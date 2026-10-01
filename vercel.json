@@ -146,10 +146,6 @@
       "schedule": "0 7 * * 2-6"
     },
     {
-      "path": "/api/cron/refresh-current-snapshot",
-      "schedule": "*/5 13-20 * * 1-5"
-    },
-    {
       "path": "/api/cron/refresh-tracker-contracts",
       "schedule": "*/5 13-20 * * 1-5"
     },
@@ -254,20 +250,12 @@
       "schedule": "*/5 * * * 0-5"
     },
     {
-      "path": "/api/cron/fetch-es-options-eod",
-      "schedule": "0 22 * * 1-5"
-    },
-    {
       "path": "/api/cron/backfill-futures-gaps",
       "schedule": "0 6 * * 1-6"
     },
     {
       "path": "/api/cron/refresh-vix1d",
       "schedule": "0 11 * * 1-5"
-    },
-    {
-      "path": "/api/cron/warm-tbbo-percentile",
-      "schedule": "0 13 * * 1-5"
     },
     {
       "path": "/api/cron/fetch-day-ohlc",

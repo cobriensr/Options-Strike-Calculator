@@ -90,23 +90,6 @@ export async function fetchDayFeatures(
   return body.vector;
 }
 
-/**
- * Per-day microstructure summary from the TBBO archive (Phase 4b).
- *
- * Minimum-viable shape — OFI means at 5m / 15m / 1h plus metadata.
- * See `sidecar/src/archive_query.py::tbbo_day_microstructure` for the
- * authoritative schema.
- */
-export interface TbboDayMicrostructure {
-  date: string;
-  symbol: 'ES' | 'NQ';
-  front_month_contract: string;
-  trade_count: number;
-  ofi_5m_mean: number | null;
-  ofi_15m_mean: number | null;
-  ofi_1h_mean: number | null;
-}
-
 /** Historical percentile rank of a given OFI value. */
 export interface TbboOfiPercentile {
   symbol: 'ES' | 'NQ';
@@ -116,24 +99,6 @@ export interface TbboOfiPercentile {
   mean: number;
   std: number;
   count: number;
-}
-
-/**
- * Fetch the per-day microstructure summary for `(date, symbol)` from
- * the sidecar's TBBO archive.
- *
- * Returns null on any failure (sidecar unreachable, date missing from
- * archive, etc.). The analyze endpoint treats this as additive context.
- */
-export async function fetchTbboDayMicrostructure(
-  dateIso: string,
-  symbol: 'ES' | 'NQ',
-): Promise<TbboDayMicrostructure | null> {
-  const qs = `date=${encodeURIComponent(dateIso)}&symbol=${encodeURIComponent(symbol)}`;
-  const body = await getJson<TbboDayMicrostructure>(
-    `/archive/tbbo-day-microstructure?${qs}`,
-  );
-  return body ?? null;
 }
 
 /**

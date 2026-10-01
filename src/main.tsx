@@ -171,7 +171,6 @@ if (import.meta.env.PROD)
       { path: '/api/dealer-regime', method: 'GET' },
       { path: '/api/vix-snapshots-recent', method: 'GET' },
       { path: '/api/ml/analyze-plots', method: 'POST' },
-      { path: '/api/cron/warm-tbbo-percentile', method: 'GET' },
       { path: '/api/lottery-finder', method: 'GET' },
       { path: '/api/lottery-finder-ticker-counts', method: 'GET' },
       { path: '/api/lottery-export', method: 'GET' },

@@ -301,11 +301,6 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
-  'fetch-es-options-eod': {
-    schedule: '0 22 * * 1-5',
-    checkinMargin: DEFAULT_MARGIN,
-    maxRuntime: LONG_RUNNER_MAX_RUNTIME,
-  },
   'fetch-etf-candles-1m': {
     schedule: '* 13-21 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
@@ -506,12 +501,6 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
-  'refresh-current-snapshot': {
-    schedule: '*/5 13-20 * * 1-5',
-    checkinMargin: DEFAULT_MARGIN,
-    maxRuntime: DEFAULT_MAX_RUNTIME,
-    failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
-  },
   'refresh-tracker-contracts': {
     // ET-local schedule — see DST_TAIL_NOTE. vercel.json fires `*/5 13-20`
     // UTC. 20 UTC = 15 ET (EST) / 16 ET (EDT); since EST caps the fired
@@ -525,11 +514,6 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
   },
   'refresh-vix1d': {
     schedule: '0 11 * * 1-5',
-    checkinMargin: DEFAULT_MARGIN,
-    maxRuntime: DEFAULT_MAX_RUNTIME,
-  },
-  'warm-tbbo-percentile': {
-    schedule: '0 13 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
