@@ -882,7 +882,14 @@ async function resolveAccessToken(
  * removes it reports, so there is exactly ONE `schwab.auth.login_lapsed`
  * per lapse however many callers race. Later reads find no tokens and stay
  * quiet. A re-login that landed meanwhile (the record now holds a
- * different refresh token) is left alone and re-read.
+ * different refresh token) is left alone and re-read. If the
+ * compare-and-delete fails, `clearDeadTokens` captures the error and the
+ * next reader retries the clear.
+ *
+ * Caveat: "the next reader reports it" holds only while the record exists.
+ * `tokenTtlSec` keeps it ~24 h past refreshExpiresAt, so a lapse that no
+ * caller reads within that day (e.g. over a weekend) still expires
+ * silently via the TTL. The planned pre-expiry reminder (A3) covers that.
  */
 async function handleLapsedLogin(
   creds: { clientId: string; clientSecret: string },

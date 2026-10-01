@@ -1759,6 +1759,30 @@ describe('schwab', () => {
       expect(result).toEqual({ token: 'reauth-access' });
       expect(mockSentry.captureMessage).not.toHaveBeenCalled();
     });
+
+    it('surfaces a failed compare-and-delete loudly and sends no login_lapsed', async () => {
+      mockRedisGet.mockResolvedValueOnce(lapsed());
+      const evalErr = new Error('EVAL failed');
+      mockRedisEval.mockRejectedValue(evalErr);
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await getAccessToken();
+
+      // Still logged out — the caller must re-auth either way.
+      expect(result).toEqual({
+        error: {
+          type: 'expired_refresh',
+          message: expect.stringContaining('Refresh token expired'),
+        },
+      });
+      // The dead record was NOT cleared, so this is an error, not the
+      // one-shot lapse warning (a later read retries the clear).
+      expect(mockSentry.captureException).toHaveBeenCalledTimes(1);
+      expect(mockSentry.captureException).toHaveBeenCalledWith(evalErr);
+      expect(mockSentry.captureMessage).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
   });
 
   describe('authorization-code exchange persistence', () => {
