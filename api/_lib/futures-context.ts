@@ -283,15 +283,16 @@ const SYMBOL_RENDERERS: ReadonlyArray<readonly [string, Renderer]> = [
 ];
 
 /**
- * futures_snapshots / futures_bars symbols the renderers read, in
- * section order (VX1 + VX2 feed the single VX section). The query
- * returns rows in this order, so the stale note lists symbols in it too.
+ * futures_snapshots / futures_bars symbols to read, in section order.
+ * The query returns rows in this order, so the stale note lists symbols
+ * in it too. VX1/VX2 are deliberately absent: they have had no bars
+ * since April (Databento never carried CFE), so they would only ever be
+ * "stale". renderVx and vxTermSignal stay until the VIX/VIX3M proxy
+ * replaces them; with no VX rows they render nothing.
  */
 const CONTEXT_SYMBOLS: readonly string[] = [
   'ES',
   'NQ',
-  'VX1',
-  'VX2',
   'ZN',
   'RTY',
   'CL',

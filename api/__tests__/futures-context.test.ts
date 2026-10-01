@@ -183,17 +183,9 @@ describe('formatFuturesForClaude', () => {
     // trade_date is unindexed — the seek is on (symbol, ts).
     expect(text).not.toContain('trade_date');
     expect(text).not.toContain('futures_options_daily');
-    // DX (Databento-only, no UW substitute) is never requested.
-    expect(queryParams()).toContainEqual([
-      'ES',
-      'NQ',
-      'VX1',
-      'VX2',
-      'ZN',
-      'RTY',
-      'CL',
-      'GC',
-    ]);
+    // DX and VX1/VX2 (no bars since Databento; no UW substitute) are
+    // never requested.
+    expect(queryParams()).toContainEqual(['ES', 'NQ', 'ZN', 'RTY', 'CL', 'GC']);
     expect(result).not.toContain('ES Options');
   });
 
@@ -277,31 +269,23 @@ describe('formatFuturesForClaude', () => {
     );
   });
 
-  it('drops the frozen VX section (VX1/VX2 bars last printed in April)', async () => {
-    const later = new Date('2026-09-29T15:00:00.000Z');
-    vi.setSystemTime(later);
-    const fresh = {
-      ts: minutesBefore(later, 2),
-      bar_ts: minutesBefore(later, 3),
-    };
-    mockSnapshots([
-      makeSnapshot('ES', fresh),
-      makeSnapshot('VX1', {
-        price: '18.00',
-        ts: fresh.ts, // cron still writing…
-        bar_ts: '2026-04-10T20:00:00.000Z', // …an April price
-      }),
-      makeSnapshot('VX2', {
-        price: '19.50',
-        ts: fresh.ts,
-        bar_ts: '2026-04-10T20:00:00.000Z',
-      }),
-    ]);
+  it('does not query VX and degrades cleanly without VX rows (no VX section, no vxTermSignal, no stale note)', async () => {
+    mockSnapshots([makeSnapshot('ES'), makeSnapshot('ZN')]);
 
-    const result = await formatFuturesForClaude(mockSql as never, '2026-09-29');
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
+    const symbols = queryParams().find(Array.isArray) as string[];
+    expect(symbols).not.toContain('VX1');
+    expect(symbols).not.toContain('VX2');
+    expect(result).toContain('ES Futures (/ES)');
+    expect(result).toContain('10Y Treasury (/ZN)');
     expect(result).not.toContain('VIX Futures');
-    expect(result).toContain(`${STALE_NOTE} VX1, VX2`);
+    expect(result).not.toContain('Term Structure:');
+    expect(result).not.toContain('Near-term stress');
+    expect(result).not.toContain('Normal vol regime');
+    expect(result).not.toContain(STALE_NOTE);
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(metrics.increment).not.toHaveBeenCalled();
   });
 
   it('returns null when every symbol is stale so the caller marks Futures Context unavailable', async () => {
@@ -492,6 +476,10 @@ describe('formatFuturesForClaude', () => {
   });
 
   // ── VX section with term structure ──────────────────────
+  //
+  // VX1/VX2 are no longer queried (no bars since April — Databento never
+  // carried CFE). These feed rows straight to the retained renderer and
+  // vxTermSignal until the VIX/VIX3M proxy replaces them.
 
   it('formats VX section with CONTANGO signal', async () => {
     mockSnapshots([
