@@ -1,66 +1,67 @@
 /**
  * GET /api/cron/enrich-silent-boom-outcomes
  *
- * Enriches silent_boom_alerts rows with realized exit policy outcomes by
- * reading the post-spike price stream from ws_option_trades. Runs after
- * market close (21:30 UTC / 4:30 PM ET) to ensure the full day's trade
- * data is available.
+ * Enriches silent_boom_alerts with realized outcomes read from
+ * ws_option_trades, then sets enriched_at = NOW(). The outcomes are
+ * peak_ceiling_pct, minutes_to_peak, realized_30m/60m/120m_pct (the last
+ * print at or before entry + N min; NULL when none landed, never a fake
+ * 0%), realized_eod_pct and realized_trail30_10_pct. Entry is `bucket_ct`,
+ * the 5-min spike bucket start; the outcome window is [bucket_ct, close +
+ * 15 min] on the alert's ET date.
  *
- * For each unenriched alert (enriched_at IS NULL), queries ws_option_trades
- * for all prints on that option_chain at or after bucket_ct (the
- * 5-min spike bucket start is the entry timestamp), computes peak +
- * minutes-to-peak, fixed-horizon returns at +30m / +60m / +120m, EoD,
- * and the trail-30/10 exit policy, then updates the alert record.
+ * Shares the enrichment pass with enrich-lottery-outcomes
+ * (api/_lib/option-outcome-aggregate.ts):
+ *   - Candidates: enriched_at IS NULL and bucket_ct inside the
+ *     WS_OPTION_TRADES_RETENTION_DAYS window, newest first. Older alerts
+ *     are NOT candidates: cleanup-ws-option-trades leaves old days
+ *     partially pruned, so their tape is fragmentary.
+ *   - Settle gate: nothing is read until close + 15 min + 5 min grace.
+ *   - One statement per chain-grouped chunk computes every outcome in SQL.
+ *   - An alert is never stamped with empty outcomes. tapeGap (its ticker
+ *     has an empty 5-min bucket after the spike or a quiet close tail: the
+ *     feed or its uw-stream shard was down) raises a Sentry warning and
+ *     returns status 'error'. noPrints and unreadable rows raise a Sentry
+ *     warning and return 'partial'. All three stay candidates and are
+ *     retried while inside the window.
  *
- * Mirrors `api/cron/enrich-lottery-outcomes.ts`. Differences from the
- * lottery template:
+ * History: from 2026-06-12 (dd2b68ff) until this fix, every alert was
+ * stamped enriched_at with NULL outcomes on its own evening even though its
+ * tape existed. The batched read keyed ticks by an int4 id while the
+ * candidate's int8 id arrived as a string, so no alert ever found its
+ * ticks. The read also had no upper bound and drained oldest-first. Those
+ * stamped rows are out of reach of this cron;
+ * scripts/enrich_silent_boom_outcomes.py (parquet) is the recovery path.
  *
- *   - Table is `silent_boom_alerts` (not `lottery_finder_fires`).
- *   - Entry timestamp is `bucket_ct` (the 5-min spike bucket start),
- *     not a separate `entry_time_ct` column.
- *   - Drops hard30m / tier50 / flow-inversion policies — silent boom
- *     does not store those columns; the only realized policy here is
- *     trail-30/10. Adds fixed-horizon 30m / 60m / 120m returns which
- *     ARE columns on silent_boom_alerts (mirror the Python script's
- *     at_horizon() logic in scripts/enrich_silent_boom_outcomes.py).
- *
- * Cadence: 21:30 UTC Mon-Fri (30 min after market close).
+ * Cadence: 21:45 UTC Mon-Fri, after the 20:20/21:20 UTC (EDT/EST) settle
+ * instant. About 250 alerts a day, i.e. a few chunks.
  *
  * Environment: CRON_SECRET
  *
- * Spec: docs/superpowers/specs/silent-boom-otm-tide-and-trail-2026-05-13.md
+ * Spec: docs/superpowers/specs/lottery-enrichment-starvation-2026-10-02.md
  */
 
 import { getDb, withDbRetry } from '../_lib/db.js';
+import { WS_OPTION_TRADES_RETENTION_DAYS } from '../_lib/constants.js';
 import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 import {
-  realizedTrailAct30Trail10,
-  peakCeiling,
-  minutesToPeak,
-} from '../_lib/lottery-exit-policies.js';
+  enrichOutcomeWindows,
+  outcomePassStatus,
+  prepareWindows,
+  type OutcomeCandidate,
+} from '../_lib/option-outcome-aggregate.js';
 
-interface UnenrichedAlert {
-  id: number;
-  optionChainId: string;
-  bucketCt: Date;
-  entryPrice: number;
-}
+type Sql = ReturnType<typeof getDb>;
 
-interface TradeTick {
-  alertId: number;
-  executedAt: Date;
-  price: number;
-}
+/**
+ * No chunk starts after this much of the run: the same budget as the
+ * lottery tape pass, well inside the Fluid Compute default maxDuration.
+ */
+const PASS_BUDGET_MS = 180_000;
 
-/** Enriched UPDATE payload — one per alert that had post-entry ticks.
- *  r30/r60/r120 are nullable: returnAtHorizon returns null when no tick
- *  falls inside the horizon, and that NULL must survive into the DB so a
- *  sparse-chain alert isn't coded as a bogus 0%. peak/minToPeak/eod/trail30
- *  are always numeric (their exit-policy helpers never return null). */
-interface EnrichUpdate {
+interface AlertUpdate {
   id: number;
   peak: number;
   minToPeak: number;
@@ -71,241 +72,124 @@ interface EnrichUpdate {
   trail30: number;
 }
 
+/** In-window unenriched alerts, newest first (silent_boom_alerts_unenriched_idx). */
+async function selectCandidates(sql: Sql): Promise<OutcomeCandidate[]> {
+  return (await withDbRetry(
+    () => sql`
+      SELECT id,
+             option_chain_id AS chain,
+             underlying_symbol AS ticker,
+             date::text AS date,
+             bucket_ct AS entry,
+             entry_price::float8 AS "entryPx"
+        FROM silent_boom_alerts
+       WHERE enriched_at IS NULL
+         AND date >= ((NOW() - make_interval(days => ${WS_OPTION_TRADES_RETENTION_DAYS}::int))
+                      AT TIME ZONE 'America/New_York')::date
+         AND bucket_ct >= NOW() - make_interval(days => ${WS_OPTION_TRADES_RETENTION_DAYS}::int)
+       ORDER BY bucket_ct DESC
+       LIMIT 5000
+    `,
+    2,
+    10_000,
+  )) as OutcomeCandidate[];
+}
+
 /**
- * Fixed-horizon forward return — last price at or before `horizonMin`
- * minutes after entry. Returns `null` when no tick falls inside the
- * horizon so the column stays NULL in the DB; coding "no data" as 0%
- * would silently inflate win rates for sparse chains. Mirrors the
- * Python `at_horizon()` in scripts/enrich_silent_boom_outcomes.py.
+ * ONE batched UPDATE per chunk; the r30/r60/r120 arrays keep their NULLs.
+ * Conditional on enriched_at IS NULL (idempotent under overlap); RETURNING
+ * counts the rows this run actually locked.
  */
-function returnAtHorizon(
-  prices: number[],
-  minutesSinceEntry: number[],
-  entryPrice: number,
-  horizonMin: number,
-): number | null {
-  let lastInIdx = -1;
-  for (let i = 0; i < minutesSinceEntry.length; i++) {
-    if (minutesSinceEntry[i]! <= horizonMin) lastInIdx = i;
-    else break;
-  }
-  if (lastInIdx === -1) return null;
-  return ((prices[lastInIdx]! - entryPrice) / entryPrice) * 100;
+async function lockOutcomes(
+  sql: Sql,
+  updates: readonly AlertUpdate[],
+): Promise<number> {
+  const rows = (await withDbRetry(
+    () => sql`
+      UPDATE silent_boom_alerts AS s
+         SET peak_ceiling_pct = u.peak,
+             minutes_to_peak = u.mtp,
+             realized_30m_pct = u.r30,
+             realized_60m_pct = u.r60,
+             realized_120m_pct = u.r120,
+             realized_eod_pct = u.eod,
+             realized_trail30_10_pct = u.trail30,
+             enriched_at = NOW()
+        FROM unnest(
+               ${updates.map((u) => u.id)}::bigint[],
+               ${updates.map((u) => u.peak)}::float8[],
+               ${updates.map((u) => u.minToPeak)}::float8[],
+               ${updates.map((u) => u.r30)}::float8[],
+               ${updates.map((u) => u.r60)}::float8[],
+               ${updates.map((u) => u.r120)}::float8[],
+               ${updates.map((u) => u.eod)}::float8[],
+               ${updates.map((u) => u.trail30)}::float8[]
+             ) AS u(id, peak, mtp, r30, r60, r120, eod, trail30)
+       WHERE s.id = u.id
+         AND s.enriched_at IS NULL
+      RETURNING s.id
+    `,
+    2,
+    30_000,
+  )) as Array<{ id: string | number }>;
+  return rows.length;
 }
 
 export default withCronInstrumentation(
   'enrich-silent-boom-outcomes',
-  async (): Promise<CronResult> => {
-    const db = getDb();
-
-    const alerts = (await withDbRetry(
-      () => db`
-        SELECT
-          id,
-          option_chain_id AS "optionChainId",
-          bucket_ct AS "bucketCt",
-          -- NUMERIC → float8 so entryPrice is a real number, not a string.
-          entry_price::float8 AS "entryPrice"
-        FROM silent_boom_alerts
-        WHERE enriched_at IS NULL
-        ORDER BY inserted_at ASC
-        -- Bound the batch so a backlog can't queue 1000s of UW intraday
-        -- calls in one run, overrunning the shared 115/min UW cap + 300s
-        -- maxDuration (the "UW 429" pile-up fix). Leftover alerts drain
-        -- oldest-first on the next run. Mirrors enrich-lottery-outcomes.
-        LIMIT 300
-      `,
-      2,
-      10_000,
-    )) as UnenrichedAlert[];
-
-    if (alerts.length === 0) {
-      return { status: 'success', message: 'No unenriched fires' };
-    }
-
-    let enriched = 0;
-    let skipped = 0;
-
-    // ONE batched ticks read — unnest the candidate alerts into a virtual
-    // input table, JOIN LATERAL the per-alert post-entry print stream.
-    // Replaces the prior per-alert SELECT loop (1 + 2N queries → ≤3 queries
-    // flat). Same shape as evaluate-round-trip.ts:148 and
-    // enrich-lottery-outcomes' batched refactor. Rows arrive ordered by
-    // (alert id, executed_at) so a single linear pass buckets them per alert.
-    const ids = alerts.map((a) => a.id);
-    const chains = alerts.map((a) => a.optionChainId);
-    const entries = alerts.map((a) =>
-      a.bucketCt instanceof Date
-        ? a.bucketCt.toISOString()
-        : new Date(a.bucketCt).toISOString(),
+  async (ctx): Promise<CronResult> => {
+    const sql = getDb();
+    const candidates = await selectCandidates(sql);
+    const { windows, skipped, inFlight } = prepareWindows(
+      candidates,
+      Date.now(),
     );
+    const pass = await enrichOutcomeWindows(sql, windows, {
+      job: 'enrich-silent-boom-outcomes',
+      recovery: 'scripts/enrich_silent_boom_outcomes.py',
+      logger: ctx.logger,
+      deadlineMs: ctx.startTimeMs + PASS_BUDGET_MS,
+      toUpdate: (w, r): AlertUpdate => ({
+        id: w.id,
+        peak: r.peakPct,
+        minToPeak: r.minutesToPeak,
+        r30: r.r30Pct,
+        r60: r.r60Pct,
+        r120: r.r120Pct,
+        eod: r.eodPct,
+        trail30: r.trail30_10Pct,
+      }),
+      lock: (updates) => lockOutcomes(sql, updates),
+    });
 
-    const tickRows = (await withDbRetry(
-      () => db`
-        SELECT
-          u.id AS "alertId",
-          t.executed_at AS "executedAt",
-          -- price is Postgres NUMERIC; the Neon serverless driver returns
-          -- NUMERIC as a STRING. Cast to float8 so downstream comparisons
-          -- (peakCeiling/minutesToPeak) are numeric, not lexicographic.
-          t.price::float8 AS price
-        FROM unnest(
-               ${ids}::int[],
-               ${chains}::text[],
-               ${entries}::timestamptz[]
-             ) AS u(id, chain, entry)
-        JOIN LATERAL (
-               SELECT executed_at, price
-                 FROM ws_option_trades
-                WHERE option_chain = u.chain
-                  AND executed_at >= u.entry
-                  AND canceled = FALSE
-                  AND price > 0
-                ORDER BY executed_at ASC
-             ) t ON TRUE
-        ORDER BY u.id, t.executed_at
-      `,
-      2,
-      30_000,
-    )) as TradeTick[];
+    const metadata = {
+      candidates: candidates.length,
+      updated: pass.locked,
+      alreadyLocked: pass.alreadyLocked,
+      skipped,
+      inFlight,
+      deferred: pass.deferred,
+      tapeGap: pass.tapeGapIds.length,
+      noPrints: pass.noPrintsIds.length,
+      unreadable: pass.unreadableIds.length,
+    };
+    ctx.logger.info(metadata, 'enrich-silent-boom-outcomes completed');
 
-    // Bucket ticks per alert. Rows arrive ordered by (alert id, executed_at),
-    // so each alert's ticks are already contiguous and ascending.
-    const ticksByAlert = new Map<number, TradeTick[]>();
-    for (const row of tickRows) {
-      const bucket = ticksByAlert.get(row.alertId);
-      if (bucket) bucket.push(row);
-      else ticksByAlert.set(row.alertId, [row]);
-    }
-
-    const updates: EnrichUpdate[] = [];
-    const noTickIds: number[] = [];
-
-    for (const alert of alerts) {
-      const ticks = ticksByAlert.get(alert.id);
-
-      if (!ticks || ticks.length === 0) {
-        // No post-entry ticks → nothing to compute. Collect for a TERMINAL
-        // marker stamp so this alert leaves the candidate set
-        // (enriched_at IS NULL). Without it the row is re-selected every run
-        // forever, and once ws_option_trades purges (2-day retention) it
-        // becomes permanently un-enrichable while still accumulating in the
-        // scan. Realized/peak columns stay NULL so a no-tick alert is
-        // distinguishable from a real outcome (no bogus 0).
-        noTickIds.push(alert.id);
-        skipped++;
-        continue;
-      }
-
-      const prices = ticks.map((t) => t.price);
-      const minutesSinceEntry = ticks.map((t) => {
-        const deltaMs = t.executedAt.getTime() - alert.bucketCt.getTime();
-        return deltaMs / 60_000;
-      });
-
-      const peak = peakCeiling(prices, alert.entryPrice);
-      const minToPeak = minutesToPeak(prices, minutesSinceEntry);
-      const r30 = returnAtHorizon(
-        prices,
-        minutesSinceEntry,
-        alert.entryPrice,
-        30,
-      );
-      const r60 = returnAtHorizon(
-        prices,
-        minutesSinceEntry,
-        alert.entryPrice,
-        60,
-      );
-      const r120 = returnAtHorizon(
-        prices,
-        minutesSinceEntry,
-        alert.entryPrice,
-        120,
-      );
-      const eod =
-        ((prices.at(-1)! - alert.entryPrice) / alert.entryPrice) * 100;
-      const trail30 = realizedTrailAct30Trail10(prices, alert.entryPrice);
-
-      updates.push({
-        id: alert.id,
-        peak,
-        minToPeak,
-        r30,
-        r60,
-        r120,
-        eod,
-        trail30,
-      });
-      enriched++;
-    }
-
-    // TWO batched writes after the loop, each guarded on non-empty.
-    //
-    // (1) Enriched UPDATE — unnest of typed arrays joined back by id. The
-    // realized_30m/60m/120m arrays are float8[] and PRESERVE NULL elements
-    // (a sparse-chain alert keeps NULL columns, not a bogus 0). Mirrors the
-    // evaluate-round-trip.ts batched UPDATE shape.
-    if (updates.length > 0) {
-      const upIds = updates.map((u) => u.id);
-      const upPeak = updates.map((u) => u.peak);
-      const upMinToPeak = updates.map((u) => u.minToPeak);
-      const upR30 = updates.map((u) => u.r30);
-      const upR60 = updates.map((u) => u.r60);
-      const upR120 = updates.map((u) => u.r120);
-      const upEod = updates.map((u) => u.eod);
-      const upTrail30 = updates.map((u) => u.trail30);
-      await withDbRetry(
-        () => db`
-          UPDATE silent_boom_alerts AS s
-          SET
-            peak_ceiling_pct = u.peak,
-            minutes_to_peak = u.min_to_peak,
-            realized_30m_pct = u.r30,
-            realized_60m_pct = u.r60,
-            realized_120m_pct = u.r120,
-            realized_eod_pct = u.eod,
-            realized_trail30_10_pct = u.trail30,
-            enriched_at = NOW()
-          FROM unnest(
-                 ${upIds}::int[],
-                 ${upPeak}::float8[],
-                 ${upMinToPeak}::float8[],
-                 ${upR30}::float8[],
-                 ${upR60}::float8[],
-                 ${upR120}::float8[],
-                 ${upEod}::float8[],
-                 ${upTrail30}::float8[]
-               ) AS u(id, peak, min_to_peak, r30, r60, r120, eod, trail30)
-          WHERE s.id = u.id
-        `,
-        2,
-        30_000,
-      );
-    }
-
-    // (2) No-tick terminal UPDATE — stamp enriched_at on the un-enrichable
-    // alerts in one statement so they leave the candidate set. Realized/peak
-    // columns stay NULL.
-    if (noTickIds.length > 0) {
-      await withDbRetry(
-        () => db`
-          UPDATE silent_boom_alerts
-          SET enriched_at = NOW()
-          WHERE id = ANY(${noTickIds}::int[])
-        `,
-        2,
-        30_000,
-      );
-    }
-
+    const status = outcomePassStatus(pass);
     return {
-      status: 'success',
-      message: `Enriched ${enriched} fires, skipped ${skipped} (no post-entry ticks)`,
+      status,
+      rows: pass.locked,
+      ...(status === 'error'
+        ? {
+            message:
+              `${pass.tapeGapIds.length} alert(s) left unenriched: ` +
+              'ws_option_trades gap at the close',
+          }
+        : {}),
+      metadata,
     };
   },
-  // Scheduled at 21:30 UTC = 17:30 ET = 90 min after the market-hours
-  // gate's 16:05 ET close-buffer. Disable the gate so the run actually
-  // happens. UW is not called, so apiKey is not required either.
+  // Runs after the close (cronGuard would reject it during its default
+  // market-hours gate); DB-only, so no UW key.
   { marketHours: false, requireApiKey: false },
 );

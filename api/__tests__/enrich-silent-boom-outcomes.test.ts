@@ -1,11 +1,13 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
+import { WS_OPTION_TRADES_RETENTION_DAYS } from '../_lib/constants.js';
 
-const { mockSql, mockCronGuard } = vi.hoisted(() => ({
-  mockSql: vi.fn(),
+const { mockSql, mockCronGuard, mockCaptureMessage } = vi.hoisted(() => ({
+  mockSql: Object.assign(vi.fn(), { query: vi.fn() }),
   mockCronGuard: vi.fn(),
+  mockCaptureMessage: vi.fn(),
 }));
 
 vi.mock('../_lib/db.js', () => ({
@@ -14,7 +16,11 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { captureException: vi.fn(), setTag: vi.fn() },
+  Sentry: {
+    captureException: vi.fn(),
+    captureMessage: mockCaptureMessage,
+    setTag: vi.fn(),
+  },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -31,267 +37,296 @@ vi.mock('../_lib/api-helpers.js', () => ({
 
 import handler from '../cron/enrich-silent-boom-outcomes.js';
 
-const GUARD = { apiKey: 'test-key', today: '2026-05-13' };
+const GUARD = { apiKey: '', today: '2026-10-01' };
 
-/**
- * The tagged-template mock receives the SQL string fragments as its first
- * arg (a TemplateStringsArray). Join them to match against the query text.
- */
-function queryText(call: unknown[]): string {
-  const strings = call[0];
-  return Array.isArray(strings) ? strings.join('') : '';
+/** 21:45 UTC on 2026-10-01 (EDT): past the 20:20Z settle instant. */
+const RUN_AT = '2026-10-01T21:45:00Z';
+
+type Row = Record<string, unknown>;
+
+/** A candidate alert as the driver returns it (int8 id as a string). */
+function alert(id: number, chain = 'AMD261002C00607500') {
+  return {
+    id: String(id),
+    chain,
+    ticker: chain.slice(0, 3),
+    date: '2026-10-01',
+    entry: new Date('2026-10-01T13:50:00Z'), // bucket_ct
+    entryPx: 2,
+  };
 }
 
-const baseAlert = {
-  id: 1,
-  optionChainId: 'SPY260513C00500000',
-  bucketCt: new Date('2026-05-13T14:30:00Z'),
-  entryPrice: 1.0,
-};
+/** A priced aggregate (entry 2.00): peak 3.00, last 2.40, no 30-min print. */
+function agg(id: number, o: Row = {}): Row {
+  return {
+    window_id: String(id),
+    tape_live: true,
+    ticks: 25,
+    peak_px: 3,
+    peak_minutes: 47.25,
+    last_px: 2.4,
+    h30_px: null,
+    h60_px: 2.6,
+    h120_px: 2.2,
+    tier1_px: 3,
+    trail_exit_px: 2.7,
+    ...o,
+  };
+}
+
+interface Router {
+  candidates?: Row[];
+  aggregate?: (ids: number[]) => Row[] | Promise<Row[]>;
+  lockReturns?: (ids: number[]) => number[] | Promise<number[]>;
+  /** Empty 5-min buckets the continuity probe reports. */
+  gaps?: Row[];
+}
+
+const text = (call: unknown[]): string =>
+  Array.isArray(call[0]) ? (call[0] as string[]).join(' ') : '';
+
+function route(r: Router): void {
+  mockSql.mockImplementation(
+    async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const sqlText = strings.join(' ');
+      if (sqlText.includes('UPDATE silent_boom_alerts')) {
+        const ids = values[0] as number[];
+        const locked = await (r.lockReturns ?? ((x) => x))(ids);
+        return locked.map((id) => ({ id: String(id) }));
+      }
+      if (sqlText.includes('FROM silent_boom_alerts')) {
+        return r.candidates ?? [];
+      }
+      throw new Error(`unrouted SQL: ${sqlText.slice(0, 80)}`);
+    },
+  );
+  mockSql.query.mockImplementation(
+    async (sqlText: string, params: unknown[]) =>
+      sqlText.includes('generate_series')
+        ? (r.gaps ?? [])
+        : (r.aggregate ?? (() => []))(params[0] as number[]),
+  );
+}
+
+/** The per-alert aggregate statements (not the continuity probe). */
+const aggregateCalls = (): Array<[string, unknown[]]> =>
+  (mockSql.query.mock.calls as Array<[string, unknown[]]>).filter(
+    (c) => !c[0].includes('generate_series'),
+  );
+
+const lockCalls = () =>
+  mockSql.mock.calls.filter((c) =>
+    text(c).includes('UPDATE silent_boom_alerts'),
+  );
+
+async function run() {
+  const res = mockResponse();
+  await handler(mockRequest({ method: 'GET' }), res);
+  return res;
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockSql.mockReset();
+  mockSql.query.mockReset();
+  mockCronGuard.mockReturnValue(GUARD);
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(RUN_AT));
+  route({});
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('enrich-silent-boom-outcomes', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    process.env.CRON_SECRET = 'test-secret';
-    mockCronGuard.mockReturnValue(GUARD);
-  });
-
   it('returns 401 when CRON_SECRET is missing/wrong (cronGuard returns null)', async () => {
     mockCronGuard.mockReturnValueOnce(null);
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer wrong-secret' },
-    });
-    const res = mockResponse();
+    await run();
 
-    await handler(req, res);
-
-    // cronGuard handles the 401 itself; the wrapper short-circuits and
-    // never runs the handler body, so no SELECT was issued.
+    // cronGuard handles the 401 itself; the handler body never runs.
     expect(mockSql).not.toHaveBeenCalled();
   });
 
-  it('returns early when no unenriched fires exist', async () => {
-    mockSql.mockResolvedValueOnce([]);
-
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-
-    await handler(req, res);
+  it('succeeds with nothing to do when no alert is unenriched', async () => {
+    const res = await run();
 
     expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      status: 'success',
-      message: 'No unenriched fires',
-    });
-
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(res._json).toMatchObject({ status: 'success', candidates: 0 });
+    expect(mockSql.query).not.toHaveBeenCalled();
   });
 
-  it('enriches a fire with post-entry ticks and lands trail-30/10 in the right UPDATE array slot', async () => {
-    // Tape: entry $1.00, peak $1.50 (+50%) at t=2min, gives back 10pp to
-    // $1.40 at t=3min → trail-30/10 exits at +40%; EoD price $1.20 (+20%).
-    mockSql.mockResolvedValueOnce([baseAlert]); // SELECT alerts
-    // Batched ticks read — each row carries the joining alertId.
-    mockSql.mockResolvedValueOnce([
-      { alertId: 1, executedAt: new Date('2026-05-13T14:31:00Z'), price: 1.2 },
-      { alertId: 1, executedAt: new Date('2026-05-13T14:32:00Z'), price: 1.5 },
-      { alertId: 1, executedAt: new Date('2026-05-13T14:33:00Z'), price: 1.4 },
-      { alertId: 1, executedAt: new Date('2026-05-13T14:40:00Z'), price: 1.2 },
-    ]); // SELECT ticks (JOIN LATERAL)
+  it('selects only alerts inside the retention window, newest first', async () => {
+    await run();
 
-    // Capture the batched enriched UPDATE bind shape. The tagged-template
-    // call invokes mockSql with (stringsArray, ...arrayValues); each bound
-    // value is now an ARRAY (one element per enriched alert).
-    let updateValues: unknown[] = [];
-    mockSql.mockImplementationOnce((..._args: unknown[]) => {
-      updateValues = _args.slice(1);
-      return Promise.resolve([]);
-    }); // enriched UPDATE
-
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-
-    await handler(req, res);
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      status: 'success',
-      message: expect.stringContaining('Enriched 1 fires'),
-    });
-    // SELECT alerts + batched ticks read + ONE batched enriched UPDATE
-    // (no no-tick alerts → no second write).
-    expect(mockSql).toHaveBeenCalledTimes(3);
-
-    // Batched UPDATE unnest array order from the handler:
-    //   ids, peak, minToPeak, r30, r60, r120, eod, trail30
-    // Each bind is an array of one (single enriched alert).
-    expect(updateValues).toHaveLength(8);
-    const [ids, peak, , , , , , trail30] = updateValues as number[][];
-    expect(ids).toEqual([1]); // id array
-    expect(peak![0]).toBeCloseTo(50, 5); // peak ceiling %
-    expect(trail30![0]).toBeCloseTo(40, 5); // trail-30/10 %
+    const [call] = mockSql.mock.calls;
+    const sqlText = text(call!).replaceAll(/\s+/g, ' ');
+    expect(sqlText).toContain('WHERE enriched_at IS NULL');
+    expect(sqlText).toContain(
+      'bucket_ct >= NOW() - make_interval(days => ::int)',
+    );
+    expect(sqlText).toContain('ORDER BY bucket_ct DESC');
+    expect(sqlText).not.toContain('ASC');
+    expect(sqlText).not.toContain('inserted_at');
+    expect(call!.slice(1)).toEqual([
+      WS_OPTION_TRADES_RETENTION_DAYS,
+      WS_OPTION_TRADES_RETENTION_DAYS,
+    ]);
   });
 
-  it('stamps a terminal enriched_at (NULL outcomes) on a no-tick alert so it exits the candidate set', async () => {
-    mockSql.mockResolvedValueOnce([
-      {
-        ...baseAlert,
-        id: 2,
-        optionChainId: 'SPY260513P00495000',
-        bucketCt: new Date('2026-05-13T20:59:00Z'),
-        entryPrice: 0.5,
-      },
-    ]); // SELECT alerts
-    mockSql.mockResolvedValueOnce([]); // batched ticks read returns no rows
+  it('locks an alert with every outcome, keeping a NULL horizon as NULL', async () => {
+    route({ candidates: [alert(1)], aggregate: () => [agg(1)] });
 
-    let noTickUpdate: { text: string; values: unknown[] } | null = null;
-    mockSql.mockImplementationOnce((...args: unknown[]) => {
-      noTickUpdate = { text: queryText(args), values: args.slice(1) };
-      return Promise.resolve([]);
-    }); // terminal no-tick UPDATE
+    const res = await run();
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-
-    await handler(req, res);
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      status: 'success',
-      message: expect.stringContaining('skipped 1'),
-    });
-    // SELECT alerts + batched ticks read + terminal no-tick UPDATE
-    // (no enriched alerts → no enriched write).
-    expect(mockSql).toHaveBeenCalledTimes(3);
-
-    // The terminal UPDATE stamps enriched_at = NOW() and touches NO realized
-    // or peak columns (they stay NULL — a no-tick alert is NOT a 0% outcome).
-    expect(noTickUpdate).not.toBeNull();
-    const update = noTickUpdate!;
-    expect(update.text).toContain('UPDATE silent_boom_alerts');
-    expect(update.text).toContain('enriched_at = NOW()');
-    expect(update.text).not.toContain('realized_');
-    expect(update.text).not.toContain('peak_ceiling_pct');
-    expect(update.text).not.toContain('minutes_to_peak');
-    // The no-tick UPDATE binds the id array for the WHERE id = ANY(...) clause.
-    expect(update.values).toEqual([[2]]);
+    expect(res._json).toMatchObject({ status: 'success', rows: 1, updated: 1 });
+    const [lock] = lockCalls();
+    const [ids, peak, mtp, r30, r60, r120, eod, trail] = lock!.slice(
+      1,
+    ) as number[][];
+    expect(ids).toEqual([1]);
+    expect(peak![0]).toBeCloseTo(50, 9);
+    expect(mtp).toEqual([47.25]);
+    expect(r30).toEqual([null]); // nothing printed in the first 30 min
+    expect(r60![0]).toBeCloseTo(30, 9);
+    expect(r120![0]).toBeCloseTo(10, 9);
+    expect(eod![0]).toBeCloseTo(20, 9);
+    expect(trail![0]).toBeCloseTo(35, 9);
+    const lockText = text(lock!);
+    expect(lockText).toContain('AND s.enriched_at IS NULL');
+    expect(lockText).toContain('RETURNING s.id');
   });
 
-  it('batches enriched and no-tick alerts into separate writes in the same run', async () => {
-    // Alert 1 has ticks → enriched UPDATE; alert 2 has none → terminal UPDATE.
-    mockSql.mockResolvedValueOnce([
-      baseAlert,
-      {
-        ...baseAlert,
-        id: 2,
-        optionChainId: 'SPY260513P00495000',
-        bucketCt: new Date('2026-05-13T20:59:00Z'),
-        entryPrice: 0.5,
-      },
-    ]); // SELECT alerts
-    // Only alert 1 has post-entry ticks. Rows arrive ordered by alert id.
-    mockSql.mockResolvedValueOnce([
-      { alertId: 1, executedAt: new Date('2026-05-13T14:31:00Z'), price: 1.2 },
-      { alertId: 1, executedAt: new Date('2026-05-13T14:32:00Z'), price: 1.5 },
-    ]); // SELECT ticks (JOIN LATERAL)
+  it('reads the tape from bucket_ct to an explicit close + 15 min upper bound', async () => {
+    route({ candidates: [alert(1)], aggregate: () => [agg(1)] });
 
-    let enrichedUpdate: { text: string; values: unknown[] } | null = null;
-    let noTickUpdate: { text: string; values: unknown[] } | null = null;
-    mockSql.mockImplementationOnce((...args: unknown[]) => {
-      enrichedUpdate = { text: queryText(args), values: args.slice(1) };
-      return Promise.resolve([]);
-    }); // enriched UPDATE (first — updates.length > 0 branch runs before no-tick)
-    mockSql.mockImplementationOnce((...args: unknown[]) => {
-      noTickUpdate = { text: queryText(args), values: args.slice(1) };
-      return Promise.resolve([]);
-    }); // terminal no-tick UPDATE
+    await run();
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-
-    await handler(req, res);
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      status: 'success',
-      message: expect.stringMatching(/Enriched 1 fires, skipped 1/),
-    });
-    // SELECT + ticks + enriched UPDATE + no-tick UPDATE = 4 calls.
-    expect(mockSql).toHaveBeenCalledTimes(4);
-
-    expect(enrichedUpdate).not.toBeNull();
-    const enr = enrichedUpdate!;
-    expect(enr.text).toContain('peak_ceiling_pct = u.peak');
-    expect(enr.text).toContain('realized_trail30_10_pct = u.trail30');
-    // First bound array is the enriched id list (alert 1 only).
-    expect(enr.values[0] as number[]).toEqual([1]);
-
-    expect(noTickUpdate).not.toBeNull();
-    const noT = noTickUpdate!;
-    expect(noT.text).toContain('id = ANY');
-    expect(noT.values).toEqual([[2]]);
+    const [sqlText, params] = aggregateCalls()[0] as [string, unknown[]];
+    expect(sqlText).toContain('t.executed_at <= u.tape_end');
+    expect(params[3]).toEqual(['2026-10-01T13:50:00.000Z']);
+    expect(params[5]).toEqual(['2026-10-01T20:15:00.000Z']);
   });
 
-  it('coerces string prices (un-cast NUMERIC) to a numerically correct peak', async () => {
-    // Belt-and-suspenders for the SQL ::float8 cast: if a future SELECT drops
-    // the cast and Neon returns NUMERIC-as-string, the function-level Number()
-    // guard in peakCeiling/minutesToPeak must still pick the numeric max.
-    // Tape: "9.50","10.50","8.00" — lexicographic max is "9.50"; numeric max
-    // is 10.50. Entry 1.0 → peak +950%, NOT +850%.
-    mockSql.mockResolvedValueOnce([{ ...baseAlert, entryPrice: 1.0 }]); // SELECT alerts
-    mockSql.mockResolvedValueOnce([
-      {
-        alertId: 1,
-        executedAt: new Date('2026-05-13T14:31:00Z'),
-        price: '9.50',
-      },
-      {
-        alertId: 1,
-        executedAt: new Date('2026-05-13T14:32:00Z'),
-        price: '10.50',
-      },
-      {
-        alertId: 1,
-        executedAt: new Date('2026-05-13T14:33:00Z'),
-        price: '8.00',
-      },
-    ]); // SELECT ticks (strings, as un-cast Neon returns)
+  it('matches aggregates to alerts when int8 ids arrive as strings (06-12 regression)', async () => {
+    // Since dd2b68ff every alert was looked up with its STRING id in a map
+    // keyed by int4 numbers, so each looked tick-less and was stamped NULL.
+    route({ candidates: [alert(74369)], aggregate: () => [agg(74369)] });
 
-    let updateValues: unknown[] = [];
-    mockSql.mockImplementationOnce((...args: unknown[]) => {
-      updateValues = args.slice(1);
-      return Promise.resolve([]);
-    }); // enriched UPDATE
+    await run();
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
+    expect(lockCalls()[0]![1]).toEqual([74369]);
+  });
+
+  it('does not read alerts before their session settles', async () => {
+    vi.setSystemTime(new Date('2026-10-01T20:10:00Z'));
+    route({ candidates: [alert(1)], aggregate: () => [agg(1)] });
+
+    const res = await run();
+
+    expect(mockSql.query).not.toHaveBeenCalled();
+    expect(res._json).toMatchObject({ status: 'success', inFlight: 1 });
+  });
+
+  it('never stamps an alert whose ticker tape went quiet at the close (tapeGap → error + Sentry)', async () => {
+    route({
+      candidates: [alert(1), alert(2, 'TLT261002C00076000')],
+      aggregate: () => [agg(1), agg(2, { tape_live: false })],
     });
-    const res = mockResponse();
 
-    await handler(req, res);
+    const res = await run();
 
-    expect(res._status).toBe(200);
-    // Batched UPDATE array order:
-    //   ids, peak, minToPeak, r30, r60, r120, eod, trail30
-    const [, peak, minToPeak] = updateValues as number[][];
-    // peak array element 0: numeric max 10.50 → +950% (not lexicographic 9.50).
-    expect(peak![0]).toBeCloseTo(950, 5);
-    // minToPeak array element 0: the 10.50 tick is 2 min after the 14:30 entry.
-    expect(minToPeak![0]).toBeCloseTo(2, 5);
+    expect(lockCalls()[0]![1]).toEqual([1]);
+    expect(res._json).toMatchObject({ status: 'error', tapeGap: 1 });
+    expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+    expect(mockCaptureMessage.mock.calls[0]![1]).toMatchObject({
+      fingerprint: ['enrich-silent-boom-outcomes', 'missing-tape'],
+    });
+  });
+
+  it('never stamps an alert with no contract print or an unreadable aggregate (partial)', async () => {
+    route({
+      candidates: [alert(1), alert(2), alert(3)],
+      aggregate: () => [
+        agg(1, {
+          ticks: 0,
+          peak_px: null,
+          peak_minutes: null,
+          last_px: null,
+          h60_px: null,
+          h120_px: null,
+          tier1_px: null,
+          trail_exit_px: null,
+        }),
+        agg(2, { peak_px: 'garbage' }),
+        agg(3),
+      ],
+    });
+
+    const res = await run();
+
+    expect(lockCalls()[0]![1]).toEqual([3]);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      noPrints: 1,
+      unreadable: 1,
+    });
+  });
+
+  it('never stamps an alert whose ticker went silent mid-session after its spike (continuity gap)', async () => {
+    route({
+      candidates: [alert(1), alert(2, 'TLT261002C00076000')],
+      gaps: [
+        {
+          ticker: 'AMD',
+          date: '2026-10-01',
+          gap_start: '2026-10-01T15:30:00Z',
+        },
+      ],
+      aggregate: (ids) => ids.map((id) => agg(id)),
+    });
+
+    const res = await run();
+
+    expect(aggregateCalls()[0]![1][0]).toEqual([2]);
+    expect(lockCalls()[0]![1]).toEqual([2]);
+    expect(res._json).toMatchObject({ status: 'error', tapeGap: 1 });
+  });
+
+  it('reports an unreadable aggregate to Sentry under its own fingerprint', async () => {
+    route({ candidates: [alert(1)], aggregate: () => [] });
+
+    const res = await run();
+
+    expect(lockCalls()).toHaveLength(0);
+    expect(res._json).toMatchObject({ status: 'partial', unreadable: 1 });
+    expect(mockCaptureMessage.mock.calls[0]![1]).toMatchObject({
+      fingerprint: ['enrich-silent-boom-outcomes', 'unreadable-aggregate'],
+    });
+  });
+
+  it('surfaces a DB reject on the aggregate read instead of reporting success', async () => {
+    route({
+      candidates: [alert(1)],
+      aggregate: () => Promise.reject(new Error('neon: connection reset')),
+    });
+
+    const res = await run();
+
+    expect(res._status).toBe(500);
+    expect(lockCalls()).toHaveLength(0);
+  });
+
+  it('surfaces a failed outcome UPDATE instead of reporting success', async () => {
+    route({
+      candidates: [alert(1)],
+      aggregate: () => [agg(1)],
+      lockReturns: () => Promise.reject(new Error('neon: write timeout')),
+    });
+
+    const res = await run();
+
+    expect(res._status).toBe(500);
   });
 });

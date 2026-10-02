@@ -12,9 +12,9 @@
  *
  * Read-horizon audit (the enrichment crons read past same-day):
  *   - detect-lottery-fires, detect-silent-boom: NOW() - SCAN_WINDOW_MIN
- *   - enrich-silent-boom-outcomes: today's alerts forward
- *   - enrich-lottery-outcomes, enrich-periscope-lottery-outcomes:
- *     unenriched fires back to NOW() - WS_OPTION_TRADES_RETENTION_DAYS
+ *   - enrich-lottery-outcomes, enrich-silent-boom-outcomes,
+ *     enrich-periscope-lottery-outcomes: unenriched fires/alerts back to
+ *     NOW() - WS_OPTION_TRADES_RETENTION_DAYS
  *     (bounded by this sweep so a pruned or partially-pruned tape is never
  *     read as an outcome)
  *   - evaluate-round-trip: fire_time + WINDOW_MIN minutes
