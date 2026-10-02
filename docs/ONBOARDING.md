@@ -81,23 +81,23 @@ Panels (in [src/components/](../src/components/)) are grouped here by purpose, n
 
 ### Flow / dealer positioning
 
-| Panel               | Shows                                                     | Source                                                   |
-| ------------------- | --------------------------------------------------------- | -------------------------------------------------------- |
-| `GreekFlowPanel`    | Greek-weighted flow per ticker (SPX/SPY/QQQ)              | Unusual Whales `/greek-flow`                             |
-| `GreekHeatmap`      | Per-strike Greek exposure heatmap                         | Unusual Whales strike-exposure + websocket               |
-| `GexLandscape`      | Full-session gamma landscape                              | UW spot + strike exposure                                |
-| `GexTarget`         | GEX target scoring (which strike will price gravitate to) | Computed from strike GEX                                 |
-| `Gexbot`            | Alternative GEX source (Gexbot subscription)              | Gexbot API                                               |
-| `DarkPoolLevels`    | $5M+ dark pool support/resistance levels                  | Unusual Whales `/darkpool`                               |
-| `LotteryFinder`     | $1M+ unusual options flow with ML scoring                 | UW `flow-alerts` websocket → ML scorer (sidecar Takeit)  |
-| `SilentBoom`        | Pre-move detection (vol/OI/flow confluence)               | UW multi-channel                                         |
-| `OpeningFlowSignal` | V4 opening-5min flow rule for SPY+QQQ (~73% OOS win rate) | UW net-flow first-5-min                                  |
-| `IntervalBAFeed`    | Bid/ask interval pattern feed                             | UW full-tape stream                                      |
-| `VegaSpikeFeed`     | Vega spike alerts                                         | UW + computed                                            |
-| `StrikeBattleMap`   | Strike-by-strike buyer vs. seller pressure                | UW                                                       |
-| `TakeItScore`       | Lottery Finder candidate scoring (XGBoost)                | Sidecar `takeit_server.py`                               |
-| `Periscope`         | UW Periscope screenshot reader (auto-playbook)            | `periscope-scraper` Railway service → `/api/periscope-*` |
-| `PeriscopeChat`     | Conversational Q&A against the latest Periscope read      | Anthropic + persisted reads                              |
+| Panel               | Shows                                                     | Source                                                  |
+| ------------------- | --------------------------------------------------------- | ------------------------------------------------------- |
+| `GreekFlowPanel`    | Greek-weighted flow per ticker (SPX/SPY/QQQ)              | Unusual Whales `/greek-flow`                            |
+| `GreekHeatmap`      | Per-strike Greek exposure heatmap                         | Unusual Whales strike-exposure + websocket              |
+| `GexLandscape`      | Full-session gamma landscape                              | UW spot + strike exposure                               |
+| `GexTarget`         | GEX target scoring (which strike will price gravitate to) | Computed from strike GEX                                |
+| `Gexbot`            | Alternative GEX source (Gexbot subscription)              | Gexbot API                                              |
+| `DarkPoolLevels`    | $5M+ dark pool support/resistance levels                  | Unusual Whales `/darkpool`                              |
+| `LotteryFinder`     | $1M+ unusual options flow with ML scoring                 | UW `flow-alerts` websocket → ML scorer (sidecar Takeit) |
+| `SilentBoom`        | Pre-move detection (vol/OI/flow confluence)               | UW multi-channel                                        |
+| `OpeningFlowSignal` | V4 opening-5min flow rule for SPY+QQQ (~73% OOS win rate) | UW net-flow first-5-min                                 |
+| `IntervalBAFeed`    | Bid/ask interval pattern feed                             | UW full-tape stream                                     |
+| `VegaSpikeFeed`     | Vega spike alerts                                         | UW + computed                                           |
+| `StrikeBattleMap`   | Strike-by-strike buyer vs. seller pressure                | UW                                                      |
+| `TakeItScore`       | Lottery Finder candidate scoring (XGBoost)                | Sidecar `takeit_server.py`                              |
+| `Periscope`         | Periscope gamma/charm panel + trade plan                  | `populate-periscope-from-gexbot` cron (GEXBot)          |
+| `PeriscopeChat`     | Conversational Q&A against the latest Periscope read      | Anthropic + persisted reads                             |
 
 ### Positions
 
@@ -216,23 +216,22 @@ What you need a paid account / API key for, in rough priority order.
 
 #### 10. Railway
 
-- **What it powers**: Hosts the `sidecar/` and `uw-stream/` Python services.
+- **What it powers**: Hosts the `sidecar/`, `uw-stream/` and `classifier/` Python services.
 - **Sign up**: [railway.app](https://railway.app).
-- **Cost**: ~$5–20/month/service for personal usage tier. Two services = budget **~$20–40/month**.
-
-#### 11. Theta Data Terminal (optional but recommended)
-
-- **What it powers**: Co-resident Java terminal in the sidecar Docker image that fetches nightly SPX option chain EOD data.
-- **Sign up**: [thetadata.net](https://thetadata.net).
-- **Cost**: ~$200/month for the SPX EOD subscription tier (verify their current plans).
-- **Env vars**: `THETA_EMAIL`, `THETA_PASSWORD` (sidecar's Railway env).
-- **Note**: Disabled gracefully when env vars are unset — the rest of the sidecar works without it.
+- **Cost**: ~$5–20/month/service for personal usage tier. Three services = budget **~$30–60/month** (the classifier runs on a large-memory replica; check its actual bill).
+- **Sidecar env vars**: `DATABASE_URL` (only for its `/health` db check), `SENTRY_DSN`, `TAKEIT_SERVER_ENABLED`, `TAKEIT_SIDECAR_SHARED_SECRET`, `ARCHIVE_*`, `BLOB_READ_WRITE_TOKEN`. See [sidecar/README.md](../sidecar/README.md).
 
 ### Required for the websocket consumer (Railway service #2)
 
 - Same `UW_API_KEY` as above (UW Advanced tier required for WS).
 - Same `DATABASE_URL` (writes to `ws_flow_alerts`, `ws_option_trades` and `futures_bars` in the same Neon instance). Futures bars come from this service since Databento was removed (2026-09-29).
 - Same Railway hosting.
+
+### Required for the multileg classifier (Railway service #3)
+
+- **What it powers**: Multileg structure labels (vertical / strangle / risk reversal / butterfly) on Lottery Finder and Silent Boom fires.
+- **Env vars**: `CLASSIFIER_URL` on **Vercel** (the classifier's base URL); `SENTRY_DSN` (optional) on the Railway service. See [classifier/README.md](../classifier/README.md).
+- **Note**: There is no fallback. Without `CLASSIFIER_URL` the detect crons still insert fires, with NULL multileg columns, and Sentry gets `multileg.classify.config_missing`.
 
 ### Optional integrations
 
@@ -257,14 +256,13 @@ For an active solo trader running the full stack:
 | Neon Postgres Pro               | ~$19                       |
 | Anthropic (Claude Opus 4.7)     | $50–100                    |
 | Unusual Whales Advanced         | ~$120–300 (verify current) |
-| Theta Data SPX EOD              | ~$200                      |
-| Railway (sidecar + uw-stream)   | $20–40                     |
+| Railway (3 services)            | $30–60                     |
 | OpenAI embeddings               | <$5                        |
 | Upstash / Vercel Blob / Sentry  | Free tier                  |
 | Twilio (occasional SMS)         | <$5                        |
 | Schwab / FRED / Finnhub / VAPID | Free                       |
 
-**Realistic total: ~$450–700/month**, with UW and Theta being the two biggest line items. Dropping Theta + the Railway services gets you to ~$120–180/month and still leaves the Vercel-side app fully functional — you just lose futures context (fed by `uw-stream`), Theta EOD chains, and the LotteryFinder pipeline.
+**Realistic total: ~$250–500/month**, with UW the biggest line item. Dropping the Railway services gets you to ~$120–180/month and still leaves the Vercel-side app fully functional — you just lose futures context (fed by `uw-stream`), multileg labels (`classifier`), Take-It SHAP (`sidecar`), and the LotteryFinder pipeline.
 
 ---
 
@@ -304,8 +302,7 @@ For deeper reference:
 I (the assistant) wrote this from a code-and-config audit, not from looking at actual billing. Confirm against your own statements:
 
 - Unusual Whales Advanced tier pricing
-- Theta Data subscription tier price
-- Railway monthly bill across both services
+- Railway monthly bill across all three services
 - Anthropic spend at your current analyze cadence
 
 If any number above is materially off, treat this doc as the structure-and-services map and substitute actual costs.

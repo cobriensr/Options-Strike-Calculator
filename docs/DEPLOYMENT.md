@@ -22,14 +22,15 @@ vercel deploy --prod     # Or push to main for auto-deploy
 - `api/cron/curate-lessons.ts` — 780s (lesson curation pipeline)
 - `api/cron/build-features.ts` — 300s (ML feature engineering)
 
-### Railway (Sidecar + uw-stream)
+### Railway (sidecar + uw-stream + classifier)
 
-Two separate Railway services, each with their own Dockerfile and env vars:
+Three separate Railway services, each with its own Dockerfile, `railway.toml` `watchPatterns` and env vars:
 
-- [sidecar/README.md](../sidecar/README.md) — Takeit SHAP + frozen archive + Theta + multi-leg fallback
+- [sidecar/README.md](../sidecar/README.md) — Takeit SHAP + frozen archive (Theta and the multileg-classify fallback were removed 2026-10-02)
 - [uw-stream/README.md](../uw-stream/README.md) — UW websocket consumer (also the live source of `futures_bars`)
+- [classifier/README.md](../classifier/README.md) — multileg classifier for the detect crons, reached via `CLASSIFIER_URL` on Vercel (no fallback)
 
-The root `vercel.json` `ignoreCommand` skips Vercel builds when only Railway-service folders change, so the two platforms deploy independently.
+The root `vercel.json` `ignoreCommand` skips Vercel builds when only `sidecar/`, `uw-stream/`, `ml/`, `scripts/`, `pine/`, `docs/` or `*.md` files change, so those deploy independently of Vercel. `classifier/` is not in that list, so a classifier change also builds Vercel. Each Railway service redeploys when a file under its `watchPatterns` changes, including its README.
 
 ### Post-Deploy Setup
 

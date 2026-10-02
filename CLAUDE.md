@@ -1,6 +1,6 @@
 # 0DTE SPX Strike Calculator
 
-Single-owner 0DTE SPX options trading tool. Vite + React 19 frontend, Vercel Serverless Functions backend (TypeScript), Python ML scripts, Railway Python services: uw-stream (Unusual Whales websocket ingestion, including futures bars) and the sidecar (Take-It SHAP scoring, Theta Data, frozen historical archive).
+Single-owner 0DTE SPX options trading tool. Vite + React 19 frontend, Vercel Serverless Functions backend (TypeScript), Python ML scripts, Railway Python services: uw-stream (Unusual Whales websocket ingestion, including futures bars), the classifier (multileg structure labels) and the sidecar (Take-It SHAP scoring, frozen historical archive).
 
 ## Architecture
 
@@ -16,18 +16,21 @@ src/              React 19 SPA (Tailwind CSS 4, no router)
 api/              Vercel Serverless Functions
   _lib/           21+ shared modules (see "Backend Modules" below)
   auth/           Schwab OAuth flow (init.ts, callback.ts)
-  cron/           35 scheduled jobs (market data fetching, feature building, lesson curation)
+  cron/           Scheduled jobs registered in vercel.json `crons` (market data, features, lessons)
   journal/        Journal CRUD + DB init/migrate
   ml/             ML data export endpoint
 
 sidecar/          Railway Python service (NOT Vercel). Ingests no market data (Databento removed 2026-09-29)
-  src/            Serves Take-It SHAP (/takeit/explain, /takeit/health), the /takeit/multileg-classify
-                  fallback, and read-only /archive/* DuckDB queries over the frozen archive on the /data
-                  volume; hosts the co-resident Theta Data Terminal. Boot DB check is non-fatal.
-                  Own requirements.txt, Dockerfile
-                  Uses psycopg2 (not @neondatabase/serverless) for Neon Postgres
-                  Sentry SDK for error tracking
-                  vercel.json ignoreCommand skips deploys for sidecar/, ml/, scripts/, pine/, docs/, *.md changes
+  src/            Serves Take-It SHAP (/takeit/explain, /takeit/health) and read-only /archive/* DuckDB
+                  queries over the frozen archive on the /data volume. Writes nothing to Neon: DATABASE_URL
+                  (psycopg2) backs only the /health db check, and the boot DB check is non-fatal.
+                  Theta Data Terminal + /takeit/multileg-classify fallback removed 2026-10-02.
+                  Own requirements.txt, Dockerfile. Sentry SDK for error tracking
+                  vercel.json ignoreCommand skips deploys for sidecar/, uw-stream/, ml/, scripts/, pine/, docs/, *.md changes
+
+classifier/       Multileg classifier (Python, Railway, NOT Vercel). POST /multileg-classify for the detect
+                  crons via CLASSIFIER_URL (no fallback: unset → NULL multileg columns + Sentry
+                  multileg.classify.config_missing). Vendors ml/src/multileg_*.py in _vendored_ml/.
 
 uw-stream/        UnusualWhales websocket consumer (Python, Railway, NOT Vercel — third Railway service)
                   asyncio + websockets + asyncpg (NOT psycopg2 — different from sidecar). Connector → router →
@@ -167,7 +170,7 @@ Everything else gets the full loop.
 - **Neon Postgres** — `@neondatabase/serverless`, lazy singleton via `getDb()`. 40+ tables managed by numbered migrations in `migrateDb()` (tracked in `schema_migrations`).
 - **Upstash Redis** — stores Schwab OAuth tokens (access + refresh). Env vars: `KV_REST_API_URL` / `UPSTASH_REDIS_REST_URL`.
 - **Input validation** — Zod schemas in `api/_lib/validation.ts` validate at system boundaries before data reaches Anthropic or Postgres.
-- **Cron jobs** — 35 jobs in `vercel.json`, all verify `CRON_SECRET`. Market data fetches run every 5 min during market hours (13-21 UTC, Mon-Fri).
+- **Cron jobs** — every job is registered in `vercel.json` `crons` and verifies `CRON_SECRET`. Market data fetches run every 5 min during market hours (13-21 UTC, Mon-Fri).
 - **Bot protection** — `botid` checks on production endpoints, skipped in local dev. **When adding a new endpoint that calls `checkBot(req)`, also add its path to the `protect` array in `src/main.tsx`'s `initBotId()` call.**
 - **Logging** — `pino` logger in `api/_lib/logger.ts`.
 - **Sentry** — error tracking + metrics via `@sentry/node`.
@@ -274,7 +277,7 @@ Required env vars (pulled via `vercel env pull .env.local`):
 | `UW_API_KEY`                               | Unusual Whales                       |
 | `GUEST_ACCESS_KEYS`                        | Comma-separated guest keys (opt.)    |
 | `UW_PER_MINUTE_CAP`                        | UW limiter override (opt., def 2000) |
-| `THETA_EMAIL`, `THETA_PASSWORD`            | Theta Data (Railway sidecar only)    |
+| `CLASSIFIER_URL`                           | Railway classifier base URL          |
 | `BLOB_READ_WRITE_TOKEN`                    | Vercel Blob (also on Railway)        |
 | `ARCHIVE_MANIFEST_URL`                     | Archive manifest (Railway only)      |
 | `ARCHIVE_SEED_TOKEN`                       | Gates seed POST (Railway only)       |
@@ -292,10 +295,10 @@ see `docs/superpowers/specs/archive-volume-seed-2026-04-18.md`.
 ## Deployment
 
 - **Platform**: Vercel (Fluid Compute, Node 24)
-- **Config**: `vercel.json` — crons, security headers, CSP, bot protection rewrites, SPA fallback, `ignoreCommand` skips builds when only `sidecar/`, `ml/`, `scripts/`, `pine/`, `docs/`, or `*.md` files change
+- **Config**: `vercel.json` — crons, security headers, CSP, bot protection rewrites, SPA fallback, `ignoreCommand` skips builds when only `sidecar/`, `uw-stream/`, `ml/`, `scripts/`, `pine/`, `docs/`, or `*.md` files change (not `classifier/`)
 - **Long-running functions**: `api/analyze.ts` (800s), `api/cron/curate-lessons.ts` (780s), `api/cron/build-features.ts` (300s)
 - **DB setup**: `POST /api/journal/init` creates all tables and runs all migrations
-- **Sidecar**: Python service deployed separately to Railway (own Dockerfile). Env vars (`DATABASE_URL`, `SENTRY_DSN`, and optionally `THETA_EMAIL` / `THETA_PASSWORD` for the co-resident Theta Data Terminal jar) are in Railway, not Vercel.
+- **Railway services**: `sidecar/`, `uw-stream/` and `classifier/`, each with its own Dockerfile, `railway.toml` `watchPatterns` and env vars in Railway, not Vercel. Sidecar env: `DATABASE_URL` (only for its `/health` db check), `SENTRY_DSN`, `TAKEIT_*`, `ARCHIVE_*`.
 
 ## Anthropic Integration
 

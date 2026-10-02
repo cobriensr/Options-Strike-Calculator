@@ -32,7 +32,7 @@ You input (or auto-receive) the current SPY price, the VIX (plus optionally VIX1
 - Automatic data collection to Neon Postgres (50+ tables, 77+ migrations, 38 cron jobs) feeding a multi-phase ML pipeline
 - Analog range forecast: strike-placement hints from 15 text-embedding-nearest historical mornings, VIX-regime-stratified for elevated/crisis days
 - ML Insights section with nightly pipeline plots analyzed by Claude vision
-- Railway Python services: `uw-stream` (Unusual Whales websocket, including 1-minute bars for 6 CME futures) and the sidecar (Take-It SHAP scoring, Theta Data Terminal for nightly SPX EOD chains, DuckDB queries over the frozen historical Parquet archive)
+- Railway Python services: `uw-stream` (Unusual Whales websocket, including 1-minute bars for 6 CME futures), the `classifier` (multileg structure labels on Lottery Finder and Silent Boom fires) and the sidecar (Take-It SHAP scoring, DuckDB queries over the frozen historical Parquet archive)
 
 ---
 

@@ -36,7 +36,7 @@ npm run dev:full                 # full stack via vercel dev,  http://localhost:
 - **Data** — Neon Postgres (`@neondatabase/serverless`), Upstash Redis
 - **AI** — Anthropic Claude Opus 4.7 (analyze), OpenAI text-embedding-3-large (lessons dedup)
 - **Market data** — Schwab Trader/Market Data API, Unusual Whales (REST + websocket, including CME futures bars)
-- **Python services** — `uw-stream/` (UW websocket on Railway), `sidecar/` (Take-It SHAP, Theta, frozen archive on Railway), `ml/` (nightly pipeline)
+- **Python services** — `uw-stream/` (UW websocket on Railway), `classifier/` (multileg classifier on Railway), `sidecar/` (Take-It SHAP, frozen archive on Railway), `ml/` (nightly pipeline)
 - **Observability** — Sentry, pino structured logs, Vercel Speed Insights
 
 ## What this app does

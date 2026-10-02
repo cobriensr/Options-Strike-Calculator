@@ -25,10 +25,10 @@ services:
 
   # Uncomment to run the Railway sidecar locally. It ingests no market
   # data (Databento was removed 2026-09-29; futures bars now come from
-  # uw-stream), so DATABASE_URL is the only required var. It serves
-  # /health, read-only /archive/* (needs a seeded ARCHIVE_ROOT), and the
-  # Take-It SHAP routes when TAKEIT_SERVER_ENABLED=1. Theta Data Terminal
-  # stays off unless THETA_EMAIL / THETA_PASSWORD are set.
+  # uw-stream), so DATABASE_URL is the only required var (it backs only
+  # the /health db check). It serves /health, read-only /archive/* (needs
+  # a seeded ARCHIVE_ROOT), and the Take-It SHAP routes when
+  # TAKEIT_SERVER_ENABLED=1.
   #
   # sidecar:
   #   build: ./sidecar

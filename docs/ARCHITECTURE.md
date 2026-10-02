@@ -90,7 +90,8 @@ System design, project structure, data flow, security, math, and the data pipeli
 │   ├── App.tsx                           # Root component
 │   └── main.tsx                          # React entry point + Sentry init
 ├── ml/                                   # Python ML pipeline (see ml/README.md)
-├── sidecar/                              # SHAP + frozen archive + Theta sidecar (see sidecar/README.md)
+├── sidecar/                              # SHAP + frozen archive sidecar (see sidecar/README.md)
+├── classifier/                           # Multileg classifier service (see classifier/README.md)
 ├── uw-stream/                            # UW websocket consumer (see uw-stream/README.md)
 ├── scripts/                              # Backfill + utility scripts (see scripts/README.md)
 ├── e2e/                                  # 32 Playwright E2E specs (see e2e/README.md)
@@ -150,9 +151,9 @@ SPY + VIX + Time ──→ useCalculation() ──→ results (strikes, premiums
                     │  Claude vision → findings.json → frontend    │
                     └──────────────────────────────────────────────┘
 
-                    ┌─── Railway (uw-stream + sidecar) ────────────┐
+                    ┌─── Railway (uw-stream, classifier, sidecar) ─┐
                     │  uw-stream WS → futures_bars, ws_* tables    │
-                    │  Theta Terminal → SPX EOD chains             │
+                    │  classifier → /multileg-classify             │
                     │  Take-It SHAP → /takeit/* endpoints          │
                     │  DuckDB → /archive/* (frozen archive)        │
                     └──────────────────────────────────────────────┘
@@ -525,46 +526,40 @@ Output: One row per trading day in `training_features` (100+ columns) + `day_lab
 
 ---
 
-## Railway Sidecar (SHAP + Archive + Theta)
+## Railway Sidecar (SHAP + Archive)
 
-A Python service deployed separately on Railway. It ingests no market data: the Databento subscription was cancelled and its ingestion path (futures OHLCV-1m, ES/NQ TBBO, ES options) was removed on 2026-09-29. Live futures bars now come from the `uw-stream` service's `futures_trades` handler (see [uw-stream/README.md](../uw-stream/README.md)). The sidecar runs outside Vercel because it holds model bundles warm, runs a co-resident Java daemon, and queries GB-scale Parquet on a persistent volume — none of which fits a serverless cold-start model.
+A Python service deployed separately on Railway. It ingests no market data: the Databento subscription was cancelled and its ingestion path (futures OHLCV-1m, ES/NQ TBBO, ES options) was removed on 2026-09-29. Live futures bars now come from the `uw-stream` service's `futures_trades` handler (see [uw-stream/README.md](../uw-stream/README.md)). The co-resident Theta Data Terminal (never run in production) and the `/takeit/multileg-classify` fallback were removed on 2026-10-02. The sidecar runs outside Vercel because it holds model bundles warm and queries GB-scale Parquet on a persistent volume — neither fits a serverless cold-start model.
 
 See [sidecar/README.md](../sidecar/README.md) for the deployment + local-dev path. Architecture summary:
 
 ```text
-Theta Data Terminal (nightly)     Vercel Blob (archive manifest)
-  ↓ theta_client.py                 ↓ archive_seeder.py
+                                  Vercel Blob (archive manifest)
+                                    ↓ archive_seeder.py
 [sidecar/src/]
   ├─ main.py             — entry point, signal handlers, shutdown
-  ├─ theta_launcher.py   — co-resident Theta Terminal JVM subprocess
-  ├─ theta_fetcher.py    — nightly APScheduler + SPX EOD chain backfill
   ├─ takeit_server.py    — Take-It SHAP explainer (/takeit/*)
-  ├─ multileg_routes.py  — /takeit/multileg-classify (fallback for classifier/)
   ├─ archive_seeder.py   — one-shot pull from Vercel Blob → /data/archive (SHA-resumable)
   ├─ archive_query.py    — DuckDB layer over the frozen Parquet archive
   ├─ health.py           — /health + /takeit/* + /archive/* + /admin/seed-archive HTTP server
-  ├─ db.py               — psycopg2 (not @neondatabase/serverless)
+  ├─ db.py               — psycopg2 pool for the /health db check only
   └─ sentry_setup.py     — Sentry init (separate DSN from Vercel side)
   ↓
-Neon Postgres (theta_option_eod) + Railway Volume [/data/archive]
+Railway Volume [/data/archive]
 ```
 
 **Responsibilities:**
 
 1. **Take-It SHAP** — `/takeit/explain` + `/takeit/health` for the `takeit-fill-shap` cron. Enabled per deployment with `TAKEIT_SERVER_ENABLED=1`.
-2. **Multi-leg classify fallback** — `/takeit/multileg-classify`. Production uses the standalone `classifier/` service; `api/_lib/multileg-client.ts` falls back here only when `CLASSIFIER_URL` is unset.
-3. **Theta Data backfill** — nightly SPX option chain EOD fetcher via the co-resident Theta Terminal Java subprocess, writing `theta_option_eod`. Optional — disabled when `THETA_EMAIL`/`THETA_PASSWORD` are unset.
-4. **Frozen archive** — one-shot `POST /admin/seed-archive` pulls the Parquet archive (originally built from Databento) from Vercel Blob into the `/data/archive` Railway volume (SHA-resumable, single-flight-locked). Nothing appends to it any more. DuckDB serves it read-only through thread-local connections capped at 500 MB memory with spill to `/tmp/duckdb`.
+2. **Frozen archive** — one-shot `POST /admin/seed-archive` pulls the Parquet archive (originally built from Databento) from Vercel Blob into the `/data/archive` Railway volume (SHA-resumable, single-flight-locked). Nothing appends to it any more. DuckDB serves it read-only through thread-local connections capped at 500 MB memory with spill to `/tmp/duckdb`.
 
-Boot requires only `DATABASE_URL`. The boot-time DB check is non-fatal, so SHAP and `/archive/*` stay up through a Neon outage while `/health` reports 503.
+Boot requires only `DATABASE_URL`, which now backs nothing but the `/health` db check (the sidecar writes nothing to Neon). The boot-time DB check is non-fatal, so SHAP and `/archive/*` stay up through a Neon outage while `/health` reports 503.
 
 **HTTP endpoints (consumed by Vercel):**
 
 | Endpoint                                     | Returns                                               |
 | -------------------------------------------- | ----------------------------------------------------- |
-| `GET /health`                                | Liveness + DB + Theta status                          |
+| `GET /health`                                | Liveness + DB status (`{status, checks: {db}}`)       |
 | `GET /takeit/health`, `POST /takeit/explain` | Take-It SHAP readiness + top-K explanations           |
-| `POST /takeit/multileg-classify`             | Multi-leg classify (fallback for `classifier/`)       |
 | `GET /archive/day-summary?date=YYYY-MM-DD`   | Deterministic session text for embedding pipeline     |
 | `GET /archive/day-features?date=YYYY-MM-DD`  | 60-dim numeric vector for engineered-analog retrieval |
 | `GET /archive/day-summary-batch?from&to`     | Batched summaries for backfill (capped 3 yrs)         |
@@ -574,13 +569,14 @@ Boot requires only `DATABASE_URL`. The boot-time DB check is non-fatal, so SHAP 
 | `GET /archive/es-range?date=YYYY-MM-DD`      | ES day summary from the archive                       |
 | `POST /admin/seed-archive`                   | One-shot seed trigger (token-gated)                   |
 
-The TBBO microstructure routes (`/archive/tbbo-day-microstructure`, `/archive/tbbo-ofi-percentile`) were removed with Databento and now return 404.
+The TBBO microstructure routes (`/archive/tbbo-day-microstructure`, `/archive/tbbo-ofi-percentile`) were removed with Databento, and `POST /takeit/multileg-classify` was removed with the F4 strip; all three now return 404.
 
 **Consumed by the Vercel side via:**
 
 - `api/_lib/archive-sidecar.ts` — typed client for `/archive/day-summary` + `/archive/day-features`
 - `api/cron/embed-yesterday.ts` — nightly, pulls yesterday's summary + stores OpenAI text-embedding-3-large (2000-dim) into `day_embeddings` for analog cohort retrieval; falls back to Postgres (`api/_lib/postgres-day-summary.ts`) for dates past the archive freeze
 - `api/cron/takeit-fill-shap.ts` — SHAP explanations for Take-It fires
-- `api/_lib/multileg-client.ts` — classify fallback when `CLASSIFIER_URL` is unset
+
+Multileg classification is not a sidecar concern: `api/_lib/multileg-client.ts` calls the standalone `classifier/` Railway service at `CLASSIFIER_URL` (`POST /multileg-classify`). There is no fallback; when `CLASSIFIER_URL` is unset the detect crons fail open (NULL multileg columns) and Sentry gets `multileg.classify.config_missing`.
 
 Futures bars are not a sidecar concern any more: `uw-stream` writes `futures_bars` live, and `api/cron/backfill-futures-gaps.ts` repairs holes daily from UW REST 1-minute candles.
