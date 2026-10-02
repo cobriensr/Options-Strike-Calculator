@@ -335,4 +335,134 @@ P1 is split to respect the five-files-per-phase rule.
 
 ## Phase 0 results
 
-Pending. Filled in by the parity commit.
+Run on 2026-10-02 against `futures_bars` ES (492,286 rows, pulled
+read-only) and the local archive. The comparison window is 2025-04-06 →
+2026-04-17. The neighbour corpus is the full archive history from
+2010-06-06.
+
+```bash
+ml/.venv/Scripts/python.exe ml/src/day_analog_parity.py \
+  --archive ml/data/archive --fb-parquet <cache>/futures_bars_es.parquet \
+  --stored-features <cache>/day_features.parquet --out <scratch>/parity.json
+# add --pull to fetch futures_bars (READ ONLY, DATABASE_URL from env)
+```
+
+**How the overlap metrics are measured.** The "query swap" corpus is the
+archive's own vectors. Each query day is answered twice, once with the
+archive vector and once with the `futures_bars` vector, and only
+strictly earlier days count as neighbours. "Corpus swap" builds both the
+corpus and the query from each source, restricted to the common days.
+
+**Replica check.** The UTC replica matches the stored `day_features`
+rows:
+
+| Metric                    | Value                           |
+| ------------------------- | ------------------------------- |
+| Common days               | 4,754                           |
+| Per-day max abs diff, max | 1.5e-9                          |
+| Share within 1e-4         | 1.000                           |
+| Front-symbol mismatches   | 0                               |
+| Days only in the replica  | 166 (2010–2013, mostly Sundays) |
+| Days only stored          | 1 (2017-03-13)                  |
+
+The stored backfill skipped the 166 replica-only days.
+
+### Vector parity and neighbour overlap
+
+| Metric                                          | UTC day (current)                                                               | 08:30 CT cash open                                              |
+| ----------------------------------------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Days compared                                   | 323                                                                             | 262                                                             |
+| Only in archive / only in `futures_bars`        | 0 / 1                                                                           | 4 / 0 (the four expiry Fridays)                                 |
+| Per-day max abs diff: median / p90 / max        | 0 / 0 / 0.0109                                                                  | 0 / 0 / 0.0085                                                  |
+| Share of days within 1e-4                       | **0.935**                                                                       | **0.943**                                                       |
+| Days over 1e-4 by cause                         | spread front 4, roll week 12, live writer 5, **other 0**                        | roll week 10, live writer 5, **other 0**                        |
+| Share within 1e-4 on days with no known cause   | **1.000** (n = 291)                                                             | **1.000** (n = 236)                                             |
+| Top-15 overlap, query swap: mean / median / p10 | 0.965 / 1.0 / 1.0                                                               | 0.977 / 1.0 / 1.0                                               |
+| Top-15 overlap, query swap: share 15/15         | 0.938                                                                           | 0.935                                                           |
+| Query-swap overlap mean by cause                | other 1.000 (291), roll week 0.846 (16), live writer 0.594 (12), spread 0.0 (4) | other 1.000 (236), roll week 0.933 (16), live writer 0.513 (10) |
+| Top-15 overlap, corpus swap: mean / p10 / 15/15 | 0.954 / 0.933 / 0.583                                                           | 0.955 / 0.867 / 0.725                                           |
+
+**Reading the table.**
+
+- **Clean days match exactly.** Every day with no known cause matches
+  exactly: per-day max diff 0 and 15/15 neighbours, in both windows.
+- **Roll weeks.** `futures_bars` (`ES.c.0`) holds the expiring contract,
+  while the archive's volume front has already rolled. The basis drift
+  is small (about 2e-4 in the cash window) but still replaces 1–2 of the
+  15 neighbours.
+- **Live writer.** A merged back-month open moves the 08:30 anchor by
+  about 50 pt (0.0078–0.0085). On those days the neighbour set is almost
+  entirely replaced (about 0.03 overlap), which pulls the live-writer mean
+  down to 0.51–0.59.
+- **Spread days.** The UTC builder's spread-front days are unrelated to ES
+  and share no neighbours.
+
+### Back-month contamination (`futures_bars` vs the archive front month, > 2 ticks)
+
+| Span                                 | Minutes | Bad close     | Bad open | Bad high | Bad low |
+| ------------------------------------ | ------- | ------------- | -------- | -------- | ------- |
+| Backfill (`ES.c.0`), not roll week   | 324,225 | **0**         | 0        | 0        | 0       |
+| Backfill (`ES.c.0`), roll weeks      | 24,462  | 24,462 (100%) | 100%     | 100%     | 100%    |
+| Live merge writer (04-05 → 04-17)    | 13,800  | 301 (2.2%)    | 9.1%     | 11.2%    | 0%      |
+| Live merge writer, cash session only | 3,900   | 3 (0.08%)     | 19.1%    | 19.1%    | 0%      |
+
+- **Coverage.** There are 362,487 matched minutes, against 364,953
+  archive front-month minutes.
+- **Roll weeks.** The roll-week span covers 20 days: Monday to Friday of
+  each quarterly expiry week.
+- **Attribution.** 24,760 of the 24,763 bad closes equal another
+  outright's close at the same minute, so they are back-month or
+  expiring-contract prints, not noise.
+- **Shape of the merge.** The live writer's damage is concentrated in
+  `open` and `high` (first write and GREATEST), which is exactly what its
+  `ON CONFLICT` clause produces.
+
+### After the archive (no ground truth): proxy
+
+The proxy flags a minute when the open is more than 15 pt from the
+previous close, or when the close spikes more than 15 pt and reverts.
+
+**Calibration** on the 262 cash-window overlap days: 5 true positives,
+2 false positives (real open gaps) and **0 false negatives**.
+
+**Flagged bars per month:**
+
+| Month             | Flagged bars                                 |
+| ----------------- | -------------------------------------------- |
+| 2025-04 – 2026-03 | 0–35 per month (35 was the April 2025 crash) |
+| 2026-04           | 4,050                                        |
+| 2026-05           | 8,173                                        |
+| 2026-06           | 9,008                                        |
+| 2026-07 →         | 0–2 per month                                |
+
+Cash-window days after 2026-04-17 that a P2 backfill could use (a
+window is usable when it has its anchor bar, at least 10 bars and no
+flag):
+
+| Month   | Days with anchor | Full 60/60 | Flagged | Usable |
+| ------- | ---------------- | ---------- | ------- | ------ |
+| 2026-04 | 9                | 9          | 9       | 0      |
+| 2026-05 | 21               | 21         | 20      | 1      |
+| 2026-06 | 21               | 21         | 9       | 12     |
+| 2026-07 | 23               | 23         | 0       | 23     |
+| 2026-08 | 15               | 15         | 0       | 15     |
+| 2026-09 | 4                | 4          | 0       | 4      |
+| 2026-10 | 1                | 1          | 0       | 1      |
+
+### Recommendation for P1
+
+**Go**, with three preconditions built into P1 and P2:
+
+1. **Refuse flagged windows.** The builder rejects any window that has an
+   open-gap or reverting-spike flag, or fewer than 10 bars, rather than
+   embedding it. A single bad minute replaces most of a day's neighbours.
+2. **Source the history from the archive.** Corpus rows up to 2026-04-17
+   come from the archive, using the outright, UTC-day-volume front month
+   and the cash window. Do not use `futures_bars` for that span: its roll
+   weeks follow `ES.c.0`, and expiry Fridays have no cash bars.
+3. **Exclude the contaminated span.** Drop the flagged 2026-04-20 →
+   ~06-15 days, and take no high/low labels from them.
+
+`futures_bars` is otherwise a faithful source. Outside roll weeks and the
+merge writer it matches the archive minute-for-minute: 0 bad minutes in
+324,225.
