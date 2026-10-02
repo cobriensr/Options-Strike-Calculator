@@ -8,6 +8,16 @@ import { MARKET, DEFAULTS } from '../constants/index.js';
 /**
  * Standard normal cumulative distribution function.
  * Returns P(X ≤ x) for X ~ N(0,1).
+ *
+ * `pdf * poly` is the upper tail N(-|x|) directly. Return it as-is for x < 0
+ * rather than reflecting through `1 - (1 - tail)`: once tail drops below
+ * ~1.1e-16, `1 - tail` rounds to exactly 1 and the reflection returns 0,
+ * discarding a value the approximation had already computed correctly.
+ *
+ *      x      before      after         true
+ *     -8   6.661e-16   6.285e-16   6.221e-16
+ *     -9           0   1.145e-19   1.129e-19
+ *    -10           0   7.770e-24   7.620e-24
  */
 export function normalCDF(x: number): number {
   const p = 0.2316419;
@@ -21,9 +31,9 @@ export function normalCDF(x: number): number {
   const t = 1 / (1 + p * absX);
   const pdf = Math.exp((-absX * absX) / 2) / Math.sqrt(2 * Math.PI);
   const poly = ((((b5 * t + b4) * t + b3) * t + b2) * t + b1) * t;
-  const cdf = 1 - pdf * poly;
+  const tail = pdf * poly; // N(-|x|)
 
-  return x >= 0 ? cdf : 1 - cdf;
+  return x >= 0 ? 1 - tail : tail;
 }
 
 /**
