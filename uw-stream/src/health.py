@@ -111,7 +111,8 @@ async def healthz(_request: web.Request) -> web.Response:
 
 
 async def metrics(request: web.Request) -> web.Response:
-    """JSON snapshot of per-channel counters and global state.
+    """JSON snapshot of per-channel subscription state, per-handler counters,
+    and global state.
 
     Optionally gated on ``INTERNAL_METRICS_TOKEN``: when set, the
     request must carry a matching ``X-Metrics-Token`` header. When
@@ -135,16 +136,25 @@ async def metrics(request: web.Request) -> web.Response:
         "reconnects_last_hour": state.reconnects_last_hour(),
         "receive_queue_depth": state.receive_queue_depth,
         "receive_queue_drops": state.receive_queue_drops,
+        # Per WS channel (keyed by the joined channel name): subscription state.
         "channels": {
             name: {
                 "subscribed": ch.subscribed,
                 "last_message_ts": _iso(ch.last_message_ts),
-                "queue_depth": ch.queue_depth,
-                "drop_count": ch.drop_count,
-                "write_attempted": ch.write_attempted,
-                "write_count": ch.write_count,
             }
             for name, ch in state.channels.items()
+        },
+        # Per handler queue (keyed by Handler.name). A shared handler services
+        # a whole channel family, so e.g. ``net_flow`` here covers every
+        # ``net_flow:<TICKER>`` row above.
+        "handlers": {
+            name: {
+                "queue_depth": h.queue_depth,
+                "drop_count": h.drop_count,
+                "write_attempted": h.write_attempted,
+                "write_count": h.write_count,
+            }
+            for name, h in state.handlers.items()
         },
     }
     return web.json_response(body)

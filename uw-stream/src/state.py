@@ -17,7 +17,34 @@ from datetime import UTC, datetime, timedelta
 
 @dataclass
 class ChannelMetrics:
-    """Per-channel counters surfaced via /metrics.
+    """Per-WS-channel subscription state, keyed by channel name.
+
+    Written by boot pre-registration in ``main`` and the connector (join sent →
+    pending), and by the router, which keys on whatever channel string UW
+    echoes (ack → subscribed, data frame → ``last_message_ts``). So keys are
+    channels we joined or that UW sent a frame on. The subscription watchdog
+    does not rely on that and evaluates only ``settings.channels``.
+
+    Handler counters live in ``HandlerMetrics`` instead: shared handlers are
+    named after their channel FAMILY (``option_trades`` / ``net_flow`` /
+    ``gex_strike_expiry``), which is not a channel, and keying their counters
+    here minted phantom ``subscribed=False`` entries the watchdog flagged (E5).
+    """
+
+    subscribed: bool = False
+    last_message_ts: datetime | None = None
+
+
+@dataclass
+class HandlerMetrics:
+    """Per-handler counters surfaced via /metrics → ``handlers``.
+
+    Keyed by ``Handler.name``. Counters are per handler queue, not per
+    channel: one shared instance services a whole channel family (e.g.
+    ``net_flow`` covers every ``net_flow:<TICKER>``). Exception: the
+    Interval B/A tickers (``option_trades:SPY`` / ``SPXW`` / ``QQQ``) get
+    dedicated handlers with their own rows, which ``option_trades`` excludes.
+    Every handler registers a zeroed row at construction.
 
     ``write_attempted`` counts every row the handler tried to flush
     (i.e. the size of the batch passed into the bulk-insert helper).
@@ -32,11 +59,9 @@ class ChannelMetrics:
     ``write_attempted`` counts prints while ``write_count`` counts bars.
     The delta is the aggregation ratio, NOT a dedup or failure rate, and
     a ~99% apparent "failure" there is the normal steady state. Judge
-    that channel by ``write_count`` and ``last_message_ts`` instead.
+    that handler by ``write_count`` and its channel's ``last_message_ts``.
     """
 
-    subscribed: bool = False
-    last_message_ts: datetime | None = None
     queue_depth: int = 0
     drop_count: int = 0
     write_attempted: int = 0
@@ -59,6 +84,7 @@ class State:
     # reconnects_last_hour. 512 comfortably covers an hour across ~6+ shards.
     reconnect_times: deque[datetime] = field(default_factory=lambda: deque(maxlen=512))
     channels: dict[str, ChannelMetrics] = field(default_factory=dict)
+    handlers: dict[str, HandlerMetrics] = field(default_factory=dict)
     # Bounded queue between connector (producer) and router (consumer).
     # Depth is set by the router on each loop iteration so /metrics can
     # show whether the router is keeping up with the WS receive rate.
@@ -119,6 +145,12 @@ class State:
         if name not in self.channels:
             self.channels[name] = ChannelMetrics()
         return self.channels[name]
+
+    def handler(self, name: str) -> HandlerMetrics:
+        """Get or create the counters record for a handler (by ``Handler.name``)."""
+        if name not in self.handlers:
+            self.handlers[name] = HandlerMetrics()
+        return self.handlers[name]
 
     def touch(self, channel: str) -> None:
         """Mark a channel as having just received a message."""

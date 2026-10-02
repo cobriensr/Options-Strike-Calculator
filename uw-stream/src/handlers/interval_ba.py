@@ -183,7 +183,7 @@ class IntervalBAHandler(OptionTradesHandler):
                 "(use one of SPYIntervalBAHandler / SPXWIntervalBAHandler / "
                 "QQQIntervalBAHandler).",
             )
-        # Pass the per-ticker channel name through so state.channel and
+        # Pass the per-ticker channel name through so state.handler and
         # Sentry tags don't carry a stray "option_trades" entry left
         # over from the parent's default.
         super().__init__(name=f"option_trades:{self._TICKER}")

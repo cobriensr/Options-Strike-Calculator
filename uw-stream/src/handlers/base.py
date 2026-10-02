@@ -1,7 +1,9 @@
 """Abstract base for per-channel handlers.
 
 Each handler owns:
-- A bounded `asyncio.Queue` whose depth is exposed via `state.channels`.
+- A bounded `asyncio.Queue` whose depth is exposed via `state.handlers`
+  (keyed by handler name, NOT `state.channels` — a shared handler's name is
+  its channel family, e.g. ``net_flow``, which is not a subscribable channel).
 - A backpressure policy applied when the queue fills.
 - A drain loop that batches and flushes on size OR time threshold.
 
@@ -48,6 +50,10 @@ class Handler(ABC):
 
     def __init__(self, name: str) -> None:
         self.name = name
+        # Register a zeroed counters row now so /metrics → handlers lists every
+        # handler built at boot, not only those that have seen traffic. Bounded:
+        # keyed by the closed set of handler names.
+        state.handler(name)
         self.queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=settings.ws_queue_size)
         # Resolve once at construction so hot path is allocation-free.
         self._batch_size = settings.ws_batch_size
@@ -88,15 +94,15 @@ class Handler(ABC):
                 try:
                     self.queue.get_nowait()
                     self.queue.task_done()
-                    state.channel(self.name).drop_count += 1
+                    state.handler(self.name).drop_count += 1
                 except asyncio.QueueEmpty:
                     pass
                 try:
                     self.queue.put_nowait(payload)
                 except asyncio.QueueFull:
-                    state.channel(self.name).drop_count += 1
+                    state.handler(self.name).drop_count += 1
             elif self._policy == "drop_newest":
-                state.channel(self.name).drop_count += 1
+                state.handler(self.name).drop_count += 1
             elif self._policy == "block":
                 # Bounded await so the WS receive task can never freeze
                 # waiting on a slow handler. On timeout, drop the payload
@@ -108,7 +114,7 @@ class Handler(ABC):
                         timeout=BLOCK_PUT_TIMEOUT_S,
                     )
                 except TimeoutError:
-                    state.channel(self.name).drop_count += 1
+                    state.handler(self.name).drop_count += 1
                     log.warning(
                         "block-policy put timed out, dropping payload",
                         extra={
@@ -118,9 +124,9 @@ class Handler(ABC):
                     )
             else:
                 # Defensive — pydantic validates this, but in case.
-                state.channel(self.name).drop_count += 1
+                state.handler(self.name).drop_count += 1
         finally:
-            state.channel(self.name).queue_depth = self.queue.qsize()
+            state.handler(self.name).queue_depth = self.queue.qsize()
 
     # ------------------------------------------------------------------
     # Consumer side — runs forever as a background task.
@@ -155,7 +161,7 @@ class Handler(ABC):
                 # ``drain()`` to collect via get_nowait().
                 if payload is _STOP_SENTINEL:
                     self.queue.task_done()
-                    state.channel(self.name).queue_depth = self.queue.qsize()
+                    state.handler(self.name).queue_depth = self.queue.qsize()
                     break
 
                 try:
@@ -174,7 +180,7 @@ class Handler(ABC):
                     )
                 finally:
                     self.queue.task_done()
-                    state.channel(self.name).queue_depth = self.queue.qsize()
+                    state.handler(self.name).queue_depth = self.queue.qsize()
         finally:
             self._stopped.set()
 
@@ -296,7 +302,7 @@ class Handler(ABC):
             finally:
                 self.queue.task_done()
 
-        state.channel(self.name).queue_depth = self.queue.qsize()
+        state.handler(self.name).queue_depth = self.queue.qsize()
 
         # 4 + 5. One final flush with the combined batch.
         flushed = len(self._batch)
@@ -317,14 +323,14 @@ class Handler(ABC):
         unaffected.
         """
         try:
-            # Inside the try so a hypothetical state.channel() failure
+            # Inside the try so a hypothetical state.handler() failure
             # is caught by the same except — preserves the "flush wrapped
             # so a DB error never kills the drain loop" contract even if
             # the metrics surface ever grows beyond pure dict access.
-            state.channel(self.name).write_attempted += len(rows)
+            state.handler(self.name).write_attempted += len(rows)
             inserted = await self._flush(rows)
             written = inserted if isinstance(inserted, int) else len(rows)
-            state.channel(self.name).write_count += written
+            state.handler(self.name).write_count += written
         except Exception as exc:
             capture_exception(
                 exc,

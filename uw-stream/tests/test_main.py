@@ -484,3 +484,61 @@ async def test_shutdown_without_lease_is_unchanged(_reset_notify_state):
     )
 
     assert producer.cancelled()
+
+
+# --- _build_handlers: boot wiring of channel vs handler state (E5) ----------
+
+
+@pytest.fixture
+def _isolated_channel_handler_state():
+    """Run against empty channel/handler maps, then restore the originals.
+
+    Uses the real ``state`` singleton (not a swapped copy) so ``main`` and
+    ``handlers.base`` write to the same object, exactly as they do at boot.
+    """
+    from state import state
+
+    saved_channels = dict(state.channels)
+    saved_handlers = dict(state.handlers)
+    state.channels.clear()
+    state.handlers.clear()
+    yield state
+    state.channels.clear()
+    state.channels.update(saved_channels)
+    state.handlers.clear()
+    state.handlers.update(saved_handlers)
+
+
+def test_build_handlers_keeps_shared_handler_names_out_of_channel_state(
+    _isolated_channel_handler_state,
+):
+    """Real boot wiring with a mixed channel list: every configured channel is
+    pre-registered unsubscribed, nothing else lands in ``state.channels``, and
+    every handler (shared family ones included) gets only a ``state.handlers``
+    row. Handler construction is pure (settings reads), so no I/O to stub.
+    """
+    state = _isolated_channel_handler_state
+    channels = [
+        "flow-alerts",
+        "option_trades:SPY",  # dedicated Interval B/A handler, name == channel
+        "option_trades:TSLA",
+        "option_trades:NVDA",
+        "net_flow:TSLA",
+        "net_flow:NVDA",
+        "gex_strike_expiry:TSLA",
+        "gex_strike_expiry:NVDA",
+    ]
+    shared = {"option_trades", "net_flow", "gex_strike_expiry"}
+
+    handlers = main._build_handlers(channels)
+
+    assert set(handlers) == set(channels)
+    assert set(state.channels) == set(channels)
+    assert not any(ch.subscribed for ch in state.channels.values())
+    assert shared <= set(state.handlers)
+    assert shared.isdisjoint(state.channels)
+    assert set(state.handlers) == shared | {"flow-alerts", "option_trades:SPY"}
+    # One instance per family, shared across that family's tickers.
+    assert handlers["net_flow:TSLA"] is handlers["net_flow:NVDA"]
+    assert handlers["option_trades:TSLA"] is handlers["option_trades:NVDA"]
+    assert handlers["option_trades:SPY"] is not handlers["option_trades:TSLA"]

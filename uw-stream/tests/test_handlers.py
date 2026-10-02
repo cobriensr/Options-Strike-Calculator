@@ -225,7 +225,7 @@ async def test_drain_flushes_in_memory_batch_and_remaining_queue(monkeypatch):
     from handlers.base import Handler
     from state import state
 
-    state.channels.clear()
+    state.handlers.clear()
 
     class _RecordingHandler(Handler):
         def __init__(self, name: str = "drain-test") -> None:
@@ -265,7 +265,7 @@ async def test_drain_flushes_in_memory_batch_and_remaining_queue(monkeypatch):
     assert h.queue.qsize() == 0
     assert h._batch == []
 
-    state.channels.clear()
+    state.handlers.clear()
     _ = _asyncio  # silence unused-import for linters
 
     # Reference _DrainTestHandler so ruff doesn't flag it (placeholder
@@ -283,7 +283,7 @@ async def test_drain_signals_running_consumer_to_stop(monkeypatch):
     from handlers.base import Handler
     from state import state
 
-    state.channels.clear()
+    state.handlers.clear()
 
     flush_event = asyncio.Event()
 
@@ -325,7 +325,7 @@ async def test_drain_signals_running_consumer_to_stop(monkeypatch):
             task.cancel()
             with contextlib.suppress(BaseException):
                 await task
-        state.channels.clear()
+        state.handlers.clear()
 
 
 # ----------------------------------------------------------------------
@@ -346,7 +346,7 @@ async def test_drain_handles_safe_flush_raising(monkeypatch):
     from handlers.base import Handler
     from state import state
 
-    state.channels.clear()
+    state.handlers.clear()
 
     class _RaisingHandler(Handler):
         def __init__(self) -> None:
@@ -379,7 +379,7 @@ async def test_drain_handles_safe_flush_raising(monkeypatch):
     # Batch was cleared so subsequent calls don't re-emit stale rows.
     assert h._batch == []
 
-    state.channels.clear()
+    state.handlers.clear()
 
 
 def _record_warnings(monkeypatch) -> list[tuple[str, dict]]:
@@ -416,7 +416,7 @@ async def test_drain_aborts_when_run_does_not_stop_in_time(monkeypatch):
     from handlers.base import Handler
     from state import state
 
-    state.channels.clear()
+    state.handlers.clear()
     warnings = _record_warnings(monkeypatch)
 
     class _SlowFlushHandler(Handler):
@@ -470,7 +470,7 @@ async def test_drain_aborts_when_run_does_not_stop_in_time(monkeypatch):
             task.cancel()
             with contextlib.suppress(BaseException):
                 await task
-        state.channels.clear()
+        state.handlers.clear()
 
 
 @pytest.mark.asyncio
@@ -482,7 +482,7 @@ async def test_drain_exceeds_deadline_logs_warning(monkeypatch):
     from handlers.base import Handler
     from state import state
 
-    state.channels.clear()
+    state.handlers.clear()
     warnings = _record_warnings(monkeypatch)
 
     class _NoopHandler(Handler):
@@ -507,7 +507,7 @@ async def test_drain_exceeds_deadline_logs_warning(monkeypatch):
     assert flushed == 0
     assert any("deadline" in msg.lower() or "deadline_s" in extra for msg, extra in warnings)
 
-    state.channels.clear()
+    state.handlers.clear()
 
 
 # ----------------------------------------------------------------------
@@ -524,7 +524,7 @@ async def test_safe_flush_increments_attempted_and_actual_separately():
     from handlers.base import Handler
     from state import state
 
-    state.channels.clear()
+    state.handlers.clear()
 
     class _ConflictHandler(Handler):
         """Pretends N-2 of every batch landed (2 ON CONFLICT skips)."""
@@ -545,7 +545,7 @@ async def test_safe_flush_increments_attempted_and_actual_separately():
 
     await h._safe_flush(rows)
 
-    metrics = state.channels[h.name]
+    metrics = state.handlers[h.name]
     assert metrics.write_attempted == 10
     # 8 = 10 - 2 (the simulated dedup skips).
     assert metrics.write_count == 8
@@ -555,7 +555,7 @@ async def test_safe_flush_increments_attempted_and_actual_separately():
     assert metrics.write_attempted == 20
     assert metrics.write_count == 16
 
-    state.channels.clear()
+    state.handlers.clear()
 
 
 @pytest.mark.asyncio
@@ -566,7 +566,7 @@ async def test_safe_flush_falls_back_to_len_when_flush_returns_none():
     from handlers.base import Handler
     from state import state
 
-    state.channels.clear()
+    state.handlers.clear()
 
     class _LegacyHandler(Handler):
         def __init__(self) -> None:
@@ -581,11 +581,11 @@ async def test_safe_flush_falls_back_to_len_when_flush_returns_none():
     h = _LegacyHandler()
     await h._safe_flush([(1,), (2,), (3,)])
 
-    metrics = state.channels[h.name]
+    metrics = state.handlers[h.name]
     assert metrics.write_attempted == 3
     assert metrics.write_count == 3
 
-    state.channels.clear()
+    state.handlers.clear()
 
 
 @pytest.mark.asyncio
@@ -596,7 +596,7 @@ async def test_safe_flush_attempted_increments_even_when_flush_raises():
     from handlers.base import Handler
     from state import state
 
-    state.channels.clear()
+    state.handlers.clear()
 
     class _RaisingHandler(Handler):
         def __init__(self) -> None:
@@ -612,8 +612,8 @@ async def test_safe_flush_attempted_increments_even_when_flush_raises():
     # _safe_flush swallows the exception per the existing contract.
     await h._safe_flush([(1,), (2,)])
 
-    metrics = state.channels[h.name]
+    metrics = state.handlers[h.name]
     assert metrics.write_attempted == 2
     assert metrics.write_count == 0
 
-    state.channels.clear()
+    state.handlers.clear()

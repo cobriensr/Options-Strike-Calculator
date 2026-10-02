@@ -31,9 +31,9 @@ class _CountingHandler(Handler):
 
 @pytest.fixture(autouse=True)
 def _reset_state():
-    state.channels.clear()
+    state.handlers.clear()
     yield
-    state.channels.clear()
+    state.handlers.clear()
 
 
 @pytest.fixture
@@ -57,9 +57,9 @@ async def test_drop_oldest_increments_drop_count_on_eviction(handler):
         await handler.enqueue({"seq": seq})
 
     # Three evictions happened (5 enqueued - 2 capacity).
-    assert state.channel(handler.name).drop_count == 3
+    assert state.handler(handler.name).drop_count == 3
     # Queue is at its bounded depth.
-    assert state.channel(handler.name).queue_depth == 2
+    assert state.handler(handler.name).queue_depth == 2
 
 
 @pytest.mark.asyncio
@@ -68,7 +68,7 @@ async def test_drop_newest_increments_drop_count(handler, monkeypatch):
     for seq in range(5):
         await handler.enqueue({"seq": seq})
     # 3 newest payloads are dropped on a 2-deep queue.
-    assert state.channel(handler.name).drop_count == 3
+    assert state.handler(handler.name).drop_count == 3
 
 
 @pytest.mark.asyncio
@@ -77,7 +77,7 @@ async def test_block_policy_does_not_drop(handler, monkeypatch):
     # Fill the queue exactly. No drops since we never go past capacity.
     await handler.enqueue({"seq": 0})
     await handler.enqueue({"seq": 1})
-    assert state.channel(handler.name).drop_count == 0
+    assert state.handler(handler.name).drop_count == 0
 
 
 @pytest.mark.asyncio
@@ -99,13 +99,13 @@ async def test_block_policy_drops_after_timeout_when_queue_full(monkeypatch):
 
     h = _CountingHandler()
     await h.enqueue({"seq": 0})  # fills the queue
-    assert state.channel(h.name).drop_count == 0
+    assert state.handler(h.name).drop_count == 0
 
     started = time.monotonic()
     await h.enqueue({"seq": 1})  # must time out and drop
     elapsed = time.monotonic() - started
 
-    assert state.channel(h.name).drop_count == 1
+    assert state.handler(h.name).drop_count == 1
     # 100ms ceiling — well below the 20s WS ping timeout, well above the
     # 20ms put timeout configured above so no flakiness on slow runners.
     assert elapsed < 0.1, f"block-put waited {elapsed:.3f}s — too long"
@@ -114,9 +114,9 @@ async def test_block_policy_drops_after_timeout_when_queue_full(monkeypatch):
 @pytest.mark.asyncio
 async def test_queue_depth_tracks_actual_queue_size(handler):
     await handler.enqueue({"seq": 0})
-    assert state.channel(handler.name).queue_depth == 1
+    assert state.handler(handler.name).queue_depth == 1
     await handler.enqueue({"seq": 1})
-    assert state.channel(handler.name).queue_depth == 2
+    assert state.handler(handler.name).queue_depth == 2
     # Fill past capacity; depth stays at 2 (eviction happens internally).
     await handler.enqueue({"seq": 2})
-    assert state.channel(handler.name).queue_depth == 2
+    assert state.handler(handler.name).queue_depth == 2

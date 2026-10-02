@@ -10,16 +10,26 @@ unsubscribed and raises a Sentry warning when any stay unsubscribed across
 consecutive checks (past the startup grace), independent of WHY (no ack, or an
 error/NACK ack the router discards). A future silent upstream change then
 surfaces in minutes, not hours.
+
+It evaluates ONLY the configured subscription set (``settings.channels``, which
+``channel_shards`` partitions across the connectors), never every key that
+happens to be in ``state.channels``. A non-subscribable key there (the E5
+phantom: a shared handler's family name such as ``net_flow``) can never ack and
+would alert once per deploy. Conversely a configured channel with NO state entry
+counts as unsubscribed, so a channel that was never even pre-registered or
+joined is still caught.
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 
+from config import settings
 from logger_setup import log
 from sentry_setup import capture_message
-from state import state
+from state import ChannelMetrics, state
 
 # How often to evaluate subscription state.
 _CHECK_INTERVAL_S = 120.0
@@ -31,6 +41,23 @@ _STRIKES_TO_ALERT = 2
 _STARTUP_GRACE_S = 300.0
 # Cap how many channel names we attach to the alert payload.
 _SAMPLE = 20
+
+
+def _configured_subscription_state(
+    configured: Iterable[str],
+    channels: Mapping[str, ChannelMetrics],
+) -> dict[str, bool]:
+    """Map each CONFIGURED channel to its subscribed flag.
+
+    Keys come from ``configured`` only, so entries in ``channels`` that are not
+    configured (phantoms) are ignored. A configured channel missing from
+    ``channels`` maps to ``False`` (unsubscribed), not a ``KeyError``.
+    """
+    out: dict[str, bool] = {}
+    for ch in configured:
+        metrics = channels.get(ch)
+        out[ch] = metrics is not None and metrics.subscribed
+    return out
 
 
 def _evaluate(
@@ -62,6 +89,10 @@ async def run_subscription_watchdog() -> None:
     """Periodically alert on channels stuck unsubscribed (silent-failure guard)."""
     strikes: dict[str, int] = {}
     alerted: set[str] = set()
+    # Read once: Settings is built at import and never changes in-process, and
+    # ``channels`` re-parses WS_CHANNELS on every access. Bounds ``strikes`` /
+    # ``alerted`` to the configured set for the life of the process.
+    configured = tuple(settings.channels)
     while True:
         await asyncio.sleep(_CHECK_INTERVAL_S)
         uptime = (datetime.now(UTC) - state.started_at).total_seconds()
@@ -69,7 +100,7 @@ async def run_subscription_watchdog() -> None:
         # (the connector's reconnect path + health already cover those).
         if uptime < _STARTUP_GRACE_S or not state.ws_any_connected:
             continue
-        subscribed = {name: ch.subscribed for name, ch in state.channels.items()}
+        subscribed = _configured_subscription_state(configured, state.channels)
         newly = _evaluate(subscribed, strikes, alerted)
         if newly:
             stuck_total = sum(1 for is_sub in subscribed.values() if not is_sub)

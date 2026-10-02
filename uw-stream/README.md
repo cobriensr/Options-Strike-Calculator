@@ -41,8 +41,16 @@ Single asyncio process, four components:
 3. **Handlers** (`src/handlers/`) — per-channel batching, transforming,
    and bulk-inserting via `asyncpg`.
 4. **Health** (`src/health.py`) — small aiohttp server on `$PORT` for
-   Railway healthchecks. Exposes `/healthz` (200/503) and `/metrics`
-   (per-channel queue depth, drop counters, last-message timestamps).
+   Railway healthchecks. Exposes `/healthz` (200/503) and `/metrics`.
+   `/metrics` has two keyed sections: `channels` (per WS channel joined,
+   or echoed by UW, e.g. `net_flow:TSLA`: `subscribed`, `last_message_ts`)
+   and `handlers` (per handler queue, keyed by handler name: `queue_depth`,
+   `drop_count`, `write_attempted`, `write_count`; zeroed from boot). The
+   shared handlers are named after their channel family (`option_trades`,
+   `net_flow`, `gex_strike_expiry`), so one `handlers` row covers that
+   family's per-ticker channels. Exception: `option_trades:SPY` / `SPXW` /
+   `QQQ` get dedicated Interval B/A handlers with their own `handlers` rows,
+   which the `option_trades` row does not include.
 
 ## Schema
 
@@ -123,10 +131,11 @@ Design notes worth knowing before touching the handler:
   spike into the root series that `DO NOTHING` could never revise; a
   missing minute is the safer failure.
 - **`/metrics` caveat:** this is the one aggregating handler, so its
-  `write_attempted` counts trade prints while `write_count` counts
-  bars. The gap between them is the aggregation ratio (~1.2M prints →
-  ~8.6k bars/day), **not** a dedup or failure rate. Judge the channel
-  by `write_count` and `last_message_ts`.
+  `handlers.futures_trades.write_attempted` counts trade prints while
+  `write_count` counts bars. The gap between them is the aggregation
+  ratio (~1.2M prints → ~8.6k bars/day), **not** a dedup or failure
+  rate. Judge it by `handlers.futures_trades.write_count` and
+  `channels.futures_trades.last_message_ts`.
 
 **Before relying on this as the source of truth**, confirm the
 `sidecar/` bar writer (`sidecar/src/bar_writer.py`, wired into

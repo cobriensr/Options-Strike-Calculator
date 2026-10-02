@@ -284,9 +284,9 @@ class TestEnqueueShortCircuit:
     async def test_off_symbol_does_not_increment_drop_count(self, handler):
         from state import state
 
-        before = state.channel("off_lit_trades").drop_count
+        before = state.handler("off_lit_trades").drop_count
         await handler.enqueue({"symbol": "AAPL"})
-        after = state.channel("off_lit_trades").drop_count
+        after = state.handler("off_lit_trades").drop_count
         # Non-target payloads are not "drops" — they were never wanted
         assert after == before
 

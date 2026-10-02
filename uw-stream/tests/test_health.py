@@ -313,3 +313,122 @@ async def test_metrics_accepts_matching_token(_restore_metrics_token):
         _StubRequest({"X-Metrics-Token": "expected-token"}),  # type: ignore[arg-type]
     )
     assert resp.status == 200
+
+
+# ── /metrics shape: channels vs handlers (E5) ────────────────
+
+
+@pytest.fixture
+def _isolated_channel_handler_state():
+    """Run against empty channel/handler maps, then restore the originals."""
+    saved_channels = dict(state.channels)
+    saved_handlers = dict(state.handlers)
+    state.channels.clear()
+    state.handlers.clear()
+    yield
+    state.channels.clear()
+    state.channels.update(saved_channels)
+    state.handlers.clear()
+    state.handlers.update(saved_handlers)
+
+
+async def test_metrics_reports_handler_counters_under_handlers(
+    monkeypatch, _restore_metrics_token, _isolated_channel_handler_state
+):
+    """The real shared NetFlowHandler's counters increment through the base
+    Handler paths and surface under ``handlers`` keyed by the family name,
+    while ``channels`` carries only real channels' subscription fields.
+    """
+    import db
+    from handlers.net_flow import NetFlowHandler
+
+    async def _one_conflict_skip(*, rows, **_kwargs) -> int:
+        return len(rows) - 1
+
+    monkeypatch.setattr(db, "bulk_insert_ignore_conflict", _one_conflict_skip)
+    monkeypatch.setattr(settings, "ws_queue_size", 1)
+    monkeypatch.setattr(settings, "ws_backpressure_policy", "drop_newest")
+    settings.internal_metrics_token = ""
+
+    state.channel("net_flow:TSLA").subscribed = True
+    h = NetFlowHandler()
+    await h.enqueue({"seq": 1})  # queue_depth 1
+    await h.enqueue({"seq": 2})  # queue full → drop_newest → drop_count 1
+    await h._safe_flush([(1,), (2,), (3,)])  # attempted 3, written 2
+
+    resp = await metrics(_StubRequest())  # type: ignore[arg-type]
+    body = await _read_json(resp)
+
+    assert resp.status == 200
+    assert body["handlers"] == {
+        "net_flow": {
+            "queue_depth": 1,
+            "drop_count": 1,
+            "write_attempted": 3,
+            "write_count": 2,
+        },
+    }
+    assert body["channels"] == {
+        "net_flow:TSLA": {"subscribed": True, "last_message_ts": None},
+    }
+    assert "net_flow" not in body["channels"]
+
+
+@pytest.mark.parametrize(
+    ("started_ago_s", "connected", "last_msg_ago_s", "expected"),
+    [
+        (60, False, None, (200, {"status": "starting"})),
+        (HEALTH_STARTUP_GRACE_S + 60, False, None, (503, {"status": "ws_disconnected"})),
+        (3600, True, 5, (200, {"status": "ok"})),
+    ],
+)
+async def test_healthz_does_not_read_channel_or_handler_state(
+    _isolated_channel_handler_state, started_ago_s, connected, last_msg_ago_s, expected
+):
+    """/healthz output is identical whether the channel/handler maps are empty
+    or full of unsubscribed channels, phantom keys, and non-zero counters.
+    """
+    now = datetime.now(UTC)
+    state.started_at = now - timedelta(seconds=started_ago_s)
+    state.ws_connected = connected
+    state.last_message_ts = (
+        None if last_msg_ago_s is None else now - timedelta(seconds=last_msg_ago_s)
+    )
+
+    empty_resp = await healthz(None)  # type: ignore[arg-type]
+    empty = (empty_resp.status, await _read_json(empty_resp))
+
+    state.channel("net_flow:TSLA").subscribed = False
+    state.channel("net_flow").subscribed = False  # legacy phantom shape
+    counters = state.handler("net_flow")
+    counters.queue_depth, counters.drop_count = 7, 3
+    counters.write_attempted, counters.write_count = 100, 90
+
+    populated_resp = await healthz(None)  # type: ignore[arg-type]
+    populated = (populated_resp.status, await _read_json(populated_resp))
+
+    assert empty == populated == expected
+
+
+async def test_metrics_lists_constructed_handler_with_zeroed_counters(
+    _restore_metrics_token, _isolated_channel_handler_state
+):
+    """A handler built at boot shows a zeroed ``handlers`` row before any
+    traffic, and constructing it mints no ``channels`` entry.
+    """
+    from handlers.flow_alerts import FlowAlertsHandler
+
+    settings.internal_metrics_token = ""
+    FlowAlertsHandler()
+
+    body = await _read_json(await metrics(_StubRequest()))  # type: ignore[arg-type]
+
+    assert body["handlers"] == {
+        "flow-alerts": {
+            "queue_depth": 0,
+            "drop_count": 0,
+            "write_attempted": 0,
+            "write_count": 0,
+        },
+    }
+    assert body["channels"] == {}

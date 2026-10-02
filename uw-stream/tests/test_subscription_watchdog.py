@@ -12,14 +12,17 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
 import subscription_watchdog
+from state import ChannelMetrics
 from subscription_watchdog import (
     _CHECK_INTERVAL_S,
     _STARTUP_GRACE_S,
     _STRIKES_TO_ALERT,
+    _configured_subscription_state,
     _evaluate,
     run_subscription_watchdog,
 )
@@ -130,13 +133,20 @@ class _Spy:
         self.calls.append((args, kwargs))
 
 
-def _patch_loop(monkeypatch, fake_state, *, iterations: int):
+def _patch_loop(monkeypatch, fake_state, *, iterations: int, configured=None):
     """Wire up the watchdog's module globals and bound the infinite loop.
 
     asyncio.sleep is replaced with a no-op that raises CancelledError after
     ``iterations`` calls so the `while True` loop terminates deterministically.
+    ``configured`` (when given) replaces the watchdog's ``settings`` so its
+    configured subscription set is exactly that list; when omitted the real
+    ``settings`` is used (callers patch ``settings.ws_channels`` themselves).
     Returns (log_spy, capture_spy) so callers can assert on the alert path.
     """
+    if configured is not None:
+        monkeypatch.setattr(
+            subscription_watchdog, "settings", SimpleNamespace(channels=list(configured))
+        )
     count = {"n": 0}
 
     async def _fake_sleep(_seconds: float) -> None:
@@ -161,7 +171,9 @@ async def test_loop_skips_during_startup_grace(monkeypatch):
         ws_any_connected=True,
         channels={"a": _FakeChannel(subscribed=False)},
     )
-    _, capture_spy = _patch_loop(monkeypatch, fake_state, iterations=2)
+    _, capture_spy = _patch_loop(
+        monkeypatch, fake_state, iterations=2, configured=list(fake_state.channels)
+    )
     with pytest.raises(asyncio.CancelledError):
         await run_subscription_watchdog()
     assert capture_spy.calls == []
@@ -175,7 +187,9 @@ async def test_loop_skips_when_fully_disconnected(monkeypatch):
         ws_any_connected=False,
         channels={"a": _FakeChannel(subscribed=False)},
     )
-    _, capture_spy = _patch_loop(monkeypatch, fake_state, iterations=2)
+    _, capture_spy = _patch_loop(
+        monkeypatch, fake_state, iterations=2, configured=list(fake_state.channels)
+    )
     with pytest.raises(asyncio.CancelledError):
         await run_subscription_watchdog()
     assert capture_spy.calls == []
@@ -189,7 +203,9 @@ async def test_loop_no_alert_when_all_subscribed(monkeypatch):
         ws_any_connected=True,
         channels={"a": _FakeChannel(subscribed=True), "b": _FakeChannel(subscribed=True)},
     )
-    log_spy, capture_spy = _patch_loop(monkeypatch, fake_state, iterations=3)
+    log_spy, capture_spy = _patch_loop(
+        monkeypatch, fake_state, iterations=3, configured=list(fake_state.channels)
+    )
     with pytest.raises(asyncio.CancelledError):
         await run_subscription_watchdog()
     assert capture_spy.calls == []
@@ -205,7 +221,9 @@ async def test_loop_alerts_after_consecutive_stuck_checks(monkeypatch):
         ws_any_connected=True,
         channels={"a": _FakeChannel(subscribed=False), "b": _FakeChannel(subscribed=True)},
     )
-    log_spy, capture_spy = _patch_loop(monkeypatch, fake_state, iterations=_STRIKES_TO_ALERT)
+    log_spy, capture_spy = _patch_loop(
+        monkeypatch, fake_state, iterations=_STRIKES_TO_ALERT, configured=list(fake_state.channels)
+    )
     with pytest.raises(asyncio.CancelledError):
         await run_subscription_watchdog()
 
@@ -248,3 +266,198 @@ async def test_loop_uses_check_interval_for_sleep(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await run_subscription_watchdog()
     assert sleeps == [_CHECK_INTERVAL_S]
+
+
+# --- E5 regression: shared-handler phantom entries ----------------------------
+#
+# The three shared handlers are named after their channel FAMILY
+# (``option_trades`` / ``net_flow`` / ``gex_strike_expiry``), which is not a
+# subscribable channel. Their counter writes used to go through the get-or-create
+# ``state.channel(handler.name)``, leaving a ``subscribed=False`` entry that never
+# acks. The watchdog then flagged it once per deploy (Sentry E5). These tests use
+# the REAL State class and the REAL handler classes.
+#
+# Either half of the fix alone hides the phantom from the end-to-end alert test,
+# so each half is also pinned on its own: the state split by
+# ``test_shared_handler_counters_never_touch_channel_state`` (all three family
+# handlers), and the watchdog's configured-set filter by the
+# ``_configured_subscription_state`` unit tests and the partial-state loop test.
+
+_SHARED_FAMILY_HANDLERS = pytest.mark.parametrize(
+    ("handler_path", "configured"),
+    [
+        ("handlers.option_trades.OptionTradesHandler", "option_trades:TSLA,option_trades:NVDA"),
+        ("handlers.net_flow.NetFlowHandler", "net_flow:TSLA,net_flow:NVDA"),
+        (
+            "handlers.gex_strike_expiry.GexStrikeExpiryHandler",
+            "gex_strike_expiry:TSLA,gex_strike_expiry:NVDA",
+        ),
+    ],
+)
+
+
+async def _shared_handler_with_traffic(monkeypatch, handler_path, configured):
+    """Fresh real State, every configured channel acked, one payload enqueued.
+
+    Returns (fresh_state, handler). Counter writes land in ``fresh`` because the
+    handler base module's ``state`` is swapped for it.
+    """
+    import importlib
+
+    import handlers.base as handlers_base
+    from config import settings
+    from state import State
+
+    module_name, cls_name = handler_path.rsplit(".", 1)
+    handler_cls = getattr(importlib.import_module(module_name), cls_name)
+
+    fresh = State()
+    fresh.started_at = datetime.now(UTC) - timedelta(seconds=_STARTUP_GRACE_S + 60)
+    fresh.set_connection("conn0", True)
+    monkeypatch.setattr(handlers_base, "state", fresh)
+    monkeypatch.setattr(settings, "ws_channels", configured)
+
+    # Every configured channel joined and acked (what the router does per ack).
+    for ch in settings.channels:
+        fresh.channel(ch).subscribed = True
+
+    # Steady-state traffic: the shared handler bumps its counters by its own
+    # (family) name. This is the write that used to mint the phantom entry.
+    handler = handler_cls()
+    await handler.enqueue({"ticker": "TSLA"})
+    return fresh, handler
+
+
+@_SHARED_FAMILY_HANDLERS
+async def test_shared_handler_counters_never_touch_channel_state(
+    monkeypatch, handler_path, configured
+):
+    from config import settings
+
+    fresh, handler = await _shared_handler_with_traffic(monkeypatch, handler_path, configured)
+
+    assert handler.name not in fresh.channels
+    assert set(fresh.channels) == set(settings.channels)
+    assert fresh.handlers[handler.name].queue_depth == 1
+
+
+@_SHARED_FAMILY_HANDLERS
+async def test_shared_handler_counters_do_not_raise_phantom_alert(
+    monkeypatch, handler_path, configured
+):
+    fresh, _ = await _shared_handler_with_traffic(monkeypatch, handler_path, configured)
+
+    log_spy, capture_spy = _patch_loop(monkeypatch, fresh, iterations=_STRIKES_TO_ALERT + 1)
+    with pytest.raises(asyncio.CancelledError):
+        await run_subscription_watchdog()
+
+    assert capture_spy.calls == []
+    assert log_spy.warning.calls == []
+
+
+async def test_stuck_configured_channel_still_alerts_alongside_handler_counters(monkeypatch):
+    # The defence must not blind the watchdog: a REAL configured channel whose
+    # join was never acked (or was NACKed) is still flagged, by its channel
+    # name, while the shared handler's family-name counters stay out of it.
+    import handlers.base as handlers_base
+    from config import settings
+    from handlers.net_flow import NetFlowHandler
+    from state import State
+
+    fresh = State()
+    fresh.started_at = datetime.now(UTC) - timedelta(seconds=_STARTUP_GRACE_S + 60)
+    fresh.set_connection("conn0", True)
+    monkeypatch.setattr(handlers_base, "state", fresh)
+    monkeypatch.setattr(settings, "ws_channels", "net_flow:TSLA,net_flow:NVDA")
+
+    fresh.channel("net_flow:NVDA").subscribed = True
+    fresh.channel("net_flow:TSLA").subscribed = False  # join sent, never acked
+    await NetFlowHandler().enqueue({"ticker": "NVDA"})
+    assert "net_flow" in fresh.handlers  # counters landed in the handler map
+
+    log_spy, capture_spy = _patch_loop(monkeypatch, fresh, iterations=_STRIKES_TO_ALERT + 1)
+    with pytest.raises(asyncio.CancelledError):
+        await run_subscription_watchdog()
+
+    assert len(capture_spy.calls) == 1
+    ctx = capture_spy.calls[0][1]["context"]
+    assert ctx["sample"] == ["net_flow:TSLA"]
+    assert ctx["stuck_total"] == 1
+    assert log_spy.warning.calls[0][1]["extra"]["newly"] == ["net_flow:TSLA"]
+
+
+# --- R4: empty / partially populated state -------------------------------------
+
+
+def test_configured_state_ignores_unconfigured_keys():
+    channels = {
+        "net_flow:TSLA": ChannelMetrics(subscribed=True),
+        "net_flow": ChannelMetrics(subscribed=False),  # phantom, not configured
+    }
+    assert _configured_subscription_state(["net_flow:TSLA"], channels) == {"net_flow:TSLA": True}
+
+
+def test_configured_state_missing_entry_counts_as_unsubscribed():
+    assert _configured_subscription_state(["a", "b"], {}) == {"a": False, "b": False}
+
+
+def test_configured_state_empty_configured_set_is_empty():
+    assert _configured_subscription_state([], {"a": ChannelMetrics(subscribed=False)}) == {}
+
+
+async def test_loop_empty_state_alerts_every_configured_channel_without_raising(monkeypatch):
+    # Nothing was ever pre-registered or joined: no KeyError, and every
+    # configured channel counts as unsubscribed.
+    fake_state = _FakeState(
+        started_at=datetime.now(UTC) - timedelta(seconds=_STARTUP_GRACE_S + 60),
+        ws_any_connected=True,
+        channels={},
+    )
+    _, capture_spy = _patch_loop(
+        monkeypatch, fake_state, iterations=_STRIKES_TO_ALERT, configured=["a", "b"]
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await run_subscription_watchdog()
+
+    assert len(capture_spy.calls) == 1
+    ctx = capture_spy.calls[0][1]["context"]
+    assert ctx["sample"] == ["a", "b"]
+    assert ctx["stuck_total"] == 2
+
+
+async def test_loop_partially_populated_state_flags_only_missing_or_unacked(monkeypatch):
+    fake_state = _FakeState(
+        started_at=datetime.now(UTC) - timedelta(seconds=_STARTUP_GRACE_S + 60),
+        ws_any_connected=True,
+        channels={
+            "a": _FakeChannel(subscribed=True),
+            "b": _FakeChannel(subscribed=False),
+            "phantom": _FakeChannel(subscribed=False),  # not configured
+        },
+    )
+    _, capture_spy = _patch_loop(
+        monkeypatch, fake_state, iterations=_STRIKES_TO_ALERT, configured=["a", "b", "c"]
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await run_subscription_watchdog()
+
+    assert len(capture_spy.calls) == 1
+    ctx = capture_spy.calls[0][1]["context"]
+    assert ctx["sample"] == ["b", "c"]  # 'c' has no entry; 'phantom' is ignored
+    assert ctx["stuck_total"] == 2
+
+
+async def test_loop_empty_configured_set_and_empty_state_is_quiet(monkeypatch):
+    fake_state = _FakeState(
+        started_at=datetime.now(UTC) - timedelta(seconds=_STARTUP_GRACE_S + 60),
+        ws_any_connected=True,
+        channels={},
+    )
+    log_spy, capture_spy = _patch_loop(
+        monkeypatch, fake_state, iterations=_STRIKES_TO_ALERT + 1, configured=[]
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await run_subscription_watchdog()
+
+    assert capture_spy.calls == []
+    assert log_spy.warning.calls == []
