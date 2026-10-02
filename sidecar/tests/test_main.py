@@ -1,9 +1,8 @@
 """Tests for sidecar/src/main.py.
 
 Focused on the entry-point's early-exit behavior. The main concern is
-that env-var validation runs BEFORE any subsystem launch (Theta
-Terminal), so a misconfigured deployment fails fast instead of burning
-~60s of Railway compute booting Theta only to die at the first DB call.
+that env-var validation runs BEFORE any subsystem starts, so a
+misconfigured deployment fails fast with a clear log line.
 
 Mock strategy:
 - conftest.py provides session-wide mocks for `psycopg2` and
@@ -11,10 +10,9 @@ Mock strategy:
 - `Settings()` runs at config.py import time and requires DATABASE_URL
   to construct, so we set it BEFORE importing `main`. The early-exit
   code path then deletes it to exercise the validation branch directly.
-- All side-effecting subsystems (theta_launcher, theta_fetcher,
-  verify_connection, start_health_server, init_sentry,
-  wait_for_shutdown) are monkeypatched so the test doesn't make any I/O
-  or block.
+- All side-effecting subsystems (verify_connection,
+  start_health_server, init_sentry, wait_for_shutdown) are
+  monkeypatched so the test doesn't make any I/O or block.
 """
 
 from __future__ import annotations
@@ -40,13 +38,10 @@ def patched_subsystems(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
     """Replace every side-effecting call inside main() with a MagicMock.
 
     Returned dict lets each test assert which subsystems did or did not
-    run. The Theta launcher mock is the load-bearing one for Phase 1a
-    correctness: it MUST NOT be called when env validation fails.
+    run.
     """
     mocks = {
         "init_sentry": MagicMock(),
-        "theta_launcher_start": MagicMock(return_value=False),
-        "theta_fetcher_start_scheduler": MagicMock(),
         "verify_connection": MagicMock(),
         "start_health_server": MagicMock(),
         "wait_for_shutdown": MagicMock(),
@@ -54,12 +49,6 @@ def patched_subsystems(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
     }
 
     monkeypatch.setattr(main, "init_sentry", mocks["init_sentry"])
-    monkeypatch.setattr(main.theta_launcher, "start", mocks["theta_launcher_start"])
-    monkeypatch.setattr(
-        main.theta_fetcher,
-        "start_scheduler",
-        mocks["theta_fetcher_start_scheduler"],
-    )
     monkeypatch.setattr(main, "verify_connection", mocks["verify_connection"])
     monkeypatch.setattr(main, "start_health_server", mocks["start_health_server"])
     monkeypatch.setattr(main, "wait_for_shutdown", mocks["wait_for_shutdown"])
@@ -115,12 +104,8 @@ def test_main_exits_when_database_url_missing(
     monkeypatch: pytest.MonkeyPatch,
     patched_subsystems: dict[str, MagicMock],
 ) -> None:
-    """Missing DATABASE_URL must SystemExit(1) BEFORE Theta launches.
-
-    Pre-fix this exited only at verify_connection() — after Theta had
-    already booted (~60s). Post-fix the exit happens before any
-    subsystem call so Railway compute isn't wasted on a doomed run.
-    """
+    """Missing DATABASE_URL must SystemExit(1) before any subsystem
+    starts, so a doomed run fails fast with a clear log line."""
     monkeypatch.delenv("DATABASE_URL", raising=False)
 
     with pytest.raises(SystemExit) as exc_info:
@@ -130,8 +115,6 @@ def test_main_exits_when_database_url_missing(
     # Sentry init still runs first by design (so we can report later
     # failures), but no other subsystem may have been touched.
     patched_subsystems["init_sentry"].assert_called_once()
-    patched_subsystems["theta_launcher_start"].assert_not_called()
-    patched_subsystems["theta_fetcher_start_scheduler"].assert_not_called()
     patched_subsystems["verify_connection"].assert_not_called()
     patched_subsystems["start_health_server"].assert_not_called()
     patched_subsystems["wait_for_shutdown"].assert_not_called()
@@ -159,7 +142,7 @@ def test_main_proceeds_when_required_env_present(
     monkeypatch: pytest.MonkeyPatch,
     patched_subsystems: dict[str, MagicMock],
 ) -> None:
-    """With DATABASE_URL set, validation passes and Theta is launched.
+    """With DATABASE_URL set, validation passes and the server starts.
 
     This is the happy-path complement to the missing-env test above:
     proves the validation gate doesn't false-positive when env is good.
@@ -169,7 +152,6 @@ def test_main_proceeds_when_required_env_present(
     main.main()
 
     patched_subsystems["init_sentry"].assert_called_once()
-    patched_subsystems["theta_launcher_start"].assert_called_once()
     patched_subsystems["verify_connection"].assert_called_once()
     patched_subsystems["start_health_server"].assert_called_once()
     patched_subsystems["wait_for_shutdown"].assert_called_once()
@@ -225,12 +207,12 @@ def test_main_does_not_report_when_db_verification_succeeds(
     patched_subsystems["capture_exception"].assert_not_called()
 
 
-def test_main_wires_health_server_with_db_and_theta_reporters(
+def test_main_wires_health_server_with_db_probe_and_seeder_only(
     monkeypatch: pytest.MonkeyPatch,
     patched_subsystems: dict[str, MagicMock],
 ) -> None:
-    """The health server gets the DB probe + Theta reporters and nothing
-    Databento-shaped (no is_connected / last_bar_at)."""
+    """The health server gets the DB probe and the archive seeder, and
+    nothing Databento- or Theta-shaped (both integrations are gone)."""
     monkeypatch.setenv("DATABASE_URL", _FAKE_DB_URL)
 
     main.main()
@@ -238,56 +220,8 @@ def test_main_wires_health_server_with_db_and_theta_reporters(
     kwargs = patched_subsystems["start_health_server"].call_args.kwargs
     assert kwargs["port"] == main.settings.port
     assert kwargs["is_db_healthy"] is main.is_db_healthy
-    assert kwargs["theta_is_running"] is main.theta_launcher.is_running
-    assert kwargs["theta_last_ready_at"] is main.theta_launcher.last_ready_at
-    assert kwargs["theta_last_error"] is main.theta_launcher.last_error
     assert kwargs["seed_is_busy"] is main.archive_seeder.is_seeding
-    assert "is_connected" not in kwargs
-    assert "last_bar_at" not in kwargs
-
-
-# ---------------------------------------------------------------------------
-# main() — Theta launched branch
-# ---------------------------------------------------------------------------
-
-
-def test_main_starts_theta_scheduler_and_backfill_when_launcher_succeeds(
-    monkeypatch: pytest.MonkeyPatch,
-    patched_subsystems: dict[str, MagicMock],
-) -> None:
-    """When theta_launcher.start() returns True, main() must start the
-    nightly scheduler AND spawn a daemon thread for the backfill."""
-    monkeypatch.setenv("DATABASE_URL", _FAKE_DB_URL)
-    # Flip the launcher mock to True so the inner branch runs.
-    patched_subsystems["theta_launcher_start"].return_value = True
-
-    fake_thread_cls = MagicMock()
-    monkeypatch.setattr(main.threading, "Thread", fake_thread_cls)
-
-    main.main()
-
-    patched_subsystems["theta_fetcher_start_scheduler"].assert_called_once()
-    fake_thread_cls.assert_called_once()
-    # Confirm the spawned thread was started as a daemon backfill.
-    kwargs = fake_thread_cls.call_args.kwargs
-    assert kwargs["daemon"] is True
-    assert kwargs["name"] == "theta-backfill"
-    fake_thread_cls.return_value.start.assert_called_once()
-
-
-def test_main_skips_theta_scheduler_when_launcher_fails(
-    monkeypatch: pytest.MonkeyPatch,
-    patched_subsystems: dict[str, MagicMock],
-) -> None:
-    """When Theta doesn't come up (no creds / jar failure), the sidecar
-    still boots and serves — only the Theta scheduler is skipped."""
-    monkeypatch.setenv("DATABASE_URL", _FAKE_DB_URL)
-    patched_subsystems["theta_launcher_start"].return_value = False
-
-    main.main()
-
-    patched_subsystems["theta_fetcher_start_scheduler"].assert_not_called()
-    patched_subsystems["start_health_server"].assert_called_once()
+    assert set(kwargs) == {"port", "is_db_healthy", "seed_archive", "seed_is_busy"}
 
 
 # ---------------------------------------------------------------------------
@@ -352,25 +286,17 @@ def test_main_disables_seed_callable_when_archive_env_missing(
 
 @pytest.fixture()
 def shutdown_fixtures(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
-    """Patch every side effect inside shutdown(): theta + drain_pool +
+    """Patch every side effect inside shutdown(): drain_pool +
     time.sleep + sys.exit. Also reset the module-level _shutting_down
     flag so each test starts from a clean slate."""
     monkeypatch.setattr(main, "_shutting_down", False)
 
     mocks = {
-        "theta_fetcher_stop": MagicMock(),
-        "theta_launcher_shutdown": MagicMock(),
         "drain_pool": MagicMock(),
         "time_sleep": MagicMock(),
         "sys_exit": MagicMock(side_effect=SystemExit(0)),
     }
 
-    monkeypatch.setattr(
-        main.theta_fetcher, "stop_scheduler", mocks["theta_fetcher_stop"]
-    )
-    monkeypatch.setattr(
-        main.theta_launcher, "shutdown", mocks["theta_launcher_shutdown"]
-    )
     monkeypatch.setattr(main, "drain_pool", mocks["drain_pool"])
     monkeypatch.setattr(main.time, "sleep", mocks["time_sleep"])
     monkeypatch.setattr(main.sys, "exit", mocks["sys_exit"])
@@ -378,39 +304,31 @@ def shutdown_fixtures(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
     return mocks
 
 
-def test_shutdown_stops_theta_drains_pool_and_exits(
+def test_shutdown_drains_pool_and_exits(
     shutdown_fixtures: dict[str, MagicMock],
 ) -> None:
-    """shutdown stops the Theta scheduler, kills the jar, drains the DB
-    pool, and exits 0."""
+    """shutdown drains the DB pool and exits 0."""
     with pytest.raises(SystemExit):
         main.shutdown(signal.SIGTERM, None)
 
-    shutdown_fixtures["theta_fetcher_stop"].assert_called_once()
-    shutdown_fixtures["theta_launcher_shutdown"].assert_called_once()
     shutdown_fixtures["drain_pool"].assert_called_once()
     shutdown_fixtures["sys_exit"].assert_called_once_with(0)
     assert main._shutting_down is True
 
 
-def test_shutdown_stops_theta_before_draining_pool(
+def test_shutdown_sleeps_before_draining_pool(
     shutdown_fixtures: dict[str, MagicMock],
 ) -> None:
-    """The Theta scheduler + jar must stop BEFORE the pool drains, so a
-    nightly job can't borrow a connection from a closed pool."""
+    """The grace sleep runs BEFORE the pool drains, so an in-flight
+    /health probe can finish its borrow against an open pool."""
     call_order: list[str] = []
-    shutdown_fixtures["theta_fetcher_stop"].side_effect = lambda: call_order.append(
-        "theta_stop"
-    )
-    shutdown_fixtures["theta_launcher_shutdown"].side_effect = lambda: (
-        call_order.append("theta_shutdown")
-    )
+    shutdown_fixtures["time_sleep"].side_effect = lambda _s: call_order.append("sleep")
     shutdown_fixtures["drain_pool"].side_effect = lambda: call_order.append("drain")
 
     with pytest.raises(SystemExit):
         main.shutdown(signal.SIGINT, None)
 
-    assert call_order == ["theta_stop", "theta_shutdown", "drain"]
+    assert call_order == ["sleep", "drain"]
 
 
 def test_shutdown_is_idempotent(
@@ -424,7 +342,6 @@ def test_shutdown_is_idempotent(
 
     shutdown_fixtures["drain_pool"].reset_mock()
     shutdown_fixtures["sys_exit"].reset_mock()
-    shutdown_fixtures["theta_fetcher_stop"].reset_mock()
 
     # Second call: _shutting_down is already True, so the function
     # must return immediately without re-running any cleanup.
@@ -432,7 +349,6 @@ def test_shutdown_is_idempotent(
 
     shutdown_fixtures["drain_pool"].assert_not_called()
     shutdown_fixtures["sys_exit"].assert_not_called()
-    shutdown_fixtures["theta_fetcher_stop"].assert_not_called()
 
 
 # ---------------------------------------------------------------------------

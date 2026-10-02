@@ -57,7 +57,7 @@ _ROOT = Path(os.environ.get("ARCHIVE_ROOT", "/data/archive"))
 # `archive_query_slot()` and, on failure, surface `ArchiveBusyError` so
 # the HTTP layer can return 503 instead of piling on more memory pressure.
 #
-# 2 is deliberate: it leaves headroom for /health, SHAP and Theta
+# 2 is deliberate: it leaves headroom for /health and SHAP
 # while still allowing one backfill request to overlap a single
 # interactive analyze-context query. Override via env for ops tuning.
 _ARCHIVE_QUERY_CONCURRENCY = int(

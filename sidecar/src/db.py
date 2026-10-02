@@ -8,10 +8,9 @@ from __future__ import annotations
 
 import time
 from contextlib import contextmanager
-from typing import Any, Generator, Sequence
+from typing import Any, Generator
 
 import psycopg2
-import psycopg2.extras
 import psycopg2.pool
 
 from logger_setup import log
@@ -29,20 +28,12 @@ DEFAULT_GETCONN_TIMEOUT_S = 10.0
 # timeout kicks in.
 SLOW_GETCONN_WARNING_MS = 1000
 
-# Short borrow timeout used ONLY by the /health probe. The probe shares
-# the same 5-conn pool as the Theta EOD writes, so under a write burst
-# all conns can be busy. With the default 10s timeout the probe would hang then return
-# False -> HTTP 503 -> Railway may restart a HEALTHY-but-busy container.
-# A 2s deadline fails fast; pool saturation is then reported as
-# healthy-but-busy (see is_db_healthy). See Finding E.
+# Short borrow timeout used ONLY by the /health probe. If every pooled
+# connection is busy, the default 10s timeout would hang the probe and
+# then return False -> HTTP 503 -> Railway may restart a HEALTHY-but-busy
+# container. A 2s deadline fails fast; pool saturation is then reported
+# as healthy-but-busy (see is_db_healthy). See Finding E.
 HEALTH_PROBE_TIMEOUT_S = 2.0
-
-# Default chunk size handed to ``psycopg2.extras.execute_values`` for
-# every batch insert in this module. Tuned for Neon's round-trip
-# overhead: smaller pages let RTT dominate; larger pages risk
-# proportionally larger rollbacks on a single bad row. 500 has been the
-# stable value for every batch-insert call site since SIDE-003.
-_DEFAULT_BATCH_PAGE_SIZE = 500
 
 
 class PoolTimeoutError(RuntimeError):
@@ -60,14 +51,13 @@ def get_pool() -> psycopg2.pool.ThreadedConnectionPool:
         dsn = settings.database_url.split("?")[0]
         # TCP keepalives let the kernel notice a server-side SSL/TCP drop
         # before the next query lands on a dead socket. Neon silently tears
-        # down idle pooler connections (e.g. the long gaps between Theta
-        # jobs when the sidecar's pool sits quiet); without
-        # keepalives, the first borrow after that gap raises
-        # ``OperationalError: SSL connection has been closed unexpectedly``
-        # mid-batch and the in-flight rows are lost. With these settings
-        # the kernel probes every 30s + 10s*5 = ~80s after each idle window,
-        # so the broken socket is detected and the pool's
-        # ``putconn(close=True)`` path can discard it before the next batch.
+        # down idle pooler connections (the pool sits quiet between
+        # /health probes); without keepalives, the first borrow after
+        # that gap raises ``OperationalError: SSL connection has been
+        # closed unexpectedly``. With these settings the kernel probes
+        # every 30s + 10s*5 = ~80s after each idle window, so the broken
+        # socket is detected and the pool's ``putconn(close=True)`` path
+        # can discard it before the next borrow.
         # See SENTRY-EMERALD-DESERT-6X / -2C.
         _pool = psycopg2.pool.ThreadedConnectionPool(
             minconn=1,
@@ -196,9 +186,8 @@ def is_db_healthy() -> bool:
     """Quick health check for the HTTP health endpoint.
 
     Distinguishes "pool saturated (alive but busy)" from "DB actually
-    unreachable" so a write burst (e.g. the Theta backfill) doesn't trip
-    a spurious 503 and a Railway restart of a healthy container
-    (Finding E):
+    unreachable" so a saturated pool doesn't trip a spurious 503 and a
+    Railway restart of a healthy container (Finding E):
 
     - Borrows with a SHORT timeout (``HEALTH_PROBE_TIMEOUT_S``) so the
       probe fails fast instead of hanging the full default 10s.
@@ -214,7 +203,7 @@ def is_db_healthy() -> bool:
                 return True
     except PoolTimeoutError:
         # Pool is saturated but the DB is alive — do NOT report unhealthy,
-        # or Railway may restart a container that's simply busy writing.
+        # or Railway may restart a container that's simply busy.
         try:
             from sentry_setup import capture_message
 
@@ -228,113 +217,6 @@ def is_db_healthy() -> bool:
         return True
     except Exception:
         return False
-
-
-# ---------------------------------------------------------------------------
-# Batch-insert helper
-# ---------------------------------------------------------------------------
-
-
-def _execute_values_batch(
-    sql: str,
-    rows: Sequence[tuple],
-    page_size: int = _DEFAULT_BATCH_PAGE_SIZE,
-) -> None:
-    """Run ``psycopg2.extras.execute_values(sql, rows, page_size=...)``.
-
-    Centralizes the verbatim shape that every batch-insert function
-    in this module needs: empty-rows no-op guard, one ``get_conn``
-    context, ``execute_values`` with the standard page size. Lets the
-    callers stay one-liners that just supply their own SQL.
-
-    The page size defaults to :data:`_DEFAULT_BATCH_PAGE_SIZE` (500),
-    which is the value every existing call site uses; callers that
-    need a different page size can override per-call.
-
-    Retries once on :class:`psycopg2.OperationalError` (e.g. Neon SSL
-    drop on a stale pooled connection). ``get_conn`` discards the dead
-    connection via ``pool.putconn(close=True)`` in its finally block,
-    so the second borrow lands on a fresh socket. Without the retry,
-    the in-flight batch (up to 500 rows) is lost — only
-    ``capture_exception`` is called by the caller, no recovery. See
-    SENTRY-EMERALD-DESERT-6X.
-    """
-    if not rows:
-        return
-    for attempt in (1, 2):
-        try:
-            with get_conn() as conn:
-                with conn.cursor() as cur:
-                    psycopg2.extras.execute_values(cur, sql, rows, page_size=page_size)
-            return
-        except psycopg2.OperationalError:
-            if attempt == 2:
-                raise
-            log.warning(
-                "_execute_values_batch: OperationalError on attempt 1, "
-                "retrying with a fresh connection"
-            )
-
-
-# ---------------------------------------------------------------------------
-# Theta Data writes
-# ---------------------------------------------------------------------------
-
-
-def upsert_theta_option_eod_batch(rows: list[tuple]) -> None:
-    """Batch upsert Theta EOD rows into theta_option_eod.
-
-    Each tuple must match this column order exactly:
-        (symbol, expiration, strike, option_type, date,
-         open, high, low, close, volume, trade_count,
-         bid, ask, bid_size, ask_size)
-
-    Upserts on the UNIQUE (symbol, expiration, strike, option_type, date)
-    constraint created by migration #70. On conflict we overwrite every
-    data column with EXCLUDED.* because Theta's EOD report is a full
-    snapshot — a later fetch for the same contract/day supersedes any
-    earlier partial. `created_at` deliberately stays untouched so we
-    preserve the first-seen timestamp across revisions.
-    """
-    _execute_values_batch(
-        """
-        INSERT INTO theta_option_eod
-            (symbol, expiration, strike, option_type, date,
-             open, high, low, close, volume, trade_count,
-             bid, ask, bid_size, ask_size)
-        VALUES %s
-        ON CONFLICT (symbol, expiration, strike, option_type, date)
-        DO UPDATE SET
-            open        = EXCLUDED.open,
-            high        = EXCLUDED.high,
-            low         = EXCLUDED.low,
-            close       = EXCLUDED.close,
-            volume      = EXCLUDED.volume,
-            trade_count = EXCLUDED.trade_count,
-            bid         = EXCLUDED.bid,
-            ask         = EXCLUDED.ask,
-            bid_size    = EXCLUDED.bid_size,
-            ask_size    = EXCLUDED.ask_size
-        """,
-        rows,
-    )
-
-
-def has_theta_option_eod_rows(symbol: str) -> bool:
-    """True when theta_option_eod has at least one row for `symbol`.
-
-    Cheap existence check used by the backfill scheduler to skip roots
-    that already have data. `LIMIT 1` + the ix_theta_option_eod_symbol_date
-    index makes this O(1) even as the table grows into the millions of
-    rows over time.
-    """
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM theta_option_eod WHERE symbol = %s LIMIT 1",
-                (symbol,),
-            )
-            return cur.fetchone() is not None
 
 
 def drain_pool() -> None:

@@ -32,28 +32,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 if "psycopg2" not in sys.modules:
     mock_psycopg2 = MagicMock()
     mock_psycopg2_pool = MagicMock()
-    mock_psycopg2_extras = MagicMock()
     # Provide a real exception class for `except psycopg2.pool.PoolError`
     mock_psycopg2_pool.PoolError = type("PoolError", (Exception,), {})
     mock_psycopg2.pool = mock_psycopg2_pool
-    mock_psycopg2.extras = mock_psycopg2_extras
     sys.modules["psycopg2"] = mock_psycopg2
     sys.modules["psycopg2.pool"] = mock_psycopg2_pool
-    sys.modules["psycopg2.extras"] = mock_psycopg2_extras
 
 # sentry_sdk — optional, used by sidecar/src/sentry_setup.py lazy path.
 if "sentry_sdk" not in sys.modules:
-    mock_sentry_sdk = MagicMock()
-
-    # `@sentry_sdk.monitor(monitor_slug=...)` is a no-op decorator when no
-    # DSN is configured (the real SDK behavior). Model it as an identity
-    # decorator so functions it wraps (e.g. theta_fetcher.run_nightly) stay
-    # callable and coverable instead of being swallowed by a MagicMock.
-    def _identity_decorator(*_args, **_kwargs):
-        def _wrap(func):
-            return func
-
-        return _wrap
-
-    mock_sentry_sdk.monitor = _identity_decorator
-    sys.modules["sentry_sdk"] = mock_sentry_sdk
+    sys.modules["sentry_sdk"] = MagicMock()

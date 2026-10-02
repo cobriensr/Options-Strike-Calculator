@@ -1,20 +1,17 @@
 """Tests for sidecar/src/db.py.
 
-Scope: pool/borrow semantics, the batch-insert retry helper, and the
-remaining query helpers, all against mocked psycopg2. Real upsert
-semantics require a live Postgres instance and are out of scope here.
+Scope: pool/borrow semantics, the boot verification query and the
+/health probe, all against mocked psycopg2.
 
 Mock strategy:
-- conftest.py provides session-wide mocks for psycopg2, psycopg2.pool,
-  psycopg2.extras. These are the external-package mocks every test
-  file shares. We reach into them for the execute_values attribute
-  that db.py calls.
+- conftest.py provides session-wide mocks for psycopg2 and
+  psycopg2.pool. These are the external-package mocks every test file
+  shares.
 - db.py is imported normally. Its get_conn() context manager is
-  monkeypatched per-test via the mock_conn_pool fixture, which also
-  intercepts execute_values via sys.modules["psycopg2.extras"].
+  monkeypatched per-test via the mock_conn_pool fixture.
 - No module-level sys.modules clobbering — every patch is per-test
-  via monkeypatch, so sibling test files (test_theta_fetcher.py,
-  test_sentry_setup.py) stay hermetic.
+  via monkeypatch, so sibling test files (test_sentry_setup.py) stay
+  hermetic.
 """
 
 from __future__ import annotations
@@ -40,27 +37,11 @@ import db  # noqa: E402
 
 
 @pytest.fixture()
-def mock_execute_values(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
-    """Monkeypatch psycopg2.extras.execute_values per-test.
-
-    db._execute_values_batch calls `psycopg2.extras.execute_values(...)`
-    — we intercept that call by patching the attribute on the shared
-    psycopg2.extras mock from conftest.py. monkeypatch auto-restores
-    after each test, so no cross-test pollution.
-    """
-    mock = MagicMock()
-    psycopg2_extras = sys.modules["psycopg2.extras"]
-    monkeypatch.setattr(psycopg2_extras, "execute_values", mock)
-    return mock
-
-
-@pytest.fixture()
 def mock_conn_pool(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     """Replace db.get_conn with a mock context manager yielding a fake conn.
 
     Returns the inner cursor MagicMock for tests that want to assert
-    against it. Most tests only care about the execute_values mock
-    above.
+    against it.
     """
     mock_cursor = MagicMock()
     mock_conn = MagicMock()
@@ -75,140 +56,6 @@ def mock_conn_pool(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     # pool-timeout work, so the replacement needs to swallow kwargs.
     monkeypatch.setattr(db, "get_conn", lambda *args, **kwargs: fake_context)
     return mock_cursor
-
-
-# ---------------------------------------------------------------------------
-# _execute_values_batch helper — batch-insert shape used by
-# upsert_theta_option_eod_batch.
-# ---------------------------------------------------------------------------
-
-
-class TestExecuteValuesBatch:
-    """Direct coverage of the helper. Pinning behavior here makes
-    future tweaks (page size override, additional callers) safe without
-    dragging assertions through caller-specific SQL-shape suites."""
-
-    SAMPLE_SQL = "INSERT INTO some_table (a, b) VALUES %s"
-    SAMPLE_ROW = (1, 2)
-
-    def test_empty_rows_is_noop(
-        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
-    ) -> None:
-        """The empty-rows guard is what every caller relied on; pinning
-        it as a property of the helper itself."""
-        db._execute_values_batch(self.SAMPLE_SQL, [])
-        mock_execute_values.assert_not_called()
-
-    def test_single_row_passed_through(
-        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
-    ) -> None:
-        db._execute_values_batch(self.SAMPLE_SQL, [self.SAMPLE_ROW])
-        mock_execute_values.assert_called_once()
-        sql_arg = mock_execute_values.call_args[0][1]
-        rows_arg = mock_execute_values.call_args[0][2]
-        assert sql_arg == self.SAMPLE_SQL
-        assert rows_arg == [self.SAMPLE_ROW]
-
-    def test_multi_row_passed_through(
-        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
-    ) -> None:
-        rows = [self.SAMPLE_ROW] * 7
-        db._execute_values_batch(self.SAMPLE_SQL, rows)
-        rows_arg = mock_execute_values.call_args[0][2]
-        assert len(rows_arg) == 7
-
-    def test_default_page_size_is_module_constant(
-        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
-    ) -> None:
-        """The 500-row default has been the stable value across every
-        caller since SIDE-003; pin it via the named constant so a
-        future change is deliberate."""
-        assert db._DEFAULT_BATCH_PAGE_SIZE == 500
-        db._execute_values_batch(self.SAMPLE_SQL, [self.SAMPLE_ROW])
-        kwargs = mock_execute_values.call_args.kwargs
-        assert kwargs.get("page_size") == db._DEFAULT_BATCH_PAGE_SIZE
-
-    def test_page_size_override(
-        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
-    ) -> None:
-        """Callers can override page_size when the workload calls for
-        a different chunking strategy."""
-        db._execute_values_batch(self.SAMPLE_SQL, [self.SAMPLE_ROW], page_size=100)
-        kwargs = mock_execute_values.call_args.kwargs
-        assert kwargs.get("page_size") == 100
-
-    def test_operational_error_retries_once_and_succeeds(
-        self,
-        mock_conn_pool: MagicMock,
-        mock_execute_values: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """SENTRY-EMERALD-DESERT-6X: when the first borrowed connection
-        is stale (Neon SSL drop after idle), execute_values raises
-        OperationalError. The helper must retry once with a fresh conn
-        rather than dropping the in-flight 500-row batch.
-
-        psycopg2 is mocked at session scope, so OperationalError isn't a
-        real class — install a temporary Exception subclass and patch
-        the mock attribute for the duration of the test."""
-        import psycopg2
-
-        class _FakeOpError(Exception):
-            pass
-
-        monkeypatch.setattr(psycopg2, "OperationalError", _FakeOpError)
-        mock_execute_values.side_effect = [
-            _FakeOpError("SSL connection has been closed unexpectedly"),
-            None,  # second attempt succeeds
-        ]
-
-        db._execute_values_batch(self.SAMPLE_SQL, [self.SAMPLE_ROW])
-
-        assert mock_execute_values.call_count == 2
-
-    def test_operational_error_raises_when_retry_also_fails(
-        self,
-        mock_conn_pool: MagicMock,
-        mock_execute_values: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """If the second attempt also fails with OperationalError, propagate
-        — the caller's capture_exception is the final-failure observability
-        path."""
-        import psycopg2
-
-        class _FakeOpError(Exception):
-            pass
-
-        monkeypatch.setattr(psycopg2, "OperationalError", _FakeOpError)
-        mock_execute_values.side_effect = _FakeOpError("still broken")
-
-        with pytest.raises(_FakeOpError, match="still broken"):
-            db._execute_values_batch(self.SAMPLE_SQL, [self.SAMPLE_ROW])
-
-        assert mock_execute_values.call_count == 2
-
-    def test_non_operational_error_does_not_retry(
-        self,
-        mock_conn_pool: MagicMock,
-        mock_execute_values: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Only OperationalError gets the retry. Programming errors
-        (bad SQL, constraint violations) must surface immediately —
-        retrying them would just delay the failure and double-log."""
-        import psycopg2
-
-        class _FakeOpError(Exception):
-            pass
-
-        monkeypatch.setattr(psycopg2, "OperationalError", _FakeOpError)
-        mock_execute_values.side_effect = ValueError("not an SSL drop")
-
-        with pytest.raises(ValueError, match="not an SSL drop"):
-            db._execute_values_batch(self.SAMPLE_SQL, [self.SAMPLE_ROW])
-
-        assert mock_execute_values.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -672,25 +519,6 @@ class TestIsDbHealthy:
         monkeypatch.setattr(db, "get_conn", boom_get_conn)
 
         assert db.is_db_healthy() is False
-
-
-# ---------------------------------------------------------------------------
-# has_theta_option_eod_rows
-# ---------------------------------------------------------------------------
-
-
-class TestHasThetaOptionEodRows:
-    def test_returns_true_when_row_exists(self, mock_conn_pool: MagicMock) -> None:
-        mock_conn_pool.fetchone.return_value = (1,)
-        assert db.has_theta_option_eod_rows("SPX") is True
-        sql, params = mock_conn_pool.execute.call_args[0]
-        assert "SELECT 1 FROM theta_option_eod" in sql
-        assert "LIMIT 1" in sql
-        assert params == ("SPX",)
-
-    def test_returns_false_when_no_row(self, mock_conn_pool: MagicMock) -> None:
-        mock_conn_pool.fetchone.return_value = None
-        assert db.has_theta_option_eod_rows("SPX") is False
 
 
 # ---------------------------------------------------------------------------

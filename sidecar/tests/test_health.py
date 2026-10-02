@@ -71,16 +71,6 @@ def _run_request(path: str = "/health") -> tuple[int, dict]:
         return status, {"_raw": body_text}
 
 
-@pytest.fixture(autouse=True)
-def reset_handler_state() -> None:
-    """Clear class-level callables between tests."""
-    # Force Theta reporters off by default so tests are deterministic.
-    HealthHandler.theta_is_running = None
-    HealthHandler.theta_last_ready_at = None
-    HealthHandler.theta_last_error = None
-    yield
-
-
 @pytest.fixture
 def configure_base_callables() -> None:
     """Install a DB-health reporter that returns OK."""
@@ -91,12 +81,11 @@ def test_health_returns_200_when_all_ok(configure_base_callables) -> None:
     status, body = _run_request()
 
     assert status == 200
-    assert body["status"] == "ok"
     # DB is the only check: Databento connectivity + futures data
-    # freshness were removed with the Databento ingestion path.
-    assert body["checks"] == {"db": True}
-    # No Theta block when reporters aren't configured.
-    assert "theta" not in body
+    # freshness were removed with the Databento ingestion path, and the
+    # `theta` block went with the Theta Data Terminal. Exact match so a
+    # re-added key fails here.
+    assert body == {"status": "ok", "checks": {"db": True}}
 
 
 def test_health_returns_503_when_db_down(configure_base_callables) -> None:
@@ -104,8 +93,7 @@ def test_health_returns_503_when_db_down(configure_base_callables) -> None:
     status, body = _run_request()
 
     assert status == 503
-    assert body["status"] == "degraded"
-    assert body["checks"]["db"] is False
+    assert body == {"status": "degraded", "checks": {"db": False}}
 
 
 def test_health_returns_404_for_unknown_path(configure_base_callables) -> None:
@@ -128,64 +116,6 @@ def test_removed_tbbo_routes_fall_through_to_404(
     assert status == 404
     # Plain-text fallthrough 404, not a handler's JSON no-data 404.
     assert body == {"_raw": "Not found"}
-
-
-def test_health_includes_theta_block_when_configured(
-    configure_base_callables,
-) -> None:
-    HealthHandler.theta_is_running = staticmethod(lambda: True)
-    HealthHandler.theta_last_ready_at = staticmethod(lambda: 1776549000.0)
-    HealthHandler.theta_last_error = staticmethod(lambda: None)
-
-    status, body = _run_request()
-
-    assert status == 200
-    assert "theta" in body
-    assert body["theta"] == {
-        "running": True,
-        "last_ready_at": 1776549000.0,
-        "last_error": None,
-    }
-
-
-def test_health_theta_never_downgrades_overall_status(
-    configure_base_callables,
-) -> None:
-    # Theta is additive — if Theta is dead but the DB is fine,
-    # overall status stays 'ok' / 200.
-    HealthHandler.theta_is_running = staticmethod(lambda: False)
-    HealthHandler.theta_last_ready_at = staticmethod(lambda: 0.0)
-    HealthHandler.theta_last_error = staticmethod(
-        lambda: "Theta HTTP server failed to come up"
-    )
-
-    status, body = _run_request()
-
-    assert status == 200
-    assert body["status"] == "ok"
-    assert body["theta"]["running"] is False
-    assert body["theta"]["last_ready_at"] is None  # 0.0 coerced to None
-    assert body["theta"]["last_error"] == "Theta HTTP server failed to come up"
-
-
-def test_health_handles_theta_reporter_exceptions(
-    configure_base_callables,
-) -> None:
-    # If a Theta reporter raises (e.g. race during shutdown), handler
-    # must still respond rather than 500. Last-ready → 0.0, last-error → None.
-    def boom() -> float:
-        raise RuntimeError("boom")
-
-    HealthHandler.theta_is_running = staticmethod(lambda: True)
-    HealthHandler.theta_last_ready_at = staticmethod(boom)
-    HealthHandler.theta_last_error = staticmethod(boom)  # type: ignore[arg-type]
-
-    status, body = _run_request()
-
-    assert status == 200
-    assert body["theta"]["running"] is True
-    assert body["theta"]["last_ready_at"] is None
-    assert body["theta"]["last_error"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -897,33 +827,6 @@ class TestHealthDbCheck:
 
 
 # ---------------------------------------------------------------------------
-# _build_theta_block — partial-config guards
-# ---------------------------------------------------------------------------
-
-
-class TestBuildThetaBlock:
-    def test_returns_none_when_running_callable_unset(
-        self, configure_base_callables
-    ) -> None:
-        # Default reset: theta_is_running is None → block omitted entirely.
-        _status, body = _run_request()
-        assert "theta" not in body
-
-    def test_handles_missing_optional_callables(self, configure_base_callables) -> None:
-        # Only running is set; others remain None — block must still render
-        # with last_ready_at=None and last_error=None.
-        HealthHandler.theta_is_running = staticmethod(lambda: True)
-        HealthHandler.theta_last_ready_at = None
-        HealthHandler.theta_last_error = None
-        _status, body = _run_request()
-        assert body["theta"] == {
-            "running": True,
-            "last_ready_at": None,
-            "last_error": None,
-        }
-
-
-# ---------------------------------------------------------------------------
 # start_health_server — wiring smoke test
 # ---------------------------------------------------------------------------
 
@@ -952,15 +855,15 @@ class TestStartHealthServer:
         # The Databento reporters are gone from the handler contract.
         assert not hasattr(health.HealthHandler, "is_connected")
         assert not hasattr(health.HealthHandler, "last_bar_at")
-        # Theta defaults: server invoked without theta args → cleared.
-        assert health.HealthHandler.theta_is_running is None
-        assert health.HealthHandler.theta_last_ready_at is None
-        assert health.HealthHandler.theta_last_error is None
+        # So are the Theta Data Terminal reporters.
+        assert not hasattr(health.HealthHandler, "theta_is_running")
+        assert not hasattr(health.HealthHandler, "theta_last_ready_at")
+        assert not hasattr(health.HealthHandler, "theta_last_error")
         # Seed defaults: not configured → None.
         assert health.HealthHandler.seed_archive is None
         assert health.HealthHandler.seed_is_busy is None
 
-    def test_wires_optional_theta_and_seed_callables(self) -> None:
+    def test_wires_optional_seed_callables(self) -> None:
         import health
 
         with (
@@ -973,41 +876,20 @@ class TestStartHealthServer:
             health.start_health_server(
                 0,
                 lambda: True,
-                theta_is_running=lambda: True,
-                theta_last_ready_at=lambda: 1.0,
-                theta_last_error=lambda: "err",
                 seed_archive=lambda: {"failed": 0},
                 seed_is_busy=lambda: False,
             )
-        # All optional callables must be installed.
-        assert health.HealthHandler.theta_is_running() is True
-        assert health.HealthHandler.theta_last_ready_at() == pytest.approx(1.0)
-        assert health.HealthHandler.theta_last_error() == "err"
+        # Both optional callables must be installed.
         assert health.HealthHandler.seed_archive() == {"failed": 0}
         assert health.HealthHandler.seed_is_busy() is False
 
-    def test_wires_theta_running_only_when_others_falsy(self) -> None:
-        """When theta_is_running is set but the other reporters aren't,
-        the staticmethod-wrap branch evaluates the falsy ternary path."""
+    def test_rejects_removed_theta_kwargs(self) -> None:
+        """The theta_* reporters are gone from the signature; a stale
+        caller must fail loudly rather than be silently ignored."""
         import health
 
-        with (
-            patch("health._QuietThreadingHTTPServer") as fake_srv_cls,
-            patch("health.threading.Thread"),
-        ):
-            from unittest.mock import MagicMock as _MagicMock
-
-            fake_srv_cls.return_value = _MagicMock()
-            health.start_health_server(
-                0,
-                lambda: True,
-                theta_is_running=lambda: True,
-                theta_last_ready_at=None,
-                theta_last_error=None,
-            )
-        assert health.HealthHandler.theta_is_running() is True
-        assert health.HealthHandler.theta_last_ready_at is None
-        assert health.HealthHandler.theta_last_error is None
+        with pytest.raises(TypeError):
+            health.start_health_server(0, lambda: True, theta_is_running=lambda: True)
 
 
 # ---------------------------------------------------------------------------

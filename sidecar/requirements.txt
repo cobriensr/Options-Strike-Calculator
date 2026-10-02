@@ -3,7 +3,6 @@ sentry-sdk>=2.0.0
 pydantic>=2.7.0
 pydantic-settings>=2.3.0
 python-dotenv>=1.0.0
-apscheduler>=3.10.0
 duckdb>=1.0.0
 # DuckDB's `SET TimeZone = '<name>'` validates the zone name against pytz.
 # Without this the archive_query module cannot force UTC session TZ, which
@@ -11,10 +10,6 @@ duckdb>=1.0.0
 # `archive_query._connection`. (Phase 4c shipped the same guard in the ML
 # pipeline; Phase 4b rework brings it to the sidecar.)
 pytz>=2024.1
-# Bundles the IANA tz database so named zones (e.g. the Theta scheduler's
-# "America/New_York") resolve on Railway's slim image, which may lack
-# system tz files.
-tzdata>=2024.1
 pytest>=8.0.0
 pytest-cov>=6.0
 ruff>=0.11

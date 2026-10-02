@@ -10,15 +10,13 @@ Starts the HTTP server (port 8080) that serves:
   historical Parquet archive on the ``/data`` volume.
 - ``POST /admin/seed-archive`` — one-shot archive seed from Vercel Blob.
 
-Also launches the co-resident Theta Data Terminal (when credentials are
-present) and its nightly EOD scheduler.
-
 The sidecar previously streamed futures OHLCV-1m bars, top-of-book,
 trade ticks, and ES options trades/statistics from Databento. That
 subscription was cancelled and the ingestion path was removed on
 2026-09-29; futures data now arrives via the ``uw-stream`` Railway
-service. The Twilio-backed alert engine was removed earlier, on
-2026-04-08 (SIDE-001).
+service. The co-resident Theta Data Terminal (never run in production)
+was removed on 2026-10-02. The Twilio-backed alert engine was removed
+earlier, on 2026-04-08 (SIDE-001).
 
 Runs 24/7 on Railway as a persistent process.
 """
@@ -27,7 +25,6 @@ from __future__ import annotations
 
 import signal
 import sys
-import threading
 import time
 
 # Ensure src/ is on the Python path for local imports
@@ -36,8 +33,6 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import archive_seeder
-import theta_fetcher
-import theta_launcher
 from config import settings
 from db import drain_pool, is_db_healthy, verify_connection
 from health import start_health_server
@@ -57,14 +52,7 @@ def shutdown(signum: int, frame: object) -> None:
     sig_name = signal.Signals(signum).name
     log.info("Shutting down gracefully (signal: %s)", sig_name)
 
-    # Stop Theta's APScheduler before killing the jar, so no nightly
-    # job fires mid-shutdown against a dead HTTP server.
-    theta_fetcher.stop_scheduler()
-
-    # Stop the Theta Terminal subprocess. No-op when Theta was never started.
-    theta_launcher.shutdown()
-
-    # Give pending writes a moment to complete
+    # Give in-flight requests a moment to complete
     time.sleep(1)
     drain_pool()
     log.info("Shutdown complete")
@@ -79,10 +67,8 @@ def main() -> None:
     # No-op locally if SENTRY_DSN is unset. Never raises.
     init_sentry()
 
-    # Verify required env vars BEFORE launching any subsystems. Missing
-    # env used to fall through past the Theta launcher (~60s blocking
-    # subprocess boot) and only fail at the verify_connection() call —
-    # wasted Railway compute and confusing logs. Fail fast instead.
+    # Verify required env vars BEFORE starting any subsystem, so a
+    # misconfigured deploy fails fast with a clear log line.
     required = ["DATABASE_URL"]
     missing = [key for key in required if not os.environ.get(key)]
     if missing:
@@ -91,20 +77,6 @@ def main() -> None:
             ", ".join(missing),
         )
         sys.exit(1)
-
-    # Launch the co-resident Theta Terminal subprocess. Blocks up to
-    # 60s waiting for its HTTP server. No-op when THETA_EMAIL /
-    # THETA_PASSWORD are unset (local dev, or deliberate disable).
-    # Failures are reported to Sentry but never block sidecar startup.
-    if theta_launcher.start():
-        # Nightly 17:25 ET scheduler + one-time backfill in a daemon thread.
-        # Both are safe no-ops when Theta is dead or the table already has data.
-        theta_fetcher.start_scheduler()
-        threading.Thread(
-            target=theta_fetcher.run_backfill_if_needed,
-            name="theta-backfill",
-            daemon=True,
-        ).start()
 
     # Take-It SHAP routes (Phase 3d, spec
     # docs/superpowers/specs/takeit-phase3-production-scoring-2026-05-16.md)
@@ -156,15 +128,9 @@ def main() -> None:
             "(ARCHIVE_MANIFEST_URL or BLOB_READ_WRITE_TOKEN missing)"
         )
 
-    # Start health check server. Theta reporters are always passed —
-    # when Theta is disabled (no credentials) the callables just return
-    # False / 0.0 / None and the /health response honestly reports that.
     start_health_server(
         port=settings.port,
         is_db_healthy=is_db_healthy,
-        theta_is_running=theta_launcher.is_running,
-        theta_last_ready_at=theta_launcher.last_ready_at,
-        theta_last_error=theta_launcher.last_error,
         seed_archive=seed_callable,
         seed_is_busy=archive_seeder.is_seeding,
     )

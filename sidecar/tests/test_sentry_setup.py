@@ -188,8 +188,8 @@ class TestApplyScope:
 
     def test_apply_tags_only(self) -> None:
         scope = MagicMock()
-        sentry_setup._apply_scope(scope, {"component": "theta"}, None)
-        scope.set_tag.assert_called_once_with("component", "theta")
+        sentry_setup._apply_scope(scope, {"component": "archive"}, None)
+        scope.set_tag.assert_called_once_with("component", "archive")
         scope.set_extra.assert_not_called()
 
     def test_apply_context_only(self) -> None:
@@ -202,10 +202,10 @@ class TestApplyScope:
         scope = MagicMock()
         sentry_setup._apply_scope(
             scope,
-            {"component": "theta"},
+            {"component": "archive"},
             {"symbol": "ES", "horizon_days": 30},
         )
-        scope.set_tag.assert_called_once_with("component", "theta")
+        scope.set_tag.assert_called_once_with("component", "archive")
         # Both context kv pairs land as extras.
         assert scope.set_extra.call_count == 2
 

@@ -188,15 +188,6 @@ class HealthHandler(BaseHTTPRequestHandler):
     # DB check — always required. The only input to /health's status.
     is_db_healthy: Callable[[], bool]
 
-    # Theta Data reporters — optional. None when Theta is disabled
-    # (credentials missing, jar not present, local dev). When set, the
-    # handler emits a `theta` block in the response body but does NOT
-    # factor Theta state into the overall healthy/degraded status —
-    # Theta is additive, not part of the sidecar's core serving contract.
-    theta_is_running: Callable[[], bool] | None = None
-    theta_last_ready_at: Callable[[], float] | None = None
-    theta_last_error: Callable[[], str | None] | None = None
-
     # Archive seeder — optional. When set, enables POST /admin/seed-archive.
     # The callable returns a dict suitable for JSON serialization.
     seed_archive: Callable[[], dict[str, Any]] | None = None
@@ -263,17 +254,14 @@ class HealthHandler(BaseHTTPRequestHandler):
             )
             checks["db"] = False
 
-        theta_block = self._build_theta_block()
-
         healthy = all(checks.values())
         status = 200 if healthy else 503
-        body_obj: dict[str, object] = {
-            "status": "ok" if healthy else "degraded",
-            "checks": checks,
-        }
-        if theta_block is not None:
-            body_obj["theta"] = theta_block
-        body = json.dumps(body_obj)
+        body = json.dumps(
+            {
+                "status": "ok" if healthy else "degraded",
+                "checks": checks,
+            }
+        )
 
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -750,28 +738,6 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps({"error": "seed already in progress"}).encode())
 
-    def _build_theta_block(self) -> dict[str, object] | None:
-        """Render the Theta status block, or None if Theta is disabled."""
-        if self.theta_is_running is None:
-            return None
-        last_ready = 0.0
-        if self.theta_last_ready_at is not None:
-            try:
-                last_ready = self.theta_last_ready_at()
-            except Exception:
-                last_ready = 0.0
-        last_error = None
-        if self.theta_last_error is not None:
-            try:
-                last_error = self.theta_last_error()
-            except Exception:
-                last_error = None
-        return {
-            "running": self.theta_is_running(),
-            "last_ready_at": last_ready if last_ready > 0 else None,
-            "last_error": last_error,
-        }
-
     def log_message(self, format: str, *args: object) -> None:
         """Suppress default stderr logging from BaseHTTPRequestHandler."""
         pass
@@ -781,39 +747,19 @@ def start_health_server(
     port: int,
     is_db_healthy: Callable[[], bool],
     *,
-    theta_is_running: Callable[[], bool] | None = None,
-    theta_last_ready_at: Callable[[], float] | None = None,
-    theta_last_error: Callable[[], str | None] | None = None,
     seed_archive: Callable[[], dict[str, Any]] | None = None,
     seed_is_busy: Callable[[], bool] | None = None,
 ) -> HTTPServer:
     """Start the HTTP server in a background thread.
 
-    Optional callables:
-      - `theta_*` exposes Theta Terminal status in the /health response.
-        Omit to disable the `theta` block.
-      - `seed_archive` / `seed_is_busy` enable POST /admin/seed-archive.
-        Omit to disable the admin endpoint (returns 401 if hit).
+    Optional callables `seed_archive` / `seed_is_busy` enable
+    POST /admin/seed-archive. Omit them to disable the admin endpoint
+    (returns 401 if hit).
 
     Class-level state is reset between calls so tests that spin up
     multiple servers in one process don't bleed state across runs.
     """
     HealthHandler.is_db_healthy = staticmethod(is_db_healthy)  # type: ignore[assignment]
-
-    if theta_is_running is not None:
-        HealthHandler.theta_is_running = staticmethod(theta_is_running)  # type: ignore[assignment]
-        HealthHandler.theta_last_ready_at = (
-            staticmethod(theta_last_ready_at) if theta_last_ready_at else None  # type: ignore[assignment]
-        )
-        HealthHandler.theta_last_error = (
-            staticmethod(theta_last_error) if theta_last_error else None  # type: ignore[assignment]
-        )
-    else:
-        # Reset between runs (important for tests that spin up multiple
-        # servers in one process).
-        HealthHandler.theta_is_running = None
-        HealthHandler.theta_last_ready_at = None
-        HealthHandler.theta_last_error = None
 
     HealthHandler.seed_archive = (
         staticmethod(seed_archive) if seed_archive is not None else None  # type: ignore[assignment]
