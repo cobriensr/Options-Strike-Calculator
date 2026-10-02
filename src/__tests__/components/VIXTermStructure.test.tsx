@@ -18,7 +18,7 @@ const LIVE: LiveVixTermReading = {
   asOf: '2026-10-01T15:42:00.000Z',
 };
 
-const CLOSE: VixTermReading = {
+const PRIOR_CLOSE: VixTermReading = {
   vix: 16.39,
   vix3m: 18.58,
   ratio: 0.882,
@@ -30,7 +30,7 @@ function term(
 ): VixTermStructureData {
   return {
     live: LIVE,
-    lastClose: CLOSE,
+    priorClose: PRIOR_CLOSE,
     futuresRegime: 'CONTANGO',
     ...overrides,
   };
@@ -50,24 +50,22 @@ describe('VixTermStructure: empty and degraded data', () => {
   it('renders nothing when every source is unavailable', () => {
     const { container } = render(
       <VixTermStructure
-        vixTermStructure={{ live: null, lastClose: null, futuresRegime: null }}
+        vixTermStructure={{ live: null, priorClose: null, futuresRegime: null }}
       />,
     );
 
     expect(container.innerHTML).toBe('');
   });
 
-  it('falls back to the latest close when there is no live quote', () => {
+  it('falls back to the prior close when there is no live quote', () => {
     render(<VixTermStructure vixTermStructure={term({ live: null })} />);
 
     expect(screen.getByText('16.39')).toBeInTheDocument();
     expect(screen.getByText('18.58')).toBeInTheDocument();
     expect(screen.getByText('0.882')).toBeInTheDocument();
-    expect(
-      screen.getByText('Latest daily close (no live quote)'),
-    ).toBeInTheDocument();
-    // The close is already the headline — no separate "Last close" note.
-    expect(screen.queryByText(/^Last close/)).not.toBeInTheDocument();
+    expect(screen.getByText('Prior close (no live quote)')).toBeInTheDocument();
+    // The close is already the headline — no separate "Prior close" ratio note.
+    expect(screen.queryByText(/^Prior close \d/)).not.toBeInTheDocument();
   });
 
   it('shows only the VX futures label when it is the only reading', () => {
@@ -75,7 +73,7 @@ describe('VixTermStructure: empty and degraded data', () => {
       <VixTermStructure
         vixTermStructure={{
           live: null,
-          lastClose: null,
+          priorClose: null,
           futuresRegime: 'BACKWARDATION',
         }}
       />,
@@ -110,10 +108,12 @@ describe('VixTermStructure: live reading', () => {
     expect(screen.getByText('Live · 10:42 AM CT')).toBeInTheDocument();
   });
 
-  it('shows the latest close ratio and the VX futures label as context', () => {
+  it('shows the prior close ratio and the VX futures label as context', () => {
     render(<VixTermStructure vixTermStructure={term()} />);
 
-    expect(screen.getByText('Last close 0.882 (CONTANGO)')).toBeInTheDocument();
+    expect(
+      screen.getByText('Prior close 0.882 (CONTANGO)'),
+    ).toBeInTheDocument();
     expect(screen.getByText('VX futures: CONTANGO')).toBeInTheDocument();
   });
 
@@ -140,7 +140,7 @@ describe('VixTermStructure: band badge', () => {
         <VixTermStructure
           vixTermStructure={term({
             live: { ...LIVE, band },
-            lastClose: null,
+            priorClose: null,
             futuresRegime: null,
           })}
         />,
@@ -148,16 +148,16 @@ describe('VixTermStructure: band badge', () => {
 
       expect(screen.getByText(band)).toBeInTheDocument();
       // Live-only: no close to show as context.
-      expect(screen.queryByText(/^Last close/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/^Prior close \d/)).not.toBeInTheDocument();
     },
   );
 
-  it('takes the badge from the latest close when there is no live quote', () => {
+  it('takes the badge from the prior close when there is no live quote', () => {
     render(
       <VixTermStructure
         vixTermStructure={{
           live: null,
-          lastClose: {
+          priorClose: {
             vix: 28,
             vix3m: 25,
             ratio: 1.12,
@@ -170,12 +170,10 @@ describe('VixTermStructure: band badge', () => {
 
     expect(screen.getByText('BACKWARDATION')).toBeInTheDocument();
     expect(screen.getByText('1.120')).toBeInTheDocument();
-    expect(
-      screen.getByText('Latest daily close (no live quote)'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Prior close (no live quote)')).toBeInTheDocument();
   });
 
-  it('prefers the live band over the latest close', () => {
+  it('prefers the live band over the prior close', () => {
     render(
       <VixTermStructure
         vixTermStructure={term({
@@ -188,7 +186,9 @@ describe('VixTermStructure: band badge', () => {
     // Badge = FLAT (live); CONTANGO only appears inside the close note.
     expect(screen.getByText('FLAT')).toBeInTheDocument();
     expect(screen.queryByText('CONTANGO')).not.toBeInTheDocument();
-    expect(screen.getByText('Last close 0.882 (CONTANGO)')).toBeInTheDocument();
+    expect(
+      screen.getByText('Prior close 0.882 (CONTANGO)'),
+    ).toBeInTheDocument();
   });
 });
 

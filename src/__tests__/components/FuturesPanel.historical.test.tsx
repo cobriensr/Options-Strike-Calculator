@@ -168,7 +168,7 @@ describe('FuturesPanel: historical picker', () => {
           band: 'CONTANGO',
           asOf: '2026-04-17T14:29:00.000Z',
         },
-        lastClose: null,
+        priorClose: null,
         futuresRegime: null,
       },
     });

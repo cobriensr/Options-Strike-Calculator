@@ -6,19 +6,19 @@
  * endpoint needs a volatility add-on we don't have (see
  * docs/superpowers/specs/databento-removal-2026-09-29.md).
  *
- * Two sources:
- *   - live: Schwab `$VIX` + `$VIX3M` index quotes, both in one /quotes call.
- *   - lastClose + futuresRegime: UW `GET /stock/SPX/volatility/context` →
- *     `market.{vix, vix3m, vix_futures_regime}`. That block reports the
- *     latest daily closes only and ignores `?date=`, so it has no history:
- *     during the session it holds the prior close, after the close that
- *     day's. `vix_futures_regime` is UW's daily label from the front two
- *     VIX futures — the only VX-derived signal we can get.
+ * Sources — all of them "now", none with history:
+ *   - live + priorClose: one Schwab `/quotes` call for `$VIX` and `$VIX3M`.
+ *     `lastPrice` gives the live ratio; `closePrice` gives the prior
+ *     session's closing ratio (see PRIOR CLOSE below).
+ *   - futuresRegime: UW `GET /stock/SPX/volatility/context` →
+ *     `market.vix_futures_regime`, UW's label from the front two VIX
+ *     futures — the only VX-derived signal we can get. The `market` block
+ *     updates intraday (its vix/vix3m moved between two GETs 34 s apart on
+ *     2026-10-02) and ignores `?date=`, so it is current data, not a close.
  *
- * The UW result is cached in Redis (30 min for a complete reading; 5 min
- * after a failure or a data gap) because the snapshot endpoint polls every
- * 30 s and the value only changes once a day. No lock: a concurrent miss
- * costs one extra UW call.
+ * The UW label is cached in Redis for 5 min (success or failure) because
+ * the snapshot endpoint polls every 30 s. No lock: a concurrent miss costs
+ * one extra UW call.
  *
  * `fetchVixTermStructure` never throws and waits at most
  * SOURCE_DEADLINE_MS per source. Each source degrades to null and reports
@@ -26,6 +26,7 @@
  */
 
 import { z } from 'zod';
+import { isMarketOpen } from './cron-helpers.js';
 import logger from './logger.js';
 import { limiterRedis, safeRedis, safeRedisVoid } from './redis.js';
 import { schwabFetch } from './schwab-fetch.js';
@@ -71,11 +72,14 @@ export interface LiveVixTermReading extends VixTermReading {
 }
 
 export interface VixTermStructure {
-  /** Schwab intraday quotes; null when either quote is unavailable. */
+  /** Schwab `lastPrice`s; null when either quote is unavailable. */
   live: LiveVixTermReading | null;
-  /** UW latest daily closes; null on UW failure or missing values. */
-  lastClose: VixTermReading | null;
-  /** UW `vix_futures_regime` (front two VIX futures, latest close). */
+  /**
+   * The prior cash session's closing ratio (Schwab `closePrice`). Set only
+   * while today's cash session is open — see PRIOR CLOSE.
+   */
+  priorClose: VixTermReading | null;
+  /** UW `vix_futures_regime`: current label from the front two VIX futures. */
   futuresRegime: VixTermBand | null;
 }
 
@@ -129,7 +133,7 @@ function toReading(
   return { vix, vix3m, ratio, band: classifyVixRatio(ratio) };
 }
 
-// ── Live: Schwab quotes ─────────────────────────────────────
+// ── Live + prior close: Schwab quotes ───────────────────────
 
 const SCHWAB_VIX = '$VIX';
 const SCHWAB_VIX3M = '$VIX3M';
@@ -137,14 +141,23 @@ const SCHWAB_VIX3M = '$VIX3M';
 /**
  * Schwab returns one entry per recognised symbol and reports unknown ones
  * under a separate `errors` key, so a rejected `$VIX3M` leaves the `$VIX`
- * entry intact. Each entry is validated on its own.
+ * entry intact. Each entry is validated on its own. A bad `closePrice`
+ * only costs the prior close, not the live reading.
  */
 const schwabIndexQuoteSchema = z.object({
   quote: z.object({
     lastPrice: z.number().positive(),
+    closePrice: z.number().optional().catch(undefined),
     tradeTime: z.number().optional(),
   }),
 });
+
+interface SchwabVixQuotes {
+  live: LiveVixTermReading | null;
+  priorClose: VixTermReading | null;
+}
+
+const NO_QUOTES: SchwabVixQuotes = { live: null, priorClose: null };
 
 /** The older trade time, clamped to now; `nowMs` when either is unusable. */
 function quoteAsOf(nowMs: number, a?: number, b?: number): string {
@@ -154,19 +167,45 @@ function quoteAsOf(nowMs: number, a?: number, b?: number): string {
   return new Date(ms).toISOString();
 }
 
-function liveUnavailable(details: Record<string, unknown>, msg: string) {
+function liveUnavailable(
+  details: Record<string, unknown>,
+  msg: string,
+): SchwabVixQuotes {
   metrics.increment('vix_term.live_unavailable');
   logger.warn(details, msg);
-  return null;
+  return NO_QUOTES;
 }
 
-async function fetchLiveReading(): Promise<LiveVixTermReading | null> {
+/**
+ * PRIOR CLOSE. Schwab's quote schema describes `closePrice` as the
+ * previous day's closing price, and this repo already relies on that:
+ * /api/quotes serves it as `prevClose`, and fetch-outcomes takes the day's
+ * close from `lastPrice` after the session, not from `closePrice`. When
+ * `closePrice` rolls over to the session that just ended is not
+ * documented, so it is used only while today's cash session is open
+ * (isMarketOpen: a trading day, 9:30 ET to the close), when it can only be
+ * the prior session's close.
+ */
+function priorCloseReading(
+  vixClose: number | undefined,
+  vix3mClose: number | undefined,
+): VixTermReading | null {
+  return isMarketOpen() ? toReading(vixClose, vix3mClose) : null;
+}
+
+async function fetchSchwabQuotes(): Promise<SchwabVixQuotes> {
   try {
     const symbols = encodeURIComponent(`${SCHWAB_VIX},${SCHWAB_VIX3M}`);
     const result = await schwabFetch<Record<string, unknown> | null>(
       `/quotes?symbols=${symbols}&fields=quote`,
     );
     if (!result.ok) {
+      // Logged out is an owner action, not a fault: count it quietly
+      // instead of warning on every 30 s poll (cf. fetch-strike-iv).
+      if (result.code === 'SCHWAB_TOKEN_EXPIRED') {
+        metrics.increment('vix_term.live_logged_out');
+        return NO_QUOTES;
+      }
       return liveUnavailable(
         { code: result.code, status: result.status },
         'vix term: Schwab quote call failed — no live VIX/VIX3M ratio',
@@ -185,22 +224,19 @@ async function fetchLiveReading(): Promise<LiveVixTermReading | null> {
       metrics.increment('vix_term.vix3m_quote_missing');
       logger.warn(
         { schwabErrors: data.errors ?? null },
-        'vix term: Schwab returned no usable $VIX3M quote — falling back to the UW close',
+        'vix term: Schwab returned no usable $VIX3M quote — no VIX/VIX3M ratio',
       );
-      return null;
+      return NO_QUOTES;
     }
-    const reading = toReading(
-      vix.data.quote.lastPrice,
-      vix3m.data.quote.lastPrice,
-    );
-    if (reading == null) return null; // unreachable: both prices are > 0
+    const v = vix.data.quote;
+    const v3 = vix3m.data.quote;
+    const reading = toReading(v.lastPrice, v3.lastPrice);
     return {
-      ...reading,
-      asOf: quoteAsOf(
-        Date.now(),
-        vix.data.quote.tradeTime,
-        vix3m.data.quote.tradeTime,
-      ),
+      live: reading && {
+        ...reading,
+        asOf: quoteAsOf(Date.now(), v.tradeTime, v3.tradeTime),
+      },
+      priorClose: priorCloseReading(v.closePrice, v3.closePrice),
     };
   } catch (err) {
     Sentry.captureException(err);
@@ -208,43 +244,34 @@ async function fetchLiveReading(): Promise<LiveVixTermReading | null> {
   }
 }
 
-// ── Last close + futures regime: UW, cached ─────────────────
+// ── VIX futures regime label: UW, cached ────────────────────
 
-const UW_CLOSE_CACHE_KEY = 'vix-term:uw-close:v1';
-/** The block changes once a day; 30 min bounds post-close staleness. */
-const UW_CLOSE_TTL_SEC = 30 * 60;
-/** Negative cache: a UW outage costs one call per 5 min, not per poll. */
-const UW_CLOSE_NEGATIVE_TTL_SEC = 5 * 60;
+/** v2: the v1 entry also carried a UW "close" that was really intraday. */
+const UW_REGIME_CACHE_KEY = 'vix-term:uw-regime:v2';
+/**
+ * The label is current data, so 5 min bounds how stale it can be. The same
+ * TTL is the negative cache: a UW outage costs one call per 5 min, not one
+ * per poll.
+ */
+const UW_REGIME_TTL_SEC = 5 * 60;
 
-const bandSchema = z.enum(['CONTANGO', 'FLAT', 'BACKWARDATION']);
-
-const uwCloseEntrySchema = z.discriminatedUnion('ok', [
+const uwRegimeEntrySchema = z.discriminatedUnion('ok', [
   z.object({
     ok: z.literal(true),
-    lastClose: z
-      .object({
-        vix: z.number(),
-        vix3m: z.number(),
-        ratio: z.number(),
-        band: bandSchema,
-      })
-      .nullable(),
-    futuresRegime: bandSchema.nullable(),
+    futuresRegime: z.enum(['CONTANGO', 'FLAT', 'BACKWARDATION']).nullable(),
   }),
   z.object({ ok: z.literal(false) }),
 ]);
-type UwCloseEntry = z.infer<typeof uwCloseEntrySchema>;
+type UwRegimeEntry = z.infer<typeof uwRegimeEntrySchema>;
 
 /**
- * The fields we read from `volatility/context`. Every UW value is
- * documented nullable ("a value that has no data is null"), so null or
- * absent values are data gaps, not malformed bodies; only a missing
+ * The field we read from `volatility/context`. Every UW value is
+ * documented nullable ("a value that has no data is null"), so a null or
+ * absent label is a data gap, not a malformed body; only a missing
  * `market` object or a wrong type is.
  */
 const uwContextSchema = z.object({
   market: z.object({
-    vix: z.number().nullish(),
-    vix3m: z.number().nullish(),
     vix_futures_regime: z.string().nullish(),
   }),
 });
@@ -261,11 +288,11 @@ function unwrapContext(body: unknown): unknown {
   return isRecord(body) && isRecord(body.data) ? body.data : body;
 }
 
-async function fetchUwCloseUncached(): Promise<UwCloseEntry> {
+async function fetchUwRegimeUncached(): Promise<UwRegimeEntry> {
   const apiKey = process.env.UW_API_KEY;
   if (!apiKey) {
     metrics.increment('vix_term.uw_error');
-    logger.warn('vix term: UW_API_KEY not configured — no VIX close');
+    logger.warn('vix term: UW_API_KEY not configured — no VIX futures label');
     return { ok: false };
   }
 
@@ -293,55 +320,42 @@ async function fetchUwCloseUncached(): Promise<UwCloseEntry> {
     return { ok: false };
   }
 
-  const { vix, vix3m, vix_futures_regime: label } = parsed.data.market;
-  const lastClose = toReading(vix, vix3m);
-  if (lastClose == null || label == null) {
-    // At most ~12/hour: an incomplete reading is cached for 5 min.
+  const label = parsed.data.market.vix_futures_regime;
+  if (label == null) {
+    // At most ~12/hour: the gap is cached for 5 min.
     metrics.increment('vix_term.uw_empty');
     Sentry.captureMessage('vix term: UW market block empty', 'warning');
-    logger.warn(
-      { vix, vix3m, label },
-      'vix term: UW market block has no usable VIX/VIX3M close or regime label',
-    );
+    logger.warn('vix term: UW market block has no vix_futures_regime');
+    return { ok: true, futuresRegime: null };
   }
-  let futuresRegime: VixTermBand | null = null;
-  if (label != null) {
-    futuresRegime = parseVixFuturesRegime(label);
-    if (futuresRegime == null) {
-      metrics.increment('vix_term.regime_unrecognized');
-      logger.warn({ label }, 'vix term: unrecognized UW vix_futures_regime');
-    }
+  const futuresRegime = parseVixFuturesRegime(label);
+  if (futuresRegime == null) {
+    metrics.increment('vix_term.regime_unrecognized');
+    logger.warn({ label }, 'vix term: unrecognized UW vix_futures_regime');
   }
-  return { ok: true, lastClose, futuresRegime };
-}
-
-/** Full TTL only for a complete reading; gaps are retried sooner. */
-function cacheTtlSec(entry: UwCloseEntry): number {
-  return entry.ok && entry.lastClose != null && entry.futuresRegime != null
-    ? UW_CLOSE_TTL_SEC
-    : UW_CLOSE_NEGATIVE_TTL_SEC;
+  return { ok: true, futuresRegime };
 }
 
 /**
- * UW close + label through the Redis cache. Uses the fail-fast client
- * (one attempt, 1.5 s) so a Redis outage degrades to an uncached UW call
+ * UW label through the Redis cache. Uses the fail-fast client (one
+ * attempt, 1.5 s) so a Redis outage degrades to an uncached UW call
  * instead of stalling the request on Upstash's default retries.
  */
-async function fetchUwClose(): Promise<UwCloseEntry> {
+async function fetchUwRegime(): Promise<UwRegimeEntry> {
   try {
     const cached = await safeRedis(
-      () => limiterRedis.get<unknown>(UW_CLOSE_CACHE_KEY),
+      () => limiterRedis.get<unknown>(UW_REGIME_CACHE_KEY),
       null,
     );
     if (cached != null) {
-      const hit = uwCloseEntrySchema.safeParse(cached);
+      const hit = uwRegimeEntrySchema.safeParse(cached);
       if (hit.success) return hit.data;
     }
 
-    const entry = await fetchUwCloseUncached();
+    const entry = await fetchUwRegimeUncached();
     await safeRedisVoid(async () => {
-      await limiterRedis.set(UW_CLOSE_CACHE_KEY, entry, {
-        ex: cacheTtlSec(entry),
+      await limiterRedis.set(UW_REGIME_CACHE_KEY, entry, {
+        ex: UW_REGIME_TTL_SEC,
       });
     });
     return entry;
@@ -386,30 +400,31 @@ async function withDeadline<T>(
 }
 
 /**
- * Live ratio (Schwab) plus the latest close and futures label (UW, cached).
- * Never throws; a failed or slow source is null and counted under
- * `vix_term.*`.
+ * Live ratio and prior close (Schwab) plus the VIX futures label (UW,
+ * cached). Never throws; a failed or slow source is null and counted
+ * under `vix_term.*`. Everything returned is current data — callers must
+ * not present it as of an earlier moment.
  */
 export async function fetchVixTermStructure(): Promise<VixTermStructure> {
-  const [live, close] = await Promise.all([
-    withDeadline(fetchLiveReading(), SOURCE_DEADLINE_MS, () =>
+  const [quotes, regime] = await Promise.all([
+    withDeadline(fetchSchwabQuotes(), SOURCE_DEADLINE_MS, () =>
       liveUnavailable(
         { deadlineMs: SOURCE_DEADLINE_MS },
         'vix term: Schwab quotes missed the deadline — no live ratio',
       ),
     ),
-    withDeadline(fetchUwClose(), SOURCE_DEADLINE_MS, (): UwCloseEntry => {
+    withDeadline(fetchUwRegime(), SOURCE_DEADLINE_MS, (): UwRegimeEntry => {
       metrics.increment('vix_term.uw_error');
       logger.warn(
         { deadlineMs: SOURCE_DEADLINE_MS },
-        'vix term: UW close missed the deadline — no close this request',
+        'vix term: UW label missed the deadline — none this request',
       );
       return { ok: false };
     }),
   ]);
   return {
-    live,
-    lastClose: close.ok ? close.lastClose : null,
-    futuresRegime: close.ok ? close.futuresRegime : null,
+    live: quotes.live,
+    priorClose: quotes.priorClose,
+    futuresRegime: regime.ok ? regime.futuresRegime : null,
   };
 }

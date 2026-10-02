@@ -798,6 +798,8 @@ options — not the other way around.
 
 If the Futures Context block ends with "Omitted (stale >15m): <symbols>", those symbols had no fresh price and were excluded — treat them as unknown (not flat or neutral) and do not apply their rules.
 
+If no "VIX Term Structure" section appears, the ratio is unknown — apply no term-structure rule and do not infer a band.
+
 ES-SPX Basis:
 - Normal range: ±2 pts. Basis tracks fair value (dividends + interest).
 - Widening beyond ±5 pts signals liquidity stress — reduce confidence by one tier.
@@ -810,12 +812,11 @@ NQ-QQQ Divergence:
 
 VIX Term Structure (VIX/VIX3M):
 The ratio is spot VIX divided by VIX3M (3-month VIX). Bands: CONTANGO at or below
-0.90, FLAT between 0.90 and 1.00, BACKWARDATION at or above 1.00. "Live" is intraday;
-"Latest daily close" is the most recent end-of-day reading available at the analysis
-time — during the session that is the prior session's close, so it does not include
-today's move. The VIX futures regime line is a daily label from the front two VIX
-futures at that same close — context only; when it disagrees with a live ratio, the
-live ratio is newer.
+0.90, FLAT between 0.90 and 1.00, BACKWARDATION at or above 1.00. "Live" is the
+current intraday ratio and the only reading the band rules below apply to.
+"Prior close" is the previous cash session's closing ratio — it does not include
+today's move. The VIX futures regime line is a current label from the front two VIX
+futures — context only; when it disagrees with the live ratio, weight the live ratio.
 - CONTANGO = vol expected to mean-revert. Favorable for premium selling. Straddle
   cones are reliably sized. IC structures viable.
 - FLAT = elevated vol, not a calm regime. Since 2009, next-day VIX moves on these
@@ -824,10 +825,11 @@ live ratio is newer.
 - BACKWARDATION = market expects vol to peak TODAY (spot above 3-month). Straddle
   cones may be understated. Widen IC strikes by 5-10 pts or avoid IC entirely.
   Require flow agreement ≥ 7/9 before entering any structure.
-- A "Shift:" line toward backwardation (CONTANGO → FLAT, FLAT → BACKWARDATION, or
-  CONTANGO → BACKWARDATION) = regime transition in progress. Treat as
-  high-uncertainty — reduce to MODERATE confidence regardless of other signals. A
-  shift the other way (vol easing) adds no rule; apply the live band's rule.
+- A "Shift:" line (prior close band → live band) toward backwardation (CONTANGO →
+  FLAT, FLAT → BACKWARDATION, or CONTANGO → BACKWARDATION) = regime transition in
+  progress. Treat as high-uncertainty — reduce to MODERATE confidence regardless of
+  other signals. A shift the other way (vol easing) adds no rule; apply the live
+  band's rule.
 
 ZN Flight-to-Safety:
 - ZN rallying (yields falling) + ES selling = institutional capital leaving equities

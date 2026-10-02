@@ -36,19 +36,25 @@ import {
   parseVixFuturesRegime,
   vixRatio,
 } from '../_lib/vix-term-structure.js';
+import logger from '../_lib/logger.js';
 import { metrics, Sentry } from '../_lib/sentry.js';
 
 // ── Fixtures ────────────────────────────────────────────────
 
+// Friday 2026-10-02, 11:00 ET — the cash session is open.
 const NOW = new Date('2026-10-02T15:00:00.000Z');
 const VIX_TRADE_MS = NOW.getTime() - 30_000;
 const VIX3M_TRADE_MS = NOW.getTime() - 90_000;
-const CACHE_KEY = 'vix-term:uw-close:v1';
+const CACHE_KEY = 'vix-term:uw-regime:v2';
 
-function schwabQuote(lastPrice: number, tradeTime?: number) {
+function schwabQuote(
+  lastPrice: number,
+  tradeTime?: number,
+  closePrice?: unknown,
+) {
   return {
     assetMainType: 'INDEX',
-    quote: { lastPrice, closePrice: lastPrice, tradeTime },
+    quote: { lastPrice, closePrice, tradeTime },
   };
 }
 
@@ -56,11 +62,25 @@ function schwabOk(data: unknown) {
   return { ok: true as const, data };
 }
 
-/** The live UW shape: payload wrapped in `data` (2026-10-01 probe). */
+/** Live quotes; closePrice = the prior session's close (16.39 / 18.58). */
+function liveQuotes(vix = 16.5, vix3m = 18.6) {
+  mockSchwabFetch.mockResolvedValueOnce(
+    schwabOk({
+      $VIX: schwabQuote(vix, VIX_TRADE_MS, 16.39),
+      $VIX3M: schwabQuote(vix3m, VIX3M_TRADE_MS, 18.58),
+    }),
+  );
+}
+
+/**
+ * The live UW shape (wrapped in `data`). Its market.vix / vix3m are
+ * intraday values — deliberately different from the Schwab closes so a
+ * test would catch them being used as the prior close.
+ */
 function uwWrapped(market: Record<string, unknown>) {
   return {
     data: {
-      date: '2026-10-01',
+      date: '2026-10-02',
       ticker: 'SPX',
       market,
       term_structure: { regime: 'contango' },
@@ -69,8 +89,8 @@ function uwWrapped(market: Record<string, unknown>) {
 }
 
 const UW_MARKET = {
-  vix: 16.39,
-  vix3m: 18.58,
+  vix: 15.74,
+  vix3m: 18.32,
   vix_curve_inverted: false,
   vix_futures_regime: 'contango',
 };
@@ -83,15 +103,6 @@ function uwReturns(body: unknown) {
       _path: string,
       extract: (b: Record<string, unknown>) => unknown[],
     ) => extract(body as Record<string, unknown>),
-  );
-}
-
-function liveQuotes(vix = 16.5, vix3m = 18.6) {
-  mockSchwabFetch.mockResolvedValueOnce(
-    schwabOk({
-      $VIX: schwabQuote(vix, VIX_TRADE_MS),
-      $VIX3M: schwabQuote(vix3m, VIX3M_TRADE_MS),
-    }),
   );
 }
 
@@ -171,7 +182,7 @@ describe('parseVixFuturesRegime', () => {
 // ── fetchVixTermStructure ───────────────────────────────────
 
 describe('fetchVixTermStructure', () => {
-  it('combines the live Schwab ratio with the UW close and label, and caches the UW result for 30 min', async () => {
+  it('returns the live ratio, the prior close from Schwab closePrice, and the UW label (cached 5 min)', async () => {
     liveQuotes(16.5, 18.6);
     uwReturns(uwWrapped(UW_MARKET));
 
@@ -186,7 +197,8 @@ describe('fetchVixTermStructure', () => {
         // The older of the two trade times, so a lagging VIX3M shows.
         asOf: new Date(VIX3M_TRADE_MS).toISOString(),
       },
-      lastClose: { vix: 16.39, vix3m: 18.58, ratio: 0.882, band: 'CONTANGO' },
+      // Schwab closePrice — not UW's intraday market.vix/vix3m.
+      priorClose: { vix: 16.39, vix3m: 18.58, ratio: 0.882, band: 'CONTANGO' },
       futuresRegime: 'CONTANGO',
     });
     expect(mockSchwabFetch).toHaveBeenCalledWith(
@@ -199,27 +211,59 @@ describe('fetchVixTermStructure', () => {
     );
     expect(mockRedisSet).toHaveBeenCalledWith(
       CACHE_KEY,
-      {
-        ok: true,
-        lastClose: {
-          vix: 16.39,
-          vix3m: 18.58,
-          ratio: 0.882,
-          band: 'CONTANGO',
-        },
-        futuresRegime: 'CONTANGO',
-      },
-      { ex: 1800 },
+      { ok: true, futuresRegime: 'CONTANGO' },
+      { ex: 300 },
     );
+    expect(metrics.increment).not.toHaveBeenCalled();
+  });
+
+  // ── Prior close (Schwab closePrice) ───────────────────────
+
+  it('omits the prior close after the cash close, when closePrice may have rolled to today', async () => {
+    vi.setSystemTime(new Date('2026-10-02T21:00:00.000Z')); // 5 PM ET
+    liveQuotes();
+    uwReturns(uwWrapped(UW_MARKET));
+
+    const result = await fetchVixTermStructure();
+
+    expect(result.priorClose).toBeNull();
+    expect(result.live).not.toBeNull();
+  });
+
+  it('omits the prior close before the open and on a weekend', async () => {
+    vi.setSystemTime(new Date('2026-10-02T12:00:00.000Z')); // 8 AM ET
+    liveQuotes();
+    uwReturns(uwWrapped(UW_MARKET));
+    expect((await fetchVixTermStructure()).priorClose).toBeNull();
+
+    vi.setSystemTime(new Date('2026-10-03T15:00:00.000Z')); // Saturday
+    liveQuotes();
+    uwReturns(uwWrapped(UW_MARKET));
+    expect((await fetchVixTermStructure()).priorClose).toBeNull();
+  });
+
+  it('keeps the live reading when closePrice is missing or malformed', async () => {
+    mockSchwabFetch.mockResolvedValueOnce(
+      schwabOk({
+        $VIX: schwabQuote(16.5, VIX_TRADE_MS),
+        $VIX3M: schwabQuote(18.6, VIX3M_TRADE_MS, 'n/a'),
+      }),
+    );
+    uwReturns(uwWrapped(UW_MARKET));
+
+    const result = await fetchVixTermStructure();
+
+    expect(result.live?.ratio).toBe(0.887);
+    expect(result.priorClose).toBeNull();
     expect(metrics.increment).not.toHaveBeenCalled();
   });
 
   // ── Live (Schwab) failure modes ───────────────────────────
 
-  it('falls back to the UW close when Schwab omits $VIX3M (partial response), keeping $VIX intact', async () => {
+  it('reports vix3m_quote_missing when Schwab omits $VIX3M (partial response), and still returns the label', async () => {
     mockSchwabFetch.mockResolvedValueOnce(
       schwabOk({
-        $VIX: schwabQuote(16.5, VIX_TRADE_MS),
+        $VIX: schwabQuote(16.5, VIX_TRADE_MS, 16.39),
         errors: { invalidSymbols: ['$VIX3M'] },
       }),
     );
@@ -228,7 +272,7 @@ describe('fetchVixTermStructure', () => {
     const result = await fetchVixTermStructure();
 
     expect(result.live).toBeNull();
-    expect(result.lastClose?.ratio).toBe(0.882);
+    expect(result.priorClose).toBeNull();
     expect(result.futuresRegime).toBe('CONTANGO');
     expect(metrics.increment).toHaveBeenCalledWith(
       'vix_term.vix3m_quote_missing',
@@ -255,7 +299,27 @@ describe('fetchVixTermStructure', () => {
     );
   });
 
-  it('reports live_unavailable when the Schwab call fails', async () => {
+  it('reports live_unavailable and warns when the Schwab call fails', async () => {
+    mockSchwabFetch.mockResolvedValueOnce({
+      ok: false,
+      error: '[SCHWAB_API_502] Schwab API error (502): bad gateway',
+      status: 502,
+      code: 'SCHWAB_API_502',
+    });
+    uwReturns(uwWrapped(UW_MARKET));
+
+    const result = await fetchVixTermStructure();
+
+    expect(result.live).toBeNull();
+    expect(result.futuresRegime).toBe('CONTANGO');
+    expect(metrics.increment).toHaveBeenCalledWith('vix_term.live_unavailable');
+    expect(logger.warn).toHaveBeenCalledWith(
+      { code: 'SCHWAB_API_502', status: 502 },
+      expect.stringContaining('Schwab quote call failed'),
+    );
+  });
+
+  it('counts a logged-out Schwab session quietly as live_logged_out (no warn per poll)', async () => {
     mockSchwabFetch.mockResolvedValueOnce({
       ok: false,
       error: '[SCHWAB_TOKEN_EXPIRED] re-auth',
@@ -267,8 +331,13 @@ describe('fetchVixTermStructure', () => {
     const result = await fetchVixTermStructure();
 
     expect(result.live).toBeNull();
-    expect(result.lastClose).not.toBeNull();
-    expect(metrics.increment).toHaveBeenCalledWith('vix_term.live_unavailable');
+    expect(result.priorClose).toBeNull();
+    expect(result.futuresRegime).toBe('CONTANGO');
+    expect(metrics.increment).toHaveBeenCalledWith('vix_term.live_logged_out');
+    expect(metrics.increment).not.toHaveBeenCalledWith(
+      'vix_term.live_unavailable',
+    );
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 
   it('reports live_unavailable when $VIX itself is missing', async () => {
@@ -294,7 +363,7 @@ describe('fetchVixTermStructure', () => {
     const result = await fetchVixTermStructure();
 
     expect(result.live).toBeNull();
-    expect(result.lastClose).not.toBeNull();
+    expect(result.futuresRegime).toBe('CONTANGO');
     expect(metrics.increment).toHaveBeenCalledWith('vix_term.live_unavailable');
     expect(Sentry.captureException).toHaveBeenCalledWith(err);
   });
@@ -322,9 +391,9 @@ describe('fetchVixTermStructure', () => {
     expect(result.live).toMatchObject({ ratio: 1.12, band: 'BACKWARDATION' });
   });
 
-  // ── UW failure modes ──────────────────────────────────────
+  // ── UW (regime label) failure modes ───────────────────────
 
-  it('reports uw_error and negative-caches for 5 min when UW returns non-200', async () => {
+  it('reports uw_error and caches the failure for 5 min when UW returns non-200', async () => {
     liveQuotes();
     mockUwFetch.mockRejectedValueOnce(
       new Error('UW API 403: {"reason":"route_not_permitted"}'),
@@ -332,9 +401,9 @@ describe('fetchVixTermStructure', () => {
 
     const result = await fetchVixTermStructure();
 
-    expect(result.lastClose).toBeNull();
     expect(result.futuresRegime).toBeNull();
     expect(result.live).not.toBeNull();
+    expect(result.priorClose).not.toBeNull();
     expect(metrics.increment).toHaveBeenCalledWith('vix_term.uw_error');
     expect(mockRedisSet).toHaveBeenCalledWith(
       CACHE_KEY,
@@ -349,18 +418,17 @@ describe('fetchVixTermStructure', () => {
 
     const result = await fetchVixTermStructure();
 
-    expect(result.lastClose).toBeNull();
+    expect(result.futuresRegime).toBeNull();
     expect(mockUwFetch).not.toHaveBeenCalled();
     expect(metrics.increment).toHaveBeenCalledWith('vix_term.uw_error');
   });
 
   it('accepts the unwrapped body shape the OpenAPI spec documents', async () => {
     liveQuotes();
-    uwReturns({ date: '2026-10-01', ticker: 'SPX', market: UW_MARKET });
+    uwReturns({ date: '2026-10-02', ticker: 'SPX', market: UW_MARKET });
 
     const result = await fetchVixTermStructure();
 
-    expect(result.lastClose?.ratio).toBe(0.882);
     expect(result.futuresRegime).toBe('CONTANGO');
     expect(metrics.increment).not.toHaveBeenCalledWith('vix_term.uw_malformed');
   });
@@ -371,7 +439,6 @@ describe('fetchVixTermStructure', () => {
 
     const result = await fetchVixTermStructure();
 
-    expect(result.lastClose).toBeNull();
     expect(result.futuresRegime).toBeNull();
     expect(metrics.increment).toHaveBeenCalledWith('vix_term.uw_malformed');
     expect(mockRedisSet).toHaveBeenCalledWith(
@@ -387,34 +454,26 @@ describe('fetchVixTermStructure', () => {
 
     const result = await fetchVixTermStructure();
 
-    expect(result.lastClose).toBeNull();
+    expect(result.futuresRegime).toBeNull();
     expect(metrics.increment).toHaveBeenCalledWith('vix_term.uw_malformed');
   });
 
-  it('reports uw_malformed when a market value has the wrong type', async () => {
+  it('reports uw_malformed when the regime label has the wrong type', async () => {
     liveQuotes();
-    uwReturns(uwWrapped({ ...UW_MARKET, vix: '16.39' }));
+    uwReturns(uwWrapped({ ...UW_MARKET, vix_futures_regime: 1 }));
 
     const result = await fetchVixTermStructure();
 
-    expect(result.lastClose).toBeNull();
+    expect(result.futuresRegime).toBeNull();
     expect(metrics.increment).toHaveBeenCalledWith('vix_term.uw_malformed');
   });
 
-  it('reports null UW values as uw_empty (not malformed) and caches the gap for only 5 min', async () => {
+  it('reports a null regime label as uw_empty (not malformed) with a Sentry message', async () => {
     liveQuotes();
-    uwReturns(
-      uwWrapped({
-        vix: null,
-        vix3m: 18.58,
-        vix_curve_inverted: null,
-        vix_futures_regime: null,
-      }),
-    );
+    uwReturns(uwWrapped({ ...UW_MARKET, vix_futures_regime: null }));
 
     const result = await fetchVixTermStructure();
 
-    expect(result.lastClose).toBeNull();
     expect(result.futuresRegime).toBeNull();
     expect(metrics.increment).toHaveBeenCalledWith('vix_term.uw_empty');
     expect(Sentry.captureMessage).toHaveBeenCalledWith(
@@ -424,46 +483,19 @@ describe('fetchVixTermStructure', () => {
     expect(metrics.increment).not.toHaveBeenCalledWith('vix_term.uw_malformed');
     expect(mockRedisSet).toHaveBeenCalledWith(
       CACHE_KEY,
-      { ok: true, lastClose: null, futuresRegime: null },
+      { ok: true, futuresRegime: null },
       { ex: 300 },
     );
   });
 
-  it('reports a zero VIX3M close as uw_empty', async () => {
-    liveQuotes();
-    uwReturns(uwWrapped({ ...UW_MARKET, vix3m: 0 }));
-
-    const result = await fetchVixTermStructure();
-
-    expect(result.lastClose).toBeNull();
-    expect(result.futuresRegime).toBe('CONTANGO');
-    expect(metrics.increment).toHaveBeenCalledWith('vix_term.uw_empty');
-  });
-
-  it('keeps the close ratio but reports uw_empty when only the regime label is missing', async () => {
-    liveQuotes();
-    uwReturns(uwWrapped({ ...UW_MARKET, vix_futures_regime: null }));
-
-    const result = await fetchVixTermStructure();
-
-    expect(result.lastClose?.ratio).toBe(0.882);
-    expect(result.futuresRegime).toBeNull();
-    expect(metrics.increment).toHaveBeenCalledWith('vix_term.uw_empty');
-    expect(mockRedisSet).toHaveBeenCalledWith(
-      CACHE_KEY,
-      expect.objectContaining({ ok: true, futuresRegime: null }),
-      { ex: 300 },
-    );
-  });
-
-  it('reports regime_unrecognized for an unknown label but keeps the close ratio', async () => {
+  it('reports regime_unrecognized for an unknown label', async () => {
     liveQuotes();
     uwReturns(uwWrapped({ ...UW_MARKET, vix_futures_regime: 'steep' }));
 
     const result = await fetchVixTermStructure();
 
     expect(result.futuresRegime).toBeNull();
-    expect(result.lastClose?.ratio).toBe(0.882);
+    expect(result.live).not.toBeNull();
     expect(metrics.increment).toHaveBeenCalledWith(
       'vix_term.regime_unrecognized',
     );
@@ -471,52 +503,41 @@ describe('fetchVixTermStructure', () => {
 
   // ── Redis cache ───────────────────────────────────────────
 
-  it('serves a cached UW result without calling UW', async () => {
+  it('serves a cached label without calling UW', async () => {
     liveQuotes();
-    mockRedisGet.mockResolvedValueOnce({
-      ok: true,
-      lastClose: { vix: 20, vix3m: 21, ratio: 0.952, band: 'FLAT' },
-      futuresRegime: 'FLAT',
-    });
+    mockRedisGet.mockResolvedValueOnce({ ok: true, futuresRegime: 'FLAT' });
 
     const result = await fetchVixTermStructure();
 
     expect(mockRedisGet).toHaveBeenCalledWith(CACHE_KEY);
     expect(mockUwFetch).not.toHaveBeenCalled();
     expect(mockRedisSet).not.toHaveBeenCalled();
-    expect(result.lastClose).toEqual({
-      vix: 20,
-      vix3m: 21,
-      ratio: 0.952,
-      band: 'FLAT',
-    });
     expect(result.futuresRegime).toBe('FLAT');
   });
 
-  it('serves a cached failure as nulls without calling UW', async () => {
+  it('serves a cached failure as null without calling UW', async () => {
     liveQuotes();
     mockRedisGet.mockResolvedValueOnce({ ok: false });
 
     const result = await fetchVixTermStructure();
 
     expect(mockUwFetch).not.toHaveBeenCalled();
-    expect(result.lastClose).toBeNull();
     expect(result.futuresRegime).toBeNull();
     expect(result.live).not.toBeNull();
   });
 
   it('refetches when the cached value no longer matches the schema', async () => {
     liveQuotes();
-    mockRedisGet.mockResolvedValueOnce({ vix: 16.39 });
+    mockRedisGet.mockResolvedValueOnce({ futuresRegime: 'SIDEWAYS' });
     uwReturns(uwWrapped(UW_MARKET));
 
     const result = await fetchVixTermStructure();
 
     expect(mockUwFetch).toHaveBeenCalledTimes(1);
-    expect(result.lastClose?.ratio).toBe(0.882);
+    expect(result.futuresRegime).toBe('CONTANGO');
   });
 
-  it('still returns the UW close when Redis is down (read and write fail)', async () => {
+  it('still returns the UW label when Redis is down (read and write fail)', async () => {
     liveQuotes();
     mockRedisGet.mockRejectedValueOnce(new Error('fetch failed'));
     mockRedisSet.mockRejectedValueOnce(new Error('fetch failed'));
@@ -525,7 +546,6 @@ describe('fetchVixTermStructure', () => {
     const result = await fetchVixTermStructure();
 
     expect(mockUwFetch).toHaveBeenCalledTimes(1);
-    expect(result.lastClose?.ratio).toBe(0.882);
     expect(result.futuresRegime).toBe('CONTANGO');
     expect(result.live).not.toBeNull();
     expect(
@@ -543,7 +563,7 @@ describe('fetchVixTermStructure', () => {
       vi.setSystemTime(NOW);
     });
 
-    it('gives up on a hung Schwab call after 4 s and still returns the UW close', async () => {
+    it('gives up on a hung Schwab call after 4 s and still returns the UW label', async () => {
       mockSchwabFetch.mockReturnValueOnce(new Promise(() => {}));
       uwReturns(uwWrapped(UW_MARKET));
 
@@ -552,7 +572,8 @@ describe('fetchVixTermStructure', () => {
       const result = await pending;
 
       expect(result.live).toBeNull();
-      expect(result.lastClose?.ratio).toBe(0.882);
+      expect(result.priorClose).toBeNull();
+      expect(result.futuresRegime).toBe('CONTANGO');
       expect(metrics.increment).toHaveBeenCalledWith(
         'vix_term.live_unavailable',
       );
@@ -567,7 +588,6 @@ describe('fetchVixTermStructure', () => {
       const result = await pending;
 
       expect(result.live).not.toBeNull();
-      expect(result.lastClose).toBeNull();
       expect(result.futuresRegime).toBeNull();
       expect(metrics.increment).toHaveBeenCalledWith('vix_term.uw_error');
       // The abandoned call may still finish and fill the cache itself.

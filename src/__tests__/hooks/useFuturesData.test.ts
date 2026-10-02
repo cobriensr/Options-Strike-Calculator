@@ -15,7 +15,7 @@ const VIX_TERM: VixTermStructureData = {
     band: 'CONTANGO',
     asOf: '2026-04-05T15:29:30Z',
   },
-  lastClose: { vix: 16.39, vix3m: 18.58, ratio: 0.882, band: 'CONTANGO' },
+  priorClose: { vix: 16.39, vix3m: 18.58, ratio: 0.882, band: 'CONTANGO' },
   futuresRegime: 'CONTANGO',
 };
 

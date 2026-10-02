@@ -10,8 +10,9 @@
  * feed dies, so the snapshot's own ts says nothing about the price.
  *
  * The block also carries the VIX term structure (spot VIX / VIX3M plus
- * UW's VIX-futures label) from vix-term-structure.ts. It has no history,
- * so it appears only when the analysis date is today.
+ * UW's VIX-futures label) from vix-term-structure.ts. Every source is
+ * "now" with no history, so it appears only for a run made within
+ * VIX_FORWARD_TOLERANCE_MS of its reference time (in practice, live runs).
  */
 
 import type { NeonQueryFunction } from '@neondatabase/serverless';
@@ -63,14 +64,28 @@ const MAX_PRICE_AGE_MS = 15 * 60 * 1000;
 const MAX_PRICE_AGE_MIN = MAX_PRICE_AGE_MS / 60_000;
 
 /**
- * The VIX term structure as the prompt may use it. `live` is set only
- * when its quotes are within MAX_PRICE_AGE_MS of the reference time.
- * `lastClose` and `futuresRegime` are the latest daily closes, so they
- * only reach the prompt for an analysis of today.
+ * How far wall clock may be past the reference time and still show the
+ * VIX term structure. Its sources (Schwab quotes, UW's label) are all
+ * "now", so anything shown is up to this much look-ahead for the run.
+ *
+ * Live entry times are snapped DOWN to 5 minutes (useAutoFill.ts and
+ * App.tsx handleResumeLive: `Math.floor(minute / 5) * 5`), so a live run
+ * lands up to 4m59s after its reference time; 6 min = that snap + 1 min
+ * of slack. Any tighter and live runs would lose the section most of the
+ * time. The leak is therefore bounded at 6 min and only reaches runs made
+ * within 6 min of their reference time — in practice, live runs. Replays
+ * and backtests fall outside it and get no VIX section (and make no calls).
+ */
+const VIX_FORWARD_TOLERANCE_MS = 6 * 60 * 1000;
+
+/**
+ * The VIX term structure as the prompt may use it. `live` is dropped when
+ * its quotes are more than MAX_PRICE_AGE_MS older than the reference time.
+ * `priorClose` is the prior cash session's close (Schwab `closePrice`).
  */
 interface VixTermContext {
   live: LiveVixTermReading | null;
-  lastClose: VixTermReading | null;
+  priorClose: VixTermReading | null;
   futuresRegime: VixTermBand | null;
 }
 
@@ -169,36 +184,30 @@ function fmtVixReading(r: VixTermReading): string {
 const renderVix: Renderer = (_bySymbol, derived) => {
   const term = derived.vixTerm;
   if (term == null) return null;
-  const { live, lastClose, futuresRegime } = term;
+  const { live, priorClose, futuresRegime } = term;
 
   const lines = [`VIX Term Structure (VIX/VIX3M):`];
-  if (live) {
-    lines.push(`  Live: ${fmtVixReading(live)}`);
-  } else if (lastClose) {
-    lines.push(`  Live: unavailable — only the latest daily close below`);
-  } else {
-    lines.push(`  Live: unavailable`);
-  }
-  if (lastClose) {
-    lines.push(`  Latest daily close: ${fmtVixReading(lastClose)}`);
+  lines.push(live ? `  Live: ${fmtVixReading(live)}` : `  Live: unavailable`);
+  if (priorClose) {
+    lines.push(`  Prior close: ${fmtVixReading(priorClose)}`);
   }
   if (futuresRegime) {
     lines.push(
-      `  VIX futures regime (front two VX, latest close): ${futuresRegime}`,
+      `  VIX futures regime (front two VX futures, current): ${futuresRegime}`,
     );
   }
-  if (live && lastClose && live.band !== lastClose.band) {
+  if (live && priorClose && live.band !== priorClose.band) {
     lines.push(
-      `  Shift: ${lastClose.band} at the latest close → ${live.band} live`,
+      `  Shift: ${priorClose.band} at the prior close → ${live.band} live`,
     );
   }
 
-  const band = live?.band ?? lastClose?.band ?? null;
-  if (band === 'BACKWARDATION') {
+  // Band signals describe today's regime, so only a live reading gives one.
+  if (live?.band === 'BACKWARDATION') {
     lines.push(
       `  Signal: Near-term stress priced in. Straddle cones may understate range.`,
     );
-  } else if (band === 'CONTANGO') {
+  } else if (live?.band === 'CONTANGO') {
     lines.push(`  Signal: Normal vol regime. Favorable for premium selling.`);
   }
   return lines;
@@ -423,32 +432,13 @@ async function readFuturesSnapshots(
 }
 
 /**
- * Whether UW's "latest close" can be used at `referenceTime` without
- * look-ahead. Before today's cash close the block can only hold the prior
- * session's close. Once the session is over it may already hold today's,
- * which is look-ahead for a run whose reference time is earlier in the
- * session (e.g. a replay of the morning entry) — so it is dropped for
- * those runs. A run referenced at the close itself keeps it.
- */
-function uwCloseUsable(
-  analysisDate: string,
-  referenceTime: Date,
-  now: Date,
-): boolean {
-  const close = sessionClose(analysisDate);
-  if (close == null) return false;
-  return now < close || referenceTime >= close;
-}
-
-/**
  * The VIX term structure for this analysis, or null when there is
- * nothing usable. Neither source has history — UW's block is the latest
- * daily closes and the Schwab quote is "now" — so a run for any other
- * date gets nothing (and makes no calls). The live ratio is used only
- * when its quotes are within MAX_PRICE_AGE_MS of the reference time in
- * either direction: a run with an entry time hours before now falls back
- * to the close, while a live run a few minutes past its entry time keeps
- * the current quote.
+ * nothing usable. Every source is "now", so the gate is wall clock, not
+ * the quotes' own timestamps: a run made more than
+ * VIX_FORWARD_TOLERANCE_MS after its reference time (a replay, a
+ * backtest, another date) gets nothing and makes no calls. Within the
+ * gate, a live reading whose quotes are more than MAX_PRICE_AGE_MS older
+ * than the reference time is dropped as stale.
  */
 async function resolveVixTerm(
   analysisDate: string,
@@ -456,21 +446,22 @@ async function resolveVixTerm(
 ): Promise<VixTermContext | null> {
   const now = new Date();
   if (analysisDate !== getETDateStr(now)) return null;
+  if (now.getTime() - referenceTime.getTime() > VIX_FORWARD_TOLERANCE_MS) {
+    return null;
+  }
 
   const term = await fetchVixTermStructure();
   const liveMs = term.live ? Date.parse(term.live.asOf) : Number.NaN;
   const live =
     Number.isFinite(liveMs) &&
-    Math.abs(referenceTime.getTime() - liveMs) <= MAX_PRICE_AGE_MS
+    referenceTime.getTime() - liveMs <= MAX_PRICE_AGE_MS
       ? term.live
       : null;
-  const closeUsable = uwCloseUsable(analysisDate, referenceTime, now);
-  const lastClose = closeUsable ? term.lastClose : null;
-  const futuresRegime = closeUsable ? term.futuresRegime : null;
-  if (live == null && lastClose == null && futuresRegime == null) {
+  const { priorClose, futuresRegime } = term;
+  if (live == null && priorClose == null && futuresRegime == null) {
     return null;
   }
-  return { live, lastClose, futuresRegime };
+  return { live, priorClose, futuresRegime };
 }
 
 /**

@@ -166,7 +166,7 @@ const VIX_TERM: VixTermStructureData = {
     band: 'CONTANGO',
     asOf: '2026-10-01T15:42:00.000Z',
   },
-  lastClose: null,
+  priorClose: null,
   futuresRegime: null,
 };
 

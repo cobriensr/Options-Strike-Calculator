@@ -93,7 +93,7 @@ describe('analyze system prompt — remaining futures rules stay coherent', () =
 
 describe('analyze system prompt — VIX term structure from VIX/VIX3M', () => {
   // VX1/VX2 futures never had a feed; the context now carries spot
-  // VIX / VIX3M plus UW's daily VIX-futures label instead.
+  // VIX / VIX3M (live + prior close) plus UW's VIX-futures label instead.
 
   it('has no VX front/back-month futures rules', () => {
     const rules = section('futures_context_rules');
@@ -116,12 +116,26 @@ describe('analyze system prompt — VIX term structure from VIX/VIX3M', () => {
     const rules = section('futures_context_rules')!;
     for (const line of [
       '"Live"',
-      '"Latest daily close"',
+      '"Prior close"',
       'VIX futures regime line',
       '"Shift:" line',
     ]) {
       expect(rules).toContain(line);
     }
+  });
+
+  it('treats a missing VIX section as unknown, not as a band', () => {
+    expect(section('futures_context_rules')).toContain(
+      'If no "VIX Term Structure" section appears, the ratio is unknown — apply no term-structure rule and do not infer a band.',
+    );
+  });
+
+  it('applies the band rules to the live ratio only and never calls UW data a close', () => {
+    const rules = section('futures_context_rules')!.replace(/\s+/g, ' ');
+    expect(rules).toContain(
+      '"Live" is the current intraday ratio and the only reading the band rules below apply to.',
+    );
+    expect(rules).not.toMatch(/Latest daily close|end-of-day reading/);
   });
 
   it('keeps the stable system text free of live VIX readings', () => {

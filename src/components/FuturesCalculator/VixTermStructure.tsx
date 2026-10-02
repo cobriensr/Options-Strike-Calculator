@@ -5,8 +5,9 @@
  * server-side in api/_lib/vix-term-structure.ts).
  *
  * The headline reading is the live Schwab ratio when present, otherwise
- * the latest daily close from Unusual Whales. UW's daily VIX-futures label
- * (front two VX contracts) is shown as context when available.
+ * the prior session's close (Schwab, only sent while the cash session is
+ * open). The prior close and UW's current VIX-futures label (front two VX
+ * contracts) are shown as context when available.
  *
  * Backwardation (spot above 3-month) means near-term stress is priced in.
  */
@@ -63,8 +64,8 @@ const VixTermStructure = memo(function VixTermStructure({
   vixTermStructure,
 }: VixTermStructureProps) {
   if (vixTermStructure == null) return null;
-  const { live, lastClose, futuresRegime } = vixTermStructure;
-  const reading = live ?? lastClose;
+  const { live, priorClose, futuresRegime } = vixTermStructure;
+  const reading = live ?? priorClose;
   if (reading == null && futuresRegime == null) return null;
 
   const band = reading?.band ?? null;
@@ -72,7 +73,7 @@ const VixTermStructure = memo(function VixTermStructure({
   const asOf = live ? formatTimeCT(live.asOf) : '';
   let source: string | null = null;
   if (live) source = asOf ? `Live · ${asOf} CT` : 'Live';
-  else if (lastClose) source = 'Latest daily close (no live quote)';
+  else if (priorClose) source = 'Prior close (no live quote)';
 
   return (
     <div
@@ -118,9 +119,9 @@ const VixTermStructure = memo(function VixTermStructure({
 
       <div className="text-muted mt-2 flex flex-wrap gap-x-3 gap-y-0.5 font-sans text-[10px]">
         {source && <span>{source}</span>}
-        {live && lastClose && (
+        {live && priorClose && (
           <span>
-            Last close {lastClose.ratio.toFixed(3)} ({lastClose.band})
+            Prior close {priorClose.ratio.toFixed(3)} ({priorClose.band})
           </span>
         )}
         {futuresRegime && <span>VX futures: {futuresRegime}</span>}

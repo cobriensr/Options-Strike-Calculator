@@ -47,9 +47,9 @@ export interface LiveVixTermReading extends VixTermReading {
 export interface VixTermStructureData {
   /** Intraday Schwab quotes; null when unavailable. */
   live: LiveVixTermReading | null;
-  /** Latest daily close (Unusual Whales). */
-  lastClose: VixTermReading | null;
-  /** UW's daily label from the front two VIX futures. */
+  /** Prior cash session's close (Schwab); only while the session is open. */
+  priorClose: VixTermReading | null;
+  /** UW's current label from the front two VIX futures. */
   futuresRegime: VixTermBand | null;
 }
 

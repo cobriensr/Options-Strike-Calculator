@@ -75,7 +75,7 @@ const VIX_TERM: VixTermStructure = {
     band: 'CONTANGO',
     asOf: '2026-04-03T15:59:30.000Z',
   },
-  lastClose: { vix: 16.39, vix3m: 18.58, ratio: 0.882, band: 'CONTANGO' },
+  priorClose: { vix: 16.39, vix3m: 18.58, ratio: 0.882, band: 'CONTANGO' },
   futuresRegime: 'CONTANGO',
 };
 
@@ -233,7 +233,7 @@ describe('GET /api/futures/snapshot', () => {
   it('passes a fully degraded VIX term structure through unchanged', async () => {
     const degraded: VixTermStructure = {
       live: null,
-      lastClose: null,
+      priorClose: null,
       futuresRegime: null,
     };
     vi.mocked(fetchVixTermStructure).mockResolvedValueOnce(degraded);

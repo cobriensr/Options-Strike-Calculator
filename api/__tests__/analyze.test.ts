@@ -30,7 +30,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 vi.mock('../_lib/vix-term-structure.js', () => ({
   fetchVixTermStructure: async () => ({
     live: null,
-    lastClose: null,
+    priorClose: null,
     futuresRegime: null,
   }),
 }));
