@@ -161,6 +161,17 @@ describe('priorTradingDay', () => {
   it('throws on a malformed date rather than looping', () => {
     expect(() => priorTradingDay('not-a-date')).toThrow(/YYYY-MM-DD/);
   });
+
+  it('throws on a well-formed but impossible date instead of rolling it over', () => {
+    // V8 parses 2026-02-30 as 2026-03-02; without the round-trip check
+    // this returned 2026-02-27, a cron target nobody asked for.
+    expect(() => priorTradingDay('2026-02-30')).toThrow(/YYYY-MM-DD/);
+    expect(() => priorTradingDay('2026-04-31')).toThrow(/YYYY-MM-DD/);
+  });
+
+  it('throws on an out-of-range month', () => {
+    expect(() => priorTradingDay('2026-13-01')).toThrow(/YYYY-MM-DD/);
+  });
 });
 
 describe('cashSessionMinutes', () => {

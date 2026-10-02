@@ -11,6 +11,7 @@ vi.mock('../_lib/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+import logger from '../_lib/logger.js';
 import {
   fetchDayOhlcFromPostgres,
   fetchDaySummaryFromPostgres,
@@ -231,10 +232,16 @@ describe('fetchDayOhlcFromPostgres (fail-soft wrapper)', () => {
     expect(await fetchDayOhlcFromPostgres('2026-04-21')).toBeNull();
   });
 
-  it('returns null on database error (regime-0DTE scorecard contract)', async () => {
+  it('returns null on database error (regime-0DTE scorecard contract) and logs it', async () => {
     mockSql.mockRejectedValueOnce(new Error('boom'));
 
     expect(await fetchDayOhlcFromPostgres('2026-04-21')).toBeNull();
+    // Fail-soft must not mean silent: the swallowed error is logged with
+    // the error object and the date.
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error), date: '2026-04-21' }),
+      'fetchDayOhlcFromPostgres failed',
+    );
   });
 });
 

@@ -197,7 +197,13 @@ export function isTradingDay(date: string): boolean {
  */
 export function priorTradingDay(date: string): string {
   const d = new Date(`${date}T12:00:00Z`);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(d.getTime())) {
+  // The round-trip rejects dates V8 rolls over (2026-02-30 → 03-02);
+  // the NaN check must run first because toISOString throws on NaN.
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+    Number.isNaN(d.getTime()) ||
+    d.toISOString().slice(0, 10) !== date
+  ) {
     throw new Error(`priorTradingDay: expected YYYY-MM-DD, got "${date}"`);
   }
   // A run of non-trading days is at most four long (holiday next to a

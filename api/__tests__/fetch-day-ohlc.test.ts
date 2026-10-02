@@ -357,10 +357,24 @@ describe('fetch-day-ohlc handler', () => {
     expect(Sentry.captureException).toHaveBeenCalled();
   });
 
-  // 404 means "archive parquet not dropped yet for this date" — same
-  // semantic as rows:[] — fall through to Postgres fallback rather
-  // than 500-ing the cron.
-  it('falls back to Postgres OHLC when sidecar returns 404 (archive pending)', async () => {
+  it('500s and reports to Sentry when the sidecar fetch rejects (timeout)', async () => {
+    // AbortSignal.timeout(15_000) rejects the fetch with a TimeoutError.
+    mockFetch.mockRejectedValueOnce(
+      new DOMException('timeout', 'TimeoutError'),
+    );
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(500);
+    expect(Sentry.captureException).toHaveBeenCalled();
+    expect(mockedReadOhlcPg).not.toHaveBeenCalled();
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  // 404 means "not in the (frozen) archive" — same semantic as rows:[]
+  // — fall through to Postgres rather than 500-ing the cron.
+  it('falls back to Postgres OHLC when sidecar returns 404 (not in archive)', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: false,
       status: 404,
