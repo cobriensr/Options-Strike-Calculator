@@ -434,6 +434,13 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
+  'schwab-reauth-reminder': {
+    // Hourly, every day: the refresh-token clock ignores market hours. Low
+    // frequency → default failure threshold of 1.
+    schedule: '7 * * * *',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
 
   // ── withCronCheckin (lighter wrap, original handler shape preserved) ──
 

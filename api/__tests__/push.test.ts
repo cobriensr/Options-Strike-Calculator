@@ -99,6 +99,22 @@ describe('sendPushToOwner', () => {
     expect((options as { TTL: number }).TTL).toBe(60);
   });
 
+  it('forwards a caller ttlSec as the push TTL (one-shot reminders)', async () => {
+    mockSql.mockResolvedValueOnce([
+      { id: 1, endpoint: 'https://a/1', p256dh_key: 'p1', auth_key: 'a1' },
+    ]);
+    mockSql.mockResolvedValueOnce([]);
+    mockSendNotification.mockResolvedValue({ statusCode: 201 });
+
+    await sendPushToOwner(
+      { title: 'Schwab login expired', body: 'Tap to re-authenticate.' },
+      { ttlSec: 6 * 60 * 60 },
+    );
+
+    const [, , options] = mockSendNotification.mock.calls[0]!;
+    expect((options as { TTL: number }).TTL).toBe(21_600);
+  });
+
   it('cleans up subscriptions returning 410 Gone', async () => {
     mockSql.mockResolvedValueOnce([
       { id: 1, endpoint: 'https://a/1', p256dh_key: 'p1', auth_key: 'a1' },

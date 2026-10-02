@@ -41,6 +41,28 @@ export function classifySchwabExpiry(
   return 'ok';
 }
 
+const CT_EXPIRY_FORMAT = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/Chicago',
+  weekday: 'short',
+  hour: 'numeric',
+  minute: '2-digit',
+});
+
+/**
+ * The expiry as the owner reads it, in Central time: "Sun 7:30 PM CT". Used
+ * in reminder pushes (which may be delivered hours late, so the time is
+ * absolute rather than "in 2 h") and in the badge tooltip. Newer ICU builds
+ * put a narrow no-break space before AM/PM; it is normalized to a plain
+ * space so the text is the same on every runtime.
+ */
+export function formatSchwabExpiryCt(ms: number): string {
+  const text = CT_EXPIRY_FORMAT.format(new Date(ms)).replace(
+    /[\u202f\u00a0]/g,
+    ' ',
+  );
+  return `${text} CT`;
+}
+
 /**
  * The non-secret view of the Schwab login served to the owner by
  * `GET /api/auth/schwab-status`. Never carries token values.

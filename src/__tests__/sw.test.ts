@@ -7,7 +7,8 @@
  * jsdom's default `self` (a Window proxy) is replaced with a SW-shaped mock
  * before the module is imported. Top-level workbox calls (precaching, route
  * registration) are no-op'd; we focus on the listeners with non-trivial
- * logic: `message` (SKIP_WAITING) and `activate` (clients.claim).
+ * logic: `message` (SKIP_WAITING), `activate` (clients.claim), `push`, and
+ * `notificationclick` (open or focus the notification's same-origin url).
  */
 
 import {
@@ -52,10 +53,14 @@ interface CapturedListener {
   (event: unknown): void | Promise<void>;
 }
 
+const ORIGIN = 'https://strike.example';
+
 const listeners = new Map<string, CapturedListener>();
 const skipWaiting = vi.fn();
 const clientsClaim = vi.fn().mockResolvedValue(undefined);
 const showNotification = vi.fn().mockResolvedValue(undefined);
+const matchAll = vi.fn().mockResolvedValue([]);
+const openWindow = vi.fn().mockResolvedValue(null);
 
 const mockSelf = {
   __WB_MANIFEST: [] as Array<{ url: string; revision: string }>,
@@ -63,8 +68,11 @@ const mockSelf = {
     listeners.set(type, fn),
   ),
   skipWaiting,
+  location: { origin: ORIGIN },
   clients: {
     claim: clientsClaim,
+    matchAll,
+    openWindow,
   },
   registration: {
     showNotification,
@@ -86,6 +94,8 @@ beforeEach(() => {
   skipWaiting.mockClear();
   clientsClaim.mockClear();
   showNotification.mockClear();
+  matchAll.mockReset().mockResolvedValue([]);
+  openWindow.mockReset().mockResolvedValue(null);
 });
 
 // ── Helper: build a mock ExtendableEvent that captures waitUntil() ──────
@@ -104,10 +114,11 @@ function makeExtendableEvent(extra: Record<string, unknown> = {}) {
 // ── Tests ───────────────────────────────────────────────────────────────
 
 describe('sw — module load', () => {
-  it('registers message, activate, and push lifecycle listeners on self', () => {
+  it('registers message, activate, push, and notificationclick listeners on self', () => {
     expect(listeners.has('message')).toBe(true);
     expect(listeners.has('activate')).toBe(true);
     expect(listeners.has('push')).toBe(true);
+    expect(listeners.has('notificationclick')).toBe(true);
   });
 });
 
@@ -237,5 +248,86 @@ describe('sw — push handler', () => {
     await event.flush();
     const [, options] = showNotification.mock.calls[0]!;
     expect(options.requireInteraction).toBe(true);
+  });
+});
+
+describe('sw — push handler carries a same-origin url for the click handler', () => {
+  function pushWith(payload: Record<string, unknown>) {
+    const event = makeExtendableEvent({ data: { json: () => payload } });
+    listeners.get('push')!(event);
+    return event;
+  }
+
+  it('stores a same-origin path in the notification data', async () => {
+    const event = pushWith({
+      title: 'Schwab login expired',
+      url: '/api/auth/init',
+    });
+    await event.flush();
+    const [, options] = showNotification.mock.calls[0]!;
+    expect(options.data).toEqual({ url: '/api/auth/init' });
+  });
+
+  it('keeps the query and hash of a same-origin absolute URL', async () => {
+    const event = pushWith({ title: 'X', url: `${ORIGIN}/?view=alerts#top` });
+    await event.flush();
+    const [, options] = showNotification.mock.calls[0]!;
+    expect(options.data).toEqual({ url: '/?view=alerts#top' });
+  });
+
+  it.each([
+    ['another origin', 'https://evil.example/phish'],
+    ['a protocol-relative URL', '//evil.example/phish'],
+    ['a backslash host', '/\\evil.example/phish'],
+    ['a javascript: URL', 'javascript:alert(1)'],
+    ['a non-string', 42],
+  ])('drops %s', async (_label, url) => {
+    const event = pushWith({ title: 'X', url });
+    await event.flush();
+    const [, options] = showNotification.mock.calls[0]!;
+    expect(options.data).toEqual({ url: undefined });
+  });
+});
+
+describe('sw — notificationclick handler', () => {
+  function click(data: unknown) {
+    const close = vi.fn();
+    const event = makeExtendableEvent({ notification: { data, close } });
+    listeners.get('notificationclick')!(event);
+    return { event, close };
+  }
+
+  it('closes the notification and opens its url when no window shows it', async () => {
+    matchAll.mockResolvedValueOnce([{ url: `${ORIGIN}/`, focus: vi.fn() }]);
+    const { event, close } = click({ url: '/api/auth/init' });
+    await event.flush();
+    expect(close).toHaveBeenCalledOnce();
+    expect(matchAll).toHaveBeenCalledWith({
+      type: 'window',
+      includeUncontrolled: true,
+    });
+    expect(openWindow).toHaveBeenCalledWith(`${ORIGIN}/api/auth/init`);
+  });
+
+  it('focuses a window already showing the url instead of opening another', async () => {
+    const focus = vi.fn().mockResolvedValue(undefined);
+    matchAll.mockResolvedValueOnce([{ url: `${ORIGIN}/`, focus }]);
+    const { event } = click({ url: '/' });
+    await event.flush();
+    expect(focus).toHaveBeenCalledOnce();
+    expect(openWindow).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['no data', null],
+    ['data without a url', { url: undefined }],
+    // data set by some other showNotification caller is re-checked
+    ['an off-site url in data', { url: '//evil.example/phish' }],
+    ['an absolute off-site url in data', { url: 'https://evil.example/' }],
+  ])('opens the app root for %s', async (_label, data) => {
+    matchAll.mockResolvedValueOnce([]);
+    const { event } = click(data);
+    await event.flush();
+    expect(openWindow).toHaveBeenCalledWith(`${ORIGIN}/`);
   });
 });

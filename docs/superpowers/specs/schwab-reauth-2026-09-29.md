@@ -77,10 +77,14 @@ Schwab Online Services Agreement; stores full-account credentials).
   owner-gated auth/status endpoint if one exists, else a small
   `withDbReader`-style owner endpoint; value is non-secret but owner-only).
 - Cron `schwab-reauth-reminder` (hourly): if tokens exist and expiry is
-  ≤ 24 h away → push once; ≤ 2 h → push once; expired/missing → push once.
-  Idempotent per `(threshold, refreshExpiresAt)` via Redis `SET NX` with TTL
-  (R6). Push payload: title/body + `url: '/api/auth/init'` +
-  `requireInteraction`.
+  ≤ 24 h away → push once; ≤ 2 h → push once; expired/missing → push once
+  per day while lapsed, where the day rolls over at 07:00 CT (so repeats
+  land at 07:07 CT, before the open, not at midnight). Idempotent per
+  `(threshold, refreshExpiresAt)` / `lapsed:{day}` via Redis `SET NX`
+  claim keys with a 48 h TTL (R6); the claim is released when nothing was
+  delivered so the next run retries. Push payload: title/body +
+  `url: '/api/auth/init'` + `requireInteraction`, sent with a 6 h push TTL
+  (`sendPushToOwner` gains an optional `ttlSec`; live alerts keep 60 s).
 - `src/sw.ts`: carry `payload.url` into the notification `data`; add a
   `notificationclick` handler that focuses/opens that URL.
 - UI: expiry countdown badge in the header next to the Re-auth control
@@ -110,5 +114,8 @@ None new (existing Redis key, `push_subscriptions`, VAPID config).
 
 ## Thresholds / constants
 
-- Reminder thresholds: 24 h, 2 h, expired.
+- Reminder thresholds: 24 h, 2 h, expired (shared with the badge via
+  `src/utils/schwab-expiry.ts`).
+- Lapsed reminder: once per day, the day starting 07:00 CT.
+- Reminder claim TTL 48 h; reminder push TTL 6 h.
 - Countdown colors: amber < 24 h, red < 2 h or expired.

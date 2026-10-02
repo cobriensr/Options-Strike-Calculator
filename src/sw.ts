@@ -113,20 +113,19 @@ self.addEventListener('activate', (event) => {
 });
 
 // ── Web Push handler ────────────────────────────────────────────────
-// Dormant infrastructure for v2 of the Interval B/A alert feature
-// (docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md, Phase 4).
-// Currently no VAPID server-side fan-out exists, so this handler never
-// fires in production today — it's wired up so the v2 server-push path
-// can light up by shipping the server fan-out alone, no SW redeploy.
-// The payload contract: { title: string, body: string, tag?: string,
-// requireInteraction?: boolean }. Malformed pushes fall back to a
-// generic "Strike Calculator alert" title so a push never silently fails.
+// Server fan-out is `sendPushToOwner` in api/_lib/push.ts (Interval B/A
+// alerts, Schwab re-auth reminders). The payload contract: { title: string,
+// body: string, tag?: string, requireInteraction?: boolean, url?: string }.
+// Malformed pushes fall back to a generic "Strike Calculator alert" title
+// so a push never silently fails. `url` rides in the notification's `data`
+// for the click handler below.
 self.addEventListener('push', (event) => {
   type PushPayload = {
     title?: string;
     body?: string;
     tag?: string;
     requireInteraction?: boolean;
+    url?: string;
   };
   let payload: PushPayload = {};
   try {
@@ -142,7 +141,52 @@ self.addEventListener('push', (event) => {
     badge: '/icon-192.png',
     tag: payload.tag,
     requireInteraction: payload.requireInteraction ?? false,
+    data: { url: sameOriginPath(payload.url) },
   };
 
   event.waitUntil(self.registration.showNotification(title, options));
 });
+
+/**
+ * Reduce a push-supplied URL to a same-origin path ("/api/auth/init"), or
+ * undefined. Resolving against our origin, rather than prefix-matching "/",
+ * also rejects "//host" and "/\host", which browsers resolve off-site, so a
+ * notification can never open another site.
+ */
+function sameOriginPath(url: unknown): string | undefined {
+  if (typeof url !== 'string') return undefined;
+  try {
+    const resolved = new URL(url, self.location.origin);
+    if (resolved.origin !== self.location.origin) return undefined;
+    return resolved.pathname + resolved.search + resolved.hash;
+  } catch {
+    return undefined;
+  }
+}
+
+// ── Notification click ──────────────────────────────────────────────
+// Open the notification's `data.url` (e.g. the Schwab re-auth flow), or the
+// app root when it has none. A window already showing that page is focused
+// instead of opening a duplicate. The url is re-checked here, since
+// `data` may come from any `showNotification` caller, not only the push
+// handler above.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const data = event.notification.data as { url?: unknown } | null;
+  const path = sameOriginPath(data?.url) ?? '/';
+  event.waitUntil(focusOrOpen(path));
+});
+
+async function focusOrOpen(path: string): Promise<void> {
+  const href = new URL(path, self.location.origin).href;
+  const windows = await self.clients.matchAll({
+    type: 'window',
+    includeUncontrolled: true,
+  });
+  const existing = windows.find((client) => client.url === href);
+  if (existing) {
+    await existing.focus();
+    return;
+  }
+  await self.clients.openWindow(href);
+}

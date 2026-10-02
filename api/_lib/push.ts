@@ -30,7 +30,10 @@ export interface PushPayload {
   tag?: string;
   /** True keeps the notification visible until the user interacts. */
   requireInteraction?: boolean;
-  /** Optional deep link the click handler can use. */
+  /**
+   * Same-origin path the notification opens when tapped (`notificationclick`
+   * in src/sw.ts). The service worker drops anything off-site.
+   */
   url?: string;
 }
 
@@ -97,6 +100,18 @@ function ensureVapidConfigured(): void {
   vapidConfigured = true;
 }
 
+export interface SendPushOptions {
+  /**
+   * Seconds the push service holds the message for an unreachable device
+   * before dropping it. Default 60: live trade alerts are worthless a
+   * minute later. One-shot reminders pass hours, so a phone that is
+   * offline or asleep still receives them.
+   */
+  ttlSec?: number;
+}
+
+const DEFAULT_PUSH_TTL_SEC = 60;
+
 /**
  * Send `payload` to every device subscribed by the owner. Subscriptions
  * that return 410/404 are deleted from the table so they don't keep
@@ -104,6 +119,7 @@ function ensureVapidConfigured(): void {
  */
 export async function sendPushToOwner(
   payload: PushPayload,
+  { ttlSec = DEFAULT_PUSH_TTL_SEC }: SendPushOptions = {},
 ): Promise<FanOutResult> {
   ensureVapidConfigured();
   const sql = getDb();
@@ -132,7 +148,7 @@ export async function sendPushToOwner(
           keys: { p256dh: row.p256dh_key, auth: row.auth_key },
         },
         serialized,
-        { TTL: 60 },
+        { TTL: ttlSec },
       );
       result.sent += 1;
     } catch (err) {

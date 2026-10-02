@@ -258,6 +258,10 @@
       "schedule": "0 11 * * 1-5"
     },
     {
+      "path": "/api/cron/schwab-reauth-reminder",
+      "schedule": "7 * * * *"
+    },
+    {
       "path": "/api/cron/fetch-day-ohlc",
       "schedule": "0 23 * * 2-6"
     },
