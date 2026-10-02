@@ -166,12 +166,24 @@ Thu→Sun, Fri→Mon. With a Mon–Fri `5 12 * * 1-5` sweep:
 - At 15k rows/s, the pessimistic case, a run deletes 4.4M rows and the
   catch-up takes 7–8 runs: still the first night.
 
-**Read-horizon impact:** none. The cutoff expression is unchanged
+**Read-horizon impact:** no rule change. The cutoff expression is unchanged
 (calendar-day `WS_OPTION_TRADES_RETENTION_DAYS`). Rows are now removed
 promptly after they expire instead of lingering until the next weekday
 12:05 UTC run. No reader needs more than 2 days. The longest are
 enrich-periscope (≈ 48h, already bounded by the same constant) and
 evaluate-round-trip (≈ 24h).
+
+One visible difference: `api/lottery-contract-tape.ts` reads a fire's
+tape with no retention handling. Wednesday's fires now show an empty tape
+from Saturday ~04:00–06:00 UTC, and Thursday's from Sunday. Before, both
+lingered until Monday 12:05 UTC. This is the same 2-day rule, enforced on
+time, not a bug.
+
+**Each batch starts at the previous batch's frontier** (`executed_at >=
+COALESCE($2, '-infinity')`, which EXPLAIN folds into the same
+`executed_idx` Index Cond). Without it, batch k re-walks every index entry
+the run already deleted, which is the classic delete-from-the-front-of-a-queue
+cost.
 
 ### Phase 2: flow-regime slot persistence (≈ 1 day)
 

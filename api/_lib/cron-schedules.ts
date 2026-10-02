@@ -467,6 +467,18 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: LONG_RUNNER_MAX_RUNTIME,
   },
+  'cleanup-ws-option-trades': {
+    // Hourly at :05 from 22:05 through 12:05 UTC, every day — never 13–21
+    // UTC, where batch deletes would contend with uw-stream's market-hours
+    // inserts. A run can use its full ~5 min budget → long-runner max
+    // runtime. A failed run self-heals on the next hourly run, so page on
+    // two consecutive failures rather than one. Cadence math:
+    // docs/superpowers/specs/flow-regime-and-retention-2026-10-02.md.
+    schedule: '5 0-12,22-23 * * *',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: LONG_RUNNER_MAX_RUNTIME,
+    failureIssueThreshold: 2,
+  },
   'curate-lessons': {
     schedule: '0 3 * * 6',
     checkinMargin: DEFAULT_MARGIN,
