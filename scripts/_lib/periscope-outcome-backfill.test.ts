@@ -316,6 +316,49 @@ describe('runBackfill', () => {
     expect(anyUpdate()).toBe(false);
   });
 
+  it('--apply: refuses to write when a parity contract-day returned http_500, even though parity passed', async () => {
+    mockSql
+      .mockResolvedValueOnce([]) // no-entry
+      .mockResolvedValueOnce([]) // partial outcomes
+      .mockResolvedValueOnce([
+        ...Array.from({ length: PARITY_MIN_COMPARED }, (_, i) =>
+          lockedRow(i + 1),
+        ),
+        { ...lockedRow(99), trade_strike: 7515 }, // this contract-day fails
+      ]);
+    mockFetchBars.mockImplementation((_k: string, symbol: string) =>
+      Promise.resolve(
+        symbol === 'SPXW260930C07515000'
+          ? { kind: 'error', reason: 'http_500' }
+          : ok(GOOD_BARS),
+      ),
+    );
+
+    expect(await runBackfill({ ...BASE_OPTS, apply: true })).toBe(1);
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining('PARITY PASS'),
+    );
+    expect(mockSql).toHaveBeenCalledTimes(3); // never reached the days query
+    expect(anyUpdate()).toBe(false);
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('parity contract-day(s) failed at UW'),
+    );
+  });
+
+  it('stops before the next day once market hours begin mid-run', async () => {
+    // Closed at the start, open by the first day iteration.
+    mockIsMarketHours.mockReturnValueOnce(false).mockReturnValue(true);
+    seedPassingRun();
+    mockFetchBars.mockResolvedValue(ok(GOOD_BARS));
+
+    expect(await runBackfill({ ...BASE_OPTS, apply: true })).toBe(1);
+    expect(mockSql).toHaveBeenCalledTimes(4); // no per-day read, no UPDATE
+    expect(anyUpdate()).toBe(false);
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('Market hours began: stopping before 2026-09-30'),
+    );
+  });
+
   it('dry run: computes outcomes and never issues an UPDATE', async () => {
     seedPassingRun();
     mockFetchBars.mockResolvedValue(ok(GOOD_BARS));

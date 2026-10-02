@@ -15,9 +15,11 @@
  * (scripts/backfill-periscope-lottery-outcomes.ts), not a Vercel Function.
  * It sends an explicit User-Agent and must tell three outcomes apart
  * (bars / no bars / failed) instead of collapsing them to `[]`. Like
- * `uwFetch`, each request holds one of the crons' shared in-flight slots
- * (uw-concurrency; a no-op without Redis), so a run never pushes UW past
- * its 3-in-flight plan cap alongside the live crons.
+ * `uwFetch`, each request first takes the shared per-minute budget
+ * (uw-rate-limit `acquireUWSlot`), then holds one of the crons' shared
+ * in-flight slots (uw-concurrency). Both are no-ops without Redis. So the
+ * crons' limiters see this traffic, and a run never pushes UW past its
+ * 3-in-flight plan cap alongside the live crons.
  */
 
 import { z } from 'zod';
@@ -29,6 +31,7 @@ import {
   acquireConcurrencySlot,
   releaseConcurrencySlot,
 } from './uw-concurrency.js';
+import { acquireUWSlot } from './uw-rate-limit.js';
 import type { UwFetchOutcome } from './uw-result.js';
 import { parseUwHttpStatus, withRetry } from './uw-fetch.js';
 
@@ -136,7 +139,10 @@ export async function fetchContractDayBars(
   let text: string;
   try {
     text = await withRetry(async () => {
-      // Held until the body is read, so the shared in-flight count is true.
+      // Same two-stage gate as uwFetch: per-minute budget, then the
+      // in-flight slot, held until the body is read so the shared count
+      // is true.
+      await acquireUWSlot();
       const slotId = await acquireConcurrencySlot();
       try {
         const r = await fetch(url, {

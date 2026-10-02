@@ -48,9 +48,7 @@
  *            The upper bound UB also counts the head and tail highs. When
  *            UB > LB, an edge minute may hold the peak, or may hold only an
  *            out-of-window print above it. The fire ABSTAINS
- *            ('ambiguous_peak') rather than guess. On the cron's 302 locked
- *            fires of 2026-09-30/10-01, 10 abstain (parity run of
- *            2026-10-02).
+ *            ('ambiguous_peak') rather than guess.
  *   peak_time  Minute precision: the start of the earliest bar whose high
  *            is the peak. In the head minute it is clamped to fire_time,
  *            and is used only when the head's at-peak print is provably
@@ -73,7 +71,10 @@
  *     tape (cron) or from any contract fetched for that day (backfill).
  *     A silent tail means the source may have stopped early.
  *
- * Spec: docs/superpowers/specs/periscope-lottery-alerts-2026-05-19.md
+ * Specs: docs/superpowers/specs/periscope-lottery-alerts-2026-05-19.md
+ * (outcome definitions) and
+ * docs/superpowers/specs/periscope-lottery-outcome-backfill-2026-10-02.md
+ * (minute-bar backfill, thresholds, parity results).
  */
 
 import { getMarketCloseHourET } from '../../src/data/marketHours.js';

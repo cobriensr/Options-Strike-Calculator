@@ -21,6 +21,10 @@ vi.mock('../_lib/uw-concurrency.js', () => ({
   acquireConcurrencySlot: mockAcquire,
   releaseConcurrencySlot: mockRelease,
 }));
+const mockAcquireUWSlot = vi.hoisted(() => vi.fn());
+vi.mock('../_lib/uw-rate-limit.js', () => ({
+  acquireUWSlot: mockAcquireUWSlot,
+}));
 
 import {
   UW_BACKFILL_USER_AGENT,
@@ -185,6 +189,7 @@ describe('fetchContractDayBars', () => {
     vi.stubGlobal('fetch', fetchMock);
     mockAcquire.mockReset().mockResolvedValue('slot-1');
     mockRelease.mockReset().mockResolvedValue(undefined);
+    mockAcquireUWSlot.mockReset().mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -238,6 +243,19 @@ describe('fetchContractDayBars', () => {
     expect(mockRelease).toHaveBeenCalledTimes(2);
     expect(mockRelease).toHaveBeenNthCalledWith(1, 'slot-1');
     expect(mockRelease).toHaveBeenNthCalledWith(2, 'slot-1');
+  });
+
+  it('takes the shared per-minute UW budget before the in-flight slot on every attempt', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(200, JSON.stringify({ data: ROWS })),
+    );
+
+    await fetchContractDayBars('k', 'SPXW260930P07580000', DAY);
+
+    expect(mockAcquireUWSlot).toHaveBeenCalledTimes(1);
+    expect(mockAcquireUWSlot.mock.invocationCallOrder[0]!).toBeLessThan(
+      mockAcquire.mock.invocationCallOrder[0]!,
+    );
   });
 
   it('retries a 5xx and reports http_500 once retries are exhausted', async () => {
@@ -301,6 +319,22 @@ describe('fetchContractDayBars', () => {
     const out = await fetchContractDayBars('k', 'SPXW260930P07580000', DAY);
 
     expect(out).toEqual({ kind: 'error', reason: 'malformed_json' });
+  });
+
+  it('reports a 200 whose body read fails as a network error and releases the slot', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: () => Promise.reject(new TypeError('terminated')),
+    } as unknown as Response);
+
+    const out = await fetchContractDayBars('k', 'SPXW260930P07580000', DAY);
+
+    expect(out).toEqual({
+      kind: 'error',
+      reason: expect.stringMatching(/^network: /),
+    });
+    expect(mockRelease).toHaveBeenCalledWith('slot-1');
   });
 
   it('reports an empty data array as empty', async () => {

@@ -398,7 +398,10 @@ async function parityGate(
 
 // ── Run ──────────────────────────────────────────────────────────────────
 
-/** Returns the process exit code: 0 only when parity passed and UW never failed. */
+/**
+ * Returns the process exit code: 0 only when parity passed, UW never failed,
+ * and the run finished before the session opened.
+ */
 export async function runBackfill(opts: BackfillOptions): Promise<number> {
   // UW_CONCURRENCY_CAP (3) is UW's plan-wide in-flight limit. Each fetch
   // takes one of the crons' shared Redis slots, but a bulk run during the
@@ -458,10 +461,16 @@ export async function runBackfill(opts: BackfillOptions): Promise<number> {
         : ''),
   );
 
-  // 2. Parity gate.
+  // 2. Parity gate. A UW failure during parity also blocks writes: it means
+  // the sample parity passed on is not the sample that was asked for.
   const parity = await parityGate(opts, nowMs);
-  if (opts.apply && !parity.pass) {
-    console.error('\nRefusing to write: the parity check failed.');
+  if (opts.apply && (!parity.pass || parity.uwErrors.length > 0)) {
+    console.error(
+      parity.pass
+        ? `\nRefusing to write: ${parity.uwErrors.length} parity contract-day(s) ` +
+            'failed at UW. Re-run once UW is healthy.'
+        : '\nRefusing to write: the parity check failed.',
+    );
     return 1;
   }
 
@@ -503,8 +512,18 @@ export async function runBackfill(opts: BackfillOptions): Promise<number> {
   const noBars: ContractIssue[] = [];
   const uwErrors: ContractIssue[] = [];
   const samples: { fire: Fire; values: BarOutcomeValues }[] = [];
+  let stoppedBefore: string | null = null;
 
   for (const day of days) {
+    // A run started just before the open must not carry on into the session.
+    if (isMarketHours()) {
+      stoppedBefore = day;
+      console.error(
+        `\nMarket hours began: stopping before ${day}. Days already done are ` +
+          'kept; re-run after the close to resume.',
+      );
+      break;
+    }
     const rows = (await withDbRetry(
       () => sql`
         SELECT id, fire_type, fire_time, expiry::text AS expiry,
@@ -624,10 +643,12 @@ export async function runBackfill(opts: BackfillOptions): Promise<number> {
   console.log(
     `  wall time           ${((Date.now() - t0) / 1000).toFixed(1)} s`,
   );
+  const runNote =
+    stoppedBefore === null ? '' : ` (stopped before ${stoppedBefore})`;
   console.log(
     opts.apply
-      ? '  APPLIED.'
-      : '  DRY RUN — no rows written. Re-run with --apply to write.',
+      ? `  APPLIED${runNote}.`
+      : `  DRY RUN — no rows written${runNote}. Re-run with --apply to write.`,
   );
   if (allUwErrors.length > 0) {
     console.error(
@@ -636,7 +657,9 @@ export async function runBackfill(opts: BackfillOptions): Promise<number> {
     );
   }
 
-  // Non-zero on a failed parity check (dry run included) or any UW failure
-  // in either phase: loud, not buried in the output.
-  return parity.pass && allUwErrors.length === 0 ? 0 : 1;
+  // Non-zero on a failed parity check (dry run included), any UW failure
+  // in either phase, or a run cut short by the open: loud, not buried.
+  return parity.pass && allUwErrors.length === 0 && stoppedBefore === null
+    ? 0
+    : 1;
 }
