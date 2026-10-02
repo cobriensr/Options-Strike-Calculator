@@ -20,6 +20,8 @@ These are gaps in the current Claude analyze prompt's foundational market mechan
 
 **Sources to find:** ORATS, VolResearch, or SqueezeMetrics have covered charm in the context of 0DTE. Any academic paper on the Greeks beyond delta/gamma (e.g., "higher-order Greeks in practice") would cover the mechanics.
 
+**Reviewed:** Amaya et al. (2025) — see [Sources Reviewed](#sources-reviewed) below. Informs charm sizing (charm vs. the gamma hedge per minute, by distance from strike and time left), but does not test pinning or drift directly — it measures variance only.
+
 ---
 
 ### 2. The 0DTE Volume Regime Shift
@@ -34,6 +36,8 @@ These are gaps in the current Claude analyze prompt's foundational market mechan
 - This makes the "afternoon wall failure" pattern in `<gex_at_expiry>` more frequent and more extreme than historical norms implied
 
 **Sources to find:** SpotGamma research on 0DTE growth, CBOE data on daily options volume by expiration, Nomura/Barclays equity vol research from 2022-2024 on 0DTE structural impact. JPMorgan has published on this topic.
+
+**Reviewed:** Amaya et al. (2025) — see [Sources Reviewed](#sources-reviewed) below. Supplies 2020–23 volume shares (0DTE ≈ 34.8% of SPX/SPXW volume) and how often MM gamma is negative (intraday on at least half of days after Tue/Thu expiries launched in May 2022).
 
 ---
 
@@ -116,6 +120,90 @@ Note: Chain data (per-strike IV, skew) currently lives in frontend state only an
 **Why it matters:** Mostly a precision issue rather than a directional one. The key practical point: SPY OI generates hedging in SPY shares, not SPX futures. Since SPY and SPX are highly correlated but not identical, large SPY GEX at a given dollar-equivalent level produces slightly different hedging behavior than the same SPX GEX. Claude doesn't currently distinguish between SPX-sourced and SPY-sourced walls.
 
 **Sources to find:** This is relatively well-documented in any primer on European vs American options and settlement mechanics. Less critical than the others — probably a short footnote rather than a full section.
+
+---
+
+## Sources Reviewed
+
+### Amaya, Garcia-Ares, Pearson & Vasquez (2025) — "0DTE Index Options and Market Volatility: How Large is Their Impact?"
+
+Working paper dated 2025-01-25 (academic, not a Cboe publication; Cboe supplied the trade data). Not stored in the repo.
+
+**Data:** Every SPX/SPXW trade from Jan 2020 to Jun 2023 from Cboe (442.6M trade records), each tagged with trader capacity (customer / market maker / firm / professional customer / broker-dealer). SPX trades only on Cboe, so this covers the whole market. Algoseek minute-bar BBO quotes for IV.
+
+**Method:**
+
+- MM net position per series per minute = cumulative MM buys minus sells since the series' inception. No sign convention is guessed — this is the "actual MM inventory" approach, vs. naive OI-based GEX.
+- BSM gamma from minute-mid IV × position × 100, summed over all series. Analysis starts July 2020 to limit error from inventory that predates the Jan 2020 data.
+- Two variance models, fit monthly on one-minute ES returns: an intraday GARCH (Engle–Sokalska daily and diurnal components plus a MIDAS lagged-gamma term) and a linear squared-return model with date and hour fixed effects.
+- Counterfactual: re-simulate with the gamma coefficients set to zero and compare realized vol.
+
+**Findings:**
+
+- 0DTE ≈ 34.8% of SPX/SPXW volume on the average day (2020–23). Customer↔MM trades ≈ 68.7% of all volume.
+- In 0DTE, customers bought 17.15% and sold 15.99% of total SPX/SPXW volume — slight net buyers by contract count (not gamma-weighted).
+- MM aggregate gamma (all expiries) is usually positive, but negative at some point on ≥25% of days in the full sample. After the Tue/Thu expiries launched (May 2022) the median daily minimum is negative (−45.0), so gamma goes negative intraday on at least half of days. Mean daily-mean gamma fell from 408.8 to 234.2 (paper's scaled units).
+- The gamma coefficient is negative in both models (more MM gamma → lower next-minute variance). Average LR stats 8.94 / 9.09 vs. the χ²(2) 5% critical value of 5.99 — moderate evidence. The effect is concentrated in the first one-minute lag.
+- Impact (GARCH): mean −0.19 pp on annualized daily vol, −0.17 pp on 30-min vol. Max **+3.32 pp daily, +6.42 pp 30-min** (the 30-min 99th percentile is only +2.01). Linear-model maxima +3.18 / +7.00. The text says the impact is positive on 10% of days and windows; Table 5's 75th percentiles (+0.20 / +0.22 pp) are also positive, so it is positive more often than that, but small.
+- Benchmarks: SD of daily changes in annualized realized vol = 4.5 pp; changes > 3 pp happen on ~20% of days. 30-min changes range from −52.2 to +63.4 pp (1st/99th percentiles −11.6 / +14.2). The authors conclude the max gamma effect is "not large."
+
+**Erratum — appendix Fig. A1 units:** The paper sets the one-minute move to dS = σ√dt instead of σ·S·√dt, which understates Γ·dS by a factor of S (= 100). Its claim that the charm and speed terms are each larger than the Γ·dS term is an artifact of that slip. Corrected, at the paper's own parameters (K = 100, σ = 40%, r = 4%, 6.75h left, strike 1% OTM), charm per minute ≈ 2.3% of a 1-sd gamma hedge. The identity charm + ½σ²S²·speed = −(σ² + r)·S·Γ holds (checked numerically), so the time-drift terms nearly cancel in expectation **only when realized vol ≈ implied**. When price sits still, charm is uncancelled.
+
+**Charm-to-gamma ratio at realistic vol:** Per minute, |charm·dt| / (Γ·σ·S·√dt) ≈ |ln(S/K)|·√dt / (2·σ·τ). It scales with distance from the strike and inversely with IV × time left, so it doubles each time the remaining time halves. At σ = 15% (r = 4%, calendar-time annualization as in the paper):
+
+| Strike OTM | 6.5h | 3h   | 1h  | 30m | 15m  |
+| ---------- | ---- | ---- | --- | --- | ---- |
+| 0.25%      | 1.6% | 3.4% | 10% | 20% | 40%  |
+| 0.5%       | 3.1% | 6.8% | 20% | 40% | 81%  |
+| 1%         | 6.3% | 14%  | 41% | 81% | 162% |
+
+Ratios for far-from-money strikes late in the day are large, but both terms are tiny in absolute size; the meaningful late-day cases are strikes just off the money.
+
+<details>
+<summary>Reproduction (Python)</summary>
+
+```python
+import math
+
+n = lambda x: math.exp(-x * x / 2) / math.sqrt(2 * math.pi)
+r, dt = 0.04, 1 / (60 * 24 * 365)  # calendar-year units, as in the paper
+
+def greeks(S, K, sig, hrs):  # returns gamma, speed, charm
+    tau = hrs / (24 * 365); s = sig * math.sqrt(tau)
+    d1 = (math.log(S / K) + (r + sig**2 / 2) * tau) / s; d2 = d1 - s
+    g = n(d1) / (S * s)
+    return g, -g / S * (d1 / s + 1), -n(d1) * (2 * r * tau - d2 * s) / (2 * tau * s)
+
+# Fig. A1 point: K=100, sigma=40%, 6.75h left, strike 1% OTM (S=99)
+S, sig = 99.0, 0.40
+g, sp, ch = greeks(S, 100.0, sig, 6.75)
+print(abs(ch * dt) / (g * sig * S * math.sqrt(dt)))         # ~0.023; paper's dS=sig*sqrt(dt) drops the S
+print(ch + 0.5 * sig**2 * S**2 * sp + (sig**2 + r) * S * g)  # identity residual ~0
+
+# Charm/gamma ratio at sigma=15%: exact vs |ln(S/K)|*sqrt(dt)/(2*sig*tau)
+for otm in (0.0025, 0.005, 0.01):
+    S = 100 * (1 - otm)
+    for h in (6.5, 3, 1, 0.5, 0.25):
+        g, _, ch = greeks(S, 100.0, 0.15, h)
+        approx = abs(math.log(S / 100)) * math.sqrt(dt) / (2 * 0.15 * h / (24 * 365))
+        print(f"{otm:.2%} {h:>4}h  {abs(ch * dt) / (g * 0.15 * S * math.sqrt(dt)):6.1%}  {approx:6.1%}")
+```
+
+</details>
+
+**Takeaways for this repo:**
+
+1. Dealer hedging as a _cause_ of volatility is small; much of GEX's predictive value is as a regime label. Consistent with our range-model Phase 1 v2 result that VIX1D already captures expected range and gamma adds ~nothing out of sample (`docs/tmp/expected-range-phase1v2-2026-05-29.md`, local and gitignored).
+2. Charm is a one-directional drift that grows into the close and dominates on quiet tapes; minute to minute, gamma hedging dominates early in the day.
+3. Negative MM gamma intraday is the common case post-2022, not a rare one.
+4. Capacity-tagged inventory reconstruction is the gold standard for MM gamma — supports preferring MM-attributed (Periscope) over naive OI-based GEX.
+
+**Caveats:**
+
+- Working draft with internal inconsistencies: Table 1 caption numbers don't match the table body; the linear-model mean of −2.1 pp is described as "similar" to the GARCH −0.19 pp; two sections are numbered 6.
+- Gamma enters as one aggregate number, so strike-local effects (amplifier pockets, pinning) can't show up.
+- Sample ends June 2023.
+- Assumes full, prompt delta-hedging in ES.
 
 ---
 
