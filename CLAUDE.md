@@ -1,6 +1,6 @@
 # 0DTE SPX Strike Calculator
 
-Single-owner 0DTE SPX options trading tool. Vite + React 19 frontend, Vercel Serverless Functions backend (TypeScript), Python ML scripts, Railway Python sidecar for Databento futures + ES options ingestion.
+Single-owner 0DTE SPX options trading tool. Vite + React 19 frontend, Vercel Serverless Functions backend (TypeScript), Python ML scripts, Railway Python services: uw-stream (Unusual Whales websocket ingestion, including futures bars) and the sidecar (Take-It SHAP scoring, Theta Data, frozen historical archive).
 
 ## Architecture
 
@@ -20,20 +20,24 @@ api/              Vercel Serverless Functions
   journal/        Journal CRUD + DB init/migrate
   ml/             ML data export endpoint
 
-sidecar/          Databento futures data ingestion (Python, Railway, NOT Vercel)
-  src/            Python 3 service using databento SDK + psycopg2
-                  Ingests 7 futures symbols (ES, NQ, ZN, RTY, CL, GC, DX) + ES options
-                  Own requirements.txt, pyproject.toml, Dockerfile
+sidecar/          Railway Python service (NOT Vercel). Ingests no market data (Databento removed 2026-09-29)
+  src/            Serves Take-It SHAP (/takeit/explain, /takeit/health), the /takeit/multileg-classify
+                  fallback, and read-only /archive/* DuckDB queries over the frozen archive on the /data
+                  volume; hosts the co-resident Theta Data Terminal. Boot DB check is non-fatal.
+                  Own requirements.txt, Dockerfile
                   Uses psycopg2 (not @neondatabase/serverless) for Neon Postgres
-                  Sentry SDK for error tracking; VX deferred pending Databento availability
+                  Sentry SDK for error tracking
                   vercel.json ignoreCommand skips deploys for sidecar/, ml/, scripts/, pine/, docs/, *.md changes
 
 uw-stream/        UnusualWhales websocket consumer (Python, Railway, NOT Vercel — third Railway service)
                   asyncio + websockets + asyncpg (NOT psycopg2 — different from sidecar). Connector → router →
                   per-channel handler queues → chunked multi-row INSERT ... ON CONFLICT DO NOTHING → Neon. Subscribes to flow-alerts (note hyphen,
-                  not flow_alerts) and option_trades:<TICKER> for the Lottery Finder universe (86 tickers).
+                  not flow_alerts), option_trades:<TICKER> for the Lottery Finder universe (86 tickers), and futures_trades.
                   Writes to ws_flow_alerts (sql/001) and ws_option_trades (api migration #110); cron-fed
                   flow_alerts table is NOT touched and runs in parallel during the soak window.
+                  futures_trades → 1-min bars in futures_bars (ES, NQ, RTY, CL, GC, ZN): the only live futures
+                  source since 2026-09-29; backfill-futures-gaps cron repairs holes from UW REST candles.
+                  No DX, VX, ES options or TBBO/OFI (VIX term structure: VIX/VIX3M).
                   Sentry tagged server_name=uw-stream; UW_API_KEY required (Advanced tier for WS access).
                   Own Dockerfile, README.md, requirements.txt, conftest.py — own pytest suite under tests/.
 
@@ -279,8 +283,9 @@ Required env vars (pulled via `vercel env pull .env.local`):
 
 Never edit `.env*` files with Claude. Never commit secrets.
 
-The `ARCHIVE_*` and `BLOB_READ_WRITE_TOKEN` vars wire up the persistent
-Databento archive on the Railway sidecar's `/data` volume.
+The `ARCHIVE_*` and `BLOB_READ_WRITE_TOKEN` vars wire up the frozen
+historical archive (Parquet queried by DuckDB, originally built from
+Databento and no longer updated) on the Railway sidecar's `/data` volume.
 `POST /admin/seed-archive` is a one-shot, SHA-resumable pull from Blob —
 see `docs/superpowers/specs/archive-volume-seed-2026-04-18.md`.
 
@@ -290,7 +295,7 @@ see `docs/superpowers/specs/archive-volume-seed-2026-04-18.md`.
 - **Config**: `vercel.json` — crons, security headers, CSP, bot protection rewrites, SPA fallback, `ignoreCommand` skips builds when only `sidecar/`, `ml/`, `scripts/`, `pine/`, `docs/`, or `*.md` files change
 - **Long-running functions**: `api/analyze.ts` (800s), `api/cron/curate-lessons.ts` (780s), `api/cron/build-features.ts` (300s)
 - **DB setup**: `POST /api/journal/init` creates all tables and runs all migrations
-- **Sidecar**: Python service deployed separately to Railway (own Dockerfile). Env vars (`DATABENTO_API_KEY`, `DATABASE_URL`, `SENTRY_DSN`, and optionally `THETA_EMAIL` / `THETA_PASSWORD` for the co-resident Theta Data Terminal jar) are in Railway, not Vercel.
+- **Sidecar**: Python service deployed separately to Railway (own Dockerfile). Env vars (`DATABASE_URL`, `SENTRY_DSN`, and optionally `THETA_EMAIL` / `THETA_PASSWORD` for the co-resident Theta Data Terminal jar) are in Railway, not Vercel.
 
 ## Anthropic Integration
 

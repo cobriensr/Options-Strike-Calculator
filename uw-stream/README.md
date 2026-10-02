@@ -137,13 +137,15 @@ Design notes worth knowing before touching the handler:
   rate. Judge it by `handlers.futures_trades.write_count` and
   `channels.futures_trades.last_message_ts`.
 
-**Before relying on this as the source of truth**, confirm the
-`sidecar/` bar writer (`sidecar/src/bar_writer.py`, wired into
-`sidecar/src/main.py`) is inert. Both services target `futures_bars`
-keyed on `UNIQUE(symbol, ts)`, and the sidecar upserts with
-`ON CONFLICT DO UPDATE` while this handler uses `DO NOTHING` — so a
-live sidecar silently wins every contested minute, and this handler
-would read healthy on `/metrics` while contributing almost nothing.
+**Sole live writer.** The sidecar's Databento bar writer (which
+upserted with `ON CONFLICT DO UPDATE` and would have won every
+contested minute) was removed on 2026-09-29, so this handler is the
+only live source of `futures_bars`. Holes it leaves (deploys, lease
+handoffs, socket drops) are repaired daily by the Vercel cron
+`api/cron/backfill-futures-gaps.ts` from UW REST 1-minute candles. That
+cron also inserts `ON CONFLICT DO NOTHING`, so it never overwrites a
+bar this handler wrote, and it replays the same front-month rule.
+`futures_trades` must therefore stay in production `WS_CHANNELS`.
 
 ## Environment
 

@@ -31,10 +31,8 @@ You input (or auto-receive) the current SPY price, the VIX (plus optionally VIX1
 - Position monitor with paper dashboard, execution quality analysis, and theta decay simulation
 - Automatic data collection to Neon Postgres (50+ tables, 77+ migrations, 38 cron jobs) feeding a multi-phase ML pipeline
 - Analog range forecast: strike-placement hints from 15 text-embedding-nearest historical mornings, VIX-regime-stratified for elevated/crisis days
-- Microstructure signals: validated NQ 1h OFI (ρ=0.313, p<0.001) + historical percentile rank against a 1-year TBBO archive
-- Futures-side structural levels from ES options EOD open interest, compared against SPX gamma walls
 - ML Insights section with nightly pipeline plots analyzed by Claude vision
-- Railway Python sidecar: Databento Live (6 futures + ES options) + Theta Data Terminal (nightly SPX EOD chains) + DuckDB query layer over a 3.9 GB TBBO Parquet archive
+- Railway Python services: `uw-stream` (Unusual Whales websocket, including 1-minute bars for 6 CME futures) and the sidecar (Take-It SHAP scoring, Theta Data Terminal for nightly SPX EOD chains, DuckDB queries over the frozen historical Parquet archive)
 
 ---
 
@@ -163,8 +161,7 @@ The centerpiece feature: upload screenshots of Market Tide, Net Flow (SPY/QQQ/SP
 - Full calculator context: SPX, VIX, VIX1D, VIX9D, VVIX, σ, T, hours remaining, delta ceiling, spread ceilings, regime zone, cluster multiplier (symmetric + directional put/call), DOW label, opening range signal, term structure signal + curve shape, RV/IV ratio, IV acceleration multiplier, overnight gap
 - Live Schwab positions: Current SPX 0DTE spreads with strikes, credits, P&L, cushion distances, and net greeks — auto-fetched before each analysis so Claude knows what's already open
 - Database-driven market context: Flow data (last 24h), GEX snapshots, SPX candles, dark pool clusters, max pain, economic events — all assembled by `buildAnalysisContext()`
-- **Futures context**: 6 futures symbols (ES, NQ, ZN, RTY, CL, GC) with ES-SPX basis, NQ-ES divergence, VIX futures term structure, ZN flight-to-safety, and ES options top-Put/top-Call OI strikes as futures-side structural levels (treated as SPX gamma walls projected from the futures option chain)
-- **Microstructure signals** (Phase 5a): ES and NQ Order Flow Imbalance (OFI) at 1h window with historical 1-year percentile rank — the NQ 1h OFI is a Bonferroni-significant predictor of next-day NQ return (ρ=0.313, p<0.001, n=312)
+- **Futures context**: 6 futures symbols (ES, NQ, ZN, RTY, CL, GC, fed by the Unusual Whales futures stream) with ES-SPX basis, NQ-ES divergence, ZN flight-to-safety, and VIX term structure (VIX/VIX3M)
 - **UW deltas** (Phase 5b): dark pool velocity, GEX delta, whale net, ETF divergence — delta-based reads that outperform absolute levels for directional signal
 - **Analog range forecast**: cohort-conditional strike-placement hints from the 15 text-embedding-nearest historical mornings, plus a VIX-regime-stratified cohort (same-VIX-bucket mornings only) that adaptively widens on elevated/crisis-VIX days
 - **Similar days context**: top-k analog sessions from `day_embeddings` (Phase B text-embedding backend) or `day_features` (Phase C engineered-feature backend), switchable via `DAY_ANALOG_BACKEND` env
@@ -483,4 +480,4 @@ Section 508 / WCAG 2.1 AA: semantic HTML, ARIA attributes, focus management, 4.5
 9. **Database coverage**: VIX1D data available from May 2022 only; earlier outcomes have VIX close but not VIX1D close
 10. **Pin risk requires live chain**: OI heatmap only available during market hours with authenticated Schwab session. Historical OI data is not persisted.
 11. **ML pipeline maturity**: Phase 2 (structure classification) is in early feasibility with ~35 labeled days — no model yet beats the majority-class baseline. Full training expected at 60+ labeled days.
-12. **ES sidecar data**: Tradovate market data access is subject to API mode restrictions. Overnight data may have gaps during maintenance windows.
+12. **Futures data**: Futures bars come from the Unusual Whales `futures_trades` websocket (uw-stream). Minutes lost to restarts or socket drops are repaired daily from UW REST candles, which reach back only ~3.5 trading days at 1-minute depth. DX, VX futures, ES options and TBBO microstructure have no Unusual Whales source and are unavailable.

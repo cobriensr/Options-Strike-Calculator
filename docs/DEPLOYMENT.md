@@ -26,8 +26,8 @@ vercel deploy --prod     # Or push to main for auto-deploy
 
 Two separate Railway services, each with their own Dockerfile and env vars:
 
-- [sidecar/README.md](../sidecar/README.md) — Databento + Theta + multi-leg + Takeit
-- [uw-stream/README.md](../uw-stream/README.md) — UW websocket consumer
+- [sidecar/README.md](../sidecar/README.md) — Takeit SHAP + frozen archive + Theta + multi-leg fallback
+- [uw-stream/README.md](../uw-stream/README.md) — UW websocket consumer (also the live source of `futures_bars`)
 
 The root `vercel.json` `ignoreCommand` skips Vercel builds when only Railway-service folders change, so the two platforms deploy independently.
 

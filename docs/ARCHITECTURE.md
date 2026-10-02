@@ -90,7 +90,7 @@ System design, project structure, data flow, security, math, and the data pipeli
 │   ├── App.tsx                           # Root component
 │   └── main.tsx                          # React entry point + Sentry init
 ├── ml/                                   # Python ML pipeline (see ml/README.md)
-├── sidecar/                              # Databento + Theta sidecar (see sidecar/README.md)
+├── sidecar/                              # SHAP + frozen archive + Theta sidecar (see sidecar/README.md)
 ├── uw-stream/                            # UW websocket consumer (see uw-stream/README.md)
 ├── scripts/                              # Backfill + utility scripts (see scripts/README.md)
 ├── e2e/                                  # 32 Playwright E2E specs (see e2e/README.md)
@@ -150,10 +150,11 @@ SPY + VIX + Time ──→ useCalculation() ──→ results (strikes, premiums
                     │  Claude vision → findings.json → frontend    │
                     └──────────────────────────────────────────────┘
 
-                    ┌─── Railway Sidecar ─────────────────────────┐
-                    │  Databento Live → futures_bars, ES options   │
+                    ┌─── Railway (uw-stream + sidecar) ────────────┐
+                    │  uw-stream WS → futures_bars, ws_* tables    │
                     │  Theta Terminal → SPX EOD chains             │
-                    │  DuckDB → /archive/* endpoints (analog/OFI)  │
+                    │  Take-It SHAP → /takeit/* endpoints          │
+                    │  DuckDB → /archive/* (frozen archive)        │
                     └──────────────────────────────────────────────┘
 
                     ┌─── Historical Data ─────────────┐
@@ -467,8 +468,8 @@ A multi-phase ML system that augments the rule-based analyze endpoint with stati
 
 - **Phase B — Text-Embedding Day Analogs** ✅ Shipped. OpenAI `text-embedding-3-large` (2000-dim) over sidecar-generated session text; analog search via pgvector.
 - **Phase C — Engineered-Feature Analog Backend** ✅ Shipped. 60-dim numeric feature vector alternative; `DAY_ANALOG_BACKEND` env switches backends.
-- **Phase 3a — TBBO DBN → Parquet Converter** ✅ Shipped. Sidecar-side conversion producing the persistent archive under `year=YYYY/part.parquet`.
-- **Phase 4b — TBBO Archive + 1-Year OFI Percentile** ✅ Shipped. Archive seeded from Vercel Blob; rank today's OFI against 1-yr historical distribution.
+- **Phase 3a — TBBO DBN → Parquet Converter** ✅ Shipped, since retired. Produced the persistent archive under `year=YYYY/part.parquet`; the DBN converters were removed 2026-09-30 with Databento, so the archive is frozen.
+- **Phase 4b — TBBO Archive + 1-Year OFI Percentile** ✅ Shipped, percentile since removed. Archive seeded from Vercel Blob; the live OFI percentile route went with Databento (no live TBBO).
 - **Analog Range Forecast — Cohort-Conditional Range + Asymmetric Excursion** ✅ Shipped. Strike-placement hints from 15 text-embedding-nearest historical mornings; replaces the fixed-%-of-spot heuristic.
 - **VIX-Regime-Stratified Analog Retrieval** ✅ Shipped. Cohort filtered to same-VIX-bucket mornings; adaptively corrects vol-regime miscalibration on elevated/crisis-VIX days.
 
@@ -477,9 +478,9 @@ A multi-phase ML system that augments the rule-based analyze endpoint with stati
 - **Phase 4c — Microstructure Feature Engineering** ✅ Shipped. Per-day OFI (Order Flow Imbalance), spread-widening aggregates, volume imbalances from TBBO.
 - **Phase 4c1 — MAX-based Spread Aggregator** ✅ Shipped. Switched spread-widening stat from median to max for tail-event sensitivity.
 - **Phase 4d — Microstructure EDA + Signal Validation** ✅ Shipped (validated). ES OFI: no signal. **NQ 1h OFI: ρ=0.313, p<0.001, n=312** — Bonferroni-significant predictor of next-day NQ return.
-- **Phase 5a — Dual-Symbol Microstructure in Analyze** ✅ Shipped. ES + NQ OFI wired into `<microstructure_signals_rules>` in the analyze prompt.
+- **Phase 5a — Dual-Symbol Microstructure in Analyze** ❌ Removed 2026-09-30. ES + NQ OFI fed `<microstructure_signals_rules>` in the analyze prompt until Databento (the only TBBO source) was cancelled; a UW `futures_trades` trade-side proxy is open research.
 - **Phase 5b — UW Deltas Context** ✅ Shipped. Dark pool velocity, GEX delta, whale net, ETF divergence — all delta-based vs absolute.
-- **Phase 5c — tbbo-ofi-percentile Pre-Warm Cron** ✅ Shipped. Daily 13:00 UTC warm so analyze's first call of the day hits a warm Parquet cache.
+- **Phase 5c — tbbo-ofi-percentile Pre-Warm Cron** ❌ Removed 2026-10-01 with the `warm-tbbo-percentile` cron.
 
 **Other phases (accumulating):**
 
@@ -494,7 +495,7 @@ A multi-phase ML system that augments the rule-based analyze endpoint with stati
 
 Core pipeline scripts: `utils.py`, `eda.py`, `clustering.py`, `phase2_early.py`, `visualize.py`, `backtest.py`, `pin_analysis.py`, `health.py`, `milestone_check.py`, `explore.py`.
 
-Microstructure pipeline (`ml/src/features/`): OFI feature engineering, TBBO conversion, Parquet writer. Uses DuckDB with its own `_new_connection()` that mirrors the sidecar's UTC-TimeZone + memory-limit safety.
+Microstructure pipeline (`ml/src/features/`): OFI feature engineering over the frozen TBBO archive (research only; the DBN → Parquet converters were removed 2026-09-30). Uses DuckDB with its own `_new_connection()` that mirrors the sidecar's UTC-TimeZone + memory-limit safety.
 
 PAC engine scaffold (`ml/src/pac/`): DuckDB-backed order-blocks + structure detection for a future price-action-confirmation backtester.
 
@@ -524,59 +525,62 @@ Output: One row per trading day in `training_features` (100+ columns) + `day_lab
 
 ---
 
-## Futures + ES Options Sidecar (Railway)
+## Railway Sidecar (SHAP + Archive + Theta)
 
-A full Python data-platform service deployed separately on Railway, combining four distinct responsibilities: (1) real-time Databento Live ingestion of 6 futures symbols + ES options, (2) end-of-day Theta Data backfill of SPX option chains, (3) a persistent TBBO Parquet archive (distributed from Vercel Blob to Railway volume), and (4) a DuckDB query layer exposing microstructure + analog-day endpoints back to the Vercel side. Runs outside Vercel because it holds long-lived streaming connections and queries GB-scale Parquet archives — neither fits a serverless cold-start model.
+A Python service deployed separately on Railway. It ingests no market data: the Databento subscription was cancelled and its ingestion path (futures OHLCV-1m, ES/NQ TBBO, ES options) was removed on 2026-09-29. Live futures bars now come from the `uw-stream` service's `futures_trades` handler (see [uw-stream/README.md](../uw-stream/README.md)). The sidecar runs outside Vercel because it holds model bundles warm, runs a co-resident Java daemon, and queries GB-scale Parquet on a persistent volume — none of which fits a serverless cold-start model.
 
 See [sidecar/README.md](../sidecar/README.md) for the deployment + local-dev path. Architecture summary:
 
 ```text
-Databento Live (streaming)         Theta Data Terminal (nightly backfill)
-  ↓ databento SDK                    ↓ theta_client.py
+Theta Data Terminal (nightly)     Vercel Blob (archive manifest)
+  ↓ theta_client.py                 ↓ archive_seeder.py
 [sidecar/src/]
-  ├─ main.py                       — entry point, signal handlers, shutdown barrier
-  ├─ databento_client.py           — Live session: OHLCV-1m, TBBO, ES.OPT trades/stats/definitions
-  ├─ symbol_manager.py             — parent-symbology + ATM strike window re-centering
-  ├─ trade_processor.py            — ES options trade buffering + periodic flush thread
-  ├─ quote_processor.py            — ES/NQ TBBO → TopOfBook + TradeTick writers
-  ├─ theta_launcher.py             — co-resident Theta Terminal JVM subprocess
-  ├─ theta_fetcher.py              — nightly APScheduler + SPX EOD chain backfill
-  ├─ archive_seeder.py             — one-shot pull from Vercel Blob → /data/archive (SHA-resumable)
-  ├─ archive_query.py              — DuckDB layer over the TBBO Parquet archive
-  ├─ health.py                     — /health + /archive/* + /admin/seed-archive HTTP server
-  ├─ db.py                         — psycopg2 upserts (not @neondatabase/serverless)
-  └─ sentry_setup.py               — Sentry init (separate DSN from Vercel side)
+  ├─ main.py             — entry point, signal handlers, shutdown
+  ├─ theta_launcher.py   — co-resident Theta Terminal JVM subprocess
+  ├─ theta_fetcher.py    — nightly APScheduler + SPX EOD chain backfill
+  ├─ takeit_server.py    — Take-It SHAP explainer (/takeit/*)
+  ├─ multileg_routes.py  — /takeit/multileg-classify (fallback for classifier/)
+  ├─ archive_seeder.py   — one-shot pull from Vercel Blob → /data/archive (SHA-resumable)
+  ├─ archive_query.py    — DuckDB layer over the frozen Parquet archive
+  ├─ health.py           — /health + /takeit/* + /archive/* + /admin/seed-archive HTTP server
+  ├─ db.py               — psycopg2 (not @neondatabase/serverless)
+  └─ sentry_setup.py     — Sentry init (separate DSN from Vercel side)
   ↓
-Neon Postgres + Railway Volume [/data/archive/tbbo/year=*/part.parquet]
+Neon Postgres (theta_option_eod) + Railway Volume [/data/archive]
 ```
 
-**Four concurrent responsibilities:**
+**Responsibilities:**
 
-1. **Real-time Databento Live** — 6 futures symbols (ES, NQ, ZN, RTY, CL, GC) on OHLCV-1m plus ES+NQ TBBO for microstructure, plus full ES.OPT chain (definition snapshot at session open with `start=0`, statistics for EOD OI/IV/delta, and trades filtered to an ATM ±10 strike window). Writes to `futures_bars`, `futures_options_trades`, `futures_options_daily`, and TopOfBook/TradeTick Parquet.
-2. **Theta Data backfill** — nightly SPX option chain EOD fetcher via the co-resident Theta Terminal Java subprocess. Optional — disabled when `THETA_EMAIL`/`THETA_PASSWORD` are unset.
-3. **Archive seeder** — one-shot `POST /admin/seed-archive` pulls the 3.9 GB TBBO archive from Vercel Blob into the `/data/archive` Railway volume on a first deploy (SHA-resumable, single-flight-locked). After seeding, an EOD process keeps the archive fresh.
-4. **DuckDB query layer** — thread-local connections against the Parquet archive, cap'd at 500 MB memory with spill to `/tmp/duckdb`. Serves archive endpoints that the Vercel side consumes on analyze and ML-feature paths.
+1. **Take-It SHAP** — `/takeit/explain` + `/takeit/health` for the `takeit-fill-shap` cron. Enabled per deployment with `TAKEIT_SERVER_ENABLED=1`.
+2. **Multi-leg classify fallback** — `/takeit/multileg-classify`. Production uses the standalone `classifier/` service; `api/_lib/multileg-client.ts` falls back here only when `CLASSIFIER_URL` is unset.
+3. **Theta Data backfill** — nightly SPX option chain EOD fetcher via the co-resident Theta Terminal Java subprocess, writing `theta_option_eod`. Optional — disabled when `THETA_EMAIL`/`THETA_PASSWORD` are unset.
+4. **Frozen archive** — one-shot `POST /admin/seed-archive` pulls the Parquet archive (originally built from Databento) from Vercel Blob into the `/data/archive` Railway volume (SHA-resumable, single-flight-locked). Nothing appends to it any more. DuckDB serves it read-only through thread-local connections capped at 500 MB memory with spill to `/tmp/duckdb`.
+
+Boot requires only `DATABASE_URL`. The boot-time DB check is non-fatal, so SHAP and `/archive/*` stay up through a Neon outage while `/health` reports 503.
 
 **HTTP endpoints (consumed by Vercel):**
 
-| Endpoint                                           | Returns                                                |
-| -------------------------------------------------- | ------------------------------------------------------ |
-| `GET /health`                                      | Liveness + DB + Theta status                           |
-| `GET /archive/day-summary?date=YYYY-MM-DD`         | Deterministic session text for embedding pipeline      |
-| `GET /archive/day-features?date=YYYY-MM-DD`        | 60-dim numeric vector for engineered-analog retrieval  |
-| `GET /archive/day-summary-batch?from&to`           | Batched summaries for backfill (capped 3 yrs)          |
-| `GET /archive/day-features-batch?from&to`          | Batched vectors for backfill                           |
-| `GET /archive/day-summary-prediction?date`         | Leakage-free prediction summary (no outcome fields)    |
-| `GET /archive/analog-days?date&k`                  | k-nearest historical mornings by window similarity     |
-| `GET /archive/tbbo-day-microstructure?date&symbol` | Per-day OFI + spread-widening aggregates (front month) |
-| `GET /archive/tbbo-ofi-percentile?symbol&value`    | 1-year percentile rank of current OFI value            |
-| `POST /admin/seed-archive`                         | One-shot seed trigger (token-gated)                    |
+| Endpoint                                     | Returns                                               |
+| -------------------------------------------- | ----------------------------------------------------- |
+| `GET /health`                                | Liveness + DB + Theta status                          |
+| `GET /takeit/health`, `POST /takeit/explain` | Take-It SHAP readiness + top-K explanations           |
+| `POST /takeit/multileg-classify`             | Multi-leg classify (fallback for `classifier/`)       |
+| `GET /archive/day-summary?date=YYYY-MM-DD`   | Deterministic session text for embedding pipeline     |
+| `GET /archive/day-features?date=YYYY-MM-DD`  | 60-dim numeric vector for engineered-analog retrieval |
+| `GET /archive/day-summary-batch?from&to`     | Batched summaries for backfill (capped 3 yrs)         |
+| `GET /archive/day-features-batch?from&to`    | Batched vectors for backfill                          |
+| `GET /archive/day-summary-prediction?date`   | Leakage-free prediction summary (no outcome fields)   |
+| `GET /archive/analog-days?date&k`            | k-nearest historical mornings by window similarity    |
+| `GET /archive/es-range?date=YYYY-MM-DD`      | ES day summary from the archive                       |
+| `POST /admin/seed-archive`                   | One-shot seed trigger (token-gated)                   |
+
+The TBBO microstructure routes (`/archive/tbbo-day-microstructure`, `/archive/tbbo-ofi-percentile`) were removed with Databento and now return 404.
 
 **Consumed by the Vercel side via:**
 
-- `api/_lib/futures-context.ts` — reads `futures_snapshots` + `futures_options_daily` into Claude's analysis context
-- `api/_lib/archive-sidecar.ts` — typed client for all `/archive/*` endpoints
-- `api/cron/warm-tbbo-percentile.ts` — daily pre-warm so analyze's first-call latency is sub-2s (Phase 5c)
-- `api/cron/refresh-current-snapshot.ts` — every 5 min in RTH, materializes today's summary+features into Neon so analyze never pays DuckDB cold-scan on hot path
-- `api/cron/embed-yesterday.ts` — nightly, pulls yesterday's summary + stores OpenAI text-embedding-3-large (2000-dim) into `day_embeddings` for analog cohort retrieval
-- `api/cron/backfill-futures-gaps.ts` — fills weekend/holiday gaps when Databento backfills late
+- `api/_lib/archive-sidecar.ts` — typed client for `/archive/day-summary` + `/archive/day-features`
+- `api/cron/embed-yesterday.ts` — nightly, pulls yesterday's summary + stores OpenAI text-embedding-3-large (2000-dim) into `day_embeddings` for analog cohort retrieval; falls back to Postgres (`api/_lib/postgres-day-summary.ts`) for dates past the archive freeze
+- `api/cron/takeit-fill-shap.ts` — SHAP explanations for Take-It fires
+- `api/_lib/multileg-client.ts` — classify fallback when `CLASSIFIER_URL` is unset
+
+Futures bars are not a sidecar concern any more: `uw-stream` writes `futures_bars` live, and `api/cron/backfill-futures-gaps.ts` repairs holes daily from UW REST 1-minute candles.

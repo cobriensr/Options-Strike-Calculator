@@ -1,15 +1,14 @@
 /**
  * Postgres-fed fallbacks for sidecar-archive endpoints. Used by the
  * embed-yesterday and fetch-day-ohlc crons when the sidecar has no row
- * for a date — usually because a fresh Databento batch hasn't been
- * converted and uploaded to Vercel Blob yet, so the sidecar's
- * `/data/archive` volume hasn't been reseeded.
+ * for a date. The sidecar's `/data/archive` volume is frozen (it was
+ * built from Databento, removed 2026-09-29, and nothing appends to it),
+ * so every date after the freeze takes this path.
  *
  * The streaming Schwab → `index_candles_1m (SPX)` feed lands in Postgres in
- * real-time, so this path closes the parquet-lag window (~7 days)
- * without manual intervention. When the parquet eventually catches up,
- * the cron writes are idempotent: subsequent runs overwrite via
- * upsert/UPDATE, restoring the canonical ES-sourced values.
+ * real-time, so this path covers those dates without manual intervention.
+ * The cron writes are idempotent (upsert/UPDATE): if archive data for a
+ * date ever appears, a re-run overwrites with the ES-sourced values.
  *
  * Two helpers:
  *   - `fetchDaySummaryFromPostgres` — formatted text summary for the

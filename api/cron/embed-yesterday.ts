@@ -71,12 +71,12 @@ export default withCronInstrumentation(
     let summary = await fetchDaySummary(date);
     let source: 'sidecar' | 'postgres' = 'sidecar';
     if (!summary) {
-      // Sidecar archive doesn't have this date - usually because the
-      // parquet archive lags the streaming feed by a few days (parquet
-      // gets refreshed manually after a fresh Databento batch is
-      // converted and uploaded). Try the Postgres-fed fallback before
-      // giving up: index_candles_1m (SPX) is populated by Schwab streaming in
-      // real-time, so most "missing in sidecar" dates are present here.
+      // Sidecar archive doesn't have this date - the parquet archive is
+      // frozen (built from Databento, which was removed 2026-09-29), so
+      // every date after the freeze misses. Try the Postgres-fed fallback
+      // before giving up: index_candles_1m (SPX) is populated by Schwab
+      // streaming in real-time, so most "missing in sidecar" dates are
+      // present here.
       summary = await fetchDaySummaryFromPostgres(date);
       if (!summary) {
         // True empty: holiday, weekend (already filtered above), or

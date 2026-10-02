@@ -11,8 +11,8 @@ The DuckDB archive needs a persistent `/data` volume, the SHAP explainer keeps h
 ## What it does
 
 - **Theta Data Terminal** — Co-resident Java service (Eclipse Temurin 21) for nightly EOD options data.
-- **Archive volume** — Persistent `/data/archive` on Railway, SHA-resumable seed from Vercel Blob via `POST /admin/seed-archive`. See `docs/superpowers/specs/archive-volume-seed-2026-04-18.md`.
-- **Multi-leg classifier** — `src/multileg_routes.py` exposes sidecar-side analysis used by detect crons.
+- **Archive volume** — Persistent `/data/archive` on Railway, SHA-resumable seed from Vercel Blob via `POST /admin/seed-archive`. Frozen: nothing appends to it now, so for dates after the freeze the `embed-yesterday` and `fetch-day-ohlc` crons fall back to Postgres (`api/_lib/postgres-day-summary.ts`). See `docs/superpowers/specs/archive-volume-seed-2026-04-18.md`.
+- **Multi-leg classifier fallback** — `src/multileg_routes.py` serves `POST /takeit/multileg-classify`. Production uses the standalone `classifier/` service; `api/_lib/multileg-client.ts` falls back to this route only when `CLASSIFIER_URL` is unset.
 - **Takeit ML server** — `src/takeit_server.py` serves SHAP explanations (`/takeit/explain`, `/takeit/health`) for the `takeit-fill-shap` cron.
 - **Archive reads** — `src/archive_query.py` runs DuckDB over the Parquet archive for the `/archive/*` routes (called via `api/_lib/archive-sidecar.ts`).
 
@@ -30,7 +30,7 @@ cp .env.example .env
 python -m src.main
 ```
 
-Health check: `curl http://localhost:8080/health` (200 when the DB is reachable).
+Health check: `curl http://localhost:8080/health` (200 when the DB is reachable). The boot-time DB check is non-fatal: during a Neon outage the SHAP and `/archive/*` routes stay up while `/health` reports 503.
 
 ### Tests
 
@@ -76,7 +76,7 @@ railway up
 
 ## Source layout
 
-```
+```text
 src/
   main.py             # Entry point: env check, Theta boot, HTTP server
   config.py           # Env vars + settings
@@ -98,9 +98,9 @@ src/
 
 - `docs/superpowers/specs/theta-railway-sidecar-2026-04-18.md` — design
 - `docs/superpowers/specs/sidecar-refactor-2026-05-02.md` — modular split
-- `docs/superpowers/specs/max-leverage-databento-uw-2026-04-18.md` — data sourcing decisions
-- `docs/superpowers/specs/phase2a-sidecar-l1-ingest-2026-04-18.md` — L1 ingest pipeline
 - `docs/superpowers/specs/archive-volume-seed-2026-04-18.md` — archive volume contract
+- `docs/superpowers/specs/databento-removal-2026-09-29.md` — Databento removal and the UW futures substitution
+- Historical (Databento era): `max-leverage-databento-uw-2026-04-18.md` (data sourcing), `phase2a-sidecar-l1-ingest-2026-04-18.md` (L1 ingest, removed)
 
 ## Operational notes
 

@@ -1,7 +1,7 @@
 # Local development stack — start with: docker compose -f docker-compose.dev.yml up -d
 #
 # Provides a local Postgres instance so you can develop without hitting Neon.
-# The sidecar service is included but commented out (needs DATABENTO_API_KEY).
+# The Railway sidecar service is included but commented out.
 #
 # After starting, set DATABASE_URL in .env.local:
 #   DATABASE_URL=postgresql://strike:strike@localhost:5432/strike_dev
@@ -23,12 +23,12 @@ services:
       timeout: 3s
       retries: 5
 
-  # Uncomment to run the Databento futures sidecar locally.
-  # Requires DATABENTO_API_KEY in sidecar/.env
-  #
-  # Streams OHLCV-1m bars for ES, NQ, ZN, RTY, CL, GC (CME/GLBX.MDP3),
-  # VX front + second month (CBOE/XCBF.PITCH), and DX (ICE/IFUS.IMPACT).
-  # Also subscribes to ES options trades/statistics/definitions.
+  # Uncomment to run the Railway sidecar locally. It ingests no market
+  # data (Databento was removed 2026-09-29; futures bars now come from
+  # uw-stream), so DATABASE_URL is the only required var. It serves
+  # /health, read-only /archive/* (needs a seeded ARCHIVE_ROOT), and the
+  # Take-It SHAP routes when TAKEIT_SERVER_ENABLED=1. Theta Data Terminal
+  # stays off unless THETA_EMAIL / THETA_PASSWORD are set.
   #
   # sidecar:
   #   build: ./sidecar
@@ -37,7 +37,6 @@ services:
   #       condition: service_healthy
   #   environment:
   #     DATABASE_URL: postgresql://strike:strike@postgres:5432/strike_dev
-  #     DATABENTO_API_KEY: ${DATABENTO_API_KEY}
   #     LOG_LEVEL: INFO
   #   ports:
   #     - '8080:8080'

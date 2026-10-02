@@ -158,7 +158,7 @@ function effectiveSpot(
   nqByMinute: Map<string, number>,
   tsIso: string,
 ): number {
-  // NDX/NDXP: prefer NQ futures (Databento) over the QQQ-derived spot
+  // NDX/NDXP: prefer NQ futures (futures_bars) over the QQQ-derived spot
   // baked into the JSONL. NQ tracks NDX with ~0.3% basis vs QQQ × 40.5
   // which is ~1% off — meaningful for chart/spot accuracy.
   if (b.ticker === 'NDXP' || b.ticker === 'NDX') {

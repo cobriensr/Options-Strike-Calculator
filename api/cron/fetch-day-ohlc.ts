@@ -74,8 +74,8 @@ export default withCronInstrumentation(
     const sidecarRes = await fetch(url, {
       signal: AbortSignal.timeout(15_000),
     });
-    // 404 means the archive parquet for `targetDate` hasn't been
-    // dropped yet (Databento batch ran late). That's the same semantic
+    // 404 means the archive parquet has no `targetDate` (the archive is
+    // frozen since Databento was removed). That's the same semantic
     // as `rows: []` — fall through to the Postgres fallback which
     // reads the streaming index_candles_1m feed. 5xx and other non-ok
     // statuses still escalate.
@@ -119,10 +119,10 @@ export default withCronInstrumentation(
       source = 'sidecar';
     } else {
       // Sidecar archive doesn't have structured OHLC for this date —
-      // most often because the parquet hasn't been refreshed since the
-      // last Databento batch. Fall back to index_candles_1m (SPX) which the
-      // streaming feed populates in real-time. When the parquet catches
-      // up, a future cron run will overwrite these values.
+      // the parquet archive is frozen (built from Databento, which was
+      // removed), so every later date misses. Fall back to
+      // index_candles_1m (SPX) which the streaming feed populates in
+      // real-time.
       const pg = await fetchDayOhlcFromPostgres(targetDate);
       if (!pg) {
         logger.info(

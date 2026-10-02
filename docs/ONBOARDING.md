@@ -4,7 +4,7 @@ Start here. This doc covers **what the app is, what's in it, where the data come
 
 ## What this app is
 
-A trading workbench for one trader (Charles, the owner) doing **0DTE SPX options**. The center is a Black-Scholes-grounded strike calculator; everything else is context that informs the trade decision — flow, dealer positioning, regime, dark pool levels, news events, prior similar days, microstructure, AI chart analysis. The trader uses it from ~8:30 AM CT through the close every market day.
+A trading workbench for one trader (Charles, the owner) doing **0DTE SPX options**. The center is a Black-Scholes-grounded strike calculator; everything else is context that informs the trade decision — flow, dealer positioning, regime, dark pool levels, news events, prior similar days, AI chart analysis. The trader uses it from ~8:30 AM CT through the close every market day.
 
 It is also a **research platform**: ~38 Vercel cron jobs persist live market data to Neon Postgres; a multi-phase ML pipeline runs nightly to validate signals and build features; the analyze endpoint's "lessons learned" compendium curates each session's review into rules that get injected into the next.
 
@@ -166,7 +166,7 @@ What you need a paid account / API key for, in rough priority order.
 
 #### 3. Unusual Whales
 
-- **What it powers**: All flow signals (Market Tide, Net Flow, Greek Flow), GEX snapshots, dark pool blocks, websocket feeds (flow-alerts, option_trades for ~50 tickers), Periscope screenshots — basically half the data surface.
+- **What it powers**: All flow signals (Market Tide, Net Flow, Greek Flow), GEX snapshots, dark pool blocks, websocket feeds (flow-alerts, option_trades for ~50 tickers, futures_trades for the CME futures bars), Periscope screenshots — basically half the data surface.
 - **Sign up**: [unusualwhales.com](https://unusualwhales.com).
 - **Required tier**: **Advanced** (websocket access for `uw-stream`). Standard tier doesn't include WS.
 - **Cost**: Check current pricing — Advanced is in the high-end personal tier range.
@@ -201,7 +201,7 @@ What you need a paid account / API key for, in rough priority order.
 
 #### 8. Vercel Blob
 
-- Sub-product of Vercel. Stores ML pipeline plots, the TBBO archive for the sidecar to seed from, database backups.
+- Sub-product of Vercel. Stores ML pipeline plots, the frozen historical archive the sidecar seeds from, database backups.
 - Added via Vercel Storage → Connect → Blob.
 - Pay-per-usage; typically **<$1/month** for personal volumes.
 
@@ -212,7 +212,7 @@ What you need a paid account / API key for, in rough priority order.
 - **Cost**: Free tier (5K errors / 10K traces / month) is sufficient.
 - **Env vars**: `SENTRY_DSN`, `SENTRY_AUTH_TOKEN` (for source map upload during build).
 
-### Required for the futures sidecar (Railway service #1)
+### Required for the Railway sidecar (Railway service #1)
 
 #### 10. Railway
 
@@ -220,14 +220,7 @@ What you need a paid account / API key for, in rough priority order.
 - **Sign up**: [railway.app](https://railway.app).
 - **Cost**: ~$5–20/month/service for personal usage tier. Two services = budget **~$20–40/month**.
 
-#### 11. Databento
-
-- **What it powers**: Real-time Databento Live ingestion of 6 futures (ES, NQ, ZN, RTY, CL, GC) on OHLCV-1m, plus ES + NQ TBBO and the ES options chain. Also batch fetches via `hist.databento.com` for backfill.
-- **Sign up**: [databento.com](https://databento.com).
-- **Cost**: This is the **most expensive single integration** — Databento Live pricing varies by data product. Budget hundreds per month for CME futures + ES options live feeds. Check their pricing page directly.
-- **Env var**: `DATABENTO_API_KEY` (sidecar's Railway env, not Vercel).
-
-#### 12. Theta Data Terminal (optional but recommended)
+#### 11. Theta Data Terminal (optional but recommended)
 
 - **What it powers**: Co-resident Java terminal in the sidecar Docker image that fetches nightly SPX option chain EOD data.
 - **Sign up**: [thetadata.net](https://thetadata.net).
@@ -238,7 +231,7 @@ What you need a paid account / API key for, in rough priority order.
 ### Required for the websocket consumer (Railway service #2)
 
 - Same `UW_API_KEY` as above (UW Advanced tier required for WS).
-- Same `DATABASE_URL` (writes to `ws_flow_alerts` + `ws_option_trades` in the same Neon instance).
+- Same `DATABASE_URL` (writes to `ws_flow_alerts`, `ws_option_trades` and `futures_bars` in the same Neon instance). Futures bars come from this service since Databento was removed (2026-09-29).
 - Same Railway hosting.
 
 ### Optional integrations
@@ -258,21 +251,20 @@ What you need a paid account / API key for, in rough priority order.
 
 For an active solo trader running the full stack:
 
-| Tier                               | Monthly cost                |
-| ---------------------------------- | --------------------------- |
-| Vercel Pro                         | $20                         |
-| Neon Postgres Pro                  | ~$19                        |
-| Anthropic (Claude Opus 4.7)        | $50–100                     |
-| Unusual Whales Advanced            | ~$120–300 (verify current)  |
-| Databento Live (futures + ES opts) | Hundreds — biggest variable |
-| Theta Data SPX EOD                 | ~$200                       |
-| Railway (sidecar + uw-stream)      | $20–40                      |
-| OpenAI embeddings                  | <$5                         |
-| Upstash / Vercel Blob / Sentry     | Free tier                   |
-| Twilio (occasional SMS)            | <$5                         |
-| Schwab / FRED / Finnhub / VAPID    | Free                        |
+| Tier                            | Monthly cost               |
+| ------------------------------- | -------------------------- |
+| Vercel Pro                      | $20                        |
+| Neon Postgres Pro               | ~$19                       |
+| Anthropic (Claude Opus 4.7)     | $50–100                    |
+| Unusual Whales Advanced         | ~$120–300 (verify current) |
+| Theta Data SPX EOD              | ~$200                      |
+| Railway (sidecar + uw-stream)   | $20–40                     |
+| OpenAI embeddings               | <$5                        |
+| Upstash / Vercel Blob / Sentry  | Free tier                  |
+| Twilio (occasional SMS)         | <$5                        |
+| Schwab / FRED / Finnhub / VAPID | Free                       |
 
-**Realistic total: ~$700–1,200/month**, with Databento and UW being the two biggest line items. Dropping Databento + Theta + UW WS (Railway services) gets you to ~$120–180/month and still leaves the Vercel-side app fully functional — you just lose futures context, microstructure features, and the LotteryFinder pipeline.
+**Realistic total: ~$450–700/month**, with UW and Theta being the two biggest line items. Dropping Theta + the Railway services gets you to ~$120–180/month and still leaves the Vercel-side app fully functional — you just lose futures context (fed by `uw-stream`), Theta EOD chains, and the LotteryFinder pipeline.
 
 ---
 
@@ -312,7 +304,6 @@ For deeper reference:
 I (the assistant) wrote this from a code-and-config audit, not from looking at actual billing. Confirm against your own statements:
 
 - Unusual Whales Advanced tier pricing
-- Databento Live monthly cost (depends on which subscriptions you activate)
 - Theta Data subscription tier price
 - Railway monthly bill across both services
 - Anthropic spend at your current analyze cadence

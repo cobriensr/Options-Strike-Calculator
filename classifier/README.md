@@ -2,18 +2,18 @@
 
 Standalone Railway service that runs the polars-based multileg classifier
 behind a small HTTP server. Carved out of `sidecar/` so the JVM-heavy
-Databento + Theta Data Terminal box no longer competes with polars for
-memory. Source of truth for the matcher itself lives in
+sidecar (then also running Databento ingestion) no longer competes
+with polars for memory. Source of truth for the matcher itself lives in
 `ml/src/multileg_assembler.py` and `ml/src/multileg_patterns.py`;
 byte-identical vendored copies live in `classifier/_vendored_ml/` and
 are kept in sync by a test.
 
 ## Environment variables
 
-| Variable     | Required | Default | Notes                                          |
-| ------------ | -------- | ------- | ---------------------------------------------- |
+| Variable     | Required | Default | Notes                                                   |
+| ------------ | -------- | ------- | ------------------------------------------------------- |
 | `SENTRY_DSN` | optional | empty   | Empty disables Sentry. Tagged `server_name=classifier`. |
-| `PORT`       | optional | `8080`  | Railway sets this; bind `0.0.0.0:$PORT`.       |
+| `PORT`       | optional | `8080`  | Railway sets this; bind `0.0.0.0:$PORT`.                |
 
 ## Local development
 

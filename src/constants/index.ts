@@ -357,8 +357,8 @@ export const POLL_INTERVALS = {
    *  the tile picks up a fresh regime read within ≤30s of the write. */
   DEALER_REGIME: 30_000,
   /** Futures snapshot refresh (useFuturesData) — matches the every-5-min
-   *  Databento sidecar cron with a 10× safety margin so the panel picks
-   *  up a fresh ES/NQ/VX snapshot within ≤30s of the write. Gated on
+   *  fetch-futures-snapshot cron with a 10× safety margin so the panel
+   *  picks up a fresh futures snapshot within ≤30s of the write. Gated on
    *  marketOpen. */
   FUTURES: 30_000,
   /** GexTarget history refresh (useGexTarget) — matches the 1-min cron cadence */

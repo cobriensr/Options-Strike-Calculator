@@ -437,8 +437,8 @@ interface EsBarRow {
  * Positive value = ES outperforming cash (holding bid). Returns null when
  * either ES or SPX history is missing.
  *
- * ES bars live in `futures_bars` with `symbol='ES'` (the Databento sidecar
- * ingests front-month ES into that table — there is also an `es_bars`
+ * ES bars live in `futures_bars` with `symbol='ES'` (uw-stream writes
+ * front-month ES into that table — there is also an `es_bars`
  * table in the schema but it's empty / deprecated). A naïve query of
  * `es_bars` was the original Phase 1 bug: the table has no `date` or
  * `interval_min` columns, the query threw, the catch swallowed it, and
