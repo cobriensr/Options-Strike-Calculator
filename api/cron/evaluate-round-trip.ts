@@ -2,7 +2,7 @@
  * GET /api/cron/evaluate-round-trip
  *
  * Runs every 10 min from the 09:25 ET open buffer until 80 min after the
- * day's close (see isRoundTripEvalWindow). Computes
+ * day's close (see POST_CLOSE_EVAL_MIN). Computes
  * `post_fire_net_pct_of_volume` for alerts fired 60-75 min ago, stores
  * it on the alert row, and applies a stepped score deduct based on the
  * Phase 1 EDA brackets.
@@ -27,17 +27,11 @@
  */
 
 import { getDb, withDbRetry } from '../_lib/db.js';
-import { MARKET_MINUTES } from '../_lib/constants.js';
+import { isMarketHours } from '../_lib/api-helpers.js';
 import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
-import { getMarketCloseHourET } from '../../src/data/marketHours.js';
-import {
-  getETDateStr,
-  getETDayOfWeek,
-  getETTime,
-} from '../../src/utils/timezone.js';
 
 /** Look-forward window length for the net-pct computation. */
 const WINDOW_MIN = 60;
@@ -62,31 +56,13 @@ const LOOKBACK_MIN_FLOOR = 60;
  * after ~15:05 ET waited for the next morning's run. Mon-Thu that worked;
  * Friday's never got evaluated (1,946 lottery + 137 silent-boom rows in 30
  * days), reading as "no penalty".
- */
-const POST_CLOSE_EVAL_MIN = 80;
-
-/**
- * Time gate: the 09:25 ET open buffer (same as isMarketHours) through the
- * day's close + POST_CLOSE_EVAL_MIN. Weekend- and holiday-aware via the
- * shared market calendar; a half-day follows its own 13:00 ET close.
+ *
+ * Applied as `isMarketHours(POST_CLOSE_EVAL_MIN)`: same 09:25 ET open
+ * buffer, weekend/holiday handling and half-day close (13:00 → 14:20 ET).
  * vercel.json's UTC hours must reach 17:20 ET in EST (22:20 UTC), and the
  * Sentry monitor window in cron-schedules.ts must cover the post-close ticks.
  */
-function isRoundTripEvalWindow(): boolean {
-  const now = new Date();
-  const day = getETDayOfWeek(now);
-  if (day === 0 || day === 6) return false;
-
-  const closeHour = getMarketCloseHourET(getETDateStr(now));
-  if (closeHour == null) return false; // holiday
-
-  const { hour, minute } = getETTime(now);
-  const totalMin = hour * 60 + minute;
-  return (
-    totalMin >= MARKET_MINUTES.OPEN - 5 &&
-    totalMin <= closeHour * 60 + POST_CLOSE_EVAL_MIN
-  );
-}
+const POST_CLOSE_EVAL_MIN = 80;
 
 /** Catch-up floor for stale alerts. If the cron pauses for hours, alerts
  *  from the same trading day still get picked up on resume. The
@@ -316,5 +292,8 @@ export default withCronInstrumentation(
       },
     };
   },
-  { requireApiKey: false, timeCheck: isRoundTripEvalWindow },
+  {
+    requireApiKey: false,
+    timeCheck: () => isMarketHours(POST_CLOSE_EVAL_MIN),
+  },
 );

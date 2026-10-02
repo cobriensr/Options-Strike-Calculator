@@ -34,8 +34,12 @@ import {
  * Check if current time is within extended market hours.
  * Uses isMarketOpen() (holiday/early-close aware) with a 5-minute buffer
  * on each side so cron jobs running at :00 catch data at open/close.
+ *
+ * `afterCloseMin` widens only the close side (default 5, the classic
+ * buffer). evaluate-round-trip passes 80 so the session's last fires are
+ * evaluated after their 60-min window, before the weekend tape sweep.
  */
-export function isMarketHours(): boolean {
+export function isMarketHours(afterCloseMin = 5): boolean {
   const now = new Date();
   const day = getETDayOfWeek(now);
   if (day === 0 || day === 6) return false;
@@ -47,8 +51,10 @@ export function isMarketHours(): boolean {
   const { hour, minute } = getETTime(now);
   const totalMin = hour * 60 + minute;
   const closeMin = closeHour * 60;
-  // 5-minute buffer: 9:25 AM (565) to close + 5 min
-  return totalMin >= MARKET_MINUTES.OPEN - 5 && totalMin <= closeMin + 5;
+  // 5-minute open buffer: 9:25 AM (565) to close + afterCloseMin
+  return (
+    totalMin >= MARKET_MINUTES.OPEN - 5 && totalMin <= closeMin + afterCloseMin
+  );
 }
 
 /**

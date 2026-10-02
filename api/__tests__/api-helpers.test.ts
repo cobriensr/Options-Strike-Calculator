@@ -1618,6 +1618,7 @@ describe('api-helpers', () => {
     afterEach(() => {
       vi.mocked(getETDayOfWeek).mockReturnValue(1);
       vi.mocked(getMarketCloseHourET).mockReturnValue(16);
+      vi.mocked(getETTime).mockReturnValue({ hour: 10, minute: 30 });
     });
 
     it('returns false on weekend (day === 0)', () => {
@@ -1641,6 +1642,29 @@ describe('api-helpers', () => {
       vi.mocked(getMarketCloseHourET).mockReturnValue(16);
       expect(typeof isMarketHours()).toBe('boolean');
     });
+
+    // afterCloseMin widens ONLY the close side (default 5 = the classic
+    // close + 5 buffer). evaluate-round-trip passes 80.
+    it.each<[number, number, number, number | undefined, boolean, string]>([
+      // [closeHour, hour, minute, afterCloseMin, expected, label]
+      [16, 16, 5, undefined, true, 'default: close + 5 is inside'],
+      [16, 16, 6, undefined, false, 'default: close + 6 is outside'],
+      [16, 16, 6, 80, true, '80: close + 6 is inside'],
+      [16, 17, 20, 80, true, '80: close + 80 (17:20) is inside'],
+      [16, 17, 21, 80, false, '80: close + 81 is outside'],
+      [13, 14, 20, 80, true, '80 on a half-day: 13:00 + 80 = 14:20'],
+      [13, 14, 21, 80, false, '80 on a half-day: 14:21 is outside'],
+      [16, 9, 24, 80, false, '80: open side unchanged — 09:24 outside'],
+      [16, 9, 25, 80, true, '80: open side unchanged — 09:25 inside'],
+    ])(
+      'close %i:00, %i:%i ET, afterCloseMin=%s → %s (%s)',
+      (closeHour, hour, minute, afterCloseMin, expected) => {
+        vi.mocked(getETDayOfWeek).mockReturnValue(5);
+        vi.mocked(getMarketCloseHourET).mockReturnValue(closeHour);
+        vi.mocked(getETTime).mockReturnValue({ hour, minute });
+        expect(isMarketHours(afterCloseMin)).toBe(expected);
+      },
+    );
   });
 
   // ============================================================
