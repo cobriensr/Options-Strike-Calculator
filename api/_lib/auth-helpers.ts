@@ -10,8 +10,6 @@
  * Re-exported from `api-helpers.ts` for backward compatibility.
  */
 
-import { timingSafeEqual } from 'node:crypto';
-
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { ZodSafeParseResult, ZodSafeParseError } from 'zod';
 import { checkBotId } from 'botid/server';
@@ -19,6 +17,12 @@ import { checkBotId } from 'botid/server';
 import { redis } from './redis.js';
 import logger from './logger.js';
 import { metrics, Sentry } from './sentry.js';
+import { secretEquals } from './secret-compare.js';
+
+// The shared secret-comparison helpers (R2). They live in a dependency-free
+// module so the cron path can import them without this file's botid/redis
+// imports; re-exported here (and so from api-helpers) for everyone else.
+export { secretEquals, bearerMatches } from './secret-compare.js';
 
 // ============================================================
 // BOT PROTECTION
@@ -31,8 +35,8 @@ import { metrics, Sentry } from './sentry.js';
  * VERCEL=1 is set automatically by Vercel; it's unset in local dev.
  *
  * Also short-circuits for authenticated owner sessions. The `sc-owner` cookie
- * is a random secret set by the Schwab OAuth callback, compared with
- * `timingSafeEqual` against `OWNER_SECRET`. If a caller presents a valid
+ * is a random secret set by the Schwab OAuth callback, compared in constant
+ * time (`secretEquals`) against `OWNER_SECRET`. If a caller presents a valid
  * owner cookie, they have already cleared a strictly stronger authentication
  * gate than any anti-bot heuristic — running Vercel BotID on top is redundant
  * and produces false positives on privacy-respecting browsers (Firefox with
@@ -97,11 +101,7 @@ export function isOwner(req: VercelRequest): boolean {
   }
 
   const cookies = parseCookies(req);
-  const cookieVal = cookies[OWNER_COOKIE] ?? '';
-  if (!cookieVal) return false;
-  const a = Buffer.from(cookieVal);
-  const b = Buffer.from(secret);
-  return a.length === b.length && timingSafeEqual(a, b);
+  return secretEquals(cookies[OWNER_COOKIE], secret);
 }
 
 /**

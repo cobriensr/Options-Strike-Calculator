@@ -13,12 +13,12 @@
  * Re-exported from `api-helpers.ts` for backward compatibility.
  */
 
-import { timingSafeEqual } from 'node:crypto';
-
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 import { MARKET_MINUTES } from './constants.js';
 import logger from './logger.js';
+// Direct import (not via api-helpers/auth-helpers): see secret-compare.ts.
+import { bearerMatches } from './secret-compare.js';
 import { getMarketCloseHourET } from '../../src/data/marketHours.js';
 import {
   getETTime,
@@ -260,11 +260,7 @@ export function cronGuard(
     res.status(401).json({ error: 'Unauthorized' });
     return null;
   }
-  const authHeader = req.headers.authorization ?? '';
-  const expected = `Bearer ${cronSecret}`;
-  const authBuf = Buffer.from(authHeader);
-  const expBuf = Buffer.from(expected);
-  if (authBuf.length !== expBuf.length || !timingSafeEqual(authBuf, expBuf)) {
+  if (!bearerMatches(req.headers.authorization, cronSecret)) {
     res.status(401).json({ error: 'Unauthorized' });
     return null;
   }

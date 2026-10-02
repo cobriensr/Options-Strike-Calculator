@@ -22,7 +22,7 @@
  * Phase 1a of docs/superpowers/specs/api-refactor-2026-05-02.md
  */
 
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 
 import { waitUntil } from '@vercel/functions';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
@@ -31,6 +31,8 @@ import { Sentry } from './sentry.js';
 import { cronGuard } from './api-helpers.js';
 import { reportCronRun } from './axiom.js';
 import { SCHEDULE_MAP, type CronMonitorConfig } from './cron-schedules.js';
+// Direct import (not via api-helpers/auth-helpers): see secret-compare.ts.
+import { bearerMatches } from './secret-compare.js';
 
 // ============================================================
 // DIRECT SENTRY CHECK-IN HTTP CLIENT
@@ -273,20 +275,13 @@ async function sentryCheckInDirect(input: SentryCheckInInput): Promise<string> {
  * Returns false when CRON_SECRET is unset or the header is missing/wrong.
  *
  * Used by `withCronCheckin` to short-circuit Sentry check-ins for
- * unauthenticated traffic (bot scans, misrouted requests). Mirrors the
- * auth check in `cronGuard()` — the duplication is deliberate: this
+ * unauthenticated traffic (bot scans, misrouted requests). Makes the same
+ * `bearerMatches` call as `cronGuard()`, but separately on purpose: this
  * decision must be made BEFORE the wrapper sends its `in_progress`
  * check-in, which is before cronGuard runs inside the inner handler.
  */
 export function isCronAuthenticated(req: VercelRequest): boolean {
-  const cronSecret = process.env.CRON_SECRET ?? '';
-  if (cronSecret.length === 0) return false;
-  const authHeader = req.headers.authorization ?? '';
-  const expected = `Bearer ${cronSecret}`;
-  const authBuf = Buffer.from(authHeader);
-  const expBuf = Buffer.from(expected);
-  if (authBuf.length !== expBuf.length) return false;
-  return timingSafeEqual(authBuf, expBuf);
+  return bearerMatches(req.headers.authorization, process.env.CRON_SECRET);
 }
 
 /**
