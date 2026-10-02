@@ -6,15 +6,17 @@ with route dispatch (``/health`` GET, ``/version`` GET,
 and a request-body size cap (50 MB → 413). Route handler logic stays in
 ``multileg_routes``; this module is HTTP plumbing only.
 
-Phase 1 of the 2026-05-28 spec — no BoundedSemaphore yet. Phase 2 will
-add bounded concurrency in front of ``handle_classify_payload``; the
-``_QuietThreadingHTTPServer`` + per-request thread model is already what
-the sidecar runs in production today, so we're matching its known-good
-shape for the split deploy.
+Concurrency is bounded inside ``multileg_routes`` — a
+``BoundedSemaphore(_CLASSIFY_CONCURRENCY)`` with an 8 s queue wait
+(``_QUEUE_WAIT_TIMEOUT_SEC``) — and every request runs under a 13 s
+budget (``_REQUEST_BUDGET_SEC``) so it finishes, or 503s, before the TS
+client's 15 s abort. The ``_QuietThreadingHTTPServer`` + per-request
+thread model is what the sidecar ran in production, so we matched its
+known-good shape for the split deploy.
 
 Operational notes:
   - ``Connection: close`` on 4xx/5xx responses so Railway's edge proxy
-    doesn't hold a broken upstream socket open between retries.
+    doesn't hold a broken upstream socket open between requests.
   - Default ``BaseHTTPRequestHandler.log_message`` is suppressed —
     sidecar and uw-stream do the same; access logging at the app layer
     is more useful than the per-request stderr line http.server emits.
@@ -167,9 +169,12 @@ class ClassifierHandler(BaseHTTPRequestHandler):
         / Decimal-ish values that need string coercion.
 
         ``retry_after_sec`` adds an RFC 9110 §10.2.3 ``Retry-After``
-        header — used by the 503 queue-timeout path (Phase 1.5 Task 4)
-        so the TS client retries with jitter instead of failing the
-        cron loop. None (default) omits the header entirely.
+        header on the 503 paths (queue timeout, matcher deadline). It is
+        informational: the TS client (``api/_lib/multileg-client.ts``)
+        aborts at 15 s and does not retry — on 503 or abort,
+        ``multileg-classify-batch.ts`` returns null and caches it for
+        that (ticker, chain, minute), so the alert is inserted without a
+        structure label. None (default) omits the header entirely.
         """
         payload = json.dumps(body, default=str).encode()
         self.send_response(status)
@@ -361,10 +366,11 @@ class ClassifierHandler(BaseHTTPRequestHandler):
         # requests it, so this is "don't force-close" rather than
         # "actively enable pipelining".
         #
-        # 503 queue-timeout responses carry ``retry_after_sec`` in the
-        # body (set by ``handle_classify_payload``). Lift it into a
-        # ``Retry-After`` HTTP header so RFC-aware clients (and Railway's
-        # edge) see it without parsing JSON.
+        # 503 responses (queue timeout, matcher deadline) carry
+        # ``retry_after_sec`` in the body (set by ``handle_classify_payload``).
+        # Lift it into a ``Retry-After`` HTTP header so RFC-aware clients
+        # (and Railway's edge) see it without parsing JSON. The TS client
+        # does not act on it — it does not retry.
         retry_after = None
         if status == 503 and isinstance(body, dict):
             ra = body.get("retry_after_sec")

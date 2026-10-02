@@ -1,7 +1,7 @@
 """Tests for the BoundedSemaphore + cold-start observability shipped
 in Phase 1.5 Task 4 (Findings 1.6 and 2.3).
 
-These cover four behaviours:
+These cover five behaviours:
 
 1.  ``_classify_semaphore`` caps simultaneous in-flight matcher
     invocations at ``_CLASSIFY_CONCURRENCY`` (default 1, lowered from
@@ -16,6 +16,10 @@ These cover four behaviours:
     pressure context.
 4.  Cold-start ``import_ms`` is logged exactly once per process; a
     slow import (>5s) additionally captures a Sentry warning message.
+5.  Timeout alignment (2026-09-08): the queue wait and the per-request
+    budget fit inside the TS client's 15 s abort, the budget is measured
+    from route entry and forwarded to the matcher as a ``deadline``, and
+    a matcher deadline surfaces as 503 (warning), not 500.
 
 The semaphore is module-level in ``multileg_routes``; tests that touch
 it explicitly drain + restore it via a fixture so test ordering can't
@@ -28,7 +32,7 @@ import json
 import threading
 import time
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -91,7 +95,7 @@ def test_classify_semaphore_caps_concurrent_matcher_invocations(
 
     # Replace the conftest fixture's stub with one that blocks on a
     # barrier so we can prove cap+4 workers can't all run together.
-    def blocking_classify(_request):
+    def blocking_classify(_request, **_kwargs):
         nonlocal in_flight, max_in_flight
         with lock:
             in_flight += 1
@@ -206,10 +210,10 @@ def test_classify_queue_wait_emits_breadcrumb_when_exceeds_threshold(
     def fake_add_breadcrumb(**kwargs):
         breadcrumb_calls.append(kwargs)
 
-    # Force time.monotonic() to report two values spaced 6.5s apart on
-    # the two calls inside handle_classify_payload (start_wait, then the
-    # one used to compute queue_wait_sec).
-    monotonic_values = iter([1000.0, 1006.5, 1006.5, 1006.5])
+    # handle_classify_payload reads the clock at entry (t_entry, for the
+    # request budget), then at start_wait, then after the acquire. Report
+    # the last two 6.5s apart so queue_wait_sec crosses the threshold.
+    monotonic_values = iter([1000.0, 1000.0, 1006.5, 1006.5])
 
     def fake_monotonic() -> float:
         return next(monotonic_values)
@@ -274,7 +278,9 @@ def test_classify_breadcrumb_failure_does_not_break_request(
     running. The route's bare-except around the breadcrumb is the
     contract.
     """
-    monotonic_values = iter([1000.0, 1010.0, 1010.0, 1010.0])
+    # t_entry, start_wait, after-acquire: a 10s synthetic queue wait so
+    # the breadcrumb branch (and its failure) is actually exercised.
+    monotonic_values = iter([1000.0, 1000.0, 1010.0, 1010.0])
 
     def fake_monotonic() -> float:
         return next(monotonic_values)
@@ -537,3 +543,247 @@ def test_server_omits_retry_after_when_not_503() -> None:
         call.args for call in handler.send_header.call_args_list
     ]
     assert not any(name == "Retry-After" for name, _ in header_calls)
+
+
+# ── Timeout alignment + matcher deadline (2026-09-08) ─────────────────────
+#
+# The TS client (``api/_lib/multileg-client.ts``) aborts every classify
+# request at ``DEFAULT_TIMEOUT_MS = 15_000`` and does not retry. The
+# route's queue wait + matcher budget must therefore fit inside 15 s, and
+# a matcher that outlives its budget must surface as a 503 (operational
+# backpressure, warning) rather than a 500 (bug, exception capture).
+
+
+def _raise_matcher_deadline(_request, **_kwargs):
+    """``_classify_with_polars`` stand-in that trips the matcher deadline."""
+    from multileg_assembler import MatcherDeadlineExceeded
+
+    raise MatcherDeadlineExceeded("late")
+
+
+def test_timeout_constants_fit_inside_client_budget() -> None:
+    """Queue wait < request budget < the TS client's 15 s abort."""
+    assert multileg_routes._QUEUE_WAIT_TIMEOUT_SEC == 8.0
+    assert multileg_routes._REQUEST_BUDGET_SEC == 13.0
+    assert (
+        multileg_routes._QUEUE_WAIT_TIMEOUT_SEC
+        < multileg_routes._REQUEST_BUDGET_SEC
+        < 15.0
+    )
+
+
+def test_matcher_deadline_maps_to_503_not_500(
+    monkeypatch: pytest.MonkeyPatch,
+    reset_classify_semaphore,
+    sample_classify_request_body: bytes,
+) -> None:
+    """``MatcherDeadlineExceeded`` from the matcher → 503 with the retry
+    hint, a Sentry *warning message* (not an exception capture), and the
+    semaphore permit released.
+    """
+    monkeypatch.setattr(
+        multileg_routes, "_classify_with_polars", _raise_matcher_deadline
+    )
+
+    import sentry_setup
+
+    capture_exception = MagicMock()
+    capture_message = MagicMock()
+    with (
+        patch.object(sentry_setup, "capture_exception", capture_exception),
+        patch.object(sentry_setup, "capture_message", capture_message),
+    ):
+        status, body = multileg_routes.handle_classify_payload(
+            sample_classify_request_body
+        )
+
+    assert status == 503
+    assert "deadline" in body["error"]
+    assert body["retry_after_sec"] == multileg_routes._RETRY_AFTER_SEC
+    assert body["budget_sec"] == multileg_routes._REQUEST_BUDGET_SEC
+    assert isinstance(body["elapsed_sec"], float)
+    assert isinstance(body["n_trades"], int)
+    assert body["n_trades"] == 1
+
+    # Backpressure is a warning, not a bug report.
+    capture_exception.assert_not_called()
+    capture_message.assert_called_once()
+    assert capture_message.call_args.kwargs["level"] == "warning"
+    assert {"n_trades", "elapsed_sec", "budget_sec", "queue_wait_sec"} <= set(
+        capture_message.call_args.kwargs["extra"]
+    )
+
+    # Permit released: every permit is re-acquirable.
+    cap = multileg_routes._CLASSIFY_CONCURRENCY
+    acquired = [
+        multileg_routes._classify_semaphore.acquire(timeout=0.1)
+        for _ in range(cap)
+    ]
+    for ok in acquired:
+        if ok:
+            multileg_routes._classify_semaphore.release()
+    assert all(acquired), "matcher deadline 503 leaked a permit"
+
+
+def test_matcher_deadline_503_survives_sentry_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    reset_classify_semaphore,
+    sample_classify_request_body: bytes,
+) -> None:
+    """A buggy ``capture_message`` must not turn the 503 into a crash."""
+    monkeypatch.setattr(
+        multileg_routes, "_classify_with_polars", _raise_matcher_deadline
+    )
+
+    import sentry_setup
+
+    with patch.object(
+        sentry_setup,
+        "capture_message",
+        side_effect=RuntimeError("sentry blew up"),
+    ):
+        status, body = multileg_routes.handle_classify_payload(
+            sample_classify_request_body
+        )
+
+    assert status == 503
+    assert "deadline" in body["error"]
+
+
+def test_queue_wait_is_bounded_by_remaining_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_classify_request_body: bytes,
+) -> None:
+    """The semaphore wait is capped at the budget that remains when the
+    acquire happens, so a slow parse plus a full queue wait can never
+    overrun ``_REQUEST_BUDGET_SEC``.
+
+    The semaphore is replaced by a stub whose ``acquire`` records its
+    ``timeout`` and returns False, so each call ends on the existing 503
+    queue-timeout path without blocking.
+    """
+    recorded: list[float] = []
+
+    class _RecordingSemaphore:
+        def acquire(self, timeout: float | None = None) -> bool:
+            recorded.append(timeout)
+            return False
+
+    monkeypatch.setattr(
+        multileg_routes, "_classify_semaphore", _RecordingSemaphore()
+    )
+
+    def clock(first: float, then: float):
+        # First reading is t_entry; every later reading (start_wait and
+        # anything after) reports ``then``.
+        readings = iter([first])
+        return lambda: next(readings, then)
+
+    # 11.5 s already elapsed → only 1.5 s of the 13 s budget remains.
+    with patch.object(
+        multileg_routes.time, "monotonic", side_effect=clock(1000.0, 1011.5)
+    ):
+        status, body = multileg_routes.handle_classify_payload(
+            sample_classify_request_body
+        )
+    assert status == 503
+    assert body["error"] == "classifier queue timeout; retry in a few seconds"
+    assert len(recorded) == 1
+    assert recorded[0] == pytest.approx(1.5)
+
+    # Plenty of budget left → the flat queue ceiling applies unchanged.
+    recorded.clear()
+    with patch.object(
+        multileg_routes.time, "monotonic", side_effect=clock(1000.0, 1000.5)
+    ):
+        status, _ = multileg_routes.handle_classify_payload(
+            sample_classify_request_body
+        )
+    assert status == 503
+    assert recorded == [multileg_routes._QUEUE_WAIT_TIMEOUT_SEC]
+
+    # Budget already gone → clamp to 0.0. Semaphore treats any timeout
+    # <= 0 as a non-blocking try; the clamp makes the "budget already
+    # gone" case explicit rather than relying on that.
+    recorded.clear()
+    with patch.object(
+        multileg_routes.time, "monotonic", side_effect=clock(1000.0, 1014.0)
+    ):
+        status, _ = multileg_routes.handle_classify_payload(
+            sample_classify_request_body
+        )
+    assert status == 503
+    assert recorded == [0.0]
+
+
+def test_route_passes_entry_based_deadline_to_matcher(
+    monkeypatch: pytest.MonkeyPatch,
+    reset_classify_semaphore,
+    sample_classify_request_body: bytes,
+) -> None:
+    """The matcher deadline is ``t_entry + _REQUEST_BUDGET_SEC`` where
+    ``t_entry`` is the first clock reading in ``handle_classify_payload``
+    — i.e. the budget covers parse + validate + queue wait + matcher.
+    """
+    t_entry = 1000.0
+    seen: dict[str, Any] = {}
+
+    def recorder(request, **kwargs):
+        seen.update(kwargs)
+        return [
+            {
+                "id": t.id,
+                "inferred_structure": "isolated_leg",
+                "is_isolated_leg": True,
+                "match_confidence": 0.0,
+                "pattern_group_id": "g",
+            }
+            for t in request.trades
+        ]
+
+    monkeypatch.setattr(multileg_routes, "_classify_with_polars", recorder)
+
+    with patch.object(multileg_routes.time, "monotonic", return_value=t_entry):
+        status, _ = multileg_routes.handle_classify_payload(
+            sample_classify_request_body
+        )
+
+    assert status == 200
+    assert "deadline" in seen
+    assert seen["deadline"] == pytest.approx(
+        t_entry + multileg_routes._REQUEST_BUDGET_SEC, abs=1e-6
+    )
+
+
+def test_classify_with_polars_forwards_deadline_to_matcher(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_trade: dict[str, Any],
+) -> None:
+    """``_classify_with_polars(request, deadline=...)`` hands the same
+    ``deadline`` to ``multileg_assembler.classify_trades``."""
+    import multileg_assembler
+    import polars as pl
+
+    seen: dict[str, Any] = {}
+
+    def recorder(df, **kwargs):
+        seen.update(kwargs)
+        return pl.DataFrame(
+            {
+                "id": df.get_column("id").to_list(),
+                "inferred_structure": ["isolated_leg"] * df.height,
+                "is_isolated_leg": [True] * df.height,
+                "match_confidence": [0.0] * df.height,
+                "pattern_group_id": ["g"] * df.height,
+            }
+        )
+
+    monkeypatch.setattr(multileg_assembler, "classify_trades", recorder)
+
+    request = multileg_routes.MultilegClassifyRequest.model_validate(
+        {"trades": [sample_trade]}
+    )
+    rows = multileg_routes._classify_with_polars(request, deadline=123.0)
+
+    assert seen["deadline"] == 123.0
+    assert rows[0]["id"] == sample_trade["id"]

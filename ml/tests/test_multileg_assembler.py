@@ -13,8 +13,12 @@ the motivating analysis (76% of $1M+ "whales" are spread legs).
 
 from __future__ import annotations
 
+import sys
+import time
 import warnings
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
+from functools import partial
 
 import polars as pl
 import pytest
@@ -1238,6 +1242,174 @@ def test_butterfly_small_cell_no_subbatch_warning(
     assert out.sort("id").to_dicts() == baseline.sort("id").to_dicts()
 
 
+# ── Butterfly pair gate (classifier OOM fix, 2026-09-08) ─────────────────────
+#
+# See docs/superpowers/specs/classifier-phase-a-butterfly-gate-2026-09-08.md
+# (its Evidence table has the same numbers). _BUTTERFLY_BODY_CHUNK
+# bounds only the body side of the body×wing join (2,000 × N pairs per
+# chunk) and the per-body lo×hi join is an uncapped cartesian, so a dense
+# single-bucket window (production is one ticker over 60 s) built an
+# 8 GB / 204 s intermediate at 10 K prints while producing zero butterflies.
+# Above _BUTTERFLY_PAIR_CAP the matcher skips butterfly enumeration for that
+# batch (one warning per batch) and lets the 2-leg stages proceed; below the
+# cap the path is byte-for-byte unchanged.
+
+
+def _dense_calls_mixed_sizes(n: int = 800) -> list[dict[str, object]]:
+    """Dense calls-only window: ``n`` prints inside one 90 s bucket.
+
+    One expiry, calls only, ``offset_s = i * 0.1``. Strikes cycle over 30
+    integer values, sizes cycle over ``(1, 2, 1, 2, 4, 2)`` indexed by
+    ``i // 2`` so each adjacent buy/sell pair shares a size (exact-size
+    verticals are abundant: every print has a 1.0-confidence vertical
+    partner), and sides alternate via nbbo (even ``i``: price == ask →
+    buy; odd ``i``: price == bid → sell). Size-1 buys at even strikes
+    flanking size-2 sells at odd strikes give body = 2×wing butterfly
+    shapes, so the butterfly stage is not vacuous — but every such triple
+    loses its confidence tie to a vertical in ``_greedy_assign`` (2-leg
+    wins ties). Calls only keeps the greedy assignment deterministic
+    (cross-type mid pairs are not).
+
+    Indexing sizes by ``i`` directly would give buys sizes (1, 1, 4) and
+    sells size 2 only — zero verticals (2× size mismatch exceeds the 0.1
+    tolerance) — so the fixture would not exercise the tie rule at all.
+    """
+    sizes = (1, 2, 1, 2, 4, 2)
+    rows: list[dict[str, object]] = []
+    for i in range(n):
+        buy = i % 2 == 0
+        rows.append(
+            _trade(
+                trade_id=f"c{i}",
+                offset_s=i * 0.1,
+                strike=200.0 + float(i % 30),
+                option_type="call",
+                size=sizes[(i // 2) % 6],
+                price=1.50,
+                nbbo_bid=1.45 if buy else 1.50,
+                nbbo_ask=1.50 if buy else 1.55,
+            )
+        )
+    return rows
+
+
+def test_butterfly_gate_skips_enumeration_above_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Above the pair cap the matcher never enters butterfly enumeration:
+    it warns once for the batch, labels no butterflies (the documented
+    trade-off), and the 2-leg stages still complete."""
+    import multileg_assembler as ma
+
+    def _must_not_be_called(*_args: object, **_kwargs: object) -> pl.DataFrame:
+        raise AssertionError("must not be called")
+
+    monkeypatch.setattr(ma, "_butterfly_candidates_for_bodies", _must_not_be_called)
+    # 900 rows in one cell: bodies × wings = 900 × 900 = 810,000 > cap.
+    df = _df(_dense_butterfly_cell(n_flies=300, expiry=date(2026, 6, 12)))
+
+    monkeypatch.setattr(ma, "_BUTTERFLY_PAIR_CAP", 250_000)
+    with pytest.warns(RuntimeWarning, match="skipping butterfly enumeration"):
+        out = ma.classify_trades(df, window_seconds=90)
+    assert out.height == df.height
+    assert not any(r["inferred_structure"] == "butterfly" for r in out.to_dicts())
+
+    monkeypatch.setattr(ma, "_BUTTERFLY_PAIR_CAP", 10**12)
+    with pytest.raises(AssertionError, match="must not be called"):
+        ma.classify_trades(df, window_seconds=90)
+
+
+def test_butterfly_gate_below_cap_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A butterfly cell under the pair cap is untouched: no gate warning,
+    butterflies still found, output identical to the uncapped baseline."""
+    import multileg_assembler as ma
+
+    # 360 rows in one cell: bodies × wings = 360 × 360 = 129,600 < cap.
+    df = _df(_dense_butterfly_cell(n_flies=120, expiry=date(2026, 6, 12)))
+
+    monkeypatch.setattr(ma, "_BUTTERFLY_PAIR_CAP", 10**12)
+    baseline = ma.classify_trades(df, window_seconds=90)
+
+    monkeypatch.setattr(ma, "_BUTTERFLY_PAIR_CAP", 250_000)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        out = ma.classify_trades(df, window_seconds=90)
+
+    # The fixture must actually produce butterflies, else the test is vacuous.
+    assert any(r["inferred_structure"] == "butterfly" for r in out.to_dicts())
+    assert out.sort("id").to_dicts() == baseline.sort("id").to_dicts()
+
+
+def test_butterfly_gate_dense_same_type_window_output_identical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In a dense calls-only window (800 prints in one bucket: 640,000
+    body×wing pairs > cap) skipping butterfly enumeration is
+    output-identical, because every butterfly triple loses its confidence
+    tie to a vertical in ``_greedy_assign``."""
+    import multileg_assembler as ma
+
+    df = _df(_dense_calls_mixed_sizes(n=800))
+
+    # Spy on the real enumerator so the uncapped run proves butterfly
+    # candidates DID exist and were out-competed (else the test is vacuous),
+    # and that they lost on the tie rule (max confidence 1.0), not on a
+    # penalty.
+    real_enumerate = ma._butterfly_candidates_for_bodies
+    enumerated: list[int] = []
+    max_conf: list[float] = []
+
+    def _spy(*args: object, **kwargs: object) -> pl.DataFrame:
+        cand = real_enumerate(*args, **kwargs)
+        enumerated.append(cand.height)
+        if cand.height > 0:
+            max_conf.append(float(cand.get_column("confidence").max()))
+        return cand
+
+    monkeypatch.setattr(ma, "_butterfly_candidates_for_bodies", _spy)
+
+    monkeypatch.setattr(ma, "_BUTTERFLY_PAIR_CAP", 10**12)
+    expected = ma.classify_trades(df, window_seconds=90)
+    assert sum(enumerated) > 0
+    assert max(max_conf) == 1.0
+
+    monkeypatch.setattr(ma, "_BUTTERFLY_PAIR_CAP", 250_000)
+    with pytest.warns(RuntimeWarning, match="skipping butterfly enumeration"):
+        actual = ma.classify_trades(df, window_seconds=90)
+
+    assert expected.sort("id").to_dicts() == actual.sort("id").to_dicts()
+
+
+def test_butterfly_default_cap_enumerates_replay_band_cells(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard for the 2026-09-08 replay: single-bucket cells in
+    the 250 K–400 K pair band (the two META fires at 350–372 K pairs) must
+    enumerate at the DEFAULT cap. The first arm is un-monkeypatched so a
+    regression to 250 K fails here; the second arm proves the fixture
+    really sits in the band (it trips at 250 K), so the first is not
+    vacuous."""
+    import multileg_assembler as ma
+
+    # 190 flies → 570 rows in one tbk bucket → 570 × 570 = 324,900 pairs.
+    df = _df(_dense_butterfly_cell(n_flies=190, expiry=date(2026, 6, 12)))
+
+    with warnings.catch_warnings():
+        # Only the gate is forbidden; the 250 K self-join sub-batching
+        # warning legitimately fires at 324,900 pairs.
+        warnings.filterwarnings(
+            "error", message=".*skipping butterfly enumeration.*"
+        )
+        out = classify_trades(df, window_seconds=90)
+    assert any(r["inferred_structure"] == "butterfly" for r in out.to_dicts())
+
+    monkeypatch.setattr(ma, "_BUTTERFLY_PAIR_CAP", 250_000)
+    with pytest.warns(RuntimeWarning, match="skipping butterfly enumeration"):
+        classify_trades(df, window_seconds=90)
+
+
 # ── Cross-type join sub-batching (OOM fix, 2026-06-04) ───────────────────────
 #
 # See docs/superpowers/specs/classifier-cross-type-subbatch-2026-06-04.md.
@@ -1805,3 +1977,171 @@ def test_cross_type_subbatch_both_orientations_chunk(
         f"expected both orientations to chunk (>=2 warnings), got "
         f"{[str(w.message) for w in subbatch_warnings]}"
     )
+
+
+# ── Matcher deadline (classifier timeout alignment, 2026-09-08) ──────────────
+#
+# ``classify_trades(..., deadline=<time.monotonic() timestamp>)`` lets the
+# classifier route hand the matcher a hard budget. The TS client aborts at
+# 15 s and never retries, so a matcher that outlives the client only burns
+# the single semaphore slot for a response nobody will read.
+
+
+def _vertical_rows() -> list[dict[str, object]]:
+    """Two-leg vertical fixture (same shape as ``test_vertical_matches``)."""
+    return [
+        _trade(
+            trade_id="t1",
+            offset_s=0.0,
+            strike=190.0,
+            option_type="call",
+            size=10,
+            price=11.00,
+            nbbo_bid=10.90,
+            nbbo_ask=11.00,  # price >= ask → buy
+        ),
+        _trade(
+            trade_id="t2",
+            offset_s=30.0,
+            strike=200.0,
+            option_type="call",
+            size=10,
+            price=5.00,
+            nbbo_bid=5.00,
+            nbbo_ask=5.10,  # price <= bid → sell
+        ),
+    ]
+
+
+def test_classify_trades_deadline_in_past_raises() -> None:
+    """A deadline already in the past raises before any matching runs, and
+    the exception is a ``TimeoutError`` so callers can catch it generically
+    without importing the matcher module."""
+    assert issubclass(multileg_assembler.MatcherDeadlineExceeded, TimeoutError)
+    with pytest.raises(multileg_assembler.MatcherDeadlineExceeded):
+        classify_trades(
+            _df(_vertical_rows()),
+            window_seconds=90,
+            deadline=time.monotonic() - 1,
+        )
+
+
+def test_classify_trades_deadline_none_and_future_unchanged() -> None:
+    """``deadline=None`` (the default) and a comfortably-future deadline are
+    output-identical, and both still find the vertical."""
+    df = _df(_vertical_rows())
+    no_deadline = classify_trades(df, window_seconds=90, deadline=None)
+    future = classify_trades(
+        df, window_seconds=90, deadline=time.monotonic() + 60
+    )
+
+    assert no_deadline.sort("id").to_dicts() == future.sort("id").to_dicts()
+    assert set(no_deadline["inferred_structure"].to_list()) == {"vertical"}
+    assert set(future["inferred_structure"].to_list()) == {"vertical"}
+
+
+def test_classify_trades_deadline_checked_per_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The deadline is re-checked per batch as the matcher iterates.
+
+    A spy on ``_check_deadline`` counts calls and raises on call 3. On this
+    two-row, single-cell fixture the checks run ticker (1), cell (2),
+    same-type batch (3) — butterfly needs >= 3 rows and cross-type needs
+    both option types, so the same-type batch check is the last one. The
+    clock comparison itself is covered by
+    ``test_classify_trades_deadline_in_past_raises``.
+    """
+    deadline = 123.0
+    calls = 0
+
+    def spy(d: float | None) -> None:
+        nonlocal calls
+        calls += 1
+        assert d == deadline
+        if calls == 3:
+            raise multileg_assembler.MatcherDeadlineExceeded("spy")
+
+    monkeypatch.setattr(multileg_assembler, "_check_deadline", spy)
+
+    with pytest.raises(multileg_assembler.MatcherDeadlineExceeded):
+        classify_trades(_df(_vertical_rows()), window_seconds=90, deadline=deadline)
+
+    assert calls == 3, f"expected ticker+cell+batch checks, got {calls}"
+
+
+@pytest.mark.parametrize(
+    ("build_rows", "patches", "warning_match", "expected_frame"),
+    [
+        pytest.param(
+            partial(
+                _dense_same_type_calls, n=1200, size=1, expiry=date(2026, 6, 12)
+            ),
+            {"_SELF_JOIN_PAIR_CAP": 50_000},
+            "sub-batching dense same-type",
+            "_self_join_scored_chunked",
+            id="same-type-self-join",
+        ),
+        pytest.param(
+            partial(_dense_cross_type_bucket, n_calls=60, n_puts=60),
+            {"_CROSS_JOIN_PAIR_CAP": 1_000},
+            "sub-batching dense cross-type",
+            "_cross_type_scored_one_orientation",
+            id="cross-type-orientation",
+        ),
+        pytest.param(
+            partial(_dense_butterfly_cell, n_flies=120, expiry=date(2026, 6, 12)),
+            {"_BUTTERFLY_BODY_CHUNK": 50},
+            "sub-batching dense butterfly",
+            "_butterfly_from_batch",
+            id="butterfly-body-chunk",
+        ),
+    ],
+)
+def test_classify_trades_deadline_checked_per_sub_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+    build_rows: Callable[[], list[dict[str, object]]],
+    patches: dict[str, int],
+    warning_match: str,
+    expected_frame: str,
+) -> None:
+    """The deadline is re-checked inside each dense-batch sub-chunk loop.
+
+    In production every cell is one batch, so the per-ticker / per-cell /
+    per-batch checks each fire about once per stage; the quadratic work is
+    inside the three sub-chunk loops (same-type anchor chunks, cross-type
+    side-A chunks, butterfly body chunks), which must therefore check too.
+    Each case reuses the dense fixture + lowered cap that the matching
+    chunking-parity test uses to force that loop.
+
+    A plain call count cannot prove a check is inside a given loop (the
+    per-batch checks of later stages are reachable without any threading),
+    so the spy records each caller's frame and raises the first time it is
+    invoked from the expected chunk-loop function — which can only happen
+    if the deadline reaches that loop.
+    """
+    deadline = 123.0
+    callers: list[str] = []
+
+    def spy(d: float | None) -> None:
+        assert d == deadline
+        caller = sys._getframe(1).f_code.co_name
+        callers.append(caller)
+        if caller == expected_frame:
+            raise multileg_assembler.MatcherDeadlineExceeded("spy")
+
+    df = _df(build_rows())
+    for name, value in patches.items():
+        monkeypatch.setattr(multileg_assembler, name, value)
+    monkeypatch.setattr(multileg_assembler, "_check_deadline", spy)
+
+    with (
+        pytest.warns(RuntimeWarning, match=warning_match),
+        pytest.raises(multileg_assembler.MatcherDeadlineExceeded),
+    ):
+        classify_trades(df, window_seconds=90, deadline=deadline)
+
+    assert callers[-1] == expected_frame, callers
+    # Raised on the FIRST check inside that loop — no earlier stage was
+    # wrongly attributed to it.
+    assert callers.count(expected_frame) == 1, callers

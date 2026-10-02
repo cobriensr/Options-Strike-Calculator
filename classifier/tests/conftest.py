@@ -106,7 +106,7 @@ def mock_classify_trades(monkeypatch: pytest.MonkeyPatch):
     """
     captured: dict[str, Any] = {}
 
-    def fake_classify(request) -> list[dict[str, Any]]:
+    def fake_classify(request, **_kwargs) -> list[dict[str, Any]]:
         # Capture the parsed Pydantic request so tests can assert the
         # forwarded tolerance defaults / trade count without re-parsing.
         captured["request"] = request
@@ -131,7 +131,7 @@ def mock_classify_raises(monkeypatch: pytest.MonkeyPatch):
     """
     exc = RuntimeError("matcher exploded")
 
-    def boom(_request):
+    def boom(_request, **_kwargs):
         raise exc
 
     import multileg_routes
