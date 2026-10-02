@@ -5,6 +5,10 @@ import {
   SYSTEM_PROMPT_PART1,
   SYSTEM_PROMPT_PART2,
 } from '../_lib/analyze-prompts.js';
+import {
+  VIX_RATIO_BACKWARDATION_MIN,
+  VIX_RATIO_CONTANGO_MAX,
+} from '../_lib/vix-term-structure.js';
 
 const PROMPT = SYSTEM_PROMPT_PART1 + SYSTEM_PROMPT_PART2;
 
@@ -57,7 +61,7 @@ describe('analyze system prompt — remaining futures rules stay coherent', () =
     for (const heading of [
       'ES-SPX Basis:',
       'NQ-QQQ Divergence:',
-      'VIX Futures Term Structure:',
+      'VIX Term Structure (VIX/VIX3M):',
       'ZN Flight-to-Safety:',
       'RTY Breadth:',
       'CL Crude Oil:',
@@ -82,8 +86,49 @@ describe('analyze system prompt — remaining futures rules stay coherent', () =
 
   it('lists only live futures signals in the futuresContext output note', () => {
     expect(PROMPT).toContain(
-      'ES basis, NQ divergence, ZN flight-to-safety, RTY breadth, CL oil shock, GC safe haven — which futures signals are active',
+      'ES basis, NQ divergence, VIX/VIX3M term structure, ZN flight-to-safety, RTY breadth, CL oil shock, GC safe haven — which futures signals are active',
     );
+  });
+});
+
+describe('analyze system prompt — VIX term structure from VIX/VIX3M', () => {
+  // VX1/VX2 futures never had a feed; the context now carries spot
+  // VIX / VIX3M plus UW's daily VIX-futures label instead.
+
+  it('has no VX front/back-month futures rules', () => {
+    const rules = section('futures_context_rules');
+    expect(rules).not.toContain('VIX Futures Term Structure');
+    expect(rules).not.toMatch(/VX front|VX1|VX2|front < back|front > back/);
+  });
+
+  it('states the band thresholds the formatter classifies with', () => {
+    const rules = section('futures_context_rules')!.replace(/\s+/g, ' ');
+    const contangoMax = VIX_RATIO_CONTANGO_MAX.toFixed(2);
+    const backwardationMin = VIX_RATIO_BACKWARDATION_MIN.toFixed(2);
+    expect(rules).toContain(`CONTANGO at or below ${contangoMax}`);
+    expect(rules).toContain(
+      `FLAT between ${contangoMax} and ${backwardationMin}`,
+    );
+    expect(rules).toContain(`BACKWARDATION at or above ${backwardationMin}`);
+  });
+
+  it('names the context lines it gives rules for', () => {
+    const rules = section('futures_context_rules')!;
+    for (const line of [
+      '"Live"',
+      '"Latest daily close"',
+      'VIX futures regime line',
+      '"Shift:" line',
+    ]) {
+      expect(rules).toContain(line);
+    }
+  });
+
+  it('keeps the stable system text free of live VIX readings', () => {
+    // Values belong in the per-request Futures Context block; a number
+    // like "VIX 16.39" here would also break the prompt cache.
+    expect(PROMPT).not.toMatch(/VIX3M \d/);
+    expect(PROMPT).not.toMatch(/= 0\.\d{3} \((CONTANGO|FLAT|BACKWARDATION)\)/);
   });
 
   it('keeps the neighbouring cross-asset, volume-profile, VIX-divergence and UW-deltas rules', () => {

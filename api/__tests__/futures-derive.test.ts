@@ -84,18 +84,11 @@ function expectFresh(result: SnapshotResult): SnapshotRow {
 }
 
 describe('FUTURES_SYMBOLS', () => {
-  it('does not include DX (ICE product, no UW feed, dead since 2026-03-05)', () => {
+  it('is the six UW-fed CME roots: no DX (ICE) and no VX1/VX2 (Cboe CFE)', () => {
     expect(FUTURES_SYMBOLS).not.toContain('DX');
-    expect([...FUTURES_SYMBOLS]).toEqual([
-      'ES',
-      'NQ',
-      'VX1',
-      'VX2',
-      'ZN',
-      'RTY',
-      'CL',
-      'GC',
-    ]);
+    expect(FUTURES_SYMBOLS).not.toContain('VX1');
+    expect(FUTURES_SYMBOLS).not.toContain('VX2');
+    expect([...FUTURES_SYMBOLS]).toEqual(['ES', 'NQ', 'ZN', 'RTY', 'CL', 'GC']);
   });
 });
 
@@ -195,7 +188,7 @@ describe('computeSnapshot', () => {
   it('reports missing when no bar exists at or before `at`', async () => {
     queueRows({ latest: [] });
 
-    const result = await computeSnapshot('VX1', TRADE_DATE, AT);
+    const result = await computeSnapshot('GC', TRADE_DATE, AT);
 
     expect(result).toEqual({ kind: 'missing' });
   });

@@ -55,9 +55,29 @@ vi.mock('../../src/utils/timezone.js', () => ({
   getETDateStr: vi.fn(() => '2026-04-03'),
 }));
 
+vi.mock('../_lib/vix-term-structure.js', () => ({
+  fetchVixTermStructure: vi.fn(),
+}));
+
 import handler from '../futures/snapshot.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
+import {
+  fetchVixTermStructure,
+  type VixTermStructure,
+} from '../_lib/vix-term-structure.js';
+
+const VIX_TERM: VixTermStructure = {
+  live: {
+    vix: 16.5,
+    vix3m: 18.6,
+    ratio: 0.887,
+    band: 'CONTANGO',
+    asOf: '2026-04-03T15:59:30.000Z',
+  },
+  lastClose: { vix: 16.39, vix3m: 18.58, ratio: 0.882, band: 'CONTANGO' },
+  futuresRegime: 'CONTANGO',
+};
 
 /**
  * Helper to build mock snapshot rows returned from futures_snapshots.
@@ -89,6 +109,7 @@ describe('GET /api/futures/snapshot', () => {
     process.env = { ...originalEnv };
 
     vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+    vi.mocked(fetchVixTermStructure).mockResolvedValue(VIX_TERM);
   });
 
   afterEach(() => {
@@ -140,7 +161,7 @@ describe('GET /api/futures/snapshot', () => {
 
   // ── No data ───────────────────────────────────────────────
 
-  it('returns null fields when no data exists', async () => {
+  it('returns null futures fields but still the VIX term structure when no snapshot rows exist', async () => {
     // Combined query returns no rows
     mockSql.mockResolvedValueOnce([]);
     // MIN(ts) query for oldestTs
@@ -152,8 +173,7 @@ describe('GET /api/futures/snapshot', () => {
     expect(res._status).toBe(200);
     expect(res._json).toEqual({
       snapshots: [],
-      vxTermSpread: null,
-      vxTermStructure: null,
+      vixTermStructure: VIX_TERM,
       esSpxBasis: null,
       updatedAt: null,
       oldestTs: '2026-03-15T13:30:00.000Z',
@@ -172,8 +192,6 @@ describe('GET /api/futures/snapshot', () => {
       makeSnapshotRow('ES', 5700, 0.15, 0.8, 1.3, ts),
       makeSnapshotRow('NQ', 20500, -0.1, 0.5, 0.9, ts),
       makeSnapshotRow('RTY', 2100, 0.3, -0.2, 1.0, ts),
-      makeSnapshotRow('VX1', 18.5, null, null, null, ts),
-      makeSnapshotRow('VX2', 20.0, null, null, null, ts),
       makeSnapshotRow('ZN', 110.5, 0.05, 0.1, 0.8, ts),
     ]);
 
@@ -189,109 +207,46 @@ describe('GET /api/futures/snapshot', () => {
     expect(res._status).toBe(200);
     const json = res._json as {
       snapshots: { symbol: string; price: number }[];
-      vxTermSpread: number;
-      vxTermStructure: string;
+      vixTermStructure: VixTermStructure | null;
       esSpxBasis: number;
       updatedAt: string;
       oldestTs: string;
       requestedAt: string | null;
     };
 
-    expect(json.snapshots).toHaveLength(7);
+    expect(json.snapshots).toHaveLength(5);
     expect(json.updatedAt).toBe(ts);
     expect(json.oldestTs).toBe('2026-03-15T13:30:00.000Z');
     expect(json.requestedAt).toBeNull();
+    expect(json.vixTermStructure).toEqual(VIX_TERM);
+    expect(fetchVixTermStructure).toHaveBeenCalledTimes(1);
+    expect(json).not.toHaveProperty('vxTermSpread');
+    expect(json).not.toHaveProperty('vxTermStructure');
 
     // ES should have price 5700
     const es = json.snapshots.find((s) => s.symbol === 'ES');
     expect(es!.price).toBe(5700);
   });
 
-  // ── VX term structure: CONTANGO ───────────────────────────
+  // ── VIX term structure ────────────────────────────────────
 
-  it('computes CONTANGO when VX1 < VX2 (spread < -0.25)', async () => {
-    mockSql.mockResolvedValueOnce([
-      makeSnapshotRow('VX1', 18.0),
-      makeSnapshotRow('VX2', 20.0),
-    ]);
+  it('passes a fully degraded VIX term structure through unchanged', async () => {
+    const degraded: VixTermStructure = {
+      live: null,
+      lastClose: null,
+      futuresRegime: null,
+    };
+    vi.mocked(fetchVixTermStructure).mockResolvedValueOnce(degraded);
+    mockSql.mockResolvedValueOnce([makeSnapshotRow('NQ', 20500)]);
     mockSql.mockResolvedValueOnce([{ oldest: null }]);
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
 
     expect(res._status).toBe(200);
-    const json = res._json as {
-      vxTermSpread: number;
-      vxTermStructure: string;
-    };
-    // Spread = 18.0 - 20.0 = -2.0 (< -0.25 → CONTANGO)
-    expect(json.vxTermSpread).toBe(-2);
-    expect(json.vxTermStructure).toBe('CONTANGO');
-  });
-
-  // ── VX term structure: BACKWARDATION ──────────────────────
-
-  it('computes BACKWARDATION when VX1 > VX2 (spread > 0.25)', async () => {
-    mockSql.mockResolvedValueOnce([
-      makeSnapshotRow('VX1', 22.0),
-      makeSnapshotRow('VX2', 20.0),
-    ]);
-    mockSql.mockResolvedValueOnce([{ oldest: null }]);
-
-    const res = mockResponse();
-    await handler(mockRequest({ method: 'GET' }), res);
-
-    const json = res._json as {
-      vxTermSpread: number;
-      vxTermStructure: string;
-    };
-    // Spread = 22.0 - 20.0 = 2.0 (> 0.25 → BACKWARDATION)
-    expect(json.vxTermSpread).toBe(2);
-    expect(json.vxTermStructure).toBe('BACKWARDATION');
-  });
-
-  // ── VX term structure: FLAT ───────────────────────────────
-
-  it('computes FLAT when VX1 ≈ VX2 (spread within threshold)', async () => {
-    mockSql.mockResolvedValueOnce([
-      makeSnapshotRow('VX1', 20.1),
-      makeSnapshotRow('VX2', 20.0),
-    ]);
-    mockSql.mockResolvedValueOnce([{ oldest: null }]);
-
-    const res = mockResponse();
-    await handler(mockRequest({ method: 'GET' }), res);
-
-    const json = res._json as {
-      vxTermSpread: number;
-      vxTermStructure: string;
-    };
-    // Spread = 20.1 - 20.0 = 0.1 (within ±0.25 → FLAT)
-    expect(json.vxTermSpread).toBe(0.1);
-    expect(json.vxTermStructure).toBe('FLAT');
-  });
-
-  // ── Null VX term structure when missing VX symbols ────────
-
-  it('returns null term structure when VX symbols are missing', async () => {
-    mockSql.mockResolvedValueOnce([
-      makeSnapshotRow('ES', 5700, 0.1, 0.5, 1.0),
-      makeSnapshotRow('NQ', 20500),
-    ]);
-    // MIN(ts) for oldestTs
-    mockSql.mockResolvedValueOnce([{ oldest: null }]);
-    // SPX query (ES exists)
-    mockSql.mockResolvedValueOnce([{ spx: '5690' }]);
-
-    const res = mockResponse();
-    await handler(mockRequest({ method: 'GET' }), res);
-
-    const json = res._json as {
-      vxTermSpread: number | null;
-      vxTermStructure: string | null;
-    };
-    expect(json.vxTermSpread).toBeNull();
-    expect(json.vxTermStructure).toBeNull();
+    expect(
+      (res._json as { vixTermStructure: unknown }).vixTermStructure,
+    ).toEqual(degraded);
   });
 
   // ── ES-SPX basis ──────────────────────────────────────────

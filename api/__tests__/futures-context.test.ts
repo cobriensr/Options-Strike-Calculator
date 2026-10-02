@@ -4,6 +4,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { formatFuturesForClaude } from '../_lib/futures-context.js';
 import logger from '../_lib/logger.js';
 import { metrics, Sentry } from '../_lib/sentry.js';
+import {
+  fetchVixTermStructure,
+  type VixTermStructure,
+} from '../_lib/vix-term-structure.js';
 
 // ── Mock logger so debug calls don't pollute output ──────────
 vi.mock('../_lib/logger.js', () => ({
@@ -14,6 +18,18 @@ vi.mock('../_lib/sentry.js', () => ({
   metrics: { increment: vi.fn() },
   Sentry: { captureException: vi.fn() },
 }));
+
+// VIX term structure is fetched at the module boundary; its own failure
+// modes are covered in vix-term-structure.test.ts.
+vi.mock('../_lib/vix-term-structure.js', () => ({
+  fetchVixTermStructure: vi.fn(),
+}));
+
+const NO_VIX_TERM: VixTermStructure = {
+  live: null,
+  lastClose: null,
+  futuresRegime: null,
+};
 
 // ── Types matching the query's row shape ─────────────────────
 
@@ -88,6 +104,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
   mockSql = vi.fn();
+  vi.mocked(fetchVixTermStructure).mockReset().mockResolvedValue(NO_VIX_TERM);
 });
 
 afterEach(() => {
@@ -110,7 +127,7 @@ describe('formatFuturesForClaude', () => {
     expect(result).toBeNull();
     expect(logger.warn).toHaveBeenCalledWith(
       { err },
-      'futures context query failed — omitting Futures Context',
+      'futures context query failed — omitting futures symbols',
     );
     expect(Sentry.captureException).toHaveBeenCalledWith(err);
     expect(metrics.increment).toHaveBeenCalledWith(
@@ -269,7 +286,7 @@ describe('formatFuturesForClaude', () => {
     );
   });
 
-  it('does not query VX and degrades cleanly without VX rows (no VX section, no vxTermSignal, no stale note)', async () => {
+  it('never queries VX1/VX2 and renders no VIX section when the term structure is empty', async () => {
     mockSnapshots([makeSnapshot('ES'), makeSnapshot('ZN')]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
@@ -279,8 +296,8 @@ describe('formatFuturesForClaude', () => {
     expect(symbols).not.toContain('VX2');
     expect(result).toContain('ES Futures (/ES)');
     expect(result).toContain('10Y Treasury (/ZN)');
-    expect(result).not.toContain('VIX Futures');
-    expect(result).not.toContain('Term Structure:');
+    expect(result).not.toContain('VIX Futures (/VX)');
+    expect(result).not.toContain('VIX Term Structure');
     expect(result).not.toContain('Near-term stress');
     expect(result).not.toContain('Normal vol regime');
     expect(result).not.toContain(STALE_NOTE);
@@ -492,62 +509,291 @@ describe('formatFuturesForClaude', () => {
     expect(result).toContain('DIVERGING');
   });
 
-  // ── VX section with term structure ──────────────────────
-  //
-  // VX1/VX2 are no longer queried (no bars since April — Databento never
-  // carried CFE). These feed rows straight to the retained renderer and
-  // vxTermSignal until the VIX/VIX3M proxy replaces them.
+  // ── VIX term structure (spot VIX / VIX3M) ───────────────
 
-  it('formats VX section with CONTANGO signal', async () => {
-    mockSnapshots([
-      makeSnapshot('VX1', { price: '18.00' }),
-      makeSnapshot('VX2', { price: '19.50' }),
-    ]);
+  describe('VIX term structure', () => {
+    const LIVE_CONTANGO = {
+      vix: 16.5,
+      vix3m: 18.6,
+      ratio: 0.887,
+      band: 'CONTANGO',
+      asOf: minutesBefore(NOW, 1),
+    } as const;
+    const CLOSE_CONTANGO = {
+      vix: 16.39,
+      vix3m: 18.58,
+      ratio: 0.882,
+      band: 'CONTANGO',
+    } as const;
 
-    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
+    function vixTerm(overrides: Partial<VixTermStructure>): void {
+      vi.mocked(fetchVixTermStructure).mockResolvedValueOnce({
+        ...NO_VIX_TERM,
+        ...overrides,
+      });
+    }
 
-    expect(result).toContain('VIX Futures (/VX)');
-    expect(result).toContain('CONTANGO');
-    // 18.00 - 19.50 = -1.50 → < -0.25 → CONTANGO
-    expect(result).toContain('premium selling');
-  });
+    it('renders the live ratio, latest close and futures label between NQ and ZN', async () => {
+      vixTerm({
+        live: LIVE_CONTANGO,
+        lastClose: CLOSE_CONTANGO,
+        futuresRegime: 'CONTANGO',
+      });
+      mockSnapshots([
+        makeSnapshot('ES'),
+        makeSnapshot('NQ', { price: '20500.00' }),
+        makeSnapshot('ZN', { price: '110.50' }),
+      ]);
 
-  it('formats VX section with BACKWARDATION signal', async () => {
-    mockSnapshots([
-      makeSnapshot('VX1', { price: '22.00' }),
-      makeSnapshot('VX2', { price: '20.00' }),
-    ]);
+      const result = await formatFuturesForClaude(
+        mockSql as never,
+        analysisDate,
+      );
 
-    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
+      expect(result).toContain(
+        [
+          'VIX Term Structure (VIX/VIX3M):',
+          '  Live: VIX 16.50 / VIX3M 18.60 = 0.887 (CONTANGO)',
+          '  Latest daily close: VIX 16.39 / VIX3M 18.58 = 0.882 (CONTANGO)',
+          '  VIX futures regime (front two VX, latest close): CONTANGO',
+          '  Signal: Normal vol regime. Favorable for premium selling.',
+        ].join('\n'),
+      );
+      const nq = result!.indexOf('NQ Futures (/NQ)');
+      const vix = result!.indexOf('VIX Term Structure');
+      const zn = result!.indexOf('10Y Treasury (/ZN)');
+      expect(nq).toBeLessThan(vix);
+      expect(vix).toBeLessThan(zn);
+      expect(result).not.toContain('Shift:');
+    });
 
-    expect(result).toContain('BACKWARDATION');
-    // 22 - 20 = +2.00 → > 0.25 → BACKWARDATION
-    expect(result).toContain('Near-term stress');
-  });
+    it('gives the BACKWARDATION stress signal from the live band', async () => {
+      vixTerm({
+        live: {
+          ...LIVE_CONTANGO,
+          vix: 28,
+          vix3m: 25,
+          ratio: 1.12,
+          band: 'BACKWARDATION',
+        },
+      });
+      mockSnapshots([makeSnapshot('ES')]);
 
-  it('formats VX section with FLAT term structure', async () => {
-    mockSnapshots([
-      makeSnapshot('VX1', { price: '19.10' }),
-      makeSnapshot('VX2', { price: '19.00' }),
-    ]);
+      const result = await formatFuturesForClaude(
+        mockSql as never,
+        analysisDate,
+      );
 
-    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
+      expect(result).toContain('= 1.120 (BACKWARDATION)');
+      expect(result).toContain('Near-term stress priced in');
+      expect(result).not.toContain('premium selling');
+    });
 
-    expect(result).toContain('FLAT');
-    // 19.10 - 19.00 = 0.10 → abs ≤ 0.25 → FLAT
-    expect(result).not.toContain('premium selling');
-    expect(result).not.toContain('Near-term stress');
-  });
+    it('gives no band signal for FLAT', async () => {
+      vixTerm({
+        live: {
+          ...LIVE_CONTANGO,
+          vix: 19,
+          vix3m: 20,
+          ratio: 0.95,
+          band: 'FLAT',
+        },
+      });
+      mockSnapshots([makeSnapshot('ES')]);
 
-  it('formats VX section with only front month when VX2 is missing', async () => {
-    mockSnapshots([makeSnapshot('VX1', { price: '20.00' })]);
+      const result = await formatFuturesForClaude(
+        mockSql as never,
+        analysisDate,
+      );
 
-    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
+      expect(result).toContain('= 0.950 (FLAT)');
+      expect(result).not.toContain('Signal: Near-term stress');
+      expect(result).not.toContain('Signal: Normal vol regime');
+    });
 
-    expect(result).toContain('VIX Futures (/VX)');
-    expect(result).toContain('Front Month: 20.00');
-    // No term structure info because VX2 is absent
-    expect(result).not.toContain('Term Structure:');
+    it('flags a band shift between the latest close and the live ratio', async () => {
+      vixTerm({
+        live: {
+          ...LIVE_CONTANGO,
+          vix: 19,
+          vix3m: 20,
+          ratio: 0.95,
+          band: 'FLAT',
+        },
+        lastClose: CLOSE_CONTANGO,
+      });
+      mockSnapshots([makeSnapshot('ES')]);
+
+      const result = await formatFuturesForClaude(
+        mockSql as never,
+        analysisDate,
+      );
+
+      expect(result).toContain(
+        '  Shift: CONTANGO at the latest close → FLAT live',
+      );
+    });
+
+    it('drops a live quote more than 15 minutes from the reference time and says so', async () => {
+      vixTerm({
+        live: { ...LIVE_CONTANGO, asOf: minutesBefore(NOW, 16) },
+        lastClose: CLOSE_CONTANGO,
+        futuresRegime: 'CONTANGO',
+      });
+      mockSnapshots([makeSnapshot('ES')]);
+
+      const result = await formatFuturesForClaude(
+        mockSql as never,
+        analysisDate,
+      );
+
+      expect(result).toContain(
+        '  Live: unavailable — only the latest daily close below',
+      );
+      expect(result).not.toContain('VIX 16.50');
+      expect(result).toContain('Latest daily close: VIX 16.39');
+      // The band signal falls back to the close.
+      expect(result).toContain('Normal vol regime');
+    });
+
+    it('drops the live quote when the entry time is hours before it', async () => {
+      const asOf = minutesBefore(NOW, 120);
+      vixTerm({ live: LIVE_CONTANGO, lastClose: CLOSE_CONTANGO });
+      mockSnapshots([
+        makeSnapshot('ES', { bar_ts: minutesBefore(new Date(asOf), 2) }),
+      ]);
+
+      const result = await formatFuturesForClaude(
+        mockSql as never,
+        analysisDate,
+        undefined,
+        asOf,
+      );
+
+      expect(result).toContain('Live: unavailable');
+      expect(result).toContain('Latest daily close: VIX 16.39');
+    });
+
+    it('does not fetch or render the term structure for a past analysis date', async () => {
+      const asOf = '2026-03-10T15:30:00.000Z';
+      mockSnapshots([
+        makeSnapshot('ES', { bar_ts: minutesBefore(new Date(asOf), 2) }),
+      ]);
+
+      const result = await formatFuturesForClaude(
+        mockSql as never,
+        '2026-03-10',
+        undefined,
+        asOf,
+      );
+
+      expect(fetchVixTermStructure).not.toHaveBeenCalled();
+      expect(result).toContain('ES Futures (/ES)');
+      expect(result).not.toContain('VIX Term Structure');
+    });
+
+    it('still renders the VIX section when every futures symbol is stale', async () => {
+      vixTerm({ live: LIVE_CONTANGO });
+      mockSnapshots([
+        makeSnapshot('ES', { bar_ts: minutesBefore(NOW, 60 * 24 * 26) }),
+      ]);
+
+      const result = await formatFuturesForClaude(
+        mockSql as never,
+        analysisDate,
+      );
+
+      expect(result).toMatch(
+        /^## Futures Context\n\nVIX Term Structure \(VIX\/VIX3M\):/,
+      );
+      expect(result).not.toContain('ES Futures');
+      expect(result).toMatch(/\n\nOmitted \(stale >15m\): ES$/);
+    });
+
+    it('still renders the VIX section when the futures query fails', async () => {
+      vixTerm({ lastClose: CLOSE_CONTANGO });
+      const err = new Error('connection reset');
+      mockSql.mockRejectedValueOnce(err);
+
+      const result = await formatFuturesForClaude(
+        mockSql as never,
+        analysisDate,
+      );
+
+      expect(result).toContain('VIX Term Structure (VIX/VIX3M):');
+      expect(result).toContain('Live: unavailable');
+      expect(metrics.increment).toHaveBeenCalledWith(
+        'futures_context.fetch_error',
+      );
+      expect(Sentry.captureException).toHaveBeenCalledWith(err);
+    });
+
+    it('renders the futures label alone when it is the only reading', async () => {
+      vixTerm({ futuresRegime: 'BACKWARDATION' });
+      mockSnapshots([]);
+
+      const result = await formatFuturesForClaude(
+        mockSql as never,
+        analysisDate,
+      );
+
+      expect(result).toContain(
+        'VIX Term Structure (VIX/VIX3M):\n  Live: unavailable\n  VIX futures regime (front two VX, latest close): BACKWARDATION',
+      );
+      expect(result).not.toContain('Latest daily close');
+      expect(result).not.toContain('only the latest daily close below');
+      // No ratio band → no band signal line.
+      expect(result).not.toContain('Signal:');
+    });
+
+    // UW's block may already hold today's close once the session is over.
+
+    it('drops the UW close and label for an after-close replay of an earlier entry time', async () => {
+      vi.setSystemTime(new Date('2026-04-06T22:00:00.000Z')); // 6 PM ET
+      const asOf = '2026-04-06T14:00:00.000Z'; // 10 AM ET entry
+      vixTerm({ lastClose: CLOSE_CONTANGO, futuresRegime: 'CONTANGO' });
+      mockSnapshots([
+        makeSnapshot('ES', { bar_ts: minutesBefore(new Date(asOf), 2) }),
+      ]);
+
+      const result = await formatFuturesForClaude(
+        mockSql as never,
+        analysisDate,
+        undefined,
+        asOf,
+      );
+
+      expect(fetchVixTermStructure).toHaveBeenCalledTimes(1);
+      expect(result).toContain('ES Futures (/ES)');
+      expect(result).not.toContain('VIX Term Structure');
+    });
+
+    it('keeps the UW close for an after-close run referenced at the session close', async () => {
+      vi.setSystemTime(new Date('2026-04-06T22:00:00.000Z')); // 6 PM ET
+      vixTerm({ lastClose: CLOSE_CONTANGO, futuresRegime: 'CONTANGO' });
+      mockSnapshots([]);
+
+      const result = await formatFuturesForClaude(
+        mockSql as never,
+        analysisDate,
+      );
+
+      expect(result).toContain('Latest daily close: VIX 16.39');
+      expect(result).toContain('VIX futures regime');
+    });
+
+    it('keeps the UW close (the prior session’s) for a pre-market run', async () => {
+      vi.setSystemTime(new Date('2026-04-06T12:00:00.000Z')); // 8 AM ET
+      vixTerm({ lastClose: CLOSE_CONTANGO });
+      mockSnapshots([]);
+
+      const result = await formatFuturesForClaude(
+        mockSql as never,
+        analysisDate,
+      );
+
+      expect(result).toContain('Latest daily close: VIX 16.39');
+    });
   });
 
   // ── ZN section with flight-to-safety ────────────────────

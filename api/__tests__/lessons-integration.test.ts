@@ -46,6 +46,16 @@ vi.mock('../_lib/db.js', () => ({
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
+// The futures context's VIX term structure calls Schwab and UW; keep the
+// handler off the network. A plain function survives resetAllMocks.
+vi.mock('../_lib/vix-term-structure.js', () => ({
+  fetchVixTermStructure: async () => ({
+    live: null,
+    lastClose: null,
+    futuresRegime: null,
+  }),
+}));
+
 // --- Lessons mock ---
 vi.mock('../_lib/lessons.js', () => ({
   getActiveLessons: vi.fn().mockResolvedValue([]),

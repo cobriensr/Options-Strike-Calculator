@@ -52,8 +52,13 @@ vi.mock('../../src/utils/timezone.js', async () => {
   return actual;
 });
 
+vi.mock('../_lib/vix-term-structure.js', () => ({
+  fetchVixTermStructure: vi.fn(),
+}));
+
 import handler from '../futures/snapshot.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
+import { fetchVixTermStructure } from '../_lib/vix-term-structure.js';
 
 // Historical bar timestamp fixture (1 min before picked `at`)
 const PICKED_AT = '2026-04-17T19:30:00.000Z';
@@ -126,7 +131,7 @@ function setupHistoricalDispatch(opts: {
       const symbol = values.find(
         (v) =>
           typeof v === 'string' &&
-          ['ES', 'NQ', 'VX1', 'VX2', 'ZN', 'RTY', 'CL', 'GC', 'DX'].includes(v),
+          ['ES', 'NQ', 'ZN', 'RTY', 'CL', 'GC', 'DX'].includes(v),
       ) as string | undefined;
 
       if (!symbol) return Promise.resolve([]);
@@ -176,8 +181,6 @@ function setupHistoricalDispatch(opts: {
 const ALL_NULL_SYMBOLS: Record<string, SymbolData | null> = {
   ES: null,
   NQ: null,
-  VX1: null,
-  VX2: null,
   ZN: null,
   RTY: null,
   CL: null,
@@ -244,15 +247,15 @@ describe('GET /api/futures/snapshot?at=<ISO>', () => {
       symbols: {
         ...ALL_NULL_SYMBOLS,
         ES: makeSymbolData({ latestClose: '5710' }),
-        VX1: makeSymbolData({
-          latestClose: '18.5',
+        ZN: makeSymbolData({
+          latestClose: '110.5',
           hourAgoClose: null,
           dayOpenClose: null,
           avgVol: null,
           todayVol: null,
         }),
-        VX2: makeSymbolData({
-          latestClose: '20.0',
+        GC: makeSymbolData({
+          latestClose: '2350',
           hourAgoClose: null,
           dayOpenClose: null,
           avgVol: null,
@@ -277,8 +280,7 @@ describe('GET /api/futures/snapshot?at=<ISO>', () => {
         change1hPct: number | null;
         changeDayPct: number | null;
       }[];
-      vxTermSpread: number;
-      vxTermStructure: string;
+      vixTermStructure: unknown;
       esSpxBasis: number;
       updatedAt: string | null;
       oldestTs: string | null;
@@ -294,9 +296,9 @@ describe('GET /api/futures/snapshot?at=<ISO>', () => {
     expect(es!.change1hPct).toBeCloseTo(0.3515, 3);
     expect(es!.changeDayPct).toBeCloseTo(0.5282, 3);
 
-    // VX term spread = 18.5 - 20.0 = -1.5 → CONTANGO
-    expect(json.vxTermSpread).toBe(-1.5);
-    expect(json.vxTermStructure).toBe('CONTANGO');
+    // VIX / VIX3M has no history: null for a historical pick, unfetched.
+    expect(json.vixTermStructure).toBeNull();
+    expect(fetchVixTermStructure).not.toHaveBeenCalled();
 
     // ES-SPX basis = 5710 - 5700
     expect(json.esSpxBasis).toBe(10);
@@ -360,7 +362,7 @@ describe('GET /api/futures/snapshot?at=<ISO>', () => {
     expect(res._status).toBe(200);
     const json = res._json as {
       snapshots: unknown[];
-      vxTermSpread: number | null;
+      vixTermStructure: unknown;
       esSpxBasis: number | null;
       updatedAt: string | null;
       oldestTs: string | null;
@@ -368,7 +370,7 @@ describe('GET /api/futures/snapshot?at=<ISO>', () => {
     };
 
     expect(json.snapshots).toEqual([]);
-    expect(json.vxTermSpread).toBeNull();
+    expect(json.vixTermStructure).toBeNull();
     expect(json.esSpxBasis).toBeNull();
     expect(json.updatedAt).toBeNull();
     expect(json.oldestTs).toBe('2026-04-18T13:30:00.000Z');

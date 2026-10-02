@@ -8,6 +8,10 @@
  * omitted and named in an "Omitted (stale)" note: the snapshot cron
  * keeps writing fresh-timestamped rows with a frozen price when the bar
  * feed dies, so the snapshot's own ts says nothing about the price.
+ *
+ * The block also carries the VIX term structure (spot VIX / VIX3M plus
+ * UW's VIX-futures label) from vix-term-structure.ts. It has no history,
+ * so it appears only when the analysis date is today.
  */
 
 import type { NeonQueryFunction } from '@neondatabase/serverless';
@@ -16,8 +20,14 @@ import { fmtPct, fmtPrice } from './format-helpers.js';
 import logger from './logger.js';
 import { numOrNull } from './numeric-coercion.js';
 import { metrics, Sentry } from './sentry.js';
+import {
+  fetchVixTermStructure,
+  type LiveVixTermReading,
+  type VixTermBand,
+  type VixTermReading,
+} from './vix-term-structure.js';
 import { getMarketCloseHourET } from '../../src/data/marketHours.js';
-import { etWallClockToUtcIso } from '../../src/utils/timezone.js';
+import { etWallClockToUtcIso, getETDateStr } from '../../src/utils/timezone.js';
 
 type Sql = NeonQueryFunction<false, false>;
 
@@ -52,11 +62,22 @@ type FuturesSnapshot = z.infer<typeof futuresSnapshotSchema>;
 const MAX_PRICE_AGE_MS = 15 * 60 * 1000;
 const MAX_PRICE_AGE_MIN = MAX_PRICE_AGE_MS / 60_000;
 
+/**
+ * The VIX term structure as the prompt may use it. `live` is set only
+ * when its quotes are within MAX_PRICE_AGE_MS of the reference time.
+ * `lastClose` and `futuresRegime` are the latest daily closes, so they
+ * only reach the prompt for an analysis of today.
+ */
+interface VixTermContext {
+  live: LiveVixTermReading | null;
+  lastClose: VixTermReading | null;
+  futuresRegime: VixTermBand | null;
+}
+
 interface DerivedSignals {
   esSpxBasis: number | null;
   nqEsRatio: number | null;
-  vxTermSpread: number | null;
-  vxTermSignal: 'CONTANGO' | 'BACKWARDATION' | 'FLAT' | null;
+  vixTerm: VixTermContext | null;
 }
 
 // ── Helpers ────────────────────────────────────────────────
@@ -140,32 +161,45 @@ const renderNq: Renderer = (bySymbol, derived) => {
   return lines;
 };
 
-const renderVx: Renderer = (bySymbol, derived) => {
-  const vxFront = bySymbol.get('VX1');
-  const vxBack = bySymbol.get('VX2');
-  if (!vxFront) return null;
+function fmtVixReading(r: VixTermReading): string {
+  return `VIX ${fmtPrice(r.vix)} / VIX3M ${fmtPrice(r.vix3m)} = ${r.ratio.toFixed(3)} (${r.band})`;
+}
 
-  const frontPrice = numOrNull(vxFront.price);
-  const backPrice = numOrNull(vxBack?.price ?? null);
-  const lines = [`VIX Futures (/VX):`];
-  if (frontPrice != null && backPrice != null) {
-    lines.push(
-      `  Front Month: ${fmtPrice(frontPrice)} | Second Month: ${fmtPrice(backPrice)}`,
-    );
-  } else if (frontPrice != null) {
-    lines.push(`  Front Month: ${fmtPrice(frontPrice)}`);
+/** Spot VIX / VIX3M section; reads only `derived.vixTerm`. */
+const renderVix: Renderer = (_bySymbol, derived) => {
+  const term = derived.vixTerm;
+  if (term == null) return null;
+  const { live, lastClose, futuresRegime } = term;
+
+  const lines = [`VIX Term Structure (VIX/VIX3M):`];
+  if (live) {
+    lines.push(`  Live: ${fmtVixReading(live)}`);
+  } else if (lastClose) {
+    lines.push(`  Live: unavailable — only the latest daily close below`);
+  } else {
+    lines.push(`  Live: unavailable`);
   }
-  if (derived.vxTermSpread != null && derived.vxTermSignal) {
+  if (lastClose) {
+    lines.push(`  Latest daily close: ${fmtVixReading(lastClose)}`);
+  }
+  if (futuresRegime) {
     lines.push(
-      `  Term Structure: ${derived.vxTermSignal} (spread: ${derived.vxTermSpread >= 0 ? '+' : ''}${derived.vxTermSpread.toFixed(2)})`,
+      `  VIX futures regime (front two VX, latest close): ${futuresRegime}`,
     );
-    if (derived.vxTermSignal === 'BACKWARDATION') {
-      lines.push(
-        `  Signal: Near-term stress priced in. Straddle cones may understate range.`,
-      );
-    } else if (derived.vxTermSignal === 'CONTANGO') {
-      lines.push(`  Signal: Normal vol regime. Favorable for premium selling.`);
-    }
+  }
+  if (live && lastClose && live.band !== lastClose.band) {
+    lines.push(
+      `  Shift: ${lastClose.band} at the latest close → ${live.band} live`,
+    );
+  }
+
+  const band = live?.band ?? lastClose?.band ?? null;
+  if (band === 'BACKWARDATION') {
+    lines.push(
+      `  Signal: Near-term stress priced in. Straddle cones may understate range.`,
+    );
+  } else if (band === 'CONTANGO') {
+    lines.push(`  Signal: Normal vol regime. Favorable for premium selling.`);
   }
   return lines;
 };
@@ -270,13 +304,14 @@ const renderGc: Renderer = (bySymbol) => {
 };
 
 // Renderer iteration order is the section order in the prompt
-// (ES → NQ → VX → ZN → RTY → CL → GC). DX has no renderer: its feed
-// was Databento-only (ICE) and has no Unusual Whales substitute, so any
-// DX snapshot row still in the table is ignored.
+// (ES → NQ → VIX → ZN → RTY → CL → GC). DX and VX1/VX2 have no
+// renderer: DX (ICE) and VX (Cboe CFE) were never on a feed we still
+// have, so any such snapshot row left in the table is ignored. The VIX
+// section comes from spot VIX / VIX3M instead.
 const SYMBOL_RENDERERS: ReadonlyArray<readonly [string, Renderer]> = [
   ['ES', renderEs],
   ['NQ', renderNq],
-  ['VX', renderVx],
+  ['VIX', renderVix],
   ['ZN', renderZn],
   ['RTY', renderRty],
   ['CL', renderCl],
@@ -286,10 +321,7 @@ const SYMBOL_RENDERERS: ReadonlyArray<readonly [string, Renderer]> = [
 /**
  * futures_snapshots / futures_bars symbols to read, in section order.
  * The query returns rows in this order, so the stale note lists symbols
- * in it too. VX1/VX2 are deliberately absent: they have had no bars
- * since April (Databento never carried CFE), so they would only ever be
- * "stale". renderVx and vxTermSignal stay until the VIX/VIX3M proxy
- * replaces them; with no VX rows they render nothing.
+ * in it too.
  */
 const CONTEXT_SYMBOLS: readonly string[] = [
   'ES',
@@ -317,12 +349,15 @@ function resolveReferenceTime(
   asOf: string | undefined,
 ): Date {
   const now = new Date();
-  const closeMinuteET = (getMarketCloseHourET(analysisDate) ?? 16) * 60;
-  const cutoff =
-    parseIso(asOf) ??
-    parseIso(etWallClockToUtcIso(analysisDate, closeMinuteET));
+  const cutoff = parseIso(asOf) ?? sessionClose(analysisDate);
   if (cutoff == null) return now;
   return cutoff < now ? cutoff : now;
+}
+
+/** The date's cash close: 13:00 ET on early-close days, else 16:00 ET. */
+function sessionClose(analysisDate: string): Date | null {
+  const closeMinuteET = (getMarketCloseHourET(analysisDate) ?? 16) * 60;
+  return parseIso(etWallClockToUtcIso(analysisDate, closeMinuteET));
 }
 
 function parseIso(iso: string | null | undefined): Date | null {
@@ -332,33 +367,18 @@ function parseIso(iso: string | null | undefined): Date | null {
 }
 
 /**
- * Build the futures context block for Claude analysis.
- *
  * One query: for each CONTEXT_SYMBOLS entry, the latest futures_snapshots
  * row at-or-before the reference time (seek on UNIQUE(symbol, ts)) and
  * the latest futures_bars ts at-or-before that snapshot (seek on
- * idx_futures_bars_symbol_ts). Freshness is the age of that bar — the
- * price the snapshot actually carries — not the snapshot's write time.
- * A symbol with no snapshot at all is simply absent (never existed); a
- * symbol whose bar is stale or missing is dropped from every section and
- * derivation and named in a trailing "Omitted (stale …)" note.
- *
- * Returns null when nothing fresh is left to render (query failed, no
- * rows, or every symbol stale); the caller then lists "Futures Context"
- * in the unavailable-data manifest.
- *
- * @param asOf - optional ISO entry-time cutoff (`parseEntryTimeAsUtc`)
+ * idx_futures_bars_symbol_ts). Rows failing schema validation are dropped
+ * with a warning; a query failure is reported and yields no rows, so the
+ * VIX section can still render.
  */
-export async function formatFuturesForClaude(
+async function readFuturesSnapshots(
   sql: Sql,
-  analysisDate: string,
-  spxPrice?: number,
-  asOf?: string,
-): Promise<string | null> {
-  const referenceTime = resolveReferenceTime(analysisDate, asOf);
-  const referenceIso = referenceTime.toISOString();
+  referenceIso: string,
+): Promise<FuturesSnapshot[]> {
   const snapshots: FuturesSnapshot[] = [];
-
   try {
     const rawRows = await sql`
       SELECT s.symbol, snap.ts, bar.bar_ts, snap.price,
@@ -393,12 +413,93 @@ export async function formatFuturesForClaude(
   } catch (err) {
     logger.warn(
       { err },
-      'futures context query failed — omitting Futures Context',
+      'futures context query failed — omitting futures symbols',
     );
     metrics.increment('futures_context.fetch_error');
     Sentry.captureException(err);
+    return [];
+  }
+  return snapshots;
+}
+
+/**
+ * Whether UW's "latest close" can be used at `referenceTime` without
+ * look-ahead. Before today's cash close the block can only hold the prior
+ * session's close. Once the session is over it may already hold today's,
+ * which is look-ahead for a run whose reference time is earlier in the
+ * session (e.g. a replay of the morning entry) — so it is dropped for
+ * those runs. A run referenced at the close itself keeps it.
+ */
+function uwCloseUsable(
+  analysisDate: string,
+  referenceTime: Date,
+  now: Date,
+): boolean {
+  const close = sessionClose(analysisDate);
+  if (close == null) return false;
+  return now < close || referenceTime >= close;
+}
+
+/**
+ * The VIX term structure for this analysis, or null when there is
+ * nothing usable. Neither source has history — UW's block is the latest
+ * daily closes and the Schwab quote is "now" — so a run for any other
+ * date gets nothing (and makes no calls). The live ratio is used only
+ * when its quotes are within MAX_PRICE_AGE_MS of the reference time in
+ * either direction: a run with an entry time hours before now falls back
+ * to the close, while a live run a few minutes past its entry time keeps
+ * the current quote.
+ */
+async function resolveVixTerm(
+  analysisDate: string,
+  referenceTime: Date,
+): Promise<VixTermContext | null> {
+  const now = new Date();
+  if (analysisDate !== getETDateStr(now)) return null;
+
+  const term = await fetchVixTermStructure();
+  const liveMs = term.live ? Date.parse(term.live.asOf) : Number.NaN;
+  const live =
+    Number.isFinite(liveMs) &&
+    Math.abs(referenceTime.getTime() - liveMs) <= MAX_PRICE_AGE_MS
+      ? term.live
+      : null;
+  const closeUsable = uwCloseUsable(analysisDate, referenceTime, now);
+  const lastClose = closeUsable ? term.lastClose : null;
+  const futuresRegime = closeUsable ? term.futuresRegime : null;
+  if (live == null && lastClose == null && futuresRegime == null) {
     return null;
   }
+  return { live, lastClose, futuresRegime };
+}
+
+/**
+ * Build the futures context block for Claude analysis.
+ *
+ * Freshness is the age of the bar behind each snapshot — the price the
+ * snapshot actually carries — not the snapshot's write time. A symbol
+ * with no snapshot at all is simply absent (never existed); a symbol
+ * whose bar is stale or missing is dropped from every section and
+ * derivation and named in a trailing "Omitted (stale …)" note.
+ *
+ * Returns null when nothing is left to render (no fresh futures and no
+ * VIX term structure); the caller then lists "Futures Context" in the
+ * unavailable-data manifest.
+ *
+ * @param asOf - optional ISO entry-time cutoff (`parseEntryTimeAsUtc`)
+ */
+export async function formatFuturesForClaude(
+  sql: Sql,
+  analysisDate: string,
+  spxPrice?: number,
+  asOf?: string,
+): Promise<string | null> {
+  const referenceTime = resolveReferenceTime(analysisDate, asOf);
+  const referenceIso = referenceTime.toISOString();
+  const [snapshots, vixTerm] = await Promise.all([
+    readFuturesSnapshots(sql, referenceIso),
+    resolveVixTerm(analysisDate, referenceTime),
+  ]);
 
   // Build a lookup map of fresh-priced snapshots only — a stale row must
   // not feed its own section or any cross-symbol derivation (basis,
@@ -432,10 +533,10 @@ export async function formatFuturesForClaude(
     metrics.increment('futures_context.stale_snapshot');
   }
 
-  if (bySymbol.size === 0) return null;
-
-  // Compute derived signals
-  const derived = computeDerivedSignals(bySymbol, spxPrice);
+  const derived: DerivedSignals = {
+    ...computeDerivedSignals(bySymbol, spxPrice),
+    vixTerm,
+  };
 
   // Per-symbol sections via the renderer table.
   const sections: string[] = [];
@@ -460,12 +561,10 @@ export async function formatFuturesForClaude(
 function computeDerivedSignals(
   bySymbol: Map<string, FuturesSnapshot>,
   spxPrice?: number,
-): DerivedSignals {
-  const result: DerivedSignals = {
+): Omit<DerivedSignals, 'vixTerm'> {
+  const result: Omit<DerivedSignals, 'vixTerm'> = {
     esSpxBasis: null,
     nqEsRatio: null,
-    vxTermSpread: null,
-    vxTermSignal: null,
   };
 
   // ES-SPX basis
@@ -478,20 +577,6 @@ function computeDerivedSignals(
   const nqPrice = numOrNull(bySymbol.get('NQ')?.price ?? null);
   if (nqPrice != null && esPrice != null && esPrice > 0) {
     result.nqEsRatio = nqPrice / esPrice;
-  }
-
-  // VX term structure
-  const vxFront = numOrNull(bySymbol.get('VX1')?.price ?? null);
-  const vxBack = numOrNull(bySymbol.get('VX2')?.price ?? null);
-  if (vxFront != null && vxBack != null) {
-    result.vxTermSpread = vxFront - vxBack;
-    if (result.vxTermSpread > 0.25) {
-      result.vxTermSignal = 'BACKWARDATION';
-    } else if (result.vxTermSpread < -0.25) {
-      result.vxTermSignal = 'CONTANGO';
-    } else {
-      result.vxTermSignal = 'FLAT';
-    }
   }
 
   return result;

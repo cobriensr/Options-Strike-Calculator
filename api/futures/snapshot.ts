@@ -17,10 +17,14 @@
  *   before `at` is omitted — so a pick inside a weekend / maintenance
  *   closure or a feed outage returns no snapshot for that symbol.
  *
- * Cross-symbol derived metrics (VX term spread, ES-SPX basis) are
- * computed from whichever snapshot set is returned. In historical mode,
- * the SPX reference is pulled from `market_snapshots` on the picked
- * trade date; if none exists, `esSpxBasis = null`.
+ * ES-SPX basis is computed from whichever snapshot set is returned. In
+ * historical mode, the SPX reference is pulled from `market_snapshots`
+ * on the picked trade date; if none exists, `esSpxBasis = null`.
+ *
+ * `vixTermStructure` (spot VIX / VIX3M ratio + UW's VIX-futures label,
+ * see vix-term-structure.ts) is live-only: neither source has history,
+ * so it is null in historical mode. It replaces the VX1/VX2 spread,
+ * which never had a data source.
  *
  * Owner-or-guest: Yes (matches ML Insights pattern).
  * Cache: private, s-maxage=60 (data updates every 5 min).
@@ -40,6 +44,10 @@ import {
   computeSnapshot,
   type SnapshotRow,
 } from '../_lib/futures-derive.js';
+import {
+  fetchVixTermStructure,
+  type VixTermStructure,
+} from '../_lib/vix-term-structure.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -53,8 +61,8 @@ interface FuturesSnapshotItem {
 
 interface FuturesSnapshotResponse {
   snapshots: FuturesSnapshotItem[];
-  vxTermSpread: number | null;
-  vxTermStructure: 'CONTANGO' | 'FLAT' | 'BACKWARDATION' | null;
+  /** Null in historical mode (no history for either source). */
+  vixTermStructure: VixTermStructure | null;
   esSpxBasis: number | null;
   updatedAt: string | null;
   oldestTs: string | null;
@@ -88,14 +96,6 @@ const querySchema = z.object({
 });
 
 // ── Helpers ─────────────────────────────────────────────────
-
-function classifyTermStructure(
-  spread: number,
-): 'CONTANGO' | 'FLAT' | 'BACKWARDATION' {
-  if (spread > 0.25) return 'BACKWARDATION';
-  if (spread < -0.25) return 'CONTANGO';
-  return 'FLAT';
-}
 
 function round2(v: number | null): number | null {
   return v != null ? Number.parseFloat(v.toFixed(2)) : null;
@@ -180,6 +180,10 @@ async function handleLatest(res: VercelResponse) {
   const sql = getDb();
   const tradeDate = getETDateStr(new Date());
 
+  // Runs alongside the DB reads. Never rejects, so if a DB read throws
+  // first this promise is simply dropped.
+  const vixTermPromise = fetchVixTermStructure();
+
   // Get all symbols at the latest snapshot timestamp for today
   // Uses inline MAX to avoid JS Date round-trip precision loss
   const rows = await withDbRetry(
@@ -200,14 +204,15 @@ async function handleLatest(res: VercelResponse) {
   const oldestTs = await fetchOldestTs();
 
   if (rows.length === 0) {
+    // VIX term structure doesn't depend on futures bars — still return it.
+    const vixTermStructure = await vixTermPromise;
     res.setHeader(
       'Cache-Control',
       'private, s-maxage=60, stale-while-revalidate=30',
     );
     return res.status(200).json({
       snapshots: [],
-      vxTermSpread: null,
-      vxTermStructure: null,
+      vixTermStructure,
       esSpxBasis: null,
       updatedAt: null,
       oldestTs,
@@ -234,13 +239,12 @@ async function handleLatest(res: VercelResponse) {
       r.volume_ratio != null ? Number.parseFloat(String(r.volume_ratio)) : null,
   }));
 
-  const { vxTermSpread, vxTermStructure } = deriveVxTermStructure(snapshots);
   const esSpxBasis = await deriveEsSpxBasis(snapshots, tradeDate);
+  const vixTermStructure = await vixTermPromise;
 
   const response: FuturesSnapshotResponse = {
     snapshots,
-    vxTermSpread: round2(vxTermSpread),
-    vxTermStructure,
+    vixTermStructure,
     esSpxBasis: round2(esSpxBasis),
     updatedAt: latestTs,
     oldestTs,
@@ -297,8 +301,7 @@ async function handleHistorical(atIso: string, res: VercelResponse) {
     );
     return res.status(200).json({
       snapshots: [],
-      vxTermSpread: null,
-      vxTermStructure: null,
+      vixTermStructure: null,
       esSpxBasis: null,
       updatedAt: null,
       oldestTs,
@@ -322,13 +325,11 @@ async function handleHistorical(atIso: string, res: VercelResponse) {
     }
   }
 
-  const { vxTermSpread, vxTermStructure } = deriveVxTermStructure(snapshots);
   const esSpxBasis = await deriveEsSpxBasis(snapshots, tradeDate);
 
   const response: FuturesSnapshotResponse = {
     snapshots,
-    vxTermSpread: round2(vxTermSpread),
-    vxTermStructure,
+    vixTermStructure: null,
     esSpxBasis: round2(esSpxBasis),
     updatedAt,
     oldestTs,
@@ -343,22 +344,6 @@ async function handleHistorical(atIso: string, res: VercelResponse) {
 }
 
 // ── Cross-symbol derivations ────────────────────────────────
-
-function deriveVxTermStructure(snapshots: FuturesSnapshotItem[]): {
-  vxTermSpread: number | null;
-  vxTermStructure: 'CONTANGO' | 'FLAT' | 'BACKWARDATION' | null;
-} {
-  const vx1 = snapshots.find((s) => s.symbol === 'VX1');
-  const vx2 = snapshots.find((s) => s.symbol === 'VX2');
-  if (!vx1 || !vx2) {
-    return { vxTermSpread: null, vxTermStructure: null };
-  }
-  const spread = vx1.price - vx2.price;
-  return {
-    vxTermSpread: spread,
-    vxTermStructure: classifyTermStructure(spread),
-  };
-}
 
 async function deriveEsSpxBasis(
   snapshots: FuturesSnapshotItem[],

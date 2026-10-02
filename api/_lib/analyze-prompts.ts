@@ -808,14 +808,26 @@ NQ-QQQ Divergence:
 - When NQ momentum DISAGREES with QQQ flow → futures market (institutional) is usually
   right. Fade the options flow signal. Reduce QQQ flow weight in Rule 8 to 10%.
 
-VIX Futures Term Structure:
-- Contango (VX front < back, normal) = vol expected to mean-revert. Favorable for
-  premium selling. Straddle cones are reliably sized. IC structures viable.
-- Backwardation (VX front > back) = market expects vol to peak TODAY. Straddle cones
-  may be understated. Widen IC strikes by 5-10 pts or avoid IC entirely. Require
-  flow agreement ≥ 7/9 before entering any structure.
-- Contango collapse (spread narrowing rapidly) = regime transition in progress. Treat
-  as high-uncertainty — reduce to MODERATE confidence regardless of other signals.
+VIX Term Structure (VIX/VIX3M):
+The ratio is spot VIX divided by VIX3M (3-month VIX). Bands: CONTANGO at or below
+0.90, FLAT between 0.90 and 1.00, BACKWARDATION at or above 1.00. "Live" is intraday;
+"Latest daily close" is the most recent end-of-day reading available at the analysis
+time — during the session that is the prior session's close, so it does not include
+today's move. The VIX futures regime line is a daily label from the front two VIX
+futures at that same close — context only; when it disagrees with a live ratio, the
+live ratio is newer.
+- CONTANGO = vol expected to mean-revert. Favorable for premium selling. Straddle
+  cones are reliably sized. IC structures viable.
+- FLAT = elevated vol, not a calm regime. Since 2009, next-day VIX moves on these
+  days averaged about 1.5x those of CONTANGO days. No structure rule by itself —
+  do not read it as CONTANGO.
+- BACKWARDATION = market expects vol to peak TODAY (spot above 3-month). Straddle
+  cones may be understated. Widen IC strikes by 5-10 pts or avoid IC entirely.
+  Require flow agreement ≥ 7/9 before entering any structure.
+- A "Shift:" line toward backwardation (CONTANGO → FLAT, FLAT → BACKWARDATION, or
+  CONTANGO → BACKWARDATION) = regime transition in progress. Treat as
+  high-uncertainty — reduce to MODERATE confidence regardless of other signals. A
+  shift the other way (vol easing) adds no rule; apply the live band's rule.
 
 ZN Flight-to-Safety:
 - ZN rallying (yields falling) + ES selling = institutional capital leaving equities
@@ -1334,7 +1346,7 @@ Respond in this exact JSON format (no markdown, no backticks, no preamble):
     "vannaExposure": { "signal": "TAILWIND" | "HEADWIND" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Aggregate vanna direction and VIX intraday trend — Rule 17 management adjustment" },
     "pinRisk": { "signal": "LOW" | "MODERATE" | "HIGH" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Top OI strikes relative to short strike placement — pin magnet proximity" },
     "skew": { "signal": "STEEP_PUT" | "FLAT" | "SYMMETRIC" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "25Δ put skew level and skew ratio — tail risk premium assessment" },
-    "futuresContext": { "signal": "RISK_ON" | "RISK_OFF" | "MIXED" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Cross-asset regime summary: ES basis, NQ divergence, ZN flight-to-safety, RTY breadth, CL oil shock, GC safe haven — which futures signals are active and what they mean for the structure" },
+    "futuresContext": { "signal": "RISK_ON" | "RISK_OFF" | "MIXED" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Cross-asset regime summary: ES basis, NQ divergence, VIX/VIX3M term structure, ZN flight-to-safety, RTY breadth, CL oil shock, GC safe haven — which futures signals are active and what they mean for the structure" },
     "nopeSignal": { "signal": "BULLISH" | "BEARISH" | "NEUTRAL" | "CHOPPY" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "SPY NOPE trajectory and magnitude — does dealer hedging pressure confirm or contradict the flow consensus? Note sign flips and whether NOPE agrees with Market Tide" },
     "deltaFlow": { "signal": "CONFIRMS" | "CONTRADICTS" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "0DTE Delta Flow OTM signal label (OTM DIVERGENCE, OTM EXCEEDS TOTAL, OTM-DOMINANT, ATM-DOMINANT) and whether it confirms or caveats the Rule 8 flow consensus" },
     "zeroGamma": { "signal": "SUPPRESSION" | "ACCELERATION" | "KNIFE_EDGE" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Current regime (positive/negative) at spot, cone fraction distance to flip, and whether it confirms or contradicts Aggregate GEX" },

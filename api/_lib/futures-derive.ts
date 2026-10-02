@@ -24,18 +24,11 @@ import { getETMarketOpenUtcIso } from '../../src/utils/timezone.js';
 
 // ── Constants ───────────────────────────────────────────────
 
-// DX (ICE) is not carried by the UW futures feed and had no bars after
-// 2026-03-05, so it is not snapshotted.
-export const FUTURES_SYMBOLS = [
-  'ES',
-  'NQ',
-  'VX1',
-  'VX2',
-  'ZN',
-  'RTY',
-  'CL',
-  'GC',
-] as const;
+// DX (ICE) and VX1/VX2 (Cboe CFE) are not carried by the UW futures feed
+// and are not snapshotted: DX had no bars after 2026-03-05, VX none since
+// April. The VIX term structure comes from spot VIX / VIX3M instead
+// (vix-term-structure.ts).
+export const FUTURES_SYMBOLS = ['ES', 'NQ', 'ZN', 'RTY', 'CL', 'GC'] as const;
 
 /**
  * Oldest a 1-minute bar may be and still count as the price at a moment.
@@ -94,7 +87,7 @@ export interface SnapshotRow {
  *   - `fresh`: a snapshot from a bar within MAX_BAR_AGE_MS of `at`.
  *   - `stale`: bars exist but the newest is too old — a stopped feed.
  *     Both fields are null when the bar's ts is unparseable.
- *   - `missing`: no bar at or before `at` at all (e.g. VX1/VX2, never
+ *   - `missing`: no bar at or before `at` at all (e.g. a symbol never
  *     ingested).
  */
 export type SnapshotResult =
@@ -145,7 +138,7 @@ function pctChange(price: number, ref: number | null): number | null {
 /**
  * Compute a single symbol's snapshot as of `at`.
  *
- * @param symbol    Futures symbol (ES, NQ, VX1, etc.)
+ * @param symbol    Futures symbol (ES, NQ, ZN, etc.)
  * @param tradeDate ET calendar date used for "day change" and today's
  *                  volume (typically `getETDateStr(at)`).
  * @param at        The "now" moment from the caller's perspective. The

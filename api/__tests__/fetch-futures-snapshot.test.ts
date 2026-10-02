@@ -242,14 +242,12 @@ describe('fetch-futures-snapshot handler', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
-  // ── Happy path: all 8 symbols ─────────────────────────────
+  // ── Happy path: all 6 symbols ─────────────────────────────
 
-  it('processes all 8 symbols and upserts snapshots', async () => {
+  it('processes all 6 symbols and upserts snapshots', async () => {
     setupSqlDispatch({
       ES: makeSymbolData({ latestClose: '5700' }),
       NQ: makeSymbolData({ latestClose: '20500' }),
-      VX1: makeSymbolData({ latestClose: '18.5' }),
-      VX2: makeSymbolData({ latestClose: '20.0' }),
       ZN: makeSymbolData({ latestClose: '110.5' }),
       RTY: makeSymbolData({ latestClose: '2100' }),
       CL: makeSymbolData({ latestClose: '75.50' }),
@@ -265,19 +263,21 @@ describe('fetch-futures-snapshot handler', () => {
       skipped: number;
       symbols: { symbol: string }[];
     };
-    expect(json.stored).toBe(8);
+    expect(json.stored).toBe(6);
     expect(json.skipped).toBe(0);
-    expect(json.symbols).toHaveLength(8);
-    expect(insertedSymbols()).toHaveLength(8);
+    expect(json.symbols).toHaveLength(6);
+    expect(insertedSymbols()).toHaveLength(6);
   });
 
-  // ── DX dropped (ICE; no UW feed) ──────────────────────────
+  // ── DX and VX dropped (ICE / Cboe CFE; no UW feed) ────────
 
-  it('never queries or writes DX', async () => {
-    // Even if DX bars existed and were fresh, the cron must not ask.
+  it('never queries or writes DX, VX1 or VX2', async () => {
+    // Even if their bars existed and were fresh, the cron must not ask.
     setupSqlDispatch({
       ES: makeSymbolData(),
       DX: makeSymbolData({ latestClose: '104.25' }),
+      VX1: makeSymbolData({ latestClose: '18.5' }),
+      VX2: makeSymbolData({ latestClose: '20.0' }),
     });
 
     const res = mockResponse();
@@ -285,6 +285,8 @@ describe('fetch-futures-snapshot handler', () => {
 
     expect(res._status).toBe(200);
     expect(queriedSymbols.has('DX')).toBe(false);
+    expect(queriedSymbols.has('VX1')).toBe(false);
+    expect(queriedSymbols.has('VX2')).toBe(false);
     expect(queriedSymbols.has('ES')).toBe(true);
     expect(insertedSymbols()).toEqual(['ES']);
   });
@@ -295,8 +297,6 @@ describe('fetch-futures-snapshot handler', () => {
     setupSqlDispatch({
       ES: makeSymbolData({ latestClose: '5700' }),
       NQ: makeSymbolData({ latestClose: '20500' }),
-      VX1: null,
-      VX2: null,
       ZN: makeSymbolData({ latestClose: '110.5' }),
       RTY: null,
       CL: makeSymbolData({ latestClose: '75.50' }),
@@ -309,7 +309,7 @@ describe('fetch-futures-snapshot handler', () => {
     expect(res._status).toBe(200);
     const json = res._json as { stored: number; skipped: number };
     expect(json.stored).toBe(4);
-    expect(json.skipped).toBe(4);
+    expect(json.skipped).toBe(2);
   });
 
   // ── Change percentage computation ─────────────────────────
@@ -322,8 +322,6 @@ describe('fetch-futures-snapshot handler', () => {
         dayOpenClose: '5600',
       }),
       NQ: null,
-      VX1: null,
-      VX2: null,
       ZN: null,
       RTY: null,
       CL: null,
@@ -354,8 +352,6 @@ describe('fetch-futures-snapshot handler', () => {
         dayOpenClose: '5600',
       }),
       NQ: null,
-      VX1: null,
-      VX2: null,
       ZN: null,
       RTY: null,
       CL: null,
@@ -412,7 +408,7 @@ describe('fetch-futures-snapshot handler', () => {
       errors?: string[];
     };
     expect(json.stored).toBe(1);
-    expect(json.skipped).toBe(7);
+    expect(json.skipped).toBe(5);
     expect(json.errors).toBeUndefined();
     expect(insertedSymbols()).toEqual(['NQ']);
     // A stale bar is not an exception.
@@ -547,7 +543,7 @@ describe('fetch-futures-snapshot handler', () => {
             latestTs: '2026-04-03T15:20:00.000Z',
             ageMinutes: 40,
           },
-          VX1: { kind: 'missing' },
+          ZN: { kind: 'missing' },
         }),
       }),
     );
@@ -644,9 +640,9 @@ describe('fetch-futures-snapshot handler', () => {
     expect(res._status).toBe(500);
     const json = res._json as { error: string; errors: string[] };
     expect(json.error).toBe('All symbols failed');
-    expect(json.errors).toHaveLength(8);
+    expect(json.errors).toHaveLength(6);
     expect(json.errors).toContain('ES: connection reset');
-    expect(Sentry.captureException).toHaveBeenCalledTimes(8);
+    expect(Sentry.captureException).toHaveBeenCalledTimes(6);
     expect(insertedSymbols()).toEqual([]);
   });
 
@@ -655,8 +651,6 @@ describe('fetch-futures-snapshot handler', () => {
     setupSqlDispatch({
       ES: makeSymbolData({ latestClose: '5700' }),
       NQ: makeSymbolData({ latestClose: '20500' }),
-      VX1: null,
-      VX2: null,
       ZN: null,
       RTY: null,
       CL: null,
@@ -707,8 +701,6 @@ describe('fetch-futures-snapshot handler', () => {
         todayVol: null,
       }),
       NQ: null,
-      VX1: null,
-      VX2: null,
       ZN: null,
       RTY: null,
       CL: null,
@@ -737,8 +729,6 @@ describe('fetch-futures-snapshot handler', () => {
     setupSqlDispatch({
       ES: makeSymbolData(),
       NQ: null,
-      VX1: null,
-      VX2: null,
       ZN: null,
       RTY: null,
       CL: null,
@@ -764,8 +754,6 @@ describe('fetch-futures-snapshot handler', () => {
         todayVol: '120000',
       }),
       NQ: null,
-      VX1: null,
-      VX2: null,
       ZN: null,
       RTY: null,
       CL: null,
@@ -795,8 +783,6 @@ describe('fetch-futures-snapshot handler', () => {
     setupSqlDispatch({
       ES: makeSymbolData({ latestClose: '5700' }),
       NQ: null,
-      VX1: null,
-      VX2: null,
       ZN: null,
       RTY: null,
       CL: null,

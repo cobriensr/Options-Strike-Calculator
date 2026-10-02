@@ -66,6 +66,10 @@ export const redis = createRedis();
  *     and on an aborted static signal Upstash fabricates an HTTP 200
  *     `{ result: "Aborted" }` instead of throwing; with the function form it
  *     rethrows the abort error, which the limiters' catch handles.
+ *
+ * Also used by the VIX term-structure cache (`vix-term-structure.ts`),
+ * which sits on the 30 s futures-snapshot poll: a best-effort cache read
+ * must fall through to the source just as fast.
  */
 export const limiterRedis = createRedis({
   retry: { retries: 0 },
