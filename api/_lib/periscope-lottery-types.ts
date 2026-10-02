@@ -121,3 +121,10 @@ export const PERISCOPE_LOTTERY_THRESHOLDS = {
     ENTRY_PX_MAX: 1.0,
   },
 } as const;
+
+/**
+ * entry_px = the first print within this many minutes after fire_time
+ * (periscope-lottery-finder fetchEntryPx). The minute-bar outcome
+ * backfill's proofs rely on the same window, so both read it from here.
+ */
+export const PERISCOPE_LOTTERY_ENTRY_WINDOW_MINUTES = 5;

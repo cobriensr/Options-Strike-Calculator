@@ -19,6 +19,7 @@
 
 import { getDb } from './db.js';
 import {
+  PERISCOPE_LOTTERY_ENTRY_WINDOW_MINUTES,
   PERISCOPE_LOTTERY_THRESHOLDS,
   type PeriscopeLotteryFire,
 } from './periscope-lottery-types.js';
@@ -193,7 +194,9 @@ async function fetchEntryPx(
   ts: Date,
 ): Promise<number | null> {
   const sql = getDb();
-  const windowEnd = new Date(ts.getTime() + 5 * 60_000);
+  const windowEnd = new Date(
+    ts.getTime() + PERISCOPE_LOTTERY_ENTRY_WINDOW_MINUTES * 60_000,
+  );
   const rows = (await sql`
     SELECT price::numeric AS price
     FROM ws_option_trades

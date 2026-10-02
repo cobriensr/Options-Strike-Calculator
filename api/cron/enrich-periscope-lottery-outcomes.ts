@@ -21,7 +21,7 @@
  *   4. UPDATE the row + set outcome_locked = TRUE.
  *
  * A fire is left UNLOCKED (retried next run, or recovered by
- * scripts/backfill_periscope_lottery_outcomes.py) when:
+ * scripts/backfill-periscope-lottery-outcomes.ts) when:
  *   - its window has not settled yet (prints can still land), or
  *   - its aggregates do not parse (R would be fabricated), or
  *   - it has no prints AND no SPXW tape landed in the last
@@ -31,7 +31,9 @@
  *     'error'. A no-print fire whose tail DID have SPXW tape genuinely
  *     never traded and keeps the per-strategy R = -1 lock.
  * "Settled" uses the contract's real close: 15:00 CT, or 12:00 CT on NYSE
- * early-close days (getMarketCloseHourET).
+ * early-close days (getMarketCloseHourET). The windows (horizon, EOD
+ * cutoff, settledAt, tape tail) come from periscopeFireWindow in
+ * _lib/periscope-lottery-outcome.ts, which the UW-bar backfill also uses.
  *
  * Known limits:
  *   - An outage that starts AND recovers inside a window, before its tail,
@@ -40,8 +42,8 @@
  *   - Tape-gap fires stay unlocked; once they age out of the
  *     WS_OPTION_TRADES_RETENTION_DAYS window this cron never revisits
  *     them, so they need a manual run of
- *     scripts/backfill_periscope_lottery_outcomes.py (from the parquet
- *     tape). The Sentry warning says so.
+ *     scripts/backfill-periscope-lottery-outcomes.ts (from UW per-contract
+ *     minute bars). The Sentry warning says so.
  *
  * Idempotent — re-running the cron won't double-process a locked row.
  * Per-user direction (open question #3): we track BOTH peak and EOD R
@@ -51,15 +53,17 @@
  * Spec: docs/superpowers/specs/periscope-lottery-alerts-2026-05-19.md
  */
 
-import { getMarketCloseHourET } from '../../src/data/marketHours.js';
-import { etWallClockToUtcIso } from '../../src/utils/timezone.js';
 import { WS_OPTION_TRADES_RETENTION_DAYS } from '../_lib/constants.js';
 import { getDb, withDbRetry } from '../_lib/db.js';
 import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
-import { eodCtForTrigger } from '../_lib/flow-inversion.js';
+import {
+  periscopeFireWindow,
+  type PeriscopeFireWindow,
+  type PeriscopeLotteryFireType,
+} from '../_lib/periscope-lottery-outcome.js';
 import { Sentry } from '../_lib/sentry.js';
 
 type Sql = ReturnType<typeof getDb>;
@@ -69,7 +73,7 @@ type DbTimestamp = string | Date;
 interface UnenrichedFire {
   /** BIGSERIAL — the Neon driver returns int8 as a STRING; normalize. */
   id: DbNumeric;
-  fire_type: 'call_lottery' | 'put_lottery';
+  fire_type: PeriscopeLotteryFireType;
   fire_time: DbTimestamp;
   expiry: string;
   trade_strike: number;
@@ -77,18 +81,12 @@ interface UnenrichedFire {
 }
 
 /** A settled candidate with its per-fire read windows. */
-interface FireWindow {
+interface FireWindow extends PeriscopeFireWindow {
   id: number;
   expiry: string;
   strike: number;
   optionType: 'C' | 'P';
   entryPx: number;
-  fireTime: Date;
-  horizonEnd: Date;
-  closeCutoff: Date;
-  /** Tape-liveness tail: [max(fireTime, settledAt - tail), settledAt]. */
-  tailStart: Date;
-  settledAt: Date;
 }
 
 /** One row per fire from the aggregate read. */
@@ -124,28 +122,6 @@ type FireOutcome =
 const toNum = (v: DbNumeric): number => (typeof v === 'number' ? v : Number(v));
 
 const toDate = (v: DbTimestamp): Date => (v instanceof Date ? v : new Date(v));
-
-/** Hold horizon per filter — must match periscope-lottery-types.ts. */
-function holdMinutes(fireType: 'call_lottery' | 'put_lottery'): number {
-  return fireType === 'call_lottery' ? 120 : 180;
-}
-
-/**
- * When SPXW on this expiry stops trading: the NYSE close in ET (16:00, or
- * 13:00 on early-close days) — 15:00 / 12:00 CT. No print can land later
- * (the fires are 0DTE, making this the fire-day close).
- */
-function expiryClose(expiry: string): Date {
-  const closeHourEt = getMarketCloseHourET(expiry) ?? 16;
-  const iso = etWallClockToUtcIso(expiry, closeHourEt * 60);
-  // Unparseable expiry (DATE NOT NULL, so not expected): regular close.
-  return iso === null
-    ? eodCtForTrigger(new Date(`${expiry}T17:00:00Z`))
-    : new Date(iso);
-}
-
-/** SPXW prints every few seconds into the close, so a silent 10 min = feed down. */
-const TAPE_TAIL_MINUTES = 10;
 
 /**
  * Fires per aggregate read. Measured on prod 2026-09-30: 3.4-5.8 s per
@@ -339,8 +315,8 @@ export default withCronInstrumentation(
     // deleted, and the no-trades branch would falsely lock it at
     // realized R = -1. So only retained fires are candidates, newest
     // first so today's fires are never starved by the LIMIT. The older
-    // unlocked backlog is recovered from the parquet tape by
-    // scripts/backfill_periscope_lottery_outcomes.py, not by this cron.
+    // unlocked backlog is recovered from UW minute bars by
+    // scripts/backfill-periscope-lottery-outcomes.ts, not by this cron.
     // Whether a candidate's window has settled is checked per fire below.
     const unenriched = (await withDbRetry(
       () => sql`
@@ -378,40 +354,24 @@ export default withCronInstrumentation(
         skipped += 1;
         continue;
       }
-      const horizonEnd = new Date(
-        fireTime.getTime() + holdMinutes(f.fire_type) * 60_000,
-      );
-      // 15:00 CT (DST-aware) — 20:00 UTC during CDT, 21:00 UTC during CST.
-      const closeCutoff = eodCtForTrigger(fireTime);
-      const readEnd = horizonEnd > closeCutoff ? horizonEnd : closeCutoff;
-      // Settled = no more prints can land in [fireTime, readEnd]: the
-      // window has passed, or the contract has stopped trading (a late
-      // fire's horizon can run past the close; on early-close days that is
-      // 12:00 CT). Nothing else enforces this — marketHours: false leaves
-      // the run time ungated, so a manual mid-session run would otherwise
-      // lock today's fires (first, given newest-first order) on a partial
-      // peak/EOD.
-      const contractClose = expiryClose(f.expiry);
-      const settledAt = readEnd < contractClose ? readEnd : contractClose;
-      if (settledAt.getTime() > nowMs) {
+      const win = periscopeFireWindow(f.fire_type, fireTime, f.expiry);
+      // Settled = no more prints can land in the read window (see
+      // periscopeFireWindow). Nothing else enforces this — marketHours:
+      // false leaves the run time ungated, so a manual mid-session run
+      // would otherwise lock today's fires (first, given newest-first
+      // order) on a partial peak/EOD.
+      if (win.settledAt.getTime() > nowMs) {
         inFlight += 1;
         continue;
       }
-      const tailFloor = new Date(
-        settledAt.getTime() - TAPE_TAIL_MINUTES * 60_000,
-      );
       windows.push({
+        ...win,
         // Number(): the int8 id arrives as a string from the driver.
         id: Number(f.id),
         expiry: f.expiry,
         strike: f.trade_strike,
         optionType: f.fire_type === 'call_lottery' ? 'C' : 'P',
         entryPx,
-        fireTime,
-        horizonEnd,
-        closeCutoff,
-        tailStart: tailFloor > fireTime ? tailFloor : fireTime,
-        settledAt,
       });
     }
 
@@ -449,7 +409,7 @@ export default withCronInstrumentation(
           'settled fire(s) had no SPXW tape in their window tail ' +
           '(ws_option_trades gap, e.g. uw-stream down); left unlocked. ' +
           'Retried while inside the retention window; after that run ' +
-          'scripts/backfill_periscope_lottery_outcomes.py';
+          'scripts/backfill-periscope-lottery-outcomes.ts';
         const detail = {
           candidates: unenriched.length,
           tapeGap: tapeGapFireIds.length,

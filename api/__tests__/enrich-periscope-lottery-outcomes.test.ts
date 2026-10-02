@@ -821,7 +821,7 @@ describe('enrich-periscope-lottery-outcomes cron', () => {
       );
       expect(Sentry.captureMessage).toHaveBeenCalledWith(
         expect.stringContaining(
-          'scripts/backfill_periscope_lottery_outcomes.py',
+          'scripts/backfill-periscope-lottery-outcomes.ts',
         ),
         expect.anything(),
       );
