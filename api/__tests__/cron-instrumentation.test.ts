@@ -1063,6 +1063,31 @@ describe('withCronInstrumentation', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('live run: a res.json throw after the ok check-in sends NO second (error) check-in for the same id', async () => {
+    // The ok completion already closed this check-in id. If writing the
+    // response then throws (e.g. unserializable metadata), the catch arm
+    // must not send a conflicting second terminal check-in.
+    vi.mocked(cronGuard).mockReturnValue(guardOk);
+    const handler = vi.fn().mockResolvedValue({ status: 'success' as const });
+    const wrapped = withCronInstrumentation('monitored-job', handler);
+    const res = mockResponse();
+    const serializeError = new Error('cannot serialize BigInt');
+    const writeJson = res.json.bind(res);
+    vi.spyOn(res, 'json')
+      .mockImplementationOnce(() => {
+        throw serializeError;
+      })
+      .mockImplementation((body: unknown) => writeJson(body));
+
+    await wrapped(mockRequest(), res);
+
+    const calls = getCheckInCalls();
+    expect(calls.map((c) => c.body.status)).toEqual(['in_progress', 'ok']);
+    // The failure still surfaces by name: Sentry issue + 500 response.
+    expect(Sentry.captureException).toHaveBeenCalledWith(serializeError);
+    expect(res._status).toBe(500);
+  });
+
   it('dynamicTimeCheck skip: sends the in_progress + ok pair BEFORE the skip response', async () => {
     // The off-regime slot of a dual-slot DST schedule skips here, not in
     // cronGuard. It used to send no check-in at all → `missed` daily.
@@ -1434,6 +1459,40 @@ describe('withCronCheckin', () => {
     expect(waitUntilCalls).toHaveLength(1);
     await expect(waitUntilCalls[0]).resolves.toBeUndefined();
     expect(getCheckInCalls()[1]!.body).toMatchObject({ status: 'error' });
+  });
+
+  it('throw arm: the error check-in settles BEFORE the wrapper promise rejects', async () => {
+    // A throwing inner() usually has not responded; Vercel's 500 only goes
+    // out once this promise rejects. Awaiting the error POST first makes
+    // its delivery deterministic instead of relying on the waitUntil hold.
+    let releaseErrorPost!: () => void;
+    fetchMock
+      .mockResolvedValueOnce(new Response('', { status: 202 })) // in_progress
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            releaseErrorPost = () => {
+              resolve(new Response('', { status: 202 }));
+            };
+          }),
+      );
+    const wrapped = withCronCheckin(
+      'checkin-job',
+      vi.fn(async () => {
+        throw new Error('inner exploded');
+      }),
+    );
+
+    const run = wrapped(authedReq(), mockResponse());
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+    expect(getCheckInCalls()[1]!.body).toMatchObject({ status: 'error' });
+    // The error POST is in flight, so the rejection must still be pending.
+    expect(await hasSettled(run)).toBe(false);
+
+    releaseErrorPost();
+    await expect(run).rejects.toThrow('inner exploded');
   });
 
   it('a hung completion check-in is bounded by the 5 s fetch abort', async () => {

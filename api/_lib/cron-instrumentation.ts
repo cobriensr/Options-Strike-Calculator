@@ -781,6 +781,10 @@ export function withCronInstrumentation(
           monitorConfig,
         })
       : null;
+    // A check-in id takes exactly one terminal status. Once the ok/error
+    // completion has gone out, a later throw (reportCronRun, res.json) must
+    // not send a second terminal check-in for the same id.
+    let terminalCheckInSent = false;
 
     try {
       const result = await handler(ctx);
@@ -800,6 +804,7 @@ export function withCronInstrumentation(
           checkInId,
           duration: durationMs / 1000,
         });
+        terminalCheckInSent = true;
       }
 
       await reportCronRun(jobName, {
@@ -822,7 +827,7 @@ export function withCronInstrumentation(
     } catch (err) {
       const durationMs = Date.now() - startTimeMs;
 
-      if (monitorConfig && checkInId) {
+      if (monitorConfig && checkInId && !terminalCheckInSent) {
         await sentryCheckInDirect({
           monitorSlug: jobName,
           status: 'error',
@@ -886,10 +891,10 @@ export function withCronInstrumentation(
  *      check-in is covered by a `waitUntil` placeholder registered before
  *      the handler runs (see `keepAlive`).
  *   4. If the handler throws (rare — most handlers catch internally),
- *      send the `error` check-in the same way, then re-throw. The throw
- *      will surface to Vercel runtime as an unhandled rejection unless
- *      the handler does its own outer try/catch, which is consistent with
- *      the existing handler contract.
+ *      AWAIT the `error` check-in, then re-throw. The throw will surface
+ *      to Vercel runtime as an unhandled rejection unless the handler does
+ *      its own outer try/catch, which is consistent with the existing
+ *      handler contract.
  *
  * This wrapper does NOT touch reportCronRun, the response shape, the
  * cronGuard call, or any other handler-internal concerns. It is purely
@@ -943,9 +948,11 @@ export function withCronCheckin(
     // inside arbitrary handlers, which deadlocks one that awaits its own
     // end() callback. So hold the instance open with a waitUntil
     // placeholder registered BEFORE inner() runs, settled only once the
-    // completion POST has landed (bounded by sentryCheckInDirect's 5 s
-    // abort). Registering up front means nothing depends on when the
-    // runtime notices the response, or on inner() responding last.
+    // completion POST has landed. Registering up front means nothing
+    // depends on when the runtime notices the response, or on inner()
+    // responding last. The hold ends at most 5 s (the POST's abort) after
+    // inner() settles; an inner() that never settles holds the instance
+    // until the function's maxDuration, exactly as it would without us.
     let releaseInstance!: () => void;
     keepAlive(
       () =>
@@ -953,14 +960,9 @@ export function withCronCheckin(
           releaseInstance = resolve;
         }),
     );
-
-    let status: 'ok' | 'error' = 'error'; // stays 'error' if inner throws
-    try {
-      await inner(req, res);
-      status = res.statusCode >= 400 ? 'error' : 'ok';
-    } finally {
-      // Never rejects (sentryCheckInDirect swallows), but release on both
-      // arms anyway so the placeholder can never pin the instance.
+    // Never rejects (sentryCheckInDirect swallows), but release on both
+    // arms anyway so the placeholder can never pin the instance.
+    const sendCompletion = (status: 'ok' | 'error'): Promise<void> =>
       sentryCheckInDirect({
         monitorSlug: jobName,
         status,
@@ -970,6 +972,18 @@ export function withCronCheckin(
         () => releaseInstance(),
         () => releaseInstance(),
       );
+
+    try {
+      await inner(req, res);
+    } catch (err) {
+      // A throwing inner() has usually NOT responded: Vercel answers 500
+      // only after this promise rejects. Awaiting here lands the error
+      // check-in before that response, deterministically; the hold above
+      // still covers an inner() that responded and then threw.
+      await sendCompletion('error');
+      throw err;
     }
+    // inner() has responded; the hold keeps the instance alive for this.
+    sendCompletion(res.statusCode >= 400 ? 'error' : 'ok');
   };
 }
