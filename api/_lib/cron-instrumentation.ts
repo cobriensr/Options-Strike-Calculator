@@ -873,9 +873,9 @@ export function withCronInstrumentation(
  * non-standard return shapes — see Phase 3 of the spec).
  *
  * Behaviour:
- *   1. Read `SCHEDULE_MAP[jobName]`. If missing OR
- *      `Sentry.captureCheckIn` is unavailable (per-test mocks), run the
- *      handler unchanged.
+ *   1. Read `SCHEDULE_MAP[jobName]`. If it is missing, or the request does
+ *      not carry the CRON_SECRET bearer (`isCronAuthenticated`), run the
+ *      handler unchanged with no check-ins.
  *   2. Send `in_progress` check-in BEFORE the handler so missed-checkin
  *      detection fires when the function never executes.
  *   3. After the handler completes, look at `res.statusCode` to decide

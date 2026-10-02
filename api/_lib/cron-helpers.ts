@@ -5,7 +5,8 @@
  * `cronGuard` is the standard "method + CRON_SECRET + time-window +
  * UW_API_KEY" preamble. `cronJitter` spreads top-of-minute bursts so
  * the UW concurrency cap doesn't 429. `isMarketHours` / `isMarketOpen`
- * gate work to RTH (with a 5-min buffer for `isMarketHours`).
+ * gate work to RTH (`isMarketHours` opens 5 min early and closes
+ * `afterCloseMin` late, default 5).
  * `checkDataQuality` fires a Sentry warning when an upstream fetch
  * structurally succeeds but contains all-zero payloads.
  *
@@ -31,13 +32,15 @@ import {
 // ============================================================
 
 /**
- * Check if current time is within extended market hours.
- * Uses isMarketOpen() (holiday/early-close aware) with a 5-minute buffer
- * on each side so cron jobs running at :00 catch data at open/close.
+ * Check if current time is within extended market hours: weekdays that
+ * are not market holidays, from 09:25 ET (5 min before the open) through
+ * the day's close + `afterCloseMin` (holiday/early-close aware via the
+ * shared market calendar, so a half-day closes from 13:00 ET).
  *
- * `afterCloseMin` widens only the close side (default 5, the classic
- * buffer). evaluate-round-trip passes 80 so the session's last fires are
- * evaluated after their 60-min window, before the weekend tape sweep.
+ * The 5-minute open buffer lets crons running at :00 catch the open.
+ * `afterCloseMin` (default 5) is the close-side buffer; evaluate-round-trip
+ * passes 80 so the session's last fires are evaluated after their 60-min
+ * window, before the weekend tape sweep.
  */
 export function isMarketHours(afterCloseMin = 5): boolean {
   const now = new Date();
@@ -270,7 +273,8 @@ export function cronGuard(
   // The auth check above still gates everything — `force` only relaxes
   // the schedule, never CRON_SECRET.
   const force = req.query?.force === '1';
-  const customCheck = timeCheck ?? (checkMarket ? isMarketHours : null);
+  // Wrapped, not passed by value: an argument would land in afterCloseMin.
+  const customCheck = timeCheck ?? (checkMarket ? () => isMarketHours() : null);
   if (!force && customCheck && !customCheck()) {
     const respond = (): void => {
       res.status(200).json({ skipped: true, reason: 'Outside time window' });
