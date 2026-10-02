@@ -20,9 +20,10 @@
  * A slot is only written from a complete window. It must be settled
  * (SLOT_SETTLE_MS past its close, so uw-stream has committed its last
  * trades), and its date must still be fully inside ws_option_trades retention
- * (so the cleanup sweep cannot have pruned part of it). A failed aggregation
- * writes nothing, and the row's presence is the "finalized" marker that both
- * writers check.
+ * (so the cleanup sweep cannot have pruned part of it). Only slots inside the
+ * date's regular session (market calendar) are written, so post-close prints
+ * on a half-day can't become a slot. A failed aggregation writes nothing, and
+ * the row's presence is the "finalized" marker that both writers check.
  */
 
 import { WS_OPTION_TRADES_RETENTION_DAYS } from './constants.js';
@@ -30,6 +31,10 @@ import { withDbRetry, type getDb } from './db.js';
 import { FLOW_REGIME_BASELINE, slotStartEtMinute } from './flow-regime.js';
 import { MIN_DAY_SLOT_TRADES } from './flow-regime-baseline-live.js';
 import { aggregateFlowWindow } from './flow-regime-rows.js';
+import {
+  getMarketCloseHourET,
+  isTradingDay,
+} from '../../src/data/marketHours.js';
 import {
   etWallClockToUtcIso,
   getETDayOfWeekFromDateStr,
@@ -72,16 +77,35 @@ export interface SlotWindow {
   endMs: number;
 }
 
-/** What `finalizeSlot` did with a closed slot. */
-export interface SlotFinalizeResult {
-  /**
-   * 'written' → upserted. 'thin' → below MIN_DAY_SLOT_TRADES and NOT
-   * persisted (a holiday or partial-session straggler; see the quorum's
-   * docstring).
-   */
-  outcome: 'written' | 'thin';
-  slot: number;
-  nTrades: number;
+/**
+ * What `finalizeSlot` did with a closed slot:
+ *   - 'written': aggregated and upserted.
+ *   - 'thin': inside the session, but below MIN_DAY_SLOT_TRADES, so NOT
+ *     persisted (trades were not ingested).
+ *   - 'outside-session': not aggregated and not persisted, because the slot
+ *     is not part of that date's regular session (a holiday or weekend, or a
+ *     half-day slot after the 13:00 close).
+ */
+export type SlotFinalizeResult =
+  | { outcome: 'written' | 'thin'; slot: number; nTrades: number }
+  | { outcome: 'outside-session'; slot: number };
+
+/**
+ * True when `slot` lies entirely inside `date`'s regular session per the
+ * market calendar (src/data/marketHours.ts).
+ *
+ * Only these slots are persisted. Off-session prints are not rare: 10-01 had
+ * 56,321 trades between 16:00 and 16:15 ET. So on a half-day (13:00 close),
+ * slot 7 [13:00, 13:30) would clear the per-day quorum on post-close prints
+ * alone, and the calendar must gate it rather than the trade count.
+ */
+export function isRegularSessionSlot(date: string, slot: number): boolean {
+  const closeHour = getMarketCloseHourET(date);
+  if (closeHour === null || !isTradingDay(date)) return false;
+  return (
+    slotStartEtMinute(slot) + FLOW_REGIME_BASELINE.bucket_minutes <=
+    closeHour * 60
+  );
 }
 
 /**
@@ -120,8 +144,9 @@ function shiftDate(date: string, days: number): string | null {
 
 /**
  * The weekday before ET date `date`: Monday → Friday, Sunday/Saturday →
- * Friday, otherwise the day before. Market holidays are not skipped. A holiday
- * date simply aggregates to empty (thin) windows and writes nothing.
+ * Friday, otherwise the day before. Market holidays are not skipped here;
+ * `finalizeSlot` treats every slot of a holiday as outside the session and
+ * writes nothing.
  */
 export function previousWeekdayEt(date: string): string | null {
   const dow = getETDayOfWeekFromDateStr(date);
@@ -158,16 +183,22 @@ export async function readPersistedSlots(
 /**
  * Aggregate one closed slot's full window and persist it. The caller has
  * already checked that the window is settled and its date is inside
- * retention. Idempotent: the upsert conflicts on (date, slot), a key derived
- * from the source data, so a re-run or a concurrent duplicate tick converges
- * on the same full-window values. Throws on any DB failure; nothing is
- * written unless the aggregation succeeded.
+ * retention. A slot outside the date's regular session is skipped before any
+ * query, for both writers.
+ *
+ * Idempotent: the upsert conflicts on (date, slot), a key derived from the
+ * source data, so a re-run or a concurrent duplicate tick converges on the
+ * same full-window values. Throws on any DB failure; nothing is written
+ * unless the aggregation succeeded.
  */
 export async function finalizeSlot(
   sql: Sql,
   date: string,
   window: SlotWindow,
 ): Promise<SlotFinalizeResult> {
+  if (!isRegularSessionSlot(date, window.slot)) {
+    return { outcome: 'outside-session', slot: window.slot };
+  }
   const sums = await withDbRetry(
     () => aggregateFlowWindow(sql, window.startIso, window.endIso, date),
     2,

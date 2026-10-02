@@ -614,6 +614,24 @@ describe('capture-flow-regime previous-slot persistence', () => {
     expect(Sentry.captureException).toHaveBeenCalledOnce();
   });
 
+  it('never finalizes a post-close half-day slot, even one above the quorum', async () => {
+    // Black Friday 2026-11-27 closes at 13:00 ET. 18:35:50 UTC = 13:35:50 ET
+    // (EST), the settled tick for slot 7 [13:00, 13:30): post-close prints
+    // only, so it is outside the session and is never aggregated or written.
+    liveAgg();
+    snapshotCalls();
+    mockSql.mockResolvedValueOnce([]); // nothing persisted for 11-27
+
+    const res = await runAt('2026-11-27T18:35:50.000Z');
+
+    expect(mockQuery).toHaveBeenCalledTimes(1); // only the live window
+    expect(insertCalls()).toEqual([]);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      finalize: { slot: 7, outcome: 'outside-session' },
+    });
+  });
+
   it('R4: a rejected persisted-slot read reports partial + Sentry and never aggregates or writes', async () => {
     liveAgg();
     snapshotCalls();

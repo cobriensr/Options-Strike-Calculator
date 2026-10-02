@@ -298,20 +298,39 @@ describe('capture-flow-regime-daily cron', () => {
     });
   });
 
-  it('stays silent for empty slots after a half-day 13:00 close', async () => {
-    // Black Friday 2026-11-27 closes at 13:00 ET: slots 7–12 (13:00–16:00)
-    // are legitimately empty, so their thin result is not an ingest gap.
-    persistedByDate = {
-      '2026-11-27': ALL_SLOTS.slice(0, 7),
-      '2026-11-26': ALL_SLOTS,
-    };
+  it('never aggregates or writes post-close half-day slots or holiday slots, even with quorum-sized volume', async () => {
+    // Black Friday 2026-11-27 closes at 13:00 ET (EST, so 13:00 ET = 18:00
+    // UTC). Post-close prints are plentiful, so give slots 7–12 a
+    // quorum-clearing count: only the market calendar can keep them out.
+    for (let s = 7; s < 13; s++) {
+      const start = new Date(
+        Date.parse('2026-11-27T14:30:00.000Z') + s * 30 * 60_000,
+      ).toISOString();
+      aggByStart[start] = aggRow(QUORUM + 5_000);
+    }
+    // Lookback = Thanksgiving 2026-11-26 (market closed), nothing persisted.
+    persistedByDate = { '2026-11-27': ALL_SLOTS.slice(0, 7) };
 
-    const res = await run('2026-11-27T21:55:00.000Z'); // 16:55 ET (EST)
+    const res = await run('2026-11-27T21:55:00.000Z'); // 16:55 ET
 
-    expect(aggCalls()).toHaveLength(6);
+    expect(mockQuery).not.toHaveBeenCalled();
     expect(inserts()).toEqual([]);
-    expect(res._json).toMatchObject({ status: 'skipped', thinGaps: [] });
+    const body = res._json as {
+      status: string;
+      thinGaps: unknown[];
+      perDate: { date: string; outsideSession: number[] }[];
+    };
+    expect(body.perDate[0]).toMatchObject({
+      date: '2026-11-27',
+      outsideSession: [7, 8, 9, 10, 11, 12],
+    });
+    expect(body.perDate[1]).toMatchObject({
+      date: '2026-11-26',
+      outsideSession: ALL_SLOTS,
+    });
+    expect(body.thinGaps).toEqual([]);
     expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
   it('leaves a slot that has not yet settled for a later run, without counting it as a failure', async () => {

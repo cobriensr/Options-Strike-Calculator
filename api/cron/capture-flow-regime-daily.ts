@@ -23,10 +23,12 @@
  * the 2-calendar-day retention this means Monday's lookback (Friday) is
  * always skipped, because Friday's tape is purged at Monday 00:00 ET.
  *
- * Slots below the per-day quorum are never persisted, so this run re-reads
- * every one of them. A thin slot inside today's regular session means trades
- * were not ingested (uw-stream down), so it raises one fingerprinted Sentry
- * warning per run. Holiday slots and post-early-close slots stay silent.
+ * Slots outside the date's regular session (holidays, and half-day slots
+ * after the 13:00 close) are never aggregated or persisted, so post-close
+ * prints can't become a slot. Slots below the per-day quorum are never
+ * persisted, so this run re-reads every one of them. A thin slot inside
+ * today's regular session means trades were not ingested (uw-stream down),
+ * so it raises one fingerprinted Sentry warning per run.
  *
  * The live cron then computes percentile breakpoints ON READ from this
  * accumulating table (flow-regime-baseline-live.ts), falling back per slot to
@@ -42,10 +44,7 @@ import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
-import {
-  FLOW_REGIME_BASELINE,
-  slotStartEtMinute,
-} from '../_lib/flow-regime.js';
+import { FLOW_REGIME_BASELINE } from '../_lib/flow-regime.js';
 import { MIN_DAY_SLOT_TRADES } from '../_lib/flow-regime-baseline-live.js';
 import {
   finalizeSlot,
@@ -56,10 +55,6 @@ import {
   slotWindow,
 } from '../_lib/flow-regime-slot-daily.js';
 import { Sentry } from '../_lib/sentry.js';
-import {
-  getMarketCloseHourET,
-  isTradingDay,
-} from '../../src/data/marketHours.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 
 export const config = { maxDuration: 300 };
@@ -77,21 +72,6 @@ export const config = { maxDuration: 300 };
  */
 const FILL_BUDGET_MS = 120_000;
 
-/**
- * True when `slot` lies entirely inside `date`'s regular session. A slot below
- * quorum there means its trades were not ingested (uw-stream down), not a
- * quiet market. A holiday slot, or a slot after a half-day's 13:00 close, is
- * legitimately empty.
- */
-function isRegularSessionSlot(date: string, slot: number): boolean {
-  const closeHour = getMarketCloseHourET(date);
-  if (closeHour === null || !isTradingDay(date)) return false;
-  return (
-    slotStartEtMinute(slot) + FLOW_REGIME_BASELINE.bucket_minutes <=
-    closeHour * 60
-  );
-}
-
 /** Per-date outcome, for the log line and the cron metadata. */
 interface DateFill {
   date: string;
@@ -99,6 +79,8 @@ interface DateFill {
   alreadyPersisted?: number;
   written: number[];
   thin: number[];
+  /** Not part of the session (holiday, post-half-day-close): never aggregated. */
+  outsideSession: number[];
   unsettled: number[];
   failed: number[];
 }
@@ -136,6 +118,7 @@ export default withCronInstrumentation(
         date,
         written: [],
         thin: [],
+        outsideSession: [],
         unsettled: [],
         failed: [],
       };
@@ -179,12 +162,16 @@ export default withCronInstrumentation(
           const result = await finalizeSlot(sql, date, window);
           if (result.outcome === 'written') {
             fill.written.push(slot);
+          } else if (result.outcome === 'outside-session') {
+            fill.outsideSession.push(slot);
           } else {
             fill.thin.push(slot);
-            // Thin slots are never persisted, so this run re-aggregates every
-            // one and is the place to surface them. Only today's: the
-            // lookback date's gaps were reported by yesterday's run.
-            if (date === today && isRegularSessionSlot(date, slot)) {
+            // A thin slot is inside the regular session (finalizeSlot gates
+            // the rest), so it is an ingest gap. Thin slots are never
+            // persisted, so this run re-aggregates every one and is the place
+            // to surface them. Only today's: the lookback date's gaps were
+            // reported by yesterday's run.
+            if (date === today) {
               thinGaps.push({ date, slot, nTrades: result.nTrades });
             }
           }

@@ -212,6 +212,11 @@ cost.
      dates before today.
    - A thin slot (below quorum) is not persisted, matching the existing #1a
      policy.
+   - A slot outside the date's regular session per the market calendar is
+     never aggregated or persisted, by either writer. That covers holidays
+     and half-day slots after the 13:00 close. The quorum alone can't
+     separate them: 10-01 had 56,321 trades between 16:00 and 16:15 ET, so a
+     half-day's slot 7 would pass it on post-close prints.
    - A failed aggregation or upsert writes nothing, is sent to Sentry, and
      returns `status: 'partial'`, never `success`.
    - The next tick in the slot retries, because the existence check is the

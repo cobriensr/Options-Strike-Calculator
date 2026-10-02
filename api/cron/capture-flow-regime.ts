@@ -73,6 +73,7 @@ interface PrevSlotFinalize {
     | 'already-persisted'
     | 'written'
     | 'thin'
+    | 'outside-session'
     | 'failed';
   nTrades?: number;
   error?: string;
@@ -104,8 +105,10 @@ async function finalizePreviousSlot(
     if (persisted.has(prev.slot)) {
       return { slot: prev.slot, outcome: 'already-persisted' };
     }
-    const { outcome, nTrades } = await finalizeSlot(sql, date, prev);
-    return { slot: prev.slot, outcome, nTrades };
+    const result = await finalizeSlot(sql, date, prev);
+    return result.outcome === 'outside-session'
+      ? { slot: prev.slot, outcome: result.outcome }
+      : { slot: prev.slot, outcome: result.outcome, nTrades: result.nTrades };
   } catch (err) {
     Sentry.captureException(err, {
       tags: { 'flow_regime.step': 'slot-finalize' },

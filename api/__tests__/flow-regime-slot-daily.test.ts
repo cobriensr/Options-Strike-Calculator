@@ -33,6 +33,7 @@ import {
   SLOT_SETTLE_MS,
   finalizeSlot,
   isSlotSettled,
+  isRegularSessionSlot,
   isWithinTradeRetention,
   previousWeekdayEt,
   readPersistedSlots,
@@ -102,6 +103,20 @@ describe('previousWeekdayEt', () => {
 
   it('returns null for a malformed date', () => {
     expect(previousWeekdayEt('not-a-date')).toBeNull();
+  });
+});
+
+describe('isRegularSessionSlot', () => {
+  it.each([
+    ['2026-06-05', 0, true], // regular day, first slot
+    ['2026-06-05', 12, true], // regular day, final slot ends at 16:00
+    ['2026-11-27', 6, true], // Black Friday: 12:30–13:00 ends at the close
+    ['2026-11-27', 7, false], // Black Friday: 13:00–13:30 is post-close
+    ['2026-11-27', 12, false],
+    ['2026-11-26', 0, false], // Thanksgiving (market closed)
+    ['2026-06-06', 3, false], // Saturday
+  ])('%s slot %i → %s', (date, slot, expected) => {
+    expect(isRegularSessionSlot(date, slot)).toBe(expected);
   });
 });
 
@@ -182,19 +197,20 @@ afterAll(async () => {
   await pg.close();
 });
 
-/** `n` deterministic trades spread across `slot`'s window on DATE. */
+/** `n` deterministic trades spread across `slot`'s window on `date`. */
 function slotTrades(
   slot: number,
   n: number,
+  date = DATE,
 ): (FlowTradeRow & { at: string })[] {
-  const w = slotWindow(DATE, slot)!;
+  const w = slotWindow(date, slot)!;
   const startMs = Date.parse(w.startIso);
   const tickers = ['SPY', 'QQQ', 'NVDA', 'SPXW'];
   return Array.from({ length: n }, (_, i) => ({
     ticker: tickers[i % tickers.length]!,
     optionType: i % 3 === 0 ? 'C' : 'P',
-    expiry: DATE,
-    tradeDateEt: DATE,
+    expiry: date,
+    tradeDateEt: date,
     side: i % 2 === 0 ? 'ask' : 'bid',
     delta: i % 3 === 0 ? 0.4 : -0.45,
     size: (i % 7) + 1,
@@ -275,6 +291,39 @@ describe('finalizeSlot (pglite, real SQL)', () => {
 
     expect(second).toHaveLength(1);
     expect(second).toEqual(first);
+  });
+
+  it('never aggregates or writes a post-close half-day slot, even one above the quorum', async () => {
+    // Black Friday 2026-11-27 closes at 13:00 ET. Post-close prints are
+    // plentiful (56k in 15 min after a normal close), so slot 7 [13:00,
+    // 13:30) clears the quorum on volume alone. The calendar must stop it.
+    await loadTrades(slotTrades(7, MIN_DAY_SLOT_TRADES + 300, '2026-11-27'));
+    let queried = false;
+    const watching = Object.assign(
+      (strings: TemplateStringsArray, ...values: unknown[]) =>
+        (
+          sql as unknown as (
+            s: TemplateStringsArray,
+            ...v: unknown[]
+          ) => unknown
+        )(strings, ...values),
+      {
+        query: async (text: string, params: unknown[]) => {
+          queried = true;
+          return sql.query(text, params);
+        },
+      },
+    ) as unknown as Sql;
+
+    const result = await finalizeSlot(
+      watching,
+      '2026-11-27',
+      slotWindow('2026-11-27', 7)!,
+    );
+
+    expect(result).toEqual({ outcome: 'outside-session', slot: 7 });
+    expect(queried).toBe(false);
+    expect(await slotRows()).toEqual([]);
   });
 
   it('does not persist a slot below the per-day quorum', async () => {

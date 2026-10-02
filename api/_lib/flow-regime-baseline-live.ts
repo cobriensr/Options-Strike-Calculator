@@ -41,13 +41,18 @@ import { getETToday } from '../../src/utils/timezone.js';
 /**
  * Per-day volume quorum for a slot to count toward the percentile distribution.
  *
- * The slot writers run every weekday, including market holidays and half-days.
- * A normal RTH 30-min slot sees thousands of trades across the ~50-ticker WS
- * universe; a holiday / partial-session slot sees only tens. Those low-n days
- * still pass the bare `nd_den > 0` / `total_premium > 0` filter and would inject
- * degenerate daily ratios into the thin (~15-day) percentile population, skewing
- * the breakpoints. 500 sits an order of magnitude above a holiday slot and well
- * below a normal RTH slot, so it admits real sessions and rejects the garbage.
+ * A normal RTH 30-min slot sees hundreds of thousands of trades across the WS
+ * universe (~670k in the 2026-10-01 close slot). A slot with only a handful of
+ * trades is an ingest gap, and its ratios would still pass the bare
+ * `nd_den > 0` / `total_premium > 0` filter, injecting degenerate values into
+ * the thin (~15-day) percentile population. 500 sits far below a real RTH slot
+ * and rejects those.
+ *
+ * The quorum does NOT separate session from off-session time: post-close
+ * prints are plentiful (56,321 trades on 2026-10-01 between 16:00 and
+ * 16:15 ET). Holidays and half-day slots after the 13:00 close are excluded by
+ * the market calendar instead (`isRegularSessionSlot` in
+ * flow-regime-slot-daily.ts), before any count is taken.
  *
  * Enforced in BOTH directions: neither slot writer persists a slot below this
  * floor, and the loader's COUNT / percentile_cont population filters on it
