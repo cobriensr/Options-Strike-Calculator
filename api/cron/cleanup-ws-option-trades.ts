@@ -10,12 +10,13 @@
  * full-tape archive is stored locally and on Cloudflare R2 — the DB only
  * needs the hot working set for live features.
  *
- * Read-horizon audit (only the periscope enrichment reads past same-day):
+ * Read-horizon audit (the enrichment crons read past same-day):
  *   - detect-lottery-fires, detect-silent-boom: NOW() - SCAN_WINDOW_MIN
- *   - enrich-{lottery,silent-boom}-outcomes: today's fires/alerts forward
- *   - enrich-periscope-lottery-outcomes: unlocked fires back to
- *     NOW() - WS_OPTION_TRADES_RETENTION_DAYS (bounded by this sweep so a
- *     pruned fire is never locked at R = -1)
+ *   - enrich-silent-boom-outcomes: today's alerts forward
+ *   - enrich-lottery-outcomes, enrich-periscope-lottery-outcomes:
+ *     unenriched fires back to NOW() - WS_OPTION_TRADES_RETENTION_DAYS
+ *     (bounded by this sweep so a pruned or partially-pruned tape is never
+ *     read as an outcome)
  *   - evaluate-round-trip: fire_time + WINDOW_MIN minutes
  *   - lottery-contract-tape: UI-supplied [fromTs, toTs] for a single fire, no
  *     retention handling. A fire's tape is empty from the ET midnight its

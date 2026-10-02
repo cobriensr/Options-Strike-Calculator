@@ -296,9 +296,11 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: LONG_RUNNER_MAX_RUNTIME,
   },
   'enrich-lottery-outcomes': {
-    schedule: '40 21 * * 1-5',
+    // Three post-close slots: each run is time-boxed (~4 min) and the
+    // later slots drain what the first could not (tape + UW inversion).
+    schedule: '40 21,22,23 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
-    maxRuntime: DEFAULT_MAX_RUNTIME,
+    maxRuntime: LONG_RUNNER_MAX_RUNTIME,
   },
   'enrich-silent-boom-outcomes': {
     schedule: '45 21 * * 1-5',

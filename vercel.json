@@ -227,7 +227,7 @@
     },
     {
       "path": "/api/cron/enrich-lottery-outcomes",
-      "schedule": "40 21 * * 1-5"
+      "schedule": "40 21,22,23 * * 1-5"
     },
     {
       "path": "/api/cron/enrich-silent-boom-outcomes",

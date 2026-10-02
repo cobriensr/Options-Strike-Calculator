@@ -1,8 +1,12 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
-import { KEPT_RETENTION_DAYS } from '../_lib/constants.js';
+import {
+  KEPT_RETENTION_DAYS,
+  WS_OPTION_TRADES_RETENTION_DAYS,
+} from '../_lib/constants.js';
+import { READ_CHUNK_SIZE } from '../_lib/option-outcome-aggregate.js';
 
 const {
   mockSql,
@@ -10,13 +14,20 @@ const {
   mockFetchIntraday,
   mockSimulateInversion,
   mockMetricsIncrement,
-} = vi.hoisted(() => ({
-  mockSql: vi.fn(),
-  mockCronGuard: vi.fn(),
-  mockFetchIntraday: vi.fn(),
-  mockSimulateInversion: vi.fn(),
-  mockMetricsIncrement: vi.fn(),
-}));
+  mockCaptureMessage,
+  mockCaptureException,
+} = vi.hoisted(() => {
+  const tagged = vi.fn();
+  return {
+    mockSql: Object.assign(tagged, { query: vi.fn() }),
+    mockCronGuard: vi.fn(),
+    mockFetchIntraday: vi.fn(),
+    mockSimulateInversion: vi.fn(),
+    mockMetricsIncrement: vi.fn(),
+    mockCaptureMessage: vi.fn(),
+    mockCaptureException: vi.fn(),
+  };
+});
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -33,7 +44,11 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { captureException: vi.fn(), setTag: vi.fn() },
+  Sentry: {
+    captureException: mockCaptureException,
+    captureMessage: mockCaptureMessage,
+    setTag: vi.fn(),
+  },
   metrics: { increment: mockMetricsIncrement },
 }));
 
@@ -59,401 +74,626 @@ vi.mock('../_lib/flow-inversion.js', () => ({
 
 import handler from '../cron/enrich-lottery-outcomes.js';
 
-const GUARD = { apiKey: 'test-key', today: '2026-05-02' };
+const GUARD = { apiKey: 'test-key', today: '2026-10-01' };
 
-/**
- * The tagged-template mock receives the SQL string fragments as its first
- * arg (a TemplateStringsArray). Join them to match against the query text.
- */
-function queryText(call: unknown[]): string {
+/** 21:40 UTC on 2026-10-01 (EDT): past the 20:20Z settle instant. */
+const RUN_AT = '2026-10-01T21:40:00Z';
+
+type Row = Record<string, unknown>;
+
+/** A tape candidate as the driver returns it (int8 id as a string). */
+function fire(id: number, chain = `AAA261002C${String(id).padStart(8, '0')}`) {
+  return {
+    id: String(id),
+    chain,
+    ticker: chain.slice(0, 3),
+    date: '2026-10-01',
+    entry: new Date('2026-10-01T14:00:00Z'),
+    entryPx: 1,
+  };
+}
+
+/** A healthy priced aggregate for fire `id` (entry 1.00). */
+function agg(id: number, o: Row = {}): Row {
+  return {
+    window_id: String(id),
+    tape_live: true,
+    ticks: 40,
+    peak_px: 2,
+    peak_minutes: 12.5,
+    last_px: 1.2,
+    h30_px: 1.5,
+    h60_px: 1.4,
+    h120_px: 1.3,
+    tier1_px: 1.6,
+    trail_exit_px: 1.4,
+    ...o,
+  };
+}
+
+/** An inversion candidate (settled, inside the lookback). */
+function invFire(id: number, chain = 'AAA261002C00100000') {
+  return {
+    id: String(id),
+    optionChainId: chain,
+    underlyingSymbol: chain.slice(0, 3),
+    optionType: 'C',
+    date: '2026-10-01',
+    triggerTimeCt: new Date('2026-10-01T13:59:00Z'),
+    entryPrice: 1,
+  };
+}
+
+interface Router {
+  tapeCandidates?: Row[];
+  inversionCandidates?: Row[];
+  flowRows?: Row[];
+  /** Rows the aggregate query returns, or a function of its window ids. */
+  aggregate?: (ids: number[]) => Row[] | Promise<Row[]>;
+  /** Ids an outcome UPDATE reports as locked (default: all of them). */
+  lockReturns?: (ids: number[]) => number[] | Promise<number[]>;
+  inversionReturns?: (ids: number[]) => number[] | Promise<number[]>;
+  prune?: () => Promise<Row[]>;
+  /** Empty 5-min buckets the continuity probe reports. */
+  gaps?: Row[];
+  /** (chain, date) rows already tombstoned 'empty' in the intraday cache. */
+  emptyIntraday?: Row[];
+  /** Override the candidate SELECTs (e.g. to reject). */
+  tapeSelect?: () => Promise<Row[]>;
+  inversionSelect?: () => Promise<Row[]>;
+}
+
+const text = (call: unknown[]): string => {
   const strings = call[0];
-  return Array.isArray(strings) ? strings.join('') : '';
-}
-
-/**
- * Find the retention-prune DELETE among all mockSql calls.
- *
- * NOTE: the neon tagged-template mock receives the SQL string fragments as
- * `call[0]` (a TemplateStringsArray) and each interpolated value as the
- * following positional args. The prune binds `KEPT_RETENTION_DAYS` as a
- * param, so the joined string text holds the structure (DELETE, the strict
- * `<` cutoff, the NY-date anchor, the `::int` cast on the param) while the
- * retention-days value lives in `call[1]`. We assert both sides here.
- *
- * This is the realistic binding under the mock harness — there is no real
- * Postgres, so we verify the generated SQL *shape* + the bound constant
- * rather than executing the DELETE. A future tightening of the cutoff
- * (strict `<` → `<=`, or KEPT_RETENTION_DAYS → 0) changes the asserted
- * shape/value and fails `asserts the strict-< retention cutoff` below.
- */
-function findPruneCall(calls: unknown[][]): unknown[] | undefined {
-  return calls.find((c) => {
-    const text = queryText(c);
-    return (
-      text.includes('DELETE FROM lottery_kept_tickers') &&
-      text.includes('trade_date') &&
-      // Strict `<` cutoff is load-bearing: today's rows must survive so the
-      // lottery-finder diff-skip can never drop a same-day kept ticker.
-      text.includes('<') &&
-      !text.includes('<=') &&
-      text.includes("AT TIME ZONE 'America/New_York'") &&
-      // date − integer (cast param) stays a date; no INTERVAL double-cast.
-      text.includes('::int')
-    );
-  });
-}
-
-const baseFire = {
-  id: 1,
-  optionChainId: 'SPY260502C00500000',
-  underlyingSymbol: 'SPY',
-  optionType: 'C' as const,
-  date: new Date('2026-05-02T00:00:00Z'),
-  triggerTimeCt: new Date('2026-05-02T14:29:00Z'),
-  entryTimeCt: new Date('2026-05-02T14:30:00Z'),
-  entryPrice: 1.5,
-  expiry: new Date('2026-05-02'),
+  return Array.isArray(strings) ? strings.join(' ') : '';
 };
 
-describe('enrich-lottery-outcomes', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    process.env.CRON_SECRET = 'test-secret';
-    mockCronGuard.mockReturnValue(GUARD);
-    mockFetchIntraday.mockResolvedValue([]);
-    mockSimulateInversion.mockReturnValue({
-      exitPct: null,
-      exitTs: null,
-      status: 'no_post_trigger_prices',
-    });
-  });
+/** Route every tagged query by its SQL text (order-independent). */
+function route(r: Router): void {
+  mockSql.mockImplementation(
+    async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const sqlText = strings.join(' ');
+      if (sqlText.includes('DELETE FROM lottery_kept_tickers')) {
+        return r.prune ? r.prune() : [];
+      }
+      if (sqlText.includes('UPDATE lottery_finder_fires')) {
+        const ids = (values[0] as number[]) ?? [];
+        if (sqlText.includes('enriched_at = NOW()')) {
+          const locked = await (r.lockReturns ?? ((x) => x))(ids);
+          return locked.map((id) => ({ id: String(id) }));
+        }
+        const filled = await (r.inversionReturns ?? ((x) => x))(ids);
+        return filled.map((id) => ({ id: String(id) }));
+      }
+      if (sqlText.includes('net_flow_per_ticker_history')) {
+        return r.flowRows ?? [];
+      }
+      if (sqlText.includes('FROM option_intraday_nbbo_fetches')) {
+        return r.emptyIntraday ?? [];
+      }
+      if (sqlText.includes('WHERE enriched_at IS NULL')) {
+        return r.tapeSelect ? r.tapeSelect() : (r.tapeCandidates ?? []);
+      }
+      if (sqlText.includes('WHERE realized_flow_inversion_pct IS NULL')) {
+        return r.inversionSelect
+          ? r.inversionSelect()
+          : (r.inversionCandidates ?? []);
+      }
+      throw new Error(`unrouted SQL: ${sqlText.slice(0, 80)}`);
+    },
+  );
+  mockSql.query.mockImplementation(
+    async (sqlText: string, params: unknown[]) =>
+      sqlText.includes('generate_series')
+        ? (r.gaps ?? [])
+        : (r.aggregate ?? (() => []))(params[0] as number[]),
+  );
+}
 
-  it('enriches fires with post-entry ticks and writes flow_inversion when computable', async () => {
-    mockSql.mockResolvedValueOnce([baseFire]); // SELECT fires
-    // ONE batched LATERAL read of ALL fires' ticks (keyed by fireId).
-    mockSql.mockResolvedValueOnce([
-      {
-        fireId: 1,
-        executedAt: new Date('2026-05-02T14:31:00Z'),
-        price: 1.6,
-      },
-      {
-        fireId: 1,
-        executedAt: new Date('2026-05-02T14:32:00Z'),
-        price: 1.8,
-      },
-      {
-        fireId: 1,
-        executedAt: new Date('2026-05-02T14:33:00Z'),
-        price: 1.7,
-      },
-      {
-        fireId: 1,
-        executedAt: new Date('2026-05-02T14:40:00Z'),
-        price: 1.9,
-      },
-    ]); // batched tick read
-    mockSql.mockResolvedValueOnce([
-      {
-        ts: new Date('2026-05-02T14:35:00Z'),
-        netCallPrem: '100',
-        netPutPrem: '0',
-      },
-      {
-        ts: new Date('2026-05-02T14:36:00Z'),
-        netCallPrem: '-50',
-        netPutPrem: '0',
-      },
-    ]); // loadMatchedFlow SELECT
-    mockSql.mockResolvedValueOnce([]); // batched enriched UPDATE
-    mockSql.mockResolvedValueOnce([]); // prune DELETE
+/** The per-fire aggregate statements (not the continuity probe). */
+const aggregateCalls = (): Array<[string, unknown[]]> =>
+  (mockSql.query.mock.calls as Array<[string, unknown[]]>).filter(
+    (c) => !c[0].includes('generate_series'),
+  );
 
-    mockFetchIntraday.mockResolvedValueOnce([
-      { ts: new Date('2026-05-02T14:31:00Z'), mid: 1.55 },
-    ]);
-    mockSimulateInversion.mockReturnValueOnce({
-      exitPct: 12.5,
-      exitTs: new Date('2026-05-02T14:45:00Z'),
-      status: 'inversion',
-    });
+const callsMatching = (needle: string): unknown[][] =>
+  mockSql.mock.calls.filter((c) => text(c).includes(needle));
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
+/** The outcome UPDATE's unnest arrays: ids, trail, hard, tier, eod, peak, mtp. */
+const lockCalls = () => callsMatching('enriched_at = NOW()');
+const inversionWrites = () =>
+  callsMatching('SET realized_flow_inversion_pct = u.inv');
 
-    await handler(req, res);
+async function run() {
+  const res = mockResponse();
+  await handler(mockRequest({ method: 'GET' }), res);
+  return res;
+}
 
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      status: 'success',
-      message: expect.stringContaining('flow_inversion populated 1'),
-    });
-    expect(mockFetchIntraday).toHaveBeenCalledWith(
-      'test-key',
-      'SPY260502C00500000',
-      '2026-05-02',
+function findPruneCall(calls: unknown[][]): unknown[] | undefined {
+  return calls.find((c) => {
+    const t = text(c);
+    return (
+      t.includes('DELETE FROM lottery_kept_tickers') &&
+      t.includes('trade_date') &&
+      // Strict `<` cutoff is load-bearing: today's rows must survive so the
+      // lottery-finder diff-skip can never drop a same-day kept ticker.
+      t.includes('<') &&
+      !t.includes('<=') &&
+      t.includes("AT TIME ZONE 'America/New_York'") &&
+      t.includes('::int')
     );
-    expect(mockSimulateInversion).toHaveBeenCalled();
-    // SELECT fires + batched tick read + loadMatchedFlow SELECT +
-    // batched enriched UPDATE + retention-prune DELETE.
-    expect(mockSql).toHaveBeenCalledTimes(5);
+  });
+}
 
-    // The retention prune ran, and ran AFTER the main work (it is the last
-    // mockSql call — the batched UPDATE that lands enrichment is call index 3).
-    const calls = mockSql.mock.calls;
-    const pruneCall = findPruneCall(calls);
-    expect(pruneCall).toBeDefined();
-    expect(calls.indexOf(pruneCall!)).toBe(calls.length - 1);
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockSql.mockReset();
+  mockSql.query.mockReset();
+  mockCronGuard.mockReturnValue(GUARD);
+  mockFetchIntraday.mockResolvedValue([]);
+  mockSimulateInversion.mockReturnValue({
+    exitPct: null,
+    exitTs: null,
+    status: 'no_post_trigger_prices',
+  });
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(RUN_AT));
+  route({});
+});
 
-    // Shape-assert the batched read (call index 1): ONE unnest + JOIN LATERAL,
-    // keyed by fire id, ordered so each fire's ticks stay chronological. A
-    // malformed batch (e.g. LEFT JOIN, missing ORDER BY, or a per-fire loop)
-    // changes this text and fails here even when bind values look right.
-    const readText = queryText(calls[1]!);
-    expect(readText).toContain('unnest(');
-    expect(readText).toContain('JOIN LATERAL');
-    expect(readText).not.toContain('LEFT JOIN LATERAL');
-    expect(readText).toContain('ON TRUE');
-    expect(readText).toContain('ORDER BY u.fire_id');
+afterEach(() => {
+  vi.useRealTimers();
+});
 
-    // Shape-assert the batched enriched UPDATE (call index 3): UPDATE ... FROM
-    // unnest of the typed arrays, keyed by f.id = u.id — the gold-standard
-    // batched-write form from evaluate-round-trip.ts.
-    const updateText = queryText(calls[3]!);
-    expect(updateText).toContain('UPDATE lottery_finder_fires');
-    expect(updateText).toContain('FROM unnest(');
-    expect(updateText).toContain('f.id = u.id');
-    expect(updateText).toContain('realized_flow_inversion_pct = u.inv');
+describe('enrich-lottery-outcomes: tape pass', () => {
+  it('selects only fires inside the retention window, newest first, with an index-friendly ET date bound', async () => {
+    await run();
+
+    const [call] = callsMatching('WHERE enriched_at IS NULL');
+    const sqlText = text(call!).replaceAll(/\s+/g, ' ');
+    expect(sqlText).toContain(
+      'trigger_time_ct >= NOW() - make_interval(days => ::int)',
+    );
+    expect(sqlText).toContain(
+      "date >= ((NOW() - make_interval(days => ::int)) AT TIME ZONE 'America/New_York')::date",
+    );
+    expect(sqlText).toContain('ORDER BY trigger_time_ct DESC');
+    expect(sqlText).not.toContain('ASC');
+    expect(sqlText).not.toContain('inserted_at');
+    expect(call!.slice(1)).toEqual([
+      WS_OPTION_TRADES_RETENTION_DAYS,
+      WS_OPTION_TRADES_RETENTION_DAYS,
+    ]);
   });
 
-  it('batches a mixed run: one enriched fire + one no-tick fire → both writes fire, fires grouped by id', async () => {
-    // The whole point of the N+1 collapse: process MANY fires in one batched
-    // read + one enriched UPDATE + one no-tick UPDATE. Fire 1 has ticks (gets
-    // enriched), fire 3 has none (gets the terminal stamp). The batched read
-    // returns only fire 1's rows (JOIN LATERAL drops no-tick fires), so the
-    // grouping must split correctly and BOTH writes must fire.
-    const fire1 = { ...baseFire, id: 1, entryPrice: 1.0 };
-    const fire3 = {
-      ...baseFire,
-      id: 3,
-      optionChainId: 'SPY260502P00495000',
-      optionType: 'P' as const,
-      entryTimeCt: new Date('2026-05-02T20:59:00Z'),
-      entryPrice: 0.5,
-    };
-    mockSql.mockResolvedValueOnce([fire1, fire3]); // SELECT fires (2)
-    // Batched read: ONLY fire 1 appears (fire 3 has no post-entry ticks).
-    mockSql.mockResolvedValueOnce([
-      { fireId: 1, executedAt: new Date('2026-05-02T14:31:00Z'), price: 1.5 },
-      { fireId: 1, executedAt: new Date('2026-05-02T14:33:00Z'), price: 2.0 },
-    ]); // batched tick read
+  it('locks a settled fire with every exit policy computed from its aggregate', async () => {
+    route({ tapeCandidates: [fire(1)], aggregate: () => [agg(1)] });
 
-    let enrichedValues: unknown[] = [];
-    mockSql.mockImplementationOnce((...args: unknown[]) => {
-      enrichedValues = args.slice(1);
-      return Promise.resolve([]);
-    }); // batched enriched UPDATE
-    let noTickValues: unknown[] = [];
-    mockSql.mockImplementationOnce((...args: unknown[]) => {
-      noTickValues = args.slice(1);
-      return Promise.resolve([]);
-    }); // no-tick UPDATE
-    mockSql.mockResolvedValueOnce([]); // prune DELETE
+    const res = await run();
 
-    // fire 1's intraday returns no minutes → inversion skipped (no
-    // loadMatchedFlow SELECT). Keeps the call sequence to exactly 5.
-    mockFetchIntraday.mockResolvedValue([]);
+    expect(res._json).toMatchObject({ status: 'success', rows: 1, updated: 1 });
+    const [lock] = lockCalls();
+    const [ids, trail, hard, tier, eod, peak, mtp] = lock!.slice(
+      1,
+    ) as number[][];
+    expect(ids).toEqual([1]);
+    expect(trail![0]).toBeCloseTo(40, 9); // trail exit 1.40
+    expect(hard![0]).toBeCloseTo(50, 9); // last print <= +30 min
+    expect(tier![0]).toBeCloseTo((60 + 20) / 2, 9);
+    expect(eod![0]).toBeCloseTo(20, 9);
+    expect(peak![0]).toBeCloseTo(100, 9);
+    expect(mtp![0]).toBe(12.5);
+    // Conditional, bigint-typed write: an overlapping run cannot re-lock.
+    const lockText = text(lock!);
+    expect(lockText).toContain('AND f.enriched_at IS NULL');
+    expect(lockText).toContain('RETURNING f.id');
+    expect(lock![0] as string[]).toSatisfy((s: string[]) =>
+      s[1]!.startsWith('::bigint[]'),
+    );
+  });
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
+  it('reads the tape with an explicit upper bound at close + 15 min and a close-tail liveness window', async () => {
+    route({ tapeCandidates: [fire(1)], aggregate: () => [agg(1)] });
+
+    await run();
+
+    const [sqlText, params] = aggregateCalls()[0] as [string, unknown[]];
+    expect(sqlText).toContain('t.executed_at <= u.tape_end');
+    expect(params[3]).toEqual(['2026-10-01T14:00:00.000Z']); // entry
+    expect(params[5]).toEqual(['2026-10-01T20:15:00.000Z']); // tape end
+    expect(params[6]).toEqual(['2026-10-01T19:50:00.000Z']); // tail start
+  });
+
+  it('leaves fires whose session has not settled unread (settle gate)', async () => {
+    // 20:10Z: the 16:00 ET close has passed but late ETF prints and the
+    // ingest grace have not; nothing may be read or locked yet.
+    vi.setSystemTime(new Date('2026-10-01T20:10:00Z'));
+    route({ tapeCandidates: [fire(1)], aggregate: () => [agg(1)] });
+
+    const res = await run();
+
+    expect(mockSql.query).not.toHaveBeenCalled();
+    expect(lockCalls()).toHaveLength(0);
+    expect(res._json).toMatchObject({ status: 'success', inFlight: 1 });
+  });
+
+  it('never stamps a fire whose ticker tape went quiet at the close: tapeGap → error + Sentry', async () => {
+    route({
+      tapeCandidates: [fire(1), fire(2)],
+      aggregate: () => [agg(1, { tape_live: false }), agg(2)],
     });
-    const res = mockResponse();
 
-    await handler(req, res);
+    const res = await run();
 
-    expect(res._status).toBe(200);
+    const [lock] = lockCalls();
+    expect(lock![1]).toEqual([2]); // only the healthy fire is locked
+    expect(res._json).toMatchObject({
+      status: 'error',
+      rows: 1,
+      tapeGap: 1,
+    });
+    expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+    expect(mockCaptureMessage.mock.calls[0]![1]).toMatchObject({
+      level: 'warning',
+      fingerprint: ['enrich-lottery-outcomes', 'missing-tape'],
+      extra: { tapeGapIds: [1], noPrintsIds: [] },
+    });
+  });
+
+  it('never stamps a fire with no print on its contract: noPrints → partial + Sentry', async () => {
+    route({
+      tapeCandidates: [fire(3)],
+      aggregate: () => [
+        agg(3, {
+          ticks: 0,
+          peak_px: null,
+          peak_minutes: null,
+          last_px: null,
+          h30_px: null,
+          h60_px: null,
+          h120_px: null,
+          tier1_px: null,
+          trail_exit_px: null,
+        }),
+      ],
+    });
+
+    const res = await run();
+
+    expect(lockCalls()).toHaveLength(0);
+    expect(res._json).toMatchObject({ status: 'partial', noPrints: 1 });
+    expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not lock a missing or malformed aggregate row (unreadable → partial)', async () => {
+    route({
+      tapeCandidates: [fire(1), fire(2), fire(3)],
+      // fire 2: last print NULL despite ticks; fire 3: no row at all.
+      aggregate: () => [agg(1), agg(2, { last_px: null })],
+    });
+
+    const res = await run();
+
+    expect(lockCalls()[0]![1]).toEqual([1]);
+    expect(res._json).toMatchObject({ status: 'partial', unreadable: 2 });
+    expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+    expect(mockCaptureMessage.mock.calls[0]![1]).toMatchObject({
+      fingerprint: ['enrich-lottery-outcomes', 'unreadable-aggregate'],
+      extra: { unreadableIds: [2, 3] },
+    });
+  });
+
+  it('matches aggregates to fires when the driver returns int8 ids as strings (06-12 regression)', async () => {
+    // The old cron keyed ticks by an int4 number and looked them up with the
+    // bigint STRING id, so every fire looked tick-less and was stamped NULL.
+    route({ tapeCandidates: [fire(969642)], aggregate: () => [agg(969642)] });
+
+    const res = await run();
+
+    expect(lockCalls()[0]![1]).toEqual([969642]);
+    expect(res._json).toMatchObject({ status: 'success', updated: 1 });
+  });
+
+  it('reads a chain’s fires in one aggregate statement and writes them in one UPDATE', async () => {
+    const chainA = 'AAA261002C00100000';
+    const chainB = 'BBB261002C00050000';
+    route({
+      tapeCandidates: [fire(1, chainA), fire(2, chainB), fire(3, chainA)],
+      aggregate: (ids) => ids.map((id) => agg(id)),
+    });
+
+    await run();
+
+    expect(aggregateCalls()).toHaveLength(1);
+    const params = aggregateCalls()[0]![1];
+    // Chain-grouped (newest group first), so chain A's two fires sit together.
+    expect(params[0]).toEqual([1, 3, 2]);
+    expect(params[1]).toEqual([chainA, chainA, chainB]);
+    expect(lockCalls()).toHaveLength(1);
+    expect(lockCalls()[0]![1]).toEqual([1, 3, 2]);
+  });
+
+  it('splits work into READ_CHUNK_SIZE statements', async () => {
+    const fires = Array.from({ length: READ_CHUNK_SIZE + 20 }, (_, i) =>
+      fire(i + 1),
+    );
+    route({
+      tapeCandidates: fires,
+      aggregate: (ids) => ids.map((id) => agg(id)),
+    });
+
+    const res = await run();
+
+    expect(aggregateCalls()).toHaveLength(2);
+    expect((aggregateCalls()[0]![1] as unknown[][])[0]).toHaveLength(
+      READ_CHUNK_SIZE,
+    );
+    expect(res._json).toMatchObject({ updated: READ_CHUNK_SIZE + 20 });
+  });
+
+  it('starts no chunk after the tape budget and defers the rest to the next run', async () => {
+    const fires = Array.from({ length: READ_CHUNK_SIZE + 5 }, (_, i) =>
+      fire(i + 1),
+    );
+    route({
+      tapeCandidates: fires,
+      aggregate: (ids) => {
+        // The first chunk is slow: 190 s of the run are gone afterwards.
+        vi.setSystemTime(new Date(Date.parse(RUN_AT) + 190_000));
+        return ids.map((id) => agg(id));
+      },
+    });
+
+    const res = await run();
+
+    expect(aggregateCalls()).toHaveLength(1);
     expect(res._json).toMatchObject({
       status: 'success',
-      message: expect.stringMatching(/Enriched 1.*skipped 1/),
+      updated: READ_CHUNK_SIZE,
+      deferred: 5,
+    });
+  });
+
+  it('counts fires an overlapping run already locked without failing', async () => {
+    route({
+      tapeCandidates: [fire(1), fire(2)],
+      aggregate: (ids) => ids.map((id) => agg(id)),
+      lockReturns: () => [1],
     });
 
-    // SELECT fires + batched tick read + enriched UPDATE + no-tick UPDATE +
-    // prune DELETE = 5 calls (NOT 1 read + 2 writes PER fire).
-    expect(mockSql).toHaveBeenCalledTimes(5);
+    const res = await run();
 
-    // Enriched UPDATE arrays carry ONLY fire 1 (fire 3 is no-tick). ids[]
-    // (index 0) → [1]; peak[] (index 6) element 0 → max 2.0 from entry 1.0 =
-    // +100%; mtp[] (index 7) element 0 → 2.0 tick is 3 min after 14:30 entry.
-    expect(enrichedValues[0]).toEqual([1]);
-    expect((enrichedValues[6] as number[])[0]).toBeCloseTo(100, 5);
-    expect((enrichedValues[7] as number[])[0]).toBeCloseTo(3, 5);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      updated: 1,
+      alreadyLocked: 1,
+    });
+  });
 
-    // No-tick UPDATE binds fire 3's id as the int[] for ANY(...).
-    expect(noTickValues).toEqual([[3]]);
+  it('surfaces a DB reject on the aggregate read (500) and still reports earlier missing-tape fires', async () => {
+    const chainA = 'AAA261002C00100000';
+    const fires = [
+      fire(1, chainA),
+      ...Array.from({ length: READ_CHUNK_SIZE }, (_, i) => fire(i + 2)),
+    ];
+    let reads = 0;
+    route({
+      tapeCandidates: fires,
+      aggregate: (ids) => {
+        reads += 1;
+        if (reads === 2) throw new Error('neon: connection reset');
+        return ids.map((id) => agg(id, { tape_live: id !== 1 }));
+      },
+    });
 
-    // The enriched fire's UW intraday was fetched; the no-tick fire's was NOT
-    // (it short-circuits before the inversion step).
+    const res = await run();
+
+    expect(res._status).toBe(500);
+    expect(mockCaptureMessage).toHaveBeenCalledTimes(1); // fire 1, chunk 1
+    expect(lockCalls()).toHaveLength(1); // chunk 1's healthy fires landed
+    expect(inversionWrites()).toHaveLength(0);
+  });
+
+  it('surfaces a failed outcome UPDATE instead of reporting success', async () => {
+    route({
+      tapeCandidates: [fire(1)],
+      aggregate: () => [agg(1)],
+      lockReturns: () => Promise.reject(new Error('neon: write timeout')),
+    });
+
+    const res = await run();
+
+    expect(res._status).toBe(500);
+    expect(res._json).not.toMatchObject({ status: 'success' });
+  });
+
+  it('skips fires with an unusable entry price without reading them', async () => {
+    route({ tapeCandidates: [{ ...fire(1), entryPx: 0 }] });
+
+    const res = await run();
+
+    expect(mockSql.query).not.toHaveBeenCalled();
+    expect(res._json).toMatchObject({ status: 'success', skipped: 1 });
+  });
+});
+
+describe('enrich-lottery-outcomes: flow-inversion pass', () => {
+  const minutes = [{ ts: new Date('2026-10-01T14:05:00Z'), mid: 1.1 }];
+
+  it('selects NULL-inversion fires across the lookback, newest first', async () => {
+    await run();
+
+    const [call] = callsMatching('WHERE realized_flow_inversion_pct IS NULL');
+    const sqlText = text(call!).replaceAll(/\s+/g, ' ');
+    expect(sqlText).toContain('ORDER BY trigger_time_ct DESC');
+    expect(sqlText).toContain(
+      'trigger_time_ct >= NOW() - make_interval(days => ::int)',
+    );
+    expect(call!.slice(1)).toEqual([4, 4]);
+  });
+
+  it('calls UW once per chain and writes every computed inversion in one conditional UPDATE', async () => {
+    mockFetchIntraday.mockResolvedValue(minutes);
+    mockSimulateInversion
+      .mockReturnValueOnce({ exitPct: 55, exitTs: null, status: 'inversion' })
+      .mockReturnValueOnce({ exitPct: -20, exitTs: null, status: 'inversion' });
+    route({
+      inversionCandidates: [invFire(1), invFire(2)],
+      flowRows: [
+        {
+          ts: new Date('2026-10-01T14:01:00Z'),
+          netCallPrem: '100',
+          netPutPrem: '5',
+        },
+        {
+          ts: new Date('2026-10-01T14:02:00Z'),
+          netCallPrem: 'bad',
+          netPutPrem: '5',
+        },
+      ],
+    });
+
+    const res = await run();
+
     expect(mockFetchIntraday).toHaveBeenCalledTimes(1);
     expect(mockFetchIntraday).toHaveBeenCalledWith(
       'test-key',
-      'SPY260502C00500000',
-      '2026-05-02',
+      'AAA261002C00100000',
+      '2026-10-01',
     );
-  });
-
-  it('stamps a terminal enriched_at (NULL outcomes) on a no-tick fire so it exits the candidate set', async () => {
-    mockSql.mockResolvedValueOnce([
-      {
-        ...baseFire,
-        id: 2,
-        optionChainId: 'SPY260502P00495000',
-        optionType: 'P',
-        entryTimeCt: new Date('2026-05-02T20:59:00Z'),
-        entryPrice: 0.5,
-      },
+    // Matched side for a call is net_call_prem; the unparseable minute drops.
+    const flowArg = mockSimulateInversion.mock.calls[0]![1] as unknown[];
+    expect(flowArg).toEqual([
+      { ts: new Date('2026-10-01T14:01:00Z'), value: 100 },
     ]);
-    mockSql.mockResolvedValueOnce([]); // batched tick read — no fires appear
-
-    // Capture the no-tick batched terminal UPDATE bind shape.
-    let noTickUpdate: { text: string; values: unknown[] } | null = null;
-    mockSql.mockImplementationOnce((...args: unknown[]) => {
-      noTickUpdate = { text: queryText(args), values: args.slice(1) };
-      return Promise.resolve([]);
-    }); // no-tick UPDATE
-    mockSql.mockResolvedValueOnce([]); // prune DELETE
-
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-
-    await handler(req, res);
-
-    expect(res._status).toBe(200);
+    const [write] = inversionWrites();
+    expect(write!.slice(1)).toEqual([
+      [1, 2],
+      [55, -20],
+    ]);
+    expect(text(write!)).toContain('AND f.realized_flow_inversion_pct IS NULL');
     expect(res._json).toMatchObject({
       status: 'success',
-      message: expect.stringContaining('skipped 1'),
+      inversion: { chains: 1, filled: 2 },
     });
-    // SELECT fires + batched tick read + no-tick UPDATE + retention-prune DELETE.
-    expect(mockSql).toHaveBeenCalledTimes(4);
+  });
 
-    // The no-tick UPDATE stamps enriched_at = NOW() and touches NO realized
-    // or peak columns (they stay NULL — a no-tick fire is NOT a 0% outcome).
-    expect(noTickUpdate).not.toBeNull();
-    const update = noTickUpdate!;
-    expect(update.text).toContain('UPDATE lottery_finder_fires');
-    expect(update.text).toContain('enriched_at = NOW()');
-    expect(update.text).not.toContain('realized_');
-    expect(update.text).not.toContain('peak_ceiling_pct');
-    expect(update.text).not.toContain('minutes_to_peak');
-    // The no-tick ids are bound as a single int[] array for the ANY(...)
-    // WHERE clause — one no-tick fire → [[2]].
-    expect(update.values).toEqual([[2]]);
+  it('leaves an undefined inversion NULL and writes nothing for it', async () => {
+    mockFetchIntraday.mockResolvedValue(minutes);
+    route({ inversionCandidates: [invFire(1)] });
 
-    expect(findPruneCall(mockSql.mock.calls)).toBeDefined();
+    const res = await run();
+
+    expect(inversionWrites()).toHaveLength(0);
+    expect(res._json).toMatchObject({
+      inversion: { filled: 0, undefinedExit: 1 },
+    });
+  });
+
+  it('does not touch flow history when UW has no intraday minutes', async () => {
+    route({ inversionCandidates: [invFire(1)] });
+
+    const res = await run();
+
+    expect(callsMatching('net_flow_per_ticker_history')).toHaveLength(0);
+    expect(res._json).toMatchObject({ inversion: { noIntradayMinutes: 1 } });
+  });
+
+  it('skips unsettled fires (no UW call before the session settles)', async () => {
+    vi.setSystemTime(new Date('2026-10-01T20:10:00Z'));
+    route({ inversionCandidates: [invFire(1)] });
+
+    await run();
+
     expect(mockFetchIntraday).not.toHaveBeenCalled();
   });
 
-  it('coerces string prices (un-cast NUMERIC) to a numerically correct peak', async () => {
-    // Belt-and-suspenders for the SQL ::float8 cast: even if a future SELECT
-    // drops the cast and Neon hands back NUMERIC-as-string, the function-level
-    // Number() guard in peakCeiling/minutesToPeak must still pick the numeric
-    // max. Tape: "9.50","10.50","8.00" — lexicographic max is "9.50"; the
-    // numeric max is 10.50. Entry 1.0 → peak +950%, NOT +850%.
-    mockSql.mockResolvedValueOnce([{ ...baseFire, entryPrice: 1.0 }]); // SELECT fires
-    mockSql.mockResolvedValueOnce([
-      {
-        fireId: 1,
-        executedAt: new Date('2026-05-02T14:31:00Z'),
-        price: '9.50',
+  it('starts no chain once the run budget is spent', async () => {
+    route({
+      tapeCandidates: [fire(1)],
+      aggregate: (ids) => {
+        vi.setSystemTime(new Date(Date.parse(RUN_AT) + 240_000));
+        return ids.map((id) => agg(id));
       },
-      {
-        fireId: 1,
-        executedAt: new Date('2026-05-02T14:32:00Z'),
-        price: '10.50',
-      },
-      {
-        fireId: 1,
-        executedAt: new Date('2026-05-02T14:33:00Z'),
-        price: '8.00',
-      },
-    ]); // batched tick read (strings, as un-cast Neon returns)
-
-    let updateValues: unknown[] = [];
-    mockSql.mockImplementationOnce((...args: unknown[]) => {
-      updateValues = args.slice(1);
-      return Promise.resolve([]);
-    }); // batched enriched UPDATE
-    mockSql.mockResolvedValueOnce([]); // prune DELETE
-
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
+      inversionCandidates: [invFire(5)],
     });
-    const res = mockResponse();
 
-    await handler(req, res);
+    const res = await run();
 
-    expect(res._status).toBe(200);
-    // Batched UPDATE bind order (each bind is an ARRAY, one element per fire):
-    //   ids[], trail[], hard[], tier[], eod[], inv[], peak[], mtp[]
-    // peak[] is the 7th bind (index 6); element 0 → numeric max 10.50 → +950%.
-    expect((updateValues[6] as number[])[0]).toBeCloseTo(950, 5);
-    // mtp[] (index 7), element 0: the 10.50 tick is 2 min after the 14:30 entry.
-    expect((updateValues[7] as number[])[0]).toBeCloseTo(2, 5);
+    expect(mockFetchIntraday).not.toHaveBeenCalled();
+    expect(res._json).toMatchObject({
+      inversion: { chains: 1, deferredChains: 1 },
+    });
   });
 
-  it('returns early when no unenriched fires exist, but still prunes', async () => {
-    mockSql.mockResolvedValueOnce([]); // SELECT fires (empty)
-    mockSql.mockResolvedValueOnce([]); // prune DELETE
-
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
+  it('counts and reports a failing chain without sinking the others (partial)', async () => {
+    mockFetchIntraday.mockImplementation(
+      async (_key: string, chain: string) => {
+        if (chain.startsWith('BAD')) throw new Error('neon: cache read failed');
+        return minutes;
+      },
+    );
+    mockSimulateInversion.mockReturnValue({
+      exitPct: 12,
+      exitTs: null,
+      status: 'inversion',
     });
-    const res = mockResponse();
+    route({
+      inversionCandidates: [
+        invFire(1, 'BAD261002C00100000'),
+        invFire(2, 'AAA261002C00100000'),
+      ],
+    });
 
-    await handler(req, res);
+    const res = await run();
+
+    expect(inversionWrites()[0]!.slice(1)).toEqual([[2], [12]]);
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      inversion: { chainErrors: 1, filled: 1 },
+    });
+  });
+
+  it('surfaces a failed inversion UPDATE instead of reporting success', async () => {
+    mockFetchIntraday.mockResolvedValue(minutes);
+    mockSimulateInversion.mockReturnValue({
+      exitPct: 12,
+      exitTs: null,
+      status: 'inversion',
+    });
+    route({
+      inversionCandidates: [invFire(1)],
+      inversionReturns: () => Promise.reject(new Error('neon: write timeout')),
+    });
+
+    const res = await run();
+
+    expect(res._status).toBe(500);
+  });
+});
+
+describe('enrich-lottery-outcomes: kept-tickers retention prune', () => {
+  it('prunes even when there is nothing to enrich', async () => {
+    const res = await run();
 
     expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      status: 'success',
-      message: 'No unenriched fires',
-    });
-
-    // Even on the no-work early return, the retention prune still runs.
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(res._json).toMatchObject({ status: 'success', candidates: 0 });
     expect(findPruneCall(mockSql.mock.calls)).toBeDefined();
   });
 
   it('still succeeds when the retention prune throws (best-effort)', async () => {
-    mockSql.mockResolvedValueOnce([]); // SELECT fires (empty) → early return path
-    // The prune DELETE rejects; safeDbVoid must swallow it so the handler
-    // still returns success.
-    mockSql.mockRejectedValueOnce(new Error('neon: connection reset'));
+    route({ prune: () => Promise.reject(new Error('neon: connection reset')) });
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-
-    await handler(req, res);
+    const res = await run();
 
     expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      status: 'success',
-      message: 'No unenriched fires',
-    });
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(res._json).toMatchObject({ status: 'success' });
     expect(findPruneCall(mockSql.mock.calls)).toBeDefined();
   });
 
-  // ── Never-vanish ↔ retention coupling (round-4 #1/#3/#5/#6) ──────────────
+  // ── Never-vanish ↔ retention coupling ────────────────────────────────────
   // These bind the cross-file invariant that makes the lottery-finder
   // diff-skip safe: the retention floor is >= 1 trading day AND the prune
   // uses a strict `<` cutoff referencing KEPT_RETENTION_DAYS, so today's
@@ -464,167 +704,179 @@ describe('enrich-lottery-outcomes', () => {
   });
 
   it('prunes with a strict-< cutoff that binds KEPT_RETENTION_DAYS as the day count', async () => {
-    mockSql.mockResolvedValueOnce([]); // SELECT fires (empty) → prune path
-    mockSql.mockResolvedValueOnce([]); // prune DELETE
-
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-
-    await handler(req, res);
+    await run();
 
     const pruneCall = findPruneCall(mockSql.mock.calls);
     expect(pruneCall).toBeDefined();
-
-    // findPruneCall already asserts `<` present and `<=` absent in the SQL
-    // string. The retention-days value is bound as the first interpolated
-    // param (call[1]) — assert it equals the constant, so a future change to
-    // the constant flows through here and a `<=`/today tightening fails above.
     expect(pruneCall![1]).toBe(KEPT_RETENTION_DAYS);
   });
 
   it('emits the lottery.kept_prune heartbeat metric on a successful prune', async () => {
-    mockSql.mockResolvedValueOnce([]); // SELECT fires (empty) → prune path
-    mockSql.mockResolvedValueOnce([]); // prune DELETE succeeds
-
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-
-    await handler(req, res);
+    await run();
 
     expect(mockMetricsIncrement).toHaveBeenCalledWith('lottery.kept_prune');
   });
 
-  it('soft-degrades when simulateFlowInversion throws: still UPDATEs other realized fields with flowInversion null', async () => {
-    // The flow-inversion step is wrapped in try/catch (enrich-lottery-outcomes.ts
-    // :268-297). A throw there must NOT abort the fire's enrichment — the
-    // realized_* and peak columns still land, only realized_flow_inversion_pct
-    // stays NULL. Verify the UPDATE bind shape: index 4 (flowInversion) is null,
-    // the other realized binds + peak are real numbers, enriched_at stamped.
-    mockSql.mockResolvedValueOnce([{ ...baseFire, entryPrice: 1.0 }]); // SELECT fires
-    mockSql.mockResolvedValueOnce([
-      { fireId: 1, executedAt: new Date('2026-05-02T14:31:00Z'), price: 1.5 },
-      { fireId: 1, executedAt: new Date('2026-05-02T14:33:00Z'), price: 2.0 },
-      { fireId: 1, executedAt: new Date('2026-05-02T14:40:00Z'), price: 1.7 },
-    ]); // batched tick read
-    mockSql.mockResolvedValueOnce([
-      {
-        ts: new Date('2026-05-02T14:35:00Z'),
-        netCallPrem: '100',
-        netPutPrem: '0',
-      },
-    ]); // loadMatchedFlow SELECT (minutes.length>0 enters the inversion path)
-
-    let updateValues: unknown[] = [];
-    mockSql.mockImplementationOnce((...args: unknown[]) => {
-      updateValues = args.slice(1);
-      return Promise.resolve([]);
-    }); // batched enriched UPDATE
-    mockSql.mockResolvedValueOnce([]); // prune DELETE
-
-    // Intraday returns minutes (so the inversion path is entered), then the
-    // simulator throws — the catch swallows it and the column stays null.
-    mockFetchIntraday.mockResolvedValueOnce([
-      { ts: new Date('2026-05-02T14:31:00Z'), mid: 1.55 },
-    ]);
-    mockSimulateInversion.mockImplementationOnce(() => {
-      throw new Error('flow-inversion: matched-flow alignment failed');
-    });
-
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-
-    await handler(req, res);
-
-    expect(res._status).toBe(200);
-    // Enrichment still landed (1 enriched), flow_inversion populated 0.
-    expect(res._json).toMatchObject({
-      status: 'success',
-      message: expect.stringContaining('flow_inversion populated 0'),
-    });
-    expect(mockSimulateInversion).toHaveBeenCalled();
-
-    // Batched UPDATE bind order (each bind is an ARRAY, one element per fire):
-    //   ids[], trail[], hard[], tier[], eod[], inv[], peak[], mtp[]
-    // inv[] (index 5), element 0 MUST be null — the throw degraded only it.
-    // unnest passes the null element straight through to the column.
-    expect((updateValues[5] as (number | null)[])[0]).toBeNull();
-    // The other realized fields + peak are real numbers (enrichment landed).
-    // peak[] (index 6), element 0: max tick 2.0 from entry 1.0 → +100%.
-    expect((updateValues[6] as number[])[0]).toBeCloseTo(100, 5);
-    // mtp[] (index 7), element 0: the 2.0 tick is 3 min after the 14:30 entry.
-    expect((updateValues[7] as number[])[0]).toBeCloseTo(3, 5);
-    // ids[] (index 0), element 0 is the fire id targeted by the WHERE clause.
-    expect((updateValues[0] as number[])[0]).toBe(baseFire.id);
-  });
-
-  // ── dateToIso parity: Date object vs YYYY-MM-DD string ────────────────────
-  // Neon returns DATE columns as a Date when the SELECT has no explicit cast;
-  // a backfill or test fixture might pass a 'YYYY-MM-DD' string. dateToIso
-  // (enrich-lottery-outcomes.ts:74) must normalize BOTH to the same ISO date,
-  // since the result is fed to fetchAndCacheOptionIntraday. dateToIso is
-  // private, so we observe it through the mocked fetchAndCacheOptionIntraday
-  // call's 3rd arg.
-  it('dateToIso normalizes a Date column input to the same ISO as a string input', async () => {
-    async function captureDateStrFor(dateCol: Date | string): Promise<string> {
-      mockSql.mockResolvedValueOnce([{ ...baseFire, date: dateCol }]); // SELECT fires
-      mockSql.mockResolvedValueOnce([
-        { fireId: 1, executedAt: new Date('2026-05-02T14:31:00Z'), price: 1.6 },
-      ]); // batched tick read
-      mockSql.mockResolvedValueOnce([]); // batched enriched UPDATE
-      mockSql.mockResolvedValueOnce([]); // prune DELETE
-      mockFetchIntraday.mockResolvedValueOnce([]); // no minutes → inversion skipped
-
-      const req = mockRequest({
-        method: 'GET',
-        headers: { authorization: 'Bearer test-secret' },
-      });
-      const res = mockResponse();
-      await handler(req, res);
-      expect(res._status).toBe(200);
-      const [, , dateStr] = mockFetchIntraday.mock.calls.at(-1) as [
-        string,
-        string,
-        string,
-      ];
-      return dateStr;
-    }
-
-    // Neon-returns-DATE-as-Date: UTC midnight Date for 2026-05-02.
-    const fromDate = await captureDateStrFor(new Date('2026-05-02T00:00:00Z'));
-    vi.clearAllMocks();
-    mockCronGuard.mockReturnValue(GUARD);
-    // Backfill / fixture string path.
-    const fromString = await captureDateStrFor('2026-05-02');
-
-    expect(fromDate).toBe('2026-05-02');
-    expect(fromString).toBe('2026-05-02');
-    expect(fromDate).toBe(fromString);
-  });
-
   it('does NOT emit the heartbeat when the prune DELETE throws', async () => {
-    mockSql.mockResolvedValueOnce([]); // SELECT fires (empty) → prune path
-    mockSql.mockRejectedValueOnce(new Error('neon: connection reset'));
+    route({ prune: () => Promise.reject(new Error('neon: connection reset')) });
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-
-    await handler(req, res);
+    const res = await run();
 
     // safeDbVoid swallows the throw before the metric line runs, so the
     // heartbeat correctly stays flat — exactly the missing-prune signal.
     expect(res._status).toBe(200);
     expect(mockMetricsIncrement).not.toHaveBeenCalledWith('lottery.kept_prune');
+  });
+});
+
+describe('enrich-lottery-outcomes: failure paths and feed gaps', () => {
+  const minutes = [{ ts: new Date('2026-10-01T14:05:00Z'), mid: 1.1 }];
+
+  it('never stamps a fire whose ticker went silent mid-session after its entry (continuity gap)', async () => {
+    // uw-stream died 16:00-16:05Z and was redeployed before the close: the
+    // close tail is live, but fire 1's path is missing five minutes.
+    route({
+      tapeCandidates: [fire(1), fire(2, 'BBB261002C00010000')],
+      gaps: [
+        {
+          ticker: 'AAA',
+          date: '2026-10-01',
+          gap_start: '2026-10-01T16:00:00Z',
+        },
+      ],
+      aggregate: (ids) => ids.map((id) => agg(id)),
+    });
+
+    const res = await run();
+
+    expect(aggregateCalls()[0]![1][0]).toEqual([2]); // fire 1 never read
+    expect(lockCalls()[0]![1]).toEqual([2]);
+    expect(res._json).toMatchObject({ status: 'error', tapeGap: 1 });
+    expect(mockCaptureMessage.mock.calls[0]![1]).toMatchObject({
+      fingerprint: ['enrich-lottery-outcomes', 'missing-tape'],
+      extra: { tapeGapIds: [1] },
+    });
+  });
+
+  it('fails the run (500) when the tape candidate SELECT is rejected', async () => {
+    route({ tapeSelect: () => Promise.reject(new Error('neon: timeout')) });
+
+    const res = await run();
+
+    expect(res._status).toBe(500);
+    expect(lockCalls()).toHaveLength(0);
+  });
+
+  it('fails the run (500) when the inversion candidate SELECT is rejected', async () => {
+    route({
+      inversionSelect: () => Promise.reject(new Error('neon: timeout')),
+    });
+
+    const res = await run();
+
+    expect(res._status).toBe(500);
+  });
+
+  it('reports a UW outage as a chain error (partial + Sentry), not as missing data', async () => {
+    mockFetchIntraday.mockRejectedValue(new Error('UW API 503: outage'));
+    route({ inversionCandidates: [invFire(1)] });
+
+    const res = await run();
+
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      inversion: { chainErrors: 1, noIntradayMinutes: 0, filled: 0 },
+    });
+    expect(mockCaptureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'UW API 503: outage' }),
+      expect.objectContaining({
+        fingerprint: ['enrich-lottery-outcomes', 'flow-inversion-chain'],
+      }),
+    );
+  });
+
+  it('drops a rejected flow load from the cache so the next chain on the ticker re-queries', async () => {
+    // The second chain asks for the ticker's flow only after the first load
+    // has rejected (concurrent askers share the in-flight load by design).
+    mockFetchIntraday.mockImplementation(async (_k: string, chain: string) => {
+      if (chain === 'AAA261002C00105000') {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      return minutes;
+    });
+    mockSimulateInversion.mockReturnValue({
+      exitPct: 12,
+      exitTs: null,
+      status: 'inversion',
+    });
+    let flowReads = 0;
+    route({
+      inversionCandidates: [
+        invFire(1, 'AAA261002C00100000'),
+        invFire(2, 'AAA261002C00105000'),
+      ],
+    });
+    const routed = mockSql.getMockImplementation()!;
+    mockSql.mockImplementation(
+      async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        if (strings.join(' ').includes('net_flow_per_ticker_history')) {
+          flowReads += 1;
+          if (flowReads === 1) throw new Error('neon: connection reset');
+          return [];
+        }
+        return routed(strings, ...values);
+      },
+    );
+
+    const res = await run();
+
+    expect(flowReads).toBe(2);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      inversion: { chainErrors: 1, filled: 1 },
+    });
+  });
+
+  it('skips chains UW already answered with no data, without a UW call', async () => {
+    route({
+      inversionCandidates: [
+        invFire(1, 'AAA261002C00100000'),
+        invFire(2, 'AAA261002C00105000'),
+      ],
+      emptyIntraday: [{ chain: 'AAA261002C00100000', date: '2026-10-01' }],
+    });
+
+    const res = await run();
+
+    expect(mockFetchIntraday).toHaveBeenCalledTimes(1);
+    expect(mockFetchIntraday).toHaveBeenCalledWith(
+      'test-key',
+      'AAA261002C00105000',
+      '2026-10-01',
+    );
+    expect(res._json).toMatchObject({
+      inversion: { chains: 2, emptyChains: 1 },
+    });
+  });
+
+  it('writes inversions in batches of 500 as they accumulate', async () => {
+    mockFetchIntraday.mockResolvedValue(minutes);
+    mockSimulateInversion.mockReturnValue({
+      exitPct: 7,
+      exitTs: null,
+      status: 'inversion',
+    });
+    route({
+      inversionCandidates: Array.from({ length: 501 }, (_, i) =>
+        invFire(i + 1),
+      ),
+    });
+
+    const res = await run();
+
+    expect(inversionWrites().map((c) => (c[1] as number[]).length)).toEqual([
+      500, 1,
+    ]);
+    expect(res._json).toMatchObject({ inversion: { filled: 501 } });
   });
 });

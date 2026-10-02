@@ -224,9 +224,10 @@ async function persistRows(
  *
  * Cache hit (`ok` or `empty` row in option_intraday_nbbo_fetches) skips
  * the UW call entirely. Cache miss or prior `error` triggers a refetch.
- * UW failures are logged + tombstoned with status='error' so the next
- * cron run will try again. Empty UW responses tombstone with
- * status='empty' so we don't repeatedly hammer expired contracts.
+ * A UW failure is tombstoned with status='error' (so the next run tries
+ * again) and then RETHROWN: an outage must surface in the caller, not
+ * pass as a contract with no intraday data. Empty UW responses tombstone
+ * with status='empty' so we don't repeatedly hammer expired contracts.
  */
 export async function fetchAndCacheOptionIntraday(
   apiKey: string,
@@ -253,7 +254,7 @@ export async function fetchAndCacheOptionIntraday(
   } catch (err) {
     logger.warn({ err, optionChain, date }, 'option-intraday: UW fetch failed');
     await recordFetch(optionChain, date, 0, 'error');
-    return [];
+    throw err;
   }
 
   await persistRows(optionChain, rows);

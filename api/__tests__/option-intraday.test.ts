@@ -146,18 +146,19 @@ describe('fetchAndCacheOptionIntraday', () => {
     expect(mockSql).toHaveBeenCalledTimes(3);
   });
 
-  it('records error tombstone when UW fetch fails', async () => {
+  it('records an error tombstone and rethrows when the UW fetch fails', async () => {
     mockSql.mockResolvedValueOnce([]); // cache miss
     mockUwFetch.mockRejectedValueOnce(new Error('UW API 503: outage'));
     mockSql.mockResolvedValueOnce([]); // recordFetch error
 
-    const result = await fetchAndCacheOptionIntraday(
-      'KEY',
-      'SPY260502C00500000',
-      '2026-05-02',
-    );
+    // An outage must reach the caller, not pass as "no intraday data".
+    await expect(
+      fetchAndCacheOptionIntraday('KEY', 'SPY260502C00500000', '2026-05-02'),
+    ).rejects.toThrow('UW API 503: outage');
 
-    expect(result).toEqual([]);
     expect(mockSql).toHaveBeenCalledTimes(2);
+    const tombstone = (mockSql.mock.calls[1]![0] as string[]).join(' ');
+    expect(tombstone).toContain('INSERT INTO option_intraday_nbbo_fetches');
+    expect(mockSql.mock.calls[1]).toContain('error');
   });
 });
