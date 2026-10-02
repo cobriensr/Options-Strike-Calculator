@@ -27,6 +27,7 @@ vi.mock('../_lib/logger.js', () => ({
   default: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
+import logger from '../_lib/logger.js';
 import { sendPushToOwner, __resetVapidForTests } from '../_lib/push.js';
 
 const VAPID_ENV = {
@@ -115,6 +116,19 @@ describe('sendPushToOwner', () => {
     expect((options as { TTL: number }).TTL).toBe(21_600);
   });
 
+  it('clamps ttlSec to one day', async () => {
+    mockSql.mockResolvedValueOnce([
+      { id: 1, endpoint: 'https://a/1', p256dh_key: 'p1', auth_key: 'a1' },
+    ]);
+    mockSql.mockResolvedValueOnce([]);
+    mockSendNotification.mockResolvedValue({ statusCode: 201 });
+
+    await sendPushToOwner({ title: 'x', body: 'y' }, { ttlSec: 7 * 86_400 });
+
+    const [, , options] = mockSendNotification.mock.calls[0]!;
+    expect((options as { TTL: number }).TTL).toBe(86_400);
+  });
+
   it('cleans up subscriptions returning 410 Gone', async () => {
     mockSql.mockResolvedValueOnce([
       { id: 1, endpoint: 'https://a/1', p256dh_key: 'p1', auth_key: 'a1' },
@@ -138,6 +152,33 @@ describe('sendPushToOwner', () => {
     expect(result.failed).toBe(0);
     // The DELETE was issued for the expired subscription.
     expect(mockSql).toHaveBeenCalledTimes(3); // SELECT + DELETE + UPDATE
+  });
+
+  it('still returns the result when the expired-row DELETE rejects', async () => {
+    // A throw here after a delivered push would make a claim-based caller
+    // (the Schwab re-auth reminder) release its claim and re-send hourly.
+    mockSql.mockResolvedValueOnce([
+      { id: 1, endpoint: 'https://a/1', p256dh_key: 'p1', auth_key: 'a1' },
+      { id: 2, endpoint: 'https://b/2', p256dh_key: 'p2', auth_key: 'a2' },
+    ]);
+    const deleteErr = new Error('Neon: connection refused');
+    mockSql.mockRejectedValueOnce(deleteErr); // DELETE for expired
+    mockSql.mockResolvedValueOnce([]); // UPDATE last_used_at
+
+    mockSendNotification
+      .mockResolvedValueOnce({ statusCode: 201 })
+      .mockRejectedValueOnce(
+        Object.assign(new Error('Gone'), { statusCode: 410 }),
+      );
+
+    const result = await sendPushToOwner({ title: 'x', body: 'y' });
+
+    expect(result).toEqual({ sent: 1, expired: 1, failed: 0 });
+    expect(logger.warn).toHaveBeenCalledWith(
+      { err: deleteErr, expiredIds: [2] },
+      'push_subscriptions expired-row cleanup failed',
+    );
+    expect(mockSql).toHaveBeenCalledTimes(3); // the UPDATE still runs
   });
 
   it('counts 404 Not Found as expired (same cleanup path)', async () => {

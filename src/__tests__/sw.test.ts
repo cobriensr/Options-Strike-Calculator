@@ -279,6 +279,11 @@ describe('sw — push handler carries a same-origin url for the click handler', 
     ['another origin', 'https://evil.example/phish'],
     ['a protocol-relative URL', '//evil.example/phish'],
     ['a backslash host', '/\\evil.example/phish'],
+    // The push handler checks once, so these prove sameOriginPath rejects
+    // them on its own (no reliance on the click handler's re-check).
+    ['a bare protocol-relative host', '//evil'],
+    ['a bare backslash host', '/\\evil'],
+    ['a dot segment that normalizes to the path "//evil"', '/.//evil'],
     ['a javascript: URL', 'javascript:alert(1)'],
     ['a non-string', 42],
   ])('drops %s', async (_label, url) => {
@@ -319,11 +324,37 @@ describe('sw — notificationclick handler', () => {
   });
 
   it.each([
+    ['a query', `${ORIGIN}/?view=alerts`],
+    ['a hash', `${ORIGIN}/#lottery`],
+    ['another app path', `${ORIGIN}/index.html`],
+  ])(
+    'for the app root, focuses any of our windows (one with %s) instead of opening a duplicate',
+    async (_label, clientUrl) => {
+      const focus = vi.fn().mockResolvedValue(undefined);
+      matchAll.mockResolvedValueOnce([{ url: clientUrl, focus }]);
+      const { event } = click(null);
+      await event.flush();
+      expect(focus).toHaveBeenCalledOnce();
+      expect(openWindow).not.toHaveBeenCalled();
+    },
+  );
+
+  it('for a specific url, does not settle for a window on another page', async () => {
+    const focus = vi.fn().mockResolvedValue(undefined);
+    matchAll.mockResolvedValueOnce([{ url: `${ORIGIN}/?view=alerts`, focus }]);
+    const { event } = click({ url: '/api/auth/init' });
+    await event.flush();
+    expect(focus).not.toHaveBeenCalled();
+    expect(openWindow).toHaveBeenCalledWith(`${ORIGIN}/api/auth/init`);
+  });
+
+  it.each([
     ['no data', null],
     ['data without a url', { url: undefined }],
     // data set by some other showNotification caller is re-checked
     ['an off-site url in data', { url: '//evil.example/phish' }],
     ['an absolute off-site url in data', { url: 'https://evil.example/' }],
+    ['a "//"-normalizing url in data', { url: '/.//evil' }],
   ])('opens the app root for %s', async (_label, data) => {
     matchAll.mockResolvedValueOnce([]);
     const { event } = click(data);

@@ -105,12 +105,18 @@ export interface SendPushOptions {
    * Seconds the push service holds the message for an unreachable device
    * before dropping it. Default 60: live trade alerts are worthless a
    * minute later. One-shot reminders pass hours, so a phone that is
-   * offline or asleep still receives them.
+   * offline or asleep still receives them. Clamped to MAX_PUSH_TTL_SEC.
    */
   ttlSec?: number;
 }
 
 const DEFAULT_PUSH_TTL_SEC = 60;
+/**
+ * Upper bound on the push TTL: a day. Nothing this app sends is worth
+ * delivering later than that, and web-push's own default (4 weeks) would
+ * surface a stale alert long after it mattered.
+ */
+const MAX_PUSH_TTL_SEC = 86_400;
 
 /**
  * Send `payload` to every device subscribed by the owner. Subscriptions
@@ -148,7 +154,7 @@ export async function sendPushToOwner(
           keys: { p256dh: row.p256dh_key, auth: row.auth_key },
         },
         serialized,
-        { TTL: ttlSec },
+        { TTL: Math.min(ttlSec, MAX_PUSH_TTL_SEC) },
       );
       result.sent += 1;
     } catch (err) {
@@ -167,11 +173,23 @@ export async function sendPushToOwner(
     }
   }
 
+  // Best-effort, like the last_used_at stamp below: the pushes have already
+  // landed, so a failed cleanup must not turn a delivered fan-out into a
+  // throw. Callers that release an idempotency claim on a throw (the Schwab
+  // re-auth reminder) would otherwise re-send every hour. The rows are
+  // retried on the next fan-out, which gets 410/404 from them again.
   if (expiredIds.length > 0) {
-    await sql`
-      DELETE FROM push_subscriptions
-      WHERE id = ANY(${expiredIds})
-    `;
+    try {
+      await sql`
+        DELETE FROM push_subscriptions
+        WHERE id = ANY(${expiredIds})
+      `;
+    } catch (err) {
+      logger.warn(
+        { err, expiredIds },
+        'push_subscriptions expired-row cleanup failed',
+      );
+    }
   }
 
   // Stamp last_used_at on the rows that succeeded so an admin can see

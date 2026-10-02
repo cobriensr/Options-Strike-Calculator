@@ -2,19 +2,13 @@ import { describe, it, expect } from 'vitest';
 import {
   classifySchwabExpiry,
   formatSchwabExpiryCt,
-  SCHWAB_REAUTH_URGENT_MS,
-  SCHWAB_REAUTH_WARN_MS,
 } from '../../utils/schwab-expiry';
 
 const HOUR_MS = 60 * 60 * 1000;
 const NOW = Date.parse('2026-10-01T15:00:00Z');
 
 describe('classifySchwabExpiry', () => {
-  it('pins the thresholds at 24 h (warn) and 2 h (urgent)', () => {
-    expect(SCHWAB_REAUTH_WARN_MS).toBe(24 * HOUR_MS);
-    expect(SCHWAB_REAUTH_URGENT_MS).toBe(2 * HOUR_MS);
-  });
-
+  // The boundary rows pin the 24 h (warn) and 2 h (urgent) thresholds.
   it.each([
     ['5 days left', 5 * 24 * HOUR_MS, 'ok'],
     ['24 h + 1 ms left', 24 * HOUR_MS + 1, 'ok'],

@@ -251,6 +251,18 @@ describe('cron schwab-reauth-reminder', () => {
         '2026-10-01',
       ],
       ['07:30 CT: the next nag day', '2026-10-02T12:30:00Z', '2026-10-02'],
+      // Fall-back Sunday (Nov 1 2026, 02:00 CDT → 01:00 CST): the 7 h
+      // shift rolls the day at 06:00 CST.
+      ['fall-back Sun 05:07 CST', '2026-11-01T11:07:00Z', '2026-10-31'],
+      ['fall-back Sun 06:07 CST', '2026-11-01T12:07:00Z', '2026-11-01'],
+      ['the Monday after, 06:30 CST', '2026-11-02T12:30:00Z', '2026-11-01'],
+      ['the Monday after, 07:07 CST', '2026-11-02T13:07:00Z', '2026-11-02'],
+      // Spring-forward Sunday (Mar 14 2027, 02:00 CST → 03:00 CDT): the
+      // day rolls at 08:00 CDT.
+      ['spring-forward Sun 07:07 CDT', '2027-03-14T12:07:00Z', '2027-03-13'],
+      ['spring-forward Sun 08:07 CDT', '2027-03-14T13:07:00Z', '2027-03-14'],
+      ['the Monday after, 06:30 CDT', '2027-03-15T11:30:00Z', '2027-03-14'],
+      ['the Monday after, 07:07 CDT', '2027-03-15T12:07:00Z', '2027-03-15'],
     ])('%s → %s', async (_label, iso, nagDay) => {
       vi.setSystemTime(Date.parse(iso));
       mockRedisGet.mockResolvedValueOnce(null);

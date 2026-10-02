@@ -12,10 +12,10 @@
 const HOUR_MS = 60 * 60 * 1000;
 
 /** At or below this much remaining lifetime the login is "expiring" (amber). */
-export const SCHWAB_REAUTH_WARN_MS = 24 * HOUR_MS;
+const SCHWAB_REAUTH_WARN_MS = 24 * HOUR_MS;
 
 /** At or below this much remaining lifetime the login is urgent (red). */
-export const SCHWAB_REAUTH_URGENT_MS = 2 * HOUR_MS;
+const SCHWAB_REAUTH_URGENT_MS = 2 * HOUR_MS;
 
 /**
  * Where a refresh token stands at `now`:

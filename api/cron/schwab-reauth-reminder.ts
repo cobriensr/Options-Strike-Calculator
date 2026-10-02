@@ -14,10 +14,17 @@
  *   - lapsed — the record is past its expiry, or gone (logged out)
  *
  * The lapsed nag's "day" is a Central-time day that starts at 07:00 CT
- * (LAPSED_DAY_START_HOUR_CT), not at midnight. The first nag goes out on the
- * run after the lapse; each repeat then lands at 07:07 CT, before the 08:30
- * open, rather than waking the phone at 00:07. On the two DST-change Sundays
- * the rollover moves by an hour.
+ * (LAPSED_DAY_START_HOUR_CT), not at midnight: its key is the CT date of
+ * (now - 7 h). The first nag goes out on the run after the lapse; each
+ * repeat then lands at 07:07 CT, before the 08:30 open, rather than waking
+ * the phone at 00:07. The shift is 7 elapsed hours, so on the fall-back
+ * Sunday the day rolls at 06:00 CST and on the spring-forward Sunday at
+ * 08:00 CDT; the Monday after each is back to 07:00.
+ *
+ * A login that lapses between 00:00 and 07:00 CT is still in the previous
+ * nag day, so it gets that day's nag on the next run and another at 07:07,
+ * 1–7 h apart. That is rare: the 7-day clock starts at a login, and logins
+ * happen during the trading session.
  *
  * Idempotency (R6) comes from a claim key taken with SET NX BEFORE sending:
  *   - Keys: `schwab:reauth-reminder:{24h|2h}:{refreshExpiresAt}`, derived
@@ -38,12 +45,8 @@
  *     next hourly run retries. A failed release is captured. That reminder
  *     is then not retried until its key expires, but the next kind still
  *     fires.
- *   - Known gaps: a run killed between the claim and the send (a function
- *     timeout) loses that one reminder; the next kind still fires. And
- *     `sendPushToOwner` deletes 410/404 subscriptions AFTER its send loop,
- *     so if that DELETE throws, a push that did reach a device is treated
- *     as a throw: the claim is released and the next run sends a duplicate,
- *     hourly for as long as the DELETE keeps failing.
+ *   - Known gap: a run killed between the claim and the send (a function
+ *     timeout) loses that one reminder; the next kind still fires.
  *
  * Push TTL is REMINDER_PUSH_TTL_SEC (6 h). The push service drops a message
  * it cannot deliver within its TTL, and the claim would then block a retry,

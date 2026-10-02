@@ -150,14 +150,17 @@ self.addEventListener('push', (event) => {
 /**
  * Reduce a push-supplied URL to a same-origin path ("/api/auth/init"), or
  * undefined. Resolving against our origin, rather than prefix-matching "/",
- * also rejects "//host" and "/\host", which browsers resolve off-site, so a
- * notification can never open another site.
+ * rejects "//host" and "/\host", which browsers resolve off-site. A resolved
+ * path that itself starts with "//" is rejected too: "/.//host" normalizes
+ * to the path "//host", which is same-origin here but would resolve off-site
+ * when opened. So a notification can never open another site.
  */
 function sameOriginPath(url: unknown): string | undefined {
   if (typeof url !== 'string') return undefined;
   try {
     const resolved = new URL(url, self.location.origin);
     if (resolved.origin !== self.location.origin) return undefined;
+    if (resolved.pathname.startsWith('//')) return undefined;
     return resolved.pathname + resolved.search + resolved.hash;
   } catch {
     return undefined;
@@ -167,9 +170,10 @@ function sameOriginPath(url: unknown): string | undefined {
 // ── Notification click ──────────────────────────────────────────────
 // Open the notification's `data.url` (e.g. the Schwab re-auth flow), or the
 // app root when it has none. A window already showing that page is focused
-// instead of opening a duplicate. The url is re-checked here, since
-// `data` may come from any `showNotification` caller, not only the push
-// handler above.
+// instead of opening a duplicate; for the app root, any of our windows
+// counts, since the SPA keeps state in its query and hash. The url is
+// re-checked here, since `data` may come from any `showNotification`
+// caller, not only the push handler above.
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const data = event.notification.data as { url?: unknown } | null;
@@ -183,7 +187,11 @@ async function focusOrOpen(path: string): Promise<void> {
     type: 'window',
     includeUncontrolled: true,
   });
-  const existing = windows.find((client) => client.url === href);
+  const existing = windows.find((client) =>
+    path === '/'
+      ? new URL(client.url).origin === self.location.origin
+      : client.url === href,
+  );
   if (existing) {
     await existing.focus();
     return;
