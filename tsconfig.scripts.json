@@ -25,7 +25,6 @@
      they import the retired IV-anomaly modules (deleted in 227498dd) and are
      dead — flagged for removal. */
   "include": [
-    "scripts/backfill-futures.ts",
     "scripts/backfill-gamma-setup-fires.ts",
     "scripts/backfill-gex-target-features.ts",
     "scripts/backfill-lottery-score.ts",
