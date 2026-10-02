@@ -59,25 +59,47 @@ describe('SchwabExpiryBadge', () => {
     mockUseNow.mockReset().mockReturnValue(NOW);
   });
 
-  describe('renders nothing', () => {
+  describe('renders nothing and runs no minute clock', () => {
     it('for a non-owner, and keeps the status hook disabled', () => {
       const { container } = renderBadge(expiresIn(HOUR_MS), {
         isOwner: false,
       });
       expect(container).toBeEmptyDOMElement();
       expect(mockUseStatus).toHaveBeenCalledWith(false);
+      expect(mockUseNow).not.toHaveBeenCalled();
     });
 
     it('before the first status arrives', () => {
       const { container } = renderBadge(null);
       expect(container).toBeEmptyDOMElement();
       expect(mockUseStatus).toHaveBeenCalledWith(true);
+      expect(mockUseNow).not.toHaveBeenCalled();
     });
 
     it('when the status is unknown', () => {
       const { container } = renderBadge({ state: 'unknown' });
       expect(container).toBeEmptyDOMElement();
+      expect(mockUseNow).not.toHaveBeenCalled();
     });
+  });
+
+  it('starts the minute clock once a status is shown', () => {
+    renderBadge(expiresIn(HOUR_MS));
+    expect(mockUseNow).toHaveBeenCalled();
+  });
+
+  it('gives warn and urgent different glyphs, not just different colours', () => {
+    const { unmount } = renderBadge(expiresIn(5 * HOUR_MS));
+    const warnGlyph = badge().querySelector(
+      '[aria-hidden="true"]',
+    )?.textContent;
+    unmount();
+    renderBadge(expiresIn(HOUR_MS));
+    const urgentGlyph = badge().querySelector(
+      '[aria-hidden="true"]',
+    )?.textContent;
+    expect(warnGlyph?.trim()).toBe('▲');
+    expect(urgentGlyph?.trim()).toBe('◆');
   });
 
   it('is green with no Re-auth link while more than 24 h remain', () => {
@@ -163,7 +185,7 @@ describe('SchwabExpiryBadge', () => {
         'ok',
         expiresIn(3 * 24 * HOUR_MS),
         '●',
-        'Login active, at Sun 10:00 AM CT.',
+        'Login active until Sun 10:00 AM CT.',
       ],
       [
         'warn',
@@ -174,7 +196,7 @@ describe('SchwabExpiryBadge', () => {
       [
         'urgent',
         expiresIn(HOUR_MS),
-        '▲',
+        '◆',
         'Login expires within 2 hours, at Thu 11:00 AM CT.',
       ],
       [

@@ -2,9 +2,10 @@
  * SchwabExpiryBadge — owner-only countdown to the Schwab refresh-token
  * expiry, shown in the header next to the Re-auth control.
  *
- *   green — more than 24 h left
- *   amber — 24 h or less
- *   red   — 2 h or less, expired, or logged out
+ *   ● green — more than 24 h left
+ *   ▲ amber — 24 h or less
+ *   ◆ red   — 2 h or less
+ *   ✕ red   — expired, or logged out
  *
  * Amber and red add a Re-auth link, unless the 401-driven Re-auth prompt
  * (`market.needsAuth`) is already showing, so only one Re-auth control
@@ -12,14 +13,17 @@
  * status arrives, or when the status is `unknown`.
  *
  * The tier is computed on the client clock (`useNowMinute`), so the badge
- * turns amber/red on time between the 5-minute status polls.
+ * turns amber/red on time between the 5-minute status polls. The clock
+ * lives in the inner `BadgeBody`, so non-owners (and the time before the
+ * first status) run no minute timer, and the first status is classified
+ * against a fresh `now`.
  *
  * Accessibility: it is a `timer` named "Schwab login expiry". That ARIA role
  * describes a countdown, and its implicit `aria-live="off"` keeps the
  * per-minute updates from chattering; the push reminder is the alerting
- * path. The tier is carried by a shape glyph and screen-reader text as well
- * as colour (WCAG 1.4.1), and the screen-reader text gives the absolute
- * expiry that sighted users get from the tooltip.
+ * path. Each tier has its own shape glyph and screen-reader text, so none is
+ * told apart by colour alone (WCAG 1.4.1), and the screen-reader text gives
+ * the absolute expiry that sighted users get from the tooltip.
  */
 
 import { useNowMinute } from '../../hooks/useNowMinute';
@@ -38,7 +42,7 @@ type BadgeTier = SchwabExpiryTier | 'logged_out';
 const TIER_LOOK: Record<BadgeTier, { color: string; glyph: string }> = {
   ok: { color: theme.green, glyph: '●' },
   warn: { color: theme.caution, glyph: '▲' },
-  urgent: { color: theme.red, glyph: '▲' },
+  urgent: { color: theme.red, glyph: '◆' },
   expired: { color: theme.red, glyph: '✕' },
   logged_out: { color: theme.red, glyph: '✕' },
 };
@@ -89,17 +93,17 @@ function badgeView(
       srText: `Login expired ${at}.`,
     };
   }
-  const severity =
+  const srText =
     tier === 'ok'
-      ? 'Login active'
+      ? `Login active until ${at}.`
       : tier === 'warn'
-        ? 'Login expires within 24 hours'
-        : 'Login expires within 2 hours';
+        ? `Login expires within 24 hours, at ${at}.`
+        : `Login expires within 2 hours, at ${at}.`;
   return {
     tier,
     label: `Schwab ${formatRemaining(refreshExpiresAt - now)}`,
     title: `Schwab login expires ${at}`,
-    srText: `${severity}, at ${at}.`,
+    srText,
   };
 }
 
@@ -115,9 +119,18 @@ export default function SchwabExpiryBadge({
   reauthPromptShown,
 }: SchwabExpiryBadgeProps) {
   const status = useSchwabAuthStatus(isOwner);
-  const now = useNowMinute();
   if (!isOwner || status === null || status.state === 'unknown') return null;
+  return <BadgeBody status={status} reauthPromptShown={reauthPromptShown} />;
+}
 
+interface BadgeBodyProps {
+  status: Exclude<SchwabAuthStatus, { state: 'unknown' }>;
+  reauthPromptShown: boolean;
+}
+
+/** Owns the minute clock, so it only ticks while a badge is on screen. */
+function BadgeBody({ status, reauthPromptShown }: BadgeBodyProps) {
+  const now = useNowMinute();
   const { tier, label, title, srText } = badgeView(status, now);
   const { color, glyph } = TIER_LOOK[tier];
   return (

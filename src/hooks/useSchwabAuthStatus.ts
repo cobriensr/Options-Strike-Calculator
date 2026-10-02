@@ -11,9 +11,15 @@
  *
  * A failed or malformed response keeps the last known status rather than
  * blanking the badge; the badge's own clock keeps the countdown moving.
+ * Failures are surfaced (R4): a malformed 2xx body, a non-JSON body, a
+ * network error, or a timeout is captured as a warning. Aborts are expected
+ * (a superseded fetch, a hidden tab, an unmount) and are not. A non-2xx
+ * response is not captured here: the endpoint captures its own 5xx, and a
+ * 401 is the auth interceptor's to handle.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { captureUnlessAuth } from '../lib/sentry-helpers';
 import type { SchwabAuthStatus } from '../utils/schwab-expiry';
 import { usePolling } from './usePolling';
 
@@ -21,6 +27,10 @@ const STATUS_URL = '/api/auth/schwab-status';
 /** Matches the badge's coarsest change (the 24 h / 2 h tier boundaries). */
 const POLL_MS = 5 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 10_000;
+const CAPTURE_OPTIONS = {
+  level: 'warning',
+  tags: { context: 'schwab_status_fetch' },
+} as const;
 
 const EXPIRY_STATES = new Set(['active', 'expiring', 'expired']);
 
@@ -44,7 +54,8 @@ export function useSchwabAuthStatus(enabled: boolean): SchwabAuthStatus | null {
   const [status, setStatus] = useState<SchwabAuthStatus | null>(null);
   const [visible, setVisible] = useState(isTabVisible);
   // Aborts the previous fetch when a new one starts, and the in-flight one
-  // when the gates close or the component unmounts.
+  // when the gates close or the component unmounts. Every await below
+  // re-checks it, so a superseded response can never overwrite a newer one.
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -68,12 +79,21 @@ export function useSchwabAuthStatus(enabled: boolean): SchwabAuthStatus | null {
       });
       if (ctrl.signal.aborted || !res.ok) return;
       const body: unknown = await res.json();
-      if (ctrl.signal.aborted || !isSchwabAuthStatus(body)) return;
+      if (ctrl.signal.aborted) return;
+      if (!isSchwabAuthStatus(body)) {
+        captureUnlessAuth(
+          new Error('schwab-status: malformed response body'),
+          CAPTURE_OPTIONS,
+        );
+        return;
+      }
       setStatus(body);
-    } catch {
-      // Network error, timeout, abort, or a non-JSON body: keep the last
-      // known status. The badge is advisory; the reminder cron is the loud
-      // path for a lapsed login.
+    } catch (err) {
+      // Our own abort (superseded, hidden, unmounted) is expected. A
+      // timeout is a TimeoutError, not an AbortError, so it is captured.
+      if (ctrl.signal.aborted) return;
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      captureUnlessAuth(err, CAPTURE_OPTIONS);
     }
   }, []);
 

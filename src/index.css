@@ -23,9 +23,9 @@
   --color-muted: #6b665d;
   --color-placeholder: #7a756b;
   --color-accent: #1d4ed8;
-  --color-success: #15803d;
+  --color-success: #126b33; /* 5.16:1 as 10px text on its own 9% pill tint */
   --color-danger: #b91c1c;
-  --color-caution: #946a00;
+  --color-caution: #7a5700; /* 5.15:1 likewise; #946a00 was 3.87:1 */
   --color-backtest: #7c3aed;
   --color-badge: #15803d;
 
