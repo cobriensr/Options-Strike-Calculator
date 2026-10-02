@@ -252,6 +252,40 @@ describe('useSchwabAuthStatus', () => {
     expect(captureUnlessAuth).not.toHaveBeenCalled();
   });
 
+  it('ignores a superseded response whose body arrives after a newer one', async () => {
+    // Fetch #1's headers arrive at once, so the post-fetch abort check has
+    // already passed; only its json() hangs. Going hidden aborts #1, and
+    // coming back starts fetch #2, which answers logged_out. Then #1's body
+    // arrives with EXPIRING. Nothing throws and the body is well-formed, so
+    // the only thing that can drop it is the abort re-check after json().
+    let resolveJson!: (body: unknown) => void;
+    const slowBody = {
+      ok: true,
+      status: 200,
+      json: () =>
+        new Promise((resolve) => {
+          resolveJson = resolve;
+        }),
+    } as unknown as Response;
+    fetchMock.mockImplementationOnce(async () => slowBody);
+    fetchMock.mockImplementationOnce(async () => jsonResponse(LOGGED_OUT));
+
+    const { result } = renderHook(() => useSchwabAuthStatus(true));
+    await settle();
+    act(() => setVisibility('hidden'));
+    act(() => setVisibility('visible'));
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.current).toEqual(LOGGED_OUT);
+
+    await act(async () => {
+      resolveJson(EXPIRING);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current).toEqual(LOGGED_OUT);
+    expect(captureUnlessAuth).not.toHaveBeenCalled();
+  });
+
   it('on unmount aborts the in-flight fetch and stops polling and listening', async () => {
     let captured: AbortSignal | undefined;
     fetchMock.mockImplementationOnce(

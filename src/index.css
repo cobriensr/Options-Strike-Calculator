@@ -32,10 +32,13 @@
   /* Data-freshness status pills (LIVE / SCRUBBED / STALE).
      Distinct from --color-success / --color-caution / --color-backtest
      above because they communicate polling state (data freshness),
-     not market-direction or user-shifted-time semantics. */
-  --color-status-live: #15803d;
-  --color-status-scrubbed: #946a00;
-  --color-status-stale: #c2410c;
+     not market-direction or user-shifted-time semantics.
+     Each is ≥ 5:1 as 10px semibold StatusBadge text on its own 9% tint
+     (live 5.16, scrubbed 5.15, stale 5.03; the old #15803d / #946a00 /
+     #c2410c were 3.97 / 3.87 / 4.06). */
+  --color-status-live: #126b33;
+  --color-status-scrubbed: #7a5700;
+  --color-status-stale: #a8380a;
 
   /* Canvas-rendered chart palette (lightweight-charts can't resolve
      CSS var() inside canvas, so these are read via getComputedStyle()

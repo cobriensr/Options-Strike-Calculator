@@ -339,6 +339,18 @@ describe('sw — notificationclick handler', () => {
     },
   );
 
+  it('for the app root, never focuses a window on another origin', async () => {
+    // The only window offered is off-origin. focusOrOpen's root branch picks
+    // a window by its origin check alone, so `openWindow` is reached only if
+    // that check rejects this client; without it, `focus` would be called.
+    const focus = vi.fn().mockResolvedValue(undefined);
+    matchAll.mockResolvedValueOnce([{ url: 'https://evil.example/', focus }]);
+    const { event } = click(null);
+    await event.flush();
+    expect(focus).not.toHaveBeenCalled();
+    expect(openWindow).toHaveBeenCalledWith(`${ORIGIN}/`);
+  });
+
   it('for a specific url, does not settle for a window on another page', async () => {
     const focus = vi.fn().mockResolvedValue(undefined);
     matchAll.mockResolvedValueOnce([{ url: `${ORIGIN}/?view=alerts`, focus }]);
