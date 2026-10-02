@@ -11,6 +11,7 @@
  *   - CBOE SKEW Index white paper (January 2011)
  *   - SpotGamma: 0DTE market structure research (public blog)
  *   - GEXBoard / VCAlgo: vanna and charm dealer flow mechanics
+ *   - Amaya, Garcia-Ares, Pearson & Vasquez: "0DTE Index Options and Market Volatility" (working paper, January 2025)
  *
  * Injected as part of the stable cached system prompt so Claude internalizes
  * these mechanics as background context for every analysis — not reference
@@ -56,17 +57,19 @@ The magnitude matters as much as the sign. Deeply negative GEX means MMs must bu
 </dealer_gamma_hedging>
 
 <gex_vs_vix>
-## Why GEX Predicts Volatility Better Than VIX
+## GEX and VIX as Volatility Signals
 
 VIX is derived from quoted option prices — it measures what option market participants are PRICING as future volatility. Because MMs are sophisticated, their quotes incorporate their own hedging costs, bid/ask spreads, and demand for protection. VIX reflects price, not mechanics.
 
 The empirical problem: VIX cannot distinguish between its lowest readings. The 1-day standard deviation of SPX returns at VIX below 12 (lowest quartile) is 0.51%. At VIX 12-15 (second-lowest quartile) it is 0.66%. A VIX of 12 and a VIX of 15 predict nearly the same realized variance — the model is nearly useless in benign regimes.
 
-GEX predicts actual mechanical flows. When GEX is in its highest quartile, the 1-day SPX standard deviation is 0.55%. In the second-highest quartile, it is 0.85% — a 4-point difference on an index at 5,500. These distributions are empirically distinguishable in a way VIX's lowest readings are not.
+GEX separates realized-volatility regimes that VIX cannot. When GEX is in its highest quartile, the 1-day SPX standard deviation is 0.55%. In the second-highest quartile, it is 0.85% — a 0.30 percentage-point gap, about 16 SPX points on an index at 5,500. These distributions are empirically distinguishable in a way VIX's lowest readings are not.
 
 Additionally, VIX's correlation to 30-day FUTURE realized volatility is 0.75, but its correlation to the PRIOR month's realized volatility is 0.85. VIX is systematically lagging — it is more a reflection of recent volatility than a forecast of future volatility. GEX is derived from the actual open interest structure that governs today's hedging flows, making it structurally forward-looking by design.
 
-**Practical implication:** On days where VIX reads low (12-16) but GEX is negative or near zero, the mechanical hedging dynamics can produce much larger intraday moves than VIX implies. Do not use VIX alone to gauge intraday range risk. GEX regime (via Aggregate GEX and the zero-gamma level) is the more reliable indicator of whether today's price action will be suppressed or amplified.
+**How much of that is hedging, and how much is regime?** Measured directly, the volatility effect of dealer hedging itself is modest. Amaya et al. (2025) reconstructed the actual aggregate MM SPX/SPXW position minute by minute and estimated volatility with and without MM gamma hedging: in their main model, hedging lowered annualized volatility by about 0.2 points on average; at its worst, it raised it by about 3.3 points over a day and 6.4 points over a 30-minute window — no larger than the swings realized volatility routinely makes for other reasons (it moves more than 3 points day over day on about 20% of days; the day-to-day standard deviation is about 4.5 points). Much of GEX's predictive power therefore comes from GEX acting as a regime label (dealers tend to be long gamma when markets are already calm), not from hedging flow alone. These are index-wide volatility measures over a day or a 30-minute window; they do not rule out local pinning near a large strike late in the session.
+
+**Practical implication:** Use VIX1D and the straddle cone to size the expected range, and the GEX regime (Aggregate GEX and the zero-gamma level) as a tilt on that range: when dealers are long gamma, price is more likely to undershoot the implied range and respect walls; when they are short gamma, it is more likely to overshoot the range and break walls. On low-VIX days (12-16) with negative GEX (spot below the zero-gamma level), do not shade the range inside the cone as you would on a long-gamma day — treat the cone edges as reachable and breaks as plausible — but keep the VIX1D/cone range as the baseline.
 </gex_vs_vix>
 
 <gex_at_expiry>
@@ -84,9 +87,9 @@ The same mechanism creates the pin effect at high-OI strikes. With extreme gamma
 <charm_and_0dte_regime>
 ## Charm Flows and the 0DTE Regime Shift
 
-**Charm — the Greek that drives the pin:**
+**Charm — the time-decay force behind afternoon drift:**
 
-Charm (also written δΔ/δt, or delta-decay) measures how an option's delta changes purely from time passing, holding price and implied volatility constant. It is the reason the market gravitates toward large-OI strikes through the day without any directional catalyst.
+Charm (also written δΔ/δt, or delta-decay) measures how an option's delta changes purely from time passing, holding price and implied volatility constant. It is a major source of the mechanical drift that builds through the afternoon without any directional catalyst — most of all when price is quiet.
 
 Mechanics for a dealer holding a short put:
 - As time passes, the OTM put's delta becomes less negative (the option is decaying toward worthlessness)
@@ -112,7 +115,7 @@ This timing pattern explains why the final two hours of 0DTE sessions often show
 
 When large gamma positions are closed out (the customer closes their 0DTE trade before expiry), the dealer's hedging obligation evaporates instantly. The accumulated charm-driven hedge unwinds all at once. This is why SpotGamma observes that "the largest market rallies on the day both coincided with the removal of these large gamma positions" — a 40+ handle SPX move can occur within minutes of a large 0DTE gamma position being closed.
 
-The signature pattern: price is pinned near a strike all morning → a large OI block closes → suppression evaporates → price moves rapidly → a new block is established at the new level → a new pin forms. The three-phase pattern of 0DTE market structure (morning setup → midday removal → afternoon reestablishment) is charm-driven at its core.
+The signature pattern: price is pinned near a strike all morning → a large OI block closes → suppression evaporates → price moves rapidly → a new block is established at the new level → a new pin forms. The three-phase pattern of 0DTE market structure (morning setup → midday removal → afternoon reestablishment) is driven at its core by large positions being removed and reestablished — gamma appearing and disappearing — with charm-driven drift building once a new block is in place.
 
 **The 0DTE volume regime shift:**
 
@@ -122,13 +125,13 @@ This structural shift has materially changed how GEX behaves intraday:
 
 1. **The AM snapshot is now a weak guide to PM dynamics.** The morning Periscope GEX picture reflects open interest that was established the night before plus whatever 0DTE was opened at the open. By 1:00 PM, a completely different set of 0DTE OI may dominate the near-term gamma landscape. The distribution can reshape faster than the analysis refresh rate.
 
-2. **Charm is now first-order, not secondary.** When 0DTE was 5% of volume (pre-2022), charm was a minor intraday effect. At 50% of volume, charm-driven delta decay from 0DTE positions is among the primary drivers of intraday SPX price action on active sessions.
+2. **Charm is a late-session drift, not the all-day driver.** Per minute, charm is small next to the gamma hedge for a typical price move at every strike that still carries meaningful hedge: for a strike one standard deviation of the remaining move away, roughly 2-3% at the open and only about 13% with 15 minutes left (about double that at two standard deviations). What makes charm a late-session force is that its absolute size grows faster than the gamma hedge as expiration approaches, and that it is one-directional: gamma hedging flow reverses whenever price reverses, while charm flow keeps pushing the same way and accumulates into a material afternoon drift. It is strongest on quiet tapes. When price moves about as much as implied volatility priced in, the delta change from those moves (via speed — how fast gamma changes with price) largely offsets charm; when price sits still, nothing offsets it. On active, trending sessions, gamma hedging and the order flow driving the move dominate.
 
 3. **GEX spikes faster and steeper.** Near-ATM 0DTE gamma increases much more rapidly through the session than longer-dated options do. A strike that has modest GEX at 9:30 AM can have extreme GEX by 2:00 PM if price has drifted toward it. The afternoon wall failure pattern is more frequent and more extreme than pre-2022 norms implied.
 
-4. **Mean-reversion character is structurally embedded.** The dominant 0DTE flow is customer-net-sold options (customers selling 0DTE for premium collection). This means dealers are mostly long 0DTE gamma — they are net buyers on dips and net sellers on rallies throughout the session. The 0DTE regime has a built-in mean-reversion bias that acts as a suppression layer on top of the longer-dated GEX picture.
+4. **The long-gamma baseline is a default, not a guarantee.** Aggregate MM gamma across all SPX expirations is usually positive, which gives a mean-reversion baseline. But 0DTE customer flow is roughly two-sided: in Cboe trade records tagged by trader capacity (2020–2023), customer purchases of 0DTE options averaged about 17.2% of all SPX/SPXW volume and customer sales about 16.0% (0DTE was about 35% of the total) — customers were, if anything, slight net buyers — so customer premium-selling does not guarantee the cushion. After Tuesday/Thursday expirations launched (May 2022), aggregate MM gamma dipped negative at some point during at least half of sessions in that sample (through mid-2023). Read the live gamma sign rather than assuming suppression.
 
-**Practical implication:** When VIX is low and 0DTE volume is high (typical daily setup), the intraday market tends to exhibit stronger pinning, faster charm-driven convergence to large-OI strikes, and more violent reactions to position removal than the overnight GEX analysis would suggest. The AM Periscope walls are starting conditions, not stable equilibria.
+**Practical implication:** When VIX is low and 0DTE volume is high (typical daily setup), expect the gamma map to reshape through the session, charm-driven drift to build into the close on quiet tapes, and more violent reactions to position removal than the overnight GEX analysis would suggest. Pinning is strongest when the live gamma sign near spot is positive — confirm it rather than assuming it. The AM Periscope walls are starting conditions, not stable equilibria.
 </charm_and_0dte_regime>
 
 <straddle_cone_mechanics>
@@ -500,7 +503,7 @@ These mechanics explain WHY the rules in this system exist — not as arbitrary 
 
 - **The crash configuration check:** Before initiating any short-premium structure when the market has sold off significantly, assess whether large OI put strikes have moved from OTM to ATM or ITM. If they have, the structural support that existed when those puts were OTM has inverted — GEX has weakened, VEX has flipped sign, and the implied order book is no longer buying dips.
 
-- **Charm and afternoon reliability:** Morning Periscope walls are starting conditions, not stable equilibria. By 1:00-2:00 PM, charm-driven delta decay from 0DTE positions has reshaped the gamma distribution significantly. Strikes that pinned reliably at 10 AM may fail to pin at 2 PM not because GEX changed but because the dominant hedging flow is now charm-driven convergence toward wherever the largest current 0DTE OI sits. If the morning analysis does not match afternoon price behavior, check whether the GEX snapshot has been superseded by intraday 0DTE position establishment.
+- **Charm and afternoon reliability:** Morning Periscope walls are starting conditions, not stable equilibria. By 1:00-2:00 PM, the gamma distribution has often reshaped significantly: as expiration approaches, 0DTE gamma concentrates near ATM, and new 0DTE positions opened during the session add gamma the morning snapshot never saw. Strikes that pinned reliably at 10 AM may fail to pin at 2 PM because, once spot is even modestly away from them, they have lost the gamma that made them walls — and fresh 0DTE positioning may now carry more gamma elsewhere. Charm-driven drift builds through the afternoon on top of this and becomes a major hedging flow into the final hour — especially on quiet tapes. If the morning analysis does not match afternoon price behavior, check whether the GEX snapshot has been superseded by intraday 0DTE position establishment.
 
 - **Position removal = volatility event:** When a large 0DTE gamma position is closed mid-session, the dealer's hedging obligations evaporate. The charm-driven convergence that had been building toward that strike stops instantly. SPX can move 30-50 handles within minutes of a large gamma block removal. This is not a GEX breakdown — it is the mechanical consequence of a committed hedging obligation disappearing.
 
