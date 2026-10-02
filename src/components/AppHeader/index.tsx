@@ -20,7 +20,9 @@
  *
  * The component takes data as props (no hooks called here) so App.tsx
  * remains the single owner of the underlying state — easier to test and
- * easier to reason about during a snapshot debugger walkthrough.
+ * easier to reason about during a snapshot debugger walkthrough. The one
+ * exception is `SchwabExpiryBadge`, which is self-contained: it polls its
+ * own owner-only status endpoint, and nothing else reads that state.
  */
 
 import type { Ref } from 'react';
@@ -32,6 +34,7 @@ import type { useHistoryData } from '../../hooks/useHistoryData';
 import type { useVixData } from '../../hooks/useVixData';
 import type { CollapseSignal } from '../collapse-context';
 import SchwabAuthLink from './SchwabAuthLink';
+import SchwabExpiryBadge from './SchwabExpiryBadge';
 import { ViewToggle } from '../ViewToggle';
 import type { ViewMode } from '../../hooks/useViewMode';
 
@@ -186,6 +189,13 @@ export default function AppHeader({
           <span className={view === 'alerts' ? undefined : 'lg:hidden'}>
             <AccessKeyButton compact />
           </span>
+          {/* Owner-only refresh-token countdown. It brings its own Re-auth
+              link when the login is close to lapsing, and hides that link
+              while the 401-driven Re-auth below is already showing. */}
+          <SchwabExpiryBadge
+            isOwner={isOwner}
+            reauthPromptShown={market.needsAuth}
+          />
           {market.needsAuth && isOwner && (
             <SchwabAuthLink
               ariaLabel="Re-authenticate with Schwab"

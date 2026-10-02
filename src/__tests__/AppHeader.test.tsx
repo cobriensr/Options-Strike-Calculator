@@ -14,6 +14,25 @@ vi.mock('../components/AccessKey/AccessKeyButton', () => ({
   default: () => <button data-testid="access-key-button">access</button>,
 }));
 
+// SchwabExpiryBadge polls its own owner-only endpoint (covered by its own
+// tests). Stub it so the header test makes no network calls and can assert
+// the props it is wired with.
+vi.mock('../components/AppHeader/SchwabExpiryBadge', () => ({
+  default: ({
+    isOwner,
+    reauthPromptShown,
+  }: {
+    isOwner: boolean;
+    reauthPromptShown: boolean;
+  }) => (
+    <span
+      data-testid="schwab-expiry-badge-stub"
+      data-owner={String(isOwner)}
+      data-reauth-prompt={String(reauthPromptShown)}
+    />
+  ),
+}));
+
 // ============================================================
 // FACTORIES
 // ============================================================
@@ -216,6 +235,22 @@ describe('AppHeader', () => {
       screen.queryByRole('link', { name: /re-authenticate with schwab/i }),
     ).not.toBeInTheDocument();
   });
+
+  // ── Schwab refresh-token countdown badge ─────────────────
+
+  it.each([
+    [true, false],
+    [true, true],
+    [false, false],
+  ])(
+    'wires the expiry badge with isOwner=%s and the 401 prompt state (needsAuth=%s)',
+    (isOwner, needsAuth) => {
+      renderHeader({ isOwner, market: makeMarket({ needsAuth }) });
+      const stub = screen.getByTestId('schwab-expiry-badge-stub');
+      expect(stub).toHaveAttribute('data-owner', String(isOwner));
+      expect(stub).toHaveAttribute('data-reauth-prompt', String(needsAuth));
+    },
+  );
 
   // ── Status badge cascading ───────────────────────────────
 
