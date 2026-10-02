@@ -323,19 +323,31 @@ export function buildShadowReport(
  * The LIVE write (the promotion path; the shadow cron never calls it while
  * PROMOTE_TO_LIVE is false). UPDATE-only, like the Python refit: the table
  * has legacy NOT NULL columns this refit does not own, so tickers missing
- * from it are skipped (lottery-ticker-stats-seed.ts seeds them). Refuses to
- * run when no ticker has a quintile: that write would clear every quintile
- * and switch Q1/Q2 suppression off fleet-wide (the 2026-10 state, when the
- * inputs had been empty since June). Returns the number of rows written.
+ * from it are skipped (lottery-ticker-stats-seed.ts seeds them).
+ *
+ * Refuses to run when the refit would clear more live quintiles than it
+ * keeps or re-fits (`report.diff.wouldClear > unchanged + changed`), and
+ * when no ticker has a quintile at all. Each NULL quintile switches Q1/Q2
+ * suppression and the score bonus off for that ticker, so a thin refit
+ * (e.g. the 2026-10 state, inputs empty since June, or one ticker with a
+ * blend and the rest below the sample floor) must never overwrite a fuller
+ * live table. `report` must come from buildShadowReport(stats, live) on the
+ * same run. Returns the number of rows written.
  */
 export async function writeLiveTickerStats(
   sql: Sql,
   stats: readonly TickerInversionStats[],
+  report: ShadowRefitReport,
 ): Promise<number> {
-  if (!stats.some((s) => s.quintile !== null)) {
+  const { wouldClear, unchanged, changed } = report.diff;
+  if (
+    !stats.some((s) => s.quintile !== null) ||
+    wouldClear > unchanged + changed
+  ) {
     throw new Error(
-      'refit-lottery-ticker-stats: refusing a live write with no quintile ' +
-        '(it would clear every inversion quintile)',
+      'refit-lottery-ticker-stats: refusing a live write that would clear ' +
+        `${wouldClear} live quintile(s) while keeping or re-fitting only ` +
+        `${unchanged + changed}`,
     );
   }
   const rows = (await withDbRetry(

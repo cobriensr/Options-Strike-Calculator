@@ -313,12 +313,23 @@ describe('writeLiveTickerStats (the promotion path)', () => {
     n21d: 4,
     n90d: 30,
   });
+  const live = (ticker: string, quintile: number | null) => ({
+    ticker,
+    quintile,
+    blend: quintile === null ? null : quintile / 10,
+    updatedAt: '2026-06-17T03:30:00.000Z',
+  });
+  /** Write with the report the cron would build for the same inputs. */
+  const write = (
+    stats: ReturnType<typeof stat>[],
+    liveRows: ReturnType<typeof live>[],
+  ) => writeLiveTickerStats(sql, stats, buildShadowReport(stats, liveRows));
 
   it('UPDATEs only existing rows, one batched statement, and returns the count', async () => {
     mockSql.mockResolvedValueOnce([{ ticker: 'AAPL' }]);
 
     await expect(
-      writeLiveTickerStats(sql, [stat('AAPL', 4), stat('NEW', null)]),
+      write([stat('AAPL', 4), stat('NEW', null)], [live('AAPL', 2)]),
     ).resolves.toBe(1);
     const t = text();
     expect(t).toContain('UPDATE lottery_ticker_stats');
@@ -337,14 +348,50 @@ describe('writeLiveTickerStats (the promotion path)', () => {
 
   it('refuses a write that would clear every quintile', async () => {
     await expect(
-      writeLiveTickerStats(sql, [stat('AAPL', null), stat('AMD', null)]),
-    ).rejects.toThrow(/refusing a live write/);
+      write(
+        [stat('AAPL', null), stat('AMD', null)],
+        [live('AAPL', 3), live('AMD', 1)],
+      ),
+    ).rejects.toThrow(/refusing a live write that would clear 2 live/);
     expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('refuses a write where one ticker has a blend but most live quintiles would clear', async () => {
+    // A thin refit: TSLA re-fits, nine others fall below the sample floor.
+    const others = [
+      'AAPL',
+      'AMD',
+      'COIN',
+      'GOOG',
+      'HOOD',
+      'META',
+      'MSTR',
+      'NVDA',
+      'QQQ',
+    ];
+    const stats = [stat('TSLA', 1), ...others.map((t) => stat(t, null))];
+    const liveRows = [live('TSLA', 4), ...others.map((t) => live(t, 3))];
+
+    await expect(write(stats, liveRows)).rejects.toThrow(
+      /would clear 9 live quintile\(s\) while keeping or re-fitting only 1/,
+    );
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('allows a write that clears fewer quintiles than it keeps or re-fits', async () => {
+    mockSql.mockResolvedValueOnce([{ ticker: 'AAPL' }, { ticker: 'AMD' }]);
+
+    await expect(
+      write(
+        [stat('AAPL', 4), stat('AMD', 3), stat('COIN', null)],
+        [live('AAPL', 4), live('AMD', 1), live('COIN', 2)],
+      ),
+    ).resolves.toBe(2); // unchanged 1 + changed 1 >= wouldClear 1
   });
 
   it('propagates a DB reject', async () => {
     mockSql.mockRejectedValueOnce(new Error('neon: write timeout'));
-    await expect(writeLiveTickerStats(sql, [stat('AAPL', 4)])).rejects.toThrow(
+    await expect(write([stat('AAPL', 4)], [live('AAPL', 4)])).rejects.toThrow(
       'write timeout',
     );
   });

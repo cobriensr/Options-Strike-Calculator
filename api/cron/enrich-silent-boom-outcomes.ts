@@ -32,8 +32,11 @@
  * stamped rows are out of reach of this cron;
  * scripts/enrich_silent_boom_outcomes.py (parquet) is the recovery path.
  *
- * Cadence: 21:45 UTC Mon-Fri, after the 20:20/21:20 UTC (EDT/EST) settle
- * instant. About 250 alerts a day, i.e. a few chunks.
+ * Cadence: 21:45 and 23:45 UTC Mon-Fri, both after the 20:20/21:20 UTC
+ * (EDT/EST) settle instant. The second slot retries what the first left
+ * (a feed gap, a read that kept timing out), which matters most on Friday:
+ * Monday's run no longer reaches Friday's alerts. About 250 alerts a day,
+ * i.e. a few chunks.
  *
  * Environment: CRON_SECRET
  *
@@ -56,10 +59,11 @@ import {
 type Sql = ReturnType<typeof getDb>;
 
 /**
- * No chunk starts after this much of the run: the same budget as the
- * lottery tape pass, well inside the Fluid Compute default maxDuration.
+ * No chunk starts after this much of the run: the same 150 s as the
+ * lottery tape pass (TAPE_PASS_BUDGET_MS), leaving ~150 s of the 300 s
+ * Fluid Compute default maxDuration for an in-flight chunk and its write.
  */
-const PASS_BUDGET_MS = 180_000;
+const PASS_BUDGET_MS = 150_000;
 
 interface AlertUpdate {
   id: number;
@@ -172,6 +176,7 @@ export default withCronInstrumentation(
       tapeGap: pass.tapeGapIds.length,
       noPrints: pass.noPrintsIds.length,
       unreadable: pass.unreadableIds.length,
+      readFailed: pass.readFailedIds.length,
     };
     ctx.logger.info(metadata, 'enrich-silent-boom-outcomes completed');
 
@@ -182,8 +187,9 @@ export default withCronInstrumentation(
       ...(status === 'error'
         ? {
             message:
-              `${pass.tapeGapIds.length} alert(s) left unenriched: ` +
-              'ws_option_trades gap at the close',
+              `${pass.tapeGapIds.length} alert(s) with a ws_option_trades ` +
+              `gap and ${pass.readFailedIds.length} whose tape read kept ` +
+              'timing out; left unenriched',
           }
         : {}),
       metadata,

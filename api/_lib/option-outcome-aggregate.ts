@@ -35,7 +35,7 @@
 
 import { getMarketCloseHourET } from '../../src/data/marketHours.js';
 import { etWallClockToUtcIso } from '../../src/utils/timezone.js';
-import { withDbRetry, type getDb } from './db.js';
+import { TransientDbError, withDbRetry, type getDb } from './db.js';
 import type logger from './logger.js';
 import { Sentry } from './sentry.js';
 
@@ -573,6 +573,9 @@ export function prepareWindows(
       entryPx <= 0 ||
       Number.isNaN(entry.getTime()) ||
       bounds === null ||
+      // Outside the date's session: the window (and the continuity probe,
+      // which starts at the open) would not cover it.
+      entry < bounds.openAt ||
       entry > bounds.tapeEnd
     ) {
       out.skipped += 1;
@@ -622,17 +625,76 @@ export interface OutcomePassResult {
   tapeGapIds: number[];
   noPrintsIds: number[];
   unreadableIds: number[];
+  /** Windows whose tape read kept timing out even when read alone. */
+  readFailedIds: number[];
 }
 
 /** Ids named in a log/Sentry payload, so a bad night stays readable. */
 const MAX_LISTED_IDS = 50;
 
+interface ChunkRead {
+  rows: Map<number, OutcomeAggregateRow>;
+  /** Single windows whose read still exhausted its retries. */
+  readFailedIds: number[];
+  /** Halves not started because the deadline passed mid-bisection. */
+  deferredIds: number[];
+}
+
+/**
+ * Read one chunk's aggregates. A retry-exhausted transient failure
+ * (TransientDbError: the statement kept timing out, e.g. two cold TSLA 0DTE
+ * chains; 116 fires on two 09-30 chains took ~11.3 s cold) splits the chunk
+ * in half and reads each half, down to single windows. A window that still
+ * fails alone is returned in readFailedIds instead of throwing. Otherwise
+ * that chunk would head every later run (newest-first order is
+ * deterministic) and the windows behind it would age out unread. A genuine
+ * (non-transient) error propagates. No half starts after the deadline.
+ */
+async function readChunkBisecting(
+  sql: Sql,
+  chunk: readonly OutcomeWindow[],
+  deadlineMs: number,
+): Promise<ChunkRead> {
+  try {
+    return {
+      rows: aggregatesById(await readOutcomeAggregates(sql, chunk)),
+      readFailedIds: [],
+      deferredIds: [],
+    };
+  } catch (err) {
+    if (!(err instanceof TransientDbError)) throw err;
+    const out: ChunkRead = {
+      rows: new Map(),
+      readFailedIds: [],
+      deferredIds: [],
+    };
+    if (chunk.length === 1) {
+      out.readFailedIds.push(chunk[0]!.id);
+      return out;
+    }
+    const mid = Math.ceil(chunk.length / 2);
+    for (const half of [chunk.slice(0, mid), chunk.slice(mid)]) {
+      if (Date.now() > deadlineMs) {
+        out.deferredIds.push(...half.map((w) => w.id));
+        continue;
+      }
+      const read = await readChunkBisecting(sql, half, deadlineMs);
+      for (const [id, row] of read.rows) out.rows.set(id, row);
+      out.readFailedIds.push(...read.readFailedIds);
+      out.deferredIds.push(...read.deferredIds);
+    }
+    return out;
+  }
+}
+
 /**
  * Read + lock chain-grouped chunk by chunk until the deadline. Windows whose
  * ticker shows a feed gap after their entry are tapeGap without being read.
- * Only priced windows are written; tapeGap / noPrints / unreadable windows
- * are never stamped (they stay candidates and are retried). A DB error
- * propagates, after the anomaly report for the windows already classified.
+ * Only priced windows are written; tapeGap / noPrints / unreadable /
+ * read-failed windows are never stamped (they stay candidates and are
+ * retried). A chunk whose read keeps timing out is bisected (see
+ * readChunkBisecting). A genuine DB error propagates, after the anomaly
+ * report for the windows already classified.
  */
 export async function enrichOutcomeWindows<U>(
   sql: Sql,
@@ -646,6 +708,7 @@ export async function enrichOutcomeWindows<U>(
     tapeGapIds: [],
     noPrintsIds: [],
     unreadableIds: [],
+    readFailedIds: [],
   };
   try {
     const gaps = await readContinuityGaps(sql, windows);
@@ -657,13 +720,17 @@ export async function enrichOutcomeWindows<U>(
     const chunks = chunkByChain(readable);
     for (const [i, chunk] of chunks.entries()) {
       if (Date.now() > opts.deadlineMs) {
-        result.deferred = chunks.slice(i).reduce((n, c) => n + c.length, 0);
+        result.deferred += chunks.slice(i).reduce((n, c) => n + c.length, 0);
         break;
       }
-      const rows = aggregatesById(await readOutcomeAggregates(sql, chunk));
+      const read = await readChunkBisecting(sql, chunk, opts.deadlineMs);
+      result.readFailedIds.push(...read.readFailedIds);
+      result.deferred += read.deferredIds.length;
+      const unread = new Set([...read.readFailedIds, ...read.deferredIds]);
       const updates: U[] = [];
       for (const w of chunk) {
-        const verdict = classifyAggregate(rows.get(w.id));
+        if (unread.has(w.id)) continue;
+        const verdict = classifyAggregate(read.rows.get(w.id));
         if (verdict.kind === 'priced') {
           updates.push(
             opts.toUpdate(w, realizedFromAggregate(verdict.agg, w.entryPx)),
@@ -692,13 +759,31 @@ export async function enrichOutcomeWindows<U>(
 
 /**
  * Fingerprinted Sentry events per run: one for missing tape (feed gap or
- * no contract print), one for unreadable aggregates. The SQL returns one
- * row per window, so an unreadable row means a bug, not market data.
+ * no contract print), one for unreadable aggregates (the SQL returns one
+ * row per window, so an unreadable row means a bug, not market data), and
+ * one naming the windows whose tape read kept failing even alone.
  */
 function reportOutcomeAnomalies<U>(
   opts: OutcomePassOptions<U>,
   r: OutcomePassResult,
 ): void {
+  if (r.readFailedIds.length > 0) {
+    const message =
+      `${opts.job}: ${r.readFailedIds.length} row(s) whose tape read kept ` +
+      'timing out even when read alone (retry-exhausted); left unenriched ' +
+      'and retried next run';
+    const detail = {
+      readFailed: r.readFailedIds.length,
+      readFailedIds: r.readFailedIds.slice(0, MAX_LISTED_IDS),
+    };
+    opts.logger.error(detail, message);
+    Sentry.captureMessage(message, {
+      level: 'error',
+      fingerprint: [opts.job, 'read-failed'],
+      tags: { 'cron.anomaly': `${opts.job}-read-failed` },
+      extra: detail,
+    });
+  }
   if (r.unreadableIds.length > 0) {
     const message =
       `${opts.job}: ${r.unreadableIds.length} unreadable aggregate row(s) ` +
@@ -737,11 +822,14 @@ function reportOutcomeAnomalies<U>(
   });
 }
 
-/** Cron status for a finished pass: a feed gap pages, the rest degrades. */
+/**
+ * Cron status for a finished pass: a feed gap or a read that kept failing
+ * pages; missing or unreadable rows degrade.
+ */
 export function outcomePassStatus(
   r: OutcomePassResult,
 ): 'success' | 'partial' | 'error' {
-  if (r.tapeGapIds.length > 0) return 'error';
+  if (r.tapeGapIds.length > 0 || r.readFailedIds.length > 0) return 'error';
   return r.noPrintsIds.length + r.unreadableIds.length > 0
     ? 'partial'
     : 'success';

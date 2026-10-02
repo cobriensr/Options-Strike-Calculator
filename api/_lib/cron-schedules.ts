@@ -303,7 +303,9 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: LONG_RUNNER_MAX_RUNTIME,
   },
   'enrich-silent-boom-outcomes': {
-    schedule: '45 21 * * 1-5',
+    // Two post-close slots so a Friday alert gets a retry before the
+    // Monday retention cutoff.
+    schedule: '45 21,23 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },

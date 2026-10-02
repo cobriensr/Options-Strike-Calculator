@@ -13,6 +13,7 @@ const { mockSql, mockCronGuard, mockCaptureMessage } = vi.hoisted(() => ({
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  TransientDbError: class TransientDbError extends Error {},
 }));
 
 vi.mock('../_lib/sentry.js', () => ({

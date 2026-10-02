@@ -13,6 +13,7 @@ vi.mock('../_lib/sentry.js', () => ({
 
 vi.mock('../_lib/db.js', () => ({
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  TransientDbError: class TransientDbError extends Error {},
 }));
 
 import {
@@ -31,6 +32,7 @@ import {
   type OutcomeAggregateRow,
   type OutcomeWindow,
 } from '../_lib/option-outcome-aggregate.js';
+import { TransientDbError } from '../_lib/db.js';
 
 /** A healthy aggregate row as the Neon driver returns it (strings for int8). */
 function row(o: Partial<OutcomeAggregateRow> = {}): OutcomeAggregateRow {
@@ -331,6 +333,7 @@ describe('prepareWindows', () => {
     ['an unparseable entry time', { entry: 'not-a-time' }],
     ['an unparseable date', { date: 'bad' }],
     ['an entry after the tape end', { entry: '2026-10-01T21:00:00Z' }],
+    ['an entry before the open', { entry: '2026-10-01T13:00:00Z' }],
   ])('skips %s', (_label, o) => {
     expect(prepareWindows([cand(o)], settledAt)).toEqual({
       windows: [],
@@ -348,6 +351,7 @@ describe('outcomePassStatus', () => {
     tapeGapIds: [],
     noPrintsIds: [],
     unreadableIds: [],
+    readFailedIds: [],
     ...o,
   });
 
@@ -358,6 +362,7 @@ describe('outcomePassStatus', () => {
     expect(outcomePassStatus(pass({ tapeGapIds: [1], noPrintsIds: [2] }))).toBe(
       'error',
     );
+    expect(outcomePassStatus(pass({ readFailedIds: [3] }))).toBe('error');
   });
 });
 
@@ -546,5 +551,131 @@ describe('enrichOutcomeWindows', () => {
         extra: expect.objectContaining({ tapeGapIds: [2] }),
       }),
     );
+  });
+
+  describe('a chunk whose read keeps timing out (TransientDbError)', () => {
+    /** Aggregate reads fail for any statement whose ids satisfy `fails`. */
+    function routeFailing(fails: (ids: number[]) => boolean) {
+      mockQuery.mockImplementation(async (text: string, params: unknown[]) => {
+        if (text.includes('generate_series')) return [];
+        const ids = params[0] as number[];
+        if (fails(ids)) {
+          throw new TransientDbError(new Error('db attempt timeout'));
+        }
+        return ids.map((id) => row({ window_id: String(id) }));
+      });
+    }
+    const aggIdLists = () =>
+      mockQuery.mock.calls
+        .filter((c) => !(c[0] as string).includes('generate_series'))
+        .map((c) => (c[1] as unknown[][])[0]);
+
+    it('splits the chunk and writes every window when the halves succeed', async () => {
+      // The full 4-window statement times out; each half reads fine.
+      routeFailing((ids) => ids.length === 4);
+      const lock = vi.fn(async (u: number[]) => u.length);
+
+      const r = await enrichOutcomeWindows(
+        sqlWith(mockQuery),
+        [win(1), win(2), win(3), win(4)],
+        opts(lock),
+      );
+
+      expect(aggIdLists()).toEqual([
+        [1, 2, 3, 4],
+        [1, 2],
+        [3, 4],
+      ]);
+      expect(r).toMatchObject({
+        locked: 4,
+        readFailedIds: [],
+        unreadableIds: [],
+      });
+      expect(lock).toHaveBeenCalledWith([1, 2, 3, 4]);
+      expect(outcomePassStatus(r)).toBe('success');
+      expect(mockCaptureMessage).not.toHaveBeenCalled();
+    });
+
+    it('skips and reports a single poison window while the rest are written', async () => {
+      // Any statement containing window 2 times out, even alone.
+      routeFailing((ids) => ids.includes(2));
+      const lock = vi.fn(async (u: number[]) => u.length);
+
+      const r = await enrichOutcomeWindows(
+        sqlWith(mockQuery),
+        [win(1), win(2), win(3)],
+        opts(lock),
+      );
+
+      expect(aggIdLists()).toEqual([[1, 2, 3], [1, 2], [1], [2], [3]]);
+      expect(r).toMatchObject({
+        locked: 2,
+        readFailedIds: [2],
+        unreadableIds: [],
+      });
+      expect(lock).toHaveBeenCalledWith([1, 3]);
+      expect(outcomePassStatus(r)).toBe('error');
+      expect(mockCaptureMessage).toHaveBeenCalledWith(
+        expect.stringContaining('1 row(s) whose tape read kept timing out'),
+        expect.objectContaining({
+          level: 'error',
+          fingerprint: ['test-job', 'read-failed'],
+          extra: { readFailed: 1, readFailedIds: [2] },
+        }),
+      );
+    });
+
+    it('defers the halves it cannot start before the deadline (not failed, not unreadable)', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(new Date('2026-10-01T21:40:00Z'));
+        const deadlineMs = Date.now() + 60_000;
+        mockQuery.mockImplementation(
+          async (text: string, params: unknown[]) => {
+            if (text.includes('generate_series')) return [];
+            // The full-chunk read burns past the deadline before timing out.
+            vi.setSystemTime(new Date(deadlineMs + 1));
+            if ((params[0] as number[]).length > 1) {
+              throw new TransientDbError(new Error('db attempt timeout'));
+            }
+            return [];
+          },
+        );
+        const lock = vi.fn(async (u: number[]) => u.length);
+
+        const r = await enrichOutcomeWindows(
+          sqlWith(mockQuery),
+          [win(1), win(2)],
+          { ...opts(lock), deadlineMs },
+        );
+
+        expect(aggIdLists()).toEqual([[1, 2]]); // no half was started
+        expect(r).toMatchObject({
+          deferred: 2,
+          locked: 0,
+          readFailedIds: [],
+          unreadableIds: [],
+        });
+        expect(lock).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('propagates a genuine (non-transient) error without bisecting', async () => {
+      mockQuery.mockImplementation(async (text: string) => {
+        if (text.includes('generate_series')) return [];
+        throw new Error('column "pricee" does not exist');
+      });
+
+      await expect(
+        enrichOutcomeWindows(
+          sqlWith(mockQuery),
+          [win(1), win(2)],
+          opts(async () => 0),
+        ),
+      ).rejects.toThrow('column "pricee" does not exist');
+      expect(aggIdLists()).toHaveLength(1);
+    });
   });
 });

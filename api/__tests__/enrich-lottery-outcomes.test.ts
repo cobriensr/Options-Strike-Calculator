@@ -32,6 +32,7 @@ const {
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  TransientDbError: class TransientDbError extends Error {},
   // Real best-effort semantics: run the op, swallow any throw (so a prune
   // failure can never fail the cron). Mirrors the real safeDbVoid in db.ts.
   safeDbVoid: async (op: () => Promise<void>): Promise<void> => {
@@ -73,6 +74,7 @@ vi.mock('../_lib/flow-inversion.js', () => ({
 }));
 
 import handler from '../cron/enrich-lottery-outcomes.js';
+import { TransientDbError } from '../_lib/db.js';
 
 const GUARD = { apiKey: 'test-key', today: '2026-10-01' };
 
@@ -756,6 +758,35 @@ describe('enrich-lottery-outcomes: failure paths and feed gaps', () => {
       fingerprint: ['enrich-lottery-outcomes', 'missing-tape'],
       extra: { tapeGapIds: [1] },
     });
+  });
+
+  it('skips and reports a poison fire whose tape read keeps timing out, writing the rest (error)', async () => {
+    route({
+      tapeCandidates: [fire(1), fire(2), fire(3)],
+      aggregate: (ids) => {
+        if (ids.includes(2)) {
+          throw new TransientDbError(new Error('db attempt timeout'));
+        }
+        return ids.map((id) => agg(id));
+      },
+    });
+
+    const res = await run();
+
+    expect(lockCalls().flatMap((c) => c[1] as number[])).toEqual([1, 3]);
+    expect(res._json).toMatchObject({
+      status: 'error',
+      updated: 2,
+      readFailed: 1,
+      unreadable: 0,
+    });
+    expect(mockCaptureMessage).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        fingerprint: ['enrich-lottery-outcomes', 'read-failed'],
+        extra: { readFailed: 1, readFailedIds: [2] },
+      }),
+    );
   });
 
   it('fails the run (500) when the tape candidate SELECT is rejected', async () => {

@@ -18,7 +18,8 @@
  *   - The inputs were empty from late June until enrichment resumed
  *     (docs/superpowers/specs/lottery-enrichment-starvation-2026-10-02.md),
  *     so an early refit would clear every quintile and switch suppression
- *     off. writeLiveTickerStats refuses that case outright.
+ *     off. writeLiveTickerStats refuses any write that would clear more
+ *     live quintiles than it keeps or re-fits.
  *
  * Where to inspect a run: the cron metadata (Axiom `refit-lottery-ticker-
  * stats` events and the HTTP response) carries the coverage and the diff
@@ -82,7 +83,7 @@ export default withCronInstrumentation(
     });
 
     const written = PROMOTE_TO_LIVE
-      ? await writeLiveTickerStats(sql, stats)
+      ? await writeLiveTickerStats(sql, stats, report)
       : 0;
 
     return {

@@ -569,6 +569,7 @@ export default withCronInstrumentation(
       tapeGap: tape.tapeGapIds.length,
       noPrints: tape.noPrintsIds.length,
       unreadable: tape.unreadableIds.length,
+      readFailed: tape.readFailedIds.length,
       inversion,
     };
 
@@ -580,8 +581,9 @@ export default withCronInstrumentation(
         status: 'error',
         rows: tape.locked,
         message:
-          `${tape.tapeGapIds.length} fire(s) left unenriched: ` +
-          'ws_option_trades gap at the close',
+          `${tape.tapeGapIds.length} fire(s) with a ws_option_trades gap and ` +
+          `${tape.readFailedIds.length} whose tape read kept timing out; ` +
+          'left unenriched',
         metadata,
       };
     }

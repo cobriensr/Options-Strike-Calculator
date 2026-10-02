@@ -231,7 +231,7 @@
     },
     {
       "path": "/api/cron/enrich-silent-boom-outcomes",
-      "schedule": "45 21 * * 1-5"
+      "schedule": "45 21,23 * * 1-5"
     },
     {
       "path": "/api/cron/enrich-periscope-lottery-outcomes",
