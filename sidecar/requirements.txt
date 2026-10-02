@@ -29,7 +29,11 @@ ruff>=0.11
 joblib>=1.3.0
 numpy>=1.26.0
 pandas>=2.1.0
-scikit-learn>=1.4.0
+# Pinned to the training version (ml/requirements.txt): the Take-It
+# bundles pickle sklearn estimators (IsotonicRegression calibrators), and
+# unpickling across sklearn versions raises InconsistentVersionWarning and
+# is not guaranteed to load. Bump both files together, then re-export.
+scikit-learn==1.8.0
 shap>=0.45.0
 xgboost>=2.1.0
 
