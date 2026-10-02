@@ -20,6 +20,7 @@
  *     A/B coexist without rewriting the table.
  */
 
+import type { VixBucket } from './analog-range-forecast.js';
 import { generateEmbedding } from './embeddings.js';
 import { getDb } from './db.js';
 import logger from './logger.js';
@@ -39,14 +40,19 @@ export interface SimilarDay {
 /**
  * Insert or replace a day's embedding. Used by the backfill script and
  * the nightly cron. Returns true on success.
+ *
+ * `vixBucket` tags the row for the range forecast's regime-matched
+ * cohort. A null bucket never erases one already stored.
  */
 export async function upsertDayEmbedding(params: {
   date: string;
   symbol: string;
   summary: string;
   embedding: number[];
+  vixBucket?: VixBucket | null;
 }): Promise<boolean> {
   const { date, symbol, summary, embedding } = params;
+  const vixBucket = params.vixBucket ?? null;
 
   if (embedding.length !== DAY_EMBEDDING_DIMS) {
     logger.error(
@@ -66,19 +72,21 @@ export async function upsertDayEmbedding(params: {
   try {
     await sql`
       INSERT INTO day_embeddings
-        (date, symbol, summary, embedding, embedding_model)
+        (date, symbol, summary, embedding, embedding_model, vix_bucket)
       VALUES (
         ${date}::date,
         ${symbol},
         ${summary},
         ${vectorLiteral}::vector,
-        ${DAY_EMBEDDING_MODEL}
+        ${DAY_EMBEDDING_MODEL},
+        ${vixBucket}
       )
       ON CONFLICT (date) DO UPDATE SET
         symbol = EXCLUDED.symbol,
         summary = EXCLUDED.summary,
         embedding = EXCLUDED.embedding,
         embedding_model = EXCLUDED.embedding_model,
+        vix_bucket = COALESCE(EXCLUDED.vix_bucket, day_embeddings.vix_bucket),
         created_at = NOW()
     `;
     return true;
@@ -91,7 +99,9 @@ export async function upsertDayEmbedding(params: {
 
 /**
  * Retrieve the top-k days whose embeddings are cosine-nearest to
- * `embedding`, excluding `excludeDate` from the results.
+ * `embedding`, drawn only from days strictly before `beforeDate`. A
+ * backtest dated in the past must not retrieve days that came after it
+ * (`date <> d` used to let it).
  *
  * Returns `[]` on any error rather than throwing — the analyze endpoint
  * treats analog context as additive.
@@ -99,7 +109,7 @@ export async function upsertDayEmbedding(params: {
 export async function findSimilarDays(
   embedding: number[],
   k: number,
-  excludeDate: string,
+  beforeDate: string,
 ): Promise<SimilarDay[]> {
   if (embedding.length !== DAY_EMBEDDING_DIMS) {
     logger.warn(
@@ -122,7 +132,7 @@ export async function findSimilarDays(
       SELECT date, symbol, summary,
              embedding <=> ${vectorLiteral}::vector AS distance
       FROM day_embeddings
-      WHERE date <> ${excludeDate}::date
+      WHERE date < ${beforeDate}::date
       ORDER BY embedding <=> ${vectorLiteral}::vector
       LIMIT ${safeK}
     `;
@@ -154,9 +164,9 @@ export async function findSimilarDays(
 export async function findSimilarDaysForSummary(
   summary: string,
   k: number,
-  excludeDate: string,
+  beforeDate: string,
 ): Promise<SimilarDay[]> {
   const embedding = await generateEmbedding(summary);
   if (!embedding) return [];
-  return findSimilarDays(embedding, k, excludeDate);
+  return findSimilarDays(embedding, k, beforeDate);
 }

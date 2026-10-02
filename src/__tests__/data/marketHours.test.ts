@@ -5,6 +5,8 @@ import {
   isHoliday,
   isHalfDay,
   isTradingDay,
+  priorTradingDay,
+  cashSessionMinutes,
   currentSessionStage,
   ACTIVE_SESSION_STAGES,
   type SessionStage,
@@ -131,6 +133,50 @@ describe('isTradingDay', () => {
     expect(isTradingDay('2026-13-01')).toBe(false); // invalid month
     expect(isTradingDay('2026-04')).toBe(false); // missing day
     expect(isTradingDay('2026/04/08')).toBe(false); // wrong separator
+  });
+});
+
+describe('priorTradingDay', () => {
+  it('returns the previous weekday on an ordinary week', () => {
+    expect(priorTradingDay('2026-04-22')).toBe('2026-04-21'); // Wed → Tue
+    expect(priorTradingDay('2026-04-21')).toBe('2026-04-20'); // Tue → Mon
+  });
+
+  it('backs over the weekend to Friday', () => {
+    expect(priorTradingDay('2026-04-25')).toBe('2026-04-24'); // Sat → Fri
+    expect(priorTradingDay('2026-04-26')).toBe('2026-04-24'); // Sun → Fri
+    expect(priorTradingDay('2026-04-20')).toBe('2026-04-17'); // Mon → Fri
+  });
+
+  it('skips full-day holidays', () => {
+    expect(priorTradingDay('2026-05-26')).toBe('2026-05-22'); // Memorial Day Mon
+    expect(priorTradingDay('2026-04-04')).toBe('2026-04-02'); // Good Friday
+    expect(priorTradingDay('2026-07-06')).toBe('2026-07-02'); // Jul 3 observed
+  });
+
+  it('returns half-days, which are trading days', () => {
+    expect(priorTradingDay('2026-11-30')).toBe('2026-11-27'); // Black Friday
+  });
+
+  it('throws on a malformed date rather than looping', () => {
+    expect(() => priorTradingDay('not-a-date')).toThrow(/YYYY-MM-DD/);
+  });
+});
+
+describe('cashSessionMinutes', () => {
+  it('is 390 on a full session (09:30–16:00 ET)', () => {
+    expect(cashSessionMinutes('2026-04-21')).toBe(390);
+  });
+
+  it('is 210 on an early-close half day (09:30–13:00 ET)', () => {
+    expect(cashSessionMinutes('2026-11-27')).toBe(210);
+    expect(cashSessionMinutes('2025-12-24')).toBe(210);
+  });
+
+  it('is 0 on weekends, holidays and malformed input', () => {
+    expect(cashSessionMinutes('2026-04-25')).toBe(0); // Sat
+    expect(cashSessionMinutes('2026-07-03')).toBe(0); // holiday
+    expect(cashSessionMinutes('garbage')).toBe(0);
   });
 });
 

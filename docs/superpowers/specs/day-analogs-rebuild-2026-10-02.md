@@ -170,7 +170,12 @@ It is read-only and runs in about 15 s.
   - A skip surfaces as a warning: `logger.warn`, a metric and a Sentry
     warning.
 - **`fetch-day-ohlc` uses the same guard**, so a partial day can no longer
-  become a `range_pt` label.
+  become a `range_pt` label. It also reports `skipped` instead of
+  `success` when no `day_embeddings` row matched (`updated = 0`), closing
+  the 2026-06-11 codebase-audit item.
+- **`fetchDayOhlcFromPostgres` keeps its fail-soft contract** (null on a DB
+  error) for the regime-0DTE scorecard. The analog crons use the new
+  throwing `readDayOhlcFromPostgres`.
 - **DB errors surface.** The cron fallbacks now raise DB rejects, so the
   cron reports an error instead of "no summary".
 - **`vix_bucket` is set in `embed-yesterday`** from `outcomes.vix_close`,

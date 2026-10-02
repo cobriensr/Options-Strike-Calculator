@@ -89,6 +89,19 @@ describe('findSimilarDaysByFeatures', () => {
     expect(out[1]).toMatchObject({ date: '2022-05-31', distance: 0.07 });
   });
 
+  it('only draws neighbours from days strictly before the query date', async () => {
+    const sql = mockSql([]);
+    await findSimilarDaysByFeatures(VALID_VEC, 5, '2024-08-06');
+
+    const text = (sql.mock.calls[0]?.[0] as TemplateStringsArray)
+      .join('$')
+      .replaceAll(/\s+/g, ' ');
+    // `date <> d` let a backtest dated in the past retrieve later days.
+    expect(text).toContain('WHERE date < $::date');
+    expect(text).not.toContain('<>');
+    expect(sql.mock.calls[0]).toContain('2024-08-06');
+  });
+
   it('returns [] on wrong-dim input', async () => {
     const sql = mockSql([]);
     const out = await findSimilarDaysByFeatures(SHORT_VEC, 5, '2024-08-06');

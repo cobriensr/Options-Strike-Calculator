@@ -259,7 +259,7 @@
     },
     {
       "path": "/api/cron/fetch-day-ohlc",
-      "schedule": "0 23 * * 1-5"
+      "schedule": "0 23 * * 2-6"
     },
     {
       "path": "/api/cron/fetch-gex-strike-expiry-etfs",

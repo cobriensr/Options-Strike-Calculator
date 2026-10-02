@@ -305,7 +305,7 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
   'fetch-day-ohlc': {
-    schedule: '0 23 * * 1-5',
+    schedule: '0 23 * * 2-6',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },

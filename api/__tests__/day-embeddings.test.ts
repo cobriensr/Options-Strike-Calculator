@@ -28,6 +28,12 @@ function mockSql(result: unknown) {
   return sql;
 }
 
+/** The SQL text of a tagged-template call, placeholders as `$`. */
+function sqlText(sql: ReturnType<typeof vi.fn>, call = 0): string {
+  const strings = sql.mock.calls[call]?.[0] as TemplateStringsArray;
+  return strings.join('$').replaceAll(/\s+/g, ' ');
+}
+
 const VALID_EMBED = Array.from(
   { length: DAY_EMBEDDING_DIMS },
   (_, i) => i * 0.001,
@@ -93,6 +99,30 @@ describe('upsertDayEmbedding', () => {
     });
     expect(ok).toBe(false);
   });
+
+  it('writes vix_bucket, and a null bucket never erases a stored one', async () => {
+    const sql = mockSql([]);
+    await upsertDayEmbedding({
+      date: '2026-09-18',
+      symbol: 'SPX',
+      summary: 'x',
+      embedding: VALID_EMBED,
+      vixBucket: 'elevated',
+    });
+    await upsertDayEmbedding({
+      date: '2026-09-18',
+      symbol: 'SPX',
+      summary: 'x',
+      embedding: VALID_EMBED,
+    });
+
+    expect(sqlText(sql)).toContain(
+      'vix_bucket = COALESCE(EXCLUDED.vix_bucket, day_embeddings.vix_bucket)',
+    );
+    expect(sql.mock.calls[0]).toContain('elevated');
+    // Omitted bucket binds NULL (the COALESCE keeps the stored value).
+    expect(sql.mock.calls[1]?.at(-1)).toBeNull();
+  });
 });
 
 describe('findSimilarDays', () => {
@@ -118,6 +148,16 @@ describe('findSimilarDays', () => {
       date: '2022-05-31',
       distance: 0.15,
     });
+  });
+
+  it('only draws neighbours from days strictly before the query date', async () => {
+    const sql = mockSql([]);
+    await findSimilarDays(VALID_EMBED, 5, '2024-08-06');
+
+    // `date <> d` let a backtest dated in the past retrieve later days.
+    expect(sqlText(sql)).toContain('WHERE date < $::date');
+    expect(sqlText(sql)).not.toContain('<>');
+    expect(sql.mock.calls[0]).toContain('2024-08-06');
   });
 
   it('returns [] on wrong-dim input without hitting the DB', async () => {

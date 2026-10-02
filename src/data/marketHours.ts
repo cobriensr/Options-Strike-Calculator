@@ -185,6 +185,46 @@ export function isTradingDay(date: string): boolean {
   return true;
 }
 
+/**
+ * The most recent trading day strictly before `date` ('YYYY-MM-DD'),
+ * skipping weekends and NYSE full-day holidays. Half-days count.
+ *
+ * Holidays come from `MARKET_CLOSED_DATES`, which only lists the years
+ * that have been entered — outside them a holiday reads as a trading day.
+ *
+ * Throws on malformed input: a caller computing a cron target date has
+ * no sensible fallback.
+ */
+export function priorTradingDay(date: string): string {
+  const d = new Date(`${date}T12:00:00Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(d.getTime())) {
+    throw new Error(`priorTradingDay: expected YYYY-MM-DD, got "${date}"`);
+  }
+  // A run of non-trading days is at most four long (holiday next to a
+  // weekend), so ten steps is a generous bound against a bad calendar.
+  for (let step = 0; step < 10; step++) {
+    d.setUTCDate(d.getUTCDate() - 1);
+    const iso = d.toISOString().slice(0, 10);
+    if (isTradingDay(iso)) return iso;
+  }
+  throw new Error(`priorTradingDay: no trading day within 10 days of ${date}`);
+}
+
+/** 9:30 ET, the cash open, in ET minutes after midnight. */
+const CASH_OPEN_MIN_ET = 9 * 60 + 30;
+
+/**
+ * Expected one-minute bars in the cash session on `date`: 390 on a full
+ * day (09:30–16:00 ET), 210 on an early-close half day (09:30–13:00 ET),
+ * 0 on weekends, holidays and malformed dates. Used to tell a complete
+ * day of SPX bars from a partial one.
+ */
+export function cashSessionMinutes(date: string): number {
+  if (!isTradingDay(date)) return 0;
+  const closeHour = getMarketCloseHourET(date) ?? 16;
+  return closeHour * 60 - CASH_OPEN_MIN_ET;
+}
+
 // ── Session-stage phase boundaries (Central Time minutes-of-day) ────
 
 const STAGE_BOUNDS = {

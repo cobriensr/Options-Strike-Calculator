@@ -81,13 +81,14 @@ export async function upsertDayFeatures(params: {
 
 /**
  * Retrieve top-k days whose feature vectors are cosine-nearest to
- * `features`, excluding `excludeDate` from the results. Returns [] on
- * any error so callers can treat analogs as additive context.
+ * `features`, drawn only from days strictly before `beforeDate` so a
+ * backtest never sees a later day. Returns [] on any error so callers
+ * can treat analogs as additive context.
  */
 export async function findSimilarDaysByFeatures(
   features: number[],
   k: number,
-  excludeDate: string,
+  beforeDate: string,
 ): Promise<SimilarDayByFeatures[]> {
   if (!validVector(features)) {
     logger.warn(
@@ -106,7 +107,7 @@ export async function findSimilarDaysByFeatures(
       SELECT date, symbol,
              features <=> ${vectorLiteral}::vector AS distance
       FROM day_features
-      WHERE date <> ${excludeDate}::date
+      WHERE date < ${beforeDate}::date
       ORDER BY features <=> ${vectorLiteral}::vector
       LIMIT ${safeK}
     `;
