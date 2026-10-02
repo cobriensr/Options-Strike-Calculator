@@ -1,8 +1,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { useFuturesData } from '../../hooks/useFuturesData';
-import type { FuturesSnapshotResponse } from '../../hooks/useFuturesData';
+import type {
+  FuturesSnapshotResponse,
+  VixTermStructureData,
+} from '../../hooks/useFuturesData';
 import { POLL_INTERVALS } from '../../constants';
+
+const VIX_TERM: VixTermStructureData = {
+  live: {
+    vix: 16.5,
+    vix3m: 18.6,
+    ratio: 0.887,
+    band: 'CONTANGO',
+    asOf: '2026-04-05T15:29:30Z',
+  },
+  lastClose: { vix: 16.39, vix3m: 18.58, ratio: 0.882, band: 'CONTANGO' },
+  futuresRegime: 'CONTANGO',
+};
 
 // ============================================================
 // MOCK FETCH
@@ -41,8 +56,7 @@ function makeApiResponse(
         volumeRatio: 0.9,
       },
     ],
-    vxTermSpread: -1.5,
-    vxTermStructure: 'CONTANGO',
+    vixTermStructure: VIX_TERM,
     esSpxBasis: 2.5,
     updatedAt: '2026-04-05T15:30:00Z',
     oldestTs: null,
@@ -99,8 +113,7 @@ describe('useFuturesData', () => {
     expect(result.current.snapshots).toHaveLength(2);
     expect(result.current.snapshots[0]!.symbol).toBe('ES');
     expect(result.current.snapshots[0]!.price).toBe(5700);
-    expect(result.current.vxTermSpread).toBe(-1.5);
-    expect(result.current.vxTermStructure).toBe('CONTANGO');
+    expect(result.current.vixTermStructure).toEqual(VIX_TERM);
     expect(result.current.esSpxBasis).toBe(2.5);
     // Server returns ISO; hook coerces to canonical epoch ms.
     expect(result.current.fetchedAt).toBe(Date.parse('2026-04-05T15:30:00Z'));
@@ -250,8 +263,7 @@ describe('useFuturesData', () => {
           volumeRatio: null,
         },
       ],
-      vxTermSpread: null,
-      vxTermStructure: null,
+      vixTermStructure: null,
       esSpxBasis: null,
     });
     mockOkResponse(data);
@@ -266,9 +278,23 @@ describe('useFuturesData', () => {
     expect(snap.change1hPct).toBeNull();
     expect(snap.changeDayPct).toBeNull();
     expect(snap.volumeRatio).toBeNull();
-    expect(result.current.vxTermSpread).toBeNull();
-    expect(result.current.vxTermStructure).toBeNull();
+    expect(result.current.vixTermStructure).toBeNull();
     expect(result.current.esSpxBasis).toBeNull();
+  });
+
+  it('coalesces a response without vixTermStructure to null', async () => {
+    const withoutVix: Partial<FuturesSnapshotResponse> = makeApiResponse();
+    delete withoutVix.vixTermStructure;
+    mockOkResponse(withoutVix as FuturesSnapshotResponse);
+
+    const { result } = renderHook(() => useFuturesData());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.vixTermStructure).toBeNull();
+    expect(result.current.snapshots).toHaveLength(2);
   });
 
   // ── Empty snapshots ─────────────────────────────────────
@@ -276,8 +302,7 @@ describe('useFuturesData', () => {
   it('returns empty snapshots array when API returns no data', async () => {
     const data = makeApiResponse({
       snapshots: [],
-      vxTermSpread: null,
-      vxTermStructure: null,
+      vixTermStructure: null,
       esSpxBasis: null,
     });
     mockOkResponse(data);

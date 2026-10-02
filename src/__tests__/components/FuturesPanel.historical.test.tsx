@@ -17,8 +17,7 @@ const atHistory: Array<string | undefined> = [];
 function mockState(overrides: Partial<FuturesDataState> = {}) {
   const defaults: FuturesDataState = {
     snapshots: [],
-    vxTermSpread: null,
-    vxTermStructure: null,
+    vixTermStructure: null,
     esSpxBasis: null,
     fetchedAt: null,
     oldestTs: '2026-03-01T13:30:00.000Z',
@@ -155,5 +154,37 @@ describe('FuturesPanel: historical picker', () => {
     // oldestTs is '2026-03-01T13:30:00.000Z' — in any local tz this maps
     // to some YYYY-MM-DDTHH:mm string. Just assert it's well-formed.
     expect(picker.min).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
+  });
+
+  it('hides the live-only VIX term structure while viewing a historical time', () => {
+    // The hook still holds the live reading until (or if) the historical
+    // fetch replaces it with null — e.g. that fetch is in flight or failed.
+    mockState({
+      vixTermStructure: {
+        live: {
+          vix: 16.5,
+          vix3m: 18.6,
+          ratio: 0.887,
+          band: 'CONTANGO',
+          asOf: '2026-04-17T14:29:00.000Z',
+        },
+        lastClose: null,
+        futuresRegime: null,
+      },
+    });
+    render(<FuturesPanel />);
+
+    expect(
+      screen.getByRole('status', { name: 'VIX term structure' }),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Historical futures timestamp'), {
+      target: { value: '2026-04-17T09:30' },
+    });
+
+    expect(screen.getByText('VIEWING HISTORICAL')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('status', { name: 'VIX term structure' }),
+    ).not.toBeInTheDocument();
   });
 });

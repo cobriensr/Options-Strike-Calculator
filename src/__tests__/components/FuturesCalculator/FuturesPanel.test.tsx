@@ -13,8 +13,7 @@ const mockUseFuturesData = vi.mocked(useFuturesData);
 function mockState(overrides: Partial<FuturesDataState> = {}) {
   const defaults: FuturesDataState = {
     snapshots: [],
-    vxTermSpread: null,
-    vxTermStructure: null,
+    vixTermStructure: null,
     esSpxBasis: null,
     fetchedAt: null,
     oldestTs: null,

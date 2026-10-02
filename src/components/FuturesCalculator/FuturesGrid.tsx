@@ -1,6 +1,8 @@
 /**
- * FuturesGrid — Compact responsive grid showing all 7 futures
- * symbols with price, 1H change, day change, and volume ratio.
+ * FuturesGrid — Compact responsive grid showing the six futures
+ * symbols (ES, NQ, ZN, RTY, CL, GC) with price, 1H change, day change,
+ * and volume ratio. DX and VX have no feed and are not snapshotted; the
+ * VIX term structure is VixTermStructure's job.
  *
  * ES card includes an ES-SPX basis annotation when available.
  */
@@ -14,25 +16,19 @@ import type { FuturesSnapshot } from '../../hooks/useFuturesData';
 const SYMBOL_LABELS: Record<string, string> = {
   ES: '/ES',
   NQ: '/NQ',
-  VX1: '/VX F',
-  VX2: '/VX B',
   ZN: '/ZN',
   RTY: '/RTY',
   CL: '/CL',
   GC: '/GC',
-  DX: '/DX',
 };
 
 const SYMBOL_NAMES: Record<string, string> = {
   ES: 'S&P 500',
   NQ: 'Nasdaq 100',
-  VX1: 'VIX Front',
-  VX2: 'VIX Back',
   ZN: '10Y Treasury',
   RTY: 'Russell 2000',
   CL: 'Crude Oil',
   GC: 'Gold',
-  DX: 'US Dollar',
 };
 
 interface FuturesGridProps {
@@ -65,9 +61,7 @@ function volumeLabel(
 function formatPrice(symbol: string, price: number): string {
   // ZN trades in 32nds but snapshot stores decimal
   if (symbol === 'ZN') return price.toFixed(3);
-  if (symbol === 'CL' || symbol === 'GC' || symbol === 'DX')
-    return price.toFixed(2);
-  if (symbol.startsWith('VX')) return price.toFixed(2);
+  if (symbol === 'CL' || symbol === 'GC') return price.toFixed(2);
   return price.toLocaleString('en-US', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
@@ -82,7 +76,7 @@ const FuturesGrid = memo(function FuturesGrid({
 
   return (
     <div
-      className="grid grid-cols-2 gap-2.5 md:grid-cols-4"
+      className="grid grid-cols-2 gap-2.5 md:grid-cols-3"
       role="list"
       aria-label="Futures prices"
     >

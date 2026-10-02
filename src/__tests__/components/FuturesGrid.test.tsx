@@ -18,36 +18,43 @@ function makeSnapshot(
   };
 }
 
-/** All 7 symbol snapshots with reasonable defaults */
+/** All 6 snapshotted symbols with reasonable defaults */
 function makeAllSnapshots(
   overrides: Partial<FuturesSnapshot> = {},
 ): FuturesSnapshot[] {
   return [
     makeSnapshot({ symbol: 'ES', price: 5450.25, ...overrides }),
     makeSnapshot({ symbol: 'NQ', price: 19800.5, ...overrides }),
-    makeSnapshot({ symbol: 'VX1', price: 18.75, ...overrides }),
-    makeSnapshot({ symbol: 'VX2', price: 20.1, ...overrides }),
     makeSnapshot({ symbol: 'ZN', price: 110.234, ...overrides }),
     makeSnapshot({ symbol: 'RTY', price: 2050.0, ...overrides }),
     makeSnapshot({ symbol: 'CL', price: 72.45, ...overrides }),
+    makeSnapshot({ symbol: 'GC', price: 2350.1, ...overrides }),
   ];
 }
 
 // ============================================================
-// RENDERING — ALL 7 SYMBOLS
+// RENDERING — ALL 6 SYMBOLS
 // ============================================================
 
 describe('FuturesGrid: renders all symbol cards', () => {
-  it('renders all 7 symbol cards with correct labels', () => {
+  it('renders all 6 symbol cards with correct labels', () => {
     render(<FuturesGrid snapshots={makeAllSnapshots()} esSpxBasis={null} />);
 
     expect(screen.getByText('/ES')).toBeInTheDocument();
     expect(screen.getByText('/NQ')).toBeInTheDocument();
-    expect(screen.getByText('/VX F')).toBeInTheDocument();
-    expect(screen.getByText('/VX B')).toBeInTheDocument();
     expect(screen.getByText('/ZN')).toBeInTheDocument();
     expect(screen.getByText('/RTY')).toBeInTheDocument();
     expect(screen.getByText('/CL')).toBeInTheDocument();
+    expect(screen.getByText('/GC')).toBeInTheDocument();
+    expect(screen.getByText('Gold')).toBeInTheDocument();
+  });
+
+  it('has no VX or DX labels', () => {
+    render(<FuturesGrid snapshots={makeAllSnapshots()} esSpxBasis={null} />);
+
+    expect(screen.queryByText(/\/VX/)).not.toBeInTheDocument();
+    expect(screen.queryByText('/DX')).not.toBeInTheDocument();
+    expect(screen.queryByText('US Dollar')).not.toBeInTheDocument();
   });
 
   it('renders nothing when snapshots is empty', () => {
@@ -65,10 +72,10 @@ describe('FuturesGrid: renders all symbol cards', () => {
     ).toBeInTheDocument();
   });
 
-  it('renders 7 listitems', () => {
+  it('renders 6 listitems', () => {
     render(<FuturesGrid snapshots={makeAllSnapshots()} esSpxBasis={null} />);
 
-    expect(screen.getAllByRole('listitem')).toHaveLength(7);
+    expect(screen.getAllByRole('listitem')).toHaveLength(6);
   });
 });
 
@@ -97,14 +104,14 @@ describe('FuturesGrid: price formatting', () => {
     expect(screen.getByText('72.40')).toBeInTheDocument();
   });
 
-  it('formats VX with 2 decimal places', () => {
+  it('formats GC with 2 decimal places and no thousands separator', () => {
     render(
       <FuturesGrid
-        snapshots={[makeSnapshot({ symbol: 'VX1', price: 18.7 })]}
+        snapshots={[makeSnapshot({ symbol: 'GC', price: 2350.1 })]}
         esSpxBasis={null}
       />,
     );
-    expect(screen.getByText('18.70')).toBeInTheDocument();
+    expect(screen.getByText('2350.10')).toBeInTheDocument();
   });
 
   it('formats ES with locale-aware 2 decimal places', () => {

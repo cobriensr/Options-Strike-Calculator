@@ -1,265 +1,194 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import VixTermStructure from '../../components/FuturesCalculator/VixTermStructure';
-import type { FuturesSnapshot } from '../../hooks/useFuturesData';
+import type {
+  LiveVixTermReading,
+  VixTermReading,
+  VixTermStructureData,
+} from '../../hooks/useFuturesData';
 
-// ── Helpers ───────────────────────────────────────────────
+// ── Fixtures ──────────────────────────────────────────────
 
-function makeSnapshot(
-  overrides: Partial<FuturesSnapshot> = {},
-): FuturesSnapshot {
+// 15:42 UTC on 2026-10-01 = 10:42 AM CT (CDT).
+const LIVE: LiveVixTermReading = {
+  vix: 16.5,
+  vix3m: 18.6,
+  ratio: 0.887,
+  band: 'CONTANGO',
+  asOf: '2026-10-01T15:42:00.000Z',
+};
+
+const CLOSE: VixTermReading = {
+  vix: 16.39,
+  vix3m: 18.58,
+  ratio: 0.882,
+  band: 'CONTANGO',
+};
+
+function term(
+  overrides: Partial<VixTermStructureData> = {},
+): VixTermStructureData {
   return {
-    symbol: 'VX1',
-    price: 18.75,
-    change1hPct: null,
-    changeDayPct: -1.5,
-    volumeRatio: null,
+    live: LIVE,
+    lastClose: CLOSE,
+    futuresRegime: 'CONTANGO',
     ...overrides,
   };
 }
 
-function frontMonth(overrides: Partial<FuturesSnapshot> = {}): FuturesSnapshot {
-  return makeSnapshot({ symbol: 'VX1', price: 18.75, ...overrides });
-}
-
-function backMonth(overrides: Partial<FuturesSnapshot> = {}): FuturesSnapshot {
-  return makeSnapshot({ symbol: 'VX2', price: 20.1, ...overrides });
-}
-
 // ============================================================
-// RENDERING — FRONT AND BACK MONTH
+// EMPTY / DEGRADED
 // ============================================================
 
-describe('VixTermStructure (futures): front and back month', () => {
-  it('renders front month price', () => {
-    render(
-      <VixTermStructure
-        snapshots={[frontMonth(), backMonth()]}
-        vxTermSpread={-1.35}
-        vxTermStructure="CONTANGO"
-      />,
-    );
+describe('VixTermStructure: empty and degraded data', () => {
+  it('renders nothing when the term structure is null (historical view)', () => {
+    const { container } = render(<VixTermStructure vixTermStructure={null} />);
 
-    expect(screen.getByText('18.75')).toBeInTheDocument();
-    expect(screen.getByText('Front')).toBeInTheDocument();
+    expect(container.innerHTML).toBe('');
   });
 
-  it('renders back month price', () => {
-    render(
-      <VixTermStructure
-        snapshots={[frontMonth(), backMonth()]}
-        vxTermSpread={-1.35}
-        vxTermStructure="CONTANGO"
-      />,
-    );
-
-    expect(screen.getByText('20.10')).toBeInTheDocument();
-    expect(screen.getByText('Back')).toBeInTheDocument();
-  });
-
-  it('shows N/A when front month is missing', () => {
-    render(
-      <VixTermStructure
-        snapshots={[backMonth()]}
-        vxTermSpread={null}
-        vxTermStructure="CONTANGO"
-      />,
-    );
-
-    const naElements = screen.getAllByText('N/A');
-    expect(naElements.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('shows N/A when back month is missing', () => {
-    render(
-      <VixTermStructure
-        snapshots={[frontMonth()]}
-        vxTermSpread={null}
-        vxTermStructure="CONTANGO"
-      />,
-    );
-
-    const naElements = screen.getAllByText('N/A');
-    expect(naElements.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('renders nothing when no snapshots and no structure', () => {
+  it('renders nothing when every source is unavailable', () => {
     const { container } = render(
       <VixTermStructure
-        snapshots={[]}
-        vxTermSpread={null}
-        vxTermStructure={null}
+        vixTermStructure={{ live: null, lastClose: null, futuresRegime: null }}
       />,
     );
 
     expect(container.innerHTML).toBe('');
   });
-});
 
-// ============================================================
-// TERM STRUCTURE BADGES
-// ============================================================
+  it('falls back to the latest close when there is no live quote', () => {
+    render(<VixTermStructure vixTermStructure={term({ live: null })} />);
 
-describe('VixTermStructure (futures): structure badges', () => {
-  it('shows CONTANGO badge', () => {
+    expect(screen.getByText('16.39')).toBeInTheDocument();
+    expect(screen.getByText('18.58')).toBeInTheDocument();
+    expect(screen.getByText('0.882')).toBeInTheDocument();
+    expect(
+      screen.getByText('Latest daily close (no live quote)'),
+    ).toBeInTheDocument();
+    // The close is already the headline — no separate "Last close" note.
+    expect(screen.queryByText(/^Last close/)).not.toBeInTheDocument();
+  });
+
+  it('shows only the VX futures label when it is the only reading', () => {
     render(
       <VixTermStructure
-        snapshots={[frontMonth(), backMonth()]}
-        vxTermSpread={-1.35}
-        vxTermStructure="CONTANGO"
+        vixTermStructure={{
+          live: null,
+          lastClose: null,
+          futuresRegime: 'BACKWARDATION',
+        }}
       />,
     );
 
-    expect(screen.getByText('CONTANGO')).toBeInTheDocument();
+    expect(screen.getByText('VX futures: BACKWARDATION')).toBeInTheDocument();
+    expect(screen.queryByText('Ratio')).not.toBeInTheDocument();
+    // No ratio band → no badge.
+    expect(screen.queryByText('BACKWARDATION')).not.toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// LIVE READING
+// ============================================================
+
+describe('VixTermStructure: live reading', () => {
+  it('shows live VIX, VIX3M and the ratio to 3 decimals', () => {
+    render(<VixTermStructure vixTermStructure={term()} />);
+
+    expect(screen.getByText('VIX')).toBeInTheDocument();
+    expect(screen.getByText('VIX3M')).toBeInTheDocument();
+    expect(screen.getByText('16.50')).toBeInTheDocument();
+    expect(screen.getByText('18.60')).toBeInTheDocument();
+    expect(screen.getByText('0.887')).toBeInTheDocument();
+    expect(screen.getByText('VIX / VIX3M')).toBeInTheDocument();
   });
 
-  it('shows BACKWARDATION badge', () => {
+  it('labels the live source with its quote time in CT', () => {
+    render(<VixTermStructure vixTermStructure={term()} />);
+
+    expect(screen.getByText('Live · 10:42 AM CT')).toBeInTheDocument();
+  });
+
+  it('shows the latest close ratio and the VX futures label as context', () => {
+    render(<VixTermStructure vixTermStructure={term()} />);
+
+    expect(screen.getByText('Last close 0.882 (CONTANGO)')).toBeInTheDocument();
+    expect(screen.getByText('VX futures: CONTANGO')).toBeInTheDocument();
+  });
+
+  it('labels a live reading with an unparseable time as just Live', () => {
     render(
       <VixTermStructure
-        snapshots={[frontMonth({ price: 22.0 }), backMonth({ price: 20.0 })]}
-        vxTermSpread={2.0}
-        vxTermStructure="BACKWARDATION"
+        vixTermStructure={term({ live: { ...LIVE, asOf: 'garbage' } })}
+      />,
+    );
+
+    expect(screen.getByText('Live')).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// BAND BADGE
+// ============================================================
+
+describe('VixTermStructure: band badge', () => {
+  it.each(['CONTANGO', 'FLAT', 'BACKWARDATION'] as const)(
+    'shows the %s badge from the live band',
+    (band) => {
+      render(
+        <VixTermStructure
+          vixTermStructure={term({
+            live: { ...LIVE, band },
+            lastClose: null,
+            futuresRegime: null,
+          })}
+        />,
+      );
+
+      expect(screen.getByText(band)).toBeInTheDocument();
+      // Live-only: no close to show as context.
+      expect(screen.queryByText(/^Last close/)).not.toBeInTheDocument();
+    },
+  );
+
+  it('takes the badge from the latest close when there is no live quote', () => {
+    render(
+      <VixTermStructure
+        vixTermStructure={{
+          live: null,
+          lastClose: {
+            vix: 28,
+            vix3m: 25,
+            ratio: 1.12,
+            band: 'BACKWARDATION',
+          },
+          futuresRegime: null,
+        }}
       />,
     );
 
     expect(screen.getByText('BACKWARDATION')).toBeInTheDocument();
+    expect(screen.getByText('1.120')).toBeInTheDocument();
+    expect(
+      screen.getByText('Latest daily close (no live quote)'),
+    ).toBeInTheDocument();
   });
 
-  it('shows FLAT badge', () => {
+  it('prefers the live band over the latest close', () => {
     render(
       <VixTermStructure
-        snapshots={[frontMonth({ price: 20.0 }), backMonth({ price: 20.05 })]}
-        vxTermSpread={-0.05}
-        vxTermStructure="FLAT"
+        vixTermStructure={term({
+          live: { ...LIVE, vix: 19, vix3m: 20, ratio: 0.95, band: 'FLAT' },
+          futuresRegime: null,
+        })}
       />,
     );
 
+    // Badge = FLAT (live); CONTANGO only appears inside the close note.
     expect(screen.getByText('FLAT')).toBeInTheDocument();
-  });
-
-  it('does not show structure badge when vxTermStructure is null', () => {
-    render(
-      <VixTermStructure
-        snapshots={[frontMonth()]}
-        vxTermSpread={null}
-        vxTermStructure={null}
-      />,
-    );
-
     expect(screen.queryByText('CONTANGO')).not.toBeInTheDocument();
-    expect(screen.queryByText('BACKWARDATION')).not.toBeInTheDocument();
-    expect(screen.queryByText('FLAT')).not.toBeInTheDocument();
-  });
-});
-
-// ============================================================
-// SPREAD VALUE
-// ============================================================
-
-describe('VixTermStructure (futures): spread value', () => {
-  it('shows negative spread in contango', () => {
-    render(
-      <VixTermStructure
-        snapshots={[frontMonth(), backMonth()]}
-        vxTermSpread={-1.35}
-        vxTermStructure="CONTANGO"
-      />,
-    );
-
-    expect(screen.getByText('-1.35')).toBeInTheDocument();
-    expect(screen.getByText('Spread')).toBeInTheDocument();
-  });
-
-  it('shows positive spread in backwardation', () => {
-    render(
-      <VixTermStructure
-        snapshots={[frontMonth({ price: 22.0 }), backMonth({ price: 20.0 })]}
-        vxTermSpread={2.0}
-        vxTermStructure="BACKWARDATION"
-      />,
-    );
-
-    expect(screen.getByText('+2.00')).toBeInTheDocument();
-  });
-
-  it('shows N/A for spread when vxTermSpread is null', () => {
-    render(
-      <VixTermStructure
-        snapshots={[frontMonth()]}
-        vxTermSpread={null}
-        vxTermStructure={null}
-      />,
-    );
-
-    // At least one N/A from spread column (and possibly from missing back month)
-    const naElements = screen.getAllByText('N/A');
-    expect(naElements.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('shows spread label pts (front - back)', () => {
-    render(
-      <VixTermStructure
-        snapshots={[frontMonth(), backMonth()]}
-        vxTermSpread={-1.35}
-        vxTermStructure="CONTANGO"
-      />,
-    );
-
-    expect(screen.getByText('pts (front - back)')).toBeInTheDocument();
-  });
-});
-
-// ============================================================
-// CHANGE PERCENTAGES
-// ============================================================
-
-describe('VixTermStructure (futures): change percentages', () => {
-  it('shows day change percentage for front month', () => {
-    render(
-      <VixTermStructure
-        snapshots={[
-          frontMonth({ changeDayPct: -1.5 }),
-          backMonth({ changeDayPct: -0.8 }),
-        ]}
-        vxTermSpread={-1.35}
-        vxTermStructure="CONTANGO"
-      />,
-    );
-
-    expect(screen.getByText('-1.50%')).toBeInTheDocument();
-    expect(screen.getByText('-0.80%')).toBeInTheDocument();
-  });
-
-  it('shows positive change with + sign', () => {
-    render(
-      <VixTermStructure
-        snapshots={[
-          frontMonth({ changeDayPct: 2.3 }),
-          backMonth({ changeDayPct: 1.1 }),
-        ]}
-        vxTermSpread={-1.35}
-        vxTermStructure="CONTANGO"
-      />,
-    );
-
-    expect(screen.getByText('+2.30%')).toBeInTheDocument();
-    expect(screen.getByText('+1.10%')).toBeInTheDocument();
-  });
-
-  it('does not show change percentage when changeDayPct is null', () => {
-    render(
-      <VixTermStructure
-        snapshots={[
-          frontMonth({ changeDayPct: null }),
-          backMonth({ changeDayPct: null }),
-        ]}
-        vxTermSpread={-1.35}
-        vxTermStructure="CONTANGO"
-      />,
-    );
-
-    // No percentage text should appear
-    expect(screen.queryByText(/%/)).not.toBeInTheDocument();
+    expect(screen.getByText('Last close 0.882 (CONTANGO)')).toBeInTheDocument();
   });
 });
 
@@ -267,15 +196,9 @@ describe('VixTermStructure (futures): change percentages', () => {
 // ACCESSIBILITY
 // ============================================================
 
-describe('VixTermStructure (futures): accessibility', () => {
+describe('VixTermStructure: accessibility', () => {
   it('has role=status with accessible label', () => {
-    render(
-      <VixTermStructure
-        snapshots={[frontMonth(), backMonth()]}
-        vxTermSpread={-1.35}
-        vxTermStructure="CONTANGO"
-      />,
-    );
+    render(<VixTermStructure vixTermStructure={term()} />);
 
     expect(
       screen.getByRole('status', { name: 'VIX term structure' }),
@@ -283,13 +206,7 @@ describe('VixTermStructure (futures): accessibility', () => {
   });
 
   it('shows VIX Term Structure heading text', () => {
-    render(
-      <VixTermStructure
-        snapshots={[frontMonth(), backMonth()]}
-        vxTermSpread={-1.35}
-        vxTermStructure="CONTANGO"
-      />,
-    );
+    render(<VixTermStructure vixTermStructure={term()} />);
 
     expect(screen.getByText('VIX Term Structure')).toBeInTheDocument();
   });

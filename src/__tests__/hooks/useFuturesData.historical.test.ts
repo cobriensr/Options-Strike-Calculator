@@ -33,8 +33,8 @@ function makeApiResponse(
         volumeRatio: 1.2,
       },
     ],
-    vxTermSpread: -1.5,
-    vxTermStructure: 'CONTANGO',
+    // The endpoint has no VIX history: null for a historical `at`.
+    vixTermStructure: null,
     esSpxBasis: 2.5,
     updatedAt: '2026-04-17T14:30:00Z',
     oldestTs: '2026-03-01T13:30:00Z',

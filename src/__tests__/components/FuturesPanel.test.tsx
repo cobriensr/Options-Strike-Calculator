@@ -2,7 +2,10 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import FuturesPanel from '../../components/FuturesCalculator/FuturesPanel';
-import type { FuturesDataState } from '../../hooks/useFuturesData';
+import type {
+  FuturesDataState,
+  VixTermStructureData,
+} from '../../hooks/useFuturesData';
 import { useFuturesData } from '../../hooks/useFuturesData';
 
 vi.mock('../../hooks/useFuturesData', () => ({
@@ -16,8 +19,7 @@ const mockUseFuturesData = vi.mocked(useFuturesData);
 function mockState(overrides: Partial<FuturesDataState> = {}) {
   const defaults: FuturesDataState = {
     snapshots: [],
-    vxTermSpread: null,
-    vxTermStructure: null,
+    vixTermStructure: null,
     esSpxBasis: null,
     fetchedAt: null,
     oldestTs: null,
@@ -43,20 +45,6 @@ function makeSnapshots() {
       change1hPct: -0.1,
       changeDayPct: 0.3,
       volumeRatio: 0.9,
-    },
-    {
-      symbol: 'VX1',
-      price: 18.75,
-      change1hPct: null,
-      changeDayPct: -1.5,
-      volumeRatio: null,
-    },
-    {
-      symbol: 'VX2',
-      price: 20.1,
-      change1hPct: null,
-      changeDayPct: -0.8,
-      volumeRatio: null,
     },
     {
       symbol: 'ZN',
@@ -124,7 +112,9 @@ describe('FuturesPanel: empty state', () => {
     render(<FuturesPanel />);
 
     expect(screen.getByText('No futures data yet')).toBeInTheDocument();
-    expect(screen.getByText(/sidecar is streaming/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/once futures trades are being ingested/),
+    ).toBeInTheDocument();
   });
 
   it('does not show empty state when loading', () => {
@@ -168,12 +158,23 @@ describe('FuturesPanel: error state', () => {
 // DATA RENDERING
 // ============================================================
 
+const VIX_TERM: VixTermStructureData = {
+  live: {
+    vix: 16.5,
+    vix3m: 18.6,
+    ratio: 0.887,
+    band: 'CONTANGO',
+    asOf: '2026-10-01T15:42:00.000Z',
+  },
+  lastClose: null,
+  futuresRegime: null,
+};
+
 describe('FuturesPanel: data rendering', () => {
   it('renders FuturesGrid and VixTermStructure when data is available', () => {
     mockState({
       snapshots: makeSnapshots(),
-      vxTermSpread: -1.35,
-      vxTermStructure: 'CONTANGO',
+      vixTermStructure: VIX_TERM,
       esSpxBasis: 3.5,
     });
     render(<FuturesPanel />);
@@ -182,8 +183,44 @@ describe('FuturesPanel: data rendering', () => {
     expect(screen.getByText('/ES')).toBeInTheDocument();
     expect(screen.getByText('/NQ')).toBeInTheDocument();
 
-    // VixTermStructure renders the term structure badge
+    // VixTermStructure renders the VIX/VIX3M ratio and band badge
     expect(screen.getByText('CONTANGO')).toBeInTheDocument();
+    expect(screen.getByText('0.887')).toBeInTheDocument();
+  });
+
+  it('shows the VIX term structure even when there are no futures snapshots', () => {
+    mockState({ snapshots: [], vixTermStructure: VIX_TERM });
+    render(<FuturesPanel />);
+
+    expect(
+      screen.getByRole('status', { name: 'VIX term structure' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('No futures data yet')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('list', { name: 'Futures prices' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not push a loading skeleton above a VIX box that is already showing', () => {
+    mockState({ loading: true, snapshots: [], vixTermStructure: VIX_TERM });
+    render(<FuturesPanel />);
+
+    expect(
+      document.querySelector('[aria-busy="true"]'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('status', { name: 'VIX term structure' }),
+    ).toBeInTheDocument();
+  });
+
+  it('renders no VIX term structure box when it is null', () => {
+    mockState({ snapshots: makeSnapshots(), vixTermStructure: null });
+    render(<FuturesPanel />);
+
+    expect(
+      screen.queryByRole('status', { name: 'VIX term structure' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText('/ES')).toBeInTheDocument();
   });
 });
 

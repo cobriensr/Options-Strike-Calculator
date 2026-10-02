@@ -2,8 +2,9 @@
  * FuturesPanel — Main container for the futures data section.
  *
  * Fetches snapshot data via useFuturesData, shows loading skeleton
- * while fetching, empty state if no data, and renders FuturesGrid
- * + VixTermStructure. Owner-gated at the App.tsx level, not here.
+ * while fetching, and renders VixTermStructure (spot VIX / VIX3M, shown
+ * whenever present) + FuturesGrid, or an empty state when there are no
+ * futures snapshots. Owner-gated at the App.tsx level, not here.
  *
  * Includes a datetime-local picker that lets the user inspect the
  * futures snapshot at an arbitrary past moment. Default (empty picker)
@@ -105,8 +106,7 @@ export default function FuturesPanel({
 
   const {
     snapshots,
-    vxTermSpread,
-    vxTermStructure,
+    vixTermStructure,
     esSpxBasis,
     fetchedAt,
     oldestTs,
@@ -117,6 +117,10 @@ export default function FuturesPanel({
 
   const timeLabel = formatFetchedAt(fetchedAt);
   const isHistorical = pickerValue !== '';
+  // The VIX term structure is live-only. The endpoint returns null for a
+  // historical `at`, but until that fetch lands (or if it errors) the hook
+  // still holds the live value — never show it beside a historical view.
+  const shownVixTerm = isHistorical ? null : vixTermStructure;
 
   // `max` = now. Computed each render (not memoized) so a dashboard left
   // open for hours / across midnight doesn't freeze the upper bound at
@@ -188,8 +192,8 @@ export default function FuturesPanel({
       }
     >
       <div className="font-sans text-[11px] leading-relaxed">
-        {/* Loading skeleton */}
-        {loading && snapshots.length === 0 && (
+        {/* Loading skeleton — not over a VIX box that's already showing */}
+        {loading && snapshots.length === 0 && shownVixTerm == null && (
           <div aria-busy="true" className="grid gap-3">
             <div className="bg-surface-alt h-24 animate-pulse rounded-lg" />
             <div className="bg-surface-alt h-16 animate-pulse rounded-lg" />
@@ -209,35 +213,33 @@ export default function FuturesPanel({
           </div>
         )}
 
-        {/* Empty state */}
-        {!loading && !error && snapshots.length === 0 && (
-          <div
-            className="border-edge rounded-lg border px-4 py-8 text-center"
-            style={{
-              backgroundColor: tint(theme.surfaceAlt, '80'),
-            }}
-          >
-            <div className="text-muted mb-1 font-sans text-[12px] font-semibold">
-              No futures data yet
-            </div>
-            <div className="text-muted font-sans text-[10px]">
-              Futures snapshots will appear here once the sidecar is streaming
-              data and the snapshot cron has run.
-            </div>
-          </div>
-        )}
-
-        {/* Content */}
-        {snapshots.length > 0 && (
-          <div className="grid gap-3">
-            <VixTermStructure
-              snapshots={snapshots}
-              vxTermSpread={vxTermSpread}
-              vxTermStructure={vxTermStructure}
-            />
+        {/* Content. VIX term structure comes from spot VIX / VIX3M, not
+            futures bars, so it renders even with no futures snapshots
+            (it returns null itself when there is nothing to show). */}
+        <div className="grid gap-3">
+          <VixTermStructure vixTermStructure={shownVixTerm} />
+          {snapshots.length > 0 && (
             <FuturesGrid snapshots={snapshots} esSpxBasis={esSpxBasis} />
-          </div>
-        )}
+          )}
+
+          {/* Empty state (futures only) */}
+          {!loading && !error && snapshots.length === 0 && (
+            <div
+              className="border-edge rounded-lg border px-4 py-8 text-center"
+              style={{
+                backgroundColor: tint(theme.surfaceAlt, '80'),
+              }}
+            >
+              <div className="text-muted mb-1 font-sans text-[12px] font-semibold">
+                No futures data yet
+              </div>
+              <div className="text-muted font-sans text-[10px]">
+                Futures snapshots will appear here once futures trades are being
+                ingested and the snapshot cron has run.
+              </div>
+            </div>
+          )}
+        </div>
 
         {/* P&L Calculator — always shown, no data dependency */}
         <span id="sec-futures-calc" className="block scroll-mt-28" />

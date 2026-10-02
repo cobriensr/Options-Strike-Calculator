@@ -8,9 +8,10 @@
  * doesn't change). Aborts any in-flight request when `at` changes or
  * the component unmounts.
  *
- * The 30s cadence is 10× safer than the 5-min sidecar cron that writes
- * fresh ES/NQ/VX rows, so the panel picks up a new snapshot within
- * ≤30s of it landing in Postgres.
+ * The 30s cadence is 10× safer than the 5-min cron that writes fresh
+ * futures rows, so the panel picks up a new snapshot within ≤30s of it
+ * landing in Postgres. Each poll also refreshes the VIX/VIX3M term
+ * structure, which the endpoint reads live (null for a historical `at`).
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -26,22 +27,45 @@ export interface FuturesSnapshot {
   volumeRatio: number | null;
 }
 
-export type VxTermStructure = 'CONTANGO' | 'FLAT' | 'BACKWARDATION';
+/** VIX / VIX3M band: CONTANGO ≤ 0.90 < FLAT < 1.00 ≤ BACKWARDATION. */
+export type VixTermBand = 'CONTANGO' | 'FLAT' | 'BACKWARDATION';
+
+export interface VixTermReading {
+  vix: number;
+  vix3m: number;
+  /** VIX / VIX3M, 3 decimals. */
+  ratio: number;
+  band: VixTermBand;
+}
+
+export interface LiveVixTermReading extends VixTermReading {
+  /** ISO time of the older of the two Schwab quotes. */
+  asOf: string;
+}
+
+/** Mirrors `VixTermStructure` in api/_lib/vix-term-structure.ts. */
+export interface VixTermStructureData {
+  /** Intraday Schwab quotes; null when unavailable. */
+  live: LiveVixTermReading | null;
+  /** Latest daily close (Unusual Whales). */
+  lastClose: VixTermReading | null;
+  /** UW's daily label from the front two VIX futures. */
+  futuresRegime: VixTermBand | null;
+}
 
 export interface FuturesSnapshotResponse {
   snapshots: FuturesSnapshot[];
-  vxTermSpread: number | null;
-  vxTermStructure: VxTermStructure | null;
+  /** Null in historical (`at`) mode. */
+  vixTermStructure: VixTermStructureData | null;
   esSpxBasis: number | null;
-  updatedAt: string;
+  updatedAt: string | null;
   oldestTs: string | null;
   requestedAt: string | null;
 }
 
 export interface FuturesDataState {
   snapshots: FuturesSnapshot[];
-  vxTermSpread: number | null;
-  vxTermStructure: VxTermStructure | null;
+  vixTermStructure: VixTermStructureData | null;
   esSpxBasis: number | null;
   /**
    * Epoch milliseconds when the snapshot was produced server-side.
@@ -61,9 +85,8 @@ export function useFuturesData(
   marketOpen = false,
 ): FuturesDataState {
   const [snapshots, setSnapshots] = useState<FuturesSnapshot[]>([]);
-  const [vxTermSpread, setVxTermSpread] = useState<number | null>(null);
-  const [vxTermStructure, setVxTermStructure] =
-    useState<VxTermStructure | null>(null);
+  const [vixTermStructure, setVixTermStructure] =
+    useState<VixTermStructureData | null>(null);
   const [esSpxBasis, setEsSpxBasis] = useState<number | null>(null);
   const [fetchedAt, setFetchedAt] = useState<number | null>(null);
   const [oldestTs, setOldestTs] = useState<string | null>(null);
@@ -110,8 +133,7 @@ export function useFuturesData(
 
       const data: FuturesSnapshotResponse = await res.json();
       setSnapshots(data.snapshots ?? []);
-      setVxTermSpread(data.vxTermSpread ?? null);
-      setVxTermStructure(data.vxTermStructure ?? null);
+      setVixTermStructure(data.vixTermStructure ?? null);
       setEsSpxBasis(data.esSpxBasis ?? null);
       // Convert the server's ISO timestamp into canonical epoch ms.
       // Bad input (missing field, unparseable string) yields NaN from
@@ -162,8 +184,7 @@ export function useFuturesData(
 
   return {
     snapshots,
-    vxTermSpread,
-    vxTermStructure,
+    vixTermStructure,
     esSpxBasis,
     fetchedAt,
     oldestTs,
