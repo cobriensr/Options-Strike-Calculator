@@ -149,7 +149,9 @@ describe('enrich-vega-spike-returns handler', () => {
     expect(mockCronGuard).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
-      { requireApiKey: false },
+      // deferSkipResponse is the wrapper's own flag (skip check-in before
+      // the skip response); requireApiKey is this cron's.
+      { requireApiKey: false, deferSkipResponse: true },
     );
   });
 

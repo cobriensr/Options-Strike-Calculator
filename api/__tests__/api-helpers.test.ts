@@ -1139,6 +1139,78 @@ describe('api-helpers', () => {
       });
     });
 
+    it('deferSkipResponse: returns the skip unwritten; respond() writes the standard body', () => {
+      process.env.CRON_SECRET = 'secret';
+      process.env.UW_API_KEY = 'uw_key';
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer secret' },
+      });
+      const res = mockResponse();
+      const statusSpy = vi.spyOn(res, 'status');
+      const result = cronGuard(req, res, {
+        timeCheck: () => false,
+        deferSkipResponse: true,
+      });
+
+      // Nothing written yet — the caller checks in with Sentry first.
+      expect(result).not.toBeNull();
+      expect(result && 'respond' in result).toBe(true);
+      expect(statusSpy).not.toHaveBeenCalled();
+      expect(res._json).toBeNull();
+
+      if (result && 'respond' in result) result.respond();
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({
+        skipped: true,
+        reason: 'Outside time window',
+      });
+    });
+
+    it('deferSkipResponse: auth and config failures still respond immediately and return null', () => {
+      process.env.CRON_SECRET = 'secret';
+      const badAuth = mockResponse();
+      expect(
+        cronGuard(
+          mockRequest({
+            method: 'GET',
+            headers: { authorization: 'Bearer wrong' },
+          }),
+          badAuth,
+          { timeCheck: () => false, deferSkipResponse: true },
+        ),
+      ).toBeNull();
+      expect(badAuth._status).toBe(401);
+
+      delete process.env.UW_API_KEY;
+      const noKey = mockResponse();
+      expect(
+        cronGuard(
+          mockRequest({
+            method: 'GET',
+            headers: { authorization: 'Bearer secret' },
+          }),
+          noKey,
+          { timeCheck: () => true, deferSkipResponse: true },
+        ),
+      ).toBeNull();
+      expect(noKey._status).toBe(500);
+    });
+
+    it('deferSkipResponse: an open window returns the normal run result', () => {
+      process.env.CRON_SECRET = 'secret';
+      process.env.UW_API_KEY = 'uw_key';
+      const result = cronGuard(
+        mockRequest({
+          method: 'GET',
+          headers: { authorization: 'Bearer secret' },
+        }),
+        mockResponse(),
+        { timeCheck: () => true, deferSkipResponse: true },
+      );
+      expect(result).toMatchObject({ apiKey: 'uw_key' });
+    });
+
     it('rejects when UW_API_KEY is missing', () => {
       process.env.CRON_SECRET = 'secret';
       delete process.env.UW_API_KEY;

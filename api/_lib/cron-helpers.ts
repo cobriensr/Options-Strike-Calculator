@@ -187,9 +187,29 @@ interface CronGuardResult {
 }
 
 /**
+ * The intentional-skip verdict, returned instead of `null` only when the
+ * caller passes `deferSkipResponse: true`. Nothing has been written to
+ * `res` yet: the caller finishes its pre-response work, then calls
+ * `respond()` to write the standard 200 `{ skipped: true, reason }` body.
+ *
+ * Exists for `withCronInstrumentation`, which must deliver the Sentry
+ * skip check-in BEFORE the response is written. Once a Vercel Function
+ * has responded, the instance can be frozen, and an un-registered
+ * in-flight fetch never leaves or leaves hours later (see
+ * `sendIntentionalSkipCheckin` in cron-instrumentation.ts).
+ */
+export interface CronGuardSkip {
+  respond: () => void;
+}
+
+/**
  * Common guard for cron handlers. Checks method, CRON_SECRET,
  * time window, and API key. Returns `{ apiKey, today }` on success,
  * or sends an error response and returns `null`.
+ *
+ * With `deferSkipResponse: true` the outside-time-window branch returns a
+ * `CronGuardSkip` instead of responding; auth/config rejections still
+ * respond immediately and return `null`.
  *
  * Manual one-shot runs can pass `?force=1` to skip the time-window
  * check (CRON_SECRET is still required). Useful for backfilling state
@@ -205,12 +225,23 @@ interface CronGuardResult {
 export function cronGuard(
   req: VercelRequest,
   res: VercelResponse,
-  opts: CronGuardOptions = {},
-): CronGuardResult | null {
+  opts?: CronGuardOptions & { deferSkipResponse?: false },
+): CronGuardResult | null;
+export function cronGuard(
+  req: VercelRequest,
+  res: VercelResponse,
+  opts: CronGuardOptions & { deferSkipResponse: true },
+): CronGuardResult | CronGuardSkip | null;
+export function cronGuard(
+  req: VercelRequest,
+  res: VercelResponse,
+  opts: CronGuardOptions & { deferSkipResponse?: boolean } = {},
+): CronGuardResult | CronGuardSkip | null {
   const {
     marketHours: checkMarket = true,
     timeCheck,
     requireApiKey = true,
+    deferSkipResponse = false,
   } = opts;
 
   if (req.method !== 'GET') {
@@ -239,7 +270,11 @@ export function cronGuard(
   const force = req.query?.force === '1';
   const customCheck = timeCheck ?? (checkMarket ? isMarketHours : null);
   if (!force && customCheck && !customCheck()) {
-    res.status(200).json({ skipped: true, reason: 'Outside time window' });
+    const respond = (): void => {
+      res.status(200).json({ skipped: true, reason: 'Outside time window' });
+    };
+    if (deferSkipResponse) return { respond };
+    respond();
     return null;
   }
 

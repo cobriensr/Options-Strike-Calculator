@@ -48,7 +48,10 @@ import { SCHEDULE_MAP, type CronMonitorConfig } from './cron-schedules.js';
 //
 // This bypass talks to Sentry's check-in ingest endpoint directly via
 // `await fetch()`. The await blocks until the HTTP response actually
-// arrives — no SDK queue, no flush, no Vercel exit race. Deterministic.
+// arrives — no SDK queue, no flush. That is deterministic ONLY when the
+// await finishes before the response is written: a check-in awaited after
+// the response races the instance freeze exactly like the SDK did (the
+// 2026-10-02 skip-path bug). See keepAlive() for the ordering rule.
 //
 // Endpoint reference: https://docs.sentry.io/api/crons/
 
@@ -314,21 +317,81 @@ export function isCronAuthenticated(req: VercelRequest): boolean {
  *
  * 2s matches the Sentry-docs default for serverless graceful shutdown.
  * No-op when `Sentry.flush` is unavailable (per-test mocks that stub a
- * narrow surface). Errors on the flush promise are swallowed by the
- * `.catch` so `waitUntil` never sees a rejection — observability paths
- * must never crash the response.
+ * narrow surface).
  */
 function flushSentry(): void {
   if (typeof Sentry.flush !== 'function') return;
+  keepAlive(() => Sentry.flush(2000));
+}
+
+/**
+ * Register observability work with Vercel's `waitUntil()` so the instance
+ * stays alive until the promise settles, even after the response is sent.
+ *
+ * THE RULE THIS FILE FOLLOWS: once a Vercel Function has responded, the
+ * instance can be frozen. A fetch that is merely in flight at that point
+ * either never leaves or leaves when the instance is next thawed — hours
+ * later, credited by Sentry to the wrong tick. So every check-in is either
+ * (a) awaited BEFORE the response is written — the deterministic option,
+ * used wherever this file writes the response — or (b) covered by a
+ * `waitUntil` registration made BEFORE the response can be written.
+ * Callers:
+ *   - `withCronCheckin` registers a placeholder before `inner()` runs and
+ *     settles it once the completion check-in lands (inner owns the
+ *     response, so (a) is impossible there);
+ *   - `sendIntentionalSkipCheckin` registers its delivery as the tail
+ *     guard for a pair that outlives the skip budget;
+ *   - `flushSentry` drains the SDK queue (captureException) after the
+ *     response, as before.
+ *
+ * Takes a thunk so a synchronous throw from the work's creation lands in
+ * this try, never in a caller's response path. Rejections are swallowed
+ * before the hand-off so `waitUntil` never sees one — observability paths
+ * must never crash the response.
+ */
+function keepAlive(start: () => Promise<unknown>): void {
   try {
     waitUntil(
-      Sentry.flush(2000).catch(() => {
+      start().catch(() => {
         /* swallowed: observability path must never crash the response */
       }),
     );
   } catch {
-    /* swallowed: waitUntil itself can throw outside a Vercel runtime */
+    /* swallowed: a synchronous throw from start(), or waitUntil itself
+       (TypeError on a non-thenable); neither may crash a cron */
   }
+}
+
+/**
+ * How long the intentional-skip path may hold its response while the
+ * in_progress → ok pair is delivered. Operational knob: two keep-alive
+ * POSTs normally finish well under 1 s and 3 s leaves room for a cold
+ * TLS handshake, while a Sentry brownout can no longer hold every skip
+ * tick for the full 2 × 5 s fetch-abort window. Anything still in flight
+ * at the deadline continues under `waitUntil` (see
+ * `sendIntentionalSkipCheckin`).
+ */
+const SKIP_CHECKIN_BUDGET_MS = 3_000;
+
+/** The in_progress → ok pair that marks a skipped tick OK (see below). */
+async function deliverSkipCheckinPair(
+  jobName: string,
+  config: CronMonitorConfig,
+): Promise<void> {
+  // Step 1: open the tick with an in_progress + monitor_config upsert.
+  const checkInId = await sentryCheckInDirect({
+    monitorSlug: jobName,
+    status: 'in_progress',
+    monitorConfig: config,
+  });
+  // Step 2: immediately close it OK. Zero duration — the skip did no
+  // work, but the tick is now satisfied exactly like a real run.
+  await sentryCheckInDirect({
+    monitorSlug: jobName,
+    status: 'ok',
+    checkInId,
+    duration: 0,
+  });
 }
 
 /**
@@ -359,10 +422,22 @@ function flushSentry(): void {
  * unambiguously marks the tick OK — there is no "did a bare heartbeat
  * count?" ambiguity. The skip is a 0-second "run" from Sentry's view.
  *
- * Both POSTs go through the direct HTTP bypass (`sentryCheckInDirect`),
- * which AWAITS the fetch — so both land before Vercel kills the runtime
- * (no SDK queue / flush race). No-op when the job has no SCHEDULE_MAP
- * entry (new cron not yet registered).
+ * ORDERING (2026-10-02): the caller MUST await this BEFORE writing the
+ * skip response. Until then the wrapper awaited it AFTER `cronGuard` had
+ * already sent the 200, so the instance could be frozen with both POSTs
+ * in flight: evaluate-round-trip's 16:10–16:50 ET skip ticks went
+ * `missed` every day, and one skip `ok` created 22:13Z landed the next
+ * morning. Both POSTs still go through the direct HTTP bypass
+ * (`sentryCheckInDirect`); awaiting them before the response is what
+ * makes that deterministic.
+ *
+ * Bounded by SKIP_CHECKIN_BUDGET_MS so a slow Sentry cannot hold the skip
+ * response for the full 2 × 5 s fetch-abort window. The delivery is also
+ * handed to `keepAlive()` up front, so a pair still in flight when the
+ * budget expires is kept alive under `waitUntil` instead of being frozen.
+ * Never rejects: a throw (e.g. `assertValidTimezone` on a malformed
+ * monitor config) must not cost the cron its skip response. No-op when
+ * the job has no SCHEDULE_MAP entry (new cron not yet registered).
  *
  * This is an O(1) wrapper-level fix: EVERY market-hours monitor (all
  * ~27, not just the four diagnosed) that hits the cronGuard market-closed
@@ -376,20 +451,38 @@ function flushSentry(): void {
 async function sendIntentionalSkipCheckin(jobName: string): Promise<void> {
   const config = SCHEDULE_MAP[jobName];
   if (!config) return;
-  // Step 1: open the tick with an in_progress + monitor_config upsert.
-  const checkInId = await sentryCheckInDirect({
-    monitorSlug: jobName,
-    status: 'in_progress',
-    monitorConfig: config,
+
+  // sentryCheckInDirect swallows network failures itself; the only throw
+  // left is a malformed monitor config (assertValidTimezone). Surface it,
+  // then resolve so neither the race nor waitUntil sees a rejection.
+  const delivery = deliverSkipCheckinPair(jobName, config).catch(
+    (err: unknown) => {
+      logger.error(
+        { err, monitorSlug: jobName },
+        'sentry skip check-in failed',
+      );
+    },
+  );
+  keepAlive(() => delivery);
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budgetExpired = new Promise<true>((resolve) => {
+    timer = setTimeout(() => resolve(true), SKIP_CHECKIN_BUDGET_MS);
   });
-  // Step 2: immediately close it OK. Zero duration — the skip did no
-  // work, but the tick is now satisfied exactly like a real run.
-  await sentryCheckInDirect({
-    monitorSlug: jobName,
-    status: 'ok',
-    checkInId,
-    duration: 0,
-  });
+  try {
+    const timedOut = await Promise.race([
+      delivery.then(() => false),
+      budgetExpired,
+    ]);
+    if (timedOut) {
+      logger.warn(
+        { monitorSlug: jobName, budgetMs: SKIP_CHECKIN_BUDGET_MS },
+        'sentry skip check-in exceeded budget; responding, delivery continues under waitUntil',
+      );
+    }
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -587,25 +680,31 @@ export function withCronInstrumentation(
     // errorStatus, dynamicTimeCheck) out of the guard call. Build the
     // forwarded object incrementally so undefined keys don't show up in
     // call assertions.
+    //
+    // `deferSkipResponse: true` makes cronGuard hand the skip back
+    // unwritten, so the skip check-in lands BEFORE the response (see
+    // keepAlive for why the order matters on Vercel).
     const guardOpts: {
       marketHours?: boolean;
       timeCheck?: () => boolean;
       requireApiKey?: boolean;
-    } = {};
+      deferSkipResponse: true;
+    } = { deferSkipResponse: true };
     if (opts.marketHours !== undefined)
       guardOpts.marketHours = opts.marketHours;
     if (opts.timeCheck !== undefined) guardOpts.timeCheck = opts.timeCheck;
     if (opts.requireApiKey !== undefined)
       guardOpts.requireApiKey = opts.requireApiKey;
     const guard = cronGuard(req, res, guardOpts);
-    if (!guard) {
-      // Intentional skip (status 200, e.g. outside market hours) → tell
-      // Sentry the cron checked in. Real auth/config failures (4xx/5xx)
-      // get NO check-in so the missed-checkin signal still alerts on
-      // genuine outages.
-      if (res.statusCode === 200) {
-        await sendIntentionalSkipCheckin(jobName);
-      }
+    // Real auth/config failures (4xx/5xx): cronGuard already responded.
+    // NO check-in, so the missed-checkin signal still alerts on genuine
+    // outages.
+    if (!guard) return;
+    if ('respond' in guard) {
+      // Intentional skip (e.g. outside market hours) → satisfy the tick
+      // in Sentry first, then write the skip response.
+      await sendIntentionalSkipCheckin(jobName);
+      guard.respond();
       return;
     }
 
@@ -625,6 +724,11 @@ export function withCronInstrumentation(
     if (opts.dynamicTimeCheck) {
       const dyn = opts.dynamicTimeCheck(req);
       if (!dyn.run) {
+        // Same intentional skip as cronGuard's, so the same tick-satisfying
+        // check-in, delivered before the response. Without it the
+        // off-regime slot of a dual-slot DST schedule (build-features,
+        // fetch-economic-calendar, fetch-outcomes) never checked in at all.
+        await sendIntentionalSkipCheckin(jobName);
         const durationMs = Date.now() - startTimeMs;
         try {
           await reportCronRun(jobName, {
@@ -688,7 +792,8 @@ export function withCronInstrumentation(
         // genuine-macro-error contract: land the alerts, but page). Map it
         // to an 'error' check-in so the Sentry cron monitor goes red.
         // 'partial'/'success'/'skipped' stay 'ok' — Sentry Crons has no
-        // 'degraded' state, and those are not failures.
+        // 'degraded' state, and those are not failures. Awaited BEFORE
+        // res.json on purpose — see keepAlive for the ordering rule.
         await sentryCheckInDirect({
           monitorSlug: jobName,
           status: result.status === 'error' ? 'error' : 'ok',
@@ -776,12 +881,15 @@ export function withCronInstrumentation(
  *   3. After the handler completes, look at `res.statusCode` to decide
  *      `ok` vs `error`. This is the deliberate trade-off: handlers that
  *      catch their own errors and respond 500 still get an `error`
- *      check-in even though no exception bubbled to the wrapper.
+ *      check-in even though no exception bubbled to the wrapper. The
+ *      handler has usually already responded by then, so the completion
+ *      check-in is covered by a `waitUntil` placeholder registered before
+ *      the handler runs (see `keepAlive`).
  *   4. If the handler throws (rare — most handlers catch internally),
- *      send `error` check-in then re-throw. The throw will surface to
- *      Vercel runtime as an unhandled rejection unless the handler does
- *      its own outer try/catch, which is consistent with the existing
- *      handler contract.
+ *      send the `error` check-in the same way, then re-throw. The throw
+ *      will surface to Vercel runtime as an unhandled rejection unless
+ *      the handler does its own outer try/catch, which is consistent with
+ *      the existing handler contract.
  *
  * This wrapper does NOT touch reportCronRun, the response shape, the
  * cronGuard call, or any other handler-internal concerns. It is purely
@@ -828,23 +936,40 @@ export function withCronCheckin(
       monitorConfig: config,
     });
 
+    // inner() owns the response and has normally already written it
+    // (cronGuard's skip 200 included) by the time it settles, so awaiting
+    // the completion check-in afterwards races the instance freeze. And it
+    // cannot be sent before inner() responds without deferring res.end
+    // inside arbitrary handlers, which deadlocks one that awaits its own
+    // end() callback. So hold the instance open with a waitUntil
+    // placeholder registered BEFORE inner() runs, settled only once the
+    // completion POST has landed (bounded by sentryCheckInDirect's 5 s
+    // abort). Registering up front means nothing depends on when the
+    // runtime notices the response, or on inner() responding last.
+    let releaseInstance!: () => void;
+    keepAlive(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseInstance = resolve;
+        }),
+    );
+
+    let status: 'ok' | 'error' = 'error'; // stays 'error' if inner throws
     try {
       await inner(req, res);
-      const status: 'ok' | 'error' = res.statusCode >= 400 ? 'error' : 'ok';
-      await sentryCheckInDirect({
+      status = res.statusCode >= 400 ? 'error' : 'ok';
+    } finally {
+      // Never rejects (sentryCheckInDirect swallows), but release on both
+      // arms anyway so the placeholder can never pin the instance.
+      sentryCheckInDirect({
         monitorSlug: jobName,
         status,
         checkInId,
         duration: (Date.now() - startMs) / 1000,
-      });
-    } catch (err) {
-      await sentryCheckInDirect({
-        monitorSlug: jobName,
-        status: 'error',
-        checkInId,
-        duration: (Date.now() - startMs) / 1000,
-      });
-      throw err;
+      }).then(
+        () => releaseInstance(),
+        () => releaseInstance(),
+      );
     }
   };
 }
