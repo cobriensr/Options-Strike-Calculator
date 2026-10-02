@@ -238,6 +238,10 @@
       "schedule": "50 21 * * 1-5"
     },
     {
+      "path": "/api/cron/refit-lottery-ticker-stats",
+      "schedule": "55 23 * * 1-5"
+    },
+    {
       "path": "/api/cron/fetch-nope",
       "schedule": "* 13-21 * * 1-5"
     },

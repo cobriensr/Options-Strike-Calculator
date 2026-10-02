@@ -542,6 +542,12 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
+  'refit-lottery-ticker-stats': {
+    // Shadow refit; after the last enrich-lottery-outcomes slot (23:40 UTC).
+    schedule: '55 23 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
   'refresh-tracker-contracts': {
     // ET-local schedule — see DST_TAIL_NOTE. vercel.json fires `*/5 13-20`
     // UTC. 20 UTC = 15 ET (EST) / 16 ET (EDT); since EST caps the fired
