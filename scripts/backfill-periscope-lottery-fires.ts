@@ -8,9 +8,11 @@
  *
  * Outcomes (peak_px, peak_pct, realized_r_*) are NOT filled here —
  * `ws_option_trades` retention is 2 days, so historical days have no
- * trade data on hand. Run `scripts/backfill_periscope_lottery_outcomes.py`
- * after this script to backfill realized outcomes from the local
- * parquet archive.
+ * trade data on hand. Run `scripts/backfill-periscope-lottery-outcomes.ts`
+ * after this script to backfill realized outcomes from UW per-contract
+ * minute bars. Note that it skips fires without an entry_px, and
+ * historical fires inserted here get one only if their entry print was
+ * still in ws_option_trades.
  *
  * Usage:
  *   DATABASE_URL=... npx tsx scripts/backfill-periscope-lottery-fires.ts

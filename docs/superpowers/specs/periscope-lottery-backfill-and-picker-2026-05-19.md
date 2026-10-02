@@ -66,9 +66,17 @@ INSERTs.
 
 **6c. Python outcomes backfill from parquet.**
 
+> **Retired 2026-10-02.** This script was deleted as hazardous. It wrote by
+> default, and locked every fire of a day with no parquet at R = -1. It
+> locked no-entry fires at R = -1, stored `peak_pct` ×100 (the cron stores
+> a ratio), and overwrote rows without an `outcome_locked` guard. Use
+> `scripts/backfill-periscope-lottery-outcomes.ts` instead: UW minute bars,
+> dry run by default, a parity gate against the cron, and conditional
+> batched writes. The design below is kept as a historical record.
+
 Files:
 
-- `scripts/backfill_periscope_lottery_outcomes.py`
+- `scripts/backfill_periscope_lottery_outcomes.py` (retired)
 
 For every row in `periscope_lottery_fires` with `outcome_locked =
 FALSE`, find the matching parquet at
