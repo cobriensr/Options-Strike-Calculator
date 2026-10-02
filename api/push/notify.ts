@@ -6,19 +6,20 @@
  * via the `x-internal-notify-secret` header. uw-stream's
  * SPXWIntervalBAHandler calls this post-flush; no other caller should.
  *
- * Constant-time secret comparison via `crypto.timingSafeEqual` keeps a
- * timing side-channel from leaking the secret length.
+ * The secret is compared with the shared `secretEquals` (constant-time over
+ * fixed-length digests, so not even the secret's length leaks via timing).
  *
  * NOT in the botid `protect` array on src/main.tsx — that surface is
  * for bot/JS-challenge protection on client-facing routes, and this is
  * server-to-server.
  */
 
-import { timingSafeEqual } from 'node:crypto';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { sendPushToOwner } from '../_lib/push.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
+// Direct import: the dependency-free module (see secret-compare.ts).
+import { secretEquals } from '../_lib/secret-compare.js';
 import { pushNotifySchema } from '../_lib/validation.js';
 
 const SECRET_HEADER = 'x-internal-notify-secret';
@@ -28,13 +29,7 @@ function verifySecret(req: VercelRequest): boolean {
   if (!expected) return false;
   const headerValue = req.headers[SECRET_HEADER];
   const got = Array.isArray(headerValue) ? headerValue[0] : headerValue;
-  if (typeof got !== 'string') return false;
-  // timingSafeEqual requires equal-length buffers; bail early on mismatch
-  // (length itself is already public info — its leak is acceptable).
-  const a = Buffer.from(got);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
+  return secretEquals(got, expected);
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {

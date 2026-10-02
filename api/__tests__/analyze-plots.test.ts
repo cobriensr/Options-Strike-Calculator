@@ -178,6 +178,32 @@ describe('POST /api/ml/analyze-plots', () => {
     expect(res._json).toEqual({ error: 'Unauthorized' });
   });
 
+  // The bearer check goes through the shared bearerMatches (R2): every
+  // near-miss is a 401 that never reaches Blob or Anthropic.
+  it.each<[string, string]>([
+    [`Bearer ${CRON_SECRET.slice(0, -1)}X`, 'same-length wrong secret'],
+    [`Bearer ${CRON_SECRET}-extra`, 'longer, length-mismatched secret'],
+    [`Bearer ${CRON_SECRET.slice(0, 4)}`, 'shorter prefix of the secret'],
+    [`bearer ${CRON_SECRET}`, 'right secret, lowercase scheme'],
+  ])('returns 401 for %j (%s)', async (authorization) => {
+    const req = mockRequest({ method: 'POST', headers: { authorization } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(401);
+    expect(res._json).toEqual({ error: 'Unauthorized' });
+    expect(mockList).not.toHaveBeenCalled();
+  });
+
+  it('right secret passes the auth gate (next gate: ANTHROPIC_API_KEY)', async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    const res = mockResponse();
+    await handler(makeAuthRequest(), res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'ANTHROPIC_API_KEY not configured' });
+  });
+
   // ── Missing API key ───────────────────────────────────────
   it('returns 500 when ANTHROPIC_API_KEY is not set', async () => {
     delete process.env.ANTHROPIC_API_KEY;

@@ -15,14 +15,14 @@
  * Environment: ANTHROPIC_API_KEY, CRON_SECRET, BLOB_READ_WRITE_TOKEN
  */
 
-import { timingSafeEqual } from 'node:crypto';
-
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { list, get } from '@vercel/blob';
 import Anthropic from '@anthropic-ai/sdk';
 import { getDb } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
+// Direct import: the dependency-free module (see secret-compare.ts).
+import { bearerMatches } from '../_lib/secret-compare.js';
 import { PLOT_ANALYSIS_SYSTEM_PROMPT } from '../_lib/plot-analysis-prompts.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 
@@ -263,11 +263,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     done({ status: 401 });
     return res.status(401).json({ error: 'Unauthorized' });
   }
-  const authHeader = req.headers.authorization ?? '';
-  const expected = `Bearer ${cronSecret}`;
-  const authBuf = Buffer.from(authHeader);
-  const expBuf = Buffer.from(expected);
-  if (authBuf.length !== expBuf.length || !timingSafeEqual(authBuf, expBuf)) {
+  if (!bearerMatches(req.headers.authorization, cronSecret)) {
     done({ status: 401 });
     return res.status(401).json({ error: 'Unauthorized' });
   }

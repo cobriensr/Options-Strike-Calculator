@@ -220,6 +220,52 @@ describe('POST /api/push/notify', () => {
     expect(mockSendPushToOwner).not.toHaveBeenCalled();
   });
 
+  // The header goes through the shared secretEquals (R2): near-misses,
+  // including a length mismatch, are all plain 401s.
+  it.each<[string, string]>([
+    [`${REAL_SECRET.slice(0, -1)}X`, 'same-length wrong secret'],
+    [`${REAL_SECRET}-extra`, 'longer, length-mismatched secret'],
+    [REAL_SECRET.slice(0, 8), 'shorter prefix of the secret'],
+  ])('returns 401 for header %j (%s)', async (secret) => {
+    const res = mockResponse();
+    await notifyHandler(
+      mockRequest({
+        method: 'POST',
+        body: VALID_NOTIFY_BODY,
+        headers: { 'x-internal-notify-secret': secret },
+      }),
+      res,
+    );
+    expect(res._status).toBe(401);
+    expect(mockSendPushToOwner).not.toHaveBeenCalled();
+  });
+
+  it('unwraps an array header and checks its first value', async () => {
+    mockSendPushToOwner.mockResolvedValue({ sent: 1, expired: 0, failed: 0 });
+    const accepted = mockResponse();
+    await notifyHandler(
+      mockRequest({
+        method: 'POST',
+        body: VALID_NOTIFY_BODY,
+        headers: { 'x-internal-notify-secret': [REAL_SECRET, 'ignored'] },
+      }),
+      accepted,
+    );
+    expect(accepted._status).toBe(200);
+
+    const rejected = mockResponse();
+    await notifyHandler(
+      mockRequest({
+        method: 'POST',
+        body: VALID_NOTIFY_BODY,
+        headers: { 'x-internal-notify-secret': ['wrong', REAL_SECRET] },
+      }),
+      rejected,
+    );
+    expect(rejected._status).toBe(401);
+    expect(mockSendPushToOwner).toHaveBeenCalledTimes(1);
+  });
+
   it('returns 401 when INTERNAL_NOTIFY_SECRET env var is unset', async () => {
     delete process.env.INTERNAL_NOTIFY_SECRET;
     const res = mockResponse();
