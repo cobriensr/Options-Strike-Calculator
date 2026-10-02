@@ -99,6 +99,7 @@ function runIgnoreCommand(previousSha?: string): number | null {
   return result.status;
 }
 
+// ~13 git spawns: ~1s alone, but past the 10s default hookTimeout under load.
 beforeAll(() => {
   configDir = mkdtempSync(join(tmpdir(), 'ignore-command-config-'));
   writeFileSync(join(configDir, 'gitconfig'), '');
@@ -117,7 +118,7 @@ beforeAll(() => {
     'pine/study.pine': 'x\n',
     'README.md': 'x\n',
   });
-});
+}, 60_000);
 
 afterAll(() => {
   if (repo) rmSync(repo, { recursive: true, force: true });
