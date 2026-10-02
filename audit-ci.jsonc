@@ -36,12 +36,14 @@
     "GHSA-23c5-xmqv-rm74", // minimatch nested *() extglobs — build-time
     "GHSA-9wv6-86v2-598j", // path-to-regexp backtracking — build-time routing
     "GHSA-v3rj-xjv7-4jmq", // smol-toml DoS via commented lines — build-time
-    "GHSA-c76h-2ccp-4975", // undici insufficient randomness — CLI HTTP only
-    "GHSA-g9mf-h72j-4rw9", // undici decompression chain — CLI HTTP only
-    "GHSA-2mjp-6q6p-2qxm", // undici request smuggling — CLI HTTP only
-    "GHSA-vrm6-8vpv-qv8q", // undici WS permessage-deflate — CLI HTTP only
-    "GHSA-v9p9-hfj2-hcw8", // undici WS server_max_window_bits — CLI HTTP only
-    "GHSA-4992-7rv2-5pvq", // undici CRLF injection via upgrade — CLI HTTP only
+
+    // undici is NOT allowlisted: package.json `overrides` forces
+    // @vercel/node's undici onto the patched 6.x line (`^6.28.1`). Every
+    // @vercel/node release through 17.0.0 hard-pins undici 5.28.4, and the
+    // 5.x line has no fix for the 6.24–6.28 advisories, so no parent upgrade
+    // exists. @vercel/node only calls undici's `request` and `Headers` (in
+    // its `vercel dev` server), both stable across 5→6. Remove the override
+    // once `npm view @vercel/node dependencies.undici` reports >=6.28.1.
 
     // ── thrift (via @dsnp/parquetjs) ──────────────────────────────────────
     // @dsnp/parquetjs (api/_lib/gexbot-parquet.ts) pulls `thrift`, which has
