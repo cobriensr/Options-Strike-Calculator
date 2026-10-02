@@ -23,6 +23,7 @@ vi.mock('../_lib/sentry.js', () => ({
 
 import handler from '../cron/evaluate-round-trip.js';
 import { Sentry } from '../_lib/sentry.js';
+import { getMarketCloseHourET } from '../../src/data/marketHours.js';
 
 const RUN_TIME = new Date('2026-05-19T18:00:00.000Z');
 
@@ -400,5 +401,124 @@ describe('evaluate-round-trip handler', () => {
       'cron.job',
       'evaluate-round-trip',
     );
+  });
+
+  // ── Time gate: open buffer through close + 80 min ─────────────
+  // Fires from the session's last hour need their 60-min post-fire window
+  // before they can be evaluated. The old isMarketHours() gate closed at
+  // close + 5, so Friday's 15:00–16:05 ET fires waited for a Monday run
+  // that was past the 24 h catch-up floor and after the tape sweep —
+  // they were never evaluated. These run the REAL cronGuard and calendar.
+
+  describe('post-close evaluation window', () => {
+    it('evaluates a Friday 15:30 ET fire on the 16:30 ET after-close run', async () => {
+      vi.setSystemTime(new Date('2026-09-25T20:30:00.000Z')); // Fri 16:30 EDT
+      mockSql.mockResolvedValueOnce([
+        {
+          source: 'lottery',
+          id: 501,
+          option_chain_id: 'SPY260925C00660000',
+          fire_time: new Date('2026-09-25T19:30:00.000Z'), // 15:30 ET
+          dte: 0,
+        },
+      ]);
+      // net_pct = (10 - 90) / 100 = -0.80 → deduct -3
+      mockSql.mockResolvedValueOnce([
+        {
+          id: 501,
+          source: 'lottery',
+          dte: 0,
+          ask_size: 10,
+          bid_size: 90,
+          total_size: 100,
+        },
+      ]);
+      mockSql.mockResolvedValueOnce([]); // lottery UPDATE
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'success',
+        eligible: 1,
+        evaluated: 1,
+        deducted: 1,
+      });
+      expect(mockSql).toHaveBeenCalledTimes(3);
+    });
+
+    it.each([
+      [
+        '2026-09-25T21:10:00.000Z',
+        'Fri 17:10 EDT — first tick to see a 16:05 ET fire',
+      ],
+      [
+        '2026-09-25T21:20:00.000Z',
+        'Fri 17:20 EDT — close + 80, the retry tick',
+      ],
+      ['2026-12-04T22:10:00.000Z', 'Fri 17:10 EST — needs the 22:xx UTC hour'],
+      ['2026-12-04T22:20:00.000Z', 'Fri 17:20 EST — close + 80'],
+      ['2026-09-28T13:25:00.000Z', 'Mon 09:25 EDT — open buffer, unchanged'],
+    ])('runs at %s (%s)', async (iso) => {
+      vi.setSystemTime(new Date(iso));
+      mockSql.mockResolvedValueOnce([]); // eligible-alerts SELECT
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({ status: 'success', rows: 0 });
+      expect(mockSql).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['2026-09-25T21:30:00.000Z', 'Fri 17:30 EDT — past close + 80'],
+      ['2026-12-04T22:30:00.000Z', 'Fri 17:30 EST — past close + 80'],
+      ['2026-09-26T20:30:00.000Z', 'Saturday 16:30 EDT'],
+      ['2026-09-28T13:20:00.000Z', 'Mon 09:20 EDT — before the open buffer'],
+    ])('skips at %s (%s)', async (iso) => {
+      vi.setSystemTime(new Date(iso));
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({
+        skipped: true,
+        reason: 'Outside time window',
+      });
+      expect(mockSql).not.toHaveBeenCalled();
+    });
+
+    it('skips all day on a market holiday (Thanksgiving)', async () => {
+      // Precondition from the shared calendar, so a calendar change fails
+      // here rather than silently changing what this test covers.
+      expect(getMarketCloseHourET('2026-11-26')).toBeNull();
+      vi.setSystemTime(new Date('2026-11-26T17:00:00.000Z')); // 12:00 EST
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._json).toMatchObject({ skipped: true });
+      expect(mockSql).not.toHaveBeenCalled();
+    });
+
+    it('follows a half-day close: runs to 13:00 + 80 = 14:20 ET, skips after', async () => {
+      expect(getMarketCloseHourET('2026-11-27')).toBe(13); // Black Friday
+
+      vi.setSystemTime(new Date('2026-11-27T19:20:00.000Z')); // 14:20 EST
+      mockSql.mockResolvedValueOnce([]);
+      const atGateEnd = mockResponse();
+      await handler(authedReq(), atGateEnd);
+      expect(atGateEnd._json).toMatchObject({ status: 'success' });
+      expect(mockSql).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(new Date('2026-11-27T19:30:00.000Z')); // 14:30 EST
+      const pastGate = mockResponse();
+      await handler(authedReq(), pastGate);
+      expect(pastGate._json).toMatchObject({ skipped: true });
+      expect(mockSql).toHaveBeenCalledTimes(1); // no new DB call
+    });
   });
 });

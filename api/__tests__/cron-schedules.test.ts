@@ -25,6 +25,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { SCHEDULE_MAP } from '../_lib/cron-schedules.js';
 import { assertValidTimezone } from '../_lib/cron-instrumentation.js';
+import { MARKET_MINUTES } from '../_lib/constants.js';
 
 interface VercelConfig {
   crons?: { path: string; schedule: string }[];
@@ -155,10 +156,11 @@ describe('cron-schedules SCHEDULE_MAP', () => {
       //   (1) it must convert to a UTC tick vercel actually fires
       //       (else the monitor expects a tick that never arrives →
       //        structural "missed"), AND
-      //   (2) at that ET wall-clock the isMarketHours() gate must be open
-      //       (else the handler skips — those are covered by the wrapper's
-      //        paired skip check-in, but the close-side tail aside, the
-      //        monitor window should track the live session).
+      //   (2) the monitor window should track when the handler actually
+      //       runs. Not asserted: ticks past the handler's own gate (the
+      //       close-side tail; evaluate-round-trip deliberately runs to
+      //       close + 80) are satisfied by the wrapper's paired skip
+      //       check-in instead.
       // Offsets: EST = ET + 5h, EDT = ET + 4h.
       for (const offset of [5, 4]) {
         const regime = offset === 5 ? 'EST' : 'EDT';
@@ -189,6 +191,27 @@ describe('cron-schedules SCHEDULE_MAP', () => {
       ).toBeDefined();
     },
   );
+
+  it('evaluate-round-trip: vercel.json serves the post-close evaluation ticks in BOTH DST regimes', () => {
+    // The handler gate runs to close + 80 so the session's last fires
+    // (close + 5) are evaluated after their 60-min window and before the
+    // weekend prunes their tape: the close + 70 tick is the first to see
+    // them, close + 80 is the retry. Both must actually be fired by
+    // vercel.json — in EST 17:20 ET is 22:20 UTC, outside a `14-21` hour
+    // range, which is how Friday's last fires went un-evaluated.
+    const vercel = vercelCrons.get('evaluate-round-trip');
+    expect(vercel).toBeDefined();
+    const servedUtc = utcTickSet(parseCron(vercel ?? ''));
+    for (const offset of [5, 4]) {
+      for (const afterClose of [70, 80]) {
+        const utcTotal = MARKET_MINUTES.CLOSE + afterClose + offset * 60;
+        expect(
+          servedUtc.has(utcTotal),
+          `${offset === 5 ? 'EST' : 'EDT'}: close + ${afterClose} min → ${Math.floor(utcTotal / 60)}:${String(utcTotal % 60).padStart(2, '0')} UTC not fired`,
+        ).toBe(true);
+      }
+    }
+  });
 
   it('every entry has positive checkinMargin and maxRuntime', () => {
     for (const [name, cfg] of Object.entries(SCHEDULE_MAP)) {

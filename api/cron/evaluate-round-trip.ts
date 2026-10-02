@@ -1,7 +1,8 @@
 /**
  * GET /api/cron/evaluate-round-trip
  *
- * Runs every 10 min during market hours. Computes
+ * Runs every 10 min from the 09:25 ET open buffer until 80 min after the
+ * day's close (see isRoundTripEvalWindow). Computes
  * `post_fire_net_pct_of_volume` for alerts fired 60-75 min ago, stores
  * it on the alert row, and applies a stepped score deduct based on the
  * Phase 1 EDA brackets.
@@ -26,10 +27,17 @@
  */
 
 import { getDb, withDbRetry } from '../_lib/db.js';
+import { MARKET_MINUTES } from '../_lib/constants.js';
 import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
+import { getMarketCloseHourET } from '../../src/data/marketHours.js';
+import {
+  getETDateStr,
+  getETDayOfWeek,
+  getETTime,
+} from '../../src/utils/timezone.js';
 
 /** Look-forward window length for the net-pct computation. */
 const WINDOW_MIN = 60;
@@ -37,6 +45,48 @@ const WINDOW_MIN = 60;
 /** How far back to wait before evaluating. Alerts younger than this haven't
  *  accumulated the full 60-min post-fire flow window yet. */
 const LOOKBACK_MIN_FLOOR = 60;
+
+/**
+ * How long past the day's close the cron keeps running. The fire detectors
+ * stop at isMarketHours()' close + 5 gate, so the last alert fires by
+ * close + 5:59 (observed max: 16:05:13 ET). It becomes evaluable
+ * LOOKBACK_MIN_FLOOR later, at close + 65:59, which the close + 70 tick of
+ * the every-10-min schedule is the first to see. The close + 80 tick is one
+ * retry (the cron's heavy LATERAL has a history of timeouts): before a
+ * weekend or holiday a missed evaluation is permanent — the next
+ * session's run is past the 24 h CATCHUP_FLOOR_HOURS window, and over a
+ * weekend Monday's 12:05 UTC ws_option_trades sweep has already pruned
+ * Friday's tape.
+ *
+ * Before 2026-10-02 the gate was isMarketHours() (close + 5), so fires
+ * after ~15:05 ET waited for the next morning's run. Mon-Thu that worked;
+ * Friday's never got evaluated (1,946 lottery + 137 silent-boom rows in 30
+ * days), reading as "no penalty".
+ */
+const POST_CLOSE_EVAL_MIN = 80;
+
+/**
+ * Time gate: the 09:25 ET open buffer (same as isMarketHours) through the
+ * day's close + POST_CLOSE_EVAL_MIN. Weekend- and holiday-aware via the
+ * shared market calendar; a half-day follows its own 13:00 ET close.
+ * vercel.json's UTC hours must reach 17:20 ET in EST (22:20 UTC), and the
+ * Sentry monitor window in cron-schedules.ts must cover the post-close ticks.
+ */
+function isRoundTripEvalWindow(): boolean {
+  const now = new Date();
+  const day = getETDayOfWeek(now);
+  if (day === 0 || day === 6) return false;
+
+  const closeHour = getMarketCloseHourET(getETDateStr(now));
+  if (closeHour == null) return false; // holiday
+
+  const { hour, minute } = getETTime(now);
+  const totalMin = hour * 60 + minute;
+  return (
+    totalMin >= MARKET_MINUTES.OPEN - 5 &&
+    totalMin <= closeHour * 60 + POST_CLOSE_EVAL_MIN
+  );
+}
 
 /** Catch-up floor for stale alerts. If the cron pauses for hours, alerts
  *  from the same trading day still get picked up on resume. The
@@ -266,5 +316,5 @@ export default withCronInstrumentation(
       },
     };
   },
-  { requireApiKey: false },
+  { requireApiKey: false, timeCheck: isRoundTripEvalWindow },
 );

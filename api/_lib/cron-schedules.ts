@@ -109,7 +109,7 @@ const HIGH_FREQ_FAILURE_THRESHOLD = 3;
  *     invocation must happen for any skip check-in to be sent). Ticks the
  *     fixed-UTC crontab does NOT serve in a given regime get no
  *     invocation at all — e.g. 09:00–09:50 ET in EDT = 13:00–13:50 UTC,
- *     outside `14-21` for evaluate-round-trip; the function never runs,
+ *     outside `14-22` for evaluate-round-trip; the function never runs,
  *     so no skip check-in can rescue them. Anchoring the MONITOR window
  *     to `America/New_York` makes it expect ticks only where the UTC
  *     crontab actually serves AND the session is live in BOTH regimes, so
@@ -126,16 +126,16 @@ const HIGH_FREQ_FAILURE_THRESHOLD = 3;
  * the UTC window in both regimes), and strictly tightens the expectation
  * set. failureIssueThreshold:3 is retained throughout.
  *
- * Window-derivation note (evaluate-round-trip, finding #6): `10-16` ET is
- * NOT an under-coverage bug — it is exactly the maximal set of ticks that
- * are BOTH served by vercel.json's `every-10-min 14-21` UTC crontab AND fired by
- * isMarketHours() in BOTH regimes. EST has served+fired ticks at 09:30–
+ * Window-derivation note (evaluate-round-trip, finding #6): the 10:00 ET
+ * start is NOT an under-coverage bug. EST has served+fired ticks at 09:30–
  * 09:55 ET, but an ET-local crontab that expected 09:30 ET would ALSO
- * expect 09:30 ET in EDT = 13:30 UTC, which `14-21` never serves →
- * guaranteed `missed`. So the start cannot be widened without
- * reintroducing a structural miss; `10-16` is the correct (and proven)
- * intersection. The close-hour tail (16:10–16:50 ET, served but past the
- * 16:05 gate) is now satisfied by Layer 1's paired skip check-in.
+ * expect 09:30 ET in EDT = 13:30 UTC, which vercel.json's `every-10-min
+ * 14-22` UTC crontab never serves → guaranteed `missed`. So the start
+ * cannot be widened without reintroducing a structural miss. The end is
+ * 17:50 ET (2026-10-02): the handler's own gate runs to close + 80 so
+ * the session's last fires are evaluated before the weekend prunes their
+ * tape, and 17:50 ET is the last tick served in EST (22:50 UTC). Ticks
+ * past the handler gate are satisfied by Layer 1's paired skip check-in.
  */
 const MARKET_HOURS_TZ = 'America/New_York';
 
@@ -273,11 +273,15 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: LONG_RUNNER_MAX_RUNTIME,
   },
   'evaluate-round-trip': {
-    // ET-local schedule — see DST_TAIL_NOTE. vercel.json fires `*/10 14-21`
-    // UTC. 14 UTC = 09 ET (EST) / 10 ET (EDT); the guaranteed served-AND-
-    // fired subset across both regimes is 10:00–16:00 ET, so the ET-local
-    // crontab starts an hour later than the lottery pair.
-    schedule: '*/10 10-16 * * 1-5',
+    // ET-local schedule — see DST_TAIL_NOTE. vercel.json fires `*/10 14-22`
+    // UTC. 14 UTC = 09 ET (EST) / 10 ET (EDT), so the window starts at
+    // 10:00 ET, an hour later than the lottery pair. It ends at 17:50 ET
+    // because the handler gate runs to close + 80 (17:20 ET) to evaluate
+    // the last fires of the session (see POST_CLOSE_EVAL_MIN in the
+    // handler); 17:50 ET = 22:50 UTC in EST, the last served tick.
+    // 17:30–17:50 ET (and every post-gate tick on a half-day or holiday)
+    // is satisfied by the wrapper's skip check-in.
+    schedule: '*/10 10-17 * * 1-5',
     timezone: MARKET_HOURS_TZ,
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,

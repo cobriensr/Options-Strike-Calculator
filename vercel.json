@@ -195,7 +195,7 @@
     },
     {
       "path": "/api/cron/evaluate-round-trip",
-      "schedule": "*/10 14-21 * * 1-5"
+      "schedule": "*/10 14-22 * * 1-5"
     },
     {
       "path": "/api/cron/takeit-fill-shap",
