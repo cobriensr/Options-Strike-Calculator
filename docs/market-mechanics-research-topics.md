@@ -149,7 +149,7 @@ Working paper dated 2025-01-25 (academic, not a Cboe publication; Cboe supplied 
 
 **Erratum — appendix Fig. A1 units:** The paper sets the one-minute move to dS = σ√dt instead of σ·S·√dt, which understates Γ·dS by a factor of S (= 100). Its claim that the charm and speed terms are each larger than the Γ·dS term is an artifact of that slip. Corrected, at the paper's own parameters (K = 100, σ = 40%, r = 4%, 6.75h left, strike 1% OTM), charm per minute ≈ 2.3% of a 1-sd gamma hedge. The identity charm + ½σ²S²·speed = −(σ² + r)·S·Γ holds (checked numerically), so the time-drift terms nearly cancel in expectation **only when realized vol ≈ implied**. When price sits still, charm is uncancelled.
 
-**Charm-to-gamma ratio at realistic vol:** Per minute, |charm·dt| / (Γ·σ·S·√dt) ≈ |ln(S/K)|·√dt / (2·σ·τ). It scales with distance from the strike and inversely with IV × time left, so it doubles each time the remaining time halves. At σ = 15% (r = 4%, calendar-time annualization as in the paper):
+**Charm-to-gamma ratio at realistic vol:** Per minute, |charm·dt| / (Γ·σ·S·√dt) ≈ |ln(S/K)|·√dt / (2·σ·τ). It scales with distance from the strike and inversely with IV × time left, so for a fixed strike it doubles each time the remaining time halves. Fixed-strike view at σ = 15% (r = 4%, calendar-time annualization as in the paper; superseded by the per-sd table below):
 
 | Strike OTM | 6.5h | 3h   | 1h  | 30m | 15m  |
 | ---------- | ---- | ---- | --- | --- | ---- |
@@ -157,7 +157,16 @@ Working paper dated 2025-01-25 (academic, not a Cboe publication; Cboe supplied 
 | 0.5%       | 3.1% | 6.8% | 20% | 40% | 81%  |
 | 1%         | 6.3% | 14%  | 41% | 81% | 162% |
 
-Ratios for far-from-money strikes late in the day are large, but both terms are tiny in absolute size; the meaningful late-day cases are strikes just off the money.
+Correction: that table holds the strike fixed, which misleads. Read by distance in standard deviations of the remaining move, k = |ln(S/K)| / (σ√τ), the ratio ≈ k/2 · √(1 min ÷ time left), independent of IV and of the time convention. Exact Black-Scholes values (same r and convention, at σ = 15%; σ = 30% matches to within 0.1 point):
+
+| Distance | Open (6.5h) | 1h    | 30m   | 15m   |
+| -------- | ----------- | ----- | ----- | ----- |
+| k = 1 sd | 2.6%        | 6.5%  | 9.2%  | 12.9% |
+| k = 2 sd | 5.1%        | 12.9% | 18.3% | 25.8% |
+
+A fixed strike's ratio climbs faster only because it drifts further out in sd terms as time runs down. The 0.5%-OTM strike at 15% IV, for example, is about 6 sd out with 15 minutes left (calendar-time convention) and carries essentially no hedge — so the fixed-strike table overstates charm's late-day share at the strikes that matter. Charm's late-session importance comes from its absolute size growing ~1/τ while the gamma hedge grows ~1/√τ, and from being one-directional.
+
+Convention: the paper and both tables use calendar time (525,600 min/yr). VIX1D uses business time (102,060 min/yr), so the same quoted IV means a wider sd-distance in calendar terms (the 0.5%-OTM strike above is about 2.8 sd out with 15 minutes left in business time, vs. about 6.3 sd in calendar time).
 
 <details>
 <summary>Reproduction (Python)</summary>
@@ -187,6 +196,20 @@ for otm in (0.0025, 0.005, 0.01):
         g, _, ch = greeks(S, 100.0, 0.15, h)
         approx = abs(math.log(S / 100)) * math.sqrt(dt) / (2 * 0.15 * h / (24 * 365))
         print(f"{otm:.2%} {h:>4}h  {abs(ch * dt) / (g * 0.15 * S * math.sqrt(dt)):6.1%}  {approx:6.1%}")
+
+# Per-sd view: strike k sd of the remaining move above spot, k = |ln(S/K)| / (sig*sqrt(tau))
+# (call OTM; with no dividends a put has the same gamma and charm). Exact vs k/2*sqrt(1 min / time left)
+for k in (1, 2):
+    for h in (6.5, 1, 0.5, 0.25):
+        tau = h / (24 * 365); sig = 0.15
+        S = 100 * math.exp(-k * sig * math.sqrt(tau))
+        g, _, ch = greeks(S, 100.0, sig, h)
+        exact = abs(ch * dt) / (g * sig * S * math.sqrt(dt))
+        print(k, h, round(exact, 4), round(k / 2 * math.sqrt(1 / (h * 60)), 4))
+
+# 0.5% OTM at 15% IV with 15 min left: sd-distance in calendar vs business time (min/yr)
+for mins_per_year in (525_600, 102_060):
+    print(mins_per_year, round(math.log(1 / 0.995) / (0.15 * math.sqrt(15 / mins_per_year)), 2))
 ```
 
 </details>
@@ -194,7 +217,7 @@ for otm in (0.0025, 0.005, 0.01):
 **Takeaways for this repo:**
 
 1. Dealer hedging as a _cause_ of volatility is small; much of GEX's predictive value is as a regime label. Consistent with our range-model Phase 1 v2 result that VIX1D already captures expected range and gamma adds ~nothing out of sample (`docs/tmp/expected-range-phase1v2-2026-05-29.md`, local and gitignored).
-2. Charm is a one-directional drift that grows into the close and dominates on quiet tapes; minute to minute, gamma hedging dominates early in the day.
+2. Charm is a one-directional drift that grows into the close and matters most on quiet tapes. Minute to minute, the gamma hedge stays larger at every strike that still carries hedge (about 13% at 1 sd with 15 minutes left); charm's weight comes from accumulating in one direction.
 3. Negative MM gamma intraday is the common case post-2022, not a rare one.
 4. Capacity-tagged inventory reconstruction is the gold standard for MM gamma — supports preferring MM-attributed (Periscope) over naive OI-based GEX.
 
