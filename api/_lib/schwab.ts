@@ -33,6 +33,10 @@ import { redactUpstreamBody } from './redact-upstream-body.js';
 // auth module isn't the source of the shared KV client (avoids inverting the
 // layering). Re-exported below for back-compat with existing importers.
 import { createRedis, redis } from './redis.js';
+import {
+  classifySchwabExpiry,
+  type SchwabAuthStatus,
+} from '../../src/utils/schwab-expiry.js';
 
 export { redis };
 
@@ -913,6 +917,51 @@ async function handleLapsedLogin(
   return {
     error: { type: 'expired_refresh', message: REFRESH_EXPIRED_MESSAGE },
   };
+}
+
+/**
+ * Only the expiry is read from the stored record. Parsing strips every other
+ * field, so token values cannot reach the status payload.
+ */
+const storedExpirySchema = z.object({ refreshExpiresAt: z.number() });
+
+/**
+ * The owner-facing view of the Schwab login: how long the refresh token has
+ * left. Drives the header countdown (`GET /api/auth/schwab-status`) and the
+ * re-auth reminder cron.
+ *
+ * Read-only: one GET of the token record. It never refreshes, writes, or
+ * clears the record (a lapsed record is cleared and reported by the next
+ * `getAccessToken`; see `handleLapsedLogin`), never calls Schwab, and never
+ * returns token values.
+ *
+ * A Redis read failure is `unknown`, never `logged_out`: "the store is down"
+ * must not read as a logout. It is not captured here, because the badge polls
+ * this every 5 minutes and `getStoredTokens` already logs and meters the
+ * failure. The hourly reminder cron captures an `unknown` result instead.
+ */
+export async function getSchwabAuthStatus(): Promise<SchwabAuthStatus> {
+  const read = await getStoredTokens();
+  if (!read.ok) return { state: 'unknown' };
+  if (read.tokens === null) return { state: 'logged_out' };
+
+  const parsed = storedExpirySchema.safeParse(read.tokens);
+  if (!parsed.success) {
+    // Name the bad fields only — the record carries token values.
+    logger.warn(
+      {
+        invalid: parsed.error.issues.map((i) => i.path.join('.') || '(record)'),
+      },
+      'getSchwabAuthStatus: stored token record has no usable refreshExpiresAt',
+    );
+    return { state: 'unknown' };
+  }
+
+  const { refreshExpiresAt } = parsed.data;
+  const tier = classifySchwabExpiry(refreshExpiresAt, Date.now());
+  if (tier === 'expired') return { state: 'expired', refreshExpiresAt };
+  if (tier === 'ok') return { state: 'active', refreshExpiresAt };
+  return { state: 'expiring', refreshExpiresAt };
 }
 
 /**

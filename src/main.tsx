@@ -190,6 +190,7 @@ if (import.meta.env.PROD)
       { path: '/api/system-status', method: 'GET' },
       { path: '/api/auth/guest-key', method: 'POST' },
       { path: '/api/auth/guest-logout', method: 'POST' },
+      { path: '/api/auth/schwab-status', method: 'GET' },
       { path: '/api/panel-prefs', method: 'GET' },
       { path: '/api/panel-prefs', method: 'PUT' },
       { path: '/api/tracker/contracts', method: 'GET' },
