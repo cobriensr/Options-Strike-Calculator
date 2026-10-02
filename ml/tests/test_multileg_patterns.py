@@ -1,9 +1,9 @@
 """Tests for multileg_patterns — declarative pattern definitions.
 
 These are PURE-FUNCTION tests over plain ``Leg`` dicts. No DataFrame, no
-database, no I/O. This module is vendored into two production Railway
-services (sidecar + classifier under ``_vendored_ml/``), so these tests are
-a genuine safety net for the spread-classification constraint logic.
+database, no I/O. This module is vendored into the production Railway
+classifier service (``classifier/_vendored_ml/``), so these tests are a
+genuine safety net for the spread-classification constraint logic.
 
 Pattern set (v1, fixed): vertical | strangle | risk_reversal | butterfly.
 """

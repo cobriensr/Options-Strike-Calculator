@@ -1019,7 +1019,7 @@ def _run_post_with_body(
 
 
 # ---------------------------------------------------------------------------
-# POST /takeit/multileg-classify — auth + body-size cap (Finding 3, CRITICAL)
+# /takeit/* POST tests — isolate TAKEIT_SIDECAR_SHARED_SECRET per test
 # ---------------------------------------------------------------------------
 
 
@@ -1033,77 +1033,23 @@ def _clear_takeit_secret() -> Any:
         os.environ.pop("TAKEIT_SIDECAR_SHARED_SECRET", None)
 
 
-class TestMultilegClassifyAuth:
-    def test_503_when_secret_unset(self, _clear_takeit_secret) -> None:
-        status, body, read_called = _run_post_with_body(
-            "/takeit/multileg-classify", body=b'{"rows": []}'
-        )
-        assert status == 503
-        assert body["error"] == "TAKEIT_SIDECAR_SHARED_SECRET not configured"
-        assert read_called is False
+class TestRemovedMultilegClassifyRoute:
+    """POST /takeit/multileg-classify was a fallback for the standalone
+    classifier/ service and has been removed. A stale caller gets the
+    plain-text fallthrough 404, even with a valid bearer, and the body is
+    never read (so the polars matcher can't be reached either)."""
 
-    def test_401_when_auth_header_missing(self, _clear_takeit_secret) -> None:
-        os.environ["TAKEIT_SIDECAR_SHARED_SECRET"] = "s3cret"
-        status, body, read_called = _run_post_with_body(
-            "/takeit/multileg-classify", body=b'{"rows": []}'
-        )
-        assert status == 401
-        assert body["error"] == "unauthorized"
-        assert read_called is False
-
-    def test_401_when_bearer_wrong(self, _clear_takeit_secret) -> None:
+    def test_404_with_valid_bearer_without_reading_body(
+        self, _clear_takeit_secret
+    ) -> None:
         os.environ["TAKEIT_SIDECAR_SHARED_SECRET"] = "s3cret"
         status, body, read_called = _run_post_with_body(
             "/takeit/multileg-classify",
-            body=b'{"rows": []}',
-            headers={"Authorization": "Bearer wrong"},
-        )
-        assert status == 401
-        assert body["error"] == "unauthorized"
-        assert read_called is False
-
-    def test_200_with_good_bearer(self, _clear_takeit_secret) -> None:
-        os.environ["TAKEIT_SIDECAR_SHARED_SECRET"] = "s3cret"
-        # Inject a fake multileg_routes so the heavy polars import is never
-        # triggered; the handler does `import multileg_routes` after auth.
-        fake = types.ModuleType("multileg_routes")
-        fake.handle_classify_payload = lambda b: (200, {"results": []})  # type: ignore[attr-defined]
-        with patch.dict(sys.modules, {"multileg_routes": fake}):
-            status, body, read_called = _run_post_with_body(
-                "/takeit/multileg-classify",
-                body=b'{"rows": []}',
-                headers={"Authorization": "Bearer s3cret"},
-            )
-        assert status == 200
-        assert body == {"results": []}
-        assert read_called is True
-
-    def test_413_over_cap_does_not_read_body(self, _clear_takeit_secret) -> None:
-        os.environ["TAKEIT_SIDECAR_SHARED_SECRET"] = "s3cret"
-        # Declare a Content-Length above the 1 MiB default while sending a
-        # tiny body — the handler must reject before reading.
-        from health import MAX_BODY_BYTES
-
-        status, body, read_called = _run_post_with_body(
-            "/takeit/multileg-classify",
-            body=b"{}",
+            body=b'{"trades": []}',
             headers={"Authorization": "Bearer s3cret"},
-            declared_length=MAX_BODY_BYTES + 1,
         )
-        assert status == 413
-        assert body["error"] == "payload too large"
-        assert read_called is False
-
-    def test_400_on_empty_body(self, _clear_takeit_secret) -> None:
-        os.environ["TAKEIT_SIDECAR_SHARED_SECRET"] = "s3cret"
-        status, body, read_called = _run_post_with_body(
-            "/takeit/multileg-classify",
-            body=b"",
-            headers={"Authorization": "Bearer s3cret"},
-            declared_length=0,
-        )
-        assert status == 400
-        assert body["error"] == "empty body"
+        assert status == 404
+        assert body == {"_raw": "Not found"}
         assert read_called is False
 
 

@@ -20,11 +20,14 @@ vi.mock('../_lib/sentry.js', () => ({
   },
 }));
 
+import logger from '../_lib/logger.js';
 import {
   classifyAlertMultileg,
   type MultilegClassifyCache,
 } from '../_lib/multileg-classify-batch.js';
+import type * as MultilegClientModule from '../_lib/multileg-client.js';
 import type { MultilegClassification } from '../_lib/multileg-client.js';
+import { Sentry } from '../_lib/sentry.js';
 
 // ── Test fixtures ──────────────────────────────────────────────────────────
 
@@ -162,7 +165,7 @@ describe('classifyAlertMultileg', () => {
 
   it('returns null when no trades on the alert chain are in the window', async () => {
     // Window has trades on the ticker, but none on optionChain → no
-    // anchor → null. Sidecar is NOT called.
+    // anchor → null. Classifier is NOT called.
     const rows = [
       makeRow({
         ws_trade_id: 'a',
@@ -191,12 +194,12 @@ describe('classifyAlertMultileg', () => {
     expect(mockClassifyMultilegBatch).not.toHaveBeenCalled();
   });
 
-  it('returns null and does NOT rethrow when the sidecar throws', async () => {
+  it('returns null and does NOT rethrow when the classifier throws', async () => {
     const rows = [
       makeRow({ ws_trade_id: 'anchor', option_chain: optionChain }),
     ];
     mockClassifyMultilegBatch.mockRejectedValueOnce(
-      new Error('sidecar 503 Service Unavailable'),
+      new Error('classifier 503 Service Unavailable'),
     );
 
     const db = makeDb([rows]);
@@ -211,6 +214,53 @@ describe('classifyAlertMultileg', () => {
 
     expect(result).toBeNull();
     expect(mockClassifyMultilegBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails open with null when CLASSIFIER_URL is unset (config_missing)', async () => {
+    // The real client throws config_missing (after emitting the named
+    // multileg.classify.config_missing Sentry event) instead of routing
+    // to the removed sidecar route. The helper must swallow it, memoize
+    // the null for the tick, and not add a second Sentry capture.
+    const { MultilegClassifyError } = await vi.importActual<
+      typeof MultilegClientModule
+    >('../_lib/multileg-client.js');
+    mockClassifyMultilegBatch.mockRejectedValueOnce(
+      new MultilegClassifyError(
+        'config_missing',
+        'CLASSIFIER_URL is not configured',
+      ),
+    );
+    const rows = [
+      makeRow({ ws_trade_id: 'anchor', option_chain: optionChain }),
+    ];
+
+    const db = makeDb([rows]);
+    const cache: MultilegClassifyCache = new Map();
+    const first = await classifyAlertMultileg(
+      db,
+      cache,
+      ticker,
+      optionChain,
+      triggerTimeCt,
+    );
+    const second = await classifyAlertMultileg(
+      db,
+      cache,
+      ticker,
+      optionChain,
+      triggerTimeCt,
+    );
+
+    expect(first).toBeNull();
+    expect(second).toBeNull();
+    expect(mockClassifyMultilegBatch).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: expect.objectContaining({ kind: 'config_missing' }),
+      }),
+      'multileg-classify classifier call failed; returning null',
+    );
+    expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
   it('returns null and does NOT rethrow when the DB query throws', async () => {
@@ -228,7 +278,7 @@ describe('classifyAlertMultileg', () => {
     expect(mockClassifyMultilegBatch).not.toHaveBeenCalled();
   });
 
-  it('returns null without calling sidecar when window exceeds the size cap (10000)', async () => {
+  it('returns null without calling classifier when window exceeds the size cap (10000)', async () => {
     // Build > 10000 rows on the chain to trip the defensive size gate.
     // Cap was raised from 5000 → 10000 on 2026-05-19 to stop Sentry
     // noise from high-vol ETF minutes that posted 6–8K-trade windows.
@@ -257,7 +307,7 @@ describe('classifyAlertMultileg', () => {
     expect(mockClassifyMultilegBatch).not.toHaveBeenCalled();
   });
 
-  it('cache hit: same (ticker, chain, minute) returns memoized result with one sidecar call', async () => {
+  it('cache hit: same (ticker, chain, minute) returns memoized result with one classifier call', async () => {
     const anchorId = 'anchor-cache';
     const rows = [
       makeRow({ ws_trade_id: anchorId, option_chain: optionChain }),
@@ -283,7 +333,7 @@ describe('classifyAlertMultileg', () => {
       optionChain,
       triggerTimeCt,
     );
-    // Second call within the same minute — cache hit, no DB / sidecar call.
+    // Second call within the same minute — cache hit, no DB / classifier call.
     const second = await classifyAlertMultileg(
       db,
       cache,
@@ -392,7 +442,7 @@ describe('classifyAlertMultileg', () => {
   );
 
   it('memoizes null results so a transient failure does not cause N retries in one tick', async () => {
-    // First call: sidecar throws → null cached. Second call: cache hit.
+    // First call: classifier throws → null cached. Second call: cache hit.
     const rows = [makeRow({ option_chain: optionChain })];
     mockClassifyMultilegBatch.mockRejectedValueOnce(new Error('boom'));
 

@@ -1,9 +1,9 @@
 /**
  * Multileg classification helper for the detect crons.
  *
- * Wraps the Railway sidecar's POST /takeit/multileg-classify endpoint
- * (see `multileg-client.ts`) with the cron-side logic needed by both
- * detect-lottery-fires and detect-silent-boom:
+ * Wraps the Railway classifier service's POST /multileg-classify
+ * endpoint (see `multileg-client.ts`) with the cron-side logic needed by
+ * both detect-lottery-fires and detect-silent-boom:
  *
  *   1. Locate the alert's anchor trade in ws_option_trades — the
  *      highest-premium print on the alert's option_chain inside a
@@ -11,14 +11,15 @@
  *   2. Pull the ticker-wide context window (all chains on the same
  *      underlying symbol within ±30s) — the matcher needs neighboring
  *      legs to detect verticals / strangles / risk-reversals.
- *   3. Call the sidecar classifier on the window.
+ *   3. Call the classifier on the window.
  *   4. Return the anchor trade's classification.
  *
- * The helper is fail-open: any failure (sidecar unreachable, no anchor
- * trade located, window too large, DB error) returns `null`. The
- * detect crons treat the four lottery_finder_fires / silent_boom_alerts
- * columns added in migration #160 as NULLABLE for exactly this reason —
- * a transient classifier outage must NOT block alert insertion.
+ * The helper is fail-open: any failure (CLASSIFIER_URL unset, classifier
+ * unreachable, no anchor trade located, window too large, DB error)
+ * returns `null`. The detect crons treat the four lottery_finder_fires /
+ * silent_boom_alerts columns added in migration #160 as NULLABLE for
+ * exactly this reason — a transient classifier outage must NOT block
+ * alert insertion.
  *
  * Per-cron-tick cache: pass a fresh empty Map at the top of each cron
  * invocation. Keyed by `${ticker}|${optionChain}|${minuteBucket}` so
@@ -27,7 +28,7 @@
  * — each has its own anchor trade.
  *
  * Spec: migration #160 in `db-migrations.ts` is the canonical column
- * shape; see commit ced5ff10 for the sidecar wiring.
+ * shape; see commit ced5ff10 for the original wiring.
  */
 
 import type { getDb } from './db.js';
@@ -47,8 +48,8 @@ type DbSql = ReturnType<typeof getDb>;
  * Per-cron-tick cache. Owned by the cron handler — pass a fresh empty
  * Map at the top of each invocation. Cached value is the anchor trade's
  * classification, or `null` if classification failed/was unavailable.
- * The cache memoizes the null path so a transient sidecar outage doesn't
- * cause N retries within one cron tick.
+ * The cache memoizes the null path so a transient classifier outage
+ * doesn't cause N retries within one cron tick.
  */
 export type MultilegClassifyCache = Map<string, MultilegClassification | null>;
 
@@ -57,16 +58,16 @@ export type MultilegClassifyCache = Map<string, MultilegClassification | null>;
 /**
  * Half-width of the trade window queried from `ws_option_trades` for
  * each alert. Tightened 45 → 30 on 2026-05-26 after SENTRY-EMERALD-
- * DESERT-8Q (762 events since 2026-05-18, regressed): the sidecar's
- * Railway container hosts futures-relay + Theta Data Terminal + the
- * classifier on a 3-vCPU box, so under contention the per-call polars
- * matcher exceeds Railway's edge-proxy upstream-response timeout and
- * the proxy returns a 502 ("Application failed to respond") before
- * the sidecar can write its reply. Shrinking the input window from
- * ±45s (90s span) to ±30s (60s span) reduces matcher input by ~33%
- * with negligible recall loss — verticals/strangles execute in <1s.
- * The sidecar's internal `window_seconds=90` matcher bucket default
- * is unchanged; only the DB-side input span shrinks.
+ * DESERT-8Q (762 events since 2026-05-18, regressed): at the time the
+ * classifier still ran inside the sidecar's Railway container, next to
+ * futures ingestion on a 3-vCPU box, so under contention the per-call
+ * polars matcher exceeded Railway's edge-proxy upstream-response
+ * timeout and the proxy returned a 502 ("Application failed to
+ * respond"). Shrinking the input window from ±45s (90s span) to ±30s
+ * (60s span) reduces matcher input by ~33% with negligible recall
+ * loss — verticals/strangles execute in <1s. The matcher's internal
+ * `window_seconds=90` bucket default is unchanged; only the DB-side
+ * input span shrinks.
  */
 const HALF_WINDOW_SEC = 30;
 
@@ -74,7 +75,7 @@ const HALF_WINDOW_SEC = 30;
  * Defensive size cap. The matcher scales fine up to ~600K rows per
  * ticker per day, but a single ±30s window with too many prints would
  * blow the cron's per-tick latency budget. Above this cap we return
- * `null` rather than calling the sidecar — matches the project's
+ * `null` rather than calling the classifier — matches the project's
  * flagged SPY/SPXW OOM follow-up.
  *
  * 10000 (raised from 5000 on 2026-05-19) — sized against QQQ peak
@@ -113,7 +114,7 @@ interface WsOptionTradeRow {
 
 /**
  * ws_option_trades does NOT carry NBBO as typed columns — only the
- * pre-classified `side`. The sidecar matcher reproduces the same
+ * pre-classified `side`. The classifier's matcher reproduces the same
  * side-classification rule:
  *   price >= nbbo_ask - 0.01   → buy
  *   price <= nbbo_bid + 0.01   → sell
@@ -314,11 +315,11 @@ async function classifyAlertMultilegInner(
   } catch (err) {
     logger.warn(
       { err, ticker, optionChain, windowTrades: rows.length },
-      'multileg-classify sidecar call failed; returning null',
+      'multileg-classify classifier call failed; returning null',
     );
-    // The client already captured a Sentry message at the typed-error
-    // boundary; don't double-capture as exception. A debug log here is
-    // enough for local triage.
+    // The client already captured a named, throttled Sentry message at
+    // the typed-error boundary (including config_missing when
+    // CLASSIFIER_URL is unset); don't double-capture as exception.
     return null;
   }
 
@@ -331,7 +332,7 @@ async function classifyAlertMultilegInner(
   // For 'mid' and 'no_side' anchor trades, synthesizeNbbo() above
   // returns the 0.01 × 9999 wide-spread sentinel that round-trips
   // through the matcher's side-classification rule to 'mid'. The
-  // sidecar's match_confidence formula uses bid/ask spread width as
+  // matcher's match_confidence formula uses bid/ask spread width as
   // an input — on those synthesized spreads the score is meaningless.
   // We preserve the structure label (which is derived from the leg
   // graph and is still valid) but null out the confidence so Take-It

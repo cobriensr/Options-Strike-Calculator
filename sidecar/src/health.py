@@ -1,7 +1,7 @@
 """HTTP server on port 8080 — health check + admin endpoints.
 
 Serves `GET /health` for liveness/readiness monitoring (DB
-reachability), the take-it SHAP + multileg routes under `/takeit/*`,
+reachability), the take-it SHAP routes under `/takeit/*`,
 read-only DuckDB queries under `/archive/*`, and
 `POST /admin/seed-archive` for one-shot seeding of the persistent
 volume from Vercel Blob. The admin endpoint is gated on a shared token
@@ -34,7 +34,7 @@ _BATCH_RANGE_MAX_DAYS = 366 * 3
 # Compiled once — every archive handler reuses this.
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
-# Upper bound on POST request bodies (takeit/explain + multileg-classify).
+# Upper bound on POST /takeit/explain request bodies.
 # The server binds 0.0.0.0, so an unbounded `rfile.read(content_length)`
 # is a trivial unauthenticated remote-OOM vector. We reject by *declared*
 # Content-Length before allocating, which is sufficient to prevent the
@@ -162,11 +162,10 @@ class _QuietThreadingHTTPServer(ThreadingHTTPServer):
     inside ``socketserver.process_request_thread``. socketserver's
     default ``handle_error`` then dumps a full stack trace to stderr.
 
-    Those tracebacks are alert-grade log noise (one per slow multileg
-    classify call against this 3-vCPU box under contention) but carry
-    no signal — the caller already knows the request failed (it saw
-    the 502), and any real failure modes still surface as Sentry
-    ``multileg.classify.sidecar_non_2xx`` from the Vercel side.
+    Those tracebacks are alert-grade log noise (one per slow archive
+    query under contention) but carry no signal — the caller already
+    knows the request failed (it saw the 502) and records the failure
+    on the Vercel side.
 
     All other exceptions propagate to the default ``handle_error``.
     """
@@ -273,9 +272,6 @@ class HealthHandler(BaseHTTPRequestHandler):
         if self.path == "/takeit/explain":
             self._handle_takeit_explain()
             return
-        if self.path == "/takeit/multileg-classify":
-            self._handle_takeit_multileg_classify()
-            return
         if self.path != "/admin/seed-archive":
             self.send_response(404)
             self.end_headers()
@@ -380,60 +376,6 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(json.dumps(body).encode())
-
-    def _handle_takeit_multileg_classify(self) -> None:
-        """POST /takeit/multileg-classify — wrap ml/src/multileg_assembler.
-
-        Stateless CPU-bound endpoint. Vercel detect-cron POSTs a batch of
-        Full Tape trade rows; we run polars-based pattern matching and
-        return per-trade classifications in the same order.
-        """
-        # Auth + size checks BEFORE the heavy `import multileg_routes`
-        # (polars/numpy) and before any payload read, so an unauthorized or
-        # oversized request never loads the ML deps or allocates a body.
-        shared_secret = os.environ.get("TAKEIT_SIDECAR_SHARED_SECRET", "")
-        if not shared_secret:
-            self.send_response(503)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(
-                json.dumps(
-                    {"error": "TAKEIT_SIDECAR_SHARED_SECRET not configured"}
-                ).encode()
-            )
-            return
-        auth_header = self.headers.get("Authorization", "")
-        if not hmac.compare_digest(auth_header, f"Bearer {shared_secret}"):
-            self.send_response(401)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": "unauthorized"}).encode())
-            return
-
-        content_length = int(self.headers.get("Content-Length", "0") or 0)
-        if content_length <= 0:
-            self.send_response(400)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": "empty body"}).encode())
-            return
-        if content_length > MAX_BODY_BYTES:
-            # Reject by declared length before allocating — guards the
-            # `rfile.read` OOM vector. Do NOT read the body.
-            self.send_response(413)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": "payload too large"}).encode())
-            return
-
-        import multileg_routes  # noqa: PLC0415
-
-        body_bytes = self.rfile.read(content_length)
-        status, body = multileg_routes.handle_classify_payload(body_bytes)
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps(body, default=str).encode())
 
     def _dispatch_bounded_archive(self, handler_name: str) -> None:
         """Run an /archive/* handler under the concurrency-bound slot.
@@ -777,7 +719,7 @@ def start_health_server(
     # ConnectionReset on response write — those happen when Vercel's
     # client (or Railway's edge proxy on its behalf) closes the upstream
     # connection before we finish writing. Vercel already records the
-    # real failure (sidecar_non_2xx); the Python traceback is just noise.
+    # real failure; the Python traceback is just noise.
     server = _QuietThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

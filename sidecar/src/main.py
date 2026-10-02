@@ -5,7 +5,6 @@ Starts the HTTP server (port 8080) that serves:
 - ``GET /health`` — liveness/readiness (DB reachability).
 - ``GET /takeit/health`` + ``POST /takeit/explain`` — take-it SHAP
   explainer used by the ``takeit-fill-shap`` Vercel cron.
-- ``POST /takeit/multileg-classify`` — multi-leg classifier fallback.
 - ``GET /archive/*`` — read-only DuckDB queries over the frozen
   historical Parquet archive on the ``/data`` volume.
 - ``POST /admin/seed-archive`` — one-shot archive seed from Vercel Blob.
@@ -15,8 +14,9 @@ trade ticks, and ES options trades/statistics from Databento. That
 subscription was cancelled and the ingestion path was removed on
 2026-09-29; futures data now arrives via the ``uw-stream`` Railway
 service. The co-resident Theta Data Terminal (never run in production)
-was removed on 2026-10-02. The Twilio-backed alert engine was removed
-earlier, on 2026-04-08 (SIDE-001).
+and the ``/takeit/multileg-classify`` fallback (served by the standalone
+``classifier/`` service) were removed on 2026-10-02. The Twilio-backed
+alert engine was removed earlier, on 2026-04-08 (SIDE-001).
 
 Runs 24/7 on Railway as a persistent process.
 """

@@ -110,9 +110,9 @@ describe('classifyMultilegBatch', () => {
   const originalSidecar = process.env.SIDECAR_URL;
 
   // Re-imported per test so module-level gates (versionChecked,
-  // sidecarFallbackWarned, sidecarFallbackSentried, classifySentryLastEmit)
-  // are fresh each time. Vitest's vi.resetModules() drops the cached
-  // module, and the dynamic import below rebuilds it with cleared state.
+  // classifySentryLastEmit) are fresh each time. Vitest's
+  // vi.resetModules() drops the cached module, and the dynamic import
+  // below rebuilds it with cleared state.
   let classifyMultilegBatch: typeof classifyMultilegBatchType;
   let MultilegClassifyError: typeof MultilegClassifyErrorType;
   let logger: {
@@ -150,7 +150,7 @@ describe('classifyMultilegBatch', () => {
     vi.restoreAllMocks();
   });
 
-  it('returns 2 classifications keyed by id when sidecar returns 2 rows', async () => {
+  it('returns 2 classifications keyed by id when the classifier returns 2 rows', async () => {
     const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(
       makeFetchMockWithVersionAuto(() =>
         makeJsonResponse({
@@ -392,16 +392,84 @@ describe('classifyMultilegBatch', () => {
     });
   });
 
-  it('throws config_missing when neither CLASSIFIER_URL nor SIDECAR_URL is set', async () => {
-    delete process.env.CLASSIFIER_URL;
-    delete process.env.SIDECAR_URL;
-    const spy = vi.spyOn(globalThis, 'fetch');
+  // ── CLASSIFIER_URL is required (sidecar fallback removed 2026-10-02) ──
 
-    await expect(classifyMultilegBatch([TRADE_A])).rejects.toMatchObject({
-      name: 'MultilegClassifyError',
-      kind: 'config_missing',
+  describe('when CLASSIFIER_URL is unset', () => {
+    it('throws config_missing without any request, even when SIDECAR_URL is set', async () => {
+      delete process.env.CLASSIFIER_URL;
+      // The sidecar no longer serves /takeit/multileg-classify; a stale
+      // SIDECAR_URL must not resurrect the old fallback.
+      process.env.SIDECAR_URL = 'https://sidecar.example';
+      const spy = vi.spyOn(globalThis, 'fetch');
+
+      await expect(classifyMultilegBatch([TRADE_A])).rejects.toMatchObject({
+        name: 'MultilegClassifyError',
+        kind: 'config_missing',
+        message: 'CLASSIFIER_URL is not configured',
+      });
+      expect(spy).not.toHaveBeenCalled();
     });
-    expect(spy).not.toHaveBeenCalled();
+
+    it('surfaces the failure by name: config_missing Sentry event + warn log', async () => {
+      delete process.env.CLASSIFIER_URL;
+
+      await expect(classifyMultilegBatch([TRADE_A])).rejects.toMatchObject({
+        kind: 'config_missing',
+      });
+
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'multileg.classify.config_missing',
+        {
+          level: 'error',
+          extra: { envVar: 'CLASSIFIER_URL' },
+        },
+      );
+      expect(logger.warn).toHaveBeenCalledWith(
+        {},
+        'multileg-classify CLASSIFIER_URL unset; skipping classification',
+      );
+    });
+
+    it('treats a whitespace-only CLASSIFIER_URL as unset', async () => {
+      process.env.CLASSIFIER_URL = '   ';
+      process.env.SIDECAR_URL = 'https://sidecar.example';
+      const spy = vi.spyOn(globalThis, 'fetch');
+
+      await expect(classifyMultilegBatch([TRADE_A])).rejects.toMatchObject({
+        kind: 'config_missing',
+      });
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('throttles the Sentry event but warns on every call', async () => {
+      delete process.env.CLASSIFIER_URL;
+
+      for (let i = 0; i < 3; i += 1) {
+        await expect(classifyMultilegBatch([TRADE_A])).rejects.toMatchObject({
+          kind: 'config_missing',
+        });
+      }
+
+      const configMissingCaptures = Sentry.captureMessage.mock.calls.filter(
+        (call: unknown[]) => call[0] === 'multileg.classify.config_missing',
+      );
+      expect(configMissingCaptures).toHaveLength(1);
+      const unsetWarns = logger.warn.mock.calls.filter(
+        (call: unknown[]) =>
+          call[1] ===
+          'multileg-classify CLASSIFIER_URL unset; skipping classification',
+      );
+      expect(unsetWarns).toHaveLength(3);
+    });
+
+    it('still returns an empty Map for empty input without touching config', async () => {
+      delete process.env.CLASSIFIER_URL;
+
+      const result = await classifyMultilegBatch([]);
+
+      expect(result.size).toBe(0);
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    });
   });
 
   it('strips trailing slash from CLASSIFIER_URL when building the endpoint URL', async () => {
@@ -427,7 +495,7 @@ describe('classifyMultilegBatch', () => {
     expect(calledUrl).toBe('https://classifier.railway/multileg-classify');
   });
 
-  it('prefers CLASSIFIER_URL when both CLASSIFIER_URL and SIDECAR_URL are set', async () => {
+  it('posts to CLASSIFIER_URL and ignores SIDECAR_URL', async () => {
     process.env.CLASSIFIER_URL = 'https://classifier.example';
     process.env.SIDECAR_URL = 'https://sidecar.example';
     const classifyResponse = makeJsonResponse({
@@ -449,85 +517,6 @@ describe('classifyMultilegBatch', () => {
     const postCall = spy.mock.calls.find((call) => !isVersionUrl(call[0]));
     const [calledUrl] = postCall!;
     expect(calledUrl).toBe('https://classifier.example/multileg-classify');
-  });
-
-  it('falls back to SIDECAR_URL with /takeit/multileg-classify path when CLASSIFIER_URL is unset', async () => {
-    delete process.env.CLASSIFIER_URL;
-    process.env.SIDECAR_URL = 'https://sidecar.example';
-    // Sidecar fallback does NOT trigger version probe — single fetch.
-    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      makeJsonResponse({
-        classifications: [
-          {
-            id: TRADE_A.id,
-            inferred_structure: 'isolated_leg',
-            is_isolated_leg: true,
-            match_confidence: 0,
-            pattern_group_id: TRADE_A.id,
-          },
-        ],
-      }),
-    );
-
-    await classifyMultilegBatch([TRADE_A]);
-    expect(spy).toHaveBeenCalledTimes(1);
-    const [calledUrl] = spy.mock.calls[0]!;
-    expect(calledUrl).toBe('https://sidecar.example/takeit/multileg-classify');
-  });
-
-  it('treats whitespace-only CLASSIFIER_URL as unset and falls back to SIDECAR_URL', async () => {
-    process.env.CLASSIFIER_URL = '   ';
-    process.env.SIDECAR_URL = 'https://sidecar.example';
-    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      makeJsonResponse({
-        classifications: [
-          {
-            id: TRADE_A.id,
-            inferred_structure: 'isolated_leg',
-            is_isolated_leg: true,
-            match_confidence: 0,
-            pattern_group_id: TRADE_A.id,
-          },
-        ],
-      }),
-    );
-
-    await classifyMultilegBatch([TRADE_A]);
-    expect(spy).toHaveBeenCalledTimes(1);
-    const [calledUrl] = spy.mock.calls[0]!;
-    expect(calledUrl).toBe('https://sidecar.example/takeit/multileg-classify');
-  });
-
-  it('logs the SIDECAR_URL fallback warning at most once per process across calls', async () => {
-    delete process.env.CLASSIFIER_URL;
-    process.env.SIDECAR_URL = 'https://sidecar.example';
-
-    vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
-      Promise.resolve(
-        makeJsonResponse({
-          classifications: [
-            {
-              id: TRADE_A.id,
-              inferred_structure: 'isolated_leg',
-              is_isolated_leg: true,
-              match_confidence: 0,
-              pattern_group_id: TRADE_A.id,
-            },
-          ],
-        }),
-      ),
-    );
-
-    await classifyMultilegBatch([TRADE_A]);
-    await classifyMultilegBatch([TRADE_A]);
-    await classifyMultilegBatch([TRADE_A]);
-
-    const fallbackWarnCount = logger.warn.mock.calls.filter(
-      (call: unknown[]) =>
-        typeof call[1] === 'string' &&
-        (call[1] as string).includes('falling back to SIDECAR_URL'),
-    ).length;
-    expect(fallbackWarnCount).toBe(1);
   });
 
   it('omits delta from the wire body when caller did not set it', async () => {
@@ -659,12 +648,8 @@ describe('classifyMultilegBatch', () => {
     await classifyMultilegBatch([TRADE_A]);
 
     expect(logger.info).toHaveBeenCalledWith(
-      expect.objectContaining({
-        count: 1,
-        durationMs: expect.any(Number),
-        target: 'classifier',
-      }),
-      'multileg-classify sidecar ok',
+      { count: 1, durationMs: expect.any(Number) },
+      'multileg-classify classifier ok',
     );
   });
 
@@ -691,7 +676,6 @@ describe('classifyMultilegBatch', () => {
           status: 502,
           count: 1,
           durationMs: expect.any(Number),
-          target: 'classifier',
         }),
       }),
     );
@@ -712,118 +696,9 @@ describe('classifyMultilegBatch', () => {
         extra: expect.objectContaining({
           count: 1,
           durationMs: expect.any(Number),
-          target: 'classifier',
         }),
       }),
     );
-  });
-
-  // ── Fix 1 (Finding 0.1) — Sentry capture on SIDECAR_URL fallback ─────────
-
-  describe('SIDECAR_URL fallback Sentry capture (Fix 1 / Finding 0.1)', () => {
-    it('fires both logger.warn AND Sentry.captureMessage on first fallback resolution', async () => {
-      delete process.env.CLASSIFIER_URL;
-      process.env.SIDECAR_URL = 'https://sidecar.example';
-
-      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-        makeJsonResponse({
-          classifications: [
-            {
-              id: TRADE_A.id,
-              inferred_structure: 'isolated_leg',
-              is_isolated_leg: true,
-              match_confidence: 0,
-              pattern_group_id: TRADE_A.id,
-            },
-          ],
-        }),
-      );
-
-      await classifyMultilegBatch([TRADE_A]);
-
-      expect(logger.warn).toHaveBeenCalledWith(
-        {},
-        'multileg-classify CLASSIFIER_URL unset; falling back to SIDECAR_URL',
-      );
-      expect(Sentry.captureMessage).toHaveBeenCalledWith(
-        'multileg.classify.classifier_url_unset_falling_back_to_sidecar',
-        expect.objectContaining({
-          level: 'warning',
-          extra: expect.objectContaining({
-            target: 'sidecar-fallback',
-            sidecarHost: 'sidecar.example',
-            fallback: true,
-          }),
-        }),
-      );
-    });
-
-    it('does not re-emit Sentry on subsequent calls within the same process', async () => {
-      delete process.env.CLASSIFIER_URL;
-      process.env.SIDECAR_URL = 'https://sidecar.example';
-
-      vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
-        Promise.resolve(
-          makeJsonResponse({
-            classifications: [
-              {
-                id: TRADE_A.id,
-                inferred_structure: 'isolated_leg',
-                is_isolated_leg: true,
-                match_confidence: 0,
-                pattern_group_id: TRADE_A.id,
-              },
-            ],
-          }),
-        ),
-      );
-
-      await classifyMultilegBatch([TRADE_A]);
-      await classifyMultilegBatch([TRADE_A]);
-      await classifyMultilegBatch([TRADE_A]);
-
-      const fallbackCaptureCalls = Sentry.captureMessage.mock.calls.filter(
-        (call: unknown[]) =>
-          call[0] ===
-          'multileg.classify.classifier_url_unset_falling_back_to_sidecar',
-      );
-      expect(fallbackCaptureCalls).toHaveLength(1);
-    });
-
-    it('uses host only — never leaks full URL into the Sentry extra', async () => {
-      delete process.env.CLASSIFIER_URL;
-      process.env.SIDECAR_URL =
-        'https://sidecar.example/some/path?token=secret';
-
-      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-        makeJsonResponse({
-          classifications: [
-            {
-              id: TRADE_A.id,
-              inferred_structure: 'isolated_leg',
-              is_isolated_leg: true,
-              match_confidence: 0,
-              pattern_group_id: TRADE_A.id,
-            },
-          ],
-        }),
-      );
-
-      await classifyMultilegBatch([TRADE_A]);
-
-      const fallbackCall = Sentry.captureMessage.mock.calls.find(
-        (call: unknown[]) =>
-          call[0] ===
-          'multileg.classify.classifier_url_unset_falling_back_to_sidecar',
-      );
-      expect(fallbackCall).toBeDefined();
-      const extra = (fallbackCall![1] as { extra: Record<string, unknown> })
-        .extra;
-      expect(extra.sidecarHost).toBe('sidecar.example');
-      // Sanity: no `token=secret` leaked into the extra anywhere.
-      expect(JSON.stringify(extra)).not.toContain('secret');
-      expect(JSON.stringify(extra)).not.toContain('/some/path');
-    });
   });
 
   // ── Fix 2 (Finding 1.1) — Zod schema accepts nulls for structure fields ──
@@ -880,42 +755,10 @@ describe('classifyMultilegBatch', () => {
     });
   });
 
-  // ── Fix 3 (Finding 2.1) — `target` tag on every Sentry capture ───────────
+  // ── Named Sentry event per failure mode ──────────────────────────────────
 
-  describe('target tag on Sentry captures (Fix 3 / Finding 2.1)', () => {
-    it('tags target=classifier on sidecar_unreachable when CLASSIFIER_URL is set', async () => {
-      vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('econnreset'));
-
-      await expect(classifyMultilegBatch([TRADE_A])).rejects.toBeInstanceOf(
-        MultilegClassifyError,
-      );
-
-      expect(Sentry.captureMessage).toHaveBeenCalledWith(
-        'multileg.classify.sidecar_unreachable',
-        expect.objectContaining({
-          extra: expect.objectContaining({ target: 'classifier' }),
-        }),
-      );
-    });
-
-    it('tags target=sidecar-fallback on sidecar_unreachable when only SIDECAR_URL is set', async () => {
-      delete process.env.CLASSIFIER_URL;
-      process.env.SIDECAR_URL = 'https://sidecar.example';
-      vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('econnreset'));
-
-      await expect(classifyMultilegBatch([TRADE_A])).rejects.toBeInstanceOf(
-        MultilegClassifyError,
-      );
-
-      expect(Sentry.captureMessage).toHaveBeenCalledWith(
-        'multileg.classify.sidecar_unreachable',
-        expect.objectContaining({
-          extra: expect.objectContaining({ target: 'sidecar-fallback' }),
-        }),
-      );
-    });
-
-    it('tags target on schema_mismatch', async () => {
+  describe('Sentry event per failure mode', () => {
+    it('emits schema_mismatch when the 2xx body fails the response schema', async () => {
       vi.spyOn(globalThis, 'fetch').mockImplementation(
         makeFetchMockWithVersionAuto(() => makeJsonResponse({ wrong_key: [] })),
       );
@@ -927,12 +770,13 @@ describe('classifyMultilegBatch', () => {
       expect(Sentry.captureMessage).toHaveBeenCalledWith(
         'multileg.classify.schema_mismatch',
         expect.objectContaining({
-          extra: expect.objectContaining({ target: 'classifier' }),
+          level: 'error',
+          extra: expect.objectContaining({ durationMs: expect.any(Number) }),
         }),
       );
     });
 
-    it('tags target on length_mismatch', async () => {
+    it('emits length_mismatch when the response row count differs', async () => {
       vi.spyOn(globalThis, 'fetch').mockImplementation(
         makeFetchMockWithVersionAuto(() =>
           makeJsonResponse({
@@ -956,12 +800,13 @@ describe('classifyMultilegBatch', () => {
       expect(Sentry.captureMessage).toHaveBeenCalledWith(
         'multileg.classify.length_mismatch',
         expect.objectContaining({
-          extra: expect.objectContaining({ target: 'classifier' }),
+          level: 'error',
+          extra: expect.objectContaining({ inputLength: 2, responseLength: 1 }),
         }),
       );
     });
 
-    it('tags target on sidecar_non_2xx for a generic 4xx (not 422)', async () => {
+    it('emits sidecar_non_2xx at error level for a generic 4xx (not 422)', async () => {
       vi.spyOn(globalThis, 'fetch').mockImplementation(
         makeFetchMockWithVersionAuto(
           () =>
@@ -979,7 +824,8 @@ describe('classifyMultilegBatch', () => {
       expect(Sentry.captureMessage).toHaveBeenCalledWith(
         'multileg.classify.sidecar_non_2xx',
         expect.objectContaining({
-          extra: expect.objectContaining({ target: 'classifier' }),
+          level: 'error',
+          extra: expect.objectContaining({ status: 400 }),
         }),
       );
     });
@@ -1015,7 +861,6 @@ describe('classifyMultilegBatch', () => {
           level: 'error',
           extra: expect.objectContaining({
             status: 422,
-            target: 'classifier',
             details: [
               expect.objectContaining({
                 loc: ['body', 'trades', 0, 'strike'],
@@ -1159,7 +1004,9 @@ describe('classifyMultilegBatch', () => {
         const warnNon2xxCalls = logger.warn.mock.calls.filter(
           (call: unknown[]) =>
             typeof call[1] === 'string' &&
-            (call[1] as string).includes('multileg-classify sidecar non-2xx'),
+            (call[1] as string).includes(
+              'multileg-classify classifier non-2xx',
+            ),
         );
         expect(warnNon2xxCalls).toHaveLength(2);
       } finally {
@@ -1242,7 +1089,6 @@ describe('classifyMultilegBatch', () => {
               'risk_reversal',
               'butterfly',
             ]),
-            target: 'classifier',
           }),
         }),
       );
@@ -1278,32 +1124,6 @@ describe('classifyMultilegBatch', () => {
           (call[1] as string).includes('/version returned non-2xx'),
       );
       expect(warnCalls).toHaveLength(1);
-    });
-
-    it('skips /version entirely when source is sidecar-fallback', async () => {
-      delete process.env.CLASSIFIER_URL;
-      process.env.SIDECAR_URL = 'https://sidecar.example';
-
-      const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-        makeJsonResponse({
-          classifications: [
-            {
-              id: TRADE_A.id,
-              inferred_structure: 'isolated_leg',
-              is_isolated_leg: true,
-              match_confidence: 0,
-              pattern_group_id: TRADE_A.id,
-            },
-          ],
-        }),
-      );
-
-      await classifyMultilegBatch([TRADE_A]);
-
-      const versionCalls = spy.mock.calls.filter((call) =>
-        isVersionUrl(call[0]),
-      );
-      expect(versionCalls).toHaveLength(0);
     });
 
     it('no pattern_set_drift when /version exposes all client patterns', async () => {
@@ -1369,7 +1189,6 @@ describe('classifyMultilegBatch', () => {
           level: 'warning',
           extra: expect.objectContaining({
             status: 503,
-            target: 'classifier',
             retryAfterSec: 5,
           }),
         }),
@@ -1427,7 +1246,7 @@ describe('classifyMultilegBatch', () => {
         'multileg.classify.invalid_json',
         expect.objectContaining({
           level: 'error',
-          extra: expect.objectContaining({ target: 'classifier' }),
+          extra: expect.objectContaining({ durationMs: expect.any(Number) }),
         }),
       );
     });

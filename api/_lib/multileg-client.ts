@@ -1,12 +1,10 @@
 /**
  * Thin client for the multileg classifier service. Calls
- * POST /multileg-classify on the new standalone classifier service or
- * POST /takeit/multileg-classify on the legacy multi-purpose sidecar
- * (fallback for one deploy cycle during the Phase 1 service split).
+ * POST /multileg-classify on the standalone `classifier/` Railway
+ * service.
  *
  * The matcher itself lives in `ml/src/multileg_assembler.py` and is
- * wrapped by `classifier/src/classifier_routes.py` (new) /
- * `sidecar/src/multileg_routes.py` (legacy). This module is the
+ * wrapped by `classifier/src/multileg_routes.py`. This module is the
  * Vercel-side wrapper that the detect crons (lottery / silent-boom)
  * use to label each Full Tape print with its inferred multileg
  * structure (vertical / strangle / risk_reversal / butterfly /
@@ -23,17 +21,20 @@
  *     vs. fail-open (skip the structure flag).
  *   - Sentry captures the error category as a message so the
  *     first 5xx pages immediately rather than waiting for the
- *     metric counter to climb.
+ *     metric counter to climb. The `multileg.classify.sidecar_*`
+ *     event names predate the classifier service split; they are kept
+ *     so existing Sentry issues and alert rules keep matching, but
+ *     they describe the classifier service.
  *
- * Env (rollout: Phase 1 task 5 of the classifier service split):
- *   CLASSIFIER_URL — preferred. Points at the new standalone
- *                    Railway classifier service. Path: /multileg-classify.
- *   SIDECAR_URL    — fallback for one deploy cycle. Same env var as
- *                    `archive-sidecar.ts`. Path: /takeit/multileg-classify.
- *                    Removed in a follow-up commit after the
- *                    one-trading-day soak completes.
- *   If both are unset, the client throws `MultilegClassifyError`
- *   with kind 'config_missing' on call.
+ * Env:
+ *   CLASSIFIER_URL — required. Base URL of the standalone Railway
+ *                    classifier service. When it is unset, every call
+ *                    throws `MultilegClassifyError` with kind
+ *                    'config_missing' (and emits the throttled
+ *                    `multileg.classify.config_missing` Sentry event)
+ *                    without making a request. There is no fallback:
+ *                    the sidecar's /takeit/multileg-classify route was
+ *                    removed on 2026-10-02.
  */
 
 import { z } from 'zod';
@@ -88,11 +89,11 @@ export interface MultilegClassification {
 }
 
 export interface MultilegClassifyOptions {
-  /** Default 90 (sidecar default). */
+  /** Default 90 (matcher default). */
   windowSeconds?: number;
-  /** Default 0.05 (sidecar default). */
+  /** Default 0.05 (matcher default). */
   strikeTolerance?: number;
-  /** Default 0.1 (sidecar default). */
+  /** Default 0.1 (matcher default). */
   sizeTolerance?: number;
 }
 
@@ -149,11 +150,7 @@ const responseSchema = z.object({
   classifications: z.array(classificationRowSchema),
 });
 
-/**
- * Shape of GET /version on the standalone classifier service (Task 1
- * Fix 7). The sidecar fallback does NOT expose /version, so we only
- * call it when `source === 'classifier'`.
- */
+/** Shape of GET /version on the classifier service (Task 1 Fix 7). */
 const versionResponseSchema = z.object({
   matcher_sha: z.string().optional(),
   release: z.string().optional(),
@@ -166,27 +163,11 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const VERSION_TIMEOUT_MS = 3_000;
 const SENTRY_THROTTLE_MS = 60_000;
 
-/** Path on the new standalone classifier service. */
+/** Classify path on the classifier service. */
 const CLASSIFIER_PATH = '/multileg-classify';
-/** Path on the legacy multi-purpose sidecar (one-deploy-cycle fallback). */
-const SIDECAR_FALLBACK_PATH = '/takeit/multileg-classify';
-/** Cold-start version probe path on the standalone classifier. */
+/** Cold-start version probe path on the classifier service. */
 const VERSION_PATH = '/version';
 
-/**
- * Tracks whether the fallback-in-effect warning has been logged in
- * the current process. Module-level so a single warm Vercel Function
- * instance logs once per cold start, not once per call.
- */
-let sidecarFallbackWarned = false;
-/**
- * Companion gate to `sidecarFallbackWarned` — ensures the Sentry
- * capture for the fallback path also fires at most once per process
- * (Fix 1 / Finding 0.1). Kept separate from the log gate so a future
- * refactor that changes log vs Sentry frequency doesn't accidentally
- * double-suppress.
- */
-let sidecarFallbackSentried = false;
 /** Whether the cold-start /version probe has run in this process. */
 let versionChecked = false;
 
@@ -212,80 +193,43 @@ function shouldEmitSentry(name: string): boolean {
 interface ResolvedClassifierTarget {
   /** Fully qualified URL the request will be POSTed to. */
   url: string;
-  /** Which env var supplied the base, for observability / tests. */
-  source: 'classifier' | 'sidecar-fallback';
   /** Base URL (no trailing slash) for ancillary probes like /version. */
   base: string;
 }
 
 /**
- * Resolve the classifier target. Prefers CLASSIFIER_URL; falls back
- * to SIDECAR_URL for one deploy cycle. Returns both the URL and the
- * source so callers (and tests) can verify which path was hit.
+ * Resolve the classifier target from CLASSIFIER_URL.
  *
- * Design note: path selection lives here next to env resolution so a
- * single function owns "where does the classifier live" — keeping
- * `classifyMultilegBatch` focused on request/response handling and
- * avoiding a second source-of-truth for the path mapping.
+ * A missing CLASSIFIER_URL is a deploy misconfiguration that silently
+ * blanks the multileg columns on every lottery / silent-boom fire, so
+ * it is surfaced by name: a warn log on every call plus a throttled
+ * `multileg.classify.config_missing` Sentry event, then a typed
+ * `config_missing` throw that the detect crons fail open on. It never
+ * falls back to SIDECAR_URL — that service no longer serves the route.
  */
 function resolveClassifierBase(): ResolvedClassifierTarget {
   const classifierRaw = process.env.CLASSIFIER_URL?.trim();
   if (classifierRaw) {
     const base = classifierRaw.replace(/\/$/, '');
-    return {
-      url: `${base}${CLASSIFIER_PATH}`,
-      source: 'classifier',
-      base,
-    };
+    return { url: `${base}${CLASSIFIER_PATH}`, base };
   }
-  const sidecarRaw = process.env.SIDECAR_URL?.trim();
-  if (sidecarRaw) {
-    const base = sidecarRaw.replace(/\/$/, '');
-    if (!sidecarFallbackWarned) {
-      sidecarFallbackWarned = true;
-      logger.warn(
-        {},
-        'multileg-classify CLASSIFIER_URL unset; falling back to SIDECAR_URL',
-      );
-    }
-    // Independent gate so the Sentry path also fires exactly once per
-    // process even if the log gate has been tripped previously. Without
-    // this capture, a silent env-binding drop in Vercel would let the
-    // whole classifier split un-happen with no Sentry signal — only a
-    // log line that nobody alerts on.
-    if (!sidecarFallbackSentried) {
-      sidecarFallbackSentried = true;
-      let host = '[unparsable]';
-      try {
-        host = new URL(sidecarRaw).host;
-      } catch {
-        // ignore — never leak the raw URL if parsing fails
-      }
-      Sentry.captureMessage(
-        'multileg.classify.classifier_url_unset_falling_back_to_sidecar',
-        {
-          level: 'warning',
-          extra: {
-            target: 'sidecar-fallback' as const,
-            sidecarHost: host,
-            fallback: true,
-          },
-        },
-      );
-    }
-    return {
-      url: `${base}${SIDECAR_FALLBACK_PATH}`,
-      source: 'sidecar-fallback',
-      base,
-    };
+  logger.warn(
+    {},
+    'multileg-classify CLASSIFIER_URL unset; skipping classification',
+  );
+  if (shouldEmitSentry('multileg.classify.config_missing')) {
+    Sentry.captureMessage('multileg.classify.config_missing', {
+      level: 'error',
+      extra: { envVar: 'CLASSIFIER_URL' },
+    });
   }
   throw new MultilegClassifyError(
     'config_missing',
-    'Neither CLASSIFIER_URL nor SIDECAR_URL is configured',
+    'CLASSIFIER_URL is not configured',
   );
 }
 
-interface SidecarRequestTrade {
+interface ClassifierRequestTrade {
   id: string;
   underlying_symbol: string;
   executed_at: string;
@@ -301,15 +245,15 @@ interface SidecarRequestTrade {
   delta?: number | null;
 }
 
-interface SidecarRequestBody {
-  trades: SidecarRequestTrade[];
+interface ClassifierRequestBody {
+  trades: ClassifierRequestTrade[];
   window_seconds?: number;
   strike_tolerance?: number;
   size_tolerance?: number;
 }
 
-function tradeToWire(t: MultilegTradeInput): SidecarRequestTrade {
-  const row: SidecarRequestTrade = {
+function tradeToWire(t: MultilegTradeInput): ClassifierRequestTrade {
+  const row: ClassifierRequestTrade = {
     id: t.id,
     underlying_symbol: t.underlyingSymbol,
     executed_at: t.executedAt,
@@ -332,8 +276,8 @@ function tradeToWire(t: MultilegTradeInput): SidecarRequestTrade {
 function buildRequestBody(
   trades: readonly MultilegTradeInput[],
   options: MultilegClassifyOptions,
-): SidecarRequestBody {
-  const body: SidecarRequestBody = {
+): ClassifierRequestBody {
+  const body: ClassifierRequestBody = {
     trades: trades.map(tradeToWire),
   };
   if (options.windowSeconds !== undefined) {
@@ -359,17 +303,10 @@ function buildRequestBody(
  * (older classifier deploy) logs a warn but does NOT throw, so the main
  * classify request still flows. Only `pattern_set_drift` is an error-level
  * Sentry event — that's the actionable diagnostic.
- *
- * Skipped entirely for the sidecar-fallback case (the legacy sidecar
- * does not expose /version, and we're tearing it out after soak anyway).
  */
-async function probeVersionOnce(
-  base: string,
-  source: 'classifier' | 'sidecar-fallback',
-): Promise<void> {
+async function probeVersionOnce(base: string): Promise<void> {
   if (versionChecked) return;
   versionChecked = true;
-  if (source !== 'classifier') return;
 
   const url = `${base}${VERSION_PATH}`;
   const controller = new AbortController();
@@ -430,7 +367,6 @@ async function probeVersionOnce(
           server_patterns: serverPatterns,
           client_patterns: [...MULTILEG_STRUCTURES],
           missing_on_server: missingOnServer,
-          target: source,
         },
       });
     }
@@ -454,10 +390,8 @@ async function probeVersionOnce(
 
 /**
  * Classify a batch of trades for multileg-structure membership. Calls
- * the classifier service (POST /multileg-classify on the standalone
- * classifier, or POST /takeit/multileg-classify on the legacy sidecar
- * during the fallback window) and returns one classification per
- * input trade.
+ * POST /multileg-classify on the classifier service and returns one
+ * classification per input trade.
  *
  * Returns a Map keyed by trade id for O(1) lookups in caller code.
  *
@@ -476,11 +410,11 @@ export async function classifyMultilegBatch(
     return new Map();
   }
 
-  const { url, source, base } = resolveClassifierBase();
+  const { url, base } = resolveClassifierBase();
 
   // Cold-start /version probe (once per process). Failure is non-fatal
   // — we don't want a slow or missing /version to block real classifies.
-  await probeVersionOnce(base, source);
+  await probeVersionOnce(base);
 
   const body = buildRequestBody(trades, options);
 
@@ -501,8 +435,8 @@ export async function classifyMultilegBatch(
     const durationMs = Date.now() - startedAt;
     const message = err instanceof Error ? err.message : String(err);
     logger.warn(
-      { err, count: trades.length, durationMs, target: source },
-      'multileg-classify sidecar fetch failed',
+      { err, count: trades.length, durationMs },
+      'multileg-classify classifier fetch failed',
     );
     if (shouldEmitSentry('multileg.classify.sidecar_unreachable')) {
       Sentry.captureMessage('multileg.classify.sidecar_unreachable', {
@@ -511,7 +445,6 @@ export async function classifyMultilegBatch(
           error: message,
           count: trades.length,
           durationMs,
-          target: source,
         },
       });
     }
@@ -524,10 +457,10 @@ export async function classifyMultilegBatch(
 
   if (!res.ok) {
     const durationMs = Date.now() - startedAt;
-    const sidecarStatus = res.status;
-    const isServer = sidecarStatus >= 500;
-    const isQueueSaturation = sidecarStatus === 503;
-    const isSchemaDrift = sidecarStatus === 422;
+    const status = res.status;
+    const isServer = status >= 500;
+    const isQueueSaturation = status === 503;
+    const isSchemaDrift = status === 422;
     let bodyText = '';
     try {
       bodyText = await res.text();
@@ -558,11 +491,10 @@ export async function classifyMultilegBatch(
       }
       logger.warn(
         {
-          status: sidecarStatus,
+          status,
           body: bodyText,
           count: trades.length,
           durationMs,
-          target: source,
           retryAfterSec,
         },
         'multileg-classify classifier queue saturated (503)',
@@ -571,10 +503,9 @@ export async function classifyMultilegBatch(
         Sentry.captureMessage('multileg.classify.queue_saturation', {
           level: 'warning',
           extra: {
-            status: sidecarStatus,
+            status,
             durationMs,
             count: trades.length,
-            target: source,
             retryAfterSec,
           },
         });
@@ -582,7 +513,7 @@ export async function classifyMultilegBatch(
       throw new MultilegClassifyError(
         'http_503',
         `classifier queue saturated`,
-        { status: sidecarStatus },
+        { status },
       );
     }
 
@@ -601,11 +532,10 @@ export async function classifyMultilegBatch(
       }
       logger.warn(
         {
-          status: sidecarStatus,
+          status,
           body: bodyText,
           count: trades.length,
           durationMs,
-          target: source,
           details,
         },
         'multileg-classify contract drift (422)',
@@ -614,10 +544,9 @@ export async function classifyMultilegBatch(
         Sentry.captureMessage('multileg.classify.contract_drift', {
           level: 'error',
           extra: {
-            status: sidecarStatus,
+            status,
             body: bodyText,
             details,
-            target: source,
             durationMs,
             count: trades.length,
           },
@@ -626,35 +555,33 @@ export async function classifyMultilegBatch(
       throw new MultilegClassifyError(
         'schema_drift',
         `classifier returned 422 (contract drift): ${bodyText.slice(0, 200)}`,
-        { status: sidecarStatus },
+        { status },
       );
     }
 
     const kind: MultilegClassifyErrorKind = isServer ? 'http_5xx' : 'http_4xx';
     logger.warn(
       {
-        status: sidecarStatus,
+        status,
         body: bodyText,
         count: trades.length,
         durationMs,
-        target: source,
       },
-      'multileg-classify sidecar non-2xx',
+      'multileg-classify classifier non-2xx',
     );
     if (shouldEmitSentry('multileg.classify.sidecar_non_2xx')) {
       Sentry.captureMessage('multileg.classify.sidecar_non_2xx', {
         level: isServer ? 'warning' : 'error',
         extra: {
-          status: sidecarStatus,
+          status,
           body: bodyText,
           count: trades.length,
           durationMs,
-          target: source,
         },
       });
     }
-    throw new MultilegClassifyError(kind, `sidecar returned ${sidecarStatus}`, {
-      status: sidecarStatus,
+    throw new MultilegClassifyError(kind, `classifier returned ${status}`, {
+      status,
     });
   }
 
@@ -669,13 +596,12 @@ export async function classifyMultilegBatch(
         extra: {
           error: message,
           durationMs: Date.now() - startedAt,
-          target: source,
         },
       });
     }
     throw new MultilegClassifyError(
       'schema_mismatch',
-      `sidecar returned invalid JSON: ${message}`,
+      `classifier returned invalid JSON: ${message}`,
       { cause: err },
     );
   }
@@ -688,13 +614,12 @@ export async function classifyMultilegBatch(
         extra: {
           issues: parsed.error.issues,
           durationMs: Date.now() - startedAt,
-          target: source,
         },
       });
     }
     throw new MultilegClassifyError(
       'schema_mismatch',
-      `sidecar response failed schema validation: ${parsed.error.message}`,
+      `classifier response failed schema validation: ${parsed.error.message}`,
       { cause: parsed.error },
     );
   }
@@ -708,7 +633,6 @@ export async function classifyMultilegBatch(
           inputLength: trades.length,
           responseLength: classifications.length,
           durationMs: Date.now() - startedAt,
-          target: source,
         },
       });
     }
@@ -735,9 +659,8 @@ export async function classifyMultilegBatch(
     {
       count: trades.length,
       durationMs: Date.now() - startedAt,
-      target: source,
     },
-    'multileg-classify sidecar ok',
+    'multileg-classify classifier ok',
   );
   return out;
 }

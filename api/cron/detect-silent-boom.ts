@@ -711,8 +711,8 @@ export default withCronInstrumentation(
     let gexOutOfUniverse = 0;
     // Multileg classifier observability (Task 6 / Finding 0.2). The
     // matcher fail-open path returns null for: DB query failure, empty
-    // window, oversized window, missing anchor trade, sidecar error.
-    // Without per-tick counters, a sidecar regression (e.g. classifier
+    // window, oversized window, missing anchor trade, classifier error.
+    // Without per-tick counters, a classifier regression (e.g. the matcher
     // returning null for 95% of inputs) is silent: detect-cron logs
     // still report healthy `inserted` counts because alert insertion
     // does not depend on a populated classification. The hit/miss split
@@ -730,9 +730,9 @@ export default withCronInstrumentation(
 
     // Per-cron-tick multileg classification cache. Keyed inside the
     // helper by (ticker, optionChain, minute) so multiple alerts on the
-    // same chain in the same minute reuse one sidecar call. Cleared
-    // when the handler returns. Spec: migration #160 columns; sidecar
-    // POST /takeit/multileg-classify (commit ced5ff10).
+    // same chain in the same minute reuse one classifier call. Cleared
+    // when the handler returns. Spec: migration #160 columns; classifier
+    // POST /multileg-classify (originally wired in commit ced5ff10).
     const multilegCache: MultilegClassifyCache = new Map();
 
     // Pre-pass: detect fires across all groups + apply gate counters.
@@ -923,9 +923,9 @@ export default withCronInstrumentation(
         f.bucketTs,
       );
 
-      // Phase 2 multileg classification (spec: migration #160; sidecar
-      // POST /takeit/multileg-classify, commit ced5ff10). Fail-open —
-      // the helper returns null on sidecar errors, missing anchor
+      // Phase 2 multileg classification (spec: migration #160; classifier
+      // POST /multileg-classify). Fail-open —
+      // the helper returns null on classifier errors, missing anchor
       // trade, or oversized windows, and the four columns stay NULL
       // on the row. Take-It feature pipeline already treats these as
       // optional (`?: T | null`).
