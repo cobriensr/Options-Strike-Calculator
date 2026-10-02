@@ -31,30 +31,14 @@
     // which is the wrong direction (loses Fluid Compute / Node 24 support).
 
     "GHSA-2g4f-4pwh-qvx6", // ajv ReDoS via $data — build-time JSON schema only
-    "GHSA-3ppc-4f35-3m26", // minimatch ReDoS — build-time glob only
-    "GHSA-7r86-cg39-jmmj", // minimatch matchOne() backtracking — build-time
-    "GHSA-23c5-xmqv-rm74", // minimatch nested *() extglobs — build-time
     "GHSA-9wv6-86v2-598j", // path-to-regexp backtracking — build-time routing
-    "GHSA-v3rj-xjv7-4jmq", // smol-toml DoS via commented lines — build-time
 
     // undici is NOT allowlisted: package.json `overrides` forces
     // @vercel/node's undici onto the patched 6.x line (`^6.28.1`). Every
-    // @vercel/node release through 17.0.0 hard-pins undici 5.28.4, and the
+    // @vercel/node release through 18.0.0 hard-pins undici 5.28.4, and the
     // 5.x line has no fix for the 6.24–6.28 advisories, so no parent upgrade
     // exists. @vercel/node only calls undici's `request` and `Headers` (in
     // its `vercel dev` server), both stable across 5→6. Remove the override
     // once `npm view @vercel/node dependencies.undici` reports >=6.28.1.
-
-    // ── thrift (via @dsnp/parquetjs) ──────────────────────────────────────
-    // @dsnp/parquetjs (api/_lib/gexbot-parquet.ts) pulls `thrift`, which has
-    // two unpatched HIGH advisories with NO upstream fix available. Both
-    // require parsing attacker-controlled Thrift/Parquet input to be
-    // exploitable. This repo only ever reads OWNER-GENERATED archive parquet
-    // files written by our own GexBot pipeline — never third-party uploads —
-    // so the malicious-input code paths are unreachable. Re-evaluate if a
-    // thrift-free reader (e.g. hyparquet) replaces @dsnp/parquetjs, or if a
-    // patched thrift ships; remove these entries to confirm the fix.
-    "GHSA-526f-jxpj-jmg2", // thrift — unbounded memory allocation
-    "GHSA-r67j-r569-jrwp", // thrift — denial of service via malformed input
   ],
 }
