@@ -165,7 +165,9 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
   'capture-flow-regime': {
     // Every 5 min during the RTH cron window (13-21 UTC weekdays).
     // Recomputes the current 30-min flow-regime bucket from
-    // ws_option_trades and upserts the (date, slot) snapshot. High-freq
+    // ws_option_trades and upserts the (date, slot) snapshot, then persists
+    // the previous slot into flow_regime_slot_daily once it has settled
+    // (5 min past its close). High-freq
     // → relaxed failure threshold so a single transient miss doesn't
     // page (same policy as the other 5-min market-hours crons).
     schedule: '*/5 13-21 * * 1-5',
@@ -175,9 +177,10 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
   },
   'capture-flow-regime-daily': {
     // 21:55 UTC weekdays — once post-close (after both EDT 16:00→20:00 UTC and
-    // EST 16:00→21:00 UTC cash closes). Accumulates the day's per-slot
-    // component sums into flow_regime_slot_daily so the live cron can compute
-    // percentile breakpoints on read. Low-freq → default failure threshold (a
+    // EST 16:00→21:00 UTC cash closes). Fills the flow_regime_slot_daily
+    // slots still missing for today and the previous weekday (normally only
+    // the final 15:30–16:00 ET slot, which the live cron can't reach), one
+    // bounded window at a time. Low-freq → default failure threshold (a
     // single miss is genuinely significant).
     schedule: '55 21 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,

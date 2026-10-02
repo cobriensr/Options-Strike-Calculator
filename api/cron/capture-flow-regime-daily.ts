@@ -1,242 +1,264 @@
 /**
  * GET /api/cron/capture-flow-regime-daily
  *
- * Self-maintaining flow-regime baseline — daily post-close accumulator
+ * Post-close gap filler for the self-maintaining flow-regime baseline
  * (resolves code-review finding #6: the frozen, manually-refreshed baseline).
  *
- * Once per trading day, after the cash close, this:
- *   1. Resolves TODAY's full RTH window [09:30 ET, 16:00 ET] as UTC bounds
- *      (DST-safe via etWallClockToUtcIso).
- *   2. Reduces the whole day's ws_option_trades (canceled = FALSE) for that
- *      window into per-ET-30min-slot component sums (nd_num/nd_den,
- *      idx_put_premium/total_premium) IN SQL via the shared
- *      aggregateFlowWindowBySlot builder — one GROUP BY slot query, no raw-row
- *      stream. (Streaming raw rows serialized past Neon's 64MB HTTP cap once the
- *      full ~50-ticker option_trades universe landed in the table.) The SQL
- *      algebra is byte-identical to the live cron's aggregateFlowWindow and
- *      mirrors computeFlowMetrics, so the accumulated distribution matches what
- *      the live cron scores against.
- *   3. UPSERTs one row per populated slot into flow_regime_slot_daily via
- *      ON CONFLICT (date, slot) DO UPDATE — idempotent if the cron re-runs.
+ * The live capture-flow-regime cron persists each 30-min slot into
+ * flow_regime_slot_daily as it closes. This cron fills only what is still
+ * MISSING, one slot at a time:
+ *   - normally just the final slot (15:30–16:00 ET), whose close the live
+ *     cron's 16:00 tick never sees because it is outside RTH;
+ *   - plus any slot a failed or missed live tick left behind.
+ * It covers today and the previous weekday. Each fill runs the shared
+ * per-window aggregation over that slot's [start, end) range, a bounded
+ * executed_at index range. The old single full-day GROUP BY planned a
+ * Parallel Seq Scan over the whole ws_option_trades heap and timed out every
+ * weekday (Sentry ES). See flow-regime-slot-daily.ts and
+ * docs/superpowers/specs/flow-regime-and-retention-2026-10-02.md.
  *
- * The live capture-flow-regime cron then computes percentile breakpoints ON
- * READ from this accumulating table (flow-regime-baseline-live.ts), falling
- * back per-slot to the committed flow-regime-baseline.json until a slot has
- * ≥15 days. The baseline therefore self-maintains from Neon — no parquet, no
- * Desktop dependency.
+ * A lookback date older than the ws_option_trades retention horizon is
+ * skipped rather than aggregated: the cleanup sweep may have pruned part of
+ * it, and a partial window must never be persisted as a complete slot. Under
+ * the 2-calendar-day retention this means Monday's lookback (Friday) is
+ * always skipped, because Friday's tape is purged at Monday 00:00 ET.
+ *
+ * Slots below the per-day quorum are never persisted, so this run re-reads
+ * every one of them. A thin slot inside today's regular session means trades
+ * were not ingested (uw-stream down), so it raises one fingerprinted Sentry
+ * warning per run. Holiday slots and post-early-close slots stay silent.
+ *
+ * The live cron then computes percentile breakpoints ON READ from this
+ * accumulating table (flow-regime-baseline-live.ts), falling back per slot to
+ * the committed flow-regime-baseline.json until a slot has ≥15 days.
  *
  * marketHours: false — runs once post-close, outside the RTH cron window.
  * requireApiKey: false — reads only our own ws_option_trades table.
  */
 
 import { getDb, withDbRetry } from '../_lib/db.js';
-import { bulkUpsert } from '../_lib/bulk-upsert.js';
 import {
+  deriveCronStatus,
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
-import { FLOW_REGIME_BASELINE } from '../_lib/flow-regime.js';
+import {
+  FLOW_REGIME_BASELINE,
+  slotStartEtMinute,
+} from '../_lib/flow-regime.js';
 import { MIN_DAY_SLOT_TRADES } from '../_lib/flow-regime-baseline-live.js';
-import { aggregateFlowWindowBySlot } from '../_lib/flow-regime-rows.js';
-import { getETDateStr, etWallClockToUtcIso } from '../../src/utils/timezone.js';
+import {
+  finalizeSlot,
+  isSlotSettled,
+  isWithinTradeRetention,
+  previousWeekdayEt,
+  readPersistedSlots,
+  slotWindow,
+} from '../_lib/flow-regime-slot-daily.js';
+import { Sentry } from '../_lib/sentry.js';
+import {
+  getMarketCloseHourET,
+  isTradingDay,
+} from '../../src/data/marketHours.js';
+import { getETDateStr } from '../../src/utils/timezone.js';
+
+export const config = { maxDuration: 300 };
 
 /**
- * ws_option_trades retention horizon, mirrored from
- * api/cron/cleanup-ws-option-trades.ts (RETENTION_DAYS = 2). The cleanup cron
- * deletes rows older than today's ET date minus this many days, so this
- * accumulator can only re-read dates strictly NEWER than that horizon.
+ * Start no new slot fill past this point in the run. Worst case after the
+ * last check, against maxDuration = 300 s:
+ *   120 s budget
+ * + 126 s for one in-flight fill: aggregation 3 × 30 s + 3 s backoff, then
+ *   upsert 3 × 10 s + 3 s
+ * +  33 s for the next date's persisted-slot read (3 × 10 s + 3 s)
+ * + ~10 s for the completion check-in and reportCronRun
+ * = 289 s.
+ * A normal run fills one slot in ~8 s; all 13 missing is ~100 s.
  */
-const RETENTION_DAYS = 2;
+const FILL_BUDGET_MS = 120_000;
 
 /**
- * Catch-up lookback: re-accumulate the last (LOOKBACK_DAYS + 1) ET trading
- * dates each run (today + N prior days), idempotent via ON CONFLICT(date, slot).
- * A missed run (Vercel cron blip) would otherwise lose that day forever once
- * cleanup-ws-option-trades purges it. LOOKBACK_DAYS MUST stay < RETENTION_DAYS
- * of cleanup-ws-option-trades so it can never read a purged date. We want one
- * prior day (RETENTION_DAYS - 1 = 1) but clamp to RETENTION_DAYS - 1 as a hard
- * ceiling so the coupling can never be silently violated. (#2 / #9)
+ * True when `slot` lies entirely inside `date`'s regular session. A slot below
+ * quorum there means its trades were not ingested (uw-stream down), not a
+ * quiet market. A holiday slot, or a slot after a half-day's 13:00 close, is
+ * legitimately empty.
  */
-const LOOKBACK_DAYS = Math.min(1, RETENTION_DAYS - 1);
-
-/** One flow_regime_slot_daily upsert row, ready for bulkUpsert. */
-interface SlotDailyRow extends Record<string, unknown> {
-  date: string;
-  slot: number;
-  nd_num: number;
-  nd_den: number;
-  idx_put_premium: number;
-  total_premium: number;
-  n_trades: number;
-  computed_at: Date;
+function isRegularSessionSlot(date: string, slot: number): boolean {
+  const closeHour = getMarketCloseHourET(date);
+  if (closeHour === null || !isTradingDay(date)) return false;
+  return (
+    slotStartEtMinute(slot) + FLOW_REGIME_BASELINE.bucket_minutes <=
+    closeHour * 60
+  );
 }
 
-/**
- * Read + accumulate one ET trading date's RTH window into per-slot rows, applying
- * the per-day volume quorum. Returns the upsert rows for that date (slots below
- * MIN_DAY_SLOT_TRADES are dropped so degenerate holiday/partial slots never get
- * persisted — #1a) plus a small per-date summary for logging. `null` window
- * (malformed date) yields an empty result.
- */
-async function accumulateDate(
-  sql: ReturnType<typeof getDb>,
-  date: string,
-  computedAt: Date,
-): Promise<{ rows: SlotDailyRow[]; totalRows: number; skippedThin: number }> {
-  // Full RTH window for `date` as UTC bounds. rth_start/end come from the
-  // committed baseline (570 = 09:30 ET, 960 = 16:00 ET).
-  const startIso = etWallClockToUtcIso(
-    date,
-    FLOW_REGIME_BASELINE.rth_start_minute,
-  );
-  const endIso = etWallClockToUtcIso(date, FLOW_REGIME_BASELINE.rth_end_minute);
-  if (startIso === null || endIso === null) {
-    return { rows: [], totalRows: 0, skippedThin: 0 };
-  }
+/** Per-date outcome, for the log line and the cron metadata. */
+interface DateFill {
+  date: string;
+  skipped?: 'outside-retention';
+  alreadyPersisted?: number;
+  written: number[];
+  thin: number[];
+  unsettled: number[];
+  failed: number[];
+}
 
-  // ws_option_trades is already restricted to the WS universe, but the
-  // aggregation re-applies the baseline universe/index filters (consistency
-  // rule) and reduces the full day to per-slot component sums IN SQL via the
-  // shared builder (byte-identical algebra to the live cron). Streaming raw rows
-  // here serialized past Neon's 64MB HTTP cap once the full ~50-ticker
-  // option_trades universe landed in the table (NeonDbError 507). canceled =
-  // FALSE matches the baseline convention; the full-day window [09:30, 16:00) ET
-  // keeps the upper bound exclusive so a 16:00:00 print (close auction edge) does
-  // not leak into a non-existent slot 13 (the slot expression is bounded
-  // [0, slot_count) in SQL).
-  const accum = await withDbRetry(
-    () => aggregateFlowWindowBySlot(sql, startIso, endIso),
-    2,
-    10_000,
-  );
+interface SlotFailure {
+  date: string;
+  slot: number;
+  error: string;
+}
 
-  let skippedThin = 0;
-  let totalRows = 0;
-  const rows: SlotDailyRow[] = [];
-  for (const {
-    slot,
-    nTrades,
-    ndNum,
-    ndDen,
-    idxPutPremium,
-    totalPremium,
-  } of accum) {
-    // n_trades counts every row in the slot (NOT universe-restricted) — matches
-    // the old JS `bucket.length`. Accumulate it for the per-date log summary.
-    totalRows += nTrades;
-    // Per-day volume quorum: a slot with < MIN_DAY_SLOT_TRADES is a
-    // holiday/partial-session straggler. Don't persist it — a degenerate daily
-    // ratio would skew the thin percentile population the loader builds (#1a).
-    if (nTrades < MIN_DAY_SLOT_TRADES) {
-      skippedThin += 1;
-      continue;
-    }
-    rows.push({
-      date,
-      slot,
-      nd_num: ndNum,
-      nd_den: ndDen,
-      idx_put_premium: idxPutPremium,
-      total_premium: totalPremium,
-      n_trades: nTrades,
-      computed_at: computedAt,
-    });
-  }
-
-  return { rows, totalRows, skippedThin };
+/** A regular-session slot that came back below quorum: an ingest gap. */
+interface ThinGap {
+  date: string;
+  slot: number;
+  nTrades: number;
 }
 
 export default withCronInstrumentation(
   'capture-flow-regime-daily',
   async (ctx): Promise<CronResult> => {
     const now = new Date();
-    const computedAt = now;
-
-    // Catch-up lookback: today + LOOKBACK_DAYS prior ET trading dates. A missed
-    // run loses the day forever once cleanup-ws-option-trades purges it, so we
-    // re-accumulate the recent window each run (idempotent via the daily UPSERT).
-    // Each date is derived by subtracting whole calendar days from `now` then
-    // re-localizing to ET, then bounded to its own RTH window. Bounded < the
-    // cleanup RETENTION_DAYS so we never read a purged date (#2 / #9).
-    const dates: string[] = [];
-    for (let back = 0; back <= LOOKBACK_DAYS; back++) {
-      const d = new Date(now.getTime() - back * 24 * 60 * 60 * 1000);
-      dates.push(getETDateStr(d));
-    }
+    const nowMs = now.getTime();
+    const today = getETDateStr(now);
+    const prior = previousWeekdayEt(today);
+    const dates = prior ? [today, prior] : [today];
 
     const sql = getDb();
-    const allRows: SlotDailyRow[] = [];
-    const perDate: { date: string; slots: number; totalRows: number }[] = [];
-    let totalSkippedThin = 0;
+    const perDate: DateFill[] = [];
+    const failures: SlotFailure[] = [];
+    const thinGaps: ThinGap[] = [];
+    let firstError: unknown = null;
 
     for (const date of dates) {
-      const { rows, totalRows, skippedThin } = await accumulateDate(
-        sql,
+      const fill: DateFill = {
         date,
-        computedAt,
+        written: [],
+        thin: [],
+        unsettled: [],
+        failed: [],
+      };
+      perDate.push(fill);
+
+      if (!isWithinTradeRetention(date, today)) {
+        fill.skipped = 'outside-retention';
+        ctx.logger.info(
+          { date, today },
+          'capture-flow-regime-daily: date is past ws_option_trades retention, skipping',
+        );
+        continue;
+      }
+
+      const persisted = await withDbRetry(
+        () => readPersistedSlots(sql, date),
+        2,
+        10_000,
       );
-      totalSkippedThin += skippedThin;
-      perDate.push({ date, slots: rows.length, totalRows });
-      allRows.push(...rows);
+      fill.alreadyPersisted = persisted.size;
+
+      for (let slot = 0; slot < FLOW_REGIME_BASELINE.slot_count; slot++) {
+        if (persisted.has(slot)) continue;
+        const window = slotWindow(date, slot);
+        if (!window) {
+          // getETDateStr / previousWeekdayEt never yield a malformed date.
+          fill.failed.push(slot);
+          failures.push({ date, slot, error: 'invalid slot window' });
+          continue;
+        }
+        if (!isSlotSettled(window, nowMs)) {
+          fill.unsettled.push(slot);
+          continue;
+        }
+        if (Date.now() - ctx.startTimeMs > FILL_BUDGET_MS) {
+          fill.failed.push(slot);
+          failures.push({ date, slot, error: 'fill budget exhausted' });
+          continue;
+        }
+        try {
+          const result = await finalizeSlot(sql, date, window);
+          if (result.outcome === 'written') {
+            fill.written.push(slot);
+          } else {
+            fill.thin.push(slot);
+            // Thin slots are never persisted, so this run re-aggregates every
+            // one and is the place to surface them. Only today's: the
+            // lookback date's gaps were reported by yesterday's run.
+            if (date === today && isRegularSessionSlot(date, slot)) {
+              thinGaps.push({ date, slot, nTrades: result.nTrades });
+            }
+          }
+        } catch (err) {
+          firstError ??= err;
+          fill.failed.push(slot);
+          failures.push({
+            date,
+            slot,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          ctx.logger.error(
+            { err, date, slot },
+            'capture-flow-regime-daily: slot fill failed',
+          );
+        }
+      }
     }
 
-    if (allRows.length === 0) {
-      ctx.logger.info(
-        { dates, perDate, skippedThin: totalSkippedThin },
-        'capture-flow-regime-daily: no RTH slots above quorum to accumulate',
+    const written = perDate.reduce((n, d) => n + d.written.length, 0);
+    const thin = perDate.reduce((n, d) => n + d.thin.length, 0);
+    const attempted = written + thin + failures.length;
+    const metadata = { dates, perDate, written, thin, failures, thinGaps };
+
+    if (thinGaps.length > 0) {
+      const gapMessage =
+        `capture-flow-regime-daily: ${thinGaps.length} regular-session ` +
+        `slot(s) below the ${MIN_DAY_SLOT_TRADES}-trade quorum ` +
+        '(ws_option_trades ingest gap?); not persisted';
+      ctx.logger.warn({ thinGaps }, gapMessage);
+      Sentry.captureMessage(gapMessage, {
+        level: 'warning',
+        fingerprint: ['capture-flow-regime-daily', 'thin-slot'],
+        tags: { 'cron.anomaly': 'flow-regime-thin-slot' },
+        extra: { thinGaps },
+      });
+    }
+
+    if (failures.length > 0) {
+      // One Sentry event per run, naming every slot left unfilled. A failed
+      // slot was not written. The next run retries it while its date is
+      // still inside retention.
+      Sentry.captureException(
+        firstError ??
+          new Error(
+            `capture-flow-regime-daily: ${failures.length} slot(s) not filled`,
+          ),
+        {
+          tags: { 'flow_regime.step': 'slot-fill' },
+          extra: { failures },
+        },
+      );
+      ctx.logger.error(
+        metadata,
+        'capture-flow-regime-daily: some slots were not filled',
       );
       return {
-        status: 'skipped',
-        message: 'no RTH slots above quorum',
-        metadata: { dates, perDate },
+        status: deriveCronStatus(failures.length, attempted),
+        rows: written,
+        message: `${failures.length} slot(s) not filled`,
+        metadata,
       };
     }
 
-    // ONE multi-row INSERT ... ON CONFLICT (date, slot) DO UPDATE for all dates'
-    // slots (≤ 26 rows with the 2-date lookback, far under the 500 chunk cap).
-    // Idempotent: a re-run for the same day overwrites rather than duplicates.
-    await withDbRetry(
-      () =>
-        bulkUpsert<SlotDailyRow>({
-          sql,
-          table: 'flow_regime_slot_daily',
-          columns: [
-            'date',
-            'slot',
-            'nd_num',
-            'nd_den',
-            'idx_put_premium',
-            'total_premium',
-            'n_trades',
-            'computed_at',
-          ],
-          rows: allRows,
-          conflictTarget: '(date, slot)',
-        }),
-      2,
-      10_000,
-    );
-
-    ctx.logger.info(
-      {
-        dates,
-        perDate,
-        slotsUpserted: allRows.length,
-        skippedThin: totalSkippedThin,
-      },
-      'capture-flow-regime-daily completed',
-    );
-
-    return {
-      status: 'success',
-      rows: allRows.length,
-      metadata: {
-        dates,
-        perDate,
-        slotsUpserted: allRows.length,
-        skippedThin: totalSkippedThin,
-      },
-    };
+    ctx.logger.info(metadata, 'capture-flow-regime-daily completed');
+    if (written === 0 && thin > 0) {
+      return {
+        status: 'skipped',
+        rows: 0,
+        message: 'no missing slot above the per-day quorum',
+        metadata,
+      };
+    }
+    return { status: 'success', rows: written, metadata };
   },
   { marketHours: false, requireApiKey: false },
 );

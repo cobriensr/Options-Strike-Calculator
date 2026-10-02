@@ -201,8 +201,15 @@ cost.
      (R6).
 2. **Live cron (`capture-flow-regime`).** After its own snapshot upsert, the
    cron finalizes slot − 1 if that slot is settled and not yet persisted.
-   - On the normal path this is the first tick of the next slot (Vercel fires
-     ~45 s after the boundary, past the 30 s settle).
+   - The settle margin is **5 min**, so on the normal path finalize happens on
+     the second tick of the next slot (Vercel fires ~45 s after the minute).
+     This deviates on purpose from "first tick". `received_at` is the DB's
+     insert-time `NOW()`, and its lag behind execution is p99.9 ≈ 3.1 s on a
+     quiet day. During a Neon stall, though, uw-stream's flush retries
+     (command_timeout 30 s × 3) can commit trades ~90 s late. A finalized
+     slot is never re-aggregated, so an early finalize would stay short for
+     good. The later finalize costs nothing, because the loader reads only
+     dates before today.
    - A thin slot (below quorum) is not persisted, matching the existing #1a
      policy.
    - A failed aggregation or upsert writes nothing, is sent to Sentry, and
@@ -220,7 +227,11 @@ cost.
      one Sentry event naming the failed slots.
    - It imports `WS_OPTION_TRADES_RETENTION_DAYS` instead of hardcoding 2.
    - Per-attempt timeout is 30 s (≈ 4× the 7.7 s cold measurement), with a
-     wall budget before each slot.
+     120 s wall budget checked before each slot.
+   - Thin slots are never persisted, so this run re-reads them all. A thin
+     slot inside today's regular session is an ingest gap (uw-stream down),
+     so it raises one fingerprinted Sentry warning per run. Holiday slots and
+     slots after a half-day's 13:00 close stay silent.
 4. **Monday lookback.** The prior date is now the previous weekday, so
    Monday names Friday instead of Sunday. Under 2-calendar-day retention
    Friday's tape is purged at Monday 00:00 ET, so the retention guard
@@ -266,16 +277,16 @@ cost.
 
 ## Thresholds and constants
 
-| Constant                         | Value                | Why                                                           |
-| -------------------------------- | -------------------- | ------------------------------------------------------------- |
-| Cleanup `BATCH_SIZE`             | 50,000               | Unchanged; ~2.5 s per batch                                   |
-| Cleanup `WALL_BUDGET_MS`         | 280,000              | Leaves room for the last batch + estimate + check-in in 300 s |
-| Cleanup backlog alert lag        | 24 h                 | > 1 session behind = not keeping pace                         |
-| Cleanup schedule                 | `5 0-12,22-23 * * *` | 15 runs per day, off-hours only                               |
-| `SLOT_SETTLE_MS`                 | 30,000               | ~4.5× the measured ≤ 6.5 s execute→commit lag                 |
-| Slot aggregation attempt timeout | 30,000 ms            | ~4× the 7.7 s cold heaviest-slot measurement                  |
-| Daily fill wall budget           | 240,000 ms           | Clean exit before the 300 s function limit                    |
-| `MIN_DAY_SLOT_TRADES`            | 500                  | Unchanged                                                     |
+| Constant                         | Value                | Why                                                            |
+| -------------------------------- | -------------------- | -------------------------------------------------------------- |
+| Cleanup `BATCH_SIZE`             | 50,000               | Unchanged; ~2.5 s per batch                                    |
+| Cleanup `WALL_BUDGET_MS`         | 280,000              | Leaves room for the last batch + estimate + check-in in 300 s  |
+| Cleanup backlog alert lag        | 24 h                 | > 1 session behind = not keeping pace                          |
+| Cleanup schedule                 | `5 0-12,22-23 * * *` | 15 runs per day, off-hours only                                |
+| `SLOT_SETTLE_MS`                 | 300,000              | Covers uw-stream's ~90 s retry path; free (loader skips today) |
+| Slot aggregation attempt timeout | 30,000 ms            | ~4× the 7.7 s cold heaviest-slot measurement                   |
+| Daily fill wall budget           | 120,000 ms           | 120 + 126 (fill) + 33 (read) + 10 (check-in) = 289 s < 300 s   |
+| `MIN_DAY_SLOT_TRADES`            | 500                  | Unchanged                                                      |
 
 ## Deferred: partitioning `ws_option_trades` by day
 
@@ -338,7 +349,8 @@ expected, it happens off-hours, and it needs no action.
 3. **Thin slots** (below quorum) are not persisted, so they are
    re-aggregated on each remaining tick of the slot and by the daily run.
    _Default:_ keep. These windows are under 500 rows by definition, and
-   persisting them would change the #1a policy.
+   persisting them would change the #1a policy. The daily run surfaces
+   regular-session thin slots as an ingest-gap warning.
 4. **Axiom ingest is failing** for these crons ("column limit of 257" on
    `reportCronRun`; seen on every capture-flow-regime tick on 10-01). This is
    pre-existing and out of scope. Sentry and Vercel logs remain the signal.

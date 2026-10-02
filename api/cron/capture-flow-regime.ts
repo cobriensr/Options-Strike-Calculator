@@ -14,6 +14,14 @@
  *      against the committed baseline (evaluateFlowRegime).
  *   4. UPSERTs the (date, slot) snapshot via ON CONFLICT DO UPDATE so
  *      the in-progress bucket is refined on every tick until it closes.
+ *   5. Persists the PREVIOUS slot into flow_regime_slot_daily once it has
+ *      closed and settled (SLOT_SETTLE_MS = 5 min, so normally the second
+ *      tick of the current slot). It aggregates the full [prevStart, prevEnd)
+ *      window
+ *      (flow-regime-slot-daily.ts). Persisted rows are the marker, so a
+ *      failed or unsettled finalize is retried on the next tick. The final
+ *      slot is filled post-close by capture-flow-regime-daily, because the
+ *      16:00 tick is outside RTH.
  *
  * Outside RTH the cron no-ops (status 'skipped') — there is no current
  * slot to capture. ws_option_trades is ALREADY restricted to the
@@ -42,10 +50,78 @@ import {
 import { loadFlowRegimeBaseline } from '../_lib/flow-regime-baseline-live.js';
 import { aggregateFlowWindow } from '../_lib/flow-regime-rows.js';
 import {
+  finalizeSlot,
+  isSlotSettled,
+  readPersistedSlots,
+  slotWindow,
+} from '../_lib/flow-regime-slot-daily.js';
+import logger from '../_lib/logger.js';
+import { Sentry } from '../_lib/sentry.js';
+import {
   getETDateStr,
   getETTotalMinutes,
   etWallClockToUtcIso,
 } from '../../src/utils/timezone.js';
+
+/** What this tick did about persisting the previous slot. */
+interface PrevSlotFinalize {
+  /** The previous slot index, or null at slot 0 (nothing closed yet today). */
+  slot: number | null;
+  outcome:
+    | 'none'
+    | 'unsettled'
+    | 'already-persisted'
+    | 'written'
+    | 'thin'
+    | 'failed';
+  nTrades?: number;
+  error?: string;
+}
+
+/**
+ * Persist slot − 1 for `date` if it has closed, settled, and is not already in
+ * flow_regime_slot_daily. A failure is reported to Sentry and returned as
+ * 'failed'; it never throws, because this tick's own snapshot is already
+ * written. Nothing is persisted on failure, so the next tick retries.
+ */
+async function finalizePreviousSlot(
+  sql: ReturnType<typeof getDb>,
+  date: string,
+  slot: number,
+  nowMs: number,
+): Promise<PrevSlotFinalize> {
+  const prev = slot > 0 ? slotWindow(date, slot - 1) : null;
+  if (!prev) return { slot: null, outcome: 'none' };
+  if (!isSlotSettled(prev, nowMs)) {
+    return { slot: prev.slot, outcome: 'unsettled' };
+  }
+  try {
+    const persisted = await withDbRetry(
+      () => readPersistedSlots(sql, date),
+      2,
+      10_000,
+    );
+    if (persisted.has(prev.slot)) {
+      return { slot: prev.slot, outcome: 'already-persisted' };
+    }
+    const { outcome, nTrades } = await finalizeSlot(sql, date, prev);
+    return { slot: prev.slot, outcome, nTrades };
+  } catch (err) {
+    Sentry.captureException(err, {
+      tags: { 'flow_regime.step': 'slot-finalize' },
+      extra: { date, slot: prev.slot },
+    });
+    logger.error(
+      { err, date, slot: prev.slot },
+      'capture-flow-regime: previous-slot finalize failed',
+    );
+    return {
+      slot: prev.slot,
+      outcome: 'failed',
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
 
 export default withCronInstrumentation(
   'capture-flow-regime',
@@ -173,6 +249,11 @@ export default withCronInstrumentation(
       10_000,
     );
 
+    // After this tick's own snapshot: persist the previous slot once it has
+    // closed. A finalize failure demotes the run to 'partial' (the snapshot
+    // above did land) and is already in Sentry; never 'success'.
+    const finalize = await finalizePreviousSlot(sql, date, slot, now.getTime());
+
     ctx.logger.info(
       {
         date,
@@ -183,13 +264,17 @@ export default withCronInstrumentation(
         hasBaseline: result.hasBaseline,
         confidence: result.confidence,
         confidenceReason: result.confidenceReason,
+        finalize,
       },
       'capture-flow-regime completed',
     );
 
     return {
-      status: 'success',
+      status: finalize.outcome === 'failed' ? 'partial' : 'success',
       rows: 1,
+      ...(finalize.outcome === 'failed'
+        ? { message: `previous-slot finalize failed: ${finalize.error}` }
+        : {}),
       metadata: {
         date,
         slot,
@@ -197,6 +282,7 @@ export default withCronInstrumentation(
         regime: result.regime,
         hasBaseline: result.hasBaseline,
         confidence: result.confidence,
+        finalize,
       },
     };
   },

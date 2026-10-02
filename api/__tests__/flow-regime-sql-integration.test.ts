@@ -6,15 +6,16 @@
  * WHY THIS EXISTS: flow-regime-sql-parity.test.ts only locks a hand-written JS
  * TRANSCRIPTION of the SQL to `computeFlowMetrics`; the cron tests mock
  * `sql.query`. So a typo in the ACTUAL SQL (a dropped FILTER, a swapped CASE
- * literal, an off-by-one in the slot floor / timezone expression) would ship
- * green. This test closes that gap: it runs the EXACT production statements
- * produced by `buildAggWindowStatement` / `buildAggSlotStatement` against an
- * in-process Postgres (pglite — real Postgres-in-WASM with full
- * `AT TIME ZONE 'America/New_York'` timezone-data support, which pg-mem lacks)
- * and asserts the result equals `computeFlowMetrics` over the same rows.
+ * literal, an off-by-one in the slot window bounds) would ship green. This test
+ * closes that gap: it runs the EXACT production statement produced by
+ * `buildAggWindowStatement` against an in-process Postgres (pglite — real
+ * Postgres-in-WASM with full timezone-data support, which pg-mem lacks) and
+ * asserts the result equals `computeFlowMetrics` over the same rows.
  *
- * This gives a true oracle for the slot derivation (AT TIME ZONE + floor + RTH
- * bounds) — which the parity test cannot exercise — and for the universe
+ * This gives a true oracle for the per-slot windows the slot persistence
+ * aggregates (flow-regime-slot-daily.ts `slotWindow` → one [start, end) range
+ * per slot, checked against the live cron's `slotForEtMinute`) — which the
+ * parity test cannot exercise — and for the universe
  * FILTER, the baseline-derived side_sign CASE, the premium algebra, the 0DTE
  * index-put FILTER, NULL delta/price skipping, and COALESCE-on-empty.
  *
@@ -28,11 +29,10 @@ import { PGlite } from '@electric-sql/pglite';
 
 import {
   buildAggWindowStatement,
-  buildAggSlotStatement,
   runAggWindow,
-  runAggSlot,
   type FlowAggRunner,
 } from '../_lib/flow-regime-rows.js';
+import { slotWindow } from '../_lib/flow-regime-slot-daily.js';
 import {
   FLOW_REGIME_BASELINE,
   computeFlowMetrics,
@@ -432,183 +432,57 @@ describe('flow-regime in-SQL aggregation (pglite, real SQL)', () => {
     });
   });
 
-  describe('aggregateFlowWindowBySlot (per-ET-30min-slot)', () => {
-    it('buckets rows across multiple ET slots and matches computeFlowMetrics per slot', async () => {
-      // 09:30 ET (570) → slot 0; 10:00 (600) → slot 1; 10:29 (629) → slot 1
-      // (floor); 10:30 (630) → slot 2; 15:59 (959) → slot 12 (last RTH slot).
-      const fixtures: Fixture[] = [
-        {
-          ticker: 'SPY',
-          optionType: 'P',
-          etDate: DATE,
-          etMinute: 570,
-          expiry: DATE,
-          side: 'ask',
-          delta: -0.5,
-          size: 100,
-          price: 1,
-        },
-        {
-          ticker: 'QQQ',
-          optionType: 'P',
-          etDate: DATE,
-          etMinute: 600,
-          expiry: DATE,
-          side: 'bid',
-          delta: -0.4,
-          size: 50,
-          price: 2,
-        },
-        // back-half of slot 1 — verifies floor (CAST would push this to slot 2).
-        {
-          ticker: 'SPXW',
-          optionType: 'P',
-          etDate: DATE,
-          etMinute: 629,
-          expiry: DATE,
-          side: 'ask',
-          delta: -0.6,
-          size: 40,
-          price: 3,
-        },
-        {
-          ticker: 'NVDA',
-          optionType: 'C',
-          etDate: DATE,
-          etMinute: 630,
-          expiry: DATE,
-          side: 'ask',
-          delta: 0.3,
-          size: 20,
-          price: 4,
-        },
-        {
-          ticker: 'SPY',
-          optionType: 'P',
-          etDate: DATE,
-          etMinute: 959,
-          expiry: DATE,
-          side: 'ask',
-          delta: -0.5,
-          size: 10,
-          price: 5,
-        },
-      ];
-      await load(fixtures);
-      const { startIso, endIso } = dayWindow();
-      const slots = await runAggSlot(run, startIso, endIso);
+  describe('per-slot windows (flow_regime_slot_daily persistence)', () => {
+    it('each slot window matches computeFlowMetrics over exactly that slot’s rows', async () => {
+      // 09:30 ET (570) → slot 0; 10:00 (600) and 10:29 (629) → slot 1 (the
+      // back half stays in its slot, matching the live cron’s Math.floor);
+      // 10:30 (630) → slot 2; 15:59 (959) → slot 12, the last RTH slot.
+      // 09:00 (540) is pre-open and 16:00 (960) is the exclusive close: no
+      // slot window may contain them.
+      const inRth: Fixture[] = [570, 600, 629, 630, 959].map((etMinute, i) => ({
+        ticker: i % 2 === 0 ? 'SPY' : 'NVDA',
+        optionType: 'P',
+        etDate: DATE,
+        etMinute,
+        expiry: DATE,
+        side: i % 3 === 0 ? 'bid' : 'ask',
+        delta: -0.4 - i * 0.05,
+        size: 10 * (i + 1),
+        price: 1 + i,
+      }));
+      const outsideRth: Fixture[] = [540, 960].map((etMinute) => ({
+        ticker: 'SPY',
+        optionType: 'P',
+        etDate: DATE,
+        etMinute,
+        expiry: DATE,
+        side: 'ask',
+        delta: -0.5,
+        size: 999,
+        price: 99,
+      }));
+      await load([...inRth, ...outsideRth]);
 
-      // Expected slot membership via the SAME slotForEtMinute the live cron uses.
-      const bySlot = new Map<number, Fixture[]>();
-      for (const f of fixtures) {
-        const slot = slotForEtMinute(f.etMinute);
-        expect(slot).not.toBeNull();
-        const arr = bySlot.get(slot!) ?? [];
-        arr.push(f);
-        bySlot.set(slot!, arr);
+      let totalTrades = 0;
+      for (let slot = 0; slot < FLOW_REGIME_BASELINE.slot_count; slot++) {
+        const window = slotWindow(DATE, slot);
+        expect(window).not.toBeNull();
+        const agg = await runAggWindow(
+          run,
+          window!.startIso,
+          window!.endIso,
+          DATE,
+        );
+        const bucket = inRth.filter(
+          (f) => slotForEtMinute(f.etMinute) === slot,
+        );
+        expectSumsClose(agg, computeFlowMetrics(bucket.map(toFlowTradeRow)));
+        expect(agg.nTrades).toBe(bucket.length);
+        totalTrades += agg.nTrades;
       }
-
-      expect(new Set(slots.map((s) => s.slot))).toEqual(new Set(bySlot.keys()));
-      // The back-half row at 10:29 must land in slot 1, not slot 2.
-      expect(
-        bySlot
-          .get(1)!
-          .map((f) => f.etMinute)
-          .sort(),
-      ).toEqual([600, 629]);
-
-      for (const s of slots) {
-        const bucket = bySlot.get(s.slot)!;
-        const oracle = computeFlowMetrics(bucket.map(toFlowTradeRow));
-        expectSumsClose(s, oracle);
-        expect(s.nTrades).toBe(bucket.length);
-      }
-    });
-
-    it('drops rows outside RTH (slot < 0 or >= slot_count)', async () => {
-      // 09:00 ET (540) is pre-RTH → slot −1; 16:00 (960) is the exclusive RTH
-      // upper bound → slot 13 (== slot_count, dropped). Neither is persisted.
-      // 09:30 (570) is the first valid slot.
-      const fixtures: Fixture[] = [
-        {
-          ticker: 'SPY',
-          optionType: 'P',
-          etDate: DATE,
-          etMinute: 540,
-          expiry: DATE,
-          side: 'ask',
-          delta: -0.5,
-          size: 1,
-          price: 1,
-        },
-        {
-          ticker: 'SPY',
-          optionType: 'P',
-          etDate: DATE,
-          etMinute: 570,
-          expiry: DATE,
-          side: 'ask',
-          delta: -0.5,
-          size: 2,
-          price: 1,
-        },
-      ];
-      await load(fixtures);
-      // Widen the window so the pre-RTH row is INSIDE [start, end) but still
-      // gets dropped by the slot bound (proves the slot filter, not the window).
-      const startIso = etWallClockToUtcIso(DATE, 480); // 08:00 ET
-      const endIso = etWallClockToUtcIso(DATE, 970); // 16:10 ET
-      const slots = await runAggSlot(run, startIso!, endIso!);
-
-      // Only slot 0 survives.
-      expect(slots.map((s) => s.slot)).toEqual([0]);
-      expect(slots[0]!.nTrades).toBe(1);
-    });
-
-    it('uses each row’s own ET date for the per-row 0DTE index-put test', async () => {
-      // Two SPY puts in slot 1, both expiry 06-05. One executed on 06-05 (0DTE),
-      // one on 06-04 (NOT 0DTE for its own ET date). The per-row etDateExpr must
-      // count only the 06-05 one toward idx_put_premium.
-      const fixtures: Fixture[] = [
-        {
-          ticker: 'SPY',
-          optionType: 'P',
-          etDate: DATE,
-          etMinute: 600,
-          expiry: DATE,
-          side: 'ask',
-          delta: -0.5,
-          size: 100,
-          price: 2,
-        },
-        {
-          ticker: 'SPY',
-          optionType: 'P',
-          etDate: '2026-06-04',
-          etMinute: 600,
-          expiry: DATE,
-          side: 'ask',
-          delta: -0.5,
-          size: 100,
-          price: 2,
-        },
-      ];
-      await load(fixtures);
-      // Two-day window so both rows are inside it.
-      const startIso = etWallClockToUtcIso(
-        '2026-06-04',
-        FLOW_REGIME_BASELINE.rth_start_minute,
-      );
-      const endIso = dayWindow().endIso;
-      const slots = await runAggSlot(run, startIso!, endIso);
-
-      // Both rows localize to slot 1 (10:00 ET) on their respective days.
-      const slot1 = slots.find((s) => s.slot === 1)!;
-      expect(slot1.nTrades).toBe(2);
-      // Only the 06-05 row is 0DTE for its own date → idx_put = one row.
-      expect(slot1.idxPutPremium).toBeCloseTo(2 * 100 * 100, 6);
-      // Both rows are index puts in total_premium.
-      expect(slot1.totalPremium).toBeCloseTo(2 * (2 * 100 * 100), 6);
+      // Every RTH row lands in exactly one window; the 09:00 and 16:00 rows
+      // land in none.
+      expect(totalTrades).toBe(inRth.length);
     });
   });
 
@@ -620,14 +494,6 @@ describe('flow-regime in-SQL aggregation (pglite, real SQL)', () => {
       expect(text).toContain('$5::date');
       // side_sign is derived from the baseline map, not hardcoded.
       expect(text).toContain("CASE side WHEN 'ask' THEN 1 WHEN 'bid' THEN -1");
-    });
-
-    it('slot statement bounds the slot to [0, slot_count) and floors', () => {
-      const { text, params } = buildAggSlotStatement('A', 'B');
-      expect(params).toEqual([universe, indexSet, 'A', 'B']);
-      expect(text).toContain("AT TIME ZONE 'America/New_York'");
-      expect(text).toContain('floor(');
-      expect(text).toContain(`< ${FLOW_REGIME_BASELINE.slot_count}`);
     });
   });
 });

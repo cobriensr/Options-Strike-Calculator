@@ -1,45 +1,59 @@
 // @vitest-environment node
 
 /**
- * Tests for the self-maintaining flow-regime baseline daily accumulator cron.
+ * Tests for the post-close flow-regime slot gap filler.
  *
- * The cron reads the whole day's ws_option_trades RTH window, buckets rows into
- * their ET 30-min slot, reduces each bucket to component sums via the (real)
- * Phase 1 lib, and UPSERTs one row per populated slot into
- * flow_regime_slot_daily. The lib is NOT mocked — we want the real bucketing /
- * metric math to run. Assertions focus on:
- *   - CRON_SECRET auth guard (no DB writes when cronGuard fails).
- *   - Happy path: a multi-slot day aggregates correctly and upserts one row per
- *     populated slot, with the per-slot sums + n_trades matching.
- *   - null/NaN coercion: a null delta + non-numeric price don't crash the math.
+ * The live capture-flow-regime cron persists each slot as it closes; this
+ * cron fills only the slots still MISSING from flow_regime_slot_daily, for
+ * today and the previous weekday, one bounded [slotStart, slotEnd) window at
+ * a time. Assertions focus on:
+ *   - only missing slots are aggregated, each over its own 30-min window
+ *     (never the old full-day GROUP BY);
+ *   - the Monday lookback names Friday (not Sunday) and skips it as outside
+ *     ws_option_trades retention; Tuesday back-fills Monday;
+ *   - an idempotent re-run with everything persisted does nothing;
+ *   - R4: a failed aggregation or upsert writes nothing for that slot, never
+ *     reports success, and reaches Sentry.
  *
- * Resolves code-review finding #6 — see
- * docs/superpowers/specs/flow-regime-baseline-refresh-2026-06-07.md.
+ * The real flow-regime-slot-daily helpers run; only the DB is mocked. The
+ * SQL itself is exercised against pglite in flow-regime-slot-daily.test.ts.
  */
 
-import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// The daily cron now reduces each date's window IN SQL: the per-date per-slot
-// aggregation runs via `sql.query(stmt, params)` (returning per-slot scalar-sum
-// rows), and `bulkUpsert({ sql, ... })` ALSO calls `sql.query(stmt, params)` for
-// the single batched INSERT. Both surface through `sql.query` now (the old raw
-// tagged-template `sql\`...\`` SELECTs are gone). We route the mock by statement
-// content: the aggregation contains `GROUP BY slot`, the INSERT contains
-// `INSERT INTO flow_regime_slot_daily`.
-//
-// `aggResults` is a FIFO queue of per-date aggregation results, one entry per
-// `accumulateDate` call (today, then each lookback date), set per test.
-let aggResults: Record<string, unknown>[][] = [];
-const mockQuery: ReturnType<
-  typeof vi.fn<(stmt: string, params: unknown[]) => Promise<unknown>>
-> = vi.fn((stmt: string) => {
-  if (/GROUP BY slot/i.test(stmt)) {
-    return Promise.resolve(aggResults.shift() ?? []);
-  }
-  // bulkUpsert INSERT — return value is ignored by the helper.
-  return Promise.resolve({ rows: [] });
+/** Persisted slots per date, as the `SELECT slot …` read returns them. */
+let persistedByDate: Record<string, number[]> = {};
+/** Per-window aggregation results keyed by the window's start ISO. */
+let aggByStart: Record<string, Record<string, unknown> | Error> = {};
+let insertError: Error | null = null;
+let selectError: Error | null = null;
+/** Wall-clock ms each aggregation "takes" (advances the fake clock). */
+let aggMs = 0;
+
+const mockQuery = vi.fn(async (_stmt: string, params: unknown[]) => {
+  if (aggMs) vi.setSystemTime(new Date(Date.now() + aggMs));
+  const r = aggByStart[String(params[2])];
+  if (r instanceof Error) throw r;
+  return [r ?? aggRow(0)];
 });
-const mockSql = Object.assign(vi.fn(), { query: mockQuery });
+const mockSql = Object.assign(
+  vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const text = strings.join('?');
+    if (/SELECT slot FROM flow_regime_slot_daily/.test(text)) {
+      if (selectError) throw selectError;
+      return (persistedByDate[String(values[0])] ?? []).map((slot) => ({
+        slot,
+      }));
+    }
+    if (/INSERT INTO flow_regime_slot_daily/.test(text)) {
+      if (insertError) throw insertError;
+      return [];
+    }
+    throw new Error(`unexpected SQL: ${text}`);
+  }),
+  { query: mockQuery },
+);
+
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
@@ -68,237 +82,345 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 import handler from '../cron/capture-flow-regime-daily.js';
-import {
-  computeFlowMetrics,
-  type FlowMetricSums,
-  type FlowTradeRow,
-} from '../_lib/flow-regime.js';
 import { MIN_DAY_SLOT_TRADES } from '../_lib/flow-regime-baseline-live.js';
+import { Sentry } from '../_lib/sentry.js';
 import { mockRequest, mockResponse } from './helpers';
 
-const DATE = '2026-06-05';
+const ALL_SLOTS = Array.from({ length: 13 }, (_, i) => i);
+const QUORUM = MIN_DAY_SLOT_TRADES;
+
+/** One per-window aggregation row as neon returns it (NUMERIC as strings). */
+function aggRow(nTrades: number, ndNum = 12.5) {
+  return {
+    n_trades: nTrades,
+    nd_num: String(ndNum),
+    nd_den: '40',
+    total_premium: '90000',
+    idx_put_premium: '15000',
+  };
+}
+
+/** Start ISO of `slot` on an EDT date (09:30 ET = 13:30 UTC). */
+function slotStartIso(date: string, slot: number): string {
+  return new Date(
+    Date.parse(`${date}T13:30:00.000Z`) + slot * 30 * 60_000,
+  ).toISOString();
+}
+
+function aggCalls() {
+  return mockQuery.mock.calls.map(([stmt, params]) => ({ stmt, params }));
+}
+
+/** Values of each INSERT: [date, slot, nd_num, nd_den, idx_put, total, n_trades]. */
+function inserts(): unknown[][] {
+  return mockSql.mock.calls
+    .filter(([strings]) =>
+      /INSERT INTO flow_regime_slot_daily/.test(
+        (strings as TemplateStringsArray).join('?'),
+      ),
+    )
+    .map(([, ...values]) => values);
+}
+
+function selectDates(): unknown[] {
+  return mockSql.mock.calls
+    .filter(([strings]) =>
+      /SELECT slot FROM/.test((strings as TemplateStringsArray).join('?')),
+    )
+    .map(([, date]) => date);
+}
+
+async function run(at: string) {
+  vi.setSystemTime(new Date(at));
+  const res = mockResponse();
+  await handler(mockRequest({ method: 'GET' }), res);
+  return res;
+}
+
+// Tue 2026-06-09 21:55 UTC = 17:55 ET (EDT): today 06-09, lookback Mon 06-08.
+const TUESDAY_RUN = '2026-06-09T21:55:00.000Z';
+// Mon 2026-06-08 21:55 UTC: today 06-08, lookback Fri 06-05.
+const MONDAY_RUN = '2026-06-08T21:55:00.000Z';
 
 beforeEach(() => {
-  aggResults = [];
-  mockSql.mockReset();
-  mockSql.mockResolvedValue([]);
-  mockQuery.mockReset();
-  mockQuery.mockImplementation((stmt: string) => {
-    if (/GROUP BY slot/i.test(stmt)) {
-      return Promise.resolve(aggResults.shift() ?? []);
-    }
-    return Promise.resolve({ rows: [] });
-  });
+  persistedByDate = {};
+  aggByStart = {};
+  insertError = null;
+  selectError = null;
+  aggMs = 0;
+  mockQuery.mockClear();
+  mockSql.mockClear();
+  vi.mocked(Sentry.captureException).mockClear();
+  vi.mocked(Sentry.captureMessage).mockClear();
   mockCronGuard.mockReset();
-  mockCronGuard.mockReturnValue({ apiKey: '', today: DATE });
-  vi.useRealTimers();
+  mockCronGuard.mockReturnValue({ apiKey: '', today: '2026-06-09' });
+  vi.useFakeTimers();
 });
 
 afterEach(() => {
   vi.useRealTimers();
 });
 
-const QUORUM = MIN_DAY_SLOT_TRADES; // 500
-
-/**
- * Shape one per-slot aggregation row (as `aggregateFlowWindowBySlot`'s
- * `sql.query` returns it) from a slot index, component sums, and an n_trades
- * count. NUMERIC come back as strings from Neon, so we stringify the sums.
- */
-function aggSlotRow(slot: number, sums: FlowMetricSums, nTrades: number) {
-  return {
-    slot,
-    n_trades: nTrades,
-    nd_num: String(sums.ndNum),
-    nd_den: String(sums.ndDen),
-    total_premium: String(sums.totalPremium),
-    idx_put_premium: String(sums.idxPutPremium),
-  };
-}
-
-/** A FlowTradeRow fixture (already coerced — the SQL does the coercion now). */
-function flowRow(overrides: Partial<FlowTradeRow> = {}): FlowTradeRow {
-  return {
-    ticker: 'SPY',
-    optionType: 'C',
-    expiry: DATE,
-    tradeDateEt: DATE,
-    side: 'ask',
-    delta: 0.5,
-    size: 100,
-    price: 1.25,
-    ...overrides,
-  };
-}
-
-/** Build n identical FlowTradeRows and reduce them to sums via the real lib. */
-function sumsFor(
-  rowOverrides: Partial<FlowTradeRow>,
-  n: number,
-): FlowMetricSums {
-  const rows = Array.from({ length: n }, () => flowRow(rowOverrides));
-  return computeFlowMetrics(rows);
-}
-
-/** The bulkUpsert INSERT call's flat params array (the non-aggregation query). */
-function insertParams(): unknown[] {
-  const call = mockQuery.mock.calls.find(([stmt]) =>
-    /INSERT INTO/i.test(String(stmt)),
-  );
-  if (!call) throw new Error('no INSERT call recorded');
-  return call[1] as unknown[];
-}
-
 describe('capture-flow-regime-daily cron', () => {
-  it('does not write when cronGuard rejects the request', async () => {
+  it('does not touch the DB when cronGuard rejects the request', async () => {
     mockCronGuard.mockReturnValue(null);
-
-    const req = mockRequest({ method: 'GET' });
-    const res = mockResponse();
-    await handler(req, res);
-
+    await run(TUESDAY_RUN);
     expect(mockSql).not.toHaveBeenCalled();
     expect(mockQuery).not.toHaveBeenCalled();
   });
 
-  it('aggregates a multi-slot day and batches one INSERT for all populated slots', async () => {
-    // Post-close on the trade day so getETDateStr(now) === DATE (the cron
-    // stamps the ET trade date from real `now`). 21:55 UTC = 17:55 ET (EDT).
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-06-05T21:55:00.000Z'));
+  it('fills only the missing final slot, over its own [15:30, 16:00) ET window', async () => {
+    // The live cron finalized slots 0–11 today; the lookback day is complete.
+    persistedByDate = {
+      '2026-06-09': ALL_SLOTS.slice(0, 12),
+      '2026-06-08': ALL_SLOTS,
+    };
+    aggByStart = { [slotStartIso('2026-06-09', 12)]: aggRow(QUORUM + 100) };
 
-    // Two slots, each ABOVE the per-day quorum: slot 1 and slot 3. The SQL
-    // aggregation reduces+buckets in-DB; here we feed its result directly. Build
-    // expected sums via the real lib so the assertions match production algebra.
-    const expSlot1 = sumsFor({ side: 'ask' }, QUORUM);
-    const expSlot3 = sumsFor(
-      { ticker: 'AAPL', side: 'ask', delta: 0.6, price: 3.0, size: 200 },
-      QUORUM,
-    );
+    const res = await run(TUESDAY_RUN);
 
-    // today's aggregation → two populated slots; the prior-date aggregation is
-    // empty. (FIFO order: today first, then the 1-day lookback.)
-    aggResults = [
-      [aggSlotRow(1, expSlot1, QUORUM), aggSlotRow(3, expSlot3, QUORUM)],
-      [],
-    ];
-
-    const req = mockRequest({ method: 'GET' });
-    const res = mockResponse();
-    await handler(req, res);
-
-    // 2 aggregation sql.query calls (today + 1 prior date), then ONE batched
-    // INSERT via sql.query → 3 sql.query calls total, 0 tagged-template calls.
-    expect(mockSql).not.toHaveBeenCalled();
-    expect(mockQuery).toHaveBeenCalledTimes(3);
-    expect(res._json).toMatchObject({ status: 'success', rows: 2 });
-
-    // bulkUpsert flattens rows into a single params array, 8 cols per row:
-    // [date, slot, nd_num, nd_den, idx_put_premium, total_premium, n_trades,
-    //  computed_at]. Two rows → 16 params.
-    const params = insertParams();
-    expect(params).toHaveLength(16);
-    // Row 0 = slot 1.
-    expect(params[0]).toBe(DATE);
-    expect(params[1]).toBe(1);
-    expect(params[2]).toBeCloseTo(expSlot1.ndNum, 3);
-    expect(params[3]).toBeCloseTo(expSlot1.ndDen, 3);
-    expect(params[5]).toBeCloseTo(expSlot1.totalPremium, 3);
-    expect(params[6]).toBe(QUORUM); // n_trades in slot 1
-    // Row 1 = slot 3.
-    expect(params[9]).toBe(3);
-    expect(params[10]).toBeCloseTo(expSlot3.ndNum, 3);
-    expect(params[13]).toBeCloseTo(expSlot3.totalPremium, 3);
-    expect(params[14]).toBe(QUORUM); // n_trades in slot 3
-  });
-
-  it('skips persisting a slot below the per-day volume quorum', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-06-05T21:55:00.000Z'));
-
-    // One slot well below the quorum (a holiday/partial straggler) → dropped.
-    aggResults = [[aggSlotRow(1, sumsFor({}, 10), 10)], []];
-
-    const req = mockRequest({ method: 'GET' });
-    const res = mockResponse();
-    await handler(req, res);
-
-    // No slot cleared the quorum → no INSERT (only the 2 aggregation queries).
-    expect(mockQuery).toHaveBeenCalledTimes(2);
-    expect(
-      mockQuery.mock.calls.some(([stmt]) => /INSERT INTO/i.test(String(stmt))),
-    ).toBe(false);
-    expect(res._json).toMatchObject({ status: 'skipped' });
-  });
-
-  it('re-accumulates the prior trading date too (catch-up lookback)', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-06-05T21:55:00.000Z'));
-
-    // Today empty, but the prior date (2026-06-04) has a quorum-clearing slot 1.
-    // The prior-date aggregation is the 2nd FIFO entry; its rows are stamped the
-    // PRIOR ET date by the cron (accumulateDate is called with the prior date).
-    aggResults = [[], [aggSlotRow(1, sumsFor({}, QUORUM), QUORUM)]];
-
-    const req = mockRequest({ method: 'GET' });
-    const res = mockResponse();
-    await handler(req, res);
-
-    // 2 aggregation queries + 1 INSERT.
-    expect(mockQuery).toHaveBeenCalledTimes(3);
+    expect(aggCalls()).toHaveLength(1);
+    const { stmt, params } = aggCalls()[0]!;
+    expect(stmt).toContain('FROM ws_option_trades');
+    expect(stmt).not.toMatch(/GROUP BY/i);
+    expect(params.slice(2)).toEqual([
+      '2026-06-09T19:30:00.000Z',
+      '2026-06-09T20:00:00.000Z',
+      '2026-06-09',
+    ]);
+    expect(inserts()).toEqual([
+      ['2026-06-09', 12, 12.5, 40, 15000, 90000, QUORUM + 100],
+    ]);
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
-    // The single upserted row is stamped the PRIOR ET date, not today.
-    const params = insertParams();
-    expect(params[0]).toBe('2026-06-04');
-    expect(params[1]).toBe(1); // slot 1
   });
 
-  it('skips with no write when there are no RTH trades', async () => {
-    // Both dates aggregate to no populated slots (empty windows).
-    aggResults = [[], []];
+  it('fills every missing slot one bounded 30-min window at a time', async () => {
+    persistedByDate = { '2026-06-08': ALL_SLOTS };
+    for (const s of ALL_SLOTS) {
+      aggByStart[slotStartIso('2026-06-09', s)] = aggRow(QUORUM);
+    }
 
-    const req = mockRequest({ method: 'GET' });
-    const res = mockResponse();
-    await handler(req, res);
+    const res = await run(TUESDAY_RUN);
 
-    // Only the 2 aggregation queries ran; no INSERT.
-    expect(mockQuery).toHaveBeenCalledTimes(2);
-    expect(
-      mockQuery.mock.calls.some(([stmt]) => /INSERT INTO/i.test(String(stmt))),
-    ).toBe(false);
-    expect(res._json).toMatchObject({ status: 'skipped' });
+    const calls = aggCalls();
+    expect(calls).toHaveLength(13);
+    for (const [i, { stmt, params }] of calls.entries()) {
+      expect(stmt).not.toMatch(/GROUP BY/i);
+      expect(params[2]).toBe(slotStartIso('2026-06-09', i));
+      expect(
+        Date.parse(String(params[3])) - Date.parse(String(params[2])),
+      ).toBe(30 * 60_000);
+    }
+    expect(inserts().map((v) => v[1])).toEqual(ALL_SLOTS);
+    expect(res._json).toMatchObject({ status: 'success', rows: 13 });
   });
 
-  it('handles null-derived zero sums (SQL skips NULL delta/price) without crashing', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-06-05T21:55:00.000Z'));
+  it('on Monday looks back to Friday, not Sunday, and skips it as outside retention', async () => {
+    persistedByDate = { '2026-06-08': ALL_SLOTS };
 
-    // The SQL aggregation skips NULL delta/price (SUM ignores NULLs), so a slot
-    // of only-null rows reports zero sums but a real count. COALESCE guards the
-    // empty-sum NULL → 0. n_trades clears the quorum → persisted.
-    aggResults = [
-      [
-        {
-          slot: 1,
-          n_trades: QUORUM,
-          nd_num: '0',
-          nd_den: '0',
-          total_premium: '0',
-          idx_put_premium: '0',
-        },
+    const res = await run(MONDAY_RUN);
+
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 0,
+      dates: ['2026-06-08', '2026-06-05'],
+    });
+    const perDate = (res._json as { perDate: Record<string, unknown>[] })
+      .perDate;
+    expect(perDate[1]).toMatchObject({
+      date: '2026-06-05',
+      skipped: 'outside-retention',
+    });
+    // Friday's tape is purged at Monday 00:00 ET: it is neither read nor
+    // aggregated, so a partially pruned window can't be persisted.
+    expect(selectDates()).toEqual(['2026-06-08']);
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(JSON.stringify(mockSql.mock.calls)).not.toContain('2026-06-07');
+  });
+
+  it('on Tuesday back-fills a slot Monday left missing (inside retention)', async () => {
+    persistedByDate = {
+      '2026-06-09': ALL_SLOTS,
+      '2026-06-08': ALL_SLOTS.slice(0, 12),
+    };
+    aggByStart = { [slotStartIso('2026-06-08', 12)]: aggRow(QUORUM) };
+
+    const res = await run(TUESDAY_RUN);
+
+    expect(aggCalls()).toHaveLength(1);
+    expect(aggCalls()[0]!.params.slice(2)).toEqual([
+      '2026-06-08T19:30:00.000Z',
+      '2026-06-08T20:00:00.000Z',
+      '2026-06-08',
+    ]);
+    expect(inserts()).toHaveLength(1);
+    expect(inserts()[0]!.slice(0, 2)).toEqual(['2026-06-08', 12]);
+    expect(res._json).toMatchObject({ status: 'success', rows: 1 });
+  });
+
+  it('is idempotent: a re-run with every slot persisted aggregates and writes nothing', async () => {
+    persistedByDate = { '2026-06-09': ALL_SLOTS, '2026-06-08': ALL_SLOTS };
+
+    const res = await run(TUESDAY_RUN);
+
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(inserts()).toEqual([]);
+    expect(res._json).toMatchObject({ status: 'success', rows: 0 });
+  });
+
+  it('does not persist a below-quorum regular-session slot and raises one ingest-gap warning', async () => {
+    persistedByDate = {
+      '2026-06-09': ALL_SLOTS.slice(0, 12),
+      '2026-06-08': ALL_SLOTS,
+    };
+    aggByStart = { [slotStartIso('2026-06-09', 12)]: aggRow(QUORUM - 1) };
+
+    const res = await run(TUESDAY_RUN);
+
+    expect(aggCalls()).toHaveLength(1);
+    expect(inserts()).toEqual([]);
+    expect(res._json).toMatchObject({
+      status: 'skipped',
+      rows: 0,
+      thinGaps: [{ date: '2026-06-09', slot: 12, nTrades: QUORUM - 1 }],
+    });
+    // A regular-session slot under quorum means uw-stream missed its trades.
+    expect(Sentry.captureMessage).toHaveBeenCalledOnce();
+    const [message, context] = vi.mocked(Sentry.captureMessage).mock.calls[0]!;
+    expect(message).toContain('1 regular-session slot(s) below');
+    expect(context).toMatchObject({
+      level: 'warning',
+      fingerprint: ['capture-flow-regime-daily', 'thin-slot'],
+      tags: { 'cron.anomaly': 'flow-regime-thin-slot' },
+      extra: {
+        thinGaps: [{ date: '2026-06-09', slot: 12, nTrades: QUORUM - 1 }],
+      },
+    });
+  });
+
+  it('stays silent for empty slots after a half-day 13:00 close', async () => {
+    // Black Friday 2026-11-27 closes at 13:00 ET: slots 7–12 (13:00–16:00)
+    // are legitimately empty, so their thin result is not an ingest gap.
+    persistedByDate = {
+      '2026-11-27': ALL_SLOTS.slice(0, 7),
+      '2026-11-26': ALL_SLOTS,
+    };
+
+    const res = await run('2026-11-27T21:55:00.000Z'); // 16:55 ET (EST)
+
+    expect(aggCalls()).toHaveLength(6);
+    expect(inserts()).toEqual([]);
+    expect(res._json).toMatchObject({ status: 'skipped', thinGaps: [] });
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('leaves a slot that has not yet settled for a later run, without counting it as a failure', async () => {
+    // 20:03 UTC = 16:03 ET: slot 12 closed 3 min ago, inside the 5-min settle.
+    persistedByDate = {
+      '2026-06-09': ALL_SLOTS.slice(0, 12),
+      '2026-06-08': ALL_SLOTS,
+    };
+
+    const res = await run('2026-06-09T20:03:00.000Z');
+
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(inserts()).toEqual([]);
+    const body = res._json as {
+      status: string;
+      failures: unknown[];
+      perDate: { unsettled: number[] }[];
+    };
+    expect(body.status).toBe('success');
+    expect(body.perDate[0]!.unsettled).toEqual([12]);
+    expect(body.failures).toEqual([]);
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('R4: a failed slot aggregation writes nothing for that slot, still fills the rest, and reports partial to Sentry', async () => {
+    persistedByDate = {
+      '2026-06-09': ALL_SLOTS.slice(0, 11),
+      '2026-06-08': ALL_SLOTS,
+    };
+    aggByStart = {
+      [slotStartIso('2026-06-09', 11)]: new Error('canceling statement'),
+      [slotStartIso('2026-06-09', 12)]: aggRow(QUORUM),
+    };
+
+    const res = await run(TUESDAY_RUN);
+
+    expect(inserts().map((v) => v[1])).toEqual([12]);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      rows: 1,
+      failures: [
+        { date: '2026-06-09', slot: 11, error: 'canceling statement' },
       ],
-      [],
-    ];
+    });
+    expect(Sentry.captureException).toHaveBeenCalledOnce();
+    const [err, context] = vi.mocked(Sentry.captureException).mock.calls[0]!;
+    expect((err as Error).message).toBe('canceling statement');
+    expect(context).toMatchObject({
+      tags: { 'flow_regime.step': 'slot-fill' },
+      extra: {
+        failures: [
+          { date: '2026-06-09', slot: 11, error: 'canceling statement' },
+        ],
+      },
+    });
+  });
 
-    const req = mockRequest({ method: 'GET' });
-    const res = mockResponse();
-    await handler(req, res);
+  it('R4: a rejected upsert is not counted as written and the run reports error', async () => {
+    persistedByDate = {
+      '2026-06-09': ALL_SLOTS.slice(0, 12),
+      '2026-06-08': ALL_SLOTS,
+    };
+    aggByStart = { [slotStartIso('2026-06-09', 12)]: aggRow(QUORUM) };
+    insertError = new Error('could not extend file: disk full');
 
-    expect(res._json).toMatchObject({ status: 'success', rows: 1 });
-    const params = insertParams();
-    expect(Number.isFinite(params[2] as number)).toBe(true); // nd_num
-    expect(Number.isFinite(params[3] as number)).toBe(true); // nd_den
-    expect(Number.isFinite(params[5] as number)).toBe(true); // total_premium
-    expect(params[6]).toBe(QUORUM); // n_trades
+    const res = await run(TUESDAY_RUN);
+
+    expect(res._json).toMatchObject({ status: 'error', rows: 0 });
+    expect(res._json).not.toMatchObject({ status: 'success' });
+    expect(Sentry.captureException).toHaveBeenCalledOnce();
+  });
+
+  it('fails the run instead of refilling blindly when the persisted-slot read rejects', async () => {
+    selectError = new Error('connection refused');
+
+    const res = await run(TUESDAY_RUN);
+
+    expect(res._status).toBe(500);
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(inserts()).toEqual([]);
+    expect(Sentry.captureException).toHaveBeenCalled();
+  });
+
+  it('stops starting new fills past the wall budget and reports the deferred slots', async () => {
+    // Each aggregation "takes" 61 s: fills start at 0 s and 61 s, and at
+    // 122 s the 120 s budget is spent, so the remaining 11 slots are
+    // deferred, not attempted. (A 180 s budget would allow a third fill.)
+    persistedByDate = { '2026-06-08': ALL_SLOTS };
+    for (const s of ALL_SLOTS) {
+      aggByStart[slotStartIso('2026-06-09', s)] = aggRow(QUORUM);
+    }
+    aggMs = 61_000;
+
+    const res = await run(TUESDAY_RUN);
+
+    expect(aggCalls()).toHaveLength(2);
+    expect(inserts().map((v) => v[1])).toEqual([0, 1]);
+    const body = res._json as {
+      status: string;
+      failures: { slot: number; error: string }[];
+    };
+    expect(body.status).toBe('partial');
+    expect(body.failures.map((f) => f.slot)).toEqual(ALL_SLOTS.slice(2));
+    expect(
+      body.failures.every((f) => f.error === 'fill budget exhausted'),
+    ).toBe(true);
+    expect(Sentry.captureException).toHaveBeenCalledOnce();
+    expect(
+      (vi.mocked(Sentry.captureException).mock.calls[0]![0] as Error).message,
+    ).toContain('11 slot(s) not filled');
   });
 });

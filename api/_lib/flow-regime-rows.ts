@@ -1,22 +1,23 @@
 /**
- * In-SQL aggregation for the two flow-regime crons (capture-flow-regime, the
- * live 5-min upsert; and capture-flow-regime-daily, the post-close per-slot
- * accumulator). Both push the metric reduction INTO Postgres so the raw
- * ws_option_trades rows never serialize back to the cron — once the full
- * ~50-ticker uw-stream option_trades universe writes to that table, streaming
- * raw rows serialized past Neon's serverless HTTP 64MB cap (NeonDbError 507
- * "response too large").
+ * In-SQL aggregation for the flow-regime crons: capture-flow-regime's live
+ * 5-min window, and the per-slot persistence that capture-flow-regime and
+ * capture-flow-regime-daily share (flow-regime-slot-daily.ts, one bounded
+ * [slotStart, slotEnd) window per statement). The metric reduction runs INTO
+ * Postgres so the raw ws_option_trades rows never serialize back to the cron.
+ * Once the full ~50-ticker uw-stream option_trades universe wrote to that
+ * table, streaming raw rows overflowed Neon's serverless HTTP 64MB cap
+ * (NeonDbError 507 "response too large").
  *
- * The crons return five scalar component sums per window (or per slot):
+ * Each statement returns five scalar component sums for one window:
  *   nd_num, nd_den, idx_put_premium, total_premium, n_trades
  * which `evaluateFlowRegime` (api/_lib/flow-regime.ts) scores against the
  * baseline. The column algebra below mirrors `computeFlowMetrics` — the JS
  * source of truth — AND `build_neon_metrics` in
  * scripts/build-flow-regime-baseline.py (the already-validated SQL reference).
  *
- * TESTABILITY: the actual SQL text + params are produced by pure statement
- * builders (`buildAggWindowStatement`, `buildAggSlotStatement`) that return
- * `{ text, params }`. Both the prod path (neon `sql.query`) and the pglite
+ * TESTABILITY: the actual SQL text + params are produced by a pure statement
+ * builder (`buildAggWindowStatement`) that returns `{ text, params }`. Both
+ * the prod path (neon `sql.query`) and the pglite
  * integration test (`api/__tests__/flow-regime-sql-integration.test.ts`)
  * EXECUTE those exact statements via an injectable runner — both neon
  * `sql.query(text, params)` and pglite `db.query(text, params)` use `$1`
@@ -62,11 +63,6 @@ export interface FlowAggRow {
   idxPutPremium: number;
   /** Σ(premium), universe-restricted. */
   totalPremium: number;
-}
-
-/** One per-slot aggregation row (FlowAggRow + its slot index). */
-export interface FlowAggSlotRow extends FlowAggRow {
-  slot: number;
 }
 
 /** A parameterized SQL statement: `$N`-placeholder text + its ordered params. */
@@ -119,12 +115,10 @@ function sideSignCase(
 }
 
 /**
- * The universe-FILTERed component-sum SELECT expressions, shared verbatim by
- * both statement builders so they issue byte-identical aggregation algebra.
- * `$1`=universe, `$2`=index_set arrays; `idxPutDateExpr` is the SQL expression
- * for the ET trade date the 0DTE index-put test compares `expiry` against (a
- * bound `$N::date` for the live single-window cron, or the per-row ET date for
- * the daily GROUP BY cron). `sideSignExpr` is the baseline-derived CASE.
+ * The universe-FILTERed component-sum SELECT expressions. `$1`=universe,
+ * `$2`=index_set arrays; `idxPutDateExpr` is the SQL expression for the ET
+ * trade date the 0DTE index-put test compares `expiry` against (the bound
+ * `$5::date`). `sideSignExpr` is the baseline-derived CASE.
  */
 function flowSumExprs(idxPutDateExpr: string, sideSignExpr: string): string {
   return `
@@ -173,9 +167,10 @@ function runnerRows(result: unknown): Record<string, unknown>[] {
 }
 
 /**
- * Build the single-window aggregation statement (the live capture-flow-regime
- * cron). Aggregates ONE in-progress window [startIso, endIso) into the five
- * scalar component sums. The 0DTE index-put test compares `expiry` against the
+ * Build the single-window aggregation statement. It aggregates ONE window
+ * [startIso, endIso) into the five scalar component sums: the live cron's
+ * in-progress slot, or one closed slot's full window in the slot
+ * persistence. The 0DTE index-put test compares `expiry` against the
  * supplied ET trade date (`$5::date`). Always returns exactly one row
  * (COALESCE makes an empty window all-zero).
  *
@@ -209,61 +204,6 @@ export function buildAggWindowStatement(
 }
 
 /**
- * Build the per-slot aggregation statement (the daily
- * capture-flow-regime-daily accumulator). Aggregates a full-day window
- * [startIso, endIso) into per-ET-30min-slot scalar component sums. The slot is
- * computed in SQL from the ET localization of executed_at and bounded to the
- * RTH grid [0, slot_count). The 0DTE index-put test compares `expiry` against
- * each row's own ET trade date. Returns one row per populated slot.
- *
- * Pure — produces `{ text, params }` with no I/O.
- */
-export function buildAggSlotStatement(
-  startIso: string,
-  endIso: string,
-  baseline: FlowRegimeBaseline = FLOW_REGIME_BASELINE,
-): FlowAggStatement {
-  const slotCount = baseline.slot_count;
-  const rthStart = baseline.rth_start_minute;
-  const bucket = baseline.bucket_minutes;
-  // ET-localized executed_at; the slot index and the per-row 0DTE trade date are
-  // both derived from it. et_date mirrors build-flow-regime-baseline.py's Neon
-  // path.
-  const etExpr = `(executed_at AT TIME ZONE 'America/New_York')`;
-  // CONSISTENCY (slot-boundary): we use floor((etMinute − rthStart) / bucket) so
-  // this matches the live cron's slot derivation EXACTLY — `slotForEtMinute`
-  // (api/_lib/flow-regime.ts) is `Math.floor(...)`. We deliberately do NOT mirror
-  // build-flow-regime-baseline.py's `CAST(... AS INTEGER)`: Postgres CAST rounds
-  // half-to-even, which shifts the back half of each 30-min window into the NEXT
-  // slot (e.g. 10:15..10:29 → slot 1 under floor but slot 2 under CAST). The
-  // daily cron BUILDS the per-slot distribution the live cron scores against, so
-  // its bucketing MUST agree with the live cron's floor — otherwise a live slot's
-  // metric would be scored against a misaligned baseline population. Both extract
-  // terms are numeric, so `/ bucket` is float division and `floor()` truncates
-  // toward −∞ identically to JS Math.floor.
-  const slotExpr =
-    `CAST(floor((extract(hour FROM ${etExpr}) * 60 ` +
-    `+ extract(minute FROM ${etExpr}) - ${rthStart}) / ${bucket}) AS INTEGER)`;
-  const etDateExpr = `CAST(${etExpr} AS DATE)`;
-  const text = `
-    SELECT
-      ${slotExpr} AS slot,
-      count(*) AS n_trades,${flowSumExprs(etDateExpr, sideSignCase(baseline.side_sign_map))}
-    FROM ws_option_trades
-    WHERE canceled = FALSE
-      AND executed_at >= $3::timestamptz
-      AND executed_at < $4::timestamptz
-      AND ${slotExpr} >= 0
-      AND ${slotExpr} < ${slotCount}
-    GROUP BY slot
-  `;
-  return {
-    text,
-    params: [baseline.universe, baseline.index_set, startIso, endIso],
-  };
-}
-
-/**
  * Execute the single-window statement against `run` and coerce the one result
  * row to a FlowAggRow. Shared by the prod cron (run = neon `sql.query`) and the
  * integration test (run = pglite `db.query`). Always returns one FlowAggRow.
@@ -289,27 +229,10 @@ export async function runAggWindow(
 }
 
 /**
- * Execute the per-slot statement against `run` and coerce each result row to a
- * FlowAggSlotRow. Shared by the prod daily cron and the integration test.
- */
-export async function runAggSlot(
-  run: FlowAggRunner,
-  startIso: string,
-  endIso: string,
-  baseline: FlowRegimeBaseline = FLOW_REGIME_BASELINE,
-): Promise<FlowAggSlotRow[]> {
-  const { text, params } = buildAggSlotStatement(startIso, endIso, baseline);
-  const rows = runnerRows(await run(text, params));
-  return rows.map((r) => ({
-    slot: numOrNull(r.slot) ?? 0,
-    ...toFlowAggRow(r),
-  }));
-}
-
-/**
- * Aggregate ONE in-progress window into the five scalar component sums in SQL
- * (the live capture-flow-regime cron). Thin wrapper that runs the exact
- * `buildAggWindowStatement` SQL against neon. Always returns exactly one row.
+ * Aggregate ONE window into the five scalar component sums in SQL, for the
+ * live cron's in-progress slot or a closed slot's persistence. Thin wrapper
+ * that runs the exact `buildAggWindowStatement` SQL against neon. Always
+ * returns exactly one row.
  */
 export async function aggregateFlowWindow(
   sql: SqlQueryFn,
@@ -322,23 +245,5 @@ export async function aggregateFlowWindow(
     startIso,
     endIso,
     tradeDateEt,
-  );
-}
-
-/**
- * Aggregate a full-day window into per-ET-30min-slot scalar component sums in
- * SQL (the daily capture-flow-regime-daily accumulator). Thin wrapper that runs
- * the exact `buildAggSlotStatement` SQL against neon. One row per populated
- * slot.
- */
-export async function aggregateFlowWindowBySlot(
-  sql: SqlQueryFn,
-  startIso: string,
-  endIso: string,
-): Promise<FlowAggSlotRow[]> {
-  return runAggSlot(
-    (text, params) => sql.query(text, params),
-    startIso,
-    endIso,
   );
 }

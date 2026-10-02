@@ -12,6 +12,9 @@
  *   - Happy path: exactly one UPSERT with a sensible regime, and the
  *     NUMERIC-as-string + nullable delta/underlying_price coercion.
  *   - Outside-RTH no-op (status 'skipped', no DB write).
+ *   - Previous-slot persistence: the closed slot is aggregated over its full
+ *     window and upserted once settled, never re-written once persisted, and
+ *     a failed finalize writes nothing and reports 'partial' + Sentry.
  *
  * Phase 2 of docs/superpowers/specs/flow-regime-badge-2026-06-06.md
  */
@@ -63,7 +66,11 @@ import {
   computeFlowMetrics,
   type FlowMetricSums,
 } from '../_lib/flow-regime.js';
-import { __resetFlowRegimeBaselineCache } from '../_lib/flow-regime-baseline-live.js';
+import {
+  __resetFlowRegimeBaselineCache,
+  MIN_DAY_SLOT_TRADES,
+} from '../_lib/flow-regime-baseline-live.js';
+import { Sentry } from '../_lib/sentry.js';
 import { mockRequest, mockResponse } from './helpers';
 
 const DATE = '2026-06-05';
@@ -424,5 +431,202 @@ describe('capture-flow-regime cron', () => {
     const params = (mockSql.mock.calls[1] ?? []).slice(1);
     expect(params[1]).toBe(1); // slot
     expect(params[9]).toBe(1); // baseline_version → fallback (committed JSON)
+  });
+});
+
+describe('capture-flow-regime previous-slot persistence', () => {
+  // Vercel fires the 5-min crons ~45–50 s after the minute. 14:05:50 UTC =
+  // 10:05:50 ET is the SECOND tick of slot 1: slot 0 = [09:30, 10:00) ET closed
+  // 5:50 ago, past the 5-min settle margin. 14:00:50 is the first tick.
+  const FIRST_TICK = '2026-06-05T14:00:50.000Z';
+  const SETTLED_TICK = '2026-06-05T14:05:50.000Z';
+  const SLOT0_START = '2026-06-05T13:30:00.000Z';
+  const SLOT0_END = '2026-06-05T14:00:00.000Z';
+  const QUORUM = MIN_DAY_SLOT_TRADES;
+
+  beforeEach(() => {
+    vi.mocked(Sentry.captureException).mockClear();
+  });
+
+  /** The tagged-template SQL text of mockSql call `i`. */
+  function sqlText(i: number): string {
+    const strings = mockSql.mock.calls[i]?.[0] as
+      | TemplateStringsArray
+      | undefined;
+    return strings ? strings.join('?') : '';
+  }
+
+  function insertCalls(): unknown[][] {
+    return mockSql.mock.calls
+      .map((c, i) => ({ c, text: sqlText(i) }))
+      .filter(({ text }) => /INSERT INTO flow_regime_slot_daily/.test(text))
+      .map(({ c }) => c.slice(1));
+  }
+
+  /** Live-window aggregation (this tick) — enough trades for a real read. */
+  function liveAgg() {
+    mockQuery.mockResolvedValueOnce([aggRow(computeFlowMetrics([]), 60)]);
+  }
+
+  /** Loader SELECT + this tick's snapshot UPSERT. */
+  function snapshotCalls() {
+    mockSql.mockResolvedValueOnce([]); // loader
+    mockSql.mockResolvedValueOnce([]); // snapshot UPSERT
+  }
+
+  async function runAt(iso: string) {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(iso));
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+    return res;
+  }
+
+  it('finalizes the previous slot over its full [start, end) window on the first tick past the settle margin', async () => {
+    liveAgg();
+    const prevSums = {
+      ndNum: -40,
+      ndDen: 120,
+      idxPutPremium: 25_000,
+      totalPremium: 80_000,
+    };
+    mockQuery.mockResolvedValueOnce([aggRow(prevSums, QUORUM + 7)]);
+    snapshotCalls();
+    mockSql.mockResolvedValueOnce([]); // persisted slots for today: none
+    mockSql.mockResolvedValueOnce([]); // INSERT slot 0
+
+    const res = await runAt(SETTLED_TICK);
+
+    // Second aggregation = slot 0's FULL window, not the live partial one.
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(mockQuery.mock.calls[1]![1]!.slice(2)).toEqual([
+      SLOT0_START,
+      SLOT0_END,
+      DATE,
+    ]);
+    expect(sqlText(2)).toMatch(/SELECT slot FROM flow_regime_slot_daily/);
+    expect(mockSql.mock.calls[2]!.slice(1)).toEqual([DATE]);
+    // Upserted on the (date, slot) key with the full-window sums.
+    expect(sqlText(3)).toContain('ON CONFLICT (date, slot) DO UPDATE');
+    expect(insertCalls()).toEqual([
+      [DATE, 0, -40, 120, 25_000, 80_000, QUORUM + 7],
+    ]);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      finalize: { slot: 0, outcome: 'written', nTrades: QUORUM + 7 },
+    });
+  });
+
+  it('waits out the settle margin: the first tick of the next slot does not finalize yet', async () => {
+    liveAgg();
+    snapshotCalls();
+
+    const res = await runAt(FIRST_TICK);
+
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      finalize: { slot: 0, outcome: 'unsettled' },
+    });
+  });
+
+  it('is idempotent across ticks: an already-persisted previous slot is not re-aggregated or re-written', async () => {
+    liveAgg();
+    snapshotCalls();
+    mockSql.mockResolvedValueOnce([{ slot: 0 }]); // already persisted
+
+    const res = await runAt('2026-06-05T14:10:50.000Z');
+
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(insertCalls()).toEqual([]);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      finalize: { slot: 0, outcome: 'already-persisted' },
+    });
+  });
+
+  it('does not persist a previous slot below the per-day quorum', async () => {
+    liveAgg();
+    mockQuery.mockResolvedValueOnce([aggRow(computeFlowMetrics([]), 12)]);
+    snapshotCalls();
+    mockSql.mockResolvedValueOnce([]); // none persisted
+
+    const res = await runAt(SETTLED_TICK);
+
+    expect(insertCalls()).toEqual([]);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      finalize: { slot: 0, outcome: 'thin', nTrades: 12 },
+    });
+  });
+
+  it('has nothing to finalize on slot 0, the first slot of the day', async () => {
+    liveAgg();
+    snapshotCalls();
+
+    // 13:35:50 UTC = 09:35:50 ET → slot 0.
+    const res = await runAt('2026-06-05T13:35:50.000Z');
+
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(res._json).toMatchObject({
+      finalize: { slot: null, outcome: 'none' },
+    });
+  });
+
+  it('R4: a failed previous-slot aggregation writes nothing and reports partial + Sentry, not success', async () => {
+    liveAgg();
+    mockQuery.mockRejectedValueOnce(new Error('canceling statement'));
+    snapshotCalls();
+    mockSql.mockResolvedValueOnce([]); // none persisted
+
+    const res = await runAt(SETTLED_TICK);
+
+    expect(insertCalls()).toEqual([]);
+    // This tick's own snapshot still landed.
+    expect(sqlText(1)).toContain('INSERT INTO flow_regime_snapshots');
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      finalize: { slot: 0, outcome: 'failed', error: 'canceling statement' },
+    });
+    expect(Sentry.captureException).toHaveBeenCalledOnce();
+    expect(vi.mocked(Sentry.captureException).mock.calls[0]![1]).toMatchObject({
+      tags: { 'flow_regime.step': 'slot-finalize' },
+      extra: { date: DATE, slot: 0 },
+    });
+  });
+
+  it('R4: a rejected previous-slot upsert reports partial + Sentry, not success', async () => {
+    liveAgg();
+    mockQuery.mockResolvedValueOnce([aggRow(computeFlowMetrics([]), QUORUM)]);
+    snapshotCalls();
+    mockSql.mockResolvedValueOnce([]); // none persisted
+    mockSql.mockRejectedValueOnce(new Error('could not extend file'));
+
+    const res = await runAt(SETTLED_TICK);
+
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      finalize: { slot: 0, outcome: 'failed' },
+    });
+    expect(Sentry.captureException).toHaveBeenCalledOnce();
+  });
+
+  it('R4: a rejected persisted-slot read reports partial + Sentry and never aggregates or writes', async () => {
+    liveAgg();
+    snapshotCalls();
+    mockSql.mockRejectedValueOnce(new Error('connection refused'));
+
+    const res = await runAt(SETTLED_TICK);
+
+    expect(mockQuery).toHaveBeenCalledTimes(1); // only the live window
+    expect(insertCalls()).toEqual([]);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      finalize: { slot: 0, outcome: 'failed', error: 'connection refused' },
+    });
+    expect(Sentry.captureException).toHaveBeenCalledOnce();
   });
 });

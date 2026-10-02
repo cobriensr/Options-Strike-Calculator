@@ -22,6 +22,7 @@ import {
   MIN_DAY_SLOT_TRADES,
 } from '../_lib/flow-regime-baseline-live.js';
 import { FLOW_REGIME_BASELINE } from '../_lib/flow-regime.js';
+import { getETToday } from '../../src/utils/timezone.js';
 
 const MIN_DAYS = FLOW_REGIME_BASELINE.min_days_per_slot; // 15
 const N_PCTL = FLOW_REGIME_BASELINE.percentiles.length; // 9
@@ -187,6 +188,25 @@ describe('loadFlowRegimeBaseline', () => {
     expect(
       FLOW_REGIME_BASELINE.slots.find((s) => s.slot === 7)!.nd_tilt_breakpoints,
     ).toEqual(before);
+  });
+
+  it('reads only dates before the ET day it runs on, so today’s intraday slots never self-score', async () => {
+    // The live cron persists today's slots as they close; they must not join
+    // the distribution today's live slots are scored against. (Behaviour over
+    // real rows is covered in flow-regime-slot-daily.test.ts against pglite.)
+    const sql = vi.fn(() => Promise.resolve([]));
+    await loadFlowRegimeBaseline(
+      sql as unknown as Parameters<typeof loadFlowRegimeBaseline>[0],
+    );
+
+    const [strings, ...values] = sql.mock.calls[0] as unknown as [
+      TemplateStringsArray,
+      ...unknown[],
+    ];
+    expect(strings.join('?')).toMatch(
+      /FROM flow_regime_slot_daily\s+WHERE date < \?::date\s+GROUP BY slot/,
+    );
+    expect(values).toContain(getETToday());
   });
 
   it('caches the result per ET date and reuses it across calls', async () => {

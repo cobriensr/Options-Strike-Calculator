@@ -3,13 +3,13 @@
 /**
  * SQL ↔ JS parity for the flow-regime metric reduction.
  *
- * The two flow-regime crons push the metric reduction INTO SQL (the shared
- * `aggregateFlowWindow` / `aggregateFlowWindowBySlot` builders in
- * flow-regime-rows.ts) so the raw ws_option_trades rows never serialize past
- * Neon's 64MB HTTP cap. The SQL FILTER/SUM/COALESCE algebra MUST stay
- * numerically identical to the JS reducer `computeFlowMetrics`
- * (api/_lib/flow-regime.ts), which is the semantic source of truth and the
- * basis the committed baseline was built on (consistency rule).
+ * The flow-regime crons push the metric reduction INTO SQL (the shared
+ * `aggregateFlowWindow` builder in flow-regime-rows.ts) so the raw
+ * ws_option_trades rows never serialize past Neon's 64MB HTTP cap. The SQL
+ * FILTER/SUM/COALESCE algebra MUST stay numerically identical to the JS
+ * reducer `computeFlowMetrics` (api/_lib/flow-regime.ts), which is the
+ * semantic source of truth and the basis the committed baseline was built on
+ * (consistency rule).
  *
  * SCOPE / LIMITATION: this test does NOT execute the real SQL string — there
  * is no live DB in unit tests. It locks the equivalence of a hand-written JS
@@ -68,10 +68,9 @@ interface RawRow {
 }
 
 /**
- * Pure-JS replica of the SQL aggregation in `aggregateFlowWindow` /
- * `aggregateFlowWindowBySlot`. Mirrors each FILTER (WHERE ...) SUM(...)
- * COALESCE(..., 0) column and the unfiltered count(*). Returns the four
- * component sums + n_trades.
+ * Pure-JS replica of the SQL aggregation in `aggregateFlowWindow`. Mirrors
+ * each FILTER (WHERE ...) SUM(...) COALESCE(..., 0) column and the unfiltered
+ * count(*). Returns the four component sums + n_trades.
  */
 function sqlReplica(rows: readonly RawRow[]): FlowMetricSums & {
   nTrades: number;

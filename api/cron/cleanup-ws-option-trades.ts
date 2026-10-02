@@ -23,6 +23,9 @@
  *     before the hourly cadence it lingered until the next weekday 12:05 UTC
  *     run. Same rule, now enforced promptly; not a bug.
  *   - opening-flow-signal: opening 5-minute slice
+ *   - capture-flow-regime(-daily): one 30-min slot window of today or the
+ *     previous weekday, skipped when the date is older than today minus this
+ *     constant (flow-regime-slot-daily.ts `isWithinTradeRetention`)
  *
  * Schedule: `5 0-12,22-23 * * *` — hourly at :05 from 22:05 through 12:05 UTC,
  * every day including weekends. Never 13–21 UTC, where batch deletes would

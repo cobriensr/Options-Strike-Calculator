@@ -6,9 +6,11 @@
  * Desktop full-tape parquet). This loader makes the baseline self-maintaining
  * straight from Neon:
  *
- *   - A daily post-close cron (capture-flow-regime-daily) accumulates each
- *     trading day's per-slot component sums into flow_regime_slot_daily (one
- *     row per (date, slot)).
+ *   - Each trading day's per-slot component sums are persisted into
+ *     flow_regime_slot_daily (one row per (date, slot)) as each slot closes.
+ *     The live capture-flow-regime cron finalizes slots intraday, and the
+ *     post-close capture-flow-regime-daily cron fills the final slot and any
+ *     gaps (flow-regime-slot-daily.ts).
  *   - This loader runs ONE aggregation query over that table and, per slot,
  *     computes the nine percentile breakpoints (1/5/10/25/50/75/90/95/99) of
  *     the two ratio metrics directly via percentile_cont — the SAME percentile
@@ -22,7 +24,7 @@
  * days of accumulation. No parquet, no Desktop dependency.
  *
  * The metric/percentile DEFINITIONS here MUST match api/_lib/flow-regime.ts
- * and the daily cron's bucketing — nd_tilt = nd_num / nd_den (guarded for a
+ * and the slot-window bucketing — nd_tilt = nd_num / nd_den (guarded for a
  * zero denominator) and idx0dte_put_share = idx_put_premium / total_premium —
  * or the percentiles would be scored against an inconsistent distribution.
  */
@@ -39,7 +41,7 @@ import { getETToday } from '../../src/utils/timezone.js';
 /**
  * Per-day volume quorum for a slot to count toward the percentile distribution.
  *
- * The daily cron runs every weekday — including market holidays and half-days.
+ * The slot writers run every weekday, including market holidays and half-days.
  * A normal RTH 30-min slot sees thousands of trades across the ~50-ticker WS
  * universe; a holiday / partial-session slot sees only tens. Those low-n days
  * still pass the bare `nd_den > 0` / `total_premium > 0` filter and would inject
@@ -47,8 +49,8 @@ import { getETToday } from '../../src/utils/timezone.js';
  * the breakpoints. 500 sits an order of magnitude above a holiday slot and well
  * below a normal RTH slot, so it admits real sessions and rejects the garbage.
  *
- * Enforced in BOTH directions: the daily cron refuses to PERSIST a slot below
- * this floor, and the loader's COUNT / percentile_cont population filters on it
+ * Enforced in BOTH directions: neither slot writer persists a slot below this
+ * floor, and the loader's COUNT / percentile_cont population filters on it
  * too, so any thin rows written before this floor existed can never count.
  */
 export const MIN_DAY_SLOT_TRADES = 500;
@@ -166,12 +168,14 @@ function clonedSeedSlot(
 }
 
 /**
- * Module-scope, single-entry cache keyed by ET date. The daily cron is the SOLE
- * writer of flow_regime_slot_daily and runs once per day, so the loader's
- * aggregation result is invariant within an ET day. Warm serverless instances
- * reuse it across the 5-min ticks; a new ET day (or a different key) busts it
- * and recomputes. Holds the resolved promise so concurrent ticks share one
- * in-flight query rather than racing.
+ * Module-scope, single-entry cache keyed by ET date. The loader reads only
+ * dates BEFORE the ET day it runs on. The live cron writes today's slots
+ * intraday; the daily cron writes the final slot post-close and back-fills the
+ * previous weekday only. So the result is invariant within an ET day (except
+ * a post-close back-fill of yesterday, which the next day's load picks up).
+ * Warm serverless instances reuse it across the 5-min ticks; a new ET day
+ * busts it and recomputes. Holds the resolved promise so concurrent ticks
+ * share one in-flight query rather than racing.
  */
 let baselineCache: {
   etDate: string;
@@ -188,8 +192,15 @@ export function __resetFlowRegimeBaselineCache(): void {
  * breakpoints from flow_regime_slot_daily, falling back per-slot to the
  * committed JSON until a slot has ≥ min_days_per_slot days for BOTH metrics.
  *
- * Cached per ET date (the daily cron writes at most once/day); the first tick
- * of a given ET day runs the query + build, later ticks reuse it (#4).
+ * Cached per ET date; the first tick of a given ET day runs the query + build,
+ * later ticks reuse it (#4).
+ *
+ * Reads only `date < ET today`. The live cron persists today's slots as they
+ * close, and those must not join the distribution today's live slots are
+ * scored against (self-inclusion). Without the bound, a cold instance would
+ * also see a different day set than a warm one. With it, the population is
+ * exactly "yesterday and earlier", as it was when only the post-close cron
+ * wrote.
  *
  * ONE aggregation query. Per slot it computes, in a single pass:
  *   - the count of days usable for each metric (nd_den > 0 / total_premium > 0,
@@ -211,7 +222,7 @@ export async function loadFlowRegimeBaseline(
   if (baselineCache?.etDate === etDate) {
     return baselineCache.promise;
   }
-  const promise = computeFlowRegimeBaseline(sql);
+  const promise = computeFlowRegimeBaseline(sql, etDate);
   baselineCache = { etDate, promise };
   // If the query rejects, drop the cache so the next tick retries instead of
   // serving a permanently-rejected promise for the rest of the ET day.
@@ -223,6 +234,7 @@ export async function loadFlowRegimeBaseline(
 
 async function computeFlowRegimeBaseline(
   sql: SqlTag,
+  etDate: string,
 ): Promise<LoadedFlowRegimeBaseline> {
   const minDays = FLOW_REGIME_BASELINE.min_days_per_slot;
 
@@ -250,6 +262,7 @@ async function computeFlowRegimeBaseline(
         ORDER BY idx_put_premium / NULLIF(total_premium, 0)
       ) FILTER (WHERE n_trades >= ${MIN_DAY_SLOT_TRADES}) AS idx_breakpoints
     FROM flow_regime_slot_daily
+    WHERE date < ${etDate}::date
     GROUP BY slot
   `) as SlotPercentileRow[];
 
