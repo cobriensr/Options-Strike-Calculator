@@ -141,48 +141,41 @@ export const ACTIVE_SESSION_STAGES: ReadonlySet<SessionStage> = new Set([
 ]);
 
 /**
+ * Parse a strict, zero-padded 'YYYY-MM-DD' calendar date to its UTC noon,
+ * or null when it isn't one. UTC noon keeps `getUTCDay` on the calendar
+ * weekday whatever the runtime's timezone.
+ *
+ * The round-trip through `toISOString` rejects dates the JS engine would
+ * otherwise roll over (2026-02-30 → 2026-03-02, 2026-04-31 → 05-01); the
+ * NaN check runs first because `toISOString` throws on an invalid Date.
+ */
+function parseIsoDate(date: string): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const d = new Date(`${date}T12:00:00Z`);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10) === date ? d : null;
+}
+
+/**
  * Returns true if `date` is a US equity trading day — i.e., a weekday
  * (Mon-Fri) that is not a NYSE-closed holiday. Half-days ARE trading days
  * (just shorter), so this returns true for them.
  *
- * Date format: 'YYYY-MM-DD'. Parsed as UTC noon to avoid any timezone
- * ambiguity around the day-of-week computation — the calendar day is
- * what we care about, not the wall-clock instant.
- *
- * Returns false for malformed input rather than throwing.
+ * Date format: zero-padded 'YYYY-MM-DD' (what every caller's Intl
+ * formatter produces). Returns false for malformed or impossible dates
+ * (e.g. 2026-02-30) rather than throwing — callers treat "not a trading
+ * day" as skip/closed, which is the safe reading of bad input.
  */
 export function isTradingDay(date: string): boolean {
   // Holidays first — also catches the calendar-day-defined "weekend
   // observation" cases like 2026-07-03 (Independence Day observed).
   if (MARKET_CLOSED_DATES.has(date)) return false;
 
-  const parts = date.split('-');
-  if (parts.length !== 3) return false;
-  const year = Number(parts[0]);
-  const month = Number(parts[1]);
-  const day = Number(parts[2]);
-  if (
-    !Number.isInteger(year) ||
-    !Number.isInteger(month) ||
-    !Number.isInteger(day) ||
-    month < 1 ||
-    month > 12 ||
-    day < 1 ||
-    day > 31
-  ) {
-    return false;
-  }
-
-  // Use UTC noon so getUTCDay returns the calendar weekday regardless
-  // of the runtime's local timezone. (See src/utils/time.ts:parseDow
-  // and src/hooks/useHistoryData.ts:218 for the same pattern.)
-  const d = new Date(Date.UTC(year, month - 1, day, 12));
-  if (Number.isNaN(d.getTime())) return false;
+  const d = parseIsoDate(date);
+  if (!d) return false;
 
   const dow = d.getUTCDay(); // 0 = Sun, 6 = Sat
-  if (dow === 0 || dow === 6) return false;
-
-  return true;
+  return dow !== 0 && dow !== 6;
 }
 
 /**
@@ -196,14 +189,8 @@ export function isTradingDay(date: string): boolean {
  * no sensible fallback.
  */
 export function priorTradingDay(date: string): string {
-  const d = new Date(`${date}T12:00:00Z`);
-  // The round-trip rejects dates V8 rolls over (2026-02-30 → 03-02);
-  // the NaN check must run first because toISOString throws on NaN.
-  if (
-    !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
-    Number.isNaN(d.getTime()) ||
-    d.toISOString().slice(0, 10) !== date
-  ) {
+  const d = parseIsoDate(date);
+  if (!d) {
     throw new Error(`priorTradingDay: expected YYYY-MM-DD, got "${date}"`);
   }
   // A run of non-trading days is at most four long (holiday next to a

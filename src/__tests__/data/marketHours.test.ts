@@ -134,6 +134,17 @@ describe('isTradingDay', () => {
     expect(isTradingDay('2026-04')).toBe(false); // missing day
     expect(isTradingDay('2026/04/08')).toBe(false); // wrong separator
   });
+
+  it('returns false for well-formed but impossible dates instead of rolling them over', () => {
+    // 2026-02-30 used to roll to Mon 2026-03-02 and read as a trading day.
+    expect(isTradingDay('2026-02-30')).toBe(false);
+    expect(isTradingDay('2026-04-31')).toBe(false);
+    expect(isTradingDay('not-a-date')).toBe(false);
+  });
+
+  it('requires zero-padded YYYY-MM-DD (every caller formats with 2-digit parts)', () => {
+    expect(isTradingDay('2026-4-8')).toBe(false);
+  });
 });
 
 describe('priorTradingDay', () => {
@@ -188,6 +199,11 @@ describe('cashSessionMinutes', () => {
     expect(cashSessionMinutes('2026-04-25')).toBe(0); // Sat
     expect(cashSessionMinutes('2026-07-03')).toBe(0); // holiday
     expect(cashSessionMinutes('garbage')).toBe(0);
+  });
+
+  it('is 0 for rolled-over dates, not a full session', () => {
+    expect(cashSessionMinutes('2026-02-30')).toBe(0);
+    expect(cashSessionMinutes('2026-04-31')).toBe(0);
   });
 });
 
