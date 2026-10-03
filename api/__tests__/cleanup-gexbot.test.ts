@@ -29,8 +29,8 @@ vi.mock('../_lib/sentry.js', () => ({
   metrics: { uwRateLimit: vi.fn() },
 }));
 
-vi.mock('../_lib/gexbot-archive-dates.js', () => ({
-  GEXBOT_ARCHIVE_TABLES: ['gexbot_snapshots', 'gexbot_api_capture'] as const,
+vi.mock('../_lib/gexbot-archive-dates.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../_lib/gexbot-archive-dates.js')>()),
   listUnarchivedDates: vi.fn(),
 }));
 
@@ -59,9 +59,9 @@ const authedReq = () =>
     headers: { authorization: 'Bearer test-secret' },
   });
 
-/** Scripts the (yesterday, gate) SELECT that follows each helper call. */
+/** Scripts the (yesterday, gate_cutoff) SELECT that follows each helper call. */
 const scriptDates = (yesterday: string, gate: string | null) =>
-  mockSql.mockResolvedValueOnce([{ yesterday, gate }]);
+  mockSql.mockResolvedValueOnce([{ yesterday, gate_cutoff: gate }]);
 
 /** First interpolated value of every DELETE call, i.e. the cutoff. */
 const deleteCutoffs = (): unknown[] =>
@@ -136,6 +136,7 @@ describe('cleanup-gexbot handler', () => {
   });
 
   it('stalls the cutoff the day before the first un-archived session', async () => {
+    vi.setSystemTime(new Date('2026-10-02T12:15:00.000Z'));
     vi.mocked(listUnarchivedDates).mockResolvedValue(['2026-09-08']);
     scriptDates('2026-10-01', '2026-09-07');
     mockSql.mockResolvedValueOnce([]); // snapshots DELETE
@@ -150,14 +151,15 @@ describe('cleanup-gexbot handler', () => {
       '2026-09-07',
       '2026-09-07',
     ]);
+    // gate is the first un-archived day itself, not the day before.
     expect(json.results.map((r) => r.gate)).toEqual([
-      '2026-09-07',
-      '2026-09-07',
+      '2026-09-08',
+      '2026-09-08',
     ]);
     expect(deleteCutoffs()).toEqual(['2026-09-07', '2026-09-07']);
     // The dates SELECT receives today and the first pending date.
     expect(mockSql.mock.calls[0]?.slice(1)).toEqual([
-      '2026-03-24',
+      '2026-10-02',
       '2026-09-08',
     ]);
   });
@@ -212,8 +214,8 @@ describe('cleanup-gexbot handler', () => {
     let nowCalls = 0;
     vi.spyOn(Date, 'now').mockImplementation(() => {
       nowCalls += 1;
-      // startedAt, then in-budget, then 5 minutes ahead (> 295s budget).
-      if (nowCalls >= 3) return realNow() + 300_000;
+      // instrumentation start, startedAt, pre-table check in budget, then 5 minutes ahead (> 295s budget).
+      if (nowCalls >= 4) return realNow() + 300_000;
       return realNow();
     });
 
@@ -226,7 +228,16 @@ describe('cleanup-gexbot handler', () => {
     await handler(authedReq(), res);
 
     expect(res._status).toBe(200);
-    expect((res._json as Json).results[0]?.stopReason).toBe('wall_budget');
+    const json = res._json as Json & {
+      skipped: Array<{ table: string; reason: string }>;
+    };
+    expect(json.results[0]?.stopReason).toBe('wall_budget');
+    // Table 2 never ran: surfaced as skipped, run is partial, not success.
+    expect(json.status).toBe('partial');
+    expect(json.skipped).toEqual([
+      { table: 'gexbot_api_capture', reason: 'wall_budget' },
+    ]);
+    expect(listUnarchivedDates).toHaveBeenCalledTimes(1);
   });
 
   it('reports stopReason: drained when the first batch is empty', async () => {
@@ -267,6 +278,52 @@ describe('cleanup-gexbot handler', () => {
     expect(
       messages.some(
         (m) => m.includes('gexbot_snapshots') && m.includes('gate down'),
+      ),
+    ).toBe(true);
+  });
+
+  it('reports partial progress and names the table when a DELETE fails mid-loop', async () => {
+    scriptDates('2026-03-23', null);
+    mockSql.mockResolvedValueOnce(
+      Array.from({ length: 10 }, (_, i) => ({ id: i })),
+    ); // snapshots batch 1
+    mockSql.mockRejectedValueOnce(new Error('delete boom')); // batch 2
+    scriptDates('2026-03-23', null);
+    mockSql.mockResolvedValueOnce([]); // captures DELETE still runs
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(500);
+    expect(deleteCutoffs()).toHaveLength(3);
+    const messages = vi
+      .mocked(Sentry.captureException)
+      .mock.calls.map(([e]) => String((e as Error).message));
+    expect(
+      messages.some(
+        (m) =>
+          m.includes('gexbot_snapshots') &&
+          m.includes('delete boom') &&
+          m.includes('deleted 10'),
+      ),
+    ).toBe(true);
+  });
+
+  it('fails with a named error when the dates row is missing', async () => {
+    mockSql.mockResolvedValueOnce([]); // snapshots dates SELECT: no row
+    scriptDates('2026-03-23', null);
+    mockSql.mockResolvedValueOnce([]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(500);
+    const messages = vi
+      .mocked(Sentry.captureException)
+      .mock.calls.map(([e]) => String((e as Error).message));
+    expect(
+      messages.some(
+        (m) => m.includes('gexbot_snapshots') && m.includes('no date row'),
       ),
     ).toBe(true);
   });
