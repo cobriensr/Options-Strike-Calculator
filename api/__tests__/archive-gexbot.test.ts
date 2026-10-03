@@ -3,14 +3,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const { mockSql, mockSentryCapture, mockPut, mockHead, mockWriteParquet } =
-  vi.hoisted(() => ({
-    mockSql: vi.fn(),
-    mockSentryCapture: vi.fn(),
-    mockPut: vi.fn(),
-    mockHead: vi.fn(),
-    mockWriteParquet: vi.fn(),
-  }));
+const {
+  mockSql,
+  mockSentryCapture,
+  mockPut,
+  mockHead,
+  mockWriteParquet,
+  mockListUnarchived,
+  mockLoggerWarn,
+} = vi.hoisted(() => ({
+  mockSql: vi.fn(),
+  mockSentryCapture: vi.fn(),
+  mockPut: vi.fn(),
+  mockHead: vi.fn(),
+  mockWriteParquet: vi.fn(),
+  mockListUnarchived: vi.fn(),
+  mockLoggerWarn: vi.fn(),
+}));
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -20,7 +29,7 @@ vi.mock('../_lib/db.js', () => ({
 vi.mock('../_lib/logger.js', () => ({
   default: {
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: mockLoggerWarn,
     error: vi.fn(),
   },
 }));
@@ -45,10 +54,53 @@ vi.mock('../_lib/gexbot-parquet.js', () => ({
   buildCaptureSchema: vi.fn(() => ({ capture: true })),
 }));
 
+vi.mock('../_lib/gexbot-archive-dates.js', () => ({
+  GEXBOT_ARCHIVE_TABLES: ['gexbot_snapshots', 'gexbot_api_capture'],
+  listUnarchivedDates: mockListUnarchived,
+}));
+
 import handler from '../cron/archive-gexbot.js';
 
-// Post-close time (Tuesday 21:30 UTC = 4:30pm CT)
+// Post-close time (Tuesday 21:30 UTC = 4:30pm CT); ET date 2026-03-24
 const POST_CLOSE = new Date('2026-03-24T21:30:00.000Z');
+
+const AUTH = { authorization: 'Bearer test-secret' };
+
+/** Both tables report the same pending dates. */
+function pendingForBoth(dates: string[]) {
+  mockListUnarchived.mockResolvedValue(dates);
+}
+
+/** Per-table pending dates, keyed by table name. */
+function pendingByTable(byTable: Record<string, string[]>) {
+  mockListUnarchived.mockImplementation(
+    async (_sql: unknown, table: string) => byTable[table] ?? [],
+  );
+}
+
+/**
+ * Scripts an all-empty-days run: every page and audit INSERT resolves [],
+ * parquet/put/head are consistent, and each writeRowsToParquet call
+ * advances the mocked clock by `msPerTable`.
+ */
+function setupEmptyDays(msPerTable = 0) {
+  mockSql.mockResolvedValue([]);
+  mockWriteParquet.mockImplementation(async () => {
+    vi.setSystemTime(Date.now() + msPerTable);
+    return { buffer: Buffer.alloc(0), bytes: 0, sha256: 'e', rowCount: 0 };
+  });
+  mockPut.mockImplementation(async (key: string) => ({
+    url: `https://blob.example/${key}`,
+    pathname: key,
+    contentDisposition: '',
+    contentType: '',
+  }));
+  mockHead.mockResolvedValue({ size: 0 });
+}
+
+function archivedKeys(): string[] {
+  return mockPut.mock.calls.map((c) => String(c[0]));
+}
 
 function setupSuccessfulRun(rowsPerPage: Record<string, unknown>[]) {
   // Each table does: page 1 (rows), page 2 (empty), then 1 INSERT.
@@ -141,6 +193,7 @@ describe('archive-gexbot handler', () => {
   });
 
   it('archives both tables and writes audit rows on happy path', async () => {
+    pendingForBoth(['2026-03-23']);
     setupSuccessfulRun([{ id: 1, captured_at: new Date(), ticker: 'SPX' }]);
 
     const req = mockRequest({
@@ -154,7 +207,20 @@ describe('archive-gexbot handler', () => {
     expect(res._json).toMatchObject({
       status: 'success',
       rows: 2, // 1 row per table × 2 tables
+      dates: ['2026-03-23'],
+      failed: 0,
+      remainingDates: 0,
+      stopReason: 'drained',
     });
+    expect(mockListUnarchived).toHaveBeenCalledWith(
+      mockSql,
+      'gexbot_snapshots',
+      '2026-03-24',
+    );
+    expect(archivedKeys()).toEqual([
+      'gexbot/gexbot_snapshots/2026-03-23.parquet',
+      'gexbot/gexbot_api_capture/2026-03-23.parquet',
+    ]);
     // 2 put() calls (snapshots + captures)
     expect(mockPut).toHaveBeenCalledTimes(2);
     // 2 head() calls for size verification
@@ -164,6 +230,7 @@ describe('archive-gexbot handler', () => {
 
   it('records partial status when one table archive throws', async () => {
     // snapshots succeeds, captures fails on put()
+    pendingForBoth(['2026-03-23']);
     mockSql.mockResolvedValueOnce([{ id: 1, ticker: 'SPX' }]); // snapshots page 1
     mockSql.mockResolvedValueOnce([]); // snapshots page 2
     mockSql.mockResolvedValueOnce([]); // snapshots audit INSERT
@@ -204,11 +271,23 @@ describe('archive-gexbot handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({ status: 'partial' });
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      failed: 1,
+      dates: ['2026-03-23'],
+    });
     expect(mockSentryCapture).toHaveBeenCalledTimes(1);
+    expect(mockSentryCapture).toHaveBeenCalledWith(expect.any(Error), {
+      tags: {
+        'gexbot.cron': 'archive',
+        'gexbot.table': 'gexbot_api_capture',
+        'gexbot.archive_date': '2026-03-23',
+      },
+    });
   });
 
   it('throws when blob HEAD size does not match upload size', async () => {
+    pendingForBoth(['2026-03-23']);
     mockSql.mockResolvedValueOnce([{ id: 1, ticker: 'SPX' }]); // page 1
     mockSql.mockResolvedValueOnce([]); // page 2 terminates
 
@@ -248,6 +327,7 @@ describe('archive-gexbot handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
+    expect(res._json).toMatchObject({ status: 'partial' });
     expect(mockSentryCapture).toHaveBeenCalled();
     const captured = mockSentryCapture.mock.calls[0]?.[0] as Error;
     expect(captured.message).toMatch(/size mismatch/i);
@@ -261,6 +341,7 @@ describe('archive-gexbot handler', () => {
   });
 
   it('archives an empty day cleanly (still writes audit row with row_count=0)', async () => {
+    pendingForBoth(['2026-03-23']);
     // No rows to archive → streamRows generator yields nothing →
     // writeRowsToParquet still produces a (schema-only) buffer →
     // audit row with row_count=0 still lands so cleanup knows the
@@ -308,6 +389,7 @@ describe('archive-gexbot handler', () => {
     // Idempotency invariant: re-running on the same archive_date
     // must UPDATE the existing audit row rather than fail.
     // Verify the SQL shape carries the ON CONFLICT DO UPDATE clause.
+    pendingForBoth(['2026-03-23']);
     setupSuccessfulRun([{ id: 1, captured_at: new Date(), ticker: 'SPX' }]);
 
     const req = mockRequest({
@@ -335,5 +417,215 @@ describe('archive-gexbot handler', () => {
       );
       expect(joinedSql).toMatch(/DO UPDATE SET/);
     }
+  });
+
+  describe('catch-up and date override', () => {
+    it('stops on the time budget after a slow date and reports the backlog', async () => {
+      pendingForBoth(['2026-03-20', '2026-03-21', '2026-03-22']);
+      // 100 s per table = 200 s for the first date. Remaining
+      // 300 - 200 = 100 s < 1.5 * 200 s + 15 s, so no second date.
+      setupEmptyDays(100_000);
+
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET', headers: AUTH }), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'success',
+        dates: ['2026-03-20'],
+        remainingDates: 2,
+        stopReason: 'budget',
+        failed: 0,
+      });
+      expect(archivedKeys()).toEqual([
+        'gexbot/gexbot_snapshots/2026-03-20.parquet',
+        'gexbot/gexbot_api_capture/2026-03-20.parquet',
+      ]);
+      expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        { remainingDates: 2, stopReason: 'budget' },
+        'archive-gexbot backlog remains',
+      );
+    });
+
+    it('archives a whole fast backlog oldest-first and drains', async () => {
+      pendingForBoth(['2026-03-20', '2026-03-21', '2026-03-22']);
+      setupEmptyDays(1_000);
+
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET', headers: AUTH }), res);
+
+      expect(res._json).toMatchObject({
+        status: 'success',
+        dates: ['2026-03-20', '2026-03-21', '2026-03-22'],
+        remainingDates: 0,
+        stopReason: 'drained',
+      });
+      expect(mockPut).toHaveBeenCalledTimes(6);
+      expect(archivedKeys().at(0)).toBe(
+        'gexbot/gexbot_snapshots/2026-03-20.parquet',
+      );
+      expect(archivedKeys().at(-1)).toBe(
+        'gexbot/gexbot_api_capture/2026-03-22.parquet',
+      );
+      expect(mockLoggerWarn).not.toHaveBeenCalled();
+    });
+
+    it('caps a run at MAX_DATES_PER_RUN dates', async () => {
+      pendingForBoth([
+        '2026-03-16',
+        '2026-03-17',
+        '2026-03-18',
+        '2026-03-19',
+        '2026-03-20',
+        '2026-03-23',
+      ]);
+      setupEmptyDays(0);
+
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET', headers: AUTH }), res);
+
+      expect(res._json).toMatchObject({
+        status: 'success',
+        dates: [
+          '2026-03-16',
+          '2026-03-17',
+          '2026-03-18',
+          '2026-03-19',
+          '2026-03-20',
+        ],
+        remainingDates: 1,
+        stopReason: 'max_dates',
+      });
+      expect(mockPut).toHaveBeenCalledTimes(10);
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        { remainingDates: 1, stopReason: 'max_dates' },
+        'archive-gexbot backlog remains',
+      );
+    });
+
+    it('re-archives only the missing table of a half-archived day', async () => {
+      pendingByTable({
+        gexbot_snapshots: [],
+        gexbot_api_capture: ['2026-03-23'],
+      });
+      setupEmptyDays(0);
+
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET', headers: AUTH }), res);
+
+      expect(res._json).toMatchObject({
+        status: 'success',
+        dates: ['2026-03-23'],
+        stopReason: 'drained',
+      });
+      expect(mockWriteParquet).toHaveBeenCalledTimes(1);
+      expect(mockWriteParquet.mock.calls[0]?.[0]).toEqual({ capture: true });
+      expect(archivedKeys()).toEqual([
+        'gexbot/gexbot_api_capture/2026-03-23.parquet',
+      ]);
+    });
+
+    it('does nothing and reports drained when nothing is pending', async () => {
+      pendingForBoth([]);
+      setupEmptyDays(0);
+
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET', headers: AUTH }), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'success',
+        rows: 0,
+        dates: [],
+        remainingDates: 0,
+        stopReason: 'drained',
+      });
+      expect(mockPut).not.toHaveBeenCalled();
+    });
+
+    it('archives both tables for ?date= without consulting the helper', async () => {
+      setupEmptyDays(0);
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          headers: AUTH,
+          query: { date: '2026-03-20' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      expect(mockListUnarchived).not.toHaveBeenCalled();
+      expect(res._json).toMatchObject({
+        status: 'success',
+        dates: ['2026-03-20'],
+        stopReason: 'drained',
+      });
+      expect(archivedKeys()).toEqual([
+        'gexbot/gexbot_snapshots/2026-03-20.parquet',
+        'gexbot/gexbot_api_capture/2026-03-20.parquet',
+      ]);
+    });
+
+    it('returns 500 and never touches Blob for a malformed ?date=', async () => {
+      setupEmptyDays(0);
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          headers: AUTH,
+          query: { date: '2026-3-2' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(500);
+      expect(mockPut).not.toHaveBeenCalled();
+      expect(mockListUnarchived).not.toHaveBeenCalled();
+    });
+
+    it('returns 500 and never touches Blob when listing pending dates fails', async () => {
+      mockListUnarchived.mockRejectedValue(new Error('neon down'));
+      setupEmptyDays(0);
+
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET', headers: AUTH }), res);
+
+      expect(res._status).toBe(500);
+      expect(mockPut).not.toHaveBeenCalled();
+      expect(mockWriteParquet).not.toHaveBeenCalled();
+    });
+
+    it('keeps archiving later dates and the other table after a table failure', async () => {
+      pendingForBoth(['2026-03-20', '2026-03-23']);
+      setupEmptyDays(0);
+      // Fail the snapshots upload on the first date only.
+      mockPut.mockImplementationOnce(async () => {
+        throw new Error('blob upload denied');
+      });
+
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET', headers: AUTH }), res);
+
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        dates: ['2026-03-20', '2026-03-23'],
+        failed: 1,
+        stopReason: 'drained',
+      });
+      expect(mockSentryCapture).toHaveBeenCalledTimes(1);
+      expect(mockSentryCapture).toHaveBeenCalledWith(expect.any(Error), {
+        tags: {
+          'gexbot.cron': 'archive',
+          'gexbot.table': 'gexbot_snapshots',
+          'gexbot.archive_date': '2026-03-20',
+        },
+      });
+      expect(mockPut).toHaveBeenCalledTimes(4);
+    });
   });
 });
