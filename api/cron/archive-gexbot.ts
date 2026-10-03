@@ -41,8 +41,14 @@
  *
  * Head-of-line blocking: dates run oldest first, so one table-day that cannot
  * finish within the function limit fails every run on that same date and
- * starves newer ones. Remedy: archive that date manually with `?date=`, or
- * insert its `gexbot_archive_audit` row, so it leaves the pending set.
+ * starves newer ones. `?date=` does NOT help: it runs this same function
+ * under the same maxDuration. Remedy: archive the stuck table-day outside the
+ * function limit, via a one-off local script that uses the same
+ * writeRowsToParquet + Blob put + audit upsert path, or a temporary
+ * maxDuration increase. NEVER insert a `gexbot_archive_audit` row unless the
+ * Blob object exists and its size has been verified: the audit row is
+ * cleanup's signal that a day is archived, so a bare row makes cleanup delete
+ * live rows that were never exported.
  *
  * For each table and date:
  *   1. Page through the day's rows via id-cursor pagination
