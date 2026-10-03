@@ -61,7 +61,10 @@
     "zod": "^4.3.6"
   },
   "overrides": {
-    "@opentelemetry/instrumentation-http": "0.214.0"
+    "@opentelemetry/instrumentation-http": "0.214.0",
+    "thrift": {
+      "uuid": "^11.1.1"
+    }
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.1",
