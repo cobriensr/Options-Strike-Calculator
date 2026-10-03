@@ -140,6 +140,14 @@ const HIGH_FREQ_FAILURE_THRESHOLD = 3;
 const MARKET_HOURS_TZ = 'America/New_York';
 
 export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
+  'archive-gexbot': {
+    // Daily Parquet export; crashed at module load for four weeks in Sep–Oct
+    // 2026 with no Sentry event because nothing ran. A missed check-in is
+    // the only signal for that failure class. maxDuration is 300 s → long runner.
+    schedule: '30 21 * * 2-6',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: LONG_RUNNER_MAX_RUNTIME,
+  },
   'auto-prefill-premarket': {
     // Dual-slot 13:30 + 14:30 UTC (mirrors compute-es-overnight). The
     // handler's isAfterCashOpen gate skips the early CST slot (07:30 CT)
@@ -203,6 +211,11 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
+  },
+  'cleanup-gexbot': {
+    schedule: '15 12 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: LONG_RUNNER_MAX_RUNTIME,
   },
   'compute-cone': {
     schedule: '32 13 * * 1-5',
