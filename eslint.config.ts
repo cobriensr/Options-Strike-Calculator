@@ -16,6 +16,11 @@ export default [
       'ml/.venv',
       '.claude/skills',
       '.claude/worktrees',
+      // Parallel-session git worktrees live under .worktrees/ (gitignored).
+      // Each carries its own tsconfig.json, and letting eslint traverse them
+      // trips typescript-eslint's "multiple candidate TSConfigRootDirs" error
+      // on every file in the repo.
+      '.worktrees',
       '.agents/skills',
       '.clone',
       'sidecar',
