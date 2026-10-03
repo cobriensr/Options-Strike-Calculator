@@ -29,10 +29,45 @@ vi.mock('../_lib/sentry.js', () => ({
   metrics: { uwRateLimit: vi.fn() },
 }));
 
+vi.mock('../_lib/gexbot-archive-dates.js', () => ({
+  GEXBOT_ARCHIVE_TABLES: ['gexbot_snapshots', 'gexbot_api_capture'] as const,
+  listUnarchivedDates: vi.fn(),
+}));
+
+import { Sentry } from '../_lib/sentry.js';
+import { listUnarchivedDates } from '../_lib/gexbot-archive-dates.js';
 import handler from '../cron/cleanup-gexbot.js';
 
 // Pre-market: Tuesday 12:15 UTC == 7:15am ET
 const PRE_MARKET = new Date('2026-03-24T12:15:00.000Z');
+
+type Json = {
+  status: string;
+  rows: number;
+  results: Array<{
+    table: string;
+    gate: string | null;
+    cutoff: string;
+    deleted: number;
+    stopReason: string;
+  }>;
+};
+
+const authedReq = () =>
+  mockRequest({
+    method: 'GET',
+    headers: { authorization: 'Bearer test-secret' },
+  });
+
+/** Scripts the (yesterday, gate) SELECT that follows each helper call. */
+const scriptDates = (yesterday: string, gate: string | null) =>
+  mockSql.mockResolvedValueOnce([{ yesterday, gate }]);
+
+/** First interpolated value of every DELETE call, i.e. the cutoff. */
+const deleteCutoffs = (): unknown[] =>
+  mockSql.mock.calls
+    .filter(([strings]) => strings.join('').includes('DELETE FROM'))
+    .map(([, cutoff]) => cutoff);
 
 describe('cleanup-gexbot handler', () => {
   const originalEnv = process.env;
@@ -40,6 +75,7 @@ describe('cleanup-gexbot handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockSql.mockResolvedValue([]);
+    vi.mocked(listUnarchivedDates).mockResolvedValue([]);
     process.env = { ...originalEnv };
     vi.setSystemTime(PRE_MARKET);
     process.env.CRON_SECRET = 'test-secret';
@@ -58,208 +94,187 @@ describe('cleanup-gexbot handler', () => {
     expect(res._status).toBe(401);
   });
 
-  it('skips a table with no audit rows (no_archive)', async () => {
-    // Both tables: audit SELECT returns max_date=null → skip
-    mockSql.mockResolvedValueOnce([{ max_date: null }]); // snapshots audit
-    mockSql.mockResolvedValueOnce([{ max_date: null }]); // captures audit
-
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      status: 'success',
-      rows: 0,
-      results: [
-        expect.objectContaining({
-          table: 'gexbot_snapshots',
-          stopReason: 'no_archive',
-          deleted: 0,
-        }),
-        expect.objectContaining({
-          table: 'gexbot_api_capture',
-          stopReason: 'no_archive',
-          deleted: 0,
-        }),
-      ],
-    });
-    // 2 SELECTs only (no DELETEs)
-    expect(mockSql).toHaveBeenCalledTimes(2);
-  });
-
-  it('deletes rows up to the archived cutoff for each table', async () => {
-    // Per-table call order: audit SELECT → yesterday_et SELECT → DELETE loop.
-    // snapshots
-    mockSql.mockResolvedValueOnce([{ max_date: '2026-03-22' }]); // audit
-    mockSql.mockResolvedValueOnce([{ yesterday_et: '2026-03-23' }]); // yesterday
+  it('with nothing pending, deletes through yesterday for each table', async () => {
+    scriptDates('2026-03-23', null);
     mockSql.mockResolvedValueOnce(
       Array.from({ length: 100 }, (_, i) => ({ id: i })),
-    ); // batch 1
-    mockSql.mockResolvedValueOnce([]); // batch 2 (drain)
-    // captures
-    mockSql.mockResolvedValueOnce([{ max_date: '2026-03-22' }]); // audit
-    mockSql.mockResolvedValueOnce([{ yesterday_et: '2026-03-23' }]); // yesterday
+    ); // snapshots batch 1
+    mockSql.mockResolvedValueOnce([]); // snapshots drain
+    scriptDates('2026-03-23', null);
     mockSql.mockResolvedValueOnce(
       Array.from({ length: 50 }, (_, i) => ({ id: i })),
-    ); // batch 1
-    mockSql.mockResolvedValueOnce([]); // batch 2 (drain)
+    ); // captures batch 1
+    mockSql.mockResolvedValueOnce([]); // captures drain
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
     const res = mockResponse();
-    await handler(req, res);
+    await handler(authedReq(), res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      status: 'success',
-      rows: 150,
-    });
+    const json = res._json as Json;
+    expect(json.rows).toBe(150);
+    expect(json.results.map((r) => r.cutoff)).toEqual([
+      '2026-03-23',
+      '2026-03-23',
+    ]);
+    expect(json.results.map((r) => r.gate)).toEqual([null, null]);
+    expect(listUnarchivedDates).toHaveBeenCalledWith(
+      mockSql,
+      'gexbot_snapshots',
+      '2026-03-24',
+    );
+    expect(listUnarchivedDates).toHaveBeenCalledWith(
+      mockSql,
+      'gexbot_api_capture',
+      '2026-03-24',
+    );
+    expect(deleteCutoffs()).toEqual([
+      '2026-03-23',
+      '2026-03-23',
+      '2026-03-23',
+      '2026-03-23',
+    ]);
   });
 
-  it('caps cutoff at yesterday even when archive is far ahead', async () => {
-    // Audit max_date is 2030-01-01 (somehow ahead of today).
-    // Cutoff should clamp to SQL-computed yesterday.
-    mockSql.mockResolvedValueOnce([{ max_date: '2030-01-01' }]); // audit
-    mockSql.mockResolvedValueOnce([{ yesterday_et: '2026-03-23' }]); // yesterday
-    mockSql.mockResolvedValueOnce([]); // empty DELETE drains
-    mockSql.mockResolvedValueOnce([{ max_date: null }]); // captures skip (no_archive)
+  it('stalls the cutoff the day before the first un-archived session', async () => {
+    vi.mocked(listUnarchivedDates).mockResolvedValue(['2026-09-08']);
+    scriptDates('2026-10-01', '2026-09-07');
+    mockSql.mockResolvedValueOnce([]); // snapshots DELETE
+    scriptDates('2026-10-01', '2026-09-07');
+    mockSql.mockResolvedValueOnce([]); // captures DELETE
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
     const res = mockResponse();
-    await handler(req, res);
+    await handler(authedReq(), res);
 
-    expect(res._status).toBe(200);
-    const json = res._json as {
-      results: Array<{ table: string; cutoff: string | null }>;
-    };
-    const snapsResult = json.results.find(
-      (r) => r.table === 'gexbot_snapshots',
-    );
-    expect(snapsResult?.cutoff).toBe('2026-03-23');
+    const json = res._json as Json;
+    expect(json.results.map((r) => r.cutoff)).toEqual([
+      '2026-09-07',
+      '2026-09-07',
+    ]);
+    expect(json.results.map((r) => r.gate)).toEqual([
+      '2026-09-07',
+      '2026-09-07',
+    ]);
+    expect(deleteCutoffs()).toEqual(['2026-09-07', '2026-09-07']);
+    // The dates SELECT receives today and the first pending date.
+    expect(mockSql.mock.calls[0]?.slice(1)).toEqual([
+      '2026-03-24',
+      '2026-09-08',
+    ]);
   });
 
-  it('handles Date-typed max_date and yesterday_et from Neon driver', async () => {
-    // The Neon serverless driver returns DATE columns as Date objects.
-    // The handler must normalize them, not coerce via `as string`.
-    mockSql.mockResolvedValueOnce([
-      { max_date: new Date('2026-03-22T00:00:00.000Z') },
-    ]); // audit
-    mockSql.mockResolvedValueOnce([
-      { yesterday_et: new Date('2026-03-23T00:00:00.000Z') },
-    ]); // yesterday (Date-typed)
-    mockSql.mockResolvedValueOnce([]); // empty DELETE
-    mockSql.mockResolvedValueOnce([{ max_date: null }]); // captures skip
+  it('never raises the cutoff above yesterday when the gate is later', async () => {
+    vi.mocked(listUnarchivedDates).mockResolvedValue(['2026-03-25']);
+    scriptDates('2026-03-23', '2026-03-24');
+    mockSql.mockResolvedValueOnce([]);
+    scriptDates('2026-03-23', '2026-03-24');
+    mockSql.mockResolvedValueOnce([]);
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
     const res = mockResponse();
-    await handler(req, res);
+    await handler(authedReq(), res);
+
+    const json = res._json as Json;
+    expect(json.results.map((r) => r.cutoff)).toEqual([
+      '2026-03-23',
+      '2026-03-23',
+    ]);
+    expect(deleteCutoffs()).toEqual(['2026-03-23', '2026-03-23']);
+  });
+
+  it('deletes nothing when every live day is pending (no audit rows)', async () => {
+    // First live day 2026-03-01 pending, gate 2026-02-28, DELETE matches 0.
+    vi.mocked(listUnarchivedDates).mockResolvedValue([
+      '2026-03-01',
+      '2026-03-02',
+    ]);
+    scriptDates('2026-03-23', '2026-02-28');
+    mockSql.mockResolvedValueOnce([]);
+    scriptDates('2026-03-23', '2026-02-28');
+    mockSql.mockResolvedValueOnce([]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
 
     expect(res._status).toBe(200);
-    const json = res._json as {
-      results: Array<{ table: string; cutoff: string | null }>;
-    };
-    const snapsResult = json.results.find(
-      (r) => r.table === 'gexbot_snapshots',
-    );
-    expect(snapsResult?.cutoff).toBe('2026-03-22');
+    const json = res._json as Json;
+    expect(json.rows).toBe(0);
+    for (const r of json.results) {
+      expect(r).toMatchObject({
+        cutoff: '2026-02-28',
+        deleted: 0,
+        stopReason: 'drained',
+      });
+    }
+    expect(deleteCutoffs()).toEqual(['2026-02-28', '2026-02-28']);
   });
 
   it('reports stopReason: wall_budget when the budget is exhausted mid-loop', async () => {
-    // Mock Date.now so the first batch returns rows and the wall-budget
-    // check inside the loop trips on the next iteration.
     const realNow = Date.now;
     let nowCalls = 0;
     vi.spyOn(Date, 'now').mockImplementation(() => {
       nowCalls += 1;
-      // First call: cron handler captures startedAt
-      // Second call (inside cleanupOne): still within budget
-      // Third call: jump 5 minutes ahead → exhausts WALL_BUDGET_MS (295s)
+      // startedAt, then in-budget, then 5 minutes ahead (> 295s budget).
       if (nowCalls >= 3) return realNow() + 300_000;
       return realNow();
     });
 
-    mockSql.mockResolvedValueOnce([{ max_date: '2026-03-22' }]); // audit
-    mockSql.mockResolvedValueOnce([{ yesterday_et: '2026-03-23' }]); // yesterday
+    scriptDates('2026-03-23', null);
     mockSql.mockResolvedValueOnce(
       Array.from({ length: 50_000 }, (_, i) => ({ id: i })),
     ); // batch 1 (full)
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
     const res = mockResponse();
-    await handler(req, res);
+    await handler(authedReq(), res);
 
     expect(res._status).toBe(200);
-    const json = res._json as {
-      results: Array<{ table: string; stopReason: string }>;
-    };
-    expect(json.results[0]?.stopReason).toBe('wall_budget');
+    expect((res._json as Json).results[0]?.stopReason).toBe('wall_budget');
   });
 
-  it('reports stopReason: drained when DELETE loop empties on first batch', async () => {
-    // Audit row present + empty DELETE on the very first batch →
-    // nothing to delete, loop breaks cleanly with drained status.
-    mockSql.mockResolvedValueOnce([{ max_date: '2026-03-22' }]); // audit
-    mockSql.mockResolvedValueOnce([{ yesterday_et: '2026-03-23' }]); // yesterday
-    mockSql.mockResolvedValueOnce([]); // empty DELETE → drained
-    mockSql.mockResolvedValueOnce([{ max_date: null }]); // captures skip
+  it('reports stopReason: drained when the first batch is empty', async () => {
+    scriptDates('2026-03-23', null);
+    mockSql.mockResolvedValueOnce([]); // snapshots empty DELETE
+    scriptDates('2026-03-23', null);
+    mockSql.mockResolvedValueOnce([]); // captures empty DELETE
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
     const res = mockResponse();
-    await handler(req, res);
+    await handler(authedReq(), res);
 
-    const json = res._json as {
-      results: Array<{ table: string; stopReason: string; deleted: number }>;
-    };
-    const snaps = json.results.find((r) => r.table === 'gexbot_snapshots');
+    const snaps = (res._json as Json).results.find(
+      (r) => r.table === 'gexbot_snapshots',
+    );
     expect(snaps?.stopReason).toBe('drained');
     expect(snaps?.deleted).toBe(0);
   });
 
-  it('processes both tables even when the first table errors', async () => {
-    // Snapshots audit SELECT throws → cleanupOne for snapshots
-    // propagates; the handler should still process captures.
-    // (Current behavior: cleanupOne errors propagate up through
-    // the for-loop and abort. Test asserts that contract — if we
-    // want resilience instead, this test will need to flip.)
-    mockSql.mockRejectedValueOnce(new Error('db down'));
+  it('still processes the second table when the first gate query rejects, then fails by name', async () => {
+    vi.mocked(listUnarchivedDates)
+      .mockRejectedValueOnce(new Error('gate down'))
+      .mockResolvedValueOnce([]);
+    scriptDates('2026-03-23', null); // captures dates
+    mockSql.mockResolvedValueOnce([]); // captures DELETE
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
     const res = mockResponse();
-    await handler(req, res);
+    await handler(authedReq(), res);
 
-    // withCronInstrumentation catches the throw and returns 500.
+    // Never reported as success.
     expect(res._status).toBe(500);
+    // The second table was still processed.
+    expect(listUnarchivedDates).toHaveBeenCalledTimes(2);
+    expect(deleteCutoffs()).toEqual(['2026-03-23']);
+    // The failure is surfaced by table name and cause.
+    const messages = vi
+      .mocked(Sentry.captureException)
+      .mock.calls.map(([e]) => String((e as Error).message));
+    expect(
+      messages.some(
+        (m) => m.includes('gexbot_snapshots') && m.includes('gate down'),
+      ),
+    ).toBe(true);
   });
 
-  it('cap-truncates to a maximum of 1 trailing zero in yyyy-mm-dd parse', () => {
-    // Sanity check for date-string slicing. Used by `Date instanceof`
-    // branch to normalize ISO timestamps to bare yyyy-mm-dd. A naive
-    // implementation that does `String(d).slice(0,10)` on a Date
-    // would emit "Wed May 19" instead of "2026-05-19".
-    // The handler uses .toISOString().slice(0,10) which is correct;
-    // this test stands as a regression-guard documentation comment.
-    const iso = new Date('2026-05-19T14:00:00.000Z').toISOString().slice(0, 10);
-    expect(iso).toBe('2026-05-19');
+  it('returns 500 when a DB call throws', async () => {
+    mockSql.mockRejectedValue(new Error('db down'));
+    const res = mockResponse();
+    await handler(authedReq(), res);
+    expect(res._status).toBe(500);
   });
 });

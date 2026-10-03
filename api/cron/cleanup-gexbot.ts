@@ -2,15 +2,18 @@
  * GET /api/cron/cleanup-gexbot
  *
  * Daily pre-market retention sweep for `gexbot_snapshots` and
- * `gexbot_api_capture`. Audit-gated: only deletes rows for a (table,
- * date) pair that has a corresponding `gexbot_archive_audit` row,
- * so a missed archive run can never lose data.
+ * `gexbot_api_capture`. Audit-gated: only deletes rows on days that have
+ * a `gexbot_archive_audit` row, so a missed archive run can never lose data.
  *
- * Cutoff per table: `LEAST(today_et - INTERVAL '1 day', max archived
- * date for table)`. In steady state the cutoff IS yesterday and we
- * trim ~85 k rows daily. After a single missed archive day the
- * cutoff stalls one day older; the next successful archive un-stalls
- * the cleanup the morning after.
+ * Cutoff per table: `LEAST(yesterday_et, first_unarchived_session - 1)`,
+ * where the first un-archived session comes from `listUnarchivedDates`
+ * (api/_lib/gexbot-archive-dates.ts, which also documents the UTC-day ==
+ * ET-session-date boundary). A missed archive day stalls deletion at that
+ * day until it is archived, no matter how many later days succeed. With no
+ * audit rows at all every live day is pending, so nothing is deleted.
+ *
+ * A table whose gate or DELETE fails is recorded by name; the other table
+ * is still processed, then the run throws so it is never reported success.
  *
  * Mirrors `cleanup-ws-option-trades.ts` for batching + wall-budget
  * semantics. Schedule: 12:15 UTC Mon–Fri (10 min after
@@ -24,6 +27,11 @@
 
 import { getDb, withDbRetry } from '../_lib/db.js';
 import {
+  GEXBOT_ARCHIVE_TABLES,
+  listUnarchivedDates,
+  type GexbotArchiveTable,
+} from '../_lib/gexbot-archive-dates.js';
+import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
@@ -33,77 +41,42 @@ export const config = { maxDuration: 300 };
 const BATCH_SIZE = 50_000;
 const WALL_BUDGET_MS = 295_000;
 
-const TARGET_TABLES = ['gexbot_snapshots', 'gexbot_api_capture'] as const;
-type TargetTable = (typeof TARGET_TABLES)[number];
-
 interface PerTableResult {
-  table: TargetTable;
-  cutoff: string | null;
+  table: GexbotArchiveTable;
+  /** First un-archived session date, or null when nothing is pending. */
+  gate: string | null;
+  cutoff: string;
   deleted: number;
   batches: number;
-  stopReason: 'drained' | 'wall_budget' | 'no_archive';
+  stopReason: 'drained' | 'wall_budget';
 }
 
 async function cleanupOne(
-  table: TargetTable,
+  table: GexbotArchiveTable,
   startedAt: number,
   today: string,
 ): Promise<PerTableResult> {
   const sql = getDb();
 
-  // Find the latest archive date for this table. If there isn't one,
-  // there's nothing safe to delete — skip the table entirely.
-  const auditRows = (await withDbRetry(
+  const pending = await listUnarchivedDates(sql, table, today);
+
+  // Date math in Postgres, returned as text, so no JS Date/timezone
+  // conversion is involved. `gate` is NULL when nothing is pending.
+  const dateRows = (await withDbRetry(
     () => sql`
-      SELECT MAX(archive_date) AS max_date
-      FROM gexbot_archive_audit
-      WHERE table_name = ${table}
+      SELECT to_char(${today}::date - 1, 'YYYY-MM-DD') AS yesterday,
+             to_char(${pending[0] ?? null}::date - 1, 'YYYY-MM-DD') AS gate
     `,
     2,
     10_000,
-  )) as Array<{ max_date: string | Date | null }>;
-  const maxArchivedRaw = auditRows[0]?.max_date ?? null;
-  if (maxArchivedRaw === null) {
-    return {
-      table,
-      cutoff: null,
-      deleted: 0,
-      batches: 0,
-      stopReason: 'no_archive',
-    };
-  }
-
-  // Normalize to yyyy-mm-dd. The Neon driver returns DATE as Date
-  // objects (see memory feedback_neon_date_columns.md), so str-cast
-  // assumptions would silently break — convert explicitly.
-  const maxArchived =
-    maxArchivedRaw instanceof Date
-      ? maxArchivedRaw.toISOString().slice(0, 10)
-      : String(maxArchivedRaw).slice(0, 10);
-
-  // Compute "yesterday ET" in SQL so date math happens in Postgres
-  // with proper timezone handling (matches the cleanup-ws-option-trades
-  // pattern). Doing it in JS via `new Date('${today}T00:00:00')` would
-  // interpret `today` as local time then mutate UTC, which mis-aligns
-  // by a day between 00:00–05:00 ET. Cap at maxArchived so a missed
-  // archive day never prematurely deletes its unarchived rows.
-  const yesterdayRows = (await withDbRetry(
-    () => sql`
-      SELECT (${today}::date - INTERVAL '1 day')::date AS yesterday_et
-    `,
-    2,
-    10_000,
-  )) as Array<{ yesterday_et: string | Date }>;
-  const yesterdayRaw = yesterdayRows[0]?.yesterday_et;
-  const yesterdayStr =
-    yesterdayRaw instanceof Date
-      ? yesterdayRaw.toISOString().slice(0, 10)
-      : String(yesterdayRaw ?? '').slice(0, 10);
-  const cutoff = yesterdayStr < maxArchived ? yesterdayStr : maxArchived;
+  )) as Array<{ yesterday: string; gate: string | null }>;
+  const yesterday = dateRows[0]?.yesterday ?? '';
+  const gate = dateRows[0]?.gate ?? null;
+  const cutoff = gate != null && gate < yesterday ? gate : yesterday;
 
   let totalDeleted = 0;
   let batches = 0;
-  let stopReason: 'drained' | 'wall_budget' = 'drained';
+  let stopReason: PerTableResult['stopReason'] = 'drained';
 
   while (true) {
     // captured_at < (cutoff + 1 day) deletes everything strictly
@@ -150,7 +123,7 @@ async function cleanupOne(
     }
   }
 
-  return { table, cutoff, deleted: totalDeleted, batches, stopReason };
+  return { table, gate, cutoff, deleted: totalDeleted, batches, stopReason };
 }
 
 export default withCronInstrumentation(
@@ -158,18 +131,31 @@ export default withCronInstrumentation(
   async (ctx): Promise<CronResult> => {
     const startedAt = Date.now();
     const results: PerTableResult[] = [];
+    const failures: Array<{ table: GexbotArchiveTable; error: string }> = [];
 
-    for (const table of TARGET_TABLES) {
-      results.push(await cleanupOne(table, startedAt, ctx.today));
+    for (const table of GEXBOT_ARCHIVE_TABLES) {
+      try {
+        results.push(await cleanupOne(table, startedAt, ctx.today));
+      } catch (err) {
+        failures.push({
+          table,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       if (Date.now() - startedAt > WALL_BUDGET_MS) break;
     }
 
     const totalDeleted = results.reduce((sum, r) => sum + r.deleted, 0);
 
     ctx.logger.info(
-      { today: ctx.today, results, totalDeleted },
+      { today: ctx.today, results, failures, totalDeleted },
       'cleanup-gexbot completed',
     );
+
+    if (failures.length > 0) {
+      const named = failures.map((f) => `${f.table} (${f.error})`).join('; ');
+      throw new Error(`cleanup-gexbot failed for ${named}`);
+    }
 
     return {
       status: 'success',
