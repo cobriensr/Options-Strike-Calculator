@@ -346,3 +346,40 @@ Existing tables only: `gexbot_snapshots`, `gexbot_api_capture`,
 - Multi-window fetch crons (`fetch-gexbot-fast`, `fetch-gexbot-strikes`,
   `populate-periscope-from-gexbot`) still have no heartbeat because
   `SCHEDULE_MAP` carries one schedule per job. Out of scope here.
+
+## Task 7: Make the useHistoryData "today" tests clock-independent
+
+**Files:** `src/__tests__/hooks/useHistoryData.test.ts` only. Do not change
+`src/hooks/useHistoryData.ts`.
+
+Added during execution: the full review gate failed on a pre-existing
+clock-dependent test unrelated to this plan, and the gate must pass on
+`main` before push.
+
+Root cause (`useHistoryData.test.ts:171-190`, same pattern at `:154-162`):
+the test computes `today` with `toLocaleDateString('en-CA', { timeZone:
+'America/New_York' })` but its weekend skip uses `new Date().getDay()` in the
+machine's local zone. Between 23:00 and 24:00 Central on a Friday (and in
+any other local/ET day mismatch window) the local weekday is Friday, so the
+test is not skipped, while `today` is already Saturday in ET. The hook
+(`useHistoryData.ts:207-220`) derives the weekday from the selected date
+string, sees a Saturday, exits before fetching, and `hasHistory` is `false`.
+
+Fix:
+1. Fake only `Date` so `waitFor` and real timers keep working:
+   `vi.useFakeTimers({ toFake: ['Date'] })` in a `beforeEach` scoped to the
+   two "today" tests (or at the top of their `describe`), and
+   `vi.useRealTimers()` in the matching `afterEach`. Pin the clock to a fixed
+   weekday mid-session, `vi.setSystemTime(new Date('2026-03-04T15:00:00Z'))`
+   (a Wednesday, 10:00 ET).
+2. Derive `today` from the pinned clock with the same `toLocaleDateString`
+   call the hook uses (it must equal `'2026-03-04'`), and delete the
+   `dow`/weekend early-return at `:178-180`. A test that skips itself on
+   weekends is not a test.
+3. Apply the same pinning to the sibling "fetches today and returns null when
+   no candles are available" test at `:154-162` so both "today" tests are
+   deterministic.
+4. Run `npx vitest run src/__tests__/hooks/useHistoryData.test.ts` and make
+   sure all 25 tests pass. Then `CI=true npm run review` must exit 0.
+
+Commit subject: `test(history): Pin the clock in the useHistoryData today tests`
