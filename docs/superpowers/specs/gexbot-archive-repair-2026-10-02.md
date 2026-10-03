@@ -210,9 +210,10 @@ Behavior:
    `finally` unlink, and UUID names are never overwritten. Best-effort: warn
    on failure, never throw.
 
-Tests. Mock `../_lib/gexbot-archive-dates.js` (`listUnarchivedDates: vi.fn()`,
-`GEXBOT_ARCHIVE_TABLES: ['gexbot_snapshots','gexbot_api_capture']`) so the
-`mockSql` sequence is just pages + audit inserts. Control time with
+Tests. Mock `../_lib/gexbot-archive-dates.js` with `importOriginal` so the
+real `GEXBOT_ARCHIVE_TABLES` flows through and only `listUnarchivedDates` is a
+`vi.fn()`. The `mockSql` sequence per table is: pages, the no-shrink audit
+SELECT, then the audit INSERT. Control time with
 `vi.spyOn(Date, 'now')` returning a scripted sequence, or `vi.useFakeTimers()` +
 `vi.setSystemTime` advanced inside `mockWriteParquet`. Cover:
 - happy path: helper returns `['2026-03-23']` for both tables → both archived,
@@ -326,8 +327,9 @@ Commit subject: `feat(gexbot): Register Sentry heartbeats for the archive and cl
    `Authorization: Bearer $CRON_SECRET` (from `.env.local`, never echoed)
    strictly one call at a time, each with `curl --max-time 330`. The wrapper
    spreads metadata flat into the response, so the fields are top-level
-   `dates`, `remainingDates`, and `stopReason`. Stop on any non-200; continue
-   until a run returns `dates: []`; stop if the same date fails twice. Each
+   `dates`, `remainingDates`, and `stopReason`. Stop on any non-200 and on a
+   200 whose `status` is `error` (every table-date failed); continue until a
+   run returns `dates: []`; stop if the same date fails twice. Each
    call archives up to 5 sessions within the 300 s budget. Then run the SQL
    verification below.
 3. Verify with read-only SQL: every UTC day 2026-09-08 → yesterday has an
