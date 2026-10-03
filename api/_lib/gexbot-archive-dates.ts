@@ -10,13 +10,14 @@
  * session time zone (UTC on Neon), the same predicate `archive-gexbot.ts`
  * uses to select a day's rows. Mirroring it exactly means a row is counted
  * for the same day the archive would export it.
- * GexBot sessions run 13:30-21:01 UTC across DST and never straddle UTC midnight, so a
- * UTC calendar day is exactly one ET session date. Do not "fix" these
- * boundaries to ET: that would break parity with streamRows.
+ * GexBot sessions run 13:30-21:01 UTC across DST and never straddle UTC
+ * midnight, so a UTC calendar day is exactly one ET session date. Do not
+ * "fix" these boundaries to ET: that would break parity with streamRows.
  *
  * Archive and cleanup both depend on this one predicate so they can never
- * disagree about what is "archived": cleanup deletes only days before `beforeDate` that this helper
- * does not return, and archive repairs the days it does return.
+ * disagree about what is "archived": cleanup deletes only days before
+ * `beforeDate` that this helper does not return, and archive repairs the
+ * days it does return.
  *
  * `generate_series` from `MIN(captured_at)::date` lets the query probe the
  * `captured_at` index once per day instead of scanning every row for a

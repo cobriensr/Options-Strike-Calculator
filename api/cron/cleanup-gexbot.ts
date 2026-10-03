@@ -15,7 +15,7 @@
  * A table whose gate or DELETE fails is recorded by name (with the rows it
  * removed before failing); the other table is still processed, then the run
  * throws so it is never reported success. A table skipped because the wall
- * budget ran out is reported and makes the run 'partial'.
+ * budget ran out is reported in `skippedTables` and makes the run 'partial'.
  *
  * Mirrors `cleanup-ws-option-trades.ts` for batching + wall-budget
  * semantics. Schedule: 12:15 UTC Mon–Fri (10 min after
@@ -42,7 +42,16 @@ import {
 export const config = { maxDuration: 300 };
 
 const BATCH_SIZE = 50_000;
-const WALL_BUDGET_MS = 295_000;
+/**
+ * Checked before each table and after each batch, measured from wrapper
+ * entry (`ctx.startTimeMs`, which precedes the in-progress Sentry check-in).
+ * One batch under `withDbRetry(..., 2, 10_000)` can take ~33 s in the worst
+ * case (3 attempts x 10 s + 1 s + 2 s backoff), so the last batch may start
+ * just under this budget and still has to finish inside maxDuration:
+ * 300 s - 33 s worst-case batch - 12 s slack (completion check-in, Axiom
+ * report, response) = 255 s.
+ */
+const WALL_BUDGET_MS = 255_000;
 
 interface PerTableResult {
   table: GexbotArchiveTable;
@@ -87,9 +96,12 @@ async function runCleanup(
   const sql = getDb();
 
   const pending = await listUnarchivedDates(sql, table, today);
+  // Recorded before the dates SELECT so a failure there still reports the
+  // stalled session.
+  progress.gate = pending[0] ?? null;
 
   // Date math in Postgres, returned as text, so no JS Date/timezone
-  // conversion is involved. `gate` is NULL when nothing is pending.
+  // conversion is involved. `gate_cutoff` is NULL when nothing is pending.
   const dateRows = (await withDbRetry(
     () => sql`
       SELECT to_char(${today}::date - 1, 'YYYY-MM-DD') AS yesterday,
@@ -105,7 +117,6 @@ async function runCleanup(
   const { yesterday, gate_cutoff: gateCutoff } = dateRow;
   const cutoff =
     gateCutoff != null && gateCutoff < yesterday ? gateCutoff : yesterday;
-  progress.gate = pending[0] ?? null;
   progress.cutoff = cutoff;
 
   while (true) {
@@ -157,17 +168,18 @@ async function runCleanup(
 export default withCronInstrumentation(
   'cleanup-gexbot',
   async (ctx): Promise<CronResult> => {
-    const startedAt = Date.now();
     const results: PerTableResult[] = [];
-    const skipped: Array<{ table: GexbotArchiveTable; reason: 'wall_budget' }> =
-      [];
+    const skippedTables: Array<{
+      table: GexbotArchiveTable;
+      reason: 'wall_budget';
+    }> = [];
 
     for (const table of GEXBOT_ARCHIVE_TABLES) {
-      if (Date.now() - startedAt > WALL_BUDGET_MS) {
-        skipped.push({ table, reason: 'wall_budget' });
+      if (Date.now() - ctx.startTimeMs > WALL_BUDGET_MS) {
+        skippedTables.push({ table, reason: 'wall_budget' });
         continue;
       }
-      results.push(await cleanupOne(table, startedAt, ctx.today));
+      results.push(await cleanupOne(table, ctx.startTimeMs, ctx.today));
     }
 
     const totalDeleted = results.reduce((sum, r) => sum + r.deleted, 0);
@@ -175,7 +187,7 @@ export default withCronInstrumentation(
 
     if (failures.length > 0) {
       ctx.logger.error(
-        { today: ctx.today, results, skipped, totalDeleted },
+        { today: ctx.today, results, skippedTables, totalDeleted },
         'cleanup-gexbot finished with failures',
       );
       const named = failures
@@ -186,9 +198,9 @@ export default withCronInstrumentation(
       throw new Error(`cleanup-gexbot failed for ${named}`);
     }
 
-    if (skipped.length > 0) {
+    if (skippedTables.length > 0) {
       ctx.logger.warn(
-        { today: ctx.today, results, skipped, totalDeleted },
+        { today: ctx.today, results, skippedTables, totalDeleted },
         'cleanup-gexbot skipped tables: wall budget exhausted',
       );
     } else {
@@ -199,9 +211,9 @@ export default withCronInstrumentation(
     }
 
     return {
-      status: skipped.length > 0 ? 'partial' : 'success',
+      status: skippedTables.length > 0 ? 'partial' : 'success',
       rows: totalDeleted,
-      metadata: { today: ctx.today, results, skipped },
+      metadata: { today: ctx.today, results, skippedTables },
     };
   },
   { marketHours: false, requireApiKey: false },

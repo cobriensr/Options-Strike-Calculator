@@ -174,6 +174,8 @@ describe('useHistoryData: basic behavior', () => {
       // the current trading session. The default 401 mock simulates a fresh
       // environment or pre-market state where no candles exist yet.
       const today = todayET();
+      // The pin holds: ET "today" is the pinned Wednesday, in any local zone.
+      expect(today).toBe('2026-03-04');
       const { result } = renderHook(() => useHistoryData(today));
 
       await waitFor(() => {

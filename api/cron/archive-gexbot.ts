@@ -20,16 +20,24 @@
  * for the scheduled path, so it never archives the current session.
  *
  * Manual re-run: `GET /api/cron/archive-gexbot?date=2026-09-08` with the
- * CRON_SECRET bearer archives that one date for BOTH tables regardless of
- * audit state, overwriting the Blob (`allowOverwrite: true`) and upserting
- * the audit row. Guards, each a thrown error (the wrapper turns it into a
- * 500): `date` must be a real YYYY-MM-DD calendar date (a repeated param is
- * rejected), and must be BEFORE today (ET), because archiving a live session
- * would write an audit row that lets cleanup delete rows captured later.
- * Per table, if an audit row already exists with MORE rows than the fresh
- * export (cleanup already purged part of the day), the table fails instead of
- * overwriting the good archive with a smaller one. A day with no live rows
- * and no prior audit row is archived as an empty file (`row_count = 0`).
+ * CRON_SECRET bearer archives that one date for BOTH tables even if it is
+ * already audited, overwriting the Blob (`allowOverwrite: true`) and
+ * upserting the audit row. Guards, each a thrown error (the wrapper turns it
+ * into a 500): `date` must be a real YYYY-MM-DD calendar date (a repeated
+ * param is rejected), and must be BEFORE today (ET), because archiving a live
+ * session would write an audit row that lets cleanup delete rows captured
+ * later. A day with no live rows and no prior audit row is archived as an
+ * empty file (`row_count = 0`); the scheduled path never does that, because
+ * it only picks days that have live rows.
+ *
+ * Shrink guard, on every path (scheduled and `?date=`): per table, if an
+ * audit row already exists with MORE rows than the fresh export (cleanup
+ * already purged part of the day), the table fails instead of overwriting
+ * the good archive with a smaller one.
+ *
+ * Status: `deriveCronStatus(failed, attempted)` over the table-dates started
+ * this run, so some failures report 'partial' and all failing reports
+ * 'error' (a red Sentry check-in).
  *
  * Time budget: the first date always runs. Another pending date starts only
  * if fewer than MAX_DATES_PER_RUN are done and the time left in the function
@@ -50,12 +58,17 @@
  * cleanup's signal that a day is archived, so a bare row makes cleanup delete
  * live rows that were never exported.
  *
+ * Before archiving, temp Parquet files older than maxDuration are removed
+ * from /tmp: a run killed at the limit skips its `finally` cleanup, and the
+ * per-run UUID names mean nothing would ever overwrite them.
+ *
  * For each table and date:
  *   1. Page through the day's rows via id-cursor pagination
  *   2. Encode as Snappy Parquet to /tmp
- *   3. PUT to Vercel Blob at gexbot/{table}/{yyyy-mm-dd}.parquet
- *   4. HEAD-verify size match
- *   5. UPSERT a gexbot_archive_audit row (cleanup uses this as the
+ *   3. Refuse if the audit row already holds more rows (shrink guard)
+ *   4. PUT to Vercel Blob at gexbot/{table}/{yyyy-mm-dd}.parquet
+ *   5. HEAD-verify size match
+ *   6. UPSERT a gexbot_archive_audit row (cleanup uses this as the
  *      go/no-go signal)
  *
  * Schedule: 21:30 UTC Tue–Sat (covering Mon–Fri trading sessions).
@@ -71,12 +84,14 @@ import { head, put } from '@vercel/blob';
 
 import { getDb, withDbRetry } from '../_lib/db.js';
 import {
+  deriveCronStatus,
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 import {
   buildCaptureSchema,
   buildSnapshotSchema,
+  sweepStaleTempFiles,
   writeRowsToParquet,
 } from '../_lib/gexbot-parquet.js';
 import {
@@ -91,7 +106,7 @@ export const config = { maxDuration: 300 };
 /** Function time limit in ms, derived from `config` so the two never drift. */
 const MAX_DURATION_MS = config.maxDuration * 1000;
 
-/** Time left must exceed this multiple of the last date's wall time. */
+/** Time left must exceed this multiple of the longest date wall time so far. */
 const NEXT_DATE_SAFETY_FACTOR = 1.5;
 
 /** Fixed slack added on top of the scaled estimate for the next date. */
@@ -226,9 +241,11 @@ interface ArchiveSummary {
 }
 
 /**
- * Refuse to replace an archive with a smaller one. A manual `?date=` re-run
- * after cleanup purged rows would otherwise overwrite the good Blob with a
- * partial or empty file and lower the audit row count.
+ * Refuse to replace an archive with a smaller one. Runs on every path, not
+ * only `?date=`: a manual re-run after cleanup purged rows, or two concurrent
+ * archive calls on one date with a cleanup in between, would otherwise
+ * overwrite a complete Blob with a partial export and lower the audit row
+ * count. Cost: one SELECT per table-date.
  */
 async function assertNotShrinking(
   table: GexbotArchiveTable,
@@ -256,7 +273,6 @@ async function assertNotShrinking(
 async function archiveOneTable(
   spec: TableSpec,
   archiveDate: string,
-  override: boolean,
 ): Promise<ArchiveSummary> {
   const schema = spec.buildSchema();
   // Unique per invocation: overlapping runs for one date must not share a
@@ -269,12 +285,11 @@ async function archiveOneTable(
     fileName,
   );
 
-  if (override) {
-    await assertNotShrinking(spec.name, archiveDate, result.rowCount);
-  }
+  await assertNotShrinking(spec.name, archiveDate, result.rowCount);
 
-  // Empty days are valid (e.g. Friday-after-holiday) — we still write
-  // the audit row so cleanup knows the date is "accounted for".
+  // An empty day only reaches this point via `?date=` (the scheduled path
+  // picks days with live rows); it still gets a Blob and a row_count = 0
+  // audit row so the date is "accounted for".
   const blob = await put(
     `gexbot/${spec.name}/${archiveDate}.parquet`,
     result.buffer,
@@ -336,7 +351,7 @@ function isRealDate(d: string): boolean {
 async function buildPlan(
   dateParam: unknown,
   today: string,
-): Promise<{ plan: DatePlan[]; override: boolean }> {
+): Promise<DatePlan[]> {
   if (dateParam !== undefined) {
     // Any defined non-string (e.g. a repeated ?date= array) is invalid too.
     if (
@@ -352,10 +367,7 @@ async function buildPlan(
           'archiving a live session would let cleanup delete later rows',
       );
     }
-    return {
-      plan: [{ date: dateParam, tables: GEXBOT_ARCHIVE_TABLES }],
-      override: true,
-    };
+    return [{ date: dateParam, tables: GEXBOT_ARCHIVE_TABLES }];
   }
 
   const sql = getDb();
@@ -365,10 +377,9 @@ async function buildPlan(
       pendingByDate.set(date, [...(pendingByDate.get(date) ?? []), table]);
     }
   }
-  const plan = [...pendingByDate.entries()]
+  return [...pendingByDate.entries()]
     .sort(([x], [y]) => x.localeCompare(y))
     .map(([date, tables]) => ({ date, tables }));
-  return { plan, override: false };
 }
 
 export default withCronInstrumentation(
@@ -378,10 +389,13 @@ export default withCronInstrumentation(
       throw new Error('BLOB_READ_WRITE_TOKEN is not configured');
     }
 
-    const { plan, override } = await buildPlan(ctx.req?.query.date, ctx.today);
+    await sweepStaleTempFiles(MAX_DURATION_MS);
+
+    const plan = await buildPlan(ctx.req?.query.date, ctx.today);
     const summaries: ArchiveSummary[] = [];
     const startedDates: string[] = [];
     let maxDateMs = 0;
+    let attempted = 0;
     let failed = 0;
     let stopReason: StopReason = 'drained';
 
@@ -389,10 +403,9 @@ export default withCronInstrumentation(
       // Wall time of this date: before its first table to after its last.
       const dateStartMs = Date.now();
       for (const name of tables) {
+        attempted += 1;
         try {
-          summaries.push(
-            await archiveOneTable(TABLE_SPECS[name], date, override),
-          );
+          summaries.push(await archiveOneTable(TABLE_SPECS[name], date));
         } catch (err) {
           failed += 1;
           Sentry.captureException(err, {
@@ -439,7 +452,7 @@ export default withCronInstrumentation(
     );
 
     return {
-      status: failed === 0 ? 'success' : 'partial',
+      status: deriveCronStatus(failed, attempted),
       rows: summaries.reduce((sum, s) => sum + s.rowCount, 0),
       metadata: {
         dates: startedDates,

@@ -1,6 +1,7 @@
 // @vitest-environment node
-import { describe, it, expect, vi } from 'vitest';
-import { access, unlink } from 'node:fs/promises';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { access, mkdir, rm, unlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as parquet from '@dsnp/parquetjs';
@@ -9,13 +10,31 @@ import {
   writeRowsToParquet,
   buildSnapshotSchema,
   buildCaptureSchema,
+  sweepStaleTempFiles,
 } from '../_lib/gexbot-parquet.js';
+
+const { mockLoggerWarn, mockReaddir } = vi.hoisted(() => ({
+  mockLoggerWarn: vi.fn(),
+  mockReaddir: vi.fn(),
+}));
+
+// Real fs, with readdir routed through a mock so one test can make listing
+// tmpdir fail.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  mockReaddir.mockImplementation(actual.readdir);
+  return { ...actual, readdir: mockReaddir };
+});
 
 // Sentry mock — the cleanup-unlink catch path captures here. We don't
 // surface a real DSN in tests; keep it inert so the writer succeeds
 // silently when unlink does run.
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: vi.fn() },
+}));
+
+vi.mock('../_lib/logger.js', () => ({
+  default: { info: vi.fn(), warn: mockLoggerWarn, error: vi.fn() },
 }));
 
 async function* yieldRows<T>(rows: T[]): AsyncGenerator<T> {
@@ -200,4 +219,86 @@ describe('writeRowsToParquet', () => {
   // "Cannot redefine property". The branch is one Sentry log line; any
   // real cleanup failure on the Vercel runtime FS would surface via the
   // Sentry dashboard regardless.
+});
+
+describe('sweepStaleTempFiles', () => {
+  const MAX_AGE_MS = 300_000;
+  const created: string[] = [];
+
+  /** Creates `name` in tmpdir() with its mtime `ageMs` in the past. */
+  async function makeEntry(
+    name: string,
+    ageMs: number,
+    kind: 'file' | 'dir' = 'file',
+  ): Promise<string> {
+    const path = join(tmpdir(), name);
+    if (kind === 'dir') await mkdir(path);
+    else await writeFile(path, 'x');
+    const at = new Date(Date.now() - ageMs);
+    await utimes(path, at, at);
+    created.push(path);
+    return path;
+  }
+
+  const exists = (path: string) =>
+    access(path).then(
+      () => true,
+      () => false,
+    );
+
+  beforeEach(() => {
+    mockLoggerWarn.mockReset();
+  });
+
+  afterEach(async () => {
+    await Promise.all(
+      created.splice(0).map((p) => rm(p, { recursive: true, force: true })),
+    );
+  });
+
+  it('removes only gexbot_*.parquet files older than maxAgeMs', async () => {
+    const id = randomUUID();
+    const old = await makeEntry(`gexbot_sweep_${id}_old.parquet`, 3_600_000);
+    const fresh = await makeEntry(`gexbot_sweep_${id}_fresh.parquet`, 0);
+    const otherPrefix = await makeEntry(`other_sweep_${id}.parquet`, 3_600_000);
+    const otherSuffix = await makeEntry(`gexbot_sweep_${id}.txt`, 3_600_000);
+
+    await sweepStaleTempFiles(MAX_AGE_MS);
+
+    expect(await exists(old)).toBe(false);
+    expect(await exists(fresh)).toBe(true);
+    expect(await exists(otherPrefix)).toBe(true);
+    expect(await exists(otherSuffix)).toBe(true);
+  });
+
+  it('logs and continues when one stale entry cannot be removed', async () => {
+    const id = randomUUID();
+    // A directory with a matching name: unlink rejects (EPERM / EISDIR).
+    const stuck = await makeEntry(
+      `gexbot_sweep_${id}_dir.parquet`,
+      3_600_000,
+      'dir',
+    );
+    const old = await makeEntry(`gexbot_sweep_${id}_old.parquet`, 3_600_000);
+
+    await expect(sweepStaleTempFiles(MAX_AGE_MS)).resolves.toBeUndefined();
+
+    expect(await exists(old)).toBe(false);
+    expect(await exists(stuck)).toBe(true);
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ path: stuck }),
+      'gexbot temp sweep: cannot remove file',
+    );
+  });
+
+  it('logs without throwing when tmpdir cannot be listed', async () => {
+    mockReaddir.mockRejectedValueOnce(new Error('EACCES: permission denied'));
+
+    await expect(sweepStaleTempFiles(MAX_AGE_MS)).resolves.toBeUndefined();
+
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ dir: tmpdir() }),
+      'gexbot temp sweep: cannot list tmpdir',
+    );
+  });
 });

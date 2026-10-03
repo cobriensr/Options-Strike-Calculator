@@ -15,12 +15,19 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readFile, unlink } from 'node:fs/promises';
+import { readdir, readFile, stat, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import * as parquet from '@dsnp/parquetjs';
+import logger from './logger.js';
 import { Sentry } from './sentry.js';
+
+/**
+ * Temp files the archive cron writes through `writeRowsToParquet`
+ * (`gexbot_<table>_<date>_<uuid>.parquet`, under tmpdir()).
+ */
+const TEMP_FILE_RE = /^gexbot_.+\.parquet$/;
 
 export interface ParquetResult {
   /** Encoded Parquet bytes ready for Blob upload. */
@@ -85,6 +92,38 @@ export async function writeRowsToParquet(
         extra: { tmpPath },
       });
     });
+  }
+}
+
+/**
+ * Remove `gexbot_*.parquet` files in tmpdir() whose mtime is older than
+ * `maxAgeMs`. A run hard-killed at maxDuration skips the `finally` unlink in
+ * `writeRowsToParquet`, and the per-run UUID names mean nothing ever
+ * overwrites those files. Callers pass the function limit: a file that an
+ * overlapping invocation on the same instance is still writing is younger
+ * than that, so it is never touched.
+ *
+ * Best-effort: every failure is logged at warn and nothing is thrown.
+ */
+export async function sweepStaleTempFiles(maxAgeMs: number): Promise<void> {
+  const dir = tmpdir();
+  const cutoffMs = Date.now() - maxAgeMs;
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch (err) {
+    logger.warn({ err, dir }, 'gexbot temp sweep: cannot list tmpdir');
+    return;
+  }
+  for (const name of names) {
+    if (!TEMP_FILE_RE.test(name)) continue;
+    const path = join(dir, name);
+    try {
+      const { mtimeMs } = await stat(path);
+      if (mtimeMs < cutoffMs) await unlink(path);
+    } catch (err) {
+      logger.warn({ err, path }, 'gexbot temp sweep: cannot remove file');
+    }
   }
 }
 

@@ -34,6 +34,7 @@ vi.mock('../_lib/gexbot-archive-dates.js', async (importOriginal) => ({
   listUnarchivedDates: vi.fn(),
 }));
 
+import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 import { listUnarchivedDates } from '../_lib/gexbot-archive-dates.js';
 import handler from '../cron/cleanup-gexbot.js';
@@ -210,34 +211,57 @@ describe('cleanup-gexbot handler', () => {
   });
 
   it('reports stopReason: wall_budget when the budget is exhausted mid-loop', async () => {
-    const realNow = Date.now;
-    let nowCalls = 0;
-    vi.spyOn(Date, 'now').mockImplementation(() => {
-      nowCalls += 1;
-      // instrumentation start, startedAt, pre-table check in budget, then 5 minutes ahead (> 295s budget).
-      if (nowCalls >= 4) return realNow() + 300_000;
-      return realNow();
-    });
-
     scriptDates('2026-03-23', null);
-    mockSql.mockResolvedValueOnce(
-      Array.from({ length: 50_000 }, (_, i) => ({ id: i })),
-    ); // batch 1 (full)
+    // Batch 1 (full) takes the clock just past the 255 s budget, measured
+    // from wrapper entry, so the loop stops after it and table 2 never runs.
+    mockSql.mockImplementationOnce(async () => {
+      vi.setSystemTime(PRE_MARKET.getTime() + 256_000);
+      return Array.from({ length: 50_000 }, (_, i) => ({ id: i }));
+    });
 
     const res = mockResponse();
     await handler(authedReq(), res);
 
     expect(res._status).toBe(200);
     const json = res._json as Json & {
-      skipped: Array<{ table: string; reason: string }>;
+      skippedTables: Array<{ table: string; reason: string }>;
     };
     expect(json.results[0]?.stopReason).toBe('wall_budget');
+    expect(json.results[0]?.deleted).toBe(50_000);
     // Table 2 never ran: surfaced as skipped, run is partial, not success.
     expect(json.status).toBe('partial');
-    expect(json.skipped).toEqual([
+    expect(json.skippedTables).toEqual([
       { table: 'gexbot_api_capture', reason: 'wall_budget' },
     ]);
     expect(listUnarchivedDates).toHaveBeenCalledTimes(1);
+    expect(deleteCutoffs()).toHaveLength(1);
+  });
+
+  it('keeps deleting while the clock is still inside the budget', async () => {
+    scriptDates('2026-03-23', null);
+    // Batch 1 (full) lands at 254 s: under the 255 s budget, so batch 2
+    // runs and drains, and table 2 still starts.
+    mockSql.mockImplementationOnce(async () => {
+      vi.setSystemTime(PRE_MARKET.getTime() + 254_000);
+      return Array.from({ length: 50_000 }, (_, i) => ({ id: i }));
+    });
+    mockSql.mockResolvedValueOnce([]); // snapshots batch 2 drains
+    scriptDates('2026-03-23', null);
+    mockSql.mockResolvedValueOnce([]); // captures DELETE
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    const json = res._json as Json & {
+      skippedTables: Array<{ table: string; reason: string }>;
+    };
+    expect(json.status).toBe('success');
+    expect(json.results.map((r) => r.stopReason)).toEqual([
+      'drained',
+      'drained',
+    ]);
+    expect(deleteCutoffs()).toHaveLength(3);
+    expect(json.skippedTables).toEqual([]);
   });
 
   it('reports stopReason: drained when the first batch is empty', async () => {
@@ -307,6 +331,37 @@ describe('cleanup-gexbot handler', () => {
           m.includes('deleted 10'),
       ),
     ).toBe(true);
+  });
+
+  it('still reports the stalled gate when the dates SELECT rejects', async () => {
+    vi.mocked(listUnarchivedDates).mockResolvedValue(['2026-03-20']);
+    mockSql.mockRejectedValueOnce(new Error('dates down')); // snapshots dates
+    scriptDates('2026-03-23', '2026-03-19'); // captures dates
+    mockSql.mockResolvedValueOnce([]); // captures DELETE
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(500);
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        results: [
+          expect.objectContaining({
+            table: 'gexbot_snapshots',
+            gate: '2026-03-20',
+            cutoff: null,
+            error: 'dates down',
+          }),
+          expect.objectContaining({
+            table: 'gexbot_api_capture',
+            gate: '2026-03-20',
+            cutoff: '2026-03-19',
+          }),
+        ],
+      }),
+      'cleanup-gexbot finished with failures',
+    );
+    expect(deleteCutoffs()).toEqual(['2026-03-19']);
   });
 
   it('fails with a named error when the dates row is missing', async () => {

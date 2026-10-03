@@ -1,6 +1,8 @@
 // @vitest-environment node
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { mockRequest, mockResponse } from './helpers';
 
 const {
@@ -9,7 +11,7 @@ const {
   mockPut,
   mockHead,
   mockWriteParquet,
-  mockListUnarchived,
+  mockSweep,
   mockLoggerWarn,
 } = vi.hoisted(() => ({
   mockSql: vi.fn(),
@@ -17,7 +19,7 @@ const {
   mockPut: vi.fn(),
   mockHead: vi.fn(),
   mockWriteParquet: vi.fn(),
-  mockListUnarchived: vi.fn(),
+  mockSweep: vi.fn(),
   mockLoggerWarn: vi.fn(),
 }));
 
@@ -50,16 +52,20 @@ vi.mock('@vercel/blob', () => ({
 
 vi.mock('../_lib/gexbot-parquet.js', () => ({
   writeRowsToParquet: mockWriteParquet,
+  sweepStaleTempFiles: mockSweep,
   buildSnapshotSchema: vi.fn(() => ({ snapshot: true })),
   buildCaptureSchema: vi.fn(() => ({ capture: true })),
 }));
 
-vi.mock('../_lib/gexbot-archive-dates.js', () => ({
-  GEXBOT_ARCHIVE_TABLES: ['gexbot_snapshots', 'gexbot_api_capture'],
-  listUnarchivedDates: mockListUnarchived,
+vi.mock('../_lib/gexbot-archive-dates.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../_lib/gexbot-archive-dates.js')>()),
+  listUnarchivedDates: vi.fn(),
 }));
 
-import handler from '../cron/archive-gexbot.js';
+import { listUnarchivedDates } from '../_lib/gexbot-archive-dates.js';
+import handler, { config } from '../cron/archive-gexbot.js';
+
+const mockListUnarchived = vi.mocked(listUnarchivedDates);
 
 // Post-close time (Tuesday 21:30 UTC = 4:30pm CT); ET date 2026-03-24
 const POST_CLOSE = new Date('2026-03-24T21:30:00.000Z');
@@ -74,7 +80,7 @@ function pendingForBoth(dates: string[]) {
 /** Per-table pending dates, keyed by table name. */
 function pendingByTable(byTable: Record<string, string[]>) {
   mockListUnarchived.mockImplementation(
-    async (_sql: unknown, table: string) => byTable[table] ?? [],
+    async (_sql, table) => byTable[table] ?? [],
   );
 }
 
@@ -102,16 +108,33 @@ function archivedKeys(): string[] {
   return mockPut.mock.calls.map((c) => String(c[0]));
 }
 
-function setupSuccessfulRun(rowsPerPage: Record<string, unknown>[]) {
-  // Each table does: page 1 (rows), page 2 (empty), then 1 INSERT.
-  // Call order for two tables: page, page, insert, page, page, insert.
-  mockSql.mockResolvedValueOnce(rowsPerPage); // snapshots page 1
-  mockSql.mockResolvedValueOnce([]); // snapshots page 2 (terminates)
-  mockSql.mockResolvedValueOnce([]); // snapshots audit INSERT
-  mockSql.mockResolvedValueOnce(rowsPerPage); // captures page 1
-  mockSql.mockResolvedValueOnce([]); // captures page 2 (terminates)
-  mockSql.mockResolvedValueOnce([]); // captures audit INSERT
+/**
+ * Queues one table's SQL for a run whose parquet writer drains the rows:
+ * page 1 (rows), page 2 (empty, terminates), the shrink-guard audit SELECT
+ * (no prior row), then the audit INSERT.
+ */
+function queueTableSql(rowsPerPage: Record<string, unknown>[]) {
+  mockSql.mockResolvedValueOnce(rowsPerPage); // page 1
+  mockSql.mockResolvedValueOnce([]); // page 2 (terminates)
+  mockSql.mockResolvedValueOnce([]); // shrink-guard audit SELECT
+  mockSql.mockResolvedValueOnce([]); // audit INSERT
+}
 
+/** SQL calls whose text is the audit INSERT, for the given table. */
+function auditInsertsFor(table: string): unknown[][] {
+  return mockSql.mock.calls.filter(
+    (c) =>
+      (c[0] as string[])
+        .join(' ')
+        .includes('INSERT INTO gexbot_archive_audit') && c[1] === table,
+  );
+}
+
+/**
+ * Parquet writer that drains the row stream (so page reads really run),
+ * plus put/head mocks whose sizes match a single-row export.
+ */
+function setupDrainingWriter() {
   mockWriteParquet.mockImplementation(
     async (_unusedSchema, rows: AsyncIterable<Record<string, unknown>>) => {
       // Drain the async iterable to count rows; the real parquet
@@ -157,6 +180,12 @@ function setupSuccessfulRun(rowsPerPage: Record<string, unknown>[]) {
   );
 }
 
+function setupSuccessfulRun(rowsPerPage: Record<string, unknown>[]) {
+  queueTableSql(rowsPerPage); // snapshots
+  queueTableSql(rowsPerPage); // captures
+  setupDrainingWriter();
+}
+
 describe('archive-gexbot handler', () => {
   const originalEnv = process.env;
 
@@ -166,6 +195,7 @@ describe('archive-gexbot handler', () => {
     vi.setSystemTime(POST_CLOSE);
     process.env.CRON_SECRET = 'test-secret';
     process.env.BLOB_READ_WRITE_TOKEN = 'blob-token';
+    mockSweep.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -226,16 +256,21 @@ describe('archive-gexbot handler', () => {
     // 2 head() calls for size verification
     expect(mockHead).toHaveBeenCalledTimes(2);
     expect(mockSentryCapture).not.toHaveBeenCalled();
+    // Stale temp files from hard-killed runs are swept first, aged by the
+    // function limit.
+    expect(mockSweep).toHaveBeenCalledWith(300_000);
+    expect(mockSweep.mock.invocationCallOrder[0]).toBeLessThan(
+      mockWriteParquet.mock.invocationCallOrder[0] ?? 0,
+    );
   });
 
   it('records partial status when one table archive throws', async () => {
-    // snapshots succeeds, captures fails on put()
+    // snapshots succeeds, captures fails on put(). The parquet mock does not
+    // drain the row stream, so no page reads are issued.
     pendingForBoth(['2026-03-23']);
-    mockSql.mockResolvedValueOnce([{ id: 1, ticker: 'SPX' }]); // snapshots page 1
-    mockSql.mockResolvedValueOnce([]); // snapshots page 2
+    mockSql.mockResolvedValueOnce([]); // snapshots shrink-guard SELECT
     mockSql.mockResolvedValueOnce([]); // snapshots audit INSERT
-    mockSql.mockResolvedValueOnce([{ id: 1, ticker: 'SPX' }]); // captures page 1
-    mockSql.mockResolvedValueOnce([]); // captures page 2
+    mockSql.mockResolvedValueOnce([]); // captures shrink-guard SELECT
 
     mockWriteParquet.mockResolvedValue({
       buffer: Buffer.from('p'),
@@ -286,10 +321,12 @@ describe('archive-gexbot handler', () => {
     });
   });
 
-  it('throws when blob HEAD size does not match upload size', async () => {
+  it('fails only that table when blob HEAD size does not match upload size', async () => {
     pendingForBoth(['2026-03-23']);
-    mockSql.mockResolvedValueOnce([{ id: 1, ticker: 'SPX' }]); // page 1
-    mockSql.mockResolvedValueOnce([]); // page 2 terminates
+    // The parquet mock does not drain the row stream: no page reads.
+    mockSql.mockResolvedValueOnce([]); // snapshots shrink-guard SELECT
+    mockSql.mockResolvedValueOnce([]); // captures shrink-guard SELECT
+    mockSql.mockResolvedValueOnce([]); // captures audit INSERT
 
     mockWriteParquet.mockResolvedValue({
       buffer: Buffer.from('parquet-data'),
@@ -306,19 +343,18 @@ describe('archive-gexbot handler', () => {
       size: 12,
     });
 
-    // HEAD returns wrong size → throws inside archiveOneTable
-    mockHead.mockResolvedValue({
+    // HEAD returns the wrong size for snapshots → throws inside
+    // archiveOneTable; captures then verifies cleanly.
+    const headMeta = {
       url: 'https://blob.example/gexbot_snapshots',
       pathname: 'x',
-      size: 999, // mismatch!
       uploadedAt: new Date(),
       contentType: '',
       contentDisposition: '',
-    });
-
-    // captures call set still must satisfy SQL mocks even though
-    // snapshots throws — withCronInstrumentation continues per-table.
-    mockSql.mockResolvedValueOnce([]); // captures page 1 (empty day)
+    };
+    mockHead
+      .mockResolvedValueOnce({ ...headMeta, size: 999 }) // mismatch!
+      .mockResolvedValueOnce({ ...headMeta, size: 12 });
 
     const req = mockRequest({
       method: 'GET',
@@ -327,29 +363,34 @@ describe('archive-gexbot handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    expect(res._json).toMatchObject({ status: 'partial' });
-    expect(mockSentryCapture).toHaveBeenCalled();
+    expect(res._json).toMatchObject({ status: 'partial', failed: 1 });
+    expect(mockSentryCapture).toHaveBeenCalledTimes(1);
     const captured = mockSentryCapture.mock.calls[0]?.[0] as Error;
     expect(captured.message).toMatch(/size mismatch/i);
+    expect(mockSentryCapture).toHaveBeenCalledWith(expect.any(Error), {
+      tags: {
+        'gexbot.cron': 'archive',
+        'gexbot.table': 'gexbot_snapshots',
+        'gexbot.archive_date': '2026-03-23',
+      },
+    });
 
     // Critical: the audit row must NOT be written when HEAD verify
     // fails. cleanup-gexbot.ts uses gexbot_archive_audit as its
     // "safe to delete" signal — recording a bad archive would defeat
-    // the safety gate. Verify no INSERT was issued for that table.
-    const sqlCalls = mockSql.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(sqlCalls).not.toMatch(/INSERT INTO gexbot_archive_audit/);
+    // the safety gate. No INSERT for that table; the other table's lands.
+    expect(auditInsertsFor('gexbot_snapshots')).toHaveLength(0);
+    expect(auditInsertsFor('gexbot_api_capture')).toHaveLength(1);
   });
 
-  it('archives an empty day cleanly (still writes audit row with row_count=0)', async () => {
-    pendingForBoth(['2026-03-23']);
-    // No rows to archive → streamRows generator yields nothing →
-    // writeRowsToParquet still produces a (schema-only) buffer →
-    // audit row with row_count=0 still lands so cleanup knows the
-    // date is "accounted for".
-    mockSql.mockResolvedValueOnce([]); // snapshots page 1 (empty)
-    mockSql.mockResolvedValueOnce([]); // snapshots audit INSERT
-    mockSql.mockResolvedValueOnce([]); // captures page 1 (empty)
-    mockSql.mockResolvedValueOnce([]); // captures audit INSERT
+  it('archives an empty ?date= day cleanly (still writes audit row with row_count=0)', async () => {
+    // Only `?date=` reaches an empty day: the scheduled path picks days
+    // with live rows. writeRowsToParquet still produces a (schema-only)
+    // buffer and the audit row with row_count=0 still lands so cleanup
+    // knows the date is "accounted for". The parquet mock does not drain
+    // the row stream, so each table issues only the shrink-guard SELECT and
+    // the audit INSERT.
+    mockSql.mockResolvedValue([]);
 
     mockWriteParquet.mockResolvedValue({
       buffer: Buffer.alloc(0),
@@ -376,6 +417,7 @@ describe('archive-gexbot handler', () => {
     const req = mockRequest({
       method: 'GET',
       headers: { authorization: 'Bearer test-secret' },
+      query: { date: '2026-03-23' },
     });
     const res = mockResponse();
     await handler(req, res);
@@ -383,6 +425,103 @@ describe('archive-gexbot handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ status: 'success', rows: 0 });
     expect(mockPut).toHaveBeenCalledTimes(2);
+    // INSERT values: table_name, archive_date, row_count, ...
+    for (const table of ['gexbot_snapshots', 'gexbot_api_capture']) {
+      expect(auditInsertsFor(table).map((c) => c[3])).toEqual([0]);
+    }
+  });
+
+  it('fails only that table when its audit INSERT rejects after put and head', async () => {
+    pendingForBoth(['2026-03-23']);
+    const rows = [{ id: 1, captured_at: new Date(), ticker: 'SPX' }];
+    setupDrainingWriter();
+    mockSql.mockResolvedValueOnce(rows); // snapshots page 1
+    mockSql.mockResolvedValueOnce([]); // snapshots page 2
+    mockSql.mockResolvedValueOnce([]); // snapshots shrink-guard SELECT
+    mockSql.mockRejectedValueOnce(new Error('audit insert failed')); // INSERT
+    queueTableSql(rows); // captures
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET', headers: AUTH }), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      failed: 1,
+      rows: 1,
+      dates: ['2026-03-23'],
+    });
+    expect(mockSentryCapture).toHaveBeenCalledTimes(1);
+    expect(mockSentryCapture).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'audit insert failed' }),
+      {
+        tags: {
+          'gexbot.cron': 'archive',
+          'gexbot.table': 'gexbot_snapshots',
+          'gexbot.archive_date': '2026-03-23',
+        },
+      },
+    );
+    // The failed INSERT is not retried by the cron; the other table lands.
+    expect(auditInsertsFor('gexbot_snapshots')).toHaveLength(1);
+    expect(auditInsertsFor('gexbot_api_capture')).toHaveLength(1);
+    expect(archivedKeys()).toEqual([
+      'gexbot/gexbot_snapshots/2026-03-23.parquet',
+      'gexbot/gexbot_api_capture/2026-03-23.parquet',
+    ]);
+  });
+
+  it('fails only that table when a mid-day page read rejects', async () => {
+    pendingForBoth(['2026-03-23']);
+    const rows = [{ id: 1, captured_at: new Date(), ticker: 'SPX' }];
+    setupDrainingWriter();
+    mockSql.mockResolvedValueOnce(rows); // snapshots page 1
+    mockSql.mockRejectedValueOnce(new Error('page read failed')); // page 2
+    queueTableSql(rows); // captures
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET', headers: AUTH }), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'partial', failed: 1, rows: 1 });
+    expect(mockSentryCapture).toHaveBeenCalledTimes(1);
+    expect(mockSentryCapture).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'page read failed' }),
+      {
+        tags: {
+          'gexbot.cron': 'archive',
+          'gexbot.table': 'gexbot_snapshots',
+          'gexbot.archive_date': '2026-03-23',
+        },
+      },
+    );
+    // No Blob and no audit row for the table whose read failed.
+    expect(archivedKeys()).toEqual([
+      'gexbot/gexbot_api_capture/2026-03-23.parquet',
+    ]);
+    expect(auditInsertsFor('gexbot_snapshots')).toHaveLength(0);
+    expect(auditInsertsFor('gexbot_api_capture')).toHaveLength(1);
+  });
+
+  it('reports error, not partial, when every table-date fails', async () => {
+    pendingForBoth(['2026-03-20', '2026-03-23']);
+    setupEmptyDays(0);
+    mockPut.mockRejectedValue(new Error('blob down'));
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET', headers: AUTH }), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'error',
+      failed: 4,
+      rows: 0,
+      dates: ['2026-03-20', '2026-03-23'],
+      stopReason: 'drained',
+    });
+    expect(mockSentryCapture).toHaveBeenCalledTimes(4);
+    expect(auditInsertsFor('gexbot_snapshots')).toHaveLength(0);
+    expect(auditInsertsFor('gexbot_api_capture')).toHaveLength(0);
   });
 
   it('issues the audit INSERT with ON CONFLICT UPDATE for idempotent re-runs', async () => {
@@ -731,16 +870,28 @@ describe('archive-gexbot handler', () => {
       expect(mockPut).not.toHaveBeenCalled();
     });
 
-    describe('override never shrinks an existing archive', () => {
-      function setupAudit(existing: number | null, freshRows: number) {
+    describe('no path shrinks an existing archive', () => {
+      /**
+       * The shrink-guard SELECT returns `existing[table]` as `row_count`
+       * (a string, the way Neon returns BIGINT), no row when the table is
+       * absent, or rejects when it is an Error. Every other call is [].
+       */
+      function setupAudit(
+        existing: Partial<Record<string, string | Error>>,
+        freshRows: number,
+      ) {
         setupEmptyDays(0);
-        mockSql.mockImplementation(async (strings: TemplateStringsArray) => {
-          const text = strings.join(' ');
-          if (text.includes('SELECT row_count FROM gexbot_archive_audit')) {
-            return existing === null ? [] : [{ row_count: existing }];
-          }
-          return [];
-        });
+        mockSql.mockImplementation(
+          async (strings: TemplateStringsArray, ...values: unknown[]) => {
+            const text = strings.join(' ');
+            if (text.includes('SELECT row_count FROM gexbot_archive_audit')) {
+              const audited = existing[String(values[0])];
+              if (audited instanceof Error) throw audited;
+              return audited === undefined ? [] : [{ row_count: audited }];
+            }
+            return [];
+          },
+        );
         mockWriteParquet.mockImplementation(async () => ({
           buffer: Buffer.alloc(0),
           bytes: 0,
@@ -763,11 +914,15 @@ describe('archive-gexbot handler', () => {
       }
 
       it('fails a table whose fresh export is smaller than the audited count', async () => {
-        setupAudit(1000, 10);
+        setupAudit(
+          { gexbot_snapshots: '1000', gexbot_api_capture: '1000' },
+          10,
+        );
 
         const res = await runOverride();
 
-        expect(res._json).toMatchObject({ status: 'partial', failed: 2 });
+        // Both table-dates refused, so every attempt failed: error.
+        expect(res._json).toMatchObject({ status: 'error', failed: 2 });
         expect(mockPut).not.toHaveBeenCalled();
         const err = mockSentryCapture.mock.calls[0]?.[0] as Error;
         expect(err.message).toMatch(/1000 rows/);
@@ -785,11 +940,67 @@ describe('archive-gexbot handler', () => {
         expect(auditWrites).toHaveLength(0);
       });
 
+      it('refuses a shrink on the scheduled path too', async () => {
+        pendingForBoth(['2026-03-23']);
+        setupAudit({ gexbot_snapshots: '1000' }, 10);
+
+        const res = mockResponse();
+        await handler(mockRequest({ method: 'GET', headers: AUTH }), res);
+
+        expect(res._json).toMatchObject({ status: 'partial', failed: 1 });
+        expect(mockSentryCapture).toHaveBeenCalledTimes(1);
+        expect(mockSentryCapture).toHaveBeenCalledWith(
+          expect.objectContaining({
+            message: expect.stringMatching(
+              /^Refusing to overwrite gexbot_snapshots 2026-03-23/,
+            ),
+          }),
+          {
+            tags: {
+              'gexbot.cron': 'archive',
+              'gexbot.table': 'gexbot_snapshots',
+              'gexbot.archive_date': '2026-03-23',
+            },
+          },
+        );
+        expect(archivedKeys()).toEqual([
+          'gexbot/gexbot_api_capture/2026-03-23.parquet',
+        ]);
+        expect(auditInsertsFor('gexbot_snapshots')).toHaveLength(0);
+      });
+
+      it('fails that table by name when the shrink-guard SELECT rejects', async () => {
+        pendingForBoth(['2026-03-23']);
+        setupAudit({ gexbot_snapshots: new Error('audit select failed') }, 10);
+
+        const res = mockResponse();
+        await handler(mockRequest({ method: 'GET', headers: AUTH }), res);
+
+        expect(res._json).toMatchObject({ status: 'partial', failed: 1 });
+        expect(mockSentryCapture).toHaveBeenCalledTimes(1);
+        expect(mockSentryCapture).toHaveBeenCalledWith(
+          expect.objectContaining({ message: 'audit select failed' }),
+          {
+            tags: {
+              'gexbot.cron': 'archive',
+              'gexbot.table': 'gexbot_snapshots',
+              'gexbot.archive_date': '2026-03-23',
+            },
+          },
+        );
+        // The guard runs before put: no Blob, no audit row for that table.
+        expect(archivedKeys()).toEqual([
+          'gexbot/gexbot_api_capture/2026-03-23.parquet',
+        ]);
+        expect(auditInsertsFor('gexbot_snapshots')).toHaveLength(0);
+        expect(auditInsertsFor('gexbot_api_capture')).toHaveLength(1);
+      });
+
       it.each([
-        ['equal', 10, 10],
-        ['smaller', 5, 10],
+        ['equal', '10', 10],
+        ['smaller', '5', 10],
       ])('archives normally when the audited count is %s', async (_n, e, f) => {
-        setupAudit(e, f);
+        setupAudit({ gexbot_snapshots: e, gexbot_api_capture: e }, f);
 
         const res = await runOverride();
 
@@ -798,7 +1009,7 @@ describe('archive-gexbot handler', () => {
       });
 
       it('archives normally when there is no audit row', async () => {
-        setupAudit(null, 0);
+        setupAudit({}, 0);
 
         const res = await runOverride();
 
@@ -850,5 +1061,19 @@ describe('archive-gexbot handler', () => {
       });
       expect(mockPut).toHaveBeenCalledTimes(4);
     });
+  });
+});
+
+describe('archive-gexbot config', () => {
+  it('matches the maxDuration vercel.json grants the function', () => {
+    // The time budget derives MAX_DURATION_MS from `config`, but Vercel
+    // enforces vercel.json. If they drift, the budget plans against a limit
+    // the platform does not grant.
+    const vercel = JSON.parse(
+      readFileSync(resolve(process.cwd(), 'vercel.json'), 'utf8'),
+    ) as { functions: Record<string, { maxDuration?: number }> };
+    expect(vercel.functions['api/cron/archive-gexbot.ts']?.maxDuration).toBe(
+      config.maxDuration,
+    );
   });
 });
