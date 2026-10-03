@@ -10,7 +10,7 @@
  * session time zone (UTC on Neon), the same predicate `archive-gexbot.ts`
  * uses to select a day's rows. Mirroring it exactly means a row is counted
  * for the same day the archive would export it.
- * GexBot sessions run 13:30-20:01 UTC and never straddle UTC midnight, so a
+ * GexBot sessions run 13:30-21:01 UTC across DST and never straddle UTC midnight, so a
  * UTC calendar day is exactly one ET session date. Do not "fix" these
  * boundaries to ET: that would break parity with streamRows.
  *

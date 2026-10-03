@@ -15,21 +15,34 @@
  *
  * Day boundaries: UTC calendar days. The date helper and `streamRows` both
  * use `d::timestamptz` under Neon's UTC session time zone. GexBot sessions
- * run 13:30-20:01 UTC and never straddle UTC midnight, so the UTC day is the
- * ET session date. `ctx.today` (ET) is the exclusive upper bound, so a run
- * never touches the current day.
+ * run 13:30-21:01 UTC across DST and never straddle UTC midnight, so the UTC
+ * day is the ET session date. `ctx.today` (ET) is the exclusive upper bound
+ * for the scheduled path, so it never archives the current session.
  *
  * Manual re-run: `GET /api/cron/archive-gexbot?date=2026-09-08` with the
  * CRON_SECRET bearer archives that one date for BOTH tables regardless of
- * audit state. It is idempotent (Blob `allowOverwrite: true`, audit
- * `ON CONFLICT ... DO UPDATE`) and writes a `row_count = 0` audit row for an
- * empty day. A malformed `date` throws, which the wrapper turns into a 500.
+ * audit state, overwriting the Blob (`allowOverwrite: true`) and upserting
+ * the audit row. Guards, each a thrown error (the wrapper turns it into a
+ * 500): `date` must be a real YYYY-MM-DD calendar date (a repeated param is
+ * rejected), and must be BEFORE today (ET), because archiving a live session
+ * would write an audit row that lets cleanup delete rows captured later.
+ * Per table, if an audit row already exists with MORE rows than the fresh
+ * export (cleanup already purged part of the day), the table fails instead of
+ * overwriting the good archive with a smaller one. A day with no live rows
+ * and no prior audit row is archived as an empty file (`row_count = 0`).
  *
  * Time budget: the first date always runs. Another pending date starts only
  * if fewer than MAX_DATES_PER_RUN are done and the time left in the function
- * exceeds NEXT_DATE_SAFETY_FACTOR times the previous date's wall time plus
- * NEXT_DATE_MARGIN_MS. Leftover dates are reported as `remainingDates`
- * (with `stopReason`) and picked up by the next scheduled run.
+ * exceeds NEXT_DATE_SAFETY_FACTOR times the LONGEST date wall time so far
+ * plus NEXT_DATE_MARGIN_MS (the max, not the last, so a fast half-archived or
+ * failing date cannot understate the cost of the next full one). Leftover
+ * dates are reported as `remainingDates` (with `stopReason`) and picked up
+ * by the next scheduled run.
+ *
+ * Head-of-line blocking: dates run oldest first, so one table-day that cannot
+ * finish within the function limit fails every run on that same date and
+ * starves newer ones. Remedy: archive that date manually with `?date=`, or
+ * insert its `gexbot_archive_audit` row, so it leaves the pending set.
  *
  * For each table and date:
  *   1. Page through the day's rows via id-cursor pagination
@@ -45,6 +58,8 @@
  *
  * Environment: BLOB_READ_WRITE_TOKEN, CRON_SECRET, DATABASE_URL
  */
+
+import { randomUUID } from 'node:crypto';
 
 import { head, put } from '@vercel/blob';
 
@@ -204,18 +219,53 @@ interface ArchiveSummary {
   sha256: string;
 }
 
+/**
+ * Refuse to replace an archive with a smaller one. A manual `?date=` re-run
+ * after cleanup purged rows would otherwise overwrite the good Blob with a
+ * partial or empty file and lower the audit row count.
+ */
+async function assertNotShrinking(
+  table: GexbotArchiveTable,
+  archiveDate: string,
+  freshRowCount: number,
+): Promise<void> {
+  const sql = getDb();
+  const rows = (await withDbRetry(
+    () => sql`
+      SELECT row_count FROM gexbot_archive_audit
+      WHERE table_name = ${table} AND archive_date = ${archiveDate}
+    `,
+    2,
+    10_000,
+  )) as Array<Record<string, unknown>>;
+  const existing = rows.at(0);
+  if (existing && Number(existing.row_count) > freshRowCount) {
+    throw new Error(
+      `Refusing to overwrite ${table} ${archiveDate}: existing archive has ` +
+        `${Number(existing.row_count)} rows, fresh export has ${freshRowCount}`,
+    );
+  }
+}
+
 async function archiveOneTable(
   spec: TableSpec,
   archiveDate: string,
+  override: boolean,
 ): Promise<ArchiveSummary> {
   const schema = spec.buildSchema();
-  const fileName = `${spec.name}_${archiveDate}.parquet`;
+  // Unique per invocation: overlapping runs for one date must not share a
+  // /tmp file.
+  const fileName = `${spec.name}_${archiveDate}_${randomUUID()}.parquet`;
 
   const result = await writeRowsToParquet(
     schema,
     streamRows(spec.name, archiveDate),
     fileName,
   );
+
+  if (override) {
+    await assertNotShrinking(spec.name, archiveDate, result.rowCount);
+  }
 
   // Empty days are valid (e.g. Friday-after-holiday) — we still write
   // the audit row so cleanup knows the date is "accounted for".
@@ -266,6 +316,12 @@ interface DatePlan {
   tables: readonly GexbotArchiveTable[];
 }
 
+/** True when `d` is a real calendar date, not just YYYY-MM-DD shaped. */
+function isRealDate(d: string): boolean {
+  const parsed = new Date(`${d}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().startsWith(d);
+}
+
 /**
  * Which (date, tables) to archive. `?date=` forces both tables for one day;
  * otherwise the ascending union of each table's pending dates, each date
@@ -274,12 +330,26 @@ interface DatePlan {
 async function buildPlan(
   dateParam: unknown,
   today: string,
-): Promise<DatePlan[]> {
-  if (typeof dateParam === 'string') {
-    if (!DATE_PARAM_RE.test(dateParam)) {
+): Promise<{ plan: DatePlan[]; override: boolean }> {
+  if (dateParam !== undefined) {
+    // Any defined non-string (e.g. a repeated ?date= array) is invalid too.
+    if (
+      typeof dateParam !== 'string' ||
+      !DATE_PARAM_RE.test(dateParam) ||
+      !isRealDate(dateParam)
+    ) {
       throw new Error('archive-gexbot: invalid date param');
     }
-    return [{ date: dateParam, tables: GEXBOT_ARCHIVE_TABLES }];
+    if (dateParam >= today) {
+      throw new Error(
+        `archive-gexbot: date ${dateParam} is not before today (${today}); ` +
+          'archiving a live session would let cleanup delete later rows',
+      );
+    }
+    return {
+      plan: [{ date: dateParam, tables: GEXBOT_ARCHIVE_TABLES }],
+      override: true,
+    };
   }
 
   const sql = getDb();
@@ -289,9 +359,10 @@ async function buildPlan(
       pendingByDate.set(date, [...(pendingByDate.get(date) ?? []), table]);
     }
   }
-  return [...pendingByDate.entries()]
+  const plan = [...pendingByDate.entries()]
     .sort(([x], [y]) => x.localeCompare(y))
     .map(([date, tables]) => ({ date, tables }));
+  return { plan, override: false };
 }
 
 export default withCronInstrumentation(
@@ -301,9 +372,10 @@ export default withCronInstrumentation(
       throw new Error('BLOB_READ_WRITE_TOKEN is not configured');
     }
 
-    const plan = await buildPlan(ctx.req?.query.date, ctx.today);
+    const { plan, override } = await buildPlan(ctx.req?.query.date, ctx.today);
     const summaries: ArchiveSummary[] = [];
-    const archivedDates: string[] = [];
+    const startedDates: string[] = [];
+    let maxDateMs = 0;
     let failed = 0;
     let stopReason: StopReason = 'drained';
 
@@ -312,7 +384,9 @@ export default withCronInstrumentation(
       const dateStartMs = Date.now();
       for (const name of tables) {
         try {
-          summaries.push(await archiveOneTable(TABLE_SPECS[name], date));
+          summaries.push(
+            await archiveOneTable(TABLE_SPECS[name], date, override),
+          );
         } catch (err) {
           failed += 1;
           Sentry.captureException(err, {
@@ -328,25 +402,25 @@ export default withCronInstrumentation(
           );
         }
       }
-      archivedDates.push(date);
-      const lastDateMs = Date.now() - dateStartMs;
+      startedDates.push(date);
+      maxDateMs = Math.max(maxDateMs, Date.now() - dateStartMs);
 
       if (index === plan.length - 1) break;
-      if (archivedDates.length >= MAX_DATES_PER_RUN) {
+      if (startedDates.length >= MAX_DATES_PER_RUN) {
         stopReason = 'max_dates';
         break;
       }
       const remainingMs = MAX_DURATION_MS - (Date.now() - ctx.startTimeMs);
       if (
         remainingMs <=
-        NEXT_DATE_SAFETY_FACTOR * lastDateMs + NEXT_DATE_MARGIN_MS
+        NEXT_DATE_SAFETY_FACTOR * maxDateMs + NEXT_DATE_MARGIN_MS
       ) {
         stopReason = 'budget';
         break;
       }
     }
 
-    const remainingDates = plan.length - archivedDates.length;
+    const remainingDates = plan.length - startedDates.length;
     if (remainingDates > 0) {
       ctx.logger.warn(
         { remainingDates, stopReason },
@@ -354,7 +428,7 @@ export default withCronInstrumentation(
       );
     }
     ctx.logger.info(
-      { dates: archivedDates, summaries, failed, remainingDates, stopReason },
+      { dates: startedDates, summaries, failed, remainingDates, stopReason },
       'archive-gexbot completed',
     );
 
@@ -362,7 +436,7 @@ export default withCronInstrumentation(
       status: failed === 0 ? 'success' : 'partial',
       rows: summaries.reduce((sum, s) => sum + s.rowCount, 0),
       metadata: {
-        dates: archivedDates,
+        dates: startedDates,
         summaries,
         failed,
         remainingDates,

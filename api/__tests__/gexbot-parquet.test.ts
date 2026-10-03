@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from 'vitest';
-import { unlink } from 'node:fs/promises';
+import { access, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as parquet from '@dsnp/parquetjs';
@@ -168,6 +168,30 @@ describe('writeRowsToParquet', () => {
     );
     expect(result.rowCount).toBe(0);
     expect(result.bytes).toBeGreaterThan(0); // header + footer still written
+  });
+
+  it('removes the temp file when the row stream throws mid-write', async () => {
+    const schema = buildCaptureSchema() as InstanceType<
+      typeof parquet.ParquetSchema
+    >;
+    const fileName = `gexbot-throw-${String(Date.now())}.parquet`;
+    async function* failing(): AsyncGenerator<Record<string, unknown>> {
+      yield {
+        id: 1,
+        captured_at: Date.now(),
+        ticker: 'SPX',
+        endpoint: 'zero',
+        category: 'zero',
+        raw_response: '{}',
+      };
+      await Promise.resolve();
+      throw new Error('stream blew up');
+    }
+
+    await expect(
+      writeRowsToParquet(schema, failing(), fileName),
+    ).rejects.toThrow('stream blew up');
+    await expect(access(join(tmpdir(), fileName))).rejects.toThrow(/ENOENT/);
   });
 
   // Cleanup-branch (the .catch on the post-write `unlink`) intentionally

@@ -37,7 +37,7 @@ export interface ParquetResult {
  * Encode rows into a Snappy-compressed Parquet file and return the
  * full byte buffer + hash + count. `fileName` is the basename used
  * under /tmp during writing — must be unique per concurrent run, so
- * the cron passes `${table}_${date}.parquet`.
+ * the cron appends a random UUID to `${table}_${date}`.
  */
 export async function writeRowsToParquet(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -55,35 +55,37 @@ export async function writeRowsToParquet(
     rowGroupSize: 50_000,
   });
 
-  let rowCount = 0;
   try {
-    for await (const row of rows) {
-      await writer.appendRow(row);
-      rowCount += 1;
+    let rowCount = 0;
+    try {
+      for await (const row of rows) {
+        await writer.appendRow(row);
+        rowCount += 1;
+      }
+    } finally {
+      await writer.close();
     }
+
+    const buffer = await readFile(tmpPath);
+    return {
+      buffer,
+      bytes: buffer.length,
+      sha256: createHash('sha256').update(buffer).digest('hex'),
+      rowCount,
+    };
   } finally {
-    await writer.close();
-  }
-
-  const buffer = await readFile(tmpPath);
-  // Best-effort cleanup; failure to unlink is non-fatal (next cron run
-  // will overwrite via openFile) but worth surfacing at info level so
-  // disk-space or permission issues on the Vercel runtime FS are
-  // visible before they snowball.
-  await unlink(tmpPath).catch((err: unknown) => {
-    Sentry.captureException(err, {
-      level: 'info',
-      tags: { context: 'gexbot_parquet_cleanup' },
-      extra: { tmpPath },
+    // Best-effort cleanup on success AND failure (a row stream that throws
+    // mid-day must not leak a temp file). Failure to unlink is non-fatal
+    // but worth surfacing at info level so disk-space or permission issues
+    // on the Vercel runtime FS are visible before they snowball.
+    await unlink(tmpPath).catch((err: unknown) => {
+      Sentry.captureException(err, {
+        level: 'info',
+        tags: { context: 'gexbot_parquet_cleanup' },
+        extra: { tmpPath },
+      });
     });
-  });
-
-  return {
-    buffer,
-    bytes: buffer.length,
-    sha256: createHash('sha256').update(buffer).digest('hex'),
-    rowCount,
-  };
+  }
 }
 
 /**
