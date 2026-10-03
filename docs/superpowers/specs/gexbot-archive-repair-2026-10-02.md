@@ -23,8 +23,8 @@ un-archived session can be deleted.
   cleanup would delete 09-08 → fix-date un-archived. This plan closes both.
 - Row-day boundaries: both crons select rows with
   `captured_at >= d::timestamptz AND captured_at < (d::date + 1)::timestamptz`
-  where the Neon session timezone is UTC. GexBot sessions run 13:30–20:01 UTC
-  and never straddle UTC midnight, so UTC-day == ET session date. The new
+  where the Neon session timezone is UTC. GexBot sessions run 13:30–21:01 UTC
+  across DST and never straddle UTC midnight, so UTC-day == ET session date. The new
   helper uses the identical predicate.
 
 ## Global constraints
@@ -160,31 +160,41 @@ Depends on Task 2's `listUnarchivedDates` and `GexbotArchiveTable`.
 Behavior:
 1. Pass `passReq: true` in the wrapper options so `ctx.req` is populated.
 2. Target selection:
-   - If `ctx.req?.query.date` is a string: it must match
-     `/^\d{4}-\d{2}-\d{2}$/`, otherwise `throw new Error('archive-gexbot: invalid date param')`
-     (the wrapper turns a throw into a 500). A valid value is archived for
-     **both** tables regardless of audit state (manual re-archive is
-     idempotent: Blob `allowOverwrite: true` + audit `ON CONFLICT ... DO UPDATE`).
+   - If `ctx.req?.query.date` is present: it must be a single string (a
+     repeated param is rejected), match `/^\d{4}-\d{2}-\d{2}$/`, and be a real
+     calendar date, otherwise `throw new Error('archive-gexbot: invalid date param')`
+     (the wrapper turns a throw into a 500). It must also be strictly before
+     `ctx.today`, because archiving a live session would write an audit row
+     that lets cleanup delete rows captured later. A valid value is archived
+     for **both** tables, overwriting the Blob (`allowOverwrite: true`) and
+     upserting the audit row (`ON CONFLICT ... DO UPDATE`).
    - Otherwise build the pending set: for each table in
      `GEXBOT_ARCHIVE_TABLES`, `await listUnarchivedDates(sql, table, ctx.today)`.
      Dates = sorted ascending union. For each date, archive only the tables
      whose pending list contains it (a half-archived day re-archives only
      the missing table).
+   - Shrink guard, on every path (scheduled and `?date=`): before the Blob
+     put, read the table-date's audit row; if its `row_count` is greater than
+     the fresh export's row count, fail that table instead of overwriting the
+     archive with a smaller one.
 3. Budget. Constants at module top, each with a one-line comment:
    `const MAX_DURATION_MS = config.maxDuration * 1000;` (single source of
    truth with the exported `config`), `NEXT_DATE_SAFETY_FACTOR = 1.5`,
    `NEXT_DATE_MARGIN_MS = 15_000`, `MAX_DATES_PER_RUN = 5`. The first date
-   always runs. After each date finishes, measure its wall time
-   `lastDateMs`; start the next pending date only if
+   always runs. After each date finishes, measure its wall time and keep the
+   maximum observed per-date wall time so far, `maxDateMs` (the max, not the
+   last, so a fast half-archived or failing date cannot understate the next
+   full one); start the next pending date only if
    `datesDone < MAX_DATES_PER_RUN` and
-   `MAX_DURATION_MS - (Date.now() - ctx.startTimeMs) > NEXT_DATE_SAFETY_FACTOR * lastDateMs + NEXT_DATE_MARGIN_MS`.
+   `MAX_DURATION_MS - (Date.now() - ctx.startTimeMs) > NEXT_DATE_SAFETY_FACTOR * maxDateMs + NEXT_DATE_MARGIN_MS`.
    Record `stopReason: 'drained' | 'budget' | 'max_dates'` and
    `remainingDates` (pending dates not started).
 4. Failure handling: keep the existing per-table `try/catch` with
    `Sentry.captureException` tagged `gexbot.cron`, `gexbot.table`,
    `gexbot.archive_date`; count failures; a failed table never stops the
    other table or later dates (cleanup's per-date gate makes that safe).
-5. Result: `status: failed === 0 ? 'success' : 'partial'`; `rows` = total
+5. Result: `status: deriveCronStatus(failed, attempted)` over the
+   table-dates started (some failed → `partial`, all failed → `error`); `rows` = total
    archived rows; `metadata: { dates: [<'YYYY-MM-DD'>...], summaries, failed, remainingDates, stopReason }`.
    When `remainingDates > 0`, `ctx.logger.warn({ remainingDates, stopReason }, 'archive-gexbot backlog remains')`.
 6. Delete `getArchiveDate` (now dead). Update the header comment: catch-up
@@ -194,6 +204,11 @@ Behavior:
    longer get an empty audit row from the scheduled path; the `?date=`
    override still archives an empty day and writes a `row_count = 0` audit
    row (keep that path).
+8. At handler start, `sweepStaleTempFiles(MAX_DURATION_MS)` (in
+   `gexbot-parquet.ts`) removes `gexbot_*.parquet` files in `os.tmpdir()`
+   older than the function limit: a run hard-killed at maxDuration skips its
+   `finally` unlink, and UUID names are never overwritten. Best-effort: warn
+   on failure, never throw.
 
 Tests. Mock `../_lib/gexbot-archive-dates.js` (`listUnarchivedDates: vi.fn()`,
 `GEXBOT_ARCHIVE_TABLES: ['gexbot_snapshots','gexbot_api_capture']`) so the
@@ -229,12 +244,16 @@ Replace the `MAX(archive_date)` logic in `cleanupOne`:
 2. One SQL round-trip for the two dates as text:
    ```sql
    SELECT to_char(${today}::date - 1, 'YYYY-MM-DD') AS yesterday,
-          to_char(${pending[0] ?? null}::date - 1, 'YYYY-MM-DD') AS gate
+          to_char(${pending[0] ?? null}::date - 1, 'YYYY-MM-DD') AS gate_cutoff
    ```
-   (`gate` is NULL when nothing is pending.)
-3. `cutoff = gate != null && gate < yesterday ? gate : yesterday`. Delete
-   rows with `captured_at < (cutoff::date + 1)::timestamptz` in the existing
-   50k batches within the existing wall budget.
+   (`gate_cutoff` is NULL when nothing is pending.)
+3. `cutoff = gate_cutoff != null && gate_cutoff < yesterday ? gate_cutoff : yesterday`.
+   Delete rows with `captured_at < (cutoff::date + 1)::timestamptz` in the
+   existing 50k batches within `WALL_BUDGET_MS = 255_000`, measured from
+   `ctx.startTimeMs` and checked before each table and after each batch
+   (300 s maxDuration − ~33 s worst-case batch under
+   `withDbRetry(…, 2, 10_000)` − slack for the completion check-in and
+   response).
 4. With no audit rows at all, every live day is pending, the gate is the day
    before the first live day, and the DELETE touches nothing. Drop the
    `'no_archive'` stop reason and the `MAX(archive_date)` query. Drop the
@@ -244,6 +263,12 @@ Replace the `MAX(archive_date)` logic in `cleanupOne`:
 6. Header comment: cutoff = `LEAST(yesterday_et, first_unarchived_session - 1)`;
    a missed archive day now stalls deletion at that day until it is
    archived, no matter how many later days succeed.
+7. Failures: each table's gate or DELETE error is caught and recorded by name
+   with its partial progress; the other table still runs; then the run
+   throws one aggregate error naming every failed table (500, never
+   `success`). A table not started because the wall budget ran out is listed
+   in metadata `skippedTables` with a warn log, and the run reports
+   `partial`.
 
 Tests (mock `../_lib/gexbot-archive-dates.js` as in Task 3):
 - pending `[]`, yesterday `2026-03-23` → cutoff `2026-03-23` passed to the
@@ -298,9 +323,13 @@ Commit subject: `feat(gexbot): Register Sentry heartbeats for the archive and cl
 1. Cherry-pick the task commits onto `main` (after `git pull --ff-only`),
    push, confirm the production deployment reaches READY.
 2. Backfill: call `GET https://<prod-domain>/api/cron/archive-gexbot` with
-   `Authorization: Bearer $CRON_SECRET` (from `.env.local`, never echoed) in
-   a loop until `metadata.remainingDates === 0`. Each call archives up to 5
-   sessions within the 300 s budget.
+   `Authorization: Bearer $CRON_SECRET` (from `.env.local`, never echoed)
+   strictly one call at a time, each with `curl --max-time 330`. The wrapper
+   spreads metadata flat into the response, so the fields are top-level
+   `dates`, `remainingDates`, and `stopReason`. Stop on any non-200; continue
+   until a run returns `dates: []`; stop if the same date fails twice. Each
+   call archives up to 5 sessions within the 300 s budget. Then run the SQL
+   verification below.
 3. Verify with read-only SQL: every UTC day 2026-09-08 → yesterday has an
    audit row for both tables whose `row_count` equals the live row count for
    that day. Read one archived Parquet back with `ParquetReader` (script in
@@ -334,7 +363,8 @@ Existing tables only: `gexbot_snapshots`, `gexbot_api_capture`,
 | `NEXT_DATE_SAFETY_FACTOR` | 1.5 | archive | a day's duration varies with row count |
 | `NEXT_DATE_MARGIN_MS` | 15 000 | archive | Blob HEAD + audit write after the last page |
 | `MAX_DATES_PER_RUN` | 5 | archive | bounds memory/GC per invocation |
-| cleanup `BATCH_SIZE` / `WALL_BUDGET_MS` | 50 000 / 295 000 | cleanup | unchanged |
+| cleanup `BATCH_SIZE` / `WALL_BUDGET_MS` | 50 000 / 255 000 | cleanup | 300 s maxDuration − ~33 s worst-case batch − slack |
+| `sweepStaleTempFiles(MAX_DURATION_MS)` | 300 s max file age | archive | older temp files belong to a run killed at the limit |
 
 ## Open questions (defaults chosen)
 
