@@ -3,9 +3,11 @@
 import type { NeonQueryFunction } from '@neondatabase/serverless';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('../_lib/db.js', () => ({
-  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+const { mockRetry } = vi.hoisted(() => ({
+  mockRetry: vi.fn(<T>(fn: () => Promise<T>): Promise<T> => fn()),
 }));
+
+vi.mock('../_lib/db.js', () => ({ withDbRetry: mockRetry }));
 
 import { listUnarchivedDates } from '../_lib/gexbot-archive-dates.js';
 
@@ -19,6 +21,7 @@ function sqlText(): string {
 describe('listUnarchivedDates', () => {
   beforeEach(() => {
     mockSql.mockReset();
+    mockRetry.mockClear();
   });
 
   it('returns [] when the query returns no rows', async () => {
@@ -53,6 +56,25 @@ describe('listUnarchivedDates', () => {
     await listUnarchivedDates(sql, 'gexbot_snapshots', '2026-10-02');
     expect(sqlText()).toContain('gexbot_archive_audit');
     expect(sqlText()).toContain('ORDER BY d');
+  });
+
+  it('keeps both table branches identical apart from the table name', async () => {
+    mockSql.mockResolvedValue([]);
+    await listUnarchivedDates(sql, 'gexbot_snapshots', '2026-10-02');
+    const snap = sqlText().replaceAll('gexbot_snapshots', 'T');
+    mockSql.mockClear();
+    await listUnarchivedDates(sql, 'gexbot_api_capture', '2026-10-02');
+    const cap = sqlText().replaceAll('gexbot_api_capture', 'T');
+    expect(snap).toBe(cap);
+    expect(snap).toContain('captured_at >= days.d::timestamptz');
+    expect(snap).toContain('captured_at < (days.d + 1)::timestamptz');
+    expect(snap).toContain('::date - 1');
+  });
+
+  it('wraps the query in withDbRetry with 2 retries and a 10s timeout', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    await listUnarchivedDates(sql, 'gexbot_snapshots', '2026-10-02');
+    expect(mockRetry).toHaveBeenCalledWith(expect.any(Function), 2, 10_000);
   });
 
   it('passes beforeDate as a query parameter', async () => {

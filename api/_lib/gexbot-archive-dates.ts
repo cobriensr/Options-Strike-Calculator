@@ -10,10 +10,13 @@
  * session time zone (UTC on Neon), the same predicate `archive-gexbot.ts`
  * uses to select a day's rows. Mirroring it exactly means a row is counted
  * for the same day the archive would export it.
+ * GexBot sessions run 13:30-20:01 UTC and never straddle UTC midnight, so a
+ * UTC calendar day is exactly one ET session date. Do not "fix" these
+ * boundaries to ET: that would break parity with streamRows.
  *
  * Archive and cleanup both depend on this one predicate so they can never
- * disagree about what is "archived": cleanup deletes only days this helper
- * no longer returns, and archive repairs the days it does return.
+ * disagree about what is "archived": cleanup deletes only days before `beforeDate` that this helper
+ * does not return, and archive repairs the days it does return.
  *
  * `generate_series` from `MIN(captured_at)::date` lets the query probe the
  * `captured_at` index once per day instead of scanning every row for a
@@ -61,12 +64,12 @@ export async function listUnarchivedDates(
             FROM days
             WHERE EXISTS (
               SELECT 1 FROM gexbot_snapshots t
-              WHERE t.captured_at >= d::timestamptz
-                AND t.captured_at < (d + 1)::timestamptz
+              WHERE t.captured_at >= days.d::timestamptz
+                AND t.captured_at < (days.d + 1)::timestamptz
             )
             AND NOT EXISTS (
               SELECT 1 FROM gexbot_archive_audit a
-              WHERE a.table_name = 'gexbot_snapshots' AND a.archive_date = d
+              WHERE a.table_name = 'gexbot_snapshots' AND a.archive_date = days.d
             )
             ORDER BY d
           `,
@@ -88,12 +91,12 @@ export async function listUnarchivedDates(
             FROM days
             WHERE EXISTS (
               SELECT 1 FROM gexbot_api_capture t
-              WHERE t.captured_at >= d::timestamptz
-                AND t.captured_at < (d + 1)::timestamptz
+              WHERE t.captured_at >= days.d::timestamptz
+                AND t.captured_at < (days.d + 1)::timestamptz
             )
             AND NOT EXISTS (
               SELECT 1 FROM gexbot_archive_audit a
-              WHERE a.table_name = 'gexbot_api_capture' AND a.archive_date = d
+              WHERE a.table_name = 'gexbot_api_capture' AND a.archive_date = days.d
             )
             ORDER BY d
           `,
