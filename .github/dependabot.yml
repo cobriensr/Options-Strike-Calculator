@@ -5,21 +5,41 @@ updates:
     schedule:
       interval: 'weekly'
     open-pull-requests-limit: 10
+    # Supply-chain buffer: skip releases younger than 7 days (GitHub's
+    # default is 3), the window in which compromised publishes are usually
+    # caught and yanked. Applies to version updates only, never security
+    # updates. Same setting on every ecosystem below.
+    cooldown:
+      default-days: 7
+    ignore:
+      # >=3.9.7 pulls @vercel/cli-config >=0.2.6, which inlines zod 4.1.11
+      # where the package.json override can't reach it. Remove together
+      # with the override per the zod note in audit-ci.jsonc. `ignore` also
+      # suppresses security PRs for these versions; audit-ci in CI still
+      # fails on any new moderate-or-higher @vercel/functions advisory.
+      - dependency-name: '@vercel/functions'
+        versions: ['>=3.9.7']
 
   - package-ecosystem: 'pip'
     directory: '/ml'
     schedule:
       interval: 'weekly'
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
 
   - package-ecosystem: 'pip'
     directory: '/sidecar'
     schedule:
       interval: 'weekly'
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
 
   - package-ecosystem: 'github-actions'
     directory: '/'
     schedule:
       interval: 'weekly'
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
