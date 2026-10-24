@@ -58,12 +58,18 @@
     "remark-gfm": "^4.0.1",
     "web-push": "^3.6.7",
     "xlsx": "^0.18.5",
-    "zod": "^4.3.6"
+    "zod": "^4.6.6"
   },
   "overrides": {
     "@opentelemetry/instrumentation-http": "0.214.0",
+    "@vercel/blob": {
+      "undici": "^6.29.1"
+    },
+    "@vercel/cli-config": {
+      "zod": "^4.6.6"
+    },
     "@vercel/node": {
-      "undici": "^6.28.1"
+      "undici": "^6.29.1"
     },
     "thrift": {
       "uuid": "^11.1.1"
@@ -85,8 +91,8 @@
     "@types/web-push": "^3.6.4",
     "@vercel/node": "^5.7.5",
     "@vitejs/plugin-react": "^5.1.4",
-    "@vitest/coverage-v8": "^4.1.11",
-    "@vitest/ui": "^4.1.11",
+    "@vitest/coverage-v8": "^4.1.12",
+    "@vitest/ui": "^4.1.12",
     "audit-ci": "^7.1.0",
     "eslint": "^10.2.1",
     "eslint-config-prettier": "^10.1.8",
@@ -104,8 +110,8 @@
     "tsx": "^4.21.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.58.2",
-    "vite": "^7.3.1",
+    "vite": "^7.3.7",
     "vite-plugin-pwa": "^1.2.0",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   }
 }

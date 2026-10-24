@@ -33,12 +33,35 @@
     "GHSA-2g4f-4pwh-qvx6", // ajv ReDoS via $data — build-time JSON schema only
     "GHSA-9wv6-86v2-598j", // path-to-regexp backtracking — build-time routing
 
-    // undici is NOT allowlisted: package.json `overrides` forces
-    // @vercel/node's undici onto the patched 6.x line (`^6.28.1`). Every
-    // @vercel/node release through 18.0.0 hard-pins undici 5.28.4, and the
-    // 5.x line has no fix for the 6.24–6.28 advisories, so no parent upgrade
-    // exists. @vercel/node only calls undici's `request` and `Headers` (in
-    // its `vercel dev` server), both stable across 5→6. Remove the override
-    // once `npm view @vercel/node dependencies.undici` reports >=6.28.1.
+    // undici is NOT allowlisted: package.json `overrides` forces undici onto
+    // the patched 6.x line (`^6.29.1`) under both of its 6.x users. Nested
+    // overrides only apply inside the named package, so each needs an entry.
+    // - @vercel/node: every release through 27.0.2 (checked 2026-10-23)
+    //   hard-pins undici 5.28.4, and the 5.x line has no fix for the
+    //   6.24–6.29.0 advisories, so no parent upgrade exists. It only calls
+    //   undici's `request` and `Headers` (in its `vercel dev` server), both
+    //   stable across 5→6.
+    // - @vercel/blob: a production runtime dependency (backup/archive crons,
+    //   api/ml plots, Periscope and Take-It bundle storage) whose own
+    //   `^6.23.0` range (through 2.8.2) still admits 6.23–6.29.0.
+    // Remove each entry once `npm view <pkg> dependencies.undici` reports
+    // >=6.29.1.
+
+    // zod is NOT allowlisted: package.json `overrides` forces
+    // @vercel/cli-config's zod onto `^4.6.6` (GHSA-mrhx-c7xc-m3w5). Every
+    // @vercel/cli-config release through 0.3.3 (checked 2026-10-23)
+    // exact-pins zod 4.1.11, so no parent upgrade fixes it. The override
+    // only lands on cli-config <=0.2.5 (today 0.2.0, via @vercel/functions
+    // 3.6.2 → @vercel/oidc 3.6.0), whose dist/index.js re-exports modules
+    // that require("zod"). cli-config >=0.2.6 (pulled by @vercel/functions
+    // >=3.9.7) inlines zod 4.1.11 into dist/index.js, where no override can
+    // reach it and npm audit cannot see it, so do not bump
+    // @vercel/functions past 3.9.6 (.github/dependabot.yml ignores >=3.9.7).
+    // Reachability: the @vercel/functions package root never loads
+    // @vercel/oidc (only the `@vercel/functions/oidc` subpath does), this
+    // repo imports only `waitUntil` from the root, and cli-config's zod
+    // only parses local Vercel CLI auth/config files. Once
+    // `npm view @vercel/cli-config dependencies.zod` reports >=4.6.6, drop
+    // the override and the Dependabot ignore.
   ],
 }
