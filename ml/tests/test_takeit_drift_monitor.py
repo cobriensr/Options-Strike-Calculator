@@ -273,7 +273,7 @@ def test_compute_feed_drift_dte_segmentation_buckets():
     n = 120
     base = _days_ago(2)
     frames = []
-    for dte_val, bucket in [(0, '0DTE'), (2, '1-3'), (10, '4+')]:
+    for dte_val, _bucket in [(0, '0DTE'), (2, '1-3'), (10, '4+')]:
         frames.append(
             pd.DataFrame(
                 {
