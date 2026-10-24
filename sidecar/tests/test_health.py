@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import types
+from datetime import UTC
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from health import HealthHandler  # noqa: E402
+from health import HealthHandler
 
 
 class _FakeRequest:
@@ -59,7 +60,7 @@ def _run_request(path: str = "/health") -> tuple[int, dict]:
     _H(req, ("127.0.0.1", 0), None)  # type: ignore[arg-type]
     raw = output.getvalue().decode()
     # First line: HTTP/1.x <status> <reason>
-    status_line, *rest = raw.split("\r\n", 1)
+    status_line, *_rest = raw.split("\r\n", 1)
     status = int(status_line.split()[1])
     # Body is everything after the empty separator line.
     _, _, body_text = raw.partition("\r\n\r\n")
@@ -97,7 +98,7 @@ def test_health_returns_503_when_db_down(configure_base_callables) -> None:
 
 
 def test_health_returns_404_for_unknown_path(configure_base_callables) -> None:
-    status, body = _run_request(path="/foo")
+    status, _body = _run_request(path="/foo")
     assert status == 404
 
 
@@ -128,32 +129,34 @@ def test_removed_tbbo_routes_fall_through_to_404(
 class TestArchiveDateGuards:
     def _future_date(self) -> str:
         """Return a date string far in the future — always 'today or future'."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
-        return (datetime.now(timezone.utc).date() + timedelta(days=30)).isoformat()
+        return (datetime.now(UTC).date() + timedelta(days=30)).isoformat()
 
     def _today_utc(self) -> str:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        return datetime.now(timezone.utc).date().isoformat()
+        return datetime.now(UTC).date().isoformat()
 
     def _past_date(self) -> str:
         """Return a date 45 days in the past — always a valid archive target."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
-        return (datetime.now(timezone.utc).date() - timedelta(days=45)).isoformat()
+        return (datetime.now(UTC).date() - timedelta(days=45)).isoformat()
 
     def test_day_summary_short_circuits_today(self) -> None:
         """Today's date must 404 immediately without invoking DuckDB."""
         import health
 
-        with patch.object(
-            health, "_is_today_or_future_utc", wraps=health._is_today_or_future_utc
-        ) as guard_spy:
-            with patch("archive_query.day_summary_text") as mock_query:
-                status, body = _run_request(
-                    f"/archive/day-summary?date={self._today_utc()}"
-                )
+        with (
+            patch.object(
+                health, "_is_today_or_future_utc", wraps=health._is_today_or_future_utc
+            ) as guard_spy,
+            patch("archive_query.day_summary_text") as mock_query,
+        ):
+            status, body = _run_request(
+                f"/archive/day-summary?date={self._today_utc()}"
+            )
 
         assert status == 404
         assert body.get("error", "").startswith("date not yet in archive")
@@ -220,10 +223,11 @@ class TestIsTodayOrFutureUtc:
     """Pure helper — exercised independently from the HTTP layer."""
 
     def test_today_returns_true(self) -> None:
-        from datetime import datetime, timezone
+        from datetime import datetime
+
         import health
 
-        today = datetime.now(timezone.utc).date().isoformat()
+        today = datetime.now(UTC).date().isoformat()
         assert health._is_today_or_future_utc(today) is True
 
     def test_future_returns_true(self) -> None:
@@ -249,13 +253,13 @@ class TestParseHelpers:
     def test_parse_date_param_rejects_garbage(self) -> None:
         import health
 
-        with pytest.raises(health._BadRequest, match="date must be YYYY-MM-DD"):
+        with pytest.raises(health._BadRequestError, match="date must be YYYY-MM-DD"):
             health._parse_date_param({"date": ["nope"]}, "date")
 
     def test_parse_date_param_rejects_missing(self) -> None:
         import health
 
-        with pytest.raises(health._BadRequest, match="date must be YYYY-MM-DD"):
+        with pytest.raises(health._BadRequestError, match="date must be YYYY-MM-DD"):
             health._parse_date_param({}, "date")
 
     def test_parse_optional_int_returns_none_when_absent(self) -> None:
@@ -271,13 +275,13 @@ class TestParseHelpers:
     def test_parse_optional_int_rejects_non_int(self) -> None:
         import health
 
-        with pytest.raises(health._BadRequest, match="k must be an integer"):
+        with pytest.raises(health._BadRequestError, match="k must be an integer"):
             health._parse_optional_int({"k": ["abc"]}, "k")
 
     def test_parse_optional_int_rejects_below_lo(self) -> None:
         import health
 
-        with pytest.raises(health._BadRequest, match=">= 1"):
+        with pytest.raises(health._BadRequestError, match=">= 1"):
             health._parse_optional_int({"horizon_days": ["0"]}, "horizon_days", lo=1)
 
     def test_parse_date_range_happy(self) -> None:
@@ -290,7 +294,7 @@ class TestParseHelpers:
         import health
 
         qs = {"from": ["bad"], "to": ["2024-06-30"]}
-        with pytest.raises(health._BadRequest, match="from/to must be YYYY-MM-DD"):
+        with pytest.raises(health._BadRequestError, match="from/to must be YYYY-MM-DD"):
             health._parse_date_range(qs)
 
     def test_parse_date_range_rejects_calendar_invalid(self) -> None:
@@ -300,24 +304,24 @@ class TestParseHelpers:
         import health
 
         qs = {"from": ["2024-13-45"], "to": ["2024-12-31"]}
-        with pytest.raises(health._BadRequest, match="invalid date"):
+        with pytest.raises(health._BadRequestError, match="invalid date"):
             health._parse_date_range(qs)
 
     def test_parse_date_range_rejects_inverted(self) -> None:
         import health
 
         qs = {"from": ["2024-06-30"], "to": ["2024-01-01"]}
-        with pytest.raises(health._BadRequest, match="to must be >= from"):
+        with pytest.raises(health._BadRequestError, match="to must be >= from"):
             health._parse_date_range(qs)
 
     def test_parse_date_range_rejects_over_3_year_cap(self) -> None:
         """Locks the _BATCH_RANGE_MAX_DAYS named constant — anything
-        past 3 years × 366 days is rejected."""
+        past 3 years x 366 days is rejected."""
         import health
 
         # Pick a span deliberately past the cap.
         qs = {"from": ["2020-01-01"], "to": ["2024-01-01"]}
-        with pytest.raises(health._BadRequest, match="cannot exceed 3 years"):
+        with pytest.raises(health._BadRequestError, match="cannot exceed 3 years"):
             health._parse_date_range(qs)
 
     def test_batch_range_max_days_is_3_years(self) -> None:
@@ -598,9 +602,9 @@ class TestArchiveAnalogDays:
 
 class TestArchiveDaySummaryExceptions:
     def _past_date(self) -> str:
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
-        return (datetime.now(timezone.utc).date() - timedelta(days=45)).isoformat()
+        return (datetime.now(UTC).date() - timedelta(days=45)).isoformat()
 
     def test_day_summary_404_on_value_error(self, configure_base_callables) -> None:
         with patch(
@@ -625,7 +629,7 @@ class TestArchiveDaySummaryExceptions:
         assert body["error"] == "query failed"
 
     def test_day_features_400_on_bad_date(self, configure_base_callables) -> None:
-        """Cover the _BadRequest branch (lines 392-394) — bad date 400s
+        """Cover the _BadRequestError branch (lines 392-394) — bad date 400s
         before the today-or-future guard runs."""
         with patch("archive_query.day_features_vector") as mock_q:
             status, body = _run_request("/archive/day-features?date=nope")
@@ -904,7 +908,7 @@ class TestQuietThreadingHTTPServer:
     """
 
     def _make_server(self) -> Any:
-        import health  # noqa: PLC0415
+        import health
 
         # Allocate without __init__ — we don't want a real socket.
         return health._QuietThreadingHTTPServer.__new__(

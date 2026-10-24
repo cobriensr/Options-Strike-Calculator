@@ -23,8 +23,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import takeit_server  # noqa: E402
-
+import takeit_server
 
 # ── _fetch_blob ────────────────────────────────────────────────────────
 
@@ -39,7 +38,7 @@ def test_fetch_blob_sends_authorization_bearer_header() -> None:
         def read(self) -> bytes:
             return b'{"ok": true}'
 
-        def __enter__(self) -> "_FakeResp":
+        def __enter__(self) -> _FakeResp:
             return self
 
         def __exit__(self, *_a: object) -> None:
@@ -161,7 +160,7 @@ def test_list_blob_sends_bearer_and_returns_blobs_array() -> None:
                 {"blobs": [{"pathname": "takeit/latest.json", "url": "u1"}]}
             ).encode()
 
-        def __enter__(self) -> "_FakeResp":
+        def __enter__(self) -> _FakeResp:
             return self
 
         def __exit__(self, *_a: object) -> None:
@@ -199,9 +198,9 @@ def test_load_bundle_raises_when_manifest_entry_missing() -> None:
             return_value=[{"pathname": "takeit/something-else.json", "url": "x"}],
         ),
         patch.dict(sys.modules, {"joblib": MagicMock()}),
+        pytest.raises(RuntimeError, match="manifest not found"),
     ):
-        with pytest.raises(RuntimeError, match="manifest not found"):
-            takeit_server._load_bundle("lottery")
+        takeit_server._load_bundle("lottery")
 
 
 def test_load_bundle_raises_when_joblib_entry_missing() -> None:
@@ -224,9 +223,9 @@ def test_load_bundle_raises_when_joblib_entry_missing() -> None:
             return_value=b'{"lottery": "takeit/lottery_classifier_v1.json"}',
         ),
         patch.dict(sys.modules, {"joblib": MagicMock()}),
+        pytest.raises(RuntimeError, match="joblib bundle missing"),
     ):
-        with pytest.raises(RuntimeError, match="joblib bundle missing"):
-            takeit_server._load_bundle("lottery")
+        takeit_server._load_bundle("lottery")
 
 
 # ── _json_safe ─────────────────────────────────────────────────────────

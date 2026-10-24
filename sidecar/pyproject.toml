@@ -1,0 +1,21 @@
+# Tool config only. The sidecar is not an installable package: deps live in
+# requirements.txt and the Dockerfile copies src/ (this file is not in the
+# image), so there is no [project] or [build-system] table.
+#
+# The rule set is pinned explicitly, matching uw-stream/ and classifier/.
+# Without a `select`, ruff falls back to its built-in defaults, which grow
+# between releases, and `ruff>=0.11` floats, so a ruff upgrade alone can
+# break the Sidecar Quality Gate.
+
+[tool.ruff]
+# 88 (ruff's default), not the siblings' 100: the sidecar code is already
+# formatted at 88, and switching to 100 would reflow 16 of its 22 files.
+line-length = 88
+target-version = "py312"  # matches the python:3.12-slim Docker image
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+    "E501",  # line too long — handled by formatter
+    "B008",  # function call in argument defaults — pydantic Field() is fine
+]

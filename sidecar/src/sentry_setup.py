@@ -260,11 +260,11 @@ def _before_send(event: Any, hint: Any) -> Any:
     """
     try:
         return _redact_value(event)
-    except Exception as inner:  # noqa: BLE001 — must never raise into the SDK
+    except Exception as inner:  # must never raise into the SDK
         log.warning("before_send credential scrub failed: %s", type(inner).__name__)
         try:
             return _minimal_event(event)
-        except Exception:  # noqa: BLE001 — last resort: send nothing
+        except Exception:  # last resort: send nothing
             return None
 
 

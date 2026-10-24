@@ -16,16 +16,17 @@ import json
 import os
 import re
 import threading
-from datetime import date, datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, date, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from archive_seeder import SeedBusyError
 from logger_setup import log
 
 # 3-year window cap on /archive/*-batch range queries. A 3-year range
-# is ~750 trading dates × ~370k instruments — well within the 8 vCPU
+# is ~750 trading dates x ~370k instruments — well within the 8 vCPU
 # budget on Railway. Anything larger should paginate client-side.
 # Used by 3 batch handlers (day-features-batch, day-summary-batch,
 # day-summary-prediction-batch).
@@ -50,16 +51,16 @@ def _is_today_or_future_utc(date_str: str) -> bool:
     archive yet. The (since removed, 2026-10-01) refresh-current-snapshot
     Vercel cron used to poll for today's summary+features every 5 min
     during RTH, but the archive only gets today's partitions after the
-    EOD ETL. Before this guard, each doomed call ran a 3–7s DuckDB
+    EOD ETL. Before this guard, each doomed call ran a 3-7s DuckDB
     query against 3.9 GB of Parquet just to discover the date had
     no rows — ~96 wasted queries per session, each contributing
     memory pressure on an already-strained Railway tier.
     """
-    today_utc = datetime.now(timezone.utc).date().isoformat()
+    today_utc = datetime.now(UTC).date().isoformat()
     return date_str >= today_utc
 
 
-class _BadRequest(Exception):
+class _BadRequestError(Exception):
     """Raised by parse helpers when an input is missing/malformed.
 
     Internal sentinel — caught by the route dispatch and converted to
@@ -68,7 +69,7 @@ class _BadRequest(Exception):
 
 
 def _parse_date_param(qs: dict[str, list[str]], name: str) -> str:
-    """Return ``qs[name]`` validated as YYYY-MM-DD, or raise _BadRequest.
+    """Return ``qs[name]`` validated as YYYY-MM-DD, or raise _BadRequestError.
 
     Centralizes the regex check that was inlined in 10+ handlers. The
     error message mirrors the one each handler used so test assertions
@@ -76,14 +77,14 @@ def _parse_date_param(qs: dict[str, list[str]], name: str) -> str:
     """
     raw = (qs.get(name) or [""])[0]
     if not _DATE_RE.fullmatch(raw):
-        raise _BadRequest(f"{name} must be YYYY-MM-DD")
+        raise _BadRequestError(f"{name} must be YYYY-MM-DD")
     return raw
 
 
 def _parse_optional_int(
     qs: dict[str, list[str]], name: str, *, lo: int | None = None
 ) -> int | None:
-    """Parse an optional integer query param, or raise _BadRequest.
+    """Parse an optional integer query param, or raise _BadRequestError.
 
     Returns None when the param is absent (so the caller can omit the
     kwarg and let the query layer apply its own default). When present
@@ -96,9 +97,9 @@ def _parse_optional_int(
     try:
         value = int(raw)
     except ValueError:
-        raise _BadRequest(f"{name} must be an integer") from None
+        raise _BadRequestError(f"{name} must be an integer") from None
     if lo is not None and value < lo:
-        raise _BadRequest(f"{name} must be >= {lo}")
+        raise _BadRequestError(f"{name} must be >= {lo}")
     return value
 
 
@@ -107,7 +108,7 @@ def _parse_date_range(
 ) -> tuple[str, str]:
     """Parse from/to YYYY-MM-DD pair + apply the 3-year cap.
 
-    Returns ``(start, end)`` strings; raises _BadRequest with the
+    Returns ``(start, end)`` strings; raises _BadRequestError with the
     handler's pre-existing message on any violation. Centralizes the
     block duplicated across 3 batch handlers.
     """
@@ -115,16 +116,16 @@ def _parse_date_range(
     end = (qs.get("to") or [""])[0]
     for v in (start, end):
         if not _DATE_RE.fullmatch(v):
-            raise _BadRequest("from/to must be YYYY-MM-DD")
+            raise _BadRequestError("from/to must be YYYY-MM-DD")
     try:
         d0 = date.fromisoformat(start)
         d1 = date.fromisoformat(end)
     except ValueError:
-        raise _BadRequest("invalid date") from None
+        raise _BadRequestError("invalid date") from None
     if d1 < d0:
-        raise _BadRequest("to must be >= from")
+        raise _BadRequestError("to must be >= from")
     if (d1 - d0).days > _BATCH_RANGE_MAX_DAYS:
-        raise _BadRequest("range cannot exceed 3 years")
+        raise _BadRequestError("range cannot exceed 3 years")
     return start, end
 
 
@@ -170,8 +171,8 @@ class _QuietThreadingHTTPServer(ThreadingHTTPServer):
     All other exceptions propagate to the default ``handle_error``.
     """
 
-    def handle_error(self, request: Any, client_address: Any) -> None:  # noqa: D401
-        import sys  # noqa: PLC0415
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        import sys
 
         exc_type = sys.exc_info()[0]
         if exc_type is not None and issubclass(
@@ -267,7 +268,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body.encode())
 
-    def do_POST(self) -> None:  # noqa: N802 — http.server naming convention
+    def do_POST(self) -> None:  # http.server naming convention
         """Dispatch POST requests."""
         if self.path == "/takeit/explain":
             self._handle_takeit_explain()
@@ -319,7 +320,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         except SeedBusyError:
             # Lost the race against another in-flight seed — return 423.
             self._send_busy_response()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.error("Seed request failed: %s", exc)
             self.send_response(500)
             self.send_header("Content-Type", "application/json")
@@ -329,7 +330,7 @@ class HealthHandler(BaseHTTPRequestHandler):
     def _handle_takeit_health(self) -> None:
         """GET /takeit/health — cheap liveness + readiness probe for the
         take-it SHAP explainer. Wraps takeit_server.handle_health_payload."""
-        import takeit_server  # noqa: PLC0415  — heavy imports stay lazy
+        import takeit_server  # heavy imports stay lazy
 
         body = takeit_server.handle_health_payload()
         self.send_response(200)
@@ -340,7 +341,7 @@ class HealthHandler(BaseHTTPRequestHandler):
     def _handle_takeit_explain(self) -> None:
         """POST /takeit/explain — Phase 3d SHAP top-K explainer. Wraps
         takeit_server.handle_explain_payload."""
-        import takeit_server  # noqa: PLC0415
+        import takeit_server
 
         if not takeit_server.is_enabled():
             self.send_response(503)
@@ -411,7 +412,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         qs = parse_qs(urlparse(self.path).query)
         try:
             d = _parse_date_param(qs, "date")
-        except _BadRequest as exc:
+        except _BadRequestError as exc:
             self._send_json(400, {"error": str(exc)})
             return
 
@@ -421,7 +422,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             # Known "no data for this date" — return 404 with message.
             self._send_json(404, {"error": str(exc)})
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._archive_500(
                 "es-range", exc, "es-range query failed for %s: %s", d, exc, date=d
             )
@@ -439,7 +440,7 @@ class HealthHandler(BaseHTTPRequestHandler):
                 value = _parse_optional_int(qs, name)
                 if value is not None:
                     kwargs[name] = value
-        except _BadRequest as exc:
+        except _BadRequestError as exc:
             self._send_json(400, {"error": str(exc)})
             return
 
@@ -450,7 +451,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             # Bounds errors ("k must be...") and no-data errors both
             # surface as ValueError; the message is user-facing either way.
             self._send_json(400, {"error": str(exc)})
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._archive_500(
                 "analog-days",
                 exc,
@@ -471,12 +472,12 @@ class HealthHandler(BaseHTTPRequestHandler):
         qs = parse_qs(urlparse(self.path).query)
         try:
             d = _parse_date_param(qs, "date")
-        except _BadRequest as exc:
+        except _BadRequestError as exc:
             self._send_json(400, {"error": str(exc)})
             return
 
         # SIDE-017: short-circuit today/future — archive never has
-        # those partitions during RTH. Avoids a 3–7s DuckDB query that
+        # those partitions during RTH. Avoids a 3-7s DuckDB query that
         # is guaranteed to miss and consume memory each time.
         if _is_today_or_future_utc(d):
             self._send_json(404, {"error": "date not yet in archive (today or future)"})
@@ -487,7 +488,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"date": d, "summary": text})
         except ValueError as exc:
             self._send_json(404, {"error": str(exc)})
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._archive_500(
                 "day-summary",
                 exc,
@@ -509,7 +510,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         qs = parse_qs(urlparse(self.path).query)
         try:
             d = _parse_date_param(qs, "date")
-        except _BadRequest as exc:
+        except _BadRequestError as exc:
             self._send_json(400, {"error": str(exc)})
             return
 
@@ -528,7 +529,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             )
         except ValueError as exc:
             self._send_json(404, {"error": str(exc)})
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._archive_500(
                 "day-features",
                 exc,
@@ -545,19 +546,19 @@ class HealthHandler(BaseHTTPRequestHandler):
         DuckDB query covering the whole range — 40x cheaper than N
         calls to /archive/day-features for bulk backfills. Capped at
         3 years per request to bound query cost (a 3-year range is
-        ~750 dates × ~370k instruments = well within 8 vCPU budget).
+        ~750 dates x ~370k instruments = well within 8 vCPU budget).
         """
         qs = parse_qs(urlparse(self.path).query)
         try:
             start, end = _parse_date_range(qs)
-        except _BadRequest as exc:
+        except _BadRequestError as exc:
             self._send_json(400, {"error": str(exc)})
             return
 
         try:
             rows = _aq().day_features_batch(start, end)
             self._send_json(200, {"from": start, "to": end, "rows": rows})
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._archive_500(
                 "day-features-batch",
                 exc,
@@ -573,14 +574,14 @@ class HealthHandler(BaseHTTPRequestHandler):
         qs = parse_qs(urlparse(self.path).query)
         try:
             start, end = _parse_date_range(qs)
-        except _BadRequest as exc:
+        except _BadRequestError as exc:
             self._send_json(400, {"error": str(exc)})
             return
 
         try:
             rows = _aq().day_summary_batch(start, end)
             self._send_json(200, {"from": start, "to": end, "rows": rows})
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._archive_500(
                 "day-summary-batch",
                 exc,
@@ -602,7 +603,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         qs = parse_qs(urlparse(self.path).query)
         try:
             d = _parse_date_param(qs, "date")
-        except _BadRequest as exc:
+        except _BadRequestError as exc:
             self._send_json(400, {"error": str(exc)})
             return
 
@@ -611,7 +612,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"date": d, "summary": text})
         except ValueError as exc:
             self._send_json(404, {"error": str(exc)})
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._archive_500(
                 "day-summary-prediction",
                 exc,
@@ -626,14 +627,14 @@ class HealthHandler(BaseHTTPRequestHandler):
         qs = parse_qs(urlparse(self.path).query)
         try:
             start, end = _parse_date_range(qs)
-        except _BadRequest as exc:
+        except _BadRequestError as exc:
             self._send_json(400, {"error": str(exc)})
             return
 
         try:
             rows = _aq().day_summary_prediction_batch(start, end)
             self._send_json(200, {"from": start, "to": end, "rows": rows})
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._archive_500(
                 "day-summary-prediction-batch",
                 exc,
@@ -660,7 +661,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         The 500 JSON response shape is unchanged.
         """
         log.error(log_msg, *log_args)
-        from sentry_setup import capture_exception  # noqa: PLC0415
+        from sentry_setup import capture_exception
 
         capture_exception(
             exc,

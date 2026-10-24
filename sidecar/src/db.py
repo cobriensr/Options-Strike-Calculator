@@ -7,8 +7,9 @@ not Vercel serverless. Connection pooling via psycopg2.pool.
 from __future__ import annotations
 
 import time
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any, Generator
+from typing import Any
 
 import psycopg2
 import psycopg2.pool
@@ -112,14 +113,14 @@ def _getconn_with_timeout(
                 except Exception:
                     log.warning("db pool getconn slow: %.1fms", elapsed_ms)
             return conn
-        except psycopg2.pool.PoolError:
+        except psycopg2.pool.PoolError as exc:
             # Pool is exhausted. Sleep a bit and retry until the deadline.
             if time.monotonic() >= deadline:
                 elapsed_ms = (time.monotonic() - start) * 1000.0
                 raise PoolTimeoutError(
                     f"db pool saturated: could not borrow a connection "
                     f"within {timeout_s:.1f}s (waited {elapsed_ms:.0f}ms)"
-                )
+                ) from exc
             time.sleep(backoff_s)
             backoff_s = min(backoff_s * 2, 0.2)  # cap at 200ms
 
@@ -173,12 +174,11 @@ def get_conn(
 
 def verify_connection() -> None:
     """Verify the database is reachable."""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 AS ok")
-            row = cur.fetchone()
-            if not row or row[0] != 1:
-                raise RuntimeError("Database connection verification failed")
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 AS ok")
+        row = cur.fetchone()
+        if not row or row[0] != 1:
+            raise RuntimeError("Database connection verification failed")
     log.info("Database connection verified")
 
 
@@ -197,10 +197,12 @@ def is_db_healthy() -> bool:
     - Any other exception (real connection/query failure) -> False.
     """
     try:
-        with get_conn(timeout_s=HEALTH_PROBE_TIMEOUT_S) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-                return True
+        with (
+            get_conn(timeout_s=HEALTH_PROBE_TIMEOUT_S) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute("SELECT 1")
+            return True
     except PoolTimeoutError:
         # Pool is saturated but the DB is alive — do NOT report unhealthy,
         # or Railway may restart a container that's simply busy.

@@ -23,13 +23,12 @@ Runs 24/7 on Railway as a persistent process.
 
 from __future__ import annotations
 
+import os
 import signal
 import sys
 import time
 
 # Ensure src/ is on the Python path for local imports
-import os
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import archive_seeder
@@ -93,7 +92,7 @@ def main() -> None:
     # which is the honest readiness signal.
     try:
         verify_connection()
-    except Exception as exc:  # noqa: BLE001 — any DB failure is non-fatal here
+    except Exception as exc:  # any DB failure is non-fatal here
         # Type only — never str(exc): psycopg2 messages can echo DSN parts.
         # The type separates a bad config (e.g. ProgrammingError) from an
         # outage (OperationalError) in the Railway logs.

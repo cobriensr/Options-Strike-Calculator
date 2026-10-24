@@ -181,15 +181,17 @@ def _download_to_tmp(url: str, token: str, tmp_path: Path) -> tuple[int, str]:
     tmp_path.parent.mkdir(parents=True, exist_ok=True)
 
     req = _build_request(url, token)
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_S) as resp:
-        with tmp_path.open("wb") as fh:
-            while True:
-                chunk = resp.read(CHUNK_SIZE)
-                if not chunk:
-                    break
-                hasher.update(chunk)
-                fh.write(chunk)
-                bytes_written += len(chunk)
+    with (
+        urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_S) as resp,
+        tmp_path.open("wb") as fh,
+    ):
+        while True:
+            chunk = resp.read(CHUNK_SIZE)
+            if not chunk:
+                break
+            hasher.update(chunk)
+            fh.write(chunk)
+            bytes_written += len(chunk)
 
     return bytes_written, hasher.hexdigest()
 
@@ -428,7 +430,11 @@ def seed_from_manifest(
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             futures = {
                 pool.submit(
-                    _seed_one_file, entry, dest, token, manifest_url
+                    _seed_one_file,
+                    entry,
+                    dest,
+                    token,
+                    manifest_url,
                 ): entry["path"]
                 for entry in files
             }
@@ -441,7 +447,7 @@ def seed_from_manifest(
                     else:
                         result.downloaded += 1
                         result.bytes_downloaded += bytes_downloaded
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     result.failed += 1
                     result.errors.append(f"{path}: {exc}")
                     capture_exception(

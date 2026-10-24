@@ -11,8 +11,8 @@ import sys
 from unittest.mock import MagicMock
 
 import pytest
-import sentry_setup
 
+import sentry_setup
 
 # Shared mock_log that tests inspect. Installed per-test via the
 # _reset_state fixture by monkeypatching sentry_setup.log directly —

@@ -13,16 +13,16 @@ already pulls in transitively.
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterator
+from datetime import UTC
 from pathlib import Path
-from typing import Iterator
 
 import duckdb
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import archive_query  # noqa: E402
-
+import archive_query
 
 # ---------------------------------------------------------------------------
 # Fixture builder
@@ -92,9 +92,9 @@ def _reset_archive_query_state() -> Iterator[None]:
 
 def test_es_day_summary_picks_highest_volume_es_contract(tmp_path: Path) -> None:
     """With two active ES contracts, the one with more volume wins."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    day = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    day = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
     bars = [
         # Front month (high volume)
         (day, 101, 5300.0, 5305.0, 5299.0, 5304.0, 10_000),
@@ -121,9 +121,9 @@ def test_es_day_summary_picks_highest_volume_es_contract(tmp_path: Path) -> None
 
 def test_es_day_summary_excludes_option_symbols(tmp_path: Path) -> None:
     """Option symbols (which contain spaces) must not be considered ES."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    day = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    day = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
     bars = [
         (day, 101, 5300.0, 5305.0, 5299.0, 5304.0, 1_000),
         # A high-volume option that would win if not filtered.
@@ -145,9 +145,9 @@ def test_es_day_summary_excludes_option_symbols(tmp_path: Path) -> None:
 
 def test_es_day_summary_excludes_non_es_symbols(tmp_path: Path) -> None:
     """NQ bars on the same day must not leak into ES summary."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    day = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    day = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
     bars = [
         (day, 101, 5300.0, 5305.0, 5299.0, 5304.0, 1_000),
         (day, 301, 18_000.0, 18_050.0, 17_950.0, 18_025.0, 5_000),
@@ -163,9 +163,9 @@ def test_es_day_summary_excludes_non_es_symbols(tmp_path: Path) -> None:
 
 
 def test_es_day_summary_raises_on_date_with_no_data(tmp_path: Path) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    day = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    day = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
     bars = [(day, 101, 5300.0, 5305.0, 5299.0, 5304.0, 1_000)]
     symbology = [(101, "ESU4", day, day)]
     _build_archive(tmp_path, bars, symbology)
@@ -178,10 +178,10 @@ def test_es_day_summary_isolates_day_from_surrounding_data(
     tmp_path: Path,
 ) -> None:
     """Bars from 06-02 must not be pulled into 06-03's summary."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    d2 = datetime(2024, 6, 2, 14, 30, tzinfo=timezone.utc)
-    d3 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    d2 = datetime(2024, 6, 2, 14, 30, tzinfo=UTC)
+    d3 = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
     bars = [
         # Prior day — different close.
         (d2, 101, 5200.0, 5210.0, 5190.0, 5205.0, 5_000),
@@ -215,11 +215,11 @@ def _two_bar_day(
     60 bars per test day. A third bar at 15:00 UTC gives us an EOD close
     distinct from the window close.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    d0 = datetime(*date_tuple, 14, 30, tzinfo=timezone.utc)
-    d1 = datetime(*date_tuple, 15, 30, tzinfo=timezone.utc)  # +60m
-    d2 = datetime(*date_tuple, 21, 0, tzinfo=timezone.utc)  # EOD
+    d0 = datetime(*date_tuple, 14, 30, tzinfo=UTC)
+    d1 = datetime(*date_tuple, 15, 30, tzinfo=UTC)  # +60m
+    d2 = datetime(*date_tuple, 21, 0, tzinfo=UTC)  # EOD
     # open/high/low/close — keep simple by making high = max of the
     # prices we reference and low = min.
     hi = max(open_price, close_at_1h, close_eod)
@@ -233,7 +233,7 @@ def _two_bar_day(
 
 def test_analog_days_returns_nearest_by_window_delta(tmp_path: Path) -> None:
     """Target delta = +5. Closest analog should be the day with delta closest to +5."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     # days: (date, delta in first 60min)
     # target:  2024-06-05, open=5300 close_at_1h=5305  -> delta +5
@@ -247,8 +247,8 @@ def test_analog_days_returns_nearest_by_window_delta(tmp_path: Path) -> None:
     bars += _two_bar_day((2024, 6, 3), 101, 4000.0, 4010.0, 4015.0)  # B
     bars += _two_bar_day((2024, 6, 4), 101, 4000.0, 4004.0, 4025.0)  # A
     bars += _two_bar_day((2024, 6, 5), 101, 5300.0, 5305.0, 5330.0)  # target
-    sym_open = datetime(2024, 6, 1, 14, 30, tzinfo=timezone.utc)
-    sym_close = datetime(2024, 6, 5, 21, 0, tzinfo=timezone.utc)
+    sym_open = datetime(2024, 6, 1, 14, 30, tzinfo=UTC)
+    sym_close = datetime(2024, 6, 5, 21, 0, tzinfo=UTC)
     symbology = [(101, "ESU4", sym_open, sym_close)]
     _build_archive(tmp_path, bars, symbology)
 
@@ -271,7 +271,7 @@ def test_analog_days_returns_nearest_by_window_delta(tmp_path: Path) -> None:
 
 
 def test_analog_days_excludes_target_from_results(tmp_path: Path) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     bars: list[tuple] = []
     bars += _two_bar_day((2024, 6, 4), 101, 4000.0, 4005.0, 4010.0)
@@ -280,8 +280,8 @@ def test_analog_days_excludes_target_from_results(tmp_path: Path) -> None:
         (
             101,
             "ESU4",
-            datetime(2024, 6, 4, 14, 30, tzinfo=timezone.utc),
-            datetime(2024, 6, 5, 21, 0, tzinfo=timezone.utc),
+            datetime(2024, 6, 4, 14, 30, tzinfo=UTC),
+            datetime(2024, 6, 5, 21, 0, tzinfo=UTC),
         )
     ]
     _build_archive(tmp_path, bars, sym)
@@ -293,15 +293,15 @@ def test_analog_days_excludes_target_from_results(tmp_path: Path) -> None:
 
 
 def test_analog_days_raises_on_no_data_for_target(tmp_path: Path) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     bars: list[tuple] = _two_bar_day((2024, 6, 4), 101, 4000.0, 4005.0, 4010.0)
     sym = [
         (
             101,
             "ESU4",
-            datetime(2024, 6, 4, 14, 30, tzinfo=timezone.utc),
-            datetime(2024, 6, 4, 21, 0, tzinfo=timezone.utc),
+            datetime(2024, 6, 4, 14, 30, tzinfo=UTC),
+            datetime(2024, 6, 4, 21, 0, tzinfo=UTC),
         )
     ]
     _build_archive(tmp_path, bars, sym)
@@ -330,14 +330,14 @@ def test_analog_days_validates_bounds(tmp_path: Path, kwargs: dict) -> None:
 
 
 def test_day_summary_text_contains_core_fields(tmp_path: Path) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     # 4-bar day: open, +60m, +120m, EOD. Enough to exercise the three
     # delta-window lookups.
-    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
-    d1 = datetime(2024, 6, 3, 15, 30, tzinfo=timezone.utc)  # +60m
-    d2 = datetime(2024, 6, 3, 16, 30, tzinfo=timezone.utc)  # +120m
-    d3 = datetime(2024, 6, 3, 21, 0, tzinfo=timezone.utc)  # EOD
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
+    d1 = datetime(2024, 6, 3, 15, 30, tzinfo=UTC)  # +60m
+    d2 = datetime(2024, 6, 3, 16, 30, tzinfo=UTC)  # +120m
+    d3 = datetime(2024, 6, 3, 21, 0, tzinfo=UTC)  # EOD
     bars = [
         (d0, 101, 5300.0, 5305.0, 5299.0, 5300.0, 1_000_000),
         (d1, 101, 5300.0, 5310.0, 5299.0, 5305.5, 1_500_000),
@@ -359,9 +359,9 @@ def test_day_summary_text_contains_core_fields(tmp_path: Path) -> None:
 
 
 def test_day_summary_text_raises_on_missing_date(tmp_path: Path) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
     bars = [(d0, 101, 5300.0, 5305.0, 5299.0, 5300.0, 1000)]
     _build_archive(tmp_path, bars, [(101, "ESU4", d0, d0)])
 
@@ -371,9 +371,9 @@ def test_day_summary_text_raises_on_missing_date(tmp_path: Path) -> None:
 
 def test_day_summary_text_is_deterministic(tmp_path: Path) -> None:
     """Same input must produce byte-identical output — embedding stability."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
     bars = [(d0, 101, 5300.0, 5305.0, 5299.0, 5304.0, 1000)]
     _build_archive(tmp_path, bars, [(101, "ESU4", d0, d0)])
 
@@ -396,10 +396,10 @@ def _sixty_minute_day(
     minute_closes: list[float],
 ) -> list[tuple]:
     """Build 60 one-minute bars starting at session open."""
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta
 
     assert len(minute_closes) == 60
-    d0 = datetime(*date_tuple, 14, 30, tzinfo=timezone.utc)
+    d0 = datetime(*date_tuple, 14, 30, tzinfo=UTC)
     bars: list[tuple] = [
         (d0, instrument_id, open_price, open_price, open_price, open_price, 1_000),
     ]
@@ -414,7 +414,7 @@ def _sixty_minute_day(
 def test_day_features_vector_produces_60_dim_percent_changes(
     tmp_path: Path,
 ) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     # Simple ramp: minute N close = 5300 + N (0.01887% per minute rise).
     closes = [5300.0 + i for i in range(1, 61)]
@@ -426,8 +426,8 @@ def test_day_features_vector_produces_60_dim_percent_changes(
             (
                 101,
                 "ESU4",
-                datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc),
-                datetime(2024, 6, 3, 15, 30, tzinfo=timezone.utc),
+                datetime(2024, 6, 3, 14, 30, tzinfo=UTC),
+                datetime(2024, 6, 3, 15, 30, tzinfo=UTC),
             )
         ],
     )
@@ -444,9 +444,9 @@ def test_day_features_vector_produces_60_dim_percent_changes(
 
 
 def test_day_features_vector_raises_on_missing_date(tmp_path: Path) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
     _build_archive(
         tmp_path,
         [(d0, 101, 5300.0, 5305.0, 5299.0, 5300.0, 1_000)],
@@ -458,9 +458,9 @@ def test_day_features_vector_raises_on_missing_date(tmp_path: Path) -> None:
 
 def test_day_features_vector_rejects_too_few_bars(tmp_path: Path) -> None:
     """5 bars in the first hour isn't a real trading day — refuse."""
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta
 
-    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
     bars = [
         (
             d0 + timedelta(minutes=i),
@@ -486,7 +486,7 @@ def test_day_summary_prediction_has_no_close_field(tmp_path: Path) -> None:
     """Critical test: leakage-free summary must not embed EOD close.
     Any regression would re-introduce the data leakage that inflated
     text-backend hit-rate artifacts."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     closes = [5300.0 + i for i in range(1, 61)]
     bars = _sixty_minute_day((2024, 6, 3), 101, 5300.0, closes)
@@ -497,8 +497,8 @@ def test_day_summary_prediction_has_no_close_field(tmp_path: Path) -> None:
             (
                 101,
                 "ESU4",
-                datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc),
-                datetime(2024, 6, 3, 15, 30, tzinfo=timezone.utc),
+                datetime(2024, 6, 3, 14, 30, tzinfo=UTC),
+                datetime(2024, 6, 3, 15, 30, tzinfo=UTC),
             )
         ],
     )
@@ -515,7 +515,7 @@ def test_day_summary_prediction_has_no_close_field(tmp_path: Path) -> None:
 
 
 def test_day_summary_prediction_batch_matches_per_date(tmp_path: Path) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     closes_a = [5300.0 + i for i in range(1, 61)]
     closes_b = [5400.0 + i * 0.5 for i in range(1, 61)]
@@ -528,8 +528,8 @@ def test_day_summary_prediction_batch_matches_per_date(tmp_path: Path) -> None:
             (
                 101,
                 "ESU4",
-                datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc),
-                datetime(2024, 6, 4, 15, 30, tzinfo=timezone.utc),
+                datetime(2024, 6, 3, 14, 30, tzinfo=UTC),
+                datetime(2024, 6, 4, 15, 30, tzinfo=UTC),
             )
         ],
     )
@@ -551,9 +551,9 @@ def test_day_summary_prediction_batch_matches_per_date(tmp_path: Path) -> None:
 def test_day_summary_prediction_rejects_sparse_days(tmp_path: Path) -> None:
     """Same <10-bar guard as day_features_vector — sparse days (halts,
     partial data) produce no embedding rather than a noisy one."""
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta
 
-    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
     bars = [
         (
             d0 + timedelta(minutes=i),
@@ -583,7 +583,7 @@ def test_day_features_batch_matches_per_date_vectors(tmp_path: Path) -> None:
     closes_d2 = [5400.0 + i * 0.5 for i in range(1, 61)]
     bars = _sixty_minute_day((2024, 6, 3), 101, 5300.0, closes_d1)
     bars += _sixty_minute_day((2024, 6, 4), 101, 5400.0, closes_d2)
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     _build_archive(
         tmp_path,
@@ -592,8 +592,8 @@ def test_day_features_batch_matches_per_date_vectors(tmp_path: Path) -> None:
             (
                 101,
                 "ESU4",
-                datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc),
-                datetime(2024, 6, 4, 15, 30, tzinfo=timezone.utc),
+                datetime(2024, 6, 3, 14, 30, tzinfo=UTC),
+                datetime(2024, 6, 4, 15, 30, tzinfo=UTC),
             )
         ],
     )
@@ -607,23 +607,23 @@ def test_day_features_batch_matches_per_date_vectors(tmp_path: Path) -> None:
 
     by_date = {r["date"]: r for r in batch}
     assert by_date["2024-06-03"]["symbol"] == "ESU4"
-    for want, got in zip(v1_single, by_date["2024-06-03"]["vector"]):
+    for want, got in zip(v1_single, by_date["2024-06-03"]["vector"], strict=True):
         assert got == pytest.approx(want, rel=1e-9)
-    for want, got in zip(v2_single, by_date["2024-06-04"]["vector"]):
+    for want, got in zip(v2_single, by_date["2024-06-04"]["vector"], strict=True):
         assert got == pytest.approx(want, rel=1e-9)
 
 
 def test_day_features_batch_skips_days_with_too_few_bars(tmp_path: Path) -> None:
     """Same <10-bar guard as the per-date function: sparse days aren't
     emitted, rather than silently written as zero-ish vectors."""
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta
 
     bars: list[tuple] = []
     # Day A: full 60 bars.
     closes = [5300.0 + i for i in range(1, 61)]
     bars += _sixty_minute_day((2024, 6, 3), 101, 5300.0, closes)
     # Day B: only 5 bars total. Should be skipped.
-    d0 = datetime(2024, 6, 4, 14, 30, tzinfo=timezone.utc)
+    d0 = datetime(2024, 6, 4, 14, 30, tzinfo=UTC)
     for i in range(5):
         ts = d0 + timedelta(minutes=i)
         bars.append((ts, 101, 5400.0 + i, 5400.0 + i, 5400.0 + i, 5400.0 + i, 1_000))
@@ -634,8 +634,8 @@ def test_day_features_batch_skips_days_with_too_few_bars(tmp_path: Path) -> None
             (
                 101,
                 "ESU4",
-                datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc),
-                datetime(2024, 6, 4, 14, 34, tzinfo=timezone.utc),
+                datetime(2024, 6, 3, 14, 30, tzinfo=UTC),
+                datetime(2024, 6, 4, 14, 34, tzinfo=UTC),
             )
         ],
     )
@@ -649,13 +649,13 @@ def test_day_features_batch_skips_days_with_too_few_bars(tmp_path: Path) -> None
 def test_day_summary_batch_matches_per_date_format(tmp_path: Path) -> None:
     """Batch summary output must be byte-identical to per-date —
     any drift would cause embedding model mismatches on backfill."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     # Reuse the same fixture shape as the per-date test.
-    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
-    d1 = datetime(2024, 6, 3, 15, 30, tzinfo=timezone.utc)  # +60m
-    d2 = datetime(2024, 6, 3, 16, 30, tzinfo=timezone.utc)  # +120m
-    d3 = datetime(2024, 6, 3, 21, 0, tzinfo=timezone.utc)  # EOD
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
+    d1 = datetime(2024, 6, 3, 15, 30, tzinfo=UTC)  # +60m
+    d2 = datetime(2024, 6, 3, 16, 30, tzinfo=UTC)  # +120m
+    d3 = datetime(2024, 6, 3, 21, 0, tzinfo=UTC)  # EOD
     bars = [
         (d0, 101, 5300.0, 5305.0, 5299.0, 5300.0, 1_000_000),
         (d1, 101, 5300.0, 5310.0, 5299.0, 5305.5, 1_500_000),
@@ -686,9 +686,9 @@ def test_day_summary_batch_matches_per_date_format(tmp_path: Path) -> None:
 
 def test_day_features_vector_forward_fills_gaps(tmp_path: Path) -> None:
     """Sparse bars (halts, gaps) should forward-fill, not produce zeros."""
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta
 
-    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
     # 12 bars, irregularly spaced — passes the < 10-bar minimum.
     # Gap between minute 5 and 30 should forward-fill.
     bars: list[tuple] = [(d0, 101, 5300.0, 5300.0, 5300.0, 5300.0, 1_000)]
@@ -749,7 +749,7 @@ def test_es_day_summary_honors_utc_day_on_non_utc_host(
     ``time.tzset()`` so the assertion actually exercises the bug path.
     """
     import time as _time
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     # time.tzset() is Unix-only. Skip on platforms where it's unavailable.
     if not hasattr(_time, "tzset"):
@@ -762,9 +762,9 @@ def test_es_day_summary_honors_utc_day_on_non_utc_host(
     archive_query.reset_connection_for_tests()
 
     # 00:30 UTC on 10-16 is 19:30 CT on 10-15 — the bug-path bar.
-    ts_boundary = datetime(2025, 10, 16, 0, 30, tzinfo=timezone.utc)
+    ts_boundary = datetime(2025, 10, 16, 0, 30, tzinfo=UTC)
     # 12:00 UTC sits inside 10-16 under any reasonable TZ.
-    ts_midday = datetime(2025, 10, 16, 12, 0, tzinfo=timezone.utc)
+    ts_midday = datetime(2025, 10, 16, 12, 0, tzinfo=UTC)
     bars = [
         (ts_boundary, 101, 5300.0, 5302.0, 5299.0, 5301.0, 1_000),
         (ts_midday, 101, 5301.0, 5305.0, 5300.0, 5304.0, 2_000),
@@ -881,7 +881,7 @@ def test_day_features_batch_tied_volume_resolves_deterministically(
     test locks the new deterministic behavior so a future refactor
     can't silently revert it.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     closes = [5300.0 + i for i in range(1, 61)]
     # Two contracts on the same day, identical bars (same volume).
@@ -894,14 +894,14 @@ def test_day_features_batch_tied_volume_resolves_deterministically(
             (
                 201,
                 "ESM4",  # lexicographically smaller
-                datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc),
-                datetime(2024, 6, 3, 15, 30, tzinfo=timezone.utc),
+                datetime(2024, 6, 3, 14, 30, tzinfo=UTC),
+                datetime(2024, 6, 3, 15, 30, tzinfo=UTC),
             ),
             (
                 202,
                 "ESU4",  # tied volume but should lose tiebreak
-                datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc),
-                datetime(2024, 6, 3, 15, 30, tzinfo=timezone.utc),
+                datetime(2024, 6, 3, 14, 30, tzinfo=UTC),
+                datetime(2024, 6, 3, 15, 30, tzinfo=UTC),
             ),
         ],
     )
@@ -916,10 +916,10 @@ def test_day_summary_batch_tied_volume_resolves_deterministically(
     tmp_path: Path,
 ) -> None:
     """Mirror of day_features_batch tiebreak test for day_summary_batch."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
-    d1 = datetime(2024, 6, 3, 21, 0, tzinfo=timezone.utc)
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
+    d1 = datetime(2024, 6, 3, 21, 0, tzinfo=UTC)
     # Same OHLCV for both contracts — identical day volume.
     bars = [
         (d0, 201, 5300.0, 5305.0, 5299.0, 5300.0, 1_000_000),
@@ -945,7 +945,7 @@ def test_day_summary_prediction_batch_tied_volume_resolves_deterministically(
     tmp_path: Path,
 ) -> None:
     """Mirror tiebreak test for day_summary_prediction_batch."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     closes = [5300.0 + i for i in range(1, 61)]
     bars = _sixty_minute_day((2024, 6, 3), 201, 5300.0, closes)
@@ -957,14 +957,14 @@ def test_day_summary_prediction_batch_tied_volume_resolves_deterministically(
             (
                 201,
                 "ESM4",
-                datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc),
-                datetime(2024, 6, 3, 15, 30, tzinfo=timezone.utc),
+                datetime(2024, 6, 3, 14, 30, tzinfo=UTC),
+                datetime(2024, 6, 3, 15, 30, tzinfo=UTC),
             ),
             (
                 202,
                 "ESU4",
-                datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc),
-                datetime(2024, 6, 3, 15, 30, tzinfo=timezone.utc),
+                datetime(2024, 6, 3, 14, 30, tzinfo=UTC),
+                datetime(2024, 6, 3, 15, 30, tzinfo=UTC),
             ),
         ],
     )

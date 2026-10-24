@@ -13,16 +13,15 @@ import json
 import sys
 import threading
 import urllib.error
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 from unittest.mock import patch
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import archive_seeder  # noqa: E402
-
+import archive_seeder
 
 # ---------------------------------------------------------------------------
 # Fixtures + helpers
@@ -40,7 +39,7 @@ class _FakeResp:
         self._body = body
         self._offset = 0
 
-    def __enter__(self) -> "_FakeResp":
+    def __enter__(self) -> _FakeResp:
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -92,7 +91,7 @@ def _urlopen_stub(
     corrupt_files = set(corrupt_files or set())
     manifest_url = "https://blob.example/manifest.json"
 
-    def fake(req, *, timeout=None) -> _FakeResp:  # noqa: ARG001
+    def fake(req, *, timeout=None) -> _FakeResp:
         url = req.full_url if hasattr(req, "full_url") else req
         if url == manifest_url:
             return _FakeResp(json.dumps(manifest).encode())
@@ -269,7 +268,7 @@ def test_concurrent_seed_raises_busy_error(tmp_path: Path) -> None:
     started = threading.Event()
     release = threading.Event()
 
-    def slow_fake(req, *, timeout=None):  # noqa: ARG001
+    def slow_fake(req, *, timeout=None):
         url = req.full_url if hasattr(req, "full_url") else req
         if url.endswith("/manifest.json"):
             return _FakeResp(json.dumps(manifest).encode())
@@ -393,7 +392,7 @@ def test_ssrf_blob_url_is_rejected_without_downloading(
 
     blob_requests: list[object] = []
 
-    def fake(req, *, timeout=None):  # noqa: ARG001
+    def fake(req, *, timeout=None):
         url = req.full_url if hasattr(req, "full_url") else req
         if url == manifest_url:
             return _FakeResp(json.dumps(manifest).encode())
@@ -443,7 +442,7 @@ def test_ssrf_extra_allowed_host_env_permits_second_host(
     manifest = _ssrf_manifest(blob_url)
     manifest_url = "https://blob.example/manifest.json"
 
-    def fake(req, *, timeout=None):  # noqa: ARG001
+    def fake(req, *, timeout=None):
         url = req.full_url if hasattr(req, "full_url") else req
         if url == manifest_url:
             return _FakeResp(json.dumps(manifest).encode())
@@ -473,7 +472,7 @@ def test_ssrf_extra_allowed_host_env_permits_second_host(
 def test_malformed_manifest_json_raises(tmp_path: Path) -> None:
     """If the manifest body isn't valid JSON, the seed aborts cleanly."""
 
-    def bad_json_urlopen(_req, *, timeout=None):  # noqa: ARG001
+    def bad_json_urlopen(_req, *, timeout=None):
         return _FakeResp(b"this is not json {")
 
     with (
@@ -502,7 +501,7 @@ def test_manifest_entry_missing_sha_is_recorded_as_failure(
         ],
     }
 
-    def stub(_req, *, timeout=None):  # noqa: ARG001
+    def stub(_req, *, timeout=None):
         return _FakeResp(json.dumps(manifest).encode())
 
     with patch.object(archive_seeder.urllib.request, "urlopen", stub):
@@ -517,7 +516,7 @@ def test_manifest_entry_missing_sha_is_recorded_as_failure(
 def test_empty_manifest_is_a_successful_no_op(tmp_path: Path) -> None:
     manifest = {"schema": 1, "files": []}
 
-    def stub(_req, *, timeout=None):  # noqa: ARG001
+    def stub(_req, *, timeout=None):
         return _FakeResp(json.dumps(manifest).encode())
 
     with patch.object(archive_seeder.urllib.request, "urlopen", stub):

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Generator
+from collections.abc import Generator
 from unittest.mock import MagicMock
 
 # Required env vars for config.py's pydantic-settings validation.
@@ -28,8 +28,8 @@ _FAKE_DB_URL = "postgresql://test:" + "fakefixture" + "@localhost/test"
 os.environ.setdefault("DATABASE_URL", _FAKE_DB_URL)
 
 import pytest  # noqa: E402
-import db  # noqa: E402
 
+import db  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -98,9 +98,8 @@ class TestGetConnDeadConnectionHandling:
         body's exception is what reaches the caller (not the rollback)."""
         _pool, conn = fake_pool_with_conn
 
-        with pytest.raises(RuntimeError, match="body boom"):
-            with db.get_conn() as _:
-                raise RuntimeError("body boom")
+        with pytest.raises(RuntimeError, match="body boom"), db.get_conn() as _:
+            raise RuntimeError("body boom")
 
         conn.rollback.assert_called_once()
 
@@ -117,9 +116,8 @@ class TestGetConnDeadConnectionHandling:
             "InterfaceError: connection already closed"
         )
 
-        with pytest.raises(RuntimeError, match="ssl drop"):
-            with db.get_conn() as _:
-                raise RuntimeError("ssl drop")
+        with pytest.raises(RuntimeError, match="ssl drop"), db.get_conn() as _:
+            raise RuntimeError("ssl drop")
 
         conn.rollback.assert_called_once()
 
@@ -133,9 +131,8 @@ class TestGetConnDeadConnectionHandling:
         conn.closed = 2  # libpq's "broken connection" state
         conn.rollback.side_effect = RuntimeError("connection already closed")
 
-        with pytest.raises(RuntimeError):
-            with db.get_conn() as _:
-                raise RuntimeError("ssl drop")
+        with pytest.raises(RuntimeError), db.get_conn() as _:
+            raise RuntimeError("ssl drop")
 
         pool.putconn.assert_called_once_with(conn, close=True)
 
@@ -158,12 +155,11 @@ class TestGetConnDeadConnectionHandling:
     ) -> None:
         """During shutdown the pool may already be closed; putconn then
         raises PoolError. That must not replace the body's exception."""
-        pool, conn = fake_pool_with_conn
+        pool, _conn = fake_pool_with_conn
         pool.putconn.side_effect = RuntimeError("connection pool is closed")
 
-        with pytest.raises(RuntimeError, match="body boom"):
-            with db.get_conn() as _:
-                raise RuntimeError("body boom")
+        with pytest.raises(RuntimeError, match="body boom"), db.get_conn() as _:
+            raise RuntimeError("body boom")
 
 
 # ---------------------------------------------------------------------------

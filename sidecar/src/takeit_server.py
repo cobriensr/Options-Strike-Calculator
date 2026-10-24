@@ -58,7 +58,7 @@ def _list_blob(prefix: str, token: str) -> list[dict]:
     """Call the Vercel Blob list API to resolve a private blob path."""
     url = f"https://blob.vercel-storage.com/?{urllib.parse.urlencode({'prefix': prefix, 'limit': 100})}"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310 (trusted)
+    with urllib.request.urlopen(req, timeout=10) as resp:  # trusted URL (Vercel Blob)
         return json.loads(resp.read())["blobs"]
 
 
@@ -70,14 +70,14 @@ def _fetch_blob(url: str, token: str) -> bytes:
     # the recurring `HTTPError 403` on cold start each time the in-process
     # bundle cache was empty.
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 (trusted)
+    with urllib.request.urlopen(req, timeout=30) as resp:  # trusted URL (Vercel Blob)
         return resp.read()
 
 
 def _load_bundle(alert_type: str) -> dict:
     """Resolve the manifest's current version for `alert_type`, then download
     and joblib.load() the bundle. Cached per-alert_type in-process."""
-    import joblib  # noqa: PLC0415
+    import joblib
 
     with _bundle_lock:
         if alert_type in _bundle_cache:
@@ -120,7 +120,7 @@ def _load_bundle(alert_type: str) -> dict:
         # /takeit/explain. We import shap lazily so the bundle loader
         # still works when ML deps are missing (the dep check happens
         # earlier in `is_enabled()`).
-        import shap  # noqa: PLC0415
+        import shap
 
         bundle["explainer"] = shap.TreeExplainer(bundle["model"])
         _bundle_cache[alert_type] = bundle
@@ -129,8 +129,8 @@ def _load_bundle(alert_type: str) -> dict:
 
 def _explain_rows(alert_type: str, rows: list[dict]) -> list[dict]:
     """Compute SHAP top-K per row. Returns the JSON-serializable payload."""
-    import numpy as np  # noqa: PLC0415
-    import pandas as pd  # noqa: PLC0415
+    import numpy as np
+    import pandas as pd
 
     bundle = _load_bundle(alert_type)
     feature_cols: list[str] = bundle["feature_cols"]
@@ -141,16 +141,16 @@ def _explain_rows(alert_type: str, rows: list[dict]) -> list[dict]:
     for r in rows:
         feats = r["features"]
         matrix.append([feats.get(c, np.nan) for c in feature_cols])
-    X = pd.DataFrame(matrix, columns=feature_cols).astype(float)
+    features_df = pd.DataFrame(matrix, columns=feature_cols).astype(float)
 
-    shap_values = np.asarray(explainer.shap_values(X))
+    shap_values = np.asarray(explainer.shap_values(features_df))
 
     out = []
     for i, r in enumerate(rows):
         contribs = shap_values[i]
         order_pos = np.argsort(contribs)[::-1][:TOP_K]
         order_neg = np.argsort(contribs)[:TOP_K]
-        feature_values = X.iloc[i].to_numpy()
+        feature_values = features_df.iloc[i].to_numpy()
         pos = [
             {
                 "name": feature_cols[j],
@@ -176,7 +176,7 @@ def _explain_rows(alert_type: str, rows: list[dict]) -> list[dict]:
 
 
 def _json_safe(v):
-    import math  # noqa: PLC0415
+    import math
 
     if v is None:
         return None
@@ -192,11 +192,11 @@ def is_enabled() -> bool:
     if os.environ.get("TAKEIT_SERVER_ENABLED", "0") != "1":
         return False
     try:
-        import joblib  # noqa: F401, PLC0415
-        import numpy  # noqa: F401, PLC0415
-        import pandas  # noqa: F401, PLC0415
-        import shap  # noqa: F401, PLC0415
-        import xgboost  # noqa: F401, PLC0415
+        import joblib  # noqa: F401
+        import numpy  # noqa: F401
+        import pandas  # noqa: F401
+        import shap  # noqa: F401
+        import xgboost  # noqa: F401
     except ImportError as e:
         logger.warning(
             "takeit_server: missing dep %s; install xgboost/shap/joblib in sidecar venv",
@@ -251,7 +251,7 @@ def handle_explain_payload(body_bytes: bytes, auth_header: str) -> tuple[int, di
     except RuntimeError as e:
         logger.exception("takeit explain failed: bundle/model error")
         return 503, {"error": str(e)}
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.exception("takeit explain failed: unexpected")
         return 500, {"error": str(e)}
     return 200, {"results": results}

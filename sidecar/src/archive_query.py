@@ -47,7 +47,7 @@ _ROOT = Path(os.environ.get("ARCHIVE_ROOT", "/data/archive"))
 # `ThreadingHTTPServer` (one thread per request — see health.py). Each
 # DuckDB connection is capped at `memory_limit='500MB'` PLUS up to ~2 GB
 # of on-disk temp spill, and those caps are PER thread-local connection.
-# So N concurrent /archive/* requests cost N × (500 MB RAM + ~2 GB temp)
+# So N concurrent /archive/* requests cost N x (500 MB RAM + ~2 GB temp)
 # on a 3-vCPU Railway box with a documented OOM history — a trivial
 # unauthenticated memory-exhaustion DoS.
 #
@@ -60,9 +60,7 @@ _ROOT = Path(os.environ.get("ARCHIVE_ROOT", "/data/archive"))
 # 2 is deliberate: it leaves headroom for /health and SHAP
 # while still allowing one backfill request to overlap a single
 # interactive analyze-context query. Override via env for ops tuning.
-_ARCHIVE_QUERY_CONCURRENCY = int(
-    os.environ.get("ARCHIVE_QUERY_CONCURRENCY", "2")
-)
+_ARCHIVE_QUERY_CONCURRENCY = int(os.environ.get("ARCHIVE_QUERY_CONCURRENCY", "2"))
 _archive_query_semaphore = threading.BoundedSemaphore(_ARCHIVE_QUERY_CONCURRENCY)
 
 

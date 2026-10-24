@@ -12,7 +12,9 @@ duckdb>=1.0.0
 pytz>=2024.1
 pytest>=8.0.0
 pytest-cov>=6.0
-ruff>=0.11
+# Capped at the minor: ruff adds/promotes stable rules only in minor releases,
+# so new findings arrive as a Dependabot bump PR, not in an unrelated change.
+ruff>=0.17,<0.18
 
 # Take-It SHAP endpoint deps (Phase 3d, spec
 # docs/superpowers/specs/takeit-phase3-production-scoring-2026-05-16.md).
