@@ -26,6 +26,8 @@ jobs:
       app: ${{ steps.filter.outputs.app }}
       ml: ${{ steps.filter.outputs.ml }}
       sidecar: ${{ steps.filter.outputs.sidecar }}
+      uw_stream: ${{ steps.filter.outputs.uw_stream }}
+      classifier: ${{ steps.filter.outputs.classifier }}
       e2e: ${{ steps.filter.outputs.e2e }}
     steps:
       - uses: actions/checkout@v6
@@ -49,10 +51,22 @@ jobs:
               - 'tsconfig.json'
               - 'vite.config.ts'
               - 'eslint.config.ts'
+            # Listing ci.yml means an edit to a job's definition runs that job.
             ml:
               - 'ml/**'
+              - '.github/workflows/ci.yml'
             sidecar:
               - 'sidecar/**'
+              - '.github/workflows/ci.yml'
+            uw_stream:
+              - 'uw-stream/**'
+              - '.github/workflows/ci.yml'
+            # ml/src/multileg_*.py is the source of truth for classifier's
+            # vendored copies (and a classifier Railway watchPattern).
+            classifier:
+              - 'classifier/**'
+              - 'ml/src/multileg_*.py'
+              - '.github/workflows/ci.yml'
             e2e:
               - 'src/**'
               - 'api/**'
@@ -184,3 +198,90 @@ jobs:
 
       - name: Lint, Format Check & Tests
         run: cd sidecar && make review PYTHON=python
+
+  # uw-stream and classifier gate check-only: unlike ml/sidecar's
+  # `make review` (ruff --fix + ruff format in write mode), fixable lint and
+  # format drift fail the job. Every gate after install runs even if an
+  # earlier one failed, so a Dependabot bump still reports its test result.
+  uw-stream:
+    name: uw-stream Quality Gate
+    needs: [changes]
+    if: needs.changes.outputs.uw_stream == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: uw-stream
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v6
+        with:
+          # Matches the python:3.12-slim production image.
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: uw-stream/requirements.txt
+
+      - name: Install dependencies
+        id: install
+        run: pip install -r requirements.txt
+
+      - name: Lint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: python -m ruff check src/ tests/ conftest.py
+
+      - name: Format check
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: python -m ruff format --check src/ tests/ conftest.py
+
+      - name: Tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: python -m pytest --cov=src --cov-report=term-missing
+
+  classifier:
+    name: Classifier Quality Gate
+    needs: [changes]
+    if: needs.changes.outputs.classifier == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: classifier
+    steps:
+      # The sync check finds ml/src/ relative to its own file (not the cwd);
+      # fetch-depth limits history only, so depth 1 still has the full tree.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v6
+        with:
+          # Matches the python:3.12-slim production image.
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: classifier/requirements.txt
+
+      - name: Install dependencies
+        id: install
+        run: pip install -r requirements.txt
+
+      # Own step so drift between ml/src/multileg_*.py and _vendored_ml/
+      # shows up as a named failure, not one test among the suite.
+      # --no-cov: addopts' 95% gate would fail a two-test run.
+      - name: Vendored ml/src sync check
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: python -m pytest tests/test_vendored_ml_sync.py --no-cov
+
+      - name: Lint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: python -m ruff check src/ tests/ conftest.py
+
+      - name: Format check
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: python -m ruff format --check src/ tests/ conftest.py
+
+      - name: Tests (95% coverage gate via pyproject addopts)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: python -m pytest
