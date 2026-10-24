@@ -1,5 +1,6 @@
 # Sidecar Quality Gate
 # Usage: cd sidecar && make review
+# Needs the dev tools: pip install -r requirements-dev.txt
 
 PYTHON ?= .venv/bin/python
 

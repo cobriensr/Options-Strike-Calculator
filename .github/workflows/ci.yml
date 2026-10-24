@@ -188,13 +188,15 @@ jobs:
         with:
           python-version: '3.13'
           cache: 'pip'
-          cache-dependency-path: sidecar/requirements.txt
+          cache-dependency-path: |
+            sidecar/requirements.txt
+            sidecar/requirements-dev.txt
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libpq-dev
 
       - name: Install dependencies
-        run: pip install -r sidecar/requirements.txt
+        run: pip install -r sidecar/requirements-dev.txt
 
       - name: Lint, Format Check & Tests
         run: cd sidecar && make review PYTHON=python
@@ -222,11 +224,13 @@ jobs:
           # Matches the python:3.12-slim production image.
           python-version: '3.12'
           cache: 'pip'
-          cache-dependency-path: uw-stream/requirements.txt
+          cache-dependency-path: |
+            uw-stream/requirements.txt
+            uw-stream/requirements-dev.txt
 
       - name: Install dependencies
         id: install
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-dev.txt
 
       - name: Lint
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
@@ -261,11 +265,13 @@ jobs:
           # Matches the python:3.12-slim production image.
           python-version: '3.12'
           cache: 'pip'
-          cache-dependency-path: classifier/requirements.txt
+          cache-dependency-path: |
+            classifier/requirements.txt
+            classifier/requirements-dev.txt
 
       - name: Install dependencies
         id: install
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-dev.txt
 
       # Own step so drift between ml/src/multileg_*.py and _vendored_ml/
       # shows up as a named failure, not one test among the suite.

@@ -25,7 +25,7 @@ sidecar/          Railway Python service (NOT Vercel). Ingests no market data (D
                   queries over the frozen archive on the /data volume. Writes nothing to Neon: DATABASE_URL
                   (psycopg2) backs only the /health db check, and the boot DB check is non-fatal.
                   Theta Data Terminal + /takeit/multileg-classify fallback removed 2026-10-02.
-                  Own requirements.txt, Dockerfile. Sentry SDK for error tracking
+                  Own requirements.txt (runtime) + requirements-dev.txt (test/lint), Dockerfile. Sentry SDK for error tracking
                   vercel.json ignoreCommand skips deploys for sidecar/, uw-stream/, ml/, scripts/, pine/, docs/, *.md changes
 
 classifier/       Multileg classifier (Python, Railway, NOT Vercel). POST /multileg-classify for the detect
@@ -42,7 +42,7 @@ uw-stream/        UnusualWhales websocket consumer (Python, Railway, NOT Vercel 
                   source since 2026-09-29; backfill-futures-gaps cron repairs holes from UW REST candles.
                   No DX, VX, ES options or TBBO/OFI (VIX term structure: VIX/VIX3M).
                   Sentry tagged server_name=uw-stream; UW_API_KEY required (Advanced tier for WS access).
-                  Own Dockerfile, README.md, requirements.txt, conftest.py — own pytest suite under tests/.
+                  Own Dockerfile, README.md, requirements.txt (runtime) + requirements-dev.txt (test/lint), conftest.py — own pytest suite under tests/.
 
 scripts/          Backfill scripts (backfill-etf-tide.mjs, backfill-greek-exposure.mjs, etc.)
 

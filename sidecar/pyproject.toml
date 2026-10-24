@@ -1,11 +1,13 @@
-# Tool config only. The sidecar is not an installable package: deps live in
-# requirements.txt and the Dockerfile copies src/ (this file is not in the
-# image), so there is no [project] or [build-system] table.
+# Tool config only. The sidecar is not an installable package: runtime deps
+# live in requirements.txt, test/lint tools in requirements-dev.txt, and the
+# Dockerfile copies src/ (this file is not in the image), so there is no
+# [project] or [build-system] table.
 #
 # The rule set is pinned explicitly, matching uw-stream/ and classifier/.
 # Without a `select`, ruff falls back to its built-in defaults, which grow
-# between releases, and `ruff>=0.11` floats, so a ruff upgrade alone can
-# break the Sidecar Quality Gate.
+# between releases; while ruff floated (`>=0.11`), an upgrade alone broke
+# the Sidecar Quality Gate. requirements-dev.txt also caps ruff below the
+# next minor, so new stable rules arrive as a Dependabot bump PR.
 
 [tool.ruff]
 # 88 (ruff's default), not the siblings' 100: the sidecar code is already

@@ -18,7 +18,7 @@ are kept in sync by a test.
 ## Local development
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-dev.txt  # runtime deps + pytest/ruff; the image installs requirements.txt only
 PYTHONPATH=src:_vendored_ml python -m main
 ```
 

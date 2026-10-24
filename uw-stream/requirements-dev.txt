@@ -1,0 +1,10 @@
+# Test and lint tools for local dev and CI, layered on the runtime deps.
+# The Dockerfile deliberately installs only requirements.txt, so none of
+# the tools below ship in the production image.
+-r requirements.txt
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-cov>=6.0
+# Capped at the minor: ruff adds/promotes stable rules only in minor releases,
+# so new findings arrive as a Dependabot bump PR, not in an unrelated change.
+ruff>=0.17,<0.18

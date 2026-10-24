@@ -177,9 +177,9 @@ bar this handler wrote, and it replays the same front-month rule.
 cd uw-stream
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt  # runtime deps + pytest/ruff; the image installs requirements.txt only
 # create .env from this README's env table, or copy from a teammate
-python -m src.main
+PYTHONPATH=src python -m main  # same as the image (ENV PYTHONPATH=/app/src)
 # in another shell:
 curl http://localhost:8080/healthz
 curl http://localhost:8080/metrics | jq

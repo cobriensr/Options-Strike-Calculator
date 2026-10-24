@@ -24,7 +24,7 @@ The sidecar writes nothing to Postgres. Consumer side of the data is in [api/\_l
 cd sidecar
 python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt  # runtime deps + pytest/ruff; the image installs requirements.txt only
 cp .env.example .env
 # Fill in DATABASE_URL at minimum.
 python -m src.main
