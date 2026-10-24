@@ -92,9 +92,7 @@ def test_missing_trades_key_returns_400(mock_classify_trades) -> None:
 
 
 def test_empty_trades_list_returns_400(mock_classify_trades) -> None:
-    status, body = multileg_routes.handle_classify_payload(
-        json.dumps({"trades": []}).encode()
-    )
+    status, body = multileg_routes.handle_classify_payload(json.dumps({"trades": []}).encode())
     assert status == 400
     assert body == {"error": "trades must be a non-empty list"}
     assert "call_count" not in mock_classify_trades
@@ -109,9 +107,7 @@ def test_missing_required_field_returns_422(
 ) -> None:
     bad = dict(sample_trade)
     bad.pop("nbbo_bid")
-    status, body = multileg_routes.handle_classify_payload(
-        json.dumps({"trades": [bad]}).encode()
-    )
+    status, body = multileg_routes.handle_classify_payload(json.dumps({"trades": [bad]}).encode())
     assert status == 422
     assert body["error"] == "schema validation failed"
     assert "details" in body
@@ -174,15 +170,13 @@ def test_extra_field_on_trade_returns_422(
 ) -> None:
     bad = dict(sample_trade)
     bad["extra_field"] = "this should be rejected"
-    status, body = multileg_routes.handle_classify_payload(
-        json.dumps({"trades": [bad]}).encode()
-    )
+    status, body = multileg_routes.handle_classify_payload(json.dumps({"trades": [bad]}).encode())
     assert status == 422
     assert body["error"] == "schema validation failed"
     # Pydantic v2 includes "extra_forbidden" in the error type for forbid mode.
-    assert any(
-        "extra" in str(d).lower() for d in body["details"]
-    ), f"expected extra-field detail, got {body['details']}"
+    assert any("extra" in str(d).lower() for d in body["details"]), (
+        f"expected extra-field detail, got {body['details']}"
+    )
     assert "call_count" not in mock_classify_trades
 
 
@@ -216,9 +210,7 @@ def test_500_path_captures_to_sentry_with_classifier_tags(
     import sentry_setup
 
     with patch.object(sentry_setup, "capture_exception", capture_mock):
-        status, body = multileg_routes.handle_classify_payload(
-            sample_classify_request_body
-        )
+        status, body = multileg_routes.handle_classify_payload(sample_classify_request_body)
 
     assert status == 500
     assert body["error"] == "matcher exploded"
@@ -249,9 +241,7 @@ def test_500_path_does_not_crash_when_sentry_capture_raises(
         "capture_exception",
         side_effect=RuntimeError("sentry blew up"),
     ):
-        status, body = multileg_routes.handle_classify_payload(
-            sample_classify_request_body
-        )
+        status, body = multileg_routes.handle_classify_payload(sample_classify_request_body)
 
     assert status == 500
     assert body["error"] == "matcher exploded"
@@ -260,9 +250,7 @@ def test_500_path_does_not_crash_when_sentry_capture_raises(
 # ── New for service: option_type case-insensitivity ──────────────────────
 
 
-@pytest.mark.parametrize(
-    "option_type", ["call", "put", "CALL", "PUT", "Call", "Put"]
-)
+@pytest.mark.parametrize("option_type", ["call", "put", "CALL", "PUT", "Call", "Put"])
 def test_option_type_case_variants_all_accepted(
     mock_classify_trades,
     sample_trade: dict[str, Any],
@@ -270,9 +258,7 @@ def test_option_type_case_variants_all_accepted(
 ) -> None:
     trade = dict(sample_trade)
     trade["option_type"] = option_type
-    status, body = multileg_routes.handle_classify_payload(
-        json.dumps({"trades": [trade]}).encode()
-    )
+    status, body = multileg_routes.handle_classify_payload(json.dumps({"trades": [trade]}).encode())
     assert status == 200, f"option_type={option_type!r} should be accepted"
     assert body["classifications"][0]["id"] == "t1"
 
@@ -342,9 +328,7 @@ def test_classify_with_polars_runs_real_matcher_end_to_end(
     glue code's body lines would be uncovered (the spec asks for ≥95%
     line coverage on src/).
     """
-    request = multileg_routes.MultilegClassifyRequest.model_validate(
-        {"trades": [sample_trade]}
-    )
+    request = multileg_routes.MultilegClassifyRequest.model_validate({"trades": [sample_trade]})
     rows = multileg_routes._classify_with_polars(request)
     assert len(rows) == 1
     row = rows[0]
@@ -395,9 +379,7 @@ def test_string_nan_in_float_field_returns_422(
     """
     bad = dict(sample_trade)
     bad["strike"] = "NaN"
-    status, body = multileg_routes.handle_classify_payload(
-        json.dumps({"trades": [bad]}).encode()
-    )
+    status, body = multileg_routes.handle_classify_payload(json.dumps({"trades": [bad]}).encode())
     assert status == 422
     assert body["error"] == "schema validation failed"
     assert "call_count" not in mock_classify_trades
@@ -440,9 +422,7 @@ def test_match_confidence_boundary_allow_inf_nan(
 # ── Finding 1.3: naive datetime rejection on executed_at ─────────────────
 
 
-def test_naive_executed_at_returns_422(
-    mock_classify_trades, sample_trade: dict[str, Any]
-) -> None:
+def test_naive_executed_at_returns_422(mock_classify_trades, sample_trade: dict[str, Any]) -> None:
     """The polars cast at ``_classify_with_polars`` *relabels* a naive
     datetime as UTC without converting it. A trade stamped ``10:30:00``
     intended as ET (14:30 UTC) would silently bucket at 10:30 UTC. The
@@ -450,9 +430,7 @@ def test_naive_executed_at_returns_422(
     """
     bad = dict(sample_trade)
     bad["executed_at"] = "2026-05-15T10:30:00"  # naive — no tz
-    status, body = multileg_routes.handle_classify_payload(
-        json.dumps({"trades": [bad]}).encode()
-    )
+    status, body = multileg_routes.handle_classify_payload(json.dumps({"trades": [bad]}).encode())
     assert status == 422
     assert body["error"] == "schema validation failed"
     assert any("executed_at" in str(d.get("loc", "")) for d in body["details"])
@@ -476,9 +454,7 @@ def test_tz_aware_executed_at_accepted(
     """All standard tz-aware ISO 8601 forms continue to validate."""
     trade = dict(sample_trade)
     trade["executed_at"] = tz_form
-    status, _ = multileg_routes.handle_classify_payload(
-        json.dumps({"trades": [trade]}).encode()
-    )
+    status, _ = multileg_routes.handle_classify_payload(json.dumps({"trades": [trade]}).encode())
     assert status == 200, f"tz_form={tz_form!r} should be accepted"
 
 
@@ -506,9 +482,7 @@ def test_window_seconds_above_cap_returns_422(
     )
     assert status == 422
     assert body["error"] == "schema validation failed"
-    assert any(
-        "window_seconds" in str(d.get("loc", "")) for d in body["details"]
-    )
+    assert any("window_seconds" in str(d.get("loc", "")) for d in body["details"])
     assert "call_count" not in mock_classify_trades
 
 
@@ -530,9 +504,7 @@ def test_strike_tolerance_above_cap_returns_422(
     )
     assert status == 422
     assert body["error"] == "schema validation failed"
-    assert any(
-        "strike_tolerance" in str(d.get("loc", "")) for d in body["details"]
-    )
+    assert any("strike_tolerance" in str(d.get("loc", "")) for d in body["details"])
     assert "call_count" not in mock_classify_trades
 
 
@@ -554,9 +526,7 @@ def test_size_tolerance_above_cap_returns_422(
     )
     assert status == 422
     assert body["error"] == "schema validation failed"
-    assert any(
-        "size_tolerance" in str(d.get("loc", "")) for d in body["details"]
-    )
+    assert any("size_tolerance" in str(d.get("loc", "")) for d in body["details"])
     assert "call_count" not in mock_classify_trades
 
 
@@ -611,22 +581,19 @@ def test_overflow_literal_in_tolerance_returns_422_via_allow_inf_nan(
         b'"premium":1250.0,"delta":0.4}],"strike_tolerance":1e9999}'
     )
     status, body_out = multileg_routes.handle_classify_payload(body)
-    assert status == 422, (
-        f"expected 422 via allow_inf_nan=False, got {status} body={body_out}"
-    )
+    assert status == 422, f"expected 422 via allow_inf_nan=False, got {status} body={body_out}"
     assert body_out["error"] == "schema validation failed"
     # The Pydantic error message for allow_inf_nan failures mentions
     # the allow_inf_nan / finite-number constraint; assert the locus
     # is strike_tolerance regardless of the exact phrasing.
     details = body_out["details"]
-    assert any(
-        "strike_tolerance" in str(d.get("loc", "")) for d in details
-    ), f"expected strike_tolerance in details, got {details}"
+    assert any("strike_tolerance" in str(d.get("loc", "")) for d in details), (
+        f"expected strike_tolerance in details, got {details}"
+    )
     # And confirm at least one detail references the finite-number rule.
-    assert any(
-        "finite" in str(d).lower() or "inf" in str(d).lower()
-        for d in details
-    ), f"expected finite/inf phrasing, got {details}"
+    assert any("finite" in str(d).lower() or "inf" in str(d).lower() for d in details), (
+        f"expected finite/inf phrasing, got {details}"
+    )
     assert "call_count" not in mock_classify_trades
 
 
@@ -642,9 +609,7 @@ def test_bool_strike_rejected_under_strict(
     """
     bad = dict(sample_trade)
     bad["strike"] = True
-    status, body = multileg_routes.handle_classify_payload(
-        json.dumps({"trades": [bad]}).encode()
-    )
+    status, body = multileg_routes.handle_classify_payload(json.dumps({"trades": [bad]}).encode())
     assert status == 422
     assert any("strike" in str(d.get("loc", "")) for d in body["details"])
     assert "call_count" not in mock_classify_trades
@@ -655,9 +620,7 @@ def test_bool_size_rejected_under_strict(
 ) -> None:
     bad = dict(sample_trade)
     bad["size"] = False
-    status, body = multileg_routes.handle_classify_payload(
-        json.dumps({"trades": [bad]}).encode()
-    )
+    status, body = multileg_routes.handle_classify_payload(json.dumps({"trades": [bad]}).encode())
     assert status == 422
     assert any("size" in str(d.get("loc", "")) for d in body["details"])
     assert "call_count" not in mock_classify_trades
@@ -669,9 +632,7 @@ def test_string_strike_rejected_under_strict(
     """``"450"`` → 450.0 used to be accepted. Strict mode rejects it."""
     bad = dict(sample_trade)
     bad["strike"] = "450"
-    status, body = multileg_routes.handle_classify_payload(
-        json.dumps({"trades": [bad]}).encode()
-    )
+    status, body = multileg_routes.handle_classify_payload(json.dumps({"trades": [bad]}).encode())
     assert status == 422
     assert any("strike" in str(d.get("loc", "")) for d in body["details"])
     assert "call_count" not in mock_classify_trades
@@ -686,9 +647,7 @@ def test_int_to_float_still_accepted_under_strict(
     """
     trade = dict(sample_trade)
     trade["strike"] = 450  # bare int, no decimal
-    status, _ = multileg_routes.handle_classify_payload(
-        json.dumps({"trades": [trade]}).encode()
-    )
+    status, _ = multileg_routes.handle_classify_payload(json.dumps({"trades": [trade]}).encode())
     assert status == 200, "int → float widening should still be accepted"
 
 
@@ -702,9 +661,7 @@ def test_string_int_for_window_seconds_rejected_under_strict(
         make_payload(trades=[sample_trade], window_seconds="90")
     )
     assert status == 422
-    assert any(
-        "window_seconds" in str(d.get("loc", "")) for d in body["details"]
-    )
+    assert any("window_seconds" in str(d.get("loc", "")) for d in body["details"])
     assert "call_count" not in mock_classify_trades
 
 
@@ -755,9 +712,7 @@ def test_handle_payload_passes_null_classification_through(
         ]
 
     monkeypatch.setattr(multileg_routes, "_classify_with_polars", fake)
-    status, body = multileg_routes.handle_classify_payload(
-        sample_classify_request_body
-    )
+    status, body = multileg_routes.handle_classify_payload(sample_classify_request_body)
     assert status == 200
     assert body == {
         "classifications": [
@@ -880,16 +835,12 @@ def test_handle_payload_mixed_null_delta_round_trips_through_real_matcher(
     # 3. Every classification has a stable string pattern_group_id.
     for c in classifications:
         gid = c["pattern_group_id"]
-        assert isinstance(gid, str) and gid, (
-            f"missing pattern_group_id on id={c['id']!r}: {gid!r}"
-        )
+        assert isinstance(gid, str) and gid, f"missing pattern_group_id on id={c['id']!r}: {gid!r}"
 
     # 4. At least one row was paired (proving the matcher didn't fail
     #    over to ``isolated_leg`` for everything when ``delta`` was
     #    partially null).
-    assert any(
-        c["is_isolated_leg"] is False for c in classifications
-    ), (
+    assert any(c["is_isolated_leg"] is False for c in classifications), (
         "every trade fell to isolated_leg — mixed-null delta silently "
         "rejected paired candidates; see Finding 3.4"
     )

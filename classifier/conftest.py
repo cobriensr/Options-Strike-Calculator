@@ -11,7 +11,6 @@ import os
 import sys
 from pathlib import Path
 
-
 # Make both `src/` and `_vendored_ml/` importable as top-level packages.
 # Mirrors the pyproject.toml `pythonpath = ["src", "_vendored_ml"]`
 # setting; duplicated here so editor configurations and pytest CLI

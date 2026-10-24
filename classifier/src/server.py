@@ -129,9 +129,7 @@ class _QuietThreadingHTTPServer(ThreadingHTTPServer):
 
     def handle_error(self, request: Any, client_address: Any) -> None:
         exc_type = sys.exc_info()[0]
-        if exc_type is not None and issubclass(
-            exc_type, (BrokenPipeError, ConnectionResetError)
-        ):
+        if exc_type is not None and issubclass(exc_type, (BrokenPipeError, ConnectionResetError)):
             return
         super().handle_error(request, client_address)
 
@@ -247,11 +245,7 @@ class ClassifierHandler(BaseHTTPRequestHandler):
         if self.headers.get("Transfer-Encoding"):
             self._write_json(
                 411,
-                {
-                    "error": (
-                        "Transfer-Encoding not supported; use Content-Length"
-                    )
-                },
+                {"error": ("Transfer-Encoding not supported; use Content-Length")},
                 close_connection=True,
             )
             return
@@ -279,20 +273,24 @@ class ClassifierHandler(BaseHTTPRequestHandler):
             content_length = int(self.headers.get("Content-Length", "0") or 0)
         except ValueError:
             self._write_json(
-                400, {"error": "Content-Length must be a non-negative integer"},
+                400,
+                {"error": "Content-Length must be a non-negative integer"},
                 close_connection=True,
             )
             return
 
         if content_length < 0:
             self._write_json(
-                400, {"error": "Content-Length must be a non-negative integer"},
+                400,
+                {"error": "Content-Length must be a non-negative integer"},
                 close_connection=True,
             )
             return
         if content_length == 0:
             self._write_json(
-                400, {"error": "empty body"}, close_connection=True,
+                400,
+                {"error": "empty body"},
+                close_connection=True,
             )
             return
         if content_length > _MAX_BODY_BYTES:
@@ -348,7 +346,9 @@ class ClassifierHandler(BaseHTTPRequestHandler):
 
         if len(body_bytes) != content_length:
             self._write_json(
-                400, {"error": "truncated body"}, close_connection=True,
+                400,
+                {"error": "truncated body"},
+                close_connection=True,
             )
             return
 

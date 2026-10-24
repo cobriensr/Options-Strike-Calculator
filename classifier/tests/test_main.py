@@ -94,9 +94,7 @@ def test_main_returns_0_on_clean_shutdown(
     mock_httpd.server_close.assert_called_once()
 
 
-def test_main_uses_port_env_var(
-    mock_httpd: MagicMock, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_main_uses_port_env_var(mock_httpd: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PORT", "12345")
     with (
         patch.object(main.sentry_setup, "init"),
@@ -154,9 +152,7 @@ def test_main_swallows_sentry_init_exception(
     """
     monkeypatch.delenv("PORT", raising=False)
     with (
-        patch.object(
-            main.sentry_setup, "init", side_effect=RuntimeError("sentry blew up")
-        ),
+        patch.object(main.sentry_setup, "init", side_effect=RuntimeError("sentry blew up")),
         patch.object(main.server, "build_server", return_value=mock_httpd),
     ):
         rc = main.main()
@@ -231,9 +227,7 @@ def test_main_installs_sigterm_handler_before_serve_forever(
 
     assert rc == 0
     # signal.signal called with SIGTERM and a callable.
-    sigterm_calls = [
-        call for call in mock_signal.call_args_list if call.args[0] == signal.SIGTERM
-    ]
+    sigterm_calls = [call for call in mock_signal.call_args_list if call.args[0] == signal.SIGTERM]
     assert len(sigterm_calls) == 1, f"expected one SIGTERM install, got {sigterm_calls}"
     assert callable(sigterm_calls[0].args[1])
     # SIGTERM install precedes serve_forever in execution order.
@@ -241,7 +235,9 @@ def test_main_installs_sigterm_handler_before_serve_forever(
         i for i, name in enumerate(call_order) if name == f"signal({signal.SIGTERM})"
     )
     serve_idx = call_order.index("serve_forever")
-    assert sigterm_idx < serve_idx, f"SIGTERM install must precede serve_forever; order: {call_order}"
+    assert sigterm_idx < serve_idx, (
+        f"SIGTERM install must precede serve_forever; order: {call_order}"
+    )
 
 
 def test_main_handles_sigterm_via_installed_handler(

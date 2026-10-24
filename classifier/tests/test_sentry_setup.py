@@ -97,9 +97,7 @@ class TestInit:
         assert kwargs["environment"] == "production"
         assert kwargs["release"] is None
 
-    def test_init_is_idempotent(
-        self, fresh_sentry_setup, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_init_is_idempotent(self, fresh_sentry_setup, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SENTRY_DSN", "https://fake@sentry.example.com/1")
         with (
             patch("sentry_sdk.init") as mock_init,
@@ -119,9 +117,7 @@ class TestInit:
     ) -> None:
         """A crash inside sentry_sdk.init must NOT take down the service."""
         monkeypatch.setenv("SENTRY_DSN", "https://fake@sentry.example.com/1")
-        with patch(
-            "sentry_sdk.init", side_effect=RuntimeError("simulated init failure")
-        ):
+        with patch("sentry_sdk.init", side_effect=RuntimeError("simulated init failure")):
             fresh_sentry_setup.init()  # must not raise
         # Service stays in "Sentry disabled" state when init fails.
         assert fresh_sentry_setup.is_enabled() is False
@@ -241,9 +237,7 @@ class TestCaptureException:
         with patch("sentry_sdk.init"), patch("sentry_sdk.set_tag"):
             fresh_sentry_setup.init()
 
-        with patch(
-            "sentry_sdk.new_scope", side_effect=RuntimeError("scope blew up")
-        ):
+        with patch("sentry_sdk.new_scope", side_effect=RuntimeError("scope blew up")):
             fresh_sentry_setup.capture_exception(
                 RuntimeError("real error"), tags={"x": "y"}
             )  # must not raise
@@ -282,9 +276,7 @@ class TestCaptureMessage:
                 extra={"import_ms": 6000, "threshold_ms": 5000},
             )
 
-        mock_capture.assert_called_once_with(
-            "slow cold-start: 6000ms", level="warning"
-        )
+        mock_capture.assert_called_once_with("slow cold-start: 6000ms", level="warning")
         scope_mock.set_extra.assert_any_call("import_ms", 6000)
         scope_mock.set_extra.assert_any_call("threshold_ms", 5000)
         assert scope_mock.set_extra.call_count == 2
@@ -320,9 +312,7 @@ class TestCaptureMessage:
         with patch("sentry_sdk.init"), patch("sentry_sdk.set_tag"):
             fresh_sentry_setup.init()
 
-        with patch(
-            "sentry_sdk.new_scope", side_effect=RuntimeError("scope blew up")
-        ):
+        with patch("sentry_sdk.new_scope", side_effect=RuntimeError("scope blew up")):
             # Must not raise — the caller (cold-start log) needs to
             # continue serving the matcher request.
             fresh_sentry_setup.capture_message("msg", level="warning")
@@ -374,13 +364,9 @@ class TestAddBreadcrumb:
             fresh_sentry_setup.init()
 
         with patch("sentry_sdk.add_breadcrumb") as mock_bc:
-            fresh_sentry_setup.add_breadcrumb(
-                category="cat", message="msg"
-            )
+            fresh_sentry_setup.add_breadcrumb(category="cat", message="msg")
 
-        mock_bc.assert_called_once_with(
-            category="cat", message="msg", level="info", data={}
-        )
+        mock_bc.assert_called_once_with(category="cat", message="msg", level="info", data={})
 
     def test_add_breadcrumb_swallows_internal_exception(
         self,
@@ -398,9 +384,7 @@ class TestAddBreadcrumb:
         ):
             # Must not raise — the caller's request path must keep
             # serving even if breadcrumb plumbing breaks.
-            fresh_sentry_setup.add_breadcrumb(
-                category="c", message="m", level="warning"
-            )
+            fresh_sentry_setup.add_breadcrumb(category="c", message="m", level="warning")
         out = capsys.readouterr().out
         assert "add_breadcrumb failed" in out
         assert "breadcrumb blew up" in out

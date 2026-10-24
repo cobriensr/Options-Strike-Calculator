@@ -71,7 +71,7 @@ logger = logging.getLogger(__name__)
 # ``/health`` past Railway's 5s healthcheck timeout under burst load.
 #
 # Lowered 8 → 4 (2026-06-03), 4 → 2 (2026-06-06), then 2 → 1 (2026-06-09):
-# peak service memory ≈ concurrency × the per-request 0DTE calls×puts
+# peak service memory ≈ concurrency x the per-request 0DTE calls x puts
 # cross-join. 8-way spiked to ~21 GB; 4-way — even with the cross-join
 # sub-batch cap added 06-04 — still OOM-restarted the 24 GB box ~11x at the
 # 2026-06-05 open. The 06-06 2-way + 500K-cap fix was INSUFFICIENT: live
@@ -171,9 +171,7 @@ class MultilegTradeInput(BaseModel):
         UTC) would silently bucket at 10:30 UTC. Reject up front.
         """
         if v.tzinfo is None:
-            raise ValueError(
-                "executed_at must include timezone (use 'Z' or '+00:00')"
-            )
+            raise ValueError("executed_at must include timezone (use 'Z' or '+00:00')")
         return v
 
 
@@ -190,12 +188,8 @@ class MultilegClassifyRequest(BaseModel):
     # ``strike_tolerance`` and ``size_tolerance`` are bounded to 0.5 (50%)
     # and 1.0 (100%) respectively — past those, the join is matching noise.
     window_seconds: int = Field(default=90, ge=1, le=600)
-    strike_tolerance: Annotated[
-        float, Field(default=0.05, ge=0.0, le=0.5, allow_inf_nan=False)
-    ]
-    size_tolerance: Annotated[
-        float, Field(default=0.1, ge=0.0, le=1.0, allow_inf_nan=False)
-    ]
+    strike_tolerance: Annotated[float, Field(default=0.05, ge=0.0, le=0.5, allow_inf_nan=False)]
+    size_tolerance: Annotated[float, Field(default=0.1, ge=0.0, le=1.0, allow_inf_nan=False)]
 
 
 class MultilegClassification(BaseModel):
@@ -433,9 +427,7 @@ def handle_classify_payload(body_bytes: bytes) -> tuple[int, dict]:
             try:
                 from sentry_setup import capture_exception
 
-                capture_exception(
-                    exc, tags={"component": "classifier", "route": "classify"}
-                )
+                capture_exception(exc, tags={"component": "classifier", "route": "classify"})
             except Exception:
                 pass
             return 500, {"error": str(exc)}

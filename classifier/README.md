@@ -25,6 +25,10 @@ PYTHONPATH=src:_vendored_ml python -m main
 ## Running tests
 
 ```bash
+# What CI's Classifier Quality Gate runs (check-only: format drift fails it)
+pytest tests/test_vendored_ml_sync.py --no-cov
+ruff check src/ tests/ conftest.py
+ruff format --check src/ tests/ conftest.py
 pytest
 ```
 

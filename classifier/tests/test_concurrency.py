@@ -114,9 +114,7 @@ def test_classify_semaphore_caps_concurrent_matcher_invocations(
     results_lock = threading.Lock()
 
     def worker() -> None:
-        status, body = multileg_routes.handle_classify_payload(
-            sample_classify_request_body
-        )
+        status, body = multileg_routes.handle_classify_payload(sample_classify_request_body)
         with results_lock:
             results.append((status, body))
 
@@ -172,9 +170,7 @@ def test_classify_queue_timeout_returns_503_with_retry_after_in_body(
         # Drain the only permit so the next acquire times out.
         assert multileg_routes._classify_semaphore.acquire(timeout=0)
         try:
-            status, body = multileg_routes.handle_classify_payload(
-                sample_classify_request_body
-            )
+            status, body = multileg_routes.handle_classify_payload(sample_classify_request_body)
         finally:
             multileg_routes._classify_semaphore.release()
 
@@ -220,9 +216,7 @@ def test_classify_queue_wait_emits_breadcrumb_when_exceeds_threshold(
         patch.object(multileg_routes.time, "monotonic", side_effect=fake_monotonic),
         patch.object(sentry_setup, "add_breadcrumb", side_effect=fake_add_breadcrumb),
     ):
-        status, _ = multileg_routes.handle_classify_payload(
-            sample_classify_request_body
-        )
+        status, _ = multileg_routes.handle_classify_payload(sample_classify_request_body)
 
     assert status == 200
     assert len(breadcrumb_calls) == 1
@@ -232,10 +226,7 @@ def test_classify_queue_wait_emits_breadcrumb_when_exceeds_threshold(
     assert "6.50s" in bc["message"] or "6.5" in bc["message"]
     assert bc["data"]["queue_wait_sec"] == 6.5
     assert bc["data"]["concurrency_cap"] == multileg_routes._CLASSIFY_CONCURRENCY
-    assert (
-        bc["data"]["threshold_sec"]
-        == multileg_routes._QUEUE_WAIT_BREADCRUMB_THRESHOLD_SEC
-    )
+    assert bc["data"]["threshold_sec"] == multileg_routes._QUEUE_WAIT_BREADCRUMB_THRESHOLD_SEC
 
 
 def test_classify_queue_wait_below_threshold_emits_no_breadcrumb(
@@ -253,12 +244,8 @@ def test_classify_queue_wait_below_threshold_emits_no_breadcrumb(
 
     import sentry_setup
 
-    with patch.object(
-        sentry_setup, "add_breadcrumb", side_effect=fake_add_breadcrumb
-    ):
-        status, _ = multileg_routes.handle_classify_payload(
-            sample_classify_request_body
-        )
+    with patch.object(sentry_setup, "add_breadcrumb", side_effect=fake_add_breadcrumb):
+        status, _ = multileg_routes.handle_classify_payload(sample_classify_request_body)
 
     assert status == 200
     # Acquired the permit immediately → wait << 5s threshold → no crumb.
@@ -289,9 +276,7 @@ def test_classify_breadcrumb_failure_does_not_break_request(
             side_effect=RuntimeError("breadcrumb blew up"),
         ),
     ):
-        status, body = multileg_routes.handle_classify_payload(
-            sample_classify_request_body
-        )
+        status, body = multileg_routes.handle_classify_payload(sample_classify_request_body)
 
     # Still served a successful response.
     assert status == 200
@@ -309,18 +294,14 @@ def test_classify_semaphore_releases_on_matcher_exception(
     """
     cap = multileg_routes._CLASSIFY_CONCURRENCY
     # Trigger a 500.
-    status, _ = multileg_routes.handle_classify_payload(
-        sample_classify_request_body
-    )
+    status, _ = multileg_routes.handle_classify_payload(sample_classify_request_body)
     assert status == 500
 
     # All permits should still be available. acquire+release on every
     # one of them proves nothing leaked.
     acquired: list[bool] = []
     for _ in range(cap):
-        acquired.append(
-            multileg_routes._classify_semaphore.acquire(timeout=0.1)
-        )
+        acquired.append(multileg_routes._classify_semaphore.acquire(timeout=0.1))
     for ok in acquired:
         if ok:
             multileg_routes._classify_semaphore.release()
@@ -338,9 +319,7 @@ def test_cold_start_logs_import_ms_once_per_process(
     """First call logs ``classifier: lazy import_ms=<N>``; subsequent
     calls do not.
     """
-    request = multileg_routes.MultilegClassifyRequest.model_validate(
-        {"trades": [sample_trade]}
-    )
+    request = multileg_routes.MultilegClassifyRequest.model_validate({"trades": [sample_trade]})
 
     # First call — must emit.
     multileg_routes._classify_with_polars(request)
@@ -362,9 +341,7 @@ def test_cold_start_captures_sentry_warning_when_import_slow(
     threshold, ``sentry_setup.capture_message`` is invoked at level
     ``warning`` with the timing in ``extra``.
     """
-    request = multileg_routes.MultilegClassifyRequest.model_validate(
-        {"trades": [sample_trade]}
-    )
+    request = multileg_routes.MultilegClassifyRequest.model_validate({"trades": [sample_trade]})
 
     capture_calls: list[dict[str, Any]] = []
 
@@ -391,9 +368,7 @@ def test_cold_start_captures_sentry_warning_when_import_slow(
 
     with (
         patch.object(multileg_routes.time, "monotonic", side_effect=fake_monotonic),
-        patch.object(
-            sentry_setup, "capture_message", side_effect=fake_capture_message
-        ),
+        patch.object(sentry_setup, "capture_message", side_effect=fake_capture_message),
     ):
         multileg_routes._classify_with_polars(request)
 
@@ -402,10 +377,7 @@ def test_cold_start_captures_sentry_warning_when_import_slow(
     assert call["message"] == "classifier slow cold-start import: 6000ms"
     assert call["level"] == "warning"
     assert call["extra"]["import_ms"] == 6000
-    assert (
-        call["extra"]["threshold_ms"]
-        == multileg_routes._COLD_START_SLOW_THRESHOLD_MS
-    )
+    assert call["extra"]["threshold_ms"] == multileg_routes._COLD_START_SLOW_THRESHOLD_MS
 
 
 def test_cold_start_no_sentry_capture_when_import_fast(
@@ -415,9 +387,7 @@ def test_cold_start_no_sentry_capture_when_import_fast(
     """A fast cold-start (under the threshold) must NOT trigger Sentry
     capture — only the print() stays.
     """
-    request = multileg_routes.MultilegClassifyRequest.model_validate(
-        {"trades": [sample_trade]}
-    )
+    request = multileg_routes.MultilegClassifyRequest.model_validate({"trades": [sample_trade]})
 
     capture_calls: list[Any] = []
 
@@ -426,9 +396,7 @@ def test_cold_start_no_sentry_capture_when_import_fast(
 
     import sentry_setup
 
-    with patch.object(
-        sentry_setup, "capture_message", side_effect=fake_capture_message
-    ):
+    with patch.object(sentry_setup, "capture_message", side_effect=fake_capture_message):
         multileg_routes._classify_with_polars(request)
 
     assert capture_calls == []
@@ -442,9 +410,7 @@ def test_cold_start_sentry_capture_failure_does_not_break_request(
     returning successfully. The bare-except around the Sentry call is
     the contract.
     """
-    request = multileg_routes.MultilegClassifyRequest.model_validate(
-        {"trades": [sample_trade]}
-    )
+    request = multileg_routes.MultilegClassifyRequest.model_validate({"trades": [sample_trade]})
 
     monotonic_values = iter([0.0, 6.0])
 
@@ -505,9 +471,7 @@ def test_server_503_response_includes_retry_after_header() -> None:
 
     # Headers sent in order: Content-Type, Content-Length, Connection,
     # Retry-After. Assert Retry-After appeared with the right value.
-    header_calls = [
-        call.args for call in handler.send_header.call_args_list
-    ]
+    header_calls = [call.args for call in handler.send_header.call_args_list]
     assert ("Retry-After", "5") in header_calls
     assert ("Connection", "close") in header_calls
     handler.send_response.assert_called_once_with(503)
@@ -533,7 +497,5 @@ def test_server_omits_retry_after_when_not_503() -> None:
 
     handler._write_json(200, {"ok": True})
 
-    header_calls = [
-        call.args for call in handler.send_header.call_args_list
-    ]
+    header_calls = [call.args for call in handler.send_header.call_args_list]
     assert not any(name == "Retry-After" for name, _ in header_calls)
