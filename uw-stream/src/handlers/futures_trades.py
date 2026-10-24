@@ -369,9 +369,7 @@ class FuturesTradesHandler(Handler):
         # Snapshot the current session leader for this minute. Recomputed
         # on every print, so the value that survives is the leader as of
         # the minute's last print.
-        self._front_sym[minute_key] = max(
-            tally.items(), key=lambda kv: (kv[1], kv[0])
-        )[0]
+        self._front_sym[minute_key] = max(tally.items(), key=lambda kv: (kv[1], kv[0]))[0]
 
         newest = self._newest_minute.get(print_.product)
         if newest is None or print_.minute_ts > newest:
@@ -450,8 +448,7 @@ class FuturesTradesHandler(Handler):
                     scope="futures_trades",
                     kind="front_sym_absent",
                     message=(
-                        "front-month contract had no prints in a "
-                        "completed minute; bar skipped"
+                        "front-month contract had no prints in a completed minute; bar skipped"
                     ),
                     extra={
                         "product": product,

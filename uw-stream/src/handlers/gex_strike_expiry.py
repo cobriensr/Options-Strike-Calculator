@@ -47,6 +47,7 @@ def _today_et() -> date:
     """
     return datetime.now(tz=_ET).date()
 
+
 _TABLE = "ws_gex_strike_expiry"
 # Must stay in sync with migration #111 in api/_lib/db-migrations.ts.
 _CONFLICT_COLS = ["ticker", "expiry", "strike", "ts_minute"]

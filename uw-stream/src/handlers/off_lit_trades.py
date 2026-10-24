@@ -183,7 +183,11 @@ class OffLitTradesHandler(Handler):
                 scope="off_lit_trades",
                 kind="invalid_price_or_size",
                 message="off_lit_trades missing or invalid price/size",
-                extra={"symbol": symbol, "price": payload.get("price"), "size": payload.get("size")},
+                extra={
+                    "symbol": symbol,
+                    "price": payload.get("price"),
+                    "size": payload.get("size"),
+                },
             )
             return None
 

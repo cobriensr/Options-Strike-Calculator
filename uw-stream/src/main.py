@@ -229,8 +229,7 @@ async def _run() -> None:
         # dispatch). These must stop FIRST on shutdown so no new payloads
         # reach the handler queues while their drain loops are emptying them.
         producer_tasks: list[asyncio.Task] = [
-            asyncio.create_task(c.run(), name=f"connector:{c.name}")
-            for c in connectors
+            asyncio.create_task(c.run(), name=f"connector:{c.name}") for c in connectors
         ]
         producer_tasks.append(
             asyncio.create_task(router.run(receive_queue), name="router"),
@@ -238,9 +237,7 @@ async def _run() -> None:
         # Background services that aren't part of the data pipeline.
         background_tasks: list[asyncio.Task] = [
             asyncio.create_task(run_server(), name="health"),
-            asyncio.create_task(
-                run_subscription_watchdog(), name="subscription_watchdog"
-            ),
+            asyncio.create_task(run_subscription_watchdog(), name="subscription_watchdog"),
         ]
         # Spawn one drain task per UNIQUE handler instance — many channels
         # can share one handler (e.g. every option_trades:<TICKER> entry
@@ -317,9 +314,7 @@ async def _run() -> None:
         for t in crashed_tasks:
             exc = t.exception()
             if exc is not None:
-                capture_exception(
-                    exc, tags={"component": "main", "task": t.get_name()}
-                )
+                capture_exception(exc, tags={"component": "main", "task": t.get_name()})
 
         log.info("shutdown initiated", extra={"reason": _describe_done(done)})
 

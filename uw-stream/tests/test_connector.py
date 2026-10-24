@@ -775,9 +775,7 @@ async def test_sub_threshold_flaps_keep_escalating_backoff(monkeypatch) -> None:
 
     monkeypatch.setattr(Connector, "_connect_once", _conn)
 
-    connector = Connector(
-        channels=["a"], receive_queue=asyncio.Queue(maxsize=10)
-    )
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10))
 
     with pytest.raises(asyncio.CancelledError):
         await connector.run()

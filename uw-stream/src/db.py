@@ -44,6 +44,7 @@ def _validate_identifier(name: str, *, kind: str) -> None:
             r"Must match ^[A-Za-z_]\w*$ (ASCII)"
         )
 
+
 _pool: asyncpg.Pool | None = None
 
 # Exception classes that signal a transient connection-class failure where
@@ -103,9 +104,7 @@ async def _with_db_retry[T](
             last_exc = exc
             if attempt >= _DB_RETRY_MAX_ATTEMPTS - 1:
                 break
-            delay = _DB_RETRY_BACKOFF_S[
-                min(attempt, len(_DB_RETRY_BACKOFF_S) - 1)
-            ]
+            delay = _DB_RETRY_BACKOFF_S[min(attempt, len(_DB_RETRY_BACKOFF_S) - 1)]
             log.warning(
                 "db transient error; retrying",
                 extra={
@@ -122,6 +121,7 @@ async def _with_db_retry[T](
     # ``before_send`` fingerprint can collapse cross-handler instances.
     assert last_exc is not None
     raise last_exc
+
 
 # Postgres' wire-protocol parameter limit per statement is 32767 (signed
 # int16). We cap a single multi-row INSERT at 30000 params to leave
@@ -170,8 +170,7 @@ def _build_multi_row_insert(
     for i, row in enumerate(rows):
         if len(row) != params_per_row:
             raise ValueError(
-                f"_build_multi_row_insert: row {i} has {len(row)} values, "
-                f"expected {params_per_row}"
+                f"_build_multi_row_insert: row {i} has {len(row)} values, expected {params_per_row}"
             )
         start = i * params_per_row + 1
         placeholders = ", ".join(f"${start + j}" for j in range(params_per_row))
@@ -329,9 +328,7 @@ async def bulk_insert_ignore_conflict(
         total_inserted = 0
         async with pool.acquire() as conn, conn.transaction():
             for chunk in _chunked_rows(rows, len(columns)):
-                sql, flat_params = _build_multi_row_insert(
-                    table, columns, chunk, suffix=suffix
-                )
+                sql, flat_params = _build_multi_row_insert(table, columns, chunk, suffix=suffix)
                 status = await conn.execute(sql, *flat_params)
                 total_inserted += _parse_insert_status(status)
         return total_inserted
@@ -387,9 +384,7 @@ async def bulk_upsert_replace(
         total_inserted = 0
         async with pool.acquire() as conn, conn.transaction():
             for chunk in _chunked_rows(rows, len(columns)):
-                sql, flat_params = _build_multi_row_insert(
-                    table, columns, chunk, suffix=suffix
-                )
+                sql, flat_params = _build_multi_row_insert(table, columns, chunk, suffix=suffix)
                 status = await conn.execute(sql, *flat_params)
                 total_inserted += _parse_insert_status(status)
         return total_inserted

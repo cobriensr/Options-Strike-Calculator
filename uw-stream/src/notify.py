@@ -219,9 +219,7 @@ def build_payload(
     """
     idx = {name: i for i, name in enumerate(columns)}
     confluence_tickers = (
-        alert_row[idx["confluence_tickers"]]
-        if "confluence_tickers" in idx
-        else None
+        alert_row[idx["confluence_tickers"]] if "confluence_tickers" in idx else None
     )
     # Normalize to a sorted list — None and empty both mean "solo".
     partners: list[str] = sorted(confluence_tickers) if confluence_tickers else []
@@ -247,9 +245,7 @@ def build_payload(
     # number in the lock-screen title. ``:g`` trims trailing zeros and
     # never uses scientific notation at the strike magnitudes we deal with
     # (< 100000).
-    strike_str = (
-        str(int(strike_f)) if strike_f == int(strike_f) else f"{strike_f:g}"
-    )
+    strike_str = str(int(strike_f)) if strike_f == int(strike_f) else f"{strike_f:g}"
     title = f"{ticker} {strike_str}{option_type} {float(ratio_pct):.0f}% ASK"
     if partners:
         # Suffix the partner tickers so the lock-screen / notification-
@@ -289,9 +285,7 @@ def _format_body(
     top_trade_is_floor: Any,
 ) -> str:
     premium_k = round(total_premium / 1000)
-    premium_str = (
-        f"${premium_k / 1000:.2f}M" if premium_k >= 1000 else f"${premium_k}K"
-    )
+    premium_str = f"${premium_k / 1000:.2f}M" if premium_k >= 1000 else f"${premium_k}K"
     trade_noun = "trade" if trade_count == 1 else "trades"
     body = f"{premium_str} premium / {trade_count} {trade_noun}"
     if top_trade_premium is not None:

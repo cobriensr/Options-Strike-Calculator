@@ -186,9 +186,7 @@ async def test_run_exits_nonzero_when_lease_acquire_times_out(monkeypatch):
     # AUD-H2: SystemExit bypasses main()'s `except Exception`, so the path must
     # report to Sentry itself.
     messages: list[tuple[str, dict]] = []
-    monkeypatch.setattr(
-        main, "capture_message", lambda msg, **kw: messages.append((msg, kw))
-    )
+    monkeypatch.setattr(main, "capture_message", lambda msg, **kw: messages.append((msg, kw)))
 
     with pytest.raises(SystemExit) as exc_info:
         await main._run()
@@ -294,9 +292,7 @@ async def test_run_wires_renewal_task_with_lease_lost_callback(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_exits_nonzero_and_reports_on_task_crash(
-    _reset_notify_state, monkeypatch
-):
+async def test_run_exits_nonzero_and_reports_on_task_crash(_reset_notify_state, monkeypatch):
     """AUD-H1: if a pipeline/background task dies with an unhandled exception,
     _run must capture it to Sentry AND exit non-zero. An exit 0 here would NOT
     trip Railway's ON_FAILURE restart policy, silently stopping ingestion.
@@ -335,9 +331,7 @@ async def test_run_exits_nonzero_and_reports_on_task_crash(
     monkeypatch.setattr(main, "run_subscription_watchdog", _forever_bg)
 
     captured: list[tuple[BaseException, dict]] = []
-    monkeypatch.setattr(
-        main, "capture_exception", lambda exc, **kw: captured.append((exc, kw))
-    )
+    monkeypatch.setattr(main, "capture_exception", lambda exc, **kw: captured.append((exc, kw)))
 
     with pytest.raises(SystemExit) as exc_info:
         await main._run()

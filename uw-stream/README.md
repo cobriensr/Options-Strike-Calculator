@@ -188,9 +188,12 @@ curl http://localhost:8080/metrics | jq
 ## Tests
 
 ```bash
-pytest                # all tests
 pytest -k flow_alerts # one suite
-ruff check src/ tests/
+
+# What CI's uw-stream Quality Gate runs (check-only: format drift fails it)
+ruff check src/ tests/ conftest.py
+ruff format --check src/ tests/ conftest.py
+pytest --cov=src --cov-report=term-missing
 ```
 
 ## Deploy

@@ -283,9 +283,7 @@ class TestPriceParsing:
 class TestMinuteFlooring:
     def test_executed_at_is_epoch_ms(self):
         """Verified against the live feed 2026-09-08."""
-        assert _floor_minute_utc(1788847011311) == datetime(
-            2026, 9, 8, 5, 56, 0, tzinfo=UTC
-        )
+        assert _floor_minute_utc(1788847011311) == datetime(2026, 9, 8, 5, 56, 0, tzinfo=UTC)
 
     def test_start_and_end_of_minute_share_a_bucket(self):
         minute_start = 1788847020000  # 05:57:00.000Z exactly
@@ -298,14 +296,10 @@ class TestMinuteFlooring:
     def test_next_minute_starts_a_new_bucket(self):
         minute_start = 1788847020000  # 05:57:00.000Z
         at_060_0 = minute_start + 60_000  # :60.0 -> next minute
-        assert _floor_minute_utc(at_060_0) == datetime(
-            2026, 9, 8, 5, 58, 0, tzinfo=UTC
-        )
+        assert _floor_minute_utc(at_060_0) == datetime(2026, 9, 8, 5, 58, 0, tzinfo=UTC)
 
     def test_exact_minute_boundary_floors_to_itself(self):
-        assert _floor_minute_utc(1788847020000) == datetime(
-            2026, 9, 8, 5, 57, 0, tzinfo=UTC
-        )
+        assert _floor_minute_utc(1788847020000) == datetime(2026, 9, 8, 5, 57, 0, tzinfo=UTC)
 
     def test_result_is_utc_aware(self):
         ts = _floor_minute_utc(_BASE_MS)
@@ -381,16 +375,25 @@ class TestFrontMonthSelection:
             # Minute :56 — ESU6 leads.
             _print(sym="ESU6", price="7700.00", size=5, trade_id=1),
             _print(
-                sym="ESZ6", executed_at=_BASE_MS + 10, price="7900.00", size=1,
+                sym="ESZ6",
+                executed_at=_BASE_MS + 10,
+                price="7900.00",
+                size=1,
                 trade_id=2,
             ),
             # Minute :57 — ESZ6 takes over on cumulative session volume.
             _print(
-                sym="ESZ6", executed_at=_BASE_MS + 60_000, price="7910.00", size=50,
+                sym="ESZ6",
+                executed_at=_BASE_MS + 60_000,
+                price="7910.00",
+                size=50,
                 trade_id=3,
             ),
             _print(
-                sym="ESU6", executed_at=_BASE_MS + 60_010, price="7701.00", size=1,
+                sym="ESU6",
+                executed_at=_BASE_MS + 60_010,
+                price="7701.00",
+                size=1,
                 trade_id=4,
             ),
             # Minute :58 — completes :57.
@@ -411,14 +414,24 @@ class TestFrontMonthSelection:
         payloads = [
             _print(product="ES", sym="ESU6", price="7700.00", size=3, trade_id=1),
             _print(
-                product="NQ", sym="NQU6", executed_at=_BASE_MS + 10,
-                price="29000.00", size=7, trade_id=2,
+                product="NQ",
+                sym="NQU6",
+                executed_at=_BASE_MS + 10,
+                price="29000.00",
+                size=7,
+                trade_id=2,
             ),
             _print(
-                product="ES", sym="ESU6", executed_at=_BASE_MS + 60_000, trade_id=3,
+                product="ES",
+                sym="ESU6",
+                executed_at=_BASE_MS + 60_000,
+                trade_id=3,
             ),
             _print(
-                product="NQ", sym="NQU6", executed_at=_BASE_MS + 60_010, trade_id=4,
+                product="NQ",
+                sym="NQU6",
+                executed_at=_BASE_MS + 60_010,
+                trade_id=4,
             ),
         ]
         rows = await _flush_capture(handler, payloads)
@@ -538,9 +551,7 @@ class TestCompletedMinutesOnly:
             [_print(executed_at=_BASE_MS + 120_000, trade_id=3)],
         )
         # Only :57 this time — :56 was already emitted and evicted.
-        assert [r[_C["ts"]] for r in again] == [
-            datetime(2026, 9, 8, 5, 57, tzinfo=UTC)
-        ]
+        assert [r[_C["ts"]] for r in again] == [datetime(2026, 9, 8, 5, 57, tzinfo=UTC)]
 
     @pytest.mark.asyncio
     async def test_empty_batch_writes_nothing(self, handler):
@@ -568,9 +579,7 @@ class TestCompletedMinutesOnly:
             assert await handler._flush(rows) == 1
 
     @pytest.mark.asyncio
-    async def test_flush_targets_futures_bars_with_symbol_ts_conflict_key(
-        self, handler
-    ):
+    async def test_flush_targets_futures_bars_with_symbol_ts_conflict_key(self, handler):
         rows = [
             r
             for r in (
@@ -688,12 +697,9 @@ class TestDuplicateSuppression:
         """trade_id is only unique within a contract — key on (sym, id)."""
         payloads = [
             _print(product="ES", sym="ESU6", size=4, trade_id=7),
-            _print(product="NQ", sym="NQU6", executed_at=_BASE_MS + 10, size=6,
-                   trade_id=7),
-            _print(product="ES", sym="ESU6", executed_at=_BASE_MS + 60_000,
-                   trade_id=8),
-            _print(product="NQ", sym="NQU6", executed_at=_BASE_MS + 60_010,
-                   trade_id=9),
+            _print(product="NQ", sym="NQU6", executed_at=_BASE_MS + 10, size=6, trade_id=7),
+            _print(product="ES", sym="ESU6", executed_at=_BASE_MS + 60_000, trade_id=8),
+            _print(product="NQ", sym="NQU6", executed_at=_BASE_MS + 60_010, trade_id=9),
         ]
         rows = await _flush_capture(handler, payloads)
         by_symbol = {r[_C["symbol"]]: r for r in rows}
@@ -733,10 +739,7 @@ class TestDuplicateSuppression:
 class TestMemoryBounding:
     @pytest.mark.asyncio
     async def test_emitted_minutes_are_evicted(self, handler):
-        payloads = [
-            _print(executed_at=_BASE_MS + i * 60_000, trade_id=i)
-            for i in range(20)
-        ]
+        payloads = [_print(executed_at=_BASE_MS + i * 60_000, trade_id=i) for i in range(20)]
         await _flush_capture(handler, payloads)
         # Only the newest (in-progress) minute survives.
         assert len(handler._bars) == 1
@@ -933,15 +936,9 @@ class TestFrontMonthSilentForAMinute:
         await _flush_capture(handler, payloads)
 
         # Only the in-progress :58 minute survives, for one contract.
-        assert {key[1] for key in handler._bars} == {
-            datetime(2026, 9, 8, 5, 58, tzinfo=UTC)
-        }
-        assert {key[1] for key in handler._seen} == {
-            datetime(2026, 9, 8, 5, 58, tzinfo=UTC)
-        }
-        assert {key[1] for key in handler._front_sym} == {
-            datetime(2026, 9, 8, 5, 58, tzinfo=UTC)
-        }
+        assert {key[1] for key in handler._bars} == {datetime(2026, 9, 8, 5, 58, tzinfo=UTC)}
+        assert {key[1] for key in handler._seen} == {datetime(2026, 9, 8, 5, 58, tzinfo=UTC)}
+        assert {key[1] for key in handler._front_sym} == {datetime(2026, 9, 8, 5, 58, tzinfo=UTC)}
 
 
 class TestDedupOutageIsVisible:

@@ -116,10 +116,7 @@ class Router:
         state.touch(channel)
 
         # Optional sampling for verbose debug, off in prod by default.
-        if (
-            settings.ws_log_sample_rate > 0
-            and random.random() < settings.ws_log_sample_rate
-        ):
+        if settings.ws_log_sample_rate > 0 and random.random() < settings.ws_log_sample_rate:
             log.info(
                 "sampled message",
                 extra={"channel": channel, "sample": _truncate(payload)},
@@ -147,11 +144,7 @@ class Router:
 
 
 def _is_join_ack(payload: object) -> bool:
-    return (
-        isinstance(payload, dict)
-        and payload.get("status") == "ok"
-        and "response" in payload
-    )
+    return isinstance(payload, dict) and payload.get("status") == "ok" and "response" in payload
 
 
 def _truncate(obj: object, limit: int = 200) -> str:

@@ -46,6 +46,7 @@ def _is_trading_hours(now: datetime) -> bool:
         return False
     return _RTH_OPEN_ET <= et.time() < _RTH_CLOSE_ET
 
+
 # Window after process start during which /healthz returns 200 even when
 # the WS hasn't connected yet AND no message has arrived. Without this,
 # a UW outage at deploy time keeps Railway's container restart-loop in
@@ -85,10 +86,7 @@ async def healthz(_request: web.Request) -> web.Response:
         return web.json_response({"status": "ws_disconnected"}, status=503)
 
     # Data flowing within the window is unambiguously healthy, any hour.
-    if (
-        state.last_message_ts is not None
-        and now - state.last_message_ts <= HEALTH_STALE_AFTER
-    ):
+    if state.last_message_ts is not None and now - state.last_message_ts <= HEALTH_STALE_AFTER:
         return web.json_response({"status": "ok"}, status=200)
 
     # Past here the socket is connected but no recent data has arrived

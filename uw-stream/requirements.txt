@@ -6,7 +6,11 @@ pydantic-settings>=2.3.0
 sentry-sdk>=2.0.0
 python-dotenv>=1.0.0
 orjson>=3.10.0
+# Windows has no system IANA tz database; CI and python:3.12-slim (Linux) do.
+tzdata; sys_platform == "win32"
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 pytest-cov>=6.0
-ruff>=0.11
+# Capped at the minor: ruff adds/promotes stable rules only in minor releases,
+# so new findings arrive as a Dependabot bump PR, not in an unrelated change.
+ruff>=0.17,<0.18

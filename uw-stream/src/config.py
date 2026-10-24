@@ -33,32 +33,104 @@ _CHANNEL_ALIASES: dict[str, str] = {
 _LOTTERY_TICKERS: frozenset[str] = frozenset(
     {
         # V3 (Mode A 0DTE intraday)
-        "USAR", "WMT", "STX", "SOUN", "RIVN", "TSM", "SNDK", "XOM", "WDC", "SQQQ",
-        "NDXP", "USO", "TNA", "RDDT", "SMCI", "TSLL", "SNOW", "TEAM", "RKLB", "SOFI",
-        "RUTW", "TSLA", "SOXS", "WULF", "SLV", "SMH", "UBER", "MSTR", "TQQQ", "RIOT",
-        "SOXL", "UNH", "QQQ", "RBLX", "SPY", "IWM",
+        "USAR",
+        "WMT",
+        "STX",
+        "SOUN",
+        "RIVN",
+        "TSM",
+        "SNDK",
+        "XOM",
+        "WDC",
+        "SQQQ",
+        "NDXP",
+        "USO",
+        "TNA",
+        "RDDT",
+        "SMCI",
+        "TSLL",
+        "SNOW",
+        "TEAM",
+        "RKLB",
+        "SOFI",
+        "RUTW",
+        "TSLA",
+        "SOXS",
+        "WULF",
+        "SLV",
+        "SMH",
+        "UBER",
+        "MSTR",
+        "TQQQ",
+        "RIOT",
+        "SOXL",
+        "UNH",
+        "QQQ",
+        "RBLX",
+        "SPY",
+        "IWM",
         "SPXW",  # Added 2026-05-07 — primary 0DTE traded chain. See spec
-                 # docs/superpowers/specs/spxw-backfill-2026-05-07.md.
+        # docs/superpowers/specs/spxw-backfill-2026-05-07.md.
         # Added 2026-05-07 from ticker discovery audit. V3 (Mode A) batch:
         # AI / speculative / crypto-adjacent that surfaced as top
         # 0DTE candidates. See docs/tmp/ticker-discovery-audit-2026-05-06.md
-        "CRWV", "IBIT", "ARM", "OKLO", "APLD", "IONQ",
-        "HIMS", "CAR", "IREN", "ASTS", "NBIS", "CRCL", "LITE", "NVTS",
+        "CRWV",
+        "IBIT",
+        "ARM",
+        "OKLO",
+        "APLD",
+        "IONQ",
+        "HIMS",
+        "CAR",
+        "IREN",
+        "ASTS",
+        "NBIS",
+        "CRCL",
+        "LITE",
+        "NVTS",
         # EXTENDED (Mode B DTE 1-3 trend; SPY/IWM dedupe via set)
-        "MU", "META", "AMD", "NVDA", "INTC", "MSFT", "AMZN",
-        "PLTR", "AVGO", "GOOGL", "GOOG", "COIN", "HOOD", "MRVL",
-        "ORCL", "AAPL",
+        "MU",
+        "META",
+        "AMD",
+        "NVDA",
+        "INTC",
+        "MSFT",
+        "AMZN",
+        "PLTR",
+        "AVGO",
+        "GOOGL",
+        "GOOG",
+        "COIN",
+        "HOOD",
+        "MRVL",
+        "ORCL",
+        "AAPL",
         # Added 2026-05-07 from ticker discovery audit. EXTENDED (Mode B)
         # batch: mega-cap peer-class oversights.
-        "QCOM", "NFLX", "LLY", "BABA", "NOW", "CRWD",
+        "QCOM",
+        "NFLX",
+        "LLY",
+        "BABA",
+        "NOW",
+        "CRWD",
         # Added 2026-05-15 from second-round discovery audit (24-day
         # parquet window). See docs/tmp/ticker-discovery-audit-2026-05-14.md.
         # V3 (Mode A 0DTE) — cleared the >450-qualifying-fire bar:
-        "BE", "AAOI", "SHOP", "BA", "APP", "POET",
-        "DELL", "CVNA", "RGTI", "IBM", "CSCO",
+        "BE",
+        "AAOI",
+        "SHOP",
+        "BA",
+        "APP",
+        "POET",
+        "DELL",
+        "CVNA",
+        "RGTI",
+        "IBM",
+        "CSCO",
         # EXTENDED (Mode B 1-3 DTE) — high-volume rate / meme names
         # whose flow concentrates on multi-day chains:
-        "GME", "TLT",
+        "GME",
+        "TLT",
     },
 )
 
@@ -213,9 +285,7 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_ratio_threshold(cls, v: float) -> float:
         if not 0.0 < v <= 1.0:
-            raise ValueError(
-                "interval_ba_ratio_threshold must be in (0.0, 1.0]"
-            )
+            raise ValueError("interval_ba_ratio_threshold must be in (0.0, 1.0]")
         return v
 
     @field_validator("interval_ba_premium_floor")
@@ -236,9 +306,7 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_multi_leg_share_max(cls, v: float) -> float:
         if not 0.0 < v <= 1.0:
-            raise ValueError(
-                "interval_ba_multi_leg_share_max must be in (0.0, 1.0]"
-            )
+            raise ValueError("interval_ba_multi_leg_share_max must be in (0.0, 1.0]")
         return v
 
     @field_validator("ws_channels")
@@ -275,8 +343,7 @@ class Settings(BaseSettings):
         when WS_CHANNELS resolves to an empty list."""
         if not self.channels:
             raise ValueError(
-                "WS_CHANNELS resolved to an empty list "
-                "(check the WS_CHANNELS env var)"
+                "WS_CHANNELS resolved to an empty list (check the WS_CHANNELS env var)"
             )
         return self
 
@@ -419,9 +486,7 @@ class Settings(BaseSettings):
         master ``interval_ba_enabled`` switch is the explicit kill).
         """
         return frozenset(
-            t.strip().upper()
-            for t in self.interval_ba_tickers_csv.split(",")
-            if t.strip()
+            t.strip().upper() for t in self.interval_ba_tickers_csv.split(",") if t.strip()
         )
 
     @property

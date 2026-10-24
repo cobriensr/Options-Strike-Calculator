@@ -303,9 +303,7 @@ class IntervalBAHandler(OptionTradesHandler):
         price: Decimal = row[_C["price"]]
         size: int = row[_C["size"]]
         tags = payload.get("tags") if isinstance(payload, dict) else None
-        trade_code = (
-            payload.get("trade_code") if isinstance(payload, dict) else None
-        )
+        trade_code = payload.get("trade_code") if isinstance(payload, dict) else None
         tick = _Tick(
             executed_at=executed_at,
             premium=price * Decimal(size) * _MULTIPLIER,
@@ -450,9 +448,7 @@ class IntervalBAHandler(OptionTradesHandler):
             return
         cutoff = latest_bucket_epoch - self._BUCKETS_TO_KEEP * self._bucket_sec
         dead = [
-            chain
-            for chain, buckets in self._ticks.items()
-            if not buckets or max(buckets) < cutoff
+            chain for chain, buckets in self._ticks.items() if not buckets or max(buckets) < cutoff
         ]
         for chain in dead:
             del self._ticks[chain]
@@ -501,7 +497,9 @@ class IntervalBAHandler(OptionTradesHandler):
                 confluence_only = bool(settings.interval_ba_push_confluence_only)
                 for row in pending:
                     payload = build_payload(
-                        row, _ALERT_COLUMNS, confluence_only=confluence_only,
+                        row,
+                        _ALERT_COLUMNS,
+                        confluence_only=confluence_only,
                     )
                     if payload is None:
                         continue
@@ -617,9 +615,7 @@ def _build_alert_row(
     registry record — keeps the two views consistent down to the
     microsecond.
     """
-    top_premium = (
-        top_tick.premium.quantize(_TWO_PLACES) if top_tick is not None else None
-    )
+    top_premium = top_tick.premium.quantize(_TWO_PLACES) if top_tick is not None else None
     return (
         chain,
         ticker,

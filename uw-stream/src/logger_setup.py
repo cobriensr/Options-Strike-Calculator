@@ -42,6 +42,7 @@ def scrub_log_tokens(text: str) -> str:
     """
     return _LOG_TOKEN_PATTERN.sub(r"\1\2=REDACTED", text)
 
+
 # Fields that handlers may attach via `extra={}` in log calls. New
 # fields are forwarded into the JSON line so we don't have to extend
 # this list every time a caller wants to add structured context.

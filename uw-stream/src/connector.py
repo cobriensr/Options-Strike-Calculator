@@ -57,6 +57,7 @@ def _jittered_backoff(backoff: float) -> float:
     high = 1.0 + _BACKOFF_JITTER_FRACTION
     return backoff * random.uniform(low, high)
 
+
 # Ping cadence so we get prompt failure detection on a hung TCP. UW
 # does not document a server-side keepalive; 20s is conservative.
 _PING_INTERVAL_S = 20.0
@@ -294,8 +295,7 @@ class Connector:
                             self._receive_queue.put_nowait(raw)
                         except asyncio.QueueFull:
                             log.warning(
-                                "receive_queue overflow even after eviction "
-                                "— dropping new frame",
+                                "receive_queue overflow even after eviction — dropping new frame",
                             )
                         state.receive_queue_drops += 1
             finally:

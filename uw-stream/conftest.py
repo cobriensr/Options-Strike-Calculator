@@ -11,7 +11,6 @@ import os
 import sys
 from pathlib import Path
 
-
 # Make `src/` importable as top-level packages so production imports
 # (`from config import settings`, `from handlers.flow_alerts import …`)
 # work in tests without a wrapper. Mirrors the pyproject.toml

@@ -145,9 +145,7 @@ class Handler(ABC):
             while not self._stopping:
                 timeout = max(0.0, deadline - loop.time())
                 try:
-                    payload = await asyncio.wait_for(
-                        self.queue.get(), timeout=timeout
-                    )
+                    payload = await asyncio.wait_for(self.queue.get(), timeout=timeout)
                 except TimeoutError:
                     # Time-based flush: drain whatever we have even if small.
                     if self._batch:
@@ -208,9 +206,7 @@ class Handler(ABC):
         write-count instrumentation).
         """
         try:
-            return await asyncio.wait_for(
-                self._drain_inner(), timeout=deadline_s
-            )
+            return await asyncio.wait_for(self._drain_inner(), timeout=deadline_s)
         except TimeoutError:
             log.warning(
                 "drain deadline exceeded; some rows may be lost",

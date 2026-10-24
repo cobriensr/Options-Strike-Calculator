@@ -102,9 +102,7 @@ def _set_nx_px_command(key: str, instance_id: str, ttl_ms: int) -> list[Any]:
     return ["SET", key, instance_id, "NX", "PX", ttl_ms]
 
 
-def _eval_command(
-    script: str, key: str, *args: str | int
-) -> list[Any]:
+def _eval_command(script: str, key: str, *args: str | int) -> list[Any]:
     """Build an ``EVAL script numkeys key arg...`` REST command array (pure).
 
     We always use exactly one key (the lease key), so numkeys is hardcoded to 1.
@@ -214,9 +212,7 @@ class WsLease:
         """
         headers = {"Authorization": f"Bearer {self._token}"}
         try:
-            async with self._session.post(
-                self._base_url, json=command, headers=headers
-            ) as resp:
+            async with self._session.post(self._base_url, json=command, headers=headers) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
                     raise WsLeaseError(f"HTTP {resp.status}: {body[:300]}")
@@ -294,9 +290,7 @@ class WsLease:
         Updates ``owns()`` to the verdict so a later ``release`` won't try to
         CAS-DEL a lease we no longer hold.
         """
-        command = _eval_command(
-            _CAS_RENEW_SCRIPT, self._key, self._instance_id, self._ttl_ms
-        )
+        command = _eval_command(_CAS_RENEW_SCRIPT, self._key, self._instance_id, self._ttl_ms)
         payload = await self._command(command)
         still_owned = _parse_eval_result(payload)
         self._owns = still_owned
@@ -337,9 +331,7 @@ class WsLease:
         )
         return deleted
 
-    async def run_renewal(
-        self, on_lost: Callable[[], Awaitable[None] | None]
-    ) -> None:
+    async def run_renewal(self, on_lost: Callable[[], Awaitable[None] | None]) -> None:
         """Renew the lease every ``renew_ms`` until ownership is lost.
 
         Loops: sleep ``renew_ms``, ``renew()``. Fences (invokes ``on_lost``
@@ -414,9 +406,7 @@ class WsLease:
             consecutive_faults = 0
             if still_owned:
                 continue
-            await self._fence(
-                "uw-stream ws lease lost", on_lost, reason="ownership_lost"
-            )
+            await self._fence("uw-stream ws lease lost", on_lost, reason="ownership_lost")
             return
 
     async def _fence(
