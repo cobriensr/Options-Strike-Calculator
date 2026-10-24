@@ -186,7 +186,7 @@ def print_milestones(data: dict) -> None:
             est_date = add_business_days(today, days_away)
             print(
                 f"  [ ] {threshold} days \u2014 {label} "
-                f"(~{days_away} days away, est. {est_date:%b %-d})"
+                f"(~{days_away} days away, est. {est_date:%b} {est_date.day})"
             )
 
     if not printed_current:

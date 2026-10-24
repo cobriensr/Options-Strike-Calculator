@@ -9,7 +9,6 @@ Tests cover:
 - Constants: SPREAD_WIDTH, CREDIT_PER_CONTRACT, MAX_LOSS_PER_CONTRACT, CONFIDENCE_SIZING
 """
 
-from pathlib import Path
 from unittest.mock import patch
 
 import matplotlib
@@ -1285,7 +1284,7 @@ class TestPlotEquityCurves:
         assert png.stat().st_size > 0, "PNG file should not be empty"
         plt.close("all")
 
-    def test_plot_equity_curves_handles_empty_strategy(self):
+    def test_plot_equity_curves_handles_empty_strategy(self, tmp_path):
         """An empty strategy DataFrame should not crash plot_equity_curves."""
         empty_df = make_df([])
         empty_trades = simulate_strategy(empty_df, name="Empty")
@@ -1310,10 +1309,11 @@ class TestPlotEquityCurves:
             "Empty Strategy": compute_metrics(empty_trades),
         }
 
-        with patch("backtest.PLOT_DIR", Path("/tmp")):
+        with patch("backtest.PLOT_DIR", tmp_path):
             # Should not raise
             plot_equity_curves(strategies, metrics)
 
+        assert (tmp_path / "backtest_equity.png").exists()
         plt.close("all")
 
 

@@ -66,6 +66,14 @@ def _make_data(
     }
 
 
+class _FrozenNow(datetime):
+    """datetime whose now() is pinned so est. dates are deterministic."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls(2026, 10, 1)  # Thursday
+
+
 # ── add_business_days ────────────────────────────────────────
 
 
@@ -298,11 +306,12 @@ class TestPrintMilestones:
     def test_class_milestone_ic_met(self, capsys):
         """IC class milestone shows checkmark when met."""
         ic_threshold = next(t for key, t, _ in CLASS_MILESTONES if key == "ic")
-        data = _make_data(labeled_days=999, ic_days=ic_threshold, sit_out_days=5)
+        data = _make_data(labeled_days=999, ic_days=ic_threshold, sit_out_days=0)
         print_milestones(data)
         out = capsys.readouterr().out
-        assert "IC" in out
-        assert "[!]" not in out.split("IC")[0].split("\n")[-1] or True
+        # Line-specific: SIT OUT is unmet here, so "[!]" appears elsewhere.
+        assert f"[\u2713] {ic_threshold}+ IC days" in out
+        assert f"[!] {ic_threshold}+ IC days" not in out
 
     def test_class_milestone_sit_out_not_met(self, capsys):
         """SIT OUT class milestone shows warning when not met."""
@@ -320,6 +329,26 @@ class TestPrintMilestones:
         out = capsys.readouterr().out
         assert "days away" in out
         assert "est." in out
+
+    @pytest.mark.parametrize(
+        ("days_away", "expected"),
+        [
+            (1, "Oct 2"),  # single-digit day: no zero padding
+            (7, "Oct 12"),  # double-digit day
+            (22, "Nov 2"),  # month rollover, single-digit day
+        ],
+    )
+    def test_est_date_day_is_not_zero_padded(self, capsys, days_away, expected):
+        """Est. date renders as '<Mon> <day>' with an unpadded day."""
+        threshold, label = MILESTONES[0]
+        data = _make_data(labeled_days=threshold - days_away)
+        with patch("milestone_check.datetime", _FrozenNow):
+            print_milestones(data)
+        out = capsys.readouterr().out
+        assert (
+            f"  [ ] {threshold} days \u2014 {label} "
+            f"(~{days_away} days away, est. {expected})"
+        ) in out
 
 
 # ── print_data_summary ───────────────────────────────────────
