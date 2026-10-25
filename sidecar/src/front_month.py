@@ -42,6 +42,26 @@ Tiebreak = Literal["none", "contract_asc"]
 SizeColumn = Literal["volume", "size"]
 
 
+def ts_us_expr(ts_column: TsColumn = "ts_event") -> str:
+    """Return ``bars.<ts_column>`` as a microsecond ``TIMESTAMPTZ``.
+
+    The archive stores timestamps as Parquet ``timestamp[ns, UTC]``. DuckDB
+    1.x reads that as ``TIMESTAMPTZ`` (microseconds, sub-µs digits
+    truncated); DuckDB 2.0+ reads it as ``TIMESTAMPTZ_NS``, which has no
+    ``date_trunc``, ``+ INTERVAL`` or subtraction overloads. Every archive
+    query reads the column through this expression so it binds the same
+    way on both.
+
+    It truncates rather than casts: ``CAST(... AS TIMESTAMPTZ)`` on 2.0
+    ROUNDS to the nearest microsecond, so a bar at 23:59:59.999999999
+    would land on the next day. ``epoch_ns`` accepts both bindings, and
+    ``// 1000`` floors for the archive's post-1970 epochs. The result is
+    still an instant, so ``date_trunc('day', ...)`` keeps honoring the
+    session ``TimeZone``.
+    """
+    return f"make_timestamptz(epoch_ns(bars.{ts_column}) // 1000)"
+
+
 def session_date_expr(ts_column: TsColumn = "ts_event") -> str:
     """Return the SQL expression that maps ``bars.<ts_column>`` to its CME
     *session* date (the 17:00 CT roll), NOT the UTC calendar day.
@@ -59,7 +79,7 @@ def session_date_expr(ts_column: TsColumn = "ts_event") -> str:
     day grouping can never drift between the cutoff scan and the main query.
     """
     return (
-        f"CAST((bars.{ts_column} AT TIME ZONE 'America/Chicago') "
+        f"CAST(({ts_us_expr(ts_column)} AT TIME ZONE 'America/Chicago') "
         f"+ INTERVAL 7 HOUR AS DATE)"
     )
 
@@ -158,9 +178,10 @@ def front_month_cte(
     # The set of `bars.*` columns that flow into `filtered`. The size
     # column is always included (needed by `contract_volume`); the
     # timestamp column is always included (needed by `fb`'s downstream
-    # consumers); anything else is caller-supplied.
+    # consumers), normalized via ts_us_expr() so their interval math binds
+    # on any DuckDB; anything else is caller-supplied.
     base_cols = [
-        f"bars.{ts_column}",
+        f"{ts_us_expr(ts_column)} AS {ts_column}",
         f"bars.{size_col}",
     ]
     base_cols.extend(extra_select_cols)

@@ -5,9 +5,10 @@ build on the fly. That covers the layer we actually own (the SQL +
 front-month picking + result shaping), whereas mocking DuckDB would
 mostly validate our mocks.
 
-Fixtures are built with DuckDB's own `COPY ... TO ... (FORMAT PARQUET)`
-so the test file has no pandas/pyarrow dependency beyond what duckdb
-already pulls in transitively.
+Fixtures are written with pyarrow in the production archive's Parquet
+types (see `_ARCHIVE_TS`), not with DuckDB's `COPY`: DuckDB writes a
+TIMESTAMPTZ column as microseconds, and that mismatch is what let the
+DuckDB 2.0 `TIMESTAMPTZ_NS` regression ship with a green suite.
 """
 
 from __future__ import annotations
@@ -17,7 +18,9 @@ from collections.abc import Iterator
 from datetime import UTC
 from pathlib import Path
 
-import duckdb
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -28,15 +31,53 @@ import archive_query
 # Fixture builder
 # ---------------------------------------------------------------------------
 
+# ml/src/archive_convert.py wrote the archive with `pa.Table.from_pandas`
+# over Databento's DataFrame, whose `ts_event` is datetime64[ns, UTC]. In
+# Parquet that is INT64 TIMESTAMP(NANOS, isAdjustedToUTC=true). DuckDB 1.x
+# binds it as TIMESTAMPTZ (microseconds, sub-µs digits truncated); DuckDB
+# 2.0+ binds it as TIMESTAMPTZ_NS. The fixtures use the same type, so the
+# suite runs against whichever binding the installed DuckDB produces.
+_ARCHIVE_TS = pa.timestamp("ns", tz="UTC")
+
+_BARS_SCHEMA = pa.schema(
+    [
+        ("ts_event", _ARCHIVE_TS),
+        ("instrument_id", pa.int32()),
+        ("open", pa.float64()),
+        ("high", pa.float64()),
+        ("low", pa.float64()),
+        ("close", pa.float64()),
+        ("volume", pa.int64()),
+    ]
+)
+
+_SYMBOLOGY_SCHEMA = pa.schema(
+    [
+        ("instrument_id", pa.int32()),
+        ("symbol", pa.string()),
+        ("first_seen", _ARCHIVE_TS),
+        ("last_seen", _ARCHIVE_TS),
+    ]
+)
+
+
+def _write_parquet(rows: list[tuple], schema: pa.Schema, path: Path) -> None:
+    table = pa.Table.from_pylist(
+        [dict(zip(schema.names, row, strict=True)) for row in rows],
+        schema=schema,
+    )
+    pq.write_table(table, path)
+
 
 def _build_archive(root: Path, bars: list[tuple], symbology: list[tuple]) -> None:
     """Write ohlcv_1m/year=YYYY/part.parquet and symbology.parquet under `root`.
 
     `bars`: list of (ts_event, instrument_id, open, high, low, close, volume)
     `symbology`: list of (instrument_id, symbol, first_seen, last_seen)
-    """
-    conn = duckdb.connect()
 
+    Timestamps are tz-aware `datetime`s, or `pd.Timestamp`s when a test
+    needs sub-microsecond precision.
+    """
     # Split bars by year so the partitioned glob matches what the real
     # converter produces. A test with bars in two years writes two files.
     years = sorted({ts.year for (ts, *_rest) in bars})
@@ -44,38 +85,10 @@ def _build_archive(root: Path, bars: list[tuple], symbology: list[tuple]) -> Non
         year_bars = [row for row in bars if row[0].year == year]
         year_dir = root / "ohlcv_1m" / f"year={year}"
         year_dir.mkdir(parents=True, exist_ok=True)
-        part = year_dir / "part.parquet"
-
-        conn.execute(
-            """
-            CREATE OR REPLACE TEMP TABLE bars_tmp (
-                ts_event TIMESTAMPTZ,
-                instrument_id INTEGER,
-                open DOUBLE,
-                high DOUBLE,
-                low DOUBLE,
-                close DOUBLE,
-                volume BIGINT
-            )
-            """
-        )
-        conn.executemany("INSERT INTO bars_tmp VALUES (?, ?, ?, ?, ?, ?, ?)", year_bars)
-        conn.execute(f"COPY bars_tmp TO '{part}' (FORMAT PARQUET)")
+        _write_parquet(year_bars, _BARS_SCHEMA, year_dir / "part.parquet")
 
     # Symbology — one file for all years.
-    conn.execute(
-        """
-        CREATE OR REPLACE TEMP TABLE sym_tmp (
-            instrument_id INTEGER,
-            symbol VARCHAR,
-            first_seen TIMESTAMPTZ,
-            last_seen TIMESTAMPTZ
-        )
-        """
-    )
-    conn.executemany("INSERT INTO sym_tmp VALUES (?, ?, ?, ?)", symbology)
-    conn.execute(f"COPY sym_tmp TO '{root / 'symbology.parquet'}' (FORMAT PARQUET)")
-    conn.close()
+    _write_parquet(symbology, _SYMBOLOGY_SCHEMA, root / "symbology.parquet")
 
 
 @pytest.fixture(autouse=True)
@@ -781,6 +794,121 @@ def test_es_day_summary_honors_utc_day_on_non_utc_host(
     # leak into the 2025-10-15 CT day and this would not raise.
     with pytest.raises(ValueError, match="2025-10-15"):
         archive_query.es_day_summary("2025-10-15", root=tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Nanosecond archive timestamps (DuckDB 2.0 binds them as TIMESTAMPTZ_NS)
+# ---------------------------------------------------------------------------
+#
+# DuckDB 2.0 reads the archive's timestamp[ns, UTC] column as
+# TIMESTAMPTZ_NS, which has no `date_trunc`, `+ INTERVAL` or subtraction
+# overloads: every archive query raised BinderException in prod from
+# 2026-10-23. Every test in this module runs on that column type; the tests
+# below pin the day-bucket edges at sub-microsecond precision.
+
+
+def test_archive_fixture_uses_production_timestamp_type(tmp_path: Path) -> None:
+    """Guard the fixture: if `_build_archive` drifts off the production
+    Parquet type, this module stops covering the binding that broke prod."""
+    from datetime import datetime
+
+    ts = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
+    _build_archive(
+        tmp_path, [(ts, 101, 1.0, 1.0, 1.0, 1.0, 1)], [(101, "ESU4", ts, ts)]
+    )
+
+    schema = pq.read_schema(tmp_path / "ohlcv_1m" / "year=2024" / "part.parquet")
+    assert schema.field("ts_event").type == pa.timestamp("ns", tz="UTC")
+
+
+def test_utc_day_bucket_keeps_last_nanosecond_before_midnight(
+    tmp_path: Path,
+) -> None:
+    """A bar 1 ns before UTC midnight stays on its own UTC day.
+
+    DuckDB 1.x truncated the archive's nanoseconds to microseconds on read,
+    so 23:59:59.999999999 bucketed into that day. On DuckDB 2.0 a plain
+    `CAST(ts_event AS TIMESTAMPTZ)` ROUNDS to the nearest microsecond and
+    would push this bar to 00:00 of the next day; the queries truncate
+    instead (`front_month.ts_us_expr`), matching the 1.x buckets exactly.
+    """
+    from datetime import datetime
+
+    midday = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
+    last_ns = pd.Timestamp("2024-06-03 23:59:59.999999999", tz="UTC")
+    next_midnight = datetime(2024, 6, 4, 0, 0, tzinfo=UTC)
+    bars = [
+        (midday, 101, 5300.0, 5305.0, 5299.0, 5301.0, 1_000),
+        (last_ns, 101, 5301.0, 5302.0, 5300.0, 5302.0, 2_000),
+        (next_midnight, 101, 5400.0, 5401.0, 5399.0, 5400.0, 4_000),
+    ]
+    _build_archive(tmp_path, bars, [(101, "ESU4", midday, next_midnight)])
+
+    day = archive_query.es_day_summary("2024-06-03", root=tmp_path)
+    assert day["bar_count"] == 2
+    assert day["volume"] == 3_000
+    assert day["close"] == 5302.0
+
+    next_day = archive_query.es_day_summary("2024-06-04", root=tmp_path)
+    assert next_day["bar_count"] == 1
+    assert next_day["open"] == 5400.0
+
+    # The `/archive/day-summary` path: front-month pick + interval windows.
+    assert archive_query.day_summary_text("2024-06-03", root=tmp_path) == (
+        "2024-06-03 ESU4 | open 5300.00 | 1h delta +1.00 | 2h delta +1.00 "
+        "| 3h delta +1.00 | range 6.00 | vol 3.0K | close 5302.00 (+2.00)"
+    )
+
+
+def test_session_day_bucket_keeps_last_nanosecond_before_cme_roll(
+    tmp_path: Path,
+) -> None:
+    """The `*_batch` variants bucket by CME session date, whose midnight is
+    the 17:00 CT roll (22:00 UTC in June, under CDT). A bar 1 ns before the
+    roll closes the 06-03 session; the roll bar opens the 06-04 session."""
+    from datetime import datetime
+
+    open_bar = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
+    last_ns = pd.Timestamp("2024-06-03 21:59:59.999999999", tz="UTC")
+    roll = datetime(2024, 6, 3, 22, 0, tzinfo=UTC)
+    bars = [
+        (open_bar, 101, 5300.0, 5305.0, 5299.0, 5301.0, 1_000),
+        (last_ns, 101, 5301.0, 5303.0, 5300.0, 5303.0, 2_000),
+        (roll, 101, 5400.0, 5401.0, 5399.0, 5400.0, 4_000),
+    ]
+    _build_archive(tmp_path, bars, [(101, "ESU4", open_bar, roll)])
+
+    batch = archive_query.day_summary_batch("2024-06-03", "2024-06-04", root=tmp_path)
+    by_date = {row["date"]: row for row in batch}
+    assert sorted(by_date) == ["2024-06-03", "2024-06-04"]
+    assert by_date["2024-06-03"]["close"] == 5303.0
+    assert "vol 3.0K" in by_date["2024-06-03"]["summary"]
+    assert by_date["2024-06-04"]["open"] == 5400.0
+    assert "vol 4.0K" in by_date["2024-06-04"]["summary"]
+
+
+def test_utc_day_bucket_follows_session_timezone(tmp_path: Path) -> None:
+    """The normalized timestamp must stay an instant (TIMESTAMPTZ), so
+    `date_trunc('day', ...)` keeps bucketing in the SESSION TimeZone. A
+    naive TIMESTAMP built from the epoch (`make_timestamp` where
+    `ts_us_expr` uses `make_timestamptz`) would bucket by UTC wall clock
+    whatever the session zone says. `_connection()` pins the session to
+    UTC; overriding it here proves the session zone decides the day.
+    """
+    from datetime import datetime
+
+    # 02:00 UTC on 06-04 is 21:00 CDT on 06-03.
+    late = datetime(2024, 6, 4, 2, 0, tzinfo=UTC)
+    _build_archive(
+        tmp_path,
+        [(late, 101, 5300.0, 5301.0, 5299.0, 5300.0, 1_000)],
+        [(101, "ESU4", late, late)],
+    )
+    archive_query._connection().execute("SET TimeZone = 'America/Chicago'")
+
+    assert archive_query.es_day_summary("2024-06-03", root=tmp_path)["bar_count"] == 1
+    with pytest.raises(ValueError, match="2024-06-04"):
+        archive_query.es_day_summary("2024-06-04", root=tmp_path)
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,15 @@ sentry-sdk>=2.0.0
 pydantic>=2.7.0
 pydantic-settings>=2.3.0
 python-dotenv>=1.0.0
-duckdb>=1.0.0
+# Pinned to the last 1.x release. DuckDB 2.0.0 (2026-10-21) binds the
+# archive's timestamp[ns, UTC] Parquet column as TIMESTAMPTZ_NS instead of
+# microsecond TIMESTAMPTZ. The unpinned `>=1.0.0` pulled it in on an image
+# rebuild, and the archive queries' date_trunc / `+ INTERVAL` calls stopped
+# binding (BinderException -> HTTP 500). archive_query now normalizes
+# ts_event first (front_month.ts_us_expr) and the ns-fixture tests in
+# tests/test_archive_query.py pass on 2.0.0 too, but bump this deliberately
+# and let CI run them.
+duckdb==1.5.6
 # DuckDB's `SET TimeZone = '<name>'` validates the zone name against pytz.
 # Without this the archive_query module cannot force UTC session TZ, which
 # is load-bearing for TIMESTAMPTZ date-bucketing correctness — see

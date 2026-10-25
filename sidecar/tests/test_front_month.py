@@ -17,7 +17,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from front_month import front_month_cte
+from front_month import front_month_cte, ts_us_expr
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -95,8 +95,10 @@ def test_ts_recv_replaces_ts_event_everywhere() -> None:
     assert "bars.ts_recv" in sql
     assert "bars.ts_event" not in sql
     # ``ts_recv`` flows through to the CME-session-date expression too,
-    # not just the SELECT list.
-    assert "bars.ts_recv AT TIME ZONE 'America/Chicago'" in sql
+    # not just the SELECT list, normalized to microseconds in both.
+    normalized = ts_us_expr("ts_recv")
+    assert f"{normalized} AS ts_recv" in sql
+    assert f"{normalized} AT TIME ZONE 'America/Chicago'" in sql
 
 
 def test_tiebreak_none_omits_contract_asc() -> None:

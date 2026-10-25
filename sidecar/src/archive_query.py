@@ -33,10 +33,19 @@ from typing import Any
 
 import duckdb
 
-from front_month import front_month_cte
+from front_month import front_month_cte, ts_us_expr
 from logger_setup import log
 
 _ROOT = Path(os.environ.get("ARCHIVE_ROOT", "/data/archive"))
+
+# Every query reads `bars.ts_event` through `_TS` (projected back out as
+# `ts_event`), never raw: DuckDB 2.0 binds the archive's nanosecond column
+# as TIMESTAMPTZ_NS, which `date_trunc`, `+ INTERVAL` and timestamp
+# subtraction reject. See `front_month.ts_us_expr`. `_UTC_DAY` is the
+# UTC calendar-day bucket of the single-date queries (UTC because
+# `_connection()` pins the session TimeZone).
+_TS = ts_us_expr("ts_event")
+_UTC_DAY = f"CAST(date_trunc('day', {_TS}) AS DATE)"
 
 
 # ---------------------------------------------------------------------------
@@ -132,10 +141,11 @@ def _connection() -> duckdb.DuckDBPyConnection:
         # was patched with the exact same hook; this is the sidecar
         # counterpart. The single-date queries (`es_day_summary`,
         # `analog_days`, `day_summary_text`, `day_features_vector`,
-        # `day_summary_prediction`) bucket with `date_trunc('day',
-        # ts_event)` and depend on it. The `*_batch` variants bucket by
-        # CME session date via `front_month.session_date_expr`, which is
-        # session-TZ independent.
+        # `day_summary_prediction`) bucket with `_UTC_DAY`, a
+        # `date_trunc('day', ...)` over the normalized TIMESTAMPTZ `_TS`,
+        # and depend on it. The `*_batch` variants bucket by CME session
+        # date via `front_month.session_date_expr`, which is session-TZ
+        # independent.
         #
         # Validating the TZ name requires the `pytz` package in DuckDB's
         # native path, which is why it is an explicit sidecar dep —
@@ -223,13 +233,13 @@ def es_day_summary(
     # Symbology uses 'ESH5' etc. for futures; options carry 'ES <date> C<strike>'
     # (note the space), which we exclude by forbidding spaces in the symbol.
     top_row = conn.execute(
-        """
+        f"""
         SELECT sym.symbol
         FROM read_parquet(?) AS bars
         JOIN read_parquet(?) AS sym USING (instrument_id)
         WHERE sym.symbol LIKE 'ES%'
           AND strpos(sym.symbol, ' ') = 0
-          AND CAST(date_trunc('day', bars.ts_event) AS DATE) = ?::DATE
+          AND {_UTC_DAY} = ?::DATE
         GROUP BY sym.symbol
         ORDER BY SUM(bars.volume) DESC
         LIMIT 1
@@ -244,14 +254,14 @@ def es_day_summary(
 
     # Step 2 — aggregate OHLC for just that contract on that day.
     summary = conn.execute(
-        """
+        f"""
         WITH filtered AS (
-            SELECT bars.ts_event, bars.open, bars.high, bars.low,
+            SELECT {_TS} AS ts_event, bars.open, bars.high, bars.low,
                    bars.close, bars.volume
             FROM read_parquet(?) AS bars
             JOIN read_parquet(?) AS sym USING (instrument_id)
             WHERE sym.symbol = ?
-              AND CAST(date_trunc('day', bars.ts_event) AS DATE) = ?::DATE
+              AND {_UTC_DAY} = ?::DATE
         )
         SELECT FIRST(open ORDER BY ts_event) AS day_open,
                MAX(high)                     AS day_high,
@@ -297,13 +307,13 @@ def _front_month_symbol(
 ) -> str | None:
     """Top-ES-by-volume on a date, or None if the date has no ES bars."""
     row = conn.execute(
-        """
+        f"""
         SELECT sym.symbol
         FROM read_parquet(?) AS bars
         JOIN read_parquet(?) AS sym USING (instrument_id)
         WHERE sym.symbol LIKE 'ES%'
           AND strpos(sym.symbol, ' ') = 0
-          AND CAST(date_trunc('day', bars.ts_event) AS DATE) = ?::DATE
+          AND {_UTC_DAY} = ?::DATE
         GROUP BY sym.symbol
         ORDER BY SUM(bars.volume) DESC
         LIMIT 1
@@ -353,16 +363,16 @@ def analog_days(
     # (not 08:30 CT) so Globex overnight activity is captured cleanly and
     # the function stays TZ-agnostic.
     rows = conn.execute(
-        """
+        f"""
         WITH es_bars AS (
-            SELECT bars.ts_event,
+            SELECT {_TS} AS ts_event,
                    bars.open,
                    bars.high,
                    bars.low,
                    bars.close,
                    bars.volume,
                    sym.symbol,
-                   CAST(date_trunc('day', bars.ts_event) AS DATE) AS day
+                   {_UTC_DAY} AS day
             FROM read_parquet(?) AS bars
             JOIN read_parquet(?) AS sym USING (instrument_id)
             WHERE sym.symbol LIKE 'ES%'
@@ -438,16 +448,16 @@ def analog_days(
     # (LIMIT k would otherwise bump the target out of the top rows when it
     # fully matches itself, giving a confusing API shape).
     target_row = conn.execute(
-        """
+        f"""
         WITH es_bars AS (
-            SELECT bars.ts_event, bars.open, bars.high, bars.low,
+            SELECT {_TS} AS ts_event, bars.open, bars.high, bars.low,
                    bars.close, bars.volume, sym.symbol,
-                   CAST(date_trunc('day', bars.ts_event) AS DATE) AS day
+                   {_UTC_DAY} AS day
             FROM read_parquet(?) AS bars
             JOIN read_parquet(?) AS sym USING (instrument_id)
             WHERE sym.symbol LIKE 'ES%'
               AND strpos(sym.symbol, ' ') = 0
-              AND CAST(date_trunc('day', bars.ts_event) AS DATE) = ?::DATE
+              AND {_UTC_DAY} = ?::DATE
         ),
         top AS (
             SELECT symbol
@@ -566,17 +576,17 @@ def day_summary_text(
         raise ValueError(f"No ES bars found for {date_iso}")
 
     # One pass: compute open, closes at 60/120/180 minutes from session
-    # start, day high/low/close, volume. ts_event index is nanosecond,
+    # start, day high/low/close, volume. Bars sit on exact minute stamps,
     # so the +60 minute boundary is captured by "<= start + 60 min".
     row = conn.execute(
-        """
+        f"""
         WITH f AS (
-            SELECT bars.ts_event, bars.open, bars.high, bars.low,
+            SELECT {_TS} AS ts_event, bars.open, bars.high, bars.low,
                    bars.close, bars.volume
             FROM read_parquet(?) AS bars
             JOIN read_parquet(?) AS sym USING (instrument_id)
             WHERE sym.symbol = ?
-              AND CAST(date_trunc('day', bars.ts_event) AS DATE) = ?::DATE
+              AND {_UTC_DAY} = ?::DATE
         ),
         bounds AS (
             SELECT MIN(ts_event) AS open_ts,
@@ -676,13 +686,13 @@ def day_features_vector(
     # numbered 1..N where N ≤ 60. Anything beyond minute 60 is ignored.
     # Minute number is `(ts_event - session_open) / 60s`.
     rows = conn.execute(
-        """
+        f"""
         WITH f AS (
-            SELECT bars.ts_event, bars.open, bars.close
+            SELECT {_TS} AS ts_event, bars.open, bars.close
             FROM read_parquet(?) AS bars
             JOIN read_parquet(?) AS sym USING (instrument_id)
             WHERE sym.symbol = ?
-              AND CAST(date_trunc('day', bars.ts_event) AS DATE) = ?::DATE
+              AND {_UTC_DAY} = ?::DATE
         ),
         agg AS (
             SELECT FIRST(open ORDER BY ts_event)  AS day_open,
@@ -765,14 +775,14 @@ def day_summary_prediction(
         raise ValueError(f"No ES bars found for {date_iso}")
 
     row = conn.execute(
-        """
+        f"""
         WITH f AS (
-            SELECT bars.ts_event, bars.open, bars.high, bars.low,
+            SELECT {_TS} AS ts_event, bars.open, bars.high, bars.low,
                    bars.close, bars.volume
             FROM read_parquet(?) AS bars
             JOIN read_parquet(?) AS sym USING (instrument_id)
             WHERE sym.symbol = ?
-              AND CAST(date_trunc('day', bars.ts_event) AS DATE) = ?::DATE
+              AND {_UTC_DAY} = ?::DATE
         ),
         bounds AS (
             SELECT MIN(ts_event) AS open_ts,

@@ -4,6 +4,11 @@
 -r requirements.txt
 pytest>=8.0.0
 pytest-cov>=6.0
+# Writes the archive test fixtures in the production Parquet type,
+# timestamp[ns, tz=UTC] (what ml/src/archive_convert.py wrote via pyarrow).
+# DuckDB's own COPY writes TIMESTAMPTZ as microseconds, which hid the
+# DuckDB 2.0 TIMESTAMPTZ_NS binding change from the suite.
+pyarrow>=18.0
 # Capped at the minor: ruff adds/promotes stable rules only in minor releases,
 # so new findings arrive as a Dependabot bump PR, not in an unrelated change.
 ruff>=0.17,<0.18
