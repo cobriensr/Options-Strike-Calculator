@@ -10,16 +10,8 @@
  * Postgres in WASM); #191 then runs in one transaction, as migrateDb() runs it.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { PGlite } from '@electric-sql/pglite';
-
-// db-migrations.ts imports getDb only for its types. A real call would mean
-// the test reached for Neon (production), so make that impossible.
-vi.mock('../_lib/db.js', () => ({
-  getDb: () => {
-    throw new Error('gex-numeric-widen test must not touch the real DB');
-  },
-}));
 
 import { MIGRATIONS, type Migration } from '../_lib/db-migrations.js';
 
@@ -47,7 +39,7 @@ const GREEK_COLUMN_COUNT: Record<Table, number> = {
   spot_exposures: 9,
 };
 
-/** Two charm columns per table. */
+// spot_exposures has no call/put split, so its pair is charm_oi + charm_vol.
 const CHARM: Record<Table, [string, string]> = {
   gex_strike_0dte: ['call_charm_oi', 'put_charm_oi'],
   strike_exposures: ['call_charm_oi', 'put_charm_oi'],
@@ -206,6 +198,10 @@ describe('migration #191: widen GEX greek columns to NUMERIC(30,4)', () => {
 
     await widen(sql);
 
+    // SET LOCAL, not SET: the 5s timeout must not outlive the migration's
+    // transaction on a pooled backend.
+    const timeout = await db.query('SHOW lock_timeout');
+    expect(timeout.rows).toEqual([{ lock_timeout: '0' }]);
     expect(await relfilenodes(db)).toEqual(before);
     for (const table of TABLES) {
       expect(await readText(db, table, CHARM[table])).toEqual(seeded);
