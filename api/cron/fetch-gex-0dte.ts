@@ -242,10 +242,11 @@ async function storeStrikes(
     const stored = result.length;
     return { stored, skipped: deduped.length - stored };
   } catch (err) {
+    // Rethrow so the cron wrapper reports an error run and captures it to
+    // Sentry once; returning stored: 0 here used to report success (R4).
     logger.warn({ err }, 'Batch gex_strike_0dte insert failed');
     metrics.increment('fetch_gex_0dte.batch_insert_error');
-    Sentry.captureException(err);
-    return { stored: 0, skipped: deduped.length };
+    throw err;
   }
 }
 

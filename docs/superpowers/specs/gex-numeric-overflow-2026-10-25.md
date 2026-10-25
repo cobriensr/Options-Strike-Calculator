@@ -143,8 +143,9 @@ planner has no statistics for them until it runs.
 
 ## Out of scope (reported, not fixed here)
 
-- `fetch-gex-0dte` catches the batch insert error and still reports `success`
-  (R4).
+- `fetch-gex-0dte` caught the batch insert error and still reported `success`
+  (R4). Fixed in the follow-up R4 commit: `storeStrikes` now rethrows, so the
+  cron wrapper reports an error run and captures it to Sentry once.
 - `fetch-spot-gex` per-row inserts behind the high-water mark: any row-level
   error stalls the day (R5 shape; no remaining trigger after this fix).
 - `rollup-ws-gex-strike-expiry` wrote no WS rows on 10-15, 10-16, 10-19,

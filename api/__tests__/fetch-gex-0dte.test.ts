@@ -52,7 +52,7 @@ vi.mock('../_lib/sentry.js', () => ({
 
 import handler from '../cron/fetch-gex-0dte.js';
 import logger from '../_lib/logger.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 
 // Fixed "market hours" date: Tuesday 10:00 AM ET
 const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
@@ -396,9 +396,13 @@ describe('fetch-gex-0dte handler', () => {
     expect(res._json).toMatchObject({ error: 'Internal error' });
   });
 
-  it('handles batch insert errors gracefully', async () => {
+  it('reports an error run, not success, when the strike INSERT fails (R4)', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    mockQuery.mockRejectedValueOnce(new Error('DB batch insert failed'));
+    // The production failure: 0DTE charm past the NUMERIC column cap.
+    const overflow = Object.assign(new Error('numeric field overflow'), {
+      code: '22003',
+    });
+    mockQuery.mockRejectedValueOnce(overflow);
     stubFetch([makeStrikeRow()]);
 
     const res = mockResponse();
@@ -410,16 +414,21 @@ describe('fetch-gex-0dte handler', () => {
       res,
     );
 
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      success: true,
-      stored: 0,
-      skipped: 1,
-    });
-    expect(logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ err: expect.any(Error) }),
-      'Batch gex_strike_0dte insert failed',
+    expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({ error: 'Internal error' });
+    // Surfaced once, by the cron wrapper.
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(overflow);
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: overflow }),
+      'fetch-gex-0dte error',
     );
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'fetch_gex_0dte.batch_insert_error',
+    );
+    // Deterministic, so withRetry does not repeat it; nothing runs after it.
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(mockLoadSnapshotHistory).not.toHaveBeenCalled();
   });
 
   // ── Multi-row INSERT (BE-CRON-005) ────────────────────────
