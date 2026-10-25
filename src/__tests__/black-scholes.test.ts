@@ -120,6 +120,22 @@ describe('normalCDF', () => {
       expect(normalCDF(x) + normalCDF(-x)).toBeCloseTo(1, 8);
     }
   });
+
+  it('keeps the far-left tail instead of rounding it to 0', () => {
+    // Reflecting the tail through 1 - (1 - tail) snaps it to a multiple of
+    // ~1.1e-16 and zeroes anything below ~5.6e-17: x = -8 catches the
+    // snapping, -9 and -10 the zeroing. References are 0.5·erfc(-x/√2).
+    // A&S 26.2.17 is only ~2% accurate in relative terms this far out,
+    // hence the tolerance.
+    const reference: Array<[number, number]> = [
+      [-8, 6.220960574271819e-16],
+      [-9, 1.1285884059538422e-19],
+      [-10, 7.619853024160595e-24],
+    ];
+    for (const [x, expected] of reference) {
+      expect(Math.abs(normalCDF(x) / expected - 1)).toBeLessThan(0.025);
+    }
+  });
 });
 
 // ── normalPDF ──────────────────────────────────────────────────
@@ -222,6 +238,13 @@ describe('calcBSDelta', () => {
   it('deep OTM put delta approaches 0', () => {
     const d = calcBSDelta(spot, 5400, sigma, T, 'put');
     expect(d).toBeLessThan(0.01);
+  });
+
+  it('deep OTM put delta keeps its tail value instead of rounding to 0', () => {
+    // d1 ≈ 9.21: N(d1) rounds to exactly 1, so 1 - N(d1) would be 0.
+    // Reference N(-d1) = 0.5·erfc(d1/√2).
+    const d = calcBSDelta(250, 100, 0.1, 1, 'put');
+    expect(Math.abs(d / 1.5870452391616996e-20 - 1)).toBeLessThan(0.025);
   });
 
   it('call delta increases as strike decreases (more ITM)', () => {
@@ -449,6 +472,20 @@ describe('blackScholesPrice', () => {
   it('deep OTM put is near 0', () => {
     const P = blackScholesPrice(spot, 5400, sigma, T, 'put');
     expect(P).toBeLessThan(0.01);
+  });
+
+  it('stays positive deep in the tail (|d| ≈ 7.8, true price ~1e-15)', () => {
+    // Points from issue #200. Snapping the CDF tail to multiples of ~1.1e-16
+    // priced these at ~-2e-15.
+    const cases: Array<[number, number, number, number, 'call' | 'put']> = [
+      [100, 80, 0.55, 1 / 365, 'put'],
+      [100, 80, 0.1, 30 / 365, 'put'],
+      [100, 125, 0.55, 1 / 365, 'call'],
+      [100, 125, 0.1, 30 / 365, 'call'],
+    ];
+    for (const [S, K, sig, t, type] of cases) {
+      expect(blackScholesPrice(S, K, sig, t, type)).toBeGreaterThan(0);
+    }
   });
 
   it('price increases with sigma (higher vol = higher option price)', () => {

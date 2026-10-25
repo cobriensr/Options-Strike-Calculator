@@ -21,9 +21,12 @@ export function normalCDF(x: number): number {
   const t = 1 / (1 + p * absX);
   const pdf = Math.exp((-absX * absX) / 2) / Math.sqrt(2 * Math.PI);
   const poly = ((((b5 * t + b4) * t + b3) * t + b2) * t + b1) * t;
-  const cdf = 1 - pdf * poly;
+  // N(-|x|). Return it directly for x < 0: reflecting it as 1 - (1 - tail)
+  // snaps it to a multiple of 2^-53 (~1.1e-16), zeroing tails below ~5.6e-17
+  // and letting differences of small tails (deep OTM prices) go negative.
+  const tail = pdf * poly;
 
-  return x >= 0 ? cdf : 1 - cdf;
+  return x >= 0 ? 1 - tail : tail;
 }
 
 /**
@@ -98,8 +101,9 @@ export function calcBSDelta(
   if (type === 'call') {
     return normalCDF(d1);
   }
-  // put delta = |N(d1) - 1| = 1 - N(d1), returned as absolute value
-  return 1 - normalCDF(d1);
+  // put delta = |N(d1) - 1| = N(-d1), returned as absolute value. N(-d1)
+  // rather than 1 - N(d1) so deep OTM puts keep their tail instead of 0.
+  return normalCDF(-d1);
 }
 
 /**
