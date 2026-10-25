@@ -148,12 +148,13 @@ describe('cleanup-ws-gex-strike-expiry handler', () => {
     expect(pass1Params).toEqual(['2026-05-15']);
 
     // Pass 2: today/future expiries with pre-today minutes. The TZ
-    // conversion is on the CONSTANT side ($1::date AT TIME ZONE …),
-    // not on the column — so the predicate stays sargable against
-    // the (ticker, expiry, ts_minute) UNIQUE index.
+    // conversion is on the CONSTANT side, not on the column — so the
+    // predicate stays sargable against the (ticker, expiry, ts_minute)
+    // UNIQUE index. The `::timestamp` makes it ET midnight in any session
+    // zone (cleanup-ws-gex-strike-expiry-pglite.test.ts proves it).
     expect(pass2Sql).toContain('expiry >= $1::date');
     expect(pass2Sql).toContain(
-      "ts_minute < ($1::date AT TIME ZONE 'America/New_York')",
+      "ts_minute < ($1::date::timestamp AT TIME ZONE 'America/New_York')",
     );
     expect(pass2Params).toEqual(['2026-05-15']);
   });

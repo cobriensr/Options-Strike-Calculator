@@ -70,7 +70,7 @@ vi.mock('../_lib/sentry.js', () => ({
   },
 }));
 
-import { MIGRATIONS } from '../_lib/db-migrations.js';
+import { applyMigration } from './pglite-migrations';
 import { rollupWsGexToStrikeExposures } from '../_lib/rollup-ws-gex-strike-expiry.js';
 import { Sentry } from '../_lib/sentry.js';
 
@@ -220,46 +220,13 @@ function dayRows(day: DayCase): { rows: SourceRow[]; included: string[] } {
   return { rows, included: [...included].sort() };
 }
 
-type Sql = Parameters<NonNullable<(typeof MIGRATIONS)[number]['run']>>[0];
-
 let pg: PGlite;
-
-/**
- * Neon-shaped tagged template over pglite, enough for the migrations'
- * `sql\`...\`` calls. Lazy (runs on await), so a `statements` array is
- * applied strictly in order.
- */
-function taggedSql(strings: TemplateStringsArray, ...values: unknown[]) {
-  const text = strings.reduce((acc, part, i) => `${acc}$${i}${part}`);
-  return {
-    then<T>(
-      onFulfilled: (rows: unknown[]) => T,
-      onRejected?: (err: unknown) => T,
-    ) {
-      return pg
-        .query(text, values)
-        .then((r) => r.rows)
-        .then(onFulfilled, onRejected);
-    },
-  };
-}
 
 /** Neon-shaped handle the rollup takes: `.query(text, params)` → rows. */
 const db = {
   query: async (text: string, params: unknown[] = []) =>
     (await pg.query(text, params)).rows,
 } as unknown as Parameters<typeof rollupWsGexToStrikeExposures>[0];
-
-async function applyMigration(id: number): Promise<void> {
-  const migration = MIGRATIONS.find((m) => m.id === id);
-  if (!migration) throw new Error(`migration #${id} not found`);
-  const sql = taggedSql as unknown as Sql;
-  if (migration.statements) {
-    for (const statement of migration.statements(sql)) await statement;
-  } else if (migration.run) {
-    await migration.run(sql);
-  }
-}
 
 async function seedSource(rows: SourceRow[]): Promise<void> {
   // Every value column gets a distinct offset from the row's ordinal, so a
@@ -339,8 +306,8 @@ const expectedByDay = new Map<string, string[]>();
 
 beforeAll(async () => {
   pg = await PGlite.create();
-  await applyMigration(8);
-  await applyMigration(111);
+  await applyMigration(pg, 8);
+  await applyMigration(pg, 111);
   for (const day of DAYS) {
     const { rows, included } = dayRows(day);
     await seedSource(rows);

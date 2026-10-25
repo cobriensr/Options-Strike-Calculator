@@ -73,9 +73,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   //    `$cutoffUtc` is a `timestamptz` so the column comparison stays
   //    bare (no per-row function call), keeping the index usable.
   //
-  // The cutoff is derived in Postgres from `$today::date AT TIME ZONE
-  // 'America/New_York'` so DST is handled by tzdata (the daemon and
-  // server cron run in UTC, but the trading-day boundary is ET).
+  // The cutoff is derived in Postgres from `$today::date::timestamp AT
+  // TIME ZONE 'America/New_York'` (ET midnight as a timestamptz) so DST
+  // is handled by tzdata (the daemon and server cron run in UTC, but the
+  // trading-day boundary is ET). The `::timestamp` is load-bearing:
+  // without it `date AT TIME ZONE` resolves through date → timestamptz in
+  // the SESSION zone, and under Neon's UTC sessions the cutoff landed 8 h
+  // (EDT) / 10 h (EST) before ET midnight, so the previous ET evening's
+  // rows survived the sweep (fixed 2026-10-25;
+  // cleanup-ws-gex-strike-expiry-pglite.test.ts).
   try {
     const passes: { label: string; where: string }[] = [
       { label: 'past_expiry', where: 'expiry < $1::date' },
@@ -83,7 +89,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         label: 'pre_today_minutes',
         where:
           'expiry >= $1::date ' +
-          "AND ts_minute < ($1::date AT TIME ZONE 'America/New_York')",
+          "AND ts_minute < ($1::date::timestamp AT TIME ZONE 'America/New_York')",
       },
     ];
 
