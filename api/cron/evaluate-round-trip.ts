@@ -32,6 +32,7 @@ import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
+import { Sentry } from '../_lib/sentry.js';
 
 /** Look-forward window length for the net-pct computation. */
 const WINDOW_MIN = 60;
@@ -67,7 +68,16 @@ const POST_CLOSE_EVAL_MIN = 80;
 /** Catch-up floor for stale alerts. If the cron pauses for hours, alerts
  *  from the same trading day still get picked up on resume. The
  *  `round_trip_net_pct IS NULL` guard handles idempotency; this just bounds
- *  the SELECT cost so we don't scan all-time on every tick. */
+ *  the SELECT cost so we don't scan all-time on every tick.
+ *
+ *  The eligible SELECT applies it twice: as the exact timestamp floor, and
+ *  as `date >= <ET date of the floor>`. `date` leads both tables'
+ *  (date, time) indexes, and without it every tick walked all of
+ *  lottery_finder_fires_date_ts_idx (~1M rows; 4.3 s cold for 0 rows).
+ *  The date bound never drops a row the timestamp floor keeps, because
+ *  `date` is always the ET date of trigger_time_ct / bucket_ct (true for
+ *  every one of the ~1.08M rows in prod on 2026-10-25), and the ET date of
+ *  any time at or after the floor is at least the floor's ET date. */
 const CATCHUP_FLOOR_HOURS = 24;
 
 /**
@@ -109,14 +119,18 @@ const SCORE_DEDUCT_DTE_MAX = 7;
  *   handler returns by                           48 s
  *   completion check-in POST (5 s abort)         53 s, leaving 7 s for the
  *                                                Axiom event + response
- * The eligible SELECT (2 × 8 s + 1 s; one cold read of it took 4.7 s)
- * ends by 22 s even after a 5 s in_progress POST. If it ends past 20 s no
- * chunk starts, so it cannot push the run past 48 s either.
+ * The eligible SELECT (2 × 8 s + 1 s) ends by 22 s even after a 5 s
+ * in_progress POST. If it ends past 20 s no chunk starts, so it cannot
+ * push the run past 48 s either.
  *
- * Throughput: EXPLAIN ANALYZE of 500 alerts against the 10-23 tape took
- * 9.1 s, so a 100-alert chunk is ~2 s and a tick clears roughly 1,000
- * alerts. That is about twice the busiest 10-minute fire count since
- * 09-28 (491), so a backlog drains instead of compounding.
+ * Throughput: the date-bounded eligible SELECT takes ~5 ms (EXPLAIN
+ * ANALYZE, 10-23 16:10 ET), so nearly all of the 20 s goes to chunks.
+ * EXPLAIN ANALYZE of 500 alerts against the 10-23 tape took 9.1 s, so a
+ * 100-alert chunk (aggregation + UPDATE) is ~2 s: ~10 chunks, or roughly
+ * 1,000 alerts, per tick. That is about twice the busiest 10-minute fire
+ * count since 09-28 (491), so a backlog drains instead of compounding.
+ * A deferral is still reported to Sentry (see the end of the handler):
+ * if intake ever outruns this, alerts age out of the 24 h floor.
  */
 const CHUNK_SIZE = 100;
 const RUN_BUDGET_MS = 20_000;
@@ -172,6 +186,13 @@ interface AlertChunk {
   alerts: EligibleAlert[];
 }
 
+/** Fire time in epoch ms; the driver may hand back a Date or a string. */
+function fireTimeMs(a: EligibleAlert): number {
+  return a.fire_time instanceof Date
+    ? a.fire_time.getTime()
+    : new Date(a.fire_time).getTime();
+}
+
 /**
  * Split the newest-first eligible list into single-source chunks, so each
  * chunk costs one aggregation and one UPDATE. Silent-boom goes first: it is
@@ -202,11 +223,7 @@ async function aggregateChunk(
   const ids = chunk.map((a) => a.id);
   const sources = chunk.map((a) => a.source);
   const chains = chunk.map((a) => a.option_chain_id);
-  const fires = chunk.map((a) =>
-    a.fire_time instanceof Date
-      ? a.fire_time.toISOString()
-      : new Date(a.fire_time).toISOString(),
-  );
+  const fires = chunk.map((a) => new Date(fireTimeMs(a)).toISOString());
   const dtes = chunk.map((a) => a.dte);
 
   return (await withDbRetry(
@@ -291,7 +308,8 @@ export default withCronInstrumentation(
     // Pull both alert types in one query, newest first (see the per-run
     // work bound above for why). The catch-up floor (24h) lets the cron
     // recover from extended pauses without losing alerts; the IS NULL
-    // idempotency guard prevents re-evaluation.
+    // idempotency guard prevents re-evaluation. The `date` bound is the
+    // same floor in index form (see CATCHUP_FLOOR_HOURS).
     //
     // INTERVAL is constructed via `(${N}::int * INTERVAL '1 minute')` rather
     // than `INTERVAL '${N} minutes'` — the latter would serialise as
@@ -303,12 +321,14 @@ export default withCronInstrumentation(
         SELECT 'lottery'::text AS source, id, option_chain_id, trigger_time_ct AS fire_time, dte
           FROM lottery_finder_fires
          WHERE round_trip_net_pct IS NULL
+           AND date >= ((NOW() - (${CATCHUP_FLOOR_HOURS}::int * INTERVAL '1 hour')) AT TIME ZONE 'America/New_York')::date
            AND trigger_time_ct <= NOW() - (${LOOKBACK_MIN_FLOOR}::int * INTERVAL '1 minute')
            AND trigger_time_ct >= NOW() - (${CATCHUP_FLOOR_HOURS}::int * INTERVAL '1 hour')
         UNION ALL
         SELECT 'silent_boom'::text AS source, id, option_chain_id, bucket_ct AS fire_time, dte
           FROM silent_boom_alerts
          WHERE round_trip_net_pct IS NULL
+           AND date >= ((NOW() - (${CATCHUP_FLOOR_HOURS}::int * INTERVAL '1 hour')) AT TIME ZONE 'America/New_York')::date
            AND bucket_ct <= NOW() - (${LOOKBACK_MIN_FLOOR}::int * INTERVAL '1 minute')
            AND bucket_ct >= NOW() - (${CATCHUP_FLOOR_HOURS}::int * INTERVAL '1 hour')
          ORDER BY fire_time DESC
@@ -325,12 +345,12 @@ export default withCronInstrumentation(
     let evaluated = 0;
     let noFlow = 0;
     let deducted = 0;
-    let deferred = 0;
+    let deferredAlerts: EligibleAlert[] = [];
 
     const chunks = chunkBySource(eligible);
     for (const [index, chunk] of chunks.entries()) {
       if (Date.now() - ctx.startTimeMs >= RUN_BUDGET_MS) {
-        deferred = chunks.slice(index).reduce((n, c) => n + c.alerts.length, 0);
+        deferredAlerts = chunks.slice(index).flatMap((c) => c.alerts);
         break;
       }
 
@@ -369,14 +389,35 @@ export default withCronInstrumentation(
       if (updates.length > 0) await writeChunk(db, chunk.source, updates);
     }
 
+    const deferred = deferredAlerts.length;
     if (deferred > 0) {
+      // A deferral is normal backpressure, so the run stays 'success' (an
+      // 'ok' check-in). But a deferred alert older than the 24 h floor is
+      // never evaluated, so surface every deferral: one grouped Sentry
+      // issue whose events carry how close the oldest one is to ageing out.
+      const oldestMs = deferredAlerts.reduce(
+        (min, a) => Math.min(min, fireTimeMs(a)),
+        Number.POSITIVE_INFINITY,
+      );
+      const detail = {
+        eligible: eligible.length,
+        deferred,
+        oldestDeferredAgeMin: Math.round((Date.now() - oldestMs) / 60_000),
+        catchupFloorMin: CATCHUP_FLOOR_HOURS * 60,
+        budgetMs: RUN_BUDGET_MS,
+      };
       ctx.logger.warn(
-        {
-          eligible: eligible.length,
-          deferred,
-          budgetMs: RUN_BUDGET_MS,
-        },
+        detail,
         'evaluate-round-trip: run budget spent; deferring the rest to the next tick',
+      );
+      Sentry.captureMessage(
+        'evaluate-round-trip: run budget spent; alerts deferred',
+        {
+          level: 'warning',
+          fingerprint: ['evaluate-round-trip', 'deferred'],
+          tags: { 'cron.anomaly': 'round-trip-deferred' },
+          extra: detail,
+        },
       );
     }
 

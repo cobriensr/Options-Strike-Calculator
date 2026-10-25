@@ -21,7 +21,11 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { setTag: vi.fn(), captureException: vi.fn() },
+  Sentry: {
+    setTag: vi.fn(),
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+  },
 }));
 
 import handler from '../cron/evaluate-round-trip.js';
@@ -512,6 +516,34 @@ describe('evaluate-round-trip handler', () => {
       );
     });
 
+    it('bounds both arms of the eligible scan by the ET date of the 24 h floor', async () => {
+      // `date` leads the (date, time) indexes; without this bound every tick
+      // walked the whole lottery_finder_fires_date_ts_idx.
+      mockSql.mockResolvedValueOnce([]);
+      await handler(authedReq(), mockResponse());
+
+      const [strings, ...values] = mockSql.mock.calls[0] as [
+        readonly string[],
+        ...unknown[],
+      ];
+      const dateBoundAt = strings.flatMap((s, i) =>
+        s.endsWith('AND date >= ((NOW() - (') ? [i] : [],
+      );
+      expect(dateBoundAt).toHaveLength(2);
+      for (const i of dateBoundAt) {
+        expect(values[i]).toBe(24); // CATCHUP_FLOOR_HOURS
+        expect(strings[i + 1]).toMatch(
+          /^::int \* INTERVAL '1 hour'\)\) AT TIME ZONE 'America\/New_York'\)::date\s/,
+        );
+      }
+      // One per arm.
+      const [lotteryArm, silentBoomArm] = strings.join('').split('UNION ALL');
+      expect(lotteryArm).toContain('FROM lottery_finder_fires');
+      expect(lotteryArm).toContain("AT TIME ZONE 'America/New_York')::date");
+      expect(silentBoomArm).toContain('FROM silent_boom_alerts');
+      expect(silentBoomArm).toContain("AT TIME ZONE 'America/New_York')::date");
+    });
+
     it('aggregates and writes 100-alert chunks, each written before the next is read', async () => {
       routeSql({ eligible: eligibleRows('lottery', 250) });
 
@@ -551,6 +583,9 @@ describe('evaluate-round-trip handler', () => {
         'lottery_finder_fires',
         'lottery_finder_fires',
       ]);
+      // Nothing deferred → no deferral warning in Sentry or the log.
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalled();
     });
 
     it('stops starting chunks once the 20 s budget is spent and defers the rest', async () => {
@@ -581,12 +616,27 @@ describe('evaluate-round-trip handler', () => {
       // The chunk already aggregated is still written.
       expect(updates()).toEqual([['lottery_finder_fires', idRange(1, 100)]]);
       expect(aggregatedIds()).toHaveLength(1);
+      // Deferral is surfaced, not just logged. The oldest deferred alert is
+      // id 250: fired 61 + 249 = 310 min before RUN_TIME, read 20 s later.
+      const detail = {
+        eligible: 250,
+        deferred: 150,
+        oldestDeferredAgeMin: 310,
+        catchupFloorMin: 1_440,
+        budgetMs: 20_000,
+      };
+      expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'evaluate-round-trip: run budget spent; alerts deferred',
+        {
+          level: 'warning',
+          fingerprint: ['evaluate-round-trip', 'deferred'],
+          tags: { 'cron.anomaly': 'round-trip-deferred' },
+          extra: detail,
+        },
+      );
       expect(logger.warn).toHaveBeenCalledWith(
-        expect.objectContaining({
-          eligible: 250,
-          deferred: 150,
-          budgetMs: 20_000,
-        }),
+        detail,
         expect.stringContaining('run budget spent'),
       );
     });
