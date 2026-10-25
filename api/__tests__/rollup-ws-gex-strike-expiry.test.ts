@@ -244,7 +244,7 @@ describe('rollup-ws-gex-strike-expiry handler', () => {
       expect(res._json).toMatchObject({ status: 'success', rows: 12 });
     });
 
-    it('reports error and warns when a trading day has no source rows (capture was down)', async () => {
+    it('reports error and warns when a trading day has no source rows (capture down or source purged)', async () => {
       routeQuery({ tickers: [] });
       const res = mockResponse();
       await handler(authedReq(), res);
@@ -255,12 +255,14 @@ describe('rollup-ws-gex-strike-expiry handler', () => {
         rows: 0,
         date: TODAY,
         tickerCount: 0,
-        message: expect.stringContaining('no ws_gex_strike_expiry rows'),
+        message:
+          `no ws_gex_strike_expiry rows for trading day ${TODAY}: ` +
+          'capture was down or the source was already purged',
       });
       expect(insertCalls()).toHaveLength(0);
       expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
       expect(Sentry.captureMessage).toHaveBeenCalledWith(
-        `${JOB}: no source rows on a trading day`,
+        `${JOB}: no source rows on a trading day (capture down or source purged)`,
         expect.objectContaining({
           level: 'warning',
           fingerprint: [JOB, 'empty-source'],
@@ -373,6 +375,8 @@ describe('rollup-ws-gex-strike-expiry handler', () => {
     });
 
     it('retries a transient error on a ticker and lands it', async () => {
+      // withDbRetry backs off 1 s before the retry; fake it.
+      vi.useFakeTimers({ now: RUN_TIME });
       let aaplAttempts = 0;
       routeQuery({
         tickers: ['SPX', 'AAPL'],
@@ -385,7 +389,9 @@ describe('rollup-ws-gex-strike-expiry handler', () => {
       });
 
       const res = mockResponse();
-      await handler(authedReq(), res);
+      const run = handler(authedReq(), res);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await run;
 
       expect(insertedTickers()).toEqual(['SPX', 'AAPL', 'AAPL']);
       expect(res._json).toMatchObject({

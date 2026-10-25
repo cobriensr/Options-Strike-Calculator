@@ -55,8 +55,8 @@ ZONE 'America/New_York')`. Process SPX first: it feeds the SPXW heatmap.
    (EST) before ET midnight. The PGlite test caught it and runs under UTC
    and a non-New-York session. `cleanup-ws-gex-strike-expiry` had the same
    uncast cutoff, so it kept the previous ET evening's rows (on production,
-   the oldest surviving row sat exactly at 20:00Z). It gets the same cast in
-   a follow-up commit, with its own PGlite test.
+   the oldest surviving row sat exactly at 20:00Z). It now has the same cast
+   and its own PGlite test.
 2. **One statement per ticker.** The same column mapping and SPX → SPXW remap
    as today, with the sargable range above plus `ticker = $2`, `ON CONFLICT
 (date, timestamp, ticker, strike, expiry) DO NOTHING`, and counting in the

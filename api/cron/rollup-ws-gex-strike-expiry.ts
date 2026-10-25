@@ -31,7 +31,8 @@
  * 'partial', or 'error' when none was copied (an error check-in: the
  * Sentry monitor goes red). No source rows at all is 'success' with 0
  * rows on a weekend or holiday; on a trading day it means uw-stream's GEX
- * capture was down, so it warns and reports 'error'.
+ * capture was down, or (on a manual ?date= re-run) the cleanup sweep
+ * already purged the source, so it warns and reports 'error'.
  *
  * Auth: CRON_SECRET via withCronInstrumentation → cronGuard. No UW key —
  * DB-only. Time gate: `marketHours: false` — after-close run. The
@@ -66,7 +67,9 @@ const JOB = 'rollup-ws-gex-strike-expiry';
  * out, the remaining tickers are deferred with a warning (re-run them
  * with ?date=); if a statement runs past the kill, the monitor's max
  * runtime (cron-schedules.ts) turns the missing completion into a
- * timeout.
+ * timeout. A ticker started just before 240 s can also add up to 3 s of
+ * withDbRetry backoff plus a re-run of its statement; the monitor timeout
+ * covers that overrun too.
  */
 export const config = { maxDuration: 300 };
 const RUN_BUDGET_MS = 240_000;
@@ -105,9 +108,11 @@ export default withCronInstrumentation(
 
     if (tickers.length === 0 && isTradingDay(date)) {
       // A trading day always has 0DTE GEX pushes; none means uw-stream's
-      // gex_strike_expiry capture was down, and there is nothing to copy.
-      ctx.logger.warn({ date }, `${JOB}: no source rows on a trading day`);
-      Sentry.captureMessage(`${JOB}: no source rows on a trading day`, {
+      // gex_strike_expiry capture was down, or a manual ?date= re-run came
+      // after the cleanup sweep purged the source. Nothing to copy either way.
+      const title = `${JOB}: no source rows on a trading day (capture down or source purged)`;
+      ctx.logger.warn({ date }, title);
+      Sentry.captureMessage(title, {
         level: 'warning',
         fingerprint: [JOB, 'empty-source'],
         tags: { 'cron.anomaly': 'ws-gex-rollup-empty-source' },
@@ -116,7 +121,9 @@ export default withCronInstrumentation(
       return {
         status: 'error',
         rows: 0,
-        message: `no ws_gex_strike_expiry rows for trading day ${date}`,
+        message:
+          `no ws_gex_strike_expiry rows for trading day ${date}: ` +
+          'capture was down or the source was already purged',
         metadata,
       };
     }
