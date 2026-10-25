@@ -445,6 +445,16 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
+  'rollup-ws-gex-strike-expiry': {
+    // Daily WS GEX → strike_exposures copy. Five runs in Oct 2026 left no
+    // rows and no Sentry event; the monitor is what turns a killed run into
+    // a timeout alert. maxDuration is 300 s → long runner, so a run that
+    // uses its whole budget still completes inside the max runtime. Low
+    // frequency → default failure threshold of 1.
+    schedule: '30 22 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: LONG_RUNNER_MAX_RUNTIME,
+  },
   'schwab-reauth-reminder': {
     // Hourly, every day: the refresh-token clock ignores market hours. Low
     // frequency → default failure threshold of 1.
