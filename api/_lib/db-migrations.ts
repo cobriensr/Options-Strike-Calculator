@@ -5292,4 +5292,65 @@ export const MIGRATIONS: Migration[] = [
       sql`CREATE INDEX IF NOT EXISTS idx_greek_exposure_date_ticker_ts ON greek_exposure (date, ticker, timestamp DESC)`,
     ],
   },
+  {
+    id: 191,
+    description:
+      'Widen the greek columns of gex_strike_0dte, strike_exposures and spot_exposures from NUMERIC(20,4) to NUMERIC(30,4) because 0DTE charm near the close exceeds 1e16, the NUMERIC(20,4) cap. Scale stays 4, so the change is metadata-only with no table rewrite.',
+    statements: (sql) => [
+      // Fail fast instead of queueing writers behind the ACCESS EXCLUSIVE lock.
+      sql`SET LOCAL lock_timeout = '5s'`,
+      sql`
+        ALTER TABLE gex_strike_0dte
+          ALTER COLUMN call_gamma_oi  TYPE NUMERIC(30,4),
+          ALTER COLUMN put_gamma_oi   TYPE NUMERIC(30,4),
+          ALTER COLUMN call_gamma_vol TYPE NUMERIC(30,4),
+          ALTER COLUMN put_gamma_vol  TYPE NUMERIC(30,4),
+          ALTER COLUMN call_gamma_ask TYPE NUMERIC(30,4),
+          ALTER COLUMN call_gamma_bid TYPE NUMERIC(30,4),
+          ALTER COLUMN put_gamma_ask  TYPE NUMERIC(30,4),
+          ALTER COLUMN put_gamma_bid  TYPE NUMERIC(30,4),
+          ALTER COLUMN call_charm_oi  TYPE NUMERIC(30,4),
+          ALTER COLUMN put_charm_oi   TYPE NUMERIC(30,4),
+          ALTER COLUMN call_charm_vol TYPE NUMERIC(30,4),
+          ALTER COLUMN put_charm_vol  TYPE NUMERIC(30,4),
+          ALTER COLUMN call_delta_oi  TYPE NUMERIC(30,4),
+          ALTER COLUMN put_delta_oi   TYPE NUMERIC(30,4),
+          ALTER COLUMN call_vanna_oi  TYPE NUMERIC(30,4),
+          ALTER COLUMN put_vanna_oi   TYPE NUMERIC(30,4),
+          ALTER COLUMN call_vanna_vol TYPE NUMERIC(30,4),
+          ALTER COLUMN put_vanna_vol  TYPE NUMERIC(30,4)
+      `,
+      sql`
+        ALTER TABLE strike_exposures
+          ALTER COLUMN call_gamma_oi  TYPE NUMERIC(30,4),
+          ALTER COLUMN put_gamma_oi   TYPE NUMERIC(30,4),
+          ALTER COLUMN call_gamma_ask TYPE NUMERIC(30,4),
+          ALTER COLUMN call_gamma_bid TYPE NUMERIC(30,4),
+          ALTER COLUMN put_gamma_ask  TYPE NUMERIC(30,4),
+          ALTER COLUMN put_gamma_bid  TYPE NUMERIC(30,4),
+          ALTER COLUMN call_charm_oi  TYPE NUMERIC(30,4),
+          ALTER COLUMN put_charm_oi   TYPE NUMERIC(30,4),
+          ALTER COLUMN call_charm_ask TYPE NUMERIC(30,4),
+          ALTER COLUMN call_charm_bid TYPE NUMERIC(30,4),
+          ALTER COLUMN put_charm_ask  TYPE NUMERIC(30,4),
+          ALTER COLUMN put_charm_bid  TYPE NUMERIC(30,4),
+          ALTER COLUMN call_delta_oi  TYPE NUMERIC(30,4),
+          ALTER COLUMN put_delta_oi   TYPE NUMERIC(30,4),
+          ALTER COLUMN call_vanna_oi  TYPE NUMERIC(30,4),
+          ALTER COLUMN put_vanna_oi   TYPE NUMERIC(30,4)
+      `,
+      sql`
+        ALTER TABLE spot_exposures
+          ALTER COLUMN gamma_oi  TYPE NUMERIC(30,4),
+          ALTER COLUMN gamma_vol TYPE NUMERIC(30,4),
+          ALTER COLUMN gamma_dir TYPE NUMERIC(30,4),
+          ALTER COLUMN charm_oi  TYPE NUMERIC(30,4),
+          ALTER COLUMN charm_vol TYPE NUMERIC(30,4),
+          ALTER COLUMN charm_dir TYPE NUMERIC(30,4),
+          ALTER COLUMN vanna_oi  TYPE NUMERIC(30,4),
+          ALTER COLUMN vanna_vol TYPE NUMERIC(30,4),
+          ALTER COLUMN vanna_dir TYPE NUMERIC(30,4)
+      `,
+    ],
+  },
 ];
