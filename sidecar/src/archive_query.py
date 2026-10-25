@@ -232,6 +232,7 @@ def es_day_summary(
     # Step 1 — pick the top ES contract by volume on this date.
     # Symbology uses 'ESH5' etc. for futures; options carry 'ES <date> C<strike>'
     # (note the space), which we exclude by forbidding spaces in the symbol.
+    # nosemgrep: sqlalchemy-execute-raw-query -- SQL constants only; values bound via ?
     top_row = conn.execute(
         f"""
         SELECT sym.symbol
@@ -253,6 +254,7 @@ def es_day_summary(
     top_symbol = top_row[0]
 
     # Step 2 — aggregate OHLC for just that contract on that day.
+    # nosemgrep: sqlalchemy-execute-raw-query -- SQL constants only; values bound via ?
     summary = conn.execute(
         f"""
         WITH filtered AS (
@@ -306,6 +308,7 @@ def _front_month_symbol(
     date_iso: str,
 ) -> str | None:
     """Top-ES-by-volume on a date, or None if the date has no ES bars."""
+    # nosemgrep: sqlalchemy-execute-raw-query -- SQL constants only; values bound via ?
     row = conn.execute(
         f"""
         SELECT sym.symbol
@@ -362,6 +365,7 @@ def analog_days(
     # "Session open" = the minute ts of the first bar of each contract-day
     # (not 08:30 CT) so Globex overnight activity is captured cleanly and
     # the function stays TZ-agnostic.
+    # nosemgrep: sqlalchemy-execute-raw-query -- SQL constants only; values bound via ?
     rows = conn.execute(
         f"""
         WITH es_bars AS (
@@ -447,6 +451,7 @@ def analog_days(
     # target row — separate query to keep the main one focused on k-nearest
     # (LIMIT k would otherwise bump the target out of the top rows when it
     # fully matches itself, giving a confusing API shape).
+    # nosemgrep: sqlalchemy-execute-raw-query -- SQL constants only; values bound via ?
     target_row = conn.execute(
         f"""
         WITH es_bars AS (
@@ -578,6 +583,7 @@ def day_summary_text(
     # One pass: compute open, closes at 60/120/180 minutes from session
     # start, day high/low/close, volume. Bars sit on exact minute stamps,
     # so the +60 minute boundary is captured by "<= start + 60 min".
+    # nosemgrep: sqlalchemy-execute-raw-query -- SQL constants only; values bound via ?
     row = conn.execute(
         f"""
         WITH f AS (
@@ -685,6 +691,7 @@ def day_features_vector(
     # One pass: pull the first 60 minutes of the front-month bars,
     # numbered 1..N where N ≤ 60. Anything beyond minute 60 is ignored.
     # Minute number is `(ts_event - session_open) / 60s`.
+    # nosemgrep: sqlalchemy-execute-raw-query -- SQL constants only; values bound via ?
     rows = conn.execute(
         f"""
         WITH f AS (
@@ -774,6 +781,7 @@ def day_summary_prediction(
     if top_symbol is None:
         raise ValueError(f"No ES bars found for {date_iso}")
 
+    # nosemgrep: sqlalchemy-execute-raw-query -- SQL constants only; values bound via ?
     row = conn.execute(
         f"""
         WITH f AS (
@@ -861,6 +869,7 @@ def day_features_batch(
     # happened to surface first. Real-volume ties between two ES outright
     # contracts on the same day are vanishingly rare in production data;
     # the determinism guarantee is the win.
+    # nosemgrep: sqlalchemy-execute-raw-query -- SQL constants only; values bound via ?
     rows = conn.execute(
         front_month_cte(
             symbol_like="'ES%'",
@@ -962,6 +971,7 @@ def day_summary_batch(
     # Standardized via `front_month_cte` (Phase 2b). Tied-volume
     # contracts now resolve deterministically by `symbol ASC` rather
     # than relying on DuckDB row order — see day_features_batch comment.
+    # nosemgrep: sqlalchemy-execute-raw-query -- SQL constants only; values bound via ?
     rows = conn.execute(
         front_month_cte(
             symbol_like="'ES%'",
@@ -1075,6 +1085,7 @@ def day_summary_prediction_batch(
     # Standardized via `front_month_cte` (Phase 2b). Tied-volume
     # contracts now resolve deterministically by `symbol ASC` rather
     # than relying on DuckDB row order — see day_features_batch comment.
+    # nosemgrep: sqlalchemy-execute-raw-query -- SQL constants only; values bound via ?
     rows = conn.execute(
         front_month_cte(
             symbol_like="'ES%'",

@@ -13,6 +13,7 @@ DuckDB 2.0 `TIMESTAMPTZ_NS` regression ship with a green suite.
 
 from __future__ import annotations
 
+import ast
 import sys
 from collections.abc import Iterator
 from datetime import UTC
@@ -26,6 +27,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import archive_query
+import front_month
 
 # ---------------------------------------------------------------------------
 # Fixture builder
@@ -1105,3 +1107,101 @@ def test_day_summary_prediction_batch_tied_volume_resolves_deterministically(
     # to ESM4.
     assert len(batch) == 1
     assert batch[0]["symbol"] == "ESM4"
+
+
+# ---------------------------------------------------------------------------
+# SQL construction guard (backs the nosemgrep suppressions)
+# ---------------------------------------------------------------------------
+#
+# Semgrep's sqlalchemy-execute-raw-query flags every `conn.execute(...)` in
+# archive_query whose SQL is an f-string or a concatenation, so those sites
+# carry `# nosemgrep`. That is sound only while the SQL is assembled from
+# constants and every value is bound via `?`; these tests enforce it.
+
+_NOSEMGREP_RAW_QUERY = "# nosemgrep: sqlalchemy-execute-raw-query"
+
+
+def _non_constant_sql_parts(sql: ast.expr, allowed_names: set[str]) -> list[str]:
+    """Return each piece of a SQL expression that is not a SQL constant: a
+    name outside `allowed_names`, any attribute access, or a call argument
+    that is not a literal."""
+    bad: list[str] = []
+    for node in ast.walk(sql):
+        if isinstance(node, ast.Name) and node.id not in allowed_names:
+            bad.append(node.id)
+        elif isinstance(node, ast.Attribute):
+            bad.append(ast.unparse(node))
+        elif isinstance(node, ast.Call):
+            for arg in [*node.args, *(kw.value for kw in node.keywords)]:
+                try:
+                    ast.literal_eval(arg)
+                except ValueError:
+                    bad.append(ast.unparse(arg))
+    return bad
+
+
+def test_execute_sql_interpolates_only_constants() -> None:
+    """Every `execute()` SQL in archive_query is built from SQL constants
+    (`_TS`, `_UTC_DAY`, literal `front_month_cte(...)` arguments), and every
+    `# nosemgrep` suppression sits directly above a call checked here."""
+    source = Path(archive_query.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    checked_lines: set[int] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "execute"
+            and node.args
+        ):
+            bad = _non_constant_sql_parts(
+                node.args[0], {"_TS", "_UTC_DAY", "front_month_cte"}
+            )
+            assert bad == [], f"line {node.lineno}: non-constant SQL {bad}"
+            checked_lines.add(node.lineno)
+
+    # The SQL constants themselves come from literals only.
+    constants = {
+        target.id: node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name) and target.id in {"_TS", "_UTC_DAY"}
+    }
+    assert set(constants) == {"_TS", "_UTC_DAY"}
+    for name, value in constants.items():
+        assert _non_constant_sql_parts(value, {"ts_us_expr", "_TS"}) == [], name
+
+    suppressed = [
+        lineno + 1
+        for lineno, line in enumerate(source.splitlines(), start=1)
+        if _NOSEMGREP_RAW_QUERY in line
+    ]
+    assert suppressed, "expected nosemgrep'd execute sites"
+    unguarded = sorted(set(suppressed) - checked_lines)
+    assert unguarded == [], f"nosemgrep above an unchecked line: {unguarded}"
+
+
+def test_front_month_sql_reads_only_its_own_inputs() -> None:
+    """front_month interpolates its parameters into SQL by contract, so its
+    builders must read nothing else (no globals, imports or builtins). Values
+    then reach that SQL only through arguments, which the test above pins to
+    literals at every archive_query call site."""
+    tree = ast.parse(Path(front_month.__file__).read_text(encoding="utf-8"))
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
+    builders = {func.name for func in functions}
+    assert {"ts_us_expr", "session_date_expr", "front_month_cte"} <= builders
+
+    for func in functions:
+        params = {
+            a.arg
+            for a in [*func.args.posonlyargs, *func.args.args, *func.args.kwonlyargs]
+        }
+        names = [
+            n for stmt in func.body for n in ast.walk(stmt) if isinstance(n, ast.Name)
+        ]
+        local = {n.id for n in names if isinstance(n.ctx, ast.Store)}
+        loaded = {n.id for n in names if isinstance(n.ctx, ast.Load)}
+        foreign = sorted(loaded - params - local - builders)
+        assert foreign == [], f"{func.name} reads {foreign}"

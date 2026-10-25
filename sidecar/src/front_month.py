@@ -55,9 +55,9 @@ def ts_us_expr(ts_column: TsColumn = "ts_event") -> str:
     It truncates rather than casts: ``CAST(... AS TIMESTAMPTZ)`` on 2.0
     ROUNDS to the nearest microsecond, so a bar at 23:59:59.999999999
     would land on the next day. ``epoch_ns`` accepts both bindings, and
-    ``// 1000`` floors for the archive's post-1970 epochs. The result is
-    still an instant, so ``date_trunc('day', ...)`` keeps honoring the
-    session ``TimeZone``.
+    ``// 1000`` truncates toward zero, exactly like DuckDB 1.x's Parquet
+    ns→µs read (pre-1970 included). The result is still an instant, so
+    ``date_trunc('day', ...)`` keeps honoring the session ``TimeZone``.
     """
     return f"make_timestamptz(epoch_ns(bars.{ts_column}) // 1000)"
 
