@@ -5,6 +5,7 @@ import {
   isHoliday,
   isHalfDay,
   isTradingDay,
+  parseIsoDate,
   priorTradingDay,
   cashSessionMinutes,
   currentSessionStage,
@@ -144,6 +145,28 @@ describe('isTradingDay', () => {
 
   it('requires zero-padded YYYY-MM-DD (every caller formats with 2-digit parts)', () => {
     expect(isTradingDay('2026-4-8')).toBe(false);
+  });
+});
+
+describe('parseIsoDate', () => {
+  it('parses a real zero-padded date to its UTC noon', () => {
+    expect(parseIsoDate('2026-10-23')?.toISOString()).toBe(
+      '2026-10-23T12:00:00.000Z',
+    );
+    expect(parseIsoDate('2028-02-29')?.toISOString()).toBe(
+      '2028-02-29T12:00:00.000Z',
+    );
+  });
+
+  it.each([
+    ['an impossible day', '2026-02-30'],
+    ['a non-leap Feb 29', '2026-02-29'],
+    ['a non-padded date', '2026-4-8'],
+    ['a timestamp', '2026-10-23T00:00:00Z'],
+    ['garbage', 'yesterday'],
+    ['an empty string', ''],
+  ])('returns null for %s', (_label, input) => {
+    expect(parseIsoDate(input)).toBeNull();
   });
 });
 

@@ -46,12 +46,17 @@ import {
 import { PGlite } from '@electric-sql/pglite';
 
 // The rollup takes its db handle as an argument; nothing here may reach
-// getDb() (whose DATABASE_URL would be a real database).
-vi.mock('../_lib/db.js', () => ({
-  getDb: () => {
-    throw new Error('getDb() must not be called in the pglite rollup test');
-  },
-}));
+// getDb() (whose DATABASE_URL would be a real database). withDbRetry is
+// the real one, wrapping the pglite handle.
+vi.mock('../_lib/db.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../_lib/db.js')>();
+  return {
+    getDb: () => {
+      throw new Error('getDb() must not be called in the pglite rollup test');
+    },
+    withDbRetry: actual.withDbRetry,
+  };
+});
 
 vi.mock('../_lib/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },

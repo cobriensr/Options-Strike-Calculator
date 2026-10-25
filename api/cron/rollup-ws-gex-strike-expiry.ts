@@ -25,11 +25,13 @@
  * repeated param) throws before the DB is touched, and the wrapper
  * answers 500. Re-running a date is safe: the copy is idempotent.
  *
- * Status: 'success' only when every ticker was copied. A failed ticker
- * (already captured to Sentry by the rollup, tagged with the ticker) or
- * a deferred one makes the run 'partial', or 'error' when no ticker was
- * copied at all (an error check-in: the Sentry monitor goes red). A day
- * with no source rows (a holiday) is 'success' with 0 rows.
+ * Status (deriveCronStatus over the source tickers): 'success' only when
+ * every ticker was copied. A failed ticker (already captured to Sentry by
+ * the rollup, tagged with the ticker) or a deferred one makes the run
+ * 'partial', or 'error' when none was copied (an error check-in: the
+ * Sentry monitor goes red). No source rows at all is 'success' with 0
+ * rows on a weekend or holiday; on a trading day it means uw-stream's GEX
+ * capture was down, so it warns and reports 'error'.
  *
  * Auth: CRON_SECRET via withCronInstrumentation → cronGuard. No UW key —
  * DB-only. Time gate: `marketHours: false` — after-close run. The
@@ -39,12 +41,13 @@
 
 import { getDb } from '../_lib/db.js';
 import {
+  deriveCronStatus,
   withCronInstrumentation,
   type CronResult,
-  type CronStatus,
 } from '../_lib/cron-instrumentation.js';
 import { rollupWsGexToStrikeExposures } from '../_lib/rollup-ws-gex-strike-expiry.js';
 import { Sentry } from '../_lib/sentry.js';
+import { isTradingDay, parseIsoDate } from '../../src/data/marketHours.js';
 
 const JOB = 'rollup-ws-gex-strike-expiry';
 
@@ -56,48 +59,29 @@ const JOB = 'rollup-ws-gex-strike-expiry';
  *   that ticker's statement                    must end by ~290 s
  *   completion check-in POST (5 s abort)       ~295 s, then the Axiom
  *                                              event and the response
- * The largest ticker (SPX, ~146K rows on 10-23) read in 0.93 s on
- * production, so a statement has ~50 s of headroom before the kill. One
- * run of the ~85 tickers fits well inside 240 s; a deferral warns.
- * If a statement does run past the kill, the monitor's max runtime
- * (cron-schedules.ts) turns the missing completion into a timeout.
+ * Write time dominates, and per-ticker write time is unmeasured. The
+ * evidence that a day fits: on 10-09 the old single statement wrote all
+ * 3.12M rows, every ticker, inside the old 120 s limit. SPX runs first,
+ * so the statement in flight at 240 s is never SPX. If the budget runs
+ * out, the remaining tickers are deferred with a warning (re-run them
+ * with ?date=); if a statement runs past the kill, the monitor's max
+ * runtime (cron-schedules.ts) turns the missing completion into a
+ * timeout.
  */
 export const config = { maxDuration: 300 };
 const RUN_BUDGET_MS = 240_000;
-
-const DATE_PARAM_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-/** True when `d` is a real calendar date, not just YYYY-MM-DD shaped. */
-function isRealDate(d: string): boolean {
-  const parsed = new Date(`${d}T00:00:00Z`);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().startsWith(d);
-}
 
 /** The ET date to roll up: `?date=` when given and valid, else today. */
 function resolveDate(dateParam: unknown, today: string): string {
   if (dateParam === undefined) return today;
   // Any defined non-string (e.g. a repeated ?date= array) is invalid too.
-  if (
-    typeof dateParam !== 'string' ||
-    !DATE_PARAM_RE.test(dateParam) ||
-    !isRealDate(dateParam)
-  ) {
+  if (typeof dateParam !== 'string' || parseIsoDate(dateParam) == null) {
     throw new Error(`${JOB}: invalid date param`);
   }
   if (dateParam > today) {
     throw new Error(`${JOB}: date ${dateParam} is after today (${today})`);
   }
   return dateParam;
-}
-
-/** 'success' only if every ticker was copied; 'error' if none was. */
-function runStatus(
-  tickers: number,
-  copied: number,
-  incomplete: number,
-): CronStatus {
-  if (tickers === 0 || incomplete === 0) return 'success';
-  return copied === 0 ? 'error' : 'partial';
 }
 
 export default withCronInstrumentation(
@@ -111,7 +95,31 @@ export default withCronInstrumentation(
       date,
       ctx.startTimeMs + RUN_BUDGET_MS,
     );
-    const { tickers, copied, failed, deferred, inserted } = result;
+    const { tickers, failed, deferred, inserted } = result;
+    const metadata = {
+      date,
+      tickerCount: tickers.length,
+      failedTickers: failed,
+      deferredTickers: deferred,
+    };
+
+    if (tickers.length === 0 && isTradingDay(date)) {
+      // A trading day always has 0DTE GEX pushes; none means uw-stream's
+      // gex_strike_expiry capture was down, and there is nothing to copy.
+      ctx.logger.warn({ date }, `${JOB}: no source rows on a trading day`);
+      Sentry.captureMessage(`${JOB}: no source rows on a trading day`, {
+        level: 'warning',
+        fingerprint: [JOB, 'empty-source'],
+        tags: { 'cron.anomaly': 'ws-gex-rollup-empty-source' },
+        extra: { date },
+      });
+      return {
+        status: 'error',
+        rows: 0,
+        message: `no ws_gex_strike_expiry rows for trading day ${date}`,
+        metadata,
+      };
+    }
 
     if (deferred.length > 0) {
       // No later run picks these up: they are lost once the 12:00 UTC
@@ -134,34 +142,21 @@ export default withCronInstrumentation(
       });
     }
 
-    const status = runStatus(
-      tickers.length,
-      copied.length,
+    const status = deriveCronStatus(
       failed.length + deferred.length,
+      tickers.length,
     );
     ctx.logger.info(
       {
-        date,
+        ...metadata,
         status,
-        tickerCount: tickers.length,
         inserted,
-        failedTickers: failed,
-        deferredTickers: deferred,
         durationMs: result.durationMs,
       },
       'ws_gex_strike_expiry → strike_exposures rollup complete',
     );
 
-    return {
-      status,
-      rows: inserted,
-      metadata: {
-        date,
-        tickerCount: tickers.length,
-        failedTickers: failed,
-        deferredTickers: deferred,
-      },
-    };
+    return { status, rows: inserted, metadata };
   },
   { marketHours: false, requireApiKey: false, passReq: true },
 );

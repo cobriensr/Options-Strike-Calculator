@@ -16,10 +16,15 @@ const { mockSql, mockQuery } = vi.hoisted(() => {
   return { mockSql: fn, mockQuery: queryFn };
 });
 
-vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockSql),
-  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-}));
+// The real withDbRetry, so the rollup's retry of transient errors is
+// exercised; only the connection is replaced.
+vi.mock('../_lib/db.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../_lib/db.js')>();
+  return {
+    getDb: vi.fn(() => mockSql),
+    withDbRetry: actual.withDbRetry,
+  };
+});
 
 vi.mock('../_lib/logger.js', () => ({
   default: {
@@ -239,20 +244,53 @@ describe('rollup-ws-gex-strike-expiry handler', () => {
       expect(res._json).toMatchObject({ status: 'success', rows: 12 });
     });
 
-    it('reports success with zero rows when the source has no rows for the date', async () => {
+    it('reports error and warns when a trading day has no source rows (capture was down)', async () => {
       routeQuery({ tickers: [] });
       const res = mockResponse();
       await handler(authedReq(), res);
 
       expect(res._status).toBe(200);
       expect(res._json).toMatchObject({
-        status: 'success',
+        status: 'error',
         rows: 0,
+        date: TODAY,
         tickerCount: 0,
+        message: expect.stringContaining('no ws_gex_strike_expiry rows'),
       });
       expect(insertCalls()).toHaveLength(0);
-      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+      expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        `${JOB}: no source rows on a trading day`,
+        expect.objectContaining({
+          level: 'warning',
+          fingerprint: [JOB, 'empty-source'],
+          tags: { 'cron.anomaly': 'ws-gex-rollup-empty-source' },
+          extra: expect.objectContaining({ date: TODAY }),
+        }),
+      );
     });
+
+    it.each([
+      ['a market holiday', '2025-12-25'],
+      ['a weekend day', '2026-05-16'],
+    ])(
+      'reports success with zero rows when %s has no source rows',
+      async (_label, date) => {
+        routeQuery({ tickers: [] });
+        const res = mockResponse();
+        await handler(authedReq({ date }), res);
+
+        expect(res._status).toBe(200);
+        expect(res._json).toMatchObject({
+          status: 'success',
+          rows: 0,
+          date,
+          tickerCount: 0,
+        });
+        expect(insertCalls()).toHaveLength(0);
+        expect(Sentry.captureMessage).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('failure isolation', () => {
@@ -303,6 +341,59 @@ describe('rollup-ws-gex-strike-expiry handler', () => {
         failedTickers: ['SPX', 'SPY'],
       });
       expect(Sentry.captureException).toHaveBeenCalledTimes(2);
+    });
+
+    it('fails a ticker whose INSERT returns no count row instead of reading it as 0 rows', async () => {
+      mockQuery.mockImplementation((text: string, params: unknown[] = []) => {
+        if (isTickerList(text)) {
+          return Promise.resolve([{ ticker: 'SPX' }, { ticker: 'SPY' }]);
+        }
+        // SPX's count row is missing; SPY's is fine.
+        return Promise.resolve(params[1] === 'SPX' ? [] : [{ inserted: 4 }]);
+      });
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(insertedTickers()).toEqual(['SPX', 'SPY']);
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        rows: 4,
+        failedTickers: ['SPX'],
+      });
+      expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureException).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: expect.stringContaining('no row count'),
+        }),
+        expect.objectContaining({
+          tags: expect.objectContaining({ 'rollup.ticker': 'SPX' }),
+        }),
+      );
+    });
+
+    it('retries a transient error on a ticker and lands it', async () => {
+      let aaplAttempts = 0;
+      routeQuery({
+        tickers: ['SPX', 'AAPL'],
+        counts: { SPX: 3, AAPL: 5 },
+        onInsert: (t) => {
+          if (t !== 'AAPL') return undefined;
+          aaplAttempts += 1;
+          return aaplAttempts === 1 ? new Error('fetch failed') : undefined;
+        },
+      });
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(insertedTickers()).toEqual(['SPX', 'AAPL', 'AAPL']);
+      expect(res._json).toMatchObject({
+        status: 'success',
+        rows: 8,
+        failedTickers: [],
+      });
+      expect(Sentry.captureException).not.toHaveBeenCalled();
     });
 
     it('fails the run with a 500 when the ticker list cannot be read', async () => {
@@ -419,11 +510,15 @@ describe('rollup-ws-gex-strike-expiry handler', () => {
     });
 
     it('accepts today explicitly', async () => {
-      routeQuery({ tickers: [] });
+      routeQuery({ tickers: ['SPX'], counts: { SPX: 2 } });
       const res = mockResponse();
       await handler(authedReq({ date: TODAY }), res);
       expect(res._status).toBe(200);
-      expect(res._json).toMatchObject({ status: 'success', date: TODAY });
+      expect(res._json).toMatchObject({
+        status: 'success',
+        date: TODAY,
+        rows: 2,
+      });
     });
 
     it.each([

@@ -79,6 +79,8 @@ ins`. No id payload reaches the function. Each ticker is atomic.
 - `api/_lib/rollup-ws-gex-strike-expiry.ts`
 - `api/cron/rollup-ws-gex-strike-expiry.ts`
 - `vercel.json` (`maxDuration`)
+- `api/_lib/cron-schedules.ts` (the Sentry monitor entry; without it the
+  wrapper sends no check-ins)
 - `api/__tests__/rollup-ws-gex-strike-expiry.test.ts`
 - A PGlite test proving the sargable per-ticker filter selects exactly the rows
   the old filter did, at ET-day boundaries in both DST regimes, and that the
@@ -95,8 +97,11 @@ while the other tickers land.
 
 ## Out of scope
 
-- A second scheduled run to retry deferred tickers automatically. One run of
-  85 tickers fits the budget by a wide margin; a deferral warns.
+- A second scheduled run to retry deferred tickers automatically. Writes
+  dominate the run, and per-ticker write time is unmeasured; the evidence that
+  a day fits is 10-09, when the old single statement wrote all 3.12M rows
+  inside the old 120 s limit. If the 240 s budget does run out, the deferral
+  warns and the remaining tickers can be re-run with `?date=`.
 - Re-copying 10-12 through 10-22: their source is already purged.
 
 ## Thresholds

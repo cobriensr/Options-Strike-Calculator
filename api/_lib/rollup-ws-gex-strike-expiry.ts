@@ -56,6 +56,7 @@
 
 import type { NeonQueryFunction } from '@neondatabase/serverless';
 
+import { withDbRetry } from './db.js';
 import logger from './logger.js';
 import { Sentry } from './sentry.js';
 
@@ -151,21 +152,38 @@ function processingOrder(tickers: string[]): string[] {
 }
 
 async function listTickers(db: DbHandle, date: string): Promise<string[]> {
-  const rows = (await db.query(TICKER_LIST_SQL, [date])) as {
+  const rows = (await withDbRetry(() => db.query(TICKER_LIST_SQL, [date]))) as {
     ticker: string;
   }[];
   return processingOrder(rows.map((r) => r.ticker));
 }
 
+/**
+ * Copy one ticker and return the rows it inserted. Transient errors are
+ * retried (withDbRetry's default attempts and backoff): the statement is
+ * atomic and ON CONFLICT DO NOTHING, so a retry after a lost response
+ * inserts nothing twice. No per-attempt timeout on purpose: a timeout that
+ * wins the race leaves the statement running server-side, and the retry
+ * would queue behind its row locks.
+ */
 async function copyTicker(
   db: DbHandle,
   date: string,
   ticker: string,
 ): Promise<number> {
-  const rows = (await db.query(TICKER_INSERT_SQL, [date, ticker])) as {
-    inserted: number;
-  }[];
-  return rows[0]?.inserted ?? 0;
+  const rows = (await withDbRetry(() =>
+    db.query(TICKER_INSERT_SQL, [date, ticker]),
+  )) as { inserted?: unknown }[];
+  const inserted = rows[0]?.inserted;
+  // count(*) always yields exactly one row; anything else is a broken
+  // response, not "0 rows copied".
+  if (typeof inserted !== 'number') {
+    throw new TypeError(
+      `rollup ${ticker} ${date}: INSERT returned no row count ` +
+        `(got ${JSON.stringify(rows[0] ?? null)})`,
+    );
+  }
+  return inserted;
 }
 
 /**
@@ -173,8 +191,9 @@ async function copyTicker(
  * `strike_exposures`, one ticker per INSERT...SELECT. Postgres does the
  * scan, write and count; only the count comes back.
  *
- * A failing ticker is captured to Sentry (tagged `rollup.ticker`) and
- * the loop moves on; the caller decides the run status from `failed`.
+ * Both statements retry transient DB errors. A ticker that still fails
+ * (or returns no count) is captured to Sentry (tagged `rollup.ticker`)
+ * and the loop moves on; the caller decides the run status from `failed`.
  * A ticker list failure throws (nothing can be copied without it).
  *
  * @param db         Neon SQL handle (must support `.query(text, params)`).

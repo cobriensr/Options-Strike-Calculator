@@ -148,8 +148,10 @@ export const ACTIVE_SESSION_STAGES: ReadonlySet<SessionStage> = new Set([
  * The round-trip through `toISOString` rejects dates the JS engine would
  * otherwise roll over (2026-02-30 → 2026-03-02, 2026-04-31 → 05-01); the
  * NaN check runs first because `toISOString` throws on an invalid Date.
+ *
+ * Exported as the shared strict-date check (e.g. a cron's `?date=` param).
  */
-function parseIsoDate(date: string): Date | null {
+export function parseIsoDate(date: string): Date | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
   const d = new Date(`${date}T12:00:00Z`);
   if (Number.isNaN(d.getTime())) return null;
