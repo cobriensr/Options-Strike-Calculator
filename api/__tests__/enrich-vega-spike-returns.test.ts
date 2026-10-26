@@ -32,7 +32,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 import handler from '../cron/enrich-vega-spike-returns.js';
-import { metrics } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Fixtures ──────────────────────────────────────────────────
@@ -640,7 +640,7 @@ describe('enrich-vega-spike-returns handler', () => {
 
   // ── UPDATE failure handling ────────────────────────────────
 
-  it('counts UPDATE failure as enrich_failure metric; handler still returns 200', async () => {
+  it('every pending row failing → status error (not partial), enrich_failure per row', async () => {
     const row = pendingRow();
     mockSql
       .mockResolvedValueOnce([row])
@@ -657,17 +657,68 @@ describe('enrich-vega-spike-returns handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
+    // HTTP stays 200 (the wrapper only 500s on a throw), but 'error' turns
+    // the Sentry cron monitor red and lands in Axiom as 'error'.
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
+      status: 'error',
       pending: 1,
       enriched: 0,
       skippedNoCandles: 0,
+      failed: 1,
     });
     expect(metrics.increment).toHaveBeenCalledWith('vega_spike.enrich_failure');
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
     expect(reportCronRun).toHaveBeenCalledWith(
       'enrich-vega-spike-returns',
-      expect.objectContaining({ status: 'partial', failed: 1 }),
+      expect.objectContaining({ status: 'error', failed: 1 }),
     );
+  });
+
+  it('some pending rows failing → status partial', async () => {
+    const ok = pendingRow({ id: 1, timestamp: '2026-04-27T16:00:00.000Z' });
+    const bad = pendingRow({ id: 2, timestamp: '2026-04-27T16:10:00.000Z' });
+    fakeDb(ok, [
+      { timestamp: '2026-04-27T16:00:00.000Z', close: 100 },
+      { timestamp: '2026-04-27T16:10:00.000Z', close: 100 },
+    ]);
+    const inner = mockSql.getMockImplementation()!;
+    mockSql.mockImplementation(
+      (strings: readonly string[], ...values: unknown[]) => {
+        const text = strings.join('?');
+        if (text.includes('FROM vega_spike_events')) {
+          return Promise.resolve([ok, bad]);
+        }
+        if (text.includes('UPDATE vega_spike_events') && values.at(-1) === 2) {
+          return Promise.reject(new Error('DB UPDATE failed: row 2'));
+        }
+        return inner(strings, ...values);
+      },
+    );
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      pending: 2,
+      enriched: 1,
+      failed: 1,
+    });
+  });
+
+  it('a run whose rows are all skipped for a missing anchor reports success', async () => {
+    mockSql.mockResolvedValueOnce([pendingRow()]).mockResolvedValueOnce([]); // no candles at all
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(res._json).toMatchObject({
+      status: 'success',
+      pending: 1,
+      skippedNoCandles: 1,
+      failed: 0,
+    });
   });
 
   it('fires vega_spike.enriched metric per row enriched', async () => {

@@ -56,6 +56,7 @@
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import {
+  deriveCronStatus,
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
@@ -319,7 +320,9 @@ export default withCronInstrumentation(
     // Pre-wrapper response keys (pending/enriched/skippedNoCandles) move
     // into metadata so existing toMatchObject assertions still pass.
     return {
-      status: failed > 0 ? 'partial' : 'success',
+      // Every pending row failing is 'error' (red Sentry monitor), not
+      // 'partial'; rows skipped for a missing anchor are not failures.
+      status: deriveCronStatus(failed, pending.length),
       metadata: {
         pending: pending.length,
         enriched,
