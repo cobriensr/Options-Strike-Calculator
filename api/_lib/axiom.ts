@@ -177,7 +177,7 @@ export async function reportCronRun(
     // The SDK reports little beyond a count, but include whatever it has so
     // a cap rejection can be told from a 401/429/network failure.
     const { failed } = first;
-    const failureSample = first.failures?.[0]?.error.slice(
+    const failureSample = first.failures?.[0]?.error?.slice(
       0,
       MAX_FAILURE_SAMPLE_CHARS,
     );

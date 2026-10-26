@@ -404,6 +404,28 @@ describe('reportCronRun: rejected ingest (ingested === 0)', () => {
     );
   });
 
+  it('tolerates a malformed failure entry and still retries and reports', async () => {
+    mockIngest
+      .mockResolvedValueOnce({ ingested: 0, failed: 1, failures: [{}] })
+      .mockResolvedValueOnce(ACCEPTED);
+
+    await expect(reportCronRun(JOB, payload)).resolves.toBeUndefined();
+
+    expect(mockIngest).toHaveBeenCalledTimes(2);
+    expect(mockIngest.mock.calls[1]).toStrictEqual([DATASET, envelope]);
+    expect(logger.warn).toHaveBeenCalledWith(
+      {
+        job: JOB,
+        overflowKeys,
+        retryIngested: 1,
+        failed: 1,
+        failureSample: undefined,
+      },
+      'axiom: event rejected; retried without meta',
+    );
+    expect(mockCaptureMessage).toHaveBeenCalledOnce();
+  });
+
   it('logs every later rejection on the instance but reports to Sentry only once', async () => {
     mockIngest
       .mockResolvedValueOnce(REJECTED) // JOB, first attempt
