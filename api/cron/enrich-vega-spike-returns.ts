@@ -2,8 +2,9 @@
  * GET /api/cron/enrich-vega-spike-returns
  *
  * Backfills the forward-return columns (fwd_return_5m, fwd_return_15m,
- * fwd_return_30m) on vega_spike_events rows whose spike timestamp is at
- * least 30 minutes old.
+ * fwd_return_30m, fwd_return_eod) on vega_spike_events rows whose spike
+ * timestamp is at least 30 minutes old. fwd_return_eod runs to the close
+ * of the last regular-session bar of the spike's day (see enrichRow).
  *
  * Why 5-minute cadence:
  *   - The t+5 candle needs ~5 minutes to exist after the spike, so any
@@ -20,8 +21,9 @@
  *     finishes well under any reasonable Vercel timeout.
  *
  * Why a 7-day cutoff on the pending-rows query:
- *   - If a spike fires in the last 30 min of a session, its t+30 candle
- *     falls AFTER market close where there is no candle data — those
+ *   - If a spike fires in the last ~30 min of a session, its t+30 candle
+ *     falls after the last bar etf_candles_1m gets that day (about
+ *     16:04 ET: the ETF cron's gate ends at close + 5) — those
  *     forward-return columns can never be populated.
  *   - Without a cutoff, every run would re-scan every permanently-
  *     unenrichable row forever, eventually swamping the LIMIT 100.
@@ -54,6 +56,8 @@ import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
+import { etWallClockToUtcIso, getETDateStr } from '../../src/utils/timezone.js';
+import { getMarketCloseHourET } from '../../src/data/marketHours.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -66,6 +70,19 @@ interface PendingRow {
 interface CandleRow {
   timestamp: string;
   close: string | number;
+}
+
+// ── Session close ───────────────────────────────────────────
+
+/**
+ * UTC ISO instant of the regular-session close on the spike's ET trading
+ * date: 16:00 ET, or 13:00 ET on a half-day, DST-correct. Null on a day
+ * the market is closed.
+ */
+function sessionCloseIso(anchor: Date): string | null {
+  const etDate = getETDateStr(anchor);
+  const closeHour = getMarketCloseHourET(etDate);
+  return closeHour == null ? null : etWallClockToUtcIso(etDate, closeHour * 60);
 }
 
 // ── Pure helper: compute forward return from two closes ─────
@@ -134,27 +151,33 @@ async function enrichRow(row: PendingRow): Promise<EnrichOutcome> {
   const close15 = byIso.get(t15) ?? null;
   const close30 = byIso.get(t30) ?? null;
 
-  // EoD lookup: the last 1-min candle of the spike's trading day for
-  // this ticker. The 7-hour ceiling covers a full regular session
-  // (9:30 → 16:00 ET) plus margin, while staying within the
-  // (ticker, timestamp DESC) index range — etf_candles_1m has no
-  // afterhours/futures bars so this can't bleed into the next day.
-  const eodCandles = (await withDbRetry(
-    () => sql`
-      SELECT close
-      FROM etf_candles_1m
-      WHERE ticker = ${row.ticker}
-        AND timestamp >= ${anchorIso}
-        AND timestamp <= ${anchorIso}::timestamptz + INTERVAL '7 hours'
-      ORDER BY timestamp DESC
-      LIMIT 1
-    `,
-    2,
-    10_000,
-  )) as Array<{ close: string | number }>;
-  const eodCloseRaw = eodCandles[0]?.close;
-  const eodClose =
-    eodCloseRaw != null ? Number.parseFloat(String(eodCloseRaw)) : null;
+  // EoD lookup: the last regular-session bar of the spike's trading day,
+  // i.e. the bar starting at 15:59 ET (12:59 on a half-day), whose close
+  // is the closing price. The bound is the session close, not a time
+  // ceiling, because etf_candles_1m holds post-market bars too:
+  // fetch-etf-candles-1m's gate runs to close + 5, so 16:00–16:04 ET bars
+  // exist (and pre-market bars from 04:00 ET). Same bar as
+  // ml/src/vega_spike_eda.py's `< 20:00 UTC`, but DST- and half-day-correct.
+  const closeIso = sessionCloseIso(anchor);
+  let eodClose: number | null = null;
+  if (closeIso != null && anchorMs < Date.parse(closeIso)) {
+    const eodCandles = (await withDbRetry(
+      () => sql`
+        SELECT close
+        FROM etf_candles_1m
+        WHERE ticker = ${row.ticker}
+          AND timestamp >= ${anchorIso}
+          AND timestamp < ${closeIso}::timestamptz
+        ORDER BY timestamp DESC
+        LIMIT 1
+      `,
+      2,
+      10_000,
+    )) as Array<{ close: string | number }>;
+    const eodCloseRaw = eodCandles[0]?.close;
+    eodClose =
+      eodCloseRaw != null ? Number.parseFloat(String(eodCloseRaw)) : null;
+  }
 
   const r5 = forwardReturn(anchorClose, close5);
   const r15 = forwardReturn(anchorClose, close15);

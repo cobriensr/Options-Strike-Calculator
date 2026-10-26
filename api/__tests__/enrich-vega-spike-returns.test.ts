@@ -362,6 +362,119 @@ describe('enrich-vega-spike-returns handler', () => {
     expect(rEod).toBeCloseTo(0.015, 10);
   });
 
+  // ── EoD bound: the regular-session close ───────────────────
+
+  /**
+   * A sql fake for one pending row that applies the cron's own bounds to
+   * `candles`: the exact-minute IN list for the 5/15/30 lookups, and
+   * `timestamp >= anchor AND timestamp < close` for the EoD bar. ISO
+   * strings in toISOString() form compare in time order.
+   */
+  function fakeDb(
+    row: ReturnType<typeof pendingRow>,
+    candles: Array<{ timestamp: string; close: number }>,
+  ) {
+    mockSql.mockImplementation(
+      (strings: readonly string[], ...values: unknown[]) => {
+        const text = strings.join('?');
+        if (text.includes('UPDATE vega_spike_events')) {
+          return Promise.resolve([]);
+        }
+        if (text.includes('FROM vega_spike_events')) {
+          return Promise.resolve([row]);
+        }
+        if (text.includes('timestamp IN')) {
+          const isos = values.slice(1);
+          return Promise.resolve(
+            candles
+              .filter((c) => isos.includes(c.timestamp))
+              .map((c) => candleRow(c.timestamp, c.close)),
+          );
+        }
+        if (text.includes('ORDER BY timestamp DESC')) {
+          const [, fromIso, closeIso] = values as [unknown, string, string];
+          const hit = candles
+            .filter((c) => c.timestamp >= fromIso && c.timestamp < closeIso)
+            .sort((a, b) => b.timestamp.localeCompare(a.timestamp))[0];
+          return Promise.resolve(eodCandleResult(hit?.close ?? null));
+        }
+        return Promise.reject(new Error(`unexpected SQL: ${text}`));
+      },
+    );
+  }
+
+  /** The bound values of the UPDATE: [r5, r15, r30, rEod, id]. */
+  function updateValues(): unknown[] {
+    const call = mockSql.mock.calls.find((c) =>
+      sqlText(c).includes('UPDATE vega_spike_events'),
+    );
+    expect(call).toBeDefined();
+    return call!.slice(1);
+  }
+
+  it.each([
+    {
+      day: 'an EDT day (16:00 ET = 20:00Z)',
+      spike: '2026-04-27T16:00:00.000Z',
+      lastRegular: '2026-04-27T19:59:00.000Z',
+      postMarket: '2026-04-27T20:04:00.000Z',
+      close: '2026-04-27T20:00:00.000Z',
+    },
+    {
+      day: 'an EST day (16:00 ET = 21:00Z)',
+      spike: '2026-01-15T16:00:00.000Z',
+      lastRegular: '2026-01-15T20:59:00.000Z',
+      postMarket: '2026-01-15T21:04:00.000Z',
+      close: '2026-01-15T21:00:00.000Z',
+    },
+    {
+      day: 'a half-day (Black Friday, 13:00 ET = 18:00Z)',
+      spike: '2026-11-27T16:00:00.000Z',
+      lastRegular: '2026-11-27T17:59:00.000Z',
+      postMarket: '2026-11-27T18:04:00.000Z',
+      close: '2026-11-27T18:00:00.000Z',
+    },
+  ])(
+    'EoD uses the last regular-session bar and ignores a post-market bar on $day',
+    async ({ spike, lastRegular, postMarket, close }) => {
+      // fetch-etf-candles-1m's gate runs to close + 5, so etf_candles_1m
+      // holds post-market bars after the close.
+      fakeDb(pendingRow({ timestamp: spike }), [
+        { timestamp: spike, close: 100 },
+        { timestamp: lastRegular, close: 101 },
+        { timestamp: postMarket, close: 105 },
+      ]);
+
+      await handler(AUTHORIZED_REQ(), mockResponse());
+
+      const eodCall = mockSql.mock.calls.find((c) =>
+        sqlText(c).includes('ORDER BY timestamp DESC'),
+      )!;
+      expect(sqlText(eodCall)).toMatch(/timestamp < \?::timestamptz/);
+      expect(sqlText(eodCall)).not.toMatch(/7 hours/);
+      expect(eodCall.slice(1)).toEqual(['SPY', spike, close]);
+      // The 15:59 (12:59 on a half-day) close, not the post-market 105.
+      expect(updateValues()[3]).toBeCloseTo(0.01, 10);
+    },
+  );
+
+  it('writes no EoD return for a spike at or after the close', async () => {
+    fakeDb(pendingRow({ timestamp: '2026-04-27T20:02:00.000Z' }), [
+      { timestamp: '2026-04-27T20:02:00.000Z', close: 100 },
+      { timestamp: '2026-04-27T20:04:00.000Z', close: 105 },
+    ]);
+
+    await handler(AUTHORIZED_REQ(), mockResponse());
+
+    expect(updateValues()[3]).toBeNull();
+    // No session left after the spike, so no EoD lookup at all.
+    expect(
+      mockSql.mock.calls.some((c) =>
+        sqlText(c).includes('ORDER BY timestamp DESC'),
+      ),
+    ).toBe(false);
+  });
+
   // ── 7-day cutoff ───────────────────────────────────────────
 
   it("pending-rows query includes a 7-day cutoff (NOW() - INTERVAL '7 days')", async () => {
