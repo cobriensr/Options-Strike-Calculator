@@ -28,7 +28,9 @@
  * Vacuuming frees nothing when every field still holds data, which is the
  * case with infinite retention. Production did exactly that on 2026-10-25:
  * AXIOM_DATASET now names the `cron-runs` dataset (created empty for these
- * events); the original `vercel` dataset keeps the Vercel log drain.
+ * events); the original `vercel` dataset keeps the Vercel log drain. The
+ * AXIOM_API_KEY token was rotated the same day to one with ingest on both
+ * datasets (Axiom tokens are immutable, so the old vercel-only one was replaced).
  *
  * This shapes only the Axiom event. The cron's HTTP response is built
  * separately (api/_lib/cron-instrumentation.ts) and is unaffected.
