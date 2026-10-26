@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 const mockSql = vi.fn();
@@ -88,6 +88,14 @@ describe('enrich-vega-spike-returns handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockCronGuard.mockReturnValue(GUARD);
+    // The morning after the fixtures' 2026-04-27 session: fwd_return_eod is
+    // written only once a spike's session has closed and settled.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-04-28T14:00:00.000Z'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   // ── Guard delegation ───────────────────────────────────────
@@ -419,6 +427,7 @@ describe('enrich-vega-spike-returns handler', () => {
       lastRegular: '2026-04-27T19:59:00.000Z',
       postMarket: '2026-04-27T20:04:00.000Z',
       close: '2026-04-27T20:00:00.000Z',
+      now: '2026-04-28T14:00:00.000Z',
     },
     {
       day: 'an EST day (16:00 ET = 21:00Z)',
@@ -426,6 +435,7 @@ describe('enrich-vega-spike-returns handler', () => {
       lastRegular: '2026-01-15T20:59:00.000Z',
       postMarket: '2026-01-15T21:04:00.000Z',
       close: '2026-01-15T21:00:00.000Z',
+      now: '2026-01-16T15:00:00.000Z',
     },
     {
       day: 'a half-day (Black Friday, 13:00 ET = 18:00Z)',
@@ -433,12 +443,14 @@ describe('enrich-vega-spike-returns handler', () => {
       lastRegular: '2026-11-27T17:59:00.000Z',
       postMarket: '2026-11-27T18:04:00.000Z',
       close: '2026-11-27T18:00:00.000Z',
+      now: '2026-11-30T15:00:00.000Z',
     },
   ])(
     'EoD uses the last regular-session bar and ignores a post-market bar on $day',
-    async ({ spike, lastRegular, postMarket, close }) => {
+    async ({ spike, lastRegular, postMarket, close, now }) => {
       // fetch-etf-candles-1m's gate runs to close + 5, so etf_candles_1m
       // holds post-market bars after the close.
+      vi.setSystemTime(new Date(now));
       fakeDb(pendingRow({ timestamp: spike }), [
         { timestamp: spike, close: 100 },
         { timestamp: lastRegular, close: 101 },
@@ -474,6 +486,140 @@ describe('enrich-vega-spike-returns handler', () => {
       ),
     ).toBe(false);
   });
+
+  // ── EoD timing: written once the session has closed + 5 min ─
+
+  /** A full set of candles for a 12:00 ET spike on 2026-04-27. */
+  const SESSION_CANDLES = [
+    { timestamp: '2026-04-27T16:00:00.000Z', close: 100 },
+    { timestamp: '2026-04-27T16:05:00.000Z', close: 100.5 },
+    { timestamp: '2026-04-27T16:15:00.000Z', close: 101 },
+    { timestamp: '2026-04-27T16:30:00.000Z', close: 101.5 },
+    { timestamp: '2026-04-27T16:59:00.000Z', close: 103 }, // newest at 13:00 ET
+    { timestamp: '2026-04-27T19:59:00.000Z', close: 102 }, // the 15:59 bar
+  ];
+
+  const eodLookupRan = () =>
+    mockSql.mock.calls.some((c) =>
+      sqlText(c).includes('ORDER BY timestamp DESC'),
+    );
+
+  it('leaves fwd_return_eod NULL while the session is open, still writing 5/15/30', async () => {
+    // Before: EoD was the newest bar at enrichment time (here 13:00 ET's
+    // 103, about t+60), frozen once fwd_return_30m was set.
+    vi.setSystemTime(new Date('2026-04-27T17:00:00.000Z')); // 13:00 ET
+    fakeDb(
+      pendingRow({ timestamp: '2026-04-27T16:00:00.000Z' }),
+      SESSION_CANDLES.slice(0, 5),
+    );
+
+    await handler(AUTHORIZED_REQ(), mockResponse());
+
+    const [r5, r15, r30, rEod] = updateValues();
+    expect(r5).toBeCloseTo(0.005, 10);
+    expect(r15).toBeCloseTo(0.01, 10);
+    expect(r30).toBeCloseTo(0.015, 10);
+    expect(rEod).toBeNull();
+    expect(eodLookupRan()).toBe(false);
+  });
+
+  it.each([
+    { label: 'EDT close + 4:59', now: '2026-04-27T20:04:59.000Z', eod: null },
+    { label: 'EDT close + 5:00', now: '2026-04-27T20:05:00.000Z', eod: 0.02 },
+  ])(
+    'writes fwd_return_eod only from close + 5 min ($label)',
+    async ({ now, eod }) => {
+      vi.setSystemTime(new Date(now));
+      fakeDb(
+        pendingRow({ timestamp: '2026-04-27T16:00:00.000Z' }),
+        SESSION_CANDLES,
+      );
+
+      await handler(AUTHORIZED_REQ(), mockResponse());
+
+      const rEod = updateValues()[3];
+      if (eod == null) expect(rEod).toBeNull();
+      else expect(rEod).toBeCloseTo(eod, 10);
+    },
+  );
+
+  it.each([
+    { label: 'close + 4:59', now: '2026-11-27T18:04:59.000Z', eod: null },
+    { label: 'close + 5:00', now: '2026-11-27T18:05:00.000Z', eod: 0.01 },
+  ])(
+    'on a half-day (13:00 ET close) writes fwd_return_eod only from 13:05 ET ($label)',
+    async ({ now, eod }) => {
+      vi.setSystemTime(new Date(now));
+      fakeDb(pendingRow({ timestamp: '2026-11-27T16:00:00.000Z' }), [
+        { timestamp: '2026-11-27T16:00:00.000Z', close: 100 },
+        { timestamp: '2026-11-27T17:59:00.000Z', close: 101 }, // 12:59 ET
+        { timestamp: '2026-11-27T18:03:00.000Z', close: 105 }, // post-market
+      ]);
+
+      await handler(AUTHORIZED_REQ(), mockResponse());
+
+      const rEod = updateValues()[3];
+      if (eod == null) expect(rEod).toBeNull();
+      else expect(rEod).toBeCloseTo(eod, 10);
+    },
+  );
+
+  it('writes a previous session’s EoD on the next morning’s run', async () => {
+    // A row the 16:05 run missed is picked up the next day (default clock:
+    // 2026-04-28 10:00 ET) with that session's 15:59 close.
+    fakeDb(
+      pendingRow({ timestamp: '2026-04-27T16:00:00.000Z' }),
+      SESSION_CANDLES,
+    );
+
+    await handler(AUTHORIZED_REQ(), mockResponse());
+
+    expect(updateValues()[3]).toBeCloseTo(0.02, 10);
+  });
+
+  it.each([
+    {
+      label: 'during the session: ET midnight today',
+      now: '2026-04-27T17:00:00.000Z',
+      bound: '2026-04-27T04:00:00.000Z',
+    },
+    {
+      label: 'from close + 5 min: now',
+      now: '2026-04-27T20:05:00.000Z',
+      bound: '2026-04-27T20:05:00.000Z',
+    },
+    {
+      label: 'during a half-day (EST): ET midnight today',
+      now: '2026-11-27T17:00:00.000Z',
+      bound: '2026-11-27T05:00:00.000Z',
+    },
+    {
+      label: 'a half-day from 13:05 ET: now',
+      now: '2026-11-27T18:05:00.000Z',
+      bound: '2026-11-27T18:05:00.000Z',
+    },
+    {
+      label: 'a day with no session: now',
+      now: '2026-04-25T15:00:00.000Z', // Saturday
+      bound: '2026-04-25T15:00:00.000Z',
+    },
+  ])(
+    're-selects rows awaiting EoD only from settled sessions ($label)',
+    async ({ now, bound }) => {
+      // Today's rows wait out the session in SQL, so they can't crowd
+      // newer spikes out of the LIMIT 100 while their EoD isn't due.
+      vi.setSystemTime(new Date(now));
+      mockSql.mockResolvedValueOnce([]);
+
+      await handler(AUTHORIZED_REQ(), mockResponse());
+
+      const pendingCall = mockSql.mock.calls[0]!;
+      expect(sqlText(pendingCall)).toMatch(
+        /fwd_return_30m IS NULL\s+OR \(fwd_return_eod IS NULL AND timestamp < \?::timestamptz\)/,
+      );
+      expect(pendingCall.slice(1)).toEqual([bound]);
+    },
+  );
 
   // ── 7-day cutoff ───────────────────────────────────────────
 

@@ -4,7 +4,10 @@
  * Backfills the forward-return columns (fwd_return_5m, fwd_return_15m,
  * fwd_return_30m, fwd_return_eod) on vega_spike_events rows whose spike
  * timestamp is at least 30 minutes old. fwd_return_eod runs to the close
- * of the last regular-session bar of the spike's day (see enrichRow).
+ * of the last regular-session bar of the spike's day (see enrichRow) and
+ * is written only after that session has closed + 5 min: during the day a
+ * row carries 5/15/30 with EoD NULL, then the run at close + 5 (or the
+ * next morning's) fills the EoD in.
  *
  * Why 5-minute cadence:
  *   - The t+5 candle needs ~5 minutes to exist after the spike, so any
@@ -57,7 +60,10 @@ import {
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 import { etWallClockToUtcIso, getETDateStr } from '../../src/utils/timezone.js';
-import { getMarketCloseHourET } from '../../src/data/marketHours.js';
+import {
+  getMarketCloseHourET,
+  isTradingDay,
+} from '../../src/data/marketHours.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -75,14 +81,42 @@ interface CandleRow {
 // ── Session close ───────────────────────────────────────────
 
 /**
- * UTC ISO instant of the regular-session close on the spike's ET trading
- * date: 16:00 ET, or 13:00 ET on a half-day, DST-correct. Null on a day
+ * How long after the close fwd_return_eod waits before it is written.
+ * fetch-etf-candles-1m writes a minute only once it has closed and UW has
+ * opened the next bucket, so the last regular bar (15:59 ET) lands a
+ * minute or two after 16:00. This cron's last run of the day is at
+ * close + 5 (the market-hours gate's after-close window), so 5 minutes
+ * puts the write on that run; a missed run is caught up the next morning.
+ */
+const EOD_SETTLE_MS = 5 * 60_000;
+
+/**
+ * UTC ISO instant of the regular-session close on the ET trading date of
+ * `at`: 16:00 ET, or 13:00 ET on a half-day, DST-correct. Null on a day
  * the market is closed.
  */
-function sessionCloseIso(anchor: Date): string | null {
-  const etDate = getETDateStr(anchor);
-  const closeHour = getMarketCloseHourET(etDate);
+function sessionCloseIso(at: Date): string | null {
+  const etDate = getETDateStr(at);
+  // getMarketCloseHourET knows holidays but not weekends.
+  const closeHour = isTradingDay(etDate) ? getMarketCloseHourET(etDate) : null;
   return closeHour == null ? null : etWallClockToUtcIso(etDate, closeHour * 60);
+}
+
+/**
+ * Spikes before this instant belong to sessions that have closed and
+ * settled, so their EoD return can be written: ET midnight today while
+ * today's session is open or settling, otherwise now (from today's close
+ * + EOD_SETTLE_MS, or on a day with no session).
+ */
+function eodSettledBeforeIso(now: Date): string {
+  const closeIso = sessionCloseIso(now);
+  if (
+    closeIso == null ||
+    now.getTime() >= Date.parse(closeIso) + EOD_SETTLE_MS
+  ) {
+    return now.toISOString();
+  }
+  return etWallClockToUtcIso(getETDateStr(now), 0) ?? now.toISOString();
 }
 
 // ── Pure helper: compute forward return from two closes ─────
@@ -158,9 +192,18 @@ async function enrichRow(row: PendingRow): Promise<EnrichOutcome> {
   // fetch-etf-candles-1m's gate runs to close + 5, so 16:00–16:04 ET bars
   // exist (and pre-market bars from 04:00 ET). Same bar as
   // ml/src/vega_spike_eda.py's `< 20:00 UTC`, but DST- and half-day-correct.
+  // Written only once the session has closed and settled: until then the
+  // newest bar is not the close, and a value written mid-session would
+  // never be revisited (that froze EoD at about t+30 before 2026-10-26).
+  // Until then it stays NULL and the row is re-selected after the close.
   const closeIso = sessionCloseIso(anchor);
+  const closeMs = closeIso == null ? null : Date.parse(closeIso);
   let eodClose: number | null = null;
-  if (closeIso != null && anchorMs < Date.parse(closeIso)) {
+  if (
+    closeMs != null &&
+    anchorMs < closeMs &&
+    Date.now() >= closeMs + EOD_SETTLE_MS
+  ) {
     const eodCandles = (await withDbRetry(
       () => sql`
         SELECT close
@@ -208,15 +251,20 @@ export default withCronInstrumentation(
     const { logger } = ctx;
     const sql = getDb();
 
-    // Pending rows: fwd_return_30m still NULL, spike at least 30 min ago,
-    // and no older than 7 days (rows older than that with still-NULL
-    // forward returns are treated as permanently unenrichable — see
-    // the JSDoc above for rationale).
+    // Pending rows: fwd_return_30m still NULL, or fwd_return_eod still
+    // NULL for a spike whose session has settled; spike at least 30 min
+    // ago, and no older than 7 days (rows older than that with still-NULL
+    // forward returns are treated as permanently unenrichable — see the
+    // JSDoc above for rationale). Today's rows awaiting their EoD are kept
+    // out in SQL until close + EOD_SETTLE_MS, so they can't crowd newer
+    // spikes out of the LIMIT while their EoD isn't due.
+    const settledBeforeIso = eodSettledBeforeIso(new Date());
     const pendingRaw = await withDbRetry(
       () => sql`
         SELECT id, ticker, timestamp
         FROM vega_spike_events
-        WHERE fwd_return_30m IS NULL
+        WHERE (fwd_return_30m IS NULL
+               OR (fwd_return_eod IS NULL AND timestamp < ${settledBeforeIso}::timestamptz))
           AND timestamp <= NOW() - INTERVAL '30 minutes'
           AND timestamp >= NOW() - INTERVAL '7 days'
         ORDER BY timestamp ASC

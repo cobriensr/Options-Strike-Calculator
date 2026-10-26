@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import VegaSpikeFeed from '../../components/VegaSpikeFeed/VegaSpikeFeed';
@@ -192,6 +192,22 @@ describe('VegaSpikeFeed: rows', () => {
     const dashes = screen.getAllByText('—');
     expect(dashes.length).toBeGreaterThanOrEqual(4);
     expect(screen.queryByText('null')).not.toBeInTheDocument();
+  });
+
+  it('shows +EoD as a muted dash while it is pending and +30m is already in', () => {
+    // fwd_return_eod stays NULL until the spike's session has closed, so
+    // during the day a row has +30m but no EoD yet: never 0 or NaN.
+    setHookState({
+      spikes: [makeSpike({ id: 1, fwdReturn30m: 0.0062, fwdReturnEoD: null })],
+    });
+    render(<VegaSpikeFeed marketOpen={true} />);
+    const cells = within(screen.getByTestId('vega-spike-row')).getAllByRole(
+      'cell',
+    );
+    expect(cells).toHaveLength(9);
+    expect(cells[7]).toHaveTextContent('+0.62%');
+    expect(cells[8]).toHaveTextContent(/^—$/);
+    expect(cells[8]!.className).toContain('text-muted');
   });
 
   it('confluence row gets a distinguishing data-confluence attribute', () => {
