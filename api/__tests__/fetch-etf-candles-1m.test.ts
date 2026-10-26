@@ -1,9 +1,17 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const mockSql = vi.fn();
+// The handler issues ONE tagged-template SELECT (the per-ticker high-water
+// mark) and writes through the real bulkUpsert, which calls `sql.query()`
+// for a single chunk and `sql.transaction()` past 500 rows.
+const mockQuery = vi.fn();
+const mockTransaction = vi.fn();
+const mockSql = Object.assign(vi.fn(), {
+  query: mockQuery,
+  transaction: mockTransaction,
+});
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -11,7 +19,11 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { captureException: vi.fn(), setTag: vi.fn() },
+  Sentry: {
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+    setTag: vi.fn(),
+  },
   metrics: { increment: vi.fn() },
 }));
 
@@ -37,14 +49,20 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 import handler from '../cron/fetch-etf-candles-1m.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Fixtures ──────────────────────────────────────────────────
 
 const GUARD = { apiKey: 'test-uw-key', today: '2026-04-27' };
 
+// Every fixture candle below starts before this, so none is the
+// still-forming minute unless a test moves the clock.
+const NOW = '2026-04-27T14:40:30.000Z';
+
 function makeCandle(overrides: Record<string, unknown> = {}) {
   return {
-    start_time: '2026-04-27T14:32:00Z',
+    start_time: '2026-04-27T14:32:00.000Z',
     open: '527.50',
     high: '528.10',
     low: '527.20',
@@ -54,23 +72,102 @@ function makeCandle(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** UW returns intraday candles newest first; mirror that in fixtures. */
+function candlesAt(...isoTimes: string[]) {
+  return isoTimes.map((start_time) => makeCandle({ start_time }));
+}
+
 const AUTHORIZED_REQ = () =>
   mockRequest({
     method: 'GET',
     headers: { authorization: 'Bearer test-secret' },
   });
 
+/**
+ * Route each UW fetch by ticker so tests don't depend on call order. A
+ * ticker left out gets one healthy closed candle (an empty payload is a
+ * failure, so it has to be asked for explicitly).
+ */
+function uwReturns(byTicker: Partial<Record<'SPY' | 'QQQ', unknown[]>>) {
+  mockUwFetch.mockImplementation((_key: string, path: string) => {
+    const ticker = /\/stock\/([A-Z]+)\//.exec(path)?.[1] as 'SPY' | 'QQQ';
+    return Promise.resolve(byTicker[ticker] ?? [makeCandle()]);
+  });
+}
+
+interface WriteCall {
+  stmt: string;
+  params: unknown[];
+}
+
+/** INSERTs bulkUpsert issued inside `sql.transaction` (multi-chunk path). */
+let txnWrites: WriteCall[] = [];
+
+/** Every INSERT bulkUpsert issued, direct and inside a transaction. */
+function writeCalls(): WriteCall[] {
+  const direct = mockQuery.mock.calls.map(([stmt, params]) => ({
+    stmt: stmt as string,
+    params: params as unknown[],
+  }));
+  return [...direct, ...txnWrites];
+}
+
+/** Decode the flat bulkUpsert params back into row objects. */
+function decodeRows({ stmt, params }: WriteCall) {
+  const cols = /INSERT INTO etf_candles_1m \(([^)]+)\)/
+    .exec(stmt)![1]!
+    .split(',')
+    .map((c) => c.trim());
+  const rows: Record<string, unknown>[] = [];
+  for (let i = 0; i < params.length; i += cols.length) {
+    rows.push(Object.fromEntries(cols.map((c, j) => [c, params[i + j]])));
+  }
+  return rows;
+}
+
+/** Timestamps written for one ticker, in the order they were sent. */
+function sentTimestamps(ticker: string): unknown[] {
+  return writeCalls()
+    .flatMap(decodeRows)
+    .filter((r) => r.ticker === ticker)
+    .map((r) => r.timestamp);
+}
+
+/** The single high-water-mark SELECT (tagged template on mockSql). */
+function hwmQuery() {
+  expect(mockSql).toHaveBeenCalledTimes(1);
+  const [strings, ...values] = mockSql.mock.calls[0]!;
+  return { text: (strings as readonly string[]).join('?'), values };
+}
+
 describe('fetch-etf-candles-1m handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    // Default: cronGuard returns valid guard (market open, auth ok)
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(NOW));
+    txnWrites = [];
     mockCronGuard.mockReturnValue(GUARD);
-    // Default: uwFetch returns one candle for both tickers
-    mockUwFetch.mockResolvedValue([makeCandle()]);
-    // Default: withRetry passes through
     mockWithRetry.mockImplementation((fn: () => unknown) => fn());
-    // Default: SQL INSERT returns a row (stored)
-    mockSql.mockResolvedValue([{ id: 1 }]);
+    // Default: one closed candle per ticker.
+    mockUwFetch.mockResolvedValue([makeCandle()]);
+    // Default: no rows stored yet today → no high-water mark.
+    mockSql.mockResolvedValue([]);
+    mockQuery.mockResolvedValue([]);
+    mockTransaction.mockImplementation(
+      async (fn: (txn: { query: typeof mockQuery }) => unknown[]) => {
+        const txn = {
+          query: vi.fn((stmt: string, params: unknown[]) => {
+            txnWrites.push({ stmt, params });
+            return Promise.resolve([]);
+          }),
+        };
+        return Promise.all(fn(txn));
+      },
+    );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   // ── Guard delegation ───────────────────────────────────────
@@ -178,149 +275,393 @@ describe('fetch-etf-candles-1m handler', () => {
 
   // ── Happy path ────────────────────────────────────────────
 
-  it('fetches both tickers, stores both, returns 200 with per-ticker counts', async () => {
-    const spyCandle = makeCandle({ start_time: '2026-04-27T14:32:00Z' });
-    const qqqCandle = makeCandle({
-      start_time: '2026-04-27T14:32:00Z',
-      open: '455.10',
-      high: '455.80',
-      low: '454.90',
-      close: '455.60',
+  it('fetches both tickers and writes each in one batched INSERT', async () => {
+    uwReturns({
+      SPY: candlesAt('2026-04-27T14:33:00.000Z', '2026-04-27T14:32:00.000Z'),
+      QQQ: candlesAt('2026-04-27T14:32:00.000Z'),
     });
 
-    // First call returns SPY candle, second returns QQQ candle
-    mockUwFetch
-      .mockResolvedValueOnce([spyCandle])
-      .mockResolvedValueOnce([qqqCandle]);
-
-    const req = AUTHORIZED_REQ();
     const res = mockResponse();
-    await handler(req, res);
+    await handler(AUTHORIZED_REQ(), res);
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       job: 'fetch-etf-candles-1m',
+      status: 'success',
+      failureCount: 0,
       tickers: {
-        SPY: { stored: 1, skipped: 0 },
-        QQQ: { stored: 1, skipped: 0 },
+        SPY: { fetched: 2, new: 2, stored: 2, skipped: 0, malformed: 0 },
+        QQQ: { fetched: 1, new: 1, stored: 1, skipped: 0, malformed: 0 },
       },
+      spy_candles: 2,
+      spy_stored: 2,
+      spy_skipped: 0,
+      qqq_candles: 1,
+      qqq_stored: 1,
+      qqq_skipped: 0,
     });
-    // 2 INSERT calls (1 per ticker)
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // One INSERT statement per ticker, not one per candle.
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
 
-  // ── Verifies both endpoints are called ────────────────────
-
   it('calls both /stock/SPY/ohlc/1m and /stock/QQQ/ohlc/1m endpoints', async () => {
-    mockUwFetch.mockResolvedValue([]);
     const req = AUTHORIZED_REQ();
     const res = mockResponse();
     await handler(req, res);
 
     expect(mockUwFetch).toHaveBeenCalledTimes(2);
     const urls = mockUwFetch.mock.calls.map((c) => c[1] as string);
-    expect(urls.some((u) => u.includes('/stock/SPY/ohlc/1m'))).toBe(true);
-    expect(urls.some((u) => u.includes('/stock/QQQ/ohlc/1m'))).toBe(true);
+    expect(urls).toContain('/stock/SPY/ohlc/1m?date=2026-04-27');
+    expect(urls).toContain('/stock/QQQ/ohlc/1m?date=2026-04-27');
   });
 
-  // ── Empty data ────────────────────────────────────────────
-
-  it('handles empty data for both tickers (returns all zeros)', async () => {
+  it('empty UW payload for both tickers → status error, Sentry per ticker, nothing written', async () => {
+    // Inside the gated window `date=today` always carries pre-market bars
+    // from 04:00 ET, so `data: []` means UW is broken, not a quiet market.
     mockUwFetch.mockResolvedValue([]);
-    const req = AUTHORIZED_REQ();
     const res = mockResponse();
-    await handler(req, res);
+    await handler(AUTHORIZED_REQ(), res);
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
+      status: 'error',
+      failureCount: 2,
       tickers: {
-        SPY: { stored: 0, skipped: 0 },
-        QQQ: { stored: 0, skipped: 0 },
+        SPY: { fetched: 0, new: 0, stored: 0, skipped: 0 },
+        QQQ: { fetched: 0, new: 0, stored: 0, skipped: 0 },
       },
     });
-    expect(mockSql).not.toHaveBeenCalled();
+    expect(Sentry.captureException).toHaveBeenCalledTimes(2);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'fetch-etf-candles-1m: UW returned no 1m candles for SPY',
+      }),
+    );
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'fetch_etf_candles_1m.empty_payload',
+    );
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
 
-  // ── ON CONFLICT (duplicate) path ──────────────────────────
-
-  it('counts ON CONFLICT rows as skipped, not stored', async () => {
-    // Empty result array = ON CONFLICT DO NOTHING (no row returned)
-    mockSql.mockResolvedValue([]);
-    mockUwFetch
-      .mockResolvedValueOnce([makeCandle()])
-      .mockResolvedValueOnce([makeCandle()]);
-
-    const req = AUTHORIZED_REQ();
+  it('empty UW payload for SPY only → status partial, QQQ still stored', async () => {
+    uwReturns({ SPY: [], QQQ: [makeCandle()] });
     const res = mockResponse();
-    await handler(req, res);
+    await handler(AUTHORIZED_REQ(), res);
 
-    expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
+      status: 'partial',
+      failureCount: 1,
       tickers: {
-        SPY: { stored: 0, skipped: 1 },
-        QQQ: { stored: 0, skipped: 1 },
+        SPY: { fetched: 0, stored: 0 },
+        QQQ: { fetched: 1, stored: 1 },
+      },
+    });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'fetch-etf-candles-1m: UW returned no 1m candles for SPY',
+      }),
+    );
+    expect(sentTimestamps('QQQ')).toEqual(['2026-04-27T14:32:00.000Z']);
+  });
+
+  // ── High-water mark ───────────────────────────────────────
+
+  it('reads the high-water mark once per run, bounded at ET midnight of today', async () => {
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    const { text, values } = hwmQuery();
+    expect(text).toMatch(/MAX\(timestamp\)/);
+    expect(text).toMatch(/FROM etf_candles_1m/);
+    expect(text).toMatch(/GROUP BY ticker/);
+    // A bare date compares as UTC midnight (4–5 h early) and
+    // `::date AT TIME ZONE` without `::timestamp` lands 8–10 h early; the
+    // bound must be ET midnight of the trading day.
+    expect(text).toMatch(
+      /\?::date::timestamp AT TIME ZONE 'America\/New_York'/,
+    );
+    expect(values).toContain('2026-04-27');
+    expect(values).toContainEqual(['SPY', 'QQQ']);
+  });
+
+  it('sends only candles after the per-ticker high-water mark, oldest first', async () => {
+    // Neon returns TIMESTAMPTZ as a Date; accept an ISO string too.
+    mockSql.mockResolvedValueOnce([
+      { ticker: 'SPY', hwm: new Date('2026-04-27T14:32:00.000Z') },
+      { ticker: 'QQQ', hwm: '2026-04-27T14:33:00.000Z' },
+    ]);
+    uwReturns({
+      SPY: candlesAt(
+        '2026-04-27T14:34:00.000Z',
+        '2026-04-27T14:33:00.000Z',
+        '2026-04-27T14:32:00.000Z',
+        '2026-04-27T14:31:00.000Z',
+      ),
+      QQQ: candlesAt('2026-04-27T14:34:00.000Z', '2026-04-27T14:33:00.000Z'),
+    });
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(sentTimestamps('SPY')).toEqual([
+      '2026-04-27T14:33:00.000Z',
+      '2026-04-27T14:34:00.000Z',
+    ]);
+    expect(sentTimestamps('QQQ')).toEqual(['2026-04-27T14:34:00.000Z']);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      tickers: {
+        SPY: { fetched: 4, new: 2, stored: 2, skipped: 2 },
+        QQQ: { fetched: 2, new: 1, stored: 1, skipped: 1 },
       },
     });
   });
 
-  // ── Insert error handling ─────────────────────────────────
+  it('sends every closed candle when a ticker has no high-water mark yet', async () => {
+    // Only QQQ has rows today; SPY's absence from the GROUP BY = null HWM.
+    mockSql.mockResolvedValueOnce([
+      { ticker: 'QQQ', hwm: new Date('2026-04-27T14:39:00.000Z') },
+    ]);
+    uwReturns({
+      SPY: candlesAt(
+        '2026-04-27T14:33:00.000Z',
+        '2026-04-27T14:32:00.000Z',
+        '2026-04-27T14:31:00.000Z',
+      ),
+      QQQ: candlesAt('2026-04-27T14:33:00.000Z'),
+    });
 
-  it('counts insert error as skipped; whole handler still returns 200', async () => {
-    mockSql.mockRejectedValueOnce(new Error('DB insert failed'));
-    mockUwFetch.mockResolvedValueOnce([makeCandle()]).mockResolvedValueOnce([]);
-
-    const req = AUTHORIZED_REQ();
     const res = mockResponse();
-    await handler(req, res);
+    await handler(AUTHORIZED_REQ(), res);
 
-    expect(res._status).toBe(200);
+    expect(sentTimestamps('SPY')).toEqual([
+      '2026-04-27T14:31:00.000Z',
+      '2026-04-27T14:32:00.000Z',
+      '2026-04-27T14:33:00.000Z',
+    ]);
+    expect(sentTimestamps('QQQ')).toEqual([]);
     expect(res._json).toMatchObject({
       tickers: {
-        SPY: { stored: 0, skipped: 1 },
-        QQQ: { stored: 0, skipped: 0 },
+        SPY: { fetched: 3, new: 3, stored: 3, skipped: 0 },
+        QQQ: { fetched: 1, new: 0, stored: 0, skipped: 1 },
       },
     });
+  });
+
+  it('skips the write entirely when nothing is newer than the high-water mark', async () => {
+    mockSql.mockResolvedValueOnce([
+      { ticker: 'SPY', hwm: new Date('2026-04-27T14:32:00.000Z') },
+      { ticker: 'QQQ', hwm: new Date('2026-04-27T14:32:00.000Z') },
+    ]);
+    uwReturns({
+      SPY: candlesAt('2026-04-27T14:32:00.000Z', '2026-04-27T14:31:00.000Z'),
+      QQQ: candlesAt('2026-04-27T14:32:00.000Z'),
+    });
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(res._json).toMatchObject({
+      status: 'success',
+      tickers: {
+        SPY: { fetched: 2, new: 0, stored: 0, skipped: 2 },
+        QQQ: { fetched: 1, new: 0, stored: 0, skipped: 1 },
+      },
+    });
+  });
+
+  it('never writes the still-forming minute UW returns as its newest candle', async () => {
+    // UW docs: "The most recent intraday candle is still forming, and its
+    // start_time is the start of the current bucket." Writing it would let
+    // DO NOTHING + the HWM freeze a partial bar forever.
+    vi.setSystemTime(new Date('2026-04-27T14:33:30.000Z'));
+    uwReturns({
+      SPY: candlesAt(
+        '2026-04-27T14:33:00.000Z', // forming
+        '2026-04-27T14:32:00.000Z',
+        '2026-04-27T14:31:00.000Z',
+      ),
+    });
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(sentTimestamps('SPY')).toEqual([
+      '2026-04-27T14:31:00.000Z',
+      '2026-04-27T14:32:00.000Z',
+    ]);
+    expect(res._json).toMatchObject({
+      tickers: { SPY: { fetched: 3, new: 2, stored: 2, skipped: 1 } },
+    });
+  });
+
+  it('de-duplicates repeated start_times before writing', async () => {
+    uwReturns({
+      SPY: candlesAt(
+        '2026-04-27T14:32:00.000Z',
+        '2026-04-27T14:32:00.000Z',
+        '2026-04-27T14:31:00.000Z',
+      ),
+    });
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(sentTimestamps('SPY')).toEqual([
+      '2026-04-27T14:31:00.000Z',
+      '2026-04-27T14:32:00.000Z',
+    ]);
+  });
+
+  it('writes more than 500 new candles through one transaction', async () => {
+    // A null HWM at the first run of the day can mean a whole pre-market
+    // plus session of minutes: past bulkUpsert's 500-row chunk.
+    const base = Date.parse('2026-04-27T04:00:00.000Z');
+    const spy = Array.from({ length: 501 }, (_, i) =>
+      makeCandle({ start_time: new Date(base + i * 60_000).toISOString() }),
+    ).reverse();
+    vi.setSystemTime(new Date('2026-04-27T20:00:00.000Z'));
+    uwReturns({ SPY: spy });
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(txnWrites).toHaveLength(2); // 500 + 1
+    expect(txnWrites.every(({ params }) => params[0] === 'SPY')).toBe(true);
+    // The only direct single-statement write is QQQ's one candle.
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(mockQuery.mock.calls[0]![1][0]).toBe('QQQ');
+    const sent = sentTimestamps('SPY');
+    expect(sent).toHaveLength(501);
+    expect(sent[0]).toBe('2026-04-27T04:00:00.000Z');
+    expect(sent.at(-1)).toBe('2026-04-27T12:20:00.000Z');
+    expect(res._json).toMatchObject({
+      status: 'success',
+      tickers: { SPY: { fetched: 501, new: 501, stored: 501 } },
+    });
+  });
+
+  // ── Failure modes (R4) ────────────────────────────────────
+
+  it('high-water-mark SELECT rejects → run errors, Sentry captures, nothing fetched or written', async () => {
+    const neonDown = new Error('Neon: connection terminated');
+    mockSql.mockRejectedValueOnce(neonDown);
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(res._status).toBe(500);
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'fetch-etf-candles-1m',
+      expect.objectContaining({ status: 'error' }),
+    );
+    expect(Sentry.captureException).toHaveBeenCalledWith(neonDown);
+    expect(mockUwFetch).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('SPY insert rejects → status partial, QQQ still stored, one Sentry event', async () => {
+    const spyWriteErr = new Error('DB insert failed: SPY');
+    mockQuery.mockImplementation((_stmt: string, params: unknown[]) =>
+      params[0] === 'SPY' ? Promise.reject(spyWriteErr) : Promise.resolve([]),
+    );
+    uwReturns({
+      SPY: candlesAt('2026-04-27T14:32:00.000Z', '2026-04-27T14:31:00.000Z'),
+      QQQ: candlesAt('2026-04-27T14:32:00.000Z'),
+    });
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      failureCount: 1,
+      tickers: {
+        SPY: { fetched: 2, new: 2, stored: 0 },
+        QQQ: { fetched: 1, new: 1, stored: 1 },
+      },
+      spy_stored: 0,
+      qqq_stored: 1,
+    });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(spyWriteErr);
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'fetch_etf_candles_1m.store_error',
+    );
+  });
+
+  it('both inserts reject → status error, one Sentry event per ticker (not per row)', async () => {
+    mockQuery.mockRejectedValue(new Error('Neon outage'));
+    uwReturns({
+      SPY: candlesAt(
+        '2026-04-27T14:33:00.000Z',
+        '2026-04-27T14:32:00.000Z',
+        '2026-04-27T14:31:00.000Z',
+      ),
+      QQQ: candlesAt('2026-04-27T14:32:00.000Z', '2026-04-27T14:31:00.000Z'),
+    });
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(res._status).toBe(200);
+    expect((res._json as { status: string }).status).toBe('error');
+    expect(res._json).toMatchObject({
+      failureCount: 2,
+      tickers: {
+        SPY: { stored: 0 },
+        QQQ: { stored: 0 },
+      },
+    });
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'fetch-etf-candles-1m',
+      expect.objectContaining({ status: 'error' }),
+    );
+    expect(Sentry.captureException).toHaveBeenCalledTimes(2);
   });
 
   // ── UW API errors → per-leg isolation (BE-CRON-H4) ────────
-  //
-  // A single fetch rejection used to abort the sibling via Promise.all and
-  // 500 the whole run. Now each leg is isolated with allSettled: the
-  // healthy ticker still stores and the status is demoted to 'partial'.
 
   it('partial: SPY fetch fails → status partial, QQQ candle still stored', async () => {
-    // First withRetry (SPY fetch) rejects; the rest pass through so the
-    // QQQ fetch + both store legs run normally.
-    mockWithRetry
-      .mockRejectedValueOnce(new Error('UW API 500: SPY'))
-      .mockImplementation((fn: () => unknown) => fn());
-    // QQQ fetch returns one candle.
-    mockUwFetch.mockResolvedValue([makeCandle()]);
-    mockSql.mockResolvedValue([{ id: 1 }]);
+    const spyFetchErr = new Error('UW API 500: SPY');
+    mockUwFetch.mockImplementation((_key: string, path: string) =>
+      path.includes('/SPY/')
+        ? Promise.reject(spyFetchErr)
+        : Promise.resolve([makeCandle()]),
+    );
 
-    const req = AUTHORIZED_REQ();
     const res = mockResponse();
-    await handler(req, res);
+    await handler(AUTHORIZED_REQ(), res);
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       status: 'partial',
       failureCount: 1,
       tickers: {
-        SPY: { stored: 0, skipped: 0 },
-        QQQ: { stored: 1, skipped: 0 },
+        SPY: { fetched: 0, stored: 0 },
+        QQQ: { fetched: 1, stored: 1 },
       },
     });
+    expect(Sentry.captureException).toHaveBeenCalledWith(spyFetchErr);
+    // A UW failure is not a write failure.
+    expect(metrics.increment).not.toHaveBeenCalledWith(
+      'fetch_etf_candles_1m.store_error',
+    );
     // The healthy QQQ leg still wrote its candle.
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(sentTimestamps('QQQ')).toEqual(['2026-04-27T14:32:00.000Z']);
+    expect(sentTimestamps('SPY')).toEqual([]);
   });
 
-  it('error: both ticker fetches fail → status error', async () => {
+  it('error: both ticker fetches fail → status error, Sentry per ticker, nothing written', async () => {
     mockWithRetry.mockRejectedValue(new Error('UW total outage'));
 
-    const req = AUTHORIZED_REQ();
     const res = mockResponse();
-    await handler(req, res);
+    await handler(AUTHORIZED_REQ(), res);
 
     // HTTP stays 200 (wrapper only 500s on a thrown exception) but the
     // cron status is 'error' so the monitor doesn't stay green.
@@ -329,144 +670,138 @@ describe('fetch-etf-candles-1m handler', () => {
       status: 'error',
       failureCount: 2,
       tickers: {
-        SPY: { stored: 0, skipped: 0 },
-        QQQ: { stored: 0, skipped: 0 },
+        SPY: { fetched: 0, stored: 0 },
+        QQQ: { fetched: 0, stored: 0 },
       },
     });
-    // No fetch succeeded → no rows written.
-    expect(mockSql).not.toHaveBeenCalled();
-  });
-
-  it('success: both tickers succeed → status success', async () => {
-    mockUwFetch.mockResolvedValue([makeCandle()]);
-    mockSql.mockResolvedValue([{ id: 1 }]);
-
-    const req = AUTHORIZED_REQ();
-    const res = mockResponse();
-    await handler(req, res);
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      status: 'success',
-      failureCount: 0,
-    });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(2);
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'fetch-etf-candles-1m',
+      expect.objectContaining({ status: 'error' }),
+    );
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
 
   // ── Status derivation regression (BE-CRON #8) ─────────────
   //
-  // The status used to be hand-rolled as `failureCount === 2`, hardcoding
-  // the ticker count. It is now `deriveCronStatus(failureCount, TICKERS.length)`
-  // (TICKERS = ['SPY','QQQ'], length 2). These two cases pin that the
-  // demotion still tracks the ACTUAL ticker count, not a literal: all N
-  // tickers failing → 'error', a strict subset failing → 'partial'. With the
-  // old magic number this contract held only by coincidence; with the derived
-  // count it holds structurally and survives adding a third ticker.
-
-  it('derives error from the ticker count: all (both) tickers failing → error', async () => {
-    // Both legs fail → failureCount (2) >= TICKERS.length (2) → 'error'.
-    mockWithRetry.mockRejectedValue(new Error('UW total outage'));
-
-    const res = mockResponse();
-    await handler(AUTHORIZED_REQ(), res);
-
-    expect(res._json).toMatchObject({ status: 'error', failureCount: 2 });
-  });
+  // Status is `deriveCronStatus(failureCount, TICKERS.length)`, not a
+  // hand-rolled `failureCount === 2`: all N tickers failing → 'error', a
+  // strict subset failing → 'partial'. Holds structurally if a third ticker
+  // is added.
 
   it('derives partial from the ticker count: a single ticker failing → partial (not error)', async () => {
-    // Only SPY's fetch rejects; QQQ succeeds. failureCount (1) < TICKERS.length
-    // (2) and > 0 → 'partial'. A magic `=== 2` would also (correctly) avoid
-    // 'error' here, but this case anchors that a strict-subset failure is
-    // 'partial' and that 'error' is reserved for full-fleet failure.
     mockWithRetry
       .mockImplementationOnce(() => Promise.reject(new Error('SPY 429')))
       .mockImplementationOnce((fn: () => unknown) => fn());
-    mockSql.mockResolvedValue([{ id: 1 }]);
 
     const res = mockResponse();
     await handler(AUTHORIZED_REQ(), res);
 
-    expect(res._json).toMatchObject({ status: 'partial', failureCount: 1 });
-  });
-
-  // ── INSERT column coverage ────────────────────────────────
-
-  it('persists all OHLC + volume columns in the INSERT (field coverage)', async () => {
-    // Regression guard: ensures open, high, low, close, volume are all
-    // present in the SQL and that the interpolated values carry the actual
-    // candle data. If a column is dropped from the INSERT, this fails.
-    const candle = makeCandle({
-      start_time: '2026-04-27T14:32:00Z',
-      open: '527.50',
-      high: '528.10',
-      low: '527.20',
-      close: '527.85',
-      volume: 345678,
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      failureCount: 1,
+      tickers: { SPY: { fetched: 0, stored: 0 }, QQQ: { stored: 1 } },
     });
-    mockUwFetch.mockResolvedValueOnce([candle]).mockResolvedValueOnce([]);
-
-    const req = AUTHORIZED_REQ();
-    const res = mockResponse();
-    await handler(req, res);
-
-    expect(res._status).toBe(200);
-    expect(mockSql).toHaveBeenCalledTimes(1);
-
-    // Inspect the tagged-template call: call[0] is the strings array.
-    const [strings, ...values] = mockSql.mock.calls[0]!;
-    const sqlText = (strings as readonly string[]).join('?');
-
-    // All OHLC + volume column names must appear in the SQL
-    expect(sqlText).toContain('open');
-    expect(sqlText).toContain('high');
-    expect(sqlText).toContain('low');
-    expect(sqlText).toContain('close');
-    expect(sqlText).toContain('volume');
-
-    // Interpolated values must include all field values from the fixture
-    expect(values).toContain('527.50'); // open
-    expect(values).toContain('528.10'); // high
-    expect(values).toContain('527.20'); // low
-    expect(values).toContain('527.85'); // close
-    expect(values).toContain(345678); // volume
   });
 
-  // ── Volume null coercion ───────────────────────────────────
+  // ── Malformed payload ─────────────────────────────────────
 
-  it('inserts successfully when volume is undefined (coerces to null)', async () => {
-    // UW sometimes omits volume — candle.volume ?? null must be used
-    const candleNoVolume = makeCandle({ volume: undefined });
-    mockUwFetch
-      .mockResolvedValueOnce([candleNoVolume])
-      .mockResolvedValueOnce([]);
+  it('drops malformed candles, counts them and raises one Sentry warning', async () => {
+    // One bad row must not poison the whole batch: the HWM would never
+    // advance past it and the ticker would fail every minute all day.
+    mockSql.mockResolvedValueOnce([
+      { ticker: 'SPY', hwm: new Date('2026-04-27T14:30:00.000Z') },
+    ]);
+    uwReturns({
+      SPY: [
+        makeCandle({ start_time: 'not-a-time' }),
+        makeCandle({ start_time: '2026-04-27T14:34:00.000Z', open: 'n/a' }),
+        makeCandle({ start_time: '2026-04-27T14:33:00.000Z', close: null }),
+        // BIGINT rejects a fraction, which would fail the whole INSERT.
+        makeCandle({ start_time: '2026-04-27T14:32:00.000Z', volume: 12.5 }),
+        makeCandle({ start_time: '2026-04-27T14:31:00.000Z' }),
+        // Already behind the HWM: skipped, not re-counted as malformed.
+        makeCandle({ start_time: '2026-04-27T14:29:00.000Z', open: 'bad' }),
+      ],
+    });
 
-    const req = AUTHORIZED_REQ();
     const res = mockResponse();
-    await handler(req, res);
+    await handler(AUTHORIZED_REQ(), res);
 
-    expect(res._status).toBe(200);
-    expect(mockSql).toHaveBeenCalledTimes(1);
-
-    // The volume parameter in the INSERT should be null, not undefined
-    const [, ...values] = mockSql.mock.calls[0]!;
-    // Find the volume value position (6th interpolated param: ticker, ts, open, high, low, close, volume)
-    expect(values).toContain(null);
-    // Ensure undefined did NOT reach SQL
-    expect(values).not.toContain(undefined);
-  });
-
-  // ── Sentry metric on insert failure ──────────────────────
-
-  it('fires Sentry metric on insert error', async () => {
-    const { metrics: sentryMetrics } = await import('../_lib/sentry.js');
-    mockSql.mockRejectedValueOnce(new Error('DB insert failed'));
-    mockUwFetch.mockResolvedValueOnce([makeCandle()]).mockResolvedValueOnce([]);
-
-    const req = AUTHORIZED_REQ();
-    const res = mockResponse();
-    await handler(req, res);
-
-    expect(sentryMetrics.increment).toHaveBeenCalledWith(
-      'fetch_etf_candles_1m.store_error',
+    expect(sentTimestamps('SPY')).toEqual(['2026-04-27T14:31:00.000Z']);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      tickers: {
+        SPY: { fetched: 6, new: 1, stored: 1, skipped: 5, malformed: 4 },
+        QQQ: { malformed: 0 },
+      },
+    });
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'fetch-etf-candles-1m: malformed UW candles dropped',
+      { level: 'warning', extra: { ticker: 'SPY', malformed: 4 } },
     );
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'fetch_etf_candles_1m.malformed',
+    );
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  // ── INSERT shape ──────────────────────────────────────────
+
+  /** The one INSERT that carried SPY rows. */
+  function spyWrite(): WriteCall {
+    const call = writeCalls().find(({ params }) => params[0] === 'SPY');
+    expect(call).toBeDefined();
+    return call!;
+  }
+
+  it('writes every OHLC + volume column with ON CONFLICT DO NOTHING', async () => {
+    uwReturns({ SPY: [makeCandle()] });
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    const call = spyWrite();
+    expect(call.stmt).toMatch(/ON CONFLICT \(ticker, timestamp\) DO NOTHING/);
+    expect(decodeRows(call)).toEqual([
+      {
+        ticker: 'SPY',
+        timestamp: '2026-04-27T14:32:00.000Z',
+        open: '527.50',
+        high: '528.10',
+        low: '527.20',
+        close: '527.85',
+        volume: 345678,
+      },
+    ]);
+  });
+
+  it('writes volume as null (never undefined) when UW omits it', async () => {
+    uwReturns({ SPY: [makeCandle({ volume: undefined })] });
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    const call = spyWrite();
+    expect(decodeRows(call)[0]!.volume).toBeNull();
+    expect(call.params).not.toContain(undefined);
+  });
+
+  it('writes the integer it validated when UW sends volume as a string', async () => {
+    // Off-contract (UW documents an integer), but Postgres BIGINT rejects
+    // '1.0' and '1e3' even though both validate as safe integers.
+    uwReturns({
+      SPY: [
+        makeCandle({ start_time: '2026-04-27T14:32:00.000Z', volume: '1.0' }),
+        makeCandle({ start_time: '2026-04-27T14:31:00.000Z', volume: '1e3' }),
+      ],
+    });
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(decodeRows(spyWrite()).map((r) => r.volume)).toEqual([1000, 1]);
   });
 });
