@@ -158,28 +158,14 @@ export interface MarketDataState {
    * specifically. Distinct from `fetchedAt` because events/movers/
    * yesterday have their own cadences and shouldn't affect quote
    * freshness. Epoch ms (canonical), matching `fetchedAt`. FE-STATE-001.
+   *
+   * Staleness (`isStale` / `isVeryStale` / `staleAgeSec`) is derived from
+   * this by `useQuoteStaleness`, called inside the header's quote badge.
+   * It is not part of this hook's return: its 5 s wall-clock tick would
+   * give the memoised return a new identity on every tick and re-render
+   * the whole panel tree (F1).
    */
   quotesFetchedAt: number | null;
-  /**
-   * True when quotes data is older than STALE_THRESHOLD_MS (90s) during
-   * market hours. Gated on `marketOpen` so the badge doesn't show after
-   * market close when polling has intentionally stopped. FE-STATE-001.
-   */
-  isStale: boolean;
-  /**
-   * True when quotes data is older than VERY_STALE_THRESHOLD_MS (180s)
-   * during market hours. Implies `isStale`. Used for the red severity
-   * tier in the header badge. FE-STATE-001.
-   */
-  isVeryStale: boolean;
-  /**
-   * Age of the most recent quotes fetch in whole seconds, or `null` when
-   * market is closed or no fetch has happened yet. Derived from the
-   * internal staleness tick so consumers can display "Quotes Ns old"
-   * without calling `Date.now()` during render (React purity rule).
-   * FE-STATE-001.
-   */
-  staleAgeSec: number | null;
   /**
    * Current US equity session, derived client-side from ET wall-clock
    * time. Updates on a timer as phase boundaries pass (08:30 CT prep
@@ -208,37 +194,13 @@ export interface MarketDataState {
 const REFRESH_INTERVAL_MS = POLL_INTERVALS.MARKET_DATA;
 
 /**
- * FE-STATE-001 staleness thresholds (in ms, gated on market hours):
- * - STALE (yellow pill): quotes older than 90s — one missed poll beyond
- *   the normal 60s cadence. Signal that polling is lagging or degraded.
- * - VERY_STALE (red pill): quotes older than 180s — three missed polls.
- *   Indicates sustained polling failure; price-dependent decisions should
- *   be treated with strong skepticism.
- *
- * Fixed thresholds (not dynamic per backoff) per the decision that
- * backoff itself is a valid signal worth surfacing — if polling has
- * doubled to 120s, that's still abnormal from the trader's perspective
- * and the pill should reflect it.
- */
-const STALE_THRESHOLD_MS = 90_000;
-const VERY_STALE_THRESHOLD_MS = 180_000;
-
-/**
- * How often to force a re-render to re-evaluate staleness. 5 seconds
- * is imperceptibly late (stale becomes visible at 95s instead of 90s)
- * and avoids the cost of a 1-second interval on a hook at the top of
- * the component tree.
- */
-const STALENESS_TICK_MS = 5_000;
-
-/**
  * How often to re-evaluate `session` against the wall clock. 15 seconds
  * gives at most a 15s lag around phase boundaries (8:30 CT prep flip,
  * 9:30 ET regular-hours flip, 16:00 ET close, 20:00 ET extended-hours
  * end) — imperceptible to the trader and cheap even at the top of the
- * component tree. Runs unconditionally (unlike the staleness tick) so
- * `closed` → `pre-market` transitions actually fire without needing a
- * manual refresh.
+ * component tree, because the setter bails out unless the phase changes.
+ * Runs unconditionally so `closed` → `pre-market` transitions actually
+ * fire without needing a manual refresh.
  */
 const SESSION_TICK_MS = 15_000;
 
@@ -269,14 +231,6 @@ export function useMarketData(): MarketDataState {
   // the /api/quotes endpoint specifically since that's what drives hedge
   // pricing and calculator inputs.
   const [quotesFetchedAt, setQuotesFetchedAt] = useState<number | null>(null);
-  // Wall-clock snapshot used by the staleness derivations below. Updated
-  // periodically by the force-tick effect so `isStale` / `isVeryStale` can
-  // flip as real time passes without a new fetch. Storing the clock value
-  // in state (rather than calling `Date.now()` during render) keeps the
-  // hook idempotent per React's purity rule — render functions must not
-  // call impure APIs. `null` means either the market is closed (tick
-  // suspended) or the first tick hasn't fired yet.
-  const [nowForStaleness, setNowForStaleness] = useState<number | null>(null);
   // FE-STATE-002: tri-state session. Initialized lazily from the current
   // wall clock so the first render has a meaningful value (otherwise the
   // first render would hard-code `'closed'` and the mount effect would
@@ -470,60 +424,8 @@ export function useMarketData(): MarketDataState {
     return () => clearInterval(id);
   }, []);
 
-  // FE-STATE-001 + FE-STATE-002: wall-clock tick that drives staleness
-  // re-evaluation. Runs while the session is NOT closed — that covers
-  // pre-market / regular / after-hours so stale-badge semantics match
-  // the extended polling gate above. Outside those windows polling has
-  // intentionally stopped, `quotesFetchedAt` is no longer updating,
-  // and a stale badge would be pure noise overnight.
-  //
-  // Fires once immediately so the first render after a session flip has
-  // a meaningful clock value, then every STALENESS_TICK_MS thereafter.
-  // Setter lives inside the effect so `Date.now()` is only called from
-  // outside the render path — this keeps the hook pure per React's
-  // idempotence rule.
-  useEffect(() => {
-    // Gate: session !== 'closed' — matches the polling gate so the
-    // staleness badge is only meaningful while we're actually trying
-    // to fetch quotes.
-    if (session === 'closed') {
-      setNowForStaleness(null);
-      return;
-    }
-    setNowForStaleness(Date.now());
-    const id = setInterval(() => {
-      setNowForStaleness(Date.now());
-    }, STALENESS_TICK_MS);
-    return () => clearInterval(id);
-  }, [session]);
-
   const hasData =
     data.quotes != null || data.intraday != null || data.yesterday != null;
-
-  // FE-STATE-001 + FE-STATE-002: derived staleness flags. Only meaningful
-  // when:
-  //   (a) session is not closed (polling is expected to run), AND
-  //   (b) quotes have been fetched at least once, AND
-  //   (c) the tick has populated `nowForStaleness`.
-  // All three conditions null-out the flags so consumers get `false`
-  // rather than a positive stale signal during startup or overnight.
-  //
-  // Gate: session !== 'closed' — staleness has to apply in pre-market /
-  // after-hours too, otherwise the 08:30 CT prep workflow would never
-  // see a degraded-polling warning.
-  let isStale = false;
-  let isVeryStale = false;
-  let staleAgeSec: number | null = null;
-  if (
-    session !== 'closed' &&
-    quotesFetchedAt != null &&
-    nowForStaleness != null
-  ) {
-    const ageMs = nowForStaleness - quotesFetchedAt;
-    isStale = ageMs >= STALE_THRESHOLD_MS;
-    isVeryStale = ageMs >= VERY_STALE_THRESHOLD_MS;
-    staleAgeSec = Math.max(0, Math.round(ageMs / 1000));
-  }
 
   // FE-STATE-002: backward-compat `marketOpen` alias. Historically
   // consumers checked `data.quotes?.marketOpen` or the hook-level
@@ -536,10 +438,15 @@ export function useMarketData(): MarketDataState {
   // data hasn't changed. Every field below is already individually
   // render-stable — `data` / `loading` / `needsAuth` / `fetchedAt` /
   // `quotesFetchedAt` / `session` are useState values, `fetchAll` is a
-  // useCallback, and `hasData` / `isStale` / `isVeryStale` / `staleAgeSec` /
-  // `marketOpen` are derived primitives. Only the object literal wrapper was
-  // churning its reference every render; useMemo holds it constant until one
-  // of the listed deps changes. Values and semantics are unchanged.
+  // useCallback, and `hasData` / `marketOpen` are derived primitives. Only
+  // the object literal wrapper was churning its reference every render;
+  // useMemo holds it constant until one of the listed deps changes. Values
+  // and semantics are unchanged.
+  //
+  // F1: keep wall-clock-derived values (like quote age) OUT of this return.
+  // A periodic tick here changes the identity on every tick and re-renders
+  // the whole panel tree; derive them in the leaf that displays them, as
+  // useQuoteStaleness does for the header badge.
   return useMemo(
     () => ({
       data,
@@ -549,9 +456,6 @@ export function useMarketData(): MarketDataState {
       refresh: fetchAll,
       fetchedAt,
       quotesFetchedAt,
-      isStale,
-      isVeryStale,
-      staleAgeSec,
       session,
       marketOpen,
     }),
@@ -563,9 +467,6 @@ export function useMarketData(): MarketDataState {
       fetchAll,
       fetchedAt,
       quotesFetchedAt,
-      isStale,
-      isVeryStale,
-      staleAgeSec,
       session,
       marketOpen,
     ],

@@ -110,11 +110,9 @@ const mockMarket = {
   needsAuth: false,
   refresh: async () => {},
   fetchedAt: null,
-  // FE-STATE-001 staleness fields.
+  // FE-STATE-001 quote freshness (staleness derives from it in
+  // useQuoteStaleness).
   quotesFetchedAt: null,
-  isStale: false,
-  isVeryStale: false,
-  staleAgeSec: null,
   // FE-STATE-002 tri-state session.
   session: 'closed' as const,
   marketOpen: false,

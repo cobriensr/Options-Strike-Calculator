@@ -692,20 +692,56 @@ describe('useMarketData: interval intraday refresh (lines 220-223)', () => {
 });
 
 // ============================================================
-// FE-STATE-001: QUOTES-SPECIFIC STALENESS FLAGS
+// F1: RETURN IDENTITY STAYS STABLE BETWEEN REAL DATA CHANGES
 // ============================================================
 
-describe('useMarketData: FE-STATE-001 staleness flags', () => {
-  const mockQuotesOpen = { ...mockQuotes, marketOpen: true };
-  const mockQuotesClosed = { ...mockQuotes, marketOpen: false };
+describe('useMarketData: F1 return identity', () => {
+  it('keeps the same object identity across 15 s of the staleness tick (F1)', async () => {
+    // App.tsx's panelMap memo is keyed on this object. A wall-clock tick in
+    // the hook used to give it a new identity every 5 s and re-render the
+    // whole panel tree ~12 times a minute for the owner. The quote-age clock
+    // now lives in useQuoteStaleness (header badge only), so with no new
+    // data the identity must hold across the old tick and the 15 s session
+    // tick, and before the 60 s quotes poll.
+    vi.setSystemTime(REGULAR_HOURS);
+    globalThis.fetch = mockFetchResponses({
+      quotes: { status: 200, body: { ...mockQuotes, marketOpen: true } },
+    }) as unknown as typeof fetch;
 
-  it('isStale is false on initial mount (no fetches yet)', async () => {
-    // Default beforeEach sets a closed session, which is what this test
-    // wants: no polling, no staleness tick, staleness stays false.
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.quotesFetchedAt).not.toBeNull());
+    const prev = result.current;
+
+    await act(async () => {
+      vi.advanceTimersByTime(15_000);
+    });
+
+    expect(result.current).toBe(prev);
+  });
+});
+
+// ============================================================
+// FE-STATE-001: QUOTES-SPECIFIC FRESHNESS (quotesFetchedAt)
+// ============================================================
+//
+// The isStale / isVeryStale / staleAgeSec flags moved to useQuoteStaleness
+// (F1) and are tested in useQuoteStaleness.test.ts and AppHeader.test.tsx.
+// What stays here is their input: quotesFetchedAt tracks the last
+// successful /api/quotes fetch only.
+
+describe('useMarketData: FE-STATE-001 quotesFetchedAt', () => {
+  const mockQuotesOpen = { ...mockQuotes, marketOpen: true };
+  const allUnauthorized = {
+    quotes: { status: 401, body: null },
+    intraday: { status: 401, body: null },
+    yesterday: { status: 401, body: null },
+    events: { status: 401, body: null },
+    movers: { status: 401, body: null },
+  };
+
+  it('quotesFetchedAt is null on initial mount (no fetches yet)', async () => {
     globalThis.fetch = mockFetchResponses() as unknown as typeof fetch;
     const { result } = renderHook(() => useMarketData());
-    expect(result.current.isStale).toBe(false);
-    expect(result.current.isVeryStale).toBe(false);
     expect(result.current.quotesFetchedAt).toBeNull();
     // Let the mount fetch settle so the trailing setData/setLoading
     // state updates don't leak past the test boundary and trigger
@@ -720,153 +756,63 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
     }) as unknown as typeof fetch;
     const { result } = renderHook(() => useMarketData());
     await waitFor(() => expect(result.current.quotesFetchedAt).not.toBeNull());
-    // Freshly fetched → not stale.
-    expect(result.current.isStale).toBe(false);
-    expect(result.current.isVeryStale).toBe(false);
+    expect(result.current.quotesFetchedAt).toBe(result.current.fetchedAt);
   });
 
-  it('transitions to isStale after 90s elapse while market is open', async () => {
+  it('pins quotesFetchedAt through failing quote polls, then advances on the next quotes success', async () => {
     vi.setSystemTime(REGULAR_HOURS);
     globalThis.fetch = mockFetchResponses({
       quotes: { status: 200, body: mockQuotesOpen },
     }) as unknown as typeof fetch;
     const { result } = renderHook(() => useMarketData());
     await waitFor(() => expect(result.current.quotesFetchedAt).not.toBeNull());
+    const firstFetch = result.current.quotesFetchedAt!;
 
-    // Hijack the next poll by making the quotes endpoint return stale data
-    // (same timestamps) AND prevent the auto-refresh from touching
-    // quotesFetchedAt: we want to observe the force-tick advancing the
-    // staleness flag purely via wall-clock passing. We use 401s so the
-    // fetch completes but quotesSuccess stays false.
-    globalThis.fetch = mockFetchResponses({
-      quotes: { status: 401, body: null },
-      intraday: { status: 401, body: null },
-      yesterday: { status: 401, body: null },
-      events: { status: 401, body: null },
-      movers: { status: 401, body: null },
-    }) as unknown as typeof fetch;
-
-    // Advance past the 90s staleness threshold. The 5s force-tick inside
-    // the hook should trigger a re-render that re-evaluates `isStale`.
+    // Polls 401 past the 90 s staleness threshold: the badge's input
+    // must stay pinned so useQuoteStaleness reports STALE.
+    globalThis.fetch = mockFetchResponses(
+      allUnauthorized,
+    ) as unknown as typeof fetch;
     await act(async () => {
       vi.advanceTimersByTime(95_000);
     });
+    expect(result.current.quotesFetchedAt).toBe(firstFetch);
 
-    expect(result.current.isStale).toBe(true);
-    expect(result.current.isVeryStale).toBe(false);
-  });
-
-  it('transitions to isVeryStale after 180s elapse while market is open', async () => {
-    vi.setSystemTime(REGULAR_HOURS);
-    globalThis.fetch = mockFetchResponses({
-      quotes: { status: 200, body: mockQuotesOpen },
-    }) as unknown as typeof fetch;
-    const { result } = renderHook(() => useMarketData());
-    await waitFor(() => expect(result.current.quotesFetchedAt).not.toBeNull());
-
-    // Subsequent polls 401 so quotesFetchedAt stays pinned.
-    globalThis.fetch = mockFetchResponses({
-      quotes: { status: 401, body: null },
-      intraday: { status: 401, body: null },
-      yesterday: { status: 401, body: null },
-      events: { status: 401, body: null },
-      movers: { status: 401, body: null },
-    }) as unknown as typeof fetch;
-
-    await act(async () => {
-      vi.advanceTimersByTime(185_000);
-    });
-
-    expect(result.current.isStale).toBe(true);
-    expect(result.current.isVeryStale).toBe(true);
-  });
-
-  it('does NOT flag staleness when market is closed (even with old quotes)', async () => {
-    // Market-closed scenario: quotes came in, market is closed, then
-    // a long time passes. The staleness flags should remain false
-    // because polling has intentionally stopped — showing "STALE" for
-    // 17 hours every overnight is pure noise.
-    //
-    // FE-STATE-002: rely on the default beforeEach `SESSION_CLOSED_WEEKEND`
-    // so the client-side session classifier returns 'closed'.
-    globalThis.fetch = mockFetchResponses({
-      quotes: { status: 200, body: mockQuotesClosed },
-    }) as unknown as typeof fetch;
-    const { result } = renderHook(() => useMarketData());
-    await waitFor(() => expect(result.current.quotesFetchedAt).not.toBeNull());
-
-    // Advance way past both thresholds.
-    await act(async () => {
-      vi.advanceTimersByTime(300_000);
-    });
-
-    expect(result.current.isStale).toBe(false);
-    expect(result.current.isVeryStale).toBe(false);
-  });
-
-  it('resets isStale after a fresh successful quotes fetch', async () => {
-    vi.setSystemTime(REGULAR_HOURS);
-    globalThis.fetch = mockFetchResponses({
-      quotes: { status: 200, body: mockQuotesOpen },
-    }) as unknown as typeof fetch;
-    const { result } = renderHook(() => useMarketData());
-    await waitFor(() => expect(result.current.quotesFetchedAt).not.toBeNull());
-
-    // Drift into stale territory by letting the interval polls 401.
-    globalThis.fetch = mockFetchResponses({
-      quotes: { status: 401, body: null },
-      intraday: { status: 401, body: null },
-      yesterday: { status: 401, body: null },
-      events: { status: 401, body: null },
-      movers: { status: 401, body: null },
-    }) as unknown as typeof fetch;
-    await act(async () => {
-      vi.advanceTimersByTime(95_000);
-    });
-    expect(result.current.isStale).toBe(true);
-
-    // Now install a healthy endpoint again and manually trigger a
-    // refresh. After quotes come back, staleness should reset.
+    // Quotes recover: a refresh moves it forward, which clears STALE.
     globalThis.fetch = mockFetchResponses({
       quotes: { status: 200, body: mockQuotesOpen },
     }) as unknown as typeof fetch;
     await act(async () => {
       await result.current.refresh();
     });
-
-    expect(result.current.isStale).toBe(false);
-    expect(result.current.isVeryStale).toBe(false);
+    expect(result.current.quotesFetchedAt).toBeGreaterThan(firstFetch);
   });
 
-  it('quote-specific: events-only updates do NOT reset stale flag', async () => {
-    // Scenario: /api/quotes 401s, /api/events succeeds. The whole-state
-    // fetchedAt advances (because events came through), but
-    // quotesFetchedAt does NOT, and `isStale` should still flip true
-    // once 90s pass since the last quotes success. This is the Decision 4
-    // "quotes-specific staleness" behavior — events/movers freshness
-    // should never mask a stale quotes warning.
+  it('quote-specific: a refresh where only events/movers succeed advances fetchedAt but not quotesFetchedAt', async () => {
+    // Decision 4 "quotes-specific staleness": events/movers freshness must
+    // never mask a stale quotes warning.
     vi.setSystemTime(REGULAR_HOURS);
     globalThis.fetch = mockFetchResponses({
       quotes: { status: 200, body: mockQuotesOpen },
     }) as unknown as typeof fetch;
     const { result } = renderHook(() => useMarketData());
     await waitFor(() => expect(result.current.quotesFetchedAt).not.toBeNull());
+    const fetchedAtBefore = result.current.fetchedAt!;
+    const quotesFetchedAtBefore = result.current.quotesFetchedAt;
 
-    // Now quotes 401 but events keep succeeding.
+    // Quotes 401 while events + movers (defaults) keep succeeding.
     globalThis.fetch = mockFetchResponses({
       quotes: { status: 401, body: null },
       intraday: { status: 401, body: null },
       yesterday: { status: 401, body: null },
-      // events + movers default to 200
     }) as unknown as typeof fetch;
-
     await act(async () => {
-      vi.advanceTimersByTime(95_000);
+      vi.advanceTimersByTime(10_000);
+      await result.current.refresh();
     });
 
-    // fetchedAt may have advanced (events are still fetching), but
-    // quotesFetchedAt is pinned, so isStale fires.
-    expect(result.current.isStale).toBe(true);
+    expect(result.current.fetchedAt).toBeGreaterThan(fetchedAtBefore);
+    expect(result.current.quotesFetchedAt).toBe(quotesFetchedAtBefore);
   });
 });
 
