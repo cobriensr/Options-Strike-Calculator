@@ -279,6 +279,8 @@ export default withCronInstrumentation(
     let enriched = 0;
     let skippedNoCandles = 0;
     let failed = 0;
+    const failedIds: number[] = [];
+    let firstError: unknown;
 
     for (const row of pending) {
       try {
@@ -291,20 +293,26 @@ export default withCronInstrumentation(
         }
       } catch (err) {
         failed += 1;
+        failedIds.push(row.id);
+        firstError ??= err;
         metrics.increment('vega_spike.enrich_failure');
         logger.warn(
           { err, id: row.id, ticker: row.ticker, ts: row.timestamp },
           'enrich-vega-spike-returns row failed',
         );
-        // Surface to Sentry — prior to 2026-05-19 only the metric was
-        // emitted (visible in Axiom), so a systematic outage (e.g.
-        // Schwab candles down for the day) accrued only as a counter
-        // tick without a grouped Sentry issue.
-        Sentry.captureException(err, {
-          tags: { cron: 'enrich-vega-spike-returns', ticker: row.ticker },
-          extra: { row_id: row.id, ts: String(row.timestamp) },
-        });
       }
+    }
+
+    // One Sentry event per run carrying the first error, not one per row:
+    // a Neon outage fails every pending row (up to the LIMIT of 100 every
+    // 5 minutes). Per-row detail stays in the warn lines and the metric.
+    // (Before 2026-05-19 only the metric was emitted, so an outage never
+    // became a grouped Sentry issue.)
+    if (failed > 0) {
+      Sentry.captureException(firstError, {
+        tags: { cron: 'enrich-vega-spike-returns' },
+        extra: { failed, pending: pending.length, failedIds },
+      });
     }
 
     logger.info(

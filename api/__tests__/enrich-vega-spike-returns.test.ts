@@ -705,6 +705,63 @@ describe('enrich-vega-spike-returns handler', () => {
       enriched: 1,
       failed: 1,
     });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'DB UPDATE failed: row 2' }),
+      {
+        tags: { cron: 'enrich-vega-spike-returns' },
+        extra: { failed: 1, pending: 2, failedIds: [2] },
+      },
+    );
+  });
+
+  it('sends ONE Sentry event per run when many rows fail, not one per row', async () => {
+    // A Neon outage fails every row: up to 100 rows every 5 minutes used to
+    // mean up to 100 Sentry events per run.
+    const rows = [1, 2, 3].map((id) =>
+      pendingRow({ id, timestamp: `2026-04-27T16:0${id}:00.000Z` }),
+    );
+    fakeDb(
+      rows[0]!,
+      rows.map((r) => ({ timestamp: r.timestamp, close: 100 })),
+    );
+    const inner = mockSql.getMockImplementation()!;
+    mockSql.mockImplementation(
+      (strings: readonly string[], ...values: unknown[]) => {
+        const text = strings.join('?');
+        if (text.includes('FROM vega_spike_events')) {
+          return Promise.resolve(rows);
+        }
+        if (text.includes('UPDATE vega_spike_events')) {
+          return Promise.reject(
+            new Error(`Neon outage: row ${String(values.at(-1))}`),
+          );
+        }
+        return inner(strings, ...values);
+      },
+    );
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(res._json).toMatchObject({
+      status: 'error',
+      pending: 3,
+      failed: 3,
+    });
+    // Per-row signals stay: one warn line and one metric tick per row.
+    const failureTicks = vi
+      .mocked(metrics.increment)
+      .mock.calls.filter(([m]) => m === 'vega_spike.enrich_failure');
+    expect(failureTicks).toHaveLength(3);
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Neon outage: row 1' }),
+      {
+        tags: { cron: 'enrich-vega-spike-returns' },
+        extra: { failed: 3, pending: 3, failedIds: [1, 2, 3] },
+      },
+    );
   });
 
   it('a run whose rows are all skipped for a missing anchor reports success', async () => {
