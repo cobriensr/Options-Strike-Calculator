@@ -90,7 +90,7 @@ idx0dte_put_share percentile = "abnormally bearish for this time of day."
 
 ## Refreshing the baseline
 
-The baseline artifact (`api/_lib/flow-regime-baseline.json`) is regenerated
+The baseline artifact (`src/data/flow-regime-baseline.json`) is regenerated
 offline, not by a cron. Run `ml/.venv/bin/python
 scripts/build-flow-regime-baseline.py`; the source parquet glob defaults to the
 Desktop full-tape and is overridable via `--tape-glob '<glob>'` (CLI) or

@@ -23,7 +23,11 @@
  * and premium = price·size·100 — or the percentiles are meaningless.
  */
 
-import baselineJson from './flow-regime-baseline.json' with { type: 'json' };
+// The baseline lives in src/data/, not api/_lib/, because the browser imports
+// it too (FlowRegimeBadge/classify.ts). Vite dev serves a browser JSON import
+// as a module request at the file's path, and any module under /api/ collides
+// with the /api proxy and with the e2e specs' page.route('**/api/**').
+import baselineJson from '../../src/data/flow-regime-baseline.json' with { type: 'json' };
 import type {
   FlowRegime,
   FlowRegimeColor,

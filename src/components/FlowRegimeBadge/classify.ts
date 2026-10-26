@@ -12,7 +12,7 @@
  */
 
 import { theme } from '../../themes';
-import baseline from '../../../api/_lib/flow-regime-baseline.json';
+import baseline from '../../data/flow-regime-baseline.json';
 import type { FlowRegimeSnapshot } from '../../hooks/useFlowRegime';
 import type { FlowRegime, FlowRegimeColor } from '../../types/flow-regime';
 
