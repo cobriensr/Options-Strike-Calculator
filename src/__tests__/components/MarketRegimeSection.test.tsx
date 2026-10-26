@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import MarketRegimeSection from '../../components/MarketRegimeSection';
 import type { CalculationResults, DeltaRow } from '../../types';
 import type { HistorySnapshot } from '../../hooks/useHistoryData';
+import type { MarketDataState } from '../../hooks/useMarketData';
 import type { ComputedSignals } from '../../hooks/useComputedSignals';
 import type { HistoryCandle } from '../../types/api';
 
@@ -96,7 +97,7 @@ function makeResults(): CalculationResults {
   };
 }
 
-const mockMarket = {
+const mockMarket: MarketDataState = {
   data: {
     quotes: null,
     yesterday: null,
@@ -105,10 +106,8 @@ const mockMarket = {
     events: null,
   },
   loading: false,
-  error: null,
   hasData: false,
   needsAuth: false,
-  refresh: async () => {},
   fetchedAt: null,
   // FE-STATE-001 quote freshness (staleness derives from it in
   // useQuoteStaleness).

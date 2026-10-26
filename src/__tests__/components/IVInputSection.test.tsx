@@ -2,8 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import IVInputSection from '../../components/IVInputSection';
+import type { MarketDataState } from '../../hooks/useMarketData';
 
-const mockMarket = {
+const mockMarket: MarketDataState = {
   data: {
     quotes: null,
     yesterday: null,
@@ -12,10 +13,8 @@ const mockMarket = {
     events: null,
   },
   loading: false,
-  error: null,
   hasData: false,
   needsAuth: false,
-  refresh: async () => {},
   fetchedAt: null,
   // FE-STATE-001 quote freshness (staleness derives from it in
   // useQuoteStaleness).

@@ -61,13 +61,12 @@ function makeMarket(overrides: Partial<MarketState> = {}): MarketState {
     loading: false,
     hasData: false,
     needsAuth: false,
-    refresh: async () => {},
     fetchedAt: null,
     quotesFetchedAt: null,
     session: 'closed',
     marketOpen: false,
     ...overrides,
-  } as MarketState;
+  };
 }
 
 /** `market.data` with a quotes payload whose `marketOpen` flag is set. */
