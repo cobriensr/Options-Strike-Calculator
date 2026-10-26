@@ -1,11 +1,17 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { createRef } from 'react';
 import AppHeader, { type AppHeaderProps } from '../components/AppHeader';
 import type { CollapseSignal } from '../components/collapse-context';
-import type { useMarketData } from '../hooks/useMarketData';
+import type { MarketSession, useMarketData } from '../hooks/useMarketData';
 import type { useHistoryData } from '../hooks/useHistoryData';
 import type { ViewMode } from '../hooks/useViewMode';
+
+// Counts SchwabExpiryBadge stub renders: a proxy for "did AppHeader itself
+// re-render", since the stub is a plain (non-memo) child of the header.
+const { expiryBadgeRender } = vi.hoisted(() => ({
+  expiryBadgeRender: vi.fn(),
+}));
 
 // AccessKeyButton calls useAccessSession() which reads cookies + dispatches
 // events. Stub it to a deterministic, side-effect-free element so the
@@ -24,13 +30,16 @@ vi.mock('../components/AppHeader/SchwabExpiryBadge', () => ({
   }: {
     isOwner: boolean;
     reauthPromptShown: boolean;
-  }) => (
-    <span
-      data-testid="schwab-expiry-badge-stub"
-      data-owner={String(isOwner)}
-      data-reauth-prompt={String(reauthPromptShown)}
-    />
-  ),
+  }) => {
+    expiryBadgeRender();
+    return (
+      <span
+        data-testid="schwab-expiry-badge-stub"
+        data-owner={String(isOwner)}
+        data-reauth-prompt={String(reauthPromptShown)}
+      />
+    );
+  },
 }));
 
 // ============================================================
@@ -55,13 +64,30 @@ function makeMarket(overrides: Partial<MarketState> = {}): MarketState {
     refresh: async () => {},
     fetchedAt: null,
     quotesFetchedAt: null,
-    isStale: false,
-    isVeryStale: false,
-    staleAgeSec: null,
     session: 'closed',
     marketOpen: false,
     ...overrides,
   } as MarketState;
+}
+
+/** `market.data` with a quotes payload whose `marketOpen` flag is set. */
+function quotesData(marketOpen: boolean): MarketState['data'] {
+  return {
+    quotes: {
+      spy: null,
+      spx: null,
+      vix: null,
+      vix1d: null,
+      vix9d: null,
+      vvix: null,
+      marketOpen,
+      asOf: '2026-05-08T13:00:00Z',
+    },
+    intraday: null,
+    yesterday: null,
+    events: null,
+    movers: null,
+  };
 }
 
 function makeHistory(
@@ -295,62 +321,103 @@ describe('AppHeader', () => {
     expect(screen.getByText(/NO INTRADAY/)).toBeInTheDocument();
   });
 
-  it('shows LIVE badge when market open and quotes are fresh', () => {
-    renderHeader({
-      market: makeMarket({
-        hasData: true,
-        isStale: false,
-        isVeryStale: false,
-        data: {
-          quotes: {
-            spy: null,
-            spx: null,
-            vix: null,
-            vix1d: null,
-            vix9d: null,
-            vvix: null,
-            marketOpen: true,
-            asOf: '2026-05-08T13:00:00Z',
-          },
-          intraday: null,
-          yesterday: null,
-          events: null,
-          movers: null,
-        },
-      }),
-    });
-    expect(screen.getByText(/LIVE/)).toBeInTheDocument();
-    expect(screen.queryByText(/STALE/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/CLOSED/)).not.toBeInTheDocument();
-  });
+  // ── Quote staleness badge (useQuoteStaleness, F1) ────────
+  //
+  // Staleness is derived inside the badge from quotesFetchedAt + session +
+  // the wall clock, so these tests drive it with fake time rather than
+  // passing precomputed flags.
 
-  it('shows STALE badge when market open and quotes are stale', () => {
-    renderHeader({
-      market: makeMarket({
-        hasData: true,
-        isStale: true,
-        isVeryStale: false,
-        staleAgeSec: 100,
-        data: {
-          quotes: {
-            spy: null,
-            spx: null,
-            vix: null,
-            vix1d: null,
-            vix9d: null,
-            vvix: null,
-            marketOpen: true,
-            asOf: '2026-05-08T13:00:00Z',
-          },
-          intraday: null,
-          yesterday: null,
-          events: null,
-          movers: null,
-        },
-      }),
+  describe('quote staleness badge', () => {
+    const NOW = Date.UTC(2026, 4, 8, 14, 0, 0);
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
     });
-    expect(screen.getByText(/STALE/)).toBeInTheDocument();
-    expect(screen.queryByText(/^● LIVE$/)).not.toBeInTheDocument();
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function renderWithQuotes(
+      ageSec: number,
+      { marketOpen = true, session = 'regular' as MarketSession } = {},
+    ) {
+      return renderHeader({
+        market: makeMarket({
+          hasData: true,
+          session,
+          quotesFetchedAt: NOW - ageSec * 1000,
+          data: quotesData(marketOpen),
+        }),
+      });
+    }
+
+    it('shows a green LIVE badge with no title when quotes are fresh', () => {
+      renderWithQuotes(10);
+      const badge = screen.getByText(/^● LIVE$/);
+      expect(badge.style.color).toContain('var(--color-success)');
+      expect(badge).not.toHaveAttribute('title');
+      expect(screen.queryByText(/STALE|CLOSED/)).not.toBeInTheDocument();
+    });
+
+    it('shows a caution STALE badge titled with the age once quotes are 90 s old', () => {
+      renderWithQuotes(100);
+      const badge = screen.getByText(/^● STALE$/);
+      expect(badge.style.color).toContain('var(--color-caution)');
+      expect(badge).toHaveAttribute('title', 'Quotes 100s old');
+      expect(screen.queryByText(/^● LIVE$/)).not.toBeInTheDocument();
+    });
+
+    it('shows a red STALE badge with the missed-polls note once quotes are 180 s old', () => {
+      renderWithQuotes(200);
+      const badge = screen.getByText(/^● STALE$/);
+      expect(badge.style.color).toContain('var(--color-danger)');
+      expect(badge).toHaveAttribute(
+        'title',
+        'Quotes 200s old — 3+ missed polls',
+      );
+    });
+
+    it('flips LIVE → STALE as the clock passes 90 s, with no new props', () => {
+      renderWithQuotes(0);
+      expect(screen.getByText(/^● LIVE$/)).toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(90_000);
+      });
+      expect(screen.getByText(/^● STALE$/)).toHaveAttribute(
+        'title',
+        'Quotes 90s old',
+      );
+    });
+
+    it('the staleness tick re-renders only the badge, not the rest of the header', () => {
+      renderWithQuotes(0);
+      expiryBadgeRender.mockClear();
+
+      act(() => {
+        vi.advanceTimersByTime(95_000);
+      });
+      expect(screen.getByText(/^● STALE$/)).toBeInTheDocument();
+      expect(expiryBadgeRender).not.toHaveBeenCalled();
+    });
+
+    it('shows a muted CLOSED badge with no staleness while the session is closed', () => {
+      renderWithQuotes(300, { marketOpen: false, session: 'closed' });
+      const badge = screen.getByText(/^● CLOSED$/);
+      expect(badge.style.color).toContain('var(--color-muted)');
+      expect(badge).not.toHaveAttribute('title');
+    });
+
+    it('keeps the CLOSED label in pre-market but still titles stale quotes', () => {
+      // quotes.marketOpen drives the label (RTH only); the session drives
+      // staleness, which also runs pre-market for the 08:30 CT prep.
+      renderWithQuotes(100, { marketOpen: false, session: 'pre-market' });
+      const badge = screen.getByText(/^● CLOSED$/);
+      expect(badge.style.color).toContain('var(--color-muted)');
+      expect(badge).toHaveAttribute('title', 'Quotes 100s old');
+    });
   });
 
   it('shows CLOSED badge when market is closed', () => {

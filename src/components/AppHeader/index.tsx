@@ -20,9 +20,13 @@
  *
  * The component takes data as props (no hooks called here) so App.tsx
  * remains the single owner of the underlying state — easier to test and
- * easier to reason about during a snapshot debugger walkthrough. The one
- * exception is `SchwabExpiryBadge`, which is self-contained: it polls its
- * own owner-only status endpoint, and nothing else reads that state.
+ * easier to reason about during a snapshot debugger walkthrough. Two
+ * children are self-contained:
+ *
+ *   - `SchwabExpiryBadge` polls its own owner-only status endpoint, and
+ *     nothing else reads that state.
+ *   - `QuoteStatusBadge` runs the 5 s quote-staleness clock
+ *     (`useQuoteStaleness`) so the tick re-renders only that pill (F1).
  */
 
 import type { Ref } from 'react';
@@ -33,6 +37,7 @@ import type { useMarketData } from '../../hooks/useMarketData';
 import type { useHistoryData } from '../../hooks/useHistoryData';
 import type { useVixData } from '../../hooks/useVixData';
 import type { CollapseSignal } from '../collapse-context';
+import QuoteStatusBadge from './QuoteStatusBadge';
 import SchwabAuthLink from './SchwabAuthLink';
 import SchwabExpiryBadge from './SchwabExpiryBadge';
 import { ViewToggle } from '../ViewToggle';
@@ -142,36 +147,10 @@ export default function AppHeader({
             />
           )}
           {!isBacktestMode && market.hasData && (
-            <StatusBadge
-              // FE-STATE-001: three-state live badge.
-              //   Market closed             → CLOSED (muted)
-              //   Market open, fresh        → LIVE   (green)
-              //   Market open, stale  >=90s → STALE  (caution/yellow)
-              //   Market open, stale >=180s → STALE  (red)
-              // isVeryStale implies isStale, so the severity check
-              // cascades from most-severe to least-severe.
-              label={
-                market.data.quotes?.marketOpen
-                  ? market.isStale
-                    ? 'STALE'
-                    : 'LIVE'
-                  : 'CLOSED'
-              }
-              color={
-                market.data.quotes?.marketOpen
-                  ? market.isVeryStale
-                    ? theme.red
-                    : market.isStale
-                      ? theme.caution
-                      : theme.green
-                  : theme.textMuted
-              }
-              dot
-              title={
-                market.isStale && market.staleAgeSec != null
-                  ? `Quotes ${market.staleAgeSec}s old${market.isVeryStale ? ' — 3+ missed polls' : ''}`
-                  : undefined
-              }
+            <QuoteStatusBadge
+              quotesMarketOpen={market.data.quotes?.marketOpen ?? false}
+              quotesFetchedAt={market.quotesFetchedAt}
+              session={market.session}
             />
           )}
           {accessMode === 'public' && (
