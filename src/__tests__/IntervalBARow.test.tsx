@@ -240,13 +240,16 @@ describe('IntervalBARow — expand toggle', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('renders both chart panels when expanded', () => {
+  it('renders both chart panels when expanded', async () => {
     renderRow(makeAlert());
     fireEvent.click(
       screen.getByRole('button', { name: /Expand charts for SPXW/i }),
     );
     expect(screen.getByTestId('contract-tape-chart')).toBeInTheDocument();
-    expect(screen.getByTestId('ticker-netflow-chart')).toBeInTheDocument();
+    // The net-flow chart is lazy (see IntervalBARow.lazy-chart.test.tsx).
+    expect(
+      await screen.findByTestId('ticker-netflow-chart'),
+    ).toBeInTheDocument();
   });
 
   it('shows a loading hint in the tape panel while the tape series is empty + loading', () => {
@@ -335,7 +338,7 @@ describe('IntervalBARow — expand toggle', () => {
     expect(screen.getByText(/Avg fill/i)).toBeInTheDocument();
   });
 
-  it('renders the net-flow chart wired with the ticker symbol when series has data', () => {
+  it('renders the net-flow chart wired with the ticker symbol when series has data', async () => {
     // The cumulative NCP/NPP/Δ header now lives inside TickerNetFlowChart
     // (covered by its own unit tests). Here we verify the row wires the
     // chart up with the ticker symbol so that header can render.
@@ -354,7 +357,7 @@ describe('IntervalBARow — expand toggle', () => {
     fireEvent.click(
       screen.getByRole('button', { name: /Expand charts for SPXW/i }),
     );
-    const chart = screen.getByTestId('ticker-netflow-chart');
+    const chart = await screen.findByTestId('ticker-netflow-chart');
     expect(chart).toBeInTheDocument();
     expect(chart).toHaveAttribute('data-symbol', 'SPXW');
   });

@@ -54,6 +54,7 @@ const CLEAN_CHUNKS = {
   '/assets/index-abc.js': 'import "./vendor-def.js";',
   '/assets/vendor-def.js': 'export const createElement = 1;',
   '/assets/PeriscopeChatHistory-jkl.js': MARKDOWN_CHUNK,
+  '/assets/charts-mno.js': 'export function createChart() {}',
 };
 
 describe('parseIndexHtml', () => {
@@ -162,7 +163,8 @@ describe('checkBuildOutput', () => {
       ok: true,
       messages: [
         'build output: OK, first paint loads 2 chunks (index-abc.js, vendor-def.js); ' +
-          'no inline scripts; kept out of first paint: react-markdown',
+          'no inline scripts; kept out of first paint: react-markdown, ' +
+          'lightweight-charts',
       ],
     });
   });
@@ -254,6 +256,52 @@ describe('checkBuildOutput: lazy-only libraries', () => {
     expect(Object.isFrozen(LAZY_ONLY)).toBe(true);
   });
 
+  it('keeps lightweight-charts out of first paint, found by its charts- chunk name', () => {
+    // manualChunks in vite.config.ts names its chunk `charts`.
+    expect(LAZY_ONLY).toContainEqual({
+      name: 'lightweight-charts',
+      chunkPrefix: 'charts-',
+    });
+  });
+
+  it('fails when index.html modulepreloads the charts- chunk', () => {
+    const result = checkBuildOutput({
+      html: viteHtml({
+        preloads: ['/assets/vendor-def.js', '/assets/charts-mno.js'],
+      }),
+      chunks: chunks(CLEAN_CHUNKS),
+    });
+    expect(result.ok).toBe(false);
+    expect(result.messages).toEqual([
+      'build output: lightweight-charts is in first paint: index.html loads ' +
+        'charts-mno.js. Import it only from a lazy() chunk.',
+      'build output: FAILED, 1 problem in dist/.',
+    ]);
+  });
+
+  it('does not take a chunk whose name only contains charts- for the charts chunk', () => {
+    const result = checkBuildOutput({
+      html: viteHtml({
+        preloads: ['/assets/vendor-def.js', '/assets/xcharts-p.js'],
+      }),
+      chunks: chunks({ ...CLEAN_CHUNKS, '/assets/xcharts-p.js': '' }),
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('fails when no chunk is named charts-, since the rule would be blind', () => {
+    const noCharts = chunks(CLEAN_CHUNKS);
+    noCharts.delete('/assets/charts-mno.js');
+    const result = checkBuildOutput({ html: viteHtml(), chunks: noCharts });
+    expect(result.ok).toBe(false);
+    expect(result.messages[0]).toBe(
+      'build output: no chunk in dist/assets has a name starting "charts-", so ' +
+        'the lightweight-charts rule cannot see it. Update its chunkPrefix in ' +
+        'scripts/_lib/build-output.mjs to match manualChunks in vite.config.ts, ' +
+        'or drop the entry if lightweight-charts is gone.',
+    );
+  });
+
   it.each([
     ['the vendor chunk (modulepreload)', '/assets/vendor-def.js'],
     ['the entry chunk', '/assets/index-abc.js'],
@@ -323,6 +371,7 @@ describe('check-build-output CLI', () => {
     'index-abc.js': CLEAN_CHUNKS['/assets/index-abc.js'],
     'vendor-def.js': CLEAN_CHUNKS['/assets/vendor-def.js'],
     'PeriscopeChatHistory-jkl.js': MARKDOWN_CHUNK,
+    'charts-mno.js': CLEAN_CHUNKS['/assets/charts-mno.js'],
     'index-abc.js.map': '{"version":3}',
   };
 
@@ -363,6 +412,19 @@ describe('check-build-output CLI', () => {
       'build output: FAILED, 1 problem in dist/.',
     );
     expect(result.stdout).toBe('');
+  });
+
+  it('exits 1 when index.html preloads the charts chunk', () => {
+    const result = runCli({
+      html: viteHtml({
+        preloads: ['/assets/vendor-def.js', '/assets/charts-mno.js'],
+      }),
+      assets: CLEAN_ASSETS,
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      'lightweight-charts is in first paint: index.html loads charts-mno.js.',
+    );
   });
 
   it('exits 1 when a first-paint chunk carries react-markdown', () => {

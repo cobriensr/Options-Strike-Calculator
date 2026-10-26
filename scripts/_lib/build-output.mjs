@@ -130,15 +130,53 @@ export function parseIndexHtml(html) {
 
 /**
  * Libraries that must stay out of first paint: no chunk index.html loads may
- * contain one. Each is found by a `marker`, a string in its code that
- * survives minification, such as a prop name it reads.
+ * contain one. Each is found either by a `marker`, a string in its code that
+ * survives minification such as a prop name it reads, or by `chunkPrefix`,
+ * the name manualChunks in vite.config.ts gives its own chunk.
  */
 export const LAZY_ONLY = Object.freeze([
   // Its plugins prop. Only lazy panels (PeriscopeChatHistory) render
   // markdown; a loose vendor manualChunks regex once pulled it, plus
   // unified and micromark, into the preloaded vendor chunk.
   Object.freeze({ name: 'react-markdown', marker: 'remarkPlugins' }),
+  // ~170 KB. Charts draw only inside lazy panels or expanded feed rows; a
+  // static import in IntervalBARow (reached from App) once put the chunk in
+  // index.html's modulepreload list.
+  Object.freeze({ name: 'lightweight-charts', chunkPrefix: 'charts-' }),
 ]);
+
+/**
+ * How `lib` shows in the chunk served at `served`, or null when it does
+ * not. `source` is undefined for a chunk missing from dist/.
+ */
+function evidence(lib, served, source) {
+  const file = basename(served);
+  if (lib.chunkPrefix !== undefined) {
+    return file.startsWith(lib.chunkPrefix) ? `index.html loads ${file}` : null;
+  }
+  return source?.includes(lib.marker)
+    ? `${file} contains "${lib.marker}"`
+    : null;
+}
+
+/** The problem when no chunk in dist/ shows `lib` at all. */
+function blindRule(lib) {
+  const [what, fix] =
+    lib.chunkPrefix === undefined
+      ? [
+          `contains "${lib.marker}"`,
+          'Update its marker in scripts/_lib/build-output.mjs',
+        ]
+      : [
+          `has a name starting "${lib.chunkPrefix}"`,
+          'Update its chunkPrefix in scripts/_lib/build-output.mjs to match ' +
+            'manualChunks in vite.config.ts',
+        ];
+  return (
+    `no chunk in dist/assets ${what}, so the ${lib.name} rule cannot see it. ` +
+    `${fix}, or drop the entry if ${lib.name} is gone.`
+  );
+}
 
 const EXTERNAL = /^(?:[a-z][a-z\d+.-]*:|\/\/)/i;
 
@@ -199,22 +237,20 @@ export function checkBuildOutput({ html, chunks }) {
     }
   }
 
-  for (const { name, marker } of LAZY_ONLY) {
+  for (const lib of LAZY_ONLY) {
     for (const served of firstPaint) {
-      if (chunks.get(served)?.includes(marker)) {
+      const found = evidence(lib, served, chunks.get(served));
+      if (found !== null) {
         problems.push(
-          `${name} is in first paint: ${basename(served)} contains "${marker}". ` +
+          `${lib.name} is in first paint: ${found}. ` +
             'Import it only from a lazy() chunk.',
         );
       }
     }
-    if (![...chunks.values()].some((source) => source.includes(marker))) {
-      problems.push(
-        `no chunk in dist/assets contains "${marker}", so the ${name} rule ` +
-          'cannot see it. Update its marker in scripts/_lib/build-output.mjs, ' +
-          `or drop the entry if ${name} is gone.`,
-      );
-    }
+    const seen = [...chunks].some(
+      ([served, source]) => evidence(lib, served, source) !== null,
+    );
+    if (!seen) problems.push(blindRule(lib));
   }
 
   if (problems.length > 0) {

@@ -9,14 +9,24 @@
  * Boom rows.
  */
 
-import { memo, useMemo, useState } from 'react';
+import { lazy, memo, Suspense, useMemo, useState } from 'react';
 import { useContractTape } from '../../hooks/useContractTape.js';
 import { useNetFlowHistory } from '../../hooks/useNetFlowHistory.js';
 import { useTickerCandles } from '../../hooks/useTickerCandles.js';
 import { ContractTapeChart } from '../charts/ContractTapeChart.js';
-import { TickerNetFlowChart } from '../charts/TickerNetFlowChart.js';
 import { EXPANDED_ROW_CHART_HEIGHT } from '../../constants/chart-layout.js';
+import { handleStaleChunk } from '../../utils/handle-stale-chunk.js';
 import type { IntervalBAFeedAlert } from '../../hooks/useIntervalBAFeed.js';
+
+// Lazy so lightweight-charts (~170 KB) loads on the first expand. This row
+// is in the entry bundle (App -> IntervalBAFeed), so a static import put the
+// charts chunk in index.html's modulepreload list; the build-output check
+// in `npm run review` fails if it returns there.
+const TickerNetFlowChart = lazy(() =>
+  import('../charts/TickerNetFlowChart.js')
+    .then((m) => ({ default: m.TickerNetFlowChart }))
+    .catch(handleStaleChunk),
+);
 
 interface IntervalBARowProps {
   alert: IntervalBAFeedAlert;
@@ -472,16 +482,29 @@ export const IntervalBARow = memo(function IntervalBARow({
                 net flow error: {netFlow.error}
               </div>
             ) : (
-              <TickerNetFlowChart
-                series={netFlowSeries}
-                candles={candles}
-                previousClose={previousClose}
-                markerTs={alert.fired_at}
-                date={date}
-                symbol={alert.ticker}
-                height={EXPANDED_ROW_CHART_HEIGHT}
-                ariaLabel={`${alert.ticker} cumulative net call/put premium with stock price overlay`}
-              />
+              <Suspense
+                fallback={
+                  // Same height as the chart box, so the panel does not
+                  // jump when the chunk arrives.
+                  <div
+                    className="flex items-center justify-center text-[10px] text-neutral-500"
+                    style={{ height: EXPANDED_ROW_CHART_HEIGHT }}
+                  >
+                    Loading chart…
+                  </div>
+                }
+              >
+                <TickerNetFlowChart
+                  series={netFlowSeries}
+                  candles={candles}
+                  previousClose={previousClose}
+                  markerTs={alert.fired_at}
+                  date={date}
+                  symbol={alert.ticker}
+                  height={EXPANDED_ROW_CHART_HEIGHT}
+                  ariaLabel={`${alert.ticker} cumulative net call/put premium with stock price overlay`}
+                />
+              </Suspense>
             )}
           </div>
         </div>
