@@ -3,7 +3,8 @@
  * hand-built bundles.
  *
  * takeit-score.parity.test.ts needs the trained bundles in ml/data/takeit/,
- * which is gitignored, so on CI it skips. Nothing here reads a file: every
+ * which is gitignored, so it skips wherever the bundle is absent (CI, fresh
+ * clones and worktrees). Nothing here reads a file: every
  * tree, spline and bundle is built inline and every expected value is derived
  * by hand in the comment beside it, so these run identically on CI.
  *

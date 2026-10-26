@@ -42,6 +42,24 @@ const FIXTURE_PATH = path.join(
 );
 const BUNDLE_DIR = path.join(REPO_ROOT, 'ml', 'data', 'takeit');
 
+// Remedies shown in the skip title. Forward slashes so a command pastes
+// into Git Bash as well as PowerShell; the venv's interpreter lives in
+// bin/ on POSIX and Scripts/ on Windows.
+const VENV_PYTHON = `ml/.venv/${process.platform === 'win32' ? 'Scripts' : 'bin'}/python`;
+// The fixture is tracked, so a missing one was deleted.
+const FIXTURE_FIX =
+  'restore it with `git checkout -- ml/tests/fixtures/takeit_parity_fixture.json`';
+// `train` alone can't recreate the bundle the fixture was generated from:
+// it reads the gitignored training parquet (built from the prod DB) and
+// stamps today's version. So copy the bundle, or rebuild every step and
+// commit the regenerated fixture.
+const BUNDLE_FIX =
+  "copy ml/data/takeit/ from a checkout that has the fixture's bundle " +
+  `version, or run ${VENV_PYTHON} -m ml.src.takeit.build_training_set, ` +
+  `${VENV_PYTHON} -m ml.src.takeit.train and ` +
+  `${VENV_PYTHON} -m ml.src.takeit.generate_parity_fixture, then commit ` +
+  'the new fixture';
+
 interface ParityRow {
   features: Record<string, number | null>;
   expected_prob_raw: number;
@@ -60,53 +78,45 @@ interface ParityFixture {
   silentboom: ParityBlock;
 }
 
+function bundlePath(alertType: 'lottery' | 'silentboom'): string {
+  return path.join(BUNDLE_DIR, `${alertType}_classifier.json`);
+}
+
+// Called only after missingArtifact() found every file.
 function loadFixture(): ParityFixture {
-  if (!fs.existsSync(FIXTURE_PATH)) {
-    throw new Error(
-      `parity fixture missing at ${FIXTURE_PATH}; regenerate with: ml/.venv/bin/python -m ml.src.takeit.generate_parity_fixture`,
-    );
-  }
   return JSON.parse(fs.readFileSync(FIXTURE_PATH, 'utf8')) as ParityFixture;
 }
 
 function loadBundle(alertType: 'lottery' | 'silentboom'): TakeitBundle {
-  const p = path.join(BUNDLE_DIR, `${alertType}_classifier.json`);
-  if (!fs.existsSync(p)) {
-    throw new Error(
-      `bundle missing at ${p}; regenerate with: ml/.venv/bin/python -m ml.src.takeit.train`,
-    );
-  }
-  return JSON.parse(fs.readFileSync(p, 'utf8')) as TakeitBundle;
+  return JSON.parse(
+    fs.readFileSync(bundlePath(alertType), 'utf8'),
+  ) as TakeitBundle;
 }
 
-// Skip the parity test when the Python-generated bundles are missing.
-// `ml/data/` is gitignored, so CI (which has no Python venv in the
-// `app` job) can't see the JSON bundles unless they're regenerated.
-// In CI we skip silently; locally we fail loudly with the regen hint
-// so a contributor making bundle-format changes can't miss it.
-function missingArtifact(): string | null {
-  if (!fs.existsSync(FIXTURE_PATH)) return `parity fixture: ${FIXTURE_PATH}`;
+// Skip the parity tests wherever the artifacts are absent. `ml/data/` is
+// gitignored, so CI and every fresh clone or worktree lack the bundles.
+// takeit-score.test.ts unit-tests the scorer without them, so the skip
+// loses only the check against real Python output, which matters
+// whenever the bundle or the scorer changes; the skip title says how to
+// get the artifacts back.
+function missingArtifact(): { what: string; fix: string } | null {
+  if (!fs.existsSync(FIXTURE_PATH)) {
+    return { what: `parity fixture ${FIXTURE_PATH}`, fix: FIXTURE_FIX };
+  }
   for (const alertType of ['lottery', 'silentboom'] as const) {
-    const p = path.join(BUNDLE_DIR, `${alertType}_classifier.json`);
-    if (!fs.existsSync(p)) return `${alertType} bundle: ${p}`;
+    const p = bundlePath(alertType);
+    if (!fs.existsSync(p)) {
+      return { what: `${alertType} bundle ${p}`, fix: BUNDLE_FIX };
+    }
   }
   return null;
 }
 
 const missing = missingArtifact();
-const isCI = process.env.CI === 'true' || process.env.CI === '1';
 
 describe('takeit-score TS↔Python parity', () => {
   if (missing) {
-    if (isCI) {
-      it.skip(`skipped — ${missing} (regenerate with ml.src.takeit.train)`, () => {});
-      return;
-    }
-    it('required artifacts are present', () => {
-      throw new Error(
-        `missing ${missing}; regenerate with: ml/.venv/bin/python -m ml.src.takeit.train`,
-      );
-    });
+    it.skip(`skipped: ${missing.what} is absent; ${missing.fix}`, () => {});
     return;
   }
 
