@@ -284,6 +284,22 @@ describe('cron detect-gamma-setups', () => {
     expect(fireArg.pre_day_filter_fires).toBe(true);
   });
 
+  it('anchors the ES basis window on the last closed minute, not NOW()', async () => {
+    // fetch-spx-candles-1m never writes the minute the clock is in, so a
+    // NOW() anchor finds only 5 SPX bars and the basis is null every run.
+    vi.setSystemTime(new Date('2026-05-21T14:30:30.000Z'));
+    vi.mocked(loadDayContext).mockResolvedValueOnce(makeDayCtx());
+    vi.mocked(loadRecentBars).mockResolvedValueOnce([makeBar()]);
+    vi.mocked(loadPositiveGammaNodes).mockResolvedValueOnce([makeNode(5805)]);
+
+    await handler(authedReq(), mockResponse());
+
+    expect(computeEsBasisChange5m).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(computeEsBasisChange5m).mock.calls[0]![1]).toEqual(
+      new Date('2026-05-21T14:29:00.000Z'),
+    );
+  });
+
   it('happy path: all three detectors hit → 3 inserts, candidates=3', async () => {
     const dayCtx = makeDayCtx({ dow_label: 'Monday' as DowLabel });
     const bars = [

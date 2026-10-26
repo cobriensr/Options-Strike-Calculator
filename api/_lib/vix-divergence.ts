@@ -33,8 +33,13 @@ const RETURN_LOOKBACK_MS = 5 * 60 * 1000;
  * Max staleness for the "now" bar. Wider window for VIX because
  * market_snapshots is event-driven (written when the calculator
  * runs) and may not be minute-fresh.
+ *
+ * SPX is 3 min, not 2: fetch-spx-candles-1m writes a minute's bar only
+ * after it closes (never the minute the clock is in), so at M:05 the
+ * newest row is often M−2 (M−1 lands a few seconds later, or a run later
+ * when UW hasn't opened the next bucket). M−2:00 is just over 2 min old.
  */
-const SPX_STALENESS_MS = 2 * 60 * 1000; // 2 min — 1-min cadence source
+const SPX_STALENESS_MS = 3 * 60 * 1000; // 3 min — closed 1-min bars
 const VIX_STALENESS_MS = 10 * 60 * 1000; // 10 min — event-driven source
 
 /** Divergence trigger thresholds. */

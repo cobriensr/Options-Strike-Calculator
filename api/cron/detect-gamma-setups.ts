@@ -59,12 +59,18 @@ export default withCronInstrumentation(
     }
 
     // Parallel: candles, periscope nodes, ES basis. Each is independent.
-    // computeEsBasisChange5m defaults to NOW() — the live cron always wants
-    // the most recent window. The backfill script passes a referenceTime.
+    // The ES basis window is anchored on the last closed minute, not NOW():
+    // fetch-spx-candles-1m stores closed bars only (never the minute the
+    // clock is in), so a NOW() anchor finds 5 SPX bars instead of 6 and the
+    // basis is null on every run, silently disabling the PCS basis gate.
+    // The backfill script passes each bar's own timestamp.
+    const lastClosedMinute = new Date(
+      Math.floor(now.getTime() / 60_000) * 60_000 - 60_000,
+    );
     const [bars, nodes, esBasis] = await Promise.all([
       loadRecentBars(sql, dayCtx.today, 20),
       loadPositiveGammaNodes(sql, dayCtx.today),
-      computeEsBasisChange5m(sql),
+      computeEsBasisChange5m(sql, lastClosedMinute),
     ]);
 
     if (bars.length === 0 || nodes.length === 0) {

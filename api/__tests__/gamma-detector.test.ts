@@ -669,6 +669,53 @@ describe('computeEsBasisChange5m', () => {
     const basis = await computeEsBasisChange5m(sql);
     expect(basis).toBeCloseTo(1, 6);
   });
+
+  describe('against closed-bar SPX storage', () => {
+    // index_candles_1m holds closed minutes only (fetch-spx-candles-1m never
+    // writes the minute the clock is in); ES also has the live 14:30 bar.
+    // At clock 14:30:30, SPX has 14:24..14:29 and ES 14:24..14:30.
+    const at = (minute: number) => Date.UTC(2026, 4, 25, 14, minute);
+    const ES = [24, 25, 26, 27, 28, 29, 30].map((m) => ({
+      ts: at(m),
+      close: 7400 + (m - 24),
+    }));
+    const SPX = [24, 25, 26, 27, 28, 29].map((m) => ({
+      ts: at(m),
+      close: 7400 + (m - 24) * 0.5,
+    }));
+
+    /** A sql fake that applies the query's own window to the bars above. */
+    function windowedSql(): Sql {
+      return vi.fn(
+        async (strings: TemplateStringsArray, ...values: unknown[]) => {
+          const bars = strings.join('?').includes('futures_bars') ? ES : SPX;
+          const ref = Date.parse(values[0] as string);
+          return bars
+            .filter((b) => b.ts >= ref - 6 * 60_000 && b.ts <= ref)
+            .sort((a, b) => b.ts - a.ts)
+            .slice(0, 6)
+            .map((b) => ({ close: b.close }));
+        },
+      ) as unknown as Sql;
+    }
+
+    it('returns null when anchored at the clock: only 5 closed SPX bars fit', async () => {
+      const basis = await computeEsBasisChange5m(
+        windowedSql(),
+        new Date('2026-05-25T14:30:30Z'),
+      );
+      expect(basis).toBeNull();
+    });
+
+    it('returns the basis change when anchored on the last closed minute', async () => {
+      // ES 14:24 → 14:29 = +5; SPX 14:24 → 14:29 = +2.5.
+      const basis = await computeEsBasisChange5m(
+        windowedSql(),
+        new Date('2026-05-25T14:29:00Z'),
+      );
+      expect(basis).toBeCloseTo(2.5, 6);
+    });
+  });
 });
 
 describe('insertFire', () => {

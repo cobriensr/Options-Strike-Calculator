@@ -107,6 +107,36 @@ describe('computeVixSpxDivergence', () => {
     expect(Math.abs(result!.spxRet5m!)).toBeLessThan(0.001);
   });
 
+  it('finds the SPX bar from two minutes back in the first seconds of a minute', async () => {
+    // fetch-spx-candles-1m writes a minute only after it closes, so at
+    // 15:30:05 the newest SPX row can be 15:28 (15:29 lands seconds later,
+    // or a run later when UW is slow). A 2-min window misses it.
+    const now = new Date('2026-04-18T15:30:05.000Z');
+    vi.setSystemTime(now);
+    const closes = [20, 21, 22, 23, 24, 25, 26, 27, 28].map((m) => ({
+      ts: Date.UTC(2026, 3, 18, 15, m),
+      close: 4996 + (m - 20), // 15:25 → 5001, 15:28 → 5004
+    }));
+    mockSql.mockImplementation(
+      async (strings: TemplateStringsArray, ...params: unknown[]) => {
+        if (strings.join('').includes('market_snapshots')) return [];
+        // Bound in order: dates, at, earliest.
+        const at = Date.parse(params[1] as string);
+        const earliest = Date.parse(params[2] as string);
+        const hit = closes
+          .filter((c) => c.ts <= at && c.ts >= earliest)
+          .sort((a, b) => b.ts - a.ts)[0];
+        return hit ? [{ close: String(hit.close) }] : [];
+      },
+    );
+
+    const result = await computeVixSpxDivergence(now);
+
+    expect(result).not.toBeNull();
+    expect(result!.spxRet5m).toBeCloseTo((5004 - 5001) / 5001, 10);
+    expect(result!.vixRet5m).toBeNull();
+  });
+
   it('does not flag when SPX moves are large (both moving together)', async () => {
     stub([
       { source: 'vix', lookbackMs: 0, value: 21.0 }, // +5%
