@@ -55,21 +55,25 @@ dataset surgery.
 
 Design (all inside `axiom.ts`; helper functions stay private):
 
-1. Constants:
+1. Constants (amended 2026-10-25 after reading the live schema):
    ```ts
-   /** Fields that may stay top-level. Every name here has been sent by many
-    *  crons for months, so each already exists as a dataset column. The set
-    *  is frozen: the dataset has a 257-field cap and hit it in Sep 2026.
-    *  Everything else goes into `meta` as one JSON string. */
-   const AXIOM_TOP_LEVEL_KEYS: ReadonlySet<string> = new Set([
-     'status', 'rows', 'message', 'error', 'durationMs',
-     'stored', 'skipped', 'failed', 'reason', 'date', 'today', 'inserted', 'total',
-   ]);
+   // api/_lib/axiom-fields.ts (new file)
+   /** Top-level columns that already exist in the `vercel` dataset — schema
+    *  snapshot taken 2026-10-25 (111 names; `_time`, `_sysTime` and `job`
+    *  excluded because the SDK and reportCronRun set them). The dataset has
+    *  a 257-field cap and sits at 258, so a cron event may only use these
+    *  names top-level; everything else goes into `meta` as one JSON string,
+    *  which is the single new column this design ever adds. Do not add
+    *  names here unless the column already exists in Axiom. */
+   export const AXIOM_TOP_LEVEL_KEYS: ReadonlySet<string> = new Set([ /* 111 names from docs/tmp/axiom-top-level-fields-2026-10-25.txt */ ]);
+
+   // api/_lib/axiom.ts
    /** Upper bound on the serialized `meta` string. */
    const MAX_META_CHARS = 16_000;
-   /** Jobs whose rejection has already been sent to Sentry on this instance. */
-   const SENTRY_DEDUPE_CAP = 200;
    ```
+   Note: `error`, `today`, `archiveDate`, `summaries`, `remainingDates`,
+   `stopReason`, `skippedTables`, `gate`, `cutoff` are NOT columns today
+   (those events have been rejected for weeks), so they route into `meta`.
 2. Event construction (`buildEvent(job, payload)` → `{ event, overflowKeys }`):
    - `event` starts as `{ job }`. A `job` key inside `payload` is ignored (the
      argument always wins; today a payload key could override it).
@@ -103,13 +107,14 @@ Design (all inside `axiom.ts`; helper functions stay private):
    }
    reportRejectionOnce(job, overflowKeys, retried);
    ```
-   `reportRejectionOnce`: module-level `const reportedJobs = new Set<string>()`;
-   if `reportedJobs.has(job)` return; if `reportedJobs.size >= SENTRY_DEDUPE_CAP`
-   → `reportedJobs.clear()`; add; then
+   `reportRejectionOnce` (amended 2026-10-25): the condition is dataset-wide,
+   so dedupe per instance, not per job: module-level `let rejectionReported =
+   false`; if already true return; set true; then
    `Sentry.captureMessage('Axiom rejected cron event', { level: 'warning',
    tags: { job, 'axiom.retried': String(retried) }, extra: { overflowKeys },
-   fingerprint: ['axiom-ingest-rejected', job] })`. Import `Sentry` from
-   `./sentry.js`. Document the cap/evict in a comment (R1).
+   fingerprint: ['axiom-ingest-rejected'] })`. Import `Sentry` from
+   `./sentry.js`. A single boolean is the R1 bound; `_resetClient` resets it.
+   Every rejection still logs through pino with the job name.
 5. Keep the outer `try/catch` → `logger.warn({ err }, 'axiom: reportCronRun
    failed')` for anything unexpected. Keep the no-op when token or dataset is
    missing. Keep `_resetClient` (also clear `reportedJobs` there so tests are
@@ -175,14 +180,17 @@ Commit subject: `fix(axiom): Bound cron event columns with a single meta field`
    `api/_lib/env.ts` and listed in `.env.example` already; only the table
    was missing them (R7).
 2. Backend Key Patterns: add a bullet after the Sentry bullet:
-   "**Axiom cron events** — `reportCronRun` keeps a frozen set of top-level
-   fields (`job`, `status`, `rows`, `message`, `error`, `durationMs`,
-   `stored`, `skipped`, `failed`, `reason`, `date`, `today`, `inserted`,
-   `total`) and JSON-stringifies every other key into one `meta` string. The
-   dataset has a 257-column cap and hit it in Sep 2026, so never add
-   top-level keys. Query per-cron fields with `parse_json(meta)`. A rejected
-   ingest retries without `meta` and raises one Sentry warning per job per
-   instance."
+   "**Axiom cron events** — `reportCronRun` (`api/_lib/axiom.ts`) sends
+   `job` plus, as top-level primitives, only the names in
+   `AXIOM_TOP_LEVEL_KEYS` (`api/_lib/axiom-fields.ts`: the 111 top-level
+   columns that already exist in the dataset, snapshot 2026-10-25). It
+   JSON-stringifies every other key, and any non-primitive value, into one
+   `meta` string. The dataset has a 257-column cap and is already at it, so
+   never add top-level keys, and never add a name to the allowlist unless
+   the column already exists in Axiom. Query per-cron fields with
+   `parse_json(meta)`. A rejected ingest (`ingested === 0`) retries without
+   `meta` and raises one Sentry warning per instance."
+   (Amended 2026-10-25 to match the live-schema allowlist.)
 
 Commit subject: `docs(claude): Document Axiom env vars and the meta field rule`
 
