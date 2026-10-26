@@ -28,13 +28,36 @@ import { getPrimaryExpiry } from './zero-gamma-tickers.js';
  * concurrent requests, so a per-instance Map gets ~80–95% hit rate
  * during market hours. Per-process is fine: cross-instance drift
  * stays bounded to the TTL.
+ *
+ * The key holds `expiry` and `at` from the query string, so the key
+ * space is unbounded and the instance outlives any one request (R1).
+ * Each write sweeps expired entries, as the sibling response caches
+ * do, and a hard cap evicts the oldest entries beyond
+ * TIMESTAMPS_CACHE_MAX. Map iterates in insertion order, so the first
+ * key is the oldest. The normal working set is ~4 live keys plus the
+ * scrubber's `at` keys from the last 30 s; an entry is ~390 ISO
+ * strings (~20 KB), so 256 entries caps the worst case near 5 MB
+ * (cap agreed in docs/superpowers/specs/review-remediation-2026-10-26.md).
  */
 const TIMESTAMPS_TTL_MS = 30_000;
+const TIMESTAMPS_CACHE_MAX = 256;
 interface TimestampsCacheEntry {
   data: string[];
   expiresAt: number;
 }
 const timestampsCache = new Map<string, TimestampsCacheEntry>();
+
+function cacheTimestamps(key: string, entry: TimestampsCacheEntry): void {
+  const now = Date.now();
+  for (const [k, v] of timestampsCache) {
+    if (v.expiresAt <= now) timestampsCache.delete(k);
+  }
+  timestampsCache.set(key, entry);
+  for (const oldest of timestampsCache.keys()) {
+    if (timestampsCache.size <= TIMESTAMPS_CACHE_MAX) break;
+    timestampsCache.delete(oldest);
+  }
+}
 
 /** Exported for tests so cache state doesn't leak across cases. */
 export function _resetTimestampsCache(): void {
@@ -552,6 +575,6 @@ export async function getTimestampsForDay(
   `,
   )) as Array<{ ts_minute: string | Date }>;
   const data = rows.map((r) => toIso(r.ts_minute));
-  timestampsCache.set(cacheKey, { data, expiresAt: now + TIMESTAMPS_TTL_MS });
+  cacheTimestamps(cacheKey, { data, expiresAt: now + TIMESTAMPS_TTL_MS });
   return data;
 }

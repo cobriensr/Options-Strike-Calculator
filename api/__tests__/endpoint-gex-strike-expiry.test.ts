@@ -677,4 +677,50 @@ describe('GET /api/gex-strike-expiry', () => {
     // 4 SQL calls — neither key was cached.
     expect(mockSql).toHaveBeenCalledTimes(4);
   });
+
+  it('caps the timestamps cache at 256 keys, evicting the oldest (D2)', async () => {
+    // `at` comes from the query string, so with neither the sweep nor the
+    // cap every distinct value would add an entry for the life of the
+    // Fluid Compute instance.
+    const isTimestampsQuery = (strings: TemplateStringsArray) =>
+      strings.join('').includes('ws_ts');
+    mockSql.mockImplementation(async (strings: TemplateStringsArray) =>
+      isTimestampsQuery(strings) ? [{ ts_minute: '2026-05-01T14:30:00Z' }] : [],
+    );
+    const timestampQueries = () =>
+      mockSql.mock.calls.filter(([strings]) => isTimestampsQuery(strings))
+        .length;
+    const atFor = (i: number) =>
+      new Date(Date.UTC(2026, 4, 1, 13, 30) + i * 60_000).toISOString();
+    const request = async (at: string) => {
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          query: { ticker: 'SPY', expiry: '2026-05-01', at },
+        }),
+        res,
+      );
+      expect(res._status).toBe(200);
+    };
+
+    // 257 distinct keys: one more than the cap.
+    for (let i = 0; i <= 256; i++) await request(atFor(i));
+    expect(timestampQueries()).toBe(257);
+
+    // Drop only the endpoint's response cache so the next requests reach
+    // getTimestampsForDay; every key is still inside its 30 s TTL.
+    _resetCacheForTests();
+
+    // The newest key is still cached...
+    await request(atFor(256));
+    expect(timestampQueries()).toBe(257);
+    // ...and so is the second-oldest: exactly one entry was evicted. This
+    // must run before key 0 is re-inserted, which would evict key 1.
+    await request(atFor(1));
+    expect(timestampQueries()).toBe(257);
+    // ...but the oldest was evicted and costs a fresh query.
+    await request(atFor(0));
+    expect(timestampQueries()).toBe(258);
+  });
 });
