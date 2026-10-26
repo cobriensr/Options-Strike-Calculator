@@ -44,7 +44,7 @@ import {
   type PanelGroup,
 } from './constants/panel-registry';
 import { resolveGroupOrder, resolvePanelOrder } from './utils/panel-order';
-import { PanelPrefsModal } from './components/PanelPrefsModal/PanelPrefsModal';
+import { LazyPanelPrefsModal } from './components/PanelPrefsModal/LazyPanelPrefsModal';
 import { PanelRouter } from './components/PanelRouter';
 import AccessKeyButton from './components/AccessKey/AccessKeyButton';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
@@ -1469,7 +1469,7 @@ export default function StrikeCalculator() {
   );
 
   const prefsModal = (
-    <PanelPrefsModal
+    <LazyPanelPrefsModal
       isOpen={panelPrefsOpen}
       onClose={() => setPanelPrefsOpen(false)}
       panelPrefs={panelPrefs}

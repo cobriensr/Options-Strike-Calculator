@@ -143,6 +143,10 @@ export const LAZY_ONLY = Object.freeze([
   // static import in IntervalBARow (reached from App) once put the chunk in
   // index.html's modulepreload list.
   Object.freeze({ name: 'lightweight-charts', chunkPrefix: 'charts-' }),
+  // The id prefix of its screen-reader instructions
+  // (useUniqueId('DndDescribedBy')). Only the panel-prefs modal drags; a
+  // static import from App once put ~115 KB of it in the entry chunk.
+  Object.freeze({ name: '@dnd-kit', marker: 'DndDescribedBy' }),
 ]);
 
 /**

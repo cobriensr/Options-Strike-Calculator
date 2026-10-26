@@ -50,11 +50,15 @@ function chunks(entries) {
 const MARKDOWN_CHUNK =
   'jsx(Markdown, { remarkPlugins: [gfm], children: body })';
 
+/** Another lazy chunk: the panel-prefs modal and @dnd-kit. */
+const DND_CHUNK = 'const describedById = useUniqueId("DndDescribedBy");';
+
 const CLEAN_CHUNKS = {
   '/assets/index-abc.js': 'import "./vendor-def.js";',
   '/assets/vendor-def.js': 'export const createElement = 1;',
   '/assets/PeriscopeChatHistory-jkl.js': MARKDOWN_CHUNK,
   '/assets/charts-mno.js': 'export function createChart() {}',
+  '/assets/PanelPrefsModal-qrs.js': DND_CHUNK,
 };
 
 describe('parseIndexHtml', () => {
@@ -164,7 +168,7 @@ describe('checkBuildOutput', () => {
       messages: [
         'build output: OK, first paint loads 2 chunks (index-abc.js, vendor-def.js); ' +
           'no inline scripts; kept out of first paint: react-markdown, ' +
-          'lightweight-charts',
+          'lightweight-charts, @dnd-kit',
       ],
     });
   });
@@ -262,6 +266,29 @@ describe('checkBuildOutput: lazy-only libraries', () => {
       name: 'lightweight-charts',
       chunkPrefix: 'charts-',
     });
+  });
+
+  it('keeps @dnd-kit out of first paint, found by its DndDescribedBy id prefix', () => {
+    expect(LAZY_ONLY).toContainEqual({
+      name: '@dnd-kit',
+      marker: 'DndDescribedBy',
+    });
+  });
+
+  it('fails when the entry chunk contains @dnd-kit', () => {
+    const result = checkBuildOutput({
+      html: viteHtml(),
+      chunks: chunks({
+        ...CLEAN_CHUNKS,
+        '/assets/index-abc.js': `${CLEAN_CHUNKS['/assets/index-abc.js']} ${DND_CHUNK}`,
+      }),
+    });
+    expect(result.ok).toBe(false);
+    expect(result.messages).toEqual([
+      'build output: @dnd-kit is in first paint: index-abc.js contains ' +
+        '"DndDescribedBy". Import it only from a lazy() chunk.',
+      'build output: FAILED, 1 problem in dist/.',
+    ]);
   });
 
   it('fails when index.html modulepreloads the charts- chunk', () => {
@@ -372,6 +399,7 @@ describe('check-build-output CLI', () => {
     'vendor-def.js': CLEAN_CHUNKS['/assets/vendor-def.js'],
     'PeriscopeChatHistory-jkl.js': MARKDOWN_CHUNK,
     'charts-mno.js': CLEAN_CHUNKS['/assets/charts-mno.js'],
+    'PanelPrefsModal-qrs.js': DND_CHUNK,
     'index-abc.js.map': '{"version":3}',
   };
 
