@@ -8,9 +8,23 @@
  * return a new identity and re-rendered the whole panel tree, about 12
  * times a minute for the owner. Only the header's quote badge reads these
  * values, so the clock now lives with the badge and re-renders only it.
+ *
+ * The tick is `useWallClockFreshness` (on `usePolling`), gated on the
+ * session being open and a quotes fetch existing. Two timing notes:
+ *
+ *   - There is no "clock not set yet" render: the helper seeds its clock
+ *     with `Date.now()` on mount, so the first render already has an age.
+ *   - While the gate is closed the helper's clock is paused, not cleared.
+ *     When the gate reopens (closed → pre-market at 04:00 ET, or the first
+ *     quotes fetch landing) the age is read against that older clock value
+ *     until the first tick, up to 5 s later. The clock is always behind the
+ *     real one, so age is only ever under-reported. In practice the
+ *     pre-market "Quotes Ns old" tooltip can appear up to 5 s late, under a
+ *     label that stays CLOSED. That is within the 5 s lag the tick already
+ *     accepts.
  */
 
-import { useEffect, useState } from 'react';
+import { useWallClockFreshness } from './useWallClockFreshness';
 import type { MarketSession } from './useMarketData';
 
 export interface QuoteStaleness {
@@ -56,25 +70,16 @@ export function useQuoteStaleness(
   quotesFetchedAt: number | null,
   session: MarketSession,
 ): QuoteStaleness {
-  // Wall-clock snapshot, set only from the effect so render stays pure
-  // (no `Date.now()` during render).
-  const [now, setNow] = useState<number | null>(null);
   const ticking = session !== 'closed' && quotesFetchedAt != null;
+  const { ageMs } = useWallClockFreshness(quotesFetchedAt, STALE_THRESHOLD_MS, {
+    gates: [ticking],
+    tickMs: STALENESS_TICK_MS,
+  });
 
-  useEffect(() => {
-    if (!ticking) return;
-    // Fire once immediately so the first render after the gate opens has a
-    // current clock, then every STALENESS_TICK_MS.
-    setNow(Date.now());
-    const id = setInterval(() => {
-      setNow(Date.now());
-    }, STALENESS_TICK_MS);
-    return () => clearInterval(id);
-  }, [ticking]);
+  // `ageMs` is null only when `quotesFetchedAt` is, which `!ticking`
+  // already covers; the second check just narrows the type.
+  if (!ticking || ageMs == null) return NOT_STALE;
 
-  if (!ticking || now == null) return NOT_STALE;
-
-  const ageMs = now - quotesFetchedAt;
   return {
     isStale: ageMs >= STALE_THRESHOLD_MS,
     isVeryStale: ageMs >= VERY_STALE_THRESHOLD_MS,
