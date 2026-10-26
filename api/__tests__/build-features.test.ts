@@ -14,6 +14,16 @@ vi.mock('../_lib/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+// Spy on captureException only; the rest of the Sentry surface stays real.
+const mockCaptureException = vi.hoisted(() => vi.fn());
+vi.mock('../_lib/sentry.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../_lib/sentry.js')>();
+  return {
+    ...actual,
+    Sentry: { ...actual.Sentry, captureException: mockCaptureException },
+  };
+});
+
 import handler, { config } from '../cron/build-features.js';
 
 // Fixed times for deterministic tests
@@ -247,11 +257,13 @@ describe('build-features handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
+      status: 'success',
       dates: 1,
       featuresBuilt: 1,
       labelsExtracted: 0,
       errors: 0,
     });
+    expect(mockCaptureException).not.toHaveBeenCalled();
   });
 
   // ── Error counting ────────────────────────────────────────
@@ -279,6 +291,7 @@ describe('build-features handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
+      status: 'partial',
       dates: 2,
       errors: 1,
     });
@@ -286,6 +299,63 @@ describe('build-features handler', () => {
     expect(
       (res._json as { featuresBuilt: number }).featuresBuilt,
     ).toBeGreaterThanOrEqual(0);
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    expect(mockCaptureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'DB timeout' }),
+    );
+  });
+
+  it('every date fails → status error (not partial), one Sentry event per date', async () => {
+    prefillHandlerPreamble();
+    mockSql.mockResolvedValueOnce([
+      { date: '2026-03-23' },
+      { date: '2026-03-24' },
+    ]);
+    // Every query after the date list rejects, so both dates fail.
+    const neonDown = new Error('Neon: connection terminated');
+    mockSql.mockRejectedValue(neonDown);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // HTTP stays 200 (the wrapper only 500s on a throw), but 'error' turns
+    // the Sentry cron monitor red and lands in Axiom as 'error'.
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'error',
+      dates: 2,
+      featuresBuilt: 0,
+      labelsExtracted: 0,
+      errors: 2,
+    });
+    expect(mockCaptureException).toHaveBeenCalledTimes(2);
+    expect(mockCaptureException).toHaveBeenCalledWith(neonDown);
+  });
+
+  it('a run with no dates to process reports success, not error', async () => {
+    prefillHandlerPreamble();
+    // Backfill over an empty flow_data table: nothing to do.
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      dates: 0,
+      errors: 0,
+    });
   });
 
   // ── Top-level error ───────────────────────────────────────

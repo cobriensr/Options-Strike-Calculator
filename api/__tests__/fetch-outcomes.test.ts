@@ -571,7 +571,12 @@ describe('fetch-outcomes handler', () => {
 
       expect(res._status).toBe(200);
       // Today (2026-03-24) should be excluded, so 4 days saved
-      expect(res._json).toMatchObject({ backfill: true, saved: 4, skipped: 0 });
+      expect(res._json).toMatchObject({
+        backfill: true,
+        status: 'success',
+        saved: 4,
+        skipped: 0,
+      });
       expect(mockSaveOutcome).toHaveBeenCalledTimes(4);
 
       // Verify one of the saved outcomes has VIX data joined by date
@@ -633,7 +638,120 @@ describe('fetch-outcomes handler', () => {
       await handler(req, res);
 
       expect(res._status).toBe(200);
-      expect(res._json).toMatchObject({ backfill: true, saved: 2, skipped: 2 });
+      expect(res._json).toEqual({
+        backfill: true,
+        status: 'partial',
+        saved: 2,
+        skipped: 2,
+      });
+      // One Sentry event per run (not per day), naming the failed days.
+      expect(mockCaptureException).toHaveBeenCalledTimes(1);
+      expect(mockCaptureException).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'duplicate key' }),
+        {
+          tags: { 'cron.job': 'fetch-outcomes', mode: 'backfill' },
+          extra: {
+            saved: 2,
+            skipped: 2,
+            total: 4,
+            failedDates: ['2026-03-22', '2026-03-23'],
+          },
+        },
+      );
+    });
+
+    function backfillReq() {
+      return mockRequest({
+        method: 'GET',
+        query: { backfill: 'true' },
+        headers: { authorization: 'Bearer test-secret' },
+      });
+    }
+
+    function mockDailyHistory() {
+      mockedSchwabFetch.mockResolvedValueOnce({
+        ok: true,
+        data: { candles: makeDailyCandles(), symbol: '$SPX', empty: false },
+      });
+      mockedSchwabFetch.mockResolvedValueOnce({
+        ok: true,
+        data: { candles: makeVixDailyCandles(), symbol: '$VIX', empty: false },
+      });
+    }
+
+    it('reports status success and sends nothing to Sentry when every day saves', async () => {
+      mockDailyHistory();
+      mockSaveOutcome.mockResolvedValue(undefined);
+
+      const res = mockResponse();
+      await handler(backfillReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({
+        backfill: true,
+        status: 'success',
+        saved: 4,
+        skipped: 0,
+      });
+      expect(mockCaptureException).not.toHaveBeenCalled();
+    });
+
+    it('every save fails → 500, status error, one Sentry event with the first error', async () => {
+      mockDailyHistory();
+      const neonDown = new Error('Neon: connection terminated');
+      mockSaveOutcome.mockRejectedValue(neonDown);
+
+      const res = mockResponse();
+      await handler(backfillReq(), res);
+
+      expect(res._status).toBe(500);
+      expect(res._json).toEqual({
+        backfill: true,
+        status: 'error',
+        saved: 0,
+        skipped: 4,
+      });
+      expect(mockCaptureException).toHaveBeenCalledTimes(1);
+      expect(mockCaptureException).toHaveBeenCalledWith(neonDown, {
+        tags: { 'cron.job': 'fetch-outcomes', mode: 'backfill' },
+        extra: {
+          saved: 0,
+          skipped: 4,
+          total: 4,
+          failedDates: ['2026-03-20', '2026-03-21', '2026-03-22', '2026-03-23'],
+        },
+      });
+    });
+
+    it('no completed daily candles → 500 and a Sentry event, not a quiet success', async () => {
+      // Two months of daily history always holds completed sessions, so an
+      // empty set (here: only today's candle) means Schwab returned nothing
+      // usable.
+      mockedSchwabFetch.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          candles: [makeDailyCandles().at(-1)],
+          symbol: '$SPX',
+          empty: false,
+        },
+      });
+      mockedSchwabFetch.mockResolvedValueOnce({
+        ok: true,
+        data: { candles: [], symbol: '$VIX', empty: true },
+      });
+
+      const res = mockResponse();
+      await handler(backfillReq(), res);
+
+      expect(res._status).toBe(500);
+      expect(res._json).toEqual({ error: 'Internal error' });
+      expect(mockCaptureException).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message:
+            'fetch-outcomes backfill: Schwab returned no completed daily SPX candles',
+        }),
+      );
+      expect(mockSaveOutcome).not.toHaveBeenCalled();
     });
   });
 });

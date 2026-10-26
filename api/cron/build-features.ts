@@ -22,6 +22,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import {
+  deriveCronStatus,
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
@@ -317,7 +318,9 @@ const wrappedCron = withCronInstrumentation(
     );
 
     return {
-      status: errors > 0 ? 'partial' : 'success',
+      // Every date failing is 'error' (red Sentry monitor), not 'partial';
+      // no dates to process is 'success'.
+      status: deriveCronStatus(errors, dates.length),
       metadata: {
         dates: dates.length,
         featuresBuilt,

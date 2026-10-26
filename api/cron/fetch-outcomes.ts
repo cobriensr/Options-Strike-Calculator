@@ -27,6 +27,7 @@ import { Sentry, metrics } from '../_lib/sentry.js';
 import { saveOutcome, getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import {
+  deriveCronStatus,
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
@@ -266,8 +267,11 @@ const mainCron = withCronInstrumentation(
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.query.backfill === 'true') {
     // Backfill bypasses time check but still needs auth — check method +
-    // secret only. Bespoke response shape (`{backfill, saved, skipped}`)
-    // keeps it out of the standard wrapper.
+    // secret only. Bespoke response shape (`{backfill, status, saved,
+    // skipped}`) keeps it out of the standard wrapper. It is triggered by
+    // hand, not scheduled: no cron monitor or Axiom event covers it, so
+    // the HTTP status (500 when every day failed) and the Sentry event
+    // are its failure signals.
     const guard = cronGuard(req, res, {
       marketHours: false,
       requireApiKey: false,
@@ -409,10 +413,17 @@ async function handleBackfill(res: VercelResponse) {
         const d = getETDateStr(new Date(c.datetime));
         vixByDate.set(d, c);
       }
+    } else {
+      logger.warn(
+        { error: vixResult.error },
+        'fetch-outcomes: backfill VIX history failed, saving SPX data only',
+      );
     }
 
     let saved = 0;
     let skipped = 0;
+    const failedDates: string[] = [];
+    let firstError: unknown;
 
     // Filter to only completed days (exclude today if market still open)
     const todayStr = getETDateStr(new Date());
@@ -420,6 +431,15 @@ async function handleBackfill(res: VercelResponse) {
       const d = getETDateStr(new Date(c.datetime));
       return d !== todayStr && c.datetime >= twoMonthsAgo;
     });
+
+    // Two months of daily history always holds completed sessions, so an
+    // empty set means Schwab sent nothing usable. Throw to the catch below
+    // (500 + Sentry) rather than reporting a quiet success.
+    if (candles.length === 0) {
+      throw new Error(
+        'fetch-outcomes backfill: Schwab returned no completed daily SPX candles',
+      );
+    }
 
     for (const candle of candles) {
       const dateStr = getETDateStr(new Date(candle.datetime));
@@ -438,20 +458,32 @@ async function handleBackfill(res: VercelResponse) {
         });
         saved++;
       } catch (err) {
-        logger.warn(
-          { err, dateStr: candle.datetime },
-          'Backfill: skipped candle',
-        );
+        logger.warn({ err, date: dateStr }, 'Backfill: skipped candle');
         skipped++;
+        failedDates.push(dateStr);
+        firstError ??= err;
       }
     }
 
+    // Some days failing → 'partial'; every day failing → 'error' (500).
+    const status = deriveCronStatus(skipped, candles.length);
+
+    if (skipped > 0) {
+      // One event per run, not per day, carrying the first error.
+      Sentry.captureException(firstError, {
+        tags: { 'cron.job': 'fetch-outcomes', mode: 'backfill' },
+        extra: { saved, skipped, total: candles.length, failedDates },
+      });
+    }
+
     logger.info(
-      { saved, skipped, total: candles.length },
+      { status, saved, skipped, total: candles.length },
       'fetch-outcomes: backfill complete',
     );
 
-    return res.status(200).json({ backfill: true, saved, skipped });
+    return res
+      .status(status === 'error' ? 500 : 200)
+      .json({ backfill: true, status, saved, skipped });
   } catch (err) {
     Sentry.setTag('cron.job', 'fetch-outcomes');
     Sentry.captureException(err);
