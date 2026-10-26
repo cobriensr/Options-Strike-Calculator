@@ -6,7 +6,8 @@ import {
   buildCallBWB,
   bwbPnLAtExpiry,
 } from '../../utils/calculator';
-import type { DeltaRow } from '../../types';
+import { BWB_NARROW_OPTIONS, BWB_WIDE_MULTIPLIERS } from '../../constants';
+import type { BWBLegs, DeltaRow } from '../../types';
 
 const spot = 5800;
 const sigma = 0.2;
@@ -283,15 +284,20 @@ describe('BWB P&L properties', () => {
     expect(wideNear.netCredit).toBeLessThan(narrowNear.netCredit);
   });
 
-  it('put BWB PoP > call BWB PoP at same delta (puts further OTM due to skew)', () => {
-    // Need skew to make this meaningful
+  it('credit put BWB PoP > credit call BWB PoP at same delta (puts further OTM due to skew)', () => {
+    // Need skew to make this meaningful. Only a credit BWB's PoP grows as
+    // it moves further OTM: a debit BWB profits only inside a band
+    // between its breakevens, so moving the band away from spot shrinks
+    // it. 15/45 is a credit on both sides here; 20/40 is a debit.
     const skewRows = calcAllDeltas(spot, sigma, T, 0.03, 10);
     const skewD10 = skewRows.find(
       (r): r is DeltaRow => !('error' in r) && r.delta === 10,
     );
     if (!skewD10) return;
-    const putBwb = buildPutBWB(skewD10, 20, 40, spot, T);
-    const callBwb = buildCallBWB(skewD10, 20, 40, spot, T);
+    const putBwb = buildPutBWB(skewD10, 15, 45, spot, T);
+    const callBwb = buildCallBWB(skewD10, 15, 45, spot, T);
+    expect(putBwb.netCredit).toBeGreaterThan(0);
+    expect(callBwb.netCredit).toBeGreaterThan(0);
     expect(putBwb.probabilityOfProfit).toBeGreaterThan(
       callBwb.probabilityOfProfit,
     );
@@ -673,5 +679,211 @@ describe('BWB branch edge cases', () => {
     // Verify the unclamped formula matches (i.e., clamp was not triggered)
     const expected = bwb.wideWidth - bwb.narrowWidth - bwb.netCredit;
     expect(bwb.maxLoss).toBeCloseTo(expected, 8);
+  });
+});
+
+// ── M1 / M1b: payoff-consistent widths, max loss, breakevens and PoP ──
+
+/** Lowest expiry P&L on a dense SPX grid spanning all three strikes. */
+function minPnLOnGrid(bwb: BWBLegs): number {
+  const lo = Math.min(bwb.longNearStrike, bwb.longFarStrike) - 50;
+  const hi = Math.max(bwb.longNearStrike, bwb.longFarStrike) + 50;
+  let min = Infinity;
+  for (let s = lo; s <= hi; s += 0.25) {
+    min = Math.min(min, bwbPnLAtExpiry(bwb, s));
+  }
+  return min;
+}
+
+/**
+ * Lognormal (r = 0) probability mass where the expiry P&L is >= 0, by the
+ * midpoint rule on ln(S_T) over +/-8 sd. Independent of calcSpreadPoP.
+ */
+function profitMass(bwb: BWBLegs, sig: number, t: number): number {
+  const sd = sig * Math.sqrt(t);
+  const mu = Math.log(spot) - (sig * sig * t) / 2;
+  const steps = 20_000;
+  const lo = mu - 8 * sd;
+  const dx = (16 * sd) / steps;
+  let mass = 0;
+  for (let i = 0; i < steps; i++) {
+    const x = lo + (i + 0.5) * dx;
+    if (bwbPnLAtExpiry(bwb, Math.exp(x)) >= 0) {
+      const z = (x - mu) / sd;
+      mass += (Math.exp(-(z * z) / 2) / (sd * Math.sqrt(2 * Math.PI))) * dx;
+    }
+  }
+  return mass;
+}
+
+const scenarios = [
+  // Default 20/40 setup from the review: σ 0.18 at 10:00 CT, 3% skew
+  { label: 'σ 0.18, 5 h, skew 3%', sig: 0.18, hours: 5, skew: 0.03 },
+  { label: 'σ 0.20, 3 h, no skew', sig: 0.2, hours: 3, skew: 0 },
+  { label: 'σ 0.30, 2 h, skew 5%', sig: 0.3, hours: 2, skew: 0.05 },
+] as const;
+
+describe.each(scenarios)(
+  'BWB sweep over every narrow × multiplier × delta × side ($label)',
+  ({ sig, hours, skew }) => {
+    const t = calcTimeToExpiry(hours);
+    const sweepRows = calcAllDeltas(spot, sig, t, skew).filter(
+      (r): r is DeltaRow => !('error' in r),
+    );
+    const cases: BWBLegs[] = [];
+    for (const narrow of BWB_NARROW_OPTIONS) {
+      for (const mult of BWB_WIDE_MULTIPLIERS) {
+        for (const row of sweepRows) {
+          cases.push(
+            buildPutBWB(row, narrow, narrow * mult, spot, t),
+            buildCallBWB(row, narrow, narrow * mult, spot, t),
+          );
+        }
+      }
+    }
+    const rowFor = (b: BWBLegs) => sweepRows.find((r) => r.delta === b.delta)!;
+    const popSigma = (b: BWBLegs) => {
+      const row = rowFor(b);
+      return b.side === 'put'
+        ? (row.basePutSigma ?? row.putSigma)
+        : (row.baseCallSigma ?? row.callSigma);
+    };
+    const name = (b: BWBLegs) =>
+      [b.delta + 'Δ', b.side, b.longNearStrike, b.shortStrike, b.longFarStrike]
+        .map(String)
+        .join(' ');
+
+    it('covers every delta and both credit and debit structures', () => {
+      expect(sweepRows).toHaveLength(6);
+      expect(cases).toHaveLength(
+        BWB_NARROW_OPTIONS.length * BWB_WIDE_MULTIPLIERS.length * 6 * 2,
+      );
+      expect(cases.some((b) => b.netCredit < 0)).toBe(true);
+      expect(cases.some((b) => b.netCredit > 0)).toBe(true);
+    });
+
+    it('reports the widths of the snapped strikes', () => {
+      for (const b of cases) {
+        expect(b.narrowWidth, name(b)).toBe(
+          Math.abs(b.longNearStrike - b.shortStrike),
+        );
+        expect(b.wideWidth, name(b)).toBe(
+          Math.abs(b.shortStrike - b.longFarStrike),
+        );
+      }
+    });
+
+    it('maxLoss equals the worst expiry P&L on a dense price grid', () => {
+      for (const b of cases) {
+        expect(b.maxLoss, name(b)).toBeCloseTo(
+          Math.max(0, -minPnLOnGrid(b)),
+          6,
+        );
+      }
+    });
+
+    it('returnOnRisk is netCredit over the payoff-consistent maxLoss', () => {
+      for (const b of cases) {
+        expect(b.returnOnRisk, name(b)).toBeCloseTo(b.netCredit / b.maxLoss, 8);
+      }
+    });
+
+    it('every reported breakeven has zero expiry P&L', () => {
+      for (const b of cases) {
+        expect(bwbPnLAtExpiry(b, b.breakeven), name(b)).toBeCloseTo(0, 6);
+        if (b.netCredit < 0) {
+          expect(b.breakevenNear, name(b)).not.toBeNull();
+          expect(bwbPnLAtExpiry(b, b.breakevenNear!), name(b)).toBeCloseTo(
+            0,
+            6,
+          );
+        } else {
+          expect(b.breakevenNear, name(b)).toBeNull();
+        }
+      }
+    });
+
+    it('PoP equals the lognormal mass where the expiry P&L is >= 0', () => {
+      for (const b of cases) {
+        const truth = profitMass(b, popSigma(b), t);
+        expect(
+          Math.abs(b.probabilityOfProfit - truth),
+          name(b) + ': PoP ' + b.probabilityOfProfit + ' vs ' + truth,
+        ).toBeLessThanOrEqual(0.005);
+      }
+    });
+
+    it('adjustedPoP stays within [0, probabilityOfProfit]', () => {
+      for (const b of cases) {
+        expect(b.adjustedPoP, name(b)).toBeGreaterThanOrEqual(0);
+        expect(b.adjustedPoP, name(b)).toBeLessThanOrEqual(
+          b.probabilityOfProfit + 1e-12,
+        );
+      }
+    });
+  },
+);
+
+describe('M1b regression: debit BWB PoP counts only the profit zone', () => {
+  // Default 20/40 at σ 0.18, 10:00 CT (5 h left), 3% skew, SPX 5800.
+  const t5 = calcTimeToExpiry(5);
+  const row10 = calcAllDeltas(spot, 0.18, t5, 0.03).find(
+    (r): r is DeltaRow => !('error' in r) && r.delta === 10,
+  )!;
+
+  it('10Δ put 20/40 is a debit that profits only between ~5705 and ~5745 (PoP 12.1%, not 94.5%)', () => {
+    const bwb = buildPutBWB(row10, 20, 40, spot, t5);
+    expect(bwb.shortStrike).toBe(5725);
+    expect(bwb.netCredit).toBeLessThan(0);
+    expect(bwb.breakeven).toBeCloseTo(5705.4, 1);
+    expect(bwb.breakevenNear).toBeCloseTo(5744.6, 1);
+    expect(bwb.probabilityOfProfit).toBeCloseTo(0.121, 2);
+    expect(bwb.adjustedPoP).toBeLessThan(bwb.probabilityOfProfit);
+  });
+
+  it('10Δ call 20/40 mirrors it (PoP 12.8%, not 94.4%)', () => {
+    const bwb = buildCallBWB(row10, 20, 40, spot, t5);
+    expect(bwb.shortStrike).toBe(5870);
+    expect(bwb.netCredit).toBeLessThan(0);
+    expect(bwb.breakevenNear).toBeCloseTo(5850.5, 1);
+    expect(bwb.breakeven).toBeCloseTo(5889.5, 1);
+    expect(bwb.probabilityOfProfit).toBeCloseTo(0.128, 2);
+  });
+});
+
+describe('M1 regression: off-grid wide widths use the snapped far strike', () => {
+  const t5 = calcTimeToExpiry(5);
+  const row10 = calcAllDeltas(spot, 0.18, t5, 0.03).find(
+    (r): r is DeltaRow => !('error' in r) && r.delta === 10,
+  )!;
+
+  it('15/37.5 put snaps the far wing to 35 wide and sizes max loss from 35', () => {
+    const bwb = buildPutBWB(row10, 15, 37.5, spot, t5);
+    expect(bwb.longFarStrike).toBe(bwb.shortStrike - 35);
+    expect(bwb.wideWidth).toBe(35);
+    expect(bwb.maxLoss).toBeCloseTo(35 - 15 - bwb.netCredit, 10);
+    expect(bwb.maxLoss).toBeCloseTo(
+      -bwbPnLAtExpiry(bwb, bwb.longFarStrike),
+      10,
+    );
+  });
+
+  it('15/37.5 call snaps the far wing to 40 wide and sizes max loss from 40', () => {
+    const bwb = buildCallBWB(row10, 15, 37.5, spot, t5);
+    expect(bwb.longFarStrike).toBe(bwb.shortStrike + 40);
+    expect(bwb.wideWidth).toBe(40);
+    expect(bwb.maxLoss).toBeCloseTo(40 - 15 - bwb.netCredit, 10);
+    expect(bwb.maxLoss).toBeCloseTo(
+      -bwbPnLAtExpiry(bwb, bwb.longFarStrike),
+      10,
+    );
+  });
+
+  it('inverted debit structure reports the debit as its max loss', () => {
+    // wide < narrow: the far side can't lose, so the worst case is
+    // losing the debit when every leg expires worthless.
+    const bwb = buildPutBWB(row10, 40, 20, spot, t5);
+    expect(bwb.netCredit).toBeLessThan(0);
+    expect(bwb.maxLoss).toBeCloseTo(Math.max(0, -minPnLOnGrid(bwb)), 6);
   });
 });

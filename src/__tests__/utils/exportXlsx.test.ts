@@ -808,8 +808,11 @@ describe('exportBWBComparison', () => {
       const wb = getWorkbook();
       const sheet = getSheet(wb, 'BWB Comparison');
       const data: any[] = XLSX.utils.sheet_to_json(sheet);
+      // The column is the fat-tail adjusted PoP. A debit BWB profits only
+      // in a narrow band, and the inflated far-tail breach can use up all
+      // of it, so 0 is a legitimate value (as for a wide iron condor).
       for (const row of data) {
-        expect(row['PoP (%)']).toBeGreaterThan(0);
+        expect(row['PoP (%)']).toBeGreaterThanOrEqual(0);
         expect(row['PoP (%)']).toBeLessThan(100);
       }
     });

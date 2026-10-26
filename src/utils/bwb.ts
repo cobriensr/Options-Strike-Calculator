@@ -15,6 +15,83 @@ import { adjustPoPForKurtosis, calcSpreadPoP } from './iron-condor.js';
 import { snapToIncrement } from './strikes.js';
 
 /**
+ * Payoff summary of a BWB, computed from its actual (snapped) strikes.
+ *
+ * The far-side breakeven always exists. A debit BWB (netCredit < 0) also
+ * loses its debit when every leg expires worthless, so it has a second,
+ * near-side breakeven and profits only between the two. PoP is the
+ * log-normal mass of that zone. `calcSpreadPoP(level, side)` is the
+ * probability of settling on the short-strike side of `level` for both
+ * sides, so PoP = calcSpreadPoP(far BE) - calcSpreadPoP(near BE) for puts
+ * and calls alike.
+ *
+ * The fat-tail adjustment inflates only the far-tail breach, as for a
+ * credit spread. The near-side loss region is the body of the
+ * distribution, not a tail.
+ */
+function summarizeBWBPayoff(
+  side: 'put' | 'call',
+  shortStrike: number,
+  longNearStrike: number,
+  longFarStrike: number,
+  netCredit: number,
+  spotPrice: number,
+  popSigma: number,
+  T: number,
+  vix: number | undefined,
+): Pick<
+  BWBLegs,
+  | 'narrowWidth'
+  | 'wideWidth'
+  | 'maxProfit'
+  | 'maxLoss'
+  | 'breakeven'
+  | 'breakevenNear'
+  | 'returnOnRisk'
+  | 'probabilityOfProfit'
+  | 'adjustedPoP'
+> {
+  // +1 when the near wing sits above the short strike (put), -1 below (call)
+  const dir = side === 'put' ? 1 : -1;
+  const narrowWidth = Math.abs(longNearStrike - shortStrike);
+  const wideWidth = Math.abs(shortStrike - longFarStrike);
+  const maxProfit = narrowWidth + netCredit;
+  // Worst of the two flat regions: beyond the near wing the trade keeps
+  // netCredit (a loss when it is a debit); beyond the far wing it loses
+  // wide - narrow - netCredit. Clamped to 0 so a structure that cannot
+  // lose never shows a negative "loss". Production UI keeps
+  // wide >= 1.5 × narrow, but the builders are callable directly.
+  // (FE-MATH-004)
+  const maxLoss = Math.max(0, -netCredit, wideWidth - narrowWidth - netCredit);
+  const breakeven = shortStrike - dir * maxProfit;
+  const breakevenNear = netCredit < 0 ? longNearStrike + dir * netCredit : null;
+  const returnOnRisk = maxLoss > 0 ? netCredit / maxLoss : 0;
+
+  const pFar = calcSpreadPoP(spotPrice, breakeven, popSigma, T, side);
+  const pNear =
+    breakevenNear == null
+      ? 0
+      : calcSpreadPoP(spotPrice, breakevenNear, popSigma, T, side);
+  const probabilityOfProfit = Math.max(0, pFar - pNear);
+  const adjustedPoP = Math.max(
+    0,
+    adjustPoPForKurtosis(pFar, getKurtosisFactor(vix), side) - pNear,
+  );
+
+  return {
+    narrowWidth,
+    wideWidth,
+    maxProfit,
+    maxLoss,
+    breakeven,
+    breakevenNear,
+    returnOnRisk,
+    probabilityOfProfit,
+    adjustedPoP,
+  };
+}
+
+/**
  * Builds a Put BWB (all puts) for a given delta row.
  *
  * Structure (from highest to lowest strike):
@@ -22,16 +99,23 @@ import { snapToIncrement } from './strikes.js';
  *   Sell 2 puts at shortStrike     (sweet spot)
  *   Buy 1 put  at longFarStrike   (further OTM — risk side)
  *
+ * The `narrowWidth` / `wideWidth` arguments are the requested widths. The
+ * wings are snapped to the strike grid, so an off-grid request moves the
+ * far wing: 15 × 2.5 = 37.5 snaps to 35 wide here (and to 40 on the call
+ * side). Every returned width and payoff number comes from the snapped
+ * strikes:
+ *
  * narrowWidth = longNearStrike - shortStrike
  * wideWidth   = shortStrike - longFarStrike
  *
  * P&L at expiry:
- *   S >= longNear:  profit = netCredit (credit kept)
+ *   S >= longNear:  profit = netCredit (credit kept, or debit lost)
  *   S == short:     profit = narrowWidth + netCredit (max profit)
  *   S == breakeven: profit = 0
  *   S <= longFar:   loss = -(wideWidth - narrowWidth - netCredit) (max loss, capped)
  *
- * Breakeven = 2×shortStrike - longNearStrike - netCredit
+ * Breakeven     = 2×shortStrike - longNearStrike - netCredit
+ * BreakevenNear = longNearStrike + netCredit (debit BWBs only)
  */
 export function buildPutBWB(
   row: DeltaRow,
@@ -71,30 +155,17 @@ export function buildPutBWB(
   );
 
   const netCredit = 2 * shortPremium - longNearPremium - longFarPremium;
-  const maxProfit = narrowWidth + netCredit;
-  // Clamp to 0 so the field never reports a negative "loss": for symmetric
-  // or inverted wings with positive net credit, the deep-wing payoff is
-  // `narrow - wide + netCredit ≥ 0`, so there is no scenario that loses
-  // money. Production UI constrains `wideWidth > narrowWidth` via
-  // BWB_WIDE_MULTIPLIERS (>= 1.5), but the function is callable directly
-  // from tests and exports, so clamping is defensive. (FE-MATH-004)
-  const maxLoss = Math.max(0, wideWidth - narrowWidth - netCredit);
-  const breakeven = 2 * shortStrike - longNearStrike - netCredit;
-  const returnOnRisk = maxLoss > 0 ? netCredit / maxLoss : 0;
-
   // PoP uses base sigma (no IV acceleration) — settlement probability
-  const popSigma = row.basePutSigma ?? row.putSigma;
-  const probabilityOfProfit = calcSpreadPoP(
+  const payoff = summarizeBWBPayoff(
+    'put',
+    shortStrike,
+    longNearStrike,
+    longFarStrike,
+    netCredit,
     spotPrice,
-    breakeven,
-    popSigma,
+    row.basePutSigma ?? row.putSigma,
     T,
-    'put',
-  );
-  const adjustedPoP = adjustPoPForKurtosis(
-    probabilityOfProfit,
-    getKurtosisFactor(vix),
-    'put',
+    vix,
   );
 
   // Aggregate Greeks: +1 long near, -2 short, +1 long far
@@ -129,19 +200,12 @@ export function buildPutBWB(
     shortStrikeSpy: snapToSpyHalf(shortStrike, spxToSpyRatio),
     longNearStrikeSpy: snapToSpyHalf(longNearStrike, spxToSpyRatio),
     longFarStrikeSpy: snapToSpyHalf(longFarStrike, spxToSpyRatio),
-    narrowWidth,
-    wideWidth,
     shortPremium,
     longNearPremium,
     longFarPremium,
     netCredit,
-    maxProfit,
-    maxLoss,
-    breakeven,
+    ...payoff,
     sweetSpot: shortStrike,
-    returnOnRisk,
-    probabilityOfProfit,
-    adjustedPoP,
     netDelta,
     netGamma,
     netTheta,
@@ -157,16 +221,19 @@ export function buildPutBWB(
  *   Sell 2 calls at shortStrike    (sweet spot)
  *   Buy 1 call at longFarStrike   (further OTM — risk side)
  *
+ * Widths come from the snapped strikes, as in buildPutBWB:
+ *
  * narrowWidth = shortStrike - longNearStrike
  * wideWidth   = longFarStrike - shortStrike
  *
  * P&L at expiry:
- *   S <= longNear:  profit = netCredit (credit kept)
+ *   S <= longNear:  profit = netCredit (credit kept, or debit lost)
  *   S == short:     profit = narrowWidth + netCredit (max profit)
  *   S == breakeven: profit = 0
  *   S >= longFar:   loss = -(wideWidth - narrowWidth - netCredit) (max loss, capped)
  *
- * Breakeven = 2×shortStrike - longNearStrike + netCredit
+ * Breakeven     = 2×shortStrike - longNearStrike + netCredit
+ * BreakevenNear = longNearStrike - netCredit (debit BWBs only)
  */
 export function buildCallBWB(
   row: DeltaRow,
@@ -206,25 +273,17 @@ export function buildCallBWB(
   );
 
   const netCredit = 2 * shortPremium - longNearPremium - longFarPremium;
-  const maxProfit = narrowWidth + netCredit;
-  // See FE-MATH-004 note in buildPutBWB — same clamp semantics apply.
-  const maxLoss = Math.max(0, wideWidth - narrowWidth - netCredit);
-  const breakeven = 2 * shortStrike - longNearStrike + netCredit;
-  const returnOnRisk = maxLoss > 0 ? netCredit / maxLoss : 0;
-
   // PoP uses base sigma (no IV acceleration) — settlement probability
-  const popSigma = row.baseCallSigma ?? row.callSigma;
-  const probabilityOfProfit = calcSpreadPoP(
+  const payoff = summarizeBWBPayoff(
+    'call',
+    shortStrike,
+    longNearStrike,
+    longFarStrike,
+    netCredit,
     spotPrice,
-    breakeven,
-    popSigma,
+    row.baseCallSigma ?? row.callSigma,
     T,
-    'call',
-  );
-  const adjustedPoP = adjustPoPForKurtosis(
-    probabilityOfProfit,
-    getKurtosisFactor(vix),
-    'call',
+    vix,
   );
 
   // Aggregate Greeks: +1 long near, -2 short, +1 long far
@@ -258,19 +317,12 @@ export function buildCallBWB(
     shortStrikeSpy: snapToSpyHalf(shortStrike, spxToSpyRatio),
     longNearStrikeSpy: snapToSpyHalf(longNearStrike, spxToSpyRatio),
     longFarStrikeSpy: snapToSpyHalf(longFarStrike, spxToSpyRatio),
-    narrowWidth,
-    wideWidth,
     shortPremium,
     longNearPremium,
     longFarPremium,
     netCredit,
-    maxProfit,
-    maxLoss,
-    breakeven,
+    ...payoff,
     sweetSpot: shortStrike,
-    returnOnRisk,
-    probabilityOfProfit,
-    adjustedPoP,
     netDelta,
     netGamma,
     netTheta,

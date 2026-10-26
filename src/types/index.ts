@@ -185,9 +185,12 @@ export interface BWBLegs {
   readonly shortStrikeSpy: number;
   readonly longNearStrikeSpy: number;
   readonly longFarStrikeSpy: number;
-  /** Narrow wing width (near side, pts) */
+  /** Narrow wing width (near side, pts), from the snapped strikes */
   readonly narrowWidth: number;
-  /** Wide wing width (far side, pts) */
+  /**
+   * Wide wing width (far side, pts), from the snapped strikes. An off-grid
+   * request differs by side: 37.5 snaps to 35 on puts and 40 on calls.
+   */
   readonly wideWidth: number;
   /** Premium for each short contract (×2 sold) */
   readonly shortPremium: number;
@@ -199,15 +202,24 @@ export interface BWBLegs {
   readonly netCredit: number;
   /** Max profit at sweet spot = narrowWidth + netCredit */
   readonly maxProfit: number;
-  /** Max loss on wide side = wideWidth - narrowWidth - netCredit */
+  /**
+   * Worst expiry loss (≥ 0). For wide > narrow this is the far-side loss,
+   * wideWidth - narrowWidth - netCredit.
+   */
   readonly maxLoss: number;
-  /** Breakeven level (SPX) */
+  /** Far-side breakeven (SPX), between the short strike and the far wing */
   readonly breakeven: number;
+  /**
+   * Near-side breakeven (SPX) for a debit BWB, between the short strike
+   * and the near wing. A debit BWB profits only between the two
+   * breakevens. null for a credit BWB, which profits beyond the near wing.
+   */
+  readonly breakevenNear: number | null;
   /** Sweet spot = short strike */
   readonly sweetSpot: number;
   /** Return on risk = netCredit / maxLoss (for credit trades) */
   readonly returnOnRisk: number;
-  /** Probability of profit (log-normal) */
+  /** Probability of settling in the profit zone (log-normal) */
   readonly probabilityOfProfit: number;
   /** Fat-tail adjusted PoP */
   readonly adjustedPoP: number;
