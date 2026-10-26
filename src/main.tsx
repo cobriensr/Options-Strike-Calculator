@@ -57,7 +57,11 @@ Sentry.init({
   integrations: [Sentry.browserTracingIntegration()],
   sendDefaultPii: false,
   tracesSampleRate: 0.2,
-  tracePropagationTargets: ['localhost', /^https:\/\/0dte\.vercel\.app\/api/],
+  // Host-agnostic: @sentry/browser tests each pattern against the full URL
+  // and, for same-origin requests only, against the path. So /^\/api\//
+  // tags our API on any domain (theta-options.com, previews) and never a
+  // third-party URL, whose full URL starts with its scheme.
+  tracePropagationTargets: ['localhost', /^\/api\//],
   enabled: import.meta.env.PROD,
   beforeSend(event) {
     const frames =
