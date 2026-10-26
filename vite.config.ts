@@ -106,10 +106,11 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (id.includes('lightweight-charts')) return 'charts';
-          if (
-            id.includes('node_modules/react') ||
-            id.includes('node_modules/scheduler')
-          )
+          // Exact package names only: a bare `node_modules/react` prefix
+          // also caught react-markdown, which dragged it and its
+          // unified/micromark deps (~120 KB) into this preloaded chunk.
+          // scripts/check-build-output.mjs fails the review if it returns.
+          if (/node_modules[\\/](react|react-dom|scheduler)[\\/]/.test(id))
             return 'vendor';
           if (id.includes('@sentry')) return 'sentry';
           if (id.includes('xlsx')) return 'export';

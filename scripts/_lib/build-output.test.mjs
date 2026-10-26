@@ -3,7 +3,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, it, expect } from 'vitest';
-import { parseIndexHtml, checkBuildOutput } from './build-output.mjs';
+import {
+  LAZY_ONLY,
+  parseIndexHtml,
+  checkBuildOutput,
+} from './build-output.mjs';
 
 /**
  * index.html in the layout `vite build` writes: the entry module script,
@@ -42,9 +46,14 @@ function chunks(entries) {
   return new Map(Object.entries(entries));
 }
 
+/** A lazy chunk, loaded by import() and never by index.html. */
+const MARKDOWN_CHUNK =
+  'jsx(Markdown, { remarkPlugins: [gfm], children: body })';
+
 const CLEAN_CHUNKS = {
   '/assets/index-abc.js': 'import "./vendor-def.js";',
   '/assets/vendor-def.js': 'export const createElement = 1;',
+  '/assets/PeriscopeChatHistory-jkl.js': MARKDOWN_CHUNK,
 };
 
 describe('parseIndexHtml', () => {
@@ -152,7 +161,8 @@ describe('checkBuildOutput', () => {
     expect(result).toEqual({
       ok: true,
       messages: [
-        'build output: OK, first paint loads 2 chunks (index-abc.js, vendor-def.js); no inline scripts',
+        'build output: OK, first paint loads 2 chunks (index-abc.js, vendor-def.js); ' +
+          'no inline scripts; kept out of first paint: react-markdown',
       ],
     });
   });
@@ -167,7 +177,7 @@ describe('checkBuildOutput', () => {
       'build output: dist/index.html line 6 has an inline <script> (no src): ' +
         '<script>window.x = 1;</script>. The CSP allows no inline scripts, ' +
         'so the browser would block it.',
-      'build output: FAILED, 1 problem in dist/index.html.',
+      'build output: FAILED, 1 problem in dist/.',
     ]);
   });
 
@@ -193,7 +203,7 @@ describe('checkBuildOutput', () => {
     expect(result.ok).toBe(false);
     expect(result.messages).toEqual([
       'build output: dist/index.html loads /assets/gone.js, which is not in dist/.',
-      'build output: FAILED, 1 problem in dist/index.html.',
+      'build output: FAILED, 1 problem in dist/.',
     ]);
   });
 
@@ -230,7 +240,56 @@ describe('checkBuildOutput', () => {
     expect(result.ok).toBe(false);
     expect(result.messages).toHaveLength(4);
     expect(result.messages.at(-1)).toBe(
-      'build output: FAILED, 3 problems in dist/index.html.',
+      'build output: FAILED, 3 problems in dist/.',
+    );
+  });
+});
+
+describe('checkBuildOutput: lazy-only libraries', () => {
+  it('keeps react-markdown out of first paint, found by its remarkPlugins prop', () => {
+    expect(LAZY_ONLY).toContainEqual({
+      name: 'react-markdown',
+      marker: 'remarkPlugins',
+    });
+    expect(Object.isFrozen(LAZY_ONLY)).toBe(true);
+  });
+
+  it.each([
+    ['the vendor chunk (modulepreload)', '/assets/vendor-def.js'],
+    ['the entry chunk', '/assets/index-abc.js'],
+  ])('fails when %s contains react-markdown', (_where, served) => {
+    const result = checkBuildOutput({
+      html: viteHtml(),
+      chunks: chunks({
+        ...CLEAN_CHUNKS,
+        [served]: `${CLEAN_CHUNKS[served]} ${MARKDOWN_CHUNK}`,
+      }),
+    });
+    expect(result.ok).toBe(false);
+    expect(result.messages).toEqual([
+      `build output: react-markdown is in first paint: ${served.slice(8)} ` +
+        'contains "remarkPlugins". Import it only from a lazy() chunk.',
+      'build output: FAILED, 1 problem in dist/.',
+    ]);
+  });
+
+  it('passes when react-markdown is only in a chunk index.html does not load', () => {
+    const result = checkBuildOutput({
+      html: viteHtml(),
+      chunks: chunks(CLEAN_CHUNKS),
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('fails when no chunk contains the marker, since the rule would be blind', () => {
+    const noMarkdown = chunks(CLEAN_CHUNKS);
+    noMarkdown.delete('/assets/PeriscopeChatHistory-jkl.js');
+    const result = checkBuildOutput({ html: viteHtml(), chunks: noMarkdown });
+    expect(result.ok).toBe(false);
+    expect(result.messages[0]).toBe(
+      'build output: no chunk in dist/assets contains "remarkPlugins", so the ' +
+        'react-markdown rule cannot see it. Update its marker in ' +
+        'scripts/_lib/build-output.mjs, or drop the entry if react-markdown is gone.',
     );
   });
 });
@@ -263,6 +322,7 @@ describe('check-build-output CLI', () => {
   const CLEAN_ASSETS = {
     'index-abc.js': CLEAN_CHUNKS['/assets/index-abc.js'],
     'vendor-def.js': CLEAN_CHUNKS['/assets/vendor-def.js'],
+    'PeriscopeChatHistory-jkl.js': MARKDOWN_CHUNK,
     'index-abc.js.map': '{"version":3}',
   };
 
@@ -300,9 +360,23 @@ describe('check-build-output CLI', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('has an inline <script> (no src)');
     expect(result.stderr).toContain(
-      'build output: FAILED, 1 problem in dist/index.html.',
+      'build output: FAILED, 1 problem in dist/.',
     );
     expect(result.stdout).toBe('');
+  });
+
+  it('exits 1 when a first-paint chunk carries react-markdown', () => {
+    const result = runCli({
+      html: viteHtml(),
+      assets: {
+        ...CLEAN_ASSETS,
+        'vendor-def.js': `${CLEAN_ASSETS['vendor-def.js']} ${MARKDOWN_CHUNK}`,
+      },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      'react-markdown is in first paint: vendor-def.js contains "remarkPlugins"',
+    );
   });
 
   it('exits 1 when a chunk index.html loads is missing from dist/assets', () => {

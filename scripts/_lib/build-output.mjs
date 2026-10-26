@@ -9,6 +9,9 @@
  *     nonce for one, so the browser would block it.
  *   - no `<script src>` entry at all, i.e. not a Vite build.
  *   - a chunk index.html loads that is not in dist/.
+ *   - a library in LAZY_ONLY inside a first-paint chunk (the entry plus its
+ *     modulepreloads), or found in no chunk at all, which would leave its
+ *     rule blind.
  *
  * The parser reads the HTML `vite build` writes, not arbitrary HTML: a `>`
  * inside a quoted attribute value would end the tag early, and spaces around
@@ -125,6 +128,18 @@ export function parseIndexHtml(html) {
   return { scriptSrcs, modulepreloads, inlineScripts };
 }
 
+/**
+ * Libraries that must stay out of first paint: no chunk index.html loads may
+ * contain one. Each is found by a `marker`, a string in its code that
+ * survives minification, such as a prop name it reads.
+ */
+export const LAZY_ONLY = Object.freeze([
+  // Its plugins prop. Only lazy panels (PeriscopeChatHistory) render
+  // markdown; a loose vendor manualChunks regex once pulled it, plus
+  // unified and micromark, into the preloaded vendor chunk.
+  Object.freeze({ name: 'react-markdown', marker: 'remarkPlugins' }),
+]);
+
 const EXTERNAL = /^(?:[a-z][a-z\d+.-]*:|\/\/)/i;
 
 /**
@@ -184,12 +199,30 @@ export function checkBuildOutput({ html, chunks }) {
     }
   }
 
+  for (const { name, marker } of LAZY_ONLY) {
+    for (const served of firstPaint) {
+      if (chunks.get(served)?.includes(marker)) {
+        problems.push(
+          `${name} is in first paint: ${basename(served)} contains "${marker}". ` +
+            'Import it only from a lazy() chunk.',
+        );
+      }
+    }
+    if (![...chunks.values()].some((source) => source.includes(marker))) {
+      problems.push(
+        `no chunk in dist/assets contains "${marker}", so the ${name} rule ` +
+          'cannot see it. Update its marker in scripts/_lib/build-output.mjs, ' +
+          `or drop the entry if ${name} is gone.`,
+      );
+    }
+  }
+
   if (problems.length > 0) {
     return {
       ok: false,
       messages: [
         ...problems.map((p) => `build output: ${p}`),
-        `build output: FAILED, ${plural(problems.length, 'problem')} in dist/index.html.`,
+        `build output: FAILED, ${plural(problems.length, 'problem')} in dist/.`,
       ],
     };
   }
@@ -198,7 +231,8 @@ export function checkBuildOutput({ html, chunks }) {
     ok: true,
     messages: [
       `build output: OK, first paint loads ${plural(firstPaint.length, 'chunk')} ` +
-        `(${firstPaint.map(basename).join(', ')}); no inline scripts`,
+        `(${firstPaint.map(basename).join(', ')}); no inline scripts; ` +
+        `kept out of first paint: ${LAZY_ONLY.map((lib) => lib.name).join(', ')}`,
     ],
   };
 }
