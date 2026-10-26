@@ -2,7 +2,7 @@
  * Top-level columns that already exist in the production `vercel` Axiom
  * dataset: schema snapshot taken 2026-10-25 via
  * GET /v2/datasets/{dataset}/fields (111 names). `_time`, `_sysTime` and
- * `job` are excluded because the SDK and reportCronRun set them.
+ * `job` are excluded because the Axiom server and reportCronRun set them.
  *
  * The dataset has a 257-field cap and sits at 258, so a cron event may only
  * use these names top-level. Everything else goes into `meta` as one JSON

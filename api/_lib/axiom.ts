@@ -5,26 +5,28 @@
  * issues (nulls, filtered records, partial fetches) are queryable over time.
  *
  * Column budget: every top-level key of an event becomes a dataset field,
- * and an Axiom dataset caps at 257 fields. This dataset reached the cap in
- * Sep 2026, after which Axiom rejected the whole event of any cron that
- * added a new key. So each event is an envelope of `job` plus primitive
+ * and an Axiom dataset caps at 257 fields. The production dataset sits at
+ * 258 fields, over the cap (snapshot 2026-10-25), and Axiom had been
+ * rejecting the whole event of any cron that added a new key for weeks
+ * before this change. So each event is an envelope of `job` plus primitive
  * values under AXIOM_TOP_LEVEL_KEYS (api/_lib/axiom-fields.ts: the columns
  * that already exist), and every other key is JSON-stringified into one
  * `meta` string field. Never add top-level keys; query per-cron fields in
  * APL instead, e.g.
  *
  *   | where job == 'archive-gexbot'
- *   | extend m = parse_json(meta) | where m.stored > 0
+ *   | extend m = parse_json(meta) | where m.remainingDates > 0
  *
  * Rejections: the SDK catches HTTP errors itself (it calls `onError` and
  * resolves `{ ingested: 0, failed: 0 }`), so a rejection shows up as
  * `ingested === 0`, not as a throw. A rejected event that carried `meta` is
  * retried once as the bare envelope. Every rejection logs a pino warning
  * naming the job; the first one per instance also raises a Sentry warning
- * (the cause is dataset-wide). While the dataset is at the cap with no
- * `meta` column yet, every event carrying `meta` is rejected and only its
- * envelope lands (`retryIngested: 1`): the owner should vacuum unused
- * fields in the Axiom dataset settings so `meta` can be created.
+ * (the cause is dataset-wide). While the dataset has no room for a `meta`
+ * column, every event carrying `meta` is rejected and only its envelope
+ * lands (`retryIngested: 1`): point AXIOM_DATASET at a fresh dataset.
+ * Vacuuming frees nothing when every field still holds data, which is the
+ * case with infinite retention.
  *
  * This shapes only the Axiom event. The cron's HTTP response is built
  * separately (api/_lib/cron-instrumentation.ts) and is unaffected.
@@ -45,6 +47,9 @@ import { Sentry } from './sentry.js';
 
 /** Upper bound on the serialized `meta` string. */
 const MAX_META_CHARS = 16_000;
+
+/** Upper bound on the SDK failure message copied into logs and Sentry. */
+const MAX_FAILURE_SAMPLE_CHARS = 200;
 
 let _client: AxiomWithoutBatching | null = null;
 
@@ -133,13 +138,15 @@ function reportRejectionOnce(
   job: string,
   overflowKeys: string[],
   retried: boolean,
+  failed: number,
+  failureSample: string | undefined,
 ): void {
   if (rejectionReported) return;
   rejectionReported = true;
   Sentry.captureMessage('Axiom rejected cron event', {
     level: 'warning',
     tags: { job, 'axiom.retried': String(retried) },
-    extra: { overflowKeys },
+    extra: { overflowKeys, failed, failureSample },
     fingerprint: ['axiom-ingest-rejected'],
   });
 }
@@ -167,17 +174,30 @@ export async function reportCronRun(
     const first = await client.ingest(dataset, event);
     if (first.ingested > 0) return;
 
+    // The SDK reports little beyond a count, but include whatever it has so
+    // a cap rejection can be told from a 401/429/network failure.
+    const { failed } = first;
+    const failureSample = first.failures?.[0]?.error.slice(
+      0,
+      MAX_FAILURE_SAMPLE_CHARS,
+    );
     const retried = meta !== undefined;
     if (retried) {
       const second = await client.ingest(dataset, envelope);
       logger.warn(
-        { job, overflowKeys, retryIngested: second.ingested },
+        {
+          job,
+          overflowKeys,
+          retryIngested: second.ingested,
+          failed,
+          failureSample,
+        },
         'axiom: event rejected; retried without meta',
       );
     } else {
-      logger.warn({ job }, 'axiom: event rejected');
+      logger.warn({ job, failed, failureSample }, 'axiom: event rejected');
     }
-    reportRejectionOnce(job, overflowKeys, retried);
+    reportRejectionOnce(job, overflowKeys, retried, failed, failureSample);
   } catch (err) {
     logger.warn({ err }, 'axiom: reportCronRun failed');
   }

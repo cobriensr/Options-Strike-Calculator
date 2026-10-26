@@ -838,9 +838,9 @@ export function withCronInstrumentation(
       // we still wrap defensively so a downstream rewrite can't break the
       // 500 response path.
       //
-      // Backward-compat alias: pre-wrapper handlers wrote `error: <msg>` to
-      // Axiom metadata. We emit BOTH `error` and `message` so existing
-      // dashboards keyed on either field keep working post-adoption.
+      // `message` is the top-level Axiom column. `error` is not a column, so
+      // it routes into `meta`, duplicating `message` for consumers that
+      // parse `meta` for it.
       const errorMessage = err instanceof Error ? err.message : String(err);
       try {
         await reportCronRun(jobName, {

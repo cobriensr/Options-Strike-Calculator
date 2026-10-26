@@ -351,7 +351,13 @@ describe('reportCronRun: rejected ingest (ingested === 0)', () => {
 
     expect(logger.warn).toHaveBeenCalledOnce();
     expect(logger.warn).toHaveBeenCalledWith(
-      { job: JOB, overflowKeys, retryIngested: 0 },
+      {
+        job: JOB,
+        overflowKeys,
+        retryIngested: 0,
+        failed: 0,
+        failureSample: undefined,
+      },
       'axiom: event rejected; retried without meta',
     );
 
@@ -361,9 +367,40 @@ describe('reportCronRun: rejected ingest (ingested === 0)', () => {
       {
         level: 'warning',
         tags: { job: JOB, 'axiom.retried': 'true' },
-        extra: { overflowKeys },
+        extra: { overflowKeys, failed: 0, failureSample: undefined },
         fingerprint: ['axiom-ingest-rejected'],
       },
+    );
+  });
+
+  it('carries a truncated SDK failure reason into the warning and Sentry', async () => {
+    const error = `adding meta would exceed the column limit of 257 ${'x'.repeat(300)}`;
+    const sample = error.slice(0, 200);
+    mockIngest
+      .mockResolvedValueOnce({
+        ingested: 0,
+        failed: 1,
+        failures: [{ error, timestamp: '2026-10-25T00:00:00Z' }],
+      })
+      .mockResolvedValueOnce(ACCEPTED);
+
+    await reportCronRun(JOB, payload);
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      {
+        job: JOB,
+        overflowKeys,
+        retryIngested: 1,
+        failed: 1,
+        failureSample: sample,
+      },
+      'axiom: event rejected; retried without meta',
+    );
+    expect(mockCaptureMessage).toHaveBeenCalledWith(
+      'Axiom rejected cron event',
+      expect.objectContaining({
+        extra: { overflowKeys, failed: 1, failureSample: sample },
+      }),
     );
   });
 
@@ -384,12 +421,18 @@ describe('reportCronRun: rejected ingest (ingested === 0)', () => {
     expect(logger.warn).toHaveBeenCalledTimes(3);
     expect(logger.warn).toHaveBeenNthCalledWith(
       2,
-      { job: JOB, overflowKeys, retryIngested: 1 },
+      {
+        job: JOB,
+        overflowKeys,
+        retryIngested: 1,
+        failed: 0,
+        failureSample: undefined,
+      },
       'axiom: event rejected; retried without meta',
     );
     expect(logger.warn).toHaveBeenNthCalledWith(
       3,
-      { job: 'fetch-darkpool' },
+      { job: 'fetch-darkpool', failed: 0, failureSample: undefined },
       'axiom: event rejected',
     );
     expect(mockCaptureMessage).toHaveBeenCalledOnce();
@@ -403,7 +446,7 @@ describe('reportCronRun: rejected ingest (ingested === 0)', () => {
     expect(mockIngest).toHaveBeenCalledOnce();
     expect(logger.warn).toHaveBeenCalledOnce();
     expect(logger.warn).toHaveBeenCalledWith(
-      { job: JOB },
+      { job: JOB, failed: 0, failureSample: undefined },
       'axiom: event rejected',
     );
     expect(mockCaptureMessage).toHaveBeenCalledOnce();
@@ -412,7 +455,7 @@ describe('reportCronRun: rejected ingest (ingested === 0)', () => {
       {
         level: 'warning',
         tags: { job: JOB, 'axiom.retried': 'false' },
-        extra: { overflowKeys: [] },
+        extra: { overflowKeys: [], failed: 0, failureSample: undefined },
         fingerprint: ['axiom-ingest-rejected'],
       },
     );
