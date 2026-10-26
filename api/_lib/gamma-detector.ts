@@ -428,9 +428,17 @@ export async function loadDayContext(
 // ES BASIS (Phase 1 placeholder — returns null when unavailable)
 // ============================================================
 
-interface EsBarRow {
+interface SpxBasisRow {
+  timestamp: Date | string;
   close: string | number;
 }
+
+interface EsBasisRow {
+  ts: Date | string;
+  close: string | number;
+}
+
+const FIVE_MIN_MS = 5 * 60_000;
 
 /**
  * Compute the 5-min change in ES futures relative to SPX cash.
@@ -445,10 +453,20 @@ interface EsBarRow {
  * the PCS Monday detector's basis filter was silently disabled at deploy.
  *
  * `referenceTime` is the timestamp the 6-minute window is anchored to.
- * Defaults to NOW() so the live cron is parameter-free; the historical
- * backfill script passes the bar's `ts` to get cycle-accurate basis.
+ * The live cron passes the last closed minute (both tables hold closed
+ * minute bars only); the historical backfill script mirrors this with
+ * each bar's own `ts`.
  *
- * Phase 1 simple form: last-bar close minus 5-bars-ago close for each
+ * Both legs are measured over the SAME two minutes: SPX's newest bar in
+ * the window and the bar 5 rows back, which must be exactly 5 minutes
+ * apart (no gap), and ES read at exactly those two minutes. Pairing by
+ * position instead would shift one leg by a minute whenever the two
+ * writers land at different times (fetch-spx-candles-1m lands M−1 a few
+ * seconds into minute M, after the detector has often already run), and
+ * one minute of SPX movement swamps PCS_ES_BASIS_MIN_CHANGE. Any missing
+ * bar returns null, which the PCS gate treats as "no basis signal".
+ *
+ * Phase 1 simple form: close minus close 5 minutes earlier for each
  * series, then subtract. A more robust spread z-score is tuning, not infra.
  */
 export async function computeEsBasisChange5m(
@@ -457,24 +475,9 @@ export async function computeEsBasisChange5m(
 ): Promise<number | null> {
   const refIso = referenceTime.toISOString();
 
-  const esRows = (await withDbRetry(
-    () => sql`
-      SELECT close
-      FROM futures_bars
-      WHERE symbol = 'ES'
-        AND ts >= ${refIso}::timestamptz - INTERVAL '6 minutes'
-        AND ts <= ${refIso}::timestamptz
-      ORDER BY ts DESC
-      LIMIT 6
-    `,
-    2,
-    10_000,
-  )) as EsBarRow[];
-  if (esRows.length < 6) return null;
-
   const spxRows = (await withDbRetry(
     () => sql`
-      SELECT close
+      SELECT timestamp, close
       FROM index_candles_1m
       WHERE symbol = 'SPX' AND market_time = 'r'
         AND timestamp >= ${refIso}::timestamptz - INTERVAL '6 minutes'
@@ -484,19 +487,37 @@ export async function computeEsBasisChange5m(
     `,
     2,
     10_000,
-  )) as EsBarRow[];
-  if (spxRows.length < 6) return null;
-
-  const esNow = esRows.at(0);
-  const esThen = esRows.at(5);
+  )) as SpxBasisRow[];
   const spxNow = spxRows.at(0);
   const spxThen = spxRows.at(5);
-  if (esNow == null || esThen == null || spxNow == null || spxThen == null) {
-    return null;
-  }
-  const esDelta = Number(esNow.close) - Number(esThen.close);
+  if (spxNow == null || spxThen == null) return null;
+  const nowMs = new Date(spxNow.timestamp).getTime();
+  const thenMs = new Date(spxThen.timestamp).getTime();
+  if (nowMs - thenMs !== FIVE_MIN_MS) return null;
+
+  const minuteIsos = [
+    new Date(nowMs).toISOString(),
+    new Date(thenMs).toISOString(),
+  ];
+  const esRows = (await withDbRetry(
+    () => sql`
+      SELECT ts, close
+      FROM futures_bars
+      WHERE symbol = 'ES'
+        AND ts = ANY(${minuteIsos}::timestamptz[])
+    `,
+    2,
+    10_000,
+  )) as EsBasisRow[];
+  const esCloseAt = new Map(
+    esRows.map((r) => [new Date(r.ts).getTime(), Number(r.close)]),
+  );
+  const esNow = esCloseAt.get(nowMs);
+  const esThen = esCloseAt.get(thenMs);
+  if (esNow == null || esThen == null) return null;
+
   const spxDelta = Number(spxNow.close) - Number(spxThen.close);
-  return esDelta - spxDelta;
+  return esNow - esThen - spxDelta;
 }
 
 // ============================================================

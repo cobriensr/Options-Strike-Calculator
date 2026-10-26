@@ -351,29 +351,34 @@ function findLatestSnapshot(
 }
 
 /**
- * ES basis at `tsMs`: last-bar minus 5-bars-ago for both ES and SPX
- * inside a 6-minute window. Mirrors `computeEsBasisChange5m` semantics
- * using preloaded arrays.
+ * ES basis at `tsMs`. Mirrors `computeEsBasisChange5m` using preloaded
+ * bars: SPX's newest bar in the 6-minute window and the bar 5 rows back
+ * must be exactly 5 minutes apart, and ES is read at exactly those two
+ * minutes (null when either ES bar is missing), so both legs cover the
+ * same minutes.
  */
 function computeEsBasisAt(
-  esBars: ReadonlyArray<{ ts_ms: number; close: number }>,
+  esCloseByTs: ReadonlyMap<number, number>,
   spxBars: ReadonlyArray<RawBar>,
   tsMs: number,
 ): number | null {
   const windowMs = 6 * 60 * 1000;
   const startMs = tsMs - windowMs;
 
-  const esWindow = esBars.filter((b) => b.ts_ms >= startMs && b.ts_ms <= tsMs);
-  if (esWindow.length < 6) return null;
   const spxWindow = spxBars.filter(
     (b) => b.ts_ms >= startMs && b.ts_ms <= tsMs,
   );
   if (spxWindow.length < 6) return null;
+  const spxNowBar = spxWindow.at(-1)!;
+  const spxThenBar = spxWindow.at(-6)!;
+  if (spxNowBar.ts_ms - spxThenBar.ts_ms !== 5 * 60 * 1000) return null;
 
-  const esNow = esWindow[esWindow.length - 1]!.close;
-  const esThen = esWindow[esWindow.length - 6]!.close;
-  const spxNow = spxWindow[spxWindow.length - 1]!.close;
-  const spxThen = spxWindow[spxWindow.length - 6]!.close;
+  const esNow = esCloseByTs.get(spxNowBar.ts_ms);
+  const esThen = esCloseByTs.get(spxThenBar.ts_ms);
+  if (esNow == null || esThen == null) return null;
+
+  const spxNow = spxNowBar.close;
+  const spxThen = spxThenBar.close;
   return esNow - esThen - (spxNow - spxThen);
 }
 
@@ -547,6 +552,8 @@ async function main(): Promise<void> {
 
   const dayCtxs = buildDayContexts(bars, vol);
   console.log(`  built day-contexts for ${dayCtxs.size} days`);
+  // ES close by exact minute, for the timestamp-aligned basis lookup.
+  const esCloseByTs = new Map(esBars.map((b) => [b.ts_ms, b.close]));
 
   // Walk every bar, simulate detection. Need a sliding window of 20.
   const fires: InsertableFire[] = [];
@@ -610,7 +617,7 @@ async function main(): Promise<void> {
     evaluated += 1;
 
     // ES basis at this bar's ts.
-    const esBasis = computeEsBasisAt(esBars, bars, currentBar.ts_ms);
+    const esBasis = computeEsBasisAt(esCloseByTs, bars, currentBar.ts_ms);
 
     // --- E1 ---
     const e1 = detectE1(windowBars, nodes);

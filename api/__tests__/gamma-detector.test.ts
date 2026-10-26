@@ -582,139 +582,171 @@ describe('loadDayContext', () => {
 });
 
 describe('computeEsBasisChange5m', () => {
-  const REFERENCE_TIME = new Date('2026-05-25T14:30:00Z');
+  // Both tables hold closed minute bars keyed by minute start:
+  // fetch-spx-candles-1m never writes the minute the clock is in, and
+  // uw-stream writes a futures minute once a later one has printed.
+  const at = (minute: number) => Date.UTC(2026, 4, 25, 14, minute);
+  const iso = (minute: number) => new Date(at(minute)).toISOString();
+  const minutes = (from: number, to: number) =>
+    Array.from({ length: to - from + 1 }, (_, i) => from + i);
 
-  it('returns the ES-vs-SPX delta when both series have 6 bars', async () => {
-    // esNow.close - esThen.close = 7402 - 7400 = +2
-    // spxNow.close - spxThen.close = 7401 - 7400 = +1
-    // basis change = esDelta - spxDelta = +1
-    const { sql } = makeMockSql([
-      [
-        { close: 7402 }, // newest (idx 0)
-        { close: 7401.8 },
-        { close: 7401.5 },
-        { close: 7401 },
-        { close: 7400.5 },
-        { close: 7400 }, // oldest (idx 5)
-      ],
-      [
-        { close: 7401 },
-        { close: 7400.8 },
-        { close: 7400.5 },
-        { close: 7400 },
-        { close: 7400.2 },
-        { close: 7400 },
-      ],
-    ]);
-
-    const basis = await computeEsBasisChange5m(sql, REFERENCE_TIME);
-    expect(basis).toBeCloseTo(1, 6);
+  interface MinuteBar {
+    ts: number;
+    close: number;
+  }
+  /** SPX rises 0.5 a minute from 7400 at 14:20. */
+  const spxBar = (m: number): MinuteBar => ({
+    ts: at(m),
+    close: 7400 + (m - 20) * 0.5,
+  });
+  /** ES rises 1 a minute from 7420 at 14:20: the basis widens 0.5/min. */
+  const esBar = (m: number): MinuteBar => ({
+    ts: at(m),
+    close: 7420 + (m - 20),
   });
 
-  it('returns null when ES has fewer than 6 bars (sidecar gap)', async () => {
-    const { sql } = makeMockSql([
-      [{ close: 7402 }, { close: 7401 }, { close: 7400 }], // only 3
-      [
-        { close: 7401 },
-        { close: 7400.8 },
-        { close: 7400.5 },
-        { close: 7400 },
-        { close: 7400.2 },
-        { close: 7400 },
-      ],
-    ]);
-
-    const basis = await computeEsBasisChange5m(sql, REFERENCE_TIME);
-    expect(basis).toBeNull();
-  });
-
-  it('returns null when SPX has fewer than 6 bars (RTH-gate transitions)', async () => {
-    const { sql } = makeMockSql([
-      [
-        { close: 7402 },
-        { close: 7401.8 },
-        { close: 7401.5 },
-        { close: 7401 },
-        { close: 7400.5 },
-        { close: 7400 },
-      ],
-      [], // SPX dry
-    ]);
-
-    const basis = await computeEsBasisChange5m(sql, REFERENCE_TIME);
-    expect(basis).toBeNull();
-  });
-
-  it('defaults referenceTime to NOW() when no arg passed', async () => {
-    const { sql } = makeMockSql([
-      [
-        { close: 7402 },
-        { close: 7401 },
-        { close: 7401 },
-        { close: 7401 },
-        { close: 7400 },
-        { close: 7400 },
-      ],
-      [
-        { close: 7401 },
-        { close: 7401 },
-        { close: 7401 },
-        { close: 7400 },
-        { close: 7400 },
-        { close: 7400 },
-      ],
-    ]);
-    // Just confirm it doesn't throw — the value asserts the contract that
-    // the default referenceTime doesn't break the SQL template.
-    const basis = await computeEsBasisChange5m(sql);
-    expect(basis).toBeCloseTo(1, 6);
-  });
-
-  describe('against closed-bar SPX storage', () => {
-    // index_candles_1m holds closed minutes only (fetch-spx-candles-1m never
-    // writes the minute the clock is in); ES also has the live 14:30 bar.
-    // At clock 14:30:30, SPX has 14:24..14:29 and ES 14:24..14:30.
-    const at = (minute: number) => Date.UTC(2026, 4, 25, 14, minute);
-    const ES = [24, 25, 26, 27, 28, 29, 30].map((m) => ({
-      ts: at(m),
-      close: 7400 + (m - 24),
-    }));
-    const SPX = [24, 25, 26, 27, 28, 29].map((m) => ({
-      ts: at(m),
-      close: 7400 + (m - 24) * 0.5,
-    }));
-
-    /** A sql fake that applies the query's own window to the bars above. */
-    function windowedSql(): Sql {
-      return vi.fn(
-        async (strings: TemplateStringsArray, ...values: unknown[]) => {
-          const bars = strings.join('?').includes('futures_bars') ? ES : SPX;
+  /**
+   * A sql fake that applies each query's own bounds: the SPX window
+   * (`timestamp >= ref − 6 min AND <= ref`, newest first, LIMIT 6) and the
+   * ES exact-minute lookup (`ts = ANY(...)`). Neon returns TIMESTAMPTZ as a
+   * Date; ES rows come back as ISO strings to cover both forms.
+   */
+  function fakeSql(spx: MinuteBar[], es: MinuteBar[]) {
+    const mock = vi.fn(
+      async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const text = strings.join('?');
+        if (text.includes('index_candles_1m')) {
           const ref = Date.parse(values[0] as string);
-          return bars
+          return spx
             .filter((b) => b.ts >= ref - 6 * 60_000 && b.ts <= ref)
             .sort((a, b) => b.ts - a.ts)
             .slice(0, 6)
-            .map((b) => ({ close: b.close }));
-        },
-      ) as unknown as Sql;
+            .map((b) => ({
+              timestamp: new Date(b.ts),
+              close: String(b.close),
+            }));
+        }
+        if (text.includes('futures_bars')) {
+          const wanted = (values[0] as string[]).map((v) => Date.parse(v));
+          return es
+            .filter((b) => wanted.includes(b.ts))
+            .map((b) => ({
+              ts: new Date(b.ts).toISOString(),
+              close: String(b.close),
+            }));
+        }
+        throw new Error(`unexpected SQL: ${text}`);
+      },
+    );
+    return { sql: mock as unknown as Sql, mock };
+  }
+
+  /** The bound values of the ES lookup, if it ran. */
+  function esLookup(mock: ReturnType<typeof vi.fn>): unknown[] | undefined {
+    return mock.mock.calls
+      .find((c) =>
+        (c[0] as readonly string[]).join('?').includes('futures_bars'),
+      )
+      ?.slice(1);
+  }
+
+  it('returns the basis change when both series have the anchored minutes', async () => {
+    const { sql, mock } = fakeSql(
+      minutes(20, 29).map(spxBar),
+      minutes(20, 29).map(esBar),
+    );
+    // 14:24 → 14:29 on both: ES +5, SPX +2.5.
+    expect(await computeEsBasisChange5m(sql, new Date(iso(29)))).toBeCloseTo(
+      2.5,
+      6,
+    );
+    expect(esLookup(mock)).toEqual([[iso(29), iso(24)]]);
+  });
+
+  it('reads ES at the SPX minutes, not its own newest bars, when SPX lags a minute', async () => {
+    // detect-gamma-setups fires at ~M:00 and fetch-spx-candles-1m lands
+    // M−1 seconds later, so at ref 14:29 SPX has up to 14:28 while ES has
+    // 14:29. ES must be read at SPX's 14:28 and 14:23, not at its own
+    // newest six (the next test shows the value that shift produces).
+    const { sql, mock } = fakeSql(
+      minutes(20, 28).map(spxBar),
+      minutes(20, 29).map(esBar),
+    );
+    const basis = await computeEsBasisChange5m(sql, new Date(iso(29)));
+    expect(esLookup(mock)).toEqual([[iso(28), iso(23)]]);
+    // ES 14:23 → 14:28 = +5, SPX 14:23 → 14:28 = +2.5.
+    expect(basis).toBeCloseTo(2.5, 6);
+  });
+
+  it('uses the same minutes on both series when ES moves differently in the lagged minute', async () => {
+    // ES jumps 10 points in 14:29 only. Aligned on SPX's 14:23 → 14:28,
+    // the jump is outside both legs; a positional ES read would include it.
+    const es = minutes(20, 29).map((m) =>
+      m === 29 ? { ...esBar(m), close: esBar(m).close + 10 } : esBar(m),
+    );
+    const { sql } = fakeSql(minutes(20, 28).map(spxBar), es);
+    expect(await computeEsBasisChange5m(sql, new Date(iso(29)))).toBeCloseTo(
+      2.5,
+      6,
+    );
+  });
+
+  it('returns null when ES is missing one of the SPX minutes', async () => {
+    const { sql } = fakeSql(
+      minutes(20, 29).map(spxBar),
+      minutes(20, 29)
+        .filter((m) => m !== 24)
+        .map(esBar),
+    );
+    expect(await computeEsBasisChange5m(sql, new Date(iso(29)))).toBeNull();
+  });
+
+  it('returns null when the SPX rows have a gap (newest and 5-back not 5 min apart)', async () => {
+    // 14:26 missing: the 6 newest rows in [14:23, 14:29] span 6 minutes.
+    const { sql, mock } = fakeSql(
+      minutes(20, 29)
+        .filter((m) => m !== 26)
+        .map(spxBar),
+      minutes(20, 29).map(esBar),
+    );
+    expect(await computeEsBasisChange5m(sql, new Date(iso(29)))).toBeNull();
+    // No ES lookup once SPX can't give an exact 5-minute pair.
+    expect(esLookup(mock)).toBeUndefined();
+  });
+
+  it('returns null when SPX has fewer than 6 bars in the window', async () => {
+    const { sql, mock } = fakeSql(
+      minutes(25, 29).map(spxBar),
+      minutes(20, 29).map(esBar),
+    );
+    expect(await computeEsBasisChange5m(sql, new Date(iso(29)))).toBeNull();
+    expect(esLookup(mock)).toBeUndefined();
+  });
+
+  it('returns null when anchored at the clock: only 5 closed SPX bars fit', async () => {
+    // Clock 14:30:30: SPX holds closed bars to 14:29, so [14:24:30,
+    // 14:30:30] holds 14:25..14:29. The cron anchors on 14:29:00 instead.
+    const { sql } = fakeSql(
+      minutes(20, 29).map(spxBar),
+      minutes(20, 29).map(esBar),
+    );
+    expect(
+      await computeEsBasisChange5m(sql, new Date('2026-05-25T14:30:30Z')),
+    ).toBeNull();
+  });
+
+  it('defaults referenceTime to NOW()', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(iso(29)));
+    try {
+      const { sql } = fakeSql(
+        minutes(20, 29).map(spxBar),
+        minutes(20, 29).map(esBar),
+      );
+      expect(await computeEsBasisChange5m(sql)).toBeCloseTo(2.5, 6);
+    } finally {
+      vi.useRealTimers();
     }
-
-    it('returns null when anchored at the clock: only 5 closed SPX bars fit', async () => {
-      const basis = await computeEsBasisChange5m(
-        windowedSql(),
-        new Date('2026-05-25T14:30:30Z'),
-      );
-      expect(basis).toBeNull();
-    });
-
-    it('returns the basis change when anchored on the last closed minute', async () => {
-      // ES 14:24 → 14:29 = +5; SPX 14:24 → 14:29 = +2.5.
-      const basis = await computeEsBasisChange5m(
-        windowedSql(),
-        new Date('2026-05-25T14:29:00Z'),
-      );
-      expect(basis).toBeCloseTo(2.5, 6);
-    });
   });
 });
 
