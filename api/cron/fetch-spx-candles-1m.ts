@@ -26,21 +26,65 @@
  * `MAX_ACQUIRE_ATTEMPTS` saturation alerts (Sentry issue 79). The added
  * latency is ~1 s and well under the cron's 60 s wall budget.
  *
- * Storage:
- *   - All candles returned by UW are stored, including premarket
- *     (`pr`) and postmarket (`po`). Filtering is done by the reader
- *     so future premarket/postmarket use cases aren't blocked.
- *   - ON CONFLICT (symbol, date, timestamp) DO NOTHING keeps the cron
- *     idempotent when UW returns a timestamp we already have.
- *   - Each row's symbol-specific anchor column (spx_schwab_price for
- *     SPX rows, ndx_schwab_price for NDX rows) is best-effort UPDATEd
- *     to the live Schwab close so reads can prefer the verified close
- *     over the SPY/QQQ-derived approximation for the current minute.
+ * Write path (review remediation D1b/D1d, 2026-10-26; same pattern as
+ * fetch-etf-candles-1m):
+ *   UW returns the whole day on every call. One SELECT reads each
+ *   symbol's high-water mark (latest stored minute since ET midnight);
+ *   only closed candles after it go to Postgres, in one batched INSERT per
+ *   symbol (`bulkUpsert`, ON CONFLICT (symbol, date, timestamp) DO
+ *   NOTHING). All sessions UW returns are kept, pre-market (`pr`),
+ *   regular (`r`) and post-market (`po`), each tagged with its
+ *   market_time; readers filter. HWM-only means a minute that first
+ *   appears after a later minute is stored is never backfilled (nor is a
+ *   bar dropped as malformed once a later valid one lands). That is
+ *   acceptable because SPY and QQQ trade every regular-session minute and
+ *   UW documents no late or out-of-order bars. A run that writes nothing
+ *   (Schwab or UW down) leaves no gap: the next run's HWM diff picks the
+ *   missed minutes up, translated at that run's ratio.
+ *
+ * The still-forming bar is never written. UW's docs: "The most recent
+ * intraday candle is still forming, and its start_time is the start of the
+ * current bucket", and the latest bar is the one with the maximum
+ * start_time. Writing it would let DO NOTHING plus the HWM freeze a partial
+ * bar for good (which the pre-2026-10-26 cron did on every run), so a
+ * candle is kept only if it starts before BOTH the minute this run started
+ * in and UW's newest candle. The clock alone is not enough: cronJitter
+ * fires 0–8 s past the minute, and if UW hasn't opened the next bucket
+ * yet, the minute the clock calls closed is still UW's newest, forming
+ * bar. Readers therefore see the latest closed minute, not a frozen
+ * partial of the current one.
+ *
+ * Schwab anchor: the symbol's own column (spx_schwab_price for SPX rows,
+ * ndx_schwab_price for NDX rows) carries the live Schwab index price on
+ * the row for the minute that closed just before this run, written in
+ * the same INSERT. The quote is taken seconds after that minute ended, so
+ * it stands in for that minute's close. When that minute is held back
+ * (UW hasn't opened the next bucket), no row is anchored this run; the
+ * next run anchors its own just-closed minute. Before 2026-10-26 the
+ * anchor was an UPDATE on the current, still-forming minute's row.
+ *
+ * Failures surface: a missing Schwab ratio, a UW error, an empty payload
+ * (abnormal inside the gated window, which `date=today` fills with
+ * pre-market bars from 04:00 ET), a DB reject, or a failed data-quality
+ * COUNT fails that symbol (one Sentry exception each, tagged with the
+ * symbol). The run reports 'partial' when one symbol fails and 'error'
+ * when both do; 'ok' means both landed. 'error' responds 500, which turns
+ * the Sentry cron monitor red (withCronCheckin keys its check-in on the
+ * HTTP status). A failed HWM read is a crash: 500, Sentry, Axiom 'error'.
+ * Malformed candles (unparseable start_time, price, volume or
+ * market_time) are dropped, counted and raised as one Sentry warning per
+ * symbol, so one bad row can't fail the whole batch every minute.
+ *
+ * Storage: index_candles_1m (migrations #52, #54, #112–#114), UNIQUE
+ * (symbol, date, timestamp).
  *
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import { withCronCheckin } from '../_lib/cron-instrumentation.js';
+import {
+  deriveCronStatus,
+  withCronCheckin,
+} from '../_lib/cron-instrumentation.js';
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
@@ -52,12 +96,28 @@ import {
   checkDataQuality,
   withRetry,
 } from '../_lib/api-helpers.js';
+import { bulkUpsert } from '../_lib/bulk-upsert.js';
 import { reportCronRun } from '../_lib/axiom.js';
+
+const JOB = 'fetch-spx-candles-1m';
+
+// Per-attempt budget for each Neon call (HWM read, batched write, QC).
+const DB_ATTEMPT_TIMEOUT_MS = 10_000;
+
+const MINUTE_MS = 60_000;
 
 // ── Types ───────────────────────────────────────────────────
 
 type IndexSymbol = 'SPX' | 'NDX';
 type EtfTicker = 'SPY' | 'QQQ';
+type MarketTime = 'pr' | 'r' | 'po';
+
+/** market_time values the table's CHECK constraint accepts. */
+const MARKET_TIMES: ReadonlySet<unknown> = new Set<MarketTime>([
+  'pr',
+  'r',
+  'po',
+]);
 
 /** Minimal Schwab quote shape needed for ratio calculation. */
 interface SchwabQuoteEntry {
@@ -83,46 +143,68 @@ interface UWCandleRow {
   total_volume: number;
   start_time: string; // ISO timestamp: "2026-04-08T23:22:00Z"
   end_time: string;
-  market_time: 'pr' | 'r' | 'po';
+  market_time: MarketTime;
 }
 
-/** Normalized row ready for insert into index_candles_1m. */
-interface IndexCandleRow {
+/** Row written to index_candles_1m. */
+interface IndexCandleRow extends Record<string, unknown> {
+  symbol: IndexSymbol;
+  date: string;
   timestamp: string;
   open: number;
   high: number;
   low: number;
   close: number;
   volume: number;
-  market_time: 'pr' | 'r' | 'po';
+  market_time: MarketTime;
+  spx_schwab_price: number | null;
+  ndx_schwab_price: number | null;
 }
+
+const COLUMNS = [
+  'symbol',
+  'date',
+  'timestamp',
+  'open',
+  'high',
+  'low',
+  'close',
+  'volume',
+  'market_time',
+  'spx_schwab_price',
+  'ndx_schwab_price',
+] as const satisfies readonly (keyof IndexCandleRow)[];
 
 /** Per-symbol pipeline configuration. */
 interface IndexConfig {
   symbol: IndexSymbol;
   etfTicker: EtfTicker;
-  schwabIndexSymbol: '$SPX' | '$NDX';
 }
 
-const SPX_CONFIG: IndexConfig = {
-  symbol: 'SPX',
-  etfTicker: 'SPY',
-  schwabIndexSymbol: '$SPX',
-};
+/** Run order: SPX, then NDX (sequential; see the header). */
+const INDEXES: readonly IndexConfig[] = [
+  { symbol: 'SPX', etfTicker: 'SPY' },
+  { symbol: 'NDX', etfTicker: 'QQQ' },
+];
 
-const NDX_CONFIG: IndexConfig = {
-  symbol: 'NDX',
-  etfTicker: 'QQQ',
-  schwabIndexSymbol: '$NDX',
-};
-
-/** Aggregate per-symbol result for the cron response body. */
+/** Per-symbol result for the response body and the Axiom `meta`. */
 interface SymbolResult {
   symbol: IndexSymbol;
+  /** Candles UW returned. */
+  fetched: number;
+  /** Closed, valid candles after the high-water mark: the rows sent. */
+  new: number;
+  /** Rows sent in a write that succeeded (ON CONFLICT skips not subtracted). */
   stored: number;
+  /** fetched − new: at or below the HWM, still forming, or malformed. */
   skipped: number;
+  /** Closed candles after the HWM dropped as malformed. */
+  malformed: number;
+  /** True when a stored row carries this run's Schwab anchor. */
+  anchored: boolean;
   ratio?: number;
   indexPrice?: number;
+  /** The error message when this symbol's leg failed. */
   reason?: string;
 }
 
@@ -203,6 +285,34 @@ async function fetchSchwabRatios(): Promise<
   return ratios;
 }
 
+// ── High-water mark ─────────────────────────────────────────
+
+/**
+ * Latest stored minute per symbol since ET midnight of `today`, as epoch
+ * ms. A symbol with no rows today is absent (null HWM). The bound is
+ * `::date::timestamp AT TIME ZONE` because a bare date compares as UTC
+ * midnight, 4–5 h early. It reads `timestamp`, not the `date` column, so
+ * a mis-tagged `date` can't hide today's rows from the diff.
+ */
+async function loadHighWaterMarks(
+  sql: ReturnType<typeof getDb>,
+  today: string,
+): Promise<Map<string, number>> {
+  const rows = (await withDbRetry(
+    () => sql`
+      SELECT symbol, MAX(timestamp) AS hwm
+      FROM index_candles_1m
+      WHERE symbol = ANY(${INDEXES.map((c) => c.symbol)}::text[])
+        AND timestamp >= (${today}::date::timestamp AT TIME ZONE 'America/New_York')
+      GROUP BY symbol
+    `,
+    2,
+    DB_ATTEMPT_TIMEOUT_MS,
+  )) as Array<{ symbol: string; hwm: Date | string }>;
+  // Neon returns TIMESTAMPTZ as a Date; new Date() accepts either form.
+  return new Map(rows.map((r) => [r.symbol, new Date(r.hwm).getTime()]));
+}
+
 // ── Fetch helper ────────────────────────────────────────────
 
 async function fetchETFCandles1m(
@@ -210,6 +320,7 @@ async function fetchETFCandles1m(
   etfTicker: EtfTicker,
   date: string,
 ): Promise<UWCandleRow[]> {
+  // Intraday candles come newest first, so the limit keeps the newest 500.
   const params = new URLSearchParams({
     date,
     limit: '500',
@@ -218,278 +329,214 @@ async function fetchETFCandles1m(
   return uwFetch<UWCandleRow>(apiKey, `/stock/${etfTicker}/ohlc/1m?${params}`);
 }
 
-// ── Transform helper ────────────────────────────────────────
+// ── Candle selection ────────────────────────────────────────
+
+function isNumeric(value: unknown): boolean {
+  if (typeof value === 'number') return Number.isFinite(value);
+  return (
+    typeof value === 'string' &&
+    value.trim() !== '' &&
+    Number.isFinite(Number(value))
+  );
+}
 
 /**
- * Translate UW ETF rows into index-equivalent DB rows using the live
- * ratio. Filters out any row with NaN OHLC values (defensive). Per-symbol
- * metric increments so a partial-data NDX day vs partial-data SPX day
- * can be distinguished in dashboards.
+ * True when the candle can be written: numeric prices, an integer volume
+ * (`volume` is BIGINT NOT NULL, so a fraction or null fails the whole
+ * INSERT) and a market_time the CHECK constraint accepts.
  */
-function translateRows(
-  rows: UWCandleRow[],
-  ratio: number,
+function isWellFormed(c: UWCandleRow): boolean {
+  return (
+    [c.open, c.high, c.low, c.close].every(isNumeric) &&
+    isNumeric(c.volume) &&
+    Number.isSafeInteger(Number(c.volume)) &&
+    MARKET_TIMES.has(c.market_time)
+  );
+}
+
+/**
+ * Keep candles that are closed, newer than the HWM and well-formed;
+ * translate them to index prices; de-duplicate by minute and sort oldest
+ * first. Closed means starting before both `clockMinuteMs` and UW's newest
+ * candle (max start_time), which UW documents as still forming whatever
+ * our clock says. Candles are validated only after the time filters, so a
+ * bad bar already behind the HWM isn't re-counted on every run. The row
+ * for the minute just before `clockMinuteMs` carries the Schwab anchor.
+ */
+function selectNewCandles(
   symbol: IndexSymbol,
-): IndexCandleRow[] {
-  const translated: IndexCandleRow[] = [];
+  today: string,
+  candles: readonly UWCandleRow[],
+  hwmMs: number | undefined,
+  clockMinuteMs: number,
+  { ratio, indexPrice }: RatioResult,
+): { rows: IndexCandleRow[]; malformed: number } {
+  const parsed = candles.map((c) => ({ c, ts: Date.parse(c.start_time) }));
+  const newestMs = Math.max(
+    ...parsed.map(({ ts }) => ts).filter((ts) => Number.isFinite(ts)),
+  );
+  const formingFromMs = Math.min(clockMinuteMs, newestMs);
+  const anchorMs = clockMinuteMs - MINUTE_MS;
 
-  for (const row of rows) {
-    const open = Number.parseFloat(row.open) * ratio;
-    const high = Number.parseFloat(row.high) * ratio;
-    const low = Number.parseFloat(row.low) * ratio;
-    const close = Number.parseFloat(row.close) * ratio;
-
-    if (
-      Number.isNaN(open) ||
-      Number.isNaN(high) ||
-      Number.isNaN(low) ||
-      Number.isNaN(close)
-    ) {
-      metrics.increment(
-        `fetch_spx_candles_1m.ohlc_invalid_${symbol.toLowerCase()}`,
-      );
+  const byMinute = new Map<number, IndexCandleRow>();
+  let malformed = 0;
+  for (const { c, ts } of parsed) {
+    if (!Number.isFinite(ts)) {
+      malformed++;
       continue;
     }
-
-    translated.push({
-      timestamp: new Date(row.start_time).toISOString(),
-      open,
-      high,
-      low,
-      close,
-      volume: row.volume,
-      market_time: row.market_time,
+    if (ts >= formingFromMs) continue; // still forming
+    if (hwmMs !== undefined && ts <= hwmMs) continue; // already stored
+    if (!isWellFormed(c)) {
+      malformed++;
+      continue;
+    }
+    if (byMinute.has(ts)) continue;
+    const anchor = ts === anchorMs ? indexPrice : null;
+    byMinute.set(ts, {
+      symbol,
+      date: today,
+      timestamp: new Date(ts).toISOString(),
+      open: Number(c.open) * ratio,
+      high: Number(c.high) * ratio,
+      low: Number(c.low) * ratio,
+      close: Number(c.close) * ratio,
+      // Write the value isWellFormed checked: BIGINT rejects '1.0'.
+      volume: Number(c.volume),
+      market_time: c.market_time,
+      spx_schwab_price: symbol === 'SPX' ? anchor : null,
+      ndx_schwab_price: symbol === 'NDX' ? anchor : null,
     });
   }
-
-  return translated;
+  const rows = [...byMinute.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([, row]) => row);
+  return { rows, malformed };
 }
 
-// ── Store helper ────────────────────────────────────────────
+// ── Data quality ────────────────────────────────────────────
 
-async function storeCandles(
-  rows: IndexCandleRow[],
-  symbol: IndexSymbol,
+/** Alert (via checkDataQuality) when today's stored bars all have zero volume. */
+async function checkStoredQuality(
+  sql: ReturnType<typeof getDb>,
+  { symbol, etfTicker }: IndexConfig,
   today: string,
-): Promise<{ stored: number; skipped: number }> {
-  if (rows.length === 0) return { stored: 0, skipped: 0 };
-
-  const sql = getDb();
-
-  try {
-    const results = await sql.transaction((txn) =>
-      rows.map(
-        (row) => txn`
-          INSERT INTO index_candles_1m (
-            symbol, date, timestamp, open, high, low, close, volume, market_time
-          )
-          VALUES (
-            ${symbol}, ${today}, ${row.timestamp},
-            ${row.open}, ${row.high}, ${row.low}, ${row.close},
-            ${row.volume}, ${row.market_time}
-          )
-          ON CONFLICT (symbol, date, timestamp) DO NOTHING
-          RETURNING id
-        `,
-      ),
-    );
-
-    let stored = 0;
-    for (const result of results) {
-      if (result.length > 0) stored++;
-    }
-    return { stored, skipped: rows.length - stored };
-  } catch (err) {
-    Sentry.captureException(err);
-    logger.warn({ err, symbol }, 'Batch index_candles_1m insert failed');
-    return { stored: 0, skipped: rows.length };
-  }
-}
-
-// ── Anchor helper ───────────────────────────────────────────
-
-/**
- * UPDATE the per-symbol Schwab-verified anchor on the current minute's
- * row. Each symbol has its own column (spx_schwab_price for SPX,
- * ndx_schwab_price for NDX) — Postgres tagged-template SQL cannot
- * interpolate column names safely, so each branch is written out.
- *
- * Best-effort: failures are logged but do not abort the cron — the
- * candle is already stored, the anchor is just a refinement.
- */
-async function anchorIndexPrice(
-  symbol: IndexSymbol,
-  indexPrice: number,
-  today: string,
-  currentMinuteTs: string,
 ): Promise<void> {
-  const sql = getDb();
-  if (symbol === 'SPX') {
-    await withDbRetry(
-      () => sql`
-        UPDATE index_candles_1m
-        SET spx_schwab_price = ${indexPrice}
-        WHERE symbol = 'SPX'
-          AND date = ${today}
-          AND timestamp = ${currentMinuteTs}
-          AND spx_schwab_price IS NULL
-      `,
-      2,
-      10_000,
-    );
-  } else {
-    await withDbRetry(
-      () => sql`
-        UPDATE index_candles_1m
-        SET ndx_schwab_price = ${indexPrice}
-        WHERE symbol = 'NDX'
-          AND date = ${today}
-          AND timestamp = ${currentMinuteTs}
-          AND ndx_schwab_price IS NULL
-      `,
-      2,
-      10_000,
-    );
-  }
+  const qcRows = (await withDbRetry(
+    () => sql`
+      SELECT COUNT(*) AS total,
+             COUNT(*) FILTER (WHERE volume > 0) AS nonzero
+      FROM index_candles_1m
+      WHERE symbol = ${symbol}
+        AND date = ${today}
+    `,
+    2,
+    DB_ATTEMPT_TIMEOUT_MS,
+  )) as Array<{ total: string | number; nonzero: string | number }>;
+  const { total, nonzero } = qcRows[0]!;
+  await checkDataQuality({
+    job: JOB,
+    table: 'index_candles_1m',
+    date: today,
+    sourceFilter: `1-minute ${etfTicker} candles translated to ${symbol}`,
+    total: Number(total),
+    nonzero: Number(nonzero),
+  });
 }
 
 // ── Per-symbol pipeline ─────────────────────────────────────
 
-async function processIndex(
-  config: IndexConfig,
-  ratioResult: RatioResult | null,
+/**
+ * Fetch, filter, translate and write one symbol. Fills `result` as it
+ * goes so the caller can still report what was fetched (and stored) when
+ * a later step rejects; any rejection fails the symbol.
+ */
+async function ingestIndex(
+  sql: ReturnType<typeof getDb>,
   apiKey: string,
   today: string,
-  currentMinuteTs: string,
-): Promise<SymbolResult> {
+  config: IndexConfig,
+  ratioResult: RatioResult | null,
+  hwmMs: number | undefined,
+  clockMinuteMs: number,
+  result: SymbolResult,
+): Promise<void> {
   const { symbol, etfTicker } = config;
 
   if (ratioResult === null) {
     metrics.increment(
       `fetch_spx_candles_1m.ratio_unavailable_${symbol.toLowerCase()}`,
     );
-    return {
-      symbol,
-      stored: 0,
-      skipped: 0,
-      reason: `${symbol}/${etfTicker} ratio unavailable from Schwab`,
-    };
+    throw new Error(
+      `fetch-spx-candles-1m: ${symbol}/${etfTicker} ratio unavailable from Schwab`,
+    );
   }
+  result.ratio = ratioResult.ratio;
+  result.indexPrice = ratioResult.indexPrice;
 
-  const { ratio, indexPrice } = ratioResult;
-
-  const rawRows = await withRetry(() =>
+  const candles = await withRetry(() =>
     fetchETFCandles1m(apiKey, etfTicker, today),
   );
-
-  if (rawRows.length === 0) {
-    return {
-      symbol,
-      stored: 0,
-      skipped: 0,
-      ratio,
-      indexPrice,
-      reason: 'No 1m candles',
-    };
-  }
-
-  const translated = translateRows(rawRows, ratio, symbol);
-
-  if (translated.length === 0) {
-    return {
-      symbol,
-      stored: 0,
-      skipped: 0,
-      ratio,
-      indexPrice,
-      reason: 'No valid 1m candles after filter',
-    };
-  }
-
-  const result = await withRetry(() => storeCandles(translated, symbol, today));
-
-  // Anchor (best-effort)
-  try {
-    await anchorIndexPrice(symbol, indexPrice, today, currentMinuteTs);
-  } catch (updateErr) {
-    logger.warn(
-      { updateErr, symbol, currentMinuteTs },
-      `fetch-spx-candles-1m: ${symbol.toLowerCase()}_schwab_price UPDATE failed`,
+  result.fetched = candles.length;
+  // uwFetch only flags a missing `data`; `data: []` arrives silently.
+  if (candles.length === 0) {
+    metrics.increment('fetch_spx_candles_1m.empty_payload');
+    throw new Error(
+      `fetch-spx-candles-1m: UW returned no 1m ${etfTicker} candles for ${symbol}`,
     );
   }
 
-  // Data quality check
-  if (result.stored > 10) {
-    const qcSql = getDb();
-    const qcRows = await withDbRetry(
-      () => qcSql`
-        SELECT COUNT(*) AS total,
-               COUNT(*) FILTER (WHERE volume > 0) AS nonzero
-        FROM index_candles_1m
-        WHERE symbol = ${symbol}
-          AND date = ${today}
-      `,
-      2,
-      10_000,
-    );
-    const { total, nonzero } = qcRows[0]!;
-    await checkDataQuality({
-      job: 'fetch-spx-candles-1m',
-      table: 'index_candles_1m',
-      date: today,
-      sourceFilter: `1-minute ${etfTicker} candles translated to ${symbol}`,
-      total: Number(total),
-      nonzero: Number(nonzero),
-    });
-  }
-
-  return {
+  const { rows, malformed } = selectNewCandles(
     symbol,
-    stored: result.stored,
-    skipped: result.skipped,
-    ratio,
-    indexPrice,
-  };
+    today,
+    candles,
+    hwmMs,
+    clockMinuteMs,
+    ratioResult,
+  );
+  result.new = rows.length;
+  result.skipped = candles.length - rows.length;
+  result.malformed = malformed;
+
+  // conflictUpdateColumns: [] → ON CONFLICT DO NOTHING (closed OHLC bars
+  // don't restate). Retries are idempotent because of DO NOTHING on the
+  // source-derived (symbol, date, timestamp) key, which matters:
+  // withDbRetry's per-attempt timeout doesn't cancel the first attempt,
+  // so two can be in flight at once.
+  await withDbRetry(
+    () =>
+      bulkUpsert({
+        sql,
+        table: 'index_candles_1m',
+        columns: COLUMNS,
+        rows,
+        conflictTarget: '(symbol, date, timestamp)',
+        conflictUpdateColumns: [],
+      }),
+    2,
+    DB_ATTEMPT_TIMEOUT_MS,
+  ).catch((err: unknown) => {
+    // Write failures only; the caller reports every symbol failure.
+    metrics.increment('fetch_spx_candles_1m.store_error');
+    throw err;
+  });
+  result.stored = rows.length;
+  result.anchored = rows.some(
+    (r) => r.spx_schwab_price != null || r.ndx_schwab_price != null,
+  );
+
+  if (result.stored > 10) await checkStoredQuality(sql, config, today);
 }
 
-/**
- * Wrap processIndex with a catch-all so a thrown error from one symbol
- * cannot escape and abort the other symbol's flow. Logs the error and
- * returns a SymbolResult with the failure reason.
- */
-async function processIndexSafe(
-  config: IndexConfig,
-  ratioResult: RatioResult | null,
-  apiKey: string,
-  today: string,
-  currentMinuteTs: string,
-): Promise<SymbolResult> {
-  try {
-    return await processIndex(
-      config,
-      ratioResult,
-      apiKey,
-      today,
-      currentMinuteTs,
-    );
-  } catch (err) {
-    Sentry.captureException(err);
-    logger.error(
-      { err, symbol: config.symbol },
-      `fetch-spx-candles-1m: ${config.symbol} flow threw`,
-    );
-    return {
-      symbol: config.symbol,
-      stored: 0,
-      skipped: 0,
-      reason: `${config.symbol} flow threw: ${(err as Error).message ?? 'unknown'}`,
-    };
-  }
+/** 'ok' when every symbol landed; the historical Axiom value for success. */
+function runStatus(failureCount: number): 'ok' | 'partial' | 'error' {
+  const status = deriveCronStatus(failureCount, INDEXES.length);
+  return status === 'partial' || status === 'error' ? status : 'ok';
 }
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default withCronCheckin('fetch-spx-candles-1m', async (req, res) => {
+export default withCronCheckin(JOB, async (req, res) => {
   const guard = cronGuard(req, res);
   if (!guard) return;
   const { apiKey, today } = guard;
@@ -499,53 +546,84 @@ export default withCronCheckin('fetch-spx-candles-1m', async (req, res) => {
   const startTime = Date.now();
 
   try {
+    const sql = getDb();
+    // Throws to the catch on failure: without a HWM there is nothing safe
+    // to diff against, and the DB is the thing that's down.
+    const hwm = await loadHighWaterMarks(sql, today);
+
+    // Taken BEFORE the Schwab quote and both UW fetches, so it is never
+    // later than the minute UW answers in (an early clock can only hold a
+    // closed bar back one run) and the anchor minute is the one that had
+    // just closed when the quote was read.
+    const clockMinuteMs = Math.floor(Date.now() / MINUTE_MS) * MINUTE_MS;
     const ratios = await fetchSchwabRatios();
 
-    const now = new Date();
-    now.setSeconds(0, 0);
-    const currentMinuteTs = now.toISOString();
+    const results = {} as Record<IndexSymbol, SymbolResult>;
+    let failureCount = 0;
 
-    // Per-symbol error isolation: NDX failure does not block SPX, and
-    // vice versa. processIndexSafe wraps each flow so a thrown error
-    // becomes a SymbolResult with a reason rather than rejecting the
-    // outer try.
-    //
     // Sequential (not Promise.all) so this handler only ever holds one
     // UW concurrency slot at a time. Running both legs in parallel
     // doubled this cron's slot demand and caused MAX_ACQUIRE_ATTEMPTS
     // saturation when 15+ minute-cadence UW crons collided on the
-    // global cap-of-3 semaphore (Sentry issue 79).
-    const spxResult = await processIndexSafe(
-      SPX_CONFIG,
-      ratios.get('SPX') ?? null,
-      apiKey,
-      today,
-      currentMinuteTs,
-    );
-    const ndxResult = await processIndexSafe(
-      NDX_CONFIG,
-      ratios.get('NDX') ?? null,
-      apiKey,
-      today,
-      currentMinuteTs,
-    );
+    // global cap-of-3 semaphore (Sentry issue 79). The per-symbol catch
+    // isolates the legs: a failure on one still lets the other land.
+    for (const config of INDEXES) {
+      const { symbol } = config;
+      const result: SymbolResult = {
+        symbol,
+        fetched: 0,
+        new: 0,
+        stored: 0,
+        skipped: 0,
+        malformed: 0,
+        anchored: false,
+      };
+      results[symbol] = result;
+      try {
+        await ingestIndex(
+          sql,
+          apiKey,
+          today,
+          config,
+          ratios.get(symbol) ?? null,
+          hwm.get(symbol),
+          clockMinuteMs,
+          result,
+        );
+      } catch (err) {
+        failureCount++;
+        result.reason = err instanceof Error ? err.message : String(err);
+        logger.warn({ err, ...result }, 'fetch-spx-candles-1m: symbol failed');
+        Sentry.captureException(err, { tags: { symbol } });
+      }
+      if (result.malformed > 0) {
+        logger.warn(
+          { symbol, malformed: result.malformed },
+          'fetch-spx-candles-1m: dropped malformed candles',
+        );
+        metrics.increment('fetch_spx_candles_1m.malformed');
+        Sentry.captureMessage(
+          'fetch-spx-candles-1m: malformed UW candles dropped',
+          { level: 'warning', extra: { symbol, malformed: result.malformed } },
+        );
+      }
+    }
 
-    const totalStored = spxResult.stored + ndxResult.stored;
+    const { SPX: spx, NDX: ndx } = results;
+    const status = runStatus(failureCount);
+    const totalStored = spx.stored + ndx.stored;
 
     logger.info(
-      {
-        spx: spxResult,
-        ndx: ndxResult,
-        totalStored,
-        date: today,
-      },
+      { spx, ndx, totalStored, failureCount, status, date: today },
       'fetch-spx-candles-1m completed',
     );
 
-    await reportCronRun('fetch-spx-candles-1m', {
-      status: 'ok',
-      spx: spxResult,
-      ndx: ndxResult,
+    // Same top-level keys as before (status, totalStored, durationMs); the
+    // spx / ndx objects land in Axiom's `meta`.
+    await reportCronRun(JOB, {
+      status,
+      spx,
+      ndx,
       totalStored,
       durationMs: Date.now() - startTime,
     });
@@ -553,30 +631,33 @@ export default withCronCheckin('fetch-spx-candles-1m', async (req, res) => {
     // Top-level fields mirror SPX for backward compatibility with
     // existing monitors / dashboards that key on { stored, ratio,
     // spxPrice, reason }. Per-symbol detail is in the spx / ndx blocks.
-    const spxStoredField: number | false = spxResult.reason
-      ? false
-      : spxResult.stored;
-
-    return res.status(200).json({
-      job: 'fetch-spx-candles-1m',
-      success: true,
-      stored: spxStoredField,
-      skipped: spxResult.skipped,
+    // 'error' answers 500 so withCronCheckin sends an error check-in.
+    return res.status(status === 'error' ? 500 : 200).json({
+      job: JOB,
+      status,
+      success: status === 'ok',
+      failureCount,
+      stored: spx.reason == null ? spx.stored : false,
+      skipped: spx.skipped,
       ratio:
-        spxResult.ratio != null
-          ? Math.round(spxResult.ratio * 10000) / 10000
-          : undefined,
-      spxPrice: spxResult.indexPrice,
-      reason: spxResult.reason,
-      spx: spxResult,
-      ndx: ndxResult,
+        spx.ratio != null ? Math.round(spx.ratio * 10000) / 10000 : undefined,
+      spxPrice: spx.indexPrice,
+      reason: spx.reason,
+      spx,
+      ndx,
       totalStored,
       durationMs: Date.now() - startTime,
     });
   } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-spx-candles-1m');
+    Sentry.setTag('cron.job', JOB);
     Sentry.captureException(err);
     logger.error({ err }, 'fetch-spx-candles-1m error');
+    await reportCronRun(JOB, {
+      status: 'error',
+      // Not an Axiom column, so it lands in `meta`.
+      error: err instanceof Error ? err.message : String(err),
+      durationMs: Date.now() - startTime,
+    });
     return res.status(500).json({ error: 'Internal error' });
   }
 });
