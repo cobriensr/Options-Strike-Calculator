@@ -29,8 +29,12 @@ Make every endpoint follow the owner's data-licensing rule. Schwab data may be p
 
 - **`api/iv-term-structure.ts:132`** → `Cache-Control: private, max-age=300`. Browser-only, so no CDN entry. This drops `s-maxage` and `stale-while-revalidate`.
 - **`api/history.ts:266-268`** (Redis-hit path) → `private, max-age=86400`. Check its other response paths for shared-cache headers too, and treat them the same way.
+- **`api/history.ts` Redis entries** (added during review): a past-date partial result is cached with `ex: 120`, but a hit always sent the day-long max-age, so a browser kept an incomplete response for a day. Entries are now `{ response, complete }` under a bumped `history:v3:` prefix, and a hit sends `max-age=86400` only when `complete`, otherwise 120. Old `history:v2:` keys are never read again and expire on their own TTL. A wrong-shaped entry is a miss: it logs a warning, and the fetch overwrites it.
+- **`api/bwb-anchor.ts`** (added during implementation): once Phase 1 guards it, its two `setCacheHeaders` calls (no-data 200: `s-maxage=30`, anchor 200: `s-maxage=60`, both with `Vary: Cookie`) would rely on the same unverified `Vary: Cookie` for guarded UW data, so both became `private, max-age=30` and `private, max-age=60`.
+- **500s** on all three endpoints go through `sendError`, which sets `no-store`, so a failure after the success header was set can't leave a cacheable `Cache-Control` on the error.
+- **Shared guards' bot 403** (added during review; a separate commit that lands before the endpoint changes): `guardOwnerOrGuestEndpoint` (`api/_lib/guest-auth.ts`) and `guardOwnerEndpoint` (`api/_lib/auth-helpers.ts`) now send `Cache-Control: no-store` on the bot 403, as their 401 already did. A 403 with no freshness wasn't cacheable before either, so this is consistency rather than a leak fix: every rejection now explicitly opts out of caching, and bwb-anchor keeps the `no-store` its own bot check used to send. Every guarded endpoint inherits it.
 - `private` is safe whether or not Vercel's CDN honors `Vary: Cookie`, which is unverified (see Phase 3).
-- **Tests:** assert the exact `Cache-Control` value on the success paths of both endpoints, and that no header contains `s-maxage`.
+- **Tests:** assert the exact `Cache-Control` value on the success paths of all three endpoints, and that no header contains `s-maxage`.
 
 ### Phase 3: verify the shared helper live (needs the owner's go-ahead; not started)
 
@@ -45,13 +49,14 @@ If the cookieless request is served from the CDN, switch the helper to `private,
 
 ## Files
 
-- **Phase 1:** `api/bwb-anchor.ts`, `api/__tests__/bwb-anchor.test.ts`
+- **Phase 1:** `api/bwb-anchor.ts`, `api/__tests__/bwb-anchor.test.ts`, `vite.config.ts` (removed the `api/bwb-anchor.ts` coverage exclusion: the handler is now unit-tested at 100%)
 - **Phase 2:** `api/iv-term-structure.ts`, `api/__tests__/iv-term-structure.test.ts`, `api/history.ts`, `api/__tests__/history.test.ts`
+- **Phase 2, shared guards (separate commit, first):** `api/_lib/guest-auth.ts`, `api/__tests__/guest-auth.test.ts`, `api/_lib/auth-helpers.ts`, `api/__tests__/api-helpers.test.ts`
 - **Phase 3 (if approved):** `api/_lib/auth-helpers.ts` and its test
 
 ## Data dependencies
 
-None. No tables, migrations, env vars or new upstream calls.
+No tables, migrations, env vars or new upstream calls. One Redis key change: `/api/history` entries move from `history:v2:` to `history:v3:` (Phase 2); v2 keys expire on their own.
 
 ## Open questions
 

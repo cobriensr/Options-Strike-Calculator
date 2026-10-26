@@ -16,6 +16,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   guardOwnerOrGuestEndpoint,
   rejectIfRateLimited,
+  sendError,
   uwFetch,
 } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
@@ -120,7 +121,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!apiKey) {
         logger.error('UW_API_KEY not configured');
         done({ status: 500 });
-        return res.status(500).json({ error: 'UW_API_KEY not configured' });
+        return sendError(res, 500, 'UW_API_KEY not configured');
       }
 
       // Always use today's date (ET)
@@ -128,8 +129,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const rows = await fetchInterpolatedIv(apiKey, today);
 
-      // Short edge cache — data changes intraday
-      res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=60');
+      // Browser-only cache: a shared-cache directive would let the CDN serve
+      // this guarded UW response to anonymous visitors without the guard.
+      res.setHeader('Cache-Control', 'private, max-age=300');
 
       done({ status: 200 });
       return res.status(200).json({
@@ -141,7 +143,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       done({ status: 500, error: 'unhandled' });
       Sentry.captureException(error);
       logger.error({ err: error }, 'IV term structure fetch failed');
-      return res.status(500).json({ error: 'Internal server error' });
+      // sendError sets no-store, replacing any success Cache-Control.
+      return sendError(res, 500, 'Internal server error');
     }
   });
 }

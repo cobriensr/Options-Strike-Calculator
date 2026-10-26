@@ -3,11 +3,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-vi.mock('../_lib/api-helpers.js', () => ({
-  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
-  rejectIfRateLimited: vi.fn(),
-  uwFetch: vi.fn(),
-}));
+// The real sendError (it sets no-store), taken from the module that owns it.
+vi.mock('../_lib/api-helpers.js', async () => {
+  const { sendError } = await vi.importActual<
+    typeof import('../_lib/auth-helpers.js')
+  >('../_lib/auth-helpers.js');
+  return {
+    guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
+    rejectIfRateLimited: vi.fn(),
+    uwFetch: vi.fn(),
+    sendError,
+  };
+});
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
@@ -36,6 +43,7 @@ import {
   rejectIfRateLimited,
   uwFetch,
 } from '../_lib/api-helpers.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 
 const SAMPLE_ROWS: IvTermRow[] = [
   {
@@ -132,6 +140,8 @@ describe('GET /api/iv-term-structure', () => {
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(500);
     expect(res._json).toMatchObject({ error: 'UW_API_KEY not configured' });
+    expect(res._headers['Cache-Control']).toBe('no-store');
+    expect(uwFetch).not.toHaveBeenCalled();
   });
 
   // ── Happy path ─────────────────────────────────────────────
@@ -158,14 +168,22 @@ describe('GET /api/iv-term-structure', () => {
     );
   });
 
-  it('sets cache headers', async () => {
-    stubFetch();
-    const res = mockResponse();
-    await handler(mockRequest({ method: 'GET' }), res);
-    expect(res._headers['Cache-Control']).toBe(
-      's-maxage=300, stale-while-revalidate=60',
-    );
-  });
+  // Guarded UW data: a shared-cache directive would let Vercel's CDN serve
+  // the response to an anonymous visitor without running the guard.
+  it.each([
+    ['rows', SAMPLE_ROWS],
+    ['an empty array', []],
+  ])(
+    'caches a 200 with %s in the browser only (private, max-age=300)',
+    async (_label, rows) => {
+      stubFetch(rows);
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET' }), res);
+      expect(res._status).toBe(200);
+      expect(res._headers['Cache-Control']).toBe('private, max-age=300');
+      expect(Object.values(res._headers).join('\n')).not.toContain('s-maxage');
+    },
+  );
 
   it('handles empty data array from UW', async () => {
     stubFetch([]);
@@ -184,14 +202,32 @@ describe('GET /api/iv-term-structure', () => {
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(500);
     expect(res._json).toMatchObject({ error: 'Internal server error' });
+    expect(res._headers['Cache-Control']).toBe('no-store');
   });
 
   it('returns 500 when uwFetch throws', async () => {
-    vi.mocked(uwFetch).mockRejectedValue(new Error('Network error'));
+    const networkError = new Error('Network error');
+    vi.mocked(uwFetch).mockRejectedValue(networkError);
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(500);
     expect(res._json).toMatchObject({ error: 'Internal server error' });
+    expect(res._headers['Cache-Control']).toBe('no-store');
+    expect(Sentry.captureException).toHaveBeenCalledWith(networkError);
+  });
+
+  it('answers 500 with no-store when a throw follows the success Cache-Control', async () => {
+    // The metrics callback throws on the 200, after the success header set.
+    vi.mocked(metrics.request).mockReturnValueOnce(
+      vi.fn((opts?: { status?: number }) => {
+        if (opts?.status === 200) throw new Error('late failure');
+      }),
+    );
+    stubFetch();
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+    expect(res._status).toBe(500);
+    expect(res._headers['Cache-Control']).toBe('no-store');
   });
 });
 

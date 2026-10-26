@@ -15,11 +15,14 @@
  * Confidence:  HIGH (disagreement <= 10 pts)
  *              MEDIUM (disagreement <= 20 pts)
  *              LOW (disagreement > 20 pts)
+ *
+ * Owner-or-guest: strike_exposures is Unusual Whales data (data-licensing
+ * rule in CLAUDE.md).
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { Sentry, metrics } from './_lib/sentry.js';
-import { checkBot, setCacheHeaders, sendError } from './_lib/api-helpers.js';
+import { guardOwnerOrGuestEndpoint, sendError } from './_lib/api-helpers.js';
 import { getStrikeExposuresByExpiry } from './_lib/db-strike-helpers.js';
 import type { StrikeExposureRow } from './_lib/db-strike-helpers.js';
 import { getETDateStr } from '../src/utils/timezone.js';
@@ -100,11 +103,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const done = metrics.request('/api/bwb-anchor');
 
     try {
-      const botCheck = await checkBot(req);
-      if (botCheck.isBot) {
-        done({ status: 403 });
-        return sendError(res, 403, 'Access denied');
-      }
+      // Runs checkBot first, then the owner-or-guest cookie check.
+      if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
       // Accept ?date=YYYY-MM-DD for backtest mode, default to today
       const dateParam =
@@ -119,8 +119,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         getStrikeExposuresByExpiry(date, '1dte'),
       ]);
 
+      // Browser-only caching on both 200s: a shared-cache directive would let
+      // the CDN serve this guarded UW response to anonymous visitors.
       if (strikes0dte.length === 0) {
-        setCacheHeaders(res, 30, 15);
+        res.setHeader('Cache-Control', 'private, max-age=30');
         done({ status: 200 });
         return res.status(200).json({
           anchor: null,
@@ -162,7 +164,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const charmCentroid = computeCharmCentroid(strikes0dte);
       const charmAdjusted = Math.round(charmCentroid / 5) * 5;
 
-      setCacheHeaders(res, 60, 30);
+      res.setHeader('Cache-Control', 'private, max-age=60');
       done({ status: 200 });
       return res.status(200).json({
         // Primary recommendation

@@ -9,17 +9,17 @@
  *
  * Owner-or-guest (uses Schwab credentials).
  *
- * Cache strategy:
- *   - Past dates: cached in Redis for 90 days (data never changes)
- *   - Today: cached 120s (data is still accumulating)
+ * Cache strategy (Redis entry TTL; the browser max-age matches on hit and miss):
+ *   - Past dates, every symbol fetched: 90 days in Redis, 1 day in the browser
+ *   - Past dates with a failed symbol, or today: 120s (self-heals)
  */
 
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   schwabFetch,
-  setCacheHeaders,
   guardOwnerOrGuestEndpoint,
+  sendError,
 } from './_lib/api-helpers.js';
 import { redis } from './_lib/redis.js';
 import { getETTotalMinutes, getETDateStr } from '../src/utils/timezone.js';
@@ -90,12 +90,65 @@ interface HistoryResponse {
   asOf: string;
 }
 
+/**
+ * Redis entry. `complete` (a past date where every symbol fetched) is stored
+ * so a hit replays the browser max-age the original response got: a 120 s
+ * partial entry must not come back with the day-long one.
+ */
+interface CachedHistory {
+  response: HistoryResponse;
+  complete: boolean;
+}
+
 // ============================================================
 // HELPERS
 // ============================================================
 
-const REDIS_PREFIX = 'history:v2:';
+// v3 entries are CachedHistory. v2 entries (bare responses) are never read
+// again and expire on their own TTL.
+const REDIS_PREFIX = 'history:v3:';
 const PAST_CACHE_TTL = 90 * 24 * 60 * 60;
+
+/**
+ * Browser-only lifetime: a day for a complete past date, else 120 s. Never a
+ * shared-cache directive, because the CDN would serve this guarded response
+ * without running the guard.
+ */
+function cacheControlFor(complete: boolean): string {
+  return `private, max-age=${complete ? 86400 : 120}`;
+}
+
+/** Envelope check only: `response` is an object and `complete` a boolean. */
+function isCachedHistory(value: unknown): value is CachedHistory {
+  if (typeof value !== 'object' || value === null) return false;
+  const { response, complete } = value as Record<string, unknown>;
+  return (
+    typeof response === 'object' &&
+    response !== null &&
+    !Array.isArray(response) &&
+    typeof complete === 'boolean'
+  );
+}
+
+/**
+ * Read a cached entry. A Redis error or a wrong-shaped value is a miss, and
+ * the fetch path then overwrites the key, so a bad entry heals on the next
+ * request instead of being served until its TTL runs out.
+ */
+async function readCachedHistory(
+  cacheKey: string,
+): Promise<CachedHistory | null> {
+  let cached: unknown;
+  try {
+    cached = await redis.get<unknown>(cacheKey);
+  } catch {
+    return null; // Redis unavailable
+  }
+  if (cached == null) return null;
+  if (isCachedHistory(cached)) return cached;
+  logger.warn({ cacheKey }, 'Malformed history cache entry; refetching');
+  return null;
+}
 
 function formatTimeET(ms: number): string {
   return new Date(ms).toLocaleTimeString('en-US', {
@@ -259,20 +312,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Try Redis cache (past dates are cached long-term)
       const cacheKey = `${REDIS_PREFIX}${dateParam}`;
       if (!isToday) {
-        try {
-          const cached = await redis.get<HistoryResponse>(cacheKey);
-          if (cached) {
-            metrics.cacheResult('/api/history', true);
-            res.setHeader(
-              'Cache-Control',
-              's-maxage=86400, stale-while-revalidate=3600',
-            );
-            res.setHeader('X-Cache', 'HIT');
-            done({ status: 200 });
-            return res.status(200).json(cached);
-          }
-        } catch {
-          // Redis unavailable
+        const cached = await readCachedHistory(cacheKey);
+        if (cached) {
+          metrics.cacheResult('/api/history', true);
+          res.setHeader('Cache-Control', cacheControlFor(cached.complete));
+          res.setHeader('X-Cache', 'HIT');
+          done({ status: 200 });
+          return res.status(200).json(cached.response);
         }
       }
 
@@ -320,34 +366,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         asOf: new Date().toISOString(),
       };
 
+      // Only a complete past-date response earns the long Redis TTL and the
+      // long browser max-age. Today's data is still accumulating, and a
+      // partial-failure response must not be cached for a day.
+      const complete = !isToday && allOk;
+      const entry: CachedHistory = { response, complete };
+
       // Cache
       try {
         if (isToday) {
-          await redis.set(cacheKey, response, { ex: 120 });
-        } else if (allOk && spx.candles.length > 0) {
-          await redis.set(cacheKey, response, { ex: PAST_CACHE_TTL });
+          await redis.set(cacheKey, entry, { ex: 120 });
+        } else if (complete && spx.candles.length > 0) {
+          await redis.set(cacheKey, entry, { ex: PAST_CACHE_TTL });
         } else if (spx.candles.length > 0) {
           // Past date but at least one symbol failed: short TTL so the empty
           // panels don't persist for 90 days. Observable via the per-symbol
           // captureMessage above.
-          await redis.set(cacheKey, response, { ex: 120 });
+          await redis.set(cacheKey, entry, { ex: 120 });
         }
       } catch (err) {
         logger.error({ err }, 'Failed to cache history');
       }
 
-      // Only a complete past-date response earns the long CDN max-age. Today's
-      // data is still accumulating, and a partial-failure response must not be
-      // edge-cached for a day (it mirrors the short Redis TTL above).
-      const longLived = !isToday && allOk;
-      setCacheHeaders(res, longLived ? 86400 : 120, longLived ? 3600 : 60);
+      res.setHeader('Cache-Control', cacheControlFor(complete));
 
       done({ status: 200 });
       res.status(200).json(response);
     } catch (error) {
       done({ status: 500, error: 'unhandled' });
       Sentry.captureException(error);
-      res.status(500).json({ error: 'Internal server error' });
+      // sendError sets no-store, replacing any success Cache-Control.
+      sendError(res, 500, 'Internal server error');
     }
   });
 }
