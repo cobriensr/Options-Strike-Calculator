@@ -666,6 +666,7 @@ describe('exportBWBComparison', () => {
       expect(headers).toContain('Max Loss (pts)');
       expect(headers).toContain('Sweet Spot');
       expect(headers).toContain('Breakeven');
+      expect(headers).toContain('Near Breakeven');
       expect(headers).toContain('Monthly Net ($)');
     });
 
@@ -742,6 +743,64 @@ describe('exportBWBComparison', () => {
           row['Net Credit (pts)'],
         );
       }
+    });
+
+    it('Wide is the snapped width per side (15 × 2.5 → 35 put, 40 call)', async () => {
+      await exportBWBComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+      });
+      const wb = getWorkbook();
+      const sheet = getSheet(wb, 'BWB Comparison');
+      const data: any[] = XLSX.utils.sheet_to_json(sheet);
+      const offGrid = data.filter(
+        (r) => r['Narrow'] === 15 && r['Mult'] === '2.5x',
+      );
+      expect(offGrid).toHaveLength(12);
+      for (const row of offGrid) {
+        expect(row['Wide']).toBe(row['Side'] === 'Put BWB' ? 35 : 40);
+      }
+    });
+
+    it('max loss matches the snapped widths', async () => {
+      await exportBWBComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+      });
+      const wb = getWorkbook();
+      const sheet = getSheet(wb, 'BWB Comparison');
+      const data: any[] = XLSX.utils.sheet_to_json(sheet);
+      for (const row of data) {
+        const credit = row['Net Credit (pts)'];
+        const expected = Math.max(
+          -credit,
+          row['Wide'] - row['Narrow'] - credit,
+        );
+        expect(row['Max Loss (pts)']).toBeCloseTo(expected, 3);
+      }
+    });
+
+    it('debit rows carry a near breakeven and credit rows leave it blank', async () => {
+      await exportBWBComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+      });
+      const wb = getWorkbook();
+      const sheet = getSheet(wb, 'BWB Comparison');
+      const data: any[] = XLSX.utils.sheet_to_json(sheet);
+      let debits = 0;
+      for (const row of data) {
+        if (row['Net Credit (pts)'] < 0) {
+          debits++;
+          expect(typeof row['Near Breakeven']).toBe('number');
+        } else {
+          expect(row['Near Breakeven'] ?? '').toBe('');
+        }
+      }
+      expect(debits).toBeGreaterThan(0);
     });
 
     it('max loss is positive', async () => {

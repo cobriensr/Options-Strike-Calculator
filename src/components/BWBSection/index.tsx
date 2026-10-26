@@ -1,8 +1,27 @@
 import { useState, useCallback } from 'react';
-import type { DeltaRow, CalculationResults } from '../../types';
+import type { BWBLegs, DeltaRow, CalculationResults } from '../../types';
 import { buildPutBWB, buildCallBWB } from '../../utils/calculator';
 import BWBLegsTable from './BWBLegsTable';
 import BWBPnLProfileTable from './BWBPnLProfileTable';
+
+/**
+ * "20/40-pt wings", or per side when snapping splits them: 15 × 2.5 = 37.5
+ * snaps to 35 on puts and 40 on calls, so "15/35-pt put, 15/40-pt call
+ * wings". Falls back to the requested widths when no delta row is valid.
+ */
+function formatWingLabel(
+  put: BWBLegs | undefined,
+  call: BWBLegs | undefined,
+  narrowWidth: number,
+  wideWidth: number,
+): string {
+  const putPair =
+    (put?.narrowWidth ?? narrowWidth) + '/' + (put?.wideWidth ?? wideWidth);
+  const callPair =
+    (call?.narrowWidth ?? narrowWidth) + '/' + (call?.wideWidth ?? wideWidth);
+  if (putPair === callPair) return putPair + '-pt wings';
+  return putPair + '-pt put, ' + callPair + '-pt call wings';
+}
 
 interface Props {
   results: CalculationResults;
@@ -49,6 +68,13 @@ export default function BWBSection({
     ),
   );
 
+  const wingLabel = formatWingLabel(
+    putRows[0],
+    callRows[0],
+    narrowWidth,
+    wideWidth,
+  );
+
   const [collapsed, setCollapsed] = useState(false);
   const toggleCollapse = useCallback(() => setCollapsed((v) => !v), []);
 
@@ -62,7 +88,7 @@ export default function BWBSection({
         onClick={toggleCollapse}
         role="button"
         tabIndex={0}
-        aria-label={`Toggle Broken Wing Butterfly (${narrowWidth}/${wideWidth}-pt wings)`}
+        aria-label={`Toggle Broken Wing Butterfly (${wingLabel})`}
         aria-expanded={!collapsed}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
@@ -80,7 +106,7 @@ export default function BWBSection({
         >
           &#x25BE;
         </span>
-        Broken Wing Butterfly ({narrowWidth}/{wideWidth}-pt wings)
+        Broken Wing Butterfly ({wingLabel})
       </div>
 
       {!collapsed && (
@@ -102,7 +128,8 @@ export default function BWBSection({
             {contracts === 1 ? '' : 's'}. Put BWB = sell 2{'\u00D7'} short put,
             buy long near put + long far put. Call BWB = sell 2{'\u00D7'} short
             call, buy long near call + long far call. Sweet spot = max profit at
-            the short strike. Premiums theoretical (r=0).
+            the short strike. A debit BWB profits only between its two
+            breakevens. Premiums theoretical (r=0).
           </p>
 
           {/* Export Button */}

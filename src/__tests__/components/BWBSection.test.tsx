@@ -7,6 +7,7 @@ import {
   waitFor,
 } from '@testing-library/react';
 import BWBSection from '../../components/BWBSection';
+import { calcAllDeltas, calcTimeToExpiry } from '../../utils/calculator';
 import type { CalculationResults, DeltaRow, DeltaRowError } from '../../types';
 
 // ============================================================
@@ -107,6 +108,20 @@ describe('BWBSection', () => {
     renderSection({}, { narrowWidth: 15, wideMultiplier: 3 });
     expect(
       screen.getByText(/Broken Wing Butterfly \(15\/45-pt wings\)/),
+    ).toBeInTheDocument();
+  });
+
+  it('labels off-grid wings per side with the snapped widths', () => {
+    // 15 × 2.5 = 37.5: the put far wing snaps to 35, the call far wing to 40
+    renderSection({}, { narrowWidth: 15, wideMultiplier: 2.5 });
+    const label = '15/35-pt put, 15/40-pt call wings';
+    expect(
+      screen.getByText('Broken Wing Butterfly (' + label + ')'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', {
+        name: 'Toggle Broken Wing Butterfly (' + label + ')',
+      }),
     ).toBeInTheDocument();
   });
 
@@ -272,6 +287,32 @@ describe('BWBSection', () => {
     expect(within(pnlTable).getByText('5630')).toBeInTheDocument();
     // Sweet spot value = shortStrike = 5770 (call BWB)
     expect(within(pnlTable).getByText('5770')).toBeInTheDocument();
+  });
+
+  it('P&L table shows a single breakeven for a credit BWB', () => {
+    // The fixture row is a credit on both sides; put BE = 5604.55
+    renderSection();
+    const pnlTable = screen.getByRole('table', {
+      name: 'BWB P&L by delta',
+    });
+    const putRow = within(pnlTable).getByText('Put BWB').closest('tr')!;
+    expect(within(putRow).getByText('5605')).toBeInTheDocument();
+  });
+
+  it('P&L table shows both breakevens of a debit BWB', () => {
+    // Default 20/40 at σ 0.18, 10:00 CT, 3% skew: the 10Δ put is a debit
+    // that profits only between 5705.4 and 5744.6.
+    const t5 = calcTimeToExpiry(5);
+    const row10 = calcAllDeltas(5800, 0.18, t5, 0.03, 10).find(
+      (r): r is DeltaRow => !('error' in r) && r.delta === 10,
+    )!;
+    renderSection({ allDeltas: [row10], spot: 5800, T: t5, sigma: 0.18 });
+    const pnlTable = screen.getByRole('table', {
+      name: 'BWB P&L by delta',
+    });
+    const putRow = within(pnlTable).getByText('Put BWB').closest('tr')!;
+    expect(within(putRow).getByText('5705\u20135745')).toBeInTheDocument();
+    expect(within(putRow).getByText('571\u2013574')).toBeInTheDocument();
   });
 
   // ============================================================

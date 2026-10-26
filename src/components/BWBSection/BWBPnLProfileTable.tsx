@@ -4,6 +4,17 @@ import { mkTh, mkTd } from '../../utils/ui-utils';
 import { formatDollars } from '../../utils/format-magnitude.js';
 import { ScrollHint } from '../ui';
 
+/**
+ * One breakeven for a credit BWB; "low–high" for a debit BWB, which
+ * profits only between its far-side and near-side breakevens.
+ */
+function formatBreakevens(bwb: BWBLegs, divisor: number): string {
+  const far = Math.round(bwb.breakeven / divisor);
+  if (bwb.breakevenNear == null) return far.toString();
+  const near = Math.round(bwb.breakevenNear / divisor);
+  return Math.min(far, near) + '\u2013' + Math.max(far, near);
+}
+
 interface Props {
   putRows: BWBLegs[];
   callRows: BWBLegs[];
@@ -88,10 +99,8 @@ export default function BWBPnLProfileTable({
                     ror: put.returnOnRisk,
                     pop: put.probabilityOfProfit,
                     adjPop: put.adjustedPoP,
-                    be: put.breakeven.toFixed(0),
-                    spyBe: Math.round(
-                      put.breakeven / effectiveRatio,
-                    ).toString(),
+                    be: formatBreakevens(put, 1),
+                    spyBe: formatBreakevens(put, effectiveRatio),
                     sweetSpot: put.sweetSpot.toFixed(0),
                     isFirst: true,
                   },
@@ -107,10 +116,8 @@ export default function BWBPnLProfileTable({
                           ror: call.returnOnRisk,
                           pop: call.probabilityOfProfit,
                           adjPop: call.adjustedPoP,
-                          be: call.breakeven.toFixed(0),
-                          spyBe: Math.round(
-                            call.breakeven / effectiveRatio,
-                          ).toString(),
+                          be: formatBreakevens(call, 1),
+                          spyBe: formatBreakevens(call, effectiveRatio),
                           sweetSpot: call.sweetSpot.toFixed(0),
                           isFirst: false,
                         },

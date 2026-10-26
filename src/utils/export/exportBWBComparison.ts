@@ -55,6 +55,7 @@ export async function exportBWBComparison({
     'RoR (%)',
     'PoP (%)',
     'Breakeven',
+    'Near Breakeven',
     'Sweet Spot',
     'Short ×2',
     'Long Near',
@@ -102,8 +103,8 @@ export async function exportBWBComparison({
           const monthlyNet = round2(monthlyProfit - monthlyLoss);
 
           data.push([
-            narrow,
-            wide,
+            bwb.narrowWidth,
+            bwb.wideWidth,
             m + 'x',
             bwb.delta + 'Δ',
             bwb.side === 'put' ? 'Put BWB' : 'Call BWB',
@@ -117,6 +118,7 @@ export async function exportBWBComparison({
             round1(bwb.returnOnRisk * 100),
             round1(pop * 100),
             round0(bwb.breakeven),
+            bwb.breakevenNear == null ? '' : round0(bwb.breakevenNear),
             bwb.sweetSpot,
             bwb.shortStrike,
             bwb.longNearStrike,
@@ -136,8 +138,8 @@ export async function exportBWBComparison({
   setColumnWidths(
     ws,
     [
-      8, 8, 6, 8, 10, 14, 12, 14, 12, 12, 12, 12, 8, 8, 10, 10, 10, 10, 10, 10,
-      10, 14, 14, 14,
+      8, 8, 6, 8, 10, 14, 12, 14, 12, 12, 12, 12, 8, 8, 10, 14, 10, 10, 10, 10,
+      10, 10, 14, 14, 14,
     ],
   );
   XLSX.utils.book_append_sheet(wb, ws, 'BWB Comparison');
@@ -173,7 +175,13 @@ export async function exportBWBComparison({
     ['BWB uses a single σ per side (put or call), same as IC pricing.'],
     ['Net Credit can be negative (net debit) depending on wing asymmetry.'],
     ['Max Profit = Narrow Width + Net Credit (at the sweet spot).'],
+    [
+      'Narrow and Wide are the snapped strike distances: an off-grid wide width (e.g. 37.5) snaps to 35 on puts and 40 on calls.',
+    ],
     ['Max Loss = Wide Width − Narrow Width − Net Credit (capped at far wing).'],
+    [
+      'A debit BWB profits only between Breakeven and Near Breakeven; PoP is the probability of settling between them.',
+    ],
     ['Buying Power = Max Loss.'],
     ['Dollar values = SPX points × $100 × ' + contracts + ' contracts.'],
     [],
