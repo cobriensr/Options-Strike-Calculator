@@ -143,8 +143,6 @@ export interface MarketDataState {
   hasData: boolean;
   /** True if Schwab auth is expired (needs /api/auth/init) */
   needsAuth: boolean;
-  /** Manually trigger a refresh */
-  refresh: () => Promise<void>;
   /**
    * Epoch milliseconds of the last successful fetch on any endpoint.
    * Canonical freshness field per the project's `fetchedAt` convention -
@@ -216,11 +214,10 @@ export function useMarketData(): MarketDataState {
   // current snapshot to `processEndpointResults` (which carries-forward
   // non-updated endpoints) WITHOUT depending on `data` in its dep array.
   // Keeping `fetchAll` identity stable preserves the original behavior where
-  // the mount effect fires exactly once and `refresh` is referentially
-  // stable for consumers. Previously this carry-forward was done via the
-  // functional `setData(prev => …)` updater; moving side effects out of the
-  // updater (so it stays pure under StrictMode double-invoke) means we read
-  // `prev` from this ref instead.
+  // the mount effect fires exactly once. Previously this carry-forward was
+  // done via the functional `setData(prev => …)` updater; moving side effects
+  // out of the updater (so it stays pure under StrictMode double-invoke)
+  // means we read `prev` from this ref instead.
   const dataRef = useRef(data);
   dataRef.current = data;
   const [loading, setLoading] = useState(true);
@@ -243,11 +240,13 @@ export function useMarketData(): MarketDataState {
   // or the sc-hint cookie exists from a prior auth session).
   //
   // AUD-M17: owner status is STATE (mirrored on a ref) rather than a bare
-  // ref. The polling gate `[isOwner, session !== 'closed']` must re-evaluate
-  // when a visitor who was public at mount authenticates in another tab and
-  // a later fetch returns 200 — a bare ref mutated in `fetchAll` would flip
-  // silently without re-rendering, so usePolling would never (re)start. The
-  // ref mirror lets `fetchAll` read the latest value without being recreated.
+  // ref. `checkIsOwner()` reads the sc-hint cookie at first render; when the
+  // hint is missing but the HttpOnly owner session is valid, the mount
+  // fetch's 200 is what flips this, and the polling gate
+  // `[isOwner, session !== 'closed']` must re-evaluate on that flip. A bare
+  // ref mutated in `fetchAll` would flip silently without re-rendering, so
+  // usePolling would never start. The ref mirror lets `fetchAll` read the
+  // latest value without being recreated.
   const [isOwner, setIsOwner] = useState<boolean>(() => checkIsOwner());
   const isOwnerRef = useRef(isOwner);
   isOwnerRef.current = isOwner;
@@ -326,17 +325,17 @@ export function useMarketData(): MarketDataState {
   //
   // Extracted to `usePolling`. The gate `[isOwner, session !== 'closed']`
   // matches the original `if (isOwnerRef.current && session !== 'closed')`
-  // guard, but reads `isOwner` STATE so the gate re-evaluates when a visitor
-  // authenticates mid-session (AUD-M17 — a bare ref read here would never
-  // restart polling).
+  // guard, but reads `isOwner` STATE so the gate re-evaluates when the mount
+  // fetch proves an owner session the sc-hint cookie didn't show (AUD-M17 —
+  // a bare ref read here would never start polling).
   //
   // AUD-M17: backoff (interval doubling on 3+ consecutive failures) is driven
   // by `consecutiveFails` STATE, not the ref. The ref read at render never
   // re-rendered, so the doubled interval never reached usePolling — the
   // documented backoff was dead code. With state, crossing the threshold
   // re-renders, `backoff` recomputes, and usePolling re-schedules. The poll
-  // tick below also feeds the fail counter (previously only the mount/refresh
-  // path did), so a failing poll can actually engage the backoff.
+  // tick below also feeds the fail counter (previously only the mount fetch
+  // did), so a failing poll can actually engage the backoff.
   const openingRangeComplete = data.intraday?.openingRange?.complete ?? false;
   const backoff = consecutiveFails >= 3 ? 2 : 1;
 
@@ -437,11 +436,10 @@ export function useMarketData(): MarketDataState {
   // keyed on it (App.tsx's panelMap memo barrier) holds when the underlying
   // data hasn't changed. Every field below is already individually
   // render-stable — `data` / `loading` / `needsAuth` / `fetchedAt` /
-  // `quotesFetchedAt` / `session` are useState values, `fetchAll` is a
-  // useCallback, and `hasData` / `marketOpen` are derived primitives. Only
-  // the object literal wrapper was churning its reference every render;
-  // useMemo holds it constant until one of the listed deps changes. Values
-  // and semantics are unchanged.
+  // `quotesFetchedAt` / `session` are useState values, and `hasData` /
+  // `marketOpen` are derived primitives. Only the object literal wrapper was
+  // churning its reference every render; useMemo holds it constant until one
+  // of the listed deps changes. Values and semantics are unchanged.
   //
   // F1: keep wall-clock-derived values (like quote age) OUT of this return.
   // A periodic tick here changes the identity on every tick and re-renders
@@ -453,7 +451,6 @@ export function useMarketData(): MarketDataState {
       loading,
       hasData,
       needsAuth,
-      refresh: fetchAll,
       fetchedAt,
       quotesFetchedAt,
       session,
@@ -464,7 +461,6 @@ export function useMarketData(): MarketDataState {
       loading,
       hasData,
       needsAuth,
-      fetchAll,
       fetchedAt,
       quotesFetchedAt,
       session,

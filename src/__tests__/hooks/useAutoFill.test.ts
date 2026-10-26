@@ -132,7 +132,6 @@ function createMarket(quotes: QuotesResponse | null = null): MarketDataState {
     loading: false,
     hasData: !!quotes,
     needsAuth: false,
-    refresh: vi.fn(),
     fetchedAt: null,
     // FE-STATE-001 quote freshness (staleness derives from it in
     // useQuoteStaleness).

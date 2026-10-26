@@ -317,28 +317,6 @@ describe('useMarketData: error handling', () => {
 });
 
 // ============================================================
-// REFRESH
-// ============================================================
-
-describe('useMarketData: manual refresh', () => {
-  it('refresh() re-fetches all endpoints', async () => {
-    const fetchMock = mockFetchResponses();
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
-
-    const { result } = renderHook(() => useMarketData());
-    await waitFor(() => expect(result.current.loading).toBe(false));
-
-    const callsBefore = fetchMock.mock.calls.length;
-    await act(async () => {
-      result.current.refresh();
-    });
-    await waitFor(() =>
-      expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBefore),
-    );
-  });
-});
-
-// ============================================================
 // CREDENTIALS
 // ============================================================
 
@@ -778,41 +756,32 @@ describe('useMarketData: FE-STATE-001 quotesFetchedAt', () => {
     });
     expect(result.current.quotesFetchedAt).toBe(firstFetch);
 
-    // Quotes recover: a refresh moves it forward, which clears STALE.
+    // Quotes recover: the next poll moves it forward, which clears STALE.
     globalThis.fetch = mockFetchResponses({
       quotes: { status: 200, body: mockQuotesOpen },
     }) as unknown as typeof fetch;
     await act(async () => {
-      await result.current.refresh();
+      vi.advanceTimersByTime(60_000);
     });
-    expect(result.current.quotesFetchedAt).toBeGreaterThan(firstFetch);
+    await waitFor(() =>
+      expect(result.current.quotesFetchedAt).toBeGreaterThan(firstFetch),
+    );
   });
 
-  it('quote-specific: a refresh where only events/movers succeed advances fetchedAt but not quotesFetchedAt', async () => {
+  it('quote-specific: a fetch where only events/movers succeed sets fetchedAt but not quotesFetchedAt', async () => {
     // Decision 4 "quotes-specific staleness": events/movers freshness must
     // never mask a stale quotes warning.
     vi.setSystemTime(REGULAR_HOURS);
-    globalThis.fetch = mockFetchResponses({
-      quotes: { status: 200, body: mockQuotesOpen },
-    }) as unknown as typeof fetch;
-    const { result } = renderHook(() => useMarketData());
-    await waitFor(() => expect(result.current.quotesFetchedAt).not.toBeNull());
-    const fetchedAtBefore = result.current.fetchedAt!;
-    const quotesFetchedAtBefore = result.current.quotesFetchedAt;
-
-    // Quotes 401 while events + movers (defaults) keep succeeding.
+    // Quotes 401 while events + movers (defaults) succeed.
     globalThis.fetch = mockFetchResponses({
       quotes: { status: 401, body: null },
       intraday: { status: 401, body: null },
       yesterday: { status: 401, body: null },
     }) as unknown as typeof fetch;
-    await act(async () => {
-      vi.advanceTimersByTime(10_000);
-      await result.current.refresh();
-    });
+    const { result } = renderHook(() => useMarketData());
 
-    expect(result.current.fetchedAt).toBeGreaterThan(fetchedAtBefore);
-    expect(result.current.quotesFetchedAt).toBe(quotesFetchedAtBefore);
+    await waitFor(() => expect(result.current.fetchedAt).not.toBeNull());
+    expect(result.current.quotesFetchedAt).toBeNull();
   });
 });
 

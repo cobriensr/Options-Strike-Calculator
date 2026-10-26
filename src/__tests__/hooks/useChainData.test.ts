@@ -217,8 +217,8 @@ describe('useChainData', () => {
       Promise.reject(new Error('Network error')),
     );
 
-    act(() => {
-      result.current.refresh();
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
     });
 
     // Error surfaces, but the previously-loaded chain is NOT wiped.
@@ -280,37 +280,18 @@ describe('useChainData', () => {
     expect(fetchMock.mock.calls.length).toBe(callsAfterMount);
   });
 
-  it('refresh() triggers a re-fetch', async () => {
+  it('does not poll while disabled, even with the market open', async () => {
     const fetchMock = mockFetch(200, mockChain);
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
 
-    const { result } = renderHook(() => useChainData(true, false));
-
-    await waitFor(() => expect(result.current.loading).toBe(false));
-
-    const callsBefore = fetchMock.mock.calls.length;
-
-    act(() => {
-      result.current.refresh();
-    });
-
-    await waitFor(() =>
-      expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBefore),
-    );
-  });
-
-  it('refresh() is a no-op when disabled', async () => {
-    const fetchMock = mockFetch(200, mockChain);
-
-    const { result } = renderHook(() => useChainData(false, false));
-
-    act(() => {
-      result.current.refresh();
-    });
+    renderHook(() => useChainData(false, true));
 
     await act(async () => {
-      vi.advanceTimersByTime(100);
+      vi.advanceTimersByTime(120_000);
     });
 
+    // No interval is scheduled at all, not just a no-op tick.
+    expect(setIntervalSpy).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

@@ -8,7 +8,6 @@ export interface UseChainDataReturn {
   chain: ChainResponse | null;
   loading: boolean;
   error: string | null;
-  refresh: () => void;
 }
 
 interface FetchChainResult {
@@ -58,6 +57,11 @@ export function useChainData(
   }, []);
 
   const refresh = useCallback(() => {
+    // Not redundant with the mount effect's check or the usePolling gate:
+    // usePolling swaps its fn ref during render but clears the interval in
+    // a passive-effect cleanup, which React runs in a later task for
+    // non-sync updates. A tick in that gap runs this enabled=false closure;
+    // without the guard it would fetch while disabled.
     if (!enabled) return;
     setLoading(true);
     setError(null);
@@ -96,5 +100,5 @@ export function useChainData(
   const backoff = failStreak >= 3 ? 2 : 1;
   usePolling(refresh, POLL_INTERVALS.CHAIN * backoff, [enabled, marketOpen]);
 
-  return { chain, loading, error, refresh };
+  return { chain, loading, error };
 }
