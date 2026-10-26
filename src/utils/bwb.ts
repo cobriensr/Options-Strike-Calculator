@@ -17,17 +17,20 @@ import { snapToIncrement } from './strikes.js';
 /**
  * Payoff summary of a BWB, computed from its actual (snapped) strikes.
  *
- * The far-side breakeven always exists. A debit BWB (netCredit < 0) also
- * loses its debit when every leg expires worthless, so it has a second,
- * near-side breakeven and profits only between the two. PoP is the
- * log-normal mass of that zone. `calcSpreadPoP(level, side)` is the
+ * A BWB whose far side loses (wide - narrow - netCredit > 0, every
+ * production combo) has a far-side breakeven. A debit BWB (netCredit < 0)
+ * also loses its debit when every leg expires worthless, so it has a
+ * second, near-side breakeven and profits only between the two. PoP is
+ * the log-normal mass of that zone. `calcSpreadPoP(level, side)` is the
  * probability of settling on the short-strike side of `level` for both
  * sides, so PoP = calcSpreadPoP(far BE) - calcSpreadPoP(near BE) for puts
- * and calls alike.
+ * and calls alike. When the far side can't lose (inverted or zero-width
+ * far wing), `breakeven` is meaningless and the far term is 1.
  *
- * The fat-tail adjustment inflates only the far-tail breach, as for a
- * credit spread. The near-side loss region is the body of the
- * distribution, not a tail.
+ * The fat-tail adjustment scales the profit band by the far-tail survival
+ * ratio, adjustPoPForKurtosis(P_far) / P_far, which for a credit is the
+ * credit-spread adjustment itself. H1 (Phase 3.10 of
+ * review-remediation-2026-10-26) will revisit the fat-tail model.
  */
 function summarizeBWBPayoff(
   side: 'put' | 'call',
@@ -67,16 +70,25 @@ function summarizeBWBPayoff(
   const breakevenNear = netCredit < 0 ? longNearStrike + dir * netCredit : null;
   const returnOnRisk = maxLoss > 0 ? netCredit / maxLoss : 0;
 
-  const pFar = calcSpreadPoP(spotPrice, breakeven, popSigma, T, side);
+  // With inverted or zero-width far wings the far flat region never loses
+  // (wide - narrow - netCredit <= 0), so the profit zone runs all the way
+  // out on that side: there is no far tail to breach or to fatten.
+  const farSideLoses = wideWidth - narrowWidth - netCredit > 0;
+  const pFar = farSideLoses
+    ? calcSpreadPoP(spotPrice, breakeven, popSigma, T, side)
+    : 1;
   const pNear =
     breakevenNear == null
       ? 0
       : calcSpreadPoP(spotPrice, breakevenNear, popSigma, T, side);
   const probabilityOfProfit = Math.max(0, pFar - pNear);
-  const adjustedPoP = Math.max(
-    0,
-    adjustPoPForKurtosis(pFar, getKurtosisFactor(vix), side) - pNear,
-  );
+  // Fat tails: scale the profit band by the far-tail survival ratio. With
+  // no near breakeven (a credit) this is exactly adjustPoPForKurtosis(PoP).
+  const farTailSurvival =
+    farSideLoses && pFar > 0
+      ? adjustPoPForKurtosis(pFar, getKurtosisFactor(vix), side) / pFar
+      : 1;
+  const adjustedPoP = probabilityOfProfit * farTailSurvival;
 
   return {
     narrowWidth,

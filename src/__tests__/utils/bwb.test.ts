@@ -6,8 +6,13 @@ import {
   buildCallBWB,
   bwbPnLAtExpiry,
 } from '../../utils/calculator';
-import { BWB_NARROW_OPTIONS, BWB_WIDE_MULTIPLIERS } from '../../constants';
+import {
+  BWB_NARROW_OPTIONS,
+  BWB_WIDE_MULTIPLIERS,
+  getKurtosisFactor,
+} from '../../constants';
 import type { BWBLegs, DeltaRow } from '../../types';
+import { adjustPoPForKurtosis } from '../../utils/iron-condor';
 
 const spot = 5800;
 const sigma = 0.2;
@@ -293,9 +298,9 @@ describe('BWB P&L properties', () => {
     const skewD10 = skewRows.find(
       (r): r is DeltaRow => !('error' in r) && r.delta === 10,
     );
-    if (!skewD10) return;
-    const putBwb = buildPutBWB(skewD10, 15, 45, spot, T);
-    const callBwb = buildCallBWB(skewD10, 15, 45, spot, T);
+    expect(skewD10).toBeDefined();
+    const putBwb = buildPutBWB(skewD10!, 15, 45, spot, T);
+    const callBwb = buildCallBWB(skewD10!, 15, 45, spot, T);
     expect(putBwb.netCredit).toBeGreaterThan(0);
     expect(callBwb.netCredit).toBeGreaterThan(0);
     expect(putBwb.probabilityOfProfit).toBeGreaterThan(
@@ -723,6 +728,16 @@ const scenarios = [
   { label: 'σ 0.30, 2 h, skew 5%', sig: 0.3, hours: 2, skew: 0.05 },
 ] as const;
 
+// Production multipliers plus wing ratios the UI can't produce but the
+// builders accept: symmetric (1), inverted (0.5) and a zero-width far
+// wing (0, a plain vertical). Inverted wings leave a far side that can't
+// lose, which takes a different PoP path.
+const SWEEP_MULTIPLIERS = [...BWB_WIDE_MULTIPLIERS, 1, 0.5, 0] as const;
+
+/** True when the far flat region (past the far wing) loses money. */
+const farSideLoses = (b: BWBLegs) =>
+  b.wideWidth - b.narrowWidth - b.netCredit > 0;
+
 describe.each(scenarios)(
   'BWB sweep over every narrow × multiplier × delta × side ($label)',
   ({ sig, hours, skew }) => {
@@ -732,7 +747,7 @@ describe.each(scenarios)(
     );
     const cases: BWBLegs[] = [];
     for (const narrow of BWB_NARROW_OPTIONS) {
-      for (const mult of BWB_WIDE_MULTIPLIERS) {
+      for (const mult of SWEEP_MULTIPLIERS) {
         for (const row of sweepRows) {
           cases.push(
             buildPutBWB(row, narrow, narrow * mult, spot, t),
@@ -753,13 +768,14 @@ describe.each(scenarios)(
         .map(String)
         .join(' ');
 
-    it('covers every delta and both credit and debit structures', () => {
+    it('covers every delta, credits, debits and a far side that cannot lose', () => {
       expect(sweepRows).toHaveLength(6);
       expect(cases).toHaveLength(
-        BWB_NARROW_OPTIONS.length * BWB_WIDE_MULTIPLIERS.length * 6 * 2,
+        BWB_NARROW_OPTIONS.length * SWEEP_MULTIPLIERS.length * 6 * 2,
       );
       expect(cases.some((b) => b.netCredit < 0)).toBe(true);
       expect(cases.some((b) => b.netCredit > 0)).toBe(true);
+      expect(cases.some((b) => !farSideLoses(b))).toBe(true);
     });
 
     it('reports the widths of the snapped strikes', () => {
@@ -784,13 +800,18 @@ describe.each(scenarios)(
 
     it('returnOnRisk is netCredit over the payoff-consistent maxLoss', () => {
       for (const b of cases) {
-        expect(b.returnOnRisk, name(b)).toBeCloseTo(b.netCredit / b.maxLoss, 8);
+        const expected = b.maxLoss > 0 ? b.netCredit / b.maxLoss : 0;
+        expect(b.returnOnRisk, name(b)).toBeCloseTo(expected, 8);
       }
     });
 
     it('every reported breakeven has zero expiry P&L', () => {
       for (const b of cases) {
-        expect(bwbPnLAtExpiry(b, b.breakeven), name(b)).toBeCloseTo(0, 6);
+        // `breakeven` is documented as meaningless when the far side
+        // can't lose: the trade profits all the way out on that side.
+        if (farSideLoses(b)) {
+          expect(bwbPnLAtExpiry(b, b.breakeven), name(b)).toBeCloseTo(0, 6);
+        }
         if (b.netCredit < 0) {
           expect(b.breakevenNear, name(b)).not.toBeNull();
           expect(bwbPnLAtExpiry(b, b.breakevenNear!), name(b)).toBeCloseTo(
@@ -809,7 +830,22 @@ describe.each(scenarios)(
         expect(
           Math.abs(b.probabilityOfProfit - truth),
           name(b) + ': PoP ' + b.probabilityOfProfit + ' vs ' + truth,
-        ).toBeLessThanOrEqual(0.005);
+        ).toBeLessThanOrEqual(0.001);
+      }
+    });
+
+    it('credit adjustedPoP is unchanged from the credit-spread fat-tail formula', () => {
+      const credits = cases.filter((b) => b.netCredit >= 0 && farSideLoses(b));
+      expect(credits.length).toBeGreaterThan(0);
+      for (const b of credits) {
+        expect(b.adjustedPoP, name(b)).toBeCloseTo(
+          adjustPoPForKurtosis(
+            b.probabilityOfProfit,
+            getKurtosisFactor(undefined),
+            b.side,
+          ),
+          12,
+        );
       }
     });
 
@@ -839,6 +875,44 @@ describe('M1b regression: debit BWB PoP counts only the profit zone', () => {
     expect(bwb.breakevenNear).toBeCloseTo(5744.6, 1);
     expect(bwb.probabilityOfProfit).toBeCloseTo(0.121, 2);
     expect(bwb.adjustedPoP).toBeLessThan(bwb.probabilityOfProfit);
+  });
+
+  it('fat tails scale the 10Δ debit band by the far-tail survival ratio (≈11.1%, not 3.9%)', () => {
+    const bwb = buildPutBWB(row10, 20, 40, spot, t5);
+    expect(bwb.adjustedPoP).toBeCloseTo(0.111, 2);
+  });
+
+  it('fat tails scale the 20Δ debit band by the far-tail survival ratio (≈15.2%, not 1.5%)', () => {
+    const row20 = calcAllDeltas(spot, 0.18, t5, 0.03).find(
+      (r): r is DeltaRow => !('error' in r) && r.delta === 20,
+    )!;
+    const bwb = buildPutBWB(row20, 20, 40, spot, t5);
+    expect(bwb.netCredit).toBeLessThan(0);
+    expect(bwb.probabilityOfProfit).toBeCloseTo(0.19, 2);
+    expect(bwb.adjustedPoP).toBeCloseTo(0.152, 2);
+  });
+
+  it('credit adjustedPoP is unchanged from the credit-spread formula under regime kurtosis', () => {
+    const t3 = calcTimeToExpiry(3);
+    const creditRow = calcAllDeltas(spot, 0.2, t3, 0.03).find(
+      (r): r is DeltaRow => !('error' in r) && r.delta === 10,
+    )!;
+    for (const vix of [12, 20, 30]) {
+      for (const bwb of [
+        buildPutBWB(creditRow, 15, 45, spot, t3, 10, vix),
+        buildCallBWB(creditRow, 15, 45, spot, t3, 10, vix),
+      ]) {
+        expect(bwb.netCredit).toBeGreaterThan(0);
+        expect(bwb.adjustedPoP).toBeCloseTo(
+          adjustPoPForKurtosis(
+            bwb.probabilityOfProfit,
+            getKurtosisFactor(vix),
+            bwb.side,
+          ),
+          12,
+        );
+      }
+    }
   });
 
   it('10Δ call 20/40 mirrors it (PoP 12.8%, not 94.4%)', () => {
@@ -885,5 +959,31 @@ describe('M1 regression: off-grid wide widths use the snapped far strike', () =>
     const bwb = buildPutBWB(row10, 40, 20, spot, t5);
     expect(bwb.netCredit).toBeLessThan(0);
     expect(bwb.maxLoss).toBeCloseTo(Math.max(0, -minPnLOnGrid(bwb)), 6);
+  });
+
+  it('inverted 40/20 10Δ put counts the whole far side as profit (PoP ≈24.7%, not 21.4%)', () => {
+    const bwb = buildPutBWB(row10, 40, 20, spot, t5);
+    expect(farSideLoses(bwb)).toBe(false);
+    const truth = profitMass(bwb, row10.basePutSigma, t5);
+    expect(Math.abs(bwb.probabilityOfProfit - truth)).toBeLessThanOrEqual(
+      0.001,
+    );
+    expect(bwb.probabilityOfProfit).toBeCloseTo(0.247, 2);
+    // No far tail to fatten, so the fat-tail step leaves PoP alone
+    expect(bwb.adjustedPoP).toBe(bwb.probabilityOfProfit);
+  });
+
+  it('zero-width far wing (20/0) 20Δ put counts the whole far side as profit (PoP ≈27.6%, not 14.2%)', () => {
+    const row20 = calcAllDeltas(spot, 0.18, t5, 0.03).find(
+      (r): r is DeltaRow => !('error' in r) && r.delta === 20,
+    )!;
+    const bwb = buildPutBWB(row20, 20, 0, spot, t5);
+    expect(bwb.wideWidth).toBe(0);
+    expect(farSideLoses(bwb)).toBe(false);
+    const truth = profitMass(bwb, row20.basePutSigma, t5);
+    expect(Math.abs(bwb.probabilityOfProfit - truth)).toBeLessThanOrEqual(
+      0.001,
+    );
+    expect(bwb.probabilityOfProfit).toBeCloseTo(0.276, 2);
   });
 });

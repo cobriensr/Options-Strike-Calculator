@@ -207,7 +207,12 @@ export interface BWBLegs {
    * wideWidth - narrowWidth - netCredit.
    */
   readonly maxLoss: number;
-  /** Far-side breakeven (SPX), between the short strike and the far wing */
+  /**
+   * Far-side breakeven (SPX), between the short strike and the far wing.
+   * Meaningless when the far side can't lose (wide - narrow - netCredit
+   * <= 0, i.e. inverted or zero-width far wings, which the UI never
+   * builds): the trade then profits all the way out on that side.
+   */
   readonly breakeven: number;
   /**
    * Near-side breakeven (SPX) for a debit BWB, between the short strike
