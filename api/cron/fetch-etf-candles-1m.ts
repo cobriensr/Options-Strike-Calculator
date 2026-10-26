@@ -24,12 +24,21 @@
  *   stored minute since ET midnight); only candles after it go to Postgres,
  *   in one batched INSERT per ticker (`bulkUpsert`, ON CONFLICT DO NOTHING).
  *   This replaced one awaited INSERT per candle (~780 round-trips a run).
+ *   HWM-only means a minute that first appears after a later minute is
+ *   stored is never backfilled (nor is a bar dropped as malformed once a
+ *   later valid one lands). That is acceptable because SPY and QQQ trade
+ *   every regular-session minute and UW documents no late or out-of-order
+ *   bars.
  *
- * The still-forming minute is never written. UW's docs: "The most recent
+ * The still-forming bar is never written. UW's docs: "The most recent
  * intraday candle is still forming, and its start_time is the start of the
- * current bucket." Writing it would let DO NOTHING plus the HWM freeze a
- * partial bar for good, so only candles that start before the minute the
- * request was made in are kept.
+ * current bucket", and the latest bar is the one with the maximum
+ * start_time. Writing it would let DO NOTHING plus the HWM freeze a partial
+ * bar for good, so a candle is kept only if it starts before BOTH the
+ * minute the request was made in and UW's newest candle. The clock alone is
+ * not enough: cronJitter fires 0–8 s past the minute, and if UW hasn't
+ * opened the next bucket yet, the minute the clock calls closed is still
+ * UW's newest, forming bar.
  *
  * Failures surface: a UW error, an empty payload (abnormal inside the gated
  * window, which `date=today` fills with pre-market bars from 04:00 ET) or a
@@ -112,7 +121,10 @@ interface TickerCounts {
    * CONFLICT skips are not subtracted). 0 when the write failed.
    */
   stored: number;
-  /** fetched − new: at or below the HWM, still forming, or malformed. */
+  /**
+   * fetched − new: at or below the HWM, still forming (by the clock or as
+   * UW's newest candle), or malformed.
+   */
   skipped: number;
   /**
    * Closed candles after the HWM dropped for an unparseable start_time,
@@ -167,26 +179,33 @@ function isValidVolume(value: unknown): boolean {
 }
 
 /**
- * Keep candles that are closed (start before `openMinuteMs`), newer than
- * the HWM and well-formed; de-duplicate by minute and sort oldest first.
- * Prices and volume are validated only after the time filters, so a bad bar
- * that is already behind the HWM isn't re-counted on every run.
+ * Keep candles that are closed, newer than the HWM and well-formed;
+ * de-duplicate by minute and sort oldest first. Closed means starting
+ * before both `clockMinuteMs` and UW's newest candle (max start_time),
+ * which UW documents as still forming whatever our clock says. Prices and
+ * volume are validated only after the time filters, so a bad bar that is
+ * already behind the HWM isn't re-counted on every run.
  */
 function selectNewCandles(
   ticker: Ticker,
   candles: readonly UWCandleRow[],
   hwmMs: number | undefined,
-  openMinuteMs: number,
+  clockMinuteMs: number,
 ): { rows: EtfCandleRow[]; malformed: number } {
+  const parsed = candles.map((c) => ({ c, ts: Date.parse(c.start_time) }));
+  const newestMs = Math.max(
+    ...parsed.map(({ ts }) => ts).filter((ts) => Number.isFinite(ts)),
+  );
+  const formingFromMs = Math.min(clockMinuteMs, newestMs);
+
   const byMinute = new Map<number, EtfCandleRow>();
   let malformed = 0;
-  for (const c of candles) {
-    const ts = Date.parse(c.start_time);
+  for (const { c, ts } of parsed) {
     if (!Number.isFinite(ts)) {
       malformed++;
       continue;
     }
-    if (ts >= openMinuteMs) continue; // still forming
+    if (ts >= formingFromMs) continue; // still forming
     if (hwmMs !== undefined && ts <= hwmMs) continue; // already stored
     if (
       ![c.open, c.high, c.low, c.close].every(isNumeric) ||
@@ -228,10 +247,11 @@ async function ingestTicker(
   hwmMs: number | undefined,
   counts: TickerCounts,
 ): Promise<void> {
-  // Taken BEFORE the fetch: UW's newest bar is the minute it answered in,
-  // which is at or after this one. An early clock can only hold back a
-  // just-closed bar until the next run, never keep a forming one.
-  const openMinuteMs = Math.floor(Date.now() / MINUTE_MS) * MINUTE_MS;
+  // Taken BEFORE the fetch, so it is never later than the minute UW answers
+  // in: an early clock can only hold a closed bar back one run. On its own
+  // it can't spot the forming bar (UW may not have opened this minute's
+  // bucket yet); selectNewCandles also drops UW's newest candle.
+  const clockMinuteMs = Math.floor(Date.now() / MINUTE_MS) * MINUTE_MS;
 
   const candles = await withRetry(() =>
     uwFetch<UWCandleRow>(apiKey, `/stock/${ticker}/ohlc/1m?date=${today}`),
@@ -249,7 +269,7 @@ async function ingestTicker(
     ticker,
     candles,
     hwmMs,
-    openMinuteMs,
+    clockMinuteMs,
   );
   counts.new = rows.length;
   counts.skipped = candles.length - rows.length;
@@ -319,7 +339,7 @@ export default withCronInstrumentation(
           { err: outcome.reason, ticker, ...counts[ticker] },
           'fetch-etf-candles-1m: ticker failed',
         );
-        Sentry.captureException(outcome.reason);
+        Sentry.captureException(outcome.reason, { tags: { ticker } });
       }
       const { malformed } = counts[ticker];
       if (malformed > 0) {

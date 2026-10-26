@@ -60,6 +60,11 @@ const GUARD = { apiKey: 'test-uw-key', today: '2026-04-27' };
 // still-forming minute unless a test moves the clock.
 const NOW = '2026-04-27T14:40:30.000Z';
 
+// UW's newest bucket at NOW. UW always returns the forming bar on top, and
+// the handler never writes the newest bar, so every payload that should
+// write something carries this as its newest candle.
+const FORMING_AT_NOW = '2026-04-27T14:40:00.000Z';
+
 function makeCandle(overrides: Record<string, unknown> = {}) {
   return {
     start_time: '2026-04-27T14:32:00.000Z',
@@ -77,6 +82,9 @@ function candlesAt(...isoTimes: string[]) {
   return isoTimes.map((start_time) => makeCandle({ start_time }));
 }
 
+/** The still-forming bar UW puts on top of a live payload. */
+const forming = () => makeCandle({ start_time: FORMING_AT_NOW });
+
 const AUTHORIZED_REQ = () =>
   mockRequest({
     method: 'GET',
@@ -85,13 +93,13 @@ const AUTHORIZED_REQ = () =>
 
 /**
  * Route each UW fetch by ticker so tests don't depend on call order. A
- * ticker left out gets one healthy closed candle (an empty payload is a
- * failure, so it has to be asked for explicitly).
+ * ticker left out gets a healthy payload: the forming bar plus one closed
+ * candle (an empty payload is a failure, so it has to be asked for).
  */
 function uwReturns(byTicker: Partial<Record<'SPY' | 'QQQ', unknown[]>>) {
   mockUwFetch.mockImplementation((_key: string, path: string) => {
     const ticker = /\/stock\/([A-Z]+)\//.exec(path)?.[1] as 'SPY' | 'QQQ';
-    return Promise.resolve(byTicker[ticker] ?? [makeCandle()]);
+    return Promise.resolve(byTicker[ticker] ?? [forming(), makeCandle()]);
   });
 }
 
@@ -148,8 +156,8 @@ describe('fetch-etf-candles-1m handler', () => {
     txnWrites = [];
     mockCronGuard.mockReturnValue(GUARD);
     mockWithRetry.mockImplementation((fn: () => unknown) => fn());
-    // Default: one closed candle per ticker.
-    mockUwFetch.mockResolvedValue([makeCandle()]);
+    // Default: the forming bar plus one closed candle per ticker.
+    mockUwFetch.mockResolvedValue([forming(), makeCandle()]);
     // Default: no rows stored yet today → no high-water mark.
     mockSql.mockResolvedValue([]);
     mockQuery.mockResolvedValue([]);
@@ -277,8 +285,12 @@ describe('fetch-etf-candles-1m handler', () => {
 
   it('fetches both tickers and writes each in one batched INSERT', async () => {
     uwReturns({
-      SPY: candlesAt('2026-04-27T14:33:00.000Z', '2026-04-27T14:32:00.000Z'),
-      QQQ: candlesAt('2026-04-27T14:32:00.000Z'),
+      SPY: candlesAt(
+        FORMING_AT_NOW,
+        '2026-04-27T14:33:00.000Z',
+        '2026-04-27T14:32:00.000Z',
+      ),
+      QQQ: candlesAt(FORMING_AT_NOW, '2026-04-27T14:32:00.000Z'),
     });
 
     const res = mockResponse();
@@ -290,15 +302,15 @@ describe('fetch-etf-candles-1m handler', () => {
       status: 'success',
       failureCount: 0,
       tickers: {
-        SPY: { fetched: 2, new: 2, stored: 2, skipped: 0, malformed: 0 },
-        QQQ: { fetched: 1, new: 1, stored: 1, skipped: 0, malformed: 0 },
+        SPY: { fetched: 3, new: 2, stored: 2, skipped: 1, malformed: 0 },
+        QQQ: { fetched: 2, new: 1, stored: 1, skipped: 1, malformed: 0 },
       },
-      spy_candles: 2,
+      spy_candles: 3,
       spy_stored: 2,
-      spy_skipped: 0,
-      qqq_candles: 1,
+      spy_skipped: 1,
+      qqq_candles: 2,
       qqq_stored: 1,
-      qqq_skipped: 0,
+      qqq_skipped: 1,
     });
     // One INSERT statement per ticker, not one per candle.
     expect(mockQuery).toHaveBeenCalledTimes(2);
@@ -337,6 +349,13 @@ describe('fetch-etf-candles-1m handler', () => {
       expect.objectContaining({
         message: 'fetch-etf-candles-1m: UW returned no 1m candles for SPY',
       }),
+      { tags: { ticker: 'SPY' } },
+    );
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'fetch-etf-candles-1m: UW returned no 1m candles for QQQ',
+      }),
+      { tags: { ticker: 'QQQ' } },
     );
     expect(metrics.increment).toHaveBeenCalledWith(
       'fetch_etf_candles_1m.empty_payload',
@@ -346,7 +365,7 @@ describe('fetch-etf-candles-1m handler', () => {
   });
 
   it('empty UW payload for SPY only → status partial, QQQ still stored', async () => {
-    uwReturns({ SPY: [], QQQ: [makeCandle()] });
+    uwReturns({ SPY: [], QQQ: [forming(), makeCandle()] });
     const res = mockResponse();
     await handler(AUTHORIZED_REQ(), res);
 
@@ -355,7 +374,7 @@ describe('fetch-etf-candles-1m handler', () => {
       failureCount: 1,
       tickers: {
         SPY: { fetched: 0, stored: 0 },
-        QQQ: { fetched: 1, stored: 1 },
+        QQQ: { fetched: 2, stored: 1 },
       },
     });
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
@@ -363,6 +382,7 @@ describe('fetch-etf-candles-1m handler', () => {
       expect.objectContaining({
         message: 'fetch-etf-candles-1m: UW returned no 1m candles for SPY',
       }),
+      { tags: { ticker: 'SPY' } },
     );
     expect(sentTimestamps('QQQ')).toEqual(['2026-04-27T14:32:00.000Z']);
   });
@@ -395,12 +415,17 @@ describe('fetch-etf-candles-1m handler', () => {
     ]);
     uwReturns({
       SPY: candlesAt(
+        FORMING_AT_NOW,
         '2026-04-27T14:34:00.000Z',
         '2026-04-27T14:33:00.000Z',
         '2026-04-27T14:32:00.000Z',
         '2026-04-27T14:31:00.000Z',
       ),
-      QQQ: candlesAt('2026-04-27T14:34:00.000Z', '2026-04-27T14:33:00.000Z'),
+      QQQ: candlesAt(
+        FORMING_AT_NOW,
+        '2026-04-27T14:34:00.000Z',
+        '2026-04-27T14:33:00.000Z',
+      ),
     });
 
     const res = mockResponse();
@@ -414,8 +439,8 @@ describe('fetch-etf-candles-1m handler', () => {
     expect(res._json).toMatchObject({
       status: 'success',
       tickers: {
-        SPY: { fetched: 4, new: 2, stored: 2, skipped: 2 },
-        QQQ: { fetched: 2, new: 1, stored: 1, skipped: 1 },
+        SPY: { fetched: 5, new: 2, stored: 2, skipped: 3 },
+        QQQ: { fetched: 3, new: 1, stored: 1, skipped: 2 },
       },
     });
   });
@@ -427,11 +452,12 @@ describe('fetch-etf-candles-1m handler', () => {
     ]);
     uwReturns({
       SPY: candlesAt(
+        FORMING_AT_NOW,
         '2026-04-27T14:33:00.000Z',
         '2026-04-27T14:32:00.000Z',
         '2026-04-27T14:31:00.000Z',
       ),
-      QQQ: candlesAt('2026-04-27T14:33:00.000Z'),
+      QQQ: candlesAt(FORMING_AT_NOW, '2026-04-27T14:33:00.000Z'),
     });
 
     const res = mockResponse();
@@ -445,8 +471,8 @@ describe('fetch-etf-candles-1m handler', () => {
     expect(sentTimestamps('QQQ')).toEqual([]);
     expect(res._json).toMatchObject({
       tickers: {
-        SPY: { fetched: 3, new: 3, stored: 3, skipped: 0 },
-        QQQ: { fetched: 1, new: 0, stored: 0, skipped: 1 },
+        SPY: { fetched: 4, new: 3, stored: 3, skipped: 1 },
+        QQQ: { fetched: 2, new: 0, stored: 0, skipped: 2 },
       },
     });
   });
@@ -457,8 +483,12 @@ describe('fetch-etf-candles-1m handler', () => {
       { ticker: 'QQQ', hwm: new Date('2026-04-27T14:32:00.000Z') },
     ]);
     uwReturns({
-      SPY: candlesAt('2026-04-27T14:32:00.000Z', '2026-04-27T14:31:00.000Z'),
-      QQQ: candlesAt('2026-04-27T14:32:00.000Z'),
+      SPY: candlesAt(
+        FORMING_AT_NOW,
+        '2026-04-27T14:32:00.000Z',
+        '2026-04-27T14:31:00.000Z',
+      ),
+      QQQ: candlesAt(FORMING_AT_NOW, '2026-04-27T14:32:00.000Z'),
     });
 
     const res = mockResponse();
@@ -468,13 +498,13 @@ describe('fetch-etf-candles-1m handler', () => {
     expect(res._json).toMatchObject({
       status: 'success',
       tickers: {
-        SPY: { fetched: 2, new: 0, stored: 0, skipped: 2 },
-        QQQ: { fetched: 1, new: 0, stored: 0, skipped: 1 },
+        SPY: { fetched: 3, new: 0, stored: 0, skipped: 3 },
+        QQQ: { fetched: 2, new: 0, stored: 0, skipped: 2 },
       },
     });
   });
 
-  it('never writes the still-forming minute UW returns as its newest candle', async () => {
+  it('never writes the candle for the minute the clock is still in', async () => {
     // UW docs: "The most recent intraday candle is still forming, and its
     // start_time is the start of the current bucket." Writing it would let
     // DO NOTHING + the HWM freeze a partial bar forever.
@@ -499,9 +529,46 @@ describe('fetch-etf-candles-1m handler', () => {
     });
   });
 
+  it('holds back the clock minute even when UW is already a minute ahead (clock skew)', async () => {
+    // UW has opened 14:34 while our clock still reads 14:33: the clock is
+    // the binding bound, so 14:33 waits for the next run.
+    vi.setSystemTime(new Date('2026-04-27T14:33:30.000Z'));
+    uwReturns({
+      SPY: candlesAt(
+        '2026-04-27T14:34:00.000Z',
+        '2026-04-27T14:33:00.000Z',
+        '2026-04-27T14:32:00.000Z',
+      ),
+    });
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(sentTimestamps('SPY')).toEqual(['2026-04-27T14:32:00.000Z']);
+  });
+
+  it('never writes the newest UW candle, even when the clock says its minute closed', async () => {
+    // cronJitter fires 0–8 s past the minute. If UW hasn't opened the
+    // 14:33 bucket yet, 14:32 is still its newest (forming) bar: the clock
+    // alone would write it and DO NOTHING + the HWM would freeze it.
+    vi.setSystemTime(new Date('2026-04-27T14:33:02.000Z'));
+    uwReturns({
+      SPY: candlesAt('2026-04-27T14:32:00.000Z', '2026-04-27T14:31:00.000Z'),
+    });
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(sentTimestamps('SPY')).toEqual(['2026-04-27T14:31:00.000Z']);
+    expect(res._json).toMatchObject({
+      tickers: { SPY: { fetched: 2, new: 1, stored: 1, skipped: 1 } },
+    });
+  });
+
   it('de-duplicates repeated start_times before writing', async () => {
     uwReturns({
       SPY: candlesAt(
+        FORMING_AT_NOW,
         '2026-04-27T14:32:00.000Z',
         '2026-04-27T14:32:00.000Z',
         '2026-04-27T14:31:00.000Z',
@@ -525,7 +592,8 @@ describe('fetch-etf-candles-1m handler', () => {
       makeCandle({ start_time: new Date(base + i * 60_000).toISOString() }),
     ).reverse();
     vi.setSystemTime(new Date('2026-04-27T20:00:00.000Z'));
-    uwReturns({ SPY: spy });
+    const formingAt20 = makeCandle({ start_time: '2026-04-27T20:00:00.000Z' });
+    uwReturns({ SPY: [formingAt20, ...spy] });
 
     const res = mockResponse();
     await handler(AUTHORIZED_REQ(), res);
@@ -542,7 +610,7 @@ describe('fetch-etf-candles-1m handler', () => {
     expect(sent.at(-1)).toBe('2026-04-27T12:20:00.000Z');
     expect(res._json).toMatchObject({
       status: 'success',
-      tickers: { SPY: { fetched: 501, new: 501, stored: 501 } },
+      tickers: { SPY: { fetched: 502, new: 501, stored: 501 } },
     });
   });
 
@@ -571,8 +639,12 @@ describe('fetch-etf-candles-1m handler', () => {
       params[0] === 'SPY' ? Promise.reject(spyWriteErr) : Promise.resolve([]),
     );
     uwReturns({
-      SPY: candlesAt('2026-04-27T14:32:00.000Z', '2026-04-27T14:31:00.000Z'),
-      QQQ: candlesAt('2026-04-27T14:32:00.000Z'),
+      SPY: candlesAt(
+        FORMING_AT_NOW,
+        '2026-04-27T14:32:00.000Z',
+        '2026-04-27T14:31:00.000Z',
+      ),
+      QQQ: candlesAt(FORMING_AT_NOW, '2026-04-27T14:32:00.000Z'),
     });
 
     const res = mockResponse();
@@ -582,28 +654,41 @@ describe('fetch-etf-candles-1m handler', () => {
       status: 'partial',
       failureCount: 1,
       tickers: {
-        SPY: { fetched: 2, new: 2, stored: 0 },
-        QQQ: { fetched: 1, new: 1, stored: 1 },
+        SPY: { fetched: 3, new: 2, stored: 0 },
+        QQQ: { fetched: 2, new: 1, stored: 1 },
       },
       spy_stored: 0,
       qqq_stored: 1,
     });
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
-    expect(Sentry.captureException).toHaveBeenCalledWith(spyWriteErr);
+    expect(Sentry.captureException).toHaveBeenCalledWith(spyWriteErr, {
+      tags: { ticker: 'SPY' },
+    });
     expect(metrics.increment).toHaveBeenCalledWith(
       'fetch_etf_candles_1m.store_error',
     );
   });
 
   it('both inserts reject → status error, one Sentry event per ticker (not per row)', async () => {
-    mockQuery.mockRejectedValue(new Error('Neon outage'));
+    const writeErr = {
+      SPY: new Error('Neon outage: SPY'),
+      QQQ: new Error('Neon outage: QQQ'),
+    };
+    mockQuery.mockImplementation((_stmt: string, params: unknown[]) =>
+      Promise.reject(writeErr[params[0] as 'SPY' | 'QQQ']),
+    );
     uwReturns({
       SPY: candlesAt(
+        FORMING_AT_NOW,
         '2026-04-27T14:33:00.000Z',
         '2026-04-27T14:32:00.000Z',
         '2026-04-27T14:31:00.000Z',
       ),
-      QQQ: candlesAt('2026-04-27T14:32:00.000Z', '2026-04-27T14:31:00.000Z'),
+      QQQ: candlesAt(
+        FORMING_AT_NOW,
+        '2026-04-27T14:32:00.000Z',
+        '2026-04-27T14:31:00.000Z',
+      ),
     });
 
     const res = mockResponse();
@@ -623,6 +708,16 @@ describe('fetch-etf-candles-1m handler', () => {
       expect.objectContaining({ status: 'error' }),
     );
     expect(Sentry.captureException).toHaveBeenCalledTimes(2);
+    expect(Sentry.captureException).toHaveBeenCalledWith(writeErr.SPY, {
+      tags: { ticker: 'SPY' },
+    });
+    expect(Sentry.captureException).toHaveBeenCalledWith(writeErr.QQQ, {
+      tags: { ticker: 'QQQ' },
+    });
+    const storeErrors = vi
+      .mocked(metrics.increment)
+      .mock.calls.filter(([m]) => m === 'fetch_etf_candles_1m.store_error');
+    expect(storeErrors).toHaveLength(2);
   });
 
   // ── UW API errors → per-leg isolation (BE-CRON-H4) ────────
@@ -632,7 +727,7 @@ describe('fetch-etf-candles-1m handler', () => {
     mockUwFetch.mockImplementation((_key: string, path: string) =>
       path.includes('/SPY/')
         ? Promise.reject(spyFetchErr)
-        : Promise.resolve([makeCandle()]),
+        : Promise.resolve([forming(), makeCandle()]),
     );
 
     const res = mockResponse();
@@ -644,10 +739,12 @@ describe('fetch-etf-candles-1m handler', () => {
       failureCount: 1,
       tickers: {
         SPY: { fetched: 0, stored: 0 },
-        QQQ: { fetched: 1, stored: 1 },
+        QQQ: { fetched: 2, stored: 1 },
       },
     });
-    expect(Sentry.captureException).toHaveBeenCalledWith(spyFetchErr);
+    expect(Sentry.captureException).toHaveBeenCalledWith(spyFetchErr, {
+      tags: { ticker: 'SPY' },
+    });
     // A UW failure is not a write failure.
     expect(metrics.increment).not.toHaveBeenCalledWith(
       'fetch_etf_candles_1m.store_error',
@@ -715,6 +812,7 @@ describe('fetch-etf-candles-1m handler', () => {
     ]);
     uwReturns({
       SPY: [
+        forming(),
         makeCandle({ start_time: 'not-a-time' }),
         makeCandle({ start_time: '2026-04-27T14:34:00.000Z', open: 'n/a' }),
         makeCandle({ start_time: '2026-04-27T14:33:00.000Z', close: null }),
@@ -733,7 +831,7 @@ describe('fetch-etf-candles-1m handler', () => {
     expect(res._json).toMatchObject({
       status: 'success',
       tickers: {
-        SPY: { fetched: 6, new: 1, stored: 1, skipped: 5, malformed: 4 },
+        SPY: { fetched: 7, new: 1, stored: 1, skipped: 6, malformed: 4 },
         QQQ: { malformed: 0 },
       },
     });
@@ -758,7 +856,7 @@ describe('fetch-etf-candles-1m handler', () => {
   }
 
   it('writes every OHLC + volume column with ON CONFLICT DO NOTHING', async () => {
-    uwReturns({ SPY: [makeCandle()] });
+    uwReturns({ SPY: [forming(), makeCandle()] });
 
     const res = mockResponse();
     await handler(AUTHORIZED_REQ(), res);
@@ -779,7 +877,7 @@ describe('fetch-etf-candles-1m handler', () => {
   });
 
   it('writes volume as null (never undefined) when UW omits it', async () => {
-    uwReturns({ SPY: [makeCandle({ volume: undefined })] });
+    uwReturns({ SPY: [forming(), makeCandle({ volume: undefined })] });
 
     const res = mockResponse();
     await handler(AUTHORIZED_REQ(), res);
@@ -794,6 +892,7 @@ describe('fetch-etf-candles-1m handler', () => {
     // '1.0' and '1e3' even though both validate as safe integers.
     uwReturns({
       SPY: [
+        forming(),
         makeCandle({ start_time: '2026-04-27T14:32:00.000Z', volume: '1.0' }),
         makeCandle({ start_time: '2026-04-27T14:31:00.000Z', volume: '1e3' }),
       ],
