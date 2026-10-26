@@ -121,6 +121,30 @@ V = verdict: **C** confirmed · **P** partly true · **F** false · **N** new (f
 
 Every code phase runs the Get It Right loop: TDD → full `npm run review` → `code-reviewer` → commit → push. Each phase touches at most 5 files and runs in its own worktree off `origin/main`.
 
+### Progress
+
+| Phase | Status | Commits on main | Review |
+|---|---|---|---|
+| 1 θ/hr | Shipped 2026-10-26 | `9e1ba620`, `553854c1` (comment) | pass, first round |
+| 2 BWB | Shipped 2026-10-26 | `dc793cf8`, `01e1652f`, `d1a01cb2` | continue → pass. The 7,680-structure independent probe found 0 failures. Debit fat-tail adjusted PoP now scales the band, so credits are unchanged: 10Δ put adjusted 3.9% → 11.1%. |
+| 3 ETF candles | Shipped 2026-10-26 | `9888f833`, `7993ebc8` | continue ×2 → pass. The forming-bar filter is `ts < min(clock minute, UW's newest start_time)`. |
+| 5 Quote staleness | Shipped 2026-10-26 | `b118f2ea`, `8cc766ac`, `117f747a` | continue → pass. Rebuilt on `useWallClockFreshness`. |
+
+### Found during implementation (new ledger rows)
+
+| ID | Finding | Notes | Phase |
+|---|---|---|---|
+| D1c | Historical `etf_candles_1m` rows are probably partial bars | The old cron inserted UW's still-forming bar with DO NOTHING every minute, so most rows froze 0–8 s into their minute. `scripts/backfill-etf-candles-1m.mjs` also uses DO NOTHING and can't repair them. Consumers: vega-spike forward returns, the dark-pool ETF→index ratio, `ml/src/vega_spike_eda.py`. Measure first with O9. | O9, Q26 |
+| D1d | `fetch-spx-candles-1m` → `index_candles_1m` has the same frozen-bar bug | Phase 4a takes the same `min(clock, newest)` filter. | 4a |
+| D1e | Vega-spike `fwd_return_eod` likely uses the 16:04 post-market close | `enrich-vega-spike-returns.ts:137-141` says the table has no after-hours bars, but the cron writes 16:00–16:04 (the gate runs to close+5). | 4c |
+| D1f | HWM-only never backfills a minute that arrives late | Acceptable: SPY/QQQ trade every regular-session minute, and UW documents no late bars. Noted in the cron header. | — |
+| D1g | Current-minute dark-pool prints drop out of translated levels for ~1 min | `dark-pool-query.ts` INNER JOINs on the exact minute, which now lands one run later. Accepted trade-off for never freezing a partial bar. | — |
+| M1c | BWB export monthly projection is wrong for debits | Wins count `max(0, credit)` (= $0 for a debit), and every loss counts as max loss. 10Δ put Monthly Net shows −$43k vs about +$332 expected over 22 days. | Q25 |
+| M1d | BWB RoR is `netCredit/maxLoss`, so it's negative for debits | Display. | Q25 |
+| M1e | Inverted / zero-width BWBs still display a meaningless far breakeven | The UI can't produce them (multipliers ≥ 1.5). PoP is correct. | — |
+| M1f | Export "Mult" column shows the requested multiplier next to the snapped Wide | The Inputs sheet explains snapping. Cosmetic. | — |
+| M1g | `AdvancedSection.tsx:305` input label still shows the requested width (e.g. "37.5pt wide") | Cosmetic, tied to Q2. | 3.5 |
+
 ### Wave 1: no owner decision, Vercel side (ship any time)
 
 Math-display changes (phases 1–2) change numbers on screen. Push them outside 08:30–15:00 CT or flag the change.
@@ -137,7 +161,8 @@ Math-display changes (phases 1–2) change numbers on screen. Push them outside 
    - no per-row catch, so a write rejection becomes `partial`/`error`.
    Tests: HWM filter, null HWM, transaction path over 500 rows, SELECT reject → `error`, one ticker rejects → `partial`, both reject → `error`, all asserted by name. Also probe whether UW returns the still-open minute; if it does, keep only `start_time < floor(now)`. M.
 4. **Cron status honesty (D1b).**
-   - 4a `fetch-spx-candles-1m`: a failed store → `error`/`partial`, plus an HWM.
+   - 4a `fetch-spx-candles-1m`: a failed store → `error`/`partial`, plus an HWM, plus the phase-3 forming-bar filter `ts < min(clock minute, UW newest)` (D1d).
+   - 4c `enrich-vega-spike-returns`: confirm whether `fwd_return_eod` reads a post-16:00 bar, and bound it to the 16:00 ET close (D1e).
    - 4b `fetch-outcomes` (backfill all-fail → error + Sentry) and `build-features` (all dates fail → `error`).
    Each with failure-mode tests. S–M.
 5. **Quote staleness split (F1).** New `src/hooks/useQuoteStaleness.ts` (holds the interval plus `isStale`/`isVeryStale`/`staleAgeSec`), used by `AppHeader`. Remove the tick and those fields from `useMarketData`. Tests:
@@ -240,6 +265,8 @@ Math-display changes (phases 1–2) change numbers on screen. Push them outside 
 - **O6.** Approve the new GitHub description text.
 - **O7.** Decide whether the ML Pipeline workflow comes back on.
 - **O8.** Screenshots or a short recording for the README.
+- **O9.** Measure how many `etf_candles_1m` rows are frozen partial bars (read-only prod query; auto mode blocks agents from running it):
+  `SELECT count(*) FILTER (WHERE inserted_at < "timestamp" + interval '1 minute'), count(*) FROM etf_candles_1m WHERE "timestamp" > now() - interval '30 days';`
 
 ## Open questions (defaults in brackets)
 
@@ -261,6 +288,8 @@ Math-display changes (phases 1–2) change numbers on screen. Push them outside 
 - **Q21.** Unify the feed toolbars, or extract only the hooks? [Hooks only.]
 - **Q22.** Phase 2 label: correct-only filter now, market-outcome label if revived? [Yes.]
 - **Q23.** Retrain Take-It after the CV fix? [Not until a side-by-side shows the honest metrics.]
+- **Q25.** BWB export monthly projection: (A) expected value from the full payoff under the same distribution PoP uses, which changes credit rows too; (B) keep the formula and blank the monthly columns for debits; (C) leave it. [A, shown with before/after rows first.]
+- **Q26.** Repair historical `etf_candles_1m` (DO UPDATE over UW's lookback window) once O9 measures the damage? [Yes, if most rows are partial.]
 - **Q9–Q11, Q14.** Security; see the local note.
 
 ## Data dependencies
