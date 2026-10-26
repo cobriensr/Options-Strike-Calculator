@@ -4,8 +4,50 @@ import tseslint from 'typescript-eslint';
 import reactHooks from 'eslint-plugin-react-hooks';
 import reactRefresh from 'eslint-plugin-react-refresh';
 import sonarjs from 'eslint-plugin-sonarjs';
-import importX from 'eslint-plugin-import-x';
+import importX, { createNodeResolver } from 'eslint-plugin-import-x';
 import prettier from 'eslint-config-prettier';
+
+// src/ modules that api/ compiles, so they get the `.js` extension rule below.
+const API_COMPILED_SRC = [
+  'src/utils/**/*.ts',
+  'src/types/**/*.ts',
+  'src/data/**/*.ts',
+  'src/constants/**/*.ts',
+];
+const SRC_TESTS = [
+  'src/__tests__/**',
+  '**/*.test.{ts,tsx}',
+  '**/*.spec.{ts,tsx}',
+];
+
+// Browser code must not import api/ at runtime. Vite dev serves an import as
+// a module at the file's own path, so anything under /api/ goes through the
+// dev proxy and hits the e2e specs' page.route('**/api/**') stubs, and the app
+// never mounts (docs/superpowers/specs/e2e-ci-repair-2026-10-26.md). CI also
+// skips E2E for api/-only changes on the strength of these rules
+// (scripts/_lib/eslint-api-guard.test.mjs keeps them honest). `import type`
+// and `export type … from` declarations are flagged too; inline
+// `import('…')` type references are not, since they're erased. Put shared
+// types in src/types/.
+const NO_API_MESSAGE =
+  'Browser code must not import api/. Move shared code or data into src/.';
+const noApiImportsFromSrc = {
+  'import-x/no-restricted-paths': [
+    'error',
+    {
+      basePath: import.meta.dirname,
+      zones: [{ target: './src', from: './api', message: NO_API_MESSAGE }],
+    },
+  ],
+};
+// no-restricted-paths only sees imports it can resolve, and the default
+// resolver can't map `./x.js` to x.ts. `.js` -> `.ts` aliasing is safe
+// everywhere. Resolving extension-less paths to .ts/.tsx is not safe in
+// API_COMPILED_SRC: the `.js` extension rule would then stop flagging `./x`.
+// So those files get the alias only, and an extension-less api/ import there
+// (which the extension rule also skips when it is `import type`) is caught by
+// matching the import string instead.
+const JS_TO_TS = { '.js': ['.ts', '.tsx', '.js'] };
 
 export default [
   {
@@ -77,13 +119,7 @@ export default [
   // (pure logic — types, utils, data, constants). Frontend-only .tsx files
   // go through Vite, which handles resolution, so they're exempt.
   {
-    files: [
-      'api/**/*.ts',
-      'src/utils/**/*.ts',
-      'src/types/**/*.ts',
-      'src/data/**/*.ts',
-      'src/constants/**/*.ts',
-    ],
+    files: ['api/**/*.ts', ...API_COMPILED_SRC],
     ignores: ['**/*.test.ts', '**/*.test.tsx', '**/__tests__/**'],
     plugins: {
       'import-x': importX,
@@ -93,6 +129,41 @@ export default [
         'error',
         'ignorePackages',
         { ts: 'never', tsx: 'never', js: 'always', jsx: 'always' },
+      ],
+    },
+  },
+  {
+    files: ['src/**/*.{ts,tsx}'],
+    ignores: [...SRC_TESTS, ...API_COMPILED_SRC],
+    plugins: { 'import-x': importX },
+    settings: {
+      'import-x/resolver-next': [
+        createNodeResolver({
+          extensions: ['.ts', '.tsx', '.mjs', '.cjs', '.js', '.json', '.node'],
+          extensionAlias: JS_TO_TS,
+        }),
+      ],
+    },
+    rules: noApiImportsFromSrc,
+  },
+  {
+    files: API_COMPILED_SRC,
+    ignores: SRC_TESTS,
+    plugins: { 'import-x': importX },
+    settings: {
+      'import-x/resolver-next': [
+        createNodeResolver({ extensionAlias: JS_TO_TS }),
+      ],
+    },
+    rules: {
+      ...noApiImportsFromSrc,
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            { regex: String.raw`^(\.\./)+api(/|$)`, message: NO_API_MESSAGE },
+          ],
+        },
       ],
     },
   },

@@ -1,12 +1,18 @@
 import { defineConfig } from '@playwright/test';
 
+const isCI = !!process.env.CI;
+
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: true,
-  forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 1,
-  workers: process.env.CI ? 1 : undefined,
-  reporter: 'html',
+  forbidOnly: isCI,
+  retries: isCI ? 2 : 1,
+  workers: isCI ? 1 : undefined,
+  // CI: stop once 10 tests have failed every retry, so a broken suite goes
+  // red in minutes instead of running into the job timeout. `list` prints
+  // each test name and error to the job log; `html` is the uploaded report.
+  maxFailures: isCI ? 10 : 0,
+  reporter: isCI ? [['list'], ['html', { open: 'never' }]] : 'html',
   expect: {
     timeout: 10000,
   },
@@ -22,6 +28,6 @@ export default defineConfig({
   webServer: {
     command: 'npm run dev',
     url: 'http://localhost:5173',
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: !isCI,
   },
 });

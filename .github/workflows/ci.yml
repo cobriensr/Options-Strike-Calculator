@@ -10,8 +10,11 @@ on:
 permissions:
   contents: read
 
+# PRs still cancel superseded runs (one group per PR ref). Every push to main
+# gets its own group (its SHA), so a quick follow-up push no longer cancels
+# the previous commit's E2E verdict.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -49,8 +52,14 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
               - 'tsconfig.json'
+              - 'tsconfig.api.json'
+              - 'tsconfig.scripts.json'
               - 'vite.config.ts'
               - 'eslint.config.ts'
+              # review lints both (and type-checks e2e/). The e2e job also
+              # needs this job, so if app is skipped, e2e is skipped too.
+              - 'e2e/**'
+              - 'playwright.config.ts'
             # Listing ci.yml means an edit to a job's definition runs that job.
             ml:
               - 'ml/**'
@@ -67,11 +76,22 @@ jobs:
               - 'classifier/**'
               - 'ml/src/multileg_*.py'
               - '.github/workflows/ci.yml'
+            # What the browser loads under test. api/** is left out: the specs
+            # stub /api with page.route, nothing serves the dev proxy's
+            # :3000 target in CI, and eslint bars src/ from importing api/.
             e2e:
               - 'src/**'
-              - 'api/**'
               - 'e2e/**'
               - 'playwright.config.ts'
+              - 'vite.config.ts'
+              # Vite's esbuild reads its compilerOptions (jsx, target, ...).
+              - 'tsconfig.json'
+              - 'index.html'
+              - 'public/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/e2e-nightly.yml'
 
   app:
     name: App Quality Gate
@@ -104,18 +124,17 @@ jobs:
         # project's own gate rots (AUD-H5).
         run: npm run audit
 
+      # No separate `npm run build` step: review already runs its type checks
+      # and vite build, and Vercel runs the real build on every push.
       - name: Review (tsc + eslint + prettier + build + vitest + coverage floors)
         run: npm run review
-
-      - name: Build
-        run: npm run build
 
   e2e:
     name: E2E Tests
     needs: [changes, app]
-    # Runs on PRs + post-merge to main + manual dispatch when relevant
-    # files change. Previously gated behind workflow_dispatch only, which
-    # let regressions in OAuth / analyze / export flows reach prod silently.
+    # Chromium only, on PRs + pushes to main + manual dispatch, when a file
+    # the browser loads changes (see the e2e filter above; api/-only changes
+    # skip it). All three browsers run nightly in e2e-nightly.yml.
     if: needs.changes.outputs.e2e == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -135,14 +154,19 @@ jobs:
         run: npm ci
 
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium firefox webkit
+        run: npx playwright install --with-deps chromium
 
+      # Own timeout below the job's 30, so a hung run still leaves time for
+      # the report upload.
       - name: Run E2E tests
-        run: npx playwright test
+        timeout-minutes: 25
+        run: npx playwright test --project=chromium
 
+      # always(), not !cancelled(): a timed-out run is the one whose report
+      # is needed most, and !cancelled() skipped it when the job timed out.
       - name: Upload report
         uses: actions/upload-artifact@v7
-        if: ${{ !cancelled() }}
+        if: always()
         with:
           name: playwright-report
           path: playwright-report/
