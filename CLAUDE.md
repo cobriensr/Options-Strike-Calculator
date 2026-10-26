@@ -174,6 +174,7 @@ Everything else gets the full loop.
 - **Bot protection** — `botid` checks on production endpoints, skipped in local dev. **When adding a new endpoint that calls `checkBot(req)`, also add its path to the `protect` array in `src/main.tsx`'s `initBotId()` call.**
 - **Logging** — `pino` logger in `api/_lib/logger.ts`.
 - **Sentry** — error tracking + metrics via `@sentry/node`.
+- **Axiom cron events** — `reportCronRun` (`api/_lib/axiom.ts`) sends `job` plus, as top-level primitives, only the names in `AXIOM_TOP_LEVEL_KEYS` (`api/_lib/axiom-fields.ts`: the 111 top-level columns that already exist in the dataset, snapshot 2026-10-25). It JSON-stringifies every other key, and any non-primitive value, into one `meta` string. The dataset has a 257-column cap and is already at it, so never add top-level keys, and never add a name to the allowlist unless the column already exists in Axiom. Query per-cron fields with `parse_json(meta)`. A rejected ingest (`ingested === 0`) retries without `meta` and raises one Sentry warning per instance.
 - **Reader endpoints use `withDbReader`** — a new GET data-reader endpoint (single-JSON response, 405-gated) should wrap its handler in `withDbReader(path, label, auth, handler, opts?)` from `api/_lib/request-scope.ts` instead of hand-rolling the envelope. The wrapper owns the Sentry isolation scope + transaction name + `endpoint` tag, `metrics.request`/`done`, the 405 method check, the auth guard (`auth` is required: `'owner'` | `'owner-or-guest'` | `'public'` — so it can't be forgotten), and the `try/catch → sendDbErrorResponse` soft-degrade (transient Neon blip → 503, genuine → 500 + Sentry). The handler body is just rate-limit/zod-validation/logic + `done({ status: 200 })` + `res.json`. Do NOT adopt it for mixed GET+write handlers, CSV/binary responses, or no-method-gate readers (those keep their own `sendDbErrorResponse` call).
 
 #### Backend Modules (`api/_lib/`)
@@ -276,6 +277,8 @@ Required env vars (pulled via `vercel env pull .env.local`):
 | `CRON_SECRET`                              | Vercel (cron job auth)               |
 | `UW_API_KEY`                               | Unusual Whales                       |
 | `GUEST_ACCESS_KEYS`                        | Comma-separated guest keys (opt.)    |
+| `AXIOM_API_KEY`                            | Axiom (opt.; cron-run events)        |
+| `AXIOM_DATASET`                            | Axiom dataset name (opt.)            |
 | `UW_PER_MINUTE_CAP`                        | UW limiter override (opt., def 2000) |
 | `CLASSIFIER_URL`                           | Railway classifier base URL          |
 | `BLOB_READ_WRITE_TOKEN`                    | Vercel Blob (also on Railway)        |
