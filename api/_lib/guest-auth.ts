@@ -154,6 +154,7 @@ export async function guardOwnerOrGuestEndpoint(
   const botCheck = await checkBot(req);
   if (botCheck.isBot) {
     done({ status: 403 });
+    res.setHeader('Cache-Control', 'no-store');
     res.status(403).json({ error: 'Access denied' });
     return true;
   }

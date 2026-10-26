@@ -309,6 +309,7 @@ describe('guardOwnerOrGuestEndpoint', () => {
     expect(rejected).toBe(true);
     expect(res._status).toBe(403);
     expect(res._json).toEqual({ error: 'Access denied' });
+    expect(res._headers['Cache-Control']).toBe('no-store');
     expect(done).toHaveBeenCalledWith({ status: 403 });
   });
 
