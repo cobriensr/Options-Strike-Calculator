@@ -23,7 +23,7 @@
     "lint": "npm run type-check && eslint .",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,mjs,cjs}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,mjs,cjs}\"",
-    "review": "npm run type-check && eslint . && prettier --write \"**/*.{ts,tsx,js,jsx,mjs,cjs}\" && vite build && vitest run --coverage",
+    "review": "npm run type-check && eslint . && prettier --write \"**/*.{ts,tsx,js,jsx,mjs,cjs}\" && vite build && vitest run --coverage && node scripts/check-coverage-floor.mjs",
     "audit": "audit-ci --config audit-ci.jsonc",
     "review:ml": "cd ml && make format && make test-cov",
     "review:sidecar": "cd sidecar && make format && make test-cov",
