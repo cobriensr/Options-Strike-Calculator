@@ -59,9 +59,11 @@ Sentry.init({
   tracesSampleRate: 0.2,
   // Host-agnostic: @sentry/browser tests each pattern against the full URL
   // and, for same-origin requests only, against the path. So /^\/api\//
-  // tags our API on any domain (theta-options.com, previews) and never a
-  // third-party URL, whose full URL starts with its scheme.
-  tracePropagationTargets: ['localhost', /^\/api\//],
+  // tags our API on any domain (theta-options.com, previews, localhost)
+  // and never a third-party URL, whose full URL starts with its scheme.
+  // No string targets: Sentry matches a string as a substring of the full
+  // URL, so 'localhost' would tag any third-party URL containing it.
+  tracePropagationTargets: [/^\/api\//],
   enabled: import.meta.env.PROD,
   beforeSend(event) {
     const frames =
