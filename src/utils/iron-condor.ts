@@ -317,7 +317,7 @@ export function buildIronCondor(
 /**
  * Computes the theta decay curve for a given OTM option across the trading day.
  * Returns an array of { hoursRemaining, premiumPct, thetaPerHour } objects
- * showing what % of the at-open premium remains at each hour.
+ * showing what % of the at-open premium remains at each half-hour step.
  * `thetaPerHour` is the % of at-open premium lost per hour over the
  * 0.5h step ending at that row (0 on the first row).
  *
