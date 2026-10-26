@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { useVix1dData } from '../../hooks/useVix1dData';
+import { captureUnlessAuth } from '../../lib/sentry-helpers';
+
+vi.mock('../../lib/sentry-helpers', () => ({ captureUnlessAuth: vi.fn() }));
 
 // ============================================================
 // MOCK DATA
@@ -19,9 +22,12 @@ let fetchSpy: ReturnType<typeof vi.spyOn>;
 let warnSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
+  vi.mocked(captureUnlessAuth).mockClear();
   fetchSpy = vi.spyOn(globalThis, 'fetch');
   warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
+
+const VIX1D_CAPTURE_CONTEXT = { tags: { context: 'vix1d_load' } };
 
 afterEach(() => {
   fetchSpy.mockRestore();
@@ -39,9 +45,8 @@ async function renderAndLoad() {
 
   const { result } = renderHook(() => useVix1dData());
 
-  // Trigger lazy load
   act(() => {
-    result.current.getVix1d('2026-03-11', 10);
+    result.current.ensureLoaded();
   });
 
   await waitFor(() => {
@@ -66,11 +71,47 @@ describe('useVix1dData', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('fetches from /api/vix1d-daily on first getVix1d call and sets loaded with correct dayCount', async () => {
+  it('getVix1d and getOHLC are pure: calling them never starts a fetch (F4c)', () => {
+    const { result } = renderHook(() => useVix1dData());
+
+    expect(result.current.getVix1d('2026-03-11', 10)).toBeNull();
+    expect(result.current.getOHLC('2026-03-11')).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('fetches from /api/vix1d-daily on ensureLoaded and sets loaded with correct dayCount', async () => {
     const result = await renderAndLoad();
 
     expect(result.current.dayCount).toBe(2);
     expect(fetchSpy).toHaveBeenCalledWith('/api/vix1d-daily');
+  });
+
+  it('starts only one fetch when ensureLoaded is called again after loading', async () => {
+    const result = await renderAndLoad();
+
+    act(() => {
+      result.current.ensureLoaded();
+      result.current.ensureLoaded();
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts only one fetch when ensureLoaded is called again while a load is in flight', async () => {
+    // A time scrub, or StrictMode's double effect, can re-run the caller's
+    // effect before the first load resolves.
+    fetchSpy.mockImplementation(
+      async () => new Response(JSON.stringify(mockVix1dMap), { status: 200 }),
+    );
+    const { result } = renderHook(() => useVix1dData());
+
+    act(() => {
+      result.current.ensureLoaded();
+      result.current.ensureLoaded();
+    });
+
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to /vix1d-daily.json when API returns 404', async () => {
@@ -82,7 +123,7 @@ describe('useVix1dData', () => {
 
     const { result } = renderHook(() => useVix1dData());
     act(() => {
-      result.current.getVix1d('2026-03-11', 10);
+      result.current.ensureLoaded();
     });
 
     await waitFor(() => expect(result.current.loaded).toBe(true));
@@ -150,9 +191,8 @@ describe('useVix1dData', () => {
 
     const { result } = renderHook(() => useVix1dData());
 
-    // Trigger lazy load
     act(() => {
-      result.current.getVix1d('2026-03-11', 10);
+      result.current.ensureLoaded();
     });
 
     await waitFor(() => {
@@ -165,19 +205,23 @@ describe('useVix1dData', () => {
       'Failed to load VIX1D daily data:',
       'HTTP 401',
     );
+    expect(captureUnlessAuth).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'HTTP 401' }),
+      VIX1D_CAPTURE_CONTEXT,
+    );
   });
 
   // --------------------------------------------------------
   // Network error: fetch rejects
   // --------------------------------------------------------
   it('logs warning and keeps loaded false on network error', async () => {
-    fetchSpy.mockRejectedValue(new TypeError('Failed to fetch'));
+    const networkError = new TypeError('Failed to fetch');
+    fetchSpy.mockRejectedValue(networkError);
 
     const { result } = renderHook(() => useVix1dData());
 
-    // Trigger lazy load
     act(() => {
-      result.current.getVix1d('2026-03-11', 10);
+      result.current.ensureLoaded();
     });
 
     await waitFor(() => {
@@ -190,6 +234,54 @@ describe('useVix1dData', () => {
       'Failed to load VIX1D daily data:',
       'Failed to fetch',
     );
+    expect(captureUnlessAuth).toHaveBeenCalledWith(
+      networkError,
+      VIX1D_CAPTURE_CONTEXT,
+    );
+  });
+
+  // --------------------------------------------------------
+  // Malformed payload: 200 with a body that isn't JSON
+  // --------------------------------------------------------
+  it('captures and keeps loaded false when a 200 body is not JSON', async () => {
+    fetchSpy.mockResolvedValue(new Response('<html>', { status: 200 }));
+
+    const { result } = renderHook(() => useVix1dData());
+
+    act(() => {
+      result.current.ensureLoaded();
+    });
+
+    await waitFor(() => expect(captureUnlessAuth).toHaveBeenCalled());
+    expect(captureUnlessAuth).toHaveBeenCalledWith(
+      expect.any(SyntaxError),
+      VIX1D_CAPTURE_CONTEXT,
+    );
+    expect(result.current.loaded).toBe(false);
+    expect(result.current.dayCount).toBe(0);
+  });
+
+  it('retries on the next ensureLoaded call after a failed load', async () => {
+    fetchSpy
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(mockVix1dMap), { status: 200 }),
+      );
+
+    const { result } = renderHook(() => useVix1dData());
+
+    act(() => {
+      result.current.ensureLoaded();
+    });
+    await waitFor(() => expect(warnSpy).toHaveBeenCalled());
+    expect(result.current.loaded).toBe(false);
+
+    act(() => {
+      result.current.ensureLoaded();
+    });
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(result.current.dayCount).toBe(2);
   });
 
   // --------------------------------------------------------
@@ -202,9 +294,8 @@ describe('useVix1dData', () => {
 
     const { result } = renderHook(() => useVix1dData());
 
-    // Trigger lazy load
     act(() => {
-      result.current.getVix1d('2026-03-11', 10);
+      result.current.ensureLoaded();
     });
 
     await waitFor(() => {

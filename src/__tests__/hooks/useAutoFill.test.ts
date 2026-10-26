@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { renderHook, waitFor } from '@testing-library/react';
 import { useAutoFill } from '../../hooks/useAutoFill';
+import { useVix1dData } from '../../hooks/useVix1dData';
 import { IV_MODES } from '../../constants';
 import type { MarketDataState } from '../../hooks/useMarketData';
 import type { UseVixDataReturn } from '../../hooks/useVixData';
@@ -179,6 +180,7 @@ function createVix1dStatic(
 ): UseVix1dDataReturn {
   return {
     loaded: false,
+    ensureLoaded: vi.fn(),
     getVix1d: vi.fn().mockReturnValue(null),
     getOHLC: vi.fn().mockReturnValue(null),
     dayCount: 0,
@@ -789,5 +791,111 @@ describe('useAutoFill', () => {
     );
 
     expect(result.current).toBeNull();
+  });
+});
+
+// ============================================================
+// STATIC VIX1D LOADING (F4c)
+// ============================================================
+
+describe('useAutoFill: static VIX1D loading', () => {
+  const baseInputs = {
+    spotEdited: { current: false },
+    spxEdited: { current: false },
+    vixEdited: { current: false },
+    timeEdited: { current: false },
+    timeHour: '11',
+    timeMinute: '30',
+    timeAmPm: 'AM' as const,
+    timezone: 'ET' as const,
+    market: createMarket(null),
+    vix: createVix({ selectedDate: '2026-03-10' }),
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('loads the static table from an effect, never during render, and the value still arrives', async () => {
+    // Real useVix1dData so the I/O is observable: count fetches that
+    // start while the hooks' render body is running.
+    let rendering = false;
+    let fetchesDuringRender = 0;
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => {
+        if (rendering) fetchesDuringRender++;
+        return new Response(
+          JSON.stringify({
+            '2026-03-10': { o: 16.5, h: 17.2, l: 16.1, c: 16.9 },
+          }),
+          { status: 200 },
+        );
+      });
+    const historyData = createHistoryData({
+      hasHistory: true,
+      history: mockHistory('2026-03-10'),
+      getStateAtTime: vi
+        .fn()
+        .mockReturnValue(makeHistorySnapshot({ vix1d: null })),
+    });
+    const setters = createSetters();
+
+    const { result } = renderHook(() => {
+      rendering = true;
+      const vix1dStatic = useVix1dData();
+      const snapshot = useAutoFill({
+        ...baseInputs,
+        ...setters,
+        historyData,
+        vix1dStatic,
+      });
+      rendering = false;
+      return snapshot;
+    });
+
+    expect(fetchesDuringRender).toBe(0);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    // 11:30 ET is before noon, so the static fallback uses the open.
+    await waitFor(() => expect(result.current?.vix1d).toBe(16.5));
+    expect(setters.setDirectIVInput).toHaveBeenCalledWith('0.1650');
+    expect(fetchesDuringRender).toBe(0);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not load the static table in live mode', () => {
+    const vix1dStatic = createVix1dStatic();
+
+    renderHook(() =>
+      useAutoFill({
+        ...baseInputs,
+        ...createSetters(),
+        historyData: createHistoryData({ hasHistory: false }),
+        vix1dStatic,
+      }),
+    );
+
+    expect(vix1dStatic.ensureLoaded).not.toHaveBeenCalled();
+  });
+
+  it('does not load the static table when the snapshot already has VIX1D', () => {
+    const vix1dStatic = createVix1dStatic();
+
+    renderHook(() =>
+      useAutoFill({
+        ...baseInputs,
+        ...createSetters(),
+        historyData: createHistoryData({
+          hasHistory: true,
+          history: mockHistory('2026-03-10'),
+          getStateAtTime: vi
+            .fn()
+            .mockReturnValue(makeHistorySnapshot({ vix1d: 14.8 })),
+        }),
+        vix1dStatic,
+      }),
+    );
+
+    expect(vix1dStatic.ensureLoaded).not.toHaveBeenCalled();
   });
 });

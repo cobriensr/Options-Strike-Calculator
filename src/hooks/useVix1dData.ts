@@ -1,9 +1,11 @@
 /**
  * useVix1dData — Lazy-loads the static VIX1D daily OHLC JSON (from CBOE).
  *
- * The 64 KB JSON is only fetched when `getVix1d` or `getOHLC` is first called,
- * which happens when viewing a historical date without Schwab VIX1D data.
- * Live-mode users never trigger the fetch.
+ * The 64 KB JSON is only fetched when `ensureLoaded` is first called. The
+ * caller does that from an effect (useAutoFill, when a historical date has no
+ * Schwab VIX1D data), so live-mode users never trigger the fetch. The getters
+ * are pure lookups: they do no I/O, so they're safe to call during render,
+ * and return null until the data arrives.
  *
  * Provides a lookup function that returns the VIX1D value for a given
  * date and time, using the same "smart" logic as VIX:
@@ -29,9 +31,15 @@ type Vix1dDataMap = Record<string, Vix1dEntry>;
 
 export interface UseVix1dDataReturn {
   loaded: boolean;
-  /** Get VIX1D value for a date at a given ET hour. Uses smart OHLC (open < noon, close >= noon). Triggers lazy load on first call. */
+  /**
+   * Start the one-time load. Idempotent while a load is in flight or done;
+   * a failed load can be retried by calling it again. Call from an effect,
+   * never during render.
+   */
+  ensureLoaded: () => void;
+  /** Get VIX1D value for a date at a given ET hour. Uses smart OHLC (open < noon, close >= noon). Null until loaded. */
   getVix1d: (date: string, hourET: number) => number | null;
-  /** Get full OHLC for a date. Triggers lazy load on first call. */
+  /** Get full OHLC for a date. Null until loaded. */
   getOHLC: (date: string) => Vix1dEntry | null;
   /** Number of days loaded */
   dayCount: number;
@@ -73,25 +81,22 @@ export function useVix1dData(): UseVix1dDataReturn {
 
   const getVix1d = useCallback(
     (date: string, hourET: number): number | null => {
-      ensureLoaded();
       const entry = data[date];
       if (!entry) return null;
       // Smart OHLC: open before noon, close after
       return hourET < 12 ? entry.o : entry.c;
     },
-    [data, ensureLoaded],
+    [data],
   );
 
   const getOHLC = useCallback(
-    (date: string): Vix1dEntry | null => {
-      ensureLoaded();
-      return data[date] ?? null;
-    },
-    [data, ensureLoaded],
+    (date: string): Vix1dEntry | null => data[date] ?? null,
+    [data],
   );
 
   return {
     loaded,
+    ensureLoaded,
     getVix1d,
     getOHLC,
     dayCount: Object.keys(data).length,

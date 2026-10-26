@@ -196,8 +196,11 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
       }
 
       // Auto-use VIX1D as σ when available (from Schwab intraday or CBOE static).
-      // getVix1d triggers ensureLoaded() on first call; returns null until the
-      // fetch completes, then its reference changes → effect re-runs with data.
+      // Without Schwab VIX1D, start the static table's load here (idempotent;
+      // retried after a failure), in an effect, so render stays free of I/O.
+      // getVix1d returns null until the fetch completes, then its reference
+      // changes → effect re-runs.
+      if (snapshot.vix1d == null) vix1dStatic.ensureLoaded();
       const vix1dVal =
         snapshot.vix1d ??
         vix1dStatic.getVix1d(historyData.history!.date, etHour);
@@ -237,6 +240,7 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     timeAmPm,
     timezone,
     vix1dStatic.loaded,
+    vix1dStatic.ensureLoaded,
     vix1dStatic.getVix1d,
     setSpotPrice,
     setSpxDirect,
@@ -259,9 +263,9 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
   if (!snapshot) return null;
 
   // Fall back to static VIX1D daily data if Schwab intraday unavailable.
-  // Always call getVix1d (not guarded by .loaded) so it triggers ensureLoaded()
-  // on the first render; returns null until the fetch completes, then the
-  // getVix1d reference changes → callers re-render with the real value.
+  // getVix1d is a pure lookup: null until the effect above has loaded the
+  // table; the load's state update re-renders App and this lookup then
+  // returns the value.
   if (snapshot.vix1d == null) {
     const staticVal = vix1dStatic.getVix1d(historyData.history!.date, etHour);
     if (staticVal != null) {
