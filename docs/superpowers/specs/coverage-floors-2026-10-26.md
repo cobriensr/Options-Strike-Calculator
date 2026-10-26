@@ -44,7 +44,7 @@ Stop files with bad coverage from hiding behind the repo-wide average. Add a per
 - **`package.json`:** append `&& node scripts/check-coverage-floor.mjs` to `review`, after `vitest run --coverage`.
 - **Files:** the 3 new files above, plus `package.json`.
 
-### Phase 2: per-folder floors and exclusion fix (small)
+### Phase 2: per-folder floors and exclusion fix (small) — DONE (da7eda7b)
 
 - **Folder floors.** Add glob thresholds in `vite.config.ts`, set at floor(current aggregate) − 1 for **branches and lines**. Recompute the aggregates from a fresh `npm run review`, since the numbers above predate the bwb-anchor change. Expected roughly:
   - `api/cron/**`: branches 84
@@ -87,6 +87,7 @@ Stop files with bad coverage from hiding behind the repo-wide average. Add a per
 
   It loads picomatch and tinyglobby through vitest's own dependency tree. Its file listing equals the real coverage map exactly (804 files). Run against a scratch config with `src/hooks/**` and `api/cron/**` renamed, it failed 3 tests: both keys matched nothing, and the 76 cron files were in no api key.
 - **Exclusion side effect.** `api/__tests__/{helpers,insert-binds,pglite-migrations}.ts` left the coverage map, so the per-file floor's lowest-branch file is now `api/_lib/db-flow-alerts.ts` at 50.0%, exactly on the floor.
+- **CI vs local (found after the da7eda7b push).** CI failed the per-file floor on `api/_lib/takeit-score.ts`: 6.5% branches. Its only test, `takeit-score.parity.test.ts`, needs the gitignored `ml/data/takeit/` artifacts, so it skips on CI. CI had been red since 6714356d. The fix is `api/__tests__/takeit-score.test.ts`, deterministic synthetic-input tests. In a CI-equivalent run (`--exclude` the parity test), the file reaches 97.8% branches and `api/_lib/**` lines go from 97.45% (0.45 over the floor) to 98.1%. Measure any future floor raise CI-equivalent.
 - **Run-to-run noise.** Two runs a few minutes apart differed by one covered branch, in `src/hooks/**` (`pct` 86.00% vs 86.04%), far inside the one-point margin.
 
 ## Thresholds / constants
