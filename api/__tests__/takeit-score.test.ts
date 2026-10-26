@@ -35,15 +35,23 @@ import type {
 // sigmoid(ln 3) = 1 / (1 + 1/3) = 3/4, so a logit of ±ln 3 lands on 0.75 / 0.25.
 const LN3 = Math.log(3);
 
-/** A leaf-only tree: one node, no split, weight `w`. */
+/**
+ * Leaf values live in split_conditions, as in XGBoost's JSON. Each leaf's
+ * base_weights is deliberately 20x its value (as tree_method='exact' stores
+ * it at eta 0.05), so a walk that read base_weights would be off 20x in
+ * every test below with a nonzero leaf, not only the dedicated walkTree one.
+ */
+const PRE_ETA = 20;
+
+/** A leaf-only tree: one node, no split, leaf value `w`. */
 function leaf(w: number): XGBTree {
   return {
     left_children: [-1],
     right_children: [-1],
     split_indices: [0],
-    split_conditions: [0],
+    split_conditions: [w],
     default_left: [0],
-    base_weights: [w],
+    base_weights: [w * PRE_ETA],
   };
 }
 
@@ -63,9 +71,9 @@ function stump(
     left_children: [1, -1, -1],
     right_children: [2, -1, -1],
     split_indices: [featureIdx, 0, 0],
-    split_conditions: [threshold, 0, 0],
+    split_conditions: [threshold, leftLeaf, rightLeaf],
     default_left: [defaultLeft, 0, 0],
-    base_weights: [0, leftLeaf, rightLeaf],
+    base_weights: [0, leftLeaf * PRE_ETA, rightLeaf * PRE_ETA],
   };
 }
 
@@ -82,17 +90,20 @@ function twoLevelTree(splitType?: number[]): XGBTree {
     left_children: [1, 3, -1, -1, -1],
     right_children: [2, 4, -1, -1, -1],
     split_indices: [0, 1, 0, 0, 0],
-    split_conditions: [0, 5, 0, 0, 0],
+    split_conditions: [0, 5, 0.5, -0.125, 0.375],
     default_left: [1, 0, 0, 0, 0],
-    base_weights: [0, 0, 0.5, -0.125, 0.375],
+    base_weights: [0, 0, 0.5 * PRE_ETA, -0.125 * PRE_ETA, 0.375 * PRE_ETA],
     ...(splitType ? { split_type: splitType } : {}),
   };
 }
 
 // Knots on dyadic values so each interpolated output is exact in float32.
+// 'clip' is what the exporter writes and the only mode assertBundleCompat
+// accepts.
 const SPLINE: IsotonicSpline = {
   x_thresholds: [0.25, 0.5, 1],
   y_thresholds: [0.125, 0.5, 0.75],
+  out_of_bounds: 'clip',
 };
 
 /**
@@ -178,7 +189,7 @@ describe('BundleSchemaError', () => {
 /* ─────────────────────────── assertBundleCompat ──────────────────── */
 
 describe('assertBundleCompat', () => {
-  it('accepts a valid bundle whose xgb_json_schema is 2.1 (the default set)', () => {
+  it('accepts a valid bundle whose xgb_json_schema is 2.1 (the supported set)', () => {
     expect(() => assertBundleCompat(makeBundle())).not.toThrow();
   });
 
@@ -193,11 +204,84 @@ describe('assertBundleCompat', () => {
     );
   });
 
+  it.each([
+    // applyIsotonic always clips, so a 'nan' spline would score differently
+    // from Python.
+    ['nan', 'nan'],
+    // sklearn's IsotonicRegression defaults to 'nan', and export_model.py
+    // always writes the field, so an absent value is not a known 'clip'.
+    ['absent', undefined],
+  ] as const)(
+    'rejects isotonic.out_of_bounds %s with BundleSchemaError',
+    (_label, outOfBounds) => {
+      const isotonic = { ...SPLINE, out_of_bounds: outOfBounds };
+      expectBundleSchemaError(
+        () => assertBundleCompat(makeBundle({ isotonic })),
+        `unsupported isotonic.out_of_bounds=${String(outOfBounds)} (supported: clip)`,
+      );
+    },
+  );
+
   it('rejects a structurally invalid bundle (empty tree list)', () => {
     expectBundleSchemaError(
       () => assertBundleCompat(bundleWithModel('[5E-1]', [])),
       'TakeitBundle validation failed at xgb_model.learner.gradient_booster.model.trees: xgb_model.trees must be non-empty',
     );
+  });
+
+  describe('every per-node tree array must match left_children in length', () => {
+    // A short split_conditions used to pass and score as NaN at a leaf, or
+    // send every value right at a split; so did a short default_left. The
+    // message names the first short array (in schema order) and both lengths,
+    // so a Sentry event can be triaged without the 3.5 MB bundle. The
+    // malformed tree is second, so the path names trees.1.
+    const where =
+      'TakeitBundle validation failed at xgb_model.learner.gradient_booster.model.trees.1';
+
+    it.each([
+      'right_children',
+      'split_indices',
+      'split_conditions',
+      'default_left',
+      'base_weights',
+      'split_type',
+    ] as const)('rejects a tree whose %s is one entry short', (key) => {
+      const tree = twoLevelTree([0, 0, 0, 0, 0]);
+      tree[key] = tree[key]!.slice(1);
+      expectBundleSchemaError(
+        () => assertBundleCompat(bundleWithModel('[5E-1]', [leaf(0), tree])),
+        `${where}: ${key} length 4 != left_children length 5`,
+      );
+    });
+
+    it('rejects an empty split_conditions on a leaf-only tree', () => {
+      const tree = { ...leaf(0), split_conditions: [] };
+      expectBundleSchemaError(
+        () => assertBundleCompat(bundleWithModel('[5E-1]', [leaf(0), tree])),
+        `${where}: split_conditions length 0 != left_children length 1`,
+      );
+    });
+
+    it('rejects a tree whose left_children is the longer array', () => {
+      // Every other array is now short; right_children is reported first.
+      const tree = twoLevelTree();
+      tree.left_children = [...tree.left_children, -1];
+      expectBundleSchemaError(
+        () => assertBundleCompat(bundleWithModel('[5E-1]', [leaf(0), tree])),
+        `${where}: right_children length 5 != left_children length 6`,
+      );
+    });
+
+    it('accepts a tree with no split_type, or one of full length', () => {
+      expect(() =>
+        assertBundleCompat(
+          bundleWithModel('[5E-1]', [
+            twoLevelTree(),
+            twoLevelTree([0, 0, 0, 0, 0]),
+          ]),
+        ),
+      ).not.toThrow();
+    });
   });
 
   it('runs structural validation before the version check', () => {
@@ -260,9 +344,26 @@ describe('parseBaseScore', () => {
 /* ──────────────────────────────── walkTree ───────────────────────── */
 
 describe('walkTree', () => {
-  it('returns the root weight of a leaf-only tree, whatever the features', () => {
+  it('returns the leaf value of a leaf-only tree, whatever the features', () => {
     expect(walkTree(leaf(0.42), [])).toBe(0.42);
     expect(walkTree(leaf(-1.5), [1, 2, 3])).toBe(-1.5);
+  });
+
+  it('reads the leaf value from split_conditions, not base_weights', () => {
+    // XGBoost's JSON keeps a leaf's value in split_conditions; base_weights
+    // is not always the leaf value. Here every base_weights entry
+    // deliberately differs from the leaf value (20x, as exact stores it at
+    // eta 0.05), so a walk that read it would return 5 or -15.
+    const exactStump: XGBTree = {
+      left_children: [1, -1, -1],
+      right_children: [2, -1, -1],
+      split_indices: [0, 0, 0],
+      split_conditions: [10, 0.25, -0.75],
+      default_left: [0, 0, 0],
+      base_weights: [0, 5, -15],
+    };
+    expect(walkTree(exactStump, [1])).toBe(0.25);
+    expect(walkTree(exactStump, [20])).toBe(-0.75);
   });
 
   describe('numeric split: value < threshold goes left, else right', () => {
@@ -295,6 +396,21 @@ describe('walkTree', () => {
         expect(walkTree(rightDefault, features)).toBe(-0.75);
       },
     );
+
+    // The type says number | null, but a vector built from untyped JSON is
+    // not checked. Any non-number is missing, never coerced: '5' is not 5,
+    // true is not 1, and 'abc' does not become NaN-goes-right.
+    it.each([
+      ['the string "abc"', 'abc'],
+      ['the numeric string "5"', '5'],
+      ['true', true],
+      ['false', false],
+      ['an object', {}],
+    ])('%s -> left when default_left=1, right when 0', (_label, value) => {
+      const features = [value] as unknown as number[];
+      expect(walkTree(leftDefault, features)).toBe(0.25);
+      expect(walkTree(rightDefault, features)).toBe(-0.75);
+    });
   });
 
   it.each([
@@ -331,6 +447,8 @@ describe('walkTree', () => {
 
   it.each([
     ['absent', undefined],
+    // walkTree alone tolerates this; assertBundleCompat rejects such a tree
+    // at load (see the per-node array-length tests above).
     ['shorter than the node arrays', []],
     ['all zero', [0, 0, 0, 0, 0]],
   ])('treats split_type %s as numeric', (_label, splitType) => {
@@ -378,7 +496,7 @@ describe('walkTree', () => {
     it('treats a child index past the node arrays as malformed, not a leaf', () => {
       // Node 0 sends every value to node 5, which does not exist. Its child
       // lookups read undefined, never -1, so the walk loops to the cap
-      // instead of returning an undefined weight.
+      // instead of returning an undefined leaf value.
       const dangling: XGBTree = {
         left_children: [5],
         right_children: [5],
@@ -458,8 +576,33 @@ describe('applyIsotonic', () => {
     expect(applyIsotonic(offGrid, 0.1)).toBe(Math.fround(0.1));
   });
 
-  it('passes NaN through as NaN rather than clipping it', () => {
-    expect(applyIsotonic(SPLINE, Number.NaN)).toBeNaN();
+  describe('NaN in gives NaN out, never a clipped or knot value', () => {
+    // The first two knots share an x. NaN used to fall through the clip
+    // checks and the search to that zero-width segment and return y[0].
+    const sharedFirstX: IsotonicSpline = {
+      x_thresholds: [0.25, 0.25, 1],
+      y_thresholds: [0.125, 0.5, 0.75],
+    };
+
+    it.each([
+      ['distinct knots', SPLINE],
+      ['first two knots sharing an x', sharedFirstX],
+    ])('on %s', (_label, spline) => {
+      expect(applyIsotonic(spline, Number.NaN)).toBeNaN();
+    });
+
+    it.each([
+      // On or below the shared x: clipped to y[0].
+      [0.25, 0.125],
+      // The search lands on knots 1 and 2 (x 0.25 -> 1), never the
+      // zero-width segment: t = 0.375 / 0.75 = 0.5, y = 0.5 + 0.5 * 0.25.
+      [0.625, 0.625],
+    ])(
+      'still interpolates finite input on the shared-x spline: %d -> %d',
+      (x, expected) => {
+        expect(applyIsotonic(sharedFirstX, x)).toBe(expected);
+      },
+    );
   });
 
   it('returns the input unchanged when there are no knots', () => {
@@ -514,8 +657,10 @@ describe('featuresFromRow', () => {
 
   it('passes non-numeric values from untyped JSON through without coercion', () => {
     // The type says number | null | undefined, but a row parsed from JSON is
-    // not checked. featuresFromRow does no coercion or validation; the detect
-    // path runs sanitizeScoringInputs (api/_lib/takeit-detect.ts) first.
+    // not checked. featuresFromRow does no coercion or validation: the detect
+    // path runs sanitizeScoringInputs (api/_lib/takeit-detect.ts) first, and
+    // walkTree treats any non-number that slips through as missing (see the
+    // predictTakeitScore test below).
     const row = JSON.parse('{"a":"1.5","b":"abc","c":true,"d":null}') as Record<
       string,
       number | null | undefined
@@ -560,6 +705,22 @@ describe('predictTakeitScore', () => {
       });
     },
   );
+
+  it('scores non-numeric row values from untyped JSON as missing', () => {
+    // Coerced, a = '20' would go right (-ln 3) and b = '-1' left (+ln 3):
+    // logit 0, prob 0.5. As missing, a goes left (+ln 3) and b right (0),
+    // the same 0.75 / 0.625 as an all-null row.
+    const bundle = makeBundle();
+    const row = JSON.parse('{"a":"20","b":"-1"}') as Record<
+      string,
+      number | null | undefined
+    >;
+    const allNull = predictTakeitScore(bundle, [null, null]);
+    expect(allNull).toEqual({ prob_raw: 0.75, prob_calibrated: 0.625 });
+    expect(predictTakeitScore(bundle, featuresFromRow(bundle, row))).toEqual(
+      allNull,
+    );
+  });
 
   it('treats base_score as a probability and converts it to a logit', () => {
     // logit(0.75) = ln 3, plus a 0-weight tree, gives sigmoid(ln 3) = 0.75.
@@ -631,6 +792,33 @@ describe('predictTakeitScore', () => {
       'base_score not finite: garbage',
     );
   });
+
+  it.each([
+    // An empty split_conditions makes walkTree return an undefined leaf
+    // value, and the sum becomes NaN. assertBundleCompat rejects this tree at
+    // load; this is the scorer's own guard for a bundle that skipped
+    // validation.
+    [
+      'an empty split_conditions',
+      [{ ...leaf(0), split_conditions: [] }],
+      'NaN',
+    ],
+    // Finite leaves whose sum overflows float64.
+    ['leaves summing past +MAX_VALUE', [leaf(1e308), leaf(1e308)], 'Infinity'],
+    [
+      'leaves summing past -MAX_VALUE',
+      [leaf(-1e308), leaf(-1e308)],
+      '-Infinity',
+    ],
+  ])(
+    'throws BundleSchemaError when the summed logit is not finite: %s',
+    (_label, trees, logit) => {
+      expectBundleSchemaError(
+        () => predictTakeitScore(bundleWithModel('0.5', trees), [1, 1]),
+        `logit not finite: ${logit}`,
+      );
+    },
+  );
 
   it('propagates a categorical-split refusal from any tree', () => {
     const bundle = bundleWithModel('0.5', [

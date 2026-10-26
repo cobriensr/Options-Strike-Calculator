@@ -50,7 +50,11 @@ function mockBundle(version: string): TakeitBundle {
         },
       },
     },
-    isotonic: { x_thresholds: [0, 1], y_thresholds: [0, 1] },
+    isotonic: {
+      x_thresholds: [0, 1],
+      y_thresholds: [0, 1],
+      out_of_bounds: 'clip',
+    },
   };
 }
 

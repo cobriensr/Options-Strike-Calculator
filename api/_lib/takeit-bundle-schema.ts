@@ -5,15 +5,44 @@
 import { z } from 'zod';
 import { BundleSchemaError } from './takeit-score.js';
 
-const XGBTreeSchema = z.object({
-  left_children: z.array(z.number()),
-  right_children: z.array(z.number()),
-  split_indices: z.array(z.number()),
-  split_conditions: z.array(z.number()),
-  default_left: z.array(z.number()),
-  base_weights: z.array(z.number()),
-  split_type: z.array(z.number()).optional(),
-});
+// Per-node arrays other than left_children, which sets the node count.
+const PER_NODE_ARRAYS = [
+  'right_children',
+  'split_indices',
+  'split_conditions',
+  'default_left',
+  'base_weights',
+  'split_type',
+] as const;
+
+// Node i is read from index i of every array, so a short array reads
+// undefined: an undefined split_conditions entry scores as NaN at a leaf
+// (where it holds the leaf value) and, like an undefined default_left, sends
+// every value right at a split. The issue names the first short array and
+// both lengths, so a Sentry event can be triaged without the bundle.
+const XGBTreeSchema = z
+  .object({
+    left_children: z.array(z.number()),
+    right_children: z.array(z.number()),
+    split_indices: z.array(z.number()),
+    split_conditions: z.array(z.number()),
+    default_left: z.array(z.number()),
+    base_weights: z.array(z.number()),
+    split_type: z.array(z.number()).optional(),
+  })
+  .superRefine((t, ctx) => {
+    const nodes = t.left_children.length;
+    for (const key of PER_NODE_ARRAYS) {
+      const arr = t[key];
+      if (arr !== undefined && arr.length !== nodes) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `${key} length ${arr.length} != left_children length ${nodes}`,
+        });
+        return;
+      }
+    }
+  });
 
 const IsotonicSplineSchema = z
   .object({
@@ -62,9 +91,10 @@ export type TakeitBundleValidated = z.infer<typeof TakeitBundleSchema>;
 
 /**
  * Validate a parsed JSON object against the TakeitBundle schema. Throws
- * BundleSchemaError with a useful message on any deviation; that error is
- * caught by the bundle loader, captured to Sentry, and falls back to the
- * cached prior bundle (if any) or null.
+ * BundleSchemaError with a useful message on any deviation. getBundle
+ * captures it to Sentry and rethrows (fail closed, no cached fallback);
+ * loadTakeitDetectContext captures it again and returns null, so the cron
+ * writes takeit_prob = NULL.
  */
 export function validateBundle(raw: unknown): TakeitBundleValidated {
   const result = TakeitBundleSchema.safeParse(raw);

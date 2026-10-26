@@ -8,9 +8,13 @@
  *     sigmoid'd to a logit before adding tree outputs).
  *   - learner.gradient_booster.model.trees[] — for each tree:
  *       left_children, right_children (-1, -1 means leaf)
- *       split_indices, split_conditions (feature index + threshold)
+ *       split_indices (feature index at a split node)
+ *       split_conditions (threshold at a split node; the leaf value at a leaf)
  *       default_left (NaN routing, 1 = left, 0 = right)
- *       base_weights (leaf value at each node)
+ *       base_weights (not read here. It equals the leaf value at leaves hist
+ *         or approx creates by splitting, which is every leaf in today's
+ *         bundles, but not at any tree_method='exact' leaf or at the lone
+ *         leaf of a tree that never split, whatever gamma is)
  *   - isotonic.x_thresholds, isotonic.y_thresholds (piecewise-linear knots)
  *
  * Prediction:
@@ -20,7 +24,8 @@
  *
  * The parity test in api/__tests__/takeit-score.parity.test.ts gates this:
  * every TS prediction must match the Python prediction within 1e-6 on 50
- * production rows. Any divergence fails the build.
+ * production rows. Any divergence fails the local parity run; it skips on
+ * CI, where the gitignored bundles are absent.
  */
 
 import { validateBundle } from './takeit-bundle-schema.js';
@@ -100,18 +105,24 @@ export class BundleSchemaError extends Error {
 }
 
 /**
- * Throws BundleSchemaError if the bundle's XGBoost JSON schema isn't in our
- * supported set. Phase 3 spec resolved decision #6: silent miscompute is
- * worse than visibly stuck — fail closed and alert.
+ * Throws BundleSchemaError if the bundle fails the Zod schema, its XGBoost
+ * JSON schema isn't in our supported set, or its isotonic spline isn't in
+ * 'clip' mode. Phase 3 spec resolved decision #6: silent miscompute is worse
+ * than visibly stuck — fail closed and alert.
  */
-export function assertBundleCompat(
-  bundle: TakeitBundle,
-  supported: ReadonlySet<string> = SUPPORTED_XGB_JSON_SCHEMAS,
-): void {
+export function assertBundleCompat(bundle: TakeitBundle): void {
   validateBundle(bundle);
-  if (!supported.has(bundle.xgb_json_schema)) {
+  if (!SUPPORTED_XGB_JSON_SCHEMAS.has(bundle.xgb_json_schema)) {
     throw new BundleSchemaError(
-      `unsupported xgb_json_schema=${bundle.xgb_json_schema} (supported: ${[...supported].join(',')})`,
+      `unsupported xgb_json_schema=${bundle.xgb_json_schema} (supported: ${[...SUPPORTED_XGB_JSON_SCHEMAS].join(',')})`,
+    );
+  }
+  // applyIsotonic only clips. sklearn's default is 'nan', so an absent value
+  // is refused too; export_model.py always writes it.
+  const outOfBounds = bundle.isotonic.out_of_bounds;
+  if (outOfBounds !== 'clip') {
+    throw new BundleSchemaError(
+      `unsupported isotonic.out_of_bounds=${String(outOfBounds)} (supported: clip)`,
     );
   }
 }
@@ -154,10 +165,10 @@ export function parseBaseScore(rawBaseScore: string): number {
 /* ──────────────────────── Tree traversal ────────────────────────── */
 
 /**
- * Walk one XGBoost tree to its leaf and return the leaf weight.
+ * Walk one XGBoost tree to its leaf and return the leaf value.
  *
  * Direction rule (matches XGBoost C++ src/tree/tree_model.cc):
- *   if isNaN(feature_value): follow default_left[node]
+ *   if feature_value is missing (not a number, or NaN): follow default_left[node]
  *   else if feature_value < split_conditions[node]: go left
  *   else: go right
  *
@@ -180,7 +191,11 @@ export function walkTree(
     const left = tree.left_children[node]!;
     const right = tree.right_children[node]!;
     if (left === LEAF_SENTINEL && right === LEAF_SENTINEL) {
-      return tree.base_weights[node]!;
+      // XGBoost keeps the leaf value in split_conditions. base_weights is not
+      // always the leaf value: tree_method='exact', and any tree that never
+      // splits, store it before the learning rate, e.g. 20x the leaf value
+      // at eta 0.05.
+      return tree.split_conditions[node]!;
     }
     // Categorical splits encode `split_conditions` as a bitset, not a numeric
     // threshold; current bundles have split_type all-0 (numeric only). Fail
@@ -196,7 +211,10 @@ export function walkTree(
     const value = features[featureIdx];
     const threshold = tree.split_conditions[node]!;
     let goLeft: boolean;
-    if (value === null || value === undefined || Number.isNaN(value)) {
+    // Anything but a non-NaN number is missing: null, undefined (vector too
+    // short), NaN, and any non-number from untyped JSON. Never coerce: '5'
+    // is not 5 and true is not 1.
+    if (typeof value !== 'number' || Number.isNaN(value)) {
       goLeft = tree.default_left[node] === 1;
     } else {
       // Match XGBoost's float32-truncated comparison.
@@ -232,6 +250,13 @@ export function predictTakeitScore(
   for (const tree of trees) {
     logit += walkTree(tree, features);
   }
+  // A NaN or infinite logit means a malformed tree (e.g. a missing leaf
+  // value) or an overflowing sum. Neither can come from a real export (leaf
+  // magnitudes are ~0.1); throw rather than return a NaN or saturated
+  // probability.
+  if (!Number.isFinite(logit)) {
+    throw new BundleSchemaError(`logit not finite: ${logit}`);
+  }
   // sklearn isotonic gets a float32 input (XGBoost.predict_proba returns f32).
   // Fround so the parity gate against Python's value is tight.
   const probRaw = Math.fround(sigmoid(logit));
@@ -260,9 +285,13 @@ export function applyIsotonic(spline: IsotonicSpline, x: number): number {
   // and its transform() returns float32. Cast input + knots + output to single
   // precision so the TS interp matches Python's float32 result bit-for-bit.
   const xf = Math.fround(x);
+  // NaN in, NaN out, as sklearn's transform() gives. Without this, NaN fails
+  // both clip checks and the search below, and lands on segment 0.
+  if (Number.isNaN(xf)) return Number.NaN;
   const x0f = Math.fround(xs[0]!);
   const xnf = Math.fround(xs.at(-1)!);
-  // Clip to range — matches sklearn's default `out_of_bounds='clip'`.
+  // Clip to range — matches `out_of_bounds='clip'`, the only mode
+  // assertBundleCompat accepts (sklearn's own default is 'nan').
   if (xf <= x0f) return Math.fround(ys[0]!);
   if (xf >= xnf) return Math.fround(ys.at(-1)!);
   // Binary search for the right segment.
@@ -280,6 +309,10 @@ export function applyIsotonic(spline: IsotonicSpline, x: number): number {
   const x1 = Math.fround(xs[hi]!);
   const y0 = Math.fround(ys[lo]!);
   const y1 = Math.fround(ys[hi]!);
+  // Unreachable: the clip checks leave xs[0] < xf < xs.at(-1), and the
+  // search keeps xs[lo] <= xf < xs[hi], so x1 > x0. NaN, the only input that
+  // could reach it, returns above. Kept as a cheap guard against a
+  // divide-by-zero if the clip checks or the search ever change.
   if (x1 === x0) return y0;
   // Op-by-op fround so each intermediate matches sklearn's float32 chain.
   const dx = Math.fround(xf - x0);
@@ -294,7 +327,7 @@ export function applyIsotonic(spline: IsotonicSpline, x: number): number {
 
 /**
  * Build the feature vector in `bundle.feature_cols` order from a row object.
- * Missing keys become null (treated as NaN by walkTree).
+ * Missing keys become null (treated as missing by walkTree).
  */
 export function featuresFromRow(
   bundle: TakeitBundle,
