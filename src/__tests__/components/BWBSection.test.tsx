@@ -487,10 +487,10 @@ describe('BWBSection', () => {
   });
 
   it('export button does not reload when user declines confirm', async () => {
+    // Safari's chunk-load message, which the old TypeError +
+    // 'dynamically imported' check missed.
     mockExportBWBComparison.mockRejectedValue(
-      new TypeError(
-        'Failed to fetch dynamically imported module: utils/export.js',
-      ),
+      new TypeError('Importing a module script failed.'),
     );
 
     const confirmSpy = vi.spyOn(globalThis, 'confirm').mockReturnValue(false);
@@ -522,6 +522,26 @@ describe('BWBSection', () => {
       writable: true,
       configurable: true,
     });
+  });
+
+  it('export button logs a non-chunk export failure without prompting', async () => {
+    const boom = new Error('boom');
+    mockExportBWBComparison.mockRejectedValue(boom);
+    const confirmSpy = vi.spyOn(globalThis, 'confirm').mockReturnValue(true);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    renderSection();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Export All BWB Widths to Excel' }),
+    );
+
+    await waitFor(() => {
+      expect(errorSpy).toHaveBeenCalledWith('Export failed:', boom);
+    });
+    expect(confirmSpy).not.toHaveBeenCalled();
+
+    confirmSpy.mockRestore();
+    errorSpy.mockRestore();
   });
 
   // ============================================================

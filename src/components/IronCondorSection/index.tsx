@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import type { DeltaRow, CalculationResults } from '../../types';
 import { buildIronCondor } from '../../utils/calculator';
+import { promptReloadOnStaleChunk } from '../../utils/handle-stale-chunk';
 import HedgeSection from '../HedgeSection';
 import LegsTable from './LegsTable';
 import PnLProfileTable from './PnLProfileTable';
@@ -130,18 +131,12 @@ export default function IronCondorSection({
                   }),
                 )
                 .catch((err: unknown) => {
-                  const isChunkError =
-                    err instanceof TypeError &&
-                    err.message.includes('dynamically imported');
-                  if (isChunkError) {
-                    if (
-                      confirm(
-                        'A new version is available. Reload to use the export feature?',
-                      )
-                    ) {
-                      globalThis.location.reload();
-                    }
-                  } else {
+                  if (
+                    !promptReloadOnStaleChunk(
+                      err,
+                      'A new version is available. Reload to use the export feature?',
+                    )
+                  ) {
                     console.error('Export failed:', err);
                   }
                 })
