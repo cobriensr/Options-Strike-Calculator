@@ -158,20 +158,52 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'lcov', 'html', 'json'],
       reportsDirectory: './coverage',
-      // Conservative floors set a few points below current coverage
-      // (~94.8% statements / 87.4% branches / 95.7% functions / 96.5%
-      // lines as of 2026-06-11). These do not fail today but give the
-      // "Tests Are Mandatory" policy a mechanical backstop against
-      // regressions. Raise these as coverage climbs.
+      // Three layers of coverage floors; dropping below any one fails
+      // `npm run review`:
+      // - Global (the four numbers below): aggregate over every file, set
+      //   a few points under current coverage (95.0% statements / 87.7%
+      //   branches / 96.0% functions / 96.7% lines on 2026-10-26).
+      // - Per folder (the glob keys): each is checked as an AGGREGATE over
+      //   the files it matches (perFile is off) and does NOT inherit the
+      //   global numbers, so only branches and lines are checked. Set to
+      //   floor(aggregate) - 1, measured 2026-10-26; the -1 lets one new,
+      //   slightly-under file land without failing its folder. Globs are
+      //   matched by picomatch against repo-relative paths. The endpoints
+      //   key is api/*.ts plus every api/ subfolder except _lib, cron and
+      //   __tests__; `api/!(_lib|cron|__tests__)/**` would be wrong, since
+      //   picomatch's negation there is prefix-only and would also drop a
+      //   future api/cron-foo/. A key that matches no files passes
+      //   silently forever (an empty match's pct is 'Unknown', and
+      //   'Unknown' < 84 is false). So the guard test
+      //   scripts/_lib/coverage-thresholds.test.mjs fails when a key
+      //   matches nothing, when an api/ file is not in exactly one api
+      //   key, when the endpoints key misroutes, or when a floor is added
+      //   or removed or the endpoints key is edited (it expects exactly 6
+      //   keys, 3 under api/, one of them the endpoints key). Rename a
+      //   folder, rename its key; add or remove a folder floor, update
+      //   the 6/3 counts in that test.
+      // - Per file: scripts/check-coverage-floor.mjs (floors in
+      //   scripts/_lib/coverage-floor.mjs), run after vitest because
+      //   `perFile` would turn every threshold here into a per-file one.
+      // Raise any floor by hand after a test pass lands; never lower one
+      // to make a run pass. Spec:
+      // docs/superpowers/specs/coverage-floors-2026-10-26.md.
       thresholds: {
         statements: 90,
         branches: 80,
         functions: 90,
         lines: 90,
+        'api/cron/**': { branches: 84, lines: 95 },
+        'api/_lib/**': { branches: 89, lines: 97 },
+        'api/!({_lib,cron,__tests__}/**)': { branches: 87, lines: 94 },
+        'src/components/**': { branches: 84, lines: 93 },
+        'src/hooks/**': { branches: 85, lines: 96 },
+        'src/utils/**': { branches: 92, lines: 97 },
       },
       include: ['src/**/*.ts', 'src/**/*.tsx', 'api/**/*.ts'],
       exclude: [
         'src/__tests__/**',
+        'api/__tests__/**',
         'api/**/*.{test,spec}.{ts,tsx}',
         'src/vite-env.d.ts',
         'src/types.ts',

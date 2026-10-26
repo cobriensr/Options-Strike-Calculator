@@ -138,7 +138,7 @@ If you're unsure whether a change needs a test: it does. The cost of writing one
 
 **1. Implement** — Write the failing test first (see "Tests Are Mandatory" above), then the code. Investigate first, understand existing patterns, then make changes.
 
-**2. Verify** — Run `npm run review` (which chains `npm run type-check` (tsc for src, api and scripts) `&& eslint . && prettier --write && vite build && vitest run --coverage`). **NEVER report a task as finished without running this full pipeline first.** Running tests on the files you touched is not enough — type errors and lint violations from your changes regularly surface in unrelated files (transitive type narrowing, prettier reformatting, etc.). Fix any failures. If it still fails after 2 fix attempts, proceed to step 3 with the failure details.
+**2. Verify** — Run `npm run review` (which chains `npm run type-check` (tsc for src, api and scripts) `&& eslint . && prettier --write && vite build && vitest run --coverage && node scripts/check-coverage-floor.mjs`). **NEVER report a task as finished without running this full pipeline first.** Running tests on the files you touched is not enough — type errors and lint violations from your changes regularly surface in unrelated files (transitive type narrowing, prettier reformatting, etc.). Fix any failures. If it still fails after 2 fix attempts, proceed to step 3 with the failure details.
 
 **3. Self-Review** — Launch a **reviewer subagent** to evaluate the implementation with fresh eyes. The subagent must:
 
@@ -219,6 +219,7 @@ When adding a migration to `migrateDb()` in `db.ts`, you must also update `api/_
 - **Unit tests** — Vitest with `@testing-library/react`. Frontend tests in `src/__tests__/`, backend tests in `api/__tests__/`.
 - **E2E tests** — Playwright with `@axe-core/playwright` for accessibility. Specs in `e2e/`. Use semantic selectors (`getByRole`, `getByLabel`, `data-testid`).
 - **Coverage** — `npm run test:coverage` for V8 coverage.
+- **Coverage floors** — `npm run review` fails when any file drops below the per-file floor (`FLOORS` in `scripts/_lib/coverage-floor.mjs`, checked from `coverage/lcov.info` by `scripts/check-coverage-floor.mjs`) or any folder's aggregate drops below its glob floor (branches + lines per folder in `vite.config.ts` `coverage.thresholds`). Raise them by hand after a test pass lands; never lower one to make a run pass. A folder glob that matches no files passes silently, so `scripts/_lib/coverage-thresholds.test.mjs` fails on one: rename the key when you rename the folder, and update its key counts when you add or remove a folder floor.
 - Test files must end in `.test.ts` or `.test.tsx` (unit) or `.spec.ts` (e2e).
 - **Cron test pattern** — mock `getDb` via `vi.mocked(getDb)`. Use `mockResolvedValueOnce` in the same sequence as the handler's DB queries. Provide `CRON_SECRET` in `process.env`.
 

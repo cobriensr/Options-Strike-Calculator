@@ -104,7 +104,7 @@ jobs:
         # project's own gate rots (AUD-H5).
         run: npm run audit
 
-      - name: Review (tsc + eslint + prettier + vitest)
+      - name: Review (tsc + eslint + prettier + build + vitest + coverage floors)
         run: npm run review
 
       - name: Build
