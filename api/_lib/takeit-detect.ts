@@ -28,9 +28,14 @@ import {
 
 /**
  * Defense-in-depth sanitizer for numeric scoring inputs. The tree walk
- * routes null via `default_left`; NaN/Infinity would silently propagate
- * to undefined branching. We coerce non-finite numerics to null so the
- * model gets a known "missing" sentinel instead.
+ * already routes null and NaN via `default_left`, but it compares ±Infinity
+ * as a real value, so an infinite feature always takes one side of every
+ * split. XGBoost refuses inf at training (fit/DMatrix: "Input data contains
+ * `inf`"), so the model never saw one; predict_proba would still score it
+ * as a real value, as walkTree does. We coerce every non-finite value (and
+ * any non-number) to null so the model gets its known "missing" routing,
+ * the stored feature record holds no NaN/Infinity, and the count below
+ * shows where bad inputs come from.
  *
  * When rejectedCount > 0, the calling score function (scoreLottery /
  * scoreSilentBoom) fires Sentry.captureMessage at level 'info' with the

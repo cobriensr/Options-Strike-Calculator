@@ -20,8 +20,12 @@
  *     If no cached bundle exists, return null → caller writes
  *     `takeit_prob = NULL`; the heuristic score still lands.
  *   - Bundle fetch fails → same as above.
- *   - Schema check fails (`xgb_json_schema` not in supported set) → THROW.
- *     Silent miscompute is worse than visibly stuck.
+ *   - assertBundleCompat rejects the bundle → THROW. It checks the Zod
+ *     structure (including equal per-node tree array lengths), that
+ *     `xgb_json_schema` is in the supported set, and that
+ *     `isotonic.out_of_bounds` is 'clip'. Silent miscompute is worse than
+ *     visibly stuck. Separately, the scorer throws per row on a non-finite
+ *     logit; the detect crons catch that and write a NULL probability.
  */
 
 import { list } from '@vercel/blob';
@@ -141,7 +145,7 @@ async function fetchBundleByPath(blobPath: string): Promise<TakeitBundle> {
     );
   }
   const bundle = (await res.json()) as TakeitBundle;
-  assertBundleCompat(bundle); // throws BundleSchemaError if version mismatch
+  assertBundleCompat(bundle); // throws BundleSchemaError on any failed check
   return bundle;
 }
 
@@ -149,8 +153,12 @@ async function fetchBundleByPath(blobPath: string): Promise<TakeitBundle> {
  * Return the current bundle for `alertType`, or `null` if no bundle is
  * available and none is cached (fail-open path).
  *
- * Throws BundleSchemaError when a freshly fetched bundle declares an
- * unsupported xgb_json_schema — that's the only fail-closed condition.
+ * Throws BundleSchemaError when a freshly fetched bundle fails
+ * assertBundleCompat: bad Zod structure (including unequal per-node tree
+ * array lengths), an unsupported xgb_json_schema, or an
+ * isotonic.out_of_bounds other than 'clip'. Those are the only fail-closed
+ * conditions here; the scorer's non-finite-logit guard fails per row, not
+ * per bundle.
  */
 export async function getBundle(
   alertType: AlertType,

@@ -19,7 +19,11 @@ Bundle layout (single JSON file):
           "TOP_N_TICKERS": 15
       },
       "xgb_model": { ...XGBoost native JSON dump... },
-      "isotonic": { "x_thresholds": [...], "y_thresholds": [...] },
+      "isotonic": {                          # piecewise-linear knots; the TS
+          "x_thresholds": [...],             # scorer only accepts "clip"
+          "y_thresholds": [...],             # (train.py fits with it)
+          "out_of_bounds": "clip"
+      },
       "metrics_snapshot": {
           "oof_auc": 0.6991, "oof_auc_no_score": 0.7017,
           "heuristic_oof_auc": 0.6137, "oof_brier": 0.205,
@@ -28,10 +32,12 @@ Bundle layout (single JSON file):
     }
 
 The TS scorer's contract:
-- read bundle, assert xgb_json_schema matches its supported set, else fail closed.
+- read bundle, assert xgb_json_schema matches its supported set and
+  isotonic.out_of_bounds is "clip", else fail closed.
 - one-hot input row using categorical_cols + top_tickers.
 - walk every tree in xgb_model.learner.gradient_booster.model.trees.
-- sum leaf logits, apply sigmoid, apply isotonic piecewise-linear interp.
+- sum leaf logits (each leaf's value is its split_conditions entry, not
+  base_weights), apply sigmoid, apply isotonic piecewise-linear interp.
 """
 
 from __future__ import annotations
