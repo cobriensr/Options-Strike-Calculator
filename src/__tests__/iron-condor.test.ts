@@ -490,6 +490,37 @@ describe('calcThetaCurve', () => {
     expect(curve).toHaveLength(0);
   });
 
+  // ── M3: thetaPerHour is a per-hour rate, not a per-step loss ──
+
+  it.each([
+    { type: 'put', sig: 0.15, dist: 60, marketHours: 6.5 },
+    { type: 'call', sig: 0.15, dist: 60, marketHours: 6.5 },
+    { type: 'put', sig: 0.2, dist: 100, marketHours: 6.5 },
+    { type: 'put', sig: 0.15, dist: 60, marketHours: 3.5 },
+    { type: 'call', sig: 0.25, dist: 80, marketHours: 3.5 },
+  ] as const)(
+    'thetaPerHour is the share of open premium lost per hour ($type, σ $sig, $dist pts, $marketHours h)',
+    ({ type, sig, dist, marketHours }) => {
+      const curve = calcThetaCurve(spot, sig, dist, type, marketHours);
+      expect(curve.length).toBeGreaterThan(2);
+      expect(curve[0]!.thetaPerHour).toBe(0);
+
+      for (let i = 1; i < curve.length; i++) {
+        const prev = curve[i - 1]!;
+        const row = curve[i]!;
+        const elapsed = prev.hoursRemaining - row.hoursRemaining;
+        expect(elapsed).toBe(0.5);
+        const expected = (prev.premiumPct - row.premiumPct) / elapsed;
+        // premiumPct and thetaPerHour are each rounded to 0.1, so the
+        // rate derived from two rounded pcts can differ from the reported
+        // rate by up to (0.05 + 0.05) / 0.5 + 0.05 = 0.25.
+        expect(Math.abs(row.thetaPerHour - expected)).toBeLessThanOrEqual(
+          0.25 + 1e-9,
+        );
+      }
+    },
+  );
+
   // ── FE-MATH-006: marketHours parameter ─────────────────────────
 
   it('FE-MATH-006: defaults to a 6.5h grid (13 entries)', () => {

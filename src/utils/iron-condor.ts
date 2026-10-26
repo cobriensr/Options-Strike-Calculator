@@ -318,6 +318,8 @@ export function buildIronCondor(
  * Computes the theta decay curve for a given OTM option across the trading day.
  * Returns an array of { hoursRemaining, premiumPct, thetaPerHour } objects
  * showing what % of the at-open premium remains at each hour.
+ * `thetaPerHour` is the % of at-open premium lost per hour over the
+ * 0.5h step ending at that row (0 on the first row).
  *
  * This helps determine optimal entry timing:
  * - Enter too early: sit through high-range morning with low theta
@@ -373,8 +375,10 @@ export function calcThetaCurve(
     const pct = Math.round((premium / openPremium) * 1000) / 10; // e.g. 85.3%
     const decay = prevPremium - premium;
     const elapsed = prevHours - h;
+    // % of open premium lost per hour over the step that ends at `h`.
+    // Each step is 0.5h, so the step's loss is divided by `elapsed`.
     const thetaPerHour =
-      elapsed > 0 ? Math.round((decay / openPremium) * 1000) / 10 : 0;
+      elapsed > 0 ? Math.round((decay / openPremium / elapsed) * 1000) / 10 : 0;
 
     result.push({ hoursRemaining: h, premiumPct: pct, thetaPerHour });
 

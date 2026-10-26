@@ -11,18 +11,18 @@ import { calcThetaCurve } from '../../utils/calculator';
 
 const mockCurve = [
   { hoursRemaining: 6.5, premiumPct: 100, thetaPerHour: 0 },
-  { hoursRemaining: 6, premiumPct: 91.2, thetaPerHour: 8.8 },
-  { hoursRemaining: 5.5, premiumPct: 82.1, thetaPerHour: 9.1 },
-  { hoursRemaining: 5, premiumPct: 72.5, thetaPerHour: 9.6 },
-  { hoursRemaining: 4.5, premiumPct: 62.3, thetaPerHour: 10.2 },
-  { hoursRemaining: 4, premiumPct: 51.8, thetaPerHour: 10.5 },
-  { hoursRemaining: 3.5, premiumPct: 41.0, thetaPerHour: 10.8 },
-  { hoursRemaining: 3, premiumPct: 30.5, thetaPerHour: 10.5 },
-  { hoursRemaining: 2.5, premiumPct: 21.0, thetaPerHour: 9.5 },
-  { hoursRemaining: 2, premiumPct: 13.0, thetaPerHour: 8.0 },
-  { hoursRemaining: 1.5, premiumPct: 7.0, thetaPerHour: 6.0 },
-  { hoursRemaining: 1, premiumPct: 3.0, thetaPerHour: 4.0 },
-  { hoursRemaining: 0.5, premiumPct: 0.8, thetaPerHour: 2.2 },
+  { hoursRemaining: 6, premiumPct: 91.2, thetaPerHour: 17.6 },
+  { hoursRemaining: 5.5, premiumPct: 82.1, thetaPerHour: 18.2 },
+  { hoursRemaining: 5, premiumPct: 72.5, thetaPerHour: 19.2 },
+  { hoursRemaining: 4.5, premiumPct: 62.3, thetaPerHour: 20.4 },
+  { hoursRemaining: 4, premiumPct: 51.8, thetaPerHour: 21.0 },
+  { hoursRemaining: 3.5, premiumPct: 41.0, thetaPerHour: 21.6 },
+  { hoursRemaining: 3, premiumPct: 30.5, thetaPerHour: 21.0 },
+  { hoursRemaining: 2.5, premiumPct: 21.0, thetaPerHour: 19.0 },
+  { hoursRemaining: 2, premiumPct: 13.0, thetaPerHour: 16.0 },
+  { hoursRemaining: 1.5, premiumPct: 7.0, thetaPerHour: 12.0 },
+  { hoursRemaining: 1, premiumPct: 3.0, thetaPerHour: 8.0 },
+  { hoursRemaining: 0.5, premiumPct: 0.8, thetaPerHour: 4.4 },
 ];
 
 function defaultProps(
@@ -96,7 +96,7 @@ describe('ThetaDecayChart', () => {
 
   it('shows peak theta value from curve', () => {
     render(<ThetaDecayChart {...defaultProps()} />);
-    expect(screen.getByText('10.8%')).toBeInTheDocument();
+    expect(screen.getByText('21.6%')).toBeInTheDocument();
     expect(screen.getByText('@ 3.5h')).toBeInTheDocument();
   });
 
@@ -148,12 +148,12 @@ describe('ThetaDecayChart', () => {
     // Under the old hardcoded-6.5 logic this would have shown the marker.
     const halfDayCurve = [
       { hoursRemaining: 3.5, premiumPct: 100, thetaPerHour: 0 },
-      { hoursRemaining: 3, premiumPct: 80, thetaPerHour: 20 },
-      { hoursRemaining: 2.5, premiumPct: 60, thetaPerHour: 20 },
-      { hoursRemaining: 2, premiumPct: 42, thetaPerHour: 18 },
-      { hoursRemaining: 1.5, premiumPct: 26, thetaPerHour: 16 },
-      { hoursRemaining: 1, premiumPct: 12, thetaPerHour: 14 },
-      { hoursRemaining: 0.5, premiumPct: 3, thetaPerHour: 9 },
+      { hoursRemaining: 3, premiumPct: 80, thetaPerHour: 40 },
+      { hoursRemaining: 2.5, premiumPct: 60, thetaPerHour: 40 },
+      { hoursRemaining: 2, premiumPct: 42, thetaPerHour: 36 },
+      { hoursRemaining: 1.5, premiumPct: 26, thetaPerHour: 32 },
+      { hoursRemaining: 1, premiumPct: 12, thetaPerHour: 28 },
+      { hoursRemaining: 0.5, premiumPct: 3, thetaPerHour: 18 },
     ];
     vi.mocked(calcThetaCurve).mockReturnValue(halfDayCurve);
     const { container } = render(
@@ -172,12 +172,12 @@ describe('ThetaDecayChart', () => {
     // hoursRemaining = 2 is in range for a 3.5h half-day session
     const halfDayCurve = [
       { hoursRemaining: 3.5, premiumPct: 100, thetaPerHour: 0 },
-      { hoursRemaining: 3, premiumPct: 80, thetaPerHour: 20 },
-      { hoursRemaining: 2.5, premiumPct: 60, thetaPerHour: 20 },
-      { hoursRemaining: 2, premiumPct: 42, thetaPerHour: 18 },
-      { hoursRemaining: 1.5, premiumPct: 26, thetaPerHour: 16 },
-      { hoursRemaining: 1, premiumPct: 12, thetaPerHour: 14 },
-      { hoursRemaining: 0.5, premiumPct: 3, thetaPerHour: 9 },
+      { hoursRemaining: 3, premiumPct: 80, thetaPerHour: 40 },
+      { hoursRemaining: 2.5, premiumPct: 60, thetaPerHour: 40 },
+      { hoursRemaining: 2, premiumPct: 42, thetaPerHour: 36 },
+      { hoursRemaining: 1.5, premiumPct: 26, thetaPerHour: 32 },
+      { hoursRemaining: 1, premiumPct: 12, thetaPerHour: 28 },
+      { hoursRemaining: 0.5, premiumPct: 3, thetaPerHour: 18 },
     ];
     vi.mocked(calcThetaCurve).mockReturnValue(halfDayCurve);
     const { container } = render(
@@ -199,12 +199,12 @@ describe('ThetaDecayChart', () => {
     // remaining → ET clock 10a..12p (closeHour 13 - hoursRemaining).
     const halfDayCurve = [
       { hoursRemaining: 3.5, premiumPct: 100, thetaPerHour: 0 },
-      { hoursRemaining: 3, premiumPct: 80, thetaPerHour: 20 },
-      { hoursRemaining: 2.5, premiumPct: 60, thetaPerHour: 20 },
-      { hoursRemaining: 2, premiumPct: 42, thetaPerHour: 18 },
-      { hoursRemaining: 1.5, premiumPct: 26, thetaPerHour: 16 },
-      { hoursRemaining: 1, premiumPct: 12, thetaPerHour: 14 },
-      { hoursRemaining: 0.5, premiumPct: 3, thetaPerHour: 9 },
+      { hoursRemaining: 3, premiumPct: 80, thetaPerHour: 40 },
+      { hoursRemaining: 2.5, premiumPct: 60, thetaPerHour: 40 },
+      { hoursRemaining: 2, premiumPct: 42, thetaPerHour: 36 },
+      { hoursRemaining: 1.5, premiumPct: 26, thetaPerHour: 32 },
+      { hoursRemaining: 1, premiumPct: 12, thetaPerHour: 28 },
+      { hoursRemaining: 0.5, premiumPct: 3, thetaPerHour: 18 },
     ];
     vi.mocked(calcThetaCurve).mockReturnValue(halfDayCurve);
     render(
