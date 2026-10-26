@@ -1092,7 +1092,9 @@ describe('fetch-spx-candles-1m handler', () => {
     expect(sentTimestamps('SPX')).toEqual(['2026-03-24T14:32:00.000Z']);
   });
 
-  it('a data quality COUNT failure after a good write fails the symbol but keeps its stored count', async () => {
+  it('a data quality COUNT failure after a good write is reported but does not fail the symbol', async () => {
+    // The rows already landed; the COUNT only feeds an all-zero-volume
+    // alert, so it must not turn a stored symbol into a failure.
     uwReturns({ SPY: [forming(), ...closedRun(11)] });
     const qcErr = new Error('Neon: QC count timed out');
     mockSql.mockResolvedValueOnce([]).mockRejectedValueOnce(qcErr);
@@ -1100,15 +1102,45 @@ describe('fetch-spx-candles-1m handler', () => {
     const res = mockResponse();
     await handler(AUTHORIZED_REQ(), res);
 
+    expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
-      status: 'partial',
+      status: 'ok',
+      success: true,
+      failureCount: 0,
+      stored: 11,
       totalStored: 12,
-      spx: { stored: 11, reason: 'Neon: QC count timed out' },
+      spx: { stored: 11 },
       ndx: { stored: 1 },
     });
+    expect((res._json as { spx: { reason?: string } }).spx.reason).toBe(
+      undefined,
+    );
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
     expect(Sentry.captureException).toHaveBeenCalledWith(qcErr, {
-      tags: { symbol: 'SPX' },
+      tags: { symbol: 'SPX', step: 'data_quality' },
     });
+    expect(mockCheckDataQuality).not.toHaveBeenCalled();
+  });
+
+  it('data quality COUNT failures on both symbols still report ok, not a 500', async () => {
+    uwReturns({
+      SPY: [forming(), ...closedRun(11)],
+      QQQ: [forming(), ...closedRun(11)],
+    });
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error('QC SPX'))
+      .mockRejectedValueOnce(new Error('QC NDX'));
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'ok',
+      totalStored: 22,
+    });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(2);
   });
 
   // ── Malformed payload ─────────────────────────────────────

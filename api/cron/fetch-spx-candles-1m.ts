@@ -65,9 +65,11 @@
  *
  * Failures surface: a missing Schwab ratio, a UW error, an empty payload
  * (abnormal inside the gated window, which `date=today` fills with
- * pre-market bars from 04:00 ET), a DB reject, or a failed data-quality
- * COUNT fails that symbol (one Sentry exception each, tagged with the
- * symbol). The run reports 'partial' when one symbol fails and 'error'
+ * pre-market bars from 04:00 ET) or a DB reject fails that symbol (one
+ * Sentry exception each, tagged with the symbol). A failed data-quality
+ * COUNT after a good write is a Sentry exception tagged
+ * step=data_quality, but the symbol still counts as landed because its
+ * rows are stored. The run reports 'partial' when one symbol fails and 'error'
  * when both do; 'ok' means both landed. 'error' responds 500, which turns
  * the Sentry cron monitor red (withCronCheckin keys its check-in on the
  * HTTP status). A failed HWM read is a crash: 500, Sentry, Axiom 'error'.
@@ -525,7 +527,16 @@ async function ingestIndex(
     (r) => r.spx_schwab_price != null || r.ndx_schwab_price != null,
   );
 
-  if (result.stored > 10) await checkStoredQuality(sql, config, today);
+  if (result.stored > 10) {
+    // Monitoring only: the rows already landed, so a failed COUNT is
+    // reported on its own and does not fail the symbol.
+    await checkStoredQuality(sql, config, today).catch((err: unknown) => {
+      logger.warn({ err, symbol }, 'fetch-spx-candles-1m: data quality failed');
+      Sentry.captureException(err, {
+        tags: { symbol, step: 'data_quality' },
+      });
+    });
+  }
 }
 
 /** 'ok' when every symbol landed; the historical Axiom value for success. */
