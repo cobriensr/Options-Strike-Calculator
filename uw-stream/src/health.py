@@ -169,6 +169,7 @@ async def metrics(request: web.Request) -> web.Response:
                 "drop_count": h.drop_count,
                 "write_attempted": h.write_attempted,
                 "write_count": h.write_count,
+                "lost_rows": h.lost_rows,
             }
             for name, h in state.handlers.items()
         },

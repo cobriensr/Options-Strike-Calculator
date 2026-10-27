@@ -720,6 +720,48 @@ async def test_safe_flush_falls_back_to_len_when_flush_returns_none():
 
 
 @pytest.mark.asyncio
+async def test_flush_failure_counts_lost_rows():
+    """A flush that raises (after the db retries are spent) loses its rows.
+    ``lost_rows`` counts them, so /metrics and the drop reporter can show a
+    stalled Neon. A dedup skip (fewer rows written than attempted) is not a
+    loss and must not count.
+    """
+    from handlers.base import Handler
+    from state import state
+
+    state.handlers.clear()
+
+    class _Handler(Handler):
+        def __init__(self) -> None:
+            super().__init__(name="lost-rows-test")
+            self.fail = False
+
+        def _transform(self, payload: dict) -> tuple | None:
+            return (payload.get("seq"),)
+
+        async def _flush(self, rows: list[tuple]) -> int:
+            if self.fail:
+                raise TimeoutError("command_timeout")
+            return len(rows) - 1  # one ON CONFLICT skip
+
+    h = _Handler()
+    metrics = state.handlers[h.name]
+    try:
+        await h._safe_flush([(1,), (2,), (3,)])
+        assert metrics.lost_rows == 0
+
+        h.fail = True
+        await h._safe_flush([(4,), (5,)])
+        assert metrics.lost_rows == 2
+        await h._safe_flush([(6,)])
+        assert metrics.lost_rows == 3
+        assert metrics.write_attempted == 6
+        assert metrics.write_count == 2
+    finally:
+        state.handlers.clear()
+
+
+@pytest.mark.asyncio
 async def test_safe_flush_attempted_increments_even_when_flush_raises():
     """If ``_flush`` raises, ``write_attempted`` must still bump (we
     tried), but ``write_count`` must NOT — those rows didn't land.

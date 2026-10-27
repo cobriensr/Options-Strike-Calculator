@@ -500,6 +500,12 @@ async def test_metrics_reports_handler_counters_under_handlers(
     await h.enqueue({"seq": 2})  # queue full → drop_newest → drop_count 1
     await h._safe_flush([(1,), (2,), (3,)])  # attempted 3, written 2
 
+    async def _neon_down(**_kwargs) -> int:
+        raise TimeoutError("command_timeout")
+
+    monkeypatch.setattr(db, "bulk_insert_ignore_conflict", _neon_down)
+    await h._safe_flush([(4,), (5,)])  # attempted 5, written 2, lost 2
+
     resp = await metrics(_StubRequest({"X-Metrics-Token": _TOKEN}))  # type: ignore[arg-type]
     body = await _read_json(resp)
 
@@ -508,8 +514,9 @@ async def test_metrics_reports_handler_counters_under_handlers(
         "net_flow": {
             "queue_depth": 1,
             "drop_count": 1,
-            "write_attempted": 3,
+            "write_attempted": 5,
             "write_count": 2,
+            "lost_rows": 2,
         },
     }
     assert body["channels"] == {
@@ -575,6 +582,7 @@ async def test_metrics_lists_constructed_handler_with_zeroed_counters(
             "drop_count": 0,
             "write_attempted": 0,
             "write_count": 0,
+            "lost_rows": 0,
         },
     }
     assert body["channels"] == {}

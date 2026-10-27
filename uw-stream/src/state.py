@@ -60,12 +60,19 @@ class HandlerMetrics:
     The delta is the aggregation ratio, NOT a dedup or failure rate, and
     a ~99% apparent "failure" there is the normal steady state. Judge
     that handler by ``write_count`` and its channel's ``last_message_ts``.
+
+    ``lost_rows`` counts the rows of every flush that ultimately failed
+    (``_flush`` raised once the db retries were spent), so a dedup skip
+    never counts. With ``drop_count`` it is the total the handler lost.
+    For ``futures_trades`` it counts the prints in the failed batch,
+    which overstates the bars actually lost.
     """
 
     queue_depth: int = 0
     drop_count: int = 0
     write_attempted: int = 0
     write_count: int = 0
+    lost_rows: int = 0
 
 
 @dataclass

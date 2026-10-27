@@ -356,7 +356,8 @@ class Handler(ABC):
         ``_flush`` returned — the rows the database actually accepted —
         when the subclass returns an int; otherwise it falls back to
         ``len(rows)`` so legacy subclasses without a return value are
-        unaffected.
+        unaffected. A flush that raises adds ``len(rows)`` to
+        ``lost_rows``: those rows are not retried after this.
         """
         try:
             # Inside the try so a hypothetical state.handler() failure
@@ -368,6 +369,7 @@ class Handler(ABC):
             written = inserted if isinstance(inserted, int) else len(rows)
             state.handler(self.name).write_count += written
         except Exception as exc:
+            state.handler(self.name).lost_rows += len(rows)
             capture_exception(
                 exc,
                 tags={"component": "handler", "channel": self.name, "stage": "flush"},
