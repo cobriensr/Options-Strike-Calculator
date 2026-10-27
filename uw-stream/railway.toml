@@ -13,8 +13,8 @@ restartPolicyMaxRetries = 10
 # tests/test_handlers.py::test_drain_deadline_fits_railway_draining_seconds
 # pins that arithmetic. Railway stops reading railway.toml on 2026-12-01
 # (Config as Code is deprecated). Before then, move this setting to the
-# RAILWAY_DEPLOYMENT_DRAINING_SECONDS=40 service variable or the dashboard
-# (Settings -> Deploy -> Draining time); see docs/superpowers/specs/
+# RAILWAY_DEPLOYMENT_DRAINING_SECONDS=40 service variable or the service's
+# Settings pane in the dashboard; see docs/superpowers/specs/
 # review-remediation-2026-10-26.md, phase 3.14.
 drainingSeconds = 40
 # NOTE: healthcheckPath is intentionally UNSET. /healthz reports
