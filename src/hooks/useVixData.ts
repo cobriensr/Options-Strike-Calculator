@@ -18,9 +18,13 @@ export type OHLCField = 'smart' | 'open' | 'high' | 'low' | 'close';
 /**
  * Whether the date's daily VIX goes in the VIX field. VIX mode prices
  * strikes off it. On a past date DIRECT mode needs it too, for regime
- * analysis, since today's live VIX must not stand in for that date's. On
- * a past date with intraday history, useAutoFill then writes the
- * snapshot's VIX at the selected time over it.
+ * analysis, since today's live VIX must not stand in for that date's. So
+ * on a past date it is true in both modes, and a mode toggle there
+ * rewrites nothing. On a past date with intraday history, useAutoFill
+ * writes the snapshot's VIX at the selected time over it, but only on a
+ * change that re-runs its history effect too: the date, the time or the
+ * date's VIX OHLC. A pick of the OHLC field re-runs only this hook's
+ * effects, so the picked field shows.
  */
 function fillsDailyVix(ivMode: IVMode, selectedDate: string): boolean {
   return (
@@ -58,6 +62,11 @@ export function useVixData(
     new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' }),
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // The effects below key on this, not on ivMode: on a past date a mode
+  // toggle leaves it true, so it re-runs neither effect.
+  const fillsDaily = fillsDailyVix(ivMode, selectedDate);
+  // The date the re-apply effect last ran for (see that effect).
+  const reapplyDate = useRef(selectedDate);
 
   // Mirror the latest committed VIX map so handleFileUpload (whose deps are
   // [] so it stays referentially stable) can merge against the current data
@@ -104,7 +113,7 @@ export function useVixData(
     const entry = vixData[selectedDate];
     if (entry) {
       setVixOHLC(entry);
-      if (vixOHLCField === 'smart' && fillsDailyVix(ivMode, selectedDate)) {
+      if (vixOHLCField === 'smart' && fillsDaily) {
         // DST-safe CT→ET conversion (see FE-STATE-004 + follow-up).
         // The ~1-hour spring-forward window each March has a real
         // 120-minute offset, not the steady-state 60, so we use
@@ -166,16 +175,22 @@ export function useVixData(
     vixData,
     vixDataLoaded,
     vixOHLCField,
-    ivMode,
+    fillsDaily,
     timezone,
     timeHour,
     timeAmPm,
     setVixInput,
   ]);
 
-  // Re-apply OHLC selection when the OHLC, field, time or date changes
+  // Re-apply OHLC selection when the OHLC, field or time changes
   useEffect(() => {
-    if (!vixOHLC || !fillsDailyVix(ivMode, selectedDate)) return;
+    // Skip the commit in which the date changed. The effect above owns that
+    // change, and vixOHLC here is still the last date's, so writing it would
+    // put the last date's daily VIX on the new date. The new date's vixOHLC
+    // re-runs this effect.
+    const dateChanged = reapplyDate.current !== selectedDate;
+    reapplyDate.current = selectedDate;
+    if (dateChanged || !vixOHLC || !fillsDaily) return;
     if (vixOHLCField === 'smart') {
       // DST-safe CT→ET conversion — same pattern as the selectedDate
       // effect above. See FE-STATE-004 for the DST window rationale.
@@ -193,7 +208,7 @@ export function useVixData(
     timeHour,
     timeAmPm,
     timezone,
-    ivMode,
+    fillsDaily,
     selectedDate,
     setVixInput,
   ]);

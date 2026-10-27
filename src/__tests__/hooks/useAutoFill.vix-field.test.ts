@@ -7,7 +7,7 @@
  * history, the snapshot's VIX at the selected time, which wins.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { useAutoFill } from '../../hooks/useAutoFill';
 import { useVixData } from '../../hooks/useVixData';
@@ -199,11 +199,23 @@ function renderCalculator(initialMode: IVMode) {
     setTimeAmPm: vi.fn(),
     setTimezone: vi.fn(),
   };
-  return renderHook(
+  // Every VIX field write, in order, so a test can assert a value was never
+  // written even when a later write in the same flush replaced it.
+  const vixWrites: string[] = [];
+  const rendered = renderHook(
     ({ historyData }: { historyData: UseHistoryDataReturn }) => {
       const [ivMode, setIvMode] = useState<IVMode>(initialMode);
-      const [vixInput, setVixInput] = useState('');
+      const [vixInput, setVixInputState] = useState('');
       const [directIV, setDirectIVInput] = useState('');
+      const setVixInput = useCallback((v: string) => {
+        vixWrites.push(v);
+        setVixInputState(v);
+      }, []);
+      // The user's mode toggle, the way App's handler makes it.
+      const userSetsIvMode = (mode: IVMode) => {
+        fixed.ivModeEdited.current = true;
+        setIvMode(mode);
+      };
       // 11:30 AM ET: the daily open's half of the session.
       const vix = useVixData(ivMode, '11', 'AM', 'ET', setVixInput);
       const vix1dStatic = useVix1dData();
@@ -223,6 +235,7 @@ function renderCalculator(initialMode: IVMode) {
       });
       return {
         ivMode,
+        userSetsIvMode,
         vixInput,
         directIV,
         vixOHLC: vix.vixOHLC,
@@ -232,6 +245,7 @@ function renderCalculator(initialMode: IVMode) {
     },
     { initialProps: { historyData: NO_HISTORY } },
   );
+  return { ...rendered, vixWrites };
 }
 
 // ============================================================
@@ -310,6 +324,71 @@ describe('the VIX field on a past date (useVixData + useAutoFill)', () => {
 
       expect(result.current.ivMode).toBe(mode);
       expect(result.current.vixInput).toBe('20.50');
+    },
+  );
+
+  it("keeps the snapshot's VIX when the date's history switches VIX mode to DIRECT", async () => {
+    routeFetches();
+    const { result, rerender } = renderCalculator(IV_MODES.VIX);
+    act(() => result.current.setSelectedDate(today));
+
+    // No VIX1D for the date in the table: VIX mode on its daily open.
+    act(() => result.current.setSelectedDate(IN_VIX_TABLE));
+    await waitFor(() => expect(result.current.vix1dLoaded).toBe(true));
+    expect(result.current.ivMode).toBe(IV_MODES.VIX);
+    expect(result.current.vixInput).toBe('25.00');
+
+    // Its intraday history lands, with Schwab VIX1D: DIRECT on it.
+    rerender({ historyData: historyFor(IN_VIX_TABLE, 14.8) });
+    await waitFor(() => expect(result.current.ivMode).toBe(IV_MODES.DIRECT));
+
+    expect(result.current.directIV).toBe('0.1480');
+    expect(result.current.vixInput).toBe('20.50');
+  });
+
+  it("keeps the snapshot's VIX when the user toggles the IV mode on a past date with history", async () => {
+    routeFetches();
+    const { result, rerender } = renderCalculator(IV_MODES.VIX);
+    act(() => result.current.setSelectedDate(today));
+
+    act(() => result.current.setSelectedDate(P1));
+    rerender({ historyData: historyFor(P1, 14.8) });
+    await waitFor(() => expect(result.current.vix1dLoaded).toBe(true));
+    expect(result.current.ivMode).toBe(IV_MODES.DIRECT);
+    expect(result.current.vixInput).toBe('20.50');
+
+    act(() => result.current.userSetsIvMode(IV_MODES.VIX));
+    expect(result.current.ivMode).toBe(IV_MODES.VIX);
+    expect(result.current.vixInput).toBe('20.50');
+
+    act(() => result.current.userSetsIvMode(IV_MODES.DIRECT));
+    expect(result.current.ivMode).toBe(IV_MODES.DIRECT);
+    expect(result.current.vixInput).toBe('20.50');
+  });
+
+  it.each([
+    ['in the table', P2, '23.00'],
+    ['in neither table, once the API answers', IN_NO_TABLE, '27.00'],
+  ] as const)(
+    "never writes the last date's daily VIX on the next past date (%s)",
+    async (_label, next, nextVix) => {
+      const fetches = routeFetches();
+      const { result, vixWrites } = renderCalculator(IV_MODES.VIX);
+      act(() => result.current.setSelectedDate(today));
+
+      act(() => result.current.setSelectedDate(P1));
+      await waitFor(() => expect(result.current.vix1dLoaded).toBe(true));
+      expect(result.current.vixInput).toBe('21.00');
+
+      vixWrites.length = 0;
+      act(() => result.current.setSelectedDate(next));
+      if (next === IN_NO_TABLE) {
+        act(() => fetches.answerVixOhlc(IN_NO_TABLE, 27, 28));
+      }
+      await waitFor(() => expect(result.current.vixInput).toBe(nextVix));
+
+      // P1's daily open never shows on the next date, even for one commit.
+      expect(vixWrites).not.toContain('21.00');
     },
   );
 });
