@@ -8,8 +8,10 @@
  *
  * Hooked up via {@link useIntervalBAAlerts}. Severity drives both the
  * tint and the chime cadence (cadence handled inside the hook). The
- * dismiss button calls the hook's `acknowledge(id)` which POSTs to
- * `/api/interval-ba-alerts-ack` AND stops the repeating chime.
+ * dismiss button calls the hook's `acknowledge(id)`, which stops the
+ * repeating chime and, for the owner, POSTs to the owner-only
+ * `/api/interval-ba-alerts-ack`. A guest dismissal stays local to the
+ * tab (see useIntervalBAAlerts).
  *
  * Mute control: when `muted` is true, the entire stack collapses to a
  * single chip showing the pending count + restore button. Polling keeps

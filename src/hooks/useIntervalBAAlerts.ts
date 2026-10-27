@@ -9,9 +9,10 @@
  *
  * Owner-or-guest — both surfaces (banner + chime + browser notification)
  * fire for any authenticated session. Public (signed-out) visitors get
- * neither the polling nor the banner. Acknowledgement POSTs to
- * /api/interval-ba-alerts-ack which is also owner-or-guest, so guest
- * dismissals persist to the DB the same as the owner's.
+ * neither the polling nor the banner. The acknowledgement POST to
+ * /api/interval-ba-alerts-ack is owner-only: an owner dismissal persists
+ * to the DB, a failed one shows an error toast, and a guest dismissal
+ * stays in this tab's sessionStorage and never calls the API.
  *
  * Mirrors `useAlertPolling` structurally; deviates only on payload shape
  * (IntervalBAAlertRow not MarketAlert), endpoint paths, and chime tone
@@ -25,7 +26,9 @@ import { POLL_INTERVALS } from '../constants';
 import { startChime, stopChime, stopAllChimes } from '../utils/alert-chime';
 import { getAccessMode } from '../utils/auth';
 import { playSweepAlarm } from '../utils/anomaly-sound';
+import { getErrorMessage } from '../utils/error';
 import { usePolling } from './usePolling';
+import { useToast } from './useToast';
 
 /**
  * Chime namespace for this hook. Disjoint from useAlertPolling ("alert") so
@@ -157,6 +160,38 @@ export function formatIntervalBABody(alert: IntervalBAAlert): string {
   return body;
 }
 
+// ── Guest dismissals ───────────────────────────────────────
+
+/**
+ * sessionStorage key for the ids a guest has dismissed in this tab. The
+ * server-side ack is owner-only, so without this a reload would bring a
+ * guest's dismissed alerts (and their chimes) back.
+ */
+const GUEST_DISMISSED_KEY = 'intervalBA:guestDismissed';
+
+function readGuestDismissed(): Set<number> {
+  try {
+    const raw = sessionStorage.getItem(GUEST_DISMISSED_KEY);
+    const ids: unknown = raw ? JSON.parse(raw) : [];
+    return new Set(
+      Array.isArray(ids)
+        ? ids.filter((v): v is number => typeof v === 'number')
+        : [],
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function writeGuestDismissed(ids: Set<number>): void {
+  try {
+    sessionStorage.setItem(GUEST_DISMISSED_KEY, JSON.stringify([...ids]));
+  } catch {
+    // Storage blocked or full: the dismissal still holds in memory for
+    // the life of this page.
+  }
+}
+
 // ── Browser notification ───────────────────────────────────
 
 function showBrowserNotification(alert: IntervalBAAlert): void {
@@ -188,9 +223,15 @@ export function useIntervalBAAlerts(
   // Public visitors (no cookie) skip the poll loop entirely so we don't
   // hammer the endpoint with 401s for signed-out browser tabs.
   const hasSession = getAccessMode() !== 'public';
+  const toast = useToast();
   const [alerts, setAlerts] = useState<IntervalBAAlert[]>([]);
   const lastSeenRef = useRef<string | null>(null);
   const seenIdsRef = useRef<Set<number>>(new Set());
+  // Ids this tab dismissed as a guest; seeded once from sessionStorage.
+  const guestDismissedRef = useRef<Set<number> | null>(null);
+  if (guestDismissedRef.current === null) {
+    guestDismissedRef.current = readGuestDismissed();
+  }
   // Held in a ref so changing `muted` doesn't bust fetchAlerts identity
   // and re-trigger the eager-fetch effect (which would re-chime queued
   // alerts on every mute toggle).
@@ -234,7 +275,10 @@ export function useIntervalBAAlerts(
       lastSeenRef.current = newest;
 
       const fresh = incoming.filter(
-        (a) => !seenIdsRef.current.has(a.id) && !a.acknowledged,
+        (a) =>
+          !seenIdsRef.current.has(a.id) &&
+          !a.acknowledged &&
+          !guestDismissedRef.current?.has(a.id),
       );
 
       for (const a of fresh) seenIdsRef.current.add(a.id);
@@ -287,29 +331,49 @@ export function useIntervalBAAlerts(
   // Recurring poll — gated identically to the eager fetch above.
   usePolling(fetchAlerts, POLL_INTERVALS.ALERTS, [hasSession, marketOpen]);
 
-  const acknowledge = useCallback(async (id: number) => {
-    stopChime(CHIME_NAMESPACE, id);
-    try {
-      const res = await fetch('/api/interval-ba-alerts-ack', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id }),
-      });
-      // Without this guard a 401/403/500 resolves silently — the local
-      // state was being marked acknowledged while the DB row still had
-      // acknowledged=FALSE, so dismissed alerts reappeared on refresh.
-      if (!res.ok) {
-        throw new Error(`ack failed: ${res.status}`);
+  const acknowledge = useCallback(
+    async (id: number) => {
+      stopChime(CHIME_NAMESPACE, id);
+      const markAcknowledged = (): void =>
+        setAlerts((prev) =>
+          prev.map((a) => (a.id === id ? { ...a, acknowledged: true } : a)),
+        );
+
+      // The ack endpoint is owner-only. A guest dismissal stays local.
+      if (getAccessMode() === 'guest') {
+        const dismissed = guestDismissedRef.current ?? new Set<number>();
+        dismissed.add(id);
+        guestDismissedRef.current = dismissed;
+        writeGuestDismissed(dismissed);
+        markAcknowledged();
+        return;
       }
-      setAlerts((prev) =>
-        prev.map((a) => (a.id === id ? { ...a, acknowledged: true } : a)),
-      );
-    } catch {
-      // Best-effort — the alert stays visible so the user notices the
-      // dismiss didn't stick and can retry (or sign back in).
-    }
-  }, []);
+
+      try {
+        const res = await fetch('/api/interval-ba-alerts-ack', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id }),
+        });
+        // Without this guard a 401/403/500 resolves silently — the local
+        // state was being marked acknowledged while the DB row still had
+        // acknowledged=FALSE, so dismissed alerts reappeared on refresh.
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        markAcknowledged();
+      } catch (err) {
+        // The alert stays visible so the dismiss can be retried (or the
+        // owner can sign back in); the toast says why it did not stick.
+        toast.show(
+          `Could not dismiss the alert: ${getErrorMessage(err)}`,
+          'error',
+        );
+      }
+    },
+    [toast],
+  );
 
   const unacknowledgedCount = alerts.filter((a) => !a.acknowledged).length;
 

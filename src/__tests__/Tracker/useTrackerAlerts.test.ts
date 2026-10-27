@@ -13,12 +13,18 @@ import React from 'react';
 import { ToastContext } from '../../hooks/useToast';
 import { useTrackerAlerts } from '../../hooks/useTrackerAlerts';
 import type { TrackerAlert } from '../../components/Tracker/types';
+import { getAccessMode } from '../../utils/auth';
+
+vi.mock('../../utils/auth', () => ({
+  getAccessMode: vi.fn(() => 'owner' as const),
+}));
 
 const fetchMock = vi.fn();
 
 beforeEach(() => {
   fetchMock.mockReset();
   globalThis.fetch = fetchMock as unknown as typeof fetch;
+  vi.mocked(getAccessMode).mockReturnValue('owner');
 });
 
 afterEach(() => {
@@ -252,5 +258,67 @@ describe('useTrackerAlerts — toast onClick wiring', () => {
       ([url]) => typeof url === 'string' && url.endsWith('/ack'),
     );
     expect(ackCall?.[0]).toBe('/api/tracker/alerts/1/ack');
+  });
+});
+
+describe('useTrackerAlerts — ack access and failures', () => {
+  async function mountWithOneAlert(show: Mock) {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ alerts: [makeAlert()], count: 1 }),
+    );
+    const hook = renderHook(() => useTrackerAlerts({ enabled: true }), {
+      wrapper: makeWrapper(show),
+    });
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+    expect(hook.result.current.data).toHaveLength(1);
+    return hook;
+  }
+
+  it('a guest ack drops the alert locally and never calls the API', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('guest');
+    const show = vi.fn();
+    const { result } = await mountWithOneAlert(show);
+
+    await act(async () => {
+      await result.current.ack(1);
+    });
+
+    expect(result.current.data).toHaveLength(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // the unread GET only
+    expect(show).not.toHaveBeenCalled();
+  });
+
+  it('shows an error toast and keeps the alert when the ack returns 401', async () => {
+    const show = vi.fn();
+    const { result } = await mountWithOneAlert(show);
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ error: 'Not authenticated' }, 401),
+    );
+
+    await act(async () => {
+      await result.current.ack(1);
+    });
+
+    expect(show).toHaveBeenCalledWith(
+      'Could not acknowledge the alert: HTTP 401',
+      'error',
+    );
+    expect(result.current.data).toHaveLength(1);
+  });
+
+  it('shows an error toast and keeps the alert when the ack request throws', async () => {
+    const show = vi.fn();
+    const { result } = await mountWithOneAlert(show);
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      await result.current.ack(1);
+    });
+
+    expect(show).toHaveBeenCalledWith(
+      'Could not acknowledge the alert: Failed to fetch',
+      'error',
+    );
+    expect(result.current.data).toHaveLength(1);
   });
 });

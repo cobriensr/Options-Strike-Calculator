@@ -8,6 +8,9 @@
  * The toast handler is opt-in: pass `onToast` to override the default
  * implementation (used by the section to scroll-to-row, and by the
  * tests to assert behavior without coupling to the real Toast portal).
+ *
+ * The ack POST is owner-only. A guest's ack only drops the alert from
+ * local state and never calls the API.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -16,6 +19,7 @@ import type { TrackerAlert } from '../components/Tracker/types.js';
 import { buildAlertToast } from '../components/Tracker/helpers.js';
 import { useToast } from './useToast.js';
 import { usePolling } from './usePolling.js';
+import { getAccessMode } from '../utils/auth.js';
 import { getErrorMessage } from '../utils/error.js';
 
 const POLL_INTERVAL_MS = 30_000;
@@ -54,22 +58,16 @@ export interface UseTrackerAlertsState {
 }
 
 /**
- * Acknowledge an alert via POST /api/tracker/alerts/:id/ack. Failures
- * are swallowed (logged via console.warn) — the user's click should
- * not raise a UI error if the network drops.
+ * Acknowledge an alert via POST /api/tracker/alerts/:id/ack. Throws on a
+ * non-2xx response (e.g. a 401) or a network error; `ack()` shows the
+ * failure as an error toast.
  */
 async function ackAlert(id: number): Promise<void> {
-  try {
-    const res = await fetch(`/api/tracker/alerts/${String(id)}/ack`, {
-      method: 'POST',
-      credentials: 'include',
-    });
-    if (!res.ok) {
-      console.warn(`tracker-alerts ack failed: HTTP ${String(res.status)}`);
-    }
-  } catch (err) {
-    console.warn('tracker-alerts ack threw', err);
-  }
+  const res = await fetch(`/api/tracker/alerts/${String(id)}/ack`, {
+    method: 'POST',
+    credentials: 'include',
+  });
+  if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
 }
 
 export function useTrackerAlerts({
@@ -176,11 +174,26 @@ export function useTrackerAlerts({
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  const ack = useCallback(async (id: number) => {
-    await ackAlert(id);
-    // Optimistically drop the row so the next poll doesn't re-fire it.
-    setData((prev) => prev.filter((a) => a.id !== id));
-  }, []);
+  const ack = useCallback(
+    async (id: number) => {
+      // Acks are owner-only server-side; a guest's ack stays local.
+      if (getAccessMode() !== 'guest') {
+        try {
+          await ackAlert(id);
+        } catch (err) {
+          // The alert stays unread on the server, so keep it in local
+          // state too and tell the user the ack did not stick.
+          toast.show(
+            `Could not acknowledge the alert: ${getErrorMessage(err)}`,
+            'error',
+          );
+          return;
+        }
+      }
+      setData((prev) => prev.filter((a) => a.id !== id));
+    },
+    [toast],
+  );
 
   // Wire the ref so the toast onClick (defined inside refresh) can call
   // the latest `ack` without a circular useCallback dependency.

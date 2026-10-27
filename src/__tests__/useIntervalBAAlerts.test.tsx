@@ -12,6 +12,11 @@ vi.mock('../utils/anomaly-sound', () => ({
   playSweepAlarm: vi.fn(),
 }));
 
+const { toastShow } = vi.hoisted(() => ({ toastShow: vi.fn() }));
+vi.mock('../hooks/useToast', () => ({
+  useToast: () => ({ show: toastShow }),
+}));
+
 // Shorten the poll interval to 30 ms so waitFor() catches the second
 // fetch in <100 ms instead of waiting the production 10 s. Fake timers
 // don't play well with @testing-library/waitFor (it polls via
@@ -197,6 +202,8 @@ describe('useIntervalBAAlerts', () => {
   beforeEach(() => {
     vi.mocked(getAccessMode).mockReturnValue('owner');
     vi.mocked(playSweepAlarm).mockClear();
+    toastShow.mockClear();
+    sessionStorage.clear();
     // Clear the module-level chime dedupe map so alert id=1 in test A
     // doesn't suppress alert id=1 in test B.
     __resetChimesForTests();
@@ -463,6 +470,148 @@ describe('useIntervalBAAlerts', () => {
     await new Promise((r) => setTimeout(r, 100));
     expect(vi.mocked(playSweepAlarm)).not.toHaveBeenCalled();
 
+    unmount();
+  });
+});
+
+describe('useIntervalBAAlerts — dismiss access and failures', () => {
+  beforeEach(() => {
+    vi.mocked(getAccessMode).mockReturnValue('owner');
+    toastShow.mockClear();
+    sessionStorage.clear();
+    __resetChimesForTests();
+  });
+
+  afterEach(() => {
+    __resetChimesForTests();
+    vi.restoreAllMocks();
+  });
+
+  it('a guest dismissal marks the alert acknowledged without calling the API', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('guest');
+    mockFetchJson({ alerts: [baseAlert] });
+    const { result, unmount } = renderHook(() => useIntervalBAAlerts(true));
+    await waitFor(() => {
+      expect(result.current.alerts).toHaveLength(1);
+    });
+
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    await act(async () => {
+      await result.current.acknowledge(1);
+    });
+
+    // The 30 ms test poll may still GET the feed; no call may hit the ack.
+    expect(fetchSpy).not.toHaveBeenCalledWith(
+      '/api/interval-ba-alerts-ack',
+      expect.anything(),
+    );
+    expect(result.current.alerts[0]?.acknowledged).toBe(true);
+    expect(result.current.unacknowledgedCount).toBe(0);
+    expect(toastShow).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it('keeps a guest dismissal for the tab session (survives a remount)', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('guest');
+    mockFetchJson({ alerts: [baseAlert] });
+    const first = renderHook(() => useIntervalBAAlerts(true));
+    await waitFor(() => {
+      expect(first.result.current.alerts).toHaveLength(1);
+    });
+    await act(async () => {
+      await first.result.current.acknowledge(1);
+    });
+    first.unmount();
+    __resetChimesForTests();
+
+    // A reload re-reads the same unacknowledged row from the server, next
+    // to a newer alert (id 2) that the guest has not dismissed.
+    const newer = { ...baseAlert, id: 2, fired_at: '2026-05-12T17:07:00.000Z' };
+    mockFetchJson({ alerts: [newer, baseAlert] });
+    const second = renderHook(() => useIntervalBAAlerts(true));
+    await waitFor(() => {
+      expect(second.result.current.alerts).toHaveLength(1);
+    });
+    expect(second.result.current.alerts[0]?.id).toBe(2);
+    expect(second.result.current.unacknowledgedCount).toBe(1);
+    second.unmount();
+  });
+
+  it('a guest dismissal still holds in memory when sessionStorage throws', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('guest');
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    mockFetchJson({ alerts: [baseAlert] });
+    const { result, unmount } = renderHook(() => useIntervalBAAlerts(true));
+    await waitFor(() => {
+      expect(result.current.alerts).toHaveLength(1);
+    });
+
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    await act(async () => {
+      await result.current.acknowledge(1);
+    });
+
+    // The 30 ms test poll may still GET the feed; no call may hit the ack.
+    expect(fetchSpy).not.toHaveBeenCalledWith(
+      '/api/interval-ba-alerts-ack',
+      expect.anything(),
+    );
+    expect(result.current.alerts[0]?.acknowledged).toBe(true);
+    unmount();
+  });
+
+  it('shows an error toast and keeps the alert when the owner ack returns 401', async () => {
+    mockFetchJson({ alerts: [baseAlert] });
+    const { result, unmount } = renderHook(() => useIntervalBAAlerts(true));
+    await waitFor(() => {
+      expect(result.current.alerts).toHaveLength(1);
+    });
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: vi.fn().mockResolvedValue({ error: 'Not authenticated' }),
+    }) as unknown as typeof fetch;
+
+    await act(async () => {
+      await result.current.acknowledge(1);
+    });
+
+    expect(toastShow).toHaveBeenCalledWith(
+      'Could not dismiss the alert: HTTP 401',
+      'error',
+    );
+    expect(result.current.alerts[0]?.acknowledged).toBe(false);
+    unmount();
+  });
+
+  it('shows an error toast when the owner ack request throws', async () => {
+    mockFetchJson({ alerts: [baseAlert] });
+    const { result, unmount } = renderHook(() => useIntervalBAAlerts(true));
+    await waitFor(() => {
+      expect(result.current.alerts).toHaveLength(1);
+    });
+    globalThis.fetch = vi
+      .fn()
+      .mockRejectedValue(
+        new TypeError('Failed to fetch'),
+      ) as unknown as typeof fetch;
+
+    await act(async () => {
+      await result.current.acknowledge(1);
+    });
+
+    expect(toastShow).toHaveBeenCalledWith(
+      'Could not dismiss the alert: Failed to fetch',
+      'error',
+    );
+    expect(result.current.alerts[0]?.acknowledged).toBe(false);
     unmount();
   });
 });
