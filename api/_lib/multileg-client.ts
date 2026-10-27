@@ -28,13 +28,18 @@
  *
  * Env:
  *   CLASSIFIER_URL — required. Base URL of the standalone Railway
- *                    classifier service. When it is unset, every call
- *                    throws `MultilegClassifyError` with kind
- *                    'config_missing' (and emits the throttled
- *                    `multileg.classify.config_missing` Sentry event)
- *                    without making a request. There is no fallback:
- *                    the sidecar's /takeit/multileg-classify route was
+ *                    classifier service. There is no fallback: the
+ *                    sidecar's /takeit/multileg-classify route was
  *                    removed on 2026-10-02.
+ *   CLASSIFIER_SHARED_SECRET — required. Sent as
+ *                    `Authorization: Bearer <secret>` on the classify
+ *                    POST and the /version probe; the classifier
+ *                    requires it on both. Never logged.
+ *
+ *   When either is unset (or whitespace-only), every call throws
+ *   `MultilegClassifyError` with kind 'config_missing' (and emits the
+ *   throttled `multileg.classify.config_missing` Sentry event naming the
+ *   variable) without making a request.
  */
 
 import { z } from 'zod';
@@ -195,38 +200,51 @@ interface ResolvedClassifierTarget {
   url: string;
   /** Base URL (no trailing slash) for ancillary probes like /version. */
   base: string;
+  /** `Bearer <CLASSIFIER_SHARED_SECRET>`. Never log it. */
+  authorization: string;
 }
 
 /**
- * Resolve the classifier target from CLASSIFIER_URL.
- *
- * A missing CLASSIFIER_URL is a deploy misconfiguration that silently
- * blanks the multileg columns on every lottery / silent-boom fire, so
- * it is surfaced by name: a warn log on every call plus a throttled
- * `multileg.classify.config_missing` Sentry event, then a typed
- * `config_missing` throw that the detect crons fail open on. It never
- * falls back to SIDECAR_URL — that service no longer serves the route.
+ * Surface a missing classifier env var by name: a warn log on every call
+ * plus a throttled `multileg.classify.config_missing` Sentry event, then
+ * a typed `config_missing` throw that the detect crons fail open on.
  */
-function resolveClassifierBase(): ResolvedClassifierTarget {
-  const classifierRaw = process.env.CLASSIFIER_URL?.trim();
-  if (classifierRaw) {
-    const base = classifierRaw.replace(/\/$/, '');
-    return { url: `${base}${CLASSIFIER_PATH}`, base };
-  }
-  logger.warn(
-    {},
-    'multileg-classify CLASSIFIER_URL unset; skipping classification',
-  );
+function failConfigMissing(
+  envVar: 'CLASSIFIER_URL' | 'CLASSIFIER_SHARED_SECRET',
+): never {
+  logger.warn({}, `multileg-classify ${envVar} unset; skipping classification`);
   if (shouldEmitSentry('multileg.classify.config_missing')) {
     Sentry.captureMessage('multileg.classify.config_missing', {
       level: 'error',
-      extra: { envVar: 'CLASSIFIER_URL' },
+      extra: { envVar },
     });
   }
   throw new MultilegClassifyError(
     'config_missing',
-    'CLASSIFIER_URL is not configured',
+    `${envVar} is not configured`,
   );
+}
+
+/**
+ * Resolve the classifier target from CLASSIFIER_URL and
+ * CLASSIFIER_SHARED_SECRET.
+ *
+ * Either one missing is a deploy misconfiguration that silently blanks
+ * the multileg columns on every lottery / silent-boom fire, so it fails
+ * via `failConfigMissing` before any request is made. It never falls
+ * back to SIDECAR_URL — that service no longer serves the route.
+ */
+function resolveClassifierTarget(): ResolvedClassifierTarget {
+  const classifierRaw = process.env.CLASSIFIER_URL?.trim();
+  if (!classifierRaw) failConfigMissing('CLASSIFIER_URL');
+  const secret = process.env.CLASSIFIER_SHARED_SECRET?.trim();
+  if (!secret) failConfigMissing('CLASSIFIER_SHARED_SECRET');
+  const base = classifierRaw.replace(/\/$/, '');
+  return {
+    url: `${base}${CLASSIFIER_PATH}`,
+    base,
+    authorization: `Bearer ${secret}`,
+  };
 }
 
 interface ClassifierRequestTrade {
@@ -304,7 +322,10 @@ function buildRequestBody(
  * classify request still flows. Only `pattern_set_drift` is an error-level
  * Sentry event — that's the actionable diagnostic.
  */
-async function probeVersionOnce(base: string): Promise<void> {
+async function probeVersionOnce({
+  base,
+  authorization,
+}: ResolvedClassifierTarget): Promise<void> {
   if (versionChecked) return;
   versionChecked = true;
 
@@ -314,7 +335,11 @@ async function probeVersionOnce(base: string): Promise<void> {
 
   let res: Response;
   try {
-    res = await fetch(url, { method: 'GET', signal: controller.signal });
+    res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: authorization },
+      signal: controller.signal,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logger.warn(
@@ -410,11 +435,12 @@ export async function classifyMultilegBatch(
     return new Map();
   }
 
-  const { url, base } = resolveClassifierBase();
+  const target = resolveClassifierTarget();
+  const { url, authorization } = target;
 
   // Cold-start /version probe (once per process). Failure is non-fatal
   // — we don't want a slow or missing /version to block real classifies.
-  await probeVersionOnce(base);
+  await probeVersionOnce(target);
 
   const body = buildRequestBody(trades, options);
 
@@ -426,7 +452,10 @@ export async function classifyMultilegBatch(
   try {
     res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: authorization,
+      },
       body: JSON.stringify(body),
       signal: controller.signal,
     });

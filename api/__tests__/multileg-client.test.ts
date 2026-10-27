@@ -105,8 +105,16 @@ function makeFetchMockWithVersionAuto(
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 
+/** Distinctive so a leak into any log or Sentry payload is greppable. */
+const TEST_SECRET = 'classifier-secret-SENTINEL-7f3a9c';
+
+function authorizationOf(init: RequestInit | undefined): string | null {
+  return new Headers(init?.headers).get('authorization');
+}
+
 describe('classifyMultilegBatch', () => {
   const originalClassifier = process.env.CLASSIFIER_URL;
+  const originalSecret = process.env.CLASSIFIER_SHARED_SECRET;
   const originalSidecar = process.env.SIDECAR_URL;
 
   // Re-imported per test so module-level gates (versionChecked,
@@ -124,6 +132,7 @@ describe('classifyMultilegBatch', () => {
 
   beforeEach(async () => {
     process.env.CLASSIFIER_URL = 'https://classifier.example';
+    process.env.CLASSIFIER_SHARED_SECRET = TEST_SECRET;
     delete process.env.SIDECAR_URL;
     vi.resetModules();
     vi.clearAllMocks();
@@ -141,6 +150,11 @@ describe('classifyMultilegBatch', () => {
       delete process.env.CLASSIFIER_URL;
     } else {
       process.env.CLASSIFIER_URL = originalClassifier;
+    }
+    if (originalSecret === undefined) {
+      delete process.env.CLASSIFIER_SHARED_SECRET;
+    } else {
+      process.env.CLASSIFIER_SHARED_SECRET = originalSecret;
     }
     if (originalSidecar === undefined) {
       delete process.env.SIDECAR_URL;
@@ -470,6 +484,173 @@ describe('classifyMultilegBatch', () => {
       expect(result.size).toBe(0);
       expect(Sentry.captureMessage).not.toHaveBeenCalled();
     });
+  });
+
+  // ── Bearer auth: CLASSIFIER_SHARED_SECRET on every request ──
+
+  describe('bearer auth (CLASSIFIER_SHARED_SECRET)', () => {
+    const okClassify = () =>
+      makeJsonResponse({
+        classifications: [
+          {
+            id: TRADE_A.id,
+            inferred_structure: 'isolated_leg',
+            is_isolated_leg: true,
+            match_confidence: 0,
+            pattern_group_id: TRADE_A.id,
+          },
+        ],
+      });
+
+    it('sends Authorization: Bearer <secret> on the classify POST', async () => {
+      const spy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation(makeFetchMockWithVersionAuto(okClassify));
+
+      await classifyMultilegBatch([TRADE_A]);
+
+      const postCall = spy.mock.calls.find((call) => !isVersionUrl(call[0]));
+      expect(postCall).toBeDefined();
+      expect(authorizationOf(postCall![1])).toBe(`Bearer ${TEST_SECRET}`);
+      // The JSON content type is still sent alongside the bearer.
+      expect(new Headers(postCall![1]?.headers).get('content-type')).toBe(
+        'application/json',
+      );
+    });
+
+    it('sends Authorization: Bearer <secret> on the /version probe', async () => {
+      const spy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation(makeFetchMockWithVersionAuto(okClassify));
+
+      await classifyMultilegBatch([TRADE_A]);
+
+      const versionCall = spy.mock.calls.find((call) => isVersionUrl(call[0]));
+      expect(versionCall).toBeDefined();
+      expect(authorizationOf(versionCall![1])).toBe(`Bearer ${TEST_SECRET}`);
+    });
+
+    it('throws config_missing without any request when the secret is unset', async () => {
+      delete process.env.CLASSIFIER_SHARED_SECRET;
+      const spy = vi.spyOn(globalThis, 'fetch');
+
+      await expect(classifyMultilegBatch([TRADE_A])).rejects.toMatchObject({
+        name: 'MultilegClassifyError',
+        kind: 'config_missing',
+        message: 'CLASSIFIER_SHARED_SECRET is not configured',
+      });
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('surfaces an unset secret by name: config_missing Sentry event + warn log', async () => {
+      delete process.env.CLASSIFIER_SHARED_SECRET;
+
+      await expect(classifyMultilegBatch([TRADE_A])).rejects.toMatchObject({
+        kind: 'config_missing',
+      });
+
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'multileg.classify.config_missing',
+        {
+          level: 'error',
+          extra: { envVar: 'CLASSIFIER_SHARED_SECRET' },
+        },
+      );
+      expect(logger.warn).toHaveBeenCalledWith(
+        {},
+        'multileg-classify CLASSIFIER_SHARED_SECRET unset; skipping classification',
+      );
+    });
+
+    it('treats a whitespace-only secret as unset', async () => {
+      process.env.CLASSIFIER_SHARED_SECRET = '   ';
+      const spy = vi.spyOn(globalThis, 'fetch');
+
+      await expect(classifyMultilegBatch([TRADE_A])).rejects.toMatchObject({
+        kind: 'config_missing',
+        message: 'CLASSIFIER_SHARED_SECRET is not configured',
+      });
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a classifier 401 (secret mismatch) as http_4xx + error-level sidecar_non_2xx', async () => {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(
+        makeFetchMockWithVersionAuto(() =>
+          makeJsonResponse({ error: 'unauthorized' }, 401),
+        ),
+      );
+
+      await expect(classifyMultilegBatch([TRADE_A])).rejects.toMatchObject({
+        kind: 'http_4xx',
+        status: 401,
+      });
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'multileg.classify.sidecar_non_2xx',
+        expect.objectContaining({ level: 'error' }),
+      );
+    });
+
+    // Every log / Sentry path, each checked for the secret value. Errors
+    // are expanded (JSON.stringify drops message/cause on Error objects).
+    function serializeForLeakCheck(value: unknown): string {
+      return JSON.stringify(value, (_key, v: unknown) =>
+        v instanceof Error
+          ? { name: v.name, message: v.message, cause: v.cause }
+          : v,
+      );
+    }
+
+    it.each([
+      ['a 200 classify', () => okClassify()],
+      ['a 400 classify', () => makeJsonResponse({ error: 'bad' }, 400)],
+      ['a 401 classify', () => makeJsonResponse({ error: 'no' }, 401)],
+      ['a 422 classify', () => makeJsonResponse({ details: [] }, 422)],
+      [
+        'a 503 classify',
+        () => makeJsonResponse({ error: 'busy', retry_after_sec: 2 }, 503),
+      ],
+      ['a 500 classify', () => makeJsonResponse({ error: 'boom' }, 500)],
+      [
+        'a non-JSON 200 classify',
+        () => new Response('not json', { status: 200 }),
+      ],
+      [
+        'a fetch rejection',
+        (): Response => {
+          throw new Error('socket hang up');
+        },
+      ],
+    ])(
+      'never writes the secret to logs, Sentry or the thrown error after %s',
+      async (_label, respond) => {
+        vi.spyOn(globalThis, 'fetch').mockImplementation(
+          async (input: unknown) => {
+            // Fail the probe too so its warn path is exercised.
+            if (isVersionUrl(input))
+              return new Response('nope', { status: 404 });
+            return respond();
+          },
+        );
+
+        let thrown: unknown = null;
+        try {
+          await classifyMultilegBatch([TRADE_A]);
+        } catch (err) {
+          thrown = err;
+        }
+
+        const surfaced = serializeForLeakCheck({
+          info: logger.info.mock.calls,
+          warn: logger.warn.mock.calls,
+          error: logger.error.mock.calls,
+          sentry: Sentry.captureMessage.mock.calls,
+          thrown,
+        });
+        // Sanity: the scenario actually reached a log line.
+        expect(surfaced.length).toBeGreaterThan(50);
+        expect(surfaced).not.toContain(TEST_SECRET);
+      },
+    );
   });
 
   it('strips trailing slash from CLASSIFIER_URL when building the endpoint URL', async () => {

@@ -29,8 +29,9 @@ sidecar/          Railway Python service (NOT Vercel). Ingests no market data (D
                   vercel.json ignoreCommand skips deploys for sidecar/, uw-stream/, ml/, scripts/, pine/, docs/, *.md changes
 
 classifier/       Multileg classifier (Python, Railway, NOT Vercel). POST /multileg-classify for the detect
-                  crons via CLASSIFIER_URL (no fallback: unset → NULL multileg columns + Sentry
-                  multileg.classify.config_missing). Vendors ml/src/multileg_*.py in _vendored_ml/.
+                  crons via CLASSIFIER_URL, with Authorization: Bearer CLASSIFIER_SHARED_SECRET (no
+                  fallback: either unset → NULL multileg columns + Sentry multileg.classify.config_missing).
+                  Vendors ml/src/multileg_*.py in _vendored_ml/.
 
 uw-stream/        UnusualWhales websocket consumer (Python, Railway, NOT Vercel — third Railway service)
                   asyncio + websockets + asyncpg (NOT psycopg2 — different from sidecar). Connector → router →
@@ -283,6 +284,7 @@ Required env vars (pulled via `vercel env pull .env.local`):
 | `AXIOM_DATASET`                            | Axiom dataset name (opt.)            |
 | `UW_PER_MINUTE_CAP`                        | UW limiter override (opt., def 2000) |
 | `CLASSIFIER_URL`                           | Railway classifier base URL          |
+| `CLASSIFIER_SHARED_SECRET`                 | Classifier bearer (also on Railway)  |
 | `BLOB_READ_WRITE_TOKEN`                    | Vercel Blob (also on Railway)        |
 | `ARCHIVE_MANIFEST_URL`                     | Archive manifest (Railway only)      |
 | `ARCHIVE_SEED_TOKEN`                       | Gates seed POST (Railway only)       |

@@ -71,6 +71,17 @@ const observabilitySchema = z.object({
   AXIOM_DATASET: z.string().min(1).optional(),
 });
 
+/**
+ * Railway multileg classifier, called by the detect crons
+ * (api/_lib/multileg-client.ts). Both are required there; unset →
+ * `config_missing`. No format check: a schema failure here would throw
+ * for every optionalEnv caller, not just the classifier client.
+ */
+const classifierSchema = z.object({
+  CLASSIFIER_URL: z.string().min(1).optional(),
+  CLASSIFIER_SHARED_SECRET: z.string().min(1).optional(),
+});
+
 /** Vercel runtime vars (auto-set by platform, read-only). */
 const vercelSchema = z.object({
   VERCEL: z.string().optional(),
@@ -85,6 +96,7 @@ const envSchema = coreSchema
   .merge(apiKeysSchema)
   .merge(twilioSchema)
   .merge(observabilitySchema)
+  .merge(classifierSchema)
   .merge(vercelSchema);
 
 /** All known env var names, derived from the schema. */
