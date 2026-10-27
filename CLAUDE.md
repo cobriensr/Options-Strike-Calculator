@@ -274,6 +274,7 @@ Required env vars (pulled via `vercel env pull .env.local`):
 | `DATABASE_URL`                             | Neon Postgres (Vercel Marketplace)   |
 | `KV_REST_API_URL`, `KV_REST_API_TOKEN`     | Upstash Redis (Vercel Marketplace)   |
 | `SCHWAB_CLIENT_ID`, `SCHWAB_CLIENT_SECRET` | Schwab developer portal              |
+| `OWNER_SCHWAB_ACCOUNT_SHA256`              | sha256 of owner's Schwab acct number |
 | `ANTHROPIC_API_KEY`                        | Anthropic                            |
 | `OPENAI_API_KEY`                           | OpenAI                               |
 | `SENTRY_DSN`, `SENTRY_AUTH_TOKEN`          | Sentry                               |

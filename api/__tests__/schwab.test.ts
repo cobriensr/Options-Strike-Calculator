@@ -1,7 +1,10 @@
 // @vitest-environment node
 
+import { createHash } from 'node:crypto';
+
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { _resetEnvCache } from '../_lib/env.js';
+import { TIMEOUTS } from '../_lib/constants.js';
 
 // Use vi.hoisted so these are available when vi.mock factory runs (hoisted above imports)
 const { mockRedisGet, mockRedisSet, mockRedisDel, mockRedisEval } = vi.hoisted(
@@ -117,6 +120,49 @@ function okJson(body: unknown) {
   return { ok: true, status: 200, json: () => Promise.resolve(body) };
 }
 
+function sha256Hex(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+/**
+ * The owner's plain Schwab account number, and the value the owner sets in
+ * OWNER_SCHWAB_ACCOUNT_SHA256 (sha256 of `accountNumber`, not `hashValue`).
+ */
+const OWNER_ACCOUNT = '12345678';
+const OWNER_ACCOUNT_SHA256 = sha256Hex(OWNER_ACCOUNT);
+
+const TOKEN_URL = 'https://api.schwabapi.com/v1/oauth/token';
+const ACCOUNT_NUMBERS_URL =
+  'https://api.schwabapi.com/trader/v1/accounts/accountNumbers';
+
+/** A 2xx accountNumbers response listing these plain account numbers. */
+function accountNumbersResponse(...accountNumbers: string[]) {
+  return okJson(
+    accountNumbers.map((accountNumber, i) => ({
+      accountNumber,
+      hashValue: `HASHVALUE${i}`,
+    })),
+  );
+}
+
+/**
+ * Fetch mock for a login: the token endpoint answers `token`, the
+ * accountNumbers owner check answers `accounts` (default: the owner's
+ * account). An Error answer rejects, as a network failure does.
+ */
+function loginFetch(
+  token: unknown,
+  accounts: unknown = accountNumbersResponse(OWNER_ACCOUNT),
+) {
+  // Typed as fetch's (url, init) so tests can read each call's init.
+  return vi.fn<(url: string, init?: RequestInit) => Promise<unknown>>((url) => {
+    const answer = url === ACCOUNT_NUMBERS_URL ? accounts : token;
+    return answer instanceof Error
+      ? Promise.reject(answer)
+      : Promise.resolve(answer);
+  });
+}
+
 /** Calls to the Redis SET mock that wrote the token record (not the lock). */
 function tokenWrites() {
   return mockRedisSet.mock.calls.filter((c) => c[0] === 'schwab:tokens');
@@ -178,6 +224,8 @@ describe('schwab', () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    // Logins pass the owner check unless a test says otherwise.
+    process.env.OWNER_SCHWAB_ACCOUNT_SHA256 = OWNER_ACCOUNT_SHA256;
     _resetEnvCache();
     vi.restoreAllMocks();
     mockRedisGet.mockReset();
@@ -889,7 +937,7 @@ describe('schwab', () => {
     it('sets a fresh 7-day refresh expiry only on the authorization-code exchange', async () => {
       vi.stubGlobal(
         'fetch',
-        vi.fn().mockResolvedValue(
+        loginFetch(
           tokenResponse({
             access_token: 'a',
             refresh_token: 'r',
@@ -1791,7 +1839,7 @@ describe('schwab', () => {
       process.env.SCHWAB_CLIENT_SECRET = 'secret';
       vi.stubGlobal(
         'fetch',
-        vi.fn().mockResolvedValue(
+        loginFetch(
           tokenResponse({
             access_token: 'login-access',
             refresh_token: 'login-ref',
@@ -1838,6 +1886,256 @@ describe('schwab', () => {
       const result = await getAccessToken();
 
       expect('error' in result && result.error.type).toBe('token_error');
+    });
+  });
+
+  describe('owner check on login (OWNER_SCHWAB_ACCOUNT_SHA256)', () => {
+    const LOGIN = tokenResponse({
+      access_token: 'login-access',
+      refresh_token: 'login-ref',
+    });
+
+    beforeEach(() => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+      mockRedisSet.mockResolvedValue('OK');
+    });
+
+    it('match: checks accountNumbers with the NEW access token, then stores the tokens', async () => {
+      const fetchMock = loginFetch(LOGIN);
+      vi.stubGlobal('fetch', fetchMock);
+
+      expect(await storeInitialTokens('code', 'https://e.x/cb')).toEqual({
+        success: true,
+      });
+
+      // The code exchange, then the owner check: no other Schwab call.
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+        TOKEN_URL,
+        ACCOUNT_NUMBERS_URL,
+      ]);
+      const [, init] = fetchMock.mock.calls[1]!;
+      const headers = init!.headers as Record<string, string>;
+      // The token just issued, not whatever the store holds.
+      expect(headers.Authorization).toBe('Bearer login-access');
+      expect(init!.signal).toBeInstanceOf(AbortSignal);
+      expect(tokenWrites()).toHaveLength(1);
+      expect(tokenWrites()[0]![1]).toMatchObject({
+        accessToken: 'login-access',
+        refreshToken: 'login-ref',
+      });
+    });
+
+    it('multiple accounts with one matching: success', async () => {
+      vi.stubGlobal(
+        'fetch',
+        loginFetch(
+          LOGIN,
+          accountNumbersResponse('11112222', OWNER_ACCOUNT, '33334444'),
+        ),
+      );
+
+      expect(await storeInitialTokens('code', 'https://e.x/cb')).toEqual({
+        success: true,
+      });
+      expect(tokenWrites()).toHaveLength(1);
+    });
+
+    it('accepts the configured hash in uppercase or padded with whitespace', async () => {
+      process.env.OWNER_SCHWAB_ACCOUNT_SHA256 = ` ${OWNER_ACCOUNT_SHA256.toUpperCase()}\n`;
+      vi.stubGlobal('fetch', loginFetch(LOGIN));
+
+      expect(await storeInitialTokens('code', 'https://e.x/cb')).toEqual({
+        success: true,
+      });
+    });
+
+    it('mismatch: not_owner, and storeTokens is NOT called', async () => {
+      vi.stubGlobal(
+        'fetch',
+        loginFetch(LOGIN, accountNumbersResponse('87654321', '11112222')),
+      );
+
+      const result = await storeInitialTokens('code', 'https://e.x/cb');
+
+      expect(result).toEqual({
+        error: {
+          type: 'not_owner',
+          message: expect.stringContaining('accounts checked: 2'),
+        },
+      });
+      expect(mockRedisSet).not.toHaveBeenCalled();
+    });
+
+    it('a refused login does not warm the in-memory fallback', async () => {
+      // Two days ahead, so tokens cached by earlier tests are expired.
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(Date.now() + 2 * DAY_MS);
+      vi.stubGlobal(
+        'fetch',
+        loginFetch(
+          tokenResponse({
+            access_token: 'intruder-access',
+            refresh_token: 'intruder-ref',
+          }),
+          accountNumbersResponse('87654321'),
+        ),
+      );
+      await storeInitialTokens('code', 'https://e.x/cb');
+      mockRedisGet.mockRejectedValueOnce(new Error('upstash blip'));
+
+      const result = await getAccessToken();
+
+      expect(result).not.toEqual({ token: 'intruder-access' });
+      expect('error' in result && result.error.type).toBe('token_error');
+    });
+
+    it.each([
+      ['unset', undefined],
+      ['blank', '   '],
+      ['not a 64-character hex sha256', 'abc123'],
+    ])(
+      'OWNER_SCHWAB_ACCOUNT_SHA256 %s: owner_hash_missing, no fetch, no store',
+      async (_label, value) => {
+        if (value === undefined) {
+          delete process.env.OWNER_SCHWAB_ACCOUNT_SHA256;
+        } else {
+          process.env.OWNER_SCHWAB_ACCOUNT_SHA256 = value;
+        }
+        const fetchMock = loginFetch(LOGIN);
+        vi.stubGlobal('fetch', fetchMock);
+
+        const result = await storeInitialTokens('code', 'https://e.x/cb');
+
+        expect('error' in result && result.error.type).toBe(
+          'owner_hash_missing',
+        );
+        // Not even the code exchange: nothing is fetched.
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(mockRedisSet).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ['a 503', tokenFailure(503, 'Service Unavailable')],
+      ['a 401', tokenFailure(401, 'Unauthorized')],
+      ['an object instead of a list', okJson({ accountNumber: OWNER_ACCOUNT })],
+      ['an empty list', okJson([])],
+      ['an entry without accountNumber', okJson([{ hashValue: 'H' }])],
+      ['a numeric accountNumber', okJson([{ accountNumber: 12345678 }])],
+      [
+        'a non-JSON body',
+        {
+          ok: true,
+          status: 200,
+          json: () => Promise.reject(new SyntaxError('Unexpected token <')),
+        },
+      ],
+      ['a network failure', new TypeError('fetch failed')],
+    ])(
+      'the owner check gets %s: owner_check_failed, nothing stored',
+      async (_label, accounts) => {
+        vi.stubGlobal('fetch', loginFetch(LOGIN, accounts));
+
+        const result = await storeInitialTokens('code', 'https://e.x/cb');
+
+        expect('error' in result && result.error.type).toBe(
+          'owner_check_failed',
+        );
+        expect(mockRedisSet).not.toHaveBeenCalled();
+      },
+    );
+
+    it('an owner check that times out: owner_check_failed, nothing stored', async () => {
+      // Shrink every abort budget to 5 ms, recording what was asked for.
+      const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+      const timeoutSpy = vi
+        .spyOn(AbortSignal, 'timeout')
+        .mockImplementation(() => realTimeout(5));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((url: string, init?: RequestInit) => {
+          if (url !== ACCOUNT_NUMBERS_URL) return Promise.resolve(LOGIN);
+          // A stalled upstream: settles only when the request is aborted.
+          return new Promise((_resolve, reject) => {
+            init!.signal!.addEventListener('abort', () =>
+              reject(init!.signal!.reason),
+            );
+          });
+        }),
+      );
+
+      const result = await storeInitialTokens('code', 'https://e.x/cb');
+
+      expect(result).toEqual({
+        error: {
+          type: 'owner_check_failed',
+          message: expect.stringContaining('TimeoutError'),
+        },
+      });
+      expect(timeoutSpy).toHaveBeenLastCalledWith(TIMEOUTS.SCHWAB_API);
+      expect(mockRedisSet).not.toHaveBeenCalled();
+    });
+
+    it('leak guard: no account number, hash, hash prefix or token in logs, Sentry or the returned error', async () => {
+      const OTHER_ACCOUNT = '87654321';
+      const secrets = [
+        OWNER_ACCOUNT,
+        OWNER_ACCOUNT_SHA256,
+        OWNER_ACCOUNT_SHA256.slice(0, 8),
+        OTHER_ACCOUNT,
+        sha256Hex(OTHER_ACCOUNT),
+        sha256Hex(OTHER_ACCOUNT).slice(0, 8),
+        'leak-access',
+        'leak-ref',
+      ];
+      const token = tokenResponse({
+        access_token: 'leak-access',
+        refresh_token: 'leak-ref',
+      });
+      const answers = [
+        accountNumbersResponse(OWNER_ACCOUNT),
+        accountNumbersResponse(OTHER_ACCOUNT),
+        // Upstream bodies that echo account numbers must not be forwarded.
+        tokenFailure(503, JSON.stringify([{ accountNumber: OWNER_ACCOUNT }])),
+        okJson([{ accountNumber: OWNER_ACCOUNT }, { accountNumber: 87654321 }]),
+      ];
+      for (const fn of [
+        ...Object.values(mockLogger),
+        ...Object.values(mockSentry),
+      ]) {
+        fn.mockClear();
+      }
+
+      const results = [];
+      for (const accounts of answers) {
+        vi.stubGlobal('fetch', loginFetch(token, accounts));
+        results.push(await storeInitialTokens('code', 'https://e.x/cb'));
+      }
+
+      expect(
+        results.map((r) => ('error' in r ? r.error.type : 'success')),
+      ).toEqual([
+        'success',
+        'not_owner',
+        'owner_check_failed',
+        'owner_check_failed',
+      ]);
+      // Errors serialize to {} by default; spell out their name + message.
+      const haystack = JSON.stringify(
+        [
+          results,
+          Object.values(mockLogger).map((fn) => fn.mock.calls),
+          Object.values(mockSentry).map((fn) => fn.mock.calls),
+        ],
+        (_key, value: unknown) =>
+          value instanceof Error
+            ? { name: value.name, message: value.message }
+            : value,
+      );
+      for (const secret of secrets) {
+        expect(haystack).not.toContain(secret);
+      }
     });
   });
 
@@ -1966,7 +2264,7 @@ describe('schwab', () => {
 
       vi.stubGlobal(
         'fetch',
-        vi.fn().mockResolvedValue({
+        loginFetch({
           ok: true,
           json: () =>
             Promise.resolve({
@@ -2021,7 +2319,7 @@ describe('schwab', () => {
       process.env.SCHWAB_CLIENT_SECRET = 'my-secret';
       mockRedisSet.mockResolvedValue('OK');
 
-      const mockFetch = vi.fn().mockResolvedValue({
+      const mockFetch = loginFetch({
         ok: true,
         json: () =>
           Promise.resolve({
@@ -2035,18 +2333,22 @@ describe('schwab', () => {
       });
       vi.stubGlobal('fetch', mockFetch);
 
-      await storeInitialTokens('auth-code', 'https://example.com/callback');
+      expect(
+        await storeInitialTokens('auth-code', 'https://example.com/callback'),
+      ).toEqual({ success: true });
 
       const [url, opts] = mockFetch.mock.calls[0]!;
-      expect(url).toBe('https://api.schwabapi.com/v1/oauth/token');
-      expect(opts.method).toBe('POST');
+      expect(url).toBe(TOKEN_URL);
+      expect(opts!.method).toBe('POST');
 
       // Check basic auth header
       const expectedAuth = `Basic ${Buffer.from('my-id:my-secret').toString('base64')}`;
-      expect(opts.headers.Authorization).toBe(expectedAuth);
+      expect((opts!.headers as Record<string, string>).Authorization).toBe(
+        expectedAuth,
+      );
 
       // Check body params
-      const body = opts.body as URLSearchParams;
+      const body = opts!.body as URLSearchParams;
       expect(body.get('grant_type')).toBe('authorization_code');
       expect(body.get('code')).toBe('auth-code');
       expect(body.get('redirect_uri')).toBe('https://example.com/callback');

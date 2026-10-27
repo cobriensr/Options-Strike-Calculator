@@ -37,12 +37,21 @@ const coreSchema = z.object({
   UPSTASH_REDIS_REST_TOKEN: z.string().min(1).optional(),
 });
 
-/** Auth and security: owner gating, cron auth, Schwab OAuth. */
+/**
+ * Auth and security: owner gating, cron auth, Schwab OAuth.
+ *
+ * OWNER_SCHWAB_ACCOUNT_SHA256 is the sha256 hex of the owner's plain Schwab
+ * `accountNumber`; `storeInitialTokens` (api/_lib/schwab.ts) stores a login
+ * only if it owns that account, and refuses every login when it is unset.
+ * No format check here, for the same reason as the classifier vars below:
+ * schwab.ts validates it at the point of use.
+ */
 const authSchema = z.object({
   OWNER_SECRET: z.string().min(1).optional(),
   CRON_SECRET: z.string().min(1).optional(),
   SCHWAB_CLIENT_ID: z.string().min(1).optional(),
   SCHWAB_CLIENT_SECRET: z.string().min(1).optional(),
+  OWNER_SCHWAB_ACCOUNT_SHA256: z.string().min(1).optional(),
 });
 
 /** Third-party API keys for data and analysis. */

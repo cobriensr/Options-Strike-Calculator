@@ -17,18 +17,23 @@
  * Environment variables required:
  *   SCHWAB_CLIENT_ID        — App Key from developer.schwab.com
  *   SCHWAB_CLIENT_SECRET     — App Secret from developer.schwab.com
+ *   OWNER_SCHWAB_ACCOUNT_SHA256 — sha256 hex of the owner's plain Schwab
+ *                              accountNumber; a login is stored only if it
+ *                              owns that account (see `storeInitialTokens`)
  *   UPSTASH_REDIS_REST_URL   — Auto-set when Upstash Redis is linked in Vercel
  *   UPSTASH_REDIS_REST_TOKEN — Auto-set when Upstash Redis is linked in Vercel
  */
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 import { z } from 'zod';
 
 import logger from './logger.js';
 import { Sentry, metrics } from './sentry.js';
 import { requireEnvGroup } from './env.js';
+import { TIMEOUTS } from './constants.js';
 import { redactUpstreamBody } from './redact-upstream-body.js';
+import { secretEquals } from './secret-compare.js';
 // The Redis singleton lives in the neutral lower-layer `redis.ts` so this
 // auth module isn't the source of the shared KV client (avoids inverting the
 // layering). Re-exported below for back-compat with existing importers.
@@ -95,6 +100,34 @@ export interface SchwabAuthError {
 }
 
 /**
+ * Why `storeInitialTokens` stored nothing: a `SchwabAuthError` kind, or an
+ * owner-check outcome:
+ *   not_owner          — the login's accounts don't include the owner's
+ *   owner_hash_missing — OWNER_SCHWAB_ACCOUNT_SHA256 is unset, blank or not
+ *                        a sha256 hex digest (fails closed, fetches nothing)
+ *   owner_check_failed — accountNumbers answered non-2xx, malformed, or
+ *                        not at all (network error / timeout)
+ */
+export interface SchwabLoginError {
+  type:
+    | SchwabAuthError['type']
+    | 'not_owner'
+    | 'owner_hash_missing'
+    | 'owner_check_failed';
+  message: string;
+}
+
+/**
+ * GET /trader/v1/accounts/accountNumbers 2xx body. Only the plain
+ * `accountNumber` is used (the owner hash is over it, not `hashValue`). An
+ * empty list proves nothing either way, so it fails the check rather than
+ * reading as "not the owner".
+ */
+const accountNumbersSchema = z
+  .array(z.object({ accountNumber: z.string().min(1) }))
+  .min(1);
+
+/**
  * Schwab's token endpoint rejected the refresh token itself — it is
  * expired, revoked, or superseded, and only a manual re-auth recovers.
  * Distinct from transient failures (5xx, timeouts, other 4xx), which stay
@@ -146,6 +179,13 @@ function basicAuthHeader(clientId: string, clientSecret: string): string {
   return `Basic ${encoded}`;
 }
 
+/** The distinct field paths a parse rejected — never the values. */
+function invalidFields(error: z.ZodError): string {
+  return [
+    ...new Set(error.issues.map((i) => i.path.join('.') || '(body)')),
+  ].join(', ');
+}
+
 /**
  * Validate a token-endpoint 2xx body. The thrown message names the bad
  * fields only — never the body, which carries token values.
@@ -153,12 +193,86 @@ function basicAuthHeader(clientId: string, clientSecret: string): string {
 function parseTokenBody<T>(schema: z.ZodType<T>, body: unknown): T {
   const parsed = schema.safeParse(body);
   if (parsed.success) return parsed.data;
-  const fields = [
-    ...new Set(parsed.error.issues.map((i) => i.path.join('.') || '(body)')),
-  ].join(', ');
   throw new Error(
-    `Schwab token endpoint returned a malformed response (invalid: ${fields})`,
+    `Schwab token endpoint returned a malformed response (invalid: ${invalidFields(parsed.error)})`,
   );
+}
+
+/**
+ * OWNER_SCHWAB_ACCOUNT_SHA256, trimmed and lowercased, or null when it is
+ * unset, blank or not a sha256 hex digest (a malformed value could never
+ * match, so it is a config error, not a reason to call a login a stranger's).
+ * Read per call, like the classifier secret, not via env.ts's cached parse.
+ */
+function ownerAccountHash(): string | null {
+  const value = process.env.OWNER_SCHWAB_ACCOUNT_SHA256?.trim().toLowerCase();
+  return value && /^[0-9a-f]{64}$/.test(value) ? value : null;
+}
+
+/**
+ * Does the login that was just issued `accessToken` own the configured
+ * account? Asks Schwab with that NEW token: `schwabTraderFetch` uses the
+ * stored token, which belongs to the previous login. One bounded attempt,
+ * no retry; on any failure the owner can simply log in again.
+ *
+ * Returns null when the login owns the account, else the refusal. Messages
+ * carry an HTTP status, field paths, an error name or the account count —
+ * never a response body, an account number, a hash or the token. Account
+ * numbers are low-entropy, so even a hash prefix would give one away.
+ */
+async function ownerCheckFailure(
+  accessToken: string,
+  ownerHash: string,
+): Promise<SchwabLoginError | null> {
+  const failed = (detail: string): SchwabLoginError => ({
+    type: 'owner_check_failed',
+    message: `Schwab accountNumbers owner check failed: ${detail}`,
+  });
+
+  let res: Response;
+  try {
+    res = await fetch(
+      'https://api.schwabapi.com/trader/v1/accounts/accountNumbers',
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/json',
+        },
+        signal: AbortSignal.timeout(TIMEOUTS.SCHWAB_API),
+      },
+    );
+  } catch (err) {
+    const name = err instanceof Error ? err.name : 'unknown error';
+    return failed(`no response (${name})`);
+  }
+  // The status only: a body may echo account data, so it is never read.
+  if (!res.ok) return failed(`HTTP ${res.status}`);
+
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    return failed('response is not JSON');
+  }
+  const parsed = accountNumbersSchema.safeParse(body);
+  if (!parsed.success) {
+    return failed(
+      `malformed response (invalid: ${invalidFields(parsed.error)})`,
+    );
+  }
+
+  const accounts = parsed.data;
+  const ownsAccount = accounts.some(({ accountNumber }) =>
+    secretEquals(
+      createHash('sha256').update(accountNumber, 'utf8').digest('hex'),
+      ownerHash,
+    ),
+  );
+  if (ownsAccount) return null;
+  return {
+    type: 'not_owner',
+    message: `Schwab login does not own the configured account (accounts checked: ${accounts.length})`,
+  };
 }
 
 /** Where a stored token record stands right now. */
@@ -967,17 +1081,35 @@ export async function getSchwabAuthStatus(): Promise<SchwabAuthStatus> {
 /**
  * Store initial tokens after the manual OAuth browser flow.
  * Called by /api/auth/callback after the user completes login.
+ *
+ * Stores only the owner's login: the new tokens replace every caller's
+ * Schwab session, so after the code exchange the login must own the account
+ * whose sha256 is OWNER_SCHWAB_ACCOUNT_SHA256 (`ownerCheckFailure`). Any
+ * other outcome returns an error and stores nothing.
  */
 export async function storeInitialTokens(
   authCode: string,
   redirectUri: string,
-): Promise<{ success: true } | { error: SchwabAuthError }> {
+): Promise<{ success: true } | { error: SchwabLoginError }> {
   const creds = getCredentials();
   if (!creds) {
     return {
       error: {
         type: 'missing_config',
         message: 'SCHWAB_CLIENT_ID and SCHWAB_CLIENT_SECRET must be set',
+      },
+    };
+  }
+
+  // Fail closed before anything is fetched: without the owner hash no
+  // login can be verified, so none may be stored.
+  const ownerHash = ownerAccountHash();
+  if (!ownerHash) {
+    return {
+      error: {
+        type: 'owner_hash_missing',
+        message:
+          'OWNER_SCHWAB_ACCOUNT_SHA256 is unset, blank or not a 64-character hex sha256; no Schwab login can be stored',
       },
     };
   }
@@ -1018,6 +1150,11 @@ export async function storeInitialTokens(
       expiresAt: now + data.expires_in * 1000,
       refreshExpiresAt: now + 7 * 24 * 60 * 60 * 1000,
     };
+
+    // Before anything is stored or cached: a refused login leaves the
+    // owner's tokens untouched.
+    const refusal = await ownerCheckFailure(tokens.accessToken, ownerHash);
+    if (refusal) return { error: refusal };
 
     if (!(await storeTokens(tokens))) {
       // A login that wasn't persisted must not look like it worked: the
