@@ -2,7 +2,8 @@
  * POST /api/tracker/alerts/:id/ack
  *
  * Marks one tracker_alerts row as acknowledged. Idempotent — acking an
- * already-acknowledged alert returns 200. Owner-or-guest gated.
+ * already-acknowledged alert returns 200. Owner-only: alert rows are
+ * shared by every caller.
  *
  * Used by both the toast click handler (frontend marks the toast as
  * read) and the dismiss-all batch button. Single PATCH per id avoids
@@ -11,7 +12,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-import { guardOwnerOrGuestEndpoint } from '../../../_lib/api-helpers.js';
+import { guardOwnerEndpoint } from '../../../_lib/api-helpers.js';
 import { getDb } from '../../../_lib/db.js';
 import logger from '../../../_lib/logger.js';
 import { Sentry, metrics } from '../../../_lib/sentry.js';
@@ -27,7 +28,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(405).json({ error: 'POST only' });
     }
 
-    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
+    if (await guardOwnerEndpoint(req, res, done)) return;
 
     const idParsed = trackerIdParamSchema.safeParse(req.query);
     if (!idParsed.success) {

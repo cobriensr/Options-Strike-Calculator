@@ -6,24 +6,25 @@
  *   - GET  /api/tracker/alerts/unread
  *   - POST /api/tracker/alerts/[id]/ack
  *
- * Auth is short-circuited by mocking `guardOwnerOrGuestEndpoint`. DB is
- * mocked via `vi.mocked(getDb)` returning a single `mockSql` per call.
+ * Auth is short-circuited by mocking the guards: `guardOwnerOrGuestEndpoint`
+ * for the unread GET, `guardOwnerEndpoint` for the owner-only ack POST. The
+ * real auth tier is covered in owner-only-writes.test.ts. DB is mocked via
+ * `vi.mocked(getDb)` returning a single `mockSql` per call.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-// One shared guard mock fronts BOTH module specifiers: the unread handler is
-// now a withDbReader endpoint whose wrapper imports the guard from
-// guest-auth.js, while the sibling ack POST handler still imports it from
-// api-helpers.js inline. Routing both to the same vi.fn keeps the existing
-// per-test mockImplementation overrides working for both handlers.
-const { mockGuard } = vi.hoisted(() => ({
+// The unread handler is a withDbReader endpoint whose wrapper imports the
+// owner-or-guest guard from guest-auth.js; the owner-only ack POST imports
+// guardOwnerEndpoint from api-helpers.js.
+const { mockGuard, mockOwnerGuard } = vi.hoisted(() => ({
   mockGuard: vi.fn().mockResolvedValue(false),
+  mockOwnerGuard: vi.fn().mockResolvedValue(false),
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  guardOwnerOrGuestEndpoint: mockGuard,
+  guardOwnerEndpoint: mockOwnerGuard,
 }));
 
 vi.mock('../_lib/guest-auth.js', () => ({
@@ -68,6 +69,7 @@ import { Sentry } from '../_lib/sentry.js';
 beforeEach(() => {
   vi.resetAllMocks();
   mockGuard.mockResolvedValue(false);
+  mockOwnerGuard.mockResolvedValue(false);
   mockSql.mockReset();
 });
 
@@ -168,8 +170,8 @@ describe('POST /api/tracker/alerts/[id]/ack', () => {
     expect(res._status).toBe(405);
   });
 
-  it('returns 401 when guest auth rejects', async () => {
-    mockGuard.mockImplementation(async (_req, res) => {
+  it('returns 401 when owner auth rejects', async () => {
+    mockOwnerGuard.mockImplementation(async (_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });

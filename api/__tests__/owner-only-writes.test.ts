@@ -4,12 +4,12 @@
  * Auth tier of the shared write endpoints, exercised through the real
  * owner and guest guards (only botid, the DB, Sentry and the logger are
  * mocked). Every shared write requires the owner session; a guest key
- * keeps read access to the tracker list.
+ * keeps read access to the tracker list and both alert feeds.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VercelRequest } from '@vercel/node';
-import { mockRequest, mockResponse } from './helpers';
+import { isolationScopeStub, mockRequest, mockResponse } from './helpers';
 
 const { checkBotIdMock, TransientDbError } = vi.hoisted(() => {
   class TransientDbError extends Error {
@@ -35,7 +35,7 @@ vi.mock('../_lib/db.js', () => ({
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
-    withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
+    withIsolationScope: vi.fn((cb) => cb(isolationScopeStub())),
     captureException: vi.fn(),
   },
   metrics: {
@@ -51,6 +51,10 @@ vi.mock('../_lib/logger.js', () => ({
 
 import listCreateHandler from '../tracker/contracts.js';
 import idHandler from '../tracker/contracts/[id].js';
+import trackerAckHandler from '../tracker/alerts/[id]/ack.js';
+import trackerUnreadHandler from '../tracker/alerts/unread.js';
+import intervalBAAckHandler from '../interval-ba-alerts-ack.js';
+import intervalBAAlertsHandler from '../interval-ba-alerts.js';
 
 const OWNER_SECRET = 'owner-secret-for-tests';
 const GUEST_KEY = 'guest-key-for-tests';
@@ -216,5 +220,82 @@ describe('DELETE /api/tracker/contracts/[id]', () => {
     await idHandler(requestAs('owner', del), res);
     expect(res._status).toBe(200);
     expect(res._json).toEqual({ deleted: 1 });
+  });
+});
+
+describe('POST /api/tracker/alerts/[id]/ack', () => {
+  const ack = { method: 'POST', query: { id: '7' } };
+
+  it('rejects a guest with 401 and writes nothing', async () => {
+    const res = mockResponse();
+    await trackerAckHandler(requestAs('guest', ack), res);
+    expect(res._status).toBe(401);
+    expect(res._json).toMatchObject({ error: 'Not authenticated' });
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unauthenticated caller with 401 and writes nothing', async () => {
+    const res = mockResponse();
+    await trackerAckHandler(requestAs('anonymous', ack), res);
+    expect(res._status).toBe(401);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('lets the owner acknowledge an alert (200)', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 7, acknowledged: true }]);
+    const res = mockResponse();
+    await trackerAckHandler(requestAs('owner', ack), res);
+    expect(res._status).toBe(200);
+    expect(res._json).toEqual({ acknowledged: 7 });
+  });
+});
+
+describe('GET /api/tracker/alerts/unread', () => {
+  it('still serves unread alerts to a guest (200)', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    const res = mockResponse();
+    await trackerUnreadHandler(requestAs('guest', { method: 'GET' }), res);
+    expect(res._status).toBe(200);
+    expect(res._json).toEqual({ alerts: [], count: 0 });
+  });
+});
+
+describe('POST /api/interval-ba-alerts-ack', () => {
+  const ack = { method: 'POST', body: { id: 42 } };
+
+  it('rejects a guest with 401 and writes nothing', async () => {
+    const res = mockResponse();
+    await intervalBAAckHandler(requestAs('guest', ack), res);
+    expect(res._status).toBe(401);
+    expect(res._json).toMatchObject({ error: 'Not authenticated' });
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unauthenticated caller with 401 and writes nothing', async () => {
+    const res = mockResponse();
+    await intervalBAAckHandler(requestAs('anonymous', ack), res);
+    expect(res._status).toBe(401);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('lets the owner acknowledge an alert (200)', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 42 }]);
+    const res = mockResponse();
+    await intervalBAAckHandler(requestAs('owner', ack), res);
+    expect(res._status).toBe(200);
+    expect(res._json).toEqual({ acknowledged: 42 });
+  });
+});
+
+describe('GET /api/interval-ba-alerts', () => {
+  it('still serves the alert feed to a guest (200)', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    const res = mockResponse();
+    await intervalBAAlertsHandler(
+      requestAs('guest', { method: 'GET', query: {} }),
+      res,
+    );
+    expect(res._status).toBe(200);
+    expect(mockSql).toHaveBeenCalledTimes(1);
   });
 });

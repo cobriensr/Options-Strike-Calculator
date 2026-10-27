@@ -4,17 +4,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse, isolationScopeStub } from './helpers';
 
 // ── Mocks ─────────────────────────────────────────────────────
-// One shared guard spy backs BOTH module specifiers: the GET handler's
-// guard now runs inside withDbReader (which imports from
-// `../_lib/guest-auth.js`), while the POST ack handler — not migrated in
-// this phase — still calls the guard inline via the `../_lib/api-helpers.js`
-// re-export. Pointing both mocks at the same fn keeps per-test overrides in
-// sync across the two handlers exercised in this file.
-const { guardOwnerOrGuestEndpoint } = vi.hoisted(() => ({
+// The GET handler's owner-or-guest guard runs inside withDbReader (which
+// imports from `../_lib/guest-auth.js`); the owner-only POST ack handler
+// imports guardOwnerEndpoint from `../_lib/api-helpers.js`. The real auth
+// tier is covered in owner-only-writes.test.ts.
+const { guardOwnerOrGuestEndpoint, guardOwnerEndpoint } = vi.hoisted(() => ({
   guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
+  guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
 }));
 vi.mock('../_lib/guest-auth.js', () => ({ guardOwnerOrGuestEndpoint }));
-vi.mock('../_lib/api-helpers.js', () => ({ guardOwnerOrGuestEndpoint }));
+vi.mock('../_lib/api-helpers.js', () => ({ guardOwnerEndpoint }));
 
 const mockSql = vi.fn();
 vi.mock('../_lib/db.js', () => ({
@@ -292,7 +291,7 @@ describe('severity derivation', () => {
 describe('POST /api/interval-ba-alerts-ack', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+    vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
     mockSql.mockReset();
   });
 
@@ -303,13 +302,11 @@ describe('POST /api/interval-ba-alerts-ack', () => {
     expect(res._json).toEqual({ error: 'POST only' });
   });
 
-  it('returns 401 for non-owner-and-non-guest (via guard)', async () => {
-    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
-      async (_req, res) => {
-        res.status(401).json({ error: 'Not authenticated' });
-        return true;
-      },
-    );
+  it('returns 401 for a non-owner (via guard)', async () => {
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
+      res.status(401).json({ error: 'Not authenticated' });
+      return true;
+    });
     const res = mockResponse();
     await ackHandler(mockRequest({ method: 'POST', body: { id: 1 } }), res);
     expect(res._status).toBe(401);
