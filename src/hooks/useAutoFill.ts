@@ -114,6 +114,15 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
   // without including the entire vix object (which is new on every render).
   const { selectedDate, setSelectedDate } = vix;
 
+  // useHistoryData keeps the last date's history while the new date's fetch
+  // is in flight. History for another date counts as none for the selected
+  // date, so its spot, VIX and σ never land there: that fetch may return no
+  // candles (pre-market, a weekend, a holiday, a closed session) or fail,
+  // and nothing would replace them. api/history echoes the requested date,
+  // so the two match exactly.
+  const ownHistory =
+    historyData.hasHistory && historyData.history?.date === selectedDate;
+
   // Track which date we last auto-set IV mode for so we don't override the
   // user's manual toggle on every re-run (the effect re-runs on every time
   // scrub, table load and quote refresh).
@@ -247,7 +256,7 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
       if (chooseMode) ivModeAutoFill.current = { date, knew };
     };
 
-    if (historyData.hasHistory) {
+    if (ownHistory) {
       // Past date: fill from historical candles
       const snapshot = historyData.getStateAtTime(etHour, etMinute);
       if (!snapshot) return;
@@ -267,10 +276,9 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
       // getVix1d returns null until the fetch completes, then its reference
       // changes → effect re-runs.
       if (snapshot.vix1d == null) vix1dStatic.ensureLoaded();
-      const date = historyData.history!.date;
       fillIv(
-        date,
-        snapshot.vix1d ?? vix1dStatic.getVix1d(date, etHour),
+        selectedDate,
+        snapshot.vix1d ?? vix1dStatic.getVix1d(selectedDate, etHour),
         snapshot.vix1d != null || vix1dStatic.loaded ? 'history' : 'none',
         snapshot.vix != null,
       );
@@ -306,7 +314,7 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     // renders when their underlying data hasn't changed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    historyData.hasHistory,
+    ownHistory,
     historyData.history,
     historyData.getStateAtTime,
     selectedDate,
@@ -327,7 +335,9 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
   ]);
 
   // ── Compute current history snapshot for downstream components ──
-  if (!historyData.hasHistory) return null;
+  // Only the selected date's: none while its history loads after another
+  // date's.
+  if (!ownHistory) return null;
 
   const { etHour, etMinute } = toETTime(
     timeHour,
@@ -343,7 +353,7 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
   // table; the load's state update re-renders App and this lookup then
   // returns the value.
   if (snapshot.vix1d == null) {
-    const staticVal = vix1dStatic.getVix1d(historyData.history!.date, etHour);
+    const staticVal = vix1dStatic.getVix1d(selectedDate, etHour);
     if (staticVal != null) {
       return { ...snapshot, vix1d: staticVal };
     }

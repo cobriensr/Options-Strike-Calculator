@@ -390,15 +390,26 @@ describe('IVInputSection', () => {
       expect(props.onUseVix1dAsSigma).not.toHaveBeenCalled();
     });
 
-    it("keeps a past snapshot off live quotes while today's history loads", () => {
-      // Back to today: the past date's snapshot stays up until today's
-      // history arrives, so its candle date also says "past".
-      renderSection({
-        dVix: '18.5',
+    it('drops a VIX1D typed on one past date without history when the date moves to another', async () => {
+      const user = userEvent.setup();
+      const { props, rerender } = renderSection({
+        dVix: '20.5',
         market: liveMarket,
-        selectedDate: getETToday(),
-        historySnapshot: snapshotAt(PAST_CANDLE),
+        selectedDate: '2026-03-10',
+        historySnapshot: null,
       });
+      await user.type(screen.getByLabelText(/VIX1D/), '15.5');
+      expect(
+        screen.getByRole('button', { name: /use vix1d as/i }),
+      ).toBeInTheDocument();
+
+      rerender(
+        <IVInputSection
+          {...props}
+          selectedDate="2026-03-09"
+          historySnapshot={null}
+        />,
+      );
 
       expectNothingOffered();
     });

@@ -8,7 +8,7 @@ import VIXRegimeCard from '../VIXRegimeCard';
 import VIXTermStructure from '../VIXTermStructure';
 import type { MarketDataState } from '../../hooks/useMarketData';
 import type { HistorySnapshot } from '../../hooks/useHistoryData';
-import { getETDateStr, getETToday } from '../../utils/timezone';
+import { getETToday } from '../../utils/timezone';
 import IVTooltip from './IVTooltip';
 
 interface Props {
@@ -78,14 +78,10 @@ export default function IVInputSection({
   // that date. The selected date decides, as in useAutoFill and App's
   // backtest mode, so a past date with no intraday history (older than ~60
   // days, a failed fetch, a weekend or holiday) gets no live values either.
-  // A snapshot whose candle is from a past ET date counts as past too: it
-  // stays up while today's history loads after a past date. Today keeps the
+  // historySnapshot is always the selected date's (useAutoFill drops another
+  // date's history while the selected date's loads). Today keeps the
   // fallback, with or without its own snapshot.
-  const today = getETToday();
-  const pastDate =
-    (!!selectedDate && selectedDate < today) ||
-    (historySnapshot != null &&
-      getETDateStr(new Date(historySnapshot.candle.datetime)) < today);
+  const pastDate = !!selectedDate && selectedDate < getETToday();
   const liveQuotes = pastDate ? null : market.data.quotes;
   // Remount the card when its source changes, so a value it took from an
   // earlier source (today's live VIX1D, say) can't stay on a past date.
