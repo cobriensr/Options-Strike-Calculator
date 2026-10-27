@@ -10,6 +10,9 @@ vi.mock('../../hooks/useTrackerContracts', () => ({
 vi.mock('../../hooks/useTrackerAlerts', () => ({
   useTrackerAlerts: vi.fn(),
 }));
+vi.mock('../../hooks/useAccessSession', () => ({
+  useAccessSession: vi.fn(),
+}));
 
 // Replace heavy children with simple test doubles so we can observe
 // which props TrackerSection passes them.
@@ -138,7 +141,17 @@ vi.mock('../../components/Tracker/helpers', async (importOriginal) => {
 import { TrackerSection } from '../../components/Tracker';
 import { useTrackerContracts } from '../../hooks/useTrackerContracts';
 import { useTrackerAlerts } from '../../hooks/useTrackerAlerts';
+import { useAccessSession } from '../../hooks/useAccessSession';
+import type { AccessMode } from '../../utils/auth';
 import type { TrackerContract } from '../../components/Tracker/types';
+
+function setAccessMode(mode: AccessMode) {
+  vi.mocked(useAccessSession).mockReturnValue({
+    mode,
+    refresh: vi.fn(),
+    logout: vi.fn(),
+  });
+}
 
 function makeContract(id: number): TrackerContract {
   return {
@@ -190,6 +203,7 @@ function mockContractsHook(
 describe('TrackerSection', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    setAccessMode('owner');
     // Default: alerts hook returns empty
     vi.mocked(useTrackerAlerts).mockReturnValue({
       data: [],
@@ -435,5 +449,39 @@ describe('TrackerSection', () => {
       status: 'closed',
       marketOpen: false,
     });
+  });
+
+  it('disables "+ Add Contract" for guests with an owner-only title', () => {
+    setAccessMode('guest');
+    vi.mocked(useTrackerContracts)
+      .mockReturnValueOnce(mockContractsHook('active', [makeContract(1)]))
+      .mockReturnValueOnce(mockContractsHook('closed', []));
+
+    render(<TrackerSection marketOpen={true} />);
+    const add = screen.getByRole('button', {
+      name: 'Add new contract to tracker',
+    });
+    expect(add).toBeDisabled();
+    expect(add).toHaveAttribute(
+      'title',
+      'Owner only \u2014 guest mode is read-only',
+    );
+    fireEvent.click(add);
+    expect(screen.queryByTestId('add-form-open')).toBeNull();
+  });
+
+  it('keeps "+ Add Contract" enabled for the owner and opens the form', () => {
+    vi.mocked(useTrackerContracts)
+      .mockReturnValueOnce(mockContractsHook('active', [makeContract(1)]))
+      .mockReturnValueOnce(mockContractsHook('closed', []));
+
+    render(<TrackerSection marketOpen={true} />);
+    const add = screen.getByRole('button', {
+      name: 'Add new contract to tracker',
+    });
+    expect(add).toBeEnabled();
+    expect(add).not.toHaveAttribute('title');
+    fireEvent.click(add);
+    expect(screen.getByTestId('add-form-open')).toBeInTheDocument();
   });
 });

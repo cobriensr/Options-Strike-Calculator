@@ -1,7 +1,26 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+
+vi.mock('../../hooks/useAccessSession', () => ({
+  useAccessSession: vi.fn(),
+}));
+
 import { ContractRow } from '../../components/Tracker/ContractRow';
 import type { TrackerContract } from '../../components/Tracker/types';
+import { useAccessSession } from '../../hooks/useAccessSession';
+import type { AccessMode } from '../../utils/auth';
+
+function setAccessMode(mode: AccessMode) {
+  vi.mocked(useAccessSession).mockReturnValue({
+    mode,
+    refresh: vi.fn(),
+    logout: vi.fn(),
+  });
+}
+
+beforeEach(() => {
+  setAccessMode('owner');
+});
 
 function makeRow(overrides: Partial<TrackerContract> = {}): TrackerContract {
   return {
@@ -174,5 +193,128 @@ describe('ContractRow', () => {
       ),
     );
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('disables every edit and close control for guests', () => {
+    setAccessMode('guest');
+    render(
+      wrap(
+        <ContractRow
+          contract={makeRow()}
+          hasUnreadAlert={false}
+          onUpdate={vi.fn()}
+          onClose={vi.fn()}
+        />,
+      ),
+    );
+    const details = screen.getByRole('button', { name: /Details/i });
+    expect(details).toBeEnabled();
+    fireEvent.click(details);
+
+    expect(
+      screen.getByText('Owner only \u2014 guest mode is read-only'),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/Position size/i)).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Add up threshold' }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Add spot alert' }),
+    ).toBeDisabled();
+    expect(screen.getByLabelText(/Closed price/i)).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Close' })).toBeDisabled();
+  });
+
+  it('does not call onClose or onUpdate when a guest clicks the disabled controls', () => {
+    setAccessMode('guest');
+    const onClose = vi.fn();
+    const onUpdate = vi.fn();
+    render(
+      wrap(
+        <ContractRow
+          contract={makeRow()}
+          hasUnreadAlert={false}
+          onUpdate={onUpdate}
+          onClose={onClose}
+        />,
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Details/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    fireEvent.click(
+      screen.getAllByRole('button', { name: /Remove up threshold/ })[0]!,
+    );
+    fireEvent.change(screen.getByLabelText(/Position size/i), {
+      target: { value: '8' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it('leaves the controls enabled for the owner, with no owner-only note', () => {
+    render(
+      wrap(
+        <ContractRow
+          contract={makeRow()}
+          hasUnreadAlert={false}
+          onUpdate={vi.fn()}
+          onClose={vi.fn()}
+        />,
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Details/i }));
+    expect(screen.queryByText(/Owner only/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Close' })).toBeEnabled();
+    expect(
+      screen.getByRole('button', { name: 'Add up threshold' }),
+    ).toBeEnabled();
+  });
+
+  it('shows the error when a threshold update is rejected (e.g. 401)', async () => {
+    const onUpdate = vi.fn().mockRejectedValue(new Error('Not authenticated'));
+    render(
+      wrap(
+        <ContractRow
+          contract={makeRow()}
+          hasUnreadAlert={false}
+          onUpdate={onUpdate}
+          onClose={vi.fn()}
+        />,
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Details/i }));
+    fireEvent.change(screen.getByLabelText('New up threshold percentage'), {
+      target: { value: '75' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add up threshold' }));
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('Not authenticated'),
+    );
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the error when a spot-alert update is rejected (e.g. 401)', async () => {
+    const onUpdate = vi.fn().mockRejectedValue(new Error('Not authenticated'));
+    render(
+      wrap(
+        <ContractRow
+          contract={makeRow()}
+          hasUnreadAlert={false}
+          onUpdate={onUpdate}
+          onClose={vi.fn()}
+        />,
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Details/i }));
+    fireEvent.change(screen.getByLabelText('Spot alert level'), {
+      target: { value: '230' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add spot alert' }));
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('Not authenticated'),
+    );
+    expect(onUpdate).toHaveBeenCalledTimes(1);
   });
 });

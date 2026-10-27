@@ -3,10 +3,16 @@
  * reveal per-contract overrides (thresholds + spot alerts) and a close
  * action. PnL is computed from the joined `latest_*` columns; direction
  * (long/short) flips the sign.
+ *
+ * Tracker writes are owner-only. A guest can expand the details and read
+ * the current values, but every edit and close control sits in a
+ * disabled fieldset.
  */
 
 import { memo, useCallback, useId, useState } from 'react';
 
+import { useAccessSession } from '../../hooks/useAccessSession.js';
+import { getErrorMessage } from '../../utils/error.js';
 import type {
   ContractUpdateInput,
   SpotAlert,
@@ -48,27 +54,43 @@ export const ContractRow = memo(function ContractRow({
   const [closing, setClosing] = useState(false);
   const [closeDraft, setCloseDraft] = useState('');
   const [closeError, setCloseError] = useState<string | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
   const detailsId = useId();
+  const isGuest = useAccessSession().mode === 'guest';
 
   const dte = dteFromExpiry(contract.expiry);
   const dteAmber = dte <= 7;
   const { current, deltaDollar, deltaPct } = computePnl(contract);
 
-  const handleThresholdsChange = useCallback(
-    (up: number[] | null, down: number[] | null) => {
-      void onUpdate(contract.id, {
-        up_thresholds: up,
-        down_thresholds: down,
+  // The disabled fieldset already blocks guest input in the browser; each
+  // write handler also returns early for a guest, so no guest path can
+  // reach an owner-only endpoint.
+  //
+  // Threshold and spot-alert edits save in the background. Show a failed
+  // save (a 401, a network error) instead of dropping it.
+  const saveInBackground = useCallback(
+    (body: ContractUpdateInput) => {
+      if (isGuest) return;
+      setUpdateError(null);
+      onUpdate(contract.id, body).catch((err: unknown) => {
+        setUpdateError(getErrorMessage(err));
       });
     },
-    [contract.id, onUpdate],
+    [isGuest, contract.id, onUpdate],
+  );
+
+  const handleThresholdsChange = useCallback(
+    (up: number[] | null, down: number[] | null) => {
+      saveInBackground({ up_thresholds: up, down_thresholds: down });
+    },
+    [saveInBackground],
   );
 
   const handleSpotAlertsChange = useCallback(
     (next: SpotAlert[] | null) => {
-      void onUpdate(contract.id, { spot_alerts: next });
+      saveInBackground({ spot_alerts: next });
     },
-    [contract.id, onUpdate],
+    [saveInBackground],
   );
 
   const handlePositionSizeEntrySave = useCallback(
@@ -79,15 +101,17 @@ export const ContractRow = memo(function ContractRow({
       quantity: number;
       entryPrice: number;
     }) => {
+      if (isGuest) return;
       await onUpdate(contract.id, {
         quantity,
         entry_price: entryPrice,
       });
     },
-    [contract.id, onUpdate],
+    [isGuest, contract.id, onUpdate],
   );
 
   const handleClose = useCallback(async () => {
+    if (isGuest) return;
     setCloseError(null);
     const price = Number.parseFloat(closeDraft);
     if (!Number.isFinite(price) || price <= 0) {
@@ -102,7 +126,7 @@ export const ContractRow = memo(function ContractRow({
     } finally {
       setClosing(false);
     }
-  }, [closeDraft, contract.id, onClose]);
+  }, [isGuest, closeDraft, contract.id, onClose]);
 
   return (
     <>
@@ -181,7 +205,26 @@ export const ContractRow = memo(function ContractRow({
       {expanded && (
         <tr id={detailsId} className="border-edge bg-surface-alt border-b">
           <td colSpan={10} className="px-4 py-3">
-            <div className="space-y-4">
+            {isGuest && (
+              <p className="text-tertiary mb-3 font-sans text-[11px]">
+                Owner only &mdash; guest mode is read-only
+              </p>
+            )}
+            {updateError && (
+              <p
+                role="alert"
+                className="text-danger mb-3 font-sans text-[11px]"
+              >
+                {updateError}
+              </p>
+            )}
+            <fieldset
+              disabled={isGuest}
+              title={
+                isGuest ? 'Owner only — guest mode is read-only' : undefined
+              }
+              className="min-w-0 space-y-4"
+            >
               {contract.status === 'active' && (
                 <PositionSizeEntryEditor
                   quantity={contract.quantity}
@@ -248,7 +291,7 @@ export const ContractRow = memo(function ContractRow({
               ) : (
                 <ClosedSummary contract={contract} />
               )}
-            </div>
+            </fieldset>
           </td>
         </tr>
       )}

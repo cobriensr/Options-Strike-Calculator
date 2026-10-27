@@ -11,10 +11,14 @@
  * Polling is gated by `marketOpen` for Active (cron only fires during
  * RTH), and disabled entirely for Archive (rows are static). The alerts
  * hook polls independently every 30s while the section is mounted.
+ *
+ * Tracker writes are owner-only. Guests see every row but the Add button
+ * is disabled (and each row's edit controls, see ContractRow).
  */
 
 import { memo, useCallback, useMemo, useState } from 'react';
 
+import { useAccessSession } from '../../hooks/useAccessSession.js';
 import { useTrackerContracts } from '../../hooks/useTrackerContracts.js';
 import { useTrackerAlerts } from '../../hooks/useTrackerAlerts.js';
 import { SectionBox } from '../ui/SectionBox.js';
@@ -39,6 +43,7 @@ export const TrackerSection = memo(function TrackerSection({
   const [tab, setTab] = useState<TrackerTab>('active');
   const [groupBy, setGroupBy] = useState<GroupMode>('expiration');
   const [addOpen, setAddOpen] = useState(false);
+  const isGuest = useAccessSession().mode === 'guest';
   // Mirror the SectionBox collapsed state so all three polling hooks
   // pause while the section is hidden. SectionBox is `defaultCollapsed`
   // (Phase 3 spec) — seed `true` and flip on the user's first expand.
@@ -149,8 +154,10 @@ export const TrackerSection = memo(function TrackerSection({
           <button
             type="button"
             onClick={() => setAddOpen(true)}
+            disabled={isGuest}
+            title={isGuest ? 'Owner only — guest mode is read-only' : undefined}
             aria-label="Add new contract to tracker"
-            className="bg-accent cursor-pointer rounded px-3 py-1.5 font-sans text-[12px] font-semibold text-white"
+            className="bg-accent cursor-pointer rounded px-3 py-1.5 font-sans text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
           >
             + Add Contract
           </button>
