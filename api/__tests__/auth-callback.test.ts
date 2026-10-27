@@ -3,9 +3,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
+// The state nonce is consumed with one atomic GETDEL; '1' is what
+// getAuthUrl stores.
 const mockRedis = vi.hoisted(() => ({
-  get: vi.fn().mockResolvedValue('valid'),
-  del: vi.fn().mockResolvedValue(1),
+  getdel: vi.fn().mockResolvedValue('1'),
 }));
 
 vi.mock('../_lib/schwab.js', () => ({
@@ -42,6 +43,9 @@ describe('GET /api/auth/callback', () => {
     process.env = { ...originalEnv };
     process.env.APP_URL = 'https://example.com';
     vi.restoreAllMocks();
+    // Call history only; the default answers above stay.
+    vi.clearAllMocks();
+    mockRedis.getdel.mockReset().mockResolvedValue('1');
   });
 
   afterEach(() => {
@@ -63,19 +67,28 @@ describe('GET /api/auth/callback', () => {
     expect(res._status).toBe(400);
   });
 
-  it('returns 500 when OWNER_SECRET is not set', async () => {
-    delete process.env.OWNER_SECRET;
-    const res = mockResponse();
-    await handler(
-      mockRequest({
-        query: { code: 'auth-code-123', state: 'valid-state' },
-        headers: { host: 'example.com' },
-      }),
-      res,
-    );
-    expect(res._status).toBe(500);
-    expect((res._json as { error: string }).error).toContain('OWNER_SECRET');
-  });
+  it.each([
+    ['unset', undefined],
+    ['empty', ''],
+  ])(
+    'returns 500 when OWNER_SECRET is %s, before any token exchange',
+    async (_label, value) => {
+      if (value === undefined) delete process.env.OWNER_SECRET;
+      else process.env.OWNER_SECRET = value;
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          query: { code: 'auth-code-123', state: 'valid-state' },
+          headers: { host: 'example.com' },
+        }),
+        res,
+      );
+      expect(res._status).toBe(500);
+      expect((res._json as { error: string }).error).toContain('OWNER_SECRET');
+      expect(storeInitialTokens).not.toHaveBeenCalled();
+      expect(res._headers['Set-Cookie']).toBeUndefined();
+    },
+  );
 
   it('returns 400 when state parameter is missing', async () => {
     process.env.OWNER_SECRET = 'secret';
@@ -93,7 +106,7 @@ describe('GET /api/auth/callback', () => {
 
   it('returns 400 when state is invalid or expired', async () => {
     process.env.OWNER_SECRET = 'secret';
-    mockRedis.get.mockResolvedValueOnce(null);
+    mockRedis.getdel.mockResolvedValueOnce(null);
     const res = mockResponse();
     await handler(
       mockRequest({
@@ -104,9 +117,84 @@ describe('GET /api/auth/callback', () => {
     );
     expect(res._status).toBe(400);
     expect((res._json as { error: string }).error).toContain('state');
-    // Nonce must not be consumed on rejection
-    expect(mockRedis.del).not.toHaveBeenCalled();
+    expect(mockRedis.getdel).toHaveBeenCalledWith('oauth:state:unknown-nonce');
+    expect(storeInitialTokens).not.toHaveBeenCalled();
   });
+
+  it('consumes the state once: a second callback with the same state is rejected', async () => {
+    process.env.OWNER_SECRET = 'secret';
+    vi.mocked(storeInitialTokens).mockResolvedValue({ success: true });
+    // A store that models GETDEL: the first read takes the nonce.
+    const store = new Map([['oauth:state:replayed', '1']]);
+    mockRedis.getdel.mockImplementation((key: string) => {
+      const value = store.get(key) ?? null;
+      store.delete(key);
+      return Promise.resolve(value);
+    });
+    const request = () =>
+      mockRequest({ query: { code: 'auth-code-123', state: 'replayed' } });
+
+    const first = mockResponse();
+    await handler(request(), first);
+    const second = mockResponse();
+    await handler(request(), second);
+
+    expect(first._status).toBe(200);
+    expect(second._status).toBe(400);
+    expect(second._json).toEqual({
+      error: 'Invalid or expired state parameter',
+    });
+    expect(second._headers['Set-Cookie']).toBeUndefined();
+    expect(storeInitialTokens).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [
+      'not_owner',
+      403,
+      'warning',
+      'This Schwab login is not authorized for this app',
+    ],
+    [
+      'owner_hash_missing',
+      500,
+      'error',
+      'Owner account check is not configured',
+    ],
+    ['owner_check_failed', 500, 'error', 'Owner account check failed'],
+  ] as const)(
+    '%s → %i with an opaque body, no Set-Cookie, and a Sentry %s naming the kind',
+    async (type, status, level, error) => {
+      process.env.OWNER_SECRET = 'owner-cookie-secret';
+      vi.mocked(storeInitialTokens).mockResolvedValue({
+        error: { type, message: 'owner-check-detail' },
+      });
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({ query: { code: 'auth-code-123', state: 'valid-state' } }),
+        res,
+      );
+
+      expect(res._status).toBe(status);
+      expect(res._json).toEqual({ error });
+      // No session for a refused login, and nothing of the cookie secret.
+      expect(res._headers['Set-Cookie']).toBeUndefined();
+      expect(JSON.stringify(res)).not.toContain('owner-cookie-secret');
+      // The detail goes to Sentry, not to the client.
+      expect(JSON.stringify(res._json)).not.toContain('owner-check-detail');
+      expect(mockSentryCapture.captureMessage).toHaveBeenCalledTimes(1);
+      expect(mockSentryCapture.captureMessage).toHaveBeenCalledWith(
+        `schwab.auth.${type}`,
+        {
+          level,
+          fingerprint: [`schwab.auth.${type}`],
+          extra: { detail: 'owner-check-detail' },
+        },
+      );
+      expect(mockSentryCapture.captureException).not.toHaveBeenCalled();
+    },
+  );
 
   it('returns 500 when APP_URL is not configured', async () => {
     process.env.OWNER_SECRET = 'secret';
