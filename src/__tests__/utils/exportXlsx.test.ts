@@ -745,7 +745,7 @@ describe('exportBWBComparison', () => {
       }
     });
 
-    it('Wide is the snapped width per side (15 × 2.5 → 35 put, 40 call)', async () => {
+    it('Wide snaps away from the short on both sides (15 × 2.5 → 40)', async () => {
       await exportBWBComparison({
         results: makeResults(),
         contracts: 1,
@@ -759,7 +759,7 @@ describe('exportBWBComparison', () => {
       );
       expect(offGrid).toHaveLength(12);
       for (const row of offGrid) {
-        expect(row['Wide']).toBe(row['Side'] === 'Put BWB' ? 35 : 40);
+        expect(row['Wide']).toBe(40);
       }
     });
 
@@ -915,6 +915,24 @@ describe('exportBWBComparison', () => {
       const flat = data.map((r) => r.join(' '));
       expect(flat.some((s) => s.includes('10, 15, 20, 25, 30'))).toBe(true);
       expect(flat.some((s) => s.includes('1.5x'))).toBe(true);
+    });
+
+    it('explains that an off-grid wide width snaps away from the short on both sides', async () => {
+      await exportBWBComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+      });
+      const wb = getWorkbook();
+      const sheet = getSheet(wb, 'Inputs');
+      const data: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+      const flat = data.map((r) => r.join(' '));
+      expect(
+        flat.some((s) =>
+          s.includes('37.5) snaps away from the short strike to 40'),
+        ),
+      ).toBe(true);
+      expect(flat.some((s) => s.includes('35 on puts'))).toBe(false);
     });
   });
 });

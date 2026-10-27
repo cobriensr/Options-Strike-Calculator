@@ -176,7 +176,7 @@ export async function exportBWBComparison({
     ['Net Credit can be negative (net debit) depending on wing asymmetry.'],
     ['Max Profit = Narrow Width + Net Credit (at the sweet spot).'],
     [
-      'Narrow and Wide are the snapped strike distances: an off-grid wide width (e.g. 37.5) snaps to 35 on puts and 40 on calls.',
+      'Narrow and Wide are the snapped strike distances: an off-grid wide width (e.g. 37.5) snaps away from the short strike to 40 on both sides.',
     ],
     ['Max Loss = Wide Width − Narrow Width − Net Credit (capped at far wing).'],
     [

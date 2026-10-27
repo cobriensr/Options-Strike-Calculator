@@ -12,7 +12,9 @@ import {
   getKurtosisFactor,
 } from '../../constants';
 import type { BWBLegs, DeltaRow } from '../../types';
+import { snapBWBFarStrike, snapBWBWideWidth } from '../../utils/bwb';
 import { adjustPoPForKurtosis } from '../../utils/iron-condor';
+import { snapToIncrement } from '../../utils/strikes';
 
 const spot = 5800;
 const sigma = 0.2;
@@ -789,6 +791,44 @@ describe.each(scenarios)(
       }
     });
 
+    it('snaps the far wing away from the short on both sides and keeps on-grid widths unchanged (Q2)', () => {
+      let offGrid = 0;
+      for (const narrow of BWB_NARROW_OPTIONS) {
+        for (const mult of SWEEP_MULTIPLIERS) {
+          const requested = narrow * mult;
+          const onGrid = requested % 5 === 0;
+          // The next 5-pt multiple at or beyond the request
+          const expected = Math.ceil(requested / 5) * 5;
+          if (!onGrid) offGrid++;
+          for (const row of sweepRows) {
+            const put = buildPutBWB(row, narrow, requested, spot, t);
+            const call = buildCallBWB(row, narrow, requested, spot, t);
+            const label = row.delta + 'Δ ' + narrow + '×' + mult;
+            expect(put.longFarStrike, label).toBe(put.shortStrike - expected);
+            expect(call.longFarStrike, label).toBe(call.shortStrike + expected);
+            expect(put.wideWidth, label).toBe(expected);
+            expect(call.wideWidth, label).toBe(expected);
+            expect(snapBWBWideWidth(requested), label).toBe(expected);
+            if (onGrid) {
+              // Exactly the request, and exactly what nearest-strike
+              // rounding gave before Q2
+              expect(put.wideWidth, label).toBe(requested);
+              expect(put.longFarStrike, label).toBe(
+                snapToIncrement(put.shortStrike - requested),
+              );
+              expect(call.longFarStrike, label).toBe(
+                snapToIncrement(call.shortStrike + requested),
+              );
+            } else {
+              expect(put.wideWidth, label).toBe(requested + 2.5);
+            }
+          }
+        }
+      }
+      // 15 × 1.5, 15 × 2.5, 25 × 1.5, 25 × 2.5, plus 15 × 0.5 and 25 × 0.5
+      expect(offGrid).toBe(6);
+    });
+
     it('maxLoss equals the worst expiry P&L on a dense price grid', () => {
       for (const b of cases) {
         expect(b.maxLoss, name(b)).toBeCloseTo(
@@ -925,17 +965,62 @@ describe('M1b regression: debit BWB PoP counts only the profit zone', () => {
   });
 });
 
+describe('Q2: off-grid far wings snap away from the short strike', () => {
+  it.each([
+    [22.5, 25],
+    [37.5, 40],
+    [62.5, 65],
+    [7.5, 10],
+    [12.5, 15],
+    [15, 15],
+    [30, 30],
+    [40, 40],
+    [90, 90],
+    [0, 0],
+  ])('snapBWBWideWidth(%d) = %d', (requested, effective) => {
+    expect(snapBWBWideWidth(requested)).toBe(effective);
+  });
+
+  it('the production grid has exactly four off-grid combos, each widened by 2.5', () => {
+    const offGrid: string[] = [];
+    for (const narrow of BWB_NARROW_OPTIONS) {
+      for (const mult of BWB_WIDE_MULTIPLIERS) {
+        const requested = narrow * mult;
+        if (snapBWBWideWidth(requested) !== requested) {
+          offGrid.push(narrow + '×' + mult);
+          expect(snapBWBWideWidth(requested)).toBe(requested + 2.5);
+        }
+      }
+    }
+    expect(offGrid).toEqual(['15×1.5', '15×2.5', '25×1.5', '25×2.5']);
+  });
+
+  it('snapBWBFarStrike floors puts and ceils calls onto the grid, even from an off-grid short', () => {
+    expect(snapBWBFarStrike(5725, 37.5, 'put')).toBe(5685);
+    expect(snapBWBFarStrike(5870, 37.5, 'call')).toBe(5910);
+    expect(snapBWBFarStrike(5727, 20, 'put')).toBe(5705);
+    expect(snapBWBFarStrike(5727, 20, 'call')).toBe(5750);
+    // An on-grid target never moves
+    expect(snapBWBFarStrike(5725, 40, 'put')).toBe(5685);
+    expect(snapBWBFarStrike(5870, 40, 'call')).toBe(5910);
+  });
+});
+
 describe('M1 regression: off-grid wide widths use the snapped far strike', () => {
   const t5 = calcTimeToExpiry(5);
   const row10 = calcAllDeltas(spot, 0.18, t5, 0.03).find(
     (r): r is DeltaRow => !('error' in r) && r.delta === 10,
   )!;
 
-  it('15/37.5 put snaps the far wing to 35 wide and sizes max loss from 35', () => {
+  it('15/37.5 put snaps the far wing away from the short to 40 wide and sizes max loss from 40', () => {
     const bwb = buildPutBWB(row10, 15, 37.5, spot, t5);
-    expect(bwb.longFarStrike).toBe(bwb.shortStrike - 35);
-    expect(bwb.wideWidth).toBe(35);
-    expect(bwb.maxLoss).toBeCloseTo(35 - 15 - bwb.netCredit, 10);
+    // Before Q2 the far wing rounded toward the short: 5740/5725/5690
+    expect([bwb.longNearStrike, bwb.shortStrike, bwb.longFarStrike]).toEqual([
+      5740, 5725, 5685,
+    ]);
+    expect(bwb.longFarStrike).toBe(bwb.shortStrike - 40);
+    expect(bwb.wideWidth).toBe(40);
+    expect(bwb.maxLoss).toBeCloseTo(40 - 15 - bwb.netCredit, 10);
     expect(bwb.maxLoss).toBeCloseTo(
       -bwbPnLAtExpiry(bwb, bwb.longFarStrike),
       10,

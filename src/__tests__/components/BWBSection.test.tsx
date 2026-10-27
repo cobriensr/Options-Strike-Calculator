@@ -111,10 +111,12 @@ describe('BWBSection', () => {
     ).toBeInTheDocument();
   });
 
-  it('labels off-grid wings per side with the snapped widths', () => {
-    // 15 × 2.5 = 37.5: the put far wing snaps to 35, the call far wing to 40
+  it('labels off-grid wings with the far wing snapped away from the short on both sides', () => {
+    // 15 × 2.5 = 37.5: both far wings snap away from the short to 40, so
+    // the sides match and the label is not split per side
     renderSection({}, { narrowWidth: 15, wideMultiplier: 2.5 });
-    const label = '15/35-pt put, 15/40-pt call wings';
+    const label = '15/40-pt wings';
+    expect(screen.queryByText(/37\.5|15\/35/)).not.toBeInTheDocument();
     expect(
       screen.getByText('Broken Wing Butterfly (' + label + ')'),
     ).toBeInTheDocument();

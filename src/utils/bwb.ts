@@ -1,5 +1,6 @@
 import {
   DEFAULT_SPX_SPY_RATIO,
+  DEFAULTS,
   getKurtosisFactor,
 } from '../constants/index.js';
 import type { DeltaRow, BWBLegs } from '../types/index.js';
@@ -13,6 +14,36 @@ import {
 import { snapToSpyHalf } from './formatting.js';
 import { adjustPoPForKurtosis, calcSpreadPoP } from './iron-condor.js';
 import { snapToIncrement } from './strikes.js';
+
+/**
+ * Far-wing strike of a BWB: the short strike ∓ the requested wide width,
+ * rounded onto the strike grid AWAY from the short strike (owner decision
+ * Q2 in review-remediation-2026-10-26). Puts floor and calls ceil, so an
+ * off-grid request (15 × 2.5 = 37.5) widens to 40 on both sides, and an
+ * on-grid target stays exactly where it is.
+ */
+export function snapBWBFarStrike(
+  shortStrike: number,
+  wideWidth: number,
+  side: 'put' | 'call',
+): number {
+  const inc = DEFAULTS.STRIKE_INCREMENT;
+  // The 1e-9 keeps an on-grid target in place when the division lands a
+  // hair off the integer.
+  return side === 'put'
+    ? Math.floor((shortStrike - wideWidth) / inc + 1e-9) * inc
+    : Math.ceil((shortStrike + wideWidth) / inc - 1e-9) * inc;
+}
+
+/**
+ * Wide-wing width a BWB actually trades for a requested width (37.5 → 40,
+ * 40 → 40), for labels. Every production short strike sits on the strike
+ * grid, where this equals the builders' wideWidth on both sides.
+ */
+export function snapBWBWideWidth(wideWidth: number): number {
+  // + 0 turns the -0 that Math.ceil(-1e-9) gives for a 0 width into 0
+  return snapBWBFarStrike(0, wideWidth, 'call') + 0;
+}
 
 /**
  * Payoff summary of a BWB, computed from its actual (snapped) strikes.
@@ -112,10 +143,10 @@ function summarizeBWBPayoff(
  *   Buy 1 put  at longFarStrike   (further OTM — risk side)
  *
  * The `narrowWidth` / `wideWidth` arguments are the requested widths. The
- * wings are snapped to the strike grid, so an off-grid request moves the
- * far wing: 15 × 2.5 = 37.5 snaps to 35 wide here (and to 40 on the call
- * side). Every returned width and payoff number comes from the snapped
- * strikes:
+ * wings are snapped to the strike grid, and the far wing snaps away from
+ * the short strike (snapBWBFarStrike), so 15 × 2.5 = 37.5 trades 40 wide
+ * here and on the call side. Every returned width and payoff number comes
+ * from the snapped strikes:
  *
  * narrowWidth = longNearStrike - shortStrike
  * wideWidth   = shortStrike - longFarStrike
@@ -140,7 +171,7 @@ export function buildPutBWB(
 ): BWBLegs {
   const shortStrike = row.putSnapped;
   const longNearStrike = snapToIncrement(shortStrike + narrowWidth);
-  const longFarStrike = snapToIncrement(shortStrike - wideWidth);
+  const longFarStrike = snapBWBFarStrike(shortStrike, wideWidth, 'put');
   const sigma = row.putSigma;
 
   // Price all legs
@@ -233,7 +264,8 @@ export function buildPutBWB(
  *   Sell 2 calls at shortStrike    (sweet spot)
  *   Buy 1 call at longFarStrike   (further OTM — risk side)
  *
- * Widths come from the snapped strikes, as in buildPutBWB:
+ * Widths come from the snapped strikes, and the far wing snaps away from
+ * the short strike, as in buildPutBWB:
  *
  * narrowWidth = shortStrike - longNearStrike
  * wideWidth   = longFarStrike - shortStrike
@@ -258,7 +290,7 @@ export function buildCallBWB(
 ): BWBLegs {
   const shortStrike = row.callSnapped;
   const longNearStrike = snapToIncrement(shortStrike - narrowWidth);
-  const longFarStrike = snapToIncrement(shortStrike + wideWidth);
+  const longFarStrike = snapBWBFarStrike(shortStrike, wideWidth, 'call');
   const sigma = row.callSigma;
 
   // Price all legs
