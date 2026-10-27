@@ -89,7 +89,14 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
   // Track which date we last auto-set IV mode for so we don't override the
   // user's manual toggle on every re-render (historyData is a new object ref
   // each render, which would otherwise re-trigger the history effect).
-  const ivModeAutoFilledDate = useRef<string | null>(null);
+  // `settled` is false when that choice was made before VIX1D for the date
+  // could be known (no Schwab VIX1D, static table still loading): the VIX
+  // fallback is then provisional, and the mode is chosen once more when the
+  // table arrives. A failed load leaves it provisional, so re-runs that retry
+  // the load still leave the user's toggle alone.
+  const ivModeAutoFill = useRef<{ date: string; settled: boolean } | null>(
+    null,
+  );
 
   // ── Auto-fill from live Schwab data (owner-only, silently skipped for public) ──
   useEffect(() => {
@@ -201,26 +208,28 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
       // getVix1d returns null until the fetch completes, then its reference
       // changes → effect re-runs.
       if (snapshot.vix1d == null) vix1dStatic.ensureLoaded();
-      const vix1dVal =
-        snapshot.vix1d ??
-        vix1dStatic.getVix1d(historyData.history!.date, etHour);
-      const isNewDate =
-        ivModeAutoFilledDate.current !== historyData.history!.date;
+      const date = historyData.history!.date;
+      const vix1dVal = snapshot.vix1d ?? vix1dStatic.getVix1d(date, etHour);
+      // Choose the IV mode on a new date, or once more when a provisional
+      // choice can settle because VIX1D for the date is now known.
+      const vix1dKnown = snapshot.vix1d != null || vix1dStatic.loaded;
+      const prev = ivModeAutoFill.current;
+      const chooseMode = prev?.date !== date || (!prev.settled && vix1dKnown);
       if (vix1dVal != null && vix1dVal > 0) {
-        // Only auto-switch IV mode when the date changes; always update the
-        // σ value so it stays current as the user scrubs time.
-        if (isNewDate) setIvMode(IV_MODES.DIRECT);
+        // Only auto-switch IV mode when choosing; always update the σ value
+        // so it stays current as the user scrubs time.
+        if (chooseMode) setIvMode(IV_MODES.DIRECT);
         setDirectIVInput((vix1dVal / 100).toFixed(4));
-      } else if (snapshot.vix != null && isNewDate) {
-        // No VIX1D available — fall back to VIX mode (new date only)
+      } else if (snapshot.vix != null && chooseMode) {
+        // No VIX1D available (yet) — fall back to VIX mode
         setIvMode(IV_MODES.VIX);
       }
-      if (isNewDate) {
-        ivModeAutoFilledDate.current = historyData.history!.date;
+      if (chooseMode) {
+        ivModeAutoFill.current = { date, settled: vix1dKnown };
       }
     } else if (market.data.quotes) {
       // Today (or no history): restore live prices if available
-      ivModeAutoFilledDate.current = null;
+      ivModeAutoFill.current = null;
       const q = market.data.quotes;
       if (q.spy) setSpotPrice(q.spy.price.toFixed(2));
       if (q.spx) setSpxDirect(q.spx.price.toFixed(0));

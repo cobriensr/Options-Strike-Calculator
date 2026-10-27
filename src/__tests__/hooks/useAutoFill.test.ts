@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { useState } from 'react';
+import { renderHook, waitFor, act } from '@testing-library/react';
 import { useAutoFill } from '../../hooks/useAutoFill';
 import { useVix1dData } from '../../hooks/useVix1dData';
 import { IV_MODES } from '../../constants';
+import type { IVMode } from '../../types';
 import type { MarketDataState } from '../../hooks/useMarketData';
 import type { UseVixDataReturn } from '../../hooks/useVixData';
 import type {
@@ -897,5 +899,157 @@ describe('useAutoFill: static VIX1D loading', () => {
     );
 
     expect(vix1dStatic.ensureLoaded).not.toHaveBeenCalled();
+  });
+
+  // ── IV mode when the table arrives after the first visit ──
+  // Real useVix1dData plus real ivMode / σ state, so a user's toggle is a
+  // real state change that the hook's later re-runs must leave alone.
+
+  /** fetch that stays pending until the test settles it, one call at a time. */
+  function pendingFetches() {
+    const pending: {
+      resolve: (res: Response) => void;
+      reject: (err: unknown) => void;
+    }[] = [];
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+      () =>
+        new Promise<Response>((resolve, reject) => {
+          pending.push({ resolve, reject });
+        }),
+    );
+    return {
+      fetchSpy,
+      respond: (table: Record<string, unknown>) =>
+        pending
+          .shift()!
+          .resolve(new Response(JSON.stringify(table), { status: 200 })),
+      fail: () => pending.shift()!.reject(new TypeError('Failed to fetch')),
+    };
+  }
+
+  const VIX1D_TABLE = { '2026-03-10': { o: 16.5, h: 17.2, l: 16.1, c: 16.9 } };
+
+  function renderWithIvState(
+    historyData: UseHistoryDataReturn,
+    initialMode: IVMode,
+  ) {
+    const setters = createSetters();
+    return renderHook(
+      ({ timeMinute }: { timeMinute: string }) => {
+        const [ivMode, setIvMode] = useState<IVMode>(initialMode);
+        const [directIV, setDirectIVInput] = useState('');
+        const vix1dStatic = useVix1dData();
+        useAutoFill({
+          ...baseInputs,
+          ...setters,
+          setIvMode,
+          setDirectIVInput,
+          timeMinute,
+          historyData,
+          vix1dStatic,
+        });
+        return { ivMode, setIvMode, directIV, loaded: vix1dStatic.loaded };
+      },
+      { initialProps: { timeMinute: '30' } },
+    );
+  }
+
+  function pastDateWithoutSchwabVix1d() {
+    return createHistoryData({
+      hasHistory: true,
+      history: mockHistory('2026-03-10'),
+      getStateAtTime: vi
+        .fn()
+        .mockReturnValue(makeHistorySnapshot({ vix: 20.5, vix1d: null })),
+    });
+  }
+
+  it('switches to DIRECT with the static VIX1D once the table loads after a first visit', async () => {
+    const fetches = pendingFetches();
+    // The previous date left DIRECT; this date has no Schwab VIX1D.
+    const { result } = renderWithIvState(
+      pastDateWithoutSchwabVix1d(),
+      IV_MODES.DIRECT,
+    );
+
+    // Table still loading: VIX until the table can answer.
+    expect(fetches.fetchSpy).toHaveBeenCalledTimes(1);
+    expect(result.current.ivMode).toBe(IV_MODES.VIX);
+
+    fetches.respond(VIX1D_TABLE);
+
+    await waitFor(() => expect(result.current.ivMode).toBe(IV_MODES.DIRECT));
+    expect(result.current.directIV).toBe('0.1650');
+  });
+
+  it('keeps a manual IV mode choice on a later re-run once the table has loaded', async () => {
+    const fetches = pendingFetches();
+    const historyData = pastDateWithoutSchwabVix1d();
+    const { result, rerender } = renderWithIvState(historyData, IV_MODES.VIX);
+    fetches.respond(VIX1D_TABLE);
+    await waitFor(() => expect(result.current.ivMode).toBe(IV_MODES.DIRECT));
+
+    act(() => result.current.setIvMode(IV_MODES.VIX));
+    rerender({ timeMinute: '35' }); // time scrub re-runs the history effect
+
+    expect(historyData.getStateAtTime).toHaveBeenLastCalledWith(11, 35);
+    expect(result.current.ivMode).toBe(IV_MODES.VIX);
+  });
+
+  it('stays in VIX mode when the loaded table has no entry for the date', async () => {
+    const fetches = pendingFetches();
+    const { result } = renderWithIvState(
+      pastDateWithoutSchwabVix1d(),
+      IV_MODES.DIRECT,
+    );
+
+    fetches.respond({ '2026-03-09': { o: 15, h: 16, l: 14, c: 15.5 } });
+
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(result.current.ivMode).toBe(IV_MODES.VIX);
+    expect(result.current.directIV).toBe('');
+  });
+
+  it('falls back to VIX mode when the table fails to load', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetches = pendingFetches();
+    const { result } = renderWithIvState(
+      pastDateWithoutSchwabVix1d(),
+      IV_MODES.DIRECT,
+    );
+
+    fetches.fail();
+
+    await waitFor(() => expect(warnSpy).toHaveBeenCalled());
+    expect(result.current.loaded).toBe(false);
+    expect(result.current.ivMode).toBe(IV_MODES.VIX);
+  });
+
+  it('keeps a manual IV mode choice on a re-run that retries a failed load', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetches = pendingFetches();
+    const { result, rerender } = renderWithIvState(
+      pastDateWithoutSchwabVix1d(),
+      IV_MODES.VIX,
+    );
+    fetches.fail();
+    await waitFor(() => expect(warnSpy).toHaveBeenCalled());
+
+    act(() => result.current.setIvMode(IV_MODES.DIRECT));
+    rerender({ timeMinute: '35' });
+
+    expect(fetches.fetchSpy).toHaveBeenCalledTimes(2); // the re-run retried
+    expect(result.current.ivMode).toBe(IV_MODES.DIRECT);
+  });
+
+  it('never loads the table or changes IV mode in live mode', () => {
+    const fetches = pendingFetches();
+    const { result } = renderWithIvState(
+      createHistoryData({ hasHistory: false }),
+      IV_MODES.DIRECT,
+    );
+
+    expect(fetches.fetchSpy).not.toHaveBeenCalled();
+    expect(result.current.ivMode).toBe(IV_MODES.DIRECT);
   });
 });
