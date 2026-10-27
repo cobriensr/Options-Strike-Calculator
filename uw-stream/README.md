@@ -95,7 +95,9 @@ Single asyncio process:
      channel joined, or echoed by UW, e.g. `net_flow:TSLA`: `subscribed`,
      `last_message_ts`) and `handlers` (per handler queue, keyed by
      handler name: `queue_depth`, `drop_count`, `write_attempted`,
-     `write_count`; zeroed from boot). The shared handlers are named after
+     `write_count`, `lost_rows`; zeroed from boot). `lost_rows` counts the
+     rows of flushes that failed after the DB retries; ON CONFLICT dedup
+     skips don't count. The shared handlers are named after
      their channel family (`option_trades`, `net_flow`,
      `gex_strike_expiry`), so one `handlers` row covers that family's
      per-ticker channels. Exception: `option_trades:SPY` / `SPXW` / `QQQ`
@@ -359,12 +361,16 @@ migration chain, and all schema changes go there.)
   `flow_alerts`. Subscribe with the hyphen; `config.py` maps
   `flow_alerts` to it.
 - **Backpressure.** Bounded `asyncio.Queue` per handler, plus the shared
-  receive queue in front of the router. Drop policy is configurable. Every
+  receive queue in front of the router. Drop policy is configurable. When
+  a handler's batch fills while more is queued (a backlog, usually after a
+  slow flush), it takes up to 5,000 queued rows into that one flush
+  (`BACKLOG_BATCH_MAX`) instead of writing 500 per round trip. Every
   60 s the `drop_reporter` task (`src/drop_reporter.py`) sends one Sentry
   warning tagged `component=backpressure` for each queue that dropped
-  payloads since its last report, with the new drops (`dropped`) and the
-  running total (`drop_total`). A quiet interval sends nothing. The
-  cumulative counters stay on `/metrics`.
+  payloads or lost flush rows since its last report. It gives the new
+  amounts (`dropped`, `lost_rows`) and the running totals (`drop_total`,
+  `lost_rows_total`). A quiet interval sends nothing. The cumulative
+  counters stay on `/metrics`.
 - **Disconnects.** Each dropped socket logs one line with the shard, the
   exception, both close frames, the underlying cause (with errno), the
   session length, frames received, time since the last frame, and both

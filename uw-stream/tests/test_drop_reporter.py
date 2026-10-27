@@ -208,3 +208,57 @@ async def test_sleeps_the_report_interval(monkeypatch):
 
     assert _REPORT_INTERVAL_S == 60.0
     assert sleeps == [_REPORT_INTERVAL_S] * 3
+
+
+# --- lost rows (P1): rows whose flush failed after the db retries ------------
+
+
+def _lost(handler: str, n: int) -> Callable[[State], None]:
+    def _apply(s: State) -> None:
+        s.handler(handler).lost_rows += n
+
+    return _apply
+
+
+async def test_reports_lost_rows_deltas(monkeypatch):
+    capture = _CaptureSpy()
+    _run_script(
+        monkeypatch, [_lost("option_trades", 500), _lost("option_trades", 250), _nothing], capture
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_drop_reporter()
+
+    events = _handler_events(capture)
+    assert [e["context"]["lost_rows"] for e in events] == [500, 250]
+    assert [e["context"]["lost_rows_total"] for e in events] == [500, 750]
+    assert [e["context"]["dropped"] for e in events] == [0, 0]
+    assert all(e["tags"]["handler"] == "option_trades" for e in events)
+
+
+async def test_drops_and_lost_rows_in_one_interval_send_one_event(monkeypatch):
+    capture = _CaptureSpy()
+
+    def _both(s: State) -> None:
+        s.handler("net_flow").drop_count += 3
+        s.handler("net_flow").lost_rows += 500
+
+    _run_script(monkeypatch, [_both], capture)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_drop_reporter()
+
+    events = _handler_events(capture)
+    assert len(events) == 1
+    ctx = events[0]["context"]
+    assert (ctx["dropped"], ctx["lost_rows"]) == (3, 500)
+
+
+async def test_failed_capture_carries_the_lost_rows_delta(monkeypatch):
+    capture = _CaptureSpy(fail_on={1})
+    _run_script(monkeypatch, [_lost("net_flow", 500), _lost("net_flow", 100)], capture)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_drop_reporter()
+
+    assert [e["context"]["lost_rows"] for e in _handler_events(capture)] == [600]
