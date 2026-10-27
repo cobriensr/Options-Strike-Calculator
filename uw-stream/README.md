@@ -373,6 +373,15 @@ migration chain, and all schema changes go there.)
   (30 with 6 shards). A temporary
   `ws-canary` Railway service (`scripts/ws-canary/`) is measuring which
   network hop resets these connections.
+- **Shutdown drain.** On SIGTERM the daemon closes its sockets, releases
+  the lease, then drains every handler at once. Each drain waits for an
+  in-flight flush to finish, then writes what is left in its queue and
+  batch in one DB attempt with no retry, all inside a 30 s deadline
+  (`DRAIN_DEADLINE_S` in `src/handlers/base.py`). If the deadline hits,
+  those rows are lost and a Sentry warning gives the counts (`lost_rows`).
+  Railway's SIGTERM-to-SIGKILL window is 40 s (`drainingSeconds` in
+  `railway.toml`; Railway's default is 0). `railway.toml` stops being read
+  on 2026-12-01, so that setting has to move before then.
 - **Single process.** One process holds every shard's connection. If one
   socket drops, only that shard's channels go quiet while it reconnects.
   If the process dies during market hours, all data goes dark until

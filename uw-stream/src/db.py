@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Awaitable, Callable, Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 import asyncpg
@@ -68,6 +70,25 @@ _TRANSIENT_DB_EXC: tuple[type[BaseException], ...] = (
 _DB_RETRY_MAX_ATTEMPTS = 3
 _DB_RETRY_BACKOFF_S: tuple[float, ...] = (0.5, 1.5)
 
+# True inside ``single_attempt()``. A ContextVar, so it scopes to the task
+# that set it: the shutdown drain's final flush stops retrying while the other
+# handlers' steady-state flushes, in their own tasks, keep the retry policy.
+_single_attempt: ContextVar[bool] = ContextVar("db_single_attempt", default=False)
+
+
+@contextmanager
+def single_attempt() -> Iterator[None]:
+    """Run every bulk write inside the block once, with no transient retry.
+
+    For the shutdown drain: Railway SIGKILLs at a fixed deadline, and a retry
+    (backoff plus another ``command_timeout``) can only push the flush past it.
+    """
+    token = _single_attempt.set(True)
+    try:
+        yield
+    finally:
+        _single_attempt.reset(token)
+
 
 def is_transient_db_error(exc: BaseException) -> bool:
     """Return True iff ``exc`` is a connection-class failure worth retrying.
@@ -92,17 +113,19 @@ async def _with_db_retry[T](
     connection — required to recover from a connection the pool still
     thinks is alive but the wire underneath has been torn down by a Neon
     restart. Non-transient errors propagate immediately; the final
-    transient error is re-raised after ``_DB_RETRY_MAX_ATTEMPTS``.
+    transient error is re-raised after ``_DB_RETRY_MAX_ATTEMPTS``, or after
+    the first attempt inside ``single_attempt()``.
     """
+    max_attempts = 1 if _single_attempt.get() else _DB_RETRY_MAX_ATTEMPTS
     last_exc: BaseException | None = None
-    for attempt in range(_DB_RETRY_MAX_ATTEMPTS):
+    for attempt in range(max_attempts):
         try:
             return await func()
         except BaseException as exc:
             if not is_transient_db_error(exc):
                 raise
             last_exc = exc
-            if attempt >= _DB_RETRY_MAX_ATTEMPTS - 1:
+            if attempt >= max_attempts - 1:
                 break
             delay = _DB_RETRY_BACKOFF_S[min(attempt, len(_DB_RETRY_BACKOFF_S) - 1)]
             log.warning(
@@ -110,7 +133,7 @@ async def _with_db_retry[T](
                 extra={
                     "label": label,
                     "attempt": attempt + 1,
-                    "max_attempts": _DB_RETRY_MAX_ATTEMPTS,
+                    "max_attempts": max_attempts,
                     "delay_s": delay,
                     "err_type": type(exc).__name__,
                     "err": str(exc),

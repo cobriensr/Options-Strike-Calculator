@@ -401,76 +401,207 @@ def _record_warnings(monkeypatch) -> list[tuple[str, dict]]:
     return captured
 
 
-@pytest.mark.asyncio
-async def test_drain_aborts_when_run_does_not_stop_in_time(monkeypatch):
-    """FIX 1 regression: if ``run()`` is parked inside a slow
-    ``_safe_flush`` call when SIGTERM fires, ``drain()`` must NOT
-    proceed to mutate ``self._batch`` — both code paths would otherwise
-    call ``_safe_flush`` with overlapping rows, producing duplicate
-    inserts on tables without ON CONFLICT DO NOTHING.
+class _SeqHandler:
+    """Factory for a concrete Handler whose ``_flush`` awaits ``flush_s``.
 
-    Verifies: returns 0, warning logged, ``self._batch`` identity AND
-    length are preserved across the drain() call.
+    Records every flushed batch, so a test can check that no row is written
+    twice. Built lazily so ``Handler`` is imported inside the test, like the
+    other drain tests here.
     """
-    from config import settings
+
+    @staticmethod
+    def build(name: str, flush_s: float):
+        from handlers.base import Handler
+
+        class _H(Handler):
+            def __init__(self) -> None:
+                super().__init__(name=name)
+                self.flush_calls: list[list[tuple]] = []
+
+            def _transform(self, payload: dict) -> tuple | None:
+                return (payload.get("seq"),)
+
+            async def _flush(self, rows: list[tuple]) -> None:
+                self.flush_calls.append(list(rows))
+                await asyncio.sleep(flush_s)
+
+        return _H()
+
+
+async def _park_run_in_flush(monkeypatch, h) -> asyncio.Task:
+    """Start ``run()`` with batch size 1 and push row 0, so the consumer is
+    inside ``_safe_flush`` holding ``self._batch == [(0,)]`` when this returns.
+    """
+    monkeypatch.setattr(h, "_batch_size", 1)
+    monkeypatch.setattr(h, "_batch_interval", 60.0)
+    task = asyncio.create_task(h.run())
+    await h.enqueue({"seq": 0})
+    await asyncio.sleep(0.05)
+    assert h._batch == [(0,)], f"test setup: run() should be mid-flush; got {h._batch!r}"
+    return task
+
+
+async def _cancel(task: asyncio.Task) -> None:
+    if not task.done():
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_drain_waits_for_in_flight_flush_and_never_double_flushes(monkeypatch):
+    """FIX 1 invariant, kept: while ``run()`` is inside a flush, ``drain()``
+    must not touch ``self._batch``, or both could write the same rows. Instead
+    of giving up after 1 s (which lost the queue and the batch), drain now
+    waits for the in-flight flush, inside its own deadline, then flushes the
+    rows still queued. Every row is written exactly once.
+    """
+    from state import state
+
+    state.handlers.clear()
+    h = _SeqHandler.build("drain-wait-test", flush_s=1.2)
+    task = await _park_run_in_flush(monkeypatch, h)
+    try:
+        await h.enqueue({"seq": 1})
+        await h.enqueue({"seq": 2})
+
+        flushed = await h.drain(deadline_s=5.0)
+
+        assert flushed == 2
+        assert h.flush_calls == [[(0,)], [(1,), (2,)]]
+        assert task.done()
+    finally:
+        await _cancel(task)
+        state.handlers.clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["consumer_busy", "final_flush"])
+async def test_drain_timeout_reports_sentry_with_lost_rows(monkeypatch, path):
+    """Whenever the deadline is hit, drain sends one Sentry event with the
+    rows it is about to lose: the in-memory batch plus what is still queued.
+
+    consumer_busy: ``run()`` is stuck in a flush of row 0 and rows 1-3 are
+    queued (the wake-up sentinel must not count as a row).
+    final_flush: the consumer has stopped and drain's own final flush of
+    rows 0-4 is too slow.
+    """
+    import handlers.base as base_mod
+    from state import state
+
+    state.handlers.clear()
+    messages: list[tuple[str, dict]] = []
+    monkeypatch.setattr(base_mod, "capture_message", lambda msg, **kw: messages.append((msg, kw)))
+
+    h = _SeqHandler.build(f"drain-timeout-{path}", flush_s=10.0)
+    task = None
+    try:
+        if path == "consumer_busy":
+            task = await _park_run_in_flush(monkeypatch, h)
+            for seq in (1, 2, 3):
+                await h.enqueue({"seq": seq})
+            batch_before = h._batch
+            expected = {"in_memory_batch": 1, "queue_remaining": 3, "lost_rows": 4}
+        else:
+            h._batch = [(0,), (1,)]
+            for seq in (2, 3, 4):
+                h.queue.put_nowait({"seq": seq})
+            h._stopped.set()
+            expected = {"in_memory_batch": 5, "queue_remaining": 0, "lost_rows": 5}
+
+        flushed = await h.drain(deadline_s=0.2)
+
+        assert flushed == 0
+        assert len(messages) == 1
+        msg, kw = messages[0]
+        assert "drain deadline" in msg
+        assert kw["level"] == "warning"
+        assert kw["tags"] == {"component": "handler", "channel": h.name, "stage": path}
+        ctx = kw["context"]
+        assert {k: ctx[k] for k in expected} == expected
+        assert ctx["deadline_s"] == 0.2
+        if path == "consumer_busy":
+            # The in-flight batch was left alone: no double-flush race.
+            assert h._batch is batch_before
+    finally:
+        if task is not None:
+            await _cancel(task)
+        state.handlers.clear()
+
+
+@pytest.mark.asyncio
+async def test_drain_flush_does_not_retry():
+    """The drain's final flush makes ONE attempt. A retry (0.5 s backoff and
+    another 30 s command_timeout) would only run past Railway's SIGKILL.
+    Steady-state flushes still retry, so the single-attempt scope must not
+    leak out of drain().
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    import db
     from handlers.base import Handler
     from state import state
 
     state.handlers.clear()
-    warnings = _record_warnings(monkeypatch)
 
-    class _SlowFlushHandler(Handler):
+    class _DbHandler(Handler):
         def __init__(self) -> None:
-            super().__init__(name="drain-slow-flush-test")
+            super().__init__(name="drain-no-retry-test")
 
         def _transform(self, payload: dict) -> tuple | None:
             return (payload.get("seq"),)
 
-        async def _flush(self, rows: list[tuple]) -> None:
-            # Simulate a slow DB on shutdown — longer than drain()'s
-            # 1.0s grace window for ``_stopped.wait()``.
-            await asyncio.sleep(2.0)
+        async def _flush(self, rows: list[tuple]) -> int:
+            return await db.bulk_insert_ignore_conflict("t", ["seq"], rows, ["seq"])
 
-    monkeypatch.setattr(settings, "ws_queue_size", 16)
-    monkeypatch.setattr(settings, "ws_batch_size", 1)
-    monkeypatch.setattr(settings, "ws_batch_interval_ms", 60_000)
+    conn = MagicMock()
+    conn.execute = AsyncMock(side_effect=TimeoutError("command_timeout"))
+    acquire_cm = MagicMock()
+    acquire_cm.__aenter__ = AsyncMock(return_value=conn)
+    acquire_cm.__aexit__ = AsyncMock(return_value=False)
+    txn_cm = MagicMock()
+    txn_cm.__aenter__ = AsyncMock(return_value=None)
+    txn_cm.__aexit__ = AsyncMock(return_value=False)
+    conn.transaction = MagicMock(return_value=txn_cm)
+    pool = MagicMock()
+    pool.acquire = MagicMock(return_value=acquire_cm)
 
-    h = _SlowFlushHandler()
-
-    # Start run() and push an item so it lands in _safe_flush() and
-    # parks there for 2s — _stopped will not fire within drain()'s
-    # 1.0s grace window. With batch_size=1 the consumer appends the
-    # transformed row to ``self._batch`` and then enters _safe_flush.
-    task = asyncio.create_task(h.run())
+    h = _DbHandler()
+    h._batch = [(0,), (1,)]
+    h._stopped.set()
     try:
-        await h.enqueue({"seq": 0})
-        # Give run() time to dequeue + start the slow _flush.
-        await asyncio.sleep(0.05)
+        with patch("db.get_pool", return_value=pool), patch("db.asyncio.sleep", new=AsyncMock()):
+            await h.drain()
+            drain_attempts = conn.execute.await_count
+            # A steady-state flush after the drain still gets all 3 attempts.
+            await h._safe_flush([(9,)])
 
-        # Snapshot AFTER run() has parked in _safe_flush — this is the
-        # batch state drain() must not mutate while the consumer is
-        # still alive holding a reference to it.
-        pre_drain_id = id(h._batch)
-        pre_drain_len = len(h._batch)
-        assert pre_drain_len == 1, (
-            "test setup: run() should have appended (0,) to _batch "
-            f"before parking in _safe_flush; got {h._batch!r}"
-        )
-
-        flushed = await h.drain(deadline_s=5.0)
-
-        # Drain bailed out without touching the batch.
-        assert flushed == 0
-        assert id(h._batch) == pre_drain_id
-        assert len(h._batch) == pre_drain_len
-        # Warning was logged mentioning the abort reason.
-        assert any("consumer still running" in msg for msg, _ in warnings)
+        assert drain_attempts == 1
+        assert conn.execute.await_count == 1 + db._DB_RETRY_MAX_ATTEMPTS
     finally:
-        if not task.done():
-            task.cancel()
-            with contextlib.suppress(BaseException):
-                await task
         state.handlers.clear()
+
+
+def test_drain_deadline_fits_railway_draining_seconds():
+    """Railway SIGKILLs the old deploy ``drainingSeconds`` after SIGTERM
+    (default 0). _shutdown releases the lease (up to its 5 s HTTP budget),
+    drains every handler concurrently (up to the drain deadline), then flushes
+    push notifications (up to 2 s). All of it must fit in the window.
+    """
+    import inspect
+    import tomllib
+
+    import main
+    import notify
+    from handlers.base import DRAIN_DEADLINE_S, Handler
+
+    railway = tomllib.loads((Path(__file__).resolve().parents[1] / "railway.toml").read_text())
+    draining_s = railway["deploy"]["drainingSeconds"]
+    notify_s = inspect.signature(notify.drain_pending).parameters["timeout"].default
+
+    assert inspect.signature(Handler.drain).parameters["deadline_s"].default == DRAIN_DEADLINE_S
+    assert DRAIN_DEADLINE_S >= 30.0  # at least one full command_timeout
+    assert main._LEASE_HTTP_TIMEOUT_S + DRAIN_DEADLINE_S + notify_s < draining_s
 
 
 @pytest.mark.asyncio

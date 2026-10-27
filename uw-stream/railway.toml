@@ -6,6 +6,17 @@ watchPatterns = ["uw-stream/**"]
 # retries: a sustained acquire timeout means a wedged peer that needs eyes.
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
+# SIGTERM-to-SIGKILL window for the outgoing deploy. Railway's default is 0,
+# which SIGKILLs before the handler drains can flush their queues. 40 s fits
+# the worst-case shutdown: lease release (5 s) + concurrent handler drains
+# (handlers.base.DRAIN_DEADLINE_S = 30 s) + push-notification flush (2 s).
+# tests/test_handlers.py::test_drain_deadline_fits_railway_draining_seconds
+# pins that arithmetic. Railway stops reading railway.toml on 2026-12-01
+# (Config as Code is deprecated). Before then, move this setting to the
+# RAILWAY_DEPLOYMENT_DRAINING_SECONDS=40 service variable or the dashboard
+# (Settings -> Deploy -> Draining time); see docs/superpowers/specs/
+# review-remediation-2026-10-26.md, phase 3.14.
+drainingSeconds = 40
 # NOTE: healthcheckPath is intentionally UNSET. /healthz reports
 # "ok_market_closed" overnight and on weekends (the UW channels are
 # legitimately silent then), but it does NOT model market holidays — on a

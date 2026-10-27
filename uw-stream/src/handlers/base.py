@@ -25,9 +25,20 @@ import contextlib
 from abc import ABC, abstractmethod
 
 from config import settings
+from db import single_attempt
 from logger_setup import log
 from sentry_setup import capture_exception, capture_message
 from state import state
+
+# Per-handler shutdown deadline. Railway SIGKILLs the old deploy
+# ``drainingSeconds`` (40, in railway.toml) after SIGTERM. Before the drains,
+# _shutdown releases the WS lease (up to main._LEASE_HTTP_TIMEOUT_S = 5 s);
+# after them it flushes push notifications (up to 2 s). The handlers drain
+# concurrently, so 5 + 30 + 2 = 37 s fits the window, and 30 s covers one
+# full asyncpg ``command_timeout`` for the final flush.
+# tests/test_handlers.py::test_drain_deadline_fits_railway_draining_seconds
+# pins this arithmetic against railway.toml.
+DRAIN_DEADLINE_S = 30.0
 
 # Maximum time we'll wait when ``ws_backpressure_policy="block"`` and the
 # per-channel queue is already full. Must be << the WS ping_timeout (20s)
@@ -67,10 +78,16 @@ class Handler(ABC):
         # iteration cleanly instead of being torn down mid-await with a
         # CancelledError that would discard the in-memory batch.
         self._stopping: bool = False
-        # Set when ``run()`` actually exits, so ``drain()`` can wait a
-        # short window for the consumer to release the queue before
-        # pulling the remaining items itself.
+        # Set when ``run()`` actually exits, so ``drain()`` can wait for the
+        # consumer to release the queue and the batch before pulling the
+        # remaining items itself.
         self._stopped: asyncio.Event = asyncio.Event()
+        # Drain bookkeeping, read by ``drain()`` when its deadline hits so the
+        # Sentry event names the stage and counts queued rows exactly:
+        # ``_sentinel_queued`` is True while the wake-up sentinel sits in the
+        # queue (it is not a row), and whoever dequeues it clears the flag.
+        self._drain_stage: str = "idle"
+        self._sentinel_queued: bool = False
 
     # ------------------------------------------------------------------
     # Producer side — called by the router on every payload.
@@ -158,6 +175,7 @@ class Handler(ABC):
                 # immediately — leave any remaining queue items for
                 # ``drain()`` to collect via get_nowait().
                 if payload is _STOP_SENTINEL:
+                    self._sentinel_queued = False
                     self.queue.task_done()
                     state.handler(self.name).queue_depth = self.queue.qsize()
                     break
@@ -185,20 +203,24 @@ class Handler(ABC):
     # ------------------------------------------------------------------
     # Shutdown — called from main on SIGTERM / SIGINT.
     # ------------------------------------------------------------------
-    async def drain(self, deadline_s: float = 5.0) -> int:
+    async def drain(self, deadline_s: float = DRAIN_DEADLINE_S) -> int:
         """Flush remaining queue + in-memory batch before shutdown.
 
         Steps:
           1. Signal ``run()`` to stop pulling from the queue.
-          2. Wait briefly for it to release the queue (best-effort).
+          2. Wait for it to exit, including any flush it is in the middle
+             of, so the two never write the same rows.
           3. Drain whatever is still in ``self.queue``.
           4. Append the drained items to the in-memory batch (after
              ``_transform``-ing them — same pipeline as the steady-state
              ``run()`` loop).
-          5. Call ``_safe_flush`` once with everything we collected.
+          5. Call ``_safe_flush`` once with everything we collected, as a
+             single DB attempt with no transient retry.
 
-        Capped at ``deadline_s`` total so we always make Railway's
-        graceful-shutdown window even if the DB is slow.
+        Capped at ``deadline_s`` total so the drain finishes inside
+        Railway's SIGTERM-to-SIGKILL window (see ``DRAIN_DEADLINE_S``). If
+        the deadline hits, the rows still in memory or in the queue are
+        lost; that is logged and sent to Sentry with the counts.
 
         Returns the number of rows attempted to flush (``_safe_flush``
         swallows DB errors, so a non-zero return does NOT prove the rows
@@ -208,14 +230,27 @@ class Handler(ABC):
         try:
             return await asyncio.wait_for(self._drain_inner(), timeout=deadline_s)
         except TimeoutError:
+            # Either run() is still inside a slow or stalled flush
+            # ("consumer_busy"), or drain's own final flush is
+            # ("final_flush"). Both leave self._batch holding the rows of
+            # that flush. The wake-up sentinel is not a row.
+            in_memory = len(self._batch)
+            queued = self.queue.qsize() - (1 if self._sentinel_queued else 0)
+            context = {
+                "deadline_s": deadline_s,
+                "in_memory_batch": in_memory,
+                "queue_remaining": queued,
+                "lost_rows": in_memory + queued,
+            }
             log.warning(
-                "drain deadline exceeded; some rows may be lost",
-                extra={
-                    "channel": self.name,
-                    "deadline_s": deadline_s,
-                    "in_memory_batch": len(self._batch),
-                    "queue_remaining": self.queue.qsize(),
-                },
+                "drain deadline exceeded; unflushed rows lost",
+                extra={"channel": self.name, "stage": self._drain_stage, **context},
+            )
+            capture_message(
+                "uw-stream drain deadline hit; unflushed rows lost",
+                level="warning",
+                tags={"component": "handler", "channel": self.name, "stage": self._drain_stage},
+                context=context,
             )
             return 0
 
@@ -224,6 +259,7 @@ class Handler(ABC):
         # 1. Signal the consumer to exit. ``run()`` checks the flag
         #    between iterations and also short-circuits on the sentinel.
         self._stopping = True
+        self._drain_stage = "consumer_busy"
         # 1a. Wake the consumer if it's parked in ``wait_for(queue.get())``
         #     — otherwise it would sleep up to ``_batch_interval`` (default
         #     2s) before noticing _stopping. ``put_nowait`` may raise
@@ -232,43 +268,15 @@ class Handler(ABC):
         #     batch-interval timeout expires, whichever comes first.
         with contextlib.suppress(asyncio.QueueFull):
             self.queue.put_nowait(_STOP_SENTINEL)  # type: ignore[arg-type]
-        # 2. Best-effort wait for the consumer to release the queue.
-        #    If ``run()`` was never started (e.g. the handler was built
-        #    but no task spawned), ``_stopped`` will never fire — short
-        #    timeout keeps the drain making forward progress regardless.
-        try:
-            await asyncio.wait_for(self._stopped.wait(), timeout=1.0)
-        except TimeoutError:
-            # Race-safety guard: if ``run()`` is still alive (most likely
-            # parked inside ``await self._safe_flush(...)`` because the DB
-            # is slow on shutdown), proceeding to step 3 would mutate
-            # ``self._batch`` while ``run()`` still holds a reference to
-            # it — both code paths could then call ``_safe_flush`` with
-            # overlapping rows, producing duplicate inserts on any table
-            # that lacks ON CONFLICT DO NOTHING. Bail out and accept that
-            # those rows are stuck inside ``run()``'s in-flight flush;
-            # they'll either land normally or be dropped — but never
-            # double-written.
-            if not self._stopped.is_set():
-                log.warning(
-                    "drain: consumer still running after grace window — "
-                    "aborting to avoid double-flush race",
-                    extra={
-                        "channel": self.name,
-                        "in_memory_batch": len(self._batch),
-                        "queue_remaining": self.queue.qsize(),
-                    },
-                )
-                capture_message(
-                    "uw-stream drain aborted: consumer still running",
-                    level="warning",
-                    tags={"component": "handler", "channel": self.name},
-                    context={
-                        "in_memory_batch": len(self._batch),
-                        "queue_remaining": self.queue.qsize(),
-                    },
-                )
-                return 0
+            self._sentinel_queued = True
+        # 2. Wait for the consumer to exit. It may be inside a flush on a
+        #    slow or stalled Neon. Touching ``self._batch`` before it exits
+        #    would race that flush: both paths could write the same rows,
+        #    a duplicate on any table without ON CONFLICT DO NOTHING. So wait,
+        #    bounded only by drain()'s deadline, which reports the rows if
+        #    the consumer never finishes (or was never started).
+        await self._stopped.wait()
+        self._drain_stage = "final_flush"
 
         # 3. Drain remaining payloads from the queue and run them
         #    through the same _transform path as steady-state. Skip the
@@ -279,6 +287,7 @@ class Handler(ABC):
             except asyncio.QueueEmpty:
                 break
             if payload is _STOP_SENTINEL:
+                self._sentinel_queued = False
                 self.queue.task_done()
                 continue
             try:
@@ -300,10 +309,13 @@ class Handler(ABC):
 
         state.handler(self.name).queue_depth = self.queue.qsize()
 
-        # 4 + 5. One final flush with the combined batch.
+        # 4 + 5. One final flush with the combined batch, as one DB attempt.
+        #    A transient retry would add backoff plus another 30 s
+        #    command_timeout, which only runs past the deadline.
         flushed = len(self._batch)
         if flushed:
-            await self._safe_flush(self._batch)
+            with single_attempt():
+                await self._safe_flush(self._batch)
             self._batch = []
         return flushed
 
