@@ -5,7 +5,9 @@
  *
  * Fixture: `ml/tests/fixtures/takeit_parity_fixture.json` — 50 real production
  * feature rows per alert type plus the Python model's raw + calibrated
- * predictions. Regenerate with `python -m ml.src.takeit.generate_parity_fixture`.
+ * predictions. Regenerate with
+ * `ml/.venv/bin/python -m ml.src.takeit.generate_parity_fixture`
+ * (`ml/.venv/Scripts/python` on Windows).
  *
  * This is the gate that any future bundle-format change must survive.
  * If parity slips, suspect (in order): isotonic interpolation drift, NaN

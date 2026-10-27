@@ -88,6 +88,22 @@ describe('promptReloadOnStaleChunk', () => {
     expect(reloadSpy).not.toHaveBeenCalled();
   });
 
+  it('still prompts when the browser does not report navigator.onLine', () => {
+    // Only an explicit `false` means offline; jsdom's default `true` alone
+    // wouldn't catch a falsy check that also skips `undefined`.
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(
+      undefined as unknown as boolean,
+    );
+    const confirmSpy = vi.spyOn(globalThis, 'confirm').mockReturnValue(true);
+    const reloadSpy = mockReload();
+    const err = new TypeError(
+      'Failed to fetch dynamically imported module: /x.js',
+    );
+    expect(promptReloadOnStaleChunk(err, 'Reload?')).toBe(true);
+    expect(confirmSpy).toHaveBeenCalledWith('Reload?');
+    expect(reloadSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('does not reload when the user declines the prompt', () => {
     const confirmSpy = vi.spyOn(globalThis, 'confirm').mockReturnValue(false);
     const reloadSpy = mockReload();
