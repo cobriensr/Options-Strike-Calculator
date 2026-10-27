@@ -1,8 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as XLSX from 'xlsx';
 import { exportPnLComparison, exportBWBComparison } from '../../utils/export';
-import { calcAllDeltas, calcTimeToExpiry } from '../../utils/calculator';
-import type { CalculationResults } from '../../types';
+import {
+  buildPutBWB,
+  calcAllDeltas,
+  calcTimeToExpiry,
+} from '../../utils/calculator';
+import { blackScholesPrice } from '../../utils/black-scholes';
+import type { CalculationResults, DeltaRow } from '../../types';
 
 // Mock XLSX.writeFile to capture the workbook instead of writing to disk
 vi.mock('xlsx', async () => {
@@ -667,7 +672,7 @@ describe('exportBWBComparison', () => {
       expect(headers).toContain('Sweet Spot');
       expect(headers).toContain('Breakeven');
       expect(headers).toContain('Near Breakeven');
-      expect(headers).toContain('Monthly Net ($)');
+      expect(headers).toContain('Monthly Net EV ($)');
     });
 
     it('has 240 data rows (5 narrows × 4 mults × 6 deltas × 2 sides)', async () => {
@@ -889,6 +894,99 @@ describe('exportBWBComparison', () => {
     });
   });
 
+  describe('monthly projection by log-normal expected value (Q25)', () => {
+    async function exportRows(results = makeResults()): Promise<any[]> {
+      await exportBWBComparison({ results, contracts: 1, effectiveRatio: 10 });
+      return XLSX.utils.sheet_to_json(
+        getSheet(getWorkbook(), 'BWB Comparison'),
+      );
+    }
+
+    it('names the projection columns as log-normal expected values', async () => {
+      const [first] = await exportRows();
+      const headers = Object.keys(first);
+      expect(headers.slice(-5)).toEqual([
+        'Monthly Wins (log-normal)',
+        'Monthly Losses (log-normal)',
+        'Monthly Win EV ($)',
+        'Monthly Loss EV ($)',
+        'Monthly Net EV ($)',
+      ]);
+      expect(headers).not.toContain('Monthly Profit ($)');
+    });
+
+    it('debit rows get a non-zero Monthly Win EV', async () => {
+      const debits = (await exportRows()).filter(
+        (r) => r['Net Credit (pts)'] < 0,
+      );
+      expect(debits.length).toBeGreaterThan(0);
+      for (const r of debits) {
+        expect(r['Monthly Win EV ($)']).toBeGreaterThan(0);
+      }
+    });
+
+    it('credit rows lose less than days × (1 − PoP) × max loss', async () => {
+      const credits = (await exportRows()).filter(
+        (r) => r['Net Credit (pts)'] > 0,
+      );
+      expect(credits.length).toBeGreaterThan(0);
+      for (const r of credits) {
+        // The old projection: every losing day loses the full max loss
+        const everyLossIsMax =
+          22 * (1 - r['PoP (%)'] / 100) * r['Max Loss ($)'];
+        expect(r['Monthly Loss EV ($)']).toBeLessThan(everyLossIsMax);
+      }
+    });
+
+    it('Monthly Net EV = Win EV − Loss EV, and wins + losses = 22 days', async () => {
+      for (const r of await exportRows()) {
+        expect(r['Monthly Net EV ($)']).toBeCloseTo(
+          r['Monthly Win EV ($)'] - r['Monthly Loss EV ($)'],
+          2,
+        );
+        expect(
+          r['Monthly Wins (log-normal)'] + r['Monthly Losses (log-normal)'],
+        ).toBeCloseTo(22, 0);
+      }
+    });
+
+    it('default 10Δ put 20/40 (SPX 5800, σ 0.18, 10:00 CT) nets the closed-form ≈ +$142 a month', async () => {
+      const results = makeResults(5800, 0.18, 5);
+      const row = (await exportRows(results)).find(
+        (r) =>
+          r['Narrow'] === 20 &&
+          r['Mult'] === '2x' &&
+          r['Delta'] === '10Δ' &&
+          r['Side'] === 'Put BWB',
+      );
+      const row10 = results.allDeltas.find(
+        (r): r is DeltaRow => !('error' in r) && r.delta === 10,
+      )!;
+      const bwb = buildPutBWB(row10, 20, 40, 5800, results.T, 10);
+      // Independent of the export: 22 days × $100 × E[P&L], with each
+      // E[payoff] an r = 0 Black-Scholes price at the base σ PoP uses
+      const P = (k: number) =>
+        blackScholesPrice(5800, k, row10.basePutSigma, results.T, 'put');
+      const closedForm =
+        22 *
+        100 *
+        (P(bwb.longNearStrike) -
+          2 * P(bwb.shortStrike) +
+          P(bwb.longFarStrike) +
+          bwb.netCredit);
+      expect(row['Net Credit (pts)']).toBeLessThan(0);
+      expect(row['Monthly Net EV ($)']).toBeGreaterThan(0);
+      expect(Math.abs(row['Monthly Net EV ($)'] - closedForm)).toBeLessThan(
+        0.05,
+      );
+      expect(row['Monthly Net EV ($)']).toBeCloseTo(142.07, 0);
+      expect(row['Monthly Wins (log-normal)']).toBeCloseTo(
+        22 * bwb.probabilityOfProfit,
+        1,
+      );
+    });
+  });
+
   describe('Sheet 2: Inputs', () => {
     it('mentions BWB in title', async () => {
       await exportBWBComparison({
@@ -933,6 +1031,22 @@ describe('exportBWBComparison', () => {
         ),
       ).toBe(true);
       expect(flat.some((s) => s.includes('35 on puts'))).toBe(false);
+    });
+
+    it('says the projection is the log-normal expected value, not the adjusted PoP', async () => {
+      await exportBWBComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+      });
+      const wb = getWorkbook();
+      const sheet = getSheet(wb, 'Inputs');
+      const data: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+      const flat = data.map((r) => r.join(' '));
+      expect(flat.some((s) => s.includes('log-normal expected value'))).toBe(
+        true,
+      );
+      expect(flat.some((s) => s.includes('not a distribution'))).toBe(true);
     });
   });
 });

@@ -12,7 +12,13 @@ import {
   getKurtosisFactor,
 } from '../../constants';
 import type { BWBLegs, DeltaRow } from '../../types';
-import { snapBWBFarStrike, snapBWBWideWidth } from '../../utils/bwb';
+import { blackScholesPrice } from '../../utils/black-scholes';
+import {
+  bwbSettlementSigma,
+  expectedPnLSplit,
+  snapBWBFarStrike,
+  snapBWBWideWidth,
+} from '../../utils/bwb';
 import { adjustPoPForKurtosis } from '../../utils/iron-condor';
 import { snapToIncrement } from '../../utils/strikes';
 
@@ -1070,5 +1076,169 @@ describe('M1 regression: off-grid wide widths use the snapped far strike', () =>
       0.001,
     );
     expect(bwb.probabilityOfProfit).toBeCloseTo(0.276, 2);
+  });
+});
+
+// ── Q25: expected win / loss under the log-normal PoP uses ──
+
+describe('expectedPnLSplit (Q25)', () => {
+  // Default setup: SPX 5800, σ 0.18, 10:00 CT (5 h left), 3% skew
+  const t5 = calcTimeToExpiry(5);
+  const row10 = calcAllDeltas(spot, 0.18, t5, 0.03).find(
+    (r): r is DeltaRow => !('error' in r) && r.delta === 10,
+  )!;
+  /**
+   * r = 0 Black-Scholes price: the log-normal expectation of the payoff.
+   * Its Abramowitz-Stegun normalCDF (abs error < 7.5e-8) puts these
+   * closed forms within ~2e-4 pts of the truth, hence 3-digit tolerances;
+   * the helper itself is checked to 1e-5 against a finer integral below.
+   */
+  const bs = (k: number, sig: number, side: 'put' | 'call') =>
+    blackScholesPrice(spot, k, sig, t5, side);
+  /** Direct midpoint integral over ±10 sd in 200,000 steps (10x finer) */
+  const fineSplit = (pnl: (s: number) => number, sig: number) => {
+    const sd = sig * Math.sqrt(t5);
+    const mu = Math.log(spot) - (sig * sig * t5) / 2;
+    const steps = 200_000;
+    const dz = 20 / steps;
+    let win = 0;
+    let loss = 0;
+    for (let i = 0; i < steps; i++) {
+      const z = -10 + (i + 0.5) * dz;
+      const f = (Math.exp(-(z * z) / 2) / Math.sqrt(2 * Math.PI)) * dz;
+      const p = pnl(Math.exp(mu + sd * z));
+      if (p > 0) win += p * f;
+      else loss -= p * f;
+    }
+    return { win, loss };
+  };
+  /** Closed-form E[P&L] of a BWB at its settlement σ */
+  const bwbMean = (b: BWBLegs) => {
+    const sig = bwbSettlementSigma(row10, b.side);
+    return (
+      bs(b.longNearStrike, sig, b.side) -
+      2 * bs(b.shortStrike, sig, b.side) +
+      bs(b.longFarStrike, sig, b.side) +
+      b.netCredit
+    );
+  };
+  const splitOf = (b: BWBLegs) =>
+    expectedPnLSplit((s) => bwbPnLAtExpiry(b, s), {
+      spot,
+      sigma: bwbSettlementSigma(row10, b.side),
+      T: t5,
+    });
+
+  it('matches the closed form for a long call vertical', () => {
+    // Long 5800 / short 5820 call vertical for an 8-pt debit D:
+    //   E[win]  = C(K1 + D) − C(K2)   (profit above K1 + D)
+    //   E[loss] = P(K1 + D) − P(K1)   (loss below K1 + D)
+    const k1 = 5800;
+    const k2 = 5820;
+    const debit = 8;
+    const pnl = (s: number) => Math.min(Math.max(s - k1, 0), k2 - k1) - debit;
+    const { expectedWin, expectedLoss } = expectedPnLSplit(pnl, {
+      spot,
+      sigma: 0.18,
+      T: t5,
+    });
+    expect(expectedWin).toBeCloseTo(
+      bs(k1 + debit, 0.18, 'call') - bs(k2, 0.18, 'call'),
+      3,
+    );
+    expect(expectedLoss).toBeCloseTo(
+      bs(k1 + debit, 0.18, 'put') - bs(k1, 0.18, 'put'),
+      3,
+    );
+    // The difference is the whole expectation: C(K1) − C(K2) − D
+    expect(expectedWin - expectedLoss).toBeCloseTo(
+      bs(k1, 0.18, 'call') - bs(k2, 0.18, 'call') - debit,
+      3,
+    );
+  });
+
+  it('agrees with a 10x finer direct integral to 1e-5 pts for debit and credit BWBs', () => {
+    for (const b of [
+      buildPutBWB(row10, 20, 40, spot, t5),
+      buildCallBWB(row10, 20, 40, spot, t5),
+      buildPutBWB(row10, 15, 37.5, spot, t5),
+    ]) {
+      const pnl = (s: number) => bwbPnLAtExpiry(b, s);
+      const fine = fineSplit(pnl, bwbSettlementSigma(row10, b.side));
+      const { expectedWin, expectedLoss } = splitOf(b);
+      expect(Math.abs(expectedWin - fine.win), b.side).toBeLessThan(1e-5);
+      expect(Math.abs(expectedLoss - fine.loss), b.side).toBeLessThan(1e-5);
+    }
+  });
+
+  it('E[win] − E[loss] is the full expected P&L for debit and credit BWBs', () => {
+    const structures = [
+      buildPutBWB(row10, 20, 40, spot, t5),
+      buildCallBWB(row10, 20, 40, spot, t5),
+      buildPutBWB(row10, 15, 37.5, spot, t5),
+      buildCallBWB(row10, 15, 37.5, spot, t5),
+    ];
+    expect(structures.some((b) => b.netCredit < 0)).toBe(true);
+    expect(structures.some((b) => b.netCredit > 0)).toBe(true);
+    for (const b of structures) {
+      const { expectedWin, expectedLoss } = splitOf(b);
+      expect(expectedWin - expectedLoss, b.side).toBeCloseTo(bwbMean(b), 3);
+    }
+  });
+
+  it('debit put BWB: E[win] is the closed-form tent between its breakevens', () => {
+    // pnl⁺ = (BE_near − S)⁺ − 2(short − S)⁺ + (BE_far − S)⁺
+    const b = buildPutBWB(row10, 20, 40, spot, t5);
+    const sig = bwbSettlementSigma(row10, 'put');
+    expect(b.netCredit).toBeLessThan(0);
+    expect(splitOf(b).expectedWin).toBeCloseTo(
+      bs(b.breakevenNear!, sig, 'put') -
+        2 * bs(b.shortStrike, sig, 'put') +
+        bs(b.breakeven, sig, 'put'),
+      3,
+    );
+    // The old projection counted a debit's wins as $0
+    expect(splitOf(b).expectedWin).toBeGreaterThan(0.5);
+  });
+
+  it('credit put BWB: E[loss] is the closed-form ramp below its breakeven, under (1 − PoP) × max loss', () => {
+    // |pnl⁻| = (BE − S)⁺ − (far − S)⁺
+    const b = buildPutBWB(row10, 15, 37.5, spot, t5);
+    const sig = bwbSettlementSigma(row10, 'put');
+    expect(b.netCredit).toBeGreaterThan(0);
+    const { expectedLoss } = splitOf(b);
+    expect(expectedLoss).toBeCloseTo(
+      bs(b.breakeven, sig, 'put') - bs(b.longFarStrike, sig, 'put'),
+      3,
+    );
+    expect(expectedLoss).toBeLessThan((1 - b.probabilityOfProfit) * b.maxLoss);
+  });
+
+  it('settles at spot when no time or vol is left', () => {
+    const above = (s: number) => s - 5790; // +10 at spot
+    expect(expectedPnLSplit(above, { spot, sigma: 0.18, T: 0 })).toEqual({
+      expectedWin: 10,
+      expectedLoss: 0,
+    });
+    expect(
+      expectedPnLSplit((s) => -above(s), { spot, sigma: 0, T: t5 }),
+    ).toEqual({ expectedWin: 0, expectedLoss: 10 });
+    // Past expiry: σ√T is NaN
+    expect(expectedPnLSplit(above, { spot, sigma: 0.18, T: -1 })).toEqual({
+      expectedWin: 10,
+      expectedLoss: 0,
+    });
+  });
+
+  it('bwbSettlementSigma is the base σ of the side, falling back to the pricing σ', () => {
+    expect(bwbSettlementSigma(row10, 'put')).toBe(row10.basePutSigma);
+    expect(bwbSettlementSigma(row10, 'call')).toBe(row10.baseCallSigma);
+    const noBase: DeltaRow = {
+      ...row10,
+      basePutSigma: undefined as unknown as number,
+      baseCallSigma: undefined as unknown as number,
+    };
+    expect(bwbSettlementSigma(noBase, 'put')).toBe(row10.putSigma);
+    expect(bwbSettlementSigma(noBase, 'call')).toBe(row10.callSigma);
   });
 });

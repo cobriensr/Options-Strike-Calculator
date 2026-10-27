@@ -206,7 +206,7 @@ export function buildPutBWB(
     longFarStrike,
     netCredit,
     spotPrice,
-    row.basePutSigma ?? row.putSigma,
+    bwbSettlementSigma(row, 'put'),
     T,
     vix,
   );
@@ -325,7 +325,7 @@ export function buildCallBWB(
     longFarStrike,
     netCredit,
     spotPrice,
-    row.baseCallSigma ?? row.callSigma,
+    bwbSettlementSigma(row, 'call'),
     T,
     vix,
   );
@@ -391,4 +391,71 @@ export function bwbPnLAtExpiry(bwb: BWBLegs, spxAtExpiry: number): number {
   const shortIntrinsic = Math.max(spxAtExpiry - bwb.shortStrike, 0);
   const farIntrinsic = Math.max(spxAtExpiry - bwb.longFarStrike, 0);
   return nearIntrinsic - 2 * shortIntrinsic + farIntrinsic + bwb.netCredit;
+}
+
+/**
+ * Settlement σ of one side of a BWB: the base σ (skew, no IV acceleration)
+ * that probabilityOfProfit uses, falling back to the pricing σ.
+ */
+export function bwbSettlementSigma(
+  row: DeltaRow,
+  side: 'put' | 'call',
+): number {
+  return side === 'put'
+    ? (row.basePutSigma ?? row.putSigma)
+    : (row.baseCallSigma ?? row.callSigma);
+}
+
+/**
+ * The r = 0 log-normal that calcSpreadPoP uses:
+ * ln S_T ~ N(ln spot − σ²T/2, σ²T).
+ */
+export interface SettlementDistribution {
+  readonly spot: number;
+  readonly sigma: number;
+  readonly T: number;
+}
+
+/** Expected profit and expected loss of one trade at expiry, both >= 0. */
+export interface ExpectedPnLSplit {
+  /** ∫ pnl·f dS over the settlements where pnl > 0 */
+  readonly expectedWin: number;
+  /** ∫ |pnl|·f dS over the settlements where pnl < 0 */
+  readonly expectedLoss: number;
+}
+
+// Midpoint rule over ±8 sd of ln S_T in 20,000 steps, the grid the BWB
+// PoP sweep test integrates on. Beyond 8 sd lies ~1e-15 of the mass.
+const EV_SPAN_SD = 8;
+const EV_STEPS = 20_000;
+
+/**
+ * Splits the expected expiry P&L of any payoff into its winning and
+ * losing parts under the log-normal PoP uses (owner decision Q25), so
+ * expectedWin − expectedLoss = E[pnl]. Integrated numerically in
+ * z = (ln S_T − μ) / (σ√T), which handles kinked payoffs as they are.
+ * With no time or no vol left the index settles at spot.
+ */
+export function expectedPnLSplit(
+  pnlAtExpiry: (spx: number) => number,
+  { spot, sigma, T }: SettlementDistribution,
+): ExpectedPnLSplit {
+  const sd = sigma * Math.sqrt(T);
+  // T < 0 gives NaN, which isFinite also sends to the point mass
+  if (!Number.isFinite(sd) || sd <= 0) {
+    const pnl = pnlAtExpiry(spot);
+    return { expectedWin: Math.max(0, pnl), expectedLoss: Math.max(0, -pnl) };
+  }
+  const mu = Math.log(spot) - (sigma * sigma * T) / 2;
+  const dz = (2 * EV_SPAN_SD) / EV_STEPS;
+  let expectedWin = 0;
+  let expectedLoss = 0;
+  for (let i = 0; i < EV_STEPS; i++) {
+    const z = -EV_SPAN_SD + (i + 0.5) * dz;
+    const weight = (Math.exp(-(z * z) / 2) / Math.sqrt(2 * Math.PI)) * dz;
+    const pnl = pnlAtExpiry(Math.exp(mu + sd * z));
+    if (pnl > 0) expectedWin += pnl * weight;
+    else expectedLoss -= pnl * weight;
+  }
+  return { expectedWin, expectedLoss };
 }

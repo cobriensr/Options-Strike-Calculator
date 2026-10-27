@@ -1,5 +1,11 @@
 import type { DeltaRow, CalculationResults } from '../../types/index.js';
-import { buildPutBWB, buildCallBWB } from '../calculator.js';
+import {
+  buildCallBWB,
+  buildPutBWB,
+  bwbPnLAtExpiry,
+  bwbSettlementSigma,
+  expectedPnLSplit,
+} from '../bwb.js';
 import {
   BWB_NARROW_OPTIONS,
   BWB_WIDE_MULTIPLIERS,
@@ -60,11 +66,11 @@ export async function exportBWBComparison({
     'Short ×2',
     'Long Near',
     'Long Far',
-    'Monthly Wins',
-    'Monthly Losses',
-    'Monthly Profit ($)',
-    'Monthly Loss ($)',
-    'Monthly Net ($)',
+    'Monthly Wins (log-normal)',
+    'Monthly Losses (log-normal)',
+    'Monthly Win EV ($)',
+    'Monthly Loss EV ($)',
+    'Monthly Net EV ($)',
   ];
 
   const data: (string | number)[][] = [];
@@ -93,14 +99,26 @@ export async function exportBWBComparison({
         );
 
         for (const bwb of [putBwb, callBwb]) {
-          const pop = bwb.adjustedPoP;
+          // Projection by expected value of the whole expiry payoff, under
+          // the log-normal probabilityOfProfit uses (owner decision Q25).
+          // The fat-tail adjusted PoP in the PoP column is a constant
+          // multiplier, not a distribution, so it can't weight a payoff.
+          const { expectedWin, expectedLoss } = expectedPnLSplit(
+            (spx) => bwbPnLAtExpiry(bwb, spx),
+            {
+              spot: results.spot,
+              sigma: bwbSettlementSigma(row, bwb.side),
+              T: results.T,
+            },
+          );
+          const pop = bwb.probabilityOfProfit;
           const monthlyWins = round1(tradingDaysPerMonth * pop);
           const monthlyLosses = round1(tradingDaysPerMonth * (1 - pop));
-          const monthlyProfit = round2(
-            monthlyWins * Math.max(0, bwb.netCredit) * mult,
+          const monthlyWinEV = round2(tradingDaysPerMonth * expectedWin * mult);
+          const monthlyLossEV = round2(
+            tradingDaysPerMonth * expectedLoss * mult,
           );
-          const monthlyLoss = round2(monthlyLosses * bwb.maxLoss * mult);
-          const monthlyNet = round2(monthlyProfit - monthlyLoss);
+          const monthlyNetEV = round2(monthlyWinEV - monthlyLossEV);
 
           data.push([
             bwb.narrowWidth,
@@ -116,7 +134,7 @@ export async function exportBWBComparison({
             round2(bwb.maxLoss * mult),
             round2(bwb.maxLoss * mult),
             round1(bwb.returnOnRisk * 100),
-            round1(pop * 100),
+            round1(bwb.adjustedPoP * 100),
             round0(bwb.breakeven),
             bwb.breakevenNear == null ? '' : round0(bwb.breakevenNear),
             bwb.sweetSpot,
@@ -125,9 +143,9 @@ export async function exportBWBComparison({
             bwb.longFarStrike,
             monthlyWins,
             monthlyLosses,
-            monthlyProfit,
-            monthlyLoss,
-            monthlyNet,
+            monthlyWinEV,
+            monthlyLossEV,
+            monthlyNetEV,
           ]);
         }
       }
@@ -139,7 +157,7 @@ export async function exportBWBComparison({
     ws,
     [
       8, 8, 6, 8, 10, 14, 12, 14, 12, 12, 12, 12, 8, 8, 10, 14, 10, 10, 10, 10,
-      10, 10, 14, 14, 14,
+      24, 26, 18, 18, 18,
     ],
   );
   XLSX.utils.book_append_sheet(wb, ws, 'BWB Comparison');
@@ -185,9 +203,21 @@ export async function exportBWBComparison({
     ['Buying Power = Max Loss.'],
     ['Dollar values = SPX points × $100 × ' + contracts + ' contracts.'],
     [],
-    ['Monthly Projections (22 trading days)'],
+    ['Monthly Projections (22 trading days, log-normal expected value)'],
     [
-      'IMPORTANT: Monthly Net assumes every trade is held to expiration with no management.',
+      'Monthly Win EV ($) = 22 × the expected profit per trade, summed over the settlements that make money. Monthly Loss EV ($) = 22 × the expected loss over the settlements that lose. Monthly Net EV ($) = Win EV − Loss EV.',
+    ],
+    [
+      'The expectations integrate the full expiry payoff under the same log-normal (r=0, base σ per side) as the log-normal PoP. Monthly Wins / Losses = 22 × that log-normal PoP.',
+    ],
+    [
+      'PoP (%) is fat-tail adjusted. That adjustment is a constant multiplier, not a distribution, so the projections do not use it.',
+    ],
+    [
+      'Premiums are priced at the IV-accelerated σ and settle at the base σ, so Net EV is the gap between the two. With no IV acceleration it is 0.',
+    ],
+    [
+      'IMPORTANT: Monthly Net EV assumes every trade is held to expiration with no management.',
     ],
     [
       'BWB profit peaks at the sweet spot — real edge comes from selecting setups where a gamma wall aligns with the sweet spot.',
