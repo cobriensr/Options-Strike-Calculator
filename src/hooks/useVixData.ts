@@ -9,11 +9,24 @@ import {
   loadStaticVixData,
 } from '../utils/vixStorage';
 import { to24Hour } from '../utils/calculator';
-import { convertCTToET } from '../utils/timezone';
+import { convertCTToET, getETToday } from '../utils/timezone';
 
 type AmPm = 'AM' | 'PM';
 type Timezone = 'ET' | 'CT';
 export type OHLCField = 'smart' | 'open' | 'high' | 'low' | 'close';
+
+/**
+ * Whether the date's daily VIX goes in the VIX field. VIX mode prices
+ * strikes off it. On a past date DIRECT mode needs it too, for regime
+ * analysis, since today's live VIX must not stand in for that date's. On
+ * a past date with intraday history, useAutoFill then writes the
+ * snapshot's VIX at the selected time over it.
+ */
+function fillsDailyVix(ivMode: IVMode, selectedDate: string): boolean {
+  return (
+    ivMode === IV_MODES.VIX || (!!selectedDate && selectedDate < getETToday())
+  );
+}
 
 export interface UseVixDataReturn {
   vixData: VIXDataMap;
@@ -91,7 +104,7 @@ export function useVixData(
     const entry = vixData[selectedDate];
     if (entry) {
       setVixOHLC(entry);
-      if (vixOHLCField === 'smart' && ivMode === IV_MODES.VIX) {
+      if (vixOHLCField === 'smart' && fillsDailyVix(ivMode, selectedDate)) {
         // DST-safe CT→ET conversion (see FE-STATE-004 + follow-up).
         // The ~1-hour spring-forward window each March has a real
         // 120-minute offset, not the steady-state 60, so we use
@@ -160,9 +173,9 @@ export function useVixData(
     setVixInput,
   ]);
 
-  // Re-apply OHLC selection when field or time changes
+  // Re-apply OHLC selection when the OHLC, field, time or date changes
   useEffect(() => {
-    if (!vixOHLC || ivMode !== IV_MODES.VIX) return;
+    if (!vixOHLC || !fillsDailyVix(ivMode, selectedDate)) return;
     if (vixOHLCField === 'smart') {
       // DST-safe CT→ET conversion — same pattern as the selectedDate
       // effect above. See FE-STATE-004 for the DST window rationale.
@@ -181,6 +194,7 @@ export function useVixData(
     timeAmPm,
     timezone,
     ivMode,
+    selectedDate,
     setVixInput,
   ]);
 

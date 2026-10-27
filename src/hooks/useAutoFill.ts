@@ -56,7 +56,7 @@ interface UseAutoFillInputs {
 
   // External hook data
   market: MarketDataState;
-  vix: Pick<UseVixDataReturn, 'selectedDate' | 'setSelectedDate'>;
+  vix: Pick<UseVixDataReturn, 'selectedDate' | 'setSelectedDate' | 'vixOHLC'>;
   historyData: UseHistoryDataReturn;
   vix1dStatic: UseVix1dDataReturn;
 
@@ -112,7 +112,7 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
 
   // Destructure stable references so they can be listed in dependency arrays
   // without including the entire vix object (which is new on every render).
-  const { selectedDate, setSelectedDate } = vix;
+  const { selectedDate, setSelectedDate, vixOHLC } = vix;
 
   // useHistoryData keeps the last date's history while the new date's fetch
   // is in flight. History for another date counts as none for the selected
@@ -312,12 +312,18 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     // every render, so listing the whole object would retrigger this
     // effect unnecessarily. The specific props we read ARE stable across
     // renders when their underlying data hasn't changed.
+    // vixOHLC is listed but not read. useVixData writes the date's daily
+    // VIX whenever it changes (from the table, the API or App's fallback
+    // from the history's candles), and its effects run before this one in
+    // a commit, so this re-run after it keeps the snapshot's VIX at the
+    // selected time on a date with intraday history.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     ownHistory,
     historyData.history,
     historyData.getStateAtTime,
     selectedDate,
+    vixOHLC,
     timeHour,
     timeMinute,
     timeAmPm,

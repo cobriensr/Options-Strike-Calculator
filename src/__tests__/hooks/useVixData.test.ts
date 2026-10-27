@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { useVixData } from '../../hooks/useVixData';
+import { getETToday } from '../../utils/timezone';
 import type { VIXDataMap } from '../../types';
 
 // ============================================================
@@ -475,9 +476,36 @@ describe('useVixData', () => {
   });
 
   // --------------------------------------------------------
-  // Does not call setVixInput in direct IV mode
+  // Direct IV mode: today's VIX field is the live quote's (useAutoFill);
+  // a past date's is the date's own daily VIX, for regime analysis
   // --------------------------------------------------------
-  it('does not call setVixInput when ivMode is direct', async () => {
+  it('does not call setVixInput in direct IV mode on today', async () => {
+    const today = getETToday();
+    const todayOHLC = { open: 15, high: 16, low: 14, close: 15.5 };
+    const setVixInput = vi.fn();
+    mockedLoadCached.mockReturnValue({
+      data: { ...mockVixMap, [today]: todayOHLC },
+      source: 'test',
+    });
+
+    const { result } = renderWith({ setVixInput, ivMode: 'direct' });
+
+    await waitFor(() => {
+      expect(result.current.vixDataLoaded).toBe(true);
+    });
+
+    act(() => {
+      result.current.setSelectedDate(today);
+    });
+
+    await waitFor(() => {
+      expect(result.current.vixOHLC).toEqual(todayOHLC);
+    });
+
+    expect(setVixInput).not.toHaveBeenCalled();
+  });
+
+  it("fills a past date's daily VIX in direct IV mode", async () => {
     const setVixInput = vi.fn();
     mockedLoadCached.mockReturnValue({
       data: mockVixMap,
@@ -494,11 +522,43 @@ describe('useVixData', () => {
       result.current.setSelectedDate('2026-03-11');
     });
 
+    // 10 AM ET: the open.
     await waitFor(() => {
-      expect(result.current.vixOHLC).toBeTruthy();
+      expect(setVixInput).toHaveBeenCalledWith('18.50');
+    });
+  });
+
+  it("fills a past date's daily VIX in direct IV mode once the API answers for it", async () => {
+    const setVixInput = vi.fn();
+    mockedLoadCached.mockReturnValue({
+      data: mockVixMap,
+      source: 'test',
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        open: 20.0,
+        high: 21.5,
+        low: 19.5,
+        close: 21.0,
+        count: 2,
+      }),
+    } as Response);
+
+    const { result } = renderWith({ setVixInput, ivMode: 'direct' });
+
+    await waitFor(() => {
+      expect(result.current.vixDataLoaded).toBe(true);
     });
 
-    // setVixInput should NOT be called in direct mode
-    expect(setVixInput).not.toHaveBeenCalled();
+    act(() => {
+      result.current.setSelectedDate('2026-03-26'); // not in mockVixMap
+    });
+
+    await waitFor(() => {
+      expect(setVixInput).toHaveBeenCalledWith('20.00');
+    });
+
+    fetchSpy.mockRestore();
   });
 });
