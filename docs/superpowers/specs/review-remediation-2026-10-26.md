@@ -192,6 +192,10 @@ The owner asked for **one implementation stream at a time**. Work the queue in o
 | 6 | Q26 candle repair | `rr-repair` / `fix/rr-repair` | npm ci done | `scripts/repair-frozen-candles.mjs` dry run only. Report to `docs/tmp/`. Owner approves before any write. |
 | 7 | Decided 2026-10-27 | — | — | 3.6, 3.8, 3.9, 3.11, 3.12, 3.13, 3.16, 3.17, 3.18. Calibration or table first, shown to the owner before wiring: 3.7, 3.10, 3.15. |
 | 8 | Remaining Wave 1 | — | — | Phases 10, 11, 12, 14–21; F4f, L6, D1j, D1k; security S3, S5, S6, S7. |
+| 9 | Past-date replay integrity | — | Spec written 2026-10-27 | `past-date-replay-integrity-2026-10-27.md`: phase 1 (stop new `market_snapshots` damage) first. |
+| 10 | Database data repair (owner request) | — | Stub spec 2026-10-27 | `db-data-repair-2026-10-27.md`: phase 0 inventory, then per-table repair from the APIs with an owner-approved dry run. Includes Q26. |
+
+**Shipped 2026-10-27 after the close:** S1 part 2 (`3bc4f3e1`), the PR #202 reland (`d676f0b9`), S2 (`6af8981f`; owner login verified after correcting the hash) and BWB round 2 (`187d76a4`). VIX-mode is in its round-5 review.
 
 ### Found during implementation (new ledger rows)
 
