@@ -13,6 +13,14 @@ import { describe, it, expect } from 'vitest';
  */
 const appSource = readFileSync(path.resolve(__dirname, '../App.tsx'), 'utf-8');
 
+/**
+ * App.tsx without comments, so a comment that names setIvMode doesn't count.
+ * The `[^:]` keeps a URL's `//` (App.tsx has none in strings today).
+ */
+const appCode = appSource
+  .replaceAll(/\/\*[\s\S]*?\*\//g, '')
+  .replaceAll(/(^|[^:])\/\/.*$/gm, '$1');
+
 /** The body of `const <name> = useCallback(...)`, up to its closing `);`. */
 function callbackBody(name: string): string {
   const match = new RegExp(
@@ -48,16 +56,28 @@ describe('App IV-mode wiring', () => {
   });
 
   it('calls setIvMode only from the two flag-setting handlers', () => {
-    // Fails closed: any new call site, an inline arrow such as
-    // `onResetIv={() => setIvMode(...)}` included, changes the count.
-    expect(appSource.match(/\bsetIvMode\(/g)).toHaveLength(2);
+    expect(appCode.match(/\bsetIvMode\(/g)).toHaveLength(2);
     expect(callbackBody('handleIvModeChange')).toContain('setIvMode(');
     expect(callbackBody('handleUseVix1dAsSigma')).toContain('setIvMode(');
+  });
+
+  it('references setIvMode nowhere but the reviewed wiring', () => {
+    // Fails closed: any new reference changes the count, whether a call, an
+    // inline arrow, a prop (`={setIvMode}`, `={setIvMode as …}`) or an object
+    // shorthand (`{ setIvMode }`). The six: the useIvInputs destructure, the
+    // call and deps of handleIvModeChange and of handleUseVix1dAsSigma, and
+    // the useAutoFill input (auto-fill, not a user pick).
+    expect(appCode.match(/\bsetIvMode\b/g)).toHaveLength(6);
   });
 
   it('hands no UI control the raw setIvMode, which skips the flag', () => {
     expect(appSource).not.toMatch(/=\{setIvMode\}/);
     expect(appSource).not.toMatch(/:\s*setIvMode\b/);
+  });
+
+  it('passes the selected date to IVInputSection', () => {
+    // The term-structure card keys its live-quote fallback on the date.
+    expect(ivInputSectionProps()).toContain('selectedDate={vix.selectedDate}');
   });
 
   it('hands useAutoFill the flag', () => {

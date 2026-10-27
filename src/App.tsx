@@ -902,6 +902,7 @@ export default function StrikeCalculator() {
                 results={results}
                 errors={errors}
                 market={market}
+                selectedDate={vix.selectedDate}
                 historySnapshot={historySnapshot}
                 onUseVix1dAsSigma={handleUseVix1dAsSigma}
                 termShape={signals.vixTermShape}

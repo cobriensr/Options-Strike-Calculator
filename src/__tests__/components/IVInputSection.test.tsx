@@ -4,6 +4,19 @@ import userEvent from '@testing-library/user-event';
 import IVInputSection from '../../components/IVInputSection';
 import type { MarketDataState } from '../../hooks/useMarketData';
 import type { HistorySnapshot } from '../../hooks/useHistoryData';
+import { useVixTrajectory } from '../../hooks/useVixTrajectory';
+import { getETToday } from '../../utils/timezone';
+
+// The term-structure card's intraday trajectory poll (today's VIX
+// snapshots). Mocked so a test can see whether the card asks for it.
+vi.mock('../../hooks/useVixTrajectory', () => ({
+  useVixTrajectory: vi.fn(() => ({
+    hasData: false,
+    ratio1d: null,
+    ratio9d: null,
+    spx: null,
+  })),
+}));
 
 const mockMarket: MarketDataState = {
   data: {
@@ -39,6 +52,7 @@ function renderSection(overrides: Record<string, unknown> = {}) {
     results: null,
     errors: {} as Record<string, string>,
     market: mockMarket,
+    selectedDate: getETToday(),
     onUseVix1dAsSigma: vi.fn(),
   };
   const props = { ...defaults, ...overrides };
@@ -317,13 +331,16 @@ describe('IVInputSection', () => {
       };
     }
 
+    // 2026-03-10 11:30 ET
+    const PAST_CANDLE = Date.parse('2026-03-10T15:30:00Z');
+
     it('does not fill a past date without VIX1D, VIX9D or VVIX from live quotes', async () => {
       const user = userEvent.setup();
       const { props } = renderSection({
         dVix: '20.5',
         market: liveMarket,
-        // 2026-03-10 11:30 ET
-        historySnapshot: snapshotAt(Date.parse('2026-03-10T15:30:00Z')),
+        selectedDate: '2026-03-10',
+        historySnapshot: snapshotAt(PAST_CANDLE),
       });
 
       expect(screen.getByLabelText(/VIX1D/)).not.toHaveValue('14.20');
@@ -333,9 +350,92 @@ describe('IVInputSection', () => {
       expect(props.onUseVix1dAsSigma).not.toHaveBeenCalledWith(0.142);
     });
 
+    it('does not fill a past date without intraday history from live quotes', async () => {
+      // Older than ~60 days, a failed history fetch, a weekend or a
+      // holiday: no snapshot, and the selected date alone says "past".
+      const user = userEvent.setup();
+      const { props } = renderSection({
+        dVix: '20.5',
+        market: liveMarket,
+        selectedDate: '2026-03-10',
+        historySnapshot: null,
+      });
+
+      expect(screen.getByLabelText(/VIX1D/)).not.toHaveValue('14.20');
+      expect(screen.getByLabelText(/VIX9D/)).not.toHaveValue('16.30');
+      expect(screen.queryByText('VVIX')).not.toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: /use vix1d as/i }));
+      expect(props.onUseVix1dAsSigma).not.toHaveBeenCalledWith(0.142);
+    });
+
+    it("drops today's live values when the date moves to a past date without history", async () => {
+      const user = userEvent.setup();
+      const { props, rerender } = renderSection({
+        dVix: '18.5',
+        market: liveMarket,
+        selectedDate: getETToday(),
+      });
+      expect(screen.getByLabelText(/VIX1D/)).toHaveValue('14.20');
+
+      rerender(
+        <IVInputSection
+          {...props}
+          dVix="20.5"
+          selectedDate="2026-03-10"
+          historySnapshot={null}
+        />,
+      );
+
+      expect(screen.getByLabelText(/VIX1D/)).not.toHaveValue('14.20');
+      expect(screen.getByLabelText(/VIX9D/)).not.toHaveValue('16.30');
+      expect(screen.queryByText('VVIX')).not.toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: /use vix1d as/i }));
+      expect(props.onUseVix1dAsSigma).not.toHaveBeenCalledWith(0.142);
+    });
+
+    it("keeps a past snapshot off live quotes while today's history loads", () => {
+      // Back to today: the past date's snapshot stays up until today's
+      // history arrives, so its candle date also says "past".
+      renderSection({
+        dVix: '18.5',
+        market: liveMarket,
+        selectedDate: getETToday(),
+        historySnapshot: snapshotAt(PAST_CANDLE),
+      });
+
+      expect(screen.getByLabelText(/VIX1D/)).not.toHaveValue('14.20');
+      expect(screen.getByLabelText(/VIX9D/)).not.toHaveValue('16.30');
+      expect(screen.queryByText('VVIX')).not.toBeInTheDocument();
+    });
+
+    it("does not poll today's VIX trajectory for a past date without history", () => {
+      renderSection({
+        dVix: '20.5',
+        market: { ...liveMarket, marketOpen: true },
+        selectedDate: '2026-03-10',
+        historySnapshot: null,
+      });
+
+      expect(vi.mocked(useVixTrajectory)).toHaveBeenLastCalledWith(false);
+    });
+
+    it("polls today's VIX trajectory on today while the market is open", () => {
+      renderSection({
+        dVix: '18.5',
+        market: { ...liveMarket, marketOpen: true },
+        selectedDate: getETToday(),
+      });
+
+      expect(vi.mocked(useVixTrajectory)).toHaveBeenLastCalledWith(true);
+    });
+
     it('fills today from live quotes, with no snapshot yet', async () => {
       const user = userEvent.setup();
-      const { props } = renderSection({ dVix: '18.5', market: liveMarket });
+      const { props } = renderSection({
+        dVix: '18.5',
+        market: liveMarket,
+        selectedDate: getETToday(),
+      });
 
       expect(screen.getByLabelText(/VIX1D/)).toHaveValue('14.20');
       expect(screen.getByLabelText(/VIX9D/)).toHaveValue('16.30');
@@ -350,6 +450,7 @@ describe('IVInputSection', () => {
       renderSection({
         dVix: '18.5',
         market: liveMarket,
+        selectedDate: getETToday(),
         historySnapshot: snapshotAt(Date.now()),
       });
 

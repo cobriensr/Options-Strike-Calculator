@@ -24,6 +24,7 @@ interface Props {
   results: CalculationResults | null;
   errors: Record<string, string>;
   market: MarketDataState;
+  selectedDate: string;
   historySnapshot?: HistorySnapshot | null;
   onUseVix1dAsSigma: (sigma: number) => void;
   termShape?: string | null;
@@ -44,6 +45,7 @@ export default function IVInputSection({
   results,
   errors,
   market,
+  selectedDate,
   historySnapshot,
   onUseVix1dAsSigma,
   termShape,
@@ -71,15 +73,27 @@ export default function IVInputSection({
     };
   }, [tooltipOpen]);
 
-  // Live quotes are today's, and they load on any date. A past date's
-  // snapshot must not fall back to them, or "Use VIX1D as σ" would apply
-  // today's VIX1D to that date. Today has a snapshot too once its intraday
-  // candles exist, so today keeps the fallback. The snapshot's date is its
-  // candle's ET date.
-  const pastSnapshot =
-    historySnapshot != null &&
-    getETDateStr(new Date(historySnapshot.candle.datetime)) < getETToday();
-  const liveQuotes = pastSnapshot ? null : market.data.quotes;
+  // Live quotes are today's, and they load on any date. A past date must
+  // not fall back to them, or "Use VIX1D as σ" would apply today's VIX1D to
+  // that date. The selected date decides, as in useAutoFill and App's
+  // backtest mode, so a past date with no intraday history (older than ~60
+  // days, a failed fetch, a weekend or holiday) gets no live values either.
+  // A snapshot whose candle is from a past ET date counts as past too: it
+  // stays up while today's history loads after a past date. Today keeps the
+  // fallback, with or without its own snapshot.
+  const today = getETToday();
+  const pastDate =
+    (!!selectedDate && selectedDate < today) ||
+    (historySnapshot != null &&
+      getETDateStr(new Date(historySnapshot.candle.datetime)) < today);
+  const liveQuotes = pastDate ? null : market.data.quotes;
+  // Remount the card when its source changes, so a value it took from an
+  // earlier source (today's live VIX1D, say) can't stay on a past date.
+  const termStructureKey = historySnapshot
+    ? `hist-${historySnapshot.candle.datetime}`
+    : pastDate
+      ? `past-${selectedDate}`
+      : 'live';
 
   return (
     <SectionBox
@@ -229,11 +243,7 @@ export default function IVInputSection({
             Term Structure
           </div>
           <VIXTermStructure
-            key={
-              historySnapshot
-                ? `hist-${historySnapshot.candle.datetime}`
-                : 'live'
-            }
+            key={termStructureKey}
             vix={Number.parseFloat(dVix)}
             onUseVix1dAsSigma={onUseVix1dAsSigma}
             isVix1dActive={ivMode === IV_MODES.DIRECT}
@@ -242,7 +252,7 @@ export default function IVInputSection({
             initialVvix={historySnapshot?.vvix ?? liveQuotes?.vvix?.price}
             termShape={termShape}
             termShapeAdvice={termShapeAdvice}
-            marketOpen={market.marketOpen && !historySnapshot}
+            marketOpen={market.marketOpen && !historySnapshot && !pastDate}
           />
         </div>
       )}
