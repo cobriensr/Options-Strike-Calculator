@@ -103,6 +103,21 @@ function makeFetchMockWithVersionAuto(
   };
 }
 
+/** A 200 classify response labelling TRADE_A as an isolated leg. */
+function okClassify(): Response {
+  return makeJsonResponse({
+    classifications: [
+      {
+        id: TRADE_A.id,
+        inferred_structure: 'isolated_leg',
+        is_isolated_leg: true,
+        match_confidence: 0,
+        pattern_group_id: TRADE_A.id,
+      },
+    ],
+  });
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 /** Distinctive so a leak into any log or Sentry payload is greppable. */
@@ -489,19 +504,6 @@ describe('classifyMultilegBatch', () => {
   // ── Bearer auth: CLASSIFIER_SHARED_SECRET on every request ──
 
   describe('bearer auth (CLASSIFIER_SHARED_SECRET)', () => {
-    const okClassify = () =>
-      makeJsonResponse({
-        classifications: [
-          {
-            id: TRADE_A.id,
-            inferred_structure: 'isolated_leg',
-            is_isolated_leg: true,
-            match_confidence: 0,
-            pattern_group_id: TRADE_A.id,
-          },
-        ],
-      });
-
     it('sends Authorization: Bearer <secret> on the classify POST', async () => {
       const spy = vi
         .spyOn(globalThis, 'fetch')
@@ -1332,6 +1334,104 @@ describe('classifyMultilegBatch', () => {
       );
       expect(driftCalls).toHaveLength(0);
     });
+
+    // A failed probe must not switch drift detection off for the life of
+    // the instance (a 401/503 is likely while the bearer rolls out).
+
+    /** fetch mock: /version answers from `versionReplies` in order. */
+    function mockVersionSequence(versionReplies: Array<() => Response>) {
+      let next = 0;
+      return vi
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation(async (input: unknown) => {
+          if (!isVersionUrl(input)) return okClassify();
+          const reply =
+            versionReplies[Math.min(next, versionReplies.length - 1)]!;
+          next += 1;
+          return reply();
+        });
+    }
+
+    function versionCallCount(spy: ReturnType<typeof mockVersionSequence>) {
+      return spy.mock.calls.filter((call) => isVersionUrl(call[0])).length;
+    }
+
+    it.each([
+      [
+        'a 401',
+        () => new Response('{"error":"unauthorized"}', { status: 401 }),
+      ],
+      [
+        'a 503 (secret unset)',
+        () =>
+          makeJsonResponse(
+            { error: 'CLASSIFIER_SHARED_SECRET not configured' },
+            503,
+          ),
+      ],
+      [
+        'a fetch rejection',
+        (): Response => {
+          throw new Error('connect ECONNREFUSED');
+        },
+      ],
+      ['an invalid JSON body', () => new Response('not json', { status: 200 })],
+      ['a body that fails the schema', () => makeJsonResponse({ nope: true })],
+    ])(
+      'probes /version again on the next call after %s, then stops once it succeeds',
+      async (_label, failedReply) => {
+        const spy = mockVersionSequence([failedReply, versionOkResponse]);
+
+        await classifyMultilegBatch([TRADE_A]);
+        await classifyMultilegBatch([TRADE_A]);
+        await classifyMultilegBatch([TRADE_A]);
+
+        // failed probe, retried probe (ok), then no third probe.
+        expect(versionCallCount(spy)).toBe(2);
+        expect(logger.info).toHaveBeenCalledWith(
+          expect.objectContaining({ matcherSha: 'abc1234' }),
+          'multileg-classify /version probe ok',
+        );
+      },
+    );
+
+    it('probes at most once per classify call while /version keeps failing', async () => {
+      const spy = mockVersionSequence([
+        () => new Response('{"error":"unauthorized"}', { status: 401 }),
+      ]);
+
+      for (let i = 0; i < 3; i += 1) {
+        const result = await classifyMultilegBatch([TRADE_A]);
+        expect(result.size).toBe(1);
+      }
+
+      expect(versionCallCount(spy)).toBe(3);
+    });
+
+    it('does not probe again after drift is reported', async () => {
+      const spy = mockVersionSequence([
+        () =>
+          makeJsonResponse({
+            patterns: ['vertical', 'strangle', 'isolated_leg'],
+          }),
+      ]);
+
+      await classifyMultilegBatch([TRADE_A]);
+      await classifyMultilegBatch([TRADE_A]);
+
+      expect(versionCallCount(spy)).toBe(1);
+    });
+
+    it('shares one in-flight probe between concurrent first calls', async () => {
+      const spy = mockVersionSequence([versionOkResponse]);
+
+      await Promise.all([
+        classifyMultilegBatch([TRADE_A]),
+        classifyMultilegBatch([TRADE_A]),
+      ]);
+
+      expect(versionCallCount(spy)).toBe(1);
+    });
   });
 
   // ── Fix 7 — 503 queue saturation distinct from generic 5xx ──────────────
@@ -1403,6 +1503,71 @@ describe('classifyMultilegBatch', () => {
       const extra = (call![1] as { extra: Record<string, unknown> }).extra;
       expect(extra.retryAfterSec).toBe('7');
     });
+
+    it('treats a body-only retry_after_sec (no header) as saturation', async () => {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(
+        makeFetchMockWithVersionAuto(() =>
+          makeJsonResponse({ error: 'queue timeout', retry_after_sec: 2 }, 503),
+        ),
+      );
+
+      await expect(classifyMultilegBatch([TRADE_A])).rejects.toMatchObject({
+        kind: 'http_503',
+      });
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'multileg.classify.queue_saturation',
+        expect.objectContaining({
+          extra: expect.objectContaining({ retryAfterSec: 2 }),
+        }),
+      );
+    });
+
+    // The classifier's saturation 503 always carries retry_after_sec and
+    // Retry-After. A 503 with neither (the secret-unset rejection, an edge
+    // proxy's 503) is a service fault, not queue pressure.
+    it.each([
+      [
+        'the secret-unset rejection',
+        () =>
+          makeJsonResponse(
+            { error: 'CLASSIFIER_SHARED_SECRET not configured' },
+            503,
+          ),
+        'CLASSIFIER_SHARED_SECRET not configured',
+      ],
+      [
+        'a non-JSON proxy 503',
+        () => new Response('Service Unavailable', { status: 503 }),
+        'Service Unavailable',
+      ],
+    ])(
+      'sends %s down the generic 5xx path, not queue_saturation',
+      async (_label, respond, bodyText) => {
+        vi.spyOn(globalThis, 'fetch').mockImplementation(
+          makeFetchMockWithVersionAuto(respond),
+        );
+
+        await expect(classifyMultilegBatch([TRADE_A])).rejects.toMatchObject({
+          name: 'MultilegClassifyError',
+          kind: 'http_5xx',
+          status: 503,
+        });
+
+        expect(Sentry.captureMessage).toHaveBeenCalledWith(
+          'multileg.classify.sidecar_non_2xx',
+          expect.objectContaining({
+            extra: expect.objectContaining({
+              status: 503,
+              body: expect.stringContaining(bodyText),
+            }),
+          }),
+        );
+        const saturationCalls = Sentry.captureMessage.mock.calls.filter(
+          (call: unknown[]) => call[0] === 'multileg.classify.queue_saturation',
+        );
+        expect(saturationCalls).toHaveLength(0);
+      },
+    );
   });
 
   // ── Coverage gap fills ───────────────────────────────────────────────────

@@ -173,7 +173,10 @@ const CLASSIFIER_PATH = '/multileg-classify';
 /** Cold-start version probe path on the classifier service. */
 const VERSION_PATH = '/version';
 
-/** Whether the cold-start /version probe has run in this process. */
+/**
+ * Whether a /version probe has succeeded (or is in flight) in this
+ * process. A failed probe clears it so the next classify call retries.
+ */
 let versionChecked = false;
 
 /**
@@ -311,24 +314,39 @@ function buildRequestBody(
 }
 
 /**
- * Cold-start `/version` probe (Fix 6 / Finding 2.2). Runs at most once
- * per process. Compares the classifier's pattern list against the TS-side
- * `MULTILEG_STRUCTURES`; any client-known pattern missing from the server
- * advertised list is a wire-contract drift signal (Vercel commit A vs
- * Railway commit B).
+ * Cold-start `/version` probe (Fix 6 / Finding 2.2). Succeeds at most
+ * once per process. Compares the classifier's pattern list against the
+ * TS-side `MULTILEG_STRUCTURES`; any client-known pattern missing from the
+ * server advertised list is a wire-contract drift signal (Vercel commit A
+ * vs Railway commit B).
+ *
+ * The flag is claimed before the request, so concurrent first calls share
+ * one in-flight probe. A failed probe (fetch error, non-2xx, bad body)
+ * releases it, and the next classify call tries again: a 401/503 while the
+ * bearer rolls out must not switch drift detection off for the life of
+ * the instance. That is at most one probe per classify call.
+ */
+async function probeVersionOnce(
+  target: ResolvedClassifierTarget,
+): Promise<void> {
+  if (versionChecked) return;
+  versionChecked = true;
+  if (!(await probeVersion(target))) versionChecked = false;
+}
+
+/**
+ * One `/version` request. Returns true when the classifier answered with a
+ * usable pattern list (drift or not), false on any failure.
  *
  * Failure modes are intentionally non-fatal: a missing /version endpoint
  * (older classifier deploy) logs a warn but does NOT throw, so the main
  * classify request still flows. Only `pattern_set_drift` is an error-level
  * Sentry event — that's the actionable diagnostic.
  */
-async function probeVersionOnce({
+async function probeVersion({
   base,
   authorization,
-}: ResolvedClassifierTarget): Promise<void> {
-  if (versionChecked) return;
-  versionChecked = true;
-
+}: ResolvedClassifierTarget): Promise<boolean> {
   const url = `${base}${VERSION_PATH}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), VERSION_TIMEOUT_MS);
@@ -346,7 +364,7 @@ async function probeVersionOnce({
       { url, err: message },
       'multileg-classify /version probe failed (non-fatal)',
     );
-    return;
+    return false;
   } finally {
     clearTimeout(timer);
   }
@@ -356,7 +374,7 @@ async function probeVersionOnce({
       { url, status: res.status },
       'multileg-classify /version returned non-2xx (non-fatal)',
     );
-    return;
+    return false;
   }
 
   let rawJson: unknown;
@@ -368,7 +386,7 @@ async function probeVersionOnce({
       { url, err: message },
       'multileg-classify /version returned invalid JSON (non-fatal)',
     );
-    return;
+    return false;
   }
 
   const parsed = versionResponseSchema.safeParse(rawJson);
@@ -377,7 +395,7 @@ async function probeVersionOnce({
       { url, issues: parsed.error.issues },
       'multileg-classify /version body failed schema (non-fatal)',
     );
-    return;
+    return false;
   }
 
   const serverPatterns = parsed.data.patterns;
@@ -409,6 +427,28 @@ async function probeVersionOnce({
       'multileg-classify /version probe ok',
     );
   }
+  return true;
+}
+
+/**
+ * The retry hint on a 503: the body's `retry_after_sec` (the classifier's
+ * structured saturation contract), else the `Retry-After` header, else
+ * null when there is neither.
+ */
+function readRetryAfter(
+  bodyText: string,
+  headers: Headers,
+): number | string | null {
+  try {
+    const parsedBody = JSON.parse(bodyText) as Record<string, unknown>;
+    const fromBody = parsedBody.retry_after_sec;
+    if (typeof fromBody === 'number' || typeof fromBody === 'string') {
+      return fromBody;
+    }
+  } catch {
+    // ignore — body may be empty, non-JSON or JSON null
+  }
+  return headers.get('Retry-After') || null;
 }
 
 // ── Public entry point ─────────────────────────────────────────────────────
@@ -488,7 +528,6 @@ export async function classifyMultilegBatch(
     const durationMs = Date.now() - startedAt;
     const status = res.status;
     const isServer = status >= 500;
-    const isQueueSaturation = status === 503;
     const isSchemaDrift = status === 422;
     let bodyText = '';
     try {
@@ -500,24 +539,13 @@ export async function classifyMultilegBatch(
     // ── Queue saturation (Task 4 Fix 1 — BoundedSemaphore). Different
     //    operational signal than "the service broke" — operators need
     //    to see "we hit the cap" distinctly, so it gets its own event
-    //    name and is NOT funneled through sidecar_non_2xx.
-    if (isQueueSaturation) {
-      // Prefer the response body's retry_after_sec (matches the
-      // classifier's structured 503 contract) and fall back to the
-      // Retry-After header if the body isn't parseable.
-      let retryAfterSec: number | string | null = null;
-      try {
-        const parsedBody = JSON.parse(bodyText) as Record<string, unknown>;
-        const fromBody = parsedBody.retry_after_sec;
-        if (typeof fromBody === 'number' || typeof fromBody === 'string') {
-          retryAfterSec = fromBody;
-        }
-      } catch {
-        // ignore — body may be empty or non-JSON
-      }
-      if (retryAfterSec === null) {
-        retryAfterSec = res.headers.get('Retry-After');
-      }
+    //    name and is NOT funneled through sidecar_non_2xx. The
+    //    classifier's saturation 503 always carries a retry hint; a 503
+    //    without one (secret unset, an edge proxy) is a service fault and
+    //    takes the generic 5xx path below.
+    const retryAfterSec =
+      status === 503 ? readRetryAfter(bodyText, res.headers) : null;
+    if (retryAfterSec !== null) {
       logger.warn(
         {
           status,
