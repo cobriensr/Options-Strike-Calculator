@@ -120,3 +120,171 @@ async def test_queue_depth_tracks_actual_queue_size(handler):
     # Fill past capacity; depth stays at 2 (eviction happens internally).
     await handler.enqueue({"seq": 2})
     assert state.handler(handler.name).queue_depth == 2
+
+
+# --- Backlog batching (P1) ----------------------------------------------------
+#
+# After a slow flush the queue holds a backlog. Draining it 500 rows per flush
+# costs one Neon round trip per 500 and can fall further behind; the 50k
+# drop-oldest queue then evicts rows with no error at all. When the batch hits
+# its size threshold, run() now tops it up from the queue (get_nowait), up to
+# BACKLOG_BATCH_MAX rows in one flush. bulk_insert_* chunk it under the
+# Postgres parameter limit (test_db_bulk.py covers the chunking).
+
+
+class _BatchRecordingHandler(Handler):
+    """Records each flushed batch separately, so tests can see batch sizes."""
+
+    def __init__(self, name: str = "backlog-test") -> None:
+        super().__init__(name=name)
+        self.batches: list[list[tuple]] = []
+
+    def _transform(self, payload: dict) -> tuple | None:
+        if payload.get("seq") == "bad":
+            raise ValueError("unparseable payload")
+        return (payload.get("seq"),)
+
+    async def _flush(self, rows: list[tuple]) -> None:
+        self.batches.append(list(rows))
+
+
+async def _run_until_idle(h: Handler, *, expected_rows: int) -> None:
+    """Run the consumer until ``expected_rows`` rows were flushed, then stop it."""
+    import asyncio
+    import contextlib
+
+    task = asyncio.create_task(h.run())
+    try:
+        for _ in range(200):
+            if sum(len(b) for b in h.batches) >= expected_rows and h.queue.empty():
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_run_flushes_backlog_in_larger_batch(monkeypatch):
+    from config import settings
+    from handlers.base import BACKLOG_BATCH_MAX
+
+    monkeypatch.setattr(settings, "ws_queue_size", 10_000)
+    monkeypatch.setattr(settings, "ws_batch_size", 500)
+    monkeypatch.setattr(settings, "ws_batch_interval_ms", 60_000)
+    h = _BatchRecordingHandler()
+    backlog = BACKLOG_BATCH_MAX + 1_000
+    for seq in range(backlog):
+        h.queue.put_nowait({"seq": seq})
+
+    await _run_until_idle(h, expected_rows=backlog)
+
+    # One flush of the cap, then the remainder: not 12 flushes of 500.
+    assert BACKLOG_BATCH_MAX == 5_000
+    assert [len(b) for b in h.batches] == [BACKLOG_BATCH_MAX, 1_000]
+    # Arrival order is kept and no row is flushed twice.
+    assert [r[0] for b in h.batches for r in b] == list(range(backlog))
+    assert state.handler(h.name).queue_depth == 0
+
+
+@pytest.mark.asyncio
+async def test_shallow_queue_keeps_the_normal_batch_size(monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(settings, "ws_batch_size", 4)
+    monkeypatch.setattr(settings, "ws_batch_interval_ms", 60_000)
+    monkeypatch.setattr(settings, "ws_queue_size", 16)
+    h = _BatchRecordingHandler()
+
+    import asyncio
+    import contextlib
+
+    task = asyncio.create_task(h.run())
+    try:
+        # Rows arrive one at a time with the consumer keeping up: no backlog
+        # to pull, so each flush is exactly the size threshold.
+        for seq in range(8):
+            await h.enqueue({"seq": seq})
+            await asyncio.sleep(0)
+        for _ in range(50):
+            if len(h.batches) >= 2:
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert [len(b) for b in h.batches] == [4, 4]
+
+
+@pytest.mark.asyncio
+async def test_backlog_top_up_stops_at_the_drain_sentinel(monkeypatch):
+    """drain() queues a wake-up sentinel. If run() wakes from an empty-queue
+    get just as rows and then the sentinel land, its top-up can reach the
+    sentinel. It must honor it like the main loop does: flush what it pulled,
+    exit, and leave the rows behind the sentinel for drain() to collect.
+    """
+    import asyncio
+
+    from config import settings
+    from handlers import base as base_mod
+
+    monkeypatch.setattr(settings, "ws_batch_size", 2)
+    monkeypatch.setattr(settings, "ws_batch_interval_ms", 60_000)
+    monkeypatch.setattr(settings, "ws_queue_size", 16)
+    h = _BatchRecordingHandler()
+    for seq in (0, 1, 2):
+        h.queue.put_nowait({"seq": seq})
+    h.queue.put_nowait(base_mod._STOP_SENTINEL)
+    h._sentinel_queued = True
+    for seq in (3, 4):
+        h.queue.put_nowait({"seq": seq})
+
+    await asyncio.wait_for(h.run(), timeout=1.0)
+
+    assert h.batches == [[(0,), (1,), (2,)]]
+    assert h._sentinel_queued is False
+    assert h.queue.qsize() == 2  # rows 3 and 4, for drain()
+
+
+@pytest.mark.asyncio
+async def test_backlog_top_up_reports_a_bad_payload_and_keeps_going(monkeypatch):
+    from config import settings
+    from handlers import base as base_mod
+
+    monkeypatch.setattr(settings, "ws_batch_size", 2)
+    monkeypatch.setattr(settings, "ws_batch_interval_ms", 60_000)
+    monkeypatch.setattr(settings, "ws_queue_size", 16)
+    captured: list[tuple[BaseException, dict]] = []
+    monkeypatch.setattr(base_mod, "capture_exception", lambda exc, **kw: captured.append((exc, kw)))
+    h = _BatchRecordingHandler()
+    for seq in (0, 1, "bad", 3):
+        h.queue.put_nowait({"seq": seq})
+
+    await _run_until_idle(h, expected_rows=3)
+
+    assert h.batches == [[(0,), (1,), (3,)]]
+    assert [str(e) for e, _ in captured] == ["unparseable payload"]
+    assert captured[0][1]["tags"] == {"component": "handler", "channel": h.name}
+
+
+@pytest.mark.asyncio
+async def test_drain_reports_a_bad_payload_with_its_stage_and_flushes_the_rest(monkeypatch):
+    # drain() shares _add_row with run(); its Sentry tags carry the stage.
+    from config import settings
+    from handlers import base as base_mod
+
+    monkeypatch.setattr(settings, "ws_queue_size", 16)
+    captured: list[tuple[BaseException, dict]] = []
+    monkeypatch.setattr(base_mod, "capture_exception", lambda exc, **kw: captured.append((exc, kw)))
+    h = _BatchRecordingHandler()
+    for seq in (0, "bad", 2):
+        h.queue.put_nowait({"seq": seq})
+    h._stopped.set()  # no consumer running
+
+    assert await h.drain() == 2
+
+    assert h.batches == [[(0,), (2,)]]
+    assert [kw["tags"]["stage"] for _, kw in captured] == ["drain_transform"]

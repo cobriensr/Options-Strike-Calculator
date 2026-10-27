@@ -40,6 +40,13 @@ from state import state
 # pins this arithmetic against railway.toml.
 DRAIN_DEADLINE_S = 30.0
 
+# Most rows one steady-state flush takes when the queue is backed up (see
+# ``Handler._take_backlog``). Ten default batches: a tenth of the round trips
+# when catching up after a slow flush. db.MAX_INSERT_PARAMS chunking keeps it
+# legal: one transaction of 2-7 INSERTs at 5,000 rows (7 for flow-alerts'
+# 41 columns, 3 for option_trades' 16).
+BACKLOG_BATCH_MAX = 5_000
+
 # Maximum time we'll wait when ``ws_backpressure_policy="block"`` and the
 # per-channel queue is already full. Must be << the WS ping_timeout (20s)
 # so the receive task never blocks long enough to look like a hung TCP.
@@ -180,25 +187,58 @@ class Handler(ABC):
                     state.handler(self.name).queue_depth = self.queue.qsize()
                     break
 
+                # Neither call raises: _add_row reports a bad payload and
+                # _safe_flush reports a failed write, so the loop survives both.
                 try:
-                    row = self._transform(payload)
-                    if row is not None:
-                        self._batch.append(row)
+                    self._add_row(payload)
                     if len(self._batch) >= self._batch_size:
+                        self._take_backlog()
                         await self._safe_flush(self._batch)
                         self._batch = []
                         deadline = loop.time() + self._batch_interval
-                except Exception as exc:
-                    capture_exception(
-                        exc,
-                        tags={"component": "handler", "channel": self.name},
-                        context={"sample": str(payload)[:500]},
-                    )
                 finally:
                     self.queue.task_done()
                     state.handler(self.name).queue_depth = self.queue.qsize()
         finally:
             self._stopped.set()
+
+    def _add_row(self, payload: dict, *, stage: str | None = None) -> None:
+        """Transform one payload onto the batch; report a bad one, never raise."""
+        try:
+            row = self._transform(payload)
+            if row is not None:
+                self._batch.append(row)
+        except Exception as exc:
+            tags = {"component": "handler", "channel": self.name}
+            if stage is not None:
+                tags["stage"] = stage
+            capture_exception(exc, tags=tags, context={"sample": str(payload)[:500]})
+
+    def _take_backlog(self) -> None:
+        """Top a full batch up from the queue, to at most BACKLOG_BATCH_MAX rows.
+
+        A full batch with more payloads waiting means a backlog, usually built
+        up during a slow flush. Writing it ``batch_size`` rows per round trip
+        can fall further behind until the drop-oldest queue starts evicting,
+        so take what is already queued (non-blocking) into this one flush.
+        The bulk_insert_* helpers chunk it under the Postgres parameter limit.
+        Pulls at most the remaining room, so skipped payloads can't extend it.
+        """
+        for _ in range(BACKLOG_BATCH_MAX - len(self._batch)):
+            try:
+                payload = self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            try:
+                if payload is _STOP_SENTINEL:
+                    # drain() queued this; honor it as run() does: flush
+                    # what we have, exit, and leave the rest for drain().
+                    self._sentinel_queued = False
+                    self._stopping = True
+                    break
+                self._add_row(payload)
+            finally:
+                self.queue.task_done()
 
     # ------------------------------------------------------------------
     # Shutdown — called from main on SIGTERM / SIGINT.
@@ -291,19 +331,7 @@ class Handler(ABC):
                 self.queue.task_done()
                 continue
             try:
-                row = self._transform(payload)
-                if row is not None:
-                    self._batch.append(row)
-            except Exception as exc:
-                capture_exception(
-                    exc,
-                    tags={
-                        "component": "handler",
-                        "channel": self.name,
-                        "stage": "drain_transform",
-                    },
-                    context={"sample": str(payload)[:500]},
-                )
+                self._add_row(payload, stage="drain_transform")
             finally:
                 self.queue.task_done()
 
