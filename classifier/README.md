@@ -16,6 +16,8 @@ are kept in sync by a test.
 | `SENTRY_DSN`               | optional | empty   | Empty disables Sentry. Tagged `server_name=classifier`.                       |
 | `PORT`                     | optional | `8080`  | Railway sets this; bind `0.0.0.0:$PORT`.                                      |
 
+Generate `CLASSIFIER_SHARED_SECRET` from at least 32 random bytes (e.g. `openssl rand -hex 32`): the repo is public and the endpoint is reachable from the internet.
+
 ## Local development
 
 ```bash
