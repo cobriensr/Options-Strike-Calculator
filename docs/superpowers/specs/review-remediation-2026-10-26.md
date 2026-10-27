@@ -132,6 +132,8 @@ Every code phase runs the Get It Right loop: TDD → full `npm run review` → `
 | 4a–4c Crons | Shipped 2026-10-26 | `ec2acd11` … `10d07f13` (9 commits) | continue ×4 → pass. Two consumer regressions were caught and fixed before push: the gamma ES-basis window, now paired by timestamp, and the VIX-divergence staleness limit, raised to 3 min. Vega-spike `fwd_return_eod` is now true hold-to-close, written only after the close. Rows from before the fix hold a ~t+30–40 min return. |
 | 6 + 8 Bundle, headers | Shipped 2026-10-26 | `ed28dba2` … `16997d24` (7 commits) | continue → pass. First paint: entry 484 → 419 KB, vendor 312 → 193 KB, charts no longer preloaded. `object-src 'none'` and zero inline scripts confirmed on the live site. |
 | 7, 9, 13, 19c Small fixes | Shipped 2026-10-26 | `185f12a8` … `163c42c8` (6 commits) | pass (independent). |
+| 3.4 Guest writes (S4) | Shipped 2026-10-27 | `5844fe68` … `335d0030` (5 commits) | continue → pass. Every client-initiated write is owner-only except a guest's own panel layout. |
+| 3.1 Security S1 | Part 1 shipped 2026-10-27 | `67a04c4e`, `8089c86a` | security review pass. Part 2 (`fix/rr-classifier-auth`) ships after the 15:00 CT close. Details in the local note. |
 
 ### Decisions recorded (owner, 2026-10-26 evening)
 
@@ -142,22 +144,54 @@ Every code phase runs the Get It Right loop: TDD → full `npm run review` → `
 - **Q26:** repair the frozen-candle history, scoped first, with the plan shown before any write.
 - **VIX-mode bug:** fix it (see "Found during implementation").
 
+### Decisions recorded (owner, 2026-10-27 morning)
+
+These answer Q3–Q8, Q12, Q13, Q16, Q17, Q20 and Q21 below.
+
+- **Q4, IC breakeven (3.6):** the IC row uses total credit (short strike ± total credit). Per-side rows keep per-side credit. Fix the Position Monitor's unweighted credit sum to weight by contracts, and add a test that `iron-condor`, `spread-builder` and `hedge/scenarios` agree.
+- **Q3, hedge stress (3.7):** calibrate the crash and rally IV response from stored history. Use the median for sizing, because a larger assumed IV jump recommends fewer hedge contracts. Show the owner the fitted numbers before any code changes. Fixed either way: IV falls on rallies (no `abs()`), each leg gets the market's direction, and `sizing.ts` prices with the stressed σ, so the contract count matches the scenario table. Example: SPX 6800 → 6664 with a 6600 put and 6 DTE left is worth $3,882 at today's ×1.08, against $5,986 at the docs' +8 vol points.
+- **Q5, headline PoP (3.10):** the headline is empirical survival by VIX bucket × distance × time left, built by a committed script from stored history. Lognormal stays as the reference, and the kurtosis multiplier is retired. Show the owner the built table before wiring it in. Example: ±1% shorts at VIX 22 survived 67.7% of days; lognormal says 52.9%, the fat-tail PoP 0.0%.
+- **Q6, delta labels (3.8):** "10Δ" means the true delta under the σ the row is priced with, so late-day strikes move out. Example: at 30 min left the "10Δ" put sits 25 pts away and is 23Δ; a true 10Δ is 45 pts away. The hedge gets relabelled with its real 7-DTE delta now. A "2Δ" hedge placed with 5 h left is 21Δ at 7 DTE. Retargeting the hedge changes its cost, so it comes back to the owner as its own decision.
+- **Q7, delta ceiling (3.9):** scale the threshold by √(time left / 6.5 h) now, which holds the ceiling near 15Δ all day at VIX 16 instead of 0.5Δ with 1 h left. Switch to the empirical remaining-move percentiles from the Q5 table once it exists. Fixed either way: relabel `SURVIVAL_DATA.intraday` as P(day's H−L < 2 × wing), not "never touched".
+- **Q8, cone (3.11):** use textbook K ± (C+P). Recompute every `cone_levels` row from its stored premiums, then fix the `compute-cone.ts:13` comment and the meaning of `asymmetry_pts`. Evidence is under "O4 measured".
+- **Q12, futures session (3.13):** reset the front-month tally at the CME session open (17:00 CT), and carry the previous session's front month forward until another contract out-trades it. uw-stream and `backfill-futures-gaps` change in one commit, pushed after a close and before the mid-December ES/NQ roll. Repair the CL bar at 2026-09-30 02:36 UTC, and record the 5th rule boundary in the table docs.
+- **Q13, basis label (3.15):** grade the ES−SPX basis against expected carry for its days to expiry, implied from the basis's own recent history. Label only the deviation, with the threshold tuned on history and shown to the owner first. Until then, show the deviation without a label. `analyze-prompt-reviewer` checks the context change.
+- **Q16, manual VIX (3.12):** a typed VIX on a past date stays until the date or the OHLC field changes, with a "manual" marker and a reset-to-auto control. `useVixData` becomes the single writer.
+- **Q21, feed refactor (3.16):** hooks only: `feed-sig.ts` with a golden byte-identity test, `useLiveDateRoll`, `useTickerExpanded`, `usePageReset`. The toolbars stay per panel.
+- **Q20, license (3.18):** switch to AGPL-3.0, keeping GPL's "-only" or "-or-later" form, and add a one-line rationale to the README. Check git authorship first, since relicensing assumes a single copyright holder.
+- **Q17 + T2, README (3.17):** Claude drafts "How this was built" and the owner rewrites it in their own voice. Un-ignore `.claude/agents/` after a privacy scan.
+
+**O4 measured** (prod, read-only, 2026-10-27):
+- **Cone vs UW: no usable comparison.** `periscope_analyses` cones are DB-anchored (the chat is given our `cone_levels` row), so they match ours exactly and say nothing about UW. No independent capture of UW's cone exists. UW labels its lines "straddle breakeven", which is K ± (C+P), and the skill's 04-29 reading of the UW chart (a 71-pt cone) fits that.
+- **Cone breach, 72 days (2026-05-08 → 10-27, median straddle 31.6 pts):**
+
+  | Cone | Day's high/low touched it | Closed outside it |
+  |---|---|---|
+  | Current K−P / K+C | 72 (100%) | 49 (68%) |
+  | Textbook K ± (C+P) | 56 (78%) | 26 (36%) |
+
+  Frozen candles understate highs and lows, so the touch counts are lower bounds.
+- **ES − SPX basis, 30 days (4,736 matched minutes):** +32.9 to +65.1 pts, mean +45.9, p5–p95 +36.2 to +56.0. The `> 5 pts → STRESS` rule therefore fired on every analysis.
+- **`futures_bars` contract-mix spikes since 2026-09-29** (one bar ≥ 0.4% off that reverts within 0.1%): one bar, CL at 2026-09-30 02:36 UTC (89.41 → 87.24 → 89.39). None on ES, NQ, RTY, GC or ZN.
+
 **O9 measured** (prod, read-only). Frozen partial bars, meaning rows inserted less than 1 min after their bar start:
 - `etf_candles_1m`, last 30 days: SPY 62%, QQQ 57%. All-time 42% since 2026-03-18.
 - `index_candles_1m`, regular session, last 30 days: SPX/NDX **99%**.
 
-### Resume checklist (in-flight work as of 2026-10-26 20:45 CT)
+### Resume checklist (as of 2026-10-27 09:45 CT)
 
-The VS Code renderer hit its ~4 GB heap cap (`reason: oom` in `main.log` at 20:43), so continue in a fresh session. Each item below has a worktree under `.worktrees/` with any partial work, plus a progress log in the old session's scratchpad.
+The owner asked for **one implementation stream at a time**. Work the queue in order. Each stream has a worktree under `.worktrees/`. Railway services (classifier, uw-stream) and auth changes push only after the 15:00 CT close.
 
-| Stream | Worktree / branch | State | Next step |
-|---|---|---|---|
-| BWB round 2 (Q2 + Q25 + M1g) | `rr-bwb2` / `fix/rr-bwb2` | npm ci done, no code | C1: snap far wing away on both sides, plus the AdvancedSection label. C2: header text. C3: EV export, with a BEFORE/AFTER table shown to the owner before push. |
-| uw-stream (phases 22–24, P7) | `rr-uwstream` / `fix/rr-uwstream` | `565e5992` drop reporter committed. Venv is Python 3.14; CI uses 3.12, so watch CI after push. | Drain fix (one no-retry flush, deadline ~30 s, drainingSeconds 40), then backlog batching plus `lost_rows`, then the P7 Railway config-as-code report. Push after 15:00 CT only. |
-| Guest writes (S4) | `rr-guest` / `fix/rr-guest` | C1 (tracker contract writes owner-only) written and tests green, but UNCOMMITTED, with no full review yet | Full review → commit C1. Then the two acks, the guest UI, and the CLAUDE.md wording. |
-| VIX-mode fix + 2 test nits | `rr-vixmode` / `fix/rr-vixmode` | Worktree only | See "Found during implementation" (useAutoFill first-historical-date mode), plus the `navigator.onLine` undefined test and the parity header comment. |
-| Q26 candle repair scoping | (read-only, no worktree) | Partial | UW 1-min history depth, SPX/NDX derivation (Schwab ratio/anchor), downstream tables, then a repair plan with dry run, backup table and verification. No prod writes until the owner approves. |
-| Security S1/S2 | — | Blocked on the owner setting `CLASSIFIER_SHARED_SECRET` (Vercel and Railway) and `OWNER_SCHWAB_ACCOUNT_SHA256` (Vercel) | See the local note `docs/tmp/review-remediation-security-2026-10-26.md`. |
+| # | Stream | Worktree / branch | State | Next step |
+|---|---|---|---|---|
+| 1 | Security S1, part 2 | `rr-classifier-auth` / `fix/rr-classifier-auth` | `254a9410`, `c739b916` committed, classifier gate green, security review pass | After 15:00 CT: rebase on `origin/main`, push, watch classifier CI (Python 3.12), confirm `classifier ok` in Vercel logs. Then reland PR #202 (`fe7bc1f5`, `82eb5f6e`). |
+| 2 | Security S2 | `rr-oauth` / `fix/rr-oauth` | npm ci done, no code | Implement per the local note. Show the owner the wrong-account login response before push, and push after the close. |
+| 3 | VIX-mode fix | `rr-vixmode` / `fix/rr-vixmode` | `6f7f7fc6`, `c3b9e8b4`, plus two failing probe tests (uncommitted). Review verdict: continue. | Add an `ivModeEdited` ref in App so that a manual IV-mode choice survives the VIX1D settle. The hook clears it on a new-date choice. Fix the `useAutoFill.ts` ~:95 comment. |
+| 4 | uw-stream (phases 22–24) | `rr-uwstream` / `fix/rr-uwstream` | 6 commits. Review verdict: continue, 5 items. | Make the drain hard-bounded (`asyncio.wait`), bound shutdown step 1, run a final drop-report pass on cancel, remove the dead `except` in `_report`, and slice the final flush by `BACKLOG_BATCH_MAX`. Push after 15:00 CT. |
+| 5 | BWB round 2 | `rr-bwb2` / `fix/rr-bwb2` | 4 commits, review pass | Rebase, full review, push. |
+| 6 | Q26 candle repair | `rr-repair` / `fix/rr-repair` | npm ci done | `scripts/repair-frozen-candles.mjs` dry run only. Report to `docs/tmp/`. Owner approves before any write. |
+| 7 | Decided 2026-10-27 | — | — | 3.6, 3.8, 3.9, 3.11, 3.12, 3.13, 3.16, 3.17, 3.18. Calibration or table first, shown to the owner before wiring: 3.7, 3.10, 3.15. |
+| 8 | Remaining Wave 1 | — | — | Phases 10, 11, 12, 14–21; F4f, L6, D1j, D1k; security S3, S5, S6, S7. |
 
 ### Found during implementation (new ledger rows)
 
@@ -305,6 +339,8 @@ Math-display changes (phases 1–2) change numbers on screen. Push them outside 
   `SELECT count(*) FILTER (WHERE inserted_at < "timestamp" + interval '1 minute'), count(*) FROM etf_candles_1m WHERE "timestamp" > now() - interval '30 days';`
 
 ## Open questions (defaults in brackets)
+
+Answered so far: Q2, Q25, Q26 (2026-10-26), and Q3–Q8, Q12, Q13, Q16, Q17, Q20, Q21 (2026-10-27). See "Decisions recorded". Still open: Q15, Q18, Q19, Q22, Q23, plus O6–O8.
 
 - **Q2.** Off-grid BWB width (e.g. 37.5): which way does the far wing snap? [Away from the short on both sides: conservative, and the sides match.]
 - **Q3.** Hedge stress regime: shock (+8 vol pts on a 2% drop) or calm (+1.5)? Does IV fall on rallies? [Shock; yes.]
