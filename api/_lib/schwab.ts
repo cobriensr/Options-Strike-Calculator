@@ -118,13 +118,19 @@ export interface SchwabLoginError {
 }
 
 /**
- * GET /trader/v1/accounts/accountNumbers 2xx body. Only the plain
- * `accountNumber` is used (the owner hash is over it, not `hashValue`). An
- * empty list proves nothing either way, so it fails the check rather than
- * reading as "not the owner".
+ * GET /trader/v1/accounts/accountNumbers 2xx body. The owner hash is over
+ * the plain `accountNumber`. `hashValue` is read only to spot an owner who
+ * configured it by mistake, so a missing or odd one never fails the parse.
+ * An empty list proves nothing either way, so it fails the check rather
+ * than reading as "not the owner".
  */
 const accountNumbersSchema = z
-  .array(z.object({ accountNumber: z.string().min(1) }))
+  .array(
+    z.object({
+      accountNumber: z.string().min(1),
+      hashValue: z.string().optional().catch(undefined),
+    }),
+  )
   .min(1);
 
 /**
@@ -216,9 +222,10 @@ function ownerAccountHash(): string | null {
  * no retry; on any failure the owner can simply log in again.
  *
  * Returns null when the login owns the account, else the refusal. Messages
- * carry an HTTP status, field paths, an error name or the account count —
- * never a response body, an account number, a hash or the token. Account
- * numbers are low-entropy, so even a hash prefix would give one away.
+ * carry an HTTP status, field paths or an error name — never a response
+ * body, an account number, a hash, a hashValue or the token, and nothing
+ * about a refused login's accounts. Account numbers are low-entropy, so
+ * even a hash prefix would give one away.
  */
 async function ownerCheckFailure(
   accessToken: string,
@@ -269,9 +276,23 @@ async function ownerCheckFailure(
     ),
   );
   if (ownsAccount) return null;
+
+  // Schwab's hashValue is 64 hex characters too, so it passes the format
+  // check. If one matches, this is the owner's login with the wrong value
+  // configured: a config error (500), not a stranger (403). Only that
+  // outcome is reported, never the value.
+  const configuredHashValue = accounts.some(
+    ({ hashValue }) =>
+      hashValue != null && secretEquals(hashValue.toLowerCase(), ownerHash),
+  );
+  if (configuredHashValue) {
+    return failed(
+      "OWNER_SCHWAB_ACCOUNT_SHA256 holds Schwab's hashValue, not sha256(accountNumber)",
+    );
+  }
   return {
     type: 'not_owner',
-    message: `Schwab login does not own the configured account (accounts checked: ${accounts.length})`,
+    message: 'Schwab login does not own the configured account',
   };
 }
 

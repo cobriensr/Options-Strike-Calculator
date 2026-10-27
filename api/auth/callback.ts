@@ -8,6 +8,10 @@
  * login's accounts against OWNER_SCHWAB_ACCOUNT_SHA256). Any other login
  * gets a 403 with nothing stored and no cookie.
  *
+ * A refused login (403 or 500) has spent its OAuth state, so retry from
+ * /api/auth/init. Runbook: the OWNER_SCHWAB_ACCOUNT_SHA256 entry in
+ * .env.example.
+ *
  * The owner cookie is what gates the data endpoints — public visitors
  * don't have it and get a 401 (frontend silently falls back to manual input).
  */

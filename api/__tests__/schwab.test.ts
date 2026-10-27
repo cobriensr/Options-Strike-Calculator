@@ -135,12 +135,20 @@ const TOKEN_URL = 'https://api.schwabapi.com/v1/oauth/token';
 const ACCOUNT_NUMBERS_URL =
   'https://api.schwabapi.com/trader/v1/accounts/accountNumbers';
 
+/**
+ * A stand-in for Schwab's per-account `hashValue`: like the real one, 64
+ * uppercase hex characters, so it passes the env format check.
+ */
+function hashValueOf(accountNumber: string): string {
+  return sha256Hex(`schwab-hash-value:${accountNumber}`).toUpperCase();
+}
+
 /** A 2xx accountNumbers response listing these plain account numbers. */
 function accountNumbersResponse(...accountNumbers: string[]) {
   return okJson(
-    accountNumbers.map((accountNumber, i) => ({
+    accountNumbers.map((accountNumber) => ({
       accountNumber,
-      hashValue: `HASHVALUE${i}`,
+      hashValue: hashValueOf(accountNumber),
     })),
   );
 }
@@ -1958,13 +1966,64 @@ describe('schwab', () => {
 
       const result = await storeInitialTokens('code', 'https://e.x/cb');
 
+      // No metadata about the refused login (not even its account count).
       expect(result).toEqual({
         error: {
           type: 'not_owner',
-          message: expect.stringContaining('accounts checked: 2'),
+          message: 'Schwab login does not own the configured account',
         },
       });
       expect(mockRedisSet).not.toHaveBeenCalled();
+    });
+
+    it("OWNER_SCHWAB_ACCOUNT_SHA256 set to an entry's hashValue: owner_check_failed naming the mix-up, nothing stored", async () => {
+      // The owner's own login, configured with Schwab's hashValue (64 hex
+      // chars, so it passes the format check) instead of the sha256.
+      process.env.OWNER_SCHWAB_ACCOUNT_SHA256 = hashValueOf(OWNER_ACCOUNT);
+      vi.stubGlobal(
+        'fetch',
+        loginFetch(LOGIN, accountNumbersResponse('11112222', OWNER_ACCOUNT)),
+      );
+
+      const result = await storeInitialTokens('code', 'https://e.x/cb');
+
+      expect(result).toEqual({
+        error: {
+          type: 'owner_check_failed',
+          message: expect.stringContaining(
+            "OWNER_SCHWAB_ACCOUNT_SHA256 holds Schwab's hashValue, not sha256(accountNumber)",
+          ),
+        },
+      });
+      expect(mockRedisSet).not.toHaveBeenCalled();
+    });
+
+    it('OWNER_SCHWAB_ACCOUNT_SHA256 set to an unrelated 64-hex value: still not_owner', async () => {
+      process.env.OWNER_SCHWAB_ACCOUNT_SHA256 = sha256Hex('unrelated-value');
+      vi.stubGlobal('fetch', loginFetch(LOGIN));
+
+      const result = await storeInitialTokens('code', 'https://e.x/cb');
+
+      expect('error' in result && result.error.type).toBe('not_owner');
+      expect(mockRedisSet).not.toHaveBeenCalled();
+    });
+
+    it('a missing or non-string hashValue does not fail an owner login', async () => {
+      vi.stubGlobal(
+        'fetch',
+        loginFetch(
+          LOGIN,
+          okJson([
+            { accountNumber: '11112222' },
+            { accountNumber: OWNER_ACCOUNT, hashValue: 12345 },
+          ]),
+        ),
+      );
+
+      expect(await storeInitialTokens('code', 'https://e.x/cb')).toEqual({
+        success: true,
+      });
+      expect(tokenWrites()).toHaveLength(1);
     });
 
     it('a refused login does not warm the in-memory fallback', async () => {
@@ -2077,28 +2136,47 @@ describe('schwab', () => {
       expect(mockRedisSet).not.toHaveBeenCalled();
     });
 
-    it('leak guard: no account number, hash, hash prefix or token in logs, Sentry or the returned error', async () => {
+    it('leak guard: no account number, hash, hashValue, prefix or token in logs, Sentry or the returned error', async () => {
       const OTHER_ACCOUNT = '87654321';
-      const secrets = [
-        OWNER_ACCOUNT,
-        OWNER_ACCOUNT_SHA256,
-        OWNER_ACCOUNT_SHA256.slice(0, 8),
-        OTHER_ACCOUNT,
-        sha256Hex(OTHER_ACCOUNT),
-        sha256Hex(OTHER_ACCOUNT).slice(0, 8),
-        'leak-access',
-        'leak-ref',
-      ];
+      const secrets = [OWNER_ACCOUNT, OTHER_ACCOUNT].flatMap((account) => {
+        const hash = sha256Hex(account);
+        const hashValue = hashValueOf(account);
+        return [
+          account,
+          hash,
+          hash.slice(0, 8),
+          hashValue,
+          hashValue.toLowerCase(),
+          hashValue.slice(0, 8),
+          hashValue.slice(0, 8).toLowerCase(),
+        ];
+      });
+      secrets.push('leak-access', 'leak-ref');
       const token = tokenResponse({
         access_token: 'leak-access',
         refresh_token: 'leak-ref',
       });
-      const answers = [
-        accountNumbersResponse(OWNER_ACCOUNT),
-        accountNumbersResponse(OTHER_ACCOUNT),
+      // [OWNER_SCHWAB_ACCOUNT_SHA256, accountNumbers answer]
+      const scenarios: [string, unknown][] = [
+        [OWNER_ACCOUNT_SHA256, accountNumbersResponse(OWNER_ACCOUNT)],
+        [OWNER_ACCOUNT_SHA256, accountNumbersResponse(OTHER_ACCOUNT)],
+        // Configured with the owner's hashValue instead of the sha256.
+        [
+          hashValueOf(OWNER_ACCOUNT),
+          accountNumbersResponse(OTHER_ACCOUNT, OWNER_ACCOUNT),
+        ],
         // Upstream bodies that echo account numbers must not be forwarded.
-        tokenFailure(503, JSON.stringify([{ accountNumber: OWNER_ACCOUNT }])),
-        okJson([{ accountNumber: OWNER_ACCOUNT }, { accountNumber: 87654321 }]),
+        [
+          OWNER_ACCOUNT_SHA256,
+          tokenFailure(503, JSON.stringify([{ accountNumber: OWNER_ACCOUNT }])),
+        ],
+        [
+          OWNER_ACCOUNT_SHA256,
+          okJson([
+            { accountNumber: OWNER_ACCOUNT },
+            { accountNumber: 87654321 },
+          ]),
+        ],
       ];
       for (const fn of [
         ...Object.values(mockLogger),
@@ -2108,7 +2186,8 @@ describe('schwab', () => {
       }
 
       const results = [];
-      for (const accounts of answers) {
+      for (const [configured, accounts] of scenarios) {
+        process.env.OWNER_SCHWAB_ACCOUNT_SHA256 = configured;
         vi.stubGlobal('fetch', loginFetch(token, accounts));
         results.push(await storeInitialTokens('code', 'https://e.x/cb'));
       }
@@ -2118,6 +2197,7 @@ describe('schwab', () => {
       ).toEqual([
         'success',
         'not_owner',
+        'owner_check_failed',
         'owner_check_failed',
         'owner_check_failed',
       ]);
