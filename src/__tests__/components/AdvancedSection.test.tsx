@@ -253,6 +253,49 @@ describe('AdvancedSection', () => {
   });
 
   // ============================================================
+  // BWB WIDE WING LABEL (M1g)
+  // ============================================================
+
+  it.each([
+    [20, 2, '2x \u2192 40pt wide'],
+    [20, 1.5, '1.5x \u2192 30pt wide'],
+    [15, 2.5, '2.5x \u2192 40pt wide'],
+    [15, 1.5, '1.5x \u2192 25pt wide'],
+    [25, 1.5, '1.5x \u2192 40pt wide'],
+    [25, 2.5, '2.5x \u2192 65pt wide'],
+  ])(
+    'labels %s \u00d7 %s with the width the far wing trades: "%s"',
+    (narrow, mult, text) => {
+      render(
+        <AdvancedSection
+          {...defaultProps({
+            showBWB: true,
+            bwbNarrowWidth: narrow,
+            bwbWideMultiplier: mult,
+          })}
+        />,
+      );
+      expect(screen.getByText(text)).toBeInTheDocument();
+    },
+  );
+
+  it('never shows the off-grid requested width (15 \u00d7 2.5 = 37.5)', () => {
+    render(
+      <AdvancedSection
+        {...defaultProps({
+          showBWB: true,
+          bwbNarrowWidth: 15,
+          bwbWideMultiplier: 2.5,
+        })}
+      />,
+    );
+    expect(screen.queryByText(/37\.5/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/rounded out to the next 5-pt strike/),
+    ).toBeInTheDocument();
+  });
+
+  // ============================================================
   // MODEL PARAMETERS
   // ============================================================
 

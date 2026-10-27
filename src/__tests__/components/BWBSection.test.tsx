@@ -348,6 +348,32 @@ describe('BWBSection', () => {
     expect(rows).toHaveLength(1);
   });
 
+  it('labels the snapped wide width, not the request, when no delta row is valid', () => {
+    const err: DeltaRowError = { delta: 10, error: 'Negative premium' };
+    renderSection(
+      { allDeltas: [err] },
+      { narrowWidth: 15, wideMultiplier: 2.5 },
+    );
+    expect(
+      screen.getByText('Broken Wing Butterfly (15/40-pt wings)'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/37\.5/)).not.toBeInTheDocument();
+  });
+
+  it('labels per side only when the sides disagree (an off-grid short strike)', () => {
+    // Production shorts sit on the 5-pt grid. A put short at 5632 puts its
+    // near wing at 5645 (13 wide) and floors its far wing to 5590 (42 wide)
+    renderSection(
+      { allDeltas: [{ ...makeDeltaRow(10), putSnapped: 5632 }] },
+      { narrowWidth: 15, wideMultiplier: 2.5 },
+    );
+    expect(
+      screen.getByText(
+        'Broken Wing Butterfly (13/42-pt put, 15/40-pt call wings)',
+      ),
+    ).toBeInTheDocument();
+  });
+
   // ============================================================
   // Explanatory text
   // ============================================================

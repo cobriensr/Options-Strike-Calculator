@@ -188,8 +188,9 @@ export interface BWBLegs {
   /** Narrow wing width (near side, pts), from the snapped strikes */
   readonly narrowWidth: number;
   /**
-   * Wide wing width (far side, pts), from the snapped strikes. An off-grid
-   * request differs by side: 37.5 snaps to 35 on puts and 40 on calls.
+   * Wide wing width (far side, pts), from the snapped strikes. The far wing
+   * snaps away from the short, so an off-grid 37.5 request trades 40 wide
+   * on both sides.
    */
   readonly wideWidth: number;
   /** Premium for each short contract (×2 sold) */

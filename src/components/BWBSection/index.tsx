@@ -1,14 +1,17 @@
 import { useState, useCallback } from 'react';
 import type { BWBLegs, DeltaRow, CalculationResults } from '../../types';
+import { snapBWBWideWidth } from '../../utils/bwb';
 import { buildPutBWB, buildCallBWB } from '../../utils/calculator';
 import { promptReloadOnStaleChunk } from '../../utils/handle-stale-chunk';
 import BWBLegsTable from './BWBLegsTable';
 import BWBPnLProfileTable from './BWBPnLProfileTable';
 
 /**
- * "20/40-pt wings", or per side when snapping splits them: 15 × 2.5 = 37.5
- * snaps to 35 on puts and 40 on calls, so "15/35-pt put, 15/40-pt call
- * wings". Falls back to the requested widths when no delta row is valid.
+ * "20/40-pt wings", from the widths the builders used. The far wing snaps
+ * away from the short on both sides, so 15 × 2.5 = 37.5 reads "15/40-pt
+ * wings". The per-side form ("15/35-pt put, 15/40-pt call wings") only
+ * appears if the sides ever disagree, e.g. from an off-grid short strike.
+ * With no valid delta row, the snapped requested width stands in.
  */
 function formatWingLabel(
   put: BWBLegs | undefined,
@@ -16,10 +19,11 @@ function formatWingLabel(
   narrowWidth: number,
   wideWidth: number,
 ): string {
+  const snappedWide = snapBWBWideWidth(wideWidth);
   const putPair =
-    (put?.narrowWidth ?? narrowWidth) + '/' + (put?.wideWidth ?? wideWidth);
+    (put?.narrowWidth ?? narrowWidth) + '/' + (put?.wideWidth ?? snappedWide);
   const callPair =
-    (call?.narrowWidth ?? narrowWidth) + '/' + (call?.wideWidth ?? wideWidth);
+    (call?.narrowWidth ?? narrowWidth) + '/' + (call?.wideWidth ?? snappedWide);
   if (putPair === callPair) return putPair + '-pt wings';
   return putPair + '-pt put, ' + callPair + '-pt call wings';
 }

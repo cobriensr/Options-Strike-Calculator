@@ -6,6 +6,7 @@ import {
   BWB_NARROW_OPTIONS,
   BWB_WIDE_MULTIPLIERS,
 } from '../constants';
+import { snapBWBWideWidth } from '../utils/bwb';
 import { SectionBox, Chip, ErrorMsg } from './ui';
 import ThetaDecayChart from './ThetaDecayChart';
 
@@ -303,7 +304,7 @@ export default function AdvancedSection({
               </label>
               <span className="text-accent font-mono text-sm font-medium">
                 {bwbWideMultiplier}x {'\u2192'}{' '}
-                {bwbNarrowWidth * bwbWideMultiplier}pt wide
+                {snapBWBWideWidth(bwbNarrowWidth * bwbWideMultiplier)}pt wide
               </span>
             </div>
             <fieldset
@@ -321,8 +322,8 @@ export default function AdvancedSection({
               ))}
             </fieldset>
             <p className="text-muted mt-1.5 mb-0 text-[11px] italic">
-              Wide wing = narrow {'\u00D7'} multiplier. Higher = more risk but
-              more credit.
+              Wide wing = narrow {'\u00D7'} multiplier, rounded out to the next
+              5-pt strike. Higher = more risk but more credit.
             </p>
           </div>
         </div>
