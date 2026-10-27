@@ -77,7 +77,7 @@ import { SectionBox } from './components/ui';
 import VegaSpikeFeed from './components/VegaSpikeFeed/VegaSpikeFeed';
 import NotificationPermission from './components/NotificationPermission';
 import { CollapseAllContext } from './components/collapse-context';
-import type { AmPm, Timezone } from './types';
+import type { AmPm, IVMode, Timezone } from './types';
 import type { CollapseSignal } from './components/collapse-context';
 import { useToast } from './hooks/useToast';
 import SectionNav from './components/SectionNav';
@@ -416,6 +416,18 @@ export default function StrikeCalculator() {
     },
     [setVixInput],
   );
+  // ivModeEdited keeps the user's IV-mode pick when the static VIX1D table
+  // arrives late for a past date; useAutoFill clears it on a new date. Every
+  // user path into setIvMode sets it: this toggle handler and
+  // handleUseVix1dAsSigma.
+  const ivModeEdited = useRef(false);
+  const handleIvModeChange = useCallback(
+    (v: IVMode) => {
+      ivModeEdited.current = true;
+      setIvMode(v);
+    },
+    [setIvMode],
+  );
   const handleTimeHourChange = useCallback(
     (v: string) => {
       markTimeEdited();
@@ -475,6 +487,7 @@ export default function StrikeCalculator() {
     spxEdited,
     vixEdited,
     timeEdited,
+    ivModeEdited,
     timeHour,
     timeMinute,
     timeAmPm,
@@ -651,6 +664,7 @@ export default function StrikeCalculator() {
 
   const handleUseVix1dAsSigma = useCallback(
     (sigma: number) => {
+      ivModeEdited.current = true;
       setIvMode(IV_MODES.DIRECT);
       setDirectIVInput(sigma.toFixed(4));
     },
@@ -877,7 +891,7 @@ export default function StrikeCalculator() {
               <span id="sec-iv" className="block scroll-mt-28" />
               <IVInputSection
                 ivMode={ivMode}
-                onIvModeChange={setIvMode}
+                onIvModeChange={handleIvModeChange}
                 vixInput={vixInput}
                 onVixChange={handleVixChange}
                 multiplier={multiplier}
@@ -1368,6 +1382,7 @@ export default function StrikeCalculator() {
       gexTarget,
       handleAnalysisSaved,
       handleDateChange,
+      handleIvModeChange,
       handleResumeLive,
       handleSpotChange,
       handleSpxChange,
@@ -1398,7 +1413,6 @@ export default function StrikeCalculator() {
       setCsvPositionSummary,
       setDirectIVInput,
       setGexBiasContext,
-      setIvMode,
       setMultiplier,
       setPeriscopeSlot,
       setSkewPct,

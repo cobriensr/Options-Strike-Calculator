@@ -32,6 +32,11 @@ interface UseAutoFillInputs {
   // selected past times aren't overwritten on the next 60s poll. Cleared
   // when the user changes the date or clicks "Resume live" in DateTimeSection.
   timeEdited: { current: boolean };
+  // ivModeEdited is set when the user picks an IV mode (the mode toggle or
+  // "Use VIX1D as σ"). It stops the re-choice that settles a provisional
+  // mode (see ivModeAutoFill below) from overriding that pick. Cleared here
+  // when a new date gets its choice.
+  ivModeEdited: { current: boolean };
   timeHour: string;
   timeMinute: string;
 
@@ -63,6 +68,9 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     spxEdited,
     vixEdited,
     timeEdited,
+    // The Ref suffix lets the React Compiler lint treat this as a ref, which
+    // the history effect below may write; it reads arguments as immutable.
+    ivModeEdited: ivModeEditedRef,
     timeHour,
     timeMinute,
     timeAmPm,
@@ -90,10 +98,10 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
   // user's manual toggle on every re-render (historyData is a new object ref
   // each render, which would otherwise re-trigger the history effect).
   // `settled` is false when that choice was made before VIX1D for the date
-  // could be known (no Schwab VIX1D, static table still loading): the VIX
-  // fallback is then provisional, and the mode is chosen once more when the
-  // table arrives. A failed load leaves it provisional, so re-runs that retry
-  // the load still leave the user's toggle alone.
+  // could be known (no Schwab VIX1D, and the static table still loading or
+  // failed to load; re-runs retry a failed load). The VIX fallback is then
+  // provisional: when the table arrives, even on a later retry, the mode is
+  // chosen once more, unless the user has picked one since (`ivModeEdited`).
   const ivModeAutoFill = useRef<{ date: string; settled: boolean } | null>(
     null,
   );
@@ -210,11 +218,17 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
       if (snapshot.vix1d == null) vix1dStatic.ensureLoaded();
       const date = historyData.history!.date;
       const vix1dVal = snapshot.vix1d ?? vix1dStatic.getVix1d(date, etHour);
-      // Choose the IV mode on a new date, or once more when a provisional
-      // choice can settle because VIX1D for the date is now known.
+      // Choose the IV mode on a new date, which also drops the last date's
+      // manual pick. Choose once more when a provisional choice can settle
+      // because VIX1D for the date is now known, unless the user picked a
+      // mode in the meantime.
       const vix1dKnown = snapshot.vix1d != null || vix1dStatic.loaded;
       const prev = ivModeAutoFill.current;
-      const chooseMode = prev?.date !== date || (!prev.settled && vix1dKnown);
+      const newDate = prev?.date !== date;
+      if (newDate) ivModeEditedRef.current = false;
+      const settle =
+        prev?.settled === false && vix1dKnown && !ivModeEditedRef.current;
+      const chooseMode = newDate || settle;
       if (vix1dVal != null && vix1dVal > 0) {
         // Only auto-switch IV mode when choosing; always update the σ value
         // so it stays current as the user scrubs time.
@@ -257,6 +271,7 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     setIvMode,
     setDirectIVInput,
     market.data.quotes,
+    ivModeEditedRef,
   ]);
 
   // ── Compute current history snapshot for downstream components ──

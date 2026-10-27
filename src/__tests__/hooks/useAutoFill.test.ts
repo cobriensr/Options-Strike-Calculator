@@ -220,6 +220,7 @@ describe('useAutoFill', () => {
         spxEdited: { current: false },
         vixEdited: { current: false },
         timeEdited: { current: false },
+        ivModeEdited: { current: false },
         timeHour: '10',
         timeMinute: '00',
         timeAmPm: 'AM',
@@ -249,6 +250,7 @@ describe('useAutoFill', () => {
         spxEdited: { current: true },
         vixEdited: { current: true },
         timeEdited: { current: false },
+        ivModeEdited: { current: false },
         timeHour: '2',
         timeMinute: '15',
         timeAmPm: 'PM',
@@ -281,6 +283,7 @@ describe('useAutoFill', () => {
         spxEdited: { current: true },
         vixEdited: { current: true },
         timeEdited: { current: false },
+        ivModeEdited: { current: false },
         timeHour: '2',
         timeMinute: '15',
         timeAmPm: 'PM',
@@ -308,6 +311,7 @@ describe('useAutoFill', () => {
         spxEdited: { current: false },
         vixEdited: { current: false },
         timeEdited: { current: false },
+        ivModeEdited: { current: false },
         timeHour: '10',
         timeMinute: '00',
         timeAmPm: 'AM',
@@ -345,6 +349,7 @@ describe('useAutoFill', () => {
         spxEdited: { current: true },
         vixEdited: { current: true },
         timeEdited: { current: false },
+        ivModeEdited: { current: false },
         timeHour: '2',
         timeMinute: '00',
         timeAmPm: 'PM',
@@ -370,6 +375,7 @@ describe('useAutoFill', () => {
         spxEdited: { current: true },
         vixEdited: { current: true },
         timeEdited: { current: false },
+        ivModeEdited: { current: false },
         timeHour: '2',
         timeMinute: '00',
         timeAmPm: 'PM',
@@ -394,6 +400,7 @@ describe('useAutoFill', () => {
         spxEdited: { current: true },
         vixEdited: { current: true },
         timeEdited: { current: false },
+        ivModeEdited: { current: false },
         timeHour: '10',
         timeMinute: '00',
         timeAmPm: 'AM',
@@ -422,6 +429,7 @@ describe('useAutoFill', () => {
         spxEdited: { current: true },
         vixEdited: { current: true },
         timeEdited: { current: false },
+        ivModeEdited: { current: false },
         timeHour: '2',
         timeMinute: '15',
         timeAmPm: 'PM',
@@ -453,6 +461,7 @@ describe('useAutoFill', () => {
         spxEdited: { current: true },
         vixEdited: { current: true },
         timeEdited: { current: false },
+        ivModeEdited: { current: false },
         timeHour: '11',
         timeMinute: '00',
         timeAmPm: 'AM',
@@ -487,6 +496,7 @@ describe('useAutoFill', () => {
         spxEdited: { current: true },
         vixEdited: { current: true },
         timeEdited: { current: true },
+        ivModeEdited: { current: false },
         timeHour: '4',
         timeMinute: '00',
         timeAmPm: 'PM',
@@ -516,6 +526,7 @@ describe('useAutoFill', () => {
         spxEdited: { current: true },
         vixEdited: { current: true },
         timeEdited: { current: true },
+        ivModeEdited: { current: false },
         timeHour: '10',
         timeMinute: '00',
         timeAmPm: 'AM',
@@ -539,6 +550,7 @@ describe('useAutoFill', () => {
         spxEdited: { current: false },
         vixEdited: { current: false },
         timeEdited: { current: false },
+        ivModeEdited: { current: false },
         timeHour: '10',
         timeMinute: '00',
         timeAmPm: 'AM',
@@ -571,6 +583,7 @@ describe('useAutoFill', () => {
         spxEdited: { current: false },
         vixEdited: { current: false },
         timeEdited: { current: false },
+        ivModeEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',
@@ -604,6 +617,7 @@ describe('useAutoFill', () => {
         spxEdited: { current: false },
         vixEdited: { current: false },
         timeEdited: { current: false },
+        ivModeEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',
@@ -637,6 +651,7 @@ describe('useAutoFill', () => {
         spxEdited: { current: false },
         vixEdited: { current: false },
         timeEdited: { current: false },
+        ivModeEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',
@@ -663,6 +678,7 @@ describe('useAutoFill', () => {
         spxEdited: { current: false },
         vixEdited: { current: false },
         timeEdited: { current: false },
+        ivModeEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',
@@ -688,6 +704,7 @@ describe('useAutoFill', () => {
         spxEdited: { current: false },
         vixEdited: { current: false },
         timeEdited: { current: false },
+        ivModeEdited: { current: false },
         timeHour: '10',
         timeMinute: '00',
         timeAmPm: 'AM',
@@ -721,6 +738,7 @@ describe('useAutoFill', () => {
         spxEdited: { current: false },
         vixEdited: { current: false },
         timeEdited: { current: false },
+        ivModeEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',
@@ -751,6 +769,7 @@ describe('useAutoFill', () => {
         spxEdited: { current: false },
         vixEdited: { current: false },
         timeEdited: { current: false },
+        ivModeEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',
@@ -780,6 +799,7 @@ describe('useAutoFill', () => {
         spxEdited: { current: false },
         vixEdited: { current: false },
         timeEdited: { current: false },
+        ivModeEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',
@@ -806,6 +826,7 @@ describe('useAutoFill: static VIX1D loading', () => {
     spxEdited: { current: false },
     vixEdited: { current: false },
     timeEdited: { current: false },
+    ivModeEdited: { current: false },
     timeHour: '11',
     timeMinute: '30',
     timeAmPm: 'AM' as const,
@@ -930,28 +951,54 @@ describe('useAutoFill: static VIX1D loading', () => {
   const VIX1D_TABLE = { '2026-03-10': { o: 16.5, h: 17.2, l: 16.1, c: 16.9 } };
 
   function renderWithIvState(
-    historyData: UseHistoryDataReturn,
+    initialHistory: UseHistoryDataReturn,
     initialMode: IVMode,
   ) {
     const setters = createSetters();
-    return renderHook(
-      ({ timeMinute }: { timeMinute: string }) => {
+    const ivModeEdited = { current: false };
+    const rendered = renderHook(
+      ({
+        timeMinute,
+        historyData,
+      }: {
+        timeMinute: string;
+        historyData: UseHistoryDataReturn;
+      }) => {
         const [ivMode, setIvMode] = useState<IVMode>(initialMode);
         const [directIV, setDirectIVInput] = useState('');
         const vix1dStatic = useVix1dData();
         useAutoFill({
           ...baseInputs,
           ...setters,
+          ivModeEdited,
           setIvMode,
           setDirectIVInput,
           timeMinute,
           historyData,
           vix1dStatic,
         });
-        return { ivMode, setIvMode, directIV, loaded: vix1dStatic.loaded };
+        // The user's two ways to pick a mode, the way App's handlers make
+        // them (App.iv-mode-wiring.test.ts guards that App sets the flag).
+        const userSetsIvMode = (mode: IVMode) => {
+          ivModeEdited.current = true;
+          setIvMode(mode);
+        };
+        const userUsesVix1dAsSigma = (sigma: number) => {
+          ivModeEdited.current = true;
+          setIvMode(IV_MODES.DIRECT);
+          setDirectIVInput(sigma.toFixed(4));
+        };
+        return {
+          ivMode,
+          userSetsIvMode,
+          userUsesVix1dAsSigma,
+          directIV,
+          loaded: vix1dStatic.loaded,
+        };
       },
-      { initialProps: { timeMinute: '30' } },
+      { initialProps: { timeMinute: '30', historyData: initialHistory } },
     );
+    return { ...rendered, ivModeEdited };
   }
 
   function pastDateWithoutSchwabVix1d() {
@@ -964,7 +1011,7 @@ describe('useAutoFill: static VIX1D loading', () => {
     });
   }
 
-  it('switches to DIRECT with the static VIX1D once the table loads after a first visit', async () => {
+  it('with no manual pick, switches to DIRECT once the late table has VIX1D for the date', async () => {
     const fetches = pendingFetches();
     // The previous date left DIRECT; this date has no Schwab VIX1D.
     const { result } = renderWithIvState(
@@ -989,8 +1036,8 @@ describe('useAutoFill: static VIX1D loading', () => {
     fetches.respond(VIX1D_TABLE);
     await waitFor(() => expect(result.current.ivMode).toBe(IV_MODES.DIRECT));
 
-    act(() => result.current.setIvMode(IV_MODES.VIX));
-    rerender({ timeMinute: '35' }); // time scrub re-runs the history effect
+    act(() => result.current.userSetsIvMode(IV_MODES.VIX));
+    rerender({ timeMinute: '35', historyData }); // a time scrub re-runs the effect
 
     expect(historyData.getStateAtTime).toHaveBeenLastCalledWith(11, 35);
     expect(result.current.ivMode).toBe(IV_MODES.VIX);
@@ -1028,18 +1075,110 @@ describe('useAutoFill: static VIX1D loading', () => {
   it('keeps a manual IV mode choice on a re-run that retries a failed load', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const fetches = pendingFetches();
-    const { result, rerender } = renderWithIvState(
-      pastDateWithoutSchwabVix1d(),
-      IV_MODES.VIX,
-    );
+    const historyData = pastDateWithoutSchwabVix1d();
+    const { result, rerender } = renderWithIvState(historyData, IV_MODES.VIX);
     fetches.fail();
     await waitFor(() => expect(warnSpy).toHaveBeenCalled());
 
-    act(() => result.current.setIvMode(IV_MODES.DIRECT));
-    rerender({ timeMinute: '35' });
+    act(() => result.current.userSetsIvMode(IV_MODES.DIRECT));
+    rerender({ timeMinute: '35', historyData });
 
     expect(fetches.fetchSpy).toHaveBeenCalledTimes(2); // the re-run retried
     expect(result.current.ivMode).toBe(IV_MODES.DIRECT);
+  });
+
+  // ── A manual pick while the choice is provisional (ivModeEdited) ──
+
+  it('keeps a manual VIX pick made before the table loads when the table then has VIX1D for the date', async () => {
+    const fetches = pendingFetches();
+    // The previous date left DIRECT; VIX is provisional while the table loads.
+    const { result } = renderWithIvState(
+      pastDateWithoutSchwabVix1d(),
+      IV_MODES.DIRECT,
+    );
+    expect(result.current.ivMode).toBe(IV_MODES.VIX);
+
+    // The user tries Direct IV, then goes back to VIX on purpose.
+    act(() => result.current.userSetsIvMode(IV_MODES.DIRECT));
+    act(() => result.current.userSetsIvMode(IV_MODES.VIX));
+    fetches.respond(VIX1D_TABLE);
+
+    // σ still tracks the table, so the settle ran; the user's mode stands.
+    await waitFor(() => expect(result.current.directIV).toBe('0.1650'));
+    expect(result.current.ivMode).toBe(IV_MODES.VIX);
+  });
+
+  it('keeps a manual DIRECT pick made before the table loads when the table then has no entry for the date', async () => {
+    const fetches = pendingFetches();
+    const { result } = renderWithIvState(
+      pastDateWithoutSchwabVix1d(),
+      IV_MODES.VIX,
+    );
+
+    act(() => result.current.userSetsIvMode(IV_MODES.DIRECT));
+    fetches.respond({ '2026-03-09': { o: 15, h: 16, l: 14, c: 15.5 } });
+
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(result.current.ivMode).toBe(IV_MODES.DIRECT);
+  });
+
+  it('counts "Use VIX1D as σ" before the table loads as a manual pick', async () => {
+    const fetches = pendingFetches();
+    const { result } = renderWithIvState(
+      pastDateWithoutSchwabVix1d(),
+      IV_MODES.VIX,
+    );
+
+    // VIX1D typed from TradingView into the term-structure card.
+    act(() => result.current.userUsesVix1dAsSigma(0.185));
+    fetches.respond({ '2026-03-09': { o: 15, h: 16, l: 14, c: 15.5 } });
+
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(result.current.ivMode).toBe(IV_MODES.DIRECT);
+    expect(result.current.directIV).toBe('0.1850');
+  });
+
+  it('keeps a manual DIRECT pick made after a failed load when a later retry has no entry for the date', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetches = pendingFetches();
+    const historyData = pastDateWithoutSchwabVix1d();
+    const { result, rerender } = renderWithIvState(historyData, IV_MODES.VIX);
+    fetches.fail();
+    await waitFor(() => expect(warnSpy).toHaveBeenCalled());
+
+    act(() => result.current.userSetsIvMode(IV_MODES.DIRECT));
+    rerender({ timeMinute: '35', historyData }); // the scrub retries the load
+    expect(fetches.fetchSpy).toHaveBeenCalledTimes(2);
+    fetches.respond({ '2026-03-09': { o: 15, h: 16, l: 14, c: 15.5 } });
+
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(result.current.ivMode).toBe(IV_MODES.DIRECT);
+  });
+
+  it('clears the manual-pick flag on a new date, so the next date auto-chooses again', async () => {
+    const fetches = pendingFetches();
+    const withSchwabVix1d = createHistoryData({
+      hasHistory: true,
+      history: mockHistory('2026-03-09'),
+      getStateAtTime: vi
+        .fn()
+        .mockReturnValue(makeHistorySnapshot({ vix: 20.5, vix1d: 14.8 })),
+    });
+    const { result, rerender, ivModeEdited } = renderWithIvState(
+      withSchwabVix1d,
+      IV_MODES.VIX,
+    );
+    expect(result.current.ivMode).toBe(IV_MODES.DIRECT);
+    act(() => result.current.userSetsIvMode(IV_MODES.VIX));
+
+    // Next date has no Schwab VIX1D: VIX while the table loads, then DIRECT.
+    rerender({ timeMinute: '30', historyData: pastDateWithoutSchwabVix1d() });
+    expect(ivModeEdited.current).toBe(false);
+    expect(fetches.fetchSpy).toHaveBeenCalledTimes(1);
+    fetches.respond(VIX1D_TABLE);
+
+    await waitFor(() => expect(result.current.ivMode).toBe(IV_MODES.DIRECT));
+    expect(result.current.directIV).toBe('0.1650');
   });
 
   it('never loads the table or changes IV mode in live mode', () => {
