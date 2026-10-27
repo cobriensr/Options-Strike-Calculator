@@ -359,9 +359,12 @@ migration chain, and all schema changes go there.)
   `flow_alerts`. Subscribe with the hyphen; `config.py` maps
   `flow_alerts` to it.
 - **Backpressure.** Bounded `asyncio.Queue` per handler, plus the shared
-  receive queue. The drop policy is configurable. Drops increment
-  `handlers.<name>.drop_count` (and, upstream, `receive_queue_drops`) in
-  `/metrics`; nothing pushes them to Sentry.
+  receive queue in front of the router. Drop policy is configurable. Every
+  60 s the `drop_reporter` task (`src/drop_reporter.py`) sends one Sentry
+  warning tagged `component=backpressure` for each queue that dropped
+  payloads since its last report, with the new drops (`dropped`) and the
+  running total (`drop_total`). A quiet interval sends nothing. The
+  cumulative counters stay on `/metrics`.
 - **Disconnects.** Each dropped socket logs one line with the shard, the
   exception, both close frames, the underlying cause (with errno), the
   session length, frames received, time since the last frame, and both

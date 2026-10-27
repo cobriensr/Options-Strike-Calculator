@@ -536,3 +536,106 @@ def test_build_handlers_keeps_shared_handler_names_out_of_channel_state(
     assert handlers["net_flow:TSLA"] is handlers["net_flow:NVDA"]
     assert handlers["option_trades:TSLA"] is handlers["option_trades:NVDA"]
     assert handlers["option_trades:SPY"] is not handlers["option_trades:TSLA"]
+
+
+# --- drop reporter wiring (P2) -----------------------------------------------
+
+
+def _stub_pipeline(monkeypatch) -> None:
+    """Stub Sentry, the pool and the data pipeline so _run reaches its wait.
+
+    The lease is off, so the only things that can wake _run are the stop
+    Event and a background task finishing.
+    """
+    monkeypatch.setattr(main, "init_sentry", lambda: None)
+
+    async def _noop_pool() -> None:
+        return None
+
+    monkeypatch.setattr(main, "init_pool", _noop_pool)
+    monkeypatch.setattr(main, "close_pool", _noop_pool)
+    monkeypatch.setattr(main.settings, "ws_lease_enabled", False, raising=False)
+    monkeypatch.setattr(main, "_build_handlers", lambda _ch: {})
+
+    class _ForeverConnector:
+        def __init__(self, *_a, **kwargs) -> None:
+            self.name = kwargs.get("name", "conn")
+
+        async def run(self) -> None:
+            await asyncio.sleep(3600)
+
+    class _ForeverRouter:
+        def __init__(self, *_a, **_k) -> None: ...
+
+        async def run(self, _q) -> None:
+            await asyncio.sleep(3600)
+
+    async def _forever_bg() -> None:
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(main, "Connector", _ForeverConnector)
+    monkeypatch.setattr(main, "Router", _ForeverRouter)
+    monkeypatch.setattr(main, "run_server", _forever_bg)
+    monkeypatch.setattr(main, "run_subscription_watchdog", _forever_bg)
+
+
+@pytest.mark.asyncio
+async def test_run_starts_drop_reporter_and_shutdown_cancels_it(_reset_notify_state, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    events: list[str] = []
+
+    async def _recording_reporter() -> None:
+        events.append("started")
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            events.append("cancelled")
+            raise
+
+    monkeypatch.setattr(main, "run_drop_reporter", _recording_reporter)
+
+    # Fire the stop Event (the last one _run creates) once _run is waiting:
+    # the normal-SIGTERM path, as in test_run_exits_zero_on_normal_sigterm.
+    created_events: list[asyncio.Event] = []
+    real_event = asyncio.Event
+
+    def _tracking_event() -> asyncio.Event:
+        ev = real_event()
+        created_events.append(ev)
+        return ev
+
+    monkeypatch.setattr(main.asyncio, "Event", _tracking_event)
+    real_wait = asyncio.wait
+
+    async def _wait_then_sigterm(tasks, **kwargs):
+        await asyncio.sleep(0)  # let the reporter reach its first await
+        created_events[-1].set()
+        return await real_wait(tasks, **kwargs)
+
+    monkeypatch.setattr(main.asyncio, "wait", _wait_then_sigterm)
+
+    await main._run()
+
+    assert events == ["started", "cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_run_exits_nonzero_when_drop_reporter_dies(_reset_notify_state, monkeypatch):
+    # The reporter sits in the same wait set as the pipeline, so its death gets
+    # the AUD-H1 handling: Sentry event tagged with the task name, then exit 1.
+    _stub_pipeline(monkeypatch)
+
+    async def _crashing_reporter() -> None:
+        raise RuntimeError("reporter boom")
+
+    monkeypatch.setattr(main, "run_drop_reporter", _crashing_reporter)
+    captured: list[tuple[BaseException, dict]] = []
+    monkeypatch.setattr(main, "capture_exception", lambda exc, **kw: captured.append((exc, kw)))
+
+    with pytest.raises(SystemExit) as exc_info:
+        await main._run()
+
+    assert exc_info.value.code == 1
+    assert [(str(e), kw["tags"]["task"]) for e, kw in captured] == [
+        ("reporter boom", "drop_reporter")
+    ]

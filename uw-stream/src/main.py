@@ -25,6 +25,7 @@ from channel_registry import handler_class_for_channel
 from config import settings
 from connector import Connector
 from db import close_pool, init_pool
+from drop_reporter import run_drop_reporter
 from handlers.base import Handler
 from health import run_server
 from logger_setup import log
@@ -234,10 +235,13 @@ async def _run() -> None:
         producer_tasks.append(
             asyncio.create_task(router.run(receive_queue), name="router"),
         )
-        # Background services that aren't part of the data pipeline.
+        # Background services that aren't part of the data pipeline. They sit
+        # in the same wait set as the pipeline, so an unexpected death of any
+        # of them exits non-zero, and _shutdown cancels them via other_tasks.
         background_tasks: list[asyncio.Task] = [
             asyncio.create_task(run_server(), name="health"),
             asyncio.create_task(run_subscription_watchdog(), name="subscription_watchdog"),
+            asyncio.create_task(run_drop_reporter(), name="drop_reporter"),
         ]
         # Spawn one drain task per UNIQUE handler instance — many channels
         # can share one handler (e.g. every option_trades:<TICKER> entry
@@ -383,7 +387,8 @@ async def _shutdown(
        drained batch's ``schedule_notify`` tasks) before the loop tears
        down, then close the shared HTTP session.
     4. Cancel the remaining background tasks (handler drain loops, health
-       server, signal waiter, lease renewal). We don't await indefinitely
+       server, subscription watchdog, drop reporter, signal waiter, lease
+       renewal). We don't await indefinitely
        — Railway SIGKILLs us after its grace window regardless.
     """
     # 1. Stop inflow.
