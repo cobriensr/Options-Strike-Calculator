@@ -54,6 +54,14 @@ These come from the VIX-mode reviews, rounds 2–5.
 7. **Past-date predicate.** It is written four or more ways (`useAutoFill`, `IVInputSection`, `App.tsx` `isBacktestMode`, `useHistoryData`, `useVixData`). Replace them all with one `isPastETDate(date)` in `src/utils/timezone.ts`.
 8. **Typed values replaced on a time scrub.** A typed VIX or σ on a past date is overwritten when the time changes. This is owner decision Q16 / remediation phase 3.12. Since `fix/rr-vixmode`, `useVixData` also writes the daily VIX in DIRECT mode on past dates, so 3.12 needs a `vixEdited` guard there as well.
 
+### More paths from the VIX-mode round-5 review
+
+9. **A date with no daily VIX at all** keeps another date's VIX in both modes. That means no table entry, a `/api/vix-ohlc` count of 0 or an error, and no history. This is covered by Q-A, defaulting to blank.
+10. **Four writers to the VIX field, ordered only by hook call order:** `useVixData`'s main effect, `useVixData`'s re-apply effect, App's injection, and `useAutoFill`'s history effect. The unread `vixOHLC` dependency and the round-6 `fillsDaily` guard are ordering patches. A CSV upload on a past date with history still lets the daily VIX win when the entry's object reference doesn't change. Phase 6 replaces all four with a single writer.
+11. **Today with its own history.** `api/history` serves today, and the history effect runs after the live effect. On every quote poll, today's fields take the 5-minute snapshot over live quotes. Its restore path also ignores `spotEdited` and `spxEdited`.
+12. **IVInputSection card key.** `termStructureKey = hist-${candle.datetime}` remounts the card on every 5-minute scrub, which drops a typed VIX1D on a past date with history. Phase 6.
+13. **No rollover at ET midnight.** Nothing advances the date in a tab left open past ET midnight. Folds into phase 2.
+
 ## Phases
 
 Each phase has its own worktree and the full Get It Right loop.
