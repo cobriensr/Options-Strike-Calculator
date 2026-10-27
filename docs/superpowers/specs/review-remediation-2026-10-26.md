@@ -344,7 +344,19 @@ Math-display changes (phases 1–2) change numbers on screen. Push them outside 
 
 ## Open questions (defaults in brackets)
 
-Answered so far: Q2, Q25, Q26 (2026-10-26), and Q3–Q8, Q12, Q13, Q16, Q17, Q20, Q21 (2026-10-27). See "Decisions recorded". Still open: Q15, Q18, Q19, Q22, Q23, plus O6–O8.
+Answered: Q2, Q25 and Q26 (2026-10-26); Q3–Q8, Q12, Q13, Q16, Q17, Q20 and Q21 (2026-10-27 morning; see "Decisions recorded").
+
+On 2026-10-27 at 17:47 the owner accepted the bracketed default for every remaining question, including the security ones in the local note:
+- Q15: a banner.
+- Q18: gitignore `HANDOFF.md`.
+- Q19: yes.
+- Q22: yes.
+- Q23: no retrain until a side-by-side comparison.
+
+Owner actions:
+- **O7:** leave the ML Pipeline workflow off for now.
+- **O8:** not needed (no screenshots or recording).
+- **O6:** Claude drafts the description and topics, and the owner approves them before they are applied.
 
 - **Q2.** Off-grid BWB width (e.g. 37.5): which way does the far wing snap? [Away from the short on both sides: conservative, and the sides match.]
 - **Q3.** Hedge stress regime: shock (+8 vol pts on a 2% drop) or calm (+1.5)? Does IV fall on rallies? [Shock; yes.]

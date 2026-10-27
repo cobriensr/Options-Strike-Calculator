@@ -94,6 +94,8 @@ No new tables or env vars. Phase 5 writes to prod `market_snapshots` only after 
 
 ## Open questions (defaults in brackets)
 
+**Answered 2026-10-27:** the owner accepted every default below.
+
 - **Q-A.** On a weekend, holiday or other past date with no data, should the VIX field be blanked (the calculator shows its "VIX must be a number" error) or keep its value with a "no data" marker? [Blank.]
 - **Q-B.** Where should spot/SPX come from for dates older than the intraday history? [A daily SPX open/close from an existing stored source if one exists, otherwise blank with a marker. Never today's spot.]
 - **Q-C.** What should happen to the misdated rows? Delete them, or move them to their creation date when that date has no row at the same time? [Delete, after a dry-run list.]
