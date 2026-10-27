@@ -9,14 +9,17 @@
  *   - DELETE /api/tracker/contracts/[id]
  *
  * Each test mocks `getDb()` via `vi.mocked` and sequences SQL responses
- * with `mockResolvedValueOnce`. Auth is short-circuited by mocking
- * `guardOwnerOrGuestEndpoint` to allow (return false).
+ * with `mockResolvedValueOnce`. Auth is short-circuited by mocking both
+ * guards to allow (return false): `guardOwnerOrGuestEndpoint` gates the
+ * GET, `guardOwnerEndpoint` gates every write. The real auth tier is
+ * covered in owner-only-writes.test.ts.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
+  guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
   guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
 }));
 
@@ -51,7 +54,10 @@ vi.mock('../_lib/logger.js', () => ({
 
 import listCreateHandler from '../tracker/contracts.js';
 import idHandler from '../tracker/contracts/[id].js';
-import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
+import {
+  guardOwnerEndpoint,
+  guardOwnerOrGuestEndpoint,
+} from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
 
 const SAMPLE_ROW = {
@@ -77,6 +83,7 @@ const SAMPLE_ROW = {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
   vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
   mockSql.mockReset();
 });
@@ -214,13 +221,11 @@ describe('POST /api/tracker/contracts (structured)', () => {
     quantity: 5,
   };
 
-  it('returns 401 when guest auth rejects', async () => {
-    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
-      async (_req, res) => {
-        res.status(401).json({ error: 'Not authenticated' });
-        return true;
-      },
-    );
+  it('returns 401 when owner auth rejects', async () => {
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
+      res.status(401).json({ error: 'Not authenticated' });
+      return true;
+    });
     const res = mockResponse();
     await listCreateHandler(
       mockRequest({ method: 'POST', body: validBody }),
@@ -607,13 +612,11 @@ describe('POST /api/tracker/contracts (free-text)', () => {
 // ============================================================
 
 describe('PATCH /api/tracker/contracts/[id]', () => {
-  it('returns 401 when guest auth rejects', async () => {
-    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
-      async (_req, res) => {
-        res.status(401).json({ error: 'Not authenticated' });
-        return true;
-      },
-    );
+  it('returns 401 when owner auth rejects', async () => {
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
+      res.status(401).json({ error: 'Not authenticated' });
+      return true;
+    });
     const res = mockResponse();
     await idHandler(
       mockRequest({
@@ -896,13 +899,11 @@ describe('PATCH /api/tracker/contracts/[id]', () => {
 // ============================================================
 
 describe('DELETE /api/tracker/contracts/[id]', () => {
-  it('returns 401 when guest auth rejects', async () => {
-    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
-      async (_req, res) => {
-        res.status(401).json({ error: 'Not authenticated' });
-        return true;
-      },
-    );
+  it('returns 401 when owner auth rejects', async () => {
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
+      res.status(401).json({ error: 'Not authenticated' });
+      return true;
+    });
     const res = mockResponse();
     await idHandler(mockRequest({ method: 'DELETE', query: { id: '1' } }), res);
     expect(res._status).toBe(401);

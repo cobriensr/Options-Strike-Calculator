@@ -18,14 +18,17 @@
  *   on `occ_symbol` is leveraged via ON CONFLICT DO NOTHING — duplicate
  *   inserts return 409 Conflict.
  *
- * Both endpoints owner-or-guest. Single-tenant — tracker rows are shared
- * across every valid auth cookie. See
+ * GET is owner-or-guest; POST is owner-only. Single-tenant: tracker rows
+ * are shared by every caller, so only the owner may add them. See
  * docs/superpowers/specs/contract-tracker-2026-05-17.md.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
+import {
+  guardOwnerEndpoint,
+  guardOwnerOrGuestEndpoint,
+} from '../_lib/api-helpers.js';
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from '../_lib/constants.js';
 import logger from '../_lib/logger.js';
@@ -50,7 +53,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(405).json({ error: 'GET or POST only' });
     }
 
-    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
+    const guard =
+      req.method === 'GET' ? guardOwnerOrGuestEndpoint : guardOwnerEndpoint;
+    if (await guard(req, res, done)) return;
 
     if (req.method === 'GET') {
       return handleList(req, res, done);

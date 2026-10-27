@@ -15,12 +15,12 @@
  *   Hard-removes the row (cascade-deletes ticks + alerts via FK). Not
  *   currently exposed in the UI per spec, but kept here for cleanup.
  *
- * Both methods owner-or-guest gated.
+ * Both methods are owner-only.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-import { guardOwnerOrGuestEndpoint } from '../../_lib/api-helpers.js';
+import { guardOwnerEndpoint } from '../../_lib/api-helpers.js';
 import { getDb } from '../../_lib/db.js';
 import logger from '../../_lib/logger.js';
 import { Sentry, metrics } from '../../_lib/sentry.js';
@@ -42,7 +42,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(405).json({ error: 'PATCH or DELETE only' });
     }
 
-    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
+    if (await guardOwnerEndpoint(req, res, done)) return;
 
     const idParsed = trackerIdParamSchema.safeParse(req.query);
     if (!idParsed.success) {
