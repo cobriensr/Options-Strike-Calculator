@@ -1214,6 +1214,72 @@ describe('expectedPnLSplit (Q25)', () => {
     expect(expectedLoss).toBeLessThan((1 - b.probabilityOfProfit) * b.maxLoss);
   });
 
+  it('nets ≈ $0 a month with no IV acceleration (6.5 h left), where pricing and settlement σ match', () => {
+    const t65 = calcTimeToExpiry(6.5);
+    const rows65 = calcAllDeltas(spot, 0.18, t65, 0.03).filter(
+      (r): r is DeltaRow => !('error' in r),
+    );
+    let checked = 0;
+    for (const row of rows65) {
+      expect(bwbSettlementSigma(row, 'put')).toBeCloseTo(row.putSigma, 12);
+      expect(bwbSettlementSigma(row, 'call')).toBeCloseTo(row.callSigma, 12);
+      for (const [narrow, mult] of [
+        [20, 2],
+        [15, 2.5],
+        [10, 3],
+      ] as const) {
+        for (const b of [
+          buildPutBWB(row, narrow, narrow * mult, spot, t65),
+          buildCallBWB(row, narrow, narrow * mult, spot, t65),
+        ]) {
+          const { expectedWin, expectedLoss } = expectedPnLSplit(
+            (s) => bwbPnLAtExpiry(b, s),
+            { spot, sigma: bwbSettlementSigma(row, b.side), T: t65 },
+          );
+          // Only the premiums' A&S normalCDF keeps this off exactly 0
+          expect(
+            Math.abs(22 * 100 * (expectedWin - expectedLoss)),
+            b.delta + 'Δ ' + b.side + ' ' + narrow + '×' + mult,
+          ).toBeLessThan(0.5);
+          checked++;
+        }
+      }
+    }
+    expect(checked).toBe(36);
+  });
+
+  it('matches the closed form one minute before expiry (σ 0.08), with the shorts at the money', () => {
+    const t1 = calcTimeToExpiry(1 / 60);
+    const row = calcAllDeltas(spot, 0.08, t1, 0.03).find(
+      (r): r is DeltaRow => !('error' in r) && r.delta === 10,
+    )!;
+    for (const b of [
+      buildPutBWB(row, 20, 40, spot, t1),
+      buildCallBWB(row, 20, 40, spot, t1),
+    ]) {
+      const sig = bwbSettlementSigma(row, b.side);
+      const price = (k: number) => blackScholesPrice(spot, k, sig, t1, b.side);
+      const { expectedWin, expectedLoss } = expectedPnLSplit(
+        (s) => bwbPnLAtExpiry(b, s),
+        { spot, sigma: sig, T: t1 },
+      );
+      expect(b.shortStrike, b.side).toBe(spot);
+      expect(b.netCredit, b.side).toBeLessThan(0);
+      expect(expectedWin - expectedLoss, b.side).toBeCloseTo(
+        price(b.longNearStrike) -
+          2 * price(b.shortStrike) +
+          price(b.longFarStrike) +
+          b.netCredit,
+        3,
+      );
+      // The debit's profit zone is a tent between its two breakevens,
+      // peaking at the short strike, on either side
+      const tent =
+        price(b.breakevenNear!) - 2 * price(b.shortStrike) + price(b.breakeven);
+      expect(expectedWin, b.side).toBeCloseTo(tent, 3);
+    }
+  });
+
   it('settles at spot when no time or vol is left', () => {
     const above = (s: number) => s - 5790; // +10 at spot
     expect(expectedPnLSplit(above, { spot, sigma: 0.18, T: 0 })).toEqual({

@@ -59,7 +59,7 @@ export async function exportBWBComparison({
     'Max Loss ($)',
     'Buying Power ($)',
     'RoR (%)',
-    'PoP (%)',
+    'Adj. PoP (%)',
     'Breakeven',
     'Near Breakeven',
     'Sweet Spot',
@@ -101,7 +101,7 @@ export async function exportBWBComparison({
         for (const bwb of [putBwb, callBwb]) {
           // Projection by expected value of the whole expiry payoff, under
           // the log-normal probabilityOfProfit uses (owner decision Q25).
-          // The fat-tail adjusted PoP in the PoP column is a constant
+          // The fat-tail adjusted PoP in the Adj. PoP column is a constant
           // multiplier, not a distribution, so it can't weight a payoff.
           const { expectedWin, expectedLoss } = expectedPnLSplit(
             (spx) => bwbPnLAtExpiry(bwb, spx),
@@ -113,7 +113,8 @@ export async function exportBWBComparison({
           );
           const pop = bwb.probabilityOfProfit;
           const monthlyWins = round1(tradingDaysPerMonth * pop);
-          const monthlyLosses = round1(tradingDaysPerMonth * (1 - pop));
+          // From the rounded wins, so the two always sum to 22 days
+          const monthlyLosses = round1(tradingDaysPerMonth - monthlyWins);
           const monthlyWinEV = round2(tradingDaysPerMonth * expectedWin * mult);
           const monthlyLossEV = round2(
             tradingDaysPerMonth * expectedLoss * mult,
@@ -211,10 +212,10 @@ export async function exportBWBComparison({
       'The expectations integrate the full expiry payoff under the same log-normal (r=0, base σ per side) as the log-normal PoP. Monthly Wins / Losses = 22 × that log-normal PoP.',
     ],
     [
-      'PoP (%) is fat-tail adjusted. That adjustment is a constant multiplier, not a distribution, so the projections do not use it.',
+      'Adj. PoP (%) is the fat-tail adjusted PoP. That adjustment is a constant multiplier, not a distribution, so the projections do not use it.',
     ],
     [
-      'Premiums are priced at the IV-accelerated σ and settle at the base σ, so Net EV is the gap between the two. With no IV acceleration it is 0.',
+      'Premiums are priced at the IV-accelerated σ and settle at the base σ, so Net EV is the gap between the two. With no IV acceleration it is ≈ 0 (within ~$0.25 from pricing rounding).',
     ],
     [
       'IMPORTANT: Monthly Net EV assumes every trade is held to expiration with no management.',

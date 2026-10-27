@@ -863,7 +863,7 @@ describe('exportBWBComparison', () => {
       );
     });
 
-    it('PoP is between 0 and 100', async () => {
+    it('Adj. PoP is between 0 and 100', async () => {
       await exportBWBComparison({
         results: makeResults(),
         contracts: 1,
@@ -873,9 +873,21 @@ describe('exportBWBComparison', () => {
       const sheet = getSheet(wb, 'BWB Comparison');
       const data: any[] = XLSX.utils.sheet_to_json(sheet);
       for (const row of data) {
-        expect(row['PoP (%)']).toBeGreaterThan(0);
-        expect(row['PoP (%)']).toBeLessThan(100);
+        expect(row['Adj. PoP (%)']).toBeGreaterThan(0);
+        expect(row['Adj. PoP (%)']).toBeLessThan(100);
       }
+    });
+
+    it('labels the fat-tail adjusted PoP column as adjusted', async () => {
+      await exportBWBComparison({
+        results: makeResults(),
+        contracts: 1,
+        effectiveRatio: 10,
+      });
+      const sheet = getSheet(getWorkbook(), 'BWB Comparison');
+      const data: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+      expect(data[0]).toContain('Adj. PoP (%)');
+      expect(data[0]).not.toContain('PoP (%)');
     });
 
     it('sweet spot is a valid SPX strike', async () => {
@@ -933,20 +945,28 @@ describe('exportBWBComparison', () => {
       for (const r of credits) {
         // The old projection: every losing day loses the full max loss
         const everyLossIsMax =
-          22 * (1 - r['PoP (%)'] / 100) * r['Max Loss ($)'];
+          22 * (1 - r['Adj. PoP (%)'] / 100) * r['Max Loss ($)'];
         expect(r['Monthly Loss EV ($)']).toBeLessThan(everyLossIsMax);
       }
     });
 
-    it('Monthly Net EV = Win EV − Loss EV, and wins + losses = 22 days', async () => {
+    it('Monthly Net EV = Win EV − Loss EV', async () => {
       for (const r of await exportRows()) {
         expect(r['Monthly Net EV ($)']).toBeCloseTo(
           r['Monthly Win EV ($)'] - r['Monthly Loss EV ($)'],
           2,
         );
-        expect(
-          r['Monthly Wins (log-normal)'] + r['Monthly Losses (log-normal)'],
-        ).toBeCloseTo(22, 0);
+      }
+    });
+
+    it('Monthly Wins + Losses is exactly 22 days on every row, despite rounding', async () => {
+      // Rounding wins and losses separately can sum to 21.9 or 22.1
+      for (const results of [makeResults(), makeResults(5800, 0.18, 5)]) {
+        for (const r of await exportRows(results)) {
+          expect(
+            r['Monthly Wins (log-normal)'] + r['Monthly Losses (log-normal)'],
+          ).toBeCloseTo(22, 9);
+        }
       }
     });
 
@@ -1047,6 +1067,15 @@ describe('exportBWBComparison', () => {
         true,
       );
       expect(flat.some((s) => s.includes('not a distribution'))).toBe(true);
+      expect(flat.some((s) => s.includes('Adj. PoP (%) is the fat-tail'))).toBe(
+        true,
+      );
+      // Pricing rounding leaves a few cents, so the note says ≈ 0, not 0
+      expect(
+        flat.some((s) =>
+          s.includes('≈ 0 (within ~$0.25 from pricing rounding)'),
+        ),
+      ).toBe(true);
     });
   });
 });
