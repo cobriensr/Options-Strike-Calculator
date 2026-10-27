@@ -10,10 +10,11 @@ are kept in sync by a test.
 
 ## Environment variables
 
-| Variable     | Required | Default | Notes                                                   |
-| ------------ | -------- | ------- | ------------------------------------------------------- |
-| `SENTRY_DSN` | optional | empty   | Empty disables Sentry. Tagged `server_name=classifier`. |
-| `PORT`       | optional | `8080`  | Railway sets this; bind `0.0.0.0:$PORT`.                |
+| Variable                   | Required | Default | Notes                                                                         |
+| -------------------------- | -------- | ------- | ----------------------------------------------------------------------------- |
+| `CLASSIFIER_SHARED_SECRET` | yes      | none    | Bearer token for `/multileg-classify` and `/version`. Same value as Vercel's. |
+| `SENTRY_DSN`               | optional | empty   | Empty disables Sentry. Tagged `server_name=classifier`.                       |
+| `PORT`                     | optional | `8080`  | Railway sets this; bind `0.0.0.0:$PORT`.                                      |
 
 ## Local development
 
@@ -38,11 +39,35 @@ coverage drops below the spec floor.
 
 ## Architecture
 
-Co-resident on port 8080 with two routes:
+Co-resident on port 8080 with three routes:
 
 - `POST /multileg-classify` — runs the polars matcher on the posted
   trade window and returns per-trade classifications.
-- `GET /health` — liveness probe (used by the Docker `HEALTHCHECK`).
+- `GET /version` — matcher sha, release and pattern list; the TS client
+  probes it once per process to detect cross-deploy drift.
+- `GET /health` — liveness probe (used by the Docker `HEALTHCHECK` and
+  the Railway healthcheck). No auth.
+
+### Auth
+
+`/multileg-classify` and `/version` require
+`Authorization: Bearer <CLASSIFIER_SHARED_SECRET>`. The secret is read
+from the environment on each request and compared as bytes with
+`hmac.compare_digest`. The check runs before the framing checks, body
+buffering and the matcher.
+
+On a rejected `POST`, a single valid `Content-Length` of at most 8 MiB
+(`_AUTH_FAIL_DRAIN_MAX`, about 2x a 10,000-trade window) is read and
+discarded in 64 KiB chunks before the response goes out. Closing with
+the body unread resets the connection, and a client still uploading
+would see a network error instead of the 401. Chunked, missing,
+invalid, duplicate or larger lengths are answered without reading.
+
+- Header missing or wrong → `401 {"error": "unauthorized"}`.
+- Secret unset or blank → `503` with
+  `{"error": "CLASSIFIER_SHARED_SECRET not configured"}`, plus one
+  `classifier.auth.secret_missing` Sentry event per process. `/health`
+  stays `200`, so the deploy still boots.
 
 ### What ships today
 
@@ -108,7 +133,10 @@ the limit in **GB**, not bytes).
 
 Railway-only. Vercel does not host this service. The TypeScript caller
 (`api/_lib/multileg-client.ts`) selects this service via the
-`CLASSIFIER_URL` env var.
+`CLASSIFIER_URL` env var and sends `CLASSIFIER_SHARED_SECRET` as the
+bearer. Set the secret on both Vercel and this Railway service; ship
+the client before server enforcement, since an older client sends no
+header.
 
 Full design rationale lives in
 `docs/superpowers/specs/multileg-classifier-service-split-2026-05-28.md`.

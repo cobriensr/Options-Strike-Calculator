@@ -19,6 +19,7 @@ import json
 import os
 import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -29,6 +30,25 @@ import multileg_assembler
 import pytest
 
 import server
+
+# ── Bearer auth: every test runs with the shared secret configured ──────
+
+TEST_SECRET = "classifier-test-secret-1b9e"
+AUTH = {"Authorization": f"Bearer {TEST_SECRET}"}
+# Same header as a raw request line, for the hand-built socket requests.
+AUTH_LINE = f"Authorization: Bearer {TEST_SECRET}\r\n"
+
+
+@pytest.fixture(autouse=True)
+def _shared_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Configure ``CLASSIFIER_SHARED_SECRET``; tests that need it unset
+    call ``monkeypatch.delenv`` themselves. Also resets the
+    once-per-process "secret missing" report so each test sees a fresh
+    process.
+    """
+    monkeypatch.setenv("CLASSIFIER_SHARED_SECRET", TEST_SECRET)
+    monkeypatch.setattr(server, "_secret_missing_reported", False, raising=False)
+
 
 # ── Fixture: spin up the real ThreadingHTTPServer on an ephemeral port ──
 
@@ -55,9 +75,14 @@ def running_server():
         thread.join(timeout=5)
 
 
-def _do_get(url: str, *, timeout: float = 5.0) -> tuple[int, dict[str, str], bytes]:
+def _do_get(
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    timeout: float = 5.0,
+) -> tuple[int, dict[str, str], bytes]:
     """GET + return (status, headers-as-dict-lower, body bytes)."""
-    req = urllib.request.Request(url, method="GET")
+    req = urllib.request.Request(url, method="GET", headers=headers or {})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read()
@@ -71,10 +96,11 @@ def _do_post(
     body: bytes | None,
     content_length_override: int | None = None,
     content_type: str = "application/json",
+    extra_headers: dict[str, str] | None = None,
     timeout: float = 10.0,
 ) -> tuple[int, dict[str, str], bytes]:
     """POST with optional Content-Length override (for the body-cap test)."""
-    headers = {"Content-Type": content_type}
+    headers = {"Content-Type": content_type, **(extra_headers or {})}
     if content_length_override is not None:
         headers["Content-Length"] = str(content_length_override)
     req = urllib.request.Request(url, method="POST", data=body, headers=headers)
@@ -266,6 +292,7 @@ def test_post_multileg_classify_happy_path_keeps_connection_open(
         status, headers, body = _do_post(
             f"{base_url}/multileg-classify",
             body=sample_classify_request_body,
+            extra_headers=AUTH,
         )
 
     assert status == 200
@@ -287,6 +314,7 @@ def test_post_multileg_classify_5xx_forces_connection_close(
         status, headers, _ = _do_post(
             f"{base_url}/multileg-classify",
             body=sample_classify_request_body,
+            extra_headers=AUTH,
         )
 
     assert status == 500
@@ -301,7 +329,7 @@ def test_post_multileg_classify_empty_body_returns_400(running_server) -> None:
     # urllib won't send a Content-Length: 0 for POST without data, so use
     # the raw socket helper. urllib actually sends 'Content-Length: 0'
     # when data is empty bytes; either way we get the path covered.
-    status, headers, body = _do_post(f"{base_url}/multileg-classify", body=b"")
+    status, headers, body = _do_post(f"{base_url}/multileg-classify", body=b"", extra_headers=AUTH)
     assert status == 400
     assert headers["connection"] == "close"
     assert json.loads(body) == {"error": "empty body"}
@@ -324,6 +352,7 @@ def test_post_multileg_classify_oversize_content_length_returns_413(
     raw = (
         f"POST /multileg-classify HTTP/1.1\r\n"
         f"Host: {host}:{port}\r\n"
+        f"{AUTH_LINE}"
         f"Content-Type: application/json\r\n"
         f"Content-Length: {oversize}\r\n"
         f"Connection: close\r\n"
@@ -348,6 +377,7 @@ def test_post_multileg_classify_invalid_content_length_returns_400(
     raw = (
         f"POST /multileg-classify HTTP/1.1\r\n"
         f"Host: {host}:{port}\r\n"
+        f"{AUTH_LINE}"
         f"Content-Type: application/json\r\n"
         f"Content-Length: not-a-number\r\n"
         f"Connection: close\r\n"
@@ -373,6 +403,7 @@ def test_post_multileg_classify_no_content_length_treats_as_empty(
     raw = (
         f"POST /multileg-classify HTTP/1.1\r\n"
         f"Host: {host}:{port}\r\n"
+        f"{AUTH_LINE}"
         f"Content-Type: application/json\r\n"
         f"Connection: close\r\n"
         f"\r\n"
@@ -396,6 +427,7 @@ def test_post_multileg_classify_truncated_body_returns_400(
     raw = (
         f"POST /multileg-classify HTTP/1.1\r\n"
         f"Host: {host}:{port}\r\n"
+        f"{AUTH_LINE}"
         f"Content-Type: application/json\r\n"
         f"Content-Length: 100\r\n"  # claim 100 but send 14
         f"Connection: close\r\n"
@@ -435,6 +467,7 @@ def _make_handler_for_do_post(
     *,
     path: str = "/multileg-classify",
     headers: dict[str, str] | None = None,
+    authorization: str | None = AUTH["Authorization"],
     rfile_read_side_effect: Exception | None = None,
     rfile_data: bytes = b"",
 ) -> tuple[server.ClassifierHandler, MagicMock]:
@@ -443,7 +476,12 @@ def _make_handler_for_do_post(
     exercised without a real socket. http.server's BaseHTTPRequestHandler
     doesn't make this easy — we bypass __init__ and inject the attributes
     handle_one_request reads.
+
+    Sends the valid bearer unless ``authorization`` overrides it (``None``
+    omits the header).
     """
+    if authorization is not None:
+        headers = {"Authorization": authorization, **(headers or {})}
     from http.client import HTTPMessage
 
     handler = server.ClassifierHandler.__new__(server.ClassifierHandler)
@@ -579,6 +617,7 @@ def test_chunked_transfer_encoding_returns_411(running_server) -> None:
     raw = (
         f"POST /multileg-classify HTTP/1.1\r\n"
         f"Host: {host}:{port}\r\n"
+        f"{AUTH_LINE}"
         f"Content-Type: application/json\r\n"
         f"Transfer-Encoding: chunked\r\n"
         f"Connection: close\r\n"
@@ -606,6 +645,7 @@ def test_chunked_transfer_encoding_identity_value_also_returns_411(
     raw = (
         f"POST /multileg-classify HTTP/1.1\r\n"
         f"Host: {host}:{port}\r\n"
+        f"{AUTH_LINE}"
         f"Content-Type: application/json\r\n"
         f"Transfer-Encoding: identity\r\n"
         f"Content-Length: 2\r\n"
@@ -629,6 +669,7 @@ def test_duplicate_content_length_returns_400(running_server) -> None:
     raw = (
         f"POST /multileg-classify HTTP/1.1\r\n"
         f"Host: {host}:{port}\r\n"
+        f"{AUTH_LINE}"
         f"Content-Type: application/json\r\n"
         f"Content-Length: {len(body)}\r\n"
         f"Content-Length: {len(body) + 100}\r\n"
@@ -657,7 +698,7 @@ def test_get_version_returns_matcher_sha_and_patterns(running_server) -> None:
       - release defaults to 'local' when RAILWAY_DEPLOYMENT_ID is unset.
     """
     _httpd, base_url = running_server
-    status, headers, body = _do_get(f"{base_url}/version")
+    status, headers, body = _do_get(f"{base_url}/version", headers=AUTH)
     assert status == 200
     assert headers["content-type"] == "application/json"
 
@@ -696,10 +737,10 @@ def test_get_version_caches_matcher_sha(running_server) -> None:
     """
     _httpd, base_url = running_server
     # Force the cache populated.
-    _do_get(f"{base_url}/version")
+    _do_get(f"{base_url}/version", headers=AUTH)
     # Now intercept the compute helper and verify it isn't called again.
     with patch.object(server, "_compute_matcher_sha") as mock_compute:
-        status, _, body = _do_get(f"{base_url}/version")
+        status, _, body = _do_get(f"{base_url}/version", headers=AUTH)
     assert status == 200
     assert mock_compute.call_count == 0
     # And the cached value is still the real sha.
@@ -810,3 +851,395 @@ def test_do_post_socket_timeout_swallows_breadcrumb_failure() -> None:
     # 408 still emitted despite the breadcrumb failure.
     assert b"408" in all_writes
     assert b"request timeout" in all_writes
+
+
+# ── Bearer auth (CLASSIFIER_SHARED_SECRET) ──────────────────────────────
+
+
+_SMALL_BODY = b'{"trades": []}'
+# About the size of a peak-window payload (~1-4 MB), where a server that
+# answers without reading the body loses the response to a TCP reset.
+_LARGE_BODY = b'{"trades": [], "pad": "' + b"x" * (3 * 1024 * 1024) + b'"}'
+
+
+def _post_classify(
+    host: str,
+    port: int,
+    auth_line: bytes,
+    body: bytes = _SMALL_BODY,
+    *,
+    pause_before_body: float = 0.0,
+    timeout: float = 5.0,
+) -> bytes:
+    """POST /multileg-classify with the whole body; return what came back.
+
+    ``pause_before_body`` sends the headers, waits, then sends the body,
+    the way a streaming client (undici, an edge proxy) is still uploading
+    when an early response arrives. A send or receive error (the reset a
+    client gets when the server closes with the body unread) ends the
+    exchange and returns the bytes read so far, so a lost response fails
+    an assertion instead of erroring.
+    """
+    head = (
+        b"POST /multileg-classify HTTP/1.1\r\n"
+        + f"Host: {host}:{port}\r\n".encode()
+        + b"Content-Type: application/json\r\n"
+        + auth_line
+        + f"Content-Length: {len(body)}\r\n".encode()
+        + b"Connection: close\r\n"
+        + b"\r\n"
+    )
+    chunks: list[bytes] = []
+    with socket.create_connection((host, port), timeout=timeout) as sock:
+        try:
+            sock.sendall(head)
+            if pause_before_body:
+                time.sleep(pause_before_body)
+            sock.sendall(body)
+            while chunk := sock.recv(65536):
+                chunks.append(chunk)
+        except OSError:
+            pass
+    return b"".join(chunks)
+
+
+def _split_response(response: bytes) -> tuple[str, bytes, Any]:
+    """Return (status line, raw header block, parsed JSON body)."""
+    head, _, body = response.partition(b"\r\n\r\n")
+    status_line = head.split(b"\r\n", 1)[0].decode()
+    return status_line, head, json.loads(body) if body else None
+
+
+def _host_port(base_url: str) -> tuple[str, int]:
+    return "127.0.0.1", int(base_url.rsplit(":", 1)[1])
+
+
+def test_classify_without_authorization_returns_401(
+    running_server,
+) -> None:
+    _httpd, base_url = running_server
+    host, port = _host_port(base_url)
+    with patch.object(server, "handle_classify_payload") as mock_handle:
+        response = _post_classify(host, port, b"")
+    status_line, head, body = _split_response(response)
+    assert "401" in status_line, f"expected 401, got: {status_line!r}"
+    assert body == {"error": "unauthorized"}
+    assert b"Connection: close" in head
+    mock_handle.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "auth_line",
+    [
+        pytest.param(b"Authorization: Bearer wrong-secret\r\n", id="wrong-secret"),
+        pytest.param(f"Authorization: {TEST_SECRET}\r\n".encode(), id="no-bearer-scheme"),
+        pytest.param(f"Authorization: Bearer {TEST_SECRET}x\r\n".encode(), id="secret-plus-suffix"),
+        pytest.param(f"Authorization: Bearer {TEST_SECRET[:-1]}\r\n".encode(), id="secret-prefix"),
+        pytest.param(b"Authorization: \r\n", id="empty-value"),
+    ],
+)
+def test_classify_with_wrong_authorization_returns_401(running_server, auth_line: bytes) -> None:
+    _httpd, base_url = running_server
+    host, port = _host_port(base_url)
+    with patch.object(server, "handle_classify_payload") as mock_handle:
+        response = _post_classify(host, port, auth_line)
+    status_line, _head, body = _split_response(response)
+    assert "401" in status_line, f"expected 401, got: {status_line!r}"
+    assert body == {"error": "unauthorized"}
+    mock_handle.assert_not_called()
+
+
+def test_classify_with_non_ascii_authorization_returns_401_not_500(running_server) -> None:
+    """Raw non-ASCII header bytes must be a plain 401. A str
+    ``hmac.compare_digest`` raises TypeError on non-ASCII, which would kill
+    the handler thread and drop the connection with no response.
+    """
+    _httpd, base_url = running_server
+    host, port = _host_port(base_url)
+    junk = b"Authorization: Bearer \xc3\xa9\xff\xfe\r\n"
+    with patch.object(server, "handle_classify_payload") as mock_handle:
+        response = _post_classify(host, port, junk)
+    status_line, _head, body = _split_response(response)
+    assert "401" in status_line, f"expected 401, got: {status_line!r}"
+    assert body == {"error": "unauthorized"}
+    mock_handle.assert_not_called()
+
+
+def test_do_post_non_ascii_authorization_str_returns_401() -> None:
+    """Same contract without a socket: a non-ASCII ``str`` header value
+    (what the handler sees after http.server decodes the header) is a 401.
+    """
+    handler, wfile = _make_handler_for_do_post(
+        headers={"Content-Length": "100"},
+        authorization="Bearer é€-unicode",
+    )
+    with patch.object(server, "handle_classify_payload") as mock_handle:
+        handler.do_POST()
+    all_writes = b"".join(call.args[0] for call in wfile.write.call_args_list)
+    assert b"401" in all_writes
+    assert b"unauthorized" in all_writes
+    mock_handle.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "framing",
+    [
+        pytest.param(f"Content-Length: {60 * 1024 * 1024}\r\n", id="oversize-not-413"),
+        pytest.param(
+            f"Content-Length: {server._MAX_BODY_BYTES // 2}\r\n", id="over-drain-cap-under-body-cap"
+        ),
+        pytest.param("Transfer-Encoding: chunked\r\n", id="chunked-not-411"),
+        pytest.param("Content-Length: 14\r\nContent-Length: 114\r\n", id="duplicate-cl-not-400"),
+    ],
+)
+def test_auth_runs_before_body_framing_checks(running_server, framing: str) -> None:
+    """An unauthenticated request gets 401 before the framing checks, and
+    without draining: no body is sent here, so a server that waited for
+    one would block until this client times out and gets nothing.
+    """
+    _httpd, base_url = running_server
+    host, port = _host_port(base_url)
+    raw = (
+        f"POST /multileg-classify HTTP/1.1\r\n"
+        f"Host: {host}:{port}\r\n"
+        f"Content-Type: application/json\r\n"
+        f"{framing}"
+        f"Connection: close\r\n"
+        f"\r\n"
+    ).encode()
+    status_line, _head, body = _split_response(_send_raw(host, port, raw, timeout=3.0))
+    assert "401" in status_line, f"expected 401, got: {status_line!r}"
+    assert body == {"error": "unauthorized"}
+
+
+# ── Auth failure drains a bounded body so the rejection is readable ─────
+
+
+def test_wrong_bearer_with_large_body_gets_readable_401(running_server) -> None:
+    """A ~3 MB body with the wrong bearer gets a 401 the client can read,
+    every time. Answering with the body unread lets the close reset the
+    connection, and the client sees a network error instead.
+    """
+    _httpd, base_url = running_server
+    host, port = _host_port(base_url)
+    with patch.object(server, "handle_classify_payload") as mock_handle:
+        for attempt in range(5):
+            response = _post_classify(
+                host,
+                port,
+                b"Authorization: Bearer wrong-secret\r\n",
+                _LARGE_BODY,
+                pause_before_body=0.3,
+            )
+            status_line, head, body = _split_response(response)
+            assert "401" in status_line, f"attempt {attempt}: got {status_line!r}"
+            assert body == {"error": "unauthorized"}
+            assert b"Connection: close" in head
+    mock_handle.assert_not_called()
+
+
+def test_secret_unset_with_large_body_gets_readable_503(
+    running_server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CLASSIFIER_SHARED_SECRET")
+    _httpd, base_url = running_server
+    host, port = _host_port(base_url)
+    for attempt in range(3):
+        response = _post_classify(
+            host, port, AUTH_LINE.encode(), _LARGE_BODY, pause_before_body=0.3
+        )
+        status_line, _head, body = _split_response(response)
+        assert "503" in status_line, f"attempt {attempt}: got {status_line!r}"
+        assert body == {"error": "CLASSIFIER_SHARED_SECRET not configured"}
+
+
+def _chunk_recording_rfile(handler: server.ClassifierHandler) -> list[int]:
+    """Make ``handler.rfile.read(n)`` return ``n`` bytes; record each ``n``."""
+    sizes: list[int] = []
+
+    def _read(n: int) -> bytes:
+        sizes.append(n)
+        return b"x" * n
+
+    handler.rfile.read.side_effect = _read
+    return sizes
+
+
+def test_auth_failure_drains_body_in_bounded_chunks() -> None:
+    """The drain reads the declared length in chunks of at most
+    ``_AUTH_FAIL_DRAIN_CHUNK`` and never asks for the whole body at once,
+    so peak memory is one chunk. The 401 goes out after the drain.
+    """
+    chunk = server._AUTH_FAIL_DRAIN_CHUNK
+    content_length = 3 * chunk + 5
+    handler, wfile = _make_handler_for_do_post(
+        headers={"Content-Length": str(content_length)},
+        authorization="Bearer wrong-secret",
+    )
+    sizes = _chunk_recording_rfile(handler)
+    with patch.object(server, "handle_classify_payload") as mock_handle:
+        handler.do_POST()
+    assert sum(sizes) == content_length
+    assert max(sizes) <= chunk
+    assert len(sizes) == 4
+    all_writes = b"".join(call.args[0] for call in wfile.write.call_args_list)
+    assert b"401" in all_writes
+    mock_handle.assert_not_called()
+
+
+def test_secret_unset_drains_body_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CLASSIFIER_SHARED_SECRET")
+    handler, wfile = _make_handler_for_do_post(headers={"Content-Length": "1000"})
+    sizes = _chunk_recording_rfile(handler)
+    handler.do_POST()
+    assert sum(sizes) == 1000
+    all_writes = b"".join(call.args[0] for call in wfile.write.call_args_list)
+    assert b"503" in all_writes
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        # Resolved in the test body, so the cap is read at run time.
+        pytest.param({"Content-Length": "<cap + 1>"}, id="over-drain-cap"),
+        pytest.param({}, id="no-content-length"),
+        pytest.param({"Content-Length": "abc"}, id="invalid-content-length"),
+        pytest.param({"Content-Length": "-5"}, id="negative-content-length"),
+        pytest.param({"Transfer-Encoding": "chunked", "Content-Length": "100"}, id="chunked"),
+    ],
+)
+def test_auth_failure_skips_drain_without_a_usable_length(headers: dict[str, str]) -> None:
+    """Missing, invalid, chunked or over-cap framing: answer and close
+    without reading anything."""
+    if headers.get("Content-Length") == "<cap + 1>":
+        headers = {"Content-Length": str(server._AUTH_FAIL_DRAIN_MAX + 1)}
+    handler, wfile = _make_handler_for_do_post(headers=headers, authorization="Bearer wrong-secret")
+    handler.do_POST()
+    handler.rfile.read.assert_not_called()
+    all_writes = b"".join(call.args[0] for call in wfile.write.call_args_list)
+    assert b"401" in all_writes
+
+
+def test_auth_failure_skips_drain_on_duplicate_content_length() -> None:
+    handler, wfile = _make_handler_for_do_post(authorization="Bearer wrong-secret")
+    handler.headers["Content-Length"] = "14"
+    handler.headers["Content-Length"] = "114"
+    handler.do_POST()
+    handler.rfile.read.assert_not_called()
+    assert b"401" in b"".join(call.args[0] for call in wfile.write.call_args_list)
+
+
+def test_auth_failure_drain_stops_at_eof() -> None:
+    """A client that closes early ends the drain; no spin on empty reads."""
+    handler, wfile = _make_handler_for_do_post(
+        headers={"Content-Length": "100000"},
+        authorization="Bearer wrong-secret",
+        rfile_data=b"",
+    )
+    handler.do_POST()
+    assert handler.rfile.read.call_count == 1
+    assert b"401" in b"".join(call.args[0] for call in wfile.write.call_args_list)
+
+
+@pytest.mark.parametrize(
+    "read_error",
+    [TimeoutError("slow"), ConnectionResetError("RST"), BrokenPipeError("gone")],
+    ids=["timeout", "reset", "broken-pipe"],
+)
+def test_auth_failure_drain_survives_socket_errors(read_error: OSError) -> None:
+    """A drain that times out or loses the socket still tries the 401 and
+    never raises out of the handler thread."""
+    handler, wfile = _make_handler_for_do_post(
+        headers={"Content-Length": "1000"},
+        authorization="Bearer wrong-secret",
+        rfile_read_side_effect=read_error,
+    )
+    handler.do_POST()  # must not raise
+    assert b"401" in b"".join(call.args[0] for call in wfile.write.call_args_list)
+
+
+def test_auth_failure_response_write_errors_are_swallowed() -> None:
+    handler, wfile = _make_handler_for_do_post(
+        headers={"Content-Length": "10"},
+        authorization="Bearer wrong-secret",
+        rfile_data=b"x" * 10,
+    )
+    wfile.write.side_effect = BrokenPipeError("client gone")
+    handler.do_POST()  # must not raise
+
+
+@pytest.mark.parametrize("secret", [None, "   "], ids=["unset", "whitespace"])
+def test_classify_with_secret_unset_returns_503(
+    running_server, monkeypatch: pytest.MonkeyPatch, secret: str | None
+) -> None:
+    if secret is None:
+        monkeypatch.delenv("CLASSIFIER_SHARED_SECRET")
+    else:
+        monkeypatch.setenv("CLASSIFIER_SHARED_SECRET", secret)
+    _httpd, base_url = running_server
+    host, port = _host_port(base_url)
+    with patch.object(server, "handle_classify_payload") as mock_handle:
+        response = _post_classify(host, port, AUTH_LINE.encode())
+    status_line, head, body = _split_response(response)
+    assert "503" in status_line, f"expected 503, got: {status_line!r}"
+    assert body == {"error": "CLASSIFIER_SHARED_SECRET not configured"}
+    assert b"Connection: close" in head
+    mock_handle.assert_not_called()
+
+
+def test_secret_unset_reports_to_sentry_once_per_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The misconfiguration is named on the service that has it, once per
+    process (the detect crons call every minute)."""
+    monkeypatch.delenv("CLASSIFIER_SHARED_SECRET")
+    with patch.object(server.sentry_setup, "capture_message") as mock_capture:
+        for _ in range(3):
+            handler, wfile = _make_handler_for_do_post(headers={"Content-Length": "100"})
+            handler.do_POST()
+            writes = b"".join(call.args[0] for call in wfile.write.call_args_list)
+            assert b"503" in writes
+    mock_capture.assert_called_once_with(
+        "classifier.auth.secret_missing",
+        level="error",
+        extra={"env_var": "CLASSIFIER_SHARED_SECRET"},
+    )
+
+
+@pytest.mark.parametrize("secret_set", [True, False], ids=["secret-set", "secret-unset"])
+def test_health_needs_no_authorization(
+    running_server, monkeypatch: pytest.MonkeyPatch, secret_set: bool
+) -> None:
+    """Railway's healthcheck sends no header; /health must stay 200 even
+    while the secret is missing, so a misconfigured deploy still boots."""
+    if not secret_set:
+        monkeypatch.delenv("CLASSIFIER_SHARED_SECRET")
+    _httpd, base_url = running_server
+    status, _headers, body = _do_get(f"{base_url}/health")
+    assert status == 200
+    assert json.loads(body) == {"status": "ok"}
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        pytest.param({}, id="no-header"),
+        pytest.param({"Authorization": "Bearer wrong-secret"}, id="wrong-secret"),
+    ],
+)
+def test_get_version_requires_authorization(running_server, headers: dict[str, str]) -> None:
+    _httpd, base_url = running_server
+    status, resp_headers, body = _do_get(f"{base_url}/version", headers=headers)
+    assert status == 401
+    assert resp_headers["connection"] == "close"
+    assert json.loads(body) == {"error": "unauthorized"}
+
+
+def test_get_version_with_secret_unset_returns_503(
+    running_server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CLASSIFIER_SHARED_SECRET")
+    _httpd, base_url = running_server
+    status, _headers, body = _do_get(f"{base_url}/version", headers=AUTH)
+    assert status == 503
+    assert json.loads(body) == {"error": "CLASSIFIER_SHARED_SECRET not configured"}

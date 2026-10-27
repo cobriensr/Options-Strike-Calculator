@@ -230,8 +230,8 @@ What you need a paid account / API key for, in rough priority order.
 ### Required for the multileg classifier (Railway service #3)
 
 - **What it powers**: Multileg structure labels (vertical / strangle / risk reversal / butterfly) on Lottery Finder and Silent Boom fires.
-- **Env vars**: `CLASSIFIER_URL` on **Vercel** (the classifier's base URL); `SENTRY_DSN` (optional) on the Railway service. See [classifier/README.md](../classifier/README.md).
-- **Note**: There is no fallback. Without `CLASSIFIER_URL` the detect crons still insert fires, with NULL multileg columns, and Sentry gets `multileg.classify.config_missing`.
+- **Env vars**: `CLASSIFIER_URL` on **Vercel** (the classifier's base URL); `CLASSIFIER_SHARED_SECRET` on **both** Vercel and the Railway service (the bearer token the classifier requires; same value on each); `SENTRY_DSN` (optional) on the Railway service. See [classifier/README.md](../classifier/README.md).
+- **Note**: There is no fallback. Without `CLASSIFIER_URL` or `CLASSIFIER_SHARED_SECRET` on Vercel, the detect crons still insert fires, with NULL multileg columns, and Sentry gets `multileg.classify.config_missing`. If the two sides' secrets differ, the classifier answers 401, which the client reports as `multileg.classify.sidecar_non_2xx`; the crons fail open the same way.
 
 ### Optional integrations
 

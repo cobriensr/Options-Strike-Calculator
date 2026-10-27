@@ -577,6 +577,6 @@ The TBBO microstructure routes (`/archive/tbbo-day-microstructure`, `/archive/tb
 - `api/cron/embed-yesterday.ts` — nightly, pulls yesterday's summary + stores OpenAI text-embedding-3-large (2000-dim) into `day_embeddings` for analog cohort retrieval; falls back to Postgres (`api/_lib/postgres-day-summary.ts`) for dates past the archive freeze
 - `api/cron/takeit-fill-shap.ts` — SHAP explanations for Take-It fires
 
-Multileg classification is not a sidecar concern: `api/_lib/multileg-client.ts` calls the standalone `classifier/` Railway service at `CLASSIFIER_URL` (`POST /multileg-classify`). There is no fallback; when `CLASSIFIER_URL` is unset the detect crons fail open (NULL multileg columns) and Sentry gets `multileg.classify.config_missing`.
+Multileg classification is not a sidecar concern: `api/_lib/multileg-client.ts` calls the standalone `classifier/` Railway service at `CLASSIFIER_URL` (`POST /multileg-classify`), sending `Authorization: Bearer <CLASSIFIER_SHARED_SECRET>`. There is no fallback; when either variable is unset the detect crons fail open (NULL multileg columns) and Sentry gets `multileg.classify.config_missing`.
 
 Futures bars are not a sidecar concern any more: `uw-stream` writes `futures_bars` live, and `api/cron/backfill-futures-gaps.ts` repairs holes daily from UW REST 1-minute candles.

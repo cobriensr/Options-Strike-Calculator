@@ -3,8 +3,9 @@
 Small ThreadingHTTPServer that fronts ``multileg_routes.handle_classify_payload``
 with route dispatch (``/health`` GET, ``/version`` GET,
 ``/multileg-classify`` POST), method validation (405 on the wrong verb),
-and a request-body size cap (50 MB → 413). Route handler logic stays in
-``multileg_routes``; this module is HTTP plumbing only.
+bearer auth on ``/multileg-classify`` and ``/version``, and a request-body
+size cap (50 MB → 413). Route handler logic stays in ``multileg_routes``;
+this module is HTTP plumbing only.
 
 Phase 1 of the 2026-05-28 spec — no BoundedSemaphore yet. Phase 2 will
 add bounded concurrency in front of ``handle_classify_payload``; the
@@ -30,12 +31,24 @@ Operational notes:
     2.6): makes ``server_close()`` return immediately during shutdown
     instead of waiting on in-flight worker threads. Railway's grace
     period is the only timeout that should govern teardown.
+  - Bearer auth: ``/multileg-classify`` and ``/version`` require
+    ``Authorization: Bearer <CLASSIFIER_SHARED_SECRET>`` (the Vercel
+    detect crons send it). The check runs before the framing checks, body
+    buffering and the matcher. Secret unset → 503; header missing or wrong
+    → 401. ``/health`` stays open for the Railway healthcheck.
+  - Auth-failure drain: a rejected POST with one valid Content-Length of
+    at most ``_AUTH_FAIL_DRAIN_MAX`` (8 MiB) has its body read and
+    discarded in 64 KiB chunks before the 401/503 goes out. Closing with
+    the body unread resets the connection, and a client still uploading
+    loses the response and reports a network error. Other framing is
+    answered without reading.
 """
 
 from __future__ import annotations
 
 import contextlib
 import hashlib
+import hmac
 import json
 import os
 import sys
@@ -66,6 +79,45 @@ _MULTILEG_PATTERNS: tuple[str, ...] = (
 # /version request and frozen for the process lifetime — the file
 # never mutates after the image boots.
 _matcher_sha_cache: str | None = None
+
+# Bearer token the Vercel detect crons send. Read per request, as the
+# sidecar's takeit_server reads TAKEIT_SIDECAR_SHARED_SECRET.
+_SHARED_SECRET_ENV = "CLASSIFIER_SHARED_SECRET"
+
+# Largest body drained before answering an auth failure, so a mismatched
+# secret reaches the caller as a 401 instead of a reset connection.
+# Sizing: one trade as the TS client serializes it (tradeToWire in
+# api/_lib/multileg-client.ts) is ~290 B of JSON, ~375 B worst case;
+# times MAX_WINDOW_TRADES = 10_000 (api/_lib/multileg-classify-batch.ts)
+# gives 2.9-3.75 MB; with 2x headroom, ~7.5 MB, rounded to 8 MiB.
+# An unauthenticated caller costs at most this much bandwidth, never
+# memory.
+_AUTH_FAIL_DRAIN_MAX = 8 * 1024 * 1024
+# Read size for that drain: its peak memory is one chunk.
+_AUTH_FAIL_DRAIN_CHUNK = 64 * 1024
+
+# Whether the "secret unset" Sentry message has gone out in this process.
+# The crons call every minute; one event names the misconfiguration.
+_secret_missing_reported = False
+
+
+def _report_secret_missing_once() -> None:
+    """Name an unset ``CLASSIFIER_SHARED_SECRET`` once per process.
+
+    The caller only sees a 503, which the TS client cannot tell apart
+    from queue saturation, so the service that has the problem says so.
+    A race between two threads can at worst send it twice.
+    """
+    global _secret_missing_reported
+    if _secret_missing_reported:
+        return
+    _secret_missing_reported = True
+    print(f"classifier: {_SHARED_SECRET_ENV} is not set; auth routes return 503", flush=True)
+    sentry_setup.capture_message(
+        "classifier.auth.secret_missing",
+        level="error",
+        extra={"env_var": _SHARED_SECRET_ENV},
+    )
 
 
 def _compute_matcher_sha() -> str:
@@ -183,6 +235,51 @@ class ClassifierHandler(BaseHTTPRequestHandler):
     def _send_404(self) -> None:
         self._write_json(404, {"error": "not found"}, close_connection=True)
 
+    def _auth_rejection(self) -> tuple[int, dict[str, str]] | None:
+        """Check ``Authorization: Bearer <CLASSIFIER_SHARED_SECRET>``.
+
+        Returns ``None`` when authorized, else the (status, body) to send:
+        503 when the secret is unset or blank, 401 when the header is
+        missing or wrong. Compares bytes: ``hmac.compare_digest`` on str
+        raises TypeError for non-ASCII input, which would kill the handler
+        thread on a junk header instead of answering 401.
+        """
+        secret = os.environ.get(_SHARED_SECRET_ENV, "").strip()
+        if not secret:
+            _report_secret_missing_once()
+            return 503, {"error": f"{_SHARED_SECRET_ENV} not configured"}
+        supplied = str(self.headers.get("Authorization", ""))
+        if not hmac.compare_digest(supplied.encode(), f"Bearer {secret}".encode()):
+            return 401, {"error": "unauthorized"}
+        return None
+
+    def _drain_rejected_body(self) -> None:
+        """Read and discard a rejected POST's body so the answer arrives.
+
+        Only one valid Content-Length of at most ``_AUTH_FAIL_DRAIN_MAX``
+        is drained; chunked, missing, invalid, duplicate or over-cap
+        framing is left unread. Reads go in ``_AUTH_FAIL_DRAIN_CHUNK``
+        pieces and are dropped, each bounded by the handler's 30 s socket
+        timeout. EOF or a socket error ends the drain.
+        """
+        if self.headers.get("Transfer-Encoding"):
+            return
+        lengths = self.headers.get_all("Content-Length") or []
+        if len(lengths) != 1:
+            return
+        try:
+            remaining = int(lengths[0])
+        except ValueError:
+            return
+        if not 0 < remaining <= _AUTH_FAIL_DRAIN_MAX:
+            return
+        with contextlib.suppress(OSError):
+            while remaining > 0:
+                chunk = self.rfile.read(min(_AUTH_FAIL_DRAIN_CHUNK, remaining))
+                if not chunk:
+                    return
+                remaining -= len(chunk)
+
     def _send_405(self, allowed: str) -> None:
         self.send_response(405)
         self.send_header("Allow", allowed)
@@ -206,7 +303,13 @@ class ClassifierHandler(BaseHTTPRequestHandler):
             # Cross-deploy drift detection (Phase 1.5 fix 2.2). The TS
             # client fetches this on cold start and alarms via Sentry if
             # ``patterns`` is not a superset of its MULTILEG_STRUCTURES
-            # enum, or if ``matcher_sha`` flips mid-soak.
+            # enum, or if ``matcher_sha`` flips mid-soak. Same bearer as
+            # /multileg-classify; the TS probe is its only caller. A GET
+            # has no body, so a rejection needs no drain.
+            rejection = self._auth_rejection()
+            if rejection is not None:
+                self._write_json(*rejection, close_connection=True)
+                return
             self._write_json(
                 200,
                 {
@@ -235,6 +338,16 @@ class ClassifierHandler(BaseHTTPRequestHandler):
             return
         if self.path != "/multileg-classify":
             self._send_404()
+            return
+
+        # Bearer auth first: an unauthenticated caller gets no framing
+        # checks, no body buffering and no matcher slot. Its body is at
+        # most drained (bounded, discarded) so the rejection is readable.
+        rejection = self._auth_rejection()
+        if rejection is not None:
+            self._drain_rejected_body()
+            with contextlib.suppress(OSError):
+                self._write_json(*rejection, close_connection=True)
             return
 
         # Phase 1.5 fix 3.1: reject Transfer-Encoding outright. http.server
