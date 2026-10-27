@@ -25,6 +25,7 @@
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,mjs,cjs}\"",
     "review": "npm run type-check && eslint . && prettier --write \"**/*.{ts,tsx,js,jsx,mjs,cjs}\" && vite build && node scripts/check-build-output.mjs && vitest run --coverage && node scripts/check-coverage-floor.mjs",
     "audit": "audit-ci --config audit-ci.jsonc",
+    "worktrees:prune": "node scripts/prune-merged-worktrees.mjs",
     "review:ml": "cd ml && make format && make test-cov",
     "review:sidecar": "cd sidecar && make format && make test-cov",
     "review:python": "npm run review:ml && npm run review:sidecar",
