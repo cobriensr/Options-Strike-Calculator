@@ -129,6 +129,35 @@ Every code phase runs the Get It Right loop: TDD → full `npm run review` → `
 | 2 BWB | Shipped 2026-10-26 | `dc793cf8`, `01e1652f`, `d1a01cb2` | continue → pass. The 7,680-structure independent probe found 0 failures. Debit fat-tail adjusted PoP now scales the band, so credits are unchanged: 10Δ put adjusted 3.9% → 11.1%. |
 | 3 ETF candles | Shipped 2026-10-26 | `9888f833`, `7993ebc8` | continue ×2 → pass. The forming-bar filter is `ts < min(clock minute, UW's newest start_time)`. |
 | 5 Quote staleness | Shipped 2026-10-26 | `b118f2ea`, `8cc766ac`, `117f747a` | continue → pass. Rebuilt on `useWallClockFreshness`. |
+| 4a–4c Crons | Shipped 2026-10-26 | `ec2acd11` … `10d07f13` (9 commits) | continue ×4 → pass. Two consumer regressions were caught and fixed before push: the gamma ES-basis window, now paired by timestamp, and the VIX-divergence staleness limit, raised to 3 min. Vega-spike `fwd_return_eod` is now true hold-to-close, written only after the close. Rows from before the fix hold a ~t+30–40 min return. |
+| 6 + 8 Bundle, headers | Shipped 2026-10-26 | `ed28dba2` … `16997d24` (7 commits) | continue → pass. First paint: entry 484 → 419 KB, vendor 312 → 193 KB, charts no longer preloaded. `object-src 'none'` and zero inline scripts confirmed on the live site. |
+| 7, 9, 13, 19c Small fixes | Shipped 2026-10-26 | `185f12a8` … `163c42c8` (6 commits) | pass (independent). |
+
+### Decisions recorded (owner, 2026-10-26 evening)
+
+- **O1:** whoami = owner, so `OWNER_SECRET` is set. Q14 resolves to: shared writes owner-only.
+- **Q2:** the off-grid far wing snaps away from the short on both sides (40).
+- **Q25:** the BWB export uses expected value from the full lognormal payoff.
+- **O5:** reland PR #202 after the classifier auth fix.
+- **Q26:** repair the frozen-candle history, scoped first, with the plan shown before any write.
+- **VIX-mode bug:** fix it (see "Found during implementation").
+
+**O9 measured** (prod, read-only). Frozen partial bars, meaning rows inserted less than 1 min after their bar start:
+- `etf_candles_1m`, last 30 days: SPY 62%, QQQ 57%. All-time 42% since 2026-03-18.
+- `index_candles_1m`, regular session, last 30 days: SPX/NDX **99%**.
+
+### Resume checklist (in-flight work as of 2026-10-26 20:45 CT)
+
+The VS Code renderer hit its ~4 GB heap cap (`reason: oom` in `main.log` at 20:43), so continue in a fresh session. Each item below has a worktree under `.worktrees/` with any partial work, plus a progress log in the old session's scratchpad.
+
+| Stream | Worktree / branch | State | Next step |
+|---|---|---|---|
+| BWB round 2 (Q2 + Q25 + M1g) | `rr-bwb2` / `fix/rr-bwb2` | npm ci done, no code | C1: snap far wing away on both sides, plus the AdvancedSection label. C2: header text. C3: EV export, with a BEFORE/AFTER table shown to the owner before push. |
+| uw-stream (phases 22–24, P7) | `rr-uwstream` / `fix/rr-uwstream` | `565e5992` drop reporter committed. Venv is Python 3.14; CI uses 3.12, so watch CI after push. | Drain fix (one no-retry flush, deadline ~30 s, drainingSeconds 40), then backlog batching plus `lost_rows`, then the P7 Railway config-as-code report. Push after 15:00 CT only. |
+| Guest writes (S4) | `rr-guest` / `fix/rr-guest` | C1 (tracker contract writes owner-only) written and tests green, but UNCOMMITTED, with no full review yet | Full review → commit C1. Then the two acks, the guest UI, and the CLAUDE.md wording. |
+| VIX-mode fix + 2 test nits | `rr-vixmode` / `fix/rr-vixmode` | Worktree only | See "Found during implementation" (useAutoFill first-historical-date mode), plus the `navigator.onLine` undefined test and the parity header comment. |
+| Q26 candle repair scoping | (read-only, no worktree) | Partial | UW 1-min history depth, SPX/NDX derivation (Schwab ratio/anchor), downstream tables, then a repair plan with dry run, backup table and verification. No prod writes until the owner approves. |
+| Security S1/S2 | — | Blocked on the owner setting `CLASSIFIER_SHARED_SECRET` (Vercel and Railway) and `OWNER_SCHWAB_ACCOUNT_SHA256` (Vercel) | See the local note `docs/tmp/review-remediation-security-2026-10-26.md`. |
 
 ### Found during implementation (new ledger rows)
 
@@ -144,6 +173,13 @@ Every code phase runs the Get It Right loop: TDD → full `npm run review` → `
 | M1e | Inverted / zero-width BWBs still display a meaningless far breakeven | The UI can't produce them (multipliers ≥ 1.5). PoP is correct. | — |
 | M1f | Export "Mult" column shows the requested multiplier next to the snapped Wide | The Inputs sheet explains snapping. Cosmetic. | — |
 | M1g | `AdvancedSection.tsx:305` input label still shows the requested width (e.g. "37.5pt wide") | Cosmetic, tied to Q2. | 3.5 |
+| D1h | `index_candles_1m` (SPX/NDX) history has the same frozen-bar bug: 99% of regular-session rows in the last 30 days | Measured by O9. Repair scoped under Q26. | Q26 |
+| D1i | Schwab token expiry now turns the SPX candle cron's monitor red | Correct (no ratio, no SPX candles), but noisy until re-auth. | — |
+| F4e | First visit to a past date without Schwab VIX1D stays in VIX mode after the VIX1D table loads (`useAutoFill`) | Confirmed on old and new code. The owner approved the fix. | rr-vixmode |
+| F4f | A Schwab 401 on a poll never raises the re-auth banner (`useMarketData`) | `needsAuth` is computed only on the mount fetch. | next |
+| L6 | `ml/src/vega_spike_eda.py` cuts EoD at `< 20:00 UTC` | That is 15:00 ET in EST (from 2026-11-01), and it ignores half-days. | next |
+| D1j | `fwd_return_5m/15m/30m` for spikes in the last 5–30 min can read 16:00–16:04 post-market bars | Same bound as 4c should apply. | next |
+| D1k | `enrich-vega-spike-returns` runs ~3 awaited queries per row for up to 100 rows (R5) | Pre-existing, documented in the file header. | next |
 
 ### Wave 1: no owner decision, Vercel side (ship any time)
 
