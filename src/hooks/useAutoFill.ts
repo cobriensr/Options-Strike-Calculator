@@ -17,7 +17,7 @@ import { useEffect, useRef } from 'react';
 import type { AmPm, IVMode } from '../types';
 import { IV_MODES } from '../constants';
 import { toETTime } from '../utils/calculator';
-import { getCTTime } from '../utils/timezone';
+import { getCTTime, getETToday } from '../utils/timezone';
 import type { MarketDataState } from './useMarketData';
 import type { UseVixDataReturn } from './useVixData';
 import type { UseHistoryDataReturn, HistorySnapshot } from './useHistoryData';
@@ -95,8 +95,8 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
   const { selectedDate, setSelectedDate } = vix;
 
   // Track which date we last auto-set IV mode for so we don't override the
-  // user's manual toggle on every re-render (historyData is a new object ref
-  // each render, which would otherwise re-trigger the history effect).
+  // user's manual toggle on every re-run (the effect re-runs on every time
+  // scrub, table load and quote refresh).
   // `settled` is false when that choice was made before VIX1D for the date
   // could be known (no Schwab VIX1D, and the static table still loading or
   // failed to load; re-runs retry a failed load). The VIX fallback is then
@@ -128,18 +128,19 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
 
     // Auto-use VIX1D as σ when available (most accurate 0DTE IV).
     // Updates on every quote refresh — VIX1D changes intraday.
-    if (q.vix1d && q.vix1d.price > 0) {
+    // Quotes are today's, and they load on any date (the owner's mount fetch
+    // runs even when the market is closed), so a past date never gets
+    // today's VIX1D or the switch to DIRECT from it. The history effect
+    // picks that date's mode and σ from the date's own data.
+    const today = getETToday();
+    const pastDate = !!selectedDate && selectedDate < today;
+    if (!pastDate && q.vix1d && q.vix1d.price > 0) {
       setIvMode(IV_MODES.DIRECT);
       setDirectIVInput((q.vix1d.price / 100).toFixed(4));
     }
 
     // Auto-set today's date if not already set
-    if (!selectedDate) {
-      const today = new Date().toLocaleDateString('en-CA', {
-        timeZone: 'America/New_York',
-      });
-      setSelectedDate(today);
-    }
+    if (!selectedDate) setSelectedDate(today);
     // Keep current CT time in sync during active sessions so DTE
     // calculations stay accurate on every 60s poll. When the market
     // is closed, only set time once from the default 10:00 value.

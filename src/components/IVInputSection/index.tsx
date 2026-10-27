@@ -8,6 +8,7 @@ import VIXRegimeCard from '../VIXRegimeCard';
 import VIXTermStructure from '../VIXTermStructure';
 import type { MarketDataState } from '../../hooks/useMarketData';
 import type { HistorySnapshot } from '../../hooks/useHistoryData';
+import { getETDateStr, getETToday } from '../../utils/timezone';
 import IVTooltip from './IVTooltip';
 
 interface Props {
@@ -69,6 +70,16 @@ export default function IVInputSection({
       document.removeEventListener('keydown', onKey);
     };
   }, [tooltipOpen]);
+
+  // Live quotes are today's, and they load on any date. A past date's
+  // snapshot must not fall back to them, or "Use VIX1D as σ" would apply
+  // today's VIX1D to that date. Today has a snapshot too once its intraday
+  // candles exist, so today keeps the fallback. The snapshot's date is its
+  // candle's ET date.
+  const pastSnapshot =
+    historySnapshot != null &&
+    getETDateStr(new Date(historySnapshot.candle.datetime)) < getETToday();
+  const liveQuotes = pastSnapshot ? null : market.data.quotes;
 
   return (
     <SectionBox
@@ -226,15 +237,9 @@ export default function IVInputSection({
             vix={Number.parseFloat(dVix)}
             onUseVix1dAsSigma={onUseVix1dAsSigma}
             isVix1dActive={ivMode === IV_MODES.DIRECT}
-            initialVix1d={
-              historySnapshot?.vix1d ?? market.data.quotes?.vix1d?.price
-            }
-            initialVix9d={
-              historySnapshot?.vix9d ?? market.data.quotes?.vix9d?.price
-            }
-            initialVvix={
-              historySnapshot?.vvix ?? market.data.quotes?.vvix?.price
-            }
+            initialVix1d={historySnapshot?.vix1d ?? liveQuotes?.vix1d?.price}
+            initialVix9d={historySnapshot?.vix9d ?? liveQuotes?.vix9d?.price}
+            initialVvix={historySnapshot?.vvix ?? liveQuotes?.vvix?.price}
             termShape={termShape}
             termShapeAdvice={termShapeAdvice}
             marketOpen={market.marketOpen && !historySnapshot}

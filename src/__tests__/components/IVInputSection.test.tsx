@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import IVInputSection from '../../components/IVInputSection';
 import type { MarketDataState } from '../../hooks/useMarketData';
+import type { HistorySnapshot } from '../../hooks/useHistoryData';
 
 const mockMarket: MarketDataState = {
   data: {
@@ -254,5 +255,107 @@ describe('IVInputSection', () => {
   it('renders Term Structure section when dVix is valid', () => {
     renderSection({ dVix: '18', errors: {} });
     expect(screen.getByText('Term Structure')).toBeInTheDocument();
+  });
+
+  // ============================================================
+  // TERM STRUCTURE: LIVE QUOTES VS THE SELECTED DATE
+  // ============================================================
+
+  describe("term structure and today's live quotes", () => {
+    const quote = (price: number) => ({
+      price,
+      open: price,
+      high: price,
+      low: price,
+      prevClose: price,
+      change: 0,
+      changePct: 0,
+    });
+    // Today's live quotes: the owner's mount fetch loads them on any date.
+    const liveMarket: MarketDataState = {
+      ...mockMarket,
+      data: {
+        ...mockMarket.data,
+        quotes: {
+          spy: quote(580),
+          spx: quote(5820),
+          vix: quote(18.5),
+          vix1d: quote(14.2),
+          vix9d: quote(16.3),
+          vvix: quote(95),
+          marketOpen: false,
+          asOf: '2026-03-17T16:30:00Z',
+        },
+      },
+      hasData: true,
+    };
+
+    /** A history snapshot at `datetime`, with no VIX1D, VIX9D or VVIX. */
+    function snapshotAt(datetime: number): HistorySnapshot {
+      return {
+        spot: 5750,
+        spy: 575,
+        runningOHLC: { open: 5740, high: 5760, low: 5730, last: 5750 },
+        openingRange: null,
+        yesterday: null,
+        vix: 20.5,
+        vixPrevClose: 21,
+        vix1d: null,
+        vix9d: null,
+        vvix: null,
+        previousClose: 5740,
+        candle: {
+          datetime,
+          time: '11:30',
+          open: 5748,
+          high: 5752,
+          low: 5746,
+          close: 5750,
+        },
+        candleIndex: 24,
+        totalCandles: 78,
+      };
+    }
+
+    it('does not fill a past date without VIX1D, VIX9D or VVIX from live quotes', async () => {
+      const user = userEvent.setup();
+      const { props } = renderSection({
+        dVix: '20.5',
+        market: liveMarket,
+        // 2026-03-10 11:30 ET
+        historySnapshot: snapshotAt(Date.parse('2026-03-10T15:30:00Z')),
+      });
+
+      expect(screen.getByLabelText(/VIX1D/)).not.toHaveValue('14.20');
+      expect(screen.getByLabelText(/VIX9D/)).not.toHaveValue('16.30');
+      expect(screen.queryByText('VVIX')).not.toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: /use vix1d as/i }));
+      expect(props.onUseVix1dAsSigma).not.toHaveBeenCalledWith(0.142);
+    });
+
+    it('fills today from live quotes, with no snapshot yet', async () => {
+      const user = userEvent.setup();
+      const { props } = renderSection({ dVix: '18.5', market: liveMarket });
+
+      expect(screen.getByLabelText(/VIX1D/)).toHaveValue('14.20');
+      expect(screen.getByLabelText(/VIX9D/)).toHaveValue('16.30');
+      expect(screen.getByText('VVIX')).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: /use vix1d as/i }));
+      expect(props.onUseVix1dAsSigma).toHaveBeenCalledWith(0.142);
+    });
+
+    it("still falls back to live quotes for today's own snapshot", () => {
+      // Today's intraday candles make a snapshot too, once the session has
+      // some; a field missing from it still comes from the live quote.
+      renderSection({
+        dVix: '18.5',
+        market: liveMarket,
+        historySnapshot: snapshotAt(Date.now()),
+      });
+
+      expect(screen.getByLabelText(/VIX1D/)).toHaveValue('14.20');
+      expect(screen.getByLabelText(/VIX9D/)).toHaveValue('16.30');
+      expect(screen.getByText('VVIX')).toBeInTheDocument();
+    });
   });
 });

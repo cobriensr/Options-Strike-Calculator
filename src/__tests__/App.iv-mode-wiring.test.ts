@@ -47,8 +47,17 @@ describe('App IV-mode wiring', () => {
     );
   });
 
+  it('calls setIvMode only from the two flag-setting handlers', () => {
+    // Fails closed: any new call site, an inline arrow such as
+    // `onResetIv={() => setIvMode(...)}` included, changes the count.
+    expect(appSource.match(/\bsetIvMode\(/g)).toHaveLength(2);
+    expect(callbackBody('handleIvModeChange')).toContain('setIvMode(');
+    expect(callbackBody('handleUseVix1dAsSigma')).toContain('setIvMode(');
+  });
+
   it('hands no UI control the raw setIvMode, which skips the flag', () => {
     expect(appSource).not.toMatch(/=\{setIvMode\}/);
+    expect(appSource).not.toMatch(/:\s*setIvMode\b/);
   });
 
   it('hands useAutoFill the flag', () => {

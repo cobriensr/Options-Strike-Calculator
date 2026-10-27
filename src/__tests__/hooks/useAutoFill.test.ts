@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { useAutoFill } from '../../hooks/useAutoFill';
 import { useVix1dData } from '../../hooks/useVix1dData';
 import { IV_MODES } from '../../constants';
+import { getETToday } from '../../utils/timezone';
 import type { IVMode } from '../../types';
 import type { MarketDataState } from '../../hooks/useMarketData';
 import type { UseVixDataReturn } from '../../hooks/useVixData';
@@ -953,9 +954,17 @@ describe('useAutoFill: static VIX1D loading', () => {
   function renderWithIvState(
     initialHistory: UseHistoryDataReturn,
     initialMode: IVMode,
+    {
+      quotes = null,
+      selectedDate = '2026-03-10',
+    }: { quotes?: QuotesResponse | null; selectedDate?: string } = {},
   ) {
+    // Built once, outside the render callback: a fresh object per render
+    // would change the live effect's deps and re-run it on every render.
     const setters = createSetters();
     const ivModeEdited = { current: false };
+    const market = createMarket(quotes);
+    const vix = createVix({ selectedDate });
     const rendered = renderHook(
       ({
         timeMinute,
@@ -964,12 +973,25 @@ describe('useAutoFill: static VIX1D loading', () => {
         timeMinute: string;
         historyData: UseHistoryDataReturn;
       }) => {
-        const [ivMode, setIvMode] = useState<IVMode>(initialMode);
-        const [directIV, setDirectIVInput] = useState('');
+        const [ivMode, setIvModeState] = useState<IVMode>(initialMode);
+        const [directIV, setDirectIVState] = useState('');
+        // Real state, with every call also recorded on `setters`, so a test
+        // can assert a value was never set even when a later call in the
+        // same flush replaced it.
+        const setIvMode = useCallback((mode: IVMode) => {
+          setters.setIvMode(mode);
+          setIvModeState(mode);
+        }, []);
+        const setDirectIVInput = useCallback((v: string) => {
+          setters.setDirectIVInput(v);
+          setDirectIVState(v);
+        }, []);
         const vix1dStatic = useVix1dData();
         useAutoFill({
           ...baseInputs,
           ...setters,
+          market,
+          vix,
           ivModeEdited,
           setIvMode,
           setDirectIVInput,
@@ -998,7 +1020,7 @@ describe('useAutoFill: static VIX1D loading', () => {
       },
       { initialProps: { timeMinute: '30', historyData: initialHistory } },
     );
-    return { ...rendered, ivModeEdited };
+    return { ...rendered, ivModeEdited, setters };
   }
 
   function pastDateWithoutSchwabVix1d() {
@@ -1029,19 +1051,33 @@ describe('useAutoFill: static VIX1D loading', () => {
     expect(result.current.directIV).toBe('0.1650');
   });
 
-  it('keeps a manual IV mode choice on a later re-run once the table has loaded', async () => {
-    const fetches = pendingFetches();
-    const historyData = pastDateWithoutSchwabVix1d();
-    const { result, rerender } = renderWithIvState(historyData, IV_MODES.VIX);
-    fetches.respond(VIX1D_TABLE);
-    await waitFor(() => expect(result.current.ivMode).toBe(IV_MODES.DIRECT));
+  // The owner's mount fetch loads today's quotes even when the market is
+  // closed, so the live effect runs on a past date too, on every time scrub.
+  it.each([
+    ['without live quotes', null],
+    ["with today's live quotes loaded", mockQuotes],
+  ] as const)(
+    "keeps a manual VIX pick and the date's σ on a later time scrub once the table has loaded (%s)",
+    async (_label, quotes) => {
+      const fetches = pendingFetches();
+      const historyData = pastDateWithoutSchwabVix1d();
+      const { result, rerender } = renderWithIvState(
+        historyData,
+        IV_MODES.VIX,
+        { quotes },
+      );
+      fetches.respond(VIX1D_TABLE);
+      await waitFor(() => expect(result.current.ivMode).toBe(IV_MODES.DIRECT));
 
-    act(() => result.current.userSetsIvMode(IV_MODES.VIX));
-    rerender({ timeMinute: '35', historyData }); // a time scrub re-runs the effect
+      act(() => result.current.userSetsIvMode(IV_MODES.VIX));
+      rerender({ timeMinute: '35', historyData }); // a time scrub re-runs the effect
 
-    expect(historyData.getStateAtTime).toHaveBeenLastCalledWith(11, 35);
-    expect(result.current.ivMode).toBe(IV_MODES.VIX);
-  });
+      expect(historyData.getStateAtTime).toHaveBeenLastCalledWith(11, 35);
+      expect(result.current.ivMode).toBe(IV_MODES.VIX);
+      // The date's VIX1D from the table, not today's live 0.1420.
+      expect(result.current.directIV).toBe('0.1650');
+    },
+  );
 
   it('stays in VIX mode when the loaded table has no entry for the date', async () => {
     const fetches = pendingFetches();
@@ -1103,7 +1139,8 @@ describe('useAutoFill: static VIX1D loading', () => {
     act(() => result.current.userSetsIvMode(IV_MODES.VIX));
     fetches.respond(VIX1D_TABLE);
 
-    // σ still tracks the table, so the settle ran; the user's mode stands.
+    // σ still tracks the table, so the effect re-ran after the load; the
+    // settle was skipped and the user's mode stands.
     await waitFor(() => expect(result.current.directIV).toBe('0.1650'));
     expect(result.current.ivMode).toBe(IV_MODES.VIX);
   });
@@ -1136,6 +1173,23 @@ describe('useAutoFill: static VIX1D loading', () => {
     await waitFor(() => expect(result.current.loaded).toBe(true));
     expect(result.current.ivMode).toBe(IV_MODES.DIRECT);
     expect(result.current.directIV).toBe('0.1850');
+  });
+
+  it('replaces a "Use VIX1D as σ" value with the table value on a time scrub when the table has the date', async () => {
+    // Pinned on purpose: σ tracks time scrubs, and the manual pick keeps
+    // only the mode. Sticky manual σ values are a separate decided phase.
+    const fetches = pendingFetches();
+    const historyData = pastDateWithoutSchwabVix1d();
+    const { result, rerender } = renderWithIvState(historyData, IV_MODES.VIX);
+    fetches.respond(VIX1D_TABLE);
+    await waitFor(() => expect(result.current.directIV).toBe('0.1650'));
+
+    act(() => result.current.userUsesVix1dAsSigma(0.185));
+    expect(result.current.directIV).toBe('0.1850');
+    rerender({ timeMinute: '35', historyData });
+
+    expect(result.current.ivMode).toBe(IV_MODES.DIRECT);
+    expect(result.current.directIV).toBe('0.1650');
   });
 
   it('keeps a manual DIRECT pick made after a failed load when a later retry has no entry for the date', async () => {
@@ -1190,5 +1244,38 @@ describe('useAutoFill: static VIX1D loading', () => {
 
     expect(fetches.fetchSpy).not.toHaveBeenCalled();
     expect(result.current.ivMode).toBe(IV_MODES.DIRECT);
+  });
+
+  // ── Today's live quotes vs the selected date ──
+
+  it("never applies today's live VIX1D to a past date that has no VIX1D anywhere", async () => {
+    const fetches = pendingFetches();
+    const historyData = pastDateWithoutSchwabVix1d();
+    const { result, rerender, setters } = renderWithIvState(
+      historyData,
+      IV_MODES.VIX,
+      { quotes: mockQuotes },
+    );
+    fetches.respond({ '2026-03-09': { o: 15, h: 16, l: 14, c: 15.5 } });
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    rerender({ timeMinute: '35', historyData });
+
+    expect(result.current.ivMode).toBe(IV_MODES.VIX);
+    expect(result.current.directIV).toBe('');
+    // Not even transiently, inside a flush that a later call overwrote.
+    expect(setters.setIvMode).not.toHaveBeenCalledWith(IV_MODES.DIRECT);
+    expect(setters.setDirectIVInput).not.toHaveBeenCalled();
+  });
+
+  it("still sets DIRECT with today's live VIX1D as σ on today", () => {
+    const { result, setters } = renderWithIvState(
+      createHistoryData({ hasHistory: false }),
+      IV_MODES.VIX,
+      { quotes: mockQuotes, selectedDate: getETToday() },
+    );
+
+    expect(result.current.ivMode).toBe(IV_MODES.DIRECT);
+    expect(result.current.directIV).toBe('0.1420');
+    expect(setters.setDirectIVInput).toHaveBeenCalledWith('0.1420');
   });
 });
