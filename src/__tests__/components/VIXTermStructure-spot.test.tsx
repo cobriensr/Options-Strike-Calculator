@@ -128,10 +128,8 @@ describe('VIXTermStructure (spot): ratio cards', () => {
     expect(screen.getByText('1.10x')).toBeInTheDocument();
   });
 
-  it('does not render ratio cards when inputs are empty', () => {
-    render(<VIXTermStructure vix={20} />);
-    // Default input values are 18.50 and 20.10 so cards will show
-    // Clear the inputs via user interaction
+  it('does not render ratio cards when inputs are emptied', () => {
+    render(<VIXTermStructure vix={20} initialVix1d={18} initialVix9d={20} />);
     const vix1dInput = screen.getByLabelText(/VIX1D/i) as HTMLInputElement;
     const vix9dInput = screen.getByLabelText(/VIX9D/i) as HTMLInputElement;
     fireEvent.change(vix1dInput, { target: { value: '' } });
@@ -295,18 +293,48 @@ describe('VIXTermStructure (spot): VIX1D σ status', () => {
 
 describe('VIXTermStructure (spot): empty states', () => {
   it('shows "Enter a VIX value" when vix is null but inputs have values', () => {
-    render(<VIXTermStructure vix={null} />);
+    render(<VIXTermStructure vix={null} initialVix1d={18.5} />);
     expect(screen.getByText(/Enter a VIX value above/i)).toBeInTheDocument();
   });
 
   it('shows ticker guidance when vix is set but no VIX1D/9D/VVIX', () => {
     render(<VIXTermStructure vix={20} />);
-    // Clear the default input values
-    const vix1dInput = screen.getByLabelText(/VIX1D/i) as HTMLInputElement;
-    const vix9dInput = screen.getByLabelText(/VIX9D/i) as HTMLInputElement;
-    fireEvent.change(vix1dInput, { target: { value: '' } });
-    fireEvent.change(vix9dInput, { target: { value: '' } });
     expect(screen.getByText(/CBOE:VIX1D/)).toBeInTheDocument();
+  });
+
+  // A date with no VIX1D or VIX9D anywhere (no snapshot, no live quote):
+  // the card must not show made-up values as that date's data, or offer
+  // one as σ.
+  it('starts with empty VIX1D and VIX9D, not made-up values, when there is no data', () => {
+    const onUse = vi.fn();
+    render(<VIXTermStructure vix={20} onUseVix1dAsSigma={onUse} />);
+
+    expect(screen.getByLabelText(/VIX1D/i)).toHaveValue('');
+    expect(screen.getByLabelText(/VIX9D/i)).toHaveValue('');
+    expect(screen.queryByText('VIX1D / VIX')).not.toBeInTheDocument();
+    expect(screen.queryByText('VIX9D / VIX')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Tip:/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /Use VIX1D/i }),
+    ).not.toBeInTheDocument();
+    expect(onUse).not.toHaveBeenCalled();
+  });
+
+  it('offers a typed VIX1D as σ, and nothing before', () => {
+    const onUse = vi.fn();
+    render(<VIXTermStructure vix={20} onUseVix1dAsSigma={onUse} />);
+    expect(
+      screen.queryByRole('button', { name: /Use VIX1D/i }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/VIX1D/i), {
+      target: { value: '17' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Use VIX1D/i }));
+
+    expect(onUse).toHaveBeenCalledWith(0.17);
+    expect(screen.getByText('VIX1D / VIX')).toBeInTheDocument();
+    expect(screen.queryByText('VIX9D / VIX')).not.toBeInTheDocument();
   });
 });
 

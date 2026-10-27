@@ -6,6 +6,9 @@
  *      (spot, SPX, VIX, VIX1D) and set the current time.
  *   2. History auto-fill: When a past date is selected, fill inputs from
  *      historical candle data; restore live data when switching back to today.
+ *      A past date without intraday history still gets its own IV mode and
+ *      σ: the static VIX1D table's value, else VIX mode on the date's daily
+ *      VIX OHLC (useVixData). No past date gets today's live VIX1D or VIX.
  *
  * Also computes and returns `historySnapshot` — the resolved historical
  * state at the selected time (with VIX1D static fallback).
@@ -62,6 +65,23 @@ interface UseAutoFillInputs {
   timezone: 'ET' | 'CT';
 }
 
+/**
+ * How much of a past date's VIX1D an IV-mode choice could see, least first:
+ *   none:    no Schwab VIX1D, and the static table still loading or failed
+ *   table:   the static table, with no intraday history for the date (none
+ *            exists, or its fetch is still in flight)
+ *   history: the date's history snapshot, plus the table when the snapshot
+ *            has no VIX1D
+ * A re-run that knows more than the last choice chooses once more.
+ */
+const VIX1D_KNOWLEDGE = ['none', 'table', 'history'] as const;
+type Vix1dKnowledge = (typeof VIX1D_KNOWLEDGE)[number];
+
+/** True when `date` (YYYY-MM-DD) is before today's ET date. */
+function isPastDate(date: string): boolean {
+  return !!date && date < getETToday();
+}
+
 export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
   const {
     spotEdited,
@@ -97,12 +117,13 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
   // Track which date we last auto-set IV mode for so we don't override the
   // user's manual toggle on every re-run (the effect re-runs on every time
   // scrub, table load and quote refresh).
-  // `settled` is false when that choice was made before VIX1D for the date
-  // could be known (no Schwab VIX1D, and the static table still loading or
-  // failed to load; re-runs retry a failed load). The VIX fallback is then
-  // provisional: when the table arrives, even on a later retry, the mode is
-  // chosen once more, unless the user has picked one since (`ivModeEdited`).
-  const ivModeAutoFill = useRef<{ date: string; settled: boolean } | null>(
+  // `knew` is how much of the date's VIX1D that choice could see. A choice
+  // that knew less is provisional: the VIX fallback while the static table
+  // is still loading or failed to load (re-runs retry a failed load), or a
+  // table-only choice before the date's intraday history arrives. When a
+  // re-run knows more, even on a later retry, the mode is chosen once more,
+  // unless the user has picked one since (`ivModeEdited`).
+  const ivModeAutoFill = useRef<{ date: string; knew: Vix1dKnowledge } | null>(
     null,
   );
 
@@ -116,6 +137,12 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     // guards only apply when the market is closed — after-hours exploration
     // or when the initial fetch races with a manual keystroke.
     const live = market.session !== 'closed';
+    // Quotes are today's, and they load on any date (the owner's mount fetch
+    // runs even when the market is closed). A past date never gets today's
+    // VIX or VIX1D, which price strikes in VIX and DIRECT mode, nor the
+    // switch to DIRECT from VIX1D. The history effect picks that date's mode
+    // and σ from the date's own data, with or without intraday history.
+    const pastDate = isPastDate(selectedDate);
 
     if (q.spy && (live || !spotEdited.current))
       setSpotPrice(q.spy.price.toFixed(2));
@@ -123,24 +150,18 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
       setSpxDirect(q.spx.price.toFixed(0));
 
     // VIX — same live-session override
-    if (q.vix && (live || !vixEdited.current))
+    if (!pastDate && q.vix && (live || !vixEdited.current))
       setVixInput(q.vix.price.toFixed(2));
 
     // Auto-use VIX1D as σ when available (most accurate 0DTE IV).
     // Updates on every quote refresh — VIX1D changes intraday.
-    // Quotes are today's, and they load on any date (the owner's mount fetch
-    // runs even when the market is closed), so a past date never gets
-    // today's VIX1D or the switch to DIRECT from it. The history effect
-    // picks that date's mode and σ from the date's own data.
-    const today = getETToday();
-    const pastDate = !!selectedDate && selectedDate < today;
     if (!pastDate && q.vix1d && q.vix1d.price > 0) {
       setIvMode(IV_MODES.DIRECT);
       setDirectIVInput((q.vix1d.price / 100).toFixed(4));
     }
 
     // Auto-set today's date if not already set
-    if (!selectedDate) setSelectedDate(today);
+    if (!selectedDate) setSelectedDate(getETToday());
     // Keep current CT time in sync during active sessions so DTE
     // calculations stay accurate on every 60s poll. When the market
     // is closed, only set time once from the default 10:00 value.
@@ -190,15 +211,44 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
   // ── Auto-fill from historical data when a past date is selected,
   //    or restore live data when switching back to today ──
   useEffect(() => {
+    const { etHour, etMinute } = toETTime(
+      timeHour,
+      timeMinute,
+      timeAmPm,
+      timezone,
+    );
+
+    // Auto-use the date's VIX1D as σ when available. Choose the IV mode on
+    // a new date, which also drops the last date's manual pick. Choose once
+    // more when this run knows more of the date's VIX1D than the last
+    // choice did, unless the user picked a mode in the meantime.
+    const fillIv = (
+      date: string,
+      vix1dVal: number | null,
+      knew: Vix1dKnowledge,
+      vixFallback: boolean,
+    ) => {
+      const prev = ivModeAutoFill.current;
+      const newDate = prev?.date !== date;
+      if (newDate) ivModeEditedRef.current = false;
+      const knowsMore =
+        prev != null &&
+        VIX1D_KNOWLEDGE.indexOf(knew) > VIX1D_KNOWLEDGE.indexOf(prev.knew);
+      const chooseMode = newDate || (knowsMore && !ivModeEditedRef.current);
+      if (vix1dVal != null && vix1dVal > 0) {
+        // Only auto-switch IV mode when choosing; always update the σ value
+        // so it stays current as the user scrubs time.
+        if (chooseMode) setIvMode(IV_MODES.DIRECT);
+        setDirectIVInput((vix1dVal / 100).toFixed(4));
+      } else if (vixFallback && chooseMode) {
+        // No VIX1D available (yet) — fall back to VIX mode
+        setIvMode(IV_MODES.VIX);
+      }
+      if (chooseMode) ivModeAutoFill.current = { date, knew };
+    };
+
     if (historyData.hasHistory) {
       // Past date: fill from historical candles
-      const { etHour, etMinute } = toETTime(
-        timeHour,
-        timeMinute,
-        timeAmPm,
-        timezone,
-      );
-
       const snapshot = historyData.getStateAtTime(etHour, etMinute);
       if (!snapshot) return;
 
@@ -211,43 +261,43 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
         setVixInput(snapshot.vix.toFixed(2));
       }
 
-      // Auto-use VIX1D as σ when available (from Schwab intraday or CBOE static).
-      // Without Schwab VIX1D, start the static table's load here (idempotent;
+      // VIX1D from Schwab intraday, else the CBOE static table. Without
+      // Schwab VIX1D, start the static table's load here (idempotent;
       // retried after a failure), in an effect, so render stays free of I/O.
       // getVix1d returns null until the fetch completes, then its reference
       // changes → effect re-runs.
       if (snapshot.vix1d == null) vix1dStatic.ensureLoaded();
       const date = historyData.history!.date;
-      const vix1dVal = snapshot.vix1d ?? vix1dStatic.getVix1d(date, etHour);
-      // Choose the IV mode on a new date, which also drops the last date's
-      // manual pick. Choose once more when a provisional choice can settle
-      // because VIX1D for the date is now known, unless the user picked a
-      // mode in the meantime.
-      const vix1dKnown = snapshot.vix1d != null || vix1dStatic.loaded;
-      const prev = ivModeAutoFill.current;
-      const newDate = prev?.date !== date;
-      if (newDate) ivModeEditedRef.current = false;
-      const settle =
-        prev?.settled === false && vix1dKnown && !ivModeEditedRef.current;
-      const chooseMode = newDate || settle;
-      if (vix1dVal != null && vix1dVal > 0) {
-        // Only auto-switch IV mode when choosing; always update the σ value
-        // so it stays current as the user scrubs time.
-        if (chooseMode) setIvMode(IV_MODES.DIRECT);
-        setDirectIVInput((vix1dVal / 100).toFixed(4));
-      } else if (snapshot.vix != null && chooseMode) {
-        // No VIX1D available (yet) — fall back to VIX mode
-        setIvMode(IV_MODES.VIX);
-      }
-      if (chooseMode) {
-        ivModeAutoFill.current = { date, settled: vix1dKnown };
-      }
-    } else if (market.data.quotes) {
-      // Today (or no history): restore live prices if available
-      ivModeAutoFill.current = null;
+      fillIv(
+        date,
+        snapshot.vix1d ?? vix1dStatic.getVix1d(date, etHour),
+        snapshot.vix1d != null || vix1dStatic.loaded ? 'history' : 'none',
+        snapshot.vix != null,
+      );
+      return;
+    }
+
+    // No intraday history: today, or a past date with none (older than ~60
+    // days, a failed fetch, a weekend or holiday) or whose fetch is in
+    // flight. Restore live prices if available.
+    if (market.data.quotes) {
       const q = market.data.quotes;
       if (q.spy) setSpotPrice(q.spy.price.toFixed(2));
       if (q.spx) setSpxDirect(q.spx.price.toFixed(0));
+    }
+    if (isPastDate(selectedDate)) {
+      // Same rule as a date with history, from the static table alone: its
+      // VIX1D for the date, else VIX mode, so the date's daily VIX OHLC
+      // (useVixData) drives σ. The table loads as above.
+      vix1dStatic.ensureLoaded();
+      fillIv(
+        selectedDate,
+        vix1dStatic.getVix1d(selectedDate, etHour),
+        vix1dStatic.loaded ? 'table' : 'none',
+        true,
+      );
+    } else {
+      ivModeAutoFill.current = null;
     }
     // Listing individual props (not whole `historyData` / `vix1dStatic`
     // objects) is intentional — both parents re-create a fresh wrapper on
@@ -259,6 +309,7 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     historyData.hasHistory,
     historyData.history,
     historyData.getStateAtTime,
+    selectedDate,
     timeHour,
     timeMinute,
     timeAmPm,

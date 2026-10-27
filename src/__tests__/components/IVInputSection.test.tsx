@@ -304,6 +304,17 @@ describe('IVInputSection', () => {
       hasData: true,
     };
 
+    /** The card on a date with no VIX1D, VIX9D or VVIX: empty, nothing to apply. */
+    function expectNothingOffered() {
+      expect(screen.getByLabelText(/VIX1D/)).toHaveValue('');
+      expect(screen.getByLabelText(/VIX9D/)).toHaveValue('');
+      expect(screen.queryByText('VVIX')).not.toBeInTheDocument();
+      expect(screen.queryByText('VIX1D / VIX')).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: /use vix1d as/i }),
+      ).not.toBeInTheDocument();
+    }
+
     /** A history snapshot at `datetime`, with no VIX1D, VIX9D or VVIX. */
     function snapshotAt(datetime: number): HistorySnapshot {
       return {
@@ -334,42 +345,31 @@ describe('IVInputSection', () => {
     // 2026-03-10 11:30 ET
     const PAST_CANDLE = Date.parse('2026-03-10T15:30:00Z');
 
-    it('does not fill a past date without VIX1D, VIX9D or VVIX from live quotes', async () => {
-      const user = userEvent.setup();
-      const { props } = renderSection({
+    it('does not fill a past date without VIX1D, VIX9D or VVIX from live quotes', () => {
+      renderSection({
         dVix: '20.5',
         market: liveMarket,
         selectedDate: '2026-03-10',
         historySnapshot: snapshotAt(PAST_CANDLE),
       });
 
-      expect(screen.getByLabelText(/VIX1D/)).not.toHaveValue('14.20');
-      expect(screen.getByLabelText(/VIX9D/)).not.toHaveValue('16.30');
-      expect(screen.queryByText('VVIX')).not.toBeInTheDocument();
-      await user.click(screen.getByRole('button', { name: /use vix1d as/i }));
-      expect(props.onUseVix1dAsSigma).not.toHaveBeenCalledWith(0.142);
+      expectNothingOffered();
     });
 
-    it('does not fill a past date without intraday history from live quotes', async () => {
+    it('does not fill a past date without intraday history from live quotes', () => {
       // Older than ~60 days, a failed history fetch, a weekend or a
       // holiday: no snapshot, and the selected date alone says "past".
-      const user = userEvent.setup();
-      const { props } = renderSection({
+      renderSection({
         dVix: '20.5',
         market: liveMarket,
         selectedDate: '2026-03-10',
         historySnapshot: null,
       });
 
-      expect(screen.getByLabelText(/VIX1D/)).not.toHaveValue('14.20');
-      expect(screen.getByLabelText(/VIX9D/)).not.toHaveValue('16.30');
-      expect(screen.queryByText('VVIX')).not.toBeInTheDocument();
-      await user.click(screen.getByRole('button', { name: /use vix1d as/i }));
-      expect(props.onUseVix1dAsSigma).not.toHaveBeenCalledWith(0.142);
+      expectNothingOffered();
     });
 
-    it("drops today's live values when the date moves to a past date without history", async () => {
-      const user = userEvent.setup();
+    it("drops today's live values when the date moves to a past date without history", () => {
       const { props, rerender } = renderSection({
         dVix: '18.5',
         market: liveMarket,
@@ -386,11 +386,8 @@ describe('IVInputSection', () => {
         />,
       );
 
-      expect(screen.getByLabelText(/VIX1D/)).not.toHaveValue('14.20');
-      expect(screen.getByLabelText(/VIX9D/)).not.toHaveValue('16.30');
-      expect(screen.queryByText('VVIX')).not.toBeInTheDocument();
-      await user.click(screen.getByRole('button', { name: /use vix1d as/i }));
-      expect(props.onUseVix1dAsSigma).not.toHaveBeenCalledWith(0.142);
+      expectNothingOffered();
+      expect(props.onUseVix1dAsSigma).not.toHaveBeenCalled();
     });
 
     it("keeps a past snapshot off live quotes while today's history loads", () => {
@@ -403,9 +400,7 @@ describe('IVInputSection', () => {
         historySnapshot: snapshotAt(PAST_CANDLE),
       });
 
-      expect(screen.getByLabelText(/VIX1D/)).not.toHaveValue('14.20');
-      expect(screen.getByLabelText(/VIX9D/)).not.toHaveValue('16.30');
-      expect(screen.queryByText('VVIX')).not.toBeInTheDocument();
+      expectNothingOffered();
     });
 
     it("does not poll today's VIX trajectory for a past date without history", () => {

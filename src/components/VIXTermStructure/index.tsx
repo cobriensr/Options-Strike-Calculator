@@ -40,12 +40,15 @@ export default function VIXTermStructure({
   marketOpen = false,
 }: Props) {
   const trajectory = useVixTrajectory(marketOpen);
-  const [vix1dInput, setVix1dInput] = useState('18.50');
-  const [vix9dInput, setVix9dInput] = useState('20.10');
+  // Empty until a value arrives or is typed: on a date with no VIX1D or
+  // VIX9D, a made-up default would read as that date's data, and "Use
+  // VIX1D as σ" would apply it. Empty hides the ratios and the button.
+  const [vix1dInput, setVix1dInput] = useState('');
+  const [vix9dInput, setVix9dInput] = useState('');
   const vix1dEdited = useRef(false);
   const vix9dEdited = useRef(false);
 
-  // Auto-fill from live data (overwrites defaults but respects user edits)
+  // Auto-fill from snapshot or live data (respects user edits)
   useEffect(() => {
     if (initialVix1d != null && !vix1dEdited.current)
       setVix1dInput(initialVix1d.toFixed(2));

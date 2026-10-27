@@ -894,6 +894,7 @@ describe('useAutoFill: static VIX1D loading', () => {
       useAutoFill({
         ...baseInputs,
         ...createSetters(),
+        vix: createVix({ selectedDate: getETToday() }),
         historyData: createHistoryData({ hasHistory: false }),
         vix1dStatic,
       }),
@@ -951,6 +952,13 @@ describe('useAutoFill: static VIX1D loading', () => {
 
   const VIX1D_TABLE = { '2026-03-10': { o: 16.5, h: 17.2, l: 16.1, c: 16.9 } };
 
+  interface IvStateProps {
+    timeMinute: string;
+    historyData: UseHistoryDataReturn;
+    /** A new selected date; `vix`'s setter stays the same. */
+    date?: string;
+  }
+
   function renderWithIvState(
     initialHistory: UseHistoryDataReturn,
     initialMode: IVMode,
@@ -965,14 +973,12 @@ describe('useAutoFill: static VIX1D loading', () => {
     const ivModeEdited = { current: false };
     const market = createMarket(quotes);
     const vix = createVix({ selectedDate });
+    const initialProps: IvStateProps = {
+      timeMinute: '30',
+      historyData: initialHistory,
+    };
     const rendered = renderHook(
-      ({
-        timeMinute,
-        historyData,
-      }: {
-        timeMinute: string;
-        historyData: UseHistoryDataReturn;
-      }) => {
+      ({ timeMinute, historyData, date = selectedDate }: IvStateProps) => {
         const [ivMode, setIvModeState] = useState<IVMode>(initialMode);
         const [directIV, setDirectIVState] = useState('');
         // Real state, with every call also recorded on `setters`, so a test
@@ -991,7 +997,7 @@ describe('useAutoFill: static VIX1D loading', () => {
           ...baseInputs,
           ...setters,
           market,
-          vix,
+          vix: { ...vix, selectedDate: date },
           ivModeEdited,
           setIvMode,
           setDirectIVInput,
@@ -1018,7 +1024,7 @@ describe('useAutoFill: static VIX1D loading', () => {
           loaded: vix1dStatic.loaded,
         };
       },
-      { initialProps: { timeMinute: '30', historyData: initialHistory } },
+      { initialProps },
     );
     return { ...rendered, ivModeEdited, setters };
   }
@@ -1235,11 +1241,33 @@ describe('useAutoFill: static VIX1D loading', () => {
     expect(result.current.directIV).toBe('0.1650');
   });
 
+  it('chooses the mode once per date: a scrub to a candle without VIX1D keeps DIRECT', async () => {
+    const fetches = pendingFetches();
+    // Schwab VIX1D at 11:30 but not at 11:35; the table lacks the date.
+    const historyData = createHistoryData({
+      hasHistory: true,
+      history: mockHistory('2026-03-10'),
+      getStateAtTime: vi.fn((_hour: number, minute: number) =>
+        makeHistorySnapshot({ vix: 20.5, vix1d: minute === 30 ? 14.8 : null }),
+      ),
+    });
+    const { result, rerender } = renderWithIvState(historyData, IV_MODES.VIX);
+    expect(result.current.ivMode).toBe(IV_MODES.DIRECT);
+
+    rerender({ timeMinute: '35', historyData });
+    fetches.respond({ '2026-03-09': { o: 15, h: 16, l: 14, c: 15.5 } });
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+
+    expect(result.current.ivMode).toBe(IV_MODES.DIRECT);
+    expect(result.current.directIV).toBe('0.1480');
+  });
+
   it('never loads the table or changes IV mode in live mode', () => {
     const fetches = pendingFetches();
     const { result } = renderWithIvState(
       createHistoryData({ hasHistory: false }),
       IV_MODES.DIRECT,
+      { selectedDate: getETToday() },
     );
 
     expect(fetches.fetchSpy).not.toHaveBeenCalled();
@@ -1268,6 +1296,7 @@ describe('useAutoFill: static VIX1D loading', () => {
   });
 
   it("still sets DIRECT with today's live VIX1D as σ on today", () => {
+    const fetches = pendingFetches();
     const { result, setters } = renderWithIvState(
       createHistoryData({ hasHistory: false }),
       IV_MODES.VIX,
@@ -1277,5 +1306,152 @@ describe('useAutoFill: static VIX1D loading', () => {
     expect(result.current.ivMode).toBe(IV_MODES.DIRECT);
     expect(result.current.directIV).toBe('0.1420');
     expect(setters.setDirectIVInput).toHaveBeenCalledWith('0.1420');
+    // Today also keeps today's live VIX and prices, and needs no table.
+    expect(setters.setVixInput).toHaveBeenCalledWith('18.50');
+    expect(setters.setSpotPrice).toHaveBeenCalledWith('580.00');
+    expect(fetches.fetchSpy).not.toHaveBeenCalled();
+  });
+
+  // ── A past date without intraday history ──
+  // Older than ~60 days, a failed history fetch, a weekend or a holiday, or
+  // a history fetch still in flight: the same rule as a date with history,
+  // from the static table alone. Today's live quotes are loaded throughout,
+  // as they are for the owner on any date.
+
+  /** No intraday history for the selected date. */
+  const noHistory = () => createHistoryData({ hasHistory: false });
+
+  it("sets DIRECT with the table's VIX1D as σ once the table loads, VIX until then", async () => {
+    const fetches = pendingFetches();
+    // Today's live VIX1D left DIRECT before the owner picked the date.
+    const { result, setters } = renderWithIvState(
+      noHistory(),
+      IV_MODES.DIRECT,
+      { quotes: mockQuotes },
+    );
+
+    expect(fetches.fetchSpy).toHaveBeenCalledTimes(1);
+    expect(result.current.ivMode).toBe(IV_MODES.VIX);
+
+    fetches.respond(VIX1D_TABLE);
+
+    await waitFor(() => expect(result.current.ivMode).toBe(IV_MODES.DIRECT));
+    expect(result.current.directIV).toBe('0.1650');
+    expect(setters.setDirectIVInput).not.toHaveBeenCalledWith('0.1420');
+  });
+
+  it("sets VIX mode, off neither today's VIX1D nor today's VIX, when the table lacks the date", async () => {
+    const fetches = pendingFetches();
+    const { result, rerender, setters } = renderWithIvState(
+      noHistory(),
+      IV_MODES.DIRECT,
+      { quotes: mockQuotes },
+    );
+    fetches.respond({ '2026-03-09': { o: 15, h: 16, l: 14, c: 15.5 } });
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    rerender({ timeMinute: '35', historyData: noHistory() });
+
+    expect(result.current.ivMode).toBe(IV_MODES.VIX);
+    expect(result.current.directIV).toBe('');
+    expect(setters.setIvMode).not.toHaveBeenCalledWith(IV_MODES.DIRECT);
+    expect(setters.setDirectIVInput).not.toHaveBeenCalled();
+    // VIX mode prices off the VIX field, which useVixData fills from the
+    // date's daily OHLC; today's live 18.50 must not overwrite it.
+    expect(setters.setVixInput).not.toHaveBeenCalledWith('18.50');
+  });
+
+  it('keeps a manual VIX pick made while the table loads, and σ follows the table', async () => {
+    const fetches = pendingFetches();
+    const historyData = noHistory();
+    const { result, rerender } = renderWithIvState(
+      historyData,
+      IV_MODES.DIRECT,
+      { quotes: mockQuotes },
+    );
+    expect(result.current.ivMode).toBe(IV_MODES.VIX);
+
+    act(() => result.current.userSetsIvMode(IV_MODES.DIRECT));
+    act(() => result.current.userSetsIvMode(IV_MODES.VIX));
+    fetches.respond(VIX1D_TABLE);
+    await waitFor(() => expect(result.current.directIV).toBe('0.1650'));
+    rerender({ timeMinute: '35', historyData });
+
+    expect(result.current.ivMode).toBe(IV_MODES.VIX);
+    expect(result.current.directIV).toBe('0.1650');
+  });
+
+  it('chooses again on a new date without intraday history, dropping the manual pick', async () => {
+    const fetches = pendingFetches();
+    const historyData = noHistory();
+    const { result, rerender, ivModeEdited } = renderWithIvState(
+      historyData,
+      IV_MODES.VIX,
+      { quotes: mockQuotes },
+    );
+    fetches.respond({
+      ...VIX1D_TABLE,
+      '2026-03-09': { o: 15, h: 16, l: 14, c: 15.5 },
+    });
+    await waitFor(() => expect(result.current.ivMode).toBe(IV_MODES.DIRECT));
+    act(() => result.current.userSetsIvMode(IV_MODES.VIX));
+
+    rerender({ timeMinute: '30', historyData, date: '2026-03-09' });
+
+    expect(ivModeEdited.current).toBe(false);
+    expect(result.current.ivMode).toBe(IV_MODES.DIRECT);
+    expect(result.current.directIV).toBe('0.1500');
+  });
+
+  it("chooses again from the snapshot when the date's history arrives after a table-only choice", async () => {
+    const fetches = pendingFetches();
+    // History still loading; the table answers first, without the date.
+    const { result, rerender } = renderWithIvState(
+      noHistory(),
+      IV_MODES.DIRECT,
+      { quotes: mockQuotes },
+    );
+    fetches.respond({ '2026-03-09': { o: 15, h: 16, l: 14, c: 15.5 } });
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(result.current.ivMode).toBe(IV_MODES.VIX);
+
+    rerender({
+      timeMinute: '30',
+      historyData: createHistoryData({
+        hasHistory: true,
+        history: mockHistory('2026-03-10'),
+        getStateAtTime: vi
+          .fn()
+          .mockReturnValue(makeHistorySnapshot({ vix: 20.5, vix1d: 14.8 })),
+      }),
+    });
+
+    expect(result.current.ivMode).toBe(IV_MODES.DIRECT);
+    expect(result.current.directIV).toBe('0.1480');
+  });
+
+  it("keeps a manual pick when the date's history arrives after a table-only choice", async () => {
+    const fetches = pendingFetches();
+    const { result, rerender } = renderWithIvState(
+      noHistory(),
+      IV_MODES.DIRECT,
+      { quotes: mockQuotes },
+    );
+    fetches.respond({ '2026-03-09': { o: 15, h: 16, l: 14, c: 15.5 } });
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    act(() => result.current.userSetsIvMode(IV_MODES.VIX));
+
+    rerender({
+      timeMinute: '30',
+      historyData: createHistoryData({
+        hasHistory: true,
+        history: mockHistory('2026-03-10'),
+        getStateAtTime: vi
+          .fn()
+          .mockReturnValue(makeHistorySnapshot({ vix: 20.5, vix1d: 14.8 })),
+      }),
+    });
+
+    expect(result.current.ivMode).toBe(IV_MODES.VIX);
+    expect(result.current.directIV).toBe('0.1480');
   });
 });
