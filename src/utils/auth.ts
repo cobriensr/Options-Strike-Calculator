@@ -6,8 +6,10 @@
  *   - 'owner'  — running in local dev, or carrying the `sc-hint` cookie
  *                set by the Schwab OAuth callback.
  *   - 'guest'  — carrying the `sc-guest-hint` cookie set by a successful
- *                POST to /api/auth/guest-key. Read-only access; the
- *                Chart Analysis submit button is disabled in this mode.
+ *                POST to /api/auth/guest-key. Reads owner-gated data;
+ *                the only write is the guest's own panel layout. Write
+ *                controls (Chart Analysis submit, tracker edits, alert
+ *                acks) are disabled or kept local in this mode.
  *   - 'public' — neither cookie present. Calculator + free data only.
  *
  * These are plain functions, not React hooks. The previous `useIsOwner`

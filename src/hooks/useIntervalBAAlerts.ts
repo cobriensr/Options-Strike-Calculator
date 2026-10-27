@@ -274,11 +274,16 @@ export function useIntervalBAAlerts(
       const newest = incoming[0]!.fired_at;
       lastSeenRef.current = newest;
 
+      // A guest's local dismissals hide alerts only while the tab is in
+      // guest mode. Once it is the owner's, the server's acknowledged flag
+      // is the only filter, so the owner sees every unacknowledged alert.
+      const guestDismissed =
+        getAccessMode() === 'guest' ? guestDismissedRef.current : null;
       const fresh = incoming.filter(
         (a) =>
           !seenIdsRef.current.has(a.id) &&
           !a.acknowledged &&
-          !guestDismissedRef.current?.has(a.id),
+          !guestDismissed?.has(a.id),
       );
 
       for (const a of fresh) seenIdsRef.current.add(a.id);

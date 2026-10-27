@@ -538,6 +538,32 @@ describe('useIntervalBAAlerts — dismiss access and failures', () => {
     second.unmount();
   });
 
+  it('shows a guest-dismissed alert again once the tab is in owner mode', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('guest');
+    mockFetchJson({ alerts: [baseAlert] });
+    const asGuest = renderHook(() => useIntervalBAAlerts(true));
+    await waitFor(() => {
+      expect(asGuest.result.current.alerts).toHaveLength(1);
+    });
+    await act(async () => {
+      await asGuest.result.current.acknowledge(1);
+    });
+    asGuest.unmount();
+    __resetChimesForTests();
+
+    // The owner signs in (the OAuth redirect reloads the tab); the server
+    // row is still unacknowledged, so the owner must see it.
+    vi.mocked(getAccessMode).mockReturnValue('owner');
+    mockFetchJson({ alerts: [baseAlert] });
+    const asOwner = renderHook(() => useIntervalBAAlerts(true));
+    await waitFor(() => {
+      expect(asOwner.result.current.alerts).toHaveLength(1);
+    });
+    expect(asOwner.result.current.alerts[0]?.id).toBe(1);
+    expect(asOwner.result.current.unacknowledgedCount).toBe(1);
+    asOwner.unmount();
+  });
+
   it('a guest dismissal still holds in memory when sessionStorage throws', async () => {
     vi.mocked(getAccessMode).mockReturnValue('guest');
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {

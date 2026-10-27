@@ -1,12 +1,15 @@
 /**
- * Guest-key auth — read-only access for trusted friends.
+ * Guest-key auth — read access to owner-gated data for trusted friends.
  *
  * Single-owner app, but the owner can hand out comma-separated keys via the
- * GUEST_ACCESS_KEYS env var so a friend can view owner-gated read-only UI
+ * GUEST_ACCESS_KEYS env var so a friend can read owner-gated data endpoints
  * (dark pool, GEX maps, etc.) without a Schwab session.
  *
- * The Anthropic-backed analyze endpoint stays owner-only — see CLAUDE.md
- * "Auth is single-owner" — so a leaked guest key cannot drain the API budget.
+ * Every client-initiated write is owner-only (`guardOwnerEndpoint`). The one
+ * guest write is the guest's own panel layout (`api/panel-prefs.ts`, keyed
+ * per guest key). The Anthropic-backed analyze endpoint stays owner-only —
+ * see CLAUDE.md "Auth is single-owner" — so a leaked guest key cannot drain
+ * the API budget.
  *
  * Cookie scheme mirrors the owner pattern (api/auth/callback.ts):
  *   - sc-guest         (HttpOnly, server-validated against env keys)
