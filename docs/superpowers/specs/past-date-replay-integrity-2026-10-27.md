@@ -103,7 +103,8 @@ Each phase has its own worktree and the full Get It Right loop.
      - **Why it waits:** a parser fix would make `/api/vix-ohlc` (`getVixOhlcFromSnapshots`) return snapshot-derived VIX OHLC for every date after the static VIX table ends (2026-03-06). Those rows still include the 220 misdated rows and the constant-5,720 week. That OHLC would override App's candle-derived fallback and feed the VIX field, σ in VIX mode and analyze's VIX.
      - **When:** do it right after the phase-5 repair. Fix the server parser (`db-snapshots.ts` ~:217) and the client copy (`useVixTrajectory`) together, convert CT to ET minutes so rows sort consistently, and limit `getVixOhlcFromSnapshots` to rows created on their own date.
      - **Later:** the upsert key keeps its zone suffix, so a CT live row and an ET-labelled replay of the same moment never conflict. Normalise the key format in a migration.
-   - **Round 2 shipped status:** see the Progress note when it lands. It is 11 commits, `5f2294dd` … `c07d8138`.
+   - **Round 2 shipped 2026-10-27 at 22:45 CT:** 12 commits, `5f2294dd` … `a0d179c2`. The code review and the analyze-prompt review both passed. The last commit caps failed-save retries (3 per key; no retry on a 400 or 403; a 429 is never reported; a 5xx is reported once) and never saves a future entry time.
+   - **Left for phase 6:** the history gate doesn't check the candle's time. Today's history is frozen at load, so a scrub-back after load can save the load-time candle as a backtest, but only where no live row exists. Carry `candle.datetime` in `SnapshotHistory` and require it to fall in the entry's 5-minute slot.
    - **Phase 3:** `fetchVixDivergenceBlock` uses `new Date()`, so a past-date analysis still gets today's divergence.
 
 1. **Stop new damage (S).**
