@@ -11,51 +11,73 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { z } from 'zod';
 import { POLL_INTERVALS } from '../constants';
+import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { getErrorMessage } from '../utils/error';
 import { usePolling } from './usePolling';
 
-export type PinSetupState = 'ARMED' | 'WATCH' | 'NOT_TRIGGERED';
-export type PinSetupBias = 'fade-rips' | 'fade-dips' | 'full-pin' | 'no-signal';
+// Runtime schemas are the single source of truth for the
+// /api/pin-setup-status response (PinSetupStatusResponse in
+// api/pin-setup-status.ts). A 200 whose body doesn't match is handled like
+// a failed fetch, so PinSetupTile never renders a status without `state`,
+// `conditions` or `trajectory`. The exported types derive from the schemas
+// via `z.infer`.
+const PIN_SETUP_STATES = ['ARMED', 'WATCH', 'NOT_TRIGGERED'] as const;
+const PIN_SETUP_BIASES = [
+  'fade-rips',
+  'fade-dips',
+  'full-pin',
+  'no-signal',
+] as const;
 
-export interface PinSetupOutcome {
-  settle: number;
-  settleVsMagnet: number;
-}
+const pinSetupOutcomeSchema = z.object({
+  settle: z.number(),
+  settleVsMagnet: z.number(),
+});
 
-export interface PinSetupConditions {
-  netGammaAtMagnetM: number;
-  netGammaThresholdM: number;
-  netGammaMet: boolean;
-  magnetStrike: number | null;
-  isRound50: boolean;
-  distanceToMagnet: number | null;
-  distanceThreshold: number;
-  distanceMet: boolean;
-}
+const pinSetupConditionsSchema = z.object({
+  netGammaAtMagnetM: z.number(),
+  netGammaThresholdM: z.number(),
+  netGammaMet: z.boolean(),
+  magnetStrike: z.number().nullable(),
+  isRound50: z.boolean(),
+  distanceToMagnet: z.number().nullable(),
+  distanceThreshold: z.number(),
+  distanceMet: z.boolean(),
+});
 
-export interface PinSetupTrajectoryPoint {
-  ts: string;
-  gammaDirM: number;
-  spot: number | null;
-}
+const pinSetupTrajectoryPointSchema = z.object({
+  ts: z.string(),
+  gammaDirM: z.number(),
+  spot: z.number().nullable(),
+});
 
-export interface PinSetupStatus {
-  evaluatedAt: string;
-  date: string | null;
-  mode: 'live' | 'historical';
-  snapshotTs: string | null;
-  staleMinutes: number | null;
-  state: PinSetupState;
-  conditions: PinSetupConditions;
-  spot: number | null;
-  bias: PinSetupBias;
-  recommendedTradeTypes: string[];
-  avoidedTradeTypes: string[];
-  trajectory: PinSetupTrajectoryPoint[];
-  outcome: PinSetupOutcome | null;
-  asOf: string;
-}
+const pinSetupStatusSchema = z.object({
+  evaluatedAt: z.string(),
+  date: z.string().nullable(),
+  mode: z.enum(['live', 'historical']),
+  snapshotTs: z.string().nullable(),
+  staleMinutes: z.number().nullable(),
+  state: z.enum(PIN_SETUP_STATES),
+  conditions: pinSetupConditionsSchema,
+  spot: z.number().nullable(),
+  bias: z.enum(PIN_SETUP_BIASES),
+  recommendedTradeTypes: z.array(z.string()),
+  avoidedTradeTypes: z.array(z.string()),
+  trajectory: z.array(pinSetupTrajectoryPointSchema),
+  outcome: pinSetupOutcomeSchema.nullable(),
+  asOf: z.string(),
+});
+
+export type PinSetupState = (typeof PIN_SETUP_STATES)[number];
+export type PinSetupBias = (typeof PIN_SETUP_BIASES)[number];
+export type PinSetupOutcome = z.infer<typeof pinSetupOutcomeSchema>;
+export type PinSetupConditions = z.infer<typeof pinSetupConditionsSchema>;
+export type PinSetupTrajectoryPoint = z.infer<
+  typeof pinSetupTrajectoryPointSchema
+>;
+export type PinSetupStatus = z.infer<typeof pinSetupStatusSchema>;
 
 export interface UsePinSetupStatusReturn {
   data: PinSetupStatus | null;
@@ -89,9 +111,28 @@ export function usePinSetupStatus({
         : '/api/pin-setup-status';
       const res = await fetch(url, { credentials: 'include' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = (await res.json()) as PinSetupStatus;
+      const body: unknown = await res.json();
       if (!mountedRef.current) return;
-      setData(body);
+      const parsed = pinSetupStatusSchema.safeParse(body);
+      if (!parsed.success) {
+        // Backend contract drift: report the Zod issues with the requested
+        // date, then handle it like a failed fetch. Last-good `data` stays;
+        // nothing malformed is stored.
+        captureUnlessAuth(
+          new Error('pin-setup-status response failed schema validation'),
+          {
+            contexts: {
+              pinSetupStatus: {
+                date: currentDate,
+                issues: parsed.error.issues,
+              },
+            },
+          },
+        );
+        setError('invalid response shape');
+        return;
+      }
+      setData(parsed.data);
       setError(null);
     } catch (err) {
       if (!mountedRef.current) return;

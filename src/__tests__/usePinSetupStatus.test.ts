@@ -9,11 +9,18 @@ import {
   usePinSetupStatus,
   type PinSetupStatus,
 } from '../hooks/usePinSetupStatus';
+import { captureUnlessAuth } from '../lib/sentry-helpers';
+
+vi.mock('../lib/sentry-helpers', () => ({
+  captureUnlessAuth: vi.fn(),
+}));
+const mockCaptureUnlessAuth = vi.mocked(captureUnlessAuth);
 
 const fetchMock = vi.fn();
 
 beforeEach(() => {
   fetchMock.mockReset();
+  mockCaptureUnlessAuth.mockClear();
   globalThis.fetch = fetchMock as unknown as typeof fetch;
 });
 
@@ -183,5 +190,77 @@ describe('usePinSetupStatus', () => {
       result.current.refresh();
     });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe('usePinSetupStatus: malformed 200 payloads', () => {
+  it.each([
+    ['an empty object', {}],
+    ['a missing state', { ...sampleStatus(), state: undefined }],
+    ['an unknown state', { ...sampleStatus(), state: 'PINNED' }],
+    ['a null conditions block', { ...sampleStatus(), conditions: null }],
+    ['a non-array trajectory', { ...sampleStatus(), trajectory: 'oops' }],
+  ])('treats %s as a failed fetch', async (_label, body) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(body));
+    const { result } = renderHook(() =>
+      usePinSetupStatus({ marketOpen: false }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBe('invalid response shape');
+    expect(result.current.data).toBeNull();
+  });
+
+  it('keeps the last good status when a refresh returns a malformed body', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(sampleStatus()))
+      .mockResolvedValueOnce(jsonResponse({ state: 3 }));
+    const { result } = renderHook(() =>
+      usePinSetupStatus({ marketOpen: false }),
+    );
+    await waitFor(() => expect(result.current.data?.state).toBe('WATCH'));
+
+    await act(async () => {
+      result.current.refresh();
+    });
+
+    await waitFor(() =>
+      expect(result.current.error).toBe('invalid response shape'),
+    );
+    expect(result.current.data).toEqual(sampleStatus());
+  });
+
+  it('reports a schema failure to Sentry by name with the date and issues', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}));
+    const { result } = renderHook(() =>
+      usePinSetupStatus({ marketOpen: false }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
+    const [err, options] = mockCaptureUnlessAuth.mock.calls[0]!;
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe(
+      'pin-setup-status response failed schema validation',
+    );
+    expect(options).toEqual(
+      expect.objectContaining({
+        contexts: expect.objectContaining({
+          pinSetupStatus: expect.objectContaining({
+            date: null,
+            issues: expect.any(Array),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('does not report a well-formed response to Sentry', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(sampleStatus()));
+    const { result } = renderHook(() =>
+      usePinSetupStatus({ marketOpen: false }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBeNull();
+    expect(mockCaptureUnlessAuth).not.toHaveBeenCalled();
   });
 });
