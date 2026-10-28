@@ -5,8 +5,14 @@ import {
   useHistoryData,
   useHistoryVixOHLCFallback,
 } from '../../hooks/useHistoryData';
+import { captureUnlessAuth } from '../../lib/sentry-helpers';
 import type { VIXDayData } from '../../types';
 import type { HistoryResponse } from '../../types/api';
+
+vi.mock('../../lib/sentry-helpers', () => ({
+  captureUnlessAuth: vi.fn(),
+}));
+const mockCaptureUnlessAuth = vi.mocked(captureUnlessAuth);
 
 // ============================================================
 // MOCK DATA
@@ -94,6 +100,7 @@ const mockHistory: HistoryResponse = {
 let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
+  mockCaptureUnlessAuth.mockClear();
   fetchMock = vi.fn(() =>
     Promise.resolve({
       ok: false,
@@ -110,6 +117,11 @@ afterEach(() => {
 
 // Override fetch to return history for a specific date
 function mockHistoryFetch(data: HistoryResponse) {
+  mockHistoryBody(data);
+}
+
+// A 200 from /api/history with any body, well-formed or not.
+function mockHistoryBody(data: unknown) {
   fetchMock.mockImplementation((url: string) => {
     if (url.includes('/api/history')) {
       return Promise.resolve({
@@ -602,6 +614,102 @@ describe('useHistoryData: edge cases', () => {
 
     expect(result.current.error).toContain('No intraday data available');
     expect(result.current.history).toBeNull();
+  });
+});
+
+// ============================================================
+// TESTS: MALFORMED 200 PAYLOADS
+// ============================================================
+
+describe('useHistoryData: malformed 200 payloads', () => {
+  it.each([
+    ['an empty object', {}],
+    [
+      'a wrong-typed spx.candles',
+      { ...mockHistory, spx: { ...mockHistory.spx, candles: 'oops' } },
+    ],
+    [
+      'a candle with a string close',
+      {
+        ...mockHistory,
+        spx: {
+          ...mockHistory.spx,
+          candles: [{ ...spxCandles[0], close: '5105' }],
+        },
+      },
+    ],
+  ])('treats %s as a failed fetch', async (_label, body) => {
+    mockHistoryBody(body);
+
+    const { result } = renderHook(() => useHistoryData('2024-03-04'));
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.error).toBe('invalid response shape');
+    expect(result.current.history).toBeNull();
+    expect(result.current.hasHistory).toBe(false);
+    expect(result.current.getStateAtTime(10, 0)).toBeNull();
+  });
+
+  it('drops the previous date history when the next date is malformed', async () => {
+    mockHistoryFetch(mockHistory);
+    const { result, rerender } = renderHook(
+      ({ date }: { date: string }) => useHistoryData(date),
+      { initialProps: { date: '2024-03-04' } },
+    );
+    await waitFor(() => {
+      expect(result.current.hasHistory).toBe(true);
+    });
+
+    mockHistoryBody({ date: '2024-03-05' });
+    rerender({ date: '2024-03-05' });
+
+    await waitFor(() => {
+      expect(result.current.error).toBe('invalid response shape');
+    });
+    expect(result.current.history).toBeNull();
+    expect(result.current.hasHistory).toBe(false);
+  });
+
+  it('reports a schema failure to Sentry by name with the date and issues', async () => {
+    mockHistoryBody({});
+
+    const { result } = renderHook(() => useHistoryData('2024-03-04'));
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
+    const [err, options] = mockCaptureUnlessAuth.mock.calls[0]!;
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe(
+      'history response failed schema validation',
+    );
+    expect(options).toEqual(
+      expect.objectContaining({
+        contexts: expect.objectContaining({
+          history: expect.objectContaining({
+            date: '2024-03-04',
+            issues: expect.any(Array),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('does not report a well-formed response to Sentry', async () => {
+    mockHistoryFetch(mockHistory);
+
+    const { result } = renderHook(() => useHistoryData('2024-03-04'));
+
+    await waitFor(() => {
+      expect(result.current.hasHistory).toBe(true);
+    });
+
+    expect(mockCaptureUnlessAuth).not.toHaveBeenCalled();
   });
 });
 

@@ -8,12 +8,14 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { z } from 'zod';
 import type { VIXDayData } from '../types';
 import type {
   HistoryResponse,
   HistoryCandle,
   SymbolDayData,
 } from '../types/api';
+import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { getErrorMessage } from '../utils/error';
 import { getETToday, getETTotalMinutes } from '../utils/timezone';
 import { getMarketCloseHourET } from '../data/marketHours';
@@ -80,6 +82,53 @@ export interface UseHistoryDataReturn {
 }
 
 // ============================================================
+// RESPONSE SCHEMA
+// ============================================================
+
+// Runtime schema for the /api/history response (api/history.ts). A 200
+// whose body doesn't match is handled like a failed fetch: every reader of
+// `history` (App's Market Regime props, getStateAtTime, hasHistory) assumes
+// the five symbols and their candles exist, and one missing would throw
+// during render. Annotated with the shared HistoryResponse type from
+// src/types/api.ts instead of deriving it via z.infer, because that type
+// is imported across the app; the annotation keeps the two in step.
+const historyCandleSchema = z.object({
+  datetime: z.number(),
+  time: z.string(),
+  open: z.number(),
+  high: z.number(),
+  low: z.number(),
+  close: z.number(),
+});
+
+const historyDaySummarySchema = z.object({
+  date: z.string(),
+  open: z.number(),
+  high: z.number(),
+  low: z.number(),
+  close: z.number(),
+  rangePct: z.number(),
+  rangePts: z.number(),
+});
+
+const symbolDayDataSchema = z.object({
+  candles: z.array(historyCandleSchema),
+  previousClose: z.number(),
+  previousDay: historyDaySummarySchema.nullable(),
+});
+
+const historyResponseSchema: z.ZodType<HistoryResponse> = z.object({
+  date: z.string(),
+  spx: symbolDayDataSchema,
+  vix: symbolDayDataSchema,
+  vix1d: symbolDayDataSchema,
+  vix9d: symbolDayDataSchema,
+  vvix: symbolDayDataSchema,
+  candleCount: z.number(),
+  asOf: z.string(),
+});
+
+// ============================================================
 // FETCH
 // ============================================================
 
@@ -98,7 +147,18 @@ async function fetchHistory(
         .catch(() => ({ error: `HTTP ${res.status}` }));
       return { error: body.error || `HTTP ${res.status}` };
     }
-    return { data: await res.json() };
+    const json: unknown = await res.json();
+    const parsed = historyResponseSchema.safeParse(json);
+    if (!parsed.success) {
+      // Backend contract drift: report the Zod issues with the date, then
+      // reject the whole payload so nothing malformed is stored.
+      captureUnlessAuth(
+        new Error('history response failed schema validation'),
+        { contexts: { history: { date, issues: parsed.error.issues } } },
+      );
+      return { error: 'invalid response shape' };
+    }
+    return { data: parsed.data };
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') {
       return { error: 'AbortError' };
