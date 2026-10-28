@@ -121,7 +121,7 @@ function buildDataNote(
     );
   if (isBacktest)
     notes.push(
-      'Backtesting: data is from historical candles, not live quotes.',
+      "Backtesting: past date — data is from that date's history, not live quotes.",
     );
   return notes.length > 0 ? notes.join(' | ') : undefined;
 }

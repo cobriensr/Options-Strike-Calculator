@@ -553,7 +553,7 @@ describe('useComputedSignals', () => {
     const OPENING_RANGE_NOTE =
       'Entry is before 10:00 AM ET — 30-min opening range not yet complete.';
     const BACKTEST_NOTE =
-      'Backtesting: data is from historical candles, not live quotes.';
+      "Backtesting: past date — data is from that date's history, not live quotes.";
     const snapshot = { vix1d: 15, vix9d: 17, vvix: 90 } as HistorySnapshot;
 
     it('includes VIX1D warning when vix1d unavailable', () => {
