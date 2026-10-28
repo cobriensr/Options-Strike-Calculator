@@ -98,7 +98,12 @@ Each phase has its own worktree and the full Get It Right loop.
      - compute the backtest flag once and share it;
      - add an ET-midnight dependency in the memos;
      - change the dataNote wording to "past date".
-   - **Lead 15 confirmed:** App's `entry_time` is `'h:mm AM CT'`, and `parseEntryTimeMinutes` rejects the suffix, so `getRecentVixSnapshots` drops every calculator row. The upsert key includes the suffix too, so a CT live row and an ET-labelled replay of the same moment never conflict. Verify against prod, then fix it in round 2 or phase 3.
+   - **Lead 15: confirmed against prod on 2026-10-27, and deliberately NOT fixed in round 2.**
+     - **Evidence:** the 5 newest `entry_time` values are all `"h:mm PM CT"`.
+     - **Why it waits:** a parser fix would make `/api/vix-ohlc` (`getVixOhlcFromSnapshots`) return snapshot-derived VIX OHLC for every date after the static VIX table ends (2026-03-06). Those rows still include the 220 misdated rows and the constant-5,720 week. That OHLC would override App's candle-derived fallback and feed the VIX field, σ in VIX mode and analyze's VIX.
+     - **When:** do it right after the phase-5 repair. Fix the server parser (`db-snapshots.ts` ~:217) and the client copy (`useVixTrajectory`) together, convert CT to ET minutes so rows sort consistently, and limit `getVixOhlcFromSnapshots` to rows created on their own date.
+     - **Later:** the upsert key keeps its zone suffix, so a CT live row and an ET-labelled replay of the same moment never conflict. Normalise the key format in a migration.
+   - **Round 2 shipped status:** see the Progress note when it lands. It is 11 commits, `5f2294dd` … `c07d8138`.
    - **Phase 3:** `fetchVixDivergenceBlock` uses `new Date()`, so a past-date analysis still gets today's divergence.
 
 1. **Stop new damage (S).**
