@@ -187,6 +187,27 @@ describe('PinSetupTile', () => {
     expect(screen.queryByText(/stale/i)).not.toBeInTheDocument();
   });
 
+  it('flags the last good status when the latest fetch failed', () => {
+    // A failed or malformed poll keeps the last good status (the hook's
+    // contract); without a flag the tile looks live while frozen.
+    mockHook(makeStatus({ staleMinutes: 1 }), {
+      error: 'invalid response shape',
+    });
+    render(<PinSetupTile marketOpen={true} />);
+
+    const flag = screen.getByText(/update failed/i);
+    expect(flag).toHaveAttribute('title', 'invalid response shape');
+    // The last good status still renders, and the no-data alert doesn't.
+    expect(screen.getByText('7500')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('shows no update-failed flag when the latest fetch succeeded', () => {
+    mockHook(makeStatus());
+    render(<PinSetupTile marketOpen={true} />);
+    expect(screen.queryByText(/update failed/i)).not.toBeInTheDocument();
+  });
+
   it('does NOT show STALE badge in historical mode even with market open', () => {
     mockHook(
       makeStatus({

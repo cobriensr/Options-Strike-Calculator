@@ -137,6 +137,21 @@ export default memo(function PinSetupTile({ marketOpen }: Props) {
                 stale {data.staleMinutes}m
               </span>
             )}
+            {/* The latest fetch failed and this is the last good status
+                (staleMinutes above is frozen with it). The error text is in
+                the title for hover/triage, as in GreekHeatmap's stale strip. */}
+            {error && (
+              <span
+                className="rounded px-1.5 py-0.5 font-sans text-[9px] font-bold tracking-wider uppercase"
+                style={{
+                  backgroundColor: tint(theme.caution, '20'),
+                  color: theme.caution,
+                }}
+                title={error}
+              >
+                ⚠ update failed
+              </span>
+            )}
           </div>
 
           {/* Detail line: γ · spot · distance — combined into a single
