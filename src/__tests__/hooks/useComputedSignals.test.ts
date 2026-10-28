@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import { useComputedSignals } from '../../hooks/useComputedSignals';
 import type { HistorySnapshot } from '../../hooks/useHistoryData';
@@ -537,6 +537,24 @@ describe('useComputedSignals', () => {
   // ── Data note ───────────────────────────────────────────
 
   describe('dataNote', () => {
+    // The clock is pinned to 2026-03-10 11:30 EDT, so the inputs' default
+    // date (2026-03-10) is today.
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-03-10T15:30:00Z'));
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    const VIX1D_NOTE =
+      'VIX1D unavailable — σ derived from VIX × 1.15. Actual per-strike IV may differ.';
+    const OPENING_RANGE_NOTE =
+      'Entry is before 10:00 AM ET — 30-min opening range not yet complete.';
+    const BACKTEST_NOTE =
+      'Backtesting: data is from historical candles, not live quotes.';
+    const snapshot = { vix1d: 15, vix9d: 17, vvix: 90 } as HistorySnapshot;
+
     it('includes VIX1D warning when vix1d unavailable', () => {
       const s = compute({ liveVix1d: undefined });
       expect(s.dataNote).toContain('VIX1D unavailable');
@@ -547,15 +565,40 @@ describe('useComputedSignals', () => {
       expect(s.dataNote).toContain('opening range not yet complete');
     });
 
-    it('includes backtest note when history snapshot present', () => {
+    it('has no Backtesting note for today with its own intraday history', () => {
+      // Today has history from its first candle; the session is still live,
+      // as isBacktest says ("Backtest mode: NO").
       const s = compute({
-        historySnapshot: {
-          vix1d: 15,
-          vix9d: 17,
-          vvix: 90,
-        } as HistorySnapshot,
+        selectedDate: '2026-03-10',
+        historySnapshot: snapshot,
       });
-      expect(s.dataNote).toContain('Backtesting');
+      expect(s.dataNote ?? '').not.toContain('Backtesting');
+    });
+
+    it.each([
+      ['with its own intraday history', '2026-03-09', snapshot],
+      ['without intraday history', '2025-12-31', null],
+    ])(
+      'notes Backtesting on a past date %s',
+      (_label, selectedDate, historySnapshot) => {
+        const s = compute({ selectedDate, historySnapshot });
+        expect(s.dataNote).toBe(BACKTEST_NOTE);
+      },
+    );
+
+    it('keeps the VIX1D and opening-range notes, worded and ordered as before', () => {
+      const early = {
+        liveVix1d: undefined,
+        timeHour: '9',
+        timeMinute: '30',
+        timeAmPm: 'AM',
+      };
+      expect(compute({ ...early, selectedDate: '2026-03-10' }).dataNote).toBe(
+        `${VIX1D_NOTE} | ${OPENING_RANGE_NOTE}`,
+      );
+      expect(compute({ ...early, selectedDate: '2026-03-09' }).dataNote).toBe(
+        `${VIX1D_NOTE} | ${OPENING_RANGE_NOTE} | ${BACKTEST_NOTE}`,
+      );
     });
 
     it('returns undefined when all data available and after 10AM', () => {

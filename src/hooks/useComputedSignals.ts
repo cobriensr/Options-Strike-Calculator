@@ -22,6 +22,7 @@ import { useTermStructure } from './useTermStructure';
 import { useRangeAnalysis } from './useRangeAnalysis';
 import type { EventItem } from '../types/api';
 import type { HistorySnapshot } from './useHistoryData';
+import { isPastETDate } from '../utils/timezone';
 
 // ============================================================
 // TYPES
@@ -283,12 +284,14 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
       isEventDay: rangeAnalysis.isEventDay,
       eventNames: rangeAnalysis.eventNames,
 
-      // Data note
+      // Data note. Its backtest line follows the selected date, as the
+      // analysis context's isBacktest does: today has intraday history from
+      // its first candle and is still live.
       dataNote: buildDataNote(
         vix1d,
         vix,
         rangeAnalysis.openingRangeAvailable,
-        !!historySnapshot,
+        isPastETDate(selectedDate ?? ''),
       ),
     }),
     [
@@ -297,7 +300,7 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
       vvix,
       sigmaSource,
       vix,
-      historySnapshot,
+      selectedDate,
       regime,
       termStructure,
       rangeAnalysis,
