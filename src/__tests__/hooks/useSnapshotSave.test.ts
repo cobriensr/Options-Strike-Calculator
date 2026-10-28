@@ -436,6 +436,40 @@ describe('useSnapshotSave — which dates save', () => {
 });
 
 // ============================================================
+// TODAY SCRUBBED FORWARD (a future entry time)
+// ============================================================
+
+describe('useSnapshotSave — today scrubbed forward', () => {
+  it('makes no save call for an entry time ahead of the clock', () => {
+    // NOW is 11:00 ET; the inputs are still now's live quotes, which would
+    // be filed under 11:30.
+    const ahead = { ...defaultSignals, etHour: 11, etMinute: 30 };
+    renderHook(() =>
+      useSnapshotSave(
+        makeResults(),
+        ahead,
+        { ...baseMeta, entryTime: '10:30 AM CT' },
+        true,
+      ),
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['2 minutes ahead', 2, 0],
+    ['the current minute', 0, 1],
+    ['1 minute ahead (clock slack)', 1, 1],
+  ])('at %s (minute %i) makes %i live save call(s)', (_label, ahead, posts) => {
+    const signals = { ...defaultSignals, etHour: 11, etMinute: ahead };
+    renderHook(() => useSnapshotSave(makeResults(), signals, baseMeta, true));
+
+    expect(fetchSpy).toHaveBeenCalledTimes(posts);
+    if (posts > 0) expect(body().isBacktest).toBe(false);
+  });
+});
+
+// ============================================================
 // A "TODAY" WITH NO SESSION (weekend, holiday)
 // ============================================================
 
@@ -885,55 +919,130 @@ describe('useSnapshotSave — a failed save', () => {
     },
   );
 
-  it.each([500, 502, 429, 400])(
-    'surfaces a %i answer to Sentry and retries it on the next change',
-    async (status) => {
-      fetchSpy.mockResolvedValueOnce(
-        new Response(JSON.stringify({ error: 'nope' }), { status }),
-      );
+  /** Let a POST's answer reach its handler (only Date is faked here). */
+  const settle = () => new Promise<void>((r) => setTimeout(r, 0));
 
-      const { rerender } = renderHook(
-        ({ results }) =>
-          useSnapshotSave(results, defaultSignals, baseMeta, true),
-        { initialProps: { results: makeResults() } },
-      );
+  /** Every POST answers `status`. */
+  function answerAlways(status: number) {
+    fetchSpy.mockImplementation(
+      async () => new Response(JSON.stringify({ error: 'nope' }), { status }),
+    );
+  }
 
-      await vi.waitFor(() => {
-        expect(captureUnlessAuth).toHaveBeenCalledWith(
-          expect.objectContaining({ status }),
-          { tags: { context: 'snapshot_save' } },
-        );
-      });
-
-      // A non-2xx saved nothing, so the key was released.
+  /**
+   * Render, then re-render `renders` more times with fresh results, letting
+   * each answer land first. Once a history snapshot exists App's signals
+   * change identity on every render, so a released key posts again on
+   * each one.
+   */
+  async function renderAndChurn(renders: number) {
+    const { rerender } = renderHook(
+      ({ results }) => useSnapshotSave(results, defaultSignals, baseMeta, true),
+      { initialProps: { results: makeResults() } },
+    );
+    await settle();
+    for (let i = 0; i < renders; i++) {
       rerender({ results: makeResults() });
-      expect(fetchSpy).toHaveBeenCalledTimes(2);
-    },
-  );
+      await settle();
+    }
+  }
 
-  it.each([401, 403])(
-    'retries a %i answer on the next change without reporting it',
+  const TAGS = { tags: { context: 'snapshot_save' } };
+
+  it.each([500, 502])(
+    'retries a persistent %i at most 3 posts and reports it once',
     async (status) => {
-      fetchSpy.mockResolvedValueOnce(
-        new Response(JSON.stringify({ error: 'Not authenticated' }), {
-          status,
-        }),
-      );
+      answerAlways(status);
+      await renderAndChurn(8);
 
-      const { rerender } = renderHook(
-        ({ results }) =>
-          useSnapshotSave(results, defaultSignals, baseMeta, true),
-        { initialProps: { results: makeResults() } },
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
+      expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+      expect(captureUnlessAuth).toHaveBeenCalledWith(
+        expect.objectContaining({ status }),
+        TAGS,
       );
-
-      // Let the answer settle, then show the key was released.
-      await vi.waitFor(() => {
-        rerender({ results: makeResults() });
-        expect(fetchSpy).toHaveBeenCalledTimes(2);
-      });
-      expect(captureUnlessAuth).not.toHaveBeenCalled();
     },
   );
+
+  it('retries a 429 (rate limited) without reporting it, up to the cap', async () => {
+    answerAlways(429);
+    await renderAndChurn(8);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(captureUnlessAuth).not.toHaveBeenCalled();
+  });
+
+  it('never retries a 400 (the body itself would fail again) and reports it once', async () => {
+    answerAlways(400);
+    await renderAndChurn(8);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+    expect(captureUnlessAuth).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 400 }),
+      TAGS,
+    );
+  });
+
+  it('keeps the key on a 403 (botid rejected it) and reports it once as a warning', async () => {
+    // The auth interceptor handles 401s only; a 403 is guardOwnerEndpoint's
+    // bot check, which the same post would hit again.
+    answerAlways(403);
+    await renderAndChurn(8);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+    expect(captureUnlessAuth).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 403 }),
+      { level: 'warning', ...TAGS },
+    );
+  });
+
+  it('retries a 401 (a lapsed session) without reporting it, up to the cap', async () => {
+    answerAlways(401);
+    await renderAndChurn(8);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(captureUnlessAuth).not.toHaveBeenCalled();
+  });
+
+  it('caps a persistent network error at 3 posts and reports it once', async () => {
+    fetchSpy.mockRejectedValue(new Error('Network error'));
+    await renderAndChurn(8);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('saves on the retry after a transient 5xx, then stops posting', async () => {
+    fetchSpy.mockResolvedValueOnce(new Response('{}', { status: 503 }));
+    await renderAndChurn(6);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives each entry time its own attempts and its own report', async () => {
+    answerAlways(500);
+    const { rerender } = renderHook(
+      ({ meta, results }) =>
+        useSnapshotSave(results, defaultSignals, meta, true),
+      { initialProps: { meta: baseMeta, results: makeResults() } },
+    );
+    const churn = async (meta: SnapshotMeta) => {
+      for (let i = 0; i < 5; i++) {
+        await settle();
+        rerender({ meta, results: makeResults() });
+      }
+      await settle();
+    };
+    await churn(baseMeta);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+
+    await churn({ ...baseMeta, entryTime: '09:40' });
+    expect(fetchSpy).toHaveBeenCalledTimes(6);
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(2);
+  });
 
   it('keeps the key on a 200 the server skipped, without reporting it', async () => {
     // A kept live row, or a server-side date skip: answered, not failed.

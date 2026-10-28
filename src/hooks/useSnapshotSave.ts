@@ -11,7 +11,9 @@
  *     (is_backtest false), with or without today's intraday history, once
  *     the inputs carry today's data: the SPX and VIX inputs each match the
  *     live quote or today's history at the entry time. A weekend or
- *     holiday today saves nothing: its quotes are the last session's.
+ *     holiday today saves nothing: its quotes are the last session's. Nor
+ *     does an entry time ahead of the clock (today scrubbed forward): its
+ *     inputs are now's.
  *   - A past date with its own intraday history, or today scrubbed back
  *     more than 5 minutes (isBacktestMode): a backtest row (is_backtest
  *     true), once the inputs carry that history's SPX and SPY at the entry
@@ -22,17 +24,30 @@
  * while the history passed is labelled for another date.
  *
  * The DB upserts on UNIQUE(date, entry_time). Each key posts once per
- * session unless the post fails: a network error or a non-2xx answer
- * releases the key, so the next change posts it again. Those reach Sentry,
- * except a 401 / 403 (a lapsed or missing owner session, which the auth
- * interceptor clears). A 200 that saved nothing (a kept live row, a date
- * the server skipped) keeps the key: it was answered, not lost.
+ * session unless the post fails, and a failing key posts at most
+ * MAX_POSTS_PER_KEY times. Once a history snapshot exists App's signals
+ * change identity on every render, so an uncapped retry would post (and
+ * report) on every render:
+ *   - a network error, a 5xx, a 429 (rate limited) or a 401 (a lapsed
+ *     owner session, which the auth interceptor clears) releases the key,
+ *     so the next change posts it again, up to the cap;
+ *   - a 400 (the body itself) or another 4xx, and a 403 (the endpoint's
+ *     botid check; the auth interceptor handles 401s only), keep the key:
+ *     the same post would fail the same way.
+ * A failure reaches Sentry once per key, a 403 as a warning, except a 429
+ * and a 401, which are expected. A 200 that saved nothing (a kept live
+ * row, a date the server skipped) keeps the key: it was answered, not
+ * lost.
  */
 
 import { useEffect, useRef } from 'react';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { isTradingDay } from '../data/marketHours';
-import { getETDateStr, isBacktestMode } from '../utils/timezone';
+import {
+  getETDateStr,
+  getETTotalMinutes,
+  isBacktestMode,
+} from '../utils/timezone';
 import type { CalculationResults } from '../types';
 import type { QuotesResponse } from '../types/api';
 import type { ComputedSignals } from './useComputedSignals';
@@ -148,6 +163,21 @@ const SPY_TOLERANCE = 0.005;
 /** Float slack for the tolerance comparisons. */
 const EPSILON = 1e-9;
 
+/** How far ahead of the ET clock today's entry time may sit and save live. */
+const FUTURE_ENTRY_SLACK_MINUTES = 1;
+
+/**
+ * Posts per key before a failing key stops retrying and stays marked
+ * saved for the session.
+ */
+const MAX_POSTS_PER_KEY = 3;
+
+/** One key's failed posts so far, and whether one reached Sentry. */
+interface KeyAttempts {
+  posts: number;
+  reported: boolean;
+}
+
 function near(
   value: number | undefined,
   source: number | null | undefined,
@@ -190,6 +220,11 @@ function rowKind(
   }
 
   if (date !== getETDateStr(now)) return null;
+  // An entry time ahead of the clock (today scrubbed forward): the inputs
+  // are now's, not that time's. One minute of slack for the clock.
+  if (etMinutes > getETTotalMinutes(now) + FUTURE_ENTRY_SLACK_MINUTES) {
+    return null;
+  }
   // No session today (a weekend or holiday): the quotes are the last
   // session's closing prints, not this date's.
   if (!isTradingDay(date)) return null;
@@ -218,6 +253,9 @@ export function useSnapshotSave(
 ) {
   // Track what we've already saved to avoid redundant requests
   const savedRef = useRef<Set<string>>(new Set());
+  // Per key: posts so far and whether its failure was reported. An entry
+  // is dropped when the key saves, so it holds failing keys only.
+  const attemptsRef = useRef<Map<string, KeyAttempts>>(new Map());
   // Primitives, so the effect keys on values: App builds the meta afresh
   // every render.
   const historyDate = meta.history?.date;
@@ -336,6 +374,28 @@ export function useSnapshotSave(
       strikes,
     };
 
+    const attempt = attemptsRef.current.get(key) ?? {
+      posts: 0,
+      reported: false,
+    };
+    attempt.posts += 1;
+    attemptsRef.current.set(key, attempt);
+    // Post the key again on the next change, unless it has used its posts.
+    const retry = () => {
+      if (attempt.posts < MAX_POSTS_PER_KEY) savedRef.current.delete(key);
+    };
+    // One Sentry event per key, however many times it fails.
+    const reportOnce = (err: unknown, level?: 'warning') => {
+      if (attempt.reported) return;
+      attempt.reported = true;
+      captureUnlessAuth(
+        err,
+        level
+          ? { level, tags: { context: 'snapshot_save' } }
+          : { tags: { context: 'snapshot_save' } },
+      );
+    };
+
     // Fire-and-forget — don't block the UI
     const controller = new AbortController();
 
@@ -346,26 +406,36 @@ export function useSnapshotSave(
       signal: controller.signal,
     })
       .then((res) => {
-        if (res.ok) return;
-        // Nothing saved: release the key so the next change posts it again.
-        savedRef.current.delete(key);
-        if (res.status === 401 || res.status === 403) return;
+        if (res.ok) {
+          attemptsRef.current.delete(key);
+          return;
+        }
+        const { status } = res;
+        // Expected and transient: retry quietly.
+        if (status === 401 || status === 429) {
+          retry();
+          return;
+        }
         const err = new Error(
-          `Snapshot save failed: HTTP ${res.status}`,
+          `Snapshot save failed: HTTP ${status}`,
         ) as Error & { status?: number };
-        err.status = res.status;
-        captureUnlessAuth(err, { tags: { context: 'snapshot_save' } });
+        err.status = status;
+        if (status >= 500) {
+          reportOnce(err);
+          retry();
+          return;
+        }
+        // A 403 (botid) or a 400 / other 4xx: the same post would fail the
+        // same way, so the key stays marked.
+        reportOnce(err, status === 403 ? 'warning' : undefined);
       })
       .catch((err: unknown) => {
         // Don't retry on abort — component unmounted or deps changed
         if (err instanceof DOMException && err.name === 'AbortError') return;
-        // Network error — capture so persistent snapshot-save failures
-        // are visible (the next-render retry hides the symptom from the
-        // UI), then remove from saved set so it retries.
-        captureUnlessAuth(err, {
-          tags: { context: 'snapshot_save' },
-        });
-        savedRef.current.delete(key);
+        // Network error — report it (the retry hides the symptom from the
+        // UI), and post again up to the cap.
+        reportOnce(err);
+        retry();
       });
 
     return () => controller.abort();
