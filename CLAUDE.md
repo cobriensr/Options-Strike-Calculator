@@ -85,7 +85,7 @@ Every code change follows this implement-verify-review loop. No exceptions. This
 
 The required loop for any multi-task plan:
 
-1. **Decompose** the plan and **dispatch independent sub-agents** — in parallel where tasks are independent (a single message with multiple `Agent` calls), sequential only where a task genuinely depends on a prior task's output.
+1. **Decompose** the plan and **dispatch sub-agents**. Run **one implementer stream at a time**: queue the rest and tell the owner the order. Read-only investigators and reviewers can run in parallel (a single message with multiple `Agent` calls).
 2. **Load each sub-agent with the skills its task needs** — name them in the prompt (e.g. `react-expert`, `backend-development`, `test-master`, `postgres-pro`, `playwright-expert`) per the task domain.
 3. Sub-agents do the work.
 4. **The main session reviews** every sub-agent's output (spec compliance, then code quality via the `code-reviewer` agent) **before presenting results.** The user sees reviewed output, not raw sub-agent dumps.
