@@ -2,8 +2,9 @@
  * useSnapshotSave — Automatically saves market snapshots to Postgres
  * whenever the calculator produces results.
  *
- * Owner-gated: the /api/snapshot endpoint rejects non-owners,
- * so public visitors never trigger writes.
+ * Owner-only: App enables it for the owner alone (a guest or public
+ * visitor would draw a 401 per entry time), and the /api/snapshot
+ * endpoint rejects non-owners.
  *
  * A row's date must own its data, so the selected date decides the save:
  *   - Today (ET) at the current time, on a session day: a live row
@@ -21,7 +22,11 @@
  * while the history passed is labelled for another date.
  *
  * The DB upserts on UNIQUE(date, entry_time). Each key posts once per
- * session unless the post fails.
+ * session unless the post fails: a network error or a non-2xx answer
+ * releases the key, so the next change posts it again. Those reach Sentry,
+ * except a 401 / 403 (a lapsed or missing owner session, which the auth
+ * interceptor clears). A 200 that saved nothing (a kept live row, a date
+ * the server skipped) keeps the key: it was answered, not lost.
  */
 
 import { useEffect, useRef } from 'react';
@@ -202,8 +207,8 @@ function rowKind(
  * Call this hook in App.tsx. It fires a POST to /api/snapshot
  * whenever results change with a new date+time combination.
  *
- * `enabled` is true once there is data to save (live quotes or the date's
- * own history); ownership is enforced by the endpoint.
+ * `enabled` is true for the owner once there is data to save (live quotes
+ * or the date's own history); the endpoint enforces ownership too.
  */
 export function useSnapshotSave(
   results: CalculationResults | null,
@@ -339,17 +344,29 @@ export function useSnapshotSave(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
       signal: controller.signal,
-    }).catch((err: unknown) => {
-      // Don't retry on abort — component unmounted or deps changed
-      if (err instanceof DOMException && err.name === 'AbortError') return;
-      // Network/server error — capture so persistent snapshot-save
-      // failures are visible (the next-render retry hides the symptom
-      // from the UI), then remove from saved set so it retries.
-      captureUnlessAuth(err, {
-        tags: { context: 'snapshot_save' },
+    })
+      .then((res) => {
+        if (res.ok) return;
+        // Nothing saved: release the key so the next change posts it again.
+        savedRef.current.delete(key);
+        if (res.status === 401 || res.status === 403) return;
+        const err = new Error(
+          `Snapshot save failed: HTTP ${res.status}`,
+        ) as Error & { status?: number };
+        err.status = res.status;
+        captureUnlessAuth(err, { tags: { context: 'snapshot_save' } });
+      })
+      .catch((err: unknown) => {
+        // Don't retry on abort — component unmounted or deps changed
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        // Network error — capture so persistent snapshot-save failures
+        // are visible (the next-render retry hides the symptom from the
+        // UI), then remove from saved set so it retries.
+        captureUnlessAuth(err, {
+          tags: { context: 'snapshot_save' },
+        });
+        savedRef.current.delete(key);
       });
-      savedRef.current.delete(key);
-    });
 
     return () => controller.abort();
   }, [

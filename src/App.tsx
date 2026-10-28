@@ -572,7 +572,8 @@ export default function StrikeCalculator() {
       skewPct,
       clusterMult,
     }),
-    market.hasData || !!historySnapshot,
+    // The owner only: a guest or public visitor's post draws a 401.
+    isOwner && (market.hasData || !!historySnapshot),
   );
 
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);

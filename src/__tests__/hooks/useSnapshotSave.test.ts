@@ -884,4 +884,79 @@ describe('useSnapshotSave — a failed save', () => {
       expect(body(1).isBacktest).toBe(isBacktest);
     },
   );
+
+  it.each([500, 502, 429, 400])(
+    'surfaces a %i answer to Sentry and retries it on the next change',
+    async (status) => {
+      fetchSpy.mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'nope' }), { status }),
+      );
+
+      const { rerender } = renderHook(
+        ({ results }) =>
+          useSnapshotSave(results, defaultSignals, baseMeta, true),
+        { initialProps: { results: makeResults() } },
+      );
+
+      await vi.waitFor(() => {
+        expect(captureUnlessAuth).toHaveBeenCalledWith(
+          expect.objectContaining({ status }),
+          { tags: { context: 'snapshot_save' } },
+        );
+      });
+
+      // A non-2xx saved nothing, so the key was released.
+      rerender({ results: makeResults() });
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([401, 403])(
+    'retries a %i answer on the next change without reporting it',
+    async (status) => {
+      fetchSpy.mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'Not authenticated' }), {
+          status,
+        }),
+      );
+
+      const { rerender } = renderHook(
+        ({ results }) =>
+          useSnapshotSave(results, defaultSignals, baseMeta, true),
+        { initialProps: { results: makeResults() } },
+      );
+
+      // Let the answer settle, then show the key was released.
+      await vi.waitFor(() => {
+        rerender({ results: makeResults() });
+        expect(fetchSpy).toHaveBeenCalledTimes(2);
+      });
+      expect(captureUnlessAuth).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps the key on a 200 the server skipped, without reporting it', async () => {
+    // A kept live row, or a server-side date skip: answered, not failed.
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ id: null, saved: false, skipped: 'live-row' }),
+        { status: 200 },
+      ),
+    );
+
+    const { rerender } = renderHook(
+      ({ results }) => useSnapshotSave(results, defaultSignals, baseMeta, true),
+      { initialProps: { results: makeResults() } },
+    );
+    await vi.waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+    // Give the answer's handler a turn before re-rendering.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    rerender({ results: makeResults() });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(captureUnlessAuth).not.toHaveBeenCalled();
+  });
 });
