@@ -62,8 +62,10 @@ export function buildApiFetchMock(
         }
 
         // Fallback: any /api/ call not explicitly mocked fails like an
-        // unreachable backend
+        // unreachable backend. The warning names it in the trace, so a
+        // forgotten mock is easy to spot.
         if (url.indexOf('/api/') !== -1) {
+          console.warn('[mock-fetch] unmocked ' + method + ' ' + url);
           return Promise.reject(new TypeError('Failed to fetch'));
         }
 

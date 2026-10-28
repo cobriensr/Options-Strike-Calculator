@@ -44,7 +44,7 @@ export interface EntryTime {
  * the owner panels add more "Minute" controls (scrubbers) to the page.
  */
 export function dateTimeSection(page: Page): Locator {
-  return page.getByRole('region', { name: 'Date & Time' });
+  return page.getByRole('region', { name: 'Date & Time', exact: true });
 }
 
 /** Set the Date & Time section's entry time. Defaults to 10:00 AM ET. */
