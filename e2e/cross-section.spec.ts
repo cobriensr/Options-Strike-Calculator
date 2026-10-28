@@ -80,7 +80,14 @@ test.describe('Cross-Section Input Cascades', () => {
 
     const table = page.getByRole('table', { name: 'Strike prices by delta' });
 
-    // Wait for VIX=15 calculation to settle
+    // Wait for VIX=15 to land: the field starts at 19, and the regime card
+    // and the strikes both read the debounced value. VIX 15-18 is the GREEN
+    // bucket, 18-20 CAUTION (src/data/vixRangeStats.ts).
+    const regimeLabel = page
+      .getByRole('region', { name: 'Implied Volatility' })
+      .getByText(/^[A-Z]+ REGIME$/);
+    await expect(regimeLabel).toHaveText('GREEN REGIME');
+
     let lowVixPut = 0;
     await expect(async () => {
       lowVixPut = Number.parseFloat(
@@ -95,13 +102,6 @@ test.describe('Cross-Section Input Cascades', () => {
       expect(lowVixPut).toBeGreaterThan(6600);
       expect(lowVixPut).toBeLessThan(6790);
     }).toPass({ timeout: 5000 });
-
-    // Note the VIX regime card's zone label (e.g. "GREEN REGIME")
-    const regimeLabel = page
-      .getByRole('region', { name: 'Implied Volatility' })
-      .getByText(/^[A-Z]+ REGIME$/);
-    await expect(regimeLabel).toBeVisible();
-    const regimeText = await regimeLabel.textContent();
 
     // Change VIX to 30
     await page.getByLabel('VIX Value').fill('30');
@@ -120,8 +120,8 @@ test.describe('Cross-Section Input Cascades', () => {
       expect(highVixPut).toBeLessThan(lowVixPut);
     }).toPass({ timeout: 5000 });
 
-    // The regime zone should differ between VIX 15 and 30
-    await expect(regimeLabel).not.toHaveText(regimeText!);
+    // VIX 30-40 is the "danger" bucket, labelled EXTREME
+    await expect(regimeLabel).toHaveText('EXTREME REGIME');
   });
 
   test('skew adjustment affects put/call asymmetry', async ({ page }) => {

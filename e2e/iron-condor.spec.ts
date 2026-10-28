@@ -48,9 +48,16 @@ test.describe('Iron Condor Section', () => {
 
     // Should show IC Δ chip selector
     await expect(results.getByText('IC \u0394')).toBeVisible();
-    // Multiple delta options as toggle buttons (IC Δ and Hedge Δ chips)
-    const deltaChips = results.getByRole('button', { name: /^\d+\u0394$/ });
-    expect(await deltaChips.count()).toBeGreaterThanOrEqual(6);
+    // One IC Δ chip per delta row (the strike table's rows) plus the
+    // four Hedge Δ chips (HEDGE_DELTA_OPTIONS = 1, 2, 3, 5)
+    const deltaRows = await results
+      .getByRole('table', { name: /^Strike prices by delta/ })
+      .locator('tbody tr')
+      .count();
+    expect(deltaRows).toBeGreaterThan(1);
+    await expect(
+      results.getByRole('button', { name: /^\d+\u0394$/ }),
+    ).toHaveCount(deltaRows + 4);
   });
 
   test('contracts change updates P&L dollar values', async ({ page }) => {

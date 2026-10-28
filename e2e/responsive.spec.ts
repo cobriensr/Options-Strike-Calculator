@@ -48,7 +48,7 @@ test.describe('Responsive Layout', () => {
     });
 
     // Below md the 14-column table is hidden and each delta row renders
-    // as a card instead (839f14ff), so nothing has to scroll sideways
+    // as a card instead (839f14ff)
     await expect(
       page.getByRole('table', { name: /^Strike prices by delta/ }),
     ).toBeHidden();
@@ -65,9 +65,19 @@ test.describe('Responsive Layout', () => {
     await page.getByLabel('SPY Price').fill('679');
     await fillVix(page, '19');
 
+    const results = page.locator('#results');
+    await expect(results.getByText('All Delta Strikes')).toBeVisible({
+      timeout: 5000,
+    });
+
+    // From md up the full table shows instead of the cards, inside
+    // ScrollHint's horizontal scroller (table > section > overflow div)
+    const table = page.getByRole('table', { name: /^Strike prices by delta/ });
+    await expect(table).toBeVisible();
     await expect(
-      page.locator('#results').getByText('All Delta Strikes'),
-    ).toBeVisible({ timeout: 5000 });
+      results.locator('div[aria-label="Delta strikes"]'),
+    ).toBeHidden();
+    await expect(table.locator('xpath=../..')).toHaveCSS('overflow-x', 'auto');
   });
 
   test('renders correctly on wide desktop viewport', async ({ page }) => {
