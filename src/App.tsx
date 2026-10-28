@@ -75,9 +75,7 @@ import IntervalBAAlertBanner from './components/IntervalBAAlertBanner';
 import { IntervalBAFeed } from './components/IntervalBAFeed/IntervalBAFeed';
 import DarkPoolLevels from './components/DarkPoolLevels';
 import { PeriscopePanel } from './components/Periscope/PeriscopePanel';
-import { OpeningFlowSignal } from './components/OpeningFlowSignal';
-import PinSetupTile from './components/PinSetupTile';
-import { SectionBox } from './components/ui';
+import PreMarketSignals from './components/PreMarketSignals';
 import VegaSpikeFeed from './components/VegaSpikeFeed/VegaSpikeFeed';
 import NotificationPermission from './components/NotificationPermission';
 import { CollapseAllContext } from './components/collapse-context';
@@ -832,13 +830,9 @@ export default function StrikeCalculator() {
           () => (
             <>
               <span id="sec-premarket" className="block scroll-mt-28" />
-              <SectionBox label="Pre-Market Signals" collapsible>
-                <OpeningFlowSignal />
-                <hr className="border-edge my-4" />
-                <PinSetupTile
-                  marketOpen={market.data.quotes?.marketOpen ?? false}
-                />
-              </SectionBox>
+              <PreMarketSignals
+                marketOpen={market.data.quotes?.marketOpen ?? false}
+              />
             </>
           ),
         ],
