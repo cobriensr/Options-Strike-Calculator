@@ -59,6 +59,16 @@ export interface VixSpxDivergence {
 
 // ── Internal helpers ──────────────────────────────────────────
 
+/**
+ * The ET calendar date(s) a window [earliest, at] touches: one, or two
+ * when it straddles ET midnight.
+ */
+function etDatesOf(earliest: Date, at: Date): string[] {
+  const atDate = getETDateStr(at);
+  const earliestDate = getETDateStr(earliest);
+  return atDate === earliestDate ? [atDate] : [earliestDate, atDate];
+}
+
 async function getSpxCloseAt(at: Date): Promise<number | null> {
   const sql = getDb();
   const atIso = at.toISOString();
@@ -67,9 +77,7 @@ async function getSpxCloseAt(at: Date): Promise<number | null> {
   // Include both potential ET calendar dates so the composite index
   // (date, timestamp) on index_candles_1m (SPX) is usable. Covers the case
   // where the staleness window straddles an ET-midnight boundary.
-  const atDate = getETDateStr(at);
-  const earliestDate = getETDateStr(earliest);
-  const dates = atDate === earliestDate ? [atDate] : [earliestDate, atDate];
+  const dates = etDatesOf(earliest, at);
   const rows = await sql`
     SELECT close FROM index_candles_1m
     WHERE symbol = 'SPX'
@@ -87,13 +95,19 @@ async function getSpxCloseAt(at: Date): Promise<number | null> {
 async function getVixAt(at: Date): Promise<number | null> {
   const sql = getDb();
   const atIso = at.toISOString();
-  const earliestIso = new Date(at.getTime() - VIX_STALENESS_MS).toISOString();
+  const earliest = new Date(at.getTime() - VIX_STALENESS_MS);
+  const earliestIso = earliest.toISOString();
   // market_snapshots has no `ts` column — rely on `created_at` for
   // chronological ordering. entry_time is free-form text and cannot
-  // be sorted reliably.
+  // be sorted reliably. Only rows for the window's own ET date count: a
+  // backtest save for a past date is created now but holds that date's
+  // VIX. The date, not is_backtest, since rows saved before 2026-10-28
+  // carry an inverted flag.
+  const dates = etDatesOf(earliest, at);
   const rows = await sql`
     SELECT vix FROM market_snapshots
-    WHERE created_at <= ${atIso}
+    WHERE date = ANY(${dates})
+      AND created_at <= ${atIso}
       AND created_at >= ${earliestIso}
       AND vix IS NOT NULL
     ORDER BY created_at DESC

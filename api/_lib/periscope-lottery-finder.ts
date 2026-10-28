@@ -18,6 +18,7 @@
  */
 
 import { getDb } from './db.js';
+import { getETDateStr } from '../../src/utils/timezone.js';
 import {
   PERISCOPE_LOTTERY_ENTRY_WINDOW_MINUTES,
   PERISCOPE_LOTTERY_THRESHOLDS,
@@ -214,15 +215,25 @@ async function fetchEntryPx(
   return rows[0] ? toNum(rows[0].price) : null;
 }
 
-/** Latest VIX from market_snapshots at-or-before ts */
+/**
+ * Latest VIX from market_snapshots at-or-before ts, from the most recent
+ * date on or before ts's ET date: that date's latest row, so the last
+ * trading day's when the calculator hasn't saved yet today (pre-market,
+ * or a day the app is closed). Ordering by date first means a backtest
+ * save for an older date, created later but holding that date's VIX,
+ * never wins, and a future-dated row is excluded. The date, not
+ * is_backtest, since rows saved before 2026-10-28 carry an inverted flag.
+ * Null when no such row exists (the fire then stores vix NULL).
+ */
 async function fetchLatestVix(ts: Date): Promise<number | null> {
   const sql = getDb();
   const rows = (await sql`
     SELECT vix::numeric AS vix
     FROM market_snapshots
-    WHERE created_at <= ${ts}
+    WHERE date <= ${getETDateStr(ts)}
+      AND created_at <= ${ts}
       AND vix IS NOT NULL
-    ORDER BY created_at DESC
+    ORDER BY date DESC, created_at DESC
     LIMIT 1
   `) as { vix: DbNumeric }[];
   return rows[0] ? toNum(rows[0].vix) : null;
