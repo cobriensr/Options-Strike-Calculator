@@ -33,7 +33,7 @@ The dev server is auto-managed by Playwright (`webServer` block in [playwright.c
 
 - Use **semantic selectors** — `getByRole`, `getByLabel`, or `data-testid`. Avoid CSS selectors that couple to Tailwind classes.
 - Suites must be deterministic. If a feature polls live data, mock it via `helpers/mock-fetch.ts`.
-- Accessibility specs use the `injectAxe` + `checkA11y` pattern. Add new pages to the a11y suite when you add a new section.
+- Accessibility specs scan with `new AxeBuilder({ page })` from `@axe-core/playwright`. Add new pages to the a11y suite when you add a new section.
 - Keep specs ≤200 lines. Split by user journey, not by feature size.
 
 ## When a spec fails

@@ -436,8 +436,8 @@ function coerceKeyLevels(raw: unknown): PeriscopeKeyLevels | null {
  * (Sentry: "Bad control character in string literal in JSON" — fixed
  * 2026-05-11 by migrating away from fenced ```json blocks).
  *
- * Field descriptions act as implicit prompt instructions per the
- * llm-structured-output skill — keep them prescriptive.
+ * Field descriptions act as implicit prompt instructions, so keep them
+ * prescriptive.
  */
 export const STRUCTURED_TOOL_NAME = 'emit_playbook_structured';
 
