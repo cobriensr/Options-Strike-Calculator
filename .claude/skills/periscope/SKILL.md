@@ -404,8 +404,6 @@ The prose section, in this order:
 
 ### Required: structured fields JSON block at end of response
 
-When this skill is invoked from the `/api/periscope-chat` endpoint (i.e. anywhere the response is being persisted), **always end your response with a fenced JSON code block** containing the schema below. The server strips this block from the prose before saving + displaying, then parses it into typed columns. **This is non-negotiable** — fields must match the exact shape, with `null` for anything not applicable.
-
 Append exactly:
 
 ````
