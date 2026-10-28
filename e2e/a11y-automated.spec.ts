@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { fillVix, setEntryTime } from './helpers/calculator';
 
 async function scanA11y(page: import('@playwright/test').Page) {
   const results = await new AxeBuilder({ page })
@@ -34,14 +35,11 @@ test.describe('Automated Accessibility Scanning', () => {
     await page.route('**/api/**', (route) => route.abort());
     await page.goto('/');
 
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await setEntryTime(page);
 
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
-    await page.getByLabel('VIX Value').fill('19');
+    await fillVix(page, '19');
 
     const resultsSection = page.locator('#results');
     await expect(resultsSection.getByText('All Delta Strikes')).toBeVisible({

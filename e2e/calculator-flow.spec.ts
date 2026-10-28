@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { chip, fillVix, openSection, setEntryTime } from './helpers/calculator';
 
 test.describe('Calculator Flow', () => {
   test.beforeEach(async ({ page }) => {
@@ -36,22 +37,20 @@ test.describe('Calculator Flow', () => {
   });
 
   test('full calculation flow produces strike results', async ({ page }) => {
-    // 0. Set entry time
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    // 0. Set entry time (10:00 AM ET)
+    await setEntryTime(page);
 
     // 1. Enter spot price
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
 
     // 2. Set VIX (app starts in VIX mode by default)
-    await page.getByLabel('VIX Value').fill('19');
+    await fillVix(page, '19');
 
-    // 3. Entry time defaults are pre-set (10:00 AM CT)
-    //    Just verify the time section is visible
-    await expect(page.getByText('Date & Time', { exact: true })).toBeVisible();
+    // 3. Verify the time section is visible
+    await expect(
+      page.getByRole('region', { name: 'Date & Time' }),
+    ).toBeVisible();
 
     // 4. Wait for results to appear (the populated section, not the empty state)
     const resultsSection = page.locator('#results');
@@ -64,37 +63,45 @@ test.describe('Calculator Flow', () => {
     // 5. Verify parameter summary shows correct inputs
     await expect(resultsSection.getByText('6790')).toBeVisible();
 
-    // 6. Verify strike table has delta rows
+    // 6. Verify strike table has delta rows. Scope to the desktop table: the
+    //    mobile card view repeats the same text but is hidden at this width.
     // The table should show deltas: 5, 8, 10, 12, 15, 20
+    const strikeTable = resultsSection.getByRole('table', {
+      name: /^Strike prices by delta/,
+    });
     for (const delta of ['5\u0394', '8\u0394', '10\u0394']) {
-      await expect(resultsSection.getByText(delta).first()).toBeVisible();
+      await expect(
+        strikeTable.getByRole('cell', { name: delta, exact: true }),
+      ).toBeVisible();
     }
 
-    // 7. Verify put strikes are below spot and call strikes are above
-    //    by checking the results section has both Put and Call headers
-    await expect(resultsSection.getByText('Put').first()).toBeVisible();
-    await expect(resultsSection.getByText('Call').first()).toBeVisible();
+    // 7. Verify the table has both Put and Call strike columns
+    await expect(
+      strikeTable.getByRole('columnheader', { name: /Put \(SPX\)/ }),
+    ).toBeVisible();
+    await expect(
+      strikeTable.getByRole('columnheader', { name: /Call \(SPX\)/ }),
+    ).toBeVisible();
   });
 
   test('switching to Direct IV mode shows sigma input', async ({ page }) => {
-    // Click the "Direct IV" chip
-    await page.getByRole('radio', { name: 'Direct IV' }).click();
+    // Click the "Direct IV" chip (in the collapsed-by-default IV section)
+    await openSection(page, 'Implied Volatility');
+    await chip(page, 'Direct IV').click();
 
     await expect(page.locator('#direct-iv')).toBeVisible();
     await expect(page.getByLabel('VIX (regime only)')).toBeVisible();
   });
 
   test('direct IV mode calculation produces results', async ({ page }) => {
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await setEntryTime(page);
 
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
 
     // Switch to Direct IV mode
-    await page.getByRole('radio', { name: 'Direct IV' }).click();
+    await openSection(page, 'Implied Volatility');
+    await chip(page, 'Direct IV').click();
     await page.locator('#direct-iv').fill('0.2185');
     await page.getByLabel('VIX (regime only)').fill('19');
 
@@ -127,14 +134,11 @@ test.describe('Calculator Flow', () => {
   test('iron condor section renders when results are present', async ({
     page,
   }) => {
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await setEntryTime(page);
 
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
-    await page.getByLabel('VIX Value').fill('19');
+    await fillVix(page, '19');
 
     const resultsSection = page.locator('#results');
     await expect(resultsSection.getByText('All Delta Strikes')).toBeVisible({
@@ -146,19 +150,18 @@ test.describe('Calculator Flow', () => {
   });
 
   test('VIX regime card appears with valid VIX input', async ({ page }) => {
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await setEntryTime(page);
 
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
-    await page.getByLabel('VIX Value').fill('19');
+    await fillVix(page, '19');
 
-    // Regime card should appear within the IV section
-    await expect(page.getByText(/regime/i).first()).toBeVisible({
-      timeout: 5000,
-    });
+    // Regime card (zone label, e.g. "GREEN REGIME") appears in the IV section
+    await expect(
+      page
+        .getByRole('region', { name: 'Implied Volatility' })
+        .getByText(/^[A-Z]+ REGIME$/),
+    ).toBeVisible({ timeout: 5000 });
   });
 
   test('skip to results link is accessible', async ({ page }) => {

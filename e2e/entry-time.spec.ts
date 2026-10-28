@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { chip, fillVix } from './helpers/calculator';
 
 /**
  * Tests for the Entry Time section: hour/minute selects,
@@ -11,7 +12,9 @@ test.describe('Entry Time Section', () => {
   });
 
   test('entry time section renders with default values', async ({ page }) => {
-    await expect(page.getByText('Date & Time', { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole('region', { name: 'Date & Time' }),
+    ).toBeVisible();
     await expect(page.getByLabel('Hour')).toBeVisible();
     await expect(page.getByLabel('Minute')).toBeVisible();
   });
@@ -27,33 +30,35 @@ test.describe('Entry Time Section', () => {
   });
 
   test('AM/PM toggle switches between AM and PM', async ({ page }) => {
-    const amChip = page.getByRole('radio', { name: 'AM' });
-    const pmChip = page.getByRole('radio', { name: 'PM' });
+    const amChip = chip(page, 'AM');
+    const pmChip = chip(page, 'PM');
 
     await pmChip.click();
-    // PM should now be active (visual confirmation via aria or class)
-    await expect(pmChip).toBeVisible();
+    await expect(pmChip).toHaveAttribute('aria-pressed', 'true');
+    await expect(amChip).toHaveAttribute('aria-pressed', 'false');
 
     await amChip.click();
-    await expect(amChip).toBeVisible();
+    await expect(amChip).toHaveAttribute('aria-pressed', 'true');
+    await expect(pmChip).toHaveAttribute('aria-pressed', 'false');
   });
 
   test('timezone toggle switches between ET and CT', async ({ page }) => {
-    const etChip = page.getByRole('radio', { name: 'ET', exact: true });
-    const ctChip = page.getByRole('radio', { name: 'CT', exact: true });
+    const etChip = chip(page, 'ET');
+    const ctChip = chip(page, 'CT');
 
     await etChip.click();
-    await expect(etChip).toHaveAttribute('aria-checked', 'true');
+    await expect(etChip).toHaveAttribute('aria-pressed', 'true');
 
     await ctChip.click();
-    await expect(ctChip).toHaveAttribute('aria-checked', 'true');
+    await expect(ctChip).toHaveAttribute('aria-pressed', 'true');
+    await expect(etChip).toHaveAttribute('aria-pressed', 'false');
   });
 
   test('changing time updates calculation results', async ({ page }) => {
     // Set up inputs
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
-    await page.getByLabel('VIX Value').fill('19');
+    await fillVix(page, '19');
 
     const results = page.locator('#results');
     await expect(results.getByText('All Delta Strikes')).toBeVisible({
@@ -66,7 +71,7 @@ test.describe('Entry Time Section', () => {
 
     // Change to a different hour
     await page.getByLabel('Hour').selectOption('2');
-    await page.getByRole('radio', { name: 'PM' }).click();
+    await chip(page, 'PM').click();
 
     // Results should update with different T value
     await expect(results.getByText('All Delta Strikes')).toBeVisible();
