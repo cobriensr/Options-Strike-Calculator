@@ -62,6 +62,14 @@ These come from the VIX-mode reviews, rounds 2–5.
 12. **IVInputSection card key.** `termStructureKey = hist-${candle.datetime}` remounts the card on every 5-minute scrub, which drops a typed VIX1D on a past date with history. Phase 6.
 13. **No rollover at ET midnight.** Nothing advances the date in a tab left open past ET midnight. Folds into phase 2.
 
+### Leads from phase 1 (2026-10-27)
+
+14. **Default spot values were probably saved as data.** The `useSpotInputs` defaults are SPY `'572'` and SPX `'5720'`. That matches the 03-23..03-30 rows with a constant SPX of ~5,720. Phase 5 should confirm this and delete those rows. A save guard should also refuse to save untouched default inputs; this belongs to phase 1 follow-ups.
+15. **`parseEntryTimeMinutes` (`db-snapshots.ts:217`) may not match App's `'h:mm AM CT'` entry-time format.** If it doesn't, `getVixOhlcFromSnapshots` and `getRecentVixSnapshots` silently ignore calculator rows. Verify against prod, then fix it in phase 3.
+16. **Saves lost to aborts.** `useSnapshotSave` aborts its fetch whenever a dependency changes. `signals` changes identity on every render once a history snapshot is set, and an aborted key is never retried, so some backtest saves are probably lost. Phase 6 should look at this alongside the single writer.
+17. **Tie-break in `fetchLatestVix`.** When it falls back to yesterday, a replay of yesterday created today wins over yesterday's real last row on `created_at`. A tie-break on `(created_at AT TIME ZONE 'America/New_York')::date = date` fixes it.
+18. **Analyze ran in backtest mode during live sessions.** `useAnalysisContext` sent `isBacktest: !!historySnapshot`. Any tab loaded after the first candle therefore ran every analysis as a backtest: no positions, no previous recommendation, no SPX candles, and "Backtest mode: YES". **Fixed in phase 1 commit 6.**
+
 ## Phases
 
 Each phase has its own worktree and the full Get It Right loop.
