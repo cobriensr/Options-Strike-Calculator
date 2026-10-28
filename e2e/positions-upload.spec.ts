@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
+import { openSection } from './helpers/calculator';
 import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
 
 const SAMPLE_CSV = `\ufeffThis document was exported from the paperMoney platform.
@@ -61,10 +62,12 @@ test.describe('PaperMoney Position Upload', () => {
     );
 
     await page.goto('/');
-    // Wait for quotes to load and Chart Analysis section to render
+    // Wait for quotes to load and Chart Analysis section to render, then
+    // open it (it starts collapsed)
     await expect(
       page.locator('section[aria-label="Chart Analysis"]'),
     ).toBeVisible({ timeout: 5000 });
+    await openSection(page, 'Chart Analysis');
   });
 
   async function uploadChartImage(page: import('@playwright/test').Page) {
@@ -140,6 +143,7 @@ test.describe('PaperMoney Position Upload', () => {
     await expect(
       page.locator('section[aria-label="Chart Analysis"]'),
     ).toBeVisible({ timeout: 5000 });
+    await openSection(page, 'Chart Analysis');
 
     await uploadChartImage(page);
 

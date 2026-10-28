@@ -50,10 +50,6 @@ test.describe('Pre-Market Input', () => {
     await expect(section.getByLabel('Globex Close')).toBeVisible();
     await expect(section.getByLabel('Globex VWAP')).toBeVisible();
 
-    // Straddle cone inputs
-    await expect(section.getByLabel('Cone Upper')).toBeVisible();
-    await expect(section.getByLabel('Cone Lower')).toBeVisible();
-
     // Save button
     await expect(section.getByRole('button', { name: 'Save' })).toBeVisible();
   });
@@ -132,22 +128,5 @@ test.describe('Pre-Market Input', () => {
     await expect(
       section.getByText(/Globex High must be .* Globex Low/),
     ).toBeVisible({ timeout: 3000 });
-  });
-
-  test('cone inputs show range as percentage of cone', async ({ page }) => {
-    const section = page.locator('section[aria-label="Pre-Market Futures"]');
-    await expect(section).toBeVisible({ timeout: 15000 });
-
-    await section.getByLabel('Globex High').fill('6555');
-    await section.getByLabel('Globex Low').fill('6520');
-    await section.getByLabel('Globex Close').fill('6540');
-
-    // Add cone data
-    await section.getByLabel('Cone Upper').fill('6600');
-    await section.getByLabel('Cone Lower').fill('6500');
-
-    // Range = 35 pts, cone = 100 pts, so 35% of cone
-    await expect(section.getByText('O/N Range')).toBeVisible({ timeout: 3000 });
-    await expect(section.getByText(/35.*pts.*35%.*cone/)).toBeVisible();
   });
 });

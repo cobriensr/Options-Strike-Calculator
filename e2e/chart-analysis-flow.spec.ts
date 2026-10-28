@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
+import { openSection } from './helpers/calculator';
 import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
 
 function createMinimalPNG(): Buffer {
@@ -102,6 +103,8 @@ test.describe('Chart Analysis Flow', () => {
     await expect(
       page.locator('section[aria-label="Chart Analysis"]'),
     ).toBeVisible({ timeout: 15000 });
+    // Chart Analysis starts collapsed
+    await openSection(page, 'Chart Analysis');
   });
 
   async function uploadChartImage(page: import('@playwright/test').Page) {
@@ -221,6 +224,7 @@ test.describe('Chart Analysis Flow', () => {
     await expect(
       errorPage.locator('section[aria-label="Chart Analysis"]'),
     ).toBeVisible({ timeout: 15000 });
+    await openSection(errorPage, 'Chart Analysis');
 
     // Upload an image on the error page
     const pngBuffer = createMinimalPNG();

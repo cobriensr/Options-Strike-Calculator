@@ -38,6 +38,7 @@ const SPIKE_SPY = {
   fwdReturn5m: 0.0018,
   fwdReturn15m: 0.0041,
   fwdReturn30m: 0.0062,
+  fwdReturnEoD: 0.0085,
   insertedAt: '2026-04-27T17:00:48.700Z',
 };
 
@@ -56,6 +57,7 @@ const SPIKE_QQQ = {
   fwdReturn5m: null,
   fwdReturn15m: null,
   fwdReturn30m: null,
+  fwdReturnEoD: null,
   insertedAt: '2026-04-27T17:00:18.412Z',
 };
 
@@ -133,11 +135,13 @@ test.describe('VegaSpikeFeed panel', () => {
     await expect(firstRow).toContainText('+0.18%');
     await expect(firstRow).toContainText('+0.41%');
     await expect(firstRow).toContainText('+0.62%');
-    // Second row's fwd_return_* are null → em-dash. Assert at least 3
-    // em-dashes appear in the row text (one per forward-return cell).
+    await expect(firstRow).toContainText('+0.85%');
+    // Second row's fwd_return_* are null → em-dash. Assert at least 4
+    // em-dashes appear in the row text (one per forward-return cell,
+    // 5m/15m/30m/EoD).
     const secondRowText = await rows.nth(1).innerText();
     const dashCount = (secondRowText.match(/—/g) ?? []).length;
-    expect(dashCount).toBeGreaterThanOrEqual(3);
+    expect(dashCount).toBeGreaterThanOrEqual(4);
   });
 
   test('range toggle updates the pressed state', async ({ page }) => {

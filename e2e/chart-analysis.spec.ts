@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openSection } from './helpers/calculator';
 import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
 
 const MOCK_ANALYZE = {
@@ -49,6 +50,7 @@ test.describe('Chart Analysis', () => {
     // Wait for Chart Analysis section to render (quotes are mocked)
     const section = page.locator('section[aria-label="Chart Analysis"]');
     await expect(section).toBeVisible({ timeout: 10000 });
+    await openSection(page, 'Chart Analysis');
 
     await expect(section.getByText('Pre-Trade')).toBeVisible();
     await expect(section.getByText('Mid-Day')).toBeVisible();
@@ -58,6 +60,7 @@ test.describe('Chart Analysis', () => {
   test('drop zone shows upload prompt', async ({ page }) => {
     const section = page.locator('section[aria-label="Chart Analysis"]');
     await expect(section).toBeVisible({ timeout: 10000 });
+    await openSection(page, 'Chart Analysis');
 
     await expect(
       section.getByText(/Drop or click to upload|paste/).first(),
