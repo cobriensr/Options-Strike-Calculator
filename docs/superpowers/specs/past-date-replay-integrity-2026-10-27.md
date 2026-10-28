@@ -74,6 +74,33 @@ These come from the VIX-mode reviews, rounds 2–5.
 
 Each phase has its own worktree and the full Get It Right loop.
 
+0. **Phase 1 shipped 2026-10-27 at 20:38 CT.** Seven commits, `ae1bb53f` … `5e2ea438`:
+   - save rules flagged by date;
+   - a backtest save can't replace a live row;
+   - the current-VIX reads are keyed on the row's date;
+   - the history VIX OHLC uses the selected date's own history only;
+   - one shared `isPastETDate`;
+   - analyze `isBacktest` by date. Live sessions get positions and SPX candles again, and the prompt now says "Backtest mode: NO".
+   - the "Backtesting:" data note by date.
+
+   The code review returned "continue". The owner chose to ship and do round 2 next. The analyze-prompt review passed.
+
+   **Phase 1 round 2 (next stream).** From the phase-1 review:
+   - **B1:** a "today" save doesn't check where its inputs came from. Switching from a past date to today saves the past date's values (and the 572/5720 defaults) as today's live row. Give `'live'` an input-identity gate: SPX/VIX must match the live quote or today's own history. The past-date gate also needs `spy`, so a live SPX within 1 point by coincidence can't pass.
+   - **B2:** the server trusts the client's `date` and `isBacktest`. Tabs still running the old bundle (PWA `registerType: 'prompt'`) keep writing live rows under past dates, and the new upsert guard then protects those rows. Make `api/snapshot.ts` skip a live save whose date isn't today ET (send a Sentry warning `snapshot.live_save_for_other_date`) and skip future dates. Tighten the `date` schema to `YYYY-MM-DD`.
+   - **N1** (owner decision; default backtest): when today is scrubbed back more than 5 minutes, it replays today's 5-minute history but saves it labelled live. Treat it as a backtest with the history gate, using an extracted `isBacktestMode` helper.
+   - **N2:** a weekend or holiday "today" saves Friday's quotes as live. Allow `'live'` only on session days.
+   - **N3:** `fetchLatestVix` tie-break (lead 17).
+   - **N4:** a `skipped: 'live-row'` marker, so a kept live row is distinct from a DB error.
+   - **N5:** `useSnapshotSave` must check `res.ok`, release the key, report non-2xx responses other than 401/403, and only post for the owner.
+   - **N6:** App wiring tests for the snapshot `history` meta and `historyVixOHLC`.
+   - **Prompt-review follow-ups:**
+     - compute the backtest flag once and share it;
+     - add an ET-midnight dependency in the memos;
+     - change the dataNote wording to "past date".
+   - **Lead 15 confirmed:** App's `entry_time` is `'h:mm AM CT'`, and `parseEntryTimeMinutes` rejects the suffix, so `getRecentVixSnapshots` drops every calculator row. The upsert key includes the suffix too, so a CT live row and an ET-labelled replay of the same moment never conflict. Verify against prod, then fix it in round 2 or phase 3.
+   - **Phase 3:** `fetchVixDivergenceBlock` uses `new Date()`, so a past-date analysis still gets today's divergence.
+
 1. **Stop new damage (S).**
    - Add `isPastETDate`.
    - Never save a snapshot with live data for a date other than today ET.
