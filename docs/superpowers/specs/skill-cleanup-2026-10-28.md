@@ -6,7 +6,15 @@ Cut the Claude Code instruction surface for this repo down to what gets used and
 
 ## Status
 
-Phase 1 is done. Phases 2–7 are queued and run one at a time, in order. Phase 8 (the weekly loop) gets its own spec after phase 7.
+Phases 1, 2 and 3a are done (project skills: 103 → 51 after 3b). 3b is in review and 4a is running. Phases run one implementer at a time, in order. Phase 8 (the weekly loop) gets its own spec after phase 7.
+
+| Phase | State | Record |
+|---|---|---|
+| 1 rule conflicts | done | `9c8fa3a1` + local history baseline |
+| 2 prune | done | `c60d0798`; local history `67f48fd`, `9e1817e` |
+| 3a merges (security, observability, a11y, claude-api, deps) | done, reviewed | `b93d784a` (stale README/comment); local history `247c781` |
+| 3b merges (perf, risk, agents-md, pandas-pro, github) | in review | – |
+| 4a fix survivors (code-path skills) | running | – |
 
 ## Evidence
 
@@ -73,6 +81,7 @@ Run one at a time. Each phase: implementer subagent → main-session check again
 6. Grep for each deleted name in `CLAUDE.md`, `~/.claude/CLAUDE.md`, memory, `.claude/agents`, `.claude/hooks` and the surviving skills. Fix any reference, or list it in the report.
 
 **Verify:**
+
 - The local-history diff shows only the manifest deletions plus the `commit` and `periscope` edits.
 - A fresh subagent reports the listing count and how many entries are name-only.
 
@@ -94,6 +103,13 @@ Each group becomes one skill that carries this repo's rules. Bodies come from th
 - **ML:** `data-scientist` → fold the useful parts into `scikit-learn` / `statistical-analysis`.
 
 ### Phase 4: fix survivors
+
+Split for review:
+
+- **4a (code-path skills):** `typescript-expert`, `git-advanced-workflows`, `postgres-pro`, `auth-implementation-patterns` (fold its unique Schwab OAuth content into `cc-skill-security-review`, then delete it), `vercel-deployment`, `progressive-web-app`, `playwright-expert`, `unusual-whales-api`.
+- **4b (everything else):** `matplotlib`, `scikit-learn` and `statistical-analysis` (both over 500 lines; move detail to `references/`), `pydantic-models-py`, `zod`, `csv-data-summarizer`, `ui-styling`, and the ALWAYS/MUST description sweep.
+
+Items:
 
 - **Point the done-gate at `npm run review`:** `typescript-expert` and `git-advanced-workflows`. In `git-advanced-workflows`, also remove `git add .` and the force-push examples.
 - **Repo-specific content for generic bodies:**
@@ -130,7 +146,11 @@ Each rewrite must cite real repo files. The reviewer checks every cited path and
 - **Fix `security-reviewer`:** guest keys, `withDbReader` modes, data licensing.
 - **Rewrite `ml-pipeline-analyst`:** the Windows venv path, the `ml/src/utils` package, `ml/conftest.py`, the current phase status.
 - **Delete `codebase-scout`:** its map has been stale since 2026-05-10, and the built-in Explore agent covers it.
-- **Project `CLAUDE.md`:** formatter locations (only `formatSpotExposuresForClaude` is in `db-flow.ts`); the `ml/.venv` path on the Windows workstation.
+- **Project `CLAUDE.md`:**
+  - formatter locations (only `formatSpotExposuresForClaude` is in `db-flow.ts`);
+  - the `ml/.venv` path on the Windows workstation;
+  - "69 numbered migrations" (the highest migration id is 191).
+- **`npm run review:ml` on Windows:** the ml Makefile defaults to `.venv/bin/python`, so the target fails unless `PYTHON` is set. Fix the default for Windows, or document the override.
 
 ### Phase 7: scripts and agent definitions for repeated work (code: full loop, tests required)
 
@@ -177,3 +197,5 @@ None. No tables, migrations, env vars or external APIs. Phase 7's `watch-deploy`
 3. The `code-review` and `pr-review-toolkit` plugins are PR-centric. **Keep for now**, and revisit after the phase 2 listing check.
 4. `.agents/skills/` holds a stale third copy, probably for Codex. **Mirror the deletions and keep the folder.**
 5. Retire `codebase-scout`? **Delete it** (phase 6).
+6. The `periscope` skill still asks for a trailing structured-JSON block. It was written for the deleted `/api/periscope-chat` endpoint. `api/_lib/periscope-synthesize.ts` parses its own prompt's output, not the skill's, so in chat the block isn't consumed. **Keep it until the owner decides.**
+7. `.claude/settings.local.json` allow-lists `Skill(...)` entries for deleted skills (e.g. `data-scientist`). They're harmless. **Leave them**: it's the owner's local permissions file.
