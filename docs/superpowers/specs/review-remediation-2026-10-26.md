@@ -195,7 +195,15 @@ The owner asked for **one implementation stream at a time**. Work the queue in o
 | 9 | Past-date replay integrity | — | Spec written 2026-10-27 | `past-date-replay-integrity-2026-10-27.md`: phase 1 (stop new `market_snapshots` damage) first. |
 | 10 | Database data repair (owner request) | — | Stub spec 2026-10-27 | `db-data-repair-2026-10-27.md`: phase 0 inventory, then per-table repair from the APIs with an owner-approved dry run. Includes Q26. |
 
-**Shipped 2026-10-27 after the close:** S1 part 2 (`3bc4f3e1`), the PR #202 reland (`d676f0b9`), S2 (`6af8981f`; owner login verified after correcting the hash) and BWB round 2 (`187d76a4`). VIX-mode is in its round-5 review.
+**Shipped 2026-10-27 after the close:** S1 part 2 (`3bc4f3e1`), the PR #202 reland (`d676f0b9`), S2 (`6af8981f`; owner login verified after correcting the hash) and BWB round 2 (`187d76a4`). VIX-mode (F4e) shipped at 18:28 as `ff6c2c8d` … `008ce98f` (9 commits, 6 review rounds) and is READY in production. Beyond F4e it fixes:
+- today's live VIX1D and VIX leaking onto past dates;
+- the term-structure card's fallback to live values;
+- σ for past dates without intraday history, taken from the static table or else VIX mode;
+- the fake 18.50/20.10 defaults;
+- stale history from the previous date;
+- a late daily-VIX response overwriting the snapshot's VIX.
+
+The remaining past-date paths are in `past-date-replay-integrity-2026-10-27.md`; its phase 1 is in progress (`rr-integrity1`).
 
 ### Found during implementation (new ledger rows)
 
