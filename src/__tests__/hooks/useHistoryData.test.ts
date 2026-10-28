@@ -688,16 +688,46 @@ describe('useHistoryData: malformed 200 payloads', () => {
     expect((err as Error).message).toBe(
       'history response failed schema validation',
     );
-    expect(options).toEqual(
-      expect.objectContaining({
-        contexts: expect.objectContaining({
-          history: expect.objectContaining({
-            date: '2024-03-04',
-            issues: expect.any(Array),
-          }),
-        }),
+    const context = (
+      options as { contexts: { history: Record<string, unknown> } }
+    ).contexts.history;
+    expect(context.date).toBe('2024-03-04');
+    // Flat "path: message" strings: Sentry would flatten issue objects to
+    // "[Object]" at its depth-3 normalization.
+    const issues = context.issues as unknown[];
+    expect(issues.length).toBeGreaterThan(0);
+    for (const issue of issues) {
+      expect(issue).toEqual(expect.stringMatching(/^[\w.]+: \S/));
+    }
+    expect(issues).toContainEqual(expect.stringMatching(/^spx: /));
+    expect(context.issueCount).toBe(issues.length);
+  });
+
+  it('treats a 2xx body that is not JSON as a failed fetch and reports it', async () => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.reject(new SyntaxError('Unexpected token <')),
       }),
     );
+
+    const { result } = renderHook(() => useHistoryData('2024-03-04'));
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.error).toBe('invalid response (not JSON)');
+    expect(result.current.history).toBeNull();
+    expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
+    const [err, options] = mockCaptureUnlessAuth.mock.calls[0]!;
+    expect((err as Error).message).toBe('history response was not JSON');
+    expect(options).toEqual({
+      contexts: {
+        history: { date: '2024-03-04', detail: 'Unexpected token <' },
+      },
+    });
   });
 
   it('does not report a well-formed response to Sentry', async () => {
@@ -710,6 +740,85 @@ describe('useHistoryData: malformed 200 payloads', () => {
     });
 
     expect(mockCaptureUnlessAuth).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================
+// TESTS: SCHWAB'S OPTIONAL previousClose
+// ============================================================
+
+// api/history.ts passes Schwab's raw previousClose through, and Schwab may
+// leave it out on an empty day, so JSON drops the key. The VIX-family
+// symbols tolerate that (0, as for a failed symbol); SPX stays strict.
+describe("useHistoryData: Schwab's missing previousClose", () => {
+  function withoutPreviousClose(
+    symbol: HistoryResponse['vix'],
+  ): Record<string, unknown> {
+    const rest: Record<string, unknown> = { ...symbol };
+    delete rest.previousClose;
+    return rest;
+  }
+
+  const VIX_FAMILY = ['vix', 'vix1d', 'vix9d', 'vvix'] as const;
+
+  function omitVixFamilyPreviousClose(
+    history: HistoryResponse,
+  ): Record<string, unknown> {
+    const out: Record<string, unknown> = { ...history };
+    for (const key of VIX_FAMILY) out[key] = withoutPreviousClose(history[key]);
+    return out;
+  }
+
+  it('still reports an empty day as "No intraday data available"', async () => {
+    mockHistoryBody(
+      omitVixFamilyPreviousClose({
+        ...mockHistory,
+        spx: { ...mockHistory.spx, candles: [] },
+        candleCount: 0,
+      }),
+    );
+
+    const { result } = renderHook(() => useHistoryData('2024-03-04'));
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.error).toContain('No intraday data available');
+    expect(result.current.history).toBeNull();
+    expect(mockCaptureUnlessAuth).not.toHaveBeenCalled();
+  });
+
+  it('accepts a trading day whose VIX symbols lack it, as 0', async () => {
+    mockHistoryBody(omitVixFamilyPreviousClose(mockHistory));
+
+    const { result } = renderHook(() => useHistoryData('2024-03-04'));
+
+    await waitFor(() => {
+      expect(result.current.hasHistory).toBe(true);
+    });
+
+    expect(result.current.history?.vix.previousClose).toBe(0);
+    // 0 reads as "unknown", the same as a failed symbol's.
+    expect(result.current.getStateAtTime(10, 0)?.vixPrevClose).toBeNull();
+    expect(mockCaptureUnlessAuth).not.toHaveBeenCalled();
+  });
+
+  it('rejects a payload whose SPX lacks it', async () => {
+    mockHistoryBody({
+      ...mockHistory,
+      spx: withoutPreviousClose(mockHistory.spx),
+    });
+
+    const { result } = renderHook(() => useHistoryData('2024-03-04'));
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.error).toBe('invalid response shape');
+    expect(result.current.history).toBeNull();
+    expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
   });
 });
 

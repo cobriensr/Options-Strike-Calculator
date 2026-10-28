@@ -15,6 +15,11 @@ import type {
   HistoryCandle,
   SymbolDayData,
 } from '../types/api';
+import {
+  INVALID_SHAPE_ERROR,
+  NOT_JSON_ERROR,
+  summarizeZodIssues,
+} from '../lib/response-guard';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { getErrorMessage } from '../utils/error';
 import { getETToday, getETTotalMinutes } from '../utils/timezone';
@@ -111,19 +116,28 @@ const historyDaySummarySchema = z.object({
   rangePts: z.number(),
 });
 
-const symbolDayDataSchema = z.object({
+// SPX's previousClose feeds the gap and snapshot math, so it's required.
+const spxDayDataSchema = z.object({
   candles: z.array(historyCandleSchema),
   previousClose: z.number(),
   previousDay: historyDaySummarySchema.nullable(),
 });
 
+// api/history.ts passes Schwab's raw previousClose through, and Schwab may
+// leave it out on an empty day. For the VIX family a missing one becomes 0,
+// which is what the endpoint sends for a failed symbol and what the VIX
+// reads already treat as "unknown".
+const vixFamilyDayDataSchema = spxDayDataSchema.extend({
+  previousClose: z.number().default(0),
+});
+
 const historyResponseSchema: z.ZodType<HistoryResponse> = z.object({
   date: z.string(),
-  spx: symbolDayDataSchema,
-  vix: symbolDayDataSchema,
-  vix1d: symbolDayDataSchema,
-  vix9d: symbolDayDataSchema,
-  vvix: symbolDayDataSchema,
+  spx: spxDayDataSchema,
+  vix: vixFamilyDayDataSchema,
+  vix1d: vixFamilyDayDataSchema,
+  vix9d: vixFamilyDayDataSchema,
+  vvix: vixFamilyDayDataSchema,
   candleCount: z.number(),
   asOf: z.string(),
 });
@@ -147,24 +161,40 @@ async function fetchHistory(
         .catch(() => ({ error: `HTTP ${res.status}` }));
       return { error: body.error || `HTTP ${res.status}` };
     }
-    const json: unknown = await res.json();
+    let json: unknown;
+    try {
+      json = await res.json();
+    } catch (err) {
+      if (isAbortError(err)) throw err;
+      // A 2xx that isn't JSON (an HTML error page, a truncated body).
+      captureUnlessAuth(new Error('history response was not JSON'), {
+        contexts: { history: { date, detail: getErrorMessage(err) } },
+      });
+      return { error: NOT_JSON_ERROR };
+    }
     const parsed = historyResponseSchema.safeParse(json);
     if (!parsed.success) {
       // Backend contract drift: report the Zod issues with the date, then
       // reject the whole payload so nothing malformed is stored.
       captureUnlessAuth(
         new Error('history response failed schema validation'),
-        { contexts: { history: { date, issues: parsed.error.issues } } },
+        {
+          contexts: {
+            history: { date, ...summarizeZodIssues(parsed.error.issues) },
+          },
+        },
       );
-      return { error: 'invalid response shape' };
+      return { error: INVALID_SHAPE_ERROR };
     }
     return { data: parsed.data };
   } catch (err) {
-    if (err instanceof DOMException && err.name === 'AbortError') {
-      return { error: 'AbortError' };
-    }
+    if (isAbortError(err)) return { error: 'AbortError' };
     return { error: getErrorMessage(err) };
   }
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'AbortError';
 }
 
 // ============================================================
