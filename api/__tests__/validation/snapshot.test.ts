@@ -272,6 +272,18 @@ describe('snapshotBodySchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it.each([
+    ['a single-digit month', '2026-5-10'],
+    ['a timestamp', '2026-05-10T09:30:00Z'],
+    ['no separators', '20260510'],
+    ['slashes', '2026/05/10'],
+    ['text', 'today'],
+    ['an empty string', ''],
+  ])('rejects %s as the date (YYYY-MM-DD only)', (_label, date) => {
+    const result = snapshotBodySchema.safeParse({ date, entryTime: '09:30' });
+    expect(result.success).toBe(false);
+  });
+
   it('rejects malformed strikes record entry', () => {
     const result = snapshotBodySchema.safeParse({
       date: '2026-05-10',

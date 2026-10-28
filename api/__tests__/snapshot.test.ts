@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
@@ -15,7 +15,7 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { captureException: vi.fn() },
+  Sentry: { captureException: vi.fn(), captureMessage: vi.fn() },
   metrics: { request: vi.fn(() => vi.fn()), dbSave: vi.fn() },
 }));
 
@@ -33,9 +33,24 @@ import { saveSnapshot } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 
+// The clock is pinned (Date only) to 2026-03-10 11:00 EDT.
+const NOW = '2026-03-10T15:00:00Z';
+const TODAY = '2026-03-10';
+const YESTERDAY = '2026-03-09';
+const TOMORROW = '2026-03-11';
+
 describe('POST /api/snapshot', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(NOW));
     vi.restoreAllMocks();
+    vi.mocked(saveSnapshot).mockReset();
+    vi.mocked(Sentry.captureMessage).mockClear();
+    vi.mocked(logger.warn).mockClear();
     vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
     vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
     vi.mocked(respondIfInvalid).mockReturnValue(false);
@@ -188,5 +203,149 @@ describe('POST /api/snapshot', () => {
     expect(logger.error).toHaveBeenCalledTimes(1);
 
     consoleSpy.mockRestore();
+  });
+
+  // ── The row's date (B2) ─────────────────────────────────────
+  // The clock is pinned to 2026-03-10 11:00 EDT (TODAY). A live save is
+  // today's only: a tab on an old bundle (PWA registerType 'prompt') still
+  // posts live rows under past dates, which the upsert guard would then
+  // protect from the replay that should own them.
+
+  describe('the row’s date', () => {
+    function validating() {
+      vi.mocked(respondIfInvalid).mockImplementation((parsed, res) => {
+        if (!parsed.success) {
+          res.status(400).json({ error: parsed.error.issues[0]?.message });
+          return true;
+        }
+        return false;
+      });
+    }
+
+    it('skips a live save for a past date and reports the stale client', async () => {
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'POST',
+          body: { date: YESTERDAY, entryTime: '10:30 AM CT', spx: 6800 },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({
+        id: null,
+        saved: false,
+        skipped: 'live-for-other-date',
+      });
+      expect(saveSnapshot).not.toHaveBeenCalled();
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'snapshot.live_save_for_other_date',
+        expect.objectContaining({ level: 'warning' }),
+      );
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ date: YESTERDAY, today: TODAY }),
+        expect.stringContaining('live snapshot save for another date'),
+      );
+    });
+
+    it.each([
+      ['isBacktest false', false],
+      ['isBacktest null', null],
+    ])('skips a past-date save with %s as live', async (_label, isBacktest) => {
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'POST',
+          body: { date: YESTERDAY, entryTime: '10:30 AM CT', isBacktest },
+        }),
+        res,
+      );
+
+      expect(saveSnapshot).not.toHaveBeenCalled();
+      expect((res._json as { skipped?: string }).skipped).toBe(
+        'live-for-other-date',
+      );
+    });
+
+    it.each([
+      ['a live save', undefined],
+      ['a backtest save', true],
+    ])('skips %s for a future date', async (_label, isBacktest) => {
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'POST',
+          body: { date: TOMORROW, entryTime: '10:30 AM CT', isBacktest },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({
+        id: null,
+        saved: false,
+        skipped: 'future-date',
+      });
+      expect(saveSnapshot).not.toHaveBeenCalled();
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a live save for today', TODAY, false],
+      ['a backtest save for today (scrubbed back)', TODAY, true],
+      ['a backtest save for a past date', YESTERDAY, true],
+    ])('passes %s through', async (_label, date, isBacktest) => {
+      vi.mocked(saveSnapshot).mockResolvedValue(7);
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'POST',
+          body: { date, entryTime: '10:30 AM CT', isBacktest },
+        }),
+        res,
+      );
+
+      expect(saveSnapshot).toHaveBeenCalledTimes(1);
+      expect(res._json).toEqual({ id: 7, saved: true });
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    });
+
+    it('keys "today" on the ET date, not the UTC date, in the evening', async () => {
+      // 21:00 EDT on 03-10 is 01:00Z on 03-11.
+      vi.setSystemTime(new Date('2026-03-11T01:00:00Z'));
+      vi.mocked(saveSnapshot).mockResolvedValue(8);
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'POST',
+          body: { date: TODAY, entryTime: '8:00 PM CT' },
+        }),
+        res,
+      );
+
+      expect(saveSnapshot).toHaveBeenCalledTimes(1);
+      expect(res._json).toEqual({ id: 8, saved: true });
+    });
+
+    it.each([
+      ['a single-digit month', '2026-3-10'],
+      ['a timestamp', '2026-03-10T10:30:00Z'],
+      ['no separators', '20260310'],
+      ['text', 'today'],
+    ])('rejects %s as the date with a 400', async (_label, date) => {
+      validating();
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'POST',
+          body: { date, entryTime: '10:30 AM CT' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(400);
+      expect(saveSnapshot).not.toHaveBeenCalled();
+    });
   });
 });
