@@ -20,7 +20,7 @@ import { useEffect, useRef } from 'react';
 import type { AmPm, IVMode } from '../types';
 import { IV_MODES } from '../constants';
 import { toETTime } from '../utils/calculator';
-import { getCTTime, getETToday } from '../utils/timezone';
+import { getCTTime, getETToday, isPastETDate } from '../utils/timezone';
 import type { MarketDataState } from './useMarketData';
 import type { UseVixDataReturn } from './useVixData';
 import type { UseHistoryDataReturn, HistorySnapshot } from './useHistoryData';
@@ -76,11 +76,6 @@ interface UseAutoFillInputs {
  */
 const VIX1D_KNOWLEDGE = ['none', 'table', 'history'] as const;
 type Vix1dKnowledge = (typeof VIX1D_KNOWLEDGE)[number];
-
-/** True when `date` (YYYY-MM-DD) is before today's ET date. */
-function isPastDate(date: string): boolean {
-  return !!date && date < getETToday();
-}
 
 export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
   const {
@@ -151,7 +146,7 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     // VIX or VIX1D, which price strikes in VIX and DIRECT mode, nor the
     // switch to DIRECT from VIX1D. The history effect picks that date's mode
     // and σ from the date's own data, with or without intraday history.
-    const pastDate = isPastDate(selectedDate);
+    const pastDate = isPastETDate(selectedDate);
 
     if (q.spy && (live || !spotEdited.current))
       setSpotPrice(q.spy.price.toFixed(2));
@@ -293,7 +288,7 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
       if (q.spy) setSpotPrice(q.spy.price.toFixed(2));
       if (q.spx) setSpxDirect(q.spx.price.toFixed(0));
     }
-    if (isPastDate(selectedDate)) {
+    if (isPastETDate(selectedDate)) {
       // Same rule as a date with history, from the static table alone: its
       // VIX1D for the date, else VIX mode, so the date's daily VIX OHLC
       // (useVixData) drives σ. The table loads as above.

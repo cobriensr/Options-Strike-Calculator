@@ -8,7 +8,7 @@ import VIXRegimeCard from '../VIXRegimeCard';
 import VIXTermStructure from '../VIXTermStructure';
 import type { MarketDataState } from '../../hooks/useMarketData';
 import type { HistorySnapshot } from '../../hooks/useHistoryData';
-import { getETToday } from '../../utils/timezone';
+import { isPastETDate } from '../../utils/timezone';
 import IVTooltip from './IVTooltip';
 
 interface Props {
@@ -81,7 +81,7 @@ export default function IVInputSection({
   // historySnapshot is always the selected date's (useAutoFill drops another
   // date's history while the selected date's loads). Today keeps the
   // fallback, with or without its own snapshot.
-  const pastDate = !!selectedDate && selectedDate < getETToday();
+  const pastDate = isPastETDate(selectedDate);
   const liveQuotes = pastDate ? null : market.data.quotes;
   // Remount the card when its source changes, so a value it took from an
   // earlier source (today's live VIX1D, say) can't stay on a past date.

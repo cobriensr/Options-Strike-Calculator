@@ -207,6 +207,9 @@ describe('useHistoryData: basic behavior', () => {
     const { result } = renderHook(() => useHistoryData('2099-12-31'));
     expect(result.current.history).toBeNull();
     expect(result.current.hasHistory).toBe(false);
+    // Skipped before the fetch: api/history rejects future dates.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.current.loading).toBe(false);
   });
 
   it('fetches history for a past date', async () => {

@@ -15,7 +15,7 @@ import type {
   SymbolDayData,
 } from '../types/api';
 import { getErrorMessage } from '../utils/error';
-import { getETTotalMinutes } from '../utils/timezone';
+import { getETToday, getETTotalMinutes } from '../utils/timezone';
 import { getMarketCloseHourET } from '../data/marketHours';
 
 // ============================================================
@@ -228,11 +228,7 @@ export function useHistoryData(selectedDate: string): UseHistoryDataReturn {
       return;
     }
 
-    const now = new Date();
-    const todayET = now.toLocaleDateString('en-CA', {
-      timeZone: 'America/New_York',
-    });
-    if (selectedDate > todayET) {
+    if (selectedDate > getETToday()) {
       setHistory(null);
       setError(null);
       return;

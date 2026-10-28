@@ -9,7 +9,7 @@ import {
   loadStaticVixData,
 } from '../utils/vixStorage';
 import { to24Hour } from '../utils/calculator';
-import { convertCTToET, getETToday } from '../utils/timezone';
+import { convertCTToET, isPastETDate } from '../utils/timezone';
 
 type AmPm = 'AM' | 'PM';
 type Timezone = 'ET' | 'CT';
@@ -27,9 +27,7 @@ export type OHLCField = 'smart' | 'open' | 'high' | 'low' | 'close';
  * effects, so the picked field shows.
  */
 function fillsDailyVix(ivMode: IVMode, selectedDate: string): boolean {
-  return (
-    ivMode === IV_MODES.VIX || (!!selectedDate && selectedDate < getETToday())
-  );
+  return ivMode === IV_MODES.VIX || isPastETDate(selectedDate);
 }
 
 export interface UseVixDataReturn {
