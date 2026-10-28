@@ -54,6 +54,17 @@ A diagnosis on 2026-10-26 traced the failure. Logs, a standalone Playwright prob
 - Let CI run the suite, now visible and failing fast. Triage the remaining failures, including the pre-06-07 break, into real app bugs and stale specs.
 - Fix them spec by spec, at most 5 files per commit.
 
+**Triage (2026-10-28, read-only investigation).** Logs are in that session's scratchpad (`C:\Users\Charlie\AppData\Local\Temp\claude\f--dev-strike-calculator\e48cf716-4d40-43b9-8a64-ec912ca7ab36\scratchpad\`).
+
+- **No regression since Phase 1.** E2E has never passed on main: 600 runs back to 2026-05-17 show 0 success, 211 cancelled, 14 failure, 371 skipped. The first run able to finish was `d15e0e2f` (2026-10-26). The same 10 tests fail and the same 5 pass in every run since (`d15e0e2f`, `163c42c8`, `a0d179c2`, `b93d784a`). `maxFailures: 10` stops the run, so 175 tests have never executed. Expect more failures once these are fixed.
+- **Five causes**, all stale specs or test harness, none from the CI environment:
+  - **(a) Chip role.** `ae2c1c7a` (2026-04-04) changed `Chip` from `role="radio"` + `aria-checked` to a button with `aria-pressed`. 108 `getByRole('radio', { name: 'AM'|'ET'… })` calls across 24 specs still look for radios. This fails the a11y-automated results scan and accessibility's radio-chips and ARIA-landmarks tests, and is probably behind most of the unexecuted tests (a guess). Fix: a shared `e2e/helpers` entry-time helper, with `getByRole('button', { name, pressed })` and `aria-pressed` assertions.
+  - **(b) Collapsed sections.** `e3f269cc` (2026-05-03) passes `defaultCollapsed` to Advanced, IV, Risk and others, so "Put Skew", "VIX Value" and "What is the 0DTE adjustment?" aren't rendered until the section is opened. Fix: click "Toggle Advanced" / "Toggle Implied Volatility" first.
+  - **(c) Iron Condor name clash.** `1e0ed9b6` (2026-04-06) added a header button labelled "Toggle Iron Condor (20-pt wings)", so `getByRole('button', { name: /Iron Condor/ })` matches 2 elements (a strict-mode violation). Fix: `{ name: /^(Hide|Show) Iron Condor$/ }`.
+  - **(d) Weekday-only crash from the fetch mock.** `e2e/helpers/mock-fetch.ts` answers unmocked `/api/*` with `{}`. On a trading day `useHistoryData` fetches `/api/history`, stores `{}`, and `App.tsx:945` `historyData.history?.spx.candles` throws, leaving only the error boundary. This hits the 9 specs that use the mock without stubbing `/api/history`, including both a11y-live-data tests. It's the only clock dependence: weekends and holidays skip the fetch. Fix: default `/api/history` to `{ candleCount: 0 }` in the mock. **Owner decision:** whether the app should also validate the history payload's shape, so a malformed response can't take the page down.
+  - **(e) Tab-order budget.** With owner-mode header buttons (dev builds run as owner) and 18 sidebar links, SPY Price is the 40th tab stop, the last one the loop checks, so the test passes or fails by one stop (CI saw "Expected > 39, Received -1"). Fix: raise the limit, or start from the Date input.
+- **Local repro:** `npx playwright test e2e/accessibility.spec.ts --project=chromium` gave 3 failed, 4 passed, matching CI's errors for (a) and (b). Tab order passed locally.
+
 ### Phase 3: speed and scope (needs owner decisions)
 
 - **Parallelism.** Use 2–4 workers on CI (ubuntu-latest has 4 vCPU), or a matrix per browser. Runner minutes are free for a public repo.
