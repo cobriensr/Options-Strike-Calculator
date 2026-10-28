@@ -86,10 +86,40 @@ export function getETToday(): string {
 /**
  * True when `date` (YYYY-MM-DD) is before today's ET date. False for
  * today, a future date and an empty string. The one past-date check for
- * a selected calendar date: ET, not the browser's zone or CT.
+ * a selected calendar date: ET, not the browser's zone or CT. `today`
+ * defaults to the clock's ET date; pass one to compare with a date
+ * already read (one clock read for several checks).
  */
-export function isPastETDate(date: string): boolean {
-  return !!date && date < getETToday();
+export function isPastETDate(
+  date: string,
+  today: string = getETToday(),
+): boolean {
+  return !!date && date < today;
+}
+
+/**
+ * How far behind the ET clock today's selected time may sit and still be
+ * "now". The live time sync snaps the time down to 5 minutes, so the
+ * selected time lags the clock by up to 4 minutes 59 seconds.
+ */
+const REPLAY_LAG_MINUTES = 5;
+
+/**
+ * True when the selected moment is history, not now: a past date at any
+ * time, or today at a time more than REPLAY_LAG_MINUTES behind the ET
+ * clock (today scrubbed back, replayed from its 5-minute history). False
+ * for today at the current time, a future date and an empty date.
+ * `etMinutes` is the selected time in minutes past ET midnight.
+ */
+export function isBacktestMode(
+  date: string,
+  etMinutes: number,
+  now: Date = new Date(),
+): boolean {
+  const today = getETDateStr(now);
+  if (isPastETDate(date, today)) return true;
+  if (date !== today) return false;
+  return etMinutes < getETTotalMinutes(now) - REPLAY_LAG_MINUTES;
 }
 
 /** Get the current CT date as YYYY-MM-DD. */

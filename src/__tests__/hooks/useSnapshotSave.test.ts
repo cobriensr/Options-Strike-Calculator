@@ -43,8 +43,9 @@ const defaultSignals: ComputedSignals = {
   vix9d: undefined,
   vvix: undefined,
   sigmaSource: 'VIX × 1.15',
-  etHour: 9,
-  etMinute: 35,
+  // The entry time in ET: NOW's, so a save for TODAY is a live one.
+  etHour: 11,
+  etMinute: 0,
   regimeZone: null,
   dowLabel: null,
   dowMultHL: null,
@@ -405,10 +406,11 @@ describe('useSnapshotSave — which dates save', () => {
   });
 
   it('treats the date as today up to ET midnight and as past after it', () => {
-    // 23:59 EDT on 03-10.
+    // 23:59 EDT on 03-10, with the entry time synced to it.
     vi.setSystemTime(new Date('2026-03-11T03:59:00Z'));
+    const lateSignals = { ...defaultSignals, etHour: 23, etMinute: 59 };
     const { rerender } = renderHook(
-      ({ meta }) => useSnapshotSave(makeResults(), defaultSignals, meta, true),
+      ({ meta }) => useSnapshotSave(makeResults(), lateSignals, meta, true),
       { initialProps: { meta: { ...baseMeta, entryTime: '10:59 PM CT' } } },
     );
     expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -430,6 +432,87 @@ describe('useSnapshotSave — which dates save', () => {
     });
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(body(1).isBacktest).toBe(true);
+  });
+});
+
+// ============================================================
+// TODAY SCRUBBED BACK (a replay of today's history)
+// ============================================================
+
+describe('useSnapshotSave — today scrubbed back more than 5 minutes', () => {
+  /** The entry time 10:30 ET, half an hour before NOW (11:00 ET). */
+  const scrubbed = { ...defaultSignals, etHour: 10, etMinute: 30 };
+  /** Today's history at 10:30: SPX 5490, SPY 549, VIX 18.2. */
+  const todayAt1030 = { date: TODAY, spot: 5490, spy: 549, vix: 18.2 };
+  const replayMeta: SnapshotMeta = {
+    ...baseMeta,
+    entryTime: '9:30 AM CT',
+    history: todayAt1030,
+    spy: 549,
+    vix: 18.2,
+  };
+
+  it('saves as a backtest row once the inputs carry today’s history at that time', () => {
+    // useAutoFill fills a scrubbed-back today from its 5-minute history,
+    // not from the live quotes.
+    renderHook(() =>
+      useSnapshotSave(makeResults({ spot: 5490 }), scrubbed, replayMeta, true),
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(body().date).toBe(TODAY);
+    expect(body().spx).toBe(5490);
+    expect(body().isBacktest).toBe(true);
+  });
+
+  it('makes no save call while the inputs still hold the live quotes', () => {
+    // Inputs that match the live quote are not that time's data.
+    renderHook(() =>
+      useSnapshotSave(
+        makeResults({ spot: 5500 }),
+        scrubbed,
+        { ...replayMeta, spy: 550, vix: 18 },
+        true,
+      ),
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('makes no save call without today’s history', () => {
+    renderHook(() =>
+      useSnapshotSave(
+        makeResults({ spot: 5500 }),
+        scrubbed,
+        { ...baseMeta, entryTime: '9:30 AM CT', history: null },
+        true,
+      ),
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('makes no save call when only the SPX matches today’s history', () => {
+    // The live SPY is never SPX / 10 to the cent.
+    renderHook(() =>
+      useSnapshotSave(
+        makeResults({ spot: 5490 }),
+        scrubbed,
+        { ...replayMeta, spy: 547.83 },
+        true,
+      ),
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('still saves the time within 5 minutes of now as live', () => {
+    // The live time sync snaps the entry time down to 5 minutes.
+    const synced = { ...defaultSignals, etHour: 10, etMinute: 55 };
+    renderHook(() => useSnapshotSave(makeResults(), synced, baseMeta, true));
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(body().isBacktest).toBe(false);
   });
 });
 

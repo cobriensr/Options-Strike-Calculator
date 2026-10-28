@@ -19,6 +19,7 @@ import {
   getETDateStr,
   getETToday,
   isPastETDate,
+  isBacktestMode,
   getCTDateStr,
   getETDayOfWeek,
   getCTDayOfWeek,
@@ -155,6 +156,58 @@ describe('isPastETDate', () => {
     const today = getETToday();
     expect(isPastETDate(today)).toBe(false);
     expect(today).toBe('2026-03-05');
+  });
+
+  it('compares with a given today instead of the clock', () => {
+    at('2026-03-04T15:00:00Z');
+    expect(isPastETDate('2026-03-04', '2026-03-05')).toBe(true);
+    expect(isPastETDate('2026-03-04', '2026-03-04')).toBe(false);
+    expect(isPastETDate('', '2026-03-05')).toBe(false);
+  });
+});
+
+describe('isBacktestMode', () => {
+  // 11:00 EDT on Tue 2026-03-10 (660 ET minutes).
+  const NOW = new Date('2026-03-10T15:00:00Z');
+  const m = (h: number, min: number) => h * 60 + min;
+
+  it.each([
+    // [label, date, ET minutes of the selected time, expected]
+    ['a past date, any time', '2026-03-09', m(15, 55), true],
+    ['a past date at the same clock time', '2026-03-09', m(11, 0), true],
+    ['a future date, even at an earlier time', '2026-03-11', m(9, 30), false],
+    ['an empty date', '', m(9, 30), false],
+    ['today at the current time', '2026-03-10', m(11, 0), false],
+    [
+      'today 5 minutes back (the time sync snaps down)',
+      '2026-03-10',
+      m(10, 55),
+      false,
+    ],
+    ['today 6 minutes back', '2026-03-10', m(10, 54), true],
+    ['today scrubbed back to the open', '2026-03-10', m(9, 30), true],
+    ['today ahead of the clock', '2026-03-10', m(15, 0), false],
+  ])('%s → %s', (_label, date, etMinutes, expected) => {
+    expect(isBacktestMode(date, etMinutes, NOW)).toBe(expected);
+  });
+
+  it('keys on the ET date of `now`, not the UTC date', () => {
+    // 21:00 EDT on 03-10 is 01:00Z on 03-11.
+    const evening = new Date('2026-03-11T01:00:00Z');
+    expect(isBacktestMode('2026-03-10', m(21, 0), evening)).toBe(false);
+    expect(isBacktestMode('2026-03-10', m(15, 0), evening)).toBe(true);
+    expect(isBacktestMode('2026-03-11', m(9, 30), evening)).toBe(false);
+  });
+
+  it('reads the clock when no `now` is given', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+    try {
+      expect(isBacktestMode('2026-03-10', m(10, 54))).toBe(true);
+      expect(isBacktestMode('2026-03-10', m(10, 55))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

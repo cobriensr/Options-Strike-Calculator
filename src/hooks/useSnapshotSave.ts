@@ -6,13 +6,14 @@
  * so public visitors never trigger writes.
  *
  * A row's date must own its data, so the selected date decides the save:
- *   - Today (ET): a live row (is_backtest false), with or without today's
- *     intraday history, once the inputs carry today's data: the SPX and
- *     VIX inputs each match the live quote or today's history at the
- *     entry time.
- *   - A past date with its own intraday history: a backtest row
- *     (is_backtest true), once the inputs carry that history's SPX and SPY
- *     at the entry time.
+ *   - Today (ET) at the current time: a live row (is_backtest false), with
+ *     or without today's intraday history, once the inputs carry today's
+ *     data: the SPX and VIX inputs each match the live quote or today's
+ *     history at the entry time.
+ *   - A past date with its own intraday history, or today scrubbed back
+ *     more than 5 minutes (isBacktestMode): a backtest row (is_backtest
+ *     true), once the inputs carry that history's SPX and SPY at the entry
+ *     time. On today the upsert never lets it replace the live row.
  *   - A past date without its own history, or a future date: no save. The
  *     inputs then hold today's live quotes or another date's history.
  * Nothing saves while a debounced input still lags its raw value, or
@@ -24,7 +25,7 @@
 
 import { useEffect, useRef } from 'react';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
-import { getETToday, isPastETDate } from '../utils/timezone';
+import { getETDateStr, isBacktestMode } from '../utils/timezone';
 import type { CalculationResults } from '../types';
 import type { QuotesResponse } from '../types/api';
 import type { ComputedSignals } from './useComputedSignals';
@@ -153,12 +154,15 @@ function near(
 }
 
 /**
- * Which row a save for `date` writes: 'live' for today once its inputs
- * carry today's data, 'backtest' for a past date whose own history the
- * inputs already carry, else null (none).
+ * Which row a save for `date` at `etMinutes` (the entry time, minutes past
+ * ET midnight) writes: 'backtest' for a past date, or today scrubbed back
+ * more than 5 minutes, whose own history the inputs already carry; 'live'
+ * for today at the current time once its inputs carry today's data; else
+ * null (none).
  */
 function rowKind(
   date: string,
+  etMinutes: number,
   spot: number,
   meta: SnapshotMeta,
 ): 'live' | 'backtest' | null {
@@ -167,22 +171,26 @@ function rowKind(
   // new one loads) means the inputs may still be that date's.
   if (history != null && history.date !== date) return null;
 
-  if (date === getETToday()) {
-    const live = meta.live ?? null;
-    const spotIsToday =
-      near(spot, live?.spot, SPX_TOLERANCE) ||
-      near(spot, history?.spot, SPX_TOLERANCE);
-    const vixIsToday =
-      near(meta.vix, live?.vix, VIX_TOLERANCE) ||
-      near(meta.vix, history?.vix, VIX_TOLERANCE);
-    return spotIsToday && vixIsToday ? 'live' : null;
+  const now = new Date();
+  if (isBacktestMode(date, etMinutes, now)) {
+    // A replay: useAutoFill fills the inputs from the date's history at the
+    // entry time. On today the upsert keeps a live row at that time.
+    if (history == null) return null;
+    return near(spot, history.spot, SPX_TOLERANCE) &&
+      near(meta.spy, history.spy, SPY_TOLERANCE)
+      ? 'backtest'
+      : null;
   }
 
-  if (!isPastETDate(date) || history == null) return null;
-  return near(spot, history.spot, SPX_TOLERANCE) &&
-    near(meta.spy, history.spy, SPY_TOLERANCE)
-    ? 'backtest'
-    : null;
+  if (date !== getETDateStr(now)) return null;
+  const live = meta.live ?? null;
+  const spotIsToday =
+    near(spot, live?.spot, SPX_TOLERANCE) ||
+    near(spot, history?.spot, SPX_TOLERANCE);
+  const vixIsToday =
+    near(meta.vix, live?.vix, VIX_TOLERANCE) ||
+    near(meta.vix, history?.vix, VIX_TOLERANCE);
+  return spotIsToday && vixIsToday ? 'live' : null;
 }
 
 /**
@@ -214,7 +222,8 @@ export function useSnapshotSave(
     if (!results || !enabled) return;
     if (!meta.selectedDate || !meta.entryTime) return;
     if (inputsPending) return;
-    const kind = rowKind(meta.selectedDate, results.spot, {
+    const etMinutes = signals.etHour * 60 + signals.etMinute;
+    const kind = rowKind(meta.selectedDate, etMinutes, results.spot, {
       history:
         historyDate == null || historySpot == null || historySpy == null
           ? null
