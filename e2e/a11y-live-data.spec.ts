@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { openSection, setEntryTime } from './helpers/calculator';
 import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
+import type { MoversResponse } from '../src/types/api';
 
 const MOCK_YESTERDAY = {
   yesterday: {
@@ -17,13 +18,34 @@ const MOCK_YESTERDAY = {
   asOf: '2026-03-28T08:00:00Z',
 };
 
-const MOCK_MOVERS = {
-  up: [
-    { symbol: 'AAPL', description: 'Apple Inc', change: 2.5, volume: 1000000 },
-  ],
-  down: [
-    { symbol: 'TSLA', description: 'Tesla Inc', change: -3.1, volume: 800000 },
-  ],
+// Typed against the API so the fixture can't drift: the old one had no
+// `analysis`, which crashes Pre-Trade Signals once Market Regime is open.
+const AAPL = {
+  symbol: 'AAPL',
+  name: 'Apple Inc',
+  change: 2.5,
+  price: 200,
+  volume: 1000000,
+};
+const TSLA = {
+  symbol: 'TSLA',
+  name: 'Tesla Inc',
+  change: -3.1,
+  price: 250,
+  volume: 800000,
+};
+const MOCK_MOVERS: MoversResponse = {
+  up: [AAPL],
+  down: [TSLA],
+  analysis: {
+    concentrated: false,
+    megaCapCount: 1,
+    megaCapSymbols: ['AAPL'],
+    bias: 'mixed',
+    topUp: AAPL,
+    topDown: TSLA,
+  },
+  marketOpen: true,
   asOf: new Date().toISOString(),
 };
 
@@ -65,13 +87,25 @@ test.describe('Accessibility with Live Data', () => {
     // Set explicit entry time so results render regardless of wall-clock
     await setEntryTime(page);
 
-    // Wait for live-data components to render (Term Structure appears in
-    // the collapsed-by-default IV section when VIX is set, which auto-fill
-    // handles from mock quotes)
-    await openSection(page, 'Implied Volatility');
+    // Open the sections that start collapsed, so the scan covers their
+    // live-data content, not just their headers
+    for (const label of [
+      'Implied Volatility',
+      'Advanced',
+      'Risk Calculator',
+      'Market Regime',
+      'Chart Analysis',
+    ]) {
+      await openSection(page, label);
+    }
+
+    // Wait for live-data components to render: Term Structure (IV section)
+    // appears when VIX is set, which auto-fill handles from mock quotes, and
+    // Pre-Trade Signals (Market Regime) reads the mocked movers
     await expect(page.getByText('Term Structure', { exact: true })).toBeVisible(
       { timeout: 10000 },
     );
+    await expect(page.getByText('Move Breadth')).toBeVisible();
 
     const violations = await scanA11y(page);
     expect(violations).toEqual([]);
@@ -87,9 +121,15 @@ test.describe('Accessibility with Live Data', () => {
     );
     await page.goto('/');
 
-    // Wait for Chart Analysis section to appear (requires hasData = true)
+    // Wait for Chart Analysis section to appear (requires hasData = true),
+    // then open it: collapsed, it renders only its header
     const section = page.locator('section[aria-label="Chart Analysis"]');
     await expect(section).toBeVisible({ timeout: 15000 });
+    await openSection(page, 'Chart Analysis');
+    await expect(section.getByText('Pre-Trade')).toBeVisible();
+    await expect(
+      section.getByText(/Drop or click to upload|paste/).first(),
+    ).toBeVisible();
 
     // Run axe scan scoped to the chart analysis section
     const results = await new AxeBuilder({ page })
