@@ -20,7 +20,7 @@ import type {
 import type { CalculationResults } from '../types';
 import type { ComputedSignals } from './useComputedSignals';
 import type { ChainResponse, ChainStrike, EventItem } from '../types/api';
-import type { HistorySnapshot } from './useHistoryData';
+import { isPastETDate } from '../utils/timezone';
 
 /**
  * For a given target rung (absolute delta in %), find the nearest-|delta|
@@ -93,7 +93,6 @@ export interface UseAnalysisContextParams {
   dVix: string;
   signals: ComputedSignals;
   clusterMult: number;
-  historySnapshot: HistorySnapshot | null;
   events: readonly EventItem[] | undefined;
   chain: ChainResponse | null;
   gexLandscapeBias?: string | null;
@@ -110,7 +109,6 @@ export function useAnalysisContext({
   dVix,
   signals,
   clusterMult,
-  historySnapshot,
   events,
   chain,
   gexLandscapeBias,
@@ -159,7 +157,11 @@ export function useAnalysisContext({
           signals.overnightGap == null
             ? undefined
             : String(signals.overnightGap),
-        isBacktest: !!historySnapshot,
+        // The selected date decides, not whether it has intraday history:
+        // today has history from its first candle, and analyze skips the
+        // live-only context (positions, SPX candles, midday chain) on a
+        // backtest.
+        isBacktest: isPastETDate(selectedDate),
         dataNote: signals.dataNote,
         events: (events ?? [])
           .filter(
@@ -237,7 +239,6 @@ export function useAnalysisContext({
       dVix,
       signals,
       clusterMult,
-      historySnapshot,
       events,
       chain,
       gexLandscapeBias,

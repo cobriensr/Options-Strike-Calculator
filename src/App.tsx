@@ -754,7 +754,6 @@ export default function StrikeCalculator() {
     dVix,
     signals,
     clusterMult,
-    historySnapshot,
     events: market.data.events?.events,
     chain: chainData.chain,
     gexLandscapeBias: gexBiasContext,

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import { useAnalysisContext } from '../../hooks/useAnalysisContext';
 import type { UseAnalysisContextParams } from '../../hooks/useAnalysisContext';
@@ -105,7 +105,6 @@ function makeParams(
       dataNote: undefined,
     } as ComputedSignals,
     clusterMult: 1.0,
-    historySnapshot: null,
     events: undefined,
     chain: null,
     ...overrides,
@@ -299,19 +298,38 @@ describe('useAnalysisContext', () => {
   });
 
   // ── 8. isBacktest flag ────────────────────────────────────
-  it('sets isBacktest false when historySnapshot is null', () => {
-    const ctx = compute({ historySnapshot: null });
-    expect(ctx.isBacktest).toBe(false);
-  });
-
-  it('sets isBacktest true when historySnapshot is non-null', () => {
-    const ctx = compute({
-      historySnapshot: {
-        spot: 5700,
-        spy: 570,
-      } as UseAnalysisContextParams['historySnapshot'],
+  // The flag follows the selected date (ET). The hook takes no history, so
+  // whether the date has intraday history can't flip it: it used to be
+  // !!historySnapshot, true on today from its first candle, which made
+  // analyze drop positions, SPX candles and the midday chain live. The
+  // clock is pinned to 2026-03-24 11:00 EDT.
+  describe('isBacktest', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-03-24T15:00:00Z'));
     });
-    expect(ctx.isBacktest).toBe(true);
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('is false for today, with or without its intraday history', () => {
+      expect(compute({ selectedDate: '2026-03-24' }).isBacktest).toBe(false);
+    });
+
+    it.each([
+      ['the day before, which has intraday history', '2026-03-23'],
+      // Analyze must not fetch today's positions and candles for it.
+      ['a date months back, without intraday history', '2025-12-31'],
+    ])('is true for a past date: %s', (_label, date) => {
+      expect(compute({ selectedDate: date }).isBacktest).toBe(true);
+    });
+
+    it('turns true for the date at ET midnight', () => {
+      vi.setSystemTime(new Date('2026-03-25T03:59:00Z')); // 23:59 EDT
+      expect(compute({ selectedDate: '2026-03-24' }).isBacktest).toBe(false);
+      vi.setSystemTime(new Date('2026-03-25T04:00:00Z')); // 00:00 EDT
+      expect(compute({ selectedDate: '2026-03-24' }).isBacktest).toBe(true);
+    });
   });
 
   // ── 9. Events filtering ───────────────────────────────────
