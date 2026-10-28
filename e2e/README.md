@@ -1,6 +1,6 @@
 # End-to-end tests
 
-Playwright suites covering the calculator UI, analyze flow, and a11y compliance. ~34 specs across 3 browsers (chromium, firefox, webkit).
+Playwright suites covering the calculator UI, analyze flow, and a11y compliance. 39 specs across 3 browsers (chromium, firefox, webkit).
 
 ## Run
 
@@ -27,7 +27,7 @@ The dev server is auto-managed by Playwright (`webServer` block in [playwright.c
 - **`chart-analysis-*.spec.ts`** — Anthropic analyze endpoint (mocked).
 - **`responsive.spec.ts`** — viewport breakpoint coverage.
 - **`*.spec.ts`** — feature-area suites mirroring `src/components/` folders.
-- **`helpers/`** — shared utilities. `mock-fetch.ts` stubs `fetch()` responses so suites don't require a populated DB.
+- **`helpers/`** — shared utilities. `mock-fetch.ts` stubs `fetch()` responses so suites don't require a populated DB; any `/api/` call a spec doesn't mock fails like an unreachable backend. `calculator.ts` finds `Chip` toggles (buttons with `aria-pressed`), opens collapsed sections and sets the entry time.
 
 ## Conventions
 
@@ -44,7 +44,8 @@ The dev server is auto-managed by Playwright (`webServer` block in [playwright.c
 
 ## CI
 
-`e2e` runs in `.github/workflows/ci.yml` only when files under `e2e/` or `api/` change. PRs that touch only `src/components/` skip E2E by design (covered by unit tests).
+- **`.github/workflows/ci.yml`** (job "E2E Tests"): chromium only, on pushes to main, PRs and manual dispatch, when a file the browser loads changes: `src/**`, `e2e/**`, `playwright.config.ts`, `vite.config.ts`, `tsconfig.json`, `index.html`, `public/**`, `package.json`, `package-lock.json` or either workflow file. `api/`-only changes skip it, because the specs stub `/api`. It stops after 10 failed tests.
+- **`.github/workflows/e2e-nightly.yml`**: all three browsers, weekdays at 23:00 UTC and on manual dispatch, with no path filter and `--max-failures=0`.
 
 ## Live DOM gotcha
 
