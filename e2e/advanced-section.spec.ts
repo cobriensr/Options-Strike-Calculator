@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { chip, fillVix, openSection, setEntryTime } from './helpers/calculator';
 
 /**
  * Tests for the Advanced section: put skew slider, iron condor toggle,
@@ -8,6 +9,8 @@ test.describe('Advanced Section', () => {
   test.beforeEach(async ({ page }) => {
     await page.route('**/api/**', (route) => route.abort());
     await page.goto('/');
+    // Advanced starts collapsed
+    await openSection(page, 'Advanced');
   });
 
   test('put skew slider displays current value', async ({ page }) => {
@@ -17,7 +20,10 @@ test.describe('Advanced Section', () => {
   });
 
   test('hide/show iron condor toggle works', async ({ page }) => {
-    const toggleBtn = page.getByRole('button', { name: /Iron Condor/ });
+    // Anchored: the results header also has a "Toggle Iron Condor (…)" button
+    const toggleBtn = page.getByRole('button', {
+      name: /^(Hide|Show) Iron Condor$/,
+    });
     await expect(toggleBtn).toHaveText('Hide Iron Condor');
 
     await toggleBtn.click();
@@ -36,17 +42,15 @@ test.describe('Advanced Section', () => {
 
   test('wing width chip selection changes value', async ({ page }) => {
     // Default is 20
-    const wingGroup = page.getByRole('radiogroup', {
+    const wingGroup = page.getByRole('group', {
       name: 'Iron condor wing width',
     });
     await expect(wingGroup).toBeVisible();
 
     // Click 10-pt wing
-    await wingGroup.getByRole('radio', { name: '10', exact: true }).click();
+    await chip(wingGroup, '10').click();
     // The 10 chip should now be active
-    await expect(
-      wingGroup.getByRole('radio', { name: '10', exact: true }),
-    ).toHaveAttribute('aria-checked', 'true');
+    await expect(chip(wingGroup, '10')).toHaveAttribute('aria-pressed', 'true');
   });
 
   test('contracts counter increment and decrement', async ({ page }) => {
@@ -70,15 +74,12 @@ test.describe('Advanced Section', () => {
   });
 
   test('changing wing width updates iron condor results', async ({ page }) => {
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await setEntryTime(page);
 
     // Fill inputs to produce results
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
-    await page.getByLabel('VIX Value').fill('19');
+    await fillVix(page, '19');
 
     const results = page.locator('#results');
     await expect(results.getByText('Iron Condor').first()).toBeVisible({
@@ -91,10 +92,10 @@ test.describe('Advanced Section', () => {
     });
 
     // Switch to 10-pt wings
-    const wingGroup = page.getByRole('radiogroup', {
+    const wingGroup = page.getByRole('group', {
       name: 'Iron condor wing width',
     });
-    await wingGroup.getByRole('radio', { name: '10' }).click();
+    await chip(wingGroup, '10').click();
 
     await expect(results.getByText('10-pt wings')).toBeVisible();
   });

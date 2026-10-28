@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { fillVix, setEntryTime } from './helpers/calculator';
 
 test.describe('Parameter Summary', () => {
   test.beforeEach(async ({ page }) => {
@@ -9,14 +10,11 @@ test.describe('Parameter Summary', () => {
   test('displays calculation parameters after valid input', async ({
     page,
   }) => {
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await setEntryTime(page);
 
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
-    await page.getByLabel('VIX Value').fill('19');
+    await fillVix(page, '19');
 
     await expect(
       page.locator('#results').getByText('All Delta Strikes'),
@@ -34,14 +32,11 @@ test.describe('Parameter Summary', () => {
   });
 
   test('shows hours left', async ({ page }) => {
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await setEntryTime(page);
 
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
-    await page.getByLabel('VIX Value').fill('19');
+    await fillVix(page, '19');
 
     await expect(
       page.locator('#results').getByText('All Delta Strikes'),
@@ -54,14 +49,11 @@ test.describe('Parameter Summary', () => {
   });
 
   test('shows sigma value', async ({ page }) => {
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await setEntryTime(page);
 
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
-    await page.getByLabel('VIX Value').fill('19');
+    await fillVix(page, '19');
 
     await expect(
       page.locator('#results').getByText('All Delta Strikes'),
@@ -75,14 +67,11 @@ test.describe('Parameter Summary', () => {
   });
 
   test('parameters update when inputs change', async ({ page }) => {
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await setEntryTime(page);
 
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
-    await page.getByLabel('VIX Value').fill('19');
+    await fillVix(page, '19');
 
     await expect(
       page.locator('#results').getByText('All Delta Strikes'),

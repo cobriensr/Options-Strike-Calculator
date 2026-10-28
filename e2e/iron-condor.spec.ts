@@ -1,14 +1,12 @@
 import { test, expect, type Page } from '@playwright/test';
+import { fillVix, openSection, setEntryTime } from './helpers/calculator';
 
 async function fillAndGetResults(page: Page) {
-  await page.getByLabel('Hour').selectOption('10');
-  await page.getByLabel('Minute').selectOption('00');
-  await page.getByRole('radio', { name: 'AM' }).click();
-  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+  await setEntryTime(page);
 
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');
-  await page.getByLabel('VIX Value').fill('19');
+  await fillVix(page, '19');
 
   const results = page.locator('#results');
   await expect(results.getByText('All Delta Strikes')).toBeVisible({
@@ -50,9 +48,9 @@ test.describe('Iron Condor Section', () => {
 
     // Should show IC Δ chip selector
     await expect(results.getByText('IC \u0394')).toBeVisible();
-    // Multiple delta options as radio buttons
-    const deltaRadios = results.getByRole('radio');
-    expect(await deltaRadios.count()).toBeGreaterThanOrEqual(6);
+    // Multiple delta options as toggle buttons (IC Δ and Hedge Δ chips)
+    const deltaChips = results.getByRole('button', { name: /^\d+\u0394$/ });
+    expect(await deltaChips.count()).toBeGreaterThanOrEqual(6);
   });
 
   test('contracts change updates P&L dollar values', async ({ page }) => {
@@ -61,7 +59,8 @@ test.describe('Iron Condor Section', () => {
     // Get initial total values
     const initialText = await results.textContent();
 
-    // Change contracts from 20 to 1
+    // Change contracts from 20 to 1 (Advanced starts collapsed)
+    await openSection(page, 'Advanced');
     const contractsInput = page
       .locator('section[aria-label="Advanced"]')
       .getByLabel('Number of contracts');
@@ -76,10 +75,10 @@ test.describe('Iron Condor Section', () => {
     const results = await fillAndGetResults(page);
     await expect(results.getByText('Iron Condor').first()).toBeVisible();
 
-    // Click "Hide Iron Condor"
+    // Click "Hide Iron Condor" by its exact name: the results header also
+    // has a "Toggle Iron Condor (…)" button
     await page
-      .getByRole('button', { name: /Iron Condor/ })
-      .first()
+      .getByRole('button', { name: 'Hide Iron Condor', exact: true })
       .click();
 
     // IC section should disappear from results
