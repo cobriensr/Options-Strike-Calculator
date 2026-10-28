@@ -83,6 +83,15 @@ export function getETToday(): string {
   return etDateFormatter.format(new Date());
 }
 
+/**
+ * True when `date` (YYYY-MM-DD) is before today's ET date. False for
+ * today, a future date and an empty string. The one past-date check for
+ * a selected calendar date: ET, not the browser's zone or CT.
+ */
+export function isPastETDate(date: string): boolean {
+  return !!date && date < getETToday();
+}
+
 /** Get the current CT date as YYYY-MM-DD. */
 export function getCTDateStr(date: Date): string {
   return ctDateFormatter.format(date);

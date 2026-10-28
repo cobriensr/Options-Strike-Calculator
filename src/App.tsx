@@ -563,13 +563,19 @@ export default function StrikeCalculator() {
     historySnapshot,
   });
 
+  // useSnapshotSave picks the row (live, backtest or none) from the selected
+  // date and the date of the history the inputs came from.
+  const snapshotHistoryDate = historyData.history?.date;
   useSnapshotSave(
     results,
     signals,
     {
       selectedDate: vix.selectedDate,
       entryTime: `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`,
-      isBacktest: !!historySnapshot,
+      history:
+        historySnapshot && snapshotHistoryDate
+          ? { date: snapshotHistoryDate, spot: historySnapshot.spot }
+          : null,
       spy: Number.parseFloat(dSpot) || undefined,
       vix: Number.parseFloat(dVix) || undefined,
       skewPct,

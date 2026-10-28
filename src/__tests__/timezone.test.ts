@@ -12,12 +12,13 @@
  * rather than in production.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   getETTime,
   getCTTime,
   getETDateStr,
   getETToday,
+  isPastETDate,
   getCTDateStr,
   getETDayOfWeek,
   getCTDayOfWeek,
@@ -81,6 +82,79 @@ describe('getETDateStr / getCTDateStr / getETToday', () => {
 
   it('getETToday returns a YYYY-MM-DD string', () => {
     expect(getETToday()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});
+
+describe('isPastETDate', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Pin the clock (Date only) to a UTC instant. */
+  function at(iso: string) {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(iso));
+  }
+
+  it.each([
+    // [label, clock (UTC), date, expected]
+    ['the day before today', '2026-03-04T15:00:00Z', '2026-03-03', true],
+    ['a date months back', '2026-03-04T15:00:00Z', '2025-12-31', true],
+    ['today', '2026-03-04T15:00:00Z', '2026-03-04', false],
+    ['tomorrow', '2026-03-04T15:00:00Z', '2026-03-05', false],
+    ['an empty date', '2026-03-04T15:00:00Z', '', false],
+    // 21:00 EST on 03-04 is 02:00Z on 03-05: the UTC date has rolled, the
+    // ET date has not.
+    [
+      'today after the UTC rollover',
+      '2026-03-05T02:00:00Z',
+      '2026-03-04',
+      false,
+    ],
+    // ET midnight in EST (UTC-5): 23:59:59 vs 00:00:00 ET.
+    [
+      'today one second before ET midnight (EST)',
+      '2026-03-05T04:59:59Z',
+      '2026-03-04',
+      false,
+    ],
+    [
+      'yesterday from ET midnight (EST)',
+      '2026-03-05T05:00:00Z',
+      '2026-03-04',
+      true,
+    ],
+    // ET midnight in EDT (UTC-4).
+    [
+      'today one second before ET midnight (EDT)',
+      '2026-07-16T03:59:59Z',
+      '2026-07-15',
+      false,
+    ],
+    [
+      'yesterday from ET midnight (EDT)',
+      '2026-07-16T04:00:00Z',
+      '2026-07-15',
+      true,
+    ],
+    // 23:30 CT on 03-04 is 00:30 ET on 03-05: the ET convention counts
+    // 03-04 as past even though it is still 03-04 in Chicago.
+    [
+      'the CT date in the last CT hour',
+      '2026-03-05T05:30:00Z',
+      '2026-03-04',
+      true,
+    ],
+  ])('%s (clock %s, date %s) → %s', (_label, clock, date, expected) => {
+    at(clock);
+    expect(isPastETDate(date)).toBe(expected);
+  });
+
+  it('agrees with getETToday at the same instant', () => {
+    at('2026-03-05T05:00:00Z');
+    const today = getETToday();
+    expect(isPastETDate(today)).toBe(false);
+    expect(today).toBe('2026-03-05');
   });
 });
 

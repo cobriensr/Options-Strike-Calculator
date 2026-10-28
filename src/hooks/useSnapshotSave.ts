@@ -5,19 +5,38 @@
  * Owner-gated: the /api/snapshot endpoint rejects non-owners,
  * so public visitors never trigger writes.
  *
- * Deduplication: the DB has a UNIQUE(date, entry_time) constraint,
- * so duplicate submissions are silently skipped.
+ * A row's date must own its data, so the selected date decides the save:
+ *   - Today (ET): a live row (is_backtest false), with or without today's
+ *     intraday history.
+ *   - A past date with its own intraday history: a backtest row
+ *     (is_backtest true), once the inputs carry that history's SPX at the
+ *     entry time.
+ *   - A past date without its own history, or a future date: no save. The
+ *     inputs then hold today's live quotes or another date's history.
+ *
+ * The DB upserts on UNIQUE(date, entry_time). Each key posts once per
+ * session unless the post fails.
  */
 
 import { useEffect, useRef } from 'react';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
+import { getETToday, isPastETDate } from '../utils/timezone';
 import type { CalculationResults } from '../types';
 import type { ComputedSignals } from './useComputedSignals';
+
+/** The intraday history the calculator's inputs and signals came from. */
+export interface SnapshotHistory {
+  /** The date the history is for (api/history echoes the requested date). */
+  date: string;
+  /** Its SPX at the entry time. */
+  spot: number;
+}
 
 export interface SnapshotMeta {
   selectedDate?: string;
   entryTime?: string;
-  isBacktest?: boolean;
+  /** Null or absent when no intraday history filled the inputs. */
+  history?: SnapshotHistory | null;
   spy?: number;
   vix?: number;
   skewPct?: number;
@@ -25,21 +44,61 @@ export interface SnapshotMeta {
 }
 
 /**
+ * How far the save's SPX may sit from the history's SPX at the entry time,
+ * in points. useAutoFill writes the history's spot, rounded to a whole
+ * point, into the SPX input: 0.5 apart at most, plus float error. Until
+ * that write reaches the results (an effect, then the input debounce), the
+ * results still price off the previous inputs, often today's live SPX.
+ */
+const HISTORY_SPX_TOLERANCE = 1;
+
+/**
+ * Which row a save for `date` writes: 'live' for today, 'backtest' for a
+ * past date whose own history the results already carry, else null (none).
+ */
+function rowKind(
+  date: string,
+  spot: number,
+  historyDate: string | undefined,
+  historySpot: number | undefined,
+): 'live' | 'backtest' | null {
+  if (date === getETToday()) return 'live';
+  if (!isPastETDate(date) || historyDate !== date || historySpot == null) {
+    return null;
+  }
+  return Math.abs(spot - historySpot) <= HISTORY_SPX_TOLERANCE
+    ? 'backtest'
+    : null;
+}
+
+/**
  * Call this hook in App.tsx. It fires a POST to /api/snapshot
  * whenever results change with a new date+time combination.
+ *
+ * `enabled` is true once there is data to save (live quotes or the date's
+ * own history); ownership is enforced by the endpoint.
  */
 export function useSnapshotSave(
   results: CalculationResults | null,
   signals: ComputedSignals,
   meta: SnapshotMeta,
-  isOwner: boolean,
+  enabled: boolean,
 ) {
   // Track what we've already saved to avoid redundant requests
   const savedRef = useRef<Set<string>>(new Set());
+  const historyDate = meta.history?.date;
+  const historySpot = meta.history?.spot;
 
   useEffect(() => {
-    if (!results || !isOwner) return;
+    if (!results || !enabled) return;
     if (!meta.selectedDate || !meta.entryTime) return;
+    const kind = rowKind(
+      meta.selectedDate,
+      results.spot,
+      historyDate,
+      historySpot,
+    );
+    if (kind == null) return;
 
     const key = `${meta.selectedDate}|${meta.entryTime}`;
     if (savedRef.current.has(key)) return;
@@ -78,7 +137,7 @@ export function useSnapshotSave(
       vix: meta.vix,
       skewPct: meta.skewPct,
       clusterMult: meta.clusterMult,
-      isBacktest: meta.isBacktest,
+      isBacktest: kind === 'backtest',
 
       // From signals (all computed trading signals)
       spxOpen: signals.spxOpen,
@@ -151,11 +210,12 @@ export function useSnapshotSave(
     signals,
     meta.selectedDate,
     meta.entryTime,
-    meta.isBacktest,
+    historyDate,
+    historySpot,
     meta.spy,
     meta.vix,
     meta.skewPct,
     meta.clusterMult,
-    isOwner,
+    enabled,
   ]);
 }
