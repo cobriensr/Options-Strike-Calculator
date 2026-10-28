@@ -14,6 +14,15 @@ vi.mock('../_lib/db.js', () => ({
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: { captureException: vi.fn() },
+  metrics: { request: vi.fn(() => vi.fn()), dbSave: vi.fn() },
+}));
+
+vi.mock('../_lib/logger.js', () => ({
+  default: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
+}));
+
 import handler from '../snapshot.js';
 import {
   guardOwnerEndpoint,
@@ -21,6 +30,8 @@ import {
   respondIfInvalid,
 } from '../_lib/api-helpers.js';
 import { saveSnapshot } from '../_lib/db.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
+import logger from '../_lib/logger.js';
 
 describe('POST /api/snapshot', () => {
   beforeEach(() => {
@@ -28,6 +39,9 @@ describe('POST /api/snapshot', () => {
     vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
     vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
     vi.mocked(respondIfInvalid).mockReturnValue(false);
+    vi.mocked(Sentry.captureException).mockClear();
+    vi.mocked(metrics.dbSave).mockClear();
+    vi.mocked(logger.error).mockClear();
   });
 
   it('returns 405 for non-POST methods', async () => {
@@ -127,6 +141,31 @@ describe('POST /api/snapshot', () => {
     expect(res._json).toEqual({ id: null, saved: false });
   });
 
+  it('answers a backtest save that kept the live row as a non-error 200', async () => {
+    // saveSnapshot returns null when a backtest save meets a live row: the
+    // upsert's conflict update is skipped and RETURNING yields no row.
+    vi.mocked(saveSnapshot).mockResolvedValue(null);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'POST',
+        body: {
+          date: '2026-03-09',
+          entryTime: '10:30 AM CT',
+          isBacktest: true,
+        },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(res._json).toEqual({ id: null, saved: false });
+    expect(metrics.dbSave).toHaveBeenCalledWith('market_snapshots', true);
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
   it('returns 200 with saved:false on database error', async () => {
     vi.mocked(saveSnapshot).mockRejectedValue(new Error('DB error'));
 
@@ -143,6 +182,10 @@ describe('POST /api/snapshot', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toEqual({ id: null, saved: false });
+    // Unlike a kept live row, a DB error is surfaced.
+    expect(metrics.dbSave).toHaveBeenCalledWith('market_snapshots', false);
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(logger.error).toHaveBeenCalledTimes(1);
 
     consoleSpy.mockRestore();
   });

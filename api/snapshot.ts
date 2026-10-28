@@ -3,8 +3,10 @@
  *
  * Saves the complete calculator state as a market snapshot.
  * Owner-gated: only writes for authenticated sessions.
- * Uniqueness: one snapshot per date + entry_time.
- * Duplicate submissions are silently skipped.
+ * Uniqueness: one snapshot per date + entry_time. A re-save updates it,
+ * except that a backtest save never replaces a live row: the response is
+ * then 200 { id: null, saved: false }, counted as a successful save and
+ * not reported as an error.
  *
  * Called automatically by the frontend whenever results are computed.
  */

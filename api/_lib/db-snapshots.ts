@@ -91,8 +91,14 @@ export interface SnapshotInput {
 
 /**
  * Save a market snapshot. Uses ON CONFLICT DO UPDATE so re-saves at the
- * same date+time overwrite with the latest calculator state.
- * Returns the snapshot ID (new or updated).
+ * same date+time overwrite with the latest calculator state, with one
+ * exception: a backtest save (replayed from 5-minute candles) never
+ * replaces a live row, the capture made on that day at that time. A live
+ * save replaces either kind. A row whose flag is NULL counts as live.
+ *
+ * Returns the snapshot ID (new or updated), or null when a backtest save
+ * met a live row and left it: RETURNING yields no row for a skipped
+ * conflict update. That is not a failure.
  */
 export async function saveSnapshot(
   input: SnapshotInput,
@@ -197,6 +203,8 @@ export async function saveSnapshot(
       is_event_day = EXCLUDED.is_event_day,
       event_names = EXCLUDED.event_names,
       is_backtest = EXCLUDED.is_backtest
+    WHERE market_snapshots.is_backtest = true
+       OR EXCLUDED.is_backtest = false
     RETURNING id
   `,
     2,
