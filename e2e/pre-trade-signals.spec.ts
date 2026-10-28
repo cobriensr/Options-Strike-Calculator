@@ -1,4 +1,10 @@
 import { test, expect } from '@playwright/test';
+import {
+  chip,
+  dateTimeSection,
+  openSection,
+  setEntryTime,
+} from './helpers/calculator';
 import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
 
 const MOCK_YESTERDAY = {
@@ -127,19 +133,21 @@ async function waitForAutoFillAndSetTime(
     timeout: 10000,
   });
   // Auto-fill sets timezone to CT
-  await expect(
-    page.getByRole('radio', { name: 'CT', exact: true }),
-  ).toBeChecked({ timeout: 5000 });
+  await expect(chip(dateTimeSection(page), 'CT')).toHaveAttribute(
+    'aria-pressed',
+    'true',
+    { timeout: 5000 },
+  );
 
   // Override to a valid market time — auto-fill has finished
-  await page.getByLabel('Hour').selectOption('10');
-  await page.getByLabel('Minute').selectOption('30');
-  await page.getByRole('radio', { name: 'AM' }).click();
+  await setEntryTime(page, { minute: '30', tz: 'CT' });
 
-  // Wait for calculation results so the Market Regime section expands
+  // Wait for calculation results, then open the (collapsed by default)
+  // Market Regime section that holds Pre-Trade Signals
   await expect(
     page.locator('#results').getByText('All Delta Strikes'),
   ).toBeVisible({ timeout: 15000 });
+  await openSection(page, 'Market Regime');
 }
 
 /**

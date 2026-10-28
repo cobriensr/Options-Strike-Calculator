@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { openSection, setEntryTime } from './helpers/calculator';
 import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
 
 const MOCK_YESTERDAY = {
@@ -62,13 +63,12 @@ test.describe('Accessibility with Live Data', () => {
     });
 
     // Set explicit entry time so results render regardless of wall-clock
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await setEntryTime(page);
 
-    // Wait for live-data components to render (Term Structure appears when
-    // VIX is set, which auto-fill handles from mock quotes)
+    // Wait for live-data components to render (Term Structure appears in
+    // the collapsed-by-default IV section when VIX is set, which auto-fill
+    // handles from mock quotes)
+    await openSection(page, 'Implied Volatility');
     await expect(page.getByText('Term Structure', { exact: true })).toBeVisible(
       { timeout: 10000 },
     );
@@ -113,7 +113,9 @@ test.describe('Accessibility with Live Data', () => {
     await page.route('**/api/**', (route) => route.abort());
     await page.goto('/');
 
-    // Find the tooltip trigger button (the "?" button for 0DTE adjustment)
+    // Find the tooltip trigger button (the "?" button for 0DTE adjustment),
+    // in the collapsed-by-default IV section
+    await openSection(page, 'Implied Volatility');
     const tooltipTrigger = page.getByRole('button', {
       name: 'What is the 0DTE adjustment?',
     });

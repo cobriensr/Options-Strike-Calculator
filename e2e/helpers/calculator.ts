@@ -39,15 +39,24 @@ export interface EntryTime {
   tz?: 'ET' | 'CT';
 }
 
+/**
+ * The Date & Time section. Scope entry-time lookups to it: with live data
+ * the owner panels add more "Minute" controls (scrubbers) to the page.
+ */
+export function dateTimeSection(page: Page): Locator {
+  return page.getByRole('region', { name: 'Date & Time' });
+}
+
 /** Set the Date & Time section's entry time. Defaults to 10:00 AM ET. */
 export async function setEntryTime(
   page: Page,
   { hour = '10', minute = '00', ampm = 'AM', tz = 'ET' }: EntryTime = {},
 ): Promise<void> {
-  await page.getByLabel('Hour').selectOption(hour);
-  await page.getByLabel('Minute').selectOption(minute);
-  await chip(page, ampm).click();
-  await chip(page, tz).click();
+  const section = dateTimeSection(page);
+  await section.getByLabel('Hour').selectOption(hour);
+  await section.getByLabel('Minute').selectOption(minute);
+  await chip(section, ampm).click();
+  await chip(section, tz).click();
 }
 
 /**

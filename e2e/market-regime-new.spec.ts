@@ -1,19 +1,25 @@
 import { test, expect, type Page } from '@playwright/test';
+import {
+  chip,
+  dateTimeSection,
+  fillVix,
+  openSection,
+  setEntryTime,
+} from './helpers/calculator';
 import { buildApiFetchMock } from './helpers/mock-fetch';
 
 async function fillCalculatorInputs(page: Page) {
-  await page.getByLabel('Hour').selectOption('10');
-  await page.getByLabel('Minute').selectOption('00');
-  await page.getByRole('radio', { name: 'AM' }).click();
-  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+  await setEntryTime(page);
 
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');
-  await page.getByLabel('VIX Value').fill('19');
+  await fillVix(page, '19');
 
   await expect(
     page.locator('#results').getByText('All Delta Strikes'),
   ).toBeVisible({ timeout: 5000 });
+  // Market Regime starts collapsed
+  await openSection(page, 'Market Regime');
 }
 
 function makeQuotesMock(vix1d: number, vix9d: number) {
@@ -88,7 +94,9 @@ test.describe('Market Regime — Manual Input', () => {
 
   test('market regime section renders with VIX input', async ({ page }) => {
     await fillCalculatorInputs(page);
-    await expect(page.getByText('Market Regime')).toBeVisible();
+    await expect(
+      page.getByRole('region', { name: 'Market Regime' }),
+    ).toBeVisible();
     await expect(
       page.getByText(/Historical VIX-to-SPX range correlation/),
     ).toBeVisible();
@@ -171,19 +179,22 @@ test.describe('Market Regime — Term Structure Shape (Mocked API)', () => {
       timeout: 10000,
     });
     // Wait for auto-fill to set the timezone to CT (it always does)
-    await expect(
-      page.getByRole('radio', { name: 'CT', exact: true }),
-    ).toBeChecked({ timeout: 10000 });
+    await expect(chip(dateTimeSection(page), 'CT')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+      { timeout: 10000 },
+    );
 
     // Now override to a valid market time — auto-fill has finished.
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('30');
-    await page.getByRole('radio', { name: 'AM' }).click();
+    await setEntryTime(page, { minute: '30', tz: 'CT' });
 
     // After time correction, results should appear
     await expect(
       page.locator('#results').getByText('All Delta Strikes'),
     ).toBeVisible({ timeout: 10000 });
+
+    // The term-structure shape renders in the collapsed-by-default IV section
+    await openSection(page, 'Implied Volatility');
 
     // VIX1D=14 < VIX=19 < VIX9D=21 → contango
     await expect(page.getByText('CONTANGO', { exact: true })).toBeVisible({
@@ -202,18 +213,19 @@ test.describe('Market Regime — Term Structure Shape (Mocked API)', () => {
     await expect(page.getByLabel('SPY Price')).toHaveValue(/\d+/, {
       timeout: 10000,
     });
-    await expect(
-      page.getByRole('radio', { name: 'CT', exact: true }),
-    ).toBeChecked({ timeout: 10000 });
+    await expect(chip(dateTimeSection(page), 'CT')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+      { timeout: 10000 },
+    );
 
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('30');
-    await page.getByRole('radio', { name: 'AM' }).click();
+    await setEntryTime(page, { minute: '30', tz: 'CT' });
 
     await expect(
       page.locator('#results').getByText('All Delta Strikes'),
     ).toBeVisible({ timeout: 10000 });
 
+    await openSection(page, 'Implied Volatility');
     await expect(page.getByText('FEAR SPIKE', { exact: true })).toBeVisible({
       timeout: 10000,
     });
@@ -230,18 +242,19 @@ test.describe('Market Regime — Term Structure Shape (Mocked API)', () => {
     await expect(page.getByLabel('SPY Price')).toHaveValue(/\d+/, {
       timeout: 10000,
     });
-    await expect(
-      page.getByRole('radio', { name: 'CT', exact: true }),
-    ).toBeChecked({ timeout: 10000 });
+    await expect(chip(dateTimeSection(page), 'CT')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+      { timeout: 10000 },
+    );
 
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('30');
-    await page.getByRole('radio', { name: 'AM' }).click();
+    await setEntryTime(page, { minute: '30', tz: 'CT' });
 
     await expect(
       page.locator('#results').getByText('All Delta Strikes'),
     ).toBeVisible({ timeout: 10000 });
 
+    await openSection(page, 'Implied Volatility');
     await expect(page.getByText('FLAT', { exact: true }).first()).toBeVisible({
       timeout: 5000,
     });

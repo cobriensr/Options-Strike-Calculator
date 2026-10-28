@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { chip, dateTimeSection, setEntryTime } from './helpers/calculator';
 import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
 
 /**
@@ -59,14 +60,14 @@ test.describe('Event Day Warning', () => {
     await expect(page.getByLabel('SPY Price')).toHaveValue(/\d+/, {
       timeout: 10000,
     });
-    await expect(
-      page.getByRole('radio', { name: 'CT', exact: true }),
-    ).toBeChecked({ timeout: 5000 });
+    await expect(chip(dateTimeSection(page), 'CT')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+      { timeout: 5000 },
+    );
 
     // Set explicit entry time so results render
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('30');
-    await page.getByRole('radio', { name: 'AM' }).click();
+    await setEntryTime(page, { minute: '30', tz: 'CT' });
 
     // Verify the high-severity banner text and event tag
     const main = page.locator('main');
@@ -97,13 +98,13 @@ test.describe('Event Day Warning', () => {
     await expect(page.getByLabel('SPY Price')).toHaveValue(/\d+/, {
       timeout: 10000,
     });
-    await expect(
-      page.getByRole('radio', { name: 'CT', exact: true }),
-    ).toBeChecked({ timeout: 5000 });
+    await expect(chip(dateTimeSection(page), 'CT')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+      { timeout: 5000 },
+    );
 
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('30');
-    await page.getByRole('radio', { name: 'AM' }).click();
+    await setEntryTime(page, { minute: '30', tz: 'CT' });
 
     const main = page.locator('main');
     await expect(main.getByText('Economic Event Day')).toBeVisible({
@@ -134,13 +135,13 @@ test.describe('Event Day Warning', () => {
     await expect(page.getByLabel('SPY Price')).toHaveValue(/\d+/, {
       timeout: 10000,
     });
-    await expect(
-      page.getByRole('radio', { name: 'CT', exact: true }),
-    ).toBeChecked({ timeout: 5000 });
+    await expect(chip(dateTimeSection(page), 'CT')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+      { timeout: 5000 },
+    );
 
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('30');
-    await page.getByRole('radio', { name: 'AM' }).click();
+    await setEntryTime(page, { minute: '30', tz: 'CT' });
 
     const main = page.locator('main');
     await expect(main.getByText('Market Closed')).toBeVisible({
@@ -163,13 +164,13 @@ test.describe('Event Day Warning', () => {
     await expect(page.getByLabel('SPY Price')).toHaveValue(/\d+/, {
       timeout: 10000,
     });
-    await expect(
-      page.getByRole('radio', { name: 'CT', exact: true }),
-    ).toBeChecked({ timeout: 5000 });
+    await expect(chip(dateTimeSection(page), 'CT')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+      { timeout: 5000 },
+    );
 
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('30');
-    await page.getByRole('radio', { name: 'AM' }).click();
+    await setEntryTime(page, { minute: '30', tz: 'CT' });
 
     // None of the warning banners should appear
     const main = page.locator('main');
