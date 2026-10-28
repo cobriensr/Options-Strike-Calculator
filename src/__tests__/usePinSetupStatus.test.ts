@@ -242,16 +242,91 @@ describe('usePinSetupStatus: malformed 200 payloads', () => {
     expect((err as Error).message).toBe(
       'pin-setup-status response failed schema validation',
     );
-    expect(options).toEqual(
-      expect.objectContaining({
-        contexts: expect.objectContaining({
-          pinSetupStatus: expect.objectContaining({
-            date: null,
-            issues: expect.any(Array),
-          }),
-        }),
-      }),
+    const context = (
+      options as { contexts: { pinSetupStatus: Record<string, unknown> } }
+    ).contexts.pinSetupStatus;
+    expect(context.date).toBeNull();
+    // Flat "path: message" strings, which survive Sentry's depth-3
+    // normalization; issue objects would arrive as "[Object]".
+    const issues = context.issues as unknown[];
+    expect(issues.length).toBeGreaterThan(0);
+    for (const issue of issues) {
+      expect(issue).toEqual(expect.stringMatching(/^[\w.]+: \S/));
+    }
+    expect(issues).toContainEqual(expect.stringMatching(/^state: /));
+    expect(context.issueCount).toBe(issues.length);
+  });
+
+  it('reports a request that keeps failing once, not once per poll', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}));
+    const { result } = renderHook(() =>
+      usePinSetupStatus({ marketOpen: false }),
     );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      result.current.refresh();
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports again once a good response came in between', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({}))
+      .mockResolvedValueOnce(jsonResponse(sampleStatus()))
+      .mockResolvedValueOnce(jsonResponse({}));
+    const { result } = renderHook(() =>
+      usePinSetupStatus({ marketOpen: false }),
+    );
+    await waitFor(() =>
+      expect(result.current.error).toBe('invalid response shape'),
+    );
+
+    await act(async () => {
+      result.current.refresh();
+    });
+    await waitFor(() => expect(result.current.error).toBeNull());
+    await act(async () => {
+      result.current.refresh();
+    });
+    await waitFor(() =>
+      expect(result.current.error).toBe('invalid response shape'),
+    );
+
+    expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(2);
+  });
+
+  it('accepts a status without the fields the tile never reads', async () => {
+    const full = sampleStatus();
+    const body = {
+      evaluatedAt: full.evaluatedAt,
+      date: full.date,
+      mode: full.mode,
+      staleMinutes: full.staleMinutes,
+      state: full.state,
+      conditions: {
+        netGammaAtMagnetM: full.conditions.netGammaAtMagnetM,
+        magnetStrike: full.conditions.magnetStrike,
+        distanceToMagnet: full.conditions.distanceToMagnet,
+      },
+      spot: full.spot,
+      bias: full.bias,
+      recommendedTradeTypes: full.recommendedTradeTypes,
+      trajectory: full.trajectory,
+      outcome: full.outcome,
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse(body));
+    const { result } = renderHook(() =>
+      usePinSetupStatus({ marketOpen: false }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.error).toBeNull();
+    expect(result.current.data?.state).toBe('WATCH');
+    expect(mockCaptureUnlessAuth).not.toHaveBeenCalled();
   });
 
   it('does not report a well-formed response to Sentry', async () => {
@@ -262,5 +337,88 @@ describe('usePinSetupStatus: malformed 200 payloads', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.error).toBeNull();
     expect(mockCaptureUnlessAuth).not.toHaveBeenCalled();
+  });
+});
+
+describe('usePinSetupStatus: a 2xx body that is not JSON', () => {
+  function notJsonResponse(): Response {
+    return {
+      ok: true,
+      status: 200,
+      json: () => Promise.reject(new SyntaxError('Unexpected token <')),
+    } as Response;
+  }
+
+  it('is a failed fetch that stores nothing and is reported by name', async () => {
+    fetchMock.mockResolvedValue(notJsonResponse());
+    const { result } = renderHook(() =>
+      usePinSetupStatus({ marketOpen: false }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.error).toBe('invalid response (not JSON)');
+    expect(result.current.data).toBeNull();
+    expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
+    const [err, options] = mockCaptureUnlessAuth.mock.calls[0]!;
+    expect((err as Error).message).toBe(
+      'pin-setup-status response was not JSON',
+    );
+    expect(options).toEqual({
+      contexts: {
+        pinSetupStatus: { date: null, detail: 'Unexpected token <' },
+      },
+    });
+  });
+
+  it('keeps the last good status', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(sampleStatus()))
+      .mockResolvedValueOnce(notJsonResponse());
+    const { result } = renderHook(() =>
+      usePinSetupStatus({ marketOpen: false }),
+    );
+    await waitFor(() => expect(result.current.data?.state).toBe('WATCH'));
+
+    await act(async () => {
+      result.current.refresh();
+    });
+    await waitFor(() =>
+      expect(result.current.error).toBe('invalid response (not JSON)'),
+    );
+
+    expect(result.current.data).toEqual(sampleStatus());
+  });
+});
+
+describe('usePinSetupStatus: superseded fetches', () => {
+  it('drops a live response that lands after the historical date it was replaced by', async () => {
+    let resolveLive: (res: Response) => void = () => {};
+    const live = new Promise<Response>((resolve) => {
+      resolveLive = resolve;
+    });
+    const historical = sampleStatus({ mode: 'historical', date: '2026-05-08' });
+    fetchMock.mockImplementation((url: string) =>
+      url.includes('date=') ? Promise.resolve(jsonResponse(historical)) : live,
+    );
+    const { result } = renderHook(() =>
+      usePinSetupStatus({ marketOpen: false }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      result.current.setDate('2026-05-08');
+    });
+    await waitFor(() => expect(result.current.data?.mode).toBe('historical'));
+
+    // The live request that was in flight answers late.
+    await act(async () => {
+      resolveLive(jsonResponse(sampleStatus({ mode: 'live' })));
+      await live;
+    });
+
+    expect(result.current.data).toEqual(historical);
+    expect(result.current.loading).toBe(false);
+    const liveInit = fetchMock.mock.calls[0]![1] as RequestInit | undefined;
+    expect(liveInit?.signal?.aborted).toBe(true);
   });
 });

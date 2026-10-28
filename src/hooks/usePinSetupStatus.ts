@@ -13,6 +13,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { z } from 'zod';
 import { POLL_INTERVALS } from '../constants';
+import {
+  claimReport,
+  INVALID_SHAPE_ERROR,
+  NOT_JSON_ERROR,
+  summarizeZodIssues,
+} from '../lib/response-guard';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { getErrorMessage } from '../utils/error';
 import { usePolling } from './usePolling';
@@ -22,7 +28,8 @@ import { usePolling } from './usePolling';
 // api/pin-setup-status.ts). A 200 whose body doesn't match is handled like
 // a failed fetch, so PinSetupTile never renders a status without `state`,
 // `conditions` or `trajectory`. The exported types derive from the schemas
-// via `z.infer`.
+// via `z.infer`. Fields the tile never reads are optional, so drift in them
+// can't blank it; the `state` and `bias` enums stay strict.
 const PIN_SETUP_STATES = ['ARMED', 'WATCH', 'NOT_TRIGGERED'] as const;
 const PIN_SETUP_BIASES = [
   'fade-rips',
@@ -38,13 +45,13 @@ const pinSetupOutcomeSchema = z.object({
 
 const pinSetupConditionsSchema = z.object({
   netGammaAtMagnetM: z.number(),
-  netGammaThresholdM: z.number(),
-  netGammaMet: z.boolean(),
+  netGammaThresholdM: z.number().optional(),
+  netGammaMet: z.boolean().optional(),
   magnetStrike: z.number().nullable(),
-  isRound50: z.boolean(),
+  isRound50: z.boolean().optional(),
   distanceToMagnet: z.number().nullable(),
-  distanceThreshold: z.number(),
-  distanceMet: z.boolean(),
+  distanceThreshold: z.number().optional(),
+  distanceMet: z.boolean().optional(),
 });
 
 const pinSetupTrajectoryPointSchema = z.object({
@@ -57,17 +64,17 @@ const pinSetupStatusSchema = z.object({
   evaluatedAt: z.string(),
   date: z.string().nullable(),
   mode: z.enum(['live', 'historical']),
-  snapshotTs: z.string().nullable(),
+  snapshotTs: z.string().nullable().optional(),
   staleMinutes: z.number().nullable(),
   state: z.enum(PIN_SETUP_STATES),
   conditions: pinSetupConditionsSchema,
   spot: z.number().nullable(),
   bias: z.enum(PIN_SETUP_BIASES),
   recommendedTradeTypes: z.array(z.string()),
-  avoidedTradeTypes: z.array(z.string()),
+  avoidedTradeTypes: z.array(z.string()).optional(),
   trajectory: z.array(pinSetupTrajectoryPointSchema),
   outcome: pinSetupOutcomeSchema.nullable(),
-  asOf: z.string(),
+  asOf: z.string().optional(),
 });
 
 export type PinSetupState = (typeof PIN_SETUP_STATES)[number];
@@ -101,44 +108,76 @@ export function usePinSetupStatus({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [date, setDate] = useState<string | null>(null);
-  const mountedRef = useRef(true);
+  // In-flight request. A new fetch aborts it, so a late live poll can't
+  // overwrite the historical date that replaced it (and vice versa).
+  const abortRef = useRef<AbortController | null>(null);
+  // Key of the request whose bad body was last reported (see claimReport).
+  const reportedKeyRef = useRef<string | null>(null);
 
   const doFetch = useCallback(async (currentDate: string | null) => {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     setLoading(true);
+
+    // A bad 2xx body is handled like a failed fetch: last-good `data`
+    // stays, nothing malformed is stored. It's reported once per request,
+    // not once per poll.
+    const rejectBody = (
+      message: string,
+      report: Error,
+      detail: Record<string, unknown>,
+    ) => {
+      if (claimReport(reportedKeyRef, currentDate ?? 'live')) {
+        captureUnlessAuth(report, {
+          contexts: { pinSetupStatus: { date: currentDate, ...detail } },
+        });
+      }
+      setError(message);
+    };
+
     try {
       const url = currentDate
         ? `/api/pin-setup-status?date=${encodeURIComponent(currentDate)}`
         : '/api/pin-setup-status';
-      const res = await fetch(url, { credentials: 'include' });
+      const res = await fetch(url, {
+        credentials: 'include',
+        signal: ctrl.signal,
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body: unknown = await res.json();
-      if (!mountedRef.current) return;
-      const parsed = pinSetupStatusSchema.safeParse(body);
-      if (!parsed.success) {
-        // Backend contract drift: report the Zod issues with the requested
-        // date, then handle it like a failed fetch. Last-good `data` stays;
-        // nothing malformed is stored.
-        captureUnlessAuth(
-          new Error('pin-setup-status response failed schema validation'),
-          {
-            contexts: {
-              pinSetupStatus: {
-                date: currentDate,
-                issues: parsed.error.issues,
-              },
-            },
-          },
+      let body: unknown;
+      try {
+        body = await res.json();
+      } catch (err) {
+        if (ctrl.signal.aborted) return;
+        // A 2xx that isn't JSON (an HTML error page, a truncated body).
+        rejectBody(
+          NOT_JSON_ERROR,
+          new Error('pin-setup-status response was not JSON'),
+          { detail: getErrorMessage(err) },
         );
-        setError('invalid response shape');
         return;
       }
+      if (ctrl.signal.aborted) return;
+      const parsed = pinSetupStatusSchema.safeParse(body);
+      if (!parsed.success) {
+        rejectBody(
+          INVALID_SHAPE_ERROR,
+          new Error('pin-setup-status response failed schema validation'),
+          summarizeZodIssues(parsed.error.issues),
+        );
+        return;
+      }
+      // A good response re-arms the report latch.
+      reportedKeyRef.current = null;
       setData(parsed.data);
       setError(null);
     } catch (err) {
-      if (!mountedRef.current) return;
+      // Superseded by a newer fetch, or unmounted: nothing to update.
+      if (ctrl.signal.aborted) return;
       setError(getErrorMessage(err));
     } finally {
-      if (mountedRef.current) setLoading(false);
+      if (!ctrl.signal.aborted) setLoading(false);
     }
   }, []);
 
@@ -146,12 +185,7 @@ export function usePinSetupStatus({
     void doFetch(date);
   }, [doFetch, date]);
 
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   // Eager fetch on mount / date change. usePolling only schedules the
   // recurring tick — never the initial fetch.
