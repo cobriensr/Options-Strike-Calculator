@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { fillVix, setEntryTime } from './helpers/calculator';
 
 /**
  * Tests for input validation: invalid prices, out-of-range VIX,
@@ -38,7 +39,7 @@ test.describe('Input Validation', () => {
   });
 
   test('negative VIX shows error message', async ({ page }) => {
-    await page.getByLabel('VIX Value').fill('-5');
+    await fillVix(page, '-5');
 
     // Negative VIX triggers an IV error via resolveIV, shown as ErrorMsg text
     await expect(page.getByText('VIX must be a positive number')).toBeVisible();
@@ -47,7 +48,7 @@ test.describe('Input Validation', () => {
   test('no results table with empty inputs', async ({ page }) => {
     // Clear any pre-filled values
     await page.getByLabel('SPY Price').fill('');
-    await page.getByLabel('VIX Value').fill('');
+    await fillVix(page, '');
 
     // The results section shows a placeholder prompt instead of the strike table
     const results = page.locator('#results');
@@ -62,15 +63,12 @@ test.describe('Input Validation', () => {
   test('results appear only when all required fields are valid', async ({
     page,
   }) => {
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await setEntryTime(page);
 
     const results = page.locator('#results');
 
     // Ensure VIX is empty before testing
-    await page.getByLabel('VIX Value').fill('');
+    await fillVix(page, '');
 
     // Only SPY — no strike results section yet (just placeholder)
     await page.getByLabel('SPY Price').fill('679');
@@ -79,21 +77,18 @@ test.describe('Input Validation', () => {
     ).not.toBeVisible();
 
     // Add VIX — now results should appear
-    await page.getByLabel('VIX Value').fill('19');
+    await fillVix(page, '19');
     await expect(
       results.locator('section[aria-label="Strike results for all deltas"]'),
     ).toBeVisible({ timeout: 5000 });
   });
 
   test('clearing SPY price removes results', async ({ page }) => {
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await setEntryTime(page);
 
     // First produce results
     await page.getByLabel('SPY Price').fill('679');
-    await page.getByLabel('VIX Value').fill('19');
+    await fillVix(page, '19');
 
     const results = page.locator('#results');
     await expect(

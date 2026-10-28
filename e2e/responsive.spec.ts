@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { fillVix, openSection } from './helpers/calculator';
 
 /**
  * Tests for responsive behavior: mobile viewport, layout shifts,
@@ -15,6 +16,7 @@ test.describe('Responsive Layout', () => {
 
     await expect(page.locator('h1')).toHaveText('Strike Calculator');
     await expect(page.getByLabel('SPY Price')).toBeVisible();
+    await openSection(page, 'Implied Volatility');
     await expect(page.getByLabel('VIX Value')).toBeVisible();
   });
 
@@ -24,7 +26,7 @@ test.describe('Responsive Layout', () => {
 
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
-    await page.getByLabel('VIX Value').fill('19');
+    await fillVix(page, '19');
 
     const results = page.locator('#results');
     await expect(results.getByText('All Delta Strikes')).toBeVisible({
@@ -32,22 +34,27 @@ test.describe('Responsive Layout', () => {
     });
   });
 
-  test('strike table is horizontally scrollable on mobile', async ({
-    page,
-  }) => {
+  test('strike table becomes delta cards on mobile', async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto('/');
 
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
-    await page.getByLabel('VIX Value').fill('19');
+    await fillVix(page, '19');
 
-    const table = page.getByRole('table', { name: 'Strike prices by delta' });
-    await expect(table).toBeVisible({ timeout: 5000 });
+    const results = page.locator('#results');
+    await expect(results.getByText('All Delta Strikes')).toBeVisible({
+      timeout: 5000,
+    });
 
-    // The ScrollHint wrapper (grandparent of table) should have overflow-x-auto
-    const scrollWrapper = table.locator('..').locator('..');
-    await expect(scrollWrapper).toHaveCSS('overflow-x', 'auto');
+    // Below md the 14-column table is hidden and each delta row renders
+    // as a card instead (839f14ff), so nothing has to scroll sideways
+    await expect(
+      page.getByRole('table', { name: /^Strike prices by delta/ }),
+    ).toBeHidden();
+    const cards = results.locator('div[aria-label="Delta strikes"]');
+    await expect(cards).toBeVisible();
+    await expect(cards.getByText('5\u0394', { exact: true })).toBeVisible();
   });
 
   test('renders correctly on tablet viewport', async ({ page }) => {
@@ -56,7 +63,7 @@ test.describe('Responsive Layout', () => {
 
     await expect(page.locator('h1')).toHaveText('Strike Calculator');
     await page.getByLabel('SPY Price').fill('679');
-    await page.getByLabel('VIX Value').fill('19');
+    await fillVix(page, '19');
 
     await expect(
       page.locator('#results').getByText('All Delta Strikes'),

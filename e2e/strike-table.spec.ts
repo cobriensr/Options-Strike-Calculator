@@ -1,14 +1,12 @@
 import { test, expect, type Page } from '@playwright/test';
+import { fillVix, setEntryTime } from './helpers/calculator';
 
 async function fillCalculatorInputs(page: Page) {
-  await page.getByLabel('Hour').selectOption('10');
-  await page.getByLabel('Minute').selectOption('00');
-  await page.getByRole('radio', { name: 'AM' }).click();
-  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+  await setEntryTime(page);
 
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');
-  await page.getByLabel('VIX Value').fill('19');
+  await fillVix(page, '19');
 
   await expect(
     page.locator('#results').getByText('All Delta Strikes'),
@@ -117,15 +115,12 @@ test.describe('Delta Strikes Table', () => {
 
   test('higher VIX produces wider strikes', async ({ page }) => {
     // Set entry time first
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await setEntryTime(page);
 
     // First: calculate with VIX 15
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
-    await page.getByLabel('VIX Value').fill('15');
+    await fillVix(page, '15');
 
     const table = page.getByRole('table', { name: 'Strike prices by delta' });
     await expect(table).toBeVisible({ timeout: 5000 });
@@ -147,7 +142,7 @@ test.describe('Delta Strikes Table', () => {
     }).toPass({ timeout: 5000 });
 
     // Now increase VIX
-    await page.getByLabel('VIX Value').fill('25');
+    await fillVix(page, '25');
 
     // Wait for recalculation with polling
     await expect(async () => {
@@ -168,7 +163,7 @@ test.describe('Delta Strikes Table', () => {
     await fillCalculatorInputs(page);
 
     await expect(
-      page.getByRole('button', { name: 'Export P&L comparison to Excel' }),
+      page.getByRole('button', { name: 'Export All Wing Widths to Excel' }),
     ).toBeVisible();
   });
 });
