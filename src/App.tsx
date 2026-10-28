@@ -26,6 +26,7 @@ import {
 } from './hooks/useHistoryData';
 import { useVix1dData } from './hooks/useVix1dData';
 import { buildSnapshotMeta, useSnapshotSave } from './hooks/useSnapshotSave';
+import { useETToday } from './hooks/useETToday';
 import { useComputedSignals } from './hooks/useComputedSignals';
 import { useChainData } from './hooks/useChainData';
 import { useAlertPolling } from './hooks/useAlertPolling';
@@ -519,9 +520,11 @@ export default function StrikeCalculator() {
 
   // The analysis's one backtest flag: the selected date is past (ET). The
   // data note (useComputedSignals) and the context's isBacktest
-  // (useAnalysisContext) both take it, so they can't disagree. Read every
-  // render, outside their memos, so a render after ET midnight turns it.
-  const analysisIsBacktest = isPastETDate(vix.selectedDate);
+  // (useAnalysisContext) both take it, so they can't disagree. It is read
+  // outside their memos from useETToday, which re-renders App at ET
+  // midnight, so a tab open across midnight turns it without a user action.
+  const etToday = useETToday();
+  const analysisIsBacktest = isPastETDate(vix.selectedDate, etToday);
 
   // Auto-save market snapshot for authenticated owner (fire-and-forget)
   const signals = useComputedSignals({

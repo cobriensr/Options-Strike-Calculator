@@ -122,6 +122,24 @@ export function isBacktestMode(
   return etMinutes < getETTotalMinutes(now) - REPLAY_LAG_MINUTES;
 }
 
+/** How far past ET midnight msUntilNextETMidnight lands, so it reads the new date. */
+const MIDNIGHT_SLACK_MS = 1000;
+
+/**
+ * Milliseconds from `now` until just past the next ET midnight, by the ET
+ * wall clock: a timer set to it reads the new ET date. On a DST day the
+ * wall clock skips or repeats an hour, so a caller waiting many hours
+ * should cap the wait and re-check (useETToday does).
+ */
+export function msUntilNextETMidnight(now: Date): number {
+  const { hour, minute } = getETTime(now);
+  // Some ICU builds report midnight as hour 24.
+  const elapsedMs =
+    (((hour % 24) * 60 + minute) * 60 + now.getUTCSeconds()) * 1000 +
+    now.getUTCMilliseconds();
+  return 24 * 60 * 60 * 1000 - elapsedMs + MIDNIGHT_SLACK_MS;
+}
+
 /** Get the current CT date as YYYY-MM-DD. */
 export function getCTDateStr(date: Date): string {
   return ctDateFormatter.format(date);

@@ -20,6 +20,7 @@ import {
   getETToday,
   isPastETDate,
   isBacktestMode,
+  msUntilNextETMidnight,
   getCTDateStr,
   getETDayOfWeek,
   getCTDayOfWeek,
@@ -207,6 +208,41 @@ describe('isBacktestMode', () => {
       expect(isBacktestMode('2026-03-10', m(10, 55))).toBe(false);
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+
+describe('msUntilNextETMidnight', () => {
+  // The result lands 1 second past ET midnight, so a timer set to it reads
+  // the new ET date.
+  it.each([
+    ['30 s before midnight (EDT)', '2026-03-11T03:59:30.000Z', 31_000],
+    ['250 ms before midnight (EST)', '2026-01-16T04:59:59.750Z', 1_250],
+    ['noon EST', '2026-01-15T17:00:00.000Z', 12 * 3_600_000 + 1_000],
+    ['ET midnight itself', '2026-03-11T04:00:00.000Z', 24 * 3_600_000 + 1_000],
+    // 21:00 EDT is 01:00Z on the next UTC day: ET, not UTC, decides.
+    ['21:00 EDT', '2026-03-11T01:00:00.000Z', 3 * 3_600_000 + 1_000],
+  ])('%s (%s) → %i ms', (_label, iso, expected) => {
+    expect(msUntilNextETMidnight(new Date(iso))).toBe(expected);
+  });
+
+  it('reads an hour of 24 (some ICU builds, at midnight) as 0', () => {
+    // Chrome's hour12:false formatter can report midnight as hour "24".
+    const spy = vi
+      .spyOn(Intl.DateTimeFormat.prototype, 'formatToParts')
+      .mockReturnValueOnce([
+        { type: 'weekday', value: 'Wed' },
+        { type: 'literal', value: ' ' },
+        { type: 'hour', value: '24' },
+        { type: 'literal', value: ':' },
+        { type: 'minute', value: '00' },
+      ]);
+    try {
+      expect(msUntilNextETMidnight(new Date('2026-03-11T04:00:00.000Z'))).toBe(
+        24 * 3_600_000 + 1_000,
+      );
+    } finally {
+      spy.mockRestore();
     }
   });
 });
