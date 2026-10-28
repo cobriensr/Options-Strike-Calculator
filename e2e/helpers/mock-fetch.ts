@@ -20,7 +20,13 @@
  * Any key in `mocks` whose value is `{ body, status? }` will match
  * URLs containing that key (e.g. `'/api/quotes'`).
  *
- * All other /api/ requests receive an empty 200 JSON response.
+ * Any other /api/ request fails as a network error, as if the backend
+ * were unreachable, which is what the manual-input specs' `route.abort()`
+ * stub does. It used to get an empty 200 `{}`, which is not a valid
+ * payload for most endpoints: hooks store it, and panels that read a field
+ * of it (`history.spx.candles` on trading days, `tickers[ticker]` in
+ * OpeningFlowSignal, PinSetupTile, ...) crashed the page into the error
+ * boundary. Mock an endpoint explicitly when a spec needs its data.
  * Non-api requests pass through to the real network.
  */
 export function buildApiFetchMock(
@@ -55,25 +61,19 @@ export function buildApiFetchMock(
           }
         }
 
-        // Fallback: any /api/ call not explicitly mocked returns empty 200
+        // Fallback: any /api/ call not explicitly mocked fails like an
+        // unreachable backend
         if (url.indexOf('/api/') !== -1) {
-          return Promise.resolve(new Response('{}', {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          }));
+          return Promise.reject(new TypeError('Failed to fetch'));
         }
 
         return _nativeFetch(input, init);
       }
 
+      // In a page, globalThis is window, so this one definition covers both.
       Object.defineProperty(window, 'fetch', {
         get: function() { return _mockFetch; },
         set: function() { /* prevent Vite from overriding */ },
-        configurable: false,
-      });
-      Object.defineProperty(globalThis, 'fetch', {
-        get: function() { return _mockFetch; },
-        set: function() {},
         configurable: false,
       });
     })();
