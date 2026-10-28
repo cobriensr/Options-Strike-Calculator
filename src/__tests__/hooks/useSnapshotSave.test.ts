@@ -436,6 +436,48 @@ describe('useSnapshotSave — which dates save', () => {
 });
 
 // ============================================================
+// A "TODAY" WITH NO SESSION (weekend, holiday)
+// ============================================================
+
+describe('useSnapshotSave — a today without a session', () => {
+  it.each([
+    ['a Saturday', '2026-03-14T15:00:00Z', '2026-03-14'],
+    ['a Sunday', '2026-03-15T15:00:00Z', '2026-03-15'],
+    ['a market holiday (Good Friday)', '2026-04-03T15:00:00Z', '2026-04-03'],
+  ])('makes no live save call on %s', (_label, clock, date) => {
+    // The quotes then hold the last session's closing prints: saving them
+    // would file Friday's close as live data under this date.
+    vi.setSystemTime(new Date(clock));
+    renderHook(() =>
+      useSnapshotSave(
+        makeResults(),
+        defaultSignals,
+        { ...baseMeta, selectedDate: date },
+        true,
+      ),
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('still saves live on an early-close session day', () => {
+    // Black Friday 2026: a 1 PM ET close, still a session.
+    vi.setSystemTime(new Date('2026-11-27T16:00:00Z'));
+    renderHook(() =>
+      useSnapshotSave(
+        makeResults(),
+        defaultSignals,
+        { ...baseMeta, selectedDate: '2026-11-27' },
+        true,
+      ),
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(body().isBacktest).toBe(false);
+  });
+});
+
+// ============================================================
 // TODAY SCRUBBED BACK (a replay of today's history)
 // ============================================================
 

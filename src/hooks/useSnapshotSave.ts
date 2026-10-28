@@ -6,10 +6,11 @@
  * so public visitors never trigger writes.
  *
  * A row's date must own its data, so the selected date decides the save:
- *   - Today (ET) at the current time: a live row (is_backtest false), with
- *     or without today's intraday history, once the inputs carry today's
- *     data: the SPX and VIX inputs each match the live quote or today's
- *     history at the entry time.
+ *   - Today (ET) at the current time, on a session day: a live row
+ *     (is_backtest false), with or without today's intraday history, once
+ *     the inputs carry today's data: the SPX and VIX inputs each match the
+ *     live quote or today's history at the entry time. A weekend or
+ *     holiday today saves nothing: its quotes are the last session's.
  *   - A past date with its own intraday history, or today scrubbed back
  *     more than 5 minutes (isBacktestMode): a backtest row (is_backtest
  *     true), once the inputs carry that history's SPX and SPY at the entry
@@ -25,6 +26,7 @@
 
 import { useEffect, useRef } from 'react';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
+import { isTradingDay } from '../data/marketHours';
 import { getETDateStr, isBacktestMode } from '../utils/timezone';
 import type { CalculationResults } from '../types';
 import type { QuotesResponse } from '../types/api';
@@ -183,6 +185,9 @@ function rowKind(
   }
 
   if (date !== getETDateStr(now)) return null;
+  // No session today (a weekend or holiday): the quotes are the last
+  // session's closing prints, not this date's.
+  if (!isTradingDay(date)) return null;
   const live = meta.live ?? null;
   const spotIsToday =
     near(spot, live?.spot, SPX_TOLERANCE) ||
