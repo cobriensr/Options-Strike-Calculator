@@ -31,6 +31,13 @@ The E2E harness now fails unmocked calls like a dead backend (commit e5c3bd18), 
 
 About 31 `src/` files call `fetch('/api/…')`. List each one that reads nested fields of an unvalidated response and renders outside an error boundary. Fix the ones that can crash the page the same way (≤5 files per commit). Report the rest.
 
+**Leads from Phase 1 (2026-10-28):**
+
+- **Validation.** Phase 1's implementer counted 32 `src/` files calling `/api` directly. Only 4 hooks validate the response (`useGreekHeatmap`, `useHistoryData`, `useOpeningFlowSignal`, `usePinSetupStatus`), and there are 30 unchecked `res.json() as …` casts.
+- **Highest-leverage fix:** `PanelRouter` runs each panel's render function outside every boundary. Wrapping each call in its own `ErrorBoundary` component would protect every panel at once.
+- **No boundary at all:** `sec-datetime`, `sec-spot-price`, `sec-premarket-futures`, `sec-advanced`, `sec-iv`.
+- **To verify against prod:** the history schema requires `previousClose` to be a number. If Schwab ever omits it, the history is rejected and Sentry reports it.
+
 ## Files
 
 - **Phase 1:**
@@ -48,3 +55,24 @@ None.
 
 - **A schema mismatch with otherwise-usable data** (e.g. one optional field wrong). **Default:** reject the whole payload (same as a failed fetch). Partial acceptance hides drift.
 - **The `.js` extension rule** applies if any schema module is imported by `api/`. **Default:** keep the schemas in `src/` and don't share them with `api/`.
+- **First-paint cost of zod. Decided: accepted (2026-10-28).** `useHistoryData` and the Pre-Market cards import zod eagerly, so it now ships in the entry chunk. Measured with `vite build`:
+
+  | Entry chunk | Raw | Gzip |
+  |---|---|---|
+  | Full zod | 519.68 KB | 144.83 KB |
+  | zod/mini | 484.42 KB | 134.72 KB |
+  | No zod | 422.76 KB | 116.86 KB |
+
+  `zod/mini` saved only about 10 KB gzipped, under the 25 KB bar, so the schemas stay on full zod (+28 KB gzip vs no zod).
+
+## Phase 1 outcome (2026-10-28)
+
+- **Commits** `5b0dd47c`..`abcf6426` (10).
+- **Shared helpers** in `src/lib/response-guard.ts`:
+  - issue formatting (`path: message` strings, since Sentry's depth-3 normalize turned issue objects into `"[Object]"`);
+  - a per-request report latch (`claimReport`), so a persistently bad payload reports once, not every poll tick.
+- **The history schema** keeps SPX `previousClose` strict and defaults it to 0 for the VIX family. Schwab may omit it on empty days, and 0 is what `api/history.ts` already sends for a failed symbol.
+- **Fields the UI doesn't read** are optional. The enums stay strict.
+- **Non-JSON 2xx bodies** are reported under their own name.
+- **Pin setup** aborts superseded fetches, and shows an "update failed" badge next to its last good status.
+- **`useGreekHeatmap`** got the same reporting fixes.
