@@ -20,7 +20,7 @@ import { useAutoFill } from './hooks/useAutoFill';
 import { useVixData } from './hooks/useVixData';
 import { useCalculation } from './hooks/useCalculation';
 import { useMarketData } from './hooks/useMarketData';
-import { useHistoryData } from './hooks/useHistoryData';
+import { historyVixOHLC, useHistoryData } from './hooks/useHistoryData';
 import { useVix1dData } from './hooks/useVix1dData';
 import { useSnapshotSave } from './hooks/useSnapshotSave';
 import { useComputedSignals } from './hooks/useComputedSignals';
@@ -350,25 +350,17 @@ export default function StrikeCalculator() {
   );
 
   // Derive VIX OHLC from history candles when static data and API have no
-  // entry. Splitting the derivation (pure) from the side-effecting state
-  // write lets us keep correct exhaustive-deps without disabling the lint
-  // rule. Destructured locals so exhaustive-deps is satisfied without
-  // pulling the whole `vix` object into deps (`vix` itself is a fresh
-  // object every render).
-  const { vixOHLC, setVixOHLC } = vix;
-  const vixOHLCFromHistory = useMemo(() => {
-    const candles = historyData.history?.vix.candles;
-    if (!candles || candles.length === 0) return null;
-    const first = candles[0];
-    const last = candles.at(-1);
-    if (!first || !last) return null;
-    return {
-      open: first.open,
-      close: last.close,
-      high: Math.max(...candles.map((c) => c.high)),
-      low: Math.min(...candles.map((c) => c.low)),
-    };
-  }, [historyData.history?.vix.candles]);
+  // entry, from the selected date's own history only (never the last
+  // date's, kept while the new one loads). Splitting the derivation (pure)
+  // from the side-effecting state write lets us keep correct
+  // exhaustive-deps without disabling the lint rule. Destructured locals so
+  // exhaustive-deps is satisfied without pulling the whole `vix` object
+  // into deps (`vix` itself is a fresh object every render).
+  const { vixOHLC, setVixOHLC, selectedDate: vixSelectedDate } = vix;
+  const vixOHLCFromHistory = useMemo(
+    () => historyVixOHLC(historyData.history, vixSelectedDate),
+    [historyData.history, vixSelectedDate],
+  );
   useEffect(() => {
     if (vixOHLC || !vixOHLCFromHistory) return;
     setVixOHLC(vixOHLCFromHistory);

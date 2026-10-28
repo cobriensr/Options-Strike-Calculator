@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
-import { useHistoryData } from '../../hooks/useHistoryData';
+import { historyVixOHLC, useHistoryData } from '../../hooks/useHistoryData';
 import type { HistoryResponse } from '../../types/api';
 
 // ============================================================
@@ -594,5 +594,49 @@ describe('useHistoryData: edge cases', () => {
 
     expect(result.current.error).toContain('No intraday data available');
     expect(result.current.history).toBeNull();
+  });
+});
+
+// ============================================================
+// historyVixOHLC
+// ============================================================
+
+describe('historyVixOHLC', () => {
+  const vixCandles = [
+    makeCandle(9, 30, 14.5, 15.1, 14.4, 14.9),
+    makeCandle(9, 35, 14.9, 15.6, 14.8, 15.4),
+    makeCandle(9, 40, 15.4, 15.5, 13.9, 14.2),
+  ];
+  const withVix: HistoryResponse = {
+    ...mockHistory,
+    vix: { candles: vixCandles, previousClose: 14.1, previousDay: null },
+  };
+
+  it("derives the date's VIX OHLC from its own history's candles", () => {
+    expect(historyVixOHLC(withVix, '2024-03-04')).toEqual({
+      open: 14.5,
+      high: 15.6,
+      low: 13.9,
+      close: 14.2,
+    });
+  });
+
+  it("returns null for another date's history", () => {
+    // useHistoryData keeps the last date's history while the new date's
+    // loads; its OHLC must not be filled in as the new date's VIX.
+    expect(historyVixOHLC(withVix, '2024-03-05')).toBeNull();
+  });
+
+  it('returns null without history or VIX candles', () => {
+    expect(historyVixOHLC(null, '2024-03-04')).toBeNull();
+    expect(
+      historyVixOHLC(
+        {
+          ...withVix,
+          vix: { candles: [], previousClose: 0, previousDay: null },
+        },
+        '2024-03-04',
+      ),
+    ).toBeNull();
   });
 });

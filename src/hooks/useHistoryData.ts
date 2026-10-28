@@ -8,6 +8,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
+import type { VIXDayData } from '../types';
 import type {
   HistoryResponse,
   HistoryCandle,
@@ -163,6 +164,29 @@ function computeRunningOHLC(
   }
 
   return { open, high, low, last };
+}
+
+/**
+ * The day's VIX OHLC from `history`'s 5-min VIX candles. Null when
+ * `history` is another date's (useHistoryData keeps the last date's while
+ * the next one loads, so its OHLC would land on the new date) or has no
+ * VIX candles.
+ */
+export function historyVixOHLC(
+  history: HistoryResponse | null,
+  date: string,
+): VIXDayData | null {
+  if (!history || history.date !== date) return null;
+  const candles = history.vix.candles;
+  const first = candles[0];
+  const last = candles.at(-1);
+  if (!first || !last) return null;
+  return {
+    open: first.open,
+    close: last.close,
+    high: Math.max(...candles.map((c) => c.high)),
+    low: Math.min(...candles.map((c) => c.low)),
+  };
 }
 
 function computeOpeningRange(
