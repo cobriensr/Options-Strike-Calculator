@@ -65,6 +65,23 @@ A diagnosis on 2026-10-26 traced the failure. Logs, a standalone Playwright prob
   - **(e) Tab-order budget.** With owner-mode header buttons (dev builds run as owner) and 18 sidebar links, SPY Price is the 40th tab stop, the last one the loop checks, so the test passes or fails by one stop (CI saw "Expected > 39, Received -1"). Fix: raise the limit, or start from the Date input.
 - **Local repro:** `npx playwright test e2e/accessibility.spec.ts --project=chromium` gave 3 failed, 4 passed, matching CI's errors for (a) and (b). Tab order passed locally.
 
+**Phase 2 outcome (2026-10-28).** Commits `15db7163`..`d3b80398` (9). A CI-like local run (CI=1, 1 worker, chromium, `--max-failures=0`) passed 189/189, with no app code changed.
+
+- **The mock differs from triage item (d).** Defaulting `/api/history` alone wasn't enough: OpeningFlowSignal (`tickers[ticker]`) and PinSetupTile (`data.state.replace`) also crashed on `{}`. So `e2e/helpers/mock-fetch.ts` now fails any unmocked `/api` call like an unreachable backend, which is what `route.abort()` specs already did. A 200 `{}` is a payload the real backend never sends.
+- **The app-side fragility moved out of e2e's view.** It's tracked in `panel-payload-guards-2026-10-28.md`, which adds an e2e regression spec feeding `{}` to those endpoints.
+- **New helpers** in `e2e/helpers/calculator.ts`: `chip`, `setEntryTime`, `openSection`, `fillVix`.
+- **Deleted:** the pre-market "% of cone" test (the feature was removed in `8f2f9fb7`). The O/N Range preview stays covered in `pre-market.spec.ts`.
+- **Code review: continue.** Fix before pushing:
+  - Open Chart Analysis before its scoped axe scan. It's collapsed, so the scan covered one button.
+  - Open the collapsed sections before the live-data scan.
+  - Restore the md-width table and overflow-x check in `responsive.spec.ts`.
+  - Fix the VIX-19 debounce race in `cross-section.spec.ts`.
+  - Use an exact chip count in `iron-condor.spec.ts`.
+  - Warn on unmocked calls in mock-fetch.
+  - Split `market-regime-new.spec.ts` (262 lines).
+  - Add `exact: true` on `dateTimeSection`.
+- **App-side follow-up (not e2e):** the mobile delta-strike card list is a `div[aria-label="Delta strikes"]` with no role, so its aria-label is ignored by assistive tech, and it duplicates the desktop section's label. Give it a `list` role, or a distinct label.
+
 ### Phase 3: speed and scope (needs owner decisions)
 
 - **Parallelism.** Use 2–4 workers on CI (ubuntu-latest has 4 vCPU), or a matrix per browser. Runner minutes are free for a public repo.
