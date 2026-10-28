@@ -22,75 +22,99 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { z } from 'zod';
 import { POLL_INTERVALS } from '../constants/index.js';
+import { captureUnlessAuth } from '../lib/sentry-helpers.js';
 import { getCTTime } from '../utils/timezone.js';
 import { getErrorMessage } from '../utils/error.js';
 import { usePolling } from './usePolling.js';
 
-export type WindowStatus =
-  | 'before_open'
-  | 'slice1'
-  | 'slice2'
-  | 'evaluating'
-  | 'closed';
+// Runtime schemas are the single source of truth for the
+// /api/opening-flow-signal response (api/_lib/opening-flow-evaluator.ts and
+// the historical store in api/_lib/opening-flow-store.ts both return this
+// shape). The fetch and the localStorage last-good cache are both checked
+// against `openingFlowResponseSchema`, so the panel never renders a body
+// that lacks `tickers` or its slices. The exported types derive from the
+// schemas via `z.infer`.
+const SIDES = ['call', 'put'] as const;
 
-export interface OpeningFlowTicket {
-  strike: number;
-  side: 'call' | 'put';
-  premium: number;
-  volume: number;
-  avgFill: number;
-}
+const WINDOW_STATUSES = [
+  'before_open',
+  'slice1',
+  'slice2',
+  'evaluating',
+  'closed',
+] as const;
 
-export interface OpeningFlowSlice1 {
-  tickets: OpeningFlowTicket[];
-  callPremium: number;
-  putPremium: number;
-  biasSide: 'call' | 'put' | null;
-  biasRatio: number;
-  top3SameSide: boolean;
-}
+const BLOCKED_REASONS = [
+  'no_tickets',
+  'top3_mixed',
+  's2_below_60',
+  'window_not_complete',
+] as const;
 
-export interface OpeningFlowSlice2 {
-  totalPremium: number;
-  biasPremium: number;
-  biasShare: number | null;
-  confirms: boolean;
-}
+const ticketSchema = z.object({
+  strike: z.number(),
+  side: z.enum(SIDES),
+  premium: z.number(),
+  volume: z.number(),
+  avgFill: z.number(),
+});
 
-export type OpeningFlowSignal =
-  | {
-      fired: true;
-      side: 'call' | 'put';
-      contract: OpeningFlowTicket;
-      entryPrice: number;
-    }
-  | {
-      fired: false;
-      reason:
-        | 'no_tickets'
-        | 'top3_mixed'
-        | 's2_below_60'
-        | 'window_not_complete';
-    };
+const slice1Schema = z.object({
+  tickets: z.array(ticketSchema),
+  callPremium: z.number(),
+  putPremium: z.number(),
+  biasSide: z.enum(SIDES).nullable(),
+  biasRatio: z.number(),
+  top3SameSide: z.boolean(),
+});
 
-export interface OpeningFlowTickerPayload {
-  slice1: OpeningFlowSlice1 | null;
-  slice2: OpeningFlowSlice2 | null;
-  signal: OpeningFlowSignal | null;
-}
+const slice2Schema = z.object({
+  totalPremium: z.number(),
+  biasPremium: z.number(),
+  biasShare: z.number().nullable(),
+  confirms: z.boolean(),
+});
 
-export interface OpeningFlowResponse {
-  date: string;
-  windowStatus: WindowStatus;
-  openUtc: string;
-  slice1EndUtc: string;
-  slice2EndUtc: string;
-  asOfUtc: string;
-  stopPct: number;
-  exitMinutesFromEntry: number;
-  tickers: Record<string, OpeningFlowTickerPayload>;
-}
+const signalSchema = z.discriminatedUnion('fired', [
+  z.object({
+    fired: z.literal(true),
+    side: z.enum(SIDES),
+    contract: ticketSchema,
+    entryPrice: z.number(),
+  }),
+  z.object({
+    fired: z.literal(false),
+    reason: z.enum(BLOCKED_REASONS),
+  }),
+]);
+
+const tickerPayloadSchema = z.object({
+  slice1: slice1Schema.nullable(),
+  slice2: slice2Schema.nullable(),
+  signal: signalSchema.nullable(),
+});
+
+const openingFlowResponseSchema = z.object({
+  date: z.string(),
+  windowStatus: z.enum(WINDOW_STATUSES),
+  openUtc: z.string(),
+  slice1EndUtc: z.string(),
+  slice2EndUtc: z.string(),
+  asOfUtc: z.string(),
+  stopPct: z.number(),
+  exitMinutesFromEntry: z.number(),
+  tickers: z.record(z.string(), tickerPayloadSchema),
+});
+
+export type WindowStatus = (typeof WINDOW_STATUSES)[number];
+export type OpeningFlowTicket = z.infer<typeof ticketSchema>;
+export type OpeningFlowSlice1 = z.infer<typeof slice1Schema>;
+export type OpeningFlowSlice2 = z.infer<typeof slice2Schema>;
+export type OpeningFlowSignal = z.infer<typeof signalSchema>;
+export type OpeningFlowTickerPayload = z.infer<typeof tickerPayloadSchema>;
+export type OpeningFlowResponse = z.infer<typeof openingFlowResponseSchema>;
 
 interface State {
   data: OpeningFlowResponse | null;
@@ -128,21 +152,29 @@ interface CachedEntry {
   date: string;
 }
 
+/**
+ * A cached entry whose payload fails the schema (written by an older build,
+ * or by an unvalidated malformed 200) is a miss, like an unparseable one.
+ * The next good fetch overwrites the slot.
+ */
 function safeReadCache(date?: string | null): CachedEntry | null {
   if (typeof localStorage === 'undefined') return null;
   try {
     const raw = localStorage.getItem(cacheKey(date));
     if (raw == null) return null;
-    const parsed = JSON.parse(raw) as Partial<CachedEntry>;
+    const parsed = JSON.parse(raw) as Partial<
+      Record<keyof CachedEntry, unknown>
+    > | null;
     if (
       parsed == null ||
       typeof parsed.date !== 'string' ||
-      typeof parsed.savedAt !== 'string' ||
-      parsed.data == null
+      typeof parsed.savedAt !== 'string'
     ) {
       return null;
     }
-    return parsed as CachedEntry;
+    const data = openingFlowResponseSchema.safeParse(parsed.data);
+    if (!data.success) return null;
+    return { data: data.data, savedAt: parsed.savedAt, date: parsed.date };
   } catch {
     return null;
   }
@@ -223,9 +255,33 @@ export function useOpeningFlowSignal(date?: string): State & {
         signal: ctrl.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = (await res.json()) as OpeningFlowResponse;
+      const body: unknown = await res.json();
 
       if (ctrl.signal.aborted) return;
+      const parsed = openingFlowResponseSchema.safeParse(body);
+      if (!parsed.success) {
+        // Backend contract drift: report the Zod issues with the requested
+        // date, then handle it like a failed fetch. Last-good `data` and
+        // the cache are left as they were; nothing malformed is stored.
+        captureUnlessAuth(
+          new Error('opening-flow-signal response failed schema validation'),
+          {
+            contexts: {
+              openingFlowSignal: {
+                date: effectiveDate,
+                issues: parsed.error.issues,
+              },
+            },
+          },
+        );
+        setState((prev) => ({
+          ...prev,
+          loading: false,
+          error: 'invalid response shape',
+        }));
+        return;
+      }
+      const json = parsed.data;
       setState({
         data: json,
         loading: false,

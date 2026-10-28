@@ -432,6 +432,21 @@ describe('OpeningFlowSignal', () => {
     expect(chip?.className).not.toMatch(/red/);
   });
 
+  it('shows an error instead of crashing on a malformed 200 body', async () => {
+    // `{}` used to be stored and rendered, and `displayData.tickers[ticker]`
+    // threw during render.
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) });
+
+    render(<OpeningFlowSignal />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'invalid response shape',
+    );
+    expect(
+      screen.getByRole('heading', { name: /opening flow signal/i }),
+    ).toBeInTheDocument();
+  });
+
   it('renders put ticket with red chip', async () => {
     const putT = makeTicket('put', 740, 2_100_000, 12_500, 0.95);
     fetchMock.mockResolvedValue({
