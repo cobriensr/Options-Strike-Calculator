@@ -1,6 +1,6 @@
 # End-to-end tests
 
-Playwright suites covering the calculator UI, analyze flow, and a11y compliance. 39 specs across 3 browsers (chromium, firefox, webkit).
+Playwright suites covering the calculator UI, analyze flow, and a11y compliance. 40 specs across 3 browsers (chromium, firefox, webkit).
 
 ## Run
 
