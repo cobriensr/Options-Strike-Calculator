@@ -221,9 +221,13 @@ async function fetchEntryPx(
  * trading day's when the calculator hasn't saved yet today (pre-market,
  * or a day the app is closed). Ordering by date first means a backtest
  * save for an older date, created later but holding that date's VIX,
- * never wins, and a future-dated row is excluded. The date, not
- * is_backtest, since rows saved before 2026-10-28 carry an inverted flag.
- * Null when no such row exists (the fire then stores vix NULL).
+ * never wins, and a future-dated row is excluded. Within that date, a row
+ * created on the date itself (a live save) ranks before one created later
+ * (a replay, which carries an earlier time's VIX): otherwise, before
+ * today's first save, a replay of yesterday made this morning would stand
+ * in for yesterday's close. The date, not is_backtest, since rows saved
+ * before 2026-10-28 carry an inverted flag. Null when no such row exists
+ * (the fire then stores vix NULL).
  */
 async function fetchLatestVix(ts: Date): Promise<number | null> {
   const sql = getDb();
@@ -233,7 +237,9 @@ async function fetchLatestVix(ts: Date): Promise<number | null> {
     WHERE date <= ${getETDateStr(ts)}
       AND created_at <= ${ts}
       AND vix IS NOT NULL
-    ORDER BY date DESC, created_at DESC
+    ORDER BY date DESC,
+             ((created_at AT TIME ZONE 'America/New_York')::date = date) DESC,
+             created_at DESC
     LIMIT 1
   `) as { vix: DbNumeric }[];
   return rows[0] ? toNum(rows[0].vix) : null;

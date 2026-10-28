@@ -12,9 +12,10 @@
  *   - getVixAt is a point-in-time read: only rows for its window's own ET
  *     date(s).
  *   - fetchLatestVix takes the most recent date on or before its
- *     timestamp's ET date, then that date's latest row: yesterday's close
- *     stands in until today's first save, and an older date's replay never
- *     wins.
+ *     timestamp's ET date, then that date's latest row, rows created on the
+ *     date itself first: yesterday's close stands in until today's first
+ *     save, and neither an older date's replay nor a replay of yesterday
+ *     made this morning wins over it.
  * The flag can't be the filter: rows saved before 2026-10-28 carry an
  * inverted is_backtest (today's live saves are true).
  *
@@ -191,6 +192,43 @@ describe('fetchLatestVix against Postgres (pglite)', () => {
     await snapshot(PAST, 33, minutesBefore(NOW, 1));
 
     expect(await fetchLatestVix(NOW)).toBeCloseTo(19, 10);
+  });
+
+  it("prefers yesterday's own rows over a replay of yesterday created today", async () => {
+    // Pre-market: today has no row yet, so yesterday stands in. A replay of
+    // yesterday saved this morning carries a replayed VIX at some earlier
+    // time; created_at alone would make it yesterday's "last" row.
+    await yesterdayRows();
+    await snapshot(YESTERDAY, 25, minutesBefore(NOW, 1));
+
+    expect(await fetchLatestVix(NOW)).toBeCloseTo(19, 10);
+  });
+
+  it('counts a late-evening save as created on its own ET date', async () => {
+    // 23:30 EDT on 03-09 is 03:30Z on 03-10: the UTC date has rolled, the
+    // ET date (the row's date) has not.
+    await yesterdayRows();
+    await snapshot(YESTERDAY, 19.5, new Date('2026-03-10T03:30:00.000Z'));
+    await snapshot(YESTERDAY, 25, minutesBefore(NOW, 1)); // a replay
+
+    expect(await fetchLatestVix(NOW)).toBeCloseTo(19.5, 10);
+  });
+
+  it('ranks the date before the tie-break: a replay of yesterday beats an older live row', async () => {
+    // Yesterday has only a replay; 03-06 has its own live row. Yesterday's
+    // VIX, even replayed, is the more recent one.
+    await snapshot('2026-03-06', 17, new Date('2026-03-06T19:55:00.000Z'));
+    await snapshot(YESTERDAY, 25, minutesBefore(NOW, 1));
+
+    expect(await fetchLatestVix(NOW)).toBeCloseTo(25, 10);
+  });
+
+  it('still takes the latest row when every row is a replay created later', async () => {
+    // No row was created on its own date: the latest replay is all there is.
+    await snapshot(YESTERDAY, 24, minutesBefore(NOW, 30));
+    await snapshot(YESTERDAY, 25, minutesBefore(NOW, 1));
+
+    expect(await fetchLatestVix(NOW)).toBeCloseTo(25, 10);
   });
 
   it('ignores a future-dated row', async () => {
