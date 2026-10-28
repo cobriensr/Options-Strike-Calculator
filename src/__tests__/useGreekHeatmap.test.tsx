@@ -367,18 +367,62 @@ describe('useGreekHeatmap', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.error).not.toBeNull();
     expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
-    expect(mockCaptureUnlessAuth).toHaveBeenCalledWith(
-      expect.any(Error),
-      expect.objectContaining({
-        contexts: expect.objectContaining({
-          greekHeatmap: expect.objectContaining({
-            ticker: 'SPY',
-            date: '2026-05-15',
-            issues: expect.any(Array),
-          }),
-        }),
-      }),
+    const [err, options] = mockCaptureUnlessAuth.mock.calls[0]!;
+    expect((err as Error).message).toBe(
+      'greek-heatmap response failed schema validation',
     );
+    const context = (
+      options as { contexts: { greekHeatmap: Record<string, unknown> } }
+    ).contexts.greekHeatmap;
+    expect(context.ticker).toBe('SPY');
+    expect(context.date).toBe('2026-05-15');
+    // Flat "path: message" strings, which survive Sentry's depth-3
+    // normalization; issue objects would arrive as "[Object]".
+    expect(context.issues).toEqual([expect.stringMatching(/^atmStrike: \S/)]);
+    expect(context.issueCount).toBe(1);
+  });
+
+  it('reports a request that keeps failing the schema once, not once per poll', async () => {
+    mockFetch.mockImplementation(() =>
+      Promise.resolve(
+        okResponse({ ...HAPPY_RESPONSE, atmStrike: 'not-a-number' }),
+      ),
+    );
+    const { result } = renderHook(() =>
+      useGreekHeatmap({ ticker: 'SPY', enabled: false }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(result.current.error).toBe('invalid response shape');
+    expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports the schema failure again once a good response came in between', async () => {
+    const bad = { ...HAPPY_RESPONSE, atmStrike: 'not-a-number' };
+    mockFetch
+      .mockImplementationOnce(() => Promise.resolve(okResponse(bad)))
+      .mockImplementationOnce(() => Promise.resolve(okResponse(HAPPY_RESPONSE)))
+      .mockImplementationOnce(() => Promise.resolve(okResponse(bad)));
+    const { result } = renderHook(() =>
+      useGreekHeatmap({ ticker: 'SPY', enabled: false }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.error).toBeNull();
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    expect(result.current.error).toBe('invalid response shape');
+    expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(2);
   });
 
   it('does NOT report to Sentry on a successful response', async () => {

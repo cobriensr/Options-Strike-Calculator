@@ -17,6 +17,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { z } from 'zod';
 
+import {
+  claimReport,
+  INVALID_SHAPE_ERROR,
+  summarizeZodIssues,
+} from '../lib/response-guard';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { getErrorMessage } from '../utils/error';
 import { fetchWithRetry, isTransientHttpStatus } from '../utils/fetchWithRetry';
@@ -144,6 +149,33 @@ interface State {
   transient: boolean;
 }
 
+/**
+ * Report a schema failure to Sentry once per request (ticker, date and
+ * scrub point), not once per poll; `latch` is reset after a good response.
+ */
+function reportSchemaFailure(
+  latch: { current: string | null },
+  request: { ticker: string; date?: string; at?: string },
+  issues: Parameters<typeof summarizeZodIssues>[0],
+): void {
+  const { ticker, date, at } = request;
+  if (!claimReport(latch, [ticker, date ?? 'live', at ?? 'tip'].join('|'))) {
+    return;
+  }
+  captureUnlessAuth(
+    new Error('greek-heatmap response failed schema validation'),
+    {
+      contexts: {
+        greekHeatmap: {
+          ticker,
+          date: date ?? null,
+          ...summarizeZodIssues(issues),
+        },
+      },
+    },
+  );
+}
+
 const INITIAL_STATE: State = {
   data: null,
   loading: true,
@@ -178,6 +210,9 @@ export function useGreekHeatmap({
   // each transient failure, reset to 0 on success or any non-transient
   // outcome. Drives the MAX_TRANSIENT_RETRIES escalation gate below.
   const transientCountRef = useRef(0);
+  // Key of the request whose schema failure was last reported (see
+  // claimReport), so a failing poll reports once.
+  const reportedKeyRef = useRef<string | null>(null);
 
   // Track unmount so the catch block can distinguish "aborted because
   // the component is gone" (silent return is correct) from "aborted
@@ -211,20 +246,14 @@ export function useGreekHeatmap({
       if (!parsed.success) {
         // Backend contract drift — capture the Zod issues to Sentry with
         // request context so a frozen grid becomes a triageable event
-        // instead of silently surfacing a generic message (D4). Then route
-        // through the same preserve-last-good path as a network error
-        // instead of rendering garbage.
-        captureUnlessAuth(
-          new Error('greek-heatmap response failed schema validation'),
-          {
-            contexts: {
-              greekHeatmap: {
-                ticker,
-                date: date ?? null,
-                issues: parsed.error.issues,
-              },
-            },
-          },
+        // instead of silently surfacing a generic message (D4). Once per
+        // request (ticker, date, scrub point), not once per 30s poll. Then
+        // route through the same preserve-last-good path as a network
+        // error instead of rendering garbage.
+        reportSchemaFailure(
+          reportedKeyRef,
+          { ticker, date, at },
+          parsed.error.issues,
         );
         // A schema failure is a genuine (non-transient) outcome — reset the
         // consecutive-transient counter so a later real blip starts fresh.
@@ -232,13 +261,15 @@ export function useGreekHeatmap({
         setState((s) => ({
           data: s.data,
           loading: false,
-          error: 'invalid response shape',
+          error: INVALID_SHAPE_ERROR,
           transient: false,
         }));
         return;
       }
-      // Success — clear the consecutive-transient counter.
+      // Success — clear the consecutive-transient counter and re-arm the
+      // report latch.
       transientCountRef.current = 0;
+      reportedKeyRef.current = null;
       setState({
         data: parsed.data,
         loading: false,
