@@ -5,7 +5,7 @@
  * panel never renders (and crashes on) a malformed payload.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import {
   useOpeningFlowSignal,
   type OpeningFlowResponse,
@@ -147,16 +147,88 @@ describe('useOpeningFlowSignal: malformed 200 payloads', () => {
     expect((err as Error).message).toBe(
       'opening-flow-signal response failed schema validation',
     );
-    expect(options).toEqual(
-      expect.objectContaining({
-        contexts: expect.objectContaining({
-          openingFlowSignal: expect.objectContaining({
-            date: '2026-05-12',
-            issues: expect.any(Array),
-          }),
-        }),
-      }),
-    );
+    const context = (
+      options as { contexts: { openingFlowSignal: Record<string, unknown> } }
+    ).contexts.openingFlowSignal;
+    expect(context.date).toBe('2026-05-12');
+    // Flat "path: message" strings, which survive Sentry's depth-3
+    // normalization; issue objects would arrive as "[Object]".
+    const issues = context.issues as unknown[];
+    expect(issues.length).toBeGreaterThan(0);
+    for (const issue of issues) {
+      expect(issue).toEqual(expect.stringMatching(/^[\w.]+: \S/));
+    }
+    expect(issues).toContainEqual(expect.stringMatching(/^tickers: /));
+    expect(context.issueCount).toBe(issues.length);
+  });
+
+  it('reports a request that keeps failing once, not once per poll', async () => {
+    fetchMock.mockResolvedValue(okResponse({}));
+    const { result } = renderHook(() => useOpeningFlowSignal());
+    await waitFor(() => {
+      expect(result.current.error).toBe('invalid response shape');
+    });
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports again once a good response came in between', async () => {
+    fetchMock
+      .mockResolvedValueOnce(okResponse({}))
+      .mockResolvedValueOnce(okResponse(makeResponse()))
+      .mockResolvedValueOnce(okResponse({}));
+    const { result } = renderHook(() => useOpeningFlowSignal());
+    await waitFor(() => {
+      expect(result.current.error).toBe('invalid response shape');
+    });
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.error).toBeNull();
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    expect(result.current.error).toBe('invalid response shape');
+    expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(2);
+  });
+
+  it('accepts a payload without the fields the panel never reads', async () => {
+    const full = makeResponse();
+    const spy = full.tickers.SPY!;
+    const body = {
+      date: full.date,
+      windowStatus: full.windowStatus,
+      stopPct: full.stopPct,
+      exitMinutesFromEntry: full.exitMinutesFromEntry,
+      tickers: {
+        SPY: {
+          slice1: {
+            tickets: spy.slice1!.tickets,
+            biasSide: 'call',
+            biasRatio: 1,
+            top3SameSide: true,
+          },
+          slice2: { biasShare: 0.7, confirms: true },
+          signal: spy.signal,
+        },
+      },
+    };
+    fetchMock.mockResolvedValue(okResponse(body));
+
+    const { result } = renderHook(() => useOpeningFlowSignal());
+
+    await waitFor(() => {
+      expect(result.current.data?.date).toBe(full.date);
+    });
+    expect(result.current.error).toBeNull();
+    expect(mockCaptureUnlessAuth).not.toHaveBeenCalled();
   });
 
   it('stores and reports nothing odd for a well-formed payload', async () => {
@@ -171,6 +243,58 @@ describe('useOpeningFlowSignal: malformed 200 payloads', () => {
     expect(result.current.error).toBeNull();
     expect(mockCaptureUnlessAuth).not.toHaveBeenCalled();
     expect(localStorage.getItem(LIVE_KEY)).not.toBeNull();
+  });
+});
+
+describe('useOpeningFlowSignal: a 2xx body that is not JSON', () => {
+  function notJsonResponse(): Response {
+    return {
+      ok: true,
+      status: 200,
+      json: () => Promise.reject(new SyntaxError('Unexpected token <')),
+    } as Response;
+  }
+
+  it('is a failed fetch that stores nothing and is reported by name', async () => {
+    fetchMock.mockResolvedValue(notJsonResponse());
+
+    const { result } = renderHook(() => useOpeningFlowSignal());
+
+    await waitFor(() => {
+      expect(result.current.error).toBe('invalid response (not JSON)');
+    });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.data).toBeNull();
+    expect(localStorage.getItem(LIVE_KEY)).toBeNull();
+    expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
+    const [err, options] = mockCaptureUnlessAuth.mock.calls[0]!;
+    expect((err as Error).message).toBe(
+      'opening-flow-signal response was not JSON',
+    );
+    expect(options).toEqual({
+      contexts: {
+        openingFlowSignal: { date: null, detail: 'Unexpected token <' },
+      },
+    });
+  });
+
+  it('keeps the last good payload', async () => {
+    const good = makeResponse();
+    fetchMock
+      .mockResolvedValueOnce(okResponse(good))
+      .mockResolvedValueOnce(notJsonResponse());
+    const { result } = renderHook(() => useOpeningFlowSignal());
+    await waitFor(() => {
+      expect(result.current.data).toEqual(good);
+    });
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    expect(result.current.error).toBe('invalid response (not JSON)');
+    expect(result.current.data).toEqual(good);
+    expect(result.current.displayData).toEqual(good);
   });
 });
 

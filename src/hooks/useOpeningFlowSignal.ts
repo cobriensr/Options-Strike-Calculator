@@ -24,6 +24,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { z } from 'zod';
 import { POLL_INTERVALS } from '../constants/index.js';
+import {
+  claimReport,
+  INVALID_SHAPE_ERROR,
+  NOT_JSON_ERROR,
+  summarizeZodIssues,
+} from '../lib/response-guard.js';
 import { captureUnlessAuth } from '../lib/sentry-helpers.js';
 import { getCTTime } from '../utils/timezone.js';
 import { getErrorMessage } from '../utils/error.js';
@@ -61,18 +67,20 @@ const ticketSchema = z.object({
   avgFill: z.number(),
 });
 
+// Fields the panel never reads are optional, so drift in them can't blank
+// it: the premiums here, the window timestamps below. The enums stay strict.
 const slice1Schema = z.object({
   tickets: z.array(ticketSchema),
-  callPremium: z.number(),
-  putPremium: z.number(),
+  callPremium: z.number().optional(),
+  putPremium: z.number().optional(),
   biasSide: z.enum(SIDES).nullable(),
   biasRatio: z.number(),
   top3SameSide: z.boolean(),
 });
 
 const slice2Schema = z.object({
-  totalPremium: z.number(),
-  biasPremium: z.number(),
+  totalPremium: z.number().optional(),
+  biasPremium: z.number().optional(),
   biasShare: z.number().nullable(),
   confirms: z.boolean(),
 });
@@ -99,10 +107,10 @@ const tickerPayloadSchema = z.object({
 const openingFlowResponseSchema = z.object({
   date: z.string(),
   windowStatus: z.enum(WINDOW_STATUSES),
-  openUtc: z.string(),
-  slice1EndUtc: z.string(),
-  slice2EndUtc: z.string(),
-  asOfUtc: z.string(),
+  openUtc: z.string().optional(),
+  slice1EndUtc: z.string().optional(),
+  slice2EndUtc: z.string().optional(),
+  asOfUtc: z.string().optional(),
   stopPct: z.number(),
   exitMinutesFromEntry: z.number(),
   tickers: z.record(z.string(), tickerPayloadSchema),
@@ -237,6 +245,8 @@ export function useOpeningFlowSignal(date?: string): State & {
     inPollingWindow(new Date()),
   );
   const abortRef = useRef<AbortController | null>(null);
+  // Key of the request whose bad body was last reported (see claimReport).
+  const reportedKeyRef = useRef<string | null>(null);
 
   const fetchOnce = useCallback(async () => {
     abortRef.current?.abort();
@@ -244,6 +254,22 @@ export function useOpeningFlowSignal(date?: string): State & {
     abortRef.current = ctrl;
 
     setState((prev) => ({ ...prev, loading: true, error: null }));
+
+    // A bad 2xx body is handled like a failed fetch: last-good `data` and
+    // the cache stay as they were, nothing malformed is stored. It's
+    // reported once per request, not once per 30s poll.
+    const rejectBody = (
+      error: string,
+      report: Error,
+      detail: Record<string, unknown>,
+    ) => {
+      if (claimReport(reportedKeyRef, effectiveDate ?? 'live')) {
+        captureUnlessAuth(report, {
+          contexts: { openingFlowSignal: { date: effectiveDate, ...detail } },
+        });
+      }
+      setState((prev) => ({ ...prev, loading: false, error }));
+    };
 
     try {
       const url =
@@ -255,32 +281,32 @@ export function useOpeningFlowSignal(date?: string): State & {
         signal: ctrl.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body: unknown = await res.json();
+      let body: unknown;
+      try {
+        body = await res.json();
+      } catch (err) {
+        if (ctrl.signal.aborted) return;
+        // A 2xx that isn't JSON (an HTML error page, a truncated body).
+        rejectBody(
+          NOT_JSON_ERROR,
+          new Error('opening-flow-signal response was not JSON'),
+          { detail: getErrorMessage(err) },
+        );
+        return;
+      }
 
       if (ctrl.signal.aborted) return;
       const parsed = openingFlowResponseSchema.safeParse(body);
       if (!parsed.success) {
-        // Backend contract drift: report the Zod issues with the requested
-        // date, then handle it like a failed fetch. Last-good `data` and
-        // the cache are left as they were; nothing malformed is stored.
-        captureUnlessAuth(
+        rejectBody(
+          INVALID_SHAPE_ERROR,
           new Error('opening-flow-signal response failed schema validation'),
-          {
-            contexts: {
-              openingFlowSignal: {
-                date: effectiveDate,
-                issues: parsed.error.issues,
-              },
-            },
-          },
+          summarizeZodIssues(parsed.error.issues),
         );
-        setState((prev) => ({
-          ...prev,
-          loading: false,
-          error: 'invalid response shape',
-        }));
         return;
       }
+      // A good response re-arms the report latch.
+      reportedKeyRef.current = null;
       const json = parsed.data;
       setState({
         data: json,
