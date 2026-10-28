@@ -140,7 +140,7 @@ describe('POST /api/snapshot', () => {
     });
   });
 
-  it('returns saved:false when saveSnapshot returns null', async () => {
+  it('marks a null id as a kept live row (skipped: live-row)', async () => {
     vi.mocked(saveSnapshot).mockResolvedValue(null);
 
     const res = mockResponse();
@@ -153,7 +153,7 @@ describe('POST /api/snapshot', () => {
     );
 
     expect(res._status).toBe(200);
-    expect(res._json).toEqual({ id: null, saved: false });
+    expect(res._json).toEqual({ id: null, saved: false, skipped: 'live-row' });
   });
 
   it('answers a backtest save that kept the live row as a non-error 200', async () => {
@@ -175,7 +175,7 @@ describe('POST /api/snapshot', () => {
     );
 
     expect(res._status).toBe(200);
-    expect(res._json).toEqual({ id: null, saved: false });
+    expect(res._json).toEqual({ id: null, saved: false, skipped: 'live-row' });
     expect(metrics.dbSave).toHaveBeenCalledWith('market_snapshots', true);
     expect(Sentry.captureException).not.toHaveBeenCalled();
     expect(logger.error).not.toHaveBeenCalled();
@@ -196,6 +196,7 @@ describe('POST /api/snapshot', () => {
     );
 
     expect(res._status).toBe(200);
+    // No skipped marker: unlike a kept live row, this save failed.
     expect(res._json).toEqual({ id: null, saved: false });
     // Unlike a kept live row, a DB error is surfaced.
     expect(metrics.dbSave).toHaveBeenCalledWith('market_snapshots', false);

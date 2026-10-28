@@ -5,8 +5,9 @@
  * Owner-gated: only writes for authenticated sessions.
  * Uniqueness: one snapshot per date + entry_time. A re-save updates it,
  * except that a backtest save never replaces a live row: the response is
- * then 200 { id: null, saved: false }, counted as a successful save and
- * not reported as an error.
+ * then 200 { id: null, saved: false, skipped: 'live-row' }, counted as a
+ * successful save and not reported as an error. A DB error answers 200
+ * { id: null, saved: false } with no skipped marker, and is reported.
  *
  * A row's date must own its data, whatever the client sends:
  *   - a future date (ET) is skipped: 200 { id: null, saved: false,
@@ -86,7 +87,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     metrics.dbSave('market_snapshots', true);
     res.setHeader('Cache-Control', 'no-store');
     done({ status: 200 });
-    return res.status(200).json({ id, saved: id != null });
+    // A null id is a backtest save that left the live row in place.
+    return res
+      .status(200)
+      .json(
+        id == null
+          ? { id: null, saved: false, skipped: 'live-row' }
+          : { id, saved: true },
+      );
   } catch (err) {
     // Don't fail the user experience or leak DB details
     metrics.dbSave('market_snapshots', false);
