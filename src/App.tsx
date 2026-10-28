@@ -22,7 +22,7 @@ import { useCalculation } from './hooks/useCalculation';
 import { useMarketData } from './hooks/useMarketData';
 import { historyVixOHLC, useHistoryData } from './hooks/useHistoryData';
 import { useVix1dData } from './hooks/useVix1dData';
-import { useSnapshotSave } from './hooks/useSnapshotSave';
+import { buildSnapshotMeta, useSnapshotSave } from './hooks/useSnapshotSave';
 import { useComputedSignals } from './hooks/useComputedSignals';
 import { useChainData } from './hooks/useChainData';
 import { useAlertPolling } from './hooks/useAlertPolling';
@@ -556,23 +556,30 @@ export default function StrikeCalculator() {
   });
 
   // useSnapshotSave picks the row (live, backtest or none) from the selected
-  // date and the date of the history the inputs came from.
-  const snapshotHistoryDate = historyData.history?.date;
+  // date, and saves only once the inputs carry that date's data: it checks
+  // them against the history (labelled with its own date) and today's live
+  // quotes, and waits out every debounced input still in flight.
   useSnapshotSave(
     results,
     signals,
-    {
+    buildSnapshotMeta({
       selectedDate: vix.selectedDate,
       entryTime: `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`,
-      history:
-        historySnapshot && snapshotHistoryDate
-          ? { date: snapshotHistoryDate, spot: historySnapshot.spot }
-          : null,
-      spy: Number.parseFloat(dSpot) || undefined,
-      vix: Number.parseFloat(dVix) || undefined,
+      historyDate: historyData.history?.date,
+      historySnapshot,
+      quotes: market.data.quotes,
+      dSpot,
+      dVix,
+      debounced: [
+        [spotPrice, dSpot],
+        [spxDirect, dSpx],
+        [vixInput, dVix],
+        [directIVInput, dIV],
+        [multiplier, dMult],
+      ],
       skewPct,
       clusterMult,
-    },
+    }),
     market.hasData || !!historySnapshot,
   );
 

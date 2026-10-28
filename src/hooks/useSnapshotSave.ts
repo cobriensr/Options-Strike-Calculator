@@ -7,12 +7,16 @@
  *
  * A row's date must own its data, so the selected date decides the save:
  *   - Today (ET): a live row (is_backtest false), with or without today's
- *     intraday history.
- *   - A past date with its own intraday history: a backtest row
- *     (is_backtest true), once the inputs carry that history's SPX at the
+ *     intraday history, once the inputs carry today's data: the SPX and
+ *     VIX inputs each match the live quote or today's history at the
  *     entry time.
+ *   - A past date with its own intraday history: a backtest row
+ *     (is_backtest true), once the inputs carry that history's SPX and SPY
+ *     at the entry time.
  *   - A past date without its own history, or a future date: no save. The
  *     inputs then hold today's live quotes or another date's history.
+ * Nothing saves while a debounced input still lags its raw value, or
+ * while the history passed is labelled for another date.
  *
  * The DB upserts on UNIQUE(date, entry_time). Each key posts once per
  * session unless the post fails.
@@ -22,7 +26,9 @@ import { useEffect, useRef } from 'react';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { getETToday, isPastETDate } from '../utils/timezone';
 import type { CalculationResults } from '../types';
+import type { QuotesResponse } from '../types/api';
 import type { ComputedSignals } from './useComputedSignals';
+import type { HistorySnapshot } from './useHistoryData';
 
 /** The intraday history the calculator's inputs and signals came from. */
 export interface SnapshotHistory {
@@ -30,6 +36,18 @@ export interface SnapshotHistory {
   date: string;
   /** Its SPX at the entry time. */
   spot: number;
+  /** Its SPY equivalent, SPX / 10 to the cent (HistorySnapshot.spy). */
+  spy: number;
+  /** Its VIX at the entry time; null without a VIX candle. */
+  vix: number | null;
+}
+
+/** Today's live quotes, the other source of a live save's inputs. */
+export interface SnapshotLive {
+  /** The live SPX. */
+  spot: number;
+  /** The live VIX. */
+  vix: number;
 }
 
 export interface SnapshotMeta {
@@ -37,36 +55,132 @@ export interface SnapshotMeta {
   entryTime?: string;
   /** Null or absent when no intraday history filled the inputs. */
   history?: SnapshotHistory | null;
+  /** Null or absent without live SPX and VIX quotes. */
+  live?: SnapshotLive | null;
+  /** True while a debounced input has not yet caught up with its raw value. */
+  inputsPending?: boolean;
   spy?: number;
   vix?: number;
   skewPct?: number;
   clusterMult?: number;
 }
 
-/**
- * How far the save's SPX may sit from the history's SPX at the entry time,
- * in points. useAutoFill writes the history's spot, rounded to a whole
- * point, into the SPX input: 0.5 apart at most, plus float error. Until
- * that write reaches the results (an effect, then the input debounce), the
- * results still price off the previous inputs, often today's live SPX.
- */
-const HISTORY_SPX_TOLERANCE = 1;
+/** What App knows that the snapshot meta is built from. */
+export interface SnapshotMetaSource {
+  selectedDate: string;
+  entryTime: string;
+  /** The date of the loaded history (historyData.history?.date). */
+  historyDate: string | undefined;
+  /** useAutoFill's snapshot at the entry time: the selected date's only. */
+  historySnapshot: Pick<HistorySnapshot, 'spot' | 'spy' | 'vix'> | null;
+  quotes: Pick<QuotesResponse, 'spx' | 'vix'> | null | undefined;
+  /** The debounced SPY and VIX inputs. */
+  dSpot: string;
+  dVix: string;
+  /** Each debounced input the results read, as [raw, debounced]. */
+  debounced: ReadonlyArray<readonly [string, string]>;
+  skewPct: number;
+  clusterMult: number;
+}
 
 /**
- * Which row a save for `date` writes: 'live' for today, 'backtest' for a
- * past date whose own history the results already carry, else null (none).
+ * The meta App passes to useSnapshotSave: where the inputs could have come
+ * from (the history, labelled with its own date, and the live quotes),
+ * whether a debounced input is still in flight, and the inputs themselves.
+ */
+export function buildSnapshotMeta(src: SnapshotMetaSource): SnapshotMeta {
+  const snap = src.historySnapshot;
+  const spx = src.quotes?.spx;
+  const vix = src.quotes?.vix;
+  return {
+    selectedDate: src.selectedDate,
+    entryTime: src.entryTime,
+    history:
+      snap && src.historyDate
+        ? {
+            date: src.historyDate,
+            spot: snap.spot,
+            spy: snap.spy,
+            vix: snap.vix,
+          }
+        : null,
+    live: spx && vix ? { spot: spx.price, vix: vix.price } : null,
+    inputsPending: src.debounced.some(([raw, value]) => raw !== value),
+    spy: Number.parseFloat(src.dSpot) || undefined,
+    vix: Number.parseFloat(src.dVix) || undefined,
+    skewPct: src.skewPct,
+    clusterMult: src.clusterMult,
+  };
+}
+
+/**
+ * How far the save's SPX may sit from its source's SPX, in points.
+ * useAutoFill writes the live or history SPX, rounded to a whole point,
+ * into the SPX input: 0.5 apart at most, plus float error. Until that
+ * write reaches the results (an effect, then the input debounce), the
+ * results still price off the previous inputs: today's live SPX on a past
+ * date, or a past date's SPX on today.
+ */
+const SPX_TOLERANCE = 1;
+
+/**
+ * How far the VIX input may sit from its source's VIX. useAutoFill writes
+ * it to the cent, so this is one cent: a rounding, not another date's VIX.
+ */
+const VIX_TOLERANCE = 0.01;
+
+/**
+ * How far the SPY input may sit from the history's SPY (SPX / 10 to the
+ * cent), which useAutoFill writes as is. The live SPY is never SPX / 10 to
+ * the cent, so a live SPX that happens to sit within SPX_TOLERANCE of the
+ * history's can't pass as that history.
+ */
+const SPY_TOLERANCE = 0.005;
+
+/** Float slack for the tolerance comparisons. */
+const EPSILON = 1e-9;
+
+function near(
+  value: number | undefined,
+  source: number | null | undefined,
+  tolerance: number,
+): boolean {
+  return (
+    value != null &&
+    source != null &&
+    Math.abs(value - source) <= tolerance + EPSILON
+  );
+}
+
+/**
+ * Which row a save for `date` writes: 'live' for today once its inputs
+ * carry today's data, 'backtest' for a past date whose own history the
+ * inputs already carry, else null (none).
  */
 function rowKind(
   date: string,
   spot: number,
-  historyDate: string | undefined,
-  historySpot: number | undefined,
+  meta: SnapshotMeta,
 ): 'live' | 'backtest' | null {
-  if (date === getETToday()) return 'live';
-  if (!isPastETDate(date) || historyDate !== date || historySpot == null) {
-    return null;
+  const history = meta.history ?? null;
+  // A history labelled for another date (the last date's, kept while the
+  // new one loads) means the inputs may still be that date's.
+  if (history != null && history.date !== date) return null;
+
+  if (date === getETToday()) {
+    const live = meta.live ?? null;
+    const spotIsToday =
+      near(spot, live?.spot, SPX_TOLERANCE) ||
+      near(spot, history?.spot, SPX_TOLERANCE);
+    const vixIsToday =
+      near(meta.vix, live?.vix, VIX_TOLERANCE) ||
+      near(meta.vix, history?.vix, VIX_TOLERANCE);
+    return spotIsToday && vixIsToday ? 'live' : null;
   }
-  return Math.abs(spot - historySpot) <= HISTORY_SPX_TOLERANCE
+
+  if (!isPastETDate(date) || history == null) return null;
+  return near(spot, history.spot, SPX_TOLERANCE) &&
+    near(meta.spy, history.spy, SPY_TOLERANCE)
     ? 'backtest'
     : null;
 }
@@ -86,18 +200,37 @@ export function useSnapshotSave(
 ) {
   // Track what we've already saved to avoid redundant requests
   const savedRef = useRef<Set<string>>(new Set());
+  // Primitives, so the effect keys on values: App builds the meta afresh
+  // every render.
   const historyDate = meta.history?.date;
   const historySpot = meta.history?.spot;
+  const historySpy = meta.history?.spy;
+  const historyVix = meta.history?.vix;
+  const liveSpot = meta.live?.spot;
+  const liveVix = meta.live?.vix;
+  const inputsPending = meta.inputsPending === true;
 
   useEffect(() => {
     if (!results || !enabled) return;
     if (!meta.selectedDate || !meta.entryTime) return;
-    const kind = rowKind(
-      meta.selectedDate,
-      results.spot,
-      historyDate,
-      historySpot,
-    );
+    if (inputsPending) return;
+    const kind = rowKind(meta.selectedDate, results.spot, {
+      history:
+        historyDate == null || historySpot == null || historySpy == null
+          ? null
+          : {
+              date: historyDate,
+              spot: historySpot,
+              spy: historySpy,
+              vix: historyVix ?? null,
+            },
+      live:
+        liveSpot == null || liveVix == null
+          ? null
+          : { spot: liveSpot, vix: liveVix },
+      spy: meta.spy,
+      vix: meta.vix,
+    });
     if (kind == null) return;
 
     const key = `${meta.selectedDate}|${meta.entryTime}`;
@@ -210,8 +343,13 @@ export function useSnapshotSave(
     signals,
     meta.selectedDate,
     meta.entryTime,
+    inputsPending,
     historyDate,
     historySpot,
+    historySpy,
+    historyVix,
+    liveSpot,
+    liveVix,
     meta.spy,
     meta.vix,
     meta.skewPct,

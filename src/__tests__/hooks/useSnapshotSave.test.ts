@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
-import { useSnapshotSave } from '../../hooks/useSnapshotSave';
-import type { SnapshotMeta } from '../../hooks/useSnapshotSave';
+import {
+  buildSnapshotMeta,
+  useSnapshotSave,
+} from '../../hooks/useSnapshotSave';
+import type {
+  SnapshotMeta,
+  SnapshotMetaSource,
+} from '../../hooks/useSnapshotSave';
 import { captureUnlessAuth } from '../../lib/sentry-helpers';
 import type { CalculationResults, DeltaRow } from '../../types';
 import type { ComputedSignals } from '../../hooks/useComputedSignals';
@@ -87,18 +93,25 @@ const TODAY = '2026-03-10';
 const YESTERDAY = '2026-03-09';
 const TOMORROW = '2026-03-11';
 
+/** Meta for today, its inputs filled from the live quotes (SPX 5500, VIX 18). */
 const baseMeta: SnapshotMeta = {
   selectedDate: TODAY,
   entryTime: '09:35',
+  live: { spot: 5500, vix: 18 },
   spy: 550,
   vix: 18,
 };
+
+/** A date's intraday history at the entry time: SPX 5500, SPY 550, VIX 18. */
+function hist(date: string, spot = 5500) {
+  return { date, spot, spy: Math.round((spot / 10) * 100) / 100, vix: 18 };
+}
 
 /** Meta for a past date whose own intraday history filled the inputs. */
 const backtestMeta: SnapshotMeta = {
   ...baseMeta,
   selectedDate: YESTERDAY,
-  history: { date: YESTERDAY, spot: 5500 },
+  history: hist(YESTERDAY),
 };
 
 // ============================================================
@@ -300,7 +313,7 @@ describe('useSnapshotSave — which dates save', () => {
       useSnapshotSave(
         makeResults(),
         defaultSignals,
-        { ...baseMeta, history: { date: TODAY, spot: 5500 } },
+        { ...baseMeta, history: hist(TODAY) },
         true,
       ),
     );
@@ -346,7 +359,7 @@ describe('useSnapshotSave — which dates save', () => {
         useSnapshotSave(
           makeResults(),
           defaultSignals,
-          { ...backtestMeta, history: { date: staleDate, spot: 5500 } },
+          { ...backtestMeta, history: hist(staleDate) },
           true,
         ),
       );
@@ -357,7 +370,7 @@ describe('useSnapshotSave — which dates save', () => {
 
   it.each([
     ['without history', null],
-    ['even with history labelled for it', { date: TOMORROW, spot: 5500 }],
+    ['even with history labelled for it', hist(TOMORROW)],
   ])('makes no save call for a future date (%s)', (_label, history) => {
     // The date input has no max, and the live quotes fill a future date.
     renderHook(() =>
@@ -412,11 +425,306 @@ describe('useSnapshotSave — which dates save', () => {
       meta: {
         ...baseMeta,
         entryTime: '11:00 PM CT',
-        history: { date: TODAY, spot: 5500 },
+        history: hist(TODAY),
       },
     });
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(body(1).isBacktest).toBe(true);
+  });
+});
+
+// ============================================================
+// WHERE THE INPUTS CAME FROM (input identity)
+// ============================================================
+
+describe('useSnapshotSave — a save carries its own date’s inputs', () => {
+  /** Today's live quotes in these tests: SPX 6800, VIX 20 (SPY 678.15). */
+  const LIVE = { spot: 6800, vix: 20 };
+  const liveMeta: SnapshotMeta = {
+    selectedDate: TODAY,
+    entryTime: '10:00 AM CT',
+    live: LIVE,
+    spy: 678.15,
+    vix: 20,
+  };
+
+  it('makes no save call for today while the inputs still hold a past date’s history', () => {
+    // On the render that switches from past date B (with history) to today,
+    // the debounced inputs still hold B's SPX, SPY and VIX, and today's
+    // history has not loaded (B's is kept, so App passes none).
+    const { rerender } = renderHook(
+      ({ results, meta }) =>
+        useSnapshotSave(results, defaultSignals, meta, true),
+      {
+        initialProps: {
+          results: makeResults({ spot: 5500 }),
+          meta: { ...liveMeta, spy: 550, vix: 18 } as SnapshotMeta,
+        },
+      },
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    // The live quotes reach the inputs: exactly one save, as live.
+    rerender({ results: makeResults({ spot: 6800 }), meta: liveMeta });
+    rerender({ results: makeResults({ spot: 6800 }), meta: liveMeta });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(body().date).toBe(TODAY);
+    expect(body().spx).toBe(6800);
+    expect(body().vix).toBe(20);
+    expect(body().isBacktest).toBe(false);
+  });
+
+  it('makes no save call for today while a past date’s daily VIX is still in the VIX field', () => {
+    // A past date without history already priced off today's live SPX, but
+    // its VIX field held that date's daily VIX (useVixData).
+    const { rerender } = renderHook(
+      ({ meta }) =>
+        useSnapshotSave(
+          makeResults({ spot: 6800 }),
+          defaultSignals,
+          meta,
+          true,
+        ),
+      { initialProps: { meta: { ...liveMeta, vix: 25.4 } as SnapshotMeta } },
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    rerender({ meta: liveMeta });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(body().vix).toBe(20);
+  });
+
+  it('makes no save call for the default 572 / 5720 inputs on the first render with data', () => {
+    // useSpotInputs seeds SPY 572 and SPX 5720, useIvInputs VIX 19; the live
+    // quotes arrive a render before useAutoFill writes them.
+    renderHook(() =>
+      useSnapshotSave(
+        makeResults({ spot: 5720 }),
+        defaultSignals,
+        { ...liveMeta, spy: 572, vix: 19 },
+        true,
+      ),
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('makes no save call for today without live quotes or today’s own history', () => {
+    renderHook(() =>
+      useSnapshotSave(
+        makeResults({ spot: 6800 }),
+        defaultSignals,
+        { ...liveMeta, live: null, history: null },
+        true,
+      ),
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('accepts the SPX input rounded to a whole point, and no further', () => {
+    // useAutoFill writes the live SPX rounded to a whole point.
+    const { rerender } = renderHook(
+      ({ spot }) =>
+        useSnapshotSave(makeResults({ spot }), defaultSignals, liveMeta, true),
+      { initialProps: { spot: 6801.5 } },
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    rerender({ spot: 6800.6 });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts the VIX input to the cent of its source, and no further', () => {
+    const { rerender } = renderHook(
+      ({ vix }) =>
+        useSnapshotSave(
+          makeResults({ spot: 6800 }),
+          defaultSignals,
+          { ...liveMeta, vix },
+          true,
+        ),
+      { initialProps: { vix: 20.02 } },
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    rerender({ vix: 20.01 });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('saves today as live from today’s own history when it differs from the live quote', () => {
+    // Today with its own history: useAutoFill fills the inputs from the
+    // 5-minute snapshot at the entry time, over the live quotes.
+    renderHook(() =>
+      useSnapshotSave(
+        makeResults({ spot: 6790 }),
+        defaultSignals,
+        {
+          ...liveMeta,
+          history: { date: TODAY, spot: 6790.2, spy: 679.02, vix: 19.4 },
+          spy: 679.02,
+          vix: 19.4,
+        },
+        true,
+      ),
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(body().spx).toBe(6790);
+    expect(body().isBacktest).toBe(false);
+  });
+
+  it('makes no save call for today while it holds another date’s history', () => {
+    // Inputs that match the live quotes still don't save under a history
+    // labelled for another date.
+    renderHook(() =>
+      useSnapshotSave(
+        makeResults({ spot: 6800 }),
+        defaultSignals,
+        { ...liveMeta, history: hist(YESTERDAY, 6800) },
+        true,
+      ),
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('makes no save call while a debounced input has not caught up', () => {
+    // The debounced inputs reach the results one at a time; until the last
+    // one lands, the results mix the old and new values (σ last).
+    const { rerender } = renderHook(
+      ({ meta }) =>
+        useSnapshotSave(
+          makeResults({ spot: 6800 }),
+          defaultSignals,
+          meta,
+          true,
+        ),
+      { initialProps: { meta: { ...liveMeta, inputsPending: true } } },
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    rerender({ meta: { ...liveMeta, inputsPending: false } });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('makes no save call for a past date while the inputs hold a live SPX near its own', () => {
+    // Today → past date B: B's history has loaded, but the inputs are still
+    // today's live quotes, and the live SPX happens to be within a point of
+    // B's SPX at the entry time. The live SPY is never B's SPX / 10.
+    const pastMeta: SnapshotMeta = {
+      ...liveMeta,
+      selectedDate: YESTERDAY,
+      history: { date: YESTERDAY, spot: 6800.4, spy: 680.04, vix: 18 },
+    };
+    const { rerender } = renderHook(
+      ({ meta }) =>
+        useSnapshotSave(
+          makeResults({ spot: 6800 }),
+          defaultSignals,
+          meta,
+          true,
+        ),
+      { initialProps: { meta: pastMeta } },
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    // B's history reaches the inputs.
+    rerender({ meta: { ...pastMeta, spy: 680.04, vix: 18 } });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(body().date).toBe(YESTERDAY);
+    expect(body().spy).toBe(680.04);
+    expect(body().isBacktest).toBe(true);
+  });
+});
+
+// ============================================================
+// THE META APP PASSES (wiring)
+// ============================================================
+
+describe('buildSnapshotMeta', () => {
+  const quotes = {
+    spx: { price: 6800.37 },
+    vix: { price: 20.114 },
+  } as SnapshotMetaSource['quotes'];
+  const snapshot = { spot: 6790.2, spy: 679.02, vix: 19.4 };
+  const source: SnapshotMetaSource = {
+    selectedDate: TODAY,
+    entryTime: '10:00 AM CT',
+    historyDate: TODAY,
+    historySnapshot: snapshot,
+    quotes,
+    dSpot: '679.02',
+    dVix: '19.40',
+    debounced: [
+      ['679.02', '679.02'],
+      ['6790', '6790'],
+    ],
+    skewPct: 3,
+    clusterMult: 1.1,
+  };
+
+  it('carries the date, entry time, parsed SPY and VIX, and the other inputs', () => {
+    expect(buildSnapshotMeta(source)).toEqual({
+      selectedDate: TODAY,
+      entryTime: '10:00 AM CT',
+      history: { date: TODAY, spot: 6790.2, spy: 679.02, vix: 19.4 },
+      live: { spot: 6800.37, vix: 20.114 },
+      inputsPending: false,
+      spy: 679.02,
+      vix: 19.4,
+      skewPct: 3,
+      clusterMult: 1.1,
+    });
+  });
+
+  it('labels the history with the date api/history answered for', () => {
+    // useAutoFill's snapshot is the selected date's only; the label is what
+    // the save checks it against.
+    expect(
+      buildSnapshotMeta({ ...source, historyDate: YESTERDAY }).history?.date,
+    ).toBe(YESTERDAY);
+  });
+
+  it.each([
+    ['no snapshot', { historySnapshot: null }],
+    ['no history date', { historyDate: undefined }],
+  ])('passes no history with %s', (_label, patch) => {
+    expect(buildSnapshotMeta({ ...source, ...patch }).history).toBeNull();
+  });
+
+  it.each([
+    ['no quotes', { quotes: null }],
+    ['no SPX quote', { quotes: { spx: null, vix: { price: 20 } } }],
+    ['no VIX quote', { quotes: { spx: { price: 6800 }, vix: null } }],
+  ])('passes no live source with %s', (_label, patch) => {
+    expect(
+      buildSnapshotMeta({
+        ...source,
+        ...(patch as Partial<SnapshotMetaSource>),
+      }).live,
+    ).toBeNull();
+  });
+
+  it('marks the inputs pending while any debounced copy lags its raw value', () => {
+    expect(
+      buildSnapshotMeta({
+        ...source,
+        debounced: [
+          ['679.02', '679.02'],
+          ['0.1934', '0.2210'],
+        ],
+      }).inputsPending,
+    ).toBe(true);
+  });
+
+  it('passes a blank or non-numeric SPY / VIX input as undefined', () => {
+    const meta = buildSnapshotMeta({ ...source, dSpot: '', dVix: 'abc' });
+    expect(meta.spy).toBeUndefined();
+    expect(meta.vix).toBeUndefined();
   });
 });
 
