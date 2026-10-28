@@ -1,18 +1,18 @@
 import { test, expect, type Page } from '@playwright/test';
+import { fillVix, openSection, setEntryTime } from './helpers/calculator';
 
 async function fillCalculatorInputs(page: Page) {
-  await page.getByLabel('Hour').selectOption('10');
-  await page.getByLabel('Minute').selectOption('00');
-  await page.getByRole('radio', { name: 'AM' }).click();
-  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+  await setEntryTime(page);
 
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');
-  await page.getByLabel('VIX Value').fill('19');
+  await fillVix(page, '19');
 
   await expect(
     page.locator('#results').getByText('All Delta Strikes'),
   ).toBeVisible({ timeout: 5000 });
+  // The Market Regime section that holds this panel starts collapsed
+  await openSection(page, 'Market Regime');
 }
 
 test.describe('Opening Range Check', () => {

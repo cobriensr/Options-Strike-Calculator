@@ -1,9 +1,10 @@
 import { test, expect, type Page } from '@playwright/test';
+import { fillVix, openSection } from './helpers/calculator';
 
 async function fillCalculatorInputs(page: Page) {
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');
-  await page.getByLabel('VIX Value').fill('19');
+  await fillVix(page, '19');
 
   await expect(
     page.locator('#results').getByText('All Delta Strikes'),
@@ -31,7 +32,8 @@ test.describe('Date Lookup Section', () => {
     // Pick a known historical date (should be in vix-data.json)
     await page.locator('#dt-date-picker').fill('2025-01-15');
 
-    // OHLC fields should appear within the Date Lookup section
+    // OHLC fields appear in the (collapsed by default) Advanced section
+    await openSection(page, 'Advanced');
     const ohlcGroup = page.getByRole('group', { name: 'VIX OHLC values' });
     await expect(ohlcGroup).toBeVisible({ timeout: 3000 });
   });
@@ -46,7 +48,9 @@ test.describe('Date Lookup Section', () => {
     // Pick a known historical date
     await page.locator('#dt-date-picker').fill('2025-01-15');
 
-    // VIX field should auto-populate from historical data
+    // VIX field should auto-populate from historical data. It lives in
+    // the collapsed-by-default IV section.
+    await openSection(page, 'Implied Volatility');
     const vixInput = page.getByLabel('VIX Value');
     await expect(vixInput).not.toHaveValue('', { timeout: 3000 });
   });
@@ -61,6 +65,8 @@ test.describe('Date Lookup Section', () => {
     await fillCalculatorInputs(page);
 
     // Results should render normally
-    await expect(page.getByText('Market Regime')).toBeVisible();
+    await expect(
+      page.getByRole('region', { name: 'Market Regime' }),
+    ).toBeVisible();
   });
 });

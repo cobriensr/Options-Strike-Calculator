@@ -1,22 +1,21 @@
 import { test, expect, type Page } from '@playwright/test';
+import { fillVix, openSection, setEntryTime } from './helpers/calculator';
 
 /**
- * Fill core calculator inputs manually to produce results and
- * render the VIXRangeAnalysis component within Market Regime.
+ * Fill core calculator inputs manually to produce results, then open the
+ * (collapsed by default) Market Regime section that holds VIXRangeAnalysis.
  */
 async function fillCalculatorInputs(page: Page) {
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');
-  await page.getByLabel('VIX Value').fill('19');
-  await page.getByLabel('Hour').selectOption('10');
-  await page.getByLabel('Minute').selectOption('00');
-  await page.getByRole('radio', { name: 'AM' }).click();
-  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+  await fillVix(page, '19');
+  await setEntryTime(page);
 
   // Wait for results to render, proving the calculator ran
   await expect(
     page.locator('#results').getByText('All Delta Strikes'),
   ).toBeVisible({ timeout: 5000 });
+  await openSection(page, 'Market Regime');
 }
 
 /**
@@ -84,20 +83,20 @@ test.describe('VIX Range Analysis', () => {
     await expect(survivalTable).toBeVisible({ timeout: 5000 });
 
     // Default mode is "settle" -- verify Settlement chip is active
-    const settleChip = page.getByRole('radio', {
-      name: /Settlement/,
+    const settleChip = page.getByRole('button', {
+      name: /^Settlement/,
     });
-    await expect(settleChip).toHaveAttribute('aria-checked', 'true');
+    await expect(settleChip).toHaveAttribute('aria-pressed', 'true');
 
     // Click Intraday chip to switch
-    const intradayChip = page.getByRole('radio', {
-      name: /Intraday/,
+    const intradayChip = page.getByRole('button', {
+      name: /^Intraday/,
     });
     await intradayChip.click();
 
     // The Intraday chip should now be active
-    await expect(intradayChip).toHaveAttribute('aria-checked', 'true');
-    await expect(settleChip).toHaveAttribute('aria-checked', 'false');
+    await expect(intradayChip).toHaveAttribute('aria-pressed', 'true');
+    await expect(settleChip).toHaveAttribute('aria-pressed', 'false');
 
     // The table aria-label should now reflect intraday mode
     await expect(
