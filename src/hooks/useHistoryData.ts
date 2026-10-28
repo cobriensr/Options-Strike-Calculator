@@ -7,7 +7,7 @@
  * For today's date, returns null — live Schwab data is used instead.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { VIXDayData } from '../types';
 import type {
   HistoryResponse,
@@ -187,6 +187,29 @@ export function historyVixOHLC(
     high: Math.max(...candles.map((c) => c.high)),
     low: Math.min(...candles.map((c) => c.low)),
   };
+}
+
+/**
+ * App's fallback for the date's daily VIX OHLC: when neither the static
+ * table nor /api/vix-ohlc has one (`vixOHLC` null), set it from the date's
+ * own history (historyVixOHLC), never the last date's while the new one
+ * loads. The derivation is a memo and the write an effect, so the effect's
+ * deps stay exhaustive.
+ */
+export function useHistoryVixOHLCFallback(
+  history: HistoryResponse | null,
+  selectedDate: string,
+  vixOHLC: VIXDayData | null,
+  setVixOHLC: (v: VIXDayData | null) => void,
+): void {
+  const fromHistory = useMemo(
+    () => historyVixOHLC(history, selectedDate),
+    [history, selectedDate],
+  );
+  useEffect(() => {
+    if (vixOHLC || !fromHistory) return;
+    setVixOHLC(fromHistory);
+  }, [vixOHLC, fromHistory, setVixOHLC]);
 }
 
 function computeOpeningRange(

@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
-import { historyVixOHLC, useHistoryData } from '../../hooks/useHistoryData';
+import {
+  historyVixOHLC,
+  useHistoryData,
+  useHistoryVixOHLCFallback,
+} from '../../hooks/useHistoryData';
+import type { VIXDayData } from '../../types';
 import type { HistoryResponse } from '../../types/api';
 
 // ============================================================
@@ -641,5 +646,87 @@ describe('historyVixOHLC', () => {
         '2024-03-04',
       ),
     ).toBeNull();
+  });
+});
+
+// ============================================================
+// useHistoryVixOHLCFallback (App's wiring)
+// ============================================================
+
+describe('useHistoryVixOHLCFallback', () => {
+  const vixCandles = [
+    makeCandle(9, 30, 14.5, 15.1, 14.4, 14.9),
+    makeCandle(9, 35, 14.9, 15.6, 14.8, 15.4),
+  ];
+  const own: HistoryResponse = {
+    ...mockHistory,
+    vix: { candles: vixCandles, previousClose: 14.1, previousDay: null },
+  };
+  const OHLC = { open: 14.5, high: 15.6, low: 14.4, close: 15.4 };
+
+  interface Props {
+    history: HistoryResponse | null;
+    date: string;
+    vixOHLC: VIXDayData | null;
+  }
+
+  function mount(initialProps: Props) {
+    const setVixOHLC = vi.fn();
+    const view = renderHook(
+      ({ history, date, vixOHLC }: Props) =>
+        useHistoryVixOHLCFallback(history, date, vixOHLC, setVixOHLC),
+      { initialProps },
+    );
+    return { ...view, setVixOHLC };
+  }
+
+  it("fills the date's VIX OHLC from its own history when none is set", () => {
+    const { setVixOHLC } = mount({
+      history: own,
+      date: '2024-03-04',
+      vixOHLC: null,
+    });
+
+    expect(setVixOHLC).toHaveBeenCalledTimes(1);
+    expect(setVixOHLC).toHaveBeenCalledWith(OHLC);
+  });
+
+  it("leaves a date's VIX OHLC from the table or API alone", () => {
+    const { setVixOHLC } = mount({
+      history: own,
+      date: '2024-03-04',
+      vixOHLC: { open: 20, high: 21, low: 19, close: 20.5 },
+    });
+
+    expect(setVixOHLC).not.toHaveBeenCalled();
+  });
+
+  it("fills nothing from the last date's history while the new one loads", () => {
+    // useHistoryData keeps 03-04's history after the switch to 03-05.
+    const { setVixOHLC, rerender } = mount({
+      history: own,
+      date: '2024-03-05',
+      vixOHLC: null,
+    });
+    expect(setVixOHLC).not.toHaveBeenCalled();
+
+    // 03-05's own history arrives.
+    rerender({
+      history: { ...own, date: '2024-03-05' },
+      date: '2024-03-05',
+      vixOHLC: null,
+    });
+    expect(setVixOHLC).toHaveBeenCalledTimes(1);
+    expect(setVixOHLC).toHaveBeenCalledWith(OHLC);
+  });
+
+  it('fills nothing without history', () => {
+    const { setVixOHLC } = mount({
+      history: null,
+      date: '2024-03-04',
+      vixOHLC: null,
+    });
+
+    expect(setVixOHLC).not.toHaveBeenCalled();
   });
 });
