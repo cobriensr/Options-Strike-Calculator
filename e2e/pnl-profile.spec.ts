@@ -1,14 +1,12 @@
 import { test, expect, type Page } from '@playwright/test';
+import { chip, fillVix, openSection, setEntryTime } from './helpers/calculator';
 
 async function fillAndWaitForIC(page: Page) {
-  await page.getByLabel('Hour').selectOption('10');
-  await page.getByLabel('Minute').selectOption('00');
-  await page.getByRole('radio', { name: 'AM' }).click();
-  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+  await setEntryTime(page);
 
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');
-  await page.getByLabel('VIX Value').fill('19');
+  await fillVix(page, '19');
 
   // Wait for debounced values to settle and results to reflect filled inputs.
   // The calculator debounces input changes (250 ms), so the first results may
@@ -150,11 +148,12 @@ test.describe('P&L Profile Table', () => {
     // Capture initial table content
     const initialContent = await pnlTable.textContent();
 
-    // Change wing width from default (20) to 10
-    const wingWidthGroup = page.getByRole('radiogroup', {
+    // Change wing width from default (20) to 10 (Advanced starts collapsed)
+    await openSection(page, 'Advanced');
+    const wingWidthGroup = page.getByRole('group', {
       name: 'Iron condor wing width',
     });
-    await wingWidthGroup.getByText('10', { exact: true }).click();
+    await chip(wingWidthGroup, '10').click();
 
     // Verify the heading now shows 10-pt wings (auto-waits for the re-render)
     const results = page.locator('#results');

@@ -1,13 +1,12 @@
 import { test, expect, type Page } from '@playwright/test';
+import { fillVix, setEntryTime } from './helpers/calculator';
 
 async function fillInputs(page: Page, hour: string, ampm: 'AM' | 'PM') {
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');
-  await page.getByLabel('VIX Value').fill('19');
-  await page.getByLabel('Hour').selectOption(hour);
-  await page.getByRole('radio', { name: ampm }).click();
+  await fillVix(page, '19');
   // Use ET so the time is exactly what we set
-  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+  await setEntryTime(page, { hour, ampm });
 
   await expect(
     page.locator('#results').getByText('All Delta Strikes'),
@@ -48,11 +47,8 @@ test.describe('IV Acceleration', () => {
   test('shows late session warning for 3:30 PM entry', async ({ page }) => {
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
-    await page.getByLabel('VIX Value').fill('19');
-    await page.getByLabel('Hour').selectOption('3');
-    await page.getByLabel('Minute').selectOption('30');
-    await page.getByRole('radio', { name: 'PM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await fillVix(page, '19');
+    await setEntryTime(page, { hour: '3', minute: '30', ampm: 'PM' });
 
     await expect(
       page.locator('#results').getByText('All Delta Strikes'),
@@ -81,8 +77,7 @@ test.describe('IV Acceleration', () => {
     );
 
     // Afternoon entry: 3 PM
-    await page.getByLabel('Hour').selectOption('3');
-    await page.getByRole('radio', { name: 'PM' }).click();
+    await setEntryTime(page, { hour: '3', ampm: 'PM' });
 
     // Poll until the recomputed (afternoon) premium differs from the morning
     // value — auto-retries through the debounce instead of a fixed sleep

@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { fillVix, openSection, setEntryTime } from './helpers/calculator';
 
 async function fillInputsAndWaitForResults(
   page: Page,
@@ -6,14 +7,11 @@ async function fillInputsAndWaitForResults(
   spx: string,
   vix: string,
 ) {
-  await page.getByLabel('Hour').selectOption('10');
-  await page.getByLabel('Minute').selectOption('00');
-  await page.getByRole('radio', { name: 'AM' }).click();
-  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+  await setEntryTime(page);
 
   await page.getByLabel('SPY Price').fill(spy);
   await page.getByLabel(/SPX Price/).fill(spx);
-  await page.getByLabel('VIX Value').fill(vix);
+  await fillVix(page, vix);
 
   const results = page.locator('#results');
   await expect(results.getByText('All Delta Strikes')).toBeVisible({
@@ -100,11 +98,14 @@ test.describe('Extreme Inputs', () => {
     const firstRow = table.locator('tbody tr').first();
     const cells = firstRow.locator('td');
 
-    // 5Δ put strike
-    const putStrike = Number.parseFloat((await cells.nth(2).textContent())!);
+    // 5Δ put strike. Poll: the table first renders with the VIX field's
+    // prefilled value, and the typed VIX lands after the debounce.
+    await expect(async () => {
+      const putStrike = Number.parseFloat((await cells.nth(2).textContent())!);
 
-    // With VIX=80, the 5Δ put should be more than 200 points below spot
-    expect(6790 - putStrike).toBeGreaterThan(200);
+      // With VIX=80, the 5Δ put should be more than 200 points below spot
+      expect(6790 - putStrike).toBeGreaterThan(200);
+    }).toPass({ timeout: 5000 });
   });
 
   test('very low VIX produces narrow strikes', async ({ page }) => {
@@ -114,11 +115,13 @@ test.describe('Extreme Inputs', () => {
     const firstRow = table.locator('tbody tr').first();
     const cells = firstRow.locator('td');
 
-    // 5Δ put strike
-    const putStrike = Number.parseFloat((await cells.nth(2).textContent())!);
+    // 5Δ put strike, polled through the VIX debounce as above
+    await expect(async () => {
+      const putStrike = Number.parseFloat((await cells.nth(2).textContent())!);
 
-    // With VIX=8, the 5Δ put should be less than 100 points below spot
-    expect(6790 - putStrike).toBeLessThan(100);
+      // With VIX=8, the 5Δ put should be less than 100 points below spot
+      expect(6790 - putStrike).toBeLessThan(100);
+    }).toPass({ timeout: 5000 });
   });
 
   test('VIX of exactly 100 does not crash', async ({ page }) => {
@@ -147,6 +150,8 @@ test.describe('Extreme Inputs', () => {
       '19',
     );
 
+    // Advanced starts collapsed
+    await openSection(page, 'Advanced');
     const contractsInput = page
       .locator('section[aria-label="Advanced"]')
       .getByLabel('Number of contracts');
@@ -169,6 +174,8 @@ test.describe('Extreme Inputs', () => {
     // Capture default (20 contracts) text
     const initialText = await results.textContent();
 
+    // Advanced starts collapsed
+    await openSection(page, 'Advanced');
     const contractsInput = page
       .locator('section[aria-label="Advanced"]')
       .getByLabel('Number of contracts');

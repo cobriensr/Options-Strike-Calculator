@@ -1,15 +1,13 @@
 import { test, expect, type Page } from '@playwright/test';
+import { chip, fillVix, openSection, setEntryTime } from './helpers/calculator';
 
 async function fillCalculatorInputs(page: Page) {
   // Set explicit entry time to avoid wall-clock dependency
-  await page.getByLabel('Hour').selectOption('10');
-  await page.getByLabel('Minute').selectOption('00');
-  await page.getByRole('radio', { name: 'AM' }).click();
-  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+  await setEntryTime(page);
 
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');
-  await page.getByLabel('VIX Value').fill('19');
+  await fillVix(page, '19');
 
   await expect(
     page.locator('#results').getByText('All Delta Strikes'),
@@ -37,11 +35,11 @@ test.describe('Error Recovery', () => {
     ).toBeVisible();
 
     // 2. Enter invalid VIX (negative) — should show error, not crash
-    await page.getByLabel('VIX Value').fill('-5');
+    await fillVix(page, '-5');
     await expect(page.getByText('VIX must be a positive number')).toBeVisible();
 
     // 3. App should still be interactive — fix the input
-    await page.getByLabel('VIX Value').fill('19');
+    await fillVix(page, '19');
     await expect(
       page.getByText('VIX must be a positive number'),
     ).not.toBeVisible({ timeout: 3000 });
@@ -63,7 +61,7 @@ test.describe('Error Recovery', () => {
     // 2. Clear all inputs
     await page.getByLabel('SPY Price').fill('');
     await page.getByLabel(/SPX Price/).fill('');
-    await page.getByLabel('VIX Value').fill('');
+    await fillVix(page, '');
 
     // 3. Results section should show the empty state prompt (auto-waits
     // through the debounce until the empty state renders)
@@ -77,12 +75,11 @@ test.describe('Error Recovery', () => {
 
   test('rapid input changes do not crash the app', async ({ page }) => {
     // Set entry time first
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await setEntryTime(page);
 
     const spyInput = page.getByLabel('SPY Price');
+    // VIX lives in the collapsed-by-default IV section
+    await openSection(page, 'Implied Volatility');
     const vixInput = page.getByLabel('VIX Value');
 
     // Rapidly change inputs without waiting for debounce
@@ -109,17 +106,17 @@ test.describe('Error Recovery', () => {
     await fillCalculatorInputs(page);
 
     // Switch to Direct IV mode
-    await page.getByRole('radio', { name: 'Direct IV' }).click();
+    await chip(page, 'Direct IV').click();
     await expect(
       page.getByRole('textbox', { name: /Direct IV/ }),
     ).toBeVisible();
 
     // Switch back to VIX mode
-    await page.getByRole('radio', { name: 'VIX' }).click();
+    await chip(page, 'VIX').click();
     await expect(page.getByLabel('VIX Value')).toBeVisible();
 
     // Re-enter VIX and verify results still work
-    await page.getByLabel('VIX Value').fill('19');
+    await fillVix(page, '19');
     const results = page.locator('#results');
     await expect(
       results.locator('section[aria-label="Strike results for all deltas"]'),

@@ -1,14 +1,12 @@
 import { test, expect, type Page } from '@playwright/test';
+import { fillVix, setEntryTime } from './helpers/calculator';
 
 async function fillAndGetResults(page: Page) {
-  await page.getByLabel('Hour').selectOption('10');
-  await page.getByLabel('Minute').selectOption('00');
-  await page.getByRole('radio', { name: 'AM' }).click();
-  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+  await setEntryTime(page);
 
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');
-  await page.getByLabel('VIX Value').fill('19');
+  await fillVix(page, '19');
 
   const results = page.locator('#results');
   await expect(results.getByText('All Delta Strikes')).toBeVisible({
