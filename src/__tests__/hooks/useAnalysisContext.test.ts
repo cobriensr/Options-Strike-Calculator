@@ -105,6 +105,7 @@ function makeParams(
       dataNote: undefined,
     } as ComputedSignals,
     clusterMult: 1.0,
+    isBacktest: false,
     events: undefined,
     chain: null,
     ...overrides,
@@ -298,11 +299,13 @@ describe('useAnalysisContext', () => {
   });
 
   // ── 8. isBacktest flag ────────────────────────────────────
-  // The flag follows the selected date (ET). The hook takes no history, so
-  // whether the date has intraday history can't flip it: it used to be
+  // The flag is App's one "selected date is past (ET)" flag, shared with
+  // useComputedSignals' data note so the two can't disagree. The hook
+  // takes no history, so intraday history can't flip it: it used to be
   // !!historySnapshot, true on today from its first candle, which made
   // analyze drop positions, SPX candles and the midday chain live. The
-  // clock is pinned to 2026-03-24 11:00 EDT.
+  // clock is pinned to 2026-03-24 11:00 EDT, so a clock read inside the
+  // hook would call 2026-03-24 live.
   describe('isBacktest', () => {
     beforeEach(() => {
       vi.useFakeTimers({ toFake: ['Date'] });
@@ -312,23 +315,29 @@ describe('useAnalysisContext', () => {
       vi.useRealTimers();
     });
 
-    it('is false for today, with or without its intraday history', () => {
-      expect(compute({ selectedDate: '2026-03-24' }).isBacktest).toBe(false);
-    });
-
     it.each([
-      ['the day before, which has intraday history', '2026-03-23'],
-      // Analyze must not fetch today's positions and candles for it.
-      ['a date months back, without intraday history', '2025-12-31'],
-    ])('is true for a past date: %s', (_label, date) => {
-      expect(compute({ selectedDate: date }).isBacktest).toBe(true);
+      [false, '2026-03-24'],
+      [true, '2026-03-23'],
+      // App's flag wins over the hook's own read of the clock.
+      [true, '2026-03-24'],
+    ])('passes App’s flag (%s) through for %s', (flag, date) => {
+      expect(compute({ selectedDate: date, isBacktest: flag }).isBacktest).toBe(
+        flag,
+      );
     });
 
-    it('turns true for the date at ET midnight', () => {
-      vi.setSystemTime(new Date('2026-03-25T03:59:00Z')); // 23:59 EDT
-      expect(compute({ selectedDate: '2026-03-24' }).isBacktest).toBe(false);
-      vi.setSystemTime(new Date('2026-03-25T04:00:00Z')); // 00:00 EDT
-      expect(compute({ selectedDate: '2026-03-24' }).isBacktest).toBe(true);
+    it('recomputes when only the flag changes (ET midnight)', () => {
+      // A tab open across ET midnight: same date, same inputs, and App's
+      // flag turns true. The memo must not hand back the stale context.
+      const params = makeParams({ selectedDate: '2026-03-24' });
+      const { result, rerender } = renderHook(
+        (p: UseAnalysisContextParams) => useAnalysisContext(p),
+        { initialProps: params },
+      );
+      expect(result.current.isBacktest).toBe(false);
+
+      rerender({ ...params, isBacktest: true });
+      expect(result.current.isBacktest).toBe(true);
     });
   });
 

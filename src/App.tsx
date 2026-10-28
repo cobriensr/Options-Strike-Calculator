@@ -53,7 +53,7 @@ import AccessKeyButton from './components/AccessKey/AccessKeyButton';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
 import { getEarlyCloseHourET } from './data/marketHours';
 import { toETTime } from './utils/time';
-import { getCTTime, isBacktestMode } from './utils/timezone';
+import { getCTTime, isBacktestMode, isPastETDate } from './utils/timezone';
 import DateTimeSection from './components/DateTimeSection';
 import EventDayWarning from './components/EventDayWarning';
 import SpotPriceSection from './components/SpotPriceSection';
@@ -517,6 +517,12 @@ export default function StrikeCalculator() {
     return isBacktestMode(vix.selectedDate, etHour * 60 + etMinute);
   }, [vix.selectedDate, timeHour, timeMinute, timeAmPm, timezone]);
 
+  // The analysis's one backtest flag: the selected date is past (ET). The
+  // data note (useComputedSignals) and the context's isBacktest
+  // (useAnalysisContext) both take it, so they can't disagree. Read every
+  // render, outside their memos, so a render after ET midnight turns it.
+  const analysisIsBacktest = isPastETDate(vix.selectedDate);
+
   // Auto-save market snapshot for authenticated owner (fire-and-forget)
   const signals = useComputedSignals({
     vix: Number.parseFloat(dVix) || undefined,
@@ -541,6 +547,7 @@ export default function StrikeCalculator() {
     liveYesterdayClose: market.data.yesterday?.yesterday?.close ?? undefined,
     liveEvents: market.data.events?.events,
     historySnapshot,
+    isBacktest: analysisIsBacktest,
   });
 
   // useSnapshotSave picks the row (live, backtest or none) from the selected
@@ -750,6 +757,7 @@ export default function StrikeCalculator() {
     dVix,
     signals,
     clusterMult,
+    isBacktest: analysisIsBacktest,
     events: market.data.events?.events,
     chain: chainData.chain,
     gexLandscapeBias: gexBiasContext,

@@ -58,6 +58,7 @@ function makeInputs(
     liveVvix: 90,
     liveOpeningRange: undefined,
     historySnapshot: null,
+    isBacktest: false,
     ...overrides,
   };
 }
@@ -571,6 +572,7 @@ describe('useComputedSignals', () => {
       const s = compute({
         selectedDate: '2026-03-10',
         historySnapshot: snapshot,
+        isBacktest: false,
       });
       expect(s.dataNote ?? '').not.toContain('Backtesting');
     });
@@ -581,10 +583,29 @@ describe('useComputedSignals', () => {
     ])(
       'notes Backtesting on a past date %s',
       (_label, selectedDate, historySnapshot) => {
-        const s = compute({ selectedDate, historySnapshot });
+        const s = compute({ selectedDate, historySnapshot, isBacktest: true });
         expect(s.dataNote).toBe(BACKTEST_NOTE);
       },
     );
+
+    it('takes App’s backtest flag, the one the analysis context sends', () => {
+      // 2026-03-10 is today on the pinned clock: a clock read inside the
+      // hook would add no note, so the note follows the flag it is given.
+      const s = compute({ selectedDate: '2026-03-10', isBacktest: true });
+      expect(s.dataNote).toBe(BACKTEST_NOTE);
+    });
+
+    it('recomputes the note when only the flag changes (ET midnight)', () => {
+      const inputs = makeInputs({ selectedDate: '2026-03-10' });
+      const { result, rerender } = renderHook(
+        (p: Parameters<typeof useComputedSignals>[0]) => useComputedSignals(p),
+        { initialProps: inputs },
+      );
+      expect(result.current.dataNote ?? '').not.toContain('Backtesting');
+
+      rerender({ ...inputs, isBacktest: true });
+      expect(result.current.dataNote).toBe(BACKTEST_NOTE);
+    });
 
     it('keeps the VIX1D and opening-range notes, worded and ordered as before', () => {
       const early = {
@@ -596,9 +617,10 @@ describe('useComputedSignals', () => {
       expect(compute({ ...early, selectedDate: '2026-03-10' }).dataNote).toBe(
         `${VIX1D_NOTE} | ${OPENING_RANGE_NOTE}`,
       );
-      expect(compute({ ...early, selectedDate: '2026-03-09' }).dataNote).toBe(
-        `${VIX1D_NOTE} | ${OPENING_RANGE_NOTE} | ${BACKTEST_NOTE}`,
-      );
+      expect(
+        compute({ ...early, selectedDate: '2026-03-09', isBacktest: true })
+          .dataNote,
+      ).toBe(`${VIX1D_NOTE} | ${OPENING_RANGE_NOTE} | ${BACKTEST_NOTE}`);
     });
 
     it('returns undefined when all data available and after 10AM', () => {

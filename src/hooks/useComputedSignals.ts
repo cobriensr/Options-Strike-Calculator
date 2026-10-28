@@ -22,7 +22,6 @@ import { useTermStructure } from './useTermStructure';
 import { useRangeAnalysis } from './useRangeAnalysis';
 import type { EventItem } from '../types/api';
 import type { HistorySnapshot } from './useHistoryData';
-import { isPastETDate } from '../utils/timezone';
 
 // ============================================================
 // TYPES
@@ -170,6 +169,13 @@ interface HookInputs {
 
   // History (null when viewing today)
   historySnapshot: HistorySnapshot | null;
+
+  /**
+   * True when the selected date is past (ET). App computes it once, for
+   * this hook's data note and useAnalysisContext's isBacktest, so the two
+   * can't disagree; it follows the ET date App re-renders on at midnight.
+   */
+  isBacktest: boolean;
 }
 
 export function useComputedSignals(inputs: HookInputs): ComputedSignals {
@@ -197,6 +203,7 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
     livePriorDays,
     liveEvents,
     historySnapshot,
+    isBacktest,
   } = inputs;
 
   // ── Resolve volatility (backtest vs live) ────────────────
@@ -284,14 +291,14 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
       isEventDay: rangeAnalysis.isEventDay,
       eventNames: rangeAnalysis.eventNames,
 
-      // Data note. Its backtest line follows the selected date, as the
-      // analysis context's isBacktest does: today has intraday history from
+      // Data note. Its backtest line takes the analysis context's own
+      // isBacktest flag (App's, by date): today has intraday history from
       // its first candle and is still live.
       dataNote: buildDataNote(
         vix1d,
         vix,
         rangeAnalysis.openingRangeAvailable,
-        isPastETDate(selectedDate ?? ''),
+        isBacktest,
       ),
     }),
     [
@@ -300,7 +307,7 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
       vvix,
       sigmaSource,
       vix,
-      selectedDate,
+      isBacktest,
       regime,
       termStructure,
       rangeAnalysis,
