@@ -32,17 +32,26 @@ export interface CaptureRow {
  * (2 retries, 10 s per attempt) like the snapshot INSERTs in the fast
  * cron; any other error, or an exhausted retry, propagates.
  *
- * Idempotent: `withDbRetry` times an attempt out but does not cancel it, so
- * a slow attempt can commit while its retry also commits. The INSERT ends in
+ * Idempotent once migration #192 is applied: `withDbRetry` times an attempt
+ * out but does not cancel it, so a slow attempt can commit while its retry
+ * (or a duplicate cron delivery) commits the same batch. The INSERT ends in
  * `ON CONFLICT DO NOTHING` (no conflict target), so the second write of a
  * row is a no-op through the partial unique index
  * `gexbot_api_capture_natural_key` on (ticker, endpoint, category,
- * source_timestamp) (migration #192). The bare form is valid with or without
- * the index, so the code and the migration can deploy in either order. Rows
- * with a NULL source_timestamp are outside the index and not deduplicated.
+ * source_timestamp). Rows with a NULL source_timestamp are outside the index
+ * and not deduplicated.
+ *
+ * Deploy order: this code is valid before the index exists, so deploy it
+ * first and apply #192 only once this build is live. The pre-#192 plain
+ * INSERT raises 23505 (not retryable) on a repeated key once the index exists,
+ * and that fails the whole batch.
+ *
+ * Returns the number of rows actually inserted (`RETURNING 1`), so a caller
+ * can report written rows honestly: fetched minus returned is the number of
+ * duplicates skipped.
  */
-export async function insertCaptureRows(rows: CaptureRow[]): Promise<void> {
-  if (rows.length === 0) return;
+export async function insertCaptureRows(rows: CaptureRow[]): Promise<number> {
+  if (rows.length === 0) return 0;
   const sql = getDb();
 
   const tickers = rows.map((r) => r.ticker);
@@ -51,7 +60,7 @@ export async function insertCaptureRows(rows: CaptureRow[]): Promise<void> {
   const sourceTs = rows.map((r) => r.sourceTimestamp);
   const rawJsons = rows.map((r) => r.rawJson);
 
-  await withDbRetry(
+  const inserted = await withDbRetry(
     () => sql`
       INSERT INTO gexbot_api_capture (
         ticker, endpoint, category, source_timestamp, raw_response
@@ -65,8 +74,10 @@ export async function insertCaptureRows(rows: CaptureRow[]): Promise<void> {
         ${rawJsons}::text[]
       ) AS t(ticker, endpoint, category, source_timestamp, raw_response)
       ON CONFLICT DO NOTHING
+      RETURNING 1
     `,
     2,
     10_000,
   );
+  return inserted.length;
 }

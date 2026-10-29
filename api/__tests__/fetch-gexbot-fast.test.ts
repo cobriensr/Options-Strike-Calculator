@@ -143,12 +143,21 @@ function stubFetchHappyPath() {
   );
 }
 
+/**
+ * Default sql double: a capture INSERT (RETURNING 1) echoes one row per
+ * input row, as Postgres does when nothing conflicts; anything else is [].
+ */
+const insertEcho = async (strings: unknown, ...args: unknown[]) =>
+  Array.isArray(strings) && strings.join('').includes('RETURNING 1')
+    ? Array.from({ length: (args[0] as unknown[]).length }, () => ({}))
+    : [];
+
 describe('fetch-gexbot-fast handler', () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
     vi.resetAllMocks();
-    mockSql.mockResolvedValue([]);
+    mockSql.mockImplementation(insertEcho);
     process.env = { ...originalEnv };
     vi.setSystemTime(MARKET_TIME);
     process.env.CRON_SECRET = 'test-secret';
@@ -254,7 +263,31 @@ describe('fetch-gexbot-fast handler', () => {
     expect(mockSentryCapture).not.toHaveBeenCalled();
   });
 
-  it('writes the snapshot INSERT with ON CONFLICT DO NOTHING', async () => {
+  it('reports rows actually written and the skipped duplicates in metadata', async () => {
+    stubFetchHappyPath();
+    const WRITTEN = CAPTURE_COUNT - 7;
+    mockSql.mockImplementation(async (strings: unknown) =>
+      Array.isArray(strings) && strings.join('').includes('RETURNING 1')
+        ? Array.from({ length: WRITTEN }, () => ({}))
+        : [],
+    );
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: GEXBOT_TICKERS.length + WRITTEN,
+      captures: CAPTURE_COUNT,
+      skipped: 7,
+    });
+  });
+
+  it('writes the snapshot INSERT without ON CONFLICT (no natural key for the merged row)', async () => {
     stubFetchHappyPath();
     const req = mockRequest({
       method: 'GET',
@@ -266,8 +299,23 @@ describe('fetch-gexbot-fast handler', () => {
     );
     expect(snapshotCalls).toHaveLength(GEXBOT_TICKERS.length);
     for (const c of snapshotCalls) {
-      expect((c[0] as string[]).join('')).toContain('ON CONFLICT DO NOTHING');
+      expect((c[0] as string[]).join('')).not.toContain('ON CONFLICT');
     }
+  });
+
+  it('writes the capture INSERT with ON CONFLICT DO NOTHING', async () => {
+    stubFetchHappyPath();
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    await handler(req, mockResponse());
+    const captureCall = mockSql.mock.calls.find((c) =>
+      (c[0] as string[]).join('').includes('INSERT INTO gexbot_api_capture'),
+    );
+    expect((captureCall?.[0] as string[]).join('')).toContain(
+      'ON CONFLICT DO NOTHING',
+    );
   });
 
   // ── Classic-basic merge ───────────────────────────────────

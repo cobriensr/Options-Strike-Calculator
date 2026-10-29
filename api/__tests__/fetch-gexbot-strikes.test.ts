@@ -73,12 +73,21 @@ function stubFetchHappyPath() {
   );
 }
 
+/**
+ * Default sql double: the capture INSERT (RETURNING 1) echoes one row per
+ * input row, as Postgres does when nothing conflicts.
+ */
+const insertEcho = async (strings: unknown, ...args: unknown[]) =>
+  Array.isArray(strings) && strings.join('').includes('RETURNING 1')
+    ? Array.from({ length: (args[0] as unknown[]).length }, () => ({}))
+    : [];
+
 describe('fetch-gexbot-strikes handler', () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
     vi.resetAllMocks();
-    mockSql.mockResolvedValue([]);
+    mockSql.mockImplementation(insertEcho);
     process.env = { ...originalEnv };
     vi.setSystemTime(MARKET_TIME);
     process.env.CRON_SECRET = 'test-secret';
@@ -159,6 +168,25 @@ describe('fetch-gexbot-strikes handler', () => {
     // Single batched UNNEST INSERT for all 128 rows.
     expect(mockSql).toHaveBeenCalledTimes(1);
     expect(mockSentryCapture).not.toHaveBeenCalled();
+  });
+
+  it('reports rows actually written and the skipped duplicates in metadata', async () => {
+    stubFetchHappyPath();
+    mockSql.mockResolvedValue(Array.from({ length: 100 }, () => ({})));
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 100,
+      captures: TOTAL_TASKS,
+      skipped: TOTAL_TASKS - 100,
+    });
   });
 
   it('continues on per-(ticker,category) fetch failures with partial status', async () => {

@@ -156,17 +156,20 @@ export default withCronInstrumentation(
       );
     }
 
-    await insertCaptureRows(captures);
+    // Rows actually written: ON CONFLICT DO NOTHING skips repeats, so
+    // fetched minus inserted is the skip count.
+    const written = await insertCaptureRows(captures);
+    const skipped = captures.length - written;
 
     ctx.logger.info(
-      { stored: captures.length, failed },
+      { stored: written, skipped, failed },
       'fetch-gexbot-strikes completed',
     );
 
     return {
       status: deriveCronStatus(failed, tasks.length),
-      rows: captures.length,
-      metadata: { captures: captures.length, failed },
+      rows: written,
+      metadata: { captures: captures.length, skipped, failed },
     };
   },
   // Gate to the GexBot live window (09:30 ET → cash close + 1 min), same

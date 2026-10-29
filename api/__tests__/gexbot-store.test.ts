@@ -22,7 +22,7 @@ describe('insertCaptureRows', () => {
   });
 
   it('returns early without calling sql when rows is empty', async () => {
-    await insertCaptureRows([]);
+    await expect(insertCaptureRows([])).resolves.toBe(0);
     expect(mockSql).not.toHaveBeenCalled();
   });
 
@@ -85,7 +85,19 @@ describe('insertCaptureRows', () => {
     expect(rawJsons).toEqual(['{"current":[5950,1.2]}', '{"spot":540}']);
   });
 
-  it('skips duplicate rows with ON CONFLICT DO NOTHING', async () => {
+  it('returns the number of rows actually inserted, not the number sent', async () => {
+    mockSql.mockResolvedValueOnce([{}, {}]);
+    const rows = Array.from({ length: 5 }, (_, i) => ({
+      ticker: 'SPX',
+      endpoint: 'state',
+      category: 'gamma_zero',
+      sourceTimestamp: i,
+      rawJson: '{}',
+    }));
+    await expect(insertCaptureRows(rows)).resolves.toBe(2);
+  });
+
+  it('skips duplicate rows with ON CONFLICT DO NOTHING and counts them via RETURNING 1', async () => {
     await insertCaptureRows([
       {
         ticker: 'SPX',
@@ -97,6 +109,7 @@ describe('insertCaptureRows', () => {
     ]);
     const strings = (mockSql.mock.calls[0] as unknown[])[0] as string[];
     expect(strings.join('')).toContain('ON CONFLICT DO NOTHING');
+    expect(strings.join('')).toContain('RETURNING 1');
   });
 
   it('preserves null sourceTimestamp without coercing to a number', async () => {
@@ -153,7 +166,7 @@ describe('insertCaptureRows', () => {
     try {
       const pending = insertCaptureRows(ONE_ROW);
       await vi.advanceTimersByTimeAsync(1_000);
-      await expect(pending).resolves.toBeUndefined();
+      await expect(pending).resolves.toBe(0);
     } finally {
       vi.useRealTimers();
     }

@@ -5356,16 +5356,13 @@ export const MIGRATIONS: Migration[] = [
   {
     id: 192,
     description:
-      'Delete duplicate rows from gexbot_snapshots (keep the lowest id per (ticker, source_timestamp)) and gexbot_api_capture (keep the lowest id per (ticker, endpoint, category, source_timestamp)), then add partial unique indexes on those natural keys (WHERE source_timestamp IS NOT NULL) so the capture INSERTs can use ON CONFLICT DO NOTHING. The vendor repeats its frozen close snapshot at the 16:00 and 16:01 ET ticks (and the prior close at the 09:30/09:31 VIX ticks), and a retry after a db attempt timeout can write a batch twice. Rows with a NULL source_timestamp are neither deleted nor constrained. The Blob Parquet archive is untouched.',
+      'Delete duplicate rows from gexbot_api_capture (keep the lowest id per (ticker, endpoint, category, source_timestamp)), then add the partial unique index gexbot_api_capture_natural_key on that key (WHERE source_timestamp IS NOT NULL) so insertCaptureRows can use ON CONFLICT DO NOTHING. The vendor repeats its frozen close snapshot at the 16:00 and 16:01 ET ticks (and the prior close at the 09:30/09:31 VIX ticks), and a retry after a db attempt timeout can write a batch twice; all duplicates found on production were byte-identical. Rows with a NULL source_timestamp are neither deleted nor constrained. gexbot_snapshots is deliberately left without a natural key: a snapshot row merges the orderflow call with a separate classic gex_zero call, so (ticker, source_timestamp) does not identify it. The Blob Parquet archive is untouched.',
     statements: (sql) => [
-      sql`
-        DELETE FROM gexbot_snapshots a
-        USING gexbot_snapshots b
-        WHERE a.source_timestamp IS NOT NULL
-          AND a.ticker = b.ticker
-          AND a.source_timestamp = b.source_timestamp
-          AND a.id > b.id
-      `,
+      // Fail fast instead of queueing behind long reads, then take the lock
+      // up front so no writer can add a duplicate between the DELETE and the
+      // CREATE UNIQUE INDEX (SHARE ROW EXCLUSIVE blocks writes, not reads).
+      sql`SET LOCAL lock_timeout = '5s'`,
+      sql`LOCK TABLE gexbot_api_capture IN SHARE ROW EXCLUSIVE MODE`,
       sql`
         DELETE FROM gexbot_api_capture a
         USING gexbot_api_capture b
@@ -5375,11 +5372,6 @@ export const MIGRATIONS: Migration[] = [
           AND a.category = b.category
           AND a.source_timestamp = b.source_timestamp
           AND a.id > b.id
-      `,
-      sql`
-        CREATE UNIQUE INDEX IF NOT EXISTS gexbot_snapshots_natural_key
-          ON gexbot_snapshots (ticker, source_timestamp)
-          WHERE source_timestamp IS NOT NULL
       `,
       sql`
         CREATE UNIQUE INDEX IF NOT EXISTS gexbot_api_capture_natural_key

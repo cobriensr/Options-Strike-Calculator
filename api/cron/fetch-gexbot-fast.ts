@@ -151,13 +151,12 @@ async function storeSnapshots(
   const sql = getDb();
   for (const { ticker, body: orderflowBody } of rows) {
     const body = mergeClassic(orderflowBody, classicByTicker.get(ticker));
-    // Idempotent: a timed-out attempt is not cancelled, so a retry (or a
-    // duplicate cron delivery) can write the same snapshot twice. The bare
-    // `ON CONFLICT DO NOTHING` makes the second write a no-op through the
-    // partial unique index gexbot_snapshots_natural_key on (ticker,
-    // source_timestamp) (migration #192), and is valid with or without the
-    // index so code and migration can deploy in either order. Rows with a
-    // NULL source_timestamp are outside the index and not deduplicated.
+    // No natural key, so no ON CONFLICT: a snapshot row merges the orderflow
+    // call with a separate classic gex_zero call that carries its own
+    // timestamp, so (ticker, source_timestamp) does not identify the row (at
+    // the VIX open the orderflow half repeats the prior close while the
+    // classic half is fresh). A retry can therefore leave a duplicate, which
+    // is harmless: readers take the latest row at or before a time.
     await withDbRetry(
       () => sql`
       INSERT INTO gexbot_snapshots (
@@ -193,7 +192,6 @@ async function storeSnapshots(
         ${n(body.delta_risk_reversal)}, ${i(body.min_dte)}, ${i(body.sec_min_dte)},
         ${JSON.stringify(body)}::jsonb
       )
-      ON CONFLICT DO NOTHING
     `,
       2,
       10_000,
@@ -417,6 +415,9 @@ export default withCronInstrumentation(
     }
     if (snapshotLeg.status === 'rejected') throw snapshotLeg.reason;
     if (captureLeg.status === 'rejected') throw captureLeg.reason;
+    // Rows actually written: ON CONFLICT DO NOTHING skips repeats of a
+    // frozen close snapshot, so fetched minus inserted is the skip count.
+    const capturesWritten = captureLeg.value;
 
     // How many snapshot rows received their classic gex_zero aggregate
     // merge — the live health signal for the 10-column revival. A drop to
@@ -425,12 +426,13 @@ export default withCronInstrumentation(
       classicByTicker.has(s.ticker),
     ).length;
 
-    const stored = snapshots.length + captures.length;
+    const stored = snapshots.length + capturesWritten;
     ctx.logger.info(
       {
         stored,
         snapshots: snapshots.length,
-        captures: captures.length,
+        captures: capturesWritten,
+        skipped: captures.length - capturesWritten,
         enriched,
         failed,
       },
@@ -443,6 +445,7 @@ export default withCronInstrumentation(
       metadata: {
         snapshots: snapshots.length,
         captures: captures.length,
+        skipped: captures.length - capturesWritten,
         enriched,
         failed,
       },
