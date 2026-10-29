@@ -1,5 +1,5 @@
 ---
-status: Plan
+status: Done
 date: 2026-10-28
 ---
 
@@ -44,5 +44,12 @@ Restore `lottery_finder_fires.range_pos_at_trigger` (the session-range position 
 
 ## Open questions
 
-- Index fires (SPXW/NDXP): a proxy from `index_candles_1m` (SPX/NDX rebuilt from SPY/QQQ × the Schwab ratio) would fill 22.5K rows, but it changes the method. Owner decision pending; default: leave NULL. RUTW has no source.
+- Index fires (SPXW/NDXP): a proxy from `index_candles_1m` (SPX/NDX rebuilt from SPY/QQQ × the Schwab ratio) would fill 22.5K rows, but it changes the method. Owner decided 2026-10-28: leave NULL. RUTW has no source.
 - Ticker-days where UW returns no candles stay NULL and are listed in the report.
+
+## Result (2026-10-29)
+
+- Phase 1 live on main: 8f1751fb (key + failure reporting + deadline/breaker), 924612ed (comment and fixture leftovers).
+- Phase 2 on main: 83b1355f. Run 2026-10-29 00:14–00:22 CT against prod: dry run 3,443 ticker-days, 0 UW failures; probe 50 ticker-days / 7,288 fires in 6 s; full run 3,393 ticker-days / 387,508 fires in 3m14s, 0 failures, 0 ticker-days without candles.
+- 394,796 fires filled in total. NULL left: 22,499, all cash-index roots (by owner decision). Values sane (sample: min 0.002, max 0.999, mean 0.56).
+- Not run: `VACUUM (ANALYZE) lottery_finder_fires` (owner approval pending); autovacuum will otherwise handle the ~395K new dead tuples.
