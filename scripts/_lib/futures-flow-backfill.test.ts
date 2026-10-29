@@ -160,6 +160,11 @@ describe('parseArgs', () => {
     ['--dry-run', ['--dry-run'], { dryRun: true }],
     ['--max-pages', ['--max-pages', '500'], { maxPages: 500 }],
     ['--roots, any case', ['--roots', 'es,NQ'], { roots: ['ES', 'NQ'] }],
+    [
+      '--roots, a repeated root once',
+      ['--roots', 'ES,nq,es,NQ'],
+      { roots: ['ES', 'NQ'] },
+    ],
   ])('%s', (_label, argv, expected) => {
     expect(parseArgs(argv)).toEqual(opts(expected));
   });
@@ -448,5 +453,35 @@ describe('runBackfill', () => {
     expect(logs.join('\n')).toMatch(
       /ES 2026-07-14 FAILED: connection terminated/,
     );
+  });
+
+  it('a failed root-day’s pages still count against the page budget', async () => {
+    mockSql.mockResolvedValueOnce([nullRow('ES', '2026-07-14T14:00:00Z', 4)]);
+    let call = 0;
+    mockUwFetch.mockImplementation(async () => {
+      call += 1;
+      // Page 1 doesn't reach 00:00; page 2 fails.
+      if (call === 1) {
+        return [print(1, '2026-07-14T12:00:00.000000Z', 1, 'buy')];
+      }
+      throw new Error('UW API 502: bad gateway');
+    });
+
+    const code = await runBackfill({
+      ...opts({
+        dates: ['2026-07-14', '2026-07-15'],
+        roots: ['ES'],
+        maxPages: 2,
+      }),
+      apiKey: 'k',
+    });
+
+    expect(code).toBe(1);
+    // Both requests counted: 07-15 never starts.
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    const out = logs.join('\n');
+    expect(out).toMatch(/ES 2026-07-14 FAILED.*UW API 502/);
+    expect(out).toMatch(/page budget.*--from 2026-07-15/is);
+    expect(out).toMatch(/2 pages/);
   });
 });

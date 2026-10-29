@@ -46,6 +46,7 @@ import {
   matchFlowToBars,
   writeFlowMinutes,
   type FlowMinute,
+  type PageBudget,
 } from '../../api/_lib/futures-flow-repair.js';
 import { UW_CONCURRENCY_CAP } from '../../api/_lib/uw-concurrency.js';
 import { mapWithConcurrency } from '../../api/_lib/uw-fetch.js';
@@ -172,17 +173,22 @@ export function parseArgs(argv: readonly string[]): BackfillOptions {
       }
       case '--roots': {
         const v = value(i, arg);
-        out.roots = v.split(',').map((raw) => {
-          const root = FUTURES_ROOTS.find(
-            (r) => r === raw.trim().toUpperCase(),
-          );
-          if (!root) {
-            throw new Error(
-              `--roots: unknown root ${raw} (one of ${FUTURES_ROOTS.join(', ')})`,
-            );
-          }
-          return root;
-        });
+        // A repeated root would run its root-days twice, concurrently.
+        out.roots = [
+          ...new Set(
+            v.split(',').map((raw) => {
+              const root = FUTURES_ROOTS.find(
+                (r) => r === raw.trim().toUpperCase(),
+              );
+              if (!root) {
+                throw new Error(
+                  `--roots: unknown root ${raw} (one of ${FUTURES_ROOTS.join(', ')})`,
+                );
+              }
+              return root;
+            }),
+          ),
+        ];
         i += 1;
         break;
       }
@@ -282,6 +288,21 @@ interface RootDayResult {
   leaders: string[];
 }
 
+type RootDayOutcome =
+  | { root: FuturesRoot; ok: RootDayResult }
+  | { root: FuturesRoot; err: string; pages: number };
+
+/** A failed root-day, carrying the UW pages it used before failing. */
+class RootDayError extends Error {
+  readonly pages: number;
+
+  constructor(cause: unknown, pages: number) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = 'RootDayError';
+    this.pages = pages;
+  }
+}
+
 async function backfillRootDay(
   apiKey: string,
   root: FuturesRoot,
@@ -305,42 +326,56 @@ async function backfillRootDay(
   }
   const endMs = Date.parse(bars.at(-1)!.ts) + MINUTE_MS;
 
-  const byContract = new Map<string, FlowMinute[]>();
+  // Counted from each contract's budget, so a fetch that throws part-way
+  // still charges the pages it used to the run's budget.
   let pages = 0;
-  for (const contract of contractCandidates(root, date)) {
-    const flow = await fetchContractFlow(apiKey, contract, dayStartMs, endMs, {
-      pagesLeft: MAX_PAGES_PER_CONTRACT_DAY,
-      deadlineMs: Number.POSITIVE_INFINITY,
-    });
-    pages += flow.pages;
-    if (flow.stop === 'budget') {
-      throw new Error(
-        `${contract}: more than ${MAX_PAGES_PER_CONTRACT_DAY} pages for one day`,
-      );
+  try {
+    const byContract = new Map<string, FlowMinute[]>();
+    for (const contract of contractCandidates(root, date)) {
+      const budget: PageBudget = {
+        pagesLeft: MAX_PAGES_PER_CONTRACT_DAY,
+        deadlineMs: Number.POSITIVE_INFINITY,
+      };
+      const flow = await fetchContractFlow(
+        apiKey,
+        contract,
+        dayStartMs,
+        endMs,
+        budget,
+      ).finally(() => {
+        pages += MAX_PAGES_PER_CONTRACT_DAY - budget.pagesLeft;
+      });
+      if (flow.stop === 'budget') {
+        throw new Error(
+          `${contract}: more than ${MAX_PAGES_PER_CONTRACT_DAY} pages for one day`,
+        );
+      }
+      byContract.set(contract, [...flow.minutes.values()]);
     }
-    byContract.set(contract, [...flow.minutes.values()]);
-  }
 
-  const leaderOf = new Map<string, string>();
-  const front = new Map<string, FlowMinute>();
-  for (const { contract, row } of replayFrontMonth(byContract)) {
-    front.set(row.ts, row);
-    leaderOf.set(row.ts, contract);
+    const leaderOf = new Map<string, string>();
+    const front = new Map<string, FlowMinute>();
+    for (const { contract, row } of replayFrontMonth(byContract)) {
+      front.set(row.ts, row);
+      leaderOf.set(row.ts, contract);
+    }
+    const { updates, skippedTolerance } = matchFlowToBars(bars, front);
+    const written = dryRun
+      ? updates.length
+      : await writeFlowMinutes(root, updates);
+    const leaders = [
+      ...new Set(updates.flatMap((u) => leaderOf.get(u.ts) ?? [])),
+    ];
+    return {
+      nullMinutes: bars.length,
+      written,
+      skippedTolerance,
+      pages,
+      leaders,
+    };
+  } catch (err) {
+    throw new RootDayError(err, pages);
   }
-  const { updates, skippedTolerance } = matchFlowToBars(bars, front);
-  const written = dryRun
-    ? updates.length
-    : await writeFlowMinutes(root, updates);
-  const leaders = [
-    ...new Set(updates.flatMap((u) => leaderOf.get(u.ts) ?? [])),
-  ];
-  return {
-    nullMinutes: bars.length,
-    written,
-    skippedTolerance,
-    pages,
-    leaders,
-  };
 }
 
 // ── Run ─────────────────────────────────────────────────────
@@ -392,7 +427,7 @@ export async function runBackfill(
     const results = await mapWithConcurrency(
       day.roots,
       UW_CONCURRENCY_CAP,
-      async (root) => {
+      async (root): Promise<RootDayOutcome> => {
         try {
           return {
             root,
@@ -402,6 +437,7 @@ export async function runBackfill(
           return {
             root,
             err: err instanceof Error ? err.message : String(err),
+            pages: err instanceof RootDayError ? err.pages : 0,
           };
         }
       },
@@ -410,10 +446,13 @@ export async function runBackfill(
     for (const r of results) {
       if ('err' in r) {
         failures += 1;
-        console.error(`  ${r.root} ${day.date} FAILED: ${r.err}`);
+        pages += r.pages;
+        console.error(
+          `  ${r.root} ${day.date} FAILED: ${r.err} (after ${r.pages} pages)`,
+        );
         continue;
       }
-      const res = r.ok!;
+      const res = r.ok;
       pages += res.pages;
       written += res.written;
       skipped += res.skippedTolerance;
