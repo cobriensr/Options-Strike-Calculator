@@ -19,6 +19,7 @@
 
 import { getDb } from './db.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
+import { PERISCOPE_GEXBOT_CUTOVER } from '../../src/utils/periscope-source.js';
 import {
   PERISCOPE_LOTTERY_ENTRY_WINDOW_MINUTES,
   PERISCOPE_LOTTERY_THRESHOLDS,
@@ -455,8 +456,13 @@ export async function detectPutLottery(
 async function fetchAllCandidatesForExpiry(
   panel: 'gamma' | 'charm',
   expiry: string,
+  opts: BackfillOptions,
 ): Promise<SliceRow[]> {
   const sql = getDb();
+  // Scraper-era slices only unless the owner opts in: the filters were tuned
+  // on UW Periscope data, and the LAG / percentile windows below must not mix
+  // in GEXBot taker-flow rows. A null cutoff lifts the bound.
+  const cutoff = opts.includeGexbot === true ? null : PERISCOPE_GEXBOT_CUTOVER;
   const dayTopPct =
     panel === 'gamma'
       ? PERISCOPE_LOTTERY_THRESHOLDS.CALL.DAY_TOP_PCT
@@ -475,6 +481,8 @@ async function fetchAllCandidatesForExpiry(
           AS greek_delta
       FROM periscope_snapshots
       WHERE panel = ${panel} AND expiry = ${expiry}
+        AND (${cutoff}::timestamptz IS NULL
+             OR captured_at < ${cutoff}::timestamptz)
     ),
     day_threshold AS (
       SELECT PERCENTILE_CONT(${quantile})
@@ -510,6 +518,12 @@ async function fetchAllCandidatesForExpiry(
   return rows;
 }
 
+/** Backfill read scope. Default: scraper-era slices only. */
+export interface BackfillOptions {
+  /** Also read GEXBot-era slices (the rules were not tuned on them). */
+  includeGexbot?: boolean;
+}
+
 /**
  * Backfill variants — run the full v3 strict filter across every
  * slice-pair in the day, not just the latest. Identical downstream
@@ -517,8 +531,9 @@ async function fetchAllCandidatesForExpiry(
  */
 export async function detectCallLotteryAllForDate(
   expiry: string,
+  opts: BackfillOptions = {},
 ): Promise<PeriscopeLotteryFire[]> {
-  const candidates = await fetchAllCandidatesForExpiry('gamma', expiry);
+  const candidates = await fetchAllCandidatesForExpiry('gamma', expiry, opts);
   const fires: PeriscopeLotteryFire[] = [];
   for (const c of candidates) {
     const fire = await applyCallFilter(c, expiry);
@@ -529,8 +544,9 @@ export async function detectCallLotteryAllForDate(
 
 export async function detectPutLotteryAllForDate(
   expiry: string,
+  opts: BackfillOptions = {},
 ): Promise<PeriscopeLotteryFire[]> {
-  const candidates = await fetchAllCandidatesForExpiry('charm', expiry);
+  const candidates = await fetchAllCandidatesForExpiry('charm', expiry, opts);
   const fires: PeriscopeLotteryFire[] = [];
   for (const c of candidates) {
     const fire = await applyPutFilter(c, expiry);

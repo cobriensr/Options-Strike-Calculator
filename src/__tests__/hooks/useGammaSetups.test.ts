@@ -36,6 +36,8 @@ function makeResponse(
 ): GammaSetupsResponse {
   return {
     today: '2026-05-21',
+    paused: false,
+    paused_reason: null,
     dow_label: 'Thursday',
     confidence_tier: 'MEDIUM',
     pre_day_filter_fires: false,

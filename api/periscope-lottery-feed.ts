@@ -8,6 +8,10 @@
  *
  * Owner-or-guest. Same auth pattern as /api/silent-boom-feed.
  *
+ * `paused` / `pausedReason`: true for a GEXBot-era date. The detect crons
+ * are paused there (the filters were tuned on UW Periscope data, owner
+ * decision D1 revised 2026-10-29); rows already stored stay readable.
+ *
  * Query params:
  *   - date (YYYY-MM-DD, default = today in ET)
  *   - fire_type ('call_lottery' | 'put_lottery' | 'both', default 'both')
@@ -24,6 +28,10 @@ import {
 } from './_lib/api-helpers.js';
 import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { getETDateStr } from '../src/utils/timezone.js';
+import {
+  UW_TUNED_PAUSE_REASON,
+  isUwTunedRulePausedForDay,
+} from '../src/utils/uw-tuned-pause.js';
 
 type DbNumeric = string | number;
 type DbTimestamp = string | Date;
@@ -172,8 +180,11 @@ export default async function handler(
     });
 
     setCacheHeaders(res, 30, 60);
+    const paused = isUwTunedRulePausedForDay(dateParam);
     res.status(200).json({
       date: dateParam,
+      paused,
+      pausedReason: paused ? UW_TUNED_PAUSE_REASON : null,
       fireType: fireTypeParam,
       count: rows.length,
       fires: rows.map(serializeFire),

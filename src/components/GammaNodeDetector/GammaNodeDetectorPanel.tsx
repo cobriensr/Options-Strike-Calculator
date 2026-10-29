@@ -24,6 +24,7 @@
 import { memo } from 'react';
 
 import { SectionBox } from '../ui/SectionBox';
+import { UwTunedPausedBanner } from '../ui/UwTunedPausedBanner';
 import { useGammaSetups } from '../../hooks/useGammaSetups';
 import { DayConfidenceBanner } from './DayConfidenceBanner';
 import { FireRow } from './FireRow';
@@ -50,11 +51,16 @@ export const GammaNodeDetectorPanel = memo(function GammaNodeDetectorPanel({
       )}
       {data != null && (
         <>
+          {data.paused && (
+            <UwTunedPausedBanner noun="setups" label="Gamma setups paused" />
+          )}
           <RollingStatsBar marketOpen={marketOpen} />
           <DayConfidenceBanner data={data} />
           {data.fires.length === 0 ? (
             <div className="border-edge bg-surface-alt rounded border p-2 text-[11px] text-neutral-500">
-              No setups detected yet today.
+              {data.paused
+                ? 'No setups while paused.'
+                : 'No setups detected yet today.'}
             </div>
           ) : (
             <div className="flex flex-col">

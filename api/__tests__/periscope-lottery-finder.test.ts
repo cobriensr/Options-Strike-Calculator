@@ -498,3 +498,36 @@ describe('detectPutLotteryAllForDate — historical backfill variant', () => {
     expect(fires[0]!.eventStrike).toBe(7090);
   });
 });
+
+describe('backfill variants — GEXBot-era rows are opt-in', () => {
+  const CUTOVER = '2026-05-26T17:20:00Z';
+  // mockSql is a tagged template: calls are (strings, ...values).
+  const interpolated = (): unknown[] => mockSql.mock.calls[0]!.slice(1);
+
+  it.each([
+    ['call', detectCallLotteryAllForDate],
+    ['put', detectPutLotteryAllForDate],
+  ] as const)(
+    '%s default bounds the snapshot read at the GEXBot cutover',
+    async (_side, detect) => {
+      mockSql.mockResolvedValueOnce([]);
+      await detect('2026-05-26');
+      expect(interpolated()).toContain(CUTOVER);
+      const sqlText = (mockSql.mock.calls[0]![0] as string[]).join('?');
+      expect(sqlText).toContain('captured_at <');
+    },
+  );
+
+  it.each([
+    ['call', detectCallLotteryAllForDate],
+    ['put', detectPutLotteryAllForDate],
+  ] as const)(
+    '%s includeGexbot lifts the bound (null cutoff)',
+    async (_side, detect) => {
+      mockSql.mockResolvedValueOnce([]);
+      await detect('2026-05-26', { includeGexbot: true });
+      expect(interpolated()).not.toContain(CUTOVER);
+      expect(interpolated()).toContain(null);
+    },
+  );
+});

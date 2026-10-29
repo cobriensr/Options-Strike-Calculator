@@ -69,6 +69,8 @@ function makeResponse(
 ): GammaSetupsResponse {
   return {
     today: '2026-05-21',
+    paused: false,
+    paused_reason: null,
     dow_label: 'Thursday',
     confidence_tier: 'MEDIUM',
     pre_day_filter_fires: false,
@@ -174,5 +176,33 @@ describe('GammaNodeDetectorPanel', () => {
     render(<GammaNodeDetectorPanel marketOpen={true} />);
     expect(screen.getByText('fetch failed: 502')).toBeDefined();
     expect(screen.getByText('E1')).toBeDefined();
+  });
+
+  it('shows the pause banner and keeps stored fires visible when paused', () => {
+    setHookState({
+      data: makeResponse({
+        paused: true,
+        paused_reason: 'uw-tuned-rule-on-gexbot-data',
+        nearest_floor: null,
+        nearest_ceiling: null,
+        fires: [makeFire({ id: 5, node_strike: 7410 })],
+      }),
+    });
+    render(<GammaNodeDetectorPanel marketOpen={true} />);
+    expect(
+      screen.getByRole('status', { name: 'Gamma setups paused' }),
+    ).toHaveTextContent(
+      'Paused — these setups were tuned on UW Periscope data; live data is GEXBot. GEXBot-specific rules pending.',
+    );
+    expect(screen.getByTestId('gamma-fire-5')).toBeDefined();
+    expect(screen.queryByText('No setups detected yet today.')).toBeNull();
+  });
+
+  it('shows no pause banner when the setups are live', () => {
+    setHookState({ data: makeResponse() });
+    render(<GammaNodeDetectorPanel marketOpen={true} />);
+    expect(
+      screen.queryByRole('status', { name: 'Gamma setups paused' }),
+    ).toBeNull();
   });
 });

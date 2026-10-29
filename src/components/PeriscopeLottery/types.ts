@@ -55,6 +55,9 @@ export interface PeriscopeLotteryFire {
 
 export interface PeriscopeLotteryFeedResponse {
   date: string;
+  /** True for a GEXBot-era date: the detect crons are paused there. */
+  paused: boolean;
+  pausedReason: string | null;
   fireType: LotteryFireTypeFilter;
   count: number;
   fires: PeriscopeLotteryFire[];

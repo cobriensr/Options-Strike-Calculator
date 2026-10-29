@@ -16,6 +16,11 @@
  *
  * Run:   npx tsx scripts/backfill-gamma-setup-fires.ts
  * Args:  --from YYYY-MM-DD --to YYYY-MM-DD  (default: all available history)
+ *        --include-gexbot  also read GEXBot-era Periscope rows (see below)
+ *
+ * Scraper-era rows only by default: E1/E5/PCS were tuned on UW Periscope
+ * data, and every snapshot since 2026-05-26 is GEXBot taker flow (owner
+ * decision D1 revised, 2026-10-29). `--include-gexbot` opts in, with a warning.
  *
  * Idempotent: UNIQUE(fired_at, signal_type, node_strike) on the table +
  * `ON CONFLICT DO NOTHING` on insert means re-running is safe and only
@@ -43,6 +48,13 @@ import {
   type SignalType,
 } from '../api/_lib/gamma-detector.js';
 
+import {
+  GEXBOT_INCLUDE_WARNING,
+  clampWindowToScraperEra,
+  parseIncludeGexbot,
+  scraperEraCutoff,
+} from './_lib/uw-tuned-backfill.js';
+
 config({ path: '.env.local' });
 
 const SQL_URL =
@@ -64,7 +76,7 @@ const BAR_LOOKBACK = 20; // matches detect-gamma-setups (loadRecentBars)
 // CLI ARGS
 // ============================================================
 
-function parseArgs(): { from: string; to: string } {
+function parseArgs(): { from: string; to: string; includeGexbot: boolean } {
   let from = DEFAULT_FROM;
   let to = DEFAULT_TO;
   const argv = process.argv.slice(2);
@@ -77,7 +89,7 @@ function parseArgs(): { from: string; to: string } {
       i += 1;
     }
   }
-  return { from, to };
+  return { from, to, includeGexbot: parseIncludeGexbot(argv) };
 }
 
 // ============================================================
@@ -141,6 +153,7 @@ async function loadBars(from: string, to: string): Promise<RawBar[]> {
 async function loadPeriscopeNodes(
   from: string,
   to: string,
+  cutoff: string | null,
 ): Promise<{
   bySnapshot: Map<string, RawNode[]>;
   snapshots: SnapshotMeta[];
@@ -154,6 +167,8 @@ async function loadPeriscopeNodes(
       AND expiry >= ${from}::date
       AND expiry <= ${to}::date
       AND value > 0
+      AND (${cutoff}::timestamptz IS NULL
+           OR captured_at < ${cutoff}::timestamptz)
     ORDER BY captured_at ASC, strike ASC
   `) as Array<{
     captured_ms: string | number;
@@ -535,14 +550,25 @@ async function backfillOutcomes(): Promise<number> {
 // ============================================================
 
 async function main(): Promise<void> {
-  const { from, to } = parseArgs();
+  const args = parseArgs();
+  const { from, to, clamped } = {
+    ...args,
+    ...clampWindowToScraperEra(args.from, args.to, args.includeGexbot),
+  };
+  if (args.includeGexbot) console.warn(GEXBOT_INCLUDE_WARNING);
+  if (clamped) {
+    console.warn(
+      `--to ${args.to} reaches the GEXBot era; capped at ${to}. Pass --include-gexbot to read it.`,
+    );
+  }
   console.log(`backfill window: ${from} → ${to}`);
+  const cutoff = scraperEraCutoff(args.includeGexbot);
 
   const t0 = Date.now();
   console.log('loading bars + periscope + ES + vol_realized...');
   const [bars, peri, esBars, vol] = await Promise.all([
     loadBars(from, to),
-    loadPeriscopeNodes(from, to),
+    loadPeriscopeNodes(from, to, cutoff),
     loadEsBars(from, to),
     loadVolRealized(),
   ]);

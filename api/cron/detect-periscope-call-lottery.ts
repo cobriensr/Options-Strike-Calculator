@@ -17,6 +17,10 @@
 
 import { getDb, withDbRetry } from '../_lib/db.js';
 import {
+  UW_TUNED_PAUSE_REASON,
+  isUwTunedRulePausedForDay,
+} from '../../src/utils/uw-tuned-pause.js';
+import {
   detectCallLottery,
   todayExpiry,
 } from '../_lib/periscope-lottery-finder.js';
@@ -30,6 +34,17 @@ export default withCronInstrumentation(
   'detect-periscope-call-lottery',
   async (ctx): Promise<CronResult> => {
     const expiry = todayExpiry();
+
+    // Paused on GEXBot data (owner decision D1 revised, 2026-10-29): the
+    // filters were tuned on UW Periscope's MM position, not taker flow.
+    if (isUwTunedRulePausedForDay(expiry)) {
+      return {
+        status: 'skipped',
+        rows: 0,
+        message: 'paused: UW-tuned rule on GEXBot data',
+        metadata: { expiry, paused: UW_TUNED_PAUSE_REASON },
+      };
+    }
     const fires = await detectCallLottery(expiry);
 
     if (fires.length === 0) {

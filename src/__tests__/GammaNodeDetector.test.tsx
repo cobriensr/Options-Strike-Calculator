@@ -43,6 +43,8 @@ function makeResponse(
 ): GammaSetupsResponse {
   return {
     today: '2026-05-21',
+    paused: false,
+    paused_reason: null,
     dow_label: 'Thursday',
     confidence_tier: 'MEDIUM',
     pre_day_filter_fires: false,
@@ -111,9 +113,17 @@ describe('FireRow', () => {
     render(<FireRow fire={makeFire({ fired_at: '2026-05-21T14:30:00Z' })} />);
     expect(screen.getByText(/09:30 CT/)).toBeDefined();
   });
-});
 
-// ── DayConfidenceBanner ─────────────────────────────────────────
+  it('tags a fire from the GEXBot era with a data-source chip', () => {
+    render(<FireRow fire={makeFire({ fired_at: '2026-06-02T14:30:00Z' })} />);
+    expect(screen.getByText('GEXBot data')).toBeInTheDocument();
+  });
+
+  it('does not tag a scraper-era fire', () => {
+    render(<FireRow fire={makeFire({ fired_at: '2026-05-21T14:30:00Z' })} />);
+    expect(screen.queryByText('GEXBot data')).toBeNull();
+  });
+});
 
 describe('DayConfidenceBanner', () => {
   it('renders DOW + MEDIUM tier on a non-filter day', () => {

@@ -12,6 +12,7 @@
 
 import { useMemo, useState } from 'react';
 import { SectionBox } from '../ui';
+import { UwTunedPausedBanner } from '../ui/UwTunedPausedBanner.js';
 import { usePeriscopeLotteryFeed } from '../../hooks/usePeriscopeLotteryFeed.js';
 import { getETDateStr } from '../../utils/timezone.js';
 import { buildSpxwOcc, spxwUwChainUrl } from './buildSpxwOcc.js';
@@ -35,7 +36,7 @@ export function PeriscopeLotteryPanel({
   const today = useMemo(() => getETDateStr(new Date()), []);
   const [selectedDate, setSelectedDate] = useState<string>(today);
   const historical = selectedDate < today;
-  const { fires, loading, error, fetchedAt } = usePeriscopeLotteryFeed({
+  const { fires, paused, loading, error, fetchedAt } = usePeriscopeLotteryFeed({
     date: selectedDate,
     marketOpen,
     historical,
@@ -81,11 +82,16 @@ export function PeriscopeLotteryPanel({
       headerRight={headerRight}
     >
       <p className="text-muted -mt-1 mb-3 font-sans text-[10px]">
-        0DTE SPXW · MM gamma + charm extremes ·{' '}
+        0DTE SPXW ·{' '}
+        {paused ? 'gamma + charm extremes' : 'MM gamma + charm extremes'} ·{' '}
         {historical
           ? 'historical — outcomes locked'
           : 'auto-refreshes every 60s'}
       </p>
+
+      {paused && (
+        <UwTunedPausedBanner noun="alerts" label="Periscope alerts paused" />
+      )}
 
       {error && (
         <div
@@ -101,12 +107,14 @@ export function PeriscopeLotteryPanel({
           side="call_lottery"
           fires={calls}
           loading={loading}
+          paused={paused}
           date={selectedDate}
         />
         <LotteryColumn
           side="put_lottery"
           fires={puts}
           loading={loading}
+          paused={paused}
           date={selectedDate}
         />
       </div>
@@ -118,11 +126,13 @@ function LotteryColumn({
   side,
   fires,
   loading,
+  paused,
   date,
 }: {
   side: LotteryFireType;
   fires: PeriscopeLotteryFire[];
   loading: boolean;
+  paused: boolean;
   date: string;
 }): React.ReactElement {
   const isCall = side === 'call_lottery';
@@ -154,7 +164,9 @@ function LotteryColumn({
         <p className="text-muted font-sans text-[11px]">
           {loading
             ? 'Loading…'
-            : 'No fires today yet — panel updates as Periscope publishes new 10-min slices.'}
+            : paused
+              ? 'No fires — detection is paused on GEXBot data.'
+              : 'No fires today yet — panel updates as Periscope publishes new 10-min slices.'}
         </p>
       ) : (
         <ul className="space-y-1.5">

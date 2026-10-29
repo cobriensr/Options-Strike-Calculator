@@ -11,7 +11,7 @@
  * functions; this file mocks them and focuses on the request shape.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse, isolationScopeStub } from './helpers';
 
 // ── Mocks ────────────────────────────────────────────────
@@ -104,7 +104,14 @@ function defaultDayContext() {
 // ── Tests ─────────────────────────────────────────────────
 
 describe('GET /api/gamma-setups/active', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
+    // Pin the clock to the scraper era; the pause tests move it.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-05-21T15:00:00.000Z'));
     vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     mockSql.mockReset();
     vi.mocked(Sentry.captureException).mockClear();
@@ -335,5 +342,72 @@ describe('GET /api/gamma-setups/active', () => {
     });
     expect(res._headers['Retry-After']).toBe('5');
     expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('scraper era: paused=false, reason null, floor/ceiling computed', async () => {
+    vi.mocked(getDowLabel).mockReturnValue('Thursday');
+    vi.mocked(getConfidenceTier).mockReturnValue('MEDIUM');
+    vi.mocked(loadDayContext).mockResolvedValue(defaultDayContext());
+    vi.mocked(loadPositiveGammaNodes).mockResolvedValue([
+      { strike: 7390, value: 250_000 },
+    ]);
+    vi.mocked(loadRecentBars).mockResolvedValue([]);
+    mockSql.mockResolvedValueOnce([]);
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    expect(res._json).toMatchObject({ paused: false, paused_reason: null });
+    expect(loadPositiveGammaNodes).toHaveBeenCalled();
+  });
+
+  it('GEXBot era: paused=true with the reason, no +γ levels from GEXBot, history still returned', async () => {
+    vi.setSystemTime(new Date('2026-10-29T15:00:00.000Z'));
+    vi.mocked(getDowLabel).mockReturnValue('Thursday');
+    vi.mocked(getConfidenceTier).mockReturnValue('MEDIUM');
+    vi.mocked(loadDayContext).mockResolvedValue(defaultDayContext());
+    mockSql.mockResolvedValueOnce([
+      {
+        id: '7',
+        fired_at: new Date('2026-10-29T15:10:00Z'),
+        signal_type: 'e1_long_call',
+        dow_label: 'Thursday',
+        confidence_tier: 'MEDIUM',
+        spot_at_fire: '7400',
+        node_strike: 7390,
+        node_gex: '250000',
+        bar_open: '1',
+        bar_high: '2',
+        bar_low: '0',
+        bar_close: '1',
+        bar_range: '2',
+        es_basis_change_5m: null,
+        ret_15m: null,
+        ret_30m: null,
+        ret_60m: null,
+        ret_eod: null,
+        trade_taken: false,
+        trade_pnl_dollars: null,
+      },
+    ]);
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      paused: boolean;
+      paused_reason: string;
+      nearest_floor: unknown;
+      nearest_ceiling: unknown;
+      fires: unknown[];
+    };
+    expect(body.paused).toBe(true);
+    expect(body.paused_reason).toBe('uw-tuned-rule-on-gexbot-data');
+    expect(body.nearest_floor).toBeNull();
+    expect(body.nearest_ceiling).toBeNull();
+    expect(body.fires).toHaveLength(1);
+    // The GEXBot slice is never read as +γ levels.
+    expect(loadPositiveGammaNodes).not.toHaveBeenCalled();
   });
 });

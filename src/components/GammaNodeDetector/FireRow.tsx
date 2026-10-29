@@ -20,6 +20,7 @@ import { memo } from 'react';
 
 import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
+import { isUwTunedRulePaused } from '../../utils/uw-tuned-pause';
 import type { GammaSetupFire, SignalType } from '../../hooks/useGammaSetups';
 
 interface FireRowProps {
@@ -96,6 +97,7 @@ export const FireRow = memo(function FireRow({ fire }: FireRowProps) {
   const sigColor = signalColor(fire.signal_type);
   const hasOutcome = fire.ret_30m != null;
   const outcomePts = fire.ret_30m;
+  const onGexbotData = isUwTunedRulePaused(fire.fired_at);
 
   return (
     <div
@@ -113,6 +115,14 @@ export const FireRow = memo(function FireRow({ fire }: FireRowProps) {
         Strike {fire.node_strike}
         <span className="text-muted"> | {setupDescription(fire)}</span>
       </span>
+      {onGexbotData && (
+        <span
+          className="text-muted border-edge shrink-0 rounded-full border px-1.5 py-0.5 font-mono text-[9px] tracking-[0.06em] uppercase"
+          title="Fired on GEXBot taker-flow data; the E1/E5/PCS rules were tuned on UW Periscope data."
+        >
+          GEXBot data
+        </span>
+      )}
       {hasOutcome && outcomePts != null && (
         <span
           className="shrink-0 font-mono text-[11px] font-semibold"

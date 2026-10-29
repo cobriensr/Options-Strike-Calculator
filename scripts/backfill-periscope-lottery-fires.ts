@@ -14,6 +14,10 @@
  * historical fires inserted here get one only if their entry print was
  * still in ws_option_trades.
  *
+ * Scraper-era rows only by default: the filters were tuned on UW Periscope
+ * data, and every snapshot since 2026-05-26 is GEXBot taker flow (owner
+ * decision D1 revised, 2026-10-29). `--include-gexbot` opts in, with a warning.
+ *
  * Usage:
  *   DATABASE_URL=... npx tsx scripts/backfill-periscope-lottery-fires.ts
  *   npx tsx scripts/backfill-periscope-lottery-fires.ts --dry-run
@@ -32,6 +36,11 @@ import {
   detectPutLotteryAllForDate,
 } from '../api/_lib/periscope-lottery-finder.js';
 import type { PeriscopeLotteryFire } from '../api/_lib/periscope-lottery-types.js';
+import { PERISCOPE_GEXBOT_CUTOVER } from '../src/utils/periscope-source.js';
+import {
+  GEXBOT_INCLUDE_WARNING,
+  parseIncludeGexbot,
+} from './_lib/uw-tuned-backfill.js';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) {
@@ -45,6 +54,7 @@ const sql = neon(DATABASE_URL);
 
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
+const includeGexbot = parseIncludeGexbot(args);
 const startIdx = args.indexOf('--start');
 const endIdx = args.indexOf('--end');
 const startDate = startIdx >= 0 ? args[startIdx + 1] : null;
@@ -57,6 +67,10 @@ const explicitDates = args.filter(
   (a, i) => /^\d{4}-\d{2}-\d{2}$/.test(a) && !consumedByFlags.has(i),
 );
 
+// The cutover day is mixed; its GEXBot slices are dropped by timestamp in the
+// finder, so the day itself is still scanned.
+const CUTOVER_DAY = PERISCOPE_GEXBOT_CUTOVER.slice(0, 10);
+
 // ── Date discovery ────────────────────────────────────────────────────
 
 async function getDates(): Promise<string[]> {
@@ -66,6 +80,7 @@ async function getDates(): Promise<string[]> {
     FROM periscope_snapshots
     WHERE (${startDate}::date IS NULL OR expiry >= ${startDate}::date)
       AND (${endDate}::date IS NULL OR expiry <= ${endDate}::date)
+      AND (${includeGexbot}::boolean OR expiry <= ${CUTOVER_DAY}::date)
     ORDER BY d
   `) as { d: string }[];
   return rows.map((r) => r.d);
@@ -101,6 +116,7 @@ async function upsertFire(f: PeriscopeLotteryFire): Promise<boolean> {
 // ── Main ──────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
+  if (includeGexbot) console.warn(GEXBOT_INCLUDE_WARNING);
   const dates = await getDates();
   if (dates.length === 0) {
     console.log('No dates found in periscope_snapshots for the given range.');
@@ -121,8 +137,8 @@ async function main(): Promise<void> {
   };
 
   for (const expiry of dates) {
-    const calls = await detectCallLotteryAllForDate(expiry);
-    const puts = await detectPutLotteryAllForDate(expiry);
+    const calls = await detectCallLotteryAllForDate(expiry, { includeGexbot });
+    const puts = await detectPutLotteryAllForDate(expiry, { includeGexbot });
     totals.callCandidates += calls.length;
     totals.putCandidates += puts.length;
 

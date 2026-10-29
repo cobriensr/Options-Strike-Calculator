@@ -36,6 +36,7 @@ vi.mock('../_lib/periscope-lottery-finder.js', () => ({
   todayExpiry: mockTodayExpiry,
 }));
 
+import { reportCronRun } from '../_lib/axiom.js';
 import handler from '../cron/detect-periscope-put-lottery.js';
 import { mockRequest, mockResponse } from './helpers';
 
@@ -164,5 +165,42 @@ describe('detect-periscope-put-lottery cron', () => {
     await handler(req, res);
 
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
+  });
+});
+
+describe('detect-periscope-put-lottery pause on GEXBot data', () => {
+  it('GEXBot-era expiry: skipped with the pause reason, no detect, no INSERT', async () => {
+    mockTodayExpiry.mockReturnValueOnce('2026-10-29');
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    expect(res._json).toMatchObject({
+      status: 'skipped',
+      rows: 0,
+      paused: 'uw-tuned-rule-on-gexbot-data',
+    });
+    expect(mockDetectPutLottery).not.toHaveBeenCalled();
+    expect(mockSql).not.toHaveBeenCalled();
+    // The Axiom event carries the reason in its payload (-> meta), and the
+    // status is not 'success'.
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'detect-periscope-put-lottery',
+      expect.objectContaining({
+        status: 'skipped',
+        paused: 'uw-tuned-rule-on-gexbot-data',
+      }),
+    );
+  });
+
+  it('scraper-era expiry still scans and writes (history path)', async () => {
+    mockTodayExpiry.mockReturnValueOnce('2026-05-22');
+    mockDetectPutLottery.mockResolvedValueOnce([]);
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    expect(mockDetectPutLottery).toHaveBeenCalledWith('2026-05-22');
+    expect(res._json).toMatchObject({ status: 'success', rows: 0 });
   });
 });

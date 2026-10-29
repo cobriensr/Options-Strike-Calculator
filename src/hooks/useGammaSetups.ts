@@ -57,6 +57,9 @@ export interface GammaSetupFire {
 
 export interface GammaSetupsResponse {
   today: string;
+  /** True while the UW-tuned setups are paused on GEXBot data. */
+  paused: boolean;
+  paused_reason: string | null;
   dow_label: DowLabel | null;
   confidence_tier: ConfidenceTier | null;
   pre_day_filter_fires: boolean;

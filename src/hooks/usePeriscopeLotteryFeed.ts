@@ -35,6 +35,8 @@ interface UsePeriscopeLotteryFeedArgs {
 
 interface State {
   fires: PeriscopeLotteryFire[];
+  /** The detect crons are paused for this date (GEXBot data). */
+  paused: boolean;
   loading: boolean;
   error: string | null;
   fetchedAt: number | null;
@@ -42,6 +44,7 @@ interface State {
 
 const INITIAL_STATE: State = {
   fires: [],
+  paused: false,
   loading: true,
   error: null,
   fetchedAt: null,
@@ -80,6 +83,7 @@ export function usePeriscopeLotteryFeed({
       if (ctrl.signal.aborted) return;
       setState({
         fires: json.fires,
+        paused: json.paused === true,
         loading: false,
         error: null,
         fetchedAt: Date.now(),

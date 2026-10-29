@@ -16,10 +16,19 @@
  * calendar anti-filters) in parallel. Each detector reads from that
  * snapshot — no per-bar DB chatter inside the detection loop.
  *
+ * PAUSED on GEXBot data (owner decision D1 revised, 2026-10-29): E1/E5/PCS
+ * were tuned on UW Periscope's market-maker gamma, and every snapshot since
+ * 2026-05-26 is GEXBot taker flow. A GEXBot-era run reports `skipped` with
+ * `paused` in its metadata (Axiom `meta`) and reads and writes nothing.
+ *
  * Spec: docs/superpowers/specs/gamma-node-composite-detector-2026-05-21.md
  */
 
 import { getDb } from '../_lib/db.js';
+import {
+  UW_TUNED_PAUSE_REASON,
+  isUwTunedRulePaused,
+} from '../../src/utils/uw-tuned-pause.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -44,6 +53,15 @@ export default withCronInstrumentation(
   async (ctx): Promise<CronResult> => {
     const sql = getDb();
     const now = new Date();
+
+    if (isUwTunedRulePaused(now)) {
+      return {
+        status: 'skipped',
+        rows: 0,
+        message: 'paused: UW-tuned rule on GEXBot data',
+        metadata: { paused: UW_TUNED_PAUSE_REASON },
+      };
+    }
 
     // Day context first — DOW and anti-filter flags gate every detector.
     const dayCtx = await loadDayContext(sql, now);

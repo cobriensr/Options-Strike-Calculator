@@ -210,3 +210,30 @@ describe('GET /api/periscope-lottery-feed', () => {
     expect(res._json).toBeNull();
   });
 });
+
+describe('periscope-lottery-feed pause flag', () => {
+  it('scraper-era date: paused=false, no reason', async () => {
+    mockSql.mockResolvedValueOnce([ROW]);
+    const res = mockResponse();
+    await handler(mockRequest({ query: { date: '2026-05-18' } }), res);
+    expect(res._json).toMatchObject({ paused: false, pausedReason: null });
+  });
+
+  it('GEXBot-era date: paused=true with the reason, history rows still returned', async () => {
+    mockSql.mockResolvedValueOnce([ROW]);
+    const res = mockResponse();
+    await handler(mockRequest({ query: { date: '2026-10-29' } }), res);
+    expect(res._json).toMatchObject({
+      paused: true,
+      pausedReason: 'uw-tuned-rule-on-gexbot-data',
+      count: 1,
+    });
+  });
+
+  it('the cutover day itself is paused', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    const res = mockResponse();
+    await handler(mockRequest({ query: { date: '2026-05-26' } }), res);
+    expect(res._json).toMatchObject({ paused: true });
+  });
+});

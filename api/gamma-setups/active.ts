@@ -9,6 +9,11 @@
  * snapshots) is already public for guests via other tiles, so this read
  * tile follows the same access policy.
  *
+ * Paused on GEXBot data (owner decision D1 revised, 2026-10-29): the response
+ * carries `paused` + `paused_reason`, and the nearest +γ floor/ceiling are
+ * null because they would be read from GEXBot taker flow. Fires already
+ * stored stay visible.
+ *
  * Polled by the frontend `useGammaSetups` hook every ~30s during RTH.
  * No query params; the response carries everything the tile needs to
  * render from a single fetch.
@@ -31,6 +36,10 @@ import {
   type SignalType,
 } from '../_lib/gamma-detector.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
+import {
+  UW_TUNED_PAUSE_REASON,
+  isUwTunedRulePaused,
+} from '../../src/utils/uw-tuned-pause.js';
 
 /** Neon NUMERIC columns come back as strings to preserve precision;
  *  the response shaper coerces them to JS numbers at the boundary. */
@@ -86,6 +95,9 @@ export interface GammaSetupFire {
 
 export interface GammaSetupsActiveResponse {
   today: string;
+  /** True while the UW-tuned setups are paused on GEXBot data. */
+  paused: boolean;
+  paused_reason: string | null;
   dow_label: DowLabel | null;
   confidence_tier: ConfidenceTier | null;
   pre_day_filter_fires: boolean;
@@ -151,11 +163,12 @@ export default withDbReader(
     const now = new Date();
     const today = getETDateStr(now);
     const dowLabel = getDowLabel(now);
+    const paused = isUwTunedRulePaused(now);
 
     // Day context + nodes + fires in parallel — independent reads.
     const [dayCtx, nodes, fireRows] = await Promise.all([
       loadDayContext(sql, now),
-      loadPositiveGammaNodes(sql, today),
+      paused ? Promise.resolve([]) : loadPositiveGammaNodes(sql, today),
       withDbRetry(
         () => sql`
             SELECT
@@ -179,7 +192,8 @@ export default withDbReader(
 
     // Spot from the latest 1-min bar is more accurate than the last
     // fire's spot, since spot moves continuously between fires.
-    const recentBars = await loadRecentBars(sql, today, 1);
+    // Paused: there are no levels to place against spot, so skip the read.
+    const recentBars = paused ? [] : await loadRecentBars(sql, today, 1);
     const spotNow = recentBars.at(-1)?.close ?? null;
 
     const nearestFloor =
@@ -194,6 +208,8 @@ export default withDbReader(
 
     const response: GammaSetupsActiveResponse = {
       today,
+      paused,
+      paused_reason: paused ? UW_TUNED_PAUSE_REASON : null,
       dow_label: dowLabel,
       confidence_tier: confidenceTier,
       pre_day_filter_fires: dayCtx.pre_day_filter_fires,

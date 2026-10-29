@@ -258,3 +258,41 @@ describe('PeriscopeLotteryPanel', () => {
     );
   });
 });
+
+describe('PeriscopeLotteryPanel pause on GEXBot data', () => {
+  const feed = (over: Record<string, unknown>) =>
+    mockFeed.mockReturnValue({
+      fires: [],
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      paused: false,
+      refresh: vi.fn(),
+      ...over,
+    });
+
+  it('shows the pause banner and a source-neutral subtitle when paused', () => {
+    feed({ paused: true });
+    render(<PeriscopeLotteryPanel marketOpen={true} />);
+    expect(
+      screen.getByRole('status', { name: 'Periscope alerts paused' }),
+    ).toHaveTextContent(
+      'Paused — these alerts were tuned on UW Periscope data; live data is GEXBot. GEXBot-specific rules pending.',
+    );
+    expect(screen.queryByText(/MM gamma/)).toBeNull();
+    expect(screen.getByText(/gamma \+ charm extremes/)).toBeInTheDocument();
+  });
+
+  it('keeps stored fires visible while paused', () => {
+    feed({ paused: true, fires: [baseFire({ id: 9 })] });
+    render(<PeriscopeLotteryPanel marketOpen={true} />);
+    expect(screen.getAllByTestId('periscope-lottery-row')).toHaveLength(1);
+  });
+
+  it('keeps the MM label and no banner on a scraper-era date', () => {
+    feed({ paused: false });
+    render(<PeriscopeLotteryPanel marketOpen={true} />);
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.getByText(/MM gamma \+ charm extremes/)).toBeInTheDocument();
+  });
+});

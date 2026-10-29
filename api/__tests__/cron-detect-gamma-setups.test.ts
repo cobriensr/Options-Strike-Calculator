@@ -432,4 +432,56 @@ describe('cron detect-gamma-setups', () => {
     expect(body.nearest_ceiling).toBeNull();
     expect(body.nearest_floor).toBeNull();
   });
+
+  // ── Pause on GEXBot data (owner decision D1 revised, 2026-10-29) ──
+
+  it('GEXBot-era slice: reports skipped with the pause reason and does nothing', async () => {
+    // Thursday 10:30 ET, five months after the 2026-05-26 cutover.
+    vi.setSystemTime(new Date('2026-10-29T14:30:00.000Z'));
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as Record<string, unknown>;
+    expect(body.status).toBe('skipped');
+    expect(body.rows).toBe(0);
+    expect(body.paused).toBe('uw-tuned-rule-on-gexbot-data');
+    // Not "success with 0 rows": nothing is read and nothing is written.
+    expect(loadDayContext).not.toHaveBeenCalled();
+    expect(loadPositiveGammaNodes).not.toHaveBeenCalled();
+    expect(loadRecentBars).not.toHaveBeenCalled();
+    expect(insertFire).not.toHaveBeenCalled();
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('GEXBot-era cutover instant is paused; one minute before still runs', async () => {
+    vi.mocked(loadDayContext).mockResolvedValue(makeDayCtx());
+    vi.mocked(loadRecentBars).mockResolvedValue([]);
+    vi.mocked(loadPositiveGammaNodes).mockResolvedValue([]);
+
+    vi.setSystemTime(new Date('2026-05-26T17:19:00.000Z'));
+    const before = mockResponse();
+    await handler(authedReq(), before);
+    expect((before._json as Record<string, unknown>).status).toBe('success');
+
+    vi.setSystemTime(new Date('2026-05-26T17:20:00.000Z'));
+    const after = mockResponse();
+    await handler(authedReq(), after);
+    expect((after._json as Record<string, unknown>).status).toBe('skipped');
+  });
+
+  it('scraper-era slice still runs the detectors (history path)', async () => {
+    vi.mocked(loadDayContext).mockResolvedValueOnce(makeDayCtx());
+    vi.mocked(loadRecentBars).mockResolvedValueOnce([makeBar()]);
+    vi.mocked(loadPositiveGammaNodes).mockResolvedValueOnce([makeNode(5800)]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    const body = res._json as Record<string, unknown>;
+    expect(body.status).toBe('success');
+    expect(body.paused).toBeUndefined();
+    expect(loadPositiveGammaNodes).toHaveBeenCalled();
+  });
 });

@@ -37,6 +37,8 @@ function emptyFeed(
     date: '2026-05-18',
     fireType: 'both',
     count: 0,
+    paused: false,
+    pausedReason: null,
     fires: [],
     ...overrides,
   };
@@ -208,5 +210,31 @@ describe('usePeriscopeLotteryFeed', () => {
       result.current.refresh();
     });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe('usePeriscopeLotteryFeed pause flag', () => {
+  it('passes the feed pause flag through', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        emptyFeed({
+          paused: true,
+          pausedReason: 'uw-tuned-rule-on-gexbot-data',
+        }),
+      ),
+    );
+    const { result } = renderHook(() =>
+      usePeriscopeLotteryFeed({ date: '2026-10-29', marketOpen: false }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.paused).toBe(true);
+  });
+
+  it('is not paused before the first response', () => {
+    fetchMock.mockReturnValue(new Promise(() => undefined));
+    const { result } = renderHook(() =>
+      usePeriscopeLotteryFeed({ date: '2026-05-18', marketOpen: false }),
+    );
+    expect(result.current.paused).toBe(false);
   });
 });
