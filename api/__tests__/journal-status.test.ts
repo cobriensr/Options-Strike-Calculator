@@ -137,6 +137,29 @@ describe('GET /api/journal/status', () => {
     ).toBeUndefined();
   });
 
+  it('no longer allowlists the dropped TRACE tables', async () => {
+    // trace_predictions was dropped in migration #69 and trace_live_analyses
+    // in #128. Were either recreated by hand, it must not reach a guest.
+    process.env.DATABASE_URL = 'postgres://test';
+    const now = new Date().toISOString();
+    const mockSql = vi
+      .fn()
+      .mockResolvedValueOnce([{ now }])
+      .mockResolvedValueOnce([
+        { name: 'analyses', count: 5 },
+        { name: 'trace_live_analyses', count: 7 },
+        { name: 'trace_predictions', count: 3 },
+      ])
+      .mockResolvedValueOnce([{ latest: 18 }]);
+    vi.mocked(getDb).mockReturnValue(mockSql as never);
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    expect(res._status).toBe(200);
+    expect((res._json as { tables: unknown }).tables).toEqual({ analyses: 5 });
+  });
+
   it('reports which env vars are set', async () => {
     process.env.DATABASE_URL = 'x';
     process.env.NEON_DATABASE_URL = 'y';
