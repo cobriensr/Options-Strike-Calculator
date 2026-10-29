@@ -9,16 +9,33 @@ import type { ViewMode } from '../hooks/useViewMode';
 
 // Counts SchwabExpiryBadge stub renders: a proxy for "did AppHeader itself
 // re-render", since the stub is a plain (non-memo) child of the header.
-const { expiryBadgeRender } = vi.hoisted(() => ({
+const { expiryBadgeRender, accessKeyDialog } = vi.hoisted(() => ({
   expiryBadgeRender: vi.fn(),
+  // Set `open` to render the stub's dialog, portaled to <body> like the
+  // real AccessKeyModal.
+  accessKeyDialog: { open: false },
 }));
 
 // AccessKeyButton calls useAccessSession() which reads cookies + dispatches
 // events. Stub it to a deterministic, side-effect-free element so the
 // AppHeader test focuses on AppHeader's own behavior.
-vi.mock('../components/AccessKey/AccessKeyButton', () => ({
-  default: () => <button data-testid="access-key-button">access</button>,
-}));
+vi.mock('../components/AccessKey/AccessKeyButton', async () => {
+  const { createPortal } = await import('react-dom');
+  return {
+    default: () => (
+      <>
+        <button data-testid="access-key-button">access</button>
+        {accessKeyDialog.open &&
+          createPortal(
+            <div role="dialog">
+              <button type="button">Close</button>
+            </div>,
+            document.body,
+          )}
+      </>
+    ),
+  };
+});
 
 // SchwabExpiryBadge polls its own owner-only endpoint (covered by its own
 // tests). Stub it so the header test makes no network calls and can assert
@@ -154,31 +171,24 @@ describe('AppHeader', () => {
   // ── Focus in the sideways-scrolling controls row ─────────
 
   describe('a control that takes focus', () => {
-    const original = Object.getOwnPropertyDescriptor(
-      Element.prototype,
-      'scrollIntoView',
-    );
-
     afterEach(() => {
-      if (original) {
-        Object.defineProperty(Element.prototype, 'scrollIntoView', original);
-      } else {
-        delete (Element.prototype as Partial<Element>).scrollIntoView;
-      }
+      vi.restoreAllMocks();
+      accessKeyDialog.open = false;
     });
 
-    it('is scrolled fully into view, by the nearest edge', () => {
-      const scrollIntoView = vi.fn();
-      Object.defineProperty(Element.prototype, 'scrollIntoView', {
-        value: scrollIntoView,
-        configurable: true,
-        writable: true,
-      });
+    function spyOnScroll() {
+      return vi.spyOn(Element.prototype, 'scrollIntoView');
+    }
+
+    it('is scrolled fully into view, by the nearest edge, when tabbed to', () => {
+      const scrollIntoView = spyOnScroll();
       renderHeader();
       const panels = screen.getByRole('button', {
         name: 'Show or hide panels',
       });
+      // Tab's keyup fires on the control that just took focus.
       act(() => panels.focus());
+      fireEvent.keyUp(panels, { key: 'Tab' });
       expect(scrollIntoView).toHaveBeenCalledTimes(1);
       expect(scrollIntoView).toHaveBeenCalledWith({
         block: 'nearest',
@@ -187,18 +197,43 @@ describe('AppHeader', () => {
       expect(scrollIntoView.mock.contexts[0]).toBe(panels);
     });
 
-    it('takes focus without throwing where scrollIntoView is missing', () => {
-      Object.defineProperty(Element.prototype, 'scrollIntoView', {
-        value: undefined,
-        configurable: true,
-        writable: true,
+    it('stays put when focused by a click, so the click lands', () => {
+      const scrollIntoView = spyOnScroll();
+      const onOpenPanelPrefs = vi.fn();
+      renderHeader({ onOpenPanelPrefs });
+      const panels = screen.getByRole('button', {
+        name: 'Show or hide panels',
       });
+      fireEvent.pointerDown(panels);
+      fireEvent.mouseDown(panels);
+      act(() => panels.focus());
+      fireEvent.mouseUp(panels);
+      fireEvent.click(panels);
+      expect(onOpenPanelPrefs).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    });
+
+    it('ignores keys other than Tab', () => {
+      const scrollIntoView = spyOnScroll();
       renderHeader();
       const panels = screen.getByRole('button', {
         name: 'Show or hide panels',
       });
       act(() => panels.focus());
-      expect(panels).toHaveFocus();
+      fireEvent.keyUp(panels, { key: 'Enter' });
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    });
+
+    it('leaves a dialog portaled out of the row alone', () => {
+      const scrollIntoView = spyOnScroll();
+      accessKeyDialog.open = true;
+      renderHeader();
+      const close = screen.getByRole('button', { name: 'Close' });
+      expect(screen.getByRole('banner')).not.toContainElement(close);
+      act(() => close.focus());
+      // React bubbles the keyup from the portal to the row's handler.
+      fireEvent.keyUp(close, { key: 'Tab' });
+      expect(scrollIntoView).not.toHaveBeenCalled();
     });
   });
 

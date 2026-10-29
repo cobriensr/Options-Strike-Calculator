@@ -18,13 +18,13 @@
  *   - Below lg the header must stay one control row tall: 62px on a
  *     phone, 69px from sm. The mobile SectionNav strip under it is sticky
  *     at `top-[57px]` (the header already overlaps it by 5px on a phone
- *     and 12px from sm), and
- *     the section anchors' `scroll-mt-28` assumes header + strip, so a
- *     wrapping header would slide over the strip. Instead the controls
- *     row scrolls sideways like that strip, its items keep their natural
- *     width, and the status pills sort first so they stay in view. From
- *     sm the title keeps one line too. Those rules all use `max-lg:`
- *     variants, so at lg and up the row is laid out as before.
+ *     and 12px from sm), and the section anchors' `scroll-mt-28` assumes
+ *     header + strip, so a wrapping header would slide over the strip.
+ *     Instead the controls row scrolls sideways like that strip, its
+ *     items keep their natural width, and the status pills sort first so
+ *     they stay in view. From sm the title keeps one line too. Those
+ *     rules all use `max-lg:` variants, so at lg and up the row is laid
+ *     out as before.
  *   - The hidden file input for VIX CSV uploads must stay co-located
  *     with the visible button so `useRef` can drive `.click()`.
  *
@@ -39,7 +39,7 @@
  *     (`useQuoteStaleness`) so the tick re-renders only that pill (F1).
  */
 
-import type { FocusEvent, Ref } from 'react';
+import type { KeyboardEvent, Ref } from 'react';
 import AccessKeyButton from '../AccessKey/AccessKeyButton';
 import { StatusBadge } from '../ui';
 import { theme } from '../../themes';
@@ -102,17 +102,20 @@ export interface AppHeaderProps {
 }
 
 /**
- * Brings a header control that takes focus fully into view. Below lg the
+ * Brings a header control reached with Tab fully into view. Below lg the
  * controls row scrolls sideways, and the browser leaves a control that is
- * already partly visible where it is, with its focus ring cut off. A
- * no-op at lg and up, where the whole row is on screen. React focus
- * events bubble through portals, so focus inside a dialog opened from
- * the row is skipped. jsdom has no `scrollIntoView`, hence the optional
- * call.
+ * already partly visible where it is, with its focus ring cut off. It
+ * runs on the Tab key's keyup, which fires on the newly focused control,
+ * so a click or tap never scrolls the row: scrolling on pointer focus
+ * would move the control out from under the pointer and lose the click.
+ * React key events bubble through portals, so a dialog opened from the
+ * row is skipped. A no-op at lg and up, where the whole row is on screen.
  */
-function scrollFocusedIntoView(e: FocusEvent<Element>) {
-  if (!e.currentTarget.contains(e.target)) return;
-  e.target.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+function scrollTabbedControlIntoView(e: KeyboardEvent<HTMLElement>) {
+  if (e.key !== 'Tab') return;
+  const focused = document.activeElement;
+  if (!focused || !e.currentTarget.contains(focused)) return;
+  focused.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
 export default function AppHeader({
@@ -160,10 +163,10 @@ export default function AppHeader({
             ring in view at either end of the row (the negative margins
             cancel the top, bottom and right padding; the left padding is
             the gap after the title). The scroll padding and
-            scrollFocusedIntoView do the same for a control that takes
-            focus part-way off the edge. */}
+            scrollTabbedControlIntoView do the same for a control tabbed
+            to part-way off the edge. */}
         <div
-          onFocus={scrollFocusedIntoView}
+          onKeyUp={scrollTabbedControlIntoView}
           className="scrollbar-hide flex items-center gap-1.5 max-lg:-my-1.5 max-lg:-mr-1.5 max-lg:scroll-px-1.5 max-lg:overflow-x-auto max-lg:p-1.5 max-lg:*:shrink-0 sm:gap-2"
         >
           <ViewToggle view={view} onViewChange={onViewChange} />

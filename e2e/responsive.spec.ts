@@ -89,9 +89,32 @@ test.describe('Responsive Layout', () => {
     await expectNoSidewaysScroll(page);
   });
 
+  test('a header control reached with Tab scrolls fully into view on mobile', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto('/');
+
+    // Panels and the dark-mode toggle sit past the right edge of the
+    // header's sideways-scrolling controls row. Tab from one to the other.
+    const header = page.getByRole('banner');
+    await header.getByRole('button', { name: 'Show or hide panels' }).focus();
+    await page.keyboard.press('Tab');
+    const themeToggle = header.getByRole('button', {
+      name: 'Switch to light mode',
+    });
+    await expect(themeToggle).toBeFocused();
+    await expect(themeToggle).toBeInViewport({ ratio: 1 });
+  });
+
   test('renders correctly on tablet viewport', async ({ page }) => {
     await page.setViewportSize({ width: 768, height: 1024 }); // iPad
     await page.goto('/');
+    // The widest header status (BACKTEST + NO INTRADAY), whatever time the
+    // suite runs, as in the mobile test
+    await dateTimeSection(page)
+      .getByLabel('Date', { exact: true })
+      .fill('2025-01-15');
 
     await expect(page.locator('h1')).toHaveText('Strike Calculator');
     await page.getByLabel('SPY Price').fill('679');
@@ -110,6 +133,13 @@ test.describe('Responsive Layout', () => {
       results.locator('div[aria-label="Delta strikes"]'),
     ).toBeHidden();
     await expect(table.locator('xpath=../..')).toHaveCSS('overflow-x', 'auto');
+
+    // ...so the page itself doesn't scroll sideways, header and lazy
+    // Futures panel included
+    await expect(
+      page.getByRole('region', { name: 'Futures', exact: true }),
+    ).toBeVisible();
+    await expectNoSidewaysScroll(page);
   });
 
   test('renders correctly on wide desktop viewport', async ({ page }) => {

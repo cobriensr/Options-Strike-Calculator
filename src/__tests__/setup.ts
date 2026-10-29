@@ -34,6 +34,16 @@ if (typeof globalThis.OffscreenCanvas !== 'function') {
   } as unknown as typeof globalThis.OffscreenCanvas;
 }
 
+// jsdom doesn't implement scrollIntoView (there's no layout to scroll), so
+// components can call it unguarded. Tests that care spy on it. The api/
+// suites run in the node environment, which has no Element at all.
+if (
+  typeof Element !== 'undefined' &&
+  typeof Element.prototype.scrollIntoView !== 'function'
+) {
+  Element.prototype.scrollIntoView = () => {};
+}
+
 // jsdom doesn't implement Blob.prototype.text() — polyfill for CSV upload tests
 if (typeof Blob.prototype.text !== 'function') {
   Blob.prototype.text = function () {
