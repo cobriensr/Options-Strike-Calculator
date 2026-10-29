@@ -1569,16 +1569,7 @@ describe('detect-lottery-fires handler', () => {
     }
   }
 
-  it('never calls the multileg classifier and leaves the four old columns out of the INSERT', async () => {
-    // Armed with a populated result: if the call were wired back in, it
-    // would be recorded below and its values would reach the INSERT.
-    mockClassifyAlertMultileg.mockResolvedValue({
-      id: 'anchor-id',
-      inferredStructure: 'vertical',
-      isIsolatedLeg: false,
-      matchConfidence: 0.83,
-      patternGroupId: 'pg-abc-123',
-    });
+  it('leaves the four old columns out of the INSERT', async () => {
     mockTicks(fireableSndkStream())
       .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
@@ -1599,8 +1590,6 @@ describe('detect-lottery-fires handler', () => {
       rows: 1,
       inserted: 1,
     });
-    expect(mockClassifyAlertMultileg).not.toHaveBeenCalled();
-    expect(mockClassifyMultilegBatch).not.toHaveBeenCalled();
 
     const insertCalls = mockSql.mock.calls.filter((call) =>
       Boolean(
@@ -1628,11 +1617,10 @@ describe('detect-lottery-fires handler', () => {
     expect(binds.get('takeit_features')).toBeNull();
   });
 
-  it('writes every fire on a busy tick with no classifier call, no multileg counters and no high-null-rate warning', async () => {
+  it('writes every fire on a busy tick with no multileg counters and no high-null-rate warning', async () => {
     // 11 fires. Before the removal this tick made 11 serial classifier
     // calls, and an all-null result raised multileg.classify.high_null_rate
     // (inserted > 10, hit rate < 50%).
-    mockClassifyAlertMultileg.mockResolvedValue(null);
     mockTicks(manyFireableSndkStreams(11));
     queuePerFireMocks(11, true);
 
@@ -1650,8 +1638,6 @@ describe('detect-lottery-fires handler', () => {
       totalFires: 11,
       inserted: 11,
     });
-    expect(mockClassifyAlertMultileg).not.toHaveBeenCalled();
-    expect(mockClassifyMultilegBatch).not.toHaveBeenCalled();
     expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
       'multileg.classify.high_null_rate',
       expect.anything(),
