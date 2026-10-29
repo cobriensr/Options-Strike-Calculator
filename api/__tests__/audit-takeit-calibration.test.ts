@@ -195,6 +195,31 @@ describe('audit-takeit-calibration cron', () => {
     expect(res._json).not.toMatchObject({ skipped: true });
   });
 
+  it('does not require UW_API_KEY, which it never uses', async () => {
+    // The cron is monitored, and cronGuard answers 500 before any check-in
+    // when a required key is missing. A missing or rotated UW_API_KEY
+    // would then read as a missed run for a dependency this DB-only audit
+    // doesn't have.
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(mockCronGuard).toHaveBeenCalledWith(
+      req,
+      res,
+      expect.objectContaining({ requireApiKey: false }),
+    );
+  });
+
   it('returns success with null metrics when both alert types have zero rows', async () => {
     // Each auditOne does 2 SQL calls: (1) calibration SELECT, (2) feature
     // coverage SELECT. Provide 4 responses total — calib lottery, coverage

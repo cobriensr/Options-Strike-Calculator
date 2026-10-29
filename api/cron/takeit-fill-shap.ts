@@ -230,4 +230,8 @@ async function takeitFillShapHandler(): Promise<CronResult> {
 export default withCronInstrumentation(
   'takeit-fill-shap',
   takeitFillShapHandler,
+  // No UW call: the only upstream is the Railway sidecar. The cron is
+  // monitored, and a required-but-missing UW_API_KEY would 500 in cronGuard
+  // before the check-in, paging a missed run for an unused dependency.
+  { requireApiKey: false },
 );
