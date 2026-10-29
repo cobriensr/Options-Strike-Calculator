@@ -212,9 +212,9 @@ class Settings(BaseSettings):
     # is at or above this threshold. Mirrors the silent-boom detector's
     # ``multiLegShareMax`` (see api/_lib/silent-boom.ts and migration
     # #146): UW's ``trade_code`` field carries the OPRA multi-leg sale
-    # condition codes (mlat/mlet/mlft/masl/mesl/mfsl/mlct/cbmo/mctp; list lives in
-    # api/_lib/multileg-codes.ts), and
-    # spread-leg-dominated buckets carry no directional thesis. The
+    # condition codes (mlat/mlet/mlft/masl/mesl/mfsl/mlct/cbmo/mctp; the
+    # list lives in api/_lib/multileg-codes.ts), and spread-leg-dominated
+    # buckets carry no directional thesis. The
     # 2026-05-13 SPXW 6850 false fire was a single $1.14M ``mlet``
     # print → 100% ask, 100% multi-leg; this gate rejects that case.
     # Distribution of ML share across surviving fires is bimodal at ~0%

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from collections import deque
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -21,6 +22,7 @@ import pytest
 
 from handlers.interval_ba import (
     _ALERT_COLUMNS,
+    _MULTI_LEG_CODES,
     IntervalBAHandler,
     QQQIntervalBAHandler,
     SPXWIntervalBAHandler,
@@ -277,6 +279,23 @@ class TestMultiLegGate:
         p["trade_code"] = "mlet"
         handler._transform(p)
         assert handler._pending_alerts == []
+
+    def test_multi_leg_codes_match_the_ts_list(self):
+        """Drift guard: _MULTI_LEG_CODES equals MULTI_LEG_TRADE_CODES in
+        api/_lib/multileg-codes.ts. Skipped where api/ is absent (the
+        uw-stream Docker build context excludes it)."""
+        ts_path = Path(__file__).resolve().parents[2] / "api" / "_lib" / "multileg-codes.ts"
+        if not ts_path.is_file():
+            pytest.skip(f"{ts_path} not present (partial checkout)")
+        src = ts_path.read_text(encoding="utf-8")
+        match = re.search(
+            r"MULTI_LEG_TRADE_CODES[^=]*=\s*\[(.*?)\]",
+            src,
+            re.DOTALL,
+        )
+        assert match, "MULTI_LEG_TRADE_CODES array not found in TS file"
+        body = re.sub(r"//[^\n]*", "", match.group(1))
+        assert set(re.findall(r"'([a-z]+)'", body)) == _MULTI_LEG_CODES
 
     @pytest.mark.parametrize(
         "code",
