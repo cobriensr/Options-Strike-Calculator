@@ -23,6 +23,9 @@
      (_probe-*, analyze-*-2026, replay-*) are intentionally excluded — they are
      throwaway. */
   "include": [
+    "scripts/backfill-futures-flow.ts",
+    "scripts/_lib/futures-flow-backfill.ts",
+    "scripts/_lib/futures-flow-backfill.test.ts",
     "scripts/backfill-gamma-setup-fires.ts",
     "scripts/backfill-gex-target-features.ts",
     "scripts/backfill-lottery-score.ts",
