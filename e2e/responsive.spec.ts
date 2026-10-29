@@ -15,6 +15,43 @@ async function expectNoSidewaysScroll(page: Page) {
   expect(scrollWidth).toBeLessThanOrEqual(innerWidth);
 }
 
+/**
+ * The owner's Schwab login runs out in 3 hours, so the header shows the
+ * amber countdown and its Re-auth link. Registered after beforeEach's
+ * abort-everything route, so it is matched first.
+ */
+async function showSchwabLoginWarning(page: Page) {
+  await page.route('**/api/auth/schwab-status', (route) =>
+    route.fulfill({
+      json: { state: 'expiring', refreshExpiresAt: Date.now() + 3 * 3600_000 },
+    }),
+  );
+}
+
+/**
+ * A past trading day puts the header in backtest mode whatever time the
+ * suite runs, and the aborted /api/history adds NO INTRADAY. On a phone
+ * the header's controls scroll sideways in their own row in the owner's
+ * order: the view toggle, then the status pills (short: BT, NO ID), then
+ * the Schwab warning. The toggle and both pills must be fully on screen.
+ */
+async function expectToggleAndStatusInView(page: Page) {
+  await dateTimeSection(page)
+    .getByLabel('Date', { exact: true })
+    .fill('2025-01-15');
+  const header = page.getByRole('banner');
+  await expect(
+    header.getByRole('timer', { name: 'Schwab login expiry' }),
+  ).toBeAttached();
+  for (const control of [
+    header.getByRole('button', { name: 'Calculator' }),
+    header.getByText('BT', { exact: true }),
+    header.getByText('NO ID', { exact: true }),
+  ]) {
+    await expect(control).toBeInViewport({ ratio: 1 });
+  }
+}
+
 test.describe('Responsive Layout', () => {
   test.beforeEach(async ({ page }) => {
     await page.route('**/api/**', (route) => route.abort());
@@ -22,6 +59,7 @@ test.describe('Responsive Layout', () => {
 
   test('renders correctly on mobile viewport', async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 }); // iPhone X
+    await showSchwabLoginWarning(page);
     await page.goto('/');
 
     await expect(page.locator('h1')).toHaveText('Strike Calculator');
@@ -29,18 +67,7 @@ test.describe('Responsive Layout', () => {
     await openSection(page, 'Implied Volatility');
     await expect(page.getByLabel('VIX Value')).toBeVisible();
 
-    // A past trading day puts the header in backtest mode whatever time
-    // the suite runs, and the aborted /api/history adds NO INTRADAY. The
-    // header's controls scroll sideways inside their own row with the
-    // status pills sorted first, so the pills stay fully on screen.
-    await dateTimeSection(page)
-      .getByLabel('Date', { exact: true })
-      .fill('2025-01-15');
-    const header = page.getByRole('banner');
-    await expect(header.getByText('BACKTEST')).toBeInViewport({ ratio: 1 });
-    await expect(header.getByText('NO INTRADAY')).toBeInViewport({
-      ratio: 1,
-    });
+    await expectToggleAndStatusInView(page);
 
     // Two rows used to scroll the page sideways: the header's
     // view/status/tool row (949px wide in owner mode) and the lazy Futures
@@ -49,6 +76,15 @@ test.describe('Responsive Layout', () => {
       page.getByRole('region', { name: 'Futures', exact: true }),
     ).toBeVisible();
     await expectNoSidewaysScroll(page);
+  });
+
+  test('the view toggle and short status pills fit a 320px phone', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 320, height: 640 }); // iPhone SE
+    await showSchwabLoginWarning(page);
+    await page.goto('/');
+    await expectToggleAndStatusInView(page);
   });
 
   test('calculation works on mobile viewport', async ({ page }) => {

@@ -406,6 +406,47 @@ describe('AppHeader', () => {
     expect(screen.getByText(/NO INTRADAY/)).toBeInTheDocument();
   });
 
+  it('shortens the backtest pills on a phone but keeps their full text for screen readers', () => {
+    renderHeader({
+      isBacktestMode: true,
+      historyData: makeHistory({ error: 'no candles for 2026-05-08' }),
+    });
+    for (const [full, short] of [
+      ['● BACKTEST', 'BT'],
+      ['● NO INTRADAY', 'NO ID'],
+    ] as const) {
+      const shortLabel = screen.getByText(short, { exact: true });
+      expect(shortLabel).toHaveAttribute('aria-hidden', 'true');
+      // What assistive tech reads: the pill minus its aria-hidden parts.
+      const exposed = (shortLabel.parentElement as HTMLElement).cloneNode(
+        true,
+      ) as HTMLElement;
+      exposed.querySelectorAll('[aria-hidden="true"]').forEach((el) => {
+        el.remove();
+      });
+      expect(exposed.textContent).toBe(full);
+    }
+    // The tooltip still carries the history error.
+    expect(screen.getByTitle('no candles for 2026-05-08')).toHaveTextContent(
+      '● NO INTRADAY',
+    );
+  });
+
+  it('keeps the DOM (focus) order: view toggle, status, Schwab warning, tools', () => {
+    renderHeader({ isBacktestMode: true });
+    const precedes = (a: Element, b: Element) =>
+      (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    const toggle = screen.getByRole('navigation', { name: 'Application view' });
+    const pill = screen.getByText('BT', { exact: true });
+    const schwab = screen.getByTestId('schwab-expiry-badge-stub');
+    const collapse = screen.getByRole('button', {
+      name: 'Collapse all sections',
+    });
+    expect(precedes(toggle, pill)).toBe(true);
+    expect(precedes(pill, schwab)).toBe(true);
+    expect(precedes(schwab, collapse)).toBe(true);
+  });
+
   // ── Quote staleness badge (useQuoteStaleness, F1) ────────
   //
   // Staleness is derived inside the badge from quotesFetchedAt + session +

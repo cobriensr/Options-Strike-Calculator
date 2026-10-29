@@ -20,11 +20,14 @@
  *     at `top-[57px]` (the header already overlaps it by 5px on a phone
  *     and 12px from sm), and the section anchors' `scroll-mt-28` assumes
  *     header + strip, so a wrapping header would slide over the strip.
- *     Instead the controls row scrolls sideways like that strip, its
- *     items keep their natural width, and the status pills sort first so
- *     they stay in view. From sm the title keeps one line too. Those
- *     rules all use `max-lg:` variants, so at lg and up the row is laid
- *     out as before.
+ *     Instead the controls row scrolls sideways like that strip, and its
+ *     items keep their natural width. The owner's order there: the view
+ *     toggle, the status pills (short on a phone: BT, NO ID), the Schwab
+ *     login warning, then the tools, which scroll. CSS `order` moves the
+ *     Access Key button and the tools after the warning; the DOM order is
+ *     unchanged. At 320px the toggle and both short pills fit. From sm
+ *     the title keeps one line too. Those rules all use `max-lg:`
+ *     variants, so at lg and up the row is laid out as before.
  *   - The hidden file input for VIX CSV uploads must stay co-located
  *     with the visible button so `useRef` can drive `.click()`.
  *
@@ -164,19 +167,28 @@ export default function AppHeader({
             cancel the top, bottom and right padding; the left padding is
             the gap after the title). The scroll padding and
             scrollTabbedControlIntoView do the same for a control tabbed
-            to part-way off the edge. */}
+            to part-way off the edge. `relative` makes the row the
+            containing block for its absolutely positioned descendants,
+            such as the visually hidden (sr-only) text in the Schwab
+            badge, so the row clips them too: without it they escaped to
+            the header and widened the page. */}
         <div
           onKeyUp={scrollTabbedControlIntoView}
-          className="scrollbar-hide flex items-center gap-1.5 max-lg:-my-1.5 max-lg:-mr-1.5 max-lg:scroll-px-1.5 max-lg:overflow-x-auto max-lg:p-1.5 max-lg:*:shrink-0 sm:gap-2"
+          className="scrollbar-hide flex items-center gap-1.5 max-lg:relative max-lg:-my-1.5 max-lg:-mr-1.5 max-lg:scroll-px-1.5 max-lg:overflow-x-auto max-lg:p-1.5 max-lg:*:shrink-0 sm:gap-2"
         >
           <ViewToggle view={view} onViewChange={onViewChange} />
-          {/* Status pills. Below lg the group sorts first so the pills stay
-              in view. At lg `contents` drops the group's box, so the pills
-              are direct items of the row after ViewToggle, as before.
-              `empty:hidden` keeps an empty group from adding a gap. */}
-          <div className="flex items-center gap-1.5 empty:hidden max-lg:order-first sm:gap-2 lg:contents">
+          {/* Status pills, right after the toggle. At lg `contents` drops
+              the group's box, so the pills are direct items of the row and
+              share out any squeeze as before. `empty:hidden` keeps an empty
+              group from adding a gap. */}
+          <div className="flex items-center gap-1.5 empty:hidden sm:gap-2 lg:contents">
             {isBacktestMode && (
-              <StatusBadge label="BACKTEST" color={theme.backtest} dot />
+              <StatusBadge
+                label="BACKTEST"
+                shortLabel="BT"
+                color={theme.backtest}
+                dot
+              />
             )}
             {isBacktestMode && historyData.loading && (
               <StatusBadge label="Loading…" color={theme.textMuted} />
@@ -184,6 +196,7 @@ export default function AppHeader({
             {isBacktestMode && historyData.error && !historyData.loading && (
               <StatusBadge
                 label="NO INTRADAY"
+                shortLabel="NO ID"
                 color={theme.red}
                 dot
                 title={historyData.error}
@@ -208,8 +221,13 @@ export default function AppHeader({
               instance is hidden there (lg:hidden) to avoid duplicate
               controls. In the alerts view there is no sidebar, so the
               header is the canonical Access Key mount on desktop too and
-              must stay visible at every breakpoint. */}
-          <span className={view === 'alerts' ? undefined : 'lg:hidden'}>
+              must stay visible at every breakpoint. Below lg it sorts after
+              the Schwab warning, with the tools. */}
+          <span
+            className={
+              view === 'alerts' ? 'max-lg:order-1' : 'max-lg:order-1 lg:hidden'
+            }
+          >
             <AccessKeyButton compact />
           </span>
           {/* Owner-only refresh-token countdown. It brings its own Re-auth
@@ -226,158 +244,162 @@ export default function AppHeader({
               color={theme.red}
             />
           )}
-          <button
-            onClick={onCollapseAll}
-            aria-label={
-              collapseSignal.collapsed
-                ? 'Expand all sections'
-                : 'Collapse all sections'
-            }
-            title={
-              collapseSignal.collapsed
-                ? 'Expand all sections'
-                : 'Collapse all sections'
-            }
-            className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
-          >
-            <span className="text-[11px] font-semibold">
-              {collapseSignal.collapsed ? '⊞ Expand' : '⊟ Collapse'}
-            </span>
-          </button>
-          {isOwner && (
+          {/* The tools. Below lg they sort after the Schwab warning and
+              scroll; at lg `contents` drops this box, as for the pills. */}
+          <div className="flex items-center gap-1.5 max-lg:order-1 sm:gap-2 lg:contents">
             <button
-              onClick={onRunMigrations}
-              disabled={migrateRunning}
-              aria-label="Run database migrations"
-              title="Run DB migrations"
-              className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200 disabled:cursor-wait disabled:opacity-50"
+              onClick={onCollapseAll}
+              aria-label={
+                collapseSignal.collapsed
+                  ? 'Expand all sections'
+                  : 'Collapse all sections'
+              }
+              title={
+                collapseSignal.collapsed
+                  ? 'Expand all sections'
+                  : 'Collapse all sections'
+              }
+              className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
             >
-              <svg
-                width="13"
-                height="13"
-                viewBox="0 0 16 16"
-                fill="none"
-                aria-hidden="true"
-              >
-                <ellipse
-                  cx="8"
-                  cy="4"
-                  rx="5"
-                  ry="2"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                />
-                <path
-                  d="M3 4v4c0 1.1 2.24 2 5 2s5-.9 5-2V4"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                />
-                <path
-                  d="M3 8v4c0 1.1 2.24 2 5 2s5-.9 5-2V8"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                />
-              </svg>
               <span className="text-[11px] font-semibold">
-                {migrateRunning ? 'Running…' : 'Migrate DB'}
+                {collapseSignal.collapsed ? '⊞ Expand' : '⊟ Collapse'}
               </span>
             </button>
-          )}
-          {isOwner && (
-            <button
-              onClick={onBackfillFeatures}
-              disabled={backfillRunning}
-              aria-label="Recompute training_features for all dates"
-              title="Backfill training_features (rebuilds NOPE + flow + GEX feature columns for every date)"
-              className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200 disabled:cursor-wait disabled:opacity-50"
-            >
-              <svg
-                width="13"
-                height="13"
-                viewBox="0 0 16 16"
-                fill="none"
-                aria-hidden="true"
-              >
-                <path
-                  d="M2 8a6 6 0 1 0 1.5-3.97"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                />
-                <path
-                  d="M1 1v4h4"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-              <span className="text-[11px] font-semibold">
-                {backfillRunning ? 'Building…' : 'Backfill'}
-              </span>
-            </button>
-          )}
-          {isOwner && (
-            <>
-              <input
-                ref={vixFileInputRef}
-                type="file"
-                accept=".csv"
-                onChange={vixHandleFileUpload}
-                className="hidden"
-                aria-label="Upload VIX OHLC CSV file"
-              />
+            {isOwner && (
               <button
-                onClick={onVixCsvClick}
-                className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
+                onClick={onRunMigrations}
+                disabled={migrateRunning}
+                aria-label="Run database migrations"
+                title="Run DB migrations"
+                className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200 disabled:cursor-wait disabled:opacity-50"
               >
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <ellipse
+                    cx="8"
+                    cy="4"
+                    rx="5"
+                    ry="2"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                  />
+                  <path
+                    d="M3 4v4c0 1.1 2.24 2 5 2s5-.9 5-2V4"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                  />
+                  <path
+                    d="M3 8v4c0 1.1 2.24 2 5 2s5-.9 5-2V8"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                  />
+                </svg>
                 <span className="text-[11px] font-semibold">
-                  {vix.vixDataLoaded ? vix.vixDataSource : 'Upload VIX CSV'}
+                  {migrateRunning ? 'Running…' : 'Migrate DB'}
                 </span>
               </button>
-            </>
-          )}
-          <button
-            onClick={onOpenPanelPrefs}
-            aria-label="Show or hide panels"
-            title="Show or hide panels"
-            className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 16 16"
-              fill="none"
-              aria-hidden="true"
+            )}
+            {isOwner && (
+              <button
+                onClick={onBackfillFeatures}
+                disabled={backfillRunning}
+                aria-label="Recompute training_features for all dates"
+                title="Backfill training_features (rebuilds NOPE + flow + GEX feature columns for every date)"
+                className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200 disabled:cursor-wait disabled:opacity-50"
+              >
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M2 8a6 6 0 1 0 1.5-3.97"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                  />
+                  <path
+                    d="M1 1v4h4"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+                <span className="text-[11px] font-semibold">
+                  {backfillRunning ? 'Building…' : 'Backfill'}
+                </span>
+              </button>
+            )}
+            {isOwner && (
+              <>
+                <input
+                  ref={vixFileInputRef}
+                  type="file"
+                  accept=".csv"
+                  onChange={vixHandleFileUpload}
+                  className="hidden"
+                  aria-label="Upload VIX OHLC CSV file"
+                />
+                <button
+                  onClick={onVixCsvClick}
+                  className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
+                >
+                  <span className="text-[11px] font-semibold">
+                    {vix.vixDataLoaded ? vix.vixDataSource : 'Upload VIX CSV'}
+                  </span>
+                </button>
+              </>
+            )}
+            <button
+              onClick={onOpenPanelPrefs}
+              aria-label="Show or hide panels"
+              title="Show or hide panels"
+              className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
             >
-              <circle
-                cx="8"
-                cy="8"
-                r="2.25"
-                stroke="currentColor"
-                strokeWidth="1.5"
-              />
-              <path
-                d="M8 1.5v2M8 12.5v2M14.5 8h-2M3.5 8h-2M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4M12.6 12.6l-1.4-1.4M4.8 4.8L3.4 3.4"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-              />
-            </svg>
-            <span className="text-[11px] font-semibold">Panels</span>
-          </button>
-          <button
-            onClick={onDarkModeToggle}
-            aria-label={
-              darkMode ? 'Switch to light mode' : 'Switch to dark mode'
-            }
-            className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
-          >
-            {darkMode ? '☀️' : '🌙'}
-            <span className="text-[11px] font-semibold">
-              {darkMode ? 'Light' : 'Dark'}
-            </span>
-          </button>
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 16 16"
+                fill="none"
+                aria-hidden="true"
+              >
+                <circle
+                  cx="8"
+                  cy="8"
+                  r="2.25"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                />
+                <path
+                  d="M8 1.5v2M8 12.5v2M14.5 8h-2M3.5 8h-2M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4M12.6 12.6l-1.4-1.4M4.8 4.8L3.4 3.4"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                />
+              </svg>
+              <span className="text-[11px] font-semibold">Panels</span>
+            </button>
+            <button
+              onClick={onDarkModeToggle}
+              aria-label={
+                darkMode ? 'Switch to light mode' : 'Switch to dark mode'
+              }
+              className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
+            >
+              {darkMode ? '☀️' : '🌙'}
+              <span className="text-[11px] font-semibold">
+                {darkMode ? 'Light' : 'Dark'}
+              </span>
+            </button>
+          </div>
         </div>
       </div>
     </header>
