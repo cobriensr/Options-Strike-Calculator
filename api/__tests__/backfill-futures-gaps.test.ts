@@ -1088,4 +1088,80 @@ describe('backfill-futures-gaps order-flow pass', () => {
       }),
     );
   });
+
+  it('a malformed print withholds its minute and surfaces as a Sentry warning, while the rest of the range is written', async () => {
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
+        nullFlowRow('ES', '2026-09-29T14:02:00Z', 5, false),
+      ])
+      .mockResolvedValueOnce([{ ts: 'x' }]);
+    routeUwWithTrades(
+      { [CONTRACTS_PATH]: CONTRACTS, ...ES_CANDLES },
+      {
+        ESZ6: [
+          [
+            print(5, '2026-09-29T14:02:40.000000Z', 3, 'up'), // unknown side
+            print(4, '2026-09-29T14:02:10.000000Z', 2, 'sell'),
+            ...ES_1401_PAGE,
+          ],
+        ],
+      },
+    );
+
+    const res = await run();
+
+    expect(sqlValues(updateCalls()[0]!)).toContainEqual([
+      '2026-09-29T14:01:00.000Z',
+    ]);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'backfill-futures-gaps: malformed UW prints skipped',
+      expect.objectContaining({
+        level: 'warning',
+        extra: { symbol: 'ES', malformed: 1 },
+      }),
+    );
+    expect(res._json).toMatchObject({
+      status: 'success',
+      flow_minutes_repaired: 1,
+      flow_minutes_skipped_tolerance: 1,
+    });
+  });
+
+  it('a budget spent mid-range defers the rest of it, including the part led by the next contract', async () => {
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
+        nullFlowRow('ES', '2026-09-29T14:02:00Z', 10, false),
+      ]);
+    let id = 1;
+    mockUwFetch.mockImplementation(async (_key: string, path: string) => {
+      if (path === CONTRACTS_PATH) return CONTRACTS;
+      // ESZ6 leads 14:01; ESH7 overtakes at 14:02 (a roll mid-range).
+      if (path === candlesPath('ESZ6')) {
+        return [candle('2026-09-29T14:01:00Z', 7740, 100)];
+      }
+      if (path === candlesPath('ESH7')) {
+        return [candle('2026-09-29T14:02:00Z', 7790, 1_000)];
+      }
+      if (path.startsWith(tradesPrefix('ESZ6'))) {
+        const us = parseUwTimeMicros(olderThan(path))! - 2n;
+        return [print(id++, formatMicrosIso(us), 1, 'buy')];
+      }
+      throw new Error(`unexpected UW path ${path}`);
+    });
+
+    const res = await run();
+
+    expect(tradesCalls('ESZ6')).toHaveLength(600);
+    expect(tradesCalls('ESH7')).toEqual([]);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      flow_pages: 600,
+      flow_ranges_deferred: 1,
+      flow_minutes_repaired: 0,
+    });
+  });
 });
