@@ -322,6 +322,10 @@
       "schedule": "30 21 * * 2-6"
     },
     {
+      "path": "/api/cron/archive-gexbot-eod",
+      "schedule": "0 2,12,19,23 * * *"
+    },
+    {
       "path": "/api/cron/cleanup-gexbot",
       "schedule": "15 12 * * 1-5"
     },
@@ -367,6 +371,7 @@
     "api/cron/fetch-gexbot-fast.ts": { "maxDuration": 60 },
     "api/cron/fetch-gexbot-strikes.ts": { "maxDuration": 60 },
     "api/cron/archive-gexbot.ts": { "maxDuration": 300 },
+    "api/cron/archive-gexbot-eod.ts": { "maxDuration": 800 },
     "api/cron/embed-yesterday.ts": { "maxDuration": 60 }
   },
   "installCommand": "npm install --loglevel=error --no-audit --no-fund",

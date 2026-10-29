@@ -625,6 +625,14 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: LONG_RUNNER_MAX_RUNTIME,
     failureIssueThreshold: 2,
   },
+  'archive-gexbot-eod': {
+    // GEXBot EOD report capture, every day (weekend runs find nothing new).
+    // Spec: docs/superpowers/specs/2026-10-28-gexbot-eod-capture-design.md
+    schedule: '0 2,12,19,23 * * *',
+    checkinMargin: DEFAULT_MARGIN,
+    // Long-runner: 800 s Vercel timeout (budget: no new downloads after 600 s, abort at 740 s). 14 min covers it with headroom.
+    maxRuntime: 14,
+  },
   'curate-lessons': {
     schedule: '0 3 * * 6',
     checkinMargin: DEFAULT_MARGIN,
