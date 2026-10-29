@@ -2037,9 +2037,11 @@ describe('LotteryRow: spread-leg badge', () => {
         legs: LEGS_726_727,
       },
     });
-    expect(
-      screen.getByText('spread leg · call vertical 726/727'),
-    ).toBeInTheDocument();
+    const badge = screen.getByText('spread leg · call vertical 726/727');
+    // One fire: the tooltip names it, not "1 of this chain's 1 fires".
+    expect(badge.getAttribute('title')).toBe(
+      "The exchange flagged this fire's anchor print as one leg of a multi-leg order. Information only: not part of the score, and nothing is filtered on it.",
+    );
   });
 
   it('k = 0 with a stock-tied latest fire: "stock-tied leg"', () => {

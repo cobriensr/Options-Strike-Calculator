@@ -50,6 +50,7 @@ import { getETDateStr } from '../src/utils/timezone.js';
 import type {
   AnchorLegKind,
   SpreadLeg,
+  SpreadLegSummary,
   SpreadShape,
 } from '../src/types/spread-legs.js';
 import {
@@ -257,18 +258,7 @@ interface FireRow {
   spread_legs: SpreadLeg[] | null;
 }
 
-/**
- * The row's spread-leg badge data: `fires` (k) of the chain-day's
- * `totalFires` (n) printed as one leg of a multi-leg order, with the shape
- * and legs of the most recent such fire. Null when k = 0.
- */
-interface SpreadLegSummary {
-  fires: number;
-  totalFires: number;
-  shape: SpreadShape;
-  legs: SpreadLeg[];
-}
-
+/** The row's `spreadLeg`: k of n fires, or null when k = 0. */
 function spreadLegSummary(
   k: number,
   n: number,
@@ -885,17 +875,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       //
       // Spread-leg badge (spec 2026-10-28-classifier-replacement-design.md,
       // "Badge"): each fire's anchor_leg_kind rides in fires_json, k =
-      // spread_leg_fires counts the multi_leg fires, and latest_spread
-      // carries the most recent multi_leg fire's shape + legs. Counting
-      // here, not in the rows query, keeps k and n on the same fire set as
+      // spread_leg_fires counts the multi_leg fires, and latest_spread_id
+      // names the most recent multi_leg fire, whose shape + legs the final
+      // SELECT reads by primary key. The jsonb legs stay out of `ordered`,
+      // so they never ride through its window sort. Counting here, not in
+      // the rows query, keeps k and n on the same fire set as
       // historicalFires (cumulative through the cutoff, user filters off).
       degradeOnTimeout(
         () => db`
         WITH ordered AS (
           SELECT
             id, underlying_symbol, strike, option_type, expiry,
-            trigger_time_ct, entry_price, spot_at_trigger,
-            anchor_leg_kind, spread_shape, spread_legs,
+            trigger_time_ct, entry_price, spot_at_trigger, anchor_leg_kind,
             EXTRACT(EPOCH FROM trigger_time_ct - LAG(trigger_time_ct) OVER w) / 60.0 AS gap_min,
             ROW_NUMBER() OVER w AS fire_seq,
             COUNT(*) OVER w_total AS fire_count
@@ -926,6 +917,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             COALESCE(MAX(g.max_gap_min), 0)::numeric AS max_gap_min,
             COALESCE(MAX(o.fire_count) - (MAX(g.post_gap_start_seq) - 1), 0)::int AS post_gap_fires,
             COUNT(*) FILTER (WHERE o.anchor_leg_kind = 'multi_leg')::int AS spread_leg_fires,
+            (array_agg(o.id ORDER BY o.trigger_time_ct DESC, o.id DESC)
+              FILTER (WHERE o.anchor_leg_kind = 'multi_leg'))[1] AS latest_spread_id,
             jsonb_agg(
               jsonb_build_object(
                 'triggerTimeCt', o.trigger_time_ct,
@@ -937,15 +930,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           FROM ordered o
           LEFT JOIN max_gap_by_chain g USING (underlying_symbol, strike, option_type, expiry)
           GROUP BY o.underlying_symbol, o.strike, o.option_type, o.expiry
-        ),
-        latest_spread AS (
-          SELECT DISTINCT ON (underlying_symbol, strike, option_type, expiry)
-            underlying_symbol, strike, option_type, expiry,
-            spread_shape, spread_legs
-          FROM ordered
-          WHERE anchor_leg_kind = 'multi_leg'
-          ORDER BY underlying_symbol, strike, option_type, expiry,
-            trigger_time_ct DESC, id DESC
         ),
         qualified AS (
           SELECT
@@ -971,7 +955,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           (q.rn IS NOT NULL AND q.rn <= ${REIGNITION_TOP_N_PER_DAY}) AS reignited
         FROM per_chain pc
         LEFT JOIN qualified q USING (underlying_symbol, strike, option_type, expiry)
-        LEFT JOIN latest_spread ls USING (underlying_symbol, strike, option_type, expiry)
+        LEFT JOIN lottery_finder_fires ls ON ls.id = pc.latest_spread_id
         WHERE pc.fire_count > 1
       `,
         [] as ChainExtrasRow[],

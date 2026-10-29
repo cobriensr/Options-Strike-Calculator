@@ -10,8 +10,10 @@ import { memo } from 'react';
 import { StatusBadge } from '../ui/StatusBadge.js';
 import { theme } from '../../themes/index.js';
 import { describeSpread } from '../../utils/spread-badge.js';
-import type { AnchorLegKind } from '../../types/spread-legs.js';
-import type { LotterySpreadLegSummary } from './types.js';
+import type {
+  AnchorLegKind,
+  SpreadLegSummary,
+} from '../../types/spread-legs.js';
 
 const INFO_ONLY =
   'Information only: not part of the score, and nothing is filtered on it.';
@@ -21,17 +23,23 @@ const INFO_ONLY =
  * wins; otherwise a stock-tied latest fire gets its own badge.
  */
 function badgeContent(
-  spreadLeg: LotterySpreadLegSummary | null,
+  spreadLeg: SpreadLegSummary | null,
   anchorLegKind: AnchorLegKind | null,
 ): { label: string; title: string } | null {
   if (spreadLeg != null) {
     const { fires: k, totalFires: n } = spreadLeg;
     const desc = describeSpread(spreadLeg.shape, spreadLeg.legs);
-    let label = `spread leg on ${k} of ${n} fires · ${desc}`;
-    if (n === 1) label = `spread leg · ${desc}`;
-    else if (k === n) label = `spread leg on all ${n} fires · ${desc}`;
+    if (n === 1) {
+      return {
+        label: `spread leg · ${desc}`,
+        title: `The exchange flagged this fire's anchor print as one leg of a multi-leg order. ${INFO_ONLY}`,
+      };
+    }
     return {
-      label,
+      label:
+        k === n
+          ? `spread leg on all ${n} fires · ${desc}`
+          : `spread leg on ${k} of ${n} fires · ${desc}`,
       title: `The exchange flagged the anchor print of ${k} of this chain's ${n} fires today as one leg of a multi-leg order. Shape and strikes are from the most recent one. ${INFO_ONLY}`,
     };
   }
@@ -49,7 +57,7 @@ export const SpreadLegBadge = memo(function SpreadLegBadge({
   spreadLeg,
   anchorLegKind,
 }: {
-  spreadLeg: LotterySpreadLegSummary | null;
+  spreadLeg: SpreadLegSummary | null;
   anchorLegKind: AnchorLegKind | null;
 }) {
   const content = badgeContent(spreadLeg, anchorLegKind);
