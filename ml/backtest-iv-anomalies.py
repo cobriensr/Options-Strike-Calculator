@@ -9,7 +9,10 @@ Three exit playbooks, evaluated per-ticker and per-DTE-bucket:
      last available mid_price at session close.
 
 Inputs:
-    ml/data/iv-anomaly-outcomes.parquet (Phase A output)
+    ml/data/iv-anomaly-outcomes.parquet (Phase A output). A frozen
+    artifact that can't be regenerated: its generator queried
+    `iv_anomalies`, which migration #100 dropped. git history has the old
+    generator (ml/extract-iv-anomaly-outcomes.py).
 
 Outputs:
     ml/data/iv-anomaly-backtest-2026-04-25.parquet  (per-alert PnL per strategy)
@@ -56,7 +59,11 @@ PLOTS_DIR = REPO_ROOT / "ml" / "plots" / "iv-anomaly-backtest"
 def load_outcomes() -> pd.DataFrame:
     if not INPUT_PATH.exists():
         raise RuntimeError(
-            f"Phase A output not found at {INPUT_PATH}. Run extract-iv-anomaly-outcomes.py first."
+            f"Phase A output not found at {INPUT_PATH}. It is a frozen "
+            "artifact that can't be regenerated: its generator queried "
+            "iv_anomalies, which migration #100 dropped (git history has "
+            "ml/extract-iv-anomaly-outcomes.py). Copy the parquet from a "
+            "checkout that still has it."
         )
     df = pd.read_parquet(INPUT_PATH)
     print(f"[load] {len(df)} alerts from {INPUT_PATH}", file=sys.stderr)
@@ -162,7 +169,9 @@ def aggregate_by_strategy(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFra
                     "max_loss": valid.min(),
                     "max_gain": valid.max(),
                     # Sharpe-like (mean / stddev) — undefined when stddev=0
-                    "sharpe_like": valid.mean() / valid.std() if valid.std() > 0 else np.nan,
+                    "sharpe_like": valid.mean() / valid.std()
+                    if valid.std() > 0
+                    else np.nan,
                 }
             )
     return pd.DataFrame(rows)
@@ -232,11 +241,7 @@ def render_strategy_table(stats: pd.DataFrame, title: str) -> str:
             + f" | {fmt_pct(r['p75_pnl'])}"
             + f" | {fmt_pct(r['max_loss'])}"
             + f" | {fmt_pct(r['max_gain'])}"
-            + (
-                " | —"
-                if pd.isna(r["sharpe_like"])
-                else f" | {r['sharpe_like']:.2f}"
-            )
+            + (" | —" if pd.isna(r["sharpe_like"]) else f" | {r['sharpe_like']:.2f}")
             + " |"
         )
         lines.append(row)
@@ -494,9 +499,7 @@ def write_report(
         .rename(columns={"count": "n_touched"})
     )
     tti = tti.sort_values("median")
-    lines.append(
-        "| Ticker | n touched | median min | mean min | min | max |\n"
-    )
+    lines.append("| Ticker | n touched | median min | mean min | min | max |\n")
     lines.append("| --- | --- | --- | --- | --- | --- |\n")
     for ticker, r in tti.iterrows():
         lines.append(
