@@ -32,7 +32,13 @@ SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 .ONESHELL:
 
-PYTHON      := ml/.venv/bin/python
+# A venv keeps its interpreter in Scripts/ on Windows and bin/ elsewhere.
+ifeq ($(OS),Windows_NT)
+VENV_BIN    := Scripts
+else
+VENV_BIN    := bin
+endif
+PYTHON      := ml/.venv/$(VENV_BIN)/python
 INPUT_DIR   ?= $(HOME)/Downloads/EOD-OptionFlow
 PARQUET_DIR ?= $(HOME)/Desktop/Bot-Eod-parquet
 INPUT_DIR_FULLTAPE   ?= $(HOME)/Downloads/EOD-FullTape
@@ -587,11 +593,11 @@ py-test-cov:
 	@echo "════════════════════════════════════════════════════════════════"
 	@echo "  PY-TEST-COV 3/4 — classifier  (--cov-fail-under=95 gate via pyproject)"
 	@echo "════════════════════════════════════════════════════════════════"
-	cd classifier && .venv/bin/python -m pytest
+	cd classifier && .venv/$(VENV_BIN)/python -m pytest
 	@echo ""
 	@echo "════════════════════════════════════════════════════════════════"
 	@echo "  PY-TEST-COV 4/4 — uw-stream"
 	@echo "════════════════════════════════════════════════════════════════"
-	cd uw-stream && .venv/bin/python -m pytest tests/ --cov=src --cov-report=term-missing
+	cd uw-stream && .venv/$(VENV_BIN)/python -m pytest tests/ --cov=src --cov-report=term-missing
 	@echo ""
 	@echo "  ✅ all four Python suites passed with coverage"

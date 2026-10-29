@@ -44,11 +44,14 @@ err()   { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 check_local() {
   local dir="$1"
   local venv="$dir/.venv"
-  if [[ ! -x "$venv/bin/pip" ]]; then
-    warn "  skip — no $venv/bin/pip"
+  # A venv keeps pip in Scripts/ on Windows and bin/ elsewhere.
+  local bin="$venv/bin"
+  [[ -d "$venv/Scripts" ]] && bin="$venv/Scripts"
+  if [[ ! -x "$bin/pip" && ! -x "$bin/pip.exe" ]]; then
+    warn "  skip — no pip in $bin"
     return
   fi
-  "$venv/bin/pip" list --outdated --format="$FORMAT" 2> >(grep -vE 'Cache entry deserialization failed|^\[notice\]|new release of pip|To update, run' >&2) \
+  "$bin/pip" list --outdated --format="$FORMAT" 2> >(grep -vE 'Cache entry deserialization failed|^\[notice\]|new release of pip|To update, run' >&2) \
     || warn "  pip failed in $dir"
 }
 

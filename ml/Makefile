@@ -1,7 +1,13 @@
 # ML Pipeline Runner
 # Usage: cd ml && make all
 
-PYTHON ?= .venv/bin/python
+# A venv keeps its interpreter in Scripts/ on Windows and bin/ elsewhere.
+ifeq ($(OS),Windows_NT)
+VENV_BIN := Scripts
+else
+VENV_BIN := bin
+endif
+PYTHON ?= .venv/$(VENV_BIN)/python
 
 .PHONY: all eda cluster visualize health milestone backtest early pin nope flow calibration lint format test test-cov test-html review clean help
 
