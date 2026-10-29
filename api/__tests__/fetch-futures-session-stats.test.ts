@@ -45,7 +45,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 import handler from '../cron/fetch-futures-session-stats.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import { reportCronRun } from '../_lib/axiom.js';
 
 // The real fan-out, behind a spy so the concurrency limit is assertable.
@@ -313,6 +313,26 @@ describe('fetch-futures-session-stats handler', () => {
     expect(JSON.stringify(sqlValues(0))).not.toContain('7740.000000000');
   });
 
+  it('does not validate the discarded session_high/low: a changed or missing one still writes the row', async () => {
+    const withoutLow: Record<string, unknown> = { ...statsBody().data };
+    delete withoutLow.session_low;
+    routeUw(
+      allRoutes({
+        [statsPath('ESZ6')]: statsBody({ session_high: 7769 }),
+        [statsPath('NQZ6')]: { data: withoutLow },
+      }),
+    );
+    mockSql.mockResolvedValueOnce(returning(12));
+
+    const res = await run();
+
+    expect(upsertColumns().contract).toEqual(
+      expect.arrayContaining(['ESZ6', 'NQZ6']),
+    );
+    expect(res._json).toMatchObject({ status: 'success', rows: 12 });
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
   it('stores NULL for null settlement, open interest and session volume when the settlement date is known', async () => {
     routeUw(
       allRoutes({
@@ -387,7 +407,7 @@ describe('fetch-futures-session-stats handler', () => {
     );
   });
 
-  it('makes no DB call when no contract has a settlement date', async () => {
+  it('no contract with a settlement date fails the run (error + metric + one warning), with no DB call', async () => {
     const routes = allRoutes();
     for (const [contract] of TARGETS) {
       routes[statsPath(contract)] = statsBody({ settlement_date: null });
@@ -397,10 +417,22 @@ describe('fetch-futures-session-stats handler', () => {
     const res = await run();
 
     expect(mockSql).not.toHaveBeenCalled();
-    expect(res._json).toMatchObject({ status: 'success', rows: 0 });
+    expect(res._json).toMatchObject({
+      status: 'error',
+      rows: 0,
+      message: expect.stringContaining('settlement date'),
+    });
     expect(
       (res._json as { skippedNoSettlement: string[] }).skippedNoSettlement,
     ).toHaveLength(12);
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'fetch_futures_session_stats.no_settlement',
+    );
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'fetch-futures-session-stats',
+      expect.objectContaining({ status: 'error' }),
+    );
   });
 
   // ── Failure modes (R4) ────────────────────────────────
@@ -576,5 +608,28 @@ describe('fetch-futures-session-stats handler', () => {
       expect.objectContaining({ message: expect.stringMatching(/non-array/) }),
     );
     expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('an empty /futures/contracts list → error, one Sentry exception per root, no stats calls and no SQL', async () => {
+    routeUw({ [CONTRACTS_PATH]: { data: [] } });
+
+    const res = await run();
+
+    expect(res._json).toMatchObject({ status: 'error', rows: 0 });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(6);
+    for (const root of ['ES', 'NQ', 'RTY', 'CL', 'GC', 'ZN']) {
+      expect(Sentry.captureException).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining(root) }),
+        expect.objectContaining({
+          tags: expect.objectContaining({ symbol: root }),
+        }),
+      );
+    }
+    expect(mockUwFetch).toHaveBeenCalledTimes(1);
+    expect(mockSql).not.toHaveBeenCalled();
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'fetch-futures-session-stats',
+      expect.objectContaining({ status: 'error' }),
+    );
   });
 });

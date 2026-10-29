@@ -21,7 +21,7 @@
  * Stats body (probed 2026-10-29 03:34 UTC): `settlement`,
  * `settlement_date` and `session_volume` describe the SETTLED session;
  * `session_high`/`session_low` describe the IN-PROGRESS one, so they are
- * validated but never stored. Which session the open interest is as of is
+ * neither validated nor stored. Which session the open interest is as of is
  * unresolved, so the cron runs twice and upserts: 21:30 UTC Mon–Fri after
  * the settlement prints, then 12:30 UTC Tue–Sat once CME's open interest
  * for that session is out. `fetched_at` shows which run last changed the
@@ -32,8 +32,10 @@
  * warning; a root UW lists no contract for is a Sentry exception. Each
  * counts as one failed leg, so the run reports 'partial', or 'error' when
  * every leg failed. A contract with no settlement date yet is skipped, not
- * failed, and listed in the run metadata. A failed contract list or a
- * rejected write throws: the wrapper reports 'error' and returns 500.
+ * failed, and listed in the run metadata (one Sentry warning per run);
+ * when no contract has one, the run reports 'error'. A failed contract
+ * list or a rejected write throws: the wrapper reports 'error' and
+ * returns 500.
  *
  * Worst case is 13 UW calls, each up to 3 attempts × 15 s timeout plus
  * backoff (~48 s): ~4 minutes with the stats calls 3 at a time, inside
@@ -81,14 +83,13 @@ const DecimalString = z
 
 const Count = z.number().int().nonnegative();
 
+// session_high/session_low are the in-progress session's range and are
+// never stored, so they are not validated either: z.object strips them.
 const StatsBody = z.object({
   settlement: DecimalString.nullable(),
   settlement_date: z.iso.date().nullable(),
   open_interest: Count.nullable(),
   session_volume: Count.nullable(),
-  // The in-progress session's range: read, never stored.
-  session_high: z.string().nullish(),
-  session_low: z.string().nullish(),
 });
 
 // ── Types ───────────────────────────────────────────────────
@@ -276,6 +277,22 @@ export default withCronInstrumentation(
         level: 'warning',
         extra: { contracts: skippedNoSettlement },
       });
+    }
+
+    // The front month always settles, so no settlement date anywhere means
+    // UW is not reporting settlements: a failed run, not a quiet one.
+    if (targets.length > 0 && skippedNoSettlement.length === targets.length) {
+      metrics.increment('fetch_futures_session_stats.no_settlement');
+      return {
+        status: 'error',
+        rows: 0,
+        message: `no settlement date for any of ${targets.length} contracts`,
+        metadata: {
+          contracts: targets.map((t) => t.contract),
+          skippedNoSettlement,
+          ...(failures.length > 0 ? { failures } : {}),
+        },
+      };
     }
 
     // A rejected write throws past this point: never a 'success' run.
