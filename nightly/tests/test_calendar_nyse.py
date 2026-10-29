@@ -53,6 +53,11 @@ def test_trading_days_skips_weekends_and_holidays():
         (datetime(2026, 11, 3, 7, 15, tzinfo=UTC), date(2026, 11, 2)),  # EST
         (datetime(2026, 11, 2, 7, 15, tzinfo=UTC), date(2026, 10, 30)),  # Monday
         (datetime(2026, 11, 27, 7, 15, tzinfo=UTC), date(2026, 11, 25)),  # after Thanksgiving
+        # Near the 20:00 ET boundary, where a fixed -4 or -5 offset gives a different date.
+        (datetime(2026, 10, 30, 23, 30, tzinfo=UTC), date(2026, 10, 29)),  # 19:30 EDT
+        (datetime(2026, 10, 31, 0, 30, tzinfo=UTC), date(2026, 10, 30)),  # 20:30 EDT
+        (datetime(2026, 11, 3, 0, 30, tzinfo=UTC), date(2026, 10, 30)),  # 19:30 EST Mon 11-02
+        (datetime(2026, 11, 3, 1, 30, tzinfo=UTC), date(2026, 11, 2)),  # 20:30 EST
     ],
 )
 def test_last_completed_session_across_dst(now_utc, expected):
@@ -124,3 +129,14 @@ def test_previous_trading_day():
     assert previous_trading_day(date(2026, 7, 31)) == date(2026, 7, 31)
     assert previous_trading_day(date(2026, 8, 2)) == date(2026, 7, 31)
     assert previous_trading_day(date(2026, 7, 4)) == date(2026, 7, 2)
+
+
+@pytest.mark.parametrize(
+    ("session", "prior"),
+    [(date(2026, 7, 31), date(2026, 7, 30)), (date(2026, 11, 2), date(2026, 10, 30))],  # EDT, EST
+)
+def test_cutoff_is_inclusive_at_exactly_20_et(session, prior):
+    at = datetime(session.year, session.month, session.day, 20, 0, 0, tzinfo=EASTERN)
+    just_before = datetime(session.year, session.month, session.day, 19, 59, 59, tzinfo=EASTERN)
+    assert last_completed_session(at.astimezone(UTC)) == session
+    assert last_completed_session(just_before.astimezone(UTC)) == prior
