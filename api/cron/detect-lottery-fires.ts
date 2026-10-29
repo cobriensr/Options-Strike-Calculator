@@ -826,6 +826,8 @@ export default withCronInstrumentation(
         extra: { fires: anchorRequests.length },
       });
     }
+    // anchorsFound / anchorsMissing count every looked-up fire, including
+    // fires that then hit ON CONFLICT, not inserted rows.
     let anchorsFound = 0;
     for (const anchor of anchorsByKey.values()) {
       if (anchor != null) anchorsFound += 1;
@@ -1303,6 +1305,18 @@ export default withCronInstrumentation(
         'candle-fetch-empty',
         'detect-lottery-fires: UW returned no stock candles; range_pos left null',
         { candleFetchEmpty, firstCandleFetchEmpty },
+      );
+    }
+    // A fire's own trigger print always qualifies as its anchor (a scanned
+    // tick: same chain and ticker, price > 0, not canceled, inside the
+    // window). So a fire with no anchor means the tick scan and the lookup
+    // disagree on ticker or time, a regression and not a quiet market. The
+    // rows are written and the status stays 'success'; this makes it visible.
+    if (anchorsMissing > 0) {
+      reportRunProblem(
+        'anchor-missing',
+        'detect-lottery-fires: no anchor print found for a fresh fire; anchor columns left null',
+        { anchorsMissing, anchorsFound },
       );
     }
 

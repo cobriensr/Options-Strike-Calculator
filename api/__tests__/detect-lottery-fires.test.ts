@@ -120,8 +120,16 @@ vi.mock('../_lib/multileg-client.js', () => ({
 // The exchange multi-leg anchor lookup that replaced the classifier, mocked
 // at the module boundary: its SQL has its own PGlite tests, and keeping it
 // off mockSql leaves every query sequence in this file unchanged. The
-// default (set in beforeEach) answers "no anchor print" for every fire, as
-// the real helper does for a quiet window.
+// default (set in beforeEach) answers DEFAULT_ANCHOR, a single-leg anchor,
+// for every fire, as on a live tick: a fire's own trigger print always
+// qualifies as its anchor.
+const DEFAULT_ANCHOR: AnchorLegs = {
+  anchorWsTradeId: '0c9d8e7f-6a5b-4c3d-9e2f-1a0b9c8d7e6f',
+  anchorTradeCode: 'auto',
+  legKind: 'single',
+  spreadShape: null,
+  spreadLegs: null,
+};
 const mockLookupAnchorLegs = vi.hoisted(() =>
   vi.fn<
     (requests: AnchorRequest[]) => Promise<Map<string, AnchorLegs | null>>
@@ -375,11 +383,14 @@ describe('detect-lottery-fires handler', () => {
     mockLoadTakeitDetectContext.mockResolvedValue(null);
     mockPriorSessionWinRatesForDay.mockResolvedValue([]);
     mockAwaitWinRateWarmup.mockResolvedValue(undefined);
-    // Default: no anchor print for any fire (the real helper's null).
+    // Default: every fire finds its (single-leg) anchor, as on a live tick.
     mockLookupAnchorLegs.mockImplementation(
       async (requests) =>
         new Map(
-          requests.map((r): [string, AnchorLegs | null] => [r.key, null]),
+          requests.map((r): [string, AnchorLegs | null] => [
+            r.key,
+            DEFAULT_ANCHOR,
+          ]),
         ),
     );
     process.env.CRON_SECRET = 'test-secret';
@@ -1680,6 +1691,8 @@ describe('detect-lottery-fires handler', () => {
   describe('anchor legs from the exchange multi-leg flag', () => {
     const SNDK_CHAIN = 'SNDK260501C01175000';
     const ANCHOR_FAILED = 'anchor_legs.lookup_failed';
+    const ANCHOR_MISSING_MSG =
+      'detect-lottery-fires: no anchor print found for a fresh fire; anchor columns left null';
     const ANCHOR_COLUMNS = [
       'anchor_ws_trade_id',
       'anchor_trade_code',
@@ -1774,6 +1787,22 @@ describe('detect-lottery-fires handler', () => {
         );
     }
 
+    function anchorMissingCaptures() {
+      return mockSentryCaptureMessage.mock.calls.filter(
+        (call) => call[0] === ANCHOR_MISSING_MSG,
+      );
+    }
+
+    /** No fire found its anchor: null for every request. */
+    function answerNoAnchors() {
+      mockLookupAnchorLegs.mockImplementation(
+        async (requests) =>
+          new Map(
+            requests.map((r): [string, AnchorLegs | null] => [r.key, null]),
+          ),
+      );
+    }
+
     function completedLog() {
       const call = vi
         .mocked(logger.info)
@@ -1858,6 +1887,12 @@ describe('detect-lottery-fires handler', () => {
         mockSql.mock.invocationCallOrder[insertIdx]!,
       );
       expect(anchorFailedCaptures()).toHaveLength(0);
+      // Every fire found its anchor: no anchor-missing warning.
+      expect(anchorMissingCaptures()).toHaveLength(0);
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        expect.anything(),
+        ANCHOR_MISSING_MSG,
+      );
     });
 
     it('makes one batched lookup for every fire on a tick and writes each fire its own anchor', async () => {
@@ -1917,10 +1952,18 @@ describe('detect-lottery-fires handler', () => {
         spread_legs: null,
       });
       expect(byChain.get('SNDK260501C01178000')).toEqual(ALL_NULL);
+
+      // One missing anchor among four fires: one warning for the run.
+      const missing = anchorMissingCaptures();
+      expect(missing).toHaveLength(1);
+      expect(missing[0]![1]).toMatchObject({
+        level: 'warning',
+        extra: { anchorsMissing: 1, anchorsFound: 3 },
+      });
     });
 
-    it('writes NULL anchor columns and stays success when the fire has no anchor print, logging the miss at info only', async () => {
-      // Default mock: null for every key.
+    it('writes NULL anchor columns and stays success when a fresh fire finds no anchor print, and warns once per run', async () => {
+      answerNoAnchors();
       queueOneSndkFire(42);
 
       const res = mockResponse();
@@ -1937,12 +1980,29 @@ describe('detect-lottery-fires handler', () => {
       expect(
         anchorBinds(extractInsertBinds(mockSql, 'lottery_finder_fires')),
       ).toEqual(ALL_NULL);
-      // Not a failure: no Sentry event, no warn or error line for it.
+      // Not a lookup failure: no anchor_legs.lookup_failed event or line.
       expect(anchorFailedCaptures()).toHaveLength(0);
       expect(logger.error).not.toHaveBeenCalled();
       expect(logger.warn).not.toHaveBeenCalledWith(
         expect.anything(),
         expect.stringContaining(ANCHOR_FAILED),
+      );
+      // But a fresh fire's trigger print always qualifies as its anchor,
+      // so the miss is raised once for the run as a warning.
+      const missing = anchorMissingCaptures();
+      expect(missing).toHaveLength(1);
+      expect(missing[0]![1]).toEqual({
+        level: 'warning',
+        fingerprint: ['detect-lottery-fires', 'anchor-missing'],
+        tags: {
+          'cron.job': 'detect-lottery-fires',
+          'cron.anomaly': 'anchor-missing',
+        },
+        extra: { anchorsMissing: 1, anchorsFound: 0 },
+      });
+      expect(logger.warn).toHaveBeenCalledWith(
+        { anchorsMissing: 1, anchorsFound: 0 },
+        ANCHOR_MISSING_MSG,
       );
       expect(completedLog()).toMatchObject({
         anchorsFound: 0,
@@ -1990,6 +2050,8 @@ describe('detect-lottery-fires handler', () => {
         expect.objectContaining({ err: broken, fires: 1 }),
         expect.stringContaining(ANCHOR_FAILED),
       );
+      // A failed lookup is not reported as missing anchors.
+      expect(anchorMissingCaptures()).toHaveLength(0);
 
       // Axiom: the run is partial, and the new fields ride in `meta`.
       const payload = vi.mocked(reportCronRun).mock.calls[0]![1];
