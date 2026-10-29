@@ -322,6 +322,17 @@ export async function getGreekHeatmapSnapshot(
  * source='rest' (the REST-backfilled archive). Same SUM(...) OVER
  * pattern either way; the source switch handles the
  * data-retention boundary at end-of-day.
+ *
+ * The day is the UTC day [date 00:00Z, date+1 00:00Z), bounded on the
+ * bare `ts` column so an index range scan serves it. This is the set
+ * the earlier `date(ts) = date` filter selected under Neon's GMT session,
+ * but that filter could not use an index: on ws_net_flow_per_ticker it was
+ * a parallel seq scan of the whole table, 49.5 s per call (2026-10-28).
+ * The bounds name UTC so they don't follow the session zone. UW emits net
+ * flow only between about 07:00 and 17:00 ET, which lies inside both the
+ * UTC and the ET day, so the two pick the same rows. The window
+ * partitions by ticker alone: the WHERE already pins one ticker-day.
+ * Equivalence with the old statement: greek-heatmap-net-flow-pglite.test.ts.
  */
 export async function getGreekHeatmapNetFlow(
   ticker: string,
@@ -344,8 +355,9 @@ export async function getGreekHeatmapNetFlow(
           SUM(net_put_vol)   OVER w AS cum_put_vol
         FROM ws_net_flow_per_ticker
         WHERE ticker = ${ticker}
-          AND date(ts) = ${date}::date
-        WINDOW w AS (PARTITION BY ticker, date(ts) ORDER BY ts)
+          AND ts >= (${date}::date::timestamp AT TIME ZONE 'UTC')
+          AND ts <  ((${date}::date + 1)::timestamp AT TIME ZONE 'UTC')
+        WINDOW w AS (PARTITION BY ticker ORDER BY ts)
         ORDER BY ts DESC
         LIMIT 1
       `
@@ -358,9 +370,10 @@ export async function getGreekHeatmapNetFlow(
           SUM(net_put_vol)   OVER w AS cum_put_vol
         FROM net_flow_per_ticker_history
         WHERE ticker = ${ticker}
-          AND date(ts) = ${date}::date
+          AND ts >= (${date}::date::timestamp AT TIME ZONE 'UTC')
+          AND ts <  ((${date}::date + 1)::timestamp AT TIME ZONE 'UTC')
           AND source = 'rest'
-        WINDOW w AS (PARTITION BY ticker, date(ts) ORDER BY ts)
+        WINDOW w AS (PARTITION BY ticker ORDER BY ts)
         ORDER BY ts DESC
         LIMIT 1
       `,

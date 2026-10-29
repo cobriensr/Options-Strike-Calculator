@@ -493,6 +493,68 @@ describe('greek-heatmap endpoint', () => {
     expect(body.atmStrike).toBe(460);
   });
 
+  // The net-flow read must keep `ts` bare so an index range scan serves it.
+  // `date(ts) = $1` could not use an index (a 49.5 s seq scan of
+  // ws_net_flow_per_ticker, 2026-10-28). The bounds are UTC midnights,
+  // which is what `date(ts)` meant under Neon's GMT session; the real-SQL
+  // equivalence lives in greek-heatmap-net-flow-pglite.test.ts.
+  describe('net-flow query predicate', () => {
+    function netFlowCall(table: string): {
+      text: string;
+      values: unknown[];
+    } {
+      const call = mockSql.mock.calls.find(([strings]) =>
+        (strings as TemplateStringsArray).join('?').includes(`FROM ${table}`),
+      );
+      if (!call) throw new Error(`no query against ${table}`);
+      const [strings, ...values] = call as [TemplateStringsArray, ...unknown[]];
+      return { text: strings.join('$'), values };
+    }
+
+    function expectSargableUtcDay(text: string) {
+      expect(text).not.toMatch(/date\(ts\)/);
+      expect(text).toMatch(
+        /ts\s+>=\s+\(\$::date::timestamp AT TIME ZONE 'UTC'\)/,
+      );
+      expect(text).toMatch(
+        /ts\s+<\s+\(\(\$::date \+ 1\)::timestamp AT TIME ZONE 'UTC'\)/,
+      );
+      expect(text).toMatch(/PARTITION BY ticker ORDER BY ts\)/);
+      expect(text).toMatch(/ORDER BY ts DESC\s+LIMIT 1/);
+    }
+
+    it('bounds the live read on ws_net_flow_per_ticker by a bare-ts UTC-day range', async () => {
+      mockSql.mockResolvedValue([]);
+      const req = mockRequest({ method: 'GET', query: { ticker: 'SPY' } });
+      await handler(req, mockResponse());
+
+      const { text, values } = netFlowCall('ws_net_flow_per_ticker');
+      expectSargableUtcDay(text);
+      expect(text).toMatch(/WHERE ticker = \$/);
+      // Binds: ticker, then the same ET-today date for both bounds.
+      const today = values[1];
+      expect(values).toEqual(['SPY', today, today]);
+      expect(today).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+
+    it('bounds the historical read on net_flow_per_ticker_history the same way (source=rest)', async () => {
+      mockSql.mockResolvedValue([]);
+      const date = new Date(Date.now() - 5 * 86_400_000)
+        .toISOString()
+        .slice(0, 10);
+      const req = mockRequest({
+        method: 'GET',
+        query: { ticker: 'SPY', date },
+      });
+      await handler(req, mockResponse());
+
+      const { text, values } = netFlowCall('net_flow_per_ticker_history');
+      expectSargableUtcDay(text);
+      expect(text).toMatch(/AND source = 'rest'/);
+      expect(values).toEqual(['SPY', date, date]);
+    });
+  });
+
   it('degrades to 503 + Retry-After on a transient db timeout (no Sentry)', async () => {
     mockSql.mockRejectedValue(new Error('db attempt timeout'));
 
