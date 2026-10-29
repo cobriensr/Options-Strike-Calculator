@@ -1,10 +1,18 @@
 import type { SpreadLeg, SpreadShape } from '../types/spread-legs';
 
-const SHAPE_WORDS: Partial<Record<SpreadShape, string>> = {
+const SHAPE_WORDS: Record<SpreadShape, string> = {
+  vertical: 'vertical',
+  calendar: 'calendar',
+  diagonal: 'diagonal',
+  straddle: 'straddle',
+  combo: 'combo',
+  butterfly: 'butterfly',
   three_leg: '3-leg',
   four_leg: '4-leg',
   four_leg_multi_expiry: '4-leg roll',
+  complex: 'complex',
   unpaired: 'leg vs stock/futures',
+  other: 'multi-leg',
 };
 
 /**
@@ -21,7 +29,7 @@ export function describeSpread(shape: SpreadShape, legs: SpreadLeg[]): string {
     .sort((a, b) => a - b)
     .join('/');
 
-  return [typeWord, SHAPE_WORDS[shape] ?? shape, strikes]
+  return [typeWord, SHAPE_WORDS[shape], strikes]
     .filter((part) => part !== '')
     .join(' ');
 }

@@ -70,7 +70,7 @@ describe('describeSpread', () => {
     ['four_leg_multi_expiry', '4-leg roll'],
     ['complex', 'complex'],
     ['unpaired', 'leg vs stock/futures'],
-    ['other', 'other'],
+    ['other', 'multi-leg'],
   ];
   it.each(words)('maps %s to "%s"', (shape, word) => {
     expect(describeSpread(shape, [leg('C', 100)])).toBe(`call ${word} 100`);
