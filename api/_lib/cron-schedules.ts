@@ -418,7 +418,12 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     // vercel.json fires `30 12 * * 2-6` and `30 21 * * 1-5`; a monitor has
     // one crontab, so it expects the 12:30 run, which carries the settled
     // session's final open interest. The 21:30 run checks in on the same
-    // slug off-schedule. Daily → default failure threshold of 1.
+    // slug off-schedule, which is safe: on an ok check-in Sentry computes
+    // the next expected tick from that check-in's time (mark_ok →
+    // update_monitor_environment in getsentry/sentry src/sentry/monitors/
+    // logic/), so 21:30 Mon expects 12:30 Tue and causes no false miss. A
+    // failed 21:30 run still shows as an error check-in. Daily → default
+    // failure threshold of 1.
     schedule: '30 12 * * 2-6',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
