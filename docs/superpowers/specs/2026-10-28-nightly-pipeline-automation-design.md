@@ -6,7 +6,7 @@ Date: 2026-10-28. Status: approved by the owner 2026-10-28; next is the build pl
 
 The owner never runs the evening routine by hand again. Until 2026-06-16 that routine was `make nightly update` on the retired Mac, started by a hand-downloaded `bot-eod-report-YYYY-MM-DD.csv`. It has not run since, about 95 trading days. One unattended nightly job replaces all of it:
 - Its options input is only the Unusual Whales Full Tape REST endpoint (`GET /api/option-trades/full-tape/{date}`).
-- It also records GexBot's daily EOD report, which the owner added the same night.
+- GEXBot EOD capture: see `2026-10-28-gexbot-eod-capture-design.md`.
 
 The owner asked for the whole process: downloading the file, saving it, uploading to Cloudflare, the enrichment scripts, and everything else the routine did.
 
@@ -56,13 +56,7 @@ The owner asked for the whole process: downloading the file, saving it, uploadin
 **Licensing:**
 - **UW-derived row-level data is tracked in this public repo today.** That covers 23 per-contract `by-day/*-chains.parquet` files, plus `cumulative-headlines.txt` and `cumulative-rollup.json`, which list contracts by ticker, strike, premium and ask%.
 
-**GexBot `/hist/eod/{ticker}`** (`docs/tmp/gexbot-refresh-2026-10-28/vendor.md`, probed 10-28):
-- A ZIP of 15 gz-JSON files, one per category, each holding the full day at about 2 s resolution: 13,360 snapshots from 09:30:02 to 16:00:00 ET for SPX. The data is byte-identical to the REST snapshots.
-- It includes classic and state `gex_one`/`gex_full`, which we never capture.
-- SPX is 85 MB zipped, about 1.1 GB unpacked, and took 8.9 s to download.
-- **It serves the latest day only.** That day becomes eligible at 17:00 ET, so a day not pulled before 17:00 ET on the next trading day is gone for good.
-- Its quota pool is undocumented.
-- The GexBot refresh plan (`gexbot-refresh-2026-10-28.md`, branch `fix/2026-10-28-gexbot`, D5) proposes this pull for SPX, SPY and QQQ first.
+GEXBot EOD capture: see `2026-10-28-gexbot-eod-capture-design.md`.
 
 **Where the job could run:**
 - The repo is public, so GitHub Actions logs are readable by anyone signed in.
@@ -73,7 +67,7 @@ The owner asked for the whole process: downloading the file, saving it, uploadin
 
 1. **Every trading day's tape lands in R2 unattended,** by about 03:30 CT the next morning.
 2. **Missing tape days fix themselves.** Each run lands every trading day missing since the last one landed. The first runs clear 06-16 → today, plus 05-29 if UW still serves it.
-3. **GexBot's EOD report for SPX, SPY and QQQ is saved every trading day,** inside its one-day window. A miss alerts the same morning so a retry still fits in the window.
+3. GEXBot EOD capture: see `2026-10-28-gexbot-eod-capture-design.md`.
 4. **Every lottery and silent-boom fire has outcomes.**
    - The 06-12 → 10-22 gap is backfilled from the tape.
    - Each night, a backstop re-enriches any fire the live cron left empty.
@@ -84,7 +78,6 @@ The owner asked for the whole process: downloading the file, saving it, uploadin
 6. **The lottery score refit, and the nightly ticker-weight update, run safely.** New weights go live only when they pass gates; otherwise the current ones stay.
 7. **Failures are loud.** A Sentry alert fires on any of these:
    - a day that fails to land;
-   - a missed GexBot window;
    - any step that fails;
    - a trading day with fires whose enrichment comes back 100% NULL;
    - a rejected refit.
@@ -97,7 +90,7 @@ The owner asked for the whole process: downloading the file, saving it, uploadin
 - **Take-It retraining and the disabled ML GitHub workflow.** Owner decisions Q23 and O7 stand.
 - **Promoting `lottery_ticker_stats` to live.** It stays on its existing shadow hold.
 - **Choosing a post-close filter** (owner, 10-28): "take what's there and we can decide what we want to filter out later".
-- **Silver 1-minute bars;** GexBot tickers beyond SPX/SPY/QQQ; cutting the per-minute GexBot polling. All of these could come later.
+- **Silver 1-minute bars;** cutting the per-minute GexBot polling. All of these could come later.
 
 ## Anti-goals (failures even if everything technically runs)
 
@@ -124,7 +117,7 @@ The owner asked for the whole process: downloading the file, saving it, uploadin
   - Batch the DB writes (R5).
   - Every new env var goes into code, its Python settings, the CLAUDE.md table and `.env.example`, in the same commit (R7).
   - Tests ship in the same commit; the new service gets a pytest suite, like `uw-stream/`.
-- **Keys:** UW_API_KEY will live in three places (Vercel, Railway uw-stream, the new service), and GEXBOT_API_KEY in two. Update the key-rotation memory.
+- **Keys:** UW_API_KEY will live in three places (Vercel, Railway uw-stream, the new service). Update the key-rotation memory.
 
 ## Decided
 
@@ -132,7 +125,6 @@ The owner asked for the whole process: downloading the file, saving it, uploadin
 - Automate the whole routine.
 - The Full Tape endpoint is the only options input.
 - No post-close cutoff for now.
-- Add GexBot's EOD report if it's worthwhile; my recommendation is yes, with the reasons in the GexBot facts.
 - GEXBot EOD capture moved to its own spec, `2026-10-28-gexbot-eod-capture-design.md` (owner, 2026-10-28).
 
 **My calls** (flagged so the owner can overrule):
@@ -146,7 +138,7 @@ The owner asked for the whole process: downloading the file, saving it, uploadin
     - Changes come from a full code review (running 10-28) and are listed in the build plan.
     - It replaces `scripts/download-fulltape.sh` and `scripts/ingest-fulltape.py`. The latter drops the newer columns today (`:105-117`).
   - **Readers must accept the growing schema:** `union_by_name` / `diagonal_relaxed`. `ml/src/utils/r2.py` doesn't today.
-- **Schedule:** 07:15 UTC, Tuesday through Saturday (02:15 CDT / 01:15 CST). That's after the late tape rewrites (04:57–05:59 UTC) and well inside the GexBot window.
+- **Schedule:** 07:15 UTC, Tuesday through Saturday (02:15 CDT / 01:15 CST). That's after the late tape rewrites (04:57–05:59 UTC).
 - **Service:** a new Railway service directory laid out like `uw-stream/`.
 - **Language:** the nightly job is Python (the owner asked; app code is TypeScript).
   - It reuses about a dozen existing Python scripts (ingest, enrichment, analyze, refit, plots, reports) instead of porting them.
