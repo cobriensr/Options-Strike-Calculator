@@ -99,18 +99,18 @@ export interface BiasMetrics {
   upsideTargets: DriftTarget[];
   /** Top 2 below spot by |netGamma|. */
   downsideTargets: DriftTarget[];
-  /** Avg 1m Δ% for below-spot strikes (GexBot cadence is 1 min). */
-  floorTrend1m: number | null;
-  /** Avg 1m Δ% for above-spot strikes. */
-  ceilingTrend1m: number | null;
-  /** Avg 5m Δ% for below-spot strikes. */
+  /** Avg 5m Δ% for below-spot strikes (GEXBot priors lookback t-5 min). */
   floorTrend5m: number | null;
   /** Avg 5m Δ% for above-spot strikes. */
   ceilingTrend5m: number | null;
-  /** Avg 10m Δ% for below-spot strikes. */
-  floorTrend10m: number | null;
-  /** Avg 10m Δ% for above-spot strikes. */
-  ceilingTrend10m: number | null;
+  /** Avg 15m Δ% for below-spot strikes. */
+  floorTrend15m: number | null;
+  /** Avg 15m Δ% for above-spot strikes. */
+  ceilingTrend15m: number | null;
+  /** Avg 30m Δ% for below-spot strikes. */
+  floorTrend30m: number | null;
+  /** Avg 30m Δ% for above-spot strikes. */
+  ceilingTrend30m: number | null;
   /** Price trend over the lookback window (null until enough data accumulates). */
   priceTrend: PriceTrendInternal | null;
 }

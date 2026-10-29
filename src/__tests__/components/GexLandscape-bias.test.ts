@@ -3,7 +3,7 @@
  *
  * Phase 3 of the 1-min GexBot rebuild
  * (docs/superpowers/specs/gex-landscape-1min-gexbot-rebuild-2026-05-26.md):
- *   - computeBias now takes 3 delta maps (1m/5m/10m) and returns 6 trend fields
+ *   - computeBias now takes 3 delta maps (5m/15m/30m) and returns 6 trend fields
  *   - the legacy naive sub-bias (computeNaiveSubBias) is gone
  *   - the verdict + gravity + price-drift override logic is unchanged
  */
@@ -175,7 +175,7 @@ describe('computeBias drift override', () => {
 });
 
 describe('computeBias trend fields', () => {
-  it('returns 6 trend fields (floor + ceiling × 1m/5m/10m) populated from the 3 delta maps', () => {
+  it('returns 6 trend fields (floor + ceiling × 5m/15m/30m) populated from the 3 delta maps', () => {
     const strikes = [
       // Above spot — feed ceiling trends
       makeStrike({ strike: 7080, netGamma: 1e9 }),
@@ -184,32 +184,32 @@ describe('computeBias trend fields', () => {
       makeStrike({ strike: 7000, netGamma: 1e9 }),
       makeStrike({ strike: 6990, netGamma: 1e9 }),
     ];
-    const delta1m = new Map<number, number | null>([
+    const delta5m = new Map<number, number | null>([
       [7080, 4],
       [7070, 2],
       [7000, -1],
       [6990, -3],
     ]);
-    const delta5m = new Map<number, number | null>([
+    const delta15m = new Map<number, number | null>([
       [7080, 8],
       [7070, 6],
       [7000, -4],
       [6990, -6],
     ]);
-    const delta10m = new Map<number, number | null>([
+    const delta30m = new Map<number, number | null>([
       [7080, 10],
       [7070, 6],
       [7000, -8],
       [6990, -12],
     ]);
-    const bias = computeBias(strikes, 7030, delta1m, delta5m, delta10m);
+    const bias = computeBias(strikes, 7030, delta5m, delta15m, delta30m);
     // ceiling = mean above spot, floor = mean below spot
-    expect(bias.ceilingTrend1m).toBe(3); // (4 + 2) / 2
-    expect(bias.floorTrend1m).toBe(-2); // (-1 + -3) / 2
-    expect(bias.ceilingTrend5m).toBe(7); // (8 + 6) / 2
-    expect(bias.floorTrend5m).toBe(-5); // (-4 + -6) / 2
-    expect(bias.ceilingTrend10m).toBe(8); // (10 + 6) / 2
-    expect(bias.floorTrend10m).toBe(-10); // (-8 + -12) / 2
+    expect(bias.ceilingTrend5m).toBe(3); // (4 + 2) / 2
+    expect(bias.floorTrend5m).toBe(-2); // (-1 + -3) / 2
+    expect(bias.ceilingTrend15m).toBe(7); // (8 + 6) / 2
+    expect(bias.floorTrend15m).toBe(-5); // (-4 + -6) / 2
+    expect(bias.ceilingTrend30m).toBe(8); // (10 + 6) / 2
+    expect(bias.floorTrend30m).toBe(-10); // (-8 + -12) / 2
   });
 
   it('returns null for trend fields when the corresponding delta map has no usable values', () => {
@@ -220,11 +220,11 @@ describe('computeBias trend fields', () => {
       emptyDeltaMap,
       emptyDeltaMap,
     );
-    expect(bias.floorTrend1m).toBeNull();
-    expect(bias.ceilingTrend1m).toBeNull();
     expect(bias.floorTrend5m).toBeNull();
     expect(bias.ceilingTrend5m).toBeNull();
-    expect(bias.floorTrend10m).toBeNull();
-    expect(bias.ceilingTrend10m).toBeNull();
+    expect(bias.floorTrend15m).toBeNull();
+    expect(bias.ceilingTrend15m).toBeNull();
+    expect(bias.floorTrend30m).toBeNull();
+    expect(bias.ceilingTrend30m).toBeNull();
   });
 });

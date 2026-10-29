@@ -5,8 +5,8 @@
  *   • Verdict label + description with a positional regime badge
  *   • GEX Gravity (strike with the largest |GEX|)
  *   • Top 2 upside and downside drift targets with classification + vol flag
- *   • 1m / 5m / 10m floor + ceiling Δ% trend ladder (Phase 4: all three
- *     windows at GexBot's native 1-min cadence)
+ *   • 5m / 15m / 30m floor + ceiling Δ% trend ladder (Phase 4: all three
+ *     windows from GEXBot's t-5 / t-15 / t-30 min priors)
  */
 
 import {
@@ -20,12 +20,12 @@ import type { BiasMetrics, DriftTarget } from './types';
 
 export interface BiasPanelProps {
   bias: BiasMetrics;
-  /** Strike with the largest |Δ1m|; used for the ⚡ confluence marker. */
-  maxChanged1mStrike: number | null;
   /** Strike with the largest |Δ5m|; used for the ⚡ confluence marker. */
   maxChanged5mStrike: number | null;
-  /** Strike with the largest |Δ10m|; used for the ⚡ confluence marker. */
-  maxChanged10mStrike: number | null;
+  /** Strike with the largest |Δ15m|; used for the ⚡ confluence marker. */
+  maxChanged15mStrike: number | null;
+  /** Strike with the largest |Δ30m|; used for the ⚡ confluence marker. */
+  maxChanged30mStrike: number | null;
 }
 
 /**
@@ -49,9 +49,9 @@ function ceilTrendColor(v: number | null): string {
 
 export function BiasPanel({
   bias,
-  maxChanged1mStrike,
   maxChanged5mStrike,
-  maxChanged10mStrike,
+  maxChanged15mStrike,
+  maxChanged30mStrike,
 }: BiasPanelProps) {
   const vm = VERDICT_META[bias.verdict];
   const isDrifting =
@@ -138,9 +138,9 @@ export function BiasPanel({
           title="Top 2 strikes above spot by absolute GEX — where the most MM hedging activity sits overhead. Positive regime: price gets pulled toward the first target. Negative regime: a break through can accelerate toward the second."
           targets={bias.upsideTargets}
           strikeColor="text-emerald-400"
-          maxChanged1mStrike={maxChanged1mStrike}
           maxChanged5mStrike={maxChanged5mStrike}
-          maxChanged10mStrike={maxChanged10mStrike}
+          maxChanged15mStrike={maxChanged15mStrike}
+          maxChanged30mStrike={maxChanged30mStrike}
         />
 
         {/* Divider */}
@@ -152,15 +152,15 @@ export function BiasPanel({
           title="Top 2 strikes below spot by absolute GEX — where the most MM hedging activity sits below you. Positive regime: price gets pulled toward the first target. Negative regime: a break through can accelerate toward the second."
           targets={bias.downsideTargets}
           strikeColor="text-red-400"
-          maxChanged1mStrike={maxChanged1mStrike}
           maxChanged5mStrike={maxChanged5mStrike}
-          maxChanged10mStrike={maxChanged10mStrike}
+          maxChanged15mStrike={maxChanged15mStrike}
+          maxChanged30mStrike={maxChanged30mStrike}
         />
 
         {/* Divider */}
         <div className="h-full w-px bg-white/10" />
 
-        {/* Trend ladder — 1m / 5m / 10m floor + ceiling */}
+        {/* Trend ladder — 5m / 15m / 30m floor + ceiling */}
         <TrendLadder bias={bias} />
       </div>
     </div>
@@ -172,9 +172,9 @@ interface DriftTargetColumnProps {
   title: string;
   targets: DriftTarget[];
   strikeColor: string;
-  maxChanged1mStrike: number | null;
   maxChanged5mStrike: number | null;
-  maxChanged10mStrike: number | null;
+  maxChanged15mStrike: number | null;
+  maxChanged30mStrike: number | null;
 }
 
 function DriftTargetColumn({
@@ -182,9 +182,9 @@ function DriftTargetColumn({
   title,
   targets,
   strikeColor,
-  maxChanged1mStrike,
   maxChanged5mStrike,
-  maxChanged10mStrike,
+  maxChanged15mStrike,
+  maxChanged30mStrike,
 }: DriftTargetColumnProps) {
   return (
     <div title={title}>
@@ -204,9 +204,9 @@ function DriftTargetColumn({
       ) : (
         targets.map((t) => {
           const isConfluence =
-            t.strike === maxChanged1mStrike ||
             t.strike === maxChanged5mStrike ||
-            t.strike === maxChanged10mStrike;
+            t.strike === maxChanged15mStrike ||
+            t.strike === maxChanged30mStrike;
           return (
             <div
               key={t.strike}
@@ -266,7 +266,7 @@ interface TrendLadderProps {
 }
 
 /**
- * Three-row trend ladder: 1m / 5m / 10m, each row showing both floor and
+ * Three-row trend ladder: 5m / 15m / 30m, each row showing both floor and
  * ceiling Δ% averages. Replaces the legacy single 10m/30m display from
  * the MM era.
  */
@@ -276,15 +276,15 @@ function TrendLadder({ bias }: TrendLadderProps) {
     floor: number | null;
     ceil: number | null;
   }> = [
-    { label: '1m', floor: bias.floorTrend1m, ceil: bias.ceilingTrend1m },
     { label: '5m', floor: bias.floorTrend5m, ceil: bias.ceilingTrend5m },
-    { label: '10m', floor: bias.floorTrend10m, ceil: bias.ceilingTrend10m },
+    { label: '15m', floor: bias.floorTrend15m, ceil: bias.ceilingTrend15m },
+    { label: '30m', floor: bias.floorTrend30m, ceil: bias.ceilingTrend30m },
   ];
 
   return (
     <div
       className="cursor-help"
-      title="Average % change in MM dollar gamma for strikes above (Ceil) and below (Floor) spot vs. the slot N min ago. Floor growing (green) = support hardening. Ceiling growing (amber) = resistance building. Ceiling shrinking (green) = overhead wall weakening. Three rows at GexBot's native 1-min cadence."
+      title="Average % change in MM dollar gamma for strikes above (Ceil) and below (Floor) spot vs. the slot N min ago. Floor growing (green) = support hardening. Ceiling growing (amber) = resistance building. Ceiling shrinking (green) = overhead wall weakening. Three rows at GEXBot's priors windows (t-5 / t-15 / t-30 min)."
     >
       <div
         className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"

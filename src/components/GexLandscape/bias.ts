@@ -50,9 +50,9 @@ function avgPct(vals: (number | null | undefined)[]): number | null {
 export function computeBias(
   rows: GexStrikeLevel[],
   currentPrice: number,
-  gexDelta1mMap: Map<number, number | null>,
   gexDelta5mMap: Map<number, number | null>,
-  gexDelta10mMap: Map<number, number | null>,
+  gexDelta15mMap: Map<number, number | null>,
+  gexDelta30mMap: Map<number, number | null>,
   priceTrend: PriceTrend | null = null,
 ): BiasMetrics {
   const above = rows.filter((s) => s.strike > currentPrice + SPX_SPOT_BAND);
@@ -130,12 +130,12 @@ export function computeBias(
     gravityGex: gravityRow?.netGamma ?? 0,
     upsideTargets,
     downsideTargets,
-    floorTrend1m: avgPct(below.map((s) => gexDelta1mMap.get(s.strike))),
-    ceilingTrend1m: avgPct(above.map((s) => gexDelta1mMap.get(s.strike))),
     floorTrend5m: avgPct(below.map((s) => gexDelta5mMap.get(s.strike))),
     ceilingTrend5m: avgPct(above.map((s) => gexDelta5mMap.get(s.strike))),
-    floorTrend10m: avgPct(below.map((s) => gexDelta10mMap.get(s.strike))),
-    ceilingTrend10m: avgPct(above.map((s) => gexDelta10mMap.get(s.strike))),
+    floorTrend15m: avgPct(below.map((s) => gexDelta15mMap.get(s.strike))),
+    ceilingTrend15m: avgPct(above.map((s) => gexDelta15mMap.get(s.strike))),
+    floorTrend30m: avgPct(below.map((s) => gexDelta30mMap.get(s.strike))),
+    ceilingTrend30m: avgPct(above.map((s) => gexDelta30mMap.get(s.strike))),
     priceTrend,
   };
 }

@@ -9,7 +9,7 @@ import {
 
 /**
  * Helper: minimal `mini_contracts` row in GEXBot's documented shape.
- * Row layout: [strike, call_val, put_val, value, [t-1m,t-5m,t-10m], 0, null]
+ * Row layout: [strike, call_val, put_val, value, [t-5m,t-15m,t-30m], 0, null]
  */
 function row(strike: number, value: number, prev: unknown = []): unknown[] {
   return [strike, 0, 0, value, prev, 0, null];
@@ -48,7 +48,7 @@ describe('decodeStrikes (back-compat)', () => {
 });
 
 describe('decodeStrikesWithHistory', () => {
-  it('populates prev1m / prev5m / prev10m from position-4 when fully filled', () => {
+  it('populates prev5m / prev15m / prev30m from position-4 when fully filled', () => {
     const payload: GexbotStatePayload = {
       mini_contracts: [row(5950, -1234, [-1200, -1100, -1000])],
     };
@@ -56,11 +56,23 @@ describe('decodeStrikesWithHistory', () => {
       {
         strike: 5950,
         value: -1234,
-        prev1m: -1200,
-        prev5m: -1100,
-        prev10m: -1000,
+        prev5m: -1200,
+        prev15m: -1100,
+        prev30m: -1000,
       },
     ]);
+  });
+
+  it('maps row[4] = [a, b, c] to prev5m = a, prev15m = b, prev30m = c (vendor windows t-5 / t-15 / t-30)', () => {
+    const payload: GexbotStatePayload = {
+      mini_contracts: [row(5950, 100, [11, 22, 33])],
+    };
+    const [decoded] = decodeStrikesWithHistory(payload);
+    expect(decoded?.prev5m).toBe(11);
+    expect(decoded?.prev15m).toBe(22);
+    expect(decoded?.prev30m).toBe(33);
+    expect(decoded).not.toHaveProperty('prev1m');
+    expect(decoded).not.toHaveProperty('prev10m');
   });
 
   it('returns all prev fields null when position-4 is missing entirely', () => {
@@ -72,9 +84,9 @@ describe('decodeStrikesWithHistory', () => {
     expect(decoded[0]).toMatchObject({
       strike: 5950,
       value: 200,
-      prev1m: null,
       prev5m: null,
-      prev10m: null,
+      prev15m: null,
+      prev30m: null,
     });
   });
 
@@ -83,7 +95,7 @@ describe('decodeStrikesWithHistory', () => {
       mini_contracts: [row(5950, 200, null as unknown as unknown[])],
     };
     expect(decodeStrikesWithHistory(payload)).toEqual([
-      { strike: 5950, value: 200, prev1m: null, prev5m: null, prev10m: null },
+      { strike: 5950, value: 200, prev5m: null, prev15m: null, prev30m: null },
     ]);
   });
 
@@ -95,9 +107,9 @@ describe('decodeStrikesWithHistory', () => {
       {
         strike: 5950,
         value: 200,
-        prev1m: -1200,
-        prev5m: null,
-        prev10m: null,
+        prev5m: -1200,
+        prev15m: null,
+        prev30m: null,
       },
     ]);
   });
@@ -107,7 +119,7 @@ describe('decodeStrikesWithHistory', () => {
       mini_contracts: [row(5950, 200, [null, 'NaN', undefined])],
     };
     expect(decodeStrikesWithHistory(payload)).toEqual([
-      { strike: 5950, value: 200, prev1m: null, prev5m: null, prev10m: null },
+      { strike: 5950, value: 200, prev5m: null, prev15m: null, prev30m: null },
     ]);
   });
 
@@ -118,7 +130,7 @@ describe('decodeStrikesWithHistory', () => {
       mini_contracts: [[5950, 100, 100, 200, [0, 0, 0], 0, null]],
     };
     expect(decodeStrikesWithHistory(payload)).toEqual([
-      { strike: 5950, value: 200, prev1m: 0, prev5m: 0, prev10m: 0 },
+      { strike: 5950, value: 200, prev5m: 0, prev15m: 0, prev30m: 0 },
     ]);
   });
 
@@ -134,9 +146,9 @@ describe('decodeStrikesWithHistory', () => {
       {
         strike: 5970,
         value: 200,
-        prev1m: -1,
-        prev5m: -2,
-        prev10m: -3,
+        prev5m: -1,
+        prev15m: -2,
+        prev30m: -3,
       },
     ]);
   });

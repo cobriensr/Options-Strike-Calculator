@@ -4,8 +4,8 @@
  * Per-strike gamma / charm / vanna rows (GEXBot net taker imbalances,
  * not dealer positions) served straight from `gexbot_api_capture` at
  * 1-min cadence, with each row carrying its own prior values (position-4
- * of the GEXBot `mini_contracts` payload, read as `[t-1m, t-5m, t-10m]`;
- * the windows are our assumption — see `decodeStrikesWithHistory`).
+ * of the GEXBot `mini_contracts` payload, holding the strike's value at
+ * t-5, t-15 and t-30 min — see `decodeStrikesWithHistory`).
  *
  * Replaces the 10-min `usePeriscopeStrikes` path the legacy GexLandscape
  * hook used. Phase 1 of the rebuild spec:
@@ -56,15 +56,15 @@ interface GexLandscapeStrike {
   gamma: number;
   charm: number;
   vanna: number;
-  gammaPrev1m: number | null;
   gammaPrev5m: number | null;
-  gammaPrev10m: number | null;
-  charmPrev1m: number | null;
+  gammaPrev15m: number | null;
+  gammaPrev30m: number | null;
   charmPrev5m: number | null;
-  charmPrev10m: number | null;
-  vannaPrev1m: number | null;
+  charmPrev15m: number | null;
+  charmPrev30m: number | null;
   vannaPrev5m: number | null;
-  vannaPrev10m: number | null;
+  vannaPrev15m: number | null;
+  vannaPrev30m: number | null;
 }
 
 interface PanelSlot {
@@ -201,15 +201,15 @@ function joinPanelsByStrike(
       gamma: 0,
       charm: 0,
       vanna: 0,
-      gammaPrev1m: null,
       gammaPrev5m: null,
-      gammaPrev10m: null,
-      charmPrev1m: null,
+      gammaPrev15m: null,
+      gammaPrev30m: null,
       charmPrev5m: null,
-      charmPrev10m: null,
-      vannaPrev1m: null,
+      charmPrev15m: null,
+      charmPrev30m: null,
       vannaPrev5m: null,
-      vannaPrev10m: null,
+      vannaPrev15m: null,
+      vannaPrev30m: null,
     };
     byStrike.set(strike, fresh);
     return fresh;
@@ -218,23 +218,23 @@ function joinPanelsByStrike(
   for (const row of gamma) {
     const target = ensure(row.strike);
     target.gamma = row.value;
-    target.gammaPrev1m = row.prev1m;
     target.gammaPrev5m = row.prev5m;
-    target.gammaPrev10m = row.prev10m;
+    target.gammaPrev15m = row.prev15m;
+    target.gammaPrev30m = row.prev30m;
   }
   for (const row of charm) {
     const target = ensure(row.strike);
     target.charm = row.value;
-    target.charmPrev1m = row.prev1m;
     target.charmPrev5m = row.prev5m;
-    target.charmPrev10m = row.prev10m;
+    target.charmPrev15m = row.prev15m;
+    target.charmPrev30m = row.prev30m;
   }
   for (const row of vanna) {
     const target = ensure(row.strike);
     target.vanna = row.value;
-    target.vannaPrev1m = row.prev1m;
     target.vannaPrev5m = row.prev5m;
-    target.vannaPrev10m = row.prev10m;
+    target.vannaPrev15m = row.prev15m;
+    target.vannaPrev30m = row.prev30m;
   }
 
   return Array.from(byStrike.values()).sort((a, b) => a.strike - b.strike);

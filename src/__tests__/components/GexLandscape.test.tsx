@@ -23,9 +23,9 @@ const dataMock = vi.hoisted(() =>
     // Δ% maps are computed inline by the hook from the endpoint's
     // pre-baked `gammaPrevNm` fields. Empty maps by default so the
     // consumer's `.get()` calls return undefined (rendered as `—`).
-    gexDelta1mMap: new Map<number, number | null>(),
     gexDelta5mMap: new Map<number, number | null>(),
-    gexDelta10mMap: new Map<number, number | null>(),
+    gexDelta15mMap: new Map<number, number | null>(),
+    gexDelta30mMap: new Map<number, number | null>(),
     loading: false,
     error: null as string | null,
     refresh: vi.fn(),
@@ -135,9 +135,9 @@ function renderLandscape(opts: RenderOptions = {}) {
   dataMock.mockReturnValue({
     strikes,
     timestamps,
-    gexDelta1mMap: new Map<number, number | null>(),
     gexDelta5mMap: new Map<number, number | null>(),
-    gexDelta10mMap: new Map<number, number | null>(),
+    gexDelta15mMap: new Map<number, number | null>(),
+    gexDelta30mMap: new Map<number, number | null>(),
     loading,
     error,
     refresh: vi.fn(),
@@ -526,12 +526,15 @@ describe('GexLandscape', () => {
     });
   });
 
-  describe('1-min GexBot Δ% surface', () => {
-    it('renders Δ1m / Δ5m / Δ10m column headers (GexBot native cadence)', () => {
+  describe('GexBot priors Δ% surface (5m / 15m / 30m)', () => {
+    it('renders Δ5m / Δ15m / Δ30m column headers (GexBot priors windows)', () => {
       renderLandscape();
-      expect(screen.getByText('Δ1m')).toBeDefined();
       expect(screen.getByText('Δ5m')).toBeDefined();
-      expect(screen.getByText('Δ10m')).toBeDefined();
+      expect(screen.getByText('Δ15m')).toBeDefined();
+      expect(screen.getByText('Δ30m')).toBeDefined();
+      // Old mislabelled windows are gone.
+      expect(screen.queryByText('Δ1m')).toBeNull();
+      expect(screen.queryByText('Δ10m')).toBeNull();
       // Legacy MM / Naive split is gone.
       expect(screen.queryByText('MM 10m')).toBeNull();
       expect(screen.queryByText('MM 30m')).toBeNull();

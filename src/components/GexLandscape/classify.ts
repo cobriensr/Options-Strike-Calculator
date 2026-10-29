@@ -5,7 +5,7 @@
  * `getDirection` maps (strike, price) to ceiling / floor / atm using
  *   `SPX_SPOT_BAND` (SPX-only since Phase 3 of the MM swap).
  * `signalTooltip` and `charmTooltip` render the per-cell tooltip text.
- * `computeVolReinforcement` maps (netGamma, Δ1m/5m/10m) to delta-trend
+ * `computeVolReinforcement` maps (netGamma, Δ5m/15m/30m) to delta-trend
  *   agreement per Locked Decision #1 of the 1-min GexBot rebuild spec
  *   (docs/superpowers/specs/gex-landscape-1min-gexbot-rebuild-2026-05-26.md).
  */
@@ -56,7 +56,7 @@ export function charmTooltip(netCharm: number): string {
 /**
  * Delta-trend agreement signal — per Locked Decision #1 of the 1-min
  * GexBot rebuild. Reads as "reinforcing" when all three deltas
- * (Δ1m / Δ5m / Δ10m) move in the same direction as the current netGamma
+ * (Δ5m / Δ15m / Δ30m) move in the same direction as the current netGamma
  * sign — the wall is being added to. Reads as "opposing" when all three
  * deltas push against the current sign — the wall is being unwound.
  * Anything mixed, any null (sparse data), any zero (no sign), or a
@@ -67,24 +67,24 @@ export function charmTooltip(netCharm: number): string {
  */
 export function computeVolReinforcement(opts: {
   netGamma: number;
-  delta1m: number | null;
   delta5m: number | null;
-  delta10m: number | null;
+  delta15m: number | null;
+  delta30m: number | null;
 }): 'reinforcing' | 'opposing' | 'neutral' {
-  const { netGamma, delta1m, delta5m, delta10m } = opts;
+  const { netGamma, delta5m, delta15m, delta30m } = opts;
   if (netGamma === 0) return 'neutral';
-  if (delta1m === null || delta5m === null || delta10m === null) {
+  if (delta5m === null || delta15m === null || delta30m === null) {
     return 'neutral';
   }
-  if (delta1m === 0 || delta5m === 0 || delta10m === 0) return 'neutral';
+  if (delta5m === 0 || delta15m === 0 || delta30m === 0) return 'neutral';
   const currentSign = Math.sign(netGamma);
-  const s1 = Math.sign(delta1m);
   const s5 = Math.sign(delta5m);
-  const s10 = Math.sign(delta10m);
-  if (s1 === currentSign && s5 === currentSign && s10 === currentSign) {
+  const s15 = Math.sign(delta15m);
+  const s30 = Math.sign(delta30m);
+  if (s5 === currentSign && s15 === currentSign && s30 === currentSign) {
     return 'reinforcing';
   }
-  if (s1 === -currentSign && s5 === -currentSign && s10 === -currentSign) {
+  if (s5 === -currentSign && s15 === -currentSign && s30 === -currentSign) {
     return 'opposing';
   }
   return 'neutral';

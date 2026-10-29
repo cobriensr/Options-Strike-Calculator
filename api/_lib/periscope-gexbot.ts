@@ -51,12 +51,15 @@ export interface DecodedStrike {
 
 export interface DecodedStrikeWithHistory extends DecodedStrike {
   /**
-   * Position-4 priors array, read as [t-1m, t-5m, t-10m] (our assumption;
-   * the spec doesn't name the windows). null when sparse.
+   * Position-4 priors array: the strike's value at [t-5m, t-15m, t-30m]
+   * (verified: vendor EOD history matches at exactly those lags, the
+   * consumers probe fits at 5/15/30 with 0.017-0.020 relative error vs
+   * 0.16-0.42 elsewhere, and three vendor integration docs list only the
+   * 5, 15 and 30 minute lookback windows). null when sparse.
    */
-  prev1m: number | null;
   prev5m: number | null;
-  prev10m: number | null;
+  prev15m: number | null;
+  prev30m: number | null;
 }
 
 /**
@@ -96,9 +99,8 @@ function readPrev(row: unknown[], idx: number): number | null {
  * Position-3 is the signed Greek value for the panel (gamma at the
  * gamma_zero endpoint, charm at charm_zero, etc.), a net taker
  * imbalance from GEXBot's orderflow classification engine, not a
- * dealer position. Live priors arrays hold 3 entries; the spec doesn't
- * name their windows, and reading them as t-1m / t-5m / t-10m is our
- * assumption.
+ * dealer position. Live priors arrays hold 3 entries: the strike's value at t-5,
+ * t-15 and t-30 min (vendor-confirmed windows, not t-1/5/10).
  *
  * Rows with non-numeric position-0 or position-3 are dropped — the
  * payload occasionally includes sparse rows for far-OTM strikes with
@@ -118,8 +120,7 @@ export function decodeStrikes(payload: GexbotStatePayload): DecodedStrike[] {
 
 /**
  * Same row-validity gates as `decodeStrikes`, but also lifts position-4
- * (the priors array, read as `[t-1m, t-5m, t-10m]` per strike; the
- * windows are our assumption, not vendor-stated) into the result so the
+ * (the priors array, `[t-5m, t-15m, t-30m]` per strike, vendor-confirmed) into the result so the
  * frontend can compute Δ% windows without a second DB read.
  *
  * Position-4 can be absent, shorter than 3, or contain null / NaN
@@ -138,9 +139,9 @@ export function decodeStrikesWithHistory(
     // `parseRowCore` confirmed `row` is an array with length >= 4.
     out.push({
       ...parsed,
-      prev1m: readPrev(row as unknown[], 0),
-      prev5m: readPrev(row as unknown[], 1),
-      prev10m: readPrev(row as unknown[], 2),
+      prev5m: readPrev(row as unknown[], 0),
+      prev15m: readPrev(row as unknown[], 1),
+      prev30m: readPrev(row as unknown[], 2),
     });
   }
   return out;

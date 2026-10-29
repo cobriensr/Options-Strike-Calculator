@@ -46,9 +46,9 @@ describe('computeVolReinforcement — delta-trend agreement', () => {
     expect(
       computeVolReinforcement({
         netGamma: 0,
-        delta1m: 5,
         delta5m: 5,
-        delta10m: 5,
+        delta15m: 5,
+        delta30m: 5,
       }),
     ).toBe('neutral');
   });
@@ -57,25 +57,25 @@ describe('computeVolReinforcement — delta-trend agreement', () => {
     expect(
       computeVolReinforcement({
         netGamma: 1e9,
-        delta1m: null,
-        delta5m: 5,
-        delta10m: 5,
-      }),
-    ).toBe('neutral');
-    expect(
-      computeVolReinforcement({
-        netGamma: 1e9,
-        delta1m: 5,
         delta5m: null,
-        delta10m: 5,
+        delta15m: 5,
+        delta30m: 5,
       }),
     ).toBe('neutral');
     expect(
       computeVolReinforcement({
         netGamma: 1e9,
-        delta1m: 5,
         delta5m: 5,
-        delta10m: null,
+        delta15m: null,
+        delta30m: 5,
+      }),
+    ).toBe('neutral');
+    expect(
+      computeVolReinforcement({
+        netGamma: 1e9,
+        delta5m: 5,
+        delta15m: 5,
+        delta30m: null,
       }),
     ).toBe('neutral');
   });
@@ -84,25 +84,25 @@ describe('computeVolReinforcement — delta-trend agreement', () => {
     expect(
       computeVolReinforcement({
         netGamma: 1e9,
-        delta1m: 0,
-        delta5m: 5,
-        delta10m: 5,
-      }),
-    ).toBe('neutral');
-    expect(
-      computeVolReinforcement({
-        netGamma: 1e9,
-        delta1m: 5,
         delta5m: 0,
-        delta10m: 5,
+        delta15m: 5,
+        delta30m: 5,
       }),
     ).toBe('neutral');
     expect(
       computeVolReinforcement({
         netGamma: 1e9,
-        delta1m: 5,
         delta5m: 5,
-        delta10m: 0,
+        delta15m: 0,
+        delta30m: 5,
+      }),
+    ).toBe('neutral');
+    expect(
+      computeVolReinforcement({
+        netGamma: 1e9,
+        delta5m: 5,
+        delta15m: 5,
+        delta30m: 0,
       }),
     ).toBe('neutral');
   });
@@ -111,9 +111,9 @@ describe('computeVolReinforcement — delta-trend agreement', () => {
     expect(
       computeVolReinforcement({
         netGamma: 2.5e9,
-        delta1m: 3.2,
-        delta5m: 7.8,
-        delta10m: 12.1,
+        delta5m: 3.2,
+        delta15m: 7.8,
+        delta30m: 12.1,
       }),
     ).toBe('reinforcing');
   });
@@ -123,9 +123,9 @@ describe('computeVolReinforcement — delta-trend agreement', () => {
     expect(
       computeVolReinforcement({
         netGamma: -2.5e9,
-        delta1m: -3.2,
-        delta5m: -7.8,
-        delta10m: -12.1,
+        delta5m: -3.2,
+        delta15m: -7.8,
+        delta30m: -12.1,
       }),
     ).toBe('reinforcing');
   });
@@ -135,9 +135,9 @@ describe('computeVolReinforcement — delta-trend agreement', () => {
     expect(
       computeVolReinforcement({
         netGamma: 2.5e9,
-        delta1m: -3.2,
-        delta5m: -7.8,
-        delta10m: -12.1,
+        delta5m: -3.2,
+        delta15m: -7.8,
+        delta30m: -12.1,
       }),
     ).toBe('opposing');
   });
@@ -147,9 +147,9 @@ describe('computeVolReinforcement — delta-trend agreement', () => {
     expect(
       computeVolReinforcement({
         netGamma: -2.5e9,
-        delta1m: 3.2,
-        delta5m: 7.8,
-        delta10m: 12.1,
+        delta5m: 3.2,
+        delta15m: 7.8,
+        delta30m: 12.1,
       }),
     ).toBe('opposing');
   });
@@ -158,17 +158,17 @@ describe('computeVolReinforcement — delta-trend agreement', () => {
     expect(
       computeVolReinforcement({
         netGamma: 1e9,
-        delta1m: 5,
-        delta5m: -3,
-        delta10m: 7,
+        delta5m: 5,
+        delta15m: -3,
+        delta30m: 7,
       }),
     ).toBe('neutral');
     expect(
       computeVolReinforcement({
         netGamma: 1e9,
-        delta1m: -5,
-        delta5m: -3,
-        delta10m: 7,
+        delta5m: -5,
+        delta15m: -3,
+        delta30m: 7,
       }),
     ).toBe('neutral');
   });
@@ -177,9 +177,9 @@ describe('computeVolReinforcement — delta-trend agreement', () => {
     expect(
       computeVolReinforcement({
         netGamma: 1e9,
-        delta1m: 5,
-        delta5m: 7,
-        delta10m: -2,
+        delta5m: 5,
+        delta15m: 7,
+        delta30m: -2,
       }),
     ).toBe('neutral');
   });

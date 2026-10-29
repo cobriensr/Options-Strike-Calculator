@@ -9,7 +9,7 @@
  * The hook owns three responsibilities:
  *   1. Single-source fetch against `/api/gex-landscape` (no WS, no MM
  *      periscope fallback).
- *   2. Build the 1m / 5m / 10m Δ% maps inline from each row's `prevNm`
+ *   2. Build the 5m / 15m / 30m Δ% maps inline from each row's `prevNm`
  *      fields — gated by `DELTA_NOISE_FLOOR` so near-zero priors don't
  *      poison the table or the BiasPanel mean.
  *   3. Compute the per-strike vol-reinforcement classification during
@@ -36,15 +36,15 @@ export interface GexLandscapeStrikeRow {
   gamma: number;
   charm: number;
   vanna: number;
-  gammaPrev1m: number | null;
   gammaPrev5m: number | null;
-  gammaPrev10m: number | null;
-  charmPrev1m: number | null;
+  gammaPrev15m: number | null;
+  gammaPrev30m: number | null;
   charmPrev5m: number | null;
-  charmPrev10m: number | null;
-  vannaPrev1m: number | null;
+  charmPrev15m: number | null;
+  charmPrev30m: number | null;
   vannaPrev5m: number | null;
-  vannaPrev10m: number | null;
+  vannaPrev15m: number | null;
+  vannaPrev30m: number | null;
 }
 
 /** Top-level /api/gex-landscape response. `data: null` when stale/missing. */
@@ -61,9 +61,9 @@ export interface UseGexLandscapeDataReturn {
   strikes: GexStrikeLevel[];
   timestamps: string[];
   /** Δ% maps populated from the per-row `prevNm` fields. */
-  gexDelta1mMap: Map<number, number | null>;
   gexDelta5mMap: Map<number, number | null>;
-  gexDelta10mMap: Map<number, number | null>;
+  gexDelta15mMap: Map<number, number | null>;
+  gexDelta30mMap: Map<number, number | null>;
   loading: boolean;
   error: string | null;
   refresh: () => void;
@@ -111,15 +111,15 @@ function computeDelta(current: number, prev: number | null): number | null {
 export function projectStrike(
   row: GexLandscapeStrikeRow,
   spot: number,
-  delta1m: number | null,
   delta5m: number | null,
-  delta10m: number | null,
+  delta15m: number | null,
+  delta30m: number | null,
 ): GexStrikeLevel {
   const volReinforcement = computeVolReinforcement({
     netGamma: row.gamma,
-    delta1m,
     delta5m,
-    delta10m,
+    delta15m,
+    delta30m,
   });
   return {
     strike: row.strike,
@@ -245,18 +245,18 @@ export function useGexLandscapeData(
   const sourceRows = resp?.data?.strikes ?? [];
   const spot = resp?.data?.spot ?? 0;
 
-  const gexDelta1mMap = new Map<number, number | null>();
   const gexDelta5mMap = new Map<number, number | null>();
-  const gexDelta10mMap = new Map<number, number | null>();
+  const gexDelta15mMap = new Map<number, number | null>();
+  const gexDelta30mMap = new Map<number, number | null>();
   const strikes: GexStrikeLevel[] = [];
   for (const row of sourceRows) {
-    const d1 = computeDelta(row.gamma, row.gammaPrev1m);
     const d5 = computeDelta(row.gamma, row.gammaPrev5m);
-    const d10 = computeDelta(row.gamma, row.gammaPrev10m);
-    gexDelta1mMap.set(row.strike, d1);
+    const d15 = computeDelta(row.gamma, row.gammaPrev15m);
+    const d30 = computeDelta(row.gamma, row.gammaPrev30m);
     gexDelta5mMap.set(row.strike, d5);
-    gexDelta10mMap.set(row.strike, d10);
-    strikes.push(projectStrike(row, spot, d1, d5, d10));
+    gexDelta15mMap.set(row.strike, d15);
+    gexDelta30mMap.set(row.strike, d30);
+    strikes.push(projectStrike(row, spot, d5, d15, d30));
   }
 
   const timestamps = resp?.availableMinutes ?? [];
@@ -264,9 +264,9 @@ export function useGexLandscapeData(
   return {
     strikes,
     timestamps,
-    gexDelta1mMap,
     gexDelta5mMap,
-    gexDelta10mMap,
+    gexDelta15mMap,
+    gexDelta30mMap,
     loading,
     error,
     refresh,

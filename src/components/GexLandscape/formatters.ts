@@ -66,18 +66,19 @@ export function formatBiasForClaude(b: BiasMetrics): string {
       `Downside targets: ${b.downsideTargets.map(fmtTarget).join(', ')}`,
     );
   const t1: string[] = [];
-  if (b.ceilingTrend1m !== null) t1.push(`ceiling ${fmtPct(b.ceilingTrend1m)}`);
-  if (b.floorTrend1m !== null) t1.push(`floor ${fmtPct(b.floorTrend1m)}`);
-  if (t1.length > 0) lines.push(`1m GEX trend: ${t1.join(' | ')}`);
+  if (b.ceilingTrend5m !== null) t1.push(`ceiling ${fmtPct(b.ceilingTrend5m)}`);
+  if (b.floorTrend5m !== null) t1.push(`floor ${fmtPct(b.floorTrend5m)}`);
+  if (t1.length > 0) lines.push(`5m GEX trend: ${t1.join(' | ')}`);
   const t5: string[] = [];
-  if (b.ceilingTrend5m !== null) t5.push(`ceiling ${fmtPct(b.ceilingTrend5m)}`);
-  if (b.floorTrend5m !== null) t5.push(`floor ${fmtPct(b.floorTrend5m)}`);
-  if (t5.length > 0) lines.push(`5m GEX trend: ${t5.join(' | ')}`);
+  if (b.ceilingTrend15m !== null)
+    t5.push(`ceiling ${fmtPct(b.ceilingTrend15m)}`);
+  if (b.floorTrend15m !== null) t5.push(`floor ${fmtPct(b.floorTrend15m)}`);
+  if (t5.length > 0) lines.push(`15m GEX trend: ${t5.join(' | ')}`);
   const t10: string[] = [];
-  if (b.ceilingTrend10m !== null)
-    t10.push(`ceiling ${fmtPct(b.ceilingTrend10m)}`);
-  if (b.floorTrend10m !== null) t10.push(`floor ${fmtPct(b.floorTrend10m)}`);
-  if (t10.length > 0) lines.push(`10m GEX trend: ${t10.join(' | ')}`);
+  if (b.ceilingTrend30m !== null)
+    t10.push(`ceiling ${fmtPct(b.ceilingTrend30m)}`);
+  if (b.floorTrend30m !== null) t10.push(`floor ${fmtPct(b.floorTrend30m)}`);
+  if (t10.length > 0) lines.push(`30m GEX trend: ${t10.join(' | ')}`);
   if (b.priceTrend && b.priceTrend.direction !== 'flat') {
     const dir = b.priceTrend.direction === 'up' ? 'UP' : 'DOWN';
     lines.push(

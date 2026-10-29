@@ -71,7 +71,7 @@ import { TransientDbError } from '../_lib/db.js';
 
 /**
  * A full row in GEXBot mini_contracts shape — `value` populates
- * position-3, `prev` populates position-4 ([t-1m,t-5m,t-10m]).
+ * position-3, `prev` populates position-4 ([t-5m,t-15m,t-30m]).
  */
 function row(strike: number, value: number, prev: unknown[] = []): unknown[] {
   return [strike, 0, 0, value, prev, 0, null];
@@ -209,15 +209,15 @@ describe('/api/gex-landscape', () => {
       gamma: -1234,
       charm: 12,
       vanna: 0.45,
-      gammaPrev1m: -1200,
-      gammaPrev5m: -1100,
-      gammaPrev10m: -1000,
-      charmPrev1m: 11.9,
-      charmPrev5m: 10.5,
-      charmPrev10m: 9.8,
-      vannaPrev1m: 0.44,
-      vannaPrev5m: 0.42,
-      vannaPrev10m: 0.4,
+      gammaPrev5m: -1200,
+      gammaPrev15m: -1100,
+      gammaPrev30m: -1000,
+      charmPrev5m: 11.9,
+      charmPrev15m: 10.5,
+      charmPrev30m: 9.8,
+      vannaPrev5m: 0.44,
+      vannaPrev15m: 0.42,
+      vannaPrev30m: 0.4,
     });
     // Second-row assertion locks the per-row prev wiring so a regression
     // that drops the join past the first strike fails the test.
@@ -226,15 +226,15 @@ describe('/api/gex-landscape', () => {
       gamma: 700,
       charm: -5,
       vanna: -0.2,
-      gammaPrev1m: 650,
-      gammaPrev5m: 600,
-      gammaPrev10m: 580,
-      charmPrev1m: -4.8,
-      charmPrev5m: -4.2,
-      charmPrev10m: -3.9,
-      vannaPrev1m: -0.19,
-      vannaPrev5m: -0.18,
-      vannaPrev10m: -0.17,
+      gammaPrev5m: 650,
+      gammaPrev15m: 600,
+      gammaPrev30m: 580,
+      charmPrev5m: -4.8,
+      charmPrev15m: -4.2,
+      charmPrev30m: -3.9,
+      vannaPrev5m: -0.19,
+      vannaPrev15m: -0.18,
+      vannaPrev30m: -0.17,
     });
     expect(typeof body.ageSec).toBe('number');
     expect(body.ageSec).toBeGreaterThanOrEqual(0);
@@ -281,9 +281,9 @@ describe('/api/gex-landscape', () => {
       gamma: -1000,
       charm: 0,
       vanna: 0,
-      gammaPrev1m: -900,
-      charmPrev1m: null,
-      vannaPrev1m: null,
+      gammaPrev5m: -900,
+      charmPrev5m: null,
+      vannaPrev5m: null,
     });
     const at5970 = body.data.strikes.find((s) => s['strike'] === 5970);
     expect(at5970).toMatchObject({
@@ -291,9 +291,9 @@ describe('/api/gex-landscape', () => {
       gamma: 0,
       charm: 5,
       vanna: 0.1,
-      gammaPrev1m: null,
-      charmPrev1m: 4,
-      vannaPrev1m: 0.09,
+      gammaPrev5m: null,
+      charmPrev5m: 4,
+      vannaPrev5m: 0.09,
     });
   });
 

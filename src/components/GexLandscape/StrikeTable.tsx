@@ -1,14 +1,15 @@
 /**
  * StrikeTable — sticky-header + scrollable grid of strikes within the
  * display window, with per-strike classification, signal, GEX, NetCharm,
- * NetVanna, three Δ% windows (1m / 5m / 10m), and a vol-reinforcement
+ * NetVanna, three Δ% windows (5m / 15m / 30m), and a vol-reinforcement
  * badge. The ATM row is ref-tagged so the parent can scroll it into
  * view on initial load.
  *
- * All three Δ% windows share the same GexBot-native 1-min cadence —
- * the prior values come from each row's `gammaPrev1m/5m/10m` fields
- * that the endpoint already carries. Δ1m and Δ5m surface short-term
- * acceleration; Δ10m surfaces session-scale build/unwind.
+ * All three Δ% windows come from GEXBot's priors array (t-5 / t-15 / t-30
+ * min) —
+ * the prior values come from each row's `gammaPrev5m/15m/30m` fields
+ * that the endpoint already carries. Δ5m and Δ15m surface short-term
+ * acceleration; Δ30m surfaces session-scale build/unwind.
  *
  * Vol Reinforcement column is the new (Phase 4) delta-trend agreement
  * signal — see `computeVolReinforcement` in `classify.ts`. ↑↑ = all
@@ -28,7 +29,7 @@ import {
 import { fmtGex, fmtPct } from './formatters';
 
 /**
- * Strike | Class | Signal | NetGamma | NetCharm | NetVanna | Δ1m | Δ5m | Δ10m | Vol Reinf.
+ * Strike | Class | Signal | NetGamma | NetCharm | NetVanna | Δ5m | Δ15m | Δ30m | Vol Reinf.
  */
 const COLS = 'grid-cols-[76px_130px_1fr_88px_76px_76px_64px_64px_64px_64px]';
 
@@ -36,12 +37,12 @@ export interface StrikeTableProps {
   rows: GexStrikeLevel[];
   currentPrice: number;
   spotStrike: GexStrikeLevel | null;
-  maxChanged1mStrike: number | null;
   maxChanged5mStrike: number | null;
-  maxChanged10mStrike: number | null;
-  gexDelta1mMap: Map<number, number | null>;
+  maxChanged15mStrike: number | null;
+  maxChanged30mStrike: number | null;
   gexDelta5mMap: Map<number, number | null>;
-  gexDelta10mMap: Map<number, number | null>;
+  gexDelta15mMap: Map<number, number | null>;
+  gexDelta30mMap: Map<number, number | null>;
   spotRowRef: Ref<HTMLDivElement>;
   /**
    * When true, non-ATM rows render a signed point offset from spot beneath
@@ -59,12 +60,12 @@ export function StrikeTable({
   rows,
   currentPrice,
   spotStrike,
-  maxChanged1mStrike,
   maxChanged5mStrike,
-  maxChanged10mStrike,
-  gexDelta1mMap,
+  maxChanged15mStrike,
+  maxChanged30mStrike,
   gexDelta5mMap,
-  gexDelta10mMap,
+  gexDelta15mMap,
+  gexDelta30mMap,
   spotRowRef,
   showAtmDistance = false,
   justEntered,
@@ -100,21 +101,21 @@ export function StrikeTable({
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="% change in dollar gamma vs. the prior 1-min slot — captures the freshest sign flips and acceleration. Native cadence at GexBot's 1-min push rate."
-        >
-          Δ1m
-        </div>
-        <div
-          className="cursor-help px-3 py-2 text-right"
-          title="% change in dollar gamma vs. the slot 5 min ago. Smooths the 1-min noise; useful for setup detection between bigger windows."
+          title="% change in dollar gamma vs. the slot 5 min ago (GEXBot's shortest priors window) — captures the freshest sign flips and acceleration."
         >
           Δ5m
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="% change in dollar gamma vs. the slot 10 min ago. Catches session-scale build/unwind."
+          title="% change in dollar gamma vs. the slot 15 min ago. Smooths the shorter-window noise; useful for setup detection between bigger windows."
         >
-          Δ10m
+          Δ15m
+        </div>
+        <div
+          className="cursor-help px-3 py-2 text-right"
+          title="% change in dollar gamma vs. the slot 30 min ago. Catches session-scale build/unwind."
+        >
+          Δ30m
         </div>
         <div
           className="cursor-help px-3 py-2 text-center"
@@ -133,18 +134,18 @@ export function StrikeTable({
         {rows.map((s) => {
           const isSpot = s.strike === spotStrike?.strike;
           const isAboveSpot = s.strike > currentPrice;
-          const isMax1m = !isSpot && s.strike === maxChanged1mStrike;
           const isMax5m = !isSpot && s.strike === maxChanged5mStrike;
-          const isMax10m = !isSpot && s.strike === maxChanged10mStrike;
+          const isMax15m = !isSpot && s.strike === maxChanged15mStrike;
+          const isMax30m = !isSpot && s.strike === maxChanged30mStrike;
           // Confluence: same strike leads ALL three timeframes — strongest signal.
-          const isConfluence = isMax1m && isMax5m && isMax10m;
-          const isHighlighted = isMax1m || isMax5m || isMax10m;
+          const isConfluence = isMax5m && isMax15m && isMax30m;
+          const isHighlighted = isMax5m || isMax15m || isMax30m;
           const dir = getDirection(s.strike, currentPrice);
           const cls = classify(s.netGamma, s.netCharm);
           const meta = CLASS_META[cls];
-          const pct1m = gexDelta1mMap.get(s.strike) ?? null;
           const pct5m = gexDelta5mMap.get(s.strike) ?? null;
-          const pct10m = gexDelta10mMap.get(s.strike) ?? null;
+          const pct15m = gexDelta15mMap.get(s.strike) ?? null;
+          const pct30m = gexDelta30mMap.get(s.strike) ?? null;
           const isNew = justEntered?.has(s.strike) ?? false;
           const isAnchor = oldestStrike !== null && s.strike === oldestStrike;
 
@@ -291,23 +292,6 @@ export function StrikeTable({
                 </span>
               </div>
 
-              {/* Δ1m */}
-              <div className="flex items-center justify-end px-3 py-1.5">
-                <span
-                  className="font-mono text-[11px]"
-                  style={{
-                    color:
-                      pct1m === null
-                        ? 'var(--color-muted)'
-                        : pct1m >= 0
-                          ? 'rgba(74,222,128,0.85)'
-                          : 'rgba(248,113,113,0.85)',
-                  }}
-                >
-                  {fmtPct(pct1m)}
-                </span>
-              </div>
-
               {/* Δ5m */}
               <div className="flex items-center justify-end px-3 py-1.5">
                 <span
@@ -325,20 +309,37 @@ export function StrikeTable({
                 </span>
               </div>
 
-              {/* Δ10m */}
+              {/* Δ15m */}
               <div className="flex items-center justify-end px-3 py-1.5">
                 <span
                   className="font-mono text-[11px]"
                   style={{
                     color:
-                      pct10m === null
+                      pct15m === null
                         ? 'var(--color-muted)'
-                        : pct10m >= 0
+                        : pct15m >= 0
                           ? 'rgba(74,222,128,0.85)'
                           : 'rgba(248,113,113,0.85)',
                   }}
                 >
-                  {fmtPct(pct10m)}
+                  {fmtPct(pct15m)}
+                </span>
+              </div>
+
+              {/* Δ30m */}
+              <div className="flex items-center justify-end px-3 py-1.5">
+                <span
+                  className="font-mono text-[11px]"
+                  style={{
+                    color:
+                      pct30m === null
+                        ? 'var(--color-muted)'
+                        : pct30m >= 0
+                          ? 'rgba(74,222,128,0.85)'
+                          : 'rgba(248,113,113,0.85)',
+                  }}
+                >
+                  {fmtPct(pct30m)}
                 </span>
               </div>
 

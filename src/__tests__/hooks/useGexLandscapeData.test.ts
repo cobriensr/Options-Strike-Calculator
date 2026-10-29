@@ -12,8 +12,8 @@
  *     deltas into vol-reinforcement
  *   - Happy path: 2 strikes → 2 GexStrikeLevels with correct field mapping
  *   - Empty payload (data: null, reason: 'no_slot' / 'no_spot') → no strikes
- *   - Strike missing prev1m → null in gexDelta1mMap
- *   - Strike with |prev1m| < 50 (recalibrated noise floor) → null
+ *   - Strike missing prev5m → null in gexDelta5mMap
+ *   - Strike with |prev5m| < 50 (recalibrated noise floor) → null
  *   - Strike with positive delta → correct sign + magnitude
  *   - 401 → loading false, error stays null (matches the project's
  *     "public visitors stay idle" idiom)
@@ -54,15 +54,15 @@ function makeRow(
     gamma: 0,
     charm: 0,
     vanna: 0,
-    gammaPrev1m: null,
     gammaPrev5m: null,
-    gammaPrev10m: null,
-    charmPrev1m: null,
+    gammaPrev15m: null,
+    gammaPrev30m: null,
     charmPrev5m: null,
-    charmPrev10m: null,
-    vannaPrev1m: null,
+    charmPrev15m: null,
+    charmPrev30m: null,
     vannaPrev5m: null,
-    vannaPrev10m: null,
+    vannaPrev15m: null,
+    vannaPrev30m: null,
     ...overrides,
   };
 }
@@ -289,7 +289,7 @@ describe('useGexLandscapeData — happy path', () => {
 });
 
 describe('useGexLandscapeData — delta maps', () => {
-  it('computes positive Δ% from prev1m, prev5m, prev10m', async () => {
+  it('computes positive Δ% from prev5m, prev15m, prev30m', async () => {
     mockFetch(() =>
       jsonResponse(
         makeResponse({
@@ -299,9 +299,9 @@ describe('useGexLandscapeData — delta maps', () => {
               makeRow({
                 strike: 7350,
                 gamma: 5000,
-                gammaPrev1m: 4500,
-                gammaPrev5m: 4000,
-                gammaPrev10m: 3500,
+                gammaPrev5m: 4500,
+                gammaPrev15m: 4000,
+                gammaPrev30m: 3500,
               }),
             ],
           },
@@ -315,11 +315,11 @@ describe('useGexLandscapeData — delta maps', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     // ((5000 - 4500) / |4500|) * 100 ≈ 11.11
-    expect(result.current.gexDelta1mMap.get(7350)).toBeCloseTo(11.11, 1);
+    expect(result.current.gexDelta5mMap.get(7350)).toBeCloseTo(11.11, 1);
     // ((5000 - 4000) / |4000|) * 100 = 25
-    expect(result.current.gexDelta5mMap.get(7350)).toBe(25);
+    expect(result.current.gexDelta15mMap.get(7350)).toBe(25);
     // ((5000 - 3500) / |3500|) * 100 ≈ 42.86
-    expect(result.current.gexDelta10mMap.get(7350)).toBeCloseTo(42.86, 1);
+    expect(result.current.gexDelta30mMap.get(7350)).toBeCloseTo(42.86, 1);
   });
 
   it('preserves negative-prev sign convention (|prev| in denominator)', async () => {
@@ -334,7 +334,7 @@ describe('useGexLandscapeData — delta maps', () => {
               makeRow({
                 strike: 7350,
                 gamma: -1_000_000_000,
-                gammaPrev1m: -2_000_000_000,
+                gammaPrev5m: -2_000_000_000,
               }),
             ],
           },
@@ -346,10 +346,10 @@ describe('useGexLandscapeData — delta maps', () => {
       useGexLandscapeData(true, '2026-05-26'),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.gexDelta1mMap.get(7350)).toBe(50);
+    expect(result.current.gexDelta5mMap.get(7350)).toBe(50);
   });
 
-  it('returns null in the delta map when prev1m is null', async () => {
+  it('returns null in the delta map when prev5m is null', async () => {
     mockFetch(() =>
       jsonResponse(
         makeResponse({
@@ -359,7 +359,7 @@ describe('useGexLandscapeData — delta maps', () => {
               makeRow({
                 strike: 7350,
                 gamma: 5000,
-                gammaPrev1m: null,
+                gammaPrev5m: null,
               }),
             ],
           },
@@ -371,10 +371,10 @@ describe('useGexLandscapeData — delta maps', () => {
       useGexLandscapeData(true, '2026-05-26'),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.gexDelta1mMap.get(7350)).toBeNull();
+    expect(result.current.gexDelta5mMap.get(7350)).toBeNull();
   });
 
-  it('returns null when |prev1m| is below DELTA_NOISE_FLOOR (50, recalibrated)', async () => {
+  it('returns null when |prev5m| is below DELTA_NOISE_FLOOR (50, recalibrated)', async () => {
     // |20| < 50 → null. Floor was retuned to GexBot scale (was 100 for MM scale).
     mockFetch(() =>
       jsonResponse(
@@ -385,7 +385,7 @@ describe('useGexLandscapeData — delta maps', () => {
               makeRow({
                 strike: 7350,
                 gamma: 5000,
-                gammaPrev1m: 20,
+                gammaPrev5m: 20,
               }),
             ],
           },
@@ -397,7 +397,7 @@ describe('useGexLandscapeData — delta maps', () => {
       useGexLandscapeData(true, '2026-05-26'),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.gexDelta1mMap.get(7350)).toBeNull();
+    expect(result.current.gexDelta5mMap.get(7350)).toBeNull();
   });
 
   it('passes a value just above the noise floor through', async () => {
@@ -412,7 +412,7 @@ describe('useGexLandscapeData — delta maps', () => {
               makeRow({
                 strike: 7350,
                 gamma: 90,
-                gammaPrev1m: 60,
+                gammaPrev5m: 60,
               }),
             ],
           },
@@ -424,7 +424,7 @@ describe('useGexLandscapeData — delta maps', () => {
       useGexLandscapeData(true, '2026-05-26'),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.gexDelta1mMap.get(7350)).toBe(50); // (90-60)/60 * 100
+    expect(result.current.gexDelta5mMap.get(7350)).toBe(50); // (90-60)/60 * 100
   });
 
   it('returns null when prev gamma is exactly 0 (no divide by zero)', async () => {
@@ -437,7 +437,7 @@ describe('useGexLandscapeData — delta maps', () => {
               makeRow({
                 strike: 7350,
                 gamma: 5000,
-                gammaPrev1m: 0,
+                gammaPrev5m: 0,
               }),
             ],
           },
@@ -449,7 +449,7 @@ describe('useGexLandscapeData — delta maps', () => {
       useGexLandscapeData(true, '2026-05-26'),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.gexDelta1mMap.get(7350)).toBeNull();
+    expect(result.current.gexDelta5mMap.get(7350)).toBeNull();
   });
 });
 
@@ -465,9 +465,9 @@ describe('useGexLandscapeData — vol-reinforcement', () => {
               makeRow({
                 strike: 7350,
                 gamma: 5000,
-                gammaPrev1m: 4500,
-                gammaPrev5m: 4000,
-                gammaPrev10m: 3500,
+                gammaPrev5m: 4500,
+                gammaPrev15m: 4000,
+                gammaPrev30m: 3500,
               }),
             ],
           },
@@ -483,7 +483,7 @@ describe('useGexLandscapeData — vol-reinforcement', () => {
   });
 
   it('strikes carry neutral when a prev value is below the noise floor', async () => {
-    // gammaPrev1m=20 is below floor 50 → delta1m is null → neutral.
+    // gammaPrev5m=20 is below floor 50 → delta5m is null → neutral.
     mockFetch(() =>
       jsonResponse(
         makeResponse({
@@ -493,9 +493,9 @@ describe('useGexLandscapeData — vol-reinforcement', () => {
               makeRow({
                 strike: 7350,
                 gamma: 5000,
-                gammaPrev1m: 20,
-                gammaPrev5m: 4000,
-                gammaPrev10m: 3500,
+                gammaPrev5m: 20,
+                gammaPrev15m: 4000,
+                gammaPrev30m: 3500,
               }),
             ],
           },
@@ -572,7 +572,7 @@ describe('useGexLandscapeData — edge cases', () => {
     expect(result.current.strikes).toEqual([]);
   });
 
-  it('return shape exposes only gexDelta1m/5m/10m maps (no legacy compat fields)', async () => {
+  it('return shape exposes only gexDelta5m/15m/30m maps (no legacy compat fields)', async () => {
     mockFetch(() =>
       jsonResponse(
         makeResponse({
@@ -582,9 +582,9 @@ describe('useGexLandscapeData — edge cases', () => {
               makeRow({
                 strike: 7350,
                 gamma: 5000,
-                gammaPrev1m: 4500,
-                gammaPrev5m: 4000,
-                gammaPrev10m: 3500,
+                gammaPrev5m: 4500,
+                gammaPrev15m: 4000,
+                gammaPrev30m: 3500,
               }),
             ],
           },
@@ -597,14 +597,15 @@ describe('useGexLandscapeData — edge cases', () => {
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
     // The post-Phase-4 return shape is just three populated maps.
-    expect(result.current.gexDelta1mMap.size).toBe(1);
     expect(result.current.gexDelta5mMap.size).toBe(1);
-    expect(result.current.gexDelta10mMap.size).toBe(1);
+    expect(result.current.gexDelta15mMap.size).toBe(1);
+    expect(result.current.gexDelta30mMap.size).toBe(1);
     // Legacy fields are gone — TS would have already caught this, but
     // assert at runtime so accidental re-additions surface in tests.
     expect('gexDeltaMap' in result.current).toBe(false);
-    expect('gexDelta15mMap' in result.current).toBe(false);
-    expect('gexDelta30mMap' in result.current).toBe(false);
+    // The pre-correction names (1m/10m mislabelled the 5m/30m priors) are gone.
+    expect('gexDelta1mMap' in result.current).toBe(false);
+    expect('gexDelta10mMap' in result.current).toBe(false);
     expect('naiveDelta1mMap' in result.current).toBe(false);
     expect('naiveDelta5mMap' in result.current).toBe(false);
     expect('naiveDelta10mMap' in result.current).toBe(false);

@@ -9,9 +9,9 @@
  *   Weakening Pin    — pos gamma + neg charm  (wall losing grip as day ages)
  *
  * Direction context (Ceiling / Floor) is overlaid based on strike vs. spot.
- * The Δ1m / Δ5m / Δ10m columns show the % change in MM dollar gamma at each
- * strike vs. the prior slot's value (all three windows native at GexBot's
- * 1-min cadence). The Vol Reinforcement column reads as "reinforcing" when
+ * The Δ5m / Δ15m / Δ30m columns show the % change in MM dollar gamma at each
+ * strike vs. its value 5 / 15 / 30 min ago (GEXBot's priors array;
+ * the capture itself is 1-min cadence). The Vol Reinforcement column reads as "reinforcing" when
  * all three deltas align with the current netGamma sign — see
  * `computeVolReinforcement` (Locked Decision #1).
  *
@@ -136,9 +136,9 @@ const GexLandscape = memo(function GexLandscape({
   const {
     strikes,
     timestamps,
-    gexDelta1mMap,
     gexDelta5mMap,
-    gexDelta10mMap,
+    gexDelta15mMap,
+    gexDelta30mMap,
     loading,
     error,
     refresh,
@@ -259,20 +259,20 @@ const GexLandscape = memo(function GexLandscape({
     );
   }, [rows, currentPrice]);
 
-  // Strikes with the largest absolute Δ% at 1m / 5m / 10m. Used for the
+  // Strikes with the largest absolute Δ% at 5m / 15m / 30m. Used for the
   // confluence highlight in the bias panel and the row-level emphasis
   // in the strike table.
-  const maxChanged1mStrike = useMemo(
-    () => findMaxAbsDeltaStrike(rows, gexDelta1mMap),
-    [rows, gexDelta1mMap],
-  );
   const maxChanged5mStrike = useMemo(
     () => findMaxAbsDeltaStrike(rows, gexDelta5mMap),
     [rows, gexDelta5mMap],
   );
-  const maxChanged10mStrike = useMemo(
-    () => findMaxAbsDeltaStrike(rows, gexDelta10mMap),
-    [rows, gexDelta10mMap],
+  const maxChanged15mStrike = useMemo(
+    () => findMaxAbsDeltaStrike(rows, gexDelta15mMap),
+    [rows, gexDelta15mMap],
+  );
+  const maxChanged30mStrike = useMemo(
+    () => findMaxAbsDeltaStrike(rows, gexDelta30mMap),
+    [rows, gexDelta30mMap],
   );
 
   // Structural bias synthesis — directional verdict + key levels + trends.
@@ -284,17 +284,17 @@ const GexLandscape = memo(function GexLandscape({
       computeBias(
         rows,
         currentPrice,
-        gexDelta1mMap,
         gexDelta5mMap,
-        gexDelta10mMap,
+        gexDelta15mMap,
+        gexDelta30mMap,
         priceTrend,
       ),
     [
       rows,
       currentPrice,
-      gexDelta1mMap,
       gexDelta5mMap,
-      gexDelta10mMap,
+      gexDelta15mMap,
+      gexDelta30mMap,
       priceTrend,
     ],
   );
@@ -443,9 +443,9 @@ const GexLandscape = memo(function GexLandscape({
     <SectionBox label="GEX LANDSCAPE" headerRight={headerRight} collapsible>
       <BiasPanel
         bias={bias}
-        maxChanged1mStrike={maxChanged1mStrike}
         maxChanged5mStrike={maxChanged5mStrike}
-        maxChanged10mStrike={maxChanged10mStrike}
+        maxChanged15mStrike={maxChanged15mStrike}
+        maxChanged30mStrike={maxChanged30mStrike}
       />
       <div
         ref={tablistRef}
@@ -514,12 +514,12 @@ const GexLandscape = memo(function GexLandscape({
             rows={rows}
             currentPrice={currentPrice}
             spotStrike={spotStrike}
-            maxChanged1mStrike={maxChanged1mStrike}
             maxChanged5mStrike={maxChanged5mStrike}
-            maxChanged10mStrike={maxChanged10mStrike}
-            gexDelta1mMap={gexDelta1mMap}
+            maxChanged15mStrike={maxChanged15mStrike}
+            maxChanged30mStrike={maxChanged30mStrike}
             gexDelta5mMap={gexDelta5mMap}
-            gexDelta10mMap={gexDelta10mMap}
+            gexDelta15mMap={gexDelta15mMap}
+            gexDelta30mMap={gexDelta30mMap}
             spotRowRef={spotRowRef}
           />
         )}
@@ -535,12 +535,12 @@ const GexLandscape = memo(function GexLandscape({
             rows={topFive}
             currentPrice={currentPrice}
             spotStrike={spotStrike}
-            maxChanged1mStrike={maxChanged1mStrike}
             maxChanged5mStrike={maxChanged5mStrike}
-            maxChanged10mStrike={maxChanged10mStrike}
-            gexDelta1mMap={gexDelta1mMap}
+            maxChanged15mStrike={maxChanged15mStrike}
+            maxChanged30mStrike={maxChanged30mStrike}
             gexDelta5mMap={gexDelta5mMap}
-            gexDelta10mMap={gexDelta10mMap}
+            gexDelta15mMap={gexDelta15mMap}
+            gexDelta30mMap={gexDelta30mMap}
             spotRowRef={spotRowRef}
             showAtmDistance
             justEntered={justEntered}
