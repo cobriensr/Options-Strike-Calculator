@@ -1,12 +1,12 @@
 """
 ML Data Explorer — Query training data directly from Neon Postgres and explore.
 
-Usage:
-    python3 ml/explore.py                     # Pull all data, print summary
-    python3 ml/explore.py --csv out.csv       # Save to CSV
-    python3 ml/explore.py --after 2026-03-01  # Filter by date
+Usage (from the repo root; on Windows use ml/.venv/Scripts/python):
+    ml/.venv/bin/python ml/src/explore.py                     # Print summary
+    ml/.venv/bin/python ml/src/explore.py --csv out.csv       # Save to CSV
+    ml/.venv/bin/python ml/src/explore.py --after 2026-03-01  # Filter by date
 
-Requires: pip install psycopg2-binary pandas
+Requires psycopg2-binary and pandas (both in ml/requirements.txt).
 Reads DATABASE_URL from .env in the repo root.
 """
 

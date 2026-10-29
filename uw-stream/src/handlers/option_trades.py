@@ -33,7 +33,8 @@ from logger_setup import rate_limited_log
 from utils import occ_parser
 
 _TABLE = "ws_option_trades"
-# Must stay in sync with sql/002_ws_option_trades.sql.
+# Must stay in sync with the ws_option_trades_trade_id_uq unique index in
+# migration #109 in api/_lib/db-migrations.ts.
 _CONFLICT_COLS = ["ws_trade_id"]
 
 # Column order MUST match the tuple shape returned by `_transform`.

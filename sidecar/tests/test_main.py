@@ -61,7 +61,11 @@ def patched_subsystems(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
 
 
 # ---------------------------------------------------------------------------
-# Config — Databento removal
+# Config — regression guards for the Databento removal (2026-09-29)
+#
+# DATABENTO_API_KEY is referenced below only to delete it from the
+# environment, proving neither Settings() nor main() requires it any more,
+# and to assert Settings has no databento_api_key field.
 # ---------------------------------------------------------------------------
 
 
