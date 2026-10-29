@@ -735,29 +735,9 @@ describe('PriceChart: momentum badge', () => {
   });
 });
 
-describe('PriceChart: ResizeObserver guard', () => {
-  it('renders without error when ResizeObserver is not available', () => {
-    // Simulate environments where ResizeObserver is undefined
-    const original = globalThis.ResizeObserver;
-    // @ts-expect-error intentionally setting undefined for test
-    globalThis.ResizeObserver = undefined;
-
-    const { getByRole } = render(
-      <PriceChart
-        candles={[makeCandle()]}
-        previousClose={null}
-        score={null}
-        openingCallStrike={null}
-        openingPutStrike={null}
-      />,
-    );
-    expect(getByRole('img', { name: /spx price chart/i })).toBeInTheDocument();
-
-    globalThis.ResizeObserver = original;
-  });
-
-  it('renders correctly and chart is resizable when ResizeObserver is available', () => {
-    // jsdom does not have ResizeObserver; provide a class-based stub to exercise the branch
+describe('PriceChart: resize', () => {
+  it('resizes the chart to its container when the ResizeObserver fires', () => {
+    // The test setup's ResizeObserver never calls back; this one does
     const observations: Element[] = [];
     let capturedCallback: ResizeObserverCallback | null = null;
 

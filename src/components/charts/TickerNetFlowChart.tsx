@@ -674,7 +674,7 @@ function TickerNetFlowChartInner({
 
     let ro: ResizeObserver | undefined;
     const paneEl = chart.panes()[0]?.getHTMLElement?.();
-    if (typeof ResizeObserver !== 'undefined' && paneEl) {
+    if (paneEl) {
       ro = new ResizeObserver(() => recompute());
       ro.observe(paneEl);
     }
@@ -689,7 +689,6 @@ function TickerNetFlowChartInner({
 
   // ── Width-only responsive resize ───────────────────────────────
   useEffect(() => {
-    if (typeof ResizeObserver === 'undefined') return;
     if (!containerRef.current || !chartRef.current) return;
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];

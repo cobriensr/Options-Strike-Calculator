@@ -313,7 +313,6 @@ export const PriceChart = memo(function PriceChart({
   // ── Responsive resize (width only — height is fixed by CSS) ─────────
 
   useEffect(() => {
-    if (typeof ResizeObserver === 'undefined') return;
     if (!containerRef.current || !chartRef.current) return;
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];

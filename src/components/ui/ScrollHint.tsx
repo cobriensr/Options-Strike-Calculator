@@ -22,7 +22,6 @@ export function ScrollHint({
 
   useEffect(() => {
     check();
-    if (typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(check);
     if (ref.current) ro.observe(ref.current);
     return () => ro.disconnect();
