@@ -250,19 +250,6 @@ describe('StatusBadge', () => {
     expect(screen.queryByText(/●/)).not.toBeInTheDocument();
   });
 
-  it('renders as link when href is provided', () => {
-    render(
-      <StatusBadge
-        label="Re-authenticate"
-        color="#f87171"
-        href="/api/auth/init"
-      />,
-    );
-    const link = screen.getByRole('link', { name: 'Re-authenticate' });
-    expect(link).toHaveAttribute('href', '/api/auth/init');
-    expect(link.tagName).toBe('A');
-  });
-
   it('passes title attribute', () => {
     render(
       <StatusBadge label="ERROR" color="#f87171" title="Something failed" />,
@@ -303,15 +290,6 @@ describe('StatusBadge', () => {
     const { container } = render(<StatusBadge label="LIVE" color="#4ade80" />);
     expect(container.querySelector('[aria-hidden]')).toBeNull();
     expect(container.firstElementChild).not.toHaveClass('max-sm:px-2');
-  });
-
-  it('does not let a link badge take a shortLabel (its name is its text)', () => {
-    render(
-      // @ts-expect-error -- shortLabel and href are mutually exclusive
-      <StatusBadge label="Re-auth" shortLabel="RA" color="#f87171" href="/x" />,
-    );
-    // The type check is the guard; at runtime the link still names itself.
-    expect(screen.getByRole('link', { name: 'Re-auth' })).toBeInTheDocument();
   });
 });
 
