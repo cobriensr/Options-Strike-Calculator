@@ -7,12 +7,16 @@ import sonarjs from 'eslint-plugin-sonarjs';
 import importX, { createNodeResolver } from 'eslint-plugin-import-x';
 import prettier from 'eslint-config-prettier';
 
-// src/ modules that api/ compiles, so they get the `.js` extension rule below.
+// src/ modules that api/ compiles, so they get the `.js` extension rule below:
+// four shared folders, plus any file elsewhere in src/ that api/ imports.
+// scripts/_lib/eslint-api-src-scope.test.mjs fails when api/ reaches a src/
+// file this list misses.
 const API_COMPILED_SRC = [
   'src/utils/**/*.ts',
   'src/types/**/*.ts',
   'src/data/**/*.ts',
   'src/constants/**/*.ts',
+  'src/components/LotteryFinder/ct-window.ts',
 ];
 const SRC_TESTS = [
   'src/__tests__/**',
@@ -113,9 +117,9 @@ export default [
   // part of the api/ Vercel Functions compile graph. Node ESM's strict
   // resolution requires the extension at runtime; TypeScript's `bundler`
   // moduleResolution happily compiles bare imports that then crash in prod.
-  // Scope: api/**, plus the shared src/ modules api/ transitively imports
-  // (pure logic — types, utils, data, constants). Frontend-only .tsx files
-  // go through Vite, which handles resolution, so they're exempt.
+  // Scope: api/**, plus the src/ modules api/ transitively imports
+  // (API_COMPILED_SRC). Frontend-only .tsx files go through Vite, which
+  // handles resolution, so they're exempt.
   {
     files: ['api/**/*.ts', ...API_COMPILED_SRC],
     ignores: ['**/*.test.ts', '**/*.test.tsx', '**/__tests__/**'],
