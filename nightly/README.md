@@ -16,8 +16,11 @@ Each run:
    failed check deletes the object, so an unverified day never counts as landed.
 3. Then probes the newest 5 days of the run's listing (`REWRITE_RECHECK_DAYS`),
    and re-lands each day whose UW ETag changed since it landed. The probes come
-   after the planned days, so a slow probe never costs a missing day. A run whose
-   planned days were skipped for disk or deadline probes nothing.
+   after the planned days, so a slow probe never costs a missing day. A probe
+   starts only with at least 1200 s (`PROBE_BUDGET_SECONDS`) left before the run
+   deadline, so a stalled one ends before the watchdog; the rest are probed the
+   next night. A run whose planned days were skipped for disk or deadline probes
+   nothing.
 4. Reports each day to Sentry as soon as it finishes, then exits.
 
 Logs go to stdout: Railway labels every stderr line an error.
@@ -82,8 +85,7 @@ count as landed days.
 New objects carry user metadata: `rows`, `sha256`, `schema-version`,
 `source-etag`, `source-last-modified`, `source-bytes`, `ingested-at`. An object
 with no metadata is a legacy day: it still counts as landed, but it is never
-probed for a rewrite and adds nothing to the row-count baseline (it still takes
-one of the baseline's 20 slots).
+probed for a rewrite and is skipped by the row-count baseline.
 
 `_superseded/` copies are never deleted by the job. Delete old ones by hand once
 the re-landed day has been checked.
@@ -150,10 +152,11 @@ After the convert, and before anything in R2 changes:
   on the session date. A tape that only partly overlaps it lands, with a
   warning.
 - **Row ratio** (warning only): a day with fewer than 0.65 times
-  (`PLAUSIBLE_MIN_ROW_RATIO`) the median `rows` of the 20 landed days nearest
-  it, before or after, lands with a warning. It needs at least 10 of those days
-  to carry `rows` (`PLAUSIBLE_MIN_TRAILING`). Because the baseline reaches both
-  ways, a backfill day has one from the days landed after it.
+  (`PLAUSIBLE_MIN_ROW_RATIO`) the median `rows` of the 20 nearest landed days
+  that carry `rows`, before or after it, lands with a warning. Legacy days are
+  skipped, not counted as slots. It needs at least 10 such days
+  (`PLAUSIBLE_MIN_TRAILING`). Because the baseline reaches both ways, a backfill
+  day has one from the days landed after it.
 
 The 0.65 ratio was tuned on 112 full days, so the half-days 2026-11-27 and
 2026-12-24 will trip the row-ratio warning. They stay well above the floor and
@@ -182,33 +185,35 @@ landed days triggers a re-land on its own.
   object's, the title is `nightly re-land identical content` instead, since the
   same content under a new ETag suggests ETag churn rather than a rewrite.
 - When there were days to probe but none could be compared (every probe failed,
-  returned no ETag or was cut off by the deadline), the run sends one warning,
-  `nightly rewrite check unavailable`, with the day count in `days`.
+  returned no ETag or was left for lack of probe budget), the run sends one
+  warning, `nightly rewrite check unavailable`, with the day count in `days`.
 
 ## Alert meanings
 
 All Sentry events carry the tag `service=nightly` (`server_name=nightly`). A day
 event also carries tags `day` and `status`. An unlanded day is grouped by status
 and `detail`, so a new kind opens a new issue; an `unavailable` day is also
-grouped by its date, so each marker opens its own issue. Its extras are
-`detail`, `warnings` and `reason`. `reason` says more about a failure, but only
-where the text is log-safe by contract: a `TapeValidationError`'s or
-`R2VerifyError`'s message (names, counts and keys only), or a botocore
-`ClientError`'s error code. Otherwise it is empty. It never changes the grouping.
+grouped by its date, so each marker opens its own issue. A `relanded` day is
+grouped by its date (and whether its content was identical), so each re-land
+opens its own issue and alerts. An unlanded day's extras are `detail`,
+`warnings` and `reason`. `reason` says more about a failure, but only where the
+text is log-safe by contract: a `TapeValidationError`'s or `R2VerifyError`'s
+message (names, counts and keys only), or a botocore `ClientError`'s error code.
+Otherwise it is empty. It never changes the grouping.
 
-| Sentry title                             | Level   | Meaning                                                                                                  |
-| ---------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------- |
-| `nightly tape day failed`                | error   | A day did not land. `detail` names the kind; `reason` may say more. Retried next night.                  |
-| `nightly tape day skipped_disk`          | error   | Free disk too low; the rest of the run was skipped.                                                      |
-| `nightly tape day skipped_deadline`      | error   | The run ran out of time; the rest was skipped.                                                           |
-| `nightly tape day not_posted`            | warning | UW had not posted a recent day. Usually clears itself.                                                   |
-| `nightly tape day unavailable`           | warning | A marker was written; one issue per day. Check it was expected.                                          |
-| `nightly tape day landed with warnings`  | warning | Landed, but a plausibility check flagged it (row ratio or time window) or cleanup failed.                |
-| `nightly tape day relanded`              | warning | A day was re-landed after its UW ETag changed. Sent for every re-land; `warnings` lists any flags.       |
-| `nightly re-land identical content`      | warning | A re-land whose `rows` and `source-bytes` equal the old object's: likely ETag churn, not a rewrite.      |
-| `nightly rewrite check unavailable`      | warning | No probed day could be compared, so a rewrite would go unseen. `days` is how many were left unchecked.   |
-| `nightly config invalid`                 | error   | Bad config. `fields` names the invalid settings. Sent only if `SENTRY_DSN` is valid.                     |
-| `NYSE holiday table ends in {year}; ...` | warning | From Oct 1 of the table's last year. Add the next year to `calendar_nyse.py`, or the job refuses to run. |
+| Sentry title                             | Level   | Meaning                                                                                                                |
+| ---------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `nightly tape day failed`                | error   | A day did not land. `detail` names the kind; `reason` may say more. Retried next night.                                |
+| `nightly tape day skipped_disk`          | error   | Free disk too low; the rest of the run was skipped.                                                                    |
+| `nightly tape day skipped_deadline`      | error   | The run ran out of time; the rest was skipped.                                                                         |
+| `nightly tape day not_posted`            | warning | UW had not posted a recent day. Usually clears itself.                                                                 |
+| `nightly tape day unavailable`           | warning | A marker was written; one issue per day. Check it was expected.                                                        |
+| `nightly tape day landed with warnings`  | warning | Landed, but a plausibility check flagged it (row ratio or time window) or cleanup failed.                              |
+| `nightly tape day relanded`              | warning | A day was re-landed after its UW ETag changed. Sent for every re-land, one issue per day; `warnings` lists any flags.  |
+| `nightly re-land identical content`      | warning | A re-land whose `rows` and `source-bytes` equal the old object's: likely ETag churn, not a rewrite. One issue per day. |
+| `nightly rewrite check unavailable`      | warning | No probed day could be compared, so a rewrite would go unseen. `days` is how many were left unchecked.                 |
+| `nightly config invalid`                 | error   | Bad config. `fields` names the invalid settings. Sent only if `SENTRY_DSN` is valid.                                   |
+| `NYSE holiday table ends in {year}; ...` | warning | From Oct 1 of the table's last year. Add the next year to `calendar_nyse.py`, or the job refuses to run.               |
 
 A run that fails before its first day (R2 listing, work dir setup, an exhausted
 calendar) sends the exception itself as an error event.

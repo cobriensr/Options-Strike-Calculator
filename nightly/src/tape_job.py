@@ -44,6 +44,7 @@ from constants import (
     MIN_TAPE_ROWS,
     OUTSIDE_WINDOW_MIN_LOOKBACK_DAYS,
     PLAUSIBLE_MIN_ROW_RATIO,
+    PROBE_BUDGET_SECONDS,
     REWRITE_RECHECK_DAYS,
     RUN_DEADLINE_SECONDS,
     SCHEMA_VERSION,
@@ -127,19 +128,23 @@ def rewritten_days(
     Only the days in that window that carry a non-empty `source-etag` are probed;
     the window never reaches further back for more. A day whose probe fails or
     returns no ETag can't be compared, so it is skipped with a warning log and
-    checked again next run. Once the run's `deadline` (a `monotonic` time) passes,
-    the remaining days are not probed. When there was a day to probe but none could
-    be compared, it sends one Sentry warning, `nightly rewrite check unavailable`,
-    with the day count: a rewrite would otherwise go unseen.
+    checked again next run. A probe starts only with PROBE_BUDGET_SECONDS left before
+    the run's `deadline` (a `monotonic` time), so a stalled one ends inside the
+    watchdog's grace; the remaining days are probed next run, since the newest days
+    stay in the window. When there was a day to probe but none could be compared, it
+    sends one Sentry warning, `nightly rewrite check unavailable`, with the day count:
+    a rewrite would otherwise go unseen.
     """
     window = sorted((d for d in landed if d <= last_session), reverse=True)
     etagged = [d for d in window[:REWRITE_RECHECK_DAYS] if landed[d].get("source-etag")]
     changed: list[date] = []
     compared = 0
     for i, day in enumerate(etagged):
-        if monotonic() >= deadline:
+        if deadline - monotonic() < PROBE_BUDGET_SECONDS:
             log.warning(
-                "rewrite check: run deadline passed; %d day(s) not probed", len(etagged) - i
+                "rewrite check: less than the probe budget left before the run deadline;"
+                " %d day(s) not probed",
+                len(etagged) - i,
             )
             break
         try:
@@ -227,10 +232,10 @@ def run_tape(
 
     The probes come after the planned days, so a slow probe never costs a missing
     day. They cover the newest days of the run's one listing, never a day this run
-    landed, and stop at the deadline (see rewritten_days). A run whose planned days
-    were skipped probes nothing; the next run probes again. Each day this run lands
-    joins the row baseline of the days after it, and a run writes at most
-    MAX_MARKERS_PER_RUN unavailable markers (see land_day).
+    landed, and stop once less than PROBE_BUDGET_SECONDS is left (see rewritten_days).
+    A run whose planned days were skipped probes nothing; the next run probes again.
+    Each day this run lands joins the row baseline of the days after it, and a run
+    writes at most MAX_MARKERS_PER_RUN unavailable markers (see land_day).
 
     `on_outcome` gets each day's outcome as soon as it is decided, skipped days
     included, so a run killed mid-way has already reported its finished days. An
@@ -481,15 +486,16 @@ def _metadata(result: ConvertResult, source: SourceInfo, ingested_at: datetime) 
 
 
 def _baseline_rows(landed: Mapping[date, Mapping[str, str]], day: date) -> list[int]:
-    """`rows` of the _BASELINE_DAYS landed days nearest `day`, before or after it,
-    nearest first (the earlier of two equally near days first); never `day` itself.
+    """`rows` of the _BASELINE_DAYS landed days nearest `day` that carry them, before
+    or after it, nearest first (the earlier of two equally near days first); never
+    `day` itself.
 
-    Legacy days carry no metadata, so they take a slot but add no value.
+    Legacy days carry no metadata, so they are skipped rather than given a slot: a
+    day beside the legacy run still gets its full baseline from the days beyond it.
     """
-    others = (d for d in landed if d != day)
-    nearest = sorted(others, key=lambda d: (abs(d - day), d))[:_BASELINE_DAYS]
-    counts = (landed[d].get("rows", "") for d in nearest)
-    return [int(c) for c in counts if c.isdecimal()]
+    valued = (d for d in landed if d != day and landed[d].get("rows", "").isdecimal())
+    nearest = sorted(valued, key=lambda d: (abs(d - day), d))[:_BASELINE_DAYS]
+    return [int(landed[d]["rows"]) for d in nearest]
 
 
 def _skip_status(deadline: float) -> tuple[DayStatus, str] | None:

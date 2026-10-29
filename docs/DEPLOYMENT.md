@@ -17,10 +17,10 @@ Pushing to `main` deploys. Vercel builds the push unless the ignore command (bel
 **Ignore command** (`vercel.json` `ignoreCommand`):
 
 ```sh
-BASE="$VERCEL_GIT_PREVIOUS_SHA"; [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null || exit 1; git diff --quiet "$BASE" HEAD -- ':!sidecar' ':!ml' ':!uw-stream' ':!docs' ':!scripts' ':!pine' ':!*.md' || exit 1
+BASE="$VERCEL_GIT_PREVIOUS_SHA"; [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null || exit 1; git diff --quiet "$BASE" HEAD -- ':!sidecar' ':!ml' ':!uw-stream' ':!nightly' ':!docs' ':!scripts' ':!pine' ':!*.md' || exit 1
 ```
 
-It diffs `HEAD` against the last deployed commit. If the only changes are under `sidecar/`, `ml/`, `uw-stream/`, `docs/`, `scripts/` or `pine/`, or are `*.md` files, the build is skipped. If that commit is unset or not in the clone, it builds.
+It diffs `HEAD` against the last deployed commit. If the only changes are under `sidecar/`, `ml/`, `uw-stream/`, `nightly/`, `docs/`, `scripts/` or `pine/`, or are `*.md` files, the build is skipped. If that commit is unset or not in the clone, it builds.
 
 **Long-running functions** (`vercel.json` `functions` sets `maxDuration` for 25 functions; the rest use the platform default):
 
@@ -34,17 +34,18 @@ It diffs `HEAD` against the last deployed commit. If the only changes are under 
 
 **Headers and rewrites** (`vercel.json`): security headers, including the CSP, on every path except the BotID proxy; `Cache-Control: no-cache, no-store, must-revalidate` on `/sw.js`; two BotID rewrites to Vercel's bot-protection service; and a last SPA fallback that sends every non-`/api/` path with no file extension to `/index.html`.
 
-### Railway (sidecar + uw-stream + ws-canary)
+### Railway (sidecar + uw-stream + nightly + ws-canary)
 
-Two long-running Railway services, each with its own Dockerfile, `railway.toml` `watchPatterns` and env vars, plus one temporary service:
+Two long-running Railway services, each with its own Dockerfile, `railway.toml` `watchPatterns` and env vars, plus one cron service and one temporary service:
 
 - [sidecar/README.md](../sidecar/README.md): Take-It SHAP + frozen archive (Theta and the multileg-classify fallback were removed 2026-10-02)
 - [uw-stream/README.md](../uw-stream/README.md): UW websocket consumer (also the live source of `futures_bars`)
+- [nightly/README.md](../nightly/README.md): a cron service that lands the UW options Full Tape in Cloudflare R2, one Parquet per trading day, then exits. It has no `railway.toml`: its schedule (`15 7 * * 2-6` UTC, Tue–Sat), restart policy (`NEVER`) and watch paths are set on the Railway service. Env: `UW_API_KEY`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`, `R2_BUCKET_FULLTAPE`, optional `SENTRY_DSN`. Its README is the runbook: alert meanings, markers, re-lands.
 - [scripts/ws-canary/README.md](../scripts/ws-canary/README.md): a temporary canary that holds test websockets from uw-stream's Railway region, to find which network hop resets uw-stream's connections. It is deleted once the verdict is in.
 
-Watch paths: `sidecar/**`, `uw-stream/**` and `/scripts/ws-canary/**`. Railway doesn't read config-as-code for a new service, so the canary's settings are set on the service and its `railway.toml` only records them. A change under `scripts/` alone redeploys the canary without building Vercel, since the ignore command leaves that folder out.
+Watch paths: `sidecar/**`, `uw-stream/**`, `/nightly/Dockerfile`, `/nightly/requirements.txt` and `/nightly/src/**` (only the image inputs), and `/scripts/ws-canary/**`. Railway doesn't read config-as-code for a new service, so the canary's settings are set on the service and its `railway.toml` only records them. A change under `scripts/` alone redeploys the canary without building Vercel, since the ignore command leaves that folder out.
 
-Hold pushes that touch `uw-stream/` or `sidecar/` until after the 15:00 CT close: a redeploy drops the websocket mid-session and briefly takes down Take-It scoring.
+Hold pushes that touch `uw-stream/` or `sidecar/` until after the 15:00 CT close: a redeploy drops the websocket mid-session and briefly takes down Take-It scoring. Keep pushes to `nightly/src` out of its run window (about 07:15 to 12:30 UTC): a redeploy can stop the run, and a stopped run waits for the next night unless someone runs `railway cron run --service nightly`.
 
 ### Post-Deploy Setup
 
@@ -165,8 +166,9 @@ make -C ml test-cov   # same, failing under 70% coverage
 
 - **sidecar**: 10 files. `make -C sidecar test-cov`; no coverage gate.
 - **uw-stream**: 26 files. CI runs `ruff check`, `ruff format --check` and `pytest --cov`, with no gate.
+- **nightly**: 9 files. CI runs `ruff check`, `ruff format --check` and `pytest --cov`, with no coverage gate; `pyproject.toml` makes pytest fail on any warning.
 
-`make py-test-cov` (root `Makefile`) runs all four Python suites. `npm run review:python` runs ml and sidecar. Six more test files sit outside any suite and CI: `scripts/test_*.py` (5) and `scripts/ws-canary/test_canary.py`.
+`make py-test-cov` (root `Makefile`) runs ml, sidecar, classifier and uw-stream; nightly runs on its own (`cd nightly && python -m pytest`). `npm run review:python` runs ml and sidecar. Six more test files sit outside any suite and CI: `scripts/test_*.py` (5) and `scripts/ws-canary/test_canary.py`.
 
 ---
 
@@ -235,7 +237,7 @@ About 255 scripts in `scripts/` (plus `_lib/`, `ops/`, `eod-flow-analysis/` and 
 
 Four workflow files in `.github/workflows/`:
 
-- **ci.yml**: on pushes to main, PRs and manual dispatch. A `paths-filter` job picks the gates that run. The **App Quality Gate** (`npm run audit` + `npm run review`) runs when `src/`, `api/`, `scripts/`, `e2e/`, `.github/`, config or lockfiles change. **E2E Tests** (Chromium only) runs after the app gate passes, when a file the browser loads changes (`src/`, `e2e/`, `playwright.config.ts`, `vite.config.ts`, `tsconfig.json`, `index.html`, `public/`, `package*.json`, or the two workflow files); `api/`-only changes skip it. The **ML**, **Sidecar** and **uw-stream** gates each run when their folder changes.
+- **ci.yml**: on pushes to main, PRs and manual dispatch. A `paths-filter` job picks the gates that run. The **App Quality Gate** (`npm run audit` + `npm run review`) runs when `src/`, `api/`, `scripts/`, `e2e/`, `.github/`, config or lockfiles change. **E2E Tests** (Chromium only) runs after the app gate passes, when a file the browser loads changes (`src/`, `e2e/`, `playwright.config.ts`, `vite.config.ts`, `tsconfig.json`, `index.html`, `public/`, `package*.json`, or the two workflow files); `api/`-only changes skip it. The **ML**, **Sidecar**, **uw-stream** and **nightly** gates each run when their folder changes.
 - **e2e-nightly.yml**: all three browsers, weekdays at 23:00 UTC and on manual dispatch, with no path filter.
 - **ml-pipeline.yml**: 01:45 UTC Tue–Sat and manual dispatch. Job `pipeline` runs `make all`, uploads plots to Vercel Blob, calls `/api/ml/analyze-plots`, and commits `ml/findings.json` + plots. Job `takeit-retrain` then rebuilds the Take-It training set, retrains, warns when out-of-fold Brier > 0.27, and uploads bundles with `scripts/upload_takeit_bundles.mjs`. **The workflow is disabled in GitHub** (last run 2026-04-17), so neither job runs.
 - **neon_workflow.yml**: creates a Neon branch per PR (expires after 14 days) and deletes it when the PR closes.

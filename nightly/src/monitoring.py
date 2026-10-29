@@ -100,12 +100,20 @@ def report_outcome(outcome: DayOutcome) -> None:
     if outcome.status == "relanded":
         # Every re-land, warnings or not: the healthy rate is about zero. The same
         # content under a new ETag gets its own title, since it suggests ETag churn.
+        # The fingerprint names the day, so each re-land opens, and alerts as, its own
+        # issue instead of adding an event to one old issue.
         identical = RELAND_IDENTICAL in outcome.warnings
         sentry_sdk.capture_message(
             "nightly re-land identical content" if identical else "nightly tape day relanded",
             level="warning",
             tags=tags,
             extras={"warnings": list(outcome.warnings)},
+            fingerprint=[
+                "nightly-tape-day",
+                "relanded",
+                "identical content" if identical else "",
+                outcome.day.isoformat(),
+            ],
         )
         return
     # One issue per status and failure kind, so a new kind opens a new issue. A marker

@@ -488,21 +488,25 @@ def test_landed_day_with_warnings_sends_one_warning(capture_message) -> None:
 
 
 @pytest.mark.parametrize(
-    ("warnings", "title"),
+    ("warnings", "title", "kind"),
     [
-        pytest.param((), "nightly tape day relanded", id="no-warnings"),
-        pytest.param(("rows 10 below",), "nightly tape day relanded", id="a-plausibility-warning"),
+        pytest.param((), "nightly tape day relanded", "", id="no-warnings"),
+        pytest.param(
+            ("rows 10 below",), "nightly tape day relanded", "", id="a-plausibility-warning"
+        ),
         pytest.param(
             (RELAND_IDENTICAL, "rows 10 below"),
             "nightly re-land identical content",
+            "identical content",
             id="identical-content",
         ),
     ],
 )
 def test_every_relanded_day_sends_one_warning(
-    capture_message, warnings: tuple[str, ...], title: str
+    capture_message, warnings: tuple[str, ...], title: str, kind: str
 ) -> None:
-    # The healthy rate is about zero, so each re-land is reported, warnings or not.
+    # The healthy rate is about zero, so each re-land is reported, warnings or not, as
+    # its own issue: the fingerprint names the day, so each one alerts.
     report_outcome(DayOutcome(DAY, "relanded", rows=10, bytes=100, warnings=warnings))
 
     capture_message.assert_called_once()
@@ -512,6 +516,7 @@ def test_every_relanded_day_sends_one_warning(
     assert kwargs["level"] == "warning"
     assert kwargs["tags"] == {"day": "2026-10-28", "status": "relanded"}
     assert kwargs["extras"] == {"warnings": list(warnings)}
+    assert kwargs["fingerprint"] == ["nightly-tape-day", "relanded", kind, "2026-10-28"]
 
 
 @pytest.mark.parametrize(
@@ -559,17 +564,40 @@ def test_a_failure_reason_goes_in_extra_but_not_the_fingerprint(capture_message)
     assert first.args == second.args == ("nightly tape day failed",)
 
 
-def test_only_an_unavailable_fingerprint_names_the_day(capture_message) -> None:
-    # Each marker is permanent, so each opens (and alerts as) its own issue; every
-    # other status groups across days.
+def test_only_unavailable_and_relanded_fingerprints_name_the_day(capture_message) -> None:
+    # Each marker is permanent and each re-land should be rare, so each opens (and
+    # alerts as) its own issue; every other status groups across days.
     for day in (date(2026, 10, 27), date(2026, 10, 28)):
         for status in get_args(DayStatus):
-            if status not in ("landed", "relanded"):
+            if status == "relanded":
+                report_outcome(DayOutcome(day, status, rows=10, bytes=100))
+                report_outcome(
+                    DayOutcome(day, status, rows=10, bytes=100, warnings=(RELAND_IDENTICAL,))
+                )
+            elif status != "landed":
                 report_outcome(DayOutcome(day, status, "kind"))
 
+    relands = [
+        (c.args[0], c.kwargs["fingerprint"])
+        for c in capture_message.call_args_list
+        if c.kwargs["tags"]["status"] == "relanded"
+    ]
+    assert relands == [
+        ("nightly tape day relanded", ["nightly-tape-day", "relanded", "", "2026-10-27"]),
+        (
+            "nightly re-land identical content",
+            ["nightly-tape-day", "relanded", "identical content", "2026-10-27"],
+        ),
+        ("nightly tape day relanded", ["nightly-tape-day", "relanded", "", "2026-10-28"]),
+        (
+            "nightly re-land identical content",
+            ["nightly-tape-day", "relanded", "identical content", "2026-10-28"],
+        ),
+    ]
     prints = {
         (c.kwargs["tags"]["day"], c.kwargs["tags"]["status"]): c.kwargs["fingerprint"]
         for c in capture_message.call_args_list
+        if c.kwargs["tags"]["status"] != "relanded"
     }
     assert prints[("2026-10-27", "unavailable")] == [
         "nightly-tape-day",

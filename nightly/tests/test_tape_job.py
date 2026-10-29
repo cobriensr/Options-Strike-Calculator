@@ -41,6 +41,7 @@ from constants import (
     MIN_FREE_DISK_BYTES,
     MIN_TAPE_ROWS,
     OUTSIDE_WINDOW_MIN_LOOKBACK_DAYS,
+    PROBE_BUDGET_SECONDS,
     REWRITE_RECHECK_DAYS,
     RUN_DEADLINE_SECONDS,
     SCHEMA_VERSION,
@@ -1106,7 +1107,10 @@ def test_rewritten_days_with_nothing_etagged_probes_nothing(tape: FakeTape) -> N
     assert tape.probes == []
 
 
-def test_rewritten_days_stops_probing_at_the_deadline(
+PROBES_SKIPPED = "rewrite check: less than the probe budget left before the run deadline"
+
+
+def test_rewritten_days_stops_probing_once_less_than_the_probe_budget_is_left(
     tape: FakeTape, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     days = _JAN[-5:]  # Jan 26-30
@@ -1116,15 +1120,37 @@ def test_rewritten_days_stops_probing_at_the_deadline(
     monkeypatch.setattr(tape_job, "monotonic", lambda: clock.now)
 
     def slow(day: date) -> None:
-        clock.now = 100.0
+        clock.now = 1.0  # one second spent: the next probe would start short of its budget
 
     tape.on_probe = slow
     with caplog.at_level(logging.WARNING, logger="tape_job"):
-        changed = rewritten_days(landed, API_KEY, days[4], deadline=100.0)
+        # Exactly the budget left: the first probe starts.
+        changed = rewritten_days(landed, API_KEY, days[4], deadline=float(PROBE_BUDGET_SECONDS))
 
     assert tape.probes == [days[4]]
     assert changed == [days[4]]
-    assert "rewrite check: run deadline passed; 4 day(s) not probed" in caplog.text
+    assert f"{PROBES_SKIPPED}; 4 day(s) not probed" in caplog.text
+
+
+def test_no_probe_starts_with_less_than_the_probe_budget_left(
+    tape: FakeTape,
+    sentry_messages,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A stalled probe can take about 1000 s, so one started this late could still be
+    # running when the watchdog fires; the newest days stay in the window for next night.
+    days = _JAN[-5:]
+    landed = {d: {"source-etag": old_etag(d)} for d in days}
+    monkeypatch.setattr(tape_job, "monotonic", lambda: 0.0)
+
+    with caplog.at_level(logging.WARNING, logger="tape_job"):
+        changed = rewritten_days(landed, API_KEY, days[4], deadline=float(PROBE_BUDGET_SECONDS - 1))
+
+    assert changed == []
+    assert tape.probes == []
+    assert f"{PROBES_SKIPPED}; 5 day(s) not probed" in caplog.text
+    sentry_messages.assert_called_once_with(REWRITE_UNCHECKED, level="warning", extras={"days": 5})
 
 
 REWRITE_UNCHECKED = "nightly rewrite check unavailable"
@@ -1660,7 +1686,7 @@ def test_baseline_rows_come_from_the_20_nearest_landed_days_on_either_side(
 ) -> None:
     target = date(2026, 1, 23)
     around = [d for d in trading_days(TAPE_START, date(2026, 2, 13)) if d != target]
-    legacy = {date(2026, 1, 21), date(2026, 2, 4)}  # take a slot, add no value
+    legacy = {date(2026, 1, 21), date(2026, 2, 4)}  # no rows: skipped, never a slot
     rows = {d: ROWS + i for i, d in enumerate(around)}
     for d in around:
         _seed(s3, d, None if d in legacy else {"rows": str(rows[d])})
@@ -1669,11 +1695,10 @@ def test_baseline_rows_come_from_the_20_nearest_landed_days_on_either_side(
     with patch.object(tape_job, "land_day", autospec=True, side_effect=land_day) as spy:
         [outcome] = run_tape(settings, FEB_NOW)
 
-    # Nearest first; on a tie in distance, the earlier day first. 01-07 and earlier,
-    # and 02-09 and later, are further than the 20th.
+    # Nearest first; on a tie in distance, the earlier day first. The two legacy days
+    # are skipped, so the 20 reach two days further out: 01-07 and 01-06.
     nearest = [
         date(2026, 1, 22),  # 1 day
-        date(2026, 1, 21),  # 2, legacy
         date(2026, 1, 20),  # 3
         date(2026, 1, 26),  # 3
         date(2026, 1, 27),  # 4
@@ -1687,20 +1712,43 @@ def test_baseline_rows_come_from_the_20_nearest_landed_days_on_either_side(
         date(2026, 2, 2),  # 10
         date(2026, 1, 12),  # 11
         date(2026, 2, 3),  # 11
-        date(2026, 2, 4),  # 12, legacy
         date(2026, 2, 5),  # 13
         date(2026, 1, 9),  # 14
         date(2026, 2, 6),  # 14
         date(2026, 1, 8),  # 15
+        date(2026, 1, 7),  # 16
+        date(2026, 1, 6),  # 17, before 02-09 (also 17)
     ]
-    expected = [rows[d] for d in nearest if d not in legacy]
-    assert len(expected) == 18
     bound = _bound(spy)
-    assert bound.arguments["baseline_rows"] == expected
+    assert bound.arguments["baseline_rows"] == [rows[d] for d in nearest]
     assert bound.arguments["last_session"] == date(2026, 2, 13)
     assert outcome.status == "landed"
     [warning] = outcome.warnings
     assert warning.startswith("rows 2,000,000 below 0.65 x the baseline median")
+
+
+def test_a_day_beside_legacy_days_still_gets_20_baseline_values(
+    s3, settings: Settings, tape: FakeTape
+) -> None:
+    # 07:15 UTC Sat 2026-03-14 resolves to the Fri 03-13 session, the one missing day.
+    # Its 15 nearest landed days are legacy (no rows); the 20 before those carry rows.
+    now = datetime(2026, 3, 14, 7, 15, tzinfo=UTC)
+    target = date(2026, 3, 13)
+    before = trading_days(TAPE_START, date(2026, 3, 12))[::-1]  # newest first
+    legacy = set(before[:15]) | set(before[35:])
+    valued = before[15:35]
+    for d in before:
+        _seed(s3, d, None if d in legacy else {"rows": str(ROWS)})
+    tape.rows[target] = 2_000_000
+
+    with patch.object(tape_job, "land_day", autospec=True, side_effect=land_day) as spy:
+        [outcome] = run_tape(settings, now)
+
+    assert len(valued) == 20
+    assert _bound(spy).arguments["baseline_rows"] == [ROWS] * 20
+    # With 20 values, the ratio check runs (15 legacy slots would have left 5 values).
+    [warning] = outcome.warnings
+    assert warning == "rows 2,000,000 below 0.65 x the baseline median 8,000,000 of 20 day(s)"
 
 
 def test_a_backfill_day_with_only_later_landed_days_gets_a_baseline(

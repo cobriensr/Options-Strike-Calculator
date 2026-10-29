@@ -33,6 +33,7 @@ import tape_job
 from constants import (
     DAY_BUDGET_SECONDS,
     DOWNLOAD_DEADLINE_SECONDS,
+    PROBE_BUDGET_SECONDS,
     RUN_DEADLINE_SECONDS,
     WATCHDOG_GRACE_SECONDS,
 )
@@ -321,6 +322,10 @@ def test_deadline_constants_bound_the_run() -> None:
     assert main.MONITOR_CONFIG["max_runtime"] * 60 > RUN_DEADLINE_SECONDS + WATCHDOG_GRACE_SECONDS
     assert RUN_DEADLINE_SECONDS + WATCHDOG_GRACE_SECONDS > RUN_DEADLINE_SECONDS
     assert DOWNLOAD_DEADLINE_SECONDS < DAY_BUDGET_SECONDS < RUN_DEADLINE_SECONDS
+    # A probe starts only with its budget left, and a stalled one (about 1000 s) must
+    # not outlast the watchdog's grace.
+    assert PROBE_BUDGET_SECONDS == 1200
+    assert WATCHDOG_GRACE_SECONDS < PROBE_BUDGET_SECONDS < RUN_DEADLINE_SECONDS
 
 
 @pytest.fixture

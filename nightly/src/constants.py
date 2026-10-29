@@ -18,6 +18,9 @@ RUN_DEADLINE_SECONDS = 5 * 3600
 DAY_BUDGET_SECONDS = 3600
 # How long past RUN_DEADLINE_SECONDS the watchdog waits before it ends a hung run.
 WATCHDOG_GRACE_SECONDS = 900
+# A rewrite probe starts only with this much run time left: a stalled one (4 attempts,
+# each a UW and a GCS hop on 60 s timeouts, plus backoff) takes about 1000 s.
+PROBE_BUDGET_SECONDS = 1200
 DOWNLOAD_DEADLINE_SECONDS = 1800
 DOWNLOAD_MAX_ATTEMPTS = 4
 MIN_FREE_DISK_BYTES = 15 * 2**30
