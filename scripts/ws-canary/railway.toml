@@ -1,0 +1,26 @@
+# Temporary websocket canary: one Railway service, `ws-canary`.
+# Spec: docs/superpowers/specs/ws-canary-2026-10-28.md
+#
+# Railway ignores this file for a new service: new services can't use
+# config-as-code, and Railway stops reading these files on 2026-12-01
+# (docs.railway.com/infrastructure-as-code, checked 2026-10-28). Set these on
+# the service itself; this file only records them:
+#   region          us-west2 (same as uw-stream)
+#   root directory  /scripts/ws-canary
+#   builder         Dockerfile
+#   restart policy  Always
+#   watch path      /scripts/ws-canary/**
+#   serverless      ON for run 1 (matches uw-stream), then OFF and redeploy for run 2
+#   IPv6 egress     off
+#   runtime         V2
+#   healthcheck     none (the canary serves no HTTP); env vars none
+
+[build]
+builder = "DOCKERFILE"
+# A [build] key in Railway's schema. Matched from the repo root even when a root
+# directory is set.
+watchPatterns = ["/scripts/ws-canary/**"]
+
+[deploy]
+# The canary must run continuously: restart on any exit, clean or not.
+restartPolicyType = "ALWAYS"

@@ -1,0 +1,2 @@
+# Pinned to the version uw-stream runs in production, so both clients behave alike.
+websockets==17.3
