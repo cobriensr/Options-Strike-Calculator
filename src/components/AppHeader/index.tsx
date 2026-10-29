@@ -217,10 +217,7 @@ export default function AppHeader({
             />
           )}
           {accessMode === 'public' && (
-            <SchwabAuthLink
-              ariaLabel="Authenticate with Schwab"
-              text="Sign in"
-            />
+            <SchwabAuthLink ariaLabel="Sign in with Schwab" text="Sign in" />
           )}
           {/* Owner-only refresh-token countdown. It brings its own Re-auth
               link when the login is close to lapsing, and hides that link
@@ -268,7 +265,6 @@ export default function AppHeader({
             <button
               onClick={onRunMigrations}
               disabled={migrateRunning}
-              aria-label="Run database migrations"
               title="Run DB migrations"
               className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200 disabled:cursor-wait disabled:opacity-50"
             >
@@ -307,7 +303,6 @@ export default function AppHeader({
             <button
               onClick={onBackfillFeatures}
               disabled={backfillRunning}
-              aria-label="Recompute training_features for all dates"
               title="Backfill training_features (rebuilds NOPE + flow + GEX feature columns for every date)"
               className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200 disabled:cursor-wait disabled:opacity-50"
             >
@@ -347,8 +342,16 @@ export default function AppHeader({
                 className="hidden"
                 aria-label="Upload VIX OHLC CSV file"
               />
+              {/* Once loaded, the visible text is just the data's span
+                  ("9,137 days"), so the name adds what the button does,
+                  starting with that text (label in name, WCAG 2.5.3). */}
               <button
                 onClick={onVixCsvClick}
+                aria-label={
+                  vix.vixDataLoaded
+                    ? `${vix.vixDataSource} of VIX data, upload CSV`
+                    : undefined
+                }
                 className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
               >
                 <span className="text-[11px] font-semibold">

@@ -311,15 +311,15 @@ describe('AppHeader', () => {
 
     // Sign in link present.
     expect(
-      screen.getByRole('link', { name: /authenticate with schwab/i }),
+      screen.getByRole('link', { name: 'Sign in with Schwab' }),
     ).toBeInTheDocument();
 
     // Owner-only admin buttons absent.
     expect(
-      screen.queryByRole('button', { name: /run database migrations/i }),
+      screen.queryByRole('button', { name: 'Migrate DB' }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: /recompute training_features/i }),
+      screen.queryByRole('button', { name: 'Backfill' }),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByLabelText(/upload vix ohlc csv file/i),
@@ -336,15 +336,15 @@ describe('AppHeader', () => {
 
     // No sign-in link.
     expect(
-      screen.queryByRole('link', { name: /authenticate with schwab/i }),
+      screen.queryByRole('link', { name: 'Sign in with Schwab' }),
     ).not.toBeInTheDocument();
 
     // No admin buttons.
     expect(
-      screen.queryByRole('button', { name: /run database migrations/i }),
+      screen.queryByRole('button', { name: 'Migrate DB' }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: /recompute training_features/i }),
+      screen.queryByRole('button', { name: 'Backfill' }),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByLabelText(/upload vix ohlc csv file/i),
@@ -356,10 +356,10 @@ describe('AppHeader', () => {
   it('shows admin actions in owner mode', () => {
     renderHeader({ accessMode: 'owner', isOwner: true });
     expect(
-      screen.getByRole('button', { name: /run database migrations/i }),
+      screen.getByRole('button', { name: 'Migrate DB' }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: /recompute training_features/i }),
+      screen.getByRole('button', { name: 'Backfill' }),
     ).toBeInTheDocument();
     // Hidden file input + visible button.
     expect(
@@ -711,6 +711,44 @@ describe('AppHeader', () => {
     expect(screen.queryByText('Upload VIX CSV')).not.toBeInTheDocument();
   });
 
+  // ── Label in name (WCAG 2.5.3) ───────────────────────────
+
+  it('names each header button by the text it shows', () => {
+    renderHeader({
+      isOwner: true,
+      vix: { vixDataLoaded: true, vixDataSource: '9,137 days' },
+    });
+    // The longer wording stays as the tooltip and description.
+    expect(screen.getByRole('button', { name: 'Migrate DB' })).toHaveAttribute(
+      'title',
+      'Run DB migrations',
+    );
+    expect(screen.getByRole('button', { name: 'Backfill' })).toHaveAttribute(
+      'title',
+      expect.stringMatching(/^Backfill training_features/),
+    );
+    // Once loaded, the VIX button shows only the data's span; its name
+    // starts with that text and says what the button does.
+    const vixButton = screen.getByRole('button', {
+      name: '9,137 days of VIX data, upload CSV',
+    });
+    expect(vixButton).toHaveTextContent('9,137 days');
+  });
+
+  it('names the VIX upload button by its text until data is loaded', () => {
+    renderHeader({ isOwner: true });
+    expect(
+      screen.getByRole('button', { name: 'Upload VIX CSV' }),
+    ).toBeInTheDocument();
+  });
+
+  it('names the public Sign in link so it starts with its visible text', () => {
+    renderHeader({ accessMode: 'public', isOwner: false });
+    expect(
+      screen.getByRole('link', { name: 'Sign in with Schwab' }),
+    ).toHaveTextContent('Sign in');
+  });
+
   it('triggers vixHandleFileUpload when the hidden input change event fires', () => {
     const vixHandleFileUpload = vi.fn();
     renderHeader({ isOwner: true, vixHandleFileUpload });
@@ -724,7 +762,7 @@ describe('AppHeader', () => {
   it('disables Migrate button when migrateRunning and shows Running label', () => {
     renderHeader({ isOwner: true, migrateRunning: true });
     const btn = screen.getByRole('button', {
-      name: /run database migrations/i,
+      name: /Running/,
     });
     expect(btn).toBeDisabled();
     expect(btn).toHaveTextContent(/Running/);
@@ -733,7 +771,7 @@ describe('AppHeader', () => {
   it('disables Backfill button when backfillRunning and shows Building label', () => {
     renderHeader({ isOwner: true, backfillRunning: true });
     const btn = screen.getByRole('button', {
-      name: /recompute training_features/i,
+      name: /Building/,
     });
     expect(btn).toBeDisabled();
     expect(btn).toHaveTextContent(/Building/);
@@ -742,18 +780,14 @@ describe('AppHeader', () => {
   it('clicking Migrate invokes onRunMigrations', () => {
     const onRunMigrations = vi.fn();
     renderHeader({ isOwner: true, onRunMigrations });
-    fireEvent.click(
-      screen.getByRole('button', { name: /run database migrations/i }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: 'Migrate DB' }));
     expect(onRunMigrations).toHaveBeenCalledTimes(1);
   });
 
   it('clicking Backfill invokes onBackfillFeatures', () => {
     const onBackfillFeatures = vi.fn();
     renderHeader({ isOwner: true, onBackfillFeatures });
-    fireEvent.click(
-      screen.getByRole('button', { name: /recompute training_features/i }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: 'Backfill' }));
     expect(onBackfillFeatures).toHaveBeenCalledTimes(1);
   });
 });
