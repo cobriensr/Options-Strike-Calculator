@@ -315,14 +315,33 @@ async def bulk_insert_ignore_conflict(
     conflict_clause = ", ".join(conflict_cols)
     suffix = f"ON CONFLICT ({conflict_clause}) DO NOTHING"
 
-    # Single explicit transaction so a chunk-mid failure rolls the
-    # whole batch. Most flow-alert rows are independent so this rarely
-    # matters, but it keeps semantics tight if a malformed payload
-    # sneaks past the handler's _transform validator.
-    #
-    # Wrapped in ``_with_db_retry`` so a transient Neon-side connection
-    # tear-down (scale-down, restart, admin terminate) absorbs into a
-    # silent retry — ON CONFLICT DO NOTHING makes the redo idempotent.
+    # ON CONFLICT DO NOTHING makes a retried batch idempotent.
+    return await _insert_chunks_with_retry(
+        f"bulk_insert_ignore_conflict:{table}", table, columns, rows, suffix
+    )
+
+
+async def _insert_chunks_with_retry(
+    label: str,
+    table: str,
+    columns: Sequence[str],
+    rows: Sequence[tuple[Any, ...]],
+    suffix: str,
+) -> int:
+    """Write ``rows`` as chunked multi-row INSERTs in one transaction.
+
+    Single explicit transaction so a chunk-mid failure rolls the whole
+    batch back, keeping semantics tight if a malformed payload sneaks
+    past a handler's ``_transform`` validator.
+
+    Wrapped in ``_with_db_retry`` so a transient Neon-side connection
+    tear-down (scale-down, restart, admin terminate) absorbs into a
+    silent retry. Every caller's ``suffix`` must make a replayed batch
+    converge to the same state; each public helper says why its suffix does.
+
+    Returns the summed row counts from asyncpg's ``"INSERT 0 N"`` status.
+    """
+
     async def _attempt() -> int:
         pool = get_pool()
         total_inserted = 0
@@ -333,7 +352,7 @@ async def bulk_insert_ignore_conflict(
                 total_inserted += _parse_insert_status(status)
         return total_inserted
 
-    return await _with_db_retry(f"bulk_insert_ignore_conflict:{table}", _attempt)
+    return await _with_db_retry(label, _attempt)
 
 
 async def bulk_upsert_replace(
@@ -376,17 +395,115 @@ async def bulk_upsert_replace(
     update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
     suffix = f"ON CONFLICT ({conflict_clause}) DO UPDATE SET {update_clause}"
 
-    # See bulk_insert_ignore_conflict for retry rationale. ON CONFLICT
-    # DO UPDATE is last-write-wins, so retrying a partially-applied batch
-    # converges to the same final state.
-    async def _attempt() -> int:
-        pool = get_pool()
-        total_inserted = 0
-        async with pool.acquire() as conn, conn.transaction():
-            for chunk in _chunked_rows(rows, len(columns)):
-                sql, flat_params = _build_multi_row_insert(table, columns, chunk, suffix=suffix)
-                status = await conn.execute(sql, *flat_params)
-                total_inserted += _parse_insert_status(status)
-        return total_inserted
+    # ON CONFLICT DO UPDATE is last-write-wins, so retrying a
+    # partially-applied batch converges to the same final state.
+    return await _insert_chunks_with_retry(
+        f"bulk_upsert_replace:{table}", table, columns, rows, suffix
+    )
 
-    return await _with_db_retry(f"bulk_upsert_replace:{table}", _attempt)
+
+async def bulk_upsert_if_newer(
+    table: str,
+    columns: list[str],
+    rows: list[tuple[Any, ...]],
+    conflict_cols: list[str],
+    version_col: str,
+    *,
+    touch_col: str | None = None,
+) -> int:
+    """Upsert where the row with the newest ``version_col`` wins.
+
+    For upstream feeds that re-send a record under the same key with a
+    newer version stamp, where the newest message replaces earlier ones
+    (UW ``futures_blocks``: ``reported_at`` per ``(trade_id, exchange,
+    trade_date)``). Every non-key column is replaced, but only when the
+    incoming version is at least the stored one::
+
+        ON CONFLICT (keys) DO UPDATE SET c = EXCLUDED.c, ...
+        WHERE (EXCLUDED.v >= t.v OR t.v IS NULL)
+
+    So an older message arriving late never overwrites a newer one, a
+    NULL incoming version never replaces a stored one, and a stored NULL
+    is always replaced. ``>=`` lets a same-version replay (a retried
+    batch) apply again, which makes the retry idempotent.
+
+    ``touch_col``, when given, is set to ``now()`` on every applied
+    update. It must not be one of ``columns``; the table's column
+    default covers the insert.
+
+    Postgres rejects one ``INSERT ... ON CONFLICT DO UPDATE`` that hits
+    the same key twice, so the batch is first collapsed to one row per
+    key, keeping the row the SQL guard would keep (``_collapse_to_newest``).
+
+    Returns the count from asyncpg's ``"INSERT 0 N"`` status: rows
+    inserted plus rows updated. Rows the guard skipped are not counted.
+    """
+    _validate_identifier(table, kind="table")
+    for col in columns:
+        _validate_identifier(col, kind="column")
+    for cc in conflict_cols:
+        _validate_identifier(cc, kind="conflict_col")
+    _validate_identifier(version_col, kind="version_col")
+    if touch_col is not None:
+        _validate_identifier(touch_col, kind="touch_col")
+
+    missing = [cc for cc in conflict_cols if cc not in columns]
+    if not conflict_cols or missing:
+        raise ValueError(
+            f"bulk_upsert_if_newer: conflict_cols {conflict_cols!r} must be "
+            f"non-empty and all in columns; missing {missing!r}"
+        )
+    if version_col not in columns or version_col in conflict_cols:
+        raise ValueError(
+            f"bulk_upsert_if_newer: version_col {version_col!r} must be a non-key column"
+        )
+    if touch_col is not None and touch_col in columns:
+        raise ValueError(
+            f"bulk_upsert_if_newer: touch_col {touch_col!r} must not be a bound "
+            "column; it is set to now() server-side"
+        )
+
+    if not rows:
+        return 0
+
+    key_idx = [columns.index(cc) for cc in conflict_cols]
+    collapsed = _collapse_to_newest(rows, key_idx, columns.index(version_col))
+
+    sets = [f"{c} = EXCLUDED.{c}" for c in columns if c not in conflict_cols]
+    if touch_col is not None:
+        sets.append(f"{touch_col} = now()")
+    stored = f"{table}.{version_col}"
+    suffix = (
+        f"ON CONFLICT ({', '.join(conflict_cols)}) DO UPDATE SET {', '.join(sets)} "
+        f"WHERE (EXCLUDED.{version_col} >= {stored} OR {stored} IS NULL)"
+    )
+
+    return await _insert_chunks_with_retry(
+        f"bulk_upsert_if_newer:{table}", table, columns, collapsed, suffix
+    )
+
+
+def _collapse_to_newest(
+    rows: Sequence[tuple[Any, ...]],
+    key_idx: Sequence[int],
+    version_idx: int,
+) -> list[tuple[Any, ...]]:
+    """Keep one row per key: the one ``bulk_upsert_if_newer``'s guard keeps.
+
+    Walking the rows in arrival order, a row replaces the kept one when
+    the SQL guard would let it: the kept version is NULL, or the new
+    version is not NULL and ``>=`` the kept one. So the newest version
+    wins, a tie goes to the later row, and a NULL version loses to any
+    dated one.
+    """
+    newest: dict[tuple[Any, ...], tuple[Any, ...]] = {}
+    for row in rows:
+        key = tuple(row[i] for i in key_idx)
+        kept = newest.get(key)
+        if kept is None or kept[version_idx] is None:
+            newest[key] = row
+            continue
+        version = row[version_idx]
+        if version is not None and version >= kept[version_idx]:
+            newest[key] = row
+    return list(newest.values())
