@@ -99,7 +99,7 @@ Use only prints already received at detect time. This matched the full-window an
 | `anchor_trade_code` | `text` | the anchor's code |
 | `anchor_leg_kind` | `text` | `single` / `multi_leg` / `stock_tied` |
 | `spread_shape` | `text` | from the table above; NULL unless `multi_leg` |
-| `spread_legs` | `jsonb` | array of `{option_type, strike, expiry, size, price, trade_code}`, anchor first, capped at 8 legs |
+| `spread_legs` | `jsonb` | array of `{optionType, strike, expiry, size, price, tradeCode}` (camelCase, matching `SpreadLeg` in src/types/spread-legs.ts), anchor first, capped at 8 legs |
 
 All nullable. NULL `anchor_leg_kind` means no anchor print was found.
 
