@@ -5399,4 +5399,13 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 194,
+    description:
+      'Add a nullable source column (no default) to periscope_snapshots. It records which vendor and sign convention produced each row: "scraper" = the UW Periscope scraper, MM-signed, before 2026-05-26; "gexbot" = GEXBot State, negated to MM sign on ingest. The backfill and the one-time re-sign of the stored GEXBot-era gamma rows happen in the next migration, which keys on source IS NULL so it runs once and is safe in either order with the ingest change. Nothing reads or writes the column yet.',
+    statements: (sql) => [
+      sql`SET LOCAL lock_timeout = '5s'`,
+      sql`ALTER TABLE periscope_snapshots ADD COLUMN IF NOT EXISTS source TEXT`,
+    ],
+  },
 ];
