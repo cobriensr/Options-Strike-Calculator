@@ -133,11 +133,11 @@ The owner asked for the whole process: downloading the file, saving it, uploadin
 - The Full Tape endpoint is the only options input.
 - No post-close cutoff for now.
 - Add GexBot's EOD report if it's worthwhile; my recommendation is yes, with the reasons in the GexBot facts.
+- GEXBot EOD capture moved to its own spec, `2026-10-28-gexbot-eod-capture-design.md` (owner, 2026-10-28).
 
 **My calls** (flagged so the owner can overrule):
 - **Lake and storage:**
   - **The lake is R2,** in the existing bucket and key pattern, so one place covers January → today. Reasons: free egress, about $9/month at 600 GB against about $19 on Blob.
-  - **GexBot EOD ZIPs also go to R2,** under their own prefix (`gexbot-eod/{TICKER}/{date}.zip`), kept as delivered. That's about 64 GB/year for 3 tickers, roughly $1/month. The GexBot refresh plan's D5 said Blob, but R2's free egress matters for 85 MB files read back for research.
   - **New tape files keep every column the day carries,** 40 to 50 as UW's layout grew, plus `date` and `ingested_at`.
   - **The tape ingest core is UW's own `uw_options_data_lake.py`,** vendored into the new service. That covers download, the historic-window probe, convert, the validation gate and the NYSE calendar.
     - Owner, 10-28: "review their code, make whatever changes you deem necessary and use that code, I'm really not worried about it". He accepts that the file carries no stated license.
@@ -176,7 +176,6 @@ The owner asked for the whole process: downloading the file, saving it, uploadin
 1. **The nightly landing job.** About 2 days.
    - New service.
    - Tape: find the trading days missing from R2 → download → validate → parquet with every column → upload → delete temporary files. One day at a time; peak disk about 12 GB. Cap each run at N days so the 95-day backlog clears over a few nights.
-   - GexBot: pull the latest EOD ZIP for SPX, SPY and QQQ; check the `Content-Disposition` date; store it in R2 if it's new.
    - A Sentry cron check-in, plus one event per failed day or missed window.
 2. **Enrichment from the lake.** About 2 days.
    - Add the `outcome_source` columns (migration).
@@ -215,15 +214,14 @@ The owner asked for the whole process: downloading the file, saving it, uploadin
 
 ## Data dependencies
 
-- **Env vars on the new service:** `UW_API_KEY`, `GEXBOT_API_KEY`, `DATABASE_URL`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`, `R2_BUCKET_FULLTAPE`, `SENTRY_DSN`.
-- **External:** the UW Full Tape endpoint; GexBot `/hist/eod/{ticker}` (its quota is undocumented, so watch for 429s); R2 over the S3 API (`boto3` is not in `ml/requirements.txt` today).
+- **Env vars on the new service:** `UW_API_KEY`, `DATABASE_URL`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`, `R2_BUCKET_FULLTAPE`, `SENTRY_DSN`.
+- **External:** the UW Full Tape endpoint; R2 over the S3 API (`boto3` is not in `ml/requirements.txt` today).
 - **Migrations:** the outcome provenance columns (phase 2); a weights-versions table with an active pointer, or a Blob manifest (phase 4, builder's call).
 
 ## Thresholds and constants
 
 - **Schedule:** 07:15 UTC, Tuesday–Saturday.
 - **Per-run tape catch-up cap:** builder's call, sized so a run finishes in under about 4 hours.
-- **GexBot tickers:** SPX, SPY, QQQ.
 - **Disk:** worst case about 12 GB transient per tape day.
 - **100%-NULL alert:** a trading day with at least 1 fire and 0 non-null outcomes after enrichment.
 - **Refit gates:** tuned on history before phase 4 goes live; no numbers agreed yet.
