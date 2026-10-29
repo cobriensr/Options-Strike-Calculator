@@ -154,7 +154,26 @@ describe('audit-gexbot-eod', () => {
     expect(body.status).toBe('success');
     expect(body.rejectedTickers).toEqual(['bad/ticker']);
     expect(body.missing).toEqual([]);
-    expect(mockCapture).not.toHaveBeenCalled();
+    expect(mockCapture).toHaveBeenCalledTimes(1);
+    expect(mockCapture).toHaveBeenCalledWith(
+      'GEXBot EOD tickers rejected by the charset: bad/ticker',
+      {
+        level: 'warning',
+        fingerprint: ['gexbot-eod', 'rejected-tickers'],
+        extra: { date: DATE, rejected: ['bad/ticker'] },
+      },
+    );
+  });
+
+  it('sends both the rejected-tickers warning and the missed-window error', async () => {
+    setTickers(['SPX', 'NDX'], ['a b', 'c d']);
+    eod.listStoredTickers.mockResolvedValue(new Set(['SPX']));
+    const res = await run();
+    expect((res._json as Json).status).toBe('error');
+    const fingerprints = mockCapture.mock.calls.map(
+      ([, o]) => (o as { fingerprint: string[] }).fingerprint[1],
+    );
+    expect(fingerprints).toEqual(['rejected-tickers', 'missed-window']);
   });
 
   it('surfaces a /tickers failure as a thrown error', async () => {

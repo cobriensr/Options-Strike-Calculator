@@ -38,6 +38,18 @@ export default withCronInstrumentation(
     const date = latestEligibleReportDate(now);
     const stored = await listStoredTickers(date);
     const missing = tickers.filter((t) => !stored.has(t));
+    if (rejected.length > 0) {
+      // Information only: rejected tickers can never be stored, so they never
+      // count as missing and do not change the audit status.
+      Sentry.captureMessage(
+        `GEXBot EOD tickers rejected by the charset: ${rejected.join(', ')}`,
+        {
+          level: 'warning',
+          fingerprint: ['gexbot-eod', 'rejected-tickers'],
+          extra: { date, rejected },
+        },
+      );
+    }
     const metadata = {
       date,
       tickers: tickers.length,

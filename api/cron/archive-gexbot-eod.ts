@@ -61,7 +61,11 @@ function reasonOf(err: unknown): string {
   if (msg.startsWith('truncated')) return 'truncated';
   if (msg.startsWith('r2_verify_failed')) return 'r2_verify_failed';
   if (msg === 'object_without_metadata') return msg;
-  return `error: ${msg.slice(0, REASON_MAX_CHARS)}`;
+  // undici reports every network failure as `fetch failed`; the real cause
+  // (ECONNRESET, UND_ERR_HEADERS_TIMEOUT, ...) is only on `cause.code`.
+  const code = (err as { cause?: { code?: unknown } } | null)?.cause?.code;
+  const suffix = typeof code === 'string' ? ` (${code})` : '';
+  return `error: ${msg.slice(0, REASON_MAX_CHARS)}${suffix}`;
 }
 
 export default withCronInstrumentation(
@@ -99,6 +103,10 @@ export default withCronInstrumentation(
 
     let stored = 0;
     let indexedFromR2 = 0;
+    // Catch-up: the served date was older than expected and had no row. Each
+    // catch-up ticker adds 1 to `caughtUp` and exactly one of `indexedFromR2`
+    // (object already in R2) or `storedCount` (downloaded and stored).
+    let caughtUp = 0;
     let skipped = 0;
     let notYetPublished = 0;
     let bytes = 0;
@@ -169,6 +177,25 @@ export default withCronInstrumentation(
           else skipped += 1;
           return;
         }
+        const isCatchUp = res.servedDate !== expected;
+        if (isCatchUp) {
+          // An older report with no row may already sit in R2 (e.g. a rescue
+          // object); index it instead of downloading the ZIP again.
+          const indexed = await indexExistingObject(
+            ticker,
+            res.servedDate,
+          ).catch(async (err) => {
+            await res.discard();
+            throw err;
+          });
+          if (indexed === 'indexed') {
+            await res.discard();
+            have.add(ticker);
+            caughtUp += 1;
+            indexedFromR2 += 1;
+            return;
+          }
+        }
         const body = await res.readBody();
         const { entryCount } = validateEodZip(body, ticker, res.servedDate);
         await storeEodReport({
@@ -179,6 +206,7 @@ export default withCronInstrumentation(
         });
         have.add(ticker);
         stored += 1;
+        if (isCatchUp) caughtUp += 1;
         bytes += body.length;
         if (entryCount !== EXPECTED_ENTRIES) {
           entryCountWarnings.push({ ticker, entryCount });
@@ -208,8 +236,11 @@ export default withCronInstrumentation(
     const attempted =
       stored + indexedFromR2 + skipped + notYetPublished + failed.length;
     let status = deriveCronStatus(failed.length, attempted);
-    // The expected report was not captured in either case.
-    if ((leftover.length > 0 || notYetPublished > 0) && status === 'success') {
+    // The expected report was not captured in any of these cases.
+    if (
+      (leftover.length > 0 || notYetPublished > 0 || caughtUp > 0) &&
+      status === 'success'
+    ) {
       status = 'partial';
     }
 
@@ -248,6 +279,7 @@ export default withCronInstrumentation(
         // auto-prefill-premarket fills with booleans.
         storedCount: stored,
         indexedFromR2,
+        caughtUp,
         skippedCount: skipped,
         notYetPublished,
         failed,

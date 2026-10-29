@@ -222,11 +222,55 @@ describe('archive-gexbot-eod', () => {
     expect(eod.storeEodReport).not.toHaveBeenCalled();
   });
 
+  it('indexes a catch-up report already in R2 without reading the body', async () => {
+    setTickers(['A']);
+    const r = ok({ servedDate: '2026-10-27' });
+    eod.requestEodReport.mockResolvedValue(r);
+    eod.indexExistingObject.mockImplementation(async (_t: string, d: string) =>
+      d === '2026-10-27' ? 'indexed' : 'absent',
+    );
+    const res = await run();
+    const json = res._json as Json;
+    expect(eod.indexExistingObject).toHaveBeenCalledWith('A', '2026-10-27');
+    expect(r.discard).toHaveBeenCalledTimes(1);
+    expect(r.readBody).not.toHaveBeenCalled();
+    expect(eod.storeEodReport).not.toHaveBeenCalled();
+    expect(json.caughtUp).toBe(1);
+    expect(json.indexedFromR2).toBe(1);
+    expect(json.storedCount).toBe(0);
+    expect(json.status).toBe('partial');
+  });
+
+  it('fails a catch-up ticker whose R2 object lacks metadata and discards the body', async () => {
+    setTickers(['A']);
+    const r = ok({ servedDate: '2026-10-27' });
+    eod.requestEodReport.mockResolvedValue(r);
+    eod.indexExistingObject.mockImplementation(
+      async (_t: string, d: string) => {
+        if (d === '2026-10-27') throw new Error('object_without_metadata');
+        return 'absent';
+      },
+    );
+    const res = await run();
+    const json = res._json as Json;
+    expect(json.failed).toEqual([
+      { ticker: 'A', reason: 'object_without_metadata' },
+    ]);
+    expect(json.caughtUp).toBe(0);
+    expect(r.discard).toHaveBeenCalledTimes(1);
+    expect(r.readBody).not.toHaveBeenCalled();
+    expect(json.status).toBe('error');
+  });
+
   it('stores an older served date with no row under that date (catch-up)', async () => {
     setTickers(['A']);
     eod.requestEodReport.mockResolvedValue(ok({ servedDate: '2026-10-27' }));
     const res = await run();
-    expect((res._json as Json).storedCount).toBe(1);
+    const json = res._json as Json;
+    expect(json.storedCount).toBe(1);
+    expect(json.caughtUp).toBe(1);
+    expect(json.indexedFromR2).toBe(0);
+    expect(json.status).toBe('partial');
     expect(eod.listStoredTickers).toHaveBeenCalledWith('2026-10-27');
     expect(eod.storeEodReport).toHaveBeenCalledWith(
       expect.objectContaining({ ticker: 'A', date: '2026-10-27' }),
@@ -337,6 +381,26 @@ describe('archive-gexbot-eod', () => {
     const res = await run();
     const reason = (res._json as Json).failed[0].reason as string;
     expect(reason).toBe(`error: ${'x'.repeat(120)}`);
+  });
+
+  it('appends the undici cause code to a generic error reason', async () => {
+    setTickers(['A']);
+    eod.requestEodReport.mockRejectedValue(
+      new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } }),
+    );
+    const res = await run();
+    expect((res._json as Json).failed[0].reason).toBe(
+      'error: fetch failed (ECONNRESET)',
+    );
+  });
+
+  it('ignores a non-string cause code', async () => {
+    setTickers(['A']);
+    eod.requestEodReport.mockRejectedValue(
+      new TypeError('fetch failed', { cause: { code: 42 } }),
+    );
+    const res = await run();
+    expect((res._json as Json).failed[0].reason).toBe('error: fetch failed');
   });
 
   it('reports error (not success) when the row lookup rejects', async () => {
