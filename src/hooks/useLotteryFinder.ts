@@ -33,15 +33,15 @@ import type {
   LotteryFinderResponse,
   LotteryMode,
   LotterySortMode,
-  LotterySpreadLegSummary,
   OptionType,
   TimeOfDay,
 } from '../components/LotteryFinder/types.js';
-import type {
-  AnchorLegKind,
-  SpreadLeg,
-  SpreadShape,
-} from '../types/spread-legs.js';
+import type { SpreadLegSummary } from '../types/spread-legs.js';
+import {
+  anchorLegKindSchema,
+  spreadLegSchema,
+  spreadShapeSchema,
+} from '../utils/spread-leg-schemas.js';
 
 // ── Response schema ──────────────────────────────────────────────────────
 // Guards the spread-leg fields (spec 2026-10-28-classifier-replacement-
@@ -52,45 +52,12 @@ import type {
 // optional and nullable, because fires from before migration #197 have
 // none of them.
 
-// Mapped objects, so adding a kind or shape to the shared union fails to
-// compile until it is listed here, instead of rejecting the feed at runtime.
-const ANCHOR_LEG_KINDS: { [K in AnchorLegKind]: K } = {
-  single: 'single',
-  multi_leg: 'multi_leg',
-  stock_tied: 'stock_tied',
-};
-const SPREAD_SHAPES: { [S in SpreadShape]: S } = {
-  vertical: 'vertical',
-  calendar: 'calendar',
-  diagonal: 'diagonal',
-  straddle: 'straddle',
-  combo: 'combo',
-  butterfly: 'butterfly',
-  three_leg: 'three_leg',
-  four_leg: 'four_leg',
-  four_leg_multi_expiry: 'four_leg_multi_expiry',
-  complex: 'complex',
-  unpaired: 'unpaired',
-  other: 'other',
-};
-
-const anchorLegKindSchema = z.enum(ANCHOR_LEG_KINDS).nullish();
-
-const spreadLegSchema = z.object({
-  optionType: z.enum(['C', 'P']),
-  strike: z.number(),
-  expiry: z.string(),
-  size: z.number(),
-  price: z.number(),
-  tradeCode: z.string().nullable(),
-}) satisfies z.ZodType<SpreadLeg>;
-
 const spreadLegSummarySchema = z.object({
   fires: z.int().positive(),
   totalFires: z.int().positive(),
-  shape: z.enum(SPREAD_SHAPES),
+  shape: spreadShapeSchema,
   legs: z.array(spreadLegSchema),
-}) satisfies z.ZodType<LotterySpreadLegSummary>;
+}) satisfies z.ZodType<SpreadLegSummary>;
 
 const fireSchema = z.looseObject({
   anchorLegKind: anchorLegKindSchema,

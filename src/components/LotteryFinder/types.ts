@@ -14,8 +14,6 @@ import type {
   SpreadLegSummary,
 } from '../../types/spread-legs.js';
 export type { OptionType };
-/** The row's spread-leg count; the wire type is shared with api/. */
-export type { SpreadLegSummary as LotterySpreadLegSummary };
 export type LotteryMode =
   | 'A_intraday_0DTE'
   | 'B_multi_day_DTE1_3'

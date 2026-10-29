@@ -18,11 +18,11 @@ import {
   summarizeZodIssues,
 } from '../lib/response-guard.js';
 import { captureUnlessAuth } from '../lib/sentry-helpers.js';
-import type {
-  AnchorLegKind,
-  SpreadLeg,
-  SpreadShape,
-} from '../types/spread-legs.js';
+import {
+  anchorLegKindSchema,
+  spreadLegSchema,
+  spreadShapeSchema,
+} from '../utils/spread-leg-schemas.js';
 import type {
   OptionType,
   SilentBoomAskPctBand,
@@ -40,40 +40,9 @@ import type {
 // as it did before. All three are optional and nullable, because alerts
 // from before migration #197 have none of them.
 
-// Mapped objects, so adding a kind or shape to the shared union fails to
-// compile until it is listed here, instead of rejecting the feed at runtime.
-const ANCHOR_LEG_KINDS: { [K in AnchorLegKind]: K } = {
-  single: 'single',
-  multi_leg: 'multi_leg',
-  stock_tied: 'stock_tied',
-};
-const SPREAD_SHAPES: { [S in SpreadShape]: S } = {
-  vertical: 'vertical',
-  calendar: 'calendar',
-  diagonal: 'diagonal',
-  straddle: 'straddle',
-  combo: 'combo',
-  butterfly: 'butterfly',
-  three_leg: 'three_leg',
-  four_leg: 'four_leg',
-  four_leg_multi_expiry: 'four_leg_multi_expiry',
-  complex: 'complex',
-  unpaired: 'unpaired',
-  other: 'other',
-};
-
-const spreadLegSchema = z.object({
-  optionType: z.enum(['C', 'P']),
-  strike: z.number(),
-  expiry: z.string(),
-  size: z.number(),
-  price: z.number(),
-  tradeCode: z.string().nullable(),
-}) satisfies z.ZodType<SpreadLeg>;
-
 const alertSchema = z.looseObject({
-  anchorLegKind: z.enum(ANCHOR_LEG_KINDS).nullish(),
-  spreadShape: z.enum(SPREAD_SHAPES).nullish(),
+  anchorLegKind: anchorLegKindSchema,
+  spreadShape: spreadShapeSchema.nullish(),
   spreadLegs: z.array(spreadLegSchema).nullish(),
 });
 
