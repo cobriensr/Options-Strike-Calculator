@@ -16,7 +16,7 @@
  *   2. Front month: `GET /futures/contracts?days=5` (volume ranked over
  *      the 5 sessions the candles span), the six roots filtered by EXACT
  *      `product` (`q=ES` would also match MES/EST) with spreads excluded,
- *      top FRONT_MONTH_CANDIDATES by volume.
+ *      top 2 by volume (`api/_lib/futures-contracts.ts`).
  *   3. `GET /futures/{contract}/candles?interval=1m&range=5d` per
  *      candidate, then the uw-stream rule replayed per minute: the
  *      contract with the larger cumulative UTC-day volume is the front
@@ -63,6 +63,12 @@ import {
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 import { isFuturesMarketOpen } from '../../src/utils/timezone.js';
+import {
+  FUTURES_ROOTS,
+  fetchFuturesContracts,
+  frontMonthCandidates,
+  type FuturesRoot,
+} from '../_lib/futures-contracts.js';
 
 // Worst case is ~13 UW calls (1 contracts + 2 candles × 6 roots), each up
 // to 3 attempts × 15s timeout plus backoff under withRetry ≈ 48s → ~10
@@ -75,13 +81,7 @@ export const config = {
 
 const JOB = 'backfill-futures-gaps';
 
-// Mirrors `_TARGET_PRODUCTS` in the uw-stream futures_trades handler.
-// DX (ICE) and VX (Cboe CFE) have no UW source.
-const SYMBOLS = ['ES', 'NQ', 'RTY', 'CL', 'GC', 'ZN'] as const;
-
 const LOOKBACK_DAYS = 3;
-// Front + next month: the pair a roll moves between.
-const FRONT_MONTH_CANDIDATES = 2;
 const INSERT_CHUNK = 500;
 // UW's documented-by-probe ceiling on one 1m candle response.
 const UW_CANDLE_ROW_CAP = 5000;
@@ -92,8 +92,6 @@ const MINUTE_MS = 60_000;
 const DAY_MS = 24 * 60 * MINUTE_MS;
 
 // ── Types ───────────────────────────────────────────────────
-
-type FuturesRoot = (typeof SYMBOLS)[number];
 
 interface Bar {
   ts: string; // ISO minute, UTC
@@ -149,7 +147,7 @@ async function detectGaps(
   const sql = getDb();
   const startIso = windowStart.toISOString();
   const endIso = windowEnd.toISOString();
-  const symbols = [...SYMBOLS];
+  const symbols = [...FUTURES_ROOTS];
 
   const rows = (await withDbRetry(
     () => sql`
@@ -182,7 +180,7 @@ async function detectGaps(
 
   const gaps = new Map<FuturesRoot, Gap[]>();
   for (const row of rows) {
-    const symbol = SYMBOLS.find((s) => s === row.symbol);
+    const symbol = FUTURES_ROOTS.find((s) => s === row.symbol);
     if (!symbol) continue;
     const prevMs = new Date(row.prev_bar).getTime();
     const nextMs = new Date(row.next_bar).getTime();
@@ -199,22 +197,6 @@ async function detectGaps(
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
-}
-
-/** Top candidates for a root, most active first (volume, then name). */
-function frontMonthCandidates(contracts: unknown[], root: string): string[] {
-  const rows: Array<{ name: string; volume: number }> = [];
-  for (const c of contracts) {
-    if (!isRecord(c) || c.product !== root || c.is_spread === true) continue;
-    if (typeof c.name !== 'string' || c.name === '') continue;
-    rows.push({
-      name: c.name,
-      volume: typeof c.volume === 'number' ? c.volume : 0,
-    });
-  }
-  // Codepoint order on ties, like the replay below (names are unique).
-  rows.sort((a, b) => b.volume - a.volume || (a.name < b.name ? 1 : -1));
-  return rows.slice(0, FRONT_MONTH_CANDIDATES).map((r) => r.name);
 }
 
 function parsePrice(v: unknown): number | null {
@@ -429,12 +411,7 @@ export default withCronInstrumentation(
 
     // One unfiltered call covers every root (~365 rows). A failure here
     // fails the whole run: the wrapper captures it and reports 'error'.
-    const contracts: unknown = await withRetry(() =>
-      uwFetch<unknown>(ctx.apiKey, '/futures/contracts?days=5'),
-    );
-    if (!Array.isArray(contracts)) {
-      throw new Error('UW /futures/contracts returned a non-array payload');
-    }
+    const contracts = await fetchFuturesContracts(ctx.apiKey);
 
     const symbols: Partial<Record<FuturesRoot, SymbolResult>> = {};
     const failures: string[] = [];
