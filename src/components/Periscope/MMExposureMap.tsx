@@ -14,6 +14,12 @@
  *   - computeTradePlan(view) for verdicts / triggers / stops / targets
  *   - pickStructures(view, plan) for spread leg selection
  *
+ * The trade plan is built on the UW market-maker hedge primitive, so it
+ * runs only on UW Periscope (scraper-era) slices. A GEXBot slice is taker
+ * flow (owner decision D1 revised, 2026-10-29): the map keeps its numbers,
+ * labels the levels by taker side, and shows a "paused" note in place of
+ * the plan until GEXBot-specific rules exist.
+ *
  * Spec: docs/superpowers/specs/periscope-analyzer-build-2026-05-21.md
  * (this is the MVP — full T1/T2 ordering by regime per the
  * TARGET_ORDER_RULE constant lives in api/_lib/periscope-analyzer-rules.ts
@@ -34,7 +40,10 @@ import {
   regimeColor,
   verdictColor,
 } from '../../utils/periscope-formatting';
-import { periscopeSourceAt } from '../../utils/periscope-source';
+import {
+  PERISCOPE_SOURCE,
+  periscopeSourceAt,
+} from '../../utils/periscope-source';
 
 /**
  * Map title by the slice's feed (owner decision D1 revised, 2026-10-29):
@@ -45,6 +54,20 @@ const MAP_TITLE = {
   scraper: 'MM Exposure Map (UW)',
   gexbot: 'Exposure Map (GEXBot, taker)',
   unknown: 'Exposure Map',
+} as const;
+
+/** Shown instead of the plan on any slice that is not UW Periscope. */
+const TRADE_PLAN_PAUSED_MESSAGE =
+  'Trade plan paused: built on UW market-maker mechanics; GEXBot rules pending.';
+
+/**
+ * Level-ladder labels. CEILING / FLOOR are the UW market-maker reading of
+ * the largest +γ strike above / below spot; on taker flow the same strikes
+ * are labelled by side.
+ */
+const LADDER_LABELS = {
+  mm: { above: 'CEILING', below: 'FLOOR', valuePrefix: 'γ' },
+  taker: { above: '+γ ABOVE', below: '+γ BELOW', valuePrefix: 'taker γ' },
 } as const;
 
 // ── Magnitudes — pulled from view in M (millions) for compactness ────
@@ -251,15 +274,108 @@ function WaitRow({
   );
 }
 
+/** Cone / charm-zero / sign-flip footer, shown for every source. */
+function MapFooter({ view }: { view: PeriscopeView }) {
+  return (
+    <div
+      className="flex flex-wrap items-baseline gap-3 border-t pt-2 font-mono text-[10px]"
+      style={{ borderColor: theme.border, color: theme.textMuted }}
+    >
+      {view.cone && (
+        <span>
+          cone {fmtLevel(view.cone.coneLower)}–{fmtLevel(view.cone.coneUpper)}
+        </span>
+      )}
+      {view.charm.charmZeroStrike != null && (
+        <span>charm zero {fmtLevel(view.charm.charmZeroStrike)}</span>
+      )}
+      {view.signFlips.length > 0 && (
+        <span style={{ color: '#fb923c' /* orange */ }}>
+          {view.signFlips.length} γ flip{view.signFlips.length > 1 ? 's' : ''}{' '}
+          this slice
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The map for a slice that is not UW Periscope: the largest taker-long γ
+ * either side of spot and the footer numbers, with the plan replaced by
+ * the paused note (no regime, triggers, stops, targets or structures).
+ */
+function PausedExposureMap({
+  view,
+  title,
+}: {
+  view: PeriscopeView;
+  title: string;
+}) {
+  const labels = LADDER_LABELS.taker;
+  return (
+    <div
+      className="flex flex-col gap-3 rounded-md border p-3"
+      style={{
+        borderColor: theme.border,
+        backgroundColor: theme.surfaceAlt,
+      }}
+    >
+      <div className="font-mono text-[11px]">
+        <span
+          className="font-sans text-[10px] font-bold tracking-[0.12em] uppercase"
+          style={{ color: theme.textTertiary }}
+        >
+          {title}
+        </span>
+      </div>
+
+      <div className="flex flex-col gap-0.5">
+        {view.gamma.ceiling && (
+          <LevelRow
+            arrow="↑"
+            label={labels.above}
+            strike={view.gamma.ceiling.strike}
+            detail={`${labels.valuePrefix} ${fmtMagnitudeM(view.gamma.ceiling.value)}`}
+          />
+        )}
+        <LevelRow arrow="─" label="SPOT" strike={view.spot} isSpot />
+        {view.gamma.floor && (
+          <LevelRow
+            arrow="↓"
+            label={labels.below}
+            strike={view.gamma.floor.strike}
+            detail={`${labels.valuePrefix} ${fmtMagnitudeM(view.gamma.floor.value)}`}
+          />
+        )}
+      </div>
+
+      <p
+        role="status"
+        className="border-t pt-2 font-mono text-[11px] leading-snug"
+        style={{ borderColor: theme.border, color: theme.textMuted }}
+      >
+        {TRADE_PLAN_PAUSED_MESSAGE}
+      </p>
+
+      <MapFooter view={view} />
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────
 
 export function MMExposureMap({ view }: { view: PeriscopeView }) {
+  const source = periscopeSourceAt(view.capturedAt);
+  const title = MAP_TITLE[source ?? 'unknown'];
+  if (source !== PERISCOPE_SOURCE.scraper) {
+    return <PausedExposureMap view={view} title={title} />;
+  }
   const plan = computeTradePlan(view);
   const structures = pickStructures(view, plan);
   const longTargets = orderedLongTargets(view, plan.regime);
   const shortTargets = orderedShortTargets(view, plan.regime);
   const regimeFg = regimeColor(plan.regime);
-  const title = MAP_TITLE[periscopeSourceAt(view.capturedAt) ?? 'unknown'];
+  const labels = LADDER_LABELS.mm;
 
   return (
     <div
@@ -293,9 +409,9 @@ export function MMExposureMap({ view }: { view: PeriscopeView }) {
         {view.gamma.ceiling && (
           <LevelRow
             arrow="↑"
-            label="CEILING"
+            label={labels.above}
             strike={view.gamma.ceiling.strike}
-            detail={`γ ${fmtMagnitudeM(view.gamma.ceiling.value)}`}
+            detail={`${labels.valuePrefix} ${fmtMagnitudeM(view.gamma.ceiling.value)}`}
           />
         )}
         {longTargets?.t1 &&
@@ -322,9 +438,9 @@ export function MMExposureMap({ view }: { view: PeriscopeView }) {
         {view.gamma.floor && (
           <LevelRow
             arrow="↓"
-            label="FLOOR"
+            label={labels.below}
             strike={view.gamma.floor.strike}
-            detail={`γ ${fmtMagnitudeM(view.gamma.floor.value)}`}
+            detail={`${labels.valuePrefix} ${fmtMagnitudeM(view.gamma.floor.value)}`}
           />
         )}
       </div>
@@ -356,26 +472,7 @@ export function MMExposureMap({ view }: { view: PeriscopeView }) {
         />
       </div>
 
-      {/* Footer */}
-      <div
-        className="flex flex-wrap items-baseline gap-3 border-t pt-2 font-mono text-[10px]"
-        style={{ borderColor: theme.border, color: theme.textMuted }}
-      >
-        {view.cone && (
-          <span>
-            cone {fmtLevel(view.cone.coneLower)}–{fmtLevel(view.cone.coneUpper)}
-          </span>
-        )}
-        {view.charm.charmZeroStrike != null && (
-          <span>charm zero {fmtLevel(view.charm.charmZeroStrike)}</span>
-        )}
-        {view.signFlips.length > 0 && (
-          <span style={{ color: '#fb923c' /* orange */ }}>
-            {view.signFlips.length} γ flip{view.signFlips.length > 1 ? 's' : ''}{' '}
-            this slice
-          </span>
-        )}
-      </div>
+      <MapFooter view={view} />
 
       {plan.summary && (
         <p

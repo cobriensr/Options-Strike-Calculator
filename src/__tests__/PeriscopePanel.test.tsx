@@ -127,6 +127,65 @@ describe('PeriscopePanel: smoke', () => {
 });
 
 // ============================================================
+// TRADE PLAN BY SOURCE — owner decision D1 revised (2026-10-29)
+// ============================================================
+
+describe('PeriscopePanel: trade plan by source', () => {
+  // The plan is built on the UW market-maker hedge primitive, so it only
+  // runs on UW Periscope (scraper-era) slices.
+  const PAUSED =
+    'Trade plan paused: built on UW market-maker mechanics; GEXBot rules pending.';
+
+  function gexbotView(): PeriscopeView {
+    return makeView({
+      capturedAt: '2026-10-27T15:00:00Z',
+      priorCapturedAt: '2026-10-27T14:50:00Z',
+      expiry: '2026-10-27',
+      gamma: {
+        ceiling: { strike: 5825, value: 5_000_000, ptsFromSpot: 25 },
+        floor: { strike: 5775, value: 4_000_000, ptsFromSpot: -25 },
+        accelTop: [],
+        topByAbsNear: [{ strike: 5850, value: 6_000_000 }],
+      },
+    });
+  }
+
+  it('does not render the plan on a GEXBot slice and says why', () => {
+    render(<PeriscopePanel {...baseProps} view={gexbotView()} />);
+    expect(screen.getByRole('status')).toHaveTextContent(PAUSED);
+    expect(screen.queryByText(/^LONG$/)).toBeNull();
+    expect(screen.queryByText(/^SHORT$/)).toBeNull();
+    expect(screen.queryByText(/^WAIT$/)).toBeNull();
+    expect(screen.queryByText(/^T1/)).toBeNull();
+    expect(
+      screen.queryByText(
+        /^(pin|drift-and-cap|chop|cone-breach-(up|down)|no-data)$/,
+      ),
+    ).toBeNull();
+  });
+
+  it('keeps the GEXBot numbers, labelled by taker side instead of ceiling / floor', () => {
+    render(<PeriscopePanel {...baseProps} view={gexbotView()} />);
+    expect(screen.getByText('+γ ABOVE')).toBeInTheDocument();
+    expect(screen.getByText('+γ BELOW')).toBeInTheDocument();
+    expect(screen.getByText('taker γ +5.0M')).toBeInTheDocument();
+    expect(screen.getByText('taker γ +4.0M')).toBeInTheDocument();
+    expect(screen.queryByText('CEILING')).toBeNull();
+    expect(screen.queryByText('FLOOR')).toBeNull();
+    expect(screen.getByText(/cone 5750/)).toBeInTheDocument();
+    expect(screen.getByText(/charm zero 5810/)).toBeInTheDocument();
+  });
+
+  it('keeps the full plan on a UW-era replay', () => {
+    render(<PeriscopePanel {...baseProps} view={makeView()} />);
+    expect(screen.queryByText(PAUSED)).toBeNull();
+    expect(screen.getByText('CEILING')).toBeInTheDocument();
+    expect(screen.getByText(/^LONG$/)).toBeInTheDocument();
+    expect(screen.getByText(/^SHORT$/)).toBeInTheDocument();
+  });
+});
+
+// ============================================================
 // STATE ROUTING — error / empty / loading
 // ============================================================
 
