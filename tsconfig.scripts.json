@@ -37,7 +37,6 @@
     "scripts/backfill-regime-0dte.ts",
     "scripts/backfill-zero-gamma.ts",
     "scripts/migrate-db.ts",
-    "scripts/run-migrations.ts",
     "scripts/verify-lottery-no-vanish.ts",
     "scripts/entry-time-analysis.ts"
   ]
