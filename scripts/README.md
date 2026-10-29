@@ -79,7 +79,7 @@ A temporary Railway service that holds test websockets to find which network hop
 - **Take-It**: `upload_takeit_bundles.mjs` (upload bundles and the `takeit/latest.json` manifest), `takeit-rollback.mjs` (`make takeit-rollback`; see [the rollback runbook](../docs/runbooks/takeit-rollback.md)), `backfill-takeit-scores.mjs` (`make takeit-backfill`).
 - **Full Tape and EOD flow ingest**: `download-fulltape.sh`, `ingest-fulltape.py`, `upload-fulltape-to-r2.py`, `ingest-flow.py`.
 - **DB**: `migrate-db.ts` runs `migrateDb()` against `DATABASE_URL`.
-- **Infra**: `set-classifier-memory-limit.mjs` (Railway classifier memory ceiling), `check-py-outdated.sh` (outdated Python packages, local or `--remote`).
+- **Infra**: `check-py-outdated.sh` (outdated Python packages, local or `--remote`).
 - **Replays**: `replay-lottery-fires-*.ts`, `replay-silent-boom-*.ts`, `replay-spike-detection.mjs`: production-parity re-runs for specific corrupted or missed days.
 - **Recompute**: `recompute_peak_from_parquet.py`, `recompute_lottery_hold_minutes.py`, `recompute_silent_boom_hold_minutes.py`.
 - **Docs**: `add-spec-status-headers.mjs` (wrote the spec front-matter `status:`).

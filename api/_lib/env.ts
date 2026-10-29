@@ -82,17 +82,6 @@ const observabilitySchema = z.object({
 });
 
 /**
- * Railway multileg classifier, called by the detect crons
- * (api/_lib/multileg-client.ts). Both are required there; unset →
- * `config_missing`. No format check: a schema failure here would throw
- * for every optionalEnv caller, not just the classifier client.
- */
-const classifierSchema = z.object({
-  CLASSIFIER_URL: z.string().min(1).optional(),
-  CLASSIFIER_SHARED_SECRET: z.string().min(1).optional(),
-});
-
-/**
  * Cloudflare R2 (private object storage, api/_lib/r2.ts). All four are
  * required together; r2.ts reports every missing name at first use.
  */
@@ -117,7 +106,6 @@ const envSchema = coreSchema
   .merge(apiKeysSchema)
   .merge(twilioSchema)
   .merge(observabilitySchema)
-  .merge(classifierSchema)
   .merge(r2Schema)
   .merge(vercelSchema);
 

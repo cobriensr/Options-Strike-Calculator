@@ -15,8 +15,8 @@
  *   - SELECT now reads gamma from raw_payload (migration #168, NULLIF).
  *   - INSERT writes range_pos_at_trigger (UW stock candles).
  *   - INSERT writes cum_ncp_at_fire / cum_npp_at_fire (ticker flow).
- *   - INSERT writes inferred_structure / is_isolated_leg /
- *     match_confidence / pattern_group_id (multileg classify).
+ *   - INSERT leaves inferred_structure / is_isolated_leg /
+ *     match_confidence / pattern_group_id NULL (the classifier is retired).
  *   - INSERT writes takeit_prob / takeit_model_version / takeit_features.
  *   - INSERT writes gamma_at_trigger (from rec.triggerGamma).
  *   - INSERT writes score + direction_gated (per current cron).
@@ -57,10 +57,6 @@ import {
   flowAtFireTime,
   type TickerFlowSeries,
 } from '../api/_lib/ticker-flow-snapshot.ts';
-import {
-  classifyAlertMultileg,
-  type MultilegClassifyCache,
-} from '../api/_lib/multileg-classify-batch.ts';
 
 loadEnv({ path: '.env.local' });
 
@@ -464,7 +460,6 @@ async function processOneCronTick(
   // Per-tick caches — same lifetime as a single cron invocation.
   const candleCache = new Map<string, UWStockCandle[]>();
   const tickerFlowCache = new Map<string, TickerFlowSeries>();
-  const multilegCache: MultilegClassifyCache = new Map();
 
   for (const g of groups.values()) {
     if (g.ticks.length < PER_CHAIN_MIN_PRINTS) continue;
@@ -539,19 +534,6 @@ async function processOneCronTick(
         flowSeries,
         rec.triggerTimeCt,
       );
-
-      // Multileg classification (fail-open).
-      const multilegResult = await classifyAlertMultileg(
-        db,
-        multilegCache,
-        rec.underlyingSymbol,
-        rec.optionChainId,
-        rec.triggerTimeCt,
-      );
-      const inferredStructure = multilegResult?.inferredStructure ?? null;
-      const isIsolatedLeg = multilegResult?.isIsolatedLeg ?? null;
-      const matchConfidence = multilegResult?.matchConfidence ?? null;
-      const patternGroupId = multilegResult?.patternGroupId ?? null;
 
       const score = applyEmpiricalBonuses({
         baseScore,
@@ -666,7 +648,7 @@ async function processOneCronTick(
           ${macro.gex_strike_put_ask_minus_bid}, ${macro.gex_strike_actual_strike},
           ${score}, ${directionGated}, ${rangePosAtTrigger},
           ${cumNcpAtFire}, ${cumNppAtFire},
-          ${inferredStructure}, ${isIsolatedLeg}, ${matchConfidence}, ${patternGroupId},
+          NULL, NULL, NULL, NULL,
           ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb,
           ${rec.triggerGamma}
         )
