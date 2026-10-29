@@ -13,8 +13,18 @@
  *   - The header is wrapped in `<header>` with sticky positioning + a
  *     translucent backdrop-blur. Don't move the wrapper — the layout
  *     container above it depends on the sticky context.
- *   - The status badge cascades from most-severe to least-severe
- *     (BACKTEST > NO INTRADAY > LIVE/STALE/CLOSED). Only one renders.
+ *   - The status pills sit in one group: BACKTEST with Loading… or
+ *     NO INTRADAY in backtest mode, otherwise LIVE/STALE/CLOSED.
+ *   - Below lg the header must stay one control row tall: 62px on a
+ *     phone, 69px from sm. The mobile SectionNav strip under it is sticky
+ *     at `top-[57px]` (the header already overlaps it by 5px on a phone
+ *     and 12px from sm), and
+ *     the section anchors' `scroll-mt-28` assumes header + strip, so a
+ *     wrapping header would slide over the strip. Instead the controls
+ *     row scrolls sideways like that strip, its items keep their natural
+ *     width, and the status pills sort first so they stay in view. From
+ *     sm the title keeps one line too. Those rules all use `max-lg:`
+ *     variants, so at lg and up the row is laid out as before.
  *   - The hidden file input for VIX CSV uploads must stay co-located
  *     with the visible button so `useRef` can drive `.click()`.
  *
@@ -29,7 +39,7 @@
  *     (`useQuoteStaleness`) so the tick re-renders only that pill (F1).
  */
 
-import type { Ref } from 'react';
+import type { FocusEvent, Ref } from 'react';
 import AccessKeyButton from '../AccessKey/AccessKeyButton';
 import { StatusBadge } from '../ui';
 import { theme } from '../../themes';
@@ -91,6 +101,20 @@ export interface AppHeaderProps {
   onViewChange: (view: ViewMode) => void;
 }
 
+/**
+ * Brings a header control that takes focus fully into view. Below lg the
+ * controls row scrolls sideways, and the browser leaves a control that is
+ * already partly visible where it is, with its focus ring cut off. A
+ * no-op at lg and up, where the whole row is on screen. React focus
+ * events bubble through portals, so focus inside a dialog opened from
+ * the row is skipped. jsdom has no `scrollIntoView`, hence the optional
+ * call.
+ */
+function scrollFocusedIntoView(e: FocusEvent<Element>) {
+  if (!e.currentTarget.contains(e.target)) return;
+  e.target.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+}
+
 export default function AppHeader({
   accessMode,
   isOwner,
@@ -122,7 +146,9 @@ export default function AppHeader({
       }}
     >
       <div className="mx-auto flex max-w-[660px] items-center justify-between px-5 py-2 sm:py-3 lg:max-w-6xl">
-        <div>
+        {/* From sm the title keeps one line, so the header stays one
+            control row tall; on a phone it wraps to leave the pills room. */}
+        <div className="sm:max-lg:shrink-0">
           <div className="text-accent hidden font-sans text-[10px] font-bold tracking-[0.2em] uppercase sm:block">
             0DTE Options
           </div>
@@ -130,29 +156,44 @@ export default function AppHeader({
             Strike Calculator
           </h1>
         </div>
-        <div className="flex items-center gap-1.5 sm:gap-2">
+        {/* Below lg this row scrolls sideways. Its padding keeps a focus
+            ring in view at either end of the row (the negative margins
+            cancel the top, bottom and right padding; the left padding is
+            the gap after the title). The scroll padding and
+            scrollFocusedIntoView do the same for a control that takes
+            focus part-way off the edge. */}
+        <div
+          onFocus={scrollFocusedIntoView}
+          className="scrollbar-hide flex items-center gap-1.5 max-lg:-my-1.5 max-lg:-mr-1.5 max-lg:scroll-px-1.5 max-lg:overflow-x-auto max-lg:p-1.5 max-lg:*:shrink-0 sm:gap-2"
+        >
           <ViewToggle view={view} onViewChange={onViewChange} />
-          {isBacktestMode && (
-            <StatusBadge label="BACKTEST" color={theme.backtest} dot />
-          )}
-          {isBacktestMode && historyData.loading && (
-            <StatusBadge label="Loading…" color={theme.textMuted} />
-          )}
-          {isBacktestMode && historyData.error && !historyData.loading && (
-            <StatusBadge
-              label="NO INTRADAY"
-              color={theme.red}
-              dot
-              title={historyData.error}
-            />
-          )}
-          {!isBacktestMode && market.hasData && (
-            <QuoteStatusBadge
-              quotesMarketOpen={market.data.quotes?.marketOpen ?? false}
-              quotesFetchedAt={market.quotesFetchedAt}
-              session={market.session}
-            />
-          )}
+          {/* Status pills. Below lg the group sorts first so the pills stay
+              in view. At lg `contents` drops the group's box, so the pills
+              are direct items of the row after ViewToggle, as before.
+              `empty:hidden` keeps an empty group from adding a gap. */}
+          <div className="flex items-center gap-1.5 empty:hidden max-lg:order-first sm:gap-2 lg:contents">
+            {isBacktestMode && (
+              <StatusBadge label="BACKTEST" color={theme.backtest} dot />
+            )}
+            {isBacktestMode && historyData.loading && (
+              <StatusBadge label="Loading…" color={theme.textMuted} />
+            )}
+            {isBacktestMode && historyData.error && !historyData.loading && (
+              <StatusBadge
+                label="NO INTRADAY"
+                color={theme.red}
+                dot
+                title={historyData.error}
+              />
+            )}
+            {!isBacktestMode && market.hasData && (
+              <QuoteStatusBadge
+                quotesMarketOpen={market.data.quotes?.marketOpen ?? false}
+                quotesFetchedAt={market.quotesFetchedAt}
+                session={market.session}
+              />
+            )}
+          </div>
           {accessMode === 'public' && (
             <SchwabAuthLink
               ariaLabel="Authenticate with Schwab"

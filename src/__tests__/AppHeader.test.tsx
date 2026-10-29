@@ -151,6 +151,57 @@ describe('AppHeader', () => {
     expect(onViewChange).toHaveBeenCalledWith('alerts');
   });
 
+  // ── Focus in the sideways-scrolling controls row ─────────
+
+  describe('a control that takes focus', () => {
+    const original = Object.getOwnPropertyDescriptor(
+      Element.prototype,
+      'scrollIntoView',
+    );
+
+    afterEach(() => {
+      if (original) {
+        Object.defineProperty(Element.prototype, 'scrollIntoView', original);
+      } else {
+        delete (Element.prototype as Partial<Element>).scrollIntoView;
+      }
+    });
+
+    it('is scrolled fully into view, by the nearest edge', () => {
+      const scrollIntoView = vi.fn();
+      Object.defineProperty(Element.prototype, 'scrollIntoView', {
+        value: scrollIntoView,
+        configurable: true,
+        writable: true,
+      });
+      renderHeader();
+      const panels = screen.getByRole('button', {
+        name: 'Show or hide panels',
+      });
+      act(() => panels.focus());
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView).toHaveBeenCalledWith({
+        block: 'nearest',
+        inline: 'nearest',
+      });
+      expect(scrollIntoView.mock.contexts[0]).toBe(panels);
+    });
+
+    it('takes focus without throwing where scrollIntoView is missing', () => {
+      Object.defineProperty(Element.prototype, 'scrollIntoView', {
+        value: undefined,
+        configurable: true,
+        writable: true,
+      });
+      renderHeader();
+      const panels = screen.getByRole('button', {
+        name: 'Show or hide panels',
+      });
+      act(() => panels.focus());
+      expect(panels).toHaveFocus();
+    });
+  });
+
   // ── Access Key button mount (sidebar vs header) ──────────
 
   it('keeps the Access Key button mobile-only (lg:hidden) in calculator view', () => {

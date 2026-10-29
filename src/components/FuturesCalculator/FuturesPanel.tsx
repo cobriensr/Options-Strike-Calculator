@@ -137,7 +137,7 @@ export default function FuturesPanel({
       collapsible
       defaultCollapsed={defaultCollapsed}
       headerRight={
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           {isHistorical && (
             <span role="status">
               <StatusBadge

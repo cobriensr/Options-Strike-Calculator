@@ -1,10 +1,20 @@
-import { test, expect } from '@playwright/test';
-import { fillVix, openSection } from './helpers/calculator';
+import { test, expect, type Page } from '@playwright/test';
+import { dateTimeSection, fillVix, openSection } from './helpers/calculator';
 
 /**
  * Tests for responsive behavior: mobile viewport, layout shifts,
  * and that the app remains functional at different screen sizes.
  */
+
+/** The page doesn't scroll sideways: its width fits the viewport. */
+async function expectNoSidewaysScroll(page: Page) {
+  const { scrollWidth, innerWidth } = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    innerWidth: window.innerWidth,
+  }));
+  expect(scrollWidth).toBeLessThanOrEqual(innerWidth);
+}
+
 test.describe('Responsive Layout', () => {
   test.beforeEach(async ({ page }) => {
     await page.route('**/api/**', (route) => route.abort());
@@ -18,6 +28,27 @@ test.describe('Responsive Layout', () => {
     await expect(page.getByLabel('SPY Price')).toBeVisible();
     await openSection(page, 'Implied Volatility');
     await expect(page.getByLabel('VIX Value')).toBeVisible();
+
+    // A past trading day puts the header in backtest mode whatever time
+    // the suite runs, and the aborted /api/history adds NO INTRADAY. The
+    // header's controls scroll sideways inside their own row with the
+    // status pills sorted first, so the pills stay fully on screen.
+    await dateTimeSection(page)
+      .getByLabel('Date', { exact: true })
+      .fill('2025-01-15');
+    const header = page.getByRole('banner');
+    await expect(header.getByText('BACKTEST')).toBeInViewport({ ratio: 1 });
+    await expect(header.getByText('NO INTRADAY')).toBeInViewport({
+      ratio: 1,
+    });
+
+    // Two rows used to scroll the page sideways: the header's
+    // view/status/tool row (949px wide in owner mode) and the lazy Futures
+    // panel's picker + Now + Refresh row, so wait for that panel first.
+    await expect(
+      page.getByRole('region', { name: 'Futures', exact: true }),
+    ).toBeVisible();
+    await expectNoSidewaysScroll(page);
   });
 
   test('calculation works on mobile viewport', async ({ page }) => {
@@ -48,13 +79,14 @@ test.describe('Responsive Layout', () => {
     });
 
     // Below md the 14-column table is hidden and each delta row renders
-    // as a card instead (839f14ff)
+    // as a card instead (839f14ff), so the strikes don't scroll sideways
     await expect(
       page.getByRole('table', { name: /^Strike prices by delta/ }),
     ).toBeHidden();
     const cards = results.locator('div[aria-label="Delta strikes"]');
     await expect(cards).toBeVisible();
     await expect(cards.getByText('5\u0394', { exact: true })).toBeVisible();
+    await expectNoSidewaysScroll(page);
   });
 
   test('renders correctly on tablet viewport', async ({ page }) => {
