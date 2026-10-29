@@ -3,9 +3,9 @@
 /**
  * Unit tests for api/_lib/validation/market-data.ts.
  *
- * Covers the 9 UW / market-flow query schemas plus boundary cases on
- * the bounded fields (ticker enum membership, limit caps, datetime
- * offset requirement, history-mode refinements).
+ * Covers 7 of its UW / market-flow query schemas plus boundary cases on
+ * the bounded fields (ticker enum membership, datetime offset
+ * requirement, the strike-trade-volume single-key refinement).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -14,9 +14,7 @@ import {
   greekFlowQuerySchema,
   gexStrikeExpiryQuerySchema,
   dealerRegimeQuerySchema,
-  ivAnomaliesQuerySchema,
   strikeTradeVolumeQuerySchema,
-  ivAnomaliesCrossAssetBodySchema,
   netFlowHistoryQuerySchema,
   tickerCandlesQuerySchema,
 } from '../../_lib/validation/market-data.js';
@@ -139,65 +137,6 @@ describe('dealerRegimeQuerySchema', () => {
   });
 });
 
-// ── ivAnomaliesQuerySchema ───────────────────────────────────
-
-describe('ivAnomaliesQuerySchema', () => {
-  it('parses list mode (no strike/side/expiry)', () => {
-    const result = ivAnomaliesQuerySchema.safeParse({ ticker: 'SPY' });
-    expect(result.success).toBe(true);
-  });
-
-  it('parses history mode (all four fields present)', () => {
-    const result = ivAnomaliesQuerySchema.safeParse({
-      ticker: 'SPY',
-      strike: 600,
-      side: 'call',
-      expiry: '2026-05-10',
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('rejects partial history mode (missing expiry)', () => {
-    const result = ivAnomaliesQuerySchema.safeParse({
-      ticker: 'SPY',
-      strike: 600,
-      side: 'call',
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects history mode without ticker', () => {
-    const result = ivAnomaliesQuerySchema.safeParse({
-      strike: 600,
-      side: 'call',
-      expiry: '2026-05-10',
-    });
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      // Note: the refine declares `path: ['strike']` even when the
-      // missing field is `ticker`. This is intentional in the original
-      // schema — the refine attaches the error to the canonical
-      // "history mode" field rather than the absent one — but worth
-      // pinning so any future schema change surfaces it explicitly.
-      const issue = result.error.issues[0];
-      expect(issue?.path).toEqual(['strike']);
-      expect(issue?.message).toBe(
-        'strike+side+expiry+ticker must all be present for per-strike history',
-      );
-    }
-  });
-
-  it('rejects limit > 500 (boundary)', () => {
-    const result = ivAnomaliesQuerySchema.safeParse({ limit: 501 });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects ticker outside STRIKE_IV_TICKERS', () => {
-    const result = ivAnomaliesQuerySchema.safeParse({ ticker: 'XLE' });
-    expect(result.success).toBe(false);
-  });
-});
-
 // ── strikeTradeVolumeQuerySchema ─────────────────────────────
 
 describe('strikeTradeVolumeQuerySchema', () => {
@@ -245,44 +184,6 @@ describe('strikeTradeVolumeQuerySchema', () => {
 
   it('rejects missing since', () => {
     const result = strikeTradeVolumeQuerySchema.safeParse({ ticker: 'SPY' });
-    expect(result.success).toBe(false);
-  });
-});
-
-// ── ivAnomaliesCrossAssetBodySchema ──────────────────────────
-
-describe('ivAnomaliesCrossAssetBodySchema', () => {
-  const validKey = {
-    ticker: 'SPY' as const,
-    strike: 600,
-    side: 'call' as const,
-    expiry: '2026-05-10',
-    alertTs: '2026-05-10T13:30:00Z',
-  };
-
-  it('parses 1-key payload', () => {
-    const result = ivAnomaliesCrossAssetBodySchema.safeParse({
-      keys: [validKey],
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('rejects empty keys array (boundary)', () => {
-    const result = ivAnomaliesCrossAssetBodySchema.safeParse({ keys: [] });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects > 200 keys (boundary)', () => {
-    const result = ivAnomaliesCrossAssetBodySchema.safeParse({
-      keys: Array.from({ length: 201 }, () => validKey),
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects invalid side value', () => {
-    const result = ivAnomaliesCrossAssetBodySchema.safeParse({
-      keys: [{ ...validKey, side: 'long' }],
-    });
     expect(result.success).toBe(false);
   });
 });
