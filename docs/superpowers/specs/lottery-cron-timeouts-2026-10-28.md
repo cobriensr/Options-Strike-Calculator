@@ -105,3 +105,22 @@ Prod Neon (read for diagnosis; writes only via the cron and recovery scripts). U
   - Other non-sargable day filters: `api/_lib/db-flow-alerts.ts:202` (`ws_flow_alerts`, 5 GB, reads every SPY alert ever), `api/_lib/db-pin-setup.ts:120` (`gex_strike_0dte`), `api/gex-landscape.ts:171` (`gexbot_api_capture`, `captured_at::date`), and the small `market_internals` reads in `api/cron/fetch-market-internals.ts:460` and `api/_lib/db-flow.ts:412`. Next Phase F pass.
 - **Autovacuum is not stalled** (first read as a stall, corrected the same night). `n_mod_since_analyze` puts `ws_net_flow_per_ticker` (84M rows), `strike_iv_snapshots` (83M) and `strike_exposures` (64M) at 60–80% of the default thresholds (analyze at 10% changed, vacuum at 20%), so they autoanalyze about every 9 trading days by design. `lottery_finder_fires` autovacuumed on its own on 10-29 once the range_pos backfill pushed it over. Nothing here explains the 10-16 onset. Remedy: extend `scripts/ops/neon-tune-autovac.py` (the 2026-05-13 incident set 1% vacuum / 0.5% analyze with 1000-row thresholds on `ws_gex_strike_expiry`, `gex_strike_0dte` and `ws_option_trades`) to these tables. It changes prod table settings, so it waits for the owner's OK.
 - **Backfill gap:** `net_flow_per_ticker_history` has no SPY rows for any Monday in March 2026 (03-09, 03-16, 03-23, 03-30) and no TEAM row for 03-09. Repair from UW `/stock/{t}/net-prem-ticks?date=` per the always-backfill rule.
+
+## Session check and follow-ups (2026-10-29)
+
+- **Phase A verified live** (first 20 minutes of the 10-29 session against the same window on 10-26/27/28):
+  - `takeit_prob` NULL on 0 of 776 lottery fires, against 49–62% on the prior two days;
+  - 0 `db attempt timeout` errors from either cron, against 190 and 260;
+  - no `partial` runs; one cold-start Take-It prefetch timeout was handled as designed.
+- **Phase A did not stop the timeouts at the open:** 17 of 25 lottery runs were killed. Setup now finishes in 8.6–10 s; the rest of each run went on about 50 serial classifier calls in Pass 2, 0.25–10.4 s each.
+  - **Fix (owner-approved stopgap):** 671a06a8 removed the classifier call from the lottery cron, live 09:52 CT. Runs then finished 4–9 s after the start, with no timeouts in the logs.
+  - That covers phase C for the lottery cron. Silent Boom keeps its call (0 timeouts). The classifier replacement spec's phase 4 adds the exchange-flag anchor lookup at the same spot.
+- **Side effect, guarded:** the V2 weight refit trains on `inferred_structure IS NULL`, which every new fire now passes.
+  - ba5aa938 and f657c3d9 block `lottery_scoring.py`, `online_ticker_update.py` and `backfill_lottery_scores.py` while their window reaches 2026-10-29.
+  - The backfill also had a quintile-boundary mismatch: left-closed `<` against the runtime's right-closed `<=`. Unguarded, it would have rewritten about 14,300 stored scores. That fix is left to phase 4 of `2026-10-28-nightly-pipeline-automation-design.md`.
+- **Phase F, done 10-29:** migration 199 (f7300f79) drops `ws_net_flow_per_ticker_ticker_ts_idx` and sets per-table autovacuum on eight tables.
+  - Prod had applied migrations only through 191 (192–198 from other sessions were committed but never run), so the owner approved a `scripts/migrate-db.ts` run at 16:05–16:35 CT, after a hand `DROP INDEX CONCURRENTLY`.
+- **Still open:**
+  - phases B, D and E;
+  - the summer-gap rebuild (`summer-gap-rebuild-2026-10-29.md`), which reuses phase E's replay;
+  - the three remaining serial awaits per fire in Pass 2 (`fetchMacroSnapshot`, `getLatestGexbotSnapshotAt`, the INSERT), the next risk to the 60 s limit on slow-Neon days, which phase B covers.
