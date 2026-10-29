@@ -1,6 +1,6 @@
 # Nightly pipeline automation: design
 
-Date: 2026-10-28. Status: design, awaiting owner approval. Revised after a builder check the same night. Memory: `nightly-automation-goal`, `enrichment-gaps-2026-10-28`.
+Date: 2026-10-28. Status: approved by the owner 2026-10-28; next is the build plan. Revised after a builder check the same night. Memory: `nightly-automation-goal`, `enrichment-gaps-2026-10-28`.
 
 ## Intent
 
@@ -139,9 +139,12 @@ The owner asked for the whole process: downloading the file, saving it, uploadin
   - **The lake is R2,** in the existing bucket and key pattern, so one place covers January → today. Reasons: free egress, about $9/month at 600 GB against about $19 on Blob.
   - **GexBot EOD ZIPs also go to R2,** under their own prefix (`gexbot-eod/{TICKER}/{date}.zip`), kept as delivered. That's about 64 GB/year for 3 tickers, roughly $1/month. The GexBot refresh plan's D5 said Blob, but R2's free egress matters for 85 MB files read back for research.
   - **New tape files keep every column the day carries,** 40 to 50 as UW's layout grew, plus `date` and `ingested_at`.
-    - Fix the repo's own `scripts/ingest-fulltape.py`, which drops the newer columns today (`:105-117`).
-    - Model the validation gate on UW's `uw-options-data-lake` script: the row count matches the CSV, the 40 core columns are present, timestamps parse, and no new nulls appear.
-    - Don't vendor UW's script into this public repo; its license isn't stated.
+  - **The tape ingest core is UW's own `uw_options_data_lake.py`,** vendored into the new service. That covers download, the historic-window probe, convert, the validation gate and the NYSE calendar.
+    - Owner, 10-28: "review their code, make whatever changes you deem necessary and use that code, I'm really not worried about it". He accepts that the file carries no stated license.
+    - Keep a provenance header: source URL, fetch date 2026-10-28, sha256 `a99ecce6…f8bb` of the published skill file.
+    - Strip the parts this job doesn't use.
+    - Changes come from a full code review (running 10-28) and are listed in the build plan.
+    - It replaces `scripts/download-fulltape.sh` and `scripts/ingest-fulltape.py`. The latter drops the newer columns today (`:105-117`).
   - **Readers must accept the growing schema:** `union_by_name` / `diagonal_relaxed`. `ml/src/utils/r2.py` doesn't today.
 - **Schedule:** 07:15 UTC, Tuesday through Saturday (02:15 CDT / 01:15 CST). That's after the late tape rewrites (04:57–05:59 UTC) and well inside the GexBot window.
 - **Service:** a new Railway service directory laid out like `uw-stream/`.
@@ -205,7 +208,7 @@ The owner asked for the whole process: downloading the file, saving it, uploadin
 
 ## Files (by phase; the plan will refine this)
 
-1. A new service dir (`src/`, `tests/`, `Dockerfile`, `railway.toml`, `requirements*.txt`, `README.md`); `scripts/ingest-fulltape.py` or its logic moved in; the CLAUDE.md env table; `.env.example`; `vercel.json` `ignoreCommand` for the new dir.
+1. A new service dir (`src/`, `tests/`, `Dockerfile`, `railway.toml`, `requirements*.txt`, `README.md`); UW's `uw_options_data_lake.py` vendored and adapted (it replaces `scripts/download-fulltape.sh` and `scripts/ingest-fulltape.py`); the CLAUDE.md env table; `.env.example`; `vercel.json` `ignoreCommand` for the new dir.
 2. A migration (`api/_lib/db-migrations.ts` plus `api/__tests__/db.test.ts`), `scripts/enrich_lottery_outcomes.py`, `scripts/enrich_silent_boom_outcomes.py`, `ml/src/utils/r2.py`, their tests, and the service's step list.
 3. `scripts/eod-flow-analysis/analyze.py`, `ml/src/whale_plots.py`, the tracker, drift and research scripts, `scripts/ingest-flow.py` (retire its Blob write), the Makefile, `.gitignore`.
 4. `ml/src/lottery_scoring.py`, `scripts/backfill_lottery_scores.py`, `scripts/online_ticker_update.py`, `api/_lib/lottery-score-weights-v2.ts`, a new loader, `api/cron/detect-lottery-fires.ts` and its tests, `api/_lib/lottery-tier.ts`, `src/components/LotteryFinder/index.tsx`, a migration if the weights live in Neon, and possibly `api/_lib/takeit-features.ts`.
