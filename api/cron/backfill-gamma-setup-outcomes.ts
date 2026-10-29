@@ -1,7 +1,8 @@
 /**
  * GET /api/cron/backfill-gamma-setup-outcomes
  *
- * Runs once daily at 20:30 UTC (15:30 CT) — 30 min after the cash close.
+ * Runs once daily at 21:30 UTC (16:30 CT in CDT, 15:30 CT in CST), 90 or
+ * 30 min after the cash close.
  * For every `ws_gamma_setup_fires` row inserted in the last 2 trading
  * days whose `ret_30m` is still NULL, this fills in:
  *

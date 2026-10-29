@@ -19,6 +19,8 @@
  * Schedule: `0 12 * * 1-5` (12:00 UTC, ~7-8am ET pre-market).
  * Auth: CRON_SECRET via cronGuard. No UW key — DB-only.
  * Time gate: none (pre-market run; `marketHours: false`).
+ * Monitor: Sentry cron check-ins via withCronCheckin (SCHEDULE_MAP entry).
+ * A 500 from a failed DELETE becomes an `error` check-in.
  *
  * Batching: deletes are issued in 50k-row chunks until either the
  * table is drained or the per-run wall budget is exhausted. Daily
@@ -32,25 +34,34 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 import { cronGuard } from '../_lib/api-helpers.js';
+import { withCronCheckin } from '../_lib/cron-instrumentation.js';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 
 export const config = { maxDuration: 300 };
 
+const JOB = 'cleanup-ws-gex-strike-expiry';
 const BATCH_SIZE = 50_000;
-// Leave 5 s of headroom before maxDuration so the loop can exit
-// cleanly with a partial report rather than getting killed mid-DELETE.
-const WALL_BUDGET_MS = 295_000;
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+/**
+ * Stop issuing batches once one finishes past this. `startedAt` is taken
+ * inside withCronCheckin, so the in-progress and completion check-ins (≤ 5 s
+ * each) sit outside it. That leaves ~10 s of maxDuration for the last batch
+ * (started inside the budget, ~5 s for 50k rows) and the response, so the
+ * loop exits with a partial report instead of being killed mid-DELETE. Same
+ * budget as cleanup-ws-option-trades.
+ */
+const WALL_BUDGET_MS = 280_000;
+
+async function handler(req: VercelRequest, res: VercelResponse) {
   const guard = cronGuard(req, res, {
     marketHours: false,
     requireApiKey: false,
   });
   if (!guard) return;
   const { today } = guard;
-  Sentry.setTag('cron.job', 'cleanup-ws-gex-strike-expiry');
+  Sentry.setTag('cron.job', JOB);
 
   const startedAt = Date.now();
   const db = getDb();
@@ -146,3 +157,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 }
+
+export default withCronCheckin(JOB, handler);

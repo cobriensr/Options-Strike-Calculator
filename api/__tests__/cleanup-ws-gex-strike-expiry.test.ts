@@ -30,8 +30,15 @@ vi.mock('../_lib/sentry.js', () => ({
   Sentry: { setTag: vi.fn(), captureException: vi.fn() },
 }));
 
+// cron-instrumentation.js stays real: the handler is wrapped in
+// withCronCheckin, and the check-in tests below drive that wrapper end to
+// end through a stubbed fetch.
 import handler from '../cron/cleanup-ws-gex-strike-expiry.js';
+import { _resetDsnCacheForTest } from '../_lib/cron-instrumentation.js';
+import { SCHEDULE_MAP } from '../_lib/cron-schedules.js';
 import { Sentry } from '../_lib/sentry.js';
+
+const JOB = 'cleanup-ws-gex-strike-expiry';
 
 // Friday 12:00 UTC = 8am ET on a DST day. cronGuard derives `today`
 // via getETDateStr(new Date()) which respects ET — so on this clock
@@ -174,25 +181,24 @@ describe('cleanup-ws-gex-strike-expiry handler', () => {
     );
   });
 
-  it('exits via wall_budget when the loop runs past the budget', async () => {
-    // Stub Date.now so the second batch lands past WALL_BUDGET_MS,
-    // forcing the loop to flip stopReason and abort the remaining
-    // pass. The cron should report partial counts and `wall_budget`.
+  it('exits via wall_budget once a batch ends past the 280 s budget', async () => {
+    // The clock advances only when a batch runs, so the wrapper's own
+    // Date.now() calls (check-in timing) can't shift it. Batch 2 ends at
+    // 280.5 s: past the 280 s budget that leaves room for the check-ins
+    // inside maxDuration 300, though it would have passed the old 295 s
+    // one. The cron reports partial counts and `wall_budget`.
     const fullBatch = Array.from({ length: 50_000 }, (_, i) => ({ id: i }));
+    let now = 1_000_000;
+    const dateNowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
     mockQuery
-      .mockResolvedValueOnce(fullBatch) // pass 1 batch 1 — within budget
-      .mockResolvedValueOnce(fullBatch); // pass 1 batch 2 — should trip budget
-
-    const startWall = 1_000_000;
-    let call = 0;
-    const dateNowSpy = vi.spyOn(Date, 'now').mockImplementation(() => {
-      // Sequence: handler entry (startedAt), then each batch's
-      // post-DELETE check. Push the second check past WALL_BUDGET_MS.
-      const offsets = [0, 1_000, 300_000];
-      const t = startWall + (offsets[call] ?? 400_000);
-      call += 1;
-      return t;
-    });
+      .mockImplementationOnce(async () => {
+        now += 1_000; // pass 1 batch 1: ends at 1 s, within budget
+        return fullBatch;
+      })
+      .mockImplementationOnce(async () => {
+        now += 279_500; // pass 1 batch 2: ends at 280.5 s, trips budget
+        return fullBatch;
+      });
 
     const res = mockResponse();
     await handler(authedReq(), res);
@@ -231,5 +237,93 @@ describe('cleanup-ws-gex-strike-expiry handler', () => {
       'cron.job',
       'cleanup-ws-gex-strike-expiry',
     );
+  });
+
+  // ── Sentry cron monitor (withCronCheckin) ───────────────────────
+
+  describe('Sentry cron check-ins', () => {
+    const fetchMock = vi.fn();
+
+    beforeEach(() => {
+      // The outer beforeEach copied process.env, so this DSN is dropped
+      // when the outer afterEach restores it.
+      process.env.SENTRY_DSN = 'https://pubkey@o1.ingest.us.sentry.io/42';
+      _resetDsnCacheForTest();
+      fetchMock.mockResolvedValue(new Response(null, { status: 202 }));
+      vi.stubGlobal('fetch', fetchMock);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      _resetDsnCacheForTest();
+    });
+
+    interface CheckInBody {
+      check_in_id: string;
+      monitor_slug: string;
+      status: string;
+      monitor_config?: Record<string, unknown>;
+    }
+
+    /** The check-in POSTs, in order. The completion is not awaited by the wrapper. */
+    async function checkIns(count: number) {
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(count));
+      return fetchMock.mock.calls.map(([url, init]) => ({
+        url: url as string,
+        body: JSON.parse((init as { body: string }).body) as CheckInBody,
+      }));
+    }
+
+    it('checks in under its slug with its SCHEDULE_MAP config, in_progress then ok', async () => {
+      mockQuery.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(200);
+      const calls = await checkIns(2);
+      expect(calls[0]!.url).toContain(`/cron/${JOB}/`);
+      expect(calls.map((c) => c.body.monitor_slug)).toEqual([JOB, JOB]);
+      expect(calls.map((c) => c.body.status)).toEqual(['in_progress', 'ok']);
+      expect(calls[1]!.body.check_in_id).toBe(calls[0]!.body.check_in_id);
+      expect(calls[0]!.body.monitor_config).toMatchObject({
+        schedule: { type: 'crontab', value: SCHEDULE_MAP[JOB]!.schedule },
+        // LONG_RUNNER_MAX_RUNTIME: maxDuration is 300 s, so a run that
+        // uses its whole budget still completes inside the max runtime.
+        max_runtime: 10,
+        failure_issue_threshold: 1,
+      });
+    });
+
+    it('sends an error check-in, not ok, when a DELETE fails', async () => {
+      const fullBatch = Array.from({ length: 50_000 }, (_, i) => ({ id: i }));
+      mockQuery
+        .mockResolvedValueOnce(fullBatch)
+        .mockRejectedValueOnce(new Error('connection lost'));
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(500);
+      expect(res._json).toMatchObject({ error: 'cleanup failed' });
+      expect(Sentry.captureException).toHaveBeenCalledOnce();
+      const calls = await checkIns(2);
+      expect(calls.map((c) => c.body.status)).toEqual(['in_progress', 'error']);
+    });
+
+    it('sends no check-ins for a request without the cron bearer', async () => {
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          headers: { authorization: 'Bearer wrong' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(401);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
   });
 });
