@@ -128,9 +128,15 @@ export const SectionBox = memo(function SectionBox({
         (isOpen ? (fill ? '' : ' h-full') : ' self-start')
       }
     >
+      {/* When the header controls fit beside the title, the title takes the
+          free space (flex-1 or mr-auto) and pushes them right, as
+          justify-between did. When they don't fit (a phone, or a long
+          badge), they drop to their own line, right-aligned, instead of
+          running past the card. */}
       <div
         className={
-          (isOpen ? 'mb-3.5 ' : '') + 'flex items-center justify-between'
+          (isOpen ? 'mb-3.5 ' : '') +
+          'flex flex-wrap items-center justify-end gap-y-2'
         }
       >
         {collapsible ? (
@@ -151,7 +157,7 @@ export const SectionBox = memo(function SectionBox({
             <SectionTitle label={label} badge={badge} badgeColor={badgeColor} />
           </button>
         ) : (
-          <div className="flex items-center gap-2.5">
+          <div className="mr-auto flex items-center gap-2.5">
             <SectionTitle label={label} badge={badge} badgeColor={badgeColor} />
           </div>
         )}
