@@ -18,7 +18,13 @@
  * Spec: docs/superpowers/specs/silent-boom-detector-2026-05-08.md
  */
 
-import { getDb, withDbRetry, settleDegradable } from '../_lib/db.js';
+import {
+  getDb,
+  isRetryableDbError,
+  withDbRetry,
+  settleDegradable,
+} from '../_lib/db.js';
+import { DeadlineError, withDeadline } from '../_lib/deadline.js';
 import {
   detectSilentBoomFires,
   SILENT_BOOM_SPEC_V1,
@@ -37,8 +43,12 @@ import {
 import { isPastCashOpen } from '../_lib/cron-helpers.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 import {
+  awaitWinRateWarmup,
   loadTakeitDetectContext,
+  priorSessionWinRatesForDay,
   scoreSilentBoom,
+  type PriorWinRateRow,
+  type TakeitPrefetchFailure,
   type RecentCofireRow,
   type RecentFireRow,
 } from '../_lib/takeit-detect.js';
@@ -73,6 +83,16 @@ const SCAN_WINDOW_MIN = 35;
 // cooldown is 60 min (12 buckets × 5min); we look back 70 min to
 // absorb clock skew between cron invocations.
 const PRIOR_FIRE_LOOKBACK_MIN = 70;
+
+// Deadline for one ticker-day's flow series, with a run-level breaker: a
+// stall or a transient failure costs a run at most 5 s, once, and the
+// remaining uncached ticker-days are skipped with cum_ncp/cum_npp NULL.
+// Unbounded, fetchTickerFlowSeries' own retries (3 × 10 s plus backoff)
+// let two slow tickers time the run out. The query normally answers well
+// under a second. The losing fetch keeps running on Neon, retries
+// included; the breaker stops a second one. Same rule as
+// detect-lottery-fires.
+const FLOW_SERIES_DEADLINE_MS = 5_000;
 
 type DbNumeric = string | number;
 type DbNullableNumeric = DbNumeric | null;
@@ -166,6 +186,33 @@ export default withCronInstrumentation(
   'detect-silent-boom',
   async (ctx): Promise<CronResult> => {
     const db = getDb();
+
+    // Per-ticker prior-session win rates, a Take-It input. Its answer only
+    // changes with the ET date, so it is loaded once per ET day and shared
+    // across runs. Started here, before the bucket scan, so a cold load
+    // has the whole setup phase to finish before the 5 s Take-It prefetch
+    // asks for it. Not awaited: the cache handles a rejection, and the
+    // prefetch below joins the load or retries it if this one failed.
+    const loadPriorWinRates = async (
+      beforeDate: string,
+    ): Promise<PriorWinRateRow[]> =>
+      (await db`
+        SELECT underlying_symbol, AVG(daily_rate)::float AS win_rate
+        FROM (
+          SELECT underlying_symbol, date,
+                 AVG((peak_ceiling_pct >= 20)::int::float) AS daily_rate
+          FROM silent_boom_alerts
+          WHERE peak_ceiling_pct IS NOT NULL
+            AND date < ${beforeDate}::date
+          GROUP BY underlying_symbol, date
+        ) per_day
+        GROUP BY underlying_symbol
+      `) as PriorWinRateRow[];
+    const winRateWarmup = priorSessionWinRatesForDay(
+      'silentboom',
+      ctx.today,
+      loadPriorWinRates,
+    );
 
     // Aggregate to 5-min buckets in SQL so the wire payload stays
     // bounded by chain-count, not tick-count. Raw-tick projection of
@@ -300,6 +347,11 @@ export default withCronInstrumentation(
           },
         );
       }
+      // Nothing else to do: wait for the win-rate load started above, so
+      // the pre-open run warms the cache instead of leaving the load to
+      // freeze with the instance. Bounded from the run's start (45 s), so a
+      // slow bucket scan plus the wait can't pass maxDuration.
+      await awaitWinRateWarmup(winRateWarmup, ctx.startTimeMs);
       return {
         status: 'skipped',
         message: 'no ticks in scan window',
@@ -388,70 +440,81 @@ export default withCronInstrumentation(
       }
     }
 
-    // Pre-fetch Take-It bundle + sequential context (3 queries, once per
-    // cron tick). On any failure proceed without takeit_prob — heuristic
-    // INSERT still lands.
-    const takeitCtx = await loadTakeitDetectContext('silentboom', {
-      fetchRecentSameType: async (lookbackMin) => {
-        const rows = (await withDbRetry(
-          () => db`
-            SELECT bucket_ct AS fire_time, underlying_symbol, option_type
-            FROM silent_boom_alerts
-            WHERE bucket_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
-          `,
-          2,
-          10_000,
-        )) as Array<{
-          fire_time: Date;
-          underlying_symbol: string;
-          option_type: 'C' | 'P';
-        }>;
-        return rows as RecentFireRow[];
-      },
-      fetchRecentOtherTypeByChain: async (lookbackMin) => {
+    // Pre-fetch Take-It bundle + sequential context: two recent-fire
+    // queries plus the win-rate day cache (started at the top of the run),
+    // once per cron tick. Best-effort: the helper gives them 5 s, and on
+    // any failure returns null (takeit_prob stays NULL, the heuristic
+    // INSERT still lands) and tells us why via the callback.
+    //
+    // The two recent-fire lookbacks (35 and 10 min) carry a `date` bound
+    // too: it is the leading column of the (date, bucket_ct) and (date,
+    // trigger_time_ct) indexes, so the scan is a two-day range instead of
+    // the whole index (planner cost ~1,490 → ~10 here, ~41,500 → ~190 on
+    // lottery_finder_fires, 2026-10-28). That makes them sub-second, so
+    // each gets one retry for a Neon blip (after a 1 s backoff). No
+    // per-attempt cap: the 5 s prefetch deadline bounds the total, and a
+    // cap would turn a slow success into a failure plus a second,
+    // uncancelled copy of the query on Neon. Yesterday is included so a
+    // lookback that crosses ET midnight still sees its fires.
+    let takeitPrefetchFailure = null as TakeitPrefetchFailure | null;
+    const takeitCtx = await loadTakeitDetectContext(
+      'silentboom',
+      {
+        fetchRecentSameType: async (lookbackMin) =>
+          (await withDbRetry(
+            () => db`
+              SELECT bucket_ct AS fire_time, underlying_symbol, option_type
+              FROM silent_boom_alerts
+              WHERE date >= ${ctx.today}::date - 1
+                AND bucket_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
+            `,
+            1,
+          )) as RecentFireRow[],
         // Pulls underlying_symbol + option_type too so the same row set powers
         // both the chain-keyed cofire map AND the sibling-chain (ticker+dir)
         // cofire map. One round-trip.
-        const rows = (await withDbRetry(
-          () => db`
-            SELECT
-              option_chain_id,
-              underlying_symbol,
-              option_type,
-              trigger_time_ct AS fire_time
-            FROM lottery_finder_fires
-            WHERE trigger_time_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
-          `,
-          2,
-          10_000,
-        )) as Array<{
-          option_chain_id: string;
-          underlying_symbol: string;
-          option_type: 'C' | 'P';
-          fire_time: Date;
-        }>;
-        return rows as RecentCofireRow[];
+        fetchRecentOtherTypeByChain: async (lookbackMin) =>
+          (await withDbRetry(
+            () => db`
+              SELECT
+                option_chain_id,
+                underlying_symbol,
+                option_type,
+                trigger_time_ct AS fire_time
+              FROM lottery_finder_fires
+              WHERE date >= ${ctx.today}::date - 1
+                AND trigger_time_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
+            `,
+            1,
+          )) as RecentCofireRow[],
+        // Joins the load started at the top of the run, or retries it if
+        // that one already failed (see loadPriorWinRates).
+        fetchPriorSessionWinRateByTicker: () =>
+          priorSessionWinRatesForDay(
+            'silentboom',
+            ctx.today,
+            loadPriorWinRates,
+          ),
       },
-      fetchPriorSessionWinRateByTicker: async () => {
-        const rows = (await withDbRetry(
-          () => db`
-            SELECT underlying_symbol, AVG(daily_rate)::float AS win_rate
-            FROM (
-              SELECT underlying_symbol, date,
-                     AVG((peak_ceiling_pct >= 20)::int::float) AS daily_rate
-              FROM silent_boom_alerts
-              WHERE peak_ceiling_pct IS NOT NULL
-                AND date < ${ctx.today}::date
-              GROUP BY underlying_symbol, date
-            ) per_day
-            GROUP BY underlying_symbol
-          `,
-          2,
-          10_000,
-        )) as Array<{ underlying_symbol: string; win_rate: number | null }>;
-        return rows;
+      (failure) => {
+        takeitPrefetchFailure = failure;
       },
-    });
+    );
+    const takeitPrefetchError = takeitPrefetchFailure?.reason ?? null;
+    const takeitPrefetchFailureKind = takeitPrefetchFailure?.kind ?? null;
+    // The helper already sent this run's one Sentry event (an error for a
+    // broken query, else a warning).
+    if (takeitPrefetchFailureKind === 'error') {
+      ctx.logger.error(
+        { takeitPrefetchError, takeitPrefetchFailureKind },
+        'detect-silent-boom: Take-It prefetch query error; takeit_prob left null',
+      );
+    } else if (takeitPrefetchFailureKind != null) {
+      ctx.logger.warn(
+        { takeitPrefetchError, takeitPrefetchFailureKind },
+        'detect-silent-boom: Take-It prefetch failed; takeit_prob left null',
+      );
+    }
 
     // Pull macro snapshots across the scan window once. Each fire's
     // mkt_tide_diff / zero_dte_diff / spx_spot_gamma_oi is the latest
@@ -708,6 +771,27 @@ export default withCronInstrumentation(
     // the TSLA series once. Spec:
     // docs/superpowers/specs/lottery-silentboom-feed-perf-2026-05-17.md.
     const tickerFlowCache = new Map<string, TickerFlowSeries>();
+    // Ticker-days whose flow series failed or was skipped this run. Their
+    // alerts are still written, with cum_ncp/cum_npp NULL (the score
+    // doesn't use them). The empty series is cached, so the ticker's other
+    // alerts don't retry. Reported once per run, after the insert loop:
+    //   - a deadline or transient (Neon) failure: warning, 'partial', and
+    //     the breaker opens so the remaining ticker-days are skipped;
+    //   - any other error (a broken query): error, the run reports 'error'.
+    let flowSeriesFailures = 0;
+    let flowSeriesSkippedBreaker = 0;
+    let flowSeriesGenuineFailures = 0;
+    let flowBreakerOpen = false;
+    let firstFlowSeriesError: {
+      ticker: string;
+      date: string;
+      error: string;
+    } | null = null;
+    let firstFlowSeriesGenuineError: {
+      ticker: string;
+      date: string;
+      err: unknown;
+    } | null = null;
 
     // Per-cron-tick multileg classification cache. Keyed inside the
     // helper by (ticker, optionChain, minute) so multiple alerts on the
@@ -896,7 +980,34 @@ export default withCronInstrumentation(
       const flowCacheKey = `${g.ticker}_${date}`;
       let flowSeries = tickerFlowCache.get(flowCacheKey);
       if (flowSeries == null) {
-        flowSeries = await fetchTickerFlowSeries(db, g.ticker, date);
+        flowSeries = { ts: [], cumNcp: [], cumNpp: [] };
+        if (flowBreakerOpen) {
+          flowSeriesSkippedBreaker += 1;
+        } else {
+          try {
+            flowSeries = await withDeadline(
+              fetchTickerFlowSeries(db, g.ticker, date),
+              FLOW_SERIES_DEADLINE_MS,
+              'ticker flow series',
+            );
+          } catch (err) {
+            if (err instanceof DeadlineError || isRetryableDbError(err)) {
+              // Neon slow or blipping: stop asking for this run.
+              flowSeriesFailures += 1;
+              flowBreakerOpen = true;
+              firstFlowSeriesError ??= {
+                ticker: g.ticker,
+                date,
+                error: err instanceof Error ? err.message : String(err),
+              };
+            } else {
+              // A broken query fails fast; keep asking so the count shows
+              // its reach.
+              flowSeriesGenuineFailures += 1;
+              firstFlowSeriesGenuineError ??= { ticker: g.ticker, date, err };
+            }
+          }
+        }
         tickerFlowCache.set(flowCacheKey, flowSeries);
       }
       const { cumNcp: cumNcpAtFire, cumNpp: cumNppAtFire } = flowAtFireTime(
@@ -1116,6 +1227,64 @@ export default withCronInstrumentation(
       });
     }
 
+    // Flow-series failures leave cum_ncp/cum_npp null on the row; the alert
+    // itself is written. Each kind is reported once per run, with its first
+    // case: Neon slow or blipping as a warning, a broken query as an error.
+    if (flowSeriesFailures > 0) {
+      const message =
+        'detect-silent-boom: ticker flow series failed; alerts written without flow features';
+      const detail = {
+        flowSeriesFailures,
+        flowSeriesSkippedBreaker,
+        firstFlowSeriesError,
+      };
+      ctx.logger.warn(detail, message);
+      Sentry.captureMessage(message, {
+        level: 'warning',
+        fingerprint: ['detect-silent-boom', 'flow-series-failed'],
+        tags: {
+          'cron.job': 'detect-silent-boom',
+          'cron.anomaly': 'flow-series-failed',
+        },
+        extra: detail,
+      });
+    }
+    const firstFlowSeriesGenuineErrorMeta =
+      firstFlowSeriesGenuineError == null
+        ? null
+        : {
+            ticker: firstFlowSeriesGenuineError.ticker,
+            date: firstFlowSeriesGenuineError.date,
+            error:
+              firstFlowSeriesGenuineError.err instanceof Error
+                ? firstFlowSeriesGenuineError.err.message
+                : String(firstFlowSeriesGenuineError.err),
+          };
+    if (firstFlowSeriesGenuineError != null) {
+      const message =
+        'detect-silent-boom: ticker flow series query error; alerts written without flow features';
+      ctx.logger.error(
+        {
+          err: firstFlowSeriesGenuineError.err,
+          flowSeriesGenuineFailures,
+          firstFlowSeriesGenuineError: firstFlowSeriesGenuineErrorMeta,
+        },
+        message,
+      );
+      Sentry.captureException(firstFlowSeriesGenuineError.err, {
+        level: 'error',
+        fingerprint: ['detect-silent-boom', 'flow-series-error'],
+        tags: {
+          'cron.job': 'detect-silent-boom',
+          'cron.anomaly': 'flow-series-error',
+        },
+        extra: {
+          flowSeriesGenuineFailures,
+          firstFlowSeriesGenuineError: firstFlowSeriesGenuineErrorMeta,
+        },
+      });
+    }
+
     ctx.logger.info(
       {
         bucketRows: bucketRows.length,
@@ -1133,23 +1302,37 @@ export default withCronInstrumentation(
         macroDegraded,
         macroSeriesFailed,
         macroGenuineFailures: genuineFailures,
+        takeitPrefetchFailures: takeitPrefetchError == null ? 0 : 1,
+        flowSeriesFailures,
+        flowSeriesSkippedBreaker,
+        flowSeriesGenuineFailures,
       },
       'detect-silent-boom completed',
     );
 
     // Status contract (FIX #1 + #9). Alerts ALWAYS land — status only
-    // signals macro health:
-    //   - genuineFailures > 0 → 'error' (loud; pages via the cron monitor),
-    //     REGARDLESS of inserted count: a genuine schema bug is real even on
-    //     a 0-fire tick.
-    //   - else transientFailures > 0 AND inserted > 0 → 'partial'
-    //     (observably degraded). A transient blip on a 0-fire tick had zero
-    //     blast radius → stays 'success' (do NOT escalate).
+    // signals degradation:
+    //   - a genuine (non-transient) macro, flow-series or Take-It prefetch
+    //     error → 'error' (loud; pages via the cron monitor), REGARDLESS of
+    //     inserted count: a genuine schema bug is real even on a 0-fire
+    //     tick.
+    //   - else a transient macro failure, a Take-It prefetch that timed out
+    //     or hit a Neon blip (takeit_prob NULL), or a flow series that
+    //     failed or was skipped by the breaker (cum_* NULL), AND
+    //     inserted > 0 → 'partial' (observably degraded). On a 0-fire tick
+    //     no row was degraded → stays 'success' (do NOT escalate).
     //   - else → 'success'.
+    const degraded =
+      transientFailures > 0 ||
+      takeitPrefetchError != null ||
+      flowSeriesFailures > 0 ||
+      flowSeriesSkippedBreaker > 0;
     const status: 'error' | 'partial' | 'success' =
-      genuineFailures > 0
+      genuineFailures > 0 ||
+      flowSeriesGenuineFailures > 0 ||
+      takeitPrefetchFailureKind === 'error'
         ? 'error'
-        : transientFailures > 0 && inserted > 0
+        : degraded && inserted > 0
           ? 'partial'
           : 'success';
     return {
@@ -1171,6 +1354,14 @@ export default withCronInstrumentation(
         macroDegraded,
         macroSeriesFailed,
         macroGenuineFailures: genuineFailures,
+        takeitPrefetchFailures: takeitPrefetchError == null ? 0 : 1,
+        takeitPrefetchError,
+        takeitPrefetchFailureKind,
+        flowSeriesFailures,
+        flowSeriesSkippedBreaker,
+        flowSeriesGenuineFailures,
+        firstFlowSeriesError,
+        firstFlowSeriesGenuineError: firstFlowSeriesGenuineErrorMeta,
       },
     };
   },

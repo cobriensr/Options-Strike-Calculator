@@ -23,7 +23,8 @@
  * missing key fails the run with 500 like every other UW cron.
  */
 
-import { getDb, withDbRetry } from '../_lib/db.js';
+import { getDb, isRetryableDbError, withDbRetry } from '../_lib/db.js';
+import { DeadlineError, withDeadline } from '../_lib/deadline.js';
 import {
   detectChainFires,
   enrichFires,
@@ -49,8 +50,12 @@ import { isPastCashOpen } from '../_lib/cron-helpers.js';
 import { CASH_INDEX_ROOTS } from '../_lib/constants.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 import {
+  awaitWinRateWarmup,
   loadTakeitDetectContext,
+  priorSessionWinRatesForDay,
   scoreLottery,
+  type PriorWinRateRow,
+  type TakeitPrefetchFailure,
   type RecentCofireRow,
   type RecentFireRow,
 } from '../_lib/takeit-detect.js';
@@ -87,6 +92,15 @@ import { parseUwHttpStatus, withRetry } from '../_lib/uw-fetch.js';
 // (the slot's lease expires after 30 s regardless). A timeout knob:
 // change it with care.
 const CANDLE_FETCH_DEADLINE_MS = 5_000;
+
+// Deadline for one ticker-day's flow series (Pass 1), with the same
+// breaker as the candles: a stall or a transient failure costs a run at
+// most 5 s, once, and the remaining uncached ticker-days are skipped with
+// cum_ncp/cum_npp and the V2 score NULL. Unbounded, fetchTickerFlowSeries'
+// own retries (3 × 10 s plus backoff) let two slow tickers time the run
+// out. The query normally answers well under a second. The losing fetch
+// keeps running on Neon, retries included; the breaker stops a second one.
+const FLOW_SERIES_DEADLINE_MS = 5_000;
 
 // 7-minute scan window — 5-min v4 window + 2-min slack so a slow cron
 // tick can't drop a trigger that landed at the start of its window.
@@ -231,6 +245,35 @@ export default withCronInstrumentation(
   async (ctx): Promise<CronResult> => {
     const db = getDb();
 
+    // Mean of daily win-rates (PIT-correct: only strictly-earlier dates)
+    // per ticker, a Take-It input. A parallel seq scan of the whole table
+    // (~5 s idle), and its answer only changes with the ET date, so it is
+    // loaded once per ET day and shared across runs. Started here, before
+    // the tick scan, so a cold load (the day's first run on an instance)
+    // has the whole setup phase to finish before the 5 s Take-It prefetch
+    // asks for it. Not awaited: the cache handles a rejection, and the
+    // prefetch below joins the load or retries it if this one failed.
+    const loadPriorWinRates = async (
+      beforeDate: string,
+    ): Promise<PriorWinRateRow[]> =>
+      (await db`
+        SELECT underlying_symbol, AVG(daily_rate)::float AS win_rate
+        FROM (
+          SELECT underlying_symbol, date,
+                 AVG((peak_ceiling_pct >= 20)::int::float) AS daily_rate
+          FROM lottery_finder_fires
+          WHERE peak_ceiling_pct IS NOT NULL
+            AND date < ${beforeDate}::date
+          GROUP BY underlying_symbol, date
+        ) per_day
+        GROUP BY underlying_symbol
+      `) as PriorWinRateRow[];
+    const winRateWarmup = priorSessionWinRatesForDay(
+      'lottery',
+      ctx.today,
+      loadPriorWinRates,
+    );
+
     // Pull every tick in the scan window, ordered for chain-grouping.
     // expiry is cast to ::text so the wire value is a stable YYYY-MM-DD
     // string — bypasses any driver-side Date<->TZ round-trip that could
@@ -306,6 +349,11 @@ export default withCronInstrumentation(
           },
         );
       }
+      // Nothing else to do: wait for the win-rate load started above, so
+      // the 08:25–08:30 CT pre-open runs warm the cache instead of leaving
+      // the load to freeze with the instance. Bounded from the run's start
+      // (45 s), so a slow tick scan plus the wait can't pass maxDuration.
+      await awaitWinRateWarmup(winRateWarmup, ctx.startTimeMs);
       return {
         status: 'skipped',
         message: 'no ticks in scan window',
@@ -422,72 +470,76 @@ export default withCronInstrumentation(
       }
     }
 
-    // Pre-fetch Take-It bundle + sequential context (3 queries, once per
-    // cron tick). On any failure the helper returns null and we proceed
-    // without takeit_prob — the heuristic INSERT still lands.
-    const takeitCtx = await loadTakeitDetectContext('lottery', {
-      fetchRecentSameType: async (lookbackMin) => {
-        const rows = (await withDbRetry(
-          () => db`
-            SELECT trigger_time_ct AS fire_time, underlying_symbol, option_type
-            FROM lottery_finder_fires
-            WHERE trigger_time_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
-          `,
-          2,
-          10_000,
-        )) as Array<{
-          fire_time: Date;
-          underlying_symbol: string;
-          option_type: 'C' | 'P';
-        }>;
-        return rows as RecentFireRow[];
-      },
-      fetchRecentOtherTypeByChain: async (lookbackMin) => {
+    // Pre-fetch Take-It bundle + sequential context: two recent-fire
+    // queries plus the win-rate day cache (started at the top of the run),
+    // once per cron tick. Best-effort: the helper gives them 5 s, and on
+    // any failure returns null (takeit_prob stays NULL, the heuristic
+    // INSERT still lands) and tells us why via the callback.
+    //
+    // The two recent-fire lookbacks (35 and 10 min) carry a `date` bound
+    // too: it is the leading column of the (date, trigger_time_ct) and
+    // (date, bucket_ct) indexes, so the scan is a two-day range instead of
+    // the whole index (planner cost ~41,500 → ~190, 2026-10-28). That
+    // makes them sub-second, so each gets one retry for a Neon blip (after
+    // a 1 s backoff). No per-attempt cap: the 5 s prefetch deadline bounds
+    // the total, and a cap would turn a slow success into a failure plus a
+    // second, uncancelled copy of the query on Neon. Yesterday is included
+    // so a lookback that crosses ET midnight still sees its fires.
+    let takeitPrefetchFailure = null as TakeitPrefetchFailure | null;
+    const takeitCtx = await loadTakeitDetectContext(
+      'lottery',
+      {
+        fetchRecentSameType: async (lookbackMin) =>
+          (await withDbRetry(
+            () => db`
+              SELECT trigger_time_ct AS fire_time, underlying_symbol, option_type
+              FROM lottery_finder_fires
+              WHERE date >= ${ctx.today}::date - 1
+                AND trigger_time_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
+            `,
+            1,
+          )) as RecentFireRow[],
         // Pulls underlying_symbol + option_type too so the same row set powers
         // both the chain-keyed cofire map AND the sibling-chain (ticker+dir)
         // cofire map. One round-trip.
-        const rows = (await withDbRetry(
-          () => db`
-            SELECT
-              option_chain_id,
-              underlying_symbol,
-              option_type,
-              bucket_ct AS fire_time
-            FROM silent_boom_alerts
-            WHERE bucket_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
-          `,
-          2,
-          10_000,
-        )) as Array<{
-          option_chain_id: string;
-          underlying_symbol: string;
-          option_type: 'C' | 'P';
-          fire_time: Date;
-        }>;
-        return rows as RecentCofireRow[];
+        fetchRecentOtherTypeByChain: async (lookbackMin) =>
+          (await withDbRetry(
+            () => db`
+              SELECT
+                option_chain_id,
+                underlying_symbol,
+                option_type,
+                bucket_ct AS fire_time
+              FROM silent_boom_alerts
+              WHERE date >= ${ctx.today}::date - 1
+                AND bucket_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
+            `,
+            1,
+          )) as RecentCofireRow[],
+        // Joins the load started at the top of the run, or retries it if
+        // that one already failed (see loadPriorWinRates).
+        fetchPriorSessionWinRateByTicker: () =>
+          priorSessionWinRatesForDay('lottery', ctx.today, loadPriorWinRates),
       },
-      fetchPriorSessionWinRateByTicker: async () => {
-        // Mean of daily win-rates (PIT-correct: only strictly-earlier dates)
-        // per ticker. ~50 rows; cheap aggregate against an indexed table.
-        const rows = (await withDbRetry(
-          () => db`
-            SELECT underlying_symbol, AVG(daily_rate)::float AS win_rate
-            FROM (
-              SELECT underlying_symbol, date,
-                     AVG((peak_ceiling_pct >= 20)::int::float) AS daily_rate
-              FROM lottery_finder_fires
-              WHERE peak_ceiling_pct IS NOT NULL
-                AND date < ${ctx.today}::date
-              GROUP BY underlying_symbol, date
-            ) per_day
-            GROUP BY underlying_symbol
-          `,
-          2,
-          10_000,
-        )) as Array<{ underlying_symbol: string; win_rate: number | null }>;
-        return rows;
+      (failure) => {
+        takeitPrefetchFailure = failure;
       },
-    });
+    );
+    const takeitPrefetchError = takeitPrefetchFailure?.reason ?? null;
+    const takeitPrefetchFailureKind = takeitPrefetchFailure?.kind ?? null;
+    // The helper already sent this run's one Sentry event (an error for a
+    // broken query, else a warning).
+    if (takeitPrefetchFailureKind === 'error') {
+      ctx.logger.error(
+        { takeitPrefetchError, takeitPrefetchFailureKind },
+        'detect-lottery-fires: Take-It prefetch query error; takeit_prob left null',
+      );
+    } else if (takeitPrefetchFailureKind != null) {
+      ctx.logger.warn(
+        { takeitPrefetchError, takeitPrefetchFailureKind },
+        'detect-lottery-fires: Take-It prefetch failed; takeit_prob left null',
+      );
+    }
 
     // Per-(ticker, date) ticker net-flow cumulative series cache. Shared
     // across all chain groups so two TSLA chains in the same cron tick
@@ -495,6 +547,28 @@ export default withCronInstrumentation(
     // (cleared when handler returns). Spec:
     // docs/superpowers/specs/lottery-silentboom-feed-perf-2026-05-17.md.
     const tickerFlowCache = new Map<string, TickerFlowSeries>();
+    // Ticker-days whose flow series failed or was skipped this run. Their
+    // fires are still written, with cum_ncp/cum_npp NULL and so no V2
+    // score (a fire with no flow isn't aligned). The empty series is
+    // cached, so the ticker's other fires don't retry. Reported once per
+    // run, after the insert loop:
+    //   - a deadline or transient (Neon) failure: warning, 'partial', and
+    //     the breaker opens so the remaining ticker-days are skipped;
+    //   - any other error (a broken query): error, the run reports 'error'.
+    let flowSeriesFailures = 0;
+    let flowSeriesSkippedBreaker = 0;
+    let flowSeriesGenuineFailures = 0;
+    let flowBreakerOpen = false;
+    let firstFlowSeriesError: {
+      ticker: string;
+      date: string;
+      error: string;
+    } | null = null;
+    let firstFlowSeriesGenuineError: {
+      ticker: string;
+      date: string;
+      err: unknown;
+    } | null = null;
 
     // Per-cron-tick multileg classification cache. Keyed inside the
     // helper by (ticker, optionChain, minute) so multiple alerts on the
@@ -615,11 +689,38 @@ export default withCronInstrumentation(
         const flowCacheKey = `${rec.underlyingSymbol}_${rec.date}`;
         let flowSeries = tickerFlowCache.get(flowCacheKey);
         if (flowSeries == null) {
-          flowSeries = await fetchTickerFlowSeries(
-            db,
-            rec.underlyingSymbol,
-            rec.date,
-          );
+          flowSeries = { ts: [], cumNcp: [], cumNpp: [] };
+          if (flowBreakerOpen) {
+            flowSeriesSkippedBreaker += 1;
+          } else {
+            try {
+              flowSeries = await withDeadline(
+                fetchTickerFlowSeries(db, rec.underlyingSymbol, rec.date),
+                FLOW_SERIES_DEADLINE_MS,
+                'ticker flow series',
+              );
+            } catch (err) {
+              if (err instanceof DeadlineError || isRetryableDbError(err)) {
+                // Neon slow or blipping: stop asking for this run.
+                flowSeriesFailures += 1;
+                flowBreakerOpen = true;
+                firstFlowSeriesError ??= {
+                  ticker: rec.underlyingSymbol,
+                  date: rec.date,
+                  error: err instanceof Error ? err.message : String(err),
+                };
+              } else {
+                // A broken query fails fast; keep asking so the count
+                // shows its reach.
+                flowSeriesGenuineFailures += 1;
+                firstFlowSeriesGenuineError ??= {
+                  ticker: rec.underlyingSymbol,
+                  date: rec.date,
+                  err,
+                };
+              }
+            }
+          }
           tickerFlowCache.set(flowCacheKey, flowSeries);
         }
         const { cumNcp: cumNcpAtFire, cumNpp: cumNppAtFire } = flowAtFireTime(
@@ -737,7 +838,7 @@ export default withCronInstrumentation(
             try {
               // One at a time on purpose: every UW call shares the global
               // 3-slot concurrency semaphore with the other crons.
-              candles = await withCandleDeadline(
+              candles = await withDeadline(
                 withRetry(
                   () =>
                     fetchStockCandles1m(
@@ -747,6 +848,8 @@ export default withCronInstrumentation(
                     ),
                   1,
                 ),
+                CANDLE_FETCH_DEADLINE_MS,
+                'stock candle fetch',
               );
               if (candles.length === 0) {
                 candleFetchEmpty += 1;
@@ -1115,10 +1218,11 @@ export default withCronInstrumentation(
       });
     }
 
-    // Candle problems leave range_pos null on the row; the fire itself is
-    // written. Each kind is reported once per run, with its first case,
-    // not once per fire, so a UW outage is one Sentry event per tick.
-    const reportCandleProblem = (
+    // Candle and flow-series problems leave columns null on the row; the
+    // fire itself is written. Each kind is reported once per run, with its
+    // first case, not once per fire, so an outage is one Sentry event per
+    // tick.
+    const reportRunProblem = (
       slug: string,
       message: string,
       detail: Record<string, unknown>,
@@ -1131,8 +1235,53 @@ export default withCronInstrumentation(
         extra: detail,
       });
     };
+    if (flowSeriesFailures > 0) {
+      reportRunProblem(
+        'flow-series-failed',
+        'detect-lottery-fires: ticker flow series failed; fires written without flow features',
+        { flowSeriesFailures, flowSeriesSkippedBreaker, firstFlowSeriesError },
+      );
+    }
+    // A flow-series error that isn't Neon being slow is a broken query: the
+    // fires still land (without flow features), but it pages and the run
+    // reports 'error'.
+    const firstFlowSeriesGenuineErrorMeta =
+      firstFlowSeriesGenuineError == null
+        ? null
+        : {
+            ticker: firstFlowSeriesGenuineError.ticker,
+            date: firstFlowSeriesGenuineError.date,
+            error:
+              firstFlowSeriesGenuineError.err instanceof Error
+                ? firstFlowSeriesGenuineError.err.message
+                : String(firstFlowSeriesGenuineError.err),
+          };
+    if (firstFlowSeriesGenuineError != null) {
+      const message =
+        'detect-lottery-fires: ticker flow series query error; fires written without flow features';
+      ctx.logger.error(
+        {
+          err: firstFlowSeriesGenuineError.err,
+          flowSeriesGenuineFailures,
+          firstFlowSeriesGenuineError: firstFlowSeriesGenuineErrorMeta,
+        },
+        message,
+      );
+      Sentry.captureException(firstFlowSeriesGenuineError.err, {
+        level: 'error',
+        fingerprint: ['detect-lottery-fires', 'flow-series-error'],
+        tags: {
+          'cron.job': 'detect-lottery-fires',
+          'cron.anomaly': 'flow-series-error',
+        },
+        extra: {
+          flowSeriesGenuineFailures,
+          firstFlowSeriesGenuineError: firstFlowSeriesGenuineErrorMeta,
+        },
+      });
+    }
     if (candleFetchFailures > 0) {
-      reportCandleProblem(
+      reportRunProblem(
         'candle-fetch-failed',
         'detect-lottery-fires: stock candle fetch failed; range_pos left null',
         {
@@ -1143,7 +1292,7 @@ export default withCronInstrumentation(
       );
     }
     if (candleFetchEmpty > 0) {
-      reportCandleProblem(
+      reportRunProblem(
         'candle-fetch-empty',
         'detect-lottery-fires: UW returned no stock candles; range_pos left null',
         { candleFetchEmpty, firstCandleFetchEmpty },
@@ -1182,12 +1331,36 @@ export default withCronInstrumentation(
         candleFetchEmpty,
         candleFetchSkippedIndex,
         candleFetchSkippedBreaker,
+        takeitPrefetchFailures: takeitPrefetchError == null ? 0 : 1,
+        flowSeriesFailures,
+        flowSeriesSkippedBreaker,
+        flowSeriesGenuineFailures,
       },
       'detect-lottery-fires completed',
     );
 
+    // Status:
+    //   - a genuine flow-series or Take-It prefetch error (a broken query)
+    //     → 'error', whatever was written: it is a bug, and the cron monitor
+    //     goes red;
+    //   - else a Take-It prefetch that timed out or hit a Neon blip
+    //     (takeit_prob NULL on every fire), or a flow series that failed or
+    //     was skipped by the breaker (no flow features or V2 score on that
+    //     ticker's fires), makes the run 'partial' when it wrote fires. With
+    //     nothing written, no row was degraded and the run stays 'success';
+    //     the counters and the Sentry warning still show the failure.
+    const degraded =
+      takeitPrefetchError != null ||
+      flowSeriesFailures > 0 ||
+      flowSeriesSkippedBreaker > 0;
+    const status: 'error' | 'partial' | 'success' =
+      flowSeriesGenuineFailures > 0 || takeitPrefetchFailureKind === 'error'
+        ? 'error'
+        : degraded && inserted > 0
+          ? 'partial'
+          : 'success';
     return {
-      status: 'success',
+      status,
       rows: inserted,
       metadata: {
         scanned: rows.length,
@@ -1209,6 +1382,14 @@ export default withCronInstrumentation(
         candleFetchEmpty,
         candleFetchSkippedIndex,
         candleFetchSkippedBreaker,
+        takeitPrefetchFailures: takeitPrefetchError == null ? 0 : 1,
+        takeitPrefetchError,
+        takeitPrefetchFailureKind,
+        flowSeriesFailures,
+        flowSeriesSkippedBreaker,
+        flowSeriesGenuineFailures,
+        firstFlowSeriesError,
+        firstFlowSeriesGenuineError: firstFlowSeriesGenuineErrorMeta,
       },
     };
   },
@@ -1418,33 +1599,4 @@ function daysBetween(fromYmd: string, toYmd: string): number {
   const a = Date.parse(`${fromYmd}T00:00:00Z`);
   const b = Date.parse(`${toYmd}T00:00:00Z`);
   return Math.round((b - a) / 86_400_000);
-}
-
-/**
- * Race a candle lookup against CANDLE_FETCH_DEADLINE_MS. Same shape as
- * withDbRetry's per-attempt race (api/_lib/db.ts): the timer is cleared
- * once the race settles, so a fast answer doesn't leave it armed and
- * holding the function open. The lookup itself isn't cancelled (uwFetch
- * aborts on its own 15 s timeout); its late result is ignored.
- */
-async function withCandleDeadline<T>(lookup: Promise<T>): Promise<T> {
-  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      lookup,
-      new Promise<never>((_, reject) => {
-        timeoutHandle = setTimeout(
-          () =>
-            reject(
-              new Error(
-                `stock candle fetch passed its ${CANDLE_FETCH_DEADLINE_MS} ms deadline`,
-              ),
-            ),
-          CANDLE_FETCH_DEADLINE_MS,
-        );
-      }),
-    ]);
-  } finally {
-    if (timeoutHandle != null) clearTimeout(timeoutHandle);
-  }
 }
