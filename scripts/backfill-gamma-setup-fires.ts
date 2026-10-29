@@ -547,7 +547,7 @@ async function main(): Promise<void> {
     loadVolRealized(),
   ]);
   console.log(
-    `  bars=${bars.length}  periscope_snapshots=${peri.snapshots.length}  es_bars=${esBars.length}  vol_realized=${vol.length}  (${Date.now() - t0}ms)`,
+    `  bars=${bars.length}  periscope_snapshots=${peri.snapshots.length}  futures_bars_es=${esBars.length}  vol_realized=${vol.length}  (${Date.now() - t0}ms)`,
   );
 
   const dayCtxs = buildDayContexts(bars, vol);

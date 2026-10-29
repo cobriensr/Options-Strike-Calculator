@@ -446,11 +446,11 @@ const FIVE_MIN_MS = 5 * 60_000;
  * either ES or SPX history is missing.
  *
  * ES bars live in `futures_bars` with `symbol='ES'` (uw-stream writes
- * front-month ES into that table — there is also an `es_bars`
- * table in the schema but it's empty / deprecated). A naïve query of
- * `es_bars` was the original Phase 1 bug: the table has no `date` or
- * `interval_min` columns, the query threw, the catch swallowed it, and
- * the PCS Monday detector's basis filter was silently disabled at deploy.
+ * front-month ES into that table). A naïve query of the old, empty
+ * `es_bars` table (dropped by migration #200) was the original Phase 1
+ * bug: that table had no `date` or `interval_min` columns, the query
+ * threw, the catch swallowed it, and the PCS Monday detector's basis
+ * filter was silently disabled at deploy.
  *
  * `referenceTime` is the timestamp the 6-minute window is anchored to.
  * The live cron passes the last closed minute (both tables hold closed

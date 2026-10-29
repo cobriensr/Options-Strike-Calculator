@@ -5615,4 +5615,13 @@ export const MIGRATIONS: Migration[] = [
       sql`DROP INDEX IF EXISTS ws_net_flow_per_ticker_ticker_ts_idx`,
     ],
   },
+  {
+    id: 200,
+    description:
+      'Drop es_overnight_summaries and es_bars. Only the compute-es-overnight cron, now removed, wrote es_overnight_summaries; only it and the weekly backup read it. es_bars has had no writer since Databento was removed on 2026-09-29; migration #42 copied its history into futures_bars, which uw-stream fills live. Both tables had 0 rows on prod on 2026-10-29, and no foreign key, view or function depends on either, so the drops need no CASCADE.',
+    statements: (sql) => [
+      sql`DROP TABLE IF EXISTS es_overnight_summaries`,
+      sql`DROP TABLE IF EXISTS es_bars`,
+    ],
+  },
 ];

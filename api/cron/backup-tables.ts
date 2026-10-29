@@ -37,8 +37,6 @@ const TABLES = [
   'training_features',
   'day_labels',
   'economic_events',
-  'es_bars',
-  'es_overnight_summaries',
   'schema_migrations',
 ] as const;
 
