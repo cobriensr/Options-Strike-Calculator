@@ -164,7 +164,8 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
   'auto-prefill-premarket': {
-    // Dual-slot 13:30 + 14:30 UTC (mirrors compute-es-overnight). The
+    // Dual-slot 13:30 + 14:30 UTC: the 08:30 CT cash open is 13:30 UTC in
+    // CDT and 14:30 UTC in CST, and no single fixed-UTC slot hits both. The
     // handler's isAfterCashOpen gate skips the early CST slot (07:30 CT)
     // so the post-open slot does the work; the redundant CDT slot is an
     // idempotent re-run. See the header comment in the handler.
@@ -254,11 +255,6 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
   },
   'compute-cone': {
     schedule: '32 13 * * 1-5',
-    checkinMargin: DEFAULT_MARGIN,
-    maxRuntime: DEFAULT_MAX_RUNTIME,
-  },
-  'compute-es-overnight': {
-    schedule: '35 13,14 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
