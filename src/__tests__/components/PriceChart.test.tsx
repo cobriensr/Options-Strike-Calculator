@@ -8,7 +8,7 @@
  */
 
 import { render, act } from '@testing-library/react';
-import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { PriceChart } from '../../components/GexTarget/PriceChart';
 import type { SPXCandle } from '../../hooks/useGexTarget';
 import type { TargetScore, StrikeScore } from '../../utils/gex-target';
@@ -736,6 +736,10 @@ describe('PriceChart: momentum badge', () => {
 });
 
 describe('PriceChart: resize', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('resizes the chart to its container when the ResizeObserver fires', () => {
     // The test setup's ResizeObserver never calls back; this one does
     const observations: Element[] = [];
@@ -757,9 +761,7 @@ describe('PriceChart: resize', () => {
       disconnect = vi.fn();
     }
 
-    const original = globalThis.ResizeObserver;
-    globalThis.ResizeObserver =
-      MockResizeObserver as unknown as typeof ResizeObserver;
+    vi.stubGlobal('ResizeObserver', MockResizeObserver);
 
     const { unmount, getByRole } = render(
       <PriceChart
@@ -773,9 +775,9 @@ describe('PriceChart: resize', () => {
 
     expect(getByRole('img', { name: /spx price chart/i })).toBeInTheDocument();
     expect(observations.length).toBeGreaterThan(0);
+    // The resize reaches the chart: width only, height is CSS-controlled
+    expect(mockChart.applyOptions).toHaveBeenCalledWith({ width: 400 });
 
     unmount();
-
-    globalThis.ResizeObserver = original;
   });
 });

@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
-import { createRef } from 'react';
+import {
+  createRef,
+  useLayoutEffect,
+  type ComponentType,
+  type ReactNode,
+} from 'react';
 import AppHeader, { type AppHeaderProps } from '../components/AppHeader';
 import type { CollapseSignal } from '../components/collapse-context';
 import type { MarketSession, useMarketData } from '../hooks/useMarketData';
@@ -125,7 +130,10 @@ function makeCollapseSignal(
   return { version: 0, collapsed: false, ...overrides };
 }
 
-function renderHeader(overrides: Partial<AppHeaderProps> = {}) {
+function renderHeader(
+  overrides: Partial<AppHeaderProps> = {},
+  wrapper?: ComponentType<{ children: ReactNode }>,
+) {
   const props: AppHeaderProps = {
     accessMode: 'owner',
     view: 'calculator' as ViewMode,
@@ -149,7 +157,7 @@ function renderHeader(overrides: Partial<AppHeaderProps> = {}) {
     onOpenPanelPrefs: vi.fn(),
     ...overrides,
   };
-  return { ...render(<AppHeader {...props} />), props };
+  return { ...render(<AppHeader {...props} />, { wrapper }), props };
 }
 
 // ============================================================
@@ -177,37 +185,58 @@ describe('AppHeader', () => {
       document.documentElement.style.removeProperty('--app-header-h');
     });
 
-    it('publishes its height on <html> at mount and on resize, and stops on unmount', () => {
-      const callbacks: Array<() => void> = [];
-      const disconnectSpy = vi.fn();
+    it('publishes its height on <html> in the layout phase, on resize, and stops on unmount', () => {
+      interface StubObserver {
+        cb: () => void;
+        observe: ReturnType<typeof vi.fn>;
+        disconnect: ReturnType<typeof vi.fn>;
+      }
+      // Each observer gets its own spies: ControlsRow observes (and
+      // disconnects, to re-observe) on its own, so shared spies or firing
+      // every callback would hide a broken header observer.
+      const observers: StubObserver[] = [];
       vi.stubGlobal(
         'ResizeObserver',
         class {
-          constructor(cb: () => void) {
-            callbacks.push(cb);
-          }
+          cb: () => void;
           observe = vi.fn();
           unobserve = vi.fn();
-          disconnect = disconnectSpy;
+          disconnect = vi.fn();
+          constructor(cb: () => void) {
+            this.cb = cb;
+            observers.push(this as unknown as StubObserver);
+          }
         },
       );
       const rect = vi
         .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
         .mockReturnValue({ height: 90 } as DOMRect);
-      const { unmount } = renderHeader();
       const root = document.documentElement;
-      // Published by the layout effect itself, before any observer callback
-      // (so the first paint has it)
-      expect(root.style.getPropertyValue('--app-header-h')).toBe('90px');
 
+      // A parent's layout effect runs after its children's and before any
+      // passive effect, so this reads what AppHeader published in its own
+      // layout phase: before the first paint, with no observer callback.
+      let atLayout: string | null = null;
+      function LayoutProbe({ children }: { children: ReactNode }) {
+        useLayoutEffect(() => {
+          atLayout = root.style.getPropertyValue('--app-header-h');
+        }, []);
+        return children;
+      }
+      const { unmount } = renderHeader({}, LayoutProbe);
+      expect(atLayout).toBe('90px');
+
+      const own = observers.find((o) =>
+        o.observe.mock.calls.some(([el]) => el === screen.getByRole('banner')),
+      );
+      if (!own) throw new Error('no ResizeObserver watches the header');
       rect.mockReturnValue({ height: 105 } as DOMRect);
-      act(() => {
-        for (const cb of callbacks) cb();
-      });
+      act(() => own.cb());
       expect(root.style.getPropertyValue('--app-header-h')).toBe('105px');
+      expect(own.disconnect).not.toHaveBeenCalled();
 
       unmount();
-      expect(disconnectSpy).toHaveBeenCalled();
+      expect(own.disconnect).toHaveBeenCalledTimes(1);
       expect(root.style.getPropertyValue('--app-header-h')).toBe('');
     });
   });
