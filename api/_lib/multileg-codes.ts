@@ -17,8 +17,11 @@ export const MULTI_LEG_TRADE_CODES: readonly string[] = [
   'mfsl',
   'mlct',
   'cbmo',
-  // Multilateral compression trade. Prints outside regular hours, so it
-  // cannot anchor an intraday fire; listed because it is a multi-leg code.
+  // Per the OPRA Pillar output spec, MCTP is an "execution in a proprietary
+  // product done as part of a multilateral compression. Trades are executed
+  // outside of regular trading hours at prices derived from end of day
+  // markets." So it cannot anchor an intraday fire; listed because it is a
+  // multi-leg code.
   'mctp',
 ];
 

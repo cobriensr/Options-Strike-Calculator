@@ -171,8 +171,8 @@ interface SilentBoomAlertResponse {
   /**
    * Multi-leg share at the spike bucket (migration #146). Fraction of
    * spike-bucket size whose UW trade_code is a multi-leg sale code
-   * (mlat/mlet/mlft/mfto/masl/mesl/mfsl/mlct). Surfaced so the UI can
-   * render a "SPREAD-CONFIRMED" badge in the 10-50% sweet spot — EDA
+   * (see MULTI_LEG_TRADE_CODES in api/_lib/multileg-codes.ts). Surfaced so
+   * the UI can render a "SPREAD-CONFIRMED" badge in the 10-50% sweet spot — EDA
    * 2026-05-15 found 2.08× win50 lift on that range. Null on rows
    * written before #146.
    */
