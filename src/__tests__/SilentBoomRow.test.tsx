@@ -1206,3 +1206,84 @@ describe('SilentBoomRow: round-tripped dim treatment', () => {
     ).not.toBeInTheDocument();
   });
 });
+
+// Spec 2026-10-28-classifier-replacement-design.md ("Badge"): whether the
+// trigger print was one leg of a multi-leg order. Information only.
+describe('SilentBoomRow: trigger-print leg badge', () => {
+  const LEGS = [
+    {
+      optionType: 'P' as const,
+      strike: 140,
+      expiry: '2026-05-08',
+      size: 40,
+      price: 2.1,
+      tradeCode: null,
+    },
+    {
+      optionType: 'P' as const,
+      strike: 135,
+      expiry: '2026-05-08',
+      size: 40,
+      price: 1.15,
+      tradeCode: 'mlet',
+    },
+  ];
+
+  it('shows the spread leg with its shape and strikes', () => {
+    renderRow(
+      makeAlert({
+        anchorLegKind: 'multi_leg',
+        spreadShape: 'vertical',
+        spreadLegs: LEGS,
+      }),
+    );
+    expect(
+      screen.getByText('trigger print: spread leg · put vertical 135/140'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows a stock-tied leg', () => {
+    renderRow(makeAlert({ anchorLegKind: 'stock_tied' }));
+    expect(
+      screen.getByText('trigger print: stock-tied leg'),
+    ).toBeInTheDocument();
+  });
+
+  it.each([
+    ['single', { anchorLegKind: 'single' as const }],
+    ['NULL kind', { anchorLegKind: null }],
+    ['absent fields', {}],
+    [
+      'a multi_leg anchor with no shape or legs',
+      { anchorLegKind: 'multi_leg' as const },
+    ],
+  ])('shows nothing for %s', (_label, fields) => {
+    renderRow(makeAlert(fields));
+    expect(screen.queryByText(/trigger print:/)).not.toBeInTheDocument();
+  });
+
+  it('renders alongside the unchanged Spread-Confirmed badge', () => {
+    renderRow(
+      makeAlert({
+        multiLegShare: 0.3,
+        anchorLegKind: 'multi_leg',
+        spreadShape: 'vertical',
+        spreadLegs: LEGS,
+      }),
+    );
+    const confirmed = screen.getByTestId('silent-boom-spread-confirmed-badge');
+    expect(confirmed).toHaveTextContent('Spread-Confirmed');
+    expect(confirmed).toHaveAttribute('title', expect.stringContaining('30%'));
+    expect(
+      screen.getByText('trigger print: spread leg · put vertical 135/140'),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps Spread-Confirmed when the trigger print was a single leg', () => {
+    renderRow(makeAlert({ multiLegShare: 0.3, anchorLegKind: 'single' }));
+    expect(
+      screen.getByTestId('silent-boom-spread-confirmed-badge'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/trigger print:/)).not.toBeInTheDocument();
+  });
+});

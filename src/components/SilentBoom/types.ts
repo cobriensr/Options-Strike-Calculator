@@ -9,6 +9,11 @@
 // importable from this path so existing SB call sites don't churn.
 import type { OptionType, ScoreTier } from '../../types/index.js';
 import type { GexbotFireContext } from '../../types/gexbot.js';
+import type {
+  AnchorLegKind,
+  SpreadLeg,
+  SpreadShape,
+} from '../../types/spread-legs.js';
 export type { OptionType };
 
 export type SilentBoomSortMode = 'newest' | 'spike_ratio' | 'vol_oi' | 'peak';
@@ -173,6 +178,17 @@ export interface SilentBoomAlert {
    * that range. Null on rows enriched before #146.
    */
   multiLegShare: number | null;
+  /**
+   * Exchange leg kind of the trigger print: `single`, one leg of a
+   * multi-leg order (`multi_leg`), or the option leg of a stock+option
+   * order (`stock_tied`). Null when unlabelled and on alerts from before
+   * migration #197. Information only.
+   */
+  anchorLegKind?: AnchorLegKind | null;
+  /** Structure of the order; non-null only for `multi_leg`. */
+  spreadShape?: SpreadShape | null;
+  /** Legs of that order, anchor first; non-null only for `multi_leg`. */
+  spreadLegs?: SpreadLeg[] | null;
   /**
    * Ticker-level cumulative net call premium at bucket_ct, snapshotted
    * by the silent-boom-feed LATERAL join against

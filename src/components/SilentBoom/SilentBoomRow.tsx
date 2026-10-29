@@ -27,6 +27,7 @@ import { gexbotBadge } from '../../utils/gexbot-badge.js';
 import { CohortCountdown } from '../ui/CohortCountdown.js';
 import { computeCountdownRemaining } from '../ui/cohort-countdown-utils.js';
 import { signedOtmPct } from '../../utils/moneyness.js';
+import { describeSpread } from '../../utils/spread-badge.js';
 import { useNowMinute } from '../../hooks/useNowMinute.js';
 import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
 
@@ -291,6 +292,35 @@ const spreadConfirmedBadge = (
 };
 
 /**
+ * Trigger-print leg badge — whether the exchange flagged the print that
+ * triggered the alert as one leg of a multi-leg order, or as the option leg
+ * of a stock-and-option order. Distinct from Spread-Confirmed, which reads
+ * the share of multi-leg volume in the spike bucket. Single, unlabelled and
+ * pre-#197 alerts get no badge. Information only: nothing filters, dims or
+ * sorts on it. Spec: docs/superpowers/specs/2026-10-28-classifier-
+ * replacement-design.md ("Badge").
+ */
+const triggerLegBadge = (
+  alert: SilentBoomAlert,
+): { label: string; tooltip: string } | null => {
+  const info = 'Information only: not part of the score.';
+  if (alert.anchorLegKind === 'multi_leg') {
+    if (alert.spreadShape == null || alert.spreadLegs == null) return null;
+    return {
+      label: `trigger print: spread leg · ${describeSpread(alert.spreadShape, alert.spreadLegs)}`,
+      tooltip: `The exchange flagged the print that triggered this alert as one leg of a multi-leg order. ${info}`,
+    };
+  }
+  if (alert.anchorLegKind === 'stock_tied') {
+    return {
+      label: 'trigger print: stock-tied leg',
+      tooltip: `The exchange flagged the print that triggered this alert as the option leg of a stock-and-option order. ${info}`,
+    };
+  }
+  return null;
+};
+
+/**
  * Spike-ratio badge — gives the eye an at-a-glance read on how
  * extreme the burst was vs the contract's own preceding 4-bucket
  * baseline. Detector min is 5x.
@@ -397,6 +427,7 @@ function areRowsEqual(prev: SilentBoomRowProps, next: SilentBoomRowProps) {
   if (a.scoreTier !== b.scoreTier) return false;
   if (a.directionGated !== b.directionGated) return false;
   if (a.multiLegShare !== b.multiLegShare) return false;
+  if (triggerLegBadge(a)?.label !== triggerLegBadge(b)?.label) return false;
   if (a.mktTideDiff !== b.mktTideDiff) return false;
   // GexBot snapshot is written once at insert time; comparing
   // capturedAt is enough to detect "the alert just got its GexBot
@@ -447,6 +478,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
     (alert.scoreTier === 'tier1' || alert.scoreTier === 'tier2');
   const gated = alert.directionGated ? gatedPill(tierPreserved) : null;
   const spreadConfirmed = spreadConfirmedBadge(alert.multiLegShare);
+  const triggerLeg = triggerLegBadge(alert);
   const gexbot = gexbotBadge(alert.gex);
   const flowMatch = flowMatchBadge(alert.optionType, liveFlowSnapshot ?? null);
   const flowInverted = flowInvertedBadge(
@@ -656,6 +688,18 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             aria-label={spreadConfirmed.tooltip}
           >
             {spreadConfirmed.label}
+          </span>
+        )}
+        {/* Trigger-print leg badge — was the print that fired the alert a
+            spread leg or a stock-tied leg? Neutral, information only; it
+            sits beside Spread-Confirmed and neither affects the other. */}
+        {triggerLeg && (
+          <span
+            data-testid="silent-boom-trigger-leg-badge"
+            className="border-edge bg-surface-alt text-secondary rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold"
+            title={triggerLeg.tooltip}
+          >
+            {triggerLeg.label}
           </span>
         )}
         {/* GexBot context badge — snapshot of the top probe signals

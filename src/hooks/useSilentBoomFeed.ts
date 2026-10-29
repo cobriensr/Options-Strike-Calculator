@@ -8,8 +8,21 @@
  * destructure `data?.alerts ?? []`, `data?.total ?? 0`, etc.
  */
 
+import { z } from 'zod';
+import { useRef } from 'react';
 import { POLL_INTERVALS } from '../constants/index.js';
 import { useFetchedData, type UseFetchedDataResult } from './useFetchedData.js';
+import {
+  claimReport,
+  INVALID_SHAPE_ERROR,
+  summarizeZodIssues,
+} from '../lib/response-guard.js';
+import { captureUnlessAuth } from '../lib/sentry-helpers.js';
+import type {
+  AnchorLegKind,
+  SpreadLeg,
+  SpreadShape,
+} from '../types/spread-legs.js';
 import type {
   OptionType,
   SilentBoomAskPctBand,
@@ -19,6 +32,54 @@ import type {
   SilentBoomSortMode,
   SilentBoomTod,
 } from '../components/SilentBoom/types.js';
+
+// ── Response schema ──────────────────────────────────────────────────────
+// Guards the spread-leg fields (spec 2026-10-28-classifier-replacement-
+// design.md, "Badge"): the row badge feeds spreadShape and spreadLegs to
+// describeSpread. Every other field passes through unchecked (looseObject),
+// as it did before. All three are optional and nullable, because alerts
+// from before migration #197 have none of them.
+
+// Mapped objects, so adding a kind or shape to the shared union fails to
+// compile until it is listed here, instead of rejecting the feed at runtime.
+const ANCHOR_LEG_KINDS: { [K in AnchorLegKind]: K } = {
+  single: 'single',
+  multi_leg: 'multi_leg',
+  stock_tied: 'stock_tied',
+};
+const SPREAD_SHAPES: { [S in SpreadShape]: S } = {
+  vertical: 'vertical',
+  calendar: 'calendar',
+  diagonal: 'diagonal',
+  straddle: 'straddle',
+  combo: 'combo',
+  butterfly: 'butterfly',
+  three_leg: 'three_leg',
+  four_leg: 'four_leg',
+  four_leg_multi_expiry: 'four_leg_multi_expiry',
+  complex: 'complex',
+  unpaired: 'unpaired',
+  other: 'other',
+};
+
+const spreadLegSchema = z.object({
+  optionType: z.enum(['C', 'P']),
+  strike: z.number(),
+  expiry: z.string(),
+  size: z.number(),
+  price: z.number(),
+  tradeCode: z.string().nullable(),
+}) satisfies z.ZodType<SpreadLeg>;
+
+const alertSchema = z.looseObject({
+  anchorLegKind: z.enum(ANCHOR_LEG_KINDS).nullish(),
+  spreadShape: z.enum(SPREAD_SHAPES).nullish(),
+  spreadLegs: z.array(spreadLegSchema).nullish(),
+});
+
+const silentBoomFeedResponseSchema = z.looseObject({
+  alerts: z.array(alertSchema),
+});
 
 interface UseSilentBoomFeedArgs {
   date: string;
@@ -114,11 +175,41 @@ export function useSilentBoomFeed({
   // the `page === 0` gate into the historical flag so paginated views
   // single-fetch instead of polling. The cross-day staleness gate lives
   // in the primitive via `requestKey`/`responseKey`.
+  // A body that fails the schema is handled like a failed fetch: the throw
+  // lands in useFetchedData's catch, which sets `error` and keeps the last
+  // good payload. The latch reports a failure that repeats every poll once
+  // per date, and a good response re-arms it.
+  const reportedKeyRef = useRef<string | null>(null);
+  const parse = (raw: unknown): SilentBoomFeedResponse => {
+    const parsed = silentBoomFeedResponseSchema.safeParse(raw);
+    if (!parsed.success) {
+      if (claimReport(reportedKeyRef, date)) {
+        captureUnlessAuth(
+          new Error('silent-boom-feed response failed schema validation'),
+          {
+            contexts: {
+              silentBoomFeed: {
+                date,
+                ...summarizeZodIssues(parsed.error.issues),
+              },
+            },
+          },
+        );
+      }
+      throw new Error(INVALID_SHAPE_ERROR);
+    }
+    reportedKeyRef.current = null;
+    // The schema checks only the spread-leg fields; return the body as
+    // received rather than a re-built copy of every poll's payload.
+    return raw as SilentBoomFeedResponse;
+  };
+
   return useFetchedData<SilentBoomFeedResponse>({
     url,
     marketOpen,
     pollIntervalMs: POLL_INTERVALS.OTM_FLOW,
     historical: historical || page !== 0,
+    parse,
     requestKey: date,
     responseKey: (d) => d.date?.slice(0, 10),
   });

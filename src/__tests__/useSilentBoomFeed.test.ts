@@ -8,12 +8,20 @@ import { renderHook, waitFor, act } from '@testing-library/react';
 import { useSilentBoomFeed } from '../hooks/useSilentBoomFeed';
 import { POLL_INTERVALS } from '../constants';
 import { getCTDateStr } from '../utils/timezone';
+import { captureUnlessAuth } from '../lib/sentry-helpers';
+import { INVALID_SHAPE_ERROR } from '../lib/response-guard';
 import type { SilentBoomFeedResponse } from '../components/SilentBoom/types';
+
+vi.mock('../lib/sentry-helpers', () => ({
+  captureUnlessAuth: vi.fn(),
+}));
+const mockCaptureUnlessAuth = vi.mocked(captureUnlessAuth);
 
 const fetchMock = vi.fn();
 
 beforeEach(() => {
   fetchMock.mockReset();
+  mockCaptureUnlessAuth.mockReset();
   globalThis.fetch = fetchMock as unknown as typeof fetch;
 });
 
@@ -517,5 +525,118 @@ describe('useSilentBoomFeed', () => {
 
     await waitFor(() => expect(result.current.data?.total).toBe(5));
     expect(result.current.data?.total).not.toBe(9999);
+  });
+});
+
+// Spread-leg fields (spec 2026-10-28-classifier-replacement-design.md,
+// "Badge"): the row badge feeds spreadShape/spreadLegs to describeSpread.
+describe('useSilentBoomFeed: spread-leg response schema', () => {
+  const LEG = {
+    optionType: 'P',
+    strike: 135,
+    expiry: '2026-05-07',
+    size: 40,
+    price: 1.15,
+    tradeCode: 'mlet',
+  };
+  const alert = (fields: Record<string, unknown>) => ({ id: 1, ...fields });
+  const feed = (alerts: unknown[]) =>
+    emptyFeed({ alerts: alerts as SilentBoomFeedResponse['alerts'] });
+
+  async function load(body: unknown) {
+    fetchMock.mockResolvedValueOnce(jsonResponse(body));
+    const hook = renderHook(() =>
+      useSilentBoomFeed({ date: '2026-05-07', marketOpen: false }),
+    );
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+    return hook;
+  }
+
+  it('accepts and passes through the spread-leg fields', async () => {
+    const body = feed([
+      alert({
+        anchorLegKind: 'multi_leg',
+        spreadShape: 'vertical',
+        spreadLegs: [LEG, { ...LEG, strike: 140, tradeCode: null }],
+      }),
+      alert({ id: 2, anchorLegKind: 'stock_tied' }),
+    ]);
+    const { result } = await load(body);
+    expect(result.current.error).toBeNull();
+    expect(result.current.data?.alerts[0]).toMatchObject({
+      anchorLegKind: 'multi_leg',
+      spreadShape: 'vertical',
+    });
+    expect(result.current.data?.alerts[0]?.spreadLegs).toHaveLength(2);
+  });
+
+  it('accepts missing and null fields (old rows, pre-#197 alerts)', async () => {
+    const { result } = await load(
+      feed([
+        alert({}),
+        alert({
+          id: 2,
+          anchorLegKind: null,
+          spreadShape: null,
+          spreadLegs: null,
+        }),
+      ]),
+    );
+    expect(result.current.error).toBeNull();
+    expect(result.current.data?.alerts).toHaveLength(2);
+  });
+
+  it.each([
+    ['an unknown anchorLegKind', { anchorLegKind: 'spread' }],
+    ['an unknown spreadShape', { spreadShape: 'iron_condor' }],
+    ['spreadLegs that is not an array', { spreadLegs: {} }],
+    ['a leg with a string strike', { spreadLegs: [{ ...LEG, strike: '135' }] }],
+  ])('rejects an alert with %s as a failed fetch', async (_label, fields) => {
+    const { result } = await load(feed([alert(fields)]));
+    expect(result.current.error).toBe(INVALID_SHAPE_ERROR);
+    expect(result.current.data).toBeNull();
+    expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
+    const [err, ctx] = mockCaptureUnlessAuth.mock.calls[0]!;
+    expect((err as Error).message).toBe(
+      'silent-boom-feed response failed schema validation',
+    );
+    expect(ctx).toMatchObject({
+      contexts: {
+        silentBoomFeed: {
+          date: '2026-05-07',
+          issues: [expect.stringMatching(/^alerts\.0\./)],
+          issueCount: 1,
+        },
+      },
+    });
+  });
+
+  it('rejects a body whose alerts is not an array', async () => {
+    const { result } = await load({ ...emptyFeed(), alerts: null });
+    expect(result.current.error).toBe(INVALID_SHAPE_ERROR);
+    expect(result.current.data).toBeNull();
+  });
+
+  it('keeps the last good payload and reports a repeating failure once', async () => {
+    const good = emptyFeed({ total: 7 });
+    const bad = feed([alert({ anchorLegKind: 'x' })]);
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(good))
+      .mockResolvedValueOnce(jsonResponse(bad))
+      .mockResolvedValueOnce(jsonResponse(bad));
+    const { result } = renderHook(() =>
+      useSilentBoomFeed({ date: '2026-05-07', marketOpen: false }),
+    );
+    await waitFor(() => expect(result.current.data?.total).toBe(7));
+    for (const calls of [2, 3]) {
+      await act(async () => {
+        result.current.refresh();
+      });
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(calls));
+      await waitFor(() => expect(result.current.loading).toBe(false));
+    }
+    expect(result.current.error).toBe(INVALID_SHAPE_ERROR);
+    expect(result.current.data?.total).toBe(7);
+    expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
   });
 });
