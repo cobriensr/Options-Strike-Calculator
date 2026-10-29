@@ -31,7 +31,6 @@ jobs:
       sidecar: ${{ steps.filter.outputs.sidecar }}
       uw_stream: ${{ steps.filter.outputs.uw_stream }}
       nightly: ${{ steps.filter.outputs.nightly }}
-      classifier: ${{ steps.filter.outputs.classifier }}
       e2e: ${{ steps.filter.outputs.e2e }}
     steps:
       - uses: actions/checkout@v6
@@ -73,12 +72,6 @@ jobs:
               - '.github/workflows/ci.yml'
             nightly:
               - 'nightly/**'
-              - '.github/workflows/ci.yml'
-            # ml/src/multileg_*.py is the source of truth for classifier's
-            # vendored copies (and a classifier Railway watchPattern).
-            classifier:
-              - 'classifier/**'
-              - 'ml/src/multileg_*.py'
               - '.github/workflows/ci.yml'
             # What the browser loads under test. api/** is left out: the specs
             # stub /api with page.route, nothing serves the dev proxy's
@@ -229,7 +222,7 @@ jobs:
       - name: Lint, Format Check & Tests
         run: cd sidecar && make review PYTHON=python
 
-  # uw-stream and classifier gate check-only: unlike ml/sidecar's
+  # uw-stream gates check-only: unlike ml/sidecar's
   # `make review` (ruff --fix + ruff format in write mode), fixable lint and
   # format drift fail the job. Every gate after install runs even if an
   # earlier one failed, so a Dependabot bump still reports its test result.
@@ -310,51 +303,3 @@ jobs:
       - name: Tests
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: python -m pytest --cov=src --cov-report=term-missing
-
-  classifier:
-    name: Classifier Quality Gate
-    needs: [changes]
-    if: needs.changes.outputs.classifier == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: classifier
-    steps:
-      # The sync check finds ml/src/ relative to its own file (not the cwd);
-      # fetch-depth limits history only, so depth 1 still has the full tree.
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 1
-
-      - uses: actions/setup-python@v6
-        with:
-          # Matches the python:3.12-slim production image.
-          python-version: '3.12'
-          cache: 'pip'
-          cache-dependency-path: |
-            classifier/requirements.txt
-            classifier/requirements-dev.txt
-
-      - name: Install dependencies
-        id: install
-        run: pip install -r requirements-dev.txt
-
-      # Own step so drift between ml/src/multileg_*.py and _vendored_ml/
-      # shows up as a named failure, not one test among the suite.
-      # --no-cov: addopts' 95% gate would fail a two-test run.
-      - name: Vendored ml/src sync check
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: python -m pytest tests/test_vendored_ml_sync.py --no-cov
-
-      - name: Lint
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: python -m ruff check src/ tests/ conftest.py
-
-      - name: Format check
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: python -m ruff format --check src/ tests/ conftest.py
-
-      - name: Tests (95% coverage gate via pyproject addopts)
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: python -m pytest
