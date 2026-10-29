@@ -108,7 +108,14 @@ describe('validateEodZip', () => {
     const zip = buildStoredZip([{ ...list[0]!, method: 8 }]);
     const dataStart = 30 + (list[0]?.name.length ?? 0);
     zip.fill(0xff, dataStart, dataStart + 4);
-    expect(reasonOf(() => validateEodZip(zip, 'VALE', DATE))).toBe('bad_crc');
+    let caught: EodZipError | undefined;
+    try {
+      validateEodZip(zip, 'VALE', DATE);
+    } catch (err) {
+      caught = err as EodZipError;
+    }
+    expect(caught?.reason).toBe('bad_crc');
+    expect(caught?.message).toContain('Corrupt deflate data');
   });
 
   it('rejects an unsupported compression method', () => {
@@ -130,6 +137,68 @@ describe('validateEodZip', () => {
     const zip = buildStoredZip(entries('VALE', 1));
     const cdStart = viewOf(zip).getUint32(zip.length - 22 + 16, true);
     viewOf(zip).setUint32(cdStart + 42, zip.length + 1000, true);
+    expect(reasonOf(() => validateEodZip(zip, 'VALE', DATE))).toBe('not_zip');
+  });
+
+  it.each([
+    ['compressed size', 20],
+    ['raw size', 24],
+    ['local offset', 42],
+  ])('rejects a ZIP64 sentinel in the entry %s', (_label, field) => {
+    const zip = buildStoredZip(entries('VALE', 1));
+    const cdStart = viewOf(zip).getUint32(zip.length - 22 + 16, true);
+    viewOf(zip).setUint32(cdStart + field, 0xffffffff, true);
+    expect(reasonOf(() => validateEodZip(zip, 'VALE', DATE))).toBe(
+      'zip64_unsupported',
+    );
+  });
+
+  it('rejects a central-directory name length running past the body', () => {
+    const zip = buildStoredZip(entries('VALE', 1));
+    const cdStart = viewOf(zip).getUint32(zip.length - 22 + 16, true);
+    viewOf(zip).setUint16(cdStart + 28, 0xffff, true);
+    expect(reasonOf(() => validateEodZip(zip, 'VALE', DATE))).toBe('not_zip');
+  });
+
+  it('rejects entry data running past the end of the body', () => {
+    const zip = buildStoredZip(entries('VALE', 1));
+    const cdStart = viewOf(zip).getUint32(zip.length - 22 + 16, true);
+    viewOf(zip).setUint32(cdStart + 20, zip.length, true);
+    viewOf(zip).setUint32(cdStart + 24, zip.length, true);
+    expect(reasonOf(() => validateEodZip(zip, 'VALE', DATE))).toBe('not_zip');
+  });
+
+  it('rejects a body shorter than an EOCD record', () => {
+    expect(
+      reasonOf(() => validateEodZip(new Uint8Array(10), 'VALE', DATE)),
+    ).toBe('not_zip');
+  });
+
+  it('finds an EOCD followed by a 65,535-byte comment', () => {
+    const zip = buildStoredZip(entries('VALE', 2));
+    const commented = new Uint8Array(zip.length + 0xffff);
+    commented.set(zip);
+    viewOf(commented).setUint16(zip.length - 22 + 20, 0xffff, true);
+    expect(validateEodZip(commented, 'VALE', DATE).entryCount).toBe(2);
+  });
+
+  it('rejects a central directory whose size disagrees with its entries', () => {
+    const zip = buildStoredZip(entries('VALE', 2));
+    const size = viewOf(zip).getUint32(zip.length - 22 + 12, true);
+    viewOf(zip).setUint32(zip.length - 22 + 12, size - 1, true);
+    expect(reasonOf(() => validateEodZip(zip, 'VALE', DATE))).toBe('not_zip');
+  });
+
+  it('rejects a central directory whose count disagrees with its size', () => {
+    const zip = buildStoredZip(entries('VALE', 2));
+    viewOf(zip).setUint16(zip.length - 22 + 10, 1, true);
+    expect(reasonOf(() => validateEodZip(zip, 'VALE', DATE))).toBe('not_zip');
+  });
+
+  it('rejects a stored entry whose sizes disagree', () => {
+    const zip = buildStoredZip(entries('VALE', 1));
+    const cdStart = viewOf(zip).getUint32(zip.length - 22 + 16, true);
+    viewOf(zip).setUint32(cdStart + 24, 3, true);
     expect(reasonOf(() => validateEodZip(zip, 'VALE', DATE))).toBe('not_zip');
   });
 });

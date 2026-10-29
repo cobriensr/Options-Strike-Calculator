@@ -123,6 +123,7 @@ export function validateEodZip(
 
     let actual: number;
     if (method === 0) {
+      if (compSize !== rawSize) throw notZip(`stored size mismatch: ${name}`);
       actual = zlib.crc32(stored);
     } else {
       try {
@@ -141,5 +142,7 @@ export function validateEodZip(
     entryNames.push(name);
   }
 
+  if (pos !== cdOffset + cdSize)
+    throw notZip('central directory size mismatch');
   return { entryCount: entryNames.length, entryNames };
 }
