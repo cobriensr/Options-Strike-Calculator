@@ -222,7 +222,7 @@ What you need a paid account / API key for, in rough priority order.
 
 - **What it powers**: Hosts the `sidecar/` and `uw-stream/` Python services.
 - **Sign up**: [railway.app](https://railway.app).
-- **Cost**: ~$5–20/month/service for personal usage tier. Two services = budget **~$20–40/month**.
+- **Cost**: ~$5–20/month/service for personal usage tier. Check your actual Railway bill.
 - **Sidecar env vars**: `DATABASE_URL` (only for its `/health` db check), `SENTRY_DSN`, `TAKEIT_SERVER_ENABLED`, `TAKEIT_SIDECAR_SHARED_SECRET`, `ARCHIVE_*`, `BLOB_READ_WRITE_TOKEN`. See [sidecar/README.md](../sidecar/README.md).
 - **Vercel env vars for the sidecar**: `SIDECAR_URL` (archive queries for analog days and `fetch-day-ohlc`), `SIDECAR_TAKEIT_URL` and `SIDECAR_TAKEIT_SECRET` (same value as the sidecar's `TAKEIT_SIDECAR_SHARED_SECRET`, sent as a bearer token by the `takeit-fill-shap` cron).
 
@@ -256,13 +256,13 @@ For an active solo trader running the full stack:
 | Neon Postgres Pro               | ~$19                       |
 | Anthropic (Claude Opus 4.7)     | $50–100                    |
 | Unusual Whales Advanced         | ~$120–300 (verify current) |
-| Railway (3 services)            | $30–60                     |
+| Railway services                | varies (check your bill)   |
 | OpenAI embeddings               | <$5                        |
 | Upstash / Vercel Blob / Sentry  | Free tier                  |
 | Twilio (occasional SMS)         | <$5                        |
 | Schwab / FRED / Finnhub / VAPID | Free                       |
 
-**Realistic total: ~$250–500/month**, with UW the biggest line item. Dropping the Railway services saves roughly $20–40/month of that. The calculator, the Schwab-backed panels and the AI analysis still work, but every websocket-fed panel goes empty: futures context, Lottery Finder, Silent Boom, dark pool levels, Interval B/A, and the opening-flow and flow-regime signals (all fed by `uw-stream`). You also lose Take-It SHAP flags (`sidecar`). Spread-leg badges come from the exchange's own multi-leg trade code, so they need no extra service.
+**Realistic total: ~$250–500/month**, with UW the biggest line item. Dropping the Railway services removes that line item. The calculator, the Schwab-backed panels and the AI analysis still work, but every websocket-fed panel goes empty: futures context, Lottery Finder, Silent Boom, dark pool levels, Interval B/A, and the opening-flow and flow-regime signals (all fed by `uw-stream`). You also lose Take-It SHAP flags (`sidecar`). Spread-leg badges come from the exchange's own multi-leg trade code, so they need no extra service.
 
 ---
 
@@ -303,7 +303,7 @@ For deeper reference:
 These figures come from a code-and-config audit, not from billing statements. Confirm them against your own:
 
 - Unusual Whales Advanced tier pricing
-- Railway monthly bill across all three services
+- Railway monthly bill across all services
 - Anthropic spend at your current analyze cadence
 
 If any number above is materially off, treat this doc as the structure-and-services map and substitute actual costs.

@@ -42,7 +42,7 @@ pytest tests/
 make test        # Windows: make test PYTHON=.venv/Scripts/python
 ```
 
-The Makefile defaults to `PYTHON ?= .venv/Scripts/python` on Windows and `.venv/bin/python` elsewhere. `make lint` auto-fixes with ruff (`ruff check --fix` plus `ruff format`), and `make review` runs lint, then the tests with coverage. CI runs `make review PYTHON=python`, so format drift is fixed in CI rather than failing it (the uw-stream and classifier gates only check).
+The Makefile defaults to `PYTHON ?= .venv/Scripts/python` on Windows and `.venv/bin/python` elsewhere. `make lint` auto-fixes with ruff (`ruff check --fix` plus `ruff format`), and `make review` runs lint, then the tests with coverage. CI runs `make review PYTHON=python`, so format drift is fixed in CI rather than failing it (the uw-stream gate only checks).
 
 ## Environment variables
 
