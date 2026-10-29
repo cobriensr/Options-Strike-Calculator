@@ -70,7 +70,7 @@ ml/               Python ML pipeline (clustering, EDA, classification, visualiza
   experiments/    JSON experiment results (phase2_early runs)
   .venv/          Python venv — run scripts with `ml/.venv/bin/python` (macOS/Linux) or `ml/.venv/Scripts/python`
                   (Windows), not system python3
-  conftest.py     Adds ml/src/ to sys.path for test imports
+  conftest.py     Adds ml/src/ and ml/tests/ to sys.path for test imports
 
 docs/             Design artifacts
   superpowers/    specs/ and plans/ for feature design documents
@@ -189,12 +189,13 @@ Everything else gets the full loop.
 
 ### Backend (api/)
 
-- **Auth is single-owner + optional guest keys** — one Schwab OAuth session via httpOnly cookie. Plaintext cookie is intentional. The owner can hand out comma-separated guest keys via `GUEST_ACCESS_KEYS`. Guests can read owner-gated data endpoints (dark pool, GEX, TRACE Live, etc.). Every client-initiated write is owner-only (`guardOwnerEndpoint`) except a guest's own panel layout (`api/panel-prefs.ts`, keyed per guest key). The Anthropic-backed `api/analyze.ts` stays owner-only. See `api/_lib/guest-auth.ts` (`rejectIfNotOwnerOrGuest`, `guardOwnerOrGuestEndpoint`) and `src/utils/auth.ts` (`getAccessMode`).
+- **Auth is single-owner + optional guest keys** — one Schwab OAuth session via httpOnly cookie. Plaintext cookie is intentional. The owner can hand out comma-separated guest keys via `GUEST_ACCESS_KEYS`. Guests can read owner-gated data endpoints (dark pool, GEX, Periscope, etc.). Every client-initiated write is owner-only (`guardOwnerEndpoint`) except a guest's own panel layout (`api/panel-prefs.ts`, keyed per guest key). The Anthropic-backed `api/analyze.ts` stays owner-only. See `api/_lib/guest-auth.ts` (`rejectIfNotOwnerOrGuest`, `guardOwnerOrGuestEndpoint`) and `src/utils/auth.ts` (`getAccessMode`).
 - **Data-licensing rule** — Schwab data may be served to anyone, with no auth. Data from Unusual Whales or GEXBot, including values computed from it, must require owner or guest auth: `guardOwnerOrGuestEndpoint`, or `withDbReader(..., 'owner-or-guest')`. Never serve it from a `'public'` or unguarded endpoint. One exception, by owner decision (2026-10-25): the ML research carousel (`/api/ml/plots`, `/api/ml/plot-image`) stays public. It serves aggregate tests and plots, not market data.
 - **Neon Postgres** — `@neondatabase/serverless`, lazy singleton via `getDb()` (HTTP driver, `neon(url)`). Tables managed by numbered migrations in `migrateDb()` (tracked in `schema_migrations`).
 - **Upstash Redis** — stores Schwab OAuth tokens (access + refresh). Env vars: `KV_REST_API_URL` / `UPSTASH_REDIS_REST_URL`.
 - **Input validation** — Zod schemas in `api/_lib/validation/` (re-exported by `api/_lib/validation.ts`) validate at system boundaries before data reaches Anthropic or Postgres.
 - **Cron jobs** — every job is registered in `vercel.json` `crons` and verifies `CRON_SECRET`. Most market data fetches run every 1–5 min during market hours (13-21 UTC, Mon-Fri).
+  - A new cron also needs a `SCHEDULE_MAP` entry in `api/_lib/cron-schedules.ts` (or a spec-cited exemption in `UNMONITORED_CRONS`) and a `withCronInstrumentation` / `withCronCheckin` wrapper under the same job name. Without the entry it sends no Sentry check-ins; `api/__tests__/cron-schedules.test.ts` fails on either gap.
 - **Unusual Whales: websocket over REST (owner rule, 2026-10-28)** — when a UW websocket channel carries the same data as a UW REST endpoint, ingest it in `uw-stream/`. Don't add a polling cron for it, and retire an existing one once the websocket writer is live and checked against it. Why: every cron costs Vercel compute plus its own Sentry and Axiom monitoring, and the websocket is fresher.
   - Exception, gap repair: the websocket has no replay, so a REST job may fill holes after the fact (after the close or on a detected gap, like `api/cron/backfill-futures-gaps.ts`), never on an intraday polling schedule.
   - Exception, no channel: data with no websocket channel stays on REST.
@@ -212,22 +213,23 @@ Key modules beyond the basics:
 - `db.ts` — `initDb()` (base tables) + `migrateDb()` (numbered migrations, stored in `api/_lib/db-migrations.ts`). New tables go in `migrateDb()` only, never `initDb()`.
 - `db-analyses.ts`, `db-flow.ts`, `db-snapshots.ts`, `db-positions.ts`, `db-strike-helpers.ts` — query modules split from db.ts.
 - `analyze-prompts.ts` — static Anthropic prompt text (system prompt parts, rules, chart type descriptions).
-- `analyze-context.ts` — dynamic context assembly; calls formatters from `db-flow.ts` (e.g. `formatSpotExposuresForClaude()`).
+- `analyze-context.ts` — dynamic context assembly; `analyze-context-fetchers.ts` fetches each source and calls its `format*ForClaude` formatter. The formatters are spread across `api/_lib/` (`analyze-context-formatters.ts`, `db-strike-formatters.ts`, `db-flow.ts`, `lessons.ts`, per-domain modules); find one with `grep -rn "function format.*ForClaude" api/`.
 - `lessons.ts` — lesson curation logic.
 - `overnight-gap.ts`, `spx-candles.ts`, `max-pain.ts`, `darkpool.ts`, `embeddings.ts`, `csv-parser.ts` — domain-specific modules.
 - `schwab.ts`, `api-helpers.ts`, `sentry.ts`, `validation.ts`, `logger.ts`, `constants.ts` — infrastructure.
 
 #### Chain Data Boundary
 
-Chain data (per-strike OI, IV, skew) lives in **frontend state only** via `useChainData`. To use it in the analyze endpoint, it must be explicitly passed in the `AnalysisContext` payload. Formatters for server-side data live in `db-flow.ts`.
+Chain data (per-strike OI, IV, skew) lives in **frontend state only** via `useChainData`. To use it in the analyze endpoint, it must be explicitly passed in the `AnalysisContext` payload. Server-side data reaches the prompt through the `format*ForClaude` formatters (see Backend Modules).
 
 #### DB Migrations
 
-When adding a migration to `migrateDb()` in `db.ts`, you must also update `api/__tests__/db.test.ts`:
+When adding a migration to `MIGRATIONS` in `api/_lib/db-migrations.ts`, you must also update the `migrateDb` tests in `api/__tests__/db.test.ts`:
 
-- Add `{ id: N }` to the applied-migrations mock
-- Add the migration to the expected-output list
-- Update the SQL call count (each migration = 1 CREATE/ALTER + 1 INSERT INTO schema_migrations)
+- Add `{ id: N }` to the applied-ids mock
+- Add `#N: <description>` to the expected-output list
+- Raise the `mockSql` total by the migration's statement count + 1 (the tracking INSERT), and extend the breakdown comment above it
+- Raise the `mockSql.transaction` total by 1 (each `statements:` migration runs in one `sql.transaction()`)
 
 ### Frontend (src/)
 
@@ -243,12 +245,13 @@ When adding a migration to `migrateDb()` in `db.ts`, you must also update `api/_
 ### Testing
 
 - **Tests ship with the feature** — see "Tests Are Mandatory (TDD Preferred)" above. Code without tests is not done.
-- **Unit tests** — Vitest with `@testing-library/react`. Frontend tests mostly in `src/__tests__/` (some in colocated `__tests__/` folders), backend tests in `api/__tests__/`.
+- **Unit tests** — Vitest with `@testing-library/react`. Frontend tests mostly in `src/__tests__/` (some colocated: `src/hooks/__tests__/`, component `__tests__/` folders), backend tests in `api/__tests__/`.
 - **E2E tests** — Playwright with `@axe-core/playwright` for accessibility. Specs in `e2e/`. Use semantic selectors (`getByRole`, `getByLabel`, `data-testid`).
 - **Coverage** — `npm run test:coverage` for V8 coverage.
 - **Coverage floors** — `npm run review` fails when any file drops below the per-file floor (`FLOORS` in `scripts/_lib/coverage-floor.mjs`, checked from `coverage/lcov.info` by `scripts/check-coverage-floor.mjs`) or any folder's aggregate drops below its glob floor (branches + lines per folder in `vite.config.ts` `coverage.thresholds`). Raise them by hand after a test pass lands; never lower one to make a run pass. A folder glob that matches no files passes silently, so `scripts/_lib/coverage-thresholds.test.mjs` fails on one: rename the key when you rename the folder, and update its key counts when you add or remove a folder floor.
 - Test files must end in `.test.ts` or `.test.tsx` (unit) or `.spec.ts` (e2e).
-- **Cron test pattern** — mock `getDb` via `vi.mocked(getDb)`. Use `mockResolvedValueOnce` in the same sequence as the handler's DB queries. Provide `CRON_SECRET` in `process.env`.
+- **Cron test pattern** — mock the DB module with a factory, `vi.mock('../_lib/db.js', () => ({ getDb: vi.fn(() => mockSql), … }))`, and queue `mockSql.mockResolvedValueOnce` in the same sequence as the handler's DB queries (`vi.mocked(getDb)` is the rarer form). Provide `CRON_SECRET` in `process.env`.
+- **Mock the module the code under test imports from** — crons and `cron-instrumentation.ts` import `cronGuard` from `api/_lib/api-helpers.js`, so tests mock it there, not in `cron-helpers.js`.
 
 ## Code Style
 
