@@ -2,8 +2,21 @@
 
 Both ``main._build_handlers`` (to instantiate handlers at boot) and
 ``config.Settings`` (to reject unknown channel names at construction
-time) consume this registry. Adding a new channel is a one-line entry
-here; nothing else needs to change in main.py or config.py.
+time) consume this registry. Nothing in main.py or config.py changes
+when a channel is added, but this module needs TWO entries plus an
+import:
+
+1. the name in ``EXACT_CHANNEL_NAMES`` or ``PREFIX_CHANNEL_NAMES``,
+   which is what ``Settings`` validates WS_CHANNELS against;
+2. the handler-class import and the name → class entry in the
+   ``exact`` or ``prefix`` dict inside ``handler_class_for_channel``,
+   which is what ``main._build_handlers`` instantiates.
+
+A name in (1) without (2) passes Settings validation and then crashes
+main at boot with a RuntimeError, so add both in the same change, and
+deploy the handler before adding the channel to WS_CHANNELS. The test
+``test_every_exact_name_has_a_handler`` checks (1) against (2) for
+exact names.
 
 Three forms are supported:
 
@@ -46,6 +59,10 @@ EXACT_CHANNEL_NAMES: frozenset[str] = frozenset(
         # cap, and contract roll (ESU6 → ESZ6) needs no expiry calendar.
         # The handler filters to six product roots client-side.
         "futures_trades",
+        # Global CME block-trade channel (all products, plus multi-leg
+        # strategies). The per-symbol ``futures_blocks:<SYM>`` form is
+        # deliberately unregistered, for the same reasons as above.
+        "futures_blocks",
     },
 )
 
@@ -112,6 +129,7 @@ def handler_class_for_channel(channel: str) -> type[Handler]:
     that into a startup ``RuntimeError`` with a richer message.
     """
     from handlers.flow_alerts import FlowAlertsHandler
+    from handlers.futures_blocks import FuturesBlocksHandler
     from handlers.futures_trades import FuturesTradesHandler
     from handlers.gex_strike_expiry import GexStrikeExpiryHandler
     from handlers.interval_ba import (
@@ -127,6 +145,7 @@ def handler_class_for_channel(channel: str) -> type[Handler]:
         "flow-alerts": FlowAlertsHandler,
         "off_lit_trades": OffLitTradesHandler,
         "futures_trades": FuturesTradesHandler,
+        "futures_blocks": FuturesBlocksHandler,
         # option_trades:{SPY,SPXW,QQQ} each get a dedicated subclass that
         # inherits the raw-tick write path from OptionTradesHandler AND
         # emits Interval B/A ask-side alerts into interval_ba_alerts. See

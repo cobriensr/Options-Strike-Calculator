@@ -10,15 +10,16 @@ Postgres in batches.
 boot fails (`config.py` validates every token against
 `src/channel_registry.py`):
 
-| `WS_CHANNELS` token                                            | Handler                                                                                                      | Writes to (api migration)                            | Write mode                                                                    |
-| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `flow-alerts` (alias `flow_alerts`)                            | `handlers/flow_alerts.py`                                                                                    | `ws_flow_alerts` (#108)                              | `ON CONFLICT (ws_alert_id) DO NOTHING`                                        |
-| `option_trades:<TICKER>`, or `option_trades_lottery`           | `handlers/option_trades.py` (one shared instance for every ticker)                                           | `ws_option_trades` (#109)                            | `ON CONFLICT (ws_trade_id) DO NOTHING`                                        |
-| `option_trades:SPY`, `option_trades:SPXW`, `option_trades:QQQ` | `handlers/interval_ba.py` (subclasses of the option-trades handler)                                          | `ws_option_trades`, plus `interval_ba_alerts` (#144) | alerts: `ON CONFLICT (option_chain, bucket_start) DO NOTHING`                 |
-| `net_flow:<TICKER>`, or `net_flow_lottery`                     | `handlers/net_flow.py`                                                                                       | `ws_net_flow_per_ticker` (#121)                      | `ON CONFLICT (ticker, ts) DO NOTHING`                                         |
-| `gex_strike_expiry:<TICKER>`, or `gex_strike_expiry_lottery`   | `handlers/gex_strike_expiry.py`                                                                              | `ws_gex_strike_expiry` (#111)                        | `ON CONFLICT (ticker, expiry, strike, ts_minute) DO UPDATE` (last write wins) |
-| `off_lit_trades`                                               | `handlers/off_lit_trades.py` (keeps SPY and QQQ, 08:30–15:00 CT; drops extended-hours and contingent prints) | `dark_pool_prints` (#116)                            | `ON CONFLICT (symbol, executed_at, price, size) DO NOTHING`                   |
-| `futures_trades`                                               | `handlers/futures_trades.py`, aggregated to 1-minute bars                                                    | `futures_bars` (#42)                                 | `ON CONFLICT (symbol, ts) DO NOTHING`                                         |
+| `WS_CHANNELS` token                                            | Handler                                                                                                      | Writes to (api migration)                            | Write mode                                                                           |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `flow-alerts` (alias `flow_alerts`)                            | `handlers/flow_alerts.py`                                                                                    | `ws_flow_alerts` (#108)                              | `ON CONFLICT (ws_alert_id) DO NOTHING`                                               |
+| `option_trades:<TICKER>`, or `option_trades_lottery`           | `handlers/option_trades.py` (one shared instance for every ticker)                                           | `ws_option_trades` (#109)                            | `ON CONFLICT (ws_trade_id) DO NOTHING`                                               |
+| `option_trades:SPY`, `option_trades:SPXW`, `option_trades:QQQ` | `handlers/interval_ba.py` (subclasses of the option-trades handler)                                          | `ws_option_trades`, plus `interval_ba_alerts` (#144) | alerts: `ON CONFLICT (option_chain, bucket_start) DO NOTHING`                        |
+| `net_flow:<TICKER>`, or `net_flow_lottery`                     | `handlers/net_flow.py`                                                                                       | `ws_net_flow_per_ticker` (#121)                      | `ON CONFLICT (ticker, ts) DO NOTHING`                                                |
+| `gex_strike_expiry:<TICKER>`, or `gex_strike_expiry_lottery`   | `handlers/gex_strike_expiry.py`                                                                              | `ws_gex_strike_expiry` (#111)                        | `ON CONFLICT (ticker, expiry, strike, ts_minute) DO UPDATE` (last write wins)        |
+| `off_lit_trades`                                               | `handlers/off_lit_trades.py` (keeps SPY and QQQ, 08:30–15:00 CT; drops extended-hours and contingent prints) | `dark_pool_prints` (#116)                            | `ON CONFLICT (symbol, executed_at, price, size) DO NOTHING`                          |
+| `futures_trades`                                               | `handlers/futures_trades.py`, aggregated to 1-minute bars                                                    | `futures_bars` (#42)                                 | `ON CONFLICT (symbol, ts) DO NOTHING`                                                |
+| `futures_blocks`                                               | `handlers/futures_blocks.py` (every product, plus multi-leg strategies)                                      | `futures_blocks` (#196)                              | `ON CONFLICT (trade_id, exchange, trade_date) DO UPDATE` (newest `reported_at` wins) |
 
 The three `*_lottery` shorthands each expand to one channel per ticker in
 the Lottery Finder universe: 86 tickers, `_LOTTERY_TICKERS` in
@@ -37,6 +38,10 @@ net_flow_lottery, gex_strike_expiry_lottery, futures_trades`, with
 expands to 263 channels: 86 `option_trades`, 86 `net_flow`, 88
 `gex_strike_expiry` (SPX and NDX are not in the Lottery universe) and the
 three global channels. They run on 6 sockets (see Architecture).
+
+`futures_blocks` is registered but **not** in production `WS_CHANNELS`, so
+it is inactive until added there, after the handler is deployed (never
+before). See "Futures blocks" below.
 
 See `docs/superpowers/specs/uw-websocket-daemon-2026-05-02.md` for the
 phased build plan, `docs/superpowers/specs/lottery-finder-2026-05-02.md`
@@ -107,7 +112,7 @@ Single asyncio process:
 
 ## Schema
 
-The daemon writes to up to seven tables, depending on `WS_CHANNELS` (see
+The daemon writes to up to eight tables, depending on `WS_CHANNELS` (see
 the channel table above):
 
 - `ws_flow_alerts`: flow-alerts channel (migration #108; the same DDL is
@@ -121,8 +126,8 @@ the channel table above):
   assumes the table exists (see Deploy).
 - `ws_net_flow_per_ticker`: `net_flow:<TICKER>` channels (migration #121).
 - `ws_gex_strike_expiry`: `gex_strike_expiry:<TICKER>` channels
-  (migration #111). The only upsert: a later frame for the same
-  ticker, expiry, strike and minute replaces the earlier one.
+  (migration #111). Upserted, last write wins: a later frame for the
+  same ticker, expiry, strike and minute replaces the earlier one.
 - `dark_pool_prints`: `off_lit_trades`, SPY and QQQ only (migration
   #116).
 - `interval_ba_alerts`: Interval B/A ask-side alerts from the SPY, SPXW
@@ -131,12 +136,17 @@ the channel table above):
   OHLCV. Pre-existing table from `api/_lib/db-migrations.ts` migration
   #42 (`UNIQUE(symbol, ts)`); the daemon adds **no** migration and
   changes **no** columns.
+- `futures_blocks`: `futures_blocks` channel, one row per CME block
+  trade (migration #196), keyed `(trade_id, exchange, trade_date)`.
+  Upserted, but only by a message whose `reported_at` is not older
+  than the stored one (see "Futures blocks").
 
-`ws_flow_alerts`, `ws_option_trades`, `ws_net_flow_per_ticker` and
-`ws_gex_strike_expiry` carry typed columns for everything the daemon
-explicitly extracts plus a `raw_payload JSONB` copy of the WS message
-for forward-compat. `futures_bars` (an aggregate), `dark_pool_prints`
-and `interval_ba_alerts` have no `raw_payload`.
+`ws_flow_alerts`, `ws_option_trades`, `ws_net_flow_per_ticker`,
+`ws_gex_strike_expiry` and `futures_blocks` carry typed columns for
+everything the daemon explicitly extracts plus a `raw_payload JSONB`
+copy of the WS message for forward-compat. `futures_bars` (an
+aggregate), `dark_pool_prints` and `interval_ba_alerts` have no
+`raw_payload`.
 
 The cron-fed `flow_alerts` table (`api/cron/fetch-flow-alerts.ts`) is
 **not touched**. Both still run, and `api/_lib/uw-deltas.ts` still reads
@@ -215,6 +225,36 @@ handler logs every copy of each ES or NQ print whose `trade_id` is a
 multiple of 500 as one `futures_capture` line with the raw payload and
 its arrival time. It runs before the queue and the dedup, cannot raise
 into the bar path, and is marked for removal after one session.
+
+### Futures blocks
+
+`src/handlers/futures_blocks.py` stores the global `futures_blocks`
+channel in `futures_blocks`. Per UW's docs, CME reports a block as
+`new`, then again as `update` or `delete`, and the newest message for a
+block replaces the earlier ones.
+
+- **Key:** `(trade_id, exchange, trade_date)`. CME reuses a `trade_id`
+  in later sessions, so `trade_id` alone is not unique.
+- **Upsert, newest wins:** `db.bulk_upsert_if_newer` replaces every
+  column (including `raw_payload`) only when the incoming `reported_at`
+  is at least the stored one, so a late older message never overwrites
+  a newer one. A batch is collapsed to one row per key first, because
+  Postgres rejects one upsert that touches a key twice.
+- **`delete` is a row state** (`action = 'delete'`); rows are never
+  removed. UW nulls the `quote_*` fields on a delete.
+- **Every product is stored**, not only the six `futures_bars` roots. A
+  multi-leg (`MLEG`) block has a NULL `price` and `product`; its legs
+  are in `legs`.
+- **Join without access:** UW answers with an `{"error": ...}` frame,
+  which the router forwards like data. The handler rejects it, warns on
+  every one, and sends one Sentry event per process.
+- **Rejected frames:** a frame missing `trade_id`, `exchange`,
+  `trade_date` or `action`, or with a field that doesn't parse, is
+  dropped with a rate-limited `bad_<field>` warning. The first
+  rejection of each field per process also goes to Sentry as likely
+  schema drift.
+- Blocks carry `qty` but no `size`/`side`, so they add nothing to the
+  `futures_bars` order-flow columns.
 
 ## Environment
 
