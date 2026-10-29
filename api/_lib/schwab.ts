@@ -208,7 +208,7 @@ function parseTokenBody<T>(schema: z.ZodType<T>, body: unknown): T {
  * OWNER_SCHWAB_ACCOUNT_SHA256, trimmed and lowercased, or null when it is
  * unset, blank or not a sha256 hex digest (a malformed value could never
  * match, so it is a config error, not a reason to call a login a stranger's).
- * Read per call, like the classifier secret, not via env.ts's cached parse.
+ * Read per call, not via env.ts's cached parse.
  */
 function ownerAccountHash(): string | null {
   const value = process.env.OWNER_SCHWAB_ACCOUNT_SHA256?.trim().toLowerCase();
