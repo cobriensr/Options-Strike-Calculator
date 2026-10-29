@@ -908,7 +908,7 @@ describe('engineerPhase2Features', () => {
       };
     }
 
-    it('extracts level metrics from dark_pool_levels', async () => {
+    it('extracts level metrics from the dark pool levels helper', async () => {
       const features = makeFeatures({ spx_open: 5795 });
 
       mockSql.mockResolvedValueOnce([]); // prevDayRows
@@ -1767,7 +1767,7 @@ describe('engineerPhase2Features', () => {
         data: [{ expiry: '2026-03-24', max_pain: '5785.00' }],
       });
 
-      // Query 6: dpRows (from dark_pool_levels)
+      // Query 6: dpRows (dark_pool_prints via dark-pool-query)
       mockSql.mockResolvedValueOnce([
         {
           level: 5810,

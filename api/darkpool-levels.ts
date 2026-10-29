@@ -14,9 +14,8 @@
  * raw `dark_pool_prints` table (written by the uw-stream daemon's
  * off_lit_trades handler) and synthesizes index-mapped levels at read
  * time via the contemporaneous candle ratio in `index_candles_1m`.
- * SPX falls back to the legacy `dark_pool_levels` cron-fed table for
- * dates the daemon hasn't backfilled yet — the fallback is removed in
- * Phase 7 cutover.
+ * Daemon-only: the legacy `dark_pool_levels` table and its SPX fallback
+ * were removed in the Phase 7 cutover.
  *
  * Backward-compat field aliases (will be removed once frontend
  * migrates to the new shape): each level row exposes `spxLevel` AND

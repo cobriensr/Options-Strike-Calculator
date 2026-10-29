@@ -338,10 +338,9 @@ export async function addMaxPainFeatures(
  * Dark pool features for daily SPX clusters: total premium, cluster
  * count, top-cluster distance, support/resistance premium split
  * (around spx_open), and concentration of premium at the single top
- * level. Reads via the shared dark-pool-query helper which is env-flag
- * gated (USE_DAEMON_DARK_POOL): legacy dark_pool_levels by default,
- * dark_pool_prints when daemon coverage is enabled. Errors are logged
- * but never propagated.
+ * level. Reads via the shared dark-pool-query helper, which aggregates
+ * the uw-stream daemon's dark_pool_prints. Errors are logged but never
+ * propagated.
  *
  * The `sql` parameter is preserved for signature compatibility with
  * the caller's transaction context, but unused — the helper opens its

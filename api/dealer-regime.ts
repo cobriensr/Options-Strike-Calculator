@@ -4,8 +4,9 @@
  * Owner-or-guest read endpoint backing the Dealer Regime Tile
  * (Phase 2 of docs/superpowers/specs/dealer-regime-tile-2026-05-03.md).
  *
- * Returns the latest `zero_gamma_levels` row per ticker for the four
- * tickers in `zero-gamma-tickers.ts` (SPX, NDX, SPY, QQQ). The frontend
+ * Returns the latest `zero_gamma_levels` row per ticker for the three
+ * tickers in `ZERO_GAMMA_TICKERS` (SPX, SPY, QQQ; NDX was dropped
+ * 2026-05-16, see `zero-gamma-tickers.ts`). The frontend
  * classifier consumes these rows and maps each to one of:
  *   `long-γ` / `short-γ` / `transition` / `uncertain`
  *
