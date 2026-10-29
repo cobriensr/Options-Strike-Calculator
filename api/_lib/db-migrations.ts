@@ -5433,4 +5433,47 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 196,
+    description:
+      'Create futures_blocks for CME block trades from the UW futures_blocks websocket channel. Keyed (trade_id, exchange, trade_date) because CME reuses trade_id across sessions; uw-stream upserts so the newest reported_at replaces earlier messages, and a delete is kept as action = delete, never removed.',
+    statements: (sql) => [
+      // Written only by uw-stream's FuturesBlocksHandler. price is NULL for a
+      // multi-leg (MLEG) block, whose prices are on the legs. product is NULL
+      // for an MLEG or a contract whose root UW doesn't know yet. exchange is
+      // NOT NULL but may be '' (UW sends '' when it has no MIC), since it is
+      // part of the key. UW sends decimals with up to 8 places, hence
+      // scale 8 on every NUMERIC. raw_payload is the newest frame as
+      // received. received_at is the first arrival and is never updated;
+      // updated_at moves on every applied upsert.
+      sql`
+        CREATE TABLE IF NOT EXISTS futures_blocks (
+          trade_id         BIGINT        NOT NULL,
+          exchange         TEXT          NOT NULL,
+          trade_date       DATE          NOT NULL,
+          sym              TEXT,
+          product          TEXT,
+          sec_type         TEXT,
+          action           TEXT          NOT NULL,
+          price            NUMERIC(18,8),
+          qty              NUMERIC(24,8),
+          executed_at      TIMESTAMPTZ,
+          reported_at      TIMESTAMPTZ,
+          strategy_link_id BIGINT,
+          legs             JSONB,
+          quote_bid        NUMERIC(18,8),
+          quote_ask        NUMERIC(18,8),
+          quote_ts         TIMESTAMPTZ,
+          raw_payload      JSONB         NOT NULL,
+          received_at      TIMESTAMPTZ   NOT NULL DEFAULT now(),
+          updated_at       TIMESTAMPTZ   NOT NULL DEFAULT now(),
+          PRIMARY KEY (trade_id, exchange, trade_date)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_futures_blocks_product_executed_at
+          ON futures_blocks (product, executed_at DESC)
+      `,
+    ],
+  },
 ];
