@@ -16,7 +16,7 @@ Output:
   docs/tmp/v22-phase-d-context-feature-lift-study-2026-05-22.md
 
 Usage:
-    ml/.venv/bin/python scripts/context_feature_lift_study.py
+    ml/.venv/Scripts/python scripts/context_feature_lift_study.py
 """
 
 from __future__ import annotations

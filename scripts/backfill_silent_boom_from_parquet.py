@@ -11,8 +11,8 @@ the lottery detector port is duplicated: TS is the runtime
 source-of-truth for the cron, this is the offline backfill path.
 
 Usage:
-    ml/.venv/bin/python scripts/backfill_silent_boom_from_parquet.py
-    ml/.venv/bin/python scripts/backfill_silent_boom_from_parquet.py --date 2026-05-07
+    ml/.venv/Scripts/python scripts/backfill_silent_boom_from_parquet.py
+    ml/.venv/Scripts/python scripts/backfill_silent_boom_from_parquet.py --date 2026-05-07
 """
 
 from __future__ import annotations

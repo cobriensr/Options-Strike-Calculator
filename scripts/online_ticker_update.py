@@ -25,7 +25,7 @@ Spec: docs/superpowers/specs/lottery-v2-2-profitability-improvements-2026-05-22.
       Phase E (item 8)
 
 Usage:
-    ml/.venv/bin/python scripts/online_ticker_update.py
+    ml/.venv/Scripts/python scripts/online_ticker_update.py
 """
 
 from __future__ import annotations

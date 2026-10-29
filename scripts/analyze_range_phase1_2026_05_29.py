@@ -12,7 +12,7 @@ OOS split + effect sizes.
 Input : docs/tmp/range-phase1-data.csv  (from analyze-range-phase1-build-*.ts)
 Output: docs/tmp/expected-range-phase1-2026-05-29.md  + a plot in docs/tmp/
 
-Run: ml/.venv/bin/python scripts/analyze_range_phase1_2026_05_29.py
+Run: ml/.venv/Scripts/python scripts/analyze_range_phase1_2026_05_29.py
 """
 
 import numpy as np

@@ -8,7 +8,7 @@ the 51-ticker Lottery Finder universe, and inserts the 13:30:00 →
 
 Usage:
     set -a; source .env.local; set +a
-    ml/.venv/bin/python scripts/backfill-ws-option-trades-2026-05-04.py
+    ml/.venv/Scripts/python scripts/backfill-ws-option-trades-2026-05-04.py
 """
 
 from __future__ import annotations

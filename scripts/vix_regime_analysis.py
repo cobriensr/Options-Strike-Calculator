@@ -14,7 +14,7 @@ Aligned filter mirrors mine_outcome_patterns.py:
 Writes: docs/tmp/v22-vix-regime-2026-05-22.md
 
 Usage:
-    ml/.venv/bin/python scripts/vix_regime_analysis.py
+    ml/.venv/Scripts/python scripts/vix_regime_analysis.py
 """
 
 from __future__ import annotations

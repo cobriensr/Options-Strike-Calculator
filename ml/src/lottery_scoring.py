@@ -40,7 +40,7 @@ The code-path in score_components.py and the TS function signature keep the
 context parameters as optional/dormant so they can be re-enabled in the
 future without a flag day.
 
-Run: ml/.venv/bin/python ml/src/lottery_scoring.py
+Run: ml/.venv/Scripts/python ml/src/lottery_scoring.py
      (DATABASE_URL sourced from repo-root .env)
 
 WARNING — Phase 2 of the rescore project (`scripts/sync_lottery_score_weights.py`)

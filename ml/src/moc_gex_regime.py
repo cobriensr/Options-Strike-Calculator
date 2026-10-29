@@ -27,7 +27,7 @@ QQQ MAE is a meaningful bonus test — not perfect (SPX vs NDX composition
 differs) but useful cross-validation.
 
 Usage:
-    ml/.venv/bin/python ml/src/moc_gex_regime.py \\
+    ml/.venv/Scripts/python ml/src/moc_gex_regime.py \\
         --gex-csv ~/Downloads/order-23f990ec-ca61-4282-ab33-24cbb75c2bd6/gamma_exposure/1y/2025-04-15-through-2026-04-14/SPX.csv
 """
 
@@ -44,7 +44,7 @@ try:
     from scipy import stats
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/bin/pip install yfinance matplotlib seaborn scipy pandas")
+    print("  ml/.venv/Scripts/pip install yfinance matplotlib seaborn scipy pandas")
     sys.exit(1)
 
 from utils import ML_ROOT, section, subsection, takeaway

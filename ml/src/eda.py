@@ -21,7 +21,7 @@ try:
     from statsmodels.stats.proportion import proportion_confint
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/bin/pip install psycopg2-binary pandas scipy statsmodels")
+    print("  ml/.venv/Scripts/pip install psycopg2-binary pandas scipy statsmodels")
     sys.exit(1)
 
 from utils import (

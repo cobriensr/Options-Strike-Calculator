@@ -29,7 +29,7 @@ Output:
     with entry / peak / first-ITM / close / finished-ITM features.
 
 Usage:
-    ml/.venv/bin/python ml/extract-iv-anomaly-outcomes.py
+    ml/.venv/Scripts/python ml/extract-iv-anomaly-outcomes.py
 """
 
 from __future__ import annotations

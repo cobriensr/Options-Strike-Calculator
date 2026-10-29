@@ -21,7 +21,7 @@ This script runs the eight follow-ups:
   7. Overlap with the Monday + small-gex PCS pocket
   8. Rough option-P&L proxy
 
-Run: ml/.venv/bin/python scripts/e5_deep_dive.py
+Run: ml/.venv/Scripts/python scripts/e5_deep_dive.py
 """
 
 from __future__ import annotations

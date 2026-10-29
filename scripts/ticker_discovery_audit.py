@@ -14,7 +14,7 @@ this script:
 Read-only — no DB writes, no parquet writes. Output to docs/tmp/.
 
 Usage:
-    ml/.venv/bin/python scripts/ticker_discovery_audit.py
+    ml/.venv/Scripts/python scripts/ticker_discovery_audit.py
 """
 
 from __future__ import annotations

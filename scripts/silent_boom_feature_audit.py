@@ -11,8 +11,8 @@ The audit informs Phase 1's score weights — every weight in the
 score library MUST trace back to a row in this report.
 
 Usage:
-    ml/.venv/bin/python scripts/silent_boom_feature_audit.py
-    ml/.venv/bin/python scripts/silent_boom_feature_audit.py --out docs/tmp/silent-boom-feature-audit.md
+    ml/.venv/Scripts/python scripts/silent_boom_feature_audit.py
+    ml/.venv/Scripts/python scripts/silent_boom_feature_audit.py --out docs/tmp/silent-boom-feature-audit.md
 """
 
 from __future__ import annotations

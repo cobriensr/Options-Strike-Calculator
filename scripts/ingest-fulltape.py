@@ -2,8 +2,8 @@
 """Ingest a UW Full Tape CSV: validate header (soft-fail), shape to schema, write Parquet.
 
 Usage:
-    ml/.venv/bin/python scripts/ingest-fulltape.py <YYYY-MM-DD>
-    ml/.venv/bin/python scripts/ingest-fulltape.py 2026-05-06 --keep-csv
+    ml/.venv/Scripts/python scripts/ingest-fulltape.py <YYYY-MM-DD>
+    ml/.venv/Scripts/python scripts/ingest-fulltape.py 2026-05-06 --keep-csv
 
 Spec: docs/superpowers/specs/fulltape-archive-2026-05-07.md
 

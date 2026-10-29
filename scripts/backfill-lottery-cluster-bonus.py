@@ -51,8 +51,8 @@ Done in a single SQL window query — no Python row-by-row loop:
     AND bonus.cluster_bonus <> 0;
 
 Usage:
-    ml/.venv/bin/python scripts/backfill-lottery-cluster-bonus.py
-    ml/.venv/bin/python scripts/backfill-lottery-cluster-bonus.py --dry-run
+    ml/.venv/Scripts/python scripts/backfill-lottery-cluster-bonus.py
+    ml/.venv/Scripts/python scripts/backfill-lottery-cluster-bonus.py --dry-run
 
 Args:
     --dry-run   Print the UPDATE plan (count + sample) without executing.

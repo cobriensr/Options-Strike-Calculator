@@ -18,7 +18,7 @@ key differences:
 Spec: docs/superpowers/specs/lottery-finder-avg-hold-2026-05-08.md
 
 Usage:
-    ml/.venv/bin/python scripts/recompute_lottery_hold_minutes.py
+    ml/.venv/Scripts/python scripts/recompute_lottery_hold_minutes.py
 """
 
 from __future__ import annotations

@@ -10,7 +10,7 @@ duplicating.
 Read-only against the DB except for its own CSV append.
 
 Usage:
-    ml/.venv/bin/python scripts/daily_tracker.py
+    ml/.venv/Scripts/python scripts/daily_tracker.py
 """
 
 from __future__ import annotations

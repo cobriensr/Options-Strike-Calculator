@@ -14,7 +14,7 @@ For each (tier × exit_policy × stop × tp) cell, reports:
 Writes: docs/tmp/v22-stop-target-backtest-2026-05-22.md
 
 Usage:
-    ml/.venv/bin/python scripts/backtest_stop_target_by_tier.py
+    ml/.venv/Scripts/python scripts/backtest_stop_target_by_tier.py
 """
 
 from __future__ import annotations

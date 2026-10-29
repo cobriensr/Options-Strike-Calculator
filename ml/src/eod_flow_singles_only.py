@@ -18,7 +18,7 @@ Scope: SPXW only (matches the current investigation focus). Extend
 later to SPY/QQQ if the pattern holds.
 
 Usage:
-  ml/.venv/bin/python src/eod_flow_singles_only.py
+  ml/.venv/Scripts/python src/eod_flow_singles_only.py
 """
 
 from __future__ import annotations

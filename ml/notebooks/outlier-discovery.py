@@ -6,7 +6,7 @@ stratified hit-rate table to stdout.
 
 Run with:
     set -a; source .env.local; set +a
-    ml/.venv/bin/python ml/notebooks/outlier-discovery.py
+    ml/.venv/Scripts/python ml/notebooks/outlier-discovery.py
 
 Optional overrides via env:
     MIN_SCORE  — outlier score threshold (default 4)

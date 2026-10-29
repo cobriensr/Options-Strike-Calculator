@@ -12,8 +12,8 @@ because the matched-flow input is missing. This script restores that
 input so the local enrichment can run.
 
 Usage:
-    ml/.venv/bin/python scripts/backfill_net_flow_history.py
-    ml/.venv/bin/python scripts/backfill_net_flow_history.py --date 2026-05-05
+    ml/.venv/Scripts/python scripts/backfill_net_flow_history.py
+    ml/.venv/Scripts/python scripts/backfill_net_flow_history.py --date 2026-05-05
 """
 
 from __future__ import annotations

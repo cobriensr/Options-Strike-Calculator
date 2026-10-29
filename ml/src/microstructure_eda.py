@@ -25,7 +25,7 @@ matches the Phase 4c regression-tested guarantee.
 CLI::
 
     cd ml
-    .venv/bin/python -m src.microstructure_eda \\
+    .venv/Scripts/python -m src.microstructure_eda \\
         --features data/features/microstructure_daily.parquet \\
         --ohlcv-root data/archive \\
         --plots-dir plots \\

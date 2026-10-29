@@ -9,7 +9,7 @@ detector watchlist plus cross-asset outliers.
 
 ```bash
 # From repo root, run the analyzer (uses ml/.venv for duckdb)
-ml/.venv/bin/python scripts/eod-flow-analysis/analyze.py
+ml/.venv/Scripts/python scripts/eod-flow-analysis/analyze.py
 ```
 
 First run processes every CSV in the folder (~60-90s per day, so ~10-15
@@ -57,16 +57,16 @@ no re-processing of prior days.
 
 ```bash
 # Process a single date (rest of pipeline unchanged)
-ml/.venv/bin/python scripts/eod-flow-analysis/analyze.py --day 2026-04-25
+ml/.venv/Scripts/python scripts/eod-flow-analysis/analyze.py --day 2026-04-25
 
 # Refresh rollup without re-processing any days
-ml/.venv/bin/python scripts/eod-flow-analysis/analyze.py --rollup-only
+ml/.venv/Scripts/python scripts/eod-flow-analysis/analyze.py --rollup-only
 
 # Process days but skip rollup (useful for batch backfill)
-ml/.venv/bin/python scripts/eod-flow-analysis/analyze.py --no-rollup
+ml/.venv/Scripts/python scripts/eod-flow-analysis/analyze.py --no-rollup
 
 # Force-reprocess a day (overwrite existing parquet)
-ml/.venv/bin/python scripts/eod-flow-analysis/analyze.py --day 2026-04-23 --force
+ml/.venv/Scripts/python scripts/eod-flow-analysis/analyze.py --day 2026-04-23 --force
 ```
 
 ## Filters / thresholds
@@ -96,7 +96,7 @@ parquets at the new floor.
 ## Daily routine (suggested)
 
 1. **End of trading day**: download new CSV from UW bot to `~/Downloads/EOD-OptionFlow/`
-2. **Evening review**: `ml/.venv/bin/python scripts/eod-flow-analysis/analyze.py`
+2. **Evening review**: `ml/.venv/Scripts/python scripts/eod-flow-analysis/analyze.py`
 3. **Read `cumulative-headlines.txt`** — focus on:
    - Repeat strikes that just hit a 2nd day → real positioning
    - New out-of-watchlist candidates → potential ticker additions

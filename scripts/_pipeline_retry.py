@@ -2,7 +2,7 @@
 
 Standalone module (no third-party deps) so any script in scripts/ can
 `import _pipeline_retry` — when a script is run as
-`ml/.venv/bin/python scripts/foo.py`, its own directory is on sys.path[0],
+`ml/.venv/Scripts/python scripts/foo.py`, its own directory is on sys.path[0],
 so this resolves without packaging.
 
 Why this exists: the nightly Makefile chains a dozen scripts that each make a

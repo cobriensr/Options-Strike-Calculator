@@ -5,7 +5,7 @@ Covers pure date helpers, DB-dependent check functions (mocked),
 and the summary printer.
 
 Run:
-    cd ml && .venv/bin/python -m pytest test_health.py -v
+    cd ml && .venv/Scripts/python -m pytest test_health.py -v
 """
 
 from datetime import datetime

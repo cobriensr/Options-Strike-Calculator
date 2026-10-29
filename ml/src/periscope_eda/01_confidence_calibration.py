@@ -10,7 +10,7 @@ Output:
 
 CLI::
 
-    ml/.venv/bin/python ml/src/periscope_eda/01_confidence_calibration.py \\
+    ml/.venv/Scripts/python ml/src/periscope_eda/01_confidence_calibration.py \\
         --min-samples 5 --mode all
 
 Becomes meaningful at n >= 10 per confidence band.

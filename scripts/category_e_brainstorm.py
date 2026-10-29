@@ -19,7 +19,7 @@ Outputs:
   - docs/tmp/forensic-multi-day/category_e_brainstorm_findings.md
   - Per-test CSVs (intermediate)
 
-Run: ml/.venv/bin/python scripts/category_e_brainstorm.py
+Run: ml/.venv/Scripts/python scripts/category_e_brainstorm.py
 """
 
 from __future__ import annotations

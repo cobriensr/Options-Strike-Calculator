@@ -22,10 +22,10 @@ skipped.
 
 Run modes:
     # smoke test — 1 date only, no DB writes
-    ml/.venv/bin/python scripts/backfill_gamma_at_trigger.py --dry-run --date 2026-05-15
+    ml/.venv/Scripts/python scripts/backfill_gamma_at_trigger.py --dry-run --date 2026-05-15
 
     # full backfill — both tables, all dates
-    ml/.venv/bin/python scripts/backfill_gamma_at_trigger.py
+    ml/.venv/Scripts/python scripts/backfill_gamma_at_trigger.py
 """
 
 from __future__ import annotations

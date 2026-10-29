@@ -10,7 +10,7 @@ Idempotent: gates on underlying_price_at_spike IS NULL so re-runs
 are safe.
 
 Usage:
-    ml/.venv/bin/python scripts/backfill_silent_boom_underlying_price.py \
+    ml/.venv/Scripts/python scripts/backfill_silent_boom_underlying_price.py \
         [--from-date YYYY-MM-DD] [--to-date YYYY-MM-DD]
 """
 

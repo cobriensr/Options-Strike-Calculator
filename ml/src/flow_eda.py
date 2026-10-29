@@ -19,7 +19,7 @@ Outputs:
   ml/findings.json → section "flow_eda"
 
 Usage:
-  ml/.venv/bin/python src/flow_eda.py
+  ml/.venv/Scripts/python src/flow_eda.py
 
 Degrades gracefully when the table is empty (prints a message and
 returns 0 without plotting).
@@ -37,7 +37,7 @@ try:
     from scipy import stats
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/bin/pip install matplotlib seaborn scipy pandas")
+    print("  ml/.venv/Scripts/pip install matplotlib seaborn scipy pandas")
     sys.exit(1)
 
 from load_flow_alerts import (  # noqa: E402

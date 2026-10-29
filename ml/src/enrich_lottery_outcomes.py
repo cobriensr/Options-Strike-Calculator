@@ -5,7 +5,7 @@ exit policies plus peak metrics for each unenriched fire, and updates
 the lottery_finder_fires table in Neon.
 
 Usage:
-    ml/.venv/bin/python ml/src/enrich_lottery_outcomes.py
+    ml/.venv/Scripts/python ml/src/enrich_lottery_outcomes.py
 
 Environment:
     DATABASE_URL - Neon Postgres connection string

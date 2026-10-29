@@ -25,7 +25,7 @@ tier's RPM limit. Progress is logged each day.
 
 Usage:
   UW_API_KEY=... DATABASE_URL="postgres://..." \
-    ml/.venv/bin/python scripts/backfill-institutional-blocks-uw.py \
+    ml/.venv/Scripts/python scripts/backfill-institutional-blocks-uw.py \
     [--days 30] [--dry-run] [--min-dte 150] [--max-dte 330] [--rate 1.0]
 """
 
@@ -45,7 +45,7 @@ try:
     from psycopg2.extras import execute_batch
 except ImportError as e:
     print(f"Missing dependency: {e}")
-    print("Run with ml/.venv/bin/python")
+    print("Run with ml/.venv/Scripts/python")
     sys.exit(1)
 
 UW_BASE = "https://api.unusualwhales.com/api"

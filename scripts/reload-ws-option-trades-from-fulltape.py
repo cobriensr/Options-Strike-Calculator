@@ -46,8 +46,8 @@ whatever the live daemon captured (and a no-op on re-run).
 
 Usage:
     set -a; source .env.local; set +a
-    ml/.venv/bin/python scripts/reload-ws-option-trades-from-fulltape.py --date 2026-05-04
-    ml/.venv/bin/python scripts/reload-ws-option-trades-from-fulltape.py --date 2026-05-04 --apply
+    ml/.venv/Scripts/python scripts/reload-ws-option-trades-from-fulltape.py --date 2026-05-04
+    ml/.venv/Scripts/python scripts/reload-ws-option-trades-from-fulltape.py --date 2026-05-04 --apply
 """
 
 from __future__ import annotations

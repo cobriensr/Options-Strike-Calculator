@@ -14,9 +14,9 @@ shares the implementation in scripts/backfill_silent_boom_from_parquet.py
 source of truth on the Python side.
 
 Usage:
-    ml/.venv/bin/python scripts/backfill_silent_boom_ask_demote.py
-    ml/.venv/bin/python scripts/backfill_silent_boom_ask_demote.py --dry-run
-    ml/.venv/bin/python scripts/backfill_silent_boom_ask_demote.py --only-saturated
+    ml/.venv/Scripts/python scripts/backfill_silent_boom_ask_demote.py
+    ml/.venv/Scripts/python scripts/backfill_silent_boom_ask_demote.py --dry-run
+    ml/.venv/Scripts/python scripts/backfill_silent_boom_ask_demote.py --only-saturated
 """
 
 from __future__ import annotations

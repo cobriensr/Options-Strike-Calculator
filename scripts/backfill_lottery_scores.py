@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Backfill lottery_finder_fires.score under V2 weights.
 
-After `ml/.venv/bin/python ml/src/lottery_scoring.py` regenerates
+After `ml/.venv/Scripts/python ml/src/lottery_scoring.py` regenerates
 `ml/output/lottery_score_weights.json`, historical rows in
 lottery_finder_fires still carry scores assigned at insert time under
 the old V1 formula. This script recomputes score for every fire using
@@ -20,7 +20,7 @@ V2 gates (score → NULL):
 Idempotent: re-running with the same weights file writes identical values.
 
 Usage:
-    ml/.venv/bin/python scripts/backfill_lottery_scores.py [--dry-run]
+    ml/.venv/Scripts/python scripts/backfill_lottery_scores.py [--dry-run]
 
 Flags:
     --dry-run   Print distribution comparison without writing to DB.

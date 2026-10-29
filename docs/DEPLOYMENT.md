@@ -150,7 +150,7 @@ make -C ml test       # 52 test files in ml/tests/
 make -C ml test-cov   # same, failing under 70% coverage
 ```
 
-`ml/Makefile` defaults to `PYTHON=.venv/bin/python`; on Windows pass `PYTHON=.venv/Scripts/python`.
+`ml/Makefile` defaults to `PYTHON=.venv/Scripts/python` on Windows and `.venv/bin/python` elsewhere (it picks by `$(OS)`); pass `PYTHON=...` only to override.
 
 | Files                                                                                                                                | Coverage                                                                       |
 | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |

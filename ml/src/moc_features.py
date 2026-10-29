@@ -37,7 +37,7 @@ Output:
     - ml/data/moc_features_qqq.parquet (one row per trading day)
 
 Usage:
-    ml/.venv/bin/python ml/src/moc_features.py
+    ml/.venv/Scripts/python ml/src/moc_features.py
 
 Requires: pandas, numpy
 """
@@ -51,7 +51,7 @@ try:
     import pandas as pd
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/bin/pip install pandas numpy")
+    print("  ml/.venv/Scripts/pip install pandas numpy")
     sys.exit(1)
 
 from utils import ML_ROOT, section, subsection, takeaway

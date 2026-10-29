@@ -4,7 +4,7 @@ Mirrors api/__tests__/lottery-finder.test.ts 1:1 by name and shape so
 the Python port cannot drift from the TS source-of-truth without
 breaking this suite. Run:
 
-    ml/.venv/bin/pytest scripts/test_lottery_detector_py.py -q
+    ml/.venv/Scripts/pytest scripts/test_lottery_detector_py.py -q
 """
 
 from __future__ import annotations

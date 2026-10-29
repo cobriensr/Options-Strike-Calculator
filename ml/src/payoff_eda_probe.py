@@ -3,7 +3,7 @@ Payoff/ceiling model decision-grade EDA probe.
 
 Usage:
     set -a && source .env.local && set +a
-    ml/.venv/bin/python ml/src/payoff_eda_probe.py
+    ml/.venv/Scripts/python ml/src/payoff_eda_probe.py
 
 Outputs plots to ml/plots/.
 """

@@ -21,7 +21,7 @@ Both bucket sizes are always built in one run. Only buckets with
 n_prints >= min_prints (default 1) are emitted.
 
 Usage:
-  ml/.venv/bin/python src/eod_flow_buckets.py [--force] [--min-prints N]
+  ml/.venv/Scripts/python src/eod_flow_buckets.py [--force] [--min-prints N]
 """
 
 from __future__ import annotations

@@ -13,7 +13,7 @@ exit signal on a given ticker, and spotting fast-vs-slow tape regimes.
 Read-only — does not modify the DB or production code.
 
 Usage:
-    ml/.venv/bin/python scripts/flow_inversion_timing.py
+    ml/.venv/Scripts/python scripts/flow_inversion_timing.py
 """
 
 from __future__ import annotations

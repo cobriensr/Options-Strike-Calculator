@@ -28,7 +28,7 @@ Threshold:
   - total_premium >= $250,000
 
 Usage:
-    ml/.venv/bin/python scripts/backfill_interval_ba_alerts.py \\
+    ml/.venv/Scripts/python scripts/backfill_interval_ba_alerts.py \\
         [--from-date 2026-01-02] [--to-date 2026-05-11] [--dry-run]
         [--limit-days N]
 

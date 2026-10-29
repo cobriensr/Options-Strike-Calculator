@@ -19,7 +19,7 @@ make health        # Windows: make health PYTHON=.venv/Scripts/python
 make all           # health eda cluster visualize early backtest pin nope flow calibration
 ```
 
-The Makefile defaults to `PYTHON ?= .venv/bin/python`, which does not exist on Windows, so pass `PYTHON=.venv/Scripts/python` to every target there. To run one script directly: `ml/.venv/bin/python ml/src/eda.py` (Windows: `ml/.venv/Scripts/python ml/src/eda.py`).
+The Makefile defaults `PYTHON` to `.venv/Scripts/python` on Windows and `.venv/bin/python` elsewhere (chosen by `$(OS)`), so no override is needed on either. To run one script directly: `ml/.venv/bin/python ml/src/eda.py` (Windows: `ml/.venv/Scripts/python ml/src/eda.py`).
 
 | make target                    | Runs                                                        |
 | ------------------------------ | ----------------------------------------------------------- |
@@ -253,7 +253,7 @@ Settlement pin risk analysis:
 
 ## Other modules
 
-One line each, from each module's docstring. "Root `make`" means the repo-root `Makefile`, which hardcodes `PYTHON := ml/.venv/bin/python` and `SHELL := /bin/bash`; on Windows pass the interpreter, e.g. `make update PYTHON=ml/.venv/Scripts/python`.
+One line each, from each module's docstring. "Root `make`" means the repo-root `Makefile`, which sets `PYTHON := ml/.venv/Scripts/python` on Windows (`ml/.venv/bin/python` elsewhere, chosen by `$(OS)`) and `SHELL := /bin/bash`.
 
 | Module                                                                                                     | Purpose                                                                                                                                                                                                                                                                                                             | How it runs                                                                                                               |
 | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |

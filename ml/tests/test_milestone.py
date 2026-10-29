@@ -7,7 +7,7 @@ print_data_summary, print_quality, print_actions), constants,
 and the DB-backed count_data function (mocked).
 
 Run:
-    cd ml && .venv/bin/python -m pytest test_milestone.py -v
+    cd ml && .venv/Scripts/python -m pytest test_milestone.py -v
 """
 
 from datetime import date, datetime

@@ -21,7 +21,7 @@ try:
 except ImportError as e:
     raise ImportError(
         "yfinance required for VIX data pull. Install via "
-        "`ml/.venv/bin/pip install yfinance`."
+        "`ml/.venv/Scripts/pip install yfinance`."
     ) from e
 
 

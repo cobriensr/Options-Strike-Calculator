@@ -22,7 +22,7 @@ Idempotent via the same `(option_chain_id, bucket_ct)` unique index
 the production cron uses. Re-runs are safe.
 
 Usage:
-    ml/.venv/bin/python scripts/backfill_silent_boom_from_fulltape.py \\
+    ml/.venv/Scripts/python scripts/backfill_silent_boom_from_fulltape.py \\
         --from-date 2026-01-02 --to-date 2026-04-10
 """
 

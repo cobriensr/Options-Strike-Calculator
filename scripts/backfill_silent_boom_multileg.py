@@ -14,9 +14,9 @@ present. Rows whose bucket date has no parquet stay NULL.
 Spec: docs/superpowers/specs/silent-boom-ask-100-demote-2026-05-12.md
 
 Usage:
-    ml/.venv/bin/python scripts/backfill_silent_boom_multileg.py
-    ml/.venv/bin/python scripts/backfill_silent_boom_multileg.py --date 2026-05-08
-    ml/.venv/bin/python scripts/backfill_silent_boom_multileg.py --dry-run
+    ml/.venv/Scripts/python scripts/backfill_silent_boom_multileg.py
+    ml/.venv/Scripts/python scripts/backfill_silent_boom_multileg.py --date 2026-05-08
+    ml/.venv/Scripts/python scripts/backfill_silent_boom_multileg.py --dry-run
 """
 
 from __future__ import annotations

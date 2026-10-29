@@ -7,7 +7,7 @@ non-interactive 'Agg' backend — files may be written to ml/plots/ but
 contents are not asserted.
 
 Run:
-    cd ml && .venv/bin/python -m pytest tests/test_flow_eda.py -v
+    cd ml && .venv/Scripts/python -m pytest tests/test_flow_eda.py -v
 """
 
 from __future__ import annotations

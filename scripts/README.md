@@ -17,8 +17,8 @@ DATABASE_URL=... npx tsx scripts/backfill-zero-gamma.ts
 # .mjs (Node ESM)
 UW_API_KEY=... DATABASE_URL=... node scripts/backfill-dark-pool-prints.mjs
 
-# .py (use the ml venv; on Windows: ml/.venv/Scripts/python)
-ml/.venv/bin/python scripts/backfill_net_flow_history.py --date 2026-05-05
+# .py (use the ml venv; on Linux/macOS: ml/.venv/bin/python)
+ml/.venv/Scripts/python scripts/backfill_net_flow_history.py --date 2026-05-05
 ```
 
 Each script documents its inputs in its header. Most take CLI flags (`--date YYYY-MM-DD`, `--dry-run`, or an opt-in `--write`/`--apply`). A few older ones read env vars such as `BACKFILL_START`/`BACKFILL_END`, `BATCH_SIZE` or `DRY_RUN=1`.

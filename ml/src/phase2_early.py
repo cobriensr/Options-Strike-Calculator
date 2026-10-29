@@ -36,14 +36,14 @@ try:
     from sklearn.tree import DecisionTreeClassifier
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/bin/pip install psycopg2-binary pandas scikit-learn xgboost")
+    print("  ml/.venv/Scripts/pip install psycopg2-binary pandas scikit-learn xgboost")
     sys.exit(1)
 
 try:
     from xgboost import XGBClassifier
 except ImportError:
     print("Missing xgboost. Run:")
-    print("  ml/.venv/bin/pip install xgboost")
+    print("  ml/.venv/Scripts/pip install xgboost")
     sys.exit(1)
 
 from utils import (
@@ -603,7 +603,7 @@ def generate_shap_plot(
         import shap
     except ImportError:
         print("  shap not installed, skipping SHAP plot")
-        print("  Install with: ml/.venv/bin/pip install shap")
+        print("  Install with: ml/.venv/Scripts/pip install shap")
         return False
 
     try:

@@ -15,7 +15,7 @@ Output plots  → ml/plots/calibration-*.png
 Output JSON   → ml/findings/calibration-{YYYY-MM-DD}.json
 
 Usage:
-    ml/.venv/bin/python ml/src/calibration.py
+    ml/.venv/Scripts/python ml/src/calibration.py
 """
 
 from __future__ import annotations

@@ -14,7 +14,7 @@ and stays entirely out-of-core, so full-file memory usage is modest
 even on 3 GB inputs.
 
 Usage:
-  ml/.venv/bin/python src/eod_flow_ingest.py \
+  ml/.venv/Scripts/python src/eod_flow_ingest.py \
       [--source /path/to/EOD-OptionFlow] \
       [--symbols SPY,QQQ,SPXW,NDXP] \
       [--force]

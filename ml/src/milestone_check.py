@@ -17,7 +17,7 @@ try:
     import pandas as pd
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/bin/pip install psycopg2-binary pandas")
+    print("  ml/.venv/Scripts/pip install psycopg2-binary pandas")
     sys.exit(1)
 
 from utils import get_connection, section, subsection, takeaway

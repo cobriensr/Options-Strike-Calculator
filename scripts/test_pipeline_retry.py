@@ -2,7 +2,7 @@
 
 Run:
 
-    ml/.venv/bin/pytest scripts/test_pipeline_retry.py -q
+    ml/.venv/Scripts/pytest scripts/test_pipeline_retry.py -q
 """
 
 from __future__ import annotations

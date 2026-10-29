@@ -5,7 +5,7 @@ Each EDA function prints output to stdout (no return values), so tests
 use capsys to verify key strings appear and assert no crashes occur.
 
 Run:
-    cd ml && .venv/bin/python -m pytest test_eda.py -v
+    cd ml && .venv/Scripts/python -m pytest test_eda.py -v
 """
 
 import numpy as np

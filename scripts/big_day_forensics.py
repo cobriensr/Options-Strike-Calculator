@@ -5,7 +5,7 @@ vol_realized, and economic_events tables. Writes a findings markdown to
 docs/tmp/forensic-multi-day/big_day_forensics_findings.md.
 
 Run:
-    ml/.venv/bin/python scripts/big_day_forensics.py
+    ml/.venv/Scripts/python scripts/big_day_forensics.py
 """
 
 from __future__ import annotations

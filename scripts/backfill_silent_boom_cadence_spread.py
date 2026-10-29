@@ -15,10 +15,10 @@ Idempotent — only touches rows where first_min_share IS NULL OR
 spread_in_bucket IS NULL. Re-runs are safe.
 
 Run:
-    ml/.venv/bin/python scripts/backfill_silent_boom_cadence_spread.py
-    ml/.venv/bin/python scripts/backfill_silent_boom_cadence_spread.py \
+    ml/.venv/Scripts/python scripts/backfill_silent_boom_cadence_spread.py
+    ml/.venv/Scripts/python scripts/backfill_silent_boom_cadence_spread.py \
         --date 2026-05-15
-    ml/.venv/bin/python scripts/backfill_silent_boom_cadence_spread.py \
+    ml/.venv/Scripts/python scripts/backfill_silent_boom_cadence_spread.py \
         --dry-run
 """
 

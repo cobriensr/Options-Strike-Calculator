@@ -2,7 +2,7 @@
 Unit tests for ML preprocessing, validation, and clustering utilities.
 
 Run:
-    cd ml && .venv/bin/python -m pytest test_ml.py -v
+    cd ml && .venv/Scripts/python -m pytest test_ml.py -v
 """
 
 import numpy as np

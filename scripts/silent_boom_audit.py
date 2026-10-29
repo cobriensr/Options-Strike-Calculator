@@ -15,7 +15,7 @@ Distinct from:
 Read-only — no DB writes, no production deps. Output to docs/tmp/.
 
 Usage:
-    ml/.venv/bin/python scripts/silent_boom_audit.py
+    ml/.venv/Scripts/python scripts/silent_boom_audit.py
 """
 
 from __future__ import annotations

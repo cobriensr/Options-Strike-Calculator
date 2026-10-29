@@ -8,7 +8,7 @@ Covers the two re-run-safety mechanisms:
     resets the baseline first).
 
 Run:
-    ml/.venv/bin/pytest scripts/test_online_ticker_update.py -q
+    ml/.venv/Scripts/pytest scripts/test_online_ticker_update.py -q
 """
 
 from __future__ import annotations

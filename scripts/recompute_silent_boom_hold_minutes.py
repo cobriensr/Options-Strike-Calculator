@@ -17,7 +17,7 @@ month is small (<5min on tier defaults) so this is NOT a daily job.
 Spec: docs/superpowers/specs/silent-boom-flame-exit-2026-05-08.md
 
 Usage:
-    ml/.venv/bin/python scripts/recompute_silent_boom_hold_minutes.py
+    ml/.venv/Scripts/python scripts/recompute_silent_boom_hold_minutes.py
 """
 
 from __future__ import annotations

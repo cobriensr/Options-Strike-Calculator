@@ -34,7 +34,7 @@ Caveats (documented in the report too):
     directional, not statistically conclusive.
 
 Usage:
-    ml/.venv/bin/python ml/backtest-iv-anomalies.py
+    ml/.venv/Scripts/python ml/backtest-iv-anomalies.py
 """
 
 from __future__ import annotations

@@ -19,7 +19,7 @@ Hypothesis: spearman(signed_distance_pct, realized_range_pct) < 0
 Run::
 
     set -a; source .env.local; set +a
-    ml/.venv/bin/python ml/src/periscope_eda/07_vol_compression_by_gamma.py
+    ml/.venv/Scripts/python ml/src/periscope_eda/07_vol_compression_by_gamma.py
 
 Outputs:
     ml/plots/periscope-eda/vol_compression_by_gamma.png

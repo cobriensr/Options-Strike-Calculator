@@ -67,7 +67,7 @@ sell flow.
 CLI::
 
     cd ml
-    .venv/bin/python -m src.features.microstructure \\
+    .venv/Scripts/python -m src.features.microstructure \\
         --tbbo-root data/archive \\
         --out data/features/microstructure_daily.parquet
 """

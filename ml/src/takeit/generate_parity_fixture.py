@@ -11,7 +11,7 @@ Decision per spec resolved-decisions item 5: real-data sample (50 random labeled
 fires, regenerated only when feature set changes).
 
 CLI:
-    ml/.venv/bin/python -m ml.src.takeit.generate_parity_fixture
+    ml/.venv/Scripts/python -m ml.src.takeit.generate_parity_fixture
 """
 
 from __future__ import annotations
