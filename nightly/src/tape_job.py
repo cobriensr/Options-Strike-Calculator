@@ -1,18 +1,22 @@
 """Plan, land and re-land Full Tape days in R2, one day at a time.
 
 A run lists R2 once and plans the newest missing trading days, up to CATCHUP_MAX_DAYS.
-It probes the newest few landed days for an upstream rewrite, then works through the
-plan followed by the rewritten days. Each day downloads, converts and uploads inside
-its own work dir, which is removed whatever happens.
+It lands the plan, then probes the newest few days of that listing for an upstream
+rewrite and re-lands the rewritten ones. Each day downloads, converts, checks and
+uploads inside its own work dir, which is removed whatever happens.
 
 Failure isolation (review finding b6): each day catches `Exception`, so one bad day
 never stops the rest. A BaseException that isn't an Exception (KeyboardInterrupt,
 SystemExit) still propagates, after the day's work dir is removed.
 
 `DayOutcome.detail` reaches Sentry, so it holds only an error kind, an exception class
-name or a fixed phrase: never exception text, a URL, a key or any tape value. Logs
+name or a fixed phrase: never exception text, a URL, a key or any tape value.
+`DayOutcome.reason` holds only text that is log-safe by contract (see DayOutcome). Logs
 follow the same rule, except that a TapeDownloadError's `detail` is logged, since
 uw_client builds it to be log-safe.
+
+Days reach Sentry through the caller's `on_outcome` (monitoring.report_outcome). The
+one Sentry call made here is the run's `nightly rewrite check unavailable` warning.
 """
 
 from __future__ import annotations
@@ -21,18 +25,25 @@ import logging
 import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from shutil import disk_usage, rmtree
 from time import monotonic
 from typing import Literal
+
+import sentry_sdk
+from botocore.exceptions import ClientError
 
 from calendar_nyse import last_completed_session, trading_days
 from config import Settings
 from constants import (
     CATCHUP_MAX_DAYS,
     DAY_BUDGET_SECONDS,
+    MAX_MARKERS_PER_RUN,
     MIN_FREE_DISK_BYTES,
+    MIN_TAPE_ROWS,
+    OUTSIDE_WINDOW_MIN_LOOKBACK_DAYS,
+    PLAUSIBLE_MIN_ROW_RATIO,
     REWRITE_RECHECK_DAYS,
     RUN_DEADLINE_SECONDS,
     SCHEMA_VERSION,
@@ -40,8 +51,14 @@ from constants import (
     UNAVAILABLE_AGE_TRADING_DAYS,
     WORK_DIR,
 )
-from r2_store import R2Store
-from tape_convert import ConvertResult, convert_zip, plausibility_warnings
+from r2_store import R2Store, R2VerifyError
+from tape_convert import (
+    ConvertResult,
+    TapeValidationError,
+    convert_zip,
+    plausibility_warnings,
+    session_window,
+)
 from uw_client import SourceInfo, TapeDownloadError, download_tape, probe_source
 
 log = logging.getLogger(__name__)
@@ -50,9 +67,13 @@ DayStatus = Literal[
     "landed", "relanded", "not_posted", "unavailable", "failed", "skipped_disk", "skipped_deadline"
 ]
 
-# The row-count check compares against the median of this many landed days before the
-# target: the trailing-20 window PLAUSIBLE_MIN_ROW_RATIO was tuned on.
-_TRAILING_DAYS = 20
+# A re-land's warning when its rows and source-bytes match the replaced object's: the
+# same content under a new ETag suggests ETag churn rather than a rewrite.
+RELAND_IDENTICAL = "re-land identical content: rows and source-bytes equal the replaced object's"
+# The row-count check compares against the median of this many landed days nearest the
+# target, on either side: PLAUSIBLE_MIN_ROW_RATIO was tuned on a 20-day window. Two-sided
+# because a backfill lands newest first, so its days have landed days only after them.
+_BASELINE_DAYS = 20
 _SKIPPED_DISK = "free disk below the minimum"
 _SKIPPED_DEADLINE = "less than a day's budget left before the run deadline"
 _DISK_CHECK_FAILED = "disk check failed"
@@ -62,7 +83,13 @@ _SRC_DIR = Path(__file__).resolve().parent
 @dataclass(frozen=True)
 class DayOutcome:
     """What happened to one day. ``detail`` is a kind, a class name or a fixed phrase
-    (empty on success); ``bytes`` is the uploaded Parquet's size."""
+    (empty on success); ``bytes`` is the uploaded Parquet's size.
+
+    ``reason`` says more about a failure, and is set only where the text is log-safe
+    by contract: a TapeValidationError's or R2VerifyError's message (names, counts and
+    keys only), or a botocore ClientError's error code. It is None otherwise, so no
+    other exception's text ever reaches it.
+    """
 
     day: date
     status: DayStatus
@@ -70,6 +97,7 @@ class DayOutcome:
     rows: int | None = None
     warnings: tuple[str, ...] = ()
     bytes: int | None = None
+    reason: str | None = None
 
 
 def plan_days(
@@ -100,11 +128,14 @@ def rewritten_days(
     the window never reaches further back for more. A day whose probe fails or
     returns no ETag can't be compared, so it is skipped with a warning log and
     checked again next run. Once the run's `deadline` (a `monotonic` time) passes,
-    the remaining days are not probed.
+    the remaining days are not probed. When there was a day to probe but none could
+    be compared, it sends one Sentry warning, `nightly rewrite check unavailable`,
+    with the day count: a rewrite would otherwise go unseen.
     """
     window = sorted((d for d in landed if d <= last_session), reverse=True)
     etagged = [d for d in window[:REWRITE_RECHECK_DAYS] if landed[d].get("source-etag")]
     changed: list[date] = []
+    compared = 0
     for i, day in enumerate(etagged):
         if monotonic() >= deadline:
             log.warning(
@@ -118,8 +149,15 @@ def rewritten_days(
             continue
         if etag is None:
             log.warning("rewrite check %s skipped: probe returned no ETag", day)
-        elif etag != landed[day]["source-etag"]:
+            continue
+        compared += 1
+        if etag != landed[day]["source-etag"]:
             changed.append(day)
+    if etagged and compared == 0:
+        log.warning("rewrite check unavailable: none of %d day(s) compared", len(etagged))
+        sentry_sdk.capture_message(
+            "nightly rewrite check unavailable", level="warning", extras={"days": len(etagged)}
+        )
     return changed
 
 
@@ -127,27 +165,42 @@ def land_day(
     day: date,
     store: R2Store,
     api_key: str,
-    trailing_rows: list[int],
-    relanding_etag: str | None = None,
+    baseline_rows: list[int],
+    replacing: Mapping[str, str] | None = None,
     *,
     last_session: date,
+    may_mark: bool = True,
 ) -> DayOutcome:
-    """Download, convert and upload one day, in WORK_DIR/<day>, removed afterwards.
+    """Download, convert, check and upload one day, in WORK_DIR/<day>, removed afterwards.
 
-    With `relanding_etag` (the landed object's source ETag), the current object is
-    first copied aside with `supersede`; if that fails, nothing is downloaded or put.
+    Before anything in R2 changes, a tape with fewer than MIN_TAPE_ROWS rows is
+    `failed` (`row floor`), and one whose every trade falls outside the session
+    window is `failed` (`wrong-day tape`). Both are retried next night.
+
+    `replacing` makes it a re-land: the landed object's metadata. A new tape with
+    fewer than PLAUSIBLE_MIN_ROW_RATIO of the old `rows` is `failed` (`re-land row
+    drop`). The old object is copied aside with `supersede` right before the put, so
+    a re-land that fails earlier leaves R2 as it was, and a failed supersede means no
+    put. When the new `rows` and `source-bytes` equal the old ones, the outcome
+    carries the RELAND_IDENTICAL warning.
 
     A day is marked unavailable, permanently, only on UW's own evidence, and never
     on a re-land:
-    - `outside_window` whose parsed `earliest` is after the day. With no boundary, or
-      a day on or after it, the day is `failed` and retried next night.
+    - `outside_window` whose parsed `earliest` is after the day and at least
+      OUTSIDE_WINDOW_MIN_LOOKBACK_DAYS before `last_session`. A newer boundary is
+      `failed` (`outside_window short-window`); no boundary, or a day on or after
+      it, is `failed` (`outside_window`). Both are retried next night.
     - `not_posted` from GCS (UW redirected; no object) at least
       UNAVAILABLE_AGE_TRADING_DAYS sessions before `last_session`. An old one from UW
       itself is `failed`; a recent one is `not_posted` whatever its origin.
+    With `may_mark` False (the run already wrote MAX_MARKERS_PER_RUN markers), a day
+    that would be marked is `failed` (`marker cap`) instead, and retried next night.
     """
     work = WORK_DIR / day.isoformat()
     try:
-        outcome = _attempt(day, work, store, api_key, trailing_rows, relanding_etag, last_session)
+        outcome = _attempt(
+            day, work, store, api_key, baseline_rows, replacing, last_session, may_mark
+        )
     finally:
         # Logged here so an interrupted day's failed cleanup is still on record.
         cleanup_error = _remove(work)
@@ -164,12 +217,20 @@ def run_tape(
     now_utc: datetime,
     on_outcome: Callable[[DayOutcome], None] | None = None,
 ) -> list[DayOutcome]:
-    """Land the planned days, then re-land rewritten ones; one outcome per day.
+    """Land the planned days, then probe for rewrites and re-land the rewritten days;
+    one outcome per day.
 
     Before each day it checks the run time left and free disk in WORK_DIR. Less than
     DAY_BUDGET_SECONDS before the deadline, too little disk, or the disk check itself
     failing marks that day and every later one skipped. A day that starts can finish
     inside its budget, so the run ends by its deadline.
+
+    The probes come after the planned days, so a slow probe never costs a missing
+    day. They cover the newest days of the run's one listing, never a day this run
+    landed, and stop at the deadline (see rewritten_days). A run whose planned days
+    were skipped probes nothing; the next run probes again. Each day this run lands
+    joins the row baseline of the days after it, and a run writes at most
+    MAX_MARKERS_PER_RUN unavailable markers (see land_day).
 
     `on_outcome` gets each day's outcome as soon as it is decided, skipped days
     included, so a run killed mid-way has already reported its finished days. An
@@ -189,39 +250,52 @@ def run_tape(
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     api_key = settings.uw_api_key.get_secret_value()
     store = R2Store(settings)
-    landed = store.landed()
-    planned = plan_days(set(landed), store.unavailable(), last_session)
-    relands = rewritten_days(landed, api_key, last_session, deadline=deadline)
-    queue: list[tuple[date, str | None]] = [(d, None) for d in planned]
-    queue += [(d, landed[d]["source-etag"]) for d in relands]
-    log.info(
-        "tape run: last session %s, %d planned, %d to re-land",
-        last_session,
-        len(planned),
-        len(relands),
-    )
-
+    listed = store.landed()
+    planned = plan_days(set(listed), store.unavailable(), last_session)
+    log.info("tape run: last session %s, %d planned", last_session, len(planned))
+    # The row baselines' source, which grows as this run lands days. `listed` stays as
+    # listed: the probes' window and each replaced object's metadata.
+    landed = dict(listed)
     outcomes: list[DayOutcome] = []
+    markers = 0
 
     def record(outcome: DayOutcome) -> None:
         outcomes.append(outcome)
         if on_outcome is not None:
             _notify(on_outcome, outcome)
 
-    for i, (day, relanding_etag) in enumerate(queue):
-        skip = _skip_status(deadline)
-        if skip is not None:
-            status, detail = skip
-            log.warning("tape run: %s; %d day(s) skipped", detail, len(queue) - i)
-            for skipped_day, _ in queue[i:]:
-                record(DayOutcome(skipped_day, status, detail))
-            break
-        trailing = _trailing_rows(landed, day)
-        outcome = land_day(day, store, api_key, trailing, relanding_etag, last_session=last_session)
-        if outcome.rows is not None:  # landed or relanded: later days' trailing window
-            landed[day] = {"rows": str(outcome.rows)}
-        _log_outcome(outcome)
-        record(outcome)
+    def land_all(queue: list[tuple[date, Mapping[str, str] | None]]) -> bool:
+        """Land each queued day in order; False once the run's limits skip the rest."""
+        nonlocal markers
+        for i, (day, replacing) in enumerate(queue):
+            skip = _skip_status(deadline)
+            if skip is not None:
+                status, detail = skip
+                log.warning("tape run: %s; %d day(s) skipped", detail, len(queue) - i)
+                for skipped_day, _ in queue[i:]:
+                    record(DayOutcome(skipped_day, status, detail))
+                return False
+            outcome = land_day(
+                day,
+                store,
+                api_key,
+                _baseline_rows(landed, day),
+                replacing,
+                last_session=last_session,
+                may_mark=markers < MAX_MARKERS_PER_RUN,
+            )
+            if outcome.status == "unavailable":  # a marker was written
+                markers += 1
+            if outcome.rows is not None:  # landed or relanded: later days' baselines
+                landed[day] = {"rows": str(outcome.rows)}
+            _log_outcome(outcome)
+            record(outcome)
+        return True
+
+    if land_all([(d, None) for d in planned]):
+        relands = rewritten_days(listed, api_key, last_session, deadline=deadline)
+        log.info("tape run: %d to re-land", len(relands))
+        land_all([(d, listed[d]) for d in relands])
     return outcomes
 
 
@@ -238,19 +312,32 @@ def _attempt(
     work: Path,
     store: R2Store,
     api_key: str,
-    trailing_rows: list[int],
-    relanding_etag: str | None,
+    baseline_rows: list[int],
+    replacing: Mapping[str, str] | None,
     last_session: date,
+    may_mark: bool,
 ) -> DayOutcome:
     """The day's outcome. Every Exception becomes one; only BaseException escapes."""
     try:
         try:
-            return _land(day, work, store, api_key, trailing_rows, relanding_etag)
+            return _land(day, work, store, api_key, baseline_rows, replacing)
         except TapeDownloadError as exc:
-            return _download_failed(day, exc, store, relanding_etag, last_session)
+            return _download_failed(day, exc, store, replacing, last_session, may_mark)
     except Exception as exc:
         log.warning("tape %s failed: %s at %s", day, type(exc).__name__, _raised_at(exc))
-        return DayOutcome(day, "failed", type(exc).__name__)
+        return DayOutcome(day, "failed", type(exc).__name__, reason=_safe_reason(exc))
+
+
+def _safe_reason(exc: Exception) -> str | None:
+    """DayOutcome.reason for `exc`: text only from the classes whose messages are
+    log-safe by contract, and only a ClientError's code (its message can quote a URL)."""
+    if isinstance(exc, TapeValidationError | R2VerifyError):
+        return str(exc)
+    if isinstance(exc, ClientError):
+        error = exc.response.get("Error")
+        code = error.get("Code") if isinstance(error, dict) else None
+        return code if isinstance(code, str) and code else None
+    return None
 
 
 def _land(
@@ -258,11 +345,9 @@ def _land(
     work: Path,
     store: R2Store,
     api_key: str,
-    trailing_rows: list[int],
-    relanding_etag: str | None,
+    baseline_rows: list[int],
+    replacing: Mapping[str, str] | None,
 ) -> DayOutcome:
-    if relanding_etag is not None:
-        store.supersede(day, relanding_etag)
     work.mkdir(parents=True, exist_ok=True)
     zip_path = work / f"{day.isoformat()}-fulltape.zip"
     out_path = work / f"{day.isoformat()}-fulltape.parquet"
@@ -270,17 +355,30 @@ def _land(
     ingested_at = datetime.now(UTC)
     # By keyword: two Paths, and two timestamps beside the rows, would swap silently.
     result = convert_zip(zip_path=zip_path, out_path=out_path, session=day, ingested_at=ingested_at)
+    # Hard checks, before anything in R2 changes: the day fails and is retried.
+    if result.rows < MIN_TAPE_ROWS:
+        log.warning("tape %s: %d rows, below the %d-row floor", day, result.rows, MIN_TAPE_ROWS)
+        return DayOutcome(day, "failed", "row floor")
+    if _wrong_day(result, day):
+        return DayOutcome(day, "failed", "wrong-day tape")
+    if replacing is not None and _row_drop(day, result.rows, replacing):
+        return DayOutcome(day, "failed", "re-land row drop")
     warnings = plausibility_warnings(
         rows=result.rows,
-        trailing_rows=trailing_rows,
+        baseline_rows=baseline_rows,
         min_executed_at=result.min_executed_at,
         max_executed_at=result.max_executed_at,
         session=day,
     )
+    if replacing is not None:
+        if _same_content(result, source, replacing):
+            warnings.append(RELAND_IDENTICAL)
+        # Right before the put, so a re-land that failed above left R2 as it was.
+        store.supersede(day, replacing["source-etag"])
     store.put_tape(out_path, day, _metadata(result, source, ingested_at))
     return DayOutcome(
         day,
-        "landed" if relanding_etag is None else "relanded",
+        "landed" if replacing is None else "relanded",
         rows=result.rows,
         warnings=tuple(warnings),
         bytes=result.bytes,
@@ -291,17 +389,23 @@ def _download_failed(
     day: date,
     exc: TapeDownloadError,
     store: R2Store,
-    relanding_etag: str | None,
+    replacing: Mapping[str, str] | None,
     last_session: date,
+    may_mark: bool,
 ) -> DayOutcome:
     log.warning("tape %s download: %s (%s)", day, exc.kind, exc.detail)
-    if relanding_etag is not None:
+    if replacing is not None:
         return DayOutcome(day, "failed", exc.kind)
     if exc.kind == "outside_window":
-        # Only UW's own boundary proves the day is gone. Anything else may be one odd
-        # night, and a marker would stop ingestion while the job reported green.
+        # Only UW's own boundary proves the day is gone, and only an old one: the 403
+        # states this token's window, so a recent boundary means the entitlement
+        # shrank. Anything else may be one odd night, and a marker would stop
+        # ingestion while the job reported green.
+        cutoff = last_session - timedelta(days=OUTSIDE_WINDOW_MIN_LOOKBACK_DAYS)
+        if exc.earliest is not None and exc.earliest > cutoff:
+            return DayOutcome(day, "failed", f"{exc.kind} short-window")
         if exc.earliest is not None and day < exc.earliest:
-            return _mark_unavailable(day, exc, store)
+            return _mark_unavailable(day, exc, store, may_mark)
         return DayOutcome(day, "failed", exc.kind)
     if exc.kind == "not_posted":
         sessions_since = sum(1 for d in trading_days(day, last_session) if d > day)
@@ -310,14 +414,57 @@ def _download_failed(
         # Documented as UW redirecting to GCS, which has no object. A 404 from UW's
         # own API isn't that evidence, so it stays loud and is retried.
         if exc.origin == "gcs":
-            return _mark_unavailable(day, exc, store)
+            return _mark_unavailable(day, exc, store, may_mark)
         return DayOutcome(day, "failed", f"not_posted {exc.origin or 'unknown'}")
     return DayOutcome(day, "failed", exc.kind)
 
 
-def _mark_unavailable(day: date, exc: TapeDownloadError, store: R2Store) -> DayOutcome:
+def _mark_unavailable(
+    day: date, exc: TapeDownloadError, store: R2Store, may_mark: bool
+) -> DayOutcome:
+    if not may_mark:
+        log.warning("tape %s: %d marker(s) already written this run", day, MAX_MARKERS_PER_RUN)
+        return DayOutcome(day, "failed", "marker cap")
     store.mark_unavailable(day, f"{exc.kind}: {exc.detail}")
     return DayOutcome(day, "unavailable", exc.kind)
+
+
+def _wrong_day(result: ConvertResult, day: date) -> bool:
+    """Every trade falls outside the day's `session_window`, so the tape is another
+    day's. A partial overlap is only a plausibility warning. Logs name the window
+    edges, never an observed timestamp."""
+    start, end = session_window(day)
+    low, high = result.min_executed_at, result.max_executed_at
+    if (low is not None and low >= end) or (high is not None and high < start):
+        log.warning(
+            "tape %s: every trade falls outside the session window [%s, %s)",
+            day,
+            start.isoformat(timespec="minutes"),
+            end.isoformat(timespec="minutes"),
+        )
+        return True
+    return False
+
+
+def _row_drop(day: date, rows: int, replacing: Mapping[str, str]) -> bool:
+    """The re-land has fewer than PLAUSIBLE_MIN_ROW_RATIO of the replaced object's rows."""
+    old = replacing.get("rows", "")
+    if not old.isdecimal() or rows >= PLAUSIBLE_MIN_ROW_RATIO * int(old):
+        return False
+    log.warning(
+        "tape %s: re-land has %d rows, below %s x the replaced object's %s",
+        day,
+        rows,
+        PLAUSIBLE_MIN_ROW_RATIO,
+        old,
+    )
+    return True
+
+
+def _same_content(result: ConvertResult, source: SourceInfo, replacing: Mapping[str, str]) -> bool:
+    """The new tape's rows and source bytes both equal the replaced object's."""
+    same_rows = replacing.get("rows") == str(result.rows)
+    return same_rows and replacing.get("source-bytes") == str(source.bytes)
 
 
 def _metadata(result: ConvertResult, source: SourceInfo, ingested_at: datetime) -> dict[str, str]:
@@ -333,12 +480,14 @@ def _metadata(result: ConvertResult, source: SourceInfo, ingested_at: datetime) 
     }
 
 
-def _trailing_rows(landed: Mapping[date, Mapping[str, str]], day: date) -> list[int]:
-    """`rows` of the nearest _TRAILING_DAYS landed days before `day`, newest first.
+def _baseline_rows(landed: Mapping[date, Mapping[str, str]], day: date) -> list[int]:
+    """`rows` of the _BASELINE_DAYS landed days nearest `day`, before or after it,
+    nearest first (the earlier of two equally near days first); never `day` itself.
 
     Legacy days carry no metadata, so they take a slot but add no value.
     """
-    nearest = sorted((d for d in landed if d < day), reverse=True)[:_TRAILING_DAYS]
+    others = (d for d in landed if d != day)
+    nearest = sorted(others, key=lambda d: (abs(d - day), d))[:_BASELINE_DAYS]
     counts = (landed[d].get("rows", "") for d in nearest)
     return [int(c) for c in counts if c.isdecimal()]
 
@@ -396,7 +545,7 @@ def _remove(work: Path) -> str | None:
     try:
         rmtree(work, ignore_errors=False)
     except FileNotFoundError:
-        pass  # nothing was created (an early failure, or a supersede that failed)
+        pass  # nothing was created (the work dir's own mkdir failed)
     except Exception as exc:
         return type(exc).__name__
     return None
@@ -420,12 +569,13 @@ def _log_outcome(outcome: DayOutcome) -> None:
     level = logging.INFO if outcome.status in ("landed", "relanded") else logging.WARNING
     log.log(
         level,
-        "tape %s %s%s rows=%s bytes=%s",
+        "tape %s %s%s rows=%s bytes=%s%s",
         outcome.day,
         outcome.status,
         f" ({outcome.detail})" if outcome.detail else "",
         outcome.rows,
         outcome.bytes,
+        f" reason: {outcome.reason}" if outcome.reason else "",
     )
     for warning in outcome.warnings:
         log.warning("tape %s: %s", outcome.day, warning)

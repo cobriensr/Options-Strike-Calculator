@@ -193,9 +193,17 @@ def convert_zip(
     return result
 
 
+def session_window(session: date) -> tuple[datetime, datetime]:
+    """The tape's own daily boundary, [session - 1 day 20:00 ET, session 20:00 ET):
+    the start is inclusive, the end exclusive."""
+    boundary = time(TAPE_AVAILABLE_HOUR_ET)
+    start = datetime.combine(session - timedelta(days=1), boundary, tzinfo=EASTERN)
+    return start, datetime.combine(session, boundary, tzinfo=EASTERN)
+
+
 def plausibility_warnings(
     rows: int,
-    trailing_rows: list[int],
+    baseline_rows: list[int],
     min_executed_at: datetime | None,
     max_executed_at: datetime | None,
     session: date,
@@ -203,21 +211,19 @@ def plausibility_warnings(
     """Reasons a converted day looks off. Warnings only: a day that passed the gate
     still lands.
 
-    The window is [session - 1 day 20:00 ET, session 20:00 ET), the tape's own
-    daily boundary. A warning names the edge that was crossed, never the observed
+    `baseline_rows` are the row counts of nearby landed days. The window is
+    `session_window`. A warning names the edge that was crossed, never the observed
     timestamp: warnings reach logs and Sentry, and UW-derived values must not.
     """
     warnings: list[str] = []
-    if len(trailing_rows) >= PLAUSIBLE_MIN_TRAILING:
-        median = statistics.median(trailing_rows)
+    if len(baseline_rows) >= PLAUSIBLE_MIN_TRAILING:
+        median = statistics.median(baseline_rows)
         if rows < PLAUSIBLE_MIN_ROW_RATIO * median:
             warnings.append(
-                f"rows {rows:,} below {PLAUSIBLE_MIN_ROW_RATIO} x the trailing median "
-                f"{median:,.0f} of {len(trailing_rows)} day(s)"
+                f"rows {rows:,} below {PLAUSIBLE_MIN_ROW_RATIO} x the baseline median "
+                f"{median:,.0f} of {len(baseline_rows)} day(s)"
             )
-    boundary = time(TAPE_AVAILABLE_HOUR_ET)
-    start = datetime.combine(session - timedelta(days=1), boundary, tzinfo=EASTERN)
-    end = datetime.combine(session, boundary, tzinfo=EASTERN)
+    start, end = session_window(session)
     if min_executed_at is not None and min_executed_at < start:
         warnings.append(
             f"executed_at starts before the session window ({start.isoformat(timespec='minutes')})"

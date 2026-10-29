@@ -26,7 +26,7 @@ from sentry_sdk.transport import Transport
 from sentry_sdk.utils import event_from_exception, has_data_collection_enabled
 
 from monitoring import init_sentry, report_outcome, scrub_event
-from tape_job import DayOutcome, DayStatus
+from tape_job import RELAND_IDENTICAL, DayOutcome, DayStatus
 
 SIGNED_URL = "https://storage.googleapis.com/b/o.zip?X-Goog-Signature=abc&X-Goog-Credential=def"
 SIGNED_QUERY = "X-Goog-Signature=abc&X-Goog-Credential=def"
@@ -469,24 +469,49 @@ def capture_message(monkeypatch: pytest.MonkeyPatch):
     return mock
 
 
-@pytest.mark.parametrize("status", ["landed", "relanded"])
-def test_landed_day_without_warnings_sends_nothing(capture_message, status: str) -> None:
-    report_outcome(DayOutcome(DAY, status, rows=10, bytes=100))  # type: ignore[arg-type]
+def test_landed_day_without_warnings_sends_nothing(capture_message) -> None:
+    report_outcome(DayOutcome(DAY, "landed", rows=10, bytes=100))
     capture_message.assert_not_called()
 
 
-@pytest.mark.parametrize("status", ["landed", "relanded"])
-def test_landed_day_with_warnings_sends_one_warning(capture_message, status: str) -> None:
-    notes = ("rows 10 below 0.65 x the trailing median 100 of 20 day(s)",)
-    report_outcome(DayOutcome(DAY, status, rows=10, bytes=100, warnings=notes))  # type: ignore[arg-type]
+def test_landed_day_with_warnings_sends_one_warning(capture_message) -> None:
+    notes = ("rows 10 below 0.65 x the baseline median 100 of 20 day(s)",)
+    report_outcome(DayOutcome(DAY, "landed", rows=10, bytes=100, warnings=notes))
 
     capture_message.assert_called_once()
     (message,) = capture_message.call_args.args
     kwargs = capture_message.call_args.kwargs
     assert kwargs["level"] == "warning"
-    assert kwargs["tags"] == {"day": "2026-10-28", "status": status}
+    assert kwargs["tags"] == {"day": "2026-10-28", "status": "landed"}
     assert kwargs["extras"]["warnings"] == list(notes)
-    assert message == f"nightly tape day {status} with warnings"
+    assert message == "nightly tape day landed with warnings"
+
+
+@pytest.mark.parametrize(
+    ("warnings", "title"),
+    [
+        pytest.param((), "nightly tape day relanded", id="no-warnings"),
+        pytest.param(("rows 10 below",), "nightly tape day relanded", id="a-plausibility-warning"),
+        pytest.param(
+            (RELAND_IDENTICAL, "rows 10 below"),
+            "nightly re-land identical content",
+            id="identical-content",
+        ),
+    ],
+)
+def test_every_relanded_day_sends_one_warning(
+    capture_message, warnings: tuple[str, ...], title: str
+) -> None:
+    # The healthy rate is about zero, so each re-land is reported, warnings or not.
+    report_outcome(DayOutcome(DAY, "relanded", rows=10, bytes=100, warnings=warnings))
+
+    capture_message.assert_called_once()
+    (message,) = capture_message.call_args.args
+    kwargs = capture_message.call_args.kwargs
+    assert message == title
+    assert kwargs["level"] == "warning"
+    assert kwargs["tags"] == {"day": "2026-10-28", "status": "relanded"}
+    assert kwargs["extras"] == {"warnings": list(warnings)}
 
 
 @pytest.mark.parametrize(
@@ -511,22 +536,71 @@ def test_unlanded_day_sends_one_message(capture_message, status: str, level: str
     assert kwargs["tags"] == {"day": "2026-10-28", "status": status}
     assert kwargs["extras"] == {
         "detail": "transient",
+        "reason": None,
         "warnings": ["work dir cleanup failed (OSError)"],
     }
-    # One Sentry issue per status and failure kind, not one for every bad night.
-    assert kwargs["fingerprint"] == ["nightly-tape-day", status, "transient"]
+    # One Sentry issue per status and failure kind, not one for every bad night; a
+    # marker also names its day.
+    marked = ["2026-10-28"] if status == "unavailable" else []
+    assert kwargs["fingerprint"] == ["nightly-tape-day", status, "transient", *marked]
     assert message == f"nightly tape day {status}"
 
 
-def test_report_titles_are_a_closed_set(capture_message) -> None:
-    # Titles name the status only, never the day, detail or a warning's text.
+def test_a_failure_reason_goes_in_extra_but_not_the_fingerprint(capture_message) -> None:
+    for reason in ("row count 9 != 10 csv lines", "missing 1 core column(s): price"):
+        report_outcome(DayOutcome(DAY, "failed", "TapeValidationError", reason=reason))
+
+    first, second = capture_message.call_args_list
+    assert first.kwargs["extras"]["reason"] == "row count 9 != 10 csv lines"
+    assert second.kwargs["extras"]["reason"] == "missing 1 core column(s): price"
+    # Grouped by status and class, so a new message text never opens a new issue.
+    assert first.kwargs["fingerprint"] == second.kwargs["fingerprint"]
+    assert first.kwargs["fingerprint"] == ["nightly-tape-day", "failed", "TapeValidationError"]
+    assert first.args == second.args == ("nightly tape day failed",)
+
+
+def test_only_an_unavailable_fingerprint_names_the_day(capture_message) -> None:
+    # Each marker is permanent, so each opens (and alerts as) its own issue; every
+    # other status groups across days.
     for day in (date(2026, 10, 27), date(2026, 10, 28)):
         for status in get_args(DayStatus):
-            report_outcome(DayOutcome(day, status, f"detail-{day}", warnings=(f"note-{day}",)))
+            if status not in ("landed", "relanded"):
+                report_outcome(DayOutcome(day, status, "kind"))
+
+    prints = {
+        (c.kwargs["tags"]["day"], c.kwargs["tags"]["status"]): c.kwargs["fingerprint"]
+        for c in capture_message.call_args_list
+    }
+    assert prints[("2026-10-27", "unavailable")] == [
+        "nightly-tape-day",
+        "unavailable",
+        "kind",
+        "2026-10-27",
+    ]
+    assert prints[("2026-10-28", "unavailable")] == [
+        "nightly-tape-day",
+        "unavailable",
+        "kind",
+        "2026-10-28",
+    ]
+    for status in ("not_posted", "failed", "skipped_disk", "skipped_deadline"):
+        expected = ["nightly-tape-day", status, "kind"]
+        assert prints[("2026-10-27", status)] == prints[("2026-10-28", status)] == expected
+
+
+def test_report_titles_are_a_closed_set(capture_message) -> None:
+    # Titles name the status only, never the day, detail, reason or a warning's text.
+    for day in (date(2026, 10, 27), date(2026, 10, 28)):
+        for status in get_args(DayStatus):
+            for notes in ((f"note-{day}",), (RELAND_IDENTICAL,)):
+                report_outcome(
+                    DayOutcome(day, status, f"detail-{day}", warnings=notes, reason=f"why-{day}")
+                )
     titles = {c.args[0] for c in capture_message.call_args_list}
     assert titles == {
         "nightly tape day landed with warnings",
-        "nightly tape day relanded with warnings",
+        "nightly tape day relanded",
+        "nightly re-land identical content",
         "nightly tape day not_posted",
         "nightly tape day unavailable",
         "nightly tape day failed",

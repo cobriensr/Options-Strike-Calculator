@@ -50,11 +50,11 @@ uw-stream/        UnusualWhales websocket consumer (Python, Railway, NOT Vercel)
                   Own Dockerfile, README.md, requirements.txt (runtime) + requirements-dev.txt (test/lint), conftest.py — own pytest suite under tests/.
 
 nightly/          Full Tape lander (Python, Railway cron service `nightly`, NOT Vercel). Tue–Sat 07:15 UTC
-                  (railway.toml cronSchedule, the morning after each session) it downloads each missing session's UW options Full Tape, converts it
+                  (a cron set on the Railway service, the morning after each session) it downloads each missing session's UW options Full Tape, converts it
                   to Parquet with polars and uploads one object per day to Cloudflare R2
                   (fulltape/{date}-fulltape.parquet), newest missing day first, up to 30 days of catch-up. Re-lands a
                   recent day whose UW ETag changed, and marks a day unavailable only on UW's own evidence. Runs once
-                  and exits: 0 ok, 1 a day did not land, 2 bad config, 3 watchdog. Sentry server_name=nightly plus
+                  and exits: 0 ok, 1 a day did not land, 2 bad config, 3 watchdog, 143 SIGTERM. Sentry server_name=nightly plus
                   the `nightly-tape` cron monitor. Writes nothing to Neon. Env: UW_API_KEY, R2_*, SENTRY_DSN.
                   Own Dockerfile, README.md (runbook and alert meanings), requirements.txt + requirements-dev.txt,
                   conftest.py — own pytest suite under tests/. Spec: docs/superpowers/specs/2026-10-28-nightly-pipeline-automation-design.md.
@@ -349,7 +349,7 @@ see `docs/superpowers/specs/archive-volume-seed-2026-04-18.md`.
 - **Config**: `vercel.json` — crons, security headers, CSP, bot protection rewrites, SPA fallback, `ignoreCommand` skips builds when only `sidecar/`, `uw-stream/`, `nightly/`, `ml/`, `scripts/`, `pine/`, `docs/`, or `*.md` files change
 - **Long-running functions**: `api/analyze.ts`, `api/cron/curate-lessons.ts` and `api/cron/curate-periscope-lessons.ts` (780s), `api/cron/backfill-futures-gaps.ts` (800s), and 300s crons such as `api/cron/build-features.ts`. Full list: `vercel.json` `functions`.
 - **DB setup**: `POST /api/journal/init` creates all tables and runs all migrations
-- **Railway services**: `sidecar/`, `uw-stream/` and `nightly/` (a cron service: `railway.toml` `cronSchedule`, runs once and exits), each with its own Dockerfile, `railway.toml` `watchPatterns` and env vars in Railway, not Vercel. Sidecar env: `DATABASE_URL` (only for its `/health` db check), `SENTRY_DSN`, `TAKEIT_*`, `ARCHIVE_*`. Nightly env: `UW_API_KEY`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`, `R2_BUCKET_FULLTAPE`, optional `SENTRY_DSN`.
+- **Railway services**: `sidecar/`, `uw-stream/` and `nightly/` (a cron service that runs once and exits), each with its own Dockerfile and env vars in Railway, not Vercel. `sidecar/` and `uw-stream/` keep `railway.toml` `watchPatterns`. `nightly/` has no `railway.toml`: its cron schedule, restart policy and watch paths are set on the Railway service (see `nightly/README.md`). Sidecar env: `DATABASE_URL` (only for its `/health` db check), `SENTRY_DSN`, `TAKEIT_*`, `ARCHIVE_*`. Nightly env: `UW_API_KEY`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`, `R2_BUCKET_FULLTAPE`, optional `SENTRY_DSN`.
 
 ## Anthropic Integration
 

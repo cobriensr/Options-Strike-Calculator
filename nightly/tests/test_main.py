@@ -511,8 +511,10 @@ def test_module_entrypoint_exits_2_on_bad_config() -> None:
     )
 
     assert result.returncode == 2
-    assert "uw_api_key" in result.stderr
-    assert "r2_endpoint_url" in result.stderr
+    # Logs go to stdout: Railway labels every stderr line an error, INFO included.
+    assert "config invalid: uw_api_key" in result.stdout
+    assert "r2_endpoint_url" in result.stdout
+    assert "config invalid" not in result.stderr
     assert "FAKE-SECRET-7f3a" not in result.stdout + result.stderr
     assert "test-secret-access-key" not in result.stdout + result.stderr
 

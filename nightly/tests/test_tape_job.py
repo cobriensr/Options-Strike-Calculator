@@ -25,18 +25,22 @@ from unittest.mock import create_autospec, patch
 import boto3
 import httpx
 import pytest
+import sentry_sdk
 from botocore.exceptions import ClientError
 from moto import mock_aws
 
 import tape_convert
 import tape_job
 import uw_client
-from calendar_nyse import trading_days
+from calendar_nyse import EASTERN, trading_days
 from config import Settings, load_settings
 from constants import (
     CATCHUP_MAX_DAYS,
     DAY_BUDGET_SECONDS,
+    MAX_MARKERS_PER_RUN,
     MIN_FREE_DISK_BYTES,
+    MIN_TAPE_ROWS,
+    OUTSIDE_WINDOW_MIN_LOOKBACK_DAYS,
     REWRITE_RECHECK_DAYS,
     RUN_DEADLINE_SECONDS,
     SCHEMA_VERSION,
@@ -44,7 +48,7 @@ from constants import (
 )
 from r2_store import R2Store, R2VerifyError, tape_key
 from tape_convert import ConvertResult, TapeValidationError
-from tape_job import DayOutcome, land_day, plan_days, rewritten_days, run_tape
+from tape_job import RELAND_IDENTICAL, DayOutcome, land_day, plan_days, rewritten_days, run_tape
 from tests.test_uw_client import LIVE_HISTORIC_BODY
 from uw_client import SourceInfo, TapeDownloadError
 
@@ -68,6 +72,12 @@ J2, J5, J6, J7, J8 = trading_days(TAPE_START, date(2026, 1, 8))
 SKIPPED_DISK = "free disk below the minimum"
 SKIPPED_DEADLINE = "less than a day's budget left before the run deadline"
 NO_DEADLINE = math.inf
+ROWS = 8_000_000  # a full day: real days run 7.68M-14.93M rows
+
+
+def _et(day: date, hour: int, minute: int = 0) -> datetime:
+    """An Eastern wall-clock time, as the UTC instant ConvertResult carries."""
+    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=EASTERN).astimezone(UTC)
 
 
 def zip_body(day: date) -> bytes:
@@ -108,12 +118,17 @@ class FakeTape:
         self.convert_error: dict[date, BaseException] = {}
         self.probe_result: dict[date, str | BaseException | None] = {}
         self.rows: dict[date, int] = {}
+        # (min, max) executed_at; a day not listed trades 09:30-16:15 ET on its date.
+        self.executed: dict[date, tuple[datetime, datetime]] = {}
         self.free: list[int | OSError] = []
         self.on_download: Callable[[date], None] | None = None
         self.on_probe: Callable[[date], None] | None = None
+        # Every call in order, with _record_store_calls adding supersede and put_tape.
+        self.events: list[tuple[str, date]] = []
 
     def download(self, day: date, dest: Path, api_key: str) -> SourceInfo:
         self.downloads.append(day)
+        self.events.append(("download", day))
         self.api_keys.add(api_key)
         dest.parent.mkdir(parents=True, exist_ok=True)
         # A stray partial file, so a failed day leaves something for cleanup to remove.
@@ -129,21 +144,24 @@ class FakeTape:
         self, zip_path: Path, out_path: Path, session: date, ingested_at: datetime
     ) -> ConvertResult:
         self.converts.append((zip_path, out_path, session, ingested_at))
+        self.events.append(("convert", session))
         assert zip_path.read_bytes() == zip_body(session)
         out_path.write_bytes(parquet_body(session))
         if session in self.convert_error:
             raise self.convert_error[session]
+        low, high = self.executed.get(session, (_et(session, 9, 30), _et(session, 16, 15)))
         return ConvertResult(
-            rows=self.rows.get(session, 1000),
+            rows=self.rows.get(session, ROWS),
             columns=["id", "date", "ingested_at"],
             sha256=hashlib.sha256(parquet_body(session)).hexdigest(),
             bytes=len(parquet_body(session)),
-            min_executed_at=None,
-            max_executed_at=None,
+            min_executed_at=low,
+            max_executed_at=high,
         )
 
     def probe(self, day: date, api_key: str) -> SourceInfo:
         self.probes.append(day)
+        self.events.append(("probe", day))
         if self.on_probe is not None:
             self.on_probe(day)
         if day not in self.probe_result:
@@ -178,6 +196,29 @@ def tape(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FakeTape:
 
 def _rmtree(monkeypatch: pytest.MonkeyPatch, side_effect: Callable[..., None]) -> None:
     monkeypatch.setattr(tape_job, "rmtree", create_autospec(shutil.rmtree, side_effect=side_effect))
+
+
+def _record_store_calls(monkeypatch: pytest.MonkeyPatch, tape: FakeTape) -> None:
+    """Log every R2Store.supersede and put_tape call in tape.events, then run it."""
+    real_supersede, real_put = R2Store.supersede, R2Store.put_tape
+
+    def supersede(self: R2Store, day: date, source_etag: str) -> str:
+        tape.events.append(("supersede", day))
+        return real_supersede(self, day, source_etag)
+
+    def put_tape(self: R2Store, path: Path, day: date, metadata: dict[str, str]) -> None:
+        tape.events.append(("put_tape", day))
+        real_put(self, path, day, metadata)
+
+    monkeypatch.setattr(R2Store, "supersede", supersede)
+    monkeypatch.setattr(R2Store, "put_tape", put_tape)
+
+
+@pytest.fixture
+def sentry_messages(monkeypatch: pytest.MonkeyPatch):
+    mock = create_autospec(sentry_sdk.capture_message)
+    monkeypatch.setattr(sentry_sdk, "capture_message", mock)
+    return mock
 
 
 @pytest.fixture
@@ -222,8 +263,10 @@ def _statuses(outcomes: list[DayOutcome]) -> list[tuple[date, str, str]]:
     return [(o.day, o.status, o.detail) for o in outcomes]
 
 
-def _bound(spy) -> inspect.BoundArguments:
-    return inspect.signature(land_day).bind(*spy.call_args.args, **spy.call_args.kwargs)
+def _bound(spy, index: int = -1) -> inspect.BoundArguments:
+    """The arguments of a land_day spy's call (the last by default), by name."""
+    call = spy.call_args_list[index]
+    return inspect.signature(land_day).bind(*call.args, **call.kwargs)
 
 
 @pytest.mark.parametrize(
@@ -245,7 +288,7 @@ def test_plausibility_warnings_takes_the_keywords_tape_job_passes() -> None:
     # tape_job calls the real plausibility_warnings, by keyword.
     assert list(inspect.signature(tape_convert.plausibility_warnings).parameters) == [
         "rows",
-        "trailing_rows",
+        "baseline_rows",
         "min_executed_at",
         "max_executed_at",
         "session",
@@ -313,11 +356,11 @@ def test_plan_days_backlog_endpoints() -> None:
 def test_land_day_success_puts_with_metadata(s3, store: R2Store, tape: FakeTape) -> None:
     outcome = land_day(LAST, store, API_KEY, [], last_session=LAST)
 
-    assert outcome == DayOutcome(LAST, "landed", "", 1000, (), bytes=len(parquet_body(LAST)))
+    assert outcome == DayOutcome(LAST, "landed", "", ROWS, (), bytes=len(parquet_body(LAST)))
     head = s3.head_object(Bucket=BUCKET, Key=tape_key(LAST))
     meta = head["Metadata"]
     assert set(meta) == METADATA_KEYS
-    assert meta["rows"] == "1000"
+    assert meta["rows"] == str(ROWS)
     assert meta["sha256"] == hashlib.sha256(parquet_body(LAST)).hexdigest()
     assert meta["schema-version"] == SCHEMA_VERSION
     assert meta["source-etag"] == new_etag(LAST)
@@ -338,11 +381,91 @@ def test_land_day_success_puts_with_metadata(s3, store: R2Store, tape: FakeTape)
 
 
 def test_land_day_reports_plausibility_warnings(s3, store: R2Store, tape: FakeTape) -> None:
-    tape.rows[LAST] = 100
-    outcome = land_day(LAST, store, API_KEY, [1000] * 12, last_session=LAST)
+    tape.rows[LAST] = 2_000_000
+    outcome = land_day(LAST, store, API_KEY, [ROWS] * 12, last_session=LAST)
     assert outcome.status == "landed"
     [warning] = outcome.warnings
-    assert warning.startswith("rows 100 below 0.65 x the trailing median 1,000 of 12 day(s)")
+    assert warning == "rows 2,000,000 below 0.65 x the baseline median 8,000,000 of 12 day(s)"
+
+
+# --- row floor and wrong-day tape ------------------------------------------------------
+
+
+def test_min_tape_rows_is_one_million() -> None:
+    # Real days run 7.68M-14.93M rows and half-days about 4-5M.
+    assert MIN_TAPE_ROWS == 1_000_000
+
+
+@pytest.mark.parametrize("rows", [0, 999_999])
+def test_a_tape_below_the_row_floor_fails_and_puts_nothing(
+    s3, store: R2Store, tape: FakeTape, caplog: pytest.LogCaptureFixture, rows: int
+) -> None:
+    tape.rows[LAST] = rows
+    with caplog.at_level(logging.WARNING, logger="tape_job"):
+        outcome = land_day(LAST, store, API_KEY, [ROWS] * 12, last_session=LAST)
+
+    assert outcome == DayOutcome(LAST, "failed", "row floor", None, ())
+    assert _keys(s3) == set()
+    assert not (tape.work / LAST.isoformat()).exists()
+    assert f"{rows} rows, below the 1000000-row floor" in caplog.text
+
+
+def test_a_tape_on_the_row_floor_lands(s3, store: R2Store, tape: FakeTape) -> None:
+    tape.rows[LAST] = MIN_TAPE_ROWS
+    outcome = land_day(LAST, store, API_KEY, [], last_session=LAST)
+    assert (outcome.status, outcome.rows) == ("landed", MIN_TAPE_ROWS)
+    assert _keys(s3) == {tape_key(LAST)}
+
+
+# The tape's own window for the 10-28 session: [10-27 20:00 ET, 10-28 20:00 ET).
+WINDOW_START, WINDOW_END = _et(date(2026, 10, 27), 20), _et(LAST, 20)
+ONE_US = timedelta(microseconds=1)
+
+
+@pytest.mark.parametrize(
+    ("low", "high"),
+    [
+        pytest.param(
+            _et(date(2026, 10, 29), 9, 30), _et(date(2026, 10, 29), 16, 15), id="the-next-day"
+        ),
+        pytest.param(WINDOW_END, WINDOW_END + timedelta(hours=8), id="starts-at-the-window-end"),
+        pytest.param(
+            _et(date(2026, 10, 27), 9, 30), WINDOW_START - ONE_US, id="ends-before-the-window"
+        ),
+    ],
+)
+def test_a_tape_wholly_outside_the_session_window_fails(
+    s3, store: R2Store, tape: FakeTape, low: datetime, high: datetime
+) -> None:
+    tape.executed[LAST] = (low, high)
+
+    outcome = land_day(LAST, store, API_KEY, [], last_session=LAST)
+
+    assert outcome == DayOutcome(LAST, "failed", "wrong-day tape", None, ())
+    assert _keys(s3) == set()
+
+
+@pytest.mark.parametrize(
+    ("low", "high", "warned"),
+    [
+        pytest.param(
+            _et(date(2026, 10, 27), 9, 30), WINDOW_START, 1, id="ends-on-the-window-start"
+        ),
+        pytest.param(WINDOW_END - ONE_US, WINDOW_END + timedelta(hours=8), 1, id="starts-inside"),
+        pytest.param(WINDOW_START - ONE_US, WINDOW_END, 2, id="spans-the-window"),
+    ],
+)
+def test_a_tape_partly_in_the_window_lands_with_a_warning(
+    s3, store: R2Store, tape: FakeTape, low: datetime, high: datetime, warned: int
+) -> None:
+    tape.executed[LAST] = (low, high)
+
+    outcome = land_day(LAST, store, API_KEY, [], last_session=LAST)
+
+    assert outcome.status == "landed"
+    assert len(outcome.warnings) == warned
+    assert all("session window" in w for w in outcome.warnings)
+    assert _keys(s3) == {tape_key(LAST)}
 
 
 def _fail_put(store: R2Store, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -385,7 +508,9 @@ def test_land_day_cleans_work_dir_on_failure(
 def test_validation_error_fails_with_class_name(s3, store: R2Store, tape: FakeTape) -> None:
     tape.convert_error[LAST] = TapeValidationError("missing 1 core column(s): price")
     outcome = land_day(LAST, store, API_KEY, [], last_session=LAST)
-    assert outcome == DayOutcome(LAST, "failed", "TapeValidationError", None, ())
+    assert outcome == DayOutcome(
+        LAST, "failed", "TapeValidationError", None, (), reason="missing 1 core column(s): price"
+    )
 
 
 def test_put_verify_error_fails_day(s3, store: R2Store, tape: FakeTape) -> None:
@@ -393,7 +518,9 @@ def test_put_verify_error_fails_day(s3, store: R2Store, tape: FakeTape) -> None:
     with patch.object(store, "put_tape", autospec=True, side_effect=error) as put:
         outcome = land_day(LAST, store, API_KEY, [], last_session=LAST)
     assert put.call_count == 1
-    assert outcome == DayOutcome(LAST, "failed", "R2VerifyError", None, ())
+    assert outcome == DayOutcome(
+        LAST, "failed", "R2VerifyError", None, (), reason="fulltape/x: could not verify"
+    )
 
 
 def test_old_not_posted_marks_unavailable(s3, store: R2Store, tape: FakeTape) -> None:
@@ -462,33 +589,72 @@ def _outside_window(day: date, earliest: date | None) -> TapeDownloadError:
     return TapeDownloadError("outside_window", day, detail, earliest=earliest, origin="uw")
 
 
-def test_outside_window_before_uw_earliest_marks_unavailable(
-    s3, store: R2Store, tape: FakeTape
-) -> None:
-    tape.download_error[OLD] = _outside_window(OLD, earliest=date(2026, 6, 1))
+# LAST minus OUTSIDE_WINDOW_MIN_LOOKBACK_DAYS: the newest boundary that can mark a day.
+CUTOFF = date(2024, 12, 7)
+OLD_BOUNDARY = date(2024, 9, 10)
 
-    outcome = land_day(OLD, store, API_KEY, [], last_session=LAST)
 
-    assert outcome == DayOutcome(OLD, "unavailable", "outside_window", None, ())
-    marker = json.loads(_body(s3, "fulltape/_unavailable/2026-05-29.json"))
-    assert marker["reason"] == (
-        "outside_window: uw-403 historic window: earliest 2026-06-01, 730 trading days"
-    )
+def test_outside_window_cutoff_is_690_days_before_the_last_session() -> None:
+    assert OUTSIDE_WINDOW_MIN_LOOKBACK_DAYS == 690
+    assert LAST - timedelta(days=OUTSIDE_WINDOW_MIN_LOOKBACK_DAYS) == CUTOFF
 
 
 @pytest.mark.parametrize(
     "earliest",
-    [pytest.param(OLD, id="on-earliest"), pytest.param(date(2026, 1, 2), id="after-earliest")],
+    [
+        pytest.param(CUTOFF, id="boundary-on-the-cutoff"),
+        pytest.param(date(2023, 11, 30), id="the-live-boundary"),
+    ],
 )
-def test_outside_window_on_or_after_earliest_fails_without_a_marker(
+def test_outside_window_with_an_old_boundary_marks_the_day_before_it(
     s3, store: R2Store, tape: FakeTape, earliest: date
 ) -> None:
+    day = earliest - timedelta(days=1)
+    tape.download_error[day] = _outside_window(day, earliest=earliest)
+
+    outcome = land_day(day, store, API_KEY, [], last_session=LAST)
+
+    assert outcome == DayOutcome(day, "unavailable", "outside_window", None, ())
+    marker = json.loads(_body(s3, f"fulltape/_unavailable/{day}.json"))
+    assert marker["reason"] == (
+        f"outside_window: uw-403 historic window: earliest {earliest}, 730 trading days"
+    )
+
+
+@pytest.mark.parametrize(
+    ("day", "earliest"),
+    [
+        pytest.param(date(2024, 12, 6), CUTOFF + timedelta(days=1), id="a-day-past-the-cutoff"),
+        pytest.param(OLD, date(2026, 6, 1), id="a-boundary-months-old"),
+        pytest.param(OLD, OLD, id="a-recent-boundary-on-the-day"),
+    ],
+)
+def test_outside_window_with_a_recent_boundary_fails_without_a_marker(
+    s3, store: R2Store, tape: FakeTape, day: date, earliest: date
+) -> None:
+    """A boundary this recent means the token's entitlement shrank, not that UW lacks
+    the day: it fails loudly and is retried."""
+    tape.download_error[day] = _outside_window(day, earliest=earliest)
+
+    outcome = land_day(day, store, API_KEY, [], last_session=LAST)
+
+    assert outcome == DayOutcome(day, "failed", "outside_window short-window", None, ())
+    assert store.unavailable() == set()
+
+
+@pytest.mark.parametrize(
+    "day",
+    [pytest.param(OLD_BOUNDARY, id="on-earliest"), pytest.param(OLD, id="after-earliest")],
+)
+def test_outside_window_on_or_after_an_old_earliest_fails_without_a_marker(
+    s3, store: R2Store, tape: FakeTape, day: date
+) -> None:
     """UW's own boundary says the day is inside the window: an anomaly, retried."""
-    tape.download_error[OLD] = _outside_window(OLD, earliest=earliest)
+    tape.download_error[day] = _outside_window(day, earliest=OLD_BOUNDARY)
 
-    outcome = land_day(OLD, store, API_KEY, [], last_session=LAST)
+    outcome = land_day(day, store, API_KEY, [], last_session=LAST)
 
-    assert outcome == DayOutcome(OLD, "failed", "outside_window", None, ())
+    assert outcome == DayOutcome(day, "failed", "outside_window", None, ())
     assert store.unavailable() == set()
 
 
@@ -562,23 +728,98 @@ def test_mark_unavailable_failure_fails_day(s3, store: R2Store, tape: FakeTape) 
     with patch.object(store, "mark_unavailable", autospec=True, side_effect=err) as mark:
         outcome = land_day(OLD, store, API_KEY, [], last_session=LAST)
     mark.assert_called_once_with(OLD, "not_posted: gcs-404")
-    assert outcome == DayOutcome(OLD, "failed", "ClientError", None, ())
+    assert outcome == DayOutcome(OLD, "failed", "ClientError", None, (), reason="500")
+
+
+# --- re-landing ---------------------------------------------------------------------
+
+
+def _replaced(day: date, rows: int = ROWS, source_bytes: int | None = None) -> dict[str, str]:
+    """A landed object's metadata, as run_tape hands it to a re-land."""
+    meta = {"rows": str(rows), "source-etag": old_etag(day)}
+    if source_bytes is not None:
+        meta["source-bytes"] = str(source_bytes)
+    return meta
+
+
+def test_reland_supersedes_right_before_the_put(
+    s3, store: R2Store, tape: FakeTape, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    replaced = _replaced(LAST)
+    _seed(s3, LAST, replaced)
+    _record_store_calls(monkeypatch, tape)
+
+    outcome = land_day(LAST, store, API_KEY, [], replaced, last_session=LAST)
+
+    assert (outcome.status, outcome.warnings) == ("relanded", ())
+    # After the download, the convert and every check; nothing else in between.
+    assert tape.events == [
+        ("download", LAST),
+        ("convert", LAST),
+        ("supersede", LAST),
+        ("put_tape", LAST),
+    ]
+    copy = s3.get_object(
+        Bucket=BUCKET, Key="fulltape/_superseded/2026-10-28-old-2026-10-28.parquet"
+    )
+    assert copy["Body"].read() == b"old-2026-10-28"
+    assert _body(s3, tape_key(LAST)) == parquet_body(LAST)
+
+
+@pytest.mark.parametrize(
+    ("arrange", "detail"),
+    [
+        pytest.param(
+            lambda t: t.download_error.update(
+                {LAST: TapeDownloadError("transient", LAST, "gcs-503 after 4 attempts")}
+            ),
+            "transient",
+            id="download",
+        ),
+        pytest.param(
+            lambda t: t.convert_error.update({LAST: TapeValidationError("corrupt zip")}),
+            "TapeValidationError",
+            id="convert",
+        ),
+        pytest.param(lambda t: t.rows.update({LAST: 999_999}), "row floor", id="row-floor"),
+        pytest.param(
+            lambda t: t.executed.update(
+                {LAST: (_et(date(2026, 10, 29), 9, 30), _et(date(2026, 10, 29), 16))}
+            ),
+            "wrong-day tape",
+            id="wrong-day",
+        ),
+    ],
+)
+def test_a_reland_that_fails_before_the_put_leaves_r2_untouched(
+    s3, store: R2Store, tape: FakeTape, arrange, detail: str
+) -> None:
+    replaced = _replaced(LAST)
+    _seed(s3, LAST, replaced)
+    arrange(tape)
+
+    outcome = land_day(LAST, store, API_KEY, [], replaced, last_session=LAST)
+
+    assert (outcome.status, outcome.detail) == ("failed", detail)
+    assert _keys(s3) == {tape_key(LAST)}  # no superseded copy
+    assert _body(s3, tape_key(LAST)) == b"old-2026-10-28"
 
 
 def test_supersede_failure_fails_day_and_never_puts(s3, store: R2Store, tape: FakeTape) -> None:
-    _seed(s3, LAST, {"source-etag": old_etag(LAST)})
+    replaced = _replaced(LAST)
+    _seed(s3, LAST, replaced)
     err = ClientError({"Error": {"Code": "500", "Message": "boom"}}, "CopyObject")
     real_put = store.put_tape
     with (
         patch.object(store, "supersede", autospec=True, side_effect=err) as supersede,
         patch.object(store, "put_tape", autospec=True, side_effect=real_put) as put,
     ):
-        outcome = land_day(LAST, store, API_KEY, [], old_etag(LAST), last_session=LAST)
+        outcome = land_day(LAST, store, API_KEY, [], replaced, last_session=LAST)
 
     supersede.assert_called_once_with(LAST, old_etag(LAST))
     assert put.call_count == 0
-    assert tape.downloads == []
-    assert outcome == DayOutcome(LAST, "failed", "ClientError", None, ())
+    assert tape.downloads == [LAST]
+    assert outcome == DayOutcome(LAST, "failed", "ClientError", None, (), reason="500")
     assert _body(s3, tape_key(LAST)) == b"old-2026-10-28"
 
 
@@ -586,34 +827,88 @@ def test_supersede_of_missing_object_fails_day(
     s3, store: R2Store, tape: FakeTape, caplog: pytest.LogCaptureFixture
 ) -> None:
     with caplog.at_level(logging.WARNING, logger="tape_job"):
-        outcome = land_day(LAST, store, API_KEY, [], old_etag(LAST), last_session=LAST)
+        outcome = land_day(LAST, store, API_KEY, [], _replaced(LAST), last_session=LAST)
     # botocore raises its modeled ClientError subclass, so the class name is specific.
-    assert outcome == DayOutcome(LAST, "failed", "NoSuchKey", None, ())
-    assert tape.downloads == []
+    assert outcome == DayOutcome(LAST, "failed", "NoSuchKey", None, (), reason="NoSuchKey")
+    assert tape.downloads == [LAST]
     assert _keys(s3) == set()
     # The log names this service's frame, not botocore's.
     assert "failed: NoSuchKey at r2_store.py:" in caplog.text
 
 
 @pytest.mark.parametrize(
+    ("new_rows", "status"),
+    [
+        pytest.param(6_499_999, "failed", id="below-0.65-of-the-old-rows"),
+        pytest.param(6_500_000, "relanded", id="0.65-exactly"),
+    ],
+)
+def test_a_reland_with_a_big_row_drop_keeps_the_old_object(
+    s3, store: R2Store, tape: FakeTape, new_rows: int, status: str
+) -> None:
+    replaced = _replaced(LAST, rows=10_000_000)
+    _seed(s3, LAST, replaced)
+    tape.rows[LAST] = new_rows
+
+    outcome = land_day(LAST, store, API_KEY, [], replaced, last_session=LAST)
+
+    assert outcome.status == status
+    if status == "failed":
+        assert outcome == DayOutcome(LAST, "failed", "re-land row drop", None, ())
+        assert _keys(s3) == {tape_key(LAST)}
+        assert _body(s3, tape_key(LAST)) == b"old-2026-10-28"
+    else:
+        assert _body(s3, tape_key(LAST)) == parquet_body(LAST)
+
+
+@pytest.mark.parametrize(
+    ("rows", "source_bytes", "churn"),
+    [
+        pytest.param(ROWS, len(zip_body(LAST)), True, id="rows-and-source-bytes-equal"),
+        pytest.param(ROWS + 1, len(zip_body(LAST)), False, id="rows-differ"),
+        pytest.param(ROWS, len(zip_body(LAST)) + 1, False, id="source-bytes-differ"),
+        pytest.param(ROWS, None, False, id="no-source-bytes"),
+    ],
+)
+def test_a_reland_of_identical_content_warns_of_etag_churn(
+    s3, store: R2Store, tape: FakeTape, rows: int, source_bytes: int | None, churn: bool
+) -> None:
+    replaced = _replaced(LAST, rows=rows, source_bytes=source_bytes)
+    _seed(s3, LAST, replaced)
+
+    outcome = land_day(LAST, store, API_KEY, [], replaced, last_session=LAST)
+
+    # Still re-landed: the old object is copied aside and the new one put.
+    assert outcome.status == "relanded"
+    assert outcome.warnings == ((RELAND_IDENTICAL,) if churn else ())
+    assert _body(s3, tape_key(LAST)) == parquet_body(LAST)
+    assert len(_keys(s3)) == 2
+
+
+@pytest.mark.parametrize(
     "error",
     [
         pytest.param(gcs_404(OLD), id="old-gcs-404"),
-        pytest.param(_outside_window(OLD, earliest=date(2026, 6, 1)), id="before-earliest"),
+        pytest.param(
+            _outside_window(date(2024, 9, 9), earliest=OLD_BOUNDARY), id="before-an-old-earliest"
+        ),
     ],
 )
 def test_relanding_never_marks_unavailable(
     s3, store: R2Store, tape: FakeTape, error: TapeDownloadError
 ) -> None:
-    """A landed day is never marked unavailable, and its object stays as it was."""
-    _seed(s3, OLD, {"source-etag": old_etag(OLD)})
-    tape.download_error[OLD] = error
+    """Each error would mark a day that isn't landed. A landed day is never marked
+    unavailable, and its object stays as it was."""
+    day = error.day
+    replaced = _replaced(day)
+    _seed(s3, day, replaced)
+    tape.download_error[day] = error
 
-    outcome = land_day(OLD, store, API_KEY, [], old_etag(OLD), last_session=LAST)
+    outcome = land_day(day, store, API_KEY, [], replaced, last_session=LAST)
 
-    assert outcome == DayOutcome(OLD, "failed", error.kind, None, ())
+    assert outcome == DayOutcome(day, "failed", error.kind, None, ())
     assert store.unavailable() == set()
-    assert _body(s3, tape_key(OLD)) == b"old-2026-05-29"
+    assert _body(s3, tape_key(day)) == b"old-" + day.isoformat().encode()
 
 
 SECRET = "sig-SECRET-0123456789abcdef"
@@ -636,11 +931,87 @@ def test_detail_never_carries_exception_text(
         outcome = land_day(LAST, store, API_KEY, [], last_session=LAST)
 
     assert outcome == DayOutcome(LAST, "failed", type(error).__name__, None, ())
+    assert outcome.reason is None  # only the three log-safe classes carry one
     for text in (repr(outcome), caplog.text):
         assert SECRET not in text
         assert "storage.googleapis.com" not in text
         assert API_KEY not in text
         assert "4521.35" not in text
+
+
+def _put_fails(error: Exception) -> Callable[[FakeTape, R2Store, pytest.MonkeyPatch], None]:
+    def arrange(tape: FakeTape, store: R2Store, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(store, "put_tape", create_autospec(store.put_tape, side_effect=error))
+
+    return arrange
+
+
+VERIFY_TEXT = "fulltape/2026-10-28-fulltape.parquet: uploaded 1016 bytes but R2 reports 1015"
+
+
+@pytest.mark.parametrize(
+    ("arrange", "detail", "reason"),
+    [
+        pytest.param(
+            lambda t, s, mp: t.convert_error.update(
+                {LAST: TapeValidationError("row count 9 != 10 csv lines")}
+            ),
+            "TapeValidationError",
+            "row count 9 != 10 csv lines",
+            id="validation",
+        ),
+        pytest.param(
+            _put_fails(R2VerifyError(VERIFY_TEXT)), "R2VerifyError", VERIFY_TEXT, id="verify"
+        ),
+        pytest.param(
+            _put_fails(
+                ClientError({"Error": {"Code": "SlowDown", "Message": f"see {URL}"}}, "PutObject")
+            ),
+            "ClientError",
+            "SlowDown",
+            id="client-error-code-only",
+        ),
+        pytest.param(
+            _put_fails(ClientError({}, "PutObject")), "ClientError", None, id="client-error-no-code"
+        ),
+    ],
+)
+def test_a_failure_of_a_log_safe_class_carries_its_reason(
+    s3,
+    store: R2Store,
+    tape: FakeTape,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    arrange,
+    detail: str,
+    reason: str | None,
+) -> None:
+    arrange(tape, store, monkeypatch)
+    with caplog.at_level(logging.DEBUG, logger="tape_job"):
+        outcome = land_day(LAST, store, API_KEY, [], last_session=LAST)
+
+    assert outcome == DayOutcome(LAST, "failed", detail, None, (), reason=reason)
+    for text in (repr(outcome), caplog.text):
+        assert SECRET not in text
+        assert "storage.googleapis.com" not in text
+
+
+def test_the_days_log_line_carries_the_reason(
+    s3, settings: Settings, tape: FakeTape, caplog: pytest.LogCaptureFixture
+) -> None:
+    _seed(s3, J2)
+    _seed(s3, J5)
+    tape.convert_error[J7] = TapeValidationError("missing 1 core column(s): price")
+
+    with caplog.at_level(logging.INFO, logger="tape_job"):
+        run_tape(settings, JAN_NOW)
+
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("tape 2026-01-0")]
+    assert (
+        "tape 2026-01-07 failed (TapeValidationError) rows=None bytes=None"
+        " reason: missing 1 core column(s): price"
+    ) in lines
+    assert f"tape 2026-01-08 landed rows={ROWS} bytes={len(parquet_body(J8))}" in lines
 
 
 def test_download_error_detail_is_kind_only(s3, store: R2Store, tape: FakeTape) -> None:
@@ -661,6 +1032,24 @@ def test_cleanup_failure_is_reported_as_a_warning(
     assert outcome.status == "landed"
     assert outcome.warnings == ("work dir cleanup failed (PermissionError)",)
     assert SECRET not in repr(outcome)
+
+
+def test_a_work_dir_that_was_never_created_is_not_a_cleanup_failure(
+    s3,
+    store: R2Store,
+    tape: FakeTape,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def gone(path: Path, *args: object, **kwargs: object) -> None:
+        raise FileNotFoundError(2, "no such directory")
+
+    _rmtree(monkeypatch, gone)
+    with caplog.at_level(logging.WARNING, logger="tape_job"):
+        outcome = land_day(LAST, store, API_KEY, [], last_session=LAST)
+
+    assert (outcome.status, outcome.warnings) == ("landed", ())
+    assert "cleanup failed" not in caplog.text
 
 
 # --- rewritten_days ----------------------------------------------------------------------
@@ -736,6 +1125,68 @@ def test_rewritten_days_stops_probing_at_the_deadline(
     assert tape.probes == [days[4]]
     assert changed == [days[4]]
     assert "rewrite check: run deadline passed; 4 day(s) not probed" in caplog.text
+
+
+REWRITE_UNCHECKED = "nightly rewrite check unavailable"
+
+
+@pytest.mark.parametrize(
+    "results",
+    [
+        pytest.param(["error"] * 5, id="every-probe-failed"),
+        pytest.param([None] * 5, id="no-etag-came-back"),
+        pytest.param(["error", None, "error", None, None], id="failed-or-no-etag"),
+    ],
+)
+def test_a_rewrite_check_that_compares_nothing_sends_one_warning(
+    tape: FakeTape, sentry_messages, results: list[str | None]
+) -> None:
+    days = _JAN[-5:]  # Jan 26-30
+    landed = {d: {"source-etag": old_etag(d)} for d in days}
+    for d, result in zip(days, results, strict=True):
+        error = TapeDownloadError("transient", d, "gcs-503 after 4 attempts")
+        tape.probe_result[d] = error if result == "error" else None
+
+    assert rewritten_days(landed, API_KEY, days[4], deadline=NO_DEADLINE) == []
+
+    assert tape.probes == days[::-1]
+    sentry_messages.assert_called_once_with(REWRITE_UNCHECKED, level="warning", extras={"days": 5})
+
+
+def test_a_rewrite_check_cut_off_by_the_deadline_sends_the_warning(
+    tape: FakeTape, sentry_messages
+) -> None:
+    days = _JAN[-5:]
+    landed = {d: {"source-etag": old_etag(d)} for d in days}
+
+    assert rewritten_days(landed, API_KEY, days[4], deadline=-NO_DEADLINE) == []
+
+    assert tape.probes == []
+    sentry_messages.assert_called_once_with(REWRITE_UNCHECKED, level="warning", extras={"days": 5})
+
+
+@pytest.mark.parametrize(
+    "compared",
+    [pytest.param('"rewritten"', id="one-changed"), pytest.param(None, id="one-unchanged")],
+)
+def test_a_rewrite_check_that_compares_one_day_sends_nothing(
+    tape: FakeTape, sentry_messages, compared: str | None
+) -> None:
+    days = _JAN[-5:]
+    landed = {d: {"source-etag": old_etag(d)} for d in days}
+    tape.probe_result = dict.fromkeys(days)
+    tape.probe_result[days[0]] = compared or old_etag(days[0])
+
+    rewritten_days(landed, API_KEY, days[4], deadline=NO_DEADLINE)
+
+    sentry_messages.assert_not_called()
+
+
+def test_a_rewrite_check_with_nothing_to_probe_sends_nothing(
+    tape: FakeTape, sentry_messages
+) -> None:
+    assert rewritten_days({d: {} for d in _JAN}, API_KEY, _JAN[-1], deadline=NO_DEADLINE) == []
+    sentry_messages.assert_not_called()
 
 
 # --- run_tape ----------------------------------------------------------------------------
@@ -827,11 +1278,60 @@ def test_run_deadline_skips_remaining_days(
     assert tape.downloads == [J8]
 
 
+def test_rewrite_probes_run_after_the_planned_days(s3, settings: Settings, tape: FakeTape) -> None:
+    for d in (J2, J5, J6):
+        _seed(s3, d, _replaced(d))
+    tape.probe_result = {J6: '"rewritten"', J5: old_etag(J5), J2: old_etag(J2)}
+
+    outcomes = run_tape(settings, JAN_NOW)
+
+    # The days this run landed (J8, J7) are not probed: the window is the listing's.
+    assert [e for e in tape.events if e[0] != "convert"] == [
+        ("download", J8),
+        ("download", J7),
+        ("probe", J6),
+        ("probe", J5),
+        ("probe", J2),
+        ("download", J6),
+    ]
+    assert _statuses(outcomes) == [(J8, "landed", ""), (J7, "landed", ""), (J6, "relanded", "")]
+
+
+def test_the_probe_window_is_the_runs_listing(s3, settings: Settings, tape: FakeTape) -> None:
+    # 07:15 UTC Sat 01-31 resolves to the Fri 01-30 session, which is missing; every
+    # earlier January day is landed and etagged.
+    now = datetime(2026, 1, 31, 7, 15, tzinfo=UTC)
+    listed = [d for d in _JAN if d != date(2026, 1, 30)]
+    for d in listed:
+        _seed(s3, d, _replaced(d))
+    newest = listed[::-1][:REWRITE_RECHECK_DAYS]  # 01-29 back to 01-23
+    tape.probe_result = {d: old_etag(d) for d in newest}
+
+    outcomes = run_tape(settings, now)
+
+    assert _statuses(outcomes) == [(date(2026, 1, 30), "landed", "")]
+    # The day this run landed takes no slot: five days of the listing are probed.
+    assert tape.probes == newest
+
+
+def test_a_run_whose_planned_days_were_skipped_probes_nothing(
+    s3, settings: Settings, tape: FakeTape
+) -> None:
+    for d in (J2, J5, J6):
+        _seed(s3, d, _replaced(d))  # no probe results: any probe fails the test
+    tape.free = [MIN_FREE_DISK_BYTES, MIN_FREE_DISK_BYTES - 1]
+
+    outcomes = run_tape(settings, JAN_NOW)
+
+    assert _statuses(outcomes) == [(J8, "landed", ""), (J7, "skipped_disk", SKIPPED_DISK)]
+    assert tape.probes == []
+
+
 def test_run_deadline_passing_during_probes_stops_them(
     s3, settings: Settings, tape: FakeTape, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for d in (J2, J5, J6):
-        _seed(s3, d, {"rows": "1000", "source-etag": old_etag(d)})
+        _seed(s3, d, _replaced(d))
     clock = SimpleNamespace(now=1000.0)
     monkeypatch.setattr(tape_job, "monotonic", lambda: clock.now)
 
@@ -843,15 +1343,15 @@ def test_run_deadline_passing_during_probes_stops_them(
 
     outcomes = run_tape(settings, JAN_NOW)
 
-    # The probe of the newest etagged day overran the run deadline: no more probes,
-    # and every queued day, the re-land included, is skipped.
+    # The planned days land first. The probe of the newest etagged day overran the
+    # run deadline: no more probes, and the re-land it found is skipped.
     assert tape.probes == [J6]
     assert _statuses(outcomes) == [
-        (J8, "skipped_deadline", SKIPPED_DEADLINE),
-        (J7, "skipped_deadline", SKIPPED_DEADLINE),
+        (J8, "landed", ""),
+        (J7, "landed", ""),
         (J6, "skipped_deadline", SKIPPED_DEADLINE),
     ]
-    assert tape.downloads == []
+    assert tape.downloads == [J8, J7]
 
 
 @pytest.mark.parametrize(
@@ -1050,6 +1550,61 @@ def test_stale_day_dir_that_cannot_be_removed_does_not_stop_the_run(
     assert "removed 0 stale day dir(s) from WORK_DIR; 1 could not be removed" in caplog.text
 
 
+def test_a_run_writes_at_most_two_markers(s3, settings: Settings, tape: FakeTape) -> None:
+    # 07:15 UTC Sat 2026-01-31 resolves to the Fri 01-30 session; all three days are
+    # old GCS 404s, which would each be marked.
+    now = datetime(2026, 1, 31, 7, 15, tzinfo=UTC)
+    gone = [date(2026, 1, 22), date(2026, 1, 21), date(2026, 1, 20)]
+    for d in _JAN:
+        if d not in gone:
+            _seed(s3, d)
+    for d in gone:
+        tape.download_error[d] = gcs_404(d)
+
+    outcomes = run_tape(settings, now)
+
+    assert MAX_MARKERS_PER_RUN == 2
+    assert _statuses(outcomes) == [
+        (gone[0], "unavailable", "not_posted"),
+        (gone[1], "unavailable", "not_posted"),
+        (gone[2], "failed", "marker cap"),
+    ]
+    assert R2Store(settings).unavailable() == set(gone[:2])
+
+    # The capped day is retried, and marked, by the next run.
+    assert _statuses(run_tape(settings, now)) == [(gone[2], "unavailable", "not_posted")]
+    assert R2Store(settings).unavailable() == set(gone)
+
+
+def test_a_failed_marker_write_does_not_count_toward_the_cap(
+    s3, settings: Settings, tape: FakeTape, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = datetime(2026, 1, 31, 7, 15, tzinfo=UTC)
+    gone = [date(2026, 1, 22), date(2026, 1, 21), date(2026, 1, 20)]
+    for d in _JAN:
+        if d not in gone:
+            _seed(s3, d)
+    for d in gone:
+        tape.download_error[d] = gcs_404(d)
+    real_mark = R2Store.mark_unavailable
+    err = ClientError({"Error": {"Code": "500", "Message": "boom"}}, "PutObject")
+
+    def mark(self: R2Store, day: date, reason: str) -> None:
+        if day == gone[0]:
+            raise err
+        real_mark(self, day, reason)
+
+    monkeypatch.setattr(R2Store, "mark_unavailable", mark)
+
+    outcomes = run_tape(settings, now)
+
+    assert _statuses(outcomes) == [
+        (gone[0], "failed", "ClientError"),
+        (gone[1], "unavailable", "not_posted"),
+        (gone[2], "unavailable", "not_posted"),
+    ]
+
+
 def test_listing_error_propagates(s3, settings: Settings, tape: FakeTape) -> None:
     missing = settings.model_copy(update={"r2_bucket_fulltape": "missing-bucket"})
 
@@ -1069,10 +1624,10 @@ def test_rewrite_relands_after_supersede(s3, settings: Settings, tape: FakeTape)
     for d in _JAN:
         if d == missing:
             continue
-        _seed(s3, d, {"rows": "1000", "source-etag": old_etag(d)} if d in etagged else None)
+        _seed(s3, d, {"rows": str(ROWS), "source-etag": old_etag(d)} if d in etagged else None)
     tape.probe_result = {d: old_etag(d) for d in etagged[-REWRITE_RECHECK_DAYS:]}
     tape.probe_result[rewritten] = '"rewritten"'
-    tape.rows[missing] = 777
+    tape.rows[missing] = 7_770_000
 
     with patch.object(tape_job, "land_day", autospec=True, side_effect=land_day) as spy:
         outcomes = run_tape(settings, now)
@@ -1080,43 +1635,92 @@ def test_rewrite_relands_after_supersede(s3, settings: Settings, tape: FakeTape)
     # The plan's days first, then the re-land.
     assert _statuses(outcomes) == [(missing, "landed", ""), (rewritten, "relanded", "")]
     assert tape.downloads == [missing, rewritten]
-    # The re-land's trailing window already counts the day this run just landed.
     reland = _bound(spy)
-    assert reland.arguments["relanding_etag"] == old_etag(rewritten)
-    assert reland.arguments["trailing_rows"] == [1000, 1000, 1000, 1000, 777]
+    # The re-land gets the replaced object's metadata, from the run's one listing.
+    assert reland.arguments["replacing"] == {"rows": str(ROWS), "source-etag": old_etag(rewritten)}
+    # Nearest first, both sides (01-27 and 01-29, then 01-26 and 01-30, ...); the
+    # baseline already counts 01-16, which this run just landed.
+    assert reland.arguments["baseline_rows"] == [ROWS] * 6 + [7_770_000]
     copy_key = "fulltape/_superseded/2026-01-28-old-2026-01-28.parquet"
     # The copy holds the old bytes and metadata, so it was taken before the put.
     copy = s3.get_object(Bucket=BUCKET, Key=copy_key)
     assert copy["Body"].read() == b"old-2026-01-28"
-    assert copy["Metadata"] == {"rows": "1000", "source-etag": old_etag(rewritten)}
+    assert copy["Metadata"] == {"rows": str(ROWS), "source-etag": old_etag(rewritten)}
     head = s3.head_object(Bucket=BUCKET, Key=tape_key(rewritten))
     assert set(head["Metadata"]) == METADATA_KEYS
     assert head["Metadata"]["source-etag"] == new_etag(rewritten)
     assert _body(s3, tape_key(rewritten)) == parquet_body(rewritten)
 
 
-def test_trailing_rows_come_from_up_to_20_landed_days_before(
+FEB_NOW = datetime(2026, 2, 14, 7, 15, tzinfo=UTC)  # resolves to the Fri 02-13 session
+
+
+def test_baseline_rows_come_from_the_20_nearest_landed_days_on_either_side(
     s3, settings: Settings, tape: FakeTape
 ) -> None:
-    # 07:15 UTC Sat 2026-02-14 resolves to the Fri 02-13 session.
-    now = datetime(2026, 2, 14, 7, 15, tzinfo=UTC)
-    target = date(2026, 2, 13)
-    before = trading_days(TAPE_START, date(2026, 2, 12))  # 29 days, all landed
-    legacy = {date(2026, 2, 11), date(2026, 2, 5)}
-    rows = {d: 2000 + i for i, d in enumerate(before)}
-    for d in before:
+    target = date(2026, 1, 23)
+    around = [d for d in trading_days(TAPE_START, date(2026, 2, 13)) if d != target]
+    legacy = {date(2026, 1, 21), date(2026, 2, 4)}  # take a slot, add no value
+    rows = {d: ROWS + i for i, d in enumerate(around)}
+    for d in around:
         _seed(s3, d, None if d in legacy else {"rows": str(rows[d])})
-    tape.rows[target] = 100
+    tape.rows[target] = 2_000_000
 
     with patch.object(tape_job, "land_day", autospec=True, side_effect=land_day) as spy:
-        [outcome] = run_tape(settings, now)
+        [outcome] = run_tape(settings, FEB_NOW)
 
-    nearest = before[::-1][:20]
+    # Nearest first; on a tie in distance, the earlier day first. 01-07 and earlier,
+    # and 02-09 and later, are further than the 20th.
+    nearest = [
+        date(2026, 1, 22),  # 1 day
+        date(2026, 1, 21),  # 2, legacy
+        date(2026, 1, 20),  # 3
+        date(2026, 1, 26),  # 3
+        date(2026, 1, 27),  # 4
+        date(2026, 1, 28),  # 5
+        date(2026, 1, 29),  # 6
+        date(2026, 1, 16),  # 7
+        date(2026, 1, 30),  # 7
+        date(2026, 1, 15),  # 8
+        date(2026, 1, 14),  # 9
+        date(2026, 1, 13),  # 10
+        date(2026, 2, 2),  # 10
+        date(2026, 1, 12),  # 11
+        date(2026, 2, 3),  # 11
+        date(2026, 2, 4),  # 12, legacy
+        date(2026, 2, 5),  # 13
+        date(2026, 1, 9),  # 14
+        date(2026, 2, 6),  # 14
+        date(2026, 1, 8),  # 15
+    ]
     expected = [rows[d] for d in nearest if d not in legacy]
     assert len(expected) == 18
     bound = _bound(spy)
-    assert bound.arguments["trailing_rows"] == expected
-    assert bound.arguments["last_session"] == target
+    assert bound.arguments["baseline_rows"] == expected
+    assert bound.arguments["last_session"] == date(2026, 2, 13)
     assert outcome.status == "landed"
-    assert len(outcome.warnings) == 1
-    assert outcome.warnings[0].startswith("rows 100 below")
+    [warning] = outcome.warnings
+    assert warning.startswith("rows 2,000,000 below 0.65 x the baseline median")
+
+
+def test_a_backfill_day_with_only_later_landed_days_gets_a_baseline(
+    s3, settings: Settings, tape: FakeTape
+) -> None:
+    # 01-02 to 01-15 are missing and nothing before them is landed: the backfill. The
+    # newest missing day, 01-15, lands first, against the ten landed days after it.
+    later = trading_days(date(2026, 1, 16), date(2026, 2, 13))
+    for d in later:
+        _seed(s3, d, {"rows": str(ROWS)})
+    first = date(2026, 1, 15)
+    tape.rows[first] = 2_000_000
+
+    with patch.object(tape_job, "land_day", autospec=True, side_effect=land_day) as spy:
+        outcomes = run_tape(settings, FEB_NOW)
+
+    assert [o.day for o in outcomes] == trading_days(TAPE_START, first)[::-1]
+    assert all(o.status == "landed" for o in outcomes)
+    assert _bound(spy, 0).arguments["baseline_rows"] == [ROWS] * 20
+    [warning] = outcomes[0].warnings
+    assert warning == "rows 2,000,000 below 0.65 x the baseline median 8,000,000 of 20 day(s)"
+    # The next day's nearest landed neighbour is the day this run just landed.
+    assert _bound(spy, 1).arguments["baseline_rows"][0] == 2_000_000

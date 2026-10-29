@@ -10,22 +10,41 @@ Each run:
 1. Lists the days already in R2 and plans the newest missing sessions, up to 30
    days of catch-up (`CATCHUP_MAX_DAYS`). The calendar starts at 2026-01-02
    (`TAPE_START`).
-2. Probes the newest 5 landed days (`REWRITE_RECHECK_DAYS`). A day whose UW
-   ETag changed since it landed is queued to be re-landed.
-3. For each day, newest first: downloads the zip from UW, converts it to Parquet
-   with polars (zstd level 3), and uploads it to R2. The upload is checked
-   against the local byte count. A failed check deletes the object, so an
-   unverified day never counts as landed.
+2. For each planned day, newest first: downloads the zip from UW, converts it to
+   Parquet with polars (zstd level 3), checks it (see "Row and day checks"), and
+   uploads it to R2. The upload is checked against the local byte count. A
+   failed check deletes the object, so an unverified day never counts as landed.
+3. Then probes the newest 5 days of the run's listing (`REWRITE_RECHECK_DAYS`),
+   and re-lands each day whose UW ETag changed since it landed. The probes come
+   after the planned days, so a slow probe never costs a missing day. A run whose
+   planned days were skipped for disk or deadline probes nothing.
 4. Reports each day to Sentry as soon as it finishes, then exits.
 
-The schedule is `15 7 * * 2-6` (UTC), in `railway.toml`: Tuesday to Saturday at
-07:15 UTC, covering the session that closed the day before.
-`restartPolicyType = "NEVER"`: a failed run alerts and waits for the next night
-instead of looping and re-downloading the tape.
+Logs go to stdout: Railway labels every stderr line an error.
 
 Constants (deadlines, retries, thresholds) live in `src/constants.py`, not in
 env vars. Design and decisions:
 `docs/superpowers/specs/2026-10-28-nightly-pipeline-automation-design.md`.
+
+## Schedule and Railway settings
+
+The schedule, restart policy and watch paths are set on the Railway `nightly`
+service itself, not in the repo. There is no `railway.toml`: Railway refused a
+config-file path (config-as-code is deprecated).
+
+- Cron `15 7 * * 2-6` (UTC): Tuesday to Saturday at 07:15 UTC, covering the
+  session that closed the day before. The Sentry monitor's crontab
+  (`MONITOR_CONFIG` in `src/main.py`) must match it; changing one means changing
+  both.
+- Restart policy `NEVER`: a failed run alerts and waits for the next night
+  instead of looping and re-downloading the tape.
+- Watch paths `/nightly/Dockerfile`, `/nightly/requirements.txt` and
+  `/nightly/src/**`: only the image inputs redeploy, so doc and test edits don't.
+
+**Push hazard.** A redeploy during a run (about 07:15 to 12:30 UTC) can stop the
+run. Code pushes to `nightly/src` should avoid that window. A killed run isn't
+retried until the next night unless someone runs
+`railway cron run --service nightly`.
 
 ## Env vars
 
@@ -63,7 +82,8 @@ count as landed days.
 New objects carry user metadata: `rows`, `sha256`, `schema-version`,
 `source-etag`, `source-last-modified`, `source-bytes`, `ingested-at`. An object
 with no metadata is a legacy day: it still counts as landed, but it is never
-probed for a rewrite and adds nothing to the row-count baseline.
+probed for a rewrite and adds nothing to the row-count baseline (it still takes
+one of the baseline's 20 slots).
 
 `_superseded/` copies are never deleted by the job. Delete old ones by hand once
 the re-landed day has been checked.
@@ -78,8 +98,16 @@ Each planned day ends in one of these:
 - `not_posted`: UW has not posted the day yet, and it is fewer than 5 sessions
   old (`UNAVAILABLE_AGE_TRADING_DAYS`). Retried next night.
 - `unavailable`: UW will not supply the day; a marker was written. See below.
-- `failed`: the download, conversion or upload failed. The detail names the kind
-  or exception class. Retried next night.
+- `failed`: the day did not land. Retried next night. The detail is one of:
+  - a download error kind (`transient`, `auth`, `quota_daily`, `corrupt`,
+    `timeout`, `unexpected`), `outside_window`, `outside_window short-window`,
+    `not_posted uw` or `not_posted unknown`;
+  - an exception class name (`TapeValidationError`, `R2VerifyError`,
+    `ClientError` or a botocore subclass such as `NoSuchKey`, ...);
+  - `row floor` or `wrong-day tape` (see "Row and day checks");
+  - `re-land row drop` (see "Re-lands");
+  - `marker cap`: the day would have been marked, but the run had already
+    written its 2 markers.
 - `skipped_disk`: free disk in the work dir was below 15 GiB, or the disk check
   failed. This day and every later one in the run are skipped.
 - `skipped_deadline`: less than 3600 s (`DAY_BUDGET_SECONDS`) was left before the
@@ -91,14 +119,45 @@ A marker is permanent, so it is written only on UW's own evidence, and never
 while re-landing an already landed day:
 
 - UW answers with a historic-window 403 whose own earliest-date phrase names a
-  date after the day. A 403 with no such date is `failed`, not a marker.
+  date after the day, and that date is at least 690 days before the last
+  session (`OUTSIDE_WINDOW_MIN_LOOKBACK_DAYS`). The 403 states the boundary for
+  this token, and a full plan's window is about 2 years, so a newer boundary
+  means the entitlement shrank, not that UW lacks the day: that is `failed`
+  with detail `outside_window short-window`. A 403 with no such date, or with an
+  old one on or before the day, is `failed` with detail `outside_window`.
 - The tape request is redirected to Google Cloud Storage and GCS returns 404, and
   the day is at least 5 trading days old (`UNAVAILABLE_AGE_TRADING_DAYS`). A
   404 from UW's own API is `failed` and retried. A GCS 404 on a younger day is
   `not_posted`.
 
+A run writes at most 2 markers (`MAX_MARKERS_PER_RUN`). A later day that would
+be marked is `failed` with detail `marker cap` and retried the next night. Each
+marker opens its own Sentry issue, so each one alerts.
+
 To undo a marker, delete `fulltape/_unavailable/{d}.json` in the Cloudflare
 dashboard. The next run plans that day again.
+
+## Row and day checks
+
+After the convert, and before anything in R2 changes:
+
+- **Row floor** (hard): a tape with fewer than 1,000,000 rows (`MIN_TAPE_ROWS`)
+  is `failed` with detail `row floor`. Nothing is put. Real days run 7.68M to
+  14.93M rows, and half-days about 4M to 5M.
+- **Wrong-day tape** (hard): a tape whose every trade falls outside the
+  session window is `failed` with detail `wrong-day tape`. The window is the
+  tape's own daily boundary, from 20:00 ET the day before the session to 20:00 ET
+  on the session date. A tape that only partly overlaps it lands, with a
+  warning.
+- **Row ratio** (warning only): a day with fewer than 0.65 times
+  (`PLAUSIBLE_MIN_ROW_RATIO`) the median `rows` of the 20 landed days nearest
+  it, before or after, lands with a warning. It needs at least 10 of those days
+  to carry `rows` (`PLAUSIBLE_MIN_TRAILING`). Because the baseline reaches both
+  ways, a backfill day has one from the days landed after it.
+
+The 0.65 ratio was tuned on 112 full days, so the half-days 2026-11-27 and
+2026-12-24 will trip the row-ratio warning. They stay well above the floor and
+land; the warning on those two days is expected.
 
 ## Forcing a re-land
 
@@ -107,27 +166,49 @@ day as missing and lands it again. A run plans at most the newest 30 missing
 days, so a day deleted from further back waits until the days after it have
 landed.
 
+## Re-lands
+
 The automatic path needs no action: a changed UW ETag on any of the newest 5
-landed days triggers a re-land on its own, and copies the old object to
-`_superseded/` first.
+landed days triggers a re-land on its own.
+
+- The new tape goes through the same checks as any day. On top of them, a new
+  tape with fewer than 0.65 times the replaced object's `rows` is `failed` with
+  detail `re-land row drop`, and the old object stays.
+- The old object is copied to `_superseded/` right before the put, after the
+  download, convert and checks. A re-land that fails earlier leaves R2 as it was.
+  If the copy fails, the day is `failed` and nothing is put.
+- Every re-land is reported to Sentry as a warning: the healthy rate is about
+  zero. When the new tape's `rows` and `source-bytes` both equal the replaced
+  object's, the title is `nightly re-land identical content` instead, since the
+  same content under a new ETag suggests ETag churn rather than a rewrite.
+- When there were days to probe but none could be compared (every probe failed,
+  returned no ETag or was cut off by the deadline), the run sends one warning,
+  `nightly rewrite check unavailable`, with the day count in `days`.
 
 ## Alert meanings
 
 All Sentry events carry the tag `service=nightly` (`server_name=nightly`). A day
-event also carries tags `day` and `status`, and is grouped by status and failure
-kind, so a new kind opens a new issue.
+event also carries tags `day` and `status`. An unlanded day is grouped by status
+and `detail`, so a new kind opens a new issue; an `unavailable` day is also
+grouped by its date, so each marker opens its own issue. Its extras are
+`detail`, `warnings` and `reason`. `reason` says more about a failure, but only
+where the text is log-safe by contract: a `TapeValidationError`'s or
+`R2VerifyError`'s message (names, counts and keys only), or a botocore
+`ClientError`'s error code. Otherwise it is empty. It never changes the grouping.
 
-| Sentry title                              | Level   | Meaning                                                                                                  |
-| ----------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------- |
-| `nightly tape day failed`                 | error   | A day did not land. `detail` names the kind. Retried next night.                                         |
-| `nightly tape day skipped_disk`           | error   | Free disk too low; the rest of the run was skipped.                                                      |
-| `nightly tape day skipped_deadline`       | error   | The run ran out of time; the rest was skipped.                                                           |
-| `nightly tape day not_posted`             | warning | UW had not posted a recent day. Usually clears itself.                                                   |
-| `nightly tape day unavailable`            | warning | A marker was written. Check it was expected.                                                             |
-| `nightly tape day landed with warnings`   | warning | Landed, but a plausibility check flagged it (row count or time window) or cleanup failed.                |
-| `nightly tape day relanded with warnings` | warning | The same, for a re-landed day.                                                                           |
-| `nightly config invalid`                  | error   | Bad config. `fields` names the invalid settings. Sent only if `SENTRY_DSN` is valid.                     |
-| `NYSE holiday table ends in {year}; ...`  | warning | From Oct 1 of the table's last year. Add the next year to `calendar_nyse.py`, or the job refuses to run. |
+| Sentry title                             | Level   | Meaning                                                                                                  |
+| ---------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------- |
+| `nightly tape day failed`                | error   | A day did not land. `detail` names the kind; `reason` may say more. Retried next night.                  |
+| `nightly tape day skipped_disk`          | error   | Free disk too low; the rest of the run was skipped.                                                      |
+| `nightly tape day skipped_deadline`      | error   | The run ran out of time; the rest was skipped.                                                           |
+| `nightly tape day not_posted`            | warning | UW had not posted a recent day. Usually clears itself.                                                   |
+| `nightly tape day unavailable`           | warning | A marker was written; one issue per day. Check it was expected.                                          |
+| `nightly tape day landed with warnings`  | warning | Landed, but a plausibility check flagged it (row ratio or time window) or cleanup failed.                |
+| `nightly tape day relanded`              | warning | A day was re-landed after its UW ETag changed. Sent for every re-land; `warnings` lists any flags.       |
+| `nightly re-land identical content`      | warning | A re-land whose `rows` and `source-bytes` equal the old object's: likely ETag churn, not a rewrite.      |
+| `nightly rewrite check unavailable`      | warning | No probed day could be compared, so a rewrite would go unseen. `days` is how many were left unchecked.   |
+| `nightly config invalid`                 | error   | Bad config. `fields` names the invalid settings. Sent only if `SENTRY_DSN` is valid.                     |
+| `NYSE holiday table ends in {year}; ...` | warning | From Oct 1 of the table's last year. Add the next year to `calendar_nyse.py`, or the job refuses to run. |
 
 A run that fails before its first day (R2 listing, work dir setup, an exhausted
 calendar) sends the exception itself as an error event.
@@ -138,7 +219,9 @@ run in and out:
 - **Missed**: no check-in within 30 minutes (`checkin_margin`) of 07:15 UTC. The
   job did not start. Check that the service is deployed and the cron is enabled.
   With no valid `SENTRY_DSN`, a bad-config run also shows as missed.
-- **Timeout**: the run was still going after 330 minutes (`max_runtime`).
+- **Timeout**: the run was still going after 330 minutes (`max_runtime`), or the
+  container was killed (out of memory, or SIGKILL on a redeploy) before it could
+  check out.
 - **Error**: the run ended with exit code 1, 2 or 3, or was stopped by SIGTERM.
 
 Exit codes:

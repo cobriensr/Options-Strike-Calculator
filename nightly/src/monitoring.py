@@ -24,13 +24,12 @@ from typing import Any
 import sentry_sdk
 from sentry_sdk.integrations.logging import LoggingIntegration
 
-from tape_job import DayOutcome
+from tape_job import RELAND_IDENTICAL, DayOutcome
 
 log = logging.getLogger(__name__)
 
 POLARS_REDACTED = "<redacted polars message>"
 MAX_EXCEPTION_VALUE = 300
-_LANDED = frozenset({"landed", "relanded"})
 # Statuses that are expected now and then (UW posts late; old days age out).
 _WARNING_STATUSES = frozenset({"not_posted", "unavailable"})
 # A URL up to its query or fragment, which is dropped. The run before `?` is bounded
@@ -80,29 +79,50 @@ def scrub_event(event: dict[str, Any], hint: dict[str, Any]) -> dict[str, Any] |
 
 
 def report_outcome(outcome: DayOutcome) -> None:
-    """One Sentry message for a day that didn't land, or that landed with warnings.
+    """One Sentry message for a day that didn't land, that landed with warnings, or
+    that was re-landed.
 
     The title names the status only, one of a closed set; the day and status are
-    tags, and `detail` (a kind, class name or fixed phrase) and the warnings (window
-    edges, ratios and cleanup phrases) go in extra. Neither carries a tape value.
+    tags, and `detail` (a kind, class name or fixed phrase), `reason` (log-safe by
+    contract, see DayOutcome) and the warnings (window edges, ratios and fixed
+    phrases) go in extra. None of them carries a tape value.
     """
     tags = {"day": outcome.day.isoformat(), "status": outcome.status}
-    if outcome.status in _LANDED:
+    if outcome.status == "landed":
         if outcome.warnings:
             sentry_sdk.capture_message(
-                f"nightly tape day {outcome.status} with warnings",
+                "nightly tape day landed with warnings",
                 level="warning",
                 tags=tags,
                 extras={"warnings": list(outcome.warnings)},
             )
         return
+    if outcome.status == "relanded":
+        # Every re-land, warnings or not: the healthy rate is about zero. The same
+        # content under a new ETag gets its own title, since it suggests ETag churn.
+        identical = RELAND_IDENTICAL in outcome.warnings
+        sentry_sdk.capture_message(
+            "nightly re-land identical content" if identical else "nightly tape day relanded",
+            level="warning",
+            tags=tags,
+            extras={"warnings": list(outcome.warnings)},
+        )
+        return
+    # One issue per status and failure kind, so a new kind opens a new issue. A marker
+    # is permanent, so each one also names its day: it opens, and alerts as, its own.
+    fingerprint = ["nightly-tape-day", outcome.status, outcome.detail]
+    if outcome.status == "unavailable":
+        fingerprint.append(outcome.day.isoformat())
     sentry_sdk.capture_message(
         f"nightly tape day {outcome.status}",
         level="warning" if outcome.status in _WARNING_STATUSES else "error",
         tags=tags,
-        extras={"detail": outcome.detail, "warnings": list(outcome.warnings)},
-        # One issue per status and failure kind, so a new kind opens a new issue.
-        fingerprint=["nightly-tape-day", outcome.status, outcome.detail],
+        extras={
+            "detail": outcome.detail,
+            "reason": outcome.reason,
+            "warnings": list(outcome.warnings),
+        },
+        fingerprint=fingerprint,
     )
 
 
