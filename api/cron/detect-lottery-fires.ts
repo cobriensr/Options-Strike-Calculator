@@ -17,6 +17,10 @@
  * Macro snapshot is **display-only** (per spec Appendix A — every
  * macro-augmented selection rule UNDERPERFORMED the cheap-call-PM-only
  * baseline on total realized $ in the 15-day backtest).
+ *
+ * Calls UW once per ticker-day per run for 1-min stock candles
+ * (range_pos), so cronGuard's default UW_API_KEY check applies: a
+ * missing key fails the run with 500 like every other UW cron.
  */
 
 import { getDb, withDbRetry } from '../_lib/db.js';
@@ -42,6 +46,7 @@ import {
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 import { isPastCashOpen } from '../_lib/cron-helpers.js';
+import { CASH_INDEX_ROOTS } from '../_lib/constants.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 import {
   loadTakeitDetectContext,
@@ -65,6 +70,21 @@ import {
   type FireTimeGexbotSnapshot,
 } from '../_lib/gexbot-queries.js';
 import { Sentry } from '../_lib/sentry.js';
+import { parseUwHttpStatus, withRetry } from '../_lib/uw-fetch.js';
+
+// Deadline for one UW candle lookup (range_pos), retry included. The
+// lookups run one at a time inside Pass 2, ahead of each fire's INSERT;
+// maxDuration is 60 s (vercel.json), and a run killed mid-Pass-2 loses
+// its remaining INSERTs. Unbounded, one stalled lookup could hold the
+// run 15–45 s (limiter wait, plus the 15 s UW timeout twice with the
+// retry). Sentry's per-ticker `ohlc/1m` p99 over 3 days is 0.4–2.5 s,
+// so 5 s only cuts off a stall. The deadline error has no UW status, so
+// it opens the breaker in Pass 2: a stall costs a run at most 5 s, once,
+// and the remaining ticker-days are skipped with range_pos NULL. The
+// losing uwFetch keeps running until its own 15 s abort, holding one UW
+// semaphore slot until its finally releases it (the slot's lease
+// expires after 30 s regardless). A timeout knob: change it with care.
+const CANDLE_FETCH_DEADLINE_MS = 5_000;
 
 // 7-minute scan window — 5-min v4 window + 2-min slack so a slow cron
 // tick can't drop a trigger that landed at the start of its window.
@@ -483,8 +503,25 @@ export default withCronInstrumentation(
 
     // Per-(ticker, date) candle cache — promoted to handler scope so
     // both passes (and fires across chains of the same ticker) share one
-    // UW lookup. Cleared when the handler returns.
+    // UW lookup. A failed or skipped lookup caches [] so it isn't retried
+    // per fire. Cleared when the handler returns.
     const candleCache = new Map<string, UWStockCandle[]>();
+    // Candle lookups this run, one per ticker-day: UW failures (deadline
+    // included), days UW returned no candles for, cash-index days skipped
+    // by design, and days skipped once the breaker opened. All go in the
+    // Axiom payload (→ `meta`). Failures and empty days each raise one
+    // Sentry warning per run, after the insert loop.
+    let candleFetchFailures = 0;
+    let candleFetchEmpty = 0;
+    let candleFetchSkippedIndex = 0;
+    let candleFetchSkippedBreaker = 0;
+    let candleBreakerOpen = false;
+    let firstCandleFetchError: {
+      ticker: string;
+      date: string;
+      error: string;
+    } | null = null;
+    let firstCandleFetchEmpty: { ticker: string; date: string } | null = null;
 
     // V2.2 Phase C.4 cluster bonus is computed in a SYMMETRIC PRE-PASS
     // (Fix 3, 2026-06-09): the prior form computed the bonus inline while
@@ -678,16 +715,63 @@ export default withCronInstrumentation(
         // × fire date (cached across fires on the same ticker) and compute
         // spot position in the session range up to trigger time. Written
         // to the row for the display-only "NEW HIGH" badge; not used in
-        // V2 scoring. On UW failure or insufficient data, range_pos stays
-        // null.
+        // V2 scoring. With no candles (index root, UW failure, deadline,
+        // empty day, breaker skip) range_pos stays null and the fire is
+        // still written.
         const cacheKey = `${rec.underlyingSymbol}_${rec.date}`;
         let candles = candleCache.get(cacheKey);
         if (candles == null) {
-          candles = await fetchStockCandles1m(
-            ctx.apiKey,
-            rec.underlyingSymbol,
-            rec.date,
-          );
+          candles = [];
+          if (CASH_INDEX_ROOTS.has(rec.underlyingSymbol)) {
+            // UW answers 422, code `cboe_index_access_missing` ("Prices for
+            // the CBOE index SPXW require provisioned access and CBOE
+            // approval."), for index roots (spec
+            // uw-api-ws-alignment-2026-10-23.md, D8), so don't ask:
+            // range_pos stays null for these fires by design.
+            candleFetchSkippedIndex += 1;
+          } else if (candleBreakerOpen) {
+            candleFetchSkippedBreaker += 1;
+          } else {
+            try {
+              // One at a time on purpose: every UW call shares the global
+              // 3-slot concurrency semaphore with the other crons.
+              candles = await withCandleDeadline(
+                withRetry(
+                  () =>
+                    fetchStockCandles1m(
+                      ctx.apiKey,
+                      rec.underlyingSymbol,
+                      rec.date,
+                    ),
+                  1,
+                ),
+              );
+              if (candles.length === 0) {
+                candleFetchEmpty += 1;
+                firstCandleFetchEmpty ??= {
+                  ticker: rec.underlyingSymbol,
+                  date: rec.date,
+                };
+              }
+            } catch (err) {
+              candleFetchFailures += 1;
+              const error = err instanceof Error ? err.message : String(err);
+              firstCandleFetchError ??= {
+                ticker: rec.underlyingSymbol,
+                date: rec.date,
+                error,
+              };
+              // A definite 4xx (unknown ticker, plan or auth) is about this
+              // one request. Anything else (5xx, 429, timeout, network, an
+              // unreadable body, the deadline) means UW itself is
+              // struggling: stop asking for the rest of the run so stalls
+              // can't eat the minute.
+              const status = parseUwHttpStatus(error);
+              if (status == null || status >= 500 || status === 429) {
+                candleBreakerOpen = true;
+              }
+            }
+          }
           candleCache.set(cacheKey, candles);
         }
         const rangePosAtTrigger = computeRangePos(
@@ -1029,6 +1113,41 @@ export default withCronInstrumentation(
       });
     }
 
+    // Candle problems leave range_pos null on the row; the fire itself is
+    // written. Each kind is reported once per run, with its first case,
+    // not once per fire, so a UW outage is one Sentry event per tick.
+    const reportCandleProblem = (
+      slug: string,
+      message: string,
+      detail: Record<string, unknown>,
+    ): void => {
+      ctx.logger.warn(detail, message);
+      Sentry.captureMessage(message, {
+        level: 'warning',
+        fingerprint: ['detect-lottery-fires', slug],
+        tags: { 'cron.job': 'detect-lottery-fires', 'cron.anomaly': slug },
+        extra: detail,
+      });
+    };
+    if (candleFetchFailures > 0) {
+      reportCandleProblem(
+        'candle-fetch-failed',
+        'detect-lottery-fires: stock candle fetch failed; range_pos left null',
+        {
+          candleFetchFailures,
+          candleFetchSkippedBreaker,
+          firstCandleFetchError,
+        },
+      );
+    }
+    if (candleFetchEmpty > 0) {
+      reportCandleProblem(
+        'candle-fetch-empty',
+        'detect-lottery-fires: UW returned no stock candles; range_pos left null',
+        { candleFetchEmpty, firstCandleFetchEmpty },
+      );
+    }
+
     // Phase 6: per-tier counts live in the structured log payload below.
     // Sentry alert for "zero tier1 fires for N consecutive trading days"
     // MUST be (re)configured in the Sentry UI to query
@@ -1057,6 +1176,10 @@ export default withCronInstrumentation(
         gexOutOfUniverse,
         multilegHits,
         multilegMisses,
+        candleFetchFailures,
+        candleFetchEmpty,
+        candleFetchSkippedIndex,
+        candleFetchSkippedBreaker,
       },
       'detect-lottery-fires completed',
     );
@@ -1080,10 +1203,13 @@ export default withCronInstrumentation(
         gexOutOfUniverse,
         multilegHits,
         multilegMisses,
+        candleFetchFailures,
+        candleFetchEmpty,
+        candleFetchSkippedIndex,
+        candleFetchSkippedBreaker,
       },
     };
   },
-  { requireApiKey: false },
 );
 
 // ============================================================
@@ -1290,4 +1416,33 @@ function daysBetween(fromYmd: string, toYmd: string): number {
   const a = Date.parse(`${fromYmd}T00:00:00Z`);
   const b = Date.parse(`${toYmd}T00:00:00Z`);
   return Math.round((b - a) / 86_400_000);
+}
+
+/**
+ * Race a candle lookup against CANDLE_FETCH_DEADLINE_MS. Same shape as
+ * withDbRetry's per-attempt race (api/_lib/db.ts): the timer is cleared
+ * once the race settles, so a fast answer doesn't leave it armed and
+ * holding the function open. The lookup itself isn't cancelled (uwFetch
+ * aborts on its own 15 s timeout); its late result is ignored.
+ */
+async function withCandleDeadline<T>(lookup: Promise<T>): Promise<T> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      lookup,
+      new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `stock candle fetch passed its ${CANDLE_FETCH_DEADLINE_MS} ms deadline`,
+              ),
+            ),
+          CANDLE_FETCH_DEADLINE_MS,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeoutHandle != null) clearTimeout(timeoutHandle);
+  }
 }

@@ -464,6 +464,30 @@ export const STRIKE_IV_TICKER_CONCURRENCY = 8;
 export const MIN_ALERT_ENTRY_PRICE = 0.1;
 
 // ============================================================
+// CASH-INDEX OPTION ROOTS
+// ============================================================
+
+/**
+ * Cash-settled index roots: the weekly roots the alert feeds carry
+ * (SPXW, NDXP, RUTW) and their index tickers (SPX, NDX, RUT).
+ *
+ * - detect-silent-boom steps the adjacent-strike co-fire check by $5
+ *   on these (their strike increment) instead of $1.
+ * - detect-lottery-fires skips the UW candle fetch for these: UW
+ *   answers 422 with code `cboe_index_access_missing` ("Prices for the
+ *   CBOE index SPXW require provisioned access and CBOE approval.";
+ *   uw-api-ws-alignment-2026-10-23.md, D8).
+ */
+export const CASH_INDEX_ROOTS: ReadonlySet<string> = new Set([
+  'SPXW',
+  'SPX',
+  'NDXP',
+  'NDX',
+  'RUTW',
+  'RUT',
+]);
+
+// ============================================================
 // LOTTERY FINDER — REIGNITION DETECTION (Task A of
 // docs/superpowers/specs/lottery-reignition-ui-2026-05-17.md)
 // ============================================================

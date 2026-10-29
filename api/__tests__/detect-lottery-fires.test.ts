@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 import {
   expectAllGexBindsNull,
@@ -52,15 +52,21 @@ vi.mock('../_lib/axiom.js', () => ({
   reportCronRun: vi.fn(),
 }));
 
-const { mockCronGuard, mockFetchStockCandles1m } = vi.hoisted(() => ({
-  mockCronGuard: vi.fn(),
-  // Mocked UW stock-candles client. Default behavior set in beforeEach
-  // — tests that care about range_pos behavior override per-case.
-  mockFetchStockCandles1m: vi.fn(),
-}));
+const { mockCronGuard, mockFetchStockCandles1m, mockUwFetch } = vi.hoisted(
+  () => ({
+    mockCronGuard: vi.fn(),
+    // Mocked UW stock-candles client. Default behavior set in beforeEach
+    // — tests that care about range_pos behavior override per-case.
+    mockFetchStockCandles1m: vi.fn(),
+    // The UW boundary under the REAL fetchStockCandles1m, for the tests
+    // that route the candle mock through the real module.
+    mockUwFetch: vi.fn(),
+  }),
+);
 
 vi.mock('../_lib/api-helpers.js', () => ({
   cronGuard: mockCronGuard,
+  uwFetch: mockUwFetch,
 }));
 
 vi.mock('../_lib/uw-stock-candles.js', async (importOriginal) => {
@@ -136,8 +142,20 @@ vi.mock('../_lib/lottery-score-weights-v2.js', async (importOriginal) => {
 });
 
 import handler from '../cron/detect-lottery-fires.js';
+import { reportCronRun } from '../_lib/axiom.js';
+import { AXIOM_TOP_LEVEL_KEYS } from '../_lib/axiom-fields.js';
+import { cronGuard as realCronGuard } from '../_lib/cron-helpers.js';
+import logger from '../_lib/logger.js';
+import { Sentry } from '../_lib/sentry.js';
 
-const GUARD = { apiKey: '', today: '2026-05-01' };
+// The real candle client. Its `uwFetch` import still resolves to the
+// mocked api-helpers above, so routing mockFetchStockCandles1m through
+// it exercises the real payload checks against a mocked UW boundary.
+const { fetchStockCandles1m: realFetchStockCandles1m } = await vi.importActual<
+  typeof import('../_lib/uw-stock-candles.js')
+>('../_lib/uw-stock-candles.js');
+
+const GUARD = { apiKey: 'test-uw-key', today: '2026-05-01' };
 
 // ============================================================
 // Fixture builders — generate ws_option_trades-shaped tick rows that
@@ -611,6 +629,460 @@ describe('detect-lottery-fires handler', () => {
     // V2 score: ticker_flow_snapshot returns [] → isAligned=false → null.
     // range_pos is written for display only (NEW HIGH badge); not scored.
     expect(binds.get('score')).toBeNull();
+  });
+
+  // Spec: docs/superpowers/specs/range-pos-fix-and-backfill-2026-10-28.md
+  // (Phase 1). The cron used to run with requireApiKey:false, so every
+  // candle call went out keyless and the 401 was swallowed to [].
+  describe('UW candle fetch for range_pos', () => {
+    const CANDLE_FAILED_MSG =
+      'detect-lottery-fires: stock candle fetch failed; range_pos left null';
+    const CANDLE_EMPTY_MSG =
+      'detect-lottery-fires: UW returned no stock candles; range_pos left null';
+    const SNDK_CANDLES = [
+      {
+        start_time: '2026-05-01T13:00:00Z',
+        open: '1150',
+        high: '1200',
+        low: '1150',
+        close: '1170',
+      },
+    ];
+
+    const authorizedReq = (query: Record<string, string> = {}) =>
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+        query,
+      });
+
+    // fireableSndkStream() moved onto another ticker / chain. SPXW and
+    // TSLA are on the Mode A (V3, 0DTE) list like SNDK, so it fires the
+    // same way.
+    function streamFor(ticker: string, optionChain: string) {
+      return fireableSndkStream().map((t) => ({
+        ...t,
+        ticker,
+        option_chain: optionChain,
+      }));
+    }
+
+    function candleWarnCalls(message = CANDLE_FAILED_MSG) {
+      return vi
+        .mocked(logger.warn)
+        .mock.calls.filter((call) => call[1] === message);
+    }
+
+    // Symbols the candle lookup was attempted for, in call order.
+    function fetchedTickers() {
+      return mockFetchStockCandles1m.mock.calls.map((call) => call[1]);
+    }
+
+    // Runs the handler with timers faked, so withRetry's backoff (≤1 s)
+    // and the per-fetch deadline elapse without real waiting. afterEach
+    // restores real timers.
+    async function runWithFakeTimers(
+      res: ReturnType<typeof mockResponse>,
+      advanceMs = 1_000,
+    ) {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const run = handler(authorizedReq(), res);
+      await vi.advanceTimersByTimeAsync(advanceMs);
+      await run;
+    }
+
+    afterEach(() => {
+      delete process.env.UW_API_KEY;
+      vi.useRealTimers();
+    });
+
+    it('passes the real UW_API_KEY from cronGuard to the candle fetch', async () => {
+      process.env.UW_API_KEY = 'uw-real-key';
+      mockCronGuard.mockImplementation(realCronGuard);
+      mockTicks(fireableSndkStream());
+
+      const res = mockResponse();
+      // force=1 lifts only the time gate; CRON_SECRET and the key check
+      // still run inside the real cronGuard.
+      await handler(authorizedReq({ force: '1' }), res);
+
+      expect(res._status).toBe(200);
+      expect(mockFetchStockCandles1m).toHaveBeenCalledWith(
+        'uw-real-key',
+        'SNDK',
+        '2026-05-01',
+      );
+    });
+
+    it('returns 500 "UW_API_KEY not configured" and runs nothing when the key is missing', async () => {
+      mockCronGuard.mockImplementation(realCronGuard);
+
+      const res = mockResponse();
+      await handler(authorizedReq({ force: '1' }), res);
+
+      expect(res._status).toBe(500);
+      expect(res._json).toEqual({ error: 'UW_API_KEY not configured' });
+      expect(mockSql).not.toHaveBeenCalled();
+      expect(mockFetchStockCandles1m).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [
+        'a UW non-2xx',
+        () =>
+          mockUwFetch.mockRejectedValue(
+            new Error('UW API 500: Internal Server Error'),
+          ),
+        'UW API 500: Internal Server Error',
+      ],
+      [
+        'a 200 whose data is not an array',
+        () => mockUwFetch.mockResolvedValue('x'),
+        'UW stock candles malformed: data is string, not an array',
+      ],
+      [
+        'a 200 whose body is not JSON',
+        () =>
+          mockUwFetch.mockRejectedValue(
+            new SyntaxError('Unexpected token < in JSON at position 0'),
+          ),
+        'Unexpected token < in JSON at position 0',
+      ],
+    ])(
+      'surfaces %s and still writes the fire with a null range_pos',
+      async (_label, stageUw, expectedError) => {
+        mockFetchStockCandles1m.mockImplementation(realFetchStockCandles1m);
+        stageUw();
+        mockTicks(fireableSndkStream())
+          .mockResolvedValueOnce([]) // prior fires
+          .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
+          .mockResolvedValueOnce([]) // flow_data (Pass 2)
+          .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
+          .mockResolvedValueOnce([{ id: 42 }]); // insert
+
+        const res = mockResponse();
+        await runWithFakeTimers(res);
+
+        // A candle failure must not fail fire detection.
+        expect(res._status).toBe(200);
+        expect(res._json).toMatchObject({
+          status: 'success',
+          rows: 1,
+          candleFetchFailures: 1,
+          candleFetchSkippedIndex: 0,
+          candleFetchSkippedBreaker: 0,
+        });
+        const binds = extractInsertBinds(mockSql, 'lottery_finder_fires');
+        expect(binds.get('range_pos_at_trigger')).toBeNull();
+
+        const firstCandleFetchError = {
+          ticker: 'SNDK',
+          date: '2026-05-01',
+          error: expectedError,
+        };
+        expect(candleWarnCalls()).toEqual([
+          [
+            expect.objectContaining({
+              candleFetchFailures: 1,
+              firstCandleFetchError,
+            }),
+            CANDLE_FAILED_MSG,
+          ],
+        ]);
+        expect(mockSentryCaptureMessage).toHaveBeenCalledTimes(1);
+        expect(mockSentryCaptureMessage).toHaveBeenCalledWith(
+          CANDLE_FAILED_MSG,
+          expect.objectContaining({
+            level: 'warning',
+            fingerprint: ['detect-lottery-fires', 'candle-fetch-failed'],
+            extra: expect.objectContaining({
+              candleFetchFailures: 1,
+              firstCandleFetchError,
+            }),
+          }),
+        );
+        expect(reportCronRun).toHaveBeenCalledWith(
+          'detect-lottery-fires',
+          expect.objectContaining({
+            candleFetchFailures: 1,
+            candleFetchSkippedIndex: 0,
+          }),
+        );
+      },
+    );
+
+    it('counts each failing ticker-day once and sends one Sentry message per run', async () => {
+      // A definite 4xx: not retried and doesn't open the breaker, so
+      // every ticker-day is still asked for.
+      mockFetchStockCandles1m.mockRejectedValue(
+        new Error('UW API 404: Not Found'),
+      );
+      // Two SNDK chains (one ticker-day) plus one TSLA chain.
+      mockTicks([
+        ...fireableSndkStream(),
+        ...streamFor('SNDK', 'SNDK260501C01180000'),
+        ...streamFor('TSLA', 'TSLA260501C01175000'),
+      ]);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._status).toBe(200);
+      // The failed SNDK lookup is cached for the run, not retried per fire.
+      expect(fetchedTickers()).toEqual(['SNDK', 'TSLA']);
+      expect(res._json).toMatchObject({
+        candleFetchFailures: 2,
+        candleFetchSkippedBreaker: 0,
+      });
+      const rangePos = extractAllInsertBinds(
+        mockSql,
+        'lottery_finder_fires',
+      ).map((b) => b.get('range_pos_at_trigger'));
+      expect(rangePos).toEqual([null, null, null]);
+      expect(candleWarnCalls()).toEqual([
+        [
+          expect.objectContaining({
+            candleFetchFailures: 2,
+            firstCandleFetchError: {
+              ticker: 'SNDK',
+              date: '2026-05-01',
+              error: 'UW API 404: Not Found',
+            },
+          }),
+          CANDLE_FAILED_MSG,
+        ],
+      ]);
+      expect(mockSentryCaptureMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips the candle fetch for cash-index roots (D8) and leaves their range_pos null', async () => {
+      mockFetchStockCandles1m.mockResolvedValue(SNDK_CANDLES);
+      mockTicks([
+        ...streamFor('SPXW', 'SPXW260501C01175000'),
+        ...fireableSndkStream(),
+      ]);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(mockFetchStockCandles1m).toHaveBeenCalledTimes(1);
+      expect(mockFetchStockCandles1m).toHaveBeenCalledWith(
+        'test-uw-key',
+        'SNDK',
+        '2026-05-01',
+      );
+      expect(res._json).toMatchObject({
+        candleFetchSkippedIndex: 1,
+        candleFetchFailures: 0,
+      });
+      const rangePosBySymbol = new Map(
+        extractAllInsertBinds(mockSql, 'lottery_finder_fires').map((b) => [
+          b.get('underlying_symbol'),
+          b.get('range_pos_at_trigger'),
+        ]),
+      );
+      expect(rangePosBySymbol.get('SPXW')).toBeNull();
+      expect(rangePosBySymbol.get('SNDK')).toBeCloseTo(0.4, 5);
+      // A skip is by design, not a failure.
+      expect(candleWarnCalls()).toEqual([]);
+      expect(mockSentryCaptureMessage).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a day UW returns no candles for as empty, not as a failure', async () => {
+      // beforeEach default: mockFetchStockCandles1m resolves [].
+      mockTicks(fireableSndkStream());
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        candleFetchEmpty: 1,
+        candleFetchFailures: 0,
+      });
+      expect(candleWarnCalls()).toEqual([]);
+      const firstCandleFetchEmpty = { ticker: 'SNDK', date: '2026-05-01' };
+      expect(candleWarnCalls(CANDLE_EMPTY_MSG)).toEqual([
+        [
+          expect.objectContaining({
+            candleFetchEmpty: 1,
+            firstCandleFetchEmpty,
+          }),
+          CANDLE_EMPTY_MSG,
+        ],
+      ]);
+      expect(mockSentryCaptureMessage).toHaveBeenCalledTimes(1);
+      expect(mockSentryCaptureMessage).toHaveBeenCalledWith(
+        CANDLE_EMPTY_MSG,
+        expect.objectContaining({
+          level: 'warning',
+          fingerprint: ['detect-lottery-fires', 'candle-fetch-empty'],
+          extra: expect.objectContaining({
+            candleFetchEmpty: 1,
+            firstCandleFetchEmpty,
+          }),
+        }),
+      );
+    });
+
+    it.each([
+      ['a UW 503', new Error('UW API 503: Service Unavailable')],
+      [
+        'a UW 429',
+        new Error('UW API 429: You have exceeded 3 concurrent requests'),
+      ],
+      ['a network error', new Error('fetch failed')],
+    ])(
+      'stops asking UW for candles for the rest of the run after %s (breaker)',
+      async (_label, uwError) => {
+        mockFetchStockCandles1m.mockRejectedValue(uwError);
+        mockTicks([
+          ...fireableSndkStream(),
+          ...streamFor('TSLA', 'TSLA260501C01175000'),
+        ]);
+
+        const res = mockResponse();
+        await runWithFakeTimers(res);
+
+        expect(res._status).toBe(200);
+        // SNDK is tried twice (one retry); TSLA is never asked for.
+        expect(fetchedTickers()).toEqual(['SNDK', 'SNDK']);
+        expect(res._json).toMatchObject({
+          candleFetchFailures: 1,
+          candleFetchSkippedBreaker: 1,
+        });
+        const rangePos = extractAllInsertBinds(
+          mockSql,
+          'lottery_finder_fires',
+        ).map((b) => b.get('range_pos_at_trigger'));
+        expect(rangePos).toEqual([null, null]);
+        expect(mockSentryCaptureMessage).toHaveBeenCalledTimes(1);
+        expect(mockSentryCaptureMessage).toHaveBeenCalledWith(
+          CANDLE_FAILED_MSG,
+          expect.objectContaining({
+            extra: expect.objectContaining({
+              candleFetchFailures: 1,
+              candleFetchSkippedBreaker: 1,
+            }),
+          }),
+        );
+      },
+    );
+
+    it('retries a transient candle failure once before giving up', async () => {
+      mockFetchStockCandles1m
+        .mockRejectedValueOnce(new Error('UW API 503: Service Unavailable'))
+        .mockResolvedValueOnce(SNDK_CANDLES);
+      mockTicks(fireableSndkStream());
+
+      const res = mockResponse();
+      await runWithFakeTimers(res);
+
+      expect(res._status).toBe(200);
+      expect(fetchedTickers()).toEqual(['SNDK', 'SNDK']);
+      expect(res._json).toMatchObject({
+        candleFetchFailures: 0,
+        candleFetchSkippedBreaker: 0,
+      });
+      const binds = extractInsertBinds(mockSql, 'lottery_finder_fires');
+      expect(binds.get('range_pos_at_trigger')).toBeCloseTo(0.4, 5);
+      expect(mockSentryCaptureMessage).not.toHaveBeenCalled();
+    });
+
+    it('gives up on a candle fetch that outlives its 5 s deadline and opens the breaker', async () => {
+      // SNDK's lookup never answers (a stalled UW call); TSLA's would.
+      mockFetchStockCandles1m.mockImplementation(
+        (_apiKey: string, ticker: string) =>
+          ticker === 'SNDK'
+            ? new Promise<never>(() => {})
+            : Promise.resolve(SNDK_CANDLES),
+      );
+      mockTicks([
+        ...fireableSndkStream(),
+        ...streamFor('TSLA', 'TSLA260501C01175000'),
+      ]);
+
+      const res = mockResponse();
+      await runWithFakeTimers(res, 5_000);
+
+      expect(res._status).toBe(200);
+      expect(fetchedTickers()).toEqual(['SNDK']);
+      expect(res._json).toMatchObject({
+        candleFetchFailures: 1,
+        candleFetchSkippedBreaker: 1,
+      });
+      // Both fires are still written, without range_pos.
+      const rangePos = extractAllInsertBinds(
+        mockSql,
+        'lottery_finder_fires',
+      ).map((b) => b.get('range_pos_at_trigger'));
+      expect(rangePos).toEqual([null, null]);
+      expect(mockSentryCaptureMessage).toHaveBeenCalledWith(
+        CANDLE_FAILED_MSG,
+        expect.objectContaining({
+          extra: expect.objectContaining({
+            candleFetchFailures: 1,
+            candleFetchSkippedBreaker: 1,
+            firstCandleFetchError: {
+              ticker: 'SNDK',
+              date: '2026-05-01',
+              error: 'stock candle fetch passed its 5000 ms deadline',
+            },
+          }),
+        }),
+      );
+    });
+
+    it('reports every candle counter to Axiom under meta, never as a top-level column', async () => {
+      mockTicks(fireableSndkStream());
+
+      await handler(authorizedReq(), mockResponse());
+
+      const payload = vi.mocked(reportCronRun).mock.calls[0]![1];
+      const candleKeys = Object.keys(payload)
+        .filter((key) => key.startsWith('candleFetch'))
+        .sort();
+      expect(candleKeys).toEqual([
+        'candleFetchEmpty',
+        'candleFetchFailures',
+        'candleFetchSkippedBreaker',
+        'candleFetchSkippedIndex',
+      ]);
+      // reportCronRun folds any key outside AXIOM_TOP_LEVEL_KEYS into
+      // `meta`; the dataset is at its column cap.
+      for (const key of candleKeys) {
+        expect(AXIOM_TOP_LEVEL_KEYS.has(key)).toBe(false);
+      }
+    });
+
+    it('fails the run when the fire INSERT rejects, even while candles fail open', async () => {
+      const writeError = new Error(
+        'relation "lottery_finder_fires" does not exist',
+      );
+      mockFetchStockCandles1m.mockRejectedValue(
+        new Error('UW API 404: Not Found'),
+      );
+      mockTicks(fireableSndkStream())
+        .mockResolvedValueOnce([]) // prior fires
+        .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
+        .mockResolvedValueOnce([]) // flow_data (Pass 2)
+        .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
+        .mockRejectedValueOnce(writeError); // insert
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._status).toBe(500);
+      expect(reportCronRun).toHaveBeenCalledWith(
+        'detect-lottery-fires',
+        expect.objectContaining({
+          status: 'error',
+          message: writeError.message,
+        }),
+      );
+      expect(Sentry.captureException).toHaveBeenCalledWith(writeError);
+    });
   });
 
   it('binds mkt_tide_otm_diff from market_tide_otm ncp/npp (regression for vestigial otm_ncp bug, spec: silent-boom-otm-tide-and-trail-2026-05-13.md)', async () => {
@@ -1707,7 +2179,10 @@ describe('detect-lottery-fires handler', () => {
     // suppress the fire entirely — deriving from the fire timestamp fixes
     // both the stamp and the detection.) The fireable SNDK fixture already
     // uses 2026-05-01 ticks + expiry, so we only roll the run clock.
-    mockCronGuard.mockReturnValue({ apiKey: '', today: '2026-05-02' });
+    mockCronGuard.mockReturnValue({
+      apiKey: 'test-uw-key',
+      today: '2026-05-02',
+    });
     // Query order (two-pass, Fix 3): prior-fires → ticker_flow_snapshot
     // (Pass 1) → flow_data, spot_exposures (Pass 2) → INSERT.
     mockTicks(fireableSndkStream())

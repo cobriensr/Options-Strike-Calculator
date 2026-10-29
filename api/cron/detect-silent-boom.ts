@@ -61,6 +61,7 @@ import { MULTI_LEG_TRADE_CODES } from '../_lib/multileg-codes.js';
 import { TAKEIT_GATE_EXEMPT_MIN_PROB } from '../_lib/takeit-score.js';
 import { withRetry } from '../_lib/uw-fetch.js';
 import { Sentry } from '../_lib/sentry.js';
+import { CASH_INDEX_ROOTS } from '../_lib/constants.js';
 
 // 35-min scan window — needs at least baselineBuckets+1 buckets of
 // history (4+1 = 5 buckets = 25 min) plus 10 min slack for cron jitter
@@ -123,19 +124,11 @@ interface ChainGroupBuilder {
   oi: number;
 }
 
-/** Cash-index roots that trade on $5 strike increments. All other
- *  tickers use the $1 default. Matches the adjacent-strike co-fire
- *  detection in docs/tmp/sb-93d-peak-revisit-2026-05-17.py. */
-const INDEX_COFIRE_ROOTS = new Set([
-  'SPXW',
-  'SPX',
-  'NDXP',
-  'NDX',
-  'RUTW',
-  'RUT',
-]);
+/** Cash-index roots trade on $5 strike increments; all other tickers
+ *  use the $1 default. Matches the adjacent-strike co-fire detection
+ *  in docs/tmp/sb-93d-peak-revisit-2026-05-17.py. */
 function adjCofireStrikeStep(ticker: string): number {
-  return INDEX_COFIRE_ROOTS.has(ticker) ? 5.0 : 1.0;
+  return CASH_INDEX_ROOTS.has(ticker) ? 5.0 : 1.0;
 }
 
 /**

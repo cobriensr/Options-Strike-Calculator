@@ -22,23 +22,55 @@ export interface UWStockCandle {
 }
 
 /**
- * Fetch 1-min OHLC for one stock × date. Returns [] on UW failure
- * (logged by uwFetch) — callers should treat empty as "no data; skip
- * range_pos computation, leave column NULL on the row".
+ * Fetch 1-min OHLC for one stock × date. `[]` means UW has no candles
+ * for that day; every failure throws instead:
+ *   - non-2xx → uwFetch's `UW API <status>: <body>`, where the body is
+ *     UW's JSON error: an empty key (sent as `Bearer `) gets a 401
+ *     `{"code":"authentication_required",…,"reason":"malformed_token"}`,
+ *     an index ticker a 422 with code `cboe_index_access_missing`
+ *   - network / timeout → the fetch error
+ *   - a 200 whose body isn't JSON → the SyntaxError from `res.json()`
+ *   - `data` not an array of candles → `UW stock candles malformed: …`
+ *
+ * A null or missing `data` comes back as [] (uwFetch coalesces both,
+ * and Sentry-flags a missing one), so it reads as an empty day, which
+ * detect-lottery-fires reports on its own.
+ *
+ * This used to catch everything and return [], which hid a keyless
+ * 401 on every lottery fire for months (spec
+ * range-pos-fix-and-backfill-2026-10-28.md). A caller that must not
+ * fail on a candle error (detect-lottery-fires) catches, counts and
+ * reports it.
  */
 export async function fetchStockCandles1m(
   apiKey: string,
   ticker: string,
   date: string,
 ): Promise<UWStockCandle[]> {
-  try {
-    return await uwFetch<UWStockCandle>(
-      apiKey,
-      `/stock/${ticker}/ohlc/1m?date=${date}`,
+  // uwFetch returns `body.data` uncast, so check the shape here: a
+  // non-array would otherwise reach computeRangePos and turn into a
+  // silent null.
+  const rows: unknown = await uwFetch<unknown>(
+    apiKey,
+    `/stock/${ticker}/ohlc/1m?date=${date}`,
+  );
+  if (!Array.isArray(rows)) {
+    throw new Error(
+      `UW stock candles malformed: data is ${typeof rows}, not an array`,
     );
-  } catch {
-    return [];
   }
+  const badIdx = rows.findIndex(
+    (row: unknown) =>
+      typeof row !== 'object' ||
+      row === null ||
+      typeof (row as { start_time?: unknown }).start_time !== 'string',
+  );
+  if (badIdx !== -1) {
+    throw new Error(
+      `UW stock candles malformed: candle ${badIdx} has no start_time`,
+    );
+  }
+  return rows as UWStockCandle[];
 }
 
 /**
