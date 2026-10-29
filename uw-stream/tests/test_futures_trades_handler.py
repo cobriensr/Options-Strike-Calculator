@@ -16,9 +16,6 @@ feed on 2026-09-08 (see the handler module docstring).
 
 from __future__ import annotations
 
-import json
-import logging
-import time
 from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
@@ -34,7 +31,7 @@ from handlers.futures_trades import (
     _to_decimal,
     _to_int,
 )
-from logger_setup import MALFORMED_PAYLOAD_LOG_INTERVAL_S, JsonFormatter, log
+from logger_setup import MALFORMED_PAYLOAD_LOG_INTERVAL_S
 from utils import timestamps
 
 # 2026-09-08T05:56:51.311Z — a real timestamp from the live probe.
@@ -83,7 +80,7 @@ def _print(
 ) -> dict:
     """Build a futures_trades payload matching the live wire shape.
 
-    Live websocket frames carry exactly these 11 keys (Phase 0b capture,
+    Live websocket frames carry exactly these 11 keys (frame capture,
     2026-10-28). ``is_spread`` exists only on REST, so it is added only
     when a test passes it.
     """
@@ -1435,94 +1432,3 @@ class TestFlushFailure:
             handler, [_print(executed_at=_BASE_MS + 120_000, trade_id=3)]
         )
         assert [r[_C["ts"]] for r in survived] == [datetime(2026, 9, 8, 5, 57, tzinfo=UTC)]
-
-
-# ----------------------------------------------------------------------
-# TEMPORARY (spec Phase 0b): remove after one session
-# Sampled raw-frame capture for websocket probes P1 (which keys a frame
-# carries) and P2 (how re-delivered copies of one print differ).
-# ----------------------------------------------------------------------
-
-
-@pytest.fixture
-def capture_records():
-    """Collect every record the service logger emits during a test.
-
-    ``log`` has ``propagate=False`` (logger_setup.get_logger), so pytest's
-    ``caplog`` never sees it; attach a list handler to the logger itself.
-    """
-    records: list[logging.LogRecord] = []
-
-    class _ListHandler(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            records.append(record)
-
-    list_handler = _ListHandler()
-    log.addHandler(list_handler)
-    try:
-        yield records
-    finally:
-        log.removeHandler(list_handler)
-
-
-def _captures(records: list[logging.LogRecord]) -> list[logging.LogRecord]:
-    return [r for r in records if r.getMessage() == "futures_capture"]
-
-
-class TestFrameCapture:
-    @pytest.mark.asyncio
-    async def test_every_copy_of_a_sampled_trade_is_logged(self, handler, capture_records):
-        """P2 compares re-delivered copies, so sampling is on trade_id and
-        every copy of a sampled print must be logged, not just the first."""
-        payload = _print(trade_id=1000)
-        before_ms = time.time_ns() // 1_000_000
-        for _ in range(3):
-            await handler.enqueue(dict(payload))
-        after_ms = time.time_ns() // 1_000_000
-
-        captures = _captures(capture_records)
-        assert len(captures) == 3
-        for record in captures:
-            assert record.levelno == logging.INFO
-            assert isinstance(record.arrival_ms, int)
-            assert before_ms <= record.arrival_ms <= after_ms
-            assert record.payload == payload
-            # The Railway line must carry the full raw payload as JSON.
-            line = json.loads(JsonFormatter().format(record))
-            assert line["msg"] == "futures_capture"
-            assert line["arrival_ms"] == record.arrival_ms
-            assert line["payload"] == payload
-
-    @pytest.mark.asyncio
-    async def test_unsampled_trade_not_logged(self, handler, capture_records):
-        await handler.enqueue(_print(trade_id=1001))
-        assert _captures(capture_records) == []
-
-    @pytest.mark.asyncio
-    async def test_non_capture_product_not_logged(self, handler, capture_records):
-        """CL is a bar product but not a capture product."""
-        await handler.enqueue(_print(product="CL", sym="CLZ6", trade_id=1000))
-        assert _captures(capture_records) == []
-
-    @pytest.mark.asyncio
-    async def test_bad_trade_id_neither_logs_nor_raises(self, handler, capture_records):
-        missing = _print()
-        del missing["trade_id"]
-        # "inf" once made _to_int raise OverflowError, which the helper's
-        # swallow absorbed; _to_int now returns None for it. Kept as a case.
-        bad = [_print(trade_id="x"), missing, _print(trade_id=None), _print(trade_id="inf")]
-        depth = handler.queue.qsize()
-        for payload in bad:
-            ft._maybe_capture(payload, 0)
-            await handler.enqueue(payload)
-        assert _captures(capture_records) == []
-        # A capture failure must never cost the frame itself.
-        assert handler.queue.qsize() == depth + len(bad)
-
-    @pytest.mark.asyncio
-    async def test_capture_does_not_change_enqueue(self, handler, capture_records):
-        depth = handler.queue.qsize()
-        await handler.enqueue(_print(trade_id=1000))
-        assert len(_captures(capture_records)) == 1  # it was sampled
-        assert handler.queue.qsize() == depth + 1
-        assert handler.queue.get_nowait() == _print(trade_id=1000)

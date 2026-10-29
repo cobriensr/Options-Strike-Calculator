@@ -219,13 +219,6 @@ cron also inserts `ON CONFLICT DO NOTHING`, so it never overwrites a
 bar this handler wrote, and it replays the same front-month rule.
 `futures_trades` must therefore stay in production `WS_CHANNELS`.
 
-**Temporary raw-frame capture (added 2026-10-28).** For Phase 0b of
-`docs/superpowers/specs/2026-10-28-uw-futures-orderflow-design.md`, the
-handler logs every copy of each ES or NQ print whose `trade_id` is a
-multiple of 500 as one `futures_capture` line with the raw payload and
-its arrival time. It runs before the queue and the dedup, cannot raise
-into the bar path, and is marked for removal after one session.
-
 ### Futures blocks
 
 `src/handlers/futures_blocks.py` stores the global `futures_blocks`

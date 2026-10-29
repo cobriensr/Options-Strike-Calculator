@@ -14,7 +14,7 @@ Reference payload (captured live 2026-09-08):
      "nbbo_ask": "7706.000000000", "trade_id": 2787552,
      "is_block": false}
 
-Those 11 keys are the whole websocket frame (Phase 0b capture,
+Those 11 keys are the whole websocket frame (frame capture,
 2026-10-28). There is no ``is_spread`` key and no event fields; those
 exist only on REST. Block frames (``"is_block": true``) carry ``qty`` in
 place of ``size`` and no ``side``.
@@ -166,7 +166,7 @@ _TARGET_PRODUCTS: frozenset[str] = frozenset({"ES", "NQ", "RTY", "CL", "GC", "ZN
 
 # An outright contract sym: the product root, one CME month code, and a
 # one- or two-digit year (ESZ6, ESZ26). Websocket frames carry no
-# ``is_spread`` key (Phase 0b capture, 2026-10-28), so this shape test is
+# ``is_spread`` key (frame capture, 2026-10-28), so this shape test is
 # what keeps spread syms (ESZ6-ESH7, ESZ6:ESH7, UD:...) out of the bars.
 # ``fullmatch`` rather than ``^...$``: ``$`` also matches before a trailing
 # newline. ``[0-9]`` rather than ``\d``, which matches any Unicode digit.
@@ -174,13 +174,6 @@ _OUTRIGHT_SYM: dict[str, re.Pattern[str]] = {
     product: re.compile(rf"{re.escape(product)}[FGHJKMNQUVXZ][0-9]{{1,2}}")
     for product in _TARGET_PRODUCTS
 }
-
-# TEMPORARY (spec Phase 0b): remove after one session
-# Raw-frame capture for websocket probes P1 (which keys a frame carries)
-# and P2 (how re-delivered copies of one print differ). Sampling is on
-# trade_id, not on arrival, so every copy of a sampled print is logged.
-_CAPTURE_PRODUCTS: frozenset[str] = frozenset({"ES", "NQ"})
-_CAPTURE_MODULO: int = 500
 
 
 class _Print(NamedTuple):
@@ -313,8 +306,6 @@ class FuturesTradesHandler(Handler):
         """
         if payload.get("product") not in _TARGET_PRODUCTS:
             return
-        # TEMPORARY (spec Phase 0b): remove after one session
-        _maybe_capture(payload, time.time_ns() // 1_000_000)
         await super().enqueue(payload)
 
     # ------------------------------------------------------------------
@@ -666,34 +657,6 @@ class FuturesTradesHandler(Handler):
                 self._emitted_through[product] = minute_ts
 
         return out
-
-
-# ----------------------------------------------------------------------
-# TEMPORARY (spec Phase 0b): remove after one session
-# ----------------------------------------------------------------------
-
-
-def _maybe_capture(payload: dict, arrival_ms: int) -> None:
-    """TEMPORARY (spec Phase 0b): remove after one session
-
-    Log one ``futures_capture`` info line holding the raw payload and its
-    arrival time (epoch ms at enqueue) when the print is ES or NQ and its
-    ``trade_id`` is a multiple of ``_CAPTURE_MODULO``. The JSON formatter
-    writes ``payload`` as a nested object, so the Railway line parses
-    straight back into the frame.
-    """
-    try:
-        if payload.get("product") not in _CAPTURE_PRODUCTS:
-            return
-        trade_id = _to_int(payload.get("trade_id"))
-        if trade_id is None or trade_id % _CAPTURE_MODULO != 0:
-            return
-        log.info("futures_capture", extra={"arrival_ms": arrival_ms, "payload": payload})
-    except Exception:
-        # Deliberate swallow: this is a temporary diagnostic on the enqueue
-        # hot path, and nothing it does may cost a print or break dispatch.
-        # Permanent code would surface the error instead.
-        return
 
 
 # ----------------------------------------------------------------------
