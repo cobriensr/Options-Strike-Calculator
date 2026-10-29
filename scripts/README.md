@@ -12,24 +12,22 @@ Re-run a historical version of a cron job to populate new tables/columns. Idempo
 
 ```bash
 # .ts (run via tsx)
-npx tsx scripts/backfill-detect.ts
+npx tsx scripts/backfill-lottery-score.ts
 
 # .mjs (Node ESM)
-node scripts/backfill-darkpool.mjs
+node scripts/backfill-greek-exposure.mjs
 
 # .py (use ml venv)
-ml/.venv/bin/python scripts/backfill-institutional-blocks.py
+ml/.venv/bin/python scripts/backfill-lottery-cluster-bonus.py
 ```
 
 Common env vars (each script documents its own at the top): `BACKFILL_DAYS`, `BACKFILL_START`, `BACKFILL_END`, `BATCH_SIZE`, `CONCURRENCY`, `DRY_RUN`, `WITHIN_DAY_DELAY_MS`.
 
 Frequently re-run (active):
 
-- `backfill-detect.ts` — multi-leg detection on historical fires
 - `backfill-lottery-fires.mjs` / `backfill-lottery-score.ts` — Lottery Finder scoring
-- `backfill-flow-phase.ts` — time-of-day buckets on flow alerts
 - `backfill-greek-exposure.mjs`, `backfill-spot-gex.mjs` — daily GEX history
-- `backfill-darkpool.mjs`, `backfill-dark-pool-prints.mjs` — dark pool prints
+- `backfill-dark-pool-prints.mjs` — dark pool prints
 - `backfill-flow-alerts.mjs`, `backfill-netflow.mjs` — UW flow tables
 - `backfill-snapshots.ts` — point-in-time snapshots
 - `backfill-strike-exposure*.mjs` — per-strike Greek exposure

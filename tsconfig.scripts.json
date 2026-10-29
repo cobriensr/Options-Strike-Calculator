@@ -21,9 +21,7 @@
   /* AUD-M32: type-check the OPERATIONAL TypeScript scripts (prod-DB tooling +
      backfills that import production logic). One-off research/probe scripts
      (_probe-*, analyze-*-2026, replay-*) are intentionally excluded — they are
-     throwaway. backfill-detect.ts / backfill-flow-phase.ts are also excluded:
-     they import the retired IV-anomaly modules (deleted in 227498dd) and are
-     dead — flagged for removal. */
+     throwaway. */
   "include": [
     "scripts/backfill-gamma-setup-fires.ts",
     "scripts/backfill-gex-target-features.ts",
