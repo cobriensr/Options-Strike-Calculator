@@ -221,7 +221,7 @@ describe('analyze system prompt — Periscope rules run on UW data only (D1 revi
     expect(
       lineStartingWith('- The chartConfidence breakdown is always required'),
     ).toContain(
-      'Mark as "NOT PROVIDED" only if no UW Periscope data (screenshots or a UW-sourced block) is present; a GEXBot block does not count.',
+      'populate from UW Periscope data (images labelled UW Periscope or a UW-sourced block). Mark as "NOT PROVIDED" only if no UW Periscope data (screenshots labelled UW Periscope or a UW-sourced block) is present; a GEXBot block does not count.',
     );
     expect(PROMPT).not.toContain('only if no Periscope images were uploaded');
   });
@@ -358,6 +358,40 @@ describe('analyze system prompt — Periscope rules run on UW data only (D1 revi
     );
   });
 
+  it('defines UW Periscope absence by labelled screenshots, not any upload (NB2)', () => {
+    // Since m6 an upload can be "Unlabeled (not Periscope)"; it must not
+    // count as UW Periscope and skip the MODERATE cap.
+    expect(lineStartingWith('- UW Periscope absent')).toContain(
+      '- UW Periscope absent (no screenshots labelled UW Periscope and no UW Periscope block): caps confidence at MODERATE',
+    );
+    expect(PROMPT).toContain(
+      'You will receive up to 2 screenshots; only those labelled UW Periscope (Gamma or Charm) are Periscope data,',
+    );
+    expect(PROMPT).not.toContain(
+      'You will receive up to 2 Periscope screenshots',
+    );
+    expect(PROMPT).not.toContain(
+      'Only Periscope Gamma and Periscope Charm are provided as images',
+    );
+    expect(
+      PROMPT.split(
+        'Only images labelled UW Periscope (Gamma or Charm) are read as Periscope images requiring visual extraction.',
+      ).length - 1,
+    ).toBe(2);
+  });
+
+  it('never counts a missing SPX Net Flow toward a LOW trigger, in every case (I4)', () => {
+    const line = lineStartingWith('Primary signals for structure selection');
+    expect(line).toContain(
+      'In every case, a missing SPX Net Flow never counts toward either LOW trigger.',
+    );
+    // NB1: the absence sentence names UW Periscope, not "Its".
+    expect(line).toContain(
+      "UW Periscope's absence applies only the MODERATE cap.",
+    );
+    expect(line).not.toContain('Its absence applies only the MODERATE cap.');
+  });
+
   it('keeps one failed feed at MODERATE when UW Periscope is absent (N1)', () => {
     // Without UW Periscope the structure primaries are SPX Net Flow and
     // Market Tide, so "only 1 primary available" would fire LOW on one
@@ -401,10 +435,10 @@ describe('analyze system prompt — Periscope rules run on UW data only (D1 revi
     // context data; UW Periscope is named as an upload.
     expect(sg).not.toMatch(/Zero-Gamma, Periscope\s+Gamma\/Charm/);
     expect(sg).toContain(
-      'UW Periscope Gamma/Charm screenshots when uploaded (never the GEXBot block)',
+      'with UW Periscope Gamma/Charm when uploaded, or a UW-era block is in context (never the GEXBot block)',
     );
     expect(sg).toContain(
-      'and UW Periscope Gamma/Charm when uploaded (never the GEXBot block)',
+      'and UW Periscope Gamma/Charm when uploaded, or a UW-era block is in context (never the GEXBot block)',
     );
   });
 

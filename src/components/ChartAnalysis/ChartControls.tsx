@@ -227,6 +227,7 @@ export default function ChartControls({
               />
               <div className="flex items-center gap-1.5 p-1.5">
                 <select
+                  aria-label="Image label"
                   value={img.label}
                   onChange={(e) => updateLabel(img.id, e.target.value)}
                   className="bg-surface-alt border-edge flex-1 rounded border px-1 py-0.5 font-sans text-[10px]"
@@ -259,6 +260,14 @@ export default function ChartControls({
             </div>
           ))}
         </div>
+      )}
+      {/* The analyze prompt reads only images labelled UW Periscope as
+          Periscope data, so say so while any image is still unlabeled. */}
+      {images.some((img) => img.label === UNLABELED_IMAGE_LABEL) && (
+        <p className="text-muted -mt-1 mb-3 font-sans text-[11px]">
+          Unlabeled images are not read as UW Periscope — pick UW Periscope
+          (Gamma) or Charm.
+        </p>
       )}
 
       {/* PaperMoney CSV upload — hidden in review mode */}

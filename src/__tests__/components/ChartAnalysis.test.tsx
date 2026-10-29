@@ -234,6 +234,20 @@ describe('ChartAnalysis', () => {
       ]);
     });
 
+    it('names the label picker and hints while an image is unlabeled', async () => {
+      const user = userEvent.setup();
+      const { container } = render(
+        <ChartAnalysis results={null} context={makeContext()} />,
+      );
+      await addImageViaInput(container);
+      const select = screen.getByRole('combobox', { name: 'Image label' });
+      const hint =
+        'Unlabeled images are not read as UW Periscope — pick UW Periscope (Gamma) or Charm.';
+      expect(screen.getByText(hint)).toBeInTheDocument();
+      await user.selectOptions(select, 'UW Periscope (Gamma)');
+      expect(screen.queryByText(hint)).toBeNull();
+    });
+
     it('allows changing the image label', async () => {
       const user = userEvent.setup();
       const { container } = render(
