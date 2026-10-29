@@ -1,11 +1,13 @@
 """Tests for the UW Full Tape download client.
 
-Every request is answered by respx (no network, never a real key). Sleep, the
-monotonic clock and jitter are patched at uw_client's module boundary.
+Every request is answered by respx (no network, never a real key), and a route a
+test defines but never calls fails it. Sleep, the monotonic clock and jitter are
+patched at uw_client's module boundary.
 """
 
 from __future__ import annotations
 
+import gzip
 import json
 from collections.abc import Iterator
 from datetime import date
@@ -16,6 +18,8 @@ import pytest
 
 from constants import DOWNLOAD_DEADLINE_SECONDS, SNIFF_MAX_BYTES, USER_AGENT
 from uw_client import SourceInfo, TapeDownloadError, download_tape, probe_source
+
+pytestmark = pytest.mark.respx(assert_all_called=True)
 
 DAY = date(2026, 10, 27)
 API_KEY = "test-key"
@@ -62,9 +66,13 @@ def _zip_response(body: bytes = ZIP_BODY, length: int | None = None) -> httpx.Re
     return httpx.Response(200, headers=headers, content=body)
 
 
+def _part(dest: Path) -> Path:
+    return dest.with_name(dest.name + ".part")
+
+
 def _assert_no_files(dest: Path) -> None:
     assert not dest.exists()
-    assert not dest.with_name(dest.name + ".part").exists()
+    assert not _part(dest).exists()
 
 
 def _assert_message(err: TapeDownloadError, kind: str, detail: str) -> None:
@@ -90,16 +98,18 @@ def test_success_writes_zip_and_returns_source_info(respx_mock, tmp_path: Path):
         bytes=len(ZIP_BODY),
     )
     assert dest.read_bytes() == ZIP_BODY
-    assert not dest.with_name(dest.name + ".part").exists()
+    assert not _part(dest).exists()
     sent = uw.calls.last.request.headers
     assert sent["Authorization"] == f"Bearer {API_KEY}"
     assert sent["Accept"] == "*/*"
+    assert sent["Accept-Encoding"] == "identity"
     assert sent["User-Agent"] == USER_AGENT
     assert sent["UW-CLIENT-API-ID"] == "100003"
-    # httpx 0.28 drops Authorization on the cross-origin hop; the UA still goes.
+    # httpx 0.28 drops Authorization on the cross-origin hop; the rest still goes.
     gcs_sent = gcs.calls.last.request.headers
     assert "Authorization" not in gcs_sent
     assert gcs_sent["User-Agent"] == USER_AGENT
+    assert gcs_sent["Accept-Encoding"] == "identity"
 
 
 def test_gcs_404_is_not_posted(respx_mock, tmp_path: Path, sleeps: list[float]):
@@ -180,16 +190,29 @@ def test_other_403s_are_classified_without_retry(
     assert uw.call_count == 1
 
 
-def test_gcs_403_is_unexpected_not_cloudflare(respx_mock, tmp_path: Path, sleeps: list[float]):
-    uw = _uw_route(respx_mock)
-    respx_mock.get(GCS_URL).mock(
+@pytest.mark.parametrize(
+    ("location", "kind", "detail"),
+    [
+        (GCS_URL, "unexpected", "gcs-403"),
+        # Virtual-hosted GCS is still GCS.
+        ("https://uw-full-tape.storage.googleapis.com/2026-10-27.zip", "unexpected", "gcs-403"),
+        # Not a GCS host: the suffix match needs the dot. UW's classifier sees no
+        # code in the body, so this is the plain-403 `auth` case.
+        ("https://evilstorage.googleapis.com/2026-10-27.zip", "auth", "uw-403"),
+    ],
+)
+def test_403_after_redirect_is_tagged_by_host(
+    respx_mock, tmp_path: Path, sleeps: list[float], location, kind, detail
+):
+    uw = _uw_route(respx_mock, httpx.Response(302, headers={"Location": location}))
+    respx_mock.get(location).mock(
         return_value=httpx.Response(403, content=b"<Error><Code>AccessDenied</Code></Error>")
     )
 
     with pytest.raises(TapeDownloadError) as caught:
         download_tape(DAY, tmp_path / "t.zip", API_KEY)
 
-    _assert_message(caught.value, "unexpected", "gcs-403")
+    _assert_message(caught.value, kind, detail)
     assert uw.call_count == 1
     assert sleeps == []
 
@@ -214,6 +237,24 @@ def test_429_retry_after_then_success(
     assert sleeps == [expected_sleep]
     assert info.bytes == len(ZIP_BODY)
     assert dest.read_bytes() == ZIP_BODY
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [{}, {"x-uw-daily-req-count": "20000"}, {"x-uw-token-req-limit": "20000"}],
+    ids=["no-daily-headers", "count-only", "limit-only"],
+)
+def test_429_without_both_daily_headers_is_retried(
+    respx_mock, tmp_path: Path, sleeps: list[float], headers
+):
+    uw = _uw_route(respx_mock, httpx.Response(429, headers=headers))
+    respx_mock.get(GCS_URL).mock(return_value=_zip_response())
+
+    info = download_tape(DAY, tmp_path / "t.zip", API_KEY)
+
+    assert uw.call_count == 2
+    assert sleeps == [5.0]
+    assert info.bytes == len(ZIP_BODY)
 
 
 def test_daily_quota_429_is_not_retried(respx_mock, tmp_path: Path, sleeps: list[float]):
@@ -271,7 +312,7 @@ def test_short_body_is_retried(respx_mock, tmp_path: Path, sleeps: list[float]):
 
     assert info.bytes == len(ZIP_BODY)
     assert dest.read_bytes() == ZIP_BODY
-    assert not dest.with_name(dest.name + ".part").exists()
+    assert not _part(dest).exists()
     # Each attempt asks UW again, so each gets a freshly signed URL.
     assert uw.call_count == 2
     assert [c.request.url.params["sig"] for c in gcs.calls] == ["1", "2"]
@@ -291,6 +332,31 @@ def test_short_body_every_attempt_is_corrupt(respx_mock, tmp_path: Path):
     _assert_message(
         caught.value, "corrupt", f"gcs-200 got 5000 of {len(ZIP_BODY)} bytes after 4 attempts"
     )
+    _assert_no_files(dest)
+
+
+def test_mid_stream_disconnect_exhausts_to_transient(
+    respx_mock, tmp_path: Path, sleeps: list[float]
+):
+    # A truncated body over a real connection: h11 raises RemoteProtocolError.
+    def truncated(_request: httpx.Request) -> httpx.Response:
+        def body() -> Iterator[bytes]:
+            yield ZIP_BODY[:3000]
+            raise httpx.RemoteProtocolError("peer closed connection mid-body")
+
+        headers = {**GCS_HEADERS, "Content-Length": str(len(ZIP_BODY))}
+        return httpx.Response(200, headers=headers, content=body())
+
+    uw = _uw_route(respx_mock)
+    respx_mock.get(GCS_URL).mock(side_effect=truncated)
+    dest = tmp_path / "t.zip"
+
+    with pytest.raises(TapeDownloadError) as caught:
+        download_tape(DAY, dest, API_KEY)
+
+    _assert_message(caught.value, "transient", "RemoteProtocolError after 4 attempts")
+    assert uw.call_count == 4
+    assert sleeps == [5.0, 10.0, 20.0]
     _assert_no_files(dest)
 
 
@@ -314,11 +380,34 @@ def test_transport_error_every_attempt_is_transient(respx_mock, tmp_path: Path):
     _assert_message(caught.value, "transient", "ConnectError after 4 attempts")
 
 
+def test_encoded_200_is_unexpected_on_first_attempt(
+    respx_mock, tmp_path: Path, sleeps: list[float]
+):
+    packed = gzip.compress(ZIP_BODY)
+    uw = _uw_route(respx_mock)
+    respx_mock.get(GCS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            headers={**GCS_HEADERS, "Content-Encoding": "gzip", "Content-Length": str(len(packed))},
+            content=packed,
+        )
+    )
+    dest = tmp_path / "t.zip"
+
+    with pytest.raises(TapeDownloadError) as caught:
+        download_tape(DAY, dest, API_KEY)
+
+    _assert_message(caught.value, "unexpected", "gcs-200 content-encoding gzip")
+    assert uw.call_count == 1
+    assert sleeps == []
+    _assert_no_files(dest)
+
+
 def test_non_zip_200_is_unexpected_without_body(respx_mock, tmp_path: Path, sleeps: list[float]):
     row = {"option_chain_id": "SPXW261027C05800000", "price": "12.35", "size": 7}
     text = json.dumps({"data": [row] * 30_000}).encode()
     assert len(text) > 2_000_000
-    piece = 4096
+    piece = 5000  # not a divisor of SNIFF_MAX_BYTES, so the last read overshoots the cap
     consumed: list[int] = []
 
     def body() -> Iterator[bytes]:
@@ -343,28 +432,32 @@ def test_non_zip_200_is_unexpected_without_body(respx_mock, tmp_path: Path, slee
     with pytest.raises(TapeDownloadError) as caught:
         download_tape(DAY, dest, API_KEY)
 
-    _assert_message(caught.value, "unexpected", "gcs-200 not a zip (application/json)")
+    _assert_message(caught.value, "unexpected", "gcs-200 non-zip (application/json)")
     message = str(caught.value)
     for fragment in ("SPXW261027C05800000", "12.35", "option_chain_id", '{"data"'):
         assert fragment not in message
-    assert sum(consumed) <= SNIFF_MAX_BYTES
+    # Reading stops at the first network read that reaches the cap.
+    assert SNIFF_MAX_BYTES <= sum(consumed) < SNIFF_MAX_BYTES + piece
     assert uw.call_count == 1
     assert sleeps == []
     _assert_no_files(dest)
 
 
-def test_200_historic_body_is_outside_window(respx_mock, tmp_path: Path):
+def test_200_historic_body_is_unexpected_not_outside_window(
+    respx_mock, tmp_path: Path, sleeps: list[float]
+):
+    # The documented out-of-window answer is a 403; a 200 carrying the code is an
+    # anomaly, so it fails loudly instead of marking the day unavailable for good.
     payload = {"code": "historic_data_access_missing", "message": HISTORIC_MESSAGE}
-    _uw_route(respx_mock, httpx.Response(200, json=payload))
+    uw = _uw_route(respx_mock, httpx.Response(200, json=payload))
 
     with pytest.raises(TapeDownloadError) as caught:
         download_tape(DAY, tmp_path / "t.zip", API_KEY)
 
-    _assert_message(
-        caught.value,
-        "outside_window",
-        "uw-200 historic window: earliest 2024-09-10, 730 trading days",
-    )
+    _assert_message(caught.value, "unexpected", "uw-200 non-zip historic_data_access_missing")
+    assert "Your plan includes" not in str(caught.value)
+    assert uw.call_count == 1
+    assert sleeps == []
 
 
 def test_zip_without_content_length_is_unexpected(respx_mock, tmp_path: Path):
@@ -387,13 +480,13 @@ def test_zip_without_content_length_is_unexpected(respx_mock, tmp_path: Path):
 def test_download_deadline_raises_timeout(respx_mock, tmp_path: Path, monkeypatch):
     clock = {"now": 1_000.0}
     monkeypatch.setattr("uw_client.time.monotonic", lambda: clock["now"])
-    piece = b"PK\x03\x04" + bytes((1 << 20) - 4)
-    pieces = 5
+    piece = b"PK\x03\x04" + bytes(4092)
+    pieces = 40
     yielded: list[int] = []
 
     def body() -> Iterator[bytes]:
         for i in range(pieces):
-            if i == 1:  # the stream trickles: the deadline passes after the first chunk
+            if i == 1:  # the stream trickles: the deadline passes after the first read
                 clock["now"] += DOWNLOAD_DEADLINE_SECONDS + 1
             yielded.append(i)
             yield piece
@@ -409,10 +502,57 @@ def test_download_deadline_raises_timeout(respx_mock, tmp_path: Path, monkeypatc
     with pytest.raises(TapeDownloadError) as caught:
         download_tape(DAY, dest, API_KEY)
 
-    assert caught.value.kind == "timeout"
-    assert str(DOWNLOAD_DEADLINE_SECONDS) in caught.value.detail
-    assert yielded == [0, 1]  # stopped mid-stream, not after reading the whole body
+    _assert_message(
+        caught.value, "timeout", f"deadline {DOWNLOAD_DEADLINE_SECONDS}s passed after 8192 bytes"
+    )
+    # Checked once per network read: it stopped on the second read, not at the end.
+    assert yielded == [0, 1]
     assert uw.call_count == 1
+    _assert_no_files(dest)
+
+
+def test_deadline_passing_during_backoff_is_timeout(respx_mock, tmp_path: Path, monkeypatch):
+    clock = {"now": 1_000.0}
+    slept: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        clock["now"] += DOWNLOAD_DEADLINE_SECONDS + 1
+
+    monkeypatch.setattr("uw_client.time.monotonic", lambda: clock["now"])
+    monkeypatch.setattr("uw_client.time.sleep", sleep)
+    uw = respx_mock.get(UW_URL).mock(return_value=httpx.Response(503))
+
+    with pytest.raises(TapeDownloadError) as caught:
+        download_tape(DAY, tmp_path / "t.zip", API_KEY)
+
+    _assert_message(
+        caught.value, "timeout", f"deadline {DOWNLOAD_DEADLINE_SECONDS}s passed after 0 bytes"
+    )
+    assert uw.call_count == 1
+    assert slept == [5.0]
+
+
+def test_keyboard_interrupt_mid_stream_propagates_and_removes_part(respx_mock, tmp_path: Path):
+    dest = tmp_path / "t.zip"
+    part_existed: list[bool] = []
+
+    def body() -> Iterator[bytes]:
+        yield ZIP_BODY[:1000]
+        part_existed.append(_part(dest).exists())
+        raise KeyboardInterrupt
+
+    _uw_route(respx_mock)
+    respx_mock.get(GCS_URL).mock(
+        return_value=httpx.Response(
+            200, headers={**GCS_HEADERS, "Content-Length": str(len(ZIP_BODY))}, content=body()
+        )
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        download_tape(DAY, dest, API_KEY)
+
+    assert part_existed == [True]
     _assert_no_files(dest)
 
 
@@ -428,8 +568,9 @@ def test_401_is_auth_not_retried(respx_mock, tmp_path: Path, sleeps: list[float]
     assert sleeps == []
 
 
-def test_os_error_is_typed(tmp_path: Path):
-    # The day folder can't be created, so the client fails before any request.
+def test_os_error_is_typed(respx_mock, tmp_path: Path):
+    # The day folder can't be created, so the client fails before any request;
+    # respx_mock (no routes) turns any request a reorder might add into a failure.
     blocker = tmp_path / "blocker"
     blocker.write_text("a file where the day folder should be")
 
@@ -439,6 +580,7 @@ def test_os_error_is_typed(tmp_path: Path):
     assert caught.value.kind == "unexpected"
     assert caught.value.detail.startswith("FileExistsError")
     assert str(tmp_path) not in str(caught.value)
+    assert not respx_mock.calls
 
 
 def test_probe_source_reads_headers_only(respx_mock):
@@ -486,6 +628,37 @@ def test_probe_source_retries_5xx(respx_mock, sleeps: list[float]):
     assert info.etag == '"gcs-etag-1"'
     assert uw.call_count == 2
     assert sleeps == [5.0]
+
+
+def test_probe_source_on_a_uw_200_is_unexpected(respx_mock, sleeps: list[float]):
+    # Only the signed GCS object's headers identify the tape.
+    _uw_route(
+        respx_mock,
+        httpx.Response(
+            200, json={"data": []}, headers={"ETag": '"uw-etag"', "Content-Length": "12"}
+        ),
+    )
+
+    with pytest.raises(TapeDownloadError) as caught:
+        probe_source(DAY, API_KEY)
+
+    _assert_message(caught.value, "unexpected", "uw-200 probe non-gcs")
+    assert sleeps == []
+
+
+def test_probe_source_without_content_length_is_unexpected(respx_mock):
+    def body() -> Iterator[bytes]:
+        yield ZIP_BODY
+
+    _uw_route(respx_mock)
+    respx_mock.get(GCS_URL).mock(
+        return_value=httpx.Response(200, headers=GCS_HEADERS, content=body())
+    )
+
+    with pytest.raises(TapeDownloadError) as caught:
+        probe_source(DAY, API_KEY)
+
+    _assert_message(caught.value, "unexpected", "gcs-200 no content-length")
 
 
 def test_error_str_is_kind_day_detail():

@@ -8,13 +8,17 @@ sha256 a99ecce6361a295d7ded72e804e9ec77e4fbec94cdace1c0b24c02551596f8bb
 
 Fixes from the 2026-10-28 review of that code:
 - (b2) Retries with backoff. Each attempt asks UW again, so it gets a fresh signed URL.
-- (b3) A wall-clock deadline checked on every chunk, since httpx's timeout is per read.
-- (b4) A non-zip body is sniffed (at most SNIFF_MAX_BYTES) and never echoed: errors
-  carry status codes, header values and exception class names, never body text.
+- (b3) A wall-clock deadline checked after every network read, since httpx's
+  timeout is per read and a trickling stream would otherwise never end.
+- (b4) A non-zip body is sniffed (SNIFF_MAX_BYTES, plus at most one network read)
+  and never echoed: errors carry status codes, header values, UW's error code and
+  exception class names, never body text.
 - (b5) A 404 from UW or from the GCS redirect target is ``not_posted``, not a skip.
 - (b7) httpx errors and OSError are caught and typed.
 - The body lands in ``<dest>.part``, its size is checked against Content-Length, and
   only then is it renamed to ``dest``. The ``.part`` file never survives a failure.
+- Identity encoding is requested and enforced, so the bytes on the wire are the
+  bytes Content-Length counts and the bytes written.
 
 Endpoint behavior (probed 2026-10-28): UW answers 302 to a signed
 storage.googleapis.com URL. An unposted day is 302 then a GCS 404. A day older than
@@ -27,7 +31,7 @@ from __future__ import annotations
 import random
 import re
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import date
@@ -40,6 +44,7 @@ import httpx
 from constants import DOWNLOAD_DEADLINE_SECONDS, DOWNLOAD_MAX_ATTEMPTS, SNIFF_MAX_BYTES, USER_AGENT
 
 HISTORIC_CODE = "historic_data_access_missing"
+ZIP_MAGIC = b"PK\x03\x04"  # zip local-file-header signature
 
 Kind = Literal[
     "not_posted",
@@ -56,8 +61,8 @@ Kind = Literal[
 class TapeDownloadError(Exception):
     """A download or probe that did not produce the day's tape.
 
-    ``detail`` is built from status codes, header values, parsed dates and exception
-    class names only, so it is safe for logs and Sentry.
+    ``detail`` is built from status codes, header values, parsed dates, UW's error
+    code and exception class names only, so it is safe for logs and Sentry.
     """
 
     def __init__(self, kind: Kind, day: date, detail: str) -> None:
@@ -98,6 +103,8 @@ def build_headers(api_key: str) -> dict[str, str]:
         "Authorization": f"Bearer {api_key}",
         # The zip comes under an octet-stream-ish type; a narrow Accept draws a 406.
         "Accept": "*/*",
+        # Overrides httpx's default gzip/deflate, and httpx copies it onto the GCS hop.
+        "Accept-Encoding": "identity",
         "User-Agent": USER_AGENT,
         "UW-CLIENT-API-ID": "100003",  # UW usage attribution, as the source script sends it
     }
@@ -149,7 +156,9 @@ def download_tape(day: date, dest: Path, api_key: str) -> SourceInfo:
 def probe_source(day: date, api_key: str) -> SourceInfo:
     """Return `day`'s source identity from the response headers, reading no body.
 
-    Non-200 responses raise TapeDownloadError, classified as in download_tape.
+    Only a 200 served by GCS (the signed-URL target) counts: those headers belong
+    to the tape object. A 200 from UW itself is ``unexpected``. Non-200 responses
+    are classified as in download_tape.
     """
     return _with_retries(day, lambda: _probe_once(day, api_key))
 
@@ -198,23 +207,28 @@ def _download_once(day: date, dest: Path, api_key: str, deadline: float) -> Sour
         with _open(day, api_key) as response:
             if response.status_code != 200:
                 raise _classify_failure(response, day)
-            # Chunks of SNIFF_MAX_BYTES: httpx fills a whole chunk before yielding it,
-            # so the zip check never pulls more than that from a non-zip body.
-            chunks = response.iter_bytes(SNIFF_MAX_BYTES)
-            head = next(chunks, b"")
-            if head[:4] != b"PK\x03\x04":  # zip local-file-header magic
+            tag = f"{_where(response)}-200"
+            encoding = response.headers.get("content-encoding", "").strip().lower()
+            if encoding not in ("", "identity"):
+                raise TapeDownloadError("unexpected", day, f"{tag} content-encoding {encoding}")
+            # One item per network read, undecoded: with identity enforced these are
+            # exactly the bytes Content-Length counts.
+            reads = response.iter_raw()
+            head = _read_head(reads)
+            if not head.startswith(ZIP_MAGIC):
                 raise _not_a_zip(response, head, day)
             expected = _content_length(response, day)
             written = 0
             with part.open("wb") as f:
-                for chunk in chain((head,), chunks):
-                    f.write(chunk)
-                    written += len(chunk)
+                for piece in chain((head,), reads):
+                    f.write(piece)
+                    written += len(piece)
                     _check_deadline(day, deadline, written)
+            # A real truncated connection raises RemoteProtocolError (retried as
+            # transient), so `corrupt` means a clean stream whose byte count still
+            # differs from Content-Length.
             if written != expected:
-                raise _RetryableError(
-                    "corrupt", f"{_where(response)}-200 got {written} of {expected} bytes"
-                )
+                raise _RetryableError("corrupt", f"{tag} got {written} of {expected} bytes")
             info = _source_info(response, written)
         part.replace(dest)
         return info
@@ -227,7 +241,23 @@ def _probe_once(day: date, api_key: str) -> SourceInfo:
     with _open(day, api_key) as response:
         if response.status_code != 200:
             raise _classify_failure(response, day)
+        if _where(response) != "gcs":
+            raise TapeDownloadError("unexpected", day, "uw-200 probe non-gcs")
         return _source_info(response, _content_length(response, day))
+
+
+def _read_head(reads: Iterator[bytes]) -> bytes:
+    """Read until the zip magic is in hand or SNIFF_MAX_BYTES are, whichever is first.
+
+    It stops at the first read that reaches the cap, so it holds less than
+    SNIFF_MAX_BYTES plus one network read, and leaves the rest of the body unread.
+    """
+    head = b""
+    for piece in reads:
+        head += piece
+        if head.startswith(ZIP_MAGIC) or len(head) >= SNIFF_MAX_BYTES:
+            break
+    return head
 
 
 def _check_deadline(day: date, deadline: float, written: int) -> None:
@@ -237,7 +267,9 @@ def _check_deadline(day: date, deadline: float, written: int) -> None:
 
 
 def _where(response: httpx.Response) -> str:
-    return "gcs" if response.url.host == "storage.googleapis.com" else "uw"
+    host = response.url.host
+    gcs = host == "storage.googleapis.com" or host.endswith(".storage.googleapis.com")
+    return "gcs" if gcs else "uw"
 
 
 def _source_info(response: httpx.Response, size: int) -> SourceInfo:
@@ -255,30 +287,18 @@ def _content_length(response: httpx.Response, day: date) -> int:
     return int(value)
 
 
-def _sniff(response: httpx.Response) -> str:
-    """At most SNIFF_MAX_BYTES of an error body, for classification only."""
-    return next(response.iter_bytes(SNIFF_MAX_BYTES), b"").decode("utf-8", "replace")
-
-
-def _outside_window(body: str, day: date, tag: str) -> TapeDownloadError:
-    earliest, lookback = parse_boundary(body)
-    detail = (
-        f"{tag} historic window: earliest {earliest or 'unknown'}, "
-        f"{lookback or 'unknown'} trading days"
-    )
-    return TapeDownloadError("outside_window", day, detail)
-
-
 def _not_a_zip(response: httpx.Response, head: bytes, day: date) -> TapeDownloadError:
-    tag = f"{_where(response)}-200"
-    body = head.decode("utf-8", "replace")
-    if HISTORIC_CODE in body.lower():
-        return _outside_window(body, day, tag)
+    tag = f"{_where(response)}-200 non-zip"
+    # The documented out-of-window answer is a 403. A 200 carrying the code is an
+    # anomaly, so it fails loudly (and is retried next night) rather than becoming
+    # `outside_window`, which marks the day unavailable for good.
+    if HISTORIC_CODE in head.decode("utf-8", "replace").lower():
+        return TapeDownloadError("unexpected", day, f"{tag} {HISTORIC_CODE}")
     media = response.headers.get("content-type", "none").split(";")[0].strip()
-    return TapeDownloadError("unexpected", day, f"{tag} not a zip ({media})")
+    return TapeDownloadError("unexpected", day, f"{tag} ({media})")
 
 
-def _classify_failure(response: httpx.Response, day: date) -> Exception:
+def _classify_failure(response: httpx.Response, day: date) -> TapeDownloadError | _RetryableError:
     """Map a non-200 final response to the error the attempt should raise."""
     status = response.status_code
     where = _where(response)
@@ -289,10 +309,15 @@ def _classify_failure(response: httpx.Response, day: date) -> Exception:
         return TapeDownloadError("auth", day, tag)
     # Only UW's own 403s carry its codes; a GCS 403 falls through to unexpected.
     if status == 403 and where == "uw":
-        body = _sniff(response)
+        body = _read_head(response.iter_bytes()).decode("utf-8", "replace")
         kind = classify_403(body, response.headers)
         if kind == "historic_boundary":
-            return _outside_window(body, day, tag)
+            earliest, lookback = parse_boundary(body)
+            detail = (
+                f"{tag} historic window: earliest {earliest or 'unknown'}, "
+                f"{lookback or 'unknown'} trading days"
+            )
+            return TapeDownloadError("outside_window", day, detail)
         if kind == "auth":
             return TapeDownloadError("auth", day, tag)
         return TapeDownloadError("unexpected", day, f"{tag} {kind}")
