@@ -432,9 +432,9 @@ function areRowsEqual(prev: SilentBoomRowProps, next: SilentBoomRowProps) {
   if (a.scoreTier !== b.scoreTier) return false;
   if (a.directionGated !== b.directionGated) return false;
   if (a.multiLegShare !== b.multiLegShare) return false;
-  if (a.anchorLegKind !== b.anchorLegKind) return false;
-  if (a.spreadShape !== b.spreadShape) return false;
-  if (a.spreadLegs !== b.spreadLegs) return false;
+  // By the rendered label, not spreadLegs: that array is rebuilt on every
+  // poll, so a reference compare would re-render every spread-leg row.
+  if (triggerLegBadge(a)?.label !== triggerLegBadge(b)?.label) return false;
   if (a.mktTideDiff !== b.mktTideDiff) return false;
   // GexBot snapshot is written once at insert time; comparing
   // capturedAt is enough to detect "the alert just got its GexBot

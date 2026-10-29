@@ -1270,6 +1270,52 @@ describe('SilentBoomRow: trigger-print leg badge', () => {
     },
   );
 
+  // The row is memoized; each poll hands it a fresh spreadLegs array. A
+  // re-render shows up as another useContractTape call (it runs every render).
+  describe('memo comparison', () => {
+    const spreadAlert = (legs: typeof LEGS) =>
+      makeAlert({
+        anchorLegKind: 'multi_leg',
+        spreadShape: 'vertical',
+        spreadLegs: legs,
+      });
+    const props = (alert: SilentBoomAlert) => ({
+      alert,
+      marketOpen: false,
+      exitPolicy: 'realized60mPct' as const,
+      liveFlowSnapshot: null,
+    });
+
+    it('skips a re-render when spreadLegs is a new array with equal content', () => {
+      const { rerender } = render(
+        <SilentBoomRow {...props(spreadAlert(LEGS))} />,
+      );
+      const renders = mockUseContractTape.mock.calls.length;
+      rerender(
+        <SilentBoomRow
+          {...props(spreadAlert(LEGS.map((leg) => ({ ...leg }))))}
+        />,
+      );
+      expect(mockUseContractTape.mock.calls.length).toBe(renders);
+    });
+
+    it('re-renders when the badge label changes', () => {
+      const { rerender } = render(
+        <SilentBoomRow {...props(spreadAlert(LEGS))} />,
+      );
+      const renders = mockUseContractTape.mock.calls.length;
+      rerender(
+        <SilentBoomRow
+          {...props(spreadAlert([{ ...LEGS[0]!, strike: 141 }, LEGS[1]!]))}
+        />,
+      );
+      expect(mockUseContractTape.mock.calls.length).toBeGreaterThan(renders);
+      expect(
+        screen.getByText('trigger print: spread leg · put vertical 135/141'),
+      ).toBeInTheDocument();
+    });
+  });
+
   it('renders alongside the unchanged Spread-Confirmed badge', () => {
     renderRow(
       makeAlert({
