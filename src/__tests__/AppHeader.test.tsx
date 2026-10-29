@@ -168,6 +168,44 @@ describe('AppHeader', () => {
     expect(onViewChange).toHaveBeenCalledWith('alerts');
   });
 
+  // ── Published height for the sticky stack ────────────────
+
+  describe('header height', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+      document.documentElement.style.removeProperty('--app-header-h');
+    });
+
+    it('publishes its height as --app-header-h on <html>, cleared on unmount', () => {
+      const callbacks: Array<() => void> = [];
+      vi.stubGlobal(
+        'ResizeObserver',
+        class {
+          constructor(cb: () => void) {
+            callbacks.push(cb);
+          }
+          observe = vi.fn();
+          unobserve = vi.fn();
+          disconnect = vi.fn();
+        },
+      );
+      const { unmount } = renderHeader();
+      vi.spyOn(
+        screen.getByRole('banner'),
+        'getBoundingClientRect',
+      ).mockReturnValue({ height: 90 } as DOMRect);
+      act(() => {
+        for (const cb of callbacks) cb();
+      });
+      const root = document.documentElement;
+      expect(root.style.getPropertyValue('--app-header-h')).toBe('90px');
+
+      unmount();
+      expect(root.style.getPropertyValue('--app-header-h')).toBe('');
+    });
+  });
+
   // ── Focus in the sideways-scrolling controls row ─────────
 
   describe('a control that takes focus', () => {

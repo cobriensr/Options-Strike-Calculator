@@ -15,26 +15,29 @@
  *     container above it depends on the sticky context.
  *   - The status pills sit in one group: BACKTEST with Loading… or
  *     NO INTRADAY in backtest mode, otherwise LIVE/STALE/CLOSED.
- *   - Below lg the header must stay one control row tall: 62px on a
- *     phone, 69px from sm. The mobile SectionNav strip under it is sticky
- *     at `top-[57px]` (the header already overlaps it by 5px on a phone
- *     and 12px from sm), and the section anchors' `scroll-mt-28` assumes
- *     header + strip, so a wrapping header would slide over the strip.
- *     Instead the controls row (`ControlsRow`) scrolls sideways like that
- *     strip, with edge fades when there is more to scroll, and its items
- *     keep their natural width. The owner's order there: the view
- *     toggle, the status pills (short on a phone: BT, NO ID), the Schwab
- *     login warning, then the tools, which scroll. CSS `order` moves the
- *     Access Key button and the tools after the warning; the DOM order is
- *     unchanged. At 320px the toggle and both short pills fit. From sm
- *     the title keeps one line too. Those rules all use `max-lg:`
- *     variants, so at lg and up the row is laid out as before.
+ *   - The header publishes its height as `--app-header-h`
+ *     (`usePublishedHeaderHeight`). The SectionNav strip (below lg) and
+ *     sidebar stick right under it, and the section anchors' scroll
+ *     margin (`--anchor-offset` in index.css) clears header + strip.
+ *   - Below lg the header stays one control row tall (62px on a phone,
+ *     69px from sm), so the sticky header + strip take little of a small
+ *     screen. Instead of wrapping, the controls row (`ControlsRow`)
+ *     scrolls sideways like the strip, with edge fades when there is
+ *     more to scroll, and its items keep their natural width. The
+ *     owner's order there: the view toggle, the status pills (short on a
+ *     phone: BT, NO ID), the Schwab login warning, then the tools, which
+ *     scroll. CSS `order` moves the Access Key button and the tools after
+ *     the warning; the DOM order is unchanged. At 320px the toggle and
+ *     both short pills fit. From sm the title keeps one line too. Those
+ *     rules all use `max-lg:` variants, so at lg and up the row is laid
+ *     out as before.
  *   - The hidden file input for VIX CSV uploads must stay co-located
  *     with the visible button so `useRef` can drive `.click()`.
  *
- * The component takes data as props (no hooks called here) so App.tsx
- * remains the single owner of the underlying state — easier to test and
- * easier to reason about during a snapshot debugger walkthrough. Three
+ * The component takes data as props (its one hook only publishes the
+ * header's height) so App.tsx remains the single owner of the underlying
+ * state — easier to test and easier to reason about during a snapshot
+ * debugger walkthrough. Three
  * children are self-contained:
  *
  *   - `ControlsRow` tracks its own scroll position for the edge fades,
@@ -45,7 +48,7 @@
  *     (`useQuoteStaleness`) so the tick re-renders only that pill (F1).
  */
 
-import type { Ref } from 'react';
+import { useEffect, useRef, type Ref } from 'react';
 import AccessKeyButton from '../AccessKey/AccessKeyButton';
 import { StatusBadge } from '../ui';
 import { theme } from '../../themes';
@@ -108,6 +111,33 @@ export interface AppHeaderProps {
   onViewChange: (view: ViewMode) => void;
 }
 
+/**
+ * Publishes the header's height as `--app-header-h` on <html>. The sticky
+ * SectionNav (strip and sidebar) sits at that offset, and the section
+ * anchors' scroll margin (`--anchor-offset`) builds on it. index.css holds
+ * the measured defaults (62px on a phone, 69px from sm); this keeps the
+ * value exact when the header grows, e.g. to 90px at 1024 in owner mode,
+ * where the controls squeeze and the title wraps.
+ */
+function usePublishedHeaderHeight() {
+  const headerRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const header = headerRef.current;
+    if (!header) return;
+    const root = document.documentElement;
+    const observer = new ResizeObserver(() => {
+      const height = header.getBoundingClientRect().height;
+      root.style.setProperty('--app-header-h', `${height}px`);
+    });
+    observer.observe(header);
+    return () => {
+      observer.disconnect();
+      root.style.removeProperty('--app-header-h');
+    };
+  }, []);
+  return headerRef;
+}
+
 export default function AppHeader({
   accessMode,
   isOwner,
@@ -130,8 +160,10 @@ export default function AppHeader({
   view,
   onViewChange,
 }: AppHeaderProps) {
+  const headerRef = usePublishedHeaderHeight();
   return (
     <header
+      ref={headerRef}
       className="border-edge sticky top-0 z-50 border-b backdrop-blur-md"
       style={{
         backgroundColor:
