@@ -205,6 +205,8 @@ def test_happy_path_layout_and_dtypes(work: Path, out: Path) -> None:
             canceled="t",
             executed_at="2026-07-31 19:59:58.5+00",
             created_at="2026-07-31 19:59:59+00",
+            size="",
+            expiry="",
         ),
     ]
     zip_path = _zip(work, _csv_bytes(rows))
@@ -221,10 +223,13 @@ def test_happy_path_layout_and_dtypes(work: Path, out: Path) -> None:
     assert df["canceled"].to_list() == [False, True]
     assert df["date"].to_list() == [SESSION, SESSION]
     assert df["ingested_at"].to_list() == [INGESTED, INGESTED]
-    assert df["expiry"].to_list() == [date(2027, 1, 15)] * 2
-    # Empty strings stay "" (the legacy objects' convention), not null.
-    assert df["alert_score"].to_list() == ["", ""]
+    # An empty field in a typed column is null; in a text column it stays "" (the
+    # legacy objects' convention).
+    assert df["size"].to_list() == [1, None]
+    assert df["expiry"].to_list() == [date(2027, 1, 15), None]
     assert df["theta"].null_count() == 2
+    assert df["alert_score"].to_list() == ["", ""]
+    assert df["aggregated_trade_id"].to_list() == ["", ""]
 
     assert result.rows == 2
     assert result.bytes == out.stat().st_size
@@ -433,6 +438,45 @@ def test_conversion_error_names_no_values(work: Path, out: Path) -> None:
     assert err.__suppress_context__
 
 
+def _raise(exc: BaseException) -> Callable[..., object]:
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise exc
+
+    return fail
+
+
+def test_polars_panic_is_redacted_like_an_error(
+    work: Path, out: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A PanicException is a BaseException, not a PolarsError, and its text can quote
+    # data; uncaught, it would also pass a caller's `except Exception`.
+    zip_path = _zip(work, _csv_bytes([_row()]))
+    monkeypatch.setattr(
+        "tape_convert.pl.scan_csv", _raise(pl.exceptions.PanicException("secretvalue"))
+    )
+
+    err = _convert_fails(zip_path, out)
+
+    assert str(err) == "csv conversion failed (PanicException)"
+    assert err.__cause__ is None
+    assert err.__suppress_context__
+    assert "secretvalue" not in str(err)
+    assert "secretvalue" not in repr(err)
+
+
+def test_runtime_error_outside_the_zip_is_not_relabeled(
+    work: Path, out: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # RuntimeError means "encrypted member" only while reading the zip.
+    zip_path = _zip(work, _csv_bytes([_row()]))
+    monkeypatch.setattr("tape_convert.pl.scan_csv", _raise(RuntimeError("elsewhere")))
+
+    with pytest.raises(RuntimeError) as info:
+        convert_zip(zip_path, out, SESSION, INGESTED)
+    assert str(info.value) == "elsewhere"
+    _assert_nothing_left(zip_path, out)
+
+
 # -- Corrupt zips and the converter's share of the sniff ---------------------------
 
 
@@ -481,9 +525,31 @@ def _members(*names: str) -> Callable[[Path], Path]:
     return make
 
 
+def _patched(field: str, change: Callable[[int], int]) -> Callable[[Path], Path]:
+    """A one-member zip with one 2-byte field rewritten in both the local header (at
+    offset 0) and the central-directory entry, so the two agree."""
+    local, central = {"flags": (6, 8), "method": (8, 10)}[field]
+
+    def make(work: Path) -> Path:
+        path = _zip(work, _csv_bytes([_row()]))
+        raw = bytearray(path.read_bytes())
+        entry = raw.index(b"PK\x01\x02")
+        for offset in (local, entry + central):
+            (value,) = struct.unpack_from("<H", raw, offset)
+            struct.pack_into("<H", raw, offset, change(value))
+        path.write_bytes(bytes(raw))
+        return path
+
+    return make
+
+
 @pytest.mark.parametrize(
     "make",
     [
+        # zipfile raises NotImplementedError for deflate64 (method 9): unsupported.
+        pytest.param(_patched("method", lambda _old: 9), id="unsupported-method"),
+        # ...and RuntimeError for an encrypted member (flag bit 0) with no password.
+        pytest.param(_patched("flags", lambda old: old | 0x1), id="encrypted"),
         pytest.param(_flipped(zipfile.ZIP_DEFLATED), id="flipped-byte-deflated"),
         pytest.param(_flipped(zipfile.ZIP_STORED), id="flipped-byte-stored-crc"),
         pytest.param(_truncated, id="truncated"),
@@ -625,41 +691,32 @@ def test_plausibility_ratio(rows: int, trailing: list[int], warns: bool) -> None
         assert warnings == []
 
 
+JUNE_START = "executed_at starts before the session window (2026-06-14T20:00-04:00)"
+JUNE_END = "executed_at ends at or after the session window end (2026-06-15T20:00-04:00)"
+
+
 @pytest.mark.parametrize(
     ("session", "low", "high", "expected"),
     [
         pytest.param(JUNE_15, OPEN, CLOSE, [], id="a-normal-day"),
         pytest.param(
-            JUNE_15,
-            OPEN,
-            _et(JUNE_15, 20, 30),
-            ["executed_at runs to 2026-06-15T20:30:00-04:00, at or past 2026-06-15T20:00:00-04:00"],
-            id="20:30-et-on-the-session-date-warns",
+            JUNE_15, OPEN, _et(JUNE_15, 20, 30), [JUNE_END], id="20:30-et-on-the-session-date-warns"
         ),
-        pytest.param(
-            JUNE_15,
-            OPEN,
-            _et(JUNE_15, 20),
-            ["executed_at runs to 2026-06-15T20:00:00-04:00, at or past 2026-06-15T20:00:00-04:00"],
-            id="the-window-end-is-exclusive",
-        ),
+        pytest.param(JUNE_15, OPEN, _et(JUNE_15, 20), [JUNE_END], id="the-window-end-is-exclusive"),
         pytest.param(JUNE_15, OPEN, _et(JUNE_15, 19, 59, 59), [], id="just-inside-the-end"),
         pytest.param(JUNE_15, _et(date(2026, 6, 14), 20), CLOSE, [], id="the-start-is-inclusive"),
         pytest.param(
             JUNE_15,
             _et(date(2026, 6, 14), 19, 59, 59),
             CLOSE,
-            ["executed_at starts at 2026-06-14T19:59:59-04:00, before 2026-06-14T20:00:00-04:00"],
+            [JUNE_START],
             id="before-the-start-warns",
         ),
         pytest.param(
             JUNE_15,
             _et(date(2026, 6, 12), 9, 30),
             _et(JUNE_15, 21),
-            [
-                "executed_at starts at 2026-06-12T09:30:00-04:00, before 2026-06-14T20:00:00-04:00",
-                "executed_at runs to 2026-06-15T21:00:00-04:00, at or past 2026-06-15T20:00:00-04:00",
-            ],
+            [JUNE_START, JUNE_END],
             id="both-ends",
         ),
         # EST: 20:00 ET is 01:00 UTC the next day.
@@ -674,7 +731,7 @@ def test_plausibility_ratio(rows: int, trailing: list[int], warns: bool) -> None
             date(2026, 1, 2),
             datetime(2026, 1, 2, 14, 30, tzinfo=UTC),
             datetime(2026, 1, 3, 1, 30, tzinfo=UTC),
-            ["executed_at runs to 2026-01-02T20:30:00-05:00, at or past 2026-01-02T20:00:00-05:00"],
+            ["executed_at ends at or after the session window end (2026-01-02T20:00-05:00)"],
             id="est-20:30-warns",
         ),
         pytest.param(JUNE_15, None, None, [], id="no-timestamps"),
@@ -683,12 +740,25 @@ def test_plausibility_ratio(rows: int, trailing: list[int], warns: bool) -> None
 def test_plausibility_time_window(
     session: date, low: datetime | None, high: datetime | None, expected: list[str]
 ) -> None:
-    assert plausibility_warnings(MEDIAN, TRAILING, low, high, session) == expected
+    warnings = plausibility_warnings(MEDIAN, TRAILING, low, high, session)
+
+    assert warnings == expected
+    # The warning names the crossed edge, never the observed value (logs and Sentry
+    # must not carry UW-derived data), in any of the usual renderings.
+    for observed in (t for t in (low, high) if t is not None):
+        eastern = observed.astimezone(EASTERN)
+        for text in (
+            observed.isoformat(),
+            eastern.isoformat(timespec="seconds"),
+            eastern.strftime("%H:%M:%S"),
+        ):
+            assert all(text not in w for w in warnings), text
 
 
 def test_plausibility_reports_both_kinds_together() -> None:
     warnings = plausibility_warnings(100, TRAILING, OPEN, _et(JUNE_15, 20, 30), JUNE_15)
 
-    assert len(warnings) == 2
-    assert warnings[0].startswith("rows 100 below")
-    assert warnings[1].startswith("executed_at runs to")
+    assert warnings == [
+        "rows 100 below 0.65 x the trailing median 1,000,000 of 10 day(s)",
+        JUNE_END,
+    ]

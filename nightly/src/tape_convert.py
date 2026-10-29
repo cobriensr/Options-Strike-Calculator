@@ -16,11 +16,13 @@ Changes from that code, per the 2026-10-28 review and the R2 layout:
 - (b1) The Parquet is written to ``<out>.tmp``, gated, hashed and only then renamed
   over ``<out>``. The ``.tmp`` and the extracted CSV never survive the call.
 - (b7) A bad zip is a ``TapeValidationError``, not an uncaught ``BadZipFile``.
-- Errors name columns and counts only. polars' own messages quote cell values, so
-  they are dropped (``from None``) rather than chained, and never reach Sentry.
+- Errors name columns and counts only. polars' own messages (and panics) quote cell
+  values, so they are dropped (``from None``) rather than chained, and never reach
+  Sentry.
 
-polars 2 renamed scan_csv's ``missing_utf8_is_empty_string=True`` (what the legacy
-writer used) to ``empty_string_is_null=False``, with the same meaning.
+The legacy writer passed scan_csv ``missing_utf8_is_empty_string=True``. polars 1.43.0
+renamed that parameter to ``empty_string_is_null`` and inverted it, and polars 2
+removed the old name, so the same behavior is now ``empty_string_is_null=False``.
 """
 
 from __future__ import annotations
@@ -101,8 +103,12 @@ _OUTPUT_SCHEMA = pl.Schema(
     CORE_SCHEMA | {"canceled": pl.Boolean, "date": pl.Date, "ingested_at": TIMESTAMP_DTYPE}
 )
 _CHUNK = 1 << 20
-# What a damaged zip raises: a bad archive or CRC, a bad deflate stream, or a short read.
-_CORRUPT_ZIP = (zipfile.BadZipFile, zlib.error, EOFError)
+# What zipfile raises for a zip it can't extract: a bad archive or CRC, a bad deflate
+# stream, a short read, an unsupported compression method (NotImplementedError) or an
+# encrypted member (RuntimeError; NotImplementedError is its subclass, named for the
+# reader). Caught only around the zip open and extract, so a RuntimeError from
+# anywhere else is never relabeled.
+_CORRUPT_ZIP = (zipfile.BadZipFile, zlib.error, EOFError, NotImplementedError, RuntimeError)
 
 
 class TapeValidationError(Exception):
@@ -156,7 +162,9 @@ def convert_zip(
                 .collect()
                 .row(0, named=True)
             )
-        except pl.exceptions.PolarsError as exc:
+        # A polars panic is a BaseException, not a PolarsError, and its text can quote
+        # data too. Left uncaught it would also slip past a caller's `except Exception`.
+        except (pl.exceptions.PolarsError, pl.exceptions.PanicException) as exc:
             raise TapeValidationError(f"csv conversion failed ({type(exc).__name__})") from None
         problems = _gate_problems(
             header=header,
@@ -196,7 +204,8 @@ def plausibility_warnings(
     still lands.
 
     The window is [session - 1 day 20:00 ET, session 20:00 ET), the tape's own
-    daily boundary.
+    daily boundary. A warning names the edge that was crossed, never the observed
+    timestamp: warnings reach logs and Sentry, and UW-derived values must not.
     """
     warnings: list[str] = []
     if len(trailing_rows) >= PLAUSIBLE_MIN_TRAILING:
@@ -210,22 +219,25 @@ def plausibility_warnings(
     start = datetime.combine(session - timedelta(days=1), boundary, tzinfo=EASTERN)
     end = datetime.combine(session, boundary, tzinfo=EASTERN)
     if min_executed_at is not None and min_executed_at < start:
-        warnings.append(f"executed_at starts at {_et(min_executed_at)}, before {_et(start)}")
+        warnings.append(
+            f"executed_at starts before the session window ({start.isoformat(timespec='minutes')})"
+        )
     if max_executed_at is not None and max_executed_at >= end:
-        warnings.append(f"executed_at runs to {_et(max_executed_at)}, at or past {_et(end)}")
+        warnings.append(
+            "executed_at ends at or after the session window end "
+            f"({end.isoformat(timespec='minutes')})"
+        )
     return warnings
-
-
-def _et(moment: datetime) -> str:
-    return moment.astimezone(EASTERN).isoformat(timespec="seconds")
 
 
 def _extract_csv(zip_path: Path, csv_path: Path) -> int:
     """Stream the zip's one member to `csv_path` and return its line count.
 
     Lines are counted from the bytes as they are written: newlines, plus one for a
-    last line that has none. Any damage the zip can detect, including a CRC
-    mismatch at the end of the member, raises TapeValidationError("corrupt zip").
+    last line that has none. Anything that stops zipfile extracting the member,
+    including a CRC mismatch at its end, an unsupported compression method or
+    encryption, raises TapeValidationError("corrupt zip"). The block holds only zip
+    and file I/O, and file I/O raises OSError, which passes through unrelabeled.
     """
     try:
         with zipfile.ZipFile(zip_path) as zf:
