@@ -22,8 +22,10 @@ Claude can't commit content that the last passing `npm run review` didn't see. T
 
 - **Pathspec commits drop `+x` on Windows.** `git commit -- <paths>` builds its tree from the working-tree file. `core.fileMode` is false on Windows, so a new file staged as 100755 was committed as 100644. Commit new executable files with a plain `git commit` from the index, and check with `git ls-tree HEAD <file>`. The `commit` skill says so as of step 2.
 - **Review contention:** once the gate is on, every Claude commit needs a full review. 3–4 sessions running coverage suites at once kept 16 cores at 88–100% on 2026-10-28, and a single review took 10–12 minutes. Option: a machine-wide lock so only one review's vitest runs at a time and the others queue.
-- **Follow-up (duplication):** `review-gate.test.mjs` copies about 40 lines of temp-repo fixtures from `prune-worktrees.fixtures.mjs`, and `review-gate.mjs` copies the `GitError`/`spawnSync` runner from `prune-worktrees.mjs`. Move them into shared `scratch-git.fixtures.mjs` and `git-run.mjs`.
-- **Follow-up (runtime):** the gate's test file takes 35s alone and up to 6 minutes under load, because each hook test spawns sh, node and git one after another. Split it into 2–3 files so vitest runs them on separate workers.
+- **Follow-up (duplication), done:** `review-gate.test.mjs` copied about 40 lines of temp-repo fixtures from `prune-worktrees.fixtures.mjs`, and `review-gate.mjs` copied the `GitError`/`spawnSync` runner from `prune-worktrees.mjs`. `d8d22e3b` moved the runner into `scripts/_lib/git-run.mjs`, and `a4a9931c` moved the fixtures into `scripts/_lib/scratch-git.fixtures.mjs`.
+- **Follow-up (runtime), done 2026-10-29:** the gate's test file took 35–42s alone and up to 6 minutes under load, because each hook test spawns sh, node and git one after another, all on one vitest worker.
+  - It's now two files, split along `describe` lines and balanced by measured time (22.4s and 18.3s when run one after the other). `review-gate.test.mjs` has decideCommit, the hook's main cases and the hook's file mode. `review-gate.cli.test.mjs` has the hook's partial-commit and rename cases, linked worktrees and the CLI. Their shared helpers are in `review-gate.fixtures.mjs`.
+  - Measured back to back at 31–73% CPU: 42.0s for the single file, 19.9s for both halves in one vitest run.
 
 ## Why a git hook, not a Claude PreToolUse hook
 
@@ -52,7 +54,8 @@ Owner decisions from 2026-10-28 are marked ★.
 - **Fails closed:** any error in `check` exits non-zero, so the commit fails with the error. Examples: bad marker JSON, a git failure.
 - **Claude-side `--no-verify` guard:** a PreToolUse `Bash|PowerShell` hook, `.claude/hooks/no-verify-guard.sh`.
   - Bash-only fast exit unless the payload contains `--no-verify`. The match isn't bare `no-verify`, because the hook's own file name contains that.
-  - ★ Then a static `permissionDecision: "deny"` (owner, 2026-10-29), with `onFailure: "block"` in settings. "Ask" was dropped because auto mode settles an ask without a prompt. The gate covers Claude only, so the owner makes any unreviewed commit from their own terminal.
+  - ★ Then a static `permissionDecision: "deny"` (owner, 2026-10-29). "Ask" was dropped because auto mode settles an ask without a prompt. The gate covers Claude only, so the owner makes any unreviewed commit from their own terminal.
+  - ★ `onFailure: "continue"` in settings (owner, 2026-10-29), changed from "block". Under heavy load, starting Git Bash took longer than the hook's 30s timeout, and "block" then blocked ordinary shell calls in every session. The cost: while the guard can't start, a command with the skip flag isn't denied.
 
 ## Accepted gaps
 
