@@ -193,6 +193,7 @@ refit:
 	@echo "════════════════════════════════════════════════════════════════"
 	@echo "  REFIT — recompute V2 ticker weights + backfill scores"
 	@echo "════════════════════════════════════════════════════════════════"
+	@# TEMPORARY GUARD (2026-10-29): ml/src/lottery_refit_guard.py blocks lottery_scoring.py, online_ticker_update.py and backfill_lottery_scores.py (exit 0) while new fires are unclassified.
 	@# Guard removed 2026-05-23 — V2 rescore + V2.2 improvements fully landed
 	@# (composites, cluster, direction-gate fix, context features, online ticker
 	@# EMA). lottery_scoring.py now preserves composite_bonuses across retrains
@@ -253,7 +254,7 @@ update: enrich refit
 	@echo "     docs/tmp/lottery-composite-candidates-YYYY-MM-DD.md  (mining)"
 	@echo "     docs/tmp/lottery-score-lineage-YYYY-MM-DD.md  (attribution)"
 	@echo "     docs/tmp/lottery-ticker-weight-history.csv  (EMA update log)"
-	@echo "     ml/output/lottery_score_weights.json  (ticker_weights updated)"
+	@echo "     ml/output/lottery_score_weights.json  (UNCHANGED while ml/src/lottery_refit_guard.py blocks the refit)"
 	@echo "     docs/tmp/takeit-drift-YYYY-MM-DD.md  (drift monitor report)"
 	@echo "     ml/plots/takeit-drift/reliability_<feed>_YYYY-MM-DD.png"
 

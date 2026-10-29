@@ -203,6 +203,8 @@ Each phase lands on main by itself and passes `npm run review` and the code-revi
 ## Known side effects
 
 - `ml/src/lottery_scoring.py:129` trains only on rows with `inferred_structure IS NULL`. After phase 4, every new row qualifies, so that filter stops meaning anything. Flag at the next rescore; not changed here.
+  - Since 2026-10-29 a guard (`ml/src/lottery_refit_guard.py`) blocks both nightly refits, because new rows are unclassified. It also covers `TODAY_QUERY` in `scripts/online_ticker_update.py`, which this spec doesn't name, and a third site, `scripts/backfill_lottery_scores.py`.
+    Remove the guard when `FETCH_QUERY` and `TODAY_QUERY` both move to `anchor_leg_kind`.
 - Silent Boom's `multi_leg_share` (a live Take-It feature) shifts slightly once `cbmo` counts and `mfto` is gone. Approved.
 
 ## Settled during the builder check

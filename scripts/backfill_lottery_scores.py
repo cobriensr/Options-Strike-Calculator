@@ -39,7 +39,10 @@ from pathlib import Path
 
 from psycopg2.extras import execute_values
 
-from _pipeline_retry import connect_with_retry
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'ml' / 'src'))
+
+from _pipeline_retry import connect_with_retry  # noqa: E402
+from lottery_refit_guard import announce_skip, refit_blocked  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 JSON_PATH = ROOT / 'ml' / 'output' / 'lottery_score_weights.json'
@@ -249,6 +252,13 @@ def main() -> None:
     )
     args = parser.parse_args()
     dry_run: bool = args.dry_run
+
+    # Temporary guard (ml/src/lottery_refit_guard.py): a real run would rewrite
+    # boundary-quintile scores (left-closed '<' vs right-closed runtime).
+    # --dry-run writes nothing and stays allowed.
+    if not dry_run and refit_blocked(date_type.today()):
+        announce_skip('backfill_lottery_scores.py')
+        return
 
     load_env()
 
