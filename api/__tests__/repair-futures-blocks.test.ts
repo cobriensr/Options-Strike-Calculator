@@ -252,10 +252,18 @@ describe('repair-futures-blocks handler', () => {
       'ON CONFLICT (trade_id, exchange, trade_date) DO UPDATE SET',
     );
     expect(text).toContain('updated_at = now()');
+    // Strictly newer only: on a tie the websocket's copy (with quotes) stays.
     expect(text).toContain(
-      'WHERE EXCLUDED.reported_at >= futures_blocks.reported_at',
+      'WHERE EXCLUDED.reported_at > futures_blocks.reported_at',
     );
-    expect(text).toContain('OR futures_blocks.reported_at IS NULL');
+    expect(text).toContain(
+      'OR (futures_blocks.reported_at IS NULL AND EXCLUDED.reported_at IS NOT NULL)',
+    );
+    for (const col of ['quote_bid', 'quote_ask', 'quote_ts']) {
+      expect(text).toContain(
+        `${col} = COALESCE(EXCLUDED.${col}, futures_blocks.${col})`,
+      );
+    }
 
     const cols = upsertColumns(0);
     expect(cols.tradeId).toEqual(['84213907', '22883287', '1']);

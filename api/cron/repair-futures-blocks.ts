@@ -22,16 +22,20 @@
  *      `sec_type` null or "" → NULL; numbers as decimal strings with a
  *      non-finite and column-range reject (one bad value would fail the
  *      whole INSERT). An invalid row is skipped and counted.
- *   3. Collapse: one row per `(trade_id, exchange, trade_date)`, the one
- *      the SQL guard would keep (newest `reported_at`, a tie to the later
- *      row, a NULL `reported_at` losing to any dated one), because one
- *      `INSERT … ON CONFLICT DO UPDATE` can't touch a key twice.
- *   4. One batched upsert per 500 rows, newest-wins exactly like uw-stream's
- *      `db.bulk_upsert_if_newer`: `DO UPDATE … WHERE EXCLUDED.reported_at
- *      >= futures_blocks.reported_at OR futures_blocks.reported_at IS NULL`.
- *      A late older message never overwrites a newer one, a `delete` is
- *      kept as a row state, and a re-run is idempotent. `raw_payload` is
- *      the REST row as received.
+ *   3. Collapse: one row per `(trade_id, exchange, trade_date)` (newest
+ *      `reported_at`, a tie to the later row, a NULL `reported_at` losing
+ *      to any dated one), because one `INSERT … ON CONFLICT DO UPDATE`
+ *      can't touch a key twice.
+ *   4. One batched upsert per 500 rows that only fills in what the
+ *      websocket lacks: `DO UPDATE … WHERE EXCLUDED.reported_at >
+ *      futures_blocks.reported_at OR (futures_blocks.reported_at IS NULL
+ *      AND EXCLUDED.reported_at IS NOT NULL)`. Strictly newer, unlike
+ *      uw-stream's `>=` (`db.bulk_upsert_if_newer`): REST sends the quote
+ *      fields as null, so on a tie (the same message) the websocket's row,
+ *      quotes and `raw_payload` stay, and a re-run writes nothing. A newer
+ *      REST message keeps any stored quote (`COALESCE`). A late older
+ *      message never overwrites a newer one, and a `delete` is kept as a
+ *      row state. `raw_payload` is the REST row as received.
  *
  * Failures surface (R4): a UW error, a non-array page, a page of only
  * invalid rows, or a rejected write throws, so the wrapper reports 'error'
@@ -280,7 +284,11 @@ async function fetchBlocks(
   }
 }
 
-/** One block per key: the message bulk_upsert_if_newer's guard keeps. */
+/**
+ * One block per key: the newest `reported_at`, a tie to the later row, a
+ * NULL `reported_at` losing to any dated one. The stored row then wins a
+ * tie against it in the upsert guard.
+ */
 function collapseToNewest(blocks: readonly Block[]): Block[] {
   const kept = new Map<string, Block>();
   for (const b of blocks) {
@@ -353,13 +361,13 @@ async function upsertBlocks(blocks: readonly Block[]): Promise<number> {
           reported_at = EXCLUDED.reported_at,
           strategy_link_id = EXCLUDED.strategy_link_id,
           legs = EXCLUDED.legs,
-          quote_bid = EXCLUDED.quote_bid,
-          quote_ask = EXCLUDED.quote_ask,
-          quote_ts = EXCLUDED.quote_ts,
+          quote_bid = COALESCE(EXCLUDED.quote_bid, futures_blocks.quote_bid),
+          quote_ask = COALESCE(EXCLUDED.quote_ask, futures_blocks.quote_ask),
+          quote_ts = COALESCE(EXCLUDED.quote_ts, futures_blocks.quote_ts),
           raw_payload = EXCLUDED.raw_payload,
           updated_at = now()
-        WHERE EXCLUDED.reported_at >= futures_blocks.reported_at
-           OR futures_blocks.reported_at IS NULL
+        WHERE EXCLUDED.reported_at > futures_blocks.reported_at
+           OR (futures_blocks.reported_at IS NULL AND EXCLUDED.reported_at IS NOT NULL)
         RETURNING trade_id
       `,
       2,

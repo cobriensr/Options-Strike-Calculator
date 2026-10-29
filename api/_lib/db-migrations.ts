@@ -5438,7 +5438,10 @@ export const MIGRATIONS: Migration[] = [
     description:
       'Create futures_blocks for CME block trades from the UW futures_blocks websocket channel. Keyed (trade_id, exchange, trade_date) because CME reuses trade_id across sessions; uw-stream upserts so the newest reported_at replaces earlier messages, and a delete is kept as action = delete, never removed.',
     statements: (sql) => [
-      // Written only by uw-stream's FuturesBlocksHandler. price is NULL for a
+      // Written live by uw-stream's FuturesBlocksHandler, and nightly by the
+      // repair-futures-blocks cron for blocks the websocket missed (it only
+      // replaces a row with a strictly newer reported_at, and keeps stored
+      // quotes). price is NULL for a
       // multi-leg (MLEG) block, whose prices are on the legs. product is NULL
       // for an MLEG or a contract whose root UW doesn't know yet. exchange is
       // NOT NULL but may be '' (UW sends '' when it has no MIC), since it is

@@ -109,18 +109,24 @@ async function run() {
   return res;
 }
 
-/** A stored row as the websocket handler would have left it. */
+/**
+ * A stored row as the websocket handler would have left it: websocket
+ * frames carry the quote at execution, which REST sends as null.
+ */
 async function seed(
   tradeId: number,
   action: string,
   reportedAt: string | null,
   qty: string,
+  quotes: [string, string, string] | null = null,
 ): Promise<void> {
   await pg.db!.query(
     `INSERT INTO futures_blocks
-       (trade_id, exchange, trade_date, action, qty, reported_at, raw_payload)
-     VALUES ($1, 'XCME', '2026-10-29', $2, $3, $4, '{"src":"ws"}'::jsonb)`,
-    [tradeId, action, qty, reportedAt],
+       (trade_id, exchange, trade_date, action, qty, reported_at,
+        quote_bid, quote_ask, quote_ts, raw_payload)
+     VALUES ($1, 'XCME', '2026-10-29', $2, $3, $4, $5, $6, $7,
+             '{"src":"ws"}'::jsonb)`,
+    [tradeId, action, qty, reportedAt, ...(quotes ?? [null, null, null])],
   );
 }
 
@@ -131,12 +137,18 @@ async function stored(tradeId: number) {
     price: string | null;
     product: string | null;
     reported_at: string | null;
+    quote_bid: string | null;
+    quote_ask: string | null;
+    quote_ts: string | null;
     legs: unknown;
     raw_payload: Record<string, unknown>;
   }>(
     `SELECT action, qty::text, price::text, product,
             to_char(reported_at AT TIME ZONE 'UTC',
                     'YYYY-MM-DD"T"HH24:MI:SS.US') AS reported_at,
+            quote_bid::text, quote_ask::text,
+            to_char(quote_ts AT TIME ZONE 'UTC',
+                    'YYYY-MM-DD"T"HH24:MI:SS.US') AS quote_ts,
             legs, raw_payload
        FROM futures_blocks
       WHERE trade_id = $1 AND exchange = 'XCME' AND trade_date = '2026-10-29'`,
@@ -144,6 +156,12 @@ async function stored(tradeId: number) {
   );
   return rows[0];
 }
+
+const WS_QUOTES: [string, string, string] = [
+  '6612.00',
+  '6612.25',
+  '2026-10-29T15:27:25Z',
+];
 
 describe('repair-futures-blocks upsert (pglite)', () => {
   beforeEach(async () => {
@@ -222,7 +240,58 @@ describe('repair-futures-blocks upsert (pglite)', () => {
     });
   });
 
-  it('a re-run with the same messages re-applies them (>=) and changes nothing', async () => {
+  it('leaves the websocket row alone when REST carries the same message (a reported_at tie): quotes and raw payload kept, not counted', async () => {
+    // The websocket stored this exact message, with its quote.
+    await seed(100, 'new', '2026-10-29T15:27:54.060Z', '250', WS_QUOTES);
+    servePage([block()]); // same reported_at, quotes null
+
+    const res = await run();
+
+    // Only OLD was written.
+    expect(res._json).toMatchObject({ status: 'success', rows: 1 });
+    expect(await stored(100)).toMatchObject({
+      quote_bid: '6612.00000000',
+      quote_ask: '6612.25000000',
+      quote_ts: '2026-10-29T15:27:25.000000',
+      raw_payload: { src: 'ws' },
+    });
+  });
+
+  it('a newer REST message replaces the websocket row but keeps its quotes when REST has none', async () => {
+    await seed(100, 'new', '2026-10-29T15:27:54.060Z', '250', WS_QUOTES);
+    servePage([
+      block({
+        action: 'update',
+        qty: '260',
+        reported_at: '2026-10-29T15:30:00Z',
+      }),
+    ]);
+
+    await run();
+
+    expect(await stored(100)).toMatchObject({
+      action: 'update',
+      qty: '260.00000000',
+      quote_bid: '6612.00000000',
+      quote_ask: '6612.25000000',
+      quote_ts: '2026-10-29T15:27:25.000000',
+      raw_payload: expect.objectContaining({ action: 'update' }),
+    });
+  });
+
+  it('a stored NULL reported_at is not replaced by an incoming NULL one', async () => {
+    await seed(103, 'new', null, '5', WS_QUOTES);
+    servePage([block({ trade_id: 103, qty: '9', reported_at: null })]);
+
+    await run();
+
+    expect(await stored(103)).toMatchObject({
+      qty: '5.00000000',
+      raw_payload: { src: 'ws' },
+    });
+  });
+
+  it('a re-run with the same messages is a no-op: nothing rewritten, nothing counted', async () => {
     servePage([block()]);
     await run();
     const first = await stored(100);
@@ -230,7 +299,7 @@ describe('repair-futures-blocks upsert (pglite)', () => {
     servePage([block()]);
     const res = await run();
 
-    expect(res._json).toMatchObject({ status: 'success', rows: 2 });
+    expect(res._json).toMatchObject({ status: 'success', rows: 0 });
     expect(await stored(100)).toEqual(first);
     const { rows } = await pg.db!.query<{ n: number }>(
       'SELECT count(*)::int AS n FROM futures_blocks',

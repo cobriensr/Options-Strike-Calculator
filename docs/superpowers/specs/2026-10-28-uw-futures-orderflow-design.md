@@ -406,7 +406,8 @@ All read-only, about 600 calls. Scripts and outputs are in `docs/tmp/uw-futures-
   - **Re-runs.** A day whose minutes all failed the 2% rule is paged again on a re-run. `--from` skips ahead.
 - **Phase 6c (new): `api/cron/repair-futures-blocks.ts`**, at `15 22 * * 1-5`.
   - **Fetch:** pages `/futures/flow?blocks_only=true` back over the last 3 UTC days, with Zod validation.
-  - **Write:** collapses repeated keys to the message the guard keeps, then upserts with uw-stream's newest-wins guard (`WHERE EXCLUDED.reported_at >= futures_blocks.reported_at OR futures_blocks.reported_at IS NULL`).
+  - **Write:** collapses repeated keys to the newest message, then upserts only strictly newer ones: `WHERE EXCLUDED.reported_at > futures_blocks.reported_at OR (futures_blocks.reported_at IS NULL AND EXCLUDED.reported_at IS NOT NULL)`, with `quote_bid`/`quote_ask`/`quote_ts = COALESCE(EXCLUDED.x, futures_blocks.x)`.
+  - **Why not uw-stream's `>=`:** REST sends the quote fields as null. On a `reported_at` tie (the same message) the websocket's row, quotes and `raw_payload` stay, and a re-run writes nothing.
   - **Status:** invalid rows or the page cap (100) / 240 s deadline → `partial`; no blocks at all in three days → `error`.
 
 ## Phase 1 result (2026-10-28): null, D5 not met
