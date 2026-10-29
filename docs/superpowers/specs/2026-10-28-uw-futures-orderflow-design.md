@@ -408,3 +408,17 @@ Consequences:
 - Phases 2–6 still collect UW flow (owner: pull everything UW offers).
 - Re-test after 60 UW sessions. Phase 6b's backfill to 2026-06-30 gets there sooner.
 - One variant is untested: overnight OFI as a predictor of the RTH session.
+
+## Probe results (0b): websocket capture, 2026-10-29 04:00–13:09Z (Globex overnight)
+
+There are 1,044 frames from 389 sampled prints (ES 201, NQ 188; `trade_id % 500 == 0`). Scripts and outputs are in `docs/tmp/uw-futures-probe/capture/` (gitignored).
+
+- **P1: every frame has the same 11 keys**, 100% present and never null: `sym, product, exchange, executed_at, price, size, side, nbbo_bid, nbbo_ask, trade_id, is_block`. There is no `is_spread`, `crossed`, `strategy`, `event_ts_ns`, `event_size` or `event_levels`.
+  - Syms: only the front outrights (`ESZ6`, `NQZ6`).
+  - Side: 212 buy, 177 sell, 0 none.
+- **P2: repeated copies.** Every print arrives at least 2×, and the copy count follows size (a size-1 print gives exactly 2 copies; copies ≤ size + 1; r = 0.77). That is consistent with one frame per CME order filled. Only `nbbo_bid`/`nbbo_ask` ever differ between copies (13 of 389 prints); `side`, `price` and `size` never do. The gap from first to last copy has a median under 1 ms and a max of 36 ms.
+  - Without the `(sym, trade_id)` dedup, ES volume would be 6.2× too high.
+- **Integrity:** sampled ES trade ids are contiguous (201 of 201), so nothing was lost. NQ's sparsity matches REST: its id counter is shared.
+- **D1 = NO.** The websocket carries no match-event fields, so **Phase 3 (sweeps) is not built from the websocket**. Sweeps would need REST `/futures/flow`, which is out of scope.
+- **D2 = copies differ only in the post-trade NBBO**, so first-copy-wins is correct. No side-disagreement counter is needed.
+- **Open:** this sample is overnight only, with no spread syms seen. Re-check non-outright syms on the RTH capture before removing the capture code.
