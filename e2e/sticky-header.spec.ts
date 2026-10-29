@@ -9,8 +9,11 @@ import { dateTimeSection, openSection } from './helpers/calculator';
  *
  * The dev server runs in owner mode, and a past trading day adds the
  * BACKTEST + NO INTRADAY pills (/api is aborted), so the header carries
- * its fullest controls row. Below xl that row scrolls sideways; at 1280
- * it squeezes, and with the Schwab countdown the header grows to 90px.
+ * its fullest controls row. Below xl that row scrolls sideways and the
+ * header keeps its 62/69px CSS default. The one case that grows it: at
+ * 1280 the row squeezes, and with the Schwab countdown the title wraps and
+ * the header is 90px, so only the published height keeps the nav and the
+ * anchors clear of it (the "taller than its CSS default" test).
  */
 
 /** The owner's Schwab login runs out in 3 hours: the amber countdown shows. */
@@ -110,6 +113,35 @@ test.describe('Sticky header and section nav', () => {
       await expect.poll(() => offTarget('sec-futures-calc')).toBeLessThan(1.5);
     });
   }
+
+  test('a header taller than its CSS default still has the nav and anchors below it (1280px)', async ({
+    page,
+  }) => {
+    // Registered after beforeEach's abort-everything route: matched first
+    await showSchwabCountdown(page);
+    await openScrolled(page, 1280);
+    const header = page.getByRole('banner');
+    await expect(
+      header.getByRole('timer', { name: 'Schwab login expiry' }),
+    ).toBeAttached();
+    // Taller than the 69px default, so the CSS fallback alone would leave
+    // the sidebar and the anchors under the header
+    await expect
+      .poll(async () => (await header.boundingBox())?.height ?? 0)
+      .toBeGreaterThan(69);
+
+    await expect.poll(() => navGapBelowHeader(page)).toBeGreaterThan(-0.5);
+    expect(await navGapBelowHeader(page)).toBeLessThan(0.5);
+
+    await sectionNav(page)
+      .getByRole('link', { name: 'Implied Volatility' })
+      .click();
+    await expect
+      .poll(async () =>
+        Math.abs((await anchorGapBelowStack(page, 'sec-iv', 1280)) - 8),
+      )
+      .toBeLessThan(1.5);
+  });
 });
 
 // The owner's fullest header row: backtest pills, the Schwab countdown with

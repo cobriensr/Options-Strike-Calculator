@@ -177,8 +177,9 @@ describe('AppHeader', () => {
       document.documentElement.style.removeProperty('--app-header-h');
     });
 
-    it('publishes its height as --app-header-h on <html>, cleared on unmount', () => {
+    it('publishes its height on <html> at mount and on resize, and stops on unmount', () => {
       const callbacks: Array<() => void> = [];
+      const disconnectSpy = vi.fn();
       vi.stubGlobal(
         'ResizeObserver',
         class {
@@ -187,21 +188,26 @@ describe('AppHeader', () => {
           }
           observe = vi.fn();
           unobserve = vi.fn();
-          disconnect = vi.fn();
+          disconnect = disconnectSpy;
         },
       );
+      const rect = vi
+        .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+        .mockReturnValue({ height: 90 } as DOMRect);
       const { unmount } = renderHeader();
-      vi.spyOn(
-        screen.getByRole('banner'),
-        'getBoundingClientRect',
-      ).mockReturnValue({ height: 90 } as DOMRect);
+      const root = document.documentElement;
+      // Published by the layout effect itself, before any observer callback
+      // (so the first paint has it)
+      expect(root.style.getPropertyValue('--app-header-h')).toBe('90px');
+
+      rect.mockReturnValue({ height: 105 } as DOMRect);
       act(() => {
         for (const cb of callbacks) cb();
       });
-      const root = document.documentElement;
-      expect(root.style.getPropertyValue('--app-header-h')).toBe('90px');
+      expect(root.style.getPropertyValue('--app-header-h')).toBe('105px');
 
       unmount();
+      expect(disconnectSpy).toHaveBeenCalled();
       expect(root.style.getPropertyValue('--app-header-h')).toBe('');
     });
   });

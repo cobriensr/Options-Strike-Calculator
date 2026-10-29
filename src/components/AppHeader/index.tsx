@@ -13,7 +13,7 @@
  *   - The header is wrapped in `<header>` with sticky positioning + a
  *     translucent backdrop-blur. Don't move the wrapper — the layout
  *     container above it depends on the sticky context.
- *   - The status pills sit in one group: BACKTEST with Loading… or
+ *   - The status pills follow the view toggle: BACKTEST with Loading… or
  *     NO INTRADAY in backtest mode, otherwise LIVE/STALE/CLOSED.
  *   - The header publishes its height as `--app-header-h`
  *     (`usePublishedHeaderHeight`). The SectionNav strip (below lg) and
@@ -175,8 +175,9 @@ export default function AppHeader({
       }}
     >
       <div className="mx-auto flex max-w-[660px] items-center justify-between px-5 py-2 sm:py-3 lg:max-w-6xl">
-        {/* From sm the title keeps one line, so the header stays one
-            control row tall; on a phone it wraps to leave the pills room. */}
+        {/* From sm to xl the title keeps one line, so the header stays one
+            control row tall; on a phone it wraps to leave the pills room.
+            At xl it may wrap when the owner's row squeezes it. */}
         <div className="sm:max-xl:shrink-0">
           <div className="text-accent hidden font-sans text-[10px] font-bold tracking-[0.2em] uppercase sm:block">
             0DTE Options
