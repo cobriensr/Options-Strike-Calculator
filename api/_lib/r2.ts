@@ -17,7 +17,6 @@ import {
 import { optionalEnv } from './env.js';
 
 const R2_VARS = [
-  'R2_ACCOUNT_ID',
   'R2_ACCESS_KEY_ID',
   'R2_SECRET_ACCESS_KEY',
   'R2_ENDPOINT_URL',
@@ -43,8 +42,6 @@ function readConfig(): R2Config {
   if (missing.length > 0) {
     throw new Error(`R2 is not configured: ${missing.join(', ')}`);
   }
-  // R2_ACCOUNT_ID is validated as present but unused: the endpoint URL
-  // already carries the account.
   return {
     accessKeyId: optionalEnv('R2_ACCESS_KEY_ID') ?? '',
     secretAccessKey: optionalEnv('R2_SECRET_ACCESS_KEY') ?? '',

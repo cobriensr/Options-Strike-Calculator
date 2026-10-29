@@ -19,7 +19,6 @@ vi.mock('@aws-sdk/client-s3', () => ({
 }));
 
 const R2_VARS = {
-  R2_ACCOUNT_ID: 'acct',
   R2_ACCESS_KEY_ID: 'key-id',
   R2_SECRET_ACCESS_KEY: 'key-secret',
   R2_ENDPOINT_URL: 'https://acct.r2.cloudflarestorage.com',
@@ -58,6 +57,14 @@ describe('getR2Bucket', () => {
     expect(() => getR2Bucket()).toThrow(
       'R2 is not configured: R2_ACCESS_KEY_ID, R2_BUCKET_FULLTAPE',
     );
+  });
+});
+
+describe('getR2Bucket without R2_ACCOUNT_ID', () => {
+  it('succeeds because api/ never reads the account id', async () => {
+    vi.stubEnv('R2_ACCOUNT_ID', '');
+    const { getR2Bucket } = await loadR2();
+    expect(getR2Bucket()).toBe('tape-bucket');
   });
 });
 
@@ -184,6 +191,17 @@ describe('r2HeadObject', () => {
     );
     const { r2HeadObject } = await loadR2();
     await expect(r2HeadObject('k')).rejects.toThrow('boom');
+  });
+
+  it('rethrows a 403 instead of returning null', async () => {
+    sendMock.mockRejectedValueOnce(
+      Object.assign(new Error('denied'), {
+        name: 'Forbidden',
+        $metadata: { httpStatusCode: 403 },
+      }),
+    );
+    const { r2HeadObject } = await loadR2();
+    await expect(r2HeadObject('k')).rejects.toThrow('denied');
   });
 
   it('rethrows a non-object rejection', async () => {
