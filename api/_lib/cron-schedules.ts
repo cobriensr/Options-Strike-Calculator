@@ -524,6 +524,14 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
+  'repair-futures-blocks': {
+    // Nightly REST repair of blocks the websocket missed during drops. Its
+    // paging stops at 240 s, inside the default 300 s limit. Low frequency
+    // → default failure threshold of 1.
+    schedule: '15 22 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
   'rollup-ws-gex-strike-expiry': {
     // Daily WS GEX → strike_exposures copy. Five runs in Oct 2026 left no
     // rows and no Sentry event; the monitor is what turns a killed run into

@@ -266,6 +266,10 @@
       "schedule": "30 21 * * 1-5"
     },
     {
+      "path": "/api/cron/repair-futures-blocks",
+      "schedule": "15 22 * * 1-5"
+    },
+    {
       "path": "/api/cron/refresh-vix1d",
       "schedule": "0 11 * * 1-5"
     },
