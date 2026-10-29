@@ -2,7 +2,7 @@
 # The Dockerfile deliberately installs only requirements.txt, so none of
 # the tools below ship in the production image.
 -r requirements.txt
-pytest>=8.0.0
+pytest>=9.1.1
 pytest-asyncio>=0.23.0
 pytest-cov>=6.0
 # Capped at the minor: ruff adds/promotes stable rules only in minor releases,
