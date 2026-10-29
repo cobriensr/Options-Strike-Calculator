@@ -1608,6 +1608,36 @@ describe('detect-silent-boom handler', () => {
       });
       expect(anchorFailedCaptures()).toHaveLength(1);
     });
+
+    it('fails the run when the alert INSERT rejects, e.g. before migration #197 adds the anchor columns', async () => {
+      // The likeliest rollout failure: this code deployed before #197 is
+      // applied makes every INSERT throw. The write error is not swallowed:
+      // the wrapper answers 500, reports 'error' to Axiom and Sentry.
+      const writeError = new Error(
+        'column "anchor_ws_trade_id" of relation "silent_boom_alerts" does not exist',
+      );
+      queueScanAndMacro(fireableSilentBoomStream());
+      mockSql
+        .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count
+        .mockResolvedValueOnce([]) // ticker_flow_snapshot
+        .mockRejectedValueOnce(writeError); // insert
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._status).toBe(500);
+      expect(reportCronRun).toHaveBeenCalledWith(
+        'detect-silent-boom',
+        expect.objectContaining({
+          status: 'error',
+          message: writeError.message,
+        }),
+      );
+      expect(Sentry.captureException).toHaveBeenCalledWith(writeError);
+      // The anchor lookup itself succeeded, so nothing is blamed on it.
+      expect(mockLookupAnchorLegs).toHaveBeenCalledTimes(1);
+      expect(anchorFailedCaptures()).toHaveLength(0);
+    });
   });
 
   it('still fires when prior-fire is older than the 60-min cooldown', async () => {

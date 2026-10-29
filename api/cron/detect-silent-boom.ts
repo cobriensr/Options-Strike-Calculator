@@ -926,12 +926,11 @@ export default withCronInstrumentation(
     // payload, and status 'partial' when the run wrote alerts. A missing
     // anchor is a warning of its own (see anchor-missing below).
     //
-    // Retry budget: the lottery cron's two queries take 7–40 ms warm and
-    // ~0.4 s cold (EXPLAIN on prod, 2026-10-29). This window is 5 min
-    // instead of 1 on the same (option_chain, executed_at) index, so a 5 s
-    // attempt cap still only cuts off a stall. With one retry the worst
-    // case is 5 + 1 + 5 = 11 s ahead of the INSERTs, inside the 60 s
-    // maxDuration.
+    // Retry budget: on prod (2026-10-29) the 5-min window is an index scan
+    // on ws_option_trades_chain_executed_idx at 5.6 ms per alert cold, and
+    // 40 of 40 alerts found an anchor. So a 5 s attempt cap only cuts off a
+    // stall. With one retry the worst case is 5 + 1 + 5 = 11 s ahead of
+    // the INSERTs, inside the 60 s maxDuration.
     const anchorKey = (chain: string, bucketTs: Date): string =>
       `${chain}|${bucketTs.toISOString()}`;
     const anchorRequests: AnchorRequest[] = allFires.map(({ g, f }) => ({
