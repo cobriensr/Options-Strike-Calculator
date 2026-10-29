@@ -10,6 +10,7 @@ import {
   cashSessionMinutes,
   currentSessionStage,
   ACTIVE_SESSION_STAGES,
+  MARKET_CLOSED_DATES,
   type SessionStage,
 } from '../../data/marketHours';
 
@@ -405,5 +406,64 @@ describe('ACTIVE_SESSION_STAGES', () => {
     for (const stage of nonActionable) {
       expect(ACTIVE_SESSION_STAGES.has(stage)).toBe(false);
     }
+  });
+});
+
+describe('2027 NYSE calendar', () => {
+  // Source: https://www.nyse.com/markets/hours-calendars (checked 2026-10-28).
+  const HOLIDAYS_2027 = [
+    ['2027-01-01', "New Year's Day"],
+    ['2027-01-18', 'MLK Day'],
+    ['2027-02-15', "Washington's Birthday"],
+    ['2027-03-26', 'Good Friday'],
+    ['2027-05-31', 'Memorial Day'],
+    ['2027-06-18', 'Juneteenth (observed, Jun 19 is a Saturday)'],
+    ['2027-07-05', 'Independence Day (observed, Jul 4 is a Sunday)'],
+    ['2027-09-06', 'Labor Day'],
+    ['2027-11-25', 'Thanksgiving'],
+    ['2027-12-24', 'Christmas (observed, Dec 25 is a Saturday)'],
+  ] as const;
+
+  it.each(HOLIDAYS_2027)('treats %s (%s) as a full closure', (date) => {
+    expect(isHoliday(date)).toBe(true);
+    expect(isTradingDay(date)).toBe(false);
+    expect(getMarketCloseHourET(date)).toBeNull();
+    expect(cashSessionMinutes(date)).toBe(0);
+  });
+
+  it('treats the day after Thanksgiving 2027 as a 1 PM ET early close', () => {
+    expect(isHalfDay('2027-11-26')).toBe(true);
+    expect(isTradingDay('2027-11-26')).toBe(true);
+    expect(getEarlyCloseHourET('2027-11-26')).toBe(13);
+    expect(cashSessionMinutes('2027-11-26')).toBe(210);
+  });
+
+  it.each(['2027-07-02', '2027-12-23', '2027-12-31'])(
+    'treats %s as an ordinary full trading day',
+    (date) => {
+      expect(isTradingDay(date)).toBe(true);
+      expect(isHalfDay(date)).toBe(false);
+      expect(getMarketCloseHourET(date)).toBe(16);
+      expect(cashSessionMinutes(date)).toBe(390);
+    },
+  );
+
+  it('skips the 2027 holidays when walking back to the prior trading day', () => {
+    expect(priorTradingDay('2027-01-04')).toBe('2026-12-31'); // Fri Jan 1 closed
+    expect(priorTradingDay('2027-07-06')).toBe('2027-07-02'); // Mon Jul 5 closed
+    expect(priorTradingDay('2027-12-27')).toBe('2027-12-23'); // Fri Dec 24 closed
+  });
+});
+
+describe('calendar horizon', () => {
+  // Fails 60 days before the last listed holiday, so CI goes red with two
+  // months to spare before the calendar runs out and holidays read as
+  // trading days. Fix: add next year's dates to src/data/marketHours.ts.
+  it('lists a holiday at least 60 days after today', () => {
+    const last = [...MARKET_CLOSED_DATES].sort().at(-1);
+    expect(last).toBeDefined();
+    const lastMs = Date.parse(`${last}T00:00:00Z`);
+    const daysLeft = (lastMs - Date.now()) / 86_400_000;
+    expect(daysLeft).toBeGreaterThanOrEqual(60);
   });
 });
