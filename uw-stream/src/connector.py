@@ -16,12 +16,14 @@ import asyncio
 import contextlib
 import random
 import time
+from dataclasses import dataclass
 
 import orjson
 import websockets
+from websockets.frames import Close
 
 from config import settings
-from logger_setup import log
+from logger_setup import log, scrub_log_tokens
 from sentry_setup import capture_exception, capture_message
 from state import state
 
@@ -102,6 +104,48 @@ _RESUBSCRIBE_INITIAL_DELAY_S = 30.0
 _RESUBSCRIBE_INTERVAL_S = 60.0
 
 
+@dataclass
+class _SessionDiag:
+    """What one connection attempt's disconnect log line reports.
+
+    ``_connect_once`` starts every attempt with a fresh instance, so a failed
+    connect never reports the previous socket's age, frames or addresses.
+    ``connected_at`` stays None until the WS handshake completes.
+    """
+
+    connected_at: float | None = None
+    frames: int = 0
+    last_frame_at: float | None = None
+    local_addr: str | None = None
+    remote_addr: str | None = None
+    # Close frames from the socket's protocol state, read when the receive
+    # loop ends. Used for every disconnect whose exception isn't a
+    # ConnectionClosed (clean close, OSError/TimeoutError, catch-all). A
+    # ConnectionClosed carries its own copies in ``rcvd`` / ``sent``.
+    close_rcvd: Close | None = None
+    close_sent: Close | None = None
+
+
+def _format_addr(addr: object) -> str | None:
+    """Render a socket address as ``ip:port`` (``[ip]:port`` for IPv6).
+
+    ``getsockname()`` / ``getpeername()`` return ``(host, port)`` for IPv4 and
+    ``(host, port, flowinfo, scope_id)`` for IPv6. Anything else (no transport,
+    an AF_UNIX path) counts as unavailable.
+    """
+    if not isinstance(addr, tuple) or len(addr) < 2:
+        return None
+    host, port = addr[0], addr[1]
+    return f"[{host}]:{port}" if ":" in str(host) else f"{host}:{port}"
+
+
+def _close_info(close: Close | None) -> dict[str, object] | None:
+    """A close frame as ``{"code", "reason"}``; None when none was exchanged."""
+    if close is None:
+        return None
+    return {"code": int(close.code), "reason": close.reason}
+
+
 class Connector:
     """Manages the lifecycle of a single multiplexed UW WS connection."""
 
@@ -128,6 +172,9 @@ class Connector:
         # start fresh at 1s) or escalates it (connect failures, or sub-threshold
         # flaps, with no healthy session between).
         self._established = False
+        # Facts about the current (or just-dropped) socket for the disconnect
+        # log line. Replaced at the top of every ``_connect_once``.
+        self._session_diag = _SessionDiag()
 
     async def run(self) -> None:
         """Run forever, reconnecting as needed."""
@@ -146,7 +193,10 @@ class Connector:
                 # branches so /metrics' reconnects_last_hour is accurate.
                 state.set_connection(self.name, False)
                 state.record_reconnect()
-                log.info("WS closed cleanly, reconnecting after grace")
+                log.info(
+                    "WS closed cleanly, reconnecting after grace",
+                    extra={**self._disconnect_diag(None), "backoff": backoff},
+                )
                 # Storm-check the clean-close path too. A provider shedding an
                 # over-cap connection sends a CLEAN close (no exception), so a
                 # rapid succession of clean closes is exactly how that incident
@@ -169,7 +219,7 @@ class Connector:
                 state.record_reconnect()
                 log.warning(
                     "WS connection unavailable",
-                    extra={"err": str(exc), "backoff": backoff},
+                    extra={**self._disconnect_diag(exc), "backoff": backoff},
                 )
                 self._maybe_alert_storm()
             except (TimeoutError, OSError) as exc:
@@ -177,7 +227,7 @@ class Connector:
                 state.record_reconnect()
                 log.warning(
                     "WS transport error",
-                    extra={"err": str(exc), "backoff": backoff},
+                    extra={**self._disconnect_diag(exc), "backoff": backoff},
                 )
                 self._maybe_alert_storm()
             except Exception as exc:
@@ -186,7 +236,11 @@ class Connector:
                 # are live.
                 state.set_connection(self.name, False)
                 state.record_reconnect()
-                capture_exception(exc, tags={"component": "connector"})
+                capture_exception(
+                    exc,
+                    tags={"component": "connector"},
+                    context={"disconnect": self._disconnect_diag(exc)},
+                )
 
             # Backoff schedule, applied uniformly across the clean-close
             # and every exception branch:
@@ -227,6 +281,7 @@ class Connector:
         a session as healthy: an over-cap-shed connection accepts the joins and
         then closes immediately, and we must NOT reset backoff for those flaps.
         """
+        self._session_diag = diag = _SessionDiag()
         log.info(
             "connecting to WS",
             extra={"shard": self.name, "channels": self.channels},
@@ -237,6 +292,12 @@ class Connector:
             ping_timeout=_PING_TIMEOUT_S,
             max_size=2**22,  # 4 MB; option_trades can carry big arrays
         ) as ws:
+            # Stamp the connect time and both socket addresses while the
+            # transport is up. The local port is what matches a drop to
+            # Railway's network-flow logs.
+            diag.connected_at = time.monotonic()
+            diag.local_addr = _format_addr(ws.local_address)
+            diag.remote_addr = _format_addr(ws.remote_address)
             try:
                 await self._subscribe_all(ws)
             except Exception as exc:
@@ -267,8 +328,15 @@ class Connector:
                 self._reconcile_subscriptions(ws),
                 name=f"reconcile:{self.name}",
             )
+            # Frame stats for the disconnect log, kept in locals on the hot path
+            # (an int bump and a clock read per frame, no await, no log) and
+            # copied to ``diag`` in the finally.
+            frames = 0
+            last_frame_at: float | None = None
             try:
                 async for raw in ws:
+                    frames += 1
+                    last_frame_at = time.monotonic()
                     # Hand off to the router via a bounded queue. We never
                     # ``await`` here — the WS receive task must never block
                     # on parsing or dispatch (those run on the router task).
@@ -299,6 +367,12 @@ class Connector:
                             )
                         state.receive_queue_drops += 1
             finally:
+                # Hand the session's frame stats and close frames to the
+                # disconnect log line ``run`` emits next.
+                diag.frames = frames
+                diag.last_frame_at = last_frame_at
+                diag.close_rcvd = ws.protocol.close_rcvd
+                diag.close_sent = ws.protocol.close_sent
                 # Treat the session as healthy (→ reset backoff in ``run``)
                 # ONLY if it stayed up long enough. Runs on both the clean
                 # ``async for`` exit and an exception unwinding through here
@@ -386,6 +460,57 @@ class Connector:
             except websockets.ConnectionClosed:
                 return
             await asyncio.sleep(_RESUBSCRIBE_INTERVAL_S)
+
+    def _disconnect_diag(self, exc: BaseException | None) -> dict[str, object]:
+        """Fields ``run`` reports once per disconnect: on the log line, or as
+        Sentry context from the catch-all branch.
+
+        ``exc`` is None for a clean close. websockets raises a
+        ``ConnectionClosedError`` *from* the transport error that killed the
+        socket (``raise close_exc from recv_exc``), so ``__cause__`` is where a
+        reset, TLS error or timeout shows up. It is None after a bare TCP EOF.
+        ``__context__`` is the fallback for an exception raised inside an
+        ``except`` without ``from``. It is skipped after ``raise ... from None``,
+        which websockets uses to hide an irrelevant inner error (e.g. the
+        ``KeyError`` behind a missing handshake header).
+
+        Never includes ``settings.ws_url``. The two exception-text fields are
+        token-scrubbed here as well as by the JSON formatter, because an
+        exception message can embed the URL and its ``?token=``.
+        """
+        diag = self._session_diag
+        now = time.monotonic()
+        if isinstance(exc, websockets.ConnectionClosed):
+            close_rcvd, close_sent = exc.rcvd, exc.sent
+        else:
+            close_rcvd, close_sent = diag.close_rcvd, diag.close_sent
+        cause = None
+        if exc is not None:
+            cause = exc.__cause__
+            if cause is None and not exc.__suppress_context__:
+                cause = exc.__context__
+        session_s = None
+        if diag.connected_at is not None:
+            session_s = round(now - diag.connected_at, 3)
+        return {
+            "shard": self.name,
+            "exc_type": type(exc).__name__ if exc is not None else None,
+            "err": scrub_log_tokens(str(exc)) if exc is not None else None,
+            "close_rcvd": _close_info(close_rcvd),
+            "close_sent": _close_info(close_sent),
+            "cause_type": type(cause).__name__ if cause is not None else None,
+            "cause": scrub_log_tokens(repr(cause)) if cause is not None else None,
+            "cause_errno": cause.errno if isinstance(cause, OSError) else None,
+            "session_s": session_s,
+            # None, not 0, when the socket never opened: "never connected"
+            # stays distinct from "connected, received nothing".
+            "frames": diag.frames if session_s is not None else None,
+            "since_last_frame_s": (
+                round(now - diag.last_frame_at, 3) if diag.last_frame_at is not None else None
+            ),
+            "local_addr": diag.local_addr,
+            "remote_addr": diag.remote_addr,
+        }
 
     def _maybe_alert_storm(self) -> None:
         """Raise a Sentry warning if reconnects pile up in the last hour.

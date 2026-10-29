@@ -4,13 +4,18 @@ plus the bounded receive-queue handoff to the router (Phase 1, C2)."""
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
+import logging
+from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
 import websockets
+from websockets.frames import Close
 
 from connector import Connector
+from logger_setup import JsonFormatter
 from state import state
 
 
@@ -74,6 +79,11 @@ class _AsyncIterableWS:
 
     def __init__(self, frames: list[bytes]) -> None:
         self._frames = frames
+        # The real connection's attributes ``_connect_once`` reads for the
+        # disconnect diagnostics.
+        self.local_address = None
+        self.remote_address = None
+        self.protocol = SimpleNamespace(close_rcvd=None, close_sent=None)
 
     def __aiter__(self):
         return self._iter()
@@ -799,3 +809,490 @@ async def test_sub_threshold_flaps_keep_escalating_backoff(monkeypatch) -> None:
             f"healthy session resets it to 1.0. realized sleep {realized} out "
             f"of jitter band around base {base}. recorded sleeps: {sleeps}"
         )
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Disconnect diagnostics. Production drops ~50-260 sockets/day with "no close
+# frame received or sent", torn down within ~2 ms of the container. Every
+# disconnect log line must carry the shard, both close frames, the transport
+# error websockets chains via ``raise ... from``, the session stats, and the
+# socket addresses (a drop is matched to Railway network-flow logs by port).
+# ──────────────────────────────────────────────────────────────────────────
+
+_LOCAL_ADDR = ("10.250.1.7", 54321)
+_REMOTE_ADDR = ("104.18.24.1", 443)
+_SECRET = "SUPER_SECRET_UW_TOKEN"
+_SECRET_URL = f"wss://api.unusualwhales.com/socket?token={_SECRET}"
+
+# Every disconnect line carries these, None where they don't apply.
+_DIAG_FIELDS = frozenset(
+    {
+        "shard",
+        "exc_type",
+        "err",
+        "close_rcvd",
+        "close_sent",
+        "cause_type",
+        "cause",
+        "cause_errno",
+        "session_s",
+        "frames",
+        "since_last_frame_s",
+        "local_addr",
+        "remote_addr",
+        "backoff",
+    }
+)
+
+
+class _RecordCollector(logging.Handler):
+    """Collects every LogRecord the connector's logger emits.
+
+    The project logger sets ``propagate=False``, so ``caplog`` never sees its
+    records. A handler attached to the logger itself does, with each ``extra``
+    field as a record attribute.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@pytest.fixture
+def connector_records():
+    import connector as connector_mod
+
+    collector = _RecordCollector()
+    prev_level = connector_mod.log.level
+    connector_mod.log.addHandler(collector)
+    connector_mod.log.setLevel(logging.DEBUG)
+    try:
+        yield collector.records
+    finally:
+        connector_mod.log.removeHandler(collector)
+        connector_mod.log.setLevel(prev_level)
+
+
+def _closed_from(cause: BaseException | None, **kwargs: Any) -> websockets.ConnectionClosedError:
+    """A ConnectionClosedError chained the way websockets 17 raises it:
+    ``raise self.protocol.close_exc from self.recv_exc`` (cause may be None)."""
+    exc = websockets.ConnectionClosedError(kwargs.get("rcvd"), kwargs.get("sent"))
+    exc.__cause__ = cause
+    exc.__suppress_context__ = True
+    return exc
+
+
+def _raised_inside_except(
+    outer: BaseException, inner: BaseException, *, from_none: bool = False
+) -> BaseException:
+    """``outer`` as Python leaves it after being raised inside ``except inner``.
+
+    Without ``from``, Python links ``inner`` as ``__context__``. With
+    ``from None`` it still links it, but sets ``__suppress_context__``.
+    """
+    try:
+        try:
+            raise inner
+        except type(inner):
+            if from_none:
+                raise outer from None
+            raise outer  # noqa: B904 - the implicit chain is what's under test
+    except type(outer) as caught:
+        return caught
+    raise AssertionError("unreachable")
+
+
+class _SessionWS:
+    """Fake connection for one session: yields ``frames``, then ends.
+
+    ``end`` is raised to end the session the way the real ``async for`` ends an
+    abnormal close; ``None`` ends the iteration cleanly, as a graceful close
+    does. ``protocol`` holds the close frames where websockets' sans-I/O
+    protocol object keeps them.
+    """
+
+    def __init__(
+        self,
+        frames: list[bytes],
+        end: BaseException | None = None,
+        *,
+        pre_frame_delay_s: float = 0.0,
+        close_rcvd: Close | None = None,
+        close_sent: Close | None = None,
+    ) -> None:
+        self.local_address = _LOCAL_ADDR
+        self.remote_address = _REMOTE_ADDR
+        self.protocol = SimpleNamespace(close_rcvd=close_rcvd, close_sent=close_sent)
+        self._frames = frames
+        self._end = end
+        self._pre_frame_delay_s = pre_frame_delay_s
+
+    def __aiter__(self):
+        return self._iter()
+
+    async def _iter(self):
+        await asyncio.sleep(self._pre_frame_delay_s)
+        for frame in self._frames:
+            yield frame
+        if self._end is not None:
+            raise self._end
+
+
+class _ConnectCtx:
+    """Stand-in for ``websockets.connect(...)``: enters to ``ws`` or raises."""
+
+    def __init__(
+        self,
+        ws: _SessionWS | None = None,
+        enter_exc: BaseException | None = None,
+    ) -> None:
+        self._ws = ws
+        self._enter_exc = enter_exc
+
+    async def __aenter__(self):
+        if self._enter_exc is not None:
+            raise self._enter_exc
+        return self._ws
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+async def _run_attempts(monkeypatch, connector: Connector, attempts: list[_ConnectCtx]) -> None:
+    """Drive the REAL ``run()`` → ``_connect_once`` through ``attempts``.
+
+    Each ``websockets.connect`` call returns the next context; once they run
+    out, connect raises CancelledError to end the loop. Backoff is zeroed and
+    the storm alert stubbed so only the disconnect log lines vary.
+    """
+    import connector as connector_mod
+
+    pending = list(attempts)
+
+    def _fake_connect(*_args, **_kwargs):
+        if not pending:
+            raise asyncio.CancelledError()
+        return pending.pop(0)
+
+    async def _noop_subscribe(_ws):
+        return None
+
+    monkeypatch.setattr(connector_mod.websockets, "connect", _fake_connect)
+    monkeypatch.setattr(connector, "_subscribe_all", _noop_subscribe)
+    monkeypatch.setattr(connector_mod, "_INITIAL_BACKOFF_S", 0.0)
+    monkeypatch.setattr(connector_mod, "capture_message", lambda *_a, **_k: None)
+
+    with pytest.raises(asyncio.CancelledError):
+        await connector.run()
+
+
+def _only(records: list[logging.LogRecord], msg: str) -> logging.LogRecord:
+    matches = [r for r in records if r.getMessage() == msg]
+    assert len(matches) == 1, (
+        f"expected exactly one {msg!r} record, got {[r.getMessage() for r in records]}"
+    )
+    return matches[0]
+
+
+@pytest.mark.asyncio
+async def test_disconnect_log_reports_transport_cause_and_session(
+    monkeypatch, connector_records
+) -> None:
+    """The production failure: ConnectionClosedError chained from an
+    ECONNRESET. The log line must name the shard, the exception class, both
+    (absent) close frames, the reset error and its errno, the session's age
+    and frame stats, and the socket addresses.
+    """
+    reset = ConnectionResetError(errno.ECONNRESET, "Connection reset by peer")
+    ws = _SessionWS(
+        [b"f1", b"f2", b"f3"],
+        end=_closed_from(reset),
+        pre_frame_delay_s=0.05,
+    )
+    connector = Connector(
+        channels=["flow-alerts"], receive_queue=asyncio.Queue(maxsize=10), name="shard-3"
+    )
+
+    await _run_attempts(monkeypatch, connector, [_ConnectCtx(ws)])
+
+    rec = _only(connector_records, "WS connection unavailable")
+    assert rec.__dict__.keys() >= _DIAG_FIELDS
+    assert rec.shard == "shard-3"
+    assert rec.exc_type == "ConnectionClosedError"
+    assert rec.err == "no close frame received or sent"
+    assert rec.close_rcvd is None
+    assert rec.close_sent is None
+    assert rec.cause_type == "ConnectionResetError"
+    assert rec.cause == repr(reset)
+    assert rec.cause_errno == errno.ECONNRESET
+    assert rec.frames == 3
+    # The frames arrived ~50 ms after connect, then the socket died at once:
+    # session age spans the wait, time-since-last-frame does not.
+    assert isinstance(rec.session_s, float)
+    assert isinstance(rec.since_last_frame_s, float)
+    assert 0.0 <= rec.since_last_frame_s < rec.session_s
+    assert rec.local_addr == "10.250.1.7:54321"
+    assert rec.remote_addr == "104.18.24.1:443"
+    assert rec.backoff == 0.0
+
+
+@pytest.mark.asyncio
+async def test_disconnect_log_without_cause_reports_close_frames(
+    monkeypatch, connector_records
+) -> None:
+    """A ConnectionClosedError with no chained cause (websockets raises it
+    ``from None`` on a bare TCP EOF) logs None cause fields without crashing,
+    and a close frame we sent (our keepalive timeout) shows up as code+reason.
+    """
+    keepalive = Close(1011, "keepalive ping timeout")
+    ws = _SessionWS([], end=_closed_from(None, sent=keepalive))
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10), name="ws")
+
+    await _run_attempts(monkeypatch, connector, [_ConnectCtx(ws)])
+
+    rec = _only(connector_records, "WS connection unavailable")
+    assert rec.__dict__.keys() >= _DIAG_FIELDS
+    assert rec.exc_type == "ConnectionClosedError"
+    assert rec.cause_type is None
+    assert rec.cause is None
+    assert rec.cause_errno is None
+    assert rec.close_rcvd is None
+    assert rec.close_sent == {"code": 1011, "reason": "keepalive ping timeout"}
+    # Connected but nothing arrived: zero frames, no last-frame age.
+    assert rec.frames == 0
+    assert rec.since_last_frame_s is None
+    assert isinstance(rec.session_s, float)
+
+
+@pytest.mark.asyncio
+async def test_clean_close_log_carries_diag_fields(monkeypatch, connector_records) -> None:
+    """A graceful close raises nothing, so the close frames come from the
+    socket's protocol state. Same field set as the exception branches."""
+    going_away = Close(1001, "going away")
+    ws = _SessionWS(
+        [b"f1", b"f2"],
+        end=None,
+        close_rcvd=going_away,
+        close_sent=going_away,
+    )
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10), name="shard-0")
+
+    await _run_attempts(monkeypatch, connector, [_ConnectCtx(ws)])
+
+    rec = _only(connector_records, "WS closed cleanly, reconnecting after grace")
+    assert rec.__dict__.keys() >= _DIAG_FIELDS
+    assert rec.shard == "shard-0"
+    assert rec.exc_type is None
+    assert rec.err is None
+    assert rec.cause_type is None
+    assert rec.close_rcvd == {"code": 1001, "reason": "going away"}
+    assert rec.close_sent == {"code": 1001, "reason": "going away"}
+    assert rec.frames == 2
+    assert isinstance(rec.session_s, float)
+    assert isinstance(rec.since_last_frame_s, float)
+    assert rec.local_addr == "10.250.1.7:54321"
+    assert rec.remote_addr == "104.18.24.1:443"
+
+
+@pytest.mark.parametrize(
+    ("enter_exc", "msg", "exc_type"),
+    [
+        (websockets.InvalidHandshake(), "WS connection unavailable", "InvalidHandshake"),
+        (
+            ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused"),
+            "WS transport error",
+            "ConnectionRefusedError",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_pre_connect_failure_logs_no_session(
+    monkeypatch, connector_records, enter_exc: BaseException, msg: str, exc_type: str
+) -> None:
+    """A handshake reject or TCP failure never opened a socket: every session
+    field is None, and building the line doesn't crash on the missing socket."""
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10), name="shard-1")
+
+    await _run_attempts(monkeypatch, connector, [_ConnectCtx(enter_exc=enter_exc)])
+
+    rec = _only(connector_records, msg)
+    assert rec.__dict__.keys() >= _DIAG_FIELDS
+    assert rec.shard == "shard-1"
+    assert rec.exc_type == exc_type
+    assert rec.session_s is None
+    assert rec.frames is None
+    assert rec.since_last_frame_s is None
+    assert rec.local_addr is None
+    assert rec.remote_addr is None
+    assert rec.close_rcvd is None
+    assert rec.close_sent is None
+    assert rec.cause_type is None
+
+
+@pytest.mark.asyncio
+async def test_disconnect_cause_falls_back_to_implicit_context(
+    monkeypatch, connector_records
+) -> None:
+    """An exception raised inside ``except`` WITHOUT ``from`` has no
+    ``__cause__``. The transport error it was handling, linked as
+    ``__context__``, is reported as the cause."""
+    reset = ConnectionResetError(errno.ECONNRESET, "Connection reset by peer")
+    closed = _raised_inside_except(websockets.ConnectionClosedError(None, None), reset)
+    ws = _SessionWS([b"f1"], end=closed)
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10))
+
+    await _run_attempts(monkeypatch, connector, [_ConnectCtx(ws)])
+
+    rec = _only(connector_records, "WS connection unavailable")
+    assert rec.cause_type == "ConnectionResetError"
+    assert rec.cause == repr(reset)
+    assert rec.cause_errno == errno.ECONNRESET
+
+
+@pytest.mark.asyncio
+async def test_disconnect_cause_honours_from_none(monkeypatch, connector_records) -> None:
+    """``raise ... from None`` suppresses the implicit context, so it must not
+    be reported as the cause. Mirrors websockets' client handshake check:
+    ``raise InvalidHeader("Sec-WebSocket-Accept") from None`` inside
+    ``except KeyError``."""
+    rejected = _raised_inside_except(
+        websockets.InvalidHeader("Sec-WebSocket-Accept"),
+        KeyError("Sec-WebSocket-Accept"),
+        from_none=True,
+    )
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10))
+
+    await _run_attempts(monkeypatch, connector, [_ConnectCtx(enter_exc=rejected)])
+
+    rec = _only(connector_records, "WS connection unavailable")
+    assert rec.exc_type == "InvalidHeader"
+    assert rec.cause_type is None
+    assert rec.cause is None
+    assert rec.cause_errno is None
+
+
+@pytest.mark.asyncio
+async def test_session_fields_reset_between_attempts(monkeypatch, connector_records) -> None:
+    """A failed connect after a real session must not report the previous
+    socket's age, frames or addresses: each attempt starts from nothing."""
+    first = _SessionWS([b"f1"], end=_closed_from(ConnectionResetError(errno.ECONNRESET, "reset")))
+    refused = ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused")
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10))
+
+    await _run_attempts(
+        monkeypatch, connector, [_ConnectCtx(first), _ConnectCtx(enter_exc=refused)]
+    )
+
+    dropped = _only(connector_records, "WS connection unavailable")
+    assert dropped.frames == 1
+    assert dropped.local_addr == "10.250.1.7:54321"
+
+    rec = _only(connector_records, "WS transport error")
+    assert rec.session_s is None
+    assert rec.frames is None
+    assert rec.since_last_frame_s is None
+    assert rec.local_addr is None
+    assert rec.remote_addr is None
+
+
+@pytest.mark.asyncio
+async def test_disconnect_logs_never_contain_ws_token(monkeypatch, connector_records) -> None:
+    """The WS URL carries the UW key as ``?token=``. Even when the exception
+    text and its chained cause both embed that URL, no emitted record, raw
+    or JSON-formatted, may contain the key."""
+    import connector as connector_mod
+
+    monkeypatch.setattr(
+        connector_mod,
+        "settings",
+        SimpleNamespace(ws_url=_SECRET_URL, channel_shards=[["a"]]),
+    )
+
+    pre_connect = OSError(f"cannot connect to {_SECRET_URL}")
+    pre_connect.__cause__ = RuntimeError(f"resolver failed for {_SECRET_URL}")
+    mid_session = _SessionWS([b"f1"], end=_closed_from(OSError(f"read failed on {_SECRET_URL}")))
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10))
+
+    await _run_attempts(
+        monkeypatch,
+        connector,
+        [_ConnectCtx(enter_exc=pre_connect), _ConnectCtx(mid_session)],
+    )
+
+    # Both disconnect lines were emitted (so the check below isn't vacuous).
+    assert _only(connector_records, "WS transport error").cause_type == "RuntimeError"
+    assert _only(connector_records, "WS connection unavailable").cause_type == "OSError"
+
+    formatter = JsonFormatter()
+    for record in connector_records:
+        line = formatter.format(record)
+        assert _SECRET not in line, f"token leaked into formatted record: {line}"
+        raw_values = " ".join(repr(v) for v in record.__dict__.values())
+        assert _SECRET not in raw_values, (
+            f"token leaked into raw record {record.getMessage()!r}: {raw_values}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_unexpected_disconnect_sends_diag_to_sentry(monkeypatch, connector_records) -> None:
+    """The catch-all branch logs nothing of its own; it reports to Sentry. The
+    capture must carry the same disconnect diagnostics as context, with the
+    existing tag, and the token scrubbed out of the exception text and cause."""
+    import connector as connector_mod
+
+    monkeypatch.setattr(
+        connector_mod,
+        "settings",
+        SimpleNamespace(ws_url=_SECRET_URL, channel_shards=[["a"]]),
+    )
+    captured: list[tuple[BaseException, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        connector_mod,
+        "capture_exception",
+        lambda exc, **kwargs: captured.append((exc, kwargs)),
+    )
+
+    boom = RuntimeError(f"unexpected failure on {_SECRET_URL}")
+    boom.__cause__ = ValueError(f"bad state for {_SECRET_URL}")
+    ws = _SessionWS([b"f1", b"f2"], end=boom)
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10), name="shard-2")
+
+    await _run_attempts(monkeypatch, connector, [_ConnectCtx(ws)])
+
+    assert len(captured) == 1, f"expected one Sentry capture, got {captured}"
+    exc, kwargs = captured[0]
+    assert exc is boom
+    assert kwargs["tags"] == {"component": "connector"}
+    ctx = kwargs["context"]["disconnect"]
+    assert ctx["shard"] == "shard-2"
+    assert ctx["exc_type"] == "RuntimeError"
+    assert ctx["cause_type"] == "ValueError"
+    assert ctx["frames"] == 2
+    assert isinstance(ctx["session_s"], float)
+    assert isinstance(ctx["since_last_frame_s"], float)
+    assert ctx["local_addr"] == "10.250.1.7:54321"
+    assert ctx["remote_addr"] == "104.18.24.1:443"
+    assert _SECRET not in json.dumps(kwargs["context"], default=str)
+    # No disconnect log line of its own: the catch-all reports via Sentry only.
+    assert not [r for r in connector_records if r.levelno >= logging.WARNING]
+
+
+@pytest.mark.parametrize(
+    ("addr", "expected"),
+    [
+        (("10.0.0.5", 443), "10.0.0.5:443"),
+        # IPv6 sockname is a 4-tuple; the host gets brackets.
+        (("2606:4700::6812:1801", 443, 0, 0), "[2606:4700::6812:1801]:443"),
+        (None, None),
+        # AF_UNIX gives a path string, not a host/port tuple.
+        ("/tmp/sock", None),
+        ((), None),
+    ],
+)
+def test_format_addr(addr: object, expected: str | None) -> None:
+    import connector as connector_mod
+
+    assert connector_mod._format_addr(addr) == expected
