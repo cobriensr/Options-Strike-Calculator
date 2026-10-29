@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 import urllib3
+from boto3.exceptions import S3UploadFailedError
 from botocore.exceptions import ClientError, HTTPClientError
 
 SCRIPT = Path(__file__).resolve().parent / "upload-fulltape-to-r2.py"
@@ -33,9 +34,12 @@ class FakeClient:
 
     def __init__(self, behaviours: dict[str, Exception | None] | None = None) -> None:
         self.behaviours = behaviours or {}
+        self.list_error: Exception | None = None
         self.uploads: list[dict[str, Any]] = []
 
     def list_objects_v2(self, **_kwargs: Any) -> dict[str, Any]:
+        if self.list_error is not None:
+            raise self.list_error
         return {"IsTruncated": False}
 
     def upload_file(self, **kwargs: Any) -> None:
@@ -48,28 +52,29 @@ class FakeClient:
 @pytest.fixture
 def run_main(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Return (main, files, client): two local files ready to upload."""
-    module = _load_module()
-    files = [tmp_path / f"2026-10-0{n}-fulltape.parquet" for n in (1, 2)]
-    for f in files:
-        f.write_bytes(b"parquet")
-    client = FakeClient()
-    monkeypatch.setattr(module, "load_env_local", lambda: None)
-    monkeypatch.setattr(module, "make_client", lambda: client)
-    monkeypatch.setenv("R2_BUCKET_FULLTAPE", "test-bucket")
-    monkeypatch.setenv("INPUT_DIR", str(tmp_path))
-    monkeypatch.setattr("sys.argv", ["upload-fulltape-to-r2.py"])
-    return module.main, files, client
+    # main() installs a global warnings filter; restore it afterwards.
+    with warnings.catch_warnings():
+        module = _load_module()
+        files = [tmp_path / f"2026-10-0{n}-fulltape.parquet" for n in (1, 2)]
+        for f in files:
+            f.write_bytes(b"parquet")
+        client = FakeClient()
+        monkeypatch.setattr(module, "load_env_local", lambda: None)
+        monkeypatch.setattr(module, "make_client", lambda: client)
+        monkeypatch.setenv("R2_BUCKET_FULLTAPE", "test-bucket")
+        monkeypatch.setenv("INPUT_DIR", str(tmp_path))
+        monkeypatch.setattr("sys.argv", ["upload-fulltape-to-r2.py"])
+        yield module.main, files, client
 
 
 def test_main_turns_insecure_request_warnings_into_errors(run_main) -> None:
     main, files, client = run_main
 
-    with warnings.catch_warnings():
-        assert main() == 0
-        # The first matching filter wins, so check the one main() installed.
-        category = urllib3.exceptions.InsecureRequestWarning
-        first = next(f for f in warnings.filters if f[2] is category)
-        assert first[0] == "error"
+    assert main() == 0
+    # The first matching filter wins, so check the one main() installed.
+    category = urllib3.exceptions.InsecureRequestWarning
+    first = next(f for f in warnings.filters if f[2] is category)
+    assert first[0] == "error"
 
     assert [Path(u["Filename"]).name for u in client.uploads] == [f.name for f in files]
 
@@ -121,3 +126,35 @@ def test_client_error_is_recorded_and_the_run_continues(
     err = capsys.readouterr().err
     assert "SlowDown" in err
     assert "TLS verification" not in err
+
+
+def test_s3_upload_failed_error_is_recorded_and_the_run_continues(
+    run_main, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main, files, client = run_main
+    client.behaviours[files[0].name] = S3UploadFailedError(
+        f"Failed to upload {files[0].name}: AccessDenied"
+    )
+
+    code = main()
+
+    assert code == 3
+    assert [Path(u["Filename"]).name for u in client.uploads] == [f.name for f in files]
+    assert "AccessDenied" in capsys.readouterr().err
+
+
+def test_unverified_tls_while_listing_aborts_before_any_upload(
+    run_main, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main, _files, client = run_main
+    client.list_error = HTTPClientError(
+        error=urllib3.exceptions.InsecureRequestWarning("x")
+    )
+
+    code = main()
+
+    assert code == 4
+    assert client.uploads == []
+    err = capsys.readouterr().err
+    assert "Listing the remote bucket" in err
+    assert "TLS verification was skipped" in err

@@ -41,6 +41,7 @@ from pathlib import Path
 
 import boto3
 import urllib3
+from boto3.exceptions import S3UploadFailedError
 from botocore.client import Config
 from botocore.exceptions import BotoCoreError, ClientError, HTTPClientError
 
@@ -120,6 +121,13 @@ def list_remote_keys(client, bucket: str) -> set[str]:
     return keys
 
 
+def is_tls_guard_error(e: Exception) -> bool:
+    """True when botocore gave up after urllib3's unverified-HTTPS guard fired."""
+    return isinstance(e, HTTPClientError) and isinstance(
+        e.kwargs.get("error"), urllib3.exceptions.InsecureRequestWarning
+    )
+
+
 def local_to_key(path: Path) -> str:
     """Map a local *-fulltape.parquet path to its R2 key."""
     return f"{KEY_PREFIX}{path.name}"
@@ -165,7 +173,16 @@ def main() -> int:
     client = make_client()
 
     print(f"→ Listing remote bucket {bucket} under prefix {KEY_PREFIX!r}...")
-    remote_keys = list_remote_keys(client, bucket)
+    try:
+        remote_keys = list_remote_keys(client, bucket)
+    except HTTPClientError as e:
+        if not is_tls_guard_error(e):
+            raise
+        sys.stderr.write(
+            "❌ Listing the remote bucket: TLS verification was skipped "
+            "for R2 requests; aborting the run.\n"
+        )
+        return 4
     print(f"  found {len(remote_keys)} existing R2 keys")
 
     force_dates = set(args.force)
@@ -211,7 +228,9 @@ def main() -> int:
                 Key=key,
                 ExtraArgs={"ContentType": "application/x-parquet"},
             )
-        except (ClientError, BotoCoreError) as e:
+        except (ClientError, BotoCoreError, S3UploadFailedError) as e:
+            # boto3's upload_file re-raises a ClientError from the transfer as
+            # S3UploadFailedError (a Boto3Error), so catch that as well.
             # Catch BotoCoreError too — transient transport failures
             # (EndpointConnectionError, ReadTimeoutError, ConnectTimeoutError)
             # are NOT ClientError subclasses and would otherwise crash the
@@ -219,9 +238,7 @@ def main() -> int:
             # Don't abandon the batch — every upload is idempotent (skip-if-
             # present), so we record the failure and keep going. Operator gets
             # a full list at the end and can re-run to retry just the failures.
-            if isinstance(e, HTTPClientError) and isinstance(
-                e.kwargs.get("error"), urllib3.exceptions.InsecureRequestWarning
-            ):
+            if is_tls_guard_error(e):
                 # Retries ran out on unverified connections: TLS on this box
                 # is broken, so every later file would hit the same thing.
                 sys.stderr.write(
