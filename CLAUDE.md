@@ -1,6 +1,6 @@
 # 0DTE SPX Strike Calculator
 
-Single-owner 0DTE SPX options trading tool. Vite + React 19 frontend, Vercel Serverless Functions backend (TypeScript), Python ML scripts, Railway Python services: uw-stream (Unusual Whales websocket ingestion, including futures bars), the classifier (multileg structure labels), the sidecar (Take-It SHAP scoring, frozen historical archive) and nightly (cron job that lands the UW Full Tape in R2).
+Single-owner 0DTE SPX options trading tool. Vite + React 19 frontend, Vercel Serverless Functions backend (TypeScript), Python ML scripts, Railway Python services: uw-stream (Unusual Whales websocket ingestion, including futures bars), the sidecar (Take-It SHAP scoring, frozen historical archive) and nightly (cron job that lands the UW Full Tape in R2). Multi-leg trades are flagged from the exchange's own trade code on the anchor print (`api/_lib/anchor-legs.ts`); the Railway multileg classifier is retired.
 
 ## Architecture
 
@@ -33,13 +33,7 @@ sidecar/          Railway Python service (NOT Vercel). Ingests no market data (D
                   Own requirements.txt (runtime) + requirements-dev.txt (test/lint), Dockerfile. Sentry SDK for error tracking
                   vercel.json ignoreCommand skips deploys for sidecar/, uw-stream/, nightly/, ml/, scripts/, pine/, docs/, *.md changes
 
-classifier/       Multileg classifier (Python, Railway, NOT Vercel). POST /multileg-classify for the detect
-                  crons via CLASSIFIER_URL, with Authorization: Bearer CLASSIFIER_SHARED_SECRET (no
-                  fallback: either unset → NULL multileg columns + Sentry multileg.classify.config_missing).
-                  Vendors ml/src/multileg_*.py in _vendored_ml/. Retirement approved 2026-10-28 (still running):
-                  docs/superpowers/specs/2026-10-28-classifier-replacement-design.md.
-
-uw-stream/        UnusualWhales websocket consumer (Python, Railway, NOT Vercel — third Railway service)
+uw-stream/        UnusualWhales websocket consumer (Python, Railway, NOT Vercel)
                   asyncio + websockets + asyncpg (NOT psycopg2 — different from sidecar). Connector → router →
                   per-channel handler queues → chunked multi-row INSERT ... ON CONFLICT DO NOTHING → Neon. Subscribes to flow-alerts (note hyphen,
                   not flow_alerts), option_trades:<TICKER> for the Lottery Finder universe (86 tickers), and futures_trades.
@@ -352,10 +346,10 @@ see `docs/superpowers/specs/archive-volume-seed-2026-04-18.md`.
 ## Deployment
 
 - **Platform**: Vercel (Fluid Compute, Node 24)
-- **Config**: `vercel.json` — crons, security headers, CSP, bot protection rewrites, SPA fallback, `ignoreCommand` skips builds when only `sidecar/`, `uw-stream/`, `nightly/`, `ml/`, `scripts/`, `pine/`, `docs/`, or `*.md` files change (not `classifier/`)
+- **Config**: `vercel.json` — crons, security headers, CSP, bot protection rewrites, SPA fallback, `ignoreCommand` skips builds when only `sidecar/`, `uw-stream/`, `nightly/`, `ml/`, `scripts/`, `pine/`, `docs/`, or `*.md` files change
 - **Long-running functions**: `api/analyze.ts`, `api/cron/curate-lessons.ts` and `api/cron/curate-periscope-lessons.ts` (780s), `api/cron/backfill-futures-gaps.ts` (800s), and 300s crons such as `api/cron/build-features.ts`. Full list: `vercel.json` `functions`.
 - **DB setup**: `POST /api/journal/init` creates all tables and runs all migrations
-- **Railway services**: `sidecar/`, `uw-stream/`, `classifier/` and `nightly/` (a cron service: `railway.toml` `cronSchedule`, runs once and exits), each with its own Dockerfile, `railway.toml` `watchPatterns` and env vars in Railway, not Vercel. Sidecar env: `DATABASE_URL` (only for its `/health` db check), `SENTRY_DSN`, `TAKEIT_*`, `ARCHIVE_*`. Nightly env: `UW_API_KEY`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`, `R2_BUCKET_FULLTAPE`, optional `SENTRY_DSN`.
+- **Railway services**: `sidecar/`, `uw-stream/` and `nightly/` (a cron service: `railway.toml` `cronSchedule`, runs once and exits), each with its own Dockerfile, `railway.toml` `watchPatterns` and env vars in Railway, not Vercel. Sidecar env: `DATABASE_URL` (only for its `/health` db check), `SENTRY_DSN`, `TAKEIT_*`, `ARCHIVE_*`. Nightly env: `UW_API_KEY`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`, `R2_BUCKET_FULLTAPE`, optional `SENTRY_DSN`.
 
 ## Anthropic Integration
 
