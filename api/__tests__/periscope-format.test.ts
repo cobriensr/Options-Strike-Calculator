@@ -233,6 +233,74 @@ describe('formatPeriscopeForClaude', () => {
     expect(out).not.toMatch(/mechanical|\/ES BUY|market-maker position/);
   });
 
+  it('describes GEXBot gamma by taker side, without floor / ceiling / acceleration readings', () => {
+    // Owner decision D1 revised: the +γ floor / ceiling / −γ acceleration
+    // words are the UW-era market-maker hedge read and do not carry over.
+    const latest = makeSlot(
+      '2026-10-27T19:50:00Z',
+      '2026-10-27',
+      realGamma2026_05_07,
+      realCharm2026_05_07,
+      realVanna2026_05_07,
+    );
+    const prior = makeSlot(
+      '2026-10-27T19:40:00Z',
+      '2026-10-27',
+      [[7350, -2000]],
+      [],
+      [],
+    );
+    const out = formatPeriscopeForClaude({
+      latest,
+      prior,
+      spot: 7337,
+      cone: null,
+      breaches: [],
+    });
+    expect(out).toContain('Gamma by strike (±100 of spot):');
+    expect(out).toMatch(
+      /Largest taker-long γ above spot: 7350 \(\+3\.2K\) — 13\.0 pts above spot/,
+    );
+    expect(out).toMatch(
+      /Largest taker-long γ below spot: 7315 \(\+634\) — 22\.0 pts below spot/,
+    );
+    expect(out).toMatch(/Largest taker-short γ \(top 3\): .*7365/);
+    expect(out).toContain('Gamma sign changes since prior slice:');
+    expect(out).toContain('Vanna (largest by size):');
+    expect(out).not.toMatch(
+      /ceiling|floor|acceleration|regime change|vol-shock|wall/i,
+    );
+  });
+
+  it('keeps the UW market-maker topology labels on a scraper-era slice', () => {
+    const latest = makeSlot(
+      '2026-05-07T19:50:00Z',
+      '2026-05-07',
+      realGamma2026_05_07,
+      realCharm2026_05_07,
+      realVanna2026_05_07,
+    );
+    const out = formatPeriscopeForClaude({
+      latest,
+      prior: makeSlot(
+        '2026-05-07T19:40:00Z',
+        '2026-05-07',
+        [[7350, -2000]],
+        [],
+        [],
+      ),
+      spot: 7337,
+      cone: null,
+      breaches: [],
+    });
+    expect(out).toContain('Gamma topology (±100 of spot):');
+    expect(out).toContain('−γ acceleration (top 3)');
+    expect(out).toContain(
+      'Gamma sign flips since prior slice (regime change at strike):',
+    );
+    expect(out).toContain('Vanna pressure (vol-shock sensitivity):');
+  });
+
   it('labels positive asymmetry as lower-skewed (downside priced richer)', () => {
     // Source-of-truth convention from compute-cone.ts:
     //   asymmetry_pts = put_mark - call_mark
@@ -561,7 +629,9 @@ describe('buildPeriscopeContextBlock', () => {
       spot: 7337,
     });
     expect(out).not.toBeNull();
-    expect(out).toMatch(/Straddle cone/);
-    expect(out).toMatch(/\+γ ceiling: 7350/);
+    // The caller picks the section's usage note by source.
+    expect(out!.source).toBe('scraper');
+    expect(out!.text).toMatch(/Straddle cone/);
+    expect(out!.text).toMatch(/\+γ ceiling: 7350/);
   });
 });

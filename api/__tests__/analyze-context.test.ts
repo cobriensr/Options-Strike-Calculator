@@ -957,35 +957,104 @@ describe('buildAnalysisContext', () => {
     vi.unstubAllGlobals();
   });
 
-  it('labels the Periscope block as GEXBot taker-side values, with no market-maker claim', async () => {
+  /** The Periscope Exposure section text, from its heading to the body. */
+  async function periscopeSection(
+    source: 'scraper' | 'gexbot' | null,
+    selectedDate: string,
+  ): Promise<string> {
     const { buildPeriscopeContextBlock } =
       await import('../_lib/periscope-format.js');
-    vi.mocked(buildPeriscopeContextBlock).mockResolvedValueOnce(
-      'PERISCOPE-BODY',
-    );
-
+    vi.mocked(buildPeriscopeContextBlock).mockResolvedValueOnce({
+      text: 'PERISCOPE-BODY',
+      source,
+    });
     const result = await buildAnalysisContext([], {
       mode: 'entry',
-      selectedDate: '2026-10-28',
+      selectedDate,
       spx: 6850,
     });
-
     const text = result.content
       .map((b) => (b.type === 'text' ? b.text : ''))
       .join('\n');
     const start = text.indexOf('## Periscope Exposure');
     expect(start).toBeGreaterThanOrEqual(0);
-    const block = text.slice(start, text.indexOf('PERISCOPE-BODY'));
+    const end = text.indexOf('PERISCOPE-BODY', start);
+    expect(end).toBeGreaterThan(start);
+    return text.slice(start, end);
+  }
+
+  /** The UW-era usage note: the periscope skill's MM structural read. */
+  const UW_USAGE =
+    /periscope skill|frame stops and targets|signs the EoD \/ES drift|sign flips mark regime changes|replaces screenshots/;
+
+  it('marks a GEXBot Periscope block as context only, with no UW market-maker reading', async () => {
+    // Owner decision D1 revised (2026-10-29): GEXBot is classified taker
+    // flow; the UW-calibrated Periscope rules and the periscope skill's MM
+    // hedge read do not apply to it.
+    const block = await periscopeSection('gexbot', '2026-10-28');
     expect(block.split('\n')[0]).toBe(
-      '## Periscope Exposure (latest 10-min slice — replaces screenshots)',
+      '## Periscope Exposure — GEXBot taker flow (latest 10-min slice; context only)',
     );
     expect(block).toContain(
-      'Since 2026-05-26 these values come from GEXBot in its taker-side sign: positive = traders (takers) are net long that Greek at the strike, negative = net short.',
+      "The Greek values are GEXBot's classified taker flow in its taker-side sign: positive = traders (takers) are net long that Greek at the strike, negative = net short.",
     );
     expect(block).toContain('not market-maker positions');
-    // Owner decision D1 revised: GEXBot is not a UW/MM measurement.
+    expect(block).toContain(
+      'CONTEXT ONLY (see SOURCE SCOPE in <periscope>): the UW-calibrated Periscope rules do NOT apply to these values.',
+    );
+    expect(block).toContain('traders are net long gamma there');
+    expect(block).toContain('not validated here');
+    expect(block).not.toMatch(UW_USAGE);
     expect(block).not.toMatch(
       /MM-attributed|structured equivalent|Market Maker Exposures Table|negated/,
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps the UW-calibrated read for a UW Periscope (scraper-era) block', async () => {
+    const block = await periscopeSection('scraper', '2026-05-07');
+    expect(block.split('\n')[0]).toBe(
+      '## Periscope Exposure — UW Periscope (latest 10-min slice — replaces screenshots)',
+    );
+    expect(block).toContain("UW Periscope's market-maker position estimates");
+    expect(block).toContain(
+      "Use this for the periscope skill's structural read: +γ floor / ceiling near spot frame stops and targets, charm tally signs the EoD /ES drift",
+    );
+    expect(block).not.toContain('CONTEXT ONLY');
+    vi.unstubAllGlobals();
+  });
+
+  it('treats a Periscope block of unknown source as context only', async () => {
+    const block = await periscopeSection(null, '2026-10-28');
+    expect(block.split('\n')[0]).toBe(
+      '## Periscope Exposure — source unknown (latest 10-min slice; context only)',
+    );
+    expect(block).toContain('CONTEXT ONLY');
+    expect(block).not.toMatch(UW_USAGE);
+    vi.unstubAllGlobals();
+  });
+
+  it('limits the "CONFIRMED MM exposure" note to uploaded UW Periscope screenshots', async () => {
+    const { formatStrikeExposuresForClaude } =
+      await import('../_lib/db-strike-helpers.js');
+    vi.mocked(formatStrikeExposuresForClaude).mockReturnValueOnce(
+      'STRIKE-BODY',
+    );
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-10-28',
+    });
+    const text = result.content
+      .map((b) => (b.type === 'text' ? b.text : ''))
+      .join('\n');
+    const start = text.indexOf('## SPX 0DTE Per-Strike Greek Profile');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const block = text.slice(start, text.indexOf('STRIKE-BODY', start));
+    expect(block).toContain(
+      'Uploaded UW Periscope screenshots, when present, still provide CONFIRMED MM exposure',
+    );
+    expect(block).toContain(
+      'A GEXBot Periscope Exposure block is taker flow and confirms nothing about MM exposure.',
     );
     vi.unstubAllGlobals();
   });

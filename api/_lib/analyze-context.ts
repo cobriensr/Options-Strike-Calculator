@@ -77,7 +77,11 @@ import {
   formatPriorDayFlowForClaude,
   formatVolRealizedForClaude,
 } from './analyze-context-formatters.js';
-import { buildPeriscopeContextBlock } from './periscope-format.js';
+import {
+  buildPeriscopeContextBlock,
+  type PeriscopeContextBlock,
+} from './periscope-format.js';
+import { PERISCOPE_SOURCE } from '../../src/utils/periscope-source.js';
 
 export { numOrUndef, parseEntryTimeAsUtc };
 export type { AnalysisContentBlock };
@@ -100,6 +104,31 @@ export interface AnalysisContextResult {
   similarAnalysesBlock: string;
   /** Clustered dark pool data for persistence (null if unavailable). */
   darkPoolClusters: DarkPoolCluster[] | null;
+}
+
+/**
+ * Shared "context only" note for a Periscope block that is not UW data.
+ * The system prompt's SOURCE SCOPE states the rule; this per-request note
+ * says it applies to the block in hand (owner decision D1 revised,
+ * 2026-10-29).
+ */
+const PERISCOPE_CONTEXT_ONLY_NOTE =
+  'CONTEXT ONLY (see SOURCE SCOPE in <periscope>): the UW-calibrated Periscope rules do NOT apply to these values. Do not treat their strikes as market-maker floors, ceilings, walls or acceleration zones for stops, targets or strike placement; do not sign an end-of-day /ES drift from their charm; do not read their sign changes as dealer regime changes; and do not use them for Rule 1, the Periscope Charm Overrides or condition (4) of the VIX1D extension. Vendor meaning, not validated here: a taker-long gamma strike means traders are net long gamma there; GEXBot says such strikes often act as a wall when vol is falling and let price pass through when vol is rising. Quote the numbers directly when you cite them. The straddle cone and breach lines are not GEXBot data and keep their usual meaning.';
+
+/**
+ * The Periscope Exposure section, framed by the slice's source. Only a UW
+ * Periscope (scraper-era) slice gets the periscope skill's market-maker
+ * read; a GEXBot or unknown-source slice is context only.
+ */
+function formatPeriscopeSection(block: PeriscopeContextBlock): string {
+  if (block.source === PERISCOPE_SOURCE.scraper) {
+    return `\n## Periscope Exposure — UW Periscope (latest 10-min slice — replaces screenshots)\nThis block carries Gamma / Charm / Vanna per strike (not naive aggregate) for today's 0DTE expiry, plus the prior-slice momentum read for sign-flip detection (orange-bar equivalent), plus the straddle cone bounds + any breach events. These values are UW Periscope's market-maker position estimates (the scraper era, before 2026-05-26), so the UW-calibrated Periscope rules in the system prompt apply.\n\nUse this for the periscope skill's structural read: +γ floor / ceiling near spot frame stops and targets, charm tally signs the EoD /ES drift, vanna extremes flag vol-shock sensitivity, sign flips mark regime changes, and a cone breach is a vol-extension setup (do not fade). Quote magnitudes directly — do NOT estimate from the screenshot when this block is present.\n\n${block.text}\n`;
+  }
+  const intro =
+    block.source === PERISCOPE_SOURCE.gexbot
+      ? `## Periscope Exposure — GEXBot taker flow (latest 10-min slice; context only)\nThis block carries GEXBot Gamma / Charm / Vanna per strike for today's 0DTE expiry, the sign changes since the prior slice, and the straddle cone bounds + any breach events. The Greek values are GEXBot's classified taker flow in its taker-side sign: positive = traders (takers) are net long that Greek at the strike, negative = net short. They are not market-maker positions, and they do not replace UW Periscope screenshots.`
+      : `## Periscope Exposure — source unknown (latest 10-min slice; context only)\nThis block carries Gamma / Charm / Vanna per strike for today's 0DTE expiry, but the slice's source could not be determined, so it may not be UW Periscope market-maker data.`;
+  return `\n${intro}\n\n${PERISCOPE_CONTEXT_ONLY_NOTE}\n\n${block.text}\n`;
 }
 
 /**
@@ -285,7 +314,7 @@ export async function buildAnalysisContext(
   // skips entirely when spot is unknown. Sequential rather than in the
   // Promise.all above so existing test mocks aren't disturbed.
   const periscopeSpot = numOrUndef(context.spx);
-  let periscopeContext: string | null = null;
+  let periscopeContext: PeriscopeContextBlock | null = null;
   if (periscopeSpot != null) {
     try {
       periscopeContext = await buildPeriscopeContextBlock({
@@ -400,11 +429,11 @@ ${main.marketInternalsContext ? `\n## NYSE Market Internals — Session Regime C
 ${main.greekExposureContext ? `\n## SPX Greek Exposure (from API — OI-based)\nAggregate MM Greek exposure across all expirations. The OI Net Gamma number determines the Rule 16 regime. The 0DTE breakdown shows charm/delta specific to today's expiration. If an Aggregate GEX screenshot is also provided, this data provides the OI gamma number — the screenshot still adds Volume GEX and Directionalized Volume GEX which are not available from this API.\n\n${main.greekExposureContext}\n` : ''}
 ${main.greekFlowContext ? `\n## 0DTE SPX Delta Flow (from API)\nDelta flow measures directional exposure being added through 0DTE SPX options per minute. Unlike premium flow (NCP/NPP), delta flow captures exposure from spreads and complex structures where net premium is near-zero but directional exposure is significant. When delta flow diverges from premium flow, it reveals institutional positioning that premium alone misses.\n\n${main.greekFlowContext}\n` : ''}
 ${main.spotGexContext ? `\n## SPX Aggregate GEX Panel (from API — intraday time series)\nThis replaces the Aggregate GEX screenshot. Includes OI Net Gamma (Rule 16), Volume Net Gamma, and Directionalized Volume Net Gamma updated every 5 minutes. If an Aggregate GEX screenshot is also provided, trust the API values — the screenshot is visual confirmation only.\n\n${main.spotGexContext}\n` : ''}
-${main.strikeExposureContext ? `\n## SPX 0DTE Per-Strike Greek Profile (from API)\nThis is the naive per-strike gamma and charm profile for today's 0DTE expiration. It replaces the Net Charm (naive) screenshot. The "Net Gamma" column shows the gamma bar values at each strike. The "Net Charm" column shows how each wall evolves with time. The "Dir Gamma/Charm" columns show directionalized (ask/bid) exposure which approximates confirmed MM positioning. Periscope screenshots still provide CONFIRMED MM exposure — use API data for the naive profile and Periscope for strike-level confirmation.\n\n${main.strikeExposureContext}\n` : ''}
+${main.strikeExposureContext ? `\n## SPX 0DTE Per-Strike Greek Profile (from API)\nThis is the naive per-strike gamma and charm profile for today's 0DTE expiration. It replaces the Net Charm (naive) screenshot. The "Net Gamma" column shows the gamma bar values at each strike. The "Net Charm" column shows how each wall evolves with time. The "Dir Gamma/Charm" columns show directionalized (ask/bid) exposure which approximates confirmed MM positioning. Uploaded UW Periscope screenshots, when present, still provide CONFIRMED MM exposure — use API data for the naive profile and those screenshots (or a UW-era Periscope Exposure block) for strike-level confirmation. A GEXBot Periscope Exposure block is taker flow and confirms nothing about MM exposure.\n\n${main.strikeExposureContext}\n` : ''}
 ${main.netGexHeatmapContext ? `\n## SPX 0DTE Net GEX Heatmap (from API — signed dollar GEX per strike)\nThis is the signed net GEX dollar amount at each strike from the greek_exposure_strike table, updated every minute. This is the same data shown in the UW Net GEX Heatmap UI. Positive net_gex = net long gamma (dealer mean-reverting hedging → price suppression, pin magnetism); negative net_gex = net short gamma (dealer momentum hedging → price acceleration, breakouts). The gamma flip zone (net_gex sign change) is the structural regime boundary between suppression and acceleration. Use this alongside the Per-Strike Greek Profile — this adds the dollar-scaled magnitude and call/put composition that the naive profile lacks.\n\n${main.netGexHeatmapContext}\n` : ''}
-${periscopeContext ? `\n## Periscope Exposure (latest 10-min slice — replaces screenshots)\nThis block carries Gamma / Charm / Vanna per strike (not naive aggregate) for today's 0DTE expiry, plus the prior-slice momentum read for sign-flip detection (orange-bar equivalent), plus the straddle cone bounds + any breach events. Since 2026-05-26 these values come from GEXBot in its taker-side sign: positive = traders (takers) are net long that Greek at the strike, negative = net short. They measure classified taker flow, not market-maker positions (before 2026-05-26 the table held UW Periscope's market-maker position estimates, a different measurement).\n\nUse this for the periscope skill's structural read: +γ floor / ceiling near spot frame stops and targets, charm tally signs the EoD /ES drift, vanna extremes flag vol-shock sensitivity, sign flips mark regime changes, and a cone breach is a vol-extension setup (do not fade). Quote magnitudes directly — do NOT estimate from the screenshot when this block is present.\n\n${periscopeContext}\n` : ''}
+${periscopeContext ? formatPeriscopeSection(periscopeContext) : ''}
 ${main.zeroGammaContext ? `\n## SPX 0DTE Zero-Gamma Level (derived from per-strike gamma profile)\nThe zero-gamma strike is the approximate SPX level at which aggregate dealer gamma flips sign. Above the flip (positive gamma) dealers hedge mean-reverting and price movement is suppressed. Below the flip (negative gamma) dealers hedge momentum and price movement accelerates. Distance-to-flip in cone fractions tells you how close today's price is to a regime change in units that match the straddle cone.\n\n${main.zeroGammaContext}\n` : ''}
-${context.gexLandscapeBias ? `\n## GEX Landscape Structural Bias (from live GEX panel)\nThis is the real-time structural bias verdict computed from the per-strike GEX panel, using GEXBot's 1-minute capture in GEXBot's taker-side sign (positive = traders net long gamma at the strike). It synthesizes gravity direction (where the largest GEX wall sits relative to spot), the sign of the summed taker-side gamma, and 5m/15m GEX trends into a single directional verdict. Use this as the GEX structural summary — it is more reliable than a manual reading because it uses the full strike-level data.\n\n${context.gexLandscapeBias as string}\n` : ''}
+${context.gexLandscapeBias ? `\n## GEX Landscape Structural Bias (from live GEX panel)\nThis is the real-time structural bias verdict computed from the per-strike GEX panel, using GEXBot's 1-minute capture in GEXBot's taker-side sign (positive = traders net long gamma at the strike). It summarizes where the largest-|γ| strike sits relative to spot, the sign of the summed taker-side gamma within ±50 pts, and the 5m/15m/30m gamma changes above and below spot. It describes taker positioning; it is not a forecast. Treat it as context only, like a GEXBot Periscope block: do not apply the UW-calibrated Periscope gamma rules to it.\n\n${context.gexLandscapeBias as string}\n` : ''}
 ${main.allExpiryStrikeContext ? `\n## SPX All-Expiry Per-Strike Profile (from API)\nThis shows gamma/charm across ALL expirations (not just 0DTE). Multi-day gamma anchors from weekly/monthly/quarterly options create structural walls that persist beyond the 0DTE session. When a 0DTE wall aligns with an all-expiry wall, it has the highest reliability. When they diverge (0DTE wall but all-expiry danger zone), the wall may fail under sustained pressure.\n\n${main.allExpiryStrikeContext}\n` : ''}
 ${ivTermStructureContext ? `\n## IV Term Structure — σ Validation Layer (from API)\nInterpolated IV across the term structure from the options chain. The 0DTE row gives the ATM implied move directly from options pricing — compare this to the calculator's VIX1D-derived σ to check if the cone is wider or narrower than the market's actual pricing. The 30D row gives the longer-dated IV for term structure shape analysis. Steep contango (0DTE IV << 30D IV) confirms a normal vol regime. Inversion (0DTE IV >> 30D IV) confirms the VIX1D extreme inversion signal from a different angle and warns of elevated intraday risk.\n\n${ivTermStructureContext}\n` : ''}
 ${volRealizedContext ? `\n## Realized Vol & IV Rank (from API — daily)\n  ${volRealizedContext}\n` : ''}

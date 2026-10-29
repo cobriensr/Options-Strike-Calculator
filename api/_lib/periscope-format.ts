@@ -19,15 +19,18 @@
  *      is not in our schema)
  *   3. cone_levels + cone_breach_events for the day — Phase 1 outputs
  *
- * Output mirrors the periscope skill's reading model: top +γ floor /
- * ceiling near spot, top −γ acceleration zones, charm tally near spot,
- * extreme charm and vanna magnitudes, sign-flip strikes, and cone
- * status. Spot is supplied by the caller (from `index_candles_1m`,
+ * For a UW (scraper) slice the output mirrors the periscope skill's
+ * market-maker reading model: top +γ floor / ceiling near spot, top −γ
+ * acceleration zones, charm tally near spot, extreme charm and vanna
+ * magnitudes, sign-flip strikes, and cone status. A GEXBot slice gets the
+ * same numbers labelled by taker side, with no floor / ceiling /
+ * acceleration reading. Spot is supplied by the caller (from `index_candles_1m`,
  * never the chart's red-dotted line — same rule the skill enforces).
  */
 
 import { getDb } from './db.js';
 import {
+  PERISCOPE_SOURCE,
   periscopeSourceAt,
   type PeriscopeSource,
 } from '../../src/utils/periscope-source.js';
@@ -48,6 +51,45 @@ const CHARM_HEADER: Record<PeriscopeSource, string> = {
   gexbot:
     'Charm (GEXBot, taker-side sign: positive = traders net long charm at the strike):',
 };
+
+interface TopologyLabels {
+  title: string;
+  ceiling: string;
+  floor: string;
+  accel: string;
+  flips: string;
+  vanna: string;
+}
+
+/**
+ * Gamma-topology labels. Floor / ceiling / acceleration and "regime change"
+ * are the UW-era market-maker hedge read, so only a scraper slice gets
+ * them; any other slice is described by taker side (owner decision D1
+ * revised, 2026-10-29).
+ */
+const MM_TOPOLOGY: TopologyLabels = {
+  title: 'Gamma topology (±100 of spot):',
+  ceiling: '+γ ceiling',
+  floor: '+γ floor',
+  accel: '−γ acceleration (top 3)',
+  flips: 'Gamma sign flips since prior slice (regime change at strike):',
+  vanna: 'Vanna pressure (vol-shock sensitivity):',
+};
+
+const TAKER_TOPOLOGY: TopologyLabels = {
+  title: 'Gamma by strike (±100 of spot):',
+  ceiling: 'Largest taker-long γ above spot',
+  floor: 'Largest taker-long γ below spot',
+  accel: 'Largest taker-short γ (top 3)',
+  flips: 'Gamma sign changes since prior slice:',
+  vanna: 'Vanna (largest by size):',
+};
+
+/** The formatted block plus the feed behind it, so callers can frame it. */
+export interface PeriscopeContextBlock {
+  text: string;
+  source: PeriscopeSource | null;
+}
 
 export interface PeriscopeRow {
   strike: number;
@@ -483,6 +525,8 @@ export function formatPeriscopeForClaude(args: {
 
   const source = periscopeSourceAt(latest.capturedAt);
   const sourceNote = source == null ? '' : SOURCE_HEADER[source];
+  const labels =
+    source === PERISCOPE_SOURCE.scraper ? MM_TOPOLOGY : TAKER_TOPOLOGY;
   lines.push(
     `Periscope exposure${sourceNote} for ${latest.expiry} expiry, latest 10-min slice ${slotTimeCT} CT (spot ${spot.toFixed(2)}).`,
   );
@@ -532,10 +576,10 @@ export function formatPeriscopeForClaude(args: {
           .join(' | ');
   lines.push(
     '',
-    'Gamma topology (±100 of spot):',
-    `  +γ ceiling: ${ceilingDesc}`,
-    `  +γ floor: ${floorDesc}`,
-    `  −γ acceleration (top 3): ${accelDesc}`,
+    labels.title,
+    `  ${labels.ceiling}: ${ceilingDesc}`,
+    `  ${labels.floor}: ${floorDesc}`,
+    `  ${labels.accel}: ${accelDesc}`,
   );
 
   // Top |γ| strikes near spot, regardless of sign — gives the structural
@@ -599,11 +643,7 @@ export function formatPeriscopeForClaude(args: {
     const topVannaDesc = topVanna
       .map((r) => `${r.strike} ${fmtSigned(r.value)}`)
       .join(' | ');
-    lines.push(
-      '',
-      'Vanna pressure (vol-shock sensitivity):',
-      `  Top |vanna| ±100: ${topVannaDesc}`,
-    );
+    lines.push('', labels.vanna, `  Top |vanna| ±100: ${topVannaDesc}`);
   }
 
   // Sign-flip detection (orange-bar equivalent).
@@ -615,11 +655,7 @@ export function formatPeriscopeForClaude(args: {
         const toSide = f.to > 0 ? '+γ' : '−γ';
         return `  ${f.strike}: ${fromSide} ${fmtSigned(f.from)} → ${toSide} ${fmtSigned(f.to)}`;
       });
-      lines.push(
-        '',
-        'Gamma sign flips since prior slice (regime change at strike):',
-        ...flipLines,
-      );
+      lines.push('', labels.flips, ...flipLines);
     }
   }
 
@@ -665,7 +701,8 @@ export function formatPeriscopeForClaude(args: {
 
 /**
  * One-shot entry point used by analyze-context.ts. Returns the formatted
- * block or null when no Periscope data exists for `(date, expiry)`.
+ * block and its source (the caller frames UW and GEXBot slices
+ * differently), or null when no Periscope data exists for `(date, expiry)`.
  *
  * `expiry` defaults to `date` for the 0DTE case the user actually trades
  * — but kept as a separate parameter so a future N-DTE consumer can
@@ -676,13 +713,16 @@ export async function buildPeriscopeContextBlock(args: {
   expiry: string;
   spot: number;
   asOf?: string;
-}): Promise<string | null> {
+}): Promise<PeriscopeContextBlock | null> {
   const view = await buildPeriscopeView(args);
   if (view == null) return null;
   // formatPeriscopeForClaude takes the same shape we already have on
   // the view — pass through the original slot rows so the formatter's
   // existing logic (and tests) stay byte-identical.
-  return formatPeriscopeForClaude(view._formatterArgs);
+  return {
+    text: formatPeriscopeForClaude(view._formatterArgs),
+    source: periscopeSourceAt(view._formatterArgs.latest.capturedAt),
+  };
 }
 
 /**

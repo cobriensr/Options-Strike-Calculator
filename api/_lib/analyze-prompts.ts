@@ -48,8 +48,8 @@ Check All-Expiry Per-Strike Profile: do multi-day structural walls align with or
 STEP 4 — CHARM CONFIRMATION:
 Apply Rule 11 (does charm pattern confirm or contradict the flow-based structure?).
 Check for all-negative charm pattern.
-If all-negative: check Periscope Charm for +50M at 3+ strikes before applying the morning-only protocol.
-Apply Periscope Charm Override if applicable.
+If all-negative: check UW Periscope Charm (not GEXBot) for +50M at 3+ strikes before applying the morning-only protocol.
+Apply Periscope Charm Override if applicable (UW Periscope data only).
 
 STEP 5 — EVENTS, REGIME & TIMING (checked in priority order):
 Check Rule 12 (any scheduled events? Hard exit times?) — highest timing priority.
@@ -86,7 +86,7 @@ Apply Rule 18 (gamma wall placement discipline — distance ≥30 pts from morni
 
 STEP 9 — MANAGEMENT RULES:
 Build specific if/then rules per the GEX regime.
-Apply Periscope Charm Ceiling Override if applicable.
+Apply Periscope Charm Ceiling Override if applicable (UW Periscope data only).
 Set time-based exits adjusted for GEX regime, vanna, and charm decay.
 Apply Rule 5 (direction-aware stops — do NOT close the winning side on a thesis-confirming move).
 
@@ -228,7 +228,8 @@ Interaction with existing signals:
 - NOPE is intrinsically short-horizon (1-min resolution, hour-scale useful window). Weight it most heavily for entry timing and management decisions within the next 30-60 minutes. It decays in relevance for end-of-day pin forecasting.
 </spy_nope>
 <periscope>
-Periscope reveals actual Market Maker net positioning and net greek exposure in SPX with updates every 10 minutes. This is provided as an IMAGE requiring visual extraction.
+UW Periscope reveals actual Market Maker net positioning and net greek exposure in SPX with updates every 10 minutes. This is provided as an IMAGE requiring visual extraction (for dates before 2026-05-26 it can also arrive as a "Periscope Exposure — UW Periscope" block in the context).
+SOURCE SCOPE — UW Periscope only: every Periscope rule in this prompt was calibrated on UW Periscope market-maker data. That covers the strike-selection and gamma-decay notes in this block, the Periscope Charm Override and Charm Ceiling Override, Rule 1 (Gamma Asymmetry), condition (4) of the VIX1D Extreme Inversion Deadline Extension, the settlement-zone and pin-risk gamma checks, the dark pool, Net GEX Heatmap and zero-gamma cross-checks against Periscope, the Rule 16 wall-reliability notes, Specific Strike Placement, and the Periscope references in the market-mechanics and SpotGamma sections. Apply them ONLY to UW Periscope data: uploaded Periscope screenshots, or a "Periscope Exposure — UW Periscope" block in the context (scraper era, before 2026-05-26). Since 2026-05-26 the context's "Periscope Exposure" block comes from GEXBot, a classified taker-flow imbalance in the vendor's taker-side sign; it is a different measurement from UW Periscope, not UW data with the sign flipped. When the block is labelled GEXBot it is CONTEXT ONLY: apply none of the rules above to it, never call its strikes market-maker walls, floors, ceilings or acceleration zones, and never sign an end-of-day drift from its charm. When no UW Periscope data is present, those rules do not fire. Describe GEXBot data by the vendor's meaning: a positive (taker-long) gamma strike means traders are net long gamma there; per GEXBot such strikes often act as a wall when vol is falling and let price pass through when vol is rising. That is vendor guidance, not validated in this system: it may inform observations, not structure, strikes, stops or timing. The GEX Landscape Structural Bias is also built from GEXBot data and is context only in the same way. In the JSON, rate chartConfidence.periscope and chartConfidence.periscopeCharm from UW Periscope data only; when the only Periscope data is a GEXBot block, set both signals to "NOT PROVIDED" and summarize the GEXBot read in the note.
 Gamma bars (right side profile):
 - Green bars (right) = positive gamma = MMs net long options = delta hedging SUPPRESSES price movement. Positive gamma zones are "walls" or "magnets."
 - Red bars (left) = negative gamma = MMs net short options = delta hedging ACCELERATES price movement. Negative gamma zones are danger zones.
@@ -241,7 +242,7 @@ Straddle cone (yellow dashed lines):
 - Breakeven prices = market's expected daily range.
 - Price INSIDE cone = expected move, favorable for premium selling.
 - Price BREAKS cone = larger-than-expected move, elevated risk.
-For strike selection using Periscope:
+For strike selection using UW Periscope (UW data only — see SOURCE SCOPE):
 - Place short strikes in positive gamma zones (price suppression helps you).
 - Avoid short strikes in heavy negative gamma zones (price acceleration risk).
 - If straddle cone breakevens are tighter than your strikes = extra cushion.
@@ -269,7 +270,7 @@ When the API charm pattern is classified as "ALL-NEGATIVE" (charm is negative ac
 - Do not rely on ANY gamma wall for all-day protection — even the largest positive gamma wall is weakening.
 - If flow is also unclear or conflicting alongside all-negative charm, strongly consider SIT OUT.
 - Reduce position size by an additional 10-15% beyond what flow/gamma alone would suggest.
-PERISCOPE CHARM OVERRIDE: When naive charm (from API) shows all-negative BUT Periscope Charm (from image) shows +50M or more of positive real MM charm at 3 or more strikes, the all-negative charm trending day signal is INVALID. The naive assumption (all puts customer-bought, all calls customer-sold) can be fundamentally wrong when large institutional hedging distorts the customer/MM split. In this scenario:
+PERISCOPE CHARM OVERRIDE (UW Periscope only — see SOURCE SCOPE in <periscope>): When naive charm (from API) shows all-negative BUT UW Periscope Charm (from image) shows +50M or more of positive real MM charm at 3 or more strikes, the all-negative charm trending day signal is INVALID. The naive assumption (all puts customer-bought, all calls customer-sold) can be fundamentally wrong when large institutional hedging distorts the customer/MM split. In this scenario:
 - Do NOT apply the morning-only trading protocol.
 - Do NOT reduce position size based on all-negative charm.
 - Use the Periscope Charm walls as the structural anchors for management timing instead of the naive charm readings.
@@ -300,8 +301,8 @@ Key concepts in the heatmap output:
 
 How to use alongside other GEX data:
 - The Net GEX Heatmap replaces visual reading of the UW Net GEX Heatmap screenshot. Use the API values directly.
-- When the top gamma walls from the heatmap match the Periscope walls at the same strikes: highest confidence. The dollar magnitude confirms the Periscope visual.
-- When heatmap shows a large wall (+$10B+) but Periscope Gamma shows small bars at that strike: the GEX is modeled from OI while Periscope reflects OCC-reported positions. The wall exists in the options book but may not be fully hedged by dealers. Weight Periscope Gamma for confirmed hedging, use heatmap for structural magnitude.
+- When the top gamma walls from the heatmap match the UW Periscope walls at the same strikes: highest confidence. The dollar magnitude confirms the Periscope visual.
+- When heatmap shows a large wall (+$10B+) but UW Periscope Gamma shows small bars at that strike: the GEX is modeled from OI while Periscope reflects OCC-reported positions. The wall exists in the options book but may not be fully hedged by dealers. Weight Periscope Gamma for confirmed hedging, use heatmap for structural magnitude.
 - When the gamma flip zone from the heatmap disagrees with the zero-gamma level from the naive profile: trust the heatmap. Dollar-weighted GEX is more accurate than unit-gamma aggregation.
 - The call/put split at key walls tells you directional bias: a call-heavy wall above spot is ceiling more than pin — if price breaks through it, the hedging unwind accelerates upward. A put-heavy wall below spot is floor more than pin — if it breaks, the downside accelerates.
 </net_gex_heatmap>
@@ -320,7 +321,7 @@ Interpretation rules (apply when this section is present):
 - POSITIVE regime + cone fraction < 0.5: Knife-edge. Spot is within half an expected move of the flip. Reduce size by one tier, prefer directional spreads over IC, and set stops at the zero-gamma strike itself — a flip to negative regime invalidates the premium-selling thesis immediately.
 - NEGATIVE regime + cone fraction > 1.0: Deep acceleration regime. Avoid IC. Prefer directional CREDIT SPREADS aligned with flow (Rule 8 consensus). Hedges become mandatory for large size. Management timing follows the deeply-negative branch of Rule 16.
 - NEGATIVE regime + cone fraction < 1.0: Acceleration regime but flip is reachable. Any rally toward the flip is a POTENTIAL regime change from momentum to suppression — use the flip strike as a target for CCS-aligned directional trades, and watch for regime flip as confirmation of trend exhaustion.
-- UNKNOWN regime or missing data: ignore this section and fall back to <aggregate_gex> and <periscope> for regime determination.
+- UNKNOWN regime or missing data: ignore this section and fall back to <aggregate_gex> and UW Periscope data, if any (see <periscope>), for regime determination.
 
 Distorted profile handling:
 When "Crossings detected: 2" or higher appears, the cumulative gamma profile is bumpy rather than clean (ATM dislocations, wide strike gaps, unusual institutional positioning). The reported flip strike is the crossing closest to spot and is still directionally useful, but reduce the conviction weight you place on it by one level (HIGH → MODERATE, MODERATE → LOW). A bumpy profile means the regime boundary is not a single clean line — treat the entire region near spot as "mixed regime" and prefer smaller, more defensive structures.
@@ -328,7 +329,7 @@ When "Crossings detected: 2" or higher appears, the cumulative gamma profile is 
 Relationship to other GEX signals:
 - Aggregate GEX (Rule 16) tells you WHETHER walls will hold across all expirations. Zero-gamma tells you WHERE the 0DTE regime boundary specifically sits.
 - When Aggregate GEX says POSITIVE regime but 0DTE zero-gamma says NEGATIVE at spot, today's 0DTE-specific gamma is unusually short even though the macro book is long. This is common on high-premium Fridays and earnings weeks — trust the 0DTE zero-gamma for same-session management, and use Aggregate GEX for the multi-day structural context.
-- When Periscope shows a dominant gamma wall AND the zero-gamma flip sits on the same side of spot as the wall, the wall is structurally reinforced (regime and level agree). When the wall is on the opposite side of the flip from spot, the wall is weaker than it looks — take profit earlier.
+- When UW Periscope shows a dominant gamma wall AND the zero-gamma flip sits on the same side of spot as the wall, the wall is structurally reinforced (regime and level agree). When the wall is on the opposite side of the flip from spot, the wall is weaker than it looks — take profit earlier.
 </zero_gamma>
 <vanna>
 Aggregate Vanna Exposure shows how dealer delta exposure changes when implied volatility moves. This is provided as structured API data from the Aggregate GEX Panel.
@@ -350,7 +351,7 @@ When aggregate vanna is negative AND VIX is rising:
 - PCS positions: tighten exits. The vanna headwind compounds the gamma acceleration on selloffs.
 </vanna>
 <periscope_charm>
-Periscope Charm shows CONFIRMED net Market Maker charm exposure at each strike, updated every 10 minutes. This is provided as an IMAGE requiring visual extraction. Unlike the naive Net Charm data (from API, which assumes all puts are customer-bought and all calls are customer-sold), Periscope Charm reflects actual dealer positioning.
+UW Periscope Charm (uploaded screenshot or UW-era block only — never the GEXBot charm; see SOURCE SCOPE in <periscope>) shows CONFIRMED net Market Maker charm exposure at each strike, updated every 10 minutes. This is provided as an IMAGE requiring visual extraction. Unlike the naive Net Charm data (from API, which assumes all puts are customer-bought and all calls are customer-sold), Periscope Charm reflects actual dealer positioning.
 How it differs from Net Charm (naive API data):
 - Net Charm (naive, from API) shows a THEORETICAL charm profile based on assumed customer/MM sides of every trade. The broad pattern (positive below ATM, negative above) is generally correct and validated as a directional tool.
 - Periscope Charm (from image) shows ACTUAL MM charm exposure. Individual strikes may deviate significantly from the naive assumption — a strike that shows +12M charm on the naive data may show near-zero real MM charm exposure on Periscope.
@@ -413,13 +414,13 @@ Data quality considerations:
 Magnet effect:
 Large dark pool clusters often act as price magnets — price consolidates around these heavy-volume levels before a decisive breakout or rejection. Dark pool magnets are strongest in the first 2-3 hours when institutional algorithms are most active. If a large dark pool cluster and max pain converge at the same level, note the convergence explicitly — both forces are pulling price toward the same target.
 How to use for structure selection:
-- When a dark pool buyer cluster at an SPX level ALIGNS with a positive gamma wall from Periscope: that level has the HIGHEST-CONFIDENCE structural support. Place PCS short puts AT or just below this level — it has both gamma suppression AND institutional capital defending it.
+- When a dark pool buyer cluster at an SPX level ALIGNS with a positive gamma wall from UW Periscope: that level has the HIGHEST-CONFIDENCE structural support. Place PCS short puts AT or just below this level — it has both gamma suppression AND institutional capital defending it.
 - When a dark pool seller cluster ALIGNS with negative gamma: that level is a confirmed ceiling. Place CCS short calls ABOVE this level — institutions are selling there AND gamma accelerates moves away from it.
 - When dark pool and gamma DISAGREE (buyer cluster at a negative gamma zone): the dark pool capital may slow but not stop a gamma-driven acceleration. Reduce confidence but note the level as a potential bounce zone.
 How to use for strike placement:
 - Reference the "Approximate SPX equivalent" levels in the data. These are translated from SPY prices using the current ratio.
 - Dark pool levels within ±20 pts of a short strike are relevant for management. A large buyer block 10 pts below your PCS short put is structural protection. A large seller block 10 pts above your CCS short call is structural resistance.
-- In the observations, note any dark pool levels that align with or contradict the Periscope gamma profile.
+- In the observations, note any dark pool levels that align with or contradict the UW Periscope gamma profile.
 How to use for management:
 - If SPX approaches a dark pool buyer level during a selloff and bounces, this confirms the level as support. Widen your PCS stop or hold with higher confidence.
 - If SPX breaks through a dark pool buyer level, the institutional support has FAILED — this is a stronger bearish signal than breaking through a gamma wall alone, because real capital was committed and lost.
@@ -495,7 +496,7 @@ Management implications:
 - If holding with 20+ pts of cushion: settlement risk is acceptable. The largest MOC-driven moves are typically 15-20 pts.
 - On quad-witching / monthly expiration days, MOC imbalances are 2-3x larger than normal. Add 10 pts to the "safe cushion" threshold on these days.
 Gamma Wall + OI Pin Convergence (Settlement Zone Predictor):
-At 2:30 PM ET, check whether the largest positive gamma wall (from Periscope or per-strike API data) and the #1 OI concentration strike are within 15 pts of each other. When they converge:
+At 2:30 PM ET, check whether the largest positive gamma wall (from UW Periscope or the per-strike API data; never from GEXBot) and the #1 OI concentration strike are within 15 pts of each other. When they converge:
 - Settlement will gravitate to this zone with HIGH probability. Both gamma suppression (MMs absorbing moves toward the wall) and OI gravity (dealer hedging around the high-OI strike) pull price to the same target.
 - If the convergence zone is 50+ pts from your nearest short strike: holding to settlement is structurally safe. The gravitational pull works in your favor.
 - If the convergence zone is within 30 pts of a short strike: close the position. Settlement mechanics will pull price toward the zone, and oscillation around the convergence level creates whipsaw risk for nearby short strikes.
@@ -511,7 +512,7 @@ Key concepts:
 How to use for strike placement:
 - NEVER place a short strike at the #1 or #2 OI concentration level. If SPX pins there, your short option oscillates between ITM and OTM in the final 30 minutes — whipsaw losses.
 - IDEAL placement: short strike 15-25 pts BEYOND a high-OI level. The OI concentration acts as a buffer — price is gravitationally pulled TOWARD the high-OI strike and AWAY from your short strike.
-- If the highest-OI strike aligns with a positive gamma wall (from Periscope), that level has TRIPLE protection: gamma suppression + OI gravity + dealer hedging. Place short strikes beyond this level with highest confidence.
+- If the highest-OI strike aligns with a positive gamma wall (from UW Periscope), that level has TRIPLE protection: gamma suppression + OI gravity + dealer hedging. Place short strikes beyond this level with highest confidence.
 How to use for management:
 - After 2:30 PM ET, if SPX is within 10 pts of a 30K+ OI strike, expect price to pin there. Do not fight the pin with directional stops — it is mechanical, not directional.
 - If your short strike IS a high-OI level and you're still holding after 2:30 PM: close immediately. The pin oscillation will create stop-outs regardless of stop placement.
@@ -605,7 +606,7 @@ Priority (highest first):
 1. Rule 12 (Event-Day Hard Exits) — FOMC/CPI exits override ALL other timing and management rules. No exceptions.
 2. Rule 3 Friday Management tiers — Friday-specific overrides take precedence over standard time-based rules.
 3. VIX1D Extreme Inversion Overrides — when present, override VIX stop zone restrictions and Friday hard exits per the Rule 3 tier system.
-4. Periscope Charm Overrides — override naive charm signals and can extend Rule 16 deadlines per the Charm Ceiling Override specification.
+4. Periscope Charm Overrides (UW Periscope data only) — override naive charm signals and can extend Rule 16 deadlines per the Charm Ceiling Override specification.
 5. Rule 5 (Direction-Aware Stops) — overrides any symmetric stop logic. Never close the winning side on a thesis-confirming move.
 6. Rule 16 (GEX Regime) — adjusts ALL management timing. Lower-priority rules that specify time-based exits must be adjusted per the Rule 16 regime.
 7. Rule 9 (8Δ Premium Floor) — overrides structure recommendations that produce untradeable premium.
@@ -615,10 +616,10 @@ When noting a conflict in the observations field, use the format: "Rule X overri
 --- PHASE 1: STRUCTURE SELECTION (Rules 1, 2, 4, 6, 8, 9, 10, 11) ---
 Apply these rules to determine WHAT to trade. Also reference the ETF Tide Divergence section.
 RULE 1: Gamma Asymmetry Overrides Neutral Flow
-When flow signals are neutral or ambiguous (NCP/NPP within 50M of each other) BUT the Periscope gamma profile shows massive negative gamma within 30-40 points of current price on ONE side and clean air on the other:
+When flow signals are neutral or ambiguous (NCP/NPP within 50M of each other) BUT the UW Periscope gamma profile (GEXBot gamma never triggers this rule — see SOURCE SCOPE) shows massive negative gamma within 30-40 points of current price on ONE side and clean air on the other:
 - Do not recommend IRON CONDOR — the short strike near the negative gamma cliff has asymmetric acceleration risk.
 - Recommend a directional CREDIT SPREAD AWAY from the negative gamma danger zone.
-- Example: flow is neutral, but Periscope shows -10,000 gamma at 6825 (20 pts below) and clean air above 6900 → recommend CALL CREDIT SPREAD, not IC.
+- Example: flow is neutral, but UW Periscope shows -10,000 gamma at 6825 (20 pts below) and clean air above 6900 → recommend CALL CREDIT SPREAD, not IC.
 RULE 2: QQQ Divergence Weighting
 When SPX-specific signals (SPX Net Flow, Market Tide, SPY Net Flow) agree on a direction but QQQ diverges:
 - Weight SPX Net Flow + Market Tide + SPY at 90%, QQQ at 10%.
@@ -765,12 +766,12 @@ Use the OI Net Gamma Exposure from the API data to adjust management aggressiven
 - OI GEX MODERATELY NEGATIVE (-50,000 to -150,000): Periscope walls may fail under sustained pressure. Reduce afternoon hold time — close CCS by 12:00 PM ET. Target 40% profit instead of 50%. Increase Rule 15's gamma proximity threshold from 30 pts to 40 pts.
 - OI GEX DEEPLY NEGATIVE (below -150,000): The entire market is in acceleration mode. ALL Periscope walls are structurally compromised. Close CCS by 11:30 AM ET or at 40% profit, whichever comes first. Reduce position size by an additional 10%. Do not trust any single positive gamma bar to contain a momentum move. PCS positions with positive charm walls can still be held, but with tightened stops.
 - When Volume GEX is strongly positive while OI GEX is negative: today's active trading is adding suppression that partially offsets the negative regime. The session may be calmer than the OI number suggests — but don't extend management past the OI-based time limits, because volume-based suppression can evaporate in the final 2 hours when trading thins out.
-PERISCOPE CHARM CEILING OVERRIDE: When Periscope Charm shows +100M or more at a positive gamma wall ABOVE the CCS short call (within 20 pts), the CCS close deadline may be extended by 1-2 hours beyond the standard Rule 16 timeline. The charm-confirmed ceiling provides structural protection that the standard deadline assumes is absent. Example: Rule 16 moderately negative GEX sets 12:00 PM ET close, but Periscope Charm shows +160M at 6620 above the 6610 short call — extend to 1:00-2:00 PM ET. This override applies ONLY when the charm wall is within 20 pts of a positive gamma wall and ABOVE the short call. Do not extend based on distant charm alone. Validated March 24: 6620 wall with +160M Periscope Charm held as ceiling all day despite moderately negative GEX.
+PERISCOPE CHARM CEILING OVERRIDE (UW Periscope only): When UW Periscope Charm shows +100M or more at a positive gamma wall ABOVE the CCS short call (within 20 pts), the CCS close deadline may be extended by 1-2 hours beyond the standard Rule 16 timeline. The charm-confirmed ceiling provides structural protection that the standard deadline assumes is absent. Example: Rule 16 moderately negative GEX sets 12:00 PM ET close, but Periscope Charm shows +160M at 6620 above the 6610 short call — extend to 1:00-2:00 PM ET. This override applies ONLY when the charm wall is within 20 pts of a positive gamma wall and ABOVE the short call. Do not extend based on distant charm alone. Validated March 24: 6620 wall with +160M Periscope Charm held as ceiling all day despite moderately negative GEX.
 VIX1D EXTREME INVERSION DEADLINE EXTENSION: When ALL of the following conditions are met, the Rule 16 CCS/PCS close deadline may be extended to 2:00 PM ET regardless of GEX regime:
 (1) VIX1D is 20%+ below VIX (extreme inversion confirmed)
 (2) ALL positions are defined-risk credit spreads (no naked short options)
 (3) Cushion from nearest short strike to current SPX price exceeds 60 pts
-(4) Periscope Charm confirms +50M at 3+ strikes protecting the short side (above short calls for CCS, below short puts for PCS)
+(4) UW Periscope Charm (screenshot or UW-era block; GEXBot charm never counts) confirms +50M at 3+ strikes protecting the short side (above short calls for CCS, below short puts for PCS)
 If ANY one condition fails, the standard Rule 16 deadline applies without extension. This extension acknowledges that VIX1D extreme inversion correctly predicts contained sessions where the standard deadlines leave $180-580 of premium on the table per session. Validated across March 25, 28, and 31 sessions — all positions expired worthless with 60-170 pts of cushion when held past the standard deadline under extreme inversion conditions.
 Rule 17 interaction: Rule 17's ±30 minute vanna adjustment applies to the final Rule 16 deadline AFTER any Periscope Charm Override has been applied. Example: Rule 16 moderately negative GEX = 12:00 PM ET → Charm Override extends to 1:00-2:00 PM ET → Rule 17 positive vanna + declining VIX tightens CCS by 30 min to 12:30-1:30 PM ET. Apply sequentially, not independently.
 THETA/GAMMA INVERSION PRINCIPLE:
@@ -1207,8 +1208,8 @@ Provide ALL of the following. Be thorough — the trader is making real money de
 - Confidence: HIGH, MODERATE, or LOW
 - Suggested delta for the recommended structure — target the calculator's delta ceiling for the recommended structure (put spread ceiling for PCS, call spread ceiling for CCS, IC ceiling for IC). If adjusting below the ceiling, explain why in strikeGuidance
 - Per-chart confidence breakdown: how strongly each data source supports the recommendation
-2. Specific Strike Placement (from Periscope)
-If Periscope is provided, map the calculator's theoretical strikes against the gamma profile:
+2. Specific Strike Placement (from UW Periscope)
+If UW Periscope data is provided (screenshot or UW-era block — not GEXBot), map the calculator's theoretical strikes against its gamma profile:
 - Which strikes land in positive gamma zones (favorable)?
 - Which strikes land in negative gamma zones (dangerous)?
 - Suggest specific strike adjustments: "Move the put short strike from 6580 down to 6560 — positive gamma wall at 6580 provides better support" or "Avoid the 6750 call — heavy negative gamma, use 6780 instead"
@@ -1289,7 +1290,7 @@ CONFIDENCE CALIBRATION:
 - HIGH: 3+ signals (primary or secondary) confirm the same structure at HIGH or MODERATE confidence, with zero primary signals at CONTRADICTS. All secondary signals either confirm or are neutral. Historical base rate >= 75% if available. This means: "Multiple independent data sources converge on the same trade."
 - MODERATE: 2+ signals confirm with at most 1 contradicting primary signal. Secondary signals are mixed. OR: all primaries agree but a significant risk factor exists (deeply negative GEX, event proximity, Friday afternoon, missing primary data sources). This means: "The trade is structurally sound but has a specific risk factor."
 - LOW: Primary signals conflict (flow says one direction, gamma says another). OR: only 1 primary signal is available. OR: multiple secondary signals contradict the primary thesis. OR: 2+ primary data sources are unavailable. This means: "The evidence is thin or contradictory — size down significantly."
-Primary signals for structure selection: SPX Net Flow, Market Tide, Periscope Gamma profile.
+Primary signals for structure selection: SPX Net Flow, Market Tide, UW Periscope Gamma profile (a GEXBot Periscope block is context only, not a primary signal).
 Primary signal for management regime: Aggregate GEX.
 Secondary signals: SPY/QQQ flow, charm, dark pool, IV term structure, candles, overnight gap, vanna, pin risk, skew.
 The confidence levels above refer to the total weight of evidence across all signals, not the Rule 8 flow weighting specifically.
