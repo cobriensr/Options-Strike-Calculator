@@ -128,6 +128,12 @@ describe('audit-gexbot-health cron', () => {
     expect(msg).toMatch(/zero_gamma NULL 100\.0% overall/);
     expect(opts.level).toBe('warning');
     expect(opts.tags['cron.anomaly']).toBe('gexbot-health');
+    expect(opts).toMatchObject({
+      fingerprint: [
+        'gexbot-health',
+        'zero-gamma-null-overall+zero-gamma-null-spx',
+      ],
+    });
   });
 
   it('alerts on an SPX-only break even when the overall rate stays low', async () => {
@@ -148,6 +154,9 @@ describe('audit-gexbot-health cron', () => {
       .calls[0] as [string];
     expect(msg).toMatch(/zero_gamma NULL 100\.0% for SPX/);
     expect(msg).not.toMatch(/overall/);
+    expect(
+      (Sentry.captureMessage as ReturnType<typeof vi.fn>).mock.calls[0]?.[1],
+    ).toMatchObject({ fingerprint: ['gexbot-health', 'zero-gamma-null-spx'] });
   });
 
   it('alerts on a capture outage (zero snapshots in the window)', async () => {
@@ -163,6 +172,9 @@ describe('audit-gexbot-health cron', () => {
     const [msg] = (Sentry.captureMessage as ReturnType<typeof vi.fn>).mock
       .calls[0] as [string];
     expect(msg).toMatch(/no gexbot_snapshots in last 12h/);
+    expect(
+      (Sentry.captureMessage as ReturnType<typeof vi.fn>).mock.calls[0]?.[1],
+    ).toMatchObject({ fingerprint: ['gexbot-health', 'no-snapshots'] });
   });
 
   it('does NOT alert on zero snapshots when today is a market holiday', async () => {

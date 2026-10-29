@@ -31,13 +31,18 @@ interface VercelConfig {
   crons?: { path: string; schedule: string }[];
 }
 
-function loadVercelCrons(): Map<string, string> {
+/**
+ * Every vercel.json schedule per job. A job can carry several entries (the
+ * GEXBot crons use three windows); the drift checks reconcile against the
+ * UNION of them, never just the last one.
+ */
+function loadVercelCrons(): Map<string, string[]> {
   const path = resolve(process.cwd(), 'vercel.json');
   const cfg = JSON.parse(readFileSync(path, 'utf8')) as VercelConfig;
-  const map = new Map<string, string>();
+  const map = new Map<string, string[]>();
   for (const c of cfg.crons ?? []) {
     const m = /^\/api\/cron\/([^/]+)$/.exec(c.path);
-    if (m?.[1]) map.set(m[1], c.schedule);
+    if (m?.[1]) map.set(m[1], [...(map.get(m[1]) ?? []), c.schedule]);
   }
   return map;
 }
@@ -109,6 +114,40 @@ function utcTickSet(parsed: ParsedCron): Set<number> {
   return ticks;
 }
 
+/** UTC minute-of-day ticks served by the union of several crontabs. */
+function unionTickSet(crontabs: string[]): Set<number> {
+  const ticks = new Set<number>();
+  for (const crontab of crontabs) {
+    for (const t of utcTickSet(parseCron(crontab))) ticks.add(t);
+  }
+  return ticks;
+}
+
+/**
+ * Describe every tick an ET-local monitor crontab expects, in BOTH DST
+ * regimes, that the union of the vercel.json crontabs does not fire. Empty
+ * means the monitor never expects a tick Vercel won't send.
+ */
+function findUnservedEtTicks(etCrontab: string, vercel: string[]): string[] {
+  const et = parseCron(etCrontab);
+  const served = unionTickSet(vercel);
+  const problems: string[] = [];
+  for (const offset of [5, 4]) {
+    const regime = offset === 5 ? 'EST' : 'EDT';
+    for (const etHour of et.hours) {
+      for (const etMin of et.minutes) {
+        const utcTotal = etHour * 60 + etMin + offset * 60;
+        if (!served.has(utcTotal)) {
+          problems.push(
+            `[${regime}] ET ${etHour}:${String(etMin).padStart(2, '0')} → ${Math.floor(utcTotal / 60)}:${String(utcTotal % 60).padStart(2, '0')} UTC`,
+          );
+        }
+      }
+    }
+  }
+  return problems;
+}
+
 describe('cron-schedules SCHEDULE_MAP', () => {
   const vercelCrons = loadVercelCrons();
 
@@ -122,9 +161,12 @@ describe('cron-schedules SCHEDULE_MAP', () => {
   it.each(utcEntries)(
     'UTC schedule for %s matches vercel.json verbatim',
     (jobName) => {
-      const want = vercelCrons.get(jobName);
+      const want = vercelCrons.get(jobName) ?? [];
       const got = SCHEDULE_MAP[jobName]?.schedule;
-      expect(got).toBe(want);
+      expect(want, `${jobName} present in vercel.json`).not.toHaveLength(0);
+      // Verbatim for a single-entry job; one of the entries for a
+      // multi-window job.
+      expect(want).toContain(got);
     },
   );
 
@@ -137,44 +179,33 @@ describe('cron-schedules SCHEDULE_MAP', () => {
       if (!cfg || !vercel) return;
 
       const et = parseCron(cfg.schedule);
-      const utc = parseCron(vercel);
+      const utcs = vercel.map((v) => parseCron(v));
 
       // Cadence (minute field + day-of-week tail) must be unchanged — only
       // the hour window is allowed to differ between the ET monitor and the
-      // UTC vercel.json crontab.
-      expect(et.minute, `${jobName}: minute field`).toBe(utc.minute);
-      expect(et.rest, `${jobName}: dow/dom/month tail`).toBe(utc.rest);
-
-      // Gap-aware served set: the EXACT UTC minute-of-day ticks vercel
-      // fires. Using the expanded set (not a min/max hour bound) is what
-      // makes this immune to a comma-list/step hour field like `13,15,17`
-      // — a bounds-only check would treat 14:xx UTC as served when it is
-      // not. Finding #8.
-      const servedUtc = utcTickSet(utc);
-
-      // For each ET tick the monitor expects, in BOTH regimes:
-      //   (1) it must convert to a UTC tick vercel actually fires
-      //       (else the monitor expects a tick that never arrives →
-      //        structural "missed"), AND
-      //   (2) the monitor window should track when the handler actually
-      //       runs. Not asserted: ticks past the handler's own gate (the
-      //       close-side tail; evaluate-round-trip deliberately runs to
-      //       close + 80) are satisfied by the wrapper's paired skip
-      //       check-in instead.
-      // Offsets: EST = ET + 5h, EDT = ET + 4h.
-      for (const offset of [5, 4]) {
-        const regime = offset === 5 ? 'EST' : 'EDT';
-        for (const etHour of et.hours) {
-          for (const etMin of et.minutes) {
-            const etTotal = etHour * 60 + etMin;
-            const utcTotal = etTotal + offset * 60;
-            expect(
-              servedUtc.has(utcTotal),
-              `${jobName} [${regime}]: ET ${etHour}:${String(etMin).padStart(2, '0')} → ${Math.floor(utcTotal / 60)}:${String(utcTotal % 60).padStart(2, '0')} UTC is NOT a tick vercel.json fires (structural missed)`,
-            ).toBe(true);
-          }
-        }
+      // UTC vercel.json crontab(s). For a multi-window job the ET minute set
+      // must lie inside the union of the windows' minute sets (the served
+      // check below is the exact test); the dow tail must match every entry.
+      if (utcs.length === 1) {
+        expect(et.minute, `${jobName}: minute field`).toBe(utcs[0]?.minute);
       }
+      for (const utc of utcs) {
+        expect(et.rest, `${jobName}: dow/dom/month tail`).toBe(utc.rest);
+      }
+
+      // Gap-aware served set over the UNION of every vercel.json entry: the
+      // EXACT UTC minute-of-day ticks vercel fires. Using the expanded set
+      // (not a min/max hour bound) keeps it immune to a comma-list/step
+      // hour field like `13,15,17`. Finding #8.
+      // Every ET tick, in BOTH regimes (EST = ET + 5h, EDT = ET + 4h), must
+      // convert to a UTC tick vercel actually fires, else the monitor
+      // expects a tick that never arrives → structural "missed". Ticks past
+      // the handler's own gate are satisfied by the wrapper's paired skip
+      // check-in instead, so they are not asserted here.
+      expect(
+        findUnservedEtTicks(cfg.schedule, vercel),
+        `${jobName}: ET ticks vercel.json does NOT fire (structural missed)`,
+      ).toEqual([]);
 
       // Tightness guard (finding #6): the START of the ET window must be
       // the maximal safe start — every served+fired-in-both-regimes tick
@@ -201,7 +232,7 @@ describe('cron-schedules SCHEDULE_MAP', () => {
     // range, which is how Friday's last fires went un-evaluated.
     const vercel = vercelCrons.get('evaluate-round-trip');
     expect(vercel).toBeDefined();
-    const servedUtc = utcTickSet(parseCron(vercel ?? ''));
+    const servedUtc = unionTickSet(vercel ?? []);
     for (const offset of [5, 4]) {
       for (const afterClose of [70, 80]) {
         const utcTotal = MARKET_MINUTES.CLOSE + afterClose + offset * 60;
@@ -221,13 +252,16 @@ describe('cron-schedules SCHEDULE_MAP', () => {
   });
 
   it('ET-anchored entries use the America/New_York timezone', () => {
-    // Lock the four market-hours monitors fixed by the 2026-06-08 DST
-    // triage so a future edit can't silently drop the timezone and
+    // Lock the market-hours monitors fixed by the 2026-06-08 DST triage
+    // (plus the three GEXBot crons added 2026-10-28) so a future edit can't silently drop the timezone and
     // reintroduce the EDT-tail "missed" flood.
     const expectedEt = [
       'detect-periscope-call-lottery',
       'detect-periscope-put-lottery',
       'evaluate-round-trip',
+      'fetch-gexbot-fast',
+      'fetch-gexbot-strikes',
+      'populate-periscope-from-gexbot',
       'refresh-tracker-contracts',
     ].sort();
     expect([...etEntries].sort()).toEqual(expectedEt);
@@ -272,5 +306,54 @@ describe('cron-schedules SCHEDULE_MAP', () => {
       foundUnserved,
       'gap-aware parser must detect an ET tick landing on an unserved UTC hour',
     ).toBe(true);
+  });
+
+  // ── Union reconciliation (multi-window jobs) ────────────────────
+  it('loadVercelCrons keeps every entry for the three-window GEXBot jobs', () => {
+    for (const job of [
+      'fetch-gexbot-fast',
+      'fetch-gexbot-strikes',
+      'populate-periscope-from-gexbot',
+    ]) {
+      expect(vercelCrons.get(job), job).toHaveLength(3);
+    }
+  });
+
+  it.each([
+    ['fetch-gexbot-fast', '* 10-15 * * 1-5'],
+    ['fetch-gexbot-strikes', '* 10-15 * * 1-5'],
+    ['populate-periscope-from-gexbot', '*/10 10-15 * * 1-5'],
+  ])(
+    '%s is monitored ET-anchored with the high-frequency threshold',
+    (job, schedule) => {
+      expect(SCHEDULE_MAP[job]).toMatchObject({
+        schedule,
+        timezone: 'America/New_York',
+        failureIssueThreshold: 3,
+      });
+    },
+  );
+
+  it('findUnservedEtTicks passes a window inside the union in both regimes', () => {
+    expect(
+      findUnservedEtTicks('* 10-15 * * 1-5', [
+        '30-59 13 * * 1-5',
+        '* 14-20 * * 1-5',
+        '0-1 21 * * 1-5',
+      ]),
+    ).toEqual([]);
+  });
+
+  it('findUnservedEtTicks catches a mismatched schedule (EDT 09:30 ET = 13:30 UTC is served, 09:00 ET is not)', () => {
+    const vercel = ['30-59 13 * * 1-5', '* 14-20 * * 1-5', '0-1 21 * * 1-5'];
+    const problems = findUnservedEtTicks('* 9-15 * * 1-5', vercel);
+    expect(problems.length).toBeGreaterThan(0);
+    expect(problems.some((p) => p.includes('EDT] ET 9:00'))).toBe(true);
+  });
+
+  it('findUnservedEtTicks catches an ET window past the last served UTC hour', () => {
+    expect(
+      findUnservedEtTicks('* 10-16 * * 1-5', ['* 14-20 * * 1-5']).length,
+    ).toBeGreaterThan(0);
   });
 });

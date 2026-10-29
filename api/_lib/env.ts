@@ -59,6 +59,7 @@ const apiKeysSchema = z.object({
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
   OPENAI_API_KEY: z.string().min(1).optional(),
   UW_API_KEY: z.string().min(1).optional(),
+  GEXBOT_API_KEY: z.string().min(1).optional(),
   FRED_API_KEY: z.string().min(1).optional(),
   FINNHUB_API_KEY: z.string().min(1).optional(),
 });

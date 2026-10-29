@@ -170,10 +170,13 @@ describe('populate-periscope-from-gexbot handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    expect(res._json).toMatchObject({ status: 'partial', panelsWritten: 0 });
+    expect(res._json).toMatchObject({ status: 'error', panelsWritten: 0 });
     expect(mockSentryMessage).toHaveBeenCalledWith(
       'populate-periscope-from-gexbot: 3 panel(s) failed',
-      expect.objectContaining({ level: 'warning' }),
+      expect.objectContaining({
+        level: 'warning',
+        fingerprint: ['populate-periscope-from-gexbot', 'panels-failed'],
+      }),
     );
   });
 
@@ -188,11 +191,14 @@ describe('populate-periscope-from-gexbot handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({ status: 'partial', panelsWritten: 0 });
+    expect(res._json).toMatchObject({ status: 'error', panelsWritten: 0 });
     expect(mockSentryMessage).toHaveBeenCalledTimes(1);
     expect(mockSentryMessage).toHaveBeenCalledWith(
       'populate-periscope-from-gexbot: 3 panel(s) failed',
-      expect.objectContaining({ level: 'warning' }),
+      expect.objectContaining({
+        level: 'warning',
+        fingerprint: ['populate-periscope-from-gexbot', 'panels-failed'],
+      }),
     );
   });
 
@@ -218,7 +224,10 @@ describe('populate-periscope-from-gexbot handler', () => {
     expect(res._json).toMatchObject({ status: 'partial', panelsWritten: 2 });
     expect(mockSentryMessage).toHaveBeenCalledWith(
       'populate-periscope-from-gexbot: 1 panel(s) failed',
-      expect.objectContaining({ level: 'warning' }),
+      expect.objectContaining({
+        level: 'warning',
+        fingerprint: ['populate-periscope-from-gexbot', 'panels-failed'],
+      }),
     );
   });
 
@@ -319,5 +328,28 @@ describe('populate-periscope-from-gexbot handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ status: 'partial', panelsWritten: 2 });
     expect(mockSentryMessage).toHaveBeenCalled();
+  });
+
+  it('reports partial (not error) when only one of three panels is written', async () => {
+    const freshTimestamp = new Date(MARKET_TIME.getTime() - 60_000);
+    const samplePayload = {
+      mini_contracts: [[7435, 0, 0, 100, [], 0, null]],
+    };
+    mockSql
+      .mockResolvedValueOnce([
+        { captured_at: freshTimestamp, raw_response: samplePayload },
+      ])
+      .mockResolvedValueOnce([{ strike: 7435 }])
+      .mockResolvedValueOnce([]) // charm: no fresh row
+      .mockResolvedValueOnce([]); // vanna: no fresh row
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._json).toMatchObject({ status: 'partial', panelsWritten: 1 });
   });
 });

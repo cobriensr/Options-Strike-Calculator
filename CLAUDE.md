@@ -284,6 +284,7 @@ Required env vars (pulled via `vercel env pull .env.local`):
 | `SENTRY_DSN`, `SENTRY_AUTH_TOKEN`          | Sentry                               |
 | `CRON_SECRET`                              | Vercel (cron job auth)               |
 | `UW_API_KEY`                               | Unusual Whales                       |
+| `GEXBOT_API_KEY`                           | GEXBot (Orderflow tier key)          |
 | `GUEST_ACCESS_KEYS`                        | Comma-separated guest keys (opt.)    |
 | `AXIOM_API_KEY`                            | Axiom (opt.; cron-run events)        |
 | `AXIOM_DATASET`                            | Axiom dataset name (opt.)            |

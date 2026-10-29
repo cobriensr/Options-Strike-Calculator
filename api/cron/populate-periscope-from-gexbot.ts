@@ -33,6 +33,7 @@ import { MARKET_MINUTES } from '../_lib/constants.js';
 import { isGexbotLiveCt } from '../_lib/cron-helpers.js';
 import {
   withCronInstrumentation,
+  deriveCronStatus,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 import { getETDateStr, getETTime } from '../../src/utils/timezone.js';
@@ -190,12 +191,20 @@ export default withCronInstrumentation(
     if (errors.length > 0) {
       Sentry.captureMessage(
         `populate-periscope-from-gexbot: ${errors.length} panel(s) failed`,
-        { level: 'warning', extra: { errors } },
+        {
+          level: 'warning',
+          // The message text carries the failed-panel count; without a fixed
+          // fingerprint each count opens its own Sentry issue.
+          fingerprint: ['populate-periscope-from-gexbot', 'panels-failed'],
+          extra: { errors },
+        },
       );
     }
 
     return {
-      status: panelsWritten === PANELS.length ? 'success' : 'partial',
+      // 0 of 3 panels written mid-session is a full outage -> error;
+      // 1-2 is partial. (The open warm-up skipped above.)
+      status: deriveCronStatus(PANELS.length - panelsWritten, PANELS.length),
       rows: totalRows,
       metadata: { panelsWritten, errors },
     };

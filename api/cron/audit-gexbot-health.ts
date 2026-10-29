@@ -2,8 +2,9 @@
  * GET /api/cron/audit-gexbot-health
  *
  * Daily data-quality monitor for the GEXBot classic-basic merge. Runs at
- * 22:30 UTC (17:30 CT) on weekdays, after the capture window closes at the
- * cash close + 1 min (20:01 UTC under EDT, 21:01 UTC under EST). Confirms
+ * 22:30 UTC on weekdays (17:30 CT under CDT, 16:30 CST after the 2026-11-01
+ * switch), after the capture window closes at the cash close + 1 min
+ * (20:01 UTC under EDT, 21:01 UTC under EST). Confirms
  * the 10 aggregate columns revived by the 2026-05-29
  * `/classic/gex_zero` capture (see spec) are actually populating — a
  * recurrence of the orderflow spec-drift would return HTTP 200 with the
@@ -90,6 +91,9 @@ export default withCronCheckin('audit-gexbot-health', async (req, res) => {
       const drrNullAllPct = pct(Number(r.drr_null_all), rowsAll);
 
       const alerts: string[] = [];
+      // Stable alert kinds for the Sentry fingerprint: the alert text carries
+      // percentages, which would otherwise open a new issue per value.
+      const alertKinds: string[] = [];
       if (rowsAll === 0) {
         // GexBot is gated to the cash session (isGexbotLiveCt), so
         // weekends/holidays legitimately produce zero snapshots — not an
@@ -97,17 +101,20 @@ export default withCronCheckin('audit-gexbot-health', async (req, res) => {
         // worth paging on. (This cron runs Mon–Fri UTC, but a weekday market
         // holiday would otherwise false-alarm.)
         if (isTradingDayET()) {
+          alertKinds.push('no-snapshots');
           alerts.push(
             `no gexbot_snapshots in last ${LOOKBACK_HOURS}h (capture outage?)`,
           );
         }
       } else {
         if (zgNullAllPct > ZG_NULL_ALERT_PCT) {
+          alertKinds.push('zero-gamma-null-overall');
           alerts.push(
             `zero_gamma NULL ${zgNullAllPct.toFixed(1)}% overall > ${ZG_NULL_ALERT_PCT}% (classic-basic merge regressed?)`,
           );
         }
         if (rowsSpx > 0 && zgNullSpxPct > ZG_NULL_ALERT_PCT) {
+          alertKinds.push('zero-gamma-null-spx');
           alerts.push(
             `zero_gamma NULL ${zgNullSpxPct.toFixed(1)}% for SPX > ${ZG_NULL_ALERT_PCT}%`,
           );
@@ -127,6 +134,7 @@ export default withCronCheckin('audit-gexbot-health', async (req, res) => {
       if (alerts.length > 0) {
         Sentry.captureMessage(`gexbot-health: ${alerts.join('; ')}`, {
           level: 'warning',
+          fingerprint: ['gexbot-health', alertKinds.join('+')],
           tags: { 'cron.anomaly': 'gexbot-health' },
           extra: summary,
         });

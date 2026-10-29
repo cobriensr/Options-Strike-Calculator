@@ -290,6 +290,28 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
+  'fetch-gexbot-fast': {
+    // Three vercel.json entries (`30-59 13`, `* 14-20`, `0-1 21`); three
+    // whole minutes went missing in Oct 2026 (10-20 15:06 UTC, 10-21 19:03,
+    // 10-22 19:34) with no signal. ET-local `* 10-15` (10:00-15:59 ET) lies
+    // inside the `* 14-20` UTC entry in BOTH regimes (EDT 14:00-19:59 UTC,
+    // EST 15:00-20:59 UTC), so no tick is expected that Vercel won't send;
+    // the open and close edges are covered by the handler's own gate.
+    // maxDuration is 60 s, so DEFAULT_MAX_RUNTIME is ample.
+    schedule: '* 10-15 * * 1-5',
+    timezone: MARKET_HOURS_TZ,
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+    failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
+  },
+  'fetch-gexbot-strikes': {
+    // Same windows and rationale as fetch-gexbot-fast.
+    schedule: '* 10-15 * * 1-5',
+    timezone: MARKET_HOURS_TZ,
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+    failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
+  },
   'embed-yesterday': {
     schedule: '0 7 * * 2-6',
     checkinMargin: DEFAULT_MARGIN,
@@ -559,6 +581,15 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     schedule: '55 23 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
+  'populate-periscope-from-gexbot': {
+    // vercel.json: `30,40,50 13`, `*/10 14-20`, `*/10 21`. ET-local
+    // `*/10 10-15` sits inside the `*/10 14-20` UTC entry in both regimes.
+    schedule: '*/10 10-15 * * 1-5',
+    timezone: MARKET_HOURS_TZ,
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+    failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
   'refresh-tracker-contracts': {
     // ET-local schedule — see DST_TAIL_NOTE. vercel.json fires `*/5 13-20`

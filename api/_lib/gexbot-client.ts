@@ -37,8 +37,9 @@ const GEXBOT_BASE = 'https://api.gex.bot/v2';
  * 32 take about 42 s. Each DB write in fetch-gexbot-fast can add up to about
  * 33 s on top (3 x 10 s + 3 s backoff), so a double outage (GEXBot down and
  * Neon down) can reach about 75 s and Vercel kills the run at 60 s with no
- * Axiom event. We keep 60 s: normal ticks finish far below it, and the P3
- * Sentry cron monitor flags a killed run.
+ * Axiom event. We keep 60 s: normal ticks finish far below it, and the Sentry
+ * cron monitor (SCHEDULE_MAP, 10:00-15:59 ET) flags a killed run as a missed
+ * check-in.
  */
 const GEXBOT_TIMEOUT_MS = 2_500;
 

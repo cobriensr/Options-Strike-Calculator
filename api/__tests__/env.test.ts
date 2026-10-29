@@ -12,6 +12,27 @@ beforeEach(() => {
   vi.unstubAllEnvs();
 });
 
+// ── GEXBOT_API_KEY ────────────────────────────────────────────
+
+describe('GEXBOT_API_KEY', () => {
+  it('is accepted when set', () => {
+    vi.stubEnv('GEXBOT_API_KEY', 'gb-test');
+    expect(requireEnv('GEXBOT_API_KEY')).toBe('gb-test');
+  });
+
+  it('is optional: optionalEnv returns undefined when absent', () => {
+    delete process.env.GEXBOT_API_KEY;
+    expect(optionalEnv('GEXBOT_API_KEY')).toBeUndefined();
+  });
+
+  it('is rejected as empty by requireEnv', () => {
+    vi.stubEnv('GEXBOT_API_KEY', '');
+    expect(() => requireEnv('GEXBOT_API_KEY')).toThrow(
+      'Missing required environment variable: GEXBOT_API_KEY',
+    );
+  });
+});
+
 // ── requireEnv ────────────────────────────────────────────────
 
 describe('requireEnv', () => {
