@@ -13,25 +13,20 @@ import { spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
-  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
-import {
-  afterAll,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { decideCommit } from './review-gate.mjs';
+import {
+  adminDir,
+  cleanEnv,
+  makeTempDir,
+  setupScratchGit,
+} from './scratch-git.fixtures.mjs';
 
 // vitest runs from the repo root (same convention as check-coverage-floor).
 const ROOT = process.cwd();
@@ -40,15 +35,6 @@ const CLI = path.join(ROOT, 'scripts', 'review-gate.mjs');
 // dirname splits on `/` only.
 const HOOKS_DIR = path.join(ROOT, '.githooks').replaceAll('\\', '/');
 const MARKER = 'review-gate.json';
-// Each hook commit spawns sh, node and several git processes: slow on
-// Windows, slower under a loaded `npm run review`. The timeout only catches
-// a hang, and these git calls can't hang; they only slow down. With several
-// sessions sharing 16 cores at 88-100% CPU, git fixtures ran past 120s
-// (2026-10-28), so the limit is 300s, as in the prune-worktrees tests.
-const GIT_TIMEOUT = 300_000;
-// Every hook commit and fixture here spawns git, so the whole file gets the
-// limit, including it.each variants. Same mechanism as the prune-worktrees tests.
-vi.setConfig({ testTimeout: GIT_TIMEOUT, hookTimeout: GIT_TIMEOUT });
 
 const NO_MARKER = 'No passing `npm run review` is on record for this worktree';
 const SEAL_REFUSED =
@@ -57,73 +43,26 @@ const CHECK_FAILED = 'review-gate: commit blocked, the check failed:';
 const DRIFTED =
   'review-gate: commit blocked. These staged files changed after the last passing `npm run review`:';
 
-/** Gate inputs each test sets explicitly instead of inheriting (upper-cased). */
+/**
+ * Gate inputs each test sets explicitly instead of inheriting, so cleanEnv
+ * drops them along with GIT_*: CLAUDECODE (set in Claude Code's shells) and
+ * npm_lifecycle_event (set to "review" when `npm run review` runs these
+ * tests). cleanEnv matches names upper-cased.
+ */
 const DROPPED_ENV = new Set(['CLAUDECODE', 'NPM_LIFECYCLE_EVENT']);
 
-/** Every temp dir made through makeTempDir; removed in afterAll. */
-const tempDirs = [];
-let gitconfig = '';
+setupScratchGit();
 
 /**
- * Long-form real path: git reports long paths, and os.tmpdir() can be an 8.3
- * short name on Windows.
- */
-function makeTempDir(prefix) {
-  const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), prefix)));
-  tempDirs.push(dir);
-  return dir;
-}
-
-beforeAll(() => {
-  gitconfig = path.join(makeTempDir('review-gate-config-'), 'gitconfig');
-  writeFileSync(gitconfig, '');
-});
-
-afterAll(() => {
-  for (const dir of tempDirs.splice(0)) {
-    rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
-  }
-});
-
-/**
- * Child env with every gate input set explicitly. Inherited GIT_* vars are
- * dropped (a hook running these tests exports GIT_DIR / GIT_INDEX_FILE,
- * which would aim git at the real repository), and so are CLAUDECODE (set in
- * Claude Code's shells) and npm_lifecycle_event (set to "review" when
- * `npm run review` runs these tests). System and global git config are
- * replaced by an empty file. An `extra` value of undefined unsets the var.
- *
- * Names are matched upper-cased: Windows env names are case-insensitive, and
- * a vitest worker there sees them upper-cased (NPM_LIFECYCLE_EVENT=npx). Kept,
- * that copy would shadow a lower-case npm_lifecycle_event set in `extra`.
- */
-function cleanEnv(extra = {}) {
-  const env = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    const name = key.toUpperCase();
-    if (name.startsWith('GIT_') || DROPPED_ENV.has(name)) continue;
-    env[key] = value;
-  }
-  Object.assign(env, {
-    GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: gitconfig,
-    ...extra,
-  });
-  for (const [key, value] of Object.entries(env)) {
-    if (value === undefined) delete env[key];
-  }
-  return env;
-}
-
-/**
- * Run a command; returns `{ status, stdout, stderr }` whatever its exit code.
+ * Run a command with every gate input set explicitly (cleanEnv plus
+ * `extraEnv`); returns `{ status, stdout, stderr }` whatever its exit code.
  * Throws only when it can't be spawned.
  */
 function run(cwd, command, args, extraEnv = {}) {
   // Test-only: `git` from PATH, as the module under test and the hook use.
   const result = spawnSync(command, args, {
     cwd,
-    env: cleanEnv(extraEnv),
+    env: cleanEnv(extraEnv, DROPPED_ENV),
     encoding: 'utf8',
     windowsHide: true,
   });
@@ -131,7 +70,11 @@ function run(cwd, command, args, extraEnv = {}) {
   return result;
 }
 
-/** Run git for test setup; stdout (trimmed) on success, throws otherwise. */
+/**
+ * Run git for test setup; stdout (trimmed) on success, throws otherwise.
+ * Not the shared fixture `git`: this one drops CLAUDECODE (DROPPED_ENV), so
+ * setup commits pass the real hook.
+ */
 function git(cwd, ...args) {
   const result = run(cwd, 'git', args);
   if (result.status !== 0) {
@@ -167,11 +110,6 @@ function write(cwd, file, body) {
 
 function headSubject(cwd) {
   return git(cwd, 'log', '-1', '--format=%s');
-}
-
-/** This worktree's own admin dir (.git, or .git/worktrees/<name>). */
-function adminDir(cwd) {
-  return git(cwd, 'rev-parse', '--absolute-git-dir');
 }
 
 function markerFile(cwd) {

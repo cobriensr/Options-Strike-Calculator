@@ -12,16 +12,11 @@ import path from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { GitError, git, runGit } from './git-run.mjs';
 import {
-  FIXTURE_TIMEOUT,
   cleanEnv,
   makeTempDir,
   git as scratchGit,
   setupScratchGit,
-} from './prune-worktrees.fixtures.mjs';
-
-// Every test spawns git, which slows down a lot under a loaded
-// `npm run review`. Same limit as the other scratch-git tests.
-vi.setConfig({ testTimeout: FIXTURE_TIMEOUT, hookTimeout: FIXTURE_TIMEOUT });
+} from './scratch-git.fixtures.mjs';
 
 setupScratchGit();
 

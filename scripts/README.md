@@ -1,6 +1,6 @@
 # scripts/
 
-One-off and recurring scripts that live outside the Vercel function lifecycle: backfills, ad-hoc analyses, ops utilities. About 255 top-level files as of 2026-10-29 (113 `.py`, 70 `.mjs`, 63 `.ts`, plus a few `.sh`, `.mts` and `.sql`), and the `_lib/`, `ops/`, `eod-flow-analysis/` and `ws-canary/` folders.
+One-off and recurring scripts that live outside the Vercel function lifecycle: backfills, ad-hoc analyses, ops utilities. About 256 top-level files as of 2026-10-29 (113 `.py`, 71 `.mjs`, 63 `.ts`, plus a few `.sh`, `.mts` and `.sql`), and the `_lib/`, `ops/`, `eod-flow-analysis/` and `ws-canary/` folders.
 
 Nothing here is a Vercel Function. A few are build and CI tooling (`write-build-info.mjs` in `npm run build`; `check-build-output.mjs` and `check-coverage-floor.mjs` in `npm run review`; `upload_takeit_bundles.mjs` in the ML workflow), and `ws-canary/` is a temporary Railway service. The rest run from the developer's machine against the production Neon instance (read `.env.local` for credentials). Most assume you've already pulled env vars with `vercel env pull .env.local`, whose `DATABASE_URL` is the production database.
 
@@ -75,7 +75,7 @@ A temporary Railway service that holds test websockets to find which network hop
 
 ### Tooling and operations
 
-- **Build and review**: `write-build-info.mjs` (commit SHA into `api/_lib/build-info.ts` for `/api/version`), `check-build-output.mjs` (build-output gate), `check-coverage-floor.mjs` (per-file coverage gate), `prune-merged-worktrees.mjs` (`npm run worktrees:prune`). Shared logic lives in `_lib/` (coverage floors, build output, worktree pruning, trading days, backfill helpers); its 9 test files run under Vitest.
+- **Build and review**: `write-build-info.mjs` (commit SHA into `api/_lib/build-info.ts` for `/api/version`), `check-build-output.mjs` (build-output gate), `check-coverage-floor.mjs` (per-file coverage gate), `review-gate.mjs` (commit gate: `npm run review` seals the tree it passed, and `.githooks/pre-commit` blocks a Claude commit of anything else), `prune-merged-worktrees.mjs` (`npm run worktrees:prune`). Shared logic lives in `_lib/` (coverage floors, build output, the commit gate, worktree pruning, the git runner those two share, trading days, backfill helpers, and the scratch-git fixtures for tests that run real git); its 11 test files run under Vitest.
 - **Take-It**: `upload_takeit_bundles.mjs` (upload bundles and the `takeit/latest.json` manifest), `takeit-rollback.mjs` (`make takeit-rollback`; see [the rollback runbook](../docs/runbooks/takeit-rollback.md)), `backfill-takeit-scores.mjs` (`make takeit-backfill`).
 - **Full Tape and EOD flow ingest**: `download-fulltape.sh`, `ingest-fulltape.py`, `upload-fulltape-to-r2.py`, `ingest-flow.py`.
 - **DB**: `migrate-db.ts` runs `migrateDb()` against `DATABASE_URL`. `run-migrations.ts` is a one-shot for migration 98.
