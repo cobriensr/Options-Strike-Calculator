@@ -354,7 +354,7 @@ describe('AppHeader', () => {
       screen.queryByLabelText(/upload vix ohlc csv file/i),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole('link', { name: /re-authenticate with schwab/i }),
+      screen.queryByRole('link', { name: 'Re-auth with Schwab' }),
     ).not.toBeInTheDocument();
   });
 
@@ -405,7 +405,7 @@ describe('AppHeader', () => {
       market: makeMarket({ needsAuth: true }),
     });
     expect(
-      screen.getByRole('link', { name: /re-authenticate with schwab/i }),
+      screen.getByRole('link', { name: 'Re-auth with Schwab' }),
     ).toBeInTheDocument();
   });
 
@@ -416,7 +416,7 @@ describe('AppHeader', () => {
       market: makeMarket({ needsAuth: true }),
     });
     expect(
-      screen.queryByRole('link', { name: /re-authenticate with schwab/i }),
+      screen.queryByRole('link', { name: 'Re-auth with Schwab' }),
     ).not.toBeInTheDocument();
   });
 
@@ -515,7 +515,7 @@ describe('AppHeader', () => {
       screen.getByRole('navigation', { name: 'Application view' }),
       screen.getByText('BT', { exact: true }),
       screen.getByTestId('schwab-expiry-badge-stub'),
-      screen.getByRole('link', { name: 'Re-authenticate with Schwab' }),
+      screen.getByRole('link', { name: 'Re-auth with Schwab' }),
       screen.getByTestId('access-key-button'),
       screen.getByRole('button', { name: 'Collapse all sections' }),
       screen.getByRole('button', { name: 'Switch to dark mode' }),
@@ -763,6 +763,24 @@ describe('AppHeader', () => {
     });
     expect(vixButton).toHaveTextContent('9,137 days');
   });
+
+  it.each([
+    ['9,137 days', '9,137 days of VIX data, upload CSV'],
+    // A cache saved without a source key reads 'cached'
+    ['cached', 'Cached VIX data, upload CSV'],
+    ['VIX 2025 OHLC', 'VIX 2025 OHLC: VIX data, upload CSV'],
+  ])(
+    'names the loaded VIX button %j so its name starts with what it shows',
+    (source, name) => {
+      renderHeader({
+        isOwner: true,
+        vix: { vixDataLoaded: true, vixDataSource: source },
+      });
+      const button = screen.getByRole('button', { name });
+      expect(button).toHaveTextContent(source);
+      expect(name.toLowerCase().startsWith(source.toLowerCase())).toBe(true);
+    },
+  );
 
   it('names the VIX upload button by its text until data is loaded', () => {
     renderHeader({ isOwner: true });

@@ -142,6 +142,19 @@ function usePublishedHeaderHeight() {
   return headerRef;
 }
 
+/**
+ * The VIX upload button's name once data is loaded. The button shows only
+ * the data's source, so the name says what it does too, and it starts
+ * with the shown text so voice control can match it (WCAG 2.5.3, label
+ * in name). The source is usually a day count ("9,137 days"); a cache
+ * saved without one reads 'cached'; anything else is an older label.
+ */
+function vixButtonName(source: string): string {
+  if (source === 'cached') return 'Cached VIX data, upload CSV';
+  if (/^[\d,]+ days$/.test(source)) return `${source} of VIX data, upload CSV`;
+  return `${source}: VIX data, upload CSV`;
+}
+
 export default function AppHeader({
   accessMode,
   isOwner,
@@ -228,7 +241,7 @@ export default function AppHeader({
           />
           {market.needsAuth && isOwner && (
             <SchwabAuthLink
-              ariaLabel="Re-authenticate with Schwab"
+              ariaLabel="Re-auth with Schwab"
               text="Re-auth"
               color={theme.red}
             />
@@ -342,14 +355,14 @@ export default function AppHeader({
                 className="hidden"
                 aria-label="Upload VIX OHLC CSV file"
               />
-              {/* Once loaded, the visible text is just the data's span
-                  ("9,137 days"), so the name adds what the button does,
-                  starting with that text (label in name, WCAG 2.5.3). */}
+              {/* Once loaded, the visible text is just the data's source
+                  ("9,137 days"), so the name adds what the button does
+                  (vixButtonName). */}
               <button
                 onClick={onVixCsvClick}
                 aria-label={
                   vix.vixDataLoaded
-                    ? `${vix.vixDataSource} of VIX data, upload CSV`
+                    ? vixButtonName(vix.vixDataSource)
                     : undefined
                 }
                 className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
