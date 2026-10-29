@@ -109,7 +109,7 @@ export function getPanelRegistry(
       },
       {
         id: 'sec-gexbot',
-        label: 'GEXBot Dealer State',
+        label: 'GEXBot Taker Flow',
         group: 'Market Context',
       },
       {

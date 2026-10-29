@@ -137,4 +137,12 @@ describe('getPanelRegistry', () => {
       expect(entry.id).toMatch(/^sec-[a-z0-9-]+$/);
     }
   });
+
+  it('relabels the GEXBot panel as taker flow without changing its id', () => {
+    const entry = getPanelRegistry({
+      isAuthenticated: true,
+      hasMarketOrSnapshot: true,
+    }).find((e) => e.id === 'sec-gexbot');
+    expect(entry?.label).toBe('GEXBot Taker Flow');
+  });
 });

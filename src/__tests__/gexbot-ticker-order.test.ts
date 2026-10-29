@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 
-import { GEXBOT_TICKER_ORDER } from '../components/Gexbot/ticker-order';
+import {
+  GEXBOT_FUTURES_VIEWS,
+  GEXBOT_TICKER_ORDER,
+  GEXBOT_UNDERLYING_ORDER,
+} from '../components/Gexbot/ticker-order';
 
 describe('GEXBOT_TICKER_ORDER', () => {
   it('contains exactly 16 tickers', () => {
@@ -45,5 +49,18 @@ describe('GEXBOT_TICKER_ORDER', () => {
   it('has no duplicate tickers', () => {
     const set = new Set<string>(GEXBOT_TICKER_ORDER);
     expect(set.size).toBe(GEXBOT_TICKER_ORDER.length);
+  });
+
+  it('names ES_SPX and NQ_NDX as futures views of SPX and NDX', () => {
+    expect([...GEXBOT_FUTURES_VIEWS]).toEqual(['ES_SPX', 'NQ_NDX']);
+  });
+
+  it('GEXBOT_UNDERLYING_ORDER is the 14 distinct underlyings, same order', () => {
+    expect(GEXBOT_UNDERLYING_ORDER).toHaveLength(14);
+    expect([...GEXBOT_UNDERLYING_ORDER]).not.toContain('ES_SPX');
+    expect([...GEXBOT_UNDERLYING_ORDER]).not.toContain('NQ_NDX');
+    expect([...GEXBOT_UNDERLYING_ORDER]).toEqual(
+      GEXBOT_TICKER_ORDER.filter((t) => t !== 'ES_SPX' && t !== 'NQ_NDX'),
+    );
   });
 });

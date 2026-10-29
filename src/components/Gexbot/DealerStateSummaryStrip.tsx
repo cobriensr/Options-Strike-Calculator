@@ -1,12 +1,13 @@
 /**
- * DealerStateSummaryStrip — at-a-glance regime read above the per-ticker
- * panels in the GEXBot Dealer State section. Surfaces the four
- * load-bearing facts a trader needs before drilling into the panels:
+ * DealerStateSummaryStrip — at-a-glance read above the per-ticker panels
+ * in the GEXBot Taker Flow section. GEXBot values are taker-side, so
+ * nothing here claims dealer positioning. Surfaces four facts:
  *
- *   1. SPX dealer γ sign (primary instrument)
- *   2. VIX dealer γ sign (vol-of-vol meta-regime)
- *   3. Cross-asset breadth across the 16-ticker universe
- *   4. Loudest dealer flow (max |dexoflow|) + freshness
+ *   1. SPX net-γ sign (spot vs zero-gamma level)
+ *   2. VIX net-γ sign
+ *   3. Breadth across the 14 distinct underlyings (the ES_SPX / NQ_NDX
+ *      futures views are excluded: they repeat SPX / NDX)
+ *   4. Loudest taker Δ flow (max |dexoflow|, raw cross-ticker) + freshness
  *
  * Spec: docs/superpowers/specs/gexbot-dealer-state-summary-strip-2026-05-26.md
  */
@@ -16,7 +17,7 @@ import {
   useGexbotData,
   type SnapshotsLatestRow,
 } from '../../hooks/useGexbotData';
-import { GEXBOT_TICKER_ORDER } from './ticker-order';
+import { GEXBOT_UNDERLYING_ORDER } from './ticker-order';
 import { deriveGammaSign, type GammaSign } from './types';
 
 interface DealerStateSummaryStripProps {
@@ -80,7 +81,7 @@ interface BreadthCounts {
 function countBreadth(rows: SnapshotsLatestRow[]): BreadthCounts {
   const byTicker = new Map(rows.map((r) => [r.ticker, r]));
   const counts: BreadthCounts = { long: 0, short: 0, unknown: 0 };
-  for (const ticker of GEXBOT_TICKER_ORDER) {
+  for (const ticker of GEXBOT_UNDERLYING_ORDER) {
     const row = byTicker.get(ticker);
     const sign = deriveGammaSign(row?.spot ?? null, row?.zeroGamma ?? null);
     counts[sign] += 1;
@@ -131,7 +132,7 @@ function DealerStateSummaryStripInner({
         data-testid="dealer-state-summary-strip-loading"
         className="text-tertiary rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs"
       >
-        Dealer State — loading…
+        GEXBot Taker Flow — loading…
       </div>
     );
   }
@@ -144,7 +145,7 @@ function DealerStateSummaryStripInner({
         data-testid="dealer-state-summary-strip-error"
         className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-300/80"
       >
-        Dealer State — {error}
+        GEXBot Taker Flow — {error}
       </div>
     );
   }
@@ -157,7 +158,7 @@ function DealerStateSummaryStripInner({
         data-testid="dealer-state-summary-strip-empty"
         className="text-tertiary rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs"
       >
-        Dealer State — awaiting first GEXBot tick
+        GEXBot Taker Flow — awaiting first GEXBot tick
       </div>
     );
   }
@@ -226,7 +227,7 @@ function GammaTile({ testid, label, row }: GammaTileProps) {
 }
 
 function BreadthTile({ counts }: { counts: BreadthCounts }) {
-  const total = GEXBOT_TICKER_ORDER.length;
+  const total = GEXBOT_UNDERLYING_ORDER.length;
   const { long, short, unknown } = counts;
   const majoritySign: GammaSign =
     long === 0 && short === 0 ? 'unknown' : long >= short ? 'long' : 'short';
@@ -291,7 +292,7 @@ function LoudestTile({ pick }: LoudestTileProps) {
   }
 
   const isPositive = pick.dexoflow >= 0;
-  const flowLabel = isPositive ? 'dealer +flow' : 'dealer −flow';
+  const flowLabel = isPositive ? 'taker +Δ flow' : 'taker −Δ flow';
   const flowTone = isPositive ? toneClasses('long') : toneClasses('short');
 
   return (
@@ -310,8 +311,11 @@ function LoudestTile({ pick }: LoudestTileProps) {
           LOUDEST · {pick.ticker}
         </span>
       </div>
-      <div className="text-tertiary mt-1 text-[10px] leading-tight">
-        {flowLabel} {formatSignedDelta(pick.dexoflow)}
+      <div
+        className="text-tertiary mt-1 text-[10px] leading-tight"
+        title="Raw taker delta change between snapshots, compared across tickers: SPX notional dominates. Compare within a ticker."
+      >
+        {flowLabel} {formatSignedDelta(pick.dexoflow)} · raw, cross-ticker
       </div>
     </div>
   );

@@ -1165,7 +1165,7 @@ export default function StrikeCalculator() {
             <GatedSection
               gate={hasMarketContext}
               id="sec-gexbot"
-              label="GEXBot Dealer State"
+              label="GEXBot Taker Flow"
               fallback={<SkeletonSection lines={3} />}
             >
               <GexbotSection

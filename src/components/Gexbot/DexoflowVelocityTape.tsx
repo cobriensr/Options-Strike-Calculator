@@ -6,11 +6,15 @@
  *   cvroflow  — convexity-ratio flow rate
  *
  * These are velocity metrics — per the GEXBot spec, the change in net
- * taker exposure over the last second (taker-signed, not dealer flow).
- * We sample once a minute, so each value is a 1-second change taken at
- * the minute mark, not the change across the minute. Distinct from
- * cumulative flow totals: a high cvroflow means convexity is
- * *accelerating*, not just that it's high.
+ * taker exposure between consecutive vendor snapshots (taker-signed;
+ * positive dexoflow = takers net bought delta). We sample once a minute,
+ * so each value is one short change taken at the minute mark, not the
+ * change across the minute. Distinct from cumulative flow totals: a high
+ * cvroflow means net convexity (zcvr) is changing fast, not just that it
+ * is high.
+ *
+ * Each row shows the ticker's own DTE from `min_dte`. The metric itself
+ * is unchanged here (owner decision D4 reworks it in a later phase).
  *
  * Each cell shows the current value with a trend arrow (▲/▼/─)
  * derived from the sign alone (v0). When historical series are
@@ -25,6 +29,7 @@ import {
   useGexbotData,
   type SnapshotsLatestRow,
 } from '../../hooks/useGexbotData';
+import { formatDte } from './types';
 
 interface DexoflowVelocityTapeProps {
   marketOpen: boolean;
@@ -32,6 +37,7 @@ interface DexoflowVelocityTapeProps {
 
 interface VelocityRow {
   ticker: string;
+  minDte: number | null;
   dexoflow: number | null;
   gexoflow: number | null;
   cvroflow: number | null;
@@ -71,7 +77,7 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
       .filter(
         // Drop rows where every flow-rate is null OR zero. GEXBot
         // returns explicit zeros for the smaller ETFs and VIX when
-        // there's no measurable 0DTE flow — surfacing them here just
+        // there's no measurable flow — surfacing them here just
         // makes the tape harder to scan. Magnitude-sum > 0 keeps any
         // row with at least one meaningful scalar.
         (r: SnapshotsLatestRow) =>
@@ -82,6 +88,7 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
       )
       .map((r) => ({
         ticker: r.ticker,
+        minDte: r.minDte,
         dexoflow: r.dexoflow,
         gexoflow: r.gexoflow,
         cvroflow: r.cvroflow,
@@ -146,21 +153,28 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
       className="rounded-md border border-white/5 bg-white/[0.02]"
     >
       <div className="text-tertiary border-b border-white/5 px-3 py-2 text-[10px] tracking-wide uppercase">
-        Dexoflow Velocity — 0DTE flow-rate scalars
+        Dexoflow Velocity — taker flow-rate scalars, DTE per ticker
       </div>
       <table className="w-full text-left text-xs">
         <thead className="text-tertiary text-[10px] tracking-wide uppercase">
           <tr>
             <th className="px-3 py-1.5 font-medium">Ticker</th>
-            <th className="px-3 py-1.5 text-right font-medium">DEX flow</th>
-            <th className="px-3 py-1.5 text-right font-medium">GEX flow</th>
-            <th className="px-3 py-1.5 text-right font-medium">CVR flow</th>
+            <th className="px-3 py-1.5 text-right font-medium">Taker Δ flow</th>
+            <th className="px-3 py-1.5 text-right font-medium">Taker γ flow</th>
+            <th className="px-3 py-1.5 text-right font-medium">
+              Net convexity flow
+            </th>
           </tr>
         </thead>
         <tbody>
           {velocityRows.map((row) => (
             <tr key={row.ticker} className="border-t border-white/5">
-              <td className="px-3 py-1.5 font-medium">{row.ticker}</td>
+              <td className="px-3 py-1.5 font-medium">
+                {row.ticker}
+                <span className="text-tertiary ml-1.5 text-[10px] font-normal">
+                  {formatDte(row.minDte)}
+                </span>
+              </td>
               <Cell value={row.dexoflow} />
               <Cell value={row.gexoflow} />
               <Cell value={row.cvroflow} />

@@ -34,7 +34,7 @@ interface GexbotSectionProps {
 
 function GexbotSectionInner({ marketOpen, spxSpot }: GexbotSectionProps) {
   return (
-    <SectionBox label="GEXBot Dealer State" collapsible>
+    <SectionBox label="GEXBot Taker Flow" collapsible>
       <div className="flex flex-col gap-3">
         <DealerStateSummaryStrip marketOpen={marketOpen} />
         <StrikeMoverLadder marketOpen={marketOpen} spxSpot={spxSpot} />
@@ -45,8 +45,9 @@ function GexbotSectionInner({ marketOpen, spxSpot }: GexbotSectionProps) {
         <CrossAssetSkewDashboard marketOpen={marketOpen} />
       </div>
       <p className="text-tertiary mt-3 text-[10px] leading-relaxed">
-        GEXBot Orderflow-tier data — capture pipeline ships dealer positioning +
-        flow metrics for 16 Index/ETF tickers every minute during market hours.
+        GEXBot Orderflow-tier data — taker-side exposure and flow metrics for 14
+        underlyings (plus ES_SPX / NQ_NDX futures views of SPX / NDX), captured
+        every minute during market hours.
       </p>
     </SectionBox>
   );

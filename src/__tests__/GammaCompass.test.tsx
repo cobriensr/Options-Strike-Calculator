@@ -4,6 +4,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import { GammaCompass } from '../components/Gexbot/GammaCompass';
 import type { SnapshotsLatestRow } from '../hooks/useGexbotData';
+import { dealerClaims } from './helpers/dealer-claims';
 
 const mockUseGexbotData = vi.fn();
 vi.mock('../hooks/useGexbotData', async () => {
@@ -136,27 +137,12 @@ describe('<GammaCompass>', () => {
     expect(rows[0]).toHaveTextContent('QQQ');
   });
 
-  it('shows "inverted" badge when long γ strike is above spot', () => {
+  it('never shows an "inverted" badge, whatever the strikes sit at', () => {
     mockUseGexbotData.mockReturnValue({
       rows: [
-        // Inverted regime: long γ (6020) is ABOVE spot (5985), short γ
-        // (5950) is BELOW. Typical floor/ceiling intuition flipped.
+        // Long-γ strike above spot, short-γ below: there is no reason to
+        // expect otherwise, so nothing is flagged.
         makeRow({ ticker: 'SPX', spot: 5985, zMlgamma: 6020, zMsgamma: 5950 }),
-      ],
-      loading: false,
-      error: null,
-      freshestAt: '2026-05-19T14:00:00Z',
-    });
-    render(<GammaCompass marketOpen />);
-    expect(
-      screen.getByTestId('gamma-compass-inverted-SPX'),
-    ).toBeInTheDocument();
-  });
-
-  it('shows "typical" indicator when regime is normal', () => {
-    mockUseGexbotData.mockReturnValue({
-      rows: [
-        makeRow({ ticker: 'SPX', spot: 5985, zMlgamma: 5950, zMsgamma: 6020 }),
       ],
       loading: false,
       error: null,
@@ -166,14 +152,75 @@ describe('<GammaCompass>', () => {
     expect(
       screen.queryByTestId('gamma-compass-inverted-SPX'),
     ).not.toBeInTheDocument();
-    // "typical" appears once in the header subtitle and once in the
-    // per-row regime cell. Assert the per-row cell renders by counting.
-    const matches = container.querySelectorAll('tbody td:last-child span');
-    expect(matches.length).toBe(1);
-    expect(matches[0]).toHaveTextContent(/typical/);
+    expect(container.textContent ?? '').not.toMatch(/inverted|typical/i);
   });
 
-  it('uses emerald for floor cells and rose for danger cells', () => {
+  it('labels the strikes as taker long-γ / short-γ with unvalidated vendor guidance', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [
+        makeRow({ ticker: 'SPX', spot: 5985, zMlgamma: 5950, zMsgamma: 6020 }),
+      ],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T14:00:00Z',
+    });
+    const { container } = render(<GammaCompass marketOpen />);
+    const text = container.textContent ?? '';
+    expect(text).toMatch(/taker long-γ strike/i);
+    expect(text).toMatch(/taker short-γ strike/i);
+    expect(
+      container.querySelector('[title*="vendor guidance, unvalidated"]'),
+    ).not.toBeNull();
+  });
+
+  it('shows the DTE per ticker from min_dte instead of a hard-coded 0DTE', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [
+        makeRow({
+          ticker: 'SPX',
+          spot: 5985,
+          zMlgamma: 5950,
+          zMsgamma: 6020,
+          minDte: 2,
+        }),
+        makeRow({
+          ticker: 'QQQ',
+          spot: 540,
+          zMlgamma: 532,
+          zMsgamma: 545,
+          minDte: null,
+        }),
+      ],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T14:00:00Z',
+    });
+    const { container } = render(<GammaCompass marketOpen />);
+    const [spxRow, qqqRow] = Array.from(container.querySelectorAll('tbody tr'));
+    expect(spxRow).toHaveTextContent('2DTE');
+    expect(qqqRow).toHaveTextContent('DTE n/a');
+    expect(container.textContent ?? '').not.toContain('0DTE');
+  });
+
+  it('makes no dealer / market-maker claims in text or tooltips', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [
+        makeRow({ ticker: 'SPX', spot: 5985, zMlgamma: 5950, zMsgamma: 6020 }),
+      ],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T14:00:00Z',
+    });
+    const { container } = render(<GammaCompass marketOpen />);
+    const titles = Array.from(container.querySelectorAll('[title]'))
+      .map((el) => el.getAttribute('title'))
+      .join(' ');
+    expect(dealerClaims(`${container.textContent ?? ''} ${titles}`)).toEqual(
+      [],
+    );
+  });
+
+  it('uses emerald for long-γ cells and rose for short-γ cells', () => {
     mockUseGexbotData.mockReturnValue({
       rows: [
         makeRow({ ticker: 'SPX', spot: 5985, zMlgamma: 5950, zMsgamma: 6020 }),

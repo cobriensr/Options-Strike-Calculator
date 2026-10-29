@@ -4,6 +4,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import { DexoflowVelocityTape } from '../components/Gexbot/DexoflowVelocityTape';
 import type { SnapshotsLatestRow } from '../hooks/useGexbotData';
+import { dealerClaims } from './helpers/dealer-claims';
 
 const mockUseGexbotData = vi.fn();
 vi.mock('../hooks/useGexbotData', async () => {
@@ -226,5 +227,35 @@ describe('<DexoflowVelocityTape>', () => {
     expect(tickerCells[0]).toHaveTextContent('SPX');
     expect(tickerCells[1]).toHaveTextContent('QQQ');
     expect(tickerCells[2]).toHaveTextContent('SPY');
+  });
+
+  it('shows the DTE per ticker from min_dte instead of a hard-coded 0DTE', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [
+        makeRow({ ticker: 'SPX', dexoflow: 1_000_000, minDte: 2 }),
+        makeRow({ ticker: 'QQQ', dexoflow: 500_000, minDte: null }),
+      ],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T14:00:00Z',
+    });
+    const { container } = render(<DexoflowVelocityTape marketOpen />);
+    const [spxRow, qqqRow] = Array.from(container.querySelectorAll('tbody tr'));
+    expect(spxRow).toHaveTextContent('2DTE');
+    expect(qqqRow).toHaveTextContent('DTE n/a');
+    expect(container.textContent ?? '').not.toContain('0DTE');
+  });
+
+  it('uses taker wording and makes no dealer / market-maker claims', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeRow({ ticker: 'SPX', dexoflow: 1_000_000, minDte: 2 })],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T14:00:00Z',
+    });
+    const { container } = render(<DexoflowVelocityTape marketOpen />);
+    const text = container.textContent ?? '';
+    expect(text).toMatch(/taker/i);
+    expect(dealerClaims(text)).toEqual([]);
   });
 });

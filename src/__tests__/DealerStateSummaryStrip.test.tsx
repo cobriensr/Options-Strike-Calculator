@@ -3,6 +3,7 @@ import { render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import { DealerStateSummaryStrip } from '../components/Gexbot/DealerStateSummaryStrip';
+import { dealerClaims } from './helpers/dealer-claims';
 import type { SnapshotsLatestRow } from '../hooks/useGexbotData';
 
 const mockUseGexbotData = vi.fn();
@@ -193,8 +194,8 @@ describe('<DealerStateSummaryStrip>', () => {
     });
     render(<DealerStateSummaryStrip marketOpen />);
     const tile = screen.getByTestId('dealer-state-strip-breadth');
-    // 3 long, 2 short, 11 unknown across 16-ticker universe.
-    expect(tile).toHaveTextContent(/3 \/ 16/);
+    // 3 long, 2 short, 9 unknown across the 14 distinct underlyings.
+    expect(tile).toHaveTextContent(/3 \/ 14/);
     expect(tile).toHaveTextContent(/LONG γ/i);
   });
 
@@ -224,5 +225,61 @@ describe('<DealerStateSummaryStrip>', () => {
     render(<DealerStateSummaryStrip marketOpen />);
     const tile = screen.getByTestId('dealer-state-strip-loudest');
     expect(within(tile).getByText('—')).toBeInTheDocument();
+  });
+
+  it('does not double-count the ES_SPX / NQ_NDX futures views in breadth', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [
+        makeRow('SPX', { spot: 5847, zeroGamma: 5820 }), // long
+        makeRow('ES_SPX', { spot: 5847, zeroGamma: 5820 }), // same data
+        makeRow('NDX', { spot: 19_200, zeroGamma: 19_100 }), // long
+        makeRow('NQ_NDX', { spot: 19_200, zeroGamma: 19_100 }), // same data
+      ],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T19:32:11Z',
+    });
+    render(<DealerStateSummaryStrip marketOpen />);
+    const tile = screen.getByTestId('dealer-state-strip-breadth');
+    expect(tile).toHaveTextContent(/2 \/ 14/);
+    expect(tile).not.toHaveTextContent(/4 \/ /);
+  });
+
+  it('labels the loudest tile as taker flow, not dealer flow', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeRow('SPX', { dexoflow: 1_200_000 })],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T19:32:11Z',
+    });
+    render(<DealerStateSummaryStrip marketOpen />);
+    const tile = screen.getByTestId('dealer-state-strip-loudest');
+    expect(tile).toHaveTextContent(/taker \+Δ flow/);
+    expect(tile).toHaveTextContent(/raw/i);
+  });
+
+  it('makes no dealer / market-maker claims in any state', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [
+        makeRow('SPX', { spot: 5847, zeroGamma: 5820, dexoflow: -3e6 }),
+        makeRow('VIX', { spot: 14, zeroGamma: 15 }),
+      ],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T19:32:11Z',
+    });
+    const { container, rerender } = render(
+      <DealerStateSummaryStrip marketOpen />,
+    );
+    expect(dealerClaims(container.textContent ?? '')).toEqual([]);
+    for (const state of [
+      { rows: [], loading: true, error: null, freshestAt: null },
+      { rows: [], loading: false, error: 'HTTP 500', freshestAt: null },
+      { rows: [], loading: false, error: null, freshestAt: null },
+    ]) {
+      mockUseGexbotData.mockReturnValue(state);
+      rerender(<DealerStateSummaryStrip marketOpen />);
+      expect(dealerClaims(container.textContent ?? '')).toEqual([]);
+    }
   });
 });

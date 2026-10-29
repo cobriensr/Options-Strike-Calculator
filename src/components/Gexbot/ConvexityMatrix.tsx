@@ -28,7 +28,7 @@ import {
   type ConvexityTrendRow,
 } from '../../hooks/useGexbotData';
 import { Sparkline } from './Sparkline';
-import { GEXBOT_TICKER_ORDER } from './ticker-order';
+import { GEXBOT_UNDERLYING_ORDER } from './ticker-order';
 import { formatDte } from './types';
 
 interface ConvexityMatrixProps {
@@ -147,7 +147,7 @@ function ConvexityMatrixInner({ marketOpen }: ConvexityMatrixProps) {
     const byTicker = new Map(
       rows.map((r: ConvexityTrendRow) => [r.ticker, r] as const),
     );
-    return GEXBOT_TICKER_ORDER.map((ticker) => {
+    return GEXBOT_UNDERLYING_ORDER.map((ticker) => {
       const row = byTicker.get(ticker);
       const values = row?.series.map(([, v]) => v) ?? [];
       const latest = values.at(-1) ?? null;

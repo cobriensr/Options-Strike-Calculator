@@ -69,7 +69,7 @@ describe('<ConvexityMatrix>', () => {
     expect(screen.getByTestId('convexity-matrix-error')).toBeInTheDocument();
   });
 
-  it('renders all 16 cells in fixed order, even with partial data', () => {
+  it('renders the 14 underlying cells in fixed order, even with partial data', () => {
     mockUseGexbotData.mockReturnValue({
       rows: [makeTrend('SPX', [1.0, 1.1, 1.2])],
       loading: false,
@@ -77,12 +77,10 @@ describe('<ConvexityMatrix>', () => {
       freshestAt: '2026-05-19T14:00:00Z',
     });
     render(<ConvexityMatrix marketOpen />);
-    // All 16 tickers should be present as cells.
+    // The 14 underlyings are present; the futures views of SPX/NDX are not.
     const tickers = [
       'SPX',
-      'ES_SPX',
       'NDX',
-      'NQ_NDX',
       'RUT',
       'VIX',
       'SPY',
@@ -99,6 +97,8 @@ describe('<ConvexityMatrix>', () => {
     for (const t of tickers) {
       expect(screen.getByTestId(`convexity-cell-${t}`)).toBeInTheDocument();
     }
+    expect(screen.queryByTestId('convexity-cell-ES_SPX')).toBeNull();
+    expect(screen.queryByTestId('convexity-cell-NQ_NDX')).toBeNull();
   });
 
   it('splits at zero: positive net convexity is net option buying (emerald)', () => {

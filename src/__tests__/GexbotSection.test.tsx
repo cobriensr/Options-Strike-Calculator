@@ -38,9 +38,10 @@ describe('<GexbotSection>', () => {
     expect(container.firstChild).not.toBeNull();
   });
 
-  it('shows the section label', () => {
+  it('shows the source-honest section label', () => {
     render(<GexbotSection marketOpen spxSpot={6750} />);
-    expect(screen.getByText(/GEXBot Dealer State/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/GEXBot Taker Flow/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Dealer State/i)).toBeNull();
   });
 
   it('mounts all 7 child components (drives empty-state testids)', () => {
