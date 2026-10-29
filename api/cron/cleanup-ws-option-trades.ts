@@ -32,10 +32,12 @@
  * every day including weekends. Never 13–21 UTC, where batch deletes would
  * contend with uw-stream's market-hours inserts. Cadence math (measured in
  * docs/superpowers/specs/flow-regime-and-retention-2026-10-02.md): intake is
- * ~8.5M rows per session and one session expires each ET midnight Thu–Mon; a
- * run deletes ~5.9M rows, so the 8–9 runs between ET midnight and 12:05 UTC
- * clear a session in two. The old Mon–Fri 12:05 run had 36.5M rows/week of
- * capacity against ~42.6M of intake and fell steadily behind.
+ * ~8.5M rows per session and one session expires each ET midnight Thu–Mon.
+ * The spec's estimate of ~20k rows/s gives ~4.8M rows per run on the current
+ * 240 s WALL_BUDGET_MS (each run logs and reports its real `rowsPerSec`), so
+ * the 8–9 runs between ET midnight and 12:05 UTC still clear a session in
+ * two. The old Mon–Fri 12:05 run had 36.5M rows/week of capacity against
+ * ~42.6M of intake and fell steadily behind.
  *
  * Ordering: each batch takes the OLDEST expired rows via the `(executed_at)`
  * index, starting at the previous batch's frontier so it never re-walks index
@@ -50,11 +52,15 @@
  *
  * Auth: CRON_SECRET via cronGuard. No UW key — DB-only.
  * Time gate: none (`marketHours: false`); the schedule keeps it off-hours.
+ * Axiom: one reportCronRun event per run that passes the guard, carrying the
+ * response body: `ok` (a budget stop, the designed outcome of a busy night,
+ * adds `backlog`) or `error` with the partial counts.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 import { cronGuard } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 import { WS_OPTION_TRADES_RETENTION_DAYS } from '../_lib/constants.js';
 import { withCronCheckin } from '../_lib/cron-instrumentation.js';
 import { getDb } from '../_lib/db.js';
@@ -68,13 +74,16 @@ const BATCH_SIZE = 50_000;
 
 /**
  * Stop issuing batches once elapsed time plus the slowest batch so far would
- * pass this. `startedAt` is taken inside withCronCheckin, so the in-progress
- * and completion check-ins (≤ 5 s each) sit outside it. That leaves ~10 s for
- * the final batch to overrun the slowest so far, plus the backlog estimate and
- * the response. Beyond that the invocation is killed mid-statement; the DELETE
- * is atomic, and the next hourly run picks up where it stopped.
+ * pass this. Of maxDuration's 300 s, the budget leaves out: the in-progress
+ * and completion check-ins (≤ 5 s each; `startedAt` is taken inside
+ * withCronCheckin), up to 40 s for the awaited reportCronRun (axiom-js times
+ * an ingest out at 20 s, and reportCronRun retries a rejected event once),
+ * and ~10 s for the final batch to overrun the slowest so far, plus the
+ * backlog estimate and the response. Beyond that the invocation is killed
+ * mid-statement; the DELETE is atomic, and the next hourly run picks up where
+ * it stopped.
  */
-const WALL_BUDGET_MS = 280_000;
+const WALL_BUDGET_MS = 240_000;
 
 /**
  * A budget stop sends a Sentry warning only when the oldest expired row still
@@ -282,6 +291,14 @@ async function handler(req: VercelRequest, res: VercelResponse) {
       { err, today, totalDeleted, batches },
       'cleanup-ws-option-trades failed',
     );
+    await reportCronRun(JOB, {
+      status: 'error',
+      error: String(err),
+      today,
+      totalDeleted,
+      batches,
+      durationMs: Date.now() - startedAt,
+    });
     res.status(500).json({
       error: 'cleanup failed',
       totalDeleted,
@@ -303,6 +320,7 @@ async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (stopReason === 'drained' || !last) {
     logger.info(summary, 'ws_option_trades retention sweep complete');
+    await reportCronRun(JOB, { status: 'ok', ...summary });
     res.status(200).json(summary);
     return;
   }
@@ -326,6 +344,10 @@ async function handler(req: VercelRequest, res: VercelResponse) {
       },
     );
   }
+  // A budget stop is the designed outcome of a busy night, not a failed
+  // write: `ok`, with the backlog in `meta`. Falling behind is surfaced by
+  // the Sentry warning above, not by the run status.
+  await reportCronRun(JOB, { status: 'ok', ...summary, backlog });
   res.status(200).json({ ...summary, backlog });
 }
 

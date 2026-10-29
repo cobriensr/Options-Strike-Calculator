@@ -21,6 +21,10 @@
  * Time gate: none (pre-market run; `marketHours: false`).
  * Monitor: Sentry cron check-ins via withCronCheckin (SCHEDULE_MAP entry).
  * A 500 from a failed DELETE becomes an `error` check-in.
+ * Axiom: one reportCronRun event per run that passes the guard, carrying the
+ * response summary: `ok` when drained, `partial` when the wall budget stopped
+ * the sweep (a handful of batches should drain a day, so expired rows left
+ * until tomorrow are abnormal here), or `error` with the partial counts.
  *
  * Batching: deletes are issued in 50k-row chunks until either the
  * table is drained or the per-run wall budget is exhausted. Daily
@@ -34,6 +38,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 import { cronGuard } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 import { withCronCheckin } from '../_lib/cron-instrumentation.js';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
@@ -48,14 +53,16 @@ const BATCH_SIZE = 50_000;
  * Don't start a batch when elapsed time plus the slowest batch so far would
  * pass this. The check runs before every batch after the first, including
  * the first batch of pass 2, so no DELETE starts that is expected to end past
- * the budget. `startedAt` is taken inside withCronCheckin, so the in-progress
- * and completion check-ins (≤ 5 s each) sit outside it. That leaves ~10 s of
- * maxDuration for a final batch that overruns the slowest so far, plus the
- * response, so the run ends with a partial report instead of being killed
- * mid-DELETE (which would page as a monitor timeout). Same rule and budget as
- * cleanup-ws-option-trades.
+ * the budget. Of maxDuration's 300 s, the budget leaves out: the in-progress
+ * and completion check-ins (≤ 5 s each; `startedAt` is taken inside
+ * withCronCheckin), up to 40 s for the awaited reportCronRun (axiom-js times
+ * an ingest out at 20 s, and reportCronRun retries a rejected event once),
+ * and ~10 s for a final batch that overruns the slowest so far plus the
+ * response. So the run ends with a partial report instead of being killed
+ * mid-DELETE or mid-ingest (which would page as a monitor timeout). Same rule
+ * and budget as cleanup-ws-option-trades.
  */
-const WALL_BUDGET_MS = 280_000;
+const WALL_BUDGET_MS = 240_000;
 
 async function handler(req: VercelRequest, res: VercelResponse) {
   const guard = cronGuard(req, res, {
@@ -140,25 +147,33 @@ async function handler(req: VercelRequest, res: VercelResponse) {
       if (stopReason === 'wall_budget') break;
     }
 
-    const durationMs = Date.now() - startedAt;
-    logger.info(
-      { today, totalDeleted, batches, durationMs, stopReason },
-      'ws_gex_strike_expiry retention sweep complete',
-    );
-
-    res.status(200).json({
+    const summary = {
       today,
       totalDeleted,
       batches,
-      durationMs,
+      durationMs: Date.now() - startedAt,
       stopReason,
+    };
+    logger.info(summary, 'ws_gex_strike_expiry retention sweep complete');
+    await reportCronRun(JOB, {
+      status: stopReason === 'wall_budget' ? 'partial' : 'ok',
+      ...summary,
     });
+    res.status(200).json(summary);
   } catch (err) {
     Sentry.captureException(err);
     logger.error(
       { err, today, totalDeleted, batches },
       'cleanup-ws-gex-strike-expiry failed',
     );
+    await reportCronRun(JOB, {
+      status: 'error',
+      error: String(err),
+      today,
+      totalDeleted,
+      batches,
+      durationMs: Date.now() - startedAt,
+    });
     res.status(500).json({
       error: 'cleanup failed',
       totalDeleted,
