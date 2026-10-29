@@ -9,9 +9,18 @@ import { dateTimeSection, openSection } from './helpers/calculator';
  *
  * The dev server runs in owner mode, and a past trading day adds the
  * BACKTEST + NO INTRADAY pills (/api is aborted), so the header carries
- * its fullest controls row: at 1024 it squeezes and the title wraps,
- * making the header 90px tall.
+ * its fullest controls row. Below xl that row scrolls sideways; at 1280
+ * it squeezes, and with the Schwab countdown the header grows to 90px.
  */
+
+/** The owner's Schwab login runs out in 3 hours: the amber countdown shows. */
+async function showSchwabCountdown(page: Page) {
+  await page.route('**/api/auth/schwab-status', (route) =>
+    route.fulfill({
+      json: { state: 'expiring', refreshExpiresAt: Date.now() + 3 * 3600_000 },
+    }),
+  );
+}
 
 async function openScrolled(page: Page, width: number) {
   await page.setViewportSize({ width, height: 900 });
@@ -101,4 +110,83 @@ test.describe('Sticky header and section nav', () => {
       await expect.poll(() => offTarget('sec-futures-calc')).toBeLessThan(1.5);
     });
   }
+});
+
+// The owner's fullest header row: backtest pills, the Schwab countdown with
+// its Re-auth link, and the admin tools. Below xl the row scrolls sideways;
+// it used to squeeze at 1024, wrapping the header to 105px and pushing
+// controls off the page (1085px wide) or, in the alerts view, out of reach.
+test.describe('Desktop header with the owner row', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.route('**/api/**', (route) => route.abort());
+    await showSchwabCountdown(page);
+  });
+
+  async function openFullRow(
+    page: Page,
+    width: number,
+    view: 'calculator' | 'alerts',
+  ) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto('/');
+    await dateTimeSection(page)
+      .getByLabel('Date', { exact: true })
+      .fill('2025-01-15');
+    const header = page.getByRole('banner');
+    await expect(
+      header.getByText('NO INTRADAY', { exact: false }),
+    ).toBeAttached();
+    await expect(
+      header.getByRole('timer', { name: 'Schwab login expiry' }),
+    ).toBeAttached();
+    if (view === 'alerts') {
+      await header.getByRole('button', { name: 'Options Alerts' }).click();
+      await expect(
+        page.getByRole('main', { name: /options alerts/i }),
+      ).toBeVisible();
+    }
+    return header;
+  }
+
+  async function pageWidth(page: Page) {
+    return page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      innerWidth: window.innerWidth,
+    }));
+  }
+
+  for (const view of ['calculator', 'alerts'] as const) {
+    test(`at 1024 the ${view} view keeps one header row and every control in reach`, async ({
+      page,
+    }) => {
+      const header = await openFullRow(page, 1024, view);
+      const { scrollWidth, innerWidth } = await pageWidth(page);
+      expect(scrollWidth).toBeLessThanOrEqual(innerWidth);
+      const box = await header.boundingBox();
+      expect(box?.height).toBeLessThan(75); // one control row: 69px
+
+      // The last tool scrolls into view within the row
+      const last = header.getByRole('button', { name: 'Switch to light mode' });
+      await last.evaluate((el) =>
+        el.scrollIntoView({ block: 'nearest', inline: 'nearest' }),
+      );
+      await expect(last).toBeInViewport({ ratio: 1 });
+    });
+  }
+
+  test('at 1280 the header row is a plain row, as before: no scrolling, no fades', async ({
+    page,
+  }) => {
+    const header = await openFullRow(page, 1280, 'calculator');
+    const row = header
+      .getByRole('navigation', { name: 'Application view' })
+      .locator('..');
+    await expect(row).toHaveCSS('overflow-x', 'visible');
+    await expect(header.getByTestId('controls-fade-right')).toBeHidden();
+    const { scrollWidth, innerWidth } = await pageWidth(page);
+    expect(scrollWidth).toBeLessThanOrEqual(innerWidth);
+    await expect(
+      header.getByRole('button', { name: 'Switch to light mode' }),
+    ).toBeInViewport({ ratio: 1 });
+  });
 });
