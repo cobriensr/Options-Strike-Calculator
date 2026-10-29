@@ -1,10 +1,11 @@
 /**
  * GET /api/gex-landscape
  *
- * Per-strike MM gamma / charm / vanna rows served straight from
- * `gexbot_api_capture` at 1-min cadence, with each row carrying its own
- * `[t-1m, t-5m, t-10m]` prior values (extracted from position-4 of the
- * GEXBot `mini_contracts` payload — see `decodeStrikesWithHistory`).
+ * Per-strike gamma / charm / vanna rows (GEXBot net taker imbalances,
+ * not dealer positions) served straight from `gexbot_api_capture` at
+ * 1-min cadence, with each row carrying its own prior values (position-4
+ * of the GEXBot `mini_contracts` payload, read as `[t-1m, t-5m, t-10m]`;
+ * the windows are our assumption — see `decodeStrikesWithHistory`).
  *
  * Replaces the 10-min `usePeriscopeStrikes` path the legacy GexLandscape
  * hook used. Phase 1 of the rebuild spec:

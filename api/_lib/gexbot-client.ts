@@ -9,16 +9,17 @@
  *
  * See: docs/superpowers/specs/gexbot-trial-capture-2026-05-16.md
  * Spec source: github.com/nfa-llc/gexbot-openapi
- *   (latest/gexbot.spec3.yaml, GEXBot v2.2.0)
+ *   (latest/gexbot.spec3.yaml, spec 2.13.0, published 2026-10-27)
  *
  * Rate-limit contract from AGENTS.md (verbatim):
- *   "Data is not updated more than once per second. Requests should
- *    not exceed one request per second per ticker per metric."
+ *   "Data updates at most once per second. Do not send more than one
+ *    request per second per ticker per metric."
  * The fetch crons hit each (ticker, endpoint) pair once per minute
  * (well under the cap). No client-side rate limiter — Vercel cron
- * cadence is the budget. Note: that contract bounds REQUEST RATE, not
- * the per-request HTTP timeout; GEXBot occasionally responds in
- * 1–2 s under load.
+ * cadence is the budget. AGENTS.md also says to "use a short timeout
+ * (about 1 second) for the snapshot routes"; we run 2.5 s on purpose
+ * because GEXBot occasionally responds in 1–2 s under load (see
+ * GEXBOT_TIMEOUT_MS).
  */
 
 const GEXBOT_BASE = 'https://api.gex.bot/v2';
@@ -26,8 +27,10 @@ const GEXBOT_BASE = 'https://api.gex.bot/v2';
 /**
  * Per-call HTTP timeout. Bumped 1 s → 2.5 s after
  * SENTRY-EMERALD-DESERT-8F/76 showed 163 TimeoutError events when
- * GEXBot returned in 1–2 s during slow minutes. The cron's
- * maxDuration is 60 s so even a 32-way burst at 2.5 s each fits.
+ * GEXBot returned in 1–2 s during slow minutes. The vendor recommends
+ * about 1 s for snapshot routes; we keep 2.5 s deliberately because
+ * 1 s is what produced those timeouts. The cron's maxDuration is 60 s
+ * so even a 32-way burst at 2.5 s each fits.
  */
 const GEXBOT_TIMEOUT_MS = 2_500;
 
@@ -71,9 +74,11 @@ export type GexbotTicker = (typeof GEXBOT_TICKERS)[number];
 
 /**
  * State endpoint categories we poll per-strike for each ticker.
- * `_zero` = 0DTE only; `_one` = next-expiry+1 (the "1DTE+" bucket).
- * Skipped: the bare `{gamma,delta,vanna,charm}` (all-DTE) variants
- * — derivable as `_zero + _one` and not worth the extra calls.
+ * `_zero` = the nearest expiry (0DTE for tickers with dailies); `_one`
+ * = the single next expiry (one expiry, not every expiry after 0DTE).
+ * Skipped: the bare `{gamma,delta,vanna,charm}` and `one{greek}` names
+ * — the spec lists them as aliases of `_zero` and `_one`, so polling
+ * them would duplicate calls.
  */
 export const STATE_CATEGORIES = [
   'gamma_zero',
@@ -92,7 +97,8 @@ export type StateCategory = (typeof STATE_CATEGORIES)[number];
  * Classic-tier maxchange categories we capture. Each returns the
  * top-mover strike across 6 lookback windows (`current` / `one` /
  * `five` / `ten` / `fifteen` / `thirty`). All three DTE buckets:
- * 0DTE (`gex_zero`), 1DTE+ (`gex_one`), and full-DTE (`gex_full`).
+ * nearest expiry (`gex_zero`), the single next expiry (`gex_one`), and
+ * full aggregation up to 90 days out (`gex_full`).
  */
 export const MAXCHANGE_CATEGORIES = [
   'gex_zero',
@@ -176,12 +182,17 @@ async function gexbotFetch(
  * GET /{ticker}/orderflow/orderflow — the Orderflow-tier snapshot
  * containing the proprietary flow scalars (zcvr, zgr, dexoflow, gexoflow,
  * cvroflow, the dex family, and the z-prefixed / o-prefixed moneyness
- * gammas) plus spot/ticker/timestamp.
+ * gammas) plus spot/ticker/timestamp. Per the spec every flow field is
+ * net TAKER exposure, not a dealer position: `agg_*` = cumulative since
+ * the 09:30 ET open (resets daily); `net_*`, `*cvr`, `*gr`, `*vanna`,
+ * `*charm` = across the active chain at this moment; `*oflow` = the
+ * change over the last second.
  *
- * NOTE: the OpenAPI `orderflow_response` schema *lists* zero_gamma,
- * sum_gex_*, major_*, delta_risk_reversal, and min_dte/sec_min_dte, but the
- * LIVE payload omits all of them (verified 2026-05-29 — spec-vs-live drift).
- * Those fields are sourced from `fetchClassicBasic` instead. See
+ * NOTE: zero_gamma, sum_gex_*, major_*, delta_risk_reversal and
+ * min_dte/sec_min_dte are not in this payload. Spec 2.13.0's
+ * `orderflow_response` no longer lists them, and the live body is the 34
+ * flow fields plus timestamp/ticker/spot. Those fields are sourced from
+ * `fetchClassicBasic` instead. See
  * docs/superpowers/specs/gexbot-classic-basic-capture-2026-05-29.md.
  */
 export function fetchOrderflow(
@@ -194,11 +205,12 @@ export function fetchOrderflow(
 /**
  * GET /{ticker}/classic/{category} — the basic (non-maxchange) classic
  * endpoint. Returns the `basic_response` aggregate scalars for one DTE
- * bucket: zero_gamma (gamma-flip price), sum_gex_vol/oi, major_pos/neg_vol/oi,
+ * bucket: zero_gamma (a spline crossing on GEX by volume, not a spot-sweep
+ * "gamma flip"), sum_gex_vol/oi, major_pos/neg_vol/oi,
  * delta_risk_reversal, min_dte/sec_min_dte, plus a strikes[] GEX profile.
  *
  * This is the live home of the 10 aggregate fields the /orderflow payload
- * drops. We poll `gex_zero` (0DTE) and merge them into the orderflow
+ * doesn't carry. We poll `gex_zero` (0DTE) and merge them into the orderflow
  * snapshot row. Distinct from `fetchMaxchange` (`/classic/{cat}/maxchange`),
  * which returns biggest-mover strikes over the lookback windows.
  */
@@ -212,9 +224,15 @@ export function fetchClassicBasic(
 
 /**
  * GET /{ticker}/state/{category} — per-strike Greek profile for
- * one DTE bucket. The response shape matches `basic_response` but
- * `strikes[]` values are the requested Greek (gamma/delta/vanna/charm)
- * rather than GEX.
+ * one DTE bucket. For the Greek categories (STATE_CATEGORIES) the spec
+ * returns `option_profile_response`, NOT `basic_response`: timestamp,
+ * ticker, spot, min_dte, sec_min_dte, major_positive, major_negative,
+ * major_long_gamma, major_short_gamma and mini_contracts. There is no
+ * `strikes[]`. Each mini_contracts row carries the requested Greek
+ * (gamma/delta/vanna/charm) as a net taker imbalance from GEXBot's
+ * orderflow classification engine, not a dealer position (row layout:
+ * `decodeStrikes` in periscope-gexbot.ts). The gex categories
+ * (`/state/gex_*`) return `basic_response`.
  */
 export function fetchStatePerStrike(
   apiKey: string,

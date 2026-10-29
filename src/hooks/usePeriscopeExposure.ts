@@ -1,7 +1,8 @@
 /**
- * usePeriscopeExposure — fetches the Periscope MM-attributed exposure
- * view for the panel. Routes between two endpoints based on whether the
- * user is in live or historical mode:
+ * usePeriscopeExposure — fetches the Periscope exposure view for the
+ * panel (GEXBot taker-signed values since the GEXBot cutover). Routes
+ * between two endpoints based on whether the user is in live or
+ * historical mode:
  *
  *   - LIVE (no date/time picker): /api/periscope-map — GEXBot 1-min,
  *     deterministic view computed from `gexbot_api_capture`. No Claude.

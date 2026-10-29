@@ -247,7 +247,7 @@ export function StrikeTable({
                 </span>
               </div>
 
-              {/* NetGamma — dealer-attributed dollar gamma */}
+              {/* NetGamma — GEXBot taker-signed dollar gamma */}
               <div className="flex items-center justify-end px-3 py-1.5">
                 <span
                   className="font-mono text-[11px]"

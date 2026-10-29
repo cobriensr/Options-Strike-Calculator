@@ -50,7 +50,10 @@ export interface DecodedStrike {
 }
 
 export interface DecodedStrikeWithHistory extends DecodedStrike {
-  /** Position-4 [t-1m, t-5m, t-10m] — already in the payload. null when sparse. */
+  /**
+   * Position-4 priors array, read as [t-1m, t-5m, t-10m] (our assumption;
+   * the spec doesn't name the windows). null when sparse.
+   */
   prev1m: number | null;
   prev5m: number | null;
   prev10m: number | null;
@@ -85,14 +88,21 @@ function readPrev(row: unknown[], idx: number): number | null {
 }
 
 /**
- * Decode GEXBot's `mini_contracts` array. Each row is:
- *   [strike, call_val, put_val, total_dealer_value, [t-1m, t-5m, t-10m], 0, null]
- * Position-3 is the signed MM-attributed value for the panel
- * (gamma at gamma_zero endpoint, charm at charm_zero, etc.).
+ * Decode GEXBot's `mini_contracts` array. Per spec 2.13.0 each row is:
+ *   [strike, call_ivol, put_ivol, greek value, priors array,
+ *    put classified volume, put volume priors]
+ * and in public API responses the last two are 0 and null, e.g.
+ *   [7795, 0, 0, -68.8, [-25.62, -49.67, -48.69], 0, null]
+ * Position-3 is the signed Greek value for the panel (gamma at the
+ * gamma_zero endpoint, charm at charm_zero, etc.), a net taker
+ * imbalance from GEXBot's orderflow classification engine, not a
+ * dealer position. Live priors arrays hold 3 entries; the spec doesn't
+ * name their windows, and reading them as t-1m / t-5m / t-10m is our
+ * assumption.
  *
  * Rows with non-numeric position-0 or position-3 are dropped — the
- * payload occasionally includes sparse rows for far-OTM strikes where
- * the dealer book is empty.
+ * payload occasionally includes sparse rows for far-OTM strikes with
+ * no classified flow.
  */
 export function decodeStrikes(payload: GexbotStatePayload): DecodedStrike[] {
   const arr = payload.mini_contracts;
@@ -108,7 +118,8 @@ export function decodeStrikes(payload: GexbotStatePayload): DecodedStrike[] {
 
 /**
  * Same row-validity gates as `decodeStrikes`, but also lifts position-4
- * (`[t-1m, t-5m, t-10m]` prior values per strike) into the result so the
+ * (the priors array, read as `[t-1m, t-5m, t-10m]` per strike; the
+ * windows are our assumption, not vendor-stated) into the result so the
  * frontend can compute Δ% windows without a second DB read.
  *
  * Position-4 can be absent, shorter than 3, or contain null / NaN

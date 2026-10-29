@@ -8,8 +8,9 @@
  * volumes the strikes cron handles (128 rows/min, ~30 KB JSONB each).
  *
  * Snapshots (16 rows/min) stay per-row inline in the fast cron —
- * the table is 46 columns wide, an UNNEST INSERT would need 46 arrays
- * which is unmaintainable for marginal benefit at that row count.
+ * the INSERT writes 48 columns (the table is 50 wide with id and
+ * captured_at), so an UNNEST INSERT would need 48 arrays, which is
+ * unmaintainable for marginal benefit at that row count.
  */
 
 import { getDb } from './db.js';

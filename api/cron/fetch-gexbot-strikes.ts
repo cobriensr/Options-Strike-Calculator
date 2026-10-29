@@ -9,13 +9,13 @@
  *
  * Each response carries ~150 strikes with per-strike Greek values, so
  * the raw JSONB payload is ~20–30 KB per row. Daily volume at steady
- * state: ~1.35M rows / ~30 GB before retention. The archive-gexbot
- * cron snapshots to Parquet on Vercel Blob and cleanup-gexbot trims
- * to a 2-day live window.
+ * state: 128 rows/min × 392 live minutes ≈ 50k rows / ~1–1.5 GB before
+ * retention. The archive-gexbot cron snapshots to Parquet on Vercel
+ * Blob and cleanup-gexbot trims to a 2-day live window.
  *
  * Separated from fetch-gexbot-fast so a single GEXBot slowdown doesn't
  * push the whole capture surface over the Hobby-plan 10-second cron
- * timeout. Production maxDuration is 300s — fits easily.
+ * timeout. maxDuration is 60 s (config below) — fits easily.
  *
  * See: docs/superpowers/specs/gexbot-trial-capture-2026-05-16.md
  *

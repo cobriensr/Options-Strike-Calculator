@@ -14,8 +14,8 @@
  * Total: 128 HTTP calls per invocation, all small payloads. The classic
  * `gex_zero` basic call supplies the 10 aggregate fields (zero_gamma,
  * sum_gex_*, major_*, delta_risk_reversal, min_dte/sec_min_dte) that the
- * /orderflow payload omits despite the spec listing them — they're merged
- * into the same per-ticker snapshot row. See
+ * /orderflow payload doesn't carry (spec 2.13.0 and the live body agree)
+ * — they're merged into the same per-ticker snapshot row. See
  * docs/superpowers/specs/gexbot-classic-basic-capture-2026-05-29.md.
  *
  * The `/state/.../maxchange` sub-route accepts only the 3 DTE buckets
@@ -92,8 +92,8 @@ const SENTRY_CAPTURE_CAP = 10;
 const CLASSIC_BASIC_CATEGORY: MaxchangeCategory = 'gex_zero';
 
 /**
- * The 10 aggregate fields the live /orderflow payload omits but the classic
- * basic_response carries. Merged from the classic gex_zero call into the
+ * The 10 aggregate fields the /orderflow payload doesn't carry but the
+ * classic basic_response does. Merged from the classic gex_zero call into the
  * per-ticker orderflow snapshot row. See spec dated 2026-05-29.
  */
 const CLASSIC_BASIC_FIELDS = [
@@ -118,7 +118,7 @@ interface SnapshotRow {
  * Merge the classic gex_zero aggregate fields into the orderflow body so a
  * single INSERT writes one enriched snapshot row. Orderflow stays canonical
  * for spot/ticker/timestamp and the flow scalars; classic supplies only the
- * 10 fields orderflow drops. Returns the orderflow body unchanged when no
+ * 10 fields orderflow lacks. Returns the orderflow body unchanged when no
  * classic row is available (fail-open — those 10 columns stay NULL).
  *
  * Note: the 10 merged fields come from a separate /classic call whose

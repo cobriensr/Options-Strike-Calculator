@@ -659,7 +659,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
           </span>
         )}
         {/* GexBot context badge — snapshot of the top probe signals
-            (1DTE+ cvroflow + net put DEX + 1DTE+ gexoflow) at fire
+            (next-expiry cvroflow + net put DEX + next-expiry gexoflow) at fire
             time. Informational only until enough data accumulates for
             the nightly takeit retrain to pick up the new feature
             columns. Spec: docs/superpowers/specs/silent-boom-gexbot-instrumentation-2026-05-26.md. */}

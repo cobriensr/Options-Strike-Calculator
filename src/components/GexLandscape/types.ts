@@ -12,9 +12,9 @@ import type {
 /**
  * One per-strike row inside a GEX snapshot. Built by `projectStrike` in
  * `useGexLandscapeData` from the `/api/gex-landscape` per-strike payload
- * (1-min GexBot capture). MM-attributed gamma/charm/vanna populate
+ * (1-min GexBot capture). GexBot's taker-signed gamma/charm/vanna populate
  * `netGamma`/`netCharm`/`netVanna`; the call/put split fields stay at 0
- * because the 1-min GexBot feed doesn't expose attribution.
+ * because the 1-min GexBot feed carries no call/put Greek split.
  */
 export interface GexStrikeLevel {
   strike: number;

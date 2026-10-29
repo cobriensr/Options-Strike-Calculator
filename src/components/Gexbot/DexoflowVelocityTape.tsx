@@ -5,10 +5,12 @@
  *   gexoflow  — dollar-gamma flow rate
  *   cvroflow  — convexity-ratio flow rate
  *
- * These are velocity metrics — rate of change of dealer-attributed
- * flow. Distinct from cumulative flow totals: a high cvroflow means
- * convexity is *accelerating*, not just that it's high. Useful for
- * spotting regime shifts at the moment they happen.
+ * These are velocity metrics — per the GEXBot spec, the change in net
+ * taker exposure over the last second (taker-signed, not dealer flow).
+ * We sample once a minute, so each value is a 1-second change taken at
+ * the minute mark, not the change across the minute. Distinct from
+ * cumulative flow totals: a high cvroflow means convexity is
+ * *accelerating*, not just that it's high.
  *
  * Each cell shows the current value with a trend arrow (▲/▼/─)
  * derived from the sign alone (v0). When historical series are

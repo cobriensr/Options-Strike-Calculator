@@ -330,10 +330,9 @@ export default function StrikeCalculator() {
   // the deterministic TradePlanSection only — the prose layer and the
   // usePeriscopePlaybook hook have been removed.
   // GEX Landscape owns its own date / scrub state internally and pulls
-  // MM-attributed per-strike data via `useGexLandscapeData` →
-  // `/api/periscope-strikes` (with a WS side channel for vol
-  // reinforcement). SPX-only since Phase 3 of the MM swap, so App.tsx
-  // no longer threads ticker or per-strike props through.
+  // GEXBot per-strike data (taker-signed) via `useGexLandscapeData` →
+  // `/api/gex-landscape`. SPX-only since Phase 3 of the MM swap, so
+  // App.tsx no longer threads ticker or per-strike props through.
   const gexTarget = useGexTarget(market.data.quotes?.marketOpen ?? false);
   const { results, errors } = useCalculation(
     dSpot,

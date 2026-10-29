@@ -83,7 +83,8 @@ export interface UseGexLandscapeDataReturn {
  * Setting the floor at 50 mutes the bottom ~20% of in-window strikes
  * (the noise source) while passing the median and above unscathed.
  * Half the legacy MM-scale floor of 100, matching the magnitude drop
- * from MM-attributed dealer math to GexBot's per-strike attribution.
+ * from the legacy MM-attributed dealer math to GexBot's per-strike
+ * taker-signed values.
  */
 const DELTA_NOISE_FLOOR = 50;
 
@@ -98,10 +99,10 @@ function computeDelta(current: number, prev: number | null): number | null {
  * GexLandscape renderer consumes.
  *
  * - Endpoint `gamma` → `netGamma`, `charm` → `netCharm`, `vanna` → `netVanna`.
- *   The endpoint already serves MM-attributed values from GexBot.
+ *   The endpoint already serves GexBot's taker-signed values.
  * - `price` ← top-level `spot` from the endpoint payload.
  * - All call/put split fields stay zero — WS side channel is gone and
- *   MM dealer math collapses call/put attribution anyway.
+ *   GexBot's state rows carry no call/put Greek split.
  * - `volReinforcement` is computed from the row's three pre-computed
  *   deltas via `computeVolReinforcement` (delta-trend agreement per
  *   Locked Decision #1). Caller supplies the three Δ% values so the
