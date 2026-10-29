@@ -120,6 +120,10 @@ describe('StrikeBox: table structure', () => {
       /before that it was UW Periscope's market-maker position estimate/,
     );
     expect(title).not.toMatch(/MM attribution|negated|wall side/);
+    // The ✓ / ✗ sign check is UW-era logic (owner decision D1 revised).
+    expect(title).toContain(
+      'On UW-era slices only, ✓ = the sign matches the naive Hedge/1% sign and ✗ = it differs; GEXBot slices show no marker',
+    );
   });
 });
 
@@ -136,10 +140,20 @@ describe('StrikeBox: Periscope Γ overlay', () => {
     expect(screen.getAllByText('—').length).toBeGreaterThan(0);
   });
 
-  it('shows the ✓ marker when the Periscope gamma sign matches the naive Hedge sign', () => {
+  /** A UW Periscope (scraper-era) slice and a GEXBot slice. */
+  const UW_SLICE = '2026-05-08T15:00:00Z';
+  const GEXBOT_SLICE = '2026-10-27T15:00:00Z';
+
+  it('shows the ✓ marker on a UW-era slice when the Periscope gamma sign matches the naive Hedge sign', () => {
     // Naive gexDollars defaults to +2B (positive). Periscope gamma also positive → match.
     const mm = new Map<number, number>([[5800, 3_500_000_000]]);
-    render(<StrikeBox leaderboard={[makeStrike(5800)]} mmGammaMap={mm} />);
+    render(
+      <StrikeBox
+        leaderboard={[makeStrike(5800)]}
+        mmGammaMap={mm}
+        mmGammaCapturedAt={UW_SLICE}
+      />,
+    );
     expect(
       screen.getByLabelText(
         'Periscope gamma sign matches the naive Hedge sign',
@@ -147,10 +161,16 @@ describe('StrikeBox: Periscope Γ overlay', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows the ✗ marker when the Periscope gamma sign differs from the naive Hedge sign', () => {
+  it('shows the ✗ marker on a UW-era slice when the Periscope gamma sign differs from the naive Hedge sign', () => {
     // Naive gexDollars +2B (positive) vs Periscope gamma negative → differ.
     const mm = new Map<number, number>([[5800, -3_500_000_000]]);
-    render(<StrikeBox leaderboard={[makeStrike(5800)]} mmGammaMap={mm} />);
+    render(
+      <StrikeBox
+        leaderboard={[makeStrike(5800)]}
+        mmGammaMap={mm}
+        mmGammaCapturedAt={UW_SLICE}
+      />,
+    );
     expect(
       screen.getByLabelText(
         'Periscope gamma sign differs from the naive Hedge sign',
@@ -158,9 +178,45 @@ describe('StrikeBox: Periscope Γ overlay', () => {
     ).toBeInTheDocument();
   });
 
+  it.each([
+    ['GEXBot', GEXBOT_SLICE],
+    ['unknown-time', null],
+  ])(
+    'hides the ✓ / ✗ marker on a %s slice but keeps the value',
+    (_label, capturedAt) => {
+      const { unmount } = render(
+        <StrikeBox
+          leaderboard={[makeStrike(5800)]}
+          mmGammaMap={new Map([[5800, 3_500_000_000]])}
+          mmGammaCapturedAt={capturedAt}
+        />,
+      );
+      expect(screen.getByText('+3.5B')).toBeInTheDocument();
+      expect(screen.queryByText('✓')).toBeNull();
+      unmount();
+      render(
+        <StrikeBox
+          leaderboard={[makeStrike(5800)]}
+          mmGammaMap={new Map([[5800, -3_500_000_000]])}
+          mmGammaCapturedAt={capturedAt}
+        />,
+      );
+      expect(screen.queryByText('✗')).toBeNull();
+      expect(
+        screen.queryByLabelText(/Periscope gamma sign (matches|differs)/),
+      ).toBeNull();
+    },
+  );
+
   it('shows neither marker when the Periscope gamma is exactly zero', () => {
     const mm = new Map<number, number>([[5800, 0]]);
-    render(<StrikeBox leaderboard={[makeStrike(5800)]} mmGammaMap={mm} />);
+    render(
+      <StrikeBox
+        leaderboard={[makeStrike(5800)]}
+        mmGammaMap={mm}
+        mmGammaCapturedAt={UW_SLICE}
+      />,
+    );
     expect(
       screen.queryByLabelText(/Periscope gamma sign matches/),
     ).not.toBeInTheDocument();

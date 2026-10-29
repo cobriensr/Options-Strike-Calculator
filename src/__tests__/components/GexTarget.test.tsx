@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { GexTarget } from '../../components/GexTarget';
 import type { UseGexTargetReturn } from '../../hooks/useGexTarget';
@@ -30,9 +30,31 @@ vi.mock('../../components/GexTarget/SparklinePanel', () => ({
   SparklinePanel: () => <div data-testid="sparkline-panel" />,
 }));
 
+// The Strike Board stub echoes the Periscope slice time it was handed, so
+// a test can check GexTarget passes it through (StrikeBox decides the era).
 vi.mock('../../components/GexTarget/StrikeBox', () => ({
-  StrikeBox: () => <div data-testid="strike-box" />,
+  StrikeBox: ({ mmGammaCapturedAt }: { mmGammaCapturedAt?: string | null }) => (
+    <div data-testid="strike-box" data-captured-at={mmGammaCapturedAt ?? ''} />
+  ),
 }));
+
+const { mockPeriscopeStrikes } = vi.hoisted(() => ({
+  mockPeriscopeStrikes: vi.fn(),
+}));
+vi.mock('../../hooks/usePeriscopeStrikes', () => ({
+  usePeriscopeStrikes: mockPeriscopeStrikes,
+}));
+
+beforeEach(() => {
+  mockPeriscopeStrikes.mockReturnValue({
+    latest: null,
+    prior10m: null,
+    prior30m: null,
+    loading: false,
+    error: null,
+    refresh: vi.fn(),
+  });
+});
 
 vi.mock('../../components/GexTarget/PriceChart', () => ({
   PriceChart: () => <div data-testid="price-chart" />,
@@ -207,6 +229,32 @@ describe('GexTarget: live state', () => {
     expect(screen.getByTestId('urgency-panel')).toBeInTheDocument();
     expect(screen.getByTestId('sparkline-panel')).toBeInTheDocument();
     expect(screen.getByTestId('strike-box')).toBeInTheDocument();
+  });
+
+  it("passes the Periscope slice's capture time to the Strike Board", () => {
+    // StrikeBox hides the UW-era ✓ / ✗ sign check on GEXBot slices, so it
+    // needs the slice time (owner decision D1 revised).
+    mockPeriscopeStrikes.mockReturnValue({
+      latest: {
+        capturedAt: '2026-10-27T15:00:00Z',
+        strikes: [{ strike: 5800, gamma: 1_000_000 }],
+      },
+      prior10m: null,
+      prior30m: null,
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    render(
+      <GexTarget
+        marketOpen={true}
+        gexTarget={makeHookResult({ isLive: true, isScrubbed: false })}
+      />,
+    );
+    expect(screen.getByTestId('strike-box')).toHaveAttribute(
+      'data-captured-at',
+      '2026-10-27T15:00:00Z',
+    );
   });
 });
 

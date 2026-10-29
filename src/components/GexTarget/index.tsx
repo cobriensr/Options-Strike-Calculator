@@ -121,9 +121,10 @@ export const GexTarget = memo(function GexTarget({
 
   // Periscope gamma overlay for the Strike Board (periscope_snapshots: UW
   // Periscope's market-maker estimate before 2026-05-26, GEXBot's
-  // taker-side gamma since), shown next to the naive Hedge/1% with a sign
-  // comparison. Aligned to the GexTarget scrub timestamp when scrubbed,
-  // latest otherwise.
+  // taker-side gamma since), shown next to the naive Hedge/1%; the Strike
+  // Board adds the ✓ / ✗ sign comparison on UW-era slices only, from the
+  // slice time passed below. Aligned to the GexTarget scrub timestamp when
+  // scrubbed, latest otherwise.
   const periscopeStrikes = usePeriscopeStrikes(
     marketOpen,
     selectedDate,
@@ -374,7 +375,11 @@ export const GexTarget = memo(function GexTarget({
 
         {/* Panel 5: full-width strike box */}
         <div className="mt-3">
-          <StrikeBox leaderboard={top5ByGex} mmGammaMap={mmGammaMap} />
+          <StrikeBox
+            leaderboard={top5ByGex}
+            mmGammaMap={mmGammaMap}
+            mmGammaCapturedAt={periscopeStrikes.latest?.capturedAt ?? null}
+          />
         </div>
       </>
     );

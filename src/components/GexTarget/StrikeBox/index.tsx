@@ -22,6 +22,10 @@ import { theme } from '../../../themes';
 import type { StrikeScore } from '../../../utils/gex-target';
 import { computeBarStats } from './bars';
 import { Row, type BarStatsBundle } from './Row';
+import {
+  PERISCOPE_SOURCE,
+  periscopeSourceAt,
+} from '../../../utils/periscope-source';
 import type { RankChangeInfo } from './RankArrow';
 
 export interface StrikeBoxProps {
@@ -31,12 +35,17 @@ export interface StrikeBoxProps {
    * measurements: UW Periscope's market-maker position estimate before the
    * 2026-05-26 cutover, GEXBot gamma in its taker-side sign since (owner
    * decision D1 revised). When present, each row renders an extra
-   * "Periscope Γ" cell with a sign comparison against the naive Hedge/1%.
-   * A missing map (e.g. pre-market) renders an em-dash in the cell.
-   * Magnitude is on a different scale than `Hedge/1%`, so only the signs
-   * are compared.
+   * "Periscope Γ" cell; a missing map (e.g. pre-market) renders an
+   * em-dash in the cell.
    */
   mmGammaMap?: Map<number, number>;
+  /**
+   * Capture time of the slice behind `mmGammaMap`. The ✓ / ✗ sign check
+   * against the naive Hedge/1% (signs only; the scales differ) is UW-era
+   * logic, so it shows only when this is a UW Periscope (scraper-era)
+   * slice. GEXBot or unknown → value only, no marker.
+   */
+  mmGammaCapturedAt?: string | null;
 }
 
 const TH_CLS =
@@ -45,7 +54,11 @@ const TH_CLS =
 export const StrikeBox = memo(function StrikeBox({
   leaderboard,
   mmGammaMap,
+  mmGammaCapturedAt,
 }: StrikeBoxProps) {
+  const showSignCheck =
+    mmGammaCapturedAt != null &&
+    periscopeSourceAt(mmGammaCapturedAt) === PERISCOPE_SOURCE.scraper;
   // The parent (GexTarget/index.tsx) pre-sorts the leaderboard by |gexDollars|
   // and slices to 5 before passing it in. Use it directly — no re-sort needed.
   const top5 = leaderboard;
@@ -149,7 +162,7 @@ export const StrikeBox = memo(function StrikeBox({
                 <th
                   className={`${TH_CLS} cursor-help`}
                   scope="col"
-                  title="Per-strike dollar gamma from periscope_snapshots (every 10 min during RTH). Its meaning depends on the slice: since 2026-05-26 it is GEXBot gamma in GEXBot's taker-side sign (positive = traders net long gamma at the strike); before that it was UW Periscope's market-maker position estimate. Scale differs from Hedge/1%, so compare signs only: ✓ = the sign matches the naive Hedge/1% sign, ✗ = it differs. On GEXBot slices that compares taker flow with a dealer-convention estimate, so ✗ is not evidence the wall is on the wrong side."
+                  title="Per-strike dollar gamma from periscope_snapshots (every 10 min during RTH). Its meaning depends on the slice: since 2026-05-26 it is GEXBot gamma in GEXBot's taker-side sign (positive = traders net long gamma at the strike); before that it was UW Periscope's market-maker position estimate. Scale differs from Hedge/1%, so compare signs only. On UW-era slices only, ✓ = the sign matches the naive Hedge/1% sign and ✗ = it differs; GEXBot slices show no marker, since comparing taker flow with a dealer-convention estimate is UW-era logic that does not carry over."
                 >
                   Periscope Γ
                 </th>
@@ -177,6 +190,7 @@ export const StrikeBox = memo(function StrikeBox({
                   barStats={barStats}
                   isAlt={idx % 2 === 1}
                   mmGamma={mmGammaMap?.get(s.strike) ?? null}
+                  showSignCheck={showSignCheck}
                 />
               ))}
             </tbody>

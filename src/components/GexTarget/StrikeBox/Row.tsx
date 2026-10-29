@@ -14,8 +14,10 @@
  *
  * The Periscope Γ cell shows the strike's periscope_snapshots gamma
  * (UW Periscope's market-maker estimate before 2026-05-26, GEXBot's
- * taker-side gamma since) with a sign comparison against the naive
- * Hedge/1%. Different scales, so only the signs are compared.
+ * taker-side gamma since). On UW-era slices it adds a ✓ / ✗ sign
+ * comparison against the naive Hedge/1% (different scales, so only the
+ * signs are compared). That check is UW-era logic, so GEXBot slices show
+ * the value with no marker (owner decision D1 revised, 2026-10-29).
  */
 
 import { memo } from 'react';
@@ -54,6 +56,11 @@ export interface RowProps {
    * signs, not magnitudes.
    */
   mmGamma: number | null;
+  /**
+   * True when `mmGamma` comes from a UW Periscope (scraper-era) slice, the
+   * only case where the ✓ / ✗ sign check is shown.
+   */
+  showSignCheck: boolean;
 }
 
 const TD_CLS = 'px-1.5 py-1.5 text-[11px] font-mono whitespace-nowrap';
@@ -65,6 +72,7 @@ export const Row = memo(function Row({
   barStats,
   isAlt,
   mmGamma,
+  showSignCheck,
 }: RowProps) {
   const { features } = s;
 
@@ -95,12 +103,15 @@ export const Row = memo(function Row({
 
   const gexColor = features.gexDollars >= 0 ? theme.green : theme.red;
 
-  // Sign comparison with the naive Hedge/1% (`features.gexDollars`). It
-  // only says whether the two signs match: on GEXBot slices the Periscope
-  // value is taker flow, not a market-maker position. Either 0 → no marker
-  // (ambiguous). Null → no marker (no Periscope value to compare).
+  // Sign comparison with the naive Hedge/1% (`features.gexDollars`), UW-era
+  // slices only: on GEXBot slices the Periscope value is taker flow, not a
+  // market-maker position, so no marker. Either 0 → no marker (ambiguous).
+  // Null → no marker (no Periscope value to compare).
   const mmAgreement: 'agree' | 'disagree' | 'none' =
-    mmGamma === null || mmGamma === 0 || features.gexDollars === 0
+    !showSignCheck ||
+    mmGamma === null ||
+    mmGamma === 0 ||
+    features.gexDollars === 0
       ? 'none'
       : mmGamma > 0 === features.gexDollars > 0
         ? 'agree'
@@ -206,8 +217,8 @@ export const Row = memo(function Row({
       </td>
 
       {/* Periscope Γ — periscope_snapshots dollar gamma, with a sign
-          comparison against Hedge/1% (different scale, so only the signs
-          are compared). */}
+          comparison against Hedge/1% on UW-era slices only (different
+          scale, so only the signs are compared). */}
       <td className={TD_CLS} style={{ color: mmColor }}>
         {mmGamma === null ? (
           <span style={{ color: theme.textMuted }}>—</span>
