@@ -32,10 +32,7 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 
-from .build_training_set import (
-    INFERRED_STRUCTURE_LABELS,
-    SESSION_PHASES,
-)
+from .build_training_set import SESSION_PHASES
 from .config import (
     BRIER_ALERT_THRESHOLD,
     ISOTONIC_HOLDOUT_FRAC,
@@ -48,13 +45,10 @@ from .config import (
 # Categorical category-pinning map. Before `get_dummies` we coerce each
 # column to `pd.Categorical(..., categories=...)` so an absent label still
 # emits its one-hot column. Without this, a training set where (say)
-# `inferred_structure='butterfly'` never appears would silently drop
-# `inferred_structure_butterfly` from `feature_cols`; the TS scorer
-# (which always emits all 5 labels per INFERRED_STRUCTURE_LABELS) would
-# then set an un-pinned key the model ignores. Pinning keeps the
+# `session_phase_cat='closing'` never appears would silently drop
+# `session_phase_cat_closing` from `feature_cols`. Pinning keeps the
 # feature contract stable across retrains.
 _PINNED_CATEGORIES: Final = {
-    "inferred_structure": INFERRED_STRUCTURE_LABELS,
     "session_phase_cat": SESSION_PHASES,
 }
 from sklearn.calibration import calibration_curve
@@ -112,25 +106,20 @@ NON_FEATURE_COLS: Final = {
 }
 
 CATEGORICAL_COLS: Final = {
-    # Phase 2 (multileg): `inferred_structure` is one of
-    # {isolated_leg, vertical, strangle, risk_reversal, butterfly} — see
-    # api/_lib/takeit-features.ts INFERRED_STRUCTURE_LABELS.
     # Phase 3 (time-of-day): `session_phase_cat` is the 7-bucket categorical
     # label (pre_open, open, opening_30, morning, lunch, afternoon, closing).
-    # Both NULL-safe via pd.get_dummies(dummy_na=False) → NULL rows produce
+    # NULL-safe via pd.get_dummies(dummy_na=False) → NULL rows produce
     # an all-zero one-hot block, which XGBoost handles via NaN-default routing.
     "lottery": [
         "option_type",
         "mode",
         "flow_quad",
         "tod",
-        "inferred_structure",
         "session_phase_cat",
     ],
     "silentboom": [
         "option_type",
         "score_tier",
-        "inferred_structure",
         "session_phase_cat",
     ],
 }

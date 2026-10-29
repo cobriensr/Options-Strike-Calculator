@@ -10,8 +10,11 @@ from datetime import date as date_type
 import pandas as pd
 import pytest
 
+from takeit import build_training_set, train
 from takeit.build_training_set import (
+    LOTTERY_SQL,
     SESSION_PHASES,
+    SILENTBOOM_SQL,
     _is_quarter_end_last_hour_ct,
     _session_phase_cat_from_minute_ct,
     add_burst_storm,
@@ -873,12 +876,28 @@ def test_cross_asset_stress_uses_vix_intraday_change_when_present() -> None:
 # ── Phase 2 / Phase 4 multileg + wave2 columns flow through unchanged ────────
 
 
-def test_multileg_and_wave2_columns_pass_through_unchanged() -> None:
-    """The SQL SELECT pulls inferred_structure, is_isolated_leg,
-    match_confidence, pattern_group_id, wave2_status, wave2_detected_at.
+RETIRED_CLASSIFIER_COLS = ("inferred_structure", "is_isolated_leg", "match_confidence")
+
+
+@pytest.mark.parametrize("sql", [LOTTERY_SQL, SILENTBOOM_SQL])
+def test_training_sql_does_not_select_retired_classifier_columns(sql: str) -> None:
+    """The multileg classifier is retired: its columns are NULL on every new
+    row, so a retrain must not read them."""
+    for col in RETIRED_CLASSIFIER_COLS:
+        assert col not in sql
+
+
+def test_trainer_has_no_classifier_feature_wiring() -> None:
+    for alert_type, cols in train.CATEGORICAL_COLS.items():
+        assert "inferred_structure" not in cols, alert_type
+    assert "inferred_structure" not in train._PINNED_CATEGORIES
+    assert not hasattr(build_training_set, "INFERRED_STRUCTURE_LABELS")
+
+
+def test_wave2_columns_pass_through_unchanged() -> None:
+    """The SQL SELECT pulls pattern_group_id, wave2_status, wave2_detected_at.
     derive_common_features must NOT mutate them — they ride along into the
-    output DataFrame so train.py can either use them as features (multileg)
-    or exclude them (wave2 — see NON_FEATURE_COLS in train.py).
+    output DataFrame so train.py can exclude them (see NON_FEATURE_COLS).
     """
     rows = [
         _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="A",
@@ -887,9 +906,6 @@ def test_multileg_and_wave2_columns_pass_through_unchanged() -> None:
                  underlying="SPY", option_type="P", strike=500, spot=500),
     ]
     df = pd.DataFrame(rows)
-    df["inferred_structure"] = ["vertical", None]
-    df["is_isolated_leg"] = [False, None]
-    df["match_confidence"] = [0.85, None]
     df["pattern_group_id"] = ["hash_abc", None]
     df["wave2_status"] = ["confirmed", "fizzled"]
     df["wave2_detected_at"] = [pd.Timestamp("2026-04-01 14:42:00+00:00"), None]
@@ -897,14 +913,8 @@ def test_multileg_and_wave2_columns_pass_through_unchanged() -> None:
     # All new columns flow through unchanged. pandas may surface None as NaN
     # in object columns; both forms mean "unclassified" which is what XGBoost
     # treats as missing.
-    assert out.iloc[0]["inferred_structure"] == "vertical"
-    assert pd.isna(out.iloc[1]["inferred_structure"])
-    assert out.iloc[0]["is_isolated_leg"] is False or (
-        out.iloc[0]["is_isolated_leg"] == 0  # noqa: PLR2004
-    )
-    assert pd.isna(out.iloc[1]["is_isolated_leg"])
-    assert out.iloc[0]["match_confidence"] == pytest.approx(0.85)
     assert list(out["wave2_status"]) == ["confirmed", "fizzled"]
+    assert list(out["pattern_group_id"])[0] == "hash_abc"
 
 
 def test_no_realized_columns_leak_into_feature_set() -> None:

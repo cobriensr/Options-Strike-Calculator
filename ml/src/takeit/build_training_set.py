@@ -87,7 +87,6 @@ LOTTERY_SQL: Final = """
         gex_one_gexoflow, gex_zcvr, gex_zero_gamma, gex_spot,
         gex_captured_at,
         score, direction_gated,
-        inferred_structure, is_isolated_leg, match_confidence,
         pattern_group_id,
         wave2_status, wave2_detected_at,
         peak_ceiling_pct
@@ -106,7 +105,6 @@ SILENTBOOM_SQL: Final = """
         spx_spot_gamma_oi,
         multi_leg_share, underlying_price_at_spike,
         score, score_tier, direction_gated,
-        inferred_structure, is_isolated_leg, match_confidence,
         pattern_group_id,
         wave2_status, wave2_detected_at,
         gex_one_cvroflow, gex_net_put_dex, gex_one_dexoflow,
@@ -191,20 +189,6 @@ SESSION_PHASES: Final = (
     "lunch",
     "afternoon",
     "closing",
-)
-
-
-# Mirrors `INFERRED_STRUCTURE_LABELS` in api/_lib/takeit-features.ts. Pinned
-# so the trainer emits a full one-hot block even if a label is absent in
-# the training set — keeps `feature_cols` stable across retrains so the TS
-# scorer (which always emits all 5 labels) never sets an un-pinned key.
-# Order is the labels' identity, not a ranking — DO NOT REORDER.
-INFERRED_STRUCTURE_LABELS: Final = (
-    "isolated_leg",
-    "vertical",
-    "strangle",
-    "risk_reversal",
-    "butterfly",
 )
 
 
