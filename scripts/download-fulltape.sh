@@ -17,7 +17,11 @@
 #   UW_API_KEY=xxx bash scripts/download-fulltape.sh 2026-05-07
 #
 # Notes:
-#   - UW retains only the LAST 3 TRADING DAYS at this endpoint.
+#   - Past days work: how far back is set by the plan's historical
+#     lookback (UW: data since 2022-01-01; a `trialing` subscription gets
+#     403 for dates more than 30 days old). Served back to at least
+#     2025-12-10; probes on 2026-10-28 (10-16) and 2026-10-29 (07-23, a
+#     302 to a 1.5 GB zip) confirmed it. Nothing here limits the date.
 #   - Endpoint requires an Advanced API subscription.
 #   - This script is idempotent: if the target CSV already exists, it skips.
 
@@ -82,9 +86,10 @@ if [[ "$HTTP_CODE" != "200" ]]; then
   # real auth/window 404 so the operator knows whether to retry later
   # vs. fix configuration.
   BODY=$(head -c 500 "$TMP_ZIP" 2>/dev/null || true)
-  TODAY_CT=$(TZ='America/Chicago' date +%Y-%m-%d)
-  YESTERDAY_CT=$(TZ='America/Chicago' date -v-1d +%Y-%m-%d 2>/dev/null \
-    || TZ='America/Chicago' date -d 'yesterday' +%Y-%m-%d 2>/dev/null \
+  # POSIX rule, not 'America/Chicago': Git Bash has no tz database, so a zone name silently yields UTC.
+  TODAY_CT=$(TZ='CST6CDT,M3.2.0,M11.1.0' date +%Y-%m-%d)
+  YESTERDAY_CT=$(TZ='CST6CDT,M3.2.0,M11.1.0' date -v-1d +%Y-%m-%d 2>/dev/null \
+    || TZ='CST6CDT,M3.2.0,M11.1.0' date -d 'yesterday' +%Y-%m-%d 2>/dev/null \
     || echo '')
   if [[ "$HTTP_CODE" == "404" && "$BODY" == *"<Code>NoSuchKey</Code>"* ]] && \
      [[ "$DATE" == "$TODAY_CT" || "$DATE" == "$YESTERDAY_CT" ]]; then
@@ -95,7 +100,7 @@ if [[ "$HTTP_CODE" != "200" ]]; then
     exit 6
   fi
   echo "❌ HTTP $HTTP_CODE from UW Full Tape" >&2
-  echo "   Common causes: 401 (bad token), 404 (date out of last-3-day window or not yet posted), 403 (no Advanced subscription), 429 (rate limited)." >&2
+  echo "   Common causes: 401 (bad token), 403 (no Advanced subscription, or a date outside the plan's lookback window), 404 (no zip for that date yet), 429 (rate limited)." >&2
   echo "   Response body (truncated):" >&2
   echo "$BODY" >&2
   echo >&2
