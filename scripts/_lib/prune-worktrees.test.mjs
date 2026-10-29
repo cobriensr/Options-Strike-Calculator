@@ -355,16 +355,20 @@ describe('pruneWorktrees', () => {
     expect(outcome.dryRun).toBe(false);
   });
 
-  it('removes a worktree whose commit was cherry-picked onto main and deletes its branch', () => {
-    expect(results.get('picked')).toMatchObject({
-      action: 'removed',
-      branch: 'fix/picked',
-      path: wts.picked,
-      deletedBranchSha: shas.picked,
-    });
-    expect(existsSync(wts.picked)).toBe(false);
-    expect(listedPaths(repo)).not.toContain(wts.picked);
-  });
+  it(
+    'removes a worktree whose commit was cherry-picked onto main and deletes its branch',
+    () => {
+      expect(results.get('picked')).toMatchObject({
+        action: 'removed',
+        branch: 'fix/picked',
+        path: wts.picked,
+        deletedBranchSha: shas.picked,
+      });
+      expect(existsSync(wts.picked)).toBe(false);
+      expect(listedPaths(repo)).not.toContain(wts.picked);
+    },
+    FIXTURE_TIMEOUT,
+  );
 
   it('removes a worktree whose branch has no commits of its own', () => {
     expect(results.get('empty')).toMatchObject({
@@ -445,12 +449,16 @@ describe('pruneWorktrees', () => {
     expect(existsSync(wts.detached)).toBe(false);
   });
 
-  it('counts a prunable worktree (directory already gone) as removed, prunes its entry and keeps its branch', () => {
-    const result = results.get('gone');
-    expect(result.action).toBe('removed');
-    expect(result.reason).toMatch(/^prunable: .+; branch fix\/gone kept$/);
-    expect(listedPaths(repo)).not.toContain(wts.gone);
-  });
+  it(
+    'counts a prunable worktree (directory already gone) as removed, prunes its entry and keeps its branch',
+    () => {
+      const result = results.get('gone');
+      expect(result.action).toBe('removed');
+      expect(result.reason).toMatch(/^prunable: .+; branch fix\/gone kept$/);
+      expect(listedPaths(repo)).not.toContain(wts.gone);
+    },
+    FIXTURE_TIMEOUT,
+  );
 
   it('records a failed `git worktree remove` as an error and keeps the worktree', () => {
     const result = results.get('blocked');
@@ -465,34 +473,46 @@ describe('pruneWorktrees', () => {
     expect(existsSync(wts.blocked)).toBe(true);
   });
 
-  it('never touches worktrees outside .worktrees/, including a look-alike .worktrees-old/', () => {
-    expect(existsSync(outside)).toBe(true);
-    expect(existsSync(lookalike)).toBe(true);
-    const listed = listedPaths(repo);
-    expect(listed).toContain(outside);
-    expect(listed).toContain(lookalike);
-  });
+  it(
+    'never touches worktrees outside .worktrees/, including a look-alike .worktrees-old/',
+    () => {
+      expect(existsSync(outside)).toBe(true);
+      expect(existsSync(lookalike)).toBe(true);
+      const listed = listedPaths(repo);
+      expect(listed).toContain(outside);
+      expect(listed).toContain(lookalike);
+    },
+    FIXTURE_TIMEOUT,
+  );
 
-  it('deletes exactly the branches of removed worktrees', () => {
-    expect(branches(repo)).toEqual([
-      'fix/blocked',
-      'fix/dirty',
-      'fix/gone',
-      'fix/locked',
-      'fix/lookalike',
-      'fix/noff',
-      'fix/outside',
-      'fix/recent',
-      'fix/scratch',
-      'fix/unmerged',
-      'main',
-      'noff-side',
-    ]);
-  });
+  it(
+    'deletes exactly the branches of removed worktrees',
+    () => {
+      expect(branches(repo)).toEqual([
+        'fix/blocked',
+        'fix/dirty',
+        'fix/gone',
+        'fix/locked',
+        'fix/lookalike',
+        'fix/noff',
+        'fix/outside',
+        'fix/recent',
+        'fix/scratch',
+        'fix/unmerged',
+        'main',
+        'noff-side',
+      ]);
+    },
+    FIXTURE_TIMEOUT,
+  );
 
-  it('finds the main repo root from inside a linked worktree', () => {
-    expect(findRepoRoot(wts.unmerged)).toBe(repo);
-  });
+  it(
+    'finds the main repo root from inside a linked worktree',
+    () => {
+      expect(findRepoRoot(wts.unmerged)).toBe(repo);
+    },
+    FIXTURE_TIMEOUT,
+  );
 });
 
 describe('pruneWorktrees dry run', () => {
@@ -544,12 +564,16 @@ describe('pruneWorktrees dry run', () => {
     );
   });
 
-  it('changes no worktree, branch or admin entry', () => {
-    expect(existsSync(wts.merged)).toBe(true);
-    expect(listedPaths(repo)).toEqual(listedBefore);
-    expect(listedBefore).toContain(wts.gone);
-    expect(branches(repo)).toEqual(branchesBefore);
-  });
+  it(
+    'changes no worktree, branch or admin entry',
+    () => {
+      expect(existsSync(wts.merged)).toBe(true);
+      expect(listedPaths(repo)).toEqual(listedBefore);
+      expect(listedBefore).toContain(wts.gone);
+      expect(branches(repo)).toEqual(branchesBefore);
+    },
+    FIXTURE_TIMEOUT,
+  );
 
   // Every checked-out file is newer than the backdated index, so a plain
   // `git status` would re-hash them and rewrite the index, resetting the clock.
