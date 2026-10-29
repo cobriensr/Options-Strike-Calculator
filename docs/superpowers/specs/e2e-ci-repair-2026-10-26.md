@@ -80,7 +80,7 @@ A diagnosis on 2026-10-26 traced the failure. Logs, a standalone Playwright prob
   - Warn on unmocked calls in mock-fetch.
   - Split `market-regime-new.spec.ts` (262 lines).
   - Add `exact: true` on `dateTimeSection`.
-- **App-side follow-up (owner approved 2026-10-28, queued):** at 375px the page is 949px wide. The header's tab and status row (`flex items-center gap-1.5 sm:gap-2`: Calculator / Options Alerts / BACKTEST / NO INTRADAY / Owner …) doesn't wrap, so a phone scrolls sideways. Once that's fixed, add `document.documentElement.scrollWidth <= window.innerWidth` back to the mobile test in `responsive.spec.ts`.
+- **App-side follow-up (owner approved 2026-10-28; fixed, `ee8ba345`..`ab5d1d74` plus test fixes up to `26f89b64`, live 2026-10-29):** at 375px the page was 949px wide because the header's tab and status row didn't wrap. Now it's 375 in owner, guest and public mode. The header controls sit in one row that scrolls sideways with edge fades at every width. `responsive.spec.ts` asserts `document.documentElement.scrollWidth <= window.innerWidth` again, and `sticky-header.spec.ts` and `narrow-panels.spec.ts` cover the sticky stack and the 320px panels.
 - **App-side follow-up (not e2e):** the mobile delta-strike card list is a `div[aria-label="Delta strikes"]` with no role, so its aria-label is ignored by assistive tech, and it duplicates the desktop section's label. Give it a `list` role, or a distinct label.
 
 ### Phase 3: speed and scope (needs owner decisions)

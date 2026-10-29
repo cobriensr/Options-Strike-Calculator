@@ -6,15 +6,20 @@ Cut the Claude Code instruction surface for this repo down to what gets used and
 
 ## Status
 
-Phases 1, 2 and 3a are done (project skills: 103 → 51 after 3b). 3b is in review and 4a is running. Phases run one implementer at a time, in order. Phase 8 (the weekly loop) gets its own spec after phase 7.
+Phases 1 to 6 are done (project skills: 103 → 51 after 3b). Phase 7 is next. Phases run one implementer at a time, in order. Phase 8 (the weekly loop) gets its own spec after phase 7.
 
 | Phase | State | Record |
 |---|---|---|
 | 1 rule conflicts | done | `9c8fa3a1` + local history baseline |
 | 2 prune | done | `c60d0798`; local history `67f48fd`, `9e1817e` |
 | 3a merges (security, observability, a11y, claude-api, deps) | done, reviewed | `b93d784a` (stale README/comment); local history `247c781` |
-| 3b merges (perf, risk, agents-md, pandas-pro, github) | in review | – |
-| 4a fix survivors (code-path skills) | running | – |
+| 3b merges (perf, risk, agents-md, pandas-pro, github) | done, review fixes applied | local history `c0977e9`, fixes `bc4ad48` |
+| 4a fix survivors (code-path skills) | done, review fixes applied | local history `c0977e9`, fixes `bc4ad48` |
+| 4b fix survivors (everything else) | done, review fixes applied | local history `0bfac3e`, fixes `7cbdcbd` |
+| 5 rewrite high-traffic skills | done, re-review pass | local history `ed2d2fd`, `14533c0`, `499c1c8`, fixes `1dff191` |
+| 6 agents | done, two review rounds | local history `742164a`, `2b4e9cd`, `a8bedaa`, `d1fe809`, `85f8e71`, `88327e0`, `0c215e1` |
+| 6 repo (CLAUDE.md facts, ESLint `.js` scope) | done | `a86835a6`, `365db57c` |
+| (side stream) cron monitor coverage | shipped 2026-10-29 | `58526e46`..`4bf97642`; see `cron-monitor-coverage-2026-10-29.md` |
 
 ## Evidence
 
@@ -147,10 +152,13 @@ Each rewrite must cite real repo files. The reviewer checks every cited path and
 - **Rewrite `ml-pipeline-analyst`:** the Windows venv path, the `ml/src/utils` package, `ml/conftest.py`, the current phase status.
 - **Delete `codebase-scout`:** its map has been stale since 2026-05-10, and the built-in Explore agent covers it.
 - **Project `CLAUDE.md`:**
-  - formatter locations (only `formatSpotExposuresForClaude` is in `db-flow.ts`);
+  - formatter locations (the `format*ForClaude` formatters are spread across `api/_lib/`; `db-flow.ts` holds `formatFlowDataForClaude`, `formatGreekExposureForClaude` and `formatSpotExposuresForClaude`);
   - the `ml/.venv` path on the Windows workstation;
-  - "69 numbered migrations" (the highest migration id is 191).
-- **`npm run review:ml` on Windows:** the ml Makefile defaults to `.venv/bin/python`, so the target fails unless `PYTHON` is set. Fix the default for Windows, or document the override.
+  - "69 numbered migrations" (the highest migration id is 199).
+  
+  Done in `a86835a6`, with more drift the phase 5 and 6a writers found (cron test pattern, migration test totals, `SCHEDULE_MAP`, TRACE Live). `c43d89d3` had already fixed `useAppState`, the venv path, the migration count, `cleanupOutdatedCaches()` and analyze's 780s.
+- **`npm run review:ml` on Windows:** the ml Makefile defaulted to `.venv/bin/python`, so the target failed unless `PYTHON` was set. Fixed in `b573ee78` (`Scripts` on Windows; CI's `PYTHON: python` still wins).
+- **`.js`-extension lint scope:** `src/components/LotteryFinder/ct-window.ts` is imported by `api/` but sat outside the ESLint glob that enforces `.js` extensions. Added in `365db57c`, with `scripts/_lib/eslint-api-src-scope.test.mjs` failing on any future gap.
 
 ### Phase 7: scripts and agent definitions for repeated work (code: full loop, tests required)
 
@@ -177,7 +185,7 @@ Each rewrite must cite real repo files. The reviewer checks every cited path and
 - **Phase 3:** about 26 skill dirs merged into about 10
 - **Phase 4:** about 17 skill files
 - **Phase 5:** `test-master`, `backend-development` (+2 deleted), `react-expert`
-- **Phase 6:** 8 agent files, `CLAUDE.md`
+- **Phase 6:** 8 agent files, `CLAUDE.md`, `.gitignore`, `api/cron/embed-yesterday.ts` (a comment), `eslint.config.ts` + `scripts/_lib/eslint-api-src-scope.test.mjs`
 - **Phase 7:** `scripts/review-summary.mjs`, `scripts/watch-deploy.mjs` (+ tests), the status script and its settings, 2 new agent files, `CLAUDE.md`
 
 ## Data dependencies
