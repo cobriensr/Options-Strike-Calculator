@@ -76,7 +76,7 @@ describe('fetchStockCandles1m', () => {
     [401, '{"code":"authentication_required","reason":"malformed_token"}'],
     [
       422,
-      '{"code":"cboe_index_access_missing","message":"The CBOE index OHLC dataset requires provisioned access"}',
+      '{"code":"cboe_index_access_missing","msg":"Prices for the CBOE index SPXW require provisioned access and CBOE approval."}',
     ],
     [500, 'Internal Server Error'],
   ])(

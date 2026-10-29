@@ -1,10 +1,12 @@
 /**
  * Thin UW client + session-range computation for stock 1-min OHLC.
  *
- * Used by `detect-lottery-fires` and `scripts/backfill-range-pos.mjs`
- * to compute each lottery fire's position within its underlying's
- * session range at trigger time — the "Range Kill" signal from the
- * 2026-05-15 cross-section EDA.
+ * Used by `detect-lottery-fires` to compute each lottery fire's position
+ * within its underlying's session range at trigger time — the "Range
+ * Kill" signal from the 2026-05-15 cross-section EDA.
+ * `scripts/backfill-range-pos.mjs` can't import TypeScript, so it runs a
+ * copy of computeRangePos from `scripts/_lib/range-pos-backfill.mjs`; a
+ * parity test there pins the copy to this one.
  *
  * UW endpoint: GET /stock/{ticker}/ohlc/1m?date=YYYY-MM-DD
  */

@@ -76,14 +76,16 @@ import { parseUwHttpStatus, withRetry } from '../_lib/uw-fetch.js';
 // lookups run one at a time inside Pass 2, ahead of each fire's INSERT;
 // maxDuration is 60 s (vercel.json), and a run killed mid-Pass-2 loses
 // its remaining INSERTs. Unbounded, one stalled lookup could hold the
-// run 15–45 s (limiter wait, plus the 15 s UW timeout twice with the
-// retry). Sentry's per-ticker `ohlc/1m` p99 over 3 days is 0.4–2.5 s,
-// so 5 s only cuts off a stall. The deadline error has no UW status, so
-// it opens the breaker in Pass 2: a stall costs a run at most 5 s, once,
-// and the remaining ticker-days are skipped with range_pos NULL. The
-// losing uwFetch keeps running until its own 15 s abort, holding one UW
-// semaphore slot until its finally releases it (the slot's lease
-// expires after 30 s regardless). A timeout knob: change it with care.
+// run well past that: each UW semaphore wait alone can take 15–30 s,
+// and the 15 s UW timeout can hit twice with the retry (the deadline
+// now bounds all of it). Sentry's per-ticker `ohlc/1m` p99 over 3 days
+// is 0.4–2.5 s, so 5 s only cuts off a stall. The deadline error has
+// no UW status, so it opens the breaker in Pass 2: a stall costs a run
+// at most 5 s, once, and the remaining ticker-days are skipped with
+// range_pos NULL. The losing uwFetch keeps running until its own 15 s
+// abort, holding one UW semaphore slot until its finally releases it
+// (the slot's lease expires after 30 s regardless). A timeout knob:
+// change it with care.
 const CANDLE_FETCH_DEADLINE_MS = 5_000;
 
 // 7-minute scan window — 5-min v4 window + 2-min slack so a slow cron
