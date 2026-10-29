@@ -20,8 +20,9 @@
  *     at `top-[57px]` (the header already overlaps it by 5px on a phone
  *     and 12px from sm), and the section anchors' `scroll-mt-28` assumes
  *     header + strip, so a wrapping header would slide over the strip.
- *     Instead the controls row scrolls sideways like that strip, and its
- *     items keep their natural width. The owner's order there: the view
+ *     Instead the controls row (`ControlsRow`) scrolls sideways like that
+ *     strip, with edge fades when there is more to scroll, and its items
+ *     keep their natural width. The owner's order there: the view
  *     toggle, the status pills (short on a phone: BT, NO ID), the Schwab
  *     login warning, then the tools, which scroll. CSS `order` moves the
  *     Access Key button and the tools after the warning; the DOM order is
@@ -33,16 +34,18 @@
  *
  * The component takes data as props (no hooks called here) so App.tsx
  * remains the single owner of the underlying state — easier to test and
- * easier to reason about during a snapshot debugger walkthrough. Two
+ * easier to reason about during a snapshot debugger walkthrough. Three
  * children are self-contained:
  *
+ *   - `ControlsRow` tracks its own scroll position for the edge fades,
+ *     so a scroll re-renders only the row wrapper, not the header.
  *   - `SchwabExpiryBadge` polls its own owner-only status endpoint, and
  *     nothing else reads that state.
  *   - `QuoteStatusBadge` runs the 5 s quote-staleness clock
  *     (`useQuoteStaleness`) so the tick re-renders only that pill (F1).
  */
 
-import type { KeyboardEvent, Ref } from 'react';
+import type { Ref } from 'react';
 import AccessKeyButton from '../AccessKey/AccessKeyButton';
 import { StatusBadge } from '../ui';
 import { theme } from '../../themes';
@@ -50,6 +53,7 @@ import type { useMarketData } from '../../hooks/useMarketData';
 import type { useHistoryData } from '../../hooks/useHistoryData';
 import type { useVixData } from '../../hooks/useVixData';
 import type { CollapseSignal } from '../collapse-context';
+import ControlsRow from './ControlsRow';
 import QuoteStatusBadge from './QuoteStatusBadge';
 import SchwabAuthLink from './SchwabAuthLink';
 import SchwabExpiryBadge from './SchwabExpiryBadge';
@@ -104,23 +108,6 @@ export interface AppHeaderProps {
   onViewChange: (view: ViewMode) => void;
 }
 
-/**
- * Brings a header control reached with Tab fully into view. Below lg the
- * controls row scrolls sideways, and the browser leaves a control that is
- * already partly visible where it is, with its focus ring cut off. It
- * runs on the Tab key's keyup, which fires on the newly focused control,
- * so a click or tap never scrolls the row: scrolling on pointer focus
- * would move the control out from under the pointer and lose the click.
- * React key events bubble through portals, so a dialog opened from the
- * row is skipped. A no-op at lg and up, where the whole row is on screen.
- */
-function scrollTabbedControlIntoView(e: KeyboardEvent<HTMLElement>) {
-  if (e.key !== 'Tab') return;
-  const focused = document.activeElement;
-  if (!focused || !e.currentTarget.contains(focused)) return;
-  focused.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-}
-
 export default function AppHeader({
   accessMode,
   isOwner,
@@ -162,20 +149,7 @@ export default function AppHeader({
             Strike Calculator
           </h1>
         </div>
-        {/* Below lg this row scrolls sideways. Its padding keeps a focus
-            ring in view at either end of the row (the negative margins
-            cancel the top, bottom and right padding; the left padding is
-            the gap after the title). The scroll padding and
-            scrollTabbedControlIntoView do the same for a control tabbed
-            to part-way off the edge. `relative` makes the row the
-            containing block for its absolutely positioned descendants,
-            such as the visually hidden (sr-only) text in the Schwab
-            badge, so the row clips them too: without it they escaped to
-            the header and widened the page. */}
-        <div
-          onKeyUp={scrollTabbedControlIntoView}
-          className="scrollbar-hide flex items-center gap-1.5 max-lg:relative max-lg:-my-1.5 max-lg:-mr-1.5 max-lg:scroll-px-1.5 max-lg:overflow-x-auto max-lg:p-1.5 max-lg:*:shrink-0 sm:gap-2"
-        >
+        <ControlsRow>
           <ViewToggle view={view} onViewChange={onViewChange} />
           {/* Status pills, right after the toggle. At lg `contents` drops
               the group's box, so the pills are direct items of the row and
@@ -400,7 +374,7 @@ export default function AppHeader({
               </span>
             </button>
           </div>
-        </div>
+        </ControlsRow>
       </div>
     </header>
   );

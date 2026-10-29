@@ -143,6 +143,30 @@ test.describe('Responsive Layout', () => {
     await expect(themeToggle).toBeInViewport({ ratio: 1 });
   });
 
+  test('the header row fades out on the sides it can still scroll to', async ({
+    page,
+  }) => {
+    // At 768 the header is still 660px wide and the owner's controls
+    // don't fit, so some sit past the right edge
+    await page.setViewportSize({ width: 768, height: 1024 });
+    await page.goto('/');
+
+    const header = page.getByRole('banner');
+    const leftFade = header.getByTestId('controls-fade-left');
+    const rightFade = header.getByTestId('controls-fade-right');
+    await expect(rightFade).toHaveCSS('opacity', '1');
+    await expect(leftFade).toHaveCSS('opacity', '0');
+
+    await header
+      .getByRole('navigation', { name: 'Application view' })
+      .locator('..')
+      .evaluate((row) => {
+        row.scrollLeft = row.scrollWidth;
+      });
+    await expect(leftFade).toHaveCSS('opacity', '1');
+    await expect(rightFade).toHaveCSS('opacity', '0');
+  });
+
   test('renders correctly on tablet viewport', async ({ page }) => {
     await page.setViewportSize({ width: 768, height: 1024 }); // iPad
     await page.goto('/');

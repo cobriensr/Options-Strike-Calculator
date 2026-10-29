@@ -44,6 +44,20 @@ if (
   Element.prototype.scrollIntoView = () => {};
 }
 
+// Nor ResizeObserver: a no-op one lets components observe unguarded. It
+// never calls back, as nothing in jsdom resizes. Tests that need the
+// callback stub their own with vi.stubGlobal.
+if (
+  typeof window !== 'undefined' &&
+  typeof globalThis.ResizeObserver !== 'function'
+) {
+  globalThis.ResizeObserver = class ResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+}
+
 // jsdom doesn't implement Blob.prototype.text() — polyfill for CSV upload tests
 if (typeof Blob.prototype.text !== 'function') {
   Blob.prototype.text = function () {
