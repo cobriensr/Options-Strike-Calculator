@@ -2,9 +2,9 @@
  * GET /api/cron/fetch-strike-iv
  *
  * 1-minute cron that snapshots per-strike implied volatility for the
- * tickers in STRIKE_IV_TICKERS (SPXW, NDXP, SPY, QQQ, IWM, SMH, NVDA,
- * TSLA, META, MSFT, SNDK, MSTR, MU — 13 tickers after the 2026-04-25
- * multi-theme expansion) into the `strike_iv_snapshots` table.
+ * tickers in STRIKE_IV_TICKERS (SPY, SPXW, NDXP, RUTW, QQQ, IWM, SMH,
+ * NVDA, TSLA, META, MSFT, GOOGL, NFLX, TSM, SNDK, MSTR, MU — 17 tickers)
+ * into the `strike_iv_snapshots` table.
  * Foundation for the Strike IV Anomaly Detector (Phase 2 layers
  * detection + context capture on top).
  *
@@ -31,9 +31,11 @@
  * chains excluded) — every one failing is `error` (red check-in), some
  * failing is `partial`. When Schwab is logged out (SCHWAB_TOKEN_EXPIRED,
  * expected until a manual re-auth) on every ticker the run is `skipped`.
+ * An `error` run with Schwab-failed tickers sends one fingerprinted Sentry
+ * warning listing them (those legs only log; `exception` legs capture).
  *
  * Cron cadence: `* 13-21 * * 1-5` — every minute during market hours.
- * Volume budget: 13 tickers × 1 request/min = 780 Schwab requests/hour,
+ * Volume budget: 17 tickers × 1 request/min = 1,020 Schwab requests/hour,
  * still well under the per-app rate limit.
  *
  * Environment: CRON_SECRET (no UW API key — pure Schwab + Neon).
@@ -536,6 +538,8 @@ interface TickerResult {
   rowsInserted: number;
   skipped: boolean;
   reason?: string;
+  /** schwabFetch's failure code, on `schwab_error` legs only. */
+  code?: string;
 }
 
 async function runTicker(
@@ -553,14 +557,20 @@ async function runTicker(
 
     const result = await fetchChain(ticker, fromDate, toDate);
     if (!result.ok) {
+      if (result.code === 'SCHWAB_TOKEN_EXPIRED') {
+        return {
+          ticker,
+          rowsInserted: 0,
+          skipped: true,
+          reason: 'schwab_logged_out',
+        };
+      }
       return {
         ticker,
         rowsInserted: 0,
         skipped: true,
-        reason:
-          result.code === 'SCHWAB_TOKEN_EXPIRED'
-            ? 'schwab_logged_out'
-            : 'schwab_error',
+        reason: 'schwab_error',
+        code: result.code,
       };
     }
     const chain = result.data;
@@ -659,9 +669,33 @@ export default withCronInstrumentation(
     const failed = attempted.filter(
       (r) => r.reason === 'schwab_error' || r.reason === 'exception',
     ).length;
+    const status = deriveCronStatus(failed, attempted.length);
+
+    // An `exception` leg is captured in runTicker; a `schwab_error` leg only
+    // logs (schwabFetch captures no non-2xx or network failure), and the
+    // wrapper answers a returned `error` with a red check-in only. So a run
+    // that failed outright gets one Sentry event naming those tickers, not
+    // one per ticker per minute.
+    const schwabErrors = attempted.filter((r) => r.reason === 'schwab_error');
+    if (status === 'error' && schwabErrors.length > 0) {
+      const codes = [...new Set(schwabErrors.map((r) => r.code))];
+      Sentry.captureMessage('fetch-strike-iv: Schwab chain fetch failed', {
+        level: 'warning',
+        fingerprint: ['fetch-strike-iv', 'schwab-fetch-failed'],
+        tags: {
+          'cron.anomaly': 'schwab-fetch-failed',
+          'schwab.code': codes.length === 1 ? codes[0] : 'mixed',
+        },
+        extra: {
+          tickers: schwabErrors.map((r) => r.ticker),
+          codes,
+          attempted: attempted.length,
+        },
+      });
+    }
 
     return {
-      status: deriveCronStatus(failed, attempted.length),
+      status,
       metadata: {
         totalInserted,
         failed,

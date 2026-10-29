@@ -27,7 +27,11 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { setTag: vi.fn(), captureException: vi.fn() },
+  Sentry: {
+    setTag: vi.fn(),
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+  },
   metrics: { increment: vi.fn() },
 }));
 
@@ -644,6 +648,8 @@ describe('fetch-strike-iv handler', () => {
     expect(body.results.filter((r) => !r.skipped)).toHaveLength(2);
     // One real failure among three tickers with work → partial, not success.
     expect((res._json as { status: string }).status).toBe('partial');
+    // The run-level Sentry warning is for runs that failed outright.
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 
   // ── Schwab logged out vs. honest total failure ──────────────
@@ -689,12 +695,130 @@ describe('fetch-strike-iv handler', () => {
       expect(res._status).toBe(200);
       const body = res._json as {
         status: string;
-        results: Array<{ reason?: string }>;
+        results: Array<{ ticker: string; reason?: string }>;
       };
       expect(body.status).toBe('error');
       expect(body.results.every((r) => r.reason === 'schwab_error')).toBe(true);
+      // schwab_error legs only log and the wrapper captures only throws, so
+      // one run-level warning naming every failed ticker is the Sentry event.
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+      expect(Sentry.captureMessage).toHaveBeenCalledOnce();
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'fetch-strike-iv: Schwab chain fetch failed',
+        expect.objectContaining({
+          level: 'warning',
+          fingerprint: ['fetch-strike-iv', 'schwab-fetch-failed'],
+          tags: expect.objectContaining({ 'schwab.code': code }),
+          extra: {
+            tickers: body.results.map((r) => r.ticker),
+            codes: [code],
+            attempted: body.results.length,
+          },
+        }),
+      );
     },
   );
+
+  it('tags a run whose tickers failed with different Schwab codes as mixed', async () => {
+    vi.mocked(schwabFetch)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        error: '[SCHWAB_API_429] Rate limited',
+        code: 'SCHWAB_API_429',
+      })
+      .mockResolvedValue({
+        ok: false,
+        status: 504,
+        error: '[SCHWAB_API_NETWORK] timeout',
+        code: 'SCHWAB_API_NETWORK',
+      });
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect((res._json as { status: string }).status).toBe('error');
+    expect(Sentry.captureMessage).toHaveBeenCalledOnce();
+    const [, context] = vi.mocked(Sentry.captureMessage).mock.calls[0]!;
+    expect(context).toMatchObject({
+      tags: { 'schwab.code': 'mixed' },
+      extra: { codes: ['SCHWAB_API_429', 'SCHWAB_API_NETWORK'] },
+    });
+  });
+
+  it('reports error with a capture per ticker when every snapshot write fails', async () => {
+    // SPXW and QQQ have rows to write; every other chain is empty, so the
+    // run attempts two tickers and both transactions reject.
+    const q = quietExpansionChains();
+    mockChainSequence([
+      makeChain('SPY', 710, { putStrikes: [], callStrikes: [] }),
+      makeChain('$SPX', 7100, {
+        putStrikes: [7050],
+        callStrikes: [7150],
+        contractRoot: 'SPXW',
+        bid: 5,
+        ask: 6,
+      }),
+      makeChain('$NDX', 22500, { contractRoot: 'NDXP' }),
+      q.rutw,
+      makeChain('QQQ', 500, {
+        putStrikes: [495],
+        callStrikes: [505],
+        bid: 0.6,
+        ask: 0.8,
+      }),
+      makeChain('IWM', 235, {}),
+      q.smh,
+      makeChain('NVDA', 210, {}),
+      q.tsla,
+      q.meta,
+      q.msft,
+      q.googl,
+      q.nflx,
+      q.tsm,
+      makeChain('SNDK', 140, {}),
+      q.mstr,
+      q.mu,
+    ]);
+    const writeError = new Error('transaction failed');
+    mockSql.transaction.mockRejectedValue(writeError);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      status: string;
+      totalInserted: number;
+      results: Array<{ ticker: string; reason?: string }>;
+    };
+    expect(body.status).toBe('error');
+    expect(body.totalInserted).toBe(0);
+    expect(
+      body.results.filter((r) => r.reason === 'exception').map((r) => r.ticker),
+    ).toEqual(['SPXW', 'QQQ']);
+    expect(Sentry.captureException).toHaveBeenCalledTimes(2);
+    expect(Sentry.captureException).toHaveBeenCalledWith(writeError);
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('reports error with a capture per ticker, and no run-level warning, when every ticker throws', async () => {
+    vi.mocked(schwabFetch).mockRejectedValue(new Error('socket hang up'));
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      status: string;
+      results: Array<{ reason?: string }>;
+    };
+    expect(body.status).toBe('error');
+    expect(body.results.every((r) => r.reason === 'exception')).toBe(true);
+    // Each exception leg is captured in runTicker; nothing to add.
+    expect(Sentry.captureException).toHaveBeenCalledTimes(body.results.length);
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
 
   // ── IV inversion fails → row skipped, cron continues ─────
 
