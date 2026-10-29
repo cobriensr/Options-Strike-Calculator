@@ -16,7 +16,7 @@ Reference payload (captured live 2026-09-08):
 ``executed_at`` is **epoch milliseconds (int)**, verified against the
 live feed: 1788847011311 decoded to 2026-09-08T05:56:51.311Z against a
 wall clock of 05:57:51Z. The epoch-seconds reading (1970-01-21) is
-implausible, so the unit is unambiguous. ``_parse_executed_at`` still
+implausible, so the unit is unambiguous. ``timestamps.parse_timestamp`` still
 accepts an ISO-8601 string as a defensive fallback — UW uses ISO on the
 ``off_lit_trades`` channel, so a future format flip is plausible and
 would otherwise be a silent total blackout.
@@ -80,17 +80,17 @@ Consequences worth knowing:
 
 from __future__ import annotations
 
-import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, NamedTuple
 
 import db
 from handlers.base import Handler
 from logger_setup import log, rate_limited_log
+from utils import timestamps
 
 _TABLE = "futures_bars"
 
@@ -106,22 +106,6 @@ _CONFLICT_COLS: list[str] = ["symbol", "ts"]
 # and VX (Cboe CFE) are deliberately absent: neither appears on this
 # CME feed (verified over a 90s live probe).
 _TARGET_PRODUCTS: frozenset[str] = frozenset({"ES", "NQ", "RTY", "CL", "GC", "ZN"})
-
-# Floor for epoch-ms timestamps: 2000-01-01. Its real job is catching a
-# units flip — epoch SECONDS read as ms lands in 1970 and falls below
-# this, so we reject loudly instead of writing bars stamped 1970 that
-# would silently poison every reader.
-_MIN_PLAUSIBLE_MS = 946_684_800_000
-
-# Ceiling tolerance ABOVE the wall clock. See _parse_executed_at for why
-# the upper bound has to track "now" rather than a fixed far-future
-# constant. Sized for clock skew between UW's stamp and ours, nothing
-# more — a genuine trade is never minutes in the future.
-_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000
-
-# Bare integer string, for the case where UW ever quotes the epoch the
-# way it already quotes price/nbbo. Checked before the ISO parse.
-_EPOCH_MS_RE = re.compile(r"[+-]?\d+")
 
 # TEMPORARY (spec Phase 0b): remove after one session
 # Raw-frame capture for websocket probes P1 (which keys a frame carries)
@@ -257,7 +241,7 @@ class FuturesTradesHandler(Handler):
 
         # 3. Timestamp — epoch-ms per the live feed; drives both the
         # minute bucket and open/close ordering.
-        executed_at = _parse_executed_at(payload.get("executed_at"))
+        executed_at = timestamps.parse_timestamp(payload.get("executed_at"))
         if executed_at is None:
             rate_limited_log.warning(
                 scope="futures_trades",
@@ -528,71 +512,6 @@ def _to_int(v: Any) -> int | None:
         return int(Decimal(str(v)))
     except (InvalidOperation, ValueError):
         return None
-
-
-def _parse_executed_at(v: Any) -> datetime | None:
-    """Parse ``executed_at`` to a UTC-aware datetime.
-
-    Primary format is epoch MILLISECONDS as a JSON int — verified
-    against the live feed on 2026-09-08 (see module docstring). A
-    numeric string and an ISO-8601 string are both accepted as
-    defensive fallbacks so a UW format change degrades rather than
-    blacking the channel out.
-    """
-    if v is None or isinstance(v, bool):
-        return None
-
-    ms: int | None = None
-    if isinstance(v, int):
-        ms = v
-    elif isinstance(v, float):
-        ms = int(v)
-    elif isinstance(v, str):
-        s = v.strip()
-        if not s:
-            return None
-        if _EPOCH_MS_RE.fullmatch(s):
-            ms = int(s)
-        else:
-            try:
-                dt = datetime.fromisoformat(s)
-            except ValueError:
-                return None
-            # A naive timestamp has no defensible interpretation here —
-            # guessing UTC vs exchange-local would shift bars by hours.
-            if dt.tzinfo is None:
-                return None
-            # Converge on epoch-ms rather than returning early, so the
-            # ISO path gets the SAME plausibility bounds as the numeric
-            # path. It used to return here after a bare year >= 2000
-            # check, which skipped the upper bound entirely.
-            ms = int(dt.timestamp() * 1000)
-    else:
-        return None
-
-    if ms < _MIN_PLAUSIBLE_MS:
-        return None
-    # The upper bound tracks the WALL CLOCK, not a fixed far-future
-    # constant. A single print stamped years ahead but inside a static
-    # window would pin ``_newest_minute`` for that product for the
-    # lifetime of the process: every subsequent real minute would then
-    # read as "completed" and be written as a one-print PARTIAL bar that
-    # ON CONFLICT DO NOTHING can never revise. It would also freeze
-    # ``_session_date`` in the future, permanently disabling the
-    # front-month roll. One bad frame, unbounded corruption — so bound
-    # against now, allowing only clock skew.
-    if ms > _now_ms() + _MAX_FUTURE_SKEW_MS:
-        return None
-    return datetime.fromtimestamp(ms / 1000, UTC)
-
-
-def _now_ms() -> int:
-    """Wall clock as epoch ms.
-
-    A named seam so tests can pin "now" — the future-timestamp bound in
-    ``_parse_executed_at`` is otherwise untestable without sleeping.
-    """
-    return int(datetime.now(UTC).timestamp() * 1000)
 
 
 def _floor_to_minute(dt: datetime) -> datetime:

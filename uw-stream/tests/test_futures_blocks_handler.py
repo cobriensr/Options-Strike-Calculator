@@ -30,6 +30,7 @@ import pytest
 from handlers import futures_blocks as fb
 from handlers.futures_blocks import _COLUMNS, FuturesBlocksHandler
 from state import state
+from utils import timestamps
 
 _C = {name: i for i, name in enumerate(_COLUMNS)}
 
@@ -47,7 +48,7 @@ _GUARD = (
 
 @pytest.fixture(autouse=True)
 def _pin_wall_clock(monkeypatch):
-    monkeypatch.setattr(fb, "_now_ms", lambda: _PINNED_NOW_MS)
+    monkeypatch.setattr(timestamps, "_now_ms", lambda: _PINNED_NOW_MS)
 
 
 def _ms_to_dt(ms: int) -> datetime:
@@ -349,7 +350,9 @@ class TestTransformRejects:
 
         assert _rejected_kind(handler, _fut(reported_at=far)) == "bad_reported_at"
 
-    @pytest.mark.parametrize("value", ["not-a-time", True, [1]])
+    @pytest.mark.parametrize(
+        "value", ["not-a-time", True, [1], float("nan"), float("inf"), "2026-09-18T14:31:07"]
+    )
     def test_unparseable_time(self, handler, value):
         assert _rejected_kind(handler, _fut(executed_at=value)) == "bad_executed_at"
 

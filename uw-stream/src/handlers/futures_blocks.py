@@ -52,9 +52,8 @@ a field that stops parsing usually means UW changed the wire format.
 
 from __future__ import annotations
 
-import math
 import re
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
@@ -62,6 +61,7 @@ import db
 from handlers.base import Handler
 from logger_setup import rate_limited_log
 from sentry_setup import capture_message
+from utils import timestamps
 
 _TABLE = "futures_blocks"
 
@@ -102,15 +102,6 @@ _PRICE_LIMIT = Decimal("1e10")
 _QTY_LIMIT = Decimal("1e16")
 _SCALE = Decimal("1e-8")
 _BIGINT_MAX = 2**63 - 1
-
-# 2000-01-01 in epoch ms. Catches a units flip: epoch SECONDS read as
-# ms lands in 1970.
-_MIN_PLAUSIBLE_MS = 946_684_800_000
-
-# Allowed lead over the wall clock, for clock skew only. A far-future
-# reported_at would win every later upsert guard comparison and freeze
-# the row against real updates, so it is rejected.
-_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000
 
 _DIGITS = re.compile(r"[0-9]+")
 _ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
@@ -317,44 +308,15 @@ def _opt_number(p: dict, field: str, limit: Decimal) -> Decimal | None:
 
 
 def _opt_time(p: dict, field: str) -> datetime | None:
-    """Epoch ms (int, float or digit string) or an offset-aware ISO-8601
-    string, as a UTC datetime inside [2000-01-01, now + skew]."""
+    """None when absent, else a UTC time from ``timestamps.parse_timestamp``
+    (epoch ms or offset-aware ISO-8601, inside its plausibility window)."""
     v = p.get(field)
     if v is None or v == "":
         return None
-    dt: datetime | None = None
-    if isinstance(v, bool):
+    parsed = timestamps.parse_timestamp(v)
+    if parsed is None:
         raise _BadFieldError(field)
-    if isinstance(v, int):
-        ms = v
-    elif isinstance(v, float):
-        if not math.isfinite(v):
-            raise _BadFieldError(field)
-        ms = int(v)
-    elif isinstance(v, str) and _DIGITS.fullmatch(v):
-        ms = int(v)
-    elif isinstance(v, str):
-        try:
-            dt = datetime.fromisoformat(v)
-        except ValueError:
-            raise _BadFieldError(field) from None
-        # A naive time has no defensible zone; guessing would shift it by hours.
-        if dt.tzinfo is None:
-            raise _BadFieldError(field)
-        try:
-            dt = dt.astimezone(UTC)
-        except OverflowError:  # e.g. year 1 with a positive offset
-            raise _BadFieldError(field) from None
-        ms = int(dt.timestamp() * 1000)
-    else:
-        raise _BadFieldError(field)
-
-    if not _MIN_PLAUSIBLE_MS <= ms <= _now_ms() + _MAX_FUTURE_SKEW_MS:
-        raise _BadFieldError(field)
-    if dt is not None:
-        return dt
-    # Integer arithmetic, so a millisecond stamp converts exactly.
-    return datetime.fromtimestamp(ms // 1000, UTC).replace(microsecond=(ms % 1000) * 1000)
+    return parsed
 
 
 def _opt_legs(p: dict) -> list | None:
@@ -365,8 +327,3 @@ def _opt_legs(p: dict) -> list | None:
     if not isinstance(v, list):
         raise _BadFieldError("legs")
     return v
-
-
-def _now_ms() -> int:
-    """Wall clock as epoch ms, for the future-skew bound."""
-    return int(datetime.now(UTC).timestamp() * 1000)

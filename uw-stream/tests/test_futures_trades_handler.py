@@ -28,23 +28,22 @@ import pytest
 from handlers import futures_trades as ft
 from handlers.futures_trades import (
     _COLUMNS,
-    _MAX_FUTURE_SKEW_MS,
     _TARGET_PRODUCTS,
     FuturesTradesHandler,
     _floor_to_minute,
-    _parse_executed_at,
     _to_decimal,
     _to_int,
 )
 from logger_setup import JsonFormatter, log
+from utils import timestamps
 
 # 2026-09-08T05:56:51.311Z — a real timestamp from the live probe.
 _BASE_MS = 1788847011311
 # Floor of _BASE_MS to the minute: 05:56:00Z
 _BASE_MINUTE = datetime(2026, 9, 8, 5, 56, 0, tzinfo=UTC)
 
-# Pinned wall clock for the whole module. _parse_executed_at rejects
-# timestamps more than _MAX_FUTURE_SKEW_MS ahead of now, and several
+# Pinned wall clock for the whole module. timestamps.parse_timestamp rejects
+# timestamps more than MAX_FUTURE_SKEW_MS ahead of now, and several
 # fixtures below deliberately span 2-3 UTC days from _BASE_MS; without a
 # pinned clock those would start failing the moment real time drifts
 # behind the fixture dates. 10 days of headroom covers every fixture.
@@ -56,7 +55,7 @@ _C = {name: i for i, name in enumerate(_COLUMNS)}
 @pytest.fixture(autouse=True)
 def _pin_wall_clock(monkeypatch):
     """Pin ``_now_ms`` so the future-timestamp bound is deterministic."""
-    monkeypatch.setattr(ft, "_now_ms", lambda: _PINNED_NOW_MS)
+    monkeypatch.setattr(timestamps, "_now_ms", lambda: _PINNED_NOW_MS)
 
 
 def _floor_minute_utc(v):
@@ -66,7 +65,7 @@ def _floor_minute_utc(v):
     of its own, so these assertions exercise the code the handler
     actually runs.
     """
-    parsed = _parse_executed_at(v)
+    parsed = timestamps.parse_timestamp(v)
     return None if parsed is None else _floor_to_minute(parsed)
 
 
@@ -865,14 +864,24 @@ class TestFutureDatedTimestamps:
 
     def test_small_clock_skew_still_accepted(self):
         """A stamp slightly ahead of us is skew, not corruption."""
-        skewed = _PINNED_NOW_MS + _MAX_FUTURE_SKEW_MS - 60_000
+        skewed = _PINNED_NOW_MS + timestamps.MAX_FUTURE_SKEW_MS - 60_000
         assert _floor_minute_utc(skewed) is not None
 
     def test_just_past_the_skew_window_rejected(self):
-        assert _floor_minute_utc(_PINNED_NOW_MS + _MAX_FUTURE_SKEW_MS + 60_000) is None
+        past = _PINNED_NOW_MS + timestamps.MAX_FUTURE_SKEW_MS + 60_000
+        assert _floor_minute_utc(past) is None
 
     def test_transform_drops_the_future_print(self, handler):
         assert handler._transform(_print(executed_at=_PINNED_NOW_MS + 10**11)) is None
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_float_executed_at_is_dropped_not_raised(self, handler, value):
+        """``int(nan)`` raises ValueError and ``int(inf)`` OverflowError.
+        The parser used to let both escape ``_transform``, which the base
+        handler then reported to Sentry once per frame."""
+        with patch.object(ft, "rate_limited_log") as rl:
+            assert handler._transform(_print(executed_at=value)) is None
+        assert rl.warning.call_args.kwargs["kind"] == "bad_executed_at"
 
     @pytest.mark.asyncio
     async def test_future_print_does_not_advance_newest_minute(self, handler):
