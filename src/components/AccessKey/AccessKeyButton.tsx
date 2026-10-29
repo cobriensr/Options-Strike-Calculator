@@ -11,7 +11,7 @@
  * modal, just two visual treatments.
  */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useAccessSession } from '../../hooks/useAccessSession';
 import AccessKeyModal from './AccessKeyModal';
 
@@ -22,6 +22,8 @@ interface Props {
 export default function AccessKeyButton({ compact = false }: Props) {
   const { mode, refresh, logout } = useAccessSession();
   const [open, setOpen] = useState(false);
+  // The dialog returns focus here on close.
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   const filled = mode === 'guest' || mode === 'owner';
   const ariaLabel =
@@ -42,6 +44,7 @@ export default function AccessKeyButton({ compact = false }: Props) {
   return (
     <>
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen(true)}
         aria-label={ariaLabel}
@@ -78,6 +81,7 @@ export default function AccessKeyButton({ compact = false }: Props) {
       {open && (
         <AccessKeyModal
           mode={mode}
+          opener={triggerRef}
           onClose={() => setOpen(false)}
           onLoginSuccess={() => {
             refresh();

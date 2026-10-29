@@ -10,6 +10,8 @@ import AccessKeyModal from '../../../components/AccessKey/AccessKeyModal';
 import type { AccessMode } from '../../../utils/auth';
 
 const fetchMock = vi.fn();
+// For tests that aren't about where focus returns on close
+const NO_OPENER = { current: null };
 
 beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock);
@@ -24,6 +26,7 @@ describe('AccessKeyModal — public mode', () => {
   it('renders the input form and disables submit when empty', () => {
     render(
       <AccessKeyModal
+        opener={NO_OPENER}
         mode="public"
         onClose={vi.fn()}
         onLoginSuccess={vi.fn()}
@@ -46,6 +49,7 @@ describe('AccessKeyModal — public mode', () => {
     const onLoginSuccess = vi.fn();
     render(
       <AccessKeyModal
+        opener={NO_OPENER}
         mode="public"
         onClose={vi.fn()}
         onLoginSuccess={onLoginSuccess}
@@ -75,6 +79,7 @@ describe('AccessKeyModal — public mode', () => {
     const onLoginSuccess = vi.fn();
     render(
       <AccessKeyModal
+        opener={NO_OPENER}
         mode="public"
         onClose={vi.fn()}
         onLoginSuccess={onLoginSuccess}
@@ -97,6 +102,7 @@ describe('AccessKeyModal — public mode', () => {
     const onClose = vi.fn();
     render(
       <AccessKeyModal
+        opener={NO_OPENER}
         mode="public"
         onClose={onClose}
         onLoginSuccess={vi.fn()}
@@ -111,6 +117,7 @@ describe('AccessKeyModal — public mode', () => {
     const onClose = vi.fn();
     render(
       <AccessKeyModal
+        opener={NO_OPENER}
         mode="public"
         onClose={onClose}
         onLoginSuccess={vi.fn()}
@@ -126,6 +133,7 @@ describe('AccessKeyModal — guest mode', () => {
   it('shows guest message and Sign out button', () => {
     render(
       <AccessKeyModal
+        opener={NO_OPENER}
         mode="guest"
         onClose={vi.fn()}
         onLoginSuccess={vi.fn()}
@@ -145,6 +153,7 @@ describe('AccessKeyModal — guest mode', () => {
     const onClose = vi.fn();
     render(
       <AccessKeyModal
+        opener={NO_OPENER}
         mode="guest"
         onClose={onClose}
         onLoginSuccess={vi.fn()}
@@ -161,6 +170,7 @@ describe('AccessKeyModal — owner mode', () => {
   it('shows informational copy without an input', () => {
     render(
       <AccessKeyModal
+        opener={NO_OPENER}
         mode="owner"
         onClose={vi.fn()}
         onLoginSuccess={vi.fn()}
@@ -184,16 +194,19 @@ describe('AccessKeyModal — focus', () => {
     for (const opener of openers.splice(0)) opener.remove();
   });
 
-  // Opens the dialog the way the header does: from a focused button.
-  function openFrom(mode: AccessMode) {
+  // Opens the dialog the way the header does: from its Access Key button,
+  // focused by a keyboard press or Chrome's click, or not (Safari leaves a
+  // clicked button unfocused).
+  function openFrom(mode: AccessMode, { focused = true } = {}) {
     const opener = document.createElement('button');
     opener.textContent = 'Access';
     document.body.appendChild(opener);
     openers.push(opener);
-    opener.focus();
+    if (focused) opener.focus();
     const utils = render(
       <AccessKeyModal
         mode={mode}
+        opener={{ current: opener }}
         onClose={vi.fn()}
         onLoginSuccess={vi.fn()}
         onLogout={vi.fn().mockResolvedValue(undefined)}
@@ -215,6 +228,14 @@ describe('AccessKeyModal — focus', () => {
       expect(opener).toHaveFocus();
     },
   );
+
+  it('returns focus to the opener even when the click left it unfocused (Safari)', () => {
+    const { opener, unmount } = openFrom('owner', { focused: false });
+    expect(opener).not.toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+    unmount();
+    expect(opener).toHaveFocus();
+  });
 
   it('keeps Tab and Shift+Tab inside the dialog', () => {
     openFrom('guest');

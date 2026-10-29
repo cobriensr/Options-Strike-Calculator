@@ -12,7 +12,7 @@
  * Focus (WCAG 2.4.3): on open it moves into the dialog, to the key input
  * (public) or the Close button (guest, owner); Tab stays inside while it
  * is open (`useFocusTrap`, as `aria-modal` promises an inert background);
- * on close it goes back to whatever opened the dialog.
+ * on close it goes back to the `opener` button.
  */
 
 import {
@@ -21,6 +21,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type RefObject,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
@@ -28,6 +29,13 @@ import type { AccessMode } from '../../utils/auth';
 
 interface Props {
   mode: AccessMode;
+  /**
+   * The button that opened the dialog; focus goes back to it on close.
+   * Passed in rather than read from `document.activeElement`, because
+   * Safari doesn't focus a button on a mouse click, so the active element
+   * would be <body>.
+   */
+  opener: RefObject<HTMLElement | null>;
   onClose: () => void;
   onLoginSuccess: () => void;
   onLogout: () => Promise<void>;
@@ -35,6 +43,7 @@ interface Props {
 
 export default function AccessKeyModal({
   mode,
+  opener,
   onClose,
   onLoginSuccess,
   onLogout,
@@ -50,14 +59,10 @@ export default function AccessKeyModal({
   useFocusTrap(dialogRef, true);
 
   useEffect(() => {
-    // Whatever had focus when the dialog opened (the Access Key button).
-    const opener =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
+    const returnTo = opener.current;
     (inputRef.current ?? closeRef.current)?.focus();
-    return () => opener?.focus();
-  }, []);
+    return () => returnTo?.focus();
+  }, [opener]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
