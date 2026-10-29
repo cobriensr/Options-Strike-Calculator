@@ -3,7 +3,7 @@
 
 Replays the SPXWIntervalBAHandler detection logic (see
 uw-stream/src/handlers/interval_ba.py) against historical per-trade
-ticks from ~/Desktop/Eod-Full-Tape-parquet/. Writes synthetic alerts
+ticks from the Full Tape parquet archive (--parquet-dir). Writes synthetic alerts
 into Neon with ON CONFLICT (option_chain, bucket_start) DO NOTHING
 so re-runs are safe and won't collide with live alerts the daemon
 writes later for the same bucket.
@@ -29,8 +29,11 @@ Threshold:
 
 Usage:
     ml/.venv/Scripts/python scripts/backfill_interval_ba_alerts.py \\
+        --parquet-dir <full-tape-dir> \\
         [--from-date 2026-01-02] [--to-date 2026-05-11] [--dry-run]
         [--limit-days N]
+
+--parquet-dir is the directory of {date}-fulltape.parquet files.
 
 Spec: docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md
 (post-shipping backfill — Phase B2).
@@ -51,13 +54,13 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pyarrow.parquet as pq
+from _cli_paths import existing_dir
 
 # psycopg2 is imported lazily inside insert_alerts() so a dry-run on a
 # machine without it still works.
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env.local'
-PARQUET_DIR = Path.home() / 'Desktop' / 'Eod-Full-Tape-parquet'
 
 # Match the SPXWIntervalBAHandler defaults. Configurable per-ticker via
 # --ticker so the same script can backfill SPY / QQQ / future tickers
@@ -138,11 +141,14 @@ def load_env() -> None:
 
 
 def list_parquet_dates(
-    from_date: str | None, to_date: str | None, limit: int | None,
+    parquet_dir: Path,
+    from_date: str | None,
+    to_date: str | None,
+    limit: int | None,
 ) -> list[tuple[str, Path]]:
     """Return [(date, path), ...] for each fulltape parquet in range."""
     out: list[tuple[str, Path]] = []
-    for p in sorted(PARQUET_DIR.glob('*-fulltape.parquet')):
+    for p in sorted(parquet_dir.glob('*-fulltape.parquet')):
         m = re.match(r'(\d{4}-\d{2}-\d{2})-fulltape\.parquet', p.name)
         if not m:
             continue
@@ -413,8 +419,14 @@ def insert_alerts(conn, rows: list[tuple]) -> int:
     return inserted
 
 
-def main() -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        '--parquet-dir',
+        type=existing_dir,
+        required=True,
+        help='Directory of {date}-fulltape.parquet files (UW Full Tape archive).',
+    )
     parser.add_argument(
         '--ticker',
         type=str,
@@ -433,15 +445,22 @@ def main() -> int:
         action='store_true',
         help='Read parquets and detect alerts but skip DB writes.',
     )
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     ticker: str = args.ticker.upper()
 
     load_env()
-    if not PARQUET_DIR.exists():
-        sys.exit(f'Missing parquet dir: {PARQUET_DIR}')
-    dates = list_parquet_dates(args.from_date, args.to_date, args.limit_days)
+    dates = list_parquet_dates(
+        args.parquet_dir, args.from_date, args.to_date, args.limit_days
+    )
     if not dates:
-        sys.exit('No parquet files matched the date range')
+        sys.exit(
+            f'No *-fulltape.parquet files in {args.parquet_dir} for '
+            f'{args.from_date or "start"} → {args.to_date or "end"}'
+        )
 
     print(
         f'Backfilling {ticker} across {len(dates)} day(s): '
