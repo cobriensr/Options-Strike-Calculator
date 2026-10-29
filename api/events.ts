@@ -25,6 +25,7 @@ import { withRequestScope } from './_lib/request-scope.js';
 import { redis } from './_lib/redis.js';
 import logger from './_lib/logger.js';
 import { getETDateStr } from '../src/utils/timezone.js';
+import { EARLY_CLOSE_DATES } from '../src/data/marketHours.js';
 
 // ============================================================
 // FRED RELEASE IDS → EVENT MAPPING
@@ -134,18 +135,31 @@ const ALL_FOMC = [...FOMC_DATES_2025, ...FOMC_DATES_2026];
 // ============================================================
 
 /**
- * NYSE early close days — market closes at 1:00 PM ET instead of 4:00 PM.
- * This reduces time-to-expiry by 3 hours, significantly impacting 0DTE pricing.
+ * Early closes come from `EARLY_CLOSE_DATES` in `src/data/marketHours.ts`,
+ * the same calendar every market-hours gate uses, so the two cannot drift
+ * (this file once listed 2026-07-03 as an early close while NYSE was shut).
+ * The reason label is derived from the month: Jul = Independence Day Eve,
+ * Nov = Black Friday, Dec = Christmas Eve.
  *
- * Recurring pattern:
- *   - Day before Independence Day (July 3, unless July 4 is Sat/Sun)
- *   - Black Friday (day after Thanksgiving)
- *   - Christmas Eve (Dec 24, unless it falls on weekend)
- *
- * Also includes full market closures for Good Friday (no 0DTE possible).
+ * Good Friday is the only full closure surfaced as a CLOSED event (no 0DTE
+ * is possible); `MARKET_CLOSED_DATES` carries no holiday names, so these
+ * stay listed by hand. Add next year's Good Friday here when you extend
+ * the calendar.
  *
  * Sources: https://www.nyse.com/markets/hours-calendars
  */
+const GOOD_FRIDAYS: readonly string[] = [
+  '2025-04-18',
+  '2026-04-03',
+  '2027-03-26',
+];
+
+const EARLY_CLOSE_REASON_BY_MONTH: Readonly<Record<string, string>> = {
+  '07': 'Independence Day Eve',
+  '11': 'Black Friday',
+  '12': 'Christmas Eve',
+};
+
 interface HalfDayEntry {
   readonly date: string;
   readonly type: 'early_close' | 'closed';
@@ -153,51 +167,24 @@ interface HalfDayEntry {
   readonly reason: string;
 }
 
-const HALF_DAYS_2025: readonly HalfDayEntry[] = [
-  { date: '2025-04-18', type: 'closed', reason: 'Good Friday' },
-  {
-    date: '2025-07-03',
-    type: 'early_close',
-    closeTime: '1:00 PM',
-    reason: 'Independence Day Eve',
-  },
-  {
-    date: '2025-11-28',
-    type: 'early_close',
-    closeTime: '1:00 PM',
-    reason: 'Black Friday',
-  },
-  {
-    date: '2025-12-24',
-    type: 'early_close',
-    closeTime: '1:00 PM',
-    reason: 'Christmas Eve',
-  },
-] as const;
+function formatCloseTime(hourET: number): string {
+  const hour12 = hourET > 12 ? hourET - 12 : hourET;
+  return `${hour12}:00 ${hourET >= 12 ? 'PM' : 'AM'}`;
+}
 
-const HALF_DAYS_2026: readonly HalfDayEntry[] = [
-  { date: '2026-04-03', type: 'closed', reason: 'Good Friday' },
-  {
-    date: '2026-07-03',
-    type: 'early_close',
-    closeTime: '1:00 PM',
-    reason: 'Independence Day Eve',
-  },
-  {
-    date: '2026-11-27',
-    type: 'early_close',
-    closeTime: '1:00 PM',
-    reason: 'Black Friday',
-  },
-  {
-    date: '2026-12-24',
-    type: 'early_close',
-    closeTime: '1:00 PM',
-    reason: 'Christmas Eve',
-  },
-] as const;
-
-const ALL_HALF_DAYS = [...HALF_DAYS_2025, ...HALF_DAYS_2026];
+const ALL_HALF_DAYS: readonly HalfDayEntry[] = [
+  ...GOOD_FRIDAYS.map(
+    (date): HalfDayEntry => ({ date, type: 'closed', reason: 'Good Friday' }),
+  ),
+  ...[...EARLY_CLOSE_DATES].map(
+    ([date, hourET]): HalfDayEntry => ({
+      date,
+      type: 'early_close',
+      closeTime: formatCloseTime(hourET),
+      reason: EARLY_CLOSE_REASON_BY_MONTH[date.slice(5, 7)] ?? 'Early close',
+    }),
+  ),
+].sort((x, y) => x.date.localeCompare(y.date));
 
 // ============================================================
 // MEGA-CAP EARNINGS (FINNHUB)

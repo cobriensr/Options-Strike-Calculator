@@ -436,9 +436,8 @@ describe('GET /api/events', () => {
     vi.unstubAllGlobals();
   });
 
-  it('includes early close events in date range', async () => {
+  async function eventsFrom(now: string, days: string) {
     process.env.FRED_API_KEY = 'fred-key';
-
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -446,33 +445,60 @@ describe('GET /api/events', () => {
         json: () => Promise.resolve({ release_dates: [] }),
       }),
     );
-
-    // Mock Date to 2026-06-20 so a 90-day window covers 2026-07-03
-    // (Independence Day Eve early close)
-    const fakeNow = new Date('2026-06-20T12:00:00Z');
-    vi.useFakeTimers({ now: fakeNow });
-
+    vi.useFakeTimers({ now: new Date(now) });
     const res = mockResponse();
-    await handler(mockRequest({ method: 'GET', query: { days: '90' } }), res);
-
+    await handler(mockRequest({ method: 'GET', query: { days } }), res);
     vi.useRealTimers();
-
-    expect(res._status).toBe(200);
-    const json = res._json as {
-      events: { event: string; description: string; date: string }[];
-    };
-    const earlyCloseEvents = json.events.filter(
-      (e) => e.event === 'EARLY CLOSE',
-    );
-    expect(earlyCloseEvents.length).toBeGreaterThan(0);
-
-    const julyThird = earlyCloseEvents.find((e) => e.date === '2026-07-03');
-    expect(julyThird).toBeDefined();
-    expect(julyThird!.description).toContain('closes at');
-    expect(julyThird!.description).toContain('1:00 PM');
-    expect(julyThird!.description).toContain('ET');
-
     vi.unstubAllGlobals();
+    expect(res._status).toBe(200);
+    return (
+      res._json as {
+        events: {
+          event: string;
+          description: string;
+          date: string;
+          time: string;
+        }[];
+      }
+    ).events;
+  }
+
+  it('includes early close events in date range', async () => {
+    const events = await eventsFrom('2026-10-20T12:00:00Z', '90');
+    const earlyClose = events.filter((e) => e.event === 'EARLY CLOSE');
+
+    const blackFriday = earlyClose.find((e) => e.date === '2026-11-27');
+    expect(blackFriday).toBeDefined();
+    expect(blackFriday!.description).toContain('closes at');
+    expect(blackFriday!.description).toContain('1:00 PM');
+    expect(blackFriday!.description).toContain('Black Friday');
+    expect(blackFriday!.time).toBe('1:00 PM');
+    expect(earlyClose.find((e) => e.date === '2026-12-24')).toBeDefined();
+  });
+
+  it('does not show 2026-07-03 as an early close (NYSE is closed all day)', async () => {
+    const events = await eventsFrom('2026-06-20T12:00:00Z', '30');
+    expect(
+      events.filter(
+        (e) => e.date === '2026-07-03' && e.event === 'EARLY CLOSE',
+      ),
+    ).toEqual([]);
+  });
+
+  it('lists the 2027 half day and Good Friday closure, and nothing else', async () => {
+    const fall = await eventsFrom('2027-11-01T12:00:00Z', '90');
+    const earlyDates = fall
+      .filter((e) => e.event === 'EARLY CLOSE')
+      .map((e) => e.date);
+    // 2027-12-24 is the observed Christmas closure, not an early close.
+    expect(earlyDates).toEqual(['2027-11-26']);
+
+    const spring = await eventsFrom('2027-03-10T12:00:00Z', '30');
+    const goodFriday = spring.find((e) => e.date === '2027-03-26');
+    expect(goodFriday?.event).toBe('CLOSED');
+
+    const summer = await eventsFrom('2027-06-25T12:00:00Z', '30');
+    expect(summer.filter((e) => e.event === 'EARLY CLOSE')).toEqual([]);
   });
 
   it('returns 403 when checkBot reports a bot', async () => {
