@@ -13,6 +13,11 @@ TAPE_START = date(2026, 1, 2)
 # Longest run of missed sessions one run will try to catch up.
 CATCHUP_MAX_DAYS = 30
 RUN_DEADLINE_SECONDS = 5 * 3600
+# A day starts only with this much run time left: its 1800 s download deadline (which
+# spans retries) plus convert and upload. It makes RUN_DEADLINE_SECONDS a true bound.
+DAY_BUDGET_SECONDS = 3600
+# How long past RUN_DEADLINE_SECONDS the watchdog waits before it ends a hung run.
+WATCHDOG_GRACE_SECONDS = 900
 DOWNLOAD_DEADLINE_SECONDS = 1800
 DOWNLOAD_MAX_ATTEMPTS = 4
 MIN_FREE_DISK_BYTES = 15 * 2**30

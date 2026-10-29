@@ -13,7 +13,7 @@ import logging
 import warnings
 from collections.abc import Iterator
 from datetime import date
-from typing import Any
+from typing import Any, get_args
 from unittest.mock import create_autospec, patch
 
 import polars as pl
@@ -23,10 +23,10 @@ from sentry_sdk.consts import SPANDATA
 from sentry_sdk.envelope import Envelope
 from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.transport import Transport
-from sentry_sdk.utils import event_from_exception
+from sentry_sdk.utils import event_from_exception, has_data_collection_enabled
 
 from monitoring import init_sentry, report_outcome, scrub_event
-from tape_job import DayOutcome
+from tape_job import DayOutcome, DayStatus
 
 SIGNED_URL = "https://storage.googleapis.com/b/o.zip?X-Goog-Signature=abc&X-Goog-Credential=def"
 SIGNED_QUERY = "X-Goog-Signature=abc&X-Goog-Credential=def"
@@ -281,6 +281,30 @@ def test_scrub_drops_frame_local_variables() -> None:
     assert not any("vars" in frame for frame in _values(scrubbed)[0]["stacktrace"]["frames"])
 
 
+def test_scrub_drops_vars_from_every_frame_list() -> None:
+    secret = RAW_BYTES.decode()
+    frame = {"module": "uw_client", "function": "_download_once", "vars": {"chunk": secret}}
+    event = {
+        "level": "error",
+        "threads": {"values": [{"stacktrace": {"frames": [dict(frame)]}, "current": True}]},
+        "extra": {"nested": {"stacktrace": {"frames": [dict(frame)]}}},
+        "exception": {"values": [{"type": "E", "value": "v", "stacktrace": {"frames": [frame]}}]},
+    }
+
+    scrubbed = scrub_event(event, {})
+
+    assert scrubbed is not None
+    assert secret not in json.dumps(scrubbed)
+    (thread,) = scrubbed["threads"]["values"]
+    assert thread["stacktrace"]["frames"] == [{"module": "uw_client", "function": "_download_once"}]
+    assert thread["current"] is True
+
+
+def test_scrub_keeps_vars_keys_outside_frames() -> None:
+    event = {"level": "warning", "message": "m", "extra": {"vars": "a setting name"}}
+    assert scrub_event(event, {}) == event
+
+
 def test_scrub_passes_check_ins_through() -> None:
     # before_send sees check-ins too; a scrub that broke them would hide every run.
     check_in = {
@@ -357,6 +381,40 @@ def sdk_transport(caplog: pytest.LogCaptureFixture) -> Iterator[_MemoryTransport
     client.close()
 
 
+def test_live_client_collects_no_frame_variables(sdk_transport: _MemoryTransport) -> None:
+    # 2.73 reads stack_frame_variables from data_collection when the user set it, and
+    # include_local_variables otherwise (utils.serialize_frame). Both must be off.
+    options = sentry_sdk.get_client().options
+    if has_data_collection_enabled(options):
+        assert options["data_collection"]["stack_frame_variables"] is False
+    else:
+        assert options["include_local_variables"] is False
+    resolved = options.get("data_collection")
+    if resolved is not None:  # SDKs with data_collection resolve it either way
+        assert resolved["stack_frame_variables"] is False
+        assert resolved["user_info"] is False
+
+
+def test_options_alone_keep_locals_off_the_wire(sdk_transport: _MemoryTransport) -> None:
+    # Without the scrubber's second layer: init_sentry's options alone send no locals.
+    sentry_sdk.get_client().options["before_send"] = None
+
+    def download() -> None:
+        chunk = RAW_BYTES
+        raise RuntimeError(f"stalled after {len(chunk)} bytes")
+
+    try:
+        download()
+    except RuntimeError as exc:
+        sentry_sdk.capture_exception(exc)
+    sentry_sdk.get_client().flush(timeout=5)
+
+    wire = b"".join(sdk_transport.payloads)
+    assert b"stalled after" in wire
+    assert RAW_BYTES not in wire
+    assert b'"vars"' not in wire
+
+
 def test_scrub_through_the_sdk(sdk_transport: _MemoryTransport) -> None:
     logging.getLogger("httpx").info('HTTP Request: GET %s "HTTP/1.1 200 OK"', SIGNED_URL)
     sentry_sdk.add_breadcrumb(_http_breadcrumb())
@@ -428,7 +486,7 @@ def test_landed_day_with_warnings_sends_one_warning(capture_message, status: str
     assert kwargs["level"] == "warning"
     assert kwargs["tags"] == {"day": "2026-10-28", "status": status}
     assert kwargs["extras"]["warnings"] == list(notes)
-    assert "2026" not in message
+    assert message == f"nightly tape day {status} with warnings"
 
 
 @pytest.mark.parametrize(
@@ -457,14 +515,21 @@ def test_unlanded_day_sends_one_message(capture_message, status: str, level: str
     }
     # One Sentry issue per status and failure kind, not one for every bad night.
     assert kwargs["fingerprint"] == ["nightly-tape-day", status, "transient"]
-    assert "2026" not in message
-    assert status not in message
-    assert "transient" not in message
+    assert message == f"nightly tape day {status}"
 
 
-def test_report_messages_are_constant(capture_message) -> None:
+def test_report_titles_are_a_closed_set(capture_message) -> None:
+    # Titles name the status only, never the day, detail or a warning's text.
     for day in (date(2026, 10, 27), date(2026, 10, 28)):
-        report_outcome(DayOutcome(day, "failed", "ComputeError"))
-        report_outcome(DayOutcome(day, "not_posted", "not_posted"))
-    messages = {c.args[0] for c in capture_message.call_args_list}
-    assert len(messages) == 1
+        for status in get_args(DayStatus):
+            report_outcome(DayOutcome(day, status, f"detail-{day}", warnings=(f"note-{day}",)))
+    titles = {c.args[0] for c in capture_message.call_args_list}
+    assert titles == {
+        "nightly tape day landed with warnings",
+        "nightly tape day relanded with warnings",
+        "nightly tape day not_posted",
+        "nightly tape day unavailable",
+        "nightly tape day failed",
+        "nightly tape day skipped_disk",
+        "nightly tape day skipped_deadline",
+    }

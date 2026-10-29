@@ -35,6 +35,7 @@ from calendar_nyse import trading_days
 from config import Settings, load_settings
 from constants import (
     CATCHUP_MAX_DAYS,
+    DAY_BUDGET_SECONDS,
     MIN_FREE_DISK_BYTES,
     REWRITE_RECHECK_DAYS,
     RUN_DEADLINE_SECONDS,
@@ -65,7 +66,7 @@ METADATA_KEYS = {
 JAN_NOW = datetime(2026, 1, 9, 7, 15, tzinfo=UTC)
 J2, J5, J6, J7, J8 = trading_days(TAPE_START, date(2026, 1, 8))
 SKIPPED_DISK = "free disk below the minimum"
-SKIPPED_DEADLINE = "run deadline passed"
+SKIPPED_DEADLINE = "less than a day's budget left before the run deadline"
 NO_DEADLINE = math.inf
 
 
@@ -851,6 +852,90 @@ def test_run_deadline_passing_during_probes_stops_them(
         (J6, "skipped_deadline", SKIPPED_DEADLINE),
     ]
     assert tape.downloads == []
+
+
+@pytest.mark.parametrize(
+    ("spent", "second_day_starts"),
+    [
+        (RUN_DEADLINE_SECONDS - DAY_BUDGET_SECONDS, True),
+        (RUN_DEADLINE_SECONDS - DAY_BUDGET_SECONDS + 1, False),
+    ],
+    ids=["budget-left", "one-second-short"],
+)
+def test_a_day_starts_only_with_its_budget_left(
+    s3,
+    settings: Settings,
+    tape: FakeTape,
+    monkeypatch: pytest.MonkeyPatch,
+    spent: int,
+    second_day_starts: bool,
+) -> None:
+    # The deadline is a true bound: a day never starts that could run past it.
+    for d in (J2, J5, J6):
+        _seed(s3, d)
+    clock = SimpleNamespace(now=1000.0)
+    monkeypatch.setattr(tape_job, "monotonic", lambda: clock.now)
+
+    def first_day_takes(day: date) -> None:
+        if day == J8:
+            clock.now += spent
+
+    tape.on_download = first_day_takes
+
+    outcomes = run_tape(settings, JAN_NOW)
+
+    if second_day_starts:
+        assert _statuses(outcomes) == [(J8, "landed", ""), (J7, "landed", "")]
+        assert tape.downloads == [J8, J7]
+    else:
+        assert _statuses(outcomes) == [
+            (J8, "landed", ""),
+            (J7, "skipped_deadline", SKIPPED_DEADLINE),
+        ]
+        assert tape.downloads == [J8]
+
+
+def test_outcomes_are_reported_as_each_day_finishes(s3, settings: Settings, tape: FakeTape) -> None:
+    _seed(s3, J2)
+    _seed(s3, J5)
+    tape.convert_error[J7] = TapeValidationError("corrupt zip")
+    tape.free = [MIN_FREE_DISK_BYTES, MIN_FREE_DISK_BYTES, MIN_FREE_DISK_BYTES - 1]
+    reported: list[tuple[date, str, str]] = []
+    reported_before_download: list[int] = []
+    tape.on_download = lambda day: reported_before_download.append(len(reported))
+
+    outcomes = run_tape(
+        settings, JAN_NOW, on_outcome=lambda o: reported.append((o.day, o.status, o.detail))
+    )
+
+    # Each day is reported before the next one starts, the skipped day included.
+    assert reported == [
+        (J8, "landed", ""),
+        (J7, "failed", "TapeValidationError"),
+        (J6, "skipped_disk", SKIPPED_DISK),
+    ]
+    assert reported == _statuses(outcomes)
+    assert reported_before_download == [0, 1]
+
+
+def test_a_raising_outcome_callback_does_not_stop_the_run(
+    s3, settings: Settings, tape: FakeTape, caplog: pytest.LogCaptureFixture
+) -> None:
+    _seed(s3, J2)
+    _seed(s3, J5)
+    calls: list[date] = []
+
+    def report(outcome: DayOutcome) -> None:
+        calls.append(outcome.day)
+        raise RuntimeError(f"report failed {URL}")
+
+    with caplog.at_level(logging.WARNING, logger="tape_job"):
+        outcomes = run_tape(settings, JAN_NOW, on_outcome=report)
+
+    assert _statuses(outcomes) == [(J8, "landed", ""), (J7, "landed", ""), (J6, "landed", "")]
+    assert calls == [J8, J7, J6]
+    assert "outcome report failed (RuntimeError)" in caplog.text
+    assert SECRET not in caplog.text
 
 
 def test_keyboard_interrupt_propagates_and_cleans_work_dir(

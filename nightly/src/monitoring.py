@@ -4,7 +4,7 @@ Nothing that leaves through Sentry may carry market data or a credential (review
 finding b11). The leak paths, and what closes each:
 - Frame locals: uw_client frames hold the signed GCS URL, and tape_convert frames
   hold raw tape bytes. `include_local_variables=False`, and `scrub_event` drops
-  any `vars` that still arrive.
+  `vars` from every frame that still carries them, threads included.
 - Signed URLs: httpx logs every request line at INFO, and the SDK's httpx
   integration puts the raw query in a breadcrumb's `http.query`. `scrub_event`
   strips the query from every URL anywhere in the event and drops those keys.
@@ -38,6 +38,7 @@ _WARNING_STATUSES = frozenset({"not_posted", "unavailable"})
 _URL_QUERY = re.compile(r"(https?://[^\s?#'\"<>]{0,2048}+)[?#][^\s'\"<>]*+", re.IGNORECASE)
 # Breadcrumb data keys where the SDK's HTTP integrations keep the raw query.
 _QUERY_KEYS = frozenset({"http.query", "http.fragment"})
+_FRAME_DROP_KEYS = _QUERY_KEYS | {"vars"}
 
 
 def init_sentry(dsn: str | None) -> None:
@@ -45,6 +46,10 @@ def init_sentry(dsn: str | None) -> None:
     if not dsn:
         log.info("SENTRY_DSN not set; Sentry disabled")
         return
+    # Trap: sentry-sdk 2.73 deprecates send_default_pii in favour of data_collection,
+    # and a data_collection dict, once given, overrides both options below. A migration
+    # to it must set stack_frame_variables=False and user_info=False, or frame locals
+    # (signed URLs, raw tape bytes) start reaching Sentry.
     sentry_sdk.init(
         dsn=dsn,
         server_name="nightly",
@@ -64,37 +69,35 @@ def scrub_event(event: dict[str, Any], hint: dict[str, Any]) -> dict[str, Any] |
     The SDK also calls this for cron check-ins, which pass through unchanged. If it
     raised, the SDK would drop the event, so it only reads shapes it checks for.
     """
-    scrubbed: dict[str, Any] = _strip_queries(event)
+    scrubbed: dict[str, Any] = _scrubbed_copy(event)
     for value in _values_of(scrubbed.get("exception")):
         text = value.get("value")
         if _from_polars(value):
             value["value"] = POLARS_REDACTED
         elif isinstance(text, str):
             value["value"] = text[:MAX_EXCEPTION_VALUE]
-        for frame in _frames(value):
-            frame.pop("vars", None)
     return scrubbed
 
 
 def report_outcome(outcome: DayOutcome) -> None:
     """One Sentry message for a day that didn't land, or that landed with warnings.
 
-    The message text is constant; the day and status are tags, and `detail` (a kind,
-    class name or fixed phrase) and the warnings (window edges, ratios and cleanup
-    phrases) go in extra. Neither carries a tape value.
+    The title names the status only, one of a closed set; the day and status are
+    tags, and `detail` (a kind, class name or fixed phrase) and the warnings (window
+    edges, ratios and cleanup phrases) go in extra. Neither carries a tape value.
     """
     tags = {"day": outcome.day.isoformat(), "status": outcome.status}
     if outcome.status in _LANDED:
         if outcome.warnings:
             sentry_sdk.capture_message(
-                "nightly tape day landed with warnings",
+                f"nightly tape day {outcome.status} with warnings",
                 level="warning",
                 tags=tags,
                 extras={"warnings": list(outcome.warnings)},
             )
         return
     sentry_sdk.capture_message(
-        "nightly tape day not landed",
+        f"nightly tape day {outcome.status}",
         level="warning" if outcome.status in _WARNING_STATUSES else "error",
         tags=tags,
         extras={"detail": outcome.detail, "warnings": list(outcome.warnings)},
@@ -138,13 +141,17 @@ def _is_polars_module(module: object) -> bool:
     return root == "polars" or root.startswith("_polars")
 
 
-def _strip_queries(value: Any) -> Any:
+def _scrubbed_copy(value: Any, *, frame: bool = False) -> Any:
     """A copy of `value` with every URL's query and fragment removed from its strings,
-    and the `http.query` / `http.fragment` keys dropped from its dicts."""
+    the `http.query` / `http.fragment` keys dropped from its dicts, and `vars` dropped
+    from every dict in a `frames` list (exception, thread or any other stacktrace)."""
     if isinstance(value, str):
         return _URL_QUERY.sub(r"\1", value)
     if isinstance(value, dict):
-        return {k: _strip_queries(v) for k, v in value.items() if k not in _QUERY_KEYS}
+        drop = _FRAME_DROP_KEYS if frame else _QUERY_KEYS
+        return {
+            k: _scrubbed_copy(v, frame=k == "frames") for k, v in value.items() if k not in drop
+        }
     if isinstance(value, list):
-        return [_strip_queries(v) for v in value]
+        return [_scrubbed_copy(v, frame=frame) for v in value]
     return value

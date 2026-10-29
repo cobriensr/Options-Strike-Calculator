@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import traceback
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -31,6 +31,7 @@ from calendar_nyse import last_completed_session, trading_days
 from config import Settings
 from constants import (
     CATCHUP_MAX_DAYS,
+    DAY_BUDGET_SECONDS,
     MIN_FREE_DISK_BYTES,
     REWRITE_RECHECK_DAYS,
     RUN_DEADLINE_SECONDS,
@@ -53,7 +54,7 @@ DayStatus = Literal[
 # target: the trailing-20 window PLAUSIBLE_MIN_ROW_RATIO was tuned on.
 _TRAILING_DAYS = 20
 _SKIPPED_DISK = "free disk below the minimum"
-_SKIPPED_DEADLINE = "run deadline passed"
+_SKIPPED_DEADLINE = "less than a day's budget left before the run deadline"
 _DISK_CHECK_FAILED = "disk check failed"
 _SRC_DIR = Path(__file__).resolve().parent
 
@@ -158,13 +159,21 @@ def land_day(
     return outcome
 
 
-def run_tape(settings: Settings, now_utc: datetime) -> list[DayOutcome]:
+def run_tape(
+    settings: Settings,
+    now_utc: datetime,
+    on_outcome: Callable[[DayOutcome], None] | None = None,
+) -> list[DayOutcome]:
     """Land the planned days, then re-land rewritten ones; one outcome per day.
 
-    Before each day it checks the run deadline and free disk in WORK_DIR. Failing
-    either, or the disk check itself failing, marks that day and every later one
-    skipped. The deadline is only checked between days (and between rewrite probes),
-    so one slow day can overrun it by its own duration.
+    Before each day it checks the run time left and free disk in WORK_DIR. Less than
+    DAY_BUDGET_SECONDS before the deadline, too little disk, or the disk check itself
+    failing marks that day and every later one skipped. A day that starts can finish
+    inside its budget, so the run ends by its deadline.
+
+    `on_outcome` gets each day's outcome as soon as it is decided, skipped days
+    included, so a run killed mid-way has already reported its finished days. An
+    Exception from it is logged by class name and the run goes on.
 
     It raises, with no outcomes, only before the first day:
     - ValueError for a naive `now_utc`, and CalendarExhausted when the NYSE holiday
@@ -193,20 +202,35 @@ def run_tape(settings: Settings, now_utc: datetime) -> list[DayOutcome]:
     )
 
     outcomes: list[DayOutcome] = []
+
+    def record(outcome: DayOutcome) -> None:
+        outcomes.append(outcome)
+        if on_outcome is not None:
+            _notify(on_outcome, outcome)
+
     for i, (day, relanding_etag) in enumerate(queue):
         skip = _skip_status(deadline)
         if skip is not None:
             status, detail = skip
-            outcomes += [DayOutcome(d, status, detail) for d, _ in queue[i:]]
             log.warning("tape run: %s; %d day(s) skipped", detail, len(queue) - i)
+            for skipped_day, _ in queue[i:]:
+                record(DayOutcome(skipped_day, status, detail))
             break
         trailing = _trailing_rows(landed, day)
         outcome = land_day(day, store, api_key, trailing, relanding_etag, last_session=last_session)
         if outcome.rows is not None:  # landed or relanded: later days' trailing window
             landed[day] = {"rows": str(outcome.rows)}
         _log_outcome(outcome)
-        outcomes.append(outcome)
+        record(outcome)
     return outcomes
+
+
+def _notify(on_outcome: Callable[[DayOutcome], None], outcome: DayOutcome) -> None:
+    """Hand `outcome` to the caller's callback; a failing report never stops the run."""
+    try:
+        on_outcome(outcome)
+    except Exception as exc:
+        log.warning("tape %s: outcome report failed (%s)", outcome.day, type(exc).__name__)
 
 
 def _attempt(
@@ -320,7 +344,7 @@ def _trailing_rows(landed: Mapping[date, Mapping[str, str]], day: date) -> list[
 
 
 def _skip_status(deadline: float) -> tuple[DayStatus, str] | None:
-    if monotonic() >= deadline:
+    if deadline - monotonic() < DAY_BUDGET_SECONDS:
         return "skipped_deadline", _SKIPPED_DEADLINE
     try:
         free = disk_usage(WORK_DIR).free
