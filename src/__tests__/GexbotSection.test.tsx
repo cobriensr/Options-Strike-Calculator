@@ -14,6 +14,7 @@ vi.mock('../hooks/useGexbotData', async () => {
 });
 
 import { GexbotSection } from '../components/Gexbot';
+import { dealerClaims } from './helpers/dealer-claims';
 
 describe('<GexbotSection>', () => {
   beforeEach(() => {
@@ -42,6 +43,13 @@ describe('<GexbotSection>', () => {
     render(<GexbotSection marketOpen spxSpot={6750} />);
     expect(screen.getAllByText(/GEXBot Taker Flow/i).length).toBeGreaterThan(0);
     expect(screen.queryByText(/Dealer State/i)).toBeNull();
+  });
+
+  it('footer names the 14 underlyings and makes no dealer claims', () => {
+    const { container } = render(<GexbotSection marketOpen spxSpot={6750} />);
+    const footer = container.querySelector('p');
+    expect(footer).toHaveTextContent('14 underlyings');
+    expect(dealerClaims(footer?.textContent ?? '')).toEqual([]);
   });
 
   it('mounts all 7 child components (drives empty-state testids)', () => {

@@ -7,7 +7,11 @@
  *   2. VIX net-γ sign
  *   3. Breadth across the 14 distinct underlyings (the ES_SPX / NQ_NDX
  *      futures views are excluded: they repeat SPX / NDX)
- *   4. Loudest taker Δ flow (max |dexoflow|, raw cross-ticker) + freshness
+ *   4. Loudest taker Δ flow (max |dexoflow|, raw cross-ticker, futures views
+ *      skipped) + freshness
+ *
+ * The file and component name and the `dealer-state-*` test ids are legacy
+ * names, kept to avoid churn; the panel shows taker-side GEXBot data.
  *
  * Spec: docs/superpowers/specs/gexbot-dealer-state-summary-strip-2026-05-26.md
  */
@@ -17,7 +21,7 @@ import {
   useGexbotData,
   type SnapshotsLatestRow,
 } from '../../hooks/useGexbotData';
-import { GEXBOT_UNDERLYING_ORDER } from './ticker-order';
+import { GEXBOT_FUTURES_VIEWS, GEXBOT_UNDERLYING_ORDER } from './ticker-order';
 import { deriveGammaSign, type GammaSign } from './types';
 
 interface DealerStateSummaryStripProps {
@@ -94,11 +98,15 @@ interface LoudestPick {
   dexoflow: number;
 }
 
+function isFuturesView(ticker: string): boolean {
+  return (GEXBOT_FUTURES_VIEWS as readonly string[]).includes(ticker);
+}
+
 function pickLoudest(rows: SnapshotsLatestRow[]): LoudestPick | null {
   let best: LoudestPick | null = null;
   let bestMag = 0;
   for (const r of rows) {
-    if (r.dexoflow == null) continue;
+    if (r.dexoflow == null || isFuturesView(r.ticker)) continue;
     const mag = Math.abs(r.dexoflow);
     if (mag > bestMag) {
       bestMag = mag;

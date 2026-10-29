@@ -199,12 +199,13 @@ describe('<DealerStateSummaryStrip>', () => {
     expect(tile).toHaveTextContent(/LONG γ/i);
   });
 
-  it('picks the ticker with the largest |dexoflow| as loudest', () => {
+  it('picks the underlying with the largest |dexoflow| as loudest, ignoring futures views', () => {
     mockUseGexbotData.mockReturnValue({
       rows: [
         makeRow('SPX', { dexoflow: 1_200_000 }),
         makeRow('NDX', { dexoflow: 2_500_000 }),
         makeRow('NQ_NDX', { dexoflow: -5_000_000 }),
+        makeRow('ES_SPX', { dexoflow: 9_000_000 }),
       ],
       loading: false,
       error: null,
@@ -212,7 +213,8 @@ describe('<DealerStateSummaryStrip>', () => {
     });
     render(<DealerStateSummaryStrip marketOpen />);
     const tile = screen.getByTestId('dealer-state-strip-loudest');
-    expect(tile).toHaveTextContent(/NQ_NDX/);
+    expect(tile).toHaveTextContent(/NDX/);
+    expect(tile).not.toHaveTextContent(/NQ_NDX|ES_SPX/);
   });
 
   it('shows "—" in the loudest tile when no row has a dexoflow value', () => {
