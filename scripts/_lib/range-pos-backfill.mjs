@@ -13,9 +13,13 @@
  *
  * Spec: docs/superpowers/specs/range-pos-fix-and-backfill-2026-10-28.md
  * (Phase 2).
+ *
+ * The UW GET itself is uw-day-fetch.mjs's fetchUwDayRows, shared with the
+ * net-prem-ticks backfill.
  */
 
 import { ctDateStr } from './trading-days.mjs';
+import { UW_BASE, fetchUwDayRows } from './uw-day-fetch.mjs';
 
 // ── Mirrors of the TypeScript sources ─────────────────────
 
@@ -250,12 +254,8 @@ export async function runPool(items, limit, worker) {
 
 // ── Unusual Whales ─────────────────────────────────────────
 
-export const UW_BASE = 'https://api.unusualwhales.com/api';
 /** Explicit UA: UW turns away some default client UAs (Python-urllib). */
 export const UW_USER_AGENT = 'strike-calculator-range-pos-backfill (node)';
-/** Same per-request timeout as uwFetch (TIMEOUTS.UW_API). */
-const UW_TIMEOUT_MS = 15_000;
-const UW_RETRY_DELAY_MS = 1_000;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -263,81 +263,23 @@ function messageOf(err) {
   return err instanceof Error ? err.message : String(err);
 }
 
-async function attemptCandles(url, apiKey) {
-  let res;
-  try {
-    res = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'User-Agent': UW_USER_AGENT,
-      },
-      signal: AbortSignal.timeout(UW_TIMEOUT_MS),
-    });
-  } catch (err) {
-    const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError';
-    const cause = err?.cause?.code ?? err?.cause?.message;
-    const detail = cause ? `${messageOf(err)} (${cause})` : messageOf(err);
-    return {
-      kind: 'error',
-      status: timedOut ? 'timeout' : 'network',
-      detail,
-      retryable: true,
-    };
-  }
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    return {
-      kind: 'error',
-      status: `http_${res.status}`,
-      detail: text.slice(0, 200),
-      retryable: res.status === 429 || res.status >= 500,
-    };
-  }
-  const malformed = (detail) => ({
-    kind: 'error',
-    status: 'malformed',
-    detail,
-    retryable: false,
-  });
-  let body;
-  try {
-    body = await res.json();
-  } catch (err) {
-    return malformed(messageOf(err));
-  }
-  // uwFetch reads a null or missing `data` as []; do the same.
-  const rows = body?.data;
-  if (rows == null) return { kind: 'empty' };
-  if (!Array.isArray(rows)) {
-    return malformed(`data is ${typeof rows}, not an array`);
-  }
-  if (rows.length === 0) return { kind: 'empty' };
-  const badIdx = rows.findIndex(
-    (row) =>
-      typeof row !== 'object' ||
-      row === null ||
-      typeof row.start_time !== 'string',
-  );
-  if (badIdx !== -1) return malformed(`candle ${badIdx} has no start_time`);
-  return { kind: 'ok', candles: rows };
-}
-
 /**
- * One UW 1-min OHLC call for a ticker-day. Retries once, after 1 s, on a
- * 5xx, a 429, a network error or a timeout; a definite 4xx or a malformed
- * body is final. Never throws:
+ * One UW 1-min OHLC call for a ticker-day (fetchUwDayRows: retries once,
+ * after 1 s, on a 5xx, a 429, a network error or a timeout; a definite 4xx
+ * or a malformed body is final). Never throws:
  *   { kind: 'ok', candles } | { kind: 'empty' }
  *   | { kind: 'error', status: 'http_<n>' | 'network' | 'timeout' | 'malformed', detail }
  */
 export async function fetchDayCandles(apiKey, ticker, date) {
   const url = `${UW_BASE}/stock/${encodeURIComponent(ticker)}/ohlc/1m?date=${date}`;
-  let outcome = await attemptCandles(url, apiKey);
-  if (outcome.kind === 'error' && outcome.retryable) {
-    await sleep(UW_RETRY_DELAY_MS);
-    outcome = await attemptCandles(url, apiKey);
-  }
-  if (outcome.kind !== 'error') return outcome;
-  return { kind: 'error', status: outcome.status, detail: outcome.detail };
+  const outcome = await fetchUwDayRows(url, apiKey, {
+    rowField: 'start_time',
+    rowLabel: 'candle',
+    userAgent: UW_USER_AGENT,
+  });
+  return outcome.kind === 'ok'
+    ? { kind: 'ok', candles: outcome.rows }
+    : outcome;
 }
 
 // ── Neon ───────────────────────────────────────────────────
