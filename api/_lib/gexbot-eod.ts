@@ -36,8 +36,11 @@ const TICKER_RE = /^[A-Z0-9_.]+$/;
 const TICKERS_TIMEOUT_MS = 15_000;
 /** GEXBot publishes the day's report after the 16:00 ET close; 17:00 is safe. */
 const REPORT_READY_ET_HOUR = 17;
+/** Largest report seen is 167.6 MB; 3 concurrent downloads stay under the 2 GB function memory. */
+const MAX_EOD_REPORT_BYTES = 512 * 1024 * 1024;
+const CONTENT_LENGTH_RE = /^[1-9]\d*$/;
 const DISPOSITION_RE =
-  /filename\*?=(?:UTF-8'')?"?eod_report_([A-Z0-9_.]+)_(\d{4}-\d{2}-\d{2})\.zip(?:["';\s]|$)/;
+  /(?:^|[;\s])filename\*?=(?:UTF-8'')?"?eod_report_([A-Z0-9_.]+)_(\d{4}-\d{2}-\d{2})\.zip(?:["';\s]|$)/;
 
 export type EodResponse =
   | { kind: 'quota' }
@@ -88,7 +91,12 @@ export async function fetchEodTickers(): Promise<{
     signal: AbortSignal.timeout(TICKERS_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`gexbot_tickers_failed: HTTP ${res.status}`);
-  const json = (await res.json()) as Record<string, unknown> | null;
+  let json: Record<string, unknown> | null;
+  try {
+    json = (await res.json()) as Record<string, unknown> | null;
+  } catch {
+    throw new Error('gexbot_tickers_failed: invalid JSON');
+  }
   const all: string[] = [];
   for (const group of ['stocks', 'indexes', 'futures'] as const) {
     const list = json?.[group];
@@ -170,8 +178,13 @@ export async function requestEodReport(
   }
   const lengthHeader = res.headers.get('content-length');
   const contentLength =
-    lengthHeader == null ? Number.NaN : Number(lengthHeader);
-  if (!Number.isSafeInteger(contentLength) || contentLength <= 0) {
+    lengthHeader != null && CONTENT_LENGTH_RE.test(lengthHeader)
+      ? Number(lengthHeader)
+      : Number.NaN;
+  if (
+    !Number.isSafeInteger(contentLength) ||
+    contentLength > MAX_EOD_REPORT_BYTES
+  ) {
     await cancelBody(res);
     return { kind: 'bad_response', reason: 'no_length' };
   }

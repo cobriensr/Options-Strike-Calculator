@@ -87,6 +87,8 @@ describe('parseEodDisposition', () => {
     ['attachment; filename=eod_report_spx_2026-10-28.zip'],
     ['attachment; filename=eod_report_SPX_2026-10-28.csv'],
     ['attachment; filename=eod_report_SPX_26-10-28.zip'],
+    ['attachment; x-filename=eod_report_SPX_2026-10-28.zip'],
+    ['x-filename=eod_report_SPX_2026-10-28.zip'],
   ])('returns null for %s', (header) => {
     expect(parseEodDisposition(header)).toBeNull();
   });
@@ -154,6 +156,13 @@ describe('fetchEodTickers', () => {
       tickersResponse({ stocks: [1, 2], indexes: [], futures: [] }),
     );
     await expect(fetchEodTickers()).rejects.toThrow(/gexbot_tickers_failed/);
+  });
+
+  it('throws gexbot_tickers_failed on invalid JSON', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('not json', { status: 200 }));
+    await expect(fetchEodTickers()).rejects.toThrow(
+      'gexbot_tickers_failed: invalid JSON',
+    );
   });
 
   it('throws gexbot_tickers_failed when a group is missing', async () => {
@@ -257,16 +266,49 @@ describe('requestEodReport', () => {
     });
   });
 
-  it.each([[null], ['0'], ['abc'], ['-3'], ['1.5']])(
-    'flags content-length %s as no_length',
-    async (length) => {
-      fetchMock.mockResolvedValueOnce(zipResponse({ length }));
+  it.each([
+    [null],
+    ['0'],
+    ['abc'],
+    ['-3'],
+    ['1.5'],
+    ['1e3'],
+    ['0x10'],
+    [String(512 * 1024 * 1024 + 1)],
+  ])('flags content-length %s as no_length', async (length) => {
+    fetchMock.mockResolvedValueOnce(zipResponse({ length }));
+    expect(await requestEodReport('k', 'SPX', signal)).toEqual({
+      kind: 'bad_response',
+      reason: 'no_length',
+    });
+  });
+
+  it.each([[' 5'], ['5 ']])(
+    'flags raw content-length %j as no_length',
+    async (raw) => {
+      // Headers trims whitespace, so hand back a raw header value.
+      const res = zipResponse();
+      vi.spyOn(res.headers, 'get').mockImplementation((name: string) =>
+        name.toLowerCase() === 'content-length'
+          ? raw
+          : Headers.prototype.get.call(zipResponse().headers, name),
+      );
+      fetchMock.mockResolvedValueOnce(res);
       expect(await requestEodReport('k', 'SPX', signal)).toEqual({
         kind: 'bad_response',
         reason: 'no_length',
       });
     },
   );
+
+  it('accepts a content-length exactly at the cap', async () => {
+    fetchMock.mockResolvedValueOnce(
+      zipResponse({ length: String(512 * 1024 * 1024) }),
+    );
+    const res = await requestEodReport('k', 'SPX', signal);
+    expect(res.kind).toBe('ok');
+    if (res.kind === 'ok') await res.discard();
+  });
 
   it('returns ok with the served date and reads the body', async () => {
     fetchMock.mockResolvedValueOnce(zipResponse({ length: '5' }));
