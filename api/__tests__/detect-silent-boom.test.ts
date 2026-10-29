@@ -2,6 +2,8 @@
 
 import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
+import type { AnchorLegs, AnchorRequest } from '../_lib/anchor-legs.js';
+import type { SpreadLeg } from '../../src/types/spread-legs.js';
 import {
   expectAllGexBindsNull,
   extractAllInsertBinds,
@@ -63,13 +65,53 @@ const { mockCronGuard } = vi.hoisted(() => ({
   mockCronGuard: vi.fn(),
 }));
 
-// Phase 2 multileg classifier — fail-open by design. Default to null so
-// the four migration #160 columns (inferred_structure, is_isolated_leg,
-// match_confidence, pattern_group_id) bind as null on the INSERT. Tests
-// that exercise the populated path override per-case via mockResolvedValue.
-const mockClassifyAlertMultileg = vi.hoisted(() => vi.fn());
+// The Silent Boom cron no longer calls the multileg classifier (replaced
+// by the exchange multi-leg anchor lookup, spec
+// 2026-10-28-classifier-replacement-design.md). Both layers of the
+// classifier boundary stay mocked so the tests below can assert neither is
+// reached: the per-alert helper and the HTTP client.
+const { mockClassifyAlertMultileg, mockClassifyMultilegBatch } = vi.hoisted(
+  () => ({
+    mockClassifyAlertMultileg: vi.fn(),
+    mockClassifyMultilegBatch: vi.fn(),
+  }),
+);
 vi.mock('../_lib/multileg-classify-batch.js', () => ({
   classifyAlertMultileg: mockClassifyAlertMultileg,
+}));
+vi.mock('../_lib/multileg-client.js', () => ({
+  classifyMultilegBatch: mockClassifyMultilegBatch,
+}));
+
+// The migration #160 columns the classifier used to fill. The cron no
+// longer writes them; they stay NULL on new rows.
+const OLD_MULTILEG_COLUMNS = [
+  'inferred_structure',
+  'is_isolated_leg',
+  'match_confidence',
+  'pattern_group_id',
+] as const;
+
+// The exchange multi-leg anchor lookup that replaced the classifier, mocked
+// at the module boundary: its SQL has its own PGlite tests, and keeping it
+// off mockSql leaves every query sequence in this file unchanged. The
+// default (set in beforeEach) answers DEFAULT_ANCHOR, a single-leg anchor,
+// for every alert, as on a live tick: the spike bucket's own prints always
+// include one that qualifies as the anchor.
+const DEFAULT_ANCHOR: AnchorLegs = {
+  anchorWsTradeId: '5e4d3c2b-1a09-4f8e-9d7c-6b5a4f3e2d1c',
+  anchorTradeCode: 'auto',
+  legKind: 'single',
+  spreadShape: null,
+  spreadLegs: null,
+};
+const mockLookupAnchorLegs = vi.hoisted(() =>
+  vi.fn<
+    (requests: AnchorRequest[]) => Promise<Map<string, AnchorLegs | null>>
+  >(),
+);
+vi.mock('../_lib/anchor-legs.js', () => ({
+  lookupAnchorLegs: mockLookupAnchorLegs,
 }));
 
 // Take-It scoring is fail-open. mockScoreSilentBoom is hoisted so the
@@ -118,9 +160,17 @@ vi.mock('../_lib/api-helpers.js', () => ({
 import handler from '../cron/detect-silent-boom.js';
 import { reportCronRun } from '../_lib/axiom.js';
 import { AXIOM_TOP_LEVEL_KEYS } from '../_lib/axiom-fields.js';
+import { TransientDbError } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
+import { Sentry } from '../_lib/sentry.js';
 
 const GUARD = { apiKey: '', today: '2026-05-07' };
+
+const authorizedReq = () =>
+  mockRequest({
+    method: 'GET',
+    headers: { authorization: 'Bearer test-secret' },
+  });
 
 // ============================================================
 // Fixture builders — generate the SQL-aggregated bucket rows the
@@ -216,9 +266,16 @@ describe('detect-silent-boom handler', () => {
     vi.resetAllMocks();
     mockCronGuard.mockReturnValue(GUARD);
     mockSql.mockResolvedValue([]);
-    // Default: classifier returns null — INSERT binds the four multileg
-    // columns as null. Tests that exercise the populated path override.
-    mockClassifyAlertMultileg.mockResolvedValue(null);
+    // Default: every alert finds its (single-leg) anchor, as on a live tick.
+    mockLookupAnchorLegs.mockImplementation(
+      async (requests) =>
+        new Map(
+          requests.map((r): [string, AnchorLegs | null] => [
+            r.key,
+            DEFAULT_ANCHOR,
+          ]),
+        ),
+    );
     // Default: ticker stays in its raw form (SPY/QQQ) so the lookup
     // fires; the lookup itself returns null so the gex_* binds are
     // NULL. Tests that exercise the populated path override.
@@ -498,22 +555,10 @@ describe('detect-silent-boom handler', () => {
     // pre_trade_count COUNT before the INSERT (+1) — this path is now
     // 9 calls.
     expect(mockSql).toHaveBeenCalledTimes(9);
-    // INSERT is the last call. Migration #158 tail-appended
-    // cum_ncp_at_fire + cum_npp_at_fire before takeit_*; combined with
-    // Phase 3d's takeit_features tail-append and migration #160's four
-    // multileg columns inserted BETWEEN cum_npp_at_fire and takeit_*,
-    // the tail layout is now:
-    //   ...mkt_tide_diff, mkt_tide_otm_diff, zero_dte_diff,
-    //   spx_spot_gamma_oi, multi_leg_share, underlying_price_at_spike,
-    //   cum_ncp_at_fire, cum_npp_at_fire,
-    //   inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
-    //   takeit_prob, takeit_model_version, takeit_features.
-    // takeit_* indices unchanged; everything before the multileg insert
-    // shifted by -4.
-    // Named-bind extraction keeps the test stable across future column
-    // adds (see api/__tests__/insert-binds.ts). Earlier versions used
-    // `insertCall.at(-N)` which needed a coordinated shift every time
-    // a migration tacked another column onto the tail.
+    // INSERT is the last call. Named-bind extraction keeps the test stable
+    // across column adds and removals (see api/__tests__/insert-binds.ts).
+    // Earlier versions used `insertCall.at(-N)`, which needed a
+    // coordinated shift every time a migration changed the column list.
     const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
     expect(binds.get('takeit_prob')).toBeNull();
     expect(binds.get('takeit_model_version')).toBeNull();
@@ -526,12 +571,15 @@ describe('detect-silent-boom handler', () => {
     expect(binds.get('multi_leg_share')).toBe(0);
     // Fixture buckets don't set underlyingPrice → null at the boundary.
     expect(binds.get('underlying_price_at_spike')).toBeNull();
-    // Default mock returns null classification → all four multileg
-    // columns bind as null.
-    expect(binds.get('inferred_structure')).toBeNull();
-    expect(binds.get('is_isolated_leg')).toBeNull();
-    expect(binds.get('match_confidence')).toBeNull();
-    expect(binds.get('pattern_group_id')).toBeNull();
+    // Default anchor mock: a single-leg trigger print, so its id, code and
+    // kind are bound and the spread columns stay null.
+    expect(binds.get('anchor_ws_trade_id')).toBe(
+      DEFAULT_ANCHOR.anchorWsTradeId,
+    );
+    expect(binds.get('anchor_trade_code')).toBe('auto');
+    expect(binds.get('anchor_leg_kind')).toBe('single');
+    expect(binds.get('spread_shape')).toBeNull();
+    expect(binds.get('spread_legs')).toBeNull();
     // bucketRow fixture doesn't set bucket_gamma → null in INSERT.
     expect(binds.get('gamma_at_trigger')).toBeNull();
     // pre_trade_count mock returned { cnt: 0 } → 0 propagates.
@@ -931,94 +979,19 @@ describe('detect-silent-boom handler', () => {
     expect(binds.get('takeit_prob')).toBeNull();
   });
 
-  it('persists multileg classification columns when classifier returns a result (Phase 2 migration #160)', async () => {
-    // classifyAlertMultileg returns a populated classification → the
-    // four migration #160 columns bind to non-null values on the INSERT.
-    mockClassifyAlertMultileg.mockResolvedValue({
-      id: 'anchor-id',
-      inferredStructure: 'vertical',
-      isIsolatedLeg: false,
-      matchConfidence: 0.83,
-      patternGroupId: 'pg-abc-123',
-    });
-    mockSql
-      .mockResolvedValueOnce(fireableSilentBoomStream()) // ticks
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // tide ticks
-      .mockResolvedValueOnce([]) // tide_otm ticks
-      .mockResolvedValueOnce([]) // zero_dte ticks
-      .mockResolvedValueOnce([]) // spx_gamma ticks
-      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count (#169)
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
-      .mockResolvedValueOnce([{ id: 11 }]); // insert
-
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({ status: 'success', rows: 1 });
-    const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
-    expect(binds.get('inferred_structure')).toBe('vertical');
-    expect(binds.get('is_isolated_leg')).toBe(false);
-    expect(binds.get('match_confidence')).toBe(0.83);
-    expect(binds.get('pattern_group_id')).toBe('pg-abc-123');
-    // Helper was called once with the alert's anchor coordinates.
-    expect(mockClassifyAlertMultileg).toHaveBeenCalledTimes(1);
-    const [, , ticker, optionChain] = mockClassifyAlertMultileg.mock.calls[0]!;
-    expect(ticker).toBe('SNDK');
-    expect(optionChain).toBe('SNDK260507C01175000');
-  });
-
-  it('inserts with null multileg columns when classifier returns null (graceful degradation)', async () => {
-    // Default mock returns null — INSERT still happens, four multileg
-    // columns bind as null. Confirms fail-open semantics: a sidecar
-    // outage does NOT block alert insertion (the columns are NULLABLE
-    // by migration #160 design).
-    mockClassifyAlertMultileg.mockResolvedValue(null);
-    mockSql
-      .mockResolvedValueOnce(fireableSilentBoomStream()) // ticks
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // tide ticks
-      .mockResolvedValueOnce([]) // tide_otm ticks
-      .mockResolvedValueOnce([]) // zero_dte ticks
-      .mockResolvedValueOnce([]) // spx_gamma ticks
-      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count (#169)
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
-      .mockResolvedValueOnce([{ id: 12 }]); // insert still lands
-
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({ status: 'success', rows: 1 });
-    const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
-    expect(binds.get('inferred_structure')).toBeNull();
-    expect(binds.get('is_isolated_leg')).toBeNull();
-    expect(binds.get('match_confidence')).toBeNull();
-    expect(binds.get('pattern_group_id')).toBeNull();
-  });
-
   // ──────────────────────────────────────────────────────────────────────
-  // Task 6 / Finding 0.2 — multileg null-rate counters + Sentry alert.
-  // Counters track the classifier's fail-open rate so a silent matcher
-  // regression (5% → 95% null) surfaces operationally. The Sentry
-  // capture fires ONLY when inserted > 10 AND hit-rate < 50%; low-volume
-  // ticks (≤10 inserts) are protected from spurious alerting.
+  // Multileg classifier removed from the Silent Boom cron (spec
+  // 2026-10-28-classifier-replacement-design.md, phase 4); the exchange
+  // multi-leg anchor lookup below replaces it. The cron no longer calls
+  // the classifier, no longer writes the four migration #160 columns (they
+  // stay NULL), and dropped the multilegHits / multilegMisses counters and
+  // the multileg.classify.high_null_rate warning with it.
   // ──────────────────────────────────────────────────────────────────────
 
   /**
    * Build N independent firing chains by varying strike on the silent
-   * boom fixture. Each chain produces one fire when its INSERT mock
-   * returns a row. Used by the null-rate tests below to cross the
-   * `inserted > 10` threshold without writing bespoke per-chain fixtures.
+   * boom fixture. Each chain produces one fire when paired with
+   * queueSilentBoomPerFireMocks(N, ...).
    */
   function manyFireableSilentBoomStreams(count: number) {
     const all: ReturnType<typeof bucketRow>[] = [];
@@ -1054,164 +1027,587 @@ describe('detect-silent-boom handler', () => {
     }
   }
 
-  it('counts multilegHits when every classify call returns a populated result (no Sentry alert)', async () => {
-    mockSentryCaptureMessage.mockClear();
+  /** The bucket scan, prior fires and the four macro series. */
+  function queueScanAndMacro(buckets: ReturnType<typeof bucketRow>[]) {
+    mockSql
+      .mockResolvedValueOnce(buckets) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // tide
+      .mockResolvedValueOnce([]) // tide_otm
+      .mockResolvedValueOnce([]) // zero_dte
+      .mockResolvedValueOnce([]); // spx_gamma
+  }
+
+  it('never calls the multileg classifier and leaves the four old columns out of the INSERT', async () => {
+    // Armed with a populated result: if the call were wired back in, it
+    // would be recorded below and its values would reach the INSERT.
     mockClassifyAlertMultileg.mockResolvedValue({
-      id: 'anchor',
+      id: 'anchor-id',
       inferredStructure: 'vertical',
       isIsolatedLeg: false,
-      matchConfidence: 0.85,
-      patternGroupId: 'pg-1',
+      matchConfidence: 0.83,
+      patternGroupId: 'pg-abc-123',
     });
-    mockSql
-      .mockResolvedValueOnce(manyFireableSilentBoomStreams(3)) // ticks
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // tide
-      .mockResolvedValueOnce([]) // tide_otm
-      .mockResolvedValueOnce([]) // zero_dte
-      .mockResolvedValueOnce([]); // spx_gamma
-    queueSilentBoomPerFireMocks(3, true);
+    queueScanAndMacro(fireableSilentBoomStream());
+    queueSilentBoomPerFireMocks(1, true);
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
     const res = mockResponse();
-    await handler(req, res);
+    await handler(authorizedReq(), res);
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       status: 'success',
-      multilegHits: 3,
-      multilegMisses: 0,
+      rows: 1,
+      inserted: 1,
     });
-    expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
-      'multileg.classify.high_null_rate',
-      expect.anything(),
+    expect(mockClassifyAlertMultileg).not.toHaveBeenCalled();
+    expect(mockClassifyMultilegBatch).not.toHaveBeenCalled();
+
+    const insertCalls = mockSql.mock.calls.filter((call) =>
+      Boolean(
+        (call[0] as readonly string[] | undefined)?.[0]?.includes(
+          'INSERT INTO silent_boom_alerts',
+        ),
+      ),
     );
+    expect(insertCalls).toHaveLength(1);
+    const insertCall = insertCalls[0]!;
+    const insertSql = (insertCall[0] as readonly string[]).join('$');
+    for (const column of OLD_MULTILEG_COLUMNS) {
+      expect(insertSql).not.toContain(column);
+    }
+    const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    for (const column of OLD_MULTILEG_COLUMNS) {
+      expect(binds.has(column)).toBe(false);
+    }
+    // One bound value per listed column: the four were dropped from the
+    // column list and from VALUES together, so nothing shifted.
+    expect(binds.size).toBe(insertCall.length - 1);
+    // The neighbours of the removed block still carry their own values.
+    expect(binds.get('cum_npp_at_fire')).toBeNull();
+    expect(binds.get('takeit_prob')).toBeNull();
+    expect(binds.get('takeit_features')).toBeNull();
   });
 
-  it('captures Sentry warning when inserted>10 AND multileg hit-rate<50%', async () => {
-    // 11 fires, all classify return null → hits=0, misses=11.
-    mockSentryCaptureMessage.mockClear();
+  it('writes every alert on a busy tick with no classifier call, no multileg counters and no high-null-rate warning', async () => {
+    // 11 alerts. Before the removal this tick made 11 serial classifier
+    // calls, and an all-null result raised multileg.classify.high_null_rate
+    // (inserted > 10, hit rate < 50%).
     mockClassifyAlertMultileg.mockResolvedValue(null);
-    mockSql
-      .mockResolvedValueOnce(manyFireableSilentBoomStreams(11))
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // tide
-      .mockResolvedValueOnce([]) // tide_otm
-      .mockResolvedValueOnce([]) // zero_dte
-      .mockResolvedValueOnce([]); // spx_gamma
+    queueScanAndMacro(manyFireableSilentBoomStreams(11));
     queueSilentBoomPerFireMocks(11, true);
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
     const res = mockResponse();
-    await handler(req, res);
+    await handler(authorizedReq(), res);
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       status: 'success',
-      multilegHits: 0,
-      multilegMisses: 11,
+      rows: 11,
+      totalFires: 11,
       inserted: 11,
     });
-    expect(mockSentryCaptureMessage).toHaveBeenCalledWith(
+    expect(mockClassifyAlertMultileg).not.toHaveBeenCalled();
+    expect(mockClassifyMultilegBatch).not.toHaveBeenCalled();
+    expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
       'multileg.classify.high_null_rate',
-      expect.objectContaining({
-        level: 'warning',
-        extra: expect.objectContaining({
-          cron: 'detect-silent-boom',
-          multilegHits: 0,
-          multilegMisses: 11,
-          inserted: 11,
-        }),
-      }),
+      expect.anything(),
     );
+
+    const allBinds = extractAllInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(allBinds).toHaveLength(11);
+    for (const binds of allBinds) {
+      for (const column of OLD_MULTILEG_COLUMNS) {
+        expect(binds.has(column)).toBe(false);
+      }
+    }
+
+    // The counters are gone from the response, the Axiom report and the
+    // completion log.
+    expect(res._json).not.toHaveProperty('multilegHits');
+    expect(res._json).not.toHaveProperty('multilegMisses');
+    const payload = vi.mocked(reportCronRun).mock.calls[0]![1];
+    expect(payload).not.toHaveProperty('multilegHits');
+    expect(payload).not.toHaveProperty('multilegMisses');
+    const completedLog = vi
+      .mocked(logger.info)
+      .mock.calls.find(
+        (call) => (call as unknown[])[1] === 'detect-silent-boom completed',
+      );
+    expect(completedLog).toBeDefined();
+    expect(completedLog![0]).toMatchObject({ inserted: 11 });
+    expect(completedLog![0]).not.toHaveProperty('multilegHits');
+    expect(completedLog![0]).not.toHaveProperty('multilegMisses');
   });
 
-  it('does NOT capture Sentry warning at exactly 50% hit-rate (threshold is strict <)', async () => {
-    // 12 fires, alternating hit/miss → ratio == 0.5 (not <). No alert.
-    mockSentryCaptureMessage.mockClear();
-    let call = 0;
-    mockClassifyAlertMultileg.mockImplementation(() => {
-      call += 1;
-      return Promise.resolve(
-        call % 2 === 1
-          ? {
-              id: 'anchor',
-              inferredStructure: 'vertical',
-              isIsolatedLeg: false,
-              matchConfidence: 0.8,
-              patternGroupId: 'pg-1',
-            }
-          : null,
+  // ──────────────────────────────────────────────────────────────────────
+  // Anchor legs from the exchange multi-leg flag (spec
+  // 2026-10-28-classifier-replacement-design.md, migration #197): one
+  // batched lookupAnchorLegs call per tick, before the INSERTs. The
+  // anchor is the top price × size print on the alert's chain inside its
+  // 5-min bucket, [bucket_ct, bucket_ct + 5 min).
+  // ──────────────────────────────────────────────────────────────────────
+  describe('anchor legs from the exchange multi-leg flag', () => {
+    const SNDK_CHAIN = 'SNDK260507C01175000';
+    const SPIKE_BUCKET = '2026-05-07T13:20:00.000Z';
+    const ANCHOR_FAILED = 'anchor_legs.lookup_failed';
+    const ANCHOR_MISSING_MSG =
+      'detect-silent-boom: no anchor print found for a fresh alert; anchor columns left null';
+    const ANCHOR_COLUMNS = [
+      'anchor_ws_trade_id',
+      'anchor_trade_code',
+      'anchor_leg_kind',
+      'spread_shape',
+      'spread_legs',
+    ] as const;
+
+    const VERTICAL_LEGS: SpreadLeg[] = [
+      {
+        optionType: 'C',
+        strike: 1175,
+        expiry: '2026-05-07',
+        size: 150,
+        price: 0.5,
+        tradeCode: 'mlet',
+      },
+      {
+        optionType: 'C',
+        strike: 1180,
+        expiry: '2026-05-07',
+        size: 150,
+        price: 0.21,
+        tradeCode: 'mlet',
+      },
+    ];
+    const SPREAD_LEG_ANCHOR: AnchorLegs = {
+      anchorWsTradeId: '3f1c2a9e-8b7d-4c6e-9a1b-2d3e4f5a6b7c',
+      anchorTradeCode: 'mlet',
+      legKind: 'multi_leg',
+      spreadShape: 'vertical',
+      spreadLegs: VERTICAL_LEGS,
+    };
+    const SINGLE_ANCHOR: AnchorLegs = {
+      anchorWsTradeId: '7a2b3c4d-1e2f-4a5b-8c9d-0e1f2a3b4c5d',
+      anchorTradeCode: 'auto',
+      legKind: 'single',
+      spreadShape: null,
+      spreadLegs: null,
+    };
+    const STOCK_TIED_ANCHOR: AnchorLegs = {
+      anchorWsTradeId: 'b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e',
+      anchorTradeCode: 'tlet',
+      legKind: 'stock_tied',
+      spreadShape: null,
+      spreadLegs: null,
+    };
+    const ALL_NULL = {
+      anchor_ws_trade_id: null,
+      anchor_trade_code: null,
+      anchor_leg_kind: null,
+      spread_shape: null,
+      spread_legs: null,
+    };
+
+    /** Answer each request by its chain, as the real helper keys by `key`. */
+    function answerAnchorsByChain(byChain: Record<string, AnchorLegs>) {
+      mockLookupAnchorLegs.mockImplementation(
+        async (requests) =>
+          new Map(
+            requests.map((r): [string, AnchorLegs | null] => [
+              r.key,
+              byChain[r.optionChain] ?? null,
+            ]),
+          ),
+      );
+    }
+
+    /** No alert found its anchor: null for every request. */
+    function answerNoAnchors() {
+      mockLookupAnchorLegs.mockImplementation(
+        async (requests) =>
+          new Map(
+            requests.map((r): [string, AnchorLegs | null] => [r.key, null]),
+          ),
+      );
+    }
+
+    /** One SNDK alert: scan, macro, pre_trade_count, flow series, INSERT. */
+    function queueOneSndkAlert(insertedId: number | null) {
+      queueScanAndMacro(fireableSilentBoomStream());
+      mockSql
+        .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count
+        .mockResolvedValueOnce([]) // ticker_flow_snapshot
+        .mockResolvedValueOnce(insertedId == null ? [] : [{ id: insertedId }]); // insert
+    }
+
+    function anchorBinds(binds: Map<string, unknown>) {
+      return Object.fromEntries(
+        ANCHOR_COLUMNS.map((column) => [column, binds.get(column)]),
+      );
+    }
+
+    function anchorFailedCaptures() {
+      return vi
+        .mocked(Sentry.captureException)
+        .mock.calls.filter(
+          (call) =>
+            (call[1] as { fingerprint?: string[] } | undefined)
+              ?.fingerprint?.[1] === ANCHOR_FAILED,
+        );
+    }
+
+    function anchorMissingCaptures() {
+      return mockSentryCaptureMessage.mock.calls.filter(
+        (call) => call[0] === ANCHOR_MISSING_MSG,
+      );
+    }
+
+    function completedLog() {
+      const call = vi
+        .mocked(logger.info)
+        .mock.calls.find(
+          (c) => (c as unknown[])[1] === 'detect-silent-boom completed',
+        );
+      expect(call).toBeDefined();
+      return (call as unknown[])[0];
+    }
+
+    it('looks the anchor up once, before the INSERT, over the alert’s 5-min bucket, and writes a spread leg’s five columns', async () => {
+      answerAnchorsByChain({ [SNDK_CHAIN]: SPREAD_LEG_ANCHOR });
+      queueOneSndkAlert(42);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'success',
+        inserted: 1,
+        anchorsFound: 1,
+        anchorsMissing: 0,
+        anchorLookupFailures: 0,
+        anchorLookupError: null,
+      });
+
+      const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+      expect(anchorBinds(binds)).toEqual({
+        anchor_ws_trade_id: '3f1c2a9e-8b7d-4c6e-9a1b-2d3e4f5a6b7c',
+        anchor_trade_code: 'mlet',
+        anchor_leg_kind: 'multi_leg',
+        spread_shape: 'vertical',
+        // jsonb: the SpreadLeg objects exactly as returned, serialised.
+        spread_legs: JSON.stringify(VERTICAL_LEGS),
+      });
+      const storedLegs = JSON.parse(binds.get('spread_legs') as string) as {
+        [key: string]: unknown;
+      }[];
+      expect(storedLegs).toEqual(VERTICAL_LEGS);
+      expect(Object.keys(storedLegs[0]!)).toEqual([
+        'optionType',
+        'strike',
+        'expiry',
+        'size',
+        'price',
+        'tradeCode',
+      ]);
+      // spread_legs is cast to jsonb in the SQL text.
+      const insertCall = mockSql.mock.calls.find((call) =>
+        Boolean(
+          (call[0] as readonly string[] | undefined)?.[0]?.includes(
+            'INSERT INTO silent_boom_alerts',
+          ),
+        ),
+      )!;
+      const strings = insertCall[0] as readonly string[];
+      const legsIdx = insertCall.indexOf(binds.get('spread_legs'));
+      expect(strings[legsIdx]!.startsWith('::jsonb')).toBe(true);
+      for (const column of OLD_MULTILEG_COLUMNS) {
+        expect(binds.has(column)).toBe(false);
+      }
+
+      // One request for the one alert: its ticker and chain as the bucket
+      // scan read them from ws_option_trades, window [bucket_ct,
+      // bucket_ct + 5 min).
+      expect(binds.get('bucket_ct')).toBe(SPIKE_BUCKET);
+      expect(mockLookupAnchorLegs).toHaveBeenCalledTimes(1);
+      expect(mockLookupAnchorLegs.mock.calls[0]![0]).toEqual([
+        {
+          key: expect.any(String),
+          ticker: 'SNDK',
+          optionChain: SNDK_CHAIN,
+          windowStart: new Date(SPIKE_BUCKET),
+          windowEnd: new Date(Date.parse(SPIKE_BUCKET) + 5 * 60_000),
+        },
+      ]);
+      // Through the DB retry helper: one retry, 5 s per attempt.
+      expect(mockWithDbRetry).toHaveBeenCalledWith(
+        expect.any(Function),
+        1,
+        5_000,
+      );
+      // Before the INSERT, not after it.
+      const insertIdx = mockSql.mock.calls.indexOf(insertCall);
+      expect(mockLookupAnchorLegs.mock.invocationCallOrder[0]).toBeLessThan(
+        mockSql.mock.invocationCallOrder[insertIdx]!,
+      );
+      expect(anchorFailedCaptures()).toHaveLength(0);
+      // Every alert found its anchor: no anchor-missing warning.
+      expect(anchorMissingCaptures()).toHaveLength(0);
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        expect.anything(),
+        ANCHOR_MISSING_MSG,
       );
     });
-    mockSql
-      .mockResolvedValueOnce(manyFireableSilentBoomStreams(12))
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
-    queueSilentBoomPerFireMocks(12, true);
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
+    it('makes one batched lookup for every alert on a tick and writes each alert its own anchor', async () => {
+      answerAnchorsByChain({
+        SNDK260507C01175000: SPREAD_LEG_ANCHOR,
+        SNDK260507C01176000: SINGLE_ANCHOR,
+        SNDK260507C01177000: STOCK_TIED_ANCHOR,
+        // SNDK260507C01178000: no anchor print in its window.
+      });
+      queueScanAndMacro(manyFireableSilentBoomStreams(4));
+      queueSilentBoomPerFireMocks(4, true);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'success',
+        inserted: 4,
+        anchorsFound: 3,
+        anchorsMissing: 1,
+        anchorLookupFailures: 0,
+      });
+
+      // R5: one call for the tick, one request per alert, keys unique.
+      expect(mockLookupAnchorLegs).toHaveBeenCalledTimes(1);
+      const requests = mockLookupAnchorLegs.mock.calls[0]![0];
+      expect(requests.map((r) => r.optionChain)).toEqual([
+        'SNDK260507C01175000',
+        'SNDK260507C01176000',
+        'SNDK260507C01177000',
+        'SNDK260507C01178000',
+      ]);
+      expect(new Set(requests.map((r) => r.key)).size).toBe(4);
+
+      const byChain = new Map(
+        extractAllInsertBinds(mockSql, 'silent_boom_alerts').map((b) => [
+          b.get('option_chain_id'),
+          anchorBinds(b),
+        ]),
+      );
+      expect(byChain.get('SNDK260507C01175000')).toMatchObject({
+        anchor_leg_kind: 'multi_leg',
+        spread_shape: 'vertical',
+      });
+      expect(byChain.get('SNDK260507C01176000')).toEqual({
+        anchor_ws_trade_id: '7a2b3c4d-1e2f-4a5b-8c9d-0e1f2a3b4c5d',
+        anchor_trade_code: 'auto',
+        anchor_leg_kind: 'single',
+        spread_shape: null,
+        spread_legs: null,
+      });
+      expect(byChain.get('SNDK260507C01177000')).toEqual({
+        anchor_ws_trade_id: 'b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e',
+        anchor_trade_code: 'tlet',
+        anchor_leg_kind: 'stock_tied',
+        spread_shape: null,
+        spread_legs: null,
+      });
+      expect(byChain.get('SNDK260507C01178000')).toEqual(ALL_NULL);
+
+      // One missing anchor among four alerts: one warning for the run.
+      const missing = anchorMissingCaptures();
+      expect(missing).toHaveLength(1);
+      expect(missing[0]![1]).toMatchObject({
+        level: 'warning',
+        extra: { anchorsMissing: 1, anchorsFound: 3 },
+      });
     });
-    const res = mockResponse();
-    await handler(req, res);
 
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      status: 'success',
-      multilegHits: 6,
-      multilegMisses: 6,
-      inserted: 12,
+    it('writes NULL anchor columns and stays success when a fresh alert finds no anchor print, and warns once per run', async () => {
+      answerNoAnchors();
+      queueOneSndkAlert(42);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'success',
+        inserted: 1,
+        anchorsFound: 0,
+        anchorsMissing: 1,
+        anchorLookupFailures: 0,
+        anchorLookupError: null,
+      });
+      expect(
+        anchorBinds(extractInsertBinds(mockSql, 'silent_boom_alerts')),
+      ).toEqual(ALL_NULL);
+      // Not a lookup failure: no anchor_legs.lookup_failed event or line.
+      expect(anchorFailedCaptures()).toHaveLength(0);
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.stringContaining(ANCHOR_FAILED),
+      );
+      // But the spike bucket's own prints always include a qualifying
+      // anchor, so the miss is raised once for the run as a warning.
+      const missing = anchorMissingCaptures();
+      expect(missing).toHaveLength(1);
+      expect(missing[0]![1]).toEqual({
+        level: 'warning',
+        fingerprint: ['detect-silent-boom', 'anchor-missing'],
+        tags: {
+          'cron.job': 'detect-silent-boom',
+          'cron.anomaly': 'anchor-missing',
+        },
+        extra: { anchorsMissing: 1, anchorsFound: 0 },
+      });
+      expect(logger.warn).toHaveBeenCalledWith(
+        { anchorsMissing: 1, anchorsFound: 0 },
+        ANCHOR_MISSING_MSG,
+      );
+      expect(completedLog()).toMatchObject({
+        anchorsFound: 0,
+        anchorsMissing: 1,
+        anchorLookupFailures: 0,
+      });
     });
-    expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
-      'multileg.classify.high_null_rate',
-      expect.anything(),
-    );
-  });
 
-  it('does NOT capture Sentry warning at 100% miss rate when inserted<=10 (low-volume protection)', async () => {
-    // Single fire, classify returns null → hit-rate 0% but inserted=1.
-    mockSentryCaptureMessage.mockClear();
-    mockClassifyAlertMultileg.mockResolvedValue(null);
-    mockSql
-      .mockResolvedValueOnce(fireableSilentBoomStream()) // ticks
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // tide
-      .mockResolvedValueOnce([]) // tide_otm
-      .mockResolvedValueOnce([]) // zero_dte
-      .mockResolvedValueOnce([]) // spx_gamma
-      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
-      .mockResolvedValueOnce([{ id: 42 }]); // insert
+    it('still writes the alert with NULL anchor columns when the lookup fails, names anchor_legs.lookup_failed in Sentry and the log, and reports partial', async () => {
+      const broken = new Error('column "trade_code" does not exist');
+      mockLookupAnchorLegs.mockRejectedValue(broken);
+      queueOneSndkAlert(42);
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        rows: 1,
+        inserted: 1,
+        // A failed lookup is not counted as missing anchors.
+        anchorsFound: 0,
+        anchorsMissing: 0,
+        anchorLookupFailures: 1,
+        anchorLookupError: broken.message,
+      });
+      expect(
+        anchorBinds(extractInsertBinds(mockSql, 'silent_boom_alerts')),
+      ).toEqual(ALL_NULL);
+
+      const captures = anchorFailedCaptures();
+      expect(captures).toHaveLength(1);
+      expect(captures[0]![0]).toBe(broken);
+      expect(captures[0]![1]).toMatchObject({
+        level: 'error',
+        fingerprint: ['detect-silent-boom', ANCHOR_FAILED],
+        tags: {
+          'cron.job': 'detect-silent-boom',
+          'cron.anomaly': ANCHOR_FAILED,
+        },
+        extra: { alerts: 1 },
+      });
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ err: broken, alerts: 1 }),
+        expect.stringContaining(ANCHOR_FAILED),
+      );
+      // A failed lookup is not reported as missing anchors.
+      expect(anchorMissingCaptures()).toHaveLength(0);
+      expect(completedLog()).toMatchObject({
+        anchorsFound: 0,
+        anchorsMissing: 0,
+        anchorLookupFailures: 1,
+      });
+
+      // Axiom: the run is partial, and the new fields ride in `meta`.
+      const payload = vi.mocked(reportCronRun).mock.calls[0]![1];
+      expect(payload).toMatchObject({
+        status: 'partial',
+        anchorLookupError: broken.message,
+      });
+      for (const key of [
+        'anchorsFound',
+        'anchorsMissing',
+        'anchorLookupFailures',
+        'anchorLookupError',
+      ]) {
+        expect(payload).toHaveProperty(key);
+        expect(AXIOM_TOP_LEVEL_KEYS.has(key)).toBe(false);
+      }
     });
-    const res = mockResponse();
-    await handler(req, res);
 
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      status: 'success',
-      inserted: 1,
-      multilegHits: 0,
-      multilegMisses: 1,
+    it('reports a lookup that exhausted its retries on a Neon blip at warning level, and still reports partial', async () => {
+      const blip = new TransientDbError(new Error('fetch failed'));
+      mockLookupAnchorLegs.mockRejectedValue(blip);
+      queueOneSndkAlert(42);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        inserted: 1,
+        anchorLookupFailures: 1,
+        anchorLookupError: 'fetch failed',
+      });
+      expect(
+        anchorBinds(extractInsertBinds(mockSql, 'silent_boom_alerts')),
+      ).toEqual(ALL_NULL);
+      const captures = anchorFailedCaptures();
+      expect(captures).toHaveLength(1);
+      expect(captures[0]![0]).toBe(blip);
+      expect(captures[0]![1]).toMatchObject({ level: 'warning' });
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ err: blip, alerts: 1 }),
+        expect.stringContaining(ANCHOR_FAILED),
+      );
+      expect(logger.error).not.toHaveBeenCalled();
     });
-    expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
-      'multileg.classify.high_null_rate',
-      expect.anything(),
-    );
+
+    it('stays success when the lookup fails but every alert hit ON CONFLICT (no row lost its anchor), and still raises the failure', async () => {
+      mockLookupAnchorLegs.mockRejectedValue(new Error('boom'));
+      queueOneSndkAlert(null);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'success',
+        inserted: 0,
+        anchorLookupFailures: 1,
+        anchorLookupError: 'boom',
+      });
+      expect(anchorFailedCaptures()).toHaveLength(1);
+    });
+
+    it('keeps status error for a genuine macro error when the lookup also fails', async () => {
+      // 'partial' from the failed lookup must not mask the genuine error.
+      mockLookupAnchorLegs.mockRejectedValue(new Error('boom'));
+      mockSql
+        .mockResolvedValueOnce(fireableSilentBoomStream()) // ticks
+        .mockResolvedValueOnce([]) // prior fires
+        .mockRejectedValueOnce(new Error('column "ncp" does not exist')) // tide
+        .mockResolvedValueOnce([]) // tide_otm
+        .mockResolvedValueOnce([]) // zero_dte
+        .mockResolvedValueOnce([]) // spx_gamma
+        .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count
+        .mockResolvedValueOnce([]) // ticker_flow_snapshot
+        .mockResolvedValueOnce([{ id: 5 }]); // insert
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'error',
+        inserted: 1,
+        macroGenuineFailures: 1,
+        anchorLookupFailures: 1,
+      });
+      expect(anchorFailedCaptures()).toHaveLength(1);
+    });
   });
 
   it('still fires when prior-fire is older than the 60-min cooldown', async () => {
@@ -1858,12 +2254,6 @@ describe('detect-silent-boom handler', () => {
       'detect-silent-boom: ticker flow series query error; alerts written without flow features';
     const FLOW_DEADLINE = 'ticker flow series passed its 5000 ms deadline';
 
-    const authorizedReq = () =>
-      mockRequest({
-        method: 'GET',
-        headers: { authorization: 'Bearer test-secret' },
-      });
-
     // Every tagged-template SQL call: its text with `${}` where each bind
     // sat, plus the binds in order.
     function sqlCalls() {
@@ -2294,8 +2684,13 @@ describe('detect-silent-boom handler', () => {
         flowSeriesGenuineFailures: 0,
         firstFlowSeriesError: null,
         firstFlowSeriesGenuineError: null,
+        anchorsFound: 1,
+        anchorsMissing: 0,
+        anchorLookupFailures: 0,
+        anchorLookupError: null,
       });
       expect(logger.error).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalled();
     });
   });
 });

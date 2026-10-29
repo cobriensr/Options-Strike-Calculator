@@ -4,7 +4,9 @@
  * Runs every 5 min during market hours. Aggregates the last
  * SCAN_WINDOW_MIN of ws_option_trades into 5-min per-chain buckets in
  * SQL (size, ask/bid splits, vwap, last price, max OI), runs the
- * silent-boom detector, and INSERTs alerts into silent_boom_alerts
+ * silent-boom detector, records each alert's trigger print and its
+ * exchange leg kind (one batched anchor lookup per tick), and INSERTs
+ * alerts into silent_boom_alerts
  * with ON CONFLICT DO NOTHING for idempotency. SQL-side aggregation is
  * load-bearing: raw-tick projection of the same window blew past the
  * Neon HTTP 64 MB response cap on busy days (Sentry
@@ -27,6 +29,7 @@ import {
 import { DeadlineError, withDeadline } from '../_lib/deadline.js';
 import {
   detectSilentBoomFires,
+  SILENT_BOOM_BUCKET_MS,
   SILENT_BOOM_SPEC_V1,
   type ChainBucket,
 } from '../_lib/silent-boom.js';
@@ -37,8 +40,14 @@ import {
   type SilentBoomScoreTier,
 } from '../_lib/silent-boom-score.js';
 import {
+  lookupAnchorLegs,
+  type AnchorLegs,
+  type AnchorRequest,
+} from '../_lib/anchor-legs.js';
+import {
   withCronInstrumentation,
   type CronResult,
+  type CronStatus,
 } from '../_lib/cron-instrumentation.js';
 import { isPastCashOpen } from '../_lib/cron-helpers.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
@@ -58,10 +67,6 @@ import {
   flowAtFireTime,
   type TickerFlowSeries,
 } from '../_lib/ticker-flow-snapshot.js';
-import {
-  classifyAlertMultileg,
-  type MultilegClassifyCache,
-} from '../_lib/multileg-classify-batch.js';
 import {
   getLatestGexbotSnapshotAt,
   mapToGexbotTicker,
@@ -753,18 +758,6 @@ export default withCronInstrumentation(
     let gexHits = 0;
     let gexMisses = 0;
     let gexOutOfUniverse = 0;
-    // Multileg classifier observability (Task 6 / Finding 0.2). The
-    // matcher fail-open path returns null for: DB query failure, empty
-    // window, oversized window, missing anchor trade, classifier error.
-    // Without per-tick counters, a classifier regression (e.g. the matcher
-    // returning null for 95% of inputs) is silent: detect-cron logs
-    // still report healthy `inserted` counts because alert insertion
-    // does not depend on a populated classification. The hit/miss split
-    // makes that regression observable and alertable; the Sentry capture
-    // below fires when the ratio drops under 50% on a meaningful sample
-    // (see threshold rationale next to the captureMessage call).
-    let multilegHits = 0;
-    let multilegMisses = 0;
 
     // Per-(ticker, date) cumulative net-flow series cache. Shared across
     // all chain groups so two TSLA chains in the same cron tick fetch
@@ -792,13 +785,6 @@ export default withCronInstrumentation(
       date: string;
       err: unknown;
     } | null = null;
-
-    // Per-cron-tick multileg classification cache. Keyed inside the
-    // helper by (ticker, optionChain, minute) so multiple alerts on the
-    // same chain in the same minute reuse one classifier call. Cleared
-    // when the handler returns. Spec: migration #160 columns; classifier
-    // POST /multileg-classify (originally wired in commit ced5ff10).
-    const multilegCache: MultilegClassifyCache = new Map();
 
     // Pre-pass: detect fires across all groups + apply gate counters.
     // Splitting detection from scoring lets the score loop see ALL
@@ -922,6 +908,81 @@ export default withCronInstrumentation(
       }
     }
 
+    // ── Trigger print + spread legs: one batched lookup per tick ─────────
+    // The anchor is the top price × size print on the alert's own chain in
+    // its 5-min bucket [bucket_ct, bucket_ct + 5 min). Its exchange trade
+    // code says whether it was one leg of a spread, and for a spread leg
+    // the lookup also groups the other legs (spec
+    // 2026-10-28-classifier-replacement-design.md, migration #197 columns;
+    // it replaces the Railway classifier, whose four migration #160
+    // columns are no longer written). At most two queries for the whole
+    // tick (R5), made before any INSERT. Alerts that will hit ON CONFLICT
+    // are looked up too: they can't be told apart in advance, and in a
+    // batch they cost nothing extra.
+    //
+    // A failed lookup leaves the columns NULL on every alert, so it is
+    // reported apart from a missing anchor: a Sentry event and a log line
+    // named anchor_legs.lookup_failed, anchorLookupError in the run
+    // payload, and status 'partial' when the run wrote alerts. A missing
+    // anchor is a warning of its own (see anchor-missing below).
+    //
+    // Retry budget: the lottery cron's two queries take 7–40 ms warm and
+    // ~0.4 s cold (EXPLAIN on prod, 2026-10-29). This window is 5 min
+    // instead of 1 on the same (option_chain, executed_at) index, so a 5 s
+    // attempt cap still only cuts off a stall. With one retry the worst
+    // case is 5 + 1 + 5 = 11 s ahead of the INSERTs, inside the 60 s
+    // maxDuration.
+    const anchorKey = (chain: string, bucketTs: Date): string =>
+      `${chain}|${bucketTs.toISOString()}`;
+    const anchorRequests: AnchorRequest[] = allFires.map(({ g, f }) => ({
+      // Unique per alert in the tick: one fire per chain per bucket, the
+      // same pair as the ON CONFLICT key.
+      key: anchorKey(g.optionChain, f.bucketTs),
+      // The ticker and chain exactly as the bucket scan read them from
+      // ws_option_trades; the anchor query matches both.
+      ticker: g.ticker,
+      optionChain: g.optionChain,
+      windowStart: f.bucketTs,
+      windowEnd: new Date(f.bucketTs.getTime() + SILENT_BOOM_BUCKET_MS),
+    }));
+    let anchorsByKey = new Map<string, AnchorLegs | null>();
+    let anchorLookupError: string | null = null;
+    try {
+      anchorsByKey = await withDbRetry(
+        () => lookupAnchorLegs(anchorRequests),
+        1,
+        5_000,
+      );
+    } catch (err) {
+      anchorLookupError = err instanceof Error ? err.message : String(err);
+      // An exhausted Neon blip degrades quietly (warning); anything else
+      // is a broken query and pages (error). Either way the alerts below
+      // are still written.
+      const transient = isRetryableDbError(err);
+      const detail = { err, alerts: anchorRequests.length, transient };
+      const message =
+        'detect-silent-boom: anchor_legs.lookup_failed; alerts written without anchor legs';
+      if (transient) ctx.logger.warn(detail, message);
+      else ctx.logger.error(detail, message);
+      Sentry.captureException(err, {
+        level: transient ? 'warning' : 'error',
+        fingerprint: ['detect-silent-boom', 'anchor_legs.lookup_failed'],
+        tags: {
+          'cron.job': 'detect-silent-boom',
+          'cron.anomaly': 'anchor_legs.lookup_failed',
+        },
+        extra: { alerts: anchorRequests.length },
+      });
+    }
+    // anchorsFound / anchorsMissing count every looked-up alert, including
+    // alerts that then hit ON CONFLICT, not inserted rows.
+    let anchorsFound = 0;
+    for (const anchor of anchorsByKey.values()) {
+      if (anchor != null) anchorsFound += 1;
+    }
+    // Empty map after a failed lookup, so a failure never counts as missing.
+    const anchorsMissing = anchorsByKey.size - anchorsFound;
+
     for (const { g, f, date, dte } of allFires) {
       // Score is deterministic from the fire payload + day context.
       // Computed inline so the row lands fully scored (no lazy
@@ -1015,33 +1076,12 @@ export default withCronInstrumentation(
         f.bucketTs,
       );
 
-      // Phase 2 multileg classification (spec: migration #160; classifier
-      // POST /multileg-classify). Fail-open —
-      // the helper returns null on classifier errors, missing anchor
-      // trade, or oversized windows, and the four columns stay NULL
-      // on the row. Take-It feature pipeline already treats these as
-      // optional (`?: T | null`).
-      const multilegResult = await classifyAlertMultileg(
-        db,
-        multilegCache,
-        g.ticker,
-        g.optionChain,
-        f.bucketTs,
-      );
-      // Hit/miss split observability (Task 6 / Finding 0.2). Null is a
-      // legitimate fail-open return — we don't want to throw — but a
-      // sustained spike in misses is the silent regression we need to
-      // see. Logged in the structured payload below and Sentry-captured
-      // when the ratio crosses the threshold for the tick.
-      if (multilegResult === null) {
-        multilegMisses += 1;
-      } else {
-        multilegHits += 1;
-      }
-      const inferredStructure = multilegResult?.inferredStructure ?? null;
-      const isIsolatedLeg = multilegResult?.isIsolatedLeg ?? null;
-      const matchConfidence = multilegResult?.matchConfidence ?? null;
-      const patternGroupId = multilegResult?.patternGroupId ?? null;
+      // This alert's trigger print from the batched lookup above: null when
+      // it had no anchor print or the lookup failed. spread_legs stores the
+      // SpreadLeg objects as returned (camelCase keys), serialised for jsonb.
+      const anchor = anchorsByKey.get(anchorKey(g.optionChain, f.bucketTs));
+      const spreadLegsJson =
+        anchor?.spreadLegs == null ? null : JSON.stringify(anchor.spreadLegs);
 
       // Phase 4 direction gate (spec:
       // docs/superpowers/specs/silent-boom-direction-gate-and-trail-ui-2026-05-14.md).
@@ -1158,12 +1198,13 @@ export default withCronInstrumentation(
               mkt_tide_diff, mkt_tide_otm_diff, zero_dte_diff, spx_spot_gamma_oi,
               multi_leg_share, underlying_price_at_spike,
               cum_ncp_at_fire, cum_npp_at_fire,
-              inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
               takeit_prob, takeit_model_version, takeit_features,
               gamma_at_trigger, pre_trade_count, adj_cofire,
               first_min_share, spread_in_bucket,
               gex_one_cvroflow, gex_net_put_dex, gex_one_dexoflow, gex_one_gexoflow,
-              gex_zcvr, gex_zero_gamma, gex_spot, gex_captured_at
+              gex_zcvr, gex_zero_gamma, gex_spot, gex_captured_at,
+              anchor_ws_trade_id, anchor_trade_code, anchor_leg_kind,
+              spread_shape, spread_legs
             ) VALUES (
               ${date}::date, ${f.bucketTs.toISOString()},
               ${g.optionChain}, ${g.ticker},
@@ -1174,7 +1215,6 @@ export default withCronInstrumentation(
               ${mktTideDiff}, ${mktTideOtmDiff}, ${zeroDteDiff}, ${spxSpotGammaOi},
               ${f.multiLegShare}, ${f.underlyingPriceAtSpike},
               ${cumNcpAtFire}, ${cumNppAtFire},
-              ${inferredStructure}, ${isIsolatedLeg}, ${matchConfidence}, ${patternGroupId},
               ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb,
               ${f.gammaAtSpike}, ${preTradeCount}, ${adjCofire},
               ${f.firstMinShareAtSpike}, ${f.spreadInBucketAtSpike},
@@ -1185,7 +1225,10 @@ export default withCronInstrumentation(
               ${gexSnapshot?.zcvr ?? null},
               ${gexSnapshot?.zeroGamma ?? null},
               ${gexSnapshot?.spot ?? null},
-              ${gexSnapshot?.capturedAt.toISOString() ?? null}
+              ${gexSnapshot?.capturedAt.toISOString() ?? null},
+              ${anchor?.anchorWsTradeId ?? null}, ${anchor?.anchorTradeCode ?? null},
+              ${anchor?.legKind ?? null}, ${anchor?.spreadShape ?? null},
+              ${spreadLegsJson}::jsonb
             )
             ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
             RETURNING id
@@ -1196,34 +1239,27 @@ export default withCronInstrumentation(
       if (result.length > 0) inserted += 1;
     }
 
-    // Multileg null-rate alert (Task 6 / Finding 0.2). When more than
-    // half of attempted classifications return null AND we actually
-    // inserted enough rows to make the ratio meaningful, capture a
-    // warning. Threshold rationale:
-    //   - 50% strict (`<`, not `<=`): a 50/50 split is plausible on
-    //     thin tape (small-cap tickers with few neighboring legs); we
-    //     only alert when nulls clearly dominate.
-    //   - inserted > 10: low-volume protection. On quiet days a couple
-    //     of fail-open misses can drag a small denominator under 50%
-    //     and produce spurious pages. Ten inserts represents an active
-    //     tick worth investigating.
-    // This is observability, not a hard failure — captureMessage, not
-    // throw — the cron's job is to insert alerts; classifier nulls do
-    // not block that.
-    const multilegTotal = multilegHits + multilegMisses;
-    if (
-      inserted > 10 &&
-      multilegTotal > 0 &&
-      multilegHits / multilegTotal < 0.5
-    ) {
-      Sentry.captureMessage('multileg.classify.high_null_rate', {
+    // An alert's spike bucket is an aggregate of this tick's scan of
+    // ws_option_trades: at least minSpikeVol contracts on the same chain
+    // and ticker, price > 0, not canceled, inside [bucket_ct, bucket_ct +
+    // 5 min). Each of those prints qualifies as the anchor, and the
+    // canceled flag is set only at insert. So an alert with no anchor
+    // means the bucket scan and the lookup disagree on ticker or time, a
+    // regression and not a quiet market. The rows are written and the
+    // status stays 'success'; this makes it visible, once per run.
+    if (anchorsMissing > 0) {
+      const message =
+        'detect-silent-boom: no anchor print found for a fresh alert; anchor columns left null';
+      const detail = { anchorsMissing, anchorsFound };
+      ctx.logger.warn(detail, message);
+      Sentry.captureMessage(message, {
         level: 'warning',
-        extra: {
-          cron: 'detect-silent-boom',
-          multilegHits,
-          multilegMisses,
-          inserted,
+        fingerprint: ['detect-silent-boom', 'anchor-missing'],
+        tags: {
+          'cron.job': 'detect-silent-boom',
+          'cron.anomaly': 'anchor-missing',
         },
+        extra: detail,
       });
     }
 
@@ -1297,8 +1333,6 @@ export default withCronInstrumentation(
         gexHits,
         gexMisses,
         gexOutOfUniverse,
-        multilegHits,
-        multilegMisses,
         macroDegraded,
         macroSeriesFailed,
         macroGenuineFailures: genuineFailures,
@@ -1306,6 +1340,9 @@ export default withCronInstrumentation(
         flowSeriesFailures,
         flowSeriesSkippedBreaker,
         flowSeriesGenuineFailures,
+        anchorsFound,
+        anchorsMissing,
+        anchorLookupFailures: anchorLookupError == null ? 0 : 1,
       },
       'detect-silent-boom completed',
     );
@@ -1317,17 +1354,20 @@ export default withCronInstrumentation(
     //     inserted count: a genuine schema bug is real even on a 0-fire
     //     tick.
     //   - else a transient macro failure, a Take-It prefetch that timed out
-    //     or hit a Neon blip (takeit_prob NULL), or a flow series that
-    //     failed or was skipped by the breaker (cum_* NULL), AND
-    //     inserted > 0 → 'partial' (observably degraded). On a 0-fire tick
-    //     no row was degraded → stays 'success' (do NOT escalate).
+    //     or hit a Neon blip (takeit_prob NULL), a flow series that
+    //     failed or was skipped by the breaker (cum_* NULL), or a failed
+    //     anchor-legs lookup, transient or not (anchor columns NULL on
+    //     every alert; the lookup's own Sentry event pages a broken query),
+    //     AND inserted > 0 → 'partial' (observably degraded). On a 0-fire
+    //     tick no row was degraded → stays 'success' (do NOT escalate).
     //   - else → 'success'.
     const degraded =
       transientFailures > 0 ||
       takeitPrefetchError != null ||
       flowSeriesFailures > 0 ||
-      flowSeriesSkippedBreaker > 0;
-    const status: 'error' | 'partial' | 'success' =
+      flowSeriesSkippedBreaker > 0 ||
+      anchorLookupError != null;
+    const status: CronStatus =
       genuineFailures > 0 ||
       flowSeriesGenuineFailures > 0 ||
       takeitPrefetchFailureKind === 'error'
@@ -1349,8 +1389,6 @@ export default withCronInstrumentation(
         gexHits,
         gexMisses,
         gexOutOfUniverse,
-        multilegHits,
-        multilegMisses,
         macroDegraded,
         macroSeriesFailed,
         macroGenuineFailures: genuineFailures,
@@ -1362,6 +1400,10 @@ export default withCronInstrumentation(
         flowSeriesGenuineFailures,
         firstFlowSeriesError,
         firstFlowSeriesGenuineError: firstFlowSeriesGenuineErrorMeta,
+        anchorsFound,
+        anchorsMissing,
+        anchorLookupFailures: anchorLookupError == null ? 0 : 1,
+        anchorLookupError,
       },
     };
   },
