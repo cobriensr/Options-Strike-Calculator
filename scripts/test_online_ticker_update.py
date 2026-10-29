@@ -106,3 +106,63 @@ def test_already_applied_false_when_today_absent(history_csv: Path) -> None:
     otu.upsert_history_csv(date(2026, 5, 28), [_update("NVDA", 2, 3)])
     # No rows for 05-29 yet => not applied today.
     assert otu.already_applied_today(date(2026, 5, 29), {"NVDA": 3}) is False
+
+
+# ---------------------------------------------------------------------------
+# Refit guard (temporary; see ml/src/lottery_refit_guard.py)
+# ---------------------------------------------------------------------------
+
+
+class _FakeDate(date):
+    pinned = date(2026, 10, 29)
+
+    @classmethod
+    def today(cls) -> date:  # type: ignore[override]
+        return cls.pinned
+
+
+def test_main_guarded_skips_db_and_writes_nothing(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    _FakeDate.pinned = date(2026, 10, 29)
+    monkeypatch.setattr(otu, "date", _FakeDate)
+    weights = tmp_path / "w.json"
+    weights.write_text('{"sentinel": 1}\n', encoding="utf-8")
+    monkeypatch.setattr(otu, "WEIGHTS_PATH", weights)
+    hist = tmp_path / "hist.csv"
+    monkeypatch.setattr(otu, "HISTORY_CSV", hist)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("must not run while guarded")
+
+    for name in (
+        "load_env",
+        "connect_with_retry",
+        "fetch_today_fires",
+        "write_weights_json",
+        "upsert_history_csv",
+    ):
+        monkeypatch.setattr(otu, name, _boom)
+
+    otu.main()
+
+    captured = capsys.readouterr()
+    assert "REFIT BLOCKED: online_ticker_update.py" in captured.out
+    assert "REFIT BLOCKED: online_ticker_update.py" in captured.err
+    assert weights.read_text(encoding="utf-8") == '{"sentinel": 1}\n'
+    assert not hist.exists()
+
+
+def test_main_unguarded_before_cutoff_proceeds(monkeypatch) -> None:
+    _FakeDate.pinned = date(2026, 10, 28)
+    monkeypatch.setattr(otu, "date", _FakeDate)
+    reached: list[bool] = []
+
+    def _load_env() -> None:
+        reached.append(True)
+        raise SystemExit("stop after load_env")
+
+    monkeypatch.setattr(otu, "load_env", _load_env)
+    with pytest.raises(SystemExit):
+        otu.main()
+    assert reached == [True]

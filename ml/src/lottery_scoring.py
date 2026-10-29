@@ -57,7 +57,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import numpy as np
@@ -68,6 +68,7 @@ from scipy import stats
 # directly, we need it in place for `from utils import ...`
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from lottery_refit_guard import announce_skip, refit_blocked
 from utils import get_connection
 
 # ---------------------------------------------------------------------------
@@ -353,6 +354,10 @@ def apply_weights(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    if refit_blocked(date.today()):
+        announce_skip("lottery_scoring.py")
+        return
+
     df = fetch_training_data()
 
     global_mean = float(df["outcome_pct"].mean())
