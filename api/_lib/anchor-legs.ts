@@ -4,14 +4,16 @@
  * classifier.
  *
  *   1. Anchor: the highest `price × size` print on the alert's own option
- *      chain inside its window, `canceled = false`, `price > 0`; ties go to
- *      the earliest print.
+ *      chain (and ticker) inside its window, `canceled = false`,
+ *      `price > 0`; ties go to the earliest print.
  *   2. Leg kind: from the anchor's OPRA trade code alone
  *      (`raw_payload->>'trade_code'`, see `multileg-codes.ts`).
- *   3. Legs (multi-leg anchors only): every multi-leg-coded print on the same
- *      ticker in the anchor's exact millisecond, the anchor included, grouped
- *      by option chain. One chain = one leg (summed size, VWAP price), since
- *      big spread orders fill against several counterparties.
+ *   3. Legs (multi-leg anchors only): every uncanceled multi-leg-coded print
+ *      on the same ticker in the anchor's exact millisecond, the anchor
+ *      included, grouped by option chain. One chain = one leg (summed size,
+ *      VWAP price), since big spread orders fill against several
+ *      counterparties. A zero-priced (cabinet) wing still counts as a leg:
+ *      dropping it would turn a fly into a vertical.
  *
  * Spec: docs/superpowers/specs/2026-10-28-classifier-replacement-design.md
  * ("Decisions already made": anchor print, sibling legs, shape names).
@@ -263,13 +265,17 @@ function toTapePrint(row: TapeRow): TapePrint {
  * batch size (rule R5: no per-alert round trips):
  *
  *   1. Anchors: one LATERAL top-1 per request on
- *      ws_option_trades_chain_executed_idx (option_chain, executed_at).
+ *      ws_option_trades_chain_executed_idx (option_chain, executed_at). The
+ *      print must also carry the request's ticker, so the ticker query 2
+ *      scans by is the stored one: a mismatch is a null anchor, not a
+ *      silently `unpaired` spread leg.
  *   2. Siblings: one LATERAL scan per distinct (ticker, millisecond) of a
  *      multi-leg anchor on ws_option_trades_ticker_executed_idx. Skipped
- *      when no anchor is multi-leg. `OFFSET 0` keeps it a per-pair index
- *      scan: as a plain join the planner can't size the 1 ms range from a
- *      joined column and, at ~150 pairs, chose a parallel seq scan of the
- *      whole table (31 GB, EXPLAIN 2026-10-29).
+ *      when no anchor is multi-leg. No `price > 0` here, unlike query 1:
+ *      a zero-priced wing is still a leg. `OFFSET 0` keeps it a per-pair
+ *      index scan: as a plain join the planner can't size the 1 ms range
+ *      from a joined column and, at ~150 pairs, chose a parallel seq scan
+ *      of the whole table (31 GB, EXPLAIN 2026-10-29).
  *
  * Returns `null` for a request with no qualifying print in its window. A
  * DB error propagates, so a missing anchor (null) and a failed lookup
@@ -287,10 +293,11 @@ export async function lookupAnchorLegs(
     SELECT r.idx, a.ws_trade_id, a.option_chain, a.option_type, a.strike,
            a.expiry, a.executed_ms, a.price, a.size, a.trade_code
       FROM unnest(
+             ${requests.map((r) => r.ticker)}::text[],
              ${requests.map((r) => r.optionChain)}::text[],
              ${requests.map((r) => r.windowStart.toISOString())}::timestamptz[],
              ${requests.map((r) => r.windowEnd.toISOString())}::timestamptz[]
-           ) WITH ORDINALITY AS r(chain, window_start, window_end, idx)
+           ) WITH ORDINALITY AS r(ticker, chain, window_start, window_end, idx)
       CROSS JOIN LATERAL (
              SELECT t.ws_trade_id, t.option_chain, t.option_type, t.strike,
                     t.expiry,
@@ -299,6 +306,7 @@ export async function lookupAnchorLegs(
                     t.price, t.size, t.raw_payload->>'trade_code' AS trade_code
                FROM ws_option_trades t
               WHERE t.option_chain = r.chain
+                AND t.ticker = r.ticker
                 AND t.executed_at >= r.window_start
                 AND t.executed_at < r.window_end
                 AND t.canceled = FALSE
@@ -348,7 +356,6 @@ export async function lookupAnchorLegs(
                   AND t.executed_at >= p.start_at
                   AND t.executed_at < p.start_at + interval '1 millisecond'
                   AND t.canceled = FALSE
-                  AND t.price > 0
                   AND lower(t.raw_payload->>'trade_code')
                         = ANY(${[...MULTI_LEG_TRADE_CODES]}::text[])
                OFFSET 0

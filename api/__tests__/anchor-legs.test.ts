@@ -168,6 +168,11 @@ describe('classifySpreadShape', () => {
       'other',
     ],
     ['0 legs → other', [], 'other'],
+    [
+      '2 legs, same type + expiry + strike (two distinct chains) → other',
+      [leg('C', 100), leg('C', 100)],
+      'other',
+    ],
   ];
 
   it.each(rows)('%s', (_name, legs, expected) => {
@@ -473,8 +478,9 @@ describe('lookupAnchorLegs', () => {
 
     expect(mockSql).toHaveBeenCalledTimes(2);
 
-    // Query 1: one row per request, chain + window arrays.
+    // Query 1: one row per request, ticker + chain + window arrays.
     expect(boundValues(0)).toEqual([
+      ['TSLA', 'AAPL', 'NVDA'],
       ['TSLA261030C00726500', 'AAPL261030P00250000', 'NVDA261030C00200000'],
       [
         '2026-10-29T13:38:20.000Z',
