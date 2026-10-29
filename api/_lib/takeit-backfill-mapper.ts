@@ -114,9 +114,6 @@ export interface LotteryFireDbRow {
   direction_gated: boolean; // NOT NULL DEFAULT FALSE
 
   // multileg classification (migration #160) — optional, NULL on pre-migration rows
-  inferred_structure: string | null;
-  is_isolated_leg: boolean | null;
-  match_confidence: number | null; // REAL → number
   pattern_group_id: string | null;
 }
 
@@ -325,9 +322,6 @@ export function dbRowToLotteryAlertRow(row: LotteryFireDbRow): LotteryAlertRow {
     score: row.score,
     direction_gated: row.direction_gated,
 
-    inferred_structure: row.inferred_structure,
-    is_isolated_leg: row.is_isolated_leg,
-    match_confidence: row.match_confidence,
     pattern_group_id: row.pattern_group_id,
   };
 }

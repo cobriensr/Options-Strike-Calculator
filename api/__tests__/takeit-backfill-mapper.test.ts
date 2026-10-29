@@ -71,9 +71,6 @@ function makeRow(overrides: Partial<LotteryFireDbRow> = {}): LotteryFireDbRow {
     score: null,
     direction_gated: false,
 
-    inferred_structure: null,
-    is_isolated_leg: null,
-    match_confidence: null,
     pattern_group_id: null,
 
     ...overrides,
@@ -115,9 +112,10 @@ describe('dbRowToLotteryAlertRow', () => {
     expect(out.spot_at_trigger).toBeNull();
     expect(out.burst_ratio_vs_prev).toBeNull();
     expect(out.score).toBeNull();
-    expect(out.inferred_structure).toBeNull();
-    expect(out.is_isolated_leg).toBeNull();
-    expect(out.match_confidence).toBeNull();
+    // Retired classifier columns are not carried through.
+    expect(out).not.toHaveProperty('inferred_structure');
+    expect(out).not.toHaveProperty('is_isolated_leg');
+    expect(out).not.toHaveProperty('match_confidence');
   });
 
   it('coerces optional NUMERIC strings to numbers, keeps explicit nulls', () => {

@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import type { ForcedFlowMacroContext } from '../_lib/forced-flow.js';
 import {
-  INFERRED_STRUCTURE_LABELS,
   type LotteryAlertRow,
   SESSION_PHASES,
   type SequentialContext,
@@ -39,8 +38,8 @@ function makeBundle(
   featureCols: string[],
   topTickers: string[] = ['SPY', 'QQQ'],
   categoricalCols: string[] = alertType === 'lottery'
-    ? ['option_type', 'mode', 'flow_quad', 'tod', 'inferred_structure']
-    : ['option_type', 'score_tier', 'inferred_structure'],
+    ? ['option_type', 'mode', 'flow_quad', 'tod']
+    : ['option_type', 'score_tier'],
 ): TakeitBundle {
   return {
     version: 'v-test',
@@ -520,9 +519,6 @@ function lotteryRow(overrides: Partial<LotteryAlertRow> = {}): LotteryAlertRow {
     gex_strike_put_ask_minus_bid: 0,
     score: 12,
     direction_gated: false,
-    inferred_structure: null,
-    is_isolated_leg: null,
-    match_confidence: null,
     pattern_group_id: null,
     ...overrides,
   };
@@ -677,9 +673,6 @@ function silentBoomRow(
     score: 6,
     score_tier: 'tier1',
     direction_gated: false,
-    inferred_structure: null,
-    is_isolated_leg: null,
-    match_confidence: null,
     pattern_group_id: null,
     ...overrides,
   };
@@ -715,128 +708,54 @@ describe('featuresForSilentBoom', () => {
   });
 });
 
-/* ───────────────────────── Multileg features (migration #160) ──────── */
+/* ───────────────────────── Retired classifier features ──────── */
 
-describe('multileg classification features (lottery)', () => {
-  const MULTILEG_FEATURE_COLS = [
-    'is_isolated_leg',
-    'match_confidence',
+describe('retired multileg classifier features', () => {
+  // The Railway classifier is retired: its columns are NULL on every new row
+  // and no live bundle pins them. The scorer must not emit the scalar
+  // features, and must not light a one-hot from a stale inferred_structure
+  // value, so a retrain cannot learn from always-NULL inputs. The bundles pin
+  // the old columns (and list inferred_structure as categorical) to prove the
+  // scorer ignores them; the rows carry legacy values to prove the same.
+  const SCALAR_KEYS = ['is_isolated_leg', 'match_confidence'];
+  const ONE_HOT_KEYS = [
     'inferred_structure_isolated_leg',
     'inferred_structure_vertical',
     'inferred_structure_strangle',
     'inferred_structure_risk_reversal',
     'inferred_structure_butterfly',
   ];
+  const LEGACY_VALUES = {
+    inferred_structure: 'vertical',
+    is_isolated_leg: false,
+    match_confidence: 0.9,
+  };
 
-  it('populates is_isolated_leg=1, match_confidence, and the matching one-hot column when classified', () => {
-    const bundle = makeBundle('lottery', MULTILEG_FEATURE_COLS);
-    const row = lotteryRow({
-      is_isolated_leg: true,
-      match_confidence: 0.87,
-      inferred_structure: 'vertical',
-    });
-    const out = featuresForLottery(bundle, row, EMPTY_CTX);
-    expect(out.is_isolated_leg).toBe(1);
-    expect(out.match_confidence).toBeCloseTo(0.87);
-    expect(out.inferred_structure_vertical).toBe(1);
-    // Sibling one-hot columns are explicit zeros, as in training.
-    expect(out.inferred_structure_isolated_leg).toBe(0);
-    expect(out.inferred_structure_strangle).toBe(0);
-    expect(out.inferred_structure_risk_reversal).toBe(0);
-    expect(out.inferred_structure_butterfly).toBe(0);
+  function expectNoClassifierSignal(out: Record<string, unknown>): void {
+    for (const key of SCALAR_KEYS) expect(out).not.toHaveProperty(key);
+    for (const key of ONE_HOT_KEYS) expect(out[key] ?? 0).toBe(0);
+  }
+
+  it('emits no classifier signal for a lottery row', () => {
+    const bundle = makeBundle(
+      'lottery',
+      [...SCALAR_KEYS, ...ONE_HOT_KEYS],
+      ['SPY'],
+      ['option_type', 'inferred_structure'],
+    );
+    const row = { ...lotteryRow(), ...LEGACY_VALUES };
+    expectNoClassifierSignal(featuresForLottery(bundle, row, EMPTY_CTX));
   });
 
-  it('encodes is_isolated_leg=false as 0 (not null)', () => {
-    const bundle = makeBundle('lottery', MULTILEG_FEATURE_COLS);
-    const row = lotteryRow({
-      is_isolated_leg: false,
-      match_confidence: 0.6,
-      inferred_structure: 'strangle',
-    });
-    const out = featuresForLottery(bundle, row, EMPTY_CTX);
-    expect(out.is_isolated_leg).toBe(0);
-    expect(out.match_confidence).toBeCloseTo(0.6);
-    expect(out.inferred_structure_strangle).toBe(1);
-  });
-
-  it('keeps is_isolated_leg / match_confidence as null and emits no inferred_structure_* one-hot when unclassified', () => {
-    const bundle = makeBundle('lottery', MULTILEG_FEATURE_COLS);
-    const row = lotteryRow({
-      is_isolated_leg: null,
-      match_confidence: null,
-      inferred_structure: null,
-    });
-    const out = featuresForLottery(bundle, row, EMPTY_CTX);
-    // NULL → null feature (XGBoost treats as missing — do NOT default to 0/false).
-    expect(out.is_isolated_leg).toBeNull();
-    expect(out.match_confidence).toBeNull();
-    // No inferred_structure_* one-hot fires (all-zero block).
-    for (const label of INFERRED_STRUCTURE_LABELS) {
-      expect(out[`inferred_structure_${label}`]).toBe(0);
-    }
-  });
-
-  it('emits no inferred_structure_* one-hot for unknown labels (forward-compat)', () => {
-    const bundle = makeBundle('lottery', MULTILEG_FEATURE_COLS);
-    const row = lotteryRow({
-      // v2 matcher could emit e.g. 'condor'; no label column matches, so the block is all zeros.
-      inferred_structure: 'condor',
-    });
-    const out = featuresForLottery(bundle, row, EMPTY_CTX);
-    for (const label of INFERRED_STRUCTURE_LABELS) {
-      expect(out[`inferred_structure_${label}`]).toBe(0);
-    }
-  });
-});
-
-describe('multileg classification features (silentboom)', () => {
-  const MULTILEG_FEATURE_COLS = [
-    'is_isolated_leg',
-    'match_confidence',
-    'inferred_structure_isolated_leg',
-    'inferred_structure_vertical',
-    'inferred_structure_strangle',
-    'inferred_structure_risk_reversal',
-    'inferred_structure_butterfly',
-  ];
-
-  it('populates the same fields end-to-end on silent-boom rows', () => {
-    const bundle = makeBundle('silentboom', MULTILEG_FEATURE_COLS);
-    const row = silentBoomRow({
-      is_isolated_leg: true,
-      match_confidence: 0.91,
-      inferred_structure: 'butterfly',
-    });
-    const out = featuresForSilentBoom(bundle, row, EMPTY_CTX);
-    expect(out.is_isolated_leg).toBe(1);
-    expect(out.match_confidence).toBeCloseTo(0.91);
-    expect(out.inferred_structure_butterfly).toBe(1);
-  });
-
-  it('handles null multileg fields on silent-boom (matches unclassified rows)', () => {
-    const bundle = makeBundle('silentboom', MULTILEG_FEATURE_COLS);
-    const out = featuresForSilentBoom(bundle, silentBoomRow(), EMPTY_CTX);
-    expect(out.is_isolated_leg).toBeNull();
-    expect(out.match_confidence).toBeNull();
-    for (const label of INFERRED_STRUCTURE_LABELS) {
-      expect(out[`inferred_structure_${label}`]).toBe(0);
-    }
-  });
-});
-
-describe('INFERRED_STRUCTURE_LABELS stability', () => {
-  it('exposes the v1 label set in a frozen order (regression guard)', () => {
-    // The trainer reads this exact list to pin `feature_cols` for each
-    // retrain. Changing the order or adding/removing a label here is a
-    // model-breaking change — bump the bundle version + audit the
-    // upstream classifier + manually verify pinned columns.
-    expect([...INFERRED_STRUCTURE_LABELS]).toEqual([
-      'isolated_leg',
-      'vertical',
-      'strangle',
-      'risk_reversal',
-      'butterfly',
-    ]);
+  it('emits no classifier signal for a silent-boom row', () => {
+    const bundle = makeBundle(
+      'silentboom',
+      [...SCALAR_KEYS, ...ONE_HOT_KEYS],
+      ['SPY'],
+      ['option_type', 'inferred_structure'],
+    );
+    const row = { ...silentBoomRow(), ...LEGACY_VALUES };
+    expectNoClassifierSignal(featuresForSilentBoom(bundle, row, EMPTY_CTX));
   });
 });
 

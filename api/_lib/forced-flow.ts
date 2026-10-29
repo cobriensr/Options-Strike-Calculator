@@ -9,7 +9,7 @@
  * loud (size, vol/oi, ask-side share) but carry no directional information.
  *
  * Design decision per spec §"Open question 3": these are FEATURES, not score
- * modifiers. The model learns interactions with `inferred_structure`,
+ * modifiers. The model learns interactions with
  * `aggressive_premium_flag`, `score`, etc. — a multiplier would zero out
  * informed prints that happen to land in a forced-flow window.
  *
