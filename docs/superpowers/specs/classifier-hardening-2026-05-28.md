@@ -1,3 +1,5 @@
+> Superseded 2026-10-28 by 2026-10-28-classifier-replacement-design.md — the multileg classifier is retired.
+
 # Classifier Service Phase 1.5 Hardening — Red-Team Findings
 
 **Date:** 2026-05-28

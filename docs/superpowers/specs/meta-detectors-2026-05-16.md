@@ -3,6 +3,8 @@ status: Likely Shipped
 date: 2026-05-16
 ---
 
+> Superseded 2026-10-28 by 2026-10-28-classifier-replacement-design.md — the multileg classifier is retired (applies to the multileg phase).
+
 # Meta-Detectors for Lottery & Silent Boom
 
 **Status:** Active plan, scoped 2026-05-16.

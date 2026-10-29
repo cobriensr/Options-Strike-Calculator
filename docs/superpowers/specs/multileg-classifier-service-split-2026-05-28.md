@@ -1,3 +1,5 @@
+> Superseded 2026-10-28 by 2026-10-28-classifier-replacement-design.md — the multileg classifier is retired.
+
 # Multileg Classifier — Split to Dedicated Railway Service + O(N²) Mitigation
 
 **Date:** 2026-05-28

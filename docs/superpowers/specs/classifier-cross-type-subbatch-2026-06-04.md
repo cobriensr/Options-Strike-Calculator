@@ -1,3 +1,5 @@
+> Superseded 2026-10-28 by 2026-10-28-classifier-replacement-design.md — the multileg classifier is retired.
+
 # Classifier cross-type join sub-batching (OOM fix)
 
 **Date:** 2026-06-04
