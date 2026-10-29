@@ -127,6 +127,7 @@ def test_gcs_404_is_not_posted(respx_mock, tmp_path: Path, sleeps: list[float]):
         download_tape(DAY, dest, API_KEY)
 
     _assert_message(caught.value, "not_posted", "gcs-404")
+    assert (caught.value.origin, caught.value.earliest) == ("gcs", None)
     assert "NoSuchKey" not in str(caught.value)
     assert uw.call_count == 1
     assert sleeps == []
@@ -140,6 +141,7 @@ def test_uw_404_is_not_posted(respx_mock, tmp_path: Path):
         download_tape(DAY, tmp_path / "t.zip", API_KEY)
 
     _assert_message(caught.value, "not_posted", "uw-404")
+    assert (caught.value.origin, caught.value.earliest) == ("uw", None)
 
 
 def test_historic_403_is_outside_window(respx_mock, tmp_path: Path, sleeps: list[float]):
@@ -159,10 +161,29 @@ def test_historic_403_is_outside_window(respx_mock, tmp_path: Path, sleeps: list
         "outside_window",
         "uw-403 historic window: earliest 2024-09-10, 730 trading days",
     )
+    assert caught.value.earliest == date(2024, 9, 10)
+    assert caught.value.origin == "uw"
     assert "Your plan includes" not in str(caught.value)
     assert uw.call_count == 1
     assert sleeps == []
     _assert_no_files(dest)
+
+
+def test_historic_403_without_a_parseable_boundary_has_no_earliest(respx_mock, tmp_path: Path):
+    _uw_route(
+        respx_mock,
+        httpx.Response(403, json={"code": "historic_data_access_missing", "message": "no dates"}),
+    )
+
+    with pytest.raises(TapeDownloadError) as caught:
+        download_tape(DAY, tmp_path / "t.zip", API_KEY)
+
+    _assert_message(
+        caught.value,
+        "outside_window",
+        "uw-403 historic window: earliest unknown, unknown trading days",
+    )
+    assert (caught.value.origin, caught.value.earliest) == ("uw", None)
 
 
 @pytest.mark.parametrize(
@@ -187,6 +208,7 @@ def test_other_403s_are_classified_without_retry(
         download_tape(DAY, tmp_path / "t.zip", API_KEY)
 
     _assert_message(caught.value, kind, detail)
+    assert (caught.value.origin, caught.value.earliest) == ("uw", None)
     assert uw.call_count == 1
 
 
@@ -213,6 +235,7 @@ def test_403_after_redirect_is_tagged_by_host(
         download_tape(DAY, tmp_path / "t.zip", API_KEY)
 
     _assert_message(caught.value, kind, detail)
+    assert caught.value.origin == detail.split("-")[0]
     assert uw.call_count == 1
     assert sleeps == []
 
@@ -274,6 +297,7 @@ def test_daily_quota_429_is_not_retried(respx_mock, tmp_path: Path, sleeps: list
         download_tape(DAY, tmp_path / "t.zip", API_KEY)
 
     _assert_message(caught.value, "quota_daily", "uw-429 daily 20000 of 20000")
+    assert caught.value.origin == "uw"
     assert uw.call_count == 1
     assert sleeps == []
 
@@ -286,6 +310,7 @@ def test_5xx_exhausts_to_transient(respx_mock, tmp_path: Path, sleeps: list[floa
         download_tape(DAY, dest, API_KEY)
 
     _assert_message(caught.value, "transient", "uw-503 after 4 attempts")
+    assert caught.value.origin == "uw"  # carried from the retried attempts
     assert uw.call_count == 4
     assert sleeps == [5.0, 10.0, 20.0]
     _assert_no_files(dest)
@@ -378,6 +403,7 @@ def test_transport_error_every_attempt_is_transient(respx_mock, tmp_path: Path):
         download_tape(DAY, tmp_path / "t.zip", API_KEY)
 
     _assert_message(caught.value, "transient", "ConnectError after 4 attempts")
+    assert caught.value.origin is None  # no response was classified
 
 
 def test_encoded_200_is_unexpected_on_first_attempt(
@@ -675,6 +701,7 @@ def test_probe_source_classifies_like_download(respx_mock, sleeps: list[float]):
         probe_source(DAY, API_KEY)
 
     _assert_message(caught.value, "not_posted", "gcs-404")
+    assert caught.value.origin == "gcs"
     assert sleeps == []
 
 
@@ -726,3 +753,18 @@ def test_error_str_is_kind_day_detail():
     err = TapeDownloadError("transient", DAY, "uw-503 after 4 attempts")
 
     assert str(err) == "transient 2026-10-27: uw-503 after 4 attempts"
+    assert (err.earliest, err.origin) == (None, None)
+
+
+def test_keyword_fields_leave_str_and_repr_unchanged():
+    plain = TapeDownloadError("outside_window", DAY, "uw-403 historic window")
+    tagged = TapeDownloadError(
+        "outside_window", DAY, "uw-403 historic window", earliest=date(2024, 9, 10), origin="uw"
+    )
+
+    assert str(tagged) == str(plain) == "outside_window 2026-10-27: uw-403 historic window"
+    assert repr(tagged) == repr(plain)
+    assert tagged.args == ("outside_window", DAY, "uw-403 historic window")
+    assert (tagged.earliest, tagged.origin) == (date(2024, 9, 10), "uw")
+    with pytest.raises(TypeError):
+        TapeDownloadError("outside_window", DAY, "x", date(2024, 9, 10))  # keyword-only

@@ -56,6 +56,8 @@ Kind = Literal[
     "timeout",
     "unexpected",
 ]
+# Who sent the failing final response: UW's API, or the GCS host it redirects to.
+Origin = Literal["uw", "gcs"]
 
 
 class TapeDownloadError(Exception):
@@ -63,13 +65,26 @@ class TapeDownloadError(Exception):
 
     ``detail`` is built from status codes, header values, parsed dates, UW's error
     code and exception class names only, so it is safe for logs and Sentry.
+    ``origin`` is set when a final HTTP response was classified (None for transport
+    and local errors). ``earliest`` is UW's own first available date, parsed from an
+    ``outside_window`` answer when its wording allows; None otherwise.
     """
 
-    def __init__(self, kind: Kind, day: date, detail: str) -> None:
+    def __init__(
+        self,
+        kind: Kind,
+        day: date,
+        detail: str,
+        *,
+        earliest: date | None = None,
+        origin: Origin | None = None,
+    ) -> None:
         super().__init__(kind, day, detail)
         self.kind = kind
         self.day = day
         self.detail = detail
+        self.earliest = earliest
+        self.origin = origin
 
     def __str__(self) -> str:
         return f"{self.kind} {self.day.isoformat()}: {self.detail}"
@@ -87,14 +102,23 @@ class SourceInfo:
 class _RetryableError(Exception):
     """An attempt failed in a way a fresh request may fix.
 
-    ``kind`` is reported if attempts run out; ``delay`` is a server-requested wait.
+    ``kind`` (and ``origin``) are reported if attempts run out; ``delay`` is a
+    server-requested wait.
     """
 
-    def __init__(self, kind: Kind, detail: str, delay: float | None = None) -> None:
+    def __init__(
+        self,
+        kind: Kind,
+        detail: str,
+        delay: float | None = None,
+        *,
+        origin: Origin | None = None,
+    ) -> None:
         super().__init__(detail)
         self.kind = kind
         self.detail = detail
         self.delay = delay
+        self.origin = origin
 
 
 def build_headers(api_key: str) -> dict[str, str]:
@@ -180,7 +204,9 @@ def _with_retries[T](day: date, attempt: Callable[[], T]) -> T:
                 "unexpected", day, f"{type(exc).__name__} errno {exc.errno}"
             ) from None
         if n == DOWNLOAD_MAX_ATTEMPTS:
-            raise TapeDownloadError(failure.kind, day, f"{failure.detail} after {n} attempts")
+            raise TapeDownloadError(
+                failure.kind, day, f"{failure.detail} after {n} attempts", origin=failure.origin
+            )
         delay = failure.delay
         if delay is None:
             delay = min(120, 5 * 2 ** (n - 1)) + random.uniform(0, 3)
@@ -271,7 +297,7 @@ def _check_deadline(day: date, deadline: float, received: int) -> None:
         raise TapeDownloadError("timeout", day, detail)
 
 
-def _where(response: httpx.Response) -> str:
+def _where(response: httpx.Response) -> Origin:
     host = response.url.host
     gcs = host == "storage.googleapis.com" or host.endswith(".storage.googleapis.com")
     return "gcs" if gcs else "uw"
@@ -296,7 +322,7 @@ def _not_a_zip(response: httpx.Response, head: bytes, day: date) -> TapeDownload
     tag = f"{_where(response)}-200 non-zip"
     # The documented out-of-window answer is a 403. A 200 carrying the code is an
     # anomaly, so it fails loudly (and is retried next night) rather than becoming
-    # `outside_window`, which marks the day unavailable for good.
+    # `outside_window`, which can mark the day unavailable for good.
     if HISTORIC_CODE in head.decode("utf-8", "replace").lower():
         return TapeDownloadError("unexpected", day, f"{tag} {HISTORIC_CODE}")
     media = response.headers.get("content-type", "none").split(";")[0].strip()
@@ -308,15 +334,16 @@ def _classify_failure(
 ) -> TapeDownloadError | _RetryableError:
     """Map a non-200 final response to the error the attempt should raise.
 
-    `deadline` bounds the 403 body sniff; probe_source has none and passes None.
+    Every error carries the response's `origin`. `deadline` bounds the 403 body
+    sniff; probe_source has none and passes None.
     """
     status = response.status_code
     where = _where(response)
     tag = f"{where}-{status}"
     if status == 404:
-        return TapeDownloadError("not_posted", day, tag)
+        return TapeDownloadError("not_posted", day, tag, origin=where)
     if status == 401:
-        return TapeDownloadError("auth", day, tag)
+        return TapeDownloadError("auth", day, tag, origin=where)
     # Only UW's own 403s carry its codes; a GCS 403 falls through to unexpected.
     if status == 403 and where == "uw":
         body = _read_head(response.iter_bytes(), day, deadline).decode("utf-8", "replace")
@@ -327,19 +354,20 @@ def _classify_failure(
                 f"{tag} historic window: earliest {earliest or 'unknown'}, "
                 f"{lookback or 'unknown'} trading days"
             )
-            return TapeDownloadError("outside_window", day, detail)
+            return TapeDownloadError("outside_window", day, detail, earliest=earliest, origin=where)
         if kind == "auth":
-            return TapeDownloadError("auth", day, tag)
-        return TapeDownloadError("unexpected", day, f"{tag} {kind}")
+            return TapeDownloadError("auth", day, tag, origin=where)
+        return TapeDownloadError("unexpected", day, f"{tag} {kind}", origin=where)
     if status == 429:
         count = response.headers.get("x-uw-daily-req-count", "")
         limit = response.headers.get("x-uw-token-req-limit", "")
         if count.isdecimal() and limit.isdecimal() and int(count) >= int(limit):
-            return TapeDownloadError("quota_daily", day, f"{tag} daily {count} of {limit}")
-        return _RetryableError("transient", tag, _retry_after(response))
+            detail = f"{tag} daily {count} of {limit}"
+            return TapeDownloadError("quota_daily", day, detail, origin=where)
+        return _RetryableError("transient", tag, _retry_after(response), origin=where)
     if status >= 500:
-        return _RetryableError("transient", tag)
-    return TapeDownloadError("unexpected", day, tag)
+        return _RetryableError("transient", tag, origin=where)
+    return TapeDownloadError("unexpected", day, tag, origin=where)
 
 
 def _retry_after(response: httpx.Response) -> float | None:

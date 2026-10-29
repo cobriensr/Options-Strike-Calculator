@@ -54,6 +54,7 @@ DayStatus = Literal[
 _TRAILING_DAYS = 20
 _SKIPPED_DISK = "free disk below the minimum"
 _SKIPPED_DEADLINE = "run deadline passed"
+_DISK_CHECK_FAILED = "disk check failed"
 _SRC_DIR = Path(__file__).resolve().parent
 
 
@@ -85,20 +86,30 @@ def plan_days(
 
 
 def rewritten_days(
-    landed: Mapping[date, Mapping[str, str]], api_key: str, last_session: date
+    landed: Mapping[date, Mapping[str, str]],
+    api_key: str,
+    last_session: date,
+    *,
+    deadline: float,
 ) -> list[date]:
-    """Of the newest REWRITE_RECHECK_DAYS landed days (up to `last_session`) that carry
-    a `source-etag`, those whose upstream ETag has since changed, newest first.
+    """Days among the newest REWRITE_RECHECK_DAYS landed days (up to `last_session`)
+    whose upstream ETag has changed since they landed, newest first.
 
-    A day whose probe fails or returns no ETag can't be compared, so it is skipped
-    with a warning log; the next run checks it again.
+    Only the days in that window that carry a non-empty `source-etag` are probed;
+    the window never reaches further back for more. A day whose probe fails or
+    returns no ETag can't be compared, so it is skipped with a warning log and
+    checked again next run. Once the run's `deadline` (a `monotonic` time) passes,
+    the remaining days are not probed.
     """
-    etagged = sorted(
-        (d for d, meta in landed.items() if d <= last_session and meta.get("source-etag")),
-        reverse=True,
-    )[:REWRITE_RECHECK_DAYS]
+    window = sorted((d for d in landed if d <= last_session), reverse=True)
+    etagged = [d for d in window[:REWRITE_RECHECK_DAYS] if landed[d].get("source-etag")]
     changed: list[date] = []
-    for day in etagged:
+    for i, day in enumerate(etagged):
+        if monotonic() >= deadline:
+            log.warning(
+                "rewrite check: run deadline passed; %d day(s) not probed", len(etagged) - i
+            )
+            break
         try:
             etag = probe_source(day, api_key).etag
         except Exception as exc:
@@ -124,9 +135,14 @@ def land_day(
 
     With `relanding_etag` (the landed object's source ETag), the current object is
     first copied aside with `supersede`; if that fails, nothing is downloaded or put.
-    A not-posted day at least UNAVAILABLE_AGE_TRADING_DAYS sessions before
-    `last_session`, or one outside UW's window, is marked unavailable, except on a
-    re-land, which never marks a landed day.
+
+    A day is marked unavailable, permanently, only on UW's own evidence, and never
+    on a re-land:
+    - `outside_window` whose parsed `earliest` is after the day. With no boundary, or
+      a day on or after it, the day is `failed` and retried next night.
+    - `not_posted` from GCS (UW redirected; no object) at least
+      UNAVAILABLE_AGE_TRADING_DAYS sessions before `last_session`. An old one from UW
+      itself is `failed`; a recent one is `not_posted` whatever its origin.
     """
     work = WORK_DIR / day.isoformat()
     try:
@@ -146,19 +162,27 @@ def run_tape(settings: Settings, now_utc: datetime) -> list[DayOutcome]:
     """Land the planned days, then re-land rewritten ones; one outcome per day.
 
     Before each day it checks the run deadline and free disk in WORK_DIR. Failing
-    either marks that day and every later one skipped. The deadline is only checked
-    between days, so one slow day can overrun it by its own duration.
+    either, or the disk check itself failing, marks that day and every later one
+    skipped. The deadline is only checked between days (and between rewrite probes),
+    so one slow day can overrun it by its own duration.
 
-    An error listing R2 at the start propagates: with no listing, no day can be
-    planned, so there is no per-day outcome to report it in.
+    It raises, with no outcomes, only before the first day:
+    - ValueError for a naive `now_utc`, and CalendarExhausted when the NYSE holiday
+      table doesn't cover a needed year;
+    - an OSError setting up WORK_DIR (scanning it for stale day dirs, or mkdir);
+    - any R2 error listing the landed or unavailable days, since with no listing no
+      day can be planned.
+    Once days start, every failure is a day's outcome.
     """
     deadline = monotonic() + RUN_DEADLINE_SECONDS
     last_session = last_completed_session(now_utc)
+    _clear_stale_work_dirs()
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
     api_key = settings.uw_api_key.get_secret_value()
     store = R2Store(settings)
     landed = store.landed()
     planned = plan_days(set(landed), store.unavailable(), last_session)
-    relands = rewritten_days(landed, api_key, last_session)
+    relands = rewritten_days(landed, api_key, last_session, deadline=deadline)
     queue: list[tuple[date, str | None]] = [(d, None) for d in planned]
     queue += [(d, landed[d]["source-etag"]) for d in relands]
     log.info(
@@ -167,7 +191,6 @@ def run_tape(settings: Settings, now_utc: datetime) -> list[DayOutcome]:
         len(planned),
         len(relands),
     )
-    WORK_DIR.mkdir(parents=True, exist_ok=True)
 
     outcomes: list[DayOutcome] = []
     for i, (day, relanding_etag) in enumerate(queue):
@@ -221,9 +244,14 @@ def _land(
     out_path = work / f"{day.isoformat()}-fulltape.parquet"
     source = download_tape(day, zip_path, api_key)
     ingested_at = datetime.now(UTC)
-    result = convert_zip(zip_path, out_path, day, ingested_at)
+    # By keyword: two Paths, and two timestamps beside the rows, would swap silently.
+    result = convert_zip(zip_path=zip_path, out_path=out_path, session=day, ingested_at=ingested_at)
     warnings = plausibility_warnings(
-        result.rows, trailing_rows, result.min_executed_at, result.max_executed_at, day
+        rows=result.rows,
+        trailing_rows=trailing_rows,
+        min_executed_at=result.min_executed_at,
+        max_executed_at=result.max_executed_at,
+        session=day,
     )
     store.put_tape(out_path, day, _metadata(result, source, ingested_at))
     return DayOutcome(
@@ -245,14 +273,27 @@ def _download_failed(
     log.warning("tape %s download: %s (%s)", day, exc.kind, exc.detail)
     if relanding_etag is not None:
         return DayOutcome(day, "failed", exc.kind)
-    sessions_since = sum(1 for d in trading_days(day, last_session) if d > day)
-    old = sessions_since >= UNAVAILABLE_AGE_TRADING_DAYS
-    if exc.kind == "outside_window" or (exc.kind == "not_posted" and old):
-        store.mark_unavailable(day, f"{exc.kind}: {exc.detail}")
-        return DayOutcome(day, "unavailable", exc.kind)
+    if exc.kind == "outside_window":
+        # Only UW's own boundary proves the day is gone. Anything else may be one odd
+        # night, and a marker would stop ingestion while the job reported green.
+        if exc.earliest is not None and day < exc.earliest:
+            return _mark_unavailable(day, exc, store)
+        return DayOutcome(day, "failed", exc.kind)
     if exc.kind == "not_posted":
-        return DayOutcome(day, "not_posted", exc.kind)
+        sessions_since = sum(1 for d in trading_days(day, last_session) if d > day)
+        if sessions_since < UNAVAILABLE_AGE_TRADING_DAYS:
+            return DayOutcome(day, "not_posted", exc.kind)
+        # Documented as UW redirecting to GCS, which has no object. A 404 from UW's
+        # own API isn't that evidence, so it stays loud and is retried.
+        if exc.origin == "gcs":
+            return _mark_unavailable(day, exc, store)
+        return DayOutcome(day, "failed", f"not_posted {exc.origin or 'unknown'}")
     return DayOutcome(day, "failed", exc.kind)
+
+
+def _mark_unavailable(day: date, exc: TapeDownloadError, store: R2Store) -> DayOutcome:
+    store.mark_unavailable(day, f"{exc.kind}: {exc.detail}")
+    return DayOutcome(day, "unavailable", exc.kind)
 
 
 def _metadata(result: ConvertResult, source: SourceInfo, ingested_at: datetime) -> dict[str, str]:
@@ -281,11 +322,45 @@ def _trailing_rows(landed: Mapping[date, Mapping[str, str]], day: date) -> list[
 def _skip_status(deadline: float) -> tuple[DayStatus, str] | None:
     if monotonic() >= deadline:
         return "skipped_deadline", _SKIPPED_DEADLINE
-    free = disk_usage(WORK_DIR).free
+    try:
+        free = disk_usage(WORK_DIR).free
+    except OSError as exc:
+        log.warning("tape run: disk check failed (%s)", type(exc).__name__)
+        return "skipped_disk", _DISK_CHECK_FAILED
     if free < MIN_FREE_DISK_BYTES:
         log.warning("tape run: %d bytes free, need %d", free, MIN_FREE_DISK_BYTES)
         return "skipped_disk", _SKIPPED_DISK
     return None
+
+
+def _clear_stale_work_dirs() -> None:
+    """Remove the day dirs a hard-killed run left in WORK_DIR, best effort.
+
+    Only directories named exactly as `date.isoformat()` writes them are touched,
+    never anything else. Whatever can't be removed is left for the disk check.
+    """
+    if not WORK_DIR.is_dir():
+        return
+    stale = [path for path in WORK_DIR.iterdir() if _is_day_dir(path)]
+    for path in stale:
+        rmtree(path, ignore_errors=True)
+    if stale:
+        left = sum(1 for path in stale if path.exists())
+        log.warning(
+            "tape run: removed %d stale day dir(s) from WORK_DIR; %d could not be removed",
+            len(stale) - left,
+            left,
+        )
+
+
+def _is_day_dir(path: Path) -> bool:
+    if path.is_symlink() or path.is_junction() or not path.is_dir():
+        return False
+    try:
+        # fromisoformat also takes 20261028 and 2026-W44-3; only the canonical form counts.
+        return date.fromisoformat(path.name).isoformat() == path.name
+    except ValueError:
+        return False
 
 
 def _remove(work: Path) -> str | None:
