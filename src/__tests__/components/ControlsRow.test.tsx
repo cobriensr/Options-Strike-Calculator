@@ -55,7 +55,7 @@ describe('ControlsRow', () => {
     expect(row).toContainElement(screen.getByRole('button', { name: 'Two' }));
     for (const edge of ['left', 'right'] as const) {
       expect(fade(edge)).toHaveAttribute('aria-hidden', 'true');
-      expect(fade(edge)).toHaveClass('pointer-events-none', 'xl:hidden');
+      expect(fade(edge)).toHaveClass('pointer-events-none');
     }
     // Nothing to scroll in jsdom's zero-size layout.
     expectFades(fade, false, false);

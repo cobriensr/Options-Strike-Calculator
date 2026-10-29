@@ -19,19 +19,19 @@
  *     (`usePublishedHeaderHeight`). The SectionNav strip (below lg) and
  *     sidebar stick right under it, and the section anchors' scroll
  *     margin (`--anchor-offset` in index.css) clears header + strip.
- *   - Below xl (1280px) the header stays one control row tall (62px on a
- *     phone, 69px from sm), so the sticky header + strip take little of a
- *     small screen, and the owner's full row can't squeeze the header to
- *     105px or push controls off the page at 1024. Instead of wrapping,
- *     the controls row (`ControlsRow`) scrolls sideways like the strip,
- *     with edge fades when there is more to scroll, and its items keep
- *     their natural width. The order is the owner's, and it is the DOM
- *     order, so focus follows what you see: the view toggle, the status
- *     pills (short on a phone: BT, NO ID), the Schwab login warning, then
- *     the tools (Access Key first), which scroll. At 320px the toggle and
- *     both short pills fit. From sm the title keeps one line too. Those
- *     rules all use `max-xl:` variants, so at xl and up the row is laid
- *     out as a plain flex row.
+ *   - The header stays one control row tall (62px on a phone, 69px from
+ *     sm, up to 90px from xl where the title may wrap), so the sticky
+ *     header + strip take little of a small screen, and the owner's full
+ *     row can't grow the header to 105px or push controls off the page.
+ *     Instead of wrapping, the controls row (`ControlsRow`) scrolls
+ *     sideways at every width when its controls don't fit, with edge
+ *     fades when there is more to scroll. Below xl its items keep their
+ *     natural width; from xl they first squeeze. The order is the
+ *     owner's, and it is the DOM order, so focus follows what you see:
+ *     the view toggle, the status pills (short on a phone: BT, NO ID), the
+ *     Schwab login warning, then the tools (Access Key first). At 320px
+ *     the toggle and both short pills fit. From sm to xl the title keeps
+ *     one line.
  *   - The hidden file input for VIX CSV uploads must stay co-located
  *     with the visible button so `useRef` can drive `.click()`.
  *
@@ -116,9 +116,9 @@ export interface AppHeaderProps {
  * SectionNav (strip and sidebar) sits at that offset, and the section
  * anchors' scroll margin (`--anchor-offset`) builds on it. index.css holds
  * the measured defaults (62px on a phone, 69px from sm); this keeps the
- * value exact when the header grows, e.g. to 90-105px at 1280 in owner
- * mode with the Schwab countdown, where the controls squeeze and the
- * title wraps.
+ * value exact when the header grows, e.g. to 90px at 1280 in owner mode
+ * with the Schwab countdown, where the controls squeeze and the title
+ * wraps.
  */
 function usePublishedHeaderHeight() {
   const headerRef = useRef<HTMLElement>(null);

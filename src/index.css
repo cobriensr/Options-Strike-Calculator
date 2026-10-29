@@ -106,8 +106,8 @@
 
   /* Sticky stack. --app-header-h is the sticky AppHeader's height: 62px
      on a phone (title on two lines), 69px from sm, measured. AppHeader
-     writes the live value on <html> whenever it resizes (e.g. 90-105px
-     at 1280 in owner mode with the Schwab countdown, where the controls
+     writes the live value on <html> whenever it resizes (e.g. 90px at
+     1280 in owner mode with the Schwab countdown, where the controls
      squeeze and the title wraps). The SectionNav strip (below lg, 53px)
      and sidebar stick right under it, and a section anchor's scroll
      margin clears both. */

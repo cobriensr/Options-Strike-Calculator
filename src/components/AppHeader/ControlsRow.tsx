@@ -1,25 +1,30 @@
 /**
  * ControlsRow — the header's row of view, status and tool controls.
  *
- * Below xl (1280px) the row scrolls sideways (the header must stay one
- * control row tall; see AppHeader's notes), and fades at its edges show
- * when there is more to scroll that way, like the SectionNav strip under
- * it. That reaches up to 1279px because the owner's full row (backtest
- * pills, Schwab countdown, admin tools) doesn't fit at 1024: squeezed, it
- * wrapped the header to 105px and pushed controls off the page. At xl and
- * up the wrapper's box is dropped (`contents`), the fades are hidden, and
- * the row is laid out as a plain flex row, exactly as before.
+ * At every width the row scrolls sideways when its controls don't fit
+ * (the header must stay one control row tall; see AppHeader's notes), and
+ * fades at its edges show when there is more to scroll that way, like
+ * the SectionNav strip under it. The owner's full row (backtest pills,
+ * Schwab countdown, admin tools) doesn't fit even at 1280-1440 in the
+ * alerts view: squeezed, it ran past the header's edge and grew the
+ * header to 105px. Below xl the controls keep their natural width; from
+ * xl they first squeeze, as before, and only scroll when that isn't
+ * enough.
  *
- * Layout below xl:
+ * Layout:
  *
  *   - The wrapper is the bar's flex item. `min-w-0` lets it shrink below
  *     its content; it is positioned, so the fades sit on the row's edges
  *     and don't scroll with it.
- *   - The row's padding keeps a focus ring in view at either end (the
- *     wrapper's negative margins cancel the top, bottom and right
- *     padding; the left padding is the gap after the title). The scroll
- *     padding and `scrollTabbedControlIntoView` do the same for a control
- *     tabbed to part-way off the edge.
+ *   - The row's padding keeps a focus ring in view at either end. The
+ *     wrapper's negative margins cancel the top, bottom and right padding.
+ *     Below xl the left padding is the gap after the title; from xl the
+ *     wrapper's negative left margin cancels it too, so the row gets the
+ *     same room as the old plain row and the padding lies over the
+ *     title's slack (two breakpoint classes: this and the children's
+ *     `max-xl:shrink-0`). The scroll padding and
+ *     `scrollTabbedControlIntoView` do the same for a control tabbed to
+ *     part-way off the edge.
  *   - The row is `relative`, so it is the containing block for its
  *     absolutely positioned descendants, such as the visually hidden
  *     (sr-only) text in the Schwab badge, and clips them. Without it they
@@ -43,7 +48,7 @@ import {
  * pointer focus would move the control out from under the pointer and
  * lose the click. React key events bubble through portals, so a dialog
  * opened from the row is skipped. A no-op wherever the whole row is on
- * screen (always at xl and up).
+ * screen.
  */
 function scrollTabbedControlIntoView(e: KeyboardEvent<HTMLElement>) {
   if (e.key !== 'Tab') return;
@@ -94,7 +99,7 @@ function useScrollableEdges(rowRef: RefObject<HTMLElement | null>) {
 }
 
 const FADE_CLASS =
-  'pointer-events-none absolute inset-y-0 w-6 transition-opacity duration-150 xl:hidden';
+  'pointer-events-none absolute inset-y-0 w-6 transition-opacity duration-150';
 
 export default function ControlsRow({
   children,
@@ -103,11 +108,11 @@ export default function ControlsRow({
   const { canScrollLeft, canScrollRight } = useScrollableEdges(rowRef);
 
   return (
-    <div className="max-xl:relative max-xl:-my-1.5 max-xl:-mr-1.5 max-xl:min-w-0 xl:contents">
+    <div className="relative -my-1.5 -mr-1.5 min-w-0 xl:-ml-1.5">
       <div
         ref={rowRef}
         onKeyUp={scrollTabbedControlIntoView}
-        className="scrollbar-hide flex items-center gap-1.5 max-xl:relative max-xl:scroll-px-1.5 max-xl:overflow-x-auto max-xl:p-1.5 max-xl:*:shrink-0 sm:gap-2"
+        className="scrollbar-hide relative flex scroll-px-1.5 items-center gap-1.5 overflow-x-auto p-1.5 max-xl:*:shrink-0 sm:gap-2"
       >
         {children}
       </div>

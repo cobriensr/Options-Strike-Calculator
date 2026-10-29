@@ -9,11 +9,12 @@ import { dateTimeSection, openSection } from './helpers/calculator';
  *
  * The dev server runs in owner mode, and a past trading day adds the
  * BACKTEST + NO INTRADAY pills (/api is aborted), so the header carries
- * its fullest controls row. Below xl that row scrolls sideways and the
- * header keeps its 62/69px CSS default. The one case that grows it: at
- * 1280 the row squeezes, and with the Schwab countdown the title wraps and
- * the header is 90px, so only the published height keeps the nav and the
- * anchors clear of it (the "taller than its CSS default" test).
+ * its fullest controls row. That row scrolls sideways at every width when
+ * it doesn't fit. Below xl the header keeps its 62/69px CSS default. From
+ * 1280, in owner mode with the Schwab countdown, the controls squeeze, the
+ * title wraps and the header is 90px, so only the published height keeps
+ * the nav and the anchors clear of it (the "taller than its CSS default"
+ * test).
  */
 
 /** The owner's Schwab login runs out in 3 hours: the amber countdown shows. */
@@ -145,9 +146,11 @@ test.describe('Sticky header and section nav', () => {
 });
 
 // The owner's fullest header row: backtest pills, the Schwab countdown with
-// its Re-auth link, and the admin tools. Below xl the row scrolls sideways;
-// it used to squeeze at 1024, wrapping the header to 105px and pushing
-// controls off the page (1085px wide) or, in the alerts view, out of reach.
+// its Re-auth link, and the admin tools. The row scrolls sideways at every
+// width when it doesn't fit. It used to squeeze instead: at 1024 that
+// wrapped the header to 105px and pushed controls off the page (1085px
+// wide) or, in the alerts view, out of reach; at 1280-1440 in the alerts
+// view it ran 38px past the header's content edge.
 test.describe('Desktop header with the owner row', () => {
   test.beforeEach(async ({ page }) => {
     await page.route('**/api/**', (route) => route.abort());
@@ -206,19 +209,73 @@ test.describe('Desktop header with the owner row', () => {
     });
   }
 
-  test('at 1280 the header row is a plain row, as before: no scrolling, no fades', async ({
-    page,
-  }) => {
-    const header = await openFullRow(page, 1280, 'calculator');
-    const row = header
+  /** The header bar's content edge: its right side minus its padding. */
+  async function barContentRight(header: ReturnType<Page['getByRole']>) {
+    return header.locator(':scope > div').evaluate((bar) => {
+      const style = getComputedStyle(bar);
+      return (
+        bar.getBoundingClientRect().right -
+        Number.parseFloat(style.paddingRight)
+      );
+    });
+  }
+
+  function controlsRow(header: ReturnType<Page['getByRole']>) {
+    return header
       .getByRole('navigation', { name: 'Application view' })
       .locator('..');
-    await expect(row).toHaveCSS('overflow-x', 'visible');
-    await expect(header.getByTestId('controls-fade-right')).toBeHidden();
-    const { scrollWidth, innerWidth } = await pageWidth(page);
-    expect(scrollWidth).toBeLessThanOrEqual(innerWidth);
-    await expect(
-      header.getByRole('button', { name: 'Switch to light mode' }),
-    ).toBeInViewport({ ratio: 1 });
-  });
+  }
+
+  /**
+   * Scrolled to its end, the row's last control is fully in view and stops
+   * at the bar's content edge, not past it.
+   */
+  async function expectRowEndsAtBarEdge(header: ReturnType<Page['getByRole']>) {
+    await controlsRow(header).evaluate((el) => {
+      el.scrollLeft = el.scrollWidth;
+    });
+    const last = header.getByRole('button', { name: 'Switch to light mode' });
+    await expect(last).toBeInViewport({ ratio: 1 });
+    const box = await last.boundingBox();
+    expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(
+      (await barContentRight(header)) + 0.5,
+    );
+  }
+
+  for (const width of [1280, 1440]) {
+    test(`at ${width} the calculator row fits: no scroll, no fade, one row`, async ({
+      page,
+    }) => {
+      const header = await openFullRow(page, width, 'calculator');
+      expect((await header.boundingBox())?.height).toBeLessThan(100);
+      const { scrollWidth, innerWidth } = await pageWidth(page);
+      expect(scrollWidth).toBeLessThanOrEqual(innerWidth);
+      await expect(header.getByTestId('controls-fade-right')).toHaveCSS(
+        'opacity',
+        '0',
+      );
+      const row = await controlsRow(header).evaluate((el) => ({
+        scrollWidth: el.scrollWidth,
+        clientWidth: el.clientWidth,
+      }));
+      expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth);
+      await expectRowEndsAtBarEdge(header);
+    });
+  }
+
+  for (const width of [1280, 1440]) {
+    test(`at ${width} the alerts row scrolls within the header instead of running past it`, async ({
+      page,
+    }) => {
+      const header = await openFullRow(page, width, 'alerts');
+      expect((await header.boundingBox())?.height).toBeLessThan(100);
+      const { scrollWidth, innerWidth } = await pageWidth(page);
+      expect(scrollWidth).toBeLessThanOrEqual(innerWidth);
+      // More to the right: the fade says so
+      const fade = header.getByTestId('controls-fade-right');
+      await expect(fade).toBeVisible();
+      await expect(fade).toHaveCSS('opacity', '1');
+      await expectRowEndsAtBarEdge(header);
+    });
+  }
 });
