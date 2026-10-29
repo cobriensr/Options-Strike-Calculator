@@ -74,6 +74,9 @@ interface AlertFixture {
   inserted_at: string;
   fire_time_cum_ncp?: string | null;
   fire_time_cum_npp?: string | null;
+  anchor_leg_kind?: string | null;
+  spread_shape?: string | null;
+  spread_legs?: unknown[] | null;
 }
 
 function makeAlert(overrides: Partial<AlertFixture> = {}): AlertFixture {
@@ -1490,5 +1493,93 @@ describe('silent-boom-feed handler', () => {
     ).alerts[0];
     expect(alert?.suspiciousCluster).toBe(false);
     expect(alert?.clusterStrikeCount).toBe(0);
+  });
+});
+
+// Spec 2026-10-28-classifier-replacement-design.md ("Badge"): the feed
+// exposes whether the trigger print was a spread leg. One row per alert, so
+// the migration-#197 columns map straight across.
+describe('silent-boom-feed handler: trigger-print leg kind', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  const LEGS = [
+    {
+      optionType: 'P',
+      strike: 135,
+      expiry: '2026-05-07',
+      size: 40,
+      price: 1.15,
+      tradeCode: 'mlet',
+    },
+    {
+      optionType: 'P',
+      strike: 140,
+      expiry: '2026-05-07',
+      size: 40,
+      price: 2.1,
+      tradeCode: null,
+    },
+  ];
+
+  async function feedFor(row: Partial<AlertFixture>) {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([makeAlert(row)])
+      .mockResolvedValueOnce([]); // cluster-candidate query
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-05-07' } }),
+      res,
+    );
+    return (
+      res._json as {
+        alerts: {
+          anchorLegKind: unknown;
+          spreadShape: unknown;
+          spreadLegs: unknown;
+        }[];
+      }
+    ).alerts[0]!;
+  }
+
+  it('returns the kind, shape and legs of a spread-leg trigger print', async () => {
+    const alert = await feedFor({
+      anchor_leg_kind: 'multi_leg',
+      spread_shape: 'vertical',
+      spread_legs: LEGS,
+    });
+    expect(alert.anchorLegKind).toBe('multi_leg');
+    expect(alert.spreadShape).toBe('vertical');
+    expect(alert.spreadLegs).toEqual(LEGS);
+  });
+
+  it('returns a stock-tied kind with no shape or legs', async () => {
+    const alert = await feedFor({
+      anchor_leg_kind: 'stock_tied',
+      spread_shape: null,
+      spread_legs: null,
+    });
+    expect(alert.anchorLegKind).toBe('stock_tied');
+    expect(alert.spreadShape).toBeNull();
+    expect(alert.spreadLegs).toBeNull();
+  });
+
+  it('returns nulls for a row from before migration #197 (columns absent)', async () => {
+    const alert = await feedFor({});
+    expect(alert.anchorLegKind).toBeNull();
+    expect(alert.spreadShape).toBeNull();
+    expect(alert.spreadLegs).toBeNull();
+  });
+
+  it('returns nulls for a row with an unlabelled anchor', async () => {
+    const alert = await feedFor({
+      anchor_leg_kind: null,
+      spread_shape: null,
+      spread_legs: null,
+    });
+    expect(alert.anchorLegKind).toBeNull();
+    expect(alert.spreadLegs).toBeNull();
   });
 });

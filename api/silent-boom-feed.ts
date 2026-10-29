@@ -25,6 +25,11 @@ import { silentBoomScoreTier } from './_lib/silent-boom-score.js';
 import { TAKEIT_GATE_EXEMPT_MIN_PROB } from './_lib/takeit-score.js';
 import { MIN_ALERT_ENTRY_PRICE } from './_lib/constants.js';
 import { getETDateStr } from '../src/utils/timezone.js';
+import type {
+  AnchorLegKind,
+  SpreadLeg,
+  SpreadShape,
+} from '../src/types/spread-legs.js';
 import {
   computeSuspiciousClusters,
   clusterKey,
@@ -79,6 +84,13 @@ interface AlertRow {
   spx_spot_gamma_oi: DbNullableNumeric;
   underlying_price_at_spike: DbNullableNumeric;
   multi_leg_share: DbNullableNumeric;
+  // Exchange multi-leg flag on the trigger print (migration #197, spec
+  // 2026-10-28-classifier-replacement-design.md). Absent or NULL on alerts
+  // from before #197; spread_shape / spread_legs are non-NULL only for
+  // multi_leg, and spread_legs holds camelCase SpreadLegs, anchor first.
+  anchor_leg_kind?: AnchorLegKind | null;
+  spread_shape?: SpreadShape | null;
+  spread_legs?: SpreadLeg[] | null;
   /** Migration #154 / spec round-trip-score-deduct-production-2026-05-16.md.
    *  See lottery-finder.ts for the bracket semantics — same brackets apply
    *  here. NULL until the evaluate-round-trip cron has run for the alert. */
@@ -177,6 +189,12 @@ interface SilentBoomAlertResponse {
    * written before #146.
    */
   multiLegShare: number | null;
+  /** Exchange leg kind of the trigger print; null when unlabelled. */
+  anchorLegKind: AnchorLegKind | null;
+  /** Structure of the order, non-null only for `multi_leg`. */
+  spreadShape: SpreadShape | null;
+  /** Legs of that order, anchor first; non-null only for `multi_leg`. */
+  spreadLegs: SpreadLeg[] | null;
   /**
    * Ticker-level cumulative net call premium at bucket_ct, snapshotted
    * by the silent-boom-feed LATERAL join against
@@ -644,6 +662,9 @@ export default async function handler(
         spxSpotGammaOi: toNumOrNull(r.spx_spot_gamma_oi),
         underlyingPriceAtSpike: toNumOrNull(r.underlying_price_at_spike),
         multiLegShare: toNumOrNull(r.multi_leg_share),
+        anchorLegKind: r.anchor_leg_kind ?? null,
+        spreadShape: r.spread_shape ?? null,
+        spreadLegs: r.spread_legs ?? null,
         // Ticker-level flow snapshot at bucket_ct. Distinct from
         // mktTideDiff (which is SPY-wide market tide) — these are the
         // cumulative NCP / NPP for THIS ticker through the alert.
