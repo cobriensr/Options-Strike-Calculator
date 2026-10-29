@@ -152,12 +152,12 @@ If you're unsure whether a change needs a test: it does. The cost of writing one
 
 **1. Implement** — Write the failing test first (see "Tests Are Mandatory" above), then the code. Investigate first, understand existing patterns, then make changes.
 
-**2. Verify** — Run `npm run review` (which chains `npm run type-check` (tsc for src, api and scripts) `&& eslint . && prettier --write && vite build && node scripts/check-build-output.mjs && vitest run --coverage && node scripts/check-coverage-floor.mjs`). **NEVER report a task as finished without running this full pipeline first.** Running tests on the files you touched is not enough — type errors and lint violations from your changes regularly surface in unrelated files (transitive type narrowing, prettier reformatting, etc.). Fix any failures. If it still fails after 2 fix attempts, proceed to step 3 with the failure details.
+**2. Verify** — Run `npm run review` (which chains `node scripts/review-gate.mjs clear && npm run type-check` (tsc for src, api and scripts) `&& eslint . && prettier --write && vite build && node scripts/check-build-output.mjs && vitest run --coverage && node scripts/check-coverage-floor.mjs && node scripts/review-gate.mjs seal`). **NEVER report a task as finished without running this full pipeline first.** Running tests on the files you touched is not enough — type errors and lint violations from your changes regularly surface in unrelated files (transitive type narrowing, prettier reformatting, etc.). Fix any failures. If it still fails after 2 fix attempts, proceed to step 3 with the failure details.
 
 **Commit gate:** Claude's commits are gated. `.githooks/pre-commit` blocks a commit whose staged files differ from what the last passing `npm run review` sealed, and names them. The fix is to re-run `npm run review` and commit again. Design: `docs/superpowers/specs/commit-gate-2026-10-28.md`.
 
 - One-time setup per clone: `git config core.hooksPath .githooks`.
-- `--no-verify` skips the gate. Ask the owner before using it.
+- A Claude hook denies `--no-verify`. The owner makes any unreviewed commit from their own terminal, which isn't gated.
 
 **3. Self-Review** — Launch a **reviewer subagent** to evaluate the implementation with fresh eyes. The subagent must:
 

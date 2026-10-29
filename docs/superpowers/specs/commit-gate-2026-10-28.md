@@ -10,11 +10,17 @@ Claude can't commit content that the last passing `npm run review` didn't see. T
   - Local `main` had diverged, with another session's unpushed commits, so it wasn't cherry-picked there.
   - `npm run review` passed on that commit, and the gate sealed its first marker.
   - The 2026-10-28 review runs failed only on prune-worktrees fixture timeouts under load from other sessions. `b2a57b7c` (another session) fixed those upstream with a shared 600s `FIXTURE_TIMEOUT`, so this stream's own timeout commit was dropped.
-- **Step 2: not started.** The owner decides before `core.hooksPath` is set.
+- **Step 2: shipped** 2026-10-29 during market hours (owner's call). `core.hooksPath` is set to `.githooks`, and the CLAUDE.md note and `.gitattributes` line went out as `eaa89513`.
+  - Local changes: `.claude/hooks/no-verify-guard.sh`, its `settings.json` entry and two `commit` skill lines. They're recorded in the local `.claude/` history as `087181c`.
+  - Live probes:
+    - **Pass:** `eaa89513` was committed through the active hook after a passing review.
+    - **Block:** an unreviewed CLAUDE.md edit was refused with "commit blocked. These staged files changed after the last passing `npm run review`: CLAUDE.md".
+    - **`--no-verify` guard:** at first it answered "ask", and a live `git commit --dry-run --no-verify` in an auto-mode session ran without a prompt, because auto mode settled the ask itself. ★ The owner switched it to "deny". The same live command was then refused with the guard's reason.
+  - Local `main` isn't gated until it contains `.githooks/`. It had diverged from `origin/main`, with another session's unpushed commits, when the gate went on.
 
 ### Found during step 1 (for step 2 and follow-ups)
 
-- **Pathspec commits drop `+x` on Windows.** `git commit -- <paths>` builds its tree from the working-tree file. `core.fileMode` is false on Windows, so a new file staged as 100755 was committed as 100644. Commit new executable files with a plain `git commit` from the index, and check with `git ls-tree HEAD <file>`. The `commit` skill should say so.
+- **Pathspec commits drop `+x` on Windows.** `git commit -- <paths>` builds its tree from the working-tree file. `core.fileMode` is false on Windows, so a new file staged as 100755 was committed as 100644. Commit new executable files with a plain `git commit` from the index, and check with `git ls-tree HEAD <file>`. The `commit` skill says so as of step 2.
 - **Review contention:** once the gate is on, every Claude commit needs a full review. 3–4 sessions running coverage suites at once kept 16 cores at 88–100% on 2026-10-28, and a single review took 10–12 minutes. Option: a machine-wide lock so only one review's vitest runs at a time and the others queue.
 - **Follow-up (duplication):** `review-gate.test.mjs` copies about 40 lines of temp-repo fixtures from `prune-worktrees.fixtures.mjs`, and `review-gate.mjs` copies the `GitError`/`spawnSync` runner from `prune-worktrees.mjs`. Move them into shared `scratch-git.fixtures.mjs` and `git-run.mjs`.
 - **Follow-up (runtime):** the gate's test file takes 35s alone and up to 6 minutes under load, because each hook test spawns sh, node and git one after another. Split it into 2–3 files so vitest runs them on separate workers.
@@ -45,14 +51,15 @@ Owner decisions from 2026-10-28 are marked ★.
 - **No exemptions.** The `commit` skill says review runs before every commit, docs included.
 - **Fails closed:** any error in `check` exits non-zero, so the commit fails with the error. Examples: bad marker JSON, a git failure.
 - **Claude-side `--no-verify` guard:** a PreToolUse `Bash|PowerShell` hook, `.claude/hooks/no-verify-guard.sh`.
-  - Bash-only fast exit unless the payload contains `no-verify`.
-  - Then a static `permissionDecision: "ask"`, the same shape as env-guard, with `onFailure: "block"`.
+  - Bash-only fast exit unless the payload contains `--no-verify`. The match isn't bare `no-verify`, because the hook's own file name contains that.
+  - ★ Then a static `permissionDecision: "deny"` (owner, 2026-10-29), with `onFailure: "block"` in settings. "Ask" was dropped because auto mode settles an ask without a prompt. The gate covers Claude only, so the owner makes any unreviewed commit from their own terminal.
 
 ## Accepted gaps
 
 The gate catches forgetting, not deliberate circumvention.
 
-- `git commit -n` (the short form of `--no-verify`), `git -c core.hooksPath=… commit`.
+- `git commit -n` (the short form of `--no-verify`), abbreviated long forms git also accepts (`--no-verif`, `--no-veri`), and `git -c core.hooksPath=… commit`.
+- Any shell command whose text contains `--no-verify` is denied, including a commit message or a search that quotes it. Leave the literal flag out of commit messages, and build it from pieces in a search.
 - Hand-editing `.githooks/pre-commit` or the marker, or setting `npm_lifecycle_event` by hand.
 - A per-file commit of a subset that doesn't build on its own. CI after push is the backstop.
 - A file changed while `npm run review` is running is sealed with its post-run content.
