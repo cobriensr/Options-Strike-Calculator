@@ -98,14 +98,31 @@ vi.mock('../_lib/uw-stock-candles.js', async (importOriginal) => {
   };
 });
 
-// Phase 2 multileg classifier — fail-open by design. Default to null so
-// the four migration #160 columns (inferred_structure, is_isolated_leg,
-// match_confidence, pattern_group_id) bind as null on the INSERT. Tests
-// that exercise the populated path override per-case via mockResolvedValue.
-const mockClassifyAlertMultileg = vi.hoisted(() => vi.fn());
+// The lottery cron no longer calls the multileg classifier (removed
+// 2026-10-29: its serial per-fire calls timed the cron out at busy ticks).
+// Both layers of the classifier boundary stay mocked so the tests below
+// can assert neither is reached: the per-alert helper and the HTTP client.
+const { mockClassifyAlertMultileg, mockClassifyMultilegBatch } = vi.hoisted(
+  () => ({
+    mockClassifyAlertMultileg: vi.fn(),
+    mockClassifyMultilegBatch: vi.fn(),
+  }),
+);
 vi.mock('../_lib/multileg-classify-batch.js', () => ({
   classifyAlertMultileg: mockClassifyAlertMultileg,
 }));
+vi.mock('../_lib/multileg-client.js', () => ({
+  classifyMultilegBatch: mockClassifyMultilegBatch,
+}));
+
+// The migration #160 columns the classifier used to fill. The cron no
+// longer writes them; they stay NULL on new rows.
+const OLD_MULTILEG_COLUMNS = [
+  'inferred_structure',
+  'is_isolated_leg',
+  'match_confidence',
+  'pattern_group_id',
+] as const;
 
 // Take-It scoring is fail-open by design. Tests mock loadTakeitDetectContext
 // to resolve null (set in beforeEach) so no Blob fetch happens — the cron
@@ -322,9 +339,6 @@ describe('detect-lottery-fires handler', () => {
     // and the score bonus is not applied. Tests that care about range
     // behavior override this per-case.
     mockFetchStockCandles1m.mockResolvedValue([]);
-    // Default: classifier returns null — INSERT binds the four multileg
-    // columns as null. Tests that exercise the populated path override.
-    mockClassifyAlertMultileg.mockResolvedValue(null);
     // Default: pass-through ticker mapping (lookup fires even on tickers
     // outside GexBot universe); lookup returns null so the gex_* binds
     // resolve to NULL. Tests that exercise the populated path override.
@@ -541,12 +555,6 @@ describe('detect-lottery-fires handler', () => {
     expect(binds.get('takeit_prob')).toBeNull();
     expect(binds.get('takeit_model_version')).toBeNull();
     expect(binds.get('takeit_features')).toBeNull();
-    // Default mock returns null classification → all four multileg
-    // columns bind as null.
-    expect(binds.get('inferred_structure')).toBeNull();
-    expect(binds.get('is_isolated_leg')).toBeNull();
-    expect(binds.get('match_confidence')).toBeNull();
-    expect(binds.get('pattern_group_id')).toBeNull();
     // lottery-fires fixture doesn't set trigger_gamma → null at the tail.
     expect(binds.get('gamma_at_trigger')).toBeNull();
     // Single SNDK fire, no prior tier1 fires in batch → isolated → cluster_bonus=0.
@@ -1466,87 +1474,18 @@ describe('detect-lottery-fires handler', () => {
     expect(binds.get('score')).toBeNull();
   });
 
-  it('persists multileg classification columns when classifier returns a result (Phase 2 migration #160)', async () => {
-    // classifyAlertMultileg returns a populated classification → the
-    // four migration #160 columns bind to non-null values on the INSERT.
-    mockClassifyAlertMultileg.mockResolvedValue({
-      id: 'anchor-id',
-      inferredStructure: 'vertical',
-      isIsolatedLeg: false,
-      matchConfidence: 0.83,
-      patternGroupId: 'pg-abc-123',
-    });
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // flow_data
-      .mockResolvedValueOnce([]) // spot_exposures
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
-      .mockResolvedValueOnce([{ id: 11 }]); // insert
-
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({ status: 'success', rows: 1 });
-    const binds = extractInsertBinds(mockSql, 'lottery_finder_fires');
-    expect(binds.get('inferred_structure')).toBe('vertical');
-    expect(binds.get('is_isolated_leg')).toBe(false);
-    expect(binds.get('match_confidence')).toBe(0.83);
-    expect(binds.get('pattern_group_id')).toBe('pg-abc-123');
-    // Helper was called once with the alert's anchor coordinates.
-    expect(mockClassifyAlertMultileg).toHaveBeenCalledTimes(1);
-    const [, , ticker, optionChain] = mockClassifyAlertMultileg.mock.calls[0]!;
-    expect(ticker).toBe('SNDK');
-    expect(optionChain).toBe('SNDK260501C01175000');
-  });
-
-  it('inserts with null multileg columns when classifier returns null (graceful degradation)', async () => {
-    // Default mock returns null — INSERT still happens, four multileg
-    // columns bind as null. Confirms fail-open semantics: a sidecar
-    // outage does NOT block alert insertion (the columns are NULLABLE
-    // by migration #160 design).
-    mockClassifyAlertMultileg.mockResolvedValue(null);
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ id: 12 }]); // insert still lands
-
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({ status: 'success', rows: 1 });
-    const binds = extractInsertBinds(mockSql, 'lottery_finder_fires');
-    expect(binds.get('inferred_structure')).toBeNull();
-    expect(binds.get('is_isolated_leg')).toBeNull();
-    expect(binds.get('match_confidence')).toBeNull();
-    expect(binds.get('pattern_group_id')).toBeNull();
-  });
-
   // ──────────────────────────────────────────────────────────────────────
-  // Task 6 / Finding 0.2 — multileg null-rate counters + Sentry alert.
-  // Counters track the classifier's fail-open rate so a silent matcher
-  // regression (5% → 95% null) surfaces operationally. The Sentry
-  // capture fires ONLY when inserted > 10 AND hit-rate < 50%; low-volume
-  // ticks (≤10 inserts) are protected from spurious alerting.
+  // Multileg classifier removed from the lottery cron (2026-10-29). Its
+  // serial per-fire calls timed the cron out at busy ticks. The cron no
+  // longer calls it, no longer writes the four migration #160 columns
+  // (they stay NULL), and dropped the multilegHits / multilegMisses
+  // counters and the multileg.classify.high_null_rate warning with it.
   // ──────────────────────────────────────────────────────────────────────
 
   /**
    * Build N independent firing chains by varying the strike on the
    * SNDK fixture. Each chain produces exactly one fire when paired with
-   * the right SQL mock sequence. Used by the null-rate tests below to
-   * cross the `inserted > 10` threshold without bespoke per-chain
-   * fixtures.
+   * queuePerFireMocks(N, ...).
    */
   function manyFireableSndkStreams(count: number) {
     const all: ReturnType<typeof tick>[] = [];
@@ -1589,19 +1528,22 @@ describe('detect-lottery-fires handler', () => {
     }
   }
 
-  it('counts multilegHits when every classify call returns a populated result (no Sentry alert)', async () => {
-    // 3 fires, every classify returns non-null → hits=3, misses=0,
-    // inserted=3 (below the >10 alert threshold so no Sentry capture).
-    mockSentryCaptureMessage.mockClear();
+  it('never calls the multileg classifier and leaves the four old columns out of the INSERT', async () => {
+    // Armed with a populated result: if the call were wired back in, it
+    // would be recorded below and its values would reach the INSERT.
     mockClassifyAlertMultileg.mockResolvedValue({
-      id: 'anchor',
+      id: 'anchor-id',
       inferredStructure: 'vertical',
       isIsolatedLeg: false,
-      matchConfidence: 0.8,
-      patternGroupId: 'pg-1',
+      matchConfidence: 0.83,
+      patternGroupId: 'pg-abc-123',
     });
-    mockTicks(manyFireableSndkStreams(3));
-    queuePerFireMocks(3, true);
+    mockTicks(fireableSndkStream())
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
+      .mockResolvedValueOnce([]) // flow_data (Pass 2)
+      .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
+      .mockResolvedValueOnce([{ id: 11 }]); // insert
 
     const req = mockRequest({
       method: 'GET',
@@ -1613,20 +1555,42 @@ describe('detect-lottery-fires handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       status: 'success',
-      multilegHits: 3,
-      multilegMisses: 0,
+      rows: 1,
+      inserted: 1,
     });
-    // No Sentry capture — inserted (3) is below the >10 protection floor.
-    expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
-      'multileg.classify.high_null_rate',
-      expect.anything(),
+    expect(mockClassifyAlertMultileg).not.toHaveBeenCalled();
+    expect(mockClassifyMultilegBatch).not.toHaveBeenCalled();
+
+    const insertCalls = mockSql.mock.calls.filter((call) =>
+      Boolean(
+        (call[0] as readonly string[] | undefined)?.[0]?.includes(
+          'INSERT INTO lottery_finder_fires',
+        ),
+      ),
     );
+    expect(insertCalls).toHaveLength(1);
+    const insertCall = insertCalls[0]!;
+    const insertSql = (insertCall[0] as readonly string[]).join('$');
+    for (const column of OLD_MULTILEG_COLUMNS) {
+      expect(insertSql).not.toContain(column);
+    }
+    const binds = extractInsertBinds(mockSql, 'lottery_finder_fires');
+    for (const column of OLD_MULTILEG_COLUMNS) {
+      expect(binds.has(column)).toBe(false);
+    }
+    // One bound value per listed column: the four were dropped from the
+    // column list and from VALUES together, so nothing shifted.
+    expect(binds.size).toBe(insertCall.length - 1);
+    // The neighbours of the removed block still carry their own values.
+    expect(binds.get('cum_npp_at_fire')).toBeNull();
+    expect(binds.get('takeit_prob')).toBeNull();
+    expect(binds.get('takeit_features')).toBeNull();
   });
 
-  it('captures Sentry warning when inserted>10 AND multileg hit-rate<50%', async () => {
-    // 11 fires, classify returns null for every one → hits=0, misses=11.
-    // Hit-rate 0 < 0.5 AND inserted=11 > 10 → captureMessage fires.
-    mockSentryCaptureMessage.mockClear();
+  it('writes every fire on a busy tick with no classifier call, no multileg counters and no high-null-rate warning', async () => {
+    // 11 fires. Before the removal this tick made 11 serial classifier
+    // calls, and an all-null result raised multileg.classify.high_null_rate
+    // (inserted > 10, hit rate < 50%).
     mockClassifyAlertMultileg.mockResolvedValue(null);
     mockTicks(manyFireableSndkStreams(11));
     queuePerFireMocks(11, true);
@@ -1641,96 +1605,41 @@ describe('detect-lottery-fires handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       status: 'success',
-      multilegHits: 0,
-      multilegMisses: 11,
+      rows: 11,
+      totalFires: 11,
       inserted: 11,
     });
-    expect(mockSentryCaptureMessage).toHaveBeenCalledWith(
+    expect(mockClassifyAlertMultileg).not.toHaveBeenCalled();
+    expect(mockClassifyMultilegBatch).not.toHaveBeenCalled();
+    expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
       'multileg.classify.high_null_rate',
-      expect.objectContaining({
-        level: 'warning',
-        extra: expect.objectContaining({
-          cron: 'detect-lottery-fires',
-          multilegHits: 0,
-          multilegMisses: 11,
-          inserted: 11,
-        }),
-      }),
+      expect.anything(),
     );
-  });
 
-  it('does NOT capture Sentry warning at exactly 50% hit-rate (threshold is strict <)', async () => {
-    // 12 fires, alternating hit/miss → hits=6, misses=6, ratio = 0.5.
-    // Threshold check is `< 0.5`, so exactly-equal must NOT alert.
-    mockSentryCaptureMessage.mockClear();
-    let call = 0;
-    mockClassifyAlertMultileg.mockImplementation(() => {
-      call += 1;
-      return Promise.resolve(
-        call % 2 === 1
-          ? {
-              id: 'anchor',
-              inferredStructure: 'vertical',
-              isIsolatedLeg: false,
-              matchConfidence: 0.8,
-              patternGroupId: 'pg-1',
-            }
-          : null,
+    const allBinds = extractAllInsertBinds(mockSql, 'lottery_finder_fires');
+    expect(allBinds).toHaveLength(11);
+    for (const binds of allBinds) {
+      for (const column of OLD_MULTILEG_COLUMNS) {
+        expect(binds.has(column)).toBe(false);
+      }
+    }
+
+    // The counters are gone from the response, the Axiom report and the
+    // completion log.
+    expect(res._json).not.toHaveProperty('multilegHits');
+    expect(res._json).not.toHaveProperty('multilegMisses');
+    const payload = vi.mocked(reportCronRun).mock.calls[0]![1];
+    expect(payload).not.toHaveProperty('multilegHits');
+    expect(payload).not.toHaveProperty('multilegMisses');
+    const completedLog = vi
+      .mocked(logger.info)
+      .mock.calls.find(
+        (call) => (call as unknown[])[1] === 'detect-lottery-fires completed',
       );
-    });
-    mockTicks(manyFireableSndkStreams(12));
-    queuePerFireMocks(12, true);
-
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      status: 'success',
-      multilegHits: 6,
-      multilegMisses: 6,
-      inserted: 12,
-    });
-    expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
-      'multileg.classify.high_null_rate',
-      expect.anything(),
-    );
-  });
-
-  it('does NOT capture Sentry warning at 100% miss rate when inserted<=10 (low-volume protection)', async () => {
-    // Single fire, classify returns null → hit-rate 0% but inserted=1.
-    // The >10 inserts gate suppresses the alert so quiet days don't page.
-    mockSentryCaptureMessage.mockClear();
-    mockClassifyAlertMultileg.mockResolvedValue(null);
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // flow_data
-      .mockResolvedValueOnce([]) // spot_exposures
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
-      .mockResolvedValueOnce([{ id: 42 }]); // insert
-
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      status: 'success',
-      inserted: 1,
-      multilegHits: 0,
-      multilegMisses: 1,
-    });
-    expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
-      'multileg.classify.high_null_rate',
-      expect.anything(),
-    );
+    expect(completedLog).toBeDefined();
+    expect(completedLog![0]).toMatchObject({ inserted: 11 });
+    expect(completedLog![0]).not.toHaveProperty('multilegHits');
+    expect(completedLog![0]).not.toHaveProperty('multilegMisses');
   });
 
   // Skipped 2026-05-23 (v2.3 cleanup): V2.2 Phase D retrain shifted weights;

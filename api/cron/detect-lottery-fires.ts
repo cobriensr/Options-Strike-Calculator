@@ -66,10 +66,6 @@ import {
   type TickerFlowSeries,
 } from '../_lib/ticker-flow-snapshot.js';
 import {
-  classifyAlertMultileg,
-  type MultilegClassifyCache,
-} from '../_lib/multileg-classify-batch.js';
-import {
   getLatestGexbotSnapshotAt,
   mapToGexbotTicker,
   type FireTimeGexbotSnapshot,
@@ -424,18 +420,6 @@ export default withCronInstrumentation(
     let gexHits = 0;
     let gexMisses = 0;
     let gexOutOfUniverse = 0;
-    // Multileg classifier observability (Task 6 / Finding 0.2). The
-    // matcher fail-open path returns null for: DB query failure, empty
-    // window, oversized window, missing anchor trade, classifier error.
-    // Without per-tick counters, a classifier regression (e.g. the matcher
-    // returning null for 95% of inputs) is silent: detect-cron logs
-    // still report healthy `inserted` counts because alert insertion
-    // does not depend on a populated classification. The hit/miss split
-    // makes that regression observable and alertable; the Sentry capture
-    // below fires when the ratio drops under 50% on a meaningful sample
-    // (see threshold rationale next to the captureMessage call).
-    let multilegHits = 0;
-    let multilegMisses = 0;
 
     // Seed cooldown state from the DB so successive cron runs don't
     // re-qualify the next tick within the 5-min window. Without this,
@@ -569,13 +553,6 @@ export default withCronInstrumentation(
       date: string;
       err: unknown;
     } | null = null;
-
-    // Per-cron-tick multileg classification cache. Keyed inside the
-    // helper by (ticker, optionChain, minute) so multiple alerts on the
-    // same chain in the same minute reuse one classifier call. Cleared
-    // when the handler returns. Spec: migration #160 columns; classifier
-    // POST /multileg-classify (originally wired in commit ced5ff10).
-    const multilegCache: MultilegClassifyCache = new Map();
 
     // Per-(ticker, date) candle cache — promoted to handler scope so
     // both passes (and fires across chains of the same ticker) share one
@@ -777,7 +754,7 @@ export default withCronInstrumentation(
       score: p.score,
     }));
 
-    // ── Pass 2: macro / multileg / gexbot / takeit + INSERT ────────────
+    // ── Pass 2: macro / gexbot / takeit + INSERT ───────────────────────
     for (const prepared of preparedFires) {
       const { rec, score, cumNcpAtFire, cumNppAtFire } = prepared;
       {
@@ -885,33 +862,13 @@ export default withCronInstrumentation(
           rec.spotAtFirst,
         );
 
-        // Phase 2 multileg classification (spec: migration #160; classifier
-        // POST /multileg-classify). Fail-open —
-        // the helper returns null on classifier errors, missing anchor
-        // trade, or oversized windows, and the four columns stay NULL
-        // on the row. Take-It feature pipeline already treats these as
-        // optional (`?: T | null`).
-        const multilegResult = await classifyAlertMultileg(
-          db,
-          multilegCache,
-          rec.underlyingSymbol,
-          rec.optionChainId,
-          rec.triggerTimeCt,
-        );
-        // Hit/miss split observability (Task 6 / Finding 0.2). Null is a
-        // legitimate fail-open return — we don't want to throw — but a
-        // sustained spike in misses is the silent regression we need to
-        // see. Logged in the structured payload below and Sentry-captured
-        // when the ratio crosses the threshold for the tick.
-        if (multilegResult === null) {
-          multilegMisses += 1;
-        } else {
-          multilegHits += 1;
-        }
-        const inferredStructure = multilegResult?.inferredStructure ?? null;
-        const isIsolatedLeg = multilegResult?.isIsolatedLeg ?? null;
-        const matchConfidence = multilegResult?.matchConfidence ?? null;
-        const patternGroupId = multilegResult?.patternGroupId ?? null;
+        // The multileg classifier call was removed here on 2026-10-29: one
+        // serial call per fire to the Railway classifier (0.25–10.4 s each)
+        // timed the cron out at busy ticks. The exchange multi-leg anchor
+        // lookup replaces it (spec 2026-10-28-classifier-replacement-design.md,
+        // phase 4; migration #197 columns). The old four migration #160
+        // columns (inferred_structure, is_isolated_leg, match_confidence,
+        // pattern_group_id) are no longer written and stay NULL.
 
         // V2.2 Phase C.4 cluster bonus: count distinct other tier1 tickers
         // that fired within ±5 min of this fire across the WHOLE cron tick
@@ -1064,7 +1021,6 @@ export default withCronInstrumentation(
             gex_strike_put_ask_minus_bid, gex_strike_actual_strike,
             score, direction_gated, range_pos_at_trigger,
             cum_ncp_at_fire, cum_npp_at_fire,
-            inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
             takeit_prob, takeit_model_version, takeit_features,
             gamma_at_trigger, cluster_bonus,
             gex_one_cvroflow, gex_net_put_dex, gex_one_dexoflow, gex_one_gexoflow,
@@ -1088,7 +1044,6 @@ export default withCronInstrumentation(
             ${macro.gex_strike_put_ask_minus_bid}, ${macro.gex_strike_actual_strike},
             ${score}, ${directionGated}, ${rangePosAtTrigger},
             ${cumNcpAtFire}, ${cumNppAtFire},
-            ${inferredStructure}, ${isIsolatedLeg}, ${matchConfidence}, ${patternGroupId},
             ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb,
             ${rec.triggerGamma}, ${clusterBonus},
             ${gexSnapshot?.oneCvroflow ?? null},
@@ -1185,37 +1140,6 @@ export default withCronInstrumentation(
         { err: err instanceof Error ? err.message : String(err) },
         'detect-lottery-fires: feed-tier monitor query failed (non-fatal)',
       );
-    }
-
-    // Multileg null-rate alert (Task 6 / Finding 0.2). When more than
-    // half of attempted classifications return null AND we actually
-    // inserted enough rows to make the ratio meaningful, capture a
-    // warning. Threshold rationale:
-    //   - 50% strict (`<`, not `<=`): a 50/50 split is plausible on
-    //     thin tape (small-cap tickers with few neighboring legs); we
-    //     only alert when nulls clearly dominate.
-    //   - inserted > 10: low-volume protection. On quiet days a couple
-    //     of fail-open misses can drag a small denominator under 50%
-    //     and produce spurious pages. Ten inserts represents an active
-    //     tick worth investigating.
-    // This is observability, not a hard failure — captureMessage, not
-    // throw — the cron's job is to insert alerts; classifier nulls do
-    // not block that.
-    const multilegTotal = multilegHits + multilegMisses;
-    if (
-      inserted > 10 &&
-      multilegTotal > 0 &&
-      multilegHits / multilegTotal < 0.5
-    ) {
-      Sentry.captureMessage('multileg.classify.high_null_rate', {
-        level: 'warning',
-        extra: {
-          cron: 'detect-lottery-fires',
-          multilegHits,
-          multilegMisses,
-          inserted,
-        },
-      });
     }
 
     // Candle and flow-series problems leave columns null on the row; the
@@ -1325,8 +1249,6 @@ export default withCronInstrumentation(
         gexHits,
         gexMisses,
         gexOutOfUniverse,
-        multilegHits,
-        multilegMisses,
         candleFetchFailures,
         candleFetchEmpty,
         candleFetchSkippedIndex,
@@ -1376,8 +1298,6 @@ export default withCronInstrumentation(
         gexHits,
         gexMisses,
         gexOutOfUniverse,
-        multilegHits,
-        multilegMisses,
         candleFetchFailures,
         candleFetchEmpty,
         candleFetchSkippedIndex,
