@@ -17,17 +17,17 @@ Auth — required env vars (set in .env.local):
 
 Usage:
     # One-shot upload everything missing in R2:
-    ml/.venv/bin/python scripts/upload-fulltape-to-r2.py
+    ml/.venv/Scripts/python scripts/upload-fulltape-to-r2.py
 
     # Custom local dir:
     INPUT_DIR=~/Desktop/Eod-Full-Tape-parquet \\
-      ml/.venv/bin/python scripts/upload-fulltape-to-r2.py
+      ml/.venv/Scripts/python scripts/upload-fulltape-to-r2.py
 
     # Dry-run (list what would upload, do nothing):
-    ml/.venv/bin/python scripts/upload-fulltape-to-r2.py --dry-run
+    ml/.venv/Scripts/python scripts/upload-fulltape-to-r2.py --dry-run
 
     # Force re-upload of specific date (overwrites in R2):
-    ml/.venv/bin/python scripts/upload-fulltape-to-r2.py --force 2026-03-15
+    ml/.venv/Scripts/python scripts/upload-fulltape-to-r2.py --force 2026-03-15
 """
 
 from __future__ import annotations
@@ -36,15 +36,21 @@ import argparse
 import os
 import sys
 import time
+import warnings
 from pathlib import Path
 
 import boto3
+import urllib3
+from boto3.s3.transfer import TransferConfig
 from botocore.client import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
-
 KEY_PREFIX = "fulltape/"
 DEFAULT_LOCAL_DIR = Path.home() / "Desktop" / "Eod-Full-Tape-parquet"
+
+# One client shared across s3transfer's worker threads sent unverified HTTPS
+# on Windows (py3.14, botocore 1.43.106, urllib3 2.8.0); upload serially.
+TRANSFER_CONFIG = TransferConfig(use_threads=False)
 
 
 def load_env_local() -> None:
@@ -143,6 +149,9 @@ def main() -> int:
     load_env_local()
     bucket = must_env("R2_BUCKET_FULLTAPE")
 
+    # Fail loudly if any request goes out without certificate verification.
+    warnings.simplefilter("error", urllib3.exceptions.InsecureRequestWarning)
+
     input_dir = Path(os.environ.get("INPUT_DIR", str(DEFAULT_LOCAL_DIR)))
     if not input_dir.is_dir():
         sys.stderr.write(f"❌ Local dir not found: {input_dir}\n")
@@ -202,7 +211,16 @@ def main() -> int:
                 Bucket=bucket,
                 Key=key,
                 ExtraArgs={"ContentType": "application/x-parquet"},
+                Config=TRANSFER_CONFIG,
             )
+        except urllib3.exceptions.InsecureRequestWarning:
+            # Once one request skipped TLS verification, every request in
+            # this run is suspect: stop instead of moving on to the next file.
+            sys.stderr.write(
+                f"❌ [{i}/{len(to_upload)}] {f.name}: TLS verification was "
+                "skipped for an R2 request; aborting the run.\n"
+            )
+            return 4
         except (ClientError, BotoCoreError) as e:
             # Catch BotoCoreError too — transient transport failures
             # (EndpointConnectionError, ReadTimeoutError, ConnectTimeoutError)
