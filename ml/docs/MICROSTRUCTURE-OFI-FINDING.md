@@ -1,6 +1,8 @@
 # Microstructure OFI Signal — Validated on NQ, Null on ES
 
-**Status:** Shipped. Phase 5a wiring complete — dual-symbol OFI + historical percentile rank now in Claude's cached system prompt on every analyze call. Re-validation schedule (quarterly) is the remaining governance.
+> **Superseded 2026-10-28:** see [`OFI-POINT-IN-TIME-2026-10-28.md`](OFI-POINT-IN-TIME-2026-10-28.md). The ρ = 0.31 below compares full-day OFI with the same day's return: the day describing itself. Tested point-in-time (OFI up to t vs the return after t, 243 RTH sessions), OFI predicts nothing (max |ρ| 0.07, BH q 0.98). The "do wire" and "more predictive" claims below are withdrawn. The analyze wiring was removed with Databento on 2026-09-30.
+
+**Status:** Superseded (see banner). Formerly shipped in the analyze context; that wiring was removed 2026-09-30.
 **Date range studied:** 2025-04-20 → 2026-04-17 (312 trading days × 2 symbols)
 **Data cost:** ~$0 (1-year TBBO pull is included in the $179/mo Databento Standard L1 allowance)
 **Code:** `ml/src/features/microstructure.py`, `ml/src/microstructure_eda.py`
@@ -46,7 +48,7 @@ Claude's prompt, confirm the signal exists.
 
 **NQ**: three OFI features survive Bonferroni correction at p < 0.001
 with Spearman ρ strictly monotone in window length (5m < 15m < 1h).
-Positive ρ — aggressive buying predicts higher same-day return.
+Positive ρ — days with more aggressive buying also closed higher: a same-day (contemporaneous) correlation, not a prediction; point-in-time it is null (`OFI-POINT-IN-TIME-2026-10-28.md`).
 
 **ES**: no feature survives Bonferroni correction. Best raw-p would
 look significant in a naive analysis but falls apart under the

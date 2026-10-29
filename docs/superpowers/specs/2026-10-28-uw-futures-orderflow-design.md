@@ -392,3 +392,19 @@ All read-only, about 600 calls. Scripts and outputs are in `docs/tmp/uw-futures-
   - Rows before 09-29 hold Databento-era OHLCV, so 6b writes flow onto a bar only when UW's deduped non-spread volume for that minute is within **2%** of the bar's `volume`. Otherwise it skips and counts the minute. That keeps `buy + sell ≤ volume` meaningful.
   - The roll replay is the same as Phase 6.
 - **Phase 5 table** drops `session_high`/`session_low` and keeps `fetched_at`. It runs at **12:30 UTC Tue–Sat and 21:30 UTC Mon–Fri**, with `DO UPDATE` on `(contract, settlement_date)`. The stored `fetched_at` then shows which run carried the final OI.
+
+## Phase 1 result (2026-10-28): null, D5 not met
+
+The full write-up is `ml/docs/OFI-POINT-IN-TIME-2026-10-28.md`.
+
+- **Discovery set:** the TBBO archive, 243 RTH sessions per root (the old "312" counted UTC-day files).
+- **Predictive:** max |ρ| = 0.070 across 26 configurations. No CI excludes 0, and BH q = 0.98.
+- **Same window (control):** ρ = 0.55–0.71.
+- **The old ρ = 0.31 replicates exactly** (NQ +0.313) as the full-day description it was.
+- **Hold-out:** sign agreement is a coin flip (15 of 26).
+
+Consequences:
+- No "wire OFI" spec.
+- Phases 2–6 still collect UW flow (owner: pull everything UW offers).
+- Re-test after 60 UW sessions. Phase 6b's backfill to 2026-06-30 gets there sooner.
+- One variant is untested: overnight OFI as a predictor of the RTH session.

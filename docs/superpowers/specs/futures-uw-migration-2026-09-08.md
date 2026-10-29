@@ -36,7 +36,7 @@ Evidence gathered 2026-09-08 by direct DB query and a live websocket probe.
 
 Consequences:
 
-- `api/_lib/microstructure-signals.ts` (NQ OFI, ρ=0.31) reads `futures_top_of_book` and has
+- `api/_lib/microstructure-signals.ts` (NQ OFI from `futures_trade_ticks.aggressor_side`; spread/TOB from `futures_top_of_book`) has
   been returning `null` since 2026-06-15. Reviving OFI is **new work**, not preservation.
 - `src/components/FuturesCalculator/VixTermStructure.tsx` renders `vxTermSpread` /
   `vxTermStructure` derived from VX1/VX2, which have **never** existed. It is dead UI.
@@ -223,11 +223,13 @@ rows in Neon. Cheap, and reversible.
 
 ## Phase 4 — deferred: NQ OFI revival
 
-`futures_trades` carries `nbbo_bid` / `nbbo_ask` / `side` / `size` per print, which
-supports a **signed-volume OFI approximation** — but that is trade-level NBBO, not book
-updates, so it is **not** a drop-in for the `futures_top_of_book` OFI that produced
-ρ=0.31. Treat as a research task: rebuild, then re-validate the correlation before wiring
-anything to analyze context. Do not assume equivalence.
+`futures_trades` carries `side` (aggressor) and `size` per print, which rebuilds the same
+signed-volume OFI behind ρ=0.31. That number came from the Databento TBBO archive's trade
+`side` (`ml/src/features/microstructure.py:346-347`), not from `futures_top_of_book`, and it
+was a same-day correlation. The 2026-10-28 point-in-time test
+(`ml/docs/OFI-POINT-IN-TIME-2026-10-28.md`) found no predictive value, so do not wire it to
+analyze context. UW flow is still collected per
+`docs/superpowers/specs/2026-10-28-uw-futures-orderflow-design.md`.
 
 ---
 
