@@ -100,23 +100,6 @@ vi.mock('../_lib/uw-stock-candles.js', async (importOriginal) => {
   };
 });
 
-// The lottery cron no longer calls the multileg classifier (removed
-// 2026-10-29: its serial per-fire calls timed the cron out at busy ticks).
-// Both layers of the classifier boundary stay mocked so the tests below
-// can assert neither is reached: the per-alert helper and the HTTP client.
-const { mockClassifyAlertMultileg, mockClassifyMultilegBatch } = vi.hoisted(
-  () => ({
-    mockClassifyAlertMultileg: vi.fn(),
-    mockClassifyMultilegBatch: vi.fn(),
-  }),
-);
-vi.mock('../_lib/multileg-classify-batch.js', () => ({
-  classifyAlertMultileg: mockClassifyAlertMultileg,
-}));
-vi.mock('../_lib/multileg-client.js', () => ({
-  classifyMultilegBatch: mockClassifyMultilegBatch,
-}));
-
 // The exchange multi-leg anchor lookup that replaced the classifier, mocked
 // at the module boundary: its SQL has its own PGlite tests, and keeping it
 // off mockSql leaves every query sequence in this file unchanged. The

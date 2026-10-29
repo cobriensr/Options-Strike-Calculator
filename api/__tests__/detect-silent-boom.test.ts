@@ -65,24 +65,6 @@ const { mockCronGuard } = vi.hoisted(() => ({
   mockCronGuard: vi.fn(),
 }));
 
-// The Silent Boom cron no longer calls the multileg classifier (replaced
-// by the exchange multi-leg anchor lookup, spec
-// 2026-10-28-classifier-replacement-design.md). Both layers of the
-// classifier boundary stay mocked so the tests below can assert neither is
-// reached: the per-alert helper and the HTTP client.
-const { mockClassifyAlertMultileg, mockClassifyMultilegBatch } = vi.hoisted(
-  () => ({
-    mockClassifyAlertMultileg: vi.fn(),
-    mockClassifyMultilegBatch: vi.fn(),
-  }),
-);
-vi.mock('../_lib/multileg-classify-batch.js', () => ({
-  classifyAlertMultileg: mockClassifyAlertMultileg,
-}));
-vi.mock('../_lib/multileg-client.js', () => ({
-  classifyMultilegBatch: mockClassifyMultilegBatch,
-}));
-
 // The migration #160 columns the classifier used to fill. The cron no
 // longer writes them; they stay NULL on new rows.
 const OLD_MULTILEG_COLUMNS = [
