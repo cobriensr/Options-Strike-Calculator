@@ -111,8 +111,22 @@ _CONFLUENCE_WINDOW_SEC = 90
 # field. A print with one of these codes is a spread leg, not a
 # directional bet — see migration #146 and api/_lib/silent-boom.ts.
 # Frozenset for O(1) membership in the per-tick hot path.
+# TS twin: api/_lib/multileg-codes.ts. Keep the two lists identical.
+# Source: OPRA Pillar output specification, sale condition codes.
+# Stock-tied codes (tlet, tlat, tlft, tlct, tesl, tasl, tfsl) are NOT
+# multi-leg; ``mfto`` is not an OPRA code.
 _MULTI_LEG_CODES: frozenset[str] = frozenset(
-    {"mlat", "mlet", "mlft", "mfto", "masl", "mesl", "mfsl", "mlct"},
+    {
+        "mlat",
+        "mlet",
+        "mlft",
+        "masl",
+        "mesl",
+        "mfsl",
+        "mlct",
+        "cbmo",
+        "mctp",
+    },
 )
 
 

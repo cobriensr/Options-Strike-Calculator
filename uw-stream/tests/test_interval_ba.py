@@ -257,7 +257,7 @@ class TestAlertEmission:
 
 class TestMultiLegGate:
     """Reject buckets dominated by spread-leg routing (trade_code in
-    mlat/mlet/mlft/mfto/masl/mesl/mfsl/mlct). The 2026-05-13 SPXW 6850
+    mlat/mlet/mlft/masl/mesl/mfsl/mlct/cbmo/mctp). The 2026-05-13 SPXW 6850
     false fire was a single $1.14M ``mlet`` print → 100% ask, 100%
     multi-leg; the gate at multi_leg_share ≥ 0.5 rejects exactly that.
     """
@@ -280,7 +280,7 @@ class TestMultiLegGate:
 
     @pytest.mark.parametrize(
         "code",
-        ["mlat", "mlet", "mlft", "mfto", "masl", "mesl", "mfsl", "mlct"],
+        ["mlat", "mlet", "mlft", "masl", "mesl", "mfsl", "mlct", "cbmo", "mctp"],
     )
     def test_all_opra_multi_leg_codes_are_rejected(
         self,
@@ -288,7 +288,7 @@ class TestMultiLegGate:
         base_payload,
         code,
     ):
-        """All 8 OPRA multi-leg sale conditions gate the alert."""
+        """All 9 OPRA multi-leg sale conditions gate the alert."""
         p = _payload(
             base_payload,
             executed_at_ms=_BUCKET_ANCHOR_MS + 50_000,
@@ -298,6 +298,24 @@ class TestMultiLegGate:
         p["trade_code"] = code
         handler._transform(p)
         assert handler._pending_alerts == []
+
+    @pytest.mark.parametrize("code", ["mfto", "tlet", "tasl"])
+    def test_non_multi_leg_codes_do_not_gate_the_alert(
+        self,
+        handler,
+        base_payload,
+        code,
+    ):
+        """mfto is not an OPRA code; stock-tied codes are not multi-leg."""
+        p = _payload(
+            base_payload,
+            executed_at_ms=_BUCKET_ANCHOR_MS + 50_000,
+            price="4.60",
+            size=888,
+        )
+        p["trade_code"] = code
+        handler._transform(p)
+        assert len(handler._pending_alerts) == 1
 
     def test_trade_code_match_is_case_insensitive(self, handler, base_payload):
         """UW occasionally upper-cases the trade_code; the gate is robust."""
