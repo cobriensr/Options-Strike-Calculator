@@ -5476,4 +5476,27 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 197,
+    description:
+      'Add exchange multi-leg anchor columns to lottery_finder_fires AND silent_boom_alerts (spec: docs/superpowers/specs/2026-10-28-classifier-replacement-design.md). They replace the Railway multileg classifier (migration #160 columns stay for history) with the exchange-reported multi-leg trade code. anchor_ws_trade_id UUID is the anchor print; anchor_trade_code TEXT is its OPRA trade code; anchor_leg_kind TEXT is single, multi_leg or stock_tied, and NULL when no anchor print was found; spread_shape TEXT is the spread shape; spread_legs JSONB is an array of legs grouped by contract, anchor first, at most 8. All five columns are NULLABLE, so pre-migration rows stay unclassified. No index: no reader filters on them yet.',
+    statements: (sql) => [
+      sql`
+        ALTER TABLE lottery_finder_fires
+          ADD COLUMN IF NOT EXISTS anchor_ws_trade_id UUID,
+          ADD COLUMN IF NOT EXISTS anchor_trade_code TEXT,
+          ADD COLUMN IF NOT EXISTS anchor_leg_kind TEXT,
+          ADD COLUMN IF NOT EXISTS spread_shape TEXT,
+          ADD COLUMN IF NOT EXISTS spread_legs JSONB
+      `,
+      sql`
+        ALTER TABLE silent_boom_alerts
+          ADD COLUMN IF NOT EXISTS anchor_ws_trade_id UUID,
+          ADD COLUMN IF NOT EXISTS anchor_trade_code TEXT,
+          ADD COLUMN IF NOT EXISTS anchor_leg_kind TEXT,
+          ADD COLUMN IF NOT EXISTS spread_shape TEXT,
+          ADD COLUMN IF NOT EXISTS spread_legs JSONB
+      `,
+    ],
+  },
 ];
