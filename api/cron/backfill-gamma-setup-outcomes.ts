@@ -3,8 +3,10 @@
  *
  * Runs once daily at 21:30 UTC (16:30 CT in CDT, 15:30 CT in CST), 90 or
  * 30 min after the cash close.
- * For every `ws_gamma_setup_fires` row inserted in the last 2 trading
- * days whose `ret_30m` is still NULL, this fills in:
+ * For every `ws_gamma_setup_fires` row fired on the last 2 trading days
+ * (from ET midnight of the earlier one; weekends and NYSE holidays are
+ * skipped, so Monday's run retries Friday's fires) whose `ret_30m` is still
+ * NULL, this fills in:
  *
  *   - ret_15m: direction-adjusted SPX return from fired_at to +15m
  *   - ret_30m: …to +30m
@@ -34,8 +36,23 @@ import {
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 import type { SignalType } from '../_lib/gamma-detector.js';
+import { isTradingDay, priorTradingDay } from '../../src/data/marketHours.js';
 
-const BACKFILL_LOOKBACK_DAYS = 2;
+/** Trading sessions of fires each run retries: the latest and the one before. */
+const BACKFILL_TRADING_DAYS = 2;
+
+/**
+ * The first ET date of the retry window: the earliest of the last
+ * BACKFILL_TRADING_DAYS trading days on or before `today` (ET), skipping
+ * weekends and NYSE holidays (`MARKET_CLOSED_DATES`). Monday → Friday; the
+ * Tuesday after a Monday holiday → the Friday before it.
+ */
+function windowStartDate(today: string): string {
+  let day = isTradingDay(today) ? today : priorTradingDay(today);
+  for (let i = 1; i < BACKFILL_TRADING_DAYS; i++) day = priorTradingDay(day);
+  return day;
+}
+
 const HORIZONS = [
   { col: 'ret_15m', minutes: 15 },
   { col: 'ret_30m', minutes: 30 },
@@ -120,16 +137,19 @@ export default withCronInstrumentation(
   'backfill-gamma-setup-outcomes',
   async (ctx): Promise<CronResult> => {
     const sql = getDb();
+    const windowStart = windowStartDate(ctx.today);
 
-    // Pull every fire from the last N days where ret_30m is still NULL.
-    // Using ret_30m as the sentinel (instead of inserted_at + a flag) so
-    // partial fills from earlier crashed runs get retried automatically.
+    // Pull every fire from the last N trading days where ret_30m is still
+    // NULL. Using ret_30m as the sentinel (instead of inserted_at + a flag)
+    // so partial fills from earlier crashed runs get retried automatically.
+    // The bound is ET midnight of windowStart; the `::timestamp` makes it ET
+    // midnight in any session zone (Neon sessions run in UTC).
     const pending = (await withDbRetry(
       () => sql`
         SELECT id, fired_at, signal_type, bar_close
         FROM ws_gamma_setup_fires
         WHERE ret_30m IS NULL
-          AND fired_at >= NOW() - (${BACKFILL_LOOKBACK_DAYS}::int * INTERVAL '1 day')
+          AND fired_at >= (${windowStart}::date::timestamp AT TIME ZONE 'America/New_York')
         ORDER BY fired_at ASC
       `,
       2,
@@ -190,7 +210,7 @@ export default withCronInstrumentation(
     }
 
     ctx.logger.info(
-      { pending: pending.length, updated },
+      { pending: pending.length, updated, windowStart },
       'backfill-gamma-setup-outcomes: complete',
     );
 
@@ -199,7 +219,8 @@ export default withCronInstrumentation(
       rows: updated,
       metadata: {
         pending: pending.length,
-        lookback_days: BACKFILL_LOOKBACK_DAYS,
+        lookback_trading_days: BACKFILL_TRADING_DAYS,
+        window_start: windowStart,
       },
     };
   },

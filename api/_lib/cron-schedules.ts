@@ -173,9 +173,11 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
   'backfill-gamma-setup-outcomes': {
-    // Daily after the close: fills the forward returns on the last two
-    // trading days' ws_gamma_setup_fires rows. maxDuration is 120 s, inside
-    // the default max runtime. Daily → default failure threshold of 1.
+    // Daily after the close: fills the forward returns on unresolved
+    // ws_gamma_setup_fires rows from the last two trading days (weekends and
+    // NYSE holidays skipped, so Monday's run retries Friday's fires).
+    // maxDuration is 120 s, inside the default max runtime. Daily → default
+    // failure threshold of 1.
     schedule: '30 21 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,

@@ -102,7 +102,7 @@ describe('cron backfill-gamma-setup-outcomes', () => {
     expect(body.rows).toBe(0);
     // metadata is spread onto the body by withCronInstrumentation
     expect(body.pending).toBe(0);
-    expect(body.lookback_days).toBe(2);
+    expect(body.lookback_trading_days).toBe(2);
     // Only the single pending-fires SELECT should have been issued.
     expect(mockSql).toHaveBeenCalledTimes(1);
   });
@@ -133,7 +133,7 @@ describe('cron backfill-gamma-setup-outcomes', () => {
     expect(body.status).toBe('success');
     expect(body.rows).toBe(1);
     expect(body.pending).toBe(1);
-    expect(body.lookback_days).toBe(2);
+    expect(body.lookback_trading_days).toBe(2);
 
     // 1 select + 4 lookups + 1 update = 6 SQL calls.
     expect(mockSql).toHaveBeenCalledTimes(6);
@@ -322,15 +322,65 @@ describe('cron backfill-gamma-setup-outcomes', () => {
     expect(sqlBinds(10)).toEqual([null, 10, null, null, 102]);
   });
 
-  it('metadata includes lookback_days=2', async () => {
-    mockSql.mockResolvedValueOnce([]);
-    const res = mockResponse();
-    await handler(authedReq(), res);
+  /** The pending-fires SELECT (call 0) as text, binds as `$?`. */
+  function selectText(): string {
+    const strings = mockSql.mock.calls[0]?.[0] as readonly string[] | undefined;
+    return (strings ?? []).join('$?').replaceAll(/\s+/g, ' ');
+  }
 
-    const body = res._json as Record<string, unknown>;
-    expect(body.lookback_days).toBe(2);
-    expect(body.pending).toBe(0);
-  });
+  // Each run is at the 21:30 UTC schedule, after that day's close.
+  it.each([
+    {
+      run: 'an ordinary Wednesday',
+      at: '2026-10-28T21:30:00Z',
+      // Tue + Wed. Unchanged in effect: the old NOW() - 2 days bound was
+      // Monday 21:30 UTC, after Monday's close, so it held the same two
+      // sessions.
+      windowStart: '2026-10-27',
+    },
+    {
+      run: 'a Monday',
+      at: '2026-10-26T21:30:00Z',
+      // Fri + Mon. The old bound was Saturday 21:30 UTC, so Friday's
+      // unresolved fires were never retried.
+      windowStart: '2026-10-23',
+    },
+    {
+      run: 'the Tuesday after Memorial Day',
+      at: '2026-05-26T21:30:00Z',
+      // Fri + Tue, past the weekend and the Monday holiday.
+      windowStart: '2026-05-22',
+    },
+    {
+      run: 'Memorial Day itself (the cron still fires)',
+      at: '2026-05-25T21:30:00Z',
+      // The last two sessions on or before a non-trading day: Thu + Fri.
+      windowStart: '2026-05-21',
+    },
+  ])(
+    '$run retries fires back to ET midnight of $windowStart',
+    async ({ at, windowStart }) => {
+      vi.setSystemTime(new Date(at));
+      mockSql.mockResolvedValueOnce([]); // SELECT pending
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(sqlBinds(0)).toEqual([windowStart]);
+      // ET midnight of the window's first day. The `::timestamp` is
+      // load-bearing: without it the date resolves in the session zone (UTC
+      // on Neon), hours before ET midnight.
+      expect(selectText()).toContain(
+        "fired_at >= ($?::date::timestamp AT TIME ZONE 'America/New_York')",
+      );
+      expect(res._json).toMatchObject({
+        lookback_trading_days: 2,
+        window_start: windowStart,
+        pending: 0,
+      });
+    },
+  );
 
   it('accepts Date instance for fired_at as well as ISO string', async () => {
     // The handler has a `row.fired_at instanceof Date` branch — exercise it

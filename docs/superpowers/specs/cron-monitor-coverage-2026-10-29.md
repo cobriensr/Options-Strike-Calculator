@@ -1,5 +1,5 @@
 ---
-status: Plan
+status: Done
 date: 2026-10-29
 ---
 
@@ -75,17 +75,35 @@ Both phases ship in one push; the main session pushes after the 15:00 CT close.
   - `api/cron/backfill-gamma-setup-outcomes.ts` says 20:30 UTC; vercel.json says 21:30.
   - `api/cron/check-gamma-setup-drift.ts` says Friday 21:30 UTC; vercel.json says 21:45.
 
+### Review follow-ups (2026-10-29)
+
+The code review of both phases returned "continue". Beyond the source scan and the cited-spec existence check (Phase 1 bullets above), it led to three fixes:
+
+- **Cleanup budget is checked before every batch (item 2).** cleanup-ws-gex-strike-expiry checked its budget only after a non-empty batch, so a pass 1 that drained late went straight into pass 2's first DELETE past 280 s. A run killed at maxDuration now pages as a monitor timeout at threshold 1. It now uses the predictive rule from `cleanup-ws-option-trades`: before every batch after the first, pass 2's first included, stop when elapsed time plus the slowest batch so far would pass 280 s. Tests pin both sides of the rule (a projection of 279.5 s runs the next batch, 280.5 s stops) and the pass boundary (a pass 1 ending at 281 s runs no pass 2 DELETE).
+- **No UW key for two crons that never use UW (item 4).** `takeit-fill-shap` (sidecar only) and `audit-takeit-calibration` (DB only) took `cronGuard`'s default `requireApiKey: true`. Once monitored, a missing or rotated `UW_API_KEY` would 500 in `cronGuard` before the check-in and page a missed run for a dependency they don't have. Both now pass `requireApiKey: false`, like detect-gamma-setups and wave2-confirmation.
+- **backfill-gamma-setup-outcomes retries the last two _trading_ days (item 5, bug fix).** Its header promised the last two trading days, but the query bound was `fired_at >= NOW() - 2 days` (calendar). At Monday's 21:30 UTC run that bound was Saturday 21:30 UTC, so Friday's unresolved fires were never retried; the same after any holiday. The bound is now ET midnight of the earlier of the last two trading days on or before the run's ET date, from `isTradingDay` / `priorTradingDay` in `src/data/marketHours.ts` (the NYSE calendar in `MARKET_CLOSED_DATES`):
+  - Monday → Friday.
+  - Tuesday after Memorial Day → the Friday before.
+  - Memorial Day itself (the cron still fires) → Thursday.
+  - An ordinary Wednesday → Tuesday, the same two sessions the old bound held, since Monday 21:30 UTC is after Monday's close.
+
+  The Axiom metadata `lookback_days: 2` became `lookback_trading_days: 2` plus `window_start`.
+  - **History.** Fires from before the deploy that the old window skipped stay unresolved: the fixed cron only reaches back two trading days. Neither table is pruned (no DELETE on `ws_gamma_setup_fires` or `index_candles_1m` anywhere in `api/` or `scripts/`), so a one-off backfill can resolve any of them whose SPX bars exist. The read-only production count of affected fires wasn't run in this session (production reads need the owner's permission). The probe and a backfill UPDATE that mirrors the handler's per-row logic are in the session report.
+
 ## Files
 
-| Phase | File                                                                                                 |
-| ----- | ---------------------------------------------------------------------------------------------------- |
-| 1     | `docs/superpowers/specs/cron-monitor-coverage-2026-10-29.md` (this file)                             |
-| 1     | `api/_lib/cron-schedules.ts`                                                                         |
-| 1     | `api/__tests__/cron-schedules.test.ts`                                                               |
-| 1     | `api/_lib/cron-instrumentation.ts` (comment only)                                                    |
-| 2     | `api/cron/cleanup-ws-gex-strike-expiry.ts`                                                           |
-| 2     | `api/__tests__/cleanup-ws-gex-strike-expiry.test.ts`                                                 |
-| 2     | `api/cron/backfill-gamma-setup-outcomes.ts`, `api/cron/check-gamma-setup-drift.ts` (header comments) |
+| Phase  | File                                                                                                    |
+| ------ | ------------------------------------------------------------------------------------------------------- |
+| 1      | `docs/superpowers/specs/cron-monitor-coverage-2026-10-29.md` (this file)                                |
+| 1      | `api/_lib/cron-schedules.ts`                                                                            |
+| 1      | `api/__tests__/cron-schedules.test.ts`                                                                  |
+| 1      | `api/_lib/cron-instrumentation.ts` (comment only)                                                       |
+| 2      | `api/cron/cleanup-ws-gex-strike-expiry.ts`                                                              |
+| 2      | `api/__tests__/cleanup-ws-gex-strike-expiry.test.ts`                                                    |
+| 2      | `api/cron/backfill-gamma-setup-outcomes.ts`, `api/cron/check-gamma-setup-drift.ts` (header comments)    |
+| Review | `docs/superpowers/specs/migration-drift-audit-cron-2026-05-29.md` (superseded note)                     |
+| Review | `api/cron/takeit-fill-shap.ts`, `api/cron/audit-takeit-calibration.ts` and their tests                  |
+| Review | `api/cron/backfill-gamma-setup-outcomes.ts`, `api/__tests__/cron-backfill-gamma-setup-outcomes.test.ts` |
 
 ## Data dependencies
 
@@ -94,8 +112,10 @@ None. No tables, migrations, env vars or external APIs. The new monitors are cre
 ## Thresholds and constants
 
 - `DEFAULT_MARGIN` 5 min, `DEFAULT_MAX_RUNTIME` 5 min, `LONG_RUNNER_MAX_RUNTIME` 10 min, `HIGH_FREQ_FAILURE_THRESHOLD` 3, all existing.
-- cleanup-ws-gex-strike-expiry `WALL_BUDGET_MS`: 295 000 → 280 000 ms.
+- cleanup-ws-gex-strike-expiry `WALL_BUDGET_MS`: 295 000 → 280 000 ms, checked before each batch as elapsed + slowest batch so far.
+- backfill-gamma-setup-outcomes `BACKFILL_TRADING_DAYS` 2 (was `BACKFILL_LOOKBACK_DAYS` 2 calendar days).
 
 ## Open questions
 
-- None blocking. Possible follow-up: neither `cleanup-ws-*` cron calls `reportCronRun`, so neither leaves an Axiom row. That matches the sibling and is out of scope here.
+- Historical gamma-setup outcomes: run the read-only count of fires the old window skipped, then the one-off backfill (see History under the review follow-ups).
+- Possible follow-up: neither `cleanup-ws-*` cron calls `reportCronRun`, so neither leaves an Axiom row. That matches the sibling and is out of scope here.
