@@ -258,8 +258,8 @@ describe('audit-takeit-calibration cron', () => {
       ])
       // Coverage probe (lottery).
       .mockResolvedValueOnce([
-        { inferred_structure: 'vertical', wave2_status: 'confirmed', n: 2 },
-        { inferred_structure: null, wave2_status: null, n: 2 },
+        { wave2_status: 'confirmed', n: 2 },
+        { wave2_status: null, n: 2 },
       ])
       // SilentBoom: 4-row set as well.
       .mockResolvedValueOnce([
@@ -284,6 +284,12 @@ describe('audit-takeit-calibration cron', () => {
       rows: 8,
       lottery: { n: 4, brier_ok: true, auc: 1 },
       silentboom: { n: 4, brier_ok: true, auc: 1 },
+    });
+    // The coverage block reports wave2 status only; the retired multileg
+    // classifier's coverage figure is gone.
+    const lottery = (res._json as { lottery: Record<string, unknown> }).lottery;
+    expect(lottery.feature_coverage).toEqual({
+      wave2_status_distribution: { confirmed: 2, null: 2 },
     });
     // Distribution calls — Brier, AUC, and per-bucket residual all emitted.
     const distCalls = vi.mocked(Sentry.metrics.distribution).mock.calls;

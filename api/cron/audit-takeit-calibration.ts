@@ -75,8 +75,6 @@ interface AuditResult {
    * silent AUC regression at retrain time.
    */
   feature_coverage: {
-    /** Fraction of last-7-day fires with a non-NULL inferred_structure. */
-    pct_inferred_structure_classified: number;
     /** Counts of wave2_status buckets (null = still in flight or pre-Phase 4). */
     wave2_status_distribution: Record<string, number>;
   };
@@ -164,49 +162,40 @@ async function fetchFeatureCoverage(
         ? ((await withDbRetry(
             () => db`
               SELECT
-                inferred_structure,
                 wave2_status,
                 COUNT(*)::int AS n
               FROM lottery_finder_fires
               WHERE date >= CURRENT_DATE - (${LOOKBACK_DAYS}::int * INTERVAL '1 day')
-              GROUP BY inferred_structure, wave2_status
+              GROUP BY wave2_status
             `,
             2,
             10_000,
           )) as Array<{
-            inferred_structure: string | null;
             wave2_status: string | null;
             n: number;
           }>)
         : ((await withDbRetry(
             () => db`
               SELECT
-                inferred_structure,
                 wave2_status,
                 COUNT(*)::int AS n
               FROM silent_boom_alerts
               WHERE date >= CURRENT_DATE - (${LOOKBACK_DAYS}::int * INTERVAL '1 day')
-              GROUP BY inferred_structure, wave2_status
+              GROUP BY wave2_status
             `,
             2,
             10_000,
           )) as Array<{
-            inferred_structure: string | null;
             wave2_status: string | null;
             n: number;
           }>);
 
-    let total = 0;
-    let classified = 0;
     const waveDist: Record<string, number> = {};
     for (const r of rows) {
-      total += r.n;
-      if (r.inferred_structure !== null) classified += r.n;
       const waveKey = r.wave2_status ?? 'null';
       waveDist[waveKey] = (waveDist[waveKey] ?? 0) + r.n;
     }
     return {
-      pct_inferred_structure_classified: total > 0 ? classified / total : 0,
       wave2_status_distribution: waveDist,
     };
   } catch (err) {
@@ -214,7 +203,6 @@ async function fetchFeatureCoverage(
     // DB hiccup — capture and return an empty block.
     Sentry.captureException(err);
     return {
-      pct_inferred_structure_classified: 0,
       wave2_status_distribution: {},
     };
   }
