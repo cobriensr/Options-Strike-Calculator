@@ -206,12 +206,14 @@ describe('/api/gex-landscape', () => {
     expect(body.data.strikes).toHaveLength(2);
     expect(body.data.strikes[0]).toMatchObject({
       strike: 5950,
-      gamma: -1234,
+      // GEXBot gamma is taker-signed; the endpoint negates it (and its
+      // priors) to MM sign. Charm and vanna keep the vendor sign.
+      gamma: 1234,
       charm: 12,
       vanna: 0.45,
-      gammaPrev5m: -1200,
-      gammaPrev15m: -1100,
-      gammaPrev30m: -1000,
+      gammaPrev5m: 1200,
+      gammaPrev15m: 1100,
+      gammaPrev30m: 1000,
       charmPrev5m: 11.9,
       charmPrev15m: 10.5,
       charmPrev30m: 9.8,
@@ -223,12 +225,12 @@ describe('/api/gex-landscape', () => {
     // that drops the join past the first strike fails the test.
     expect(body.data.strikes[1]).toMatchObject({
       strike: 5960,
-      gamma: 700,
+      gamma: -700,
       charm: -5,
       vanna: -0.2,
-      gammaPrev5m: 650,
-      gammaPrev15m: 600,
-      gammaPrev30m: 580,
+      gammaPrev5m: -650,
+      gammaPrev15m: -600,
+      gammaPrev30m: -580,
       charmPrev5m: -4.8,
       charmPrev15m: -4.2,
       charmPrev30m: -3.9,
@@ -239,6 +241,46 @@ describe('/api/gex-landscape', () => {
     expect(typeof body.ageSec).toBe('number');
     expect(body.ageSec).toBeGreaterThanOrEqual(0);
     expect(body.availableMinutes).toHaveLength(1);
+  });
+
+  it('flips the gamma regime and gamma deltas to MM sign; charm and vanna deltas keep the vendor sign', async () => {
+    const capturedAt = new Date(Date.now() - 30 * 1000);
+    mockSql
+      .mockResolvedValueOnce([{ minute: capturedAt }])
+      .mockResolvedValueOnce([
+        { captured_at: capturedAt, raw_response: GAMMA_PAYLOAD },
+      ])
+      .mockResolvedValueOnce([
+        { captured_at: capturedAt, raw_response: CHARM_PAYLOAD },
+      ])
+      .mockResolvedValueOnce([
+        { captured_at: capturedAt, raw_response: VANNA_PAYLOAD },
+      ])
+      .mockResolvedValueOnce([{ close: '5955' }]);
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    const strikes = (
+      res._json as { data: { strikes: Array<Record<string, number>> } }
+    ).data.strikes;
+
+    // Taker gamma sums to -534 (-1234 + 700): the regime the GEX Landscape
+    // computes from these rows now reads MM long gamma (+534), not short.
+    const total = strikes.reduce((sum, s) => sum + s['gamma']!, 0);
+    expect(total).toBe(534);
+
+    // Taker gamma at 5950 went -1200 → -1234 over 5 min (more taker-short),
+    // so MM gamma grew: +1200 → +1234. Value and prior are flipped together,
+    // so the change keeps a meaningful sign (-(raw change)).
+    const at5950 = strikes.find((s) => s['strike'] === 5950)!;
+    expect(at5950['gamma']! - at5950['gammaPrev5m']!).toBe(-(-1234 - -1200));
+    expect(at5950['gamma']! - at5950['gammaPrev30m']!).toBe(-(-1234 - -1000));
+    // Charm 9.8 → 12 over 30 min stays a +2.2 change.
+    expect(at5950['charm']! - at5950['charmPrev30m']!).toBeCloseTo(2.2);
+    expect(at5950['vanna']! - at5950['vannaPrev30m']!).toBeCloseTo(0.05);
   });
 
   it('zero-fills scalar values for strikes only present in one panel, leaves prev fields null', async () => {
@@ -278,10 +320,10 @@ describe('/api/gex-landscape', () => {
     const at5950 = body.data.strikes.find((s) => s['strike'] === 5950);
     expect(at5950).toMatchObject({
       strike: 5950,
-      gamma: -1000,
+      gamma: 1000,
       charm: 0,
       vanna: 0,
-      gammaPrev5m: -900,
+      gammaPrev5m: 900,
       charmPrev5m: null,
       vannaPrev5m: null,
     });

@@ -47,10 +47,14 @@ export function signalTooltip(cls: GexClassification, dir: Direction): string {
   return `${mechanic} ${position} ${charm}`;
 }
 
+/**
+ * Charm is GEXBot's own value in the vendor's sign (owner decision D1
+ * flips only gamma), so the tooltip makes no market-maker claim.
+ */
 export function charmTooltip(netCharm: number): string {
   return netCharm >= 0
-    ? 'Positive: market maker hedging pressure at this level is growing throughout the day — the structural effect gets stronger into the close.'
-    : 'Negative: market maker hedging pressure at this level is draining throughout the day — the structural effect weakens into the close.';
+    ? "Positive GEXBot charm (vendor's sign, not market-maker attributed): the structural effect at this level gets stronger into the close."
+    : "Negative GEXBot charm (vendor's sign, not market-maker attributed): the structural effect at this level weakens into the close.";
 }
 
 /**

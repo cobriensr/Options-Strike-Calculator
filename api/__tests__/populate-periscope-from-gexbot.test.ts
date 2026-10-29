@@ -46,7 +46,7 @@ describe('decodeStrikes', () => {
         [7290, 0, 0, -1295.76, [-3509.44, -2211.96, 286.84], 0, null],
       ],
     };
-    const out = decodeStrikes(payload);
+    const out = decodeStrikes(payload, 'charm');
     expect(out).toEqual([
       { strike: 7375, value: 55.75 },
       { strike: 7435, value: 6500.28 },
@@ -55,39 +55,54 @@ describe('decodeStrikes', () => {
   });
 
   it('rounds non-integer strikes (defensive, GEXBot uses integers)', () => {
-    const out = decodeStrikes({
-      mini_contracts: [[7435.4, 0, 0, 42, [], 0, null]],
-    });
+    const out = decodeStrikes(
+      { mini_contracts: [[7435.4, 0, 0, 42, [], 0, null]] },
+      'charm',
+    );
     expect(out).toEqual([{ strike: 7435, value: 42 }]);
   });
 
   it('drops rows where strike or value is non-finite', () => {
-    const out = decodeStrikes({
-      mini_contracts: [
-        [7435, 0, 0, NaN, [], 0, null],
-        [null, 0, 0, 100, [], 0, null],
-        [7290, 0, 0, 100, [], 0, null],
-      ],
-    });
+    const out = decodeStrikes(
+      {
+        mini_contracts: [
+          [7435, 0, 0, NaN, [], 0, null],
+          [null, 0, 0, 100, [], 0, null],
+          [7290, 0, 0, 100, [], 0, null],
+        ],
+      },
+      'charm',
+    );
     expect(out).toEqual([{ strike: 7290, value: 100 }]);
   });
 
   it('returns empty array on missing or non-array mini_contracts', () => {
-    expect(decodeStrikes({})).toEqual([]);
-    expect(decodeStrikes({ mini_contracts: undefined })).toEqual([]);
-    expect(decodeStrikes({ mini_contracts: 'oops' as unknown as [] })).toEqual(
-      [],
-    );
+    expect(decodeStrikes({}, 'charm')).toEqual([]);
+    expect(decodeStrikes({ mini_contracts: undefined }, 'charm')).toEqual([]);
+    expect(
+      decodeStrikes({ mini_contracts: 'oops' as unknown as [] }, 'charm'),
+    ).toEqual([]);
   });
 
   it('drops rows shorter than 4 elements', () => {
-    const out = decodeStrikes({
-      mini_contracts: [
-        [7435, 0, 0], // too short
-        [7290, 0, 0, 100, []],
-      ],
-    });
+    const out = decodeStrikes(
+      {
+        mini_contracts: [
+          [7435, 0, 0], // too short
+          [7290, 0, 0, 100, []],
+        ],
+      },
+      'charm',
+    );
     expect(out).toEqual([{ strike: 7290, value: 100 }]);
+  });
+
+  it('negates the gamma panel to MM sign (owner decision D1)', () => {
+    const out = decodeStrikes(
+      { mini_contracts: [[7435, 0, 0, 6500.28, [], 0, null]] },
+      'gamma',
+    );
+    expect(out).toEqual([{ strike: 7435, value: -6500.28 }]);
   });
 });
 
@@ -300,6 +315,67 @@ describe('populate-periscope-from-gexbot handler', () => {
     });
     // 3 SELECTs + 3 INSERTs = 6 SQL calls
     expect(mockSql).toHaveBeenCalledTimes(6);
+  });
+
+  it("writes gamma negated to MM sign and tags every panel's rows source = 'gexbot'", async () => {
+    const freshTimestamp = new Date(MARKET_TIME.getTime() - 60_000);
+    const payload = {
+      mini_contracts: [
+        [7375, 0, 0, 55.75, [], 0, null],
+        [7435, 0, 0, 6500.28, [], 0, null],
+        [7290, 0, 0, -1295.76, [], 0, null],
+      ],
+    };
+    const inserted = [{ strike: 7375 }, { strike: 7435 }, { strike: 7290 }];
+    mockSql
+      .mockResolvedValueOnce([
+        { captured_at: freshTimestamp, raw_response: payload },
+      ])
+      .mockResolvedValueOnce(inserted)
+      .mockResolvedValueOnce([
+        { captured_at: freshTimestamp, raw_response: payload },
+      ])
+      .mockResolvedValueOnce(inserted)
+      .mockResolvedValueOnce([
+        { captured_at: freshTimestamp, raw_response: payload },
+      ])
+      .mockResolvedValueOnce(inserted);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._json).toMatchObject({ status: 'success', rows: 9 });
+
+    // The tagged-template mock sees (strings, ...params) per query.
+    const inserts = mockSql.mock.calls
+      .map(([strings, ...params]) => ({
+        text: (strings as TemplateStringsArray).join('$'),
+        params: params as unknown[],
+      }))
+      .filter((q) => q.text.includes('INSERT INTO periscope_snapshots'));
+    expect(inserts).toHaveLength(3);
+
+    const byPanel = new Map(
+      inserts.map((q) => {
+        const panel = q.params.find(
+          (p) => p === 'gamma' || p === 'charm' || p === 'vanna',
+        );
+        const [strikes, values] = q.params.filter(Array.isArray);
+        return [panel, { q, strikes, values }];
+      }),
+    );
+    const raw = [55.75, 6500.28, -1295.76];
+    expect(byPanel.get('gamma')?.strikes).toEqual([7375, 7435, 7290]);
+    expect(byPanel.get('gamma')?.values).toEqual([-55.75, -6500.28, 1295.76]);
+    expect(byPanel.get('charm')?.values).toEqual(raw);
+    expect(byPanel.get('vanna')?.values).toEqual(raw);
+    for (const { q } of byPanel.values()) {
+      expect(q.text).toMatch(/\bsource\b/);
+      expect(q.params).toContain('gexbot');
+    }
   });
 
   it('reports partial status when some panels missing fresh data', async () => {

@@ -108,6 +108,13 @@ describe('StrikeBox: table structure', () => {
     expect(screen.getByText('MM Γ')).toBeInTheDocument();
     expect(screen.getByText('HOT%')).toBeInTheDocument();
   });
+
+  it('MM Γ header names its real source: GEXBot negated to MM sign since 2026-05-26', () => {
+    render(<StrikeBox leaderboard={[makeStrike(5800)]} />);
+    const title = screen.getByText('MM Γ').getAttribute('title') ?? '';
+    expect(title).toMatch(/GEXBot gamma negated to MM sign since 2026-05-26/);
+    expect(title).toMatch(/UW Periscope before/);
+  });
 });
 
 describe('StrikeBox: MM Γ overlay', () => {

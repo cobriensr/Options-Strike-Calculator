@@ -226,7 +226,7 @@ const GexLandscape = memo(function GexLandscape({
 
   // Top 5 strikes across the entire chain — ignores PRICE_WINDOW so
   // distant institutional walls surface even when they're far from
-  // spot. Ranked by absolute netGamma (GEXBot, taker-signed).
+  // spot. Ranked by absolute netGamma (GEXBot, negated to MM sign).
   const topFive = useMemo(
     () =>
       [...strikes]

@@ -1,6 +1,7 @@
 /**
  * usePeriscopeExposure — fetches the Periscope exposure view for the
- * panel (GEXBot taker-signed values since the GEXBot cutover). Routes
+ * panel (since the 2026-05-26 GEXBot cutover: gamma negated to MM sign,
+ * charm and vanna in GEXBot's own sign). Routes
  * between two endpoints based on whether the user is in live or
  * historical mode:
  *

@@ -12,8 +12,9 @@
  * geometry than the standard CHEX/DEX/VEX `GreekBar`, and worth keeping
  * adjacent to the cell that owns it.
  *
- * The MM Γ cell shows UW Periscope's MM-attributed dollar gamma at this
- * strike as a cross-check against the naive Hedge/1%. Different scales
+ * The MM Γ cell shows MM-signed dollar gamma at this strike (GEXBot
+ * negated to MM sign since 2026-05-26, UW Periscope before) as a
+ * cross-check against the naive Hedge/1%. Different scales
  * (MM is B-scale, Hedge/1% is K-scale) so the sign-agreement marker
  * is the load-bearing signal, not magnitude.
  */
@@ -47,7 +48,7 @@ export interface RowProps {
   barStats: BarStatsBundle;
   isAlt: boolean;
   /**
-   * MM-attributed dollar gamma at this strike from UW Periscope, or
+   * MM-signed dollar gamma at this strike from periscope_snapshots, or
    * `null` when no MM slot exists for the strike (e.g. pre-market, or
    * strike is outside the periscope_snapshots coverage window). Scale
    * differs from `features.gexDollars` — the agreement marker compares
@@ -96,8 +97,8 @@ export const Row = memo(function Row({
   const gexColor = features.gexDollars >= 0 ? theme.green : theme.red;
 
   // MM-attributed gamma cross-check. The naive scoring pipeline computes
-  // `wallSide` from the sign of `features.gexDollars`; if UW's MM
-  // attribution disagrees on the sign at this strike, the wall may be
+  // `wallSide` from the sign of `features.gexDollars`; if the MM-signed
+  // gamma disagrees on the sign at this strike, the wall may be
   // mis-classified. Both 0 → no marker (ambiguous). Either null → no
   // marker (no MM data to compare against).
   const mmAgreement: 'agree' | 'disagree' | 'none' =
@@ -206,7 +207,7 @@ export const Row = memo(function Row({
         {formatGexBare(features.gexDollars)}
       </td>
 
-      {/* MM Γ — UW Periscope MM-attributed dollar gamma, with sign-
+      {/* MM Γ — MM-signed dollar gamma (periscope_snapshots), with sign-
           agreement marker against Hedge/1% (different scale, so the ✓/✗
           is the load-bearing signal, not the value compare). */}
       <td className={TD_CLS} style={{ color: mmColor }}>

@@ -1,5 +1,7 @@
 /**
- * Periscope MM-attributed exposure formatter for the analyze endpoint.
+ * Periscope exposure formatter for the analyze endpoint. Gamma is
+ * MM-signed (UW Periscope before 2026-05-26, GEXBot negated to MM sign
+ * since); charm and vanna are GEXBot's own sign since 2026-05-26.
  *
  * Replaces the screenshot workflow: instead of pasting a UW Periscope
  * heat-map image and relying on vision OCR, this module reads the
@@ -456,7 +458,7 @@ export function formatPeriscopeForClaude(args: {
   });
 
   lines.push(
-    `MM-attributed exposure for ${latest.expiry} expiry, latest 10-min slice ${slotTimeCT} CT (spot ${spot.toFixed(2)}).`,
+    `Periscope exposure for ${latest.expiry} expiry, latest 10-min slice ${slotTimeCT} CT (spot ${spot.toFixed(2)}).`,
   );
   if (prior != null) {
     const priorTimeCT = new Date(prior.capturedAt).toLocaleTimeString('en-US', {

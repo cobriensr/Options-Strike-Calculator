@@ -198,6 +198,11 @@ describe('formatPeriscopeForClaude', () => {
     expect(out).toMatch(/upper-skewed \(upside priced richer\)/);
     // No-breach distance reporting.
     expect(out).toMatch(/No breach yet/);
+    // The header no longer calls all three Greeks MM-attributed: since
+    // 2026-05-26 only gamma is MM-signed (charm/vanna are GEXBot's sign).
+    expect(out.split('\n')[0]).toBe(
+      'Periscope exposure for 2026-05-07 expiry, latest 10-min slice 14:50 CT (spot 7337.00).',
+    );
   });
 
   it('labels positive asymmetry as lower-skewed (downside priced richer)', () => {

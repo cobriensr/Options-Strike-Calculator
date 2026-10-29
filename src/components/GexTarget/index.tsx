@@ -119,10 +119,10 @@ export const GexTarget = memo(function GexTarget({
   // here doesn't impact the GEX panels.
   const { points: nopePoints } = useNopeIntraday({ marketOpen });
 
-  // MM-attributed gamma overlay for the Strike Board. Fetches the same
-  // periscope_snapshots slot that powers the GEX Landscape's "Dollar Γ"
-  // column so the trader can cross-check the naive scoring pipeline's
-  // wallSide pick against UW's MM-attribution math. Aligned to the
+  // MM-signed gamma overlay for the Strike Board (periscope_snapshots:
+  // GEXBot gamma negated to MM sign since 2026-05-26, UW Periscope
+  // before), so the trader can cross-check the naive scoring pipeline's
+  // wallSide pick against it. Aligned to the
   // GexTarget scrub timestamp when scrubbed, latest-otherwise.
   const periscopeStrikes = usePeriscopeStrikes(
     marketOpen,

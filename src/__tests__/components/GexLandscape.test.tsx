@@ -526,6 +526,37 @@ describe('GexLandscape', () => {
     });
   });
 
+  describe('Greek column tooltips name the source and sign (owner decision D1)', () => {
+    it('NetGamma says GEXBot gamma negated to MM sign, not UW Periscope', () => {
+      renderLandscape();
+      const title = screen.getByText('NetGamma').getAttribute('title') ?? '';
+      expect(title).toMatch(/GEXBot/);
+      expect(title).toMatch(/negated to market-maker sign/);
+      expect(title).not.toMatch(/UW Periscope|proprietary/);
+    });
+
+    it('NetCharm and NetVanna say vendor sign and claim no MM attribution', () => {
+      renderLandscape();
+      for (const header of ['NetCharm', 'NetVanna']) {
+        const title = screen.getByText(header).getAttribute('title') ?? '';
+        expect(title).toMatch(/GEXBot/);
+        expect(title).toMatch(/vendor's sign, not market-maker attributed/);
+        expect(title).not.toMatch(/MM-attributed|dealer/i);
+      }
+    });
+
+    it('the per-cell charm tooltip claims no market-maker attribution', () => {
+      renderLandscape();
+      const charmCells = Array.from(
+        document.querySelectorAll<HTMLElement>('[title]'),
+      ).filter((el) => /GEXBot charm/.test(el.title));
+      expect(charmCells.length).toBeGreaterThan(0);
+      for (const el of charmCells) {
+        expect(el.title).not.toMatch(/market maker/i);
+      }
+    });
+  });
+
   describe('GexBot priors Δ% surface (5m / 15m / 30m)', () => {
     it('renders Δ5m / Δ15m / Δ30m column headers (GexBot priors windows)', () => {
       renderLandscape();

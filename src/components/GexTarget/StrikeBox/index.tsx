@@ -27,10 +27,11 @@ import type { RankChangeInfo } from './RankArrow';
 export interface StrikeBoxProps {
   leaderboard: StrikeScore[];
   /**
-   * MM-attributed gamma per strike from UW Periscope's
-   * `periscope_snapshots`. When present, each row renders an extra
-   * "MM Γ" cell so the trader can cross-check the naive scoring
-   * pipeline's wallSide pick against UW's MM-attribution math. Missing
+   * MM-signed gamma per strike from `periscope_snapshots`: GEXBot gamma
+   * negated to MM sign since 2026-05-26, UW Periscope's MM-attributed
+   * gamma before. When present, each row renders an extra "MM Γ" cell so
+   * the trader can cross-check the naive scoring pipeline's wallSide pick
+   * against the MM-signed gamma. Missing
    * map (e.g. pre-market or no MM coverage) renders an em-dash in the
    * cell. Magnitude is on a different scale than `Hedge/1%` — the
    * agreement signal is the sign comparison, not the value compare.
@@ -148,7 +149,7 @@ export const StrikeBox = memo(function StrikeBox({
                 <th
                   className={`${TH_CLS} cursor-help`}
                   scope="col"
-                  title="MM-attributed dollar gamma from UW Periscope (periscope_snapshots, captured every 10 min during RTH). Cross-check column: scale is different from Hedge/1% — what matters is the SIGN comparison. A ✓ next to the value means MM attribution agrees with the naive Hedge/1% sign (same wall side); ✗ means they disagree (the scoring pipeline may have the wall on the wrong side)."
+                  title="MM-signed dollar gamma from periscope_snapshots (captured every 10 min during RTH): GEXBot gamma negated to MM sign since 2026-05-26, UW Periscope before. Cross-check column: scale is different from Hedge/1% — what matters is the SIGN comparison. A ✓ next to the value means MM attribution agrees with the naive Hedge/1% sign (same wall side); ✗ means they disagree (the scoring pipeline may have the wall on the wrong side)."
                 >
                   MM Γ
                 </th>

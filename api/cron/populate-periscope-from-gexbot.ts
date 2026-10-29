@@ -23,6 +23,14 @@
  * Orderflow tier doesn't expose a positions endpoint. Detectors don't
  * use positions, so this is fine for now.
  *
+ * Sign: gamma is written negated to MM sign, the convention the readers
+ * and rules assume (GEXBot reports it taker-signed); charm and vanna keep
+ * the vendor sign. `decodeStrikes` applies `GEXBOT_TO_MM_SIGN` (owner
+ * decision D1). Every row is tagged `source = 'gexbot'`, so
+ * `scripts/resign-gexbot-gamma.mts` (which re-signs only `source IS NULL`
+ * rows) never flips a row this cron wrote. The INSERT names the `source`
+ * column, so migration #194 must be applied before this code deploys.
+ *
  * Idempotency: `periscope_snapshots` UNIQUE
  * (captured_at, expiry, panel, strike) gives natural dedup. Re-running
  * the cron on the same minute is a no-op.
@@ -42,6 +50,7 @@ import logger from '../_lib/logger.js';
 import {
   PANELS,
   PANEL_TO_CATEGORY,
+  PERISCOPE_SOURCE,
   STALENESS_CUTOFF_MS,
   TICKER,
   decodeStrikes,
@@ -130,7 +139,8 @@ export default withCronInstrumentation(
 
       const row = rows[0]!;
       const capturedAt = new Date(row.captured_at);
-      const decoded = decodeStrikes(row.raw_response);
+      // Gamma comes back negated to MM sign; charm and vanna unchanged.
+      const decoded = decodeStrikes(row.raw_response, panel);
 
       if (decoded.length === 0) {
         errors.push(`${category}: no strikes decoded from payload`);
@@ -144,14 +154,15 @@ export default withCronInstrumentation(
       const values = decoded.map((d) => d.value);
       const inserted = (await withDbRetry(
         () => sql`
-          INSERT INTO periscope_snapshots (captured_at, expiry, panel, strike, value, timeframe)
+          INSERT INTO periscope_snapshots (captured_at, expiry, panel, strike, value, timeframe, source)
           SELECT
             ${capturedAt.toISOString()}::timestamptz,
             ${todayEt}::date,
             ${panel},
             unnest(${strikes}::int[]) AS strike,
             unnest(${values}::numeric[]) AS value,
-            ${timeframe}
+            ${timeframe},
+            ${PERISCOPE_SOURCE.gexbot}
           ON CONFLICT (captured_at, expiry, panel, strike) DO NOTHING
           RETURNING strike
         `,

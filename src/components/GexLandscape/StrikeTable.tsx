@@ -83,19 +83,19 @@ export function StrikeTable({
         <div className="px-3 py-2">Signal</div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="MM-attributed dollar gamma per strike from the 1-min GexBot capture. This is what UW Periscope renders on the Net GEX heat map — the proprietary dealer-attribution number."
+          title="Dollar gamma per strike from the 1-min GEXBot capture, negated to market-maker sign (GEXBot reports it taker-signed). Positive = market makers long gamma here, so they dampen moves; negative = short gamma, so they add to moves."
         >
           NetGamma
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="MM-attributed dollar charm per strike — how dealer hedge demand at this level decays into the close. Positive = pressure grows into close; negative = pressure fades."
+          title="GEXBot dollar charm per strike, in the vendor's sign, not market-maker attributed. Positive = this level's influence builds into the close; negative = it fades."
         >
           NetCharm
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="MM-attributed dollar vanna per strike — sensitivity of dealer delta hedge to IV moves. Positive = vol crush forces dealers to buy; negative = vol expansion forces dealers to sell."
+          title="GEXBot dollar vanna per strike, in the vendor's sign, not market-maker attributed: how the delta at this strike shifts when implied vol moves."
         >
           NetVanna
         </div>
@@ -248,7 +248,7 @@ export function StrikeTable({
                 </span>
               </div>
 
-              {/* NetGamma — GEXBot taker-signed dollar gamma */}
+              {/* NetGamma — GEXBot dollar gamma, negated to MM sign */}
               <div className="flex items-center justify-end px-3 py-1.5">
                 <span
                   className="font-mono text-[11px]"

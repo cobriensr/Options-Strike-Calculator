@@ -947,13 +947,64 @@ describe('buildAnalysisContext', () => {
     const unavailableBlock = result.content.find(
       (b) =>
         b.type === 'text' &&
-        b.text.includes('Periscope MM-attributed Exposure'),
+        b.text.includes('- Periscope Exposure (latest 10-min slice)'),
     );
     expect(unavailableBlock).toBeDefined();
     // The swallowed failure is now visible in Sentry.
     expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledWith(
       expect.any(Error),
     );
+    vi.unstubAllGlobals();
+  });
+
+  it('states the Periscope sign conventions: gamma MM-signed, charm and vanna in the vendor sign', async () => {
+    const { buildPeriscopeContextBlock } =
+      await import('../_lib/periscope-format.js');
+    vi.mocked(buildPeriscopeContextBlock).mockResolvedValueOnce(
+      'PERISCOPE-BODY',
+    );
+
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-10-28',
+      spx: 6850,
+    });
+
+    const text = result.content
+      .map((b) => (b.type === 'text' ? b.text : ''))
+      .join('\n');
+    const start = text.indexOf('## Periscope Exposure');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const block = text.slice(start, text.indexOf('PERISCOPE-BODY'));
+    expect(block.split('\n')[0]).toBe(
+      '## Periscope Exposure (latest 10-min slice — replaces screenshots)',
+    );
+    expect(block).toContain('Gamma is MM-signed');
+    expect(block).toContain('negated to MM sign since 2026-05-26');
+    expect(block).toContain(
+      "Charm and vanna are GEXBot's own values in the vendor's sign since 2026-05-26, not MM-attributed.",
+    );
+    // The old copy claimed all three Greeks were MM-attributed.
+    expect(block).not.toContain('**MM-attributed**');
+    vi.unstubAllGlobals();
+  });
+
+  it("describes the GEX Landscape bias as built on GEXBot's 1-minute capture", async () => {
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-10-28',
+      gexLandscapeBias: 'BIAS-BODY',
+    });
+
+    const text = result.content
+      .map((b) => (b.type === 'text' ? b.text : ''))
+      .join('\n');
+    const start = text.indexOf('## GEX Landscape Structural Bias');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const block = text.slice(start, text.indexOf('BIAS-BODY'));
+    expect(block).toContain("GEXBot's 1-minute capture");
+    expect(block).toContain('gamma negated to MM sign');
+    expect(block).not.toContain('smoothing');
     vi.unstubAllGlobals();
   });
 

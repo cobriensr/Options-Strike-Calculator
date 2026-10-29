@@ -1,11 +1,17 @@
 /**
  * GET /api/gex-landscape
  *
- * Per-strike gamma / charm / vanna rows (GEXBot net taker imbalances,
- * not dealer positions) served straight from `gexbot_api_capture` at
- * 1-min cadence, with each row carrying its own prior values (position-4
- * of the GEXBot `mini_contracts` payload, holding the strike's value at
- * t-5, t-15 and t-30 min — see `decodeStrikesWithHistory`).
+ * Per-strike gamma / charm / vanna rows (GEXBot State) served straight
+ * from `gexbot_api_capture` at 1-min cadence, with each row carrying its
+ * own prior values (position-4 of the GEXBot `mini_contracts` payload,
+ * holding the strike's value at t-5, t-15 and t-30 min — see
+ * `decodeStrikesWithHistory`).
+ *
+ * Sign: `gamma` and its three priors are GEXBot's taker-signed gamma
+ * negated to MM sign (positive = market makers long gamma), the
+ * convention the GEX Landscape regime and labels assume (owner decision
+ * D1, `GEXBOT_TO_MM_SIGN`). Value and priors flip together, so the Δ
+ * columns keep their meaning. Charm and vanna are in GEXBot's own sign.
  *
  * Replaces the 10-min `usePeriscopeStrikes` path the legacy GexLandscape
  * hook used. Phase 1 of the rebuild spec:
@@ -16,7 +22,7 @@
  *      back to "latest" (matches the project's permissive query handling).
  *   2. Read the latest gexbot row per panel (gamma_zero / charm_zero /
  *      vanna_zero) for SPX within STALENESS_CUTOFF_MS.
- *   3. Decode each panel via `decodeStrikesWithHistory()`.
+ *   3. Decode each panel via `decodeStrikesWithHistory()` (gamma negated).
  *   4. Join the three panels by strike. Missing scalar values default
  *      to 0 so client arithmetic doesn't have to null-guard; missing
  *      prev values stay null (source-of-truth).
@@ -144,6 +150,7 @@ async function fetchPanelSlot(
   const row = rows[0]!;
   const decoded = decodeStrikesWithHistory(
     row.raw_response as GexbotStatePayload,
+    panel,
   );
   return {
     capturedAt: new Date(row.captured_at),

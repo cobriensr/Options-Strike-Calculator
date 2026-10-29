@@ -156,6 +156,47 @@ describe('/api/periscope-map', () => {
     expect(body.priorAvailable).toBe(true);
   });
 
+  it('builds the gamma topology from gamma negated to MM sign; charm keeps the vendor sign', async () => {
+    const latestAt = new Date(Date.now() - 30 * 1000);
+    mockSql
+      .mockResolvedValueOnce([]) // availableSlots
+      .mockResolvedValueOnce([{ captured_at: latestAt, raw_response: PAYLOAD }])
+      .mockResolvedValueOnce([{ captured_at: latestAt, raw_response: PAYLOAD }])
+      .mockResolvedValueOnce([{ captured_at: latestAt, raw_response: PAYLOAD }])
+      .mockResolvedValueOnce([{ close: '7515' }])
+      .mockResolvedValue([]); // no prior, no cone
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    const view = (
+      res._json as {
+        data: {
+          gamma: {
+            ceiling: { strike: number; value: number } | null;
+            floor: { strike: number; value: number } | null;
+            accelTop: Array<{ strike: number; value: number }>;
+          };
+          charm: { topByAbs: Array<{ strike: number; value: number }> };
+        };
+      }
+    ).data;
+
+    // Raw taker gamma: 7510 +500K, 7520 +1.25M, 7505 −800K (spot 7515).
+    // MM sign: 7520 −1.25M and 7510 −500K are short-γ (acceleration),
+    // 7505 +800K is the +γ floor, and nothing above spot is a +γ ceiling.
+    expect(view.gamma.ceiling).toBeNull();
+    expect(view.gamma.floor).toMatchObject({ strike: 7505, value: 800_000 });
+    expect(view.gamma.accelTop.map((r) => [r.strike, r.value])).toEqual([
+      [7520, -1_250_000],
+      [7510, -500_000],
+    ]);
+    // Same payload on the charm panel: not flipped.
+    expect(view.charm.topByAbs[0]).toEqual({ strike: 7520, value: 1_250_000 });
+  });
+
   it('returns 503 + Retry-After on a transient DB error', async () => {
     mockSql.mockRejectedValue(new TransientDbError('db attempt timeout'));
     const req = mockRequest({
