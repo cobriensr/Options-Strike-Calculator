@@ -2,6 +2,8 @@
 
 import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
+import type { AnchorLegs, AnchorRequest } from '../_lib/anchor-legs.js';
+import type { SpreadLeg } from '../../src/types/spread-legs.js';
 import {
   expectAllGexBindsNull,
   extractAllInsertBinds,
@@ -115,6 +117,20 @@ vi.mock('../_lib/multileg-client.js', () => ({
   classifyMultilegBatch: mockClassifyMultilegBatch,
 }));
 
+// The exchange multi-leg anchor lookup that replaced the classifier, mocked
+// at the module boundary: its SQL has its own PGlite tests, and keeping it
+// off mockSql leaves every query sequence in this file unchanged. The
+// default (set in beforeEach) answers "no anchor print" for every fire, as
+// the real helper does for a quiet window.
+const mockLookupAnchorLegs = vi.hoisted(() =>
+  vi.fn<
+    (requests: AnchorRequest[]) => Promise<Map<string, AnchorLegs | null>>
+  >(),
+);
+vi.mock('../_lib/anchor-legs.js', () => ({
+  lookupAnchorLegs: mockLookupAnchorLegs,
+}));
+
 // The migration #160 columns the classifier used to fill. The cron no
 // longer writes them; they stay NULL on new rows.
 const OLD_MULTILEG_COLUMNS = [
@@ -203,6 +219,7 @@ import handler from '../cron/detect-lottery-fires.js';
 import { reportCronRun } from '../_lib/axiom.js';
 import { AXIOM_TOP_LEVEL_KEYS } from '../_lib/axiom-fields.js';
 import { cronGuard as realCronGuard } from '../_lib/cron-helpers.js';
+import { TransientDbError } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 
@@ -214,6 +231,12 @@ const { fetchStockCandles1m: realFetchStockCandles1m } = await vi.importActual<
 >('../_lib/uw-stock-candles.js');
 
 const GUARD = { apiKey: 'test-uw-key', today: '2026-05-01' };
+
+const authorizedReq = () =>
+  mockRequest({
+    method: 'GET',
+    headers: { authorization: 'Bearer test-secret' },
+  });
 
 // ============================================================
 // Fixture builders — generate ws_option_trades-shaped tick rows that
@@ -352,6 +375,13 @@ describe('detect-lottery-fires handler', () => {
     mockLoadTakeitDetectContext.mockResolvedValue(null);
     mockPriorSessionWinRatesForDay.mockResolvedValue([]);
     mockAwaitWinRateWarmup.mockResolvedValue(undefined);
+    // Default: no anchor print for any fire (the real helper's null).
+    mockLookupAnchorLegs.mockImplementation(
+      async (requests) =>
+        new Map(
+          requests.map((r): [string, AnchorLegs | null] => [r.key, null]),
+        ),
+    );
     process.env.CRON_SECRET = 'test-secret';
   });
 
@@ -1642,6 +1672,387 @@ describe('detect-lottery-fires handler', () => {
     expect(completedLog![0]).not.toHaveProperty('multilegMisses');
   });
 
+  // ──────────────────────────────────────────────────────────────────────
+  // Anchor legs from the exchange multi-leg flag (spec
+  // 2026-10-28-classifier-replacement-design.md, migration #197): one
+  // batched lookupAnchorLegs call per tick, before the INSERTs.
+  // ──────────────────────────────────────────────────────────────────────
+  describe('anchor legs from the exchange multi-leg flag', () => {
+    const SNDK_CHAIN = 'SNDK260501C01175000';
+    const ANCHOR_FAILED = 'anchor_legs.lookup_failed';
+    const ANCHOR_COLUMNS = [
+      'anchor_ws_trade_id',
+      'anchor_trade_code',
+      'anchor_leg_kind',
+      'spread_shape',
+      'spread_legs',
+    ] as const;
+
+    const VERTICAL_LEGS: SpreadLeg[] = [
+      {
+        optionType: 'C',
+        strike: 1175,
+        expiry: '2026-05-01',
+        size: 120,
+        price: 0.5,
+        tradeCode: 'mlet',
+      },
+      {
+        optionType: 'C',
+        strike: 1180,
+        expiry: '2026-05-01',
+        size: 120,
+        price: 0.21,
+        tradeCode: 'mlet',
+      },
+    ];
+    const SPREAD_LEG_ANCHOR: AnchorLegs = {
+      anchorWsTradeId: '3f1c2a9e-8b7d-4c6e-9a1b-2d3e4f5a6b7c',
+      anchorTradeCode: 'mlet',
+      legKind: 'multi_leg',
+      spreadShape: 'vertical',
+      spreadLegs: VERTICAL_LEGS,
+    };
+    const SINGLE_ANCHOR: AnchorLegs = {
+      anchorWsTradeId: '7a2b3c4d-1e2f-4a5b-8c9d-0e1f2a3b4c5d',
+      anchorTradeCode: 'auto',
+      legKind: 'single',
+      spreadShape: null,
+      spreadLegs: null,
+    };
+    const STOCK_TIED_ANCHOR: AnchorLegs = {
+      anchorWsTradeId: 'b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e',
+      anchorTradeCode: 'tlet',
+      legKind: 'stock_tied',
+      spreadShape: null,
+      spreadLegs: null,
+    };
+    const ALL_NULL = {
+      anchor_ws_trade_id: null,
+      anchor_trade_code: null,
+      anchor_leg_kind: null,
+      spread_shape: null,
+      spread_legs: null,
+    };
+
+    /** Answer each request by its chain, as the real helper keys by `key`. */
+    function answerAnchorsByChain(byChain: Record<string, AnchorLegs>) {
+      mockLookupAnchorLegs.mockImplementation(
+        async (requests) =>
+          new Map(
+            requests.map((r): [string, AnchorLegs | null] => [
+              r.key,
+              byChain[r.optionChain] ?? null,
+            ]),
+          ),
+      );
+    }
+
+    /** One SNDK fire: ticks, prior fires, flow series, macro, INSERT. */
+    function queueOneSndkFire(insertedId: number | null) {
+      mockTicks(fireableSndkStream())
+        .mockResolvedValueOnce([]) // prior fires
+        .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
+        .mockResolvedValueOnce([]) // flow_data (Pass 2)
+        .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
+        .mockResolvedValueOnce(insertedId == null ? [] : [{ id: insertedId }]); // insert
+    }
+
+    function anchorBinds(binds: Map<string, unknown>) {
+      return Object.fromEntries(
+        ANCHOR_COLUMNS.map((column) => [column, binds.get(column)]),
+      );
+    }
+
+    function anchorFailedCaptures() {
+      return vi
+        .mocked(Sentry.captureException)
+        .mock.calls.filter(
+          (call) =>
+            (call[1] as { fingerprint?: string[] } | undefined)
+              ?.fingerprint?.[1] === ANCHOR_FAILED,
+        );
+    }
+
+    function completedLog() {
+      const call = vi
+        .mocked(logger.info)
+        .mock.calls.find(
+          (c) => (c as unknown[])[1] === 'detect-lottery-fires completed',
+        );
+      expect(call).toBeDefined();
+      return (call as unknown[])[0];
+    }
+
+    it('looks the anchor up once, before the INSERT, and writes a spread leg’s five columns in place of the four old ones', async () => {
+      answerAnchorsByChain({ [SNDK_CHAIN]: SPREAD_LEG_ANCHOR });
+      queueOneSndkFire(42);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'success',
+        inserted: 1,
+        anchorsFound: 1,
+        anchorsMissing: 0,
+        anchorLookupFailures: 0,
+        anchorLookupError: null,
+      });
+
+      const binds = extractInsertBinds(mockSql, 'lottery_finder_fires');
+      expect(anchorBinds(binds)).toEqual({
+        anchor_ws_trade_id: '3f1c2a9e-8b7d-4c6e-9a1b-2d3e4f5a6b7c',
+        anchor_trade_code: 'mlet',
+        anchor_leg_kind: 'multi_leg',
+        spread_shape: 'vertical',
+        // jsonb: the SpreadLeg objects exactly as returned, serialised.
+        spread_legs: JSON.stringify(VERTICAL_LEGS),
+      });
+      const storedLegs = JSON.parse(binds.get('spread_legs') as string) as {
+        [key: string]: unknown;
+      }[];
+      expect(storedLegs).toEqual(VERTICAL_LEGS);
+      expect(Object.keys(storedLegs[0]!)).toEqual([
+        'optionType',
+        'strike',
+        'expiry',
+        'size',
+        'price',
+        'tradeCode',
+      ]);
+      for (const column of OLD_MULTILEG_COLUMNS) {
+        expect(binds.has(column)).toBe(false);
+      }
+
+      // One request for the one fire: its ticker and chain as the tick
+      // scan read them from ws_option_trades, window [trigger − 30 s,
+      // trigger + 30 s).
+      expect(mockLookupAnchorLegs).toHaveBeenCalledTimes(1);
+      const triggerMs = Date.parse(binds.get('trigger_time_ct') as string);
+      expect(mockLookupAnchorLegs.mock.calls[0]![0]).toEqual([
+        {
+          key: expect.any(String),
+          ticker: 'SNDK',
+          optionChain: SNDK_CHAIN,
+          windowStart: new Date(triggerMs - 30_000),
+          windowEnd: new Date(triggerMs + 30_000),
+        },
+      ]);
+      // Through the DB retry helper: one retry, 5 s per attempt.
+      expect(mockWithDbRetry).toHaveBeenCalledWith(
+        expect.any(Function),
+        1,
+        5_000,
+      );
+      // Before the INSERT, not after it.
+      const insertIdx = mockSql.mock.calls.findIndex((call) =>
+        Boolean(
+          (call[0] as readonly string[] | undefined)?.[0]?.includes(
+            'INSERT INTO lottery_finder_fires',
+          ),
+        ),
+      );
+      expect(mockLookupAnchorLegs.mock.invocationCallOrder[0]).toBeLessThan(
+        mockSql.mock.invocationCallOrder[insertIdx]!,
+      );
+      expect(anchorFailedCaptures()).toHaveLength(0);
+    });
+
+    it('makes one batched lookup for every fire on a tick and writes each fire its own anchor', async () => {
+      answerAnchorsByChain({
+        SNDK260501C01175000: SPREAD_LEG_ANCHOR,
+        SNDK260501C01176000: SINGLE_ANCHOR,
+        SNDK260501C01177000: STOCK_TIED_ANCHOR,
+        // SNDK260501C01178000: no anchor print in its window.
+      });
+      mockTicks(manyFireableSndkStreams(4));
+      queuePerFireMocks(4, true);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'success',
+        inserted: 4,
+        anchorsFound: 3,
+        anchorsMissing: 1,
+        anchorLookupFailures: 0,
+      });
+
+      // R5: one call for the tick, one request per fire, keys unique.
+      expect(mockLookupAnchorLegs).toHaveBeenCalledTimes(1);
+      const requests = mockLookupAnchorLegs.mock.calls[0]![0];
+      expect(requests.map((r) => r.optionChain)).toEqual([
+        'SNDK260501C01175000',
+        'SNDK260501C01176000',
+        'SNDK260501C01177000',
+        'SNDK260501C01178000',
+      ]);
+      expect(new Set(requests.map((r) => r.key)).size).toBe(4);
+
+      const byChain = new Map(
+        extractAllInsertBinds(mockSql, 'lottery_finder_fires').map((b) => [
+          b.get('option_chain_id'),
+          anchorBinds(b),
+        ]),
+      );
+      expect(byChain.get('SNDK260501C01175000')).toMatchObject({
+        anchor_leg_kind: 'multi_leg',
+        spread_shape: 'vertical',
+      });
+      expect(byChain.get('SNDK260501C01176000')).toEqual({
+        anchor_ws_trade_id: '7a2b3c4d-1e2f-4a5b-8c9d-0e1f2a3b4c5d',
+        anchor_trade_code: 'auto',
+        anchor_leg_kind: 'single',
+        spread_shape: null,
+        spread_legs: null,
+      });
+      expect(byChain.get('SNDK260501C01177000')).toEqual({
+        anchor_ws_trade_id: 'b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e',
+        anchor_trade_code: 'tlet',
+        anchor_leg_kind: 'stock_tied',
+        spread_shape: null,
+        spread_legs: null,
+      });
+      expect(byChain.get('SNDK260501C01178000')).toEqual(ALL_NULL);
+    });
+
+    it('writes NULL anchor columns and stays success when the fire has no anchor print, logging the miss at info only', async () => {
+      // Default mock: null for every key.
+      queueOneSndkFire(42);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'success',
+        inserted: 1,
+        anchorsFound: 0,
+        anchorsMissing: 1,
+        anchorLookupFailures: 0,
+        anchorLookupError: null,
+      });
+      expect(
+        anchorBinds(extractInsertBinds(mockSql, 'lottery_finder_fires')),
+      ).toEqual(ALL_NULL);
+      // Not a failure: no Sentry event, no warn or error line for it.
+      expect(anchorFailedCaptures()).toHaveLength(0);
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.stringContaining(ANCHOR_FAILED),
+      );
+      expect(completedLog()).toMatchObject({
+        anchorsFound: 0,
+        anchorsMissing: 1,
+        anchorLookupFailures: 0,
+      });
+    });
+
+    it('still writes the fire with NULL anchor columns when the lookup fails, names anchor_legs.lookup_failed in Sentry and the log, and reports partial', async () => {
+      const broken = new Error('column "trade_code" does not exist');
+      mockLookupAnchorLegs.mockRejectedValue(broken);
+      queueOneSndkFire(42);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        rows: 1,
+        inserted: 1,
+        // A failed lookup is not counted as missing anchors.
+        anchorsFound: 0,
+        anchorsMissing: 0,
+        anchorLookupFailures: 1,
+        anchorLookupError: broken.message,
+      });
+      expect(
+        anchorBinds(extractInsertBinds(mockSql, 'lottery_finder_fires')),
+      ).toEqual(ALL_NULL);
+
+      const captures = anchorFailedCaptures();
+      expect(captures).toHaveLength(1);
+      expect(captures[0]![0]).toBe(broken);
+      expect(captures[0]![1]).toMatchObject({
+        level: 'error',
+        fingerprint: ['detect-lottery-fires', ANCHOR_FAILED],
+        tags: {
+          'cron.job': 'detect-lottery-fires',
+          'cron.anomaly': ANCHOR_FAILED,
+        },
+        extra: { fires: 1 },
+      });
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ err: broken, fires: 1 }),
+        expect.stringContaining(ANCHOR_FAILED),
+      );
+
+      // Axiom: the run is partial, and the new fields ride in `meta`.
+      const payload = vi.mocked(reportCronRun).mock.calls[0]![1];
+      expect(payload).toMatchObject({
+        status: 'partial',
+        anchorLookupError: broken.message,
+      });
+      for (const key of [
+        'anchorsFound',
+        'anchorsMissing',
+        'anchorLookupFailures',
+        'anchorLookupError',
+      ]) {
+        expect(payload).toHaveProperty(key);
+        expect(AXIOM_TOP_LEVEL_KEYS.has(key)).toBe(false);
+      }
+    });
+
+    it('reports a lookup that exhausted its retries on a Neon blip at warning level, and still reports partial', async () => {
+      const blip = new TransientDbError(new Error('fetch failed'));
+      mockLookupAnchorLegs.mockRejectedValue(blip);
+      queueOneSndkFire(42);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        inserted: 1,
+        anchorLookupFailures: 1,
+        anchorLookupError: 'fetch failed',
+      });
+      expect(
+        anchorBinds(extractInsertBinds(mockSql, 'lottery_finder_fires')),
+      ).toEqual(ALL_NULL);
+      const captures = anchorFailedCaptures();
+      expect(captures).toHaveLength(1);
+      expect(captures[0]![0]).toBe(blip);
+      expect(captures[0]![1]).toMatchObject({ level: 'warning' });
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ err: blip, fires: 1 }),
+        expect.stringContaining(ANCHOR_FAILED),
+      );
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('stays success when the lookup fails but every fire hit ON CONFLICT (no row lost its anchor), and still raises the failure', async () => {
+      mockLookupAnchorLegs.mockRejectedValue(new Error('boom'));
+      queueOneSndkFire(null);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'success',
+        inserted: 0,
+        anchorLookupFailures: 1,
+        anchorLookupError: 'boom',
+      });
+      expect(anchorFailedCaptures()).toHaveLength(1);
+    });
+  });
+
   // Skipped 2026-05-23 (v2.3 cleanup): V2.2 Phase D retrain shifted weights;
   // SOUN's synthesized score under this fixture is 10 (verified by debug),
   // below the new t1=11. committedFires doesn't include it as a tier1 peer
@@ -2256,12 +2667,6 @@ describe('detect-lottery-fires handler', () => {
         },
       );
     }
-
-    const authorizedReq = () =>
-      mockRequest({
-        method: 'GET',
-        headers: { authorization: 'Bearer test-secret' },
-      });
 
     // Every tagged-template SQL call: its text with `${}` where each bind
     // sat, plus the binds in order.

@@ -4,8 +4,9 @@
  * Runs the v4 trigger detector on the rolling per-tick stream in
  * ws_option_trades for the Lottery Finder universe (~50 tickers).
  * Each qualifying fire is enriched with the per-fire discriminators
- * (RE-LOAD, cheap-call-PM, mode, flow_quad, tod) plus a macro-context
- * snapshot at fire time, then inserted into lottery_finder_fires with
+ * (RE-LOAD, cheap-call-PM, mode, flow_quad, tod), a macro-context
+ * snapshot at fire time and its anchor print's exchange leg kind, then
+ * inserted into lottery_finder_fires with
  * ON CONFLICT (option_chain_id, trigger_time_ct) DO NOTHING.
  *
  * Cadence: every minute during market hours (13:30–21:00 UTC, Mon-Fri).
@@ -43,8 +44,14 @@ import {
   type UWStockCandle,
 } from '../_lib/uw-stock-candles.js';
 import {
+  lookupAnchorLegs,
+  type AnchorLegs,
+  type AnchorRequest,
+} from '../_lib/anchor-legs.js';
+import {
   withCronInstrumentation,
   type CronResult,
+  type CronStatus,
 } from '../_lib/cron-instrumentation.js';
 import { isPastCashOpen } from '../_lib/cron-helpers.js';
 import { CASH_INDEX_ROOTS } from '../_lib/constants.js';
@@ -754,6 +761,78 @@ export default withCronInstrumentation(
       score: p.score,
     }));
 
+    // ── Anchor print + spread legs: one batched lookup per tick ────────
+    // The anchor is the top price × size print on the fire's own chain in
+    // [trigger − 30 s, trigger + 30 s). Its exchange trade code says
+    // whether it was one leg of a spread, and for a spread leg the lookup
+    // also groups the other legs (spec
+    // 2026-10-28-classifier-replacement-design.md, migration #197 columns;
+    // it replaces the Railway classifier, whose four migration #160
+    // columns are no longer written). At most two queries for the whole
+    // tick (R5), made before any INSERT. Fires that will hit ON CONFLICT
+    // are looked up too: they can't be told apart in advance, and in a
+    // batch they cost nothing extra.
+    //
+    // A fire with no anchor print gets NULL columns, and that is not a
+    // failure (counted as anchorsMissing). A failed lookup also leaves the
+    // columns NULL, on every fire, so it is reported apart: a Sentry event
+    // and a log line named anchor_legs.lookup_failed, anchorLookupError in
+    // the run payload, and status 'partial' when the run wrote fires.
+    //
+    // Retry budget: the two queries take 7–40 ms warm and ~0.4 s cold
+    // (EXPLAIN on prod, 2026-10-29), so a 5 s attempt cap only cuts off a
+    // stall. With one retry the worst case is 5 + 1 + 5 = 11 s ahead of
+    // the INSERTs, inside the 60 s maxDuration that setup and Pass 2 share.
+    const anchorKey = (rec: LotteryFireRecord): string =>
+      `${rec.optionChainId}|${rec.triggerTimeCt.toISOString()}`;
+    const anchorRequests: AnchorRequest[] = preparedFires.map(({ rec }) => {
+      const triggerMs = rec.triggerTimeCt.getTime();
+      return {
+        key: anchorKey(rec),
+        // The ticker and chain exactly as the tick scan read them from
+        // ws_option_trades; the anchor query matches both.
+        ticker: rec.underlyingSymbol,
+        optionChain: rec.optionChainId,
+        windowStart: new Date(triggerMs - 30_000),
+        windowEnd: new Date(triggerMs + 30_000),
+      };
+    });
+    let anchorsByKey = new Map<string, AnchorLegs | null>();
+    let anchorLookupError: string | null = null;
+    try {
+      anchorsByKey = await withDbRetry(
+        () => lookupAnchorLegs(anchorRequests),
+        1,
+        5_000,
+      );
+    } catch (err) {
+      anchorLookupError = err instanceof Error ? err.message : String(err);
+      // An exhausted Neon blip degrades quietly (warning); anything else
+      // is a broken query and pages (error). Either way the fires below
+      // are still written.
+      const transient = isRetryableDbError(err);
+      const detail = { err, fires: anchorRequests.length, transient };
+      const message =
+        'detect-lottery-fires: anchor_legs.lookup_failed; fires written without anchor legs';
+      if (transient) ctx.logger.warn(detail, message);
+      else ctx.logger.error(detail, message);
+      Sentry.captureException(err, {
+        level: transient ? 'warning' : 'error',
+        fingerprint: ['detect-lottery-fires', 'anchor_legs.lookup_failed'],
+        tags: {
+          'cron.job': 'detect-lottery-fires',
+          'cron.anomaly': 'anchor_legs.lookup_failed',
+        },
+        extra: { fires: anchorRequests.length },
+      });
+    }
+    let anchorsFound = 0;
+    for (const anchor of anchorsByKey.values()) {
+      if (anchor != null) anchorsFound += 1;
+    }
+    // Empty map after a failed lookup, so a failure never counts as missing.
+    const anchorsMissing = anchorsByKey.size - anchorsFound;
+
     // ── Pass 2: macro / gexbot / takeit + INSERT ───────────────────────
     for (const prepared of preparedFires) {
       const { rec, score, cumNcpAtFire, cumNppAtFire } = prepared;
@@ -862,13 +941,12 @@ export default withCronInstrumentation(
           rec.spotAtFirst,
         );
 
-        // The multileg classifier call was removed here on 2026-10-29: one
-        // serial call per fire to the Railway classifier (0.25–10.4 s each)
-        // timed the cron out at busy ticks. The exchange multi-leg anchor
-        // lookup replaces it (spec 2026-10-28-classifier-replacement-design.md,
-        // phase 4; migration #197 columns). The old four migration #160
-        // columns (inferred_structure, is_isolated_leg, match_confidence,
-        // pattern_group_id) are no longer written and stay NULL.
+        // This fire's anchor from the batched lookup above: null when it had
+        // no anchor print or the lookup failed. spread_legs stores the
+        // SpreadLeg objects as returned (camelCase keys), serialised for jsonb.
+        const anchor = anchorsByKey.get(anchorKey(rec)) ?? null;
+        const spreadLegsJson =
+          anchor?.spreadLegs == null ? null : JSON.stringify(anchor.spreadLegs);
 
         // V2.2 Phase C.4 cluster bonus: count distinct other tier1 tickers
         // that fired within ±5 min of this fire across the WHOLE cron tick
@@ -1024,7 +1102,9 @@ export default withCronInstrumentation(
             takeit_prob, takeit_model_version, takeit_features,
             gamma_at_trigger, cluster_bonus,
             gex_one_cvroflow, gex_net_put_dex, gex_one_dexoflow, gex_one_gexoflow,
-            gex_zcvr, gex_zero_gamma, gex_spot, gex_captured_at
+            gex_zcvr, gex_zero_gamma, gex_spot, gex_captured_at,
+            anchor_ws_trade_id, anchor_trade_code, anchor_leg_kind,
+            spread_shape, spread_legs
           ) VALUES (
             ${rec.date}::date, ${rec.triggerTimeCt.toISOString()}, ${rec.entryTimeCt.toISOString()},
             ${rec.optionChainId}, ${rec.underlyingSymbol}, ${rec.optionType},
@@ -1053,7 +1133,10 @@ export default withCronInstrumentation(
             ${gexSnapshot?.zcvr ?? null},
             ${gexSnapshot?.zeroGamma ?? null},
             ${gexSnapshot?.spot ?? null},
-            ${gexSnapshot?.capturedAt.toISOString() ?? null}
+            ${gexSnapshot?.capturedAt.toISOString() ?? null},
+            ${anchor?.anchorWsTradeId ?? null}, ${anchor?.anchorTradeCode ?? null},
+            ${anchor?.legKind ?? null}, ${anchor?.spreadShape ?? null},
+            ${spreadLegsJson}::jsonb
           )
           ON CONFLICT (option_chain_id, trigger_time_ct) DO NOTHING
           RETURNING id
@@ -1257,6 +1340,9 @@ export default withCronInstrumentation(
         flowSeriesFailures,
         flowSeriesSkippedBreaker,
         flowSeriesGenuineFailures,
+        anchorsFound,
+        anchorsMissing,
+        anchorLookupFailures: anchorLookupError == null ? 0 : 1,
       },
       'detect-lottery-fires completed',
     );
@@ -1266,16 +1352,19 @@ export default withCronInstrumentation(
     //     → 'error', whatever was written: it is a bug, and the cron monitor
     //     goes red;
     //   - else a Take-It prefetch that timed out or hit a Neon blip
-    //     (takeit_prob NULL on every fire), or a flow series that failed or
+    //     (takeit_prob NULL on every fire), a flow series that failed or
     //     was skipped by the breaker (no flow features or V2 score on that
-    //     ticker's fires), makes the run 'partial' when it wrote fires. With
+    //     ticker's fires), or a failed anchor-legs lookup, transient or not
+    //     (anchor columns NULL on every fire), makes the run 'partial'
+    //     when it wrote fires. With
     //     nothing written, no row was degraded and the run stays 'success';
-    //     the counters and the Sentry warning still show the failure.
+    //     the counters and the Sentry event still show the failure.
     const degraded =
       takeitPrefetchError != null ||
       flowSeriesFailures > 0 ||
-      flowSeriesSkippedBreaker > 0;
-    const status: 'error' | 'partial' | 'success' =
+      flowSeriesSkippedBreaker > 0 ||
+      anchorLookupError != null;
+    const status: CronStatus =
       flowSeriesGenuineFailures > 0 || takeitPrefetchFailureKind === 'error'
         ? 'error'
         : degraded && inserted > 0
@@ -1310,6 +1399,10 @@ export default withCronInstrumentation(
         flowSeriesGenuineFailures,
         firstFlowSeriesError,
         firstFlowSeriesGenuineError: firstFlowSeriesGenuineErrorMeta,
+        anchorsFound,
+        anchorsMissing,
+        anchorLookupFailures: anchorLookupError == null ? 0 : 1,
+        anchorLookupError,
       },
     };
   },
