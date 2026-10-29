@@ -21,7 +21,7 @@ Thumbs.db
 # Testing
 coverage/
 
-# Python service artifacts (sidecar/, uw-stream/, classifier/, ml/)
+# Python service artifacts (sidecar/, uw-stream/, ml/)
 .venv/
 .coverage
 .pytest_cache/

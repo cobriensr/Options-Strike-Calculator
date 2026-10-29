@@ -68,7 +68,7 @@ for this routine.
   The 10Δ floor conflict, for example, sat in code that hadn't changed.
 - **In scope:**
   - `README.md` and the docs it links: `docs/{ONBOARDING,LOCAL_DEV,FEATURES,ARCHITECTURE,DEPLOYMENT,TRADING_WORKFLOW,INDEX}.md`;
-  - the subproject READMEs: `sidecar/`, `uw-stream/`, `classifier/`, `ml/`, `scripts/`, `e2e/`;
+  - the subproject READMEs: `sidecar/`, `uw-stream/`, `ml/`, `scripts/`, `e2e/`;
   - `AGENTS.md`;
   - CLAUDE.md, _factual claims only_: never rules or policy.
 - **Out of scope:**
@@ -140,8 +140,8 @@ in the repo. Changing the audit means a commit, not a routine edit.
 ## Phases
 
 1. **Phase 0: keep docs commits from redeploying Railway.** About 15 min.
-   - **The problem:** `railway.toml` `watchPatterns` are `sidecar/**`,
-     `uw-stream/**`, and `classifier/**` + `ml/src/multileg_*.py`. A
+   - **The problem:** `railway.toml` `watchPatterns` are `sidecar/**`
+     and `uw-stream/**`. A
      README-only commit under those dirs rebuilds and redeploys the
      service; uw-stream drops its websockets. The routine commits
      unattended, possibly during market hours.
@@ -174,8 +174,7 @@ in the repo. Changing the audit means a commit, not a routine edit.
 
 ## Files
 
-- **Phase 0:** `sidecar/railway.toml`, `uw-stream/railway.toml`,
-  `classifier/railway.toml`, and `scripts/ws-canary/railway.toml` if it
+- **Phase 0:** `sidecar/railway.toml`, `uw-stream/railway.toml`, and `scripts/ws-canary/railway.toml` if it
   has watchPatterns.
 - **Phase 1:** `docs/runbooks/docs-audit.md`, `docs/audits/doc-map.json`,
   `docs/audits/state.json`, a README line pointing at `docs/audits/`,

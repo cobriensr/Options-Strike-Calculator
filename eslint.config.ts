@@ -69,10 +69,6 @@ export default [
       'uw-stream',
       // Railway cron service (Python), same pattern as uw-stream.
       'nightly',
-      // Standalone Python service for multileg classifier — same pattern
-      // as sidecar/uw-stream. Its own .venv contains third-party JS files
-      // that fail lint by no fault of ours.
-      'classifier',
       // periscope-scraper service was retired 2026-05-26 but local
       // dist/ + node_modules can linger on dev machines. Keep the
       // root-dir ignore so eslint doesn't choke on the compiled JS.

@@ -63,7 +63,7 @@ Hold pushes that touch `uw-stream/` or `sidecar/` until after the 15:00 CT close
 
 ## Testing
 
-As of 2026-10-29: **about 15,800 Vitest tests in 711 files**, plus 43 Playwright spec files (three browser projects: CI runs Chromium, the nightly job runs all three), all type-checked in strict mode. Python: 100 pytest files across ml (54), uw-stream (27), sidecar (10) and nightly (9), plus 7 in the retired `classifier/` folder, which CI no longer runs. Coverage on the 2026-10-29 gate run: 95.5% statements / 88.4% branches / 96.5% functions / 97.1% lines.
+As of 2026-10-29: **about 15,800 Vitest tests in 711 files**, plus 43 Playwright spec files (three browser projects: CI runs Chromium, the nightly job runs all three), all type-checked in strict mode. Python: 97 pytest files across ml (51), uw-stream (27), sidecar (10) and nightly (9). Coverage on the 2026-10-29 gate run: 95.5% statements / 88.4% branches / 96.5% functions / 97.1% lines.
 
 ### Unit Tests (Vitest)
 
@@ -168,7 +168,7 @@ make -C ml test-cov   # same, failing under 70% coverage
 - **uw-stream**: 26 files. CI runs `ruff check`, `ruff format --check` and `pytest --cov`, with no gate.
 - **nightly**: 9 files. CI runs `ruff check`, `ruff format --check` and `pytest --cov`, with no coverage gate; `pyproject.toml` makes pytest fail on any warning.
 
-`make py-test-cov` (root `Makefile`) runs ml, sidecar, classifier and uw-stream; nightly runs on its own (`cd nightly && python -m pytest`). `npm run review:python` runs ml and sidecar. Six more test files sit outside any suite and CI: `scripts/test_*.py` (5) and `scripts/ws-canary/test_canary.py`.
+`make py-test-cov` (root `Makefile`) runs ml, sidecar and uw-stream; nightly runs on its own (`cd nightly && python -m pytest`). `npm run review:python` runs ml and sidecar. Six more test files sit outside any suite and CI: `scripts/test_*.py` (5) and `scripts/ws-canary/test_canary.py`.
 
 ---
 
