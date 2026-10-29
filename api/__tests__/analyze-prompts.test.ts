@@ -5,6 +5,7 @@ import {
   SYSTEM_PROMPT_PART1,
   SYSTEM_PROMPT_PART2,
 } from '../_lib/analyze-prompts.js';
+import { SPOTGAMMA_MECHANICS_CONTEXT } from '../_lib/spotgamma-mechanics.js';
 import {
   VIX_RATIO_BACKWARDATION_MIN,
   VIX_RATIO_CONTANGO_MAX,
@@ -170,31 +171,59 @@ describe('analyze system prompt — Periscope rules run on UW data only (D1 revi
     return line ?? '';
   }
 
-  it('scopes every Periscope rule to UW data in one SOURCE SCOPE instruction', () => {
+  it('defines Periscope as UW data only, in one SOURCE SCOPE instruction', () => {
     const block = periscope();
-    expect(block).toContain('SOURCE SCOPE');
+    expect(block).toContain(
+      "SOURCE SCOPE — UW Periscope only. In this prompt, 'Periscope' always means UW Periscope (uploaded screenshots or UW-era/UW-websocket data). The GEXBot block is not Periscope data.",
+    );
     expect(block).toContain('Apply them ONLY to UW Periscope data');
     expect(block).toContain('uploaded Periscope screenshots');
     expect(block).toContain('"Periscope Exposure — UW Periscope" block');
+    expect(block).toContain('before 2026-05-26 17:20 UTC (12:20 CT)');
+    expect(block).toContain(
+      'Generic gamma/charm rules read UW sources only (UW Periscope, the API Per-Strike Profile, the Net GEX Heatmap, Zero-Gamma, All-Expiry).',
+    );
   });
 
-  it('makes a GEXBot block context only, with the vendor meaning and no MM reading', () => {
+  it('makes the GEXBot Taker-Flow Greeks block context only, with the vendor meaning and no MM reading', () => {
     const block = periscope();
-    expect(block).toContain('it is CONTEXT ONLY');
+    expect(block).toContain('"GEXBot Taker-Flow Greeks" block');
+    expect(block).not.toMatch(/"Periscope Exposure" block comes from GEXBot/);
+    expect(block).toContain('It is CONTEXT ONLY');
+    expect(block).toContain(
+      'never use it for any structure, strike, stop, target, timing or sizing decision',
+    );
     expect(block).toMatch(/classified taker-flow imbalance/);
     expect(block).toMatch(
       /never call its strikes market-maker walls, floors, ceilings or acceleration zones/,
     );
     expect(block).toMatch(/traders are net long gamma there/);
-    expect(block).toMatch(/wall when vol is falling/);
-    expect(block).toMatch(/pass through when vol is rising/);
+    expect(block).toContain(
+      "tend to hold price in falling vol (vendor's description)",
+    );
+    expect(block).not.toMatch(/act as a wall/);
+    expect(block).toMatch(/pass through in rising vol/);
     expect(block).toMatch(/not validated in this system/);
   });
 
-  it('rates the Periscope chart-confidence fields from UW data only', () => {
+  it('rates the Periscope chart-confidence fields from UW data only, consistently', () => {
     expect(periscope()).toContain(
       'rate chartConfidence.periscope and chartConfidence.periscopeCharm from UW Periscope data only',
     );
+    const exception =
+      '(Exception: chartConfidence.periscope/periscopeCharm — a GEXBot block does not count; see SOURCE SCOPE.)';
+    expect(lineStartingWith('If an API data section is present')).toContain(
+      exception,
+    );
+    expect(lineStartingWith('9. If any chartConfidence field')).toContain(
+      exception,
+    );
+    expect(
+      lineStartingWith('- The chartConfidence breakdown is always required'),
+    ).toContain(
+      'Mark as "NOT PROVIDED" only if no UW Periscope data (screenshots or a UW-sourced block) is present; a GEXBot block does not count.',
+    );
+    expect(PROMPT).not.toContain('only if no Periscope images were uploaded');
   });
 
   it('tags each strike-picking gamma rule and charm override as UW-only', () => {
@@ -246,11 +275,6 @@ describe('analyze system prompt — Periscope rules run on UW data only (D1 revi
     expect(lineStartingWith('If UW Periscope data is provided')).toContain(
       "map the calculator's theoretical strikes against its gamma profile",
     );
-    expect(
-      lineStartingWith('Primary signals for structure selection'),
-    ).toContain(
-      'UW Periscope Gamma profile (a GEXBot Periscope block is context only, not a primary signal)',
-    );
     expect(section('periscope_charm')).toContain(
       'UW Periscope Charm (uploaded screenshot or UW-era block only — never the GEXBot charm; see SOURCE SCOPE in <periscope>) shows CONFIRMED',
     );
@@ -268,6 +292,88 @@ describe('analyze system prompt — Periscope rules run on UW data only (D1 revi
     );
     expect(PROMPT).toContain(
       'Validated March 24: 6620 wall with +160M Periscope Charm held as ceiling all day',
+    );
+  });
+
+  it('points strike, cushion and wall reads at UW gamma data, never GEXBot', () => {
+    const uwGamma =
+      'UW Periscope if present, otherwise the API Per-Strike Greek Profile and Net GEX Heatmap; never the GEXBot block';
+    expect(lineStartingWith('2. Calculate actual cushion distances')).toContain(
+      uwGamma,
+    );
+    expect(
+      lineStartingWith('- When the opening range is unavailable'),
+    ).toContain(uwGamma);
+    expect(PROMPT).toContain(
+      '2. Specific Strike Placement (from UW gamma data)',
+    );
+    expect(lineStartingWith('If UW Periscope data is provided')).toContain(
+      'otherwise map them against the API Per-Strike Greek Profile and Net GEX Heatmap (UW data) — never against the GEXBot block:',
+    );
+    for (const field of ['putStrikeNote', 'callStrikeNote']) {
+      const line = PROMPT.split('\n').find((l) => l.includes(`"${field}"`));
+      expect(line).toContain(
+        'UW gamma zones (UW Periscope, else the API Per-Strike Greek Profile and Net GEX Heatmap; never the GEXBot block). null only if none of these is present.',
+      );
+    }
+    expect(section('aggregate_gex')).toContain(
+      'the per-strike 0DTE gamma profile (UW Periscope, or the API Per-Strike Greek Profile and Net GEX Heatmap) sits inside',
+    );
+    expect(section('aggregate_gex')).toContain(
+      'The UW per-strike profile (UW Periscope, or the API Per-Strike Greek Profile and Net GEX Heatmap; never GEXBot) answers WHERE',
+    );
+    expect(section('zero_gamma')).toContain(
+      'It is derived from the UW per-strike profile (the "SPX 0DTE Per-Strike Greek Profile", UW spot exposures by strike), not from Periscope or the GEXBot block',
+    );
+    expect(lineStartingWith('- If charm contradicts the flow-based')).toContain(
+      'may not behave as UW Periscope suggests',
+    );
+    expect(lineStartingWith('- GOOD: "SPX NCP at +$102.5M')).toContain(
+      '(from UW Periscope)',
+    );
+    expect(PROMPT).toContain(
+      'Do the top walls match UW Periscope (if present)?',
+    );
+  });
+
+  it('counts UW Periscope as primary only when present; its absence is the MODERATE cap only', () => {
+    // Owner decision (I4): one failed feed on a day with no UW Periscope
+    // stays MODERATE; GEXBot never counts as Periscope.
+    expect(lineStartingWith('- UW Periscope absent')).toContain(
+      'caps confidence at MODERATE independently of API availability. That cap is the only effect of its absence: a missing UW Periscope never counts toward the LOW triggers',
+    );
+    expect(PROMPT).not.toContain('- Periscope not uploaded (no images)');
+    expect(
+      lineStartingWith('Primary signals for structure selection'),
+    ).toContain(
+      'SPX Net Flow, Market Tide, and the UW Periscope Gamma profile when UW Periscope data is present.',
+    );
+    expect(
+      lineStartingWith('Primary signals for structure selection'),
+    ).toContain(
+      'GEXBot data never counts as Periscope or as a primary signal.',
+    );
+    expect(PROMPT).toContain(
+      'UW Periscope availability is determined separately: it is present when Periscope screenshots were uploaded or a "Periscope Exposure — UW Periscope" block is in the context; a GEXBot block never counts.',
+    );
+  });
+
+  it('scopes the SpotGamma cross-checks to uploaded UW Periscope', () => {
+    const sg = SPOTGAMMA_MECHANICS_CONTEXT;
+    expect(sg).not.toContain('Heatmap and Periscope Gamma already in context');
+    expect(sg).toContain(
+      'UW Net GEX Heatmap and UW Periscope Gamma (if uploaded; never the GEXBot block)',
+    );
+    expect(sg).toContain(
+      'Cross-check (only when UW Periscope Charm was uploaded; GEXBot charm never counts)',
+    );
+    expect(sg).toContain('When UW Periscope Charm shows strong real MM charm');
+    expect(sg).toContain(
+      'PRIMARY: UW Net GEX Heatmap + UW Periscope Gamma when uploaded (never the GEXBot block)',
+    );
+    expect(sg).toContain('+ UW Periscope Charm showing strong positive charm');
+    expect(sg).toContain(
+      'Trust UW Periscope Charm for confirmed dealer positioning',
     );
   });
 

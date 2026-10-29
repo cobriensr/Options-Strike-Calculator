@@ -194,8 +194,8 @@ Provided as an IMAGE requiring visual extraction.
 
 **Wall backing confidence — the primary analytical value:**
 
-Match non-0DTE bar locations to 0DTE wall locations from the UW Net GEX
-Heatmap and Periscope Gamma already in context.
+Match non-0DTE bar locations to 0DTE wall locations from the
+UW Net GEX Heatmap and UW Periscope Gamma (if uploaded; never the GEXBot block).
 
 NON-0DTE POSITIVE + 0DTE POSITIVE at same strike: MAXIMUM CONFIDENCE
 wall. Both intraday and structural books defend this level. Treat as
@@ -395,18 +395,19 @@ When two Charm Pressure snapshots are provided (early session and current):
 
 When naive charm API shows ALL-NEGATIVE (trending day signal) BUT
 SpotGamma Charm Pressure shows clear blue below with red above: the
-Charm Pressure image is providing the same override signal as Periscope
-Charm. Cross-check: does Periscope Charm also show positive real MM
-charm? If both SpotGamma Charm Pressure and Periscope Charm show blue
-below / red above, apply the Periscope Charm Override protocol from the
-net_charm section and do NOT apply the morning-only protocol.
+Charm Pressure image is providing the same override signal as UW Periscope
+Charm. Cross-check (only when UW Periscope Charm was uploaded; GEXBot charm never counts):
+does UW Periscope Charm also show positive real MM charm? If both SpotGamma
+Charm Pressure and UW Periscope Charm show blue below / red above, apply the
+Periscope Charm Override protocol from the net_charm section and do NOT apply
+the morning-only protocol.
 
 When naive charm shows CCS-CONFIRMING (positive below, negative above)
 AND SpotGamma Charm Pressure also shows blue below / red above: full
 alignment. Use the Charm Pressure convergence boundary as the specific
 strike target, not just the directional pattern.
 
-When Periscope Charm shows strong real MM charm at a specific strike AND
+When UW Periscope Charm shows strong real MM charm at a specific strike AND
 the SpotGamma convergence boundary aligns with that same strike: highest-
 confidence end-of-day anchor in the data set. Both confirmed real MM
 charm AND time-projected charm forces converge at this level.
@@ -503,8 +504,8 @@ slowly and with more chop.
      highest confidence in where the regime boundary is.
 
 3. Wall identification:
-   - PRIMARY: UW Net GEX Heatmap + Periscope Gamma (0DTE wall locations
-     with dollar magnitude).
+   - PRIMARY: UW Net GEX Heatmap + UW Periscope Gamma when uploaded (never the GEXBot block)
+     (0DTE wall locations with dollar magnitude).
    - BACKING CONFIDENCE: Non-0DTE GEX bars (does the structural book
      agree?).
    - FORWARD EVOLUTION: Delta Pressure time dimension (will the wall
@@ -532,10 +533,10 @@ buying below. Expect significant two-way action — widen strikes away
 from this level.
 
 Charm Pressure convergence fading (zone colors de-saturating near
-convergence boundary) + Periscope Charm showing strong positive charm:
+convergence boundary) + UW Periscope Charm showing strong positive charm:
 Charm Pressure reflects multi-expiry decay dynamics weakening at that
-level while Periscope Charm confirms real MM positioning still valid.
-Trust Periscope Charm for confirmed dealer positioning; note Charm
+level while UW Periscope Charm confirms real MM positioning still valid.
+Trust UW Periscope Charm for confirmed dealer positioning; note Charm
 Pressure as indicating the multi-expiry dynamic may be shifting away
 from that level for future sessions.
 

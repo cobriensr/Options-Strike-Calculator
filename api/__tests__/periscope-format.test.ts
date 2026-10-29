@@ -224,8 +224,9 @@ describe('formatPeriscopeForClaude', () => {
       cone: null,
       breaches: [],
     });
+    // A GEXBot block is not Periscope data, so it is not titled Periscope.
     expect(out.split('\n')[0]).toBe(
-      'Periscope exposure (GEXBot, taker-side sign: positive = traders net long that Greek at the strike) for 2026-10-27 expiry, latest 10-min slice 14:50 CT (spot 7337.00).',
+      'GEXBot exposure (taker-side sign: positive = traders net long that Greek at the strike) for 2026-10-27 expiry, latest 10-min slice 14:50 CT (spot 7337.00).',
     );
     expect(out).toContain(
       'Charm (GEXBot, taker-side sign: positive = traders net long charm at the strike):',
@@ -270,6 +271,30 @@ describe('formatPeriscopeForClaude', () => {
     expect(out).not.toMatch(
       /ceiling|floor|acceleration|regime change|vol-shock|wall/i,
     );
+  });
+
+  it('treats a slice with an unparseable time as unknown: taker labels, generic charm heading', () => {
+    const latest = makeSlot(
+      'not-a-date',
+      '2026-10-27',
+      realGamma2026_05_07,
+      realCharm2026_05_07,
+      realVanna2026_05_07,
+    );
+    const out = formatPeriscopeForClaude({
+      latest,
+      prior: null,
+      spot: 7337,
+      cone: null,
+      breaches: [],
+    });
+    expect(out.split('\n')[0]).toMatch(
+      /^Exposure \(source unknown\) for 2026-10-27 expiry/,
+    );
+    expect(out).toContain('Gamma by strike (±100 of spot):');
+    expect(out).toContain('Largest taker-long γ above spot: 7350');
+    expect(out).toContain('Charm flow:');
+    expect(out).not.toMatch(/Periscope|market-maker|\+γ ceiling|acceleration/);
   });
 
   it('keeps the UW market-maker topology labels on a scraper-era slice', () => {

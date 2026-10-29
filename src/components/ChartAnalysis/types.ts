@@ -124,9 +124,14 @@ export interface AnalysisEntry {
 
 export type ModeFilter = 'all' | 'entry' | 'midday' | 'review';
 
+/**
+ * Upload labels. They name UW Periscope explicitly: in the analyze prompt
+ * "Periscope" means UW Periscope only, and the live per-strike block is
+ * GEXBot data (owner decision D1 revised, 2026-10-29).
+ */
 export const CHART_LABELS = [
-  'Periscope (Gamma)',
-  'Periscope Charm (SPX)',
+  'UW Periscope (Gamma)',
+  'UW Periscope Charm (SPX)',
 ] as const;
 
 export const MODE_LABELS: Record<

@@ -226,7 +226,7 @@ describe('ChartAnalysis', () => {
       );
       await addImageViaInput(container);
       expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe(
-        'Periscope (Gamma)',
+        'UW Periscope (Gamma)',
       );
     });
 
@@ -237,8 +237,10 @@ describe('ChartAnalysis', () => {
       );
       await addImageViaInput(container);
       const select = screen.getByRole('combobox');
-      await user.selectOptions(select, 'Periscope Charm (SPX)');
-      expect((select as HTMLSelectElement).value).toBe('Periscope Charm (SPX)');
+      await user.selectOptions(select, 'UW Periscope Charm (SPX)');
+      expect((select as HTMLSelectElement).value).toBe(
+        'UW Periscope Charm (SPX)',
+      );
     });
 
     it('limits to 2 images', async () => {
@@ -599,7 +601,7 @@ describe('ChartAnalysis', () => {
     it('chart confidence cards are always visible', async () => {
       await renderFull();
       expect(
-        screen.getAllByText('Periscope (Gamma)').length,
+        screen.getAllByText('UW Periscope (Gamma)').length,
       ).toBeGreaterThanOrEqual(1);
       expect(screen.getByText('BEARISH')).toBeInTheDocument();
     });
@@ -805,7 +807,7 @@ describe('ChartAnalysis', () => {
         imageIssues: [
           {
             imageIndex: 1,
-            label: 'Periscope (Gamma)',
+            label: 'UW Periscope (Gamma)',
             issue: 'Blurry.',
             suggestion: 'Higher res.',
           },
@@ -1449,7 +1451,7 @@ describe('ChartAnalysis', () => {
               imageIssues: [
                 {
                   imageIndex: 1,
-                  label: 'Periscope (Gamma)',
+                  label: 'UW Periscope (Gamma)',
                   issue: 'Blurry.',
                   suggestion: 'Higher res.',
                 },
@@ -1794,7 +1796,7 @@ describe('AnalysisHistoryItem', () => {
 describe('ConfirmationBar', () => {
   const noop = () => {};
 
-  function makeImage(label = 'Periscope (Gamma)') {
+  function makeImage(label = 'UW Periscope (Gamma)') {
     return {
       id: '1',
       file: new File([''], 'chart.png'),
@@ -1821,7 +1823,7 @@ describe('ConfirmationBar', () => {
   it('shows plural "images" for two images', () => {
     render(
       <ConfirmationBar
-        images={[makeImage(), makeImage('Periscope Charm (SPX)')]}
+        images={[makeImage(), makeImage('UW Periscope Charm (SPX)')]}
         mode="entry"
         isBacktest={false}
         lastAnalysis={null}

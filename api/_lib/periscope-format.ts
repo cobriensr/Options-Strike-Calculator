@@ -30,16 +30,25 @@
 
 import { getDb } from './db.js';
 import {
+  PERISCOPE_GEXBOT_CUTOVER,
   PERISCOPE_SOURCE,
   periscopeSourceAt,
   type PeriscopeSource,
 } from '../../src/utils/periscope-source.js';
 
-/** What the slice's values are, per source, for the block's header. */
-const SOURCE_HEADER: Record<PeriscopeSource, string> = {
-  scraper: ' (UW Periscope, market-maker position estimate)',
+/** Lower bound for a scraper-era prior: before any periscope_snapshots row. */
+const SCRAPER_ERA_START = '1970-01-01T00:00:00Z';
+
+/**
+ * The block's title, per source. Only a UW slice is called Periscope: in
+ * the analyze prompt "Periscope" always means UW Periscope, and a GEXBot
+ * block is not Periscope data (owner decision D1 revised, 2026-10-29).
+ */
+const BLOCK_TITLE: Record<PeriscopeSource | 'unknown', string> = {
+  scraper: 'Periscope exposure (UW Periscope, market-maker position estimate)',
   gexbot:
-    ' (GEXBot, taker-side sign: positive = traders net long that Greek at the strike)',
+    'GEXBot exposure (taker-side sign: positive = traders net long that Greek at the strike)',
+  unknown: 'Exposure (source unknown)',
 };
 
 /**
@@ -154,16 +163,28 @@ export async function fetchLatestPeriscopeSlot(
  * Fetch the slot immediately preceding `latestCapturedAt` for momentum /
  * sign-flip detection. Returns null when no prior slot exists in the
  * window (typically the very first RTH slot of the day).
+ *
+ * The prior stays in the latest slice's era: a GEXBot slice never pairs
+ * with a UW scraper slice, since the two feeds measure different things
+ * and a sign change between them is not a flip. On the cutover day the
+ * first GEXBot slice therefore has no prior. A scraper slice's prior is
+ * already earlier than the cutover.
  */
 export async function fetchPriorPeriscopeSlot(
   expiry: string,
   latestCapturedAt: string,
 ): Promise<PeriscopeSlot | null> {
   const sql = getDb();
+  const eraStart =
+    periscopeSourceAt(latestCapturedAt) === PERISCOPE_SOURCE.gexbot
+      ? PERISCOPE_GEXBOT_CUTOVER
+      : SCRAPER_ERA_START;
   const slotRows = await sql`
     SELECT MAX(captured_at) AS captured_at
     FROM periscope_snapshots
-    WHERE expiry = ${expiry} AND captured_at < ${latestCapturedAt}
+    WHERE expiry = ${expiry}
+      AND captured_at < ${latestCapturedAt}
+      AND captured_at >= ${eraStart}
   `;
   const capturedAt = (slotRows[0] as { captured_at: string | Date | null })
     ?.captured_at;
@@ -524,11 +545,10 @@ export function formatPeriscopeForClaude(args: {
   });
 
   const source = periscopeSourceAt(latest.capturedAt);
-  const sourceNote = source == null ? '' : SOURCE_HEADER[source];
   const labels =
     source === PERISCOPE_SOURCE.scraper ? MM_TOPOLOGY : TAKER_TOPOLOGY;
   lines.push(
-    `Periscope exposure${sourceNote} for ${latest.expiry} expiry, latest 10-min slice ${slotTimeCT} CT (spot ${spot.toFixed(2)}).`,
+    `${BLOCK_TITLE[source ?? 'unknown']} for ${latest.expiry} expiry, latest 10-min slice ${slotTimeCT} CT (spot ${spot.toFixed(2)}).`,
   );
   if (prior != null) {
     const priorTimeCT = new Date(prior.capturedAt).toLocaleTimeString('en-US', {

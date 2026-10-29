@@ -147,3 +147,18 @@ describe('analyze-calibration.ts', () => {
     );
   });
 });
+
+describe('calibration examples — UW Periscope was uploaded those days (D1 revised)', () => {
+  // The examples model the Periscope Charm Override and Periscope walls as
+  // decisive. Those are UW-only rules, so each example states that UW
+  // Periscope screenshots were uploaded, or it would teach the model to
+  // apply them to GEXBot data.
+  it.each(['entry', 'midday', 'review'])(
+    '%s example says UW Periscope screenshots were uploaded that day',
+    (mode) => {
+      expect(getCalibrationExample(mode)).toContain(
+        'UW Periscope screenshots (Gamma and Charm) were uploaded that day, so the UW-only Periscope rules applied.',
+      );
+    },
+  );
+});

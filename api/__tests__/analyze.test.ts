@@ -80,6 +80,13 @@ vi.mock('../_lib/lessons.js', () => ({
   formatWinRateForClaude: vi.fn().mockReturnValue(''),
 }));
 
+// Periscope block builder: null (no slice) unless a test supplies a block.
+// Partial mock so the module's other exports stay real.
+vi.mock('../_lib/periscope-format.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../_lib/periscope-format.js')>()),
+  buildPeriscopeContextBlock: vi.fn().mockResolvedValue(null),
+}));
+
 // Mock the pre-check module — prevents real Anthropic calls in analyze tests.
 // Default: returns null (no-op path, existing content unchanged).
 vi.mock('../_lib/analyze-precheck.js', () => ({
@@ -824,6 +831,38 @@ describe('POST /api/analyze', () => {
     expect(params.system[1].text).toContain('<lessons_learned>');
     expect(params.system[1].text).toContain('VIX above 25 means widen wings');
     expect(params.system[1].cache_control).toBeUndefined();
+  });
+
+  it('sends a byte-identical cached system block for UW-era and GEXBot requests', async () => {
+    // The UW-vs-GEXBot framing is per request, so it must sit in the user
+    // message; if it leaked into the cached block, every source change
+    // would miss the prompt cache (owner decision D1 revised).
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+    const { buildPeriscopeContextBlock } =
+      await import('../_lib/periscope-format.js');
+    vi.mocked(buildPeriscopeContextBlock)
+      .mockResolvedValueOnce({ text: 'UW-BODY', source: 'scraper' })
+      .mockResolvedValueOnce({ text: 'GEXBOT-BODY', source: 'gexbot' });
+
+    for (let i = 0; i < 2; i++) {
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'POST', body: makeBody() }), res);
+      expect(res._status).toBe(200);
+    }
+
+    expect(mockStream).toHaveBeenCalledTimes(2);
+    const [uw, gexbot] = mockStream.mock.calls.map((c) => c[0]);
+    expect(uw.system[0].cache_control).toBeDefined();
+    expect(gexbot.system[0].text).toBe(uw.system[0].text);
+    for (const p of [uw, gexbot]) {
+      expect(p.system[0].text).not.toMatch(
+        /UW-BODY|GEXBOT-BODY|## GEXBot Taker-Flow Greeks|## Periscope Exposure — UW Periscope/,
+      );
+    }
+    const userText = (p: typeof uw): string =>
+      JSON.stringify(p.messages.at(-1).content);
+    expect(userText(uw)).toContain('## Periscope Exposure — UW Periscope');
+    expect(userText(gexbot)).toContain('## GEXBot Taker-Flow Greeks');
   });
 
   it('omits lessons block when no lessons exist', async () => {

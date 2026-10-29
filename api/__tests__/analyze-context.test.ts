@@ -957,10 +957,14 @@ describe('buildAnalysisContext', () => {
     vi.unstubAllGlobals();
   });
 
-  /** The Periscope Exposure section text, from its heading to the body. */
+  /**
+   * The per-strike Greeks section (heading to body) for a block of the given
+   * source. The heading names the source, so it is located by `heading`.
+   */
   async function periscopeSection(
     source: 'scraper' | 'gexbot' | null,
     selectedDate: string,
+    heading: string,
   ): Promise<string> {
     const { buildPeriscopeContextBlock } =
       await import('../_lib/periscope-format.js');
@@ -976,35 +980,49 @@ describe('buildAnalysisContext', () => {
     const text = result.content
       .map((b) => (b.type === 'text' ? b.text : ''))
       .join('\n');
-    const start = text.indexOf('## Periscope Exposure');
+    const start = text.indexOf(heading);
     expect(start).toBeGreaterThanOrEqual(0);
     const end = text.indexOf('PERISCOPE-BODY', start);
     expect(end).toBeGreaterThan(start);
     return text.slice(start, end);
   }
 
-  /** The UW-era usage note: the periscope skill's MM structural read. */
+  /** The UW-era usage note: the UW Periscope market-maker structural read. */
   const UW_USAGE =
     /periscope skill|frame stops and targets|signs the EoD \/ES drift|sign flips mark regime changes|replaces screenshots/;
 
-  it('marks a GEXBot Periscope block as context only, with no UW market-maker reading', async () => {
+  /** Wording that would make a GEXBot block read as Periscope data. */
+  const PERISCOPE_TITLE = /## Periscope|Periscope Exposure/;
+
+  it('titles a GEXBot block as taker-flow Greeks, context only, with no UW market-maker reading', async () => {
     // Owner decision D1 revised (2026-10-29): GEXBot is classified taker
-    // flow; the UW-calibrated Periscope rules and the periscope skill's MM
-    // hedge read do not apply to it.
-    const block = await periscopeSection('gexbot', '2026-10-28');
+    // flow, not Periscope data; the UW-calibrated Periscope and gamma/charm
+    // rules do not apply to it.
+    const block = await periscopeSection(
+      'gexbot',
+      '2026-10-28',
+      '## GEXBot Taker-Flow Greeks',
+    );
     expect(block.split('\n')[0]).toBe(
-      '## Periscope Exposure — GEXBot taker flow (latest 10-min slice; context only)',
+      '## GEXBot Taker-Flow Greeks — 0DTE (latest 10-min slice; context only)',
     );
     expect(block).toContain(
       "The Greek values are GEXBot's classified taker flow in its taker-side sign: positive = traders (takers) are net long that Greek at the strike, negative = net short.",
     );
     expect(block).toContain('not market-maker positions');
     expect(block).toContain(
-      'CONTEXT ONLY (see SOURCE SCOPE in <periscope>): the UW-calibrated Periscope rules do NOT apply to these values.',
+      'CONTEXT ONLY (see SOURCE SCOPE in <periscope>): this is not Periscope data, and none of the Periscope or gamma/charm rules in the system prompt apply to it.',
     );
-    expect(block).toContain('traders are net long gamma there');
+    expect(block).toContain(
+      'Do not use it for any structure, strike, stop, target, timing or sizing decision.',
+    );
+    expect(block).toContain(
+      'GEXBot says such strikes tend to hold price in falling vol and let price pass through in rising vol',
+    );
     expect(block).toContain('not validated here');
     expect(block).not.toMatch(UW_USAGE);
+    expect(block).not.toMatch(PERISCOPE_TITLE);
+    expect(block).not.toMatch(/act as a wall|Rule 1\b/);
     expect(block).not.toMatch(
       /MM-attributed|structured equivalent|Market Maker Exposures Table|negated/,
     );
@@ -1012,25 +1030,37 @@ describe('buildAnalysisContext', () => {
   });
 
   it('keeps the UW-calibrated read for a UW Periscope (scraper-era) block', async () => {
-    const block = await periscopeSection('scraper', '2026-05-07');
+    const block = await periscopeSection(
+      'scraper',
+      '2026-05-07',
+      '## Periscope Exposure — UW Periscope',
+    );
     expect(block.split('\n')[0]).toBe(
       '## Periscope Exposure — UW Periscope (latest 10-min slice — replaces screenshots)',
     );
-    expect(block).toContain("UW Periscope's market-maker position estimates");
     expect(block).toContain(
-      "Use this for the periscope skill's structural read: +γ floor / ceiling near spot frame stops and targets, charm tally signs the EoD /ES drift",
+      "UW Periscope's market-maker position estimates (the scraper era, before 2026-05-26 17:20 UTC (12:20 CT))",
     );
+    expect(block).toContain(
+      'Use this for the UW Periscope structural read: +γ floor / ceiling near spot frame stops and targets, charm tally signs the EoD /ES drift',
+    );
+    expect(block).not.toContain('periscope skill');
     expect(block).not.toContain('CONTEXT ONLY');
     vi.unstubAllGlobals();
   });
 
-  it('treats a Periscope block of unknown source as context only', async () => {
-    const block = await periscopeSection(null, '2026-10-28');
+  it('treats a block of unknown source as context only and not as Periscope', async () => {
+    const block = await periscopeSection(
+      null,
+      '2026-10-28',
+      '## Per-Strike Greeks — source unknown',
+    );
     expect(block.split('\n')[0]).toBe(
-      '## Periscope Exposure — source unknown (latest 10-min slice; context only)',
+      '## Per-Strike Greeks — source unknown (latest 10-min slice; context only)',
     );
     expect(block).toContain('CONTEXT ONLY');
     expect(block).not.toMatch(UW_USAGE);
+    expect(block).not.toMatch(PERISCOPE_TITLE);
     vi.unstubAllGlobals();
   });
 
@@ -1054,7 +1084,7 @@ describe('buildAnalysisContext', () => {
       'Uploaded UW Periscope screenshots, when present, still provide CONFIRMED MM exposure',
     );
     expect(block).toContain(
-      'A GEXBot Periscope Exposure block is taker flow and confirms nothing about MM exposure.',
+      'The GEXBot Taker-Flow Greeks block is taker flow and confirms nothing about MM exposure.',
     );
     vi.unstubAllGlobals();
   });
