@@ -99,8 +99,12 @@ import {
 
 // OHLC worst case is ~13 UW calls (1 contracts + 2 candles × 6 roots),
 // each up to 3 attempts × 15s timeout plus backoff under withRetry ≈ 48s
-// → ~10 min if UW hangs on every call. The order-flow pass stops starting
-// pages at FLOW_DEADLINE_MS. Typical runs finish in a minute or two.
+// → ~10 min if UW hangs on every call. The order-flow pass starts no new
+// range or page after FLOW_DEADLINE_MS, but one started just before it can
+// still load a root's candles (2 calls, ~96 s) and fetch a page (~48 s)
+// and write: ~600 + 150 s worst case. The Sentry monitor's 14 min max
+// runtime (cron-schedules.ts) covers the full 800 s. Typical runs finish
+// in a minute or two.
 export const config = {
   maxDuration: 800,
 };
@@ -119,9 +123,11 @@ const MAX_PRICE = 99_999_999;
 // UW /trades pages per run for the order-flow pass, oldest range first
 // (spec Phase 6). About 84 ms a page, so roughly a minute of paging.
 const FLOW_PAGE_BUDGET = 600;
-// No order-flow page starts this long after the run began, so a slow UW
-// can't carry the run past maxDuration (800 s): one more page under
-// withRetry adds at most ~48 s. What's left resumes on the next run.
+// No order-flow range or page starts this long after the run began, so a
+// slow UW can't carry the run past maxDuration (800 s). Work started just
+// before it can add one root's candle load (~96 s worst case under
+// withRetry, if the OHLC pass didn't load them) and one page (~48 s).
+// What's left resumes on the next run.
 const FLOW_DEADLINE_MS = 600_000;
 
 const MINUTE_MS = 60_000;
