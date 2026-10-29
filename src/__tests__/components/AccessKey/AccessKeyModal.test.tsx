@@ -1,6 +1,13 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import AccessKeyModal from '../../../components/AccessKey/AccessKeyModal';
+import type { AccessMode } from '../../../utils/auth';
 
 const fetchMock = vi.fn();
 
@@ -167,5 +174,58 @@ describe('AccessKeyModal — owner mode', () => {
     expect(
       screen.queryByRole('button', { name: /sign in/i }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe('AccessKeyModal — focus', () => {
+  const openers: HTMLElement[] = [];
+
+  afterEach(() => {
+    for (const opener of openers.splice(0)) opener.remove();
+  });
+
+  // Opens the dialog the way the header does: from a focused button.
+  function openFrom(mode: AccessMode) {
+    const opener = document.createElement('button');
+    opener.textContent = 'Access';
+    document.body.appendChild(opener);
+    openers.push(opener);
+    opener.focus();
+    const utils = render(
+      <AccessKeyModal
+        mode={mode}
+        onClose={vi.fn()}
+        onLoginSuccess={vi.fn()}
+        onLogout={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+    return { ...utils, opener };
+  }
+
+  it.each([
+    ['owner', () => screen.getByRole('button', { name: 'Close' })],
+    ['guest', () => screen.getByRole('button', { name: 'Close' })],
+    ['public', () => screen.getByLabelText('Access key')],
+  ] as const)(
+    '%s: moves focus into the dialog, and back to the opener on close',
+    (mode, focusTarget) => {
+      const { opener, unmount } = openFrom(mode);
+      expect(focusTarget()).toHaveFocus();
+      unmount();
+      expect(opener).toHaveFocus();
+    },
+  );
+
+  it('keeps Tab and Shift+Tab inside the dialog', () => {
+    openFrom('guest');
+    const close = screen.getByRole('button', { name: 'Close' });
+    const signOut = screen.getByRole('button', { name: 'Sign out' });
+
+    act(() => signOut.focus());
+    fireEvent.keyDown(signOut, { key: 'Tab' });
+    expect(close).toHaveFocus();
+
+    fireEvent.keyDown(close, { key: 'Tab', shiftKey: true });
+    expect(signOut).toHaveFocus();
   });
 });
