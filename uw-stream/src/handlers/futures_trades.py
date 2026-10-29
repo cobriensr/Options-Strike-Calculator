@@ -2,8 +2,9 @@
 
 Aggregates the global CME futures trade firehose into 1-minute OHLCV
 bars in the ``futures_bars`` table (migration #42). This replaces the
-Databento-fed Railway ``sidecar`` as the source of those bars; the
-schema is unchanged, so downstream readers need no migration.
+Databento-fed Railway ``sidecar`` as the source of those bars. Each bar
+also carries aggressor order flow (spec Phase 2): ``buy_volume``,
+``sell_volume``, ``buy_prints`` and ``sell_prints``.
 
 Reference payload (captured live 2026-09-08):
 
@@ -12,6 +13,26 @@ Reference payload (captured live 2026-09-08):
      "side": "sell", "nbbo_bid": "7705.750000000",
      "nbbo_ask": "7706.000000000", "trade_id": 2787552,
      "is_block": false}
+
+Those 11 keys are the whole websocket frame (Phase 0b capture,
+2026-10-28). There is no ``is_spread`` key and no event fields; those
+exist only on REST. Block frames (``"is_block": true``) carry ``qty`` in
+place of ``size`` and no ``side``.
+
+Fields used beyond OHLCV:
+
+- ``side`` is the exchange aggressor flag: ``"buy"``, ``"sell"`` or
+  ``"none"``, case-sensitive. It agreed with a tick test on 99.1% of
+  price-changing ES prints (REST probe, 2026-10-28). Any other value, or
+  no key, is unknown.
+- ``nbbo_bid``/``nbbo_ask`` are mostly post-trade quotes, so they are
+  never used to classify a print.
+
+Order-flow columns follow the NULL vs 0 rule: NULL = unknown, 0 = known
+to be none. A bar in which no print carried a known side writes NULL for
+all four. Otherwise ``buy``/``sell`` prints add to the matching volume
+and print count, and ``none`` or unknown prints count only toward
+``volume``, so ``buy_volume + sell_volume <= volume``.
 
 ``executed_at`` is **epoch milliseconds (int)**, verified against the
 live feed: 1788847011311 decoded to 2026-09-08T05:56:51.311Z against a
@@ -34,7 +55,23 @@ Filtering rationale (in handler order):
    ``startswith`` test would fold into their full-size parents and
    corrupt both volume and range. Applied in ``enqueue`` so the ~80% of
    the firehose we don't want never takes a queue slot.
-2. **De-duplication on (sym, trade_id).** UW re-delivers every futures
+2. **Outright contracts only, skipped quietly (no warning).** A print is
+   dropped when ``is_block`` is true (Phase 4 stores blocks from the
+   ``futures_blocks`` channel), when ``is_spread`` is true (REST-only
+   today, kept for a future frame change), or when its ``sym`` is not an
+   outright of its product: root + CME month code + one- or two-digit
+   year (``ESZ6``, ``ESZ26``; not ``ESZ6-ESH7``, ``ESZ6:ESH7``, ``UD:...``).
+   A spread is its own sym, so counted it could win the front-month
+   argmax and write a spread price into the root series.
+3. **Late prints are dropped**, before the dedup and the tally: any
+   print at or before the newest emitted minute, including an interior
+   minute that never had a bar (the gap repair refills it). An emitted
+   minute's seen-set (4) was evicted with it, so a late re-delivered copy
+   can't be deduped; let through, it would inflate the front-month tally
+   and build a one-print bar that DO NOTHING discards. Logged at info as
+   ``kind="late_print_dropped"`` with a running count, at most once per
+   60s window.
+4. **De-duplication on (sym, trade_id).** UW re-delivers every futures
    print 2-11 times. Measured over a 90s live window on 2026-09-08,
    naive summing inflated volume by 1.93x (ZN) to 3.09x (ES); every
    distinct ES trade_id arrived at least twice, so this is the steady
@@ -44,8 +81,8 @@ Filtering rationale (in handler order):
    per-(product, minute) seen-set catches them all and is evicted with
    the bucket. ``trade_id`` was never observed colliding across syms,
    but we key on the pair anyway since it is only documented unique
-   within a contract.
-3. **Front-month collapse.** ``futures_bars.symbol`` holds the ROOT
+   within a contract. The first copy wins, side included.
+5. **Front-month collapse.** ``futures_bars.symbol`` holds the ROOT
    (``'ES'``), but the global feed carries every contract month. Within
    each product we keep only the ``sym`` with the greatest cumulative
    volume so far in the session. Volume-based selection rolls itself at
@@ -80,6 +117,8 @@ Consequences worth knowing:
 
 from __future__ import annotations
 
+import math
+import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -89,14 +128,32 @@ from typing import Any, NamedTuple
 
 import db
 from handlers.base import Handler
-from logger_setup import log, rate_limited_log
+from logger_setup import MALFORMED_PAYLOAD_LOG_INTERVAL_S, log, rate_limited_log
 from utils import timestamps
 
 _TABLE = "futures_bars"
 
 # Column order MUST match the tuple shape emitted by _collect_completed.
 # id (BIGSERIAL) auto-populates; we omit it from the INSERT entirely.
-_COLUMNS: list[str] = ["symbol", "ts", "open", "high", "low", "close", "volume"]
+# The four order-flow columns are nullable (api migration, spec Phase 2):
+# NULL = unknown, 0 = known to be none.
+_COLUMNS: list[str] = [
+    "symbol",
+    "ts",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "buy_volume",
+    "sell_volume",
+    "buy_prints",
+    "sell_prints",
+]
+
+# UW's documented ``side`` values, case-sensitive. Anything else (absent,
+# null, another spelling) is unknown and never coerced into a side.
+_SIDES: frozenset[str] = frozenset({"buy", "sell", "none"})
 
 # Per migration #42: UNIQUE(symbol, ts).
 _CONFLICT_COLS: list[str] = ["symbol", "ts"]
@@ -106,6 +163,17 @@ _CONFLICT_COLS: list[str] = ["symbol", "ts"]
 # and VX (Cboe CFE) are deliberately absent: neither appears on this
 # CME feed (verified over a 90s live probe).
 _TARGET_PRODUCTS: frozenset[str] = frozenset({"ES", "NQ", "RTY", "CL", "GC", "ZN"})
+
+# An outright contract sym: the product root, one CME month code, and a
+# one- or two-digit year (ESZ6, ESZ26). Websocket frames carry no
+# ``is_spread`` key (Phase 0b capture, 2026-10-28), so this shape test is
+# what keeps spread syms (ESZ6-ESH7, ESZ6:ESH7, UD:...) out of the bars.
+# ``fullmatch`` rather than ``^...$``: ``$`` also matches before a trailing
+# newline. ``[0-9]`` rather than ``\d``, which matches any Unicode digit.
+_OUTRIGHT_SYM: dict[str, re.Pattern[str]] = {
+    product: re.compile(rf"{re.escape(product)}[FGHJKMNQUVXZ][0-9]{{1,2}}")
+    for product in _TARGET_PRODUCTS
+}
 
 # TEMPORARY (spec Phase 0b): remove after one session
 # Raw-frame capture for websocket probes P1 (which keys a frame carries)
@@ -131,11 +199,13 @@ class _Print(NamedTuple):
     size: int
     trade_id: int | None
     executed_at: datetime
+    # "buy" / "sell" / "none", or None when the frame carried no usable side.
+    side: str | None
 
 
 @dataclass
 class _Bar:
-    """Mutable OHLCV accumulator for one (product, minute, sym)."""
+    """Mutable OHLCV + aggressor-flow accumulator for one (product, minute, sym)."""
 
     open: Decimal
     high: Decimal
@@ -144,8 +214,22 @@ class _Bar:
     volume: int
     first_at: datetime
     last_at: datetime
+    buy_volume: int = 0
+    sell_volume: int = 0
+    buy_prints: int = 0
+    sell_prints: int = 0
+    # True once any print in the bar carried a known side ("none"
+    # included). False means the flow is unknown, so it is written as
+    # NULL rather than as a misleading 0.
+    side_seen: bool = False
 
-    def add(self, price: Decimal, size: int, executed_at: datetime) -> None:
+    def flow(self) -> tuple[int | None, int | None, int | None, int | None]:
+        """The four order-flow column values, in ``_COLUMNS`` order."""
+        if not self.side_seen:
+            return (None, None, None, None)
+        return (self.buy_volume, self.sell_volume, self.buy_prints, self.sell_prints)
+
+    def add(self, price: Decimal, size: int, executed_at: datetime, side: str | None) -> None:
         # open/close track earliest/latest by executed_at, NOT by arrival
         # order — UW can deliver a print slightly out of sequence and the
         # bar must not care. ``>=`` on the close so that among prints
@@ -162,6 +246,16 @@ class _Bar:
         if price < self.low:
             self.low = price
         self.volume += size
+        # "none" and unknown prints count only toward volume, so
+        # buy + sell <= volume and the remainder is unclassified.
+        if side is not None:
+            self.side_seen = True
+        if side == "buy":
+            self.buy_volume += size
+            self.buy_prints += 1
+        elif side == "sell":
+            self.sell_volume += size
+            self.sell_prints += 1
 
 
 class FuturesTradesHandler(Handler):
@@ -188,6 +282,15 @@ class FuturesTradesHandler(Handler):
         self._seen: dict[tuple[str, datetime], set[tuple[str, int]]] = {}
         # UTC session date the volume tally belongs to.
         self._session_date: date | None = None
+        # product -> newest minute already emitted (written or skipped as a
+        # gap). Prints at or before it are dropped in ``_ingest``: that
+        # minute's dedup set is gone, so they can't be deduped, and DO
+        # NOTHING would discard any bar they built. One entry per product.
+        self._emitted_through: dict[str, datetime] = {}
+        # Running count of those drops, and the monotonic time of the last
+        # info line about them (None until the first drop).
+        self._late_dropped: int = 0
+        self._late_drop_logged_at: float | None = None
 
     # ------------------------------------------------------------------
     # Producer side.
@@ -227,6 +330,18 @@ class FuturesTradesHandler(Handler):
         if product not in _TARGET_PRODUCTS:
             return None
 
+        # 1b. Spread and block prints are skipped quietly, BEFORE the
+        # price/size validation. A calendar spread is its own sym, so it
+        # would otherwise join the front-month argmax and could write a
+        # spread price into the root series. A block frame carries ``qty``
+        # and no ``size``/``side``, so it would otherwise log
+        # invalid_price_or_size on every block; Phase 4 stores blocks from
+        # the futures_blocks channel. Both are expected traffic, not
+        # malformed frames, hence no warning. ``is_spread`` is REST-only
+        # today; the websocket spread case is caught by the sym shape in 2b.
+        if payload.get("is_spread") is True or payload.get("is_block") is True:
+            return None
+
         # 2. Contract symbol — required for front-month selection and as
         # half of the dedup key.
         sym = payload.get("sym")
@@ -237,6 +352,22 @@ class FuturesTradesHandler(Handler):
                 message="futures_trades print missing sym",
                 extra={"product": product},
             )
+            return None
+
+        # 2b. Outright contracts only: a sym that isn't root + month + year
+        # is never a bar. Spread and strategy syms carry a separator
+        # (ESZ6-ESH7, ESZ6:ESH7, UD:...) and are skipped quietly like 1b. A
+        # separator-free sym that still doesn't match is most likely a
+        # feed-wide format change (ESZ2026), which would otherwise black
+        # out every bar in silence, so it warns.
+        if not _is_outright(product, sym):
+            if sym.isalnum():
+                rate_limited_log.warning(
+                    scope="futures_trades",
+                    kind="unrecognized_sym",
+                    message="futures_trades sym is not an outright contract of its product",
+                    extra={"product": product, "sym": sym},
+                )
             return None
 
         # 3. Timestamp — epoch-ms per the live feed; drives both the
@@ -260,7 +391,14 @@ class FuturesTradesHandler(Handler):
         # numeric so '999.00' can never sort above '1000.00'.
         price = _to_decimal(payload.get("price"))
         size = _to_int(payload.get("size"))
-        if price is None or size is None or price <= 0 or size <= 0:
+        if (
+            price is None
+            or size is None
+            or price <= 0
+            or size <= 0
+            # Summed into BIGINT volume, a huge size overflows the shared INSERT: whole batch lost.
+            or size > 2**31 - 1
+        ):
             rate_limited_log.warning(
                 scope="futures_trades",
                 kind="invalid_price_or_size",
@@ -282,6 +420,9 @@ class FuturesTradesHandler(Handler):
             size=size,
             trade_id=_to_int(payload.get("trade_id")),
             executed_at=executed_at,
+            # The exchange aggressor flag. nbbo_* is post-trade (REST probe
+            # 2026-10-28), so it is never used to classify a print.
+            side=_parse_side(payload.get("side")),
         )
 
     # ------------------------------------------------------------------
@@ -309,7 +450,19 @@ class FuturesTradesHandler(Handler):
         )
 
     def _ingest(self, print_: _Print) -> None:
-        """Fold one print into the accumulator (dedup, tally, OHLCV)."""
+        """Fold one print into the accumulator (dedup, tally, OHLCV, flow)."""
+        # Late print for a minute already emitted: drop it BEFORE the dedup
+        # and the tally. Usually a re-delivered copy arriving after its
+        # minute's ``_seen`` set was evicted, so dedup can't catch it. Let
+        # through, it would inflate the front-month tally, build a
+        # one-print bar that DO NOTHING discards (or, for a minute that was
+        # a gap, write a permanent partial bar), and could log a false
+        # front_sym_absent.
+        emitted_through = self._emitted_through.get(print_.product)
+        if emitted_through is not None and print_.minute_ts <= emitted_through:
+            self._note_late_drop(print_, emitted_through)
+            return
+
         self._roll_session(print_.minute_ts.date())
 
         minute_key = (print_.product, print_.minute_ts)
@@ -342,32 +495,74 @@ class FuturesTradesHandler(Handler):
                 extra={"product": print_.product, "sym": print_.sym},
             )
 
+        # A print from before the current session date (a straggler for a
+        # minute held back across midnight UTC) still builds its own bar,
+        # but must not touch the new day's tally or its minute's front-month
+        # snapshot. In the empty post-roll tally a back-month straggler
+        # would otherwise elect itself front for the prior-day minute (a
+        # permanent carry-basis spike) and lead the new day too.
+        stale = self._session_date is not None and print_.minute_ts.date() < self._session_date
         tally = self._session_volume.setdefault(print_.product, {})
-        tally[print_.sym] = tally.get(print_.sym, 0) + print_.size
+        if not stale:
+            tally[print_.sym] = tally.get(print_.sym, 0) + print_.size
 
         bar_key = (print_.product, print_.minute_ts, print_.sym)
         bar = self._bars.get(bar_key)
         if bar is None:
-            self._bars[bar_key] = _Bar(
+            # Seeded empty and filled by ``add`` below, so the first print
+            # takes the same volume and side path as every later one.
+            bar = self._bars[bar_key] = _Bar(
                 open=print_.price,
                 high=print_.price,
                 low=print_.price,
                 close=print_.price,
-                volume=print_.size,
+                volume=0,
                 first_at=print_.executed_at,
                 last_at=print_.executed_at,
             )
-        else:
-            bar.add(print_.price, print_.size, print_.executed_at)
+        bar.add(print_.price, print_.size, print_.executed_at, print_.side)
 
         # Snapshot the current session leader for this minute. Recomputed
         # on every print, so the value that survives is the leader as of
-        # the minute's last print.
-        self._front_sym[minute_key] = max(tally.items(), key=lambda kv: (kv[1], kv[0]))[0]
+        # the minute's last print. A stale print keeps its minute's
+        # prior-day snapshot; with none, the minute is the logged
+        # front_sym_absent gap.
+        if not stale:
+            self._front_sym[minute_key] = max(tally.items(), key=lambda kv: (kv[1], kv[0]))[0]
 
         newest = self._newest_minute.get(print_.product)
         if newest is None or print_.minute_ts > newest:
             self._newest_minute[print_.product] = print_.minute_ts
+
+    def _note_late_drop(self, print_: _Print, emitted_through: datetime) -> None:
+        """Count a late-print drop; log it at info, at most once per window.
+
+        Info, not warning: re-delivered copies are the feed's steady state
+        (2-11 per print), so a late one is expected traffic, not a fault.
+        ``rate_limited_log`` only throttles warnings, so this keeps its own
+        window of the same length. The running total lets the gaps between
+        lines give the drop rate.
+        """
+        self._late_dropped += 1
+        now = time.monotonic()
+        if (
+            self._late_drop_logged_at is not None
+            and now - self._late_drop_logged_at < MALFORMED_PAYLOAD_LOG_INTERVAL_S
+        ):
+            return
+        self._late_drop_logged_at = now
+        log.info(
+            "futures_trades print for an already-emitted minute dropped",
+            extra={
+                "scope": "futures_trades",
+                "kind": "late_print_dropped",
+                "dropped_total": self._late_dropped,
+                "product": print_.product,
+                "sym": print_.sym,
+                "minute_ts": print_.minute_ts.isoformat(),
+                "emitted_through": emitted_through.isoformat(),
+            },
+        )
 
     def _roll_session(self, day: date) -> None:
         """Clear the front-month volume tally on a new UTC session day.
@@ -377,10 +572,14 @@ class FuturesTradesHandler(Handler):
         window even after the market has moved on.
 
         Only a strictly NEWER date rolls the tally, so a late print from
-        the previous session can't wipe the current day's tally. Such a
-        straggler is folded into the current tally instead; it is a
-        handful of lots against a session's worth, and never enough to
-        change the argmax.
+        the previous session can't wipe the current day's tally. A
+        straggler whose minute was already emitted never gets here
+        (``_ingest`` drops it first). One whose minute is still open (the
+        minute held back across midnight) builds its bar but is kept out of
+        the new day's tally and its minute's front-month snapshot. Folded
+        in, it would land in an EMPTY tally right after the roll, so even a
+        few back-month lots would elect that contract front for the
+        prior-day minute and write a carry-basis spike into the series.
         """
         if self._session_date is None:
             self._session_date = day
@@ -419,6 +618,7 @@ class FuturesTradesHandler(Handler):
                         bar.low,
                         bar.close,
                         bar.volume,
+                        *bar.flow(),
                     )
                 )
             else:
@@ -457,6 +657,13 @@ class FuturesTradesHandler(Handler):
                 del self._bars[(product, minute_ts, sym)]
             self._front_sym.pop((product, minute_ts), None)
             self._seen.pop((product, minute_ts), None)
+            # Written or skipped, this minute is done: later prints for it
+            # are dropped in _ingest. Set before the INSERT runs, so a
+            # rejected flush also closes the minute (no re-queue; the OHLC
+            # gap repair refills it).
+            through = self._emitted_through.get(product)
+            if through is None or minute_ts > through:
+                self._emitted_through[product] = minute_ts
 
         return out
 
@@ -497,21 +704,56 @@ def _maybe_capture(payload: dict, arrival_ms: int) -> None:
 
 
 def _to_decimal(v: Any) -> Decimal | None:
+    """Parse to a finite Decimal, or None when unparseable or non-finite.
+
+    ``Decimal`` happily parses ``"NaN"``, ``"sNaN"`` and ``"Infinity"``,
+    and each one breaks a caller: NaN raises InvalidOperation on
+    ``price <= 0``, Infinity passes ``price > 0`` into a bar. ``"1e400"``
+    is a finite Decimal but past the float range, so no real price or size
+    can be that large. ``is_finite`` runs first because ``float`` raises
+    on a signaling NaN.
+    """
     if v is None or v == "":
         return None
     try:
-        return Decimal(str(v))
+        d = Decimal(str(v))
     except (InvalidOperation, ValueError):
         return None
+    if not d.is_finite() or math.isinf(float(d)):
+        return None
+    return d
 
 
 def _to_int(v: Any) -> int | None:
-    if v is None or v == "" or isinstance(v, bool):
+    """Parse to an int (truncating), or None when unusable.
+
+    Built on ``_to_decimal`` so it inherits the finite check:
+    ``int(Decimal("Infinity"))`` raises OverflowError, which this used to
+    let escape.
+    """
+    if isinstance(v, bool):
         return None
-    try:
-        return int(Decimal(str(v)))
-    except (InvalidOperation, ValueError):
-        return None
+    d = _to_decimal(v)
+    return None if d is None else int(d)
+
+
+def _is_outright(product: str, sym: str) -> bool:
+    """True when ``sym`` is an outright contract of ``product`` (ESZ6, ESZ26)."""
+    pattern = _OUTRIGHT_SYM.get(product)
+    return pattern is not None and pattern.fullmatch(sym) is not None
+
+
+def _parse_side(raw: object) -> str | None:
+    """Return ``"buy"``, ``"sell"`` or ``"none"`` for those exact strings.
+
+    Anything else, including an absent key, is unknown and returns None.
+    UW's values are case-sensitive, so ``"BUY"`` is unknown rather than
+    guessed at. The ``isinstance`` check keeps an unhashable value (a list
+    or dict on a wire-format change) from raising on the set lookup.
+    """
+    if isinstance(raw, str) and raw in _SIDES:
+        return raw
+    return None
 
 
 def _floor_to_minute(dt: datetime) -> datetime:
