@@ -5380,4 +5380,23 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 193,
+    description:
+      'Add aggressor order-flow columns to futures_bars (buy/sell volume and print counts). Nullable, no default: NULL = unknown (websocket outage, OHLC repair, rows before this migration).',
+    statements: (sql) => [
+      // Fail fast instead of queueing writers behind the ACCESS EXCLUSIVE lock.
+      sql`SET LOCAL lock_timeout = '5s'`,
+      // Nullable with no default on purpose: NULL means "unknown", which is
+      // distinct from a real 0. A default of 0 would make unknown bars look
+      // like bars with no aggressive flow.
+      sql`
+        ALTER TABLE futures_bars
+          ADD COLUMN IF NOT EXISTS buy_volume  BIGINT,
+          ADD COLUMN IF NOT EXISTS sell_volume BIGINT,
+          ADD COLUMN IF NOT EXISTS buy_prints  INTEGER,
+          ADD COLUMN IF NOT EXISTS sell_prints INTEGER
+      `,
+    ],
+  },
 ];
