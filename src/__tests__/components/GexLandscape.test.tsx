@@ -5,6 +5,9 @@ import { CollapseAllContext } from '../../components/collapse-context';
 import type { CollapseSignal } from '../../components/collapse-context';
 import type { GexStrikeLevel } from '../../components/GexLandscape/types';
 import { dealerClaims } from '../helpers/dealer-claims';
+import { BiasPanel } from '../../components/GexLandscape/BiasPanel';
+import { GAMMA_SIGN_HEX } from '../../components/GexLandscape/constants';
+import type { BiasMetrics } from '../../components/GexLandscape/types';
 
 // ── Mocks ──────────────────────────────────────────────────────────────────────
 //
@@ -618,5 +621,97 @@ describe('GexLandscape', () => {
       renderLandscape();
       expect(screen.getByText('Vol Reinf.')).toBeDefined();
     });
+  });
+});
+
+// ── BiasPanel palette and glyphs (owner decision D1 revised) ──────────
+
+function makeBias(overrides: Partial<BiasMetrics> = {}): BiasMetrics {
+  return {
+    verdict: 'gex-pull-up',
+    regime: 'positive',
+    totalNetGex: 2.5e9,
+    gravityStrike: 5900,
+    gravityOffset: 40,
+    gravityGex: 1.8e9,
+    upsideTargets: [],
+    downsideTargets: [],
+    floorTrend5m: 2.5,
+    ceilingTrend5m: 2.5,
+    floorTrend15m: -1.2,
+    ceilingTrend15m: -1.2,
+    floorTrend30m: null,
+    ceilingTrend30m: null,
+    priceTrend: null,
+    ...overrides,
+  };
+}
+
+function renderBias(bias: BiasMetrics) {
+  return render(
+    <BiasPanel
+      bias={bias}
+      maxChanged5mStrike={null}
+      maxChanged15mStrike={null}
+      maxChanged30mStrike={null}
+    />,
+  );
+}
+
+/** jsdom normalizes hex to rgb(); compare through the same normalizer. */
+function cssColor(hex: string): string {
+  const el = document.createElement('span');
+  el.style.color = hex;
+  return el.style.color;
+}
+
+describe('BiasPanel — sign-only colours, same rule above and below spot', () => {
+  it('colours F and C the same for the same trend value', () => {
+    renderBias(makeBias());
+    const f = screen.getByText('F +2.5%') as HTMLElement;
+    const c = screen.getByText('C +2.5%') as HTMLElement;
+    expect(f.style.color).toBe(c.style.color);
+    expect(f.style.color).toBe(cssColor(GAMMA_SIGN_HEX.long));
+    const fNeg = screen.getByText('F −1.2%') as HTMLElement;
+    const cNeg = screen.getByText('C −1.2%') as HTMLElement;
+    expect(fNeg.style.color).toBe(cNeg.style.color);
+    expect(fNeg.style.color).toBe(cssColor(GAMMA_SIGN_HEX.short));
+  });
+
+  it('colours the net-gamma badge by sign with the gamma-sign hues', () => {
+    const { unmount } = renderBias(makeBias());
+    expect(screen.getByText(/NET LONG γ/).className).toContain('sky');
+    unmount();
+    renderBias(
+      makeBias({
+        verdict: 'breakout-risk-up',
+        regime: 'negative',
+        totalNetGex: -1e9,
+      }),
+    );
+    expect(screen.getByText(/NET SHORT γ/).className).toContain('violet');
+  });
+
+  it('marks strike position with ▲ / ▼ and keeps ↑ / ↓ for price moves', () => {
+    const { unmount } = renderBias(makeBias());
+    expect(screen.getByText('▲ TOP ABOVE · LONG γ')).toBeDefined();
+    expect(screen.getByText('▲ 40pts')).toBeDefined();
+    expect(screen.getByText('▲ Top |γ| above')).toBeDefined();
+    expect(screen.getByText('▼ Top |γ| below')).toBeDefined();
+    expect(document.body.textContent).not.toMatch(/[↑↓]/);
+    unmount();
+    renderBias(
+      makeBias({
+        verdict: 'drifting-up',
+        gravityOffset: 10,
+        priceTrend: {
+          direction: 'up',
+          changePct: 0.1,
+          changePts: 6,
+          consistency: 0.8,
+        },
+      }),
+    );
+    expect(screen.getByText('↑ DRIFTING UP')).toBeDefined();
   });
 });

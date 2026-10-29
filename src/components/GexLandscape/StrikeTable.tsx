@@ -19,7 +19,7 @@
 
 import type { Ref } from 'react';
 import type { GexStrikeLevel } from './types';
-import { CLASS_META, CLS_TOOLTIP } from './constants';
+import { CLASS_META, CLS_TOOLTIP, gammaSignHex } from './constants';
 import {
   charmTooltip,
   classify,
@@ -243,7 +243,7 @@ export function StrikeTable({
                           : 'rgba(255,255,255,0.35)',
                   }}
                 >
-                  {dir === 'ceiling' ? '↑' : dir === 'floor' ? '↓' : '●'}
+                  {dir === 'ceiling' ? '▲' : dir === 'floor' ? '▼' : '●'}
                 </span>
                 <span
                   className={`cursor-help font-mono text-[10px] ${meta.badgeText}`}
@@ -253,11 +253,11 @@ export function StrikeTable({
                 </span>
               </div>
 
-              {/* NetGamma — GEXBot dollar gamma, taker-side sign */}
+              {/* NetGamma — GEXBot dollar gamma, coloured by taker-side sign */}
               <div className="flex items-center justify-end px-3 py-1.5">
                 <span
                   className="font-mono text-[11px]"
-                  style={{ color: s.netGamma >= 0 ? '#4ade80' : '#fbbf24' }}
+                  style={{ color: gammaSignHex(s.netGamma) }}
                 >
                   {fmtGex(s.netGamma)}
                 </span>

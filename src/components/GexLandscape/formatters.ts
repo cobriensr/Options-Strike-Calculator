@@ -3,7 +3,12 @@
  * plain-text bias summary sent to the analyze endpoint.
  */
 
-import { CLASS_META, PRICE_WINDOW, VERDICT_META } from './constants';
+import {
+  CLASS_META,
+  PRICE_WINDOW,
+  SPX_SPOT_BAND,
+  VERDICT_META,
+} from './constants';
 import type { BiasMetrics, DriftTarget } from './types';
 
 export function fmtGex(n: number): string {
@@ -74,11 +79,11 @@ export function formatBiasForClaude(b: BiasMetrics): string {
   ];
   if (b.upsideTargets.length > 0)
     lines.push(
-      `Largest |γ| above spot: ${b.upsideTargets.map(fmtTarget).join(', ')}`,
+      `Largest |γ| >${SPX_SPOT_BAND} pts above spot: ${b.upsideTargets.map(fmtTarget).join(', ')}`,
     );
   if (b.downsideTargets.length > 0)
     lines.push(
-      `Largest |γ| below spot: ${b.downsideTargets.map(fmtTarget).join(', ')}`,
+      `Largest |γ| >${SPX_SPOT_BAND} pts below spot: ${b.downsideTargets.map(fmtTarget).join(', ')}`,
     );
   for (const line of [
     fmtTrendLine('5m', b.ceilingTrend5m, b.floorTrend5m),

@@ -15,8 +15,11 @@
 import {
   CLASS_META,
   CLS_TOOLTIP,
+  GAMMA_SIGN_CLASSES,
   VERDICT_META,
   VERDICT_TOOLTIP,
+  gammaSignHex,
+  trendColor,
 } from './constants';
 import { fmtGex, fmtPct } from './formatters';
 import type { BiasMetrics, DriftTarget } from './types';
@@ -31,23 +34,6 @@ export interface BiasPanelProps {
   maxChanged30mStrike: number | null;
 }
 
-/**
- * Cell color for the below-spot (F) trend: growing green, shrinking red.
- * The green / amber scheme in this and `ceilTrendColor` is the UW-era
- * support / resistance convention; the text no longer makes that claim on
- * GEXBot data, and the colors are unchanged pending GEXBot-specific rules.
- */
-function floorTrendColor(v: number | null): string {
-  if (v === null) return 'var(--color-muted)';
-  return v >= 0 ? '#4ade80' : '#f87171';
-}
-
-/** Cell color for the above-spot (C) trend: shrinking green, growing amber. */
-function ceilTrendColor(v: number | null): string {
-  if (v === null) return 'var(--color-muted)';
-  return v <= 0 ? '#4ade80' : '#fbbf24';
-}
-
 export function BiasPanel({
   bias,
   maxChanged5mStrike,
@@ -55,6 +41,9 @@ export function BiasPanel({
   maxChanged30mStrike,
 }: BiasPanelProps) {
   const vm = VERDICT_META[bias.verdict];
+  // Net-gamma badge: same sign hues as the verdicts and class tints.
+  const regimeTone =
+    GAMMA_SIGN_CLASSES[bias.regime === 'positive' ? 'long' : 'short'];
   const isDrifting =
     bias.verdict === 'drifting-down' || bias.verdict === 'drifting-up';
   const driftSuffix =
@@ -81,7 +70,7 @@ export function BiasPanel({
           </span>
         </div>
         <span
-          className={`shrink-0 cursor-help rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${bias.regime === 'positive' ? 'bg-sky-500/20 text-sky-400' : 'bg-amber-500/20 text-amber-400'}`}
+          className={`shrink-0 cursor-help rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${regimeTone.bg} ${regimeTone.color}`}
           title={
             bias.regime === 'positive'
               ? "Sum of GEXBot gamma over the strikes within ±50 pts of spot, in GEXBot's taker-side sign: positive, so traders (takers) are net long gamma across the window."
@@ -114,7 +103,7 @@ export function BiasPanel({
           >
             {bias.gravityOffset === 0
               ? 'ATM'
-              : `${bias.gravityOffset > 0 ? '↑' : '↓'} ${Math.abs(
+              : `${bias.gravityOffset > 0 ? '▲' : '▼'} ${Math.abs(
                   bias.gravityOffset,
                 ).toLocaleString(undefined, {
                   maximumFractionDigits: 2,
@@ -133,7 +122,7 @@ export function BiasPanel({
 
         {/* Top |γ| strikes above spot */}
         <DriftTargetColumn
-          label="↑ Top |γ| above"
+          label="▲ Top |γ| above"
           title="The two strikes more than 25 pts above spot with the largest absolute GEXBot gamma, with their taker-side classification."
           targets={bias.upsideTargets}
           strikeColor="text-emerald-400"
@@ -147,7 +136,7 @@ export function BiasPanel({
 
         {/* Top |γ| strikes below spot */}
         <DriftTargetColumn
-          label="↓ Top |γ| below"
+          label="▼ Top |γ| below"
           title="The two strikes more than 25 pts below spot with the largest absolute GEXBot gamma, with their taker-side classification."
           targets={bias.downsideTargets}
           strikeColor="text-red-400"
@@ -224,7 +213,7 @@ function DriftTargetColumn({
               </span>
               <span
                 className="font-mono text-[9px]"
-                style={{ color: t.netGamma >= 0 ? '#4ade80' : '#fbbf24' }}
+                style={{ color: gammaSignHex(t.netGamma) }}
               >
                 {fmtGex(t.netGamma)}
               </span>
@@ -322,14 +311,14 @@ function TrendRow({ label, floor, ceil }: TrendRowProps) {
       </span>
       <span
         className="font-mono text-[11px] font-semibold"
-        style={{ color: floorTrendColor(floor) }}
+        style={{ color: trendColor(floor) }}
         title={`F: avg Δ${label} of the strikes below spot`}
       >
         F {fmtPct(floor)}
       </span>
       <span
         className="font-mono text-[11px] font-semibold"
-        style={{ color: ceilTrendColor(ceil) }}
+        style={{ color: trendColor(ceil) }}
         title={`C: avg Δ${label} of the strikes above spot`}
       >
         C {fmtPct(ceil)}

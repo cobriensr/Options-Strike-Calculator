@@ -37,32 +37,74 @@ export interface ClassMeta {
   signal: (dir: Direction) => string;
 }
 
+/**
+ * Gamma-sign palette: two non-evaluative hues, sky = taker-long γ and
+ * violet = taker-short γ, applied the same way above and below spot. On
+ * GEXBot taker flow only the sign is known, so colour carries the sign and
+ * nothing else; the UW-era green = safe / amber, red = danger reading is
+ * gone (owner decision D1 revised, 2026-10-29).
+ */
+export const GAMMA_SIGN_CLASSES = {
+  long: {
+    color: 'text-sky-400',
+    bg: 'bg-sky-500/15',
+    border: 'border-sky-500/30',
+  },
+  short: {
+    color: 'text-violet-400',
+    bg: 'bg-violet-500/15',
+    border: 'border-violet-500/30',
+  },
+} as const;
+
+/** Hex forms of the two hues, for inline `style` colours. */
+export const GAMMA_SIGN_HEX = { long: '#38bdf8', short: '#a78bfa' } as const;
+
+/** Hue for a gamma value (zero counts as long, as in `classify`). */
+export function gammaSignHex(value: number): string {
+  return value >= 0 ? GAMMA_SIGN_HEX.long : GAMMA_SIGN_HEX.short;
+}
+
+/**
+ * Hue for a Δ% trend cell, above or below spot alike. Δ% is
+ * (current − prior) / |prior|, so a positive change moved the value toward
+ * taker-long (sky) and a negative one toward taker-short (violet).
+ */
+export function trendColor(value: number | null): string {
+  if (value === null) return 'var(--color-muted)';
+  return gammaSignHex(value);
+}
+
+/**
+ * Class badges and row tints: the hue is the gamma sign; a positive charm
+ * gets the stronger tint, the same way for both signs.
+ */
 export const CLASS_META: Record<GexClassification, ClassMeta> = {
   'max-launchpad': {
     badge: 'Takers −γ +charm',
-    badgeBg: 'bg-amber-500/25',
-    badgeText: 'text-amber-400',
-    rowBg: 'bg-amber-500/5',
+    badgeBg: 'bg-violet-500/25',
+    badgeText: 'text-violet-400',
+    rowBg: 'bg-violet-500/5',
     signal: (dir) => classSignal('max-launchpad', dir),
   },
   'fading-launchpad': {
     badge: 'Takers −γ −charm',
-    badgeBg: 'bg-yellow-600/20',
-    badgeText: 'text-yellow-500/80',
-    rowBg: 'bg-yellow-600/5',
+    badgeBg: 'bg-violet-500/10',
+    badgeText: 'text-violet-300',
+    rowBg: '',
     signal: (dir) => classSignal('fading-launchpad', dir),
   },
   'sticky-pin': {
     badge: 'Takers +γ +charm',
-    badgeBg: 'bg-emerald-500/25',
-    badgeText: 'text-emerald-400',
-    rowBg: 'bg-emerald-500/5',
+    badgeBg: 'bg-sky-500/25',
+    badgeText: 'text-sky-400',
+    rowBg: 'bg-sky-500/5',
     signal: (dir) => classSignal('sticky-pin', dir),
   },
   'weakening-pin': {
     badge: 'Takers +γ −charm',
-    badgeBg: 'bg-emerald-500/10',
-    badgeText: 'text-emerald-600',
+    badgeBg: 'bg-sky-500/10',
+    badgeText: 'text-sky-300',
     rowBg: '',
     signal: (dir) => classSignal('weakening-pin', dir),
   },
@@ -96,7 +138,8 @@ export interface VerdictMeta {
 /**
  * Verdict display text. `computeBias` still classifies by where the
  * largest-|γ| strike sits (above / below / within 25 pts of spot) and the
- * sign of the window's net gamma, plus the 30-min price-drift override. On
+ * sign of the window's net gamma, plus the 30-min price-drift override.
+ * ▲ / ▼ mark where the strike sits; ↑ / ↓ are kept for price moves. On
  * GEXBot taker flow the labels say exactly that and nothing more: the
  * UW-era readings ("MMs will pull price toward it", "dealers amplify
  * moves") do not apply (owner decision D1 revised, 2026-10-29). Verdict ids
@@ -110,52 +153,38 @@ const AT_SPOT = 'Largest |γ| strike is within 25 pts of spot';
 
 export const VERDICT_META: Record<BiasMetrics['verdict'], VerdictMeta> = {
   'gex-pull-up': {
-    label: '↑ TOP ABOVE · LONG γ',
-    color: 'text-emerald-400',
-    bg: 'bg-emerald-500/15',
-    border: 'border-emerald-500/30',
+    label: '▲ TOP ABOVE · LONG γ',
+    ...GAMMA_SIGN_CLASSES.long,
     desc: `${ABOVE}; ${LONG_DESC}`,
   },
   'gex-pull-down': {
-    label: '↓ TOP BELOW · LONG γ',
-    color: 'text-red-400',
-    bg: 'bg-red-500/15',
-    border: 'border-red-500/30',
+    label: '▼ TOP BELOW · LONG γ',
+    ...GAMMA_SIGN_CLASSES.long,
     desc: `${BELOW}; ${LONG_DESC}`,
   },
   'breakout-risk-up': {
-    label: '↑ TOP ABOVE · SHORT γ',
-    color: 'text-amber-400',
-    bg: 'bg-amber-500/15',
-    border: 'border-amber-500/30',
+    label: '▲ TOP ABOVE · SHORT γ',
+    ...GAMMA_SIGN_CLASSES.short,
     desc: `${ABOVE}; ${SHORT_DESC}`,
   },
   'breakdown-risk-down': {
-    label: '↓ TOP BELOW · SHORT γ',
-    color: 'text-orange-400',
-    bg: 'bg-orange-500/15',
-    border: 'border-orange-500/30',
+    label: '▼ TOP BELOW · SHORT γ',
+    ...GAMMA_SIGN_CLASSES.short,
     desc: `${BELOW}; ${SHORT_DESC}`,
   },
   rangebound: {
     label: '● TOP AT SPOT · LONG γ',
-    color: 'text-sky-400',
-    bg: 'bg-sky-500/15',
-    border: 'border-sky-500/30',
+    ...GAMMA_SIGN_CLASSES.long,
     desc: `${AT_SPOT}; ${LONG_DESC}`,
   },
   volatile: {
     label: '● TOP AT SPOT · SHORT γ',
-    color: 'text-amber-400',
-    bg: 'bg-amber-500/15',
-    border: 'border-amber-500/30',
+    ...GAMMA_SIGN_CLASSES.short,
     desc: `${AT_SPOT}; ${SHORT_DESC}`,
   },
   'gex-floor-below': {
-    label: '↓ TOP BELOW · LONG γ',
-    color: 'text-emerald-400',
-    bg: 'bg-emerald-500/15',
-    border: 'border-emerald-500/30',
+    label: '▼ TOP BELOW · LONG γ',
+    ...GAMMA_SIGN_CLASSES.long,
     desc: `${BELOW}; ${LONG_DESC}`,
   },
   'drifting-down': {

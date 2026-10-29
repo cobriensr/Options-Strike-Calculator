@@ -21,9 +21,13 @@ import {
 import {
   CLASS_META,
   CLS_TOOLTIP,
+  GAMMA_SIGN_CLASSES,
+  GAMMA_SIGN_HEX,
   SPX_SPOT_BAND,
   VERDICT_META,
   VERDICT_TOOLTIP,
+  gammaSignHex,
+  trendColor,
 } from '../../components/GexLandscape/constants';
 import type { GexClassification } from '../../components/GexLandscape/types';
 import { dealerClaims } from '../helpers/dealer-claims';
@@ -246,5 +250,60 @@ describe('verdict labels and prose — no dealer claims', () => {
       .filter(([v]) => v !== 'gex-pull-down')
       .map(([, m]) => m.label);
     expect(new Set(emitted).size).toBe(emitted.length);
+  });
+});
+
+describe('gamma-sign palette — two non-evaluative hues (owner decision D1 revised)', () => {
+  // The UW-era colours read green = safe / amber, red = danger. On taker
+  // flow only the sign is known, so colour carries the sign and nothing else,
+  // the same way above and below spot.
+  const VERDICT_SIGN: Record<
+    Exclude<keyof typeof VERDICT_META, 'drifting-down' | 'drifting-up'>,
+    'long' | 'short'
+  > = {
+    'gex-pull-up': 'long',
+    'gex-pull-down': 'long',
+    'gex-floor-below': 'long',
+    rangebound: 'long',
+    'breakout-risk-up': 'short',
+    'breakdown-risk-down': 'short',
+    volatile: 'short',
+  };
+  const EVALUATIVE = /green|emerald|red|amber|orange|yellow|lime|rose/;
+
+  it.each(Object.entries(VERDICT_SIGN))(
+    '%s is coloured by its gamma sign only',
+    (verdict, sign) => {
+      const m = VERDICT_META[verdict as keyof typeof VERDICT_META];
+      expect({ color: m.color, bg: m.bg, border: m.border }).toEqual(
+        GAMMA_SIGN_CLASSES[sign],
+      );
+    },
+  );
+
+  it('uses two distinct, non-evaluative hues', () => {
+    expect(GAMMA_SIGN_CLASSES.long.color).not.toBe(
+      GAMMA_SIGN_CLASSES.short.color,
+    );
+    expect(JSON.stringify(GAMMA_SIGN_CLASSES)).not.toMatch(EVALUATIVE);
+    expect(GAMMA_SIGN_HEX.long).not.toBe(GAMMA_SIGN_HEX.short);
+  });
+
+  it.each(CLASSES)('%s class tints use its gamma-sign hue', (cls) => {
+    const m = CLASS_META[cls];
+    const hue =
+      cls === 'max-launchpad' || cls === 'fading-launchpad' ? 'violet' : 'sky';
+    expect(m.badgeText).toContain(hue);
+    expect(m.badgeBg).toContain(hue);
+    expect(`${m.badgeBg} ${m.badgeText} ${m.rowBg}`).not.toMatch(EVALUATIVE);
+  });
+
+  it('colours a value by sign alone: gammaSignHex and trendColor', () => {
+    expect(gammaSignHex(5e8)).toBe(GAMMA_SIGN_HEX.long);
+    expect(gammaSignHex(0)).toBe(GAMMA_SIGN_HEX.long);
+    expect(gammaSignHex(-5e8)).toBe(GAMMA_SIGN_HEX.short);
+    expect(trendColor(2.5)).toBe(GAMMA_SIGN_HEX.long);
+    expect(trendColor(-2.5)).toBe(GAMMA_SIGN_HEX.short);
+    expect(trendColor(null)).toBe('var(--color-muted)');
   });
 });

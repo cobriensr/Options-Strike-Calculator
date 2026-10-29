@@ -24,6 +24,9 @@ const DEALER_CLAIM_PATTERNS: readonly RegExp[] = [
   /gravity/i,
   /target/i,
   /ceiling|floor/i,
+  /magnet|suppress|squeez/i,
+  /bullish|bearish/i,
+  /\bfade|regime change/i,
 ];
 
 /** The dealer-claim patterns that `text` matches (empty = clean). */

@@ -101,7 +101,7 @@ describe('formatBiasForClaude', () => {
   it('emits the verdict, net taker gamma and largest-|γ| strike on the first two lines', () => {
     const out = formatBiasForClaude(baseBias()).split('\n');
     expect(out[0]).toBe(
-      'Verdict: ↑ TOP ABOVE · LONG γ — Largest |γ| strike is more than 25 pts above spot; net taker gamma is positive (traders net long gamma)',
+      'Verdict: ▲ TOP ABOVE · LONG γ — Largest |γ| strike is more than 25 pts above spot; net taker gamma is positive (traders net long gamma)',
     );
     expect(out[1]).toBe(
       'Net taker gamma: +2.5B within ±50 pts (traders net long gamma) | Largest |γ| strike: 6,900 (25 pts above spot, +1.8B, taker-long)',
@@ -185,17 +185,17 @@ describe('formatBiasForClaude', () => {
     });
     const out = formatBiasForClaude(bias);
     expect(out).toContain(
-      'Largest |γ| above spot: 6,975 (Takers +γ +charm, vol reinforcing)',
+      'Largest |γ| >25 pts above spot: 6,975 (Takers +γ +charm, vol reinforcing)',
     );
     expect(out).toContain(
-      'Largest |γ| below spot: 6,850 (Takers −γ −charm, vol opposing)',
+      'Largest |γ| >25 pts below spot: 6,850 (Takers −γ −charm, vol opposing)',
     );
   });
 
   it('omits target lines when arrays are empty', () => {
     const out = formatBiasForClaude(baseBias());
-    expect(out).not.toMatch(/Largest \|γ\| above spot:/);
-    expect(out).not.toMatch(/Largest \|γ\| below spot:/);
+    expect(out).not.toMatch(/Largest \|γ\| >25 pts above spot:/);
+    expect(out).not.toMatch(/Largest \|γ\| >25 pts below spot:/);
   });
 
   it('appends 5m, 15m, and 30m trend lines when trend values are present', () => {
