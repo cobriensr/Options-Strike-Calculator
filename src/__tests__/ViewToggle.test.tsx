@@ -26,6 +26,25 @@ describe('ViewToggle', () => {
     ).not.toHaveAttribute('aria-current');
   });
 
+  it('shows short labels on a phone but keeps the full accessible names', () => {
+    render(<ViewToggle view="calculator" onViewChange={vi.fn()} />);
+    for (const [name, short] of [
+      ['Calculator', 'Calc'],
+      ['Options Alerts', 'Alerts'],
+    ] as const) {
+      // A string name matches exactly, which proves the aria-hidden short
+      // label stays out of it.
+      const button = screen.getByRole('button', { name });
+      const shortLabel = screen.getByText(short, { exact: true });
+      expect(button).toContainElement(shortLabel);
+      expect(shortLabel).toHaveAttribute('aria-hidden', 'true');
+      expect(shortLabel).toHaveClass('sm:hidden');
+      expect(screen.getByText(name, { exact: true })).toHaveClass(
+        'max-sm:sr-only',
+      );
+    }
+  });
+
   it('calls onViewChange with the clicked view', () => {
     const onViewChange = vi.fn();
     render(<ViewToggle view="calculator" onViewChange={onViewChange} />);
