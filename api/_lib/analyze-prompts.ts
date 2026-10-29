@@ -1101,7 +1101,7 @@ How to use with VIX1D:
 Time-Bounded Analysis:
 The trader specifies an entry time. Charts may show the full day (especially when backtesting). Only analyze what was visible at the entry time. Draw a mental vertical line at the entry time — everything to the RIGHT does not exist yet. Do not reference any price action, flow, or volume after the entry time.
 Missing Data Protocol:
-When a "Data Sources Unavailable" section is present in the context, these are API data sources that failed to fetch. UW Periscope availability is determined separately: it is present when Periscope screenshots were uploaded or a "Periscope Exposure — UW Periscope" block is in the context; a GEXBot block never counts.
+When a "Data Sources Unavailable" section is present in the context, these are API data sources that failed to fetch. UW Periscope availability is determined separately: it is present when screenshots labelled UW Periscope were uploaded or a "Periscope Exposure — UW Periscope" block is in the context; a GEXBot block never counts, and an image labelled "Unlabeled (not Periscope)" is not UW Periscope.
 - A missing PRIMARY API signal (Market Tide, QQQ Net Flow, Aggregate GEX) automatically caps confidence at MODERATE. Two or more missing primary API signals caps confidence at LOW. SPX Net Flow missing does not cap confidence — the remaining sources are more reliable for direction.
 - UW Periscope absent (no screenshots and no UW Periscope block): caps confidence at MODERATE independently of API availability. That cap is the only effect of its absence: a missing UW Periscope never counts toward the LOW triggers ("Two or more missing primary API signals" above, or "only 1 primary signal is available" / "2+ primary data sources are unavailable" in the confidence calibration), so one failed API feed on top of it stays MODERATE.
 - A missing SECONDARY signal (dark pool, max pain, IV term structure, candles, overnight gap) reduces confidence by one level only if the remaining primary signals are in conflict.
@@ -1290,7 +1290,7 @@ CONFIDENCE CALIBRATION:
 - HIGH: 3+ signals (primary or secondary) confirm the same structure at HIGH or MODERATE confidence, with zero primary signals at CONTRADICTS. All secondary signals either confirm or are neutral. Historical base rate >= 75% if available. This means: "Multiple independent data sources converge on the same trade."
 - MODERATE: 2+ signals confirm with at most 1 contradicting primary signal. Secondary signals are mixed. OR: all primaries agree but a significant risk factor exists (deeply negative GEX, event proximity, Friday afternoon, missing primary data sources). This means: "The trade is structurally sound but has a specific risk factor."
 - LOW: Primary signals conflict (flow says one direction, gamma says another). OR: only 1 primary signal is available. OR: multiple secondary signals contradict the primary thesis. OR: 2+ primary data sources are unavailable. This means: "The evidence is thin or contradictory — size down significantly."
-Primary signals for structure selection: SPX Net Flow, Market Tide, and the UW Periscope Gamma profile when UW Periscope data is present. When it is absent, judge the LOW triggers on the API primaries alone (see the Missing Data Protocol): its absence applies only the MODERATE cap. GEXBot data never counts as Periscope or as a primary signal.
+Primary signals for structure selection: SPX Net Flow, Market Tide, and the UW Periscope Gamma profile when UW Periscope data is present. Without UW Periscope data, both LOW triggers ("only 1 primary signal is available" and "2+ primary data sources are unavailable") count only the Missing Data Protocol's primary API list (Market Tide, QQQ Net Flow, Aggregate GEX): one unavailable feed stays MODERATE, and a missing SPX Net Flow never lowers confidence. Its absence applies only the MODERATE cap. GEXBot data never counts as Periscope or as a primary signal.
 Primary signal for management regime: Aggregate GEX.
 Secondary signals: SPY/QQQ flow, charm, dark pool, IV term structure, candles, overnight gap, vanna, pin risk, skew.
 The confidence levels above refer to the total weight of evidence across all signals, not the Rule 8 flow weighting specifically.
@@ -1397,7 +1397,7 @@ Respond in this exact JSON format (no markdown, no backticks, no preamble):
     "rationale": "Why this hedge given today's conditions",
     "estimatedCost": "~$8.00 purchase, ~$6.00-7.00 recovered at EOD close, net cost ~$1.50"
   },
-  "periscopeNotes": "Detailed gamma/straddle analysis from the Periscope images. null if no Periscope images provided.",
+  "periscopeNotes": "Detailed gamma/straddle analysis from UW Periscope data (screenshots or a UW-sourced block). null if no UW Periscope data (screenshots or a UW-sourced block).",
   "structureRationale": "Why this structure, referencing NCP/NPP relationship and all confirming/contradicting signals.",
   "review": {
     "wasCorrect": true,

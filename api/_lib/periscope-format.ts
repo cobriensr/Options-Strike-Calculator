@@ -45,6 +45,9 @@ const SCRAPER_ERA_START = '1970-01-01T00:00:00Z';
  * block is not Periscope data (owner decision D1 revised, 2026-10-29).
  */
 const BLOCK_TITLE: Record<PeriscopeSource | 'unknown', string> = {
+  // A future UW-websocket slice is UW Periscope data too: give it this
+  // title, and analyze-context's "Periscope Exposure — UW Periscope"
+  // section, which the system prompt uses to decide UW Periscope is present.
   scraper: 'Periscope exposure (UW Periscope, market-maker position estimate)',
   gexbot:
     'GEXBot exposure (taker-side sign: positive = traders net long that Greek at the strike)',

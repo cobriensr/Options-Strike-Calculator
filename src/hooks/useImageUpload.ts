@@ -1,7 +1,10 @@
 import type React from 'react';
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { UploadedImage } from '../components/ChartAnalysis/types';
-import { CHART_LABELS } from '../components/ChartAnalysis/types';
+import {
+  CHART_LABELS,
+  UNLABELED_IMAGE_LABEL,
+} from '../components/ChartAnalysis/types';
 
 export interface UseImageUploadReturn {
   images: UploadedImage[];
@@ -38,12 +41,12 @@ export function useImageUpload(): UseImageUploadReturn {
       if (images.length >= CHART_LABELS.length) return;
       const id = `img-${crypto.randomUUID()}`;
       const preview = URL.createObjectURL(file);
-      setImages((prev) => {
-        const usedLabels = new Set(prev.map((i) => i.label));
-        const nextLabel =
-          CHART_LABELS.find((l) => !usedLabels.has(l)) ?? CHART_LABELS[0];
-        return [...prev, { id, file, preview, label: nextLabel }];
-      });
+      // Start not-Periscope; the owner picks a UW Periscope label in the
+      // picker (an auto-assigned one would count as UW Periscope data).
+      setImages((prev) => [
+        ...prev,
+        { id, file, preview, label: UNLABELED_IMAGE_LABEL },
+      ]);
     },
     [images.length],
   );

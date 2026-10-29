@@ -928,6 +928,46 @@ describe('buildAnalysisContext', () => {
     vi.unstubAllGlobals();
   });
 
+  it('names a missing per-strike block "GEXBot Taker-Flow Greeks" after the cutover', async () => {
+    // Since 2026-05-26 17:20 UTC the block comes from GEXBot, so its absence
+    // is a missing GEXBot feed, not a missing UW Periscope (m2).
+    const { buildPeriscopeContextBlock } =
+      await import('../_lib/periscope-format.js');
+    vi.mocked(buildPeriscopeContextBlock).mockRejectedValueOnce(
+      new Error('gexbot down'),
+    );
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-10-28',
+      spx: 6850,
+    });
+    const text = result.content
+      .map((b) => (b.type === 'text' ? b.text : ''))
+      .join('\n');
+    expect(text).toContain('- GEXBot Taker-Flow Greeks (latest 10-min slice)');
+    expect(text).not.toContain('- Periscope Exposure (latest 10-min slice)');
+    vi.unstubAllGlobals();
+  });
+
+  it('names the Net GEX Heatmap source table it actually reads (m4)', async () => {
+    const { formatNetGexHeatmapForClaude } =
+      await import('../_lib/db-strike-helpers.js');
+    vi.mocked(formatNetGexHeatmapForClaude).mockReturnValueOnce('HEATMAP-BODY');
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-10-28',
+    });
+    const text = result.content
+      .map((b) => (b.type === 'text' ? b.text : ''))
+      .join('\n');
+    const start = text.indexOf('## SPX 0DTE Net GEX Heatmap');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const block = text.slice(start, text.indexOf('HEATMAP-BODY', start));
+    expect(block).toContain('from the strike_exposures table');
+    expect(block).not.toContain('greek_exposure_strike');
+    vi.unstubAllGlobals();
+  });
+
   it('captures to Sentry when the periscope context build fails', async () => {
     const { buildPeriscopeContextBlock } =
       await import('../_lib/periscope-format.js');

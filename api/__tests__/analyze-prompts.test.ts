@@ -354,8 +354,30 @@ describe('analyze system prompt — Periscope rules run on UW data only (D1 revi
       'GEXBot data never counts as Periscope or as a primary signal.',
     );
     expect(PROMPT).toContain(
-      'UW Periscope availability is determined separately: it is present when Periscope screenshots were uploaded or a "Periscope Exposure — UW Periscope" block is in the context; a GEXBot block never counts.',
+      'UW Periscope availability is determined separately: it is present when screenshots labelled UW Periscope were uploaded or a "Periscope Exposure — UW Periscope" block is in the context; a GEXBot block never counts, and an image labelled "Unlabeled (not Periscope)" is not UW Periscope.',
     );
+  });
+
+  it('keeps one failed feed at MODERATE when UW Periscope is absent (N1)', () => {
+    // Without UW Periscope the structure primaries are SPX Net Flow and
+    // Market Tide, so "only 1 primary available" would fire LOW on one
+    // failed feed. The LOW triggers count the Missing Data Protocol's list.
+    expect(
+      lineStartingWith('Primary signals for structure selection'),
+    ).toContain(
+      'Without UW Periscope data, both LOW triggers ("only 1 primary signal is available" and "2+ primary data sources are unavailable") count only the Missing Data Protocol\'s primary API list (Market Tide, QQQ Net Flow, Aggregate GEX): one unavailable feed stays MODERATE, and a missing SPX Net Flow never lowers confidence.',
+    );
+    expect(PROMPT).not.toContain(
+      'judge the LOW triggers on the API primaries alone',
+    );
+  });
+
+  it('scopes periscopeNotes to UW Periscope data', () => {
+    const line = PROMPT.split('\n').find((l) => l.includes('"periscopeNotes"'));
+    expect(line).toContain(
+      'null if no UW Periscope data (screenshots or a UW-sourced block).',
+    );
+    expect(line).not.toContain('null if no Periscope images provided');
   });
 
   it('scopes the SpotGamma cross-checks to uploaded UW Periscope', () => {
@@ -374,6 +396,15 @@ describe('analyze system prompt — Periscope rules run on UW data only (D1 revi
     expect(sg).toContain('+ UW Periscope Charm showing strong positive charm');
     expect(sg).toContain(
       'Trust UW Periscope Charm for confirmed dealer positioning',
+    );
+    // m1: the "already in context" lists no longer name Periscope as
+    // context data; UW Periscope is named as an upload.
+    expect(sg).not.toMatch(/Zero-Gamma, Periscope\s+Gamma\/Charm/);
+    expect(sg).toContain(
+      'UW Periscope Gamma/Charm screenshots when uploaded (never the GEXBot block)',
+    );
+    expect(sg).toContain(
+      'and UW Periscope Gamma/Charm when uploaded (never the GEXBot block)',
     );
   });
 

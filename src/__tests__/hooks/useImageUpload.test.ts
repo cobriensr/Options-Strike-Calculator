@@ -35,7 +35,7 @@ describe('useImageUpload', () => {
 
   // ── addImage ──
 
-  it('adds an image with a generated preview URL and auto-assigned label', () => {
+  it('adds an image with a generated preview URL and the not-Periscope label', () => {
     const { result } = renderHook(() => useImageUpload());
     const file = makeFile();
 
@@ -46,12 +46,14 @@ describe('useImageUpload', () => {
     expect(result.current.images).toHaveLength(1);
     expect(result.current.images[0]!.file).toBe(file);
     expect(result.current.images[0]!.preview).toBe('blob:mock-url');
-    expect(result.current.images[0]!.label).toBe('UW Periscope (Gamma)');
+    // m6: the owner picks UW Periscope explicitly, so an unlabelled
+    // screenshot cannot lift the "no UW Periscope" MODERATE cap.
+    expect(result.current.images[0]!.label).toBe('Unlabeled (not Periscope)');
     expect(result.current.images[0]!.id).toMatch(/^img-/);
     expect(mockCreateObjectURL).toHaveBeenCalledWith(file);
   });
 
-  it('auto-assigns the next unused label for subsequent images', () => {
+  it('never auto-assigns a Periscope label to later images either', () => {
     const { result } = renderHook(() => useImageUpload());
 
     act(() => {
@@ -61,8 +63,8 @@ describe('useImageUpload', () => {
       result.current.addImage(makeFile('b.png'));
     });
 
-    expect(result.current.images[0]!.label).toBe('UW Periscope (Gamma)');
-    expect(result.current.images[1]!.label).toBe('UW Periscope Charm (SPX)');
+    expect(result.current.images[0]!.label).toBe('Unlabeled (not Periscope)');
+    expect(result.current.images[1]!.label).toBe('Unlabeled (not Periscope)');
   });
 
   it('respects the 2 image limit', () => {

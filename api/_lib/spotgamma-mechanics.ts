@@ -25,8 +25,8 @@ provided as images in the analyze context: Delta Pressure, Non-0DTE GEX
 bars, and Charm Pressure. Each image is labeled when provided. This
 framework explains what each measures, how to extract signal from the
 image, and how to combine them with the structured API data already in
-context (UW Net GEX Heatmap, Aggregate GEX, Zero-Gamma, Periscope
-Gamma/Charm, Net Charm API).
+context (UW Net GEX Heatmap, Aggregate GEX, Zero-Gamma, Net Charm API) and
+with UW Periscope Gamma/Charm screenshots when uploaded (never the GEXBot block).
 
 <image_reading_protocol>
 ## Critical: Establishing the Price Anchor Before Reading Any Chart
@@ -432,8 +432,8 @@ charm AND time-projected charm forces converge at this level.
 
 When SpotGamma images are provided alongside the structured API data,
 apply this integration layer on top of the individual readings above AND
-the existing UW Net GEX Heatmap, Aggregate GEX, Zero-Gamma, Periscope
-Gamma/Charm, Net Charm, dark pool, and Max Pain data already in context.
+the existing UW Net GEX Heatmap, Aggregate GEX, Zero-Gamma, Net Charm, dark
+pool, and Max Pain data already in context, and UW Periscope Gamma/Charm when uploaded (never the GEXBot block).
 
 **The Delta Pressure / Charm Pressure mathematical relationship:**
 

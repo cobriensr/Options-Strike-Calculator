@@ -134,6 +134,14 @@ export const CHART_LABELS = [
   'UW Periscope Charm (SPX)',
 ] as const;
 
+/**
+ * Label a new upload starts with. Not a Periscope label: the analyze
+ * prompt counts UW Periscope as present when a screenshot is labelled UW
+ * Periscope, which lifts the "no UW Periscope" MODERATE cap, so the owner
+ * picks a Periscope label explicitly. Any number of images may carry it.
+ */
+export const UNLABELED_IMAGE_LABEL = 'Unlabeled (not Periscope)';
+
 export const MODE_LABELS: Record<
   AnalysisMode,
   { label: string; desc: string }

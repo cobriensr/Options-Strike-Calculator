@@ -220,14 +220,18 @@ describe('ChartAnalysis', () => {
       expect(screen.getByText(/drop or click to upload/i)).toBeInTheDocument();
     });
 
-    it('defaults image label to Periscope (Gamma)', async () => {
+    it('starts a new image as not Periscope, with the UW Periscope labels offered', async () => {
       const { container } = render(
         <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
-      expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe(
+      const select = screen.getByRole('combobox') as HTMLSelectElement;
+      expect(select.value).toBe('Unlabeled (not Periscope)');
+      expect(Array.from(select.options).map((o) => o.value)).toEqual([
+        'Unlabeled (not Periscope)',
         'UW Periscope (Gamma)',
-      );
+        'UW Periscope Charm (SPX)',
+      ]);
     });
 
     it('allows changing the image label', async () => {

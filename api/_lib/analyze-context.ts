@@ -81,7 +81,10 @@ import {
   buildPeriscopeContextBlock,
   type PeriscopeContextBlock,
 } from './periscope-format.js';
-import { PERISCOPE_SOURCE } from '../../src/utils/periscope-source.js';
+import {
+  PERISCOPE_SOURCE,
+  periscopeSourceAt,
+} from '../../src/utils/periscope-source.js';
 
 export { numOrUndef, parseEntryTimeAsUtc };
 export type { AnalysisContentBlock };
@@ -123,6 +126,10 @@ const PERISCOPE_CONTEXT_ONLY_NOTE =
  */
 function formatPeriscopeSection(block: PeriscopeContextBlock): string {
   if (block.source === PERISCOPE_SOURCE.scraper) {
+    // Keep this title: the system prompt's Missing Data Protocol counts UW
+    // Periscope as present when a "Periscope Exposure — UW Periscope" block
+    // is in the context. A future UW-websocket Periscope block must reuse
+    // this exact title (or that prompt line must change with it).
     return `\n## Periscope Exposure — UW Periscope (latest 10-min slice — replaces screenshots)\nThis block carries Gamma / Charm / Vanna per strike (not naive aggregate) for today's 0DTE expiry, plus the prior-slice momentum read for sign-flip detection (orange-bar equivalent), plus the straddle cone bounds + any breach events. These values are UW Periscope's market-maker position estimates (the scraper era, before 2026-05-26 17:20 UTC (12:20 CT)), so the UW-calibrated Periscope rules in the system prompt apply.\n\nUse this for the UW Periscope structural read: +γ floor / ceiling near spot frame stops and targets, charm tally signs the EoD /ES drift, vanna extremes flag vol-shock sensitivity, sign flips mark regime changes, and a cone breach is a vol-extension setup (do not fade). Quote magnitudes directly — do NOT estimate from the screenshot when this block is present.\n\n${block.text}\n`;
   }
   const intro =
@@ -364,8 +371,16 @@ export async function buildAnalysisContext(
   if (!similarDaysContext) unavailable.push('Historical Analog Days');
   if (!rangeForecastContext)
     unavailable.push('Analog Range Forecast (cohort-conditional strikes)');
+  // Name the missing per-strike feed by the era the analysis falls in:
+  // since the cutover the block is GEXBot data, so a failed fetch is a
+  // missing GEXBot feed, not a missing UW Periscope.
   if (!periscopeContext)
-    unavailable.push('Periscope Exposure (latest 10-min slice)');
+    unavailable.push(
+      periscopeSourceAt(asOf ?? `${analysisDate}T23:59:59Z`) ===
+        PERISCOPE_SOURCE.gexbot
+        ? 'GEXBot Taker-Flow Greeks (latest 10-min slice)'
+        : 'Periscope Exposure (latest 10-min slice)',
+    );
   if (!context.targetDeltaStrikes) unavailable.push('Chain Delta Rungs');
   const unavailableList = unavailable.map((s) => '- ' + s).join('\n');
   const unavailableSection =
@@ -431,7 +446,7 @@ ${main.greekExposureContext ? `\n## SPX Greek Exposure (from API — OI-based)\n
 ${main.greekFlowContext ? `\n## 0DTE SPX Delta Flow (from API)\nDelta flow measures directional exposure being added through 0DTE SPX options per minute. Unlike premium flow (NCP/NPP), delta flow captures exposure from spreads and complex structures where net premium is near-zero but directional exposure is significant. When delta flow diverges from premium flow, it reveals institutional positioning that premium alone misses.\n\n${main.greekFlowContext}\n` : ''}
 ${main.spotGexContext ? `\n## SPX Aggregate GEX Panel (from API — intraday time series)\nThis replaces the Aggregate GEX screenshot. Includes OI Net Gamma (Rule 16), Volume Net Gamma, and Directionalized Volume Net Gamma updated every 5 minutes. If an Aggregate GEX screenshot is also provided, trust the API values — the screenshot is visual confirmation only.\n\n${main.spotGexContext}\n` : ''}
 ${main.strikeExposureContext ? `\n## SPX 0DTE Per-Strike Greek Profile (from API)\nThis is the naive per-strike gamma and charm profile for today's 0DTE expiration. It replaces the Net Charm (naive) screenshot. The "Net Gamma" column shows the gamma bar values at each strike. The "Net Charm" column shows how each wall evolves with time. The "Dir Gamma/Charm" columns show directionalized (ask/bid) exposure which approximates confirmed MM positioning. Uploaded UW Periscope screenshots, when present, still provide CONFIRMED MM exposure — use API data for the naive profile and those screenshots (or a UW-era Periscope Exposure block) for strike-level confirmation. The GEXBot Taker-Flow Greeks block is taker flow and confirms nothing about MM exposure.\n\n${main.strikeExposureContext}\n` : ''}
-${main.netGexHeatmapContext ? `\n## SPX 0DTE Net GEX Heatmap (from API — signed dollar GEX per strike)\nThis is the signed net GEX dollar amount at each strike from the greek_exposure_strike table, updated every minute. This is the same data shown in the UW Net GEX Heatmap UI. Positive net_gex = net long gamma (dealer mean-reverting hedging → price suppression, pin magnetism); negative net_gex = net short gamma (dealer momentum hedging → price acceleration, breakouts). The gamma flip zone (net_gex sign change) is the structural regime boundary between suppression and acceleration. Use this alongside the Per-Strike Greek Profile — this adds the dollar-scaled magnitude and call/put composition that the naive profile lacks.\n\n${main.netGexHeatmapContext}\n` : ''}
+${main.netGexHeatmapContext ? `\n## SPX 0DTE Net GEX Heatmap (from API — signed dollar GEX per strike)\nThis is the signed net GEX dollar amount at each strike from the strike_exposures table (UW spot exposures by strike, today's expiry only), updated every minute. This is the same data shown in the UW Net GEX Heatmap UI. Positive net_gex = net long gamma (dealer mean-reverting hedging → price suppression, pin magnetism); negative net_gex = net short gamma (dealer momentum hedging → price acceleration, breakouts). The gamma flip zone (net_gex sign change) is the structural regime boundary between suppression and acceleration. Use this alongside the Per-Strike Greek Profile — this adds the dollar-scaled magnitude and call/put composition that the naive profile lacks.\n\n${main.netGexHeatmapContext}\n` : ''}
 ${periscopeContext ? formatPeriscopeSection(periscopeContext) : ''}
 ${main.zeroGammaContext ? `\n## SPX 0DTE Zero-Gamma Level (derived from per-strike gamma profile)\nThe zero-gamma strike is the approximate SPX level at which aggregate dealer gamma flips sign. Above the flip (positive gamma) dealers hedge mean-reverting and price movement is suppressed. Below the flip (negative gamma) dealers hedge momentum and price movement accelerates. Distance-to-flip in cone fractions tells you how close today's price is to a regime change in units that match the straddle cone.\n\n${main.zeroGammaContext}\n` : ''}
 ${context.gexLandscapeBias ? `\n## GEX Landscape Structural Bias (from live GEX panel)\nThis is the real-time structural bias verdict computed from the per-strike GEX panel, using GEXBot's 1-minute capture in GEXBot's taker-side sign (positive = traders net long gamma at the strike). It summarizes where the largest-|γ| strike sits relative to spot, the sign of the summed taker-side gamma within ±50 pts, and the 5m/15m/30m gamma changes above and below spot. It describes taker positioning; it is not a forecast. Treat it as context only, like the GEXBot Taker-Flow Greeks block: do not apply the UW-calibrated Periscope or gamma/charm rules to it.\n\n${context.gexLandscapeBias as string}\n` : ''}

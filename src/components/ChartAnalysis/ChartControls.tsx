@@ -10,7 +10,7 @@ import type { RefObject } from 'react';
 import { theme } from '../../themes';
 import type { AnalysisMode, UploadedImage } from './types';
 import type { RetryPrompt } from '../../hooks/useChartAnalysis';
-import { CHART_LABELS, MODE_LABELS } from './types';
+import { CHART_LABELS, MODE_LABELS, UNLABELED_IMAGE_LABEL } from './types';
 import { tint } from '../../utils/ui-utils';
 import { useAccessSession } from '../../hooks/useAccessSession';
 import {
@@ -231,6 +231,9 @@ export default function ChartControls({
                   onChange={(e) => updateLabel(img.id, e.target.value)}
                   className="bg-surface-alt border-edge flex-1 rounded border px-1 py-0.5 font-sans text-[10px]"
                 >
+                  <option value={UNLABELED_IMAGE_LABEL}>
+                    {UNLABELED_IMAGE_LABEL}
+                  </option>
                   {CHART_LABELS.filter(
                     (l) =>
                       l === img.label ||
