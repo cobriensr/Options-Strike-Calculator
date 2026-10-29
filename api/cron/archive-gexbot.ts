@@ -143,9 +143,10 @@ const TABLE_SPECS: Record<GexbotArchiveTable, TableSpec> = {
 /**
  * Async generator that paginates one date's rows from `tableName`
  * using keyset pagination on the BIGSERIAL `id` column. Single
- * archive date is read-only mid-cron (writes stop at 21:00 UTC
- * under EDT, 21:01 UTC under EST; archive runs at 21:30), so OFFSET-style pagination would also
- * work — keyset is just faster and never skips rows under churn.
+ * archive date is read-only mid-cron (writes stop at 21:00 UTC under
+ * EDT, 21:01 UTC under EST; archive runs at 21:30), so OFFSET-style
+ * pagination would also work — keyset is just faster and never skips
+ * rows under churn.
  */
 async function* streamRows(
   tableName: GexbotArchiveTable,

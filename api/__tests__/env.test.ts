@@ -21,7 +21,7 @@ describe('GEXBOT_API_KEY', () => {
   });
 
   it('is optional: optionalEnv returns undefined when absent', () => {
-    delete process.env.GEXBOT_API_KEY;
+    vi.stubEnv('GEXBOT_API_KEY', undefined);
     expect(optionalEnv('GEXBOT_API_KEY')).toBeUndefined();
   });
 

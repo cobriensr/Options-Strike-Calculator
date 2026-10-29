@@ -122,17 +122,20 @@ describe('audit-gexbot-health cron', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
-    const [msg, opts] = (Sentry.captureMessage as ReturnType<typeof vi.fn>).mock
-      .calls[0] as [string, { level: string; tags: Record<string, string> }];
+    const calls = (Sentry.captureMessage as ReturnType<typeof vi.fn>).mock
+      .calls as [string, { level: string; tags: Record<string, string> }][];
+    // Overall and SPX are separate root causes: one capture each.
+    expect(calls).toHaveLength(2);
+    const [msg, opts] = calls[0]!;
     expect(msg).toMatch(/zero_gamma NULL 100\.0% overall/);
     expect(opts.level).toBe('warning');
     expect(opts.tags['cron.anomaly']).toBe('gexbot-health');
     expect(opts).toMatchObject({
-      fingerprint: [
-        'gexbot-health',
-        'zero-gamma-null-overall+zero-gamma-null-spx',
-      ],
+      fingerprint: ['gexbot-health', 'zero-gamma-null-overall'],
+    });
+    expect(calls[1]![0]).toMatch(/zero_gamma NULL 100\.0% for SPX/);
+    expect(calls[1]![1]).toMatchObject({
+      fingerprint: ['gexbot-health', 'zero-gamma-null-spx'],
     });
   });
 

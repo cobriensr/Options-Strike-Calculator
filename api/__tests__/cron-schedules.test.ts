@@ -188,6 +188,17 @@ describe('cron-schedules SCHEDULE_MAP', () => {
       // check below is the exact test); the dow tail must match every entry.
       if (utcs.length === 1) {
         expect(et.minute, `${jobName}: minute field`).toBe(utcs[0]?.minute);
+      } else {
+        // Multi-window job: the ET monitor must keep the cadence of the main
+        // (widest-hours) entry, so a sparser monitor (e.g. `*/10` against a
+        // per-minute job) cannot pass.
+        const main = utcs.reduce((a, b) =>
+          b.hours.size > a.hours.size ? b : a,
+        );
+        expect(
+          [...et.minutes].sort((x, y) => x - y),
+          `${jobName}: cadence`,
+        ).toEqual([...main.minutes].sort((x, y) => x - y));
       }
       for (const utc of utcs) {
         expect(et.rest, `${jobName}: dow/dom/month tail`).toBe(utc.rest);

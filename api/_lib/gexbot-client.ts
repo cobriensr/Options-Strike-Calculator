@@ -38,8 +38,8 @@ const GEXBOT_BASE = 'https://api.gex.bot/v2';
  * 33 s on top (3 x 10 s + 3 s backoff), so a double outage (GEXBot down and
  * Neon down) can reach about 75 s and Vercel kills the run at 60 s with no
  * Axiom event. We keep 60 s: normal ticks finish far below it, and the Sentry
- * cron monitor (SCHEDULE_MAP, 10:00-15:59 ET) flags a killed run as a missed
- * check-in.
+ * cron monitor (SCHEDULE_MAP, 10:00-15:59 ET) times out the check-in
+ * of a killed run (in_progress with no completion).
  */
 const GEXBOT_TIMEOUT_MS = 2_500;
 

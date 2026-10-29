@@ -90,10 +90,9 @@ export default withCronCheckin('audit-gexbot-health', async (req, res) => {
       const sgoNullAllPct = pct(Number(r.sgo_null_all), rowsAll);
       const drrNullAllPct = pct(Number(r.drr_null_all), rowsAll);
 
-      const alerts: string[] = [];
-      // Stable alert kinds for the Sentry fingerprint: the alert text carries
-      // percentages, which would otherwise open a new issue per value.
-      const alertKinds: string[] = [];
+      // One entry per alert. `kind` is the stable Sentry fingerprint (the
+      // text carries percentages, which would open a new issue per value).
+      const alerts: { kind: string; text: string }[] = [];
       if (rowsAll === 0) {
         // GexBot is gated to the cash session (isGexbotLiveCt), so
         // weekends/holidays legitimately produce zero snapshots — not an
@@ -101,23 +100,23 @@ export default withCronCheckin('audit-gexbot-health', async (req, res) => {
         // worth paging on. (This cron runs Mon–Fri UTC, but a weekday market
         // holiday would otherwise false-alarm.)
         if (isTradingDayET()) {
-          alertKinds.push('no-snapshots');
-          alerts.push(
-            `no gexbot_snapshots in last ${LOOKBACK_HOURS}h (capture outage?)`,
-          );
+          alerts.push({
+            kind: 'no-snapshots',
+            text: `no gexbot_snapshots in last ${LOOKBACK_HOURS}h (capture outage?)`,
+          });
         }
       } else {
         if (zgNullAllPct > ZG_NULL_ALERT_PCT) {
-          alertKinds.push('zero-gamma-null-overall');
-          alerts.push(
-            `zero_gamma NULL ${zgNullAllPct.toFixed(1)}% overall > ${ZG_NULL_ALERT_PCT}% (classic-basic merge regressed?)`,
-          );
+          alerts.push({
+            kind: 'zero-gamma-null-overall',
+            text: `zero_gamma NULL ${zgNullAllPct.toFixed(1)}% overall > ${ZG_NULL_ALERT_PCT}% (classic-basic merge regressed?)`,
+          });
         }
         if (rowsSpx > 0 && zgNullSpxPct > ZG_NULL_ALERT_PCT) {
-          alertKinds.push('zero-gamma-null-spx');
-          alerts.push(
-            `zero_gamma NULL ${zgNullSpxPct.toFixed(1)}% for SPX > ${ZG_NULL_ALERT_PCT}%`,
-          );
+          alerts.push({
+            kind: 'zero-gamma-null-spx',
+            text: `zero_gamma NULL ${zgNullSpxPct.toFixed(1)}% for SPX > ${ZG_NULL_ALERT_PCT}%`,
+          });
         }
       }
 
@@ -128,13 +127,14 @@ export default withCronCheckin('audit-gexbot-health', async (req, res) => {
         zgNullSpxPct,
         sgoNullAllPct,
         drrNullAllPct,
-        alerts,
+        alerts: alerts.map((a) => a.text),
       };
 
-      if (alerts.length > 0) {
-        Sentry.captureMessage(`gexbot-health: ${alerts.join('; ')}`, {
+      // One capture per alert so each root cause keeps its own Sentry issue.
+      for (const alert of alerts) {
+        Sentry.captureMessage(`gexbot-health: ${alert.text}`, {
           level: 'warning',
-          fingerprint: ['gexbot-health', alertKinds.join('+')],
+          fingerprint: ['gexbot-health', alert.kind],
           tags: { 'cron.anomaly': 'gexbot-health' },
           extra: summary,
         });
