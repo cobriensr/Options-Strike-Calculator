@@ -12,8 +12,13 @@ because the matched-flow input is missing. This script restores that
 input so the local enrichment can run.
 
 Usage:
-    ml/.venv/Scripts/python scripts/backfill_net_flow_history.py
     ml/.venv/Scripts/python scripts/backfill_net_flow_history.py --date 2026-05-05
+    ml/.venv/Scripts/python scripts/backfill_net_flow_history.py \\
+        --parquet-dir <bot-eod-dir>
+
+Pass --date, or --parquet-dir to use the date of the newest
+{date}-trades.parquet in that directory (`make backfill-flow` passes the
+Makefile's PARQUET_DIR).
 """
 
 from __future__ import annotations
@@ -35,13 +40,13 @@ from zoneinfo import ZoneInfo
 import psycopg2
 from psycopg2.extras import execute_values
 
+from _cli_paths import existing_dir
 from _pipeline_retry import is_retryable_http_status, retry_call
 
 _CT_TZ = ZoneInfo('America/Chicago')
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env.local'
-PARQUET_DIR = Path.home() / 'Desktop' / 'Bot-Eod-parquet'
 
 # Mirrors LOTTERY_V3_TICKERS ∪ LOTTERY_EXTENDED_TICKERS in
 # api/_lib/lottery-finder.ts (deduped). If that source list grows,
@@ -99,10 +104,10 @@ def load_env() -> None:
                 )
 
 
-def detect_latest_date() -> str:
-    files = sorted(PARQUET_DIR.glob('*-trades.parquet'))
+def detect_latest_date(parquet_dir: Path) -> str:
+    files = sorted(parquet_dir.glob('*-trades.parquet'))
     if not files:
-        sys.exit(f'No *-trades.parquet files in {PARQUET_DIR}')
+        sys.exit(f'No *-trades.parquet files in {parquet_dir}')
     m = re.match(r'(\d{4}-\d{2}-\d{2})-trades\.parquet', files[-1].name)
     if not m:
         sys.exit(f'Cannot parse date from {files[-1].name}')
@@ -229,16 +234,31 @@ def store_rows(
     return len(inserted) if inserted else 0
 
 
-def main() -> None:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--date', help='YYYY-MM-DD trading date to fetch')
     parser.add_argument(
-        '--date',
-        help='YYYY-MM-DD; defaults to latest *-trades.parquet date',
+        '--parquet-dir',
+        type=existing_dir,
+        help=(
+            'Bot-EOD archive (directory of {date}-trades.parquet files). '
+            'Without --date, the run fetches its newest date.'
+        ),
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.date is None and args.parquet_dir is None:
+        parser.error(
+            'pass --date YYYY-MM-DD, or --parquet-dir DIR to fetch the '
+            'newest *-trades.parquet date in DIR'
+        )
+    return args
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
 
     load_env()
-    target_date = args.date or detect_latest_date()
+    target_date = args.date or detect_latest_date(args.parquet_dir)
     DateType.fromisoformat(target_date)
     print(f'[backfill-flow] target date: {target_date}')
 

@@ -90,7 +90,9 @@ LOCAL_PARQUET_ROOT = Path.home() / ".flow-archive"
 # Full unfiltered archive of the source CSV. Written BEFORE any filtering so
 # the CSV is recoverable to its original row count even if the filter step
 # changes. The CSV is deleted only after this archive plus the upload succeed.
-ARCHIVE_PARQUET_DIR = Path.home() / "Desktop" / "Bot-Eod-parquet"
+# Default for --archive-dir; the Makefile passes its PARQUET_DIR, which the
+# enrich scripts then read.
+DEFAULT_ARCHIVE_DIR = Path.home() / "Desktop" / "Bot-Eod-parquet"
 
 
 def expected_csv_path(date: str, input_dir: Path) -> Path:
@@ -102,8 +104,8 @@ def parquet_local_path(date: str) -> Path:
     return LOCAL_PARQUET_ROOT / f"year={y}" / f"month={m}" / f"day={d}" / "data.parquet"
 
 
-def archive_parquet_path(date: str) -> Path:
-    return ARCHIVE_PARQUET_DIR / f"{date}-trades.parquet"
+def archive_parquet_path(date: str, archive_dir: Path) -> Path:
+    return archive_dir / f"{date}-trades.parquet"
 
 
 def write_full_archive(lf: pl.LazyFrame, archive_path: Path) -> None:
@@ -440,6 +442,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     p.add_argument("date", help="Trading date in YYYY-MM-DD format")
     p.add_argument("--input-dir", type=Path, default=DEFAULT_INPUT_DIR)
+    p.add_argument(
+        "--archive-dir",
+        type=Path,
+        default=DEFAULT_ARCHIVE_DIR,
+        help=(
+            "Bot-EOD archive the full {date}-trades.parquet goes to (created "
+            f"if missing). Default: {DEFAULT_ARCHIVE_DIR}"
+        ),
+    )
     p.add_argument("--keep-csv", action="store_true", help="Don't delete source CSV")
     p.add_argument("--dry-run", action="store_true", help="Skip upload + cleanup")
     p.add_argument(
@@ -447,7 +458,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help=(
             "Skip writing the full unfiltered archive parquet to "
-            f"{ARCHIVE_PARQUET_DIR}. Without --skip-archive the CSV is only "
+            "--archive-dir. Without --skip-archive the CSV is only "
             "deleted after the archive write AND the upload both succeed."
         ),
     )
@@ -493,7 +504,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if not args.skip_archive:
-        archive_path = archive_parquet_path(args.date)
+        archive_path = archive_parquet_path(args.date, args.archive_dir)
         if archive_path.exists():
             print(
                 f"→ Archive already exists, skipping: {archive_path} "
