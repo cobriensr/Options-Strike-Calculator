@@ -58,8 +58,9 @@ Both phases ship in one push; the main session pushes after the 15:00 CT close.
 - A reverse-direction test in `cron-schedules.test.ts`:
   - It reads raw `vercel.json` `crons[].path`, deduplicated, so paths outside `/api/cron/` count too.
   - Every path needs either a `SCHEDULE_MAP` entry (`/api/cron/<job>` → `<job>`) or an entry in the inline `UNMONITORED_CRONS: Record<string, string>`, keyed by full path, whose value is a reason citing a spec.
-  - For each exemption, the test also asserts that it is still in `vercel.json`, that it has no `SCHEDULE_MAP` entry, and that its reason is non-empty and cites a `docs/superpowers/specs/*.md` file.
+  - For each exemption, the test also asserts that it is still in `vercel.json`, that it has no `SCHEDULE_MAP` entry, and that its reason is non-empty and cites a `docs/superpowers/specs/*.md` file that exists.
   - `/api/health` is the only exemption.
+- A source scan in the same file (added after review): an entry alone sends nothing, so for every `SCHEDULE_MAP` key, `api/cron/<job>.ts` must pass that job name to `withCronInstrumentation(` or `withCronCheckin(`. The name is read from the call's first argument, either a string literal or a `const JOB = '<job>'` in the same file (six crons name themselves through a constant). Any other mention of the name, such as a `Sentry.setTag`, doesn't count. The coverage test alone was green at the Phase 1 commit while the cleanup job had an entry and no wrapper; the scan fails on that state.
 - Fix the stale `cron-schedules.ts` header, which said the map is fed to `Sentry.withMonitor()` / `captureCheckIn()`. Check-ins have been direct HTTP for a while.
 - Fix the `cron-instrumentation.ts` comment that said `cron-schedules.test.ts` "catches stale entries the other direction". It now names both directions accurately.
 

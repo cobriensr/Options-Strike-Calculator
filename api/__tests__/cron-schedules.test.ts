@@ -10,6 +10,10 @@
  *     wrappers send no check-ins for a job with no entry, by design, so
  *     without this check a new cron would run unmonitored and nothing would
  *     fail.
+ *   - SCHEDULE_MAP → handler source: an entry alone sends nothing, so a
+ *     source scan checks that api/cron/<job>.ts passes that job name to
+ *     withCronInstrumentation or withCronCheckin (as a string literal or
+ *     through a `const JOB = '<job>'` in the same file).
  *
  * Two reconciliation modes for the first direction:
  *   - UTC entries (no `timezone`): the monitor crontab MUST equal
@@ -28,7 +32,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { SCHEDULE_MAP } from '../_lib/cron-schedules.js';
 import { assertValidTimezone } from '../_lib/cron-instrumentation.js';
@@ -81,6 +85,33 @@ const UNMONITORED_CRONS: Record<string, string> = {
 /** The SCHEDULE_MAP key for an /api/cron/<job> path, or null for any other path. */
 function scheduleKey(cronPath: string): string | null {
   return /^\/api\/cron\/([^/]+)$/.exec(cronPath)?.[1] ?? null;
+}
+
+/**
+ * The job names a cron source file registers with a check-in wrapper: the
+ * first argument of each `withCronInstrumentation(` / `withCronCheckin(`
+ * call, read from a string literal or resolved through a
+ * `const NAME = '<job>'` in the same file (several crons name themselves
+ * through a JOB constant). The wrappers look SCHEDULE_MAP up by this name,
+ * so it, not any other mention of the job, decides whether check-ins go out.
+ */
+function wrappedJobNames(src: string): string[] {
+  const names: string[] = [];
+  const calls = src.matchAll(
+    /\bwithCron(?:Instrumentation|Checkin)\(\s*(?:'([^']+)'|([A-Za-z_$][\w$]*))/g,
+  );
+  for (const [, literal, identifier] of calls) {
+    if (literal != null) {
+      names.push(literal);
+    } else if (identifier != null) {
+      const escaped = identifier.replaceAll('$', String.raw`\$`);
+      const decl = new RegExp(
+        String.raw`\bconst ${escaped}\s*=\s*'([^']+)'`,
+      ).exec(src);
+      if (decl?.[1] != null) names.push(decl[1]);
+    }
+  }
+  return names;
 }
 
 interface ParsedCron {
@@ -439,9 +470,55 @@ describe('vercel.json crons → SCHEDULE_MAP coverage', () => {
         `${cronPath} is exempt but also has a SCHEDULE_MAP entry`,
       ).toBeUndefined();
       expect(reason.trim(), `${cronPath}: empty reason`).not.toBe('');
-      expect(reason, `${cronPath}: reason must cite its spec`).toMatch(
-        /docs\/superpowers\/specs\/\S+\.md/,
-      );
+      const cited = /docs\/superpowers\/specs\/\S+?\.md/.exec(reason)?.[0];
+      expect(cited, `${cronPath}: reason must cite its spec`).toBeDefined();
+      if (cited == null) return;
+      expect(
+        existsSync(resolve(process.cwd(), cited)),
+        `${cronPath}: cited spec ${cited} does not exist`,
+      ).toBe(true);
     },
   );
+
+  it.each(Object.keys(SCHEDULE_MAP))(
+    'api/cron/%s.ts registers a check-in wrapper under that job name',
+    (job) => {
+      // A SCHEDULE_MAP entry sends nothing by itself: the handler has to be
+      // wrapped under the same name. This was green while
+      // cleanup-ws-gex-strike-expiry had an entry and no wrapper.
+      const file = `api/cron/${job}.ts`;
+      const src = readFileSync(resolve(process.cwd(), file), 'utf8');
+      expect(
+        wrappedJobNames(src),
+        `${file}: job names passed to withCronInstrumentation / withCronCheckin`,
+      ).toContain(job);
+    },
+  );
+
+  it.each([
+    [
+      'a string literal',
+      "export default withCronInstrumentation('a-job', run);",
+      ['a-job'],
+    ],
+    [
+      'a JOB constant',
+      "const JOB = 'a-job';\nexport default withCronCheckin(JOB, run);",
+      ['a-job'],
+    ],
+    [
+      'a typo in the wrapper, even when the right name appears elsewhere',
+      "Sentry.setTag('cron.job', 'a-job');\n" +
+        "export default withCronInstrumentation('a-jbo', run);",
+      ['a-jbo'],
+    ],
+    [
+      'no wrapper at all',
+      "Sentry.setTag('cron.job', 'a-job');\n" +
+        'export default async function handler() {}',
+      [],
+    ],
+  ])('wrappedJobNames reads %s', (_case, src, want) => {
+    expect(wrappedJobNames(src)).toEqual(want);
+  });
 });
