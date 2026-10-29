@@ -53,9 +53,9 @@ function SectionTitle({
  *   - **Core / primary panels** (Results, Risk, Regime, Futures, etc.):
  *     `defaultCollapsed=false` — they answer the user's primary question
  *     and should be visible on load.
- *   - **Drill-down / per-row detail** (IVAnomalies row, PositionMonitor
- *     row, ChartAnalysis sub-tabs): start collapsed — secondary content
- *     that the user opts into per-row.
+ *   - **Drill-down / per-row detail** (PositionMonitor row, ChartAnalysis
+ *     sub-tabs): start collapsed — secondary content that the user opts
+ *     into per-row.
  *   - **Optional/uploaded data** (PositionMonitor parent panel): start
  *     collapsed — content is empty until the user provides input.
  *

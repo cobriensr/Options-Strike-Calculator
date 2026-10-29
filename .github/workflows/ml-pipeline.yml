@@ -3,7 +3,7 @@ name: ML Pipeline
 on:
   schedule:
     # 01:45 UTC Tue-Sat (covers Mon-Fri trading days)
-    # Runs after build-features cron completes at 01:00 UTC
+    # Runs well after the build-features cron (20:45 and 21:45 UTC, Mon-Fri)
     - cron: '45 1 * * 2-6'
   workflow_dispatch:
 

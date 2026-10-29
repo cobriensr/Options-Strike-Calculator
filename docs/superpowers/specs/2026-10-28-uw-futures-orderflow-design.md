@@ -307,7 +307,8 @@ This is a conditional update: idempotent, and it never overwrites websocket data
 | 4 | `uw-stream/src/handlers/futures_blocks.py`, `uw-stream/tests/test_futures_blocks_handler.py` | `api/_lib/db-migrations.ts`, `api/__tests__/db.test.ts`, `uw-stream/src/channel_registry.py`, `uw-stream/src/db.py` (≤ 5 per commit; split if needed) |
 | 5 | `api/cron/fetch-futures-session-stats.ts`, `api/__tests__/fetch-futures-session-stats.test.ts`, shared contract-selection helper in `api/_lib/` | `api/_lib/db-migrations.ts`, `api/__tests__/db.test.ts`, `vercel.json`, `api/_lib/cron-schedules.ts`, `api/cron/backfill-futures-gaps.ts` (use the helper) |
 | 6 | shared flow-aggregation module in `api/_lib/` | `api/cron/backfill-futures-gaps.ts`, `api/__tests__/backfill-futures-gaps.test.ts` |
-| 6b | `scripts/backfill-futures-flow.mjs` (+ test) | — |
+| 6b | `scripts/backfill-futures-flow.ts`, `scripts/_lib/futures-flow-backfill.ts` (+ test) | `tsconfig.scripts.json` |
+| 6c | `api/cron/repair-futures-blocks.ts` (+ tests) | `vercel.json`, `api/_lib/cron-schedules.ts` |
 
 ## Data dependencies
 
@@ -393,6 +394,25 @@ All read-only, about 600 calls. Scripts and outputs are in `docs/tmp/uw-futures-
   - The roll replay is the same as Phase 6.
 - **Phase 5 table** drops `session_high`/`session_low` and keeps `fetched_at`. It runs at **12:30 UTC Tue–Sat and 21:30 UTC Mon–Fri**, with `DO UPDATE` on `(contract, settlement_date)`. The stored `fetched_at` then shows which run carried the final OI.
 
+## Build notes: Phases 6, 6b and 6c (2026-10-29)
+
+- **Shared code.** The roll replay moved into `api/_lib/futures-contracts.ts` as `replayFrontMonth`, generic over `{ts, volume}` rows, so candles and trade-derived minutes use one rule. Paging, the 2% match, the conditional UPDATE and the NULL-flow scan live in `api/_lib/futures-flow-repair.ts`. `api/_lib/uw-time.ts` carries UW times as bigint microseconds, because a JS `Date` would round the +1 µs cursor.
+- **Phase 6 stays in `backfill-futures-gaps.ts`** (not a sibling cron). It reuses the OHLC pass's candles, which load once per root, and the logic lives in the shared module.
+- **Phase 6 ranges:** runs of consecutive NULL-flow bars, oldest first, with ties in `FUTURES_ROOTS` order (ES, NQ first; D7). Each is split by the replay's leader per minute into pieces of at most 60 min, oldest first, because UW pages newest-first within a fetch.
+- **Phase 6 bounds:** 600 pages per run, plus no page after 600 s, so the run stays inside its 800 s `maxDuration`. The Sentry monitor allows 14 min.
+- **Phase 6 counts in Axiom `meta`:** `flow_minutes_repaired`, `flow_minutes_skipped_tolerance`, `flow_ranges_unrepairable` (an empty page inside the range), `flow_ranges_deferred`, `flow_minutes_aged_out`, `flow_pages`.
+- **Phase 6 status:** anything deferred or unrepairable raises one Sentry warning. Deferred bars on the window's oldest UTC day age out before the next run (`flow_minutes_aged_out`), which makes the run `partial`.
+- **Run 6b after the Phase 2 deploy.** The cron can't clear the backlog of websocket rows written before the order-flow columns: about 1,000 ES pages a session against 600 pages a run, so that backlog ages out of the 3-day window still NULL.
+- **Write rule.** A minute is written only when REST volume is within 2% of the bar's AND buy + sell ≤ the bar's volume.
+- **Phase 6b is a `.ts` script** with its logic in `scripts/_lib`.
+  - **Candidates.** `/futures/contracts` lists only contracts active in the last 30 sessions. So each day's candidates are the 3 listed months from that day's month on, by CME cycle: HMUZ for ES/NQ/RTY/ZN, every month for CL, even months for GC. Each candidate is paged from 00:00 UTC to the last NULL minute, because the tally needs the whole day.
+  - **Re-runs.** A day whose minutes all failed the 2% rule is paged again on a re-run. `--from` skips ahead.
+- **Phase 6c (new): `api/cron/repair-futures-blocks.ts`**, at `15 22 * * 1-5`.
+  - **Fetch:** pages `/futures/flow?blocks_only=true` back over the last 3 UTC days, with Zod validation.
+  - **Write:** collapses repeated keys to the newest message, then upserts only strictly newer ones: `WHERE EXCLUDED.reported_at > futures_blocks.reported_at OR (futures_blocks.reported_at IS NULL AND EXCLUDED.reported_at IS NOT NULL)`, with `quote_bid`/`quote_ask`/`quote_ts = COALESCE(EXCLUDED.x, futures_blocks.x)`.
+  - **Why not uw-stream's `>=`:** REST sends the quote fields as null. On a `reported_at` tie (the same message) the websocket's row, quotes and `raw_payload` stay, and a re-run writes nothing.
+  - **Status:** invalid rows or the page cap (100) / 240 s deadline → `partial`; no blocks at all in three days → `error`.
+
 ## Phase 1 result (2026-10-28): null, D5 not met
 
 The full write-up is `ml/docs/OFI-POINT-IN-TIME-2026-10-28.md`.
@@ -408,3 +428,17 @@ Consequences:
 - Phases 2–6 still collect UW flow (owner: pull everything UW offers).
 - Re-test after 60 UW sessions. Phase 6b's backfill to 2026-06-30 gets there sooner.
 - One variant is untested: overnight OFI as a predictor of the RTH session.
+
+## Probe results (0b): websocket capture, 2026-10-29 04:00–13:09Z (Globex overnight)
+
+There are 1,044 frames from 389 sampled prints (ES 201, NQ 188; `trade_id % 500 == 0`). Scripts and outputs are in `docs/tmp/uw-futures-probe/capture/` (gitignored).
+
+- **P1: every frame has the same 11 keys**, 100% present and never null: `sym, product, exchange, executed_at, price, size, side, nbbo_bid, nbbo_ask, trade_id, is_block`. There is no `is_spread`, `crossed`, `strategy`, `event_ts_ns`, `event_size` or `event_levels`.
+  - Syms: only the front outrights (`ESZ6`, `NQZ6`).
+  - Side: 212 buy, 177 sell, 0 none.
+- **P2: repeated copies.** Every print arrives at least 2×, and the copy count follows size (a size-1 print gives exactly 2 copies; copies ≤ size + 1; r = 0.77). That is consistent with one frame per CME order filled. Only `nbbo_bid`/`nbbo_ask` ever differ between copies (13 of 389 prints); `side`, `price` and `size` never do. The gap from first to last copy has a median under 1 ms and a max of 36 ms.
+  - Without the `(sym, trade_id)` dedup, ES volume would be 6.2× too high.
+- **Integrity:** sampled ES trade ids are contiguous (201 of 201), so nothing was lost. NQ's sparsity matches REST: its id counter is shared.
+- **D1 = NO.** The websocket carries no match-event fields, so **Phase 3 (sweeps) is not built from the websocket**. Sweeps would need REST `/futures/flow`, which is out of scope.
+- **D2 = copies differ only in the post-trade NBBO**, so first-copy-wins is correct. No side-disagreement counter is needed.
+- **Open:** this sample is overnight only, with no spread syms seen. Re-check non-outright syms on the RTH capture before removing the capture code.

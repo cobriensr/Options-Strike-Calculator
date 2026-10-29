@@ -754,7 +754,6 @@ def dark_pool_analysis(df: pd.DataFrame) -> None:
         print(f"  Only {len(has_dp)} days with dark pool data -- need at least 5")
         return
 
-    # DP bias vs settlement direction
     # Support/resistance ratio vs range
     subsection("DP Support/Resistance Ratio vs Range")
     if (

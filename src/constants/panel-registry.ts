@@ -1,5 +1,5 @@
 /**
- * Panel registry — single source of truth for the 30 home-page sections.
+ * Panel registry — single source of truth for the home-page sections.
  *
  * Replaces the inline `navSections` array that previously lived in
  * `src/App.tsx`. Both the section nav and the panel-prefs modal consume

@@ -3,9 +3,9 @@
  *
  * 1-minute cron that snapshots per-strike per-minute tape-side volume
  * for the watchlist tickers from UW
- * `/api/stock/{ticker}/flow-per-strike-intraday`. Feeds the bid-side-
- * surge exit signal in `useIVAnomalies` (Phase 3) — replaces the
- * prior firing-rate-surge proxy with real tape data.
+ * `/api/stock/{ticker}/flow-per-strike-intraday`. It was built for the
+ * retired IV-anomaly detector's bid-side-surge exit signal; the data is
+ * still collected for future research, and no UI reads it today.
  *
  * Per ticker, per run:
  *   1. Fetch flow-per-strike-intraday for today
@@ -15,13 +15,12 @@
  *      `put_volume_*` fields)
  *   4. Insert into strike_trade_volume keyed on (ticker, strike, side, ts)
  *
- * Note: UW's flow-per-strike-intraday aggregates ACROSS expiries — the
- * table doesn't have an expiry column. This is intentional: tape-side
- * surge detection on (ticker, strike, side) is sufficient for the exit
- * signal even when the original anomaly fired at a specific expiry.
+ * Note: UW's flow-per-strike-intraday aggregates ACROSS expiries, so the
+ * table has no expiry column: rows are keyed on (ticker, strike, side, ts).
  *
  * Cron cadence: `* 13-21 * * 1-5` — every minute during market hours.
- * Volume budget: 13 tickers × 1 request/min = 780 UW requests/hour.
+ * Volume budget: one request per STRIKE_IV_TICKERS entry per minute, so
+ * 60 UW requests/hour per ticker.
  *
  * Environment: CRON_SECRET, UW_API_KEY.
  */
@@ -259,10 +258,11 @@ export default withCronInstrumentation(
 
     const sql = getDb();
 
-    // UW plan caps concurrent in-flight requests at 3. Firing all 14 tickers
-    // via `Promise.all` reliably 429s the last 11. A 3-wide worker pool keeps
-    // the cron under that ceiling; total wall-clock is ~5 sequential rounds
-    // (≈ 1.5–2 s at typical UW latency), well under function timeout.
+    // UW plan caps concurrent in-flight requests at 3. Firing every
+    // STRIKE_IV_TICKERS entry via `Promise.all` reliably 429s all but 3 of
+    // them. A 3-wide worker pool keeps the cron under that ceiling; total
+    // wall-clock is ceil(tickers / 3) sequential rounds, a few seconds at
+    // typical UW latency and well under the function timeout.
     const results = await mapWithConcurrency(STRIKE_IV_TICKERS, 3, (t) =>
       runTicker(t, apiKey, sql, today),
     );

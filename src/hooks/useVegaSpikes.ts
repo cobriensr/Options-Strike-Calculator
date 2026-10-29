@@ -124,8 +124,8 @@ export function useVegaSpikes(marketOpen: boolean): VegaSpikesState {
   // Per-range AbortController. A new controller is installed on every
   // range change (and on unmount); the prior one is aborted so a slow
   // response from the OLD range can't overwrite state already populated
-  // for the NEW range, or fire setState after unmount. Pattern matches
-  // useAnomalyCrossAsset (race surfaced by code review).
+  // for the NEW range, or fire setState after unmount (race surfaced by
+  // code review).
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {

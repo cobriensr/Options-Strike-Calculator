@@ -1,6 +1,7 @@
 /**
  * UW Deltas — compute-on-demand rate-of-change signals derived from
- * Unusual Whales data already ingested into Neon by existing crons.
+ * Unusual Whales data already ingested into Neon by existing crons and
+ * the uw-stream daemon.
  *
  * Phase 5b (2026-04-19) turns four raw UW data streams into delta /
  * velocity / cumulative-net summaries for Claude's analyze context.
@@ -9,25 +10,22 @@
  *
  * ── Source tables (verified against migrations + cron handlers) ──
  *
- *   1. `dark_pool_levels` (migration id 22, `fetch-darkpool.ts`)
- *      Columns: date, spx_approx, total_premium, trade_count,
- *               total_shares, buyer_initiated, seller_initiated,
- *               neutral, latest_time, updated_at
- *      Shape: aggregated per (date, spx_approx). ON CONFLICT UPDATE
- *      keeps running totals — there is NO per-print row history.
- *      `latest_time` is the newest print time for that strike cluster.
- *      Cron runs every minute during RTH.
+ *   1. `dark_pool_prints` (migration id 116, uw-stream `off_lit_trades`
+ *      handler), read through `getDarkPoolStrikeCountBuckets` in
+ *      `dark-pool-query.ts`.
+ *      Columns include: symbol, executed_at, price, size, premium
+ *      Shape: one row per SPY/QQQ print. SPX levels are synthesized at
+ *      read time from SPY prices × (SPX_close / SPY_close) per minute.
  *
- *      Ingest-time filtering already strips: canceled, ext_hours,
- *      average_price_trade, derivative_priced, contingent_trade,
- *      and anything outside 08:30–15:00 CT. Query-time we do NOT
- *      re-apply those filters — the rows in the table are clean.
+ *      Ingest-time filtering already strips extended-hours and
+ *      contingent-trade prints and anything outside 08:30–15:00 CT.
+ *      Query-time we do NOT re-apply those filters.
  *
- *      Because the table is aggregated, "velocity" here is measured
- *      as "distinct strike clusters that received prints in the last
- *      5 minutes" rather than "per-print count". The z-score compares
- *      the latest 5-min window to a rolling baseline of the same
- *      metric, so the proxy is internally consistent.
+ *      "Velocity" is measured as "distinct SPX-equivalent levels that
+ *      received prints in each 5-minute bucket" rather than a raw
+ *      per-print count. The z-score compares the latest 5-min window
+ *      to a rolling baseline of the same metric, so the proxy is
+ *      internally consistent.
  *
  *   2. `spot_exposures` (migration id 7, `fetch-spot-gex.ts`)
  *      Columns: date, timestamp, ticker, price,
@@ -60,7 +58,7 @@
  * ── Signal definitions ──
  *
  *   1. Dark pool velocity
- *      - count_5m = distinct strike clusters updated in last 5 min
+ *      - count_5m = distinct levels with prints in the last 5 min
  *      - baseline = 12 non-overlapping 5-min buckets over last 60 min
  *      - z = (count_5m - mean(baseline)) / stddev(baseline)
  *      - SURGE z > 2, DROUGHT z < -2, NORMAL otherwise.
@@ -124,12 +122,10 @@ const DP_VELOCITY_DROUGHT_Z = -2.0;
  * low-denominator false positives: a baseline of mean=2 std=0.5 yields
  * z=2.0 at count=3, but that's +1 cluster — noise, not a surge.
  *
- * Also compensates for an ingest-side bias in `dark_pool_levels`: each
- * strike cluster's `latest_time` is UPSERTed with GREATEST(), so a
- * cluster that reprints within the 60-min window appears only in the
- * MOST RECENT bucket it touched. The baseline is systematically
- * under-counted relative to bucket 0, which inflates z-scores in both
- * directions. The absolute-delta floor gates that noise.
+ * It also gated an ingest-side bias in the retired `dark_pool_levels`
+ * table, whose per-cluster `latest_time` upserts under-counted the
+ * baseline. `dark_pool_prints` keeps one row per print, so that bias is
+ * gone; the floor stays for the low-denominator case above.
  */
 const DP_VELOCITY_SURGE_MIN_ABSOLUTE_DELTA = 3;
 
@@ -265,9 +261,7 @@ function populationStd(values: number[], mean: number): number {
  * which buckets dark-pool activity into 5-minute windows over the
  * last 60 minutes and counts distinct strike levels per bucket.
  * Bucket 0 is the current 5-min window; buckets 1..12 are the
- * baseline. The helper is env-flag gated so the query runs against
- * legacy dark_pool_levels by default and dark_pool_prints once
- * USE_DAEMON_DARK_POOL is set.
+ * baseline. The helper reads the uw-stream daemon's dark_pool_prints.
  */
 export async function computeDarkPoolVelocity(
   now: Date,
@@ -276,10 +270,8 @@ export async function computeDarkPoolVelocity(
   const earliestIso = new Date(now.getTime() - lookbackMs).toISOString();
   const nowIso = now.toISOString();
 
-  // Phase 4c-iii: read via the shared dark-pool-query helper which is
-  // env-flag gated (USE_DAEMON_DARK_POOL). Soak default reads from
-  // legacy dark_pool_levels with the same SQL shape; daemon path reads
-  // dark_pool_prints aggregated to per-bucket distinct level count.
+  // Read via the shared dark-pool-query helper: dark_pool_prints
+  // aggregated to a per-bucket distinct level count.
   const rows = await getDarkPoolStrikeCountBuckets({
     symbol: 'SPX',
     fromIso: earliestIso,

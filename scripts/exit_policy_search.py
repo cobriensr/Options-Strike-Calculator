@@ -27,12 +27,20 @@ docs/tmp/.
 
 Read-only — does not modify the DB.
 
+A day whose archive file is missing is skipped with one line naming it, and
+the skipped days are listed at the end and in the report. When no day had a
+file, the run says so and exits 0, so `make update` carries on.
+
 Usage:
-    ml/.venv/Scripts/python scripts/exit_policy_search.py
+    ml/.venv/Scripts/python scripts/exit_policy_search.py --parquet-dir <bot-eod-dir>
+
+--parquet-dir is the Bot-EOD archive, the directory of
+{date}-trades.parquet files (`make update` passes the Makefile's PARQUET_DIR).
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import sys
@@ -45,7 +53,13 @@ import psycopg2
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env.local'
-PARQUET_DIR = Path.home() / 'Desktop' / 'Bot-Eod-parquet'
+
+sys.path.insert(0, str(ROOT / 'scripts'))
+from _cli_paths import (  # noqa: E402
+    existing_dir,
+    format_dates,
+    warn_missing_archive,
+)
 
 
 def load_env() -> None:
@@ -158,11 +172,19 @@ def flow_inv_or_trail(
 def process_date(
     target_date: str,
     fires_for_date: pd.DataFrame,
-) -> pd.DataFrame:
-    path = PARQUET_DIR / f'{target_date}-trades.parquet'
+    parquet_dir: Path,
+) -> pd.DataFrame | None:
+    """Policy rows for the day's fires, or None (after one line naming the
+    day and path) when the day's archive file is missing."""
+    path = parquet_dir / f'{target_date}-trades.parquet'
     if not path.exists():
-        print(f'  [{target_date}] parquet missing — skipping')
-        return pd.DataFrame()
+        warn_missing_archive(
+            '[search]',
+            target_date,
+            path,
+            f'{len(fires_for_date):,} fires not searched',
+        )
+        return None
 
     chains = fires_for_date['option_chain_id'].unique().tolist()
     # `canceled` was bool in older parquets and string ('f'/'t') in newer
@@ -244,7 +266,19 @@ def latest_fire_date(conn) -> str:
     return row[0].isoformat() if hasattr(row[0], 'isoformat') else str(row[0])[:10]
 
 
-def main() -> None:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        '--parquet-dir',
+        type=existing_dir,
+        required=True,
+        help='Bot-EOD archive: the directory of {date}-trades.parquet files.',
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     load_env()
     db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ['DATABASE_URL']
     conn = psycopg2.connect(db_url)
@@ -276,13 +310,33 @@ def main() -> None:
 
     t0 = time.time()
     derived_chunks: list[pd.DataFrame] = []
+    missing: list[str] = []
     for d, sub in fires.groupby('date', sort=True):
         date_str = d.isoformat() if hasattr(d, 'isoformat') else str(d)[:10]
         print(f'  [{date_str}] processing {len(sub):,} fires…')
-        chunk = process_date(date_str, sub)
+        chunk = process_date(date_str, sub, args.parquet_dir)
+        if chunk is None:
+            missing.append(date_str)
+            continue
         derived_chunks.append(chunk)
     derived = pd.concat(derived_chunks, ignore_index=True) if derived_chunks else pd.DataFrame()
     print(f'[search] derived in {time.time() - t0:.1f}s; rows={len(derived):,}')
+    print(
+        f'[search] {len(derived_chunks)} day(s) read, {len(missing)} day(s) '
+        'skipped for a missing archive'
+    )
+    if missing:
+        line = f'[search] skipped (archive missing): {format_dates(missing)}'
+        print(line)
+        print(line, file=sys.stderr)
+
+    if not derived_chunks:
+        # Missing archives are a skip, not a failure (owner rule
+        # 2026-10-29): say so and let `make update` carry on.
+        print('[search] no archive day to read — no report written')
+        return
+    if derived.empty:
+        sys.exit('[search] no fire produced a policy row — nothing to report')
 
     # Merge derived back onto fires for the comparison.
     df = fires.merge(derived, on='id', how='left')
@@ -325,6 +379,12 @@ def main() -> None:
                  f'{df["date"].nunique()} trading days '
                  f'({df["date"].min()} → {df["date"].max()}), '
                  f'{df["ticker"].nunique() if "ticker" in df.columns else "?"} tickers.\n'.replace('"',""))
+    if missing:
+        lines.append(
+            f'{len(missing)} day(s) skipped (archive missing): '
+            f'{format_dates(missing)}. Their fires have no parquet-derived '
+            'policy values here.\n'
+        )
 
     lines.append('## Aggregate comparison (all fires)\n')
     lines.append(f'    {"policy":<32} {"n":>7}  {"mean%":>8}  {"med%":>7}  {"win%":>6}  {"Sharpe":>7}')

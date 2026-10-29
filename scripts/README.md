@@ -67,7 +67,7 @@ Neon maintenance: connection diagnostics, killing hung backends, autovacuum tuni
 
 ### EOD flow analysis (`eod-flow-analysis/`)
 
-Self-contained pipeline for end-of-day flow stratification. Has its own `output/backfill-buckets/` directory (gitignored). See [eod-flow-analysis/README.md](eod-flow-analysis/README.md).
+Self-contained pipeline for end-of-day flow stratification. Writes to its own `output/` directory. See [eod-flow-analysis/README.md](eod-flow-analysis/README.md).
 
 ### Websocket canary (`ws-canary/`)
 
@@ -78,25 +78,13 @@ A temporary Railway service that holds test websockets to find which network hop
 - **Build and review**: `write-build-info.mjs` (commit SHA into `api/_lib/build-info.ts` for `/api/version`), `check-build-output.mjs` (build-output gate), `check-coverage-floor.mjs` (per-file coverage gate), `review-gate.mjs` (commit gate: `npm run review` seals the tree it passed, and `.githooks/pre-commit` blocks a Claude commit of anything else), `prune-merged-worktrees.mjs` (`npm run worktrees:prune`). Shared logic lives in `_lib/` (coverage floors, build output, the commit gate, worktree pruning, the git runner those two share, trading days, backfill helpers, and the scratch-git fixtures for tests that run real git); its 12 test files run under Vitest.
 - **Take-It**: `upload_takeit_bundles.mjs` (upload bundles and the `takeit/latest.json` manifest), `takeit-rollback.mjs` (`make takeit-rollback`; see [the rollback runbook](../docs/runbooks/takeit-rollback.md)), `backfill-takeit-scores.mjs` (`make takeit-backfill`).
 - **Full Tape and EOD flow ingest**: `download-fulltape.sh`, `ingest-fulltape.py`, `upload-fulltape-to-r2.py`, `ingest-flow.py`.
-- **DB**: `migrate-db.ts` runs `migrateDb()` against `DATABASE_URL`. `run-migrations.ts` is a one-shot for migration 98.
+- **DB**: `migrate-db.ts` runs `migrateDb()` against `DATABASE_URL`.
 - **Infra**: `set-classifier-memory-limit.mjs` (Railway classifier memory ceiling), `check-py-outdated.sh` (outdated Python packages, local or `--remote`).
 - **Replays**: `replay-lottery-fires-*.ts`, `replay-silent-boom-*.ts`, `replay-spike-detection.mjs`: production-parity re-runs for specific corrupted or missed days.
 - **Recompute**: `recompute_peak_from_parquet.py`, `recompute_lottery_hold_minutes.py`, `recompute_silent_boom_hold_minutes.py`.
 - **Docs**: `add-spec-status-headers.mjs` (wrote the spec front-matter `status:`).
 - **One-off probes**: 29 `_probe-*.ts` / `_dump-*.ts` files, read-only and throwaway by design.
 - **Python tests**: five `test_*.py` files sit here, and no suite or CI job runs them.
-
-### Retired or pending removal
-
-These serve features that are gone: each writes a table a migration has dropped, imports a deleted module, replays a retired detector, or needs input that no longer exists. Don't use them; removal is pending an owner decision.
-
-- `backfill-institutional-blocks-uw.py` (writes `institutional_blocks`, dropped)
-- `backfill-iv-anomalies-from-csv.py` (replays the IV-anomaly detector, retired 2026-04-30, into local JSON)
-- `backfill-precision-stack.py` (writes `gamma_squeeze_events`, dropped)
-- `backfill-whale-anomalies.py` (writes `whale_anomalies`, dropped)
-- `preview-flush-alerts.ts` (imports the deleted `api/_lib/iv-anomaly.ts` and `api/_lib/anomaly-context.ts`)
-- `recompute-whale-thresholds.py` (prints thresholds for `api/_lib/whale-detector.ts`, which no longer exists)
-- `backfill-snapshots.ts` (loads JSONL from a generator script that was deleted, so it works only on files already on disk)
 
 ## When in doubt
 

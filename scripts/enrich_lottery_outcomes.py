@@ -3,9 +3,11 @@
 
 Replaces api/cron/enrich-lottery-outcomes.ts for the realized exit-policy
 columns. The Vercel cron reads ws_option_trades, which is incomplete
-relative to the EOD parquet written by `make ingest` to
-`~/Desktop/Bot-Eod-parquet/{DATE}-trades.parquet`. Running this locally
-after ingest gives full coverage.
+relative to the EOD parquet that `make ingest` writes as
+`{DATE}-trades.parquet` in the Bot-EOD archive. Running this locally
+after ingest gives full coverage. `--parquet-dir` names the archive (no
+default; the Makefile passes its PARQUET_DIR), and
+`--parquet-format fulltape` reads `{DATE}-fulltape.parquet` instead.
 
 Computes:
   - realized_trail30_10_pct
@@ -19,8 +21,9 @@ Computes:
 
 Usage
 -----
-    ml/.venv/Scripts/python scripts/enrich_lottery_outcomes.py
-    ml/.venv/Scripts/python scripts/enrich_lottery_outcomes.py --date 2026-05-05
+    ml/.venv/Scripts/python scripts/enrich_lottery_outcomes.py --parquet-dir <bot-eod-dir>
+    ml/.venv/Scripts/python scripts/enrich_lottery_outcomes.py \\
+        --parquet-dir <bot-eod-dir> --date 2026-05-05
 """
 
 from __future__ import annotations
@@ -43,6 +46,7 @@ import numpy as np
 import pandas as pd
 from psycopg2.extras import execute_values
 
+from _cli_paths import existing_dir, format_dates, warn_missing_archive
 from _pipeline_retry import connect_with_retry
 
 
@@ -124,14 +128,15 @@ def quintile_cuts(
         out[ticker] = q
     return out
 
-DEFAULT_PARQUET_DIR = Path.home() / 'Desktop' / 'Bot-Eod-parquet'
 PARQUET_FORMATS = {
     'trades': '{date}-trades.parquet',
     'fulltape': '{date}-fulltape.parquet',
 }
 # Module-level mutable so functions can read without threading args
-# through every call. Populated in main() from CLI args.
-PARQUET_DIR = DEFAULT_PARQUET_DIR
+# through every call. Populated in main() from --parquet-dir (no default);
+# scripts/recompute_peak_from_parquet.py sets both when it reuses the
+# loaders.
+PARQUET_DIR: Path | None = None
 PARQUET_FILE_PATTERN = PARQUET_FORMATS['trades']
 ENV_FILE = Path(__file__).resolve().parent.parent / '.env.local'
 
@@ -434,6 +439,11 @@ def fetch_unenriched(conn, target_date: str) -> list[Fire]:
     ]
 
 
+def day_archive_path(target_date: str) -> Path:
+    """The day's parquet in the configured archive (it may not exist)."""
+    return PARQUET_DIR / PARQUET_FILE_PATTERN.format(date=target_date)
+
+
 def load_parquet_chain_index(
     target_date: str,
     fired_chains: set[str],
@@ -441,8 +451,13 @@ def load_parquet_chain_index(
 ) -> dict[str, pd.DataFrame]:
     """Load the day's parquet, filter to fired chains, return a dict of
     chain_id → sorted DataFrame. Includes nbbo_bid/nbbo_ask columns when
-    include_nbbo=True (used by the flow-inversion second pass)."""
-    path = PARQUET_DIR / PARQUET_FILE_PATTERN.format(date=target_date)
+    include_nbbo=True (used by the flow-inversion second pass).
+
+    Exits when the file is missing. enrich_one_date checks for it first and
+    skips the day instead; this exit is for direct callers
+    (scripts/recompute_peak_from_parquet.py) and a file that vanishes
+    between that check and the read."""
+    path = day_archive_path(target_date)
     if not path.exists():
         sys.exit(f'Parquet not found: {path}')
 
@@ -588,11 +603,14 @@ def update_flow_inversion(conn, updates: list[tuple[int, float]]) -> None:
     conn.commit()
 
 
-def run_flow_inversion_pass(conn, target_date: str) -> None:
-    fires = fetch_flow_unfilled(conn, target_date)
+def run_flow_inversion_pass(
+    conn, target_date: str, fires: list[FlowFire]
+) -> int:
+    """Fill realized_flow_inversion_pct for `fires` (fetch_flow_unfilled's
+    rows for the date). Returns how many rows were written."""
     print(f'[flow-inv] fires lacking flow_inversion: {len(fires):,}')
     if not fires:
-        return
+        return 0
 
     chain_index = load_parquet_chain_index(
         target_date, {f.option_chain_id for f in fires}, include_nbbo=True
@@ -645,6 +663,7 @@ def run_flow_inversion_pass(conn, target_date: str) -> None:
 
     update_flow_inversion(conn, updates)
     print(f'[flow-inv] DB updated: {len(updates):,} rows')
+    return len(updates)
 
 
 def compute_fire_outcomes(
@@ -942,12 +961,43 @@ def list_unenriched_dates(conn) -> list[str]:
     return [r[0] for r in cur.fetchall()]
 
 
-def enrich_one_date(conn, target_date: str) -> None:
+@dataclass
+class DayResult:
+    """What enrich_one_date did for one date."""
+
+    archive_missing: bool = False
+    # Main pass: outcome rows written plus fires marked enriched-with-NULLs.
+    fires_written: int = 0
+    flow_written: int = 0
+
+
+def enrich_one_date(conn, target_date: str) -> DayResult:
     """Per-date passes: main outcome computation + flow-inversion. Caller
     runs the global ticker-quality refit once after the date loop.
+
+    A day with work to do whose archive file is missing is skipped: one
+    line names it (warn_missing_archive) and nothing is written for it, so
+    its fires keep enriched_at and realized_flow_inversion_pct NULL for a
+    later run with the file in place (a Full Tape backfill, say). Every
+    other failure (DB, unreadable parquet) still raises.
     """
     fires = fetch_unenriched(conn, target_date)
     print(f'[enrich] {target_date} unenriched fires: {len(fires):,}')
+    # The flow pass ignores enriched_at, and the main pass never writes its
+    # column, so its fires can be fetched before the main pass runs.
+    flow_fires = fetch_flow_unfilled(conn, target_date)
+    path = day_archive_path(target_date)
+    if (fires or flow_fires) and not path.exists():
+        warn_missing_archive(
+            '[enrich]',
+            target_date,
+            path,
+            f'{len(fires):,} unenriched fires and {len(flow_fires):,} '
+            'without flow inversion left as they are',
+        )
+        return DayResult(archive_missing=True)
+
+    result = DayResult()
     if not fires:
         print(f'[enrich] {target_date} main pass: nothing to do')
     else:
@@ -987,15 +1037,37 @@ def enrich_one_date(conn, target_date: str) -> None:
             f'[enrich] {target_date} DB updated: {len(updates):,} rows '
             f'(+ {len(no_post_tick_ids)} marked enriched-with-NULLs)'
         )
+        result.fires_written = len(updates) + len(no_post_tick_ids)
 
     # Second pass — flow-inversion. Targets `realized_flow_inversion_pct
     # IS NULL` regardless of enriched_at, so it backfills both the
     # rows we just enriched AND any historical fires the Vercel cron
     # missed.
-    run_flow_inversion_pass(conn, target_date)
+    result.flow_written = run_flow_inversion_pass(conn, target_date, flow_fires)
+    return result
 
 
-def main() -> None:
+def print_run_summary(results: dict[str, DayResult]) -> None:
+    """Days enriched, fires written, and the days skipped for a missing
+    archive (also on stderr, so they can't scroll past unseen)."""
+    missing = [d for d, r in results.items() if r.archive_missing]
+    done = [r for r in results.values() if not r.archive_missing]
+    print(
+        f'[enrich] summary: {len(done)} day(s) enriched, '
+        f'{sum(r.fires_written for r in done):,} fires updated, '
+        f'{sum(r.flow_written for r in done):,} flow-inversion rows written; '
+        f'{len(missing)} day(s) skipped for a missing archive'
+    )
+    if missing:
+        line = (
+            f'[enrich] skipped (archive missing, fires left unenriched): '
+            f'{format_dates(missing)}'
+        )
+        print(line)
+        print(line, file=sys.stderr)
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         '--date',
@@ -1014,8 +1086,12 @@ def main() -> None:
     )
     parser.add_argument(
         '--parquet-dir',
-        default=str(DEFAULT_PARQUET_DIR),
-        help=f'Default: {DEFAULT_PARQUET_DIR}',
+        type=existing_dir,
+        required=True,
+        help=(
+            'Directory of day parquets: the Bot-EOD archive for '
+            '--parquet-format trades, the Full Tape archive for fulltape.'
+        ),
     )
     parser.add_argument(
         '--parquet-format',
@@ -1023,10 +1099,14 @@ def main() -> None:
         default='trades',
         help='Parquet schema and filename suffix.',
     )
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
 
     global PARQUET_DIR, PARQUET_FILE_PATTERN
-    PARQUET_DIR = Path(args.parquet_dir).expanduser()
+    PARQUET_DIR = args.parquet_dir
     PARQUET_FILE_PATTERN = PARQUET_FORMATS[args.parquet_format]
 
     load_env()
@@ -1038,6 +1118,7 @@ def main() -> None:
         sys.exit('DATABASE_URL_UNPOOLED / DATABASE_URL not set')
 
     conn = connect_with_retry(db_url)
+    results: dict[str, DayResult] = {}
     try:
         if args.all_unenriched:
             dates = list_unenriched_dates(conn)
@@ -1054,14 +1135,14 @@ def main() -> None:
                     f'[enrich] --all-unenriched: {len(dates)} dates to process'
                 )
                 for d in dates:
-                    enrich_one_date(conn, d)
+                    results[d] = enrich_one_date(conn, d)
                 latest_date = dates[-1]
         else:
             latest_date = args.date or detect_latest_date()
             # Validate format.
             DateType.fromisoformat(latest_date)
             print(f'[enrich] target date: {latest_date}')
-            enrich_one_date(conn, latest_date)
+            results[latest_date] = enrich_one_date(conn, latest_date)
 
         # Third pass — per-ticker inversion-quality refit (Phase 2 of the
         # inversion-quality filter). Runs against whatever is in
@@ -1073,6 +1154,7 @@ def main() -> None:
             write_db=bool(int(os.environ.get('WRITE_DB', '0'))),
             sim_csv_path=sim_csv,
         )
+        print_run_summary(results)
 
     finally:
         conn.close()

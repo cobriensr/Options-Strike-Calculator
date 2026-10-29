@@ -1,7 +1,8 @@
 /**
  * Zod schemas for the UW / market-flow query endpoints (zero-gamma,
- * greek-flow, gex-strike-expiry, dealer-regime, IV anomalies + cross
- * asset, strike-trade-volume, net-flow-history, ticker-candles).
+ * greek-flow, gex-strike-expiry, dealer-regime, pin-setup-status,
+ * strike-trade-volume, net-flow-history, ticker-net-flow-current,
+ * ticker-candles, gexbot).
  */
 
 import { z } from 'zod';
@@ -138,82 +139,14 @@ export const pinSetupQuerySchema = z
 export type PinSetupQuery = z.infer<typeof pinSetupQuerySchema>;
 
 // ============================================================
-// /api/iv-anomalies
-// ============================================================
-
-/**
- * Query params for GET /api/iv-anomalies.
- *
- * Two modes, distinguished by the presence of `strike`/`side`/`expiry`:
- *
- *  1. **List mode** (no strike): returns `{ latest, history }` grouped by
- *     ticker. `ticker` narrows to a single ticker; omitting it returns
- *     every ticker in STRIKE_IV_TICKERS. `limit` caps `history` length
- *     (default 100, max 500) and serves as an upper bound across all
- *     tickers when no ticker is supplied.
- *
- *  2. **Per-strike history mode** (strike + side + expiry present): returns
- *     the per-strike IV time series from `strike_iv_snapshots` for the last
- *     `limit` samples. Feeds the Phase 3 StrikeIVChart.
- *
- * `ticker` is gated to STRIKE_IV_TICKERS — the only tickers ingested by
- * `fetch-strike-iv`. Anything else would guarantee an empty response
- * and is rejected here to surface client bugs early.
- *
- * `expiry` is a YYYY-MM-DD calendar date; the column is `DATE` so we
- * keep the string shape pinned rather than parsing into a Date.
- *
- * `side` is required whenever `strike` is present — a strike isn't
- * addressable without call/put.
- */
-export const ivAnomaliesQuerySchema = z
-  .object({
-    ticker: z.enum(STRIKE_IV_TICKERS).optional(),
-    limit: z.coerce.number().int().min(1).max(500).default(100),
-    strike: z.coerce.number().positive().finite().optional(),
-    side: z.enum(['call', 'put']).optional(),
-    expiry: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/, 'expiry must be YYYY-MM-DD')
-      .optional(),
-    /**
-     * Replay anchor. When present, the endpoint filters list-mode
-     * results to rows where `ts <= at AND ts >= at - 24h`. The hook
-     * then re-runs aggregation against this timestamp instead of
-     * `Date.now()` so the silence-eviction logic produces the exact
-     * active-set the user would have seen at T.
-     *
-     * Spec: docs/superpowers/specs/iv-anomaly-replay-2026-04-25.md
-     */
-    at: z.string().datetime({ offset: true }).optional(),
-  })
-  .refine(
-    (v) => {
-      // History mode requires all three: strike + side + expiry + ticker.
-      const historyFields = [v.strike, v.side, v.expiry];
-      const present = historyFields.filter((f) => f != null).length;
-      if (present === 0) return true;
-      if (present !== 3) return false;
-      // A strike without a ticker is ambiguous across indices.
-      return v.ticker != null;
-    },
-    {
-      message:
-        'strike+side+expiry+ticker must all be present for per-strike history',
-      path: ['strike'],
-    },
-  );
-
-export type IVAnomaliesQuery = z.infer<typeof ivAnomaliesQuerySchema>;
-
-// ============================================================
 // /api/strike-trade-volume
 // ============================================================
 
 /**
  * Query params for GET /api/strike-trade-volume.
  *
- * Serves the bid-side-surge exit signal in `useIVAnomalies`. Two modes:
+ * The data is collected for future research; no UI reads it today. Two
+ * modes:
  *   - Bulk: ticker + since → all strikes' tape data since timestamp
  *   - Single-key: ticker + strike + side + since → one compound key
  */
@@ -238,42 +171,6 @@ export const strikeTradeVolumeQuerySchema = z
 
 export type StrikeTradeVolumeQuery = z.infer<
   typeof strikeTradeVolumeQuerySchema
->;
-
-// ============================================================
-// /api/iv-anomalies/cross-asset
-// ============================================================
-
-/**
- * POST body for /api/iv-anomalies/cross-asset.
- *
- * Bulk endpoint — takes a list of compound keys + alert timestamps,
- * returns the cross-asset confluence context per key. Used by
- * `useAnomalyCrossAsset` to drive the regime / tape-align / DP-cluster /
- * GEX-zone / VIX-direction pills introduced in Phase F.
- *
- * Bulk shape avoids the N+1 fan-out that would otherwise hit our
- * Neon connection pool on a busy day.
- */
-export const ivAnomaliesCrossAssetBodySchema = z.object({
-  keys: z
-    .array(
-      z.object({
-        ticker: z.enum(STRIKE_IV_TICKERS),
-        strike: z.number().positive().finite(),
-        side: z.enum(['call', 'put']),
-        expiry: z
-          .string()
-          .regex(/^\d{4}-\d{2}-\d{2}$/, 'expiry must be YYYY-MM-DD'),
-        alertTs: z.string().datetime({ offset: true }),
-      }),
-    )
-    .min(1)
-    .max(200),
-});
-
-export type IVAnomaliesCrossAssetBody = z.infer<
-  typeof ivAnomaliesCrossAssetBodySchema
 >;
 
 // ============================================================

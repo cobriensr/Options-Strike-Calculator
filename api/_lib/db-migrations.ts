@@ -5438,7 +5438,10 @@ export const MIGRATIONS: Migration[] = [
     description:
       'Create futures_blocks for CME block trades from the UW futures_blocks websocket channel. Keyed (trade_id, exchange, trade_date) because CME reuses trade_id across sessions; uw-stream upserts so the newest reported_at replaces earlier messages, and a delete is kept as action = delete, never removed.',
     statements: (sql) => [
-      // Written only by uw-stream's FuturesBlocksHandler. price is NULL for a
+      // Written live by uw-stream's FuturesBlocksHandler, and nightly by the
+      // repair-futures-blocks cron for blocks the websocket missed (it only
+      // replaces a row with a strictly newer reported_at, and keeps stored
+      // quotes). price is NULL for a
       // multi-leg (MLEG) block, whose prices are on the legs. product is NULL
       // for an MLEG or a contract whose root UW doesn't know yet. exchange is
       // NOT NULL but may be '' (UW sends '' when it has no MIC), since it is
@@ -5610,6 +5613,15 @@ export const MIGRATIONS: Migration[] = [
         )
       `,
       sql`DROP INDEX IF EXISTS ws_net_flow_per_ticker_ticker_ts_idx`,
+    ],
+  },
+  {
+    id: 200,
+    description:
+      'Drop es_overnight_summaries and es_bars. Only the compute-es-overnight cron, now removed, wrote es_overnight_summaries; only it and the weekly backup read it. es_bars has had no writer since Databento was removed on 2026-09-29; migration #42 copied its history into futures_bars, which uw-stream fills live. Both tables had 0 rows on prod on 2026-10-29, and no foreign key, view or function depends on either, so the drops need no CASCADE.',
+    statements: (sql) => [
+      sql`DROP TABLE IF EXISTS es_overnight_summaries`,
+      sql`DROP TABLE IF EXISTS es_bars`,
     ],
   },
 ];

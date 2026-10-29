@@ -149,9 +149,12 @@ export function useRegimeClassification(
     result.p90HlPts = Math.round((result.p90HlPct / 100) * spot);
 
     // ── Directional cluster multipliers ───────────────────────
-    // After a big down day, put-side range expands more than call-side.
-    // After a big up day, the asymmetry is weaker (upside rallies cluster less).
-    // When cluster mult ≈ 1 (no clustering), both sides are equal.
+    // On a directional day with cluster mult > 1, each side scales the excess
+    // over 1.0 by a SIGNALS.CLUSTER_*_WEIGHT. After a big down day, both sides
+    // widen past the base cluster mult (V-reversal risk), the put side more.
+    // After a big up day, the call side widens past it, and the put side
+    // widens less, by 0.6x the excess (SIGNALS.CLUSTER_UP_PUT_WEIGHT). When
+    // cluster mult ≈ 1 (no clustering), both sides are equal.
     const ydayOpen = historySnapshot?.yesterday?.open ?? liveYesterdayOpen;
     const ydayClose = historySnapshot?.yesterday?.close ?? liveYesterdayClose;
     if (cMult !== 1 && ydayOpen && ydayClose && ydayOpen > 0) {
@@ -160,12 +163,12 @@ export function useRegimeClassification(
       if (excess > 0) {
         // Clustering is active (mult > 1)
         if (ydayReturn < -SIGNALS.CLUSTER_DIRECTION_THRESHOLD) {
-          // Down day: put side gets 70% of excess, call side 30%
+          // Down day: put side gets 1.3x the excess, call side 1.1x
           result.clusterPutMult = 1 + excess * SIGNALS.CLUSTER_DOWN_PUT_WEIGHT;
           result.clusterCallMult =
             1 + excess * SIGNALS.CLUSTER_DOWN_CALL_WEIGHT;
         } else if (ydayReturn > SIGNALS.CLUSTER_DIRECTION_THRESHOLD) {
-          // Up day: call side gets 60% of excess, put side 40% (weaker asymmetry)
+          // Up day: call side gets 1.3x the excess, put side 0.6x
           result.clusterPutMult = 1 + excess * SIGNALS.CLUSTER_UP_PUT_WEIGHT;
           result.clusterCallMult = 1 + excess * SIGNALS.CLUSTER_UP_CALL_WEIGHT;
         } else {

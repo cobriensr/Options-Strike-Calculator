@@ -22,9 +22,7 @@ import {
   greekFlowQuerySchema,
   gexStrikeExpiryQuerySchema,
   dealerRegimeQuerySchema,
-  ivAnomaliesQuerySchema,
   strikeTradeVolumeQuerySchema,
-  ivAnomaliesCrossAssetBodySchema,
   periscopeImageSchema,
   periscopeChatBodySchema,
   periscopeChatUpdateBodySchema,
@@ -171,54 +169,6 @@ describe('dealerRegimeQuerySchema — strict mode', () => {
   });
 });
 
-describe('ivAnomaliesQuerySchema — refinement', () => {
-  it('list mode (no strike/side/expiry) is valid', () => {
-    expect(ivAnomaliesQuerySchema.safeParse({}).success).toBe(true);
-  });
-
-  it('history mode requires all four (strike+side+expiry+ticker)', () => {
-    const partial = ivAnomaliesQuerySchema.safeParse({
-      strike: 5800,
-      side: 'call',
-    });
-    expect(partial.success).toBe(false);
-  });
-
-  it('strike without ticker is rejected', () => {
-    const r = ivAnomaliesQuerySchema.safeParse({
-      strike: 5800,
-      side: 'call',
-      expiry: '2026-05-15',
-    });
-    expect(r.success).toBe(false);
-  });
-
-  it('strike + side + expiry + ticker is accepted', () => {
-    const r = ivAnomaliesQuerySchema.safeParse({
-      ticker: 'SPY',
-      strike: 580,
-      side: 'call',
-      expiry: '2026-05-15',
-    });
-    expect(r.success).toBe(true);
-  });
-
-  it('rejects an unknown ticker (not in STRIKE_IV_TICKERS)', () => {
-    expect(ivAnomaliesQuerySchema.safeParse({ ticker: 'AAPL' }).success).toBe(
-      false,
-    );
-  });
-
-  it('limit is coerced from string and capped at 500', () => {
-    expect(ivAnomaliesQuerySchema.safeParse({ limit: '50' }).success).toBe(
-      true,
-    );
-    expect(ivAnomaliesQuerySchema.safeParse({ limit: '501' }).success).toBe(
-      false,
-    );
-  });
-});
-
 describe('strikeTradeVolumeQuerySchema — refinement', () => {
   it('bulk mode (no strike/side) is accepted', () => {
     expect(
@@ -248,35 +198,6 @@ describe('strikeTradeVolumeQuerySchema — refinement', () => {
         strike: 580,
       }).success,
     ).toBe(false);
-  });
-});
-
-describe('ivAnomaliesCrossAssetBodySchema', () => {
-  const validKey = {
-    ticker: 'SPY' as const,
-    strike: 580,
-    side: 'call' as const,
-    expiry: '2026-05-15',
-    alertTs: '2026-05-15T13:30:00Z',
-  };
-
-  it('accepts 1-200 keys', () => {
-    expect(
-      ivAnomaliesCrossAssetBodySchema.safeParse({ keys: [validKey] }).success,
-    ).toBe(true);
-  });
-
-  it('rejects 0 keys', () => {
-    expect(
-      ivAnomaliesCrossAssetBodySchema.safeParse({ keys: [] }).success,
-    ).toBe(false);
-  });
-
-  it('rejects 201 keys', () => {
-    const keys = Array.from({ length: 201 }, () => ({ ...validKey }));
-    expect(ivAnomaliesCrossAssetBodySchema.safeParse({ keys }).success).toBe(
-      false,
-    );
   });
 });
 

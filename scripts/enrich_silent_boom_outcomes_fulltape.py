@@ -17,10 +17,12 @@ Idempotent via the existing `enriched_at IS NULL` gate (or
 
 Usage:
     ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes_fulltape.py \\
-        --backfill-mode
+        --parquet-dir <full-tape-dir> --backfill-mode
 
     ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes_fulltape.py \\
-        --backfill-mode --date 2026-01-15
+        --parquet-dir <full-tape-dir> --backfill-mode --date 2026-01-15
+
+--parquet-dir is the directory of {date}-fulltape.parquet files.
 """
 
 from __future__ import annotations
@@ -42,15 +44,14 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 # Reuse the existing enrichment's helpers, scoring, and UPDATE
 # pipeline. The only thing we override is the parquet read path.
 import enrich_silent_boom_outcomes as enrich_sb
-
-FULLTAPE_DIR = Path.home() / 'Desktop' / 'Eod-Full-Tape-parquet'
+from _cli_paths import existing_dir
 
 
 def list_fulltape_dates(
-    from_date: str | None, to_date: str | None
+    parquet_dir: Path, from_date: str | None, to_date: str | None
 ) -> list[str]:
     dates: list[str] = []
-    for p in sorted(FULLTAPE_DIR.glob('*-fulltape.parquet')):
+    for p in sorted(parquet_dir.glob('*-fulltape.parquet')):
         m = re.match(r'(\d{4}-\d{2}-\d{2})-fulltape\.parquet', p.name)
         if not m:
             continue
@@ -101,8 +102,14 @@ def load_chain_tape_fulltape(
     )
 
 
-def main() -> None:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        '--parquet-dir',
+        type=existing_dir,
+        required=True,
+        help='Directory of {date}-fulltape.parquet files (UW Full Tape archive).',
+    )
     parser.add_argument(
         '--date', help='YYYY-MM-DD single-day mode'
     )
@@ -121,11 +128,16 @@ def main() -> None:
             'historical fills after a backfill INSERT.'
         ),
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.date and (args.from_date or args.to_date):
         parser.error(
             '--date is mutually exclusive with --from-date / --to-date'
         )
+    return args
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
 
     enrich_sb.load_env()
     db_url = (
@@ -137,7 +149,9 @@ def main() -> None:
     dates = (
         [args.date]
         if args.date
-        else list_fulltape_dates(args.from_date, args.to_date)
+        else list_fulltape_dates(
+            args.parquet_dir, args.from_date, args.to_date
+        )
     )
     print(f'[sb-enrich-fulltape] {len(dates)} parquet days; '
           f'backfill_mode={args.backfill_mode}')
@@ -152,7 +166,7 @@ def main() -> None:
             )
             if not alerts:
                 continue
-            path = FULLTAPE_DIR / f'{date_str}-fulltape.parquet'
+            path = args.parquet_dir / f'{date_str}-fulltape.parquet'
             if not path.exists():
                 print(
                     f'  [{date_str}] WARN parquet missing — skipping '

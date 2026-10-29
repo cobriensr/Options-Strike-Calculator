@@ -16,10 +16,11 @@
  *      Globex hour (07:30–08:30 CT) from H/L/C/VWAP.
  *   2. The single `30 13` slot fired at 07:30 CT in CST — an hour BEFORE the
  *      08:30 CT data is complete (no window math can conjure bars that
- *      haven't printed). Mirroring compute-es-overnight, we fire at both
- *      13:30 and 14:30 UTC and gate with isAfterCashOpen so the early CST
- *      slot skips and the post-open slot does the work. The CDT 14:30-UTC
- *      slot is a harmless idempotent re-run (same upsert).
+ *      haven't printed). Vercel crons run on fixed UTC, so no one slot hits
+ *      the open in both regimes: we fire at 13:30 UTC (the CDT open) and
+ *      14:30 UTC (the CST open) and gate with isAfterCashOpen so the early
+ *      CST slot skips and the post-open slot does the work. The CDT
+ *      14:30-UTC slot is a harmless idempotent re-run (same upsert).
  *
  * Environment: CRON_SECRET
  */

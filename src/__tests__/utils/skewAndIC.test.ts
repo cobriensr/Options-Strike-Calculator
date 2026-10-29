@@ -459,7 +459,7 @@ describe('buildIronCondor', () => {
 });
 
 describe('buildIronCondor: PoP uses base sigma (not accelerated)', () => {
-  // At 2h remaining, IV accel is ~1.12x. PoP should use base σ,
+  // At 2h remaining, IV accel is ~1.21x. PoP should use base σ,
   // which gives a higher PoP than using the accelerated σ.
   const spot = 5800;
   const sigma = 0.2;

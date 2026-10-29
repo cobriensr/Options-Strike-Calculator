@@ -323,7 +323,8 @@ export function impliedVolatility(
  * this empirically observed behavior.
  *
  * Model: mult = 1 + coeff × (1/hoursRemaining - 1/6.5)
- * At open (6.5h): 1.0x. At 2h: ~1.12x. At 1h: ~1.28x. At 0.5h: ~1.56x.
+ * With coeff 0.6: at open (6.5h) 1.0x, at 2h ~1.21x, at 1h ~1.51x. At 0.5h
+ * the formula gives ~2.11x, so the IV_ACCEL_MAX cap (1.8x) applies.
  *
  * The multiplier is capped to prevent extreme values near close.
  */

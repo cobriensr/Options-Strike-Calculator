@@ -13,37 +13,27 @@ code review (commit 9c20cb2 follow-up):
    the full trading session per (ticker, date), independent of when
    alerts fired.
 
-Constants below MUST stay in sync with `api/_lib/constants.ts` —
-the live cross-asset endpoint imports the TS twins of these. If you
-tune one, tune the other and re-run the affected ML scripts.
+`REGIME_THRESHOLDS` below is now the only copy, kept so the 2026-04-25
+Phase E/F research can be reproduced. Its TypeScript twin in
+`api/_lib/constants.ts` is gone, and so is the cross-asset endpoint that
+read it (`api/iv-anomalies-cross-asset.ts`, removed in 8adc4744).
 """
+
 from __future__ import annotations
 
 import warnings
-from datetime import datetime
-from typing import Iterable
+from collections.abc import Iterable
 
 import numpy as np
 import pandas as pd
 
-# ── Constants (mirrored from api/_lib/constants.ts Phase F section) ──────
+# ── Constants (REGIME_THRESHOLDS is the only copy; its TS twin is gone) ──
 
 REGIME_THRESHOLDS = {
     "chop": 0.25,
     "mild": 1.0,
     "strong": 2.0,
 }
-TAPE_WINDOW_MIN = 15
-VIX_WINDOW_MIN = 30
-LAG_MAX_MIN = 5
-DP_AT_STRIKE_BAND_PTS = 5
-DP_NEAR_STRIKE_BAND_PTS = 25
-DP_BUCKETS = {
-    "small": 50_000_000,
-    "medium": 200_000_000,
-}
-EVENT_WINDOW_MIN = 30
-VIX_DELTA_THRESHOLD = 0.2
 
 # Picker requires a minimum sample size to compute std reliably and to
 # avoid `inf` from a 1-row group with std=0.
@@ -54,6 +44,7 @@ NON_ORACLE_STRATEGIES = ("pnl_itm_touch", "pnl_eod")
 
 
 # ── Pandas warning silencer (psycopg2 connections trigger a UserWarning) ──
+
 
 def silence_pandas_psycopg2_warning() -> None:
     """Suppress the psycopg2/pandas-read_sql_query SQLAlchemy warning.
@@ -75,8 +66,8 @@ def silence_pandas_psycopg2_warning() -> None:
 def regime_label(pct_change: float) -> str:
     """Classify a same-day % change into the project's regime taxonomy.
 
-    Mirrors `regimeLabel` in api/iv-anomalies-cross-asset.ts. Thresholds
-    live in `REGIME_THRESHOLDS` so re-tuning happens in one place.
+    Ported from `regimeLabel` in the removed api/iv-anomalies-cross-asset.ts.
+    Thresholds live in `REGIME_THRESHOLDS` so re-tuning happens in one place.
     """
     if pct_change is None or not np.isfinite(pct_change):
         return "unknown"
@@ -162,7 +153,9 @@ def attach_regime(df: pd.DataFrame, session_labels: pd.DataFrame) -> pd.DataFram
     out = df.copy()
     if "date" not in out.columns:
         if "alert_ct" not in out.columns:
-            out["alert_ct"] = pd.to_datetime(out["alert_ts"], utc=True).dt.tz_convert("US/Central")
+            out["alert_ct"] = pd.to_datetime(out["alert_ts"], utc=True).dt.tz_convert(
+                "US/Central"
+            )
         out["date"] = out["alert_ct"].dt.date
     return out.merge(
         session_labels[["ticker", "date", "regime", "pct_change"]],
@@ -208,7 +201,9 @@ def pick_best_strategy_per_ticker_regime(df: pd.DataFrame) -> dict:
             scores = {s: _sharpe_score(sub[s]) for s in NON_ORACLE_STRATEGIES}
             picked = max(scores, key=scores.get)
             # If both scores are -inf (no usable data), fall back.
-            best[(ticker, regime)] = picked if scores[picked] > -np.inf else ticker_level[ticker]
+            best[(ticker, regime)] = (
+                picked if scores[picked] > -np.inf else ticker_level[ticker]
+            )
         else:
             best[(ticker, regime)] = ticker_level[ticker]
     return best

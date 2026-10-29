@@ -12,12 +12,21 @@ exit signal on a given ticker, and spotting fast-vs-slow tape regimes.
 
 Read-only — does not modify the DB or production code.
 
+A day whose archive file is missing is skipped with one line naming it, and
+the skipped days are listed at the end. When no day had a file, the run says
+so and exits 0, so `make update` carries on; a run that read days but timed
+no inversion still exits non-zero.
+
 Usage:
-    ml/.venv/Scripts/python scripts/flow_inversion_timing.py
+    ml/.venv/Scripts/python scripts/flow_inversion_timing.py --parquet-dir <bot-eod-dir>
+
+--parquet-dir is the Bot-EOD archive, the directory of
+{date}-trades.parquet files (`make update` passes the Makefile's PARQUET_DIR).
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import sys
@@ -32,11 +41,15 @@ import psycopg2
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env.local'
-PARQUET_DIR = Path.home() / 'Desktop' / 'Bot-Eod-parquet'
 
 # Reuse the production port from the enrichment script — single
 # source of truth for the algorithm.
 sys.path.insert(0, str(ROOT / 'scripts'))
+from _cli_paths import (  # noqa: E402
+    existing_dir,
+    format_dates,
+    warn_missing_archive,
+)
 from enrich_lottery_outcomes import (  # noqa: E402
     simulate_flow_inversion,
     resample_minute_mid,
@@ -66,7 +79,19 @@ def latest_fire_date(conn) -> str:
     return row[0].isoformat() if hasattr(row[0], 'isoformat') else str(row[0])[:10]
 
 
-def main() -> None:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        '--parquet-dir',
+        type=existing_dir,
+        required=True,
+        help='Bot-EOD archive: the directory of {date}-trades.parquet files.',
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     load_env()
     db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ['DATABASE_URL']
     conn = psycopg2.connect(db_url)
@@ -93,12 +118,19 @@ def main() -> None:
 
     # Bucket by date so we load each parquet once.
     timings = []  # list of dicts (one per fire)
+    missing: list[str] = []
+    days_read = 0
     t0 = time.time()
     for d, sub in fires.groupby('date', sort=True):
         date_str = d.isoformat() if hasattr(d, 'isoformat') else str(d)[:10]
-        path = PARQUET_DIR / f'{date_str}-trades.parquet'
+        path = args.parquet_dir / f'{date_str}-trades.parquet'
         if not path.exists():
+            warn_missing_archive(
+                '[timing]', date_str, path, f'{len(sub):,} fires not timed'
+            )
+            missing.append(date_str)
             continue
+        days_read += 1
 
         chains = sub['option_chain_id'].unique().tolist()
         df = pd.read_parquet(
@@ -182,8 +214,21 @@ def main() -> None:
         print(f'  [{date_str}] {len(sub):,} fires → {len([t for t in timings if t.get("id") in set(sub["id"])]):,} inversion timings')
 
     print(f'[timing] computed in {time.time() - t0:.1f}s; {len(timings):,} inversions')
+    print(
+        f'[timing] {days_read} day(s) read, {len(missing)} day(s) skipped '
+        'for a missing archive'
+    )
+    if missing:
+        line = f'[timing] skipped (archive missing): {format_dates(missing)}'
+        print(line)
+        print(line, file=sys.stderr)
 
     if not timings:
+        if days_read == 0 and missing:
+            # Missing archives are a skip, not a failure (owner rule
+            # 2026-10-29): say so and let `make update` carry on.
+            print('[timing] no archive day to read — no report written')
+            return
         sys.exit('[timing] no inversion timings collected — nothing to report')
 
     df = pd.DataFrame(timings)
@@ -202,6 +247,11 @@ def main() -> None:
     lines = ['# Flow-inversion timing analysis\n']
     lines.append(f'Dataset: {len(df):,} fires where flow_inversion fired '
                  f'(EOD-fallback excluded — those would skew distribution).\n')
+    if missing:
+        lines.append(
+            f'{len(missing)} day(s) skipped (archive missing): '
+            f'{format_dates(missing)}. Their fires are not timed here.\n'
+        )
     lines.append('## Aggregate (all fires with true inversion)\n')
     lines.append('    ' + fmt_stats(df['minutes_to_inversion']))
 

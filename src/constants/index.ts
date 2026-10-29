@@ -115,9 +115,10 @@ export const DEFAULTS = {
    * gamma acceleration makes delta-hedging more expensive for market makers.
    * This multiplier is applied to σ for pricing and PoP calculations.
    *
-   * Model: mult = 1 + ACCEL_COEFF × (1 / hoursRemaining - 1 / HOURS_PER_DAY)
-   * At open (6.5h): 1.0x. At 2h: ~1.12x. At 1h: ~1.28x. At 0.5h: ~1.56x.
-   * Capped at ACCEL_MAX to prevent extreme values near close.
+   * Model: mult = 1 + IV_ACCEL_COEFF × (1/hoursRemaining - 1/HOURS_PER_DAY)
+   * With IV_ACCEL_COEFF 0.6: at open (6.5h) 1.0x, at 2h ~1.21x, at 1h ~1.51x.
+   * At 0.5h the formula gives ~2.11x, so the IV_ACCEL_MAX cap (1.8x) applies.
+   * Capped at IV_ACCEL_MAX to prevent extreme values near close.
    */
   IV_ACCEL_COEFF: 0.6,
   IV_ACCEL_MAX: 1.8,
@@ -266,76 +267,18 @@ export const IV_MODES = {
   DIRECT: 'direct',
 } as const;
 
-/**
- * Silence window for Strike IV anomaly aggregation.
- *
- * A compound-key anomaly (ticker:strike:side:expiry) that stops firing for
- * this long is evicted from the active board. The NEXT firing for that key
- * is treated as a brand-new event and re-triggers the banner + chime.
- *
- * 15 min balances "the event is genuinely over" against "same strike
- * coming back after a brief pause is still the same event."
- */
-export const ANOMALY_SILENCE_MS = 15 * 60 * 1000;
-
-/**
- * Strike IV exit-signal thresholds (phase transitions in useIVAnomalies).
- *
- * As of 2026-04-25 (Phase 3 of tape-side spec) the distribution signal
- * uses real per-minute bid-side vs ask-side tape volume from
- * `strike_trade_volume` (UW flow-per-strike-intraday). The prior
- * firing-rate proxy is deprecated.
- */
-
-/** 30% drop from peak IV relative to (peak - entry) triggers cooling phase. */
-export const IV_REGRESSION_THRESHOLD = 0.3;
-
-/** iv_ask - iv_mid crossing below 0.2 vol pts signals MMs disengaging. */
-export const ASK_MID_COMPRESSION_THRESHOLD = 0.002;
-
-/** Min active-span duration (ms) before compression signal considered valid. */
-export const ASK_MID_COMPRESSION_MIN_ACTIVE_MS = 5 * 60 * 1000;
-
-/** Rolling window for IV regression detection. */
-export const IV_REGRESSION_WINDOW_MS = 10 * 60 * 1000;
-
-/** Ask-mid divergence threshold above which accumulation signature is active. */
-export const ASK_MID_ACCUMULATION_THRESHOLD = 0.005;
-
-/**
- * Bid-side surge threshold — the primary distribution signal as of 2026-04-25.
- * When `bidSideVolInLast15Min ≥ accumulatedAskSideVol × BID_SIDE_SURGE_RATIO`
- * AND `bidSideVolInLast15Min ≥ BID_SIDE_MIN_VOL`, the active anomaly
- * transitions to `distributing` with reason `bid_side_surge`.
- *
- * 50% comes from the 2026-04-23 fixture: SPY 705P accumulated ~454K
- * vol at 97% ask during entry; the 12:00 CT distribution print was a
- * 14.7K bid-side surge, ~3% of accumulated — too tight. After holders
- * scaled out across 12:00–13:00, bid-side cumulative reached ~50% of
- * the entry-window ask-side total. 50% in a 15-min rolling window is
- * the cleanest "scaling out" signature.
- */
-export const BID_SIDE_SURGE_RATIO = 0.5;
-export const BID_SIDE_SURGE_WINDOW_MS = 15 * 60 * 1000;
-/** Noise floor — below this absolute volume, ignore the surge. */
-export const BID_SIDE_MIN_VOL = 1000;
-
 /** Polling intervals for data fetching hooks (milliseconds) */
 export const POLL_INTERVALS = {
-  /** Live quote refresh (useAutoFill, useMarketData) */
-  QUOTES: 10_000,
   /** Option chain refresh (useChainData) */
   CHAIN: 60_000,
   /** Market data refresh (useMarketData) */
   MARKET_DATA: 60_000,
-  /** History data refresh (useHistoryData) */
-  HISTORY: 10_000,
   /** Alert polling interval (useAlertPolling) */
   ALERTS: 10_000,
   /** Polling cadence for the Lottery Finder hook (useLotteryFinder). */
   OTM_FLOW: 30_000,
   /** Opening Flow Signal polling cadence (useOpeningFlowSignal) — gated to
-   *  the 09:25–09:50 CT window when the V4 rule can fire. */
+   *  the 08:25–08:50 CT window when the V4 rule can fire. */
   OPENING_FLOW: 30_000,
   /** 0DTE Gamma Regime polling cadence (useRegime0dte) — gated to the
    *  08:30–15:00 CT regular session. The endpoint reads per-minute GEX/IV
@@ -370,10 +313,6 @@ export const POLL_INTERVALS = {
    *  every minute by the cron. 60s polling keeps the tile within one
    *  snapshot of fresh data without hammering the endpoint. */
   PIN_SETUP: 60_000,
-  /** Market internals refresh ($TICK/$ADD/$VOLD/$TRIN) — matches 1-min cron */
-  MARKET_INTERNALS: 60_000,
-  /** Cross-asset confluence context (useAnomalyCrossAsset) — Phase F UI */
-  ANOMALY_CROSS_ASSET: 30_000,
   /** Vega spike feed refresh (useVegaSpikes) — matches monitor-vega-spike cron cadence. */
   VEGA_SPIKES: 60_000,
   /** Periscope MM exposure refresh (usePeriscopeExposure) — GEXBot writes

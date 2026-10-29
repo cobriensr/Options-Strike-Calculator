@@ -164,7 +164,8 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
   'auto-prefill-premarket': {
-    // Dual-slot 13:30 + 14:30 UTC (mirrors compute-es-overnight). The
+    // Dual-slot 13:30 + 14:30 UTC: the 08:30 CT cash open is 13:30 UTC in
+    // CDT and 14:30 UTC in CST, and no single fixed-UTC slot hits both. The
     // handler's isAfterCashOpen gate skips the early CST slot (07:30 CT)
     // so the post-open slot does the work; the redundant CDT slot is an
     // idempotent re-run. See the header comment in the handler.
@@ -254,11 +255,6 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
   },
   'compute-cone': {
     schedule: '32 13 * * 1-5',
-    checkinMargin: DEFAULT_MARGIN,
-    maxRuntime: DEFAULT_MAX_RUNTIME,
-  },
-  'compute-es-overnight': {
-    schedule: '35 13,14 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
@@ -414,6 +410,20 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
+  'fetch-futures-session-stats': {
+    // vercel.json fires `30 12 * * 2-6` and `30 21 * * 1-5`; a monitor has
+    // one crontab, so it expects the 12:30 run, which carries the settled
+    // session's final open interest. The 21:30 run checks in on the same
+    // slug off-schedule, which is safe: on an ok check-in Sentry computes
+    // the next expected tick from that check-in's time (mark_ok →
+    // update_monitor_environment in getsentry/sentry src/sentry/monitors/
+    // logic/), so 21:30 Mon expects 12:30 Tue and causes no false miss. A
+    // failed 21:30 run still shows as an error check-in. Daily → default
+    // failure threshold of 1.
+    schedule: '30 12 * * 2-6',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
   'fetch-gex-0dte': {
     schedule: '* 13-21 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
@@ -510,6 +520,14 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
+  'repair-futures-blocks': {
+    // Nightly REST repair of blocks the websocket missed during drops. Its
+    // paging stops at 240 s, inside the default 300 s limit. Low frequency
+    // → default failure threshold of 1.
+    schedule: '15 22 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
   'rollup-ws-gex-strike-expiry': {
     // Daily WS GEX → strike_exposures copy. Five runs in Oct 2026 left no
     // rows and no Sentry event; the monitor is what turns a killed run into
@@ -575,7 +593,11 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
   'backfill-futures-gaps': {
     schedule: '0 6 * * 1-6',
     checkinMargin: DEFAULT_MARGIN,
-    maxRuntime: LONG_RUNNER_MAX_RUNTIME,
+    // 14 min covers its 800 s maxDuration (13.3 min). The OHLC pass alone
+    // can take ~10 min when UW hangs, and the order-flow pass can run up to
+    // its 600 s deadline plus one candle load and one page, so the 10 min
+    // long-runner default would page on a run Vercel still lets finish.
+    maxRuntime: 14,
   },
   'backup-tables': {
     schedule: '0 5 * * 0',

@@ -329,6 +329,20 @@ describe('cron-schedules SCHEDULE_MAP', () => {
     }
   });
 
+  it('backfill-futures-gaps: the monitor max runtime covers the function maxDuration', () => {
+    // A run that legitimately uses its whole 800 s budget must not page as
+    // a timeout before Vercel would have killed it.
+    const cfg = JSON.parse(
+      readFileSync(resolve(process.cwd(), 'vercel.json'), 'utf8'),
+    ) as { functions: Record<string, { maxDuration?: number }> };
+    const maxDuration =
+      cfg.functions['api/cron/backfill-futures-gaps.ts']?.maxDuration;
+    expect(maxDuration).toBe(800);
+    expect(
+      SCHEDULE_MAP['backfill-futures-gaps']!.maxRuntime * 60,
+    ).toBeGreaterThanOrEqual(maxDuration!);
+  });
+
   it('ET-anchored entries use the America/New_York timezone', () => {
     // Lock the market-hours monitors fixed by the 2026-06-08 DST triage
     // (plus the three GEXBot crons added 2026-10-28) so a future edit can't silently drop the timezone and

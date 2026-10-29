@@ -96,11 +96,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Stale thresholds: intraday tables ~15 min, daily tables ~30 hours
   let freshness: FreshnessCheck[] = [];
   try {
-    // Dark pool freshness now goes through the shared helper which is
-    // env-flag-gated (USE_DAEMON_DARK_POOL): reports legacy
-    // dark_pool_levels.updated_at when unset, dark_pool_prints.ingested_at
-    // when set. Same 10-min staleness threshold as before — daemon's
-    // per-print freshness is sub-second so this is generous either way.
+    // Dark pool freshness goes through the shared dark-pool-query helper,
+    // which reports dark_pool_prints.ingested_at (uw-stream daemon). Same
+    // 10-min staleness threshold as before — the daemon's per-print
+    // freshness is sub-second, so this is generous.
     const [flow, spot, strike, darkpoolTs, features, outcomes, findings] =
       await Promise.all([
         withDbRetry(

@@ -11,7 +11,8 @@
 #
 # Per-date steps (run for each pending CSV):
 #   1. analyze.py   — per-day parquet aggregate at scripts/eod-flow-analysis/output/by-day/
-#   2. ingest-flow  — full unfiltered archive parquet to ~/Desktop/Bot-Eod-parquet/,
+#   2. ingest-flow  — full unfiltered archive parquet to PARQUET_DIR (default
+#                     ~/Desktop/Bot-Eod-parquet/),
 #                     filtered parquet uploaded to Vercel Blob, source CSV deleted on success
 #
 # Closing pass (run once at the end):
@@ -29,8 +30,14 @@
 #     make nightly INPUT_DIR=/path/to/csvs
 
 SHELL := /bin/bash
+# GNU Make 3.82+ (this Windows box: 4.4.1) applies these flags to every recipe
+# line; the retired Mac's Make 3.81 ignored .SHELLFLAGS, so recipes there ran
+# without -e/-u/pipefail.
 .SHELLFLAGS := -eu -o pipefail -c
-.ONESHELL:
+# No .ONESHELL, on purpose. Every recipe line runs in its own shell, which is
+# what the `\` continuations and the sentinel file below are written for. Under
+# .ONESHELL a whole recipe is one line, and `make -n` runs any recipe that
+# contains $(MAKE) for real (`update`, `nightly`).
 
 # A venv keeps its interpreter in Scripts/ on Windows and bin/ elsewhere.
 ifeq ($(OS),Windows_NT)
@@ -39,20 +46,29 @@ else
 VENV_BIN    := bin
 endif
 PYTHON      := ml/.venv/$(VENV_BIN)/python
-INPUT_DIR   ?= $(HOME)/Downloads/EOD-OptionFlow
-PARQUET_DIR ?= $(HOME)/Desktop/Bot-Eod-parquet
-INPUT_DIR_FULLTAPE   ?= $(HOME)/Downloads/EOD-FullTape
-PARQUET_DIR_FULLTAPE ?= $(HOME)/Desktop/Eod-Full-Tape-parquet
-ENV_FILE    := .env.local
+# $(HOME) is C:\Users\... under Windows make; forward slashes keep the paths
+# intact in sh and in Python alike. Still quote them in recipes (spaces).
+HOME_DIR    := $(subst \,/,$(HOME))
+INPUT_DIR   ?= $(HOME_DIR)/Downloads/EOD-OptionFlow
+# Bot-EOD archive ({date}-trades.parquet). scripts/ingest-flow.py writes it
+# (--archive-dir); the enrich, backfill-flow, exit-policy-search and
+# flow-inversion-timing scripts read it (--parquet-dir). None of them has a
+# default of its own here.
+PARQUET_DIR ?= $(HOME_DIR)/Desktop/Bot-Eod-parquet
+INPUT_DIR_FULLTAPE   ?= $(HOME_DIR)/Downloads/EOD-FullTape
+PARQUET_DIR_FULLTAPE ?= $(HOME_DIR)/Desktop/Eod-Full-Tape-parquet
+# `./` on purpose: Windows make runs recipes in Git's sh.exe (bash in POSIX
+# mode), where `source name` without a slash searches PATH, not the cwd.
+ENV_FILE    := ./.env.local
 
-# Sentinel file for cross-shell failure signalling in the nightly loop. This
-# machine runs GNU Make 3.81, which IGNORES .ONESHELL — every recipe line runs
-# in its own shell, so a shell variable set in the per-date loop cannot be read
-# by the final exit-check line. A sentinel file persists across those shells.
+# Sentinel file for cross-shell failure signalling in the nightly loop. Every
+# recipe line runs in its own shell (no .ONESHELL, see above), so a shell
+# variable set in the per-date loop cannot be read by the final exit-check
+# line. A sentinel file persists across those shells.
 NIGHTLY_FAIL_SENTINEL := /tmp/.strike-nightly-failed
 
 # Every bot-eod-report-YYYY-MM-DD.csv in INPUT_DIR, ascending.
-PENDING_DATES := $(shell ls -1 $(INPUT_DIR)/bot-eod-report-*.csv 2>/dev/null \
+PENDING_DATES := $(shell ls -1 "$(INPUT_DIR)"/bot-eod-report-*.csv 2>/dev/null \
                        | sed -nE 's|.*bot-eod-report-([0-9]{4}-[0-9]{2}-[0-9]{2})\.csv|\1|p' \
                        | sort)
 
@@ -69,7 +85,7 @@ DATE        ?= $(lastword $(PENDING_DATES))
 
 CSV_PATH    := $(INPUT_DIR)/bot-eod-report-$(DATE).csv
 
-.PHONY: help nightly nightly-one nightly-resume analyze ingest plots backfill-flow enrich refit update tune check dry-run clean download-fulltape ingest-fulltape version takeit-rollback takeit-drift takeit-backfill py-test-cov
+.PHONY: help nightly nightly-one nightly-resume rollup analyze ingest plots backfill-flow enrich refit update tune check dry-run clean download-fulltape ingest-fulltape version takeit-rollback takeit-drift takeit-backfill py-test-cov
 
 help:
 	@echo "EOD options-flow pipeline targets:"
@@ -144,7 +160,8 @@ ingest: check
 	@echo "  STEP 2/4 — ingest-flow.py (CSV → Archive → Parquet → Blob → delete CSV)"
 	@echo "════════════════════════════════════════════════════════════════"
 	set -a && source $(ENV_FILE) && set +a && \
-	  $(PYTHON) scripts/ingest-flow.py $(DATE)
+	  $(PYTHON) scripts/ingest-flow.py $(DATE) \
+	    --input-dir "$(INPUT_DIR)" --archive-dir "$(PARQUET_DIR)"
 
 plots:
 	@echo ""
@@ -160,8 +177,9 @@ backfill-flow:
 	@echo "════════════════════════════════════════════════════════════════"
 	@# Idempotent (ON CONFLICT DO NOTHING). Mirrors the Vercel cron
 	@# fetch-net-flow-history; runs locally so flow-inversion can compute
-	@# even when the deployed cron silently fails.
-	$(PYTHON) scripts/backfill_net_flow_history.py
+	@# even when the deployed cron silently fails. Without --date it fetches
+	@# the newest *-trades.parquet date in PARQUET_DIR.
+	$(PYTHON) scripts/backfill_net_flow_history.py --parquet-dir "$(PARQUET_DIR)"
 
 enrich:
 	@echo ""
@@ -181,7 +199,7 @@ enrich:
 	@#      Gated by WRITE_DB=1; staleness >3 days raises a Sentry warning
 	@#      from the next /api/cron/refresh-vix1d run (see spec
 	@#      lottery-inversion-quality-filter-2026-05-19.md).
-	WRITE_DB=1 $(PYTHON) scripts/enrich_lottery_outcomes.py --all-unenriched
+	WRITE_DB=1 $(PYTHON) scripts/enrich_lottery_outcomes.py --all-unenriched --parquet-dir "$(PARQUET_DIR)"
 	@echo ""
 	@echo "════════════════════════════════════════════════════════════════"
 	@echo "  STEP 5/5 (cont.) — enrich_silent_boom_outcomes.py --all-unenriched"
@@ -192,7 +210,7 @@ enrich:
 	@# lottery enrichment uses. --all-unenriched scopes the date list to
 	@# dates with pending rows (matches the lottery target's behavior so
 	@# manual backfills get picked up regardless of when they landed).
-	$(PYTHON) scripts/enrich_silent_boom_outcomes.py --all-unenriched
+	$(PYTHON) scripts/enrich_silent_boom_outcomes.py --all-unenriched --parquet-dir "$(PARQUET_DIR)"
 
 refit:
 	@echo ""
@@ -228,9 +246,9 @@ update: enrich refit
 	@# Total runtime ~3-4 min: most of it is `flow_inversion_timing.py`,
 	@# which re-runs the simulate_flow_inversion algorithm against every
 	@# enriched fire to capture inversion timestamps (parquet replay).
-	$(PYTHON) scripts/exit_policy_search.py
+	$(PYTHON) scripts/exit_policy_search.py --parquet-dir "$(PARQUET_DIR)"
 	$(PYTHON) scripts/feature_audit.py
-	$(PYTHON) scripts/flow_inversion_timing.py
+	$(PYTHON) scripts/flow_inversion_timing.py --parquet-dir "$(PARQUET_DIR)"
 	$(PYTHON) scripts/daily_tracker.py
 	@# Outcome-mining + score-lineage feedback loop (spec: lottery-
 	@# outcome-mining-and-lineage-2026-05-22). Surfaces interaction
@@ -357,22 +375,35 @@ nightly-resume: plots backfill-flow enrich
 	@# artifacts as a full CSV run. Idempotent: reads the by-day parquets only.
 	$(PYTHON) scripts/eod-flow-analysis/analyze.py --rollup-only
 
+# Cumulative rollup over every by-day parquet. Its own target so the `nightly`
+# lines below reach it through $(MAKE): `make -n` runs a recipe line that
+# contains $(MAKE) for real, so a bare python call on such a line would run
+# too, while a sub-make inherits -n and only prints.
+rollup:
+	$(PYTHON) scripts/eod-flow-analysis/analyze.py --rollup-only
+
+# Every step below runs as `$(MAKE) … || { warn; touch sentinel; }`, so a
+# failure under .SHELLFLAGS' -e can't end its line early: the rest of the
+# closing pass and ingest-fulltape still run, and the final check exits 1.
 nightly:
+	@# Start clean: a sentinel left by an earlier, interrupted run must not
+	@# fail this one.
+	@rm -f "$(NIGHTLY_FAIL_SENTINEL)"
 ifdef DATE_EXPLICIT
 	@echo "→ DATE=$(DATE) (explicit override) — single-date pipeline"
 	@if [[ -f "$(CSV_PATH)" ]]; then \
-	  $(MAKE) --no-print-directory nightly-one DATE=$(DATE); \
+	  $(MAKE) --no-print-directory nightly-one DATE=$(DATE) || { echo "⚠️  nightly-one $(DATE) failed" >&2; touch "$(NIGHTLY_FAIL_SENTINEL)"; }; \
 	  echo ""; \
 	  echo "═══ Closing pass (cumulative rollup + plots) ═══"; \
-	  $(PYTHON) scripts/eod-flow-analysis/analyze.py --rollup-only; \
-	  $(MAKE) --no-print-directory plots; \
-	elif ls -1 $(PARQUET_DIR)/$(DATE)-trades.parquet >/dev/null 2>&1; then \
+	  $(MAKE) --no-print-directory rollup || { echo "⚠️  rollup failed" >&2; touch "$(NIGHTLY_FAIL_SENTINEL)"; }; \
+	  $(MAKE) --no-print-directory plots || { echo "⚠️  plots failed" >&2; touch "$(NIGHTLY_FAIL_SENTINEL)"; }; \
+	elif ls -1 "$(PARQUET_DIR)"/$(DATE)-trades.parquet >/dev/null 2>&1; then \
 	  echo "  CSV gone but parquet on disk — replaying parquet for $(DATE) (idempotent)"; \
-	  $(MAKE) --no-print-directory backfill-flow-one enrich-one DATE=$(DATE); \
+	  $(MAKE) --no-print-directory backfill-flow-one enrich-one DATE=$(DATE) || { echo "⚠️  backfill-flow-one/enrich-one $(DATE) failed" >&2; touch "$(NIGHTLY_FAIL_SENTINEL)"; }; \
 	  echo ""; \
 	  echo "═══ Closing pass (cumulative rollup + plots) ═══"; \
-	  $(PYTHON) scripts/eod-flow-analysis/analyze.py --rollup-only; \
-	  $(MAKE) --no-print-directory plots; \
+	  $(MAKE) --no-print-directory rollup || { echo "⚠️  rollup failed" >&2; touch "$(NIGHTLY_FAIL_SENTINEL)"; }; \
+	  $(MAKE) --no-print-directory plots || { echo "⚠️  plots failed" >&2; touch "$(NIGHTLY_FAIL_SENTINEL)"; }; \
 	else \
 	  echo "❌ Neither $(CSV_PATH) nor $(PARQUET_DIR)/$(DATE)-trades.parquet exists."; \
 	  exit 2; \
@@ -382,7 +413,6 @@ else
 	  count=$$(echo "$(PENDING_DATES)" | wc -w | tr -d ' '); \
 	  echo "→ Found $$count pending CSV(s) in $(INPUT_DIR):"; \
 	  for d in $(PENDING_DATES); do echo "   • $$d"; done; \
-	  rm -f "$(NIGHTLY_FAIL_SENTINEL)"; \
 	  failed_dates=""; \
 	  for d in $(PENDING_DATES); do \
 	    echo ""; \
@@ -395,8 +425,8 @@ else
 	  done; \
 	  echo ""; \
 	  echo "═══ Closing pass (cumulative rollup + plots, once across all dates) ═══"; \
-	  $(PYTHON) scripts/eod-flow-analysis/analyze.py --rollup-only; \
-	  $(MAKE) --no-print-directory plots; \
+	  $(MAKE) --no-print-directory rollup || { echo "⚠️  rollup failed" >&2; touch "$(NIGHTLY_FAIL_SENTINEL)"; }; \
+	  $(MAKE) --no-print-directory plots || { echo "⚠️  plots failed" >&2; touch "$(NIGHTLY_FAIL_SENTINEL)"; }; \
 	  if [[ -n "$$failed_dates" ]]; then \
 	    echo "" >&2; \
 	    echo "⚠️  Nightly completed with FAILED date(s):$$failed_dates" >&2; \
@@ -404,10 +434,10 @@ else
 	    echo "   enrichment is retried by 'make update' (--all-unenriched). To re-run" >&2; \
 	    echo "   one date in full: make nightly DATE=YYYY-MM-DD" >&2; \
 	  fi; \
-	elif ls -1 $(PARQUET_DIR)/*-trades.parquet >/dev/null 2>&1; then \
+	elif ls -1 "$(PARQUET_DIR)"/*-trades.parquet >/dev/null 2>&1; then \
 	  echo "→ No CSV in $(INPUT_DIR), but parquet already on disk in $(PARQUET_DIR)"; \
 	  echo "  (CSV was consumed by a previous invocation — running plots + backfill-flow + enrich only)"; \
-	  $(MAKE) --no-print-directory nightly-resume; \
+	  $(MAKE) --no-print-directory nightly-resume || { echo "⚠️  nightly-resume failed" >&2; touch "$(NIGHTLY_FAIL_SENTINEL)"; }; \
 	else \
 	  echo "❌ No CSV in $(INPUT_DIR) and no parquet in $(PARQUET_DIR)."; \
 	  echo "   Drop a bot-eod-report-YYYY-MM-DD.csv first."; \
@@ -419,14 +449,16 @@ endif
 	@# but does NOT abort `nightly` and does NOT block a chained `make update`.
 	@# Re-run via `make ingest-fulltape` once UW posts.
 	$(MAKE) --no-print-directory ingest-fulltape || echo "⚠️  Full Tape ingest failed (UW lag or network); re-run with 'make ingest-fulltape' after UW posts. Bot-eod pipeline succeeded."
-	@# Surface per-date failures isolated above. The closing pass + Full Tape
-	@# have already run; exit non-zero now so the failure is visible (CI / shell
-	@# exit code) without having aborted the rest of the night. The sentinel file
-	@# carries the failure flag across recipe-line shell boundaries (Make 3.81
-	@# ignores .ONESHELL). Only the multi-date loop ever creates it.
+	@# Surface the failures isolated above. The closing pass + Full Tape have
+	@# already run; exit non-zero now so the failure is visible (CI / shell
+	@# exit code) without having aborted the rest of the night. The sentinel
+	@# file carries the flag across recipe-line shell boundaries (each line is
+	@# its own shell). Any failed step sets it, on every path: a per-date
+	@# pipeline, the parquet replay or resume, rollup, plots. The first line
+	@# of the recipe clears it.
 	@if [[ -f "$(NIGHTLY_FAIL_SENTINEL)" ]]; then \
 	  rm -f "$(NIGHTLY_FAIL_SENTINEL)"; \
-	  echo "❌ nightly: one or more dates failed after retries (see above)." >&2; \
+	  echo "❌ nightly: one or more steps failed (see the ⚠️ lines above)." >&2; \
 	  exit 1; \
 	fi
 
@@ -477,12 +509,12 @@ enrich-one:
 	@echo "════════════════════════════════════════════════════════════════"
 	@echo "  STEP 5/5 — enrich_lottery_outcomes.py --date $(DATE)"
 	@echo "════════════════════════════════════════════════════════════════"
-	$(PYTHON) scripts/enrich_lottery_outcomes.py --date $(DATE)
+	$(PYTHON) scripts/enrich_lottery_outcomes.py --date $(DATE) --parquet-dir "$(PARQUET_DIR)"
 	@echo ""
 	@echo "════════════════════════════════════════════════════════════════"
 	@echo "  STEP 5/5 (cont.) — enrich_silent_boom_outcomes.py --date $(DATE)"
 	@echo "════════════════════════════════════════════════════════════════"
-	$(PYTHON) scripts/enrich_silent_boom_outcomes.py --date $(DATE)
+	$(PYTHON) scripts/enrich_silent_boom_outcomes.py --date $(DATE) --parquet-dir "$(PARQUET_DIR)"
 
 dry-run: check
 	@# Intentionally omits `enrich` — dry-run skips DB writes by contract.
@@ -492,7 +524,8 @@ dry-run: check
 	@echo "  CSV will NOT be uploaded or deleted."
 	@echo "════════════════════════════════════════════════════════════════"
 	$(PYTHON) scripts/eod-flow-analysis/analyze.py --day $(DATE)
-	$(PYTHON) scripts/ingest-flow.py $(DATE) --dry-run --keep-csv
+	$(PYTHON) scripts/ingest-flow.py $(DATE) --dry-run --keep-csv \
+	  --input-dir "$(INPUT_DIR)" --archive-dir "$(PARQUET_DIR)"
 	$(PYTHON) ml/src/whale_plots.py
 	@echo ""
 	@echo "✅ Dry run complete — no upload, no CSV deletion."
@@ -507,8 +540,10 @@ clean:
 PROD_URL ?= https://theta-options.com
 
 version:
+	@# `|| true`: under .SHELLFLAGS' -e + pipefail a failed curl would end the
+	@# line before it reports; an empty api_sha prints as a mismatch instead.
 	@local_sha=$$(git rev-parse --short=7 HEAD); \
-	api_sha=$$(curl -fsS $(PROD_URL)/api/version | sed -nE 's/.*"sha":"([^"]+)".*/\1/p'); \
+	api_sha=$$(curl -fsS $(PROD_URL)/api/version | sed -nE 's/.*"sha":"([^"]+)".*/\1/p' || true); \
 	echo ""; \
 	echo "  local HEAD : $$local_sha"; \
 	echo "  api SHA    : $$api_sha"; \
@@ -569,9 +604,10 @@ takeit-backfill:
 # Python test coverage — fan out across all four Python projects (fail-fast).
 # The `npm run test:coverage` analogue for the Python side. Each project has its
 # own .venv and its own pytest config, so this cd's into each and uses that
-# project's interpreter. Because Make 3.81 ignores .ONESHELL, every recipe line
-# runs in its own `-eu -o pipefail` shell — so the FIRST project whose tests or
-# coverage gate fail aborts the whole target (fail-fast, no extra plumbing).
+# project's interpreter (VENV_BIN picks bin/ or Scripts/). Every recipe line
+# runs in its own shell and make stops at the first line that fails — so the
+# FIRST project whose tests or coverage gate fail aborts the whole target
+# (fail-fast, no extra plumbing).
 #
 #   ml / sidecar  delegate to each project's own `test-cov` target so the
 #                 coverage flags stay single-sourced in the sub-Makefile.

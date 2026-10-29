@@ -16,9 +16,6 @@ feed on 2026-09-08 (see the handler module docstring).
 
 from __future__ import annotations
 
-import json
-import logging
-import time
 from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
@@ -28,23 +25,22 @@ import pytest
 from handlers import futures_trades as ft
 from handlers.futures_trades import (
     _COLUMNS,
-    _MAX_FUTURE_SKEW_MS,
     _TARGET_PRODUCTS,
     FuturesTradesHandler,
     _floor_to_minute,
-    _parse_executed_at,
     _to_decimal,
     _to_int,
 )
-from logger_setup import JsonFormatter, log
+from logger_setup import MALFORMED_PAYLOAD_LOG_INTERVAL_S
+from utils import timestamps
 
 # 2026-09-08T05:56:51.311Z — a real timestamp from the live probe.
 _BASE_MS = 1788847011311
 # Floor of _BASE_MS to the minute: 05:56:00Z
 _BASE_MINUTE = datetime(2026, 9, 8, 5, 56, 0, tzinfo=UTC)
 
-# Pinned wall clock for the whole module. _parse_executed_at rejects
-# timestamps more than _MAX_FUTURE_SKEW_MS ahead of now, and several
+# Pinned wall clock for the whole module. timestamps.parse_timestamp rejects
+# timestamps more than MAX_FUTURE_SKEW_MS ahead of now, and several
 # fixtures below deliberately span 2-3 UTC days from _BASE_MS; without a
 # pinned clock those would start failing the moment real time drifts
 # behind the fixture dates. 10 days of headroom covers every fixture.
@@ -56,7 +52,7 @@ _C = {name: i for i, name in enumerate(_COLUMNS)}
 @pytest.fixture(autouse=True)
 def _pin_wall_clock(monkeypatch):
     """Pin ``_now_ms`` so the future-timestamp bound is deterministic."""
-    monkeypatch.setattr(ft, "_now_ms", lambda: _PINNED_NOW_MS)
+    monkeypatch.setattr(timestamps, "_now_ms", lambda: _PINNED_NOW_MS)
 
 
 def _floor_minute_utc(v):
@@ -66,7 +62,7 @@ def _floor_minute_utc(v):
     of its own, so these assertions exercise the code the handler
     actually runs.
     """
-    parsed = _parse_executed_at(v)
+    parsed = timestamps.parse_timestamp(v)
     return None if parsed is None else _floor_to_minute(parsed)
 
 
@@ -76,23 +72,41 @@ def _print(
     sym: str = "ESU6",
     executed_at: int | str = _BASE_MS,
     price: str = "7706.25",
-    size: int = 1,
-    trade_id: int = 1,
+    size: int | str = 1,
+    trade_id: int | str | None = 1,
+    side: str = "sell",
+    is_spread: bool | None = None,
+    is_block: bool = False,
 ) -> dict:
-    """Build a futures_trades payload matching the live wire shape."""
-    return {
+    """Build a futures_trades payload matching the live wire shape.
+
+    Live websocket frames carry exactly these 11 keys (frame capture,
+    2026-10-28). ``is_spread`` exists only on REST, so it is added only
+    when a test passes it.
+    """
+    payload = {
         "sym": sym,
         "product": product,
         "exchange": "XCME",
         "executed_at": executed_at,
         "price": price,
         "size": size,
-        "side": "sell",
+        "side": side,
         "nbbo_bid": "7706.00",
         "nbbo_ask": "7706.25",
         "trade_id": trade_id,
-        "is_block": False,
+        "is_block": is_block,
     }
+    if is_spread is not None:
+        payload["is_spread"] = is_spread
+    return payload
+
+
+def _without(payload: dict, *keys: str) -> dict:
+    """Drop keys from a payload, for frames that omit a field entirely."""
+    for key in keys:
+        del payload[key]
+    return payload
 
 
 @pytest.fixture
@@ -218,6 +232,12 @@ class TestMicroExclusion:
 # 3. String price parsing — Decimal, never str
 # ----------------------------------------------------------------------
 
+# Decimal parses all of these without complaint, and each one used to
+# escape: int(Decimal("Infinity")) raises OverflowError, Decimal("NaN")
+# raises InvalidOperation on ``<= 0``, Infinity passes ``> 0``, and
+# "1e400" is a finite Decimal that no float, price or size can hold.
+_NON_FINITE = ("inf", "-Infinity", "NaN", "nan", "sNaN", "1e400", float("inf"), float("nan"))
+
 
 class TestPriceParsing:
     def test_price_parsed_to_decimal(self, handler):
@@ -277,6 +297,30 @@ class TestPriceParsing:
         assert handler._transform(_print(price="-1")) is None
         assert handler._transform(_print(size=0)) is None
         assert handler._transform(_print(size=-5)) is None
+
+    @pytest.mark.parametrize("raw", _NON_FINITE, ids=repr)
+    def test_to_decimal_rejects_non_finite(self, raw):
+        assert _to_decimal(raw) is None
+
+    @pytest.mark.parametrize("raw", _NON_FINITE, ids=repr)
+    def test_to_int_rejects_non_finite(self, raw):
+        assert _to_int(raw) is None
+
+    @pytest.mark.parametrize("price", ["NaN", "Infinity", "-Infinity", "1e400"])
+    def test_non_finite_price_dropped_without_raising(self, handler, price):
+        with patch("handlers.futures_trades.rate_limited_log") as mock_log:
+            assert handler._transform(_print(price=price)) is None
+        kinds = [c.kwargs.get("kind") for c in mock_log.warning.call_args_list]
+        assert kinds == ["invalid_price_or_size"]
+
+    # The last two parse to huge finite ints; summed into BIGINT volume they
+    # would overflow the shared INSERT and lose every product's minutes.
+    @pytest.mark.parametrize("size", ["inf", "NaN", "1e400", "1e20", "9223372036854775808"])
+    def test_non_finite_or_oversized_size_dropped_without_raising(self, handler, size):
+        with patch("handlers.futures_trades.rate_limited_log") as mock_log:
+            assert handler._transform(_print(size=size)) is None
+        kinds = [c.kwargs.get("kind") for c in mock_log.warning.call_args_list]
+        assert kinds == ["invalid_price_or_size"]
 
 
 # ----------------------------------------------------------------------
@@ -481,6 +525,73 @@ class TestFrontMonthSelection:
         # Day 1's 101 ESU6 lots are gone from the tally, not merely outvoted.
         assert handler._session_volume == {"ES": {"ESZ6": 5}}
 
+    @pytest.mark.asyncio
+    async def test_prior_day_straggler_keeps_its_minutes_front_month(self, handler):
+        """23:59 is the held-back minute when the first 00:00 print rolls
+        the tally. A 23:59 back-month straggler then lands in the EMPTY
+        new-day tally; it must not re-elect itself front for 23:59 (a
+        permanent carry-basis spike) or lead the new day (a 00:01 gap)."""
+        at_2359_50 = 1788911990000  # 2026-09-08T23:59:50Z
+        await _flush_capture(
+            handler,
+            [_print(sym="ESZ6", executed_at=at_2359_50 - 60_000, price="7700.00", size=500)],
+        )
+        await _flush_capture(
+            handler,
+            [_print(sym="ESZ6", executed_at=at_2359_50, price="7700.00", size=50, trade_id=2)],
+        )
+        rows = await _flush_capture(
+            handler,
+            [
+                # 00:00:05 — first print of the new UTC day; rolls the tally.
+                _print(sym="ESZ6", executed_at=at_2359_50 + 15_000, price="7701.00", trade_id=3),
+                # 23:59:50.1 — prior-day back-month straggler.
+                _print(
+                    sym="ESH7", executed_at=at_2359_50 + 100, price="7755.00", size=5, trade_id=4
+                ),
+                # 00:01:05 — completes 23:59 and 00:00.
+                _print(sym="ESZ6", executed_at=at_2359_50 + 75_000, price="7701.00", trade_id=5),
+            ],
+        )
+
+        by_ts = {r[_C["ts"]]: r for r in rows}
+        bar_2359 = by_ts[datetime(2026, 9, 8, 23, 59, tzinfo=UTC)]
+        assert bar_2359[_C["close"]] == Decimal("7700.00")  # ESZ6, not ESH7's 7755
+        assert bar_2359[_C["volume"]] == 50
+        assert "ESH7" not in handler._session_volume["ES"]
+        assert handler._front_sym[("ES", datetime(2026, 9, 9, 0, 1, tzinfo=UTC))] == "ESZ6"
+
+    @pytest.mark.asyncio
+    async def test_prior_day_straggler_without_a_snapshot_is_a_logged_gap(self, handler):
+        """A prior-day minute first seen after the roll has no front-month
+        snapshot from its own day, so it becomes the existing logged gap
+        rather than being elected from the new day's tally."""
+        at_2359_50 = 1788911990000  # 2026-09-08T23:59:50Z
+        await _flush_capture(
+            handler,
+            [_print(sym="ESZ6", executed_at=at_2359_50 - 120_000, price="7700.00", size=500)],
+        )
+        with patch("handlers.futures_trades.rate_limited_log") as mock_log:
+            rows = await _flush_capture(
+                handler,
+                [
+                    _print(sym="ESZ6", executed_at=at_2359_50 + 15_000, trade_id=2),
+                    _print(
+                        sym="ESH7",
+                        executed_at=at_2359_50 + 100,
+                        price="7755.00",
+                        size=5,
+                        trade_id=3,
+                    ),
+                    _print(sym="ESZ6", executed_at=at_2359_50 + 75_000, trade_id=4),
+                ],
+            )
+
+        assert datetime(2026, 9, 8, 23, 59, tzinfo=UTC) not in {r[_C["ts"]] for r in rows}
+        assert all(r[_C["close"]] != Decimal("7755.00") for r in rows)
+        kinds = [c.kwargs.get("kind") for c in mock_log.warning.call_args_list]
+        assert "front_sym_absent" in kinds
+
 
 # ----------------------------------------------------------------------
 # 6. Only completed minutes flush
@@ -610,6 +721,10 @@ class TestCompletedMinutesOnly:
             "low",
             "close",
             "volume",
+            "buy_volume",
+            "sell_volume",
+            "buy_prints",
+            "sell_prints",
         ]
 
 
@@ -865,14 +980,24 @@ class TestFutureDatedTimestamps:
 
     def test_small_clock_skew_still_accepted(self):
         """A stamp slightly ahead of us is skew, not corruption."""
-        skewed = _PINNED_NOW_MS + _MAX_FUTURE_SKEW_MS - 60_000
+        skewed = _PINNED_NOW_MS + timestamps.MAX_FUTURE_SKEW_MS - 60_000
         assert _floor_minute_utc(skewed) is not None
 
     def test_just_past_the_skew_window_rejected(self):
-        assert _floor_minute_utc(_PINNED_NOW_MS + _MAX_FUTURE_SKEW_MS + 60_000) is None
+        past = _PINNED_NOW_MS + timestamps.MAX_FUTURE_SKEW_MS + 60_000
+        assert _floor_minute_utc(past) is None
 
     def test_transform_drops_the_future_print(self, handler):
         assert handler._transform(_print(executed_at=_PINNED_NOW_MS + 10**11)) is None
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_float_executed_at_is_dropped_not_raised(self, handler, value):
+        """``int(nan)`` raises ValueError and ``int(inf)`` OverflowError.
+        The parser used to let both escape ``_transform``, which the base
+        handler then reported to Sentry once per frame."""
+        with patch.object(ft, "rate_limited_log") as rl:
+            assert handler._transform(_print(executed_at=value)) is None
+        assert rl.warning.call_args.kwargs["kind"] == "bad_executed_at"
 
     @pytest.mark.asyncio
     async def test_future_print_does_not_advance_newest_minute(self, handler):
@@ -991,91 +1116,319 @@ class TestDedupOutageIsVisible:
 
 
 # ----------------------------------------------------------------------
-# TEMPORARY (spec Phase 0b): remove after one session
-# Sampled raw-frame capture for websocket probes P1 (which keys a frame
-# carries) and P2 (how re-delivered copies of one print differ).
+# 12. Aggressor order flow (spec Phase 2). UW's ``side`` is the exchange
+#     aggressor flag (99.1% tick-test agreement, REST probe 2026-10-28).
+#     NULL flow = unknown (no print in the bar carried a side); 0 = known
+#     to be none.
+# ----------------------------------------------------------------------
+
+_FLOW = ("buy_volume", "sell_volume", "buy_prints", "sell_prints")
+
+
+def _flow(row: tuple) -> list:
+    return [row[_C[name]] for name in _FLOW]
+
+
+class TestOrderFlow:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("buy", "buy"),
+            ("sell", "sell"),
+            ("none", "none"),
+            # UW documents the values as case-sensitive: anything else is
+            # unknown, never coerced into a side.
+            ("BUY", None),
+            ("Sell", None),
+            (" buy", None),
+            ("bid", None),
+            ("", None),
+            (None, None),
+            (1, None),
+            (True, None),
+        ],
+    )
+    def test_parse_side(self, raw, expected):
+        assert ft._parse_side(raw) == expected
+
+    def test_transform_carries_side(self, handler):
+        assert handler._transform(_print(side="buy")).side == "buy"
+        assert handler._transform(_without(_print(), "side")).side is None
+
+    @pytest.mark.asyncio
+    async def test_buy_sell_split(self, handler):
+        payloads = [
+            _print(size=2, side="buy", trade_id=1),
+            _print(executed_at=_BASE_MS + 100, size=3, side="sell", trade_id=2),
+            _print(executed_at=_BASE_MS + 200, size=1, side="none", trade_id=3),
+            # Next minute — completes 05:56.
+            _print(executed_at=_BASE_MS + 60_000, trade_id=4),
+        ]
+        rows = await _flush_capture(handler, payloads)
+
+        assert len(rows) == 1
+        assert rows[0][_C["volume"]] == 6  # the "none" lot counts here only
+        assert _flow(rows[0]) == [2, 3, 1, 1]
+
+    @pytest.mark.asyncio
+    async def test_mixed_known_and_missing_side(self, handler):
+        """One print with a side makes the flow known: the side-less lots
+        count toward volume only, and the flow is 0, not NULL, for sell."""
+        payloads = [
+            _print(size=2, side="buy", trade_id=1),
+            _without(_print(executed_at=_BASE_MS + 100, size=3, trade_id=2), "side"),
+            _print(executed_at=_BASE_MS + 60_000, trade_id=3),
+        ]
+        rows = await _flush_capture(handler, payloads)
+
+        assert len(rows) == 1
+        assert rows[0][_C["volume"]] == 5
+        assert _flow(rows[0]) == [2, 0, 1, 0]
+
+    @pytest.mark.asyncio
+    async def test_bar_without_any_side_key_writes_null_flow(self, handler):
+        """A frame with no ``side`` key means unknown, so the bar must write
+        NULL flow, never 0 — 0 would claim "no aggressor volume"."""
+        payloads = [
+            _without(_print(price="7706.25", size=2, trade_id=1), "side"),
+            _without(
+                _print(executed_at=_BASE_MS + 100, price="7708.00", size=3, trade_id=2), "side"
+            ),
+            _print(executed_at=_BASE_MS + 60_000, trade_id=3),
+        ]
+        rows = await _flush_capture(handler, payloads)
+
+        assert len(rows) == 1
+        row = rows[0]
+        assert _flow(row) == [None, None, None, None]
+        # OHLCV is unchanged by the missing side.
+        assert row[_C["open"]] == Decimal("7706.25")
+        assert row[_C["high"]] == Decimal("7708.00")
+        assert row[_C["low"]] == Decimal("7706.25")
+        assert row[_C["close"]] == Decimal("7708.00")
+        assert row[_C["volume"]] == 5
+
+    @pytest.mark.asyncio
+    async def test_all_none_side_writes_zero_flow(self, handler):
+        """``side="none"`` is a known side, so the flow is 0, not NULL."""
+        payloads = [
+            _print(size=2, side="none", trade_id=1),
+            _print(executed_at=_BASE_MS + 100, size=3, side="none", trade_id=2),
+            _print(executed_at=_BASE_MS + 60_000, trade_id=3),
+        ]
+        rows = await _flush_capture(handler, payloads)
+
+        assert len(rows) == 1
+        assert rows[0][_C["volume"]] == 5
+        assert _flow(rows[0]) == [0, 0, 0, 0]
+
+    @pytest.mark.asyncio
+    async def test_duplicate_copy_counts_side_once(self, handler):
+        """Dedup runs before the flow tally, so the first copy wins even
+        when a re-delivered copy disagrees on side."""
+        first = _print(size=4, side="buy", trade_id=42)
+        payloads = [
+            first,
+            dict(first, side="sell"),
+            _print(executed_at=_BASE_MS + 60_000, trade_id=43),
+        ]
+        rows = await _flush_capture(handler, payloads)
+
+        assert len(rows) == 1
+        assert rows[0][_C["volume"]] == 4
+        assert _flow(rows[0]) == [4, 0, 1, 0]
+
+    @pytest.mark.parametrize(
+        ("spread_sym", "is_spread"),
+        [
+            # REST-style flag on an outright-looking sym.
+            pytest.param("ESH7", True, id="is_spread_flag"),
+            # The websocket's real case: no is_spread key at all, so only
+            # the sym shape marks it as a spread.
+            pytest.param("ESZ6-ESH7", None, id="spread_sym_no_flag"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_spread_print_never_wins_front_month_flag_or_sym(
+        self, handler, spread_sym, is_spread
+    ):
+        """A calendar spread is its own sym. Counted, its volume would win
+        the front-month argmax and write the spread's price as ES."""
+        spread = _print(sym=spread_sym, price="45.50", size=1000, trade_id=1, is_spread=is_spread)
+        payloads = [
+            spread,
+            _print(sym="ESZ6", executed_at=_BASE_MS + 10, price="7706.25", size=5, trade_id=2),
+            _print(sym="ESZ6", executed_at=_BASE_MS + 60_000, trade_id=3),
+        ]
+        with patch("handlers.futures_trades.rate_limited_log") as mock_log:
+            assert handler._transform(spread) is None
+            rows = await _flush_capture(handler, payloads)
+
+        assert len(rows) == 1
+        assert rows[0][_C["volume"]] == 5
+        assert rows[0][_C["low"]] == Decimal("7706.25")  # not the spread's 45.50
+        assert spread_sym not in handler._session_volume["ES"]
+        # Expected traffic, skipped quietly.
+        assert mock_log.warning.call_args_list == []
+
+    @pytest.mark.parametrize(
+        ("product", "sym", "expected"),
+        [
+            ("ES", "ESZ6", True),
+            ("NQ", "NQH7", True),
+            ("ES", "ESZ26", True),  # two-digit year
+            ("RTY", "RTYU6", True),
+            ("ES", "ESZ6-ESH7", False),  # calendar spread
+            ("ES", "ESZ6:ESH7", False),
+            ("ES", "ES Z6", False),
+            ("ES", "ES", False),  # bare root
+            ("ES", "MESZ6", False),  # micro sym under the ES product
+            ("ES", "ESZ", False),  # no year
+            ("ES", "ESA6", False),  # A is not a CME month code
+            ("ES", "ESZ123", False),
+            ("ES", "esz6", False),
+            ("ES", "ESZ6\n", False),  # $ would accept this; fullmatch must not
+            ("ES", "NQZ6", False),  # another product's outright
+            ("ES", "UD:1V: ESZ6", False),
+        ],
+    )
+    def test_outright_sym_matcher(self, product, sym, expected):
+        assert ft._is_outright(product, sym) is expected
+
+    def test_unrecognized_alphanumeric_sym_warns(self, handler):
+        """A separator-free sym that isn't an outright is most likely a
+        feed-wide format change (e.g. a four-digit year). Skipping it quietly
+        would black out every bar with no signal, so it warns."""
+        with patch("handlers.futures_trades.rate_limited_log") as mock_log:
+            assert handler._transform(_print(sym="ESZ2026")) is None
+        assert mock_log.warning.call_count == 1
+        call = mock_log.warning.call_args
+        assert call.kwargs["scope"] == "futures_trades"
+        assert call.kwargs["kind"] == "unrecognized_sym"
+        assert call.kwargs["extra"] == {"product": "ES", "sym": "ESZ2026"}
+
+    @pytest.mark.parametrize("sym", ["ESZ6-ESH7", "ESZ6:ESH7", "UD:1V: ESZ6"])
+    def test_separator_spread_sym_skipped_quietly(self, handler, sym):
+        with patch("handlers.futures_trades.rate_limited_log") as mock_log:
+            assert handler._transform(_print(sym=sym)) is None
+        assert mock_log.method_calls == []
+
+    def test_block_print_skipped_without_warning(self, handler):
+        """Block frames carry ``qty`` and no ``size``/``side``. Phase 4
+        stores them from ``futures_blocks``; here they are skipped quietly,
+        not logged as ``invalid_price_or_size``."""
+        block = _without(_print(is_block=True), "size", "side")
+        block["qty"] = 25
+        with patch("handlers.futures_trades.rate_limited_log") as mock_log:
+            assert handler._transform(block) is None
+        assert mock_log.warning.call_args_list == []
+
+
+# ----------------------------------------------------------------------
+# 13. Prints for minutes already emitted. Their dedup set was evicted with
+#     the minute, so a late re-delivered copy would otherwise bypass dedup,
+#     inflate the session tally and build a one-print bar that
+#     ON CONFLICT DO NOTHING discards.
 # ----------------------------------------------------------------------
 
 
-@pytest.fixture
-def capture_records():
-    """Collect every record the service logger emits during a test.
-
-    ``log`` has ``propagate=False`` (logger_setup.get_logger), so pytest's
-    ``caplog`` never sees it; attach a list handler to the logger itself.
-    """
-    records: list[logging.LogRecord] = []
-
-    class _ListHandler(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            records.append(record)
-
-    list_handler = _ListHandler()
-    log.addHandler(list_handler)
-    try:
-        yield records
-    finally:
-        log.removeHandler(list_handler)
+def _late_drop_logs(mock_log) -> list[dict]:
+    return [
+        c.kwargs["extra"]
+        for c in mock_log.info.call_args_list
+        if c.kwargs.get("extra", {}).get("kind") == "late_print_dropped"
+    ]
 
 
-def _captures(records: list[logging.LogRecord]) -> list[logging.LogRecord]:
-    return [r for r in records if r.getMessage() == "futures_capture"]
-
-
-class TestFrameCapture:
+class TestLatePrints:
     @pytest.mark.asyncio
-    async def test_every_copy_of_a_sampled_trade_is_logged(self, handler, capture_records):
-        """P2 compares re-delivered copies, so sampling is on trade_id and
-        every copy of a sampled print must be logged, not just the first."""
-        payload = _print(trade_id=1000)
-        before_ms = time.time_ns() // 1_000_000
-        for _ in range(3):
-            await handler.enqueue(dict(payload))
-        after_ms = time.time_ns() // 1_000_000
+    async def test_print_for_emitted_minute_is_dropped(self, handler):
+        front = _print(sym="ESU6", price="7700.00", size=10, trade_id=1)
+        back = _print(sym="ESZ6", executed_at=_BASE_MS + 10, price="7900.00", size=1, trade_id=2)
+        first = await _flush_capture(
+            handler, [front, back, _print(sym="ESU6", executed_at=_BASE_MS + 60_000, trade_id=3)]
+        )
+        assert [r[_C["ts"]] for r in first] == [_BASE_MINUTE]
+        assert handler._session_volume == {"ES": {"ESU6": 11, "ESZ6": 1}}
 
-        captures = _captures(capture_records)
-        assert len(captures) == 3
-        for record in captures:
-            assert record.levelno == logging.INFO
-            assert isinstance(record.arrival_ms, int)
-            assert before_ms <= record.arrival_ms <= after_ms
-            assert record.payload == payload
-            # The Railway line must carry the full raw payload as JSON.
-            line = json.loads(JsonFormatter().format(record))
-            assert line["msg"] == "futures_capture"
-            assert line["arrival_ms"] == record.arrival_ms
-            assert line["payload"] == payload
+        with patch("handlers.futures_trades.rate_limited_log") as mock_log:
+            # A back-month copy used to trip a false front_sym_absent; a
+            # front-month copy used to re-emit a one-print 05:56 bar.
+            late_back = await _flush_capture(handler, [dict(back)])
+            late_front = await _flush_capture(handler, [dict(front)])
+
+        assert late_back == []
+        assert late_front == []
+        assert handler._session_volume == {"ES": {"ESU6": 11, "ESZ6": 1}}
+        assert all(key[1] != _BASE_MINUTE for key in handler._bars)
+        kinds = [c.kwargs.get("kind") for c in mock_log.warning.call_args_list]
+        assert "front_sym_absent" not in kinds
 
     @pytest.mark.asyncio
-    async def test_unsampled_trade_not_logged(self, handler, capture_records):
-        await handler.enqueue(_print(trade_id=1001))
-        assert _captures(capture_records) == []
+    async def test_late_drop_is_logged_at_info_rate_limited(self, handler):
+        """Late copies are expected traffic (UW re-delivers each print 2-11
+        times, up to ~0.5s apart), so the drop is an info line with a
+        running count, throttled per window, and never a warning."""
+        early = _print(trade_id=1)
+        await _flush_capture(handler, [early, _print(executed_at=_BASE_MS + 60_000, trade_id=2)])
 
-    @pytest.mark.asyncio
-    async def test_non_capture_product_not_logged(self, handler, capture_records):
-        """CL is a bar product but not a capture product."""
-        await handler.enqueue(_print(product="CL", sym="CLZ6", trade_id=1000))
-        assert _captures(capture_records) == []
+        with (
+            patch("handlers.futures_trades.log") as mock_log,
+            patch("handlers.futures_trades.rate_limited_log") as mock_rl,
+        ):
+            # Two drops inside one window: one line.
+            await _flush_capture(handler, [dict(early), dict(early)])
+            assert [e["dropped_total"] for e in _late_drop_logs(mock_log)] == [1]
+            # Expire the window; the next drop logs the running count.
+            handler._late_drop_logged_at -= MALFORMED_PAYLOAD_LOG_INTERVAL_S
+            await _flush_capture(handler, [dict(early)])
 
-    @pytest.mark.asyncio
-    async def test_bad_trade_id_neither_logs_nor_raises(self, handler, capture_records):
-        missing = _print()
-        del missing["trade_id"]
-        # "inf" makes _to_int raise OverflowError (int(Decimal("Infinity"))),
-        # which the helper's deliberate swallow must absorb.
-        bad = [_print(trade_id="x"), missing, _print(trade_id=None), _print(trade_id="inf")]
-        depth = handler.queue.qsize()
-        for payload in bad:
-            ft._maybe_capture(payload, 0)
-            await handler.enqueue(payload)
-        assert _captures(capture_records) == []
-        # A capture failure must never cost the frame itself.
-        assert handler.queue.qsize() == depth + len(bad)
+        logs = _late_drop_logs(mock_log)
+        assert [e["dropped_total"] for e in logs] == [1, 3]
+        assert logs[0]["scope"] == "futures_trades"
+        assert logs[0]["product"] == "ES"
+        assert logs[0]["minute_ts"] == _BASE_MINUTE.isoformat()
+        assert mock_log.warning.call_args_list == []
+        assert mock_rl.warning.call_args_list == []
 
+
+# ----------------------------------------------------------------------
+# 14. A rejected futures_bars INSERT (R4). The base handler surfaces it to
+#     Sentry and keeps draining; there is no re-queue (spec Phase 2, YAGNI):
+#     the loss is visible and the OHLC gap repair refills those minutes.
+# ----------------------------------------------------------------------
+
+
+class TestFlushFailure:
     @pytest.mark.asyncio
-    async def test_capture_does_not_change_enqueue(self, handler, capture_records):
-        depth = handler.queue.qsize()
-        await handler.enqueue(_print(trade_id=1000))
-        assert len(_captures(capture_records)) == 1  # it was sampled
-        assert handler.queue.qsize() == depth + 1
-        assert handler.queue.get_nowait() == _print(trade_id=1000)
+    async def test_db_reject_is_surfaced(self, handler):
+        from state import state
+
+        metrics = state.handler("futures_trades")
+        written_before = metrics.write_count
+        rows = [
+            handler._transform(_print(trade_id=1)),
+            handler._transform(_print(executed_at=_BASE_MS + 60_000, trade_id=2)),
+        ]
+        with (
+            patch("handlers.futures_trades.db") as mock_db,
+            patch("handlers.base.capture_exception") as mock_capture,
+        ):
+            mock_db.bulk_insert_ignore_conflict = AsyncMock(
+                side_effect=RuntimeError("simulated Neon reject")
+            )
+            await handler._safe_flush(rows)  # must not raise
+
+        assert mock_capture.call_count == 1
+        assert isinstance(mock_capture.call_args.args[0], RuntimeError)
+        tags = mock_capture.call_args.kwargs["tags"]
+        assert tags["channel"] == "futures_trades"
+        assert tags["stage"] == "flush"
+        assert metrics.write_count == written_before
+
+        # The handler keeps draining: the next flush writes the next minute,
+        # and the rejected 05:56 bar is not retried.
+        survived = await _flush_capture(
+            handler, [_print(executed_at=_BASE_MS + 120_000, trade_id=3)]
+        )
+        assert [r[_C["ts"]] for r in survived] == [datetime(2026, 9, 8, 5, 57, tzinfo=UTC)]

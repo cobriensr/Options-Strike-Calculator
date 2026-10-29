@@ -25,6 +25,9 @@
   "include": [
     "scripts/_lib/uw-tuned-backfill.ts",
     "scripts/_lib/uw-tuned-backfill.test.ts",
+    "scripts/backfill-futures-flow.ts",
+    "scripts/_lib/futures-flow-backfill.ts",
+    "scripts/_lib/futures-flow-backfill.test.ts",
     "scripts/backfill-gamma-setup-fires.ts",
     "scripts/backfill-gex-target-features.ts",
     "scripts/backfill-lottery-score.ts",
@@ -34,13 +37,11 @@
     "scripts/_lib/periscope-outcome-backfill.ts",
     "scripts/_lib/periscope-outcome-backfill.test.ts",
     "scripts/backfill-regime-0dte.ts",
-    "scripts/backfill-snapshots.ts",
     "scripts/backfill-zero-gamma.ts",
     "scripts/tag-periscope-source.mts",
     "scripts/_lib/tag-periscope-source.ts",
     "scripts/_lib/tag-periscope-source.test.ts",
     "scripts/migrate-db.ts",
-    "scripts/run-migrations.ts",
     "scripts/verify-lottery-no-vanish.ts",
     "scripts/entry-time-analysis.ts"
   ]

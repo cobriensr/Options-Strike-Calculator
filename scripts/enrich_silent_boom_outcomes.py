@@ -22,9 +22,16 @@ without resetting enriched_at on the table. Use this once after the
 column is added, then revert to the default flow.
 
 Usage:
-    ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes.py
-    ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes.py --date 2026-05-07
-    ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes.py --backfill-mode
+    ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes.py --parquet-dir <bot-eod-dir>
+    ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes.py \\
+        --parquet-dir <bot-eod-dir> --date 2026-05-07
+    ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes.py \\
+        --parquet-dir <bot-eod-dir> --backfill-mode
+
+--parquet-dir is the Bot-EOD archive, the directory of
+{date}-trades.parquet files (no default; the Makefile passes its
+PARQUET_DIR). For the Full Tape archive use
+scripts/enrich_silent_boom_outcomes_fulltape.py.
 """
 
 from __future__ import annotations
@@ -40,11 +47,14 @@ import numpy as np
 import pandas as pd
 from psycopg2.extras import execute_values
 
+from _cli_paths import existing_dir, format_dates, warn_missing_archive
 from _pipeline_retry import connect_with_retry
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env.local'
-PARQUET_DIR = Path.home() / 'Desktop' / 'Bot-Eod-parquet'
+# Set in main() from --parquet-dir (no default);
+# scripts/recompute_peak_from_parquet.py sets it when it reuses this module.
+PARQUET_DIR: Path | None = None
 
 # Import the trail-30/10 exit policy from the shared ml/src module so this
 # script stays in sync with the lottery enrichment that uses the same fn.
@@ -233,8 +243,14 @@ def list_unenriched_dates(conn, backfill_mode: bool) -> list[str]:
     return [r[0] for r in cur.fetchall()]
 
 
-def main() -> None:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        '--parquet-dir',
+        type=existing_dir,
+        required=True,
+        help='Bot-EOD archive: the directory of {date}-trades.parquet files.',
+    )
     parser.add_argument('--date', help='YYYY-MM-DD; single-day mode')
     parser.add_argument('--from-date')
     parser.add_argument('--to-date')
@@ -259,7 +275,14 @@ def main() -> None:
             'stranded with enriched_at NULL.'
         ),
     )
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+
+    global PARQUET_DIR
+    PARQUET_DIR = args.parquet_dir
 
     load_env()
     db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ.get(
@@ -285,6 +308,8 @@ def main() -> None:
         )
 
         grand_updated = 0
+        days_enriched = 0
+        missing: list[str] = []
         t0 = time.time()
         for date_str in dates:
             td = time.time()
@@ -294,13 +319,16 @@ def main() -> None:
                 continue
             path = PARQUET_DIR / f'{date_str}-trades.parquet'
             if not path.exists():
-                # Loud — pipeline operator needs to know a parquet went missing.
-                # Distinguish from the chain-not-in-parquet skip below.
-                print(
-                    f'  [{date_str}] WARN parquet missing — skipping '
-                    f'{len(alerts)} alerts',
-                    file=sys.stderr,
+                # Loud, on stdout and stderr — distinct from the
+                # chain-not-in-parquet skip below. Nothing is written for the
+                # day, so its alerts keep enriched_at NULL for a later run.
+                warn_missing_archive(
+                    '[enrich-silent-boom]',
+                    date_str,
+                    path,
+                    f'{len(alerts):,} alerts left unenriched',
                 )
+                missing.append(date_str)
                 continue
             chain_ids = list({a['chain'] for a in alerts})
             tape = load_chain_tape(path, chain_ids)
@@ -323,6 +351,7 @@ def main() -> None:
                 )
             update_outcomes(conn, updates)
             grand_updated += len(updates)
+            days_enriched += 1
             print(
                 f'  [{date_str}] alerts={len(alerts):>4,} '
                 f'updated={len(updates):>4,} '
@@ -333,6 +362,18 @@ def main() -> None:
 
         print(f'\n[enrich-silent-boom] DONE updated={grand_updated:,} '
               f'in {time.time() - t0:.1f}s')
+        print(
+            f'[enrich-silent-boom] summary: {days_enriched} day(s) enriched, '
+            f'{grand_updated:,} alerts updated; {len(missing)} day(s) skipped '
+            'for a missing archive'
+        )
+        if missing:
+            line = (
+                '[enrich-silent-boom] skipped (archive missing, alerts left '
+                f'unenriched): {format_dates(missing)}'
+            )
+            print(line)
+            print(line, file=sys.stderr)
     finally:
         conn.close()
 

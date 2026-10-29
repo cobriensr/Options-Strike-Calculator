@@ -118,10 +118,6 @@
       "schedule": "25 13,14 * * 1-5"
     },
     {
-      "path": "/api/cron/compute-es-overnight",
-      "schedule": "35 13,14 * * 1-5"
-    },
-    {
       "path": "/api/cron/compute-zero-gamma",
       "schedule": "4,9,14,19,24,29,34,39,44,49,54,59 13-21 * * 1-5"
     },
@@ -256,6 +252,18 @@
     {
       "path": "/api/cron/backfill-futures-gaps",
       "schedule": "0 6 * * 1-6"
+    },
+    {
+      "path": "/api/cron/fetch-futures-session-stats",
+      "schedule": "30 12 * * 2-6"
+    },
+    {
+      "path": "/api/cron/fetch-futures-session-stats",
+      "schedule": "30 21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/repair-futures-blocks",
+      "schedule": "15 22 * * 1-5"
     },
     {
       "path": "/api/cron/refresh-vix1d",

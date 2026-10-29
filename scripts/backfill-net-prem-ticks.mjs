@@ -1,32 +1,58 @@
 #!/usr/bin/env node
 
 /**
- * One-shot historical backfill of `net_flow_per_ticker_history` from
- * UW REST `/stock/{ticker}/net-prem-ticks`. Pulls per-minute net-flow
+ * Historical backfill of `net_flow_per_ticker_history` from UW REST
+ * `/stock/{ticker}/net-prem-ticks?date=`. Pulls per-minute net-flow
  * deltas (NCP, NPP, NCV, NPV plus per-ticker bid/ask side splits) for
- * the lottery universe across the last N days.
+ * the lottery universe.
  *
- * Spec: docs/superpowers/specs/lottery-net-flow-eda-2026-05-03.md
- *       Phase 1 Task 1.2.
+ * Specs: docs/superpowers/specs/lottery-net-flow-eda-2026-05-03.md
+ *        Phase 1 Task 1.2 (the lookback);
+ *        docs/superpowers/specs/summer-gap-rebuild-2026-10-29.md Phase 1
+ *        (--from/--to and the guards of scripts/backfill-range-pos.mjs).
  *
- * Idempotent: ON CONFLICT (ticker, ts, source) DO NOTHING.
- * Resumable: queries MAX(ts) per ticker before fetching and skips
- * (ticker, date) pairs already fully covered.
+ * Which dates:
+ *   - default: the last DAYS weekdays ending today, the original
+ *     behavior. Resumable: queries MAX(ts) per ticker first and skips a
+ *     ticker's dates before its newest one (BYPASS_RESUME=1 fetches them).
+ *   - --from/--to: every NYSE trading day in the range, inclusive
+ *     (holidays from src/data/marketHours.ts). Fetches every ticker-day:
+ *     the resume rule would skip a whole past gap.
+ *
+ * Idempotent: ON CONFLICT (ticker, ts, source) DO NOTHING, BATCH_SIZE rows
+ * per INSERT; a re-run only adds what is missing.
  *
  * Filters (matching session-window memory rules):
  *   - 08:30–15:00 CT (13:30–20:00 UTC) — drop pre/after-market ticks
  *   - skip empty (ticker, date) responses (weekends/holidays)
  *
- * Usage:
- *   UW_API_KEY=... DATABASE_URL=... node scripts/backfill-net-prem-ticks.mjs
+ * UW: at most UW_REQUESTS_PER_MINUTE (300) requests a minute over
+ * CONCURRENCY lanes, one retry on a 5xx/429/network error/timeout. A 4xx or
+ * a malformed answer counts as a failed ticker-day (exit 1), never as an
+ * empty one. Refuses to start 08:15–15:30 CT on a weekday, and stops
+ * taking ticker-days (report, exit 3) when that window opens mid-run: its
+ * calls skip the shared Redis semaphore and compete with the production
+ * crons.
+ *
+ * Runs against whatever DATABASE_URL points at (.env.local = PRODUCTION).
+ *
+ * Usage (from the repo root; the key and URL are never printed):
+ *   node --env-file=.env.local scripts/backfill-net-prem-ticks.mjs [flags]
+ *
+ * Flags:
+ *   --dry-run             fetch and parse, write nothing (or DRY_RUN=1)
+ *   --limit N             at most N ticker-days (date order); prints the
+ *                         projected time for the whole plan
+ *   --from YYYY-MM-DD     first trading date (inclusive); needs --to
+ *   --to YYYY-MM-DD       last trading date (inclusive); needs --from
+ *   --allow-market-hours  start even inside the 08:15–15:30 CT window
  *
  * Optional env:
- *   DAYS=90              — calendar-day lookback (default 90; user has
- *                          90-day UW WebSocket plan retention)
+ *   DAYS=90              — lookback in weekdays when there's no --from/--to
  *   TICKERS=TSLA,NVDA    — comma-separated subset of the lottery list
- *   DRY_RUN=1            — fetch + parse, no DB writes
  *   BATCH_SIZE=500       — rows per batched INSERT
- *   CONCURRENCY=3        — concurrent ticker fetches
+ *   CONCURRENCY=3        — concurrent ticker-day fetches
+ *   BYPASS_RESUME=1      — lookback only: fetch the dates resume would skip
  *
  * The lottery ticker universe below is the union of LOTTERY_V3_TICKERS
  * and LOTTERY_EXTENDED_TICKERS in api/_lib/lottery-finder.ts.
@@ -37,29 +63,75 @@
 
 import { neon } from '@neondatabase/serverless';
 
-import { getTradingDays } from './_lib/trading-days.mjs';
+import {
+  NET_FLOW_SOURCE,
+  UW_REQUESTS_PER_MINUTE,
+  createRequestThrottle,
+  fetchNetPremTicks,
+  marketHoursRefusal,
+  parseArgs,
+  planPairs,
+  runTickerDays,
+  selectDates,
+  storeBatch,
+  summarizeByDay,
+} from './_lib/net-prem-ticks-backfill.mjs';
+import {
+  redact,
+  retryTransientDb,
+  summarizeFailures,
+} from './_lib/range-pos-backfill.mjs';
 
-// ── Env + config ────────────────────────────────────────────
+// ── Args, guard, env ────────────────────────────────────────
 
-const UW_API_KEY = process.env.UW_API_KEY;
-const DATABASE_URL = process.env.DATABASE_URL;
-const DRY_RUN = process.env.DRY_RUN === '1';
 const DAYS = Number.parseInt(process.env.DAYS ?? '90', 10);
 const BATCH_SIZE = Number.parseInt(process.env.BATCH_SIZE ?? '500', 10);
 const CONCURRENCY = Number.parseInt(process.env.CONCURRENCY ?? '3', 10);
+const BYPASS_RESUME = process.env.BYPASS_RESUME === '1';
+/** Progress line every this many ticker-days. */
+const HEARTBEAT_EVERY = 100;
+
+let args;
+let selection;
+try {
+  args = parseArgs(process.argv.slice(2));
+  selection = selectDates(args, DAYS);
+  for (const [name, value] of [
+    ['BATCH_SIZE', BATCH_SIZE],
+    ['CONCURRENCY', CONCURRENCY],
+  ]) {
+    if (!Number.isInteger(value) || value < 1) {
+      throw new Error(`${name} must be a whole number ≥ 1, got ${value}`);
+    }
+  }
+} catch (err) {
+  console.error(err.message);
+  process.exit(2);
+}
+
+const refusal = marketHoursRefusal(args);
+if (refusal) {
+  console.error(refusal);
+  process.exit(3);
+}
+
+const UW_API_KEY = process.env.UW_API_KEY;
+const DATABASE_URL = process.env.DATABASE_URL;
+const DRY_RUN = args.dryRun || process.env.DRY_RUN === '1';
 
 if (!UW_API_KEY) {
-  console.error('Missing UW_API_KEY');
+  console.error('Missing UW_API_KEY (run with --env-file=.env.local)');
   process.exit(1);
 }
 if (!DRY_RUN && !DATABASE_URL) {
-  console.error('Missing DATABASE_URL (or set DRY_RUN=1 to skip writes)');
+  console.error('Missing DATABASE_URL (or pass --dry-run to skip writes)');
   process.exit(1);
 }
 
+const secrets = { uwKey: UW_API_KEY, databaseUrl: DATABASE_URL };
+const say = (line = '') => console.log(redact(line, secrets));
 const sql = DRY_RUN ? null : neon(DATABASE_URL);
-const UW_BASE = 'https://api.unusualwhales.com/api';
-const SOURCE = 'rest';
+const waitForSlot = createRequestThrottle(UW_REQUESTS_PER_MINUTE);
 
 // LOTTERY_V3_TICKERS ∪ LOTTERY_EXTENDED_TICKERS (deduped) — see header.
 // Last sync: 2026-05-15 (Greek Heatmap Phase 2 backfill kickoff).
@@ -160,6 +232,12 @@ const tickers =
   TICKER_FILTER.length > 0
     ? LOTTERY_TICKERS_ALL.filter((t) => TICKER_FILTER.includes(t))
     : LOTTERY_TICKERS_ALL;
+if (tickers.length === 0) {
+  console.error(
+    `TICKERS=${process.env.TICKERS} matches none of the lottery list`,
+  );
+  process.exit(2);
+}
 
 // ── Session-window filter (08:30–15:00 CT) ───────────────────
 
@@ -190,49 +268,21 @@ function isInSessionCT(tapeTimeUtc) {
   return mod >= 510 && mod < 900; // 08:30 .. 14:59
 }
 
-// ── Resumability: max ts per ticker ──────────────────────────
+// ── Resumability (lookback only): newest stored date per ticker ──
 
-async function getMaxTsByTicker() {
-  if (DRY_RUN) return new Map();
-  const rows = await sql`
-    SELECT ticker, MAX(ts)::text AS max_ts
-    FROM net_flow_per_ticker_history
-    WHERE source = ${SOURCE}
-    GROUP BY ticker
-  `;
+async function getMaxDateByTicker() {
   const map = new Map();
-  for (const r of rows) map.set(r.ticker, r.max_ts);
+  if (DRY_RUN || selection.mode !== 'lookback') return map;
+  const rows = await retryTransientDb(
+    () => sql`
+      SELECT ticker, MAX(ts)::text AS max_ts
+      FROM net_flow_per_ticker_history
+      WHERE source = ${NET_FLOW_SOURCE}
+      GROUP BY ticker
+    `,
+  );
+  for (const r of rows) map.set(r.ticker, r.max_ts.slice(0, 10));
   return map;
-}
-
-// ── UW fetch ─────────────────────────────────────────────────
-
-async function fetchNetPremTicks(ticker, date) {
-  const url = `${UW_BASE}/stock/${ticker}/net-prem-ticks?date=${date}`;
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${UW_API_KEY}` },
-  });
-  if (res.status === 429) {
-    const retryAfter = res.headers.get('retry-after');
-    throw new RateLimitError(
-      `429 for ${ticker} ${date}; retry-after=${retryAfter ?? 'unset'}`,
-      Number.parseInt(retryAfter ?? '5', 10),
-    );
-  }
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    console.warn(`  UW ${res.status} ${ticker} ${date}: ${body.slice(0, 100)}`);
-    return [];
-  }
-  const json = await res.json();
-  return json.data ?? [];
-}
-
-class RateLimitError extends Error {
-  constructor(msg, retryAfterSec) {
-    super(msg);
-    this.retryAfterSec = retryAfterSec;
-  }
 }
 
 // ── Parse + filter ───────────────────────────────────────────
@@ -259,193 +309,205 @@ function parseRow(ticker, raw) {
   };
 }
 
-// ── Batched INSERT ──────────────────────────────────────────
+// ── Per ticker-day ──────────────────────────────────────────
 
-// Uses sql.query() for arbitrary-arity multi-row INSERTs — the
-// tagged-template form can't express variable VALUES lists. Pattern
-// matches scripts/backfill-dark-pool-prints.mjs for consistency.
-async function storeBatch(rows) {
-  if (DRY_RUN || rows.length === 0) return rows.length;
-  let stored = 0;
-  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
-    const chunk = rows.slice(i, i + BATCH_SIZE);
-    const placeholders = [];
-    const values = [];
-    let p = 1;
-    for (const r of chunk) {
-      const ph = [];
-      for (let k = 0; k < 13; k++) ph.push(`$${p++}`);
-      placeholders.push(`(${ph.join(',')})`);
-      values.push(
-        r.ticker,
-        r.ts,
-        r.netCallPrem,
-        r.netCallVol,
-        r.netPutPrem,
-        r.netPutVol,
-        r.callVolume,
-        r.callVolumeAsk,
-        r.callVolumeBid,
-        r.putVolume,
-        r.putVolumeAsk,
-        r.putVolumeBid,
-        SOURCE,
-      );
-    }
-    const queryText = `
-      INSERT INTO net_flow_per_ticker_history (
-        ticker, ts,
-        net_call_prem, net_call_vol,
-        net_put_prem, net_put_vol,
-        call_volume, call_volume_ask_side, call_volume_bid_side,
-        put_volume, put_volume_ask_side, put_volume_bid_side,
-        source
-      ) VALUES ${placeholders.join(',')}
-      ON CONFLICT (ticker, ts, source) DO NOTHING
-      RETURNING id
-    `;
-    try {
-      const result = await sql.query(queryText, values);
-      stored += Array.isArray(result)
-        ? result.length
-        : (result.rows?.length ?? 0);
-    } catch (err) {
-      console.warn(`  batch insert error: ${err.message}`);
-    }
-  }
-  return stored;
+const results = [];
+const failures = [];
+let done = 0;
+let planTotal = 0;
+const startedAt = Date.now();
+
+function minutes(ms) {
+  return `${(ms / 60_000).toFixed(1)} min`;
 }
 
-// ── Per-(ticker, date) ──────────────────────────────────────
-
-async function backfillTickerDate(ticker, date) {
-  // Light retry on 429: wait + one retry with jitter.
-  let raws;
-  try {
-    raws = await fetchNetPremTicks(ticker, date);
-  } catch (err) {
-    if (err instanceof RateLimitError) {
-      const wait = (err.retryAfterSec + Math.random() * 2) * 1000;
-      console.warn(
-        `  rate-limited on ${ticker} ${date}; sleeping ${(wait / 1000).toFixed(1)}s`,
-      );
-      await new Promise((r) => setTimeout(r, wait));
-      raws = await fetchNetPremTicks(ticker, date);
-    } else {
-      throw err;
-    }
-  }
-  if (raws.length === 0) {
-    return { fetched: 0, kept: 0, stored: 0, empty: true };
-  }
-  const kept = raws
-    .filter((r) => isInSessionCT(r.tape_time))
-    .map((r) => parseRow(ticker, r));
-  const stored = await storeBatch(kept);
-  return { fetched: raws.length, kept: kept.length, stored, empty: false };
+function progress(prefix) {
+  const pct = ((done / Math.max(1, planTotal)) * 100).toFixed(1);
+  say(
+    `${prefix} · ticker-days ${done}/${planTotal} (${pct}%) · ` +
+      `elapsed ${minutes(Date.now() - startedAt)}`,
+  );
 }
 
-// ── Concurrency: per-ticker pool with N workers ─────────────
+async function processPair({ ticker, date }) {
+  const outcome = await fetchNetPremTicks(
+    UW_API_KEY,
+    ticker,
+    date,
+    waitForSlot,
+  );
+  if (outcome.kind === 'error') {
+    failures.push({
+      ticker,
+      date,
+      status: outcome.status,
+      detail: outcome.detail,
+    });
+    results.push({ date, kind: 'error', fetched: 0, kept: 0, stored: 0 });
+  } else if (outcome.kind === 'empty') {
+    results.push({ date, kind: 'empty', fetched: 0, kept: 0, stored: 0 });
+  } else {
+    const kept = outcome.rows
+      .filter((r) => isInSessionCT(r.tape_time))
+      .map((r) => parseRow(ticker, r));
+    const stored = await storeBatch(sql, kept, {
+      batchSize: BATCH_SIZE,
+      dryRun: DRY_RUN,
+    });
+    results.push({
+      date,
+      kind: 'ok',
+      fetched: outcome.rows.length,
+      kept: kept.length,
+      stored,
+    });
+  }
+  done++;
+  if (done % HEARTBEAT_EVERY === 0) progress('[progress]');
+}
 
-async function pmapTickers(tickerList, dates, maxTsByTicker, concurrency) {
-  const totals = {
-    pairs: 0,
-    fetched: 0,
-    kept: 0,
-    stored: 0,
-    empty: 0,
-    skipped: 0,
-    failed: 0,
-  };
-  const queue = [...tickerList];
-  const workers = Array.from({ length: concurrency }, async () => {
-    while (queue.length > 0) {
-      const ticker = queue.shift();
-      if (!ticker) break;
-      const maxTs = maxTsByTicker.get(ticker) ?? null;
-      const maxDate = maxTs ? maxTs.slice(0, 10) : null;
-      let perTicker = { fetched: 0, kept: 0, stored: 0, empty: 0, skipped: 0 };
-      for (const date of dates) {
-        // Resumability: skip dates strictly before the latest covered
-        // date. Re-fetch the latest-covered date in case it was partial.
-        // Set BYPASS_RESUME=1 to force-fetch every date (ON CONFLICT
-        // makes it idempotent — useful for filling gaps left by an
-        // earlier broken run).
-        if (process.env.BYPASS_RESUME !== '1' && maxDate && date < maxDate) {
-          perTicker.skipped++;
-          totals.skipped++;
-          continue;
-        }
-        // Small jitter to spread fetches.
-        await new Promise((r) => setTimeout(r, 50 + Math.random() * 150));
-        try {
-          const r = await backfillTickerDate(ticker, date);
-          perTicker.fetched += r.fetched;
-          perTicker.kept += r.kept;
-          perTicker.stored += r.stored;
-          if (r.empty) perTicker.empty++;
-        } catch (err) {
-          console.warn(`  ${ticker} ${date} failed: ${err.message}`);
-          totals.failed++;
-        }
-        totals.pairs++;
-      }
-      console.log(
-        `  ${ticker}: fetched=${perTicker.fetched} kept=${perTicker.kept} stored=${perTicker.stored} empty=${perTicker.empty} skipped=${perTicker.skipped}`,
-      );
-      totals.fetched += perTicker.fetched;
-      totals.kept += perTicker.kept;
-      totals.stored += perTicker.stored;
-      totals.empty += perTicker.empty;
-    }
-  });
-  await Promise.all(workers);
-  return totals;
+// ── Report ──────────────────────────────────────────────────
+
+const DAY_COLUMNS = [
+  'tickers',
+  'ok',
+  'empty',
+  'failed',
+  'fetched',
+  'kept',
+  'stored',
+];
+
+function dayLine(label, row) {
+  return (
+    label.padEnd(12) +
+    DAY_COLUMNS.map((k) => String(row[k]).padStart(9)).join('')
+  );
+}
+
+function windowLine() {
+  const { dates } = selection;
+  const span = `${dates[0]} → ${dates.at(-1)}`;
+  return selection.mode === 'range'
+    ? `window: --from ${args.from} --to ${args.to}, ${dates.length} trading days (${span})`
+    : `window: last ${dates.length} weekdays (DAYS=${DAYS}), ${span}`;
+}
+
+function printReport(plan) {
+  const limited =
+    plan.pairs.length < plan.planned
+      ? ` (--limit; ${plan.planned} planned)`
+      : '';
+  say();
+  say(
+    `── net-prem-ticks backfill report (${DRY_RUN ? 'DRY RUN' : 'write'}) ──`,
+  );
+  say(windowLine());
+  say(
+    `ticker-days: ${done}/${plan.pairs.length} done${limited} · ` +
+      `${plan.skipped} skipped by resume · ${failures.length} failed`,
+  );
+  say(
+    `elapsed: ${minutes(Date.now() - startedAt)} · ` +
+      `≤${UW_REQUESTS_PER_MINUTE} UW requests/min · ${CONCURRENCY} lanes`,
+  );
+
+  say();
+  say(
+    `per day (stored = ${DRY_RUN ? 'rows that would be written' : 'new rows'}):`,
+  );
+  say('date'.padEnd(12) + DAY_COLUMNS.map((h) => h.padStart(9)).join(''));
+  const total = Object.fromEntries(DAY_COLUMNS.map((k) => [k, 0]));
+  for (const day of summarizeByDay(results)) {
+    for (const k of DAY_COLUMNS) total[k] += day[k];
+    say(dayLine(day.date, day));
+  }
+  say(dayLine('total', total));
+
+  say();
+  say(`UW failures by status (${failures.length}):`);
+  for (const f of summarizeFailures(failures)) {
+    const e = f.example;
+    say(
+      `  ${f.status.padEnd(10)} ${String(f.count).padStart(5)}  e.g. ${e.ticker} ${e.date}: ${e.detail}`,
+    );
+  }
 }
 
 // ── Main ─────────────────────────────────────────────────────
 
 async function main() {
-  const dates = getTradingDays(DAYS);
-  console.log(
-    `Backfilling /stock/{ticker}/net-prem-ticks → net_flow_per_ticker_history`,
+  say(
+    'Backfilling /stock/{ticker}/net-prem-ticks → net_flow_per_ticker_history' +
+      (DRY_RUN ? ' (DRY RUN: no writes)' : ''),
   );
-  console.log(
-    `  tickers: ${tickers.length}  days: ${dates.length}  range: ${dates[0]} → ${dates.at(-1)}`,
-  );
-  console.log(
-    `  concurrency: ${CONCURRENCY}  batch: ${BATCH_SIZE}  dry_run: ${DRY_RUN}`,
+  say(`  ${windowLine()}`);
+
+  const maxDateByTicker = await getMaxDateByTicker();
+  if (maxDateByTicker.size > 0 && !BYPASS_RESUME) {
+    say(
+      `  resume: ${maxDateByTicker.size} tickers have prior data; ` +
+        'skipping their dates before it',
+    );
+  }
+  const plan = planPairs({
+    mode: selection.mode,
+    dates: selection.dates,
+    tickers,
+    maxDateByTicker,
+    bypassResume: BYPASS_RESUME,
+    limit: args.limit,
+  });
+  planTotal = plan.pairs.length;
+  say(
+    `  tickers: ${tickers.length} · ticker-days: ${plan.pairs.length} of ` +
+      `${plan.planned} planned · concurrency ${CONCURRENCY} · ` +
+      `batch ${BATCH_SIZE} · limit ${args.limit ?? 'none'}`,
   );
 
-  const maxTsByTicker = await getMaxTsByTicker();
-  if (maxTsByTicker.size > 0) {
-    console.log(
-      `  resumability: ${maxTsByTicker.size} tickers have prior data; will skip dates < their max`,
+  // The market-hours guard is re-checked before every ticker-day, so a run
+  // started at 08:05 CT stops at 08:15 instead of competing with the crons.
+  const stoppedBy = await runTickerDays(
+    plan.pairs,
+    { concurrency: CONCURRENCY, allowMarketHours: args.allowMarketHours },
+    processPair,
+  );
+  printReport(plan);
+  if (stoppedBy != null) {
+    console.error(
+      `Stopped after ${done}/${plan.pairs.length} ticker-days: ${stoppedBy} ` +
+        'Re-run after the close; inserts are ON CONFLICT DO NOTHING.',
+    );
+    process.exitCode = 3;
+    return;
+  }
+
+  // Timing probe: scale this run's pace to the whole plan.
+  if (args.limit != null && done > 0 && plan.planned > done) {
+    const perPair = (Date.now() - startedAt) / done;
+    const floorMs = (plan.planned * 60_000) / UW_REQUESTS_PER_MINUTE;
+    say();
+    say(
+      `projection: ${plan.planned} ticker-days in the plan; at this pace a ` +
+        `full run takes ≈ ${minutes(perPair * plan.planned)} (the throttle ` +
+        `alone needs ≥ ${minutes(floorMs)})`,
     );
   }
 
-  const startWall = Date.now();
-  const totals = await pmapTickers(tickers, dates, maxTsByTicker, CONCURRENCY);
-  const elapsed = ((Date.now() - startWall) / 1000).toFixed(1);
-
-  console.log('');
-  console.log(`Done in ${elapsed}s`);
-  console.log(`  pairs processed: ${totals.pairs}`);
-  console.log(`  rows fetched:    ${totals.fetched}`);
-  console.log(`  rows kept (CT):  ${totals.kept}`);
-  console.log(`  rows stored:     ${totals.stored}`);
-  console.log(`  empty days:      ${totals.empty}`);
-  console.log(`  pre-skipped:     ${totals.skipped}`);
-  console.log(`  failed:          ${totals.failed}`);
-
-  if (totals.failed > 0) {
-    process.exitCode = 1;
-  }
+  // Failures are worth a re-run: every insert is ON CONFLICT DO NOTHING.
+  if (failures.length > 0) process.exitCode = 1;
 }
 
 try {
   await main();
 } catch (err) {
-  console.error('Backfill failed:', err);
-  process.exit(1);
+  console.error(redact(`backfill aborted: ${err?.message ?? err}`, secrets));
+  console.error(
+    redact(
+      `progress so far: ${done}/${planTotal} ticker-days; re-run to resume ` +
+        '(inserts are ON CONFLICT DO NOTHING)',
+      secrets,
+    ),
+  );
+  process.exitCode = 1;
 }

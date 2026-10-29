@@ -8,8 +8,8 @@ Full Tape parquet so the corrected replay has its source data back.
 
 Generalizes scripts/backfill-ws-option-trades-2026-05-26.py:
 
-  - `--date YYYY-MM-DD` (required) derives the parquet path
-    `~/Desktop/Eod-Full-Tape-parquet/{date}-fulltape.parquet` and the
+  - `--date YYYY-MM-DD` and `--parquet-dir DIR` (both required) give the
+    parquet path `{DIR}/{date}-fulltape.parquet`; the date also sets the
     UTC window `{date} 13:00 → 21:00` (full RTH, same as the 05-26 backfill).
   - Universe is read at runtime from uw-stream/src/config.py `_LOTTERY_TICKERS`
     (not hardcoded) so it never drifts from the live WS subscription set.
@@ -46,8 +46,10 @@ whatever the live daemon captured (and a no-op on re-run).
 
 Usage:
     set -a; source .env.local; set +a
-    ml/.venv/Scripts/python scripts/reload-ws-option-trades-from-fulltape.py --date 2026-05-04
-    ml/.venv/Scripts/python scripts/reload-ws-option-trades-from-fulltape.py --date 2026-05-04 --apply
+    ml/.venv/Scripts/python scripts/reload-ws-option-trades-from-fulltape.py \\
+        --date 2026-05-04 --parquet-dir <full-tape-dir>
+    ml/.venv/Scripts/python scripts/reload-ws-option-trades-from-fulltape.py \\
+        --date 2026-05-04 --parquet-dir <full-tape-dir> --apply
 """
 
 from __future__ import annotations
@@ -65,10 +67,10 @@ from pathlib import Path
 
 import polars as pl
 import psycopg2
+from _cli_paths import existing_dir
 from psycopg2.extras import execute_values
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PARQUET_DIR = Path.home() / "Desktop" / "Eod-Full-Tape-parquet"
 
 BATCH_SIZE = 5000
 
@@ -260,7 +262,7 @@ def _fetch_coverage(con, day_start: datetime, day_end: datetime) -> dict[int, in
     return rows
 
 
-def main() -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--date",
@@ -268,12 +270,22 @@ def main() -> int:
         help="Trading day to reload, YYYY-MM-DD (e.g. 2026-05-04).",
     )
     parser.add_argument(
+        "--parquet-dir",
+        type=existing_dir,
+        required=True,
+        help="Directory holding the Full Tape archive's {date}-fulltape.parquet files.",
+    )
+    parser.add_argument(
         "--apply",
         action="store_true",
         help="Actually insert rows. Without this flag, runs in dry-run mode "
         "(reports projected counts, no DB writes).",
     )
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
 
     try:
         day = datetime.strptime(args.date, "%Y-%m-%d").date()
@@ -281,7 +293,7 @@ def main() -> int:
         print(f"ERROR: --date must be YYYY-MM-DD, got {args.date!r}", file=sys.stderr)
         return 2
 
-    parquet_path = PARQUET_DIR / f"{args.date}-fulltape.parquet"
+    parquet_path = args.parquet_dir / f"{args.date}-fulltape.parquet"
     day_start_utc = datetime(day.year, day.month, day.day, 13, 0, 0, tzinfo=timezone.utc)
     day_end_utc = datetime(day.year, day.month, day.day, 21, 0, 0, tzinfo=timezone.utc)
 

@@ -22,6 +22,7 @@ from db import (
     _chunked_rows,
     _parse_insert_status,
     bulk_insert_ignore_conflict,
+    bulk_upsert_if_newer,
     bulk_upsert_replace,
     is_transient_db_error,
 )
@@ -603,3 +604,236 @@ class TestBulkUpsertRetry:
 
         assert result == 3
         assert conn.execute.await_count == 2
+
+
+# ----------------------------------------------------------------------
+# bulk_upsert_if_newer — newest-version-wins upsert (futures_blocks)
+# ----------------------------------------------------------------------
+
+# Shape used below: key (k1, k2), payload b, version v. Versions are
+# ints here; the helper only needs them to be mutually comparable.
+_COLS = ["k1", "k2", "b", "v"]
+_KEYS = ["k1", "k2"]
+
+
+async def _upsert(conn: MagicMock, rows: list[tuple], **kwargs) -> int:
+    pool = _mock_pool_with_conn(conn)
+    with patch("db.get_pool", return_value=pool):
+        return await bulk_upsert_if_newer(
+            table=kwargs.pop("table", "t"),
+            columns=kwargs.pop("columns", _COLS),
+            rows=rows,
+            conflict_cols=kwargs.pop("conflict_cols", _KEYS),
+            version_col=kwargs.pop("version_col", "v"),
+            **kwargs,
+        )
+
+
+def _sent_rows(conn: MagicMock, width: int = len(_COLS)) -> list[tuple]:
+    """Re-group the flat params of every execute call into row tuples."""
+    rows: list[tuple] = []
+    for call in conn.execute.await_args_list:
+        flat = call.args[1:]
+        rows.extend(tuple(flat[i : i + width]) for i in range(0, len(flat), width))
+    return rows
+
+
+class TestBulkUpsertIfNewer:
+    @pytest.mark.asyncio
+    async def test_guarded_do_update_clause(self):
+        conn = MagicMock()
+        conn.execute = AsyncMock(return_value="INSERT 0 1")
+        conn.executemany = AsyncMock()  # presence trap
+
+        result = await _upsert(conn, [(1, "x", "b1", 10)])
+
+        assert conn.execute.await_count == 1
+        conn.executemany.assert_not_awaited()
+        sql = conn.execute.await_args.args[0]
+        assert sql.startswith("INSERT INTO t (k1, k2, b, v) VALUES ($1, $2, $3, $4)")
+        assert sql.endswith(
+            "ON CONFLICT (k1, k2) DO UPDATE SET b = EXCLUDED.b, v = EXCLUDED.v"
+            " WHERE (EXCLUDED.v >= t.v OR t.v IS NULL)"
+        )
+        # Conflict keys never appear in SET (Postgres rejects that).
+        assert "k1 = EXCLUDED" not in sql
+        assert "k2 = EXCLUDED" not in sql
+        assert result == 1
+
+    @pytest.mark.asyncio
+    async def test_touch_col_is_set_to_now_on_update(self):
+        conn = MagicMock()
+        conn.execute = AsyncMock(return_value="INSERT 0 1")
+
+        await _upsert(conn, [(1, "x", "b1", 10)], touch_col="updated_at")
+
+        sql = conn.execute.await_args.args[0]
+        assert "SET b = EXCLUDED.b, v = EXCLUDED.v, updated_at = now() WHERE" in sql
+        # touch_col is server-side only: never a bound column.
+        assert "updated_at" not in sql.split(" VALUES ", 1)[0]
+
+    @pytest.mark.asyncio
+    async def test_returns_parsed_count_not_input_length(self):
+        """Rows the WHERE guard skips are not counted by Postgres."""
+        conn = MagicMock()
+        conn.execute = AsyncMock(return_value="INSERT 0 2")
+
+        result = await _upsert(conn, [(i, "x", "b", 1) for i in range(5)])
+
+        assert result == 2
+
+    @pytest.mark.asyncio
+    async def test_empty_rows_short_circuits_without_pool_access(self):
+        with patch("db.get_pool") as mock_pool:
+            result = await bulk_upsert_if_newer(
+                table="t", columns=_COLS, rows=[], conflict_cols=_KEYS, version_col="v"
+            )
+        assert result == 0
+        mock_pool.assert_not_called()
+
+
+class TestBulkUpsertIfNewerCollapse:
+    """Postgres rejects one INSERT ... ON CONFLICT DO UPDATE that touches
+    the same key twice ("command cannot affect row a second time"), so the
+    helper collapses a batch to one row per key first, keeping the row the
+    SQL guard would have kept had the rows arrived in separate statements."""
+
+    @pytest.mark.asyncio
+    async def test_duplicate_key_keeps_the_newest_version(self):
+        conn = MagicMock()
+        conn.execute = AsyncMock(return_value="INSERT 0 2")
+
+        await _upsert(
+            conn,
+            [
+                (1, "x", "newest", 30),
+                (1, "x", "older", 20),
+                (2, "x", "other-key", 5),
+                (1, "x", "oldest", 10),
+            ],
+        )
+
+        assert sorted(_sent_rows(conn)) == [(1, "x", "newest", 30), (2, "x", "other-key", 5)]
+
+    @pytest.mark.asyncio
+    async def test_equal_versions_keep_the_later_row(self):
+        """Matches the SQL guard's ``>=``: a same-version replay applies."""
+        conn = MagicMock()
+        conn.execute = AsyncMock(return_value="INSERT 0 1")
+
+        await _upsert(conn, [(1, "x", "first", 10), (1, "x", "second", 10)])
+
+        assert _sent_rows(conn) == [(1, "x", "second", 10)]
+
+    @pytest.mark.asyncio
+    async def test_a_dated_version_beats_a_null_one_in_either_order(self):
+        """In SQL a NULL incoming version never passes ``EXCLUDED.v >= t.v``,
+        and a NULL stored version is always replaced."""
+        conn = MagicMock()
+        conn.execute = AsyncMock(return_value="INSERT 0 2")
+
+        await _upsert(
+            conn,
+            [
+                (1, "x", "null-first", None),
+                (1, "x", "dated", 10),
+                (2, "x", "dated", 10),
+                (2, "x", "null-after", None),
+            ],
+        )
+
+        assert sorted(_sent_rows(conn)) == [(1, "x", "dated", 10), (2, "x", "dated", 10)]
+
+    @pytest.mark.asyncio
+    async def test_two_null_versions_keep_the_later_row(self):
+        conn = MagicMock()
+        conn.execute = AsyncMock(return_value="INSERT 0 1")
+
+        await _upsert(conn, [(1, "x", "first", None), (1, "x", "second", None)])
+
+        assert _sent_rows(conn) == [(1, "x", "second", None)]
+
+    @pytest.mark.asyncio
+    async def test_keys_differing_in_any_conflict_col_are_distinct(self):
+        conn = MagicMock()
+        conn.execute = AsyncMock(return_value="INSERT 0 2")
+
+        await _upsert(conn, [(1, "x", "a", 10), (1, "y", "b", 10)])
+
+        assert len(_sent_rows(conn)) == 2
+
+    @pytest.mark.asyncio
+    async def test_collapse_runs_before_chunking(self):
+        """A key repeated across what would be two chunks still lands once.
+        4 cols → 7500 rows per chunk; 7501 distinct keys + 1 repeat of key 0
+        at the end is 7502 input rows and 7501 output rows: two chunks, and
+        key 0 only in the first, carrying the newer payload."""
+        conn = MagicMock()
+        conn.execute = AsyncMock(side_effect=["INSERT 0 7500", "INSERT 0 1"])
+        rows = [(i, "x", "old", 1) for i in range(7501)] + [(0, "x", "new", 2)]
+
+        result = await _upsert(conn, rows)
+
+        assert conn.execute.await_count == 2
+        sent = _sent_rows(conn)
+        assert len(sent) == 7501
+        assert [r for r in sent if r[0] == 0] == [(0, "x", "new", 2)]
+        assert result == 7501
+        for call in conn.execute.await_args_list:
+            assert len(call.args) - 1 <= MAX_INSERT_PARAMS
+
+
+class TestBulkUpsertIfNewerGuards:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"version_col": "missing"}, "version_col"),
+            ({"version_col": "k1"}, "version_col"),
+            ({"conflict_cols": ["k1", "nope"]}, "conflict"),
+            ({"version_col": "v; DROP TABLE t"}, "Invalid SQL identifier"),
+            ({"touch_col": "updated_at; --"}, "Invalid SQL identifier"),
+            ({"touch_col": "b"}, "touch_col"),
+            ({"table": "t; DROP TABLE t"}, "Invalid SQL identifier"),
+        ],
+    )
+    async def test_rejects_bad_arguments_before_touching_the_pool(self, kwargs, match):
+        with patch("db.get_pool") as mock_pool, pytest.raises(ValueError, match=match):
+            await bulk_upsert_if_newer(
+                table=kwargs.pop("table", "t"),
+                columns=_COLS,
+                rows=[(1, "x", "b", 1)],
+                conflict_cols=kwargs.pop("conflict_cols", _KEYS),
+                version_col=kwargs.pop("version_col", "v"),
+                **kwargs,
+            )
+        mock_pool.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_retries_a_transient_error_then_succeeds(self):
+        conn = MagicMock()
+        conn.execute = AsyncMock(
+            side_effect=[asyncpg.exceptions.InterfaceError("connection is closed"), "INSERT 0 1"]
+        )
+
+        with patch("asyncio.sleep", new=AsyncMock()):
+            result = await _upsert(conn, [(1, "x", "b", 1)])
+
+        assert result == 1
+        assert conn.execute.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_non_transient_error_propagates_without_retry(self):
+        """A constraint or overflow error must reach the handler's
+        ``_safe_flush`` (which reports it), not be retried or swallowed."""
+        conn = MagicMock()
+        conn.execute = AsyncMock(side_effect=asyncpg.exceptions.NumericValueOutOfRangeError("x"))
+
+        with (
+            patch("asyncio.sleep", new=AsyncMock()) as sleep_mock,
+            pytest.raises(asyncpg.exceptions.NumericValueOutOfRangeError),
+        ):
+            await _upsert(conn, [(1, "x", "b", 1)])
+
+        assert conn.execute.await_count == 1
+        sleep_mock.assert_not_awaited()
