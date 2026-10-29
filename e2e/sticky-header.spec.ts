@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { dateTimeSection } from './helpers/calculator';
+import { dateTimeSection, openSection } from './helpers/calculator';
 
 /**
  * The sticky stack: AppHeader on top, then the SectionNav strip (below lg)
@@ -39,6 +39,21 @@ async function navGapBelowHeader(page: Page) {
   return nav.y - (header.y + header.height);
 }
 
+/**
+ * How far an anchor sits below the sticky stack: the header plus, below
+ * lg, the section strip (from lg the nav is a sidebar beside the content).
+ */
+async function anchorGapBelowStack(page: Page, id: string, width: number) {
+  const header = await page.getByRole('banner').boundingBox();
+  const nav = await sectionNav(page).boundingBox();
+  const anchor = await page.locator(`#${id}`).boundingBox();
+  if (!header || !nav || !anchor)
+    throw new Error('stack or anchor not laid out');
+  const stackBottom =
+    width < 1024 ? nav.y + nav.height : header.y + header.height;
+  return anchor.y - stackBottom;
+}
+
 test.describe('Sticky header and section nav', () => {
   test.beforeEach(async ({ page }) => {
     await page.route('**/api/**', (route) => route.abort());
@@ -56,6 +71,34 @@ test.describe('Sticky header and section nav', () => {
       await expect(sectionNav(page).getByRole('link').first()).toBeInViewport({
         ratio: 1,
       });
+    });
+  }
+
+  // Every section anchor's scroll margin is --anchor-offset: the sticky
+  // stack plus 8px. App.tsx renders sec-iv inline; FuturesPanel renders
+  // sec-futures-calc inside the lazy Futures panel.
+  for (const width of [375, 768, 1024, 1280]) {
+    test(`a jump to a section lands just below the sticky stack at ${width}px`, async ({
+      page,
+    }) => {
+      await openScrolled(page, width);
+
+      // Polled until the (possibly smooth) scroll settles 8px below.
+      const offTarget = async (id: string) =>
+        Math.abs((await anchorGapBelowStack(page, id, width)) - 8);
+
+      await sectionNav(page)
+        .getByRole('link', { name: 'Implied Volatility' })
+        .click();
+      await expect.poll(() => offTarget('sec-iv')).toBeLessThan(1.5);
+
+      // The anchor sits inside the Futures panel, collapsed by default.
+      // scrollIntoView honours its scroll margin, as a hash jump does.
+      await openSection(page, 'Futures');
+      await page
+        .locator('#sec-futures-calc')
+        .evaluate((el) => el.scrollIntoView());
+      await expect.poll(() => offTarget('sec-futures-calc')).toBeLessThan(1.5);
     });
   }
 });

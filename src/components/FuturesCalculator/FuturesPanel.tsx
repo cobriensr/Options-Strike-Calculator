@@ -242,7 +242,10 @@ export default function FuturesPanel({
         </div>
 
         {/* P&L Calculator — always shown, no data dependency */}
-        <span id="sec-futures-calc" className="block scroll-mt-28" />
+        <span
+          id="sec-futures-calc"
+          className="block scroll-mt-(--anchor-offset)"
+        />
         <FuturesCalculator />
       </div>
     </SectionBox>
