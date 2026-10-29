@@ -69,7 +69,7 @@ Both phases ship in one push; the main session pushes after the 15:00 CT close.
 - `api/cron/cleanup-ws-gex-strike-expiry.ts`:
   - Wrap it in `withCronCheckin`, following `api/cron/cleanup-ws-option-trades.ts`.
   - Lower `WALL_BUDGET_MS` from 295 000 to 280 000. The in-progress and completion check-ins (each up to 5 s) then fit inside maxDuration 300 alongside the last batch.
-  - No `reportCronRun`: the sibling `cleanup-ws-option-trades.ts` doesn't call it either.
+  - No `reportCronRun`: the sibling `cleanup-ws-option-trades.ts` doesn't call it either. (Reversed later the same day: see [Follow-up: Axiom events and the cleanup budget](#follow-up-axiom-events-and-the-cleanup-budget).)
 - `api/__tests__/cleanup-ws-gex-strike-expiry.test.ts`: drive the real wrapper with a stubbed `fetch`. Assert the slug, the `monitor_config` schedule, `in_progress → ok` on success, and `in_progress → error` when a DELETE rejects (R4). Also assert that an unauthenticated request sends no check-ins.
 - Headers that disagree with `vercel.json`:
   - `api/cron/backfill-gamma-setup-outcomes.ts` says 20:30 UTC; vercel.json says 21:30.
@@ -88,11 +88,30 @@ The code review of both phases returned "continue". Beyond the source scan and t
   - An ordinary Wednesday → Tuesday, the same two sessions the old bound held, since Monday 21:30 UTC is after Monday's close.
 
   The Axiom metadata `lookback_days: 2` became `lookback_trading_days: 2` plus `window_start`.
-  - **History.** Fires from before the deploy that the old window skipped stay unresolved: the fixed cron only reaches back two trading days. Neither table is pruned (no DELETE on `ws_gamma_setup_fires` or `index_candles_1m` anywhere in `api/` or `scripts/`), so a one-off backfill can resolve any of them whose SPX bars exist. The read-only production count of affected fires wasn't run in this session (production reads need the owner's permission). The preview, the backfill UPDATE and the run procedure are under [History backfill](#history-backfill).
+  - **History: resolved, no backfill needed.** The read-only production probe (2026-10-29, owner-approved reads) found that the window bug never lost an outcome. Every fire is resolved by the same-day run after the close, and the 57 fires still missing `ret_30m` have no SPX bar to fill it from. Details under [History backfill](#history-backfill).
+
+### Follow-up: Axiom events and the cleanup budget
+
+Owner-approved on 2026-10-29 ("match the siblings"). Four `withCronCheckin` crons sent no Axiom event: cleanup-ws-gex-strike-expiry, cleanup-ws-option-trades, curate-lessons and curate-periscope-lessons. Each now calls `reportCronRun` like its `withCronCheckin` siblings:
+
+- **Status.** `ok`, `partial` or `error`, awaited before the response. A guard rejection sends nothing. The catch reports `error` with `String(err)`.
+- **Curate crons.** Status is `ok` when nothing failed, `error` when nothing landed, and `partial` otherwise. An `error` run sends one fingerprinted Sentry message, because such a run still answers 200 with an ok check-in.
+- **Cleanup budget stops.** cleanup-ws-gex-strike-expiry reports `partial`: it runs once a day, so leftover rows are abnormal. cleanup-ws-option-trades reports `ok`: a budget stop is its normal busy night, and its >24 h backlog warning carries the alert.
+- **`WALL_BUDGET_MS` 280 000 → 240 000 in both cleanups.** The awaited ingest can take up to 40 s: axiom-js times out at 20 s, and `reportCronRun` retries a rejected event once. That 40 s has to fit in maxDuration 300 alongside the two check-ins (≤ 5 s each) and the last batch's overrun.
 
 ## History backfill
 
-The fix reaches back only two trading days, so fires that the old calendar-day window skipped (Friday fires unresolved by Friday's run, fires before a holiday) stay unresolved. Neither table is pruned, so a one-off can resolve every pending fire whose SPX bars exist.
+**Resolved 2026-10-29: no backfill needed.** The read-only probe below ran against production on 2026-10-29 (SELECTs only, in a read-only transaction; the owner approved production reads). It found:
+
+- 1,125 fires since 2026-02-27, and 0 with no outcome written at all.
+- 57 with `ret_30m` NULL. None can be filled: no SPX RTH bar exists in their 30-minute window.
+  - 56 of the 57 fired at or after 15:30 ET, so their 30-minute mark falls at or after the 16:00 close.
+  - The other fired at 12:12 ET, on a day with partial SPX 1-min data. The probe reported two partial days: 2026-09-21 with 169 RTH bars and 2026-07-22 with 82 (a full session has 390).
+- The Friday→Monday window bug never lost an outcome. The same-day run after the close (21:30 UTC) resolves every horizon, so the retry window it broke was never needed.
+
+The write in section 2 was not run. The SQL stays as a reference for any future outcome gap.
+
+Why a backfill looked necessary before the probe: the fix reaches back only two trading days, so fires that the old calendar-day window skipped (Friday fires unresolved by Friday's run, fires before a holiday) would have stayed unresolved. Neither table is pruned, so a one-off could resolve every pending fire whose SPX bars exist.
 
 The SQL below mirrors `api/cron/backfill-gamma-setup-outcomes.ts` row for row:
 
@@ -115,6 +134,8 @@ Before anything is written, a read-only probe (SELECTs only, in a read-only tran
 Section 1 below is the part of it that previews the write.
 
 ### Run procedure
+
+Not needed this time (see above); kept for a future gap.
 
 1. After this fix is deployed, run section 1 (read-only) against production and share the per-date output with the owner.
 2. Get the owner's go-ahead before writing anything to production.
@@ -196,6 +217,8 @@ FROM r GROUP BY et_date ORDER BY et_date;
 | Review | `docs/superpowers/specs/migration-drift-audit-cron-2026-05-29.md` (superseded note)                     |
 | Review | `api/cron/takeit-fill-shap.ts`, `api/cron/audit-takeit-calibration.ts` and their tests                  |
 | Review | `api/cron/backfill-gamma-setup-outcomes.ts`, `api/__tests__/cron-backfill-gamma-setup-outcomes.test.ts` |
+| Axiom  | `api/cron/cleanup-ws-{gex-strike-expiry,option-trades}.ts`, `api/cron/curate-{,periscope-}lessons.ts`   |
+| Axiom  | the four matching tests in `api/__tests__/`                                                             |
 
 ## Data dependencies
 
@@ -204,10 +227,12 @@ None. No tables, migrations, env vars or external APIs. The new monitors are cre
 ## Thresholds and constants
 
 - `DEFAULT_MARGIN` 5 min, `DEFAULT_MAX_RUNTIME` 5 min, `LONG_RUNNER_MAX_RUNTIME` 10 min, `HIGH_FREQ_FAILURE_THRESHOLD` 3, all existing.
-- cleanup-ws-gex-strike-expiry `WALL_BUDGET_MS`: 295 000 → 280 000 ms, checked before each batch as elapsed + slowest batch so far.
+- cleanup-ws-gex-strike-expiry `WALL_BUDGET_MS`: 295 000 → 280 000 ms, checked before each batch as elapsed + slowest batch so far. Lowered again to 240 000 ms in both cleanups by the [Axiom follow-up](#follow-up-axiom-events-and-the-cleanup-budget).
 - backfill-gamma-setup-outcomes `BACKFILL_TRADING_DAYS` 2 (was `BACKFILL_LOOKBACK_DAYS` 2 calendar days).
 
 ## Open questions
 
-- Historical gamma-setup outcomes: run the read-only preview, then the one-off backfill, following [History backfill](#history-backfill).
-- Possible follow-up: neither `cleanup-ws-*` cron calls `reportCronRun`, so neither leaves an Axiom row. That matches the sibling and is out of scope here.
+None open.
+
+- ~~Historical gamma-setup outcomes: run the read-only preview, then the one-off backfill.~~ Resolved 2026-10-29: the probe showed no backfill is needed ([History backfill](#history-backfill)).
+- ~~Neither `cleanup-ws-*` cron calls `reportCronRun`.~~ Resolved 2026-10-29: both do now, as do the two curate crons ([Axiom follow-up](#follow-up-axiom-events-and-the-cleanup-budget)).
