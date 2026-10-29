@@ -319,8 +319,6 @@ Required env vars (pulled via `vercel env pull .env.local`):
 | `AXIOM_API_KEY`                                          | Axiom (opt.; cron-run events)                               |
 | `AXIOM_DATASET`                                          | Axiom dataset name (opt.)                                   |
 | `UW_PER_MINUTE_CAP`                                      | UW limiter override (opt., def 2000)                        |
-| `CLASSIFIER_URL`                                         | Railway classifier base URL                                 |
-| `CLASSIFIER_SHARED_SECRET`                               | Classifier bearer (also on Railway)                         |
 | `SIDECAR_URL`                                            | Railway sidecar (archive queries)                           |
 | `SIDECAR_TAKEIT_URL`, `SIDECAR_TAKEIT_SECRET`            | Sidecar SHAP (= `TAKEIT_SIDECAR_SHARED_SECRET`)             |
 | `INTERNAL_NOTIFY_SECRET`                                 | uw-stream → `/api/push/notify` (also on Railway)            |
