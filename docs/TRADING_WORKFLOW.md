@@ -109,9 +109,9 @@ Never place stops AT negative gamma bars — MM delta hedging creates brief spik
 
 Weighting hierarchy: SPX Net Flow (50%) → Market Tide (25%) → SPY (15%) → QQQ (10%). When SPX and Market Tide agree: HIGH confidence. When they contradict: use SPX for structure, reduce confidence one level.
 
-### Rule 9: Minimum Premium Threshold (8Δ Floor)
+### Rule 9: Minimum Premium Threshold (10Δ Floor)
 
-The trader's minimum tradeable delta is 8Δ. When the structurally correct structure can't achieve 8Δ+ (e.g., gamma favors CCS but premium above the wall is 3–5Δ), evaluate the opposite structure or SIT OUT. Don't recommend untradeable structures just because gamma favors them.
+The trader's minimum tradeable delta is 10Δ. When the structurally correct structure can't achieve 10Δ+ (e.g., gamma favors CCS but premium above the wall is 3–5Δ), evaluate the opposite structure or SIT OUT. Don't recommend untradeable structures just because gamma favors them.
 
 ### Rule 10: SPX Net Flow Hedging Divergence
 

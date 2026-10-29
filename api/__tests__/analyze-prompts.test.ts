@@ -9,6 +9,10 @@ import {
   VIX_RATIO_BACKWARDATION_MIN,
   VIX_RATIO_CONTANGO_MAX,
 } from '../_lib/vix-term-structure.js';
+import { MARKET_MECHANICS_CONTEXT } from '../_lib/market-mechanics.js';
+import { SPOTGAMMA_MECHANICS_CONTEXT } from '../_lib/spotgamma-mechanics.js';
+import { getCalibrationExample } from '../_lib/analyze-calibration.js';
+import { FLOOR_ENTRY_DELTA } from '../../src/constants/index.js';
 
 const PROMPT = SYSTEM_PROMPT_PART1 + SYSTEM_PROMPT_PART2;
 
@@ -154,5 +158,109 @@ describe('analyze system prompt — VIX term structure from VIX/VIX3M', () => {
     ]) {
       expect(section(tag)).not.toBeNull();
     }
+  });
+});
+
+describe('analyze system prompt — Rule 9 short-strike delta floor', () => {
+  // The per-call "Chain Delta Rungs" block prints `Floor: ${FLOOR_ENTRY_DELTA}Δ.
+  // Never go below floor`. The cached rules must state the same floor, or
+  // Claude gets two different minimums in one request.
+  const floor = `${FLOOR_ENTRY_DELTA}Δ`;
+  const MODES = ['entry', 'midday', 'review'] as const;
+
+  /** The cached stable system block, composed exactly as api/analyze.ts does. */
+  function stableSystemText(mode: (typeof MODES)[number]): string {
+    return (
+      SYSTEM_PROMPT_PART1 +
+      '\n' +
+      MARKET_MECHANICS_CONTEXT +
+      '\n' +
+      SPOTGAMMA_MECHANICS_CONTEXT +
+      '\n' +
+      getCalibrationExample(mode) +
+      '\n' +
+      SYSTEM_PROMPT_PART2
+    );
+  }
+
+  /** suggestedDelta from a mode's JSON.stringify'd calibration output. */
+  function calibrationSuggestedDelta(mode: (typeof MODES)[number]): number {
+    const match = /"suggestedDelta":\s*(\d+)/.exec(getCalibrationExample(mode));
+    expect(match).not.toBeNull();
+    return Number(match![1]);
+  }
+
+  it('pins the floor at 10Δ (owner decision 2026-10-28)', () => {
+    expect(FLOOR_ENTRY_DELTA).toBe(10);
+  });
+
+  it('states the floor the Chain Delta Rungs block enforces', () => {
+    const text = PROMPT.replace(/\s+/g, ' ');
+    for (const line of [
+      `Apply Rule 9 (${floor} premium floor`,
+      `7. Rule 9 (${floor} Premium Floor)`,
+      `If the widened delta still falls below the ${floor} floor, Rule 9 takes precedence`,
+      `Never adjust below the ${floor} floor: if ceiling minus 2-3Δ lands under ${floor}, the FLOOR line applies.`,
+      `FLOOR: ${floor} is the absolute minimum. Below ${floor},`,
+      `If neither side can reach the higher of its ceiling minus 3Δ or the ${floor} floor while maintaining structural protection, recommend SIT OUT.`,
+      `If the structurally correct trade cannot achieve ${floor}, recommend SIT OUT.`,
+      `The ${floor} floor exists for days when extreme structural risk`,
+      `${floor}+ premium (Rule 9)`,
+      `must meet ${floor}+ minimum (Rule 9)`,
+      `suggestedDelta must be >= ${FLOOR_ENTRY_DELTA} (Rule 9) for entry mode`,
+    ]) {
+      expect(text).toContain(line);
+    }
+  });
+
+  it.each(MODES)('names no other delta as the Rule 9 floor (%s)', (mode) => {
+    // Scoped to floor / "(Rule 9)" phrasing: the directional-long section's
+    // "50Δ minimum" is a separate rule for bought options.
+    const stated = [
+      ...stableSystemText(mode).matchAll(
+        /(\d+)Δ\+? (?:premium floor|floor|(?:premium|minimum) \(Rule 9\))/gi,
+      ),
+    ].map((m) => Number(m[1]));
+    expect(stated.length).toBeGreaterThanOrEqual(6);
+    expect(new Set(stated)).toEqual(new Set([FLOOR_ENTRY_DELTA]));
+  });
+
+  it.each(MODES)('has no leftover 8Δ floor wording (%s)', (mode) => {
+    const text = stableSystemText(mode);
+    expect(text).not.toMatch(/\b8Δ (premium )?floor/i);
+    expect(text).not.toContain('8Δ is the absolute minimum');
+    expect(text).not.toMatch(/\b8Δ\+/);
+    expect(text).not.toMatch(/\b8-10Δ/);
+    expect(text).not.toMatch(/suggestedDelta must be >= 8\b/);
+  });
+
+  it('shows no sub-floor suggestedDelta in the entry calibration example', () => {
+    expect(calibrationSuggestedDelta('entry')).toBeGreaterThanOrEqual(
+      FLOOR_ENTRY_DELTA,
+    );
+  });
+
+  it('shows 0 or an at-floor suggestedDelta in the midday calibration example', () => {
+    // Self-validation check 5: midday may be 0 when recommending no new entry.
+    const delta = calibrationSuggestedDelta('midday');
+    expect(
+      delta === 0 || delta >= FLOOR_ENTRY_DELTA,
+      `midday suggestedDelta ${delta}`,
+    ).toBe(true);
+  });
+
+  it('keeps the "ceiling is the recommendation" guidance above the floor', () => {
+    expect(PROMPT).toContain(
+      `Common mistake: Defaulting to ${FLOOR_ENTRY_DELTA}-${FLOOR_ENTRY_DELTA + 1}Δ when the calculator ceiling is 14-16Δ.`,
+    );
+    expect(PROMPT).toContain(
+      'On most days, the ceiling IS the recommendation.',
+    );
+  });
+
+  it('shows no sub-floor suggestedDelta in the response-format example', () => {
+    const example = /"suggestedDelta": (\d+),/.exec(PROMPT);
+    expect(example).not.toBeNull();
+    expect(Number(example![1])).toBeGreaterThanOrEqual(FLOOR_ENTRY_DELTA);
   });
 });
