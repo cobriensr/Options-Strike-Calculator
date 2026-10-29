@@ -519,7 +519,6 @@ function lotteryRow(overrides: Partial<LotteryAlertRow> = {}): LotteryAlertRow {
     gex_strike_put_ask_minus_bid: 0,
     score: 12,
     direction_gated: false,
-    pattern_group_id: null,
     ...overrides,
   };
 }
@@ -673,7 +672,6 @@ function silentBoomRow(
     score: 6,
     score_tier: 'tier1',
     direction_gated: false,
-    pattern_group_id: null,
     ...overrides,
   };
 }

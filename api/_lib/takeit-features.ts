@@ -93,7 +93,6 @@ export interface LotteryAlertRow {
   gex_strike_put_ask_minus_bid: number | null;
   score: number | null;
   direction_gated: boolean | null;
-  pattern_group_id?: string | null;
 }
 
 /**
@@ -133,7 +132,6 @@ export interface SilentBoomAlertRow {
   score: number | null;
   score_tier: string | null;
   direction_gated: boolean | null;
-  pattern_group_id?: string | null;
 }
 
 /**
@@ -768,8 +766,9 @@ export function featuresForSilentBoom(
   };
 
   // One-hot categoricals. Encoding stability is enforced by
-  // bundle.feature_cols. `session_phase_cat` is silent-boom's FIRST time-of-day categorical
-  // (lottery has `tod`; silent-boom previously had no TOD feature).
+  // bundle.feature_cols. `session_phase_cat` is silent-boom's FIRST
+  // time-of-day categorical (lottery has `tod`; silent-boom previously had no
+  // TOD feature).
   Object.assign(
     base,
     expandOneHotCategoricals(

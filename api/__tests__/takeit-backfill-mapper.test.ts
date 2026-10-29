@@ -71,8 +71,6 @@ function makeRow(overrides: Partial<LotteryFireDbRow> = {}): LotteryFireDbRow {
     score: null,
     direction_gated: false,
 
-    pattern_group_id: null,
-
     ...overrides,
   };
 }

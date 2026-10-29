@@ -112,9 +112,6 @@ export interface LotteryFireDbRow {
   // scoring outputs already persisted by the detect cron
   score: number | null; // INTEGER, nullable
   direction_gated: boolean; // NOT NULL DEFAULT FALSE
-
-  // multileg classification (migration #160) — optional, NULL on pre-migration rows
-  pattern_group_id: string | null;
 }
 
 /**
@@ -321,7 +318,5 @@ export function dbRowToLotteryAlertRow(row: LotteryFireDbRow): LotteryAlertRow {
 
     score: row.score,
     direction_gated: row.direction_gated,
-
-    pattern_group_id: row.pattern_group_id,
   };
 }
