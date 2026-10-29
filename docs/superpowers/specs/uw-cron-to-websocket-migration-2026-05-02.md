@@ -55,6 +55,8 @@ Two cron entries collapse into one channel subscription (`flow-alerts` covers bo
 
 ### Tier 3 — DO NOT migrate (no fidelity gain)
 
+> **Superseded 2026-10-28.** The owner overruled this tier: when a websocket channel carries the same data, ingest it in `uw-stream/` and retire the cron (CLAUDE.md, "Unusual Whales: websocket over REST"). The owner is the only reader and wants the freshest data, and each cron costs Vercel compute plus Sentry and Axiom monitoring.
+
 UW serves these as 5-min pre-aggregated buckets at the source. WS gives push-vs-pull but identical payload granularity. Migration cost exceeds benefit even with Railway available — adding handlers, soak time, and risk for no actual signal improvement.
 
 - `fetch-flow` (market-tide)

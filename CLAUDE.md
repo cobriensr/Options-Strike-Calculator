@@ -173,6 +173,10 @@ Everything else gets the full loop.
 - **Upstash Redis** — stores Schwab OAuth tokens (access + refresh). Env vars: `KV_REST_API_URL` / `UPSTASH_REDIS_REST_URL`.
 - **Input validation** — Zod schemas in `api/_lib/validation.ts` validate at system boundaries before data reaches Anthropic or Postgres.
 - **Cron jobs** — every job is registered in `vercel.json` `crons` and verifies `CRON_SECRET`. Market data fetches run every 5 min during market hours (13-21 UTC, Mon-Fri).
+- **Unusual Whales: websocket over REST (owner rule, 2026-10-28)** — when a UW websocket channel carries the same data as a UW REST endpoint, ingest it in `uw-stream/`. Don't add a polling cron for it, and retire an existing one once the websocket writer is live and checked against it. Why: every cron costs Vercel compute plus its own Sentry and Axiom monitoring, and the websocket is fresher.
+  - Exception, gap repair: the websocket has no replay, so a REST job may fill holes after the fact (after the close or on a detected gap, like `api/cron/backfill-futures-gaps.ts`), never on an intraday polling schedule.
+  - Exception, no channel: data with no websocket channel stays on REST.
+  - Before writing a UW cron, check the channel list at `https://api.unusualwhales.com/docs/websocket.md`. This rule overrules "Tier 3 — DO NOT migrate" in `docs/superpowers/specs/uw-cron-to-websocket-migration-2026-05-02.md`.
 - **Bot protection** — `botid` checks on production endpoints, skipped in local dev. **When adding a new endpoint that calls `checkBot(req)`, also add its path to the `protect` array in `src/main.tsx`'s `initBotId()` call.**
 - **Logging** — `pino` logger in `api/_lib/logger.ts`.
 - **Sentry** — error tracking + metrics via `@sentry/node`.

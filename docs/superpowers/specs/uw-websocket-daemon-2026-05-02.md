@@ -25,7 +25,7 @@ A new Railway-deployed Python service that maintains a single multiplexed Unusua
 
 - No new tables / no schema changes. Writes into the same tables the corresponding crons currently populate so cutover requires only `vercel.json` edits, not migrations.
 - No new analytics or computation. Raw data only — derived signals stay on existing analyze-time paths.
-- No replacement for crons polling pre-aggregated 5-min UW endpoints (no fidelity gain — see migration Tier 3).
+- No replacement for crons polling pre-aggregated 5-min UW endpoints (no fidelity gain — see migration Tier 3). **Superseded 2026-10-28:** the owner rule in CLAUDE.md ("Unusual Whales: websocket over REST") moves these to the websocket.
 
 ---
 
