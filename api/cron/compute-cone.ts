@@ -33,6 +33,10 @@
  * NOTHING` so a same-day re-fire (e.g. accidental backfill) is a no-op
  * rather than overwriting the morning's cone with later marks.
  *
+ * Errors: a Schwab chain failure other than logged-out returns `error` (a
+ * red check-in) and sends a fingerprinted Sentry warning, since the wrapper
+ * captures only thrown errors.
+ *
  * Spec: docs/superpowers/specs/periscope-html-ingestion-2026-05-07.md
  *       (Phase 1 — cone auto-compute)
  */
@@ -43,6 +47,8 @@ import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
+import { redactUpstreamBody } from '../_lib/redact-upstream-body.js';
+import { Sentry } from '../_lib/sentry.js';
 
 interface SchwabOptionContract {
   putCall: 'PUT' | 'CALL';
@@ -187,6 +193,23 @@ export default withCronInstrumentation(
         { status: result.status, error: result.error },
         'compute-cone: Schwab chain fetch failed',
       );
+      // schwabFetch captures nothing for a non-2xx or network failure, and
+      // the wrapper answers a returned `error` with a red check-in only, so
+      // this is the run's Sentry event. No cone today means no cone breaches.
+      // result.error embeds the raw Schwab body, and beforeSend scrubs
+      // `extra` by key name only, so mask token-like runs and cap it.
+      Sentry.captureMessage('compute-cone: Schwab chain fetch failed', {
+        level: 'warning',
+        fingerprint: ['compute-cone', 'schwab-fetch-failed'],
+        tags: {
+          'cron.anomaly': 'schwab-fetch-failed',
+          'schwab.code': result.code,
+        },
+        extra: {
+          status: result.status,
+          error: redactUpstreamBody(result.error),
+        },
+      });
       return {
         status: 'error',
         metadata: { reason: 'schwab_fetch_failed', error: result.error },

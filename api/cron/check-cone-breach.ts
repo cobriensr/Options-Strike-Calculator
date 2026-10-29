@@ -23,6 +23,10 @@
  *     (compute-cone fires at 13:32 UTC; this cron starts at 13:00 UTC
  *     so there's a 32-minute window where it correctly does nothing).
  *
+ * Errors: an unparseable cone bound or SPX close returns `error` (a red
+ * check-in) and sends a fingerprinted Sentry warning, since the wrapper
+ * captures only thrown errors.
+ *
  * Spec: docs/superpowers/specs/periscope-html-ingestion-2026-05-07.md
  *       (Phase 1 — cone breach detection)
  */
@@ -32,6 +36,9 @@ import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
+import { Sentry } from '../_lib/sentry.js';
+
+const JOB = 'check-cone-breach';
 
 interface ConeRow {
   cone_upper: string | number;
@@ -50,7 +57,7 @@ function num(v: string | number | null | undefined): number | null {
 }
 
 export default withCronInstrumentation(
-  'check-cone-breach',
+  JOB,
   async (ctx): Promise<CronResult> => {
     const { today, logger } = ctx;
     const sql = getDb();
@@ -79,6 +86,19 @@ export default withCronInstrumentation(
     const coneLower = num(coneRows[0]!.cone_lower);
     if (coneUpper == null || coneLower == null) {
       logger.warn({ today }, 'check-cone-breach: cone bounds unparseable');
+      // The wrapper answers a returned `error` with a red check-in only; this
+      // is the Sentry event. One fingerprint: the bad row stays all day and
+      // this runs every minute.
+      Sentry.captureMessage(`${JOB}: cone bounds unparseable`, {
+        level: 'warning',
+        fingerprint: [JOB, 'cone-bounds-unparseable'],
+        tags: { 'cron.anomaly': 'cone-bounds-unparseable' },
+        extra: {
+          today,
+          coneUpper: coneRows[0]!.cone_upper,
+          coneLower: coneRows[0]!.cone_lower,
+        },
+      });
       return {
         status: 'error',
         metadata: { reason: 'cone_bounds_unparseable' },
@@ -111,6 +131,16 @@ export default withCronInstrumentation(
     const spot = num(spotRows[0]!.close);
     if (spot == null) {
       logger.warn({ today }, 'check-cone-breach: SPX close unparseable');
+      Sentry.captureMessage(`${JOB}: SPX close unparseable`, {
+        level: 'warning',
+        fingerprint: [JOB, 'spx-close-unparseable'],
+        tags: { 'cron.anomaly': 'spx-close-unparseable' },
+        extra: {
+          today,
+          close: spotRows[0]!.close,
+          timestamp: spotRows[0]!.timestamp,
+        },
+      });
       return {
         status: 'error',
         metadata: { reason: 'spx_close_unparseable' },

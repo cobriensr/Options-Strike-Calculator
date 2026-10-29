@@ -19,7 +19,11 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { setTag: vi.fn(), captureException: vi.fn() },
+  Sentry: {
+    setTag: vi.fn(),
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+  },
   metrics: { increment: vi.fn() },
 }));
 
@@ -367,14 +371,16 @@ describe('compute-cone handler', () => {
     });
     expect(mockSql).not.toHaveBeenCalled();
     expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 
   it.each([
     ['SCHWAB_TOKEN_ERROR', 500],
     ['SCHWAB_API_REJECTED', 401],
     ['SCHWAB_API_502', 502],
+    ['SCHWAB_API_NETWORK', 504],
   ] as const)(
-    'still reports error (red check-in) on %s',
+    'still reports error (red check-in) on %s, with a Sentry warning',
     async (code, status) => {
       vi.mocked(schwabFetch).mockResolvedValueOnce({
         ok: false,
@@ -391,8 +397,62 @@ describe('compute-cone handler', () => {
         reason: 'schwab_fetch_failed',
       });
       expect(mockSql).not.toHaveBeenCalled();
+      // schwabFetch captures none of these, and the wrapper captures only
+      // throws, so this message is the run's only Sentry event (R4).
+      expect(Sentry.captureMessage).toHaveBeenCalledOnce();
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'compute-cone: Schwab chain fetch failed',
+        expect.objectContaining({
+          level: 'warning',
+          fingerprint: ['compute-cone', 'schwab-fetch-failed'],
+          tags: expect.objectContaining({ 'schwab.code': code }),
+          extra: { status, error: `[${code}] boom` },
+        }),
+      );
     },
   );
+
+  it('masks a token-like run and caps the Schwab body before it reaches Sentry', async () => {
+    // beforeSend scrubs `extra` by key name only, so the body is redacted
+    // at the call site (redactUpstreamBody: mask 24+ token chars, cap 200).
+    const token = 'A'.repeat(40);
+    const body = `{"error":"bad","echo":"${token}","pad":"${'x '.repeat(150)}"}`;
+    vi.mocked(schwabFetch).mockResolvedValueOnce({
+      ok: false,
+      status: 502,
+      error: `[SCHWAB_API_502] Schwab API error (502): ${body}`,
+      code: 'SCHWAB_API_502',
+    });
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    const [, context] = vi.mocked(Sentry.captureMessage).mock.calls[0]!;
+    const sent = (context as { extra: { error: string } }).extra.error;
+    expect(sent).not.toContain(token);
+    expect(sent).toContain('[redacted]');
+    expect(sent).toMatch(/… \(\d+ chars\)$/);
+  });
+
+  it('surfaces a failed cone_levels INSERT as a 500 with a captured exception', async () => {
+    vi.mocked(schwabFetch).mockResolvedValueOnce({
+      ok: true,
+      data: makeChain({
+        spot: 5800,
+        callStrikes: [[5800, 10.0]],
+        putStrikes: [[5800, 10.0]],
+      }),
+    });
+    const insertError = new Error('insert failed');
+    mockSql.mockRejectedValueOnce(insertError);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ job: 'compute-cone', error: 'Internal error' });
+    expect(Sentry.captureException).toHaveBeenCalledWith(insertError);
+  });
 
   it('does not INSERT when underlying.last is invalid', async () => {
     vi.mocked(schwabFetch).mockResolvedValueOnce({

@@ -19,7 +19,11 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { setTag: vi.fn(), captureException: vi.fn() },
+  Sentry: {
+    setTag: vi.fn(),
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+  },
   metrics: { increment: vi.fn() },
 }));
 
@@ -52,6 +56,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 import handler from '../cron/check-cone-breach.js';
+import { Sentry } from '../_lib/sentry.js';
 
 // ── Fixtures ──────────────────────────────────────────────────
 
@@ -174,6 +179,26 @@ describe('check-cone-breach handler', () => {
     expect(insertArgs[5]).toBe(5.5); // pts_past_bound
   });
 
+  it('surfaces a failed breach INSERT as a 500 with a captured exception', async () => {
+    queueConeAndSpot(
+      { cone_upper: 5810, cone_lower: 5790 },
+      { close: 5815.5, timestamp: '2026-05-08T15:00:00.000Z' },
+    );
+    const insertError = new Error('insert failed');
+    mockSql.mockRejectedValueOnce(insertError);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(mockSql).toHaveBeenCalledTimes(3);
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({
+      job: 'check-cone-breach',
+      error: 'Internal error',
+    });
+    expect(Sentry.captureException).toHaveBeenCalledWith(insertError);
+  });
+
   // ── Lower breach ──────────────────────────────────────────
 
   it('INSERTs a lower breach event when spot is below cone_lower', async () => {
@@ -229,5 +254,65 @@ describe('check-cone-breach handler', () => {
     const insertArgs = mockSql.mock.calls[2]!.slice(1) as unknown[];
     expect(insertArgs[1]).toBe('upper');
     expect(insertArgs[5]).toBe(5.5); // pts_past, computed from parsed strings
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  // ── Error paths: returned `error` must still reach Sentry ──
+  //
+  // withCronInstrumentation captures only thrown errors; a returned
+  // `status: 'error'` gets a red check-in and nothing else (R4).
+
+  it('returns error and warns Sentry when a cone bound is unparseable', async () => {
+    queueConeAndSpot({ cone_upper: 'not-a-number', cone_lower: 5790 }, null);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      job: 'check-cone-breach',
+      status: 'error',
+      reason: 'cone_bounds_unparseable',
+    });
+    // Exits before the spot lookup; nothing is written.
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledOnce();
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'check-cone-breach: cone bounds unparseable',
+      expect.objectContaining({
+        level: 'warning',
+        fingerprint: ['check-cone-breach', 'cone-bounds-unparseable'],
+        extra: expect.objectContaining({
+          coneUpper: 'not-a-number',
+          coneLower: 5790,
+        }),
+      }),
+    );
+  });
+
+  it('returns error and warns Sentry when the SPX close is unparseable', async () => {
+    queueConeAndSpot(
+      { cone_upper: 5810, cone_lower: 5790 },
+      { close: 'garbage', timestamp: '2026-05-08T15:00:00.000Z' },
+    );
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._json).toMatchObject({
+      status: 'error',
+      reason: 'spx_close_unparseable',
+    });
+    // Cone + spot SELECTs only; no INSERT.
+    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(Sentry.captureMessage).toHaveBeenCalledOnce();
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'check-cone-breach: SPX close unparseable',
+      expect.objectContaining({
+        level: 'warning',
+        fingerprint: ['check-cone-breach', 'spx-close-unparseable'],
+        extra: expect.objectContaining({ close: 'garbage' }),
+      }),
+    );
   });
 });
