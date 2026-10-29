@@ -31,16 +31,31 @@
  *   4. Batched `INSERT … SELECT FROM unnest(…) ON CONFLICT (symbol, ts)
  *      DO NOTHING` for the leader's bars inside each gap. DO NOTHING
  *      never overwrites a bar the live handler wrote.
+ *   5. Order-flow pass (spec Phase 6), after the OHLC pass so the bars it
+ *      just inserted are included: bars in the same window and Globex-open
+ *      minutes whose `buy_volume` is NULL (unknown), in runs of
+ *      consecutive bars, oldest run first. Each run is split by the
+ *      replay's leader per minute (the same candles, loaded once per root
+ *      for both passes), and each piece pages that contract's REST prints
+ *      (`api/_lib/futures-flow-repair.ts`). A minute is written only when
+ *      its REST volume is within 2% of the bar's, by one batched
+ *      `UPDATE … WHERE buy_volume IS NULL`, so websocket flow is never
+ *      overwritten. At most FLOW_PAGE_BUDGET pages per run; the rest stays
+ *      NULL and is found again next run. Counts go to Axiom `meta`:
+ *      flow_minutes_repaired, flow_minutes_skipped_tolerance,
+ *      flow_ranges_unrepairable (UW's history ended inside the run) and
+ *      flow_ranges_deferred.
  *
  * Candle `start` is the bar's minute (UTC), which is exactly the
  * handler's `ts` (executed_at floored to the minute); `symbol` is the
  * root ('ES'), not the contract.
  *
  * Failures surface: a UW error, an empty or malformed payload, or a DB
- * reject fails that symbol (Sentry exception); the run reports
- * 'partial' / 'error' via deriveCronStatus, and 'error' turns the Sentry
- * cron monitor red. The Databento version swallowed non-OK responses and
- * reported success.
+ * reject fails that symbol in that pass (Sentry exception, tagged
+ * `pass: flow` for the order-flow pass); the run reports 'partial' /
+ * 'error' via deriveCronStatus over every symbol either pass worked on,
+ * and 'error' turns the Sentry cron monitor red. The Databento version
+ * swallowed non-OK responses and reported success.
  *
  * Depth: UW caps 1m candles at 5,000 rows and keeps the NEWEST (probed
  * 2026-09-30: `range=1w` → first 09-24 15:16Z, last = the in-progress
@@ -71,10 +86,21 @@ import {
   replayFrontMonth,
   type FuturesRoot,
 } from '../_lib/futures-contracts.js';
+import {
+  fetchContractFlow,
+  fetchNullFlowBars,
+  groupFlowRanges,
+  matchFlowToBars,
+  writeFlowMinutes,
+  type FlowBar,
+  type FlowRange,
+  type PageBudget,
+} from '../_lib/futures-flow-repair.js';
 
-// Worst case is ~13 UW calls (1 contracts + 2 candles × 6 roots), each up
-// to 3 attempts × 15s timeout plus backoff under withRetry ≈ 48s → ~10
-// min if UW hangs on every call. Typical runs finish in seconds.
+// OHLC worst case is ~13 UW calls (1 contracts + 2 candles × 6 roots),
+// each up to 3 attempts × 15s timeout plus backoff under withRetry ≈ 48s
+// → ~10 min if UW hangs on every call. The order-flow pass stops starting
+// pages at FLOW_DEADLINE_MS. Typical runs finish in a minute or two.
 export const config = {
   maxDuration: 800,
 };
@@ -89,6 +115,14 @@ const INSERT_CHUNK = 500;
 const UW_CANDLE_ROW_CAP = 5000;
 // NUMERIC(12,4) ceiling — a larger value would reject the whole chunk.
 const MAX_PRICE = 99_999_999;
+
+// UW /trades pages per run for the order-flow pass, oldest range first
+// (spec Phase 6). About 84 ms a page, so roughly a minute of paging.
+const FLOW_PAGE_BUDGET = 600;
+// No order-flow page starts this long after the run began, so a slow UW
+// can't carry the run past maxDuration (800 s): one more page under
+// withRetry adds at most ~48 s. What's left resumes on the next run.
+const FLOW_DEADLINE_MS = 600_000;
 
 const MINUTE_MS = 60_000;
 const DAY_MS = 24 * 60 * MINUTE_MS;
@@ -124,6 +158,32 @@ interface SymbolResult {
   gapMinutes: number;
   inserted: number;
   malformed: number;
+}
+
+interface FlowSymbolResult {
+  /** Runs of consecutive NULL-flow bars, and the bars in them. */
+  ranges: number;
+  minutes: number;
+  repaired: number;
+  /** REST volume missed the bar's by more than 2%: left NULL. */
+  skippedTolerance: number;
+  /** In a minute where the replay's leader has no candle: left NULL. */
+  unattributed: number;
+  pages: number;
+  /** Malformed REST prints skipped (each withholds its minute). */
+  malformed: number;
+}
+
+interface FlowPassResult {
+  symbols: Partial<Record<FuturesRoot, FlowSymbolResult>>;
+  failures: string[];
+  repaired: number;
+  skippedTolerance: number;
+  /** Ranges where UW's history ended (an empty page) before the range did. */
+  unrepairable: number;
+  /** Ranges the page or time budget left for the next run. */
+  deferred: number;
+  pages: number;
 }
 
 // ── Gap detection ───────────────────────────────────────────
@@ -262,25 +322,36 @@ async function insertBars(symbol: FuturesRoot, bars: Bar[]): Promise<number> {
   return inserted;
 }
 
-// ── Per-symbol repair ───────────────────────────────────────
+// ── Candles ─────────────────────────────────────────────────
 
-async function repairSymbol(
+/** One root's 1m candles for its front-month candidates. */
+interface RootCandles {
+  candidates: string[];
+  byContract: Map<string, Bar[]>;
+  /** Raw row count of each payload that hit UW's row cap. */
+  capped: Map<string, number>;
+  malformed: number;
+}
+
+/**
+ * 1m candles for a root's top-2 contracts. Throws when UW lists no
+ * contract for the root, on a UW error, a non-array payload, an empty
+ * payload for the most-active contract, or a payload of only malformed
+ * candles. Other malformed candles are skipped and surfaced as a Sentry
+ * warning.
+ */
+async function loadCandles(
   ctx: CronContext,
   symbol: FuturesRoot,
-  gaps: Gap[],
   contracts: unknown[],
-): Promise<SymbolResult> {
+): Promise<RootCandles> {
   const candidates = frontMonthCandidates(contracts, symbol);
   if (candidates.length === 0) {
     throw new Error(`UW /futures/contracts lists no ${symbol} contract`);
   }
 
-  // A capped payload must reach 00:00 UTC of the oldest gap's day: the
-  // front-month replay needs that whole day's volume tally, not just the
-  // gap minutes themselves.
-  const firstGapMinuteMs = Math.min(...gaps.map((g) => g.prevMs)) + MINUTE_MS;
-  const oldestNeededMs = firstGapMinuteMs - (firstGapMinuteMs % DAY_MS);
   const byContract = new Map<string, Bar[]>();
+  const capped = new Map<string, number>();
   let malformed = 0;
   for (const [idx, contract] of candidates.entries()) {
     const raw: unknown = await withRetry(() =>
@@ -303,14 +374,7 @@ async function repairSymbol(
         `UW candles for ${contract}: all ${raw.length} malformed`,
       );
     }
-    const earliestMs = Math.min(...bars.map((b) => Date.parse(b.ts)));
-    if (raw.length >= UW_CANDLE_ROW_CAP && earliestMs > oldestNeededMs) {
-      const earliest = new Date(earliestMs).toISOString();
-      const needed = new Date(oldestNeededMs).toISOString();
-      throw new Error(
-        `UW candles for ${contract}: depth truncated at ${raw.length} rows (earliest ${earliest}, gap needs ${needed})`,
-      );
-    }
+    if (raw.length >= UW_CANDLE_ROW_CAP) capped.set(contract, raw.length);
     malformed += raw.length - bars.length;
     byContract.set(contract, bars);
   }
@@ -327,21 +391,254 @@ async function repairSymbol(
     });
   }
 
+  return { candidates, byContract, capped, malformed };
+}
+
+/**
+ * A capped payload (UW keeps the NEWEST rows) must reach 00:00 UTC of the
+ * day holding `firstMinuteMs`: the front-month replay needs that whole
+ * day's volume tally, not just the minutes being repaired. Throws, so a
+ * truncated payload fails the symbol rather than reporting a clean run.
+ */
+function assertCandleDepth(candles: RootCandles, firstMinuteMs: number): void {
+  const oldestNeededMs = firstMinuteMs - (firstMinuteMs % DAY_MS);
+  for (const [contract, rows] of candles.capped) {
+    const bars = candles.byContract.get(contract) ?? [];
+    const earliestMs = Math.min(...bars.map((b) => Date.parse(b.ts)));
+    if (earliestMs > oldestNeededMs) {
+      const earliest = new Date(earliestMs).toISOString();
+      const needed = new Date(oldestNeededMs).toISOString();
+      throw new Error(
+        `UW candles for ${contract}: depth truncated at ${rows} rows (earliest ${earliest}, gap needs ${needed})`,
+      );
+    }
+  }
+}
+
+// ── OHLC pass ───────────────────────────────────────────────
+
+async function repairSymbol(
+  symbol: FuturesRoot,
+  gaps: Gap[],
+  candles: RootCandles,
+): Promise<SymbolResult> {
+  assertCandleDepth(
+    candles,
+    Math.min(...gaps.map((g) => g.prevMs)) + MINUTE_MS,
+  );
+
   const inGap = (bar: Bar) => {
     const t = Date.parse(bar.ts);
     return gaps.some((g) => t > g.prevMs && t < g.nextMs);
   };
-  const bars = replayFrontMonth(byContract)
+  const bars = replayFrontMonth(candles.byContract)
     .map((e) => e.row)
     .filter(inGap);
   const inserted = await insertBars(symbol, bars);
 
   return {
-    contracts: candidates,
+    contracts: candles.candidates,
     gapMinutes: gaps.reduce((sum, g) => sum + g.openMinutes, 0),
     inserted,
-    malformed,
+    malformed: candles.malformed,
   };
+}
+
+// ── Order-flow pass (Phase 6) ───────────────────────────────
+
+function emptyFlowStats(): FlowSymbolResult {
+  return {
+    ranges: 0,
+    minutes: 0,
+    repaired: 0,
+    skippedTolerance: 0,
+    unattributed: 0,
+    pages: 0,
+    malformed: 0,
+  };
+}
+
+function budgetSpent(budget: PageBudget): boolean {
+  return budget.pagesLeft <= 0 || Date.now() >= budget.deadlineMs;
+}
+
+/**
+ * Repairs one run of NULL-flow bars: splits it into runs led by the same
+ * contract, pages each one's prints, and writes the minutes that match.
+ * Adds to `stats` as it goes, so work done before a throw still counts.
+ * `deferred` means the budget stopped it before every bar was decided;
+ * `unrepairable` means UW's history ended inside it.
+ */
+async function repairFlowRange(
+  ctx: CronContext,
+  symbol: FuturesRoot,
+  range: FlowRange,
+  leaders: ReadonlyMap<string, string>,
+  budget: PageBudget,
+  stats: FlowSymbolResult,
+): Promise<{ deferred: boolean; unrepairable: boolean }> {
+  const segments: Array<{ contract: string; bars: FlowBar[] }> = [];
+  for (const bar of range.bars) {
+    const contract = leaders.get(bar.ts);
+    if (contract === undefined) {
+      stats.unattributed += 1;
+      continue;
+    }
+    const last = segments.at(-1);
+    if (last?.contract === contract) last.bars.push(bar);
+    else segments.push({ contract, bars: [bar] });
+  }
+
+  let deferred = false;
+  let unrepairable = false;
+  for (const seg of segments) {
+    if (budgetSpent(budget)) {
+      deferred = true;
+      break;
+    }
+    const flow = await fetchContractFlow(
+      ctx.apiKey,
+      seg.contract,
+      Date.parse(seg.bars[0]!.ts),
+      Date.parse(seg.bars.at(-1)!.ts) + MINUTE_MS,
+      budget,
+    );
+    stats.pages += flow.pages;
+    stats.malformed += flow.malformed;
+    const covered = seg.bars.filter(
+      (b) => Date.parse(b.ts) >= flow.coveredFromMs,
+    );
+    if (covered.length < seg.bars.length) {
+      if (flow.stop === 'exhausted') unrepairable = true;
+      else deferred = true;
+    }
+    const { updates, skippedTolerance } = matchFlowToBars(
+      covered,
+      flow.minutes,
+    );
+    stats.skippedTolerance += skippedTolerance;
+    stats.repaired += await writeFlowMinutes(symbol, updates);
+  }
+  return { deferred, unrepairable };
+}
+
+/**
+ * Fills NULL order flow on the window's Globex-open bars, oldest run
+ * first, within FLOW_PAGE_BUDGET pages. A symbol whose candles, prints or
+ * write fail is a failure (Sentry exception); its remaining runs are
+ * skipped. Throws only when the NULL-flow scan itself fails.
+ */
+async function repairFlow(
+  ctx: CronContext,
+  windowStart: Date,
+  windowEnd: Date,
+  candlesFor: (symbol: FuturesRoot) => Promise<RootCandles>,
+): Promise<FlowPassResult> {
+  const result: FlowPassResult = {
+    symbols: {},
+    failures: [],
+    repaired: 0,
+    skippedTolerance: 0,
+    unrepairable: 0,
+    deferred: 0,
+    pages: 0,
+  };
+  const nullBars = await fetchNullFlowBars(
+    FUTURES_ROOTS,
+    windowStart.toISOString(),
+    windowEnd.toISOString(),
+  );
+  if (nullBars.length === 0) return result;
+
+  // Ordered by symbol, then time: the first row per symbol is its oldest.
+  const oldestMs = new Map<string, number>();
+  for (const bar of nullBars) {
+    if (!oldestMs.has(bar.symbol)) {
+      oldestMs.set(bar.symbol, Date.parse(bar.ts));
+    }
+  }
+  const leaderMaps = new Map<FuturesRoot, Map<string, string>>();
+  const leadersFor = async (symbol: FuturesRoot) => {
+    const cached = leaderMaps.get(symbol);
+    if (cached) return cached;
+    const candles = await candlesFor(symbol);
+    assertCandleDepth(candles, oldestMs.get(symbol)!);
+    const leaders = new Map(
+      replayFrontMonth(candles.byContract).map((e) => [e.row.ts, e.contract]),
+    );
+    leaderMaps.set(symbol, leaders);
+    return leaders;
+  };
+
+  const ranges = groupFlowRanges(nullBars).sort(
+    (a, b) =>
+      a.bars[0]!.ts.localeCompare(b.bars[0]!.ts) ||
+      a.symbol.localeCompare(b.symbol),
+  );
+  const budget: PageBudget = {
+    pagesLeft: FLOW_PAGE_BUDGET,
+    deadlineMs: ctx.startTimeMs + FLOW_DEADLINE_MS,
+  };
+  const failed = new Set<FuturesRoot>();
+
+  for (const range of ranges) {
+    const symbol = FUTURES_ROOTS.find((s) => s === range.symbol);
+    if (!symbol) continue;
+    const stats = (result.symbols[symbol] ??= emptyFlowStats());
+    stats.ranges += 1;
+    stats.minutes += range.bars.length;
+    if (failed.has(symbol)) continue;
+    if (budgetSpent(budget)) {
+      result.deferred += 1;
+      continue;
+    }
+    try {
+      const leaders = await leadersFor(symbol);
+      const outcome = await repairFlowRange(
+        ctx,
+        symbol,
+        range,
+        leaders,
+        budget,
+        stats,
+      );
+      if (outcome.unrepairable) result.unrepairable += 1;
+      else if (outcome.deferred) result.deferred += 1;
+    } catch (err) {
+      failed.add(symbol);
+      const message = err instanceof Error ? err.message : String(err);
+      result.failures.push(`${symbol} flow: ${message}`);
+      ctx.logger.error({ err, symbol }, `${JOB}: order-flow repair failed`);
+      metrics.increment('backfill_futures_gaps.flow_symbol_error');
+      Sentry.captureException(err, {
+        tags: { cron: JOB, symbol, pass: 'flow' },
+      });
+    }
+  }
+
+  for (const [symbol, stats] of Object.entries(result.symbols)) {
+    result.repaired += stats.repaired;
+    result.skippedTolerance += stats.skippedTolerance;
+    result.pages += stats.pages;
+    if (stats.malformed > 0) {
+      ctx.logger.warn(
+        { symbol, malformed: stats.malformed },
+        `${JOB}: skipped malformed UW prints`,
+      );
+      metrics.increment('backfill_futures_gaps.malformed_print');
+      Sentry.captureMessage(`${JOB}: malformed UW prints skipped`, {
+        level: 'warning',
+        extra: { symbol, malformed: stats.malformed },
+      });
+    }
+  }
+  if (budgetSpent(budget) && result.deferred > 0) {
+    ctx.logger.warn(
+      { deferred: result.deferred, pages: result.pages },
+      `${JOB}: order-flow page budget spent, ranges deferred`,
+    );
+  }
+  return result;
 }
 
 // ── Handler ─────────────────────────────────────────────────
@@ -355,52 +652,73 @@ export default withCronInstrumentation(
     const range = `${windowStart.toISOString()} to ${windowEnd.toISOString()}`;
 
     const gaps = await detectGaps(windowStart, windowEnd);
-    if (gaps.size === 0) {
-      return {
-        status: 'success',
-        rows: 0,
-        message: 'no gaps',
-        metadata: { range, gapSymbols: [] },
-      };
-    }
 
-    // One unfiltered call covers every root (~365 rows). A failure here
-    // fails the whole run: the wrapper captures it and reports 'error'.
-    const contracts = await fetchFuturesContracts(ctx.apiKey);
+    // One unfiltered contract list covers every root (~365 rows), and each
+    // root's candles feed both passes, so both are loaded at most once.
+    let contractsLoad: Promise<unknown[]> | null = null;
+    const contracts = () =>
+      (contractsLoad ??= fetchFuturesContracts(ctx.apiKey));
+    const candleLoads = new Map<FuturesRoot, Promise<RootCandles>>();
+    const candlesFor = (symbol: FuturesRoot): Promise<RootCandles> => {
+      let load = candleLoads.get(symbol);
+      if (!load) {
+        load = contracts().then((c) => loadCandles(ctx, symbol, c));
+        candleLoads.set(symbol, load);
+      }
+      return load;
+    };
 
     const symbols: Partial<Record<FuturesRoot, SymbolResult>> = {};
     const failures: string[] = [];
-    for (const [symbol, symbolGaps] of gaps) {
-      try {
-        symbols[symbol] = await repairSymbol(
-          ctx,
-          symbol,
-          symbolGaps,
-          contracts,
-        );
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        failures.push(`${symbol}: ${message}`);
-        ctx.logger.error({ err, symbol }, `${JOB}: symbol repair failed`);
-        metrics.increment('backfill_futures_gaps.symbol_error');
-        Sentry.captureException(err, { tags: { cron: JOB, symbol } });
+    if (gaps.size > 0) {
+      // A failed contract list here fails the whole run: the wrapper
+      // captures it and reports 'error'.
+      await contracts();
+      for (const [symbol, symbolGaps] of gaps) {
+        try {
+          symbols[symbol] = await repairSymbol(
+            symbol,
+            symbolGaps,
+            await candlesFor(symbol),
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          failures.push(`${symbol}: ${message}`);
+          ctx.logger.error({ err, symbol }, `${JOB}: symbol repair failed`);
+          metrics.increment('backfill_futures_gaps.symbol_error');
+          Sentry.captureException(err, { tags: { cron: JOB, symbol } });
+        }
       }
     }
-
     const rows = Object.values(symbols).reduce((n, r) => n + r.inserted, 0);
-    const status = deriveCronStatus(failures.length, gaps.size);
+
+    // After the OHLC pass, so the bars it just inserted get flow too.
+    const flow = await repairFlow(ctx, windowStart, windowEnd, candlesFor);
+    failures.push(...flow.failures);
+    const flowSymbols = Object.keys(flow.symbols).length;
+
+    // Legs: each symbol with gaps, plus each symbol with NULL-flow bars.
+    const status = deriveCronStatus(failures.length, gaps.size + flowSymbols);
     ctx.logger.info(
-      { range, status, rows, symbols, failures },
+      { range, status, rows, symbols, flow, failures },
       `${JOB} completed`,
     );
 
     return {
       status,
       rows,
+      ...(gaps.size === 0 && flowSymbols === 0 ? { message: 'no gaps' } : {}),
       metadata: {
         range,
         gapSymbols: [...gaps.keys()],
         symbols,
+        // Not Axiom columns, so reportCronRun routes them into `meta`.
+        flow_minutes_repaired: flow.repaired,
+        flow_minutes_skipped_tolerance: flow.skippedTolerance,
+        flow_ranges_unrepairable: flow.unrepairable,
+        flow_ranges_deferred: flow.deferred,
+        flow_pages: flow.pages,
+        flowSymbols: flow.symbols,
         ...(failures.length > 0 ? { failures } : {}),
       },
     };

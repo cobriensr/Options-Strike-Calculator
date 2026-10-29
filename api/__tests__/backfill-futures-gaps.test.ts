@@ -44,6 +44,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 import handler from '../cron/backfill-futures-gaps.js';
 import { Sentry } from '../_lib/sentry.js';
 import { reportCronRun } from '../_lib/axiom.js';
+import { formatMicrosIso, parseUwTimeMicros } from '../_lib/uw-time.js';
 
 // ── Fixtures ──────────────────────────────────────────────
 
@@ -148,6 +149,9 @@ describe('backfill-futures-gaps handler', () => {
     vi.setSystemTime(new Date(NOW));
     mockCronGuard.mockReturnValue(GUARD);
     mockWithRetry.mockImplementation((fn: () => unknown) => fn());
+    // Every query after the queued ones (the order-flow pass's NULL-flow
+    // scan in the OHLC tests) finds nothing.
+    mockSql.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -175,17 +179,20 @@ describe('backfill-futures-gaps handler', () => {
 
   // ── Gap detection ─────────────────────────────────────
 
-  it('scans the three prior UTC days for the six UW-covered roots (no DX)', async () => {
+  it('scans the three prior UTC days for the six UW-covered roots (no DX), for missing bars and then for NULL order flow', async () => {
     mockSql.mockResolvedValueOnce([]);
     await run();
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(mockSql).toHaveBeenCalledTimes(2);
     const text = sqlText(0);
     expect(text).toContain('FROM futures_bars');
     expect(text).toContain('LEAD(ts) OVER (PARTITION BY symbol ORDER BY ts)');
-    const values = sqlValues(0);
-    expect(values).toContainEqual(['ES', 'NQ', 'RTY', 'CL', 'GC', 'ZN']);
-    expect(values).toContain(WINDOW_START);
-    expect(values).toContain(WINDOW_END);
+    for (const idx of [0, 1]) {
+      const values = sqlValues(idx);
+      expect(values).toContainEqual(['ES', 'NQ', 'RTY', 'CL', 'GC', 'ZN']);
+      expect(values).toContain(WINDOW_START);
+      expect(values).toContain(WINDOW_END);
+    }
+    expect(sqlText(1)).toContain('buy_volume IS NULL');
   });
 
   it('no-gap run: makes no UW calls and reports success with zero rows', async () => {
@@ -638,5 +645,447 @@ describe('backfill-futures-gaps handler', () => {
     expect(res._status).toBe(500);
     expect(Sentry.captureException).toHaveBeenCalled();
     expect(mockUwFetch).not.toHaveBeenCalled();
+  });
+});
+
+// ── Order-flow pass (Phase 6) ─────────────────────────────
+
+/** A NULL-flow row as fetchNullFlowBars' query returns it. */
+function nullFlowRow(
+  symbol: string,
+  ts: string,
+  volume: number,
+  startsRange: boolean,
+) {
+  return { symbol, ts: new Date(ts), volume, starts_range: startsRange };
+}
+
+/** A regular REST /trades print (probe 0a shape). */
+function print(id: number, at: string, size: number, side: string | null) {
+  return {
+    crossed: false,
+    executed_at: at,
+    is_block: false,
+    is_spread: false,
+    nbbo_ask: '7765.75',
+    nbbo_bid: '7765.50',
+    price: '7765.75',
+    side,
+    size,
+    strategy: null,
+    trade_id: id,
+  };
+}
+
+const tradesPrefix = (contract: string) => `/futures/${contract}/trades?`;
+
+/**
+ * Route UW calls: exact paths from `routes`, and each contract's
+ * /trades pages served in order from `pages` (an Error rejects).
+ */
+function routeUwWithTrades(
+  routes: Record<string, Route>,
+  pages: Record<string, Route[]>,
+) {
+  const served: Record<string, number> = {};
+  mockUwFetch.mockImplementation(async (_key: string, path: string) => {
+    const contract = /^\/futures\/([^/]+)\/trades\?/.exec(path)?.[1];
+    if (contract) {
+      const i = served[contract] ?? 0;
+      served[contract] = i + 1;
+      const page = pages[contract]?.[i];
+      if (page === undefined) throw new Error(`unexpected trades page ${path}`);
+      if (page instanceof Error) throw page;
+      return page;
+    }
+    const r = routes[path];
+    if (r === undefined) throw new Error(`unexpected UW path ${path}`);
+    if (r instanceof Error) throw r;
+    return r;
+  });
+}
+
+function tradesCalls(contract: string): string[] {
+  return mockUwFetch.mock.calls
+    .map((c) => c[1] as string)
+    .filter((p) => p.startsWith(tradesPrefix(contract)));
+}
+
+function olderThan(path: string): string | null {
+  return new URL(`https://uw.test${path}`).searchParams.get('older_than');
+}
+
+function updateCalls(): number[] {
+  return mockSql.mock.calls
+    .map((_, i) => i)
+    .filter((i) => sqlText(i).includes('UPDATE futures_bars'));
+}
+
+/** ESZ6 leads 2026-09-29 by a wide margin; ESH7 barely trades. */
+const ES_CANDLES = {
+  [candlesPath('ESZ6')]: [
+    candle('2026-09-29T00:00:00Z', 7700, 5_000),
+    candle('2026-09-29T14:01:00Z', 7740, 10),
+    candle('2026-09-29T14:02:00Z', 7741, 5),
+  ],
+  [candlesPath('ESH7')]: [candle('2026-09-29T00:00:00Z', 7760, 3)],
+};
+
+/** Two ESZ6 prints in 14:01 and one before it, ending the paging. */
+const ES_1401_PAGE = [
+  print(2, '2026-09-29T14:01:30.000000Z', 10, 'buy'),
+  print(1, '2026-09-29T14:00:30.000000Z', 1, 'buy'),
+];
+
+describe('backfill-futures-gaps order-flow pass', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(NOW));
+    mockCronGuard.mockReturnValue(GUARD);
+    mockWithRetry.mockImplementation((fn: () => unknown) => fn());
+    mockSql.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('fills NULL-flow minutes from the front contract REST prints with one conditional UPDATE, and reports the counts in meta', async () => {
+    mockSql
+      .mockResolvedValueOnce([]) // no missing bars
+      .mockResolvedValueOnce([
+        nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
+        nullFlowRow('ES', '2026-09-29T14:02:00Z', 5, false),
+      ])
+      .mockResolvedValueOnce([{ ts: 'a' }, { ts: 'b' }]);
+    routeUwWithTrades(
+      { [CONTRACTS_PATH]: CONTRACTS, ...ES_CANDLES },
+      {
+        ESZ6: [
+          [
+            print(5, '2026-09-29T14:02:40.000001Z', 3, 'buy'),
+            print(4, '2026-09-29T14:02:10.000000Z', 2, 'sell'),
+            print(3, '2026-09-29T14:01:50.000000Z', 6, 'buy'),
+            print(2, '2026-09-29T14:01:05.000000Z', 4, 'none'),
+            print(1, '2026-09-29T14:00:59.999999Z', 9, 'buy'),
+          ],
+        ],
+      },
+    );
+
+    const res = await run();
+
+    // Paged back from the end of the range, on the replay's leader.
+    expect(tradesCalls('ESH7')).toEqual([]);
+    const calls = tradesCalls('ESZ6');
+    expect(calls).toHaveLength(1);
+    expect(olderThan(calls[0]!)).toBe('2026-09-29T14:03:00.000000Z');
+
+    const updates = updateCalls();
+    expect(updates).toHaveLength(1);
+    expect(sqlText(updates[0]!)).toContain('AND b.buy_volume IS NULL');
+    const values = sqlValues(updates[0]!);
+    expect(values).toContain('ES');
+    expect(values).toContainEqual([
+      '2026-09-29T14:01:00.000Z',
+      '2026-09-29T14:02:00.000Z',
+    ]);
+    expect(values).toContainEqual([6, 3]); // buy volume
+    expect(values).toContainEqual([0, 2]); // sell volume
+
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 0, // OHLC rows inserted
+      flow_minutes_repaired: 2,
+      flow_minutes_skipped_tolerance: 0,
+      flow_ranges_unrepairable: 0,
+      flow_ranges_deferred: 0,
+      flow_pages: 1,
+    });
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'backfill-futures-gaps',
+      expect.objectContaining({ flow_minutes_repaired: 2 }),
+    );
+  });
+
+  it('gives flow to the bars the OHLC pass inserts in the same run, reusing its candles', async () => {
+    mockSql
+      .mockResolvedValueOnce([
+        gapRow('ES', '2026-09-29T14:00:00Z', '2026-09-29T14:02:00Z'),
+      ])
+      .mockResolvedValueOnce([{ ts: 'x' }]) // OHLC insert of 14:01
+      .mockResolvedValueOnce([
+        nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
+      ])
+      .mockResolvedValueOnce([{ ts: 'x' }]); // flow UPDATE
+    routeUwWithTrades(
+      { [CONTRACTS_PATH]: CONTRACTS, ...ES_CANDLES },
+      { ESZ6: [ES_1401_PAGE] },
+    );
+
+    const res = await run();
+
+    const paths = mockUwFetch.mock.calls.map((c) => c[1] as string);
+    expect(paths.filter((p) => p === candlesPath('ESZ6'))).toHaveLength(1);
+    expect(paths.filter((p) => p === CONTRACTS_PATH)).toHaveLength(1);
+    expect(insertCalls()).toHaveLength(1);
+    expect(updateCalls()).toHaveLength(1);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      flow_minutes_repaired: 1,
+    });
+  });
+
+  it('fetches prints from the contract the roll replay picks, and skips a minute whose leader has no candle', async () => {
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
+        // No candle for any ES contract at 14:05: unattributed.
+        nullFlowRow('ES', '2026-09-29T14:05:00Z', 7, false),
+      ])
+      .mockResolvedValueOnce([{ ts: 'x' }]);
+    routeUwWithTrades(
+      {
+        [CONTRACTS_PATH]: CONTRACTS,
+        [candlesPath('ESZ6')]: [candle('2026-09-29T14:01:00Z', 7740, 5)],
+        // Mid-roll: ESH7 leads the 09-29 tally.
+        [candlesPath('ESH7')]: [
+          candle('2026-09-29T00:00:00Z', 7760, 90_000),
+          candle('2026-09-29T14:01:00Z', 7761, 10),
+        ],
+      },
+      { ESH7: [ES_1401_PAGE] },
+    );
+
+    const res = await run();
+
+    expect(tradesCalls('ESZ6')).toEqual([]);
+    expect(tradesCalls('ESH7')).toHaveLength(1);
+    expect(sqlValues(updateCalls()[0]!)).toContainEqual([
+      '2026-09-29T14:01:00.000Z',
+    ]);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      flow_minutes_repaired: 1,
+      flowSymbols: { ES: expect.objectContaining({ unattributed: 1 }) },
+    });
+  });
+
+  it('a minute whose REST volume misses the bar by more than 2% stays NULL and is counted', async () => {
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        nullFlowRow('ES', '2026-09-29T14:01:00Z', 100, true),
+      ]);
+    routeUwWithTrades(
+      { [CONTRACTS_PATH]: CONTRACTS, ...ES_CANDLES },
+      { ESZ6: [ES_1401_PAGE] },
+    );
+
+    const res = await run();
+
+    expect(updateCalls()).toHaveLength(0);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      flow_minutes_repaired: 0,
+      flow_minutes_skipped_tolerance: 1,
+    });
+  });
+
+  it('an empty trades page before the range start (UW history edge) counts the range as unrepairable', async () => {
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
+        nullFlowRow('ES', '2026-09-29T14:02:00Z', 5, false),
+      ]);
+    routeUwWithTrades(
+      { [CONTRACTS_PATH]: CONTRACTS, ...ES_CANDLES },
+      { ESZ6: [[print(9, '2026-09-29T14:02:30.000000Z', 5, 'buy')], []] },
+    );
+
+    const res = await run();
+
+    expect(updateCalls()).toHaveLength(0);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      flow_ranges_unrepairable: 1,
+      flow_minutes_repaired: 0,
+    });
+  });
+
+  it('stops at 600 pages per run, oldest range first, and defers the rest to the next run', async () => {
+    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
+      // Older: processed first.
+      nullFlowRow('NQ', '2026-09-29T13:00:00Z', 10, true),
+      nullFlowRow('NQ', '2026-09-29T13:01:00Z', 10, false),
+    ]);
+    let id = 1;
+    mockUwFetch.mockImplementation(async (_key: string, path: string) => {
+      if (path === CONTRACTS_PATH) return CONTRACTS;
+      if (path === candlesPath('NQZ6')) {
+        return [
+          candle('2026-09-29T13:00:00Z', 26_000, 50),
+          candle('2026-09-29T13:01:00Z', 26_001, 50),
+        ];
+      }
+      if (path === candlesPath('NQH7')) return [];
+      if (path.startsWith(tradesPrefix('NQZ6'))) {
+        // One print 2 µs older than the cursor, so each page steps back
+        // 1 µs and never reaches the range start.
+        const us = parseUwTimeMicros(olderThan(path))! - 2n;
+        return [print(id++, formatMicrosIso(us), 1, 'buy')];
+      }
+      throw new Error(`unexpected UW path ${path}`);
+    });
+
+    const res = await run();
+
+    expect(tradesCalls('NQZ6')).toHaveLength(600);
+    expect(tradesCalls('ESZ6')).toEqual([]);
+    expect(updateCalls()).toHaveLength(0);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      flow_pages: 600,
+      flow_ranges_deferred: 2,
+    });
+  });
+
+  it('an upstream 5xx on /trades fails the symbol: Sentry exception, status error, never success', async () => {
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
+      ]);
+    routeUwWithTrades(
+      { [CONTRACTS_PATH]: CONTRACTS, ...ES_CANDLES },
+      { ESZ6: [new Error('UW API 503: unavailable')] },
+    );
+
+    const res = await run();
+
+    expect(res._json).toMatchObject({ status: 'error' });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'UW API 503: unavailable' }),
+      expect.objectContaining({
+        tags: expect.objectContaining({ symbol: 'ES', pass: 'flow' }),
+      }),
+    );
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'backfill-futures-gaps',
+      expect.objectContaining({ status: 'error' }),
+    );
+  });
+
+  it('a malformed /trades page fails the symbol', async () => {
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
+      ]);
+    routeUwWithTrades(
+      { [CONTRACTS_PATH]: CONTRACTS, ...ES_CANDLES },
+      { ESZ6: [{ unexpected: 'shape' }] },
+    );
+
+    const res = await run();
+
+    expect(res._json).toMatchObject({ status: 'error' });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/non-array/) }),
+      expect.anything(),
+    );
+    expect(updateCalls()).toHaveLength(0);
+  });
+
+  it('a rejected flow UPDATE fails the symbol (status error + Sentry), not success', async () => {
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
+      ])
+      .mockRejectedValueOnce(new Error('canceling statement due to timeout'));
+    routeUwWithTrades(
+      { [CONTRACTS_PATH]: CONTRACTS, ...ES_CANDLES },
+      { ESZ6: [ES_1401_PAGE] },
+    );
+
+    const res = await run();
+
+    expect(updateCalls()).toHaveLength(1);
+    expect(res._json).toMatchObject({
+      status: 'error',
+      flow_minutes_repaired: 0,
+    });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'canceling statement due to timeout',
+      }),
+      expect.objectContaining({
+        tags: expect.objectContaining({ pass: 'flow' }),
+      }),
+    );
+  });
+
+  it('a failed flow symbol does not stop another symbol repair → partial', async () => {
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
+        nullFlowRow('NQ', '2026-09-29T14:01:00Z', 4, true),
+      ])
+      .mockResolvedValueOnce([{ ts: 'x' }]);
+    routeUwWithTrades(
+      {
+        [CONTRACTS_PATH]: CONTRACTS,
+        ...ES_CANDLES,
+        [candlesPath('NQZ6')]: [candle('2026-09-29T14:01:00Z', 26_000, 4)],
+        [candlesPath('NQH7')]: [],
+      },
+      {
+        ESZ6: [new TypeError('fetch failed')],
+        NQZ6: [
+          [
+            print(2, '2026-09-29T14:01:30.000000Z', 4, 'sell'),
+            print(1, '2026-09-29T14:00:30.000000Z', 1, 'buy'),
+          ],
+        ],
+      },
+    );
+
+    const res = await run();
+
+    expect(sqlValues(updateCalls()[0]!)).toContain('NQ');
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      flow_minutes_repaired: 1,
+    });
+  });
+
+  it('a failed contract list in the flow pass reports status error with a Sentry exception, still answering 200', async () => {
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
+      ]);
+    routeUwWithTrades(
+      { [CONTRACTS_PATH]: new Error('UW API 500: upstream down') },
+      {},
+    );
+
+    const res = await run();
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'error' });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'UW API 500: upstream down' }),
+      expect.objectContaining({
+        tags: expect.objectContaining({ pass: 'flow' }),
+      }),
+    );
   });
 });
