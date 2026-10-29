@@ -1,6 +1,6 @@
 # 0DTE SPX Strike Calculator
 
-Single-owner 0DTE SPX options trading tool. Vite + React 19 frontend, Vercel Serverless Functions backend (TypeScript), Python ML scripts, Railway Python services: uw-stream (Unusual Whales websocket ingestion, including futures bars), the classifier (multileg structure labels) and the sidecar (Take-It SHAP scoring, frozen historical archive).
+Single-owner 0DTE SPX options trading tool. Vite + React 19 frontend, Vercel Serverless Functions backend (TypeScript), Python ML scripts, Railway Python services: uw-stream (Unusual Whales websocket ingestion, including futures bars), the classifier (multileg structure labels), the sidecar (Take-It SHAP scoring, frozen historical archive) and nightly (cron job that lands the UW Full Tape in R2).
 
 ## Architecture
 
@@ -31,7 +31,7 @@ sidecar/          Railway Python service (NOT Vercel). Ingests no market data (D
                   (psycopg2) backs only the /health db check, and the boot DB check is non-fatal.
                   Theta Data Terminal + /takeit/multileg-classify fallback removed 2026-10-02.
                   Own requirements.txt (runtime) + requirements-dev.txt (test/lint), Dockerfile. Sentry SDK for error tracking
-                  vercel.json ignoreCommand skips deploys for sidecar/, uw-stream/, ml/, scripts/, pine/, docs/, *.md changes
+                  vercel.json ignoreCommand skips deploys for sidecar/, uw-stream/, nightly/, ml/, scripts/, pine/, docs/, *.md changes
 
 classifier/       Multileg classifier (Python, Railway, NOT Vercel). POST /multileg-classify for the detect
                   crons via CLASSIFIER_URL, with Authorization: Bearer CLASSIFIER_SHARED_SECRET (no
@@ -54,6 +54,16 @@ uw-stream/        UnusualWhales websocket consumer (Python, Railway, NOT Vercel 
                   No DX, VX, ES options or TBBO/OFI (VIX term structure: VIX/VIX3M).
                   Sentry tagged server_name=uw-stream; UW_API_KEY required (Advanced tier for WS access).
                   Own Dockerfile, README.md, requirements.txt (runtime) + requirements-dev.txt (test/lint), conftest.py — own pytest suite under tests/.
+
+nightly/          Full Tape lander (Python, Railway cron service `nightly`, NOT Vercel). Tue–Sat 07:15 UTC
+                  (railway.toml cronSchedule, the morning after each session) it downloads each missing session's UW options Full Tape, converts it
+                  to Parquet with polars and uploads one object per day to Cloudflare R2
+                  (fulltape/{date}-fulltape.parquet), newest missing day first, up to 30 days of catch-up. Re-lands a
+                  recent day whose UW ETag changed, and marks a day unavailable only on UW's own evidence. Runs once
+                  and exits: 0 ok, 1 a day did not land, 2 bad config, 3 watchdog. Sentry server_name=nightly plus
+                  the `nightly-tape` cron monitor. Writes nothing to Neon. Env: UW_API_KEY, R2_*, SENTRY_DSN.
+                  Own Dockerfile, README.md (runbook and alert meanings), requirements.txt + requirements-dev.txt,
+                  conftest.py — own pytest suite under tests/. Spec: docs/superpowers/specs/2026-10-28-nightly-pipeline-automation-design.md.
 
 scripts/          Backfill, probe and analysis scripts (backfill-etf-tide.mjs, backfill-greek-exposure.mjs, etc.),
                   plus build/coverage tooling (check-build-output.mjs, check-coverage-floor.mjs, _lib/)
@@ -323,10 +333,10 @@ Required env vars (pulled via `vercel env pull .env.local`):
 | `LOG_LEVEL`                                              | pino log level (opt.)                                       |
 | `WS_CHANNELS`, `VERCEL_NOTIFY_URL`                       | uw-stream (Railway only)                                    |
 | `R2_ACCOUNT_ID`                                          | Cloudflare R2 (local tape scripts only; api/ ignores it)    |
-| `R2_ACCESS_KEY_ID`                                       | Cloudflare R2 (also local tape scripts)                     |
-| `R2_SECRET_ACCESS_KEY`                                   | Cloudflare R2 (also local tape scripts)                     |
-| `R2_ENDPOINT_URL`                                        | Cloudflare R2 (also local tape scripts)                     |
-| `R2_BUCKET_FULLTAPE`                                     | Cloudflare R2 (also local tape scripts)                     |
+| `R2_ACCESS_KEY_ID`                                       | Cloudflare R2 (Railway nightly, local tape scripts)         |
+| `R2_SECRET_ACCESS_KEY`                                   | Cloudflare R2 (Railway nightly, local tape scripts)         |
+| `R2_ENDPOINT_URL`                                        | Cloudflare R2 (Railway nightly, local tape scripts)         |
+| `R2_BUCKET_FULLTAPE`                                     | Cloudflare R2 (Railway nightly, local tape scripts)         |
 | `BLOB_READ_WRITE_TOKEN`                                  | Vercel Blob (also on Railway)                               |
 | `ARCHIVE_MANIFEST_URL`                                   | Archive manifest (Railway only)                             |
 | `ARCHIVE_SEED_TOKEN`                                     | Gates seed POST (Railway only)                              |
@@ -344,10 +354,10 @@ see `docs/superpowers/specs/archive-volume-seed-2026-04-18.md`.
 ## Deployment
 
 - **Platform**: Vercel (Fluid Compute, Node 24)
-- **Config**: `vercel.json` — crons, security headers, CSP, bot protection rewrites, SPA fallback, `ignoreCommand` skips builds when only `sidecar/`, `uw-stream/`, `ml/`, `scripts/`, `pine/`, `docs/`, or `*.md` files change (not `classifier/`)
+- **Config**: `vercel.json` — crons, security headers, CSP, bot protection rewrites, SPA fallback, `ignoreCommand` skips builds when only `sidecar/`, `uw-stream/`, `nightly/`, `ml/`, `scripts/`, `pine/`, `docs/`, or `*.md` files change (not `classifier/`)
 - **Long-running functions**: `api/analyze.ts`, `api/cron/curate-lessons.ts` and `api/cron/curate-periscope-lessons.ts` (780s), `api/cron/backfill-futures-gaps.ts` (800s), and 300s crons such as `api/cron/build-features.ts`. Full list: `vercel.json` `functions`.
 - **DB setup**: `POST /api/journal/init` creates all tables and runs all migrations
-- **Railway services**: `sidecar/`, `uw-stream/` and `classifier/`, each with its own Dockerfile, `railway.toml` `watchPatterns` and env vars in Railway, not Vercel. Sidecar env: `DATABASE_URL` (only for its `/health` db check), `SENTRY_DSN`, `TAKEIT_*`, `ARCHIVE_*`.
+- **Railway services**: `sidecar/`, `uw-stream/`, `classifier/` and `nightly/` (a cron service: `railway.toml` `cronSchedule`, runs once and exits), each with its own Dockerfile, `railway.toml` `watchPatterns` and env vars in Railway, not Vercel. Sidecar env: `DATABASE_URL` (only for its `/health` db check), `SENTRY_DSN`, `TAKEIT_*`, `ARCHIVE_*`. Nightly env: `UW_API_KEY`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`, `R2_BUCKET_FULLTAPE`, optional `SENTRY_DSN`.
 
 ## Anthropic Integration
 
