@@ -88,7 +88,99 @@ The code review of both phases returned "continue". Beyond the source scan and t
   - An ordinary Wednesday → Tuesday, the same two sessions the old bound held, since Monday 21:30 UTC is after Monday's close.
 
   The Axiom metadata `lookback_days: 2` became `lookback_trading_days: 2` plus `window_start`.
-  - **History.** Fires from before the deploy that the old window skipped stay unresolved: the fixed cron only reaches back two trading days. Neither table is pruned (no DELETE on `ws_gamma_setup_fires` or `index_candles_1m` anywhere in `api/` or `scripts/`), so a one-off backfill can resolve any of them whose SPX bars exist. The read-only production count of affected fires wasn't run in this session (production reads need the owner's permission). The probe and a backfill UPDATE that mirrors the handler's per-row logic are in the session report.
+  - **History.** Fires from before the deploy that the old window skipped stay unresolved: the fixed cron only reaches back two trading days. Neither table is pruned (no DELETE on `ws_gamma_setup_fires` or `index_candles_1m` anywhere in `api/` or `scripts/`), so a one-off backfill can resolve any of them whose SPX bars exist. The read-only production count of affected fires wasn't run in this session (production reads need the owner's permission). The preview, the backfill UPDATE and the run procedure are under [History backfill](#history-backfill).
+
+## History backfill
+
+The fix reaches back only two trading days, so fires that the old calendar-day window skipped (Friday fires unresolved by Friday's run, fires before a holiday) stay unresolved. Neither table is pruned, so a one-off can resolve every pending fire whose SPX bars exist.
+
+The SQL below mirrors `api/cron/backfill-gamma-setup-outcomes.ts` row for row:
+
+- `ret_15m` / `ret_30m` / `ret_60m`: the first RTH (`market_time = 'r'`) SPX bar in `index_candles_1m` at or after `fired_at` + N min, within the next 90 min.
+- `ret_eod`: the last RTH SPX bar on the fire's ET date, at or after `fired_at`.
+- Sign: `e5_long_put` is entry − end; every other signal is end − entry, where entry is `bar_close`.
+- Only rows still pending (`ret_30m IS NULL`), and only when at least one horizon resolves (the handler skips the row otherwise).
+
+SQL `NUMERIC` arithmetic is exact, while the handler subtracts JS floats, so a value can differ from a cron-written one only around the 1e-12 place.
+
+### The read-only probe
+
+Before anything is written, a read-only probe (SELECTs only, in a read-only transaction) sizes the gap:
+
+- total fires and their date range;
+- how many are pending (`ret_30m IS NULL`) and how many were never written (all four outcomes NULL);
+- pending fires per ET date and weekday, next to that date's count of SPX RTH bars, which shows whether the gap is the Friday and pre-holiday pattern and whether the price data is still there;
+- per ET date, how many pending fires the handler's logic could resolve now.
+
+Section 1 below is the part of it that previews the write.
+
+### Run procedure
+
+1. After this fix is deployed, run section 1 (read-only) against production and share the per-date output with the owner.
+2. Get the owner's go-ahead before writing anything to production.
+3. Run section 2 in one session:
+   - `BEGIN`, then the `UPDATE … RETURNING f.id`;
+   - compare the `RETURNING` row count with the preview's total `resolvable`;
+   - `COMMIT` only if they match; otherwise `ROLLBACK` and investigate.
+4. Re-run section 1. The fires still pending are those without the SPX bars to resolve `ret_30m`. That includes rows whose other horizons resolved, because `ret_30m` is the handler's own pending marker.
+
+```sql
+-- ── 1. Read-only preview: what would be written ──────────────────────────
+WITH r AS (
+  SELECT f.id, f.signal_type, f.bar_close,
+         (f.fired_at AT TIME ZONE 'America/New_York')::date AS et_date,
+         b15.close AS c15, b30.close AS c30, b60.close AS c60, eod.close AS ceod
+  FROM ws_gamma_setup_fires f
+  LEFT JOIN LATERAL (SELECT close FROM index_candles_1m
+     WHERE symbol = 'SPX' AND market_time = 'r'
+       AND timestamp >= f.fired_at + INTERVAL '15 minutes'
+       AND timestamp <= f.fired_at + INTERVAL '105 minutes'
+     ORDER BY timestamp LIMIT 1) b15 ON true
+  LEFT JOIN LATERAL (SELECT close FROM index_candles_1m
+     WHERE symbol = 'SPX' AND market_time = 'r'
+       AND timestamp >= f.fired_at + INTERVAL '30 minutes'
+       AND timestamp <= f.fired_at + INTERVAL '120 minutes'
+     ORDER BY timestamp LIMIT 1) b30 ON true
+  LEFT JOIN LATERAL (SELECT close FROM index_candles_1m
+     WHERE symbol = 'SPX' AND market_time = 'r'
+       AND timestamp >= f.fired_at + INTERVAL '60 minutes'
+       AND timestamp <= f.fired_at + INTERVAL '150 minutes'
+     ORDER BY timestamp LIMIT 1) b60 ON true
+  LEFT JOIN LATERAL (SELECT (array_agg(close ORDER BY timestamp DESC))[1] AS close
+     FROM index_candles_1m
+     WHERE symbol = 'SPX' AND market_time = 'r'
+       AND date = (f.fired_at AT TIME ZONE 'America/New_York')::date
+       AND timestamp >= f.fired_at) eod ON true
+  WHERE f.ret_30m IS NULL
+)
+SELECT et_date, to_char(et_date, 'Dy') AS dow,
+       count(*) AS pending,
+       count(*) FILTER (WHERE c15 IS NOT NULL OR c30 IS NOT NULL
+                          OR c60 IS NOT NULL OR ceod IS NOT NULL) AS resolvable,
+       count(*) FILTER (WHERE c30 IS NOT NULL) AS ret30_resolvable
+FROM r GROUP BY et_date ORDER BY et_date;
+
+-- ── 2. The write (run once, after reviewing the preview) ─────────────────
+-- BEGIN;
+-- WITH r AS ( <same CTE body as above> ),
+-- s AS (
+--   SELECT id,
+--     CASE WHEN c15  IS NULL THEN NULL WHEN signal_type = 'e5_long_put' THEN bar_close - c15  ELSE c15  - bar_close END AS ret_15m,
+--     CASE WHEN c30  IS NULL THEN NULL WHEN signal_type = 'e5_long_put' THEN bar_close - c30  ELSE c30  - bar_close END AS ret_30m,
+--     CASE WHEN c60  IS NULL THEN NULL WHEN signal_type = 'e5_long_put' THEN bar_close - c60  ELSE c60  - bar_close END AS ret_60m,
+--     CASE WHEN ceod IS NULL THEN NULL WHEN signal_type = 'e5_long_put' THEN bar_close - ceod ELSE ceod - bar_close END AS ret_eod
+--   FROM r
+--   WHERE c15 IS NOT NULL OR c30 IS NOT NULL OR c60 IS NOT NULL OR ceod IS NOT NULL
+-- )
+-- UPDATE ws_gamma_setup_fires f
+--    SET ret_15m = s.ret_15m, ret_30m = s.ret_30m,
+--        ret_60m = s.ret_60m, ret_eod = s.ret_eod
+--   FROM s
+--  WHERE f.id = s.id AND f.ret_30m IS NULL
+-- RETURNING f.id;
+-- -- Check the RETURNING count against the preview's `resolvable` total, then:
+-- COMMIT;
+```
 
 ## Files
 
@@ -117,5 +209,5 @@ None. No tables, migrations, env vars or external APIs. The new monitors are cre
 
 ## Open questions
 
-- Historical gamma-setup outcomes: run the read-only count of fires the old window skipped, then the one-off backfill (see History under the review follow-ups).
+- Historical gamma-setup outcomes: run the read-only preview, then the one-off backfill, following [History backfill](#history-backfill).
 - Possible follow-up: neither `cleanup-ws-*` cron calls `reportCronRun`, so neither leaves an Axiom row. That matches the sibling and is out of scope here.

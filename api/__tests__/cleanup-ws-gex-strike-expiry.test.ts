@@ -201,37 +201,57 @@ describe('cleanup-ws-gex-strike-expiry handler', () => {
 
   it.each([
     {
-      projected: '279.5 s',
-      batchMs: 139_750,
-      queries: 3,
+      // Equal terms. Under the old 295 s after-the-batch check, the 280.5 s
+      // case below would have kept going.
+      projection: 'elapsed 139.75 s + slowest 139.75 s = 279.5 s',
+      fullBatchesMs: [139_750],
+      queries: 3, // batch 2 drains pass 1, then pass 2 drains
       stopReason: 'drained',
     },
     {
-      projected: '280.5 s',
-      batchMs: 140_250,
+      projection: 'elapsed 140.25 s + slowest 140.25 s = 280.5 s',
+      fullBatchesMs: [140_250],
       queries: 1,
       stopReason: 'wall_budget',
     },
+    {
+      // Unequal terms, so each one is pinned on its own: `2 * elapsed`
+      // (280.8 s) would stop here.
+      projection: 'elapsed 140.4 s + slowest 139.4 s = 279.8 s',
+      fullBatchesMs: [1_000, 139_400],
+      queries: 4,
+      stopReason: 'drained',
+    },
+    {
+      // `2 * slowest` (200 s) or elapsed alone (190 s) would keep going.
+      projection: 'elapsed 190 s + slowest 100 s = 290 s',
+      fullBatchesMs: [100_000, 90_000],
+      queries: 2,
+      stopReason: 'wall_budget',
+    },
   ])(
-    'elapsed + slowest batch = $projected before the next batch → $stopReason',
-    async ({ batchMs, queries, stopReason }) => {
-      // One full batch taking batchMs; every later batch takes no time and
-      // deletes nothing. Before batch 2 the projection is elapsed (batchMs)
-      // plus the slowest batch so far (batchMs), against the 280 s budget.
-      // At 279.5 s batch 2 runs (pass 1 drains, then pass 2 drains); at
-      // 280.5 s nothing more runs. Under the old 295 s after-the-batch
-      // check, the 280.5 s case would have kept going.
+    'before the next batch, $projection → $stopReason',
+    async ({ fullBatchesMs, queries, stopReason }) => {
+      // Full batches taking the listed times; every later batch takes no
+      // time and deletes nothing. Before each batch after the first, the
+      // projection is elapsed time plus the slowest batch so far, against
+      // the 280 s budget.
       const advance = fakeClock();
-      mockQuery.mockImplementationOnce(async () => {
-        advance(batchMs);
-        return FULL_BATCH;
-      });
+      for (const ms of fullBatchesMs) {
+        mockQuery.mockImplementationOnce(async () => {
+          advance(ms);
+          return FULL_BATCH;
+        });
+      }
 
       const res = mockResponse();
       await handler(authedReq(), res);
 
       expect(res._status).toBe(200);
-      expect(res._json).toMatchObject({ totalDeleted: 50_000, stopReason });
+      expect(res._json).toMatchObject({
+        totalDeleted: fullBatchesMs.length * 50_000,
+        stopReason,
+      });
       expect(mockQuery).toHaveBeenCalledTimes(queries);
     },
   );

@@ -518,6 +518,19 @@ describe('vercel.json crons → SCHEDULE_MAP coverage', () => {
         'export default async function handler() {}',
       [],
     ],
+    // The two shapes the scan can't resolve read as no name, so the
+    // per-job case fails (closed) rather than trusting them.
+    [
+      'nothing from a template-literal name',
+      'export default withCronInstrumentation(`a-job`, run);',
+      [],
+    ],
+    [
+      'nothing from an imported constant',
+      "import { JOB } from './jobs.js';\n" +
+        'export default withCronCheckin(JOB, run);',
+      [],
+    ],
   ])('wrappedJobNames reads %s', (_case, src, want) => {
     expect(wrappedJobNames(src)).toEqual(want);
   });
