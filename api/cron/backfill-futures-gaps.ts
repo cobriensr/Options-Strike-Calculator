@@ -583,9 +583,12 @@ async function repairFlow(
     agedOut: 0,
     pages: 0,
   };
-  // The next run's window starts a day later: a bar before this is not
-  // seen again, so leaving it NULL leaves it NULL for good.
-  const agesOutBeforeMs = windowStart.getTime() + DAY_MS;
+  // The next run's window starts as many days later as the next scheduled
+  // run (0 6 * * 1-6): Saturday's next run is Monday, two days on, every
+  // other day's is the next day. A bar before that start is not seen
+  // again, so leaving it NULL leaves it NULL for good.
+  const daysToNextRun = windowEnd.getUTCDay() === 6 ? 2 : 1;
+  const agesOutBeforeMs = windowStart.getTime() + daysToNextRun * DAY_MS;
   const defer = (bars: readonly FlowBar[]) => {
     result.deferred += 1;
     result.agedOut += bars.filter(

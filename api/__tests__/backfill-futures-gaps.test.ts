@@ -1018,6 +1018,43 @@ describe('backfill-futures-gaps order-flow pass', () => {
     );
   });
 
+  it('a Saturday run counts the window’s oldest TWO days as aging out: the next run is Monday, whose window starts on Friday', async () => {
+    // Saturday 2026-10-03 06:00 UTC: window Wed 09-30 → Sat 10-03 00:00.
+    // Monday's window starts Fri 10-02, so Wed and Thu bars are never
+    // seen again.
+    vi.setSystemTime(new Date('2026-10-03T06:00:00Z'));
+    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      nullFlowRow('NQ', '2026-09-30T13:00:00Z', 10, true), // Wed: ages out
+      nullFlowRow('NQ', '2026-10-01T13:00:00Z', 10, true), // Thu: ages out
+      nullFlowRow('ES', '2026-10-02T14:01:00Z', 10, true), // Fri: kept
+    ]);
+    let id = 1;
+    mockUwFetch.mockImplementation(async (_key: string, path: string) => {
+      if (path === CONTRACTS_PATH) return CONTRACTS;
+      if (path === candlesPath('NQZ6')) {
+        return [
+          candle('2026-09-30T13:00:00Z', 26_000, 50),
+          candle('2026-10-01T13:00:00Z', 26_001, 50),
+        ];
+      }
+      if (path === candlesPath('NQH7')) return [];
+      if (path.startsWith(tradesPrefix('NQZ6'))) {
+        // Never reaches the range start: the oldest range takes the budget.
+        const us = parseUwTimeMicros(olderThan(path))! - 2n;
+        return [print(id++, formatMicrosIso(us), 1, 'buy')];
+      }
+      throw new Error(`unexpected UW path ${path}`);
+    });
+
+    const res = await run();
+
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      flow_ranges_deferred: 3,
+      flow_minutes_aged_out: 2,
+    });
+  });
+
   it('an upstream 5xx on /trades fails the symbol: Sentry exception, status error, never success', async () => {
     mockSql
       .mockResolvedValueOnce([])
