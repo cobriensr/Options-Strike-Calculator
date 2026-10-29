@@ -42,7 +42,6 @@ New to the repo? Read [README.md](../README.md) → [ONBOARDING.md](ONBOARDING.m
 
 - [sidecar/README.md](../sidecar/README.md): Railway service for Take-It SHAP and read-only DuckDB queries over the frozen archive
 - [uw-stream/README.md](../uw-stream/README.md): Railway service consuming the UW websocket into Neon (including `futures_bars`)
-- [classifier/README.md](../classifier/README.md): Railway multileg classifier (retirement approved 2026-10-28, still running)
 - [scripts/ws-canary/README.md](../scripts/ws-canary/README.md): temporary Railway canary for uw-stream's websocket resets
 - [ml/README.md](../ml/README.md): ML pipeline (structure classification, day-type analysis)
 - [ml/experiments/README.md](../ml/experiments/README.md): experiment JSON naming
@@ -91,7 +90,7 @@ By rough domain (look for filenames matching the prefix, ignoring a leading date
 
 ### Key specs (newest first)
 
-- `2026-10-28-classifier-replacement-design.md`: replace the multileg classifier with the exchange's multi-leg flag (approved 2026-10-28)
+- `2026-10-28-classifier-replacement-design.md`: replace the retired multileg classifier with the exchange's multi-leg flag (approved 2026-10-28)
 - `2026-10-28-nightly-pipeline-automation-design.md`: land every trading day's tape in R2 unattended
 - `2026-10-28-uw-futures-orderflow-design.md`: keep the futures order flow, block trades and session stats UW already sends (design, not built)
 - `2026-10-28-gexbot-eod-capture-design.md`: save GEXBot's end-of-day report for every ticker daily

@@ -262,7 +262,7 @@ For an active solo trader running the full stack:
 | Twilio (occasional SMS)         | <$5                        |
 | Schwab / FRED / Finnhub / VAPID | Free                       |
 
-**Realistic total: ~$250–500/month**, with UW the biggest line item. Dropping the Railway services gets you to ~$120–180/month. The calculator, the Schwab-backed panels and the AI analysis still work, but every websocket-fed panel goes empty: futures context, Lottery Finder, Silent Boom, dark pool levels, Interval B/A, and the opening-flow and flow-regime signals (all fed by `uw-stream`). You also lose Take-It SHAP flags (`sidecar`). Spread-leg badges come from the exchange's own multi-leg trade code, so they need no extra service.
+**Realistic total: ~$250–500/month**, with UW the biggest line item. Dropping the Railway services saves roughly $20–40/month of that. The calculator, the Schwab-backed panels and the AI analysis still work, but every websocket-fed panel goes empty: futures context, Lottery Finder, Silent Boom, dark pool levels, Interval B/A, and the opening-flow and flow-regime signals (all fed by `uw-stream`). You also lose Take-It SHAP flags (`sidecar`). Spread-leg badges come from the exchange's own multi-leg trade code, so they need no extra service.
 
 ---
 

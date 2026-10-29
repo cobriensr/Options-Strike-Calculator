@@ -13,7 +13,7 @@ Production-grade 0DTE SPX options analysis platform: Black-Scholes pricing, AI-p
 | Deployment + testing                                         | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)                                                                                                                                                                                               |
 | Trading workflow + position sizing rules                     | [docs/TRADING_WORKFLOW.md](docs/TRADING_WORKFLOW.md)                                                                                                                                                                                   |
 | Design specs and runbooks                                    | [docs/INDEX.md](docs/INDEX.md)                                                                                                                                                                                                         |
-| Subprojects                                                  | [sidecar/README.md](sidecar/README.md), [ml/README.md](ml/README.md), [uw-stream/README.md](uw-stream/README.md), [classifier/README.md](classifier/README.md), [scripts/README.md](scripts/README.md), [e2e/README.md](e2e/README.md) |
+| Subprojects                                                  | [sidecar/README.md](sidecar/README.md), [ml/README.md](ml/README.md), [uw-stream/README.md](uw-stream/README.md), [scripts/README.md](scripts/README.md), [e2e/README.md](e2e/README.md) |
 | Conventions for AI coding agents                             | [CLAUDE.md](CLAUDE.md), [AGENTS.md](AGENTS.md)                                                                                                                                                                                         |
 
 ## Quick start
@@ -27,7 +27,7 @@ npm run dev                      # frontend only,  http://localhost:5173
 npm run dev:full                 # full stack via vercel dev,  http://localhost:3000
 ```
 
-[.env.example](.env.example) is the starting template for `.env.local`. [api/\_lib/env.ts](api/_lib/env.ts) validates the core server vars (database, Redis, auth, API keys, Twilio, observability, classifier); some optional integrations read `process.env` directly. Two setup paths (frontend only, or full stack against live data) are documented in [docs/LOCAL_DEV.md](docs/LOCAL_DEV.md).
+[.env.example](.env.example) is the starting template for `.env.local`. [api/\_lib/env.ts](api/_lib/env.ts) validates the core server vars (database, Redis, auth, API keys, Twilio, observability); some optional integrations read `process.env` directly. Two setup paths (frontend only, or full stack against live data) are documented in [docs/LOCAL_DEV.md](docs/LOCAL_DEV.md).
 
 ## Stack
 
@@ -36,10 +36,10 @@ npm run dev:full                 # full stack via vercel dev,  http://localhost:
 - **Data** — Neon Postgres (`@neondatabase/serverless`), Upstash Redis, Vercel Blob
 - **AI** — Anthropic Claude Opus 4.7 (chart analysis, weekly lesson curation) with Sonnet 4.6 as its fallback and for the pre-check, Periscope lesson curation and plot analysis; OpenAI text-embedding-3-large (lesson dedup, analog-day retrieval)
 - **Market data** — Schwab Trader/Market Data API, Unusual Whales (REST + websocket, including per-trade option prints and CME futures bars), GEXBot (dealer gamma/charm/vanna state), FRED + Finnhub (economic and earnings calendar)
-- **Python services** — `uw-stream/` (UW websocket on Railway), `classifier/` (multileg classifier on Railway), `sidecar/` (Take-It SHAP, frozen archive on Railway), `ml/` (research pipeline)
+- **Python services** — `uw-stream/` (UW websocket on Railway), `sidecar/` (Take-It SHAP, frozen archive on Railway), `ml/` (research pipeline)
 - **Observability** — Sentry, pino structured logs, Axiom (cron-run events), Vercel Analytics + Speed Insights
 
-The `classifier/` service is slated for retirement: the exchange's own multi-leg flag on each print will replace it ([design](docs/superpowers/specs/2026-10-28-classifier-replacement-design.md)). It still runs today.
+Multi-leg trades are flagged from the exchange's own trade code on the anchor print (`api/_lib/anchor-legs.ts`); the former Railway classifier is retired ([design](docs/superpowers/specs/2026-10-28-classifier-replacement-design.md)).
 
 ## What this app does
 
@@ -57,7 +57,7 @@ npm run test:run      # vitest unit tests (no env vars required)
 npm run test:e2e      # Playwright e2e + a11y across chromium/firefox/webkit
 ```
 
-As of 2026-10-28: about 14,800 Vitest tests in 680 files; 41 Playwright specs (chromium on every CI run, all three browsers nightly); 95 pytest files across `ml/`, `sidecar/`, `uw-stream/` and `classifier/`. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full breakdown.
+As of 2026-10-29: about 14,960 Vitest tests in 686 files; 41 Playwright specs (chromium on every CI run, all three browsers nightly); 88 CI-gated pytest files across `ml/`, `sidecar/` and `uw-stream/`. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full breakdown.
 
 ## License
 

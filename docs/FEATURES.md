@@ -534,7 +534,7 @@ Each Lottery Finder and Silent Boom alert carries a calibrated probability that 
 
 ### Multileg labels
 
-The classifier service writes multileg structure labels onto Lottery Finder and Silent Boom fires, where the Take-It feature builder reads them; no panel shows them. Its retirement was approved on 2026-10-28 (`docs/superpowers/specs/2026-10-28-classifier-replacement-design.md`), but it still runs.
+Lottery Finder and Silent Boom rows show a "spread leg" badge when the exchange's multi-leg trade code marks the anchor print as one leg of a spread. `api/_lib/anchor-legs.ts` reads the code and the detect crons store the result in five columns (migration 197). It replaces the retired Railway classifier (`docs/superpowers/specs/2026-10-28-classifier-replacement-design.md`).
 
 ---
 
@@ -612,7 +612,7 @@ As of 2026-10-29:
 - Vercel crons: 76 scheduled handlers in `api/cron/` (83 schedule entries in `vercel.json`)
 - Railway Python services:
   - `uw-stream`: the Unusual Whales websocket consumer. It ingests per-trade option prints, flow alerts and futures trades (building 1-minute bars for 6 CME futures), with further handlers for net flow, per-strike GEX, dark pool prints and Interval B/A alerts
-  - `classifier`: multileg structure labels on Lottery Finder and Silent Boom fires (retirement approved 2026-10-28; still running)
+  - spread-leg badge: the exchange's multi-leg trade code on the anchor print, via `api/_lib/anchor-legs.ts` (replaced the Railway classifier, 2026-10-28)
   - `sidecar`: Take-It SHAP explanations (filled by the `takeit-fill-shap` cron) and DuckDB queries over the frozen historical Parquet archive
 - The ML pipeline (`ml/`) runs as a GitHub Actions workflow that is currently paused (last run 2026-04-17)
 

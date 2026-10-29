@@ -7,7 +7,7 @@ How to get strike-calculator running on a clean clone. Allow ~30 minutes.
 - **Node.js 24.x** — see [.nvmrc](../.nvmrc) and `engines` in `package.json`. Use `nvm use` or install the matching version.
 - **npm 9+**
 - **Vercel CLI** — `npm i -g vercel`. Required for `npm run dev:full`.
-- _(optional)_ **Python** if you intend to touch the Python code: 3.13 for `ml/`, 3.12 for `sidecar/`, `uw-stream/` and `classifier/` (matching their Docker images), each with its own `.venv`. The interpreter is `.venv/bin/python` on macOS/Linux and `.venv/Scripts/python` on Windows. The repo-root, `ml/` and `sidecar/` Makefiles pick the right one by `$(OS)`, so `make <target>` works on both without a `PYTHON=` override.
+- _(optional)_ **Python** if you intend to touch the Python code: 3.13 for `ml/`, 3.12 for `sidecar/` and `uw-stream/` (matching their Docker images), each with its own `.venv`. The interpreter is `.venv/bin/python` on macOS/Linux and `.venv/Scripts/python` on Windows. The repo-root, `ml/` and `sidecar/` Makefiles pick the right one by `$(OS)`, so `make <target>` works on both without a `PYTHON=` override.
 
 ## Setup paths
 
@@ -109,4 +109,4 @@ Migrations live in [api/\_lib/db-migrations.ts](../api/_lib/db-migrations.ts). W
 - [README.md](../README.md) — entry-point index; features, architecture and deployment live in [FEATURES.md](FEATURES.md), [ARCHITECTURE.md](ARCHITECTURE.md) and [DEPLOYMENT.md](DEPLOYMENT.md).
 - [CLAUDE.md](../CLAUDE.md) — project conventions, dev workflow, AI agent guidance.
 - [docs/INDEX.md](INDEX.md) — map of design specs and runbooks.
-- [sidecar/README.md](../sidecar/README.md), [ml/README.md](../ml/README.md), [uw-stream/README.md](../uw-stream/README.md), [classifier/README.md](../classifier/README.md) — Python services and pipeline.
+- [sidecar/README.md](../sidecar/README.md), [ml/README.md](../ml/README.md), [uw-stream/README.md](../uw-stream/README.md) — Python services and pipeline.
