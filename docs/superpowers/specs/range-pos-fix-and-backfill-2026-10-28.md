@@ -31,6 +31,12 @@ Restore `lottery_finder_fires.range_pos_at_trigger` (the session-range position 
    - Flags: `--dry-run`, `--limit`, date range. 50-row timing probe first, then the full run. Progress log per ticker-day batch.
    - Report before/after NULL counts by month, plus ticker-days with no candles.
    - Tests for the pure parts (grouping, row mapping, chunking).
+   - As built:
+     - The pure parts live in `scripts/_lib/range-pos-backfill.mjs` (tests beside it). Plain `node` can't import the TypeScript `uwFetch` or `computeRangePos` (their `./x.js` imports need a bundler, and `uwFetch` brings the prod Redis limiter the crons share), so the script calls UW with its own `fetch` (explicit User-Agent, 15 s timeout, 3 in flight, one retry on 5xx/429/network/timeout) and runs a copy of `computeRangePos` and `CASH_INDEX_ROOTS`, each pinned to its source by a test. Positions are written as `numeric` text, matching the cron's bind.
+     - It refuses to start 08:15–15:30 CT on weekdays unless `--allow-market-hours` is passed: its UW calls skip the shared semaphore, and a 429 there would open the live cron's candle breaker. Every Neon call has a 30 s per-attempt deadline that counts as transient for the retry.
+     - Two differences from the live cron's value are inherent. (1) `spot_at_first` is `NUMERIC(12,4)`, so the backfill uses the 4-dp spot where the cron used the tick's full price: an error of at most 0.00005 ÷ the session range, under 1e-4 for any range of $0.50 or more. (2) The backfill sees the trigger minute's finished candle, where the live cron saw it still forming (or not yet opened). If price set a new session high or low later in that same minute, the backfill's range is wider by that move. That's usually tiny, but it isn't bounded in general.
+     - After a full run, `VACUUM (ANALYZE) lottery_finder_fires` (about 395K rows rewritten); owner approval pending.
+     - 2026-10-28 was still in session when the run was prepared, so it needs a second pass after midnight CT: `--from 2026-10-28 --to 2026-10-28`.
 
 ## Data dependencies
 
