@@ -376,3 +376,52 @@ def test_explanation_to_dict_is_json_serializable(tmp_path: Path) -> None:
     parsed = json.loads(payload)
     assert "prob_calibrated" in parsed
     assert "top_positive" in parsed
+
+
+# ── Feature contract with the live featurizer ────────────────────────────────
+
+# gex_* feature names that api/_lib/takeit-features.ts actually sends at score
+# time (see the gex_strike_* entries in its feature map). Mirror only the
+# gex_* handling: a training feature the live scorer never sends is scored as
+# NaN by the sidecar. Add a name here only together with the live wiring.
+_LIVE_SERVED_GEX_FEATURES = {
+    "gex_strike_call_minus_put",
+    "gex_strike_call_ask_minus_bid",
+    "gex_strike_put_ask_minus_bid",
+}
+
+# Every gex_* column build_training_set.py SELECTs for the alert tables.
+_SELECTED_GEX_COLS = [
+    "gex_strike_call_minus_put",
+    "gex_strike_call_ask_minus_bid",
+    "gex_strike_put_ask_minus_bid",
+    "gex_strike_actual_strike",
+    "gex_one_cvroflow",
+    "gex_net_put_dex",
+    "gex_one_dexoflow",
+    "gex_one_gexoflow",
+    "gex_zcvr",
+    "gex_zero_gamma",
+    "gex_spot",
+]
+
+
+def test_prepare_features_only_selects_gex_features_the_live_featurizer_serves() -> None:
+    df = _synthetic_lottery_frame()
+    rng = np.random.default_rng(0)
+    for col in _SELECTED_GEX_COLS:
+        df[col] = rng.normal(size=len(df))
+    df["gex_captured_at"] = pd.Timestamp("2026-05-01", tz="UTC")
+
+    _, _, feature_cols, _ = prepare_features(df, "lottery")
+
+    selected_gex = {c for c in feature_cols if c.startswith("gex_")}
+    assert selected_gex <= _LIVE_SERVED_GEX_FEATURES
+    for unserved in (
+        "gex_one_cvroflow",
+        "gex_net_put_dex",
+        "gex_one_dexoflow",
+        "gex_one_gexoflow",
+        "gex_zcvr",
+    ):
+        assert unserved not in feature_cols

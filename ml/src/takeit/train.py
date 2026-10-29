@@ -99,6 +99,16 @@ NON_FEATURE_COLS: Final = {
     "gex_captured_at",
     "gex_zero_gamma",
     "gex_spot",
+    # GexBot fire-time scalars the live featurizer (api/_lib/takeit-features.ts)
+    # never serves: a bundle trained on them would be scored with NaN. They are
+    # also missing for out-of-universe tickers, so their missingness encodes
+    # ticker identity. Re-adding them needs the re-probe plus the live
+    # featurizer wiring together.
+    "gex_one_cvroflow",
+    "gex_net_put_dex",
+    "gex_one_dexoflow",
+    "gex_one_gexoflow",
+    "gex_zcvr",
 }
 
 CATEGORICAL_COLS: Final = {
