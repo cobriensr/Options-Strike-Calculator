@@ -404,7 +404,9 @@ Each is from the 2026-10-28 review of UW's script (line numbers are in `.claude/
 - [ ] **Step 2:** Create the Railway service `nightly` from the GitHub repo (root directory `nightly`, config file `nightly/railway.toml`) in the existing project. Check that the cron schedule shows `15 7 * * 2-6`.
 - [ ] **Step 3:** Variables:
   - `UW_API_KEY = ${{uw-stream.UW_API_KEY}}` and `SENTRY_DSN = ${{uw-stream.SENTRY_DSN}}` as Railway references.
-  - **Owner sets** `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL` and `R2_BUCKET_FULLTAPE` in the Railway dashboard; Claude never handles their values.
+  - `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL` and `R2_BUCKET_FULLTAPE`: set with the authed Railway CLI (owner, 2026-10-28: "you should be able to handle those values via the railway cli which is authed").
+    - A scratch script reads them from `F:/dev/strike-calculator/.env.local` and passes them to `railway variables` for the `nightly` service. It prints names only; the values never appear in a command line, log or chat. Check `railway variables --help` for the set syntax first.
+    - Afterwards list the service's variable names (not values) to confirm all four are set.
 - [ ] **Step 4:** Add an R2 lifecycle rule that aborts incomplete multipart uploads after 1 day: `put_bucket_lifecycle_configuration` through the S3 API, or the Cloudflare dashboard. Read it back.
 - [ ] **Step 5:** Trigger a first run from Railway. Expected:
   - logs show up to 30 days `landed`, newest first, with no `InsecureRequestWarning`;
