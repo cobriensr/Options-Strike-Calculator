@@ -151,6 +151,41 @@ Owner decisions (each becomes a phase once decided; default pick in brackets):
 
 Run order: P3 → P4 → P9 → P10a → P10b → P5 → P6 → P7 → P8.
 
+## D1 revised (owner, 2026-10-29 09:00 CT) — supersedes the negation above
+
+The P10b review measured the two feeds side by side on 2026-05-26 (same
+expiry and strikes, minutes apart): per-strike Spearman between UW scraper
+gamma and GEXBot gamma ≈ +0.04 (208 slice pairs; within-feed 0.94 and 0.80).
+GEXBot is a classified **taker flow** imbalance; UW Periscope was a
+market-maker **position** estimate. They are different measurements, not one
+measurement with opposite signs.
+
+Owner decision: keep the sources separate, with separate rules per source.
+- **No negation.** GEXBot gamma keeps its own (taker) sign everywhere and is
+  labelled as such. Every `periscope_snapshots` row is tagged with `source`
+  ('scraper' before the cutover instant 2026-05-26T17:20Z, 'gexbot' after).
+- **UW-tuned rules run only on UW data.** Since the cutover all live data is
+  GEXBot, so these pause on GEXBot data until GEXBot-specific versions exist:
+  the Periscope lottery gamma filters, the gamma setups (E1, PCS Monday, …),
+  and the analyze prompt's Periscope gamma floor/ceiling/asymmetry rules.
+  Claude still receives GEXBot gamma, labelled with the vendor's meaning.
+- **Build GEXBot-specific rules** from GEXBot-era history, starting from the
+  vendor's own guidance (taker-long strikes as walls in falling vol, etc.).
+- **Compare GEXBot vs UW live** to learn how each should inform trading. This
+  needs UW Periscope captured again: the scraper stopped 2026-05-26 and the
+  UW `periscope:SPX` websocket channel is not captured (no
+  `ws_periscope_snapshots` table on prod). New capture via `uw-stream`,
+  own spec.
+
+Revised phases (replace P10b):
+
+| Phase | Scope |
+|---|---|
+| P10b′ | Rework 97d7074f/295fa13b: drop every negation; populate writes `source = 'gexbot'`; labels say GEXBot taker-side sign (no MM claim) for gamma, charm, vanna; the script becomes a run-once, resumable **source-tagging** backfill (no value change), same discriminator + fingerprint check. Apply #194 before deploy; after hours |
+| P11 | Pause UW-tuned gamma rules on `source = 'gexbot'` data (lottery Periscope detectors, gamma-setup detector, analyze prompt rules), each surfacing a clear "paused: tuned on UW data" note (UI, Axiom `meta`, prompt); no deletion. Review with `analyze-prompt-reviewer`. After hours |
+| R1 (research) | GEXBot-specific rules from GEXBot-era history (pre-registered, vendor semantics) |
+| S1 (spec) | UW Periscope websocket capture in `uw-stream` → separate table, so UW and GEXBot can be compared live (Railway deploy after the close; handler before `WS_CHANNELS`) |
+
 D5 note (2026-10-28): the daily `/hist/eod` capture is owned by a separate
 spec from another session, `2026-10-28-gexbot-eod-capture-design.md` (R2
 bucket, all tickers). It is out of scope here; the rest of D5 (persist Classic
