@@ -94,7 +94,7 @@
     "@vercel/node": "^5.7.5",
     "@vitejs/plugin-react": "^5.1.4",
     "@vitest/coverage-v8": "^4.1.12",
-    "@vitest/ui": "^4.1.12",
+    "@vitest/ui": "^5.0.5",
     "audit-ci": "^7.1.0",
     "eslint": "^10.2.1",
     "eslint-config-prettier": "^10.1.8",
