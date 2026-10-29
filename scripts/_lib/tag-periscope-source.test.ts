@@ -1,8 +1,8 @@
 // @vitest-environment node
 
 /**
- * REAL-SQL test for the one-time GEXBot gamma re-sign
- * (scripts/resign-gexbot-gamma.mts → ./resign-gexbot-gamma.ts).
+ * REAL-SQL test for the one-time periscope_snapshots source backfill
+ * (scripts/tag-periscope-source.mts → ./tag-periscope-source.ts).
  *
  * periscope_snapshots comes from replaying the REAL migrations #140
  * (table), #141 (timeframe) and #194 (source) on pglite. Only the DB
@@ -12,8 +12,9 @@
  * Seeded rows mirror production (measured 2026-10-28): scraper slices
  * carry the UW label of the PRIOR 10-min CT slot (or no label), GEXBot
  * slices carry the slot their own captured_at falls in, and the cutover
- * day 2026-05-26 holds both eras (last scraper slice 17:13:26Z, first
- * GEXBot slice 17:29:32Z).
+ * day 2026-05-26 holds both feeds (last scraper slice 17:13:26Z, first
+ * GEXBot slice 17:29:32Z). Owner decision D1 revised (2026-10-29): the
+ * backfill only tags rows; no value changes, in either feed.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -33,7 +34,7 @@ vi.mock('../../api/_lib/db.js', () => ({
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
-import { GEXBOT_CUTOVER, resignDay, runResign } from './resign-gexbot-gamma.js';
+import { runTag, tagDay } from './tag-periscope-source.js';
 
 interface Seed {
   capturedAt: string;
@@ -44,7 +45,7 @@ interface Seed {
   source?: string;
 }
 
-/** One slice per tuple: [captured_at, timeframe, gamma, charm, vanna]. */
+/** One slice: gamma, charm and vanna rows at one captured_at. */
 function slice(
   capturedAt: string,
   timeframe: string | null,
@@ -78,15 +79,17 @@ const GEXBOT: Seed[] = [
 ];
 
 /**
- * Rows the new populate code already wrote (negated and tagged), on the
- * same ET day as untagged GEXBot rows: the deploy day, when the code
- * ships mid-session and the script runs after the close.
+ * Rows the new populate code already wrote (tagged), on the same ET day
+ * as untagged GEXBot rows: the deploy day, when the code ships and the
+ * script runs after the close.
  */
 const ALREADY_TAGGED: Seed[] = slice(
   '2026-10-27T20:00:00Z',
   '15:00 - 15:10',
   [-50, 7, 8],
 ).map((r) => ({ ...r, source: 'gexbot' }));
+
+const ALL = [...SCRAPER, ...GEXBOT, ...ALREADY_TAGGED];
 
 async function seed(db: PGlite, rows: Seed[]): Promise<void> {
   for (const r of rows) {
@@ -136,6 +139,7 @@ beforeEach(async () => {
     logs.push(args.map(String).join(' '));
   };
   vi.spyOn(console, 'log').mockImplementation(capture);
+  vi.spyOn(console, 'warn').mockImplementation(capture);
   vi.spyOn(console, 'error').mockImplementation(capture);
 });
 
@@ -144,45 +148,38 @@ afterEach(async () => {
   await db.close();
 });
 
-describe('resign-gexbot-gamma (pglite)', () => {
-  it('the cutover sits between the last scraper and the first GEXBot row', () => {
-    const t = Date.parse(GEXBOT_CUTOVER);
-    expect(t).toBeGreaterThan(Date.parse('2026-05-26T17:13:26.475Z'));
-    expect(t).toBeLessThan(Date.parse('2026-05-26T17:29:32.914Z'));
-  });
+/** Wrap the client's transaction() so a test can act around one call. */
+function onTransaction(
+  hook: (call: number, run: () => Promise<unknown[][]>) => Promise<unknown[][]>,
+): void {
+  const sql = holder.sql as ReturnType<typeof neonOverPglite>;
+  const real = sql.transaction;
+  let calls = 0;
+  sql.transaction = (queries) => {
+    calls += 1;
+    return hook(calls, () => real(queries));
+  };
+}
 
-  it('one run negates and tags GEXBot gamma, tags other GEXBot rows unchanged, tags scraper rows unchanged', async () => {
-    await seed(db, [...SCRAPER, ...GEXBOT, ...ALREADY_TAGGED]);
+describe('tag-periscope-source (pglite)', () => {
+  it('one run tags scraper rows and GEXBot rows and changes no value', async () => {
+    await seed(db, ALL);
 
-    expect(await runResign({ dryRun: false })).toBe(0);
+    expect(await runTag({ dryRun: false })).toBe(0);
 
     const after = await snapshot(db);
+    expect(after).toHaveLength(ALL.length);
     const scraperAt = new Set(SCRAPER.map((r) => key(r.capturedAt)));
-    const gexbotAt = new Set(GEXBOT.map((r) => key(r.capturedAt)));
-    const seeded = [...SCRAPER, ...GEXBOT, ...ALREADY_TAGGED];
-    expect(after).toHaveLength(seeded.length);
-
     for (const [i, row] of after.entries()) {
-      const before = seeded[i]!;
-      const at = key(before.capturedAt);
-      if (scraperAt.has(at)) {
-        expect(row).toMatchObject({ value: before.value, source: 'scraper' });
-      } else if (gexbotAt.has(at)) {
-        const want =
-          before.panel === 'gamma' && before.value !== 0
-            ? -before.value
-            : before.value;
-        expect(row).toMatchObject({ value: want, source: 'gexbot' });
-      } else {
-        // Written by the new populate code: already MM-signed, left alone.
-        expect(row).toMatchObject({ value: before.value, source: 'gexbot' });
-      }
+      const before = ALL[i]!;
+      const want = scraperAt.has(key(before.capturedAt)) ? 'scraper' : 'gexbot';
+      // Every value, gamma included, is exactly what was stored.
+      expect(row).toMatchObject({ value: before.value, source: want });
     }
-    // Spot checks on the cutover day.
     expect(after).toContainEqual({
       captured_at: '2026-05-26T17:29:32.914Z',
       panel: 'gamma',
-      value: 1295.76,
+      value: -1295.76,
       source: 'gexbot',
     });
     expect(after).toContainEqual({
@@ -191,56 +188,55 @@ describe('resign-gexbot-gamma (pglite)', () => {
       value: 6,
       source: 'scraper',
     });
-    expect(logs.join('\n')).toMatch(
-      /Done: negated 3 gamma rows, tagged 6 GEXBot rows and 12 scraper rows/,
-    );
+    const out = logs.join('\n');
+    expect(out).toMatch(/Done: tagged 9 GEXBot rows and 12 scraper rows/);
+    expect(out).toMatch(/Verified: no row is left with source IS NULL/);
+    expect(out).not.toMatch(/warning/);
   });
 
   it('a second run changes nothing', async () => {
-    await seed(db, [...SCRAPER, ...GEXBOT, ...ALREADY_TAGGED]);
-    expect(await runResign({ dryRun: false })).toBe(0);
+    await seed(db, ALL);
+    expect(await runTag({ dryRun: false })).toBe(0);
     const once = await snapshot(db);
 
     logs = [];
-    expect(await runResign({ dryRun: false })).toBe(0);
+    expect(await runTag({ dryRun: false })).toBe(0);
     expect(await snapshot(db)).toEqual(once);
     expect(logs.join('\n')).toMatch(/Nothing to do/);
   });
 
   it('re-running a day (a retried transaction whose commit was lost) changes nothing', async () => {
-    await seed(db, [...SCRAPER, ...GEXBOT, ...ALREADY_TAGGED]);
-    const none = { gammaNegated: 0, gexbotTagged: 0, scraperTagged: 0 };
-    // The cutover day holds both eras; 10-27 also holds new-code rows.
-    expect(await resignDay('2026-05-26')).toEqual({
-      gammaNegated: 1,
-      gexbotTagged: 2,
+    await seed(db, ALL);
+    const none = { gexbotTagged: 0, scraperTagged: 0 };
+    // The cutover day holds both feeds; 10-27 also holds new-code rows.
+    expect(await tagDay('2026-05-26')).toEqual({
+      gexbotTagged: 3,
       scraperTagged: 3,
     });
-    expect(await resignDay('2026-10-27')).toEqual({
-      gammaNegated: 2,
-      gexbotTagged: 4,
+    expect(await tagDay('2026-10-27')).toEqual({
+      gexbotTagged: 6,
       scraperTagged: 0,
     });
     const once = await snapshot(db);
 
-    expect(await resignDay('2026-05-26')).toEqual(none);
-    expect(await resignDay('2026-10-27')).toEqual(none);
+    expect(await tagDay('2026-05-26')).toEqual(none);
+    expect(await tagDay('2026-10-27')).toEqual(none);
     expect(await snapshot(db)).toEqual(once);
   });
 
   it('--dry-run prints the counts and writes nothing', async () => {
-    await seed(db, [...SCRAPER, ...GEXBOT, ...ALREADY_TAGGED]);
+    await seed(db, ALL);
     const before = await snapshot(db);
 
-    expect(await runResign({ dryRun: true })).toBe(0);
+    expect(await runTag({ dryRun: true })).toBe(0);
 
     expect(await snapshot(db)).toEqual(before);
     const out = logs.join('\n');
     expect(out).toMatch(/DRY RUN/);
     expect(out).toMatch(
-      /5 ET days · 3 gamma rows to negate · 6 GEXBot rows to tag · 12 scraper rows to tag/,
+      /5 ET days · 9 GEXBot rows to tag · 12 scraper rows to tag \(21 total\)/,
     );
-    expect(out).toMatch(/2026-05-26 {2}negate 1 · gexbot 2 · scraper 3/);
+    expect(out).toMatch(/2026-05-26 {2}gexbot 3 · scraper 3/);
     expect(out).toMatch(/Dry run: nothing written/);
   });
 
@@ -254,13 +250,13 @@ describe('resign-gexbot-gamma (pglite)', () => {
     );
     holder.sql = neonOverPglite(bare);
 
-    expect(await runResign({ dryRun: false })).toBe(1);
+    expect(await runTag({ dryRun: false })).toBe(1);
 
     const r = await bare.query<{ value: number }>(
       'SELECT value::float8 AS value FROM periscope_snapshots',
     );
     expect(r.rows).toEqual([{ value: 5 }]);
-    expect(logs.join('\n')).toMatch(/migration #194/);
+    expect(logs.join('\n')).toMatch(/apply migration #194 first/);
     await bare.close();
   });
 
@@ -272,7 +268,7 @@ describe('resign-gexbot-gamma (pglite)', () => {
     ]);
     const before = await snapshot(db);
 
-    expect(await runResign({ dryRun: false })).toBe(1);
+    expect(await runTag({ dryRun: false })).toBe(1);
 
     expect(await snapshot(db)).toEqual(before);
     expect(logs.join('\n')).toMatch(
@@ -280,51 +276,75 @@ describe('resign-gexbot-gamma (pglite)', () => {
     );
   });
 
-  it('a DB error mid-day rolls that whole day back (gamma flip included) and propagates; re-running finishes the job', async () => {
+  it('a DB error mid-day rolls that whole day back and propagates; re-running finishes the job', async () => {
     await seed(db, [...SCRAPER, ...GEXBOT]);
     const sql = holder.sql as ReturnType<typeof neonOverPglite>;
-    const realTransaction = sql.transaction;
-    let calls = 0;
     // Days run oldest first: 03-06, 03-09, 05-08, 05-26, 10-27. On the
-    // 4th (the cutover day) a failing statement runs AFTER the three
-    // UPDATEs, inside the same transaction.
+    // 4th (the cutover day) a failing statement runs AFTER both UPDATEs,
+    // inside the same transaction.
+    const real = sql.transaction;
+    let calls = 0;
     sql.transaction = (queries) => {
       calls += 1;
-      return realTransaction(
-        calls === 4 ? [...queries, sql`SELECT 1 / 0`] : queries,
-      );
+      return real(calls === 4 ? [...queries, sql`SELECT 1 / 0`] : queries);
     };
 
-    await expect(runResign({ dryRun: false })).rejects.toThrow(
-      /division by zero/,
-    );
+    await expect(runTag({ dryRun: false })).rejects.toThrow(/division by zero/);
     const mid = await snapshot(db);
     // The three earlier (scraper) days committed: 9 rows tagged.
     expect(mid.filter((r) => r.source === 'scraper')).toHaveLength(9);
     expect(mid.filter((r) => r.source === 'gexbot')).toHaveLength(0);
-    // The cutover day rolled back whole: its gamma is still taker-signed.
-    expect(mid).toContainEqual({
-      captured_at: '2026-05-26T17:29:32.914Z',
-      panel: 'gamma',
-      value: -1295.76,
-      source: null,
+
+    sql.transaction = real;
+    expect(await runTag({ dryRun: false })).toBe(0);
+    expect((await snapshot(db)).filter((r) => r.source == null)).toHaveLength(
+      0,
+    );
+  });
+
+  it('exits 1 when rows are still NULL after the run (written while it ran)', async () => {
+    await seed(db, [...SCRAPER, ...GEXBOT]);
+    // After the last day commits, an untagged row lands on a day the run
+    // already finished (old code still deployed, or a late insert).
+    onTransaction(async (call, run) => {
+      const out = await run();
+      if (call === 5) {
+        await seed(
+          db,
+          slice('2026-03-06T15:31:00Z', '09:20 - 09:30', [1, 1, 1], 7200),
+        );
+      }
+      return out;
     });
 
-    sql.transaction = realTransaction;
-    expect(await runResign({ dryRun: false })).toBe(0);
-    const done = await snapshot(db);
-    expect(done.filter((r) => r.source == null)).toHaveLength(0);
-    expect(done).toContainEqual({
-      captured_at: '2026-05-26T17:29:32.914Z',
-      panel: 'gamma',
-      value: 1295.76,
-      source: 'gexbot',
+    expect(await runTag({ dryRun: false })).toBe(1);
+
+    expect(logs.join('\n')).toMatch(
+      /3 rows still have no source[\s\S]*Re-run to finish/,
+    );
+    expect((await snapshot(db)).filter((r) => r.source == null)).toHaveLength(
+      3,
+    );
+  });
+
+  it("warns when a day's tagged counts differ from its planned counts", async () => {
+    await seed(db, [...SCRAPER, ...GEXBOT]);
+    // Between the scan and the cutover day's transaction, one more GEXBot
+    // slice lands on that day: 3 more rows tagged than planned.
+    onTransaction(async (call, run) => {
+      if (call === 4) {
+        await seed(
+          db,
+          slice('2026-05-26T17:39:32Z', '12:30 - 12:40', [1, 1, 1], 7300),
+        );
+      }
+      return run();
     });
-    expect(
-      done.find(
-        (r) =>
-          r.captured_at === '2026-10-27T19:59:00.000Z' && r.panel === 'gamma',
-      )?.value,
-    ).toBe(-6500.28);
+
+    expect(await runTag({ dryRun: false })).toBe(0);
+
+    expect(logs.join('\n')).toMatch(
+      /warning: 2026-05-26 tagged gexbot 6 · scraper 3, planned gexbot 3 · scraper 3/,
+    );
   });
 });
