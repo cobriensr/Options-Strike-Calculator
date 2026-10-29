@@ -61,4 +61,4 @@ As of 2026-10-28: about 14,800 Vitest tests in 680 files; 41 Playwright specs (c
 
 ## License
 
-[GNU General Public License v3.0](LICENSE.md).
+[GNU Affero General Public License v3.0](LICENSE.md).

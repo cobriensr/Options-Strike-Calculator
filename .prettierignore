@@ -12,3 +12,5 @@ playwright-report
 .claude/worktrees
 .agents/skills
 .clone
+# Canonical legal text from gnu.org; never reformat
+LICENSE.md
