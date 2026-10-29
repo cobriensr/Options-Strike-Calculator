@@ -9,7 +9,30 @@
 // importable from this path so existing LF call sites don't churn.
 import type { OptionType, ScoreTier } from '../../types/index.js';
 import type { GexbotFireContext } from '../../types/gexbot.js';
+import type {
+  AnchorLegKind,
+  SpreadLeg,
+  SpreadShape,
+} from '../../types/spread-legs.js';
 export type { OptionType };
+
+/**
+ * How many of a chain-day's fires printed as one leg of a multi-leg order
+ * (the exchange's trade code on each fire's anchor print), with the shape
+ * and legs of the most recent such fire. Drives the row's spread-leg
+ * badge. Spec: docs/superpowers/specs/2026-10-28-classifier-replacement-design.md
+ * ("Badge").
+ */
+export interface LotterySpreadLegSummary {
+  /** k: spread-leg fires on the chain-day (≥ 1). */
+  fires: number;
+  /** n: all fires on the chain-day. */
+  totalFires: number;
+  /** Shape of the most recent spread-leg fire. */
+  shape: SpreadShape;
+  /** Legs of the most recent spread-leg fire, anchor first. */
+  legs: SpreadLeg[];
+}
 export type LotteryMode =
   | 'A_intraday_0DTE'
   | 'B_multi_day_DTE1_3'
@@ -301,7 +324,27 @@ export interface LotteryFire {
      * inserted before migration #176 (no backfill).
      */
     spotAtTrigger: number | null;
+    /**
+     * Exchange leg kind of the prior fire's anchor print. NULL when it had
+     * no anchor print or no trade code, and on fires from before
+     * migration #197.
+     */
+    anchorLegKind?: AnchorLegKind | null;
   }>;
+
+  /**
+   * Exchange leg kind of this (latest) fire's anchor print: `single`, one
+   * leg of a multi-leg order (`multi_leg`), or an option leg of a
+   * stock+option order (`stock_tied`). NULL when no anchor print was
+   * found or it carried no trade code, and on fires from before migration
+   * #197. Information only.
+   */
+  anchorLegKind?: AnchorLegKind | null;
+  /**
+   * Spread-leg count across the chain-day's fires, null when none printed
+   * as a spread leg. Information only: no filtering or sorting reads it.
+   */
+  spreadLeg?: LotterySpreadLegSummary | null;
 
   /**
    * TRUE when this chain made the daily "REIGNITION" top-N — i.e. fired

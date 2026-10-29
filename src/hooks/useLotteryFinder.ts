@@ -19,16 +19,91 @@
  */
 
 import { useEffect, useMemo, useRef } from 'react';
+import { z } from 'zod';
 import { POLL_INTERVALS } from '../constants/index.js';
 import { getCTDateStr } from '../utils/timezone.js';
 import { useFetchedData, type UseFetchedDataResult } from './useFetchedData.js';
+import {
+  claimReport,
+  INVALID_SHAPE_ERROR,
+  summarizeZodIssues,
+} from '../lib/response-guard.js';
+import { captureUnlessAuth } from '../lib/sentry-helpers.js';
 import type {
   LotteryFinderResponse,
   LotteryMode,
   LotterySortMode,
+  LotterySpreadLegSummary,
   OptionType,
   TimeOfDay,
 } from '../components/LotteryFinder/types.js';
+import type {
+  AnchorLegKind,
+  SpreadLeg,
+  SpreadShape,
+} from '../types/spread-legs.js';
+
+// ── Response schema ──────────────────────────────────────────────────────
+// Guards the spread-leg fields (spec 2026-10-28-classifier-replacement-
+// design.md, "Badge"): the row badge feeds `spreadLeg` to describeSpread,
+// and the reignites list reads each fire's `anchorLegKind`. Every other
+// field passes through unchecked (looseObject), as it did before; checking
+// the rest is Phase 2 of panel-payload-guards-2026-10-28.md. All three are
+// optional and nullable, because fires from before migration #197 have
+// none of them.
+
+// Mapped objects, so adding a kind or shape to the shared union fails to
+// compile until it is listed here, instead of rejecting the feed at runtime.
+const ANCHOR_LEG_KINDS: { [K in AnchorLegKind]: K } = {
+  single: 'single',
+  multi_leg: 'multi_leg',
+  stock_tied: 'stock_tied',
+};
+const SPREAD_SHAPES: { [S in SpreadShape]: S } = {
+  vertical: 'vertical',
+  calendar: 'calendar',
+  diagonal: 'diagonal',
+  straddle: 'straddle',
+  combo: 'combo',
+  butterfly: 'butterfly',
+  three_leg: 'three_leg',
+  four_leg: 'four_leg',
+  four_leg_multi_expiry: 'four_leg_multi_expiry',
+  complex: 'complex',
+  unpaired: 'unpaired',
+  other: 'other',
+};
+
+const anchorLegKindSchema = z.enum(ANCHOR_LEG_KINDS).nullish();
+
+const spreadLegSchema = z.object({
+  optionType: z.enum(['C', 'P']),
+  strike: z.number(),
+  expiry: z.string(),
+  size: z.number(),
+  price: z.number(),
+  tradeCode: z.string().nullable(),
+}) satisfies z.ZodType<SpreadLeg>;
+
+const spreadLegSummarySchema = z.object({
+  fires: z.int().positive(),
+  totalFires: z.int().positive(),
+  shape: z.enum(SPREAD_SHAPES),
+  legs: z.array(spreadLegSchema),
+}) satisfies z.ZodType<LotterySpreadLegSummary>;
+
+const fireSchema = z.looseObject({
+  anchorLegKind: anchorLegKindSchema,
+  spreadLeg: spreadLegSummarySchema.nullish(),
+  historicalFires: z
+    .array(z.looseObject({ anchorLegKind: anchorLegKindSchema }))
+    .optional(),
+});
+
+const lotteryFinderResponseSchema = z.looseObject({
+  fires: z.array(fireSchema),
+  reignitedFires: z.array(fireSchema).optional(),
+});
 
 interface UseLotteryFinderArgs {
   /** YYYY-MM-DD trading day. */
@@ -165,11 +240,42 @@ export function useLotteryFinder({
   // data (the `if (fetched.data == null) return` guard in the save effect
   // skips a gated-null response) and every derived value stays coherent.
   const todayCt = getCTDateStr(new Date());
+
+  // A body that fails the schema is handled like a failed fetch: the
+  // throw lands in useFetchedData's catch, which sets `error` and keeps
+  // the last good payload. The latch reports a failure that repeats every
+  // poll once per date, and a good response re-arms it.
+  const reportedKeyRef = useRef<string | null>(null);
+  const parse = (raw: unknown): LotteryFinderResponse => {
+    const parsed = lotteryFinderResponseSchema.safeParse(raw);
+    if (!parsed.success) {
+      if (claimReport(reportedKeyRef, date)) {
+        captureUnlessAuth(
+          new Error('lottery-finder response failed schema validation'),
+          {
+            contexts: {
+              lotteryFinder: {
+                date,
+                ...summarizeZodIssues(parsed.error.issues),
+              },
+            },
+          },
+        );
+      }
+      throw new Error(INVALID_SHAPE_ERROR);
+    }
+    reportedKeyRef.current = null;
+    // The schema checks only the spread-leg fields; return the body as
+    // received rather than a re-built copy of every poll's payload.
+    return raw as LotteryFinderResponse;
+  };
+
   const fetched = useFetchedData<LotteryFinderResponse>({
     url,
     marketOpen,
     pollIntervalMs: POLL_INTERVALS.OTM_FLOW,
     historical: minute != null || page !== 0 || date !== todayCt,
+    parse,
     requestKey: date,
     responseKey: (d) => d.date?.slice(0, 10),
   });

@@ -8,12 +8,20 @@ import { renderHook, waitFor, act } from '@testing-library/react';
 import { useLotteryFinder } from '../hooks/useLotteryFinder';
 import { POLL_INTERVALS } from '../constants';
 import { getCTDateStr } from '../utils/timezone';
+import { captureUnlessAuth } from '../lib/sentry-helpers';
+import { INVALID_SHAPE_ERROR } from '../lib/response-guard';
 import type { LotteryFinderResponse } from '../components/LotteryFinder/types';
+
+vi.mock('../lib/sentry-helpers', () => ({
+  captureUnlessAuth: vi.fn(),
+}));
+const mockCaptureUnlessAuth = vi.mocked(captureUnlessAuth);
 
 const fetchMock = vi.fn();
 
 beforeEach(() => {
   fetchMock.mockReset();
+  mockCaptureUnlessAuth.mockReset();
   globalThis.fetch = fetchMock as unknown as typeof fetch;
 });
 
@@ -600,5 +608,206 @@ describe('useLotteryFinder', () => {
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.data).toBeNull();
+  });
+});
+
+// ============================================================
+// Spread-leg fields (spec 2026-10-28-classifier-replacement-design.md,
+// "Badge"). The response schema guards the fields the row badge and the
+// reignites markers render from; everything else passes through.
+// ============================================================
+
+describe('useLotteryFinder: spread-leg response schema', () => {
+  type Fire = LotteryFinderResponse['fires'][number];
+  const fire = (fields: Record<string, unknown>): Fire =>
+    ({ id: 1, ...fields }) as unknown as Fire;
+
+  const LEGS = [
+    {
+      optionType: 'C',
+      strike: 726,
+      expiry: '2026-05-07',
+      size: 40,
+      price: 1.15,
+      tradeCode: 'mlet',
+    },
+    {
+      optionType: 'C',
+      strike: 727,
+      expiry: '2026-05-07',
+      size: 40,
+      price: 0.7,
+      tradeCode: null,
+    },
+  ];
+  const SPREAD_LEG = { fires: 2, totalFires: 5, shape: 'vertical', legs: LEGS };
+
+  async function load(body: unknown) {
+    fetchMock.mockResolvedValueOnce(jsonResponse(body));
+    const hook = renderHook(() =>
+      useLotteryFinder({ date: '2026-05-07', marketOpen: false }),
+    );
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+    return hook;
+  }
+
+  it('accepts and passes through the spread-leg fields', async () => {
+    const body = emptyFinder({
+      fires: [
+        fire({
+          anchorLegKind: 'single',
+          spreadLeg: SPREAD_LEG,
+          historicalFires: [
+            {
+              triggerTimeCt: '2026-05-07T14:00:00Z',
+              entryPrice: 0.5,
+              spotAtTrigger: 100,
+              anchorLegKind: 'multi_leg',
+            },
+          ],
+        }),
+      ],
+      reignitedFires: [
+        fire({ id: 2, anchorLegKind: 'stock_tied', spreadLeg: null }),
+      ],
+    });
+    const { result } = await load(body);
+    expect(result.current.error).toBeNull();
+    expect(result.current.data?.fires[0]).toMatchObject({
+      anchorLegKind: 'single',
+      spreadLeg: SPREAD_LEG,
+      historicalFires: [{ anchorLegKind: 'multi_leg' }],
+    });
+    expect(result.current.data?.reignitedFires?.[0]?.anchorLegKind).toBe(
+      'stock_tied',
+    );
+    expect(mockCaptureUnlessAuth).not.toHaveBeenCalled();
+  });
+
+  it('accepts missing and null spread-leg fields (old rows, pre-#197 fires)', async () => {
+    const body = emptyFinder({
+      fires: [
+        fire({}),
+        fire({
+          id: 2,
+          anchorLegKind: null,
+          spreadLeg: null,
+          historicalFires: [
+            { triggerTimeCt: '2026-05-07T14:00:00Z', entryPrice: 0.5 },
+            {
+              triggerTimeCt: '2026-05-07T14:10:00Z',
+              entryPrice: 0.5,
+              anchorLegKind: null,
+            },
+          ],
+        }),
+      ],
+    });
+    const { result } = await load(body);
+    expect(result.current.error).toBeNull();
+    expect(result.current.data?.fires).toHaveLength(2);
+    expect(mockCaptureUnlessAuth).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['an unknown anchorLegKind', { anchorLegKind: 'spread' }],
+    [
+      'an unknown spread shape',
+      { spreadLeg: { ...SPREAD_LEG, shape: 'iron_condor' } },
+    ],
+    ['legs that are not an array', { spreadLeg: { ...SPREAD_LEG, legs: {} } }],
+    [
+      'a leg with a string strike',
+      {
+        spreadLeg: {
+          ...SPREAD_LEG,
+          legs: [{ ...LEGS[0], strike: '726' }],
+        },
+      },
+    ],
+    ['a zero spread-leg count', { spreadLeg: { ...SPREAD_LEG, fires: 0 } }],
+    ['a fractional total', { spreadLeg: { ...SPREAD_LEG, totalFires: 2.5 } }],
+    [
+      'an unknown leg kind on a past fire',
+      {
+        historicalFires: [
+          {
+            triggerTimeCt: '2026-05-07T14:00:00Z',
+            entryPrice: 0.5,
+            anchorLegKind: 'multi',
+          },
+        ],
+      },
+    ],
+  ])(
+    'rejects a fire with %s: handled as a failed fetch and reported once',
+    async (_label, fields) => {
+      const { result } = await load(emptyFinder({ fires: [fire(fields)] }));
+      expect(result.current.error).toBe(INVALID_SHAPE_ERROR);
+      expect(result.current.data).toBeNull();
+      expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
+      const [err, ctx] = mockCaptureUnlessAuth.mock.calls[0]!;
+      expect((err as Error).message).toBe(
+        'lottery-finder response failed schema validation',
+      );
+      expect(ctx).toMatchObject({
+        contexts: {
+          lotteryFinder: {
+            date: '2026-05-07',
+            issues: [expect.stringMatching(/^fires\.0\./)],
+            issueCount: 1,
+          },
+        },
+      });
+    },
+  );
+
+  it('rejects a malformed pinned reignited fire too', async () => {
+    const { result } = await load(
+      emptyFinder({ reignitedFires: [fire({ anchorLegKind: 'x' })] }),
+    );
+    expect(result.current.error).toBe(INVALID_SHAPE_ERROR);
+    expect(result.current.data).toBeNull();
+  });
+
+  it('rejects a body whose fires is not an array', async () => {
+    const { result } = await load({ ...emptyFinder(), fires: null });
+    expect(result.current.error).toBe(INVALID_SHAPE_ERROR);
+    expect(result.current.data).toBeNull();
+  });
+
+  it('keeps the last good payload, and reports a repeating failure once until a good response re-arms it', async () => {
+    const good = emptyFinder({ total: 7, fires: [fire({ spreadLeg: null })] });
+    const bad = emptyFinder({ fires: [fire({ anchorLegKind: 'x' })] });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(good))
+      .mockResolvedValueOnce(jsonResponse(bad))
+      .mockResolvedValueOnce(jsonResponse(bad))
+      .mockResolvedValueOnce(jsonResponse(good))
+      .mockResolvedValueOnce(jsonResponse(bad));
+    const { result } = renderHook(() =>
+      useLotteryFinder({ date: '2026-05-07', marketOpen: false }),
+    );
+    await waitFor(() => expect(result.current.data?.total).toBe(7));
+
+    const refreshAndSettle = async (calls: number) => {
+      await act(async () => {
+        result.current.refresh();
+      });
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(calls));
+      await waitFor(() => expect(result.current.loading).toBe(false));
+    };
+
+    await refreshAndSettle(2);
+    expect(result.current.error).toBe(INVALID_SHAPE_ERROR);
+    // Nothing malformed is stored: the last good payload stays.
+    expect(result.current.data?.total).toBe(7);
+    await refreshAndSettle(3);
+    expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
+
+    await refreshAndSettle(4);
+    expect(result.current.error).toBeNull();
+    await refreshAndSettle(5);
+    expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(2);
   });
 });

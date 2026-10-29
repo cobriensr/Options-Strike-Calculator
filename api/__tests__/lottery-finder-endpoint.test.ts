@@ -1,6 +1,15 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
+import { PGlite } from '@electric-sql/pglite';
 import { mockRequest, mockResponse } from './helpers';
 
 // A Phase-3 suppression fragment marker. The real keptSuppressionSql returns
@@ -1458,21 +1467,26 @@ describe('lottery-finder endpoint', () => {
       }>;
     };
     expect(body.fires[0]!.reignited).toBe(true);
+    // The fixture's fires carry no anchorLegKind (fires from before
+    // migration #197), so each past fire reports null.
     expect(body.fires[0]!.historicalFires).toEqual([
       {
         triggerTimeCt: '2026-05-01T14:00:00Z',
         entryPrice: 0.4,
         spotAtTrigger: 1170.25,
+        anchorLegKind: null,
       },
       {
         triggerTimeCt: '2026-05-01T14:10:00Z',
         entryPrice: 0.42,
         spotAtTrigger: 1170.5,
+        anchorLegKind: null,
       },
       {
         triggerTimeCt: '2026-05-01T19:00:00Z',
         entryPrice: 0.55,
         spotAtTrigger: 1171.1,
+        anchorLegKind: null,
       },
     ]);
   });
@@ -1539,8 +1553,420 @@ describe('lottery-finder endpoint', () => {
         triggerTimeCt: '2026-05-01T14:00:00Z',
         entryPrice: 0.4,
         spotAtTrigger: null,
+        anchorLegKind: null,
       },
     ]);
+  });
+
+  // ============================================================
+  // Spread-leg badge fields (spec 2026-10-28-classifier-replacement,
+  // "Badge"): each fire's exchange leg kind, plus the row's count of
+  // spread-leg fires (k of n) with the shape and legs of the most recent
+  // one. k and n come from chainExtras, the same fire set as
+  // historicalFires; a single-fire chain (which chainExtras skips) reads
+  // its own row.
+  // ============================================================
+
+  describe('spread-leg fields', () => {
+    const LEGS_726_727 = [
+      {
+        optionType: 'C',
+        strike: 726,
+        expiry: '2026-05-01',
+        size: 40,
+        price: 1.15,
+        tradeCode: 'mlet',
+      },
+      {
+        optionType: 'C',
+        strike: 727,
+        expiry: '2026-05-01',
+        size: 40,
+        price: 0.7,
+        tradeCode: 'mlet',
+      },
+    ];
+
+    /** A chainExtras row for the default ROW's chain (SNDK 1175C 5/1). */
+    function chainExtra(
+      kinds: Array<'single' | 'multi_leg' | 'stock_tied' | null>,
+      extra: Record<string, unknown>,
+    ) {
+      return {
+        underlying_symbol: 'SNDK',
+        strike: '1175',
+        option_type: 'C',
+        expiry: '2026-05-01',
+        fires_json: kinds.map((anchorLegKind, i) => ({
+          triggerTimeCt: `2026-05-01T1${i}:00:00Z`,
+          entryPrice: '0.50',
+          spotAtTrigger: '1170',
+          anchorLegKind,
+        })),
+        fire_count: kinds.length,
+        reignited: false,
+        ...extra,
+      };
+    }
+
+    type SpreadBody = {
+      fires: Array<{
+        anchorLegKind: string | null;
+        spreadLeg: {
+          fires: number;
+          totalFires: number;
+          shape: string;
+          legs: unknown[];
+        } | null;
+        historicalFires?: Array<{ anchorLegKind: string | null }>;
+      }>;
+      reignitedFires: Array<{
+        anchorLegKind: string | null;
+        spreadLeg: unknown;
+      }>;
+    };
+
+    async function run(
+      rows: unknown[],
+      chainExtras: unknown[],
+      reignitedRows: unknown[] = [],
+    ): Promise<SpreadBody> {
+      mockSql
+        .mockResolvedValueOnce(rows) // rows
+        .mockResolvedValueOnce([{ total: rows.length }]) // total
+        .mockResolvedValueOnce(chainExtras) // chainExtras
+        .mockResolvedValueOnce([]) // clusterByMinute
+        .mockResolvedValueOnce([]) // sbChains
+        .mockResolvedValueOnce(reignitedRows); // reignitedRows
+      const res = mockResponse();
+      await handler(
+        mockRequest({ method: 'GET', query: { date: '2026-05-01' } }),
+        res,
+      );
+      expect(res._status).toBe(200);
+      return res._json as SpreadBody;
+    }
+
+    it('mixed chain: counts k = 2 of n = 5 and passes the most recent spread-leg shape and legs through', async () => {
+      const row = {
+        ...ROW,
+        fire_count: 5,
+        anchor_leg_kind: 'single',
+        spread_shape: null,
+        spread_legs: null,
+      };
+      const body = await run(
+        [row],
+        [
+          chainExtra(['multi_leg', 'single', null, 'multi_leg', 'single'], {
+            spread_leg_fires: 2,
+            spread_shape: 'vertical',
+            spread_legs: LEGS_726_727,
+          }),
+        ],
+      );
+      const fire = body.fires[0]!;
+      expect(fire.spreadLeg).toEqual({
+        fires: 2,
+        totalFires: 5,
+        shape: 'vertical',
+        legs: LEGS_726_727,
+      });
+      // The row's own (latest) fire.
+      expect(fire.anchorLegKind).toBe('single');
+      // Past fires only: the latest (5th) is the row itself.
+      expect(fire.historicalFires!.map((h) => h.anchorLegKind)).toEqual([
+        'multi_leg',
+        'single',
+        null,
+        'multi_leg',
+      ]);
+    });
+
+    it('all-spread chain: k = n', async () => {
+      const row = {
+        ...ROW,
+        fire_count: 3,
+        anchor_leg_kind: 'multi_leg',
+        spread_shape: 'vertical',
+        spread_legs: LEGS_726_727,
+      };
+      const body = await run(
+        [row],
+        [
+          chainExtra(['multi_leg', 'multi_leg', 'multi_leg'], {
+            spread_leg_fires: 3,
+            spread_shape: 'vertical',
+            spread_legs: LEGS_726_727,
+          }),
+        ],
+      );
+      expect(body.fires[0]!.spreadLeg).toEqual({
+        fires: 3,
+        totalFires: 3,
+        shape: 'vertical',
+        legs: LEGS_726_727,
+      });
+      expect(body.fires[0]!.anchorLegKind).toBe('multi_leg');
+    });
+
+    it('chain with no spread-leg fires: spreadLeg null', async () => {
+      const row = {
+        ...ROW,
+        fire_count: 3,
+        anchor_leg_kind: 'stock_tied',
+        spread_shape: null,
+        spread_legs: null,
+      };
+      const body = await run(
+        [row],
+        [
+          chainExtra(['single', null, 'stock_tied'], {
+            spread_leg_fires: 0,
+            spread_shape: null,
+            spread_legs: null,
+          }),
+        ],
+      );
+      expect(body.fires[0]!.spreadLeg).toBeNull();
+      expect(body.fires[0]!.anchorLegKind).toBe('stock_tied');
+    });
+
+    it('single-fire stock-tied row: no spread count, leg kind from its own columns', async () => {
+      const row = {
+        ...ROW,
+        fire_count: 1,
+        anchor_leg_kind: 'stock_tied',
+        spread_shape: null,
+        spread_legs: null,
+      };
+      const body = await run([row], []);
+      expect(body.fires[0]!.spreadLeg).toBeNull();
+      expect(body.fires[0]!.anchorLegKind).toBe('stock_tied');
+      expect(body.fires[0]!.historicalFires).toBeUndefined();
+    });
+
+    it('single-fire spread-leg row: 1 of 1 from its own columns (chainExtras skips single-fire chains)', async () => {
+      const row = {
+        ...ROW,
+        fire_count: 1,
+        anchor_leg_kind: 'multi_leg',
+        spread_shape: 'vertical',
+        spread_legs: LEGS_726_727,
+      };
+      const body = await run([row], []);
+      expect(body.fires[0]!.spreadLeg).toEqual({
+        fires: 1,
+        totalFires: 1,
+        shape: 'vertical',
+        legs: LEGS_726_727,
+      });
+    });
+
+    it('all-NULL row (no anchor print, or a fire from before migration #197): nulls, no badge data', async () => {
+      const row = {
+        ...ROW,
+        fire_count: 1,
+        anchor_leg_kind: null,
+        spread_shape: null,
+        spread_legs: null,
+      };
+      const body = await run([row], []);
+      expect(body.fires[0]!.spreadLeg).toBeNull();
+      expect(body.fires[0]!.anchorLegKind).toBeNull();
+    });
+
+    it('row without the new columns at all still maps to nulls', async () => {
+      // ROW predates the five columns; a missing key must not turn into a
+      // NaN count or an undefined leg kind.
+      const body = await run([{ ...ROW, fire_count: 1 }], []);
+      expect(body.fires[0]!.spreadLeg).toBeNull();
+      expect(body.fires[0]!.anchorLegKind).toBeNull();
+    });
+
+    it('multi-fire row whose chainExtras degraded: spreadLeg null rather than a guessed 1 of 1', async () => {
+      // chainExtras fell back to [] (a retryable DB error with no
+      // last-good). The row's own columns describe only its latest fire,
+      // so k of n is unknown: no badge beats a wrong one.
+      const row = {
+        ...ROW,
+        fire_count: 5,
+        anchor_leg_kind: 'multi_leg',
+        spread_shape: 'vertical',
+        spread_legs: LEGS_726_727,
+      };
+      const body = await run([row], []);
+      expect(body.fires[0]!.spreadLeg).toBeNull();
+      expect(body.fires[0]!.anchorLegKind).toBe('multi_leg');
+    });
+
+    it('pinned reignitedFires carry the same fields', async () => {
+      const reignited = {
+        ...ROW,
+        id: 999,
+        fire_count: 3,
+        anchor_leg_kind: 'multi_leg',
+        spread_shape: 'vertical',
+        spread_legs: LEGS_726_727,
+      };
+      const body = await run(
+        [],
+        [
+          chainExtra(['single', 'multi_leg', 'multi_leg'], {
+            spread_leg_fires: 2,
+            spread_shape: 'vertical',
+            spread_legs: LEGS_726_727,
+          }),
+        ],
+        [reignited],
+      );
+      expect(body.reignitedFires[0]).toMatchObject({
+        anchorLegKind: 'multi_leg',
+        spreadLeg: {
+          fires: 2,
+          totalFires: 3,
+          shape: 'vertical',
+          legs: LEGS_726_727,
+        },
+      });
+    });
+
+    it('selects the leg columns in the rows and reignitedRows queries', async () => {
+      await run([], []);
+      const sqlText = (call: number) =>
+        (mockSql.mock.calls[call]![0] as string[]).join('?');
+      for (const call of [0, 5]) {
+        expect(sqlText(call)).toContain('f.anchor_leg_kind');
+        expect(sqlText(call)).toContain('f.spread_shape');
+        expect(sqlText(call)).toContain('f.spread_legs');
+      }
+    });
+
+    it('keys the chainExtras and reignitedRows last-good caches on the v2 row shape', async () => {
+      // Both cached payloads gained columns. A pre-deploy entry has none
+      // of them, so the keys moved to v2: an old entry is never served.
+      await run([], []);
+      const keys = mockWriteLastGood.mock.calls.map((c) => c[0] as string);
+      expect(keys).toContain('lf:lg:chainExtras:v2:2026-05-01');
+      expect(keys).toContain('lf:lg:reignited:v2:2026-05-01::::::');
+      expect(keys).not.toContain('lf:lg:chainExtras:2026-05-01');
+    });
+
+    // The k count and "most recent spread-leg fire" pick happen in SQL, so
+    // run the chainExtras text the handler sends against real Postgres
+    // (pglite). Only the columns that query reads are created.
+    describe('chainExtras SQL on Postgres (pglite)', () => {
+      let pg: PGlite;
+
+      beforeAll(async () => {
+        pg = await PGlite.create();
+        await pg.query(`
+          CREATE TABLE lottery_finder_fires (
+            id BIGSERIAL PRIMARY KEY,
+            date DATE NOT NULL,
+            underlying_symbol TEXT NOT NULL,
+            strike NUMERIC NOT NULL,
+            option_type TEXT NOT NULL,
+            expiry DATE NOT NULL,
+            trigger_time_ct TIMESTAMPTZ NOT NULL,
+            entry_price NUMERIC NOT NULL,
+            spot_at_trigger NUMERIC,
+            anchor_leg_kind TEXT,
+            spread_shape TEXT,
+            spread_legs JSONB
+          )
+        `);
+      });
+
+      afterAll(async () => {
+        await pg.close();
+      });
+
+      /** Insert one fire at 2026-05-01 <hhmm> UTC. */
+      async function fire(
+        symbol: string,
+        strike: number,
+        hhmm: string,
+        kind: string | null,
+        shape: string | null = null,
+        legs: unknown = null,
+      ): Promise<void> {
+        await pg.query(
+          `INSERT INTO lottery_finder_fires
+             (date, underlying_symbol, strike, option_type, expiry,
+              trigger_time_ct, entry_price, spot_at_trigger,
+              anchor_leg_kind, spread_shape, spread_legs)
+           VALUES ('2026-05-01', $1, $2, 'C', '2026-05-01',
+                   $3, 0.5, 100, $4, $5, $6)`,
+          [
+            symbol,
+            strike,
+            `2026-05-01T${hhmm.slice(0, 2)}:${hhmm.slice(2)}:00Z`,
+            kind,
+            shape,
+            legs == null ? null : JSON.stringify(legs),
+          ],
+        );
+      }
+
+      it('counts spread-leg fires and takes the shape and legs of the most recent one', async () => {
+        const OLDER_LEGS = [{ ...LEGS_726_727[0], strike: 720 }];
+        // SNDK 1175: five fires, two of them spread legs. The older
+        // spread-leg fire has a different shape, so picking it would show.
+        await fire('SNDK', 1175, '1400', 'multi_leg', 'unpaired', OLDER_LEGS);
+        await fire('SNDK', 1175, '1410', 'single');
+        await fire('SNDK', 1175, '1420', null);
+        await fire('SNDK', 1175, '1430', 'multi_leg', 'vertical', LEGS_726_727);
+        await fire('SNDK', 1175, '1440', 'single');
+        // AAPL 200: three fires, none a spread leg.
+        await fire('AAPL', 200, '1500', 'stock_tied');
+        await fire('AAPL', 200, '1510', 'single');
+        await fire('AAPL', 200, '1520', null);
+        // TSLA 300: a single fire, which chainExtras leaves out.
+        await fire('TSLA', 300, '1600', 'multi_leg', 'vertical', LEGS_726_727);
+
+        mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([{ total: 0 }]);
+        await handler(
+          mockRequest({ method: 'GET', query: { date: '2026-05-01' } }),
+          mockResponse(),
+        );
+        const [strings, ...values] = mockSql.mock.calls[2] as [
+          string[],
+          ...unknown[],
+        ];
+        const text = strings.reduce((acc, part, i) => `${acc}$${i}${part}`);
+        const { rows } = await pg.query<{
+          underlying_symbol: string;
+          fire_count: number;
+          spread_leg_fires: number;
+          spread_shape: string | null;
+          spread_legs: unknown;
+          fires_json: Array<{ anchorLegKind: string | null }>;
+        }>(text, values);
+
+        const bySymbol = new Map(rows.map((r) => [r.underlying_symbol, r]));
+        expect([...bySymbol.keys()].sort()).toEqual(['AAPL', 'SNDK']);
+
+        const sndk = bySymbol.get('SNDK')!;
+        expect(sndk.fire_count).toBe(5);
+        expect(sndk.spread_leg_fires).toBe(2);
+        expect(sndk.spread_shape).toBe('vertical');
+        expect(sndk.spread_legs).toEqual(LEGS_726_727);
+        expect(sndk.fires_json.map((f) => f.anchorLegKind)).toEqual([
+          'multi_leg',
+          'single',
+          null,
+          'multi_leg',
+          'single',
+        ]);
+
+        const aapl = bySymbol.get('AAPL')!;
+        expect(aapl.fire_count).toBe(3);
+        expect(aapl.spread_leg_fires).toBe(0);
+        expect(aapl.spread_shape).toBeNull();
+        expect(aapl.spread_legs).toBeNull();
+      });
+    });
   });
 
   it('surfaces reignitedFires from the dedicated parallel query, independent of pagination', async () => {

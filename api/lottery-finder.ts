@@ -47,6 +47,11 @@ import {
 } from './_lib/constants.js';
 import { keptSuppressionSql } from './_lib/lottery-suppression.js';
 import { getETDateStr } from '../src/utils/timezone.js';
+import type {
+  AnchorLegKind,
+  SpreadLeg,
+  SpreadShape,
+} from '../src/types/spread-legs.js';
 import {
   computeSuspiciousClusters,
   clusterKey,
@@ -240,6 +245,40 @@ interface FireRow {
   // the live snapshot from /api/ticker-net-flow-current.
   fire_time_cum_ncp: DbNullableNumeric;
   fire_time_cum_npp: DbNullableNumeric;
+
+  // Exchange multi-leg flag on the fire's anchor print (migration #197,
+  // spec 2026-10-28-classifier-replacement-design.md). anchor_leg_kind is
+  // NULL when no anchor print was found, when the print carried no trade
+  // code, and on fires from before #197. spread_shape / spread_legs are
+  // non-NULL only for multi_leg; spread_legs holds camelCase SpreadLegs,
+  // anchor first.
+  anchor_leg_kind: AnchorLegKind | null;
+  spread_shape: SpreadShape | null;
+  spread_legs: SpreadLeg[] | null;
+}
+
+/**
+ * The row's spread-leg badge data: `fires` (k) of the chain-day's
+ * `totalFires` (n) printed as one leg of a multi-leg order, with the shape
+ * and legs of the most recent such fire. Null when k = 0.
+ */
+interface SpreadLegSummary {
+  fires: number;
+  totalFires: number;
+  shape: SpreadShape;
+  legs: SpreadLeg[];
+}
+
+function spreadLegSummary(
+  k: number,
+  n: number,
+  shape: SpreadShape | null,
+  legs: SpreadLeg[] | null,
+): SpreadLegSummary | null {
+  // The detect cron writes shape and legs on every multi_leg fire; if a
+  // row ever lacks them there's nothing to describe, so no badge.
+  if (k < 1 || shape == null || legs == null) return null;
+  return { fires: k, totalFires: n, shape, legs };
 }
 
 /**
@@ -263,6 +302,10 @@ interface ClusterByMinuteRow {
  * parsed JS array. Embedded timestamps come back as strings (Postgres
  * serialises timestamptz inside JSON to ISO 8601). `expiry` is a DATE
  * column so it may be a Date OR a string depending on driver config.
+ *
+ * `fire_count` (n) and `spread_leg_fires` (k) count the same fires as
+ * `fires_json`; `spread_shape` / `spread_legs` are the most recent
+ * multi_leg fire's, NULL when k = 0.
  */
 interface ChainExtrasRow {
   underlying_symbol: string;
@@ -273,7 +316,12 @@ interface ChainExtrasRow {
     triggerTimeCt: string;
     entryPrice: DbNumeric;
     spotAtTrigger: DbNullableNumeric;
+    anchorLegKind: AnchorLegKind | null;
   }> | null;
+  fire_count: number;
+  spread_leg_fires: number;
+  spread_shape: SpreadShape | null;
+  spread_legs: SpreadLeg[] | null;
   reignited: boolean;
 }
 
@@ -717,7 +765,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           s.inversion_n_21d       AS ticker_inversion_n_21d,
           s.inversion_n_90d       AS ticker_inversion_n_90d,
           f.cum_ncp_at_fire AS fire_time_cum_ncp,
-          f.cum_npp_at_fire AS fire_time_cum_npp
+          f.cum_npp_at_fire AS fire_time_cum_npp,
+          f.anchor_leg_kind, f.spread_shape, f.spread_legs
         FROM filtered f
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE f.rn = 1
@@ -833,12 +882,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // stable semantics across filter views — a chain that's #3 of
       // the day stays #3 whether the user is filtered to QQQ-only or
       // showing all tickers.
+      //
+      // Spread-leg badge (spec 2026-10-28-classifier-replacement-design.md,
+      // "Badge"): each fire's anchor_leg_kind rides in fires_json, k =
+      // spread_leg_fires counts the multi_leg fires, and latest_spread
+      // carries the most recent multi_leg fire's shape + legs. Counting
+      // here, not in the rows query, keeps k and n on the same fire set as
+      // historicalFires (cumulative through the cutoff, user filters off).
       degradeOnTimeout(
         () => db`
         WITH ordered AS (
           SELECT
-            underlying_symbol, strike, option_type, expiry,
+            id, underlying_symbol, strike, option_type, expiry,
             trigger_time_ct, entry_price, spot_at_trigger,
+            anchor_leg_kind, spread_shape, spread_legs,
             EXTRACT(EPOCH FROM trigger_time_ct - LAG(trigger_time_ct) OVER w) / 60.0 AS gap_min,
             ROW_NUMBER() OVER w AS fire_seq,
             COUNT(*) OVER w_total AS fire_count
@@ -868,16 +925,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             MAX(o.fire_count)::int AS fire_count,
             COALESCE(MAX(g.max_gap_min), 0)::numeric AS max_gap_min,
             COALESCE(MAX(o.fire_count) - (MAX(g.post_gap_start_seq) - 1), 0)::int AS post_gap_fires,
+            COUNT(*) FILTER (WHERE o.anchor_leg_kind = 'multi_leg')::int AS spread_leg_fires,
             jsonb_agg(
               jsonb_build_object(
                 'triggerTimeCt', o.trigger_time_ct,
                 'entryPrice', o.entry_price,
-                'spotAtTrigger', o.spot_at_trigger
+                'spotAtTrigger', o.spot_at_trigger,
+                'anchorLegKind', o.anchor_leg_kind
               ) ORDER BY o.trigger_time_ct ASC
             ) AS fires_json
           FROM ordered o
           LEFT JOIN max_gap_by_chain g USING (underlying_symbol, strike, option_type, expiry)
           GROUP BY o.underlying_symbol, o.strike, o.option_type, o.expiry
+        ),
+        latest_spread AS (
+          SELECT DISTINCT ON (underlying_symbol, strike, option_type, expiry)
+            underlying_symbol, strike, option_type, expiry,
+            spread_shape, spread_legs
+          FROM ordered
+          WHERE anchor_leg_kind = 'multi_leg'
+          ORDER BY underlying_symbol, strike, option_type, expiry,
+            trigger_time_ct DESC, id DESC
         ),
         qualified AS (
           SELECT
@@ -896,14 +964,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           pc.option_type,
           pc.expiry,
           pc.fires_json,
+          pc.fire_count,
+          pc.spread_leg_fires,
+          ls.spread_shape,
+          ls.spread_legs,
           (q.rn IS NOT NULL AND q.rn <= ${REIGNITION_TOP_N_PER_DAY}) AS reignited
         FROM per_chain pc
         LEFT JOIN qualified q USING (underlying_symbol, strike, option_type, expiry)
+        LEFT JOIN latest_spread ls USING (underlying_symbol, strike, option_type, expiry)
         WHERE pc.fire_count > 1
       `,
         [] as ChainExtrasRow[],
         'chainExtras',
-        { cacheKey: `lf:lg:chainExtras:${targetDate}` },
+        // v2: the row gained fire_count, spread_leg_fires, spread_shape,
+        // spread_legs and a per-fire anchorLegKind (2026-10-29). A new key
+        // means a pre-deploy entry, which has none of them, is never served.
+        { cacheKey: `lf:lg:chainExtras:v2:${targetDate}` },
       ),
       // Per-minute distinct-ticker count — fuels the MEGA-CLUSTER
       // badge. Truncates trigger_time_ct to the 1-min bucket and
@@ -1102,7 +1178,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           s.inversion_n_21d       AS ticker_inversion_n_21d,
           s.inversion_n_90d       AS ticker_inversion_n_90d,
           f.cum_ncp_at_fire AS fire_time_cum_ncp,
-          f.cum_npp_at_fire AS fire_time_cum_npp
+          f.cum_npp_at_fire AS fire_time_cum_npp,
+          f.anchor_leg_kind, f.spread_shape, f.spread_legs
         FROM filtered f
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE f.rn = 1
@@ -1119,8 +1196,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           // avoid serving one filter view's rows under another. windowEnd /
           // at / minute are DELIBERATELY omitted — they're a cumulative,
           // moving cutoff; keying on them would near-guarantee cache misses
-          // and is wrong for "last good".
-          cacheKey: `lf:lg:reignited:${targetDate}:${ticker ?? ''}:${reload ?? ''}:${cheapCallPm ?? ''}:${mode ?? ''}:${optionType ?? ''}:${tod ?? ''}`,
+          // and is wrong for "last good". v2: rows gained the anchor leg
+          // columns (2026-10-29), so pre-deploy entries are never served.
+          cacheKey: `lf:lg:reignited:v2:${targetDate}:${ticker ?? ''}:${reload ?? ''}:${cheapCallPm ?? ''}:${mode ?? ''}:${optionType ?? ''}:${tod ?? ''}`,
         },
       ),
       // Day-scoped cluster-candidate query — ALL 0DTE fires for the date,
@@ -1265,7 +1343,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           triggerTimeCt: string;
           entryPrice: number;
           spotAtTrigger: number | null;
+          anchorLegKind: AnchorLegKind | null;
         }>;
+        spreadLeg: SpreadLegSummary | null;
         reignited: boolean;
       }
     >();
@@ -1286,10 +1366,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             : new Date(f.triggerTimeCt as string).toISOString(),
         entryPrice: Number(f.entryPrice),
         spotAtTrigger: f.spotAtTrigger != null ? Number(f.spotAtTrigger) : null,
+        anchorLegKind: f.anchorLegKind ?? null,
       }));
       const key = `${ce.underlying_symbol}|${Number(ce.strike)}|${ce.option_type}|${expiryStr}`;
       chainExtraByKey.set(key, {
         historicalFires: past,
+        spreadLeg: spreadLegSummary(
+          Number(ce.spread_leg_fires ?? 0),
+          Number(ce.fire_count),
+          ce.spread_shape ?? null,
+          ce.spread_legs ?? null,
+        ),
         reignited: ce.reignited === true,
       });
     }
@@ -1464,6 +1551,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           : toIso(r.expiry).slice(0, 10);
       const chainKey = `${r.underlying_symbol}|${Number(r.strike)}|${r.option_type}|${expiryKey}`;
       const chainExtra = chainExtraByKey.get(chainKey);
+      // Spread-leg badge data. k of n comes from chainExtras, the same fire
+      // set as historicalFires. A single-fire chain, which chainExtras
+      // skips, reads its own columns. A multi-fire row with no chainExtras
+      // entry means that query degraded: k of n is unknown, so no badge
+      // rather than a guessed "1 of 1".
+      const anchorLegKind = r.anchor_leg_kind ?? null;
+      const spreadLeg = chainExtra
+        ? chainExtra.spreadLeg
+        : Number(r.fire_count ?? 1) <= 1
+          ? spreadLegSummary(
+              anchorLegKind === 'multi_leg' ? 1 : 0,
+              1,
+              r.spread_shape ?? null,
+              r.spread_legs ?? null,
+            )
+          : null;
       // Mega-cluster lookup: truncate the fire's trigger_time_ct to
       // the minute and check whether that minute had ≥12 distinct
       // tickers fire. Misses are the common case (`size === undefined`
@@ -1566,6 +1669,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           ? { historicalFires: chainExtra.historicalFires }
           : {}),
         reignited: chainExtra?.reignited === true,
+        // Exchange multi-leg flag on this (latest) fire's anchor print, and
+        // the chain-day's spread-leg count for the row badge. Information
+        // only (spec 2026-10-28-classifier-replacement-design.md, "Badge").
+        anchorLegKind,
+        spreadLeg,
         // MEGA-CLUSTER flag — true when this fire's CT-minute had at
         // least MEGA_CLUSTER_MIN_DISTINCT_TICKERS distinct tickers
         // firing. `megaClusterSize` carries the actual count so the
