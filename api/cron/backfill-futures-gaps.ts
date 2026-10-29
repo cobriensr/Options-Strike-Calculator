@@ -34,17 +34,21 @@
  *   5. Order-flow pass (spec Phase 6), after the OHLC pass so the bars it
  *      just inserted are included: bars in the same window and Globex-open
  *      minutes whose `buy_volume` is NULL (unknown), in runs of
- *      consecutive bars, oldest run first. Each run is split by the
- *      replay's leader per minute (the same candles, loaded once per root
- *      for both passes), and each piece pages that contract's REST prints
- *      (`api/_lib/futures-flow-repair.ts`). A minute is written only when
- *      its REST volume is within 2% of the bar's, by one batched
- *      `UPDATE … WHERE buy_volume IS NULL`, so websocket flow is never
- *      overwritten. At most FLOW_PAGE_BUDGET pages per run; the rest stays
- *      NULL and is found again next run. Counts go to Axiom `meta`:
- *      flow_minutes_repaired, flow_minutes_skipped_tolerance,
- *      flow_ranges_unrepairable (UW's history ended inside the run) and
- *      flow_ranges_deferred.
+ *      consecutive bars, oldest run first (ties ES, NQ, … per spec D7).
+ *      Each run is split by the replay's leader per minute (the same
+ *      candles, loaded once per root for both passes) into pieces of at
+ *      most an hour, oldest first, and each piece pages that contract's
+ *      REST prints (`api/_lib/futures-flow-repair.ts`). A minute is
+ *      written only when its REST volume is within 2% of the bar's, by one
+ *      batched `UPDATE … WHERE buy_volume IS NULL`, so websocket flow is
+ *      never overwritten. At most FLOW_PAGE_BUDGET pages per run; the rest
+ *      stays NULL and is found again next run, unless it is on the
+ *      window's oldest day, which ages out (flow_minutes_aged_out, run
+ *      'partial'). Anything deferred or unrepairable raises one Sentry
+ *      warning. Counts go to Axiom `meta`: flow_minutes_repaired,
+ *      flow_minutes_skipped_tolerance, flow_ranges_unrepairable (UW's
+ *      history ended inside the run), flow_ranges_deferred and
+ *      flow_minutes_aged_out.
  *
  * Candle `start` is the bar's minute (UTC), which is exactly the
  * handler's `ts` (executed_at floored to the minute); `symbol` is the
@@ -129,6 +133,9 @@ const FLOW_PAGE_BUDGET = 600;
 // withRetry, if the OHLC pass didn't load them) and one page (~48 s).
 // What's left resumes on the next run.
 const FLOW_DEADLINE_MS = 600_000;
+// Longest span one order-flow fetch covers, so a long range is repaired
+// oldest first (UW pages newest-first within a fetch).
+const FLOW_PIECE_MS = 60 * 60_000;
 
 const MINUTE_MS = 60_000;
 const DAY_MS = 24 * 60 * MINUTE_MS;
@@ -182,6 +189,8 @@ interface FlowSymbolResult {
 
 interface FlowPassResult {
   symbols: Partial<Record<FuturesRoot, FlowSymbolResult>>;
+  /** Left out: their candles failed, and were reported, in the OHLC pass. */
+  skippedSymbols: FuturesRoot[];
   failures: string[];
   repaired: number;
   skippedTolerance: number;
@@ -189,6 +198,8 @@ interface FlowPassResult {
   unrepairable: number;
   /** Ranges the page or time budget left for the next run. */
   deferred: number;
+  /** Deferred bars on the window's oldest day: no later run will see them. */
+  agedOut: number;
   pages: number;
 }
 
@@ -469,11 +480,42 @@ function budgetSpent(budget: PageBudget): boolean {
 }
 
 /**
- * Repairs one run of NULL-flow bars: splits it into runs led by the same
- * contract, pages each one's prints, and writes the minutes that match.
- * Adds to `stats` as it goes, so work done before a throw still counts.
- * `deferred` means the budget stopped it before every bar was decided;
- * `unrepairable` means UW's history ended inside it.
+ * Splits a range into pieces led by one contract and spanning at most
+ * FLOW_PIECE_MS, oldest first. UW pages newest-first, so one long fetch
+ * stopped by the budget would fill its newest minutes and leave its oldest,
+ * the ones closest to aging out of the window.
+ */
+function flowPieces(
+  range: FlowRange,
+  leaders: ReadonlyMap<string, string>,
+  stats: FlowSymbolResult,
+): Array<{ contract: string; bars: FlowBar[] }> {
+  const pieces: Array<{ contract: string; bars: FlowBar[] }> = [];
+  for (const bar of range.bars) {
+    const contract = leaders.get(bar.ts);
+    if (contract === undefined) {
+      stats.unattributed += 1;
+      continue;
+    }
+    const last = pieces.at(-1);
+    if (
+      last?.contract === contract &&
+      Date.parse(bar.ts) - Date.parse(last.bars[0]!.ts) < FLOW_PIECE_MS
+    ) {
+      last.bars.push(bar);
+    } else {
+      pieces.push({ contract, bars: [bar] });
+    }
+  }
+  return pieces;
+}
+
+/**
+ * Repairs one run of NULL-flow bars, piece by piece (`flowPieces`):
+ * pages each piece's prints and writes the minutes that match. Adds to
+ * `stats` as it goes, so work done before a throw still counts. Returns
+ * the bars the budget left undecided, and whether UW's history ended
+ * inside the range.
  */
 async function repairFlowRange(
   ctx: CronContext,
@@ -482,41 +524,28 @@ async function repairFlowRange(
   leaders: ReadonlyMap<string, string>,
   budget: PageBudget,
   stats: FlowSymbolResult,
-): Promise<{ deferred: boolean; unrepairable: boolean }> {
-  const segments: Array<{ contract: string; bars: FlowBar[] }> = [];
-  for (const bar of range.bars) {
-    const contract = leaders.get(bar.ts);
-    if (contract === undefined) {
-      stats.unattributed += 1;
-      continue;
-    }
-    const last = segments.at(-1);
-    if (last?.contract === contract) last.bars.push(bar);
-    else segments.push({ contract, bars: [bar] });
-  }
-
-  let deferred = false;
+): Promise<{ deferred: FlowBar[]; unrepairable: boolean }> {
+  const deferred: FlowBar[] = [];
   let unrepairable = false;
-  for (const seg of segments) {
+  for (const piece of flowPieces(range, leaders, stats)) {
     if (budgetSpent(budget)) {
-      deferred = true;
-      break;
+      deferred.push(...piece.bars);
+      continue;
     }
     const flow = await fetchContractFlow(
       ctx.apiKey,
-      seg.contract,
-      Date.parse(seg.bars[0]!.ts),
-      Date.parse(seg.bars.at(-1)!.ts) + MINUTE_MS,
+      piece.contract,
+      Date.parse(piece.bars[0]!.ts),
+      Date.parse(piece.bars.at(-1)!.ts) + MINUTE_MS,
       budget,
     );
     stats.pages += flow.pages;
     stats.malformed += flow.malformed;
-    const covered = seg.bars.filter(
-      (b) => Date.parse(b.ts) >= flow.coveredFromMs,
-    );
-    if (covered.length < seg.bars.length) {
-      if (flow.stop === 'exhausted') unrepairable = true;
-      else deferred = true;
+    const covered: FlowBar[] = [];
+    for (const bar of piece.bars) {
+      if (Date.parse(bar.ts) >= flow.coveredFromMs) covered.push(bar);
+      else if (flow.stop === 'exhausted') unrepairable = true;
+      else deferred.push(bar);
     }
     const { updates, skippedTolerance } = matchFlowToBars(
       covered,
@@ -530,24 +559,38 @@ async function repairFlowRange(
 
 /**
  * Fills NULL order flow on the window's Globex-open bars, oldest run
- * first, within FLOW_PAGE_BUDGET pages. A symbol whose candles, prints or
- * write fail is a failure (Sentry exception); its remaining runs are
- * skipped. Throws only when the NULL-flow scan itself fails.
+ * first (ties in FUTURES_ROOTS order: ES and NQ first, spec D7), within
+ * FLOW_PAGE_BUDGET pages. A symbol whose candles, prints or write fail is
+ * a failure (Sentry exception); its remaining runs are skipped. A symbol
+ * in `skip` (its candles already failed, and were reported, in the OHLC
+ * pass) is left out. Throws only when the NULL-flow scan itself fails.
  */
 async function repairFlow(
   ctx: CronContext,
   windowStart: Date,
   windowEnd: Date,
   candlesFor: (symbol: FuturesRoot) => Promise<RootCandles>,
+  skip: ReadonlySet<FuturesRoot>,
 ): Promise<FlowPassResult> {
   const result: FlowPassResult = {
     symbols: {},
+    skippedSymbols: [],
     failures: [],
     repaired: 0,
     skippedTolerance: 0,
     unrepairable: 0,
     deferred: 0,
+    agedOut: 0,
     pages: 0,
+  };
+  // The next run's window starts a day later: a bar before this is not
+  // seen again, so leaving it NULL leaves it NULL for good.
+  const agesOutBeforeMs = windowStart.getTime() + DAY_MS;
+  const defer = (bars: readonly FlowBar[]) => {
+    result.deferred += 1;
+    result.agedOut += bars.filter(
+      (b) => Date.parse(b.ts) < agesOutBeforeMs,
+    ).length;
   };
   const nullBars = await fetchNullFlowBars(
     FUTURES_ROOTS,
@@ -576,10 +619,12 @@ async function repairFlow(
     return leaders;
   };
 
+  const rootOrder = (symbol: string) =>
+    FUTURES_ROOTS.findIndex((r) => r === symbol);
   const ranges = groupFlowRanges(nullBars).sort(
     (a, b) =>
       a.bars[0]!.ts.localeCompare(b.bars[0]!.ts) ||
-      a.symbol.localeCompare(b.symbol),
+      rootOrder(a.symbol) - rootOrder(b.symbol),
   );
   const budget: PageBudget = {
     pagesLeft: FLOW_PAGE_BUDGET,
@@ -590,12 +635,18 @@ async function repairFlow(
   for (const range of ranges) {
     const symbol = FUTURES_ROOTS.find((s) => s === range.symbol);
     if (!symbol) continue;
+    if (skip.has(symbol)) {
+      if (!result.skippedSymbols.includes(symbol)) {
+        result.skippedSymbols.push(symbol);
+      }
+      continue;
+    }
     const stats = (result.symbols[symbol] ??= emptyFlowStats());
     stats.ranges += 1;
     stats.minutes += range.bars.length;
     if (failed.has(symbol)) continue;
     if (budgetSpent(budget)) {
-      result.deferred += 1;
+      defer(range.bars);
       continue;
     }
     try {
@@ -609,7 +660,7 @@ async function repairFlow(
         stats,
       );
       if (outcome.unrepairable) result.unrepairable += 1;
-      else if (outcome.deferred) result.deferred += 1;
+      if (outcome.deferred.length > 0) defer(outcome.deferred);
     } catch (err) {
       failed.add(symbol);
       const message = err instanceof Error ? err.message : String(err);
@@ -638,10 +689,27 @@ async function repairFlow(
       });
     }
   }
-  if (budgetSpent(budget) && result.deferred > 0) {
-    ctx.logger.warn(
-      { deferred: result.deferred, pages: result.pages },
-      `${JOB}: order-flow page budget spent, ranges deferred`,
+  // Minutes left NULL are visible, not silent: a deferred backlog the
+  // budget can't clear (e.g. bars written before the order-flow columns
+  // existed, which scripts/backfill-futures-flow.ts is for) or a gap in
+  // UW's history.
+  if (result.deferred > 0 || result.unrepairable > 0) {
+    if (result.deferred > 0) {
+      metrics.increment('backfill_futures_gaps.flow_deferred');
+    }
+    if (result.unrepairable > 0) {
+      metrics.increment('backfill_futures_gaps.flow_unrepairable');
+    }
+    const extra = {
+      deferred: result.deferred,
+      agedOut: result.agedOut,
+      unrepairable: result.unrepairable,
+      pages: result.pages,
+    };
+    ctx.logger.warn(extra, `${JOB}: order-flow minutes left NULL`);
+    Sentry.captureMessage(
+      `${JOB}: order-flow minutes left NULL (deferred or unrepairable)`,
+      { level: 'warning', extra },
     );
   }
   return result;
@@ -676,17 +744,20 @@ export default withCronInstrumentation(
 
     const symbols: Partial<Record<FuturesRoot, SymbolResult>> = {};
     const failures: string[] = [];
+    // Roots whose candles failed (and were reported) here: the flow pass
+    // would only get the same cached rejection.
+    const candlesFailed = new Set<FuturesRoot>();
     if (gaps.size > 0) {
       // A failed contract list here fails the whole run: the wrapper
       // captures it and reports 'error'.
       await contracts();
       for (const [symbol, symbolGaps] of gaps) {
         try {
-          symbols[symbol] = await repairSymbol(
-            symbol,
-            symbolGaps,
-            await candlesFor(symbol),
-          );
+          const candles = await candlesFor(symbol).catch((err: unknown) => {
+            candlesFailed.add(symbol);
+            throw err;
+          });
+          symbols[symbol] = await repairSymbol(symbol, symbolGaps, candles);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           failures.push(`${symbol}: ${message}`);
@@ -699,12 +770,21 @@ export default withCronInstrumentation(
     const rows = Object.values(symbols).reduce((n, r) => n + r.inserted, 0);
 
     // After the OHLC pass, so the bars it just inserted get flow too.
-    const flow = await repairFlow(ctx, windowStart, windowEnd, candlesFor);
+    const flow = await repairFlow(
+      ctx,
+      windowStart,
+      windowEnd,
+      candlesFor,
+      candlesFailed,
+    );
     failures.push(...flow.failures);
     const flowSymbols = Object.keys(flow.symbols).length;
 
-    // Legs: each symbol with gaps, plus each symbol with NULL-flow bars.
-    const status = deriveCronStatus(failures.length, gaps.size + flowSymbols);
+    // Legs: each symbol with gaps, plus each symbol the flow pass worked
+    // on. Minutes that age out of the window still NULL are a shortfall
+    // too: no later run will repair them.
+    let status = deriveCronStatus(failures.length, gaps.size + flowSymbols);
+    if (status === 'success' && flow.agedOut > 0) status = 'partial';
     ctx.logger.info(
       { range, status, rows, symbols, flow, failures },
       `${JOB} completed`,
@@ -723,8 +803,12 @@ export default withCronInstrumentation(
         flow_minutes_skipped_tolerance: flow.skippedTolerance,
         flow_ranges_unrepairable: flow.unrepairable,
         flow_ranges_deferred: flow.deferred,
+        flow_minutes_aged_out: flow.agedOut,
         flow_pages: flow.pages,
         flowSymbols: flow.symbols,
+        ...(flow.skippedSymbols.length > 0
+          ? { flowSkippedSymbols: flow.skippedSymbols }
+          : {}),
         ...(failures.length > 0 ? { failures } : {}),
       },
     };

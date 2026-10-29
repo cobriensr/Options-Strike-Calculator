@@ -397,9 +397,12 @@ All read-only, about 600 calls. Scripts and outputs are in `docs/tmp/uw-futures-
 ## Build notes: Phases 6, 6b and 6c (2026-10-29)
 
 - **Shared code.** The roll replay moved into `api/_lib/futures-contracts.ts` as `replayFrontMonth`, generic over `{ts, volume}` rows, so candles and trade-derived minutes use one rule. Paging, the 2% match, the conditional UPDATE and the NULL-flow scan live in `api/_lib/futures-flow-repair.ts`. `api/_lib/uw-time.ts` carries UW times as bigint microseconds, because a JS `Date` would round the +1 µs cursor.
-- **Phase 6 stays in `backfill-futures-gaps.ts`** (not a sibling cron). It reuses the OHLC pass's candles, which load once per root, and the logic lives in the shared module. Ranges are runs of consecutive NULL-flow bars, split by the replay's leader per minute.
-- **Phase 6 bounds:** 600 pages per run, plus no page after 600 s, so the run stays inside its 800 s `maxDuration`.
-- **Phase 6 counts in Axiom `meta`:** `flow_minutes_repaired`, `flow_minutes_skipped_tolerance`, `flow_ranges_unrepairable` (an empty page inside the range), `flow_ranges_deferred`, `flow_pages`.
+- **Phase 6 stays in `backfill-futures-gaps.ts`** (not a sibling cron). It reuses the OHLC pass's candles, which load once per root, and the logic lives in the shared module.
+- **Phase 6 ranges:** runs of consecutive NULL-flow bars, oldest first, with ties in `FUTURES_ROOTS` order (ES, NQ first; D7). Each is split by the replay's leader per minute into pieces of at most 60 min, oldest first, because UW pages newest-first within a fetch.
+- **Phase 6 bounds:** 600 pages per run, plus no page after 600 s, so the run stays inside its 800 s `maxDuration`. The Sentry monitor allows 14 min.
+- **Phase 6 counts in Axiom `meta`:** `flow_minutes_repaired`, `flow_minutes_skipped_tolerance`, `flow_ranges_unrepairable` (an empty page inside the range), `flow_ranges_deferred`, `flow_minutes_aged_out`, `flow_pages`.
+- **Phase 6 status:** anything deferred or unrepairable raises one Sentry warning. Deferred bars on the window's oldest UTC day age out before the next run (`flow_minutes_aged_out`), which makes the run `partial`.
+- **Run 6b after the Phase 2 deploy.** The cron can't clear the backlog of websocket rows written before the order-flow columns: about 1,000 ES pages a session against 600 pages a run, so that backlog ages out of the 3-day window still NULL.
 - **Write rule.** A minute is written only when REST volume is within 2% of the bar's AND buy + sell ≤ the bar's volume.
 - **Phase 6b is a `.ts` script** with its logic in `scripts/_lib`.
   - **Candidates.** `/futures/contracts` lists only contracts active in the last 30 sessions. So each day's candidates are the 3 listed months from that day's month on, by CME cycle: HMUZ for ES/NQ/RTY/ZN, every month for CL, even months for GC. Each candidate is paged from 00:00 UTC to the last NULL minute, because the tally needs the whole day.

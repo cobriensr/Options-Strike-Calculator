@@ -731,6 +731,10 @@ const ES_CANDLES = {
   [candlesPath('ESH7')]: [candle('2026-09-29T00:00:00Z', 7760, 3)],
 };
 
+/** The one warning a run raises when it leaves NULL-flow minutes behind. */
+const BACKLOG_WARNING =
+  'backfill-futures-gaps: order-flow minutes left NULL (deferred or unrepairable)';
+
 /** Two ESZ6 prints in 14:01 and one before it, ending the paging. */
 const ES_1401_PAGE = [
   print(2, '2026-09-29T14:01:30.000000Z', 10, 'buy'),
@@ -915,6 +919,13 @@ describe('backfill-futures-gaps order-flow pass', () => {
       flow_ranges_unrepairable: 1,
       flow_minutes_repaired: 0,
     });
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      BACKLOG_WARNING,
+      expect.objectContaining({
+        level: 'warning',
+        extra: expect.objectContaining({ unrepairable: 1, deferred: 0 }),
+      }),
+    );
   });
 
   it('stops at 600 pages per run, oldest range first, and defers the rest to the next run', async () => {
@@ -948,11 +959,63 @@ describe('backfill-futures-gaps order-flow pass', () => {
     expect(tradesCalls('NQZ6')).toHaveLength(600);
     expect(tradesCalls('ESZ6')).toEqual([]);
     expect(updateCalls()).toHaveLength(0);
+    // Deferred but still inside tomorrow's window: success, with a warning.
     expect(res._json).toMatchObject({
       status: 'success',
       flow_pages: 600,
       flow_ranges_deferred: 2,
+      flow_minutes_aged_out: 0,
     });
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      BACKLOG_WARNING,
+      expect.objectContaining({
+        level: 'warning',
+        extra: expect.objectContaining({ deferred: 2, agedOut: 0 }),
+      }),
+    );
+  });
+
+  it('deferred minutes on the window’s oldest day age out before the next run: counted, and the run is partial', async () => {
+    // 2026-09-27 is the oldest UTC day of this run's window; tomorrow's
+    // window starts 09-28, so its NULL bars will never be seen again.
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        nullFlowRow('NQ', '2026-09-27T22:30:00Z', 10, true),
+        nullFlowRow('NQ', '2026-09-27T22:31:00Z', 10, false),
+        nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
+      ]);
+    let id = 1;
+    mockUwFetch.mockImplementation(async (_key: string, path: string) => {
+      if (path === CONTRACTS_PATH) return CONTRACTS;
+      if (path === candlesPath('NQZ6')) {
+        return [
+          candle('2026-09-27T22:30:00Z', 26_000, 50),
+          candle('2026-09-27T22:31:00Z', 26_001, 50),
+        ];
+      }
+      if (path === candlesPath('NQH7')) return [];
+      if (path.startsWith(tradesPrefix('NQZ6'))) {
+        const us = parseUwTimeMicros(olderThan(path))! - 2n;
+        return [print(id++, formatMicrosIso(us), 1, 'buy')];
+      }
+      throw new Error(`unexpected UW path ${path}`);
+    });
+
+    const res = await run();
+
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      flow_ranges_deferred: 2,
+      // The two NQ bars; ES 09-29 is still inside tomorrow's window.
+      flow_minutes_aged_out: 2,
+    });
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      BACKLOG_WARNING,
+      expect.objectContaining({
+        extra: expect.objectContaining({ deferred: 2, agedOut: 2 }),
+      }),
+    );
   });
 
   it('an upstream 5xx on /trades fails the symbol: Sentry exception, status error, never success', async () => {
@@ -1162,6 +1225,133 @@ describe('backfill-futures-gaps order-flow pass', () => {
       flow_pages: 600,
       flow_ranges_deferred: 1,
       flow_minutes_repaired: 0,
+    });
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      BACKLOG_WARNING,
+      expect.objectContaining({
+        level: 'warning',
+        extra: expect.objectContaining({ deferred: 1, agedOut: 0 }),
+      }),
+    );
+  });
+
+  it('ranges starting at the same minute go ES, NQ, RTY, CL, GC, ZN (spec D7), not alphabetically', async () => {
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        // The scan orders by symbol, so CL comes first.
+        nullFlowRow('CL', '2026-09-29T14:01:00Z', 3, true),
+        nullFlowRow('NQ', '2026-09-29T14:01:00Z', 4, true),
+      ])
+      .mockResolvedValue([{ ts: 'x' }]);
+    routeUwWithTrades(
+      {
+        [CONTRACTS_PATH]: [
+          ...CONTRACTS,
+          { name: 'CLZ6', product: 'CL', is_spread: false, volume: 800_000 },
+          { name: 'CLF7', product: 'CL', is_spread: false, volume: 300_000 },
+        ],
+        [candlesPath('NQZ6')]: [candle('2026-09-29T14:01:00Z', 26_000, 4)],
+        [candlesPath('NQH7')]: [],
+        [candlesPath('CLZ6')]: [candle('2026-09-29T14:01:00Z', 60, 3)],
+        [candlesPath('CLF7')]: [],
+      },
+      {
+        NQZ6: [
+          [
+            print(2, '2026-09-29T14:01:30.000000Z', 4, 'buy'),
+            print(1, '2026-09-29T14:00:30.000000Z', 1, 'buy'),
+          ],
+        ],
+        CLZ6: [
+          [
+            print(2, '2026-09-29T14:01:30.000000Z', 3, 'sell'),
+            print(1, '2026-09-29T14:00:30.000000Z', 1, 'buy'),
+          ],
+        ],
+      },
+    );
+
+    await run();
+
+    const paths = mockUwFetch.mock.calls.map((c) => c[1] as string);
+    const first = (contract: string) =>
+      paths.findIndex((p) => p.startsWith(tradesPrefix(contract)));
+    expect(first('NQZ6')).toBeGreaterThanOrEqual(0);
+    expect(first('NQZ6')).toBeLessThan(first('CLZ6'));
+  });
+
+  it('repairs a long range oldest piece first, so a budget stop leaves the newer minutes, not the older', async () => {
+    // One range, one contract, 90 minutes long: two pieces of ≤ 60 min.
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        nullFlowRow('ES', '2026-09-29T14:00:00Z', 599, true),
+        nullFlowRow('ES', '2026-09-29T15:30:00Z', 7, false),
+      ])
+      .mockResolvedValueOnce([{ ts: 'x' }]);
+    let call = 0;
+    mockUwFetch.mockImplementation(async (_key: string, path: string) => {
+      if (path === CONTRACTS_PATH) return CONTRACTS;
+      if (path === candlesPath('ESZ6')) {
+        return [
+          candle('2026-09-29T00:00:00Z', 7700, 5_000),
+          candle('2026-09-29T14:00:00Z', 7740, 599),
+          candle('2026-09-29T15:30:00Z', 7750, 7),
+        ];
+      }
+      if (path === candlesPath('ESH7')) return [];
+      if (path.startsWith(tradesPrefix('ESZ6'))) {
+        call += 1;
+        // 599 one-lot pages stepping back from the first cursor, then a
+        // print before 14:00 ends the piece: the whole budget for one piece.
+        if (call === 600) {
+          return [print(999_999, '2026-09-29T13:59:59.000000Z', 1, 'buy')];
+        }
+        const us = parseUwTimeMicros(olderThan(path))! - 2n;
+        return [print(call, formatMicrosIso(us), 1, 'buy')];
+      }
+      throw new Error(`unexpected UW path ${path}`);
+    });
+
+    const res = await run();
+
+    // The first piece pages back from 14:01, not from 15:31.
+    expect(olderThan(tradesCalls('ESZ6')[0]!)).toBe(
+      '2026-09-29T14:01:00.000000Z',
+    );
+    expect(tradesCalls('ESZ6')).toHaveLength(600);
+    expect(sqlValues(updateCalls()[0]!)).toContainEqual([
+      '2026-09-29T14:00:00.000Z',
+    ]);
+    expect(res._json).toMatchObject({
+      flow_minutes_repaired: 1,
+      flow_ranges_deferred: 1,
+    });
+  });
+
+  it('a root whose candles already failed in the OHLC pass is skipped by the flow pass, not reported twice', async () => {
+    mockSql
+      .mockResolvedValueOnce([ES_GAP])
+      .mockResolvedValueOnce([
+        nullFlowRow('ES', '2026-09-29T14:40:00Z', 10, true),
+      ]);
+    routeUwWithTrades(
+      {
+        [CONTRACTS_PATH]: CONTRACTS,
+        [candlesPath('ESZ6')]: new Error('UW API 502: bad gateway'),
+      },
+      {},
+    );
+
+    const res = await run();
+
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(tradesCalls('ESZ6')).toEqual([]);
+    expect(res._json).toMatchObject({
+      status: 'error',
+      failures: ['ES: UW API 502: bad gateway'],
+      flowSkippedSymbols: ['ES'],
     });
   });
 });
