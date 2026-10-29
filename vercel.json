@@ -258,6 +258,14 @@
       "schedule": "0 6 * * 1-6"
     },
     {
+      "path": "/api/cron/fetch-futures-session-stats",
+      "schedule": "30 12 * * 2-6"
+    },
+    {
+      "path": "/api/cron/fetch-futures-session-stats",
+      "schedule": "30 21 * * 1-5"
+    },
+    {
       "path": "/api/cron/refresh-vix1d",
       "schedule": "0 11 * * 1-5"
     },

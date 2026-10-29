@@ -414,6 +414,15 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
+  'fetch-futures-session-stats': {
+    // vercel.json fires `30 12 * * 2-6` and `30 21 * * 1-5`; a monitor has
+    // one crontab, so it expects the 12:30 run, which carries the settled
+    // session's final open interest. The 21:30 run checks in on the same
+    // slug off-schedule. Daily → default failure threshold of 1.
+    schedule: '30 12 * * 2-6',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
   'fetch-gex-0dte': {
     schedule: '* 13-21 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
