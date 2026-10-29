@@ -44,6 +44,11 @@ import httpx
 from constants import DOWNLOAD_DEADLINE_SECONDS, DOWNLOAD_MAX_ATTEMPTS, SNIFF_MAX_BYTES, USER_AGENT
 
 HISTORIC_CODE = "historic_data_access_missing"
+# The window boundary in a historic 403, anchored on UW's phrase. ASCII digits only.
+_EARLIEST_RE = re.compile(
+    r"earliest(?:\s+available)?\s+date[^0-9]{0,60}?([0-9]{4}-[0-9]{2}-[0-9]{2})",
+    re.IGNORECASE,
+)
 ZIP_MAGIC = b"PK\x03\x04"  # zip local-file-header signature
 
 Kind = Literal[
@@ -136,9 +141,16 @@ def build_headers(api_key: str) -> dict[str, str]:
 
 def parse_boundary(message: str) -> tuple[date | None, int | None]:
     """Pull the caller's earliest available date and trading-day lookback out of a
-    `historic_data_access_missing` message. Either may be None if the wording moved."""
+    `historic_data_access_missing` message. Either may be None if the wording moved.
+
+    The boundary is read only from UW's own "earliest date" (or "earliest available
+    date") phrase, never as the first date in the text: the same sentence also echoes
+    the requested day (live 2026-10-29: "The earliest date currently available to
+    this token is 2023-11-30, so 2021-01-04 in query param date will not return
+    historical data."). No phrase, no boundary, which leaves the day retried.
+    """
     earliest: date | None = None
-    m = re.search(r"(\d{4}-\d{2}-\d{2})", message)
+    m = _EARLIEST_RE.search(message)
     if m:
         try:
             earliest = date.fromisoformat(m.group(1))

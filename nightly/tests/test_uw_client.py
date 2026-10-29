@@ -17,7 +17,7 @@ import httpx
 import pytest
 
 from constants import DOWNLOAD_DEADLINE_SECONDS, SNIFF_MAX_BYTES, USER_AGENT
-from uw_client import SourceInfo, TapeDownloadError, download_tape, probe_source
+from uw_client import SourceInfo, TapeDownloadError, download_tape, parse_boundary, probe_source
 
 pytestmark = pytest.mark.respx(assert_all_called=True)
 
@@ -34,6 +34,9 @@ GCS_HEADERS = {
 HISTORIC_MESSAGE = (
     "Your plan includes 730 trading days of history; your earliest available date is 2024-09-10."
 )
+# Verbatim from UW on 2026-10-29, for GET /api/option-trades/full-tape/2021-01-04 (an
+# error message; no market data). The same sentence echoes the requested day.
+LIVE_HISTORIC_BODY = r"""{"code":"historic_data_access_missing","message":"The earliest date currently available to this token is 2023-11-30, so 2021-01-04 in query param date will not return historical data.\n\nAPI Basic and API Advanced subscriptions include up to 2 years of historical data. View API plans at https://unusualwhales.com/pricing?product=api.\n\nFor access beyond standard plan limits, email dev@unusualwhales.com with your use case.\n\nNote: For the endpoints /api/institution, /api/stock/:ticker/ohlc/:candle_size, /api/insider/transactions, /api/insider/:sector/sector-flow, /api/insider/:ticker, /api/insider/:ticker/ticker-flow, /api/stock/:ticker/insider-buy-sells, /api/market/correlations, /api/alerts there is no limitations on accessing historical data.\n"}"""
 
 
 @pytest.fixture(autouse=True)
@@ -184,6 +187,62 @@ def test_historic_403_without_a_parseable_boundary_has_no_earliest(respx_mock, t
         "uw-403 historic window: earliest unknown, unknown trading days",
     )
     assert (caught.value.origin, caught.value.earliest) == ("uw", None)
+
+
+def test_live_historic_403_body_gives_uw_earliest(respx_mock, tmp_path: Path):
+    _uw_route(
+        respx_mock,
+        httpx.Response(
+            403,
+            content=LIVE_HISTORIC_BODY.encode(),
+            headers={"Content-Type": "application/json"},
+        ),
+    )
+
+    with pytest.raises(TapeDownloadError) as caught:
+        download_tape(DAY, tmp_path / "t.zip", API_KEY)
+
+    _assert_message(
+        caught.value,
+        "outside_window",
+        "uw-403 historic window: earliest 2023-11-30, unknown trading days",
+    )
+    assert (caught.value.origin, caught.value.earliest) == ("uw", date(2023, 11, 30))
+    assert "unusualwhales.com" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("message", "earliest", "lookback"),
+    [
+        pytest.param(
+            json.loads(LIVE_HISTORIC_BODY)["message"],
+            date(2023, 11, 30),
+            None,
+            id="live-2026-10-29",
+        ),
+        pytest.param(
+            "2021-01-04 in query param date will not return historical data, as the earliest "
+            "date currently available to this token is 2023-11-30.",
+            date(2023, 11, 30),
+            None,
+            id="requested-day-first",
+        ),
+        pytest.param(HISTORIC_MESSAGE, date(2024, 9, 10), 730, id="earliest-available-date"),
+        pytest.param("THE EARLIEST DATE IS 2023-11-30.", date(2023, 11, 30), None, id="any-case"),
+        pytest.param(
+            "Requested 2021-01-04; the window starts 2023-11-30.",
+            None,
+            None,
+            id="dates-without-the-phrase",
+        ),
+        pytest.param("the earliest 2023-11-30", None, None, id="earliest-without-date"),
+        pytest.param("The earliest date is 2023-02-30.", None, None, id="impossible-date"),
+    ],
+)
+def test_parse_boundary_reads_only_uws_earliest_date_phrase(
+    message: str, earliest: date | None, lookback: int | None
+):
+    assert parse_boundary(message) == (earliest, lookback)
 
 
 @pytest.mark.parametrize(

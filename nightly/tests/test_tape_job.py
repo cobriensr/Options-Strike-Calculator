@@ -23,6 +23,7 @@ from types import SimpleNamespace
 from unittest.mock import create_autospec, patch
 
 import boto3
+import httpx
 import pytest
 from botocore.exceptions import ClientError
 from moto import mock_aws
@@ -43,6 +44,7 @@ from constants import (
 from r2_store import R2Store, R2VerifyError, tape_key
 from tape_convert import ConvertResult, TapeValidationError
 from tape_job import DayOutcome, land_day, plan_days, rewritten_days, run_tape
+from tests.test_uw_client import LIVE_HISTORIC_BODY
 from uw_client import SourceInfo, TapeDownloadError
 
 BUCKET = "test-bucket"
@@ -498,6 +500,47 @@ def test_outside_window_without_a_boundary_fails_without_a_marker(
 
     assert outcome == DayOutcome(OLD, "failed", "outside_window", None, ())
     assert store.unavailable() == set()
+
+
+@pytest.mark.parametrize(
+    ("day", "status"),
+    [
+        pytest.param(date(2021, 1, 4), "unavailable", id="the-requested-day-before-earliest"),
+        pytest.param(date(2023, 12, 1), "failed", id="a-day-after-earliest"),
+    ],
+)
+def test_live_historic_403_end_to_end(
+    s3,
+    store: R2Store,
+    tape: FakeTape,
+    monkeypatch: pytest.MonkeyPatch,
+    respx_mock,
+    day: date,
+    status: str,
+) -> None:
+    """The real download_tape reads UW's live 403 body (boundary 2023-11-30, which the
+    same sentence follows with the echoed requested day); land_day acts on it."""
+    monkeypatch.setattr(tape_job, "download_tape", uw_client.download_tape)
+    respx_mock.get(f"https://api.unusualwhales.com/api/option-trades/full-tape/{day}").mock(
+        return_value=httpx.Response(
+            403,
+            content=LIVE_HISTORIC_BODY.encode(),
+            headers={"Content-Type": "application/json"},
+        )
+    )
+
+    outcome = land_day(day, store, API_KEY, [], last_session=LAST)
+
+    assert outcome == DayOutcome(day, status, "outside_window", None, ())
+    if status == "unavailable":
+        marker = json.loads(_body(s3, f"fulltape/_unavailable/{day}.json"))
+        assert marker["reason"] == (
+            "outside_window: uw-403 historic window: earliest 2023-11-30, unknown trading days"
+        )
+        assert store.unavailable() == {day}
+    else:
+        assert store.unavailable() == set()
+    assert not (tape.work / day.isoformat()).exists()
 
 
 @pytest.mark.parametrize(
