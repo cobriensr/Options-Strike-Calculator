@@ -5501,4 +5501,28 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 198,
+    description:
+      'Create futures_session_stats: one row per CME contract and settlement date from UW /futures/{contract}/stats (settlement, open interest, session volume) for the top 2 non-spread contracts of each root. The fetch-futures-session-stats cron runs twice a day and upserts on (contract, settlement_date), because open interest can finalize after the settlement prints; fetched_at shows which run wrote the stored values. No session high/low: UW reports those for the in-progress session, not the settled one.',
+    statements: (sql) => [
+      // Written only by api/cron/fetch-futures-session-stats.ts. contract is
+      // the UW contract symbol ('ESZ6'), product its root ('ES'). The values
+      // are nullable because UW's are. UW sends settlement as a decimal
+      // string with up to 9 places, so scale 8 as on futures_blocks. About
+      // 12 rows a day, so the primary key is the only index.
+      sql`
+        CREATE TABLE IF NOT EXISTS futures_session_stats (
+          contract        TEXT          NOT NULL,
+          product         TEXT          NOT NULL,
+          settlement_date DATE          NOT NULL,
+          settlement      NUMERIC(18,8),
+          open_interest   BIGINT,
+          session_volume  BIGINT,
+          fetched_at      TIMESTAMPTZ   NOT NULL DEFAULT now(),
+          PRIMARY KEY (contract, settlement_date)
+        )
+      `,
+    ],
+  },
 ];
