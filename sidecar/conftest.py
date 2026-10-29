@@ -1,8 +1,10 @@
 """Configure pytest to find source modules in sidecar/src/.
 
-Also installs minimal session-wide mocks for external packages that
-may NOT be in the local test venv (psycopg2, sentry_sdk). This lets
-source modules import at all. Every other mock (db, logger_setup,
+Also installs minimal session-wide mocks for two external packages,
+psycopg2 and sentry_sdk, whenever they aren't already in sys.modules.
+Both are in requirements.txt, so the mocks don't exist for a missing
+install: they keep tests from ever needing a live database driver,
+database or Sentry client. Every other mock (db, logger_setup,
 config, sentry_setup) is managed per-test-file so each file's
 assertions match its own fixture setup.
 """
@@ -19,16 +21,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 # Minimal external-package mocks
 # ---------------------------------------------------------------------------
 #
-# Only for packages NOT installed in the local venv. These are the
-# packages whose absence would cause `import foo` to fail at module
-# parse time, which would then make every test file fail to even load.
+# Installed or not, each is mocked whenever it isn't already in
+# sys.modules. Nothing imports either before this conftest loads, so in
+# practice the tests always get the mock and never the real package.
 #
 # Packages like `db`, `logger_setup`, `config`, and `sentry_setup` are
 # all sidecar source modules that exist on disk and can be imported
 # directly from sidecar/src/. Test files that want to mock those should
 # install their own mocks per-file.
 
-# psycopg2 — used by sidecar/src/db.py. Not in venv.
+# psycopg2 — used by sidecar/src/db.py.
 if "psycopg2" not in sys.modules:
     mock_psycopg2 = MagicMock()
     mock_psycopg2_pool = MagicMock()
