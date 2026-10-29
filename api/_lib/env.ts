@@ -92,6 +92,18 @@ const classifierSchema = z.object({
   CLASSIFIER_SHARED_SECRET: z.string().min(1).optional(),
 });
 
+/**
+ * Cloudflare R2 (private object storage, api/_lib/r2.ts). All five are
+ * required together; r2.ts reports every missing name at first use.
+ */
+const r2Schema = z.object({
+  R2_ACCOUNT_ID: z.string().min(1).optional(),
+  R2_ACCESS_KEY_ID: z.string().min(1).optional(),
+  R2_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+  R2_ENDPOINT_URL: z.string().min(1).optional(),
+  R2_BUCKET_FULLTAPE: z.string().min(1).optional(),
+});
+
 /** Vercel runtime vars (auto-set by platform, read-only). */
 const vercelSchema = z.object({
   VERCEL: z.string().optional(),
@@ -107,6 +119,7 @@ const envSchema = coreSchema
   .merge(twilioSchema)
   .merge(observabilitySchema)
   .merge(classifierSchema)
+  .merge(r2Schema)
   .merge(vercelSchema);
 
 /** All known env var names, derived from the schema. */

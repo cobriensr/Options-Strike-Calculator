@@ -317,6 +317,11 @@ Required env vars (pulled via `vercel env pull .env.local`):
 | `DAY_ANALOG_BACKEND`                                     | Analog-day backend (opt.; `features`, else text embeddings) |
 | `LOG_LEVEL`                                              | pino log level (opt.)                                       |
 | `WS_CHANNELS`, `VERCEL_NOTIFY_URL`                       | uw-stream (Railway only)                                    |
+| `R2_ACCOUNT_ID`                                          | Cloudflare R2 (also local tape scripts)                     |
+| `R2_ACCESS_KEY_ID`                                       | Cloudflare R2 (also local tape scripts)                     |
+| `R2_SECRET_ACCESS_KEY`                                   | Cloudflare R2 (also local tape scripts)                     |
+| `R2_ENDPOINT_URL`                                        | Cloudflare R2 (also local tape scripts)                     |
+| `R2_BUCKET_FULLTAPE`                                     | Cloudflare R2 (also local tape scripts)                     |
 | `BLOB_READ_WRITE_TOKEN`                                  | Vercel Blob (also on Railway)                               |
 | `ARCHIVE_MANIFEST_URL`                                   | Archive manifest (Railway only)                             |
 | `ARCHIVE_SEED_TOKEN`                                     | Gates seed POST (Railway only)                              |
