@@ -30,7 +30,7 @@ It diffs `HEAD` against the last deployed commit. If the only changes are under 
 - `api/cron/curate-periscope-lessons.ts`: 780 s (Periscope debrief lesson curation)
 - `api/cron/build-features.ts`, `enrich-lottery-outcomes.ts`, `rollup-ws-gex-strike-expiry.ts` and `archive-gexbot.ts`: 300 s
 
-**Cron jobs**: `vercel.json` registers 83 schedules across 77 paths: 76 handlers in `api/cron/` plus `/api/health` (13:25 UTC weekdays). `fetch-gexbot-fast`, `fetch-gexbot-strikes` and `populate-periscope-from-gexbot` each have three entries. Schedules are UTC, and every handler checks `CRON_SECRET`.
+**Cron jobs**: `vercel.json` registers 87 schedules across 80 paths: 79 handlers in `api/cron/` plus `/api/health` (13:25 UTC weekdays). `fetch-gexbot-fast`, `fetch-gexbot-strikes` and `populate-periscope-from-gexbot` each have three entries, and `fetch-futures-session-stats` has two. Schedules are UTC, and every handler checks `CRON_SECRET`.
 
 **Headers and rewrites** (`vercel.json`): security headers, including the CSP, on every path except the BotID proxy; `Cache-Control: no-cache, no-store, must-revalidate` on `/sw.js`; two BotID rewrites to Vercel's bot-protection service; and a last SPA fallback that sends every non-`/api/` path with no file extension to `/index.html`.
 
@@ -63,7 +63,7 @@ Hold pushes that touch `uw-stream/` or `sidecar/` until after the 15:00 CT close
 
 ## Testing
 
-As of 2026-10-29: **about 14,960 Vitest tests in 686 files**, plus 41 Playwright spec files (three browser projects: CI runs Chromium, the nightly job runs all three), all type-checked in strict mode. Python: 88 pytest files across ml (52), uw-stream (26) and sidecar (10), plus 7 in the retired `classifier/` folder, which CI no longer runs. Coverage on the 2026-10-29 gate run: 95.2% statements / 88.0% branches / 96.1% functions / 96.9% lines.
+As of 2026-10-29: **about 15,800 Vitest tests in 711 files**, plus 43 Playwright spec files (three browser projects: CI runs Chromium, the nightly job runs all three), all type-checked in strict mode. Python: 100 pytest files across ml (54), uw-stream (27), sidecar (10) and nightly (9), plus 7 in the retired `classifier/` folder, which CI no longer runs. Coverage on the 2026-10-29 gate run: 95.5% statements / 88.4% branches / 96.5% functions / 97.1% lines.
 
 ### Unit Tests (Vitest)
 

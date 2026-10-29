@@ -301,17 +301,16 @@ On Windows, use `ml/.venv/Scripts/python` (or `.venv/Scripts/python` from `ml/`)
 
 These tables contain data that could be engineered into future features:
 
-| Table                                     | Frequency | Potential Features                                                                                                                        |
-| ----------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `futures_bars` (beyond the studies above) | 1-min     | Overnight price action, pre-market momentum (ES, NQ, RTY, CL, GC, ZN)                                                                     |
-| `es_overnight_summaries`                  | Daily     | Gap analysis, VWAP signal, fill probability. Frozen: computed from `es_bars`, which has had no writer since Databento ended on 2026-09-29 |
-| `iv_monitor`                              | 1-min     | Intraday IV time-series dynamics. No live writer since 2026-04-30                                                                         |
-| `flow_ratio_monitor`                      | 1-min     | Intraday PCR dynamics (beyond daily aggregates)                                                                                           |
-| `market_alerts`                           | On-demand | Alert frequency/severity as a feature                                                                                                     |
-| `dark_pool_prints`                        | Per print | Intraday dark-pool cluster formation (SPY, QQQ)                                                                                           |
-| `dark_pool_snapshots`                     | On-demand | Point-in-time DP state at analysis time                                                                                                   |
-| `lessons`                                 | Weekly    | Semantic similarity to current conditions (vector embeddings)                                                                             |
-| `positions`                               | On-demand | Real vs simulated P&L validation                                                                                                          |
+| Table                                     | Frequency | Potential Features                                                    |
+| ----------------------------------------- | --------- | --------------------------------------------------------------------- |
+| `futures_bars` (beyond the studies above) | 1-min     | Overnight price action, pre-market momentum (ES, NQ, RTY, CL, GC, ZN) |
+| `iv_monitor`                              | 1-min     | Intraday IV time-series dynamics. No live writer since 2026-04-30     |
+| `flow_ratio_monitor`                      | 1-min     | Intraday PCR dynamics (beyond daily aggregates)                       |
+| `market_alerts`                           | On-demand | Alert frequency/severity as a feature                                 |
+| `dark_pool_prints`                        | Per print | Intraday dark-pool cluster formation (SPY, QQQ)                       |
+| `dark_pool_snapshots`                     | On-demand | Point-in-time DP state at analysis time                               |
+| `lessons`                                 | Weekly    | Semantic similarity to current conditions (vector embeddings)         |
+| `positions`                               | On-demand | Real vs simulated P&L validation                                      |
 
 ## Adding New Features
 

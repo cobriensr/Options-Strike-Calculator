@@ -608,12 +608,13 @@ Section 508 / WCAG 2.1 AA: semantic HTML, ARIA attributes, focus management, 4.5
 
 As of 2026-10-29:
 
-- Neon Postgres: about 90 tables, managed by 194 numbered migrations
-- Vercel crons: 76 scheduled handlers in `api/cron/` (83 schedule entries in `vercel.json`)
+- Neon Postgres: about 90 tables, managed by 200 numbered migrations
+- Vercel crons: 79 scheduled handlers in `api/cron/` (87 schedule entries in `vercel.json`)
 - Railway Python services:
   - `uw-stream`: the Unusual Whales websocket consumer. It ingests per-trade option prints, flow alerts and futures trades (building 1-minute bars for 6 CME futures), with further handlers for net flow, per-strike GEX, dark pool prints and Interval B/A alerts
   - spread-leg badge: the exchange's multi-leg trade code on the anchor print, via `api/_lib/anchor-legs.ts` (replaced the Railway classifier, 2026-10-28)
   - `sidecar`: Take-It SHAP explanations (filled by the `takeit-fill-shap` cron) and DuckDB queries over the frozen historical Parquet archive
+  - `nightly`: the Full Tape lander, a cron service (Tue–Sat 07:15 UTC) that converts each missing session's UW options Full Tape to Parquet and uploads it to Cloudflare R2. It writes nothing to Neon
 - The ML pipeline (`ml/`) runs as a GitHub Actions workflow that is currently paused (last run 2026-04-17)
 
 ---

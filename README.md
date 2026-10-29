@@ -4,17 +4,17 @@ Production-grade 0DTE SPX options analysis platform: Black-Scholes pricing, AI-p
 
 ## What's where
 
-| Topic                                                        | Doc                                                                                                                                                                                                                                    |
-| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **First read** — what's in here, accounts you'll need, costs | [docs/ONBOARDING.md](docs/ONBOARDING.md)                                                                                                                                                                                               |
-| Run it locally                                               | [docs/LOCAL_DEV.md](docs/LOCAL_DEV.md)                                                                                                                                                                                                 |
-| Features (chart analysis, regime intelligence, positions, …) | [docs/FEATURES.md](docs/FEATURES.md)                                                                                                                                                                                                   |
-| Architecture, project structure, data flow, security, math   | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)                                                                                                                                                                                           |
-| Deployment + testing                                         | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)                                                                                                                                                                                               |
-| Trading workflow + position sizing rules                     | [docs/TRADING_WORKFLOW.md](docs/TRADING_WORKFLOW.md)                                                                                                                                                                                   |
-| Design specs and runbooks                                    | [docs/INDEX.md](docs/INDEX.md)                                                                                                                                                                                                         |
+| Topic                                                        | Doc                                                                                                                                                                                      |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **First read** — what's in here, accounts you'll need, costs | [docs/ONBOARDING.md](docs/ONBOARDING.md)                                                                                                                                                 |
+| Run it locally                                               | [docs/LOCAL_DEV.md](docs/LOCAL_DEV.md)                                                                                                                                                   |
+| Features (chart analysis, regime intelligence, positions, …) | [docs/FEATURES.md](docs/FEATURES.md)                                                                                                                                                     |
+| Architecture, project structure, data flow, security, math   | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)                                                                                                                                             |
+| Deployment + testing                                         | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)                                                                                                                                                 |
+| Trading workflow + position sizing rules                     | [docs/TRADING_WORKFLOW.md](docs/TRADING_WORKFLOW.md)                                                                                                                                     |
+| Design specs and runbooks                                    | [docs/INDEX.md](docs/INDEX.md)                                                                                                                                                           |
 | Subprojects                                                  | [sidecar/README.md](sidecar/README.md), [ml/README.md](ml/README.md), [uw-stream/README.md](uw-stream/README.md), [scripts/README.md](scripts/README.md), [e2e/README.md](e2e/README.md) |
-| Conventions for AI coding agents                             | [CLAUDE.md](CLAUDE.md), [AGENTS.md](AGENTS.md)                                                                                                                                                                                         |
+| Conventions for AI coding agents                             | [CLAUDE.md](CLAUDE.md), [AGENTS.md](AGENTS.md)                                                                                                                                           |
 
 ## Quick start
 
@@ -57,7 +57,7 @@ npm run test:run      # vitest unit tests (no env vars required)
 npm run test:e2e      # Playwright e2e + a11y across chromium/firefox/webkit
 ```
 
-As of 2026-10-29: about 14,960 Vitest tests in 686 files; 41 Playwright specs (chromium on every CI run, all three browsers nightly); 88 CI-gated pytest files across `ml/`, `sidecar/` and `uw-stream/`. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full breakdown.
+As of 2026-10-29: about 15,800 Vitest tests in 711 files; 43 Playwright specs (chromium on every CI run, all three browsers nightly); 100 CI-gated pytest files across `ml/`, `sidecar/`, `uw-stream/` and `nightly/`. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full breakdown.
 
 ## License
 

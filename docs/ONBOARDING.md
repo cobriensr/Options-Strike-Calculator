@@ -185,7 +185,7 @@ What you need a paid account / API key for, in rough priority order.
 
 #### 5. Neon Postgres (via Vercel Marketplace)
 
-- **What it powers**: All persistent data — snapshots, analyses, flow_data, GEX tables, training_features, lessons, positions. 80+ tables and 191 numbered migrations (as of 2026-10-28).
+- **What it powers**: All persistent data — snapshots, analyses, flow_data, GEX tables, training_features, lessons, positions. About 90 tables and 200 numbered migrations (as of 2026-10-29).
 - **Sign up**: Vercel dashboard → Storage → Connect Database → Neon.
 - **Cost**: Free tier (0.5 GB storage) likely insufficient given the data volume; **Pro ~$19/month** is realistic.
 - **Env vars**: `DATABASE_URL` (pooled), `DATABASE_URL_UNPOOLED`. Auto-injected.
