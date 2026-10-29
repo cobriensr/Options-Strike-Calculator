@@ -136,7 +136,7 @@ describe('archive-gexbot-eod', () => {
     const json = res._json as Json;
     expect(res._status).toBe(200);
     expect(json.status).toBe('success');
-    expect(json.stored).toBe(2);
+    expect(json.storedCount).toBe(2);
     expect(json.bytes).toBe(6);
     expect(json.expectedDate).toBe(EXPECTED);
     expect(eod.storeEodReport).toHaveBeenCalledWith(
@@ -175,7 +175,7 @@ describe('archive-gexbot-eod', () => {
     expect(json.failed).toEqual([
       { ticker: 'A', reason: 'object_without_metadata' },
     ]);
-    expect(json.stored).toBe(1);
+    expect(json.storedCount).toBe(1);
     expect(failureCaptures()).toHaveLength(1);
   });
 
@@ -191,8 +191,17 @@ describe('archive-gexbot-eod', () => {
     expect(r.discard).toHaveBeenCalledTimes(1);
     expect(json.notYetPublished).toBe(1);
     expect(json.status).toBe('partial');
-    expect(json.stored).toBe(0);
+    expect(json.storedCount).toBe(0);
     expect(eod.storeEodReport).not.toHaveBeenCalled();
+  });
+
+  it('keeps stored and skipped out of the shared Axiom columns', async () => {
+    await run();
+    const meta = mockReport.mock.calls[0]?.[1] as Json;
+    expect(meta).toHaveProperty('storedCount');
+    expect(meta).toHaveProperty('skippedCount');
+    expect(meta).not.toHaveProperty('stored');
+    expect(meta).not.toHaveProperty('skipped');
   });
 
   it('counts a served date equal to expected with a row as skipped', async () => {
@@ -209,7 +218,7 @@ describe('archive-gexbot-eod', () => {
     const res = await run();
     const json = res._json as Json;
     expect(r.discard).toHaveBeenCalledTimes(1);
-    expect(json.skipped).toBe(1);
+    expect(json.skippedCount).toBe(1);
     expect(eod.storeEodReport).not.toHaveBeenCalled();
   });
 
@@ -217,7 +226,7 @@ describe('archive-gexbot-eod', () => {
     setTickers(['A']);
     eod.requestEodReport.mockResolvedValue(ok({ servedDate: '2026-10-27' }));
     const res = await run();
-    expect((res._json as Json).stored).toBe(1);
+    expect((res._json as Json).storedCount).toBe(1);
     expect(eod.listStoredTickers).toHaveBeenCalledWith('2026-10-27');
     expect(eod.storeEodReport).toHaveBeenCalledWith(
       expect.objectContaining({ ticker: 'A', date: '2026-10-27' }),
@@ -291,7 +300,7 @@ describe('archive-gexbot-eod', () => {
     const json = res._json as Json;
     expect(json.status).toBe('partial');
     expect(json.failed).toEqual([{ ticker: 'A', reason: 'truncated' }]);
-    expect(json.stored).toBe(1);
+    expect(json.storedCount).toBe(1);
     expect(mockCapture).toHaveBeenCalledTimes(1);
   });
 
@@ -369,7 +378,7 @@ describe('archive-gexbot-eod', () => {
     );
     const res = await run();
     const json = res._json as Json;
-    expect(json.stored).toBe(1);
+    expect(json.storedCount).toBe(1);
     expect(json.failed).toEqual([{ ticker: 'A', reason: 'error: blip' }]);
     expect(failureCaptures()).toHaveLength(1);
   });
@@ -387,7 +396,7 @@ describe('archive-gexbot-eod', () => {
     zip.validateEodZip.mockReturnValue({ entryCount: 14, entryNames: [] });
     const res = await run();
     const json = res._json as Json;
-    expect(json.stored).toBe(1);
+    expect(json.storedCount).toBe(1);
     expect(json.entryCountWarnings).toEqual([{ ticker: 'A', entryCount: 14 }]);
     expect(json.status).toBe('success');
     expect(mockWarn).toHaveBeenCalled();
@@ -424,7 +433,7 @@ describe('archive-gexbot-eod', () => {
     const res = await run();
     const json = res._json as Json;
     expect(json.stopReason).toBe('budget');
-    expect(json.stored).toBe(3);
+    expect(json.storedCount).toBe(3);
     expect(json.leftover).toEqual(['D']);
     expect(json.status).toBe('partial');
     expect(eod.requestEodReport).toHaveBeenCalledTimes(3);

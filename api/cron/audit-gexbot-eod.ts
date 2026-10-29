@@ -33,8 +33,9 @@ import { Sentry } from '../_lib/sentry.js';
 export default withCronInstrumentation(
   'audit-gexbot-eod',
   async (ctx): Promise<CronResult> => {
+    const now = new Date();
     const { tickers, rejected } = await fetchEodTickers();
-    const date = latestEligibleReportDate(new Date());
+    const date = latestEligibleReportDate(now);
     const stored = await listStoredTickers(date);
     const missing = tickers.filter((t) => !stored.has(t));
     const metadata = {

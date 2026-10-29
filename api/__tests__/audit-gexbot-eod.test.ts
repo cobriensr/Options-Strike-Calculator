@@ -95,6 +95,24 @@ describe('audit-gexbot-eod', () => {
     expect(eod.listStoredTickers).toHaveBeenCalledWith(DATE);
   });
 
+  it.each([
+    ['2026-10-29T19:45:00.000Z', '2026-10-28'],
+    ['2026-11-02T19:45:00.000Z', '2026-10-30'],
+  ])(
+    'audits the real previous trading day at %s (EDT and EST)',
+    async (now, expected) => {
+      const actual = await vi.importActual<
+        typeof import('../_lib/gexbot-eod.js')
+      >('../_lib/gexbot-eod.js');
+      vi.setSystemTime(new Date(now));
+      eod.latestEligibleReportDate.mockImplementation(
+        actual.latestEligibleReportDate,
+      );
+      await run();
+      expect(eod.listStoredTickers).toHaveBeenCalledWith(expected);
+    },
+  );
+
   it('returns error and alerts once when tickers are missing', async () => {
     eod.listStoredTickers.mockResolvedValue(new Set(['SPX']));
     setTickers(['SPX', 'NDX', 'QQQ']);

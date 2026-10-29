@@ -244,9 +244,11 @@ export default withCronInstrumentation(
       metadata: {
         expectedDate: expected,
         tickers: tickers.length,
-        stored,
+        // Not `stored`/`skipped`: those are Axiom top-level columns that
+        // auto-prefill-premarket fills with booleans.
+        storedCount: stored,
         indexedFromR2,
-        skipped,
+        skippedCount: skipped,
         notYetPublished,
         failed,
         leftover,
