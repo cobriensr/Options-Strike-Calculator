@@ -20,7 +20,7 @@ Pushing to `main` deploys. Vercel builds the push unless the ignore command (bel
 BASE="$VERCEL_GIT_PREVIOUS_SHA"; [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null || exit 1; git diff --quiet "$BASE" HEAD -- ':!sidecar' ':!ml' ':!uw-stream' ':!docs' ':!scripts' ':!pine' ':!*.md' || exit 1
 ```
 
-It diffs `HEAD` against the last deployed commit. If the only changes are under `sidecar/`, `ml/`, `uw-stream/`, `docs/`, `scripts/` or `pine/`, or are `*.md` files, the build is skipped. If that commit is unset or not in the clone, it builds. `classifier/` is not left out, so a classifier change also builds Vercel.
+It diffs `HEAD` against the last deployed commit. If the only changes are under `sidecar/`, `ml/`, `uw-stream/`, `docs/`, `scripts/` or `pine/`, or are `*.md` files, the build is skipped. If that commit is unset or not in the clone, it builds.
 
 **Long-running functions** (`vercel.json` `functions` sets `maxDuration` for 25 functions; the rest use the platform default):
 
@@ -34,16 +34,15 @@ It diffs `HEAD` against the last deployed commit. If the only changes are under 
 
 **Headers and rewrites** (`vercel.json`): security headers, including the CSP, on every path except the BotID proxy; `Cache-Control: no-cache, no-store, must-revalidate` on `/sw.js`; two BotID rewrites to Vercel's bot-protection service; and a last SPA fallback that sends every non-`/api/` path with no file extension to `/index.html`.
 
-### Railway (sidecar + uw-stream + classifier + ws-canary)
+### Railway (sidecar + uw-stream + ws-canary)
 
-Three long-running Railway services, each with its own Dockerfile, `railway.toml` `watchPatterns` and env vars, plus one temporary service:
+Two long-running Railway services, each with its own Dockerfile, `railway.toml` `watchPatterns` and env vars, plus one temporary service:
 
 - [sidecar/README.md](../sidecar/README.md): Take-It SHAP + frozen archive (Theta and the multileg-classify fallback were removed 2026-10-02)
 - [uw-stream/README.md](../uw-stream/README.md): UW websocket consumer (also the live source of `futures_bars`)
-- [classifier/README.md](../classifier/README.md): multileg classifier for the detect crons, reached via `CLASSIFIER_URL` on Vercel (no fallback). Its retirement was approved 2026-10-28 and it is still running; see [the replacement design](superpowers/specs/2026-10-28-classifier-replacement-design.md).
 - [scripts/ws-canary/README.md](../scripts/ws-canary/README.md): a temporary canary that holds test websockets from uw-stream's Railway region, to find which network hop resets uw-stream's connections. It is deleted once the verdict is in.
 
-Watch paths: `sidecar/**`, `uw-stream/**`, `classifier/**` plus `ml/src/multileg_*.py` (the source of the classifier's `_vendored_ml/` copies), and `/scripts/ws-canary/**`. Railway doesn't read config-as-code for a new service, so the canary's settings are set on the service and its `railway.toml` only records them. A change to those `ml/` or `scripts/` paths alone redeploys the classifier or the canary without building Vercel, since the ignore command leaves both folders out.
+Watch paths: `sidecar/**`, `uw-stream/**` and `/scripts/ws-canary/**`. Railway doesn't read config-as-code for a new service, so the canary's settings are set on the service and its `railway.toml` only records them. A change under `scripts/` alone redeploys the canary without building Vercel, since the ignore command leaves that folder out.
 
 Hold pushes that touch `uw-stream/` or `sidecar/` until after the 15:00 CT close: a redeploy drops the websocket mid-session and briefly takes down Take-It scoring.
 
@@ -53,7 +52,7 @@ Hold pushes that touch `uw-stream/` or `sidecar/` until after the 15:00 CT close
 2. Add Upstash Redis: Vercel Marketplace → Connect Database → Upstash for Redis
 3. Add Vercel Blob: Vercel Storage → Connect → Blob (ML plots, Take-It model bundles, GEXBot and Periscope archives, table backups, archive seeding)
 4. Add Sentry: Vercel Integrations → Sentry (auto-sets `SENTRY_DSN`)
-5. Set environment variables: `OWNER_SECRET`, `CRON_SECRET`, `APP_URL` (the public origin; the Schwab OAuth redirect is built from it), `SCHWAB_CLIENT_ID`, `SCHWAB_CLIENT_SECRET`, `OWNER_SCHWAB_ACCOUNT_SHA256` (sha256 of the owner's Schwab account number; Schwab logins are refused while it is unset), `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `UW_API_KEY`, `GEXBOT_API_KEY`, `CLASSIFIER_URL`, `CLASSIFIER_SHARED_SECRET`. See [.env.example](../.env.example) for the full list.
+5. Set environment variables: `OWNER_SECRET`, `CRON_SECRET`, `APP_URL` (the public origin; the Schwab OAuth redirect is built from it), `SCHWAB_CLIENT_ID`, `SCHWAB_CLIENT_SECRET`, `OWNER_SCHWAB_ACCOUNT_SHA256` (sha256 of the owner's Schwab account number; Schwab logins are refused while it is unset), `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `UW_API_KEY`, `GEXBOT_API_KEY`. See [.env.example](../.env.example) for the full list.
 6. Authenticate: visit `/api/auth/init` → Schwab login → the callback sets the owner cookie. This needs Redis, not the database.
 7. Initialize tables: `POST /api/journal/init` with the owner cookie. It creates the base tables and runs every migration. Idempotent.
 8. Later schema changes: nothing applies migrations on deploy. Apply them with `POST /api/journal/migrate` (owner cookie), or locally with `DATABASE_URL=... npx tsx scripts/migrate-db.ts`. The `DATABASE_URL` that `vercel env pull` writes to `.env.local` is the production database. The `audit-migration-drift` cron (12:00 UTC daily) raises a Sentry warning for any migration in code that is missing from `schema_migrations`.
@@ -63,7 +62,7 @@ Hold pushes that touch `uw-stream/` or `sidecar/` until after the 15:00 CT close
 
 ## Testing
 
-As of 2026-10-29: **about 14,960 Vitest tests in 686 files**, plus 41 Playwright spec files (three browser projects: CI runs Chromium, the nightly job runs all three), all type-checked in strict mode. Python: 95 pytest files across ml (52), uw-stream (26), sidecar (10) and classifier (7). Coverage on the 2026-10-29 gate run: 95.2% statements / 88.0% branches / 96.1% functions / 96.9% lines.
+As of 2026-10-29: **about 14,960 Vitest tests in 686 files**, plus 41 Playwright spec files (three browser projects: CI runs Chromium, the nightly job runs all three), all type-checked in strict mode. Python: 88 pytest files across ml (52), uw-stream (26) and sidecar (10), plus 7 in the retired `classifier/` folder, which CI no longer runs. Coverage on the 2026-10-29 gate run: 95.2% statements / 88.0% branches / 96.1% functions / 96.9% lines.
 
 ### Unit Tests (Vitest)
 
@@ -166,7 +165,6 @@ make -C ml test-cov   # same, failing under 70% coverage
 
 - **sidecar**: 10 files. `make -C sidecar test-cov`; no coverage gate.
 - **uw-stream**: 26 files. CI runs `ruff check`, `ruff format --check` and `pytest --cov`, with no gate.
-- **classifier**: 7 files, with a 95% coverage gate (branch coverage on) in `pyproject.toml` `addopts`, plus a check that its vendored copies match `ml/src/multileg_*.py`.
 
 `make py-test-cov` (root `Makefile`) runs all four Python suites. `npm run review:python` runs ml and sidecar. Six more test files sit outside any suite and CI: `scripts/test_*.py` (5) and `scripts/ws-canary/test_canary.py`.
 
@@ -237,7 +235,7 @@ About 255 scripts in `scripts/` (plus `_lib/`, `ops/`, `eod-flow-analysis/` and 
 
 Four workflow files in `.github/workflows/`:
 
-- **ci.yml**: on pushes to main, PRs and manual dispatch. A `paths-filter` job picks the gates that run. The **App Quality Gate** (`npm run audit` + `npm run review`) runs when `src/`, `api/`, `scripts/`, `e2e/`, `.github/`, config or lockfiles change. **E2E Tests** (Chromium only) runs after the app gate passes, when a file the browser loads changes (`src/`, `e2e/`, `playwright.config.ts`, `vite.config.ts`, `tsconfig.json`, `index.html`, `public/`, `package*.json`, or the two workflow files); `api/`-only changes skip it. The **ML**, **Sidecar**, **uw-stream** and **Classifier** gates each run when their folder changes (the classifier gate also on `ml/src/multileg_*.py`).
+- **ci.yml**: on pushes to main, PRs and manual dispatch. A `paths-filter` job picks the gates that run. The **App Quality Gate** (`npm run audit` + `npm run review`) runs when `src/`, `api/`, `scripts/`, `e2e/`, `.github/`, config or lockfiles change. **E2E Tests** (Chromium only) runs after the app gate passes, when a file the browser loads changes (`src/`, `e2e/`, `playwright.config.ts`, `vite.config.ts`, `tsconfig.json`, `index.html`, `public/`, `package*.json`, or the two workflow files); `api/`-only changes skip it. The **ML**, **Sidecar** and **uw-stream** gates each run when their folder changes.
 - **e2e-nightly.yml**: all three browsers, weekdays at 23:00 UTC and on manual dispatch, with no path filter.
 - **ml-pipeline.yml**: 01:45 UTC Tue–Sat and manual dispatch. Job `pipeline` runs `make all`, uploads plots to Vercel Blob, calls `/api/ml/analyze-plots`, and commits `ml/findings.json` + plots. Job `takeit-retrain` then rebuilds the Take-It training set, retrains, warns when out-of-fold Brier > 0.27, and uploads bundles with `scripts/upload_takeit_bundles.mjs`. **The workflow is disabled in GitHub** (last run 2026-04-17), so neither job runs.
 - **neon_workflow.yml**: creates a Neon branch per PR (expires after 14 days) and deletes it when the PR closes.

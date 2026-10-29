@@ -49,7 +49,7 @@ File counts are as of 2026-10-29.
 │   │   ├── overnight-gap.ts              # ES overnight gap analysis
 │   │   ├── spx-candles.ts                # 1-min SPX candles (index_candles_1m first, UW live fallback)
 │   │   ├── futures-context.ts            # Futures + VIX term-structure block for analyze
-│   │   ├── multileg-client.ts            # Client for the Railway classifier (POST /multileg-classify)
+│   │   ├── anchor-legs.ts                # Spread-leg detection from the exchange multi-leg trade code on the anchor print
 │   │   ├── archive-sidecar.ts            # Client for the sidecar's /archive/* routes
 │   │   ├── takeit-score.ts               # Take-It XGBoost scoring in TypeScript
 │   │   ├── csv-parser.ts                 # thinkorswim CSV export parser (+ csv-parser/)
@@ -104,7 +104,6 @@ File counts are as of 2026-10-29.
 │   └── sw.ts                             # PWA service worker
 ├── ml/                                   # Python ML pipeline (see ml/README.md)
 ├── sidecar/                              # SHAP + frozen archive sidecar (see sidecar/README.md)
-├── classifier/                           # Multileg classifier service (see classifier/README.md)
 ├── uw-stream/                            # UW websocket consumer (see uw-stream/README.md)
 ├── scripts/                              # Backfill + utility scripts (see scripts/README.md)
 ├── e2e/                                  # 41 Playwright E2E specs (see e2e/README.md)
@@ -181,10 +180,7 @@ SPY + VIX + Time ──→ useCalculation() ──→ results (strikes, premiums
                     │    findings.json; takeit-retrain → model bundles           │
                     └────────────────────────────────────────────────────────────┘
 
-                    ┌─── Railway: classifier + sidecar ──────────────────────────┐
-                    │  detect-lottery-fires / detect-silent-boom crons →         │
-                    │    classifier POST /multileg-classify (bearer secret;      │
-                    │    retirement approved 2026-10-28, still running)          │
+                    ┌─── Railway: sidecar ───────────────────────────────────────┐
                     │  takeit-fill-shap cron → sidecar /takeit/explain           │
                     │  embed-yesterday → sidecar /archive/* (DuckDB archive      │
                     │    frozen at 2026-04-17; Postgres fallback after)          │
@@ -692,6 +688,6 @@ The TBBO microstructure routes (`/archive/tbbo-day-microstructure`, `/archive/tb
 - `api/cron/embed-yesterday.ts` — nightly, pulls yesterday's summary + stores OpenAI text-embedding-3-large (2000-dim) into `day_embeddings` for analog cohort retrieval; falls back to Postgres (`api/_lib/postgres-day-summary.ts`) for dates past the archive freeze
 - `api/cron/takeit-fill-shap.ts` — SHAP explanations for Take-It fires
 
-Multileg classification is not a sidecar concern: the `detect-lottery-fires` and `detect-silent-boom` crons call the standalone `classifier/` Railway service through `api/_lib/multileg-client.ts` and `api/_lib/multileg-classify-batch.ts`, at `CLASSIFIER_URL` (`POST /multileg-classify`), sending `Authorization: Bearer <CLASSIFIER_SHARED_SECRET>`. There is no fallback; when either variable is unset the detect crons fail open (NULL multileg columns) and Sentry gets `multileg.classify.config_missing`. The classifier's retirement was approved on 2026-10-28 ([design](superpowers/specs/2026-10-28-classifier-replacement-design.md)); it still runs.
+Multi-leg detection is not a sidecar concern either: the `detect-lottery-fires` and `detect-silent-boom` crons read the exchange's multi-leg trade code on the anchor print in `api/_lib/anchor-legs.ts` and store five spread-leg columns (migration 197), which the Lottery Finder and Silent Boom panels show as a "spread leg" badge. The former Railway classifier is retired ([design](superpowers/specs/2026-10-28-classifier-replacement-design.md)).
 
 Futures bars are not a sidecar concern any more: `uw-stream` writes `futures_bars` live, and `api/cron/backfill-futures-gaps.ts` repairs holes daily from UW REST 1-minute candles.

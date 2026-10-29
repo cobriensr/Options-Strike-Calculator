@@ -220,9 +220,9 @@ What you need a paid account / API key for, in rough priority order.
 
 #### 10. Railway
 
-- **What it powers**: Hosts the `sidecar/`, `uw-stream/` and `classifier/` Python services.
+- **What it powers**: Hosts the `sidecar/` and `uw-stream/` Python services.
 - **Sign up**: [railway.app](https://railway.app).
-- **Cost**: ~$5–20/month/service for personal usage tier. Three services = budget **~$30–60/month** (the classifier runs on a large-memory replica; check its actual bill).
+- **Cost**: ~$5–20/month/service for personal usage tier. Two services = budget **~$20–40/month**.
 - **Sidecar env vars**: `DATABASE_URL` (only for its `/health` db check), `SENTRY_DSN`, `TAKEIT_SERVER_ENABLED`, `TAKEIT_SIDECAR_SHARED_SECRET`, `ARCHIVE_*`, `BLOB_READ_WRITE_TOKEN`. See [sidecar/README.md](../sidecar/README.md).
 - **Vercel env vars for the sidecar**: `SIDECAR_URL` (archive queries for analog days and `fetch-day-ohlc`), `SIDECAR_TAKEIT_URL` and `SIDECAR_TAKEIT_SECRET` (same value as the sidecar's `TAKEIT_SIDECAR_SHARED_SECRET`, sent as a bearer token by the `takeit-fill-shap` cron).
 
@@ -232,13 +232,6 @@ What you need a paid account / API key for, in rough priority order.
 - Same `DATABASE_URL`. It writes `ws_flow_alerts`, `ws_option_trades`, `futures_bars`, and (per `WS_CHANNELS`) `ws_gex_strike_expiry`, `ws_net_flow_per_ticker`, `interval_ba_alerts` and `dark_pool_prints`, all in the same Neon instance. Futures bars come from this service since Databento was removed (2026-09-29).
 - Other env vars: `WS_CHANNELS` (which channels to subscribe; default `flow-alerts`), `KV_REST_API_URL` + `KV_REST_API_TOKEN` (Upstash connection lease), `VERCEL_NOTIFY_URL` + `INTERNAL_NOTIFY_SECRET` (pushes Interval B/A alerts to `/api/push/notify`; Vercel needs the same `INTERNAL_NOTIFY_SECRET`), `SENTRY_DSN`. See [uw-stream/README.md](../uw-stream/README.md).
 - Same Railway hosting.
-
-### Required for the multileg classifier (Railway service #3)
-
-- **What it powers**: Multileg structure labels (vertical / strangle / risk reversal / butterfly) on Lottery Finder and Silent Boom fires.
-- **Status**: slated for retirement. The exchange's own multi-leg flag on each print will replace it ([design](superpowers/specs/2026-10-28-classifier-replacement-design.md)). It still runs today.
-- **Env vars**: `CLASSIFIER_URL` on **Vercel** (the classifier's base URL); `CLASSIFIER_SHARED_SECRET` on **both** Vercel and the Railway service (the bearer token the classifier requires; same value on each); `SENTRY_DSN` (optional) on the Railway service. See [classifier/README.md](../classifier/README.md).
-- **Note**: There is no fallback. Without `CLASSIFIER_URL` or `CLASSIFIER_SHARED_SECRET` on Vercel, the detect crons still insert fires, with NULL multileg columns, and Sentry gets `multileg.classify.config_missing`. If the two sides' secrets differ, the classifier answers 401, which the client reports as `multileg.classify.sidecar_non_2xx`; the crons fail open the same way.
 
 ### Optional integrations
 
@@ -269,7 +262,7 @@ For an active solo trader running the full stack:
 | Twilio (occasional SMS)         | <$5                        |
 | Schwab / FRED / Finnhub / VAPID | Free                       |
 
-**Realistic total: ~$250–500/month**, with UW the biggest line item. Dropping the Railway services gets you to ~$120–180/month. The calculator, the Schwab-backed panels and the AI analysis still work, but every websocket-fed panel goes empty: futures context, Lottery Finder, Silent Boom, dark pool levels, Interval B/A, and the opening-flow and flow-regime signals (all fed by `uw-stream`). You also lose multileg labels (`classifier`) and Take-It SHAP flags (`sidecar`).
+**Realistic total: ~$250–500/month**, with UW the biggest line item. Dropping the Railway services gets you to ~$120–180/month. The calculator, the Schwab-backed panels and the AI analysis still work, but every websocket-fed panel goes empty: futures context, Lottery Finder, Silent Boom, dark pool levels, Interval B/A, and the opening-flow and flow-regime signals (all fed by `uw-stream`). You also lose Take-It SHAP flags (`sidecar`). Spread-leg badges come from the exchange's own multi-leg trade code, so they need no extra service.
 
 ---
 
@@ -300,7 +293,7 @@ For deeper reference:
 - [TRADING_WORKFLOW.md](TRADING_WORKFLOW.md) — the 5-phase intraday workflow + 12 structure-selection rules
 - [DEPLOYMENT.md](DEPLOYMENT.md) — Vercel + Railway deploy + test catalog
 - [INDEX.md](INDEX.md) — design specs + runbooks
-- [sidecar/README.md](../sidecar/README.md), [uw-stream/README.md](../uw-stream/README.md), [classifier/README.md](../classifier/README.md), [ml/README.md](../ml/README.md) — Python services
+- [sidecar/README.md](../sidecar/README.md), [uw-stream/README.md](../uw-stream/README.md), [ml/README.md](../ml/README.md) — Python services
 - [CLAUDE.md](../CLAUDE.md) — coding conventions for AI agents working in the repo
 
 ---

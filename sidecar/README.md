@@ -4,7 +4,7 @@ Python service deployed to **Railway** (not Vercel). Serves the Take-It SHAP exp
 
 > **Databento ingestion removed (2026-09-29).** The sidecar used to stream futures OHLCV-1m bars, top-of-book, trade ticks, and ES options trades/statistics from Databento into Neon. The Databento subscription was cancelled, so that path (and the `databento` dependency and `DATABENTO_API_KEY`) is gone. Live futures data now comes from the `uw-stream` Railway service. The `/data/archive` Parquet archive (originally sourced from Databento) is frozen but still served read-only.
 >
-> **Theta Data Terminal and multileg-classify fallback removed (2026-10-02).** The co-resident Theta Data Terminal (Java jar, nightly SPX EOD fetch into `theta_option_eod`) never ran in production and is gone, along with its JRE and `THETA_*` env vars. `POST /takeit/multileg-classify` is gone too: the standalone `classifier/` Railway service is the only multileg classifier, and `api/_lib/multileg-client.ts` requires `CLASSIFIER_URL`.
+> **Theta Data Terminal and multileg-classify fallback removed (2026-10-02).** The co-resident Theta Data Terminal (Java jar, nightly SPX EOD fetch into `theta_option_eod`) never ran in production and is gone, along with its JRE and `THETA_*` env vars. `POST /takeit/multileg-classify` is gone too. The standalone classifier that replaced it has since been retired: multi-leg trades are now flagged from the exchange's trade code on the anchor print (`api/_lib/anchor-legs.ts`).
 
 ## Why a separate service?
 
@@ -103,7 +103,7 @@ src/
 - `docs/superpowers/specs/sidecar-refactor-2026-05-02.md` — modular split
 - `docs/superpowers/specs/archive-volume-seed-2026-04-18.md` — archive volume contract
 - `docs/superpowers/specs/databento-removal-2026-09-29.md` — Databento removal, the UW futures substitution, and the F4 strip (Theta, multileg-classify fallback)
-- `docs/superpowers/specs/multileg-classifier-service-split-2026-05-28.md` — why the classifier left the sidecar
+- `docs/superpowers/specs/multileg-classifier-service-split-2026-05-28.md` — why the classifier left the sidecar (superseded: the classifier is retired)
 - Historical: `theta-railway-sidecar-2026-04-18.md` (Theta design, removed), `max-leverage-databento-uw-2026-04-18.md` (data sourcing), `phase2a-sidecar-l1-ingest-2026-04-18.md` (L1 ingest, removed)
 
 ## Operational notes
