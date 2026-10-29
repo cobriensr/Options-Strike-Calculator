@@ -78,7 +78,7 @@ describe('GET /api/gexbot', () => {
 
   it('returns 200 with rows for snapshots-latest', async () => {
     mockGetLatest.mockResolvedValue([
-      { ticker: 'SPX', capturedAt: '2026-05-19T14:00:00Z' },
+      { ticker: 'HYG', capturedAt: '2026-05-19T14:00:00Z', minDte: 2 },
     ]);
     const res = mockResponse();
     await handler(
@@ -87,7 +87,7 @@ describe('GET /api/gexbot', () => {
     );
     expect(res._status).toBe(200);
     expect(res._json).toEqual({
-      rows: [{ ticker: 'SPX', capturedAt: '2026-05-19T14:00:00Z' }],
+      rows: [{ ticker: 'HYG', capturedAt: '2026-05-19T14:00:00Z', minDte: 2 }],
     });
     expect(mockGetLatest).toHaveBeenCalledTimes(1);
   });

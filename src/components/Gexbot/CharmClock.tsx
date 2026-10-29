@@ -55,7 +55,7 @@ function hoursToClose(now: Date): number {
 
 function formatHoursMinutes(hours: number): string {
   const h = Math.floor(hours);
-  const m = Math.round((hours - h) * 60);
+  const m = Math.floor((hours - h) * 60);
   return `${h}h ${m.toString().padStart(2, '0')}m`;
 }
 
@@ -92,18 +92,29 @@ function toneClass(byClose: number): string {
 }
 
 /** Wall clock that re-renders every `intervalMs`; the interval is cleaned up. */
-function useNow(intervalMs: number): Date {
+function useNow(intervalMs: number | null): Date {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
-    const id = setInterval(() => setNow(new Date()), intervalMs);
-    return () => clearInterval(id);
+    if (intervalMs == null) return undefined;
+    const tick = () => setNow(new Date());
+    // Catch up after a closed-market or hidden-tab gap, then keep ticking.
+    tick();
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') tick();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    const id = setInterval(tick, intervalMs);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [intervalMs]);
   return now;
 }
 
 function CharmClockInner({ marketOpen }: CharmClockProps) {
   const { rows, loading, error } = useGexbotData(SPEC, marketOpen);
-  const now = useNow(CLOCK_TICK_MS);
+  const now = useNow(marketOpen ? CLOCK_TICK_MS : null);
   const hoursRemaining = useMemo(() => hoursToClose(now), [now]);
 
   const charmRows = useMemo<CharmRow[]>(() => {
@@ -179,7 +190,12 @@ function CharmClockInner({ marketOpen }: CharmClockProps) {
           <tr>
             <th className="px-3 py-1.5 font-medium">Ticker</th>
             <th className="px-3 py-1.5 text-right font-medium">Net charm</th>
-            <th className="px-3 py-1.5 text-right font-medium">By close</th>
+            <th
+              className="px-3 py-1.5 text-right font-medium"
+              title="Scaled to remaining session; unit under review"
+            >
+              By close
+            </th>
             <th className="px-3 py-1.5 text-right font-medium">EOD bias</th>
           </tr>
         </thead>

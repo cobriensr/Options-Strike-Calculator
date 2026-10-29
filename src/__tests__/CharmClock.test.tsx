@@ -97,8 +97,8 @@ describe('<CharmClock>', () => {
   it('renders one row per ticker that has zcharm', () => {
     mockUseGexbotData.mockReturnValue({
       rows: [
-        makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47_000_000 }),
-        makeRow({ ticker: 'SPY', spot: 596, zcharm: 12_000_000 }),
+        makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47 }),
+        makeRow({ ticker: 'SPY', spot: 596, zcharm: 12 }),
         makeRow({ ticker: 'QQQ', spot: 540, zcharm: null }),
       ],
       loading: false,
@@ -241,6 +241,67 @@ describe('<CharmClock>', () => {
     );
   });
 
+  it('never renders 60 in the minutes field (floors, not rounds)', () => {
+    // 17:00:20Z = 13:00:20 ET -> 2h 59m 40s to the 16:00 ET close.
+    vi.setSystemTime(new Date('2026-05-19T17:00:20Z'));
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47 })],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T17:00:00Z',
+    });
+    render(<CharmClock marketOpen />);
+    expect(screen.getByText(/time to close: 2h 59m/)).toBeInTheDocument();
+  });
+
+  it('does not tick while the market is closed, and resumes when it opens', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47 })],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T17:00:00Z',
+    });
+    const { rerender } = render(<CharmClock marketOpen={false} />);
+    expect(vi.getTimerCount()).toBe(0);
+    act(() => {
+      vi.advanceTimersByTime(30 * 60_000);
+    });
+    rerender(<CharmClock marketOpen />);
+    expect(vi.getTimerCount()).toBe(1);
+    // Catches up to the real clock on resume.
+    expect(screen.getByText(/time to close: 2h 30m/)).toBeInTheDocument();
+  });
+
+  it('refreshes the clock when the tab becomes visible again', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47 })],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T17:00:00Z',
+    });
+    render(<CharmClock marketOpen />);
+    // Move the wall clock without firing the interval (throttled tab).
+    vi.setSystemTime(new Date('2026-05-19T18:00:00Z'));
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(screen.getByText(/time to close: 2h 00m/)).toBeInTheDocument();
+  });
+
+  it('explains the By close column in a tooltip', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47 })],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T17:00:00Z',
+    });
+    render(<CharmClock marketOpen />);
+    expect(screen.getByText('By close')).toHaveAttribute(
+      'title',
+      'Scaled to remaining session; unit under review',
+    );
+  });
+
   it('clears its interval on unmount', () => {
     mockUseGexbotData.mockReturnValue({
       rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47 })],
@@ -256,7 +317,7 @@ describe('<CharmClock>', () => {
 
   it('labels EOD bias as ▲ BUYS for positive zcharm', () => {
     mockUseGexbotData.mockReturnValue({
-      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47_000_000 })],
+      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47 })],
       loading: false,
       error: null,
       freshestAt: '2026-05-19T17:00:00Z',
@@ -267,7 +328,7 @@ describe('<CharmClock>', () => {
 
   it('labels EOD bias as ▼ SELLS for negative zcharm', () => {
     mockUseGexbotData.mockReturnValue({
-      rows: [makeRow({ ticker: 'QQQ', spot: 540, zcharm: -29_950_000 })],
+      rows: [makeRow({ ticker: 'QQQ', spot: 540, zcharm: -29.95 })],
       loading: false,
       error: null,
       freshestAt: '2026-05-19T17:00:00Z',
@@ -289,7 +350,7 @@ describe('<CharmClock>', () => {
 
   it('colors negative-bias cells in rose tone', () => {
     mockUseGexbotData.mockReturnValue({
-      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: -10_000_000 })],
+      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: -10 })],
       loading: false,
       error: null,
       freshestAt: '2026-05-19T17:00:00Z',
@@ -304,9 +365,9 @@ describe('<CharmClock>', () => {
     // matches |zcharm| ordering: SPX (47M) > QQQ (15M) > SPY (3M).
     mockUseGexbotData.mockReturnValue({
       rows: [
-        makeRow({ ticker: 'SPY', spot: 596, zcharm: 3_000_000 }),
-        makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47_000_000 }),
-        makeRow({ ticker: 'QQQ', spot: 540, zcharm: 15_000_000 }),
+        makeRow({ ticker: 'SPY', spot: 596, zcharm: 3 }),
+        makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47 }),
+        makeRow({ ticker: 'QQQ', spot: 540, zcharm: 15 }),
       ],
       loading: false,
       error: null,
@@ -321,7 +382,7 @@ describe('<CharmClock>', () => {
 
   it('shows hours-to-close in the header', () => {
     mockUseGexbotData.mockReturnValue({
-      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47_000_000 })],
+      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47 })],
       loading: false,
       error: null,
       freshestAt: '2026-05-19T17:00:00Z',

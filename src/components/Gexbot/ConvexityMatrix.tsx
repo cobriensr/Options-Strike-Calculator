@@ -9,14 +9,14 @@
  *   zcvr < 0  net option selling  (rose)
  *   zcvr = 0  neutral
  *
- * Shade is scaled per ticker: |latest| over the ticker's own peak |zcvr|
- * in the 60-minute window the sparkline shows. SPX moves in the
- * thousands and the ETFs in the tens, so a shared scale would paint
- * everything but SPX neutral. Three bands (faint / medium / strong at
- * <1/3, <2/3, ≥2/3 of the peak) keep the classes static for Tailwind.
- * Caveat: a ticker's own peak is the reference, so a ticker sitting at
- * its window high always reads "strong" — compare the sign across
- * tickers, and the number within a ticker.
+ * Shade is scaled per ticker against its own typical size: |latest| over
+ * the median |zcvr| of the 60-minute window the sparkline shows. SPX moves
+ * in the thousands and the ETFs in the tens, so a shared scale would paint
+ * everything but SPX neutral, and a peak-based scale would make any ticker
+ * at its window high (or a flat/one-point series) read "strong". Bands:
+ * <1x median faint, 1-2x medium, >=2x strong. With fewer than
+ * MIN_SAMPLES values the median is not trustworthy, so the cell stays
+ * faint. Colour says buying vs selling only, never bullish/bearish.
  *
  * Spec: docs/superpowers/specs/gexbot-frontend-2026-05-16.md
  */
@@ -49,9 +49,18 @@ interface CellData {
 
 const SPEC = { view: 'convexity-trend' as const };
 
-/** Band edges as a fraction of the ticker's own peak |zcvr|. */
-const INTENSITY_MEDIUM_FROM = 1 / 3;
-const INTENSITY_STRONG_FROM = 2 / 3;
+/** Band edges as multiples of the ticker's median |zcvr| in the window. */
+const INTENSITY_MEDIUM_FROM = 1;
+const INTENSITY_STRONG_FROM = 2;
+/** Below this many window values the median is too noisy to shade by. */
+const MIN_SAMPLES = 10;
+
+function median(sorted: number[]): number {
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? (sorted[mid] ?? 0)
+    : ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2;
+}
 
 function classifyTone(latest: number | null): Tone {
   if (latest == null || latest === 0) return 'neutral';
@@ -59,10 +68,10 @@ function classifyTone(latest: number | null): Tone {
 }
 
 function classifyIntensity(values: number[], latest: number | null): Intensity {
-  if (latest == null) return 'faint';
-  const peak = values.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
-  if (peak === 0) return 'faint';
-  const ratio = Math.abs(latest) / peak;
+  if (latest == null || values.length < MIN_SAMPLES) return 'faint';
+  const typical = median(values.map(Math.abs).sort((x, y) => x - y));
+  if (typical === 0) return 'faint';
+  const ratio = Math.abs(latest) / typical;
   if (ratio >= INTENSITY_STRONG_FROM) return 'strong';
   if (ratio >= INTENSITY_MEDIUM_FROM) return 'medium';
   return 'faint';
@@ -201,8 +210,8 @@ function ConvexityMatrixInner({ marketOpen }: ConvexityMatrixProps) {
     >
       <div className="text-tertiary border-b border-white/5 px-3 py-2 text-[10px] tracking-wide uppercase">
         Cross-Asset net convexity (zcvr), 60-min trend — green = net option
-        buying, red = net option selling; shade is relative to each
-        ticker&apos;s own 60-min peak
+        buying, red = net option selling; shade = size vs this ticker&apos;s
+        typical in the last hour
       </div>
       <div className="grid grid-cols-4 gap-2 p-2">
         {cells.map((cell) => {
@@ -213,6 +222,7 @@ function ConvexityMatrixInner({ marketOpen }: ConvexityMatrixProps) {
               data-testid={`convexity-cell-${cell.ticker}`}
               data-intensity={cell.intensity}
               title={cellTitle(cell)}
+              aria-label={cellTitle(cell)}
               className={`flex flex-col rounded-sm border ${styles.border} ${styles.bg} px-2 py-1.5`}
             >
               <div className="flex items-baseline justify-between">

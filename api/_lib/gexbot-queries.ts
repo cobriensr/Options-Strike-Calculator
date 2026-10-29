@@ -243,8 +243,8 @@ export async function getConvexityTrend(
     if (value === null) continue;
     const entry = byTicker.get(r.ticker) ?? { series: [], minDte: null };
     entry.series.push([toIso(r.captured_at), value]);
-    // Rows are oldest-first, so the last one wins: the latest known DTE.
-    entry.minDte = toNum(r.min_dte);
+    // Rows are oldest-first: keep the last non-null DTE in the window.
+    entry.minDte = toNum(r.min_dte) ?? entry.minDte;
     byTicker.set(r.ticker, entry);
   }
   return Array.from(byTicker, ([ticker, { series, minDte }]) => ({

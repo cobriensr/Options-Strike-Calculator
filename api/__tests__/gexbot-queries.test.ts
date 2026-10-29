@@ -117,6 +117,25 @@ describe('gexbot-queries', () => {
       expect(result.find((r) => r.ticker === 'SPX')!.minDte).toBeNull();
     });
 
+    it('keeps the last non-null min_dte when the newest row lacks one', async () => {
+      mockSql.mockResolvedValueOnce([
+        {
+          ticker: 'HYG',
+          captured_at: '2026-05-19T13:00:00Z',
+          zcvr: '-5',
+          min_dte: 2,
+        },
+        {
+          ticker: 'HYG',
+          captured_at: '2026-05-19T13:01:00Z',
+          zcvr: '-6',
+          min_dte: null,
+        },
+      ]);
+      const result = await getConvexityTrend();
+      expect(result[0]!.minDte).toBe(2);
+    });
+
     it('skips NaN zcvr rows', async () => {
       mockSql.mockResolvedValueOnce([
         {

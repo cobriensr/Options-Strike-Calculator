@@ -156,23 +156,97 @@ describe('<ConvexityMatrix>', () => {
     expect(cls).not.toMatch(/rose/);
   });
 
-  it('scales intensity per ticker against its own 60-min peak', () => {
-    // Same latest value (-100): near its own peak on UVXY, tiny against
-    // SPX's -10,000 swing. Shade must differ.
+  describe('intensity vs the ticker typical size (median |zcvr|)', () => {
+    const flat = (v: number, n = 12) => Array.from({ length: n }, () => v);
+    const intensityOf = (ticker: string): string | undefined =>
+      screen.getByTestId(`convexity-cell-${ticker}`).dataset.intensity;
+
+    it('scales per ticker: same shape, different magnitude, same band', () => {
+      mockUseGexbotData.mockReturnValue({
+        rows: [
+          makeTrend('SPX', [...flat(-1000), -2500]),
+          makeTrend('UVXY', [...flat(-10), -25]),
+          makeTrend('TLT', [...flat(-10), -12]),
+          makeTrend('GLD', [...flat(-10), -5]),
+        ],
+        loading: false,
+        error: null,
+        freshestAt: '2026-05-19T14:00:00Z',
+      });
+      render(<ConvexityMatrix marketOpen />);
+      expect(intensityOf('SPX')).toBe('strong'); // 2.5x typical
+      expect(intensityOf('UVXY')).toBe('strong'); // 2.5x typical
+      expect(intensityOf('TLT')).toBe('medium'); // 1.2x typical
+      expect(intensityOf('GLD')).toBe('faint'); // 0.5x typical
+    });
+
+    it('does not paint a normal reading strong (SPX flat at -1,310)', () => {
+      mockUseGexbotData.mockReturnValue({
+        rows: [makeTrend('SPX', flat(-1310, 20))],
+        loading: false,
+        error: null,
+        freshestAt: '2026-05-19T14:00:00Z',
+      });
+      render(<ConvexityMatrix marketOpen />);
+      expect(intensityOf('SPX')).toBe('medium');
+    });
+
+    it('stays faint with fewer than 10 samples, incl. a one-point series', () => {
+      mockUseGexbotData.mockReturnValue({
+        rows: [
+          makeTrend('SPX', [-1310]),
+          makeTrend('QQQ', flat(-500, 9)),
+          makeTrend('IWM', [...flat(-10, 9), -500]),
+        ],
+        loading: false,
+        error: null,
+        freshestAt: '2026-05-19T14:00:00Z',
+      });
+      render(<ConvexityMatrix marketOpen />);
+      expect(intensityOf('SPX')).toBe('faint');
+      expect(intensityOf('QQQ')).toBe('faint');
+      expect(intensityOf('IWM')).toBe('strong');
+    });
+
+    it('stays faint when the typical size is zero', () => {
+      mockUseGexbotData.mockReturnValue({
+        rows: [makeTrend('SPX', [...flat(0), 50])],
+        loading: false,
+        error: null,
+        freshestAt: '2026-05-19T14:00:00Z',
+      });
+      render(<ConvexityMatrix marketOpen />);
+      expect(intensityOf('SPX')).toBe('faint');
+    });
+  });
+
+  it('exposes the cell details to assistive tech via aria-label', () => {
     mockUseGexbotData.mockReturnValue({
-      rows: [
-        makeTrend('SPX', [-10_000, -100]),
-        makeTrend('UVXY', [-120, -100]),
-      ],
+      rows: [makeTrend('SPX', [-1310], 0)],
       loading: false,
       error: null,
       freshestAt: '2026-05-19T14:00:00Z',
     });
     render(<ConvexityMatrix marketOpen />);
-    const spx = screen.getByTestId('convexity-cell-SPX');
-    const uvxy = screen.getByTestId('convexity-cell-UVXY');
-    expect(spx.dataset.intensity).toBe('faint');
-    expect(uvxy.dataset.intensity).toBe('strong');
+    const cell = screen.getByTestId('convexity-cell-SPX');
+    expect(cell).toHaveAttribute('aria-label', cell.getAttribute('title'));
+    expect(cell).toHaveAttribute(
+      'aria-label',
+      expect.stringContaining('net option selling'),
+    );
+  });
+
+  it('legend says shade is vs typical and never bullish/bearish', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeTrend('SPX', [-1310])],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T14:00:00Z',
+    });
+    render(<ConvexityMatrix marketOpen />);
+    const root = screen.getByTestId('convexity-matrix');
+    expect(root).toHaveTextContent(/typical in the last hour/i);
+    expect(root).not.toHaveTextContent(/bullish|bearish/i);
   });
 
   it('names the quantity "net convexity (zcvr)" in the legend', () => {
