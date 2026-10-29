@@ -20,8 +20,9 @@
  *   - cone_breach_events has UNIQUE (date, direction). ON CONFLICT DO
  *     NOTHING means a breach in the same direction is recorded once.
  *   - The cron silently exits if today has no cone_levels row yet
- *     (compute-cone fires at 13:32 UTC; this cron starts at 13:00 UTC
- *     so there's a 32-minute window where it correctly does nothing).
+ *     (compute-cone writes it at 09:32 ET in both DST regimes; this
+ *     cron's market gate opens at 09:25 ET, so for the first few minutes
+ *     it correctly does nothing).
  *
  * Errors: an unparseable cone bound or SPX close returns `error` (a red
  * check-in) and sends a fingerprinted Sentry warning, since the wrapper

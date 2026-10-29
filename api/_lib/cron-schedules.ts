@@ -254,7 +254,9 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: LONG_RUNNER_MAX_RUNTIME,
   },
   'compute-cone': {
-    schedule: '32 13 * * 1-5',
+    // Two UTC slots, one per DST regime (09:32 ET in both); the handler's
+    // 09:30–09:45 ET timeCheck skips the other with a paired ok check-in.
+    schedule: '32 13,14 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },

@@ -23,11 +23,14 @@
  * fetch shape as `fetch-strike-iv` (which we mirror for parity). The
  * 0DTE chain is fromDate=today, toDate=today.
  *
- * Schedule: `32 13 * * 1-5` (13:32 UTC = 9:32 EDT — 1 min after the
- * 9:31 ET Periscope cone-calc anchor, giving Schwab time to settle the
- * opening chain marks). DST-tuned to match the rest of the cron fleet —
- * every other RTH cron in vercel.json uses 13–21 UTC under the same
- * DST convention.
+ * Schedule: `32 13,14 * * 1-5`, to run at 9:32 ET (1 min after the 9:31 ET
+ * Periscope cone-calc anchor, giving Schwab time to settle the opening
+ * chain marks) in both DST regimes: 13:32 UTC is 9:32 EDT and 14:32 UTC is
+ * 9:32 EST. The `isConeCalcWindow` timeCheck (09:30–09:45 ET on a trading
+ * day) admits exactly one of the two slots; the other (8:32 EST, 10:32 EDT)
+ * is an intentional skip with a paired ok check-in. With only the 13:32
+ * slot and the default market gate (09:25 ET on), every EST run was
+ * skipped and no cone was written all winter.
  *
  * Idempotency: cone_levels has DATE PRIMARY KEY. We `ON CONFLICT DO
  * NOTHING` so a same-day re-fire (e.g. accidental backfill) is a no-op
@@ -43,12 +46,25 @@
 
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { schwabFetch } from '../_lib/api-helpers.js';
+import { isPastCashOpen } from '../_lib/cron-helpers.js';
 import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 import { redactUpstreamBody } from '../_lib/redact-upstream-body.js';
 import { Sentry } from '../_lib/sentry.js';
+import { getETTime } from '../../src/utils/timezone.js';
+
+/**
+ * 09:30–09:45 ET on a trading day: the cone-calc window. isPastCashOpen
+ * handles weekends, holidays and the open; the 09:45 cap makes exactly one
+ * of the `32 13,14` UTC slots pass in each DST regime.
+ */
+function isConeCalcWindow(): boolean {
+  if (!isPastCashOpen()) return false;
+  const { hour, minute } = getETTime(new Date());
+  return hour * 60 + minute <= 9 * 60 + 45;
+}
 
 interface SchwabOptionContract {
   putCall: 'PUT' | 'CALL';
@@ -296,5 +312,5 @@ export default withCronInstrumentation(
       },
     };
   },
-  { requireApiKey: false },
+  { requireApiKey: false, timeCheck: isConeCalcWindow },
 );

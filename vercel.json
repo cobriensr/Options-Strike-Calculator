@@ -123,7 +123,7 @@
     },
     {
       "path": "/api/cron/compute-cone",
-      "schedule": "32 13 * * 1-5"
+      "schedule": "32 13,14 * * 1-5"
     },
     {
       "path": "/api/cron/check-cone-breach",
