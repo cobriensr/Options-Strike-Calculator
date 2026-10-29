@@ -883,6 +883,8 @@ in UW's example layout, then deleting old Neon rows.
   resume**. First P3's screenshot check and P6a's scale/sign parity must
   pass. Then each rule is re-validated on ≥ 20 sessions of websocket data,
   and the owner approves it rule by rule.
+  **Decided (owner, 2026-10-29):** keep the rules paused after capture goes
+  live; resume only after the 1-minute UW data has been studied.
 
 **Defaults the build can proceed on:**
 
