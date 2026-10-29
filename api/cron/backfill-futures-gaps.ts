@@ -18,7 +18,8 @@
  *      `product` (`q=ES` would also match MES/EST) with spreads excluded,
  *      top 2 by volume (`api/_lib/futures-contracts.ts`).
  *   3. `GET /futures/{contract}/candles?interval=1m&range=5d` per
- *      candidate, then the uw-stream rule replayed per minute: the
+ *      candidate, then the uw-stream rule replayed per minute
+ *      (`replayFrontMonth`, shared with the order-flow repair): the
  *      contract with the larger cumulative UTC-day volume is the front
  *      month, ties to the larger symbol, and a minute where the leader
  *      has no candle stays empty (never back-filled from another month,
@@ -67,6 +68,7 @@ import {
   FUTURES_ROOTS,
   fetchFuturesContracts,
   frontMonthCandidates,
+  replayFrontMonth,
   type FuturesRoot,
 } from '../_lib/futures-contracts.js';
 
@@ -230,55 +232,6 @@ function parseCandle(raw: unknown): Bar | null {
   };
 }
 
-// ── Front-month replay ──────────────────────────────────────
-
-/**
- * Replays the uw-stream front-month rule over per-contract candles: per
- * minute, add every contract's volume to a UTC-day tally (reset at each
- * new UTC date), then emit the tally leader's bar if it has one. Ties go
- * to the larger contract symbol, matching Python's
- * `max(tally.items(), key=lambda kv: (kv[1], kv[0]))`.
- */
-function selectFrontMonthBars(byContract: Map<string, Bar[]>): Bar[] {
-  const byMinute = new Map<string, Map<string, Bar>>();
-  for (const [contract, bars] of byContract) {
-    for (const bar of bars) {
-      const minute = byMinute.get(bar.ts) ?? new Map<string, Bar>();
-      minute.set(contract, bar);
-      byMinute.set(bar.ts, minute);
-    }
-  }
-
-  const out: Bar[] = [];
-  const tally = new Map<string, number>();
-  let day = '';
-  // ISO-8601 UTC strings of equal length sort chronologically.
-  for (const ts of [...byMinute.keys()].sort()) {
-    const minute = byMinute.get(ts)!;
-    if (ts.slice(0, 10) !== day) {
-      day = ts.slice(0, 10);
-      tally.clear();
-    }
-    for (const [contract, bar] of minute) {
-      tally.set(contract, (tally.get(contract) ?? 0) + bar.volume);
-    }
-    let leader = '';
-    let leaderVolume = -1;
-    for (const [contract, volume] of tally) {
-      if (
-        volume > leaderVolume ||
-        (volume === leaderVolume && contract > leader)
-      ) {
-        leader = contract;
-        leaderVolume = volume;
-      }
-    }
-    const bar = minute.get(leader);
-    if (bar) out.push(bar);
-  }
-  return out;
-}
-
 // ── DB write ────────────────────────────────────────────────
 
 async function insertBars(symbol: FuturesRoot, bars: Bar[]): Promise<number> {
@@ -378,7 +331,9 @@ async function repairSymbol(
     const t = Date.parse(bar.ts);
     return gaps.some((g) => t > g.prevMs && t < g.nextMs);
   };
-  const bars = selectFrontMonthBars(byContract).filter(inGap);
+  const bars = replayFrontMonth(byContract)
+    .map((e) => e.row)
+    .filter(inGap);
   const inserted = await insertBars(symbol, bars);
 
   return {

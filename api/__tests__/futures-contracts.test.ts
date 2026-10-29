@@ -18,6 +18,7 @@ import {
   FUTURES_ROOTS,
   fetchFuturesContracts,
   frontMonthCandidates,
+  replayFrontMonth,
 } from '../_lib/futures-contracts.js';
 
 // ── Fixtures ──────────────────────────────────────────────
@@ -120,6 +121,72 @@ describe('frontMonthCandidates', () => {
     const snapshot = JSON.stringify(input);
     frontMonthCandidates(input, 'ES');
     expect(JSON.stringify(input)).toBe(snapshot);
+  });
+});
+
+describe('replayFrontMonth', () => {
+  /** A per-contract minute row; `tag` shows which row the replay kept. */
+  const row = (ts: string, volume: number, tag = '') => ({ ts, volume, tag });
+
+  it('per minute, emits the row of the contract leading the cumulative UTC-day volume', () => {
+    const out = replayFrontMonth(
+      new Map([
+        [
+          'ESU6',
+          [
+            row('2026-09-14T13:00:00.000Z', 100, 'U1'),
+            row('2026-09-14T13:01:00.000Z', 10, 'U2'),
+          ],
+        ],
+        [
+          'ESZ6',
+          [
+            row('2026-09-14T13:00:00.000Z', 40, 'Z1'),
+            row('2026-09-14T13:01:00.000Z', 80, 'Z2'),
+          ],
+        ],
+      ]),
+    );
+    // 13:00 ESU6 100 vs 40. 13:01 ESZ6 overtakes on the tally (120 vs 110).
+    expect(out).toEqual([
+      { contract: 'ESU6', row: row('2026-09-14T13:00:00.000Z', 100, 'U1') },
+      { contract: 'ESZ6', row: row('2026-09-14T13:01:00.000Z', 80, 'Z2') },
+    ]);
+  });
+
+  it('resets the tally at 00:00 UTC, ties to the larger symbol, and leaves a minute empty when the leader has no row', () => {
+    const out = replayFrontMonth(
+      new Map([
+        [
+          'ESZ6',
+          [
+            row('2026-09-28T23:55:00.000Z', 10),
+            row('2026-09-29T00:00:00.000Z', 20),
+            row('2026-09-29T00:02:00.000Z', 5),
+          ],
+        ],
+        [
+          'ESH7',
+          [
+            row('2026-09-28T23:55:00.000Z', 1_000),
+            row('2026-09-29T00:00:00.000Z', 20),
+            row('2026-09-29T00:01:00.000Z', 100),
+          ],
+        ],
+      ]),
+    );
+    expect(out.map((e) => [e.row.ts, e.contract])).toEqual([
+      ['2026-09-28T23:55:00.000Z', 'ESH7'],
+      // New UTC day: 20 vs 20 → 'ESZ6' > 'ESH7'.
+      ['2026-09-29T00:00:00.000Z', 'ESZ6'],
+      ['2026-09-29T00:01:00.000Z', 'ESH7'],
+      // 00:02 ESH7 still leads (120 vs 25) but has no row → no entry.
+    ]);
+  });
+
+  it('returns [] for no contracts or no rows', () => {
+    expect(replayFrontMonth(new Map())).toEqual([]);
+    expect(replayFrontMonth(new Map([['ESZ6', []]]))).toEqual([]);
   });
 });
 
