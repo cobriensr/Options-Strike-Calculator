@@ -27,10 +27,7 @@ export const periscopeImageSchema = z.object({
 export const periscopeChatBodySchema = z
   .object({
     mode: z.enum(['pre_trade', 'intraday', 'debrief']),
-    // 0 images is allowed — the handler synthesizes Pass 1A + Pass 1B
-    // from `periscope_snapshots` + `cone_levels` for the requested slot
-    // when the user submits without screenshots. See
-    // api/_lib/periscope-synthesize.ts.
+    // 0 images is allowed (a submit without screenshots).
     images: z
       .array(periscopeImageSchema)
       .max(

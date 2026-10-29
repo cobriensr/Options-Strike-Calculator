@@ -21,9 +21,7 @@
  * the plan until GEXBot-specific rules exist.
  *
  * Spec: docs/superpowers/specs/periscope-analyzer-build-2026-05-21.md
- * (this is the MVP — full T1/T2 ordering by regime per the
- * TARGET_ORDER_RULE constant lives in api/_lib/periscope-analyzer-rules.ts
- * and is reproduced here client-side).
+ * (this is the MVP — the T1/T2 ordering by regime is defined here).
  */
 
 import { theme } from '../../themes';
@@ -80,7 +78,7 @@ function fmtMagnitudeM(value: number): string {
   return `${sign}${abs.toFixed(0)}`;
 }
 
-// ── Target ordering — mirrors api/_lib/periscope-analyzer-rules.ts ───
+// ── Target ordering ───────────────────────────────────────────────────
 // gamma_wall is T1 in every regime (validated rule); magnet is T2 by
 // default; charm_zero takes T2 in pin regime.
 
