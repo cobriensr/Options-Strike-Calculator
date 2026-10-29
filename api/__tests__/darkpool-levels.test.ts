@@ -35,14 +35,8 @@ import logger from '../_lib/logger.js';
 // ── Helpers ───────────────────────────────────────────────
 
 function makeDbRow(overrides: Record<string, unknown> = {}) {
-  // Phase 4 migration: the helper now queries `dark_pool_prints` first,
-  // which returns a `level` column. The legacy `dark_pool_levels` table
-  // (queried only on SPX fallback) returns `spx_approx`. We populate
-  // both so the same fixture works whether the test exercises the
-  // prints path (default) or the legacy fallback path.
   return {
     level: 6575,
-    spx_approx: 6575,
     total_premium: '1300000000',
     trade_count: 13,
     total_shares: 2000000,
@@ -155,12 +149,10 @@ describe('GET /api/darkpool-levels', () => {
     const rows = [
       makeDbRow({
         level: 6575,
-        spx_approx: 6575,
         total_premium: '1300000000',
       }),
       makeDbRow({
         level: 6555,
-        spx_approx: 6555,
         total_premium: '248000000',
       }),
     ];
@@ -282,14 +274,12 @@ describe('GET /api/darkpool-levels', () => {
     mockSql.mockResolvedValue([
       makeDbRow({
         level: 6575,
-        spx_approx: 6575,
         total_premium: '1300000000',
         updated_at: '2026-04-02T13:30:00Z',
         max_updated_at: '2026-04-02T19:58:00Z',
       }),
       makeDbRow({
         level: 6555,
-        spx_approx: 6555,
         total_premium: '248000000',
         updated_at: '2026-04-02T19:58:00Z',
         max_updated_at: '2026-04-02T19:58:00Z',
