@@ -317,40 +317,6 @@ export const IV_SIDE_SKEW_THRESHOLD = 0.65;
 export const RESOLVE_FLAT_PNL_THRESHOLD = 5;
 export const RESOLVE_FAST_PEAK_MINS = 30;
 
-/**
- * Retrospective catalyst analysis (`analyzeCatalysts`).
- *
- * T-60 → T+0 window: we scan a rolling 60-minute pre-detection window for
- * leading-lag signals and concurrent events. 60 minutes matches the 2026-04-23
- * validation event (TLT bid → SPX flush with ~60 min lead time).
- */
-export const CATALYST_WINDOW_MINS = 60;
-
-/**
- * Minimum |correlation| for a cross-asset to appear in `leading_assets`.
- * Pearson on 1-min log-returns inside the T-60 window. 0.5 is the middle of
- * the "moderate correlation" band — filters noise without demanding the tight
- * lock-step that only appears during extreme sessions.
- */
-export const CATALYST_CORR_THRESHOLD = 0.5;
-
-/**
- * Minimum |correlation| + minimum lag to surface a `likely_catalyst` narrative
- * tag. We only claim a cross-asset "led" the anomaly when it BOTH correlates
- * strongly AND moved measurably ahead of the anomaly ticker. 5 minutes is
- * large enough that tick-level noise can't fake it, small enough to still
- * catch fast macro-tape handoffs (ZN futures → SPX).
- */
-export const CATALYST_NARRATIVE_CORR_MIN = 0.6;
-export const CATALYST_NARRATIVE_LAG_MIN_MINS = 5;
-
-/**
- * Large dark print threshold (notional dollars). Dark prints inside the
- * T-60 window above this notional are flagged as potential catalyst candidates.
- * Matches the `dark_pool_levels.total_premium` row shape (already dollar-denominated).
- */
-export const CATALYST_LARGE_DARK_NOTIONAL = 5_000_000;
-
 // ============================================================
 // Phase F — IV-anomaly cross-asset confluence pills
 // ============================================================
