@@ -7,6 +7,7 @@ provoked at the boto3 client boundary.
 
 from __future__ import annotations
 
+import socket
 from collections.abc import Iterator
 from datetime import date
 from pathlib import Path
@@ -14,6 +15,7 @@ from unittest.mock import patch
 
 import boto3
 import pytest
+from boto3.exceptions import S3UploadFailedError
 from botocore.exceptions import ClientError
 from moto import mock_aws
 
@@ -34,7 +36,9 @@ META = {
 @pytest.fixture
 def settings() -> Settings:
     # moto only intercepts AWS hostnames; a custom R2 endpoint would go out to the network.
-    return load_settings().model_copy(update={"r2_endpoint_url": "https://s3.amazonaws.com"})
+    return load_settings().model_copy(
+        update={"r2_endpoint_url": "https://s3.amazonaws.com", "r2_bucket_fulltape": BUCKET}
+    )
 
 
 @pytest.fixture
@@ -116,25 +120,115 @@ def test_put_tape_sets_metadata_and_verifies_size(s3, store: R2Store, tmp_path: 
     assert store.landed() == {D1: META}
 
 
-def test_size_mismatch_raises(s3, store: R2Store, tmp_path: Path) -> None:
+def _file(tmp_path: Path, size: int = 100) -> Path:
     f = tmp_path / "t.parquet"
-    f.write_bytes(b"p" * 100)
-    with (
-        patch.object(store._client, "head_object", return_value={"ContentLength": 99}),
-        pytest.raises(R2VerifyError),
-    ):
-        store.put_tape(f, D1, META)
+    f.write_bytes(b"p" * size)
+    return f
 
 
-def test_failed_upload_leaves_day_unlanded(s3, store: R2Store, tmp_path: Path) -> None:
-    f = tmp_path / "t.parquet"
-    f.write_bytes(b"p" * 100)
+def _key_exists(s3, key: str) -> bool:
+    return any(o["Key"] == key for o in s3.list_objects_v2(Bucket=BUCKET).get("Contents", []))
+
+
+def test_size_mismatch_deletes_and_raises(s3, store: R2Store, tmp_path: Path) -> None:
+    real_head = store._client.head_object
     with (
-        patch.object(store._client, "upload_file", side_effect=OSError("connection reset")),
-        pytest.raises(OSError),
+        patch.object(
+            store._client,
+            "head_object",
+            side_effect=lambda **kw: {**real_head(**kw), "ContentLength": 99},
+        ),
+        pytest.raises(R2VerifyError, match="uploaded 100 bytes but R2 reports 99"),
     ):
-        store.put_tape(f, D1, META)
+        store.put_tape(_file(tmp_path), D1, META)
+    assert not _key_exists(s3, tape_key(D1))
     assert store.landed() == {}
+
+
+def test_head_failure_after_upload_deletes_and_raises(s3, store: R2Store, tmp_path: Path) -> None:
+    err = ClientError({"Error": {"Code": "500", "Message": "boom"}}, "HeadObject")
+    with (
+        patch.object(store._client, "head_object", side_effect=err),
+        pytest.raises(R2VerifyError, match="could not verify"),
+    ):
+        store.put_tape(_file(tmp_path), D1, META)
+    assert not _key_exists(s3, tape_key(D1))
+
+
+def test_cleanup_delete_failure_still_raises(s3, store: R2Store, tmp_path: Path) -> None:
+    del_err = ClientError({"Error": {"Code": "500", "Message": "boom"}}, "DeleteObject")
+    with (
+        patch.object(store._client, "head_object", return_value={"ContentLength": 1}),
+        patch.object(store._client, "delete_object", side_effect=del_err),
+        pytest.raises(R2VerifyError, match="may remain"),
+    ):
+        store.put_tape(_file(tmp_path), D1, META)
+
+
+def test_failed_part_upload_leaves_day_unlanded(
+    s3, settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("r2_store._MULTIPART_THRESHOLD", 5 * 2**20)
+    store = R2Store(settings)
+    err = ClientError({"Error": {"Code": "500", "Message": "boom"}}, "UploadPart")
+    with (
+        patch.object(store._client, "upload_part", side_effect=err),
+        pytest.raises(S3UploadFailedError),
+    ):
+        store.put_tape(_file(tmp_path, 12 * 2**20), D1, META)
+    assert store.landed() == {}
+    assert s3.list_multipart_uploads(Bucket=BUCKET).get("Uploads", []) == []
+
+
+def test_multipart_upload_round_trips(
+    s3, settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("r2_store._MULTIPART_THRESHOLD", 5 * 2**20)
+    store = R2Store(settings)
+    store.put_tape(_file(tmp_path, 12 * 2**20), D1, META)
+    head = s3.head_object(Bucket=BUCKET, Key=tape_key(D1))
+    assert head["ContentLength"] == 12 * 2**20
+    assert head["Metadata"] == META
+
+
+def test_non_ascii_metadata_rejected_before_upload(s3, store: R2Store, tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="'sha256'") as info:
+        store.put_tape(_file(tmp_path), D1, {"sha256": "café"})
+    assert "caf" not in str(info.value)
+    assert not _key_exists(s3, tape_key(D1))
+
+
+def test_malformed_keys_are_ignored(s3, store: R2Store) -> None:
+    _put(s3, tape_key(D1))
+    _put(s3, "fulltape/2026-02-30-fulltape.parquet")
+    _put(s3, "fulltape/2026-13-45-fulltape.parquet")
+    _put(s3, "fulltape/٢٠٢٦-10-26-fulltape.parquet")
+    _put(s3, "fulltape/2026-10-27-fulltape.parquet.bak")
+    _put(s3, "fulltape/2026-10-27-fulltape.parquet\n")
+    _put(s3, "fulltape/_unavailable/2026-10-27.json")
+    _put(s3, "fulltape/_unavailable/2026-10-27.json.bak")
+    _put(s3, "fulltape/_unavailable/2026-02-30.json")
+    _put(s3, "fulltape/_unavailable/2026-13-45.json")
+    assert store.landed() == {D1: {}}
+    assert store.unavailable() == {date(2026, 10, 27)}
+
+
+def test_slash_in_etag_is_sanitized(s3, store: R2Store) -> None:
+    _put(s3, tape_key(D1), body=b"old")
+    key = store.supersede(D1, '"ab/c+d=="')
+    assert key == "fulltape/_superseded/2026-10-26-ab_c_d__.parquet"
+    assert s3.get_object(Bucket=BUCKET, Key=key)["Body"].read() == b"old"
+
+
+def test_supersede_missing_source_raises(s3, store: R2Store) -> None:
+    with pytest.raises(ClientError) as info:
+        store.supersede(D1, "etag")
+    assert info.value.response["Error"]["Code"] == "NoSuchKey"
+
+
+def test_network_guard_blocks_real_connections() -> None:
+    with pytest.raises(RuntimeError, match="real network connection"), socket.socket() as sock:
+        sock.connect(("93.184.216.34", 443))
 
 
 def test_supersede_copies_old_object(s3, store: R2Store) -> None:
@@ -161,3 +255,8 @@ def test_unavailable_round_trip(s3, store: R2Store) -> None:
     assert store.landed() == {date(2026, 10, 20): {}}
     body = s3.get_object(Bucket=BUCKET, Key="fulltape/_unavailable/2026-10-26.json")["Body"].read()
     assert b"UW has not posted this day" in body
+
+
+def test_transfers_are_single_threaded(store: R2Store) -> None:
+    assert store._transfer.use_threads is False
+    assert store._transfer.preferred_transfer_client == "classic"
