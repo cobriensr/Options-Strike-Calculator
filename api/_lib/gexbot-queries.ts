@@ -266,13 +266,24 @@ interface RawCaptureRow {
   raw_response: unknown;
 }
 
+/**
+ * GEXBot's INT32 "no value" sentinel (-2147483.648) shows up in maxchange
+ * windows around the close (seen 15:59:46-16:00:00 ET). Anything at or below
+ * this floor is the sentinel, never a real strike or change, so the whole
+ * tuple is dropped.
+ */
+const MAXCHANGE_SENTINEL_FLOOR = -2_147_483;
+
 function pickWindowTuple(raw: unknown, key: string): [number, number] | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const value = (raw as Record<string, unknown>)[key];
   if (!Array.isArray(value) || value.length < 2) return null;
   const strike = toNum(value[0]);
   const change = toNum(value[1]);
-  return strike !== null && change !== null ? [strike, change] : null;
+  if (strike === null || change === null) return null;
+  if (strike <= MAXCHANGE_SENTINEL_FLOOR || change <= MAXCHANGE_SENTINEL_FLOOR)
+    return null;
+  return [strike, change];
 }
 
 export async function getMaxchangeWinners(): Promise<MaxchangeWinnerRow[]> {

@@ -5,9 +5,8 @@
  * the tooltip / direction logic / aria-label happens in one place.
  *
  * The badge is informational only — it does NOT participate in
- * filtering or sorting until the takeit retrain absorbs the gex_*
- * features (target: 2026-06-16 re-probe, see
- * `docs/superpowers/specs/silent-boom-gexbot-instrumentation-2026-05-26.md`).
+ * filtering or sorting. It shows GEXBot taker-flow values captured at fire
+ * time (see `docs/superpowers/specs/silent-boom-gexbot-instrumentation-2026-05-26.md`).
  */
 
 import type { GexbotFireContext } from '../types/gexbot.js';
@@ -28,13 +27,13 @@ export interface GexbotBadgeSpec {
 export function gexbotBadge(gex: GexbotFireContext): GexbotBadgeSpec | null {
   if (gex.capturedAt == null) return null;
   const cvr = gex.oneCvroflow;
-  const direction = cvr == null ? '·' : cvr > 1 ? '↑' : cvr < 1 ? '↓' : '·';
+  // Split at 0: positive up, negative down, exactly 0 a dash, no value a dot.
+  const direction = cvr == null ? '·' : cvr > 0 ? '↑' : cvr < 0 ? '↓' : '—';
   const arrowWord =
     direction === '↑' ? 'up' : direction === '↓' ? 'down' : 'flat';
   const cvrStr = cvr == null ? '—' : cvr.toFixed(2);
   const zcvrStr = gex.zcvr == null ? '—' : gex.zcvr.toFixed(2);
-  const dexStr =
-    gex.netPutDex == null ? '—' : (gex.netPutDex / 1e6).toFixed(1) + 'M';
+  const dexStr = gex.netPutDex == null ? '—' : gex.netPutDex.toFixed(0);
   const dexoStr = gex.oneDexoflow == null ? '—' : gex.oneDexoflow.toFixed(2);
   const gexoStr = gex.oneGexoflow == null ? '—' : gex.oneGexoflow.toFixed(2);
   const zg =
@@ -42,12 +41,12 @@ export function gexbotBadge(gex: GexbotFireContext): GexbotBadgeSpec | null {
       ? `zero-γ ${gex.zeroGamma.toFixed(0)} vs spot ${gex.spot.toFixed(0)} (Δ ${(gex.zeroGamma - gex.spot).toFixed(0)})`
       : 'zero-γ unavailable';
   const tooltip = [
-    'GexBot snapshot at fire time (informational; not used in score yet).',
-    `1DTE+ cvroflow: ${cvrStr}  ${direction}  — +0.20 r vs hit-30 in 2026-05-26 probe`,
-    `0DTE cvroflow (zcvr): ${zcvrStr}`,
-    `Net put DEX: ${dexStr}  — +0.17 r vs hit-50`,
-    `1DTE+ dexoflow: ${dexoStr}  — +0.19 r vs hit-30`,
-    `1DTE+ gexoflow: ${gexoStr}  — −0.16 r (anti-signal)`,
+    'GEXBot taker-flow snapshot at fire time (informational; not used in score).',
+    `Next-expiry cvroflow: ${cvrStr}  ${direction}`,
+    `Net convexity (zcvr): ${zcvrStr}`,
+    `Net put DEX: ${dexStr}`,
+    `Next-expiry dexoflow: ${dexoStr}`,
+    `Next-expiry gexoflow: ${gexoStr}`,
     zg,
     `Snapshot at: ${gex.capturedAt} (UTC)`,
   ].join('\n');
@@ -55,6 +54,6 @@ export function gexbotBadge(gex: GexbotFireContext): GexbotBadgeSpec | null {
     label: `GEX ${direction}${cvrStr}`,
     cls: 'border-sky-500/50 bg-sky-950/40 text-sky-200',
     tooltip,
-    ariaLabel: `GexBot snapshot: 1DTE+ cvroflow ${cvrStr} ${arrowWord}`,
+    ariaLabel: `GexBot snapshot: next-expiry cvroflow ${cvrStr} ${arrowWord}`,
   };
 }

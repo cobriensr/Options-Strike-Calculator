@@ -2,10 +2,11 @@
  * StrikeMoverLadder — SPX-spine, spot-anchored ladder of strike movers
  * focused on 0DTE trading. Replaces the StrikeMoverTicker chip wall.
  *
- * The body shows at most 5 ceilings above spot and 5 floors below, with
- * an ATM-magnet band rendered between them. Cross-asset confirmation is
- * shown as symbol dots + a 3✓/2✓ badge. Position-aware coloring distinguishes
- * a strengthening level from a failing one (see colors.ts).
+ * Two tabs, one per GEXBot model: Classic GEX (by volume, calls +, puts −)
+ * and State (taker-flow GEX imbalance). The models never share a scale.
+ * The body shows at most 5 strikes above spot and 5 below, with the
+ * near-spot band between them. SPX and SPY confirm each other (2✓);
+ * ES_SPX / NQ_NDX are not plotted. Colour is sign only (see colors.ts).
  *
  * Data: useGexbotData({view:'maxchange-winners'}) for the rows; SPX spot
  * is threaded as a prop from App.tsx (Schwab realtime) — GEXBot's
@@ -22,12 +23,13 @@ import {
   buildLadderRows,
   sortAndCapRows,
 } from './strike-mover-ladder/aggregation';
-import { classifyRow } from './strike-mover-ladder/colors';
+import { changeSignClasses } from './strike-mover-ladder/colors';
 import {
-  CATEGORY_LABEL,
   MIN_BAR_PCT,
+  MODEL_LABEL,
+  MODEL_LEGEND,
   type AggregatedRow,
-  type CategoryTab,
+  type ModelTab,
 } from './strike-mover-ladder/types';
 
 interface StrikeMoverLadderProps {
@@ -37,13 +39,7 @@ interface StrikeMoverLadderProps {
 }
 
 const SPEC = { view: 'maxchange-winners' as const };
-const TABS: readonly CategoryTab[] = [
-  'gex',
-  'gamma',
-  'delta',
-  'vanna',
-  'charm',
-];
+const TABS: readonly ModelTab[] = ['classic', 'state'];
 
 function formatChange(value: number): string {
   const abs = Math.abs(value);
@@ -66,7 +62,7 @@ function StrikeMoverLadderInner({
   spxSpot,
 }: StrikeMoverLadderProps) {
   const { rows: rawRows, loading, error } = useGexbotData(SPEC, marketOpen);
-  const [activeTab, setActiveTab] = useState<CategoryTab>('gex');
+  const [activeTab, setActiveTab] = useState<ModelTab>('classic');
 
   const visibleRows = useMemo<AggregatedRow[]>(() => {
     if (spxSpot == null) return [];
@@ -114,7 +110,7 @@ function StrikeMoverLadderInner({
     >
       <div className="flex items-baseline justify-between border-b border-white/5 px-3 py-2">
         <span className="text-tertiary text-[10px] tracking-wide uppercase">
-          Strike Movers — SPX 0DTE
+          Strike Movers — SPX 0DTE GEX
           {spxSpot != null && ` · spot ${formatSpot(spxSpot)}`}
         </span>
       </div>
@@ -132,9 +128,16 @@ function StrikeMoverLadderInner({
                 : 'text-tertiary hover:bg-white/5'
             }`}
           >
-            {CATEGORY_LABEL[tab]}
+            {MODEL_LABEL[tab]}
           </button>
         ))}
+      </div>
+
+      <div
+        data-testid="strike-mover-ladder-legend"
+        className="text-tertiary border-b border-white/5 px-3 py-1.5 text-[10px]"
+      >
+        {MODEL_LEGEND[activeTab]}
       </div>
 
       {hasRows ? (
@@ -150,7 +153,7 @@ function StrikeMoverLadderInner({
           data-testid="strike-mover-ladder-empty"
           className="text-tertiary px-3 py-3 text-xs"
         >
-          No SPX winners in last 5 min for {CATEGORY_LABEL[activeTab]} (0DTE)
+          No {MODEL_LABEL[activeTab]} winners in last 5 min (0DTE)
         </div>
       )}
     </div>
@@ -169,7 +172,7 @@ const LadderBody = memo(function LadderBody({
   maxAbsChange,
 }: LadderBodyProps) {
   // Find the index where to insert the spot divider — between the
-  // last ceiling (strike > spot) and the first floor (strike <= spot).
+  // last strike above spot and the first at or below it.
   const dividerIdx = rows.findIndex((r) => r.strike <= spot);
 
   return (
@@ -177,7 +180,7 @@ const LadderBody = memo(function LadderBody({
       {rows.map((row, idx) => (
         <div key={row.strike}>
           {idx === dividerIdx && <SpotDivider spot={spot} />}
-          <LadderRow row={row} spot={spot} maxAbsChange={maxAbsChange} />
+          <LadderRow row={row} maxAbsChange={maxAbsChange} />
         </div>
       ))}
       {/* Edge: all rows are above spot — divider goes at the bottom. */}
@@ -201,42 +204,30 @@ const SpotDivider = memo(function SpotDivider({ spot }: { spot: number }) {
 
 interface LadderRowProps {
   row: AggregatedRow;
-  spot: number;
   maxAbsChange: number;
 }
 
 const LadderRow = memo(function LadderRow({
   row,
-  spot,
   maxAbsChange,
 }: LadderRowProps) {
-  const classified = classifyRow(row.strike, spot, row.change);
+  const sign = changeSignClasses(row.change);
   const barPct =
     maxAbsChange > 0
       ? Math.max(MIN_BAR_PCT, (Math.abs(row.change) / maxAbsChange) * 100)
       : 0;
-  const barColor =
-    classified.tone === 'magnet'
-      ? 'bg-violet-400/50'
-      : row.change >= 0
-        ? 'bg-emerald-400/50'
-        : 'bg-rose-400/50';
 
   return (
     <div
       data-testid={`strike-mover-ladder-row-${row.strike}`}
-      className={`flex items-center gap-2 py-0.5 text-[11px] tabular-nums ${classified.toneClass}`}
+      className={`flex items-center gap-2 py-0.5 text-[11px] tabular-nums ${sign.text}`}
     >
       <span className="w-12 font-medium">{row.strike}</span>
-
-      {classified.marker === '◈ ATM' && (
-        <span className="text-[10px] font-semibold tracking-wide">◈ ATM</span>
-      )}
 
       <span className="text-tertiary flex gap-1">
         {row.symbols.map((s) => (
           <span key={s} role="img" aria-label={s}>
-            ▪{s === 'ES_SPX' ? 'ES' : s}
+            ▪{s}
           </span>
         ))}
       </span>
@@ -254,22 +245,13 @@ const LadderRow = memo(function LadderRow({
         className="h-1.5 w-16 overflow-hidden rounded-sm bg-white/5"
       >
         <span
-          className={`block h-full ${barColor}`}
-          style={{ width: `${barPct}%` }}
+          className="block h-full opacity-50"
+          style={{ width: `${barPct}%`, backgroundColor: sign.barHex }}
         />
       </span>
 
-      {/*
-        Status icon column. ⚡ (largest mover in visible set) takes
-        precedence over ▽ (direction mismatch — e.g. a floor that's
-        weakening or a ceiling that's strengthening unexpectedly). A
-        row that's both will show only ⚡; the ▽ signal would be
-        redundant for the largest mover since users will inspect it
-        regardless.
-      */}
-      <span className="w-5 text-center">
-        {row.isLargestMover ? '⚡' : classified.marker === '▽' ? '▽' : ''}
-      </span>
+      {/* ⚡ marks the largest |change| in the visible set. */}
+      <span className="w-5 text-center">{row.isLargestMover ? '⚡' : ''}</span>
     </div>
   );
 });

@@ -3,14 +3,17 @@
  *
  * Input:  raw MaxchangeWinnerRow[] from `useGexbotData({view:'maxchange-winners'})`.
  * Output: AggregatedRow[] anchored on SPX-equivalent strikes, with
- *         cross-asset symbol dots and 3✓/2✓ confirmation badges.
+ *         symbol dots and a 2✓ confirmation badge (SPX + SPY).
  *
  * Pipeline:
- *   1. Filter to {SPX, ES_SPX, SPY} × selected 0DTE category.
+ *   1. Filter to {SPX, SPY} × the selected model (classic | state) × 0DTE
+ *      GEX. ES_SPX and NQ_NDX are not plotted: they are the SPX / NDX chains
+ *      shifted to futures levels, so they would plot phantom rows and
+ *      double-count an underlying as confirmation.
  *   2. Convert SPY strikes to SPX-equivalent (× 10).
  *   3. Bin to nearest-5 SPX-equivalent strike; merge adjacent bins
  *      within ±CROSS_ASSET_TOLERANCE_PTS into one row.
- *   4. Compute confirmCount (sign-agreement among present symbols).
+ *   4. Compute confirmCount (sign agreement among distinct underlyings).
  *   5. Mark the largest |Δ| row.
  *
  * Spec: docs/superpowers/specs/strike-mover-ladder-2026-05-19.md
@@ -19,23 +22,21 @@
 import type { MaxchangeWinnerRow } from '../../../hooks/useGexbotData';
 import {
   ATM_BAND_BPS,
-  CATEGORY_TO_GEXBOT_KEY,
   CROSS_ASSET_TOLERANCE_PTS,
-  GEXBOT_MAXCHANGE_SUFFIX,
+  LADDER_CATEGORY,
   MAX_ROWS_PER_SIDE,
   SPY_TO_SPX_RATIO,
   type AggregatedRow,
-  type CategoryTab,
   type LadderSymbol,
+  type ModelTab,
 } from './types';
 
 const TICKER_TO_SYMBOL: Record<string, LadderSymbol | undefined> = {
   SPX: 'SPX',
-  ES_SPX: 'ES_SPX',
   SPY: 'SPY',
 };
 
-const SYMBOL_DISPLAY_ORDER: readonly LadderSymbol[] = ['SPX', 'ES_SPX', 'SPY'];
+const SYMBOL_DISPLAY_ORDER: readonly LadderSymbol[] = ['SPX', 'SPY'];
 
 interface WinnerSample {
   symbol: LadderSymbol;
@@ -54,12 +55,11 @@ function roundToNearest5(n: number): number {
 
 function filterWinners(
   rows: MaxchangeWinnerRow[],
-  category: CategoryTab,
+  model: ModelTab,
 ): WinnerSample[] {
-  const targetCategory = `${CATEGORY_TO_GEXBOT_KEY[category]}${GEXBOT_MAXCHANGE_SUFFIX}`;
   const samples: WinnerSample[] = [];
   for (const r of rows) {
-    if (r.category !== targetCategory) continue;
+    if (r.endpoint !== model || r.category !== LADDER_CATEGORY) continue;
     const symbol = TICKER_TO_SYMBOL[r.ticker];
     if (!symbol) continue;
     const five = r.windows.five;
@@ -77,9 +77,9 @@ function filterWinners(
 
 export function buildLadderRows(
   rows: MaxchangeWinnerRow[],
-  category: CategoryTab,
+  model: ModelTab,
 ): AggregatedRow[] {
-  const samples = filterWinners(rows, category);
+  const samples = filterWinners(rows, model);
   if (samples.length === 0) return [];
 
   // Bin by SPX-equivalent strike, rounded to nearest 5.
@@ -131,8 +131,7 @@ export function buildLadderRows(
 
     const canonicalSign = Math.sign(canonical.change);
     const allAgree = bucket.every((b) => Math.sign(b.change) === canonicalSign);
-    const confirmCount: 0 | 2 | 3 =
-      allAgree && symbols.length >= 2 ? (symbols.length as 2 | 3) : 0;
+    const confirmCount: 0 | 2 = allAgree && symbols.length >= 2 ? 2 : 0;
 
     out.push({
       strike,
@@ -162,7 +161,7 @@ export function buildLadderRows(
 }
 
 /**
- * Split rows into ceiling/ATM/floor, cap each side at MAX_ROWS_PER_SIDE
+ * Split rows into above-spot / near-spot / below-spot, cap each side at MAX_ROWS_PER_SIDE
  * (preferring proximity to spot), then re-sort the visible set by
  * strike descending for top-to-bottom display.
  */
@@ -171,31 +170,29 @@ export function sortAndCapRows(
   spot: number,
 ): AggregatedRow[] {
   const bandWidth = spot * (ATM_BAND_BPS / 10_000);
-  const ceilings: AggregatedRow[] = [];
-  const floors: AggregatedRow[] = [];
+  const above: AggregatedRow[] = [];
+  const below: AggregatedRow[] = [];
   const atm: AggregatedRow[] = [];
   for (const r of rows) {
     const dist = Math.abs(r.strike - spot);
     if (dist <= bandWidth) atm.push(r);
-    else if (r.strike > spot) ceilings.push(r);
-    else floors.push(r);
+    else if (r.strike > spot) above.push(r);
+    else below.push(r);
   }
 
-  ceilings.sort(
-    (a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot),
-  );
-  floors.sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));
+  above.sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));
+  below.sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));
   atm.sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));
-  const trimmedCeilings = ceilings.slice(0, MAX_ROWS_PER_SIDE);
-  const trimmedFloors = floors.slice(0, MAX_ROWS_PER_SIDE);
+  const trimmedAbove = above.slice(0, MAX_ROWS_PER_SIDE);
+  const trimmedBelow = below.slice(0, MAX_ROWS_PER_SIDE);
   // Cap ATM at the same per-side budget. With ATM_BAND_BPS = 25 (±0.25%
   // of spot) and 5-pt SPX strikes, only ~6 strikes can land in the band
   // at any time, but capping keeps the contract symmetric with the
-  // ceiling/floor sides and prevents pathological inputs from blowing
+  // above/below sides and prevents pathological inputs from blowing
   // up the visible row count.
   const trimmedAtm = atm.slice(0, MAX_ROWS_PER_SIDE);
 
-  const all = [...trimmedCeilings, ...trimmedAtm, ...trimmedFloors];
+  const all = [...trimmedAbove, ...trimmedAtm, ...trimmedBelow];
   all.sort((a, b) => b.strike - a.strike);
   return all;
 }

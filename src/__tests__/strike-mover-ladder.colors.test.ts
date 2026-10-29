@@ -1,61 +1,31 @@
 import { describe, expect, it } from 'vitest';
 
-import { classifyRow } from '../components/Gexbot/strike-mover-ladder/colors';
+import { changeSignClasses } from '../components/Gexbot/strike-mover-ladder/colors';
+import {
+  GAMMA_SIGN_CLASSES,
+  GAMMA_SIGN_HEX,
+} from '../components/GexLandscape/constants';
 
-describe('classifyRow', () => {
-  const SPOT = 6750;
-
-  it('classifies below-spot positive Δ as floor strengthening (emerald)', () => {
-    const r = classifyRow(6700, SPOT, 1_600);
-    expect(r.side).toBe('below');
-    expect(r.tone).toBe('strengthening');
-    expect(r.toneClass).toBe('text-emerald-300');
-    expect(r.marker).toBeNull();
+describe('changeSignClasses', () => {
+  it('paints a positive change with the sky (long) pair', () => {
+    const c = changeSignClasses(1_600);
+    expect(c.text).toBe(GAMMA_SIGN_CLASSES.long.color);
+    expect(c.barHex).toBe(GAMMA_SIGN_HEX.long);
   });
 
-  it('classifies below-spot negative Δ as floor weakening (amber + ▽)', () => {
-    const r = classifyRow(6700, SPOT, -199);
-    expect(r.side).toBe('below');
-    expect(r.tone).toBe('weakening');
-    expect(r.toneClass).toBe('text-amber-300');
-    expect(r.marker).toBe('▽');
+  it('paints a negative change with the violet (short) pair', () => {
+    const c = changeSignClasses(-820);
+    expect(c.text).toBe(GAMMA_SIGN_CLASSES.short.color);
+    expect(c.barHex).toBe(GAMMA_SIGN_HEX.short);
   });
 
-  it('classifies above-spot negative Δ as ceiling strengthening (rose)', () => {
-    const r = classifyRow(6800, SPOT, -820);
-    expect(r.side).toBe('above');
-    expect(r.tone).toBe('strengthening');
-    expect(r.toneClass).toBe('text-rose-300');
-    expect(r.marker).toBeNull();
+  it('depends only on the sign, not the size', () => {
+    expect(changeSignClasses(1)).toEqual(changeSignClasses(9_000_000));
+    expect(changeSignClasses(-1)).toEqual(changeSignClasses(-9_000_000));
   });
 
-  it('classifies above-spot positive Δ as ceiling weakening (yellow + ▽)', () => {
-    const r = classifyRow(6800, SPOT, 164);
-    expect(r.side).toBe('above');
-    expect(r.tone).toBe('weakening');
-    expect(r.toneClass).toBe('text-yellow-300');
-    expect(r.marker).toBe('▽');
-  });
-
-  it('classifies a strike within ±0.25% as ATM magnet (violet + ◈ ATM)', () => {
-    // Spot 6750 → band ±16.875. 6760 is inside the band.
-    const r = classifyRow(6760, SPOT, 2_100);
-    expect(r.side).toBe('atm');
-    expect(r.tone).toBe('magnet');
-    expect(r.toneClass).toBe('text-violet-300');
-    expect(r.marker).toBe('◈ ATM');
-  });
-
-  it('classifies the exact-spot strike as ATM regardless of Δ sign', () => {
-    const positive = classifyRow(6750, SPOT, 100);
-    const negative = classifyRow(6750, SPOT, -100);
-    expect(positive.side).toBe('atm');
-    expect(negative.side).toBe('atm');
-  });
-
-  it('treats Δ === 0 below spot as weakening (no positive contribution)', () => {
-    const r = classifyRow(6700, SPOT, 0);
-    expect(r.side).toBe('below');
-    expect(r.tone).toBe('weakening');
+  it('uses no green, amber or red palette colours', () => {
+    const all = JSON.stringify([changeSignClasses(5), changeSignClasses(-5)]);
+    expect(all).not.toMatch(/emerald|green|amber|rose|red|yellow/);
   });
 });

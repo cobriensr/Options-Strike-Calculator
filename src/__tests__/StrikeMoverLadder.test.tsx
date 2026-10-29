@@ -3,6 +3,8 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import { StrikeMoverLadder } from '../components/Gexbot/StrikeMoverLadder';
+import { GAMMA_SIGN_CLASSES } from '../components/GexLandscape/constants';
+import { dealerClaims } from './helpers/dealer-claims';
 import { makeWinner } from './helpers/makeWinner';
 
 const mockUseGexbotData = vi.fn();
@@ -15,6 +17,17 @@ vi.mock('../hooks/useGexbotData', async () => {
     useGexbotData: (...args: unknown[]) => mockUseGexbotData(...args),
   };
 });
+
+const CAT = 'gex_zero/maxchange';
+
+function withRows(rows: unknown[]) {
+  mockUseGexbotData.mockReturnValue({
+    rows,
+    loading: false,
+    error: null,
+    freshestAt: '2026-05-19T17:00:00Z',
+  });
+}
 
 describe('<StrikeMoverLadder>', () => {
   beforeEach(() => {
@@ -46,151 +59,119 @@ describe('<StrikeMoverLadder>', () => {
     expect(screen.getByText(/HTTP 500/)).toBeInTheDocument();
   });
 
-  it('renders empty state when no SPX winners are present', () => {
-    mockUseGexbotData.mockReturnValue({
-      rows: [],
-      loading: false,
-      error: null,
-      freshestAt: null,
-    });
+  it('renders the empty state when there are no winners', () => {
+    withRows([]);
     render(<StrikeMoverLadder marketOpen spxSpot={6750} />);
     expect(screen.getByTestId('strike-mover-ladder-empty')).toBeInTheDocument();
   });
 
   it('shows the spot in the header when available', () => {
-    mockUseGexbotData.mockReturnValue({
-      rows: [],
-      loading: false,
-      error: null,
-      freshestAt: null,
-    });
+    withRows([]);
     render(<StrikeMoverLadder marketOpen spxSpot={6750.5} />);
     expect(screen.getByText(/spot 6750\.5/)).toBeInTheDocument();
   });
 
-  it('renders a row for each SPX winner inside the active category', () => {
-    mockUseGexbotData.mockReturnValue({
-      rows: [
-        makeWinner('SPX', 'gex_zero/maxchange', 6750, 2_100),
-        makeWinner('ES_SPX', 'gex_zero/maxchange', 6750, 2_050),
-        makeWinner('SPY', 'gex_zero/maxchange', 675, 1_500),
-      ],
-      loading: false,
-      error: null,
-      freshestAt: '2026-05-19T17:00:00Z',
-    });
+  it('renders exactly two model tabs', () => {
+    withRows([]);
     render(<StrikeMoverLadder marketOpen spxSpot={6750} />);
-    const row = screen.getByTestId('strike-mover-ladder-row-6750');
-    expect(row).toBeInTheDocument();
-    expect(row).toHaveTextContent('6750');
-    expect(row).toHaveTextContent('3✓');
+    const tabs = screen.getAllByRole('button');
+    expect(tabs.map((t) => t.textContent)).toEqual([
+      'Classic GEX',
+      'State (taker)',
+    ]);
   });
 
-  it('switches the active category when a tab is clicked', () => {
-    mockUseGexbotData.mockReturnValue({
-      rows: [
-        makeWinner('SPX', 'gex_zero/maxchange', 6750, 2_100),
-        makeWinner('SPX', 'gamma_zero/maxchange', 6700, 800),
-      ],
-      loading: false,
-      error: null,
-      freshestAt: '2026-05-19T17:00:00Z',
-    });
+  it('shows only Classic winners on the Classic tab and only State on the State tab', () => {
+    withRows([
+      makeWinner('SPX', CAT, 6750, 2_100, 'classic'),
+      makeWinner('SPX', CAT, 6700, -900, 'state'),
+    ]);
     render(<StrikeMoverLadder marketOpen spxSpot={6750} />);
-    // Default = GEX → shows strike 6750.
     expect(
       screen.getByTestId('strike-mover-ladder-row-6750'),
     ).toBeInTheDocument();
-    // Switch to γ tab → shows strike 6700.
-    fireEvent.click(screen.getByRole('button', { name: /^γ$/ }));
+    expect(
+      screen.queryByTestId('strike-mover-ladder-row-6700'),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'State (taker)' }));
     expect(
       screen.getByTestId('strike-mover-ladder-row-6700'),
     ).toBeInTheDocument();
-    // Also assert the previous tab's row (6750 / GEX) is no longer rendered.
     expect(
       screen.queryByTestId('strike-mover-ladder-row-6750'),
     ).not.toBeInTheDocument();
   });
 
-  it('renders the ATM badge on a magnet row', () => {
-    mockUseGexbotData.mockReturnValue({
-      rows: [makeWinner('SPX', 'gex_zero/maxchange', 6750, 2_100)],
-      loading: false,
-      error: null,
-      freshestAt: '2026-05-19T17:00:00Z',
-    });
-    render(<StrikeMoverLadder marketOpen spxSpot={6750} />);
-    expect(screen.getByText('◈ ATM')).toBeInTheDocument();
-  });
-
-  it('renders the spot divider when at least one row is present', () => {
-    mockUseGexbotData.mockReturnValue({
-      rows: [makeWinner('SPX', 'gex_zero/maxchange', 6800, -820)],
-      loading: false,
-      error: null,
-      freshestAt: '2026-05-19T17:00:00Z',
-    });
+  it('carries a one-line legend per tab', () => {
+    withRows([]);
     render(<StrikeMoverLadder marketOpen spxSpot={6750} />);
     expect(
-      screen.getByTestId('strike-mover-ladder-spot-divider'),
+      screen.getByText(
+        'Classic GEX by volume — calls +, puts −; biggest change by strike',
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'State (taker)' }));
+    expect(
+      screen.getByText(
+        'GEXBot State — taker-flow GEX imbalance; biggest change by strike',
+      ),
     ).toBeInTheDocument();
   });
 
-  it('falls back gracefully when spxSpot is null and no winners exist', () => {
-    mockUseGexbotData.mockReturnValue({
-      rows: [],
-      loading: false,
-      error: null,
-      freshestAt: null,
-    });
-    render(<StrikeMoverLadder marketOpen spxSpot={null} />);
-    expect(screen.getByTestId('strike-mover-ladder-empty')).toBeInTheDocument();
-  });
-
-  it('falls back gracefully when spxSpot is null but winners are present', () => {
-    // The null-spot guard inside the visibleRows useMemo must prevent
-    // the non-null assertion `spxSpot!` in the body from ever firing.
-    // If the guard regresses, this test crashes at render time.
-    mockUseGexbotData.mockReturnValue({
-      rows: [makeWinner('SPX', 'gex_zero/maxchange', 6750, 2_100)],
-      loading: false,
-      error: null,
-      freshestAt: '2026-05-19T17:00:00Z',
-    });
-    render(<StrikeMoverLadder marketOpen spxSpot={null} />);
-    expect(screen.getByTestId('strike-mover-ladder-empty')).toBeInTheDocument();
-    expect(
-      screen.queryByTestId('strike-mover-ladder-row-6750'),
-    ).not.toBeInTheDocument();
-  });
-
-  it('renders empty state when winners exist but none match the active tab', () => {
-    // rawRows has only gamma_zero entries; default tab is gex.
-    // buildLadderRows() should return [] and the empty card should render.
-    mockUseGexbotData.mockReturnValue({
-      rows: [
-        makeWinner('SPX', 'gamma_zero/maxchange', 6700, 800),
-        makeWinner('ES_SPX', 'gamma_zero/maxchange', 6700, 750),
-      ],
-      loading: false,
-      error: null,
-      freshestAt: '2026-05-19T17:00:00Z',
-    });
-    render(<StrikeMoverLadder marketOpen spxSpot={6750} />);
-    expect(screen.getByTestId('strike-mover-ladder-empty')).toBeInTheDocument();
-  });
-
-  it('places the spot divider above floor rows (strike < spot)', () => {
-    mockUseGexbotData.mockReturnValue({
-      rows: [makeWinner('SPX', 'gex_zero/maxchange', 6700, 1_600)],
-      loading: false,
-      error: null,
-      freshestAt: '2026-05-19T17:00:00Z',
-    });
+  it('keeps the visible text free of dealer claims', () => {
+    withRows([makeWinner('SPX', CAT, 6800, -820)]);
     const { container } = render(
       <StrikeMoverLadder marketOpen spxSpot={6750} />,
     );
-    // Divider should appear in the DOM before the floor row.
+    expect(dealerClaims(container.textContent ?? '')).toEqual([]);
+    fireEvent.click(screen.getByRole('button', { name: 'State (taker)' }));
+    expect(dealerClaims(container.textContent ?? '')).toEqual([]);
+  });
+
+  it('renders no ES_SPX row and counts only distinct underlyings', () => {
+    withRows([
+      makeWinner('SPX', CAT, 6750, 2_100),
+      makeWinner('ES_SPX', CAT, 6785, 2_050),
+      makeWinner('SPY', CAT, 675, 1_500),
+    ]);
+    render(<StrikeMoverLadder marketOpen spxSpot={6750} />);
+    expect(
+      screen.queryByTestId('strike-mover-ladder-row-6785'),
+    ).not.toBeInTheDocument();
+    const row = screen.getByTestId('strike-mover-ladder-row-6750');
+    expect(row).toHaveTextContent('2✓');
+    expect(row).not.toHaveTextContent('3✓');
+    expect(row).not.toHaveTextContent('ES');
+  });
+
+  it('colours a row by its sign alone, the same above and below spot', () => {
+    withRows([
+      makeWinner('SPX', CAT, 6800, 1_000),
+      makeWinner('SPX', CAT, 6700, 1_000),
+      makeWinner('SPX', CAT, 6850, -1_000),
+      makeWinner('SPX', CAT, 6650, -1_000),
+    ]);
+    render(<StrikeMoverLadder marketOpen spxSpot={6750} />);
+    const longClass = GAMMA_SIGN_CLASSES.long.color;
+    const shortClass = GAMMA_SIGN_CLASSES.short.color;
+    for (const k of [6800, 6700]) {
+      expect(screen.getByTestId(`strike-mover-ladder-row-${k}`)).toHaveClass(
+        longClass,
+      );
+    }
+    for (const k of [6850, 6650]) {
+      expect(screen.getByTestId(`strike-mover-ladder-row-${k}`)).toHaveClass(
+        shortClass,
+      );
+    }
+  });
+
+  it('puts the spot divider before floor rows', () => {
+    withRows([makeWinner('SPX', CAT, 6700, 1_600)]);
+    const { container } = render(
+      <StrikeMoverLadder marketOpen spxSpot={6750} />,
+    );
     const divider = container.querySelector(
       '[data-testid="strike-mover-ladder-spot-divider"]',
     );
@@ -199,8 +180,15 @@ describe('<StrikeMoverLadder>', () => {
     );
     expect(divider).not.toBeNull();
     expect(row).not.toBeNull();
-    // compareDocumentPosition: 4 = DOCUMENT_POSITION_FOLLOWING.
-    // i.e. `row` follows `divider` in document order.
     expect(divider!.compareDocumentPosition(row!) & 4).toBeTruthy();
+  });
+
+  it('falls back to the empty state when spxSpot is null but winners exist', () => {
+    withRows([makeWinner('SPX', CAT, 6750, 2_100)]);
+    render(<StrikeMoverLadder marketOpen spxSpot={null} />);
+    expect(screen.getByTestId('strike-mover-ladder-empty')).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('strike-mover-ladder-row-6750'),
+    ).not.toBeInTheDocument();
   });
 });

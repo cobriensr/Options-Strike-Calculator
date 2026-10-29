@@ -181,6 +181,31 @@ describe('gexbot-queries', () => {
       expect(row!.windows.thirty).toEqual([5945, 5.0]);
     });
 
+    it('drops the INT32 sentinel (-2147483.648) from any window', async () => {
+      mockSql.mockResolvedValueOnce([
+        {
+          ticker: 'SPX',
+          endpoint: 'state',
+          category: 'gex_zero/maxchange',
+          captured_at: '2026-05-19T19:59:50Z',
+          raw_response: {
+            current: [5950, -2147483.648],
+            one: [-2147483.648, 12],
+            five: [5960, -2147483],
+            ten: [5955, -2147482],
+            fifteen: [5950, 4.1],
+          },
+        },
+      ]);
+      const [row] = await getMaxchangeWinners();
+      expect(row!.windows.current).toBeNull();
+      expect(row!.windows.one).toBeNull();
+      expect(row!.windows.five).toBeNull();
+      // Just above the sentinel floor is a real (if huge) value.
+      expect(row!.windows.ten).toEqual([5955, -2147482]);
+      expect(row!.windows.fifteen).toEqual([5950, 4.1]);
+    });
+
     it('returns null for malformed window entries', async () => {
       mockSql.mockResolvedValueOnce([
         {
