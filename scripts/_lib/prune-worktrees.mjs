@@ -26,9 +26,13 @@
  * every unlocked worktree whose directory is already gone, wherever it was.
  * Spec: docs/superpowers/specs/worktree-auto-prune-2026-10-27.md.
  */
-import { spawnSync } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import path from 'node:path';
+import {
+  GitError,
+  git as gitWithEnv,
+  runGit as runGitWithEnv,
+} from './git-run.mjs';
 
 /**
  * Default idle floor, picked 2026-10-27: longer than a typical gap between
@@ -50,9 +54,6 @@ const HOUR_MS = 60 * 60 * 1000;
 
 /** Commits or paths named in a kept reason; the rest are counted. */
 const MAX_NAMED = 3;
-
-/** spawnSync's 1 MB default could truncate a huge `git status`. */
-const MAX_GIT_OUTPUT = 64 * 1024 * 1024;
 
 /**
  * Env vars that tie git to one repository, index or object store: the list
@@ -78,43 +79,24 @@ const LOCAL_ENV_VARS = Object.freeze([
   'GIT_COMMON_DIR',
 ]);
 
-/** A git command that could not run or exited non-zero. */
-class GitError extends Error {
-  constructor(args, detail) {
-    super(`git ${args.join(' ')}: ${detail}`);
-    this.name = 'GitError';
-    this.detail = detail;
-  }
-}
-
+/**
+ * The env for every git call here: process.env without LOCAL_ENV_VARS, read
+ * at call time.
+ */
 function gitEnv() {
   const env = { ...process.env };
   for (const name of LOCAL_ENV_VARS) delete env[name];
   return env;
 }
 
-/** Run git without a shell; returns `{ status, stdout, stderr }`. */
+/** Shared runGit, always with gitEnv(): no call here can pass another env. */
 function runGit(args) {
-  // `git` from PATH, as for every git command a developer runs. Arguments go
-  // in an array, so nothing is shell-parsed.
-  // eslint-disable-next-line sonarjs/no-os-command-from-path
-  const result = spawnSync('git', args, {
-    encoding: 'utf8',
-    env: gitEnv(),
-    maxBuffer: MAX_GIT_OUTPUT,
-    windowsHide: true,
-  });
-  if (result.error) throw new GitError(args, result.error.message);
-  return result;
+  return runGitWithEnv(args, gitEnv());
 }
 
-/** Run git; stdout on exit 0, GitError (with git's stderr) otherwise. */
+/** Shared git, always with gitEnv(): no call here can pass another env. */
 function git(args) {
-  const { status, stdout, stderr } = runGit(args);
-  if (status !== 0) {
-    throw new GitError(args, stderr.trim() || `exit code ${status}`);
-  }
-  return stdout;
+  return gitWithEnv(args, gitEnv());
 }
 
 /** Non-empty output lines. */

@@ -9,68 +9,26 @@
  * tree object of the whole working tree (tracked, modified and untracked,
  * minus gitignored) as review saw it.
  *
- * Every git call inherits process.env on purpose. Inside the pre-commit hook,
- * git exports GIT_INDEX_FILE (a temp index for `git commit -a` or
+ * Every git call passes process.env on purpose (seal's add/write-tree swap
+ * in only their temp GIT_INDEX_FILE). Inside the pre-commit hook, git
+ * exports GIT_INDEX_FILE (a temp index for `git commit -a` or
  * `git commit -- <paths>`) and, in a linked worktree, GIT_DIR. The check has
  * to read that index, the one being committed, not the on-disk one.
  *
  * Node builtins only: the hook runs this in worktrees with no node_modules.
  * Spec: docs/superpowers/specs/commit-gate-2026-10-28.md.
  */
-import { spawnSync } from 'node:child_process';
 import { copyFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { git } from './git-run.mjs';
 
 /** @typedef {{ tree: string, head: string, sealedAt: string }} Marker */
 
 /** The marker's file name inside this worktree's git dir. */
 export const MARKER_FILE = 'review-gate.json';
 
-/** spawnSync's 1 MB default could truncate a long path list. */
-const MAX_GIT_OUTPUT = 64 * 1024 * 1024;
-
 /** A full SHA-1 or SHA-256 object id. */
 const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
-
-/** A git command that could not run or exited non-zero. */
-class GitError extends Error {
-  /**
-   * @param {string[]} args
-   * @param {string} detail
-   */
-  constructor(args, detail) {
-    super(`git ${args.join(' ')}: ${detail}`);
-    this.name = 'GitError';
-  }
-}
-
-/**
- * Run git in the current directory without a shell; stdout on exit 0,
- * GitError (with git's stderr) otherwise.
- *
- * @param {string[]} args
- * @param {NodeJS.ProcessEnv} [env]
- * @returns {string}
- */
-function git(args, env = process.env) {
-  // `git` from PATH, as for every git command a developer runs. Arguments go
-  // in an array, so nothing is shell-parsed.
-  // eslint-disable-next-line sonarjs/no-os-command-from-path
-  const result = spawnSync('git', args, {
-    encoding: 'utf8',
-    env,
-    maxBuffer: MAX_GIT_OUTPUT,
-    windowsHide: true,
-  });
-  if (result.error) throw new GitError(args, result.error.message);
-  if (result.status !== 0) {
-    throw new GitError(
-      args,
-      result.stderr.trim() || `exit code ${result.status}`,
-    );
-  }
-  return result.stdout;
-}
 
 /**
  * `git rev-parse --git-path <name>`, made absolute. Git prints it relative
@@ -82,7 +40,7 @@ function git(args, env = process.env) {
  */
 function gitPath(name) {
   return path.resolve(
-    git(['rev-parse', '--git-path', name]).replace(/\r?\n$/, ''),
+    git(['rev-parse', '--git-path', name], process.env).replace(/\r?\n$/, ''),
   );
 }
 
@@ -143,7 +101,7 @@ export function seal() {
   /** @type {Marker} */
   const marker = {
     tree,
-    head: git(['rev-parse', '--verify', 'HEAD']).trim(),
+    head: git(['rev-parse', '--verify', 'HEAD'], process.env).trim(),
     sealedAt: new Date().toISOString(),
   };
   writeFileSync(markerPath(), `${JSON.stringify(marker, null, 2)}\n`);
@@ -217,7 +175,7 @@ export function readMarker() {
  */
 export function stagedPaths() {
   return nulSeparated(
-    git(['diff', '--cached', '--no-renames', '--name-only', '-z']),
+    git(['diff', '--cached', '--no-renames', '--name-only', '-z'], process.env),
   );
 }
 
@@ -237,7 +195,7 @@ function assertSealedTreeExists(tree) {
   /** @type {unknown} */
   let cause;
   try {
-    const type = git(['cat-file', '-t', tree]).trim();
+    const type = git(['cat-file', '-t', tree], process.env).trim();
     if (type === 'tree') return;
     found = `git cat-file -t ${tree} printed "${type}"`;
   } catch (err) {
@@ -263,7 +221,10 @@ function assertSealedTreeExists(tree) {
 export function driftedPaths(tree) {
   assertSealedTreeExists(tree);
   return nulSeparated(
-    git(['diff', '--cached', '--no-renames', '--name-only', '-z', tree, '--']),
+    git(
+      ['diff', '--cached', '--no-renames', '--name-only', '-z', tree, '--'],
+      process.env,
+    ),
   );
 }
 
