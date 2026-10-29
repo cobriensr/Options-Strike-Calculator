@@ -2,14 +2,16 @@
  * GexLandscape — Strike classification table using the 4-quadrant
  * gamma × charm framework (Negative/Positive Gamma × Negative/Positive Charm).
  *
- * Each strike within ±50 pts of spot is labelled as one of:
- *   Max Launchpad    — neg gamma + pos charm  (accelerant that builds into close)
- *   Fading Launchpad — neg gamma + neg charm  (accelerant that weakens over time)
- *   Sticky Pin       — pos gamma + pos charm  (wall that strengthens into close)
- *   Weakening Pin    — pos gamma + neg charm  (wall losing grip as day ages)
+ * Each strike within ±50 pts of spot is labelled by the signs of its GEXBot
+ * gamma and charm, in GEXBot's taker-side sign (owner decision D1 revised,
+ * 2026-10-29: taker flow, so no market-maker reading is shown):
+ *   Takers −γ +charm (id max-launchpad)    — neg gamma + pos charm
+ *   Takers −γ −charm (id fading-launchpad) — neg gamma + neg charm
+ *   Takers +γ +charm (id sticky-pin)       — pos gamma + pos charm
+ *   Takers +γ −charm (id weakening-pin)    — pos gamma + neg charm
  *
- * Direction context (Ceiling / Floor) is overlaid based on strike vs. spot.
- * The Δ5m / Δ15m / Δ30m columns show the % change in MM dollar gamma at each
+ * Position (above / below / at spot) is overlaid based on strike vs. spot.
+ * The Δ5m / Δ15m / Δ30m columns show the % change in GEXBot dollar gamma at each
  * strike vs. its value 5 / 15 / 30 min ago (GEXBot's priors array;
  * the capture itself is 1-min cadence). The Vol Reinforcement column reads as "reinforcing" when
  * all three deltas align with the current netGamma sign — see
@@ -77,7 +79,7 @@ const TAB_LABEL: Record<LandscapeTab, string> = {
 };
 
 const TAB_TITLE: Record<LandscapeTab, string> = {
-  all: 'Strikes within ±50 pts of spot, sorted ceiling → floor',
+  all: 'Strikes within ±50 pts of spot, sorted highest → lowest',
   top5: 'Top 5 strikes across the entire chain, ranked by absolute dollar gamma',
 };
 

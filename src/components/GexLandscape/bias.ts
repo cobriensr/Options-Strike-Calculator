@@ -1,23 +1,28 @@
 /**
- * Structural bias synthesis. Turns the current (optionally smoothed) strike
- * landscape into a directional verdict + supporting metrics.
+ * Structural bias synthesis. Turns the current strike landscape into a
+ * verdict + supporting metrics.
+ *
+ * The input is GEXBot gamma in its taker-side sign (positive = traders net
+ * long gamma at the strike). It is classified taker flow, not a
+ * market-maker position, so the verdict is a description of where the
+ * taker gamma sits, not a forecast of dealer hedging (owner decision D1
+ * revised, 2026-10-29). The ids below keep their UW-era names; the display
+ * text in constants.ts describes only what is computed.
  *
  * Algorithm:
- *   Regime  = sign of total net GEX across all strikes in the window
- *             Positive → dealers counter moves (dampened / range-bound day)
- *             Negative → dealers amplify moves  (trending / volatile day)
+ *   Regime  = sign of total net gamma across all strikes in the window
+ *             (positive = traders net long gamma, negative = net short)
  *
  *   Gravity = strike with the largest |netGamma| anywhere in the window
- *             This is where MMs have the heaviest hedge book — price drifts toward it
  *
- *   Verdict = gravity direction × regime
- *             Above + Positive → gex-pull-up        (MMs pull price up to wall)
- *             Above + Negative → breakout-risk-up    (no dampener above; acceleration risk)
- *             Below + Positive → gex-pull-down       (MMs pull price down to wall)
- *               └─ override: the wall is now a support floor → gex-floor-below
- *                  (upside freedom; price has already broken above it)
- *             Below + Negative → breakdown-risk-down (no dampener below; breakdown risk)
- *             ATM   + Positive → rangebound
+ *   Verdict = gravity position × regime
+ *             Above + Positive → gex-pull-up
+ *             Above + Negative → breakout-risk-up
+ *             Below + Positive → gex-pull-down, always rewritten to
+ *                                gex-floor-below
+ *             Below + Negative → breakdown-risk-down
+ *             ATM   + Positive → rangebound, or drifting-up / drifting-down
+ *                                when the 30-min price trend is not flat
  *             ATM   + Negative → volatile
  */
 
@@ -90,17 +95,17 @@ export function computeBias(
     verdict = regime === 'negative' ? 'breakdown-risk-down' : 'gex-pull-down';
   }
 
-  // Floor left-behind correction: in positive regime, when the largest wall is
-  // below spot and price has already broken above it, that wall is now a support
-  // floor — not a downward magnet. The effective bias flips upward.
+  // UW-era "floor left behind" rule: positive regime with the largest strike
+  // below spot is always reported as gex-floor-below, never gex-pull-down.
+  // Kept so the computed classification is unchanged; the display text no
+  // longer calls the strike a floor.
   if (verdict === 'gex-pull-down') {
     verdict = 'gex-floor-below';
   }
 
-  // Price-drift override: when GEX says range-bound but price is persistently
-  // moving in one direction, the range-bound label is misleading. Override to
-  // drifting-down / drifting-up so the trader knows price is grinding despite
-  // positive GEX dampening.
+  // Price-drift override: positive regime with the largest strike at spot,
+  // but price persistently moving one way over 30 min → drifting-down /
+  // drifting-up, so the label reports the price move.
   if (
     verdict === 'rangebound' &&
     priceTrend &&
@@ -109,7 +114,8 @@ export function computeBias(
     verdict = priceTrend.direction === 'down' ? 'drifting-down' : 'drifting-up';
   }
 
-  // Drift targets: top 2 above and below spot by |netGamma|
+  // Top 2 strikes above and below spot by |netGamma| (the `*Targets` fields
+  // keep their UW-era names).
   const byAbsGex = (a: GexStrikeLevel, b: GexStrikeLevel) =>
     Math.abs(b.netGamma) - Math.abs(a.netGamma);
   const toTarget = (s: GexStrikeLevel): DriftTarget => ({

@@ -5,53 +5,50 @@ import {
   type Direction,
 } from '../../utils/gex-classification';
 
+const CLASSES: GexClassification[] = [
+  'max-launchpad',
+  'fading-launchpad',
+  'sticky-pin',
+  'weakening-pin',
+];
+const DIRECTIONS: Direction[] = ['ceiling', 'floor', 'atm'];
+
 describe('classSignal', () => {
-  it('returns Max Launchpad signals for max-launchpad', () => {
-    expect(classSignal('max-launchpad', 'ceiling')).toBe(
-      'Ceiling Breakout Risk',
-    );
-    expect(classSignal('max-launchpad', 'floor')).toBe('Floor Collapse Risk');
-    expect(classSignal('max-launchpad', 'atm')).toBe('Launch Zone');
+  // Owner decision D1 revised (2026-10-29): the GexLandscape data is GEXBot
+  // taker flow, so the signal describes the taker side and position only;
+  // the UW-era breakout / pin / floor predictions are gone.
+  it.each([
+    ['max-launchpad', 'ceiling', 'Taker-short γ above spot'],
+    ['max-launchpad', 'floor', 'Taker-short γ below spot'],
+    ['max-launchpad', 'atm', 'Taker-short γ at spot'],
+    ['fading-launchpad', 'ceiling', 'Taker-short γ above spot'],
+    ['fading-launchpad', 'floor', 'Taker-short γ below spot'],
+    ['fading-launchpad', 'atm', 'Taker-short γ at spot'],
+    ['sticky-pin', 'ceiling', 'Taker-long γ above spot'],
+    ['sticky-pin', 'floor', 'Taker-long γ below spot'],
+    ['sticky-pin', 'atm', 'Taker-long γ at spot'],
+    ['weakening-pin', 'ceiling', 'Taker-long γ above spot'],
+    ['weakening-pin', 'floor', 'Taker-long γ below spot'],
+    ['weakening-pin', 'atm', 'Taker-long γ at spot'],
+  ] as const)('%s at %s reads "%s"', (cls, dir, label) => {
+    expect(classSignal(cls, dir)).toBe(label);
   });
 
-  it('returns Fading Launchpad signals for fading-launchpad', () => {
-    expect(classSignal('fading-launchpad', 'ceiling')).toBe(
-      'Weakening Ceiling',
-    );
-    expect(classSignal('fading-launchpad', 'floor')).toBe('Weakening Floor');
-    expect(classSignal('fading-launchpad', 'atm')).toBe('Fading Launch');
-  });
-
-  it('returns Sticky Pin signals for sticky-pin', () => {
-    expect(classSignal('sticky-pin', 'ceiling')).toBe('Hard Ceiling');
-    expect(classSignal('sticky-pin', 'floor')).toBe('Hard Floor');
-    expect(classSignal('sticky-pin', 'atm')).toBe('Pin Zone');
-  });
-
-  it('returns Weakening Pin signals for weakening-pin', () => {
-    expect(classSignal('weakening-pin', 'ceiling')).toBe('Softening Ceiling');
-    expect(classSignal('weakening-pin', 'floor')).toBe('Softening Floor');
-    expect(classSignal('weakening-pin', 'atm')).toBe('Weak Pin');
-  });
-
-  it('covers all 12 (classification × direction) combinations distinctly', () => {
-    // Drift guard: every (cls, dir) pair must produce a unique label.
-    // Catches accidental collapse (e.g., all four ceiling labels becoming
-    // identical) which would silently break the GexLandscape strike-table
-    // semantics or the daemon's persisted signal field.
-    const classes: GexClassification[] = [
-      'max-launchpad',
-      'fading-launchpad',
-      'sticky-pin',
-      'weakening-pin',
-    ];
-    const directions: Direction[] = ['ceiling', 'floor', 'atm'];
+  it('gives each (gamma side × direction) pair its own label', () => {
     const labels = new Set<string>();
-    for (const cls of classes) {
-      for (const dir of directions) {
-        labels.add(classSignal(cls, dir));
+    for (const cls of CLASSES) {
+      for (const dir of DIRECTIONS) labels.add(classSignal(cls, dir));
+    }
+    expect(labels.size).toBe(6);
+  });
+
+  it('makes no dealer, market-maker or price-path prediction', () => {
+    for (const cls of CLASSES) {
+      for (const dir of DIRECTIONS) {
+        expect(classSignal(cls, dir)).not.toMatch(
+          /market.?maker|dealer|\bMM|breakout|collapse|launch|pin|hard|soft|weak|ceiling|floor|risk/i,
+        );
       }
     }
-    expect(labels.size).toBe(12);
   });
 });

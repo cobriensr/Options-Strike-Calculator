@@ -4,6 +4,7 @@ import GexLandscape from '../../components/GexLandscape';
 import { CollapseAllContext } from '../../components/collapse-context';
 import type { CollapseSignal } from '../../components/collapse-context';
 import type { GexStrikeLevel } from '../../components/GexLandscape/types';
+import { dealerClaims } from '../helpers/dealer-claims';
 
 // ── Mocks ──────────────────────────────────────────────────────────────────────
 //
@@ -178,44 +179,81 @@ describe('GexLandscape', () => {
     }
   });
 
-  describe('classification labels', () => {
-    it('shows Max Launchpad for negative gamma + positive charm', () => {
+  describe('classification labels (taker-side gamma × charm signs)', () => {
+    it('labels negative gamma + positive charm as Takers −γ +charm', () => {
       renderLandscape();
-      expect(screen.getAllByText('Max Launchpad').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('Takers −γ +charm').length).toBeGreaterThan(0);
     });
 
-    it('shows Sticky Pin for positive gamma + positive charm', () => {
+    it('labels positive gamma + positive charm as Takers +γ +charm', () => {
       renderLandscape();
-      expect(screen.getAllByText('Sticky Pin').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('Takers +γ +charm').length).toBeGreaterThan(0);
     });
 
-    it('shows Weakening Pin for positive gamma + negative charm', () => {
+    it('labels positive gamma + negative charm as Takers +γ −charm', () => {
       renderLandscape();
-      expect(screen.getAllByText('Weakening Pin').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('Takers +γ −charm').length).toBeGreaterThan(0);
     });
 
-    it('shows Fading Launchpad for negative gamma + negative charm', () => {
+    it('labels negative gamma + negative charm as Takers −γ −charm', () => {
       renderLandscape();
-      expect(screen.getAllByText('Fading Launchpad').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('Takers −γ −charm').length).toBeGreaterThan(0);
     });
   });
 
-  describe('direction signals', () => {
-    it('labels ceiling strikes as Ceiling Breakout Risk for Max Launchpad', () => {
+  describe('position column', () => {
+    it('describes a ceiling strike with negative gamma by taker side', () => {
       renderLandscape();
-      expect(screen.getByText('Ceiling Breakout Risk')).toBeDefined();
+      expect(screen.getByText('Position')).toBeDefined();
+      expect(
+        screen.getAllByText('Taker-short γ above spot').length,
+      ).toBeGreaterThan(0);
     });
 
-    it('labels floor strikes as Softening Floor for Weakening Pin', () => {
+    it('describes a floor strike with positive gamma by taker side', () => {
       renderLandscape();
-      expect(screen.getByText('Softening Floor')).toBeDefined();
+      expect(
+        screen.getAllByText('Taker-long γ below spot').length,
+      ).toBeGreaterThan(0);
+    });
+  });
+
+  describe('no dealer or market-maker claims (owner decision D1 revised)', () => {
+    // GEX Landscape reads GEXBot taker flow; nothing on the panel may
+    // predict market-maker hedging. Checks the visible text and every
+    // tooltip, in both tabs.
+
+    /**
+     * Visible text plus every tooltip, minus the Greek column headers'
+     * explicit disclaimer ("…, not a market-maker position"), which denies
+     * a claim rather than making one.
+     */
+    function panelText(): string {
+      const titles = Array.from(
+        document.querySelectorAll<HTMLElement>('[title]'),
+      ).map((el) => el.title);
+      return [document.body.textContent ?? '', ...titles]
+        .join('\n')
+        .replaceAll('not a market-maker position', '');
+    }
+
+    it('the strike grid and bias panel make no dealer claim', () => {
+      renderLandscape();
+      expect(screen.getByText('Top |γ| strike')).toBeDefined();
+      expect(dealerClaims(panelText())).toEqual([]);
+    });
+
+    it('the Top 5 tab makes no dealer claim', () => {
+      renderLandscape();
+      fireEvent.click(screen.getByRole('tab', { name: 'Top 5 GEX' }));
+      expect(dealerClaims(panelText())).toEqual([]);
     });
   });
 
   describe('spot indicator', () => {
     it('marks the nearest strike to current price with ATM label', () => {
       renderLandscape();
-      // "ATM" may appear in both the spot row and the GEX Gravity panel
+      // "ATM" may appear in both the spot row and the Top |γ| strike panel
       // (when the gravity strike is at spot). At least one must exist.
       expect(screen.getAllByText('ATM').length).toBeGreaterThan(0);
     });
@@ -283,7 +321,7 @@ describe('GexLandscape', () => {
     it('shows data rows while loading if strikes exist', () => {
       renderLandscape({ loading: true });
       // Should still render table rows when data is already present
-      expect(screen.getAllByText('Max Launchpad').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('Takers −γ +charm').length).toBeGreaterThan(0);
     });
   });
 

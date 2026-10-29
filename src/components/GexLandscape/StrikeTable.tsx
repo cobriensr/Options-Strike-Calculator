@@ -1,6 +1,6 @@
 /**
  * StrikeTable — sticky-header + scrollable grid of strikes within the
- * display window, with per-strike classification, signal, GEX, NetCharm,
+ * display window, with per-strike classification, position, GEX, NetCharm,
  * NetVanna, three Δ% windows (5m / 15m / 30m), and a vol-reinforcement
  * badge. The ATM row is ref-tagged so the parent can scroll it into
  * view on initial load.
@@ -13,8 +13,8 @@
  *
  * Vol Reinforcement column is the new (Phase 4) delta-trend agreement
  * signal — see `computeVolReinforcement` in `classify.ts`. ↑↑ = all
- * three deltas push with the wall (reinforcing); ↓↓ = all three push
- * against the wall (opposing); — = mixed / sparse data.
+ * three deltas move with the strike's gamma sign (reinforcing); ↓↓ = all
+ * three move against it (opposing); — = mixed / sparse data.
  */
 
 import type { Ref } from 'react';
@@ -29,7 +29,7 @@ import {
 import { fmtGex, fmtPct } from './formatters';
 
 /**
- * Strike | Class | Signal | NetGamma | NetCharm | NetVanna | Δ5m | Δ15m | Δ30m | Vol Reinf.
+ * Strike | Class | Position | NetGamma | NetCharm | NetVanna | Δ5m | Δ15m | Δ30m | Vol Reinf.
  */
 const COLS = 'grid-cols-[76px_130px_1fr_88px_76px_76px_64px_64px_64px_64px]';
 
@@ -47,7 +47,7 @@ export interface StrikeTableProps {
   /**
    * When true, non-ATM rows render a signed point offset from spot beneath
    * the strike number (e.g. "+15 pts", "-30 pts"). Used by the Top 5 tab so
-   * distant walls show their distance without needing a separate column.
+   * distant strikes show their distance without needing a separate column.
    */
   showAtmDistance?: boolean;
   /** Strikes that just entered the set on the latest tick (Top 5 only). */
@@ -80,7 +80,12 @@ export function StrikeTable({
       >
         <div className="px-3 py-2 text-right">Strike</div>
         <div className="px-3 py-2">Classification</div>
-        <div className="px-3 py-2">Signal</div>
+        <div
+          className="cursor-help px-3 py-2"
+          title="Taker side of the strike's GEXBot gamma and where the strike sits relative to spot (25-pt band)."
+        >
+          Position
+        </div>
         <div
           className="cursor-help px-3 py-2 text-right"
           title="GEXBot dollar gamma per strike from the 1-min capture, in GEXBot's taker-side sign: positive = traders (takers) are net long gamma at this strike, negative = net short. A taker-flow measure, not a market-maker position."
@@ -101,7 +106,7 @@ export function StrikeTable({
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="% change in dollar gamma vs. the slot 5 min ago (GEXBot's shortest priors window) — captures the freshest sign flips and acceleration."
+          title="% change in dollar gamma vs. the slot 5 min ago (GEXBot's shortest priors window) — shows the freshest sign flips and the fastest changes."
         >
           Δ5m
         </div>
@@ -119,7 +124,7 @@ export function StrikeTable({
         </div>
         <div
           className="cursor-help px-3 py-2 text-center"
-          title="Vol Reinforcement — delta-trend agreement. ↑↑ (reinforcing): all three Δ% windows push with the netGamma sign; the wall is being added to. ↓↓ (opposing): all three push against; the wall is being unwound. — (neutral): mixed / sparse / no data."
+          title="Vol Reinforcement — delta-trend agreement. ↑↑ (reinforcing): all three Δ% windows move with the netGamma sign, so the strike's gamma is growing in that sign. ↓↓ (opposing): all three move against it, so it is shrinking toward zero. — (neutral): mixed / sparse / no data."
         >
           Vol Reinf.
         </div>
@@ -225,7 +230,7 @@ export function StrikeTable({
                 )}
               </div>
 
-              {/* Direction signal */}
+              {/* Position: taker gamma side + where the strike sits */}
               <div className="flex items-center gap-1 px-3 py-1.5">
                 <span
                   className="font-mono text-[11px]"
@@ -348,7 +353,7 @@ export function StrikeTable({
                 {s.volReinforcement === 'reinforcing' && (
                   <span
                     className="font-mono text-[12px] font-bold text-emerald-400"
-                    title="Reinforcing — all three Δ% windows push with the netGamma sign; the wall is being added to."
+                    title="Reinforcing — all three Δ% windows move with the netGamma sign; the strike's gamma is growing in that sign."
                     aria-label="Vol reinforcing"
                   >
                     ↑↑
@@ -357,7 +362,7 @@ export function StrikeTable({
                 {s.volReinforcement === 'opposing' && (
                   <span
                     className="font-mono text-[12px] font-bold text-red-400"
-                    title="Opposing — all three Δ% windows push against the netGamma sign; the wall is being unwound."
+                    title="Opposing — all three Δ% windows move against the netGamma sign; the strike's gamma is shrinking toward zero."
                     aria-label="Vol opposing"
                   >
                     ↓↓

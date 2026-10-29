@@ -22,39 +22,29 @@ export type GexClassification =
 
 export type Direction = 'ceiling' | 'floor' | 'atm';
 
+/** Position wording for each direction (SPX spot band = 25 pts). */
+const POSITION_TEXT: Record<Direction, string> = {
+  ceiling: 'above spot',
+  floor: 'below spot',
+  atm: 'at spot',
+};
+
 /**
- * Map (classification, direction) → human-readable signal label.
+ * Map (classification, direction) → human-readable signal label: the
+ * taker side of the strike's gamma and where the strike sits.
  *
- * The 12 returned strings are the canonical set rendered in the
- * GexLandscape strike table and persisted in the trace_live_analyses
- * payload. Changing any string is a frontend-visible change.
+ * The GexLandscape data is GEXBot taker flow in its taker-side sign, so
+ * the label describes positioning and makes no market-maker or price-path
+ * prediction (owner decision D1 revised, 2026-10-29; the UW-era labels
+ * such as "Hard Floor" and "Ceiling Breakout Risk" are gone). Charm is
+ * shown by the classification badge, so the six labels depend on the
+ * gamma side and the direction only. Changing any string is a
+ * frontend-visible change.
  */
 export function classSignal(cls: GexClassification, dir: Direction): string {
-  if (cls === 'max-launchpad') {
-    return dir === 'ceiling'
-      ? 'Ceiling Breakout Risk'
-      : dir === 'floor'
-        ? 'Floor Collapse Risk'
-        : 'Launch Zone';
-  }
-  if (cls === 'fading-launchpad') {
-    return dir === 'ceiling'
-      ? 'Weakening Ceiling'
-      : dir === 'floor'
-        ? 'Weakening Floor'
-        : 'Fading Launch';
-  }
-  if (cls === 'sticky-pin') {
-    return dir === 'ceiling'
-      ? 'Hard Ceiling'
-      : dir === 'floor'
-        ? 'Hard Floor'
-        : 'Pin Zone';
-  }
-  // weakening-pin
-  return dir === 'ceiling'
-    ? 'Softening Ceiling'
-    : dir === 'floor'
-      ? 'Softening Floor'
-      : 'Weak Pin';
+  const side =
+    cls === 'max-launchpad' || cls === 'fading-launchpad'
+      ? 'Taker-short'
+      : 'Taker-long';
+  return `${side} γ ${POSITION_TEXT[dir]}`;
 }

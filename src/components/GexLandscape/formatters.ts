@@ -3,8 +3,8 @@
  * plain-text bias summary sent to the analyze endpoint.
  */
 
-import { VERDICT_META } from './constants';
-import type { BiasMetrics, DriftTarget, GexClassification } from './types';
+import { CLASS_META, PRICE_WINDOW, VERDICT_META } from './constants';
+import type { BiasMetrics, DriftTarget } from './types';
 
 export function fmtGex(n: number): string {
   const abs = Math.abs(n);
@@ -30,14 +30,25 @@ export function fmtTime(iso: string): string {
   });
 }
 
-/** Serializes BiasMetrics to a compact plain-text summary for the analyze prompt. */
+/** "+x% | −y%" trend line for one window, or null when both are missing. */
+function fmtTrendLine(
+  window: string,
+  above: number | null,
+  below: number | null,
+): string | null {
+  const parts: string[] = [];
+  if (above !== null) parts.push(`above spot ${fmtPct(above)}`);
+  if (below !== null) parts.push(`below spot ${fmtPct(below)}`);
+  return parts.length > 0 ? `${window} γ change: ${parts.join(' | ')}` : null;
+}
+
+/**
+ * Serializes BiasMetrics to a compact plain-text summary for the analyze
+ * prompt. The values are GEXBot taker flow (owner decision D1 revised,
+ * 2026-10-29), so the text reports taker positioning and numbers only —
+ * no market-maker pull, wall or target reading.
+ */
 export function formatBiasForClaude(b: BiasMetrics): string {
-  const clsLabel: Record<GexClassification, string> = {
-    'max-launchpad': 'Max Launchpad',
-    'fading-launchpad': 'Fading Launchpad',
-    'sticky-pin': 'Sticky Pin',
-    'weakening-pin': 'Weakening Pin',
-  };
   const fmtTarget = (t: DriftTarget) => {
     const volTag =
       t.volReinforcement === 'reinforcing'
@@ -45,7 +56,7 @@ export function formatBiasForClaude(b: BiasMetrics): string {
         : t.volReinforcement === 'opposing'
           ? ', vol opposing'
           : '';
-    return `${t.strike.toLocaleString()} (${clsLabel[t.cls]}${volTag})`;
+    return `${t.strike.toLocaleString()} (${CLASS_META[t.cls].badge}${volTag})`;
   };
   const meta = VERDICT_META[b.verdict];
   const gravDir = b.gravityOffset >= 0 ? 'above' : 'below';
@@ -55,30 +66,27 @@ export function formatBiasForClaude(b: BiasMetrics): string {
       maximumFractionDigits: 2,
     },
   );
+  const netSide = b.regime === 'positive' ? 'long' : 'short';
+  const topSide = b.gravityGex >= 0 ? 'taker-long' : 'taker-short';
   const lines = [
     `Verdict: ${meta.label} — ${meta.desc}`,
-    `Regime: ${b.regime === 'positive' ? 'Positive' : 'Negative'} GEX (${fmtGex(b.totalNetGex)} total) | Gravity: ${b.gravityStrike.toLocaleString()} (${gravOffsetDisplay} pts ${gravDir} spot, ${fmtGex(b.gravityGex)})`,
+    `Net taker gamma: ${fmtGex(b.totalNetGex)} within ±${PRICE_WINDOW} pts (traders net ${netSide} gamma) | Largest |γ| strike: ${b.gravityStrike.toLocaleString()} (${gravOffsetDisplay} pts ${gravDir} spot, ${fmtGex(b.gravityGex)}, ${topSide})`,
   ];
   if (b.upsideTargets.length > 0)
-    lines.push(`Upside targets: ${b.upsideTargets.map(fmtTarget).join(', ')}`);
+    lines.push(
+      `Largest |γ| above spot: ${b.upsideTargets.map(fmtTarget).join(', ')}`,
+    );
   if (b.downsideTargets.length > 0)
     lines.push(
-      `Downside targets: ${b.downsideTargets.map(fmtTarget).join(', ')}`,
+      `Largest |γ| below spot: ${b.downsideTargets.map(fmtTarget).join(', ')}`,
     );
-  const t1: string[] = [];
-  if (b.ceilingTrend5m !== null) t1.push(`ceiling ${fmtPct(b.ceilingTrend5m)}`);
-  if (b.floorTrend5m !== null) t1.push(`floor ${fmtPct(b.floorTrend5m)}`);
-  if (t1.length > 0) lines.push(`5m GEX trend: ${t1.join(' | ')}`);
-  const t5: string[] = [];
-  if (b.ceilingTrend15m !== null)
-    t5.push(`ceiling ${fmtPct(b.ceilingTrend15m)}`);
-  if (b.floorTrend15m !== null) t5.push(`floor ${fmtPct(b.floorTrend15m)}`);
-  if (t5.length > 0) lines.push(`15m GEX trend: ${t5.join(' | ')}`);
-  const t10: string[] = [];
-  if (b.ceilingTrend30m !== null)
-    t10.push(`ceiling ${fmtPct(b.ceilingTrend30m)}`);
-  if (b.floorTrend30m !== null) t10.push(`floor ${fmtPct(b.floorTrend30m)}`);
-  if (t10.length > 0) lines.push(`30m GEX trend: ${t10.join(' | ')}`);
+  for (const line of [
+    fmtTrendLine('5m', b.ceilingTrend5m, b.floorTrend5m),
+    fmtTrendLine('15m', b.ceilingTrend15m, b.floorTrend15m),
+    fmtTrendLine('30m', b.ceilingTrend30m, b.floorTrend30m),
+  ]) {
+    if (line != null) lines.push(line);
+  }
   if (b.priceTrend && b.priceTrend.direction !== 'flat') {
     const dir = b.priceTrend.direction === 'up' ? 'UP' : 'DOWN';
     lines.push(

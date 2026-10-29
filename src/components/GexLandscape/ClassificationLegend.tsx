@@ -1,16 +1,17 @@
 /**
  * ClassificationLegend — bottom-row legend mapping each of the four
- * (gamma × charm) classifications to a short plain-English description.
+ * (gamma × charm) classifications to the signs that define it, in GEXBot's
+ * taker-side sign (no market-maker reading; owner decision D1 revised).
  */
 
 import { CLASS_META } from './constants';
 import type { GexClassification } from './types';
 
 const LEGEND: Array<[GexClassification, string]> = [
-  ['max-launchpad', 'Neg γ + Pos θ_t — accelerant, builds into close'],
-  ['fading-launchpad', 'Neg γ + Neg θ_t — accelerant that weakens over time'],
-  ['sticky-pin', 'Pos γ + Pos θ_t — wall that strengthens into close'],
-  ['weakening-pin', 'Pos γ + Neg θ_t — wall losing grip as day ages'],
+  ['max-launchpad', 'traders net short gamma, net long charm'],
+  ['fading-launchpad', 'traders net short gamma, net short charm'],
+  ['sticky-pin', 'traders net long gamma, net long charm'],
+  ['weakening-pin', 'traders net long gamma, net short charm'],
 ];
 
 export function ClassificationLegend() {

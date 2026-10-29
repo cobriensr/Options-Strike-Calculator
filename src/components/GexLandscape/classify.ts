@@ -29,22 +29,25 @@ export function getDirection(strike: number, price: number): Direction {
   return 'atm';
 }
 
+/**
+ * Per-cell signal tooltip: which side traders hold at the strike and where
+ * it sits. GEXBot gamma and charm are classified taker flow in the
+ * vendor's taker-side sign (owner decision D1 revised, 2026-10-29), so the
+ * UW-era market-maker hedging read ("market makers absorb moves here")
+ * does not apply and is not stated.
+ */
 export function signalTooltip(cls: GexClassification, dir: Direction): string {
-  const mechanic =
-    cls === 'max-launchpad' || cls === 'fading-launchpad'
-      ? 'Market makers add fuel to moves here — they buy when price rises and sell when it falls.'
-      : 'Market makers absorb moves here — they sell into rallies and buy into dips.';
+  const gamma =
+    cls === 'max-launchpad' || cls === 'fading-launchpad' ? 'short' : 'long';
+  const charm =
+    cls === 'max-launchpad' || cls === 'sticky-pin' ? 'long' : 'short';
   const position =
     dir === 'ceiling'
-      ? 'This strike is above current price — it is overhead resistance.'
+      ? `more than ${SPX_SPOT_BAND} pts above spot`
       : dir === 'floor'
-        ? 'This strike is below current price — it is downside support.'
-        : 'This strike is right at the money — pressure is balanced in both directions.';
-  const charm =
-    cls === 'max-launchpad' || cls === 'sticky-pin'
-      ? 'The influence at this level builds as the session ages.'
-      : 'The influence at this level fades as the session ages.';
-  return `${mechanic} ${position} ${charm}`;
+        ? `more than ${SPX_SPOT_BAND} pts below spot`
+        : `within ${SPX_SPOT_BAND} pts of spot`;
+  return `In GEXBot's taker-side sign, traders (takers) are net ${gamma} gamma and net ${charm} charm at this strike, which sits ${position}.`;
 }
 
 /**

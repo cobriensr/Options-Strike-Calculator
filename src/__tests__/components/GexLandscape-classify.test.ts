@@ -16,8 +16,17 @@ import { describe, expect, it } from 'vitest';
 import {
   computeVolReinforcement,
   getDirection,
+  signalTooltip,
 } from '../../components/GexLandscape/classify';
-import { SPX_SPOT_BAND } from '../../components/GexLandscape/constants';
+import {
+  CLASS_META,
+  CLS_TOOLTIP,
+  SPX_SPOT_BAND,
+  VERDICT_META,
+  VERDICT_TOOLTIP,
+} from '../../components/GexLandscape/constants';
+import type { GexClassification } from '../../components/GexLandscape/types';
+import { dealerClaims } from '../helpers/dealer-claims';
 
 describe('getDirection — SPX-only spot band', () => {
   it('exposes the documented SPX spot band', () => {
@@ -182,5 +191,60 @@ describe('computeVolReinforcement — delta-trend agreement', () => {
         delta30m: -2,
       }),
     ).toBe('neutral');
+  });
+});
+
+// Owner decision D1 revised (2026-10-29): GEX Landscape is GEXBot taker
+// flow, so its labels and tooltips describe the taker side and assert no
+// market-maker or dealer behaviour.
+const CLASSES: GexClassification[] = [
+  'max-launchpad',
+  'fading-launchpad',
+  'sticky-pin',
+  'weakening-pin',
+];
+
+describe('signalTooltip — taker-side description', () => {
+  it('states the taker gamma and charm sides and the position', () => {
+    expect(signalTooltip('max-launchpad', 'ceiling')).toBe(
+      "In GEXBot's taker-side sign, traders (takers) are net short gamma and net long charm at this strike, which sits more than 25 pts above spot.",
+    );
+    expect(signalTooltip('weakening-pin', 'floor')).toBe(
+      "In GEXBot's taker-side sign, traders (takers) are net long gamma and net short charm at this strike, which sits more than 25 pts below spot.",
+    );
+    expect(signalTooltip('sticky-pin', 'atm')).toBe(
+      "In GEXBot's taker-side sign, traders (takers) are net long gamma and net long charm at this strike, which sits within 25 pts of spot.",
+    );
+  });
+
+  it.each(CLASSES)('%s tooltips make no dealer claim', (cls) => {
+    for (const dir of ['ceiling', 'floor', 'atm'] as const) {
+      expect(dealerClaims(signalTooltip(cls, dir))).toEqual([]);
+      expect(dealerClaims(CLASS_META[cls].signal(dir))).toEqual([]);
+    }
+    expect(dealerClaims(CLS_TOOLTIP[cls])).toEqual([]);
+    expect(dealerClaims(CLASS_META[cls].badge)).toEqual([]);
+  });
+});
+
+describe('verdict labels and prose — no dealer claims', () => {
+  it.each(Object.keys(VERDICT_META) as Array<keyof typeof VERDICT_META>)(
+    '%s',
+    (verdict) => {
+      const meta = VERDICT_META[verdict];
+      expect(dealerClaims(meta.label)).toEqual([]);
+      expect(dealerClaims(meta.desc)).toEqual([]);
+      expect(dealerClaims(VERDICT_TOOLTIP[verdict])).toEqual([]);
+      expect(meta.desc).toMatch(/net taker gamma is (positive|negative)/);
+    },
+  );
+
+  it('keeps every emitted verdict distinguishable', () => {
+    // gex-pull-down is always rewritten to gex-floor-below by computeBias,
+    // so those two share the "below, long γ" wording.
+    const emitted = Object.entries(VERDICT_META)
+      .filter(([v]) => v !== 'gex-pull-down')
+      .map(([, m]) => m.label);
+    expect(new Set(emitted).size).toBe(emitted.length);
   });
 });

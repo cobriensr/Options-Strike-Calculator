@@ -13,6 +13,7 @@ import {
   formatBiasForClaude,
 } from '../../components/GexLandscape/formatters';
 import type { BiasMetrics } from '../../components/GexLandscape/types';
+import { dealerClaims } from '../helpers/dealer-claims';
 
 describe('fmtGex', () => {
   it('formats values in the billions with one decimal and B suffix', () => {
@@ -97,20 +98,70 @@ describe('formatBiasForClaude', () => {
     };
   }
 
-  it('emits verdict, regime, and gravity on the first two lines', () => {
+  it('emits the verdict, net taker gamma and largest-|γ| strike on the first two lines', () => {
     const out = formatBiasForClaude(baseBias()).split('\n');
-    expect(out[0]).toMatch(/^Verdict: /);
-    expect(out[1]).toMatch(/Regime: Positive GEX/);
-    expect(out[1]).toMatch(/Gravity: 6,900/);
-    expect(out[1]).toMatch(/25 pts above spot/);
+    expect(out[0]).toBe(
+      'Verdict: ↑ TOP ABOVE · LONG γ — Largest |γ| strike is more than 25 pts above spot; net taker gamma is positive (traders net long gamma)',
+    );
+    expect(out[1]).toBe(
+      'Net taker gamma: +2.5B within ±50 pts (traders net long gamma) | Largest |γ| strike: 6,900 (25 pts above spot, +1.8B, taker-long)',
+    );
   });
 
-  it('reports negative regime with the correct sign description', () => {
+  it('reports negative net taker gamma as traders net short gamma', () => {
     const out = formatBiasForClaude(
-      baseBias({ regime: 'negative', totalNetGex: -1.4e9, gravityOffset: -30 }),
+      baseBias({
+        verdict: 'breakdown-risk-down',
+        regime: 'negative',
+        totalNetGex: -1.4e9,
+        gravityOffset: -30,
+        gravityGex: -9e8,
+      }),
     );
-    expect(out).toMatch(/Negative GEX/);
-    expect(out).toMatch(/30 pts below spot/);
+    expect(out).toMatch(
+      /Net taker gamma: −1\.4B within ±50 pts \(traders net short gamma\)/,
+    );
+    expect(out).toMatch(/30 pts below spot, −900\.0M, taker-short\)/);
+  });
+
+  // Owner decision D1 revised (2026-10-29): this is GEXBot taker flow, so
+  // the text Claude gets must not assert market-maker behaviour.
+
+  it.each([
+    'gex-pull-up',
+    'gex-pull-down',
+    'breakout-risk-up',
+    'breakdown-risk-down',
+    'rangebound',
+    'volatile',
+    'gex-floor-below',
+    'drifting-down',
+    'drifting-up',
+  ] as const)('%s text makes no dealer or market-maker claim', (verdict) => {
+    const out = formatBiasForClaude(
+      baseBias({
+        verdict,
+        upsideTargets: [
+          {
+            strike: 6975,
+            cls: 'sticky-pin',
+            netGamma: 4e8,
+            volReinforcement: 'reinforcing',
+          },
+        ],
+        downsideTargets: [
+          {
+            strike: 6850,
+            cls: 'max-launchpad',
+            netGamma: -2.5e8,
+            volReinforcement: 'opposing',
+          },
+        ],
+        ceilingTrend5m: 2.5,
+        floorTrend5m: -1.2,
+      }),
+    );
+    expect(dealerClaims(out)).toEqual([]);
   });
 
   it('serializes upside and downside targets with classification labels', () => {
@@ -133,18 +184,18 @@ describe('formatBiasForClaude', () => {
       ],
     });
     const out = formatBiasForClaude(bias);
-    expect(out).toMatch(
-      /Upside targets: 6,975 \(Sticky Pin, vol reinforcing\)/,
+    expect(out).toContain(
+      'Largest |γ| above spot: 6,975 (Takers +γ +charm, vol reinforcing)',
     );
-    expect(out).toMatch(
-      /Downside targets: 6,850 \(Fading Launchpad, vol opposing\)/,
+    expect(out).toContain(
+      'Largest |γ| below spot: 6,850 (Takers −γ −charm, vol opposing)',
     );
   });
 
   it('omits target lines when arrays are empty', () => {
     const out = formatBiasForClaude(baseBias());
-    expect(out).not.toMatch(/Upside targets:/);
-    expect(out).not.toMatch(/Downside targets:/);
+    expect(out).not.toMatch(/Largest \|γ\| above spot:/);
+    expect(out).not.toMatch(/Largest \|γ\| below spot:/);
   });
 
   it('appends 5m, 15m, and 30m trend lines when trend values are present', () => {
@@ -157,16 +208,22 @@ describe('formatBiasForClaude', () => {
       floorTrend30m: -3.1,
     });
     const out = formatBiasForClaude(bias);
-    expect(out).toMatch(/5m GEX trend: ceiling \+2\.5% \| floor \u22121\.2%/);
-    expect(out).toMatch(/15m GEX trend: ceiling \+5\.4% \| floor \u22122\.6%/);
-    expect(out).toMatch(/30m GEX trend: ceiling \+8\.4% \| floor \u22123\.1%/);
+    expect(out).toContain(
+      '5m γ change: above spot +2.5% | below spot \u22121.2%',
+    );
+    expect(out).toContain(
+      '15m γ change: above spot +5.4% | below spot \u22122.6%',
+    );
+    expect(out).toContain(
+      '30m γ change: above spot +8.4% | below spot \u22123.1%',
+    );
   });
 
   it('skips trend lines entirely when all ceiling and floor are null', () => {
     const out = formatBiasForClaude(baseBias());
-    expect(out).not.toMatch(/5m GEX trend:/);
-    expect(out).not.toMatch(/15m GEX trend:/);
-    expect(out).not.toMatch(/30m GEX trend:/);
+    expect(out).not.toMatch(/5m γ change:/);
+    expect(out).not.toMatch(/15m γ change:/);
+    expect(out).not.toMatch(/30m γ change:/);
   });
 
   it('excludes the volTag when reinforcement is neutral', () => {
@@ -181,7 +238,7 @@ describe('formatBiasForClaude', () => {
       ],
     });
     const out = formatBiasForClaude(bias);
-    expect(out).toMatch(/7,000 \(Max Launchpad\)/);
+    expect(out).toContain('7,000 (Takers −γ +charm)');
     expect(out).not.toMatch(/vol reinforcing|vol opposing/);
   });
 

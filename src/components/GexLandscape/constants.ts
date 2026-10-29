@@ -39,28 +39,28 @@ export interface ClassMeta {
 
 export const CLASS_META: Record<GexClassification, ClassMeta> = {
   'max-launchpad': {
-    badge: 'Max Launchpad',
+    badge: 'Takers −γ +charm',
     badgeBg: 'bg-amber-500/25',
     badgeText: 'text-amber-400',
     rowBg: 'bg-amber-500/5',
     signal: (dir) => classSignal('max-launchpad', dir),
   },
   'fading-launchpad': {
-    badge: 'Fading Launchpad',
+    badge: 'Takers −γ −charm',
     badgeBg: 'bg-yellow-600/20',
     badgeText: 'text-yellow-500/80',
     rowBg: 'bg-yellow-600/5',
     signal: (dir) => classSignal('fading-launchpad', dir),
   },
   'sticky-pin': {
-    badge: 'Sticky Pin',
+    badge: 'Takers +γ +charm',
     badgeBg: 'bg-emerald-500/25',
     badgeText: 'text-emerald-400',
     rowBg: 'bg-emerald-500/5',
     signal: (dir) => classSignal('sticky-pin', dir),
   },
   'weakening-pin': {
-    badge: 'Weakening Pin',
+    badge: 'Takers +γ −charm',
     badgeBg: 'bg-emerald-500/10',
     badgeText: 'text-emerald-600',
     rowBg: '',
@@ -68,15 +68,21 @@ export const CLASS_META: Record<GexClassification, ClassMeta> = {
   },
 };
 
+/**
+ * Per-class tooltip. GEXBot values are classified taker flow in the
+ * vendor's taker-side sign (owner decision D1 revised, 2026-10-29), so each
+ * tooltip states which side traders hold and makes no market-maker claim.
+ * The class ids keep their UW-era names; only the display text changed.
+ */
 export const CLS_TOOLTIP: Record<GexClassification, string> = {
   'max-launchpad':
-    'Market makers will ADD fuel to a move here, not resist it — and that pressure grows as the day goes on. If price breaks through, expect acceleration, not a bounce.',
+    "In GEXBot's taker-side sign, traders (takers) are net short gamma and net long charm at this strike.",
   'fading-launchpad':
-    'Market makers will amplify moves here, but only early in the session. Their hedging pressure fades as the day wears on, so this level is most dangerous in the morning.',
+    "In GEXBot's taker-side sign, traders (takers) are net short gamma and net short charm at this strike.",
   'sticky-pin':
-    'Market makers are actively pushing back against any move through this level, and that resistance gets stronger as the day progresses. The most reliable wall on the board.',
+    "In GEXBot's taker-side sign, traders (takers) are net long gamma and net long charm at this strike.",
   'weakening-pin':
-    'Market makers are dampening moves here, but their ability to hold the line fades over time. Can act as support or resistance early in the day; less reliable into the close.',
+    "In GEXBot's taker-side sign, traders (takers) are net long gamma and net short charm at this strike.",
 };
 
 export interface VerdictMeta {
@@ -87,89 +93,107 @@ export interface VerdictMeta {
   desc: string;
 }
 
+/**
+ * Verdict display text. `computeBias` still classifies by where the
+ * largest-|γ| strike sits (above / below / within 25 pts of spot) and the
+ * sign of the window's net gamma, plus the 30-min price-drift override. On
+ * GEXBot taker flow the labels say exactly that and nothing more: the
+ * UW-era readings ("MMs will pull price toward it", "dealers amplify
+ * moves") do not apply (owner decision D1 revised, 2026-10-29). Verdict ids
+ * keep their old names.
+ */
+const LONG_DESC = 'net taker gamma is positive (traders net long gamma)';
+const SHORT_DESC = 'net taker gamma is negative (traders net short gamma)';
+const ABOVE = 'Largest |γ| strike is more than 25 pts above spot';
+const BELOW = 'Largest |γ| strike is more than 25 pts below spot';
+const AT_SPOT = 'Largest |γ| strike is within 25 pts of spot';
+
 export const VERDICT_META: Record<BiasMetrics['verdict'], VerdictMeta> = {
   'gex-pull-up': {
-    label: '↑ GEX PULL',
+    label: '↑ TOP ABOVE · LONG γ',
     color: 'text-emerald-400',
     bg: 'bg-emerald-500/15',
     border: 'border-emerald-500/30',
-    desc: 'Largest GEX wall is above spot — MMs will pull price toward it',
+    desc: `${ABOVE}; ${LONG_DESC}`,
   },
   'gex-pull-down': {
-    label: '↓ GEX PULL',
+    label: '↓ TOP BELOW · LONG γ',
     color: 'text-red-400',
     bg: 'bg-red-500/15',
     border: 'border-red-500/30',
-    desc: 'Largest GEX wall is below spot — MMs will pull price toward it',
+    desc: `${BELOW}; ${LONG_DESC}`,
   },
   'breakout-risk-up': {
-    label: '↑ BREAKOUT RISK',
+    label: '↑ TOP ABOVE · SHORT γ',
     color: 'text-amber-400',
     bg: 'bg-amber-500/15',
     border: 'border-amber-500/30',
-    desc: 'Neg GEX regime — dealers amplify moves; largest wall above spot may give',
+    desc: `${ABOVE}; ${SHORT_DESC}`,
   },
   'breakdown-risk-down': {
-    label: '↓ BREAKDOWN RISK',
+    label: '↓ TOP BELOW · SHORT γ',
     color: 'text-orange-400',
     bg: 'bg-orange-500/15',
     border: 'border-orange-500/30',
-    desc: 'Neg GEX regime — dealers amplify moves; largest wall below spot may give',
+    desc: `${BELOW}; ${SHORT_DESC}`,
   },
   rangebound: {
-    label: '● RANGE-BOUND',
+    label: '● TOP AT SPOT · LONG γ',
     color: 'text-sky-400',
     bg: 'bg-sky-500/15',
     border: 'border-sky-500/30',
-    desc: 'Positive GEX regime — dealers counter moves; price pinned near largest wall',
+    desc: `${AT_SPOT}; ${LONG_DESC}`,
   },
   volatile: {
-    label: '⚡ VOLATILE',
+    label: '● TOP AT SPOT · SHORT γ',
     color: 'text-amber-400',
     bg: 'bg-amber-500/15',
     border: 'border-amber-500/30',
-    desc: 'Negative GEX regime — dealers amplify moves in both directions; follow breakouts',
+    desc: `${AT_SPOT}; ${SHORT_DESC}`,
   },
   'gex-floor-below': {
-    label: '↑ FLOOR BELOW',
+    label: '↓ TOP BELOW · LONG γ',
     color: 'text-emerald-400',
     bg: 'bg-emerald-500/15',
     border: 'border-emerald-500/30',
-    desc: 'Largest GEX wall is below spot — acting as support floor; price has upside freedom',
+    desc: `${BELOW}; ${LONG_DESC}`,
   },
   'drifting-down': {
     label: '↓ DRIFTING DOWN',
     color: 'text-orange-400',
     bg: 'bg-orange-500/15',
     border: 'border-orange-500/30',
-    desc: 'Positive GEX but price grinding lower — dealers dampening, not stopping the move',
+    desc: `${AT_SPOT} and ${LONG_DESC}, but price has drifted lower over 30m`,
   },
   'drifting-up': {
     label: '↑ DRIFTING UP',
     color: 'text-teal-400',
     bg: 'bg-teal-500/15',
     border: 'border-teal-500/30',
-    desc: 'Positive GEX but price grinding higher — dealers dampening, not stopping the move',
+    desc: `${AT_SPOT} and ${LONG_DESC}, but price has drifted higher over 30m`,
   },
 };
 
+/** Shared tail for every verdict tooltip: what the numbers are. */
+const VERDICT_TOOLTIP_TAIL =
+  'Computed from GEXBot gamma in its taker-side sign over the strikes within ±50 pts of spot. It describes taker positioning; it is not a forecast of where price goes.';
+
+/** The largest-|γ| strike's position, in tooltip wording. */
+const TOP_ABOVE =
+  'The strike with the largest absolute gamma sits more than 25 pts above spot';
+const TOP_BELOW =
+  'The strike with the largest absolute gamma sits more than 25 pts below spot';
+const TOP_AT_SPOT =
+  'The strike with the largest absolute gamma sits within 25 pts of spot';
+
 export const VERDICT_TOOLTIP: Record<BiasMetrics['verdict'], string> = {
-  'gex-pull-up':
-    'The biggest GEX wall is above current price. MMs are long gamma there — as price rises toward it, they buy shares to stay hedged, which helps pull price up. Watch your upside drift targets for where price may go.',
-  'gex-pull-down':
-    'The biggest GEX wall is below current price. MMs are long gamma there — as price falls toward it, they sell shares to stay hedged, which helps pull price down. Watch your downside drift targets for where price may go.',
-  'breakout-risk-up':
-    'Total GEX is negative — MMs are short gamma and amplify moves instead of dampening them. The biggest concentration is above spot. If price breaks through that level, dealers buy more and add fuel to the rally.',
-  'breakdown-risk-down':
-    'Total GEX is negative — MMs are short gamma and amplify moves instead of dampening them. The biggest concentration is below spot. If price breaks through that level, dealers sell more and add fuel to the decline.',
-  rangebound:
-    'Total GEX is positive and the biggest wall is close to spot. MMs are countering moves from both sides — selling into rallies, buying into dips. Expect a choppy day. Fade moves toward the edges rather than chasing breakouts.',
-  volatile:
-    'Total GEX is negative and the biggest concentration is near spot. MMs amplify moves without a clear directional pull. A breakout in either direction can accelerate fast. Wait for a clear move before committing to a direction.',
-  'gex-floor-below':
-    'The biggest GEX wall is below current price and acting as a support floor — dealers are net long gamma there and will buy dips toward it. Price has already broken above it and has upside freedom toward ceiling targets. Watch for the ceiling drift targets above as the next magnetic levels.',
-  'drifting-down':
-    'GEX is positive (dealers are dampening moves), but price has been grinding lower despite that support. The GEX walls are slowing the decline, not stopping it. Downside drift targets show where price is heading. Consider this a warning that range-bound conditions are failing to hold.',
-  'drifting-up':
-    'GEX is positive (dealers are dampening moves), but price has been grinding higher despite that resistance. The GEX walls are slowing the rally, not stopping it. Upside drift targets show where price is heading. Consider this a warning that range-bound conditions are failing to hold.',
+  'gex-pull-up': `${TOP_ABOVE}, and ${LONG_DESC}. ${VERDICT_TOOLTIP_TAIL}`,
+  'gex-pull-down': `${TOP_BELOW}, and ${LONG_DESC}. ${VERDICT_TOOLTIP_TAIL}`,
+  'breakout-risk-up': `${TOP_ABOVE}, and ${SHORT_DESC}. ${VERDICT_TOOLTIP_TAIL}`,
+  'breakdown-risk-down': `${TOP_BELOW}, and ${SHORT_DESC}. ${VERDICT_TOOLTIP_TAIL}`,
+  rangebound: `${TOP_AT_SPOT}, and ${LONG_DESC}. ${VERDICT_TOOLTIP_TAIL}`,
+  volatile: `${TOP_AT_SPOT}, and ${SHORT_DESC}. ${VERDICT_TOOLTIP_TAIL}`,
+  'gex-floor-below': `${TOP_BELOW}, and ${LONG_DESC}. ${VERDICT_TOOLTIP_TAIL}`,
+  'drifting-down': `${TOP_AT_SPOT}, and ${LONG_DESC}, but price has moved lower consistently over the last 30 minutes. ${VERDICT_TOOLTIP_TAIL}`,
+  'drifting-up': `${TOP_AT_SPOT}, and ${LONG_DESC}, but price has moved higher consistently over the last 30 minutes. ${VERDICT_TOOLTIP_TAIL}`,
 };

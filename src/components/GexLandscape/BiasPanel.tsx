@@ -2,11 +2,14 @@
  * BiasPanel — structural bias verdict block rendered above the strike table.
  *
  * Shows:
- *   • Verdict label + description with a positional regime badge
- *   • GEX Gravity (strike with the largest |GEX|)
- *   • Top 2 upside and downside drift targets with classification + vol flag
- *   • 5m / 15m / 30m floor + ceiling Δ% trend ladder (Phase 4: all three
- *     windows from GEXBot's t-5 / t-15 / t-30 min priors)
+ *   • Verdict label + description with the net taker gamma badge
+ *   • Top |γ| strike (the strike with the largest |γ|)
+ *   • Top 2 strikes above and below spot by |γ| with classification + vol flag
+ *   • 5m / 15m / 30m below-spot (F) + above-spot (C) Δ% trend ladder
+ *     (all three windows from GEXBot's t-5 / t-15 / t-30 min priors)
+ *
+ * All text describes GEXBot taker-side positioning; none of it predicts
+ * market-maker hedging (owner decision D1 revised, 2026-10-29).
  */
 
 import {
@@ -29,19 +32,17 @@ export interface BiasPanelProps {
 }
 
 /**
- * Pick the cell color for a floor-trend value. Floor growing (positive
- * % Δ) is bullish — support is hardening; the gradient stays green.
+ * Cell color for the below-spot (F) trend: growing green, shrinking red.
+ * The green / amber scheme in this and `ceilTrendColor` is the UW-era
+ * support / resistance convention; the text no longer makes that claim on
+ * GEXBot data, and the colors are unchanged pending GEXBot-specific rules.
  */
 function floorTrendColor(v: number | null): string {
   if (v === null) return 'var(--color-muted)';
   return v >= 0 ? '#4ade80' : '#f87171';
 }
 
-/**
- * Pick the cell color for a ceiling-trend value. Ceiling shrinking
- * (negative % Δ) is bullish — overhead resistance is weakening; the
- * positive direction is amber (resistance building).
- */
+/** Cell color for the above-spot (C) trend: shrinking green, growing amber. */
 function ceilTrendColor(v: number | null): string {
   if (v === null) return 'var(--color-muted)';
   return v <= 0 ? '#4ade80' : '#fbbf24';
@@ -83,31 +84,29 @@ export function BiasPanel({
           className={`shrink-0 cursor-help rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${bias.regime === 'positive' ? 'bg-sky-500/20 text-sky-400' : 'bg-amber-500/20 text-amber-400'}`}
           title={
             bias.regime === 'positive'
-              ? 'MMs are net long gamma — they trade against moves, buying dips and selling rips like shock absorbers. Expect tighter ranges and faded breakouts today.'
-              : 'MMs are net short gamma — they trade with moves, buying rallies and selling drops like fuel. Expect wider ranges and breakouts that accelerate today.'
+              ? "Sum of GEXBot gamma over the strikes within ±50 pts of spot, in GEXBot's taker-side sign: positive, so traders (takers) are net long gamma across the window."
+              : "Sum of GEXBot gamma over the strikes within ±50 pts of spot, in GEXBot's taker-side sign: negative, so traders (takers) are net short gamma across the window."
           }
         >
-          {bias.regime === 'positive'
-            ? 'POS GEX — dampened'
-            : 'NEG GEX — trending'}{' '}
+          {bias.regime === 'positive' ? 'NET LONG γ' : 'NET SHORT γ'}{' '}
           <span className="font-normal opacity-70">
             {fmtGex(bias.totalNetGex)}
           </span>
         </span>
       </div>
 
-      {/* Metrics row — gravity, drift targets, and the 3-row trend ladder */}
+      {/* Metrics row — top |γ| strike, top strikes either side, trend ladder */}
       <div className="grid grid-cols-[auto_1px_1fr_1px_1fr_1px_auto] items-start gap-x-4">
-        {/* GEX gravity */}
+        {/* Top |γ| strike (`gravity*` fields) */}
         <div
           className="cursor-help"
-          title="The single strike with the largest absolute GEX in the window. This is where MMs have the heaviest hedge book and do the most delta hedging. Price naturally drifts toward this level over the session."
+          title="The strike with the largest absolute GEXBot gamma within ±50 pts of spot: its distance from spot, strike and taker-side value."
         >
           <div
             className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
             style={{ color: 'var(--color-tertiary)' }}
           >
-            GEX Gravity
+            Top |γ| strike
           </div>
           <div
             className="font-mono text-[13px] font-semibold"
@@ -132,10 +131,10 @@ export function BiasPanel({
         {/* Divider */}
         <div className="h-full w-px bg-white/10" />
 
-        {/* Upside drift targets */}
+        {/* Top |γ| strikes above spot */}
         <DriftTargetColumn
-          label="↑ Drift Targets"
-          title="Top 2 strikes above spot by absolute GEX — where the most MM hedging activity sits overhead. Positive regime: price gets pulled toward the first target. Negative regime: a break through can accelerate toward the second."
+          label="↑ Top |γ| above"
+          title="The two strikes more than 25 pts above spot with the largest absolute GEXBot gamma, with their taker-side classification."
           targets={bias.upsideTargets}
           strikeColor="text-emerald-400"
           maxChanged5mStrike={maxChanged5mStrike}
@@ -146,10 +145,10 @@ export function BiasPanel({
         {/* Divider */}
         <div className="h-full w-px bg-white/10" />
 
-        {/* Downside drift targets */}
+        {/* Top |γ| strikes below spot */}
         <DriftTargetColumn
-          label="↓ Drift Targets"
-          title="Top 2 strikes below spot by absolute GEX — where the most MM hedging activity sits below you. Positive regime: price gets pulled toward the first target. Negative regime: a break through can accelerate toward the second."
+          label="↓ Top |γ| below"
+          title="The two strikes more than 25 pts below spot with the largest absolute GEXBot gamma, with their taker-side classification."
           targets={bias.downsideTargets}
           strikeColor="text-red-400"
           maxChanged5mStrike={maxChanged5mStrike}
@@ -232,7 +231,7 @@ function DriftTargetColumn({
               {t.volReinforcement === 'reinforcing' && (
                 <span
                   className="font-mono text-[9px] text-emerald-400"
-                  title="Reinforcing — delta-trend agrees with the wall"
+                  title="Reinforcing — Δ5m, Δ15m and Δ30m all move with this strike's gamma sign"
                 >
                   ↑↑
                 </span>
@@ -240,7 +239,7 @@ function DriftTargetColumn({
               {t.volReinforcement === 'opposing' && (
                 <span
                   className="font-mono text-[9px] text-red-400"
-                  title="Opposing — delta-trend pushes against the wall"
+                  title="Opposing — Δ5m, Δ15m and Δ30m all move against this strike's gamma sign"
                 >
                   ↓↓
                 </span>
@@ -248,7 +247,7 @@ function DriftTargetColumn({
               {isConfluence && (
                 <span
                   className="font-mono text-[9px] text-amber-400"
-                  title="Most actively changing GEX level — high-conviction target"
+                  title="Most actively changing gamma strike (largest |Δ| in a 5m, 15m or 30m window)"
                 >
                   ⚡
                 </span>
@@ -266,9 +265,9 @@ interface TrendLadderProps {
 }
 
 /**
- * Three-row trend ladder: 5m / 15m / 30m, each row showing both floor and
- * ceiling Δ% averages. Replaces the legacy single 10m/30m display from
- * the MM era.
+ * Three-row trend ladder: 5m / 15m / 30m, each row showing the average Δ%
+ * below spot (F) and above spot (C). Replaces the legacy single 10m/30m
+ * display from the MM era.
  */
 function TrendLadder({ bias }: TrendLadderProps) {
   const rows: Array<{
@@ -284,7 +283,7 @@ function TrendLadder({ bias }: TrendLadderProps) {
   return (
     <div
       className="cursor-help"
-      title="Average % change in MM dollar gamma for strikes above (Ceil) and below (Floor) spot vs. the slot N min ago. Floor growing (green) = support hardening. Ceiling growing (amber) = resistance building. Ceiling shrinking (green) = overhead wall weakening. Three rows at GEXBot's priors windows (t-5 / t-15 / t-30 min)."
+      title="Average % change in GEXBot dollar gamma (taker-side sign) for the strikes more than 25 pts below spot (F) and above spot (C), vs. the value N min ago. Three rows at GEXBot's priors windows (t-5 / t-15 / t-30 min)."
     >
       <div
         className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
@@ -324,14 +323,14 @@ function TrendRow({ label, floor, ceil }: TrendRowProps) {
       <span
         className="font-mono text-[11px] font-semibold"
         style={{ color: floorTrendColor(floor) }}
-        title={`Floor (avg Δ${label} below spot)`}
+        title={`F: avg Δ${label} of the strikes below spot`}
       >
         F {fmtPct(floor)}
       </span>
       <span
         className="font-mono text-[11px] font-semibold"
         style={{ color: ceilTrendColor(ceil) }}
-        title={`Ceiling (avg Δ${label} above spot)`}
+        title={`C: avg Δ${label} of the strikes above spot`}
       >
         C {fmtPct(ceil)}
       </span>
