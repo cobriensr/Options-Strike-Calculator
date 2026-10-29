@@ -60,8 +60,11 @@ export const GAMMA_SIGN_CLASSES = {
 /** Hex forms of the two hues, for inline `style` colours. */
 export const GAMMA_SIGN_HEX = { long: '#38bdf8', short: '#a78bfa' } as const;
 
-/** Hue for a gamma value (zero counts as long, as in `classify`). */
-export function gammaSignHex(value: number): string {
+/**
+ * Hue for a taker-side Greek value: gamma, charm or vanna (positive =
+ * traders net long it at the strike). Zero counts as long, as in `classify`.
+ */
+export function takerSignHex(value: number): string {
   return value >= 0 ? GAMMA_SIGN_HEX.long : GAMMA_SIGN_HEX.short;
 }
 
@@ -72,7 +75,7 @@ export function gammaSignHex(value: number): string {
  */
 export function trendColor(value: number | null): string {
   if (value === null) return 'var(--color-muted)';
-  return gammaSignHex(value);
+  return takerSignHex(value);
 }
 
 /**

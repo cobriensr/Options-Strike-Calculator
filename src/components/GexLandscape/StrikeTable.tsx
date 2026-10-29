@@ -19,7 +19,7 @@
 
 import type { Ref } from 'react';
 import type { GexStrikeLevel } from './types';
-import { CLASS_META, CLS_TOOLTIP, gammaSignHex } from './constants';
+import { CLASS_META, CLS_TOOLTIP, takerSignHex, trendColor } from './constants';
 import {
   charmTooltip,
   classify,
@@ -162,7 +162,9 @@ export function StrikeTable({
               className={[
                 `border-edge/30 hover:bg-surface-alt/60 grid border-b transition-colors ${COLS}`,
                 isSpot
-                  ? 'border-l-2 border-l-sky-400/40 bg-sky-500/10'
+                  ? // Neutral ring, not a hue: sky means taker-long γ here, and
+                    // the row keeps its own gamma tint.
+                    `ring-edge-strong ring-1 ring-inset ${meta.rowBg}`
                   : isConfluence
                     ? isAboveSpot
                       ? 'border-l-2 border-l-green-400/60 bg-green-500/20'
@@ -177,12 +179,12 @@ export function StrikeTable({
               {/* Strike + ATM label (or signed offset for the Top 5 view) */}
               <div className="flex flex-col items-end justify-center px-3 py-1">
                 <span
-                  className={`font-mono text-[12px] font-semibold ${isSpot ? 'text-sky-300' : 'text-secondary'}`}
+                  className={`font-mono text-[12px] font-semibold ${isSpot ? 'text-primary' : 'text-secondary'}`}
                 >
                   {s.strike.toLocaleString()}
                 </span>
                 {isSpot && (
-                  <span className="font-mono text-[9px] font-bold text-sky-400/80">
+                  <span className="text-secondary font-mono text-[9px] font-bold">
                     ATM
                   </span>
                 )}
@@ -257,7 +259,7 @@ export function StrikeTable({
               <div className="flex items-center justify-end px-3 py-1.5">
                 <span
                   className="font-mono text-[11px]"
-                  style={{ color: gammaSignHex(s.netGamma) }}
+                  style={{ color: takerSignHex(s.netGamma) }}
                 >
                   {fmtGex(s.netGamma)}
                 </span>
@@ -267,12 +269,7 @@ export function StrikeTable({
               <div className="flex items-center justify-end px-3 py-1.5">
                 <span
                   className="cursor-help font-mono text-[11px]"
-                  style={{
-                    color:
-                      s.netCharm >= 0
-                        ? 'rgba(74,222,128,0.75)'
-                        : 'rgba(248,113,113,0.75)',
-                  }}
+                  style={{ color: takerSignHex(s.netCharm) }}
                   title={charmTooltip(s.netCharm)}
                 >
                   {fmtGex(s.netCharm)}
@@ -288,9 +285,7 @@ export function StrikeTable({
                     color:
                       s.netVanna === 0
                         ? 'var(--color-muted)'
-                        : s.netVanna > 0
-                          ? 'rgba(74,222,128,0.75)'
-                          : 'rgba(248,113,113,0.75)',
+                        : takerSignHex(s.netVanna),
                   }}
                 >
                   {s.netVanna === 0 ? '—' : fmtGex(s.netVanna)}
@@ -301,14 +296,7 @@ export function StrikeTable({
               <div className="flex items-center justify-end px-3 py-1.5">
                 <span
                   className="font-mono text-[11px]"
-                  style={{
-                    color:
-                      pct5m === null
-                        ? 'var(--color-muted)'
-                        : pct5m >= 0
-                          ? 'rgba(74,222,128,0.85)'
-                          : 'rgba(248,113,113,0.85)',
-                  }}
+                  style={{ color: trendColor(pct5m) }}
                 >
                   {fmtPct(pct5m)}
                 </span>
@@ -318,14 +306,7 @@ export function StrikeTable({
               <div className="flex items-center justify-end px-3 py-1.5">
                 <span
                   className="font-mono text-[11px]"
-                  style={{
-                    color:
-                      pct15m === null
-                        ? 'var(--color-muted)'
-                        : pct15m >= 0
-                          ? 'rgba(74,222,128,0.85)'
-                          : 'rgba(248,113,113,0.85)',
-                  }}
+                  style={{ color: trendColor(pct15m) }}
                 >
                   {fmtPct(pct15m)}
                 </span>
@@ -335,14 +316,7 @@ export function StrikeTable({
               <div className="flex items-center justify-end px-3 py-1.5">
                 <span
                   className="font-mono text-[11px]"
-                  style={{
-                    color:
-                      pct30m === null
-                        ? 'var(--color-muted)'
-                        : pct30m >= 0
-                          ? 'rgba(74,222,128,0.85)'
-                          : 'rgba(248,113,113,0.85)',
-                  }}
+                  style={{ color: trendColor(pct30m) }}
                 >
                   {fmtPct(pct30m)}
                 </span>
@@ -352,7 +326,7 @@ export function StrikeTable({
               <div className="flex items-center justify-center px-3 py-1.5">
                 {s.volReinforcement === 'reinforcing' && (
                   <span
-                    className="font-mono text-[12px] font-bold text-emerald-400"
+                    className="text-secondary font-mono text-[12px] font-bold"
                     title="Reinforcing — all three Δ% windows move with the netGamma sign; the strike's gamma is growing in that sign."
                     aria-label="Vol reinforcing"
                   >
@@ -361,7 +335,7 @@ export function StrikeTable({
                 )}
                 {s.volReinforcement === 'opposing' && (
                   <span
-                    className="font-mono text-[12px] font-bold text-red-400"
+                    className="text-secondary font-mono text-[12px] font-bold"
                     title="Opposing — all three Δ% windows move against the netGamma sign; the strike's gamma is shrinking toward zero."
                     aria-label="Vol opposing"
                   >

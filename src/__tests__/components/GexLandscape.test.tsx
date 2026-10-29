@@ -6,7 +6,12 @@ import type { CollapseSignal } from '../../components/collapse-context';
 import type { GexStrikeLevel } from '../../components/GexLandscape/types';
 import { dealerClaims } from '../helpers/dealer-claims';
 import { BiasPanel } from '../../components/GexLandscape/BiasPanel';
-import { GAMMA_SIGN_HEX } from '../../components/GexLandscape/constants';
+import {
+  CLASS_META,
+  GAMMA_SIGN_HEX,
+  trendColor,
+} from '../../components/GexLandscape/constants';
+import { StrikeTable } from '../../components/GexLandscape/StrikeTable';
 import type { BiasMetrics } from '../../components/GexLandscape/types';
 
 // ── Mocks ──────────────────────────────────────────────────────────────────────
@@ -713,5 +718,102 @@ describe('BiasPanel — sign-only colours, same rule above and below spot', () =
       }),
     );
     expect(screen.getByText('↑ DRIFTING UP')).toBeDefined();
+  });
+});
+
+// ── StrikeTable colours (fix round 2: U9–U11) ─────────────────────────
+
+describe('StrikeTable — Δ%, ATM row and reinforcement marks carry no gamma or safe/danger meaning', () => {
+  const SPOT = 5900;
+
+  function renderTable(rows: GexStrikeLevel[], pct: number) {
+    const map = new Map(rows.map((r) => [r.strike, pct] as const));
+    return render(
+      <StrikeTable
+        rows={rows}
+        currentPrice={SPOT}
+        spotStrike={rows.find((r) => r.strike === SPOT) ?? null}
+        maxChanged5mStrike={null}
+        maxChanged15mStrike={null}
+        maxChanged30mStrike={null}
+        gexDelta5mMap={map}
+        gexDelta15mMap={map}
+        gexDelta30mMap={map}
+        spotRowRef={{ current: null }}
+      />,
+    );
+  }
+
+  it('colours a Δ% cell exactly like the BiasPanel trend for the same value', () => {
+    const { unmount } = renderTable([makeStrike(5950, SPOT, -5e8, 1e6)], 2.5);
+    const tableColor = (screen.getAllByText('+2.5%')[0] as HTMLElement).style
+      .color;
+    unmount();
+    renderBias(makeBias({ floorTrend5m: 2.5, ceilingTrend5m: 2.5 }));
+    const panelColor = (screen.getByText('F +2.5%') as HTMLElement).style.color;
+    expect(tableColor).toBe(panelColor);
+    expect(tableColor).toBe(cssColor(trendColor(2.5)));
+  });
+
+  it('colours a negative Δ% with the short hue, not red', () => {
+    renderTable([makeStrike(5950, SPOT, 5e8, 1e6)], -3);
+    const cell = screen.getAllByText('−3.0%')[0] as HTMLElement;
+    expect(cell.style.color).toBe(cssColor(trendColor(-3)));
+  });
+
+  it('marks the ATM row with a neutral ring and keeps its gamma tint', () => {
+    renderTable([makeStrike(SPOT, SPOT, 5e8, 1e6)], 1);
+    const row = screen.getAllByRole('listitem')[0] as HTMLElement;
+    expect(row.className).toContain('ring-edge-strong');
+    // Long γ, positive charm → the sticky-pin row tint stays on the ATM row.
+    expect(row.className).toContain(CLASS_META['sticky-pin'].rowBg);
+    expect(row.className).not.toMatch(/bg-sky-500\/10|border-l-sky/);
+  });
+
+  it('draws ↑↑ / ↓↓ in neutral text, with the gamma growth stated in the title', () => {
+    renderTable(
+      [
+        makeStrike(5950, SPOT, 5e8, 1e6, 'reinforcing'),
+        makeStrike(5850, SPOT, 5e8, 1e6, 'opposing'),
+      ],
+      1,
+    );
+    const up = screen.getByLabelText('Vol reinforcing');
+    const down = screen.getByLabelText('Vol opposing');
+    for (const el of [up, down]) {
+      expect(el.className).not.toMatch(/emerald|green|red|amber/);
+    }
+    expect(up.title).toMatch(/gamma is growing/);
+    expect(down.title).toMatch(/gamma is shrinking toward zero/);
+  });
+
+  it('draws the BiasPanel ↑↑ / ↓↓ marks in neutral text too', () => {
+    renderBias(
+      makeBias({
+        upsideTargets: [
+          {
+            strike: 5950,
+            cls: 'sticky-pin',
+            netGamma: 5e8,
+            volReinforcement: 'reinforcing',
+          },
+        ],
+        downsideTargets: [
+          {
+            strike: 5850,
+            cls: 'sticky-pin',
+            netGamma: 5e8,
+            volReinforcement: 'opposing',
+          },
+        ],
+      }),
+    );
+    const up = screen.getByText('↑↑');
+    const down = screen.getByText('↓↓');
+    for (const el of [up, down]) {
+      expect(el.className).not.toMatch(/emerald|green|red|amber/);
+    }
+    expect(up.title).toMatch(/growing/);
+    expect(down.title).toMatch(/shrinking/);
   });
 });

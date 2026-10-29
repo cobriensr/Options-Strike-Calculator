@@ -18,7 +18,7 @@ import {
   GAMMA_SIGN_CLASSES,
   VERDICT_META,
   VERDICT_TOOLTIP,
-  gammaSignHex,
+  takerSignHex,
   trendColor,
 } from './constants';
 import { fmtGex, fmtPct } from './formatters';
@@ -213,22 +213,22 @@ function DriftTargetColumn({
               </span>
               <span
                 className="font-mono text-[9px]"
-                style={{ color: gammaSignHex(t.netGamma) }}
+                style={{ color: takerSignHex(t.netGamma) }}
               >
                 {fmtGex(t.netGamma)}
               </span>
               {t.volReinforcement === 'reinforcing' && (
                 <span
-                  className="font-mono text-[9px] text-emerald-400"
-                  title="Reinforcing — Δ5m, Δ15m and Δ30m all move with this strike's gamma sign"
+                  className="text-secondary font-mono text-[9px]"
+                  title="Reinforcing — Δ5m, Δ15m and Δ30m all move with this strike's gamma sign, so its gamma is growing in that sign"
                 >
                   ↑↑
                 </span>
               )}
               {t.volReinforcement === 'opposing' && (
                 <span
-                  className="font-mono text-[9px] text-red-400"
-                  title="Opposing — Δ5m, Δ15m and Δ30m all move against this strike's gamma sign"
+                  className="text-secondary font-mono text-[9px]"
+                  title="Opposing — Δ5m, Δ15m and Δ30m all move against this strike's gamma sign, so its gamma is shrinking toward zero"
                 >
                   ↓↓
                 </span>

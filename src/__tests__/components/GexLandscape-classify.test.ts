@@ -26,7 +26,7 @@ import {
   SPX_SPOT_BAND,
   VERDICT_META,
   VERDICT_TOOLTIP,
-  gammaSignHex,
+  takerSignHex,
   trendColor,
 } from '../../components/GexLandscape/constants';
 import type { GexClassification } from '../../components/GexLandscape/types';
@@ -298,10 +298,10 @@ describe('gamma-sign palette — two non-evaluative hues (owner decision D1 revi
     expect(`${m.badgeBg} ${m.badgeText} ${m.rowBg}`).not.toMatch(EVALUATIVE);
   });
 
-  it('colours a value by sign alone: gammaSignHex and trendColor', () => {
-    expect(gammaSignHex(5e8)).toBe(GAMMA_SIGN_HEX.long);
-    expect(gammaSignHex(0)).toBe(GAMMA_SIGN_HEX.long);
-    expect(gammaSignHex(-5e8)).toBe(GAMMA_SIGN_HEX.short);
+  it('colours a value by sign alone: takerSignHex and trendColor', () => {
+    expect(takerSignHex(5e8)).toBe(GAMMA_SIGN_HEX.long);
+    expect(takerSignHex(0)).toBe(GAMMA_SIGN_HEX.long);
+    expect(takerSignHex(-5e8)).toBe(GAMMA_SIGN_HEX.short);
     expect(trendColor(2.5)).toBe(GAMMA_SIGN_HEX.long);
     expect(trendColor(-2.5)).toBe(GAMMA_SIGN_HEX.short);
     expect(trendColor(null)).toBe('var(--color-muted)');
