@@ -1,0 +1,14 @@
+{
+  "venvPath": "ml",
+  "venv": ".venv",
+  "executionEnvironments": [
+    { "root": "ml", "extraPaths": ["ml/src"] },
+    { "root": "sidecar", "extraPaths": ["sidecar/src"] },
+    { "root": "uw-stream", "extraPaths": ["uw-stream/src"] },
+    { "root": "nightly", "extraPaths": ["nightly/src"] },
+    {
+      "root": "classifier",
+      "extraPaths": ["classifier/src", "classifier/_vendored_ml"]
+    }
+  ]
+}
