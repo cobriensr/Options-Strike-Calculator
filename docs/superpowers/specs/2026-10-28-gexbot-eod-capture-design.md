@@ -1,7 +1,26 @@
 # GEXBot EOD capture to R2 — design
 
-Date: 2026-10-28. Status: **approved by the owner 2026-10-28 22:45 CT**, to build now in parallel with the
-GEXBot refresh session ("yeah just be mindful of migration numbering and shared file edits").
+Date: 2026-10-28. Status: **live (2026-10-29)**. Approved by the owner 2026-10-28 22:45 CT, to build now in
+parallel with the GEXBot refresh session ("yeah just be mindful of migration numbering and shared file
+edits"). See "As built" below; where the text further down still describes the plan, "As built" and the
+corrected passages win.
+
+## As built (2026-10-29)
+
+- **Status: live.** The first production run, triggered by hand on 2026-10-29 at about 23:20 UTC, stored all
+  60 reports for 2026-10-29: 1.63 GB in 175 s, 0 failed, no entry-count warnings, no rejected tickers. The 60
+  reports rescued for 2026-10-28 were indexed from R2 (no re-download). DB and R2 counts and byte totals
+  match for both dates (60 rows each; 1.75 GB for 10-28, 1.63 GB for 10-29).
+- **Schedules** (`vercel.json`, `api/_lib/cron-schedules.ts`): capture `archive-gexbot-eod` at
+  `0 2,12,19,23 * * *`, audit `audit-gexbot-eod` at `45 19 * * 1-5`.
+- **Migration 195** creates `gexbot_eod_reports`.
+- **Code:** `api/_lib/gexbot-eod.ts`, `api/_lib/gexbot-eod-zip.ts`, `api/_lib/r2.ts`,
+  `api/cron/archive-gexbot-eod.ts`, `api/cron/audit-gexbot-eod.ts`.
+- **Where the build differs from the plan** is fixed in the sections below (audit, status rules, metadata
+  keys, size cap, timeouts, catch-up). The full list of build decisions (Rulings 1 to 20, each with its
+  reason, plus every live probe) is in the build ledger
+  `.superpowers/sdd/2026-10-28-gexbot-eod-capture/progress.md`. That folder is gitignored, so the ledger
+  exists only on the owner's machine.
 
 ## Goal
 
@@ -116,10 +135,15 @@ private R2 bucket, so a complete 2-second history of all GEXBot data builds up f
   `Content-Length`. It must parse as a ZIP (end-of-central-directory and every entry header). The
   `Content-Disposition` date, the date in every entry path and the R2 key date must all agree. The
   ticker in the entry paths must match the requested ticker. Record the entry count; warn (don't fail)
-  when it isn't 15 (all 60 had 15 on 10-28, so a different count means GEXBot changed the report).
+  when it isn't 15 (all 60 had 15 on 10-28, so a different count means GEXBot changed the report). As
+  built: one Sentry warning per run, fingerprint `['gexbot-eod','entry-count']`, when any report in the run
+  has another count.
 - **Idempotent.** A ticker whose report date already has a row is skipped. If the R2 object exists but the
   row doesn't (an upload whose DB write failed), write the row from the object instead of re-downloading.
-  Same key + same bytes means a re-upload is harmless.
+  Same key + same bytes means a re-upload is harmless. As built: a catch-up (a ticker whose report date
+  is no longer the one GEXBot serves) indexes from R2 before it tries any download. `indexExistingObject`
+  trusts an object only if its size matches and its `ticker`, `report-date` and `source` metadata agree
+  with the key; otherwise it refuses and the ticker is treated as failed.
 - **Several attempts per window** (my call), all running the same code: the first at least 30 minutes
   after 5 PM ET in both EDT and EST (so no earlier than 22:30 UTC), at least three more spread before the
   next close, and the last at least 1 hour before 5 PM ET in EDT (5 PM EDT is 21:00 UTC, so no later than
@@ -129,20 +153,33 @@ private R2 bucket, so a complete 2-second history of all GEXBot data builds up f
   and 19:00 is before 20:00).
 - **Missed-window check** is a separate audit cron, `audit-gexbot-eod`, at `45 19 * * 1-5`, which raises the
   alert. Its "last attempt" is simply the 19:00 UTC capture, so a capture run that crashes can't also
-  swallow the alert. It has two parts (my call, after the builder check):
-  - Any ticker from `/tickers` with no row for the report date GEXBot is currently serving (from
-    `Content-Disposition`) gets a Sentry error naming the tickers.
-  - The most recent completed NYSE session, per the trading calendar in `src/data/marketHours.ts`, must
-    have rows for every ticker. This catches a day GEXBot never published and a window our job missed
-    entirely; the error names the date and the tickers. (`src/` files imported by `api/` need `.js`
-    extensions on their relative imports; see CLAUDE.md.)
+  swallow the alert. As built it is one check, and it makes **no
+  report request** (a report request spends quota, and GEXBot serves only the latest report). It computes
+  `latestEligibleReportDate(now)` (the most recent completed NYSE session whose 5 PM ET has passed, per the
+  trading calendar in `src/data/marketHours.ts`) and compares `listStoredTickers(thatDate)` against the
+  `/tickers` list. Any ticker with no row gets a Sentry error naming the date and the tickers (fingerprint
+  `['gexbot-eod','missed-window']`). This catches a day GEXBot never published and a window our job missed
+  entirely. (`src/` files imported by `api/` need `.js` extensions on their relative imports; see
+  CLAUDE.md.) The audit also sends a Sentry warning, fingerprint `['gexbot-eod','rejected-tickers']`, when
+  the ticker charset rejects any listed ticker; a rejected ticker can never be stored, so it is not counted
+  as missing.
 - **Cron status is honest** (R4): `success` only when every ticker is stored or skipped. Status follows
   `deriveCronStatus(failed, attempted)` like the rest of the fleet: some tickers failed is `partial`, all
-  failed is `error`. Leftovers from the wall budget or a 429 make it at least `partial`. A lost day is
-  caught by the audit cron, not by the capture status. Report via `reportCronRun` with
-  per-run fields in `meta` (never new top-level Axiom keys). Add a Sentry cron monitor.
-- **New Vercel env vars:** the R2 ones the tape scripts already use (`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
-  `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`, `R2_BUCKET_FULLTAPE`). R7: read in code + `api/_lib/env.ts` +
+  failed is `error`. Leftovers from the wall budget or a 429 make it at least `partial`. So does
+  `notYetPublished` (the expected report wasn't served yet) and `caughtUp` (a catch-up ran, meaning an
+  earlier window missed that ticker). A lost day is caught by the audit cron, not by the capture status.
+  Report via `reportCronRun` with per-run fields in `meta` (never new top-level Axiom keys). As built, the
+  count keys are `storedCount` and `skippedCount` (not `stored` / `skipped`, which are allowlisted
+  top-level Axiom columns that another cron fills with booleans), plus a `caughtUp` counter. The Sentry
+  cron monitor for the capture cron uses `maxRuntime` 14 minutes, to cover the 800 s function limit.
+- **Ticker list guard.** A `/tickers` that answers non-OK, is malformed, is empty or lacks SPX throws
+  (`gexbot_tickers_failed`), in both crons, so a broken list can't turn into a quiet "nothing to do".
+- **Timeouts.** Each R2 call has a 120 s timeout per attempt and each DB call a 10 s timeout per attempt,
+  so a hung dependency can't eat the whole wall budget.
+- **New Vercel env vars:** the R2 ones the tape scripts already use (`R2_ACCESS_KEY_ID`,
+  `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`, `R2_BUCKET_FULLTAPE`). As built, `api/` does not require
+  `R2_ACCOUNT_ID`: only the local tape scripts read it, so it stays in the CLAUDE.md table and
+  `.env.example` marked as local-only. R7: read in code + `api/_lib/env.ts` +
   the CLAUDE.md table + `.env.example`, same commit. (`GEXBOT_API_KEY` is already in all of them on
   `origin/main`.)
 
@@ -152,8 +189,10 @@ private R2 bucket, so a complete 2-second history of all GEXBot data builds up f
   (dev-box median; 0.3 MB/s at worst),
   all 60 tickers in one run need several downloads in parallel, and a run that runs short of time leaves
   the rest for the next attempt.
-- Peak memory: the largest ZIP so far is 167.6 MB (SNDK), and sizes grow with a ticker's activity. Whether
-  to buffer or stream is the builder's call, but state the peak (concurrency × largest file, with headroom
+- Peak memory: the largest ZIP so far is 167.6 MB (SNDK), and sizes grow with a ticker's activity. As
+  built, a report is read into one buffer preallocated to `Content-Length`, and a `Content-Length` above
+  `MAX_EOD_REPORT_BYTES` (300 MiB) is refused. Whether
+  to buffer or stream was the builder's call, but state the peak (concurrency × largest file, with headroom
   for a file twice that size) and keep it well under the function's memory.
 - The live polling crons share the GEXBot account. EOD is its own endpoint, so it likely has its own quota
   pool (GEXBot docs: "quotas track independently per endpoint pool"), but treat any 429 as a stop signal
@@ -183,7 +222,7 @@ private R2 bucket, so a complete 2-second history of all GEXBot data builds up f
      from that folder: `python -I rescue.py YYYY-MM-DD` with the session date, after 5 PM ET and before
      5 PM ET on the next trading day. Then check its log for `FAIL` and `InsecureRequestWarning`. It
      stays local in `docs/tmp/gexbot-eod-rescue/` (gitignored) until the cron is live; it isn't committed.
-1. **Index table:** migration + `api/__tests__/db.test.ts`. (~30 min)
+1. **Index table:** migration 195 + `api/__tests__/db.test.ts`. (~30 min)
 2. **R2 client:** a small `api/_lib/` module (put / head), the dependency, env wiring (`env.ts`,
    `.env.example`, CLAUDE.md table), tests. (~1–2 h)
 3. **The cron:** handler + tests (auth guard, happy path, and each failure: 429, 5xx, timeout, truncated
@@ -233,4 +272,5 @@ schedule and the audit's "last attempt" are settled above.)
 - Report window: eligible 5 PM ET on the session date, served until 5 PM ET on the next trading day.
 - Last attempt: at least 1 hour before 5 PM ET in EDT, i.e. no later than 20:00 UTC.
 - Expected entries per report: 15 (warn on other counts).
+- Size cap per report: `MAX_EOD_REPORT_BYTES` = 300 MiB (about 1.8x the largest seen).
 - Largest file seen: 167.6 MB (SNDK, 10-28). Daily total seen: 1.74 GB (60 tickers).
