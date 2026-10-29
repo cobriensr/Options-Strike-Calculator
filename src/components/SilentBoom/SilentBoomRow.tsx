@@ -305,9 +305,14 @@ const triggerLegBadge = (
 ): { label: string; tooltip: string } | null => {
   const info = 'Information only: not part of the score.';
   if (alert.anchorLegKind === 'multi_leg') {
-    if (alert.spreadShape == null || alert.spreadLegs == null) return null;
+    // The exchange flag stands on its own; the shape and strikes are added
+    // only when the feed sent both.
+    const desc =
+      alert.spreadShape == null || alert.spreadLegs == null
+        ? ''
+        : ` · ${describeSpread(alert.spreadShape, alert.spreadLegs)}`;
     return {
-      label: `trigger print: spread leg · ${describeSpread(alert.spreadShape, alert.spreadLegs)}`,
+      label: `trigger print: spread leg${desc}`,
       tooltip: `The exchange flagged the print that triggered this alert as one leg of a multi-leg order. ${info}`,
     };
   }
@@ -427,7 +432,9 @@ function areRowsEqual(prev: SilentBoomRowProps, next: SilentBoomRowProps) {
   if (a.scoreTier !== b.scoreTier) return false;
   if (a.directionGated !== b.directionGated) return false;
   if (a.multiLegShare !== b.multiLegShare) return false;
-  if (triggerLegBadge(a)?.label !== triggerLegBadge(b)?.label) return false;
+  if (a.anchorLegKind !== b.anchorLegKind) return false;
+  if (a.spreadShape !== b.spreadShape) return false;
+  if (a.spreadLegs !== b.spreadLegs) return false;
   if (a.mktTideDiff !== b.mktTideDiff) return false;
   // GexBot snapshot is written once at insert time; comparing
   // capturedAt is enough to detect "the alert just got its GexBot

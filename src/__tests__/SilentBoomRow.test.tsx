@@ -1253,14 +1253,22 @@ describe('SilentBoomRow: trigger-print leg badge', () => {
     ['single', { anchorLegKind: 'single' as const }],
     ['NULL kind', { anchorLegKind: null }],
     ['absent fields', {}],
-    [
-      'a multi_leg anchor with no shape or legs',
-      { anchorLegKind: 'multi_leg' as const },
-    ],
   ])('shows nothing for %s', (_label, fields) => {
     renderRow(makeAlert(fields));
     expect(screen.queryByText(/trigger print:/)).not.toBeInTheDocument();
   });
+
+  it.each([
+    ['no shape or legs', {}],
+    ['legs but no shape', { spreadLegs: LEGS }],
+    ['a shape but no legs', { spreadShape: 'vertical' as const }],
+  ])(
+    'shows the bare spread leg flag for a multi_leg anchor with %s',
+    (_label, extra) => {
+      renderRow(makeAlert({ anchorLegKind: 'multi_leg', ...extra }));
+      expect(screen.getByText('trigger print: spread leg')).toBeInTheDocument();
+    },
+  );
 
   it('renders alongside the unchanged Spread-Confirmed badge', () => {
     renderRow(
