@@ -5408,4 +5408,29 @@ export const MIGRATIONS: Migration[] = [
       sql`ALTER TABLE periscope_snapshots ADD COLUMN IF NOT EXISTS source TEXT`,
     ],
   },
+  {
+    id: 195,
+    description:
+      'Create gexbot_eod_reports index of GEXBot EOD ZIPs in R2 (spec: docs/superpowers/specs/2026-10-28-gexbot-eod-capture-design.md)',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS gexbot_eod_reports (
+          id            BIGSERIAL PRIMARY KEY,
+          ticker        TEXT NOT NULL,
+          report_date   DATE NOT NULL,
+          r2_key        TEXT NOT NULL,
+          bytes         BIGINT NOT NULL,
+          sha256        TEXT NOT NULL,
+          entry_count   INT NOT NULL,
+          source        TEXT NOT NULL,
+          fetched_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+          UNIQUE (ticker, report_date)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_gexbot_eod_reports_report_date
+          ON gexbot_eod_reports (report_date)
+      `,
+    ],
+  },
 ];
