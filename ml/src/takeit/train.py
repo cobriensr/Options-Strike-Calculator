@@ -78,11 +78,9 @@ NON_FEATURE_COLS: Final = {
     # `wave2_status` is determined by a follow-up event 0-60 min AFTER
     # the alert; including it as a feature would leak the future. It's
     # available for a separate meta-classifier (per spec). The detected_at
-    # timestamp and the pattern_group_id (hash, not a feature) join the
-    # exclude list for the same reason.
+    # timestamp joins the exclude list for the same reason.
     "wave2_status",
     "wave2_detected_at",
-    "pattern_group_id",
     # GexBot context (migrations #180 / #181). `gex_captured_at` is a
     # TIMESTAMPTZ and would crash X.astype(float). `gex_zero_gamma` and
     # `gex_spot` are absolute prices that don't generalize across the

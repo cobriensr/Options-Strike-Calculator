@@ -70,9 +70,8 @@ interface AuditResult {
   }>;
   /**
    * Meta-detectors Phase 6: surfacing of new feature coverage. Informational
-   * only — no scoring impact. Helps detect dead pipes (e.g. multileg
-   * classifier silently returning NULL for 90% of fires) before they cause a
-   * silent AUC regression at retrain time.
+   * only — no scoring impact. Reports the wave2 status mix of recent fires so
+   * a stalled wave2 detector shows up before it skews a retrain.
    */
   feature_coverage: {
     /** Counts of wave2_status buckets (null = still in flight or pre-Phase 4). */

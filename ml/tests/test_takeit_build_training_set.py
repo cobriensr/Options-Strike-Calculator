@@ -876,7 +876,12 @@ def test_cross_asset_stress_uses_vix_intraday_change_when_present() -> None:
 # ── Phase 2 / Phase 4 multileg + wave2 columns flow through unchanged ────────
 
 
-RETIRED_CLASSIFIER_COLS = ("inferred_structure", "is_isolated_leg", "match_confidence")
+RETIRED_CLASSIFIER_COLS = (
+    "inferred_structure",
+    "is_isolated_leg",
+    "match_confidence",
+    "pattern_group_id",
+)
 
 
 @pytest.mark.parametrize("sql", [LOTTERY_SQL, SILENTBOOM_SQL])
@@ -895,7 +900,7 @@ def test_trainer_has_no_classifier_feature_wiring() -> None:
 
 
 def test_wave2_columns_pass_through_unchanged() -> None:
-    """The SQL SELECT pulls pattern_group_id, wave2_status, wave2_detected_at.
+    """The SQL SELECT pulls wave2_status and wave2_detected_at.
     derive_common_features must NOT mutate them — they ride along into the
     output DataFrame so train.py can exclude them (see NON_FEATURE_COLS).
     """
@@ -906,7 +911,6 @@ def test_wave2_columns_pass_through_unchanged() -> None:
                  underlying="SPY", option_type="P", strike=500, spot=500),
     ]
     df = pd.DataFrame(rows)
-    df["pattern_group_id"] = ["hash_abc", None]
     df["wave2_status"] = ["confirmed", "fizzled"]
     df["wave2_detected_at"] = [pd.Timestamp("2026-04-01 14:42:00+00:00"), None]
     out = derive_common_features(df, "spot_at_first", "trigger_ask_pct")
@@ -914,7 +918,6 @@ def test_wave2_columns_pass_through_unchanged() -> None:
     # in object columns; both forms mean "unclassified" which is what XGBoost
     # treats as missing.
     assert list(out["wave2_status"]) == ["confirmed", "fizzled"]
-    assert list(out["pattern_group_id"])[0] == "hash_abc"
 
 
 def test_no_realized_columns_leak_into_feature_set() -> None:

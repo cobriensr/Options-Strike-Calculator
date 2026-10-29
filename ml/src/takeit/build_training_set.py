@@ -87,7 +87,6 @@ LOTTERY_SQL: Final = """
         gex_one_gexoflow, gex_zcvr, gex_zero_gamma, gex_spot,
         gex_captured_at,
         score, direction_gated,
-        pattern_group_id,
         wave2_status, wave2_detected_at,
         peak_ceiling_pct
     FROM lottery_finder_fires
@@ -105,7 +104,6 @@ SILENTBOOM_SQL: Final = """
         spx_spot_gamma_oi,
         multi_leg_share, underlying_price_at_spike,
         score, score_tier, direction_gated,
-        pattern_group_id,
         wave2_status, wave2_detected_at,
         gex_one_cvroflow, gex_net_put_dex, gex_one_dexoflow,
         gex_one_gexoflow, gex_zcvr, gex_zero_gamma, gex_spot,
