@@ -6,7 +6,7 @@
  * fetch-futures-session-stats.test.ts mocks the DB and only sees SQL
  * text. This file runs the handler end to end against pglite (real
  * Postgres in WASM): futures_session_stats comes from the REAL migration
- * #197, and the handler's own unnest upsert writes to it. It checks what
+ * #198, and the handler's own unnest upsert writes to it. It checks what
  * the mocks can't: decimal strings land at NUMERIC(18,8) without a float
  * round trip, NULLs inside the unnest arrays store as NULL, and a second
  * run for the same settlement date updates the row in place.
@@ -174,7 +174,7 @@ describe('fetch-futures-session-stats upsert (pglite)', () => {
     vi.clearAllMocks();
     mockCronGuard.mockReturnValue({ apiKey: 'k', today: '2026-10-29' });
     pg.db = new PGlite();
-    await applyMigration(pg.db, 197);
+    await applyMigration(pg.db, 198);
   });
 
   afterEach(async () => {
