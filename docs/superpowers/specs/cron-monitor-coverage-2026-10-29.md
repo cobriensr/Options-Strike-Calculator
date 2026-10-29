@@ -1,0 +1,100 @@
+---
+status: Plan
+date: 2026-10-29
+---
+
+# Cron monitor coverage: every Vercel cron gets a Sentry monitor or a written exemption
+
+## Goal
+
+Give each of the nine unmonitored `/api/cron/*` jobs a Sentry cron monitor, exempt `/api/health` in writing, and add a test that fails when a `vercel.json` cron has neither. Today a cron with no `SCHEDULE_MAP` entry sends no check-ins, and nothing notices when it stops. Scope approved by the owner on 2026-10-29.
+
+## How monitoring works today
+
+- `SCHEDULE_MAP` in `api/_lib/cron-schedules.ts` drives Sentry cron monitors. The key is the job name: the `vercel.json` path minus `/api/cron/`.
+- `withCronInstrumentation` and `withCronCheckin` (`api/_lib/cron-instrumentation.ts`) POST check-ins straight to Sentry's Crons ingest endpoint and send `monitor_config` on a run's first `in_progress`. When the job has no entry, they send nothing. This fail-open is deliberate and pinned by tests in `cron-instrumentation.test.ts`; it stays.
+- Before this change, `api/__tests__/cron-schedules.test.ts` looped only over the `SCHEDULE_MAP` keys, so a `vercel.json` cron with no entry passed.
+
+## The gap on origin/main (2026-10-29, `1539b764`)
+
+Ten `vercel.json` cron paths had no entry. Each schedule below was copied verbatim from `vercel.json`.
+
+| Job                           | vercel.json schedule (UTC) | Wrapper before this change                                 | maxDuration      | Monitor added                    |
+| ----------------------------- | -------------------------- | ---------------------------------------------------------- | ---------------- | -------------------------------- |
+| check-gamma-setup-drift       | `45 21 * * 5`              | withCronInstrumentation, `marketHours:false`               | 30 s             | default runtime, threshold 1     |
+| backfill-gamma-setup-outcomes | `30 21 * * 1-5`            | withCronInstrumentation, `marketHours:false`               | 120 s            | default runtime, threshold 1     |
+| detect-gamma-setups           | `* 13-21 * * 1-5`          | withCronInstrumentation, `requireApiKey:false`             | 30 s             | default runtime, threshold 3     |
+| takeit-fill-shap              | `*/2 13-21 * * 1-5`        | withCronInstrumentation                                    | 60 s             | default runtime, threshold 3     |
+| wave2-confirmation            | `*/5 13-21 * * 1-5`        | withCronInstrumentation, `requireApiKey:false`             | 60 s             | default runtime, threshold 3     |
+| audit-takeit-calibration      | `0 11 * * 1`               | withCronInstrumentation, `marketHours:false`               | 60 s             | default runtime, threshold 1     |
+| audit-takeit-health           | `30 23 * * *`              | withCronCheckin                                            | platform default | default runtime, threshold 1     |
+| audit-migration-drift         | `0 12 * * *`               | withCronCheckin                                            | platform default | default runtime, threshold 1     |
+| cleanup-ws-gex-strike-expiry  | `0 12 * * 1-5`             | none: raw `cronGuard`, no `reportCronRun`, so no Axiom row | 300 s            | LONG_RUNNER runtime, threshold 1 |
+| `/api/health`                 | `25 13 * * 1-5`            | none (public endpoint)                                     | —                | exempt (`UNMONITORED_CRONS`)     |
+
+"Default runtime" is `DEFAULT_MAX_RUNTIME` (5 min), "LONG_RUNNER" is `LONG_RUNNER_MAX_RUNTIME` (10 min), and every entry uses `DEFAULT_MARGIN` (5 min). "Threshold 3" is `HIGH_FREQ_FAILURE_THRESHOLD`.
+
+### Why these values
+
+- **UTC, verbatim.** All nine use the `vercel.json` crontab as-is, with no `timezone`. Each tick Vercel fires checks in, either as a live run or as the wrapper's paired skip check-in when the market-hours gate is closed (`DST_TAIL_NOTE`, Layer 1). So the monitor never expects a tick that won't arrive, and the ET-local anchoring (Layer 2) isn't needed. That matches `detect-lottery-fires`, `detect-silent-boom` and `check-cone-breach`.
+- **Threshold 3 for the market-hours jobs.** detect-gamma-setups (every minute), takeit-fill-shap (every 2 min) and wave2-confirmation (every 5 min) take the high-frequency policy their siblings use, so a single dropped completion check-in doesn't page.
+- **Threshold 1 for everything else.** These run daily or weekly, so one miss is a real signal.
+- **cleanup-ws-gex-strike-expiry: LONG_RUNNER, threshold 1.** maxDuration is 300 s, so a run that uses its whole budget needs the 10-min runtime (same rule as `archive-gexbot` and `rollup-ws-gex-strike-expiry`). It runs once a weekday, so a failed sweep isn't retried until the next day. `cleanup-ws-option-trades` uses threshold 2 only because it runs hourly and self-heals.
+- **No maxDuration (the two `withCronCheckin` audits).** Both finish in seconds, so `DEFAULT_MAX_RUNTIME` applies, the same as `audit-gexbot-health`.
+
+## Owner decisions (2026-10-29)
+
+1. **Monitor all nine jobs**, including the three that run during market hours: detect-gamma-setups, takeit-fill-shap and wave2-confirmation.
+2. **`/api/health` stays exempt.** It returns 503 whenever any dependency is degraded (`api/health.ts`: postgres, redis or the Schwab token), so an expired Schwab token would page the owner at the open. `docs/superpowers/specs/backend-audit-fixes-2026-06-07.md` ("Deliberately NOT changing") had already left it alone, but gave a different reason: "public endpoint anyway; low value". The reason recorded here is the 503 behaviour.
+3. **Reversal: the three audit-\* crons get monitors.** `docs/superpowers/specs/migration-drift-audit-cron-2026-05-29.md` (Schedule section) left `audit-migration-drift` out of `SCHEDULE_MAP` only "for consistency" with the sibling `audit-takeit-*` crons, which were also unmonitored. This spec reverses that for all three. Why: the audits are the safety net. If a weekly or daily audit silently stops running, it raises no alert, and nothing else checks it. A missed check-in is the only signal for that failure.
+
+## Phases
+
+Both phases ship in one push; the main session pushes after the 15:00 CT close.
+
+### Phase 1: entries, enforcement test, comments (~1 h)
+
+- `SCHEDULE_MAP` entries for all nine jobs. The cleanup-ws-gex-strike-expiry entry does nothing until Phase 2 wraps its handler, because nothing reads it until then.
+- A reverse-direction test in `cron-schedules.test.ts`:
+  - It reads raw `vercel.json` `crons[].path`, deduplicated, so paths outside `/api/cron/` count too.
+  - Every path needs either a `SCHEDULE_MAP` entry (`/api/cron/<job>` → `<job>`) or an entry in the inline `UNMONITORED_CRONS: Record<string, string>`, keyed by full path, whose value is a reason citing a spec.
+  - For each exemption, the test also asserts that it is still in `vercel.json`, that it has no `SCHEDULE_MAP` entry, and that its reason is non-empty and cites a `docs/superpowers/specs/*.md` file.
+  - `/api/health` is the only exemption.
+- Fix the stale `cron-schedules.ts` header, which said the map is fed to `Sentry.withMonitor()` / `captureCheckIn()`. Check-ins have been direct HTTP for a while.
+- Fix the `cron-instrumentation.ts` comment that said `cron-schedules.test.ts` "catches stale entries the other direction". It now names both directions accurately.
+
+### Phase 2: wrap the cleanup job, fix stale headers (~1 h)
+
+- `api/cron/cleanup-ws-gex-strike-expiry.ts`:
+  - Wrap it in `withCronCheckin`, following `api/cron/cleanup-ws-option-trades.ts`.
+  - Lower `WALL_BUDGET_MS` from 295 000 to 280 000. The in-progress and completion check-ins (each up to 5 s) then fit inside maxDuration 300 alongside the last batch.
+  - No `reportCronRun`: the sibling `cleanup-ws-option-trades.ts` doesn't call it either.
+- `api/__tests__/cleanup-ws-gex-strike-expiry.test.ts`: drive the real wrapper with a stubbed `fetch`. Assert the slug, the `monitor_config` schedule, `in_progress → ok` on success, and `in_progress → error` when a DELETE rejects (R4). Also assert that an unauthenticated request sends no check-ins.
+- Headers that disagree with `vercel.json`:
+  - `api/cron/backfill-gamma-setup-outcomes.ts` says 20:30 UTC; vercel.json says 21:30.
+  - `api/cron/check-gamma-setup-drift.ts` says Friday 21:30 UTC; vercel.json says 21:45.
+
+## Files
+
+| Phase | File                                                                                                 |
+| ----- | ---------------------------------------------------------------------------------------------------- |
+| 1     | `docs/superpowers/specs/cron-monitor-coverage-2026-10-29.md` (this file)                             |
+| 1     | `api/_lib/cron-schedules.ts`                                                                         |
+| 1     | `api/__tests__/cron-schedules.test.ts`                                                               |
+| 1     | `api/_lib/cron-instrumentation.ts` (comment only)                                                    |
+| 2     | `api/cron/cleanup-ws-gex-strike-expiry.ts`                                                           |
+| 2     | `api/__tests__/cleanup-ws-gex-strike-expiry.test.ts`                                                 |
+| 2     | `api/cron/backfill-gamma-setup-outcomes.ts`, `api/cron/check-gamma-setup-drift.ts` (header comments) |
+
+## Data dependencies
+
+None. No tables, migrations, env vars or external APIs. The new monitors are created in Sentry by the first `in_progress` check-in that carries `monitor_config` (an upsert), and they read the existing `SENTRY_DSN`.
+
+## Thresholds and constants
+
+- `DEFAULT_MARGIN` 5 min, `DEFAULT_MAX_RUNTIME` 5 min, `LONG_RUNNER_MAX_RUNTIME` 10 min, `HIGH_FREQ_FAILURE_THRESHOLD` 3, all existing.
+- cleanup-ws-gex-strike-expiry `WALL_BUDGET_MS`: 295 000 → 280 000 ms.
+
+## Open questions
+
+- None blocking. Possible follow-up: neither `cleanup-ws-*` cron calls `reportCronRun`, so neither leaves an Axiom row. That matches the sibling and is out of scope here.

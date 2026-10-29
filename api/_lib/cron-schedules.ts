@@ -1,16 +1,21 @@
 /**
- * Cron schedule map → fed to Sentry.withMonitor() inside
- * withCronInstrumentation AND to Sentry.captureCheckIn() inside
- * withCronCheckin (the lighter wrap for crons with non-standard shapes).
- * Keep entries in sync with vercel.json.
+ * Cron schedule map → the Sentry cron monitor config that both cron
+ * wrappers, withCronInstrumentation and withCronCheckin (the lighter wrap
+ * for crons with non-standard shapes), send as `monitor_config` on a run's
+ * first `in_progress` check-in. Check-ins are direct HTTP POSTs to Sentry's
+ * Crons ingest endpoint (sentryCheckInDirect in cron-instrumentation.ts),
+ * not Sentry.withMonitor() or captureCheckIn(). A job with no entry here
+ * sends no check-ins at all. Keep entries in sync with vercel.json.
  *
  * Why a separate file: the schedule strings live in vercel.json (the
  * canonical source) but both wrappers need them at request time without
  * parsing JSON on the cold path. Hand-mirroring the values is the
- * cheapest correct option — drift is caught by the unit test that
- * cross-checks each entry against the file at test time.
+ * cheapest correct option. cron-schedules.test.ts checks both directions:
+ * each entry against vercel.json, and each vercel.json cron for an entry
+ * here or a written exemption (UNMONITORED_CRONS in that test).
  *
  * Spec: docs/superpowers/specs/sentry-monitoring-2026-05-07.md
+ *       docs/superpowers/specs/cron-monitor-coverage-2026-10-29.md
  */
 
 export interface CronMonitorConfig {
@@ -148,12 +153,30 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: LONG_RUNNER_MAX_RUNTIME,
   },
+  'audit-takeit-calibration': {
+    // Weekly Take-It calibration audit, Monday 11:00 UTC (before the
+    // open; the handler sets marketHours: false). Audits are the safety
+    // net: if one silently stops running, nothing else notices, so every
+    // audit-* cron carries a monitor. Weekly → default failure threshold
+    // of 1. docs/superpowers/specs/cron-monitor-coverage-2026-10-29.md.
+    schedule: '0 11 * * 1',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
   'auto-prefill-premarket': {
     // Dual-slot 13:30 + 14:30 UTC (mirrors compute-es-overnight). The
     // handler's isAfterCashOpen gate skips the early CST slot (07:30 CT)
     // so the post-open slot does the work; the redundant CDT slot is an
     // idempotent re-run. See the header comment in the handler.
     schedule: '30 13,14 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
+  'backfill-gamma-setup-outcomes': {
+    // Daily after the close: fills the forward returns on the last two
+    // trading days' ws_gamma_setup_fires rows. maxDuration is 120 s, inside
+    // the default max runtime. Daily → default failure threshold of 1.
+    schedule: '30 21 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
@@ -215,6 +238,13 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
+  'check-gamma-setup-drift': {
+    // Weekly, Friday 21:45 UTC, 15 min after backfill-gamma-setup-outcomes
+    // fills the week's returns. Weekly → default failure threshold of 1.
+    schedule: '45 21 * * 5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
   'cleanup-gexbot': {
     schedule: '15 12 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
@@ -232,6 +262,17 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
   },
   'compute-zero-gamma': {
     schedule: '4,9,14,19,24,29,34,39,44,49,54,59 13-21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+    failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
+  },
+  'detect-gamma-setups': {
+    // Every minute in the 13-21 UTC window, same cadence and policy as
+    // detect-lottery-fires. UTC verbatim is safe: every tick vercel.json
+    // fires checks in, either live or via the wrapper's paired skip
+    // check-in outside the market-hours gate (DST_TAIL_NOTE, Layer 1).
+    // High-freq → relaxed failure threshold.
+    schedule: '* 13-21 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
@@ -484,6 +525,23 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
+  'takeit-fill-shap': {
+    // Every 2 min in the 13-21 UTC window: SHAP top features for scored
+    // Lottery and Silent Boom alerts. Skipped ticks check in via the
+    // wrapper (see detect-gamma-setups). High-freq → relaxed threshold.
+    schedule: '*/2 13-21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+    failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
+  },
+  'wave2-confirmation': {
+    // Every 5 min in the 13-21 UTC window: labels wave-2 confirmation on
+    // recent Lottery and Silent Boom fires. High-freq → relaxed threshold.
+    schedule: '*/5 13-21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+    failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
+  },
 
   // ── withCronCheckin (lighter wrap, original handler shape preserved) ──
 
@@ -496,6 +554,22 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
+  'audit-migration-drift': {
+    // Daily 12:00 UTC, every day, ahead of the 13:00 UTC market-data
+    // crons. Safety-net audit, monitored for the reason given at
+    // audit-takeit-calibration. Daily → default failure threshold of 1.
+    schedule: '0 12 * * *',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
+  'audit-takeit-health': {
+    // Daily 23:30 UTC, every day, after EOD settles. Safety-net audit,
+    // monitored for the reason given at audit-takeit-calibration. Daily →
+    // default failure threshold of 1.
+    schedule: '30 23 * * *',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
   'backfill-futures-gaps': {
     schedule: '0 6 * * 1-6',
     checkinMargin: DEFAULT_MARGIN,
@@ -503,6 +577,15 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
   },
   'backup-tables': {
     schedule: '0 5 * * 0',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: LONG_RUNNER_MAX_RUNTIME,
+  },
+  'cleanup-ws-gex-strike-expiry': {
+    // Daily pre-market retention sweep, 12:00 UTC weekdays. maxDuration is
+    // 300 s → long runner. It runs once a weekday, so a failed sweep isn't
+    // retried until the next one: default failure threshold of 1 (unlike
+    // cleanup-ws-option-trades, which runs hourly and self-heals).
+    schedule: '0 12 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: LONG_RUNNER_MAX_RUNTIME,
   },

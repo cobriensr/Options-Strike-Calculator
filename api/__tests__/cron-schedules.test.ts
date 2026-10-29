@@ -1,11 +1,17 @@
 // @vitest-environment node
 
 /**
- * Drift guard: every entry in SCHEDULE_MAP must match vercel.json's
- * crontab string for the same job. Catches stale schedules before they
- * ship a wrong-cadence Sentry monitor.
+ * Drift guard, both directions:
+ *   - SCHEDULE_MAP → vercel.json: every entry must match vercel.json's
+ *     crontab string for the same job. Catches stale schedules before they
+ *     ship a wrong-cadence Sentry monitor.
+ *   - vercel.json → SCHEDULE_MAP: every cron path in vercel.json must have a
+ *     SCHEDULE_MAP entry or a written exemption in UNMONITORED_CRONS. The
+ *     wrappers send no check-ins for a job with no entry, by design, so
+ *     without this check a new cron would run unmonitored and nothing would
+ *     fail.
  *
- * Two reconciliation modes:
+ * Two reconciliation modes for the first direction:
  *   - UTC entries (no `timezone`): the monitor crontab MUST equal
  *     vercel.json verbatim (Vercel's cron timezone is UTC).
  *   - ET-anchored entries (`timezone: 'America/New_York'`, see
@@ -18,6 +24,7 @@
  *
  * Spec: docs/superpowers/specs/sentry-monitoring-2026-05-07.md
  *       docs/superpowers/specs/sentry-railway-triage-fixes-2026-06-08.md
+ *       docs/superpowers/specs/cron-monitor-coverage-2026-10-29.md
  */
 
 import { describe, it, expect } from 'vitest';
@@ -45,6 +52,35 @@ function loadVercelCrons(): Map<string, string[]> {
     if (m?.[1]) map.set(m[1], [...(map.get(m[1]) ?? []), c.schedule]);
   }
   return map;
+}
+
+/**
+ * Every distinct cron path in vercel.json, raw. Unlike loadVercelCrons this
+ * keeps paths outside /api/cron/ (e.g. /api/health), so they need an entry or
+ * an exemption too.
+ */
+function loadVercelCronPaths(): string[] {
+  const path = resolve(process.cwd(), 'vercel.json');
+  const cfg = JSON.parse(readFileSync(path, 'utf8')) as VercelConfig;
+  return [...new Set((cfg.crons ?? []).map((c) => c.path))];
+}
+
+/**
+ * vercel.json crons that deliberately run with no Sentry cron monitor, keyed
+ * by full path. The value is the reason and must cite the spec that decided
+ * it. Every other vercel.json cron needs a SCHEDULE_MAP entry.
+ */
+const UNMONITORED_CRONS: Record<string, string> = {
+  '/api/health':
+    'Public health probe, not a job: it answers 503 whenever Postgres, Redis ' +
+    'or the Schwab token is unhealthy, so a monitor would page the owner at ' +
+    'the open on an expired Schwab token. ' +
+    'docs/superpowers/specs/cron-monitor-coverage-2026-10-29.md',
+};
+
+/** The SCHEDULE_MAP key for an /api/cron/<job> path, or null for any other path. */
+function scheduleKey(cronPath: string): string | null {
+  return /^\/api\/cron\/([^/]+)$/.exec(cronPath)?.[1] ?? null;
 }
 
 interface ParsedCron {
@@ -367,4 +403,45 @@ describe('cron-schedules SCHEDULE_MAP', () => {
       findUnservedEtTicks('* 10-16 * * 1-5', ['* 14-20 * * 1-5']).length,
     ).toBeGreaterThan(0);
   });
+});
+
+describe('vercel.json crons → SCHEDULE_MAP coverage', () => {
+  const cronPaths = loadVercelCronPaths();
+
+  it('reads cron paths outside /api/cron/ too', () => {
+    // Guards the loader: if it dropped non-/api/cron paths the way
+    // loadVercelCrons does, /api/health would vanish and the coverage
+    // check below would pass for the wrong reason.
+    expect(cronPaths).toContain('/api/health');
+  });
+
+  it('every vercel.json cron has a SCHEDULE_MAP entry or a written exemption', () => {
+    const uncovered = cronPaths.filter((cronPath) => {
+      if (UNMONITORED_CRONS[cronPath] !== undefined) return false;
+      const key = scheduleKey(cronPath);
+      return key == null || SCHEDULE_MAP[key] === undefined;
+    });
+    expect(
+      uncovered,
+      'vercel.json crons with no SCHEDULE_MAP entry and no UNMONITORED_CRONS exemption (they run with no Sentry monitor)',
+    ).toEqual([]);
+  });
+
+  it.each(Object.entries(UNMONITORED_CRONS))(
+    'exemption %s is still a vercel.json cron, has no SCHEDULE_MAP entry, and cites its spec',
+    (cronPath, reason) => {
+      expect(cronPaths, `${cronPath} is no longer in vercel.json`).toContain(
+        cronPath,
+      );
+      const key = scheduleKey(cronPath);
+      expect(
+        key == null ? undefined : SCHEDULE_MAP[key],
+        `${cronPath} is exempt but also has a SCHEDULE_MAP entry`,
+      ).toBeUndefined();
+      expect(reason.trim(), `${cronPath}: empty reason`).not.toBe('');
+      expect(reason, `${cronPath}: reason must cite its spec`).toMatch(
+        /docs\/superpowers\/specs\/\S+\.md/,
+      );
+    },
+  );
 });

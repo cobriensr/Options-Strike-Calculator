@@ -761,12 +761,16 @@ export function withCronInstrumentation(
     // isolated at the runtime level — losing the SDK-level wrap is a
     // no-op for breadcrumbs/tags in this codebase.
     //
-    // Jobs without a SCHEDULE_MAP entry run un-monitored (handler still
-    // runs, reportCronRun still emits Axiom events — we just lose the
-    // Sentry missed-checkin signal for that one invocation). This keeps
-    // the wrapper safe for new crons added before the schedule map is
-    // updated; cron-schedules.test.ts catches stale entries the other
-    // direction. See docs/superpowers/specs/sentry-monitoring-2026-05-07.md.
+    // Jobs without a SCHEDULE_MAP entry run un-monitored: the handler
+    // still runs and reportCronRun still emits Axiom events, but no
+    // check-in is sent on any run, so Sentry has no missed-checkin signal
+    // for the job. That fail-open is deliberate: a missing entry must never
+    // break a cron. The gap is caught at test time instead:
+    // cron-schedules.test.ts checks each SCHEDULE_MAP entry against
+    // vercel.json, and fails when a vercel.json cron has neither an entry
+    // nor a written exemption (UNMONITORED_CRONS). See
+    // docs/superpowers/specs/sentry-monitoring-2026-05-07.md and
+    // docs/superpowers/specs/cron-monitor-coverage-2026-10-29.md.
     const monitorConfig = SCHEDULE_MAP[jobName];
 
     const checkInId = monitorConfig
