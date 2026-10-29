@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import type {
   LotteryFire,
   LotteryFireMacro,
@@ -1953,5 +1953,231 @@ describe('LotteryRow: first-fire header anchor + reignites expander', () => {
     expect(list).not.toHaveTextContent(`${ctTime(firstFireTimeCt)} CT`);
     // Exactly one reignite row.
     expect(list.querySelectorAll('li')).toHaveLength(1);
+  });
+});
+
+// ============================================================
+// SPREAD-LEG BADGE + REIGNITE MARKERS (spec
+// 2026-10-28-classifier-replacement-design.md, "Badge"). Information
+// only: nothing here dims, filters or reorders the row.
+// ============================================================
+
+describe('LotteryRow: spread-leg badge', () => {
+  const LEGS_726_727 = [
+    {
+      optionType: 'C' as const,
+      strike: 726,
+      expiry: '2026-05-08',
+      size: 40,
+      price: 1.15,
+      tradeCode: 'mlet',
+    },
+    {
+      optionType: 'C' as const,
+      strike: 727,
+      expiry: '2026-05-08',
+      size: 40,
+      price: 0.7,
+      tradeCode: 'mlet',
+    },
+  ];
+  const BADGE_TEXT = /spread leg|stock-tied leg/;
+
+  const renderRow = (overrides: Partial<LotteryFire>) =>
+    render(
+      <LotteryRow
+        fire={makeFire(overrides)}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+
+  it('k of n: "spread leg on 2 of 5 fires · call vertical 726/727"', () => {
+    renderRow({
+      fireCount: 5,
+      anchorLegKind: 'single',
+      spreadLeg: {
+        fires: 2,
+        totalFires: 5,
+        shape: 'vertical',
+        legs: LEGS_726_727,
+      },
+    });
+    const badge = screen.getByText(
+      'spread leg on 2 of 5 fires · call vertical 726/727',
+    );
+    expect(badge).toBeInTheDocument();
+    expect(badge.getAttribute('title')).toMatch(/information only/i);
+  });
+
+  it('k = n: "spread leg on all 3 fires · …"', () => {
+    renderRow({
+      fireCount: 3,
+      anchorLegKind: 'multi_leg',
+      spreadLeg: {
+        fires: 3,
+        totalFires: 3,
+        shape: 'vertical',
+        legs: LEGS_726_727,
+      },
+    });
+    expect(
+      screen.getByText('spread leg on all 3 fires · call vertical 726/727'),
+    ).toBeInTheDocument();
+  });
+
+  it('a single-fire chain reads "spread leg · …" (no "all 1 fires")', () => {
+    renderRow({
+      fireCount: 1,
+      anchorLegKind: 'multi_leg',
+      spreadLeg: {
+        fires: 1,
+        totalFires: 1,
+        shape: 'vertical',
+        legs: LEGS_726_727,
+      },
+    });
+    expect(
+      screen.getByText('spread leg · call vertical 726/727'),
+    ).toBeInTheDocument();
+  });
+
+  it('k = 0 with a stock-tied latest fire: "stock-tied leg"', () => {
+    renderRow({ fireCount: 3, anchorLegKind: 'stock_tied', spreadLeg: null });
+    const badge = screen.getByText('stock-tied leg');
+    expect(badge.getAttribute('title')).toMatch(/information only/i);
+  });
+
+  it('a spread count wins over a stock-tied latest fire', () => {
+    renderRow({
+      fireCount: 4,
+      anchorLegKind: 'stock_tied',
+      spreadLeg: {
+        fires: 1,
+        totalFires: 4,
+        shape: 'vertical',
+        legs: LEGS_726_727,
+      },
+    });
+    expect(
+      screen.getByText('spread leg on 1 of 4 fires · call vertical 726/727'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('stock-tied leg')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['a single-leg latest fire', { anchorLegKind: 'single', spreadLeg: null }],
+    ['NULL fields', { anchorLegKind: null, spreadLeg: null }],
+    ['no fields at all (pre-#197 payload)', {}],
+  ] as const)('renders no badge for %s', (_label, fields) => {
+    renderRow(fields as Partial<LotteryFire>);
+    expect(screen.queryByText(BADGE_TEXT)).not.toBeInTheDocument();
+  });
+
+  it('does not dim the row', () => {
+    renderRow({
+      fireCount: 5,
+      anchorLegKind: 'multi_leg',
+      spreadLeg: {
+        fires: 5,
+        totalFires: 5,
+        shape: 'vertical',
+        legs: LEGS_726_727,
+      },
+    });
+    expect(screen.getByTestId('lottery-row').className).not.toContain(
+      'opacity',
+    );
+  });
+});
+
+describe('LotteryRow: reignite-list leg markers', () => {
+  const FIRST = '2026-05-08T14:00:00Z';
+  const SECOND = '2026-05-08T15:10:00Z';
+  const THIRD = '2026-05-08T15:55:00Z';
+  const LATEST = '2026-05-08T16:45:00Z';
+
+  function openList(kinds: {
+    first?: LotteryFire['anchorLegKind'];
+    second?: LotteryFire['anchorLegKind'];
+    third?: LotteryFire['anchorLegKind'];
+    latest?: LotteryFire['anchorLegKind'];
+  }) {
+    render(
+      <LotteryRow
+        fire={makeFire({
+          fireCount: 4,
+          firstFireTimeCt: FIRST,
+          triggerTimeCt: LATEST,
+          anchorLegKind: kinds.latest,
+          historicalFires: [
+            {
+              triggerTimeCt: FIRST,
+              entryPrice: 1.0,
+              spotAtTrigger: 200,
+              anchorLegKind: kinds.first,
+            },
+            {
+              triggerTimeCt: SECOND,
+              entryPrice: 0.8,
+              spotAtTrigger: 200,
+              anchorLegKind: kinds.second,
+            },
+            {
+              triggerTimeCt: THIRD,
+              entryPrice: 0.6,
+              spotAtTrigger: 200,
+              anchorLegKind: kinds.third,
+            },
+          ],
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('lottery-reignites-toggle'));
+    return screen.getByTestId('lottery-reignites-list');
+  }
+
+  it('marks each spread-leg and stock-tied entry with an accessible label', () => {
+    const list = openList({
+      first: 'multi_leg', // header anchor, not a list entry
+      second: 'multi_leg',
+      third: 'stock_tied',
+      latest: 'single',
+    });
+    const items = within(list).getAllByRole('listitem');
+    expect(items).toHaveLength(3);
+    // 10:10 CT: spread leg.
+    expect(items[0]).toHaveTextContent(`${ctTime(SECOND)} CT`);
+    expect(
+      within(items[0]!).getByRole('img', { name: 'spread-leg fire' }),
+    ).toBeInTheDocument();
+    // 10:55 CT: stock-tied.
+    expect(
+      within(items[1]!).getByRole('img', { name: 'stock-tied fire' }),
+    ).toBeInTheDocument();
+    expect(
+      within(items[1]!).queryByRole('img', { name: 'spread-leg fire' }),
+    ).not.toBeInTheDocument();
+    // Latest, single-leg: no marker.
+    expect(within(items[2]!).queryByRole('img')).not.toBeInTheDocument();
+    // Exactly one of each across the list (the first fire isn't listed).
+    expect(
+      within(list).getAllByRole('img', { name: 'spread-leg fire' }),
+    ).toHaveLength(1);
+  });
+
+  it("marks the latest entry from the row's own leg kind", () => {
+    const list = openList({ latest: 'multi_leg' });
+    const items = within(list).getAllByRole('listitem');
+    expect(
+      within(items[2]!).getByRole('img', { name: 'spread-leg fire' }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows no markers when no fire carries a leg kind', () => {
+    const list = openList({ second: null, third: undefined, latest: null });
+    expect(within(list).queryByRole('img')).not.toBeInTheDocument();
   });
 });

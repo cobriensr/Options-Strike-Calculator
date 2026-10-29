@@ -14,6 +14,8 @@ import type {
   LotteryTickerStats,
 } from './types.js';
 import { EXIT_POLICY_LABELS, EXIT_POLICY_TOOLTIPS } from './types.js';
+import { FireLegMarker, SpreadLegBadge } from './SpreadLegBadge.js';
+import type { AnchorLegKind } from '../../types/spread-legs.js';
 import { fireSpot as resolveFireSpot } from './fire-spot.js';
 import { signedOtmPct } from '../../utils/moneyness.js';
 import { formatPremiumAmount } from '../../utils/ticker-rollup-aggregates.js';
@@ -632,10 +634,16 @@ export const LotteryRow = memo(function LotteryRow({
    * is `[...historicalFires, latest]` (oldest → newest); the first fire
    * is the header anchor, so the reignites are `historicalFires.slice(1)`
    * plus the latest fire (`fire.triggerTimeCt` / `fire.entry.price`).
-   * Empty when there are no historical fires (single-fire chain).
+   * Each carries its anchor print's leg kind for the spread-leg /
+   * stock-tied marker. Empty when there are no historical fires
+   * (single-fire chain).
    */
   const laterFires = useMemo<
-    Array<{ triggerTimeCt: string; entryPrice: number }>
+    Array<{
+      triggerTimeCt: string;
+      entryPrice: number;
+      anchorLegKind: AnchorLegKind | null;
+    }>
   >(() => {
     const history = fire.historicalFires ?? [];
     if (history.length === 0) return [];
@@ -643,10 +651,20 @@ export const LotteryRow = memo(function LotteryRow({
       ...history.slice(1).map((h) => ({
         triggerTimeCt: h.triggerTimeCt,
         entryPrice: h.entryPrice,
+        anchorLegKind: h.anchorLegKind ?? null,
       })),
-      { triggerTimeCt: fire.triggerTimeCt, entryPrice: fire.entry.price },
+      {
+        triggerTimeCt: fire.triggerTimeCt,
+        entryPrice: fire.entry.price,
+        anchorLegKind: fire.anchorLegKind ?? null,
+      },
     ];
-  }, [fire.historicalFires, fire.triggerTimeCt, fire.entry.price]);
+  }, [
+    fire.historicalFires,
+    fire.triggerTimeCt,
+    fire.entry.price,
+    fire.anchorLegKind,
+  ]);
 
   const roundTripDeduct = fire.roundTripScoreDeduct ?? 0;
   const isRoundTripped = roundTripDeduct < 0;
@@ -914,6 +932,13 @@ export const LotteryRow = memo(function LotteryRow({
             {fire.fireCount - 1 === 1 ? '' : 's'}
           </button>
         )}
+        {/* Spread-leg badge — how many of the chain's fires today printed
+            as one leg of a multi-leg order (exchange trade code on each
+            fire's anchor print), or "stock-tied leg". Information only. */}
+        <SpreadLegBadge
+          spreadLeg={fire.spreadLeg ?? null}
+          anchorLegKind={fire.anchorLegKind ?? null}
+        />
         {/* REIGNITED chip — chain matches the daily top-N reignition
             pattern (multi-fire chain that went quiet ≥30 min, then had
             ≥2 post-gap fires). Same row also renders in the pinned
@@ -1089,6 +1114,7 @@ export const LotteryRow = memo(function LotteryRow({
               <span className="text-orange-300">
                 {formatDollar(r.entryPrice)}
               </span>
+              <FireLegMarker kind={r.anchorLegKind} />
             </li>
           ))}
         </ul>
