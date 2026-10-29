@@ -128,18 +128,21 @@ describe('insertCaptureRows', () => {
   });
 
   it('succeeds when the first INSERT attempt hits a transient error and the retry lands', async () => {
-    // Emulate withDbRetry: re-run the op once after a transient failure.
-    mockWithDbRetry.mockImplementation(async <T>(fn: () => Promise<T>) => {
-      try {
-        return await fn();
-      } catch {
-        return fn();
-      }
-    });
+    // Real withDbRetry: a retryable Neon error backs off 1 s, then retries.
+    const actual =
+      await vi.importActual<typeof import('../_lib/db.js')>('../_lib/db.js');
+    mockWithDbRetry.mockImplementation(actual.withDbRetry);
     mockSql
       .mockRejectedValueOnce(new Error('fetch failed'))
       .mockResolvedValueOnce([]);
-    await expect(insertCaptureRows(ONE_ROW)).resolves.toBeUndefined();
+    vi.useFakeTimers();
+    try {
+      const pending = insertCaptureRows(ONE_ROW);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(pending).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
     expect(mockSql).toHaveBeenCalledTimes(2);
   });
 

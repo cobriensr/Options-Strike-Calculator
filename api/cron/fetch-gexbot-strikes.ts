@@ -84,7 +84,8 @@ export default withCronInstrumentation(
           // Retry transient 5xx / timeout / ECONNRESET up to 2 times
           // (3 attempts total, 1s + 2s exponential backoff). Mirrors
           // the fetch-gexbot-fast wrap that suppressed SENTRY-EMERALD-
-          // DESERT-8F. 4xx (bad auth) still fails fast.
+          // DESERT-8F. Every 4xx (bad auth, incl. 429 quota) still fails
+          // fast.
           const body = await withRetry(() =>
             fetchStatePerStrike(apiKey, ticker, category),
           );

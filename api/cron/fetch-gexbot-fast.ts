@@ -76,6 +76,11 @@ function i(v: unknown): number | null {
  * tight while preventing all 128 calls from launching simultaneously — a
  * 128-way burst paired with the per-call HTTP timeout can produce 128
  * Sentry events in a single tick if GEXBot has a slow minute.
+ *
+ * Time budget (maxDuration 60 s): see GEXBOT_TIMEOUT_MS in gexbot-client.ts.
+ * Worst case is about 42 s of fetching (4 waves of 32 x ~10.5 s) plus up to
+ * ~33 s per DB write, over the cap in a double outage; normal ticks finish
+ * far below it.
  */
 const FETCH_CONCURRENCY = 32;
 
@@ -146,6 +151,10 @@ async function storeSnapshots(
   const sql = getDb();
   for (const { ticker, body: orderflowBody } of rows) {
     const body = mergeClassic(orderflowBody, classicByTicker.get(ticker));
+    // Not idempotent: a timed-out attempt is not cancelled, so a retry can
+    // write the same snapshot twice. There is no natural unique key until the
+    // data-hygiene decision D6 lands (see
+    // docs/superpowers/specs/gexbot-refresh-2026-10-28.md).
     await withDbRetry(
       () => sql`
       INSERT INTO gexbot_snapshots (
@@ -252,13 +261,14 @@ export default withCronInstrumentation(
       FETCH_CONCURRENCY,
       async (task) => {
         try {
-          // Retry transient 5xx / timeout / ECONNRESET up to 2 times
-          // (3 attempts total, 1s + 2s exponential backoff). Suppresses
-          // single-tick TimeoutError storms (SENTRY-EMERALD-DESERT-8F:
-          // 214 events / 9 days) caused by GEXBot 1–2s slow minutes
-          // brushing the 2.5s per-call timeout. `withRetry`'s classifier
-          // matches /50[234]/ and /timeout|ECONN.../ but NOT 4xx, so a
-          // bad API key still fails fast.
+          // Retry up to 2 times (3 attempts total, 1s + 2s backoff) on
+          // GEXBot 500/502/503/504 (except the orderflow 500 "null or zero
+          // length", which means no snapshot exists yet) and on timeouts
+          // and network errors. Suppresses single-tick TimeoutError storms
+          // (SENTRY-EMERALD-DESERT-8F: 214 events / 9 days) caused by GEXBot
+          // 1-2s slow minutes brushing the 2.5s per-call timeout. Every 4xx
+          // fails fast, including the 429 quota (resets at 00:00 ET) and a
+          // bad API key.
           let body: GexbotResponse;
           switch (task.kind) {
             case 'orderflow':
@@ -393,6 +403,10 @@ export default withCronInstrumentation(
     ]);
     if (snapshotLeg.status === 'rejected' && captureLeg.status === 'rejected') {
       // The wrapper captures only the thrown error; report the other one here.
+      ctx.logger.error(
+        { err: captureLeg.reason },
+        'fetch-gexbot-fast capture leg failed',
+      );
       Sentry.captureException(captureLeg.reason, {
         tags: { 'gexbot.cron': 'fast', 'gexbot.leg': 'capture' },
       });

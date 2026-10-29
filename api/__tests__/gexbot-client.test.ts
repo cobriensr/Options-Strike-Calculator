@@ -262,6 +262,42 @@ describe('gexbot-client', () => {
       });
     });
 
+    it.each([
+      ['/SPX/classic/gex_zero/maxchange', 404, ''],
+      ['/SPX/state/gex_one/maxchange', 404, 'not found'],
+      [
+        '/SPX/orderflow/orderflow',
+        500,
+        'Failed to get redis chart data: null or zero length',
+      ],
+    ])(
+      'maps the vendor "no snapshot yet" answer %s %i to no-data',
+      (path, status, body) => {
+        expect(
+          classifyGexbotError(new GexbotHttpError(status, path, body)),
+        ).toEqual({ statusClass: 'no-data', statusTag: String(status) });
+      },
+    );
+
+    it('keeps a 404 off maxchange and a plain 500 in their HTTP classes', () => {
+      expect(
+        classifyGexbotError(
+          new GexbotHttpError(404, '/SPX/orderflow/orderflow', ''),
+        ).statusClass,
+      ).toBe('http-4xx');
+      expect(
+        classifyGexbotError(
+          new GexbotHttpError(500, '/SPX/orderflow/orderflow', 'boom'),
+        ).statusClass,
+      ).toBe('http-5xx');
+    });
+
+    it('maps a non-error HTTP status to other', () => {
+      expect(
+        classifyGexbotError(new GexbotHttpError(302, '/SPX/x', '')),
+      ).toEqual({ statusClass: 'other', statusTag: '302' });
+    });
+
     it('maps a TimeoutError DOMException to timeout', () => {
       const err = new DOMException('timed out', 'TimeoutError');
       expect(classifyGexbotError(err)).toEqual({

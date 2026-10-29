@@ -30,7 +30,15 @@ const GEXBOT_BASE = 'https://api.gex.bot/v2';
  * GEXBot returned in 1–2 s during slow minutes. The vendor recommends
  * about 1 s for snapshot routes; we keep 2.5 s deliberately because
  * 1 s is what produced those timeouts. Both fetch crons set
- * maxDuration to 60 s, so even a 32-way burst at 2.5 s each fits.
+ * maxDuration to 60 s (the plan constant shared with fetch-gexbot-strikes).
+ *
+ * Worst case, not the normal one: a persistently failing task costs about
+ * 10.5 s (3 attempts x 2.5 s + 1 s + 2 s backoff), so 128 tasks in waves of
+ * 32 take about 42 s. Each DB write in fetch-gexbot-fast can add up to about
+ * 33 s on top (3 x 10 s + 3 s backoff), so a double outage (GEXBot down and
+ * Neon down) can reach about 75 s and Vercel kills the run at 60 s with no
+ * Axiom event. We keep 60 s: normal ticks finish far below it, and the P3
+ * Sentry cron monitor flags a killed run.
  */
 const GEXBOT_TIMEOUT_MS = 2_500;
 
@@ -147,8 +155,20 @@ export type GexbotStatusClass =
   | 'http-429'
   | 'http-4xx'
   | 'http-5xx'
+  | 'no-data'
   | 'timeout'
   | 'other';
+
+/**
+ * The vendor's normal "no snapshot yet" answers: maxchange returns 404 when
+ * there is no data, and the orderflow route returns 500 `Failed to get redis
+ * chart data: null or zero length`. They get their own class so the routine
+ * noise cannot hide a 401/403 or a real 5xx in the same Sentry issue.
+ */
+function isNoData(err: GexbotHttpError): boolean {
+  if (err.status === 404) return err.path.endsWith('/maxchange');
+  return err.status === 500 && err.message.includes('null or zero length');
+}
 
 /**
  * Bucket a failed GEXBot call for Sentry. `statusClass` is the fingerprint
@@ -161,9 +181,11 @@ export function classifyGexbotError(err: unknown): {
   statusTag: string;
 } {
   if (err instanceof GexbotHttpError) {
-    let statusClass: GexbotStatusClass = 'http-4xx';
-    if (err.status === 429) statusClass = 'http-429';
+    let statusClass: GexbotStatusClass = 'other';
+    if (isNoData(err)) statusClass = 'no-data';
+    else if (err.status === 429) statusClass = 'http-429';
     else if (err.status >= 500) statusClass = 'http-5xx';
+    else if (err.status >= 400) statusClass = 'http-4xx';
     return { statusClass, statusTag: String(err.status) };
   }
   if (

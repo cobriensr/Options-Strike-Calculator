@@ -1,6 +1,8 @@
 // @vitest-environment node
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { mockRequest, mockResponse } from './helpers';
 
 const { mockSql, mockSentryCapture, mockSentryMessage } = vi.hoisted(() => ({
@@ -31,7 +33,7 @@ vi.mock('../_lib/sentry.js', () => ({
   metrics: { uwRateLimit: vi.fn() },
 }));
 
-import handler from '../cron/fetch-gexbot-fast.js';
+import handler, { config } from '../cron/fetch-gexbot-fast.js';
 import {
   GEXBOT_TICKERS,
   MAXCHANGE_CATEGORIES,
@@ -706,6 +708,66 @@ describe('fetch-gexbot-fast handler', () => {
       );
     });
 
+    it('no-data: orderflow 500 "null or zero length" is not retried and gets its own class', async () => {
+      const fetchMock = vi.fn(async (input: string) => {
+        const url = String(input);
+        if (url.endsWith('/SPX/orderflow/orderflow')) {
+          return {
+            ok: false,
+            status: 500,
+            text: async () =>
+              'Failed to get redis chart data: null or zero length',
+          } as Response;
+        }
+        return happyResponse(url);
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      });
+      await handler(req, mockResponse());
+
+      expect(spxCalls(fetchMock)).toBe(1);
+      expect(mockSentryCapture).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 500 }),
+        expect.objectContaining({
+          fingerprint: ['gexbot-fetch-failure', 'fetch-gexbot-fast', 'no-data'],
+          tags: expect.objectContaining({ 'gexbot.status': '500' }),
+        }),
+      );
+    });
+
+    it('no-data: a maxchange 404 gets its own class, distinct from a real 4xx', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: string) => {
+          const url = String(input);
+          if (url.endsWith('/SPX/classic/gex_zero/maxchange')) {
+            return {
+              ok: false,
+              status: 404,
+              text: async () => '',
+            } as Response;
+          }
+          return happyResponse(url);
+        }),
+      );
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      });
+      await handler(req, mockResponse());
+
+      expect(mockSentryCapture).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 404 }),
+        expect.objectContaining({
+          fingerprint: ['gexbot-fetch-failure', 'fetch-gexbot-fast', 'no-data'],
+          tags: expect.objectContaining({ 'gexbot.status': '404' }),
+        }),
+      );
+    });
+
     it('http-5xx: a persistent 503 is retried, then tagged 503', async () => {
       vi.useFakeTimers();
       vi.setSystemTime(MARKET_TIME);
@@ -789,13 +851,30 @@ describe('fetch-gexbot-fast handler', () => {
       );
     });
 
-    it('both legs fail: both are attempted and the run reports 500', async () => {
+    it('both legs fail: both are attempted, the run reports 500 and each error is captured', async () => {
       stubFetchHappyPath();
-      mockSql.mockRejectedValue(new Error('neon: down'));
+      mockSql.mockImplementation(async (strings: unknown) => {
+        throw new Error(
+          isCaptureInsert(strings)
+            ? 'neon: capture down'
+            : 'neon: snapshot down',
+        );
+      });
       const res = await run();
 
       expect(res._status).toBe(500);
       expect(mockSql.mock.calls.some((c) => isCaptureInsert(c[0]))).toBe(true);
+      // The capture leg's error is reported by the cron, with its leg tag...
+      expect(mockSentryCapture).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'neon: capture down' }),
+        expect.objectContaining({
+          tags: expect.objectContaining({ 'gexbot.leg': 'capture' }),
+        }),
+      );
+      // ...and the snapshot leg's error is the one thrown to the wrapper.
+      expect(mockSentryCapture).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'neon: snapshot down' }),
+      );
     });
   });
 
@@ -812,6 +891,19 @@ describe('fetch-gexbot-fast handler', () => {
     expect(res._status).toBe(500);
     expect(mockSentryCapture).toHaveBeenCalledWith(
       expect.objectContaining({ message: 'neon: connection terminated' }),
+    );
+  });
+});
+
+describe('fetch-gexbot-fast config', () => {
+  it('matches the maxDuration vercel.json grants the function', () => {
+    // Vercel enforces vercel.json; a drift would make the in-code budget plan
+    // against a limit the platform does not grant.
+    const vercel = JSON.parse(
+      readFileSync(resolve(process.cwd(), 'vercel.json'), 'utf8'),
+    ) as { functions: Record<string, { maxDuration?: number }> };
+    expect(vercel.functions['api/cron/fetch-gexbot-fast.ts']?.maxDuration).toBe(
+      config.maxDuration,
     );
   });
 });

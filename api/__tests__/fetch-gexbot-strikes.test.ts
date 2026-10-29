@@ -485,6 +485,68 @@ describe('fetch-gexbot-strikes handler', () => {
       );
     });
 
+    it('no-data: a state 404 stays http-4xx (only maxchange 404 is no-data)', async () => {
+      stubSpxFailure(404);
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      });
+      await handler(req, mockResponse());
+
+      expect(mockSentryCapture).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 404 }),
+        expect.objectContaining({
+          fingerprint: [
+            'gexbot-fetch-failure',
+            'fetch-gexbot-strikes',
+            'http-4xx',
+          ],
+        }),
+      );
+    });
+
+    it('no-data: a 500 "null or zero length" is not retried and gets its own class', async () => {
+      const fetchMock = vi.fn(async (input: string) => {
+        const url = String(input);
+        if (url.endsWith('/SPX/state/gamma_zero')) {
+          return {
+            ok: false,
+            status: 500,
+            text: async () =>
+              'Failed to get redis chart data: null or zero length',
+          } as Response;
+        }
+        const segs = url.split('/');
+        const ticker =
+          segs.find((s) => GEXBOT_TICKERS.includes(s as never)) ?? 'SPX';
+        const category = segs.at(-1) ?? 'gamma_zero';
+        return {
+          ok: true,
+          status: 200,
+          json: async () => makeStateBody(ticker, category),
+        } as Response;
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      });
+      await handler(req, mockResponse());
+
+      expect(spxCalls(fetchMock)).toBe(1);
+      expect(mockSentryCapture).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 500 }),
+        expect.objectContaining({
+          fingerprint: [
+            'gexbot-fetch-failure',
+            'fetch-gexbot-strikes',
+            'no-data',
+          ],
+          tags: expect.objectContaining({ 'gexbot.status': '500' }),
+        }),
+      );
+    });
+
     it('http-5xx: a persistent 503 is retried, then tagged 503', async () => {
       vi.useFakeTimers();
       vi.setSystemTime(MARKET_TIME);
