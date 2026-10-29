@@ -267,70 +267,12 @@ export const IV_MODES = {
   DIRECT: 'direct',
 } as const;
 
-/**
- * Silence window for Strike IV anomaly aggregation.
- *
- * A compound-key anomaly (ticker:strike:side:expiry) that stops firing for
- * this long is evicted from the active board. The NEXT firing for that key
- * is treated as a brand-new event and re-triggers the banner + chime.
- *
- * 15 min balances "the event is genuinely over" against "same strike
- * coming back after a brief pause is still the same event."
- */
-export const ANOMALY_SILENCE_MS = 15 * 60 * 1000;
-
-/**
- * Strike IV exit-signal thresholds (phase transitions in useIVAnomalies).
- *
- * As of 2026-04-25 (Phase 3 of tape-side spec) the distribution signal
- * uses real per-minute bid-side vs ask-side tape volume from
- * `strike_trade_volume` (UW flow-per-strike-intraday). The prior
- * firing-rate proxy is deprecated.
- */
-
-/** 30% drop from peak IV relative to (peak - entry) triggers cooling phase. */
-export const IV_REGRESSION_THRESHOLD = 0.3;
-
-/** iv_ask - iv_mid crossing below 0.2 vol pts signals MMs disengaging. */
-export const ASK_MID_COMPRESSION_THRESHOLD = 0.002;
-
-/** Min active-span duration (ms) before compression signal considered valid. */
-export const ASK_MID_COMPRESSION_MIN_ACTIVE_MS = 5 * 60 * 1000;
-
-/** Rolling window for IV regression detection. */
-export const IV_REGRESSION_WINDOW_MS = 10 * 60 * 1000;
-
-/** Ask-mid divergence threshold above which accumulation signature is active. */
-export const ASK_MID_ACCUMULATION_THRESHOLD = 0.005;
-
-/**
- * Bid-side surge threshold — the primary distribution signal as of 2026-04-25.
- * When `bidSideVolInLast15Min ≥ accumulatedAskSideVol × BID_SIDE_SURGE_RATIO`
- * AND `bidSideVolInLast15Min ≥ BID_SIDE_MIN_VOL`, the active anomaly
- * transitions to `distributing` with reason `bid_side_surge`.
- *
- * 50% comes from the 2026-04-23 fixture: SPY 705P accumulated ~454K
- * vol at 97% ask during entry; the 12:00 CT distribution print was a
- * 14.7K bid-side surge, ~3% of accumulated — too tight. After holders
- * scaled out across 12:00–13:00, bid-side cumulative reached ~50% of
- * the entry-window ask-side total. 50% in a 15-min rolling window is
- * the cleanest "scaling out" signature.
- */
-export const BID_SIDE_SURGE_RATIO = 0.5;
-export const BID_SIDE_SURGE_WINDOW_MS = 15 * 60 * 1000;
-/** Noise floor — below this absolute volume, ignore the surge. */
-export const BID_SIDE_MIN_VOL = 1000;
-
 /** Polling intervals for data fetching hooks (milliseconds) */
 export const POLL_INTERVALS = {
-  /** Live quote refresh (useAutoFill, useMarketData) */
-  QUOTES: 10_000,
   /** Option chain refresh (useChainData) */
   CHAIN: 60_000,
   /** Market data refresh (useMarketData) */
   MARKET_DATA: 60_000,
-  /** History data refresh (useHistoryData) */
-  HISTORY: 10_000,
   /** Alert polling interval (useAlertPolling) */
   ALERTS: 10_000,
   /** Polling cadence for the Lottery Finder hook (useLotteryFinder). */
@@ -371,10 +313,6 @@ export const POLL_INTERVALS = {
    *  every minute by the cron. 60s polling keeps the tile within one
    *  snapshot of fresh data without hammering the endpoint. */
   PIN_SETUP: 60_000,
-  /** Market internals refresh ($TICK/$ADD/$VOLD/$TRIN) — matches 1-min cron */
-  MARKET_INTERNALS: 60_000,
-  /** Cross-asset confluence context (useAnomalyCrossAsset) — Phase F UI */
-  ANOMALY_CROSS_ASSET: 30_000,
   /** Vega spike feed refresh (useVegaSpikes) — matches monitor-vega-spike cron cadence. */
   VEGA_SPIKES: 60_000,
   /** Periscope MM exposure refresh (usePeriscopeExposure) — GEXBot writes
