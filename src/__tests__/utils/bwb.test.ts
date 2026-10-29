@@ -554,7 +554,7 @@ describe('BWB edge cases', () => {
 });
 
 describe('BWB PoP uses base sigma', () => {
-  // At 2h remaining, IV accel is ~1.12x. PoP should use base sigma,
+  // At 2h remaining, IV accel is ~1.21x. PoP should use base sigma,
   // which gives a higher PoP than using the accelerated sigma.
   const accelT = calcTimeToExpiry(2); // significant acceleration at 2h
   const accelRows = calcAllDeltas(spot, sigma, accelT, 0, 10);

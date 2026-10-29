@@ -115,9 +115,10 @@ export const DEFAULTS = {
    * gamma acceleration makes delta-hedging more expensive for market makers.
    * This multiplier is applied to σ for pricing and PoP calculations.
    *
-   * Model: mult = 1 + ACCEL_COEFF × (1 / hoursRemaining - 1 / HOURS_PER_DAY)
-   * At open (6.5h): 1.0x. At 2h: ~1.12x. At 1h: ~1.28x. At 0.5h: ~1.56x.
-   * Capped at ACCEL_MAX to prevent extreme values near close.
+   * Model: mult = 1 + IV_ACCEL_COEFF × (1/hoursRemaining - 1/HOURS_PER_DAY)
+   * With IV_ACCEL_COEFF 0.6: at open (6.5h) 1.0x, at 2h ~1.21x, at 1h ~1.51x.
+   * At 0.5h the formula gives ~2.11x, so the IV_ACCEL_MAX cap (1.8x) applies.
+   * Capped at IV_ACCEL_MAX to prevent extreme values near close.
    */
   IV_ACCEL_COEFF: 0.6,
   IV_ACCEL_MAX: 1.8,
@@ -335,7 +336,7 @@ export const POLL_INTERVALS = {
   /** Polling cadence for the Lottery Finder hook (useLotteryFinder). */
   OTM_FLOW: 30_000,
   /** Opening Flow Signal polling cadence (useOpeningFlowSignal) — gated to
-   *  the 09:25–09:50 CT window when the V4 rule can fire. */
+   *  the 08:25–08:50 CT window when the V4 rule can fire. */
   OPENING_FLOW: 30_000,
   /** 0DTE Gamma Regime polling cadence (useRegime0dte) — gated to the
    *  08:30–15:00 CT regular session. The endpoint reads per-minute GEX/IV

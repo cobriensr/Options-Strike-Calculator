@@ -4,7 +4,8 @@
  * Fetches snapshot data via useFuturesData, shows loading skeleton
  * while fetching, and renders VixTermStructure (spot VIX / VIX3M, shown
  * whenever present) + FuturesGrid, or an empty state when there are no
- * futures snapshots. Owner-gated at the App.tsx level, not here.
+ * futures snapshots. Owner-or-guest gated (`isAuthenticated` in the panel
+ * registry), not here.
  *
  * Includes a datetime-local picker that lets the user inspect the
  * futures snapshot at an arbitrary past moment. Default (empty picker)
