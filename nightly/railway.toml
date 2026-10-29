@@ -1,0 +1,5 @@
+[deploy]
+cronSchedule = "15 7 * * 2-6"
+# NEVER: a failed nightly run should alert, not loop and re-download the tape.
+restartPolicyType = "NEVER"
+watchPatterns = ["nightly/**"]

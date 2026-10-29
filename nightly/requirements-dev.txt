@@ -1,0 +1,9 @@
+# Test and lint tools for local dev and CI, layered on the runtime deps.
+# The Dockerfile installs only requirements.txt, so none of these ship in the image.
+-r requirements.txt
+pytest>=8
+pytest-cov>=6
+respx>=0.21
+moto[s3]>=5
+# Capped at the minor: ruff adds/promotes stable rules only in minor releases.
+ruff>=0.17,<0.18

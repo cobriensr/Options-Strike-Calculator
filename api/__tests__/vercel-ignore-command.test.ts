@@ -114,6 +114,7 @@ beforeAll(() => {
     'sidecar/app.py': 'x\n',
     'ml/model.py': 'x\n',
     'uw-stream/consumer.py': 'x\n',
+    'nightly/src/main.py': 'x\n',
     'scripts/backfill.mjs': 'x\n',
     'pine/study.pine': 'x\n',
     'README.md': 'x\n',
