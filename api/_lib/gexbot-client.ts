@@ -22,7 +22,7 @@
  * GEXBOT_TIMEOUT_MS).
  */
 
-const GEXBOT_BASE = 'https://api.gex.bot/v2';
+export const GEXBOT_BASE = 'https://api.gex.bot/v2';
 
 /**
  * Per-call HTTP timeout. Bumped 1 s → 2.5 s after
@@ -205,7 +205,7 @@ export function classifyGexbotError(err: unknown): {
  * from the env var (with or without the prefix) so a copy-paste of
  * the full token from the GEXBot dashboard still works.
  */
-function buildAuthHeader(apiKey: string): string {
+export function buildAuthHeader(apiKey: string): string {
   const token = apiKey.startsWith(TOKEN_PREFIX)
     ? apiKey
     : `${TOKEN_PREFIX}${apiKey}`;
