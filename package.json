@@ -92,7 +92,7 @@
     "@types/react-dom": "^19.2.3",
     "@types/web-push": "^3.6.4",
     "@vercel/node": "^5.7.5",
-    "@vitejs/plugin-react": "^5.1.4",
+    "@vitejs/plugin-react": "^6.1.2",
     "@vitest/coverage-v8": "^4.1.12",
     "@vitest/ui": "^4.1.12",
     "audit-ci": "^7.1.0",
