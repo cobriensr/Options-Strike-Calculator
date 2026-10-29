@@ -2,11 +2,11 @@
  * Time-grid scrubber for intraday data replay on a fixed 5-min slot grid
  * spanning the trading session (08:30–15:00 CT).
  *
- * Shared by `useDarkPoolLevels` and `useIVAnomalies`, which both expose
- * the same prev/next/to/live navigation over the same HH:MM grid. The
- * scrubber owns ONLY the navigation state and grid math; per-feature
- * concerns (`isLive`, freshness, `isToday`, polling) stay in the
- * consuming hook because their policies differ across consumers.
+ * Used by `useDarkPoolLevels`, which exposes prev/next/to/live navigation
+ * over this HH:MM grid. The scrubber owns ONLY the navigation state and
+ * grid math; per-feature concerns (`isLive`, freshness, `isToday`,
+ * polling) stay in the consuming hook, so each consumer sets its own
+ * policies.
  *
  * Snapshot scrubbers that index into a dynamic timestamp array
  * (e.g. `useGexPerStrike`) are intentionally NOT unified here — their

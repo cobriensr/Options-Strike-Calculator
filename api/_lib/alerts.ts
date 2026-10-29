@@ -1,8 +1,8 @@
 /**
  * Shared alert utilities for the real-time market monitors.
  *
- * Both monitor-iv and monitor-flow-ratio crons use these functions
- * to write alerts to the market_alerts table with cooldown dedup.
+ * The monitor-flow-ratio cron uses these functions to write alerts to
+ * the market_alerts table with cooldown dedup.
  * Also handles combined alert detection and Twilio SMS delivery.
  */
 

@@ -2,7 +2,7 @@
  * useAlertPolling — polls /api/alerts for real-time market alerts.
  *
  * During market hours, polls every 10 seconds for new alerts from the
- * monitor-iv and monitor-flow-ratio crons. On new alert:
+ * monitor-flow-ratio cron. On new alert:
  *   1. Fires a browser Notification (if permission granted)
  *   2. Plays an audio alert via Web Audio API
  *   3. Updates React state for the AlertBanner component

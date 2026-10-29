@@ -1,18 +1,17 @@
 /**
  * GET /api/strike-trade-volume
  *
- * Owner-or-guest read endpoint backing the bid-side-surge exit signal in
- * `useIVAnomalies` (Phase 3 of the tape-side spec).
+ * Owner-or-guest read endpoint over `strike_trade_volume`. It was built
+ * for the retired IV-anomaly detector's bid-side-surge exit signal; the
+ * data is kept for future research, and no UI reads it today.
  *
  * Two modes:
  *   1. **Bulk mode** (default): `?ticker=SPY&since=<ISO>` → returns all
- *      (strike, side, ts) tape rows for the ticker since `since`. Used
- *      by the hook to fetch tape data for all currently-active compound
- *      keys in a single query rather than N parallel queries.
+ *      (strike, side, ts) tape rows for the ticker since `since`, in one
+ *      query rather than N parallel per-key queries.
  *
  *   2. **Single-key mode**: `?ticker=SPY&strike=705&side=put&since=<ISO>` →
- *      returns one strike's time series since `since`. Used for drill-down
- *      views.
+ *      returns one strike's time series since `since`.
  *
  * Note: `strike_trade_volume` aggregates across expiries (UW's
  * flow-per-strike-intraday endpoint shape) — there is no `expiry`
