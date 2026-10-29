@@ -782,7 +782,10 @@ export default function StrikeCalculator() {
           'sec-datetime',
           () => (
             <>
-              <span id="sec-datetime" className="block scroll-mt-28" />
+              <span
+                id="sec-datetime"
+                className="block scroll-mt-(--anchor-offset)"
+              />
               <DateTimeSection
                 chevronUrl={chevronUrl}
                 selectedDate={vix.selectedDate}
@@ -807,7 +810,10 @@ export default function StrikeCalculator() {
           'sec-spot-price',
           () => (
             <>
-              <span id="sec-spot-price" className="block scroll-mt-28" />
+              <span
+                id="sec-spot-price"
+                className="block scroll-mt-(--anchor-offset)"
+              />
               <SpotPriceSection
                 spotPrice={spotPrice}
                 onSpotChange={handleSpotChange}
@@ -828,7 +834,10 @@ export default function StrikeCalculator() {
           'sec-premarket',
           () => (
             <>
-              <span id="sec-premarket" className="block scroll-mt-28" />
+              <span
+                id="sec-premarket"
+                className="block scroll-mt-(--anchor-offset)"
+              />
               <PreMarketSignals
                 marketOpen={market.data.quotes?.marketOpen ?? false}
               />
@@ -839,7 +848,10 @@ export default function StrikeCalculator() {
           'sec-premarket-futures',
           () => (
             <>
-              <span id="sec-premarket-futures" className="block scroll-mt-28" />
+              <span
+                id="sec-premarket-futures"
+                className="block scroll-mt-(--anchor-offset)"
+              />
               {market.hasData && (
                 <PreMarketInput
                   date={vix.selectedDate}
@@ -854,7 +866,10 @@ export default function StrikeCalculator() {
           'sec-advanced',
           () => (
             <>
-              <span id="sec-advanced" className="block scroll-mt-28" />
+              <span
+                id="sec-advanced"
+                className="block scroll-mt-(--anchor-offset)"
+              />
               <AdvancedSection
                 skewPct={skewPct}
                 onSkewChange={setSkewPct}
@@ -885,7 +900,7 @@ export default function StrikeCalculator() {
           'sec-iv',
           () => (
             <>
-              <span id="sec-iv" className="block scroll-mt-28" />
+              <span id="sec-iv" className="block scroll-mt-(--anchor-offset)" />
               <IVInputSection
                 ivMode={ivMode}
                 onIvModeChange={handleIvModeChange}

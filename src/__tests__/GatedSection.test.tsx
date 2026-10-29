@@ -61,7 +61,7 @@ describe('GatedSection: gate=true without fallback', () => {
     expect(anchor!.tagName).toBe('SPAN');
   });
 
-  it('the anchor span has scroll-mt-28 so the sticky header doesn’t cover it', () => {
+  it('the anchor span clears the sticky header and strip (--anchor-offset)', () => {
     const { container } = render(
       <GatedSection gate id="anchor-2" label="Section">
         <div>payload</div>
@@ -69,7 +69,7 @@ describe('GatedSection: gate=true without fallback', () => {
     );
     const anchor = container.querySelector('#anchor-2');
     expect(anchor).not.toBeNull();
-    expect(anchor!.className).toContain('scroll-mt-28');
+    expect(anchor!.className).toContain('scroll-mt-(--anchor-offset)');
     expect(anchor!.className).toContain('block');
   });
 
