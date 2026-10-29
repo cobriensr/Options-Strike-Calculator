@@ -41,16 +41,11 @@ from pathlib import Path
 
 import boto3
 import urllib3
-from boto3.s3.transfer import TransferConfig
 from botocore.client import Config
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import BotoCoreError, ClientError, HTTPClientError
 
 KEY_PREFIX = "fulltape/"
 DEFAULT_LOCAL_DIR = Path.home() / "Desktop" / "Eod-Full-Tape-parquet"
-
-# One client shared across s3transfer's worker threads sent unverified HTTPS
-# on Windows (py3.14, botocore 1.43.106, urllib3 2.8.0); upload serially.
-TRANSFER_CONFIG = TransferConfig(use_threads=False)
 
 
 def load_env_local() -> None:
@@ -149,7 +144,11 @@ def main() -> int:
     load_env_local()
     bucket = must_env("R2_BUCKET_FULLTAPE")
 
-    # Fail loudly if any request goes out without certificate verification.
+    # A client shared across s3transfer's threads sent unverified HTTPS on
+    # Windows (py3.14, botocore 1.43.106, urllib3 2.8.0). urllib3 warns before
+    # it sends, so this makes the warning an error: botocore wraps it as an
+    # HTTPClientError and retries on a new connection, and nothing goes out
+    # unverified.
     warnings.simplefilter("error", urllib3.exceptions.InsecureRequestWarning)
 
     input_dir = Path(os.environ.get("INPUT_DIR", str(DEFAULT_LOCAL_DIR)))
@@ -211,16 +210,7 @@ def main() -> int:
                 Bucket=bucket,
                 Key=key,
                 ExtraArgs={"ContentType": "application/x-parquet"},
-                Config=TRANSFER_CONFIG,
             )
-        except urllib3.exceptions.InsecureRequestWarning:
-            # Once one request skipped TLS verification, every request in
-            # this run is suspect: stop instead of moving on to the next file.
-            sys.stderr.write(
-                f"❌ [{i}/{len(to_upload)}] {f.name}: TLS verification was "
-                "skipped for an R2 request; aborting the run.\n"
-            )
-            return 4
         except (ClientError, BotoCoreError) as e:
             # Catch BotoCoreError too — transient transport failures
             # (EndpointConnectionError, ReadTimeoutError, ConnectTimeoutError)
@@ -229,6 +219,16 @@ def main() -> int:
             # Don't abandon the batch — every upload is idempotent (skip-if-
             # present), so we record the failure and keep going. Operator gets
             # a full list at the end and can re-run to retry just the failures.
+            if isinstance(e, HTTPClientError) and isinstance(
+                e.kwargs.get("error"), urllib3.exceptions.InsecureRequestWarning
+            ):
+                # Retries ran out on unverified connections: TLS on this box
+                # is broken, so every later file would hit the same thing.
+                sys.stderr.write(
+                    f"❌ [{i}/{len(to_upload)}] {f.name}: TLS verification was "
+                    "skipped for R2 requests; aborting the run.\n"
+                )
+                return 4
             sys.stderr.write(f"❌ [{i}/{len(to_upload)}] {f.name}: {e}\n")
             failed.append((f.name, str(e)))
             continue

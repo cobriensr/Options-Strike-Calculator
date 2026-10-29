@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 import urllib3
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, HTTPClientError
 
 SCRIPT = Path(__file__).resolve().parent / "upload-fulltape-to-r2.py"
 
@@ -41,9 +41,7 @@ class FakeClient:
     def upload_file(self, **kwargs: Any) -> None:
         self.uploads.append(kwargs)
         outcome = self.behaviours.get(Path(kwargs["Filename"]).name)
-        if isinstance(outcome, urllib3.exceptions.InsecureRequestWarning):
-            warnings.warn(outcome, stacklevel=2)
-        elif outcome is not None:
+        if outcome is not None:
             raise outcome
 
 
@@ -63,29 +61,49 @@ def run_main(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return module.main, files, client
 
 
-def test_upload_passes_a_serial_transfer_config(run_main) -> None:
+def test_main_turns_insecure_request_warnings_into_errors(run_main) -> None:
     main, files, client = run_main
 
-    assert main() == 0
+    with warnings.catch_warnings():
+        assert main() == 0
+        # The first matching filter wins, so check the one main() installed.
+        category = urllib3.exceptions.InsecureRequestWarning
+        first = next(f for f in warnings.filters if f[2] is category)
+        assert first[0] == "error"
 
     assert [Path(u["Filename"]).name for u in client.uploads] == [f.name for f in files]
-    for upload in client.uploads:
-        assert upload["Config"].use_threads is False
 
 
 def test_unverified_tls_aborts_the_run_without_touching_later_files(
     run_main, capsys: pytest.CaptureFixture[str]
 ) -> None:
     main, files, client = run_main
-    client.behaviours[files[0].name] = urllib3.exceptions.InsecureRequestWarning("x")
+    client.behaviours[files[0].name] = HTTPClientError(
+        error=urllib3.exceptions.InsecureRequestWarning("x")
+    )
 
     code = main()
 
-    assert code != 0
+    assert code == 4
     assert [Path(u["Filename"]).name for u in client.uploads] == [files[0].name]
     err = capsys.readouterr().err
     assert files[0].name in err
     assert "TLS verification was skipped" in err
+
+
+def test_other_transport_errors_are_recorded_and_the_run_continues(
+    run_main, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main, files, client = run_main
+    client.behaviours[files[0].name] = HTTPClientError(error=OSError("reset"))
+
+    code = main()
+
+    assert code == 3
+    assert [Path(u["Filename"]).name for u in client.uploads] == [f.name for f in files]
+    err = capsys.readouterr().err
+    assert "reset" in err
+    assert "TLS verification" not in err
 
 
 def test_client_error_is_recorded_and_the_run_continues(
