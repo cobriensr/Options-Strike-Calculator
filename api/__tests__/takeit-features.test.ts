@@ -739,7 +739,7 @@ describe('multileg classification features (lottery)', () => {
     expect(out.is_isolated_leg).toBe(1);
     expect(out.match_confidence).toBeCloseTo(0.87);
     expect(out.inferred_structure_vertical).toBe(1);
-    // Sibling one-hot columns stay unset (treated as 0 at inference time).
+    // Sibling one-hot columns are explicit zeros, as in training.
     expect(out.inferred_structure_isolated_leg).toBe(0);
     expect(out.inferred_structure_strangle).toBe(0);
     expect(out.inferred_structure_risk_reversal).toBe(0);
@@ -779,7 +779,7 @@ describe('multileg classification features (lottery)', () => {
   it('emits no inferred_structure_* one-hot for unknown labels (forward-compat)', () => {
     const bundle = makeBundle('lottery', MULTILEG_FEATURE_COLS);
     const row = lotteryRow({
-      // v2 matcher could emit e.g. 'condor'; bundle doesn't pin it → no key.
+      // v2 matcher could emit e.g. 'condor'; no label column matches, so the block is all zeros.
       inferred_structure: 'condor',
     });
     const out = featuresForLottery(bundle, row, EMPTY_CTX);

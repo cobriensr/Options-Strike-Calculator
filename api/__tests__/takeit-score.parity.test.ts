@@ -19,13 +19,13 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { expandOneHotCategoricals } from '../_lib/takeit-features.js';
 import {
   type TakeitBundle,
   assertBundleCompat,
   featuresFromRow,
   predictTakeitScore,
 } from '../_lib/takeit-score.js';
-import { expandOneHotCategoricals } from '../_lib/takeit-features.js';
 
 // Raw-prob parity is exact-fround-match across our 100 fixture rows.
 // Calibrated parity is gated looser because the isotonic slope can amplify
@@ -246,6 +246,9 @@ describe('takeit-score TS↔Python parity', () => {
           expect(
             Math.abs(result.prob_raw - row.expected_prob_raw),
           ).toBeLessThanOrEqual(PARITY_TOLERANCE_RAW);
+          expect(
+            Math.abs(result.prob_calibrated - row.expected_prob_calibrated),
+          ).toBeLessThanOrEqual(PARITY_TOLERANCE_CAL);
         }
       });
 
