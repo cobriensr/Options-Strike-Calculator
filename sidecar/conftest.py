@@ -34,6 +34,12 @@ if "psycopg2" not in sys.modules:
     mock_psycopg2_pool = MagicMock()
     # Provide a real exception class for `except psycopg2.pool.PoolError`
     mock_psycopg2_pool.PoolError = type("PoolError", (Exception,), {})
+    # Rule: any stub attribute a test monkeypatches must be a real object,
+    # not an auto-created MagicMock child. pytest 9.2's monkeypatch reads the
+    # old value from the target's __dict__, where a MagicMock child never
+    # lives, so its undo deleted ThreadedConnectionPool and the next test's
+    # getattr raised AttributeError.
+    mock_psycopg2_pool.ThreadedConnectionPool = type("ThreadedConnectionPool", (), {})
     mock_psycopg2.pool = mock_psycopg2_pool
     sys.modules["psycopg2"] = mock_psycopg2
     sys.modules["psycopg2.pool"] = mock_psycopg2_pool
