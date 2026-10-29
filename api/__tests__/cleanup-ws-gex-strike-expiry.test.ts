@@ -67,8 +67,26 @@ describe('cleanup-ws-gex-strike-expiry handler', () => {
 
   afterEach(() => {
     process.env = originalEnv;
+    // Restores the Date.now spy from fakeClock, even when a test fails
+    // before reaching its end.
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
+
+  /**
+   * Pin Date.now and return a function that moves it forward. The clock
+   * advances only when a test says so (inside a batch), so the wrapper's own
+   * Date.now() calls for check-in timing can't shift the budget arithmetic.
+   */
+  function fakeClock(): (ms: number) => void {
+    let now = 1_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    return (ms) => {
+      now += ms;
+    };
+  }
+
+  const FULL_BATCH = Array.from({ length: 50_000 }, (_, i) => ({ id: i }));
 
   it('returns 405 on non-GET', async () => {
     const req = mockRequest({ method: 'POST' });
@@ -181,23 +199,57 @@ describe('cleanup-ws-gex-strike-expiry handler', () => {
     );
   });
 
-  it('exits via wall_budget once a batch ends past the 280 s budget', async () => {
-    // The clock advances only when a batch runs, so the wrapper's own
-    // Date.now() calls (check-in timing) can't shift it. Batch 2 ends at
-    // 280.5 s: past the 280 s budget that leaves room for the check-ins
-    // inside maxDuration 300, though it would have passed the old 295 s
-    // one. The cron reports partial counts and `wall_budget`.
-    const fullBatch = Array.from({ length: 50_000 }, (_, i) => ({ id: i }));
-    let now = 1_000_000;
-    const dateNowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+  it.each([
+    {
+      projected: '279.5 s',
+      batchMs: 139_750,
+      queries: 3,
+      stopReason: 'drained',
+    },
+    {
+      projected: '280.5 s',
+      batchMs: 140_250,
+      queries: 1,
+      stopReason: 'wall_budget',
+    },
+  ])(
+    'elapsed + slowest batch = $projected before the next batch → $stopReason',
+    async ({ batchMs, queries, stopReason }) => {
+      // One full batch taking batchMs; every later batch takes no time and
+      // deletes nothing. Before batch 2 the projection is elapsed (batchMs)
+      // plus the slowest batch so far (batchMs), against the 280 s budget.
+      // At 279.5 s batch 2 runs (pass 1 drains, then pass 2 drains); at
+      // 280.5 s nothing more runs. Under the old 295 s after-the-batch
+      // check, the 280.5 s case would have kept going.
+      const advance = fakeClock();
+      mockQuery.mockImplementationOnce(async () => {
+        advance(batchMs);
+        return FULL_BATCH;
+      });
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({ totalDeleted: 50_000, stopReason });
+      expect(mockQuery).toHaveBeenCalledTimes(queries);
+    },
+  );
+
+  it('checks the budget at the pass boundary, so pass 2 never starts after a late pass 1', async () => {
+    // Pass 1: a quick full batch, then its draining batch ends at 281 s.
+    // The budget used to be checked only after a non-empty batch, so pass
+    // 2's first DELETE started past the budget and could run into
+    // maxDuration, where the kill reads as a monitor timeout.
+    const advance = fakeClock();
     mockQuery
       .mockImplementationOnce(async () => {
-        now += 1_000; // pass 1 batch 1: ends at 1 s, within budget
-        return fullBatch;
+        advance(1_000); // pass 1 batch 1: ends at 1 s
+        return FULL_BATCH;
       })
       .mockImplementationOnce(async () => {
-        now += 279_500; // pass 1 batch 2: ends at 280.5 s, trips budget
-        return fullBatch;
+        advance(280_000); // pass 1 batch 2: drains, ends at 281 s
+        return [];
       });
 
     const res = mockResponse();
@@ -205,13 +257,16 @@ describe('cleanup-ws-gex-strike-expiry handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
-      totalDeleted: 100_000,
+      totalDeleted: 50_000,
+      batches: 2,
       stopReason: 'wall_budget',
     });
-    // The second pass must NOT run after the budget trips.
+    // Both pass 1 batches ran; pass 2's DELETE never did.
     expect(mockQuery).toHaveBeenCalledTimes(2);
-
-    dateNowSpy.mockRestore();
+    expect(mockQuery.mock.calls.map(([sql]) => sql as string)).toEqual([
+      expect.stringContaining('expiry < $1::date'),
+      expect.stringContaining('expiry < $1::date'),
+    ]);
   });
 
   it('captures errors to Sentry and returns 500 with partial counts', async () => {

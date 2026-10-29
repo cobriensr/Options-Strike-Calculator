@@ -45,12 +45,15 @@ const JOB = 'cleanup-ws-gex-strike-expiry';
 const BATCH_SIZE = 50_000;
 
 /**
- * Stop issuing batches once one finishes past this. `startedAt` is taken
- * inside withCronCheckin, so the in-progress and completion check-ins (≤ 5 s
- * each) sit outside it. That leaves ~10 s of maxDuration for the last batch
- * (started inside the budget, ~5 s for 50k rows) and the response, so the
- * loop exits with a partial report instead of being killed mid-DELETE. Same
- * budget as cleanup-ws-option-trades.
+ * Don't start a batch when elapsed time plus the slowest batch so far would
+ * pass this. The check runs before every batch after the first, including
+ * the first batch of pass 2, so no DELETE starts that is expected to end past
+ * the budget. `startedAt` is taken inside withCronCheckin, so the in-progress
+ * and completion check-ins (≤ 5 s each) sit outside it. That leaves ~10 s of
+ * maxDuration for a final batch that overruns the slowest so far, plus the
+ * response, so the run ends with a partial report instead of being killed
+ * mid-DELETE (which would page as a monitor timeout). Same rule and budget as
+ * cleanup-ws-option-trades.
  */
 const WALL_BUDGET_MS = 280_000;
 
@@ -67,6 +70,7 @@ async function handler(req: VercelRequest, res: VercelResponse) {
   const db = getDb();
   let totalDeleted = 0;
   let batches = 0;
+  let slowestBatchMs = 0;
   let stopReason: 'drained' | 'wall_budget' = 'drained';
 
   // Two-pass DELETE preserving today's ET session, both passes sargable
@@ -106,6 +110,14 @@ async function handler(req: VercelRequest, res: VercelResponse) {
 
     for (const pass of passes) {
       while (true) {
+        if (
+          batches > 0 &&
+          Date.now() - startedAt + slowestBatchMs > WALL_BUDGET_MS
+        ) {
+          stopReason = 'wall_budget';
+          break;
+        }
+        const batchStartedAt = Date.now();
         const result = (await db.query(
           `WITH batch AS (
              SELECT id FROM ws_gex_strike_expiry
@@ -117,16 +129,13 @@ async function handler(req: VercelRequest, res: VercelResponse) {
            RETURNING id`,
           [today],
         )) as { id: number }[];
+        slowestBatchMs = Math.max(slowestBatchMs, Date.now() - batchStartedAt);
 
         const deleted = result.length;
         totalDeleted += deleted;
         batches += 1;
 
         if (deleted === 0) break;
-        if (Date.now() - startedAt > WALL_BUDGET_MS) {
-          stopReason = 'wall_budget';
-          break;
-        }
       }
       if (stopReason === 'wall_budget') break;
     }
