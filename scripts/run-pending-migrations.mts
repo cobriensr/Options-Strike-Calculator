@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env tsx
 /**
  * One-shot pending-migration runner.
  *
@@ -8,9 +8,10 @@
  * schema_migrations table).
  *
  * Usage:
- *   node --env-file=.env.local scripts/run-pending-migrations.mts
- *   node --env-file=.env.local scripts/run-pending-migrations.mts --yes
- *   (npm script: `npm run migrate`)
+ *   npx tsx --env-file=.env.local scripts/run-pending-migrations.mts [--yes]
+ *
+ * Plain `node` can't run it: Node's type stripping doesn't map db.ts's
+ * `./db-migrations.js` imports to the `.ts` files (ERR_MODULE_NOT_FOUND).
  *
  * By default the script prints the target host and waits 5 seconds for
  * Ctrl-C — protects against accidentally pointing at prod when
