@@ -248,10 +248,19 @@ describe('fetch-futures-session-stats handler', () => {
     expect(text).toContain('INSERT INTO futures_session_stats');
     expect(text).toContain('unnest(');
     expect(text).toContain('ON CONFLICT (contract, settlement_date) DO UPDATE');
-    expect(text).toContain('settlement = EXCLUDED.settlement');
-    expect(text).toContain('open_interest = EXCLUDED.open_interest');
-    expect(text).toContain('session_volume = EXCLUDED.session_volume');
+    // A later null never erases a known value.
+    expect(text).toContain(
+      'settlement = COALESCE(EXCLUDED.settlement, futures_session_stats.settlement)',
+    );
+    expect(text).toContain(
+      'open_interest = COALESCE(EXCLUDED.open_interest, futures_session_stats.open_interest)',
+    );
+    expect(text).toContain(
+      'session_volume = COALESCE(EXCLUDED.session_volume, futures_session_stats.session_volume)',
+    );
     expect(text).toContain('fetched_at = now()');
+    // fetched_at moves only when a stored value actually changes.
+    expect(text).toMatch(/WHERE \([\s\S]*\) IS DISTINCT FROM \(/);
 
     const cols = upsertColumns();
     expect([...cols.contract].sort()).toEqual(TARGETS.map(([c]) => c).sort());
@@ -266,12 +275,31 @@ describe('fetch-futures-session-stats handler', () => {
     expect(new Set(cols.volume)).toEqual(new Set([1_576_563]));
 
     expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({ status: 'success', rows: 12 });
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 12,
+      unchanged: 0,
+    });
     expect(reportCronRun).toHaveBeenCalledWith(
       'fetch-futures-session-stats',
-      expect.objectContaining({ status: 'success', rows: 12 }),
+      expect.objectContaining({ status: 'success', rows: 12, unchanged: 0 }),
     );
     expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('counts rows the guarded upsert left alone as unchanged, not written', async () => {
+    routeUw(allRoutes());
+    // 12 sent; RETURNING lists only the 5 inserted or changed.
+    mockSql.mockResolvedValueOnce(returning(5));
+
+    const res = await run();
+
+    expect(upsertColumns().contract).toHaveLength(12);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 5,
+      unchanged: 7,
+    });
   });
 
   it('never stores session_high/low (they belong to the in-progress session)', async () => {

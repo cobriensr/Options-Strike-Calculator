@@ -150,6 +150,25 @@ async function count(): Promise<number> {
   return r.rows[0]!.n;
 }
 
+/** A fetched_at well before any run's now(), so a move is unambiguous. */
+const AGED = '2026-10-28T21:30:00Z';
+const AGED_MS = Date.parse(AGED);
+
+async function ageFetchedAt(): Promise<void> {
+  await pg.db!.query('UPDATE futures_session_stats SET fetched_at = $1', [
+    AGED,
+  ]);
+}
+
+/** Distinct fetched_at instants (epoch ms) across the table. */
+async function fetchedAtValues(): Promise<Set<number>> {
+  const r = await pg.db!.query<{ ms: number }>(
+    `SELECT DISTINCT (extract(epoch FROM fetched_at) * 1000)::float8 AS ms
+     FROM futures_session_stats`,
+  );
+  return new Set(r.rows.map((x) => x.ms));
+}
+
 describe('fetch-futures-session-stats upsert (pglite)', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -213,27 +232,78 @@ describe('fetch-futures-session-stats upsert (pglite)', () => {
     ]);
   });
 
-  it('a second run for the same settlement date updates the row in place and moves fetched_at', async () => {
+  it('a changed value updates that row in place and moves only its fetched_at', async () => {
     routeUw(stats({ open_interest: 1_900_000 }));
     await run();
-    // Age the first write so the second run's now() is unambiguously later.
-    await pg.db!.query(
-      `UPDATE futures_session_stats SET fetched_at = '2026-10-28T21:30:00Z'`,
-    );
+    await ageFetchedAt();
 
-    routeUw(stats({ open_interest: 1_928_340, session_volume: 1_600_000 }));
+    routeUw(stats({ open_interest: 1_900_000 }), {
+      ESZ6: { open_interest: 1_928_340 },
+    });
     const res = await run();
 
-    expect(res._json).toMatchObject({ status: 'success', rows: 12 });
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      unchanged: 11,
+    });
     expect(await count()).toBe(12);
-    const [row] = await stored('ESZ6');
-    expect(row).toMatchObject({
+    const [esz6] = await stored('ESZ6');
+    expect(esz6?.open_interest).toBe('1928340');
+    expect(Date.parse(esz6!.fetched_at)).toBeGreaterThan(AGED_MS);
+    const [nqz6] = await stored('NQZ6');
+    expect(Date.parse(nqz6!.fetched_at)).toBe(AGED_MS);
+  });
+
+  it('an identical rerun changes nothing: fetched_at stays and every row counts as unchanged', async () => {
+    // A 9th decimal place rounds into NUMERIC(18,8); the rerun must still
+    // compare equal, not churn fetched_at on every run.
+    const perContract = { ZNZ6: { settlement: '112.671875001' } };
+    routeUw(stats(), perContract);
+    await run();
+    await ageFetchedAt();
+
+    routeUw(stats(), perContract);
+    const res = await run();
+
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 0,
+      unchanged: 12,
+    });
+    expect(await fetchedAtValues()).toEqual(new Set([AGED_MS]));
+  });
+
+  it('a later null keeps the known value, per column, and is not a change on its own', async () => {
+    routeUw(stats());
+    await run();
+    await ageFetchedAt();
+
+    routeUw(stats(), {
+      ESZ6: { settlement: null, open_interest: null, session_volume: null },
+      // Null OI, but a real volume change: volume moves, OI is kept.
+      ESH7: { open_interest: null, session_volume: 1_600_000 },
+    });
+    const res = await run();
+
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      unchanged: 11,
+    });
+    const [esz6] = await stored('ESZ6');
+    expect(esz6).toMatchObject({
+      settlement: '7783.25000000',
+      open_interest: '1928340',
+      session_volume: '1576563',
+    });
+    expect(Date.parse(esz6!.fetched_at)).toBe(AGED_MS);
+    const [esh7] = await stored('ESH7');
+    expect(esh7).toMatchObject({
       open_interest: '1928340',
       session_volume: '1600000',
     });
-    expect(Date.parse(row!.fetched_at)).toBeGreaterThan(
-      Date.parse('2026-10-28T21:30:00Z'),
-    );
+    expect(Date.parse(esh7!.fetched_at)).toBeGreaterThan(AGED_MS);
   });
 
   it('a new settlement date adds a row instead of overwriting the previous session', async () => {

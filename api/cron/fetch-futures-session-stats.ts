@@ -15,6 +15,8 @@
  *      concurrent-request cap), each through withRetry.
  *   3. One batched `INSERT … SELECT FROM unnest(…) ON CONFLICT
  *      (contract, settlement_date) DO UPDATE` into futures_session_stats.
+ *      A null never overwrites a known value, and a row whose values
+ *      don't change is left alone (counted as `unchanged`).
  *
  * Stats body (probed 2026-10-29 03:34 UTC): `settlement`,
  * `settlement_date` and `session_volume` describe the SETTLED session;
@@ -22,8 +24,8 @@
  * validated but never stored. Which session the open interest is as of is
  * unresolved, so the cron runs twice and upserts: 21:30 UTC Mon–Fri after
  * the settlement prints, then 12:30 UTC Tue–Sat once CME's open interest
- * for that session is out. `fetched_at` shows which run wrote the stored
- * values.
+ * for that session is out. `fetched_at` shows which run last changed the
+ * stored values.
  *
  * Failures surface (R4). A contract whose call fails is a Sentry exception
  * tagged with the contract; a body that fails validation is a Sentry
@@ -145,7 +147,12 @@ async function fetchStats(apiKey: string, target: Target): Promise<Outcome> {
 
 // ── DB write ────────────────────────────────────────────────
 
-/** Rows written (inserted or updated). Throws on a rejected write. */
+/**
+ * Rows written: inserted, or updated because a stored value changed. A
+ * null from UW never erases a known value, and a row whose values come
+ * out the same is left alone, so `fetched_at` marks the run that last
+ * changed it. Throws on a rejected write.
+ */
 async function upsertStats(rows: StatsRow[]): Promise<number> {
   const sql = getDb();
   const written = (await withDbRetry(
@@ -168,10 +175,19 @@ async function upsertStats(rows: StatsRow[]): Promise<number> {
         settlement, open_interest, session_volume
       )
       ON CONFLICT (contract, settlement_date) DO UPDATE SET
-        settlement = EXCLUDED.settlement,
-        open_interest = EXCLUDED.open_interest,
-        session_volume = EXCLUDED.session_volume,
+        settlement = COALESCE(EXCLUDED.settlement, futures_session_stats.settlement),
+        open_interest = COALESCE(EXCLUDED.open_interest, futures_session_stats.open_interest),
+        session_volume = COALESCE(EXCLUDED.session_volume, futures_session_stats.session_volume),
         fetched_at = now()
+      WHERE (
+        COALESCE(EXCLUDED.settlement, futures_session_stats.settlement),
+        COALESCE(EXCLUDED.open_interest, futures_session_stats.open_interest),
+        COALESCE(EXCLUDED.session_volume, futures_session_stats.session_volume)
+      ) IS DISTINCT FROM (
+        futures_session_stats.settlement,
+        futures_session_stats.open_interest,
+        futures_session_stats.session_volume
+      )
       RETURNING contract
     `,
     2,
@@ -270,8 +286,9 @@ export default withCronInstrumentation(
       failures.length,
       targets.length + rootsMissing,
     );
+    const unchanged = rows.length - written;
     ctx.logger.info(
-      { status, rows: written, skippedNoSettlement, failures },
+      { status, rows: written, unchanged, skippedNoSettlement, failures },
       `${JOB} completed`,
     );
 
@@ -280,6 +297,7 @@ export default withCronInstrumentation(
       rows: written,
       metadata: {
         contracts: targets.map((t) => t.contract),
+        unchanged,
         skippedNoSettlement,
         ...(failures.length > 0 ? { failures } : {}),
       },
