@@ -206,7 +206,7 @@ def _download_once(day: date, dest: Path, api_key: str, deadline: float) -> Sour
     try:
         with _open(day, api_key) as response:
             if response.status_code != 200:
-                raise _classify_failure(response, day)
+                raise _classify_failure(response, day, deadline)
             tag = f"{_where(response)}-200"
             encoding = response.headers.get("content-encoding", "").strip().lower()
             if encoding not in ("", "identity"):
@@ -214,7 +214,7 @@ def _download_once(day: date, dest: Path, api_key: str, deadline: float) -> Sour
             # One item per network read, undecoded: with identity enforced these are
             # exactly the bytes Content-Length counts.
             reads = response.iter_raw()
-            head = _read_head(reads)
+            head = _read_head(reads, day, deadline)
             if not head.startswith(ZIP_MAGIC):
                 raise _not_a_zip(response, head, day)
             expected = _content_length(response, day)
@@ -240,29 +240,34 @@ def _probe_once(day: date, api_key: str) -> SourceInfo:
     # Leaving the block closes the stream, so a 200's body is never read.
     with _open(day, api_key) as response:
         if response.status_code != 200:
-            raise _classify_failure(response, day)
+            # No wall-clock deadline here: only the per-read timeout bounds a 403 sniff.
+            raise _classify_failure(response, day, None)
         if _where(response) != "gcs":
             raise TapeDownloadError("unexpected", day, "uw-200 probe non-gcs")
         return _source_info(response, _content_length(response, day))
 
 
-def _read_head(reads: Iterator[bytes]) -> bytes:
+def _read_head(reads: Iterator[bytes], day: date, deadline: float | None) -> bytes:
     """Read until the zip magic is in hand or SNIFF_MAX_BYTES are, whichever is first.
 
     It stops at the first read that reaches the cap, so it holds less than
     SNIFF_MAX_BYTES plus one network read, and leaves the rest of the body unread.
+    Like the download loop, it checks `deadline` (when there is one) after each read,
+    so a trickling non-zip or error body can't outlast it either.
     """
     head = b""
     for piece in reads:
         head += piece
+        if deadline is not None:
+            _check_deadline(day, deadline, len(head))
         if head.startswith(ZIP_MAGIC) or len(head) >= SNIFF_MAX_BYTES:
             break
     return head
 
 
-def _check_deadline(day: date, deadline: float, written: int) -> None:
+def _check_deadline(day: date, deadline: float, received: int) -> None:
     if time.monotonic() > deadline:
-        detail = f"deadline {DOWNLOAD_DEADLINE_SECONDS}s passed after {written} bytes"
+        detail = f"deadline {DOWNLOAD_DEADLINE_SECONDS}s passed after {received} bytes"
         raise TapeDownloadError("timeout", day, detail)
 
 
@@ -298,8 +303,13 @@ def _not_a_zip(response: httpx.Response, head: bytes, day: date) -> TapeDownload
     return TapeDownloadError("unexpected", day, f"{tag} ({media})")
 
 
-def _classify_failure(response: httpx.Response, day: date) -> TapeDownloadError | _RetryableError:
-    """Map a non-200 final response to the error the attempt should raise."""
+def _classify_failure(
+    response: httpx.Response, day: date, deadline: float | None
+) -> TapeDownloadError | _RetryableError:
+    """Map a non-200 final response to the error the attempt should raise.
+
+    `deadline` bounds the 403 body sniff; probe_source has none and passes None.
+    """
     status = response.status_code
     where = _where(response)
     tag = f"{where}-{status}"
@@ -309,7 +319,7 @@ def _classify_failure(response: httpx.Response, day: date) -> TapeDownloadError 
         return TapeDownloadError("auth", day, tag)
     # Only UW's own 403s carry its codes; a GCS 403 falls through to unexpected.
     if status == 403 and where == "uw":
-        body = _read_head(response.iter_bytes()).decode("utf-8", "replace")
+        body = _read_head(response.iter_bytes(), day, deadline).decode("utf-8", "replace")
         kind = classify_403(body, response.headers)
         if kind == "historic_boundary":
             earliest, lookback = parse_boundary(body)

@@ -533,6 +533,67 @@ def test_deadline_passing_during_backoff_is_timeout(respx_mock, tmp_path: Path, 
     assert slept == [5.0]
 
 
+def _trickle(data: bytes, clock: dict[str, float], consumed: list[int]) -> Iterator[bytes]:
+    """Serve `data` in 1,000-byte reads; the deadline passes once the first is read."""
+    for start in range(0, len(data), 1000):
+        if start:
+            clock["now"] += DOWNLOAD_DEADLINE_SECONDS + 1
+        piece = data[start : start + 1000]
+        consumed.append(len(piece))
+        yield piece
+
+
+def test_deadline_during_sniff_raises_timeout(respx_mock, tmp_path: Path, monkeypatch):
+    clock = {"now": 1_000.0}
+    consumed: list[int] = []
+    monkeypatch.setattr("uw_client.time.monotonic", lambda: clock["now"])
+    text = json.dumps({"data": [{"price": "12.35"}] * 20_000}).encode()
+    uw = _uw_route(respx_mock)
+    respx_mock.get(GCS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(text))},
+            content=_trickle(text, clock, consumed),
+        )
+    )
+    dest = tmp_path / "t.zip"
+
+    with pytest.raises(TapeDownloadError) as caught:
+        download_tape(DAY, dest, API_KEY)
+
+    _assert_message(
+        caught.value, "timeout", f"deadline {DOWNLOAD_DEADLINE_SECONDS}s passed after 2000 bytes"
+    )
+    assert sum(consumed) < SNIFF_MAX_BYTES
+    assert uw.call_count == 1
+    _assert_no_files(dest)
+
+
+def test_deadline_during_403_sniff_raises_timeout(respx_mock, tmp_path: Path, monkeypatch):
+    clock = {"now": 1_000.0}
+    consumed: list[int] = []
+    monkeypatch.setattr("uw_client.time.monotonic", lambda: clock["now"])
+    text = json.dumps({"message": "x" * 20_000, "code": "historic_data_access_missing"}).encode()
+    _uw_route(
+        respx_mock,
+        httpx.Response(
+            403,
+            headers={"Content-Type": "application/json"},
+            content=_trickle(text, clock, consumed),
+        ),
+    )
+    dest = tmp_path / "t.zip"
+
+    with pytest.raises(TapeDownloadError) as caught:
+        download_tape(DAY, dest, API_KEY)
+
+    _assert_message(
+        caught.value, "timeout", f"deadline {DOWNLOAD_DEADLINE_SECONDS}s passed after 2000 bytes"
+    )
+    assert sum(consumed) < SNIFF_MAX_BYTES
+    _assert_no_files(dest)
+
+
 def test_keyboard_interrupt_mid_stream_propagates_and_removes_part(respx_mock, tmp_path: Path):
     dest = tmp_path / "t.zip"
     part_existed: list[bool] = []
