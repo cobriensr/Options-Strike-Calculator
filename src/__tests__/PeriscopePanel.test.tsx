@@ -66,11 +66,39 @@ const baseProps = {
 // ============================================================
 
 describe('PeriscopePanel: smoke', () => {
-  it('renders the section heading', () => {
+  it('renders a source-neutral section heading when there is no slice', () => {
     render(<PeriscopePanel {...baseProps} />);
     expect(
-      screen.getByRole('heading', { name: /periscope mm exposure/i }),
+      screen.getByRole('heading', { name: 'Periscope Exposure' }),
     ).toBeInTheDocument();
+  });
+
+  // Owner decision D1 revised (2026-10-29): the panel replays both feeds,
+  // so the title says which one the slice came from.
+  it('titles a UW-scraper slice (before the 2026-05-26 cutover) as MM exposure', () => {
+    render(<PeriscopePanel {...baseProps} view={makeView()} />);
+    expect(
+      screen.getByRole('heading', { name: 'Periscope MM Exposure (UW)' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('MM Exposure Map (UW)')).toBeInTheDocument();
+  });
+
+  it('titles a GEXBot slice as taker-side exposure, with no MM claim', () => {
+    const view = makeView({
+      capturedAt: '2026-10-27T15:00:00Z',
+      priorCapturedAt: '2026-10-27T14:50:00Z',
+      expiry: '2026-10-27',
+    });
+    render(<PeriscopePanel {...baseProps} view={view} />);
+    expect(
+      screen.getByRole('heading', {
+        name: 'Periscope Exposure (GEXBot, taker)',
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Exposure Map (GEXBot, taker)'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/MM Exposure/)).toBeNull();
   });
 
   it('renders the MM Exposure Map with the level ladder + setups + spot when given a populated view', () => {

@@ -198,11 +198,39 @@ describe('formatPeriscopeForClaude', () => {
     expect(out).toMatch(/upper-skewed \(upside priced richer\)/);
     // No-breach distance reporting.
     expect(out).toMatch(/No breach yet/);
-    // The header no longer calls all three Greeks MM-attributed: since
-    // 2026-05-26 only gamma is MM-signed (charm/vanna are GEXBot's sign).
+    // A scraper-era slice says what it is: UW's market-maker estimate.
     expect(out.split('\n')[0]).toBe(
-      'Periscope exposure for 2026-05-07 expiry, latest 10-min slice 14:50 CT (spot 7337.00).',
+      'Periscope exposure (UW Periscope, market-maker position estimate) for 2026-05-07 expiry, latest 10-min slice 14:50 CT (spot 7337.00).',
     );
+    expect(out).toContain(
+      'Charm flow (positive = mechanical /ES BUY into close):',
+    );
+  });
+
+  it('labels a GEXBot-era slice with the taker-side sign and no market-maker claim', () => {
+    // Owner decision D1 revised (2026-10-29): GEXBot values are classified
+    // taker flow, not MM positions, so the UW-era charm reading is dropped.
+    const latest = makeSlot(
+      '2026-10-27T19:50:00Z',
+      '2026-10-27',
+      realGamma2026_05_07,
+      realCharm2026_05_07,
+      realVanna2026_05_07,
+    );
+    const out = formatPeriscopeForClaude({
+      latest,
+      prior: null,
+      spot: 7337,
+      cone: null,
+      breaches: [],
+    });
+    expect(out.split('\n')[0]).toBe(
+      'Periscope exposure (GEXBot, taker-side sign: positive = traders net long that Greek at the strike) for 2026-10-27 expiry, latest 10-min slice 14:50 CT (spot 7337.00).',
+    );
+    expect(out).toContain(
+      'Charm (GEXBot, taker-side sign: positive = traders net long charm at the strike):',
+    );
+    expect(out).not.toMatch(/mechanical|\/ES BUY|market-maker position/);
   });
 
   it('labels positive asymmetry as lower-skewed (downside priced richer)', () => {

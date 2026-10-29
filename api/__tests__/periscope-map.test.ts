@@ -156,7 +156,7 @@ describe('/api/periscope-map', () => {
     expect(body.priorAvailable).toBe(true);
   });
 
-  it('builds the gamma topology from gamma negated to MM sign; charm keeps the vendor sign', async () => {
+  it("builds the gamma topology from GEXBot's own taker-side sign (no negation)", async () => {
     const latestAt = new Date(Date.now() - 30 * 1000);
     mockSql
       .mockResolvedValueOnce([]) // availableSlots
@@ -184,16 +184,16 @@ describe('/api/periscope-map', () => {
       }
     ).data;
 
-    // Raw taker gamma: 7510 +500K, 7520 +1.25M, 7505 −800K (spot 7515).
-    // MM sign: 7520 −1.25M and 7510 −500K are short-γ (acceleration),
-    // 7505 +800K is the +γ floor, and nothing above spot is a +γ ceiling.
-    expect(view.gamma.ceiling).toBeNull();
-    expect(view.gamma.floor).toMatchObject({ strike: 7505, value: 800_000 });
+    // Taker gamma as GEXBot reports it (D1 revised: never negated):
+    // 7510 +500K, 7520 +1.25M, 7505 −800K at spot 7515.
+    expect(view.gamma.ceiling).toMatchObject({
+      strike: 7520,
+      value: 1_250_000,
+    });
+    expect(view.gamma.floor).toMatchObject({ strike: 7510, value: 500_000 });
     expect(view.gamma.accelTop.map((r) => [r.strike, r.value])).toEqual([
-      [7520, -1_250_000],
-      [7510, -500_000],
+      [7505, -800_000],
     ]);
-    // Same payload on the charm panel: not flipped.
     expect(view.charm.topByAbs[0]).toEqual({ strike: 7520, value: 1_250_000 });
   });
 

@@ -4,8 +4,8 @@
  * Deterministic Periscope "trader's map" served directly from
  * `gexbot_api_capture` at 1-min cadence. No Claude. No scraper.
  *
- * Replaces the Claude auto-playbook pipeline for the live MM Exposure
- * panel. The historical lookup path (`/api/periscope-exposure?date=...`)
+ * Replaces the Claude auto-playbook pipeline for the live Periscope
+ * Exposure panel. The historical lookup path (`/api/periscope-exposure?date=...`)
  * stays — periscope_snapshots has the full ~6-month history that
  * GEXBot capture only covers from 2026-05-16 forward.
  *
@@ -13,10 +13,10 @@
  *   1. Read latest gexbot_api_capture rows for SPX state/{gamma,charm,vanna}_zero
  *   2. Read prior captures from ~10 min before latest (for sign-flip detection
  *      and per-strike delta semantics in the existing view-builder)
- *   3. Decode mini_contracts -> PeriscopeRow[] (gamma negated to MM sign,
- *      charm and vanna in GEXBot's own sign — `GEXBOT_TO_MM_SIGN`, owner
- *      decision D1), so the live map matches the MM-signed history that
- *      /api/periscope-exposure reads from periscope_snapshots
+ *   3. Decode mini_contracts -> PeriscopeRow[], in GEXBot's own
+ *      taker-side sign (never negated: owner decision D1 revised). Not
+ *      market-maker positions, unlike the UW-scraper slices that
+ *      /api/periscope-exposure still replays from before 2026-05-26
  *   4. Build PeriscopeSlot for latest + prior
  *   5. fetchSpxSpot(today) for the spot anchor
  *   6. fetchConeLevels + fetchConeBreaches (nullable; cone may not exist yet)
@@ -110,10 +110,7 @@ async function fetchLatestGexbotSlot(
     if (latestCapturedAt == null || ts > latestCapturedAt) {
       latestCapturedAt = ts;
     }
-    panelRows[panel] = decodeStrikes(
-      row.raw_response as GexbotStatePayload,
-      panel,
-    );
+    panelRows[panel] = decodeStrikes(row.raw_response as GexbotStatePayload);
   }
 
   if (
@@ -182,10 +179,7 @@ async function fetchPriorGexbotSlot(
     if (priorCapturedAt == null || ts > priorCapturedAt) {
       priorCapturedAt = ts;
     }
-    panelRows[panel] = decodeStrikes(
-      row.raw_response as GexbotStatePayload,
-      panel,
-    );
+    panelRows[panel] = decodeStrikes(row.raw_response as GexbotStatePayload);
   }
 
   if (

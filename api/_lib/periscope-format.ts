@@ -1,13 +1,16 @@
 /**
- * Periscope exposure formatter for the analyze endpoint. Gamma is
- * MM-signed (UW Periscope before 2026-05-26, GEXBot negated to MM sign
- * since); charm and vanna are GEXBot's own sign since 2026-05-26.
+ * Periscope exposure formatter for the analyze endpoint. The slice's
+ * source decides how its values are labelled (owner decision D1 revised,
+ * 2026-10-29): before the 2026-05-26 cutover they are UW Periscope's
+ * market-maker position estimates; from it on they are GEXBot values in
+ * GEXBot's taker-side sign (positive = traders net long that Greek at the
+ * strike), never converted to an MM sign.
  *
  * Replaces the screenshot workflow: instead of pasting a UW Periscope
  * heat-map image and relying on vision OCR, this module reads the
- * `periscope_snapshots` table (populated by the Railway scraper service)
- * and emits a structured text block Claude can quote magnitudes from
- * directly.
+ * `periscope_snapshots` table (written by the retired UW Periscope scraper
+ * before 2026-05-26, by `populate-periscope-from-gexbot` since) and emits
+ * a structured text block Claude can quote magnitudes from directly.
  *
  * Three queries per call:
  *   1. Latest slot at or before `asOf`         — primary structural read
@@ -24,6 +27,27 @@
  */
 
 import { getDb } from './db.js';
+import {
+  periscopeSourceAt,
+  type PeriscopeSource,
+} from '../../src/utils/periscope-source.js';
+
+/** What the slice's values are, per source, for the block's header. */
+const SOURCE_HEADER: Record<PeriscopeSource, string> = {
+  scraper: ' (UW Periscope, market-maker position estimate)',
+  gexbot:
+    ' (GEXBot, taker-side sign: positive = traders net long that Greek at the strike)',
+};
+
+/**
+ * The charm sub-heading. "Mechanical /ES buy into close" is the UW-era
+ * market-maker reading; it does not carry over to GEXBot's taker flow.
+ */
+const CHARM_HEADER: Record<PeriscopeSource, string> = {
+  scraper: 'Charm flow (positive = mechanical /ES BUY into close):',
+  gexbot:
+    'Charm (GEXBot, taker-side sign: positive = traders net long charm at the strike):',
+};
 
 export interface PeriscopeRow {
   strike: number;
@@ -457,8 +481,10 @@ export function formatPeriscopeForClaude(args: {
     hour12: false,
   });
 
+  const source = periscopeSourceAt(latest.capturedAt);
+  const sourceNote = source == null ? '' : SOURCE_HEADER[source];
   lines.push(
-    `Periscope exposure for ${latest.expiry} expiry, latest 10-min slice ${slotTimeCT} CT (spot ${spot.toFixed(2)}).`,
+    `Periscope exposure${sourceNote} for ${latest.expiry} expiry, latest 10-min slice ${slotTimeCT} CT (spot ${spot.toFixed(2)}).`,
   );
   if (prior != null) {
     const priorTimeCT = new Date(prior.capturedAt).toLocaleTimeString('en-US', {
@@ -531,7 +557,7 @@ export function formatPeriscopeForClaude(args: {
 
   lines.push(
     '',
-    'Charm flow (positive = mechanical /ES BUY into close):',
+    source == null ? 'Charm flow:' : CHARM_HEADER[source],
     `  Net tally ±50: ${fmtSigned(charmNearTally)}`,
     `  Net tally ±100: ${fmtSigned(charmWideTally)}`,
   );

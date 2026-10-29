@@ -84,7 +84,7 @@ export interface UseGexLandscapeDataReturn {
  * (the noise source) while passing the median and above unscathed.
  * Half the legacy MM-scale floor of 100, matching the magnitude drop
  * from the legacy MM-attributed dealer math to GexBot's per-strike
- * values. Magnitude-only, so the endpoint's sign flip leaves it valid.
+ * values. Magnitude-only, so it does not depend on the sign convention.
  */
 const DELTA_NOISE_FLOOR = 50;
 
@@ -99,8 +99,8 @@ function computeDelta(current: number, prev: number | null): number | null {
  * GexLandscape renderer consumes.
  *
  * - Endpoint `gamma` → `netGamma`, `charm` → `netCharm`, `vanna` → `netVanna`.
- *   The endpoint serves gamma negated to MM sign (GEXBot reports it
- *   taker-signed) and charm/vanna in GEXBot's own sign.
+ *   The endpoint serves all three in GEXBot's taker-side sign
+ *   (positive = traders net long that Greek), never negated.
  * - `price` ← top-level `spot` from the endpoint payload.
  * - All call/put split fields stay zero — WS side channel is gone and
  *   GexBot's state rows carry no call/put Greek split.

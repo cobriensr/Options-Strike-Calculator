@@ -1,7 +1,9 @@
 /**
- * usePeriscopeStrikes — fetches MM-attributed per-strike gamma + charm
- * from /api/periscope-strikes (Phase 1 of the GEX Landscape MM swap —
- * docs/superpowers/specs/gex-landscape-mm-swap-2026-05-12.md).
+ * usePeriscopeStrikes — fetches per-strike gamma + charm from
+ * /api/periscope-strikes (periscope_snapshots: UW Periscope's market-maker
+ * estimate before 2026-05-26, GEXBot's taker-side values since). Used by
+ * the GEX Target "Periscope Γ" column. Built for Phase 1 of the GEX
+ * Landscape MM swap (docs/superpowers/specs/gex-landscape-mm-swap-2026-05-12.md).
  *
  * Returns the latest slot's per-strike rows PLUS three lookback slots
  * (10m / 20m / 30m prior) computed by walking back through the
@@ -10,7 +12,8 @@
  * warmup needed; the slot history lives in `periscope_snapshots`).
  *
  * Live mode (no `at`): polls every POLL_INTERVALS.STRIKE_BATTLE_MAP
- * during market hours. The scraper produces a new slot every 10 min,
+ * during market hours. populate-periscope-from-gexbot writes a new slot
+ * every 10 min,
  * so polling more frequently than 30s just hits the 30s endpoint cache.
  *
  * Snapshot mode (`at='YYYY-MM-DDTHH:mm:ssZ'`): one-shot at-or-before

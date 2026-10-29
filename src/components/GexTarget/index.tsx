@@ -119,11 +119,11 @@ export const GexTarget = memo(function GexTarget({
   // here doesn't impact the GEX panels.
   const { points: nopePoints } = useNopeIntraday({ marketOpen });
 
-  // MM-signed gamma overlay for the Strike Board (periscope_snapshots:
-  // GEXBot gamma negated to MM sign since 2026-05-26, UW Periscope
-  // before), so the trader can cross-check the naive scoring pipeline's
-  // wallSide pick against it. Aligned to the
-  // GexTarget scrub timestamp when scrubbed, latest-otherwise.
+  // Periscope gamma overlay for the Strike Board (periscope_snapshots: UW
+  // Periscope's market-maker estimate before 2026-05-26, GEXBot's
+  // taker-side gamma since), shown next to the naive Hedge/1% with a sign
+  // comparison. Aligned to the GexTarget scrub timestamp when scrubbed,
+  // latest otherwise.
   const periscopeStrikes = usePeriscopeStrikes(
     marketOpen,
     selectedDate,

@@ -23,13 +23,14 @@
  * Orderflow tier doesn't expose a positions endpoint. Detectors don't
  * use positions, so this is fine for now.
  *
- * Sign: gamma is written negated to MM sign, the convention the readers
- * and rules assume (GEXBot reports it taker-signed); charm and vanna keep
- * the vendor sign. `decodeStrikes` applies `GEXBOT_TO_MM_SIGN` (owner
- * decision D1). Every row is tagged `source = 'gexbot'`, so
- * `scripts/resign-gexbot-gamma.mts` (which re-signs only `source IS NULL`
- * rows) never flips a row this cron wrote. The INSERT names the `source`
- * column, so migration #194 must be applied before this code deploys.
+ * Sign: gamma, charm and vanna are written in GEXBot's own taker-side
+ * sign (positive = traders net long that Greek at the strike), never
+ * negated: GEXBot is a taker-flow measure, not the UW scraper's
+ * market-maker position estimate (owner decision D1 revised, 2026-10-29).
+ * Every row is tagged `source = 'gexbot'` so readers can tell the two
+ * feeds apart; `scripts/tag-periscope-source.mts` tags the older rows.
+ * The INSERT names the `source` column, so migration #194 must be applied
+ * before this code deploys.
  *
  * Idempotency: `periscope_snapshots` UNIQUE
  * (captured_at, expiry, panel, strike) gives natural dedup. Re-running
@@ -47,10 +48,10 @@ import {
 import { getETDateStr, getETTime } from '../../src/utils/timezone.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
+import { PERISCOPE_SOURCE } from '../../src/utils/periscope-source.js';
 import {
   PANELS,
   PANEL_TO_CATEGORY,
-  PERISCOPE_SOURCE,
   STALENESS_CUTOFF_MS,
   TICKER,
   decodeStrikes,
@@ -139,8 +140,7 @@ export default withCronInstrumentation(
 
       const row = rows[0]!;
       const capturedAt = new Date(row.captured_at);
-      // Gamma comes back negated to MM sign; charm and vanna unchanged.
-      const decoded = decodeStrikes(row.raw_response, panel);
+      const decoded = decodeStrikes(row.raw_response);
 
       if (decoded.length === 0) {
         errors.push(`${category}: no strikes decoded from payload`);

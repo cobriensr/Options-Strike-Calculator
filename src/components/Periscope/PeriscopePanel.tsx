@@ -1,6 +1,9 @@
 /**
- * PeriscopePanel — read-only display of the latest dealer-flow map,
- * served by `/api/periscope-map` from GEXBot's 1-min state captures.
+ * PeriscopePanel — read-only display of the latest Periscope exposure
+ * map, served by `/api/periscope-map` from GEXBot's 1-min state captures.
+ * The title names the slice's feed: UW Periscope (market-maker position
+ * estimate) before the 2026-05-26 cutover, GEXBot (taker-side sign)
+ * after; neutral while there is no slice.
  *
  * The panel is a thin composition shell: header (slot timestamp + spot)
  * plus the deterministic `MMExposureMap` body that derives the level
@@ -24,6 +27,14 @@ import type {
 } from '../../hooks/usePeriscopeExposure';
 import { MMExposureMap } from './MMExposureMap';
 import { SlotPicker } from './SlotPicker';
+import { periscopeSourceAt } from '../../utils/periscope-source';
+
+/** Section title by the displayed slice's feed (owner decision D1 revised). */
+const PANEL_TITLE = {
+  scraper: 'Periscope MM Exposure (UW)',
+  gexbot: 'Periscope Exposure (GEXBot, taker)',
+  unknown: 'Periscope Exposure',
+} as const;
 
 interface PeriscopePanelProps {
   view: PeriscopeView | null;
@@ -119,9 +130,11 @@ function PeriscopePanelInner({
     body = <PeriscopeBody view={view} />;
   }
 
+  const source = view == null ? null : periscopeSourceAt(view.capturedAt);
+
   return (
     <SectionBox
-      label="Periscope MM Exposure"
+      label={PANEL_TITLE[source ?? 'unknown']}
       headerRight={
         <SlotPicker
           displayedDate={displayedDate}

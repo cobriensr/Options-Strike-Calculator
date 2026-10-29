@@ -1,7 +1,8 @@
 /**
  * usePeriscopeExposure — fetches the Periscope exposure view for the
- * panel (since the 2026-05-26 GEXBot cutover: gamma negated to MM sign,
- * charm and vanna in GEXBot's own sign). Routes
+ * panel. Slices from before the 2026-05-26 cutover are UW Periscope's
+ * market-maker position estimates; later ones are GEXBot values in
+ * GEXBot's taker-side sign (`periscopeSourceAt`). Routes
  * between two endpoints based on whether the user is in live or
  * historical mode:
  *

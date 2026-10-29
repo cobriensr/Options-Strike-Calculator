@@ -48,13 +48,14 @@ export function signalTooltip(cls: GexClassification, dir: Direction): string {
 }
 
 /**
- * Charm is GEXBot's own value in the vendor's sign (owner decision D1
- * flips only gamma), so the tooltip makes no market-maker claim.
+ * GEXBot charm in its taker-side sign (owner decision D1 revised: GEXBot
+ * is classified taker flow, not a market-maker position), so the tooltip
+ * states who is long or short and makes no market-maker claim.
  */
 export function charmTooltip(netCharm: number): string {
   return netCharm >= 0
-    ? "Positive GEXBot charm (vendor's sign, not market-maker attributed): the structural effect at this level gets stronger into the close."
-    : "Negative GEXBot charm (vendor's sign, not market-maker attributed): the structural effect at this level weakens into the close.";
+    ? 'Positive GEXBot charm (taker-side sign): traders are net long charm at this strike.'
+    : 'Negative GEXBot charm (taker-side sign): traders are net short charm at this strike.';
 }
 
 /**

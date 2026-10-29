@@ -12,11 +12,10 @@
  * geometry than the standard CHEX/DEX/VEX `GreekBar`, and worth keeping
  * adjacent to the cell that owns it.
  *
- * The MM Γ cell shows MM-signed dollar gamma at this strike (GEXBot
- * negated to MM sign since 2026-05-26, UW Periscope before) as a
- * cross-check against the naive Hedge/1%. Different scales
- * (MM is B-scale, Hedge/1% is K-scale) so the sign-agreement marker
- * is the load-bearing signal, not magnitude.
+ * The Periscope Γ cell shows the strike's periscope_snapshots gamma
+ * (UW Periscope's market-maker estimate before 2026-05-26, GEXBot's
+ * taker-side gamma since) with a sign comparison against the naive
+ * Hedge/1%. Different scales, so only the signs are compared.
  */
 
 import { memo } from 'react';
@@ -48,8 +47,8 @@ export interface RowProps {
   barStats: BarStatsBundle;
   isAlt: boolean;
   /**
-   * MM-signed dollar gamma at this strike from periscope_snapshots, or
-   * `null` when no MM slot exists for the strike (e.g. pre-market, or
+   * Dollar gamma at this strike from periscope_snapshots, or
+   * `null` when no slot exists for the strike (e.g. pre-market, or
    * strike is outside the periscope_snapshots coverage window). Scale
    * differs from `features.gexDollars` — the agreement marker compares
    * signs, not magnitudes.
@@ -96,11 +95,10 @@ export const Row = memo(function Row({
 
   const gexColor = features.gexDollars >= 0 ? theme.green : theme.red;
 
-  // MM-attributed gamma cross-check. The naive scoring pipeline computes
-  // `wallSide` from the sign of `features.gexDollars`; if the MM-signed
-  // gamma disagrees on the sign at this strike, the wall may be
-  // mis-classified. Both 0 → no marker (ambiguous). Either null → no
-  // marker (no MM data to compare against).
+  // Sign comparison with the naive Hedge/1% (`features.gexDollars`). It
+  // only says whether the two signs match: on GEXBot slices the Periscope
+  // value is taker flow, not a market-maker position. Either 0 → no marker
+  // (ambiguous). Null → no marker (no Periscope value to compare).
   const mmAgreement: 'agree' | 'disagree' | 'none' =
     mmGamma === null || mmGamma === 0 || features.gexDollars === 0
       ? 'none'
@@ -207,9 +205,9 @@ export const Row = memo(function Row({
         {formatGexBare(features.gexDollars)}
       </td>
 
-      {/* MM Γ — MM-signed dollar gamma (periscope_snapshots), with sign-
-          agreement marker against Hedge/1% (different scale, so the ✓/✗
-          is the load-bearing signal, not the value compare). */}
+      {/* Periscope Γ — periscope_snapshots dollar gamma, with a sign
+          comparison against Hedge/1% (different scale, so only the signs
+          are compared). */}
       <td className={TD_CLS} style={{ color: mmColor }}>
         {mmGamma === null ? (
           <span style={{ color: theme.textMuted }}>—</span>
@@ -218,8 +216,8 @@ export const Row = memo(function Row({
             <span>{formatGexBare(mmGamma)}</span>
             {mmAgreement === 'agree' && (
               <span
-                aria-label="MM attribution agrees with naive Hedge sign"
-                title="MM attribution agrees with naive Hedge sign"
+                aria-label="Periscope gamma sign matches the naive Hedge sign"
+                title="Periscope gamma sign matches the naive Hedge sign"
                 style={{ color: theme.green }}
               >
                 ✓
@@ -227,8 +225,8 @@ export const Row = memo(function Row({
             )}
             {mmAgreement === 'disagree' && (
               <span
-                aria-label="MM attribution disagrees with naive Hedge sign — wall side may be mis-classified"
-                title="MM attribution disagrees with naive Hedge sign — wall side may be mis-classified"
+                aria-label="Periscope gamma sign differs from the naive Hedge sign"
+                title="Periscope gamma sign differs from the naive Hedge sign"
                 style={{ color: theme.red }}
               >
                 ✗

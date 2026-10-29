@@ -27,14 +27,14 @@ import type { RankChangeInfo } from './RankArrow';
 export interface StrikeBoxProps {
   leaderboard: StrikeScore[];
   /**
-   * MM-signed gamma per strike from `periscope_snapshots`: GEXBot gamma
-   * negated to MM sign since 2026-05-26, UW Periscope's MM-attributed
-   * gamma before. When present, each row renders an extra "MM Γ" cell so
-   * the trader can cross-check the naive scoring pipeline's wallSide pick
-   * against the MM-signed gamma. Missing
-   * map (e.g. pre-market or no MM coverage) renders an em-dash in the
-   * cell. Magnitude is on a different scale than `Hedge/1%` — the
-   * agreement signal is the sign comparison, not the value compare.
+   * Per-strike gamma from `periscope_snapshots`, which holds two different
+   * measurements: UW Periscope's market-maker position estimate before the
+   * 2026-05-26 cutover, GEXBot gamma in its taker-side sign since (owner
+   * decision D1 revised). When present, each row renders an extra
+   * "Periscope Γ" cell with a sign comparison against the naive Hedge/1%.
+   * A missing map (e.g. pre-market) renders an em-dash in the cell.
+   * Magnitude is on a different scale than `Hedge/1%`, so only the signs
+   * are compared.
    */
   mmGammaMap?: Map<number, number>;
 }
@@ -149,9 +149,9 @@ export const StrikeBox = memo(function StrikeBox({
                 <th
                   className={`${TH_CLS} cursor-help`}
                   scope="col"
-                  title="MM-signed dollar gamma from periscope_snapshots (captured every 10 min during RTH): GEXBot gamma negated to MM sign since 2026-05-26, UW Periscope before. Cross-check column: scale is different from Hedge/1% — what matters is the SIGN comparison. A ✓ next to the value means MM attribution agrees with the naive Hedge/1% sign (same wall side); ✗ means they disagree (the scoring pipeline may have the wall on the wrong side)."
+                  title="Per-strike dollar gamma from periscope_snapshots (every 10 min during RTH). Its meaning depends on the slice: since 2026-05-26 it is GEXBot gamma in GEXBot's taker-side sign (positive = traders net long gamma at the strike); before that it was UW Periscope's market-maker position estimate. Scale differs from Hedge/1%, so compare signs only: ✓ = the sign matches the naive Hedge/1% sign, ✗ = it differs. On GEXBot slices that compares taker flow with a dealer-convention estimate, so ✗ is not evidence the wall is on the wrong side."
                 >
-                  MM Γ
+                  Periscope Γ
                 </th>
                 <th
                   className={TH_CLS}

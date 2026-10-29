@@ -5,7 +5,7 @@
 **Supersedes:** [gex-landscape-mm-swap-2026-05-12.md](./gex-landscape-mm-swap-2026-05-12.md)
 **Status:** Locked — decisions confirmed 2026-05-26, ready to implement
 
-> **Correction (2026-10-28):** the position-4 priors are t−5 / t−15 / t−30 min, not t−1 / t−5 / t−10 (fields renamed `gammaPrev5m/15m/30m` etc.), and `/api/gex-landscape` now negates GEXBot gamma and its priors to MM sign (charm and vanna keep the vendor sign). See [gexbot-refresh-2026-10-28.md](./gexbot-refresh-2026-10-28.md) (P4, D1/P10b).
+> **Correction (2026-10-28):** the position-4 priors are t−5 / t−15 / t−30 min, not t−1 / t−5 / t−10 (fields renamed `gammaPrev5m/15m/30m` etc.), and GEXBot gamma, charm and vanna are taker-signed (positive = traders net long that Greek at the strike), not market-maker positions: `/api/gex-landscape` serves them in that sign, never negated, so the "MM gamma" wording below does not describe this data. See [gexbot-refresh-2026-10-28.md](./gexbot-refresh-2026-10-28.md) (P4, D1 revised / P10b′).
 
 ## Goal
 

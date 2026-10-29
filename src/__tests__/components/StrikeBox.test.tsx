@@ -105,20 +105,26 @@ describe('StrikeBox: table structure', () => {
     expect(screen.getByText('DEX')).toBeInTheDocument();
     expect(screen.getByText('VEX')).toBeInTheDocument();
     expect(screen.getByText('Hedge/1%')).toBeInTheDocument();
-    expect(screen.getByText('MM Γ')).toBeInTheDocument();
+    expect(screen.getByText('Periscope Γ')).toBeInTheDocument();
+    expect(screen.queryByText('MM Γ')).toBeNull();
     expect(screen.getByText('HOT%')).toBeInTheDocument();
   });
 
-  it('MM Γ header names its real source: GEXBot negated to MM sign since 2026-05-26', () => {
+  it('Periscope Γ header gives both meanings, since the column can show either era', () => {
     render(<StrikeBox leaderboard={[makeStrike(5800)]} />);
-    const title = screen.getByText('MM Γ').getAttribute('title') ?? '';
-    expect(title).toMatch(/GEXBot gamma negated to MM sign since 2026-05-26/);
-    expect(title).toMatch(/UW Periscope before/);
+    const title = screen.getByText('Periscope Γ').getAttribute('title') ?? '';
+    expect(title).toMatch(
+      /since 2026-05-26 it is GEXBot gamma in GEXBot's taker-side sign \(positive = traders net long gamma at the strike\)/,
+    );
+    expect(title).toMatch(
+      /before that it was UW Periscope's market-maker position estimate/,
+    );
+    expect(title).not.toMatch(/MM attribution|negated|wall side/);
   });
 });
 
-describe('StrikeBox: MM Γ overlay', () => {
-  it('renders an em-dash in the MM Γ cell when no mmGammaMap is provided', () => {
+describe('StrikeBox: Periscope Γ overlay', () => {
+  it('renders an em-dash in the Periscope Γ cell when no mmGammaMap is provided', () => {
     render(<StrikeBox leaderboard={[makeStrike(5800)]} />);
     // The cell renders "—" via theme.textMuted; query by the literal char.
     expect(screen.getAllByText('—').length).toBeGreaterThan(0);
@@ -130,32 +136,36 @@ describe('StrikeBox: MM Γ overlay', () => {
     expect(screen.getAllByText('—').length).toBeGreaterThan(0);
   });
 
-  it('shows the ✓ marker when MM gamma sign agrees with naive Hedge sign', () => {
-    // Naive gexDollars defaults to +2B (positive). MM gamma also positive → agree.
+  it('shows the ✓ marker when the Periscope gamma sign matches the naive Hedge sign', () => {
+    // Naive gexDollars defaults to +2B (positive). Periscope gamma also positive → match.
     const mm = new Map<number, number>([[5800, 3_500_000_000]]);
     render(<StrikeBox leaderboard={[makeStrike(5800)]} mmGammaMap={mm} />);
     expect(
-      screen.getByLabelText('MM attribution agrees with naive Hedge sign'),
+      screen.getByLabelText(
+        'Periscope gamma sign matches the naive Hedge sign',
+      ),
     ).toBeInTheDocument();
   });
 
-  it('shows the ✗ marker when MM gamma sign disagrees with naive Hedge sign', () => {
-    // Naive gexDollars +2B (positive) vs MM gamma negative → disagree.
+  it('shows the ✗ marker when the Periscope gamma sign differs from the naive Hedge sign', () => {
+    // Naive gexDollars +2B (positive) vs Periscope gamma negative → differ.
     const mm = new Map<number, number>([[5800, -3_500_000_000]]);
     render(<StrikeBox leaderboard={[makeStrike(5800)]} mmGammaMap={mm} />);
     expect(
-      screen.getByLabelText(/MM attribution disagrees with naive Hedge sign/i),
+      screen.getByLabelText(
+        'Periscope gamma sign differs from the naive Hedge sign',
+      ),
     ).toBeInTheDocument();
   });
 
-  it('shows neither marker when MM gamma is exactly zero', () => {
+  it('shows neither marker when the Periscope gamma is exactly zero', () => {
     const mm = new Map<number, number>([[5800, 0]]);
     render(<StrikeBox leaderboard={[makeStrike(5800)]} mmGammaMap={mm} />);
     expect(
-      screen.queryByLabelText(/MM attribution agrees/),
+      screen.queryByLabelText(/Periscope gamma sign matches/),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByLabelText(/MM attribution disagrees/),
+      screen.queryByLabelText(/Periscope gamma sign differs/),
     ).not.toBeInTheDocument();
   });
 });

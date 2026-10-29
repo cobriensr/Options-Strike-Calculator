@@ -1,11 +1,14 @@
 /**
  * GET /api/periscope-exposure
  *
- * Returns the UW Periscope MM-attributed exposure slot for the picked
- * (date, time) — defaulting to today's latest — plus straddle cone
+ * Returns the Periscope exposure slot for the picked (date, time) from
+ * periscope_snapshots — defaulting to today's latest — plus straddle cone
  * bounds, breach events, and the list of available slot timestamps for
  * that date. Same data the analyze endpoint injects into Claude's
- * prompt, exposed as JSON for the frontend panel.
+ * prompt, exposed as JSON for the frontend panel. Slots before the
+ * 2026-05-26 cutover are UW Periscope's market-maker position estimates;
+ * later ones are GEXBot values in GEXBot's taker-side sign
+ * (`periscopeSourceAt`, owner decision D1 revised).
  *
  * Query params:
  *   ?date=YYYY-MM-DD  CT trading date. Defaults to today's CT date.

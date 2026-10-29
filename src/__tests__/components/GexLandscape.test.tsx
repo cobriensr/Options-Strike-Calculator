@@ -526,33 +526,35 @@ describe('GexLandscape', () => {
     });
   });
 
-  describe('Greek column tooltips name the source and sign (owner decision D1)', () => {
-    it('NetGamma says GEXBot gamma negated to MM sign, not UW Periscope', () => {
-      renderLandscape();
-      const title = screen.getByText('NetGamma').getAttribute('title') ?? '';
-      expect(title).toMatch(/GEXBot/);
-      expect(title).toMatch(/negated to market-maker sign/);
-      expect(title).not.toMatch(/UW Periscope|proprietary/);
-    });
-
-    it('NetCharm and NetVanna say vendor sign and claim no MM attribution', () => {
-      renderLandscape();
-      for (const header of ['NetCharm', 'NetVanna']) {
+  describe('Greek column tooltips: GEXBot, taker-side sign (owner decision D1 revised)', () => {
+    it.each([
+      ['NetGamma', 'gamma'],
+      ['NetCharm', 'charm'],
+      ['NetVanna', 'vanna'],
+    ])(
+      '%s says GEXBot taker-side sign, with no MM, dealer or UW claim',
+      (header, greek) => {
+        renderLandscape();
         const title = screen.getByText(header).getAttribute('title') ?? '';
         expect(title).toMatch(/GEXBot/);
-        expect(title).toMatch(/vendor's sign, not market-maker attributed/);
-        expect(title).not.toMatch(/MM-attributed|dealer/i);
-      }
-    });
+        expect(title).toContain(
+          `in GEXBot's taker-side sign: positive = traders (takers) are net long ${greek} at this strike`,
+        );
+        expect(title).not.toMatch(/MM-|dealer|UW|negated|proprietary/);
+      },
+    );
 
-    it('the per-cell charm tooltip claims no market-maker attribution', () => {
+    it('the per-cell charm tooltip reads charm in the taker-side sign', () => {
       renderLandscape();
       const charmCells = Array.from(
         document.querySelectorAll<HTMLElement>('[title]'),
       ).filter((el) => /GEXBot charm/.test(el.title));
       expect(charmCells.length).toBeGreaterThan(0);
       for (const el of charmCells) {
-        expect(el.title).not.toMatch(/market maker/i);
+        expect(el.title).toMatch(
+          /taker-side sign\): traders are net (long|short) charm/,
+        );
+        expect(el.title).not.toMatch(/market.maker|dealer/i);
       }
     });
   });

@@ -1,8 +1,12 @@
 /**
  * GET /api/periscope-strikes
  *
- * Returns raw per-strike MM-attributed gamma + charm values for the
- * picked (date, time) slot — used by the GEX Landscape panel after the
+ * Returns raw per-strike gamma + charm values from periscope_snapshots
+ * for the picked (date, time) slot. Slots before the 2026-05-26 cutover
+ * are UW Periscope's market-maker position estimates; later ones are
+ * GEXBot values in GEXBot's taker-side sign (owner decision D1 revised).
+ * Read today by the GEX Target "Periscope Γ" column (usePeriscopeStrikes);
+ * the GEX Landscape moved to /api/gex-landscape. Originally built for the
  * SPX-only MM-data swap (docs/superpowers/specs/gex-landscape-mm-swap-2026-05-12.md).
  *
  * vs. /api/periscope-exposure: that endpoint returns the formatted Top-N

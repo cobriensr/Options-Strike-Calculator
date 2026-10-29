@@ -326,11 +326,12 @@ export default function StrikeCalculator() {
     selectedSlot: periscopeSlot,
   });
   // Periscope auto-playbook (Claude) is retired in favor of the
-  // deterministic GEXBot-fed map at /api/periscope-map. Panel renders
-  // the deterministic TradePlanSection only — the prose layer and the
+  // deterministic GEXBot-fed map at /api/periscope-map. The panel renders
+  // the deterministic MMExposureMap only — the prose layer and the
   // usePeriscopePlaybook hook have been removed.
   // GEX Landscape owns its own date / scrub state internally and pulls
-  // GEXBot per-strike data (taker-signed) via `useGexLandscapeData` →
+  // GEXBot per-strike data (GEXBot's taker-side sign, never negated) via
+  // `useGexLandscapeData` →
   // `/api/gex-landscape`. SPX-only since Phase 3 of the MM swap, so
   // App.tsx no longer threads ticker or per-strike props through.
   const gexTarget = useGexTarget(market.data.quotes?.marketOpen ?? false);
@@ -1195,7 +1196,7 @@ export default function StrikeCalculator() {
             <GatedSection
               gate={hasMarketContext}
               id="sec-periscope-exposure"
-              label="Periscope MM Exposure"
+              label="Periscope Exposure"
               fallback={<SkeletonSection lines={6} tall />}
             >
               <PeriscopePanel

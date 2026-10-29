@@ -34,6 +34,18 @@ import {
   regimeColor,
   verdictColor,
 } from '../../utils/periscope-formatting';
+import { periscopeSourceAt } from '../../utils/periscope-source';
+
+/**
+ * Map title by the slice's feed (owner decision D1 revised, 2026-10-29):
+ * UW Periscope estimated market-maker positions; GEXBot measures taker
+ * flow, in its taker-side sign. Neutral when the timestamp is unreadable.
+ */
+const MAP_TITLE = {
+  scraper: 'MM Exposure Map (UW)',
+  gexbot: 'Exposure Map (GEXBot, taker)',
+  unknown: 'Exposure Map',
+} as const;
 
 // ── Magnitudes — pulled from view in M (millions) for compactness ────
 
@@ -247,6 +259,7 @@ export function MMExposureMap({ view }: { view: PeriscopeView }) {
   const longTargets = orderedLongTargets(view, plan.regime);
   const shortTargets = orderedShortTargets(view, plan.regime);
   const regimeFg = regimeColor(plan.regime);
+  const title = MAP_TITLE[periscopeSourceAt(view.capturedAt) ?? 'unknown'];
 
   return (
     <div
@@ -262,7 +275,7 @@ export function MMExposureMap({ view }: { view: PeriscopeView }) {
           className="font-sans text-[10px] font-bold tracking-[0.12em] uppercase"
           style={{ color: theme.textTertiary }}
         >
-          MM Exposure Map
+          {title}
         </span>
         <span
           className="rounded px-1.5 py-0.5 text-[10px] tracking-wider uppercase"

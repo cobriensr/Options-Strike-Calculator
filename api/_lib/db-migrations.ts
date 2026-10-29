@@ -5402,7 +5402,7 @@ export const MIGRATIONS: Migration[] = [
   {
     id: 194,
     description:
-      'Add a nullable source column (no default) to periscope_snapshots. It records which vendor and sign convention produced each row: "scraper" = the UW Periscope scraper, MM-signed, before 2026-05-26; "gexbot" = GEXBot State, negated to MM sign on ingest. The backfill and the one-time re-sign of the stored GEXBot-era gamma rows happen in the next migration, which keys on source IS NULL so it runs once and is safe in either order with the ingest change. Nothing reads or writes the column yet.',
+      'Add a nullable source column (no default) to periscope_snapshots. It records which feed produced each row, because the two measure different things: "scraper" = the UW Periscope scraper (market-maker position estimates), rows before 2026-05-26T17:20Z; "gexbot" = GEXBot State (classified taker flow, in the GEXBot taker-side sign, never negated), rows from then on. populate-periscope-from-gexbot writes "gexbot" on every new row, so apply this before deploying that code. scripts/tag-periscope-source.mts tags the existing rows once (values unchanged, only rows where source IS NULL).',
     statements: (sql) => [
       sql`SET LOCAL lock_timeout = '5s'`,
       sql`ALTER TABLE periscope_snapshots ADD COLUMN IF NOT EXISTS source TEXT`,

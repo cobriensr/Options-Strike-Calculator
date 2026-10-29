@@ -957,7 +957,7 @@ describe('buildAnalysisContext', () => {
     vi.unstubAllGlobals();
   });
 
-  it('states the Periscope sign conventions: gamma MM-signed, charm and vanna in the vendor sign', async () => {
+  it('labels the Periscope block as GEXBot taker-side values, with no market-maker claim', async () => {
     const { buildPeriscopeContextBlock } =
       await import('../_lib/periscope-format.js');
     vi.mocked(buildPeriscopeContextBlock).mockResolvedValueOnce(
@@ -979,13 +979,14 @@ describe('buildAnalysisContext', () => {
     expect(block.split('\n')[0]).toBe(
       '## Periscope Exposure (latest 10-min slice — replaces screenshots)',
     );
-    expect(block).toContain('Gamma is MM-signed');
-    expect(block).toContain('negated to MM sign since 2026-05-26');
     expect(block).toContain(
-      "Charm and vanna are GEXBot's own values in the vendor's sign since 2026-05-26, not MM-attributed.",
+      'Since 2026-05-26 these values come from GEXBot in its taker-side sign: positive = traders (takers) are net long that Greek at the strike, negative = net short.',
     );
-    // The old copy claimed all three Greeks were MM-attributed.
-    expect(block).not.toContain('**MM-attributed**');
+    expect(block).toContain('not market-maker positions');
+    // Owner decision D1 revised: GEXBot is not a UW/MM measurement.
+    expect(block).not.toMatch(
+      /MM-attributed|structured equivalent|Market Maker Exposures Table|negated/,
+    );
     vi.unstubAllGlobals();
   });
 
@@ -1003,8 +1004,8 @@ describe('buildAnalysisContext', () => {
     expect(start).toBeGreaterThanOrEqual(0);
     const block = text.slice(start, text.indexOf('BIAS-BODY'));
     expect(block).toContain("GEXBot's 1-minute capture");
-    expect(block).toContain('gamma negated to MM sign');
-    expect(block).not.toContain('smoothing');
+    expect(block).toContain('taker-side sign');
+    expect(block).not.toMatch(/smoothing|dealer|negated/);
     vi.unstubAllGlobals();
   });
 

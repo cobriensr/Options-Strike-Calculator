@@ -148,7 +148,7 @@ export function getPanelRegistry(
   if (hasMarketOrSnapshot) {
     list.push({
       id: 'sec-periscope-exposure',
-      label: 'Periscope MM Exposure',
+      label: 'Periscope Exposure',
       group: 'Market Context',
     });
   }

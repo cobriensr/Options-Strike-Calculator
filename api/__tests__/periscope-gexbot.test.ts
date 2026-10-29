@@ -2,7 +2,6 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  GEXBOT_TO_MM_SIGN,
   decodeStrikes,
   decodeStrikesWithHistory,
   type GexbotStatePayload,
@@ -16,81 +15,12 @@ function row(strike: number, value: number, prev: unknown = []): unknown[] {
   return [strike, 0, 0, value, prev, 0, null];
 }
 
-describe('GEXBot → MM sign (owner decision D1)', () => {
-  const payload: GexbotStatePayload = {
-    mini_contracts: [
-      row(5950, -1234, [-1200, null, 0]),
-      row(5960, 700, [650, 600, 580]),
-      row(5970, 0, [0, 0, 0]),
-    ],
-  };
-
-  it('negates gamma only; charm and vanna keep the vendor sign', () => {
-    expect(GEXBOT_TO_MM_SIGN).toEqual({ gamma: -1, charm: 1, vanna: 1 });
-  });
-
-  it('decodeStrikes negates the gamma panel', () => {
-    expect(decodeStrikes(payload, 'gamma')).toEqual([
-      { strike: 5950, value: 1234 },
-      { strike: 5960, value: -700 },
-      { strike: 5970, value: 0 },
-    ]);
-  });
-
-  it('decodeStrikes leaves charm and vanna in the vendor sign', () => {
-    const raw = [
-      { strike: 5950, value: -1234 },
-      { strike: 5960, value: 700 },
-      { strike: 5970, value: 0 },
-    ];
-    expect(decodeStrikes(payload, 'charm')).toEqual(raw);
-    expect(decodeStrikes(payload, 'vanna')).toEqual(raw);
-  });
-
-  it('decodeStrikesWithHistory negates gamma and all three priors, so deltas keep their sign', () => {
-    const [a, b] = decodeStrikesWithHistory(payload, 'gamma');
-    expect(a).toEqual({
-      strike: 5950,
-      value: 1234,
-      prev5m: 1200,
-      prev15m: null,
-      prev30m: 0,
-    });
-    expect(b).toEqual({
-      strike: 5960,
-      value: -700,
-      prev5m: -650,
-      prev15m: -600,
-      prev30m: -580,
-    });
-    // Taker gamma grew 50 over 5 min (650 → 700), so MM gamma fell 50.
-    expect(b!.value - b!.prev5m!).toBe(-(700 - 650));
-  });
-
-  it('never produces negative zero for a flipped 0', () => {
-    const zero = decodeStrikesWithHistory(payload, 'gamma')[2]!;
-    expect(Object.is(zero.value, 0)).toBe(true);
-    expect(Object.is(zero.prev5m, 0)).toBe(true);
-    expect(Object.is(zero.prev30m, 0)).toBe(true);
-  });
-
-  it('decodeStrikesWithHistory leaves charm and vanna priors unchanged', () => {
-    expect(decodeStrikesWithHistory(payload, 'vanna')[1]).toEqual({
-      strike: 5960,
-      value: 700,
-      prev5m: 650,
-      prev15m: 600,
-      prev30m: 580,
-    });
-  });
-});
-
 describe('decodeStrikes (back-compat)', () => {
   it('returns parsed rows in input order with rounded strikes', () => {
     const payload: GexbotStatePayload = {
       mini_contracts: [row(5950.4, -1234), row(5960.7, 500)],
     };
-    expect(decodeStrikes(payload, 'charm')).toEqual([
+    expect(decodeStrikes(payload)).toEqual([
       { strike: 5950, value: -1234 },
       { strike: 5961, value: 500 },
     ]);
@@ -106,18 +36,13 @@ describe('decodeStrikes (back-compat)', () => {
         row(5970, 200),
       ],
     };
-    expect(decodeStrikes(payload, 'charm')).toEqual([
-      { strike: 5970, value: 200 },
-    ]);
+    expect(decodeStrikes(payload)).toEqual([{ strike: 5970, value: 200 }]);
   });
 
   it('returns [] when mini_contracts is absent or not an array', () => {
-    expect(decodeStrikes({}, 'charm')).toEqual([]);
+    expect(decodeStrikes({})).toEqual([]);
     expect(
-      decodeStrikes(
-        { mini_contracts: 'oops' as unknown as unknown[][] },
-        'charm',
-      ),
+      decodeStrikes({ mini_contracts: 'oops' as unknown as unknown[][] }),
     ).toEqual([]);
   });
 });
@@ -127,7 +52,7 @@ describe('decodeStrikesWithHistory', () => {
     const payload: GexbotStatePayload = {
       mini_contracts: [row(5950, -1234, [-1200, -1100, -1000])],
     };
-    expect(decodeStrikesWithHistory(payload, 'charm')).toEqual([
+    expect(decodeStrikesWithHistory(payload)).toEqual([
       {
         strike: 5950,
         value: -1234,
@@ -142,7 +67,7 @@ describe('decodeStrikesWithHistory', () => {
     const payload: GexbotStatePayload = {
       mini_contracts: [row(5950, 100, [11, 22, 33])],
     };
-    const [decoded] = decodeStrikesWithHistory(payload, 'charm');
+    const [decoded] = decodeStrikesWithHistory(payload);
     expect(decoded?.prev5m).toBe(11);
     expect(decoded?.prev15m).toBe(22);
     expect(decoded?.prev30m).toBe(33);
@@ -154,7 +79,7 @@ describe('decodeStrikesWithHistory', () => {
     const payload: GexbotStatePayload = {
       mini_contracts: [[5950, 0, 0, 200]],
     };
-    const decoded = decodeStrikesWithHistory(payload, 'charm');
+    const decoded = decodeStrikesWithHistory(payload);
     expect(decoded).toHaveLength(1);
     expect(decoded[0]).toMatchObject({
       strike: 5950,
@@ -169,7 +94,7 @@ describe('decodeStrikesWithHistory', () => {
     const payload: GexbotStatePayload = {
       mini_contracts: [row(5950, 200, null as unknown as unknown[])],
     };
-    expect(decodeStrikesWithHistory(payload, 'charm')).toEqual([
+    expect(decodeStrikesWithHistory(payload)).toEqual([
       { strike: 5950, value: 200, prev5m: null, prev15m: null, prev30m: null },
     ]);
   });
@@ -178,7 +103,7 @@ describe('decodeStrikesWithHistory', () => {
     const payload: GexbotStatePayload = {
       mini_contracts: [row(5950, 200, [-1200])],
     };
-    expect(decodeStrikesWithHistory(payload, 'charm')).toEqual([
+    expect(decodeStrikesWithHistory(payload)).toEqual([
       {
         strike: 5950,
         value: 200,
@@ -193,7 +118,7 @@ describe('decodeStrikesWithHistory', () => {
     const payload: GexbotStatePayload = {
       mini_contracts: [row(5950, 200, [null, 'NaN', undefined])],
     };
-    expect(decodeStrikesWithHistory(payload, 'charm')).toEqual([
+    expect(decodeStrikesWithHistory(payload)).toEqual([
       { strike: 5950, value: 200, prev5m: null, prev15m: null, prev30m: null },
     ]);
   });
@@ -204,7 +129,7 @@ describe('decodeStrikesWithHistory', () => {
     const payload: GexbotStatePayload = {
       mini_contracts: [[5950, 100, 100, 200, [0, 0, 0], 0, null]],
     };
-    expect(decodeStrikesWithHistory(payload, 'charm')).toEqual([
+    expect(decodeStrikesWithHistory(payload)).toEqual([
       { strike: 5950, value: 200, prev5m: 0, prev15m: 0, prev30m: 0 },
     ]);
   });
@@ -217,7 +142,7 @@ describe('decodeStrikesWithHistory', () => {
         row(5970, 200, [-1, -2, -3]),
       ],
     };
-    expect(decodeStrikesWithHistory(payload, 'charm')).toEqual([
+    expect(decodeStrikesWithHistory(payload)).toEqual([
       {
         strike: 5970,
         value: 200,
@@ -229,6 +154,6 @@ describe('decodeStrikesWithHistory', () => {
   });
 
   it('returns [] when mini_contracts is absent', () => {
-    expect(decodeStrikesWithHistory({}, 'charm')).toEqual([]);
+    expect(decodeStrikesWithHistory({})).toEqual([]);
   });
 });

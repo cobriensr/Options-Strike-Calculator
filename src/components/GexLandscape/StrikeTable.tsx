@@ -83,19 +83,19 @@ export function StrikeTable({
         <div className="px-3 py-2">Signal</div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="Dollar gamma per strike from the 1-min GEXBot capture, negated to market-maker sign (GEXBot reports it taker-signed). Positive = market makers long gamma here, so they dampen moves; negative = short gamma, so they add to moves."
+          title="GEXBot dollar gamma per strike from the 1-min capture, in GEXBot's taker-side sign: positive = traders (takers) are net long gamma at this strike, negative = net short. A taker-flow measure, not a market-maker position."
         >
           NetGamma
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="GEXBot dollar charm per strike, in the vendor's sign, not market-maker attributed. Positive = this level's influence builds into the close; negative = it fades."
+          title="GEXBot dollar charm per strike, in GEXBot's taker-side sign: positive = traders (takers) are net long charm at this strike, negative = net short. A taker-flow measure, not a market-maker position."
         >
           NetCharm
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="GEXBot dollar vanna per strike, in the vendor's sign, not market-maker attributed: how the delta at this strike shifts when implied vol moves."
+          title="GEXBot dollar vanna per strike, in GEXBot's taker-side sign: positive = traders (takers) are net long vanna at this strike, negative = net short. A taker-flow measure, not a market-maker position."
         >
           NetVanna
         </div>
@@ -248,7 +248,7 @@ export function StrikeTable({
                 </span>
               </div>
 
-              {/* NetGamma — GEXBot dollar gamma, negated to MM sign */}
+              {/* NetGamma — GEXBot dollar gamma, taker-side sign */}
               <div className="flex items-center justify-end px-3 py-1.5">
                 <span
                   className="font-mono text-[11px]"
