@@ -531,11 +531,15 @@ export function deriveNSameDirFiresLast30Min(
 
 /**
  * For each categorical column listed in bundle.categorical_cols and
- * `ticker_bucket`, set the matching one-hot feature to 1.
+ * `ticker_bucket`, emit every one-hot feature the bundle pins in
+ * feature_cols: 1 for the active category, 0 for the rest.
  *
- * Convention from pandas.get_dummies(..., drop_first=False, dummy_na=False):
- * the column name is `{col}_{value}`. We only emit entries the bundle pins
- * in feature_cols; unknown values produce an all-zero one-hot block.
+ * Convention from pandas.get_dummies(..., drop_first=False, dummy_na=False)
+ * then `.astype(float)`: the column name is `{col}_{value}` and inactive
+ * categories are 0.0 in training. The zeros must be explicit. The XGBoost
+ * splits on these columns send a missing value the same way as 1
+ * (`default_left = 0`, `split_condition = 1`), so an omitted column scores
+ * as if active. Unknown or null values produce an all-zero one-hot block.
  */
 export function expandOneHotCategoricals(
   bundle: TakeitBundle,
@@ -544,6 +548,13 @@ export function expandOneHotCategoricals(
 ): Record<string, number> {
   const out: Record<string, number> = {};
   const featureSet = new Set(bundle.feature_cols);
+  const prefixes = [
+    ...bundle.categorical_cols.map((col) => `${col}_`),
+    'ticker_bucket_',
+  ];
+  for (const name of bundle.feature_cols) {
+    if (prefixes.some((prefix) => name.startsWith(prefix))) out[name] = 0;
+  }
   // Categorical columns from bundle.categorical_cols.
   for (const col of bundle.categorical_cols) {
     const v = raw[col];

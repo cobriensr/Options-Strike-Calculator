@@ -25,6 +25,7 @@ import {
   featuresFromRow,
   predictTakeitScore,
 } from '../_lib/takeit-score.js';
+import { expandOneHotCategoricals } from '../_lib/takeit-features.js';
 
 // Raw-prob parity is exact-fround-match across our 100 fixture rows.
 // Calibrated parity is gated looser because the isotonic slope can amplify
@@ -206,6 +207,45 @@ describe('takeit-score TS↔Python parity', () => {
           throw new Error(
             `${diffs.length}/${block.rows.length} rows exceed calibrated tolerance ${PARITY_TOLERANCE_CAL}:\n${summary}`,
           );
+        }
+      });
+
+      it('scores a fixture row identically when inactive one-hots arrive via expandOneHotCategoricals', () => {
+        const prefixes = [
+          ...bundle.categorical_cols.map((c) => `${c}_`),
+          'ticker_bucket_',
+        ];
+        const isOneHot = (name: string) =>
+          prefixes.some((p) => name.startsWith(p));
+        for (const row of block.rows) {
+          // Recover the raw categorical values from the active (1.0) columns.
+          const raw: Record<string, string> = {};
+          let ticker = 'NOT_A_TOP_TICKER';
+          for (const [name, v] of Object.entries(row.features)) {
+            if (v !== 1) continue;
+            if (name.startsWith('ticker_bucket_')) {
+              const bucket = name.slice('ticker_bucket_'.length);
+              if (bucket !== 'OTHER') ticker = bucket;
+              continue;
+            }
+            const col = bundle.categorical_cols.find((c) =>
+              name.startsWith(`${c}_`),
+            );
+            if (col) raw[col] = name.slice(col.length + 1);
+          }
+          // Live shape: numeric features only, one-hot block rebuilt.
+          const live: Record<string, number | null> = {};
+          for (const [name, v] of Object.entries(row.features)) {
+            if (!isOneHot(name)) live[name] = v;
+          }
+          Object.assign(live, expandOneHotCategoricals(bundle, raw, ticker));
+          const result = predictTakeitScore(
+            bundle,
+            featuresFromRow(bundle, live),
+          );
+          expect(
+            Math.abs(result.prob_raw - row.expected_prob_raw),
+          ).toBeLessThanOrEqual(PARITY_TOLERANCE_RAW);
         }
       });
 

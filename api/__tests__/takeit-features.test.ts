@@ -371,7 +371,7 @@ describe('deriveNSameDirFiresLast30Min', () => {
 /* ───────────────────────── Categorical one-hot ─────────────────────── */
 
 describe('expandOneHotCategoricals', () => {
-  it('emits only one-hot columns that exist in bundle.feature_cols', () => {
+  it('emits only one-hot columns that exist in bundle.feature_cols, inactive ones as 0', () => {
     const bundle = makeBundle('lottery', [
       'option_type_C',
       'option_type_P',
@@ -389,9 +389,59 @@ describe('expandOneHotCategoricals', () => {
     );
     expect(out).toEqual({
       option_type_C: 1,
+      option_type_P: 0,
       mode_A_intraday_0DTE: 1,
+      mode_B_multi_day_DTE1_3: 0,
       tod_AM_open: 1,
       ticker_bucket_SPY: 1,
+      ticker_bucket_QQQ: 0,
+      ticker_bucket_OTHER: 0,
+    });
+  });
+
+  it('emits 0 for every inactive one-hot column', () => {
+    const bundle = makeBundle(
+      'lottery',
+      [
+        'option_type_C',
+        'option_type_P',
+        'tod_AM_open',
+        'tod_PM',
+        'ticker_bucket_QQQ',
+        'ticker_bucket_OTHER',
+        'score',
+      ],
+      ['SPY', 'QQQ'],
+      ['option_type', 'tod'],
+    );
+    const out = expandOneHotCategoricals(
+      bundle,
+      { option_type: 'P', tod: 'PM' },
+      'QQQ',
+    );
+    expect(out).toEqual({
+      option_type_C: 0,
+      option_type_P: 1,
+      tod_AM_open: 0,
+      tod_PM: 1,
+      ticker_bucket_QQQ: 1,
+      ticker_bucket_OTHER: 0,
+    });
+    expect('score' in out).toBe(false);
+  });
+
+  it('emits all zeros for a categorical whose value is null', () => {
+    const bundle = makeBundle(
+      'lottery',
+      ['option_type_C', 'option_type_P', 'ticker_bucket_OTHER'],
+      ['SPY'],
+      ['option_type'],
+    );
+    const out = expandOneHotCategoricals(bundle, { option_type: null }, 'ZZZ');
+    expect(out).toEqual({
+      option_type_C: 0,
+      option_type_P: 0,
+      ticker_bucket_OTHER: 1,
     });
   });
 
@@ -401,10 +451,10 @@ describe('expandOneHotCategoricals', () => {
       'ticker_bucket_OTHER',
     ]);
     const out = expandOneHotCategoricals(bundle, {}, 'OBSCURE');
-    expect(out).toEqual({ ticker_bucket_OTHER: 1 });
+    expect(out).toEqual({ ticker_bucket_SPY: 0, ticker_bucket_OTHER: 1 });
   });
 
-  it('skips unknown categorical values (no key emitted)', () => {
+  it('emits an all-zero block for unknown categorical values', () => {
     const bundle = makeBundle('lottery', [
       'mode_A_intraday_0DTE',
       'ticker_bucket_OTHER',
@@ -414,8 +464,11 @@ describe('expandOneHotCategoricals', () => {
       { mode: 'UNKNOWN_MODE' },
       'OBSCURE',
     );
-    // No mode_* key set; only ticker_bucket_OTHER.
-    expect(out).toEqual({ ticker_bucket_OTHER: 1 });
+    // The mode_* block stays all-zero; ticker_bucket_OTHER is active.
+    expect(out).toEqual({
+      mode_A_intraday_0DTE: 0,
+      ticker_bucket_OTHER: 1,
+    });
   });
 });
 
@@ -687,10 +740,10 @@ describe('multileg classification features (lottery)', () => {
     expect(out.match_confidence).toBeCloseTo(0.87);
     expect(out.inferred_structure_vertical).toBe(1);
     // Sibling one-hot columns stay unset (treated as 0 at inference time).
-    expect(out.inferred_structure_isolated_leg).toBeUndefined();
-    expect(out.inferred_structure_strangle).toBeUndefined();
-    expect(out.inferred_structure_risk_reversal).toBeUndefined();
-    expect(out.inferred_structure_butterfly).toBeUndefined();
+    expect(out.inferred_structure_isolated_leg).toBe(0);
+    expect(out.inferred_structure_strangle).toBe(0);
+    expect(out.inferred_structure_risk_reversal).toBe(0);
+    expect(out.inferred_structure_butterfly).toBe(0);
   });
 
   it('encodes is_isolated_leg=false as 0 (not null)', () => {
@@ -719,7 +772,7 @@ describe('multileg classification features (lottery)', () => {
     expect(out.match_confidence).toBeNull();
     // No inferred_structure_* one-hot fires (all-zero block).
     for (const label of INFERRED_STRUCTURE_LABELS) {
-      expect(out[`inferred_structure_${label}`]).toBeUndefined();
+      expect(out[`inferred_structure_${label}`]).toBe(0);
     }
   });
 
@@ -731,7 +784,7 @@ describe('multileg classification features (lottery)', () => {
     });
     const out = featuresForLottery(bundle, row, EMPTY_CTX);
     for (const label of INFERRED_STRUCTURE_LABELS) {
-      expect(out[`inferred_structure_${label}`]).toBeUndefined();
+      expect(out[`inferred_structure_${label}`]).toBe(0);
     }
   });
 });
@@ -766,7 +819,7 @@ describe('multileg classification features (silentboom)', () => {
     expect(out.is_isolated_leg).toBeNull();
     expect(out.match_confidence).toBeNull();
     for (const label of INFERRED_STRUCTURE_LABELS) {
-      expect(out[`inferred_structure_${label}`]).toBeUndefined();
+      expect(out[`inferred_structure_${label}`]).toBe(0);
     }
   });
 });
@@ -876,7 +929,7 @@ describe('session_phase_cat one-hot (lottery + silentboom)', () => {
     'session_phase_cat_closing',
   ];
 
-  it('emits session_phase_cat_open=1 at 08:35 CT for lottery (others unset)', () => {
+  it('emits session_phase_cat_open=1 at 08:35 CT for lottery (others 0)', () => {
     const bundle = makeBundle(
       'lottery',
       SESSION_PHASE_COLS,
@@ -889,13 +942,13 @@ describe('session_phase_cat one-hot (lottery + silentboom)', () => {
       EMPTY_CTX,
     );
     expect(out.session_phase_cat_open).toBe(1);
-    // Sibling buckets stay unset (treated as 0 at inference time).
-    expect(out.session_phase_cat_pre_open).toBeUndefined();
-    expect(out.session_phase_cat_opening_30).toBeUndefined();
-    expect(out.session_phase_cat_morning).toBeUndefined();
-    expect(out.session_phase_cat_lunch).toBeUndefined();
-    expect(out.session_phase_cat_afternoon).toBeUndefined();
-    expect(out.session_phase_cat_closing).toBeUndefined();
+    // Sibling buckets are explicit zeros, as in training.
+    expect(out.session_phase_cat_pre_open).toBe(0);
+    expect(out.session_phase_cat_opening_30).toBe(0);
+    expect(out.session_phase_cat_morning).toBe(0);
+    expect(out.session_phase_cat_lunch).toBe(0);
+    expect(out.session_phase_cat_afternoon).toBe(0);
+    expect(out.session_phase_cat_closing).toBe(0);
   });
 
   it('emits session_phase_cat_closing=1 at 14:55 CT for silent-boom', () => {
@@ -911,8 +964,8 @@ describe('session_phase_cat one-hot (lottery + silentboom)', () => {
       EMPTY_CTX,
     );
     expect(out.session_phase_cat_closing).toBe(1);
-    expect(out.session_phase_cat_open).toBeUndefined();
-    expect(out.session_phase_cat_morning).toBeUndefined();
+    expect(out.session_phase_cat_open).toBe(0);
+    expect(out.session_phase_cat_morning).toBe(0);
   });
 
   it('emits no session_phase_cat one-hot when bundle does not pin them (forward-compat)', () => {
