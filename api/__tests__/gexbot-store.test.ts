@@ -85,6 +85,20 @@ describe('insertCaptureRows', () => {
     expect(rawJsons).toEqual(['{"current":[5950,1.2]}', '{"spot":540}']);
   });
 
+  it('skips duplicate rows with ON CONFLICT DO NOTHING', async () => {
+    await insertCaptureRows([
+      {
+        ticker: 'SPX',
+        endpoint: 'state',
+        category: 'gamma_zero',
+        sourceTimestamp: 1_700_000_000,
+        rawJson: '{}',
+      },
+    ]);
+    const strings = (mockSql.mock.calls[0] as unknown[])[0] as string[];
+    expect(strings.join('')).toContain('ON CONFLICT DO NOTHING');
+  });
+
   it('preserves null sourceTimestamp without coercing to a number', async () => {
     await insertCaptureRows([
       {

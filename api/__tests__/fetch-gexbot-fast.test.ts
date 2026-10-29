@@ -254,6 +254,22 @@ describe('fetch-gexbot-fast handler', () => {
     expect(mockSentryCapture).not.toHaveBeenCalled();
   });
 
+  it('writes the snapshot INSERT with ON CONFLICT DO NOTHING', async () => {
+    stubFetchHappyPath();
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    await handler(req, mockResponse());
+    const snapshotCalls = mockSql.mock.calls.filter((c) =>
+      (c[0] as string[]).join('').includes('INSERT INTO gexbot_snapshots'),
+    );
+    expect(snapshotCalls).toHaveLength(GEXBOT_TICKERS.length);
+    for (const c of snapshotCalls) {
+      expect((c[0] as string[]).join('')).toContain('ON CONFLICT DO NOTHING');
+    }
+  });
+
   // ── Classic-basic merge ───────────────────────────────────
 
   it('merges classic gex_zero aggregate fields into the orderflow snapshot row', async () => {

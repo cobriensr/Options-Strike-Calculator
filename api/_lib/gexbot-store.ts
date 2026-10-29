@@ -32,11 +32,14 @@ export interface CaptureRow {
  * (2 retries, 10 s per attempt) like the snapshot INSERTs in the fast
  * cron; any other error, or an exhausted retry, propagates.
  *
- * Not idempotent: `withDbRetry` times an attempt out but does not cancel it,
- * so a slow attempt can still commit while its retry also commits, writing
- * the batch twice. The table has no natural unique key to ON CONFLICT on
- * until the data-hygiene decision D6 lands (unique keys plus a dedupe of
- * live rows; see docs/superpowers/specs/gexbot-refresh-2026-10-28.md).
+ * Idempotent: `withDbRetry` times an attempt out but does not cancel it, so
+ * a slow attempt can commit while its retry also commits. The INSERT ends in
+ * `ON CONFLICT DO NOTHING` (no conflict target), so the second write of a
+ * row is a no-op through the partial unique index
+ * `gexbot_api_capture_natural_key` on (ticker, endpoint, category,
+ * source_timestamp) (migration #192). The bare form is valid with or without
+ * the index, so the code and the migration can deploy in either order. Rows
+ * with a NULL source_timestamp are outside the index and not deduplicated.
  */
 export async function insertCaptureRows(rows: CaptureRow[]): Promise<void> {
   if (rows.length === 0) return;
@@ -61,6 +64,7 @@ export async function insertCaptureRows(rows: CaptureRow[]): Promise<void> {
         ${sourceTs}::bigint[],
         ${rawJsons}::text[]
       ) AS t(ticker, endpoint, category, source_timestamp, raw_response)
+      ON CONFLICT DO NOTHING
     `,
     2,
     10_000,

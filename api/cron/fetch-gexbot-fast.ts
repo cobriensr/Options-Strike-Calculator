@@ -151,10 +151,13 @@ async function storeSnapshots(
   const sql = getDb();
   for (const { ticker, body: orderflowBody } of rows) {
     const body = mergeClassic(orderflowBody, classicByTicker.get(ticker));
-    // Not idempotent: a timed-out attempt is not cancelled, so a retry can
-    // write the same snapshot twice. There is no natural unique key until the
-    // data-hygiene decision D6 lands (see
-    // docs/superpowers/specs/gexbot-refresh-2026-10-28.md).
+    // Idempotent: a timed-out attempt is not cancelled, so a retry (or a
+    // duplicate cron delivery) can write the same snapshot twice. The bare
+    // `ON CONFLICT DO NOTHING` makes the second write a no-op through the
+    // partial unique index gexbot_snapshots_natural_key on (ticker,
+    // source_timestamp) (migration #192), and is valid with or without the
+    // index so code and migration can deploy in either order. Rows with a
+    // NULL source_timestamp are outside the index and not deduplicated.
     await withDbRetry(
       () => sql`
       INSERT INTO gexbot_snapshots (
@@ -190,6 +193,7 @@ async function storeSnapshots(
         ${n(body.delta_risk_reversal)}, ${i(body.min_dte)}, ${i(body.sec_min_dte)},
         ${JSON.stringify(body)}::jsonb
       )
+      ON CONFLICT DO NOTHING
     `,
       2,
       10_000,
