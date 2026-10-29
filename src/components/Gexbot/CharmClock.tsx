@@ -1,29 +1,31 @@
 /**
- * CharmClock — multi-ticker dealer-hedging direction for the 0DTE close.
+ * CharmClock — multi-ticker GEXBot net charm drift into the close.
  *
- * `zcharm` is GEXBot's net 0DTE charm, signed. The sign tells the direction
- * dealers must mechanically hedge as charm decays into the bell:
- *   +zcharm → dealers BUY to stay delta-neutral  → lifts price into close
- *   −zcharm → dealers SELL to stay delta-neutral → drags price into close
+ * `zcharm` is GEXBot's net charm in $MM per hour (a rate, not a total),
+ * with the vendor's sign convention: positive = the delta drift adds
+ * passive bids (shown "▲ BUYS"), negative = passive offers ("▼ SELLS").
+ * These are vendor-defined quantities, not a dealer-position claim.
  *
- * "By close" = zcharm × (hoursRemaining / SESSION_HOURS) — the portion
- * of today's charm that has not yet decayed. Reported in the same unit as
- * net charm: we do not have a defensible conversion from zcharm to a
- * realized % move, so we do not fabricate one. The actionable read is the
- * cross-ticker ranking of |By close| plus the signed direction — biggest
- * mover is where hedging pressure is strongest, and SPX↔SPY↔QQQ direction
- * agreement confirms regime.
+ * "By close" = zcharm × (hoursRemaining / SESSION_HOURS), displayed in
+ * the same $MM/hr unit as a scaled rate. The scaling is an open owner
+ * decision (a true remaining total would be zcharm × hoursRemaining), so
+ * the math is unchanged here. The actionable read is the cross-ticker
+ * ranking of |By close| plus the signed direction.
+ *
+ * The expiry each ticker's charm refers to is its own nearest listed
+ * expiry (`min_dte`): 0DTE for SPX, but 2–3DTE for HYG/UVXY, etc.
  *
  * Spec: docs/superpowers/specs/gexbot-frontend-2026-05-16.md
  */
 
-import { memo, useMemo } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 
 import { getETToday, getETCloseUtcIso } from '../../utils/timezone';
 import {
   useGexbotData,
   type SnapshotsLatestRow,
 } from '../../hooks/useGexbotData';
+import { formatDte } from './types';
 
 interface CharmClockProps {
   marketOpen: boolean;
@@ -31,6 +33,7 @@ interface CharmClockProps {
 
 interface CharmRow {
   ticker: string;
+  minDte: number | null;
   zcharm: number;
   byClose: number;
 }
@@ -39,6 +42,8 @@ const SPEC = { view: 'snapshots-latest' as const };
 const SESSION_HOURS = 6.5;
 /** Minimum bar fill % so a tiny-but-nonzero value still produces a visible nub. */
 const MIN_BAR_PCT = 4;
+/** Re-read the wall clock once a minute; the readout shows minutes. */
+const CLOCK_TICK_MS = 60_000;
 
 function hoursToClose(now: Date): number {
   const today = getETToday();
@@ -54,19 +59,24 @@ function formatHoursMinutes(hours: number): string {
   return `${h}h ${m.toString().padStart(2, '0')}m`;
 }
 
-function formatCharm(value: number): string {
-  // Auto-scale: GEXBot's zcharm can swing from small-ETF values
-  // (sub-thousand $) to index values (millions). A single fixed unit
-  // collapses most values to "$0.0M". Pick the unit that keeps two
-  // significant digits visible — preserves the relative ordering signal
-  // across very different magnitudes.
+/**
+ * zcharm is already in $MM per hour. Keep ~3 significant digits across the
+ * observed range (sub-1 ETF values to five-digit index values), with
+ * thousands separators for the large end.
+ */
+function formatCharmPerHour(value: number): string {
   const abs = Math.abs(value);
-  const signed = value >= 0 ? '+' : '−';
-  if (abs >= 1_000_000) return `${signed}$${(abs / 1_000_000).toFixed(2)}M`;
-  if (abs >= 1_000) return `${signed}$${(abs / 1_000).toFixed(2)}K`;
-  if (abs >= 1) return `${signed}$${abs.toFixed(2)}`;
-  if (abs > 0) return `${signed}$${abs.toFixed(4)}`;
-  return '$0';
+  if (abs === 0) return '$0 MM/hr';
+  const signed = value > 0 ? '+' : '−';
+  let digits = 3;
+  if (abs >= 100) digits = 0;
+  else if (abs >= 10) digits = 1;
+  else if (abs >= 0.01) digits = 2;
+  const body = abs.toLocaleString('en-US', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+  return `${signed}$${body} MM/hr`;
 }
 
 function biasLabel(byClose: number): string {
@@ -81,9 +91,20 @@ function toneClass(byClose: number): string {
   return 'text-tertiary';
 }
 
+/** Wall clock that re-renders every `intervalMs`; the interval is cleaned up. */
+function useNow(intervalMs: number): Date {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
+}
+
 function CharmClockInner({ marketOpen }: CharmClockProps) {
   const { rows, loading, error } = useGexbotData(SPEC, marketOpen);
-  const hoursRemaining = useMemo(() => hoursToClose(new Date()), []);
+  const now = useNow(CLOCK_TICK_MS);
+  const hoursRemaining = useMemo(() => hoursToClose(now), [now]);
 
   const charmRows = useMemo<CharmRow[]>(() => {
     const sessionFraction = hoursRemaining / SESSION_HOURS;
@@ -93,6 +114,7 @@ function CharmClockInner({ marketOpen }: CharmClockProps) {
       )
       .map((r) => ({
         ticker: r.ticker,
+        minDte: r.minDte,
         zcharm: r.zcharm,
         byClose: r.zcharm * sessionFraction,
       }))
@@ -149,7 +171,7 @@ function CharmClockInner({ marketOpen }: CharmClockProps) {
       className="rounded-md border border-white/5 bg-white/[0.02]"
     >
       <div className="text-tertiary flex items-baseline justify-between border-b border-white/5 px-3 py-2 text-[10px] tracking-wide uppercase">
-        <span>Charm Clock — 0DTE hedge drift</span>
+        <span>Charm Clock — GEXBot net charm ($MM/hr)</span>
         <span>time to close: {formatHoursMinutes(hoursRemaining)}</span>
       </div>
       <table className="w-full text-left text-xs">
@@ -179,9 +201,20 @@ function CharmClockInner({ marketOpen }: CharmClockProps) {
                 : 0;
             return (
               <tr key={row.ticker} className="border-t border-white/5">
-                <td className="px-3 py-1.5 font-medium">{row.ticker}</td>
-                <td className="text-secondary px-3 py-1.5 text-right tabular-nums">
-                  {formatCharm(row.zcharm)}
+                <td className="px-3 py-1.5 font-medium">
+                  {row.ticker}{' '}
+                  <span
+                    data-testid={`charm-dte-${row.ticker}`}
+                    className="text-tertiary text-[10px] font-normal"
+                  >
+                    {formatDte(row.minDte)}
+                  </span>
+                </td>
+                <td
+                  data-testid={`charm-net-${row.ticker}`}
+                  className="text-secondary px-3 py-1.5 text-right tabular-nums"
+                >
+                  {formatCharmPerHour(row.zcharm)}
                 </td>
                 <td
                   data-testid={`charm-by-close-${row.ticker}`}
@@ -189,7 +222,7 @@ function CharmClockInner({ marketOpen }: CharmClockProps) {
                 >
                   <div className="flex items-center justify-end gap-2">
                     <span className="tabular-nums">
-                      {formatCharm(row.byClose)}
+                      {formatCharmPerHour(row.byClose)}
                     </span>
                     <span
                       aria-hidden="true"

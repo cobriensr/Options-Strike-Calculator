@@ -61,9 +61,11 @@ describe('gexbot-queries', () => {
           one_gexoflow: null,
           one_cvroflow: null,
           delta_risk_reversal: '0.05',
+          min_dte: 2,
         },
       ]);
       const [row] = await getLatestSnapshots();
+      expect(row!.minDte).toBe(2);
       expect(row!.spot).toBe(5985.2);
       expect(row!.zcvr).toBe(1.25);
       expect(row!.zvanna).toBeNull();
@@ -91,6 +93,28 @@ describe('gexbot-queries', () => {
       expect(spx.series.length).toBe(2);
       expect(spx.series[0]![1]).toBe(1);
       expect(spx.series[1]![1]).toBe(1.1);
+      expect(spx.minDte).toBeNull();
+    });
+
+    it('carries the latest min_dte per ticker', async () => {
+      mockSql.mockResolvedValueOnce([
+        {
+          ticker: 'HYG',
+          captured_at: '2026-05-19T13:00:00Z',
+          zcvr: '-5',
+          min_dte: 3,
+        },
+        {
+          ticker: 'HYG',
+          captured_at: '2026-05-19T13:01:00Z',
+          zcvr: '-6',
+          min_dte: 2,
+        },
+        { ticker: 'SPX', captured_at: '2026-05-19T13:00:00Z', zcvr: '1' },
+      ]);
+      const result = await getConvexityTrend();
+      expect(result.find((r) => r.ticker === 'HYG')!.minDte).toBe(2);
+      expect(result.find((r) => r.ticker === 'SPX')!.minDte).toBeNull();
     });
 
     it('skips NaN zcvr rows', async () => {

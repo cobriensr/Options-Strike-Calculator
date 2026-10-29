@@ -46,6 +46,8 @@ export interface SnapshotsLatestRow {
   oneGexoflow: number | null;
   oneCvroflow: number | null;
   deltaRiskReversal: number | null;
+  /** Nearest listed expiry in days (0 = same-day). Differs per ticker. */
+  minDte: number | null;
 }
 
 export interface MaxchangeWinnerRow {
@@ -66,6 +68,8 @@ export interface MaxchangeWinnerRow {
 
 export interface ConvexityTrendRow {
   ticker: string;
+  /** Latest nearest-expiry DTE for the ticker, or null if unreported. */
+  minDte: number | null;
   /** Time-ordered `[isoTimestamp, zcvr]` points, oldest first. */
   series: Array<[string, number]>;
 }
@@ -148,6 +152,7 @@ interface RawSnapshotsRow {
   one_gexoflow: unknown;
   one_cvroflow: unknown;
   delta_risk_reversal: unknown;
+  min_dte: unknown;
 }
 
 export async function getLatestSnapshots(): Promise<SnapshotsLatestRow[]> {
@@ -165,7 +170,7 @@ export async function getLatestSnapshots(): Promise<SnapshotsLatestRow[]> {
         o_mlgamma, o_msgamma, ocvr, ogr, ovanna, ocharm,
         dexoflow, gexoflow, cvroflow,
         one_dexoflow, one_gexoflow, one_cvroflow,
-        delta_risk_reversal
+        delta_risk_reversal, min_dte
       FROM gexbot_snapshots
       WHERE captured_at >= now() - INTERVAL '15 minutes'
       ORDER BY ticker, captured_at DESC
@@ -198,6 +203,7 @@ export async function getLatestSnapshots(): Promise<SnapshotsLatestRow[]> {
     oneGexoflow: toNum(r.one_gexoflow),
     oneCvroflow: toNum(r.one_cvroflow),
     deltaRiskReversal: toNum(r.delta_risk_reversal),
+    minDte: toNum(r.min_dte),
   }));
 }
 
@@ -209,6 +215,7 @@ interface RawConvexityPoint {
   ticker: string;
   captured_at: string | Date;
   zcvr: unknown;
+  min_dte?: unknown;
 }
 
 export async function getConvexityTrend(
@@ -217,7 +224,7 @@ export async function getConvexityTrend(
   const sql = getDb();
   const rows = (await withDbRetry(
     () => sql`
-      SELECT ticker, captured_at, zcvr
+      SELECT ticker, captured_at, zcvr, min_dte
       FROM gexbot_snapshots
       WHERE captured_at >= now() - (${windowMinutes}::int * INTERVAL '1 minute')
         AND zcvr IS NOT NULL
@@ -227,15 +234,24 @@ export async function getConvexityTrend(
     READ_TIMEOUT_MS,
   )) as RawConvexityPoint[];
 
-  const byTicker = new Map<string, Array<[string, number]>>();
+  const byTicker = new Map<
+    string,
+    { series: Array<[string, number]>; minDte: number | null }
+  >();
   for (const r of rows) {
     const value = toNum(r.zcvr);
     if (value === null) continue;
-    const list = byTicker.get(r.ticker) ?? [];
-    list.push([toIso(r.captured_at), value]);
-    byTicker.set(r.ticker, list);
+    const entry = byTicker.get(r.ticker) ?? { series: [], minDte: null };
+    entry.series.push([toIso(r.captured_at), value]);
+    // Rows are oldest-first, so the last one wins: the latest known DTE.
+    entry.minDte = toNum(r.min_dte);
+    byTicker.set(r.ticker, entry);
   }
-  return Array.from(byTicker, ([ticker, series]) => ({ ticker, series }));
+  return Array.from(byTicker, ([ticker, { series, minDte }]) => ({
+    ticker,
+    minDte,
+    series,
+  }));
 }
 
 // ────────────────────────────────────────────────────────────

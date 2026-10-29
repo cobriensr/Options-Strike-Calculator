@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 import { CharmClock } from '../components/Gexbot/CharmClock';
@@ -41,6 +41,7 @@ function makeRow(overrides: Partial<SnapshotsLatestRow>): SnapshotsLatestRow {
     oneGexoflow: null,
     oneCvroflow: null,
     deltaRiskReversal: null,
+    minDte: 0,
     ...overrides,
   };
 }
@@ -111,48 +112,146 @@ describe('<CharmClock>', () => {
     expect(table).not.toHaveTextContent(/^QQQ/m);
   });
 
-  it('formats positive charm with leading + and dollar+M suffix', () => {
+  it('formats zcharm as $MM per hour, not raw dollars', () => {
     mockUseGexbotData.mockReturnValue({
-      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47_000_000 })],
+      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 53.6 })],
       loading: false,
       error: null,
       freshestAt: '2026-05-19T17:00:00Z',
     });
     render(<CharmClock marketOpen />);
-    expect(screen.getByText(/\+\$47\.00M/)).toBeInTheDocument();
+    const row = screen.getByTestId('charm-net-SPX');
+    expect(row).toHaveTextContent('+$53.6 MM/hr');
+    expect(row).not.toHaveTextContent('$53.60');
   });
 
-  it('formats small-magnitude charm with extra precision so the value is visible', () => {
-    // GEXBot ships small zcharm values for smaller ETFs and VIX.
-    // Previously formatCharm rounded everything < 50K to "$0.0M" —
-    // every row collapsed to the same display and the relative
-    // ordering (the actionable signal per the spec) was lost.
+  it('formats large negative zcharm with separators and a minus sign', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeRow({ ticker: 'QQQ', spot: 540, zcharm: -15_342 })],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T17:00:00Z',
+    });
+    render(<CharmClock marketOpen />);
+    expect(screen.getByTestId('charm-net-QQQ')).toHaveTextContent(
+      '−$15,342 MM/hr',
+    );
+  });
+
+  it('keeps precision on small-magnitude charm so the value is visible', () => {
     mockUseGexbotData.mockReturnValue({
       rows: [
-        makeRow({ ticker: 'VIX', spot: 18, zcharm: 4_200 }),
         makeRow({ ticker: 'SLV', spot: 28, zcharm: 0.85 }),
+        makeRow({ ticker: 'GLD', spot: 280, zcharm: 0.004 }),
       ],
       loading: false,
       error: null,
       freshestAt: '2026-05-19T17:00:00Z',
     });
     render(<CharmClock marketOpen />);
-    expect(screen.getByText(/\+\$4\.20K/)).toBeInTheDocument();
-    expect(screen.getByText(/\+\$0\.85/)).toBeInTheDocument();
+    expect(screen.getByTestId('charm-net-SLV')).toHaveTextContent(
+      '+$0.85 MM/hr',
+    );
+    expect(screen.getByTestId('charm-net-GLD')).toHaveTextContent(
+      '+$0.004 MM/hr',
+    );
   });
 
-  it('shows "By close" as zcharm × (hoursRemaining / 6.5) in the same unit', () => {
-    // At 3h to close, session fraction = 3 / 6.5 ≈ 0.4615.
-    // zcharm = 47M  →  By close ≈ 21.69M
+  it('describes the value as GEXBot net charm, not dealer hedging', () => {
     mockUseGexbotData.mockReturnValue({
-      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47_000_000 })],
+      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 53.6 })],
       loading: false,
       error: null,
       freshestAt: '2026-05-19T17:00:00Z',
     });
     render(<CharmClock marketOpen />);
-    const cell = screen.getByTestId('charm-by-close-SPX');
-    expect(cell).toHaveTextContent(/\+\$21\.69M/);
+    const root = screen.getByTestId('charm-clock');
+    expect(root).toHaveTextContent(/GEXBot net charm/);
+    expect(root).not.toHaveTextContent(/dealer/i);
+  });
+
+  it('shows "By close" as zcharm × (hoursRemaining / 6.5) in the same unit', () => {
+    // At 3h to close, session fraction = 3 / 6.5 ≈ 0.4615.
+    // zcharm = 47  →  By close ≈ 21.69 (scaled rate; the math is unchanged)
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47 })],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T17:00:00Z',
+    });
+    render(<CharmClock marketOpen />);
+    expect(screen.getByTestId('charm-by-close-SPX')).toHaveTextContent(
+      '+$21.7 MM/hr',
+    );
+  });
+
+  it('labels each ticker with its own nearest-expiry DTE from min_dte', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [
+        makeRow({ ticker: 'HYG', spot: 80, zcharm: 1, minDte: 2 }),
+        makeRow({ ticker: 'SPX', spot: 5985, zcharm: 2, minDte: 0 }),
+        makeRow({ ticker: 'VIX', spot: 18, zcharm: 3, minDte: null }),
+      ],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T17:00:00Z',
+    });
+    render(<CharmClock marketOpen />);
+    expect(screen.getByTestId('charm-dte-HYG')).toHaveTextContent('2DTE');
+    expect(screen.getByTestId('charm-dte-SPX')).toHaveTextContent('0DTE');
+    expect(screen.getByTestId('charm-dte-VIX')).not.toHaveTextContent('0DTE');
+    expect(screen.getByTestId('charm-clock')).not.toHaveTextContent(
+      '0DTE hedge drift',
+    );
+  });
+
+  it('advances the time-to-close readout every minute', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47 })],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T17:00:00Z',
+    });
+    render(<CharmClock marketOpen />);
+    expect(screen.getByText(/time to close: 3h 00m/)).toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(30 * 60_000);
+    });
+    expect(screen.getByText(/time to close: 2h 30m/)).toBeInTheDocument();
+  });
+
+  it('recomputes By close from the advanced clock', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 65 })],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T17:00:00Z',
+    });
+    render(<CharmClock marketOpen />);
+    // 3h left: 65 × 3/6.5 = 30
+    expect(screen.getByTestId('charm-by-close-SPX')).toHaveTextContent(
+      '+$30.0 MM/hr',
+    );
+    act(() => {
+      vi.advanceTimersByTime(60 * 60_000);
+    });
+    // 2h left: 65 × 2/6.5 = 20
+    expect(screen.getByTestId('charm-by-close-SPX')).toHaveTextContent(
+      '+$20.0 MM/hr',
+    );
+  });
+
+  it('clears its interval on unmount', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47 })],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T17:00:00Z',
+    });
+    const { unmount } = render(<CharmClock marketOpen />);
+    expect(vi.getTimerCount()).toBe(1);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('labels EOD bias as ▲ BUYS for positive zcharm', () => {

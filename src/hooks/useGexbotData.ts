@@ -47,10 +47,14 @@ export interface SnapshotsLatestRow {
   oneGexoflow: number | null;
   oneCvroflow: number | null;
   deltaRiskReversal: number | null;
+  /** Nearest listed expiry in days (0 = same-day). Differs per ticker. */
+  minDte: number | null;
 }
 
 export interface ConvexityTrendRow {
   ticker: string;
+  /** Latest nearest-expiry DTE for the ticker, or null if unreported. */
+  minDte: number | null;
   series: Array<[string, number]>;
 }
 
