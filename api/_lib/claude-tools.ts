@@ -62,7 +62,7 @@ export function buildClaudeTools(): Tool[] {
     {
       name: 'get_strike_exposures',
       description:
-        'Fetch per-strike OI, gamma, and delta exposures for SPX for the analysis date.',
+        "Fetch per-strike OI, gamma, and delta exposures for SPX's 0DTE expiry (today's expiry only) for the analysis date.",
       input_schema: {
         type: 'object',
         properties: {

@@ -80,9 +80,17 @@ export interface FlowDataRow {
 }
 
 /**
- * Get the most recent per-strike exposure snapshot for a given date.
- * Returns strikes ordered by strike price ascending.
- * Uses the latest timestamp available for that date.
+ * Get the most recent 0DTE per-strike exposure snapshot for a given date:
+ * rows whose expiry is the date itself, from that expiry's latest
+ * timestamp (optionally capped by asOf). Returns strikes ordered by strike
+ * price ascending.
+ *
+ * fetch-strike-exposure writes the next expiry's rows under the same
+ * (date, timestamp), so the expiry filter is required in both queries:
+ * without it the "0DTE" profile and zero-gamma blended tomorrow's expiry
+ * in, and a snapshot that only the next expiry had could become "latest".
+ * Callers (analyze context, the get_strike_exposures Claude tool) all want
+ * 0DTE; use getStrikeExposuresByExpiry for the next expiry.
  */
 export async function getStrikeExposures(
   date: string,
@@ -98,7 +106,7 @@ export async function getStrikeExposures(
           SELECT MAX(timestamp) as latest_ts
           FROM strike_exposures
           WHERE date = ${date} AND ticker = ${ticker}
-            AND expiry != ${ALL_EXPIRY_SENTINEL}
+            AND expiry = ${date}
             AND timestamp <= ${asOf}
         `,
         2,
@@ -108,7 +116,7 @@ export async function getStrikeExposures(
         () => db`
           SELECT MAX(timestamp) as latest_ts
           FROM strike_exposures
-          WHERE date = ${date} AND ticker = ${ticker} AND expiry != ${ALL_EXPIRY_SENTINEL}
+          WHERE date = ${date} AND ticker = ${ticker} AND expiry = ${date}
         `,
         2,
         10_000,
@@ -126,7 +134,7 @@ export async function getStrikeExposures(
              call_delta_oi, put_delta_oi,
              call_vanna_oi, put_vanna_oi
       FROM strike_exposures
-      WHERE date = ${date} AND ticker = ${ticker} AND timestamp = ${latestTs} AND expiry != ${ALL_EXPIRY_SENTINEL}
+      WHERE date = ${date} AND ticker = ${ticker} AND timestamp = ${latestTs} AND expiry = ${date}
       ORDER BY strike ASC
     `,
     2,
