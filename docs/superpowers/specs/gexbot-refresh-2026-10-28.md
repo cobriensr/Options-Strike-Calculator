@@ -124,3 +124,7 @@ Owner decisions (each becomes a phase once decided; default pick in brackets):
 - 2026-10-28: owner approved "check and update everything" after the
   comment pass. Mechanical phases P1–P8 proceed without further approval;
   D1–D7 wait for owner answers.
+- 2026-10-28: D1 → (c). Run a read-only sign study on GEXBot-era history
+  (05-26 → 10-28) against the scraper era before choosing negate-on-ingest
+  vs taker-sign rewrite. Report: main checkout
+  `docs/tmp/gexbot-refresh-2026-10-28/sign-study.md`.
