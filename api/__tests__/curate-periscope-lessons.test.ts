@@ -26,14 +26,21 @@ vi.mock('../_lib/api-helpers.js', () => ({
 // withCronCheckin should pass-through the inner handler so its body runs
 // directly. The real wrapper short-circuits the Sentry checkin path when
 // `Sentry.captureCheckIn` is unavailable (which it is in this mock-suite).
-vi.mock('../_lib/cron-instrumentation.js', () => ({
+// deriveCronStatus stays real: the run status is computed with it.
+vi.mock('../_lib/cron-instrumentation.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../_lib/cron-instrumentation.js')>()),
   withCronCheckin: vi.fn((_name: string, fn: unknown) => fn),
+}));
+
+vi.mock('../_lib/axiom.js', () => ({
+  reportCronRun: vi.fn(),
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
     setTag: vi.fn(),
     captureException: vi.fn(),
+    captureMessage: vi.fn(),
   },
 }));
 
@@ -62,6 +69,7 @@ vi.mock('../_lib/periscope-lessons.js', () => ({
 // ============================================================
 
 import handler from '../cron/curate-periscope-lessons.js';
+import { reportCronRun } from '../_lib/axiom.js';
 import { generateEmbedding } from '../_lib/embeddings.js';
 import {
   fetchUnprocessedDebriefs,
@@ -430,6 +438,7 @@ describe('GET /api/cron/curate-periscope-lessons', () => {
         candidates: 2,
         inserted: 1,
         merged: 0,
+        upsertFailures: 1,
       }),
     );
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
@@ -457,5 +466,172 @@ describe('GET /api/cron/curate-periscope-lessons', () => {
       'curate-periscope-lessons',
     );
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  // ── Axiom run event (reportCronRun) ───────────────────────
+
+  describe('Axiom run event', () => {
+    const JOB = 'curate-periscope-lessons';
+
+    it('reports ok with the run counts when every lesson lands', async () => {
+      vi.mocked(fetchUnprocessedDebriefs).mockResolvedValueOnce([debrief(11)]);
+      vi.mocked(extractCandidatesViaRegex).mockReturnValueOnce([
+        'lesson A',
+        'lesson B',
+      ]);
+      vi.mocked(upsertLesson)
+        .mockResolvedValueOnce({ inserted: true, lessonId: 100 })
+        .mockResolvedValueOnce({ inserted: false, lessonId: 200 });
+
+      const res = mockResponse();
+      await handler(authedReq({ since: '2026-10-20' }), res);
+
+      expect(res._status).toBe(200);
+      expect(reportCronRun).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledWith(JOB, {
+        status: 'ok',
+        debriefsScanned: 1,
+        candidates: 2,
+        inserted: 1,
+        merged: 1,
+        embedFailures: 0,
+        upsertFailures: 0,
+        dryRun: false,
+        sinceIso: '2026-10-20T00:00:00.000Z',
+        durationMs: expect.any(Number),
+      });
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    });
+
+    it('reports ok when there are no debriefs to scan', async () => {
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(reportCronRun).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledWith(
+        JOB,
+        expect.objectContaining({ status: 'ok', candidates: 0 }),
+      );
+    });
+
+    it('reports partial when one upsert fails and another lands', async () => {
+      vi.mocked(fetchUnprocessedDebriefs).mockResolvedValueOnce([debrief(77)]);
+      vi.mocked(extractCandidatesViaRegex).mockReturnValueOnce(['x', 'y']);
+      vi.mocked(upsertLesson)
+        .mockResolvedValueOnce({ inserted: true, lessonId: 1 })
+        .mockRejectedValueOnce(new Error('DB write failed'));
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(reportCronRun).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledWith(
+        JOB,
+        expect.objectContaining({
+          status: 'partial',
+          inserted: 1,
+          upsertFailures: 1,
+        }),
+      );
+      // The failed upsert is captured on its own; only a run that landed
+      // nothing adds the run-level message.
+      expect(Sentry.captureException).toHaveBeenCalledOnce();
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    });
+
+    it('reports error, never ok, when every upsert fails', async () => {
+      vi.mocked(fetchUnprocessedDebriefs).mockResolvedValueOnce([debrief(78)]);
+      vi.mocked(extractCandidatesViaRegex).mockReturnValueOnce(['x']);
+      vi.mocked(upsertLesson).mockRejectedValueOnce(
+        new Error('DB write failed'),
+      );
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(Sentry.captureException).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledWith(
+        JOB,
+        expect.objectContaining({
+          status: 'error',
+          inserted: 0,
+          merged: 0,
+          upsertFailures: 1,
+        }),
+      );
+      expect(Sentry.captureMessage).toHaveBeenCalledOnce();
+    });
+
+    it('reports error when every candidate fails to embed, and tells Sentry', async () => {
+      // generateEmbedding can return null without capturing anything, so the
+      // run-level message is the only Sentry event for this run.
+      vi.mocked(fetchUnprocessedDebriefs).mockResolvedValueOnce([debrief(44)]);
+      vi.mocked(extractCandidatesViaRegex).mockReturnValueOnce(['lesson']);
+      vi.mocked(generateEmbedding).mockResolvedValueOnce(null);
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(reportCronRun).toHaveBeenCalledWith(
+        JOB,
+        expect.objectContaining({ status: 'error', embedFailures: 1 }),
+      );
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+      expect(Sentry.captureMessage).toHaveBeenCalledOnce();
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'curate-periscope-lessons: no lesson landed',
+        expect.objectContaining({
+          level: 'error',
+          fingerprint: ['curate-periscope-lessons', 'nothing-landed'],
+          extra: expect.objectContaining({ candidates: 1, embedFailures: 1 }),
+        }),
+      );
+    });
+
+    it('counts dry-run survivors as landed, so a clean dry run is ok', async () => {
+      vi.mocked(fetchUnprocessedDebriefs).mockResolvedValueOnce([debrief(55)]);
+      vi.mocked(extractCandidatesViaRegex).mockReturnValueOnce(['lesson']);
+
+      const res = mockResponse();
+      await handler(authedReq({ dry: 'true' }), res);
+
+      expect(upsertLesson).not.toHaveBeenCalled();
+      expect(reportCronRun).toHaveBeenCalledWith(
+        JOB,
+        expect.objectContaining({ status: 'ok', dryRun: true, candidates: 1 }),
+      );
+    });
+
+    it('reports error with the message when the run throws', async () => {
+      vi.mocked(fetchUnprocessedDebriefs).mockRejectedValueOnce(
+        new Error('Neon down'),
+      );
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(500);
+      expect(reportCronRun).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledWith(JOB, {
+        status: 'error',
+        error: 'Error: Neon down',
+        durationMs: expect.any(Number),
+      });
+    });
+
+    it('sends no event when the guard rejects or ?since= is malformed', async () => {
+      const unauthed = mockResponse();
+      await handler(mockRequest({ method: 'GET', headers: {} }), unauthed);
+      const badSince = mockResponse();
+      await handler(authedReq({ since: 'not-a-date' }), badSince);
+
+      expect(unauthed._status).toBe(401);
+      expect(badSince._status).toBe(400);
+      expect(reportCronRun).not.toHaveBeenCalled();
+    });
   });
 });

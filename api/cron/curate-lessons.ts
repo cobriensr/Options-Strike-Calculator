@@ -7,9 +7,20 @@
  *   Phase B: Persist ADD/SUPERSEDE results to the lessons table
  *
  * Auth: Bearer token via CRON_SECRET env var (Vercel crons use GET).
+ *
+ * Axiom: one reportCronRun event per run that passes the guard. `ok` when no
+ * lesson failed (including a week with no reviews), `partial` when some
+ * failed (embedding, malformed Claude decision, or a review's DB write) but
+ * at least one landed, `error` when none landed or the run threw. An `error`
+ * always reaches Sentry: the catch captures the throw, and a run that landed
+ * nothing sends one fingerprinted captureMessage.
  */
 
-import { withCronCheckin } from '../_lib/cron-instrumentation.js';
+import { reportCronRun } from '../_lib/axiom.js';
+import {
+  deriveCronStatus,
+  withCronCheckin,
+} from '../_lib/cron-instrumentation.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
@@ -114,6 +125,7 @@ export default withCronCheckin('curate-lessons', async (req, res) => {
     requireApiKey: false,
   });
   if (!guard) return;
+  const startedAt = Date.now();
 
   try {
     // Step 0: Bootstrap report
@@ -182,6 +194,13 @@ export default withCronCheckin('curate-lessons', async (req, res) => {
       });
 
       logger.info({ weekEnding }, 'Curation complete — no unprocessed reviews');
+      await reportCronRun('curate-lessons', {
+        status: 'ok',
+        weekEnding,
+        backfill,
+        reviewsProcessed: 0,
+        durationMs: Date.now() - startedAt,
+      });
       return res.status(200).json({ reviewsProcessed: 0 });
     }
 
@@ -204,6 +223,9 @@ export default withCronCheckin('curate-lessons', async (req, res) => {
     const superseded: SupersededLesson[] = [];
     const skipped: SkippedLesson[] = [];
     const errors: LessonError[] = [];
+    // Skips are recorded in `skipped` before the review's transaction runs,
+    // so this counts only those whose review committed (run status only).
+    let skipsLanded = 0;
 
     // Step 3: Process each review
     let reviewIndex = 0;
@@ -468,6 +490,7 @@ export default withCronCheckin('curate-lessons', async (req, res) => {
             }
           }
         }
+        skipsLanded += prepared.length - writeActions.length;
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Unknown DB error';
         Sentry.setTag('cron.job', 'curate-lessons');
@@ -524,11 +547,50 @@ export default withCronCheckin('curate-lessons', async (req, res) => {
       lessonsSkipped: skipped.length,
       errors: errors.length,
     });
+
+    // `errors` mixes lesson-level failures with review-level DB writes, but
+    // only its zero-ness matters here. Total = failed + landed, so
+    // deriveCronStatus reads: nothing failed → ok, nothing landed → error,
+    // otherwise partial. A skip lands when its review's write commits.
+    const landed = added.length + superseded.length + skipsLanded;
+    const derived = deriveCronStatus(errors.length, errors.length + landed);
+    if (derived === 'error') {
+      // Not every failed leg captures (a malformed decision only logs, and
+      // generateEmbedding can return null without one), and the response is
+      // still 200, so the check-in says ok. One run-level event surfaces it.
+      Sentry.captureMessage('curate-lessons: no lesson landed', {
+        level: 'error',
+        fingerprint: ['curate-lessons', 'nothing-landed'],
+        tags: { 'cron.job': 'curate-lessons' },
+        extra: {
+          weekEnding,
+          reviewsProcessed: reviews.length,
+          errors: errors.length,
+          errorSample: errors.slice(0, 5),
+        },
+      });
+    }
+    await reportCronRun('curate-lessons', {
+      status: derived === 'success' ? 'ok' : derived,
+      weekEnding,
+      backfill,
+      reviewsProcessed: reviews.length,
+      lessonsAdded: added.length,
+      lessonsSuperseded: superseded.length,
+      lessonsSkipped: skipped.length,
+      errors: errors.length,
+      durationMs: Date.now() - startedAt,
+    });
     return res.end();
   } catch (err) {
     Sentry.setTag('cron.job', 'curate-lessons');
     Sentry.captureException(err);
     logger.error({ err }, 'Curation cron failed');
+    await reportCronRun('curate-lessons', {
+      status: 'error',
+      error: String(err),
+      durationMs: Date.now() - startedAt,
+    });
     return res.status(500).json({ error: 'Internal error' });
   }
 });

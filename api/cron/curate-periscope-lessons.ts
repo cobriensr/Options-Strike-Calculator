@@ -23,10 +23,20 @@
  * Promotion in MVP is manual SQL:
  *   UPDATE periscope_lessons SET status='active', promoted_at=now() WHERE id=N;
  *
+ * Axiom: one reportCronRun event per run that passes the guard and the
+ * `?since=` check. `ok` when no candidate failed, `partial` when some embeds
+ * or upserts failed but at least one lesson landed, `error` when none did or
+ * the run threw. An `error` always reaches Sentry: the catch captures the
+ * throw, and a run that landed nothing sends one fingerprinted captureMessage.
+ *
  * See: docs/superpowers/specs/periscope-curate-lessons-2026-05-06.md
  */
 
-import { withCronCheckin } from '../_lib/cron-instrumentation.js';
+import { reportCronRun } from '../_lib/axiom.js';
+import {
+  deriveCronStatus,
+  withCronCheckin,
+} from '../_lib/cron-instrumentation.js';
 import { Sentry } from '../_lib/sentry.js';
 import { cronGuard } from '../_lib/api-helpers.js';
 import { generateEmbedding } from '../_lib/embeddings.js';
@@ -49,6 +59,7 @@ interface RunReport {
   inserted: number;
   merged: number;
   embedFailures: number;
+  upsertFailures: number;
   dryRun: boolean;
   sinceIso: string;
 }
@@ -85,6 +96,7 @@ export default withCronCheckin('curate-periscope-lessons', async (req, res) => {
     requireApiKey: false,
   });
   if (!guard) return;
+  const startedAt = Date.now();
 
   const sinceIso = resolveSinceIso(req.query.since);
   if (sinceIso == null) {
@@ -100,6 +112,7 @@ export default withCronCheckin('curate-periscope-lessons', async (req, res) => {
   let inserted = 0;
   let merged = 0;
   let embedFailures = 0;
+  let upsertFailures = 0;
 
   try {
     const debriefs = await fetchUnprocessedDebriefs(sinceIso);
@@ -197,6 +210,7 @@ export default withCronCheckin('curate-periscope-lessons', async (req, res) => {
           );
         }
       } catch (err) {
+        upsertFailures++;
         Sentry.setTag('cron.job', 'curate-periscope-lessons');
         Sentry.captureException(err, {
           tags: { stage: 'upsert', sourceIds: survivor.sourceIds.join(',') },
@@ -208,22 +222,50 @@ export default withCronCheckin('curate-periscope-lessons', async (req, res) => {
       }
     }
 
-    const report: RunReport = {
-      ok: true,
+    const counts = {
       debriefsScanned,
       candidates,
       inserted,
       merged,
       embedFailures,
+      upsertFailures,
       dryRun,
       sinceIso,
     };
+    const report: RunReport = { ok: true, ...counts };
     logger.info(report, 'curate-periscope-lessons complete');
+
+    // A lesson "lands" when it is upserted, or reaches the upsert step on a
+    // dry run. Total = failed + landed, so deriveCronStatus reads: nothing
+    // failed → ok, nothing landed → error, otherwise partial.
+    const failed = embedFailures + upsertFailures;
+    const landed = dryRun ? survivors.length : inserted + merged;
+    const derived = deriveCronStatus(failed, failed + landed);
+    if (derived === 'error') {
+      // generateEmbedding can return null without a capture, and the response
+      // is still 200, so the check-in says ok. One run-level event surfaces it.
+      Sentry.captureMessage('curate-periscope-lessons: no lesson landed', {
+        level: 'error',
+        fingerprint: ['curate-periscope-lessons', 'nothing-landed'],
+        tags: { 'cron.job': 'curate-periscope-lessons' },
+        extra: counts,
+      });
+    }
+    await reportCronRun('curate-periscope-lessons', {
+      status: derived === 'success' ? 'ok' : derived,
+      ...counts,
+      durationMs: Date.now() - startedAt,
+    });
     res.status(200).json(report);
   } catch (err) {
     Sentry.setTag('cron.job', 'curate-periscope-lessons');
     Sentry.captureException(err);
     logger.error({ err }, 'curate-periscope-lessons cron failed');
+    await reportCronRun('curate-periscope-lessons', {
+      status: 'error',
+      error: String(err),
+      durationMs: Date.now() - startedAt,
+    });
     res.status(500).json({ error: 'Internal error' });
   }
 });

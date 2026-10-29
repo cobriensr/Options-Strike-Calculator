@@ -49,7 +49,15 @@ vi.mock('@anthropic-ai/sdk', () => {
 });
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { setTag: vi.fn(), captureException: vi.fn() },
+  Sentry: {
+    setTag: vi.fn(),
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+  },
+}));
+
+vi.mock('../_lib/axiom.js', () => ({
+  reportCronRun: vi.fn(),
 }));
 
 // ============================================================
@@ -57,6 +65,7 @@ vi.mock('../_lib/sentry.js', () => ({
 // ============================================================
 
 import handler from '../cron/curate-lessons.js';
+import { reportCronRun } from '../_lib/axiom.js';
 import { upsertReport, updateReport } from '../_lib/lessons.js';
 import { generateEmbedding, findSimilarLessons } from '../_lib/embeddings.js';
 
@@ -904,6 +913,239 @@ describe('GET /api/cron/curate-lessons', () => {
     expect(getCompleteEvent(res)).toEqual(
       expect.objectContaining({ lessonsAdded: 1 }),
     );
+  });
+
+  // ── Axiom run event (reportCronRun) ────────────────────────
+
+  describe('Axiom run event', () => {
+    const WEEK_ENDING = expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/);
+
+    /**
+     * Queue one run's SQL in call order: SET statement_timeout, active
+     * count, the reviews query, then per review a snapshot and one nextval
+     * per lesson to write (the INSERT builds return nothing).
+     */
+    function queueReviews(reviews: ReturnType<typeof makeReview>[]) {
+      const queue: Record<string, unknown>[][] = [
+        [],
+        [{ count: 5 }],
+        reviews,
+        ...reviews.flatMap((r) => [[{ id: 10 }], [{ id: r.id + 1 }], []]),
+      ];
+      mockSql.mockImplementation(async () => queue.shift() ?? []);
+    }
+
+    it('reports ok when there are no unprocessed reviews', async () => {
+      queueReviews([]);
+      const res = mockResponse();
+      await handler(makeAuthedRequest(), res);
+
+      expect(res._status).toBe(200);
+      expect(reportCronRun).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledWith('curate-lessons', {
+        status: 'ok',
+        weekEnding: WEEK_ENDING,
+        backfill: false,
+        reviewsProcessed: 0,
+        durationMs: expect.any(Number),
+      });
+    });
+
+    it('reports ok with the curation counts when every lesson lands', async () => {
+      const { Sentry } = await import('../_lib/sentry.js');
+      queueReviews([makeReview()]);
+      mockStreamResponse(makeCurationResponse(makeAddDecision()));
+
+      const res = mockResponse();
+      await handler(makeAuthedRequest(), res);
+
+      expect(mockTransaction).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledWith('curate-lessons', {
+        status: 'ok',
+        weekEnding: WEEK_ENDING,
+        backfill: false,
+        reviewsProcessed: 1,
+        lessonsAdded: 1,
+        lessonsSuperseded: 0,
+        lessonsSkipped: 0,
+        errors: 0,
+        durationMs: expect.any(Number),
+      });
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    });
+
+    it('reports partial when one review write fails and another lands', async () => {
+      const { Sentry } = await import('../_lib/sentry.js');
+      queueReviews([makeReview({ id: 100 }), makeReview({ id: 200 })]);
+      mockStreamResponse(makeCurationResponse(makeAddDecision()));
+      mockTransaction
+        .mockRejectedValueOnce(new Error('DB connection lost'))
+        .mockResolvedValueOnce(undefined);
+
+      const res = mockResponse();
+      await handler(makeAuthedRequest(), res);
+
+      expect(mockTransaction).toHaveBeenCalledTimes(2);
+      expect(reportCronRun).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledWith(
+        'curate-lessons',
+        expect.objectContaining({
+          status: 'partial',
+          lessonsAdded: 1,
+          errors: 1,
+        }),
+      );
+      // The failed write is captured on its own; only a run that landed
+      // nothing adds the run-level message.
+      expect(Sentry.captureException).toHaveBeenCalledOnce();
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    });
+
+    it('reports error, never ok, when the only review write fails', async () => {
+      const { Sentry } = await import('../_lib/sentry.js');
+      queueReviews([makeReview()]);
+      mockStreamResponse(makeCurationResponse(makeAddDecision()));
+      mockTransaction.mockRejectedValueOnce(new Error('DB connection lost'));
+
+      const res = mockResponse();
+      await handler(makeAuthedRequest(), res);
+
+      expect(reportCronRun).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledWith(
+        'curate-lessons',
+        expect.objectContaining({
+          status: 'error',
+          lessonsAdded: 0,
+          errors: 1,
+        }),
+      );
+      expect(Sentry.captureMessage).toHaveBeenCalledOnce();
+    });
+
+    it('does not count a skip as landed when its review write fails', async () => {
+      // One review: lesson 1 is a SKIP, lesson 2 an ADD. The skip is recorded
+      // before the transaction, but the review wrote nothing, so the run
+      // landed nothing: error, not partial.
+      const review = makeReview({
+        full_response: {
+          review: { lessonsLearned: ['duplicate lesson', 'new lesson'] },
+        },
+      });
+      queueReviews([review]);
+      mockStream
+        .mockReturnValueOnce({
+          finalMessage: vi
+            .fn()
+            .mockResolvedValue(
+              makeCurationResponse(
+                makeAddDecision({ action: 'skip', supersedes_id: 7 }),
+              ),
+            ),
+        })
+        .mockReturnValueOnce({
+          finalMessage: vi
+            .fn()
+            .mockResolvedValue(makeCurationResponse(makeAddDecision())),
+        });
+      mockTransaction.mockRejectedValueOnce(new Error('DB connection lost'));
+
+      const res = mockResponse();
+      await handler(makeAuthedRequest(), res);
+
+      expect(mockTransaction).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledWith(
+        'curate-lessons',
+        expect.objectContaining({
+          status: 'error',
+          lessonsAdded: 0,
+          lessonsSkipped: 1,
+          errors: 1,
+        }),
+      );
+    });
+
+    it('reports error and tells Sentry when every decision is malformed', async () => {
+      // A malformed decision only logs, so without the run-level message this
+      // run would be an `error` with no Sentry event and an ok check-in.
+      const { Sentry } = await import('../_lib/sentry.js');
+      queueReviews([makeReview()]);
+      mockStreamResponse({
+        content: [{ type: 'text', text: 'This is not valid JSON at all' }],
+        usage: { input_tokens: 100, output_tokens: 50 },
+      });
+
+      const res = mockResponse();
+      await handler(makeAuthedRequest(), res);
+
+      expect(res._status).toBe(200);
+      expect(reportCronRun).toHaveBeenCalledWith(
+        'curate-lessons',
+        expect.objectContaining({ status: 'error', errors: 1 }),
+      );
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+      expect(Sentry.captureMessage).toHaveBeenCalledOnce();
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'curate-lessons: no lesson landed',
+        expect.objectContaining({
+          level: 'error',
+          fingerprint: ['curate-lessons', 'nothing-landed'],
+          extra: expect.objectContaining({
+            errors: 1,
+            errorSample: [
+              expect.objectContaining({ error: 'Malformed Claude response' }),
+            ],
+          }),
+        }),
+      );
+    });
+
+    it('reports error when every lesson fails to embed', async () => {
+      const { Sentry } = await import('../_lib/sentry.js');
+      queueReviews([makeReview()]);
+      vi.mocked(generateEmbedding).mockResolvedValue(null);
+
+      const res = mockResponse();
+      await handler(makeAuthedRequest(), res);
+
+      expect(mockStream).not.toHaveBeenCalled();
+      expect(reportCronRun).toHaveBeenCalledWith(
+        'curate-lessons',
+        expect.objectContaining({ status: 'error', errors: 1 }),
+      );
+      expect(Sentry.captureMessage).toHaveBeenCalledOnce();
+    });
+
+    it('reports error with the message when the run throws', async () => {
+      vi.mocked(upsertReport).mockRejectedValueOnce(
+        new Error('Unexpected DB failure'),
+      );
+
+      const res = mockResponse();
+      await handler(makeAuthedRequest(), res);
+
+      expect(res._status).toBe(500);
+      expect(reportCronRun).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledWith('curate-lessons', {
+        status: 'error',
+        error: 'Error: Unexpected DB failure',
+        durationMs: expect.any(Number),
+      });
+    });
+
+    it('sends no event when the guard rejects the request', async () => {
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          headers: { authorization: 'Bearer wrong-secret' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(401);
+      expect(reportCronRun).not.toHaveBeenCalled();
+    });
   });
 });
 
