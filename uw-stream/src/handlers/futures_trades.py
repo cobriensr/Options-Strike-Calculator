@@ -81,6 +81,7 @@ Consequences worth knowing:
 from __future__ import annotations
 
 import re
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -89,7 +90,7 @@ from typing import Any, NamedTuple
 
 import db
 from handlers.base import Handler
-from logger_setup import rate_limited_log
+from logger_setup import log, rate_limited_log
 
 _TABLE = "futures_bars"
 
@@ -121,6 +122,13 @@ _MAX_FUTURE_SKEW_MS = 5 * 60 * 1000
 # Bare integer string, for the case where UW ever quotes the epoch the
 # way it already quotes price/nbbo. Checked before the ISO parse.
 _EPOCH_MS_RE = re.compile(r"[+-]?\d+")
+
+# TEMPORARY (spec Phase 0b): remove after one session
+# Raw-frame capture for websocket probes P1 (which keys a frame carries)
+# and P2 (how re-delivered copies of one print differ). Sampling is on
+# trade_id, not on arrival, so every copy of a sampled print is logged.
+_CAPTURE_PRODUCTS: frozenset[str] = frozenset({"ES", "NQ"})
+_CAPTURE_MODULO: int = 500
 
 
 class _Print(NamedTuple):
@@ -218,6 +226,8 @@ class FuturesTradesHandler(Handler):
         """
         if payload.get("product") not in _TARGET_PRODUCTS:
             return
+        # TEMPORARY (spec Phase 0b): remove after one session
+        _maybe_capture(payload, time.time_ns() // 1_000_000)
         await super().enqueue(payload)
 
     # ------------------------------------------------------------------
@@ -465,6 +475,34 @@ class FuturesTradesHandler(Handler):
             self._seen.pop((product, minute_ts), None)
 
         return out
+
+
+# ----------------------------------------------------------------------
+# TEMPORARY (spec Phase 0b): remove after one session
+# ----------------------------------------------------------------------
+
+
+def _maybe_capture(payload: dict, arrival_ms: int) -> None:
+    """TEMPORARY (spec Phase 0b): remove after one session
+
+    Log one ``futures_capture`` info line holding the raw payload and its
+    arrival time (epoch ms at enqueue) when the print is ES or NQ and its
+    ``trade_id`` is a multiple of ``_CAPTURE_MODULO``. The JSON formatter
+    writes ``payload`` as a nested object, so the Railway line parses
+    straight back into the frame.
+    """
+    try:
+        if payload.get("product") not in _CAPTURE_PRODUCTS:
+            return
+        trade_id = _to_int(payload.get("trade_id"))
+        if trade_id is None or trade_id % _CAPTURE_MODULO != 0:
+            return
+        log.info("futures_capture", extra={"arrival_ms": arrival_ms, "payload": payload})
+    except Exception:
+        # Deliberate swallow: this is a temporary diagnostic on the enqueue
+        # hot path, and nothing it does may cost a print or break dispatch.
+        # Permanent code would surface the error instead.
+        return
 
 
 # ----------------------------------------------------------------------
