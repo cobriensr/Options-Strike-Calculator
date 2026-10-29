@@ -21,7 +21,7 @@ A previous version of this repo maintained AGENTS.md and CLAUDE.md as near-ident
 CLAUDE.md uses Claude Code tool names (Read, Edit, Bash, etc.). When working from a different agent, map them to your platform's equivalents:
 
 - Codex: see your CLI's tool list — `shell`, `apply_patch`, etc.
-- Gemini CLI: tools mapped automatically via `GEMINI.md`.
+- Gemini CLI: this repo ships no `GEMINI.md`; configure Gemini CLI to load `AGENTS.md` as its context file.
 - Other agents: most have direct equivalents — Read/Edit/Bash semantics are universal.
 
 The conventions in CLAUDE.md (typed-import patterns, `.js` extension rule for `src/`-imported-by-`api/`, Zod boundary validation, Vercel function patterns) apply regardless of which tool surface you use to read or edit files.

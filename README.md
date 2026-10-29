@@ -1,20 +1,20 @@
 # 0DTE Options Strike Calculator
 
-Production-grade 0DTE SPX options analysis platform: Black-Scholes pricing, AI-powered chart analysis (Claude Opus 4.7), live market data (Schwab + Unusual Whales), position tracking, and a multi-phase ML pipeline. Single-owner tool with optional guest read access. Live at [theta-options.com](https://theta-options.com).
+Production-grade 0DTE SPX options analysis platform: Black-Scholes pricing, AI-powered chart analysis (Claude Opus 4.7), live market data (Schwab, Unusual Whales, GEXBot), dealer-positioning dashboards, intraday unusual-options alerts, position tracking, and an ML research pipeline. Single-owner tool with optional guest read access. Live at [theta-options.com](https://theta-options.com).
 
 ## What's where
 
-| Topic                                                        | Doc                                                                                                                                                                                      |
-| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **First read** — what's in here, accounts you'll need, costs | [docs/ONBOARDING.md](docs/ONBOARDING.md)                                                                                                                                                 |
-| Run it locally                                               | [docs/LOCAL_DEV.md](docs/LOCAL_DEV.md)                                                                                                                                                   |
-| Features (chart analysis, regime intelligence, positions, …) | [docs/FEATURES.md](docs/FEATURES.md)                                                                                                                                                     |
-| Architecture, project structure, data flow, security, math   | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)                                                                                                                                             |
-| Deployment + testing                                         | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)                                                                                                                                                 |
-| Trading workflow + position sizing rules                     | [docs/TRADING_WORKFLOW.md](docs/TRADING_WORKFLOW.md)                                                                                                                                     |
-| Design specs and runbooks                                    | [docs/INDEX.md](docs/INDEX.md)                                                                                                                                                           |
-| Subprojects                                                  | [sidecar/README.md](sidecar/README.md), [ml/README.md](ml/README.md), [uw-stream/README.md](uw-stream/README.md), [scripts/README.md](scripts/README.md), [e2e/README.md](e2e/README.md) |
-| Conventions for AI coding agents                             | [CLAUDE.md](CLAUDE.md), [AGENTS.md](AGENTS.md)                                                                                                                                           |
+| Topic                                                        | Doc                                                                                                                                                                                                                                    |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **First read** — what's in here, accounts you'll need, costs | [docs/ONBOARDING.md](docs/ONBOARDING.md)                                                                                                                                                                                               |
+| Run it locally                                               | [docs/LOCAL_DEV.md](docs/LOCAL_DEV.md)                                                                                                                                                                                                 |
+| Features (chart analysis, regime intelligence, positions, …) | [docs/FEATURES.md](docs/FEATURES.md)                                                                                                                                                                                                   |
+| Architecture, project structure, data flow, security, math   | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)                                                                                                                                                                                           |
+| Deployment + testing                                         | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)                                                                                                                                                                                               |
+| Trading workflow + position sizing rules                     | [docs/TRADING_WORKFLOW.md](docs/TRADING_WORKFLOW.md)                                                                                                                                                                                   |
+| Design specs and runbooks                                    | [docs/INDEX.md](docs/INDEX.md)                                                                                                                                                                                                         |
+| Subprojects                                                  | [sidecar/README.md](sidecar/README.md), [ml/README.md](ml/README.md), [uw-stream/README.md](uw-stream/README.md), [classifier/README.md](classifier/README.md), [scripts/README.md](scripts/README.md), [e2e/README.md](e2e/README.md) |
+| Conventions for AI coding agents                             | [CLAUDE.md](CLAUDE.md), [AGENTS.md](AGENTS.md)                                                                                                                                                                                         |
 
 ## Quick start
 
@@ -27,31 +27,37 @@ npm run dev                      # frontend only,  http://localhost:5173
 npm run dev:full                 # full stack via vercel dev,  http://localhost:3000
 ```
 
-[.env.example](.env.example) is the canonical env reference, kept in sync with [api/\_lib/env.ts](api/_lib/env.ts). Three setup paths (frontend-only / live prod data / offline docker) are documented in [docs/LOCAL_DEV.md](docs/LOCAL_DEV.md).
+[.env.example](.env.example) is the starting template for `.env.local`. [api/\_lib/env.ts](api/_lib/env.ts) validates the core server vars (database, Redis, auth, API keys, Twilio, observability, classifier); some optional integrations read `process.env` directly. Two setup paths (frontend only, or full stack against live data) are documented in [docs/LOCAL_DEV.md](docs/LOCAL_DEV.md).
 
 ## Stack
 
-- **Frontend** — React 19 (strict mode), Vite, Tailwind CSS 4
+- **Frontend** — React 19 (strict mode), Vite, Tailwind CSS 4, installable PWA
 - **Backend** — Vercel Serverless Functions on Node 24 (Fluid Compute)
-- **Data** — Neon Postgres (`@neondatabase/serverless`), Upstash Redis
-- **AI** — Anthropic Claude Opus 4.7 (analyze), OpenAI text-embedding-3-large (lessons dedup)
-- **Market data** — Schwab Trader/Market Data API, Unusual Whales (REST + websocket, including CME futures bars)
-- **Python services** — `uw-stream/` (UW websocket on Railway), `classifier/` (multileg classifier on Railway), `sidecar/` (Take-It SHAP, frozen archive on Railway), `ml/` (nightly pipeline)
-- **Observability** — Sentry, pino structured logs, Vercel Speed Insights
+- **Data** — Neon Postgres (`@neondatabase/serverless`), Upstash Redis, Vercel Blob
+- **AI** — Anthropic Claude Opus 4.7 (chart analysis, weekly lesson curation) with Sonnet 4.6 as its fallback and for the pre-check, Periscope lesson curation and plot analysis; OpenAI text-embedding-3-large (lesson dedup, analog-day retrieval)
+- **Market data** — Schwab Trader/Market Data API, Unusual Whales (REST + websocket, including per-trade option prints and CME futures bars), GEXBot (dealer gamma/charm/vanna state), FRED + Finnhub (economic and earnings calendar)
+- **Python services** — `uw-stream/` (UW websocket on Railway), `classifier/` (multileg classifier on Railway), `sidecar/` (Take-It SHAP, frozen archive on Railway), `ml/` (research pipeline)
+- **Observability** — Sentry, pino structured logs, Axiom (cron-run events), Vercel Analytics + Speed Insights
+
+The `classifier/` service is slated for retirement: the exchange's own multi-leg flag on each print will replace it ([design](docs/superpowers/specs/2026-10-28-classifier-replacement-design.md)). It still runs today.
 
 ## What this app does
 
-Given a SPY/SPX price, VIX, and time, the calculator produces delta-targeted strike tables, full iron condor / BWB P&L with skew-adjusted fat-tail PoP, a delta ceiling recommendation backed by 9,102 days of historical VIX-to-SPX range data, and a catalog of regime signals (VIX term structure, opening range, volatility clustering, dark pool levels, GEX walls, event-day warnings). An AI analyze endpoint reads up to 4 chart screenshots (Market Tide, Net Flow, Periscope) and returns a structure / delta / entry plan / management rules / hedge recommendation, with active "lessons learned" injected from a self-improving weekly curation pipeline. Live data ingestion, ML feature engineering, and Claude vision analysis of nightly plots all run on schedule. See [docs/FEATURES.md](docs/FEATURES.md) for the full surface.
+Given a SPY/SPX price, VIX, and time, the calculator produces delta-targeted strike tables, full iron condor / BWB P&L with skew-adjusted fat-tail PoP, and a delta ceiling recommendation backed by 9,102 days of historical VIX-to-SPX range data. A Market Regime section adds VIX regime and term structure, opening range, volatility clustering, pre-trade signals and event-day warnings.
+
+Owner and guest sessions add live dashboards: dealer gamma and exposure (0DTE gamma regime, GEX Target, GEX Landscape, zero gamma, Strike Battle Map, 0DTE Greek heatmap, GEXBot dealer state, a rule-based Periscope exposure map), flow (Greek flow, dark pool levels, directional vega spikes, Interval B/A history), setup detectors (Periscope Lottery, gamma-node detector), futures, a position monitor and a contract tracker. A separate **Options Alerts** view runs two intraday unusual-options feeds, **Lottery Finder** and **Silent Boom**, over the per-trade tape that `uw-stream` ingests. Each alert carries a **Take-It** probability from calibrated gradient-boosted models scored in TypeScript, with SHAP flags from the sidecar.
+
+An owner-only AI analyze endpoint reads up to 2 Periscope screenshots (gamma and charm) plus structured flow, GEX, futures and positions data, and returns a structure / delta / entry plan / management rules / hedge recommendation, with active "lessons learned" injected from a self-improving weekly curation pipeline. Live data ingestion (Vercel crons plus the `uw-stream` websocket service) and ML feature building run on schedule; the GitHub Actions ML pipeline behind the research plots is paused. See [docs/FEATURES.md](docs/FEATURES.md) for the full surface.
 
 ## Tests
 
 ```bash
-npm run review        # tsc + eslint + prettier + vitest --coverage
+npm run review        # type-check + eslint + prettier --write + build + build-output check + vitest --coverage + coverage floors
 npm run test:run      # vitest unit tests (no env vars required)
 npm run test:e2e      # Playwright e2e + a11y across chromium/firefox/webkit
 ```
 
-6,897 unit tests across 277 files; 34 Playwright specs across 3 browsers. ML pipeline has 14 pytest files. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full breakdown.
+As of 2026-10-28: about 14,800 Vitest tests in 680 files; 41 Playwright specs (chromium on every CI run, all three browsers nightly); 95 pytest files across `ml/`, `sidecar/`, `uw-stream/` and `classifier/`. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full breakdown.
 
 ## License
 
