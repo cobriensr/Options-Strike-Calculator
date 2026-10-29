@@ -362,3 +362,33 @@ This is a conditional update: idempotent, and it never overwrites websocket data
 - Test layout.
 - (Settled in the plan: no re-queue of failed `futures_bars` flushes. The failure is already reported to Sentry.)
 - Whether Phase 6 lives inside `backfill-futures-gaps.ts` or in a sibling cron.
+
+## Probe results (0a): REST, 2026-10-28 evening
+
+All read-only, about 600 calls. Scripts and outputs are in `docs/tmp/uw-futures-probe/` (gitignored).
+
+- **P6 lookback.** UW futures REST history starts **2026-06-30T18:06Z for ES** (ESU6) and 2026-07-21 for NQ and the other roots. The edge returns an empty page, not a 403; a 403 `historic_data_access_missing` appears only before the token's 2-year window (2023-11-29). The start differs by root, so it is a **fixed archive start, not a rolling window**. Re-probe 06-30 in a week to confirm it doesn't roll.
+  - Early July has afternoon holes (07-08, 07-15, 07-22).
+  - **Density:** ES 904 prints at 14:30 UTC (2 pages), 61 at 04:00 UTC (1 page). About **1,025 pages per ES session and 916 per NQ**, at about 84 ms per page.
+  - **Cursor:** `older_than` is strict. Use a +1 µs cursor with `trade_id` dedup (0 of 27,674 prints lost).
+- **P3 side: D3 = PASS.** Tick-test agreement is **99.14%** (n = 4,063 price-changing ESZ6 prints, 10-28 14:00–14:30 UTC; 99.81% by volume). `side = none` and missing `side` are both 0%. On zero-tick prints `side` follows the last move only 54% of the time, so it is the **exchange aggressor flag**, not a derived classification.
+  - `nbbo_*` is mostly post-trade (~93% consistent with post-trade vs ~58% with pre-trade), so never classify on it.
+  - `trade_id` isn't monotonic in time, and its ranges differ by product, so dedup stays on `(sym, trade_id)`.
+- **P4 volume parity:** **30 of 30 minutes exact** (deduped non-spread print volume = `futures_bars.volume`). Whole-session volume matches at 99.9%.
+- **P7 stats** (`/futures/{c}/stats` at 03:34 UTC):
+  - `settlement`, `settlement_date` and `session_volume` refer to the **settled** session (10-28).
+  - `session_high` and `session_low` refer to the **in-progress** session (10-29 overnight). **So Phase 5 drops high/low.**
+  - `session_volume` runs about 4% above print volume.
+  - Which date OI is as of is unresolved, so Phase 5 stores `fetched_at` and runs twice (see Phase 5 amendments).
+- **Fields:**
+  - REST `/trades` regular rows have no `sym` (implied by the path) and **no event fields**.
+  - `/futures/flow` carries `sym`, `product`, `tick_size`, `event_ts_ns`, `event_size` and `event_levels`. The event fields are null only on the newest, still-open event.
+  - `/trades?blocks_only=true` returned 0 rows. Blocks come through `/futures/flow?blocks_only=true`, with `quote_*` null in 20 of 20 and `executed_at` at second precision.
+- **D8 → normal order.** The lookback is fixed, so nothing is aging out.
+
+### Amendments from 0a
+
+- **Phase 6b scope** widens from "since 2026-09-29" to **since UW's archive start** (ES 2026-06-30, others 2026-07-21), about 85 sessions.
+  - Rows before 09-29 hold Databento-era OHLCV, so 6b writes flow onto a bar only when UW's deduped non-spread volume for that minute is within **2%** of the bar's `volume`. Otherwise it skips and counts the minute. That keeps `buy + sell ≤ volume` meaningful.
+  - The roll replay is the same as Phase 6.
+- **Phase 5 table** drops `session_high`/`session_low` and keeps `fetched_at`. It runs at **12:30 UTC Tue–Sat and 21:30 UTC Mon–Fri**, with `DO UPDATE` on `(contract, settlement_date)`. The stored `fetched_at` then shows which run carried the final OI.
