@@ -50,10 +50,8 @@ function readConfig(): R2Config {
   };
 }
 
-/** The name of the private bucket. Throws when R2 is not configured. */
-export function getR2Bucket(): string {
-  return readConfig().bucket;
-}
+/** Per-call cap: a stalled socket must not eat the function's wall budget. */
+const R2_TIMEOUT_MS = 120_000;
 
 let client: S3Client | null = null;
 
@@ -88,6 +86,7 @@ export async function r2PutObject(
       ContentType: opts.contentType,
       Metadata: opts.metadata,
     }),
+    { abortSignal: AbortSignal.timeout(R2_TIMEOUT_MS) },
   );
 }
 
@@ -103,6 +102,7 @@ export async function r2HeadObject(key: string): Promise<R2HeadResult | null> {
   try {
     const res = await getClient(config).send(
       new HeadObjectCommand({ Bucket: config.bucket, Key: key }),
+      { abortSignal: AbortSignal.timeout(R2_TIMEOUT_MS) },
     );
     return {
       contentLength: res.ContentLength ?? 0,

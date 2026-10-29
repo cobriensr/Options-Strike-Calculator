@@ -10,34 +10,29 @@ import { createHash } from 'node:crypto';
 import { isTradingDay, priorTradingDay } from '../../src/data/marketHours.js';
 import { getETDateStr, getETTime } from '../../src/utils/timezone.js';
 import { getDb, withDbRetry } from './db.js';
-import { buildAuthHeader, GEXBOT_BASE } from './gexbot-client.js';
+import {
+  buildAuthHeader,
+  GEXBOT_BASE,
+  GEXBOT_TICKERS,
+} from './gexbot-client.js';
 import { r2HeadObject, r2PutObject } from './r2.js';
 
-export const EOD_PRIORITY: readonly string[] = [
-  'SPX',
-  'ES_SPX',
-  'NDX',
-  'NQ_NDX',
-  'RUT',
-  'VIX',
-  'SPY',
-  'QQQ',
-  'IWM',
-  'TLT',
-  'GLD',
-  'USO',
-  'TQQQ',
-  'UVXY',
-  'HYG',
-  'SLV',
-];
+/** Fetch order: the live-polled GEXBot tickers first (same order). */
+export const EOD_PRIORITY: readonly string[] = GEXBOT_TICKERS;
 
-const TICKER_RE = /^[A-Z0-9_.]+$/;
+const TICKER_RE = /^[A-Z0-9][A-Z0-9_.]{0,15}$/;
 const TICKERS_TIMEOUT_MS = 15_000;
 /** GEXBot publishes the day's report after the 16:00 ET close; 17:00 is safe. */
 const REPORT_READY_ET_HOUR = 17;
-/** Largest report seen is 167.6 MB; 3 concurrent downloads stay under the 2 GB function memory. */
-const MAX_EOD_REPORT_BYTES = 512 * 1024 * 1024;
+/**
+ * Largest report seen is 167.6 MB. During the R2 PUT, Node's TLS layer likely
+ * holds a second copy, so 3 concurrent x 2 x 300 MiB ~ 1.8 GiB stays under
+ * the 2 GB function.
+ */
+const MAX_EOD_REPORT_BYTES = 300 * 1024 * 1024;
+/** Per-attempt Neon timeout, the fleet-wide value for withDbRetry. */
+const DB_ATTEMPT_TIMEOUT_MS = 10_000;
+const DB_RETRIES = 2;
 const CONTENT_LENGTH_RE = /^[1-9]\d*$/;
 const DISPOSITION_RE =
   /(?:^|[;\s])filename\*?=(?:UTF-8'')?"?eod_report_([A-Z0-9_.]+)_(\d{4}-\d{2}-\d{2})\.zip(?:["';\s]|$)/;
@@ -227,6 +222,8 @@ async function insertIndexRow(row: IndexRow): Promise<void> {
         (${row.ticker}, ${row.date}, ${key}, ${row.bytes}, ${row.sha256},
          ${row.entryCount}, ${row.source}, COALESCE(${row.fetchedAt}::timestamptz, now()))
       ON CONFLICT (ticker, report_date) DO NOTHING`,
+    DB_RETRIES,
+    DB_ATTEMPT_TIMEOUT_MS,
   );
 }
 
@@ -266,6 +263,8 @@ export async function storeEodReport(args: {
   if (head.metadata.sha256 !== sha256) {
     throw new Error('r2_verify_failed: sha256 metadata mismatch');
   }
+  // Single-row INSERT, not batched: each row is gated on its own verified
+  // upload, and a run writes about 60 rows.
   await insertIndexRow({
     ticker,
     date,
@@ -287,11 +286,17 @@ export async function indexExistingObject(
   if (head == null) return 'absent';
   const { sha256, source } = head.metadata;
   const entryCount = Number(head.metadata['entry-count']);
+  // storeEodReport PUTs, then HEAD-verifies; a failed verify leaves the
+  // object in R2, so only an object whose metadata matches its own key and
+  // size may be indexed as complete.
   if (
     !sha256 ||
     !source ||
     !Number.isSafeInteger(entryCount) ||
-    entryCount <= 0
+    entryCount <= 0 ||
+    Number(head.metadata['source-content-length']) !== head.contentLength ||
+    head.metadata.ticker !== ticker ||
+    head.metadata['report-date'] !== date
   ) {
     throw new Error('object_without_metadata');
   }
@@ -314,6 +319,8 @@ export async function listStoredTickers(date: string): Promise<Set<string>> {
   const rows = (await withDbRetry(
     () =>
       sql`SELECT ticker FROM gexbot_eod_reports WHERE report_date = ${date}`,
+    DB_RETRIES,
+    DB_ATTEMPT_TIMEOUT_MS,
   )) as { ticker: string }[];
   return new Set(rows.map((r) => r.ticker));
 }

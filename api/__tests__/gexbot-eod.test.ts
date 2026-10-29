@@ -2,7 +2,8 @@
 import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockSql, mockPut, mockHead } = vi.hoisted(() => ({
+const { mockSql, mockPut, mockHead, mockRetry } = vi.hoisted(() => ({
+  mockRetry: vi.fn(),
   mockSql: vi.fn(),
   mockPut: vi.fn(),
   mockHead: vi.fn(),
@@ -10,7 +11,7 @@ const { mockSql, mockPut, mockHead } = vi.hoisted(() => ({
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
-  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  withDbRetry: mockRetry,
 }));
 vi.mock('../_lib/r2.js', () => ({
   r2PutObject: mockPut,
@@ -28,12 +29,14 @@ import {
   requestEodReport,
   storeEodReport,
 } from '../_lib/gexbot-eod.js';
+import { GEXBOT_TICKERS } from '../_lib/gexbot-client.js';
 import { etWallClockToUtcIso } from '../../src/utils/timezone.js';
 
 const fetchMock = vi.fn();
 
 beforeEach(() => {
   vi.resetAllMocks();
+  mockRetry.mockImplementation((fn: () => Promise<unknown>) => fn());
   mockSql.mockResolvedValue([]);
   vi.stubGlobal('fetch', fetchMock);
 });
@@ -192,6 +195,52 @@ describe('fetchEodTickers', () => {
     expect(EOD_PRIORITY[0]).toBe('SPX');
     expect(EOD_PRIORITY).toHaveLength(16);
   });
+
+  it('keeps the original 16-name priority order, now sourced from GEXBOT_TICKERS', () => {
+    expect([...GEXBOT_TICKERS]).toEqual([
+      'SPX',
+      'ES_SPX',
+      'NDX',
+      'NQ_NDX',
+      'RUT',
+      'VIX',
+      'SPY',
+      'QQQ',
+      'IWM',
+      'TLT',
+      'GLD',
+      'USO',
+      'TQQQ',
+      'UVXY',
+      'HYG',
+      'SLV',
+    ]);
+    expect(EOD_PRIORITY).toEqual([...GEXBOT_TICKERS]);
+  });
+
+  it.each([['..'], ['.A'], ['A'.repeat(17)], ['_A']])(
+    'rejects ticker %s',
+    async (bad) => {
+      fetchMock.mockResolvedValueOnce(
+        tickersResponse({ stocks: [bad], indexes: ['SPX'], futures: [] }),
+      );
+      const out = await fetchEodTickers();
+      expect(out.rejected).toEqual([bad]);
+      expect(out.tickers).toEqual(['SPX']);
+    },
+  );
+
+  it.each([['ES_SPX'], ['BRK.B'], ['A'], ['A'.repeat(16)]])(
+    'accepts ticker %s',
+    async (good) => {
+      fetchMock.mockResolvedValueOnce(
+        tickersResponse({ stocks: [good], indexes: ['SPX'], futures: [] }),
+      );
+      const out = await fetchEodTickers();
+      expect(out.rejected).toEqual([]);
+      expect(out.tickers).toContain(good);
+    },
+  );
 });
 
 describe('requestEodReport', () => {
@@ -292,7 +341,7 @@ describe('requestEodReport', () => {
     ['1.5'],
     ['1e3'],
     ['0x10'],
-    [String(512 * 1024 * 1024 + 1)],
+    [String(300 * 1024 * 1024 + 1)],
   ])('flags content-length %s as no_length', async (length) => {
     fetchMock.mockResolvedValueOnce(zipResponse({ length }));
     expect(await requestEodReport('k', 'SPX', signal)).toEqual({
@@ -321,7 +370,7 @@ describe('requestEodReport', () => {
 
   it('accepts a content-length exactly at the cap', async () => {
     fetchMock.mockResolvedValueOnce(
-      zipResponse({ length: String(512 * 1024 * 1024) }),
+      zipResponse({ length: String(300 * 1024 * 1024) }),
     );
     const res = await requestEodReport('k', 'SPX', signal);
     expect(res.kind).toBe('ok');
@@ -494,12 +543,22 @@ describe('storeEodReport', () => {
     mockSql.mockRejectedValueOnce(new Error('connection lost'));
     await expect(storeEodReport(args)).rejects.toThrow('connection lost');
   });
+
+  it('bounds the insert with retries and a per-attempt timeout', async () => {
+    mockPut.mockResolvedValueOnce(undefined);
+    mockHead.mockResolvedValueOnce(goodHead());
+    await storeEodReport(args);
+    expect(mockRetry).toHaveBeenCalledWith(expect.any(Function), 2, 10_000);
+  });
 });
 
 describe('indexExistingObject', () => {
   const meta = {
     sha256: 'abc',
+    ticker: 'SPX',
+    'report-date': '2026-10-28',
     'entry-count': '15',
+    'source-content-length': '99',
     source: 'rescue-2026-10-28',
     'fetched-at': '2026-10-28T23:05:00.000Z',
   };
@@ -548,6 +607,15 @@ describe('indexExistingObject', () => {
     ['source', { ...meta, source: undefined }],
     ['bad entry-count', { ...meta, 'entry-count': 'abc' }],
     ['zero entry-count', { ...meta, 'entry-count': '0' }],
+    [
+      'no source-content-length',
+      { ...meta, 'source-content-length': undefined },
+    ],
+    ['length mismatch', { ...meta, 'source-content-length': '98' }],
+    ['no ticker', { ...meta, ticker: undefined }],
+    ['ticker mismatch', { ...meta, ticker: 'QQQ' }],
+    ['no report-date', { ...meta, 'report-date': undefined }],
+    ['report-date mismatch', { ...meta, 'report-date': '2026-10-27' }],
   ])('throws object_without_metadata for %s', async (_n, metadata) => {
     mockHead.mockResolvedValueOnce({
       contentLength: 99,
@@ -574,6 +642,11 @@ describe('indexExistingObject', () => {
 });
 
 describe('listStoredTickers', () => {
+  it('bounds the query with retries and a per-attempt timeout', async () => {
+    await listStoredTickers('2026-10-28');
+    expect(mockRetry).toHaveBeenCalledWith(expect.any(Function), 2, 10_000);
+  });
+
   it('returns a Set of tickers for the date', async () => {
     mockSql.mockResolvedValueOnce([{ ticker: 'SPX' }, { ticker: 'QQQ' }]);
     const out = await listStoredTickers('2026-10-28');

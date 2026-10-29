@@ -44,30 +44,6 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe('getR2Bucket', () => {
-  it('returns the bucket name when all five vars are set', async () => {
-    const { getR2Bucket } = await loadR2();
-    expect(getR2Bucket()).toBe('tape-bucket');
-  });
-
-  it('throws naming every missing var', async () => {
-    vi.stubEnv('R2_ACCESS_KEY_ID', '');
-    vi.stubEnv('R2_BUCKET_FULLTAPE', '');
-    const { getR2Bucket } = await loadR2();
-    expect(() => getR2Bucket()).toThrow(
-      'R2 is not configured: R2_ACCESS_KEY_ID, R2_BUCKET_FULLTAPE',
-    );
-  });
-});
-
-describe('getR2Bucket without R2_ACCOUNT_ID', () => {
-  it('succeeds because api/ never reads the account id', async () => {
-    vi.stubEnv('R2_ACCOUNT_ID', '');
-    const { getR2Bucket } = await loadR2();
-    expect(getR2Bucket()).toBe('tape-bucket');
-  });
-});
-
 describe('r2PutObject', () => {
   it('sends Bucket, Key, Body, ContentType and Metadata', async () => {
     sendMock.mockResolvedValueOnce({});
@@ -79,6 +55,9 @@ describe('r2PutObject', () => {
     });
     expect(sendMock).toHaveBeenCalledTimes(1);
     const cmd = sendMock.mock.calls[0]?.[0] as { input: unknown };
+    expect(sendMock.mock.calls[0]?.[1]).toEqual({
+      abortSignal: expect.any(AbortSignal),
+    });
     expect(cmd.input).toEqual({
       Bucket: 'tape-bucket',
       Key: 'gexbot-eod/SPX/2026-10-28.zip',
@@ -119,6 +98,27 @@ describe('r2PutObject', () => {
     ).rejects.toThrow('AccessDenied');
   });
 
+  it('names every missing var in the config error', async () => {
+    vi.stubEnv('R2_ACCESS_KEY_ID', '');
+    vi.stubEnv('R2_BUCKET_FULLTAPE', '');
+    const { r2HeadObject } = await loadR2();
+    await expect(r2HeadObject('k')).rejects.toThrow(
+      'R2 is not configured: R2_ACCESS_KEY_ID, R2_BUCKET_FULLTAPE',
+    );
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it('works without R2_ACCOUNT_ID because api/ never reads it', async () => {
+    vi.stubEnv('R2_ACCOUNT_ID', '');
+    sendMock.mockResolvedValueOnce({});
+    const { r2PutObject } = await loadR2();
+    await r2PutObject('k', new Uint8Array(1), {
+      contentType: 'application/zip',
+      metadata: {},
+    });
+    expect(sendMock).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects with the config error when R2 is not configured', async () => {
     vi.stubEnv('R2_ENDPOINT_URL', '');
     const { r2PutObject } = await loadR2();
@@ -147,6 +147,9 @@ describe('r2HeadObject', () => {
       metadata: { sha256: 'abc' },
     });
     const cmd = sendMock.mock.calls[0]?.[0] as { input: unknown };
+    expect(sendMock.mock.calls[0]?.[1]).toEqual({
+      abortSignal: expect.any(AbortSignal),
+    });
     expect(cmd.input).toEqual({
       Bucket: 'tape-bucket',
       Key: 'gexbot-eod/SPX/2026-10-28.zip',
