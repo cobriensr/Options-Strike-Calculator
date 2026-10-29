@@ -43,9 +43,11 @@ export interface StrikeBoxProps {
    * Capture time of the slice behind `mmGammaMap`. The ✓ / ✗ sign check
    * against the naive Hedge/1% (signs only; the scales differ) is UW-era
    * logic, so it shows only when this is a UW Periscope (scraper-era)
-   * slice. GEXBot or unknown → value only, no marker.
+   * slice. GEXBot or unknown → value only, no marker. Required, so a
+   * caller cannot drop it and silently lose the check; pass null when there
+   * is no slice.
    */
-  mmGammaCapturedAt?: string | null;
+  mmGammaCapturedAt: string | null;
 }
 
 const TH_CLS =

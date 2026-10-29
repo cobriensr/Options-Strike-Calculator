@@ -78,26 +78,30 @@ function makeStrike(
 
 describe('StrikeBox: empty state', () => {
   it('shows No data when leaderboard is empty', () => {
-    render(<StrikeBox leaderboard={[]} />);
+    render(<StrikeBox mmGammaCapturedAt={null} leaderboard={[]} />);
     expect(screen.getByText('No data')).toBeInTheDocument();
   });
 
   it('does not render a table when leaderboard is empty', () => {
-    render(<StrikeBox leaderboard={[]} />);
+    render(<StrikeBox mmGammaCapturedAt={null} leaderboard={[]} />);
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 });
 
 describe('StrikeBox: table structure', () => {
   it('renders an accessible table with a label', () => {
-    render(<StrikeBox leaderboard={[makeStrike(5800)]} />);
+    render(
+      <StrikeBox mmGammaCapturedAt={null} leaderboard={[makeStrike(5800)]} />,
+    );
     expect(
       screen.getByRole('table', { name: /gex strike leaderboard/i }),
     ).toBeInTheDocument();
   });
 
   it('renders the expected column headers', () => {
-    render(<StrikeBox leaderboard={[makeStrike(5800)]} />);
+    render(
+      <StrikeBox mmGammaCapturedAt={null} leaderboard={[makeStrike(5800)]} />,
+    );
     expect(screen.getByText('RK')).toBeInTheDocument();
     expect(screen.getByText('Strike')).toBeInTheDocument();
     expect(screen.getByText('Dist')).toBeInTheDocument();
@@ -111,7 +115,9 @@ describe('StrikeBox: table structure', () => {
   });
 
   it('Periscope Γ header gives both meanings, since the column can show either era', () => {
-    render(<StrikeBox leaderboard={[makeStrike(5800)]} />);
+    render(
+      <StrikeBox mmGammaCapturedAt={null} leaderboard={[makeStrike(5800)]} />,
+    );
     const title = screen.getByText('Periscope Γ').getAttribute('title') ?? '';
     expect(title).toMatch(
       /since 2026-05-26 it is GEXBot gamma in GEXBot's taker-side sign \(positive = traders net long gamma at the strike\)/,
@@ -129,14 +135,22 @@ describe('StrikeBox: table structure', () => {
 
 describe('StrikeBox: Periscope Γ overlay', () => {
   it('renders an em-dash in the Periscope Γ cell when no mmGammaMap is provided', () => {
-    render(<StrikeBox leaderboard={[makeStrike(5800)]} />);
+    render(
+      <StrikeBox mmGammaCapturedAt={null} leaderboard={[makeStrike(5800)]} />,
+    );
     // The cell renders "—" via theme.textMuted; query by the literal char.
     expect(screen.getAllByText('—').length).toBeGreaterThan(0);
   });
 
   it('renders an em-dash for a strike absent from the mmGammaMap', () => {
     const mm = new Map<number, number>([[9999, 1_000_000_000]]);
-    render(<StrikeBox leaderboard={[makeStrike(5800)]} mmGammaMap={mm} />);
+    render(
+      <StrikeBox
+        mmGammaCapturedAt={null}
+        leaderboard={[makeStrike(5800)]}
+        mmGammaMap={mm}
+      />,
+    );
     expect(screen.getAllByText('—').length).toBeGreaterThan(0);
   });
 
@@ -244,7 +258,7 @@ describe('StrikeBox: data rows', () => {
         }),
       }),
     ];
-    render(<StrikeBox leaderboard={leaderboard} />);
+    render(<StrikeBox mmGammaCapturedAt={null} leaderboard={leaderboard} />);
     expect(screen.getByText('5800')).toBeInTheDocument();
     expect(screen.getByText('5750')).toBeInTheDocument();
   });
@@ -263,7 +277,7 @@ describe('StrikeBox: data rows', () => {
         }),
       }),
     );
-    render(<StrikeBox leaderboard={strikes} />);
+    render(<StrikeBox mmGammaCapturedAt={null} leaderboard={strikes} />);
     expect(screen.getByText('5800')).toBeInTheDocument();
     expect(screen.getByText('5600')).toBeInTheDocument();
   });
@@ -279,7 +293,7 @@ describe('StrikeBox: data rows', () => {
         features: makeFeatures({ strike: 5800, gexDollars: 1_000_000_000 }),
       }),
     ];
-    render(<StrikeBox leaderboard={leaderboard} />);
+    render(<StrikeBox mmGammaCapturedAt={null} leaderboard={leaderboard} />);
     const rows = screen.getAllByRole('row');
     // rows[0] = header; order matches input (5700 first, then 5800)
     expect(rows[1]).toHaveTextContent('5700');
@@ -291,6 +305,7 @@ describe('StrikeBox: GEX $ formatting', () => {
   it('formats GEX in billions with one decimal', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             features: makeFeatures({ gexDollars: 2_500_000_000, strike: 5800 }),
@@ -304,6 +319,7 @@ describe('StrikeBox: GEX $ formatting', () => {
   it('formats GEX in millions with one decimal', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             features: makeFeatures({ gexDollars: 350_000_000, strike: 5800 }),
@@ -317,6 +333,7 @@ describe('StrikeBox: GEX $ formatting', () => {
   it('formats GEX in thousands (no decimal)', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             features: makeFeatures({ gexDollars: 750_000, strike: 5800 }),
@@ -330,6 +347,7 @@ describe('StrikeBox: GEX $ formatting', () => {
   it('formats negative GEX with minus sign', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             features: makeFeatures({
@@ -348,6 +366,7 @@ describe('StrikeBox: distance formatting', () => {
   it('shows positive distance with + sign', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             features: makeFeatures({
@@ -365,6 +384,7 @@ describe('StrikeBox: distance formatting', () => {
   it('shows negative distance without extra sign (toFixed handles it)', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5750, {
             features: makeFeatures({
@@ -384,6 +404,7 @@ describe('StrikeBox: target row highlight', () => {
   it('sets aria-current on the target row', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             isTarget: true,
@@ -400,6 +421,7 @@ describe('StrikeBox: target row highlight', () => {
   it('does not set aria-current on non-target rows', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             isTarget: false,
@@ -417,6 +439,7 @@ describe('StrikeBox: rank arrows', () => {
   it('shows New entry arrow on initial render', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             rankBySize: 1,
@@ -438,6 +461,7 @@ describe('StrikeBox: delta percentage formatting', () => {
     // "NEW" on initial render (not —), so only the Δ% cell contributes a dash.
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             features: makeFeatures({ deltaPct_1m: null, strike: 5800 }),
@@ -451,6 +475,7 @@ describe('StrikeBox: delta percentage formatting', () => {
   it('shows formatted positive deltaPct_1m', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             features: makeFeatures({ deltaPct_1m: 0.025, strike: 5800 }),
@@ -464,6 +489,7 @@ describe('StrikeBox: delta percentage formatting', () => {
   it('shows formatted negative deltaPct_1m', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             features: makeFeatures({ deltaPct_1m: -0.025, strike: 5800 }),
@@ -479,6 +505,7 @@ describe('StrikeBox: formatNet coverage (est. Δ column)', () => {
   it('renders the leaderboard table with est. Δ column (positive gexDollars)', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             features: makeFeatures({
@@ -498,6 +525,7 @@ describe('StrikeBox: formatNet coverage (est. Δ column)', () => {
   it('renders positive dealer delta (green) when gexDollars is positive', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             features: makeFeatures({
@@ -519,6 +547,7 @@ describe('StrikeBox: formatNet coverage (est. Δ column)', () => {
   it('renders negative dealer delta when gexDollars is negative', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             features: makeFeatures({
@@ -544,6 +573,7 @@ describe('StrikeBox: Greek bar tooltips', () => {
   it('renders CHEX cell with tooltip text for positive charm', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             features: makeFeatures({ charmNet: 5e7, strike: 5800 }),
@@ -564,6 +594,7 @@ describe('StrikeBox: Greek bar tooltips', () => {
   it('renders CHEX cell with negative tooltip for negative charm', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             features: makeFeatures({ charmNet: -5e7, strike: 5800 }),
@@ -583,6 +614,7 @@ describe('StrikeBox: Greek bar tooltips', () => {
   it('renders DEX cell with positive tooltip for positive deltaNet', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             features: makeFeatures({ deltaNet: 5e8, strike: 5800 }),
@@ -602,6 +634,7 @@ describe('StrikeBox: Greek bar tooltips', () => {
   it('renders DEX cell with negative tooltip for negative deltaNet', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             features: makeFeatures({ deltaNet: -5e8, strike: 5800 }),
@@ -621,6 +654,7 @@ describe('StrikeBox: Greek bar tooltips', () => {
   it('renders VEX cell with positive tooltip for positive vannaNet', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             features: makeFeatures({ vannaNet: 5e7, strike: 5800 }),
@@ -640,6 +674,7 @@ describe('StrikeBox: Greek bar tooltips', () => {
   it('renders VEX cell with negative tooltip for negative vannaNet', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             features: makeFeatures({ vannaNet: -5e7, strike: 5800 }),
@@ -659,6 +694,7 @@ describe('StrikeBox: Greek bar tooltips', () => {
   it('renders near-zero CHEX tooltip when charmNet is zero', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             features: makeFeatures({ charmNet: 0, strike: 5800 }),
@@ -678,6 +714,7 @@ describe('StrikeBox: rank arrows (up / down)', () => {
   it('renders rank arrows for all rows in a multi-strike leaderboard', async () => {
     const { rerender } = render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             rankBySize: 1,
@@ -698,6 +735,7 @@ describe('StrikeBox: rank arrows (up / down)', () => {
     // Rerender with swapped order so rank changes fire
     rerender(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5750, {
             rankBySize: 1,
@@ -726,6 +764,7 @@ describe('StrikeBox: HOT% badge', () => {
   it('shows 0% HOT badge when deltaPct_1m is null', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             features: makeFeatures({ deltaPct_1m: null, strike: 5800 }),
@@ -739,6 +778,7 @@ describe('StrikeBox: HOT% badge', () => {
   it('shows correct HOT% for a non-null positive deltaPct_1m', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             // |0.08| * 100 = 8 → toFixed(0) = '8'
@@ -753,6 +793,7 @@ describe('StrikeBox: HOT% badge', () => {
   it('shows absolute HOT% for a negative deltaPct_1m', () => {
     render(
       <StrikeBox
+        mmGammaCapturedAt={null}
         leaderboard={[
           makeStrike(5800, {
             // |-0.12| * 100 = 12 → toFixed(0) = '12'

@@ -9,6 +9,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import type { PeriscopeView } from '../hooks/usePeriscopeExposure';
 import { PeriscopePanel } from '../components/Periscope/PeriscopePanel';
+import { dealerClaims } from './helpers/dealer-claims';
 
 // ── Fixture factory ───────────────────────────────────────────────────
 
@@ -152,7 +153,8 @@ describe('PeriscopePanel: trade plan by source', () => {
 
   it('does not render the plan on a GEXBot slice and says why', () => {
     render(<PeriscopePanel {...baseProps} view={gexbotView()} />);
-    expect(screen.getByRole('status')).toHaveTextContent(PAUSED);
+    // A note, not a live region: it does not change while the slice is shown.
+    expect(screen.getByText(PAUSED)).toHaveAttribute('role', 'note');
     expect(screen.queryByText(/^LONG$/)).toBeNull();
     expect(screen.queryByText(/^SHORT$/)).toBeNull();
     expect(screen.queryByText(/^WAIT$/)).toBeNull();
@@ -162,6 +164,32 @@ describe('PeriscopePanel: trade plan by source', () => {
         /^(pin|drift-and-cap|chop|cone-breach-(up|down)|no-data)$/,
       ),
     ).toBeNull();
+  });
+
+  it('pauses the plan on a slice whose time does not parse (source unknown)', () => {
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        view={makeView({ capturedAt: 'not-a-date' })}
+      />,
+    );
+    expect(screen.getByText(PAUSED)).toBeInTheDocument();
+    expect(screen.queryByText(/^LONG$/)).toBeNull();
+    expect(screen.queryByText(/^SHORT$/)).toBeNull();
+    expect(screen.queryByText('CEILING')).toBeNull();
+  });
+
+  it('makes no dealer or market-maker claim on a GEXBot slice', () => {
+    render(<PeriscopePanel {...baseProps} view={gexbotView()} />);
+    const titles = Array.from(
+      document.querySelectorAll<HTMLElement>('[title]'),
+    ).map((el) => el.title);
+    // The paused note names the UW mechanics it is not applying; strip that
+    // disclaimer, then nothing else may make a dealer reading.
+    const text = [document.body.textContent ?? '', ...titles]
+      .join('\n')
+      .replaceAll(PAUSED, '');
+    expect(dealerClaims(text)).toEqual([]);
   });
 
   it('keeps the GEXBot numbers, labelled by taker side instead of ceiling / floor', () => {

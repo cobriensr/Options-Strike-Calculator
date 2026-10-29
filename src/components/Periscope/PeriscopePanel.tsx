@@ -55,19 +55,27 @@ interface PeriscopePanelProps {
  *  Used for both display (slot label) and the selectedSlot.time round-trip
  *  when the user clicks prev/next. */
 function isoToCtTime(iso: string): string {
-  const ct = getCTTime(new Date(iso));
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const ct = getCTTime(d);
   return `${String(ct.hour).padStart(2, '0')}:${String(ct.minute).padStart(2, '0')}`;
 }
 
-/** Convert an ISO captured_at to a CT YYYY-MM-DD string. */
+/**
+ * Convert an ISO captured_at to a CT YYYY-MM-DD string, or '' when it does
+ * not parse (Intl's format() throws on an invalid Date, which would take
+ * the panel down; the map then shows its unknown-source state).
+ */
 function isoToCtDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
   const ctDate = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/Chicago',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
   });
-  return ctDate.format(new Date(iso));
+  return ctDate.format(d);
 }
 
 function PeriscopePanelInner({

@@ -350,7 +350,7 @@ function PausedExposureMap({
       </div>
 
       <p
-        role="status"
+        role="note"
         className="border-t pt-2 font-mono text-[11px] leading-snug"
         style={{ borderColor: theme.border, color: theme.textMuted }}
       >
