@@ -50,9 +50,8 @@ import {
 
 import {
   GEXBOT_INCLUDE_WARNING,
-  clampWindowToScraperEra,
   parseIncludeGexbot,
-  scraperEraCutoff,
+  resolveBackfillScope,
 } from './_lib/uw-tuned-backfill.js';
 
 config({ path: '.env.local' });
@@ -551,18 +550,18 @@ async function backfillOutcomes(): Promise<number> {
 
 async function main(): Promise<void> {
   const args = parseArgs();
-  const { from, to, clamped } = {
-    ...args,
-    ...clampWindowToScraperEra(args.from, args.to, args.includeGexbot),
-  };
-  if (args.includeGexbot) console.warn(GEXBOT_INCLUDE_WARNING);
+  const { includeGexbot, from, to, clamped, cutoff } = resolveBackfillScope(
+    process.argv.slice(2),
+    args.from,
+    args.to,
+  );
+  if (includeGexbot) console.warn(GEXBOT_INCLUDE_WARNING);
   if (clamped) {
     console.warn(
       `--to ${args.to} reaches the GEXBot era; capped at ${to}. Pass --include-gexbot to read it.`,
     );
   }
   console.log(`backfill window: ${from} → ${to}`);
-  const cutoff = scraperEraCutoff(args.includeGexbot);
 
   const t0 = Date.now();
   console.log('loading bars + periscope + ES + vol_realized...');

@@ -51,7 +51,6 @@ import {
 export default withCronInstrumentation(
   'detect-gamma-setups',
   async (ctx): Promise<CronResult> => {
-    const sql = getDb();
     const now = new Date();
 
     if (isUwTunedRulePaused(now)) {
@@ -62,6 +61,8 @@ export default withCronInstrumentation(
         metadata: { paused: UW_TUNED_PAUSE_REASON },
       };
     }
+
+    const sql = getDb();
 
     // Day context first — DOW and anti-filter flags gate every detector.
     const dayCtx = await loadDayContext(sql, now);

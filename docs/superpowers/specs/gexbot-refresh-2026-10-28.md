@@ -183,6 +183,7 @@ Revised phases (replace P10b):
 |---|---|
 | P10b′ | Rework 97d7074f/295fa13b: drop every negation; populate writes `source = 'gexbot'`; labels say GEXBot taker-side sign (no MM claim) for gamma, charm, vanna; the script becomes a run-once, resumable **source-tagging** backfill (no value change), same discriminator + fingerprint check. Apply #194 before deploy; after hours |
 | P11 | Pause UW-tuned gamma rules on `source = 'gexbot'` data (lottery Periscope detectors, gamma-setup detector, analyze prompt rules), each surfacing a clear "paused: tuned on UW data" note (UI, Axiom `meta`, prompt); no deletion. Review with `analyze-prompt-reviewer`. After hours |
+| P11 known gap | `/api/gamma-setups/weekly-stats` and `/api/gamma-setups/export` still mix scraper-era and GEXBot-era fires without flagging them. |
 | R1 (research) | GEXBot-specific rules from GEXBot-era history (pre-registered, vendor semantics) |
 | S1 (spec) | UW Periscope websocket capture in `uw-stream` → separate table, so UW and GEXBot can be compared live (Railway deploy after the close; handler before `WS_CHANNELS`) |
 

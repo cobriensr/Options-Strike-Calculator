@@ -34,6 +34,10 @@ import {
 } from '../_lib/gamma-stats.js';
 import { Sentry } from '../_lib/sentry.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
+import {
+  UW_TUNED_PAUSE_REASON,
+  isUwTunedRulePaused,
+} from '../../src/utils/uw-tuned-pause.js';
 
 const LOOKBACK_DAYS = 28;
 
@@ -46,6 +50,18 @@ function daysAgoEtDateStr(days: number): string {
 export default withCronInstrumentation(
   'check-gamma-setup-drift',
   async (ctx): Promise<CronResult> => {
+    // Paused with the detector (owner decision D1 revised, 2026-10-29): the
+    // outcome backfill keeps scoring stored GEXBot-era fires, and a drift
+    // warning about a deliberately paused rule is noise.
+    if (isUwTunedRulePaused(new Date())) {
+      return {
+        status: 'skipped',
+        rows: 0,
+        message: 'paused: UW-tuned rule on GEXBot data',
+        metadata: { paused: UW_TUNED_PAUSE_REASON },
+      };
+    }
+
     const sql = getDb();
     const today = getETDateStr(new Date());
     const from = daysAgoEtDateStr(LOOKBACK_DAYS);

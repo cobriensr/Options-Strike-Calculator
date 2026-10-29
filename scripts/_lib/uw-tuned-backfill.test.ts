@@ -3,6 +3,7 @@ import {
   GEXBOT_INCLUDE_WARNING,
   clampWindowToScraperEra,
   parseIncludeGexbot,
+  resolveBackfillScope,
   scraperEraCutoff,
 } from './uw-tuned-backfill';
 
@@ -54,6 +55,30 @@ describe('clampWindowToScraperEra', () => {
       from: '2026-02-26',
       to: '2026-10-29',
       clamped: false,
+    });
+  });
+});
+
+describe('resolveBackfillScope', () => {
+  it('defaults to the cutover bound and a capped window', () => {
+    expect(resolveBackfillScope([], '2026-02-26', '2026-10-29')).toEqual({
+      includeGexbot: false,
+      from: '2026-02-26',
+      to: '2026-05-26',
+      clamped: true,
+      cutoff: '2026-05-26T17:20:00Z',
+    });
+  });
+
+  it('lifts the cutoff and the cap with --include-gexbot', () => {
+    expect(
+      resolveBackfillScope(['--include-gexbot'], '2026-02-26', '2026-10-29'),
+    ).toEqual({
+      includeGexbot: true,
+      from: '2026-02-26',
+      to: '2026-10-29',
+      clamped: false,
+      cutoff: null,
     });
   });
 });

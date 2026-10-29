@@ -78,6 +78,9 @@ describe('cron check-gamma-setup-drift', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    // Scraper era: the weekly check is paused on GEXBot-era time.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-05-21T21:30:00.000Z'));
     process.env = { ...originalEnv };
     process.env.CRON_SECRET = 'test-secret';
     mockSql.mockResolvedValue([]);
@@ -189,5 +192,22 @@ describe('cron check-gamma-setup-drift', () => {
     // real-time math but it must be a YYYY-MM-DD string.
     expect(typeof call![1]).toBe('string');
     expect(call![1]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it('GEXBot era: skipped with the pause reason, no query, no Sentry drift warning', async () => {
+    vi.setSystemTime(new Date('2026-10-30T21:30:00.000Z'));
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'skipped',
+      rows: 0,
+      paused: 'uw-tuned-rule-on-gexbot-data',
+    });
+    expect(loadFireStatsRows).not.toHaveBeenCalled();
+    expect(detectDrift).not.toHaveBeenCalled();
+    expect(mockSentryCapture).not.toHaveBeenCalled();
   });
 });

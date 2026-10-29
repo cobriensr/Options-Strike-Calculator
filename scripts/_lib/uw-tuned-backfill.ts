@@ -32,6 +32,30 @@ export function scraperEraCutoff(includeGexbot: boolean): string | null {
 }
 
 /**
+ * Everything a backfill needs from its args in one place: the opt-in flag,
+ * the capped window and the snapshot cutoff to bind into SQL. The gamma
+ * script passes `cutoff` straight to its snapshot loader.
+ */
+export function resolveBackfillScope(
+  argv: readonly string[],
+  from: string,
+  to: string,
+): {
+  includeGexbot: boolean;
+  from: string;
+  to: string;
+  clamped: boolean;
+  cutoff: string | null;
+} {
+  const includeGexbot = parseIncludeGexbot(argv);
+  return {
+    includeGexbot,
+    ...clampWindowToScraperEra(from, to, includeGexbot),
+    cutoff: scraperEraCutoff(includeGexbot),
+  };
+}
+
+/**
  * Cap a `--to` date at the cutover day (the day itself is mixed; the
  * snapshot loader drops its GEXBot slices by timestamp).
  */
