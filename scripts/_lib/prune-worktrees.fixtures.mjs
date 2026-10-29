@@ -19,6 +19,14 @@ import { afterAll, beforeAll, vi } from 'vitest';
 
 const HOUR_MS = 60 * 60 * 1000;
 
+/**
+ * Timeout for hooks and tests that spawn real git. Measured on Windows: the
+ * main prune-worktrees.test.mjs fixture takes ~63 s alone, ~6x that in a full
+ * parallel run. Every spawn is synchronous, so vitest can only fail a slow
+ * one after it finishes: this is a ceiling, not a cutoff.
+ */
+export const FIXTURE_TIMEOUT = 600_000;
+
 /** Every temp dir made through makeTempDir; removed in afterAll. */
 const tempDirs = [];
 let gitconfig = '';

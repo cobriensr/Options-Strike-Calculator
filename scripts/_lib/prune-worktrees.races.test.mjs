@@ -13,6 +13,7 @@ import { existsSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  FIXTURE_TIMEOUT,
   addWorktree,
   age,
   commitFile,
@@ -30,8 +31,6 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 const { spawnSync: realSpawnSync } =
   await vi.importActual('node:child_process');
-
-const FIXTURE_TIMEOUT = 120_000;
 
 setupScratchGit();
 

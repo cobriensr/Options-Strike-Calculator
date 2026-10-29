@@ -20,6 +20,7 @@ import {
 import path from 'node:path';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
+  FIXTURE_TIMEOUT,
   addWorktree,
   adminDir,
   age,
@@ -48,8 +49,6 @@ const CLI = path.resolve(
   'scripts',
   'prune-merged-worktrees.mjs',
 );
-// ~80 git spawns per fixture: a few seconds alone, more under a loaded run.
-const FIXTURE_TIMEOUT = 120_000;
 
 setupScratchGit();
 
@@ -571,48 +570,57 @@ describe('pruneWorktrees dry run', () => {
         outcome.results.map((r) => [r.name, r.action]),
       );
     },
+    FIXTURE_TIMEOUT,
   );
 });
 
 describe('pruneWorktrees without a main branch', () => {
-  it('returns an error naming main and removes nothing', () => {
-    const repo = initRepo(makeTempDir('prune-wt-trunk-'), 'trunk');
-    const wt = addWorktree(repo, '.worktrees/x', 'fix/x');
-    age(wt);
+  it(
+    'returns an error naming main and removes nothing',
+    () => {
+      const repo = initRepo(makeTempDir('prune-wt-trunk-'), 'trunk');
+      const wt = addWorktree(repo, '.worktrees/x', 'fix/x');
+      age(wt);
 
-    const outcome = pruneWorktrees({ repoRoot: repo });
+      const outcome = pruneWorktrees({ repoRoot: repo });
 
-    expect(outcome.results).toEqual([]);
-    expect(outcome.errors).toEqual([
-      `no local branch "main" in ${repo}. Every worktree is checked ` +
-        'against it, so nothing was pruned.',
-    ]);
-    expect(existsSync(wt)).toBe(true);
-    expect(branches(repo)).toEqual(['fix/x', 'trunk']);
-  });
+      expect(outcome.results).toEqual([]);
+      expect(outcome.errors).toEqual([
+        `no local branch "main" in ${repo}. Every worktree is checked ` +
+          'against it, so nothing was pruned.',
+      ]);
+      expect(existsSync(wt)).toBe(true);
+      expect(branches(repo)).toEqual(['fix/x', 'trunk']);
+    },
+    FIXTURE_TIMEOUT,
+  );
 });
 
 describe('pruneWorktrees with main checked out in a worktree', () => {
-  it('keeps that worktree and never deletes main', () => {
-    const repo = initRepo(makeTempDir('prune-wt-onmain-'));
-    git(repo, 'checkout', '-q', '-b', 'other');
-    const wt = path.join(repo, '.worktrees', 'onmain');
-    git(repo, 'worktree', 'add', '-q', wt, 'main');
-    age(wt);
+  it(
+    'keeps that worktree and never deletes main',
+    () => {
+      const repo = initRepo(makeTempDir('prune-wt-onmain-'));
+      git(repo, 'checkout', '-q', '-b', 'other');
+      const wt = path.join(repo, '.worktrees', 'onmain');
+      git(repo, 'worktree', 'add', '-q', wt, 'main');
+      age(wt);
 
-    const outcome = pruneWorktrees({ repoRoot: repo });
+      const outcome = pruneWorktrees({ repoRoot: repo });
 
-    expect(outcome.errors).toEqual([]);
-    expect(outcome.results).toEqual([
-      expect.objectContaining({
-        name: 'onmain',
-        action: 'kept',
-        reason: 'it has main checked out',
-      }),
-    ]);
-    expect(existsSync(wt)).toBe(true);
-    expect(branches(repo)).toEqual(['main', 'other']);
-  });
+      expect(outcome.errors).toEqual([]);
+      expect(outcome.results).toEqual([
+        expect.objectContaining({
+          name: 'onmain',
+          action: 'kept',
+          reason: 'it has main checked out',
+        }),
+      ]);
+      expect(existsSync(wt)).toBe(true);
+      expect(branches(repo)).toEqual(['main', 'other']);
+    },
+    FIXTURE_TIMEOUT,
+  );
 });
 
 describe('prune-merged-worktrees CLI', () => {
@@ -688,18 +696,22 @@ describe('prune-merged-worktrees CLI', () => {
     FIXTURE_TIMEOUT,
   );
 
-  it('exits 1 when run outside a git repository', () => {
-    const dir = makeTempDir('prune-wt-norepo-');
+  it(
+    'exits 1 when run outside a git repository',
+    () => {
+      const dir = makeTempDir('prune-wt-norepo-');
 
-    const result = runCli(dir, [], {
-      GIT_CEILING_DIRECTORIES: path.dirname(dir),
-    });
+      const result = runCli(dir, [], {
+        GIT_CEILING_DIRECTORIES: path.dirname(dir),
+      });
 
-    expect(result.status).toBe(1);
-    expect(result.stderr).toMatch(
-      /^worktrees prune: FAILED, git .*not a git repository/,
-    );
-  });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toMatch(
+        /^worktrees prune: FAILED, git .*not a git repository/,
+      );
+    },
+    FIXTURE_TIMEOUT,
+  );
 
   it.each([
     [['--min-idle-hours', 'abc']],
@@ -707,12 +719,16 @@ describe('prune-merged-worktrees CLI', () => {
     [['--min-idle-hours=-1']],
     [['--force']],
     [['extra']],
-  ])('exits 2 with usage on bad arguments %j', (args) => {
-    const result = runCli(repo, args);
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain(
-      'usage: node scripts/prune-merged-worktrees.mjs [--dry-run] [--min-idle-hours N]',
-    );
-    expect(result.stdout).toBe('');
-  });
+  ])(
+    'exits 2 with usage on bad arguments %j',
+    (args) => {
+      const result = runCli(repo, args);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(
+        'usage: node scripts/prune-merged-worktrees.mjs [--dry-run] [--min-idle-hours N]',
+      );
+      expect(result.stdout).toBe('');
+    },
+    FIXTURE_TIMEOUT,
+  );
 });
