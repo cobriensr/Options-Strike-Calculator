@@ -103,6 +103,30 @@
   --shadow-subtle: 0 1px 4px rgba(0, 0, 0, 0.03);
   --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.06);
   --shadow-tooltip: 0 4px 24px rgba(0, 0, 0, 0.25);
+
+  /* Sticky stack. --app-header-h is the sticky AppHeader's height: 62px
+     on a phone (title on two lines), 69px from sm, measured. AppHeader
+     writes the live value on <html> whenever it resizes (e.g. 90px at
+     1280 in owner mode with the Schwab countdown, where the controls
+     squeeze and the title wraps). The SectionNav strip (below lg, 53px)
+     and sidebar stick right under it, and a section anchor's scroll
+     margin clears both. */
+  --app-header-h: 62px;
+  --section-strip-h: 53px;
+  --anchor-offset: calc(var(--app-header-h) + var(--section-strip-h) + 8px);
+}
+
+@media (width >= 40rem) {
+  :root {
+    --app-header-h: 69px;
+  }
+}
+
+@media (width >= 64rem) {
+  :root {
+    /* The sidebar replaces the strip. */
+    --section-strip-h: 0px;
+  }
 }
 
 /* ============================================================

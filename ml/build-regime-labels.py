@@ -8,7 +8,7 @@ ALERT's spot. Output is read by all D/E phase scripts via
 Re-run after any backfill that adds new dates or new tickers.
 
 Usage:
-    ml/.venv/bin/python ml/build-regime-labels.py
+    ml/.venv/Scripts/python ml/build-regime-labels.py
 """
 from __future__ import annotations
 

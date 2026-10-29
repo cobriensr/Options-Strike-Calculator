@@ -25,10 +25,10 @@ Idempotent — only touches rows where pre_trade_count IS NULL OR
 adj_cofire IS NULL. Re-runs are safe.
 
 Run:
-    ml/.venv/bin/python scripts/backfill_silent_boom_pre_trade_and_cofire.py
-    ml/.venv/bin/python scripts/backfill_silent_boom_pre_trade_and_cofire.py \
+    ml/.venv/Scripts/python scripts/backfill_silent_boom_pre_trade_and_cofire.py
+    ml/.venv/Scripts/python scripts/backfill_silent_boom_pre_trade_and_cofire.py \
         --date 2026-05-15
-    ml/.venv/bin/python scripts/backfill_silent_boom_pre_trade_and_cofire.py \
+    ml/.venv/Scripts/python scripts/backfill_silent_boom_pre_trade_and_cofire.py \
         --dry-run
 """
 

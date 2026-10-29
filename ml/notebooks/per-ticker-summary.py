@@ -9,7 +9,7 @@ Output:
 
 Run:
     set -a; source .env.local; set +a
-    ml/.venv/bin/python ml/notebooks/per-ticker-summary.py
+    ml/.venv/Scripts/python ml/notebooks/per-ticker-summary.py
 
 Spec: docs/superpowers/specs/options-flow-archive-2026-04-28.md (Phase 5/6 viz)
 """

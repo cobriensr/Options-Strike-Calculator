@@ -9,11 +9,16 @@ import type { AccessMode } from '../../../utils/auth';
 vi.mock('../AccessKeyModal', () => ({
   default: (props: {
     mode: AccessMode;
+    opener: { current: HTMLElement | null };
     onClose: () => void;
     onLoginSuccess: () => void;
     onLogout: () => Promise<void>;
   }) => (
-    <div data-testid="mock-modal" data-mode={props.mode}>
+    <div
+      data-testid="mock-modal"
+      data-mode={props.mode}
+      data-opener-label={props.opener.current?.getAttribute('aria-label')}
+    >
       <button type="button" onClick={props.onClose}>
         mock-close
       </button>
@@ -67,6 +72,15 @@ describe('AccessKeyButton — public mode', () => {
     expect(screen.getByTestId('mock-modal')).toHaveAttribute(
       'data-mode',
       'public',
+    );
+  });
+
+  it('hands the modal its own trigger to return focus to', () => {
+    render(<AccessKeyButton />);
+    fireEvent.click(screen.getByRole('button', { name: /enter access key/i }));
+    expect(screen.getByTestId('mock-modal')).toHaveAttribute(
+      'data-opener-label',
+      'Enter access key',
     );
   });
 

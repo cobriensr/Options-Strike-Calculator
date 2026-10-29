@@ -62,14 +62,14 @@ const P27_PATH =
 if (!existsSync(P14_PATH)) {
   console.error(`p14 CSV not found at ${P14_PATH}`);
   console.error(
-    'Run: ml/.venv/bin/python docs/tmp/options-flow-analysis/scripts/p14_event_trigger.py',
+    'Run: ml/.venv/Scripts/python docs/tmp/options-flow-analysis/scripts/p14_event_trigger.py',
   );
   process.exit(1);
 }
 if (!existsSync(P26_PATH)) {
   console.error(`p26 CSV not found at ${P26_PATH}`);
   console.error(
-    'Run: ml/.venv/bin/python docs/tmp/options-flow-analysis/scripts/p26_canonical_realized.py',
+    'Run: ml/.venv/Scripts/python docs/tmp/options-flow-analysis/scripts/p26_canonical_realized.py',
   );
   process.exit(1);
 }

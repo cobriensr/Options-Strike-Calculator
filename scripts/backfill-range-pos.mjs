@@ -1,230 +1,402 @@
 #!/usr/bin/env node
 
 /**
- * Backfill range_pos_at_trigger on historical lottery_finder_fires.
+ * Backfill lottery_finder_fires.range_pos_at_trigger: the fire's spot
+ * position in its underlying's session range at trigger time, behind the
+ * "NEW HIGH" badge. The cron stopped filling it on 2026-05-18 (it called
+ * UW without a key and swallowed the 401); spec:
+ * docs/superpowers/specs/range-pos-fix-and-backfill-2026-10-28.md, Phase 2.
  *
- * For every fire where range_pos_at_trigger IS NULL, fetches the
- * underlying's 1-min OHLC candles from Unusual Whales for the fire's
- * trading date, then computes (spot_at_first − session_low) /
- * (session_high − session_low) over the candle prefix at or before
- * trigger_time_ct. Writes the result via UPDATE. NULL stays NULL on
- * UW failure or insufficient data (the score-bonus layer treats NULL
- * as "no penalty").
+ * For each (underlying, date) with NULL rows:
+ *   1. one UW GET /stock/{ticker}/ohlc/1m?date= (3 at a time, one retry on
+ *      5xx / 429 / network / timeout);
+ *   2. range_pos per fire with the cron's computeRangePos, from the fire's
+ *      trigger time and spot_at_first;
+ *   3. batched `UPDATE … FROM unnest(...)` in ≤500-row chunks, guarded by
+ *      `range_pos_at_trigger IS NULL`, so a re-run (or a killed run) only
+ *      fills what is still empty.
  *
- * Idempotent: only touches rows where the column is NULL.
+ * Skipped by design: cash-index roots (UW answers 422,
+ * `cboe_index_access_missing`) and today's in-progress session. A day UW
+ * has no candles for, a fire with no candle before its trigger, a flat
+ * range or a NULL spot stays NULL and is counted in the report.
  *
- * Performance:
- *   - Groups fires by (ticker, date) so each UW endpoint call is
- *     hit exactly once per unique pair.
- *   - Sequential UW calls (no concurrency) — UW limit on the stock-
- *     ohlc endpoint was ~120/min for the Advanced tier (cap lifted
- *     2026-08-13; pacing kept as a conservative default); this is well
- *     under that even on a 626K-row backfill.
- *   - Batches the UPDATE in per-(ticker,date) groups so the round
- *     trip count is bounded by unique pairs, not row count.
+ * Runs against whatever DATABASE_URL points at (.env.local = PRODUCTION).
+ * Refuses to start 08:15–15:30 CT on weekdays: its 3 UW calls in flight
+ * skip the shared Redis semaphore and compete with the production crons
+ * for the key's concurrency cap (see isMarketHoursCt).
  *
- * Usage:
- *   UW_API_KEY=... DATABASE_URL=... node scripts/backfill-range-pos.mjs
+ * Usage (from the repo root; the key and URL are never printed):
+ *   node --env-file=.env.local scripts/backfill-range-pos.mjs [flags]
  *
- * Options:
- *   --limit N         Cap the number of (ticker, date) groups processed.
- *   --dry-run         Compute but don't UPDATE — useful for sanity checks.
- *
- * Source: docs/superpowers/specs/lottery-silentboom-eda-impl-2026-05-16.md
- * Phase F. Schema column added in migration #153.
+ * Flags:
+ *   --dry-run             fetch and compute, write nothing
+ *   --limit N             at most N ticker-days (newest first); prints the
+ *                         projected time for every ticker-day still NULL
+ *   --from YYYY-MM-DD     first trading date (inclusive)
+ *   --to YYYY-MM-DD       last trading date (inclusive)
+ *   --allow-market-hours  start even inside the 08:15–15:30 CT window
  */
 
 import { neon } from '@neondatabase/serverless';
 
+import {
+  CASH_INDEX_ROOTS,
+  chunk,
+  fetchDayCandles,
+  isMarketHoursCt,
+  mergeMonthCounts,
+  parseArgs,
+  rangePosUpdates,
+  redact,
+  retryTransientDb,
+  runPool,
+  selectionWindow,
+  summarizeFailures,
+  takeReadyChunks,
+} from './_lib/range-pos-backfill.mjs';
+
+/** UW's plan allows 3 requests in flight per key. */
+const UW_CONCURRENCY = 3;
+/** Rows per UPDATE (R5). */
+const UPDATE_CHUNK = 500;
+/** Progress heartbeat when no batch has been written for a while. */
+const HEARTBEAT_EVERY_DAYS = 100;
+
+let args;
+try {
+  args = parseArgs(process.argv.slice(2));
+} catch (err) {
+  console.error(err.message);
+  process.exit(2);
+}
+
+if (isMarketHoursCt() && !args.allowMarketHours) {
+  console.error(
+    'Refusing to run 08:15–15:30 CT on a weekday: the backfill would compete ' +
+      "with the live crons for UW's concurrency cap. Run after the close, or " +
+      'pass --allow-market-hours (e.g. on a market holiday).',
+  );
+  process.exit(3);
+}
+
 const UW_API_KEY = process.env.UW_API_KEY;
 const DATABASE_URL = process.env.DATABASE_URL;
+for (const [name, value] of [
+  ['UW_API_KEY', UW_API_KEY],
+  ['DATABASE_URL', DATABASE_URL],
+]) {
+  if (!value) {
+    console.error(`Missing ${name} (run with --env-file=.env.local)`);
+    process.exit(1);
+  }
+}
 
-if (!UW_API_KEY) {
-  console.error('Missing UW_API_KEY');
-  process.exit(1);
-}
-if (!DATABASE_URL) {
-  console.error('Missing DATABASE_URL');
-  process.exit(1);
-}
+const secrets = { uwKey: UW_API_KEY, databaseUrl: DATABASE_URL };
+const say = (line = '') => console.log(redact(line, secrets));
 
 const sql = neon(DATABASE_URL);
-const UW_BASE = 'https://api.unusualwhales.com/api';
+const { from, to, before } = selectionWindow(args);
+const indexRoots = [...CASH_INDEX_ROOTS];
 
-const args = process.argv.slice(2);
-const dryRun = args.includes('--dry-run');
-const limitIdx = args.indexOf('--limit');
-const groupLimit =
-  limitIdx >= 0 ? Number.parseInt(args[limitIdx + 1] ?? '0', 10) : 0;
-
-// ── UW client ──────────────────────────────────────────────
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-/**
- * Fetch with retry-on-429. UW Advanced tier caps /stock/{t}/ohlc/1m
- * at the then-current 120/min — first run hit the wall at request 121 with thousands
- * of 429s. We pace at 600ms between calls (100/min, safety margin)
- * and exponential-backoff retry up to 4 times on 429. Non-429
- * non-2xx returns [] immediately so transient server errors don't
- * stall the whole backfill.
- */
-async function fetchStockCandles1m(ticker, date, failures) {
-  const url = `${UW_BASE}/stock/${ticker}/ohlc/1m?date=${date}`;
-  for (let attempt = 0; attempt < 4; attempt++) {
-    try {
-      const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${UW_API_KEY}` },
-      });
-      if (res.status === 429) {
-        const retryAfterSec = Number.parseInt(
-          res.headers.get('retry-after') ?? '',
-          10,
-        );
-        const wait = Number.isFinite(retryAfterSec)
-          ? retryAfterSec * 1000
-          : 2000 * 2 ** attempt; // 2s, 4s, 8s, 16s
-        console.warn(
-          `  UW ${ticker} ${date} → 429 (attempt ${attempt + 1}/4); ` +
-            `sleeping ${wait}ms`,
-        );
-        await sleep(wait);
-        continue;
-      }
-      if (!res.ok) {
-        console.warn(
-          `  UW ${ticker} ${date} → HTTP ${res.status}; leaving NULL`,
-        );
-        failures.count++;
-        return [];
-      }
-      const body = await res.json();
-      return Array.isArray(body?.data) ? body.data : [];
-    } catch (err) {
-      console.warn(`  UW ${ticker} ${date} → ${err.message}; leaving NULL`);
-      failures.count++;
-      return [];
-    }
-  }
-  console.warn(`  UW ${ticker} ${date} → exhausted 4 retries on 429`);
-  failures.count++;
-  return [];
+function formatDuration(ms) {
+  const totalSec = Math.round(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}h${String(m).padStart(2, '0')}m`;
+  if (m > 0) return `${m}m${String(s).padStart(2, '0')}s`;
+  return `${s}s`;
 }
 
-/**
- * Steady-state pacing between calls. The 120/min cap this was sized for was
- * lifted 2026-08-13 (live headers: 1,000,000/min remaining), so this is now a
- * conservative default rather than a requirement — safe to lower if a backfill
- * is too slow. Serial loop, so UW's ~3-concurrent cap is never approached.
- */
-const UW_INTER_CALL_DELAY_MS = 600;
-
-function computeRangePos(candles, triggerTimeMs, spot) {
-  let high = -Infinity;
-  let low = Infinity;
-  let sawCandle = false;
-  for (const c of candles) {
-    const ms = new Date(c.start_time).getTime();
-    if (!Number.isFinite(ms) || ms > triggerTimeMs) continue;
-    sawCandle = true;
-    const h = Number.parseFloat(c.high);
-    const l = Number.parseFloat(c.low);
-    if (Number.isFinite(h) && h > high) high = h;
-    if (Number.isFinite(l) && l < low) low = l;
-  }
-  if (!sawCandle) return null;
-  if (!Number.isFinite(high) || !Number.isFinite(low) || high <= low) {
-    return null;
-  }
-  const pos = (spot - low) / (high - low);
-  if (!Number.isFinite(pos)) return null;
-  return Math.max(0, Math.min(1, pos));
-}
-
-// ── Pull groups + rows ─────────────────────────────────────
-
-console.log('Querying NULL range_pos_at_trigger groups…');
-const groups = await sql`
-  SELECT
-    underlying_symbol AS ticker,
-    date::text AS date,
-    COUNT(*)::int AS n
-  FROM lottery_finder_fires
-  WHERE range_pos_at_trigger IS NULL
-  GROUP BY underlying_symbol, date
-  ORDER BY date DESC, underlying_symbol
-  ${groupLimit > 0 ? sql`LIMIT ${groupLimit}` : sql``}
-`;
-
-console.log(
-  `Found ${groups.length} (ticker, date) groups; ` +
-    `${groups.reduce((acc, g) => acc + g.n, 0)} total rows to update.`,
-);
-
-let groupsProcessed = 0;
-let rowsUpdated = 0;
-let rowsLeftNull = 0;
-const fetchFailures = { count: 0 };
-
-for (const g of groups) {
-  groupsProcessed++;
-  console.log(
-    `[${groupsProcessed}/${groups.length}] ${g.ticker} ${g.date} (${g.n} fires)`,
+async function monthCounts() {
+  return retryTransientDb(
+    () => sql`
+      SELECT
+        to_char(date, 'YYYY-MM') AS month,
+        COUNT(*)::int AS fires,
+        COUNT(*) FILTER (WHERE range_pos_at_trigger IS NULL)::int AS null_all,
+        COUNT(*) FILTER (
+          WHERE range_pos_at_trigger IS NULL
+            AND underlying_symbol = ANY(${indexRoots}::text[])
+        )::int AS null_index
+      FROM lottery_finder_fires
+      WHERE date < ${before}::date
+        AND (${from}::date IS NULL OR date >= ${from}::date)
+        AND (${to}::date IS NULL OR date <= ${to}::date)
+      GROUP BY 1
+      ORDER BY 1
+    `,
   );
-  // Steady-state pacing — skip on the first request since the loop
-  // entry already has zero rate budget consumed.
-  if (groupsProcessed > 1) await sleep(UW_INTER_CALL_DELAY_MS);
-  const candles = await fetchStockCandles1m(g.ticker, g.date, fetchFailures);
-  if (candles.length === 0) {
-    rowsLeftNull += g.n;
-    continue;
-  }
-  // Pull the fires for this (ticker, date) group with their trigger
-  // time + spot_at_first so we can compute per-row range_pos.
-  const fires = await sql`
-    SELECT id, trigger_time_ct, spot_at_first::float AS spot
-    FROM lottery_finder_fires
-    WHERE underlying_symbol = ${g.ticker}
-      AND date = ${g.date}::date
-      AND range_pos_at_trigger IS NULL
-  `;
-  // Compute all in-memory, then issue ONE batched UPDATE per group
-  // via a JSONB pivot. Per-row UPDATEs on neon-serverless are 50-100x
-  // slower than a batched single round-trip — at 626K rows the per-
-  // row approach is multi-hour while the batched approach is minutes.
-  const updates = [];
-  for (const f of fires) {
-    const triggerMs =
-      f.trigger_time_ct instanceof Date
-        ? f.trigger_time_ct.getTime()
-        : new Date(f.trigger_time_ct).getTime();
-    const rangePos = computeRangePos(candles, triggerMs, f.spot);
-    if (rangePos == null) {
-      rowsLeftNull++;
-      continue;
-    }
-    updates.push({ id: f.id, pos: rangePos });
-  }
-  if (updates.length === 0) continue;
-  if (dryRun) {
-    rowsUpdated += updates.length;
-    continue;
-  }
-  // One round-trip per group via jsonb_array_elements pivot.
-  await sql`
-    UPDATE lottery_finder_fires AS f
-    SET range_pos_at_trigger = (u->>'pos')::numeric
-    FROM jsonb_array_elements(${JSON.stringify(updates)}::jsonb) AS u
-    WHERE f.id = (u->>'id')::int
-      AND f.range_pos_at_trigger IS NULL
-  `;
-  rowsUpdated += updates.length;
 }
 
-console.log('\n── Backfill summary ──');
-console.log(`  Groups processed:  ${groupsProcessed}`);
-console.log(`  Rows updated:      ${rowsUpdated}${dryRun ? ' (dry-run)' : ''}`);
-console.log(`  Rows left NULL:    ${rowsLeftNull}`);
-console.log(`  UW fetch failures: ${fetchFailures.count}`);
+async function selectTickerDays(limit) {
+  return retryTransientDb(
+    () => sql`
+      SELECT
+        underlying_symbol AS ticker,
+        to_char(date, 'YYYY-MM-DD') AS date,
+        COUNT(*)::int AS fires
+      FROM lottery_finder_fires
+      WHERE range_pos_at_trigger IS NULL
+        AND NOT (underlying_symbol = ANY(${indexRoots}::text[]))
+        AND date < ${before}::date
+        AND (${from}::date IS NULL OR date >= ${from}::date)
+        AND (${to}::date IS NULL OR date <= ${to}::date)
+      GROUP BY underlying_symbol, date
+      ORDER BY date DESC, underlying_symbol
+      LIMIT ${limit}::int
+    `,
+  );
+}
 
-if (fetchFailures.count > 0) process.exitCode = 1;
+async function readNullFires(day) {
+  return retryTransientDb(
+    () => sql`
+      SELECT id, trigger_time_ct, spot_at_first::float8 AS spot
+      FROM lottery_finder_fires
+      WHERE underlying_symbol = ${day.ticker}
+        AND date = ${day.date}::date
+        AND range_pos_at_trigger IS NULL
+    `,
+  );
+}
+
+/**
+ * One UPDATE for up to UPDATE_CHUNK rows. Positions go over as text into
+ * numeric[] so each stored value matches what the cron's numeric bind
+ * writes. Returns how many rows were still NULL and got filled.
+ */
+async function writeChunk(ids, positions) {
+  if (args.dryRun) return ids.length;
+  const [{ n }] = await retryTransientDb(
+    () => sql`
+      WITH filled AS (
+        UPDATE lottery_finder_fires AS f
+        SET range_pos_at_trigger = v.pos
+        FROM unnest(
+          ${ids}::bigint[],
+          ${positions.map(String)}::numeric[]
+        ) AS v(id, pos)
+        WHERE f.id = v.id
+          AND f.range_pos_at_trigger IS NULL
+        RETURNING 1
+      )
+      SELECT COUNT(*)::int AS n FROM filled
+    `,
+  );
+  return n;
+}
+
+const stats = {
+  daysTotal: 0,
+  daysDone: 0,
+  daysOk: 0,
+  rowsComputed: 0,
+  rowsWritten: 0,
+  rowsAlreadyFilled: 0,
+  rowsLeftNull: 0,
+  batches: 0,
+};
+const noCandleDays = [];
+const failures = [];
+let pending = { ids: [], positions: [] };
+const startedAt = Date.now();
+
+function progress(prefix) {
+  const elapsed = Date.now() - startedAt;
+  const pct = ((stats.daysDone / Math.max(1, stats.daysTotal)) * 100).toFixed(
+    1,
+  );
+  const perDay = elapsed / Math.max(1, stats.daysDone);
+  const eta = formatDuration(perDay * (stats.daysTotal - stats.daysDone));
+  say(
+    `${prefix} · ticker-days ${stats.daysDone}/${stats.daysTotal} (${pct}%)` +
+      ` · elapsed ${formatDuration(elapsed)} · eta ${eta}`,
+  );
+}
+
+/**
+ * Write every full chunk in `pending`, or everything when `final`. The
+ * swap to `rest` happens before the first await, so the 3 lanes can
+ * never write the same rows twice.
+ */
+async function flush(final) {
+  const { chunks, rest } = takeReadyChunks(pending, UPDATE_CHUNK, final);
+  pending = rest;
+  for (const c of chunks) {
+    const written = await writeChunk(c.ids, c.positions);
+    stats.batches++;
+    stats.rowsWritten += written;
+    stats.rowsAlreadyFilled += c.ids.length - written;
+    const verb = args.dryRun ? 'would write' : 'wrote';
+    progress(
+      `[batch ${stats.batches}] ${verb} ${written}/${c.ids.length} rows`,
+    );
+  }
+}
+
+async function processTickerDay(day) {
+  const outcome = await fetchDayCandles(UW_API_KEY, day.ticker, day.date);
+  if (outcome.kind === 'error') {
+    failures.push({ ticker: day.ticker, date: day.date, ...outcome });
+    stats.rowsLeftNull += day.fires;
+  } else if (outcome.kind === 'empty') {
+    noCandleDays.push(`${day.ticker} ${day.date}`);
+    stats.rowsLeftNull += day.fires;
+  } else {
+    stats.daysOk++;
+    const fires = await readNullFires(day);
+    const { ids, positions, leftNull } = rangePosUpdates(
+      fires,
+      outcome.candles,
+    );
+    stats.rowsComputed += ids.length;
+    stats.rowsLeftNull += leftNull;
+    for (let k = 0; k < ids.length; k++) {
+      pending.ids.push(ids[k]);
+      pending.positions.push(positions[k]);
+    }
+    await flush(false);
+  }
+  stats.daysDone++;
+  if (stats.daysDone % HEARTBEAT_EVERY_DAYS === 0) progress('[progress]');
+}
+
+function printReport(beforeCounts, afterCounts) {
+  const elapsed = Date.now() - startedAt;
+  say();
+  say(`── range_pos backfill report (${args.dryRun ? 'DRY RUN' : 'write'}) ──`);
+  say(
+    `window: ${from ?? 'start'} → ${to ?? 'latest'}, before ${before} (CT today); ` +
+      `index roots skipped: ${indexRoots.join(', ')}`,
+  );
+  say(
+    `ticker-days: ${stats.daysDone}/${stats.daysTotal} done · ` +
+      `${stats.daysOk} with candles · ${noCandleDays.length} without · ` +
+      `${failures.length} failed`,
+  );
+  const writeVerb = args.dryRun ? 'would write' : 'written';
+  say(
+    `fires: ${stats.rowsComputed} computed · ${stats.rowsWritten} ${writeVerb} · ` +
+      `${stats.rowsAlreadyFilled} already filled · ` +
+      `${stats.rowsLeftNull} left NULL`,
+  );
+  // "Already filled" = rows another run filled first, or rows of a chunk
+  // whose UPDATE committed but whose response was lost (timeout, blip), so
+  // the retry found them filled. A stat only; the stored values are right.
+  say(
+    '  (already filled: by another run, or by an UPDATE that committed ' +
+      'before its response was lost and was retried; the data is correct)',
+  );
+  const minutes = Math.max(elapsed, 1_000) / 60_000;
+  const rate = stats.daysDone / minutes;
+  say(
+    `elapsed: ${formatDuration(elapsed)} · ${rate.toFixed(1)} ticker-days/min · ` +
+      `${stats.batches} batches`,
+  );
+
+  const rows = mergeMonthCounts(beforeCounts, afterCounts);
+  say();
+  say(
+    afterCounts == null
+      ? 'NULL range_pos by month (dry run: unchanged):'
+      : 'NULL range_pos by month (before → after):',
+  );
+  say(
+    'month    ' +
+      ['fires', 'null before', 'null after', 'filled', 'null index']
+        .map((h) => h.padStart(12))
+        .join(''),
+  );
+  const totals = {
+    fires: 0,
+    nullBefore: 0,
+    nullAfter: 0,
+    filled: 0,
+    nullIndex: 0,
+  };
+  for (const r of rows) {
+    for (const key of Object.keys(totals)) totals[key] += r[key];
+    say(
+      r.month.padEnd(9) +
+        [r.fires, r.nullBefore, r.nullAfter, r.filled, r.nullIndex]
+          .map((v) => String(v).padStart(12))
+          .join(''),
+    );
+  }
+  say(
+    'total    ' +
+      [
+        totals.fires,
+        totals.nullBefore,
+        totals.nullAfter,
+        totals.filled,
+        totals.nullIndex,
+      ]
+        .map((v) => String(v).padStart(12))
+        .join(''),
+  );
+
+  say();
+  say(`ticker-days with no candles from UW (${noCandleDays.length}):`);
+  for (const line of chunk(noCandleDays.sort(), 6))
+    say(`  ${line.join(' · ')}`);
+
+  say();
+  say(`UW failures by status (${failures.length}):`);
+  for (const f of summarizeFailures(failures)) {
+    const e = f.example;
+    say(
+      `  ${f.status.padEnd(10)} ${String(f.count).padStart(5)}  e.g. ${e.ticker} ${e.date}: ${e.detail}`,
+    );
+  }
+}
+
+async function main() {
+  say(
+    `range_pos backfill${args.dryRun ? ' (DRY RUN: no writes)' : ''} · ` +
+      `limit ${args.limit ?? 'none'}`,
+  );
+  const beforeCounts = await monthCounts();
+  const days = await selectTickerDays(args.limit);
+  stats.daysTotal = days.length;
+  say(
+    `${days.length} ticker-days to fill (${days.reduce((n, d) => n + d.fires, 0)} NULL fires)`,
+  );
+
+  await runPool(days, UW_CONCURRENCY, processTickerDay);
+  await flush(true);
+
+  const afterCounts = args.dryRun ? null : await monthCounts();
+  printReport(beforeCounts, afterCounts);
+
+  // Timing probe: scale this run's pace to every ticker-day still NULL in
+  // the window (after a write run, that excludes the ones just filled).
+  if (args.limit != null && stats.daysDone > 0) {
+    const eligible = (await selectTickerDays(null)).length;
+    const perDay = (Date.now() - startedAt) / stats.daysDone;
+    say();
+    say(
+      `projection: ${eligible} ticker-days still NULL in the window; at ` +
+        `this pace a full run takes ≈ ${formatDuration(perDay * eligible)}`,
+    );
+  }
+
+  // Failures are worth a re-run (it only touches rows still NULL).
+  if (failures.length > 0) process.exitCode = 1;
+}
+
+try {
+  await main();
+} catch (err) {
+  console.error(redact(`backfill aborted: ${err?.message ?? err}`, secrets));
+  console.error(
+    redact(
+      `progress so far: ${stats.daysDone}/${stats.daysTotal} ticker-days, ` +
+        `${stats.rowsWritten} rows written; re-run to resume`,
+      secrets,
+    ),
+  );
+  process.exitCode = 1;
+}

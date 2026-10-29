@@ -7,7 +7,7 @@ parquet archive at `scripts/eod-flow-analysis/output/by-day/`.
 Outputs to `ml/plots/whale-detection/`.
 
 Run:
-    ml/.venv/bin/python ml/src/whale_plots.py
+    ml/.venv/Scripts/python ml/src/whale_plots.py
 """
 
 from __future__ import annotations

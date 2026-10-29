@@ -50,7 +50,7 @@ function badge(): HTMLElement {
 }
 
 function reauthLink(): HTMLElement | null {
-  return screen.queryByRole('link', { name: 'Re-authenticate with Schwab' });
+  return screen.queryByRole('link', { name: 'Re-auth with Schwab' });
 }
 
 describe('SchwabExpiryBadge', () => {
@@ -230,7 +230,7 @@ describe('SchwabExpiryBadge', () => {
 
     it('labels its Re-auth link for screen readers', () => {
       renderBadge(expiresIn(HOUR_MS));
-      expect(reauthLink()).toHaveAccessibleName('Re-authenticate with Schwab');
+      expect(reauthLink()).toHaveAccessibleName('Re-auth with Schwab');
     });
   });
 });

@@ -9,7 +9,7 @@ Highlights the levers worth turning into entry filters.
 Read-only, no DB writes.
 
 Usage:
-    ml/.venv/bin/python scripts/feature_audit.py
+    ml/.venv/Scripts/python scripts/feature_audit.py
 """
 
 from __future__ import annotations

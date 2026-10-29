@@ -22,7 +22,7 @@ files (no pandas load of the full dataset). Only the small aggregate
 result sets come into pandas for plotting.
 
 Usage:
-  ml/.venv/bin/python src/eod_flow_baselines.py
+  ml/.venv/Scripts/python src/eod_flow_baselines.py
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ try:
     import seaborn as sns
 except ImportError as e:
     print(f"Missing dependency: {e}")
-    print("  ml/.venv/bin/pip install duckdb pandas matplotlib seaborn")
+    print("  ml/.venv/Scripts/pip install duckdb pandas matplotlib seaborn")
     sys.exit(1)
 
 from utils import (  # noqa: E402

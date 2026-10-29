@@ -321,7 +321,7 @@ def neon_connection() -> PgConnection:
     if psycopg2 is None:
         raise RuntimeError(
             "psycopg2 not installed in this venv. Run "
-            "ml/.venv/bin/pip install psycopg2-binary."
+            "ml/.venv/Scripts/pip install psycopg2-binary."
         )
     url = os.environ.get("DATABASE_URL")
     if not url:

@@ -7,7 +7,7 @@ How to get strike-calculator running on a clean clone. Allow ~30 minutes.
 - **Node.js 24.x** — see [.nvmrc](../.nvmrc) and `engines` in `package.json`. Use `nvm use` or install the matching version.
 - **npm 9+**
 - **Vercel CLI** — `npm i -g vercel`. Required for `npm run dev:full`.
-- _(optional)_ **Python** if you intend to touch the Python code: 3.13 for `ml/`, 3.12 for `sidecar/`, `uw-stream/` and `classifier/` (matching their Docker images), each with its own `.venv`. The interpreter is `.venv/bin/python` on macOS/Linux and `.venv/Scripts/python` on Windows. `ml/Makefile` defaults to `PYTHON ?= .venv/bin/python`, so on Windows run `make PYTHON=.venv/Scripts/python <target>`.
+- _(optional)_ **Python** if you intend to touch the Python code: 3.13 for `ml/`, 3.12 for `sidecar/`, `uw-stream/` and `classifier/` (matching their Docker images), each with its own `.venv`. The interpreter is `.venv/bin/python` on macOS/Linux and `.venv/Scripts/python` on Windows. The repo-root, `ml/` and `sidecar/` Makefiles pick the right one by `$(OS)`, so `make <target>` works on both without a `PYTHON=` override.
 
 ## Setup paths
 

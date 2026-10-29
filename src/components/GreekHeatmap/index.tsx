@@ -162,12 +162,7 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
     const el = document.getElementById(
       `heatmap-strike-${String(strike).replace('.', '_')}`,
     );
-    // jsdom and some older browsers don't implement scrollIntoView —
-    // gate so the click handler never throws (the highlight state
-    // below would otherwise never get set in test environments).
-    if (el && typeof el.scrollIntoView === 'function') {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     setHighlightedStrike(strike);
     if (highlightTimeoutRef.current !== null) {
       clearTimeout(highlightTimeoutRef.current);

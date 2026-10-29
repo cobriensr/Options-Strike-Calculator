@@ -152,7 +152,7 @@ function BadgeBody({ status, reauthPromptShown }: BadgeBodyProps) {
       </span>
       {tier !== 'ok' && !reauthPromptShown && (
         <SchwabAuthLink
-          ariaLabel="Re-authenticate with Schwab"
+          ariaLabel="Re-auth with Schwab"
           text="Re-auth"
           color={color}
         />

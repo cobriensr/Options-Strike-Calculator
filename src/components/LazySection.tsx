@@ -13,8 +13,9 @@
  *
  *   - The nav anchor `<span id={id} />` always renders FIRST (so smooth
  *     scrolling lands on the anchor, not inside the panel).
- *   - `block scroll-mt-28` on the anchor leaves room for the sticky
- *     header on a hash jump.
+ *   - `block scroll-mt-(--anchor-offset)` on the anchor lands a hash jump
+ *     below the sticky header and section strip (the offset is defined
+ *     in index.css from the header's live height).
  *   - <ErrorBoundary label> wraps the panel so a render error in one
  *     section doesn't blow up the whole page.
  *   - <Suspense fallback> is opt-in via the `fallback` prop; sections
@@ -44,7 +45,7 @@ export default function LazySection({
 }: LazySectionProps) {
   return (
     <>
-      <span id={id} className="block scroll-mt-28" />
+      <span id={id} className="block scroll-mt-(--anchor-offset)" />
       <ErrorBoundary label={label}>
         {fallback === undefined ? (
           children

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Commit gate: blocks a Claude Code commit whose staged content the last
+# passing `npm run review` in this worktree didn't see. Claude Code sets
+# CLAUDECODE=1 in its tool shells; every other commit passes untouched.
+# Enable once per clone: git config core.hooksPath .githooks
+# Spec: docs/superpowers/specs/commit-gate-2026-10-28.md
+[ "$CLAUDECODE" = "1" ] || exit 0
+exec node "$(dirname "$0")/../scripts/review-gate.mjs" check

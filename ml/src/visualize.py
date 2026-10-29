@@ -23,7 +23,7 @@ try:
     import seaborn as sns
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/bin/pip install psycopg2-binary pandas matplotlib seaborn")
+    print("  ml/.venv/Scripts/pip install psycopg2-binary pandas matplotlib seaborn")
     sys.exit(1)
 
 from statsmodels.stats.proportion import proportion_confint

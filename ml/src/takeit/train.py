@@ -14,7 +14,7 @@ For each alert type:
    to ml/findings/takeit-v1-{today}/.
 
 CLI:
-    ml/.venv/bin/python -m ml.src.takeit.train [--alert-type lottery|silentboom|both]
+    ml/.venv/Scripts/python -m ml.src.takeit.train [--alert-type lottery|silentboom|both]
 """
 
 from __future__ import annotations

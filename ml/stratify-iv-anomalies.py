@@ -27,7 +27,7 @@ per ticker (carried over from Phase B) so we're comparing actionable
 trades, not the cheating-oracle peak ceiling.
 
 Usage:
-    ml/.venv/bin/python ml/stratify-iv-anomalies.py
+    ml/.venv/Scripts/python ml/stratify-iv-anomalies.py
 """
 
 from __future__ import annotations

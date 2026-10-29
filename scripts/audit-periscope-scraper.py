@@ -3,7 +3,7 @@ Audit script: pull a random sample of full-coverage trading days from
 periscope_snapshots and write each day to its own tab in an Excel workbook
 so the user can spot-check scraper accuracy against the live UW Periscope UI.
 
-Run: ml/.venv/bin/python scripts/audit-periscope-scraper.py
+Run: ml/.venv/Scripts/python scripts/audit-periscope-scraper.py
 Output: docs/tmp/periscope-scraper-audit-<today>.xlsx
 """
 

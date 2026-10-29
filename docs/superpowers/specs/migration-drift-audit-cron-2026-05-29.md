@@ -52,6 +52,10 @@ Not added to `SCHEDULE_MAP` — consistent with the sibling `audit-takeit-*`
 crons, which run un-monitored for check-ins but still report failures via
 `Sentry.captureException` + `reportCronRun`.
 
+Superseded 2026-10-29: monitored, see `cron-monitor-coverage-2026-10-29.md`.
+All three audit crons now have `SCHEDULE_MAP` entries, because an audit that
+silently stops running is the failure nothing else catches.
+
 ## Files
 
 - `api/cron/audit-migration-drift.ts` (new)

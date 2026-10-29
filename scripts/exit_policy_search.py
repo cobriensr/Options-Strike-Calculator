@@ -28,7 +28,7 @@ docs/tmp/.
 Read-only — does not modify the DB.
 
 Usage:
-    ml/.venv/bin/python scripts/exit_policy_search.py
+    ml/.venv/Scripts/python scripts/exit_policy_search.py
 """
 
 from __future__ import annotations

@@ -5,7 +5,7 @@ that are NOT already in the score formula.
 
 Usage:
     set -a && source .env.local && set +a
-    ml/.venv/bin/python ml/src/cross_section_eda.py
+    ml/.venv/Scripts/python ml/src/cross_section_eda.py
 
 Saves plots to ml/plots/ and prints structured findings.
 """

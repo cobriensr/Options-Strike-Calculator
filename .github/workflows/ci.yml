@@ -30,6 +30,7 @@ jobs:
       ml: ${{ steps.filter.outputs.ml }}
       sidecar: ${{ steps.filter.outputs.sidecar }}
       uw_stream: ${{ steps.filter.outputs.uw_stream }}
+      nightly: ${{ steps.filter.outputs.nightly }}
       classifier: ${{ steps.filter.outputs.classifier }}
       e2e: ${{ steps.filter.outputs.e2e }}
     steps:
@@ -69,6 +70,9 @@ jobs:
               - '.github/workflows/ci.yml'
             uw_stream:
               - 'uw-stream/**'
+              - '.github/workflows/ci.yml'
+            nightly:
+              - 'nightly/**'
               - '.github/workflows/ci.yml'
             # ml/src/multileg_*.py is the source of truth for classifier's
             # vendored copies (and a classifier Railway watchPattern).
@@ -251,6 +255,45 @@ jobs:
           cache-dependency-path: |
             uw-stream/requirements.txt
             uw-stream/requirements-dev.txt
+
+      - name: Install dependencies
+        id: install
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: python -m ruff check src/ tests/ conftest.py
+
+      - name: Format check
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: python -m ruff format --check src/ tests/ conftest.py
+
+      - name: Tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: python -m pytest --cov=src --cov-report=term-missing
+
+  nightly:
+    name: nightly Quality Gate
+    needs: [changes]
+    if: needs.changes.outputs.nightly == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: nightly
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v6
+        with:
+          # Matches the python:3.12-slim production image.
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: |
+            nightly/requirements.txt
+            nightly/requirements-dev.txt
 
       - name: Install dependencies
         id: install

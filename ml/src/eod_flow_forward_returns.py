@@ -24,7 +24,7 @@ Plus a summary block in `ml/findings.json` under
 `eod_flow_forward_returns`.
 
 Usage:
-  ml/.venv/bin/python src/eod_flow_forward_returns.py
+  ml/.venv/Scripts/python src/eod_flow_forward_returns.py
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ try:
     import seaborn as sns
 except ImportError as e:
     print(f"Missing dependency: {e}")
-    print("  ml/.venv/bin/pip install duckdb pandas matplotlib seaborn")
+    print("  ml/.venv/Scripts/pip install duckdb pandas matplotlib seaborn")
     sys.exit(1)
 
 from utils import (  # noqa: E402

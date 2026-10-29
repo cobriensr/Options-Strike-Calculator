@@ -1,34 +1,58 @@
 # classifier
 
+> **Scheduled for retirement (approved 2026-10-28), still running.** The
+> exchange's own multi-leg flag (`trade_code` on `ws_option_trades`) will
+> replace this service. See
+> [the replacement design](../docs/superpowers/specs/2026-10-28-classifier-replacement-design.md).
+> Until that ships, the detect crons still call it.
+
 Standalone Railway service that runs the polars-based multileg classifier
-behind a small HTTP server. Carved out of `sidecar/` so the JVM-heavy
-sidecar (then also running Databento ingestion) no longer competes
-with polars for memory. Source of truth for the matcher itself lives in
-`ml/src/multileg_assembler.py` and `ml/src/multileg_patterns.py`;
-byte-identical vendored copies live in `classifier/_vendored_ml/` and
-are kept in sync by a test.
+behind a small HTTP server. Carved out of `sidecar/` in 2026-05, when the
+sidecar also ran the Java Theta Data Terminal and Databento ingestion, so
+polars no longer competed with them for memory. Both have since been
+removed from the sidecar.
+
+The matcher's source of truth is `ml/src/multileg_assembler.py` and
+`ml/src/multileg_patterns.py`. Edit them there, then copy them into
+`classifier/_vendored_ml/` by hand and commit both.
+`tests/test_vendored_ml_sync.py` fails CI on any byte difference. Both
+CI's path filter and Railway's `watchPatterns` include
+`ml/src/multileg_*.py`, so a matcher edit re-runs the classifier gate and
+redeploys the service.
 
 ## Environment variables
 
-| Variable                   | Required | Default | Notes                                                                         |
-| -------------------------- | -------- | ------- | ----------------------------------------------------------------------------- |
-| `CLASSIFIER_SHARED_SECRET` | yes      | none    | Bearer token for `/multileg-classify` and `/version`. Same value as Vercel's. |
-| `SENTRY_DSN`               | optional | empty   | Empty disables Sentry. Tagged `server_name=classifier`.                       |
-| `PORT`                     | optional | `8080`  | Railway sets this; bind `0.0.0.0:$PORT`.                                      |
+| Variable                      | Required       | Default              | Notes                                                                                      |
+| ----------------------------- | -------------- | -------------------- | ------------------------------------------------------------------------------------------ |
+| `CLASSIFIER_SHARED_SECRET`    | yes            | none                 | Bearer token for `/multileg-classify` and `/version`. Same value as Vercel's.              |
+| `SENTRY_DSN`                  | optional       | empty                | Empty disables Sentry. Events carry `server_name=classifier` and tag `service=classifier`. |
+| `PORT`                        | optional       | `8080`               | Railway sets this; bind `0.0.0.0:$PORT`.                                                   |
+| `POLARS_MAX_THREADS`          | optional       | `2` (Dockerfile)     | Caps polars threads, and so the peak-memory multiplier. Read once, at import.              |
+| `POLARS_STREAMING_CHUNK_SIZE` | optional       | `50000` (Dockerfile) | Streaming-engine morsel size.                                                              |
+| `RAILWAY_DEPLOYMENT_ID`       | set by Railway | `local`              | Reported as `release` by `/version` and Sentry.                                            |
+| `RAILWAY_ENVIRONMENT`         | set by Railway | `production`         | Sentry environment.                                                                        |
 
 Generate `CLASSIFIER_SHARED_SECRET` from at least 32 random bytes (e.g. `openssl rand -hex 32`): the repo is public and the endpoint is reachable from the internet.
 
 ## Local development
 
 ```bash
-pip install -r requirements-dev.txt  # runtime deps + pytest/ruff; the image installs requirements.txt only
-PYTHONPATH=src:_vendored_ml python -m main
+cd classifier
+python -m venv .venv
+source .venv/bin/activate                         # Windows (Git Bash): source .venv/Scripts/activate
+pip install -r requirements-dev.txt               # runtime deps + pytest/ruff; the image installs requirements.txt only
+export CLASSIFIER_SHARED_SECRET=dev-only-secret   # without it the auth routes return 503
+PYTHONPATH=src:_vendored_ml python -m main        # Windows: PYTHONPATH='src;_vendored_ml' python -m main
 ```
+
+Python splits `PYTHONPATH` on `;` on Windows, so the colon form there
+puts one bogus entry on `sys.path`.
 
 ## Running tests
 
 ```bash
-# What CI's Classifier Quality Gate runs (check-only: format drift fails it)
+cd classifier
+# What CI's Classifier Quality Gate runs on Python 3.12 (check-only: format drift fails it)
 pytest tests/test_vendored_ml_sync.py --no-cov
 ruff check src/ tests/ conftest.py
 ruff format --check src/ tests/ conftest.py
@@ -41,7 +65,7 @@ coverage drops below the spec floor.
 
 ## Architecture
 
-Co-resident on port 8080 with three routes:
+Listens on `0.0.0.0:$PORT` (default 8080) with three routes:
 
 - `POST /multileg-classify` — runs the polars matcher on the posted
   trade window and returns per-trade classifications.
@@ -88,15 +112,15 @@ structure label — so backpressure never wedges the cron.
 
 Request-body size is capped at 50 MB; payloads above the cap
 short-circuit to `413` before the body is read off the wire (DoS
-floor, well clear of the ~3-4 MB a realistic 7500-trade payload
-weighs in at). `Connection: close` is set on every 4xx/5xx so
-Railway's edge proxy does not pool a broken upstream socket.
+floor, well clear of a 10,000-trade window, the client's cap, which
+the server sizes at about 3-4 MB). `Connection: close` is set on every
+4xx/5xx so Railway's edge proxy does not pool a broken upstream socket.
 
 ## Memory limit
 
 Root cause identified 2026-09-08: the uncapped butterfly enumeration
-stage, now gated by `_BUTTERFLY_PAIR_CAP` — see
-docs/superpowers/specs/classifier-phase-a-butterfly-gate-2026-09-08.md.
+stage, now gated by `_BUTTERFLY_PAIR_CAP` (400,000 body×wing pairs,
+`ml/src/multileg_assembler.py`).
 
 The per-replica memory **ceiling** is NOT settable in `railway.toml`
 (config-as-code only covers `build`/`deploy`). It lives on a separate
@@ -104,11 +128,15 @@ Railway surface. **Current recommendation: leave the 24 GB host ceiling
 in place — do NOT set 8 GB.** The earlier 8 GB recommendation was
 falsified on 2026-06-09 (live peak hit 28.88 GB on the old
 concurrency-2 + 500K settings); an 8 GB ceiling would hard crash-loop
-the box. The 2026-06-09 hotfix (concurrency 2→1, cross-join cap
-500K→250K) should pull the peak well under 24 GB — re-measure
-`MEMORY_USAGE_GB` on the new settings before setting any explicit
-ceiling, and never set it below the observed open-window peak. Rationale
-in `classifier/railway.toml`.
+the box.
+
+In-process bounds now: classify concurrency 1, cross-join cap 250K
+pairs, butterfly cap 400K pairs, a 500K-row per-ticker overload skip,
+and `POLARS_MAX_THREADS=2`. Even so, the service still OOM-restarts: the
+replacement spec records 2 replicas × 24 GB and 55 OOM restarts in the
+30 days to 2026-10-28. Re-measure `MEMORY_USAGE_GB` before setting any
+explicit ceiling, and never set it below the observed open-window peak.
+Rationale in `classifier/railway.toml`.
 
 **Manual dashboard path** (only if a re-measured peak justifies an
 explicit ceiling): Railway dashboard → project **Theta-Options** →
@@ -140,9 +168,11 @@ the limit in **GB**, not bytes).
 Railway-only. Vercel does not host this service. The TypeScript caller
 (`api/_lib/multileg-client.ts`) selects this service via the
 `CLASSIFIER_URL` env var and sends `CLASSIFIER_SHARED_SECRET` as the
-bearer. Set the secret on both Vercel and this Railway service; ship
-the client before server enforcement, since an older client sends no
-header.
+bearer. Set the secret on both Vercel and this Railway service. If
+`CLASSIFIER_URL` or `CLASSIFIER_SHARED_SECRET` is unset on Vercel, the
+client skips the call: it raises `config_missing` and emits a throttled
+`multileg.classify.config_missing` Sentry event, and the alert is
+inserted with NULL multileg columns.
 
 Full design rationale lives in
 `docs/superpowers/specs/multileg-classifier-service-split-2026-05-28.md`.

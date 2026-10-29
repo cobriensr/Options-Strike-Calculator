@@ -67,6 +67,25 @@ describe('takeit-fill-shap cron', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
+  it('does not require UW_API_KEY, which it never uses', async () => {
+    // The only upstream is the Railway sidecar. The cron is monitored, and
+    // cronGuard answers 500 before any check-in when a required key is
+    // missing, so a missing or rotated UW_API_KEY would read as a missed
+    // run for a dependency this job doesn't have.
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(mockCronGuard).toHaveBeenCalledWith(
+      req,
+      res,
+      expect.objectContaining({ requireApiKey: false }),
+    );
+  });
+
   it('POSTs to the sidecar and UPDATEs rows when results return', async () => {
     process.env.SIDECAR_TAKEIT_URL = 'http://sidecar.test:8123';
     process.env.SIDECAR_TAKEIT_SECRET = 'shh';

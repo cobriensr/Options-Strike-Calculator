@@ -22,9 +22,9 @@ without resetting enriched_at on the table. Use this once after the
 column is added, then revert to the default flow.
 
 Usage:
-    ml/.venv/bin/python scripts/enrich_silent_boom_outcomes.py
-    ml/.venv/bin/python scripts/enrich_silent_boom_outcomes.py --date 2026-05-07
-    ml/.venv/bin/python scripts/enrich_silent_boom_outcomes.py --backfill-mode
+    ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes.py
+    ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes.py --date 2026-05-07
+    ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes.py --backfill-mode
 """
 
 from __future__ import annotations

@@ -137,7 +137,7 @@ export default function FuturesPanel({
       collapsible
       defaultCollapsed={defaultCollapsed}
       headerRight={
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           {isHistorical && (
             <span role="status">
               <StatusBadge
@@ -242,7 +242,10 @@ export default function FuturesPanel({
         </div>
 
         {/* P&L Calculator — always shown, no data dependency */}
-        <span id="sec-futures-calc" className="block scroll-mt-28" />
+        <span
+          id="sec-futures-calc"
+          className="block scroll-mt-(--anchor-offset)"
+        />
         <FuturesCalculator />
       </div>
     </SectionBox>

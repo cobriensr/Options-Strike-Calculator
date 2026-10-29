@@ -108,7 +108,7 @@ def load_session_regime_labels() -> pd.DataFrame:
     p = Path(__file__).resolve().parents[1] / REGIME_LABELS_PARQUET
     if not p.exists():
         raise FileNotFoundError(
-            f"{p} missing. Run `ml/.venv/bin/python ml/build-regime-labels.py` "
+            f"{p} missing. Run `ml/.venv/Scripts/python ml/build-regime-labels.py` "
             "first to refresh from strike_iv_snapshots."
         )
     df = pd.read_parquet(p)

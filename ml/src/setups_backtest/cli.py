@@ -3,14 +3,14 @@
 Usage:
 
   cd ml
-  .venv/bin/python -m src.setups_backtest.cli run \
+  .venv/Scripts/python -m src.setups_backtest.cli run \
       --setup 1 \
       --start 2026-01-01 \
       --end 2026-04-17 \
       --out experiments/futures-setups-2026-05-15
 
   # Dry-run on a small window for harness wiring validation:
-  .venv/bin/python -m src.setups_backtest.cli run \
+  .venv/Scripts/python -m src.setups_backtest.cli run \
       --setup 1 \
       --start 2026-04-13 \
       --end 2026-04-17 \

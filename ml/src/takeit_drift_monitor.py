@@ -28,7 +28,7 @@ try:
     from sklearn.metrics import roc_auc_score
 except ImportError:
     print('Missing dependencies. Run:')
-    print('  ml/.venv/bin/pip install -r ml/requirements.txt')
+    print('  ml/.venv/Scripts/pip install -r ml/requirements.txt')
     sys.exit(1)
 
 from utils import get_connection  # type: ignore[import-not-found]  # noqa: I001

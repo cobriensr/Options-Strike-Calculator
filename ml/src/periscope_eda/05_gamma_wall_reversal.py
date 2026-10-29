@@ -17,7 +17,7 @@ Outputs:
 
 CLI::
 
-    ml/.venv/bin/python ml/src/periscope_eda/05_gamma_wall_reversal.py
+    ml/.venv/Scripts/python ml/src/periscope_eda/05_gamma_wall_reversal.py
 
 Spec: docs/superpowers/specs/periscope-gamma-wall-edge-2026-05-14.md
 """

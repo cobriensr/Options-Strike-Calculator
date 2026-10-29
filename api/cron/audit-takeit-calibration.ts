@@ -343,8 +343,11 @@ export default withCronInstrumentation(
   // Scheduled `0 11 * * 1` = 07:00 ET Monday, BEFORE the market-hours
   // gate opens (09:25 ET). The handler reads only from the DB (no live
   // market data), so disable the gate or every weekly run skips and the
-  // calibration metrics never emit.
-  { marketHours: false },
+  // calibration metrics never emit. No UW call either, so no UW_API_KEY:
+  // the cron is monitored, and a required-but-missing key would 500 in
+  // cronGuard before the check-in, paging a missed run for an unused
+  // dependency.
+  { marketHours: false, requireApiKey: false },
 );
 
 // Exported for tests.

@@ -13,7 +13,7 @@ Writes a daily Markdown report to:
   docs/tmp/lottery-composite-candidates-{YYYY-MM-DD}.md
 
 Usage:
-    ml/.venv/bin/python scripts/mine_outcome_patterns.py
+    ml/.venv/Scripts/python scripts/mine_outcome_patterns.py
 """
 
 from __future__ import annotations
@@ -138,7 +138,7 @@ def load_weights() -> dict:
     """Load lottery_score_weights.json."""
     if not WEIGHTS_PATH.exists():
         sys.exit(f"Weights file missing: {WEIGHTS_PATH}\n"
-                 "Run: ml/.venv/bin/python ml/src/lottery_scoring.py")
+                 "Run: ml/.venv/Scripts/python ml/src/lottery_scoring.py")
     with WEIGHTS_PATH.open() as fh:
         return json.load(fh)
 

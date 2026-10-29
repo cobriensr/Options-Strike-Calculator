@@ -10,7 +10,7 @@ change) to surface drift; the printed values can be pasted directly into
 WHALE_THRESHOLDS.
 
 Usage:
-    ml/.venv/bin/python scripts/recompute-whale-thresholds.py [--last-n-days N]
+    ml/.venv/Scripts/python scripts/recompute-whale-thresholds.py [--last-n-days N]
 
 Optional --last-n-days narrows the recompute to a trailing window so a
 single regime-changing day doesn't permanently shift the long-run number.
@@ -26,7 +26,7 @@ try:
     import polars as pl
 except ImportError as e:
     print(f"Missing dependency: {e}", file=sys.stderr)
-    print("Run with ml/.venv/bin/python", file=sys.stderr)
+    print("Run with ml/.venv/Scripts/python", file=sys.stderr)
     sys.exit(1)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

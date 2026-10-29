@@ -16,10 +16,10 @@ Idempotent via the existing `enriched_at IS NULL` gate (or
 `realized_trail30_10_pct IS NULL` under --backfill-mode).
 
 Usage:
-    ml/.venv/bin/python scripts/enrich_silent_boom_outcomes_fulltape.py \\
+    ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes_fulltape.py \\
         --backfill-mode
 
-    ml/.venv/bin/python scripts/enrich_silent_boom_outcomes_fulltape.py \\
+    ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes_fulltape.py \\
         --backfill-mode --date 2026-01-15
 """
 

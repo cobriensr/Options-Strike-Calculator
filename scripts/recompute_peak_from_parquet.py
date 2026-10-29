@@ -74,18 +74,18 @@ to stored values.
 Usage
 -----
     # dry-run recompute (default, read-only, full_tape source)
-    ml/.venv/bin/python scripts/recompute_peak_from_parquet.py --table lottery --date 2026-06-09
-    ml/.venv/bin/python scripts/recompute_peak_from_parquet.py --table silent_boom --date 2026-06-09
-    ml/.venv/bin/python scripts/recompute_peak_from_parquet.py            # both, full default range
+    ml/.venv/Scripts/python scripts/recompute_peak_from_parquet.py --table lottery --date 2026-06-09
+    ml/.venv/Scripts/python scripts/recompute_peak_from_parquet.py --table silent_boom --date 2026-06-09
+    ml/.venv/Scripts/python scripts/recompute_peak_from_parquet.py            # both, full default range
 
     # bug-isolation audit (read-only proof)
-    ml/.venv/bin/python scripts/recompute_peak_from_parquet.py --table both --audit-bug
+    ml/.venv/Scripts/python scripts/recompute_peak_from_parquet.py --table both --audit-bug
 
     # read from the less-complete bot tape instead of the full tape
-    ml/.venv/bin/python scripts/recompute_peak_from_parquet.py --source bot_eod --date 2026-06-05
+    ml/.venv/Scripts/python scripts/recompute_peak_from_parquet.py --source bot_eod --date 2026-06-05
 
     # actually write (bulk UPDATE of ONLY the two columns)
-    WRITE_DB=1 ml/.venv/bin/python scripts/recompute_peak_from_parquet.py
+    WRITE_DB=1 ml/.venv/Scripts/python scripts/recompute_peak_from_parquet.py
 """
 
 from __future__ import annotations
@@ -101,7 +101,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from psycopg2.extras import execute_values
 
-# scripts/ is sys.path[0] when run as `ml/.venv/bin/python scripts/...`,
+# scripts/ is sys.path[0] when run as `ml/.venv/Scripts/python scripts/...`,
 # so the sibling imports below (and the enrich scripts' own
 # `from _pipeline_retry import ...` / `sys.path.insert(ml/src)`) resolve.
 SCRIPTS_DIR = Path(__file__).resolve().parent

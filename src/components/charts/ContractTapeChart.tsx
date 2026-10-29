@@ -152,14 +152,12 @@ function ContractTapeChartInner({
 
   // Measure container size once on mount (before first paint, so
   // pixelHeight mode doesn't flash a letterboxed frame) and again
-  // whenever it resizes. Falls back to a one-shot measurement when
-  // ResizeObserver is unavailable (older jsdom).
+  // whenever it resizes.
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     rectRef.current = el.getBoundingClientRect();
     setMeasuredW(rectRef.current.width);
-    if (typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(() => {
       rectRef.current = el.getBoundingClientRect();
       setMeasuredW(rectRef.current.width);

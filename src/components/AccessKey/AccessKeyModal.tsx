@@ -8,6 +8,11 @@
  * The owner state explains the feature instead of hiding the button — the
  * user explicitly asked for the key UI to be visible to everyone, including
  * the owner, to keep the mount point simple (single render, no conditional).
+ *
+ * Focus (WCAG 2.4.3): on open it moves into the dialog, to the key input
+ * (public) or the Close button (guest, owner); Tab stays inside while it
+ * is open (`useFocusTrap`, as `aria-modal` promises an inert background);
+ * on close it goes back to the `opener` button.
  */
 
 import {
@@ -16,12 +21,21 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type RefObject,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
 import type { AccessMode } from '../../utils/auth';
 
 interface Props {
   mode: AccessMode;
+  /**
+   * The button that opened the dialog; focus goes back to it on close.
+   * Passed in rather than read from `document.activeElement`, because
+   * Safari doesn't focus a button on a mouse click, so the active element
+   * would be <body>.
+   */
+  opener: RefObject<HTMLElement | null>;
   onClose: () => void;
   onLoginSuccess: () => void;
   onLogout: () => Promise<void>;
@@ -29,6 +43,7 @@ interface Props {
 
 export default function AccessKeyModal({
   mode,
+  opener,
   onClose,
   onLoginSuccess,
   onLogout,
@@ -37,10 +52,17 @@ export default function AccessKeyModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Guest and owner each render one Close button; only one mode shows.
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  useFocusTrap(dialogRef, true);
 
   useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
+    const returnTo = opener.current;
+    (inputRef.current ?? closeRef.current)?.focus();
+    return () => returnTo?.focus();
+  }, [opener]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -81,6 +103,7 @@ export default function AccessKeyModal({
 
   return createPortal(
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
       aria-labelledby="access-key-title"
@@ -159,6 +182,7 @@ export default function AccessKeyModal({
             </p>
             <div className="flex gap-2">
               <button
+                ref={closeRef}
                 type="button"
                 onClick={onClose}
                 className="border-edge-strong text-primary hover:bg-surface-alt flex-1 rounded-lg border px-4 py-2 text-sm font-semibold transition-colors"
@@ -200,6 +224,7 @@ export default function AccessKeyModal({
               in Vercel.
             </p>
             <button
+              ref={closeRef}
               type="button"
               onClick={onClose}
               className="border-edge-strong text-primary hover:bg-surface-alt w-full rounded-lg border px-4 py-2 text-sm font-semibold transition-colors"

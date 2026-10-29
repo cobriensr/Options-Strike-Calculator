@@ -2,7 +2,7 @@
   "name": "0dte-strike-calculator",
   "private": true,
   "version": "1.0.0",
-  "license": "GPL-3.0-only",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "engines": {
     "node": "24.x"
@@ -23,7 +23,7 @@
     "lint": "npm run type-check && eslint .",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,mjs,cjs}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,mjs,cjs}\"",
-    "review": "npm run type-check && eslint . && prettier --write \"**/*.{ts,tsx,js,jsx,mjs,cjs}\" && vite build && node scripts/check-build-output.mjs && vitest run --coverage && node scripts/check-coverage-floor.mjs",
+    "review": "node scripts/review-gate.mjs clear && npm run type-check && eslint . && prettier --write \"**/*.{ts,tsx,js,jsx,mjs,cjs}\" && vite build && node scripts/check-build-output.mjs && vitest run --coverage && node scripts/check-coverage-floor.mjs && node scripts/review-gate.mjs seal",
     "audit": "audit-ci --config audit-ci.jsonc",
     "worktrees:prune": "node scripts/prune-merged-worktrees.mjs",
     "review:ml": "cd ml && make format && make test-cov",
@@ -35,6 +35,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.102.0",
+    "@aws-sdk/client-s3": "^3.1159.0",
     "@axiomhq/js": "^1.6.0",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",

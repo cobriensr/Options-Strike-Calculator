@@ -6,7 +6,7 @@ Mirrors the dtype layout of the existing ~/Desktop/Bot-Eod-parquet/
 treat the converted file identically to a normally-ingested day.
 
 Usage:
-    ml/.venv/bin/python scripts/convert-bot-eod-csv-to-parquet.py \\
+    ml/.venv/Scripts/python scripts/convert-bot-eod-csv-to-parquet.py \\
         --csv ~/Downloads/EOD-OptionFlow/bot-eod-report-2026-05-26.csv \\
         --out ~/Desktop/Bot-Eod-parquet/2026-05-26-trades.parquet
 """

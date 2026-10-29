@@ -20,7 +20,7 @@ Outputs:
   ml/findings.json → section "nope_eda"
 
 Usage:
-  ml/.venv/bin/python src/nope_eda.py
+  ml/.venv/Scripts/python src/nope_eda.py
 
 Requires NOPE_FEATURES populated in training_features (run build-features
 cron or backfill first). The script degrades gracefully when data is
@@ -39,7 +39,7 @@ try:
     from scipy import stats
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/bin/pip install matplotlib seaborn scipy pandas")
+    print("  ml/.venv/Scripts/pip install matplotlib seaborn scipy pandas")
     sys.exit(1)
 
 from utils import (  # noqa: E402

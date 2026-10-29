@@ -6,7 +6,6 @@ Date: 2026-10-28. Status: approved by the owner 2026-10-28; next is the build pl
 
 The owner never runs the evening routine by hand again. Until 2026-06-16 that routine was `make nightly update` on the retired Mac, started by a hand-downloaded `bot-eod-report-YYYY-MM-DD.csv`. It has not run since, about 95 trading days. One unattended nightly job replaces all of it:
 - Its options input is only the Unusual Whales Full Tape REST endpoint (`GET /api/option-trades/full-tape/{date}`).
-- GEXBot EOD capture: see `2026-10-28-gexbot-eod-capture-design.md`.
 
 The owner asked for the whole process: downloading the file, saving it, uploading to Cloudflare, the enrichment scripts, and everything else the routine did.
 
@@ -56,7 +55,8 @@ The owner asked for the whole process: downloading the file, saving it, uploadin
 **Licensing:**
 - **UW-derived row-level data is tracked in this public repo today.** That covers 23 per-contract `by-day/*-chains.parquet` files, plus `cumulative-headlines.txt` and `cumulative-rollup.json`, which list contracts by ticker, strike, premium and ask%.
 
-GEXBot EOD capture: see `2026-10-28-gexbot-eod-capture-design.md`.
+**GexBot:**
+- **GexBot's daily EOD report is a separate job,** by owner decision: "that nightly pipeline spec was for the UW end of day full tape, this is for gexbot, so I would prefer it to be separate". It is designed in `2026-10-28-gexbot-eod-capture-design.md` (all 60 tickers, a Vercel cron, the same R2 bucket under `gexbot-eod/`). This pipeline doesn't touch GexBot, and its R2 listings must read only the `fulltape/` prefix.
 
 **Where the job could run:**
 - The repo is public, so GitHub Actions logs are readable by anyone signed in.
@@ -67,16 +67,15 @@ GEXBot EOD capture: see `2026-10-28-gexbot-eod-capture-design.md`.
 
 1. **Every trading day's tape lands in R2 unattended,** by about 03:30 CT the next morning.
 2. **Missing tape days fix themselves.** Each run lands every trading day missing since the last one landed. The first runs clear 06-16 → today, plus 05-29 if UW still serves it.
-3. GEXBot EOD capture: see `2026-10-28-gexbot-eod-capture-design.md`.
-4. **Every lottery and silent-boom fire has outcomes.**
+3. **Every lottery and silent-boom fire has outcomes.**
    - The 06-12 → 10-22 gap is backfilled from the tape.
    - Each night, a backstop re-enriches any fire the live cron left empty.
-5. **Every research output `make nightly update` produced keeps updating from the tape:**
+4. **Every research output `make nightly update` produced keeps updating from the tape:**
    - the per-day chains parquet, the cumulative rollup and headlines, the whale plots, the lottery tracking and ticker-weight-history CSVs;
    - the Take-It drift monitor (`takeit_health_daily`);
    - the dated research reports: `exit_policy_search`, `feature_audit`, `flow_inversion_timing`, `mine_outcome_patterns`, `score_lineage_audit` and the lottery quality sim.
-6. **The lottery score refit, and the nightly ticker-weight update, run safely.** New weights go live only when they pass gates; otherwise the current ones stay.
-7. **Failures are loud.** A Sentry alert fires on any of these:
+5. **The lottery score refit, and the nightly ticker-weight update, run safely.** New weights go live only when they pass gates; otherwise the current ones stay.
+6. **Failures are loud.** A Sentry alert fires on any of these:
    - a day that fails to land;
    - any step that fails;
    - a trading day with fires whose enrichment comes back 100% NULL;
@@ -90,11 +89,12 @@ GEXBot EOD capture: see `2026-10-28-gexbot-eod-capture-design.md`.
 - **Take-It retraining and the disabled ML GitHub workflow.** Owner decisions Q23 and O7 stand.
 - **Promoting `lottery_ticker_stats` to live.** It stays on its existing shadow hold.
 - **Choosing a post-close filter** (owner, 10-28): "take what's there and we can decide what we want to filter out later".
-- **Silver 1-minute bars;** cutting the per-minute GexBot polling. All of these could come later.
+- **Silver 1-minute bars.** The skill can add them later.
+- **GexBot's EOD report.** It's a separate job (see Facts).
 
 ## Anti-goals (failures even if everything technically runs)
 
-- **UW or GexBot data shows up anywhere public:** logs, a public Blob, a public endpoint, or the repo. Status lines with counts and dates are fine; rows of market data are not. This also means the job never commits the row-level outputs.
+- **UW data shows up anywhere public:** logs, a public Blob, a public endpoint, or the repo. Status lines with counts and dates are fine; rows of market data are not. This also means the job never commits the row-level outputs.
 - **A bad refit or ticker-weight update quietly changes live scores,** the way the 06-10 sign flip did.
 - **A step reports success after writing nothing** (rule R4).
 - **Historical data is overwritten with no copy kept.** This applies to scores and outcomes alike.
@@ -102,7 +102,7 @@ GEXBot EOD capture: see `2026-10-28-gexbot-eod-capture-design.md`.
 
 ## Constraints
 
-- **Data licensing** (CLAUDE.md): UW and GexBot data need owner or guest auth. R2 and Blob stay private.
+- **Data licensing** (CLAUDE.md): UW data needs owner or guest auth. R2 and Blob stay private.
 - **Host: a new Railway service with a cron schedule.**
   - The service must exit when done, and Railway skips a run that would overlap a running one.
   - Schedules are in UTC.
@@ -125,7 +125,7 @@ GEXBot EOD capture: see `2026-10-28-gexbot-eod-capture-design.md`.
 - Automate the whole routine.
 - The Full Tape endpoint is the only options input.
 - No post-close cutoff for now.
-- GEXBot EOD capture moved to its own spec, `2026-10-28-gexbot-eod-capture-design.md` (owner, 2026-10-28).
+- GexBot's EOD report is a separate job (owner, in its own design session the same night; see Facts).
 
 **My calls** (flagged so the owner can overrule):
 - **Lake and storage:**
@@ -138,7 +138,7 @@ GEXBot EOD capture: see `2026-10-28-gexbot-eod-capture-design.md`.
     - Changes come from a full code review (running 10-28) and are listed in the build plan.
     - It replaces `scripts/download-fulltape.sh` and `scripts/ingest-fulltape.py`. The latter drops the newer columns today (`:105-117`).
   - **Readers must accept the growing schema:** `union_by_name` / `diagonal_relaxed`. `ml/src/utils/r2.py` doesn't today.
-- **Schedule:** 07:15 UTC, Tuesday through Saturday (02:15 CDT / 01:15 CST). That's after the late tape rewrites (04:57–05:59 UTC).
+- **Schedule:** 07:15 UTC, Tuesday through Saturday (02:15 CDT / 01:15 CST). That's after the late tape rewrites (04:57–05:59 UTC). One run a day is enough: UW keeps history, so a missed night lands on the next run.
 - **Service:** a new Railway service directory laid out like `uw-stream/`.
 - **Language:** the nightly job is Python (the owner asked; app code is TypeScript).
   - It reuses about a dozen existing Python scripts (ingest, enrichment, analyze, refit, plots, reports) instead of porting them.
@@ -165,10 +165,10 @@ GEXBot EOD capture: see `2026-10-28-gexbot-eod-capture-design.md`.
 
 ## Phases (each ships on its own)
 
-1. **The nightly landing job.** About 2 days.
+1. **The nightly tape landing job.** About 2 days.
    - New service.
    - Tape: find the trading days missing from R2 → download → validate → parquet with every column → upload → delete temporary files. One day at a time; peak disk about 12 GB. Cap each run at N days so the 95-day backlog clears over a few nights.
-   - A Sentry cron check-in, plus one event per failed day or missed window.
+   - A Sentry cron check-in, plus one event per failed day.
 2. **Enrichment from the lake.** About 2 days.
    - Add the `outcome_source` columns (migration).
    - Point `enrich_lottery_outcomes.py` and `enrich_silent_boom_outcomes.py` at the tape, through a shared reader.

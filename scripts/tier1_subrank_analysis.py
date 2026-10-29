@@ -14,7 +14,7 @@ realized_eod_pct if absent (consistent with other v22 scripts).
 Writes: docs/tmp/v22-tier1-subrank-2026-05-22.md
 
 Usage:
-    ml/.venv/bin/python scripts/tier1_subrank_analysis.py
+    ml/.venv/Scripts/python scripts/tier1_subrank_analysis.py
 """
 
 from __future__ import annotations

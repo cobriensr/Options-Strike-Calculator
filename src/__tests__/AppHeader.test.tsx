@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
-import { createRef } from 'react';
+import {
+  createRef,
+  useLayoutEffect,
+  type ComponentType,
+  type ReactNode,
+} from 'react';
 import AppHeader, { type AppHeaderProps } from '../components/AppHeader';
 import type { CollapseSignal } from '../components/collapse-context';
 import type { MarketSession, useMarketData } from '../hooks/useMarketData';
@@ -9,16 +14,33 @@ import type { ViewMode } from '../hooks/useViewMode';
 
 // Counts SchwabExpiryBadge stub renders: a proxy for "did AppHeader itself
 // re-render", since the stub is a plain (non-memo) child of the header.
-const { expiryBadgeRender } = vi.hoisted(() => ({
+const { expiryBadgeRender, accessKeyDialog } = vi.hoisted(() => ({
   expiryBadgeRender: vi.fn(),
+  // Set `open` to render the stub's dialog, portaled to <body> like the
+  // real AccessKeyModal.
+  accessKeyDialog: { open: false },
 }));
 
 // AccessKeyButton calls useAccessSession() which reads cookies + dispatches
 // events. Stub it to a deterministic, side-effect-free element so the
 // AppHeader test focuses on AppHeader's own behavior.
-vi.mock('../components/AccessKey/AccessKeyButton', () => ({
-  default: () => <button data-testid="access-key-button">access</button>,
-}));
+vi.mock('../components/AccessKey/AccessKeyButton', async () => {
+  const { createPortal } = await import('react-dom');
+  return {
+    default: () => (
+      <>
+        <button data-testid="access-key-button">access</button>
+        {accessKeyDialog.open &&
+          createPortal(
+            <div role="dialog">
+              <button type="button">Close</button>
+            </div>,
+            document.body,
+          )}
+      </>
+    ),
+  };
+});
 
 // SchwabExpiryBadge polls its own owner-only endpoint (covered by its own
 // tests). Stub it so the header test makes no network calls and can assert
@@ -108,7 +130,10 @@ function makeCollapseSignal(
   return { version: 0, collapsed: false, ...overrides };
 }
 
-function renderHeader(overrides: Partial<AppHeaderProps> = {}) {
+function renderHeader(
+  overrides: Partial<AppHeaderProps> = {},
+  wrapper?: ComponentType<{ children: ReactNode }>,
+) {
   const props: AppHeaderProps = {
     accessMode: 'owner',
     view: 'calculator' as ViewMode,
@@ -132,7 +157,7 @@ function renderHeader(overrides: Partial<AppHeaderProps> = {}) {
     onOpenPanelPrefs: vi.fn(),
     ...overrides,
   };
-  return { ...render(<AppHeader {...props} />), props };
+  return { ...render(<AppHeader {...props} />, { wrapper }), props };
 }
 
 // ============================================================
@@ -149,6 +174,140 @@ describe('AppHeader', () => {
     expect(alertsTab).toBeInTheDocument();
     fireEvent.click(alertsTab);
     expect(onViewChange).toHaveBeenCalledWith('alerts');
+  });
+
+  // ── Published height for the sticky stack ────────────────
+
+  describe('header height', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+      document.documentElement.style.removeProperty('--app-header-h');
+    });
+
+    it('publishes its height on <html> in the layout phase, on resize, and stops on unmount', () => {
+      interface StubObserver {
+        cb: () => void;
+        observe: ReturnType<typeof vi.fn>;
+        disconnect: ReturnType<typeof vi.fn>;
+      }
+      // Each observer gets its own spies: ControlsRow observes (and
+      // disconnects, to re-observe) on its own, so shared spies or firing
+      // every callback would hide a broken header observer.
+      const observers: StubObserver[] = [];
+      vi.stubGlobal(
+        'ResizeObserver',
+        class {
+          cb: () => void;
+          observe = vi.fn();
+          unobserve = vi.fn();
+          disconnect = vi.fn();
+          constructor(cb: () => void) {
+            this.cb = cb;
+            observers.push(this as unknown as StubObserver);
+          }
+        },
+      );
+      const rect = vi
+        .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+        .mockReturnValue({ height: 90 } as DOMRect);
+      const root = document.documentElement;
+
+      // A parent's layout effect runs after its children's and before any
+      // passive effect, so this reads what AppHeader published in its own
+      // layout phase: before the first paint, with no observer callback.
+      let atLayout: string | null = null;
+      function LayoutProbe({ children }: { children: ReactNode }) {
+        useLayoutEffect(() => {
+          atLayout = root.style.getPropertyValue('--app-header-h');
+        }, []);
+        return children;
+      }
+      const { unmount } = renderHeader({}, LayoutProbe);
+      expect(atLayout).toBe('90px');
+
+      const own = observers.find((o) =>
+        o.observe.mock.calls.some(([el]) => el === screen.getByRole('banner')),
+      );
+      if (!own) throw new Error('no ResizeObserver watches the header');
+      rect.mockReturnValue({ height: 105 } as DOMRect);
+      act(() => own.cb());
+      expect(root.style.getPropertyValue('--app-header-h')).toBe('105px');
+      expect(own.disconnect).not.toHaveBeenCalled();
+
+      unmount();
+      expect(own.disconnect).toHaveBeenCalledTimes(1);
+      expect(root.style.getPropertyValue('--app-header-h')).toBe('');
+    });
+  });
+
+  // ── Focus in the sideways-scrolling controls row ─────────
+
+  describe('a control that takes focus', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+      accessKeyDialog.open = false;
+    });
+
+    function spyOnScroll() {
+      return vi.spyOn(Element.prototype, 'scrollIntoView');
+    }
+
+    it('is scrolled fully into view, by the nearest edge, when tabbed to', () => {
+      const scrollIntoView = spyOnScroll();
+      renderHeader();
+      const panels = screen.getByRole('button', {
+        name: 'Show or hide panels',
+      });
+      // Tab's keyup fires on the control that just took focus.
+      act(() => panels.focus());
+      fireEvent.keyUp(panels, { key: 'Tab' });
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView).toHaveBeenCalledWith({
+        block: 'nearest',
+        inline: 'nearest',
+      });
+      expect(scrollIntoView.mock.contexts[0]).toBe(panels);
+    });
+
+    it('stays put when focused by a click, so the click lands', () => {
+      const scrollIntoView = spyOnScroll();
+      const onOpenPanelPrefs = vi.fn();
+      renderHeader({ onOpenPanelPrefs });
+      const panels = screen.getByRole('button', {
+        name: 'Show or hide panels',
+      });
+      fireEvent.pointerDown(panels);
+      fireEvent.mouseDown(panels);
+      act(() => panels.focus());
+      fireEvent.mouseUp(panels);
+      fireEvent.click(panels);
+      expect(onOpenPanelPrefs).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    });
+
+    it('ignores keys other than Tab', () => {
+      const scrollIntoView = spyOnScroll();
+      renderHeader();
+      const panels = screen.getByRole('button', {
+        name: 'Show or hide panels',
+      });
+      act(() => panels.focus());
+      fireEvent.keyUp(panels, { key: 'Enter' });
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    });
+
+    it('leaves a dialog portaled out of the row alone', () => {
+      const scrollIntoView = spyOnScroll();
+      accessKeyDialog.open = true;
+      renderHeader();
+      const close = screen.getByRole('button', { name: 'Close' });
+      expect(screen.getByRole('banner')).not.toContainElement(close);
+      act(() => close.focus());
+      // React bubbles the keyup from the portal to the row's handler.
+      fireEvent.keyUp(close, { key: 'Tab' });
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    });
   });
 
   // ── Access Key button mount (sidebar vs header) ──────────
@@ -181,21 +340,21 @@ describe('AppHeader', () => {
 
     // Sign in link present.
     expect(
-      screen.getByRole('link', { name: /authenticate with schwab/i }),
+      screen.getByRole('link', { name: 'Sign in with Schwab' }),
     ).toBeInTheDocument();
 
     // Owner-only admin buttons absent.
     expect(
-      screen.queryByRole('button', { name: /run database migrations/i }),
+      screen.queryByRole('button', { name: 'Migrate DB' }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: /recompute training_features/i }),
+      screen.queryByRole('button', { name: 'Backfill' }),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByLabelText(/upload vix ohlc csv file/i),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole('link', { name: /re-authenticate with schwab/i }),
+      screen.queryByRole('link', { name: 'Re-auth with Schwab' }),
     ).not.toBeInTheDocument();
   });
 
@@ -206,15 +365,15 @@ describe('AppHeader', () => {
 
     // No sign-in link.
     expect(
-      screen.queryByRole('link', { name: /authenticate with schwab/i }),
+      screen.queryByRole('link', { name: 'Sign in with Schwab' }),
     ).not.toBeInTheDocument();
 
     // No admin buttons.
     expect(
-      screen.queryByRole('button', { name: /run database migrations/i }),
+      screen.queryByRole('button', { name: 'Migrate DB' }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: /recompute training_features/i }),
+      screen.queryByRole('button', { name: 'Backfill' }),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByLabelText(/upload vix ohlc csv file/i),
@@ -226,10 +385,10 @@ describe('AppHeader', () => {
   it('shows admin actions in owner mode', () => {
     renderHeader({ accessMode: 'owner', isOwner: true });
     expect(
-      screen.getByRole('button', { name: /run database migrations/i }),
+      screen.getByRole('button', { name: 'Migrate DB' }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: /recompute training_features/i }),
+      screen.getByRole('button', { name: 'Backfill' }),
     ).toBeInTheDocument();
     // Hidden file input + visible button.
     expect(
@@ -246,7 +405,7 @@ describe('AppHeader', () => {
       market: makeMarket({ needsAuth: true }),
     });
     expect(
-      screen.getByRole('link', { name: /re-authenticate with schwab/i }),
+      screen.getByRole('link', { name: 'Re-auth with Schwab' }),
     ).toBeInTheDocument();
   });
 
@@ -257,7 +416,7 @@ describe('AppHeader', () => {
       market: makeMarket({ needsAuth: true }),
     });
     expect(
-      screen.queryByRole('link', { name: /re-authenticate with schwab/i }),
+      screen.queryByRole('link', { name: 'Re-auth with Schwab' }),
     ).not.toBeInTheDocument();
   });
 
@@ -318,6 +477,54 @@ describe('AppHeader', () => {
       }),
     });
     expect(screen.getByText(/NO INTRADAY/)).toBeInTheDocument();
+  });
+
+  it('shortens the backtest pills on a phone but keeps their full text for screen readers', () => {
+    renderHeader({
+      isBacktestMode: true,
+      historyData: makeHistory({ error: 'no candles for 2026-05-08' }),
+    });
+    for (const [full, short] of [
+      ['● BACKTEST', 'BT'],
+      ['● NO INTRADAY', 'NO ID'],
+    ] as const) {
+      const shortLabel = screen.getByText(short, { exact: true });
+      expect(shortLabel).toHaveAttribute('aria-hidden', 'true');
+      // What assistive tech reads: the pill minus its aria-hidden parts.
+      const exposed = (shortLabel.parentElement as HTMLElement).cloneNode(
+        true,
+      ) as HTMLElement;
+      exposed.querySelectorAll('[aria-hidden="true"]').forEach((el) => {
+        el.remove();
+      });
+      expect(exposed.textContent).toBe(full);
+    }
+    // The tooltip still carries the history error.
+    expect(screen.getByTitle('no candles for 2026-05-08')).toHaveTextContent(
+      '● NO INTRADAY',
+    );
+  });
+
+  it('keeps the owner order in the DOM, so focus follows it: toggle, pills, Schwab warning, Re-auth, Access, tools', () => {
+    renderHeader({
+      isOwner: true,
+      isBacktestMode: true,
+      market: makeMarket({ needsAuth: true }),
+    });
+    const sequence = [
+      screen.getByRole('navigation', { name: 'Application view' }),
+      screen.getByText('BT', { exact: true }),
+      screen.getByTestId('schwab-expiry-badge-stub'),
+      screen.getByRole('link', { name: 'Re-auth with Schwab' }),
+      screen.getByTestId('access-key-button'),
+      screen.getByRole('button', { name: 'Collapse all sections' }),
+      screen.getByRole('button', { name: 'Switch to dark mode' }),
+    ];
+    const header = screen.getByRole('banner');
+    const inDomOrder = [...header.querySelectorAll('*')].filter((el) =>
+      sequence.includes(el as HTMLElement),
+    );
+    expect(inDomOrder).toEqual(sequence);
   });
 
   // ── Quote staleness badge (useQuoteStaleness, F1) ────────
@@ -533,6 +740,62 @@ describe('AppHeader', () => {
     expect(screen.queryByText('Upload VIX CSV')).not.toBeInTheDocument();
   });
 
+  // ── Label in name (WCAG 2.5.3) ───────────────────────────
+
+  it('names each header button by the text it shows', () => {
+    renderHeader({
+      isOwner: true,
+      vix: { vixDataLoaded: true, vixDataSource: '9,137 days' },
+    });
+    // The longer wording stays as the tooltip and description.
+    expect(screen.getByRole('button', { name: 'Migrate DB' })).toHaveAttribute(
+      'title',
+      'Run DB migrations',
+    );
+    expect(screen.getByRole('button', { name: 'Backfill' })).toHaveAttribute(
+      'title',
+      expect.stringMatching(/^Backfill training_features/),
+    );
+    // Once loaded, the VIX button shows only the data's span; its name
+    // starts with that text and says what the button does.
+    const vixButton = screen.getByRole('button', {
+      name: '9,137 days of VIX data, upload CSV',
+    });
+    expect(vixButton).toHaveTextContent('9,137 days');
+  });
+
+  it.each([
+    ['9,137 days', '9,137 days of VIX data, upload CSV'],
+    // A cache saved without a source key reads 'cached'
+    ['cached', 'Cached VIX data, upload CSV'],
+    ['VIX 2025 OHLC', 'VIX 2025 OHLC: VIX data, upload CSV'],
+  ])(
+    'names the loaded VIX button %j so its name starts with what it shows',
+    (source, name) => {
+      renderHeader({
+        isOwner: true,
+        vix: { vixDataLoaded: true, vixDataSource: source },
+      });
+      const button = screen.getByRole('button', { name });
+      expect(button).toHaveTextContent(source);
+      expect(name.toLowerCase().startsWith(source.toLowerCase())).toBe(true);
+    },
+  );
+
+  it('names the VIX upload button by its text until data is loaded', () => {
+    renderHeader({ isOwner: true });
+    expect(
+      screen.getByRole('button', { name: 'Upload VIX CSV' }),
+    ).toBeInTheDocument();
+  });
+
+  it('names the public Sign in link so it starts with its visible text', () => {
+    renderHeader({ accessMode: 'public', isOwner: false });
+    expect(
+      screen.getByRole('link', { name: 'Sign in with Schwab' }),
+    ).toHaveTextContent('Sign in');
+  });
+
   it('triggers vixHandleFileUpload when the hidden input change event fires', () => {
     const vixHandleFileUpload = vi.fn();
     renderHeader({ isOwner: true, vixHandleFileUpload });
@@ -546,7 +809,7 @@ describe('AppHeader', () => {
   it('disables Migrate button when migrateRunning and shows Running label', () => {
     renderHeader({ isOwner: true, migrateRunning: true });
     const btn = screen.getByRole('button', {
-      name: /run database migrations/i,
+      name: /Running/,
     });
     expect(btn).toBeDisabled();
     expect(btn).toHaveTextContent(/Running/);
@@ -555,7 +818,7 @@ describe('AppHeader', () => {
   it('disables Backfill button when backfillRunning and shows Building label', () => {
     renderHeader({ isOwner: true, backfillRunning: true });
     const btn = screen.getByRole('button', {
-      name: /recompute training_features/i,
+      name: /Building/,
     });
     expect(btn).toBeDisabled();
     expect(btn).toHaveTextContent(/Building/);
@@ -564,18 +827,14 @@ describe('AppHeader', () => {
   it('clicking Migrate invokes onRunMigrations', () => {
     const onRunMigrations = vi.fn();
     renderHeader({ isOwner: true, onRunMigrations });
-    fireEvent.click(
-      screen.getByRole('button', { name: /run database migrations/i }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: 'Migrate DB' }));
     expect(onRunMigrations).toHaveBeenCalledTimes(1);
   });
 
   it('clicking Backfill invokes onBackfillFeatures', () => {
     const onBackfillFeatures = vi.fn();
     renderHeader({ isOwner: true, onBackfillFeatures });
-    fireEvent.click(
-      screen.getByRole('button', { name: /recompute training_features/i }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: 'Backfill' }));
     expect(onBackfillFeatures).toHaveBeenCalledTimes(1);
   });
 });

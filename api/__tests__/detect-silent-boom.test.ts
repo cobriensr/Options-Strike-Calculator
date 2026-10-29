@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 import {
   expectAllGexBindsNull,
@@ -16,12 +16,23 @@ const mockSql = vi.fn();
 // fail-open classifier (transient → fall open, genuine → throw) is
 // exercised against the actual DB_RETRYABLE_RX, not a stub. This is the
 // regression guard for the "genuine macro error must propagate" contract.
+// withDbRetry is a spy so tests can pin the retry arguments a query is
+// given (vi.fn(impl) keeps impl across resetAllMocks).
+const mockWithDbRetry = vi.hoisted(() =>
+  vi.fn<
+    (
+      fn: () => Promise<unknown>,
+      retries?: number,
+      perAttemptTimeoutMs?: number,
+    ) => Promise<unknown>
+  >((fn) => fn()),
+);
 vi.mock('../_lib/db.js', async () => {
   const actual =
     await vi.importActual<typeof import('../_lib/db.js')>('../_lib/db.js');
   return {
     getDb: vi.fn(() => mockSql),
-    withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+    withDbRetry: mockWithDbRetry,
     isRetryableDbError: actual.isRetryableDbError,
     TransientDbError: actual.TransientDbError,
     // The handler classifies macro failures via the real settleDegradable
@@ -67,8 +78,24 @@ vi.mock('../_lib/multileg-classify-batch.js', () => ({
 const mockScoreSilentBoom = vi.hoisted(() =>
   vi.fn().mockReturnValue({ prob: null, version: null, features: null }),
 );
+// loadTakeitDetectContext resolves null by default (set in beforeEach); the
+// Take-It tests below override it to run the cron's prefetch closures or to
+// report a prefetch failure. The win-rate day cache resolves [] without SQL
+// by default (it is kicked before the bucket scan, so a real loader would
+// shift every mock sequence); the warm-up tests swap in the real cache.
+const {
+  mockLoadTakeitDetectContext,
+  mockPriorSessionWinRatesForDay,
+  mockAwaitWinRateWarmup,
+} = vi.hoisted(() => ({
+  mockLoadTakeitDetectContext: vi.fn(),
+  mockPriorSessionWinRatesForDay: vi.fn(),
+  mockAwaitWinRateWarmup: vi.fn(),
+}));
 vi.mock('../_lib/takeit-detect.js', () => ({
-  loadTakeitDetectContext: () => Promise.resolve(null),
+  loadTakeitDetectContext: mockLoadTakeitDetectContext,
+  priorSessionWinRatesForDay: mockPriorSessionWinRatesForDay,
+  awaitWinRateWarmup: mockAwaitWinRateWarmup,
   scoreSilentBoom: mockScoreSilentBoom,
 }));
 
@@ -89,6 +116,9 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 import handler from '../cron/detect-silent-boom.js';
+import { reportCronRun } from '../_lib/axiom.js';
+import { AXIOM_TOP_LEVEL_KEYS } from '../_lib/axiom-fields.js';
+import logger from '../_lib/logger.js';
 
 const GUARD = { apiKey: '', today: '2026-05-07' };
 
@@ -203,6 +233,9 @@ describe('detect-silent-boom handler', () => {
       version: null,
       features: null,
     });
+    mockLoadTakeitDetectContext.mockResolvedValue(null);
+    mockPriorSessionWinRatesForDay.mockResolvedValue([]);
+    mockAwaitWinRateWarmup.mockResolvedValue(undefined);
   });
 
   it('returns skipped + warns when no ticks are in the scan window (active session)', async () => {
@@ -1813,5 +1846,456 @@ describe('detect-silent-boom handler', () => {
     expect(res._status).toBe(200);
     binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
     expect(binds.get('mkt_tide_diff')).toBeNull();
+  });
+
+  // Spec lottery-cron-timeouts-2026-10-28.md, Phase A: the setup phase
+  // must not time the run out, and each degraded path is surfaced.
+  describe('setup-phase degradation', () => {
+    const TAKEIT_TIMEOUT = 'Take-It prefetch passed its 5000 ms deadline';
+    const FLOW_FAILED_MSG =
+      'detect-silent-boom: ticker flow series failed; alerts written without flow features';
+    const FLOW_ERROR_MSG =
+      'detect-silent-boom: ticker flow series query error; alerts written without flow features';
+    const FLOW_DEADLINE = 'ticker flow series passed its 5000 ms deadline';
+
+    const authorizedReq = () =>
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      });
+
+    // Every tagged-template SQL call: its text with `${}` where each bind
+    // sat, plus the binds in order.
+    function sqlCalls() {
+      return mockSql.mock.calls.map((call) => {
+        const [strings, ...params] = call as [readonly string[], ...unknown[]];
+        return { text: strings.join('${}'), params };
+      });
+    }
+    function sqlCall(...needles: string[]) {
+      const found = sqlCalls().filter((c) =>
+        needles.every((n) => c.text.includes(n)),
+      );
+      expect(found).toHaveLength(1);
+      return found[0]!;
+    }
+    const flowSeriesQueries = () =>
+      sqlCalls().filter((c) => c.text.includes('ws_net_flow_per_ticker'));
+
+    // The real win-rate day cache. It is module state, so each test that
+    // uses it runs on its own ET date.
+    async function useRealWinRateCache(today: string) {
+      const actual = await vi.importActual<
+        typeof import('../_lib/takeit-detect.js')
+      >('../_lib/takeit-detect.js');
+      mockPriorSessionWinRatesForDay.mockImplementation(
+        actual.priorSessionWinRatesForDay,
+      );
+      mockCronGuard.mockReturnValue({ ...GUARD, today });
+    }
+
+    // ticks → prior fires → 4 macro series → pre_trade_count, then the
+    // per-fire ticker flow series and INSERT staged by the caller.
+    function stageUpToFlowSeries(
+      buckets = fireableSilentBoomStream(),
+      fires = 1,
+    ) {
+      return mockSql
+        .mockResolvedValueOnce(buckets) // ticks
+        .mockResolvedValueOnce([]) // prior fires
+        .mockResolvedValueOnce([]) // tide ticks
+        .mockResolvedValueOnce([]) // tide_otm ticks
+        .mockResolvedValueOnce([]) // zero_dte ticks
+        .mockResolvedValueOnce([]) // spx_gamma ticks
+        .mockResolvedValueOnce(
+          Array.from({ length: fires }, (_, i) => ({ ord: i + 1, cnt: 0 })),
+        ); // pre_trade_count
+    }
+
+    // The SNDK fixture plus the same pattern on an NVDA chain: two fires,
+    // two ticker-days, SNDK first.
+    function twoTickerBuckets() {
+      return [
+        ...fireableSilentBoomStream(),
+        ...fireableSilentBoomStream().map((r) => ({
+          ...r,
+          ticker: 'NVDA',
+          option_chain: 'NVDA260507C01175000',
+        })),
+      ];
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('bounds both recent-fire prefetch queries to ET today and yesterday, and loads win rates once for the early kick and the prefetch', async () => {
+      const today = '2026-06-03';
+      await useRealWinRateCache(today);
+      mockLoadTakeitDetectContext.mockImplementation(
+        async (
+          _alertType: string,
+          deps: {
+            fetchRecentSameType: (m: number) => Promise<unknown>;
+            fetchRecentOtherTypeByChain: (m: number) => Promise<unknown>;
+            fetchPriorSessionWinRateByTicker: () => Promise<unknown>;
+          },
+        ) => {
+          await deps.fetchRecentSameType(35);
+          await deps.fetchRecentOtherTypeByChain(10);
+          await deps.fetchPriorSessionWinRateByTicker();
+          return null;
+        },
+      );
+      mockSql
+        .mockResolvedValueOnce([]) // win-rate load, kicked before the bucket scan
+        .mockResolvedValueOnce(fireableSilentBoomStream());
+
+      await handler(authorizedReq(), mockResponse());
+
+      const sameType = sqlCall(
+        'FROM silent_boom_alerts',
+        'bucket_ct AS fire_time',
+      );
+      expect(sameType.text).toMatch(
+        /WHERE date >= \$\{\}::date - 1\s+AND bucket_ct >= NOW\(\)/,
+      );
+      expect(sameType.params).toEqual([today, 35]);
+
+      // The lottery-side cofire lookup walked the whole lottery_finder_fires
+      // (date, trigger_time_ct) index before the bound.
+      const otherType = sqlCall(
+        'FROM lottery_finder_fires',
+        'trigger_time_ct AS fire_time',
+      );
+      expect(otherType.text).toMatch(
+        /WHERE date >= \$\{\}::date - 1\s+AND trigger_time_ct >= NOW\(\)/,
+      );
+      expect(otherType.params).toEqual([today, 10]);
+
+      // Kicked first, then joined by the prefetch: one query.
+      expect(mockPriorSessionWinRatesForDay).toHaveBeenCalledTimes(2);
+      const [kick, prefetch] = mockPriorSessionWinRatesForDay.mock.calls;
+      expect(kick).toEqual(['silentboom', today, expect.any(Function)]);
+      expect(prefetch).toEqual(['silentboom', today, kick![2]]);
+      const winRate = sqlCall('AVG(daily_rate)', 'FROM silent_boom_alerts');
+      expect(winRate.text).toContain('AND date < ${}::date');
+      expect(winRate.params).toEqual([today]);
+      expect(sqlCalls()[0]!.text).toContain('AVG(daily_rate)');
+
+      // Both recent-fire queries get one retry and no per-attempt cap: the
+      // 5 s prefetch deadline bounds the total.
+      expect(mockWithDbRetry).toHaveBeenCalledWith(expect.any(Function), 1);
+      expect(
+        mockWithDbRetry.mock.calls.filter(
+          (call) => call.length === 2 && call[1] === 1,
+        ),
+      ).toHaveLength(2);
+    });
+
+    it('starts the win-rate load on an empty pre-open scan and waits for it, so the cache is warm at the open', async () => {
+      const today = '2026-06-04';
+      await useRealWinRateCache(today);
+      mockSql
+        .mockResolvedValueOnce([{ underlying_symbol: 'SNDK', win_rate: 0.3 }]) // win-rate warm-up
+        .mockResolvedValueOnce([]); // empty bucket scan
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({ status: 'skipped' });
+      expect(
+        sqlCall('AVG(daily_rate)', 'FROM silent_boom_alerts').params,
+      ).toEqual([today]);
+      const warmup = mockPriorSessionWinRatesForDay.mock.results[0]!.value;
+      // The wait is budgeted from the run's own start time.
+      expect(mockAwaitWinRateWarmup).toHaveBeenCalledExactlyOnceWith(
+        warmup,
+        expect.any(Number),
+      );
+      const startTimeMs = mockAwaitWinRateWarmup.mock.calls[0]![1] as number;
+      expect(Date.now() - startTimeMs).toBeGreaterThanOrEqual(0);
+      expect(Date.now() - startTimeMs).toBeLessThan(10_000);
+      await expect(warmup).resolves.toEqual([
+        { underlying_symbol: 'SNDK', win_rate: 0.3 },
+      ]);
+    });
+
+    // The cron's onPrefetchFailure callback, fed a failure of `kind`.
+    function failPrefetch(reason: string, kind: 'timeout' | 'error') {
+      mockLoadTakeitDetectContext.mockImplementation(
+        async (
+          _alertType: string,
+          _deps: unknown,
+          onPrefetchFailure: (failure: {
+            reason: string;
+            kind: string;
+          }) => void,
+        ) => {
+          onPrefetchFailure({ reason, kind });
+          return null;
+        },
+      );
+    }
+
+    it('stays success when the Take-It prefetch fails but every alert was already written (no row lost its score)', async () => {
+      failPrefetch(TAKEIT_TIMEOUT, 'timeout');
+      // The INSERT hits ON CONFLICT and returns no id.
+      stageUpToFlowSeries()
+        .mockResolvedValueOnce([]) // ticker_flow_snapshot
+        .mockResolvedValueOnce([]); // insert
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'success',
+        inserted: 0,
+        takeitPrefetchFailures: 1,
+      });
+      expect(logger.warn).toHaveBeenCalledWith(
+        {
+          takeitPrefetchError: TAKEIT_TIMEOUT,
+          takeitPrefetchFailureKind: 'timeout',
+        },
+        'detect-silent-boom: Take-It prefetch failed; takeit_prob left null',
+      );
+    });
+
+    it('fails the run when the Take-It prefetch hits a genuine query error, and still writes the alert', async () => {
+      const broken = 'column "bucket_ct" does not exist';
+      failPrefetch(broken, 'error');
+      stageUpToFlowSeries()
+        .mockResolvedValueOnce([]) // ticker_flow_snapshot
+        .mockResolvedValueOnce([{ id: 11 }]); // insert
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      // A bug, not Neon being slow: red check-in, whatever was written.
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'error',
+        inserted: 1,
+        takeitPrefetchFailures: 1,
+        takeitPrefetchError: broken,
+        takeitPrefetchFailureKind: 'error',
+      });
+      expect(
+        extractInsertBinds(mockSql, 'silent_boom_alerts').get('takeit_prob'),
+      ).toBeNull();
+      expect(logger.error).toHaveBeenCalledWith(
+        { takeitPrefetchError: broken, takeitPrefetchFailureKind: 'error' },
+        'detect-silent-boom: Take-It prefetch query error; takeit_prob left null',
+      );
+    });
+
+    it('writes the alert with takeit_prob NULL and reports partial with a counter when the Take-It prefetch fails', async () => {
+      failPrefetch(TAKEIT_TIMEOUT, 'timeout');
+      stageUpToFlowSeries()
+        .mockResolvedValueOnce([]) // ticker_flow_snapshot
+        .mockResolvedValueOnce([{ id: 7 }]); // insert
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        inserted: 1,
+        takeitPrefetchFailures: 1,
+        takeitPrefetchError: TAKEIT_TIMEOUT,
+      });
+      expect(
+        extractInsertBinds(mockSql, 'silent_boom_alerts').get('takeit_prob'),
+      ).toBeNull();
+      expect(logger.warn).toHaveBeenCalledWith(
+        {
+          takeitPrefetchError: TAKEIT_TIMEOUT,
+          takeitPrefetchFailureKind: 'timeout',
+        },
+        'detect-silent-boom: Take-It prefetch failed; takeit_prob left null',
+      );
+      const payload = vi.mocked(reportCronRun).mock.calls[0]![1];
+      for (const key of [
+        'takeitPrefetchFailures',
+        'takeitPrefetchError',
+        'takeitPrefetchFailureKind',
+      ]) {
+        expect(payload).toHaveProperty(key);
+        expect(AXIOM_TOP_LEVEL_KEYS.has(key)).toBe(false);
+      }
+    });
+
+    it('writes the alert without flow features when its flow series fails transiently, and reports it once', async () => {
+      const flowError = 'db attempt timeout';
+      stageUpToFlowSeries()
+        .mockRejectedValueOnce(new Error(flowError)) // ticker_flow_snapshot
+        .mockResolvedValueOnce([{ id: 8 }]); // insert
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        inserted: 1,
+        flowSeriesFailures: 1,
+        flowSeriesGenuineFailures: 0,
+        firstFlowSeriesError: {
+          ticker: 'SNDK',
+          date: '2026-05-07',
+          error: flowError,
+        },
+      });
+      const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+      expect(binds.get('cum_ncp_at_fire')).toBeNull();
+      expect(binds.get('cum_npp_at_fire')).toBeNull();
+      // The score doesn't use flow, so it is still computed.
+      expect(typeof binds.get('score')).toBe('number');
+
+      const flowCaptures = mockSentryCaptureMessage.mock.calls.filter(
+        (call) => call[0] === FLOW_FAILED_MSG,
+      );
+      expect(flowCaptures).toHaveLength(1);
+      expect(flowCaptures[0]![1]).toMatchObject({
+        level: 'warning',
+        fingerprint: ['detect-silent-boom', 'flow-series-failed'],
+        extra: { flowSeriesFailures: 1 },
+      });
+      expect(
+        vi
+          .mocked(logger.warn)
+          .mock.calls.filter((call) => call[1] === FLOW_FAILED_MSG),
+      ).toHaveLength(1);
+      const payload = vi.mocked(reportCronRun).mock.calls[0]![1];
+      for (const key of [
+        'flowSeriesFailures',
+        'flowSeriesSkippedBreaker',
+        'flowSeriesGenuineFailures',
+        'firstFlowSeriesError',
+        'firstFlowSeriesGenuineError',
+      ]) {
+        expect(payload).toHaveProperty(key);
+        expect(AXIOM_TOP_LEVEL_KEYS.has(key)).toBe(false);
+      }
+    });
+
+    it('gives a stalled flow series 5 s, then opens the breaker so the next ticker is not fetched', async () => {
+      stageUpToFlowSeries(twoTickerBuckets(), 2)
+        .mockReturnValueOnce(new Promise(() => {})) // SNDK flow series: stalls
+        .mockResolvedValueOnce([{ id: 1 }]) // SNDK insert
+        // NVDA's flow series is skipped by the breaker.
+        .mockResolvedValueOnce([{ id: 2 }]); // NVDA insert
+
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const res = mockResponse();
+      const run = handler(authorizedReq(), res);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await run;
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        inserted: 2,
+        flowSeriesFailures: 1,
+        flowSeriesSkippedBreaker: 1,
+        firstFlowSeriesError: {
+          ticker: 'SNDK',
+          date: '2026-05-07',
+          error: FLOW_DEADLINE,
+        },
+      });
+      expect(flowSeriesQueries()).toHaveLength(1);
+      const inserts = extractAllInsertBinds(mockSql, 'silent_boom_alerts');
+      expect(inserts.map((b) => b.get('underlying_symbol'))).toEqual([
+        'SNDK',
+        'NVDA',
+      ]);
+      for (const binds of inserts) {
+        expect(binds.get('cum_ncp_at_fire')).toBeNull();
+        expect(binds.get('cum_npp_at_fire')).toBeNull();
+      }
+      expect(mockSentryCaptureMessage).toHaveBeenCalledWith(
+        FLOW_FAILED_MSG,
+        expect.objectContaining({
+          extra: expect.objectContaining({
+            flowSeriesFailures: 1,
+            flowSeriesSkippedBreaker: 1,
+          }),
+        }),
+      );
+    });
+
+    it('reports a genuine flow-series error at error level and fails the run, but still writes every alert and does not open the breaker', async () => {
+      const flowError = new Error('column "net_call_prem" does not exist');
+      stageUpToFlowSeries(twoTickerBuckets(), 2)
+        .mockRejectedValueOnce(flowError) // SNDK flow series: broken query
+        .mockResolvedValueOnce([{ id: 1 }]) // SNDK insert
+        .mockResolvedValueOnce([]) // NVDA flow series: still asked
+        .mockResolvedValueOnce([{ id: 2 }]); // NVDA insert
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'error',
+        inserted: 2,
+        flowSeriesFailures: 0,
+        flowSeriesSkippedBreaker: 0,
+        flowSeriesGenuineFailures: 1,
+        firstFlowSeriesGenuineError: {
+          ticker: 'SNDK',
+          date: '2026-05-07',
+          error: 'column "net_call_prem" does not exist',
+        },
+      });
+      expect(flowSeriesQueries()).toHaveLength(2);
+
+      const sentryModule = await import('../_lib/sentry.js');
+      const errorCaptures = vi
+        .mocked(sentryModule.Sentry.captureException)
+        .mock.calls.filter((call) => call[0] === flowError);
+      expect(errorCaptures).toHaveLength(1);
+      expect(errorCaptures[0]![1]).toMatchObject({
+        level: 'error',
+        fingerprint: ['detect-silent-boom', 'flow-series-error'],
+        extra: { flowSeriesGenuineFailures: 1 },
+      });
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          err: flowError,
+          flowSeriesGenuineFailures: 1,
+        }),
+        FLOW_ERROR_MSG,
+      );
+      expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
+        FLOW_FAILED_MSG,
+        expect.anything(),
+      );
+    });
+
+    it('reports no setup degradation on a clean run', async () => {
+      stageUpToFlowSeries()
+        .mockResolvedValueOnce([]) // ticker_flow_snapshot
+        .mockResolvedValueOnce([{ id: 9 }]); // insert
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'success',
+        takeitPrefetchFailures: 0,
+        takeitPrefetchError: null,
+        takeitPrefetchFailureKind: null,
+        flowSeriesFailures: 0,
+        flowSeriesSkippedBreaker: 0,
+        flowSeriesGenuineFailures: 0,
+        firstFlowSeriesError: null,
+        firstFlowSeriesGenuineError: null,
+      });
+      expect(logger.error).not.toHaveBeenCalled();
+    });
   });
 });

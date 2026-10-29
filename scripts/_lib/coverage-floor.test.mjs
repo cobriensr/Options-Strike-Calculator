@@ -453,7 +453,11 @@ describe('evaluateLcov', () => {
   });
 });
 
-describe('check-coverage-floor CLI', () => {
+// Each CLI test spawns node: Windows process spawn under full-suite
+// multi-session load took 15.2 s (2026-10-29), past the 15 s testTimeout.
+const CLI_TIMEOUT = 60_000;
+
+describe('check-coverage-floor CLI', { timeout: CLI_TIMEOUT }, () => {
   // vitest runs from the repo root (same convention as vercel-ignore-command).
   const cli = path.resolve(
     process.cwd(),

@@ -350,7 +350,7 @@ const GexLandscape = memo(function GexLandscape({
   useEffect(() => {
     if (hasScrolledRef.current) return;
     if (!loading && rows.length > 0 && spotRowRef.current) {
-      spotRowRef.current.scrollIntoView?.({
+      spotRowRef.current.scrollIntoView({
         block: 'center',
         behavior: 'instant',
       });

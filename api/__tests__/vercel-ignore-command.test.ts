@@ -28,6 +28,13 @@ const { ignoreCommand } = JSON.parse(
   readFileSync(resolve(process.cwd(), 'vercel.json'), 'utf8'),
 ) as { ignoreCommand: string };
 
+/**
+ * beforeAll and test ceiling. Every git/sh spawn here is synchronous and runs several
+ * times slower under the full parallel suite on Windows; vitest can't interrupt
+ * sync code, so this is a slowness ceiling, not a hang guard.
+ */
+const LOAD_TIMEOUT = 300_000;
+
 let repo = '';
 /** Empty global gitconfig, outside the scratch repo so `add -A` skips it. */
 let configDir = '';
@@ -99,7 +106,7 @@ function runIgnoreCommand(previousSha?: string): number | null {
   return result.status;
 }
 
-// ~13 git spawns: ~1s alone, but past the 10s default hookTimeout under load.
+// ~13 git spawns: ~1s alone, several times that under the full parallel suite.
 beforeAll(() => {
   configDir = mkdtempSync(join(tmpdir(), 'ignore-command-config-'));
   writeFileSync(join(configDir, 'gitconfig'), '');
@@ -114,18 +121,19 @@ beforeAll(() => {
     'sidecar/app.py': 'x\n',
     'ml/model.py': 'x\n',
     'uw-stream/consumer.py': 'x\n',
+    'nightly/src/main.py': 'x\n',
     'scripts/backfill.mjs': 'x\n',
     'pine/study.pine': 'x\n',
     'README.md': 'x\n',
   });
-}, 60_000);
+}, LOAD_TIMEOUT);
 
 afterAll(() => {
   if (repo) rmSync(repo, { recursive: true, force: true });
   if (configDir) rmSync(configDir, { recursive: true, force: true });
 });
 
-describe('vercel.json ignoreCommand', () => {
+describe('vercel.json ignoreCommand', { timeout: LOAD_TIMEOUT }, () => {
   it('builds when VERCEL_GIT_PREVIOUS_SHA is unset, even if HEAD is ignored-only', () => {
     expect(runIgnoreCommand()).toBe(1);
   });

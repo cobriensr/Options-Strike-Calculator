@@ -5,9 +5,9 @@ interface ViewToggleProps {
   onViewChange: (view: ViewMode) => void;
 }
 
-const VIEWS: Array<{ value: ViewMode; label: string }> = [
-  { value: 'calculator', label: 'Calculator' },
-  { value: 'alerts', label: 'Options Alerts' },
+const VIEWS: Array<{ value: ViewMode; label: string; short: string }> = [
+  { value: 'calculator', label: 'Calculator', short: 'Calc' },
+  { value: 'alerts', label: 'Options Alerts', short: 'Alerts' },
 ];
 
 /**
@@ -17,6 +17,14 @@ const VIEWS: Array<{ value: ViewMode; label: string }> = [
  * so the active control is marked with aria-current="page" rather than the
  * tablist/tabpanel contract (which would require role=tabpanel + aria-controls
  * + roving tabindex that don't apply here).
+ *
+ * A phone (below sm) shows the short labels with tighter padding, so the
+ * toggle and the header's status pills fit at 320px. The full label stays
+ * the button's accessible name there, visually hidden, and contains the
+ * short one (WCAG 2.5.3, label in name). The button is `relative` so the
+ * visually hidden label is positioned, and clipped, with it: in the
+ * header's sideways-scrolling row an unpositioned one escaped the row's
+ * clip and widened the page.
  */
 export function ViewToggle({ view, onViewChange }: ViewToggleProps) {
   return (
@@ -32,13 +40,16 @@ export function ViewToggle({ view, onViewChange }: ViewToggleProps) {
             type="button"
             aria-current={active ? 'page' : undefined}
             onClick={() => onViewChange(item.value)}
-            className={`min-h-[36px] rounded-md px-2.5 font-sans text-[11px] font-semibold transition-colors duration-200 ${
+            className={`relative min-h-[36px] rounded-md px-2 font-sans text-[11px] font-semibold transition-colors duration-200 sm:px-2.5 ${
               active
                 ? 'bg-accent text-white'
                 : 'text-secondary hover:text-primary'
             }`}
           >
-            {item.label}
+            <span aria-hidden="true" className="sm:hidden">
+              {item.short}
+            </span>
+            <span className="max-sm:sr-only">{item.label}</span>
           </button>
         );
       })}

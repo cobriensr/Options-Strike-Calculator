@@ -95,8 +95,8 @@ Drift signals to watch for over time:
 
 ## Where the moving parts live
 
-- **Pipeline scripts**: `scripts/` (Python, run via `ml/.venv/bin/python`)
+- **Pipeline scripts**: `scripts/` (Python, run via `ml/.venv/Scripts/python`; `ml/.venv/bin/python` on Linux/macOS)
 - **Score-weight artifact**: `ml/data/lottery_score_weights.json` (canonical) → `api/_lib/lottery-score-weights.ts` (TS mirror)
 - **Algorithm source-of-truth**: `api/_lib/flow-inversion.ts` + `api/_lib/lottery-exit-policies.ts`
 - **Python ports** (parity-tested via pytest): in `scripts/enrich_lottery_outcomes.py`
-- **Tests**: `scripts/test_enrich_lottery_outcomes.py` (33 cases, run via `ml/.venv/bin/pytest scripts/test_enrich_lottery_outcomes.py -q`)
+- **Tests**: `scripts/test_enrich_lottery_outcomes.py` (33 cases, run via `ml/.venv/Scripts/pytest scripts/test_enrich_lottery_outcomes.py -q`)

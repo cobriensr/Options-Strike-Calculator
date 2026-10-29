@@ -2,7 +2,13 @@
 # Usage: cd sidecar && make review
 # Needs the dev tools: pip install -r requirements-dev.txt
 
-PYTHON ?= .venv/bin/python
+# A venv keeps its interpreter in Scripts/ on Windows and bin/ elsewhere.
+ifeq ($(OS),Windows_NT)
+VENV_BIN := Scripts
+else
+VENV_BIN := bin
+endif
+PYTHON ?= .venv/$(VENV_BIN)/python
 
 .PHONY: lint format test test-cov test-html review clean help
 

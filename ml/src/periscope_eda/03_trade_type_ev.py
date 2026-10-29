@@ -10,7 +10,7 @@ Output:
 
 CLI::
 
-    ml/.venv/bin/python ml/src/periscope_eda/03_trade_type_ev.py \\
+    ml/.venv/Scripts/python ml/src/periscope_eda/03_trade_type_ev.py \\
         --min-samples 3
 
 Becomes meaningful at n >= 30 total rows. Trade-type cells are sparser than

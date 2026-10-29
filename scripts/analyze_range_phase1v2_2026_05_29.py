@@ -8,7 +8,7 @@ Hypothesis: more session time long-γ (spot > flip) -> SMALLER realized range vs
 VIX1D-implied (compression) -> NEGATIVE correlation. Decisive GO/NO-GO for Phase 2.
 
 Input : docs/tmp/range-phase1v2-data.csv  Output: docs/tmp/expected-range-phase1v2-2026-05-29.md
-Run: ml/.venv/bin/python scripts/analyze_range_phase1v2_2026_05_29.py
+Run: ml/.venv/Scripts/python scripts/analyze_range_phase1v2_2026_05_29.py
 """
 
 import numpy as np

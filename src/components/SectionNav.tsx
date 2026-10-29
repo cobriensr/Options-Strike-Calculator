@@ -76,10 +76,11 @@ const SectionNav = memo(function SectionNav({
         aria-label="Page sections"
         className={
           className ??
-          // Use 100dvh so the sidebar accounts for iOS Safari's address
-          // bar and doesn't clip the bottom links. 100vh would crop on
-          // iPad portrait.
-          'border-edge sticky top-[57px] hidden h-[calc(100dvh-57px)] w-56 shrink-0 overflow-y-auto border-r px-3 py-4 lg:block'
+          // Sticks right under the header, whose live height AppHeader
+          // publishes as --app-header-h. Use 100dvh so the sidebar
+          // accounts for iOS Safari's address bar and doesn't clip the
+          // bottom links. 100vh would crop on iPad portrait.
+          'border-edge sticky top-(--app-header-h) hidden h-[calc(100dvh_-_var(--app-header-h))] w-56 shrink-0 overflow-y-auto border-r px-3 py-4 lg:block'
         }
       >
         <div className="flex flex-col gap-0.5">
@@ -108,12 +109,14 @@ const SectionNav = memo(function SectionNav({
   return (
     <nav
       aria-label="Page sections"
-      // Shown at <lg only. `sticky` already establishes a positioning
-      // context, so the right-edge fade gradient (an absolutely-positioned
-      // child below) anchors here without needing `relative`.
+      // Shown at <lg only, stuck right under the header (--app-header-h,
+      // published by AppHeader); its 53px height is --section-strip-h in
+      // index.css. `sticky` already establishes a positioning context, so
+      // the right-edge fade gradient (an absolutely-positioned child
+      // below) anchors here without needing `relative`.
       className={
         className ??
-        'border-edge sticky top-[57px] z-40 border-b backdrop-blur-md lg:hidden'
+        'border-edge sticky top-(--app-header-h) z-40 border-b backdrop-blur-md lg:hidden'
       }
       style={{
         backgroundColor:

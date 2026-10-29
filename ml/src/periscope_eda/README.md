@@ -17,10 +17,10 @@ environment, queries Neon Postgres, and writes plots/CSVs to
 ## Running
 
 ```bash
-ml/.venv/bin/python ml/src/periscope_eda/01_confidence_calibration.py --min-samples 5 --mode all
-ml/.venv/bin/python ml/src/periscope_eda/02_regime_bias_table.py     --min-samples 5
-ml/.venv/bin/python ml/src/periscope_eda/03_trade_type_ev.py         --min-samples 3
-ml/.venv/bin/python ml/src/periscope_eda/04_embedding_cluster.py     --method umap --cluster 5
+ml/.venv/Scripts/python ml/src/periscope_eda/01_confidence_calibration.py --min-samples 5 --mode all
+ml/.venv/Scripts/python ml/src/periscope_eda/02_regime_bias_table.py     --min-samples 5
+ml/.venv/Scripts/python ml/src/periscope_eda/03_trade_type_ev.py         --min-samples 3
+ml/.venv/Scripts/python ml/src/periscope_eda/04_embedding_cluster.py     --method umap --cluster 5
 ```
 
 All scripts handle the empty-result case gracefully (print a "corpus may be
@@ -44,7 +44,7 @@ back to `matplotlib.imshow` if seaborn isn't installed). `umap-learn` is
 optional for script 4 — falls back to sklearn t-SNE when missing.
 
 ```bash
-ml/.venv/bin/pip install seaborn umap-learn
+ml/.venv/Scripts/pip install seaborn umap-learn
 ```
 
 ## Status

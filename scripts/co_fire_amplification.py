@@ -10,7 +10,7 @@ Writes findings to:
   docs/tmp/v22-co-fire-analysis-2026-05-22.md
 
 Usage:
-    ml/.venv/bin/python scripts/co_fire_amplification.py
+    ml/.venv/Scripts/python scripts/co_fire_amplification.py
 """
 
 from __future__ import annotations

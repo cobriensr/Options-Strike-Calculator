@@ -13,6 +13,9 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 
+# Git hooks run under sh: a CRLF checkout breaks the shebang
+.githooks/* text eol=lf
+
 # Mark generated files
 package-lock.json linguist-generated=true
 

@@ -6,7 +6,7 @@ exception is raised, and checks that the expected .png file was created.
 PLOT_DIR is monkeypatched to a tmp_path so the real plots/ dir is untouched.
 
 Run:
-    cd ml && .venv/bin/python -m pytest test_visualize.py -v
+    cd ml && .venv/Scripts/python -m pytest test_visualize.py -v
 """
 
 import matplotlib

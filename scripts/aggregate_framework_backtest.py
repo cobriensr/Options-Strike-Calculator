@@ -30,7 +30,7 @@ Stats: total trades, trades/month, mean event return, mean (event - control)
 delta, per-type win rate, walk-forward (chronological halves), drawdown
 (longest losing streak) per trade type.
 
-Run: ml/.venv/bin/python scripts/aggregate_framework_backtest.py
+Run: ml/.venv/Scripts/python scripts/aggregate_framework_backtest.py
 """
 
 from __future__ import annotations

@@ -30,7 +30,7 @@ Approach:
          (shows how tightly the vol regime drives the tail)
 
 Usage:
-    ml/.venv/bin/python ml/src/moc_regime_vix.py
+    ml/.venv/Scripts/python ml/src/moc_regime_vix.py
 
 Requires: yfinance, pandas, numpy, matplotlib, seaborn, scipy
 """
@@ -46,7 +46,7 @@ try:
     from scipy import stats
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/bin/pip install yfinance matplotlib seaborn scipy")
+    print("  ml/.venv/Scripts/pip install yfinance matplotlib seaborn scipy")
     sys.exit(1)
 
 from utils import ML_ROOT, section, subsection, takeaway

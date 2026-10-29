@@ -11,7 +11,7 @@ Produces:
 - ml/plots/takeit_phase1_correlation_matrix.png
 
 Run:
-    ml/.venv/bin/python ml/notebooks/takeit_eda.py
+    ml/.venv/Scripts/python ml/notebooks/takeit_eda.py
 """
 
 from __future__ import annotations

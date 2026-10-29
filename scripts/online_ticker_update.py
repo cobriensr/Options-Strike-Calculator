@@ -25,7 +25,7 @@ Spec: docs/superpowers/specs/lottery-v2-2-profitability-improvements-2026-05-22.
       Phase E (item 8)
 
 Usage:
-    ml/.venv/bin/python scripts/online_ticker_update.py
+    ml/.venv/Scripts/python scripts/online_ticker_update.py
 """
 
 from __future__ import annotations
@@ -40,7 +40,10 @@ from pathlib import Path
 
 import pandas as pd
 
-from _pipeline_retry import connect_with_retry
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ml" / "src"))
+
+from _pipeline_retry import connect_with_retry  # noqa: E402
+from lottery_refit_guard import announce_skip, refit_blocked  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -345,6 +348,10 @@ def already_applied_today(
 
 
 def main() -> None:
+    if refit_blocked(date.today()):
+        announce_skip("online_ticker_update.py")
+        return
+
     load_env()
 
     # Load existing weights JSON

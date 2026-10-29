@@ -9,7 +9,7 @@ This script is intentionally SEPARATE from scripts/sync_lottery_score_weights.py
 wire up the v2 exports; until then the old file drives production scoring.
 
 Usage:
-    ml/.venv/bin/python scripts/sync_lottery_score_weights_v2.py
+    ml/.venv/Scripts/python scripts/sync_lottery_score_weights_v2.py
 
 Idempotent: same JSON in → same TS out.
 """
@@ -220,7 +220,7 @@ def render_ts(w: dict) -> str:  # noqa: PLR0914 — intentionally flat render fu
     return f'''\
 /**
  * GENERATED FILE — do not edit by hand.
- * Regenerate via: ml/.venv/bin/python scripts/sync_lottery_score_weights_v2.py
+ * Regenerate via: ml/.venv/Scripts/python scripts/sync_lottery_score_weights_v2.py
  *
  * Phase 2 output of the lottery rescore project.
  * Spec: docs/superpowers/specs/lottery-rescore-2026-05-22.md

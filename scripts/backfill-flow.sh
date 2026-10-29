@@ -23,12 +23,18 @@
 #
 # Env:
 #   INPUT_DIR — defaults to ~/Downloads/EOD-OptionFlow
-#   PYTHON    — defaults to ml/.venv/bin/python (the project's ML venv)
+#   PYTHON    — defaults to the ML venv's python: ml/.venv/Scripts/python on
+#               Windows, ml/.venv/bin/python elsewhere
 
 set -euo pipefail
 
 INPUT_DIR="${INPUT_DIR:-$HOME/Downloads/EOD-OptionFlow}"
-PYTHON="${PYTHON:-ml/.venv/bin/python}"
+if [[ -x ml/.venv/Scripts/python.exe ]]; then
+  VENV_PYTHON="ml/.venv/Scripts/python"
+else
+  VENV_PYTHON="ml/.venv/bin/python"
+fi
+PYTHON="${PYTHON:-$VENV_PYTHON}"
 
 if [[ ! -d "$INPUT_DIR" ]]; then
   echo "ERROR: input dir not found: $INPUT_DIR" >&2

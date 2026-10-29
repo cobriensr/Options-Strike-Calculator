@@ -15,8 +15,9 @@
  *
  *   - The nav anchor `<span id={id} />` always renders FIRST (so smooth
  *     scrolling lands on the anchor, not inside the panel).
- *   - The anchor uses `block scroll-mt-28` to leave room for the sticky
- *     header on a hash jump.
+ *   - The anchor uses `block scroll-mt-(--anchor-offset)` so a hash jump
+ *     lands below the sticky header and section strip (the offset is
+ *     defined in index.css from the header's live height).
  *   - <ErrorBoundary label> wraps the panel so a render error in one
  *     section doesn't blow up the whole page.
  *   - <Suspense fallback> is opt-in via the `fallback` prop; sections
@@ -49,7 +50,7 @@ export default function GatedSection({
   if (!gate) return null;
   return (
     <>
-      <span id={id} className="block scroll-mt-28" />
+      <span id={id} className="block scroll-mt-(--anchor-offset)" />
       <ErrorBoundary label={label}>
         {fallback === undefined ? (
           children

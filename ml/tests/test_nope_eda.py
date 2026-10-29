@@ -7,7 +7,7 @@ run end-to-end without crashing, and that they return findings dicts
 with the expected shape.
 
 Run:
-    cd ml && .venv/bin/python -m pytest tests/test_nope_eda.py -v
+    cd ml && .venv/Scripts/python -m pytest tests/test_nope_eda.py -v
 """
 
 from __future__ import annotations

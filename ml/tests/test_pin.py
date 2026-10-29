@@ -7,7 +7,7 @@ Covers:
   - compute_oi_pin: OI-based pin strike and concentration
 
 Run:
-    cd ml && .venv/bin/python -m pytest test_pin.py -v
+    cd ml && .venv/Scripts/python -m pytest test_pin.py -v
 """
 
 import numpy as np

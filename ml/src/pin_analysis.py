@@ -33,7 +33,7 @@ try:
 except ImportError:
     print("Missing dependencies. Run:")
     print(
-        "  ml/.venv/bin/pip install psycopg2-binary pandas sqlalchemy numpy scikit-learn"
+        "  ml/.venv/Scripts/pip install psycopg2-binary pandas sqlalchemy numpy scikit-learn"
     )
     sys.exit(1)
 

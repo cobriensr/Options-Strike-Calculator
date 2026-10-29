@@ -2,7 +2,7 @@
 Unit tests for ml/explore.py — print_summary and fetch_data.
 
 Run:
-    cd ml && .venv/bin/python -m pytest test_explore.py -v
+    cd ml && .venv/Scripts/python -m pytest test_explore.py -v
 """
 
 from unittest.mock import MagicMock, patch

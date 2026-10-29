@@ -27,7 +27,7 @@ TIME-NORMALIZATION NOTE:
 
 Usage:
     set -a && source .env.local && set +a
-    ml/.venv/bin/python ml/src/vega_spike_eda.py
+    ml/.venv/Scripts/python ml/src/vega_spike_eda.py
 """
 
 import os

@@ -25,7 +25,7 @@ plus per-finding JSON.
 
 Usage:
     set -a && source .env.local && set +a
-    ml/.venv/bin/python ml/src/cross_section_eda_rerun_2026-05-16.py
+    ml/.venv/Scripts/python ml/src/cross_section_eda_rerun_2026-05-16.py
 """
 
 import json

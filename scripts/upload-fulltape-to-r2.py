@@ -17,17 +17,17 @@ Auth — required env vars (set in .env.local):
 
 Usage:
     # One-shot upload everything missing in R2:
-    ml/.venv/bin/python scripts/upload-fulltape-to-r2.py
+    ml/.venv/Scripts/python scripts/upload-fulltape-to-r2.py
 
     # Custom local dir:
     INPUT_DIR=~/Desktop/Eod-Full-Tape-parquet \\
-      ml/.venv/bin/python scripts/upload-fulltape-to-r2.py
+      ml/.venv/Scripts/python scripts/upload-fulltape-to-r2.py
 
     # Dry-run (list what would upload, do nothing):
-    ml/.venv/bin/python scripts/upload-fulltape-to-r2.py --dry-run
+    ml/.venv/Scripts/python scripts/upload-fulltape-to-r2.py --dry-run
 
     # Force re-upload of specific date (overwrites in R2):
-    ml/.venv/bin/python scripts/upload-fulltape-to-r2.py --force 2026-03-15
+    ml/.venv/Scripts/python scripts/upload-fulltape-to-r2.py --force 2026-03-15
 """
 
 from __future__ import annotations
@@ -36,12 +36,14 @@ import argparse
 import os
 import sys
 import time
+import warnings
 from pathlib import Path
 
 import boto3
+import urllib3
+from boto3.exceptions import S3UploadFailedError
 from botocore.client import Config
-from botocore.exceptions import BotoCoreError, ClientError
-
+from botocore.exceptions import BotoCoreError, ClientError, HTTPClientError
 
 KEY_PREFIX = "fulltape/"
 DEFAULT_LOCAL_DIR = Path.home() / "Desktop" / "Eod-Full-Tape-parquet"
@@ -119,6 +121,13 @@ def list_remote_keys(client, bucket: str) -> set[str]:
     return keys
 
 
+def is_tls_guard_error(e: Exception) -> bool:
+    """True when botocore gave up after urllib3's unverified-HTTPS guard fired."""
+    return isinstance(e, HTTPClientError) and isinstance(
+        e.kwargs.get("error"), urllib3.exceptions.InsecureRequestWarning
+    )
+
+
 def local_to_key(path: Path) -> str:
     """Map a local *-fulltape.parquet path to its R2 key."""
     return f"{KEY_PREFIX}{path.name}"
@@ -143,6 +152,13 @@ def main() -> int:
     load_env_local()
     bucket = must_env("R2_BUCKET_FULLTAPE")
 
+    # A client shared across s3transfer's threads sent unverified HTTPS on
+    # Windows (py3.14, botocore 1.43.106, urllib3 2.8.0). urllib3 warns before
+    # it sends, so this makes the warning an error: botocore wraps it as an
+    # HTTPClientError and retries on a new connection, and nothing goes out
+    # unverified.
+    warnings.simplefilter("error", urllib3.exceptions.InsecureRequestWarning)
+
     input_dir = Path(os.environ.get("INPUT_DIR", str(DEFAULT_LOCAL_DIR)))
     if not input_dir.is_dir():
         sys.stderr.write(f"❌ Local dir not found: {input_dir}\n")
@@ -157,7 +173,16 @@ def main() -> int:
     client = make_client()
 
     print(f"→ Listing remote bucket {bucket} under prefix {KEY_PREFIX!r}...")
-    remote_keys = list_remote_keys(client, bucket)
+    try:
+        remote_keys = list_remote_keys(client, bucket)
+    except HTTPClientError as e:
+        if not is_tls_guard_error(e):
+            raise
+        sys.stderr.write(
+            "❌ Listing the remote bucket: TLS verification was skipped "
+            "for R2 requests; aborting the run.\n"
+        )
+        return 4
     print(f"  found {len(remote_keys)} existing R2 keys")
 
     force_dates = set(args.force)
@@ -203,7 +228,9 @@ def main() -> int:
                 Key=key,
                 ExtraArgs={"ContentType": "application/x-parquet"},
             )
-        except (ClientError, BotoCoreError) as e:
+        except (ClientError, BotoCoreError, S3UploadFailedError) as e:
+            # boto3's upload_file re-raises a ClientError from the transfer as
+            # S3UploadFailedError (a Boto3Error), so catch that as well.
             # Catch BotoCoreError too — transient transport failures
             # (EndpointConnectionError, ReadTimeoutError, ConnectTimeoutError)
             # are NOT ClientError subclasses and would otherwise crash the
@@ -211,6 +238,14 @@ def main() -> int:
             # Don't abandon the batch — every upload is idempotent (skip-if-
             # present), so we record the failure and keep going. Operator gets
             # a full list at the end and can re-run to retry just the failures.
+            if is_tls_guard_error(e):
+                # Retries ran out on unverified connections: TLS on this box
+                # is broken, so every later file would hit the same thing.
+                sys.stderr.write(
+                    f"❌ [{i}/{len(to_upload)}] {f.name}: TLS verification was "
+                    "skipped for R2 requests; aborting the run.\n"
+                )
+                return 4
             sys.stderr.write(f"❌ [{i}/{len(to_upload)}] {f.name}: {e}\n")
             failed.append((f.name, str(e)))
             continue

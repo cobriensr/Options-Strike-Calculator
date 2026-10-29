@@ -12,7 +12,7 @@ Output:
 
 CLI::
 
-    ml/.venv/bin/python ml/src/periscope_eda/02_regime_bias_table.py \\
+    ml/.venv/Scripts/python ml/src/periscope_eda/02_regime_bias_table.py \\
         --min-samples 5
 
 Becomes meaningful at n >= 30 total rows.

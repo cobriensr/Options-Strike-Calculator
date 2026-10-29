@@ -44,8 +44,8 @@ we map it directly to the table's allowed set; anything unexpected →
 
 Usage:
     set -a; source .env.local; set +a
-    ml/.venv/bin/python scripts/backfill-ws-option-trades-2026-06-10.py            # dry-run
-    ml/.venv/bin/python scripts/backfill-ws-option-trades-2026-06-10.py --apply    # writes
+    ml/.venv/Scripts/python scripts/backfill-ws-option-trades-2026-06-10.py            # dry-run
+    ml/.venv/Scripts/python scripts/backfill-ws-option-trades-2026-06-10.py --apply    # writes
 """
 
 from __future__ import annotations

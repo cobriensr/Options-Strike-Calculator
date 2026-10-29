@@ -67,6 +67,8 @@ export default [
       '.clone',
       'sidecar',
       'uw-stream',
+      // Railway cron service (Python), same pattern as uw-stream.
+      'nightly',
       // Standalone Python service for multileg classifier — same pattern
       // as sidecar/uw-stream. Its own .venv contains third-party JS files
       // that fail lint by no fault of ours.

@@ -32,7 +32,13 @@ SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 .ONESHELL:
 
-PYTHON      := ml/.venv/bin/python
+# A venv keeps its interpreter in Scripts/ on Windows and bin/ elsewhere.
+ifeq ($(OS),Windows_NT)
+VENV_BIN    := Scripts
+else
+VENV_BIN    := bin
+endif
+PYTHON      := ml/.venv/$(VENV_BIN)/python
 INPUT_DIR   ?= $(HOME)/Downloads/EOD-OptionFlow
 PARQUET_DIR ?= $(HOME)/Desktop/Bot-Eod-parquet
 INPUT_DIR_FULLTAPE   ?= $(HOME)/Downloads/EOD-FullTape
@@ -193,6 +199,7 @@ refit:
 	@echo "════════════════════════════════════════════════════════════════"
 	@echo "  REFIT — recompute V2 ticker weights + backfill scores"
 	@echo "════════════════════════════════════════════════════════════════"
+	@# TEMPORARY GUARD (2026-10-29): ml/src/lottery_refit_guard.py blocks lottery_scoring.py, online_ticker_update.py and backfill_lottery_scores.py (exit 0) while new fires are unclassified.
 	@# Guard removed 2026-05-23 — V2 rescore + V2.2 improvements fully landed
 	@# (composites, cluster, direction-gate fix, context features, online ticker
 	@# EMA). lottery_scoring.py now preserves composite_bonuses across retrains
@@ -253,7 +260,7 @@ update: enrich refit
 	@echo "     docs/tmp/lottery-composite-candidates-YYYY-MM-DD.md  (mining)"
 	@echo "     docs/tmp/lottery-score-lineage-YYYY-MM-DD.md  (attribution)"
 	@echo "     docs/tmp/lottery-ticker-weight-history.csv  (EMA update log)"
-	@echo "     ml/output/lottery_score_weights.json  (ticker_weights updated)"
+	@echo "     ml/output/lottery_score_weights.json  (UNCHANGED while ml/src/lottery_refit_guard.py blocks the refit)"
 	@echo "     docs/tmp/takeit-drift-YYYY-MM-DD.md  (drift monitor report)"
 	@echo "     ml/plots/takeit-drift/reliability_<feed>_YYYY-MM-DD.png"
 
@@ -586,11 +593,11 @@ py-test-cov:
 	@echo "════════════════════════════════════════════════════════════════"
 	@echo "  PY-TEST-COV 3/4 — classifier  (--cov-fail-under=95 gate via pyproject)"
 	@echo "════════════════════════════════════════════════════════════════"
-	cd classifier && .venv/bin/python -m pytest
+	cd classifier && .venv/$(VENV_BIN)/python -m pytest
 	@echo ""
 	@echo "════════════════════════════════════════════════════════════════"
 	@echo "  PY-TEST-COV 4/4 — uw-stream"
 	@echo "════════════════════════════════════════════════════════════════"
-	cd uw-stream && .venv/bin/python -m pytest tests/ --cov=src --cov-report=term-missing
+	cd uw-stream && .venv/$(VENV_BIN)/python -m pytest tests/ --cov=src --cov-report=term-missing
 	@echo ""
 	@echo "  ✅ all four Python suites passed with coverage"

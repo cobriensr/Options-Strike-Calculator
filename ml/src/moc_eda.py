@@ -52,7 +52,7 @@ Also prints to stdout:
     and a naive "expected savings" metric.
 
 Usage:
-    ml/.venv/bin/python ml/src/moc_eda.py
+    ml/.venv/Scripts/python ml/src/moc_eda.py
 
 Requires: pandas, numpy, matplotlib, seaborn, scipy
 """
@@ -67,7 +67,7 @@ try:
     from scipy import stats
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/bin/pip install matplotlib seaborn scipy")
+    print("  ml/.venv/Scripts/pip install matplotlib seaborn scipy")
     sys.exit(1)
 
 from utils import ML_ROOT, section, subsection, takeaway

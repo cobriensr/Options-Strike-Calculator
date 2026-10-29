@@ -25,10 +25,10 @@ skipped. Reads with neither trigger set are also skipped — there's no
 directional thesis to mechanically execute.
 
 Usage:
-    ml/.venv/bin/python ml/src/compute_realized_outcomes.py            # full backfill
-    ml/.venv/bin/python ml/src/compute_realized_outcomes.py --dry-run  # print, don't write
-    ml/.venv/bin/python ml/src/compute_realized_outcomes.py --limit 50
-    ml/.venv/bin/python ml/src/compute_realized_outcomes.py --read-id 123
+    ml/.venv/Scripts/python ml/src/compute_realized_outcomes.py            # full backfill
+    ml/.venv/Scripts/python ml/src/compute_realized_outcomes.py --dry-run  # print, don't write
+    ml/.venv/Scripts/python ml/src/compute_realized_outcomes.py --limit 50
+    ml/.venv/Scripts/python ml/src/compute_realized_outcomes.py --read-id 123
 
 Environment:
     DATABASE_URL - Neon Postgres connection string

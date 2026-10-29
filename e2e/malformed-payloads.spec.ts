@@ -51,11 +51,10 @@ test.describe('Malformed 200 payloads', () => {
     await dateTimeSection(page)
       .getByLabel('Date', { exact: true })
       .fill('2025-01-15');
-    // The header badge carries the hook's error as its title.
-    await expect(page.getByText('NO INTRADAY')).toHaveAttribute(
-      'title',
-      'invalid response shape',
-    );
+    // The header's NO INTRADAY badge carries the hook's error as its title.
+    await expect(
+      page.getByRole('banner').getByTitle('invalid response shape'),
+    ).toContainText('NO INTRADAY');
 
     await setEntryTime(page);
     await page.getByLabel('SPY Price').fill('679');

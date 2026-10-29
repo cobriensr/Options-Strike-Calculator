@@ -31,7 +31,7 @@ range), the community member's thesis is validated and SPY ARCX imbalance
 becomes worth pulling for a true SPX-options test.
 
 Usage:
-    ml/.venv/bin/python ml/src/moc_moo_persistence.py
+    ml/.venv/Scripts/python ml/src/moc_moo_persistence.py
 """
 
 import sys
@@ -44,7 +44,7 @@ try:
     from scipy import stats
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/bin/pip install matplotlib seaborn scipy pandas numpy")
+    print("  ml/.venv/Scripts/pip install matplotlib seaborn scipy pandas numpy")
     sys.exit(1)
 
 from utils import ML_ROOT, section, subsection, takeaway

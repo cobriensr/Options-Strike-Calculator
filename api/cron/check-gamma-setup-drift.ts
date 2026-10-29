@@ -1,8 +1,8 @@
 /**
  * GET /api/cron/check-gamma-setup-drift
  *
- * Runs weekly (Friday 21:30 UTC, after the EOD outcome backfill at the
- * same minute the prior crons fire). Aggregates the trailing 28-day
+ * Runs weekly (Friday 21:45 UTC, 15 min after the 21:30 UTC EOD outcome
+ * backfill in backfill-gamma-setup-outcomes). Aggregates the trailing 28-day
  * window of `ws_gamma_setup_fires`, applies drift rules from
  * `api/_lib/gamma-stats.ts`, and fires a Sentry warning when live stats
  * meaningfully diverge from the validated backtest expectations.

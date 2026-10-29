@@ -26,9 +26,9 @@ roots, same MULTI_LEG_CODES, same load+groupby pattern. Differences:
     the handler's gate exactly.
 
 Usage:
-    ml/.venv/bin/python scripts/scrub_interval_ba_multileg.py --dry-run
-    ml/.venv/bin/python scripts/scrub_interval_ba_multileg.py --date 2026-04-15
-    ml/.venv/bin/python scripts/scrub_interval_ba_multileg.py --threshold 0.5
+    ml/.venv/Scripts/python scripts/scrub_interval_ba_multileg.py --dry-run
+    ml/.venv/Scripts/python scripts/scrub_interval_ba_multileg.py --date 2026-04-15
+    ml/.venv/Scripts/python scripts/scrub_interval_ba_multileg.py --threshold 0.5
 """
 
 from __future__ import annotations

@@ -3,7 +3,7 @@ Unit tests for ML utility functions: load_env, get_connection, load_data,
 and feature group constants.
 
 Run:
-    cd ml && .venv/bin/python -m pytest test_utils.py -v
+    cd ml && .venv/Scripts/python -m pytest test_utils.py -v
 
 Note: validate_dataframe, section, subsection, verdict, and takeaway are
 already covered in test_ml.py — those are NOT duplicated here.

@@ -16,7 +16,7 @@ Writes:
   docs/tmp/v22-phase-f-1dte-recovery-2026-05-22.md
 
 Usage:
-    ml/.venv/bin/python scripts/phase_f_1dte_recovery_analysis.py
+    ml/.venv/Scripts/python scripts/phase_f_1dte_recovery_analysis.py
 """
 
 from __future__ import annotations

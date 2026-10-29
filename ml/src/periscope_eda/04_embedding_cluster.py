@@ -10,7 +10,7 @@ Output:
 
 CLI::
 
-    ml/.venv/bin/python ml/src/periscope_eda/04_embedding_cluster.py \\
+    ml/.venv/Scripts/python ml/src/periscope_eda/04_embedding_cluster.py \\
         --method umap --cluster 5
 
 Becomes meaningful at n >= 50 reads with both embedding and realized R.

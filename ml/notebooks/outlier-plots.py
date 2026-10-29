@@ -5,7 +5,7 @@ three CSVs of the underlying tables for spreadsheet exploration.
 
 Run:
     set -a; source .env.local; set +a
-    ml/.venv/bin/python ml/notebooks/outlier-plots.py
+    ml/.venv/Scripts/python ml/notebooks/outlier-plots.py
 
 Spec: docs/superpowers/specs/options-flow-archive-2026-04-28.md (Phase 5/6 viz)
 """

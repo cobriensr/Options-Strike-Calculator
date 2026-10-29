@@ -1,6 +1,6 @@
 /**
  * GENERATED FILE — do not edit by hand.
- * Regenerate via: ml/.venv/bin/python scripts/sync_lottery_score_weights_v2.py
+ * Regenerate via: ml/.venv/Scripts/python scripts/sync_lottery_score_weights_v2.py
  *
  * Phase 2 output of the lottery rescore project.
  * Spec: docs/superpowers/specs/lottery-rescore-2026-05-22.md

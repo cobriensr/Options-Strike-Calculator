@@ -31,8 +31,8 @@ of this script.
 
 Usage:
     set -a; source .env.local; set +a
-    ml/.venv/bin/python scripts/backfill-ws-option-trades-2026-05-20.py            # dry-run
-    ml/.venv/bin/python scripts/backfill-ws-option-trades-2026-05-20.py --apply    # writes
+    ml/.venv/Scripts/python scripts/backfill-ws-option-trades-2026-05-20.py            # dry-run
+    ml/.venv/Scripts/python scripts/backfill-ws-option-trades-2026-05-20.py --apply    # writes
 """
 
 from __future__ import annotations

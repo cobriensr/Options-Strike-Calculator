@@ -38,7 +38,7 @@ Plots:
   3. cumulative_straddle.png     - equity curve of daily straddle P&L, per bucket
 
 Usage:
-    ml/.venv/bin/python ml/src/moc_vol_premium.py
+    ml/.venv/Scripts/python ml/src/moc_vol_premium.py
 """
 
 import sys
@@ -50,7 +50,7 @@ try:
     import seaborn as sns
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/bin/pip install matplotlib seaborn pandas numpy")
+    print("  ml/.venv/Scripts/pip install matplotlib seaborn pandas numpy")
     sys.exit(1)
 
 from utils import ML_ROOT, section, subsection, takeaway

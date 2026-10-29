@@ -19,10 +19,10 @@ Idempotent: only updates rows where the target column IS NULL.
 Spec: docs/superpowers/specs/silent-boom-otm-tide-and-trail-2026-05-13.md
 
 Usage:
-    ml/.venv/bin/python scripts/backfill_otm_tide_on_alerts.py
-    ml/.venv/bin/python scripts/backfill_otm_tide_on_alerts.py --dry-run
-    ml/.venv/bin/python scripts/backfill_otm_tide_on_alerts.py --table silent_boom_alerts --field mkt_tide_otm_diff
-    ml/.venv/bin/python scripts/backfill_otm_tide_on_alerts.py --date 2026-05-13 --limit 100
+    ml/.venv/Scripts/python scripts/backfill_otm_tide_on_alerts.py
+    ml/.venv/Scripts/python scripts/backfill_otm_tide_on_alerts.py --dry-run
+    ml/.venv/Scripts/python scripts/backfill_otm_tide_on_alerts.py --table silent_boom_alerts --field mkt_tide_otm_diff
+    ml/.venv/Scripts/python scripts/backfill_otm_tide_on_alerts.py --date 2026-05-13 --limit 100
 """
 
 from __future__ import annotations

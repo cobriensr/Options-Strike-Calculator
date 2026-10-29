@@ -6,7 +6,7 @@ detect-lottery-fires.ts. This script keeps the two in lockstep after a
 refit. Reads the JSON, regenerates the TS file. Idempotent.
 
 Usage:
-    ml/.venv/bin/python scripts/sync_lottery_score_weights.py
+    ml/.venv/Scripts/python scripts/sync_lottery_score_weights.py
 """
 
 from __future__ import annotations

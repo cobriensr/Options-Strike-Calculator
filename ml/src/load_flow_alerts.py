@@ -28,7 +28,7 @@ try:
     from sqlalchemy import create_engine
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/bin/pip install pandas numpy sqlalchemy psycopg2-binary")
+    print("  ml/.venv/Scripts/pip install pandas numpy sqlalchemy psycopg2-binary")
     sys.exit(1)
 
 from utils import load_env  # noqa: E402

@@ -37,10 +37,10 @@ DuckDB gotchas (confirmed against the archive, see spec):
     column.
 
 Run:
-  ml/.venv/bin/python scripts/build-flow-regime-baseline.py
+  ml/.venv/Scripts/python scripts/build-flow-regime-baseline.py
   # or point at a different parquet archive (CLI arg or env var):
-  ml/.venv/bin/python scripts/build-flow-regime-baseline.py --tape-glob '/path/to/*.parquet'
-  FLOW_REGIME_TAPE_GLOB='/path/to/*.parquet' ml/.venv/bin/python scripts/build-flow-regime-baseline.py
+  ml/.venv/Scripts/python scripts/build-flow-regime-baseline.py --tape-glob '/path/to/*.parquet'
+  FLOW_REGIME_TAPE_GLOB='/path/to/*.parquet' ml/.venv/Scripts/python scripts/build-flow-regime-baseline.py
 """
 
 from __future__ import annotations

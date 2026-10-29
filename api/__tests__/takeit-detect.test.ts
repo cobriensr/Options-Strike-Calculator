@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock every cross-module dependency takeit-detect imports. Each mock
 // exposes a vi.fn so individual tests can override the implementation
@@ -25,7 +25,9 @@ vi.mock('../_lib/sentry.js', () => ({
 }));
 
 import {
+  awaitWinRateWarmup,
   loadTakeitDetectContext,
+  priorSessionWinRatesForDay,
   scoreLottery,
   scoreSilentBoom,
 } from '../_lib/takeit-detect.js';
@@ -136,6 +138,361 @@ describe('loadTakeitDetectContext', () => {
     expect(callArgs?.[1]).toMatchObject({
       extra: { where: 'loadTakeitDetectContext.prefetch' },
     });
+  });
+});
+
+describe('loadTakeitDetectContext prefetch deadline', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const never = <T>() => new Promise<T>(() => {});
+
+  it('gives up after 5 s, sends one fingerprinted Sentry warning and tells the caller', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.mocked(getBundle).mockResolvedValueOnce(FAKE_BUNDLE);
+    baseDeps.fetchRecentSameType.mockReturnValueOnce(never());
+    const onPrefetchFailure = vi.fn();
+
+    const pending = loadTakeitDetectContext(
+      'lottery',
+      baseDeps,
+      onPrefetchFailure,
+    );
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(onPrefetchFailure).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(pending).resolves.toBeNull();
+    const reason = 'Take-It prefetch passed its 5000 ms deadline';
+    expect(onPrefetchFailure).toHaveBeenCalledExactlyOnceWith({
+      reason,
+      kind: 'timeout',
+    });
+    expect(Sentry.captureException).toHaveBeenCalledOnce();
+    const [err, hint] = vi.mocked(Sentry.captureException).mock.calls[0]!;
+    expect((err as Error).message).toBe(reason);
+    expect(hint).toMatchObject({
+      level: 'warning',
+      fingerprint: ['takeit-detect', 'lottery', 'prefetch-timeout'],
+      tags: { 'takeit.alert_type': 'lottery' },
+      extra: {
+        alertType: 'lottery',
+        where: 'loadTakeitDetectContext.prefetch',
+      },
+    });
+  });
+
+  it('reports a genuine prefetch error at error level, under the error fingerprint, after one attempt per query', async () => {
+    vi.mocked(getBundle).mockResolvedValueOnce(FAKE_BUNDLE);
+    baseDeps.fetchRecentOtherTypeByChain.mockRejectedValueOnce(
+      new Error('relation "silent_boom_alerts" does not exist'),
+    );
+    const onPrefetchFailure = vi.fn();
+
+    const ctx = await loadTakeitDetectContext(
+      'silentboom',
+      baseDeps,
+      onPrefetchFailure,
+    );
+
+    expect(ctx).toBeNull();
+    // 'error' tells the cron this is a bug, so the run reports 'error'.
+    expect(onPrefetchFailure).toHaveBeenCalledExactlyOnceWith({
+      reason: 'relation "silent_boom_alerts" does not exist',
+      kind: 'error',
+    });
+    expect(baseDeps.fetchRecentSameType).toHaveBeenCalledOnce();
+    expect(baseDeps.fetchRecentOtherTypeByChain).toHaveBeenCalledOnce();
+    expect(baseDeps.fetchPriorSessionWinRateByTicker).toHaveBeenCalledOnce();
+    // A broken query (renamed table or column) is a bug, not Neon being
+    // slow: it pages.
+    expect(vi.mocked(Sentry.captureException).mock.calls[0]?.[1]).toMatchObject(
+      {
+        level: 'error',
+        fingerprint: ['takeit-detect', 'silentboom', 'prefetch-error'],
+      },
+    );
+  });
+
+  it('reports a transient prefetch rejection (a Neon blip) at warning level under the error fingerprint', async () => {
+    vi.mocked(getBundle).mockResolvedValueOnce(FAKE_BUNDLE);
+    baseDeps.fetchRecentSameType.mockRejectedValueOnce(
+      new Error('fetch failed'),
+    );
+    const onPrefetchFailure = vi.fn();
+
+    await loadTakeitDetectContext('lottery', baseDeps, onPrefetchFailure);
+
+    expect(onPrefetchFailure).toHaveBeenCalledExactlyOnceWith({
+      reason: 'fetch failed',
+      kind: 'transient',
+    });
+    expect(vi.mocked(Sentry.captureException).mock.calls[0]?.[1]).toMatchObject(
+      {
+        level: 'warning',
+        fingerprint: ['takeit-detect', 'lottery', 'prefetch-error'],
+      },
+    );
+  });
+
+  it('does not call onPrefetchFailure when the prefetch succeeds', async () => {
+    vi.mocked(getBundle).mockResolvedValueOnce(FAKE_BUNDLE);
+    const onPrefetchFailure = vi.fn();
+
+    const ctx = await loadTakeitDetectContext(
+      'lottery',
+      baseDeps,
+      onPrefetchFailure,
+    );
+
+    expect(ctx).not.toBeNull();
+    expect(onPrefetchFailure).not.toHaveBeenCalled();
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('does not call onPrefetchFailure when the bundle is missing (nothing was prefetched)', async () => {
+    vi.mocked(getBundle).mockResolvedValueOnce(null);
+    const onPrefetchFailure = vi.fn();
+
+    await loadTakeitDetectContext('lottery', baseDeps, onPrefetchFailure);
+
+    expect(onPrefetchFailure).not.toHaveBeenCalled();
+  });
+});
+
+// The win-rate cache is module state that outlives a test, as it outlives
+// a request in production. Every test below uses ET dates no other test
+// uses, so no test can see another's entry.
+describe('priorSessionWinRatesForDay', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const NVDA = [{ underlying_symbol: 'NVDA', win_rate: 0.5 }];
+  const TSLA = [{ underlying_symbol: 'TSLA', win_rate: 0.25 }];
+
+  it('loads once per ET day, for dates before that day, then serves the cached rows', async () => {
+    const load = vi.fn().mockResolvedValue(NVDA);
+
+    const first = await priorSessionWinRatesForDay(
+      'lottery',
+      '2026-01-05',
+      load,
+    );
+    const second = await priorSessionWinRatesForDay(
+      'lottery',
+      '2026-01-05',
+      load,
+    );
+
+    expect(first).toEqual(NVDA);
+    expect(second).toBe(first);
+    expect(load).toHaveBeenCalledExactlyOnceWith('2026-01-05');
+  });
+
+  it('shares one in-flight load between callers that arrive before it settles', async () => {
+    let resolveLoad: (rows: typeof NVDA) => void = () => {};
+    const load = vi.fn(
+      () =>
+        new Promise<typeof NVDA>((resolve) => {
+          resolveLoad = resolve;
+        }),
+    );
+
+    const a = priorSessionWinRatesForDay('lottery', '2026-01-06', load);
+    const b = priorSessionWinRatesForDay('lottery', '2026-01-06', load);
+    resolveLoad(NVDA);
+
+    await expect(a).resolves.toEqual(NVDA);
+    await expect(b).resolves.toEqual(NVDA);
+    expect(load).toHaveBeenCalledOnce();
+  });
+
+  it('reloads when the ET date changes and keeps only the newest day', async () => {
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce(NVDA)
+      .mockResolvedValueOnce(TSLA)
+      .mockResolvedValueOnce(NVDA);
+
+    await priorSessionWinRatesForDay('lottery', '2026-01-07', load);
+    const nextDay = await priorSessionWinRatesForDay(
+      'lottery',
+      '2026-01-08',
+      load,
+    );
+    // The new day replaced the old entry: asking for the old day again
+    // is a miss, not a second resident entry.
+    await priorSessionWinRatesForDay('lottery', '2026-01-07', load);
+
+    expect(nextDay).toEqual(TSLA);
+    expect(load.mock.calls).toEqual([
+      ['2026-01-07'],
+      ['2026-01-08'],
+      ['2026-01-07'],
+    ]);
+  });
+
+  it('does not cache a failed load: the next call for the same day retries', async () => {
+    const load = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('db attempt timeout'))
+      .mockResolvedValueOnce(NVDA);
+
+    await expect(
+      priorSessionWinRatesForDay('lottery', '2026-01-09', load),
+    ).rejects.toThrow('db attempt timeout');
+    const retried = await priorSessionWinRatesForDay(
+      'lottery',
+      '2026-01-09',
+      load,
+    );
+
+    expect(retried).toEqual(NVDA);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('a load for the old day that fails after the date rolled leaves the new day cached', async () => {
+    let rejectOld: (err: Error) => void = () => {};
+    const load = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((_, reject) => {
+            rejectOld = reject;
+          }),
+      )
+      .mockResolvedValueOnce(TSLA);
+
+    const old = priorSessionWinRatesForDay('lottery', '2026-01-12', load);
+    await priorSessionWinRatesForDay('lottery', '2026-01-13', load);
+    rejectOld(new Error('fetch failed'));
+    await expect(old).rejects.toThrow('fetch failed');
+
+    const cached = await priorSessionWinRatesForDay(
+      'lottery',
+      '2026-01-13',
+      load,
+    );
+    expect(cached).toEqual(TSLA);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps one entry per alert type, so lottery and silent boom never share rows', async () => {
+    const lotteryLoad = vi.fn().mockResolvedValue(NVDA);
+    const silentBoomLoad = vi.fn().mockResolvedValue(TSLA);
+
+    const lottery = await priorSessionWinRatesForDay(
+      'lottery',
+      '2026-01-14',
+      lotteryLoad,
+    );
+    const silentBoom = await priorSessionWinRatesForDay(
+      'silentboom',
+      '2026-01-14',
+      silentBoomLoad,
+    );
+
+    expect(lottery).toEqual(NVDA);
+    expect(silentBoom).toEqual(TSLA);
+    expect(lotteryLoad).toHaveBeenCalledOnce();
+    expect(silentBoomLoad).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a slow load for up to 120 s, then drops a hung one so a later run can retry it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const load = vi
+      .fn()
+      .mockReturnValueOnce(new Promise(() => {}))
+      .mockResolvedValueOnce(NVDA);
+
+    const hung = priorSessionWinRatesForDay('lottery', '2026-01-15', load);
+    const settled = expect(hung).rejects.toThrow(
+      'Take-It win-rate load passed its 120000 ms deadline',
+    );
+    // Still in flight (and shared) just before the cap.
+    await vi.advanceTimersByTimeAsync(119_999);
+    await expect(
+      Promise.race([
+        priorSessionWinRatesForDay('lottery', '2026-01-15', load).then(
+          () => 'settled',
+        ),
+        Promise.resolve('pending'),
+      ]),
+    ).resolves.toBe('pending');
+    expect(load).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    await settled;
+
+    const retried = await priorSessionWinRatesForDay(
+      'lottery',
+      '2026-01-15',
+      load,
+    );
+    expect(retried).toEqual(NVDA);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('awaitWinRateWarmup', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Fake the clock too: the budget is measured from the run's start time.
+  const fakeClock = () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(new Date('2026-06-05T13:26:00Z'));
+  };
+
+  it('resolves once the warm-up load lands', async () => {
+    let resolveLoad: (rows: unknown[]) => void = () => {};
+    const warmup = new Promise<unknown[]>((resolve) => {
+      resolveLoad = resolve;
+    });
+    let done = false;
+    const waiting = awaitWinRateWarmup(warmup, Date.now()).then(() => {
+      done = true;
+    });
+
+    await Promise.resolve();
+    expect(done).toBe(false);
+    resolveLoad([]);
+    await waiting;
+    expect(done).toBe(true);
+  });
+
+  it('never rejects: a failed warm-up is left for the next run to retry', async () => {
+    await expect(
+      awaitWinRateWarmup(Promise.reject(new Error('fetch failed')), Date.now()),
+    ).resolves.toBeUndefined();
+  });
+
+  it('waits until 45 s after the run started: a run 30 s in gives up after 15 s', async () => {
+    fakeClock();
+    const startTimeMs = Date.now() - 30_000;
+    let done = false;
+    const waiting = awaitWinRateWarmup(new Promise(() => {}), startTimeMs).then(
+      () => {
+        done = true;
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await waiting;
+    expect(done).toBe(true);
+  });
+
+  it('does not wait at all once the run is past 45 s, leaving room for the check-in and response', async () => {
+    fakeClock();
+    const startTimeMs = Date.now() - 50_000;
+
+    await awaitWinRateWarmup(new Promise(() => {}), startTimeMs);
+
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 

@@ -369,7 +369,11 @@ describe('checkBuildOutput: lazy-only libraries', () => {
   });
 });
 
-describe('check-build-output CLI', () => {
+// Each CLI test spawns node: Windows process spawn under full-suite
+// multi-session load took 16.7 s (2026-10-29), past the 15 s testTimeout.
+const CLI_TIMEOUT = 60_000;
+
+describe('check-build-output CLI', { timeout: CLI_TIMEOUT }, () => {
   // vitest runs from the repo root (same convention as check-coverage-floor).
   const cli = path.resolve(process.cwd(), 'scripts', 'check-build-output.mjs');
   let cwd;

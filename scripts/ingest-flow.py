@@ -2,9 +2,9 @@
 """Ingest a UW EOD options flow CSV: validate, filter, write Parquet, upload to Blob.
 
 Usage:
-    ml/.venv/bin/python scripts/ingest-flow.py <YYYY-MM-DD>
-    ml/.venv/bin/python scripts/ingest-flow.py 2026-04-24 --keep-csv
-    ml/.venv/bin/python scripts/ingest-flow.py 2026-04-24 --dry-run
+    ml/.venv/Scripts/python scripts/ingest-flow.py <YYYY-MM-DD>
+    ml/.venv/Scripts/python scripts/ingest-flow.py 2026-04-24 --keep-csv
+    ml/.venv/Scripts/python scripts/ingest-flow.py 2026-04-24 --dry-run
 
 Spec: docs/superpowers/specs/options-flow-archive-2026-04-28.md
 

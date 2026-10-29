@@ -10,7 +10,7 @@ can tell if a tuned combo is real edge vs overfit noise.
 Read-only — does not modify the DB or production code.
 
 Usage:
-    ml/.venv/bin/python scripts/tune_flow_inversion.py
+    ml/.venv/Scripts/python scripts/tune_flow_inversion.py
 """
 
 from __future__ import annotations

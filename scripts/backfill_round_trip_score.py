@@ -10,8 +10,8 @@ round_trip_net_pct IS NULL. Re-running is safe.
 Spec: docs/superpowers/specs/round-trip-score-deduct-production-2026-05-16.md
 
 Usage:
-    ml/.venv/bin/python scripts/backfill_round_trip_score.py
-    ml/.venv/bin/python scripts/backfill_round_trip_score.py --dry-run
+    ml/.venv/Scripts/python scripts/backfill_round_trip_score.py
+    ml/.venv/Scripts/python scripts/backfill_round_trip_score.py --dry-run
 
 Decisions encoded:
   - DTE ≤ 7 only (per 2026-05-16 per-DTE AUC slice — signal collapses above 7DTE)

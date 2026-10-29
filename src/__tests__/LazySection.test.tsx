@@ -29,14 +29,14 @@ describe('LazySection: without fallback', () => {
     expect(anchor!.tagName).toBe('SPAN');
   });
 
-  it('the anchor span has block + scroll-mt-28 for sticky-header offset', () => {
+  it('the anchor span has block + the sticky-stack offset (--anchor-offset)', () => {
     const { container } = render(
       <LazySection id="anchor-2" label="Section">
         <div>payload</div>
       </LazySection>,
     );
     const anchor = container.querySelector('#anchor-2');
-    expect(anchor!.className).toContain('scroll-mt-28');
+    expect(anchor!.className).toContain('scroll-mt-(--anchor-offset)');
     expect(anchor!.className).toContain('block');
   });
 });

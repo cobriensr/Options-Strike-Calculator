@@ -24,7 +24,7 @@ Outputs under `ml/plots/eod-flow-decomp/`:
   gamma_vs_premium_{N}min.png       — side-by-side comparison of (B)
 
 Usage:
-  ml/.venv/bin/python src/eod_flow_decomp.py
+  ml/.venv/Scripts/python src/eod_flow_decomp.py
 """
 
 from __future__ import annotations

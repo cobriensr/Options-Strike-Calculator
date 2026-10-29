@@ -10,7 +10,7 @@ Designed for SPXW (where ws_option_trades has zero rows because the
 WS daemon isn't subscribed). Reusable for any future ticker.
 
 Usage:
-    ml/.venv/bin/python scripts/backfill_lottery_fires_for_ticker.py \
+    ml/.venv/Scripts/python scripts/backfill_lottery_fires_for_ticker.py \
         --ticker SPXW [--from-date 2026-04-13] [--to-date 2026-05-06]
 
 Read+write: reads parquets + flow_data + spot_exposures +

@@ -104,7 +104,7 @@ export default function HedgeSection({
         </div>
         <div className="flex flex-wrap items-center gap-4">
           {icRows && icRows.length > 1 && onHedgeDeltaChange && (
-            <div className="flex items-center gap-1">
+            <div className="flex flex-wrap items-center gap-1">
               <span className="text-tertiary mr-1 font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
                 IC {'\u0394'}
               </span>
@@ -126,7 +126,7 @@ export default function HedgeSection({
               ))}
             </div>
           )}
-          <div className="flex items-center gap-1">
+          <div className="flex flex-wrap items-center gap-1">
             <span className="text-tertiary mr-1 font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
               Hedge {'\u0394'}
             </span>
@@ -147,7 +147,7 @@ export default function HedgeSection({
               </button>
             ))}
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex flex-wrap items-center gap-1">
             <span className="text-tertiary mr-1 font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
               DTE
             </span>

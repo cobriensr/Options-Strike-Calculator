@@ -98,6 +98,49 @@ describe('pruneWorktrees races and git failures', () => {
   );
 
   it(
+    'strips GIT_DIR and GIT_INDEX_FILE from every git call, so a hook env cannot redirect it',
+    () => {
+      // A git hook exports these. Inherited, they would aim every
+      // `-C <dir>` call at this decoy repo instead of the worktree named.
+      const decoyGitDir = path.join(
+        initRepo(makeTempDir('prune-wt-decoy-')),
+        '.git',
+      );
+      const before = {
+        GIT_DIR: process.env.GIT_DIR,
+        GIT_INDEX_FILE: process.env.GIT_INDEX_FILE,
+      };
+      vi.stubEnv('GIT_DIR', decoyGitDir);
+      vi.stubEnv('GIT_INDEX_FILE', path.join(decoyGitDir, 'index'));
+      try {
+        const { result, errors } = prune();
+
+        // Checked before the finally: a call handed process.env itself holds
+        // a reference, and the restore below would delete the stubs from it.
+        const { calls } = vi.mocked(spawnSync).mock;
+        expect(calls.length).toBeGreaterThan(0);
+        for (const [, args, options] of calls) {
+          const call = `git ${args.join(' ')}`;
+          expect(options?.env, call).toBeDefined();
+          expect(options.env, call).not.toHaveProperty('GIT_DIR');
+          expect(options.env, call).not.toHaveProperty('GIT_INDEX_FILE');
+        }
+        expect(errors).toEqual([]);
+        expect(result).toMatchObject({
+          action: 'removed',
+          deletedBranchSha: head,
+        });
+      } finally {
+        // Only these two: unstubAllEnvs would also drop the file's
+        // GIT_CONFIG stubs. Stubbing undefined deletes the var.
+        vi.stubEnv('GIT_DIR', before.GIT_DIR);
+        vi.stubEnv('GIT_INDEX_FILE', before.GIT_INDEX_FILE);
+      }
+    },
+    FIXTURE_TIMEOUT,
+  );
+
+  it(
     'keeps the branch when it moves between the merge check and the delete',
     () => {
       const moved = commitFile(repo, 'later.txt', 'later\n');

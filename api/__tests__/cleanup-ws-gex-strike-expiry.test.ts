@@ -30,8 +30,15 @@ vi.mock('../_lib/sentry.js', () => ({
   Sentry: { setTag: vi.fn(), captureException: vi.fn() },
 }));
 
+// cron-instrumentation.js stays real: the handler is wrapped in
+// withCronCheckin, and the check-in tests below drive that wrapper end to
+// end through a stubbed fetch.
 import handler from '../cron/cleanup-ws-gex-strike-expiry.js';
+import { _resetDsnCacheForTest } from '../_lib/cron-instrumentation.js';
+import { SCHEDULE_MAP } from '../_lib/cron-schedules.js';
 import { Sentry } from '../_lib/sentry.js';
+
+const JOB = 'cleanup-ws-gex-strike-expiry';
 
 // Friday 12:00 UTC = 8am ET on a DST day. cronGuard derives `today`
 // via getETDateStr(new Date()) which respects ET — so on this clock
@@ -60,8 +67,26 @@ describe('cleanup-ws-gex-strike-expiry handler', () => {
 
   afterEach(() => {
     process.env = originalEnv;
+    // Restores the Date.now spy from fakeClock, even when a test fails
+    // before reaching its end.
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
+
+  /**
+   * Pin Date.now and return a function that moves it forward. The clock
+   * advances only when a test says so (inside a batch), so the wrapper's own
+   * Date.now() calls for check-in timing can't shift the budget arithmetic.
+   */
+  function fakeClock(): (ms: number) => void {
+    let now = 1_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    return (ms) => {
+      now += ms;
+    };
+  }
+
+  const FULL_BATCH = Array.from({ length: 50_000 }, (_, i) => ({ id: i }));
 
   it('returns 405 on non-GET', async () => {
     const req = mockRequest({ method: 'POST' });
@@ -174,38 +199,94 @@ describe('cleanup-ws-gex-strike-expiry handler', () => {
     );
   });
 
-  it('exits via wall_budget when the loop runs past the budget', async () => {
-    // Stub Date.now so the second batch lands past WALL_BUDGET_MS,
-    // forcing the loop to flip stopReason and abort the remaining
-    // pass. The cron should report partial counts and `wall_budget`.
-    const fullBatch = Array.from({ length: 50_000 }, (_, i) => ({ id: i }));
-    mockQuery
-      .mockResolvedValueOnce(fullBatch) // pass 1 batch 1 — within budget
-      .mockResolvedValueOnce(fullBatch); // pass 1 batch 2 — should trip budget
+  it.each([
+    {
+      // Equal terms. Under the old 295 s after-the-batch check, the 280.5 s
+      // case below would have kept going.
+      projection: 'elapsed 139.75 s + slowest 139.75 s = 279.5 s',
+      fullBatchesMs: [139_750],
+      queries: 3, // batch 2 drains pass 1, then pass 2 drains
+      stopReason: 'drained',
+    },
+    {
+      projection: 'elapsed 140.25 s + slowest 140.25 s = 280.5 s',
+      fullBatchesMs: [140_250],
+      queries: 1,
+      stopReason: 'wall_budget',
+    },
+    {
+      // Unequal terms, so each one is pinned on its own: `2 * elapsed`
+      // (280.8 s) would stop here.
+      projection: 'elapsed 140.4 s + slowest 139.4 s = 279.8 s',
+      fullBatchesMs: [1_000, 139_400],
+      queries: 4,
+      stopReason: 'drained',
+    },
+    {
+      // `2 * slowest` (200 s) or elapsed alone (190 s) would keep going.
+      projection: 'elapsed 190 s + slowest 100 s = 290 s',
+      fullBatchesMs: [100_000, 90_000],
+      queries: 2,
+      stopReason: 'wall_budget',
+    },
+  ])(
+    'before the next batch, $projection → $stopReason',
+    async ({ fullBatchesMs, queries, stopReason }) => {
+      // Full batches taking the listed times; every later batch takes no
+      // time and deletes nothing. Before each batch after the first, the
+      // projection is elapsed time plus the slowest batch so far, against
+      // the 280 s budget.
+      const advance = fakeClock();
+      for (const ms of fullBatchesMs) {
+        mockQuery.mockImplementationOnce(async () => {
+          advance(ms);
+          return FULL_BATCH;
+        });
+      }
 
-    const startWall = 1_000_000;
-    let call = 0;
-    const dateNowSpy = vi.spyOn(Date, 'now').mockImplementation(() => {
-      // Sequence: handler entry (startedAt), then each batch's
-      // post-DELETE check. Push the second check past WALL_BUDGET_MS.
-      const offsets = [0, 1_000, 300_000];
-      const t = startWall + (offsets[call] ?? 400_000);
-      call += 1;
-      return t;
-    });
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        totalDeleted: fullBatchesMs.length * 50_000,
+        stopReason,
+      });
+      expect(mockQuery).toHaveBeenCalledTimes(queries);
+    },
+  );
+
+  it('checks the budget at the pass boundary, so pass 2 never starts after a late pass 1', async () => {
+    // Pass 1: a quick full batch, then its draining batch ends at 281 s.
+    // The budget used to be checked only after a non-empty batch, so pass
+    // 2's first DELETE started past the budget and could run into
+    // maxDuration, where the kill reads as a monitor timeout.
+    const advance = fakeClock();
+    mockQuery
+      .mockImplementationOnce(async () => {
+        advance(1_000); // pass 1 batch 1: ends at 1 s
+        return FULL_BATCH;
+      })
+      .mockImplementationOnce(async () => {
+        advance(280_000); // pass 1 batch 2: drains, ends at 281 s
+        return [];
+      });
 
     const res = mockResponse();
     await handler(authedReq(), res);
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
-      totalDeleted: 100_000,
+      totalDeleted: 50_000,
+      batches: 2,
       stopReason: 'wall_budget',
     });
-    // The second pass must NOT run after the budget trips.
+    // Both pass 1 batches ran; pass 2's DELETE never did.
     expect(mockQuery).toHaveBeenCalledTimes(2);
-
-    dateNowSpy.mockRestore();
+    expect(mockQuery.mock.calls.map(([sql]) => sql as string)).toEqual([
+      expect.stringContaining('expiry < $1::date'),
+      expect.stringContaining('expiry < $1::date'),
+    ]);
   });
 
   it('captures errors to Sentry and returns 500 with partial counts', async () => {
@@ -231,5 +312,93 @@ describe('cleanup-ws-gex-strike-expiry handler', () => {
       'cron.job',
       'cleanup-ws-gex-strike-expiry',
     );
+  });
+
+  // ── Sentry cron monitor (withCronCheckin) ───────────────────────
+
+  describe('Sentry cron check-ins', () => {
+    const fetchMock = vi.fn();
+
+    beforeEach(() => {
+      // The outer beforeEach copied process.env, so this DSN is dropped
+      // when the outer afterEach restores it.
+      process.env.SENTRY_DSN = 'https://pubkey@o1.ingest.us.sentry.io/42';
+      _resetDsnCacheForTest();
+      fetchMock.mockResolvedValue(new Response(null, { status: 202 }));
+      vi.stubGlobal('fetch', fetchMock);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      _resetDsnCacheForTest();
+    });
+
+    interface CheckInBody {
+      check_in_id: string;
+      monitor_slug: string;
+      status: string;
+      monitor_config?: Record<string, unknown>;
+    }
+
+    /** The check-in POSTs, in order. The completion is not awaited by the wrapper. */
+    async function checkIns(count: number) {
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(count));
+      return fetchMock.mock.calls.map(([url, init]) => ({
+        url: url as string,
+        body: JSON.parse((init as { body: string }).body) as CheckInBody,
+      }));
+    }
+
+    it('checks in under its slug with its SCHEDULE_MAP config, in_progress then ok', async () => {
+      mockQuery.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(200);
+      const calls = await checkIns(2);
+      expect(calls[0]!.url).toContain(`/cron/${JOB}/`);
+      expect(calls.map((c) => c.body.monitor_slug)).toEqual([JOB, JOB]);
+      expect(calls.map((c) => c.body.status)).toEqual(['in_progress', 'ok']);
+      expect(calls[1]!.body.check_in_id).toBe(calls[0]!.body.check_in_id);
+      expect(calls[0]!.body.monitor_config).toMatchObject({
+        schedule: { type: 'crontab', value: SCHEDULE_MAP[JOB]!.schedule },
+        // LONG_RUNNER_MAX_RUNTIME: maxDuration is 300 s, so a run that
+        // uses its whole budget still completes inside the max runtime.
+        max_runtime: 10,
+        failure_issue_threshold: 1,
+      });
+    });
+
+    it('sends an error check-in, not ok, when a DELETE fails', async () => {
+      const fullBatch = Array.from({ length: 50_000 }, (_, i) => ({ id: i }));
+      mockQuery
+        .mockResolvedValueOnce(fullBatch)
+        .mockRejectedValueOnce(new Error('connection lost'));
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(500);
+      expect(res._json).toMatchObject({ error: 'cleanup failed' });
+      expect(Sentry.captureException).toHaveBeenCalledOnce();
+      const calls = await checkIns(2);
+      expect(calls.map((c) => c.body.status)).toEqual(['in_progress', 'error']);
+    });
+
+    it('sends no check-ins for a request without the cron bearer', async () => {
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          headers: { authorization: 'Bearer wrong' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(401);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
   });
 });

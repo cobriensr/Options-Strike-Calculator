@@ -8,7 +8,7 @@
  */
 
 import { render, act } from '@testing-library/react';
-import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { PriceChart } from '../../components/GexTarget/PriceChart';
 import type { SPXCandle } from '../../hooks/useGexTarget';
 import type { TargetScore, StrikeScore } from '../../utils/gex-target';
@@ -735,29 +735,13 @@ describe('PriceChart: momentum badge', () => {
   });
 });
 
-describe('PriceChart: ResizeObserver guard', () => {
-  it('renders without error when ResizeObserver is not available', () => {
-    // Simulate environments where ResizeObserver is undefined
-    const original = globalThis.ResizeObserver;
-    // @ts-expect-error intentionally setting undefined for test
-    globalThis.ResizeObserver = undefined;
-
-    const { getByRole } = render(
-      <PriceChart
-        candles={[makeCandle()]}
-        previousClose={null}
-        score={null}
-        openingCallStrike={null}
-        openingPutStrike={null}
-      />,
-    );
-    expect(getByRole('img', { name: /spx price chart/i })).toBeInTheDocument();
-
-    globalThis.ResizeObserver = original;
+describe('PriceChart: resize', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
-  it('renders correctly and chart is resizable when ResizeObserver is available', () => {
-    // jsdom does not have ResizeObserver; provide a class-based stub to exercise the branch
+  it('resizes the chart to its container when the ResizeObserver fires', () => {
+    // The test setup's ResizeObserver never calls back; this one does
     const observations: Element[] = [];
     let capturedCallback: ResizeObserverCallback | null = null;
 
@@ -777,9 +761,7 @@ describe('PriceChart: ResizeObserver guard', () => {
       disconnect = vi.fn();
     }
 
-    const original = globalThis.ResizeObserver;
-    globalThis.ResizeObserver =
-      MockResizeObserver as unknown as typeof ResizeObserver;
+    vi.stubGlobal('ResizeObserver', MockResizeObserver);
 
     const { unmount, getByRole } = render(
       <PriceChart
@@ -793,9 +775,9 @@ describe('PriceChart: ResizeObserver guard', () => {
 
     expect(getByRole('img', { name: /spx price chart/i })).toBeInTheDocument();
     expect(observations.length).toBeGreaterThan(0);
+    // The resize reaches the chart: width only, height is CSS-controlled
+    expect(mockChart.applyOptions).toHaveBeenCalledWith({ width: 400 });
 
     unmount();
-
-    globalThis.ResizeObserver = original;
   });
 });

@@ -5408,4 +5408,208 @@ export const MIGRATIONS: Migration[] = [
       sql`ALTER TABLE periscope_snapshots ADD COLUMN IF NOT EXISTS source TEXT`,
     ],
   },
+  {
+    id: 195,
+    description:
+      'Create gexbot_eod_reports index of GEXBot EOD ZIPs in R2 (spec: docs/superpowers/specs/2026-10-28-gexbot-eod-capture-design.md)',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS gexbot_eod_reports (
+          id            BIGSERIAL PRIMARY KEY,
+          ticker        TEXT NOT NULL,
+          report_date   DATE NOT NULL,
+          r2_key        TEXT NOT NULL,
+          bytes         BIGINT NOT NULL,
+          sha256        TEXT NOT NULL,
+          entry_count   INT NOT NULL,
+          source        TEXT NOT NULL,
+          fetched_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+          UNIQUE (ticker, report_date)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_gexbot_eod_reports_report_date
+          ON gexbot_eod_reports (report_date)
+      `,
+    ],
+  },
+  {
+    id: 196,
+    description:
+      'Create futures_blocks for CME block trades from the UW futures_blocks websocket channel. Keyed (trade_id, exchange, trade_date) because CME reuses trade_id across sessions; uw-stream upserts so the newest reported_at replaces earlier messages, and a delete is kept as action = delete, never removed.',
+    statements: (sql) => [
+      // Written only by uw-stream's FuturesBlocksHandler. price is NULL for a
+      // multi-leg (MLEG) block, whose prices are on the legs. product is NULL
+      // for an MLEG or a contract whose root UW doesn't know yet. exchange is
+      // NOT NULL but may be '' (UW sends '' when it has no MIC), since it is
+      // part of the key. UW sends decimals with up to 8 places, hence
+      // scale 8 on every NUMERIC. raw_payload is the newest frame as
+      // received. received_at is the first arrival and is never updated;
+      // updated_at moves on every applied upsert.
+      sql`
+        CREATE TABLE IF NOT EXISTS futures_blocks (
+          trade_id         BIGINT        NOT NULL,
+          exchange         TEXT          NOT NULL,
+          trade_date       DATE          NOT NULL,
+          sym              TEXT,
+          product          TEXT,
+          sec_type         TEXT,
+          action           TEXT          NOT NULL,
+          price            NUMERIC(18,8),
+          qty              NUMERIC(24,8),
+          executed_at      TIMESTAMPTZ,
+          reported_at      TIMESTAMPTZ,
+          strategy_link_id BIGINT,
+          legs             JSONB,
+          quote_bid        NUMERIC(18,8),
+          quote_ask        NUMERIC(18,8),
+          quote_ts         TIMESTAMPTZ,
+          raw_payload      JSONB         NOT NULL,
+          received_at      TIMESTAMPTZ   NOT NULL DEFAULT now(),
+          updated_at       TIMESTAMPTZ   NOT NULL DEFAULT now(),
+          PRIMARY KEY (trade_id, exchange, trade_date)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_futures_blocks_product_executed_at
+          ON futures_blocks (product, executed_at DESC)
+      `,
+    ],
+  },
+  {
+    id: 197,
+    description:
+      'Add exchange multi-leg anchor columns to lottery_finder_fires AND silent_boom_alerts (spec: docs/superpowers/specs/2026-10-28-classifier-replacement-design.md). They replace the Railway multileg classifier (migration #160 columns stay for history) with the exchange-reported multi-leg trade code. anchor_ws_trade_id UUID is the anchor print; anchor_trade_code TEXT is its OPRA trade code; anchor_leg_kind TEXT is single, multi_leg or stock_tied, and NULL when no anchor print was found; spread_shape TEXT is the spread shape; spread_legs JSONB is an array of legs grouped by contract, anchor first, at most 8. All five columns are NULLABLE, so pre-migration rows stay unclassified. No index: no reader filters on them yet.',
+    statements: (sql) => [
+      // Fail fast instead of queueing writers behind the ACCESS EXCLUSIVE lock.
+      sql`SET LOCAL lock_timeout = '5s'`,
+      sql`
+        ALTER TABLE lottery_finder_fires
+          ADD COLUMN IF NOT EXISTS anchor_ws_trade_id UUID,
+          ADD COLUMN IF NOT EXISTS anchor_trade_code TEXT,
+          ADD COLUMN IF NOT EXISTS anchor_leg_kind TEXT,
+          ADD COLUMN IF NOT EXISTS spread_shape TEXT,
+          ADD COLUMN IF NOT EXISTS spread_legs JSONB
+      `,
+      sql`
+        ALTER TABLE silent_boom_alerts
+          ADD COLUMN IF NOT EXISTS anchor_ws_trade_id UUID,
+          ADD COLUMN IF NOT EXISTS anchor_trade_code TEXT,
+          ADD COLUMN IF NOT EXISTS anchor_leg_kind TEXT,
+          ADD COLUMN IF NOT EXISTS spread_shape TEXT,
+          ADD COLUMN IF NOT EXISTS spread_legs JSONB
+      `,
+    ],
+  },
+  {
+    id: 198,
+    description:
+      'Create futures_session_stats: one row per CME contract and settlement date from UW /futures/{contract}/stats (settlement, open interest, session volume) for the top 2 non-spread contracts of each root. The fetch-futures-session-stats cron runs twice a day and upserts on (contract, settlement_date), because open interest can finalize after the settlement prints; fetched_at shows which run wrote the stored values. No session high/low: UW reports those for the in-progress session, not the settled one.',
+    statements: (sql) => [
+      // Written only by api/cron/fetch-futures-session-stats.ts. contract is
+      // the UW contract symbol ('ESZ6'), product its root ('ES'). The values
+      // are nullable because UW's are. UW sends settlement as a decimal
+      // string with up to 9 places, so scale 8 as on futures_blocks. About
+      // 12 rows a day, so the primary key is the only index.
+      sql`
+        CREATE TABLE IF NOT EXISTS futures_session_stats (
+          contract        TEXT          NOT NULL,
+          product         TEXT          NOT NULL,
+          settlement_date DATE          NOT NULL,
+          settlement      NUMERIC(18,8),
+          open_interest   BIGINT,
+          session_volume  BIGINT,
+          fetched_at      TIMESTAMPTZ   NOT NULL DEFAULT now(),
+          PRIMARY KEY (contract, settlement_date)
+        )
+      `,
+    ],
+  },
+  {
+    id: 199,
+    description:
+      'Drop the redundant ws_net_flow_per_ticker_ticker_ts_idx (ticker, ts DESC; 4.5 GB on prod) and set per-table autovacuum thresholds on the large, hot tables. The index duplicates ws_net_flow_per_ticker_uq UNIQUE (ticker, ts): every reader filters ticker = X or ticker = ANY(...) plus a ts range, and the ORDER BYs apply to UNION or window results, so none needs a (ticker, ts DESC) scan, and the DESC copy only costs maintenance on every insert into a 31 GB table. Postgres defaults (analyze at 10% changed, vacuum at 20%, insert-vacuum at 20%) mean an 84M-row table re-analyzes only about every 9 trading days and its visibility map goes stale (the 2026-05-13 ws_gex_strike_expiry incident, see scripts/ops/neon-tune-autovac.py). ws_net_flow_per_ticker, strike_iv_snapshots, strike_exposures, lottery_finder_fires and net_flow_per_ticker_history get vacuum 1%, analyze 0.5%, insert-vacuum 1% and thresholds of 1000; the insert scale factor matters because ws_net_flow_per_ticker, strike_iv_snapshots, strike_exposures and net_flow_per_ticker_history are insert-only on prod (0 updates, 0 deletes), so the dead-tuple trigger never fires for them. ws_gex_strike_expiry, gex_strike_0dte and ws_option_trades were already tuned on prod by that script with the same four settings, and they are recorded here so a fresh DB matches; gex_strike_0dte is also insert-only, so it additionally gets the insert scale factor of 0.01 (the May tuning never made autovacuum vacuum it). Applied to prod by hand after the close (DROP INDEX CONCURRENTLY, then the ALTER TABLE SETs); the IF EXISTS drop and the ALTER SETs here are an idempotent no-op on prod and seed a fresh database.',
+    statements: (sql) => [
+      // ALTER TABLE ... SET (autovacuum_*) takes SHARE UPDATE EXCLUSIVE: it
+      // blocks no read or write, only (auto)vacuum, ANALYZE and other DDL on
+      // that table (a blocking autovacuum is cancelled after deadlock_timeout).
+      // The 5 s bound fails the migration instead of waiting on a manual
+      // VACUUM. Only the DROP INDEX takes ACCESS EXCLUSIVE, and only while the
+      // index still exists, so it runs last: the lock is held to commit.
+      sql`SET LOCAL lock_timeout = '5s'`,
+      sql`
+        ALTER TABLE ws_net_flow_per_ticker SET (
+          autovacuum_vacuum_scale_factor = 0.01,
+          autovacuum_analyze_scale_factor = 0.005,
+          autovacuum_vacuum_insert_scale_factor = 0.01,
+          autovacuum_vacuum_threshold = 1000,
+          autovacuum_analyze_threshold = 1000
+        )
+      `,
+      sql`
+        ALTER TABLE strike_iv_snapshots SET (
+          autovacuum_vacuum_scale_factor = 0.01,
+          autovacuum_analyze_scale_factor = 0.005,
+          autovacuum_vacuum_insert_scale_factor = 0.01,
+          autovacuum_vacuum_threshold = 1000,
+          autovacuum_analyze_threshold = 1000
+        )
+      `,
+      sql`
+        ALTER TABLE strike_exposures SET (
+          autovacuum_vacuum_scale_factor = 0.01,
+          autovacuum_analyze_scale_factor = 0.005,
+          autovacuum_vacuum_insert_scale_factor = 0.01,
+          autovacuum_vacuum_threshold = 1000,
+          autovacuum_analyze_threshold = 1000
+        )
+      `,
+      sql`
+        ALTER TABLE lottery_finder_fires SET (
+          autovacuum_vacuum_scale_factor = 0.01,
+          autovacuum_analyze_scale_factor = 0.005,
+          autovacuum_vacuum_insert_scale_factor = 0.01,
+          autovacuum_vacuum_threshold = 1000,
+          autovacuum_analyze_threshold = 1000
+        )
+      `,
+      sql`
+        ALTER TABLE net_flow_per_ticker_history SET (
+          autovacuum_vacuum_scale_factor = 0.01,
+          autovacuum_analyze_scale_factor = 0.005,
+          autovacuum_vacuum_insert_scale_factor = 0.01,
+          autovacuum_vacuum_threshold = 1000,
+          autovacuum_analyze_threshold = 1000
+        )
+      `,
+      // Tuned on prod 2026-05-13 by scripts/ops/neon-tune-autovac.py (four
+      // settings; gex_strike_0dte also gets the insert factor, 2026-10-29).
+      sql`
+        ALTER TABLE ws_gex_strike_expiry SET (
+          autovacuum_vacuum_scale_factor = 0.01,
+          autovacuum_analyze_scale_factor = 0.005,
+          autovacuum_vacuum_threshold = 1000,
+          autovacuum_analyze_threshold = 1000
+        )
+      `,
+      sql`
+        ALTER TABLE gex_strike_0dte SET (
+          autovacuum_vacuum_scale_factor = 0.01,
+          autovacuum_analyze_scale_factor = 0.005,
+          autovacuum_vacuum_insert_scale_factor = 0.01,
+          autovacuum_vacuum_threshold = 1000,
+          autovacuum_analyze_threshold = 1000
+        )
+      `,
+      sql`
+        ALTER TABLE ws_option_trades SET (
+          autovacuum_vacuum_scale_factor = 0.01,
+          autovacuum_analyze_scale_factor = 0.005,
+          autovacuum_vacuum_threshold = 1000,
+          autovacuum_analyze_threshold = 1000
+        )
+      `,
+      sql`DROP INDEX IF EXISTS ws_net_flow_per_ticker_ticker_ts_idx`,
+    ],
+  },
 ];

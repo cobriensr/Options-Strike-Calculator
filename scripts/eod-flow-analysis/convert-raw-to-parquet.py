@@ -11,13 +11,13 @@ Output:  ~/Desktop/Bot-Eod-parquet/YYYY-MM-DD-trades.parquet  (zstd)
 
 Usage:
     # Convert all CSVs not yet converted
-    ml/.venv/bin/python scripts/eod-flow-analysis/convert-raw-to-parquet.py
+    ml/.venv/Scripts/python scripts/eod-flow-analysis/convert-raw-to-parquet.py
 
     # Convert one specific date
-    ml/.venv/bin/python scripts/eod-flow-analysis/convert-raw-to-parquet.py --day 2026-04-23
+    ml/.venv/Scripts/python scripts/eod-flow-analysis/convert-raw-to-parquet.py --day 2026-04-23
 
     # Re-convert (overwrite existing parquet)
-    ml/.venv/bin/python scripts/eod-flow-analysis/convert-raw-to-parquet.py --day 2026-04-23 --force
+    ml/.venv/Scripts/python scripts/eod-flow-analysis/convert-raw-to-parquet.py --day 2026-04-23 --force
 
 Files are NOT checked into git — set INPUT_DIR / OUTPUT_DIR via env or
 CLI flags to point elsewhere.

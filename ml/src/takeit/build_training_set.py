@@ -18,7 +18,7 @@ No leakage:
   pre-fire data.
 
 CLI:
-    ml/.venv/bin/python -m ml.src.takeit.build_training_set \\
+    ml/.venv/Scripts/python -m ml.src.takeit.build_training_set \\
         --out ml/data/takeit \\
         --threshold 20
 """

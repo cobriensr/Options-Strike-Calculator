@@ -5,7 +5,7 @@ and stop-fire rules from 59 trading days of periscope_snapshots + index_candles_
 
 Usage:
     set -a; source .env.local; set +a
-    ml/.venv/bin/python scripts/study_periscope_rules_2026-05-21.py
+    ml/.venv/Scripts/python scripts/study_periscope_rules_2026-05-21.py
 
 Outputs:
     docs/tmp/periscope-rules-study-findings-2026-05-21.md

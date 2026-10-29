@@ -15,7 +15,7 @@ Outputs a CSV report at docs/tmp/precision-stack-backfill-<UTC-date>.csv
 plus a per-day summary printed to stdout.
 
 Usage:
-    ml/.venv/bin/python scripts/backfill-precision-stack.py
+    ml/.venv/Scripts/python scripts/backfill-precision-stack.py
 
 Prereq: migration 104 must be applied (script verifies and exits otherwise).
 
@@ -37,7 +37,7 @@ try:
     from psycopg2.extras import RealDictCursor, execute_values
 except ImportError as e:
     print(f"Missing dependency: {e}", file=sys.stderr)
-    print("Install: ml/.venv/bin/pip install psycopg2-binary numpy pandas", file=sys.stderr)
+    print("Install: ml/.venv/Scripts/pip install psycopg2-binary numpy pandas", file=sys.stderr)
     sys.exit(1)
 
 

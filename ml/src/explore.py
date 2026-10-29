@@ -18,7 +18,7 @@ try:
     import psycopg2
 except ImportError:
     print(
-        "Missing dependencies. Run:\n  ml/.venv/bin/pip install psycopg2-binary pandas"
+        "Missing dependencies. Run:\n  ml/.venv/Scripts/pip install psycopg2-binary pandas"
     )
     sys.exit(1)
 

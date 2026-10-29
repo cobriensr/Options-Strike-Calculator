@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Backfill lottery_finder_fires.score under V2 weights.
 
-After `ml/.venv/bin/python ml/src/lottery_scoring.py` regenerates
+After `ml/.venv/Scripts/python ml/src/lottery_scoring.py` regenerates
 `ml/output/lottery_score_weights.json`, historical rows in
 lottery_finder_fires still carry scores assigned at insert time under
 the old V1 formula. This script recomputes score for every fire using
@@ -20,7 +20,7 @@ V2 gates (score → NULL):
 Idempotent: re-running with the same weights file writes identical values.
 
 Usage:
-    ml/.venv/bin/python scripts/backfill_lottery_scores.py [--dry-run]
+    ml/.venv/Scripts/python scripts/backfill_lottery_scores.py [--dry-run]
 
 Flags:
     --dry-run   Print distribution comparison without writing to DB.
@@ -39,7 +39,10 @@ from pathlib import Path
 
 from psycopg2.extras import execute_values
 
-from _pipeline_retry import connect_with_retry
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'ml' / 'src'))
+
+from _pipeline_retry import connect_with_retry  # noqa: E402
+from lottery_refit_guard import announce_skip, refit_blocked  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 JSON_PATH = ROOT / 'ml' / 'output' / 'lottery_score_weights.json'
@@ -249,6 +252,13 @@ def main() -> None:
     )
     args = parser.parse_args()
     dry_run: bool = args.dry_run
+
+    # Temporary guard (ml/src/lottery_refit_guard.py): a real run would rewrite
+    # boundary-quintile scores (left-closed '<' vs right-closed runtime).
+    # --dry-run writes nothing and stays allowed.
+    if not dry_run and refit_blocked(date_type.today()):
+        announce_skip('backfill_lottery_scores.py')
+        return
 
     load_env()
 

@@ -13,23 +13,42 @@
  *   - The header is wrapped in `<header>` with sticky positioning + a
  *     translucent backdrop-blur. Don't move the wrapper — the layout
  *     container above it depends on the sticky context.
- *   - The status badge cascades from most-severe to least-severe
- *     (BACKTEST > NO INTRADAY > LIVE/STALE/CLOSED). Only one renders.
+ *   - The status pills follow the view toggle: BACKTEST with Loading… or
+ *     NO INTRADAY in backtest mode, otherwise LIVE/STALE/CLOSED.
+ *   - The header publishes its height as `--app-header-h`
+ *     (`usePublishedHeaderHeight`). The SectionNav strip (below lg) and
+ *     sidebar stick right under it, and the section anchors' scroll
+ *     margin (`--anchor-offset` in index.css) clears header + strip.
+ *   - The header stays one control row tall (62px on a phone, 69px from
+ *     sm, up to 90px from xl where the title may wrap), so the sticky
+ *     header + strip take little of a small screen, and the owner's full
+ *     row can't grow the header to 105px or push controls off the page.
+ *     Instead of wrapping, the controls row (`ControlsRow`) scrolls
+ *     sideways at every width when its controls don't fit, with edge
+ *     fades when there is more to scroll. Below xl its items keep their
+ *     natural width; from xl they first squeeze. The order is the
+ *     owner's, and it is the DOM order, so focus follows what you see:
+ *     the view toggle, the status pills (short on a phone: BT, NO ID), the
+ *     Schwab login warning, then the tools (Access Key first). At 320px
+ *     the toggle and both short pills fit. From sm to xl the title keeps
+ *     one line.
  *   - The hidden file input for VIX CSV uploads must stay co-located
  *     with the visible button so `useRef` can drive `.click()`.
  *
- * The component takes data as props (no hooks called here) so App.tsx
- * remains the single owner of the underlying state — easier to test and
- * easier to reason about during a snapshot debugger walkthrough. Two
- * children are self-contained:
+ * The component takes data as props (its one hook only publishes the
+ * header's height) so App.tsx remains the single owner of the underlying
+ * state — easier to test and easier to reason about during a snapshot
+ * debugger walkthrough. Three children are self-contained:
  *
+ *   - `ControlsRow` tracks its own scroll position for the edge fades,
+ *     so a scroll re-renders only the row wrapper, not the header.
  *   - `SchwabExpiryBadge` polls its own owner-only status endpoint, and
  *     nothing else reads that state.
  *   - `QuoteStatusBadge` runs the 5 s quote-staleness clock
  *     (`useQuoteStaleness`) so the tick re-renders only that pill (F1).
  */
 
-import type { Ref } from 'react';
+import { useLayoutEffect, useRef, type Ref } from 'react';
 import AccessKeyButton from '../AccessKey/AccessKeyButton';
 import { StatusBadge } from '../ui';
 import { theme } from '../../themes';
@@ -37,6 +56,7 @@ import type { useMarketData } from '../../hooks/useMarketData';
 import type { useHistoryData } from '../../hooks/useHistoryData';
 import type { useVixData } from '../../hooks/useVixData';
 import type { CollapseSignal } from '../collapse-context';
+import ControlsRow from './ControlsRow';
 import QuoteStatusBadge from './QuoteStatusBadge';
 import SchwabAuthLink from './SchwabAuthLink';
 import SchwabExpiryBadge from './SchwabExpiryBadge';
@@ -91,6 +111,50 @@ export interface AppHeaderProps {
   onViewChange: (view: ViewMode) => void;
 }
 
+/**
+ * Publishes the header's height as `--app-header-h` on <html>. The sticky
+ * SectionNav (strip and sidebar) sits at that offset, and the section
+ * anchors' scroll margin (`--anchor-offset`) builds on it. index.css holds
+ * the measured defaults (62px on a phone, 69px from sm); this keeps the
+ * value exact when the header grows, e.g. to 90px at 1280 in owner mode
+ * with the Schwab countdown, where the controls squeeze and the title
+ * wraps.
+ */
+function usePublishedHeaderHeight() {
+  const headerRef = useRef<HTMLElement>(null);
+  // A layout effect, so the first paint already uses the real height.
+  useLayoutEffect(() => {
+    const header = headerRef.current;
+    if (!header) return;
+    const root = document.documentElement;
+    const publish = () => {
+      const height = header.getBoundingClientRect().height;
+      root.style.setProperty('--app-header-h', `${height}px`);
+    };
+    publish();
+    const observer = new ResizeObserver(publish);
+    observer.observe(header);
+    return () => {
+      observer.disconnect();
+      root.style.removeProperty('--app-header-h');
+    };
+  }, []);
+  return headerRef;
+}
+
+/**
+ * The VIX upload button's name once data is loaded. The button shows only
+ * the data's source, so the name says what it does too, and it starts
+ * with the shown text so voice control can match it (WCAG 2.5.3, label
+ * in name). The source is usually a day count ("9,137 days"); a cache
+ * saved without one reads 'cached'; anything else is an older label.
+ */
+function vixButtonName(source: string): string {
+  if (source === 'cached') return 'Cached VIX data, upload CSV';
+  if (/^[\d,]+ days$/.test(source)) return `${source} of VIX data, upload CSV`;
+  return `${source}: VIX data, upload CSV`;
+}
+
 export default function AppHeader({
   accessMode,
   isOwner,
@@ -113,8 +177,10 @@ export default function AppHeader({
   view,
   onViewChange,
 }: AppHeaderProps) {
+  const headerRef = usePublishedHeaderHeight();
   return (
     <header
+      ref={headerRef}
       className="border-edge sticky top-0 z-50 border-b backdrop-blur-md"
       style={{
         backgroundColor:
@@ -122,7 +188,10 @@ export default function AppHeader({
       }}
     >
       <div className="mx-auto flex max-w-[660px] items-center justify-between px-5 py-2 sm:py-3 lg:max-w-6xl">
-        <div>
+        {/* From sm to xl the title keeps one line, so the header stays one
+            control row tall; on a phone it wraps to leave the pills room.
+            At xl it may wrap when the owner's row squeezes it. */}
+        <div className="sm:max-xl:shrink-0">
           <div className="text-accent hidden font-sans text-[10px] font-bold tracking-[0.2em] uppercase sm:block">
             0DTE Options
           </div>
@@ -130,10 +199,16 @@ export default function AppHeader({
             Strike Calculator
           </h1>
         </div>
-        <div className="flex items-center gap-1.5 sm:gap-2">
+        <ControlsRow>
           <ViewToggle view={view} onViewChange={onViewChange} />
+          {/* Status: the pills, then the Schwab login warning. */}
           {isBacktestMode && (
-            <StatusBadge label="BACKTEST" color={theme.backtest} dot />
+            <StatusBadge
+              label="BACKTEST"
+              shortLabel="BT"
+              color={theme.backtest}
+              dot
+            />
           )}
           {isBacktestMode && historyData.loading && (
             <StatusBadge label="Loading…" color={theme.textMuted} />
@@ -141,6 +216,7 @@ export default function AppHeader({
           {isBacktestMode && historyData.error && !historyData.loading && (
             <StatusBadge
               label="NO INTRADAY"
+              shortLabel="NO ID"
               color={theme.red}
               dot
               title={historyData.error}
@@ -154,20 +230,8 @@ export default function AppHeader({
             />
           )}
           {accessMode === 'public' && (
-            <SchwabAuthLink
-              ariaLabel="Authenticate with Schwab"
-              text="Sign in"
-            />
+            <SchwabAuthLink ariaLabel="Sign in with Schwab" text="Sign in" />
           )}
-          {/* Access-key entry point. In the calculator view the sidebar
-              bottomSlot is the canonical mount on lg+, so this header
-              instance is hidden there (lg:hidden) to avoid duplicate
-              controls. In the alerts view there is no sidebar, so the
-              header is the canonical Access Key mount on desktop too and
-              must stay visible at every breakpoint. */}
-          <span className={view === 'alerts' ? undefined : 'lg:hidden'}>
-            <AccessKeyButton compact />
-          </span>
           {/* Owner-only refresh-token countdown. It brings its own Re-auth
               link when the login is close to lapsing, and hides that link
               while the 401-driven Re-auth below is already showing. */}
@@ -177,11 +241,21 @@ export default function AppHeader({
           />
           {market.needsAuth && isOwner && (
             <SchwabAuthLink
-              ariaLabel="Re-authenticate with Schwab"
+              ariaLabel="Re-auth with Schwab"
               text="Re-auth"
               color={theme.red}
             />
           )}
+          {/* The tools, from here on. First the access-key entry point. In
+              the calculator view the sidebar bottomSlot is the canonical
+              mount on lg+, so this header instance is hidden there
+              (lg:hidden) to avoid duplicate controls. In the alerts view
+              there is no sidebar, so the header is the canonical Access Key
+              mount on desktop too and must stay visible at every
+              breakpoint. */}
+          <span className={view === 'alerts' ? undefined : 'lg:hidden'}>
+            <AccessKeyButton compact />
+          </span>
           <button
             onClick={onCollapseAll}
             aria-label={
@@ -204,7 +278,6 @@ export default function AppHeader({
             <button
               onClick={onRunMigrations}
               disabled={migrateRunning}
-              aria-label="Run database migrations"
               title="Run DB migrations"
               className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200 disabled:cursor-wait disabled:opacity-50"
             >
@@ -243,7 +316,6 @@ export default function AppHeader({
             <button
               onClick={onBackfillFeatures}
               disabled={backfillRunning}
-              aria-label="Recompute training_features for all dates"
               title="Backfill training_features (rebuilds NOPE + flow + GEX feature columns for every date)"
               className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200 disabled:cursor-wait disabled:opacity-50"
             >
@@ -283,8 +355,16 @@ export default function AppHeader({
                 className="hidden"
                 aria-label="Upload VIX OHLC CSV file"
               />
+              {/* Once loaded, the visible text is just the data's source
+                  ("9,137 days"), so the name adds what the button does
+                  (vixButtonName). */}
               <button
                 onClick={onVixCsvClick}
+                aria-label={
+                  vix.vixDataLoaded
+                    ? vixButtonName(vix.vixDataSource)
+                    : undefined
+                }
                 className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
               >
                 <span className="text-[11px] font-semibold">
@@ -334,7 +414,7 @@ export default function AppHeader({
               {darkMode ? 'Light' : 'Dark'}
             </span>
           </button>
-        </div>
+        </ControlsRow>
       </div>
     </header>
   );

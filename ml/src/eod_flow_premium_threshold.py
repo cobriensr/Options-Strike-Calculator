@@ -24,7 +24,7 @@ Outputs under `ml/plots/eod-flow-premium-threshold/`:
   threshold_sweep_{N}min.png      — touch_rate vs premium threshold by dist
 
 Usage:
-  ml/.venv/bin/python src/eod_flow_premium_threshold.py
+  ml/.venv/Scripts/python src/eod_flow_premium_threshold.py
 """
 
 from __future__ import annotations

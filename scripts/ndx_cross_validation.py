@@ -48,7 +48,7 @@ Outputs:
   - docs/tmp/forensic-multi-day/ndx_cross_validation_findings.md
   - per-test CSVs (suffix _ndx)
 
-Run: ml/.venv/bin/python scripts/ndx_cross_validation.py
+Run: ml/.venv/Scripts/python scripts/ndx_cross_validation.py
 """
 
 from __future__ import annotations

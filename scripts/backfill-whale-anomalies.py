@@ -9,7 +9,7 @@ vs simultaneous same-strike pairs, and upserts into Neon Postgres
 
 Usage:
     DATABASE_URL="postgres://..." \\
-      ml/.venv/bin/python scripts/backfill-whale-anomalies.py [--dry-run]
+      ml/.venv/Scripts/python scripts/backfill-whale-anomalies.py [--dry-run]
 
 Idempotent — uses UNIQUE (option_chain, first_ts) + ON CONFLICT DO NOTHING.
 
@@ -32,7 +32,7 @@ try:
     from psycopg2.extras import execute_batch
 except ImportError as e:
     print(f"Missing dependency: {e}", file=sys.stderr)
-    print("Run with ml/.venv/bin/python", file=sys.stderr)
+    print("Run with ml/.venv/Scripts/python", file=sys.stderr)
     sys.exit(1)
 
 

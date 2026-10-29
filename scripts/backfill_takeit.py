@@ -18,7 +18,7 @@ Idempotent: re-running skips rows already on the current version.
 
 Usage:
     set -a && source .env.local && set +a && \\
-    ml/.venv/bin/python -m scripts.backfill_takeit \\
+    ml/.venv/Scripts/python -m scripts.backfill_takeit \\
         --alert-type both \\
         --batch-size 1000
 
@@ -72,7 +72,7 @@ def _load_bundles(alert_type: str) -> tuple[dict, str]:
     if not joblib_path.exists() or not json_path.exists():
         print(
             f"ERROR: missing bundle for {alert_type}. Regenerate with: "
-            f"ml/.venv/bin/python -m ml.src.takeit.train",
+            f"ml/.venv/Scripts/python -m ml.src.takeit.train",
             file=sys.stderr,
         )
         sys.exit(1)

@@ -28,7 +28,7 @@ Output:
 
 Usage:
 
-    ml/.venv/bin/python scripts/backfill-iv-anomalies-from-csv.py
+    ml/.venv/Scripts/python scripts/backfill-iv-anomalies-from-csv.py
 """
 
 from __future__ import annotations

@@ -15,7 +15,7 @@ distance above spot?"
 Run::
 
     set -a; source .env.local; set +a
-    ml/.venv/bin/python ml/src/periscope_eda/06_open_touch_curve.py
+    ml/.venv/Scripts/python ml/src/periscope_eda/06_open_touch_curve.py
 
 Outputs:
     ml/plots/periscope-eda/open_touch_curve.png

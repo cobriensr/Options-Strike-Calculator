@@ -38,7 +38,7 @@ async function uploadBundle(alertType) {
   const bundlePath = resolve(BUNDLE_DIR, `${alertType}_classifier.json`);
   if (!existsSync(bundlePath)) {
     throw new Error(
-      `bundle missing at ${bundlePath}; regenerate with: ml/.venv/bin/python -m ml.src.takeit.train`,
+      `bundle missing at ${bundlePath}; regenerate with: ml/.venv/Scripts/python -m ml.src.takeit.train`,
     );
   }
   const raw = readFileSync(bundlePath, 'utf8');

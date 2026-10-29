@@ -250,19 +250,6 @@ describe('StatusBadge', () => {
     expect(screen.queryByText(/●/)).not.toBeInTheDocument();
   });
 
-  it('renders as link when href is provided', () => {
-    render(
-      <StatusBadge
-        label="Re-authenticate"
-        color="#f87171"
-        href="/api/auth/init"
-      />,
-    );
-    const link = screen.getByRole('link', { name: 'Re-authenticate' });
-    expect(link).toHaveAttribute('href', '/api/auth/init');
-    expect(link.tagName).toBe('A');
-  });
-
   it('passes title attribute', () => {
     render(
       <StatusBadge label="ERROR" color="#f87171" title="Something failed" />,
@@ -271,6 +258,38 @@ describe('StatusBadge', () => {
       'title',
       'Something failed',
     );
+  });
+
+  it('shows shortLabel on a phone and keeps label as the screen-reader text', () => {
+    const { container } = render(
+      <StatusBadge
+        label="BACKTEST"
+        shortLabel="BT"
+        color="#a78bfa"
+        dot
+        title="Backtest mode"
+      />,
+    );
+    const badge = container.firstElementChild as HTMLElement;
+    expect(badge).toHaveAttribute('title', 'Backtest mode');
+    expect(badge).toHaveClass('relative', 'max-sm:px-2');
+    const short = screen.getByText('BT', { exact: true });
+    expect(short).toHaveAttribute('aria-hidden', 'true');
+    expect(short).toHaveClass('sm:hidden');
+    const full = screen.getByText('● BACKTEST', { exact: true });
+    expect(full).toHaveClass('max-sm:sr-only');
+    // What assistive tech reads: the badge minus its aria-hidden parts.
+    const exposed = badge.cloneNode(true) as HTMLElement;
+    exposed.querySelectorAll('[aria-hidden="true"]').forEach((el) => {
+      el.remove();
+    });
+    expect(exposed.textContent).toBe('● BACKTEST');
+  });
+
+  it('renders no short-label markup without shortLabel', () => {
+    const { container } = render(<StatusBadge label="LIVE" color="#4ade80" />);
+    expect(container.querySelector('[aria-hidden]')).toBeNull();
+    expect(container.firstElementChild).not.toHaveClass('max-sm:px-2');
   });
 });
 

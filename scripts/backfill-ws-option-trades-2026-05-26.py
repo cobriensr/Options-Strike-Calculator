@@ -38,8 +38,8 @@ Field mapping (parquet col → ws_option_trades col):
 
 Usage:
     set -a; source .env.local; set +a
-    ml/.venv/bin/python scripts/backfill-ws-option-trades-2026-05-26.py
-    ml/.venv/bin/python scripts/backfill-ws-option-trades-2026-05-26.py --apply
+    ml/.venv/Scripts/python scripts/backfill-ws-option-trades-2026-05-26.py
+    ml/.venv/Scripts/python scripts/backfill-ws-option-trades-2026-05-26.py --apply
 """
 
 from __future__ import annotations

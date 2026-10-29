@@ -19,8 +19,8 @@ Computes:
 
 Usage
 -----
-    ml/.venv/bin/python scripts/enrich_lottery_outcomes.py
-    ml/.venv/bin/python scripts/enrich_lottery_outcomes.py --date 2026-05-05
+    ml/.venv/Scripts/python scripts/enrich_lottery_outcomes.py
+    ml/.venv/Scripts/python scripts/enrich_lottery_outcomes.py --date 2026-05-05
 """
 
 from __future__ import annotations

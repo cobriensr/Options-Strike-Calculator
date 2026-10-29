@@ -4,7 +4,7 @@ Mirrors api/__tests__/lottery-exit-policies.test.ts and
 api/__tests__/flow-inversion.test.ts so the local enrichment cannot
 drift from the Vercel cron's logic without breaking this suite. Run:
 
-    ml/.venv/bin/pytest scripts/test_enrich_lottery_outcomes.py -q
+    ml/.venv/Scripts/pytest scripts/test_enrich_lottery_outcomes.py -q
 """
 
 from __future__ import annotations
