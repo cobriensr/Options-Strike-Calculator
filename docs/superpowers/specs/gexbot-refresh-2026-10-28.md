@@ -128,3 +128,33 @@ Owner decisions (each becomes a phase once decided; default pick in brackets):
   (05-26 → 10-28) against the scraper era before choosing negate-on-ingest
   vs taker-sign rewrite. Report: main checkout
   `docs/tmp/gexbot-refresh-2026-10-28/sign-study.md`.
+- 2026-10-28: sign study result (`docs/tmp/gexbot-refresh-2026-10-28/sign-study-results.md`):
+  price tests inconclusive (69 tests, min q 0.335); construction check vs UW
+  taker flow shows GEXBot gamma = −(scraper MM convention), flipping exactly at
+  05-26 (high confidence); no trading edge shown for either sign.
+- 2026-10-28: D1 → **yes, negate GEXBot gamma** so per-strike gamma is
+  MM-signed everywhere it is labelled MM: on ingest into `periscope_snapshots`
+  and in the GEX Landscape read path; re-sign the stored GEXBot-era gamma rows;
+  add `periscope_snapshots.source`. Charm and vanna unchanged. GEXBot scalar
+  fields (`zcvr`, `z_mlgamma`, …) keep the vendor's taker sign and get taker
+  labels (P5). Rule re-validation on GEXBot-era history follows (D7).
+- 2026-10-28: D6 → **yes**: dedupe the live capture tables (~480 rows; Blob
+  archive untouched), add unique keys, `ON CONFLICT DO NOTHING`.
+
+## Phases added by the D1 / D6 decisions
+
+| Phase | Scope | Order notes |
+|---|---|---|
+| P9 (D6) | Migration: delete duplicate live rows in `gexbot_snapshots` (key ticker, source_timestamp) and `gexbot_api_capture` (key ticker, endpoint, category, source_timestamp), keeping the lowest `id`; partial unique indexes `WHERE source_timestamp IS NOT NULL`; both INSERT paths use `ON CONFLICT DO NOTHING` with no conflict target, so code is safe before or after the migration runs; remove P2's "not idempotent until D6" comments | After P4. Apply to prod after hours |
+| P10a (D1) | Migration only: `ALTER TABLE periscope_snapshots ADD COLUMN source TEXT` (nullable) | Deploy + apply before P10b |
+| P10b (D1) | Code: populate negates gamma and writes `source = 'gexbot'`; GEX Landscape negates gamma at read; labels say MM for gamma. Migration: tag `source = 'scraper'` before the 2026-05-26 cutover; `UPDATE … SET value = -value, source = 'gexbot' WHERE panel = 'gamma' AND source IS NULL AND captured_at >= cutover`; charm/vanna rows get `source = 'gexbot'` unflipped. `source IS NULL` guard makes the flip order-safe and run-once | Apply right after the P10b deploy, after hours |
+
+Run order: P3 → P4 → P9 → P10a → P10b → P5 → P6 → P7 → P8.
+
+D5 note (2026-10-28): the daily `/hist/eod` capture is owned by a separate
+spec from another session, `2026-10-28-gexbot-eod-capture-design.md` (R2
+bucket, all tickers). It is out of scope here; the rest of D5 (persist Classic
+`strikes[]`, more live tickers, a true 1-min Δ) stays open for the owner. Prod
+migrations are applied by direct SQL against `DATABASE_URL` with a
+`schema_migrations` row (id + description), or by the owner via
+`POST /api/journal/migrate`.
