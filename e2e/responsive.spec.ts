@@ -131,14 +131,35 @@ test.describe('Responsive Layout', () => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto('/');
 
-    // Panels and the dark-mode toggle sit past the right edge of the
-    // header's sideways-scrolling controls row. Tab from one to the other.
+    // The browser scrolls a fully hidden control into view on focus by
+    // itself, but leaves a partly visible one cut off. So scroll the
+    // header's controls row until only ~40% of the dark-mode toggle shows,
+    // focus Panels (just before it) without scrolling, then Tab.
     const header = page.getByRole('banner');
-    await header.getByRole('button', { name: 'Show or hide panels' }).focus();
-    await page.keyboard.press('Tab');
     const themeToggle = header.getByRole('button', {
       name: 'Switch to light mode',
     });
+    await header
+      .getByRole('navigation', { name: 'Application view' })
+      .locator('..')
+      .evaluate((row) => {
+        const toggle = row.querySelector<HTMLElement>(
+          '[aria-label="Switch to light mode"]',
+        );
+        const panels = row.querySelector<HTMLElement>(
+          '[aria-label="Show or hide panels"]',
+        );
+        if (!toggle || !panels) throw new Error('header controls missing');
+        const rowBox = row.getBoundingClientRect();
+        row.scrollLeft +=
+          toggle.getBoundingClientRect().left -
+          rowBox.left -
+          (rowBox.width - toggle.offsetWidth * 0.4);
+        panels.focus({ preventScroll: true });
+      });
+    await expect(themeToggle).not.toBeInViewport({ ratio: 1 });
+
+    await page.keyboard.press('Tab');
     await expect(themeToggle).toBeFocused();
     await expect(themeToggle).toBeInViewport({ ratio: 1 });
   });

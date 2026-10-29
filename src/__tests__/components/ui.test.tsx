@@ -304,6 +304,15 @@ describe('StatusBadge', () => {
     expect(container.querySelector('[aria-hidden]')).toBeNull();
     expect(container.firstElementChild).not.toHaveClass('max-sm:px-2');
   });
+
+  it('does not let a link badge take a shortLabel (its name is its text)', () => {
+    render(
+      // @ts-expect-error -- shortLabel and href are mutually exclusive
+      <StatusBadge label="Re-auth" shortLabel="RA" color="#f87171" href="/x" />,
+    );
+    // The type check is the guard; at runtime the link still names itself.
+    expect(screen.getByRole('link', { name: 'Re-auth' })).toBeInTheDocument();
+  });
 });
 
 describe('ErrorMsg', () => {

@@ -470,19 +470,26 @@ describe('AppHeader', () => {
     );
   });
 
-  it('keeps the DOM (focus) order: view toggle, status, Schwab warning, tools', () => {
-    renderHeader({ isBacktestMode: true });
-    const precedes = (a: Element, b: Element) =>
-      (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
-    const toggle = screen.getByRole('navigation', { name: 'Application view' });
-    const pill = screen.getByText('BT', { exact: true });
-    const schwab = screen.getByTestId('schwab-expiry-badge-stub');
-    const collapse = screen.getByRole('button', {
-      name: 'Collapse all sections',
+  it('keeps the owner order in the DOM, so focus follows it: toggle, pills, Schwab warning, Re-auth, Access, tools', () => {
+    renderHeader({
+      isOwner: true,
+      isBacktestMode: true,
+      market: makeMarket({ needsAuth: true }),
     });
-    expect(precedes(toggle, pill)).toBe(true);
-    expect(precedes(pill, schwab)).toBe(true);
-    expect(precedes(schwab, collapse)).toBe(true);
+    const sequence = [
+      screen.getByRole('navigation', { name: 'Application view' }),
+      screen.getByText('BT', { exact: true }),
+      screen.getByTestId('schwab-expiry-badge-stub'),
+      screen.getByRole('link', { name: 'Re-authenticate with Schwab' }),
+      screen.getByTestId('access-key-button'),
+      screen.getByRole('button', { name: 'Collapse all sections' }),
+      screen.getByRole('button', { name: 'Switch to dark mode' }),
+    ];
+    const header = screen.getByRole('banner');
+    const inDomOrder = [...header.querySelectorAll('*')].filter((el) =>
+      sequence.includes(el as HTMLElement),
+    );
+    expect(inDomOrder).toEqual(sequence);
   });
 
   // ── Quote staleness badge (useQuoteStaleness, F1) ────────
