@@ -111,7 +111,15 @@ export async function fetchEodTickers(): Promise<{
   const priority = EOD_PRIORITY.filter((t) => valid.has(t));
   const prioritySet = new Set(priority);
   const rest = [...valid].filter((t) => !prioritySet.has(t)).sort();
-  return { tickers: [...priority, ...rest], rejected };
+  const tickers = [...priority, ...rest];
+  // An empty or SPX-less list means GEXBot answered with something other
+  // than its real catalog; capturing nothing must not look like success.
+  if (tickers.length === 0 || !tickers.includes('SPX')) {
+    throw new Error(
+      `gexbot_tickers_failed: implausible list (${tickers.length} tickers)`,
+    );
+  }
+  return { tickers, rejected };
 }
 
 async function cancelBody(res: Response): Promise<void> {

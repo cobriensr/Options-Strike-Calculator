@@ -3,19 +3,22 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const { mockCapture, mockWarn, eod, zip } = vi.hoisted(() => ({
-  mockCapture: vi.fn(),
-  mockWarn: vi.fn(),
-  eod: {
-    fetchEodTickers: vi.fn(),
-    latestEligibleReportDate: vi.fn(),
-    requestEodReport: vi.fn(),
-    storeEodReport: vi.fn(),
-    indexExistingObject: vi.fn(),
-    listStoredTickers: vi.fn(),
-  },
-  zip: { validateEodZip: vi.fn() },
-}));
+const { mockCapture, mockException, mockReport, mockWarn, eod, zip } =
+  vi.hoisted(() => ({
+    mockCapture: vi.fn(),
+    mockException: vi.fn(),
+    mockReport: vi.fn(),
+    mockWarn: vi.fn(),
+    eod: {
+      fetchEodTickers: vi.fn(),
+      latestEligibleReportDate: vi.fn(),
+      requestEodReport: vi.fn(),
+      storeEodReport: vi.fn(),
+      indexExistingObject: vi.fn(),
+      listStoredTickers: vi.fn(),
+    },
+    zip: { validateEodZip: vi.fn() },
+  }));
 
 vi.mock('../_lib/logger.js', () => ({
   default: { info: vi.fn(), warn: mockWarn, error: vi.fn() },
@@ -23,11 +26,12 @@ vi.mock('../_lib/logger.js', () => ({
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
     setTag: vi.fn(),
-    captureException: vi.fn(),
+    captureException: mockException,
     captureMessage: mockCapture,
   },
   metrics: { uwRateLimit: vi.fn() },
 }));
+vi.mock('../_lib/axiom.js', () => ({ reportCronRun: mockReport }));
 vi.mock('../_lib/gexbot-eod.js', () => eod);
 vi.mock('../_lib/gexbot-eod-zip.js', async () => {
   class EodZipError extends Error {
@@ -73,6 +77,16 @@ async function run() {
 }
 
 type Json = Record<string, any>;
+
+const FAILED_FP = ['gexbot-eod', 'capture-failed'];
+
+function failureCaptures() {
+  return mockCapture.mock.calls.filter(
+    ([, o]) =>
+      JSON.stringify((o as { fingerprint?: string[] }).fingerprint) ===
+      JSON.stringify(FAILED_FP),
+  );
+}
 
 function setTickers(tickers: string[], rejected: string[] = []) {
   eod.fetchEodTickers.mockResolvedValue({ tickers, rejected });
@@ -162,6 +176,7 @@ describe('archive-gexbot-eod', () => {
       { ticker: 'A', reason: 'object_without_metadata' },
     ]);
     expect(json.stored).toBe(1);
+    expect(failureCaptures()).toHaveLength(1);
   });
 
   it('discards an older served date that already has a row', async () => {
@@ -175,6 +190,7 @@ describe('archive-gexbot-eod', () => {
     const json = res._json as Json;
     expect(r.discard).toHaveBeenCalledTimes(1);
     expect(json.notYetPublished).toBe(1);
+    expect(json.status).toBe('partial');
     expect(json.stored).toBe(0);
     expect(eod.storeEodReport).not.toHaveBeenCalled();
   });
@@ -221,6 +237,8 @@ describe('archive-gexbot-eod', () => {
     expect(json.status).toBe('partial');
     expect(json.leftover).toContain('B');
     expect(json.leftover).toContain('D');
+    // By design (Ruling 15): leftover-only runs rely on the audit cron.
+    expect(failureCaptures()).toHaveLength(0);
     expect(eod.requestEodReport).not.toHaveBeenCalledWith(
       'key',
       'D',
@@ -256,6 +274,7 @@ describe('archive-gexbot-eod', () => {
     expect((res._json as Json).failed).toEqual([
       { ticker: 'A', reason: 'bad_disposition' },
     ]);
+    expect(failureCaptures()).toHaveLength(1);
   });
 
   it('fails a truncated body and reports partial', async () => {
@@ -286,6 +305,7 @@ describe('archive-gexbot-eod', () => {
     expect((res._json as Json).failed).toEqual([
       { ticker: 'A', reason: 'zip_bad_crc' },
     ]);
+    expect(failureCaptures()).toHaveLength(1);
     expect(eod.storeEodReport).not.toHaveBeenCalled();
   });
 
@@ -299,6 +319,7 @@ describe('archive-gexbot-eod', () => {
     expect((res._json as Json).failed).toEqual([
       { ticker: 'A', reason: 'r2_verify_failed' },
     ]);
+    expect(failureCaptures()).toHaveLength(1);
   });
 
   it('truncates unknown error messages to 120 chars', async () => {
@@ -313,8 +334,28 @@ describe('archive-gexbot-eod', () => {
     eod.listStoredTickers.mockRejectedValue(new Error('connection lost'));
     const res = await run();
     expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({ error: 'Internal error' });
+    expect(mockException).toHaveBeenCalledTimes(1);
+    expect(mockReport).toHaveBeenCalledWith(
+      'archive-gexbot-eod',
+      expect.objectContaining({ status: 'error', message: 'connection lost' }),
+    );
     expect(eod.requestEodReport).not.toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('reports error when the ticker list fetch rejects', async () => {
+    eod.fetchEodTickers.mockRejectedValue(
+      new Error('gexbot_tickers_failed: implausible list (0 tickers)'),
+    );
+    const res = await run();
+    expect(res._status).toBe(500);
+    expect(mockException).toHaveBeenCalledTimes(1);
+    expect(mockReport).toHaveBeenCalledWith(
+      'archive-gexbot-eod',
+      expect.objectContaining({ status: 'error' }),
+    );
+    expect(eod.listStoredTickers).not.toHaveBeenCalled();
+    expect(eod.requestEodReport).not.toHaveBeenCalled();
   });
 
   it('fails only that ticker when a lazy served-date lookup rejects', async () => {
@@ -330,6 +371,7 @@ describe('archive-gexbot-eod', () => {
     const json = res._json as Json;
     expect(json.stored).toBe(1);
     expect(json.failed).toEqual([{ ticker: 'A', reason: 'error: blip' }]);
+    expect(failureCaptures()).toHaveLength(1);
   });
 
   it('reports error when GEXBOT_API_KEY is missing', async () => {
@@ -349,6 +391,18 @@ describe('archive-gexbot-eod', () => {
     expect(json.entryCountWarnings).toEqual([{ ticker: 'A', entryCount: 14 }]);
     expect(json.status).toBe('success');
     expect(mockWarn).toHaveBeenCalled();
+    expect(mockCapture).toHaveBeenCalledTimes(1);
+    expect(mockCapture).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        level: 'warning',
+        fingerprint: ['gexbot-eod', 'entry-count'],
+        extra: {
+          expectedDate: EXPECTED,
+          entryCountWarnings: [{ ticker: 'A', entryCount: 14 }],
+        },
+      }),
+    );
   });
 
   it('warns about rejected tickers', async () => {
@@ -374,6 +428,8 @@ describe('archive-gexbot-eod', () => {
     expect(json.leftover).toEqual(['D']);
     expect(json.status).toBe('partial');
     expect(eod.requestEodReport).toHaveBeenCalledTimes(3);
+    // By design (Ruling 15): leftover-only runs rely on the audit cron.
+    expect(failureCaptures()).toHaveLength(0);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -390,9 +446,82 @@ describe('archive-gexbot-eod', () => {
     const res = await run();
     const json = res._json as Json;
     expect(json.leftover).toEqual(['A']);
+    expect(failureCaptures()).toHaveLength(0);
     expect(json.failed).toEqual([]);
     expect(json.status).toBe('partial');
     expect(mockCapture).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not request a ticker whose index lookup outlives a 429', async () => {
+    setTickers(['A', 'B', 'C']);
+    let releaseC: () => void = () => undefined;
+    eod.indexExistingObject.mockImplementation((t: string) =>
+      t === 'C'
+        ? new Promise<'absent'>((resolve) => {
+            releaseC = () => resolve('absent');
+          })
+        : Promise.resolve('absent' as const),
+    );
+    eod.requestEodReport.mockImplementation(async (_k: string, t: string) => {
+      if (t === 'B') {
+        setTimeout(() => releaseC(), 10);
+        return { kind: 'quota' as const };
+      }
+      return ok();
+    });
+    const res = await run();
+    const json = res._json as Json;
+    expect(eod.requestEodReport).not.toHaveBeenCalledWith(
+      'key',
+      'C',
+      expect.anything(),
+    );
+    expect(json.leftover).toContain('C');
+    expect(json.stopReason).toBe('quota');
+  });
+
+  it('sends a post-abort store failure to failed, not leftover', async () => {
+    setTickers(['A']);
+    eod.requestEodReport.mockResolvedValue(
+      ok({
+        readBody: async () => {
+          await new Promise((r) => setTimeout(r, 745_000));
+          return new Uint8Array([1]);
+        },
+      }),
+    );
+    eod.storeEodReport.mockRejectedValue(
+      new Error('r2_verify_failed: etag mismatch'),
+    );
+    const res = await run();
+    const json = res._json as Json;
+    expect(json.failed).toEqual([{ ticker: 'A', reason: 'r2_verify_failed' }]);
+    expect(json.leftover).toEqual([]);
+    expect(failureCaptures()).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('logs every failed ticker with its error', async () => {
+    setTickers(['A']);
+    eod.requestEodReport.mockResolvedValue({ kind: 'http_error', status: 503 });
+    await run();
+    expect(mockWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ ticker: 'A', reason: 'http_503' }),
+      'gexbot-eod ticker failed',
+    );
+  });
+
+  it('caps the Sentry failure list at 100 and reports the full count', async () => {
+    const many = Array.from({ length: 120 }, (_, i) => `T${i}`);
+    setTickers(many);
+    eod.requestEodReport.mockResolvedValue({ kind: 'http_error', status: 500 });
+    await run();
+    const [, opts] = failureCaptures()[0] as [
+      string,
+      { extra: { failed: unknown[]; failedCount: number } },
+    ];
+    expect(opts.extra.failed).toHaveLength(100);
+    expect(opts.extra.failedCount).toBe(120);
   });
 });

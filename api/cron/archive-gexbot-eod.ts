@@ -108,6 +108,19 @@ export default withCronInstrumentation(
     const leftover: string[] = [];
     const entryCountWarnings: { ticker: string; entryCount: number }[] = [];
 
+    const recordFailure = (
+      ticker: string,
+      err?: unknown,
+      reason = reasonOf(err),
+    ): void => {
+      failed.push({ ticker, reason });
+      ctx.logger.warn({ ticker, reason, err }, 'gexbot-eod ticker failed');
+    };
+    const isAbort = (err: unknown): boolean =>
+      controller.signal.aborted &&
+      (err === controller.signal.reason ||
+        (err instanceof Error && err.name === 'AbortError'));
+
     const processTicker = async (ticker: string): Promise<void> => {
       if (!stop && elapsed() >= START_CUTOFF_MS) {
         stop = true;
@@ -123,6 +136,14 @@ export default withCronInstrumentation(
           (await storedFor(expected)).add(ticker);
           return;
         }
+        // The index lookup can outlive a 429 or the budget; re-check before
+        // spending a request.
+        if (stop || elapsed() >= START_CUTOFF_MS || controller.signal.aborted) {
+          if (!stop) stopReason ??= 'budget';
+          stop = true;
+          leftover.push(ticker);
+          return;
+        }
         const res = await requestEodReport(apiKey, ticker, controller.signal);
         if (res.kind === 'quota') {
           stop = true;
@@ -131,11 +152,11 @@ export default withCronInstrumentation(
           return;
         }
         if (res.kind === 'http_error') {
-          failed.push({ ticker, reason: `http_${res.status}` });
+          recordFailure(ticker, undefined, `http_${res.status}`);
           return;
         }
         if (res.kind === 'bad_response') {
-          failed.push({ ticker, reason: res.reason });
+          recordFailure(ticker, undefined, res.reason);
           return;
         }
         const have = await storedFor(res.servedDate).catch(async (err) => {
@@ -167,12 +188,14 @@ export default withCronInstrumentation(
           );
         }
       } catch (err) {
-        if (controller.signal.aborted) {
+        // Only the abort itself is leftover. validateEodZip and
+        // storeEodReport ignore the signal, so their errors stay failures.
+        if (isAbort(err)) {
           stopReason ??= 'budget';
           leftover.push(ticker);
           return;
         }
-        failed.push({ ticker, reason: reasonOf(err) });
+        recordFailure(ticker, err);
       }
     };
 
@@ -185,13 +208,29 @@ export default withCronInstrumentation(
     const attempted =
       stored + indexedFromR2 + skipped + notYetPublished + failed.length;
     let status = deriveCronStatus(failed.length, attempted);
-    if (leftover.length > 0 && status === 'success') status = 'partial';
+    // The expected report was not captured in either case.
+    if ((leftover.length > 0 || notYetPublished > 0) && status === 'success') {
+      status = 'partial';
+    }
 
+    // Leftover-only runs (429, budget) deliberately send no Sentry event:
+    // the audit cron catches a day that never completes (Ruling 15).
     if (failed.length > 0) {
       Sentry.captureMessage('GEXBot EOD capture had failures', {
         level: 'error',
         fingerprint: ['gexbot-eod', 'capture-failed'],
-        extra: { expectedDate: expected, failed },
+        extra: {
+          expectedDate: expected,
+          failed: failed.slice(0, 100),
+          failedCount: failed.length,
+        },
+      });
+    }
+    if (entryCountWarnings.length > 0) {
+      Sentry.captureMessage('GEXBot EOD report entry count differs', {
+        level: 'warning',
+        fingerprint: ['gexbot-eod', 'entry-count'],
+        extra: { expectedDate: expected, entryCountWarnings },
       });
     }
     ctx.logger.info(

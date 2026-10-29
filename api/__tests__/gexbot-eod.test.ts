@@ -146,6 +146,24 @@ describe('fetchEodTickers', () => {
     expect(out.rejected).toEqual(['BAD TICKER', '../x']);
   });
 
+  it('throws on an empty list', async () => {
+    fetchMock.mockResolvedValueOnce(
+      tickersResponse({ stocks: [], indexes: [], futures: [] }),
+    );
+    await expect(fetchEodTickers()).rejects.toThrow(
+      'gexbot_tickers_failed: implausible list (0 tickers)',
+    );
+  });
+
+  it('throws when the list has no SPX', async () => {
+    fetchMock.mockResolvedValueOnce(
+      tickersResponse({ stocks: ['AAPL'], indexes: ['NDX'], futures: [] }),
+    );
+    await expect(fetchEodTickers()).rejects.toThrow(
+      'gexbot_tickers_failed: implausible list (2 tickers)',
+    );
+  });
+
   it('throws gexbot_tickers_failed on a non-ok response', async () => {
     fetchMock.mockResolvedValueOnce(tickersResponse({}, 503));
     await expect(fetchEodTickers()).rejects.toThrow(/gexbot_tickers_failed/);
