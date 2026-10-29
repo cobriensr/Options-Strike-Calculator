@@ -123,7 +123,6 @@ scripts/delta-pressure-capture/*.csv.bak
 scripts/gamma-capture/screenshots/
 scripts/gamma-capture/*.csv
 scripts/gamma-capture/*.csv.bak
-scripts/eod-flow-analysis/output/backfill-buckets/
 
 # Lottery Finder backtest (docs/tmp/options-flow-analysis/) — track scripts
 # and load-bearing outputs (p14, p26-p31, macro_*) referenced by the spec at

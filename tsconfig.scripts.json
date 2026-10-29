@@ -35,7 +35,6 @@
     "scripts/_lib/periscope-outcome-backfill.ts",
     "scripts/_lib/periscope-outcome-backfill.test.ts",
     "scripts/backfill-regime-0dte.ts",
-    "scripts/backfill-snapshots.ts",
     "scripts/backfill-zero-gamma.ts",
     "scripts/migrate-db.ts",
     "scripts/run-migrations.ts",
