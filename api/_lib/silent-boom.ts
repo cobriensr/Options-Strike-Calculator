@@ -44,7 +44,7 @@ export const SILENT_BOOM_SPEC_V1 = Object.freeze({
   minOi: 100,
   /** Max multi-leg size share of the spike bucket. Buckets at or above
    *  this threshold are rejected — they're dominated by spread-leg
-   *  routing (mlat/mlet/etc. trade codes) and carry no directional
+   *  routing (MULTI_LEG_TRADE_CODES in multileg-codes.ts) and carry no directional
    *  thesis.
    *
    *  Threshold relaxed from 0.5 → 0.7 on 2026-05-16 after the EDA
@@ -98,7 +98,7 @@ export interface ChainBucket {
   /** Bid-side contracts in this bucket. */
   bidSize: number;
   /** Multi-leg contracts in this bucket — sum of size whose UW
-   *  trade_code is one of mlat/mlet/mlft/mfto/masl/mesl/mfsl/mlct
+   *  trade_code is one of the shared MULTI_LEG_TRADE_CODES (mlat/mlet/mlft/masl/mesl/mfsl/mlct/cbmo/mctp)
    *  (OPRA-standard multi-leg sale conditions). Caller aggregates
    *  from ws_option_trades.raw_payload->>'trade_code'. */
   multiLegSize: number;

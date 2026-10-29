@@ -57,6 +57,7 @@ import {
   mapToGexbotTicker,
   type FireTimeGexbotSnapshot,
 } from '../_lib/gexbot-queries.js';
+import { MULTI_LEG_TRADE_CODES } from '../_lib/multileg-codes.js';
 import { TAKEIT_GATE_EXEMPT_MIN_PROB } from '../_lib/takeit-score.js';
 import { withRetry } from '../_lib/uw-fetch.js';
 import { Sentry } from '../_lib/sentry.js';
@@ -111,19 +112,6 @@ interface BucketRow {
    *  silent_boom_alerts.spread_in_bucket by migration #171. */
   spread_in_bucket: DbNullableNumeric;
 }
-
-/** OPRA-standard multi-leg sale condition codes — drop buckets whose
- *  size is dominated by these (spec: silent-boom-ask-100-demote-2026-05-12). */
-const MULTI_LEG_TRADE_CODES = [
-  'mlat',
-  'mlet',
-  'mlft',
-  'mfto',
-  'masl',
-  'mesl',
-  'mfsl',
-  'mlct',
-] as const;
 
 interface ChainGroupBuilder {
   ticker: string;
@@ -215,7 +203,7 @@ export default withCronInstrumentation(
         COALESCE(SUM(size) FILTER (WHERE side = 'ask'), 0) AS ask_size,
         COALESCE(SUM(size) FILTER (WHERE side = 'bid'), 0) AS bid_size,
         COALESCE(SUM(size) FILTER (
-          WHERE raw_payload->>'trade_code' = ANY(${MULTI_LEG_TRADE_CODES as unknown as string[]}::text[])
+          WHERE raw_payload->>'trade_code' = ANY(${MULTI_LEG_TRADE_CODES as string[]}::text[])
         ), 0) AS multi_leg_size,
         SUM(price * size) AS notional,
         MAX(open_interest) AS bucket_max_oi,
