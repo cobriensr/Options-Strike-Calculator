@@ -5525,4 +5525,91 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 199,
+    description:
+      'Drop the redundant ws_net_flow_per_ticker_ticker_ts_idx (ticker, ts DESC; 4.5 GB on prod) and set per-table autovacuum thresholds on the large, hot tables. The index duplicates ws_net_flow_per_ticker_uq UNIQUE (ticker, ts): every reader filters ticker = X or ticker = ANY(...) plus a ts range, and the ORDER BYs apply to UNION or window results, so none needs a (ticker, ts DESC) scan, and the DESC copy only costs maintenance on every insert into a 31 GB table. Postgres defaults (analyze at 10% changed, vacuum at 20%, insert-vacuum at 20%) mean an 84M-row table re-analyzes only about every 9 trading days and its visibility map goes stale (the 2026-05-13 ws_gex_strike_expiry incident, see scripts/ops/neon-tune-autovac.py). ws_net_flow_per_ticker, strike_iv_snapshots, strike_exposures, lottery_finder_fires and net_flow_per_ticker_history get vacuum 1%, analyze 0.5%, insert-vacuum 1% and thresholds of 1000; the insert scale factor matters because ws_net_flow_per_ticker, strike_iv_snapshots, strike_exposures and net_flow_per_ticker_history are insert-only on prod (0 updates, 0 deletes), so the dead-tuple trigger never fires for them. ws_gex_strike_expiry, gex_strike_0dte and ws_option_trades were already tuned on prod by that script with the same four settings, and they are recorded here so a fresh DB matches; gex_strike_0dte is also insert-only, so it additionally gets the insert scale factor of 0.01 (the May tuning never made autovacuum vacuum it). Applied to prod by hand after the close (DROP INDEX CONCURRENTLY, then the ALTER TABLE SETs); the IF EXISTS drop and the ALTER SETs here are an idempotent no-op on prod and seed a fresh database.',
+    statements: (sql) => [
+      // ALTER TABLE ... SET (autovacuum_*) takes SHARE UPDATE EXCLUSIVE: it
+      // blocks no read or write, only (auto)vacuum, ANALYZE and other DDL on
+      // that table (a blocking autovacuum is cancelled after deadlock_timeout).
+      // The 5 s bound fails the migration instead of waiting on a manual
+      // VACUUM. Only the DROP INDEX takes ACCESS EXCLUSIVE, and only while the
+      // index still exists, so it runs last: the lock is held to commit.
+      sql`SET LOCAL lock_timeout = '5s'`,
+      sql`
+        ALTER TABLE ws_net_flow_per_ticker SET (
+          autovacuum_vacuum_scale_factor = 0.01,
+          autovacuum_analyze_scale_factor = 0.005,
+          autovacuum_vacuum_insert_scale_factor = 0.01,
+          autovacuum_vacuum_threshold = 1000,
+          autovacuum_analyze_threshold = 1000
+        )
+      `,
+      sql`
+        ALTER TABLE strike_iv_snapshots SET (
+          autovacuum_vacuum_scale_factor = 0.01,
+          autovacuum_analyze_scale_factor = 0.005,
+          autovacuum_vacuum_insert_scale_factor = 0.01,
+          autovacuum_vacuum_threshold = 1000,
+          autovacuum_analyze_threshold = 1000
+        )
+      `,
+      sql`
+        ALTER TABLE strike_exposures SET (
+          autovacuum_vacuum_scale_factor = 0.01,
+          autovacuum_analyze_scale_factor = 0.005,
+          autovacuum_vacuum_insert_scale_factor = 0.01,
+          autovacuum_vacuum_threshold = 1000,
+          autovacuum_analyze_threshold = 1000
+        )
+      `,
+      sql`
+        ALTER TABLE lottery_finder_fires SET (
+          autovacuum_vacuum_scale_factor = 0.01,
+          autovacuum_analyze_scale_factor = 0.005,
+          autovacuum_vacuum_insert_scale_factor = 0.01,
+          autovacuum_vacuum_threshold = 1000,
+          autovacuum_analyze_threshold = 1000
+        )
+      `,
+      sql`
+        ALTER TABLE net_flow_per_ticker_history SET (
+          autovacuum_vacuum_scale_factor = 0.01,
+          autovacuum_analyze_scale_factor = 0.005,
+          autovacuum_vacuum_insert_scale_factor = 0.01,
+          autovacuum_vacuum_threshold = 1000,
+          autovacuum_analyze_threshold = 1000
+        )
+      `,
+      // Tuned on prod 2026-05-13 by scripts/ops/neon-tune-autovac.py (four
+      // settings; gex_strike_0dte also gets the insert factor, 2026-10-29).
+      sql`
+        ALTER TABLE ws_gex_strike_expiry SET (
+          autovacuum_vacuum_scale_factor = 0.01,
+          autovacuum_analyze_scale_factor = 0.005,
+          autovacuum_vacuum_threshold = 1000,
+          autovacuum_analyze_threshold = 1000
+        )
+      `,
+      sql`
+        ALTER TABLE gex_strike_0dte SET (
+          autovacuum_vacuum_scale_factor = 0.01,
+          autovacuum_analyze_scale_factor = 0.005,
+          autovacuum_vacuum_insert_scale_factor = 0.01,
+          autovacuum_vacuum_threshold = 1000,
+          autovacuum_analyze_threshold = 1000
+        )
+      `,
+      sql`
+        ALTER TABLE ws_option_trades SET (
+          autovacuum_vacuum_scale_factor = 0.01,
+          autovacuum_analyze_scale_factor = 0.005,
+          autovacuum_vacuum_threshold = 1000,
+          autovacuum_analyze_threshold = 1000
+        )
+      `,
+      sql`DROP INDEX IF EXISTS ws_net_flow_per_ticker_ticker_ts_idx`,
+    ],
+  },
 ];

@@ -5,9 +5,10 @@
  * whatever Neon DB DATABASE_URL points at and prints the list of
  * newly applied migrations.
  *
- * Vercel runs this same path automatically on every deploy via
- * api/journal/init (init→migrate). This script lets you ship the
- * schema ahead of a deploy — useful when a follow-up local script
+ * Nothing applies migrations automatically: a deploy does not run them.
+ * Prod gets them by hand, through the owner-guarded POST
+ * /api/journal/migrate or this script. This script ships the schema
+ * ahead of a deploy — useful when a follow-up local script
  * (e.g. scripts/backfill-lottery-fires.mjs) needs the table to exist
  * before the next deploy lands.
  *
