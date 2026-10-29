@@ -283,7 +283,7 @@ describe('fetch-gexbot-strikes handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
-      status: 'partial',
+      status: 'error',
       rows: 0,
       failed: TOTAL_TASKS,
     });
@@ -352,12 +352,13 @@ describe('fetch-gexbot-strikes handler', () => {
         fingerprint: [
           'gexbot-fetch-failure',
           'fetch-gexbot-strikes',
-          'TimeoutError',
+          'timeout',
         ],
         tags: expect.objectContaining({
           'gexbot.cron': 'strikes',
           'gexbot.ticker': 'SPX',
           'gexbot.category': 'gamma_zero',
+          'gexbot.status': 'timeout',
         }),
       }),
     );
@@ -403,13 +404,112 @@ describe('fetch-gexbot-strikes handler', () => {
     expect(mockSentryCapture).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'SyntaxError' }),
       expect.objectContaining({
-        fingerprint: [
-          'gexbot-fetch-failure',
-          'fetch-gexbot-strikes',
-          'SyntaxError',
-        ],
+        fingerprint: ['gexbot-fetch-failure', 'fetch-gexbot-strikes', 'other'],
       }),
     );
+  });
+
+  describe('Sentry fingerprint carries the failure status class', () => {
+    /** SPX/gamma_zero fails with `status`; every other call succeeds. */
+    function stubSpxFailure(status: number) {
+      const fetchMock = vi.fn(async (input: string) => {
+        const url = String(input);
+        if (url.endsWith('/SPX/state/gamma_zero')) {
+          return {
+            ok: false,
+            status,
+            text: async () => 'upstream said no',
+          } as Response;
+        }
+        const segs = url.split('/');
+        const ticker =
+          segs.find((s) => GEXBOT_TICKERS.includes(s as never)) ?? 'SPX';
+        const category = segs.at(-1) ?? 'gamma_zero';
+        return {
+          ok: true,
+          status: 200,
+          json: async () => makeStateBody(ticker, category),
+        } as Response;
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      return fetchMock;
+    }
+
+    const spxCalls = (fetchMock: ReturnType<typeof vi.fn>): number =>
+      fetchMock.mock.calls.filter((c) =>
+        String(c[0]).endsWith('/SPX/state/gamma_zero'),
+      ).length;
+
+    it('http-429: quota exhaustion is not retried and is tagged 429', async () => {
+      const fetchMock = stubSpxFailure(429);
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      });
+      const res = mockResponse();
+      await handler(req, res);
+
+      expect(spxCalls(fetchMock)).toBe(1);
+      expect(res._json).toMatchObject({ status: 'partial', failed: 1 });
+      expect(mockSentryCapture).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'GexbotHttpError', status: 429 }),
+        expect.objectContaining({
+          fingerprint: [
+            'gexbot-fetch-failure',
+            'fetch-gexbot-strikes',
+            'http-429',
+          ],
+          tags: expect.objectContaining({ 'gexbot.status': '429' }),
+        }),
+      );
+    });
+
+    it('http-4xx: a 403 is tagged 403', async () => {
+      stubSpxFailure(403);
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      });
+      await handler(req, mockResponse());
+
+      expect(mockSentryCapture).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 403 }),
+        expect.objectContaining({
+          fingerprint: [
+            'gexbot-fetch-failure',
+            'fetch-gexbot-strikes',
+            'http-4xx',
+          ],
+          tags: expect.objectContaining({ 'gexbot.status': '403' }),
+        }),
+      );
+    });
+
+    it('http-5xx: a persistent 503 is retried, then tagged 503', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(MARKET_TIME);
+      const fetchMock = stubSpxFailure(503);
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      });
+      const pending = handler(req, mockResponse());
+      await vi.advanceTimersByTimeAsync(3500);
+      await pending;
+
+      expect(spxCalls(fetchMock)).toBe(3);
+      expect(mockSentryCapture).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 503 }),
+        expect.objectContaining({
+          fingerprint: [
+            'gexbot-fetch-failure',
+            'fetch-gexbot-strikes',
+            'http-5xx',
+          ],
+          tags: expect.objectContaining({ 'gexbot.status': '503' }),
+        }),
+      );
+    });
   });
 
   it('returns 500 and reports to Sentry when the capture INSERT rejects', async () => {

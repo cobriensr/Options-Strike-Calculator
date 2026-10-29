@@ -13,7 +13,7 @@
  * unmaintainable for marginal benefit at that row count.
  */
 
-import { getDb } from './db.js';
+import { getDb, withDbRetry } from './db.js';
 
 export interface CaptureRow {
   ticker: string;
@@ -28,7 +28,9 @@ export interface CaptureRow {
 /**
  * Batch-insert capture rows into `gexbot_api_capture` via UNNEST.
  * One Postgres round-trip regardless of row count. Empty input is a
- * no-op (skips the DB call).
+ * no-op (skips the DB call). The INSERT retries a transient Neon blip
+ * (2 retries, 10 s per attempt) like the snapshot INSERTs in the fast
+ * cron; any other error, or an exhausted retry, propagates.
  */
 export async function insertCaptureRows(rows: CaptureRow[]): Promise<void> {
   if (rows.length === 0) return;
@@ -40,17 +42,21 @@ export async function insertCaptureRows(rows: CaptureRow[]): Promise<void> {
   const sourceTs = rows.map((r) => r.sourceTimestamp);
   const rawJsons = rows.map((r) => r.rawJson);
 
-  await sql`
-    INSERT INTO gexbot_api_capture (
-      ticker, endpoint, category, source_timestamp, raw_response
-    )
-    SELECT t.ticker, t.endpoint, t.category, t.source_timestamp, t.raw_response::jsonb
-    FROM unnest(
-      ${tickers}::text[],
-      ${endpoints}::text[],
-      ${categories}::text[],
-      ${sourceTs}::bigint[],
-      ${rawJsons}::text[]
-    ) AS t(ticker, endpoint, category, source_timestamp, raw_response)
-  `;
+  await withDbRetry(
+    () => sql`
+      INSERT INTO gexbot_api_capture (
+        ticker, endpoint, category, source_timestamp, raw_response
+      )
+      SELECT t.ticker, t.endpoint, t.category, t.source_timestamp, t.raw_response::jsonb
+      FROM unnest(
+        ${tickers}::text[],
+        ${endpoints}::text[],
+        ${categories}::text[],
+        ${sourceTs}::bigint[],
+        ${rawJsons}::text[]
+      ) AS t(ticker, endpoint, category, source_timestamp, raw_response)
+    `,
+    2,
+    10_000,
+  );
 }

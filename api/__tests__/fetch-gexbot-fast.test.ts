@@ -442,6 +442,7 @@ describe('fetch-gexbot-fast handler', () => {
     expect(opts.tags['gexbot.ticker']).toBe('SPX');
     expect(opts.tags['gexbot.endpoint']).toBe('state-maxchange');
     expect(opts.tags['gexbot.category']).toBe('gex_zero');
+    expect(opts.tags['gexbot.status']).toBe('401');
   });
 
   // ── Retry on transient 5xx ────────────────────────────────
@@ -534,15 +535,12 @@ describe('fetch-gexbot-fast handler', () => {
     expect(mockSentryCapture).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'TimeoutError' }),
       expect.objectContaining({
-        fingerprint: [
-          'gexbot-fetch-failure',
-          'fetch-gexbot-fast',
-          'TimeoutError',
-        ],
+        fingerprint: ['gexbot-fetch-failure', 'fetch-gexbot-fast', 'timeout'],
         tags: expect.objectContaining({
           'gexbot.cron': 'fast',
           'gexbot.ticker': 'SPX',
           'gexbot.endpoint': 'orderflow',
+          'gexbot.status': 'timeout',
         }),
       }),
     );
@@ -580,11 +578,7 @@ describe('fetch-gexbot-fast handler', () => {
     expect(mockSentryCapture).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'SyntaxError' }),
       expect.objectContaining({
-        fingerprint: [
-          'gexbot-fetch-failure',
-          'fetch-gexbot-fast',
-          'SyntaxError',
-        ],
+        fingerprint: ['gexbot-fetch-failure', 'fetch-gexbot-fast', 'other'],
       }),
     );
   });
@@ -619,6 +613,190 @@ describe('fetch-gexbot-fast handler', () => {
         fingerprint: ['gexbot-failures-suppressed', 'fetch-gexbot-fast'],
       }),
     );
+  });
+
+  it('reports status error (not partial) when every fetch fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          ({
+            ok: false,
+            status: 400,
+            text: async () => 'bad request',
+          }) as Response,
+      ),
+    );
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._json).toMatchObject({ status: 'error', failed: FETCH_TASKS });
+  });
+
+  describe('Sentry fingerprint carries the failure status class', () => {
+    /** SPX/orderflow fails with `status`; every other call succeeds. */
+    function stubSpxOrderflowFailure(status: number) {
+      const fetchMock = vi.fn(async (input: string) => {
+        const url = String(input);
+        if (url.endsWith('/SPX/orderflow/orderflow')) {
+          return {
+            ok: false,
+            status,
+            text: async () => 'upstream said no',
+          } as Response;
+        }
+        return happyResponse(url);
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      return fetchMock;
+    }
+
+    function spxCalls(fetchMock: ReturnType<typeof vi.fn>): number {
+      return fetchMock.mock.calls.filter((c) =>
+        String(c[0]).endsWith('/SPX/orderflow/orderflow'),
+      ).length;
+    }
+
+    it('http-429: quota exhaustion is not retried and is tagged 429', async () => {
+      const fetchMock = stubSpxOrderflowFailure(429);
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      });
+      const res = mockResponse();
+      await handler(req, res);
+
+      expect(spxCalls(fetchMock)).toBe(1);
+      expect(res._json).toMatchObject({ status: 'partial', failed: 1 });
+      expect(mockSentryCapture).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'GexbotHttpError', status: 429 }),
+        expect.objectContaining({
+          fingerprint: [
+            'gexbot-fetch-failure',
+            'fetch-gexbot-fast',
+            'http-429',
+          ],
+          tags: expect.objectContaining({ 'gexbot.status': '429' }),
+        }),
+      );
+    });
+
+    it('http-4xx: a 403 is tagged 403', async () => {
+      stubSpxOrderflowFailure(403);
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      });
+      await handler(req, mockResponse());
+
+      expect(mockSentryCapture).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 403 }),
+        expect.objectContaining({
+          fingerprint: [
+            'gexbot-fetch-failure',
+            'fetch-gexbot-fast',
+            'http-4xx',
+          ],
+          tags: expect.objectContaining({ 'gexbot.status': '403' }),
+        }),
+      );
+    });
+
+    it('http-5xx: a persistent 503 is retried, then tagged 503', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(MARKET_TIME);
+      const fetchMock = stubSpxOrderflowFailure(503);
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      });
+      const pending = handler(req, mockResponse());
+      await vi.advanceTimersByTimeAsync(3500);
+      await pending;
+
+      expect(spxCalls(fetchMock)).toBe(3);
+      expect(mockSentryCapture).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 503 }),
+        expect.objectContaining({
+          fingerprint: [
+            'gexbot-fetch-failure',
+            'fetch-gexbot-fast',
+            'http-5xx',
+          ],
+          tags: expect.objectContaining({ 'gexbot.status': '503' }),
+        }),
+      );
+    });
+  });
+
+  // ── DB legs are independent ───────────────────────────────
+
+  describe('snapshot and capture legs are written independently', () => {
+    const isCaptureInsert = (strings: unknown): boolean =>
+      Array.isArray(strings) && strings.join('').includes('gexbot_api_capture');
+
+    async function run() {
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      });
+      const res = mockResponse();
+      await handler(req, res);
+      return res;
+    }
+
+    it('capture INSERT fails: snapshots are still written and the run surfaces the failure', async () => {
+      stubFetchHappyPath();
+      mockSql.mockImplementation(async (strings: unknown) => {
+        if (isCaptureInsert(strings)) {
+          throw new Error('neon: capture insert failed');
+        }
+        return [];
+      });
+      const res = await run();
+
+      const snapshotInserts = mockSql.mock.calls.filter(
+        (c) => !isCaptureInsert(c[0]),
+      );
+      expect(snapshotInserts).toHaveLength(GEXBOT_TICKERS.length);
+      expect(res._status).toBe(500);
+      expect(mockSentryCapture).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'neon: capture insert failed' }),
+      );
+    });
+
+    it('snapshot INSERT fails: the capture INSERT is still attempted and the run surfaces the failure', async () => {
+      stubFetchHappyPath();
+      mockSql.mockImplementation(async (strings: unknown) => {
+        if (!isCaptureInsert(strings)) {
+          throw new Error('neon: snapshot insert failed');
+        }
+        return [];
+      });
+      const res = await run();
+
+      const captureInserts = mockSql.mock.calls.filter((c) =>
+        isCaptureInsert(c[0]),
+      );
+      expect(captureInserts).toHaveLength(1);
+      expect(res._status).toBe(500);
+      expect(mockSentryCapture).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'neon: snapshot insert failed' }),
+      );
+    });
+
+    it('both legs fail: both are attempted and the run reports 500', async () => {
+      stubFetchHappyPath();
+      mockSql.mockRejectedValue(new Error('neon: down'));
+      const res = await run();
+
+      expect(res._status).toBe(500);
+      expect(mockSql.mock.calls.some((c) => isCaptureInsert(c[0]))).toBe(true);
+    });
   });
 
   it('returns 500 and reports to Sentry when the snapshot INSERT rejects', async () => {

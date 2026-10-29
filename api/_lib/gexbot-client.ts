@@ -29,8 +29,8 @@ const GEXBOT_BASE = 'https://api.gex.bot/v2';
  * SENTRY-EMERALD-DESERT-8F/76 showed 163 TimeoutError events when
  * GEXBot returned in 1–2 s during slow minutes. The vendor recommends
  * about 1 s for snapshot routes; we keep 2.5 s deliberately because
- * 1 s is what produced those timeouts. The cron's maxDuration is 60 s
- * so even a 32-way burst at 2.5 s each fits.
+ * 1 s is what produced those timeouts. Both fetch crons set
+ * maxDuration to 60 s, so even a 32-way burst at 2.5 s each fits.
  */
 const GEXBOT_TIMEOUT_MS = 2_500;
 
@@ -126,6 +126,56 @@ export const STATE_MAXCHANGE_CATEGORIES = MAXCHANGE_CATEGORIES;
 export type GexbotResponse = Record<string, unknown>;
 
 /**
+ * Non-2xx response from GEXBot. The message keeps the historical
+ * `GEXBot <status> <path>: <body, first 200 chars>` text, which
+ * `withRetry`'s classifier and the logs match on; `status` and `path`
+ * expose the same facts without re-parsing it (see `classifyGexbotError`).
+ */
+export class GexbotHttpError extends Error {
+  readonly status: number;
+  readonly path: string;
+
+  constructor(status: number, path: string, body: string) {
+    super(`GEXBot ${status} ${path}: ${body.slice(0, 200)}`);
+    this.name = 'GexbotHttpError';
+    this.status = status;
+    this.path = path;
+  }
+}
+
+export type GexbotStatusClass =
+  | 'http-429'
+  | 'http-4xx'
+  | 'http-5xx'
+  | 'timeout'
+  | 'other';
+
+/**
+ * Bucket a failed GEXBot call for Sentry. `statusClass` is the fingerprint
+ * component, so a 401/403 (auth), 429 (quota) and 5xx (vendor outage) land in
+ * separate issues instead of one `Error`. `statusTag` is the `gexbot.status`
+ * tag: the numeric HTTP status when there is one, otherwise the class.
+ */
+export function classifyGexbotError(err: unknown): {
+  statusClass: GexbotStatusClass;
+  statusTag: string;
+} {
+  if (err instanceof GexbotHttpError) {
+    let statusClass: GexbotStatusClass = 'http-4xx';
+    if (err.status === 429) statusClass = 'http-429';
+    else if (err.status >= 500) statusClass = 'http-5xx';
+    return { statusClass, statusTag: String(err.status) };
+  }
+  if (
+    err instanceof Error &&
+    (err.name === 'TimeoutError' || err.name === 'AbortError')
+  ) {
+    return { statusClass: 'timeout', statusTag: 'timeout' };
+  }
+  return { statusClass: 'other', statusTag: 'other' };
+}
+
+/**
  * Internal: build the GEXBot bearer header value.
  *
  * Token format is `gexbot_custom_<secret>`. We accept either form
@@ -141,9 +191,9 @@ function buildAuthHeader(apiKey: string): string {
 
 /**
  * Issue a single authenticated GEXBot request. Throws on non-2xx,
- * timeout, or network failure. The thrown error message includes
- * HTTP status when available, so caller logs/Sentry can distinguish
- * 401 (bad token) vs 429 (rate limit) vs network errors.
+ * timeout, or network failure. A non-2xx throws `GexbotHttpError`
+ * (status + path), so caller logs/Sentry can distinguish 401 (bad
+ * token) vs 429 (quota) vs 5xx vs network errors.
  *
  * We deliberately don't pool, batch, or retry here. The cron-level
  * fan-out uses `Promise.allSettled` so one bad call doesn't take
@@ -168,7 +218,7 @@ async function gexbotFetch(
     const text = await res
       .text()
       .catch((e) => `[parse error: ${(e as Error).message}]`);
-    throw new Error(`GEXBot ${res.status} ${path}: ${text.slice(0, 200)}`);
+    throw new GexbotHttpError(res.status, path, text);
   }
 
   const body = (await res.json()) as unknown;

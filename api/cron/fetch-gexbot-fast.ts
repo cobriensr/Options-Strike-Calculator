@@ -33,10 +33,12 @@ import { getDb, withDbRetry } from '../_lib/db.js';
 import { isGexbotLiveCt } from '../_lib/cron-helpers.js';
 import { mapWithConcurrency, withRetry } from '../_lib/uw-fetch.js';
 import {
+  deriveCronStatus,
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 import {
+  classifyGexbotError,
   fetchOrderflow,
   fetchClassicBasic,
   fetchMaxchange,
@@ -188,6 +190,8 @@ async function storeSnapshots(
 
 // ── Handler ─────────────────────────────────────────────────
 
+export const config = { maxDuration: 60 };
+
 export default withCronInstrumentation(
   'fetch-gexbot-fast',
   async (ctx): Promise<CronResult> => {
@@ -305,14 +309,19 @@ export default withCronInstrumentation(
             result.task.kind === 'orderflow'
               ? 'orderflow'
               : result.task.category;
-          // Stable grouping: one issue per (cron, error class). Without it
+          // Stable grouping: one issue per (cron, status class). Without it
           // Sentry split the same TimeoutError into two issues (8F by
-          // message, 76 by internal timer frames).
-          const errName =
-            result.err instanceof Error ? result.err.name : 'UnknownError';
+          // message, 76 by internal timer frames), and keying on err.name
+          // alone put 401/403/429/5xx in one issue.
+          const { statusClass, statusTag } = classifyGexbotError(result.err);
           Sentry.captureException(result.err, {
-            fingerprint: ['gexbot-fetch-failure', 'fetch-gexbot-fast', errName],
+            fingerprint: [
+              'gexbot-fetch-failure',
+              'fetch-gexbot-fast',
+              statusClass,
+            ],
             tags: {
+              'gexbot.status': statusTag,
               'gexbot.cron': 'fast',
               'gexbot.ticker': result.task.ticker,
               'gexbot.endpoint': result.task.kind,
@@ -375,8 +384,21 @@ export default withCronInstrumentation(
       );
     }
 
-    await storeSnapshots(snapshots, classicByTicker);
-    await insertCaptureRows(captures);
+    // Two independent DB legs: attempt both so a failure in one never
+    // discards the other's already-fetched rows, then surface any failure
+    // by throwing (the wrapper reports 'error', 500 and a Sentry capture).
+    const [snapshotLeg, captureLeg] = await Promise.allSettled([
+      storeSnapshots(snapshots, classicByTicker),
+      insertCaptureRows(captures),
+    ]);
+    if (snapshotLeg.status === 'rejected' && captureLeg.status === 'rejected') {
+      // The wrapper captures only the thrown error; report the other one here.
+      Sentry.captureException(captureLeg.reason, {
+        tags: { 'gexbot.cron': 'fast', 'gexbot.leg': 'capture' },
+      });
+    }
+    if (snapshotLeg.status === 'rejected') throw snapshotLeg.reason;
+    if (captureLeg.status === 'rejected') throw captureLeg.reason;
 
     // How many snapshot rows received their classic gex_zero aggregate
     // merge — the live health signal for the 10-column revival. A drop to
@@ -398,7 +420,7 @@ export default withCronInstrumentation(
     );
 
     return {
-      status: failed === 0 ? 'success' : 'partial',
+      status: deriveCronStatus(failed, tasks.length),
       rows: stored,
       metadata: {
         snapshots: snapshots.length,

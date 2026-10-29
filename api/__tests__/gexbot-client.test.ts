@@ -3,11 +3,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import {
+  classifyGexbotError,
   fetchClassicBasic,
   fetchMaxchange,
   fetchOrderflow,
   fetchStateMaxchange,
   fetchStatePerStrike,
+  GexbotHttpError,
   GEXBOT_TICKERS,
   MAXCHANGE_CATEGORIES,
   STATE_CATEGORIES,
@@ -175,6 +177,27 @@ describe('gexbot-client', () => {
       );
     });
 
+    it('throws a typed GexbotHttpError carrying status and path, message unchanged', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => ({
+          ok: false,
+          status: 403,
+          text: async () => 'x'.repeat(300),
+        })),
+      );
+      const err = await fetchOrderflow('s', 'SPX').catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(GexbotHttpError);
+      expect(err).toBeInstanceOf(Error);
+      const http = err as GexbotHttpError;
+      expect(http.name).toBe('GexbotHttpError');
+      expect(http.status).toBe(403);
+      expect(http.path).toBe('/SPX/orderflow/orderflow');
+      expect(http.message).toBe(
+        `GEXBot 403 /SPX/orderflow/orderflow: ${'x'.repeat(200)}`,
+      );
+    });
+
     it('throws when response body is not an object', async () => {
       vi.stubGlobal(
         'fetch',
@@ -215,6 +238,53 @@ describe('gexbot-client', () => {
       await expect(fetchOrderflow('s', 'SPX')).rejects.toThrow(
         /expected object body/,
       );
+    });
+  });
+
+  // ── Failure classification (Sentry fingerprint + tag) ──
+
+  describe('classifyGexbotError', () => {
+    const http = (status: number) =>
+      new GexbotHttpError(status, '/SPX/orderflow/orderflow', 'body');
+
+    it.each([
+      [429, 'http-429'],
+      [400, 'http-4xx'],
+      [401, 'http-4xx'],
+      [403, 'http-4xx'],
+      [404, 'http-4xx'],
+      [500, 'http-5xx'],
+      [503, 'http-5xx'],
+    ])('maps HTTP %i to %s and tags the numeric status', (status, cls) => {
+      expect(classifyGexbotError(http(status))).toEqual({
+        statusClass: cls,
+        statusTag: String(status),
+      });
+    });
+
+    it('maps a TimeoutError DOMException to timeout', () => {
+      const err = new DOMException('timed out', 'TimeoutError');
+      expect(classifyGexbotError(err)).toEqual({
+        statusClass: 'timeout',
+        statusTag: 'timeout',
+      });
+    });
+
+    it('maps an AbortError to timeout', () => {
+      const err = new DOMException('aborted', 'AbortError');
+      expect(classifyGexbotError(err).statusClass).toBe('timeout');
+    });
+
+    it.each([
+      new SyntaxError('Unexpected token'),
+      new Error('fetch failed'),
+      'a string',
+      null,
+    ])('maps %s to other', (err) => {
+      expect(classifyGexbotError(err)).toEqual({
+        statusClass: 'other',
+        statusTag: 'other',
+      });
     });
   });
 });

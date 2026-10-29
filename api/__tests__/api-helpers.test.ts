@@ -633,6 +633,73 @@ describe('api-helpers', () => {
       expect(fn).toHaveBeenCalledTimes(2);
     });
 
+    // GEXBot 429 is a per-account daily/monthly pool quota that resets at
+    // 00:00 ET; a retry inside the minute cannot succeed, so fail fast.
+    it('does not retry a "GEXBot 429" quota error', async () => {
+      const fn = vi
+        .fn()
+        .mockRejectedValue(
+          new Error(
+            'GEXBot 429 /SPX/orderflow/orderflow: {"error":"Rate limit exceeded."}',
+          ),
+        );
+      await expect(withRetry(fn, 2)).rejects.toThrow('GEXBot 429');
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    // The orderflow route 500s deterministically when no snapshot exists.
+    it('does not retry a "GEXBot 500" with "null or zero length" (no snapshot yet)', async () => {
+      const fn = vi
+        .fn()
+        .mockRejectedValue(
+          new Error(
+            'GEXBot 500 /SPX/orderflow/orderflow: Failed to get redis chart data: null or zero length',
+          ),
+        );
+      await expect(withRetry(fn, 2)).rejects.toThrow('null or zero length');
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('still retries a plain "GEXBot 500" blip', async () => {
+      vi.useFakeTimers();
+      try {
+        const fn = vi
+          .fn()
+          .mockRejectedValueOnce(
+            new Error('GEXBot 500 /SPX/orderflow/orderflow: oops'),
+          )
+          .mockResolvedValue('recovered');
+        const promise = withRetry(fn, 1);
+        await vi.advanceTimersByTimeAsync(1000);
+        await expect(promise).resolves.toBe('recovered');
+        expect(fn).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('still retries UW 429 concurrency, per-minute and generic variants', async () => {
+      vi.useFakeTimers();
+      try {
+        for (const msg of [
+          'UW API 429: {"error":"You have exceeded 3 concurrent requests"}',
+          'UW API 429: rate limit of 120 in 60 seconds',
+          'UW API 429: Too Many Requests',
+        ]) {
+          const fn = vi
+            .fn()
+            .mockRejectedValueOnce(new Error(msg))
+            .mockResolvedValue('ok');
+          const promise = withRetry(fn, 1);
+          await vi.advanceTimersByTimeAsync(10_000);
+          await expect(promise).resolves.toBe('ok');
+          expect(fn).toHaveBeenCalledTimes(2);
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('does not retry non-Error throws', async () => {
       const fn = vi.fn().mockRejectedValue('string error');
       await expect(withRetry(fn, 2)).rejects.toBe('string error');

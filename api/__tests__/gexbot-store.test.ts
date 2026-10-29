@@ -2,13 +2,14 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { mockSql } = vi.hoisted(() => ({
+const { mockSql, mockWithDbRetry } = vi.hoisted(() => ({
   mockSql: vi.fn().mockResolvedValue([]),
+  mockWithDbRetry: vi.fn(),
 }));
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
-  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  withDbRetry: mockWithDbRetry,
 }));
 
 import { insertCaptureRows } from '../_lib/gexbot-store.js';
@@ -17,6 +18,7 @@ describe('insertCaptureRows', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockSql.mockResolvedValue([]);
+    mockWithDbRetry.mockImplementation(<T>(fn: () => Promise<T>) => fn());
   });
 
   it('returns early without calling sql when rows is empty', async () => {
@@ -103,5 +105,48 @@ describe('insertCaptureRows', () => {
         (a[0] === null || typeof a[0] === 'number'),
     );
     expect(tsArr).toEqual([null]);
+  });
+
+  const ONE_ROW = [
+    {
+      ticker: 'SPX',
+      endpoint: 'state',
+      category: 'gamma_zero',
+      sourceTimestamp: 1,
+      rawJson: '{}',
+    },
+  ];
+
+  it('wraps the INSERT in withDbRetry(fn, 2, 10_000) so a Neon blip is retried', async () => {
+    await insertCaptureRows(ONE_ROW);
+    expect(mockWithDbRetry).toHaveBeenCalledTimes(1);
+    expect(mockWithDbRetry).toHaveBeenCalledWith(
+      expect.any(Function),
+      2,
+      10_000,
+    );
+  });
+
+  it('succeeds when the first INSERT attempt hits a transient error and the retry lands', async () => {
+    // Emulate withDbRetry: re-run the op once after a transient failure.
+    mockWithDbRetry.mockImplementation(async <T>(fn: () => Promise<T>) => {
+      try {
+        return await fn();
+      } catch {
+        return fn();
+      }
+    });
+    mockSql
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockResolvedValueOnce([]);
+    await expect(insertCaptureRows(ONE_ROW)).resolves.toBeUndefined();
+    expect(mockSql).toHaveBeenCalledTimes(2);
+  });
+
+  it('propagates the error when the INSERT keeps failing', async () => {
+    mockSql.mockRejectedValue(new Error('neon: connection terminated'));
+    await expect(insertCaptureRows(ONE_ROW)).rejects.toThrow(
+      'neon: connection terminated',
+    );
   });
 });

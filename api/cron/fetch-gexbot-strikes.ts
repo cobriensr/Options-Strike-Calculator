@@ -25,10 +25,12 @@
 import { isGexbotLiveCt } from '../_lib/cron-helpers.js';
 import { mapWithConcurrency, withRetry } from '../_lib/uw-fetch.js';
 import {
+  deriveCronStatus,
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 import {
+  classifyGexbotError,
   fetchStatePerStrike,
   GEXBOT_TICKERS,
   STATE_CATEGORIES,
@@ -101,18 +103,19 @@ export default withCronInstrumentation(
       if (!result.ok) {
         failed += 1;
         if (sentryCaptured < SENTRY_CAPTURE_CAP) {
-          // Stable grouping: one issue per (cron, error class). Without it
+          // Stable grouping: one issue per (cron, status class). Without it
           // Sentry split the same TimeoutError into two issues (8F by
-          // message, 76 by internal timer frames).
-          const errName =
-            result.err instanceof Error ? result.err.name : 'UnknownError';
+          // message, 76 by internal timer frames), and keying on err.name
+          // alone put 401/403/429/5xx in one issue.
+          const { statusClass, statusTag } = classifyGexbotError(result.err);
           Sentry.captureException(result.err, {
             fingerprint: [
               'gexbot-fetch-failure',
               'fetch-gexbot-strikes',
-              errName,
+              statusClass,
             ],
             tags: {
+              'gexbot.status': statusTag,
               'gexbot.cron': 'strikes',
               'gexbot.ticker': result.ticker,
               'gexbot.endpoint': 'state',
@@ -160,7 +163,7 @@ export default withCronInstrumentation(
     );
 
     return {
-      status: failed === 0 ? 'success' : 'partial',
+      status: deriveCronStatus(failed, tasks.length),
       rows: captures.length,
       metadata: { captures: captures.length, failed },
     };

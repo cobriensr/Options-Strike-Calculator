@@ -52,8 +52,24 @@ import {
  *
  * Network errors and 5xx upstream failures (500/502/503/504) keep the
  * existing exponential `1000 × (attempt + 1)`.
+ *
+ * Two GEXBot errors are never retried (`null`): `GEXBot 429` (a daily or
+ * monthly quota that resets at 00:00 ET) and `GEXBot 500 … null or zero
+ * length` (no snapshot exists yet). Other GEXBot 5xx still retry. UW and
+ * every other caller are unaffected: both checks are anchored to the
+ * `GEXBot` message prefix.
  */
 function classifyRetryDelay(msg: string, attempt: number): number | null {
+  // GEXBot failures that retrying cannot fix, checked before the generic
+  // branches below (withRetry is shared across UW, GEXBot and others):
+  //  - `GEXBot 429`: a per-account daily/monthly endpoint-pool quota that
+  //    resets at 00:00 ET, so a retry inside the minute cannot succeed and
+  //    only burns more calls.
+  //  - `GEXBot 500 ... null or zero length`: the orderflow route's answer
+  //    when no snapshot exists yet. Deterministic, not a blip.
+  if (/^GEXBot 429\b/.test(msg)) return null;
+  if (/^GEXBot 500\b.*null or zero length/s.test(msg)) return null;
+
   // 429 — distinguish concurrency vs per-minute window
   if (/UW API 429|\b429\b/.test(msg)) {
     if (/concurrent/i.test(msg)) {
