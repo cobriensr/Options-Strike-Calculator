@@ -323,11 +323,11 @@
     },
     {
       "path": "/api/cron/archive-gexbot-eod",
-      "schedule": "0 2,12,19,23 * * *"
+      "schedule": "0 2,12-21,23 * * *"
     },
     {
       "path": "/api/cron/audit-gexbot-eod",
-      "schedule": "45 19 * * 1-5"
+      "schedule": "30 22 * * 1-5"
     },
     {
       "path": "/api/cron/cleanup-gexbot",

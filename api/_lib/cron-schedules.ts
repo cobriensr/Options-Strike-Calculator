@@ -628,17 +628,17 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     failureIssueThreshold: 2,
   },
   'archive-gexbot-eod': {
-    // GEXBot EOD report capture, every day (weekend runs find nothing new).
+    // GEXBot EOD report capture, every day: hourly 12:00-21:00 UTC retries missing reports until the window closes (a run with nothing missing makes no report request), plus 23:00 and 02:00.
     // Spec: docs/superpowers/specs/2026-10-28-gexbot-eod-capture-design.md
-    schedule: '0 2,12,19,23 * * *',
+    schedule: '0 2,12-21,23 * * *',
     checkinMargin: DEFAULT_MARGIN,
     // Long-runner: 800 s Vercel timeout (budget: no new downloads after 600 s, abort at 740 s). 14 min covers it with headroom.
     maxRuntime: 14,
   },
   'audit-gexbot-eod': {
-    // Alarm for a lost GEXBot EOD day, weekdays 19:45 UTC.
+    // Loss report for a GEXBot EOD day, weekdays 22:30 UTC, after the download window closes (21:00 UTC EDT, 22:00 UTC EST).
     // Spec: docs/superpowers/specs/2026-10-28-gexbot-eod-capture-design.md
-    schedule: '45 19 * * 1-5',
+    schedule: '30 22 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },

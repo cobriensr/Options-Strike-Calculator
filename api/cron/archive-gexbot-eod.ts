@@ -5,8 +5,10 @@
  * is validated, stored in private R2 and indexed in `gexbot_eod_reports`.
  * Spec: docs/superpowers/specs/2026-10-28-gexbot-eod-capture-design.md
  *
- * Schedule: `0 2,12,19,23 * * *` UTC, every day. Runs that find nothing new
- * (weekends, or a day already captured) make no download.
+ * Schedule: `0 2,12-21,23 * * *` UTC, every day: hourly from 12:00 to 21:00
+ * UTC, so a missing report keeps being retried until its download window
+ * closes (17:00 ET on the next trading day). A run with nothing missing makes
+ * no report request (one `/tickers` call and one DB query).
  *
  * Served date decides the key: the `Content-Disposition` date is the report
  * date. A row for (ticker, served date) means skip (`notYetPublished` when
@@ -18,8 +20,17 @@
  * 600 s, abort in-flight downloads at 740 s (maxDuration 800). A 429 stops
  * new requests. Tickers not attempted for either reason are `leftover`.
  *
+ * Retries: a ticker gets up to 3 attempts, waiting 15 s then 45 s. Retried:
+ * network errors, HTTP 5xx/408, bad responses, truncated or invalid ZIPs, R2
+ * and DB errors. Not retried: 429 (stops the run), other 4xx and
+ * `object_without_metadata`. A wait that would cross the 600 s cutoff, or a
+ * stop flag, sends the ticker to `leftover`. Three consecutive
+ * `notYetPublished` results stop the run (`stopReason` `not_published`) so a
+ * late GEXBot does not cost 60 requests per hourly run.
+ *
  * Status: `deriveCronStatus(failed, attempted)`; leftovers make a would-be
- * `success` into `partial`. A lost day is caught by the separate audit cron.
+ * `success` into `partial`. A lost day is reported by the separate audit cron
+ * after the window closes.
  *
  * All state is run-scoped (R1). Per-run fields go in `metadata`, which the
  * wrapper puts in the Axiom `meta` string (no new top-level keys).
@@ -53,6 +64,39 @@ const START_CUTOFF_MS = 600_000;
 const ABORT_AT_MS = 740_000;
 const EXPECTED_ENTRIES = 15;
 const REASON_MAX_CHARS = 120;
+/** Waits before the 2nd and 3rd attempt of a ticker (3 attempts in all). */
+const RETRY_DELAYS_MS: readonly number[] = [15_000, 45_000];
+/** Consecutive `notYetPublished` results that stop the run. */
+const NOT_PUBLISHED_STOP_AFTER = 3;
+
+type StopReason = 'quota' | 'budget' | 'not_published';
+
+/** What one attempt at one ticker came to. */
+type Attempt =
+  | { kind: 'stored' | 'indexed' | 'skipped' | 'not_published' | 'leftover' }
+  | { kind: 'failed'; reason: string; err?: unknown; retryable: boolean };
+
+/**
+ * Sleep that ends early (resolving false) when the signal aborts, and always
+ * clears its timer and listener (R1).
+ */
+function abortableSleep(ms: number, signal: AbortSignal): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    if (signal.aborted) {
+      resolve(false);
+      return;
+    }
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve(true);
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
 
 /** Short, stable reason string so failures group in Sentry and Axiom. */
 function reasonOf(err: unknown): string {
@@ -111,7 +155,12 @@ export default withCronInstrumentation(
     let notYetPublished = 0;
     let bytes = 0;
     let stop = false;
-    let stopReason: 'quota' | 'budget' | null = null;
+    let stopReason: StopReason | null = null;
+    // Tickers that needed a retry, and those stored or indexed after one.
+    let retried = 0;
+    let recoveredByRetry = 0;
+    // Consecutive notYetPublished results, in completion order.
+    let notPublishedStreak = 0;
     const failed: { ticker: string; reason: string }[] = [];
     const leftover: string[] = [];
     const entryCountWarnings: { ticker: string; entryCount: number }[] = [];
@@ -129,43 +178,41 @@ export default withCronInstrumentation(
       (err === controller.signal.reason ||
         (err instanceof Error && err.name === 'AbortError'));
 
-    const processTicker = async (ticker: string): Promise<void> => {
+    /** One attempt at one ticker; never throws. Counters move only on success. */
+    const attemptTicker = async (ticker: string): Promise<Attempt> => {
       if (!stop && elapsed() >= START_CUTOFF_MS) {
         stop = true;
         stopReason ??= 'budget';
       }
-      if (stop || controller.signal.aborted) {
-        leftover.push(ticker);
-        return;
-      }
+      if (stop || controller.signal.aborted) return { kind: 'leftover' };
       try {
         if ((await indexExistingObject(ticker, expected)) === 'indexed') {
           indexedFromR2 += 1;
           (await storedFor(expected)).add(ticker);
-          return;
+          return { kind: 'indexed' };
         }
         // The index lookup can outlive a 429 or the budget; re-check before
         // spending a request.
         if (stop || elapsed() >= START_CUTOFF_MS || controller.signal.aborted) {
           if (!stop) stopReason ??= 'budget';
           stop = true;
-          leftover.push(ticker);
-          return;
+          return { kind: 'leftover' };
         }
         const res = await requestEodReport(apiKey, ticker, controller.signal);
         if (res.kind === 'quota') {
           stop = true;
           stopReason = 'quota';
-          leftover.push(ticker);
-          return;
+          return { kind: 'leftover' };
         }
         if (res.kind === 'http_error') {
-          recordFailure(ticker, undefined, `http_${res.status}`);
-          return;
+          return {
+            kind: 'failed',
+            reason: `http_${res.status}`,
+            retryable: res.status >= 500 || res.status === 408,
+          };
         }
         if (res.kind === 'bad_response') {
-          recordFailure(ticker, undefined, res.reason);
-          return;
+          return { kind: 'failed', reason: res.reason, retryable: true };
         }
         const have = await storedFor(res.servedDate).catch(async (err) => {
           await res.discard();
@@ -173,9 +220,12 @@ export default withCronInstrumentation(
         });
         if (have.has(ticker)) {
           await res.discard();
-          if (res.servedDate < expected) notYetPublished += 1;
-          else skipped += 1;
-          return;
+          if (res.servedDate < expected) {
+            notYetPublished += 1;
+            return { kind: 'not_published' };
+          }
+          skipped += 1;
+          return { kind: 'skipped' };
         }
         const isCatchUp = res.servedDate !== expected;
         if (isCatchUp) {
@@ -193,7 +243,7 @@ export default withCronInstrumentation(
             have.add(ticker);
             caughtUp += 1;
             indexedFromR2 += 1;
-            return;
+            return { kind: 'indexed' };
           }
         }
         const body = await res.readBody();
@@ -215,15 +265,82 @@ export default withCronInstrumentation(
             'archive-gexbot-eod unexpected entry count',
           );
         }
+        return { kind: 'stored' };
       } catch (err) {
         // Only the abort itself is leftover. validateEodZip and
         // storeEodReport ignore the signal, so their errors stay failures.
         if (isAbort(err)) {
           stopReason ??= 'budget';
+          return { kind: 'leftover' };
+        }
+        const reason = reasonOf(err);
+        return {
+          kind: 'failed',
+          reason,
+          err,
+          // A missing-metadata object stays that way until a human looks.
+          retryable: reason !== 'object_without_metadata',
+        };
+      }
+    };
+
+    /** Books a ticker's final, non-leftover outcome. */
+    const finish = (kind: Attempt['kind'], afterRetry: boolean): void => {
+      if (afterRetry && (kind === 'stored' || kind === 'indexed')) {
+        recoveredByRetry += 1;
+      }
+      if (kind !== 'not_published') {
+        notPublishedStreak = 0;
+        return;
+      }
+      notPublishedStreak += 1;
+      if (notPublishedStreak >= NOT_PUBLISHED_STOP_AFTER && !stop) {
+        stop = true;
+        stopReason = 'not_published';
+      }
+    };
+
+    const processTicker = async (ticker: string): Promise<void> => {
+      let attempt = 1;
+      for (;;) {
+        const result = await attemptTicker(ticker);
+        if (result.kind === 'leftover') {
           leftover.push(ticker);
           return;
         }
-        recordFailure(ticker, err);
+        if (result.kind !== 'failed') {
+          finish(result.kind, attempt > 1);
+          return;
+        }
+        const delay = RETRY_DELAYS_MS[attempt - 1];
+        // After the abort a failure is a real one (the abort did not cause
+        // it), so it is booked as failed, as before retries existed.
+        if (
+          !result.retryable ||
+          delay === undefined ||
+          controller.signal.aborted
+        ) {
+          finish('failed', false);
+          recordFailure(ticker, result.err, result.reason);
+          return;
+        }
+        // Never start an attempt, or sleep, at or past the start cutoff.
+        if (stop || elapsed() + delay >= START_CUTOFF_MS) {
+          stopReason ??= 'budget';
+          leftover.push(ticker);
+          return;
+        }
+        attempt += 1;
+        if (attempt === 2) retried += 1;
+        ctx.logger.warn(
+          { ticker, attempt, reason: result.reason },
+          'gexbot-eod retry',
+        );
+        if (!(await abortableSleep(delay, controller.signal))) {
+          stopReason ??= 'budget';
+          leftover.push(ticker);
+          return;
+        }
       }
     };
 
@@ -244,8 +361,8 @@ export default withCronInstrumentation(
       status = 'partial';
     }
 
-    // Leftover-only runs (429, budget) deliberately send no Sentry event:
-    // the audit cron catches a day that never completes (Ruling 15).
+    // Leftover-only runs (429, budget, not published) deliberately send no
+    // Sentry event: the audit cron reports a day that is lost (Ruling 15).
     if (failed.length > 0) {
       Sentry.captureMessage('GEXBot EOD capture had failures', {
         level: 'error',
@@ -285,6 +402,8 @@ export default withCronInstrumentation(
         failed,
         leftover,
         stopReason,
+        retried,
+        recoveredByRetry,
         bytes,
         entryCountWarnings,
         rejectedTickers: rejected,

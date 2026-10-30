@@ -588,7 +588,8 @@ describe('archive-gexbot-eod', () => {
   it('caps the Sentry failure list at 100 and reports the full count', async () => {
     const many = Array.from({ length: 120 }, (_, i) => `T${i}`);
     setTickers(many);
-    eod.requestEodReport.mockResolvedValue({ kind: 'http_error', status: 500 });
+    // 400 is not retried; a retried 5xx would run past the 600 s cutoff.
+    eod.requestEodReport.mockResolvedValue({ kind: 'http_error', status: 400 });
     await run();
     const [, opts] = failureCaptures()[0] as [
       string,
@@ -596,5 +597,246 @@ describe('archive-gexbot-eod', () => {
     ];
     expect(opts.extra.failed).toHaveLength(100);
     expect(opts.extra.failedCount).toBe(120);
+  });
+
+  describe('automatic retries', () => {
+    const http = (status: number) => ({ kind: 'http_error' as const, status });
+
+    it('retries http_503 after 15 s and stores on the 2nd attempt', async () => {
+      setTickers(['A']);
+      const times: number[] = [];
+      eod.requestEodReport
+        .mockImplementationOnce(async () => {
+          times.push(Date.now());
+          return http(503);
+        })
+        .mockImplementation(async () => {
+          times.push(Date.now());
+          return ok();
+        });
+      const res = await run();
+      const json = res._json as Json;
+      expect(json.storedCount).toBe(1);
+      expect(json.failed).toEqual([]);
+      expect(json.retried).toBe(1);
+      expect(json.recoveredByRetry).toBe(1);
+      expect(json.status).toBe('success');
+      expect(times).toHaveLength(2);
+      expect((times[1] ?? 0) - (times[0] ?? 0)).toBe(15_000);
+      expect(mockWarn).toHaveBeenCalledWith(
+        { ticker: 'A', attempt: 2, reason: 'http_503' },
+        'gexbot-eod retry',
+      );
+      expect(failureCaptures()).toHaveLength(0);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('waits 45 s before the 3rd attempt and fails with the LAST reason', async () => {
+      setTickers(['A']);
+      const times: number[] = [];
+      const statuses = [500, 502, 503];
+      eod.requestEodReport.mockImplementation(async () => {
+        times.push(Date.now());
+        return http(statuses[times.length - 1] ?? 500);
+      });
+      const res = await run();
+      const json = res._json as Json;
+      expect(eod.requestEodReport).toHaveBeenCalledTimes(3);
+      expect(json.failed).toEqual([{ ticker: 'A', reason: 'http_503' }]);
+      expect(json.retried).toBe(1);
+      expect(json.recoveredByRetry).toBe(0);
+      expect(json.status).toBe('error');
+      expect((times[1] ?? 0) - (times[0] ?? 0)).toBe(15_000);
+      expect((times[2] ?? 0) - (times[1] ?? 0)).toBe(45_000);
+      expect(failureCaptures()).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it.each([
+      ['http 408', () => http(408), 3],
+      [
+        'bad_response',
+        () => ({ kind: 'bad_response', reason: 'no_length' }),
+        3,
+      ],
+      ['http 404', () => http(404), 1],
+      ['http 400', () => http(400), 1],
+    ])('%s: makes %i attempts', async (_name, make, calls) => {
+      setTickers(['A']);
+      eod.requestEodReport.mockImplementation(async () => make());
+      const res = await run();
+      expect(eod.requestEodReport).toHaveBeenCalledTimes(calls);
+      expect((res._json as Json).failed).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('retries a thrown network error', async () => {
+      setTickers(['A']);
+      eod.requestEodReport
+        .mockRejectedValueOnce(
+          new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } }),
+        )
+        .mockImplementation(async () => ok());
+      const json = (await run())._json as Json;
+      expect(json.storedCount).toBe(1);
+      expect(json.recoveredByRetry).toBe(1);
+    });
+
+    it('retries a truncated body, a zip error and a store failure', async () => {
+      setTickers(['A', 'B', 'C']);
+      const seen = new Set<string>();
+      const firstTime = (t: string) => !seen.has(t) && !!seen.add(t);
+      eod.requestEodReport.mockImplementation(async (_k: string, t: string) =>
+        t === 'A'
+          ? ok({
+              readBody: async () => {
+                if (firstTime('A')) throw new Error('truncated: got 1 of 3');
+                return new Uint8Array([1]);
+              },
+            })
+          : ok(),
+      );
+      zip.validateEodZip.mockImplementation((_b: Uint8Array, t: string) => {
+        if (t === 'B' && firstTime('B')) throw new EodZipError('bad_crc', 'x');
+        return { entryCount: 15, entryNames: [] };
+      });
+      eod.storeEodReport.mockImplementation(
+        async (a: { ticker: string; body: Uint8Array }) => {
+          if (a.ticker === 'C' && firstTime('C')) {
+            throw new Error('r2_verify_failed: etag mismatch');
+          }
+          return { key: 'k', sha256: 's', bytes: a.body.length };
+        },
+      );
+      const json = (await run())._json as Json;
+      expect(json.storedCount).toBe(3);
+      expect(json.failed).toEqual([]);
+      expect(json.retried).toBe(3);
+      expect(json.recoveredByRetry).toBe(3);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('does not retry a 429: the ticker goes to leftover', async () => {
+      setTickers(['A']);
+      eod.requestEodReport.mockResolvedValue({ kind: 'quota' });
+      const json = (await run())._json as Json;
+      expect(eod.requestEodReport).toHaveBeenCalledTimes(1);
+      expect(json.leftover).toEqual(['A']);
+      expect(json.failed).toEqual([]);
+      expect(json.stopReason).toBe('quota');
+      expect(json.retried).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('does not retry object_without_metadata', async () => {
+      setTickers(['A']);
+      eod.indexExistingObject.mockRejectedValue(
+        new Error('object_without_metadata'),
+      );
+      const json = (await run())._json as Json;
+      expect(eod.indexExistingObject).toHaveBeenCalledTimes(1);
+      expect(json.failed).toEqual([
+        { ticker: 'A', reason: 'object_without_metadata' },
+      ]);
+      expect(json.retried).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('puts a ticker in leftover when the retry wait would cross 600 s', async () => {
+      setTickers(['A']);
+      eod.requestEodReport.mockImplementation(async () => {
+        await new Promise((r) => setTimeout(r, 590_000));
+        return http(503);
+      });
+      const json = (await run())._json as Json;
+      // 590 s + the 15 s wait = 605 s, past the cutoff.
+      expect(eod.requestEodReport).toHaveBeenCalledTimes(1);
+      expect(json.leftover).toEqual(['A']);
+      expect(json.failed).toEqual([]);
+      expect(json.stopReason).toBe('budget');
+      expect(json.retried).toBe(0);
+      expect(json.status).toBe('partial');
+      expect(failureCaptures()).toHaveLength(0);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('sends a failing ticker to leftover when a 429 elsewhere set the stop flag', async () => {
+      setTickers(['A', 'B']);
+      eod.requestEodReport.mockImplementation(async (_k: string, t: string) =>
+        t === 'A' ? http(503) : { kind: 'quota' as const },
+      );
+      const json = (await run())._json as Json;
+      expect([...json.leftover].sort()).toEqual(['A', 'B']);
+      expect(json.failed).toEqual([]);
+      expect(json.stopReason).toBe('quota');
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('ends a retry wait at once on abort, into leftover, clearing the timer', async () => {
+      setTickers(['A']);
+      const controllers: AbortController[] = [];
+      const Real = AbortController;
+      vi.stubGlobal(
+        'AbortController',
+        class extends Real {
+          constructor() {
+            super();
+            controllers.push(this);
+          }
+        },
+      );
+      try {
+        eod.requestEodReport.mockImplementation(
+          async (_k: string, _t: string, signal: AbortSignal) => {
+            const ctrl = controllers.find((c) => c.signal === signal);
+            setTimeout(() => ctrl?.abort(), 5_000);
+            return http(503);
+          },
+        );
+        const json = (await run())._json as Json;
+        expect(eod.requestEodReport).toHaveBeenCalledTimes(1);
+        expect(json.leftover).toEqual(['A']);
+        expect(json.failed).toEqual([]);
+        expect(json.stopReason).toBe('budget');
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('stops on 3 consecutive notYetPublished and leaves the rest in leftover', async () => {
+      setTickers(['A', 'B', 'C', 'D', 'E']);
+      eod.listStoredTickers.mockImplementation(async (d: string) =>
+        d === '2026-10-27' ? new Set(['A', 'B', 'C', 'D', 'E']) : new Set(),
+      );
+      eod.requestEodReport.mockImplementation(async () =>
+        ok({ servedDate: '2026-10-27' }),
+      );
+      const json = (await run())._json as Json;
+      expect(json.stopReason).toBe('not_published');
+      expect(json.notYetPublished).toBe(3);
+      expect(eod.requestEodReport).toHaveBeenCalledTimes(3);
+      expect(json.leftover).toEqual(['D', 'E']);
+      expect(json.status).toBe('partial');
+      expect(failureCaptures()).toHaveLength(0);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('does not stop after 2 notYetPublished followed by a stored report', async () => {
+      setTickers(['A', 'B', 'C', 'D', 'E']);
+      eod.listStoredTickers.mockImplementation(async (d: string) =>
+        d === '2026-10-27' ? new Set(['A', 'B']) : new Set(),
+      );
+      eod.requestEodReport.mockImplementation(async (_k: string, t: string) =>
+        ok({ servedDate: t === 'A' || t === 'B' ? '2026-10-27' : EXPECTED }),
+      );
+      const json = (await run())._json as Json;
+      expect(json.stopReason).toBeNull();
+      expect(json.notYetPublished).toBe(2);
+      expect(json.storedCount).toBe(3);
+      expect(json.leftover).toEqual([]);
+      expect(eod.requestEodReport).toHaveBeenCalledTimes(5);
+      expect(vi.getTimerCount()).toBe(0);
+    });
   });
 });
