@@ -93,6 +93,26 @@ def read_fulltape(
     )
 
 
+def fulltape_connection():
+    """A fresh DuckDB connection with httpfs configured for the R2 bucket.
+
+    One connection per caller: DuckDB connections are not shared across
+    processes, and each worker process builds its own.
+    """
+    import duckdb  # local import: keeps cold-start light for read_fulltape users
+
+    con = duckdb.connect()
+    con.execute("INSTALL httpfs; LOAD httpfs;")
+    con.execute(
+        f"SET s3_endpoint='{_must_env('R2_ENDPOINT_URL').replace('https://', '')}';"
+    )
+    con.execute(f"SET s3_access_key_id='{_must_env('R2_ACCESS_KEY_ID')}';")
+    con.execute(f"SET s3_secret_access_key='{_must_env('R2_SECRET_ACCESS_KEY')}';")
+    con.execute("SET s3_url_style='path';")
+    con.execute("SET s3_region='auto';")
+    return con
+
+
 def query_fulltape(sql: str, dates: list[str]) -> pd.DataFrame:
     """Run a DuckDB SQL query against the R2 parquets for the given dates.
 
@@ -115,8 +135,6 @@ def query_fulltape(sql: str, dates: list[str]) -> pd.DataFrame:
             dates=["2026-03-15", "2026-03-16"],
         )
     """
-    import duckdb  # local import — keeps cold-start light when caller only needs read_fulltape
-
     if not dates:
         raise ValueError("query_fulltape: dates list is empty")
 
@@ -126,14 +144,5 @@ def query_fulltape(sql: str, dates: list[str]) -> pd.DataFrame:
     url_list = "[" + ", ".join(f"'{u}'" for u in urls) + "]"
     expanded = sql.replace("__TAPE__", f"read_parquet({url_list})")
 
-    con = duckdb.connect()
-    # Configure the httpfs extension to talk to R2.
-    con.execute("INSTALL httpfs; LOAD httpfs;")
-    con.execute(
-        f"SET s3_endpoint='{_must_env('R2_ENDPOINT_URL').replace('https://', '')}';"
-    )
-    con.execute(f"SET s3_access_key_id='{_must_env('R2_ACCESS_KEY_ID')}';")
-    con.execute(f"SET s3_secret_access_key='{_must_env('R2_SECRET_ACCESS_KEY')}';")
-    con.execute("SET s3_url_style='path';")
-    con.execute("SET s3_region='auto';")
+    con = fulltape_connection()
     return con.execute(expanded).df()
