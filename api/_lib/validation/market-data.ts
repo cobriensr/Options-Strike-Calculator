@@ -307,6 +307,7 @@ export const gexbotQuerySchema = z
   .object({
     view: z.enum([
       'snapshots-latest',
+      'velocity',
       'convexity-trend',
       'maxchange-winners',
       'sibling-confirm',

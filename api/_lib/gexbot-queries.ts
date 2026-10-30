@@ -45,9 +45,33 @@ export interface SnapshotsLatestRow {
   oneDexoflow: number | null;
   oneGexoflow: number | null;
   oneCvroflow: number | null;
-  deltaRiskReversal: number | null;
   /** Nearest listed expiry in days (0 = same-day). Differs per ticker. */
   minDte: number | null;
+}
+
+/**
+ * One ticker's minute-over-minute change, for the velocity tape. Every delta
+ * is `null` when it cannot be trusted: no prior snapshot in the ET session,
+ * the prior is more than 3 minutes older, or the vendor repeated the prior
+ * `source_timestamp` (the 09:30 VIX repeat of the prior close).
+ */
+export interface VelocityRow {
+  ticker: string;
+  capturedAt: string;
+  /** Nearest listed expiry in days (0 = same-day). Differs per ticker. */
+  minDte: number | null;
+  /** Change in `agg_dex` (session-cumulative taker delta) over the minute. */
+  dAggDex: number | null;
+  /** Change in `zgr` (call minus put GEX imbalance) over the minute. */
+  dZgr: number | null;
+  /** Change in `zcvr` (net convexity) over the minute. */
+  dZcvr: number | null;
+  /**
+   * Median |dAggDex| over the ticker's valid minutes this ET session, so the
+   * client can rank a move against that ticker's own norm. Null until the
+   * session has one valid change.
+   */
+  typicalAbsDAggDex: number | null;
 }
 
 export interface MaxchangeWinnerRow {
@@ -156,7 +180,6 @@ interface RawSnapshotsRow {
   one_dexoflow: unknown;
   one_gexoflow: unknown;
   one_cvroflow: unknown;
-  delta_risk_reversal: unknown;
   min_dte: unknown;
 }
 
@@ -175,7 +198,7 @@ export async function getLatestSnapshots(): Promise<SnapshotsLatestRow[]> {
         o_mlgamma, o_msgamma, ocvr, ogr, ovanna, ocharm,
         dexoflow, gexoflow, cvroflow,
         one_dexoflow, one_gexoflow, one_cvroflow,
-        delta_risk_reversal, min_dte
+        min_dte
       FROM gexbot_snapshots
       WHERE captured_at >= now() - INTERVAL '15 minutes'
       ORDER BY ticker, captured_at DESC
@@ -207,8 +230,124 @@ export async function getLatestSnapshots(): Promise<SnapshotsLatestRow[]> {
     oneDexoflow: toNum(r.one_dexoflow),
     oneGexoflow: toNum(r.one_gexoflow),
     oneCvroflow: toNum(r.one_cvroflow),
-    deltaRiskReversal: toNum(r.delta_risk_reversal),
     minDte: toNum(r.min_dte),
+  }));
+}
+
+// ────────────────────────────────────────────────────────────
+// Query: velocity tape (minute-over-minute change per ticker)
+// ────────────────────────────────────────────────────────────
+
+interface RawVelocityRow {
+  ticker: string;
+  captured_at: string | Date;
+  min_dte: unknown;
+  d_agg_dex: unknown;
+  d_zgr: unknown;
+  d_zcvr: unknown;
+  typical_abs_d_agg_dex: unknown;
+}
+
+/**
+ * Latest snapshot per ticker, differenced against the snapshot before it
+ * with `LAG` over `captured_at`.
+ *
+ * - Scope: the current ET session only (`agg_dex` is session-cumulative, so
+ *   a difference across the overnight reset is meaningless). The ET-midnight
+ *   bound truncates the ET wall-clock timestamp, then converts it back to
+ *   timestamptz, so it is right on both sides of a DST change.
+ * - Gap rule: a prior snapshot more than 3 minutes older (about two missed
+ *   1-min cron runs) yields null deltas, never a multi-minute change dressed
+ *   up as one minute.
+ * - Stale rule: a prior with the same `source_timestamp` is the vendor
+ *   replaying its last value, so the "change" is an artifact; null deltas.
+ * - Freshness: tickers whose newest snapshot is over 15 minutes old are
+ *   dropped, matching `getLatestSnapshots`.
+ * - `typical_abs_d_agg_dex` is the per-ticker median |Δagg_dex| over the
+ *   session's valid minutes (at most ~390 rows per ticker, so a cheap
+ *   ordered-set aggregate).
+ *
+ * "Now" is a bound JS clock reading rather than SQL `now()`, so the whole
+ * statement is evaluated against one instant.
+ */
+export async function getVelocityTape(): Promise<VelocityRow[]> {
+  const sql = getDb();
+  const nowIso = new Date().toISOString();
+  const rows = (await withDbRetry(
+    () => sql`
+      WITH bounds AS (
+        SELECT
+          ${nowIso}::timestamptz AS now_ts,
+          date_trunc('day', ${nowIso}::timestamptz AT TIME ZONE 'America/New_York')
+            AT TIME ZONE 'America/New_York' AS day_start
+      ),
+      lagged AS (
+        SELECT
+          s.ticker, s.captured_at, s.min_dte, s.source_timestamp,
+          s.agg_dex, s.zgr, s.zcvr,
+          LAG(s.captured_at)       OVER w AS prev_at,
+          LAG(s.source_timestamp)  OVER w AS prev_src,
+          LAG(s.agg_dex)           OVER w AS prev_agg_dex,
+          LAG(s.zgr)               OVER w AS prev_zgr,
+          LAG(s.zcvr)              OVER w AS prev_zcvr
+        FROM gexbot_snapshots s, bounds b
+        WHERE s.captured_at >= b.day_start
+          AND s.captured_at <= b.now_ts
+        WINDOW w AS (PARTITION BY s.ticker ORDER BY s.captured_at)
+      ),
+      paired AS (
+        SELECT
+          l.*,
+          (
+            l.prev_at IS NOT NULL
+            AND l.captured_at - l.prev_at <= INTERVAL '3 minutes'
+            AND NOT (l.source_timestamp IS NOT NULL
+                     AND l.source_timestamp = l.prev_src)
+          ) AS ok
+        FROM lagged l
+      ),
+      diffs AS (
+        SELECT
+          p.ticker, p.captured_at, p.min_dte,
+          CASE WHEN p.ok THEN (p.agg_dex - p.prev_agg_dex)::float8 END AS d_agg_dex,
+          CASE WHEN p.ok THEN (p.zgr - p.prev_zgr)::float8 END AS d_zgr,
+          CASE WHEN p.ok THEN (p.zcvr - p.prev_zcvr)::float8 END AS d_zcvr
+        FROM paired p
+      ),
+      typical AS (
+        SELECT
+          ticker,
+          percentile_cont(0.5) WITHIN GROUP (ORDER BY abs(d_agg_dex)) AS median_abs
+        FROM diffs
+        WHERE d_agg_dex IS NOT NULL
+        GROUP BY ticker
+      ),
+      latest AS (
+        SELECT DISTINCT ON (d.ticker) d.*
+        FROM diffs d, bounds b
+        WHERE d.captured_at >= b.now_ts - INTERVAL '15 minutes'
+        ORDER BY d.ticker, d.captured_at DESC
+      )
+      SELECT
+        l.ticker, l.captured_at, l.min_dte,
+        l.d_agg_dex, l.d_zgr, l.d_zcvr,
+        t.median_abs::float8 AS typical_abs_d_agg_dex
+      FROM latest l
+      LEFT JOIN typical t USING (ticker)
+      ORDER BY l.ticker
+    `,
+    READ_RETRIES,
+    READ_TIMEOUT_MS,
+  )) as RawVelocityRow[];
+
+  return rows.map((r) => ({
+    ticker: r.ticker,
+    capturedAt: toIso(r.captured_at),
+    minDte: toNum(r.min_dte),
+    dAggDex: toNum(r.d_agg_dex),
+    dZgr: toNum(r.d_zgr),
+    dZcvr: toNum(r.d_zcvr),
+    typicalAbsDAggDex: toNum(r.typical_abs_d_agg_dex),
   }));
 }
 

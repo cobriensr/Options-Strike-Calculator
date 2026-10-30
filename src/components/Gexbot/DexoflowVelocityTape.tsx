@@ -1,49 +1,42 @@
 /**
- * DexoflowVelocityTape — per-ticker view of the three flow-rate
- * scalars from the orderflow endpoint:
- *   dexoflow  — dollar-delta flow rate
- *   gexoflow  — dollar-gamma flow rate
- *   cvroflow  — convexity-ratio flow rate
+ * DexoflowVelocityTape — per-ticker minute-over-minute change in taker
+ * exposure. (Legacy name: the tape used to show the vendor's
+ * dexoflow / gexoflow / cvroflow scalars, which are the change over ONE 1-2 s
+ * vendor step sampled once a minute, so 70-99% of values were exact zeros on
+ * the smaller tickers. Owner decision D4 replaced them.)
  *
- * These are velocity metrics — per the GEXBot spec, the change in net
- * taker exposure between consecutive vendor snapshots (taker-signed;
- * positive dexoflow = takers net bought delta). We sample once a minute,
- * so each value is one short change taken at the minute mark, not the
- * change across the minute. Distinct from cumulative flow totals: a high
- * cvroflow means net convexity (zcvr) is changing fast, not just that it
- * is high.
+ * Columns, differenced server-side with a SQL window (`view=velocity`):
+ *   Δ agg_dex — session-cumulative taker delta, so its minute difference is
+ *               the taker delta flow over the last minute;
+ *   Δ zgr     — change in the call − put GEX imbalance;
+ *   Δ zcvr    — change in net convexity.
  *
- * Each row shows the ticker's own DTE from `min_dte`. The metric itself
- * is unchanged here (owner decision D4 reworks it in a later phase).
+ * A dash means the change is unavailable (first minute of the session, a gap
+ * of more than 3 minutes, or the vendor repeating its prior source
+ * timestamp) — not a zero. Rows are ranked by |Δ agg_dex| against the
+ * ticker's own median minute change (see velocity-tape.ts), never by a raw
+ * sum of mixed units. Futures views (ES_SPX / NQ_NDX) are excluded: they
+ * duplicate SPX / NDX.
  *
- * Each cell shows the current value with a trend arrow (▲/▼/─)
- * derived from the sign alone (v0). When historical series are
- * captured we can switch to a 5-min slope.
+ * Each cell shows the value with a trend arrow (▲/▼/─) from its sign.
+ * Each row shows the ticker's own DTE from `min_dte`.
  *
  * Spec: docs/superpowers/specs/gexbot-frontend-2026-05-16.md
  */
 
 import { memo, useMemo } from 'react';
 
-import {
-  useGexbotData,
-  type SnapshotsLatestRow,
-} from '../../hooks/useGexbotData';
+import { useGexbotData } from '../../hooks/useGexbotData';
+import { GEXBOT_FUTURES_VIEWS } from './ticker-order';
 import { formatDte } from './types';
+import { sortVelocityRows } from './velocity-tape';
 
 interface DexoflowVelocityTapeProps {
   marketOpen: boolean;
 }
 
-interface VelocityRow {
-  ticker: string;
-  minDte: number | null;
-  dexoflow: number | null;
-  gexoflow: number | null;
-  cvroflow: number | null;
-}
-
-const SPEC = { view: 'snapshots-latest' as const };
+const SPEC = { view: 'velocity' as const };
+const FUTURES_VIEWS: readonly string[] = GEXBOT_FUTURES_VIEWS;
 
 function arrow(value: number | null): { glyph: string; cls: string } {
   if (value == null) return { glyph: '·', cls: 'text-tertiary' };
@@ -62,51 +55,14 @@ function formatScalar(value: number | null): string {
   return `${sign}${abs.toFixed(4)}`;
 }
 
-function magnitude(value: number | null): number {
-  // Defensive against NaN: Math.abs(NaN) === NaN, and NaN comparisons
-  // return false, which makes Array.prototype.sort non-deterministic.
-  if (value == null || Number.isNaN(value)) return 0;
-  return Math.abs(value);
-}
-
 function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
   const { rows, loading, error } = useGexbotData(SPEC, marketOpen);
 
-  const velocityRows = useMemo<VelocityRow[]>(() => {
-    return rows
-      .filter(
-        // Drop rows where every flow-rate is null OR zero. GEXBot
-        // returns explicit zeros for the smaller ETFs and VIX when
-        // there's no measurable flow — surfacing them here just
-        // makes the tape harder to scan. Magnitude-sum > 0 keeps any
-        // row with at least one meaningful scalar.
-        (r: SnapshotsLatestRow) =>
-          magnitude(r.dexoflow) +
-            magnitude(r.gexoflow) +
-            magnitude(r.cvroflow) >
-          0,
-      )
-      .map((r) => ({
-        ticker: r.ticker,
-        minDte: r.minDte,
-        dexoflow: r.dexoflow,
-        gexoflow: r.gexoflow,
-        cvroflow: r.cvroflow,
-      }))
-      .sort((a, b) => {
-        // Combined velocity magnitude across all three flow scalars.
-        // CVR included so a row where only cvroflow fires doesn't sink
-        // to the bottom — convexity acceleration is the marquee signal
-        // per the JSDoc.
-        const aMag =
-          magnitude(a.dexoflow) + magnitude(a.gexoflow) + magnitude(a.cvroflow);
-        const bMag =
-          magnitude(b.dexoflow) + magnitude(b.gexoflow) + magnitude(b.cvroflow);
-        // Stable tiebreaker on ticker so render order is deterministic
-        // when magnitudes match.
-        return bMag - aMag || a.ticker.localeCompare(b.ticker);
-      });
-  }, [rows]);
+  const velocityRows = useMemo(
+    () =>
+      sortVelocityRows(rows.filter((r) => !FUTURES_VIEWS.includes(r.ticker))),
+    [rows],
+  );
 
   if (loading) {
     return (
@@ -153,16 +109,20 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
       className="rounded-md border border-white/5 bg-white/[0.02]"
     >
       <div className="text-tertiary border-b border-white/5 px-3 py-2 text-[10px] tracking-wide uppercase">
-        Dexoflow Velocity — taker flow-rate scalars, DTE per ticker
+        Velocity — taker change over the last minute, DTE per ticker
       </div>
       <table className="w-full text-left text-xs">
         <thead className="text-tertiary text-[10px] tracking-wide uppercase">
           <tr>
             <th className="px-3 py-1.5 font-medium">Ticker</th>
-            <th className="px-3 py-1.5 text-right font-medium">Taker Δ flow</th>
-            <th className="px-3 py-1.5 text-right font-medium">Taker γ flow</th>
             <th className="px-3 py-1.5 text-right font-medium">
-              Net convexity flow
+              Taker Δ flow / min
+            </th>
+            <th className="px-3 py-1.5 text-right font-medium">
+              Call−put GEX Δ / min
+            </th>
+            <th className="px-3 py-1.5 text-right font-medium">
+              Net convexity Δ / min
             </th>
           </tr>
         </thead>
@@ -175,13 +135,17 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
                   {formatDte(row.minDte)}
                 </span>
               </td>
-              <Cell value={row.dexoflow} />
-              <Cell value={row.gexoflow} />
-              <Cell value={row.cvroflow} />
+              <Cell value={row.dAggDex} />
+              <Cell value={row.dZgr} />
+              <Cell value={row.dZcvr} />
             </tr>
           ))}
         </tbody>
       </table>
+      <p className="text-tertiary border-t border-white/5 px-3 py-1.5 text-[10px]">
+        Δ = this minute minus the last. — means no clean prior minute. Sorted by
+        taker Δ flow against each ticker&rsquo;s own typical minute.
+      </p>
     </div>
   );
 }

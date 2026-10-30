@@ -8,6 +8,8 @@
  *
  * Views:
  *   ?view=snapshots-latest     → latest snapshot row per ticker
+ *   ?view=velocity             → minute-over-minute change per ticker
+ *                                (Δagg_dex, Δzgr, Δzcvr via LAG)
  *   ?view=convexity-trend      → 60-min zcvr timeseries per ticker
  *   ?view=maxchange-winners    → latest maxchange winner per (ticker, cat)
  *   ?view=sibling-confirm      → requires &ticker=AAPL&side=call|put&at=<ISO
@@ -27,6 +29,7 @@ import {
   getLatestSnapshots,
   getMaxchangeWinners,
   getSiblingConfirmation,
+  getVelocityTape,
 } from './_lib/gexbot-queries.js';
 import logger from './_lib/logger.js';
 import { Sentry, metrics } from './_lib/sentry.js';
@@ -59,6 +62,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     switch (view) {
       case 'snapshots-latest':
         body = { rows: await getLatestSnapshots() };
+        break;
+      case 'velocity':
+        body = { rows: await getVelocityTape() };
         break;
       case 'convexity-trend':
         body = { rows: await getConvexityTrend() };

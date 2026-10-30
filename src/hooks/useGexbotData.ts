@@ -46,9 +46,23 @@ export interface SnapshotsLatestRow {
   oneDexoflow: number | null;
   oneGexoflow: number | null;
   oneCvroflow: number | null;
-  deltaRiskReversal: number | null;
   /** Nearest listed expiry in days (0 = same-day). Differs per ticker. */
   minDte: number | null;
+}
+
+/** Minute-over-minute change per ticker; null = unavailable (see server). */
+export interface VelocityRow {
+  ticker: string;
+  capturedAt: string;
+  minDte: number | null;
+  /** Δ agg_dex: taker delta flow over the last minute. */
+  dAggDex: number | null;
+  /** Δ zgr: change in call − put GEX imbalance. */
+  dZgr: number | null;
+  /** Δ zcvr: change in net convexity. */
+  dZcvr: number | null;
+  /** Median |Δ agg_dex| over this ticker's session minutes. */
+  typicalAbsDAggDex: number | null;
 }
 
 export interface ConvexityTrendRow {
@@ -89,6 +103,7 @@ export interface SiblingConfirmRow {
 
 export type GexbotView =
   | { view: 'snapshots-latest' }
+  | { view: 'velocity' }
   | { view: 'convexity-trend' }
   | { view: 'maxchange-winners' }
   | {
@@ -101,6 +116,7 @@ export type GexbotView =
 
 interface ViewPayload {
   'snapshots-latest': SnapshotsLatestRow[];
+  velocity: VelocityRow[];
   'convexity-trend': ConvexityTrendRow[];
   'maxchange-winners': MaxchangeWinnerRow[];
   'sibling-confirm': SiblingConfirmRow[];

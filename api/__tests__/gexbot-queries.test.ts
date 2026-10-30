@@ -17,6 +17,7 @@ import {
   getLatestSnapshots,
   getMaxchangeWinners,
   getSiblingConfirmation,
+  getVelocityTape,
   siblingVerdict,
   mapToGexbotTicker,
   SIBLING_GROUPS,
@@ -61,16 +62,64 @@ describe('gexbot-queries', () => {
           one_dexoflow: null,
           one_gexoflow: null,
           one_cvroflow: null,
-          delta_risk_reversal: '0.05',
           min_dte: 2,
         },
       ]);
       const [row] = await getLatestSnapshots();
       expect(row!.minDte).toBe(2);
+      expect(row).not.toHaveProperty('deltaRiskReversal');
       expect(row!.spot).toBe(5985.2);
       expect(row!.zcvr).toBe(1.25);
       expect(row!.zvanna).toBeNull();
       expect(row!.capturedAt).toBe('2026-05-19T14:00:00.000Z');
+    });
+  });
+
+  // ── getVelocityTape (row mapping; the SQL is proven in the pglite test) ──
+
+  describe('getVelocityTape', () => {
+    it('coerces NUMERIC-as-string deltas and keeps nulls as null', async () => {
+      mockSql.mockResolvedValueOnce([
+        {
+          ticker: 'SPX',
+          captured_at: new Date('2026-10-29T14:04:00Z'),
+          min_dte: 0,
+          d_agg_dex: '-1250000.5',
+          d_zgr: '0.25',
+          d_zcvr: null,
+          typical_abs_d_agg_dex: '800000',
+        },
+        {
+          ticker: 'VIX',
+          captured_at: new Date('2026-10-29T14:04:00Z'),
+          min_dte: null,
+          d_agg_dex: null,
+          d_zgr: null,
+          d_zcvr: null,
+          typical_abs_d_agg_dex: null,
+        },
+      ]);
+      const rows = await getVelocityTape();
+      expect(rows[0]).toEqual({
+        ticker: 'SPX',
+        capturedAt: '2026-10-29T14:04:00.000Z',
+        minDte: 0,
+        dAggDex: -1250000.5,
+        dZgr: 0.25,
+        dZcvr: null,
+        typicalAbsDAggDex: 800000,
+      });
+      expect(rows[1]).toMatchObject({
+        ticker: 'VIX',
+        minDte: null,
+        dAggDex: null,
+        typicalAbsDAggDex: null,
+      });
+    });
+
+    it('propagates a DB failure', async () => {
+      mockSql.mockRejectedValueOnce(new Error('connection lost'));
+      await expect(getVelocityTape()).rejects.toThrow('connection lost');
     });
   });
 

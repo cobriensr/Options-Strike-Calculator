@@ -8,16 +8,22 @@ vi.mock('../_lib/api-helpers.js', () => ({
   setCacheHeaders: vi.fn(),
 }));
 
-const { mockGetLatest, mockGetTrend, mockGetMax, mockGetSibling } = vi.hoisted(
-  () => ({
-    mockGetLatest: vi.fn(),
-    mockGetTrend: vi.fn(),
-    mockGetMax: vi.fn(),
-    mockGetSibling: vi.fn(),
-  }),
-);
+const {
+  mockGetLatest,
+  mockGetTrend,
+  mockGetMax,
+  mockGetSibling,
+  mockGetVelocity,
+} = vi.hoisted(() => ({
+  mockGetLatest: vi.fn(),
+  mockGetTrend: vi.fn(),
+  mockGetMax: vi.fn(),
+  mockGetSibling: vi.fn(),
+  mockGetVelocity: vi.fn(),
+}));
 
 vi.mock('../_lib/gexbot-queries.js', () => ({
+  getVelocityTape: mockGetVelocity,
   getLatestSnapshots: mockGetLatest,
   getConvexityTrend: mockGetTrend,
   getMaxchangeWinners: mockGetMax,
@@ -45,6 +51,7 @@ describe('GET /api/gexbot', () => {
     mockGetTrend.mockResolvedValue([]);
     mockGetMax.mockResolvedValue([]);
     mockGetSibling.mockResolvedValue([]);
+    mockGetVelocity.mockResolvedValue([]);
   });
 
   it('returns 405 for non-GET', async () => {
@@ -118,6 +125,43 @@ describe('GET /api/gexbot', () => {
       rows: [{ ticker: 'HYG', capturedAt: '2026-05-19T14:00:00Z', minDte: 2 }],
     });
     expect(mockGetLatest).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 200 with rows for velocity', async () => {
+    const row = {
+      ticker: 'SPX',
+      capturedAt: '2026-10-29T14:04:00.000Z',
+      minDte: 0,
+      dAggDex: 40,
+      dZgr: null,
+      dZcvr: null,
+      typicalAbsDAggDex: 10,
+    };
+    mockGetVelocity.mockResolvedValue([row]);
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { view: 'velocity' } }),
+      res,
+    );
+    expect(res._status).toBe(200);
+    expect(res._json).toEqual({ rows: [row] });
+    expect(mockGetVelocity).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces a velocity DB failure as 500 and a Sentry capture', async () => {
+    mockGetVelocity.mockRejectedValue(new Error('connection lost'));
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { view: 'velocity' } }),
+      res,
+    );
+    expect(res._status).toBe(500);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'connection lost' }),
+      expect.objectContaining({
+        tags: { route: '/api/gexbot', view: 'velocity' },
+      }),
+    );
   });
 
   it('returns 200 with rows for convexity-trend', async () => {

@@ -17,7 +17,6 @@ import { memo } from 'react';
 import { SectionBox } from '../ui';
 import { CharmClock } from './CharmClock';
 import { ConvexityMatrix } from './ConvexityMatrix';
-import { CrossAssetSkewDashboard } from './CrossAssetSkewDashboard';
 import { DealerStateSummaryStrip } from './DealerStateSummaryStrip';
 import { DexoflowVelocityTape } from './DexoflowVelocityTape';
 import { GammaCompass } from './GammaCompass';
@@ -42,7 +41,6 @@ function GexbotSectionInner({ marketOpen, spxSpot }: GexbotSectionProps) {
         <GammaCompass marketOpen={marketOpen} />
         <DexoflowVelocityTape marketOpen={marketOpen} />
         <ConvexityMatrix marketOpen={marketOpen} />
-        <CrossAssetSkewDashboard marketOpen={marketOpen} />
       </div>
       <p className="text-tertiary mt-3 text-[10px] leading-relaxed">
         GEXBot Orderflow-tier data — taker-side exposure and flow metrics for 14

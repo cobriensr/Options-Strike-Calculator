@@ -109,6 +109,29 @@ describe('PanelRouter', () => {
     expect(screen.getByTestId('panel-sec-c')).toBeInTheDocument();
   });
 
+  it('still loads a saved layout that names a removed panel id', () => {
+    // The cross-asset skew dashboard lived inside sec-gexbot and never had
+    // its own panel id, but a hand-edited or older saved layout could name
+    // one. An id with no renderer is skipped, in the order and when hidden.
+    const resolvedPanelsByGroup = new Map<string, readonly string[]>([
+      ['Inputs', ['sec-a', 'sec-skew-dashboard', 'sec-c']],
+    ]);
+    const panelMap = mkPanelMap(['sec-a', 'sec-c']);
+
+    render(
+      <PanelRouter
+        panelMap={panelMap}
+        resolvedGroups={['Inputs']}
+        resolvedPanelsByGroup={resolvedPanelsByGroup}
+        isHidden={(id) => id === 'sec-skew-dashboard'}
+      />,
+    );
+
+    expect(screen.getByTestId('panel-sec-a')).toBeInTheDocument();
+    expect(screen.getByTestId('panel-sec-c')).toBeInTheDocument();
+    expect(screen.queryByTestId('panel-sec-skew-dashboard')).toBeNull();
+  });
+
   it('renders nothing when resolvedGroups is empty', () => {
     const panelMap = mkPanelMap(['sec-a', 'sec-b']);
 

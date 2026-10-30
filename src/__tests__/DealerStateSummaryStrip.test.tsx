@@ -44,7 +44,6 @@ function makeRow(
     oneDexoflow: null,
     oneGexoflow: null,
     oneCvroflow: null,
-    deltaRiskReversal: null,
     minDte: 0,
     ...overrides,
   };
