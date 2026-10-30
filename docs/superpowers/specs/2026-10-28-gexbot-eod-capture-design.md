@@ -12,7 +12,8 @@ corrected passages win.
   reports rescued for 2026-10-28 were indexed from R2 (no re-download). DB and R2 counts and byte totals
   match for both dates (60 rows each; 1.75 GB for 10-28, 1.63 GB for 10-29).
 - **Schedules** (`vercel.json`, `api/_lib/cron-schedules.ts`): capture `archive-gexbot-eod` at
-  `0 2,12,19,23 * * *`, audit `audit-gexbot-eod` at `45 19 * * 1-5`.
+  `0 2,12-21,23 * * *` and the loss report `audit-gexbot-eod` at `30 22 * * 1-5`, both as set by Amendment 1
+  below. The first production run used the original `0 2,12,19,23 * * *` and `45 19 * * 1-5`.
 - **Migration 195** creates `gexbot_eod_reports`.
 - **Code:** `api/_lib/gexbot-eod.ts`, `api/_lib/gexbot-eod-zip.ts`, `api/_lib/r2.ts`,
   `api/cron/archive-gexbot-eod.ts`, `api/cron/audit-gexbot-eod.ts`.
@@ -21,6 +22,42 @@ corrected passages win.
   reason, plus every live probe) is in the build ledger
   `.superpowers/sdd/2026-10-28-gexbot-eod-capture/progress.md`. That folder is gitignored, so the ledger
   exists only on the owner's machine.
+
+## Amendment 1 (2026-10-29): automatic retries
+
+Owner request, 2026-10-29 18:40 CT: "can we just have it auto-retry x times or something? I really don't want
+manual processes". The first design raised an alarm about 75 minutes before the download window closed, and
+that alarm was a call for a manual rescue. This amendment removes the manual step. Missing reports now retry
+on their own until the window closes, and the owner hears only about a real loss, for information only,
+because nothing manual can do better than the cron.
+
+A report D can be downloaded from 17:00 ET on D until 17:00 ET on the next trading day: 21:00 UTC to 21:00
+UTC in EDT, and 22:00 UTC to 22:00 UTC in EST (from 2026-11-02).
+
+- **A. Hourly runs.** The capture runs at `0 2,12-21,23 * * *`: 12 runs a day, hourly from 12:00 to 21:00 UTC
+  (7 AM to 4 PM CDT, 6 AM to 3 PM CST), plus 23:00 and 02:00. A run with nothing missing makes no report
+  request: one `/tickers` call and one DB query. At 21:00 UTC in EDT the window for D has just closed, so
+  the expected date becomes D+1 and the run is simply D+1's first try. `maxRuntime` stays 14 and
+  `maxDuration` 800.
+- **B. Retries inside a run.** Each ticker gets up to 3 attempts (1 + 2 retries), waiting 15 s before the
+  second and 45 s before the third. Retried: network errors, HTTP 5xx and 408, any `bad_response`,
+  truncated bodies, ZIP validation errors, R2 verify failures, and R2 or DB errors on store or index. Not
+  retried: a 429 (it still stops the run, the ticker goes to `leftover`), other 4xx (recorded as failed at
+  once), `object_without_metadata` (permanent until a human looks), and any ticker hit by the run's stop
+  flag, the 600 s start cutoff or the 740 s abort. No attempt starts at or after 600 s and no wait runs past
+  it; a ticker whose wait would cross 600 s goes to `leftover`, not `failed`. An abort ends a wait at once.
+  A ticker still lands in exactly one bucket. Two new metadata keys count retries: `retried` (tickers that
+  needed at least one retry) and `recoveredByRetry` (tickers stored or indexed after a retry). Neither is an
+  Axiom top-level column. Each retry logs a warning.
+- **C. Quota guard.** Three consecutive `notYetPublished` results (reports GEXBot has not yet published) stop
+  the run with `stopReason` `not_published` and the rest go to `leftover`, so 12 runs a day cannot spend 60
+  requests each while GEXBot is late. Any other outcome resets the count. Status rules are unchanged.
+- **D. Loss report.** The audit now runs at `30 22 * * 1-5`, after the window has closed in both EDT (21:00
+  UTC) and EST (22:00 UTC). It takes `today` in ET; on a non-trading day it returns `skipped` and makes no
+  call. Otherwise it checks `priorTradingDay(today)`, the report whose window just closed. Missing tickers
+  give status `error` and one Sentry error, fingerprint `['gexbot-eod','missed-window']`, worded as a loss:
+  "GEXBot EOD reports lost for <date>: <n> tickers (download window closed; automatic retries could not
+  capture them)". It is information only; there is nothing to run.
 
 ## Goal
 
@@ -142,23 +179,25 @@ private R2 bucket, so a complete 2-second history of all GEXBot data builds up f
   row doesn't (an upload whose DB write failed), write the row from the object instead of re-downloading.
   Same key + same bytes means a re-upload is harmless. As built: a catch-up (a ticker whose report date
   is no longer the one GEXBot serves) indexes from R2 before it tries any download. `indexExistingObject`
-  trusts an object only if its size matches and its `ticker`, `report-date` and `source` metadata agree
-  with the key; otherwise it refuses and the ticker is treated as failed.
-- **Several attempts per window** (my call), all running the same code: the first at least 30 minutes
+  trusts an object only if its size matches, `source` metadata is present (any value), and its `ticker` and
+  `report-date` metadata match the key; otherwise it refuses and the ticker is treated as failed.
+- **Several attempts per window** (my call; superseded by Amendment 1, which makes the retries hourly), all
+  running the same code: the first at least 30 minutes
   after 5 PM ET in both EDT and EST (so no earlier than 22:30 UTC), at least three more spread before the
   next close, and the last at least 1 hour before 5 PM ET in EDT (5 PM EDT is 21:00 UTC, so no later than
   20:00 UTC). Weekend and holiday runs are harmless (the latest
   report is already stored, so everything skips). The schedule is the capture cron `archive-gexbot-eod`
   at `0 2,12,19,23 * * *`: one `vercel.json` entry, every day (23:00 UTC is after 22:30, then 02:00, 12:00,
   and 19:00 is before 20:00).
-- **Missed-window check** is a separate audit cron, `audit-gexbot-eod`, at `45 19 * * 1-5`, which raises the
-  alert. Its "last attempt" is simply the 19:00 UTC capture, so a capture run that crashes can't also
-  swallow the alert. As built it is one check, and it makes **no
+- **Missed-window check** is a separate audit cron, `audit-gexbot-eod`, which raises the alert. As first
+  built it ran at `45 19 * * 1-5`; Amendment 1 moves it to `30 22 * * 1-5`, after the window has closed, and
+  makes it a loss report. A capture run that crashes can't also swallow the alert. As built it is one check, and it makes **no
   report request** (a report request spends quota, and GEXBot serves only the latest report). It computes
   `latestEligibleReportDate(now)` (the most recent completed NYSE session whose 5 PM ET has passed, per the
   trading calendar in `src/data/marketHours.ts`) and compares `listStoredTickers(thatDate)` against the
   `/tickers` list. Any ticker with no row gets a Sentry error naming the date and the tickers (fingerprint
-  `['gexbot-eod','missed-window']`). This catches a day GEXBot never published and a window our job missed
+  `['gexbot-eod','missed-window']`; under Amendment 1 the date is the report whose window closed that day, and
+  the message is for information only). This catches a day GEXBot never published and a window our job missed
   entirely. (`src/` files imported by `api/` need `.js` extensions on their relative imports; see
   CLAUDE.md.) The audit also sends a Sentry warning, fingerprint `['gexbot-eod','rejected-tickers']`, when
   the ticker charset rejects any listed ticker; a rejected ticker can never be stored, so it is not counted
@@ -218,10 +257,9 @@ private R2 bucket, so a complete 2-second history of all GEXBot data builds up f
      (shared client: 60 of 120 requests unverified; one client per thread: 0). The script now builds one
      client per thread, and a re-run logged none. The stored data is verified, but the R2 key travelled on
      unverified connections during that run (see "Owner actions").
-   - The script and the run manifests are in `docs/tmp/gexbot-eod-rescue/` (gitignored). Nightly re-run,
-     from that folder: `python -I rescue.py YYYY-MM-DD` with the session date, after 5 PM ET and before
-     5 PM ET on the next trading day. Then check its log for `FAIL` and `InsecureRequestWarning`. It
-     stays local in `docs/tmp/gexbot-eod-rescue/` (gitignored) until the cron is live; it isn't committed.
+   - The script and the run manifests are in `docs/tmp/gexbot-eod-rescue/` (gitignored). It was only a
+     bridge until the cron went live (2026-10-29). Nothing runs it now: missing reports retry on their own
+     (Amendment 1). It isn't committed.
 1. **Index table:** migration 195 + `api/__tests__/db.test.ts`. (~30 min)
 2. **R2 client:** a small `api/_lib/` module (put / head), the dependency, env wiring (`env.ts`,
    `.env.example`, CLAUDE.md table), tests. (~1–2 h)
@@ -270,7 +308,10 @@ schedule and the audit's "last attempt" are settled above.)
 ## Thresholds and constants
 
 - Report window: eligible 5 PM ET on the session date, served until 5 PM ET on the next trading day.
-- Last attempt: at least 1 hour before 5 PM ET in EDT, i.e. no later than 20:00 UTC.
+- Last attempt: Amendment 1 runs the capture hourly through 21:00 UTC (the close in EDT); the original
+  "no later than 20:00 UTC" rule is superseded.
+- Retries: 3 attempts per ticker, waits of 15 s and 45 s; no attempt starts at or after 600 s.
+- Quota guard: 3 consecutive `notYetPublished` results stop the run (`stopReason` `not_published`).
 - Expected entries per report: 15 (warn on other counts).
 - Size cap per report: `MAX_EOD_REPORT_BYTES` = 300 MiB (about 1.8x the largest seen).
 - Largest file seen: 167.6 MB (SNDK, 10-28). Daily total seen: 1.74 GB (60 tickers).
