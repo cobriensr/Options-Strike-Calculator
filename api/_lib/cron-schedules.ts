@@ -80,7 +80,7 @@ const HIGH_FREQ_FAILURE_THRESHOLD = 3;
  * mismatch:
  *
  *   - vercel.json runs these on a fixed-UTC every-5/10-min crontab over
- *     the UTC hours 13-21 (or 13-20) sized to cover the EST cash session
+ *     the UTC hours 13-21 sized to cover the EST cash session
  *     (close 21:00 UTC).
  *   - The handler gate, cronGuard → isMarketHours(), is ET-anchored:
  *     it opens ~09:25 ET and closes ~16:05 ET. In EDT (summer) 16:05 ET
@@ -716,10 +716,15 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
   'refresh-tracker-contracts': {
-    // ET-local schedule — see DST_TAIL_NOTE. vercel.json fires `*/5 13-20`
-    // UTC. 20 UTC = 15 ET (EST) / 16 ET (EDT); since EST caps the fired
-    // window at 15:00 ET, the guaranteed served-AND-fired subset across
-    // both regimes is 09:00–15:00 ET → ET-local `*/5 9-15`.
+    // ET-local schedule — see DST_TAIL_NOTE. vercel.json fires `*/5 13-21`
+    // UTC. It was 13-20 until 2026-10-29, which in EST would never fire the
+    // 16:00 and 16:05 ET ticks, so an expiring contract would close on its
+    // 15:55 mark. Caught before the first EST session (2026-11-02): the cron
+    // dates from 2026-05-17, so no history is affected.
+    // The monitor keeps `*/5 9-15`: the test requires every expected tick
+    // to be market-open in both regimes, which rules out an hour 16 that
+    // would expect 16:10–16:55 ET. Those served-but-skipped ticks send a
+    // paired skip check-in the monitor doesn't need.
     schedule: '*/5 9-15 * * 1-5',
     timezone: MARKET_HOURS_TZ,
     checkinMargin: DEFAULT_MARGIN,

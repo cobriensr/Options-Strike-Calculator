@@ -3,7 +3,8 @@
  *
  * Fetches daily open interest per strike for SPX from Unusual Whales API.
  * OI is a daily figure (settled from prior day), not intraday — runs ONCE
- * per day near market open (14:00 UTC / 10:00 AM ET).
+ * per day near market open (14:30 UTC: 10:30 AM EDT, 9:30 AM EST; either
+ * gets the same prior-day OI).
  *
  * Skips if data already exists for today to avoid duplicate work on retries.
  *

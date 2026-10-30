@@ -232,7 +232,7 @@ async function loadSlot(
 
 /**
  * Fetch today's cone bounds from `cone_levels` (populated by the
- * compute-cone cron at 13:32 UTC). Returns null if the cron hasn't run
+ * compute-cone cron at 09:32 ET). Returns null if the cron hasn't run
  * yet for the day.
  */
 export async function fetchConeLevels(

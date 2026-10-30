@@ -14,6 +14,9 @@
  *     source scan checks that api/cron/<job>.ts passes that job name to
  *     withCronInstrumentation or withCronCheckin (as a string literal or
  *     through a `const JOB = '<job>'` in the same file).
+ *   - vercel.json → handler gate, per DST regime: a cron whose ET gate the
+ *     source scan can name must reach that gate in both EDT and EST, and
+ *     open and close it at the same ET minute in both (see sourceGate).
  *
  * Two reconciliation modes for the first direction:
  *   - UTC entries (no `timezone`): the monitor crontab MUST equal
@@ -31,12 +34,17 @@
  *       docs/superpowers/specs/cron-monitor-coverage-2026-10-29.md
  */
 
-import { describe, it, expect } from 'vitest';
+import { afterAll, describe, it, expect, vi } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { SCHEDULE_MAP } from '../_lib/cron-schedules.js';
 import { assertValidTimezone } from '../_lib/cron-instrumentation.js';
 import { MARKET_MINUTES } from '../_lib/constants.js';
+import {
+  isFuturesRthCt,
+  isGexbotLiveCt,
+  isMarketHours,
+} from '../_lib/cron-helpers.js';
 
 interface VercelConfig {
   crons?: { path: string; schedule: string }[];
@@ -188,6 +196,72 @@ function unionTickSet(crontabs: string[]): Set<number> {
     for (const t of utcTickSet(parseCron(crontab))) ticks.add(t);
   }
   return ticks;
+}
+
+/** Whether a crontab's day-of-week field (0 = Sunday) includes `day`. */
+function firesOnWeekday(crontab: string, day: number): boolean {
+  const dow = crontab.trim().split(/\s+/)[4] ?? '*';
+  return expandField(dow, 0, 6).has(day);
+}
+
+/**
+ * Gate predicates a cron can name in `timeCheck:` that the DST check can
+ * evaluate. Any other name (a predicate local to the cron) or an inline
+ * function is a custom gate, left to that cron's own tests.
+ */
+const NAMED_GATES: Record<string, () => boolean> = {
+  isMarketHours: () => isMarketHours(),
+  isGexbotLiveCt,
+  isFuturesRthCt,
+};
+
+/**
+ * The time gate a cron's cronGuard applies, read from its source: the
+ * default isMarketHours() when the file calls cronGuard or
+ * withCronInstrumentation and sets neither `marketHours: false` nor a
+ * `timeCheck`, or the one predicate named in NAMED_GATES. Null when there is
+ * no guard call to read, the gate is off, wrapper-level (`dynamicTimeCheck`)
+ * or custom, or the options can't be read with confidence (a shorthand
+ * `{ timeCheck }`, more than one `timeCheck` mention). Those crons are
+ * skipped, conservatively, and left to their own tests.
+ */
+function sourceGate(src: string): (() => boolean) | null {
+  if (!/\b(?:cronGuard|withCronInstrumentation)\(/.test(src)) return null;
+  if (
+    /\bmarketHours:\s*false\b/.test(src) ||
+    /\bdynamicTimeCheck\b/.test(src)
+  ) {
+    return null;
+  }
+  const timeCheckMentions = src.match(/\btimeCheck\b/g) ?? [];
+  if (timeCheckMentions.length > 1 || /\btimeCheck\s*[,}]/.test(src)) {
+    return null;
+  }
+  const named = /\btimeCheck:\s*([A-Za-z_$][\w$]*)\s*[,}\n]/.exec(src);
+  if (named?.[1] != null) return NAMED_GATES[named[1]] ?? null;
+  if (timeCheckMentions.length > 0) return null;
+  return NAMED_GATES.isMarketHours!;
+}
+
+/**
+ * Gated crons whose in-gate ET ticks deliberately differ between EDT and
+ * EST, with the reason. Every other gated cron must open and close its gate
+ * at the same ET minute in both regimes.
+ */
+const DST_ASYMMETRIC_CRONS: Record<string, string> = {
+  'fetch-greek-exposure-strike':
+    '`30 13,14` UTC is a DST pair: 09:30 ET runs in both regimes, and EDT ' +
+    'adds a 10:30 ET re-run that upserts the same rows (ON CONFLICT DO UPDATE).',
+  'fetch-oi-per-strike':
+    'One run a day at 14:30 UTC (10:30 EDT, 09:30 EST). OI is the prior ' +
+    "day's settled figure, so either time gets the same data, and the day's " +
+    'first fetch is kept.',
+};
+
+/** ET minute-of-day as HH:MM, for readable failures. */
+function etClock(min: number | undefined): string {
+  if (min == null) return 'none';
+  return `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
 }
 
 /**
@@ -547,5 +621,165 @@ describe('vercel.json crons → SCHEDULE_MAP coverage', () => {
     ],
   ])('wrappedJobNames reads %s', (_case, src, want) => {
     expect(wrappedJobNames(src)).toEqual(want);
+  });
+});
+
+describe('DST: gated crons reach the same ET window in both regimes', () => {
+  // vercel.json crontabs are UTC; the gates are ET. A Wednesday in each
+  // regime, both full sessions: EDT is UTC-4, EST is UTC-5.
+  const REGIMES = [
+    { name: 'EDT', date: '2026-10-28', offsetMin: 240 },
+    { name: 'EST', date: '2026-11-04', offsetMin: 300 },
+  ] as const;
+  const WEDNESDAY = 3;
+
+  afterAll(() => {
+    vi.useRealTimers();
+  });
+
+  /** ET minutes-of-day, ascending, of the UTC ticks the gate admits on `date`. */
+  function inGateEtMinutes(
+    ticks: Iterable<number>,
+    gate: () => boolean,
+    date: string,
+    offsetMin: number,
+  ): number[] {
+    const midnightUtc = Date.parse(`${date}T00:00:00Z`);
+    const admitted: number[] = [];
+    for (const tick of ticks) {
+      vi.setSystemTime(midnightUtc + tick * 60_000);
+      if (gate()) admitted.push(tick - offsetMin);
+    }
+    return admitted.sort((a, b) => a - b);
+  }
+
+  const gated = [...loadVercelCrons()].flatMap(([job, schedules]) => {
+    const file = resolve(process.cwd(), 'api', 'cron', `${job}.ts`);
+    if (!existsSync(file)) return [];
+    const gate = sourceGate(readFileSync(file, 'utf8'));
+    const weekday = schedules.filter((s) => firesOnWeekday(s, WEDNESDAY));
+    return gate == null || weekday.length === 0
+      ? []
+      : [{ job, ticks: unionTickSet(weekday), gate }];
+  });
+
+  /** In-gate ET minutes for one gated cron: [EDT, EST]. */
+  function windows(cron: (typeof gated)[number]): [number[], number[]] {
+    const [edt, est] = REGIMES;
+    return [
+      inGateEtMinutes(cron.ticks, cron.gate, edt.date, edt.offsetMin),
+      inGateEtMinutes(cron.ticks, cron.gate, est.date, est.offsetMin),
+    ];
+  }
+
+  /** A window's tick count and first and last ET tick, as HH:MM. */
+  function span(window: number[]) {
+    return {
+      ticks: window.length,
+      first: etClock(window[0]),
+      last: etClock(window.at(-1)),
+    };
+  }
+
+  it('the source scan classifies known crons as gated or custom', () => {
+    const jobs = gated.map((g) => g.job);
+    expect(jobs.length).toBeGreaterThan(30);
+    expect(jobs).toEqual(
+      expect.arrayContaining([
+        'fetch-spx-candles-1m', // default market gate, withCronInstrumentation
+        'fetch-strike-exposure', // default gate via its own cronGuard call
+        'capture-flow-regime', // explicit marketHours: true
+        'fetch-gexbot-fast', // timeCheck: isGexbotLiveCt
+        'fetch-gex-strike-expiry-etfs', // timeCheck: isFuturesRthCt
+      ]),
+    );
+    // Custom gates are left to each cron's own tests.
+    for (const custom of [
+      'compute-cone', // local isConeCalcWindow
+      'compute-es-overnight', // local isAfterCashOpen
+      'evaluate-round-trip', // inline timeCheck
+      'build-features', // dynamicTimeCheck
+      'fetch-vol-surface', // marketHours: false
+    ]) {
+      expect(jobs).not.toContain(custom);
+    }
+  });
+
+  it.each(gated)(
+    '$job reaches its gate in both regimes, opening and closing at the same ET minute',
+    (cron) => {
+      const [edtWindow, estWindow] = windows(cron);
+      const edt = span(edtWindow);
+      const est = span(estWindow);
+      expect(edt.ticks, 'EDT ticks inside the gate').toBeGreaterThan(0);
+      expect(est.ticks, 'EST ticks inside the gate').toBeGreaterThan(0);
+      if (cron.job in DST_ASYMMETRIC_CRONS) return;
+      expect({ first: est.first, last: est.last }).toEqual({
+        first: edt.first,
+        last: edt.last,
+      });
+    },
+  );
+
+  it('every DST_ASYMMETRIC_CRONS exemption is still gated and still asymmetric', () => {
+    for (const job of Object.keys(DST_ASYMMETRIC_CRONS)) {
+      const cron = gated.find((g) => g.job === job);
+      expect(cron, `${job} is no longer a gated cron`).toBeDefined();
+      const [edtWindow, estWindow] = windows(cron!);
+      const edt = span(edtWindow);
+      const est = span(estWindow);
+      expect(
+        [edt.first, edt.last],
+        `${job} is symmetric now; drop its exemption`,
+      ).not.toEqual([est.first, est.last]);
+    }
+  });
+
+  it.each([
+    ['the default market gate', 'withCronInstrumentation(JOB, run);', true],
+    ['a default cronGuard call', 'cronGuard(req, res);', true],
+    [
+      'explicit marketHours: true',
+      'cronGuard(req, res, { marketHours: true })',
+      true,
+    ],
+    [
+      'a named cron-helpers gate',
+      'withCronInstrumentation(JOB, run, { timeCheck: isGexbotLiveCt })',
+      true,
+    ],
+    ['no guard call to read', 'export default handler;', false],
+    [
+      'marketHours: false',
+      'cronGuard(req, res, { marketHours: false })',
+      false,
+    ],
+    [
+      'a local predicate',
+      'withCronInstrumentation(JOB, run, { timeCheck: isAfterCashOpen, x })',
+      false,
+    ],
+    [
+      'an inline predicate',
+      'withCronInstrumentation(JOB, run, { timeCheck: () => isMarketHours(80) })',
+      false,
+    ],
+    [
+      'a dynamicTimeCheck',
+      'withCronInstrumentation(JOB, run, { dynamicTimeCheck: f })',
+      false,
+    ],
+    [
+      'a shorthand timeCheck',
+      'withCronInstrumentation(JOB, run, { timeCheck })',
+      false,
+    ],
+    [
+      'two timeCheck mentions',
+      '// timeCheck: isMarketHours\nwithCronInstrumentation(JOB, run, { timeCheck: isGexbotLiveCt })',
+      false,
+    ],
+  ])('sourceGate reads %s', (_case, src, gated) => {
+    expect(sourceGate(src) != null).toBe(gated);
   });
 });
