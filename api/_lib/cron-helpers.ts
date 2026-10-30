@@ -90,6 +90,18 @@ export function isPastCashOpen(graceMinutes = 0): boolean {
 }
 
 /**
+ * compute-cone's window: 09:30–09:45 ET on a trading day (isPastCashOpen
+ * handles weekends, holidays and the open). The cron fires `32 13,14` UTC,
+ * and the 09:45 cap admits exactly one of those slots in each DST regime:
+ * 13:32 UTC in EDT and 14:32 UTC in EST, both 09:32 ET.
+ */
+export function isConeCalcWindow(): boolean {
+  if (!isPastCashOpen()) return false;
+  const { hour, minute } = getETTime(new Date());
+  return hour * 60 + minute <= 9 * 60 + 45;
+}
+
+/**
  * Futures-tied RTH window: 08:30–15:55 CT (== 09:30–16:55 ET).
  *
  * Wider than `isMarketHours()` on the close side (15:55 CT vs equity

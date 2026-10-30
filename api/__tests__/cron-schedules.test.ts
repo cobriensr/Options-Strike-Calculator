@@ -41,6 +41,7 @@ import { SCHEDULE_MAP } from '../_lib/cron-schedules.js';
 import { assertValidTimezone } from '../_lib/cron-instrumentation.js';
 import { MARKET_MINUTES } from '../_lib/constants.js';
 import {
+  isConeCalcWindow,
   isFuturesRthCt,
   isGexbotLiveCt,
   isMarketHours,
@@ -213,7 +214,23 @@ const NAMED_GATES: Record<string, () => boolean> = {
   isMarketHours: () => isMarketHours(),
   isGexbotLiveCt,
   isFuturesRthCt,
+  isConeCalcWindow,
 };
+
+/**
+ * Source with comments removed, so a comment that mentions `timeCheck`,
+ * `dynamicTimeCheck` or `marketHours: false` can't change how a cron is
+ * read. Line comments are matched only when `//` doesn't follow `:` or a
+ * quote, which keeps `https://` URLs and literals that open with `//`
+ * intact. A `//` mid-string or in a template literal is still stripped, and
+ * a star-slash inside a block comment (say, a quoted every-5-minutes
+ * crontab) ends that comment early; no cron source has either today.
+ */
+function stripComments(src: string): string {
+  return src
+    .replaceAll(/\/\*[\s\S]*?\*\//g, '')
+    .replaceAll(/(^|[^:'"`])\/\/.*$/gm, '$1');
+}
 
 /**
  * The time gate a cron's cronGuard applies, read from its source: the
@@ -225,7 +242,8 @@ const NAMED_GATES: Record<string, () => boolean> = {
  * `{ timeCheck }`, more than one `timeCheck` mention). Those crons are
  * skipped, conservatively, and left to their own tests.
  */
-function sourceGate(src: string): (() => boolean) | null {
+function sourceGate(rawSrc: string): (() => boolean) | null {
+  const src = stripComments(rawSrc);
   if (!/\b(?:cronGuard|withCronInstrumentation)\(/.test(src)) return null;
   if (
     /\bmarketHours:\s*false\b/.test(src) ||
@@ -691,11 +709,11 @@ describe('DST: gated crons reach the same ET window in both regimes', () => {
         'capture-flow-regime', // explicit marketHours: true
         'fetch-gexbot-fast', // timeCheck: isGexbotLiveCt
         'fetch-gex-strike-expiry-etfs', // timeCheck: isFuturesRthCt
+        'compute-cone', // timeCheck: isConeCalcWindow (one slot per regime)
       ]),
     );
     // Custom gates are left to each cron's own tests.
     for (const custom of [
-      'compute-cone', // local isConeCalcWindow
       'compute-es-overnight', // local isAfterCashOpen
       'evaluate-round-trip', // inline timeCheck
       'build-features', // dynamicTimeCheck
@@ -775,8 +793,22 @@ describe('DST: gated crons reach the same ET window in both regimes', () => {
       false,
     ],
     [
-      'two timeCheck mentions',
-      '// timeCheck: isMarketHours\nwithCronInstrumentation(JOB, run, { timeCheck: isGexbotLiveCt })',
+      'a timeCheck mentioned only in comments',
+      '// timeCheck: isMarketHours\n/* marketHours: false, dynamicTimeCheck */\n' +
+        'withCronInstrumentation(JOB, run, { timeCheck: isGexbotLiveCt })',
+      true,
+    ],
+    [
+      'two timeCheck options in code',
+      'cronGuard(req, res, { timeCheck: isMarketHours });\n' +
+        'withCronInstrumentation(JOB, run, { timeCheck: isGexbotLiveCt })',
+      false,
+    ],
+    [
+      // Stripping from `//` on would drop `marketHours: false` and misread
+      // this as the default gate.
+      'a URL before an option on the same line',
+      "cronGuard(req, res, { url: 'https://x.test', marketHours: false })",
       false,
     ],
   ])('sourceGate reads %s', (_case, src, gated) => {

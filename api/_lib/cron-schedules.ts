@@ -721,11 +721,10 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     // 16:00 and 16:05 ET ticks, so an expiring contract would close on its
     // 15:55 mark. Caught before the first EST session (2026-11-02): the cron
     // dates from 2026-05-17, so no history is affected.
-    // The monitor keeps `*/5 9-15`: the test requires every expected tick
-    // to be market-open in both regimes, which rules out an hour 16 that
-    // would expect 16:10–16:55 ET. Those served-but-skipped ticks send a
-    // paired skip check-in the monitor doesn't need.
-    schedule: '*/5 9-15 * * 1-5',
+    // ET hour 16 is served in both regimes by 13-21 UTC, so the monitor
+    // expects the 16:00 and 16:05 ET runs that restores; 16:10–16:55 ET
+    // are past the market gate and satisfied by the paired skip check-in.
+    schedule: '*/5 9-16 * * 1-5',
     timezone: MARKET_HOURS_TZ,
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,

@@ -1,7 +1,7 @@
 /**
  * GET /api/cron/compute-cone
  *
- * Computes the SPX 0DTE straddle breakeven cone at 9:31 ET each weekday and
+ * Computes the SPX 0DTE straddle breakeven cone at 9:32 ET each weekday and
  * persists it to `cone_levels`. Replaces the user-facing manual cone input
  * with an auto-computed pair derived from the ATM call+put marks on the
  * SPX 0DTE chain.
@@ -47,25 +47,13 @@
 
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { schwabFetch } from '../_lib/api-helpers.js';
-import { isPastCashOpen } from '../_lib/cron-helpers.js';
+import { isConeCalcWindow } from '../_lib/cron-helpers.js';
 import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 import { redactUpstreamBody } from '../_lib/redact-upstream-body.js';
 import { Sentry } from '../_lib/sentry.js';
-import { getETTime } from '../../src/utils/timezone.js';
-
-/**
- * 09:30–09:45 ET on a trading day: the cone-calc window. isPastCashOpen
- * handles weekends, holidays and the open; the 09:45 cap makes exactly one
- * of the `32 13,14` UTC slots pass in each DST regime.
- */
-function isConeCalcWindow(): boolean {
-  if (!isPastCashOpen()) return false;
-  const { hour, minute } = getETTime(new Date());
-  return hour * 60 + minute <= 9 * 60 + 45;
-}
 
 interface SchwabOptionContract {
   putCall: 'PUT' | 'CALL';
