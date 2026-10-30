@@ -49,6 +49,8 @@ Files: `api/cron/detect-lottery-fires.ts`, `api/cron/detect-silent-boom.ts`, the
 
 ### B. Make the run cheap (spec'd here, built after A; medium)
 
+Detailed design for B and E (2026-10-29), which supersedes the bullets below where they differ: `docs/superpowers/plans/2026-10-29-lottery-phase-b-e.md`.
+
 - Tick scan in time slices, each row read once.
 - Pass 1 flow series in one query (`ticker = ANY`).
 - Prefetch per run: `flow_data`, `spot_exposures`, `strike_exposures`, `gexbot_snapshots` → in-memory lookups.
