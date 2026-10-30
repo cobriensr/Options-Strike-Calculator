@@ -106,6 +106,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 
 import handler from '../cron/fetch-strike-iv.js';
 import { schwabFetch } from '../_lib/api-helpers.js';
+import logger from '../_lib/logger.js';
 import type { SchwabErrorCode } from '../_lib/schwab-fetch.js';
 import { Sentry } from '../_lib/sentry.js';
 
@@ -719,6 +720,32 @@ describe('fetch-strike-iv handler', () => {
     },
   );
 
+  it('masks a token-like run in the Schwab body before it reaches the log', async () => {
+    // pino has no redact config, and this logs once a minute per failing
+    // ticker.
+    const token = 'B'.repeat(40);
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: false,
+      status: 502,
+      error: `[SCHWAB_API_502] Schwab API error (502): {"echo":"${token}"}`,
+      code: 'SCHWAB_API_502',
+    });
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    const warned = vi
+      .mocked(logger.warn)
+      .mock.calls.filter(
+        ([, msg]) => msg === 'fetch-strike-iv: Schwab chain fetch failed',
+      );
+    expect(warned.length).toBeGreaterThan(0);
+    for (const [fields] of warned) {
+      expect((fields as { error: string }).error).toContain('[redacted]');
+      expect(JSON.stringify(fields)).not.toContain(token);
+    }
+  });
+
   it('tags a run whose tickers failed with different Schwab codes as mixed', async () => {
     vi.mocked(schwabFetch)
       .mockResolvedValueOnce({
@@ -798,7 +825,17 @@ describe('fetch-strike-iv handler', () => {
       body.results.filter((r) => r.reason === 'exception').map((r) => r.ticker),
     ).toEqual(['SPXW', 'QQQ']);
     expect(Sentry.captureException).toHaveBeenCalledTimes(2);
-    expect(Sentry.captureException).toHaveBeenCalledWith(writeError);
+    // Each event carries its own ticker tag; nothing is set on the shared
+    // scope, where parallel legs would overwrite each other.
+    for (const ticker of ['SPXW', 'QQQ']) {
+      expect(Sentry.captureException).toHaveBeenCalledWith(writeError, {
+        tags: { 'strike_iv.ticker': ticker },
+      });
+    }
+    expect(Sentry.setTag).not.toHaveBeenCalledWith(
+      'strike_iv.ticker',
+      expect.anything(),
+    );
     expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 

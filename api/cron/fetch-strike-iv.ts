@@ -43,6 +43,7 @@
 
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
+import { redactUpstreamBody } from '../_lib/redact-upstream-body.js';
 import {
   mapWithConcurrency,
   schwabFetch,
@@ -97,24 +98,6 @@ interface SnapshotRow {
   midPrice: number;
   oi: number;
   volume: number;
-}
-
-/**
- * Capture an exception to Sentry with the standard fetch-strike-iv tag
- * bundle. Mirrors the verbatim setTag + captureException sequence the
- * original cron repeated five times so the per-error noise stays
- * consistent across detection, persist, enrichment, and per-ticker
- * crash sites.
- */
-function captureTickerException(
-  ticker: StrikeIVTicker,
-  err: unknown,
-  phase?: string,
-): void {
-  Sentry.setTag('cron.job', 'fetch-strike-iv');
-  Sentry.setTag('strike_iv.ticker', ticker);
-  if (phase) Sentry.setTag('strike_iv.phase', phase);
-  Sentry.captureException(err);
 }
 
 // ── Schwab types (duplicated locally — api/chain.ts is an endpoint, not a
@@ -364,8 +347,13 @@ async function fetchChain(
     `&fromDate=${fromDate}&toDate=${toDate}&strikeCount=500`;
   const result = await schwabFetch<SchwabChainResponse>(path);
   if (!result.ok && result.code !== 'SCHWAB_TOKEN_EXPIRED') {
+    // result.error embeds the raw Schwab body and pino has no redact config.
     logger.warn(
-      { ticker, status: result.status, error: result.error },
+      {
+        ticker,
+        status: result.status,
+        error: redactUpstreamBody(result.error),
+      },
       'fetch-strike-iv: Schwab chain fetch failed',
     );
   }
@@ -617,7 +605,9 @@ async function runTicker(
 
     return { ticker, rowsInserted, skipped: false };
   } catch (err) {
-    captureTickerException(ticker, err);
+    // Tag the event, not the scope: tickers run in parallel, so a scope tag
+    // set here would leak onto another leg's event or the run-level message.
+    Sentry.captureException(err, { tags: { 'strike_iv.ticker': ticker } });
     logger.error({ err, ticker }, 'fetch-strike-iv: ticker failed');
     return {
       ticker,
@@ -637,7 +627,7 @@ export default withCronInstrumentation(
     const sql = getDb();
 
     // Run tickers in parallel — they're independent and fault-isolated.
-    // Cap in-flight requests via mapWithConcurrency so the 13-ticker fan-out
+    // Cap in-flight requests via mapWithConcurrency so the 17-ticker fan-out
     // never overruns Schwab's per-app concurrency budget.
     const results = await mapWithConcurrency(
       STRIKE_IV_TICKERS,

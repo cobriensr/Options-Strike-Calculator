@@ -29,8 +29,9 @@
  * 9:32 EST. The `isConeCalcWindow` timeCheck (09:30–09:45 ET on a trading
  * day) admits exactly one of the two slots; the other (8:32 EST, 10:32 EDT)
  * is an intentional skip with a paired ok check-in. With only the 13:32
- * slot and the default market gate (09:25 ET on), every EST run was
- * skipped and no cone was written all winter.
+ * slot and the default market gate (09:25 ET on), every EST run would have
+ * been skipped and no cone written all winter; caught on 2026-10-29, before
+ * the first EST session since the cron's 2026-05-07 start.
  *
  * Idempotency: cone_levels has DATE PRIMARY KEY. We `ON CONFLICT DO
  * NOTHING` so a same-day re-fire (e.g. accidental backfill) is a no-op
@@ -205,15 +206,18 @@ export default withCronInstrumentation(
           metadata: { reason: 'schwab_logged_out' },
         };
       }
+      // result.error embeds the raw Schwab body. Mask token-like runs and cap
+      // it once, for every place it goes: pino (no redact config), Sentry
+      // `extra` (beforeSend scrubs by key name only), and the Axiom event and
+      // JSON response via `metadata`.
+      const safeError = redactUpstreamBody(result.error);
       logger.warn(
-        { status: result.status, error: result.error },
+        { status: result.status, error: safeError },
         'compute-cone: Schwab chain fetch failed',
       );
       // schwabFetch captures nothing for a non-2xx or network failure, and
       // the wrapper answers a returned `error` with a red check-in only, so
       // this is the run's Sentry event. No cone today means no cone breaches.
-      // result.error embeds the raw Schwab body, and beforeSend scrubs
-      // `extra` by key name only, so mask token-like runs and cap it.
       Sentry.captureMessage('compute-cone: Schwab chain fetch failed', {
         level: 'warning',
         fingerprint: ['compute-cone', 'schwab-fetch-failed'],
@@ -221,14 +225,11 @@ export default withCronInstrumentation(
           'cron.anomaly': 'schwab-fetch-failed',
           'schwab.code': result.code,
         },
-        extra: {
-          status: result.status,
-          error: redactUpstreamBody(result.error),
-        },
+        extra: { status: result.status, error: safeError },
       });
       return {
         status: 'error',
-        metadata: { reason: 'schwab_fetch_failed', error: result.error },
+        metadata: { reason: 'schwab_fetch_failed', error: safeError },
       };
     }
 

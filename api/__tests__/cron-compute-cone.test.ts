@@ -37,6 +37,7 @@ vi.mock('../_lib/api-helpers.js', async (importOriginal) => ({
 import handler from '../cron/compute-cone.js';
 import { schwabFetch } from '../_lib/api-helpers.js';
 import { _resetDsnCacheForTest } from '../_lib/cron-instrumentation.js';
+import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 
 // ── Fixtures ──────────────────────────────────────────────────
@@ -485,9 +486,11 @@ describe('compute-cone handler', () => {
     },
   );
 
-  it('masks a token-like run and caps the Schwab body before it reaches Sentry', async () => {
-    // beforeSend scrubs `extra` by key name only, so the body is redacted
-    // at the call site (redactUpstreamBody: mask 24+ token chars, cap 200).
+  it('masks a token-like run and caps the Schwab body everywhere it goes', async () => {
+    // beforeSend scrubs `extra` by key name only and pino has no redact
+    // config, so the body is redacted once at the call site
+    // (redactUpstreamBody: mask 24+ token chars, cap 200) and that copy
+    // feeds Sentry, the log line and the response (= the Axiom metadata).
     const token = 'A'.repeat(40);
     const body = `{"error":"bad","echo":"${token}","pad":"${'x '.repeat(150)}"}`;
     vi.mocked(schwabFetch).mockResolvedValueOnce({
@@ -505,6 +508,15 @@ describe('compute-cone handler', () => {
     expect(sent).not.toContain(token);
     expect(sent).toContain('[redacted]');
     expect(sent).toMatch(/… \(\d+ chars\)$/);
+
+    // The same redacted copy is in the response (the wrapper merges
+    // `metadata` into both the body and the Axiom event) and the log line.
+    expect(res._json).toMatchObject({ status: 'error', error: sent });
+    expect(JSON.stringify(res._json)).not.toContain(token);
+    expect(logger.warn).toHaveBeenCalledWith(
+      { status: 502, error: sent },
+      'compute-cone: Schwab chain fetch failed',
+    );
   });
 
   it('surfaces a failed cone_levels INSERT as a 500 with a captured exception', async () => {
