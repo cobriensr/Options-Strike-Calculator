@@ -108,9 +108,9 @@ vercel.json crontabs are UTC, but most gates are ET (EDT is UTC-4; EST is UTC-5 
 - **compute-cone** (since 2026-05-07). It ran only at `32 13` UTC behind the default market gate (09:25 ET on). In EST every run would have been an intentional skip, and no cone would have been written all winter.
   - It now runs at `32 13,14` with a 09:30–09:45 ET `timeCheck`, following compute-es-overnight's `35 13,14`.
   - Exactly one slot runs per regime; the other takes the paired skip check-in.
-- **refresh-tracker-contracts** (since 2026-05-17). `*/5 13-20` would never have fired 16:00 or 16:05 ET in EST, so a contract expiring that day would have closed on its 15:55 mark. It is now `*/5 13-21`, and the market gate trims the extra ticks.
+- **refresh-tracker-contracts** (since 2026-05-17). `*/5 13-20` would never have fired 16:00 or 16:05 ET in EST, so a contract expiring that day would have closed on its 15:55 mark. It is now `*/5 13-21`, and the market gate trims the extra ticks. Its Sentry monitor moves from `*/5 9-15` to `*/5 9-16` ET to expect the 16:00 and 16:05 ET runs; the 16:10–16:55 ticks are served and answered by the paired skip check-in.
 
-Every other cron reaches its gate in both regimes, mostly because `13-21` UTC covers 09:25–16:05 ET either way. A few run once more in EDT (`13,14` pairs and `20,21` post-close pairs), and all of those are idempotent upserts. `cron-schedules.test.ts` now encodes the rule. For each cron whose gate the source scan can name (the default `isMarketHours`, `isGexbotLiveCt` or `isFuturesRthCt`), it evaluates the real gate at every vercel.json tick on an EDT and an EST weekday, and asserts:
+Every other cron reaches its gate in both regimes, mostly because `13-21` UTC covers 09:25–16:05 ET either way. A few run once more in EDT (`13,14` pairs and `20,21` post-close pairs), and all of those are idempotent upserts. `cron-schedules.test.ts` now encodes the rule. For each cron whose gate the source scan can name (the default `isMarketHours`, `isGexbotLiveCt`, `isFuturesRthCt` or `isConeCalcWindow`, read with comments stripped), it evaluates the real gate at every vercel.json tick on an EDT and an EST weekday, and asserts:
 
 - there are in-gate ticks in both regimes;
 - the first and last in-gate ET minute match, except for two written exemptions (fetch-greek-exposure-strike, fetch-oi-per-strike).
