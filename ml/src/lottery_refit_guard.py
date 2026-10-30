@@ -1,20 +1,20 @@
 """Temporary guard: block the nightly lottery refits while fires are unclassified.
 
-WHY: commit 671a06a8 (deployed 2026-10-29) stopped the lottery cron from calling
-the multileg classifier, so ``lottery_finder_fires.inferred_structure`` is NULL
-on every row inserted after that deploy. (2,448 of the 3,106 rows dated
-2026-10-29 still carry a label, so the date cutoff below is deliberately
-conservative.) Both nightly refits train on ``inferred_structure IS NULL`` as
+WHY: the multileg classifier is retired, so ``lottery_finder_fires.
+inferred_structure`` is NULL on every fire inserted after commit 671a06a8
+(deployed 2026-10-29). Both nightly refits now train on
+``anchor_leg_kind = 'single'`` (``SINGLE_LEG_FILTER`` in lottery_scoring.py) as
 their "not a spread leg" filter:
 
   - ml/src/lottery_scoring.py (FETCH_QUERY)
   - scripts/online_ticker_update.py (TODAY_QUERY)
 
-Until now that filter kept ~0.8% of fires (1,436 of 184,720; a 196-row refit
-set). From the cutoff on it would admit nearly every fire, spread legs
-included, and silently change the V2 weights and tiers
-(``lottery-score-weights-v2.ts``). Owner decision (2026-10-29): refuse to train
-instead, so the live weights stay exactly as they are.
+``anchor_leg_kind`` (migration #197) exists only on fires inserted after the
+2026-10-29 18:22 CT deploy. Older fires are NULL, which the filter excludes, so
+a refit now would train on a few days of rows and silently change the V2
+weights and tiers (``lottery-score-weights-v2.ts``). Owner decision
+(2026-10-29): refuse to train instead, so the live weights stay exactly as they
+are.
 
 A third site is guarded too: scripts/backfill_lottery_scores.py. It re-scores
 stored fires, and even with unchanged weights its left-closed quintile bounds
@@ -27,15 +27,15 @@ untouched, so the following ``sync_lottery_score_weights_v2.py`` re-renders the
 same TS from the same JSON (idempotent), the backfill is skipped, and
 ``make update`` carries on.
 
-REMOVAL: delete this module and all three call sites when the classifier
-replacement ships and both training queries filter on ``anchor_leg_kind``
-(migration #197) instead of ``inferred_structure``. See
-docs/superpowers/specs/2026-10-28-classifier-replacement-design.md. Removing
-the guard also turns back on two things that need their own fix first, both in
-docs/superpowers/specs/2026-10-28-nightly-pipeline-automation-design.md
-phase 4: (i) the backfill's ``<`` vs ``<=`` boundary rewrite, and (ii) the
-EMA's evening no-op, since ``TODAY_QUERY`` uses ``date = CURRENT_DATE`` in Neon
-(session time zone GMT).
+REMOVAL: delete this module and all three call sites when all of these hold:
+(a) ``anchor_leg_kind`` is backfilled from the full tape for the 90-day
+training window; (b) the outcome backfill has landed and the old bug signature
+(flow_inv > peak * 1.05) has been measured, per the "Refit" section of
+docs/superpowers/specs/2026-10-28-nightly-pipeline-automation-design.md; (c) the
+two phase-4 fixes in that spec are in: the backfill's ``<`` vs ``<=`` boundary
+rewrite, and the EMA's evening no-op, since ``TODAY_QUERY`` uses
+``date = CURRENT_DATE`` in Neon (session time zone GMT). See also
+docs/superpowers/specs/2026-10-28-classifier-replacement-design.md.
 """
 
 from __future__ import annotations
@@ -67,13 +67,13 @@ def skip_message(script: str) -> str:
         [
             _BAR,
             f"REFIT BLOCKED: {script} did NOT run.",
-            f"  Fires dated >= {UNCLASSIFIED_FROM.isoformat()} have "
-            "inferred_structure NULL (the classifier is no longer called),",
-            "  so the training filter would admit spread legs and shift the "
-            "V2 weights and tiers.",
-            "  Weights left unchanged. Guard comes off when the queries move "
-            "to anchor_leg_kind",
-            "  (see ml/src/lottery_refit_guard.py).",
+            f"  Fires dated >= {UNCLASSIFIED_FROM.isoformat()} have no "
+            "classifier label, and the",
+            "  anchor_leg_kind training filter has no history yet, so a refit "
+            "would shift the V2 weights.",
+            "  Weights left unchanged. Guard comes off when anchor_leg_kind "
+            "is backfilled for the",
+            "  training window (see ml/src/lottery_refit_guard.py).",
             _BAR,
         ]
     )
