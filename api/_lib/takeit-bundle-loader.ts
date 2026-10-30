@@ -18,7 +18,9 @@
  * Failure modes (spec resolved decision #3):
  *   - Manifest fetch fails → keep the stale cached bundle, capture Sentry warn.
  *     If no cached bundle exists, return null → caller writes
- *     `takeit_prob = NULL`; the heuristic score still lands.
+ *     `takeit_prob = NULL`; the heuristic score still lands. The caller's
+ *     `onUnavailable` hears why (BundleUnavailable), so a detect cron can
+ *     report its run 'partial' or 'error' instead of 'success'.
  *   - Bundle fetch fails → same as above.
  *   - assertBundleCompat rejects the bundle → THROW. It checks the Zod
  *     structure (including equal per-node tree array lengths), that
@@ -28,7 +30,13 @@
  *     logit; the detect crons catch that and write a NULL probability.
  */
 
-import { list } from '@vercel/blob';
+import {
+  BlobRequestAbortedError,
+  BlobServiceNotAvailable,
+  BlobServiceRateLimited,
+  BlobUnknownError,
+  list,
+} from '@vercel/blob';
 
 import { Sentry } from './sentry.js';
 import {
@@ -87,6 +95,66 @@ function blobAuthHeaders(): Record<string, string> {
   return { Authorization: `Bearer ${token}` };
 }
 
+/** A non-2xx Blob download, keeping its status for fetchFailureKind. */
+class BlobDownloadError extends Error {
+  readonly status: number;
+  constructor(what: 'manifest' | 'bundle', res: Response) {
+    super(`take-it ${what} fetch failed: ${res.status} ${res.statusText}`);
+    this.name = 'BlobDownloadError';
+    this.status = res.status;
+  }
+}
+
+/**
+ * Why getBundle has no bundle to give (none cached and the load failed),
+ * for a detect cron's run status:
+ *   - 'transient': Blob didn't answer through every retry (a network
+ *     error, a 5xx or 429, an aborted request); the next run may load it;
+ *   - 'error': a config problem every later run hits too: the manifest
+ *     names no bundle for this alert type, or Blob refused the read (a 403
+ *     or 404, a missing token or blob, a manifest that isn't JSON).
+ */
+export interface BundleUnavailable {
+  reason: string;
+  kind: 'transient' | 'error';
+}
+
+/**
+ * Whether a manifest or bundle read that failed through every retry is
+ * worth waiting out. Unrecognized failures count as config problems
+ * ('error'), so a new failure mode goes red rather than quiet.
+ */
+function fetchFailureKind(err: unknown): BundleUnavailable['kind'] {
+  if (err instanceof BlobDownloadError) {
+    return err.status >= 500 || err.status === 429 ? 'transient' : 'error';
+  }
+  const unreachable =
+    // fetch() rejects with a TypeError when no answer came back: 'fetch
+    // failed', or 'terminated' for a body cut off mid-read (undici's two
+    // messages, as in the SDK's own isNetworkError). Matched by message so
+    // a TypeError from a code bug, or from the SDK choking on a changed
+    // list() response (response.blobs.map), stays an 'error'.
+    (err instanceof TypeError &&
+      (err.message === 'fetch failed' || err.message === 'terminated')) ||
+    // The SDK retries BlobServiceNotAvailable itself; list() throws it once
+    // those retries run out on a Blob outage. BlobServiceRateLimited is not
+    // retried by the SDK, only by withRetry above.
+    err instanceof BlobServiceNotAvailable ||
+    err instanceof BlobServiceRateLimited ||
+    // The SDK also uses BlobUnknownError for a 'not_allowed' answer, a
+    // permission problem it does not retry. That, too, counts as transient
+    // here, because the class can't tell it from a Blob outage: a
+    // persistent permission problem shows as 'partial' plus a Sentry
+    // warning on every run, not as a red check-in.
+    err instanceof BlobUnknownError ||
+    err instanceof BlobRequestAbortedError;
+  return unreachable ? 'transient' : 'error';
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export type AlertType = 'lottery' | 'silentboom';
 
 interface ManifestPayload {
@@ -124,11 +192,7 @@ async function fetchManifest(): Promise<ManifestPayload> {
     throw new Error(`take-it manifest missing at ${MANIFEST_PATH}`);
   }
   const res = await fetch(entry.downloadUrl, { headers: blobAuthHeaders() });
-  if (!res.ok) {
-    throw new Error(
-      `take-it manifest fetch failed: ${res.status} ${res.statusText}`,
-    );
-  }
+  if (!res.ok) throw new BlobDownloadError('manifest', res);
   return (await res.json()) as ManifestPayload;
 }
 
@@ -139,11 +203,7 @@ async function fetchBundleByPath(blobPath: string): Promise<TakeitBundle> {
     throw new Error(`take-it bundle missing at ${blobPath}`);
   }
   const res = await fetch(entry.downloadUrl, { headers: blobAuthHeaders() });
-  if (!res.ok) {
-    throw new Error(
-      `take-it bundle fetch failed: ${res.status} ${res.statusText}`,
-    );
-  }
+  if (!res.ok) throw new BlobDownloadError('bundle', res);
   const bundle = (await res.json()) as TakeitBundle;
   assertBundleCompat(bundle); // throws BundleSchemaError on any failed check
   return bundle;
@@ -159,13 +219,24 @@ async function fetchBundleByPath(blobPath: string): Promise<TakeitBundle> {
  * isotonic.out_of_bounds other than 'clip'. Those are the only fail-closed
  * conditions here; the scorer's non-finite-logit guard fails per row, not
  * per bundle.
+ *
+ * `onUnavailable` is called once, just before getBundle resolves null,
+ * with why. Not when it serves a stale bundle in place of a failed refresh
+ * (scoring still works), and not for a BundleSchemaError (thrown instead).
  */
 export async function getBundle(
   alertType: AlertType,
+  onUnavailable?: (unavailable: BundleUnavailable) => void,
 ): Promise<TakeitBundle | null> {
   const cached: CacheEntry | undefined = CACHE[alertType];
   if (cached !== undefined && isFresh(cached)) return cached.bundle;
   const fallback: TakeitBundle | null = cached ? cached.bundle : null;
+  // Every failed load returns through here: the stale bundle if there is
+  // one, else null with the reason passed on.
+  const giveUp = (unavailable: BundleUnavailable): TakeitBundle | null => {
+    if (fallback == null) onUnavailable?.(unavailable);
+    return fallback;
+  };
 
   let manifest: ManifestPayload;
   try {
@@ -175,7 +246,10 @@ export async function getBundle(
       level: 'warning',
       extra: { error: (err as Error).message, alertType },
     });
-    return fallback;
+    return giveUp({
+      reason: `Take-It manifest unavailable: ${errorMessage(err)}`,
+      kind: fetchFailureKind(err),
+    });
   }
 
   const targetPath = manifest[alertType];
@@ -184,7 +258,10 @@ export async function getBundle(
       level: 'warning',
       extra: { alertType, manifestKeys: Object.keys(manifest) },
     });
-    return fallback;
+    return giveUp({
+      reason: `Take-It manifest names no ${alertType} bundle`,
+      kind: 'error',
+    });
   }
 
   // Skip the heavy bundle fetch if the manifest still points to the cached
@@ -215,7 +292,10 @@ export async function getBundle(
       throw err;
     }
     Sentry.captureException(err as Error, { extra: { alertType, targetPath } });
-    return fallback;
+    return giveUp({
+      reason: `Take-It bundle ${targetPath} unavailable: ${errorMessage(err)}`,
+      kind: fetchFailureKind(err),
+    });
   }
 }
 

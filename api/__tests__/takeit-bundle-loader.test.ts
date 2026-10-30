@@ -1,6 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@vercel/blob', () => ({
+// Only list() is replaced: the loader tells a transient Blob failure from
+// a config one by the SDK's real error classes.
+vi.mock('@vercel/blob', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@vercel/blob')>()),
   list: vi.fn(),
 }));
 
@@ -11,7 +14,15 @@ vi.mock('../_lib/sentry.js', () => ({
   },
 }));
 
-import { list } from '@vercel/blob';
+import {
+  BlobAccessError,
+  BlobRequestAbortedError,
+  BlobServiceNotAvailable,
+  BlobServiceRateLimited,
+  BlobStoreNotFoundError,
+  BlobUnknownError,
+  list,
+} from '@vercel/blob';
 
 import { Sentry } from '../_lib/sentry.js';
 import {
@@ -425,8 +436,8 @@ describe('getBundle', () => {
     delete process.env.BLOB_READ_WRITE_TOKEN;
     // The manifest list succeeds, but blobAuthHeaders() throws before fetch.
     // The throw is non-schema, so withRetry retries it 3x then rethrows; the
-    // outer catch treats it as a transient failure and returns the fallback
-    // (null here, no cache warmed).
+    // outer catch returns the fallback (null here, no cache warmed). The
+    // caller hears it as a config error (see "why it has no bundle" below).
     vi.useFakeTimers();
     mockListResponse([{ pathname: 'takeit/latest.json', url: MANIFEST_URL }]);
     mockListResponse([{ pathname: 'takeit/latest.json', url: MANIFEST_URL }]);
@@ -593,5 +604,280 @@ describe('getBundle', () => {
     );
     expect(Sentry.captureException).toHaveBeenCalled();
     fetchSpy.mockRestore();
+  });
+});
+
+// getBundle tells its caller why it resolves null, so a detect cron can
+// report the run 'partial' (Blob unreachable: worth waiting out) or 'error'
+// (a config problem every later run hits too) instead of 'success'.
+describe('getBundle: why it has no bundle', () => {
+  const MANIFEST_PATH = 'takeit/latest.json';
+  const BUNDLE_PATH = 'takeit/lottery_classifier_v2026-05-16.json';
+  const MANIFEST = {
+    lottery: BUNDLE_PATH,
+    silentboom: 'takeit/silentboom_classifier_v2026-05-16.json',
+  };
+  const blobUrl = (pathname: string) => `https://blob.example/${pathname}`;
+
+  /**
+   * Serve Blob paths: list() finds each path in `answers`, and fetch()
+   * builds a fresh Response from it per call (a retry needs an unread body).
+   */
+  function serve(answers: Record<string, () => Response>) {
+    vi.mocked(list).mockImplementation(async (opts) => {
+      const pathname = opts?.prefix ?? '';
+      const url = blobUrl(pathname);
+      return {
+        blobs:
+          answers[pathname] == null
+            ? []
+            : [{ pathname, url, downloadUrl: url }],
+        cursor: undefined,
+        hasMore: false,
+      } as unknown as Awaited<ReturnType<typeof list>>;
+    });
+    vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
+      const answer = answers[String(url).replace(blobUrl(''), '')];
+      if (answer == null)
+        throw new Error(`unexpected fetch url ${String(url)}`);
+      return answer();
+    });
+  }
+  const json = (body: unknown) => () => new Response(JSON.stringify(body));
+  const status = (code: number, text: string) => () =>
+    new Response('nope', { status: code, statusText: text });
+
+  /** Run getBundle through its retry backoffs, recording any report. */
+  async function load() {
+    const onUnavailable = vi.fn();
+    const pending = getBundle('lottery', onUnavailable);
+    await vi.runAllTimersAsync();
+    return { bundle: await pending, onUnavailable };
+  }
+
+  beforeEach(() => {
+    _resetBundleCacheForTests();
+    vi.resetAllMocks();
+    process.env.BLOB_READ_WRITE_TOKEN = 'test-token';
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it.each([
+    {
+      label: 'a dropped connection',
+      err: new TypeError('fetch failed'),
+      kind: 'transient',
+    },
+    {
+      label: 'a connection cut off mid-read',
+      err: new TypeError('terminated'),
+      kind: 'transient',
+    },
+    {
+      // A code bug, or the SDK choking on a changed list() response: not a
+      // Blob outage, so it must not read as one.
+      label: 'a TypeError that is not a network failure',
+      err: new TypeError("Cannot read properties of undefined (reading 'map')"),
+      kind: 'error',
+    },
+    {
+      label: 'Blob down',
+      err: new BlobServiceNotAvailable(),
+      kind: 'transient',
+    },
+    {
+      label: 'Blob rate-limiting',
+      err: new BlobServiceRateLimited(5),
+      kind: 'transient',
+    },
+    {
+      // Also what the SDK throws for a 'not_allowed' answer, which this
+      // can't tell from an outage (see fetchFailureKind).
+      label: 'an unknown Blob error',
+      err: new BlobUnknownError(),
+      kind: 'transient',
+    },
+    {
+      label: 'an aborted request',
+      err: new BlobRequestAbortedError(),
+      kind: 'transient',
+    },
+    {
+      label: 'a token Blob refuses',
+      err: new BlobAccessError(),
+      kind: 'error',
+    },
+    {
+      label: 'a missing store',
+      err: new BlobStoreNotFoundError(),
+      kind: 'error',
+    },
+  ] as const)(
+    'reports $label while listing the manifest as $kind',
+    async ({ err, kind }) => {
+      vi.mocked(list).mockRejectedValue(err);
+
+      const { bundle, onUnavailable } = await load();
+
+      expect(bundle).toBeNull();
+      expect(onUnavailable).toHaveBeenCalledExactlyOnceWith({
+        reason: `Take-It manifest unavailable: ${err.message}`,
+        kind,
+      });
+      // The existing warning is the run's one Sentry event for it.
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'takeit.bundle.manifest_fetch_failed',
+        expect.objectContaining({ level: 'warning' }),
+      );
+    },
+  );
+
+  it.each([
+    { code: 500, kind: 'transient' },
+    { code: 503, kind: 'transient' },
+    { code: 429, kind: 'transient' },
+    { code: 403, kind: 'error' },
+    { code: 404, kind: 'error' },
+  ] as const)(
+    'reports a $code on the manifest download as $kind',
+    async ({ code, kind }) => {
+      serve({ [MANIFEST_PATH]: status(code, 'Nope') });
+
+      const { bundle, onUnavailable } = await load();
+
+      expect(bundle).toBeNull();
+      expect(onUnavailable).toHaveBeenCalledExactlyOnceWith({
+        reason: `Take-It manifest unavailable: take-it manifest fetch failed: ${code} Nope`,
+        kind,
+      });
+    },
+  );
+
+  it('reports a manifest that is not in the store as an error', async () => {
+    serve({});
+
+    const { bundle, onUnavailable } = await load();
+
+    expect(bundle).toBeNull();
+    expect(onUnavailable).toHaveBeenCalledExactlyOnceWith({
+      reason: `Take-It manifest unavailable: take-it manifest missing at ${MANIFEST_PATH}`,
+      kind: 'error',
+    });
+  });
+
+  it('reports a missing BLOB_READ_WRITE_TOKEN as an error', async () => {
+    delete process.env.BLOB_READ_WRITE_TOKEN;
+    serve({ [MANIFEST_PATH]: json(MANIFEST) });
+
+    const { bundle, onUnavailable } = await load();
+
+    expect(bundle).toBeNull();
+    expect(onUnavailable).toHaveBeenCalledExactlyOnceWith({
+      reason: 'Take-It manifest unavailable: BLOB_READ_WRITE_TOKEN not set',
+      kind: 'error',
+    });
+  });
+
+  it('reports a manifest that is not JSON as an error', async () => {
+    serve({ [MANIFEST_PATH]: () => new Response('<html>') });
+
+    const { bundle, onUnavailable } = await load();
+
+    expect(bundle).toBeNull();
+    expect(onUnavailable).toHaveBeenCalledExactlyOnceWith({
+      reason: expect.stringMatching(/^Take-It manifest unavailable: .*JSON/),
+      kind: 'error',
+    });
+  });
+
+  it('reports a manifest with no bundle for the alert type as an error', async () => {
+    serve({ [MANIFEST_PATH]: json({ silentboom: MANIFEST.silentboom }) });
+
+    const { bundle, onUnavailable } = await load();
+
+    expect(bundle).toBeNull();
+    expect(onUnavailable).toHaveBeenCalledExactlyOnceWith({
+      reason: 'Take-It manifest names no lottery bundle',
+      kind: 'error',
+    });
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'takeit.bundle.manifest_missing_alert_type',
+      expect.objectContaining({ level: 'warning' }),
+    );
+  });
+
+  it('reports a 503 on the bundle download as transient', async () => {
+    serve({
+      [MANIFEST_PATH]: json(MANIFEST),
+      [BUNDLE_PATH]: status(503, 'Service Unavailable'),
+    });
+
+    const { bundle, onUnavailable } = await load();
+
+    expect(bundle).toBeNull();
+    expect(onUnavailable).toHaveBeenCalledExactlyOnceWith({
+      reason: `Take-It bundle ${BUNDLE_PATH} unavailable: take-it bundle fetch failed: 503 Service Unavailable`,
+      kind: 'transient',
+    });
+    // The existing capture, unchanged: one per failed bundle fetch.
+    expect(Sentry.captureException).toHaveBeenCalledOnce();
+  });
+
+  it('reports a bundle the manifest names but the store lacks as an error', async () => {
+    serve({ [MANIFEST_PATH]: json(MANIFEST) });
+
+    const { bundle, onUnavailable } = await load();
+
+    expect(bundle).toBeNull();
+    expect(onUnavailable).toHaveBeenCalledExactlyOnceWith({
+      reason: `Take-It bundle ${BUNDLE_PATH} unavailable: take-it bundle missing at ${BUNDLE_PATH}`,
+      kind: 'error',
+    });
+  });
+
+  it('reports nothing when it loads the bundle', async () => {
+    serve({
+      [MANIFEST_PATH]: json(MANIFEST),
+      [BUNDLE_PATH]: json(mockBundle('v2026-05-16')),
+    });
+
+    const { bundle, onUnavailable } = await load();
+
+    expect(bundle?.version).toBe('v2026-05-16');
+    expect(onUnavailable).not.toHaveBeenCalled();
+  });
+
+  it('reports nothing when it serves the stale bundle in place of a failed refresh', async () => {
+    vi.setSystemTime(new Date('2026-05-16T12:00:00Z'));
+    serve({
+      [MANIFEST_PATH]: json(MANIFEST),
+      [BUNDLE_PATH]: json(mockBundle('v2026-05-16')),
+    });
+    await load();
+    // Past the 15-min TTL, Blob goes down.
+    vi.setSystemTime(new Date('2026-05-16T12:20:00Z'));
+    vi.mocked(list).mockRejectedValue(new BlobServiceNotAvailable());
+
+    const { bundle, onUnavailable } = await load();
+
+    expect(bundle?.version).toBe('v2026-05-16');
+    expect(onUnavailable).not.toHaveBeenCalled();
+  });
+
+  it('throws an invalid bundle instead of reporting it', async () => {
+    const bad = mockBundle('v2026-05-16');
+    bad.xgb_json_schema = '9.99';
+    serve({ [MANIFEST_PATH]: json(MANIFEST), [BUNDLE_PATH]: json(bad) });
+    const onUnavailable = vi.fn();
+
+    await expect(getBundle('lottery', onUnavailable)).rejects.toThrow(
+      'unsupported xgb_json_schema',
+    );
+    expect(onUnavailable).not.toHaveBeenCalled();
   });
 });
