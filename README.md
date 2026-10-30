@@ -57,7 +57,7 @@ npm run test:run      # vitest unit tests (no env vars required)
 npm run test:e2e      # Playwright e2e + a11y across chromium/firefox/webkit
 ```
 
-As of 2026-10-29: about 15,800 Vitest tests in 711 files; 43 Playwright specs (chromium on every CI run, all three browsers nightly); 100 CI-gated pytest files across `ml/`, `sidecar/`, `uw-stream/` and `nightly/`. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full breakdown.
+As of 2026-10-29: about 15,800 Vitest tests in 711 files; 43 Playwright specs (chromium on every CI run, all three browsers nightly); 97 CI-gated pytest files across `ml/`, `sidecar/`, `uw-stream/` and `nightly/`. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full breakdown.
 
 ## License
 
