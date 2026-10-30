@@ -53,7 +53,10 @@ import {
 export const config = { maxDuration: 780 };
 
 interface RunReport {
-  ok: true;
+  /** False when no lesson landed, so the body never reads as a clean run. */
+  ok: boolean;
+  /** The run status Axiom gets, so a manual or ?dry=true response matches. */
+  status: 'ok' | 'partial' | 'error';
   debriefsScanned: number;
   candidates: number;
   inserted: number;
@@ -232,18 +235,24 @@ export default withCronCheckin('curate-periscope-lessons', async (req, res) => {
       dryRun,
       sinceIso,
     };
-    const report: RunReport = { ok: true, ...counts };
-    logger.info(report, 'curate-periscope-lessons complete');
-
     // A lesson "lands" when it is upserted, or reaches the upsert step on a
     // dry run. Total = failed + landed, so deriveCronStatus reads: nothing
     // failed → ok, nothing landed → error, otherwise partial.
     const failed = embedFailures + upsertFailures;
     const landed = dryRun ? survivors.length : inserted + merged;
     const derived = deriveCronStatus(failed, failed + landed);
+    // deriveCronStatus never returns 'skipped'; 'success' reads as 'ok'.
+    const status: RunReport['status'] =
+      derived === 'partial' || derived === 'error' ? derived : 'ok';
+    const report: RunReport = { ok: status !== 'error', status, ...counts };
+    logger.info(report, 'curate-periscope-lessons complete');
+
     if (derived === 'error') {
-      // generateEmbedding can return null without a capture, and the response
-      // is still 200, so the check-in says ok. One run-level event surfaces it.
+      // Sent on every error run by design: some failed legs never capture
+      // (generateEmbedding can return null without one) and the caller can't
+      // tell which, so this guarantees one Sentry event; when the legs did
+      // capture (a failed upsert), this is a separate run-level issue. The
+      // response is still 200, so the check-in says ok.
       Sentry.captureMessage('curate-periscope-lessons: no lesson landed', {
         level: 'error',
         fingerprint: ['curate-periscope-lessons', 'nothing-landed'],
@@ -252,7 +261,7 @@ export default withCronCheckin('curate-periscope-lessons', async (req, res) => {
       });
     }
     await reportCronRun('curate-periscope-lessons', {
-      status: derived === 'success' ? 'ok' : derived,
+      status,
       ...counts,
       durationMs: Date.now() - startedAt,
     });

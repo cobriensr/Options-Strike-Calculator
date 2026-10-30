@@ -501,6 +501,7 @@ describe('GET /api/cron/curate-periscope-lessons', () => {
         durationMs: expect.any(Number),
       });
       expect(Sentry.captureMessage).not.toHaveBeenCalled();
+      expect(res._json).toMatchObject({ ok: true, status: 'ok' });
     });
 
     it('reports ok when there are no debriefs to scan', async () => {
@@ -539,6 +540,8 @@ describe('GET /api/cron/curate-periscope-lessons', () => {
       // nothing adds the run-level message.
       expect(Sentry.captureException).toHaveBeenCalledOnce();
       expect(Sentry.captureMessage).not.toHaveBeenCalled();
+      // The response carries the same status as the Axiom event.
+      expect(res._json).toMatchObject({ ok: true, status: 'partial' });
     });
 
     it('reports error, never ok, when every upsert fails', async () => {
@@ -563,6 +566,9 @@ describe('GET /api/cron/curate-periscope-lessons', () => {
         }),
       );
       expect(Sentry.captureMessage).toHaveBeenCalledOnce();
+      // Still 200, but the body no longer reads as a clean run.
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({ ok: false, status: 'error' });
     });
 
     it('reports error when every candidate fails to embed, and tells Sentry', async () => {
@@ -604,6 +610,7 @@ describe('GET /api/cron/curate-periscope-lessons', () => {
         JOB,
         expect.objectContaining({ status: 'ok', dryRun: true, candidates: 1 }),
       );
+      expect(res._json).toMatchObject({ status: 'ok', dryRun: true });
     });
 
     it('reports error with the message when the run throws', async () => {

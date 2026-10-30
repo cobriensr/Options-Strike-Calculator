@@ -555,9 +555,11 @@ export default withCronCheckin('curate-lessons', async (req, res) => {
     const landed = added.length + superseded.length + skipsLanded;
     const derived = deriveCronStatus(errors.length, errors.length + landed);
     if (derived === 'error') {
-      // Not every failed leg captures (a malformed decision only logs, and
-      // generateEmbedding can return null without one), and the response is
-      // still 200, so the check-in says ok. One run-level event surfaces it.
+      // Sent on every error run by design: some failed legs never capture (a
+      // malformed decision only logs; generateEmbedding can return null
+      // without one) and the caller can't tell which, so this guarantees one
+      // Sentry event; when the legs did capture, this is a separate
+      // run-level issue. The response is still 200, so the check-in says ok.
       Sentry.captureMessage('curate-lessons: no lesson landed', {
         level: 'error',
         fingerprint: ['curate-lessons', 'nothing-landed'],
@@ -591,6 +593,17 @@ export default withCronCheckin('curate-lessons', async (req, res) => {
       error: String(err),
       durationMs: Date.now() - startedAt,
     });
+    if (res.headersSent) {
+      // Progress has already streamed as NDJSON, so a JSON body would throw
+      // ERR_HTTP_HEADERS_SENT: close the stream with an error event instead.
+      res.write(
+        JSON.stringify({ event: 'error', error: 'Internal error' }) + '\n',
+      );
+      // The client already got 200; this doesn't reach the wire. It is what
+      // withCronCheckin reads (statusCode >= 400) to send an error check-in.
+      res.statusCode = 500;
+      return res.end();
+    }
     return res.status(500).json({ error: 'Internal error' });
   }
 });

@@ -1133,6 +1133,39 @@ describe('GET /api/cron/curate-lessons', () => {
       });
     });
 
+    it('closes the NDJSON stream with an error event when the run throws mid-stream', async () => {
+      // Progress has streamed, so the catch must not send a JSON body (a
+      // real response would throw ERR_HTTP_HEADERS_SENT on .json()).
+      const { Sentry } = await import('../_lib/sentry.js');
+      queueReviews([makeReview()]);
+      const overloaded = new Error('overloaded');
+      mockStream.mockReturnValueOnce({
+        finalMessage: vi.fn().mockRejectedValue(overloaded),
+      });
+
+      const res = mockResponse();
+      const write = res.write.bind(res);
+      res.write = (chunk: string) => {
+        res.headersSent = true;
+        return write(chunk);
+      };
+      await handler(makeAuthedRequest(), res);
+
+      expect(reportCronRun).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledWith('curate-lessons', {
+        status: 'error',
+        error: 'Error: overloaded',
+        durationMs: expect.any(Number),
+      });
+      expect(Sentry.captureException).toHaveBeenCalledWith(overloaded);
+      expect(JSON.parse(res._chunks.at(-1)!)).toEqual({
+        event: 'error',
+        error: 'Internal error',
+      });
+      expect(res.statusCode).toBe(500);
+      expect(res._json).toBeNull();
+    });
+
     it('sends no event when the guard rejects the request', async () => {
       const res = mockResponse();
       await handler(
