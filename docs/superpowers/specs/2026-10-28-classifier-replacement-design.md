@@ -224,3 +224,24 @@ Each phase lands on main by itself and passes `npm run review` and the code-revi
 - How to format strikes in the badge (trailing zeros, ordering low→high).
 - Whether `spread_legs` also carries `side`. It's allowed as a raw field, but don't derive direction from it.
 - Logging/Sentry naming for the new lookup, following `monitoring-expert` conventions.
+
+## Lottery refit training filter (2026-10-29)
+
+Both nightly lottery refits moved from `inferred_structure IS NULL` to `anchor_leg_kind = 'single'`. The one definition is `SINGLE_LEG_FILTER` in `ml/src/lottery_scoring.py`, and `scripts/online_ticker_update.py` imports it. This follows the "Refit" section of the nightly pipeline spec: one definition of "not part of a multi-leg structure", switched to the exchange-derived flag once the classifier is retired. The filter excludes `multi_leg`, `stock_tied` and NULL (unknown) rows, which is the conservative reading of "spread legs stay excluded".
+
+No fire has `anchor_leg_kind` set before the 2026-10-29 18:22 CT deploy, so the filter has no history yet. `ml/src/lottery_refit_guard.py` therefore still blocks the refit. Its text now names the new reason. It comes off when all three hold:
+
+- (a) `anchor_leg_kind` is backfilled from the full tape for the 90-day training window. `ws_option_trades` keeps only 2 days, so the source is the UW Full Tape, where the trade code is the `upstream_condition_detail` column. The backfill is handed to the nightly-pipeline work.
+- (b) The outcome backfill has landed, and the old bug signature (flow_inv > peak × 1.05) has been measured, per the nightly spec's "Refit" section.
+- (c) The two phase-4 fixes in the nightly spec are in: the backfill's `<` vs `<=` boundary, and the EMA's evening no-op from `CURRENT_DATE` in GMT.
+
+Research scripts that still filter on `inferred_structure` reproduce classifier-era studies and were left as-is, by design:
+
+- `scripts/backtest_stop_target_by_tier.py`
+- `scripts/context_feature_lift_study.py`
+- `scripts/mine_outcome_patterns.py`
+- `scripts/phase_f_1dte_recovery_analysis.py`
+- `scripts/score_lineage_audit.py`
+- `scripts/vix_regime_analysis.py`
+- `scripts/walk_forward_backtest_v22.py`
+- `scripts/walk_forward_backtest_v22_corrected.py`
