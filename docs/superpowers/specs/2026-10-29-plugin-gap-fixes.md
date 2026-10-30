@@ -8,14 +8,14 @@ Act on the 2026-10-29 transcript audit. Remove the unused and duplicate plugins 
 
 | Phase | State | Record |
 |---|---|---|
-| 1 remove unused/duplicate plugins and skills | queued | – |
-| 2 language servers | queued | – |
-| 3 MCP servers (UW, Neon read-only) | queued; 3b waits on owner | – |
-| 4 hook timeouts | queued | – |
-| 5 `gexbot-api` skill | queued | – |
-| 6 `r2-storage` skill | queued | – |
-| 7 Unity projects | queued | – |
-| 8 lost-question rule | queued | – |
+| 1 remove unused/duplicate plugins and skills | done | backup `~/.claude/backups/2026-10-29-plugin-gap/`; local history `234d310`. `use-railway` kept: the user copy (1.7.0) is newer than the plugin's (1.5.2) |
+| 2 language servers | done | TS + Pyright on at user level; `pyrightconfig.json` `c737442f` |
+| 3 MCP servers (UW, Neon read-only) | 3b done; 3a waits on owner | `neon-readonly` added, `plugin:neon:neon` in `deniedMcpServers`. 3a was denied by the auto-mode classifier ("Code from External"); the owner runs the add |
+| 4 hook timeouts | done (revised, see below) | local history `993c8f8` |
+| 5 `gexbot-api` skill | done, fact-checked | local history `62a05b6` |
+| 6 `r2-storage` skill | done, fact-checked | local history `c3dea00` |
+| 7 Unity projects | done | local scope in all three; no commits in those repos |
+| 8 lost-question rule | memory done; `~/.claude/CLAUDE.md` line waits on owner | `feedback_restate_open_questions.md` |
 
 ## Evidence
 
@@ -31,7 +31,7 @@ The audit covered all 42 strike-calculator sessions (about 540 subagent transcri
 - **GEXBot:** about 100 doc fetches and API probes, and there's no skill. UW has two.
 - **R2:** 52 ad-hoc boto3 script runs and about 14 owner asks, with no tool.
 - **Hook timeouts on 10-29:**
-  - `env-shell-guard` 32. It is a shell wrapper over `env-shell-guard.py`, so every Bash call starts Python.
+  - `env-shell-guard` 32 in the audit (69 in a later full count). **Correction:** the wrapper already exits in bash before Python for any payload without `.env`, and 57 of the 69 were such plain commands. 34 came after its timeout went from 10 to 30 s. The cause is process start-up or the script under load, not Python (see phase 4).
   - `no-verify-guard` 17, already fixed in local history `11390e0`.
   - `git-context.sh`, reported by the owner.
 - **Neon MCP:** the plugin's server (`https://mcp.neon.tech/mcp`) runs in write mode against the production database. Neon supports `?readonly=true` ✓ (neon.com/docs/ai/neon-mcp-server, "Read-only mode").
@@ -94,9 +94,10 @@ One implementer at a time. The main session checks each phase against this spec 
 ### Phase 3: MCP servers
 
 - **3a, Unusual Whales:**
-  - A script in the session scratchpad, not the repo, reads `UW_API_KEY` from `.env.local` and runs `claude mcp add --scope local unusual-whales -e UW_API_KEY=… -- npx -y @unusualwhales/mcp`.
-  - Check the Claude Code docs for whether native Windows needs a `cmd /c` wrapper for `npx`.
-  - Local scope keeps the key out of the public repo.
+  - A script in the session scratchpad, not the repo, reads `UW_API_KEY` from `.env.local` and runs `claude mcp add --scope user unusual-whales -e UW_API_KEY=… -- npx -y @unusualwhales/mcp@1.2.0`.
+  - **User scope, not local** (changed during the build): local scope is tied to one folder path, so it wouldn't load in `.worktrees/*` sessions. Either scope keeps the key out of the public repo; it sits in plaintext in `~/.claude.json`.
+  - The current Claude Code docs no longer require a `cmd /c` wrapper on Windows; Playwright's bare `npx` server connects here.
+  - **Blocked:** the auto-mode classifier denied the add as "Code from External". The owner runs the add with `!` from the session.
   - **Verify:** `claude mcp list` shows the server connected, and a headless probe calls one read endpoint.
   - Update the memory `project_uw_key_two_places.md`: the key now lives in three places.
 - **3b, Neon read-only** (waiting on the owner):
@@ -108,13 +109,17 @@ One implementer at a time. The main session checks each phase against this spec 
 
 ### Phase 4: hook timeouts (code: full loop)
 
-- **`env-shell-guard.sh`:** add a prefilter that exits 0 before starting Python when the command text contains no `.env`. Real matches still block (fail closed).
-- **`git-context.sh`:** bound its git calls (`--no-optional-locks`, plus a time limit). Print one line, "git state unavailable", instead of hanging.
-- Follow the fail-open-under-load change in local history `11390e0` for structure, not policy. This guard must stay closed on a real match.
-- **Test:**
-  - a case table for the prefilter, covering `.env` writes that are blocked and ordinary commands that pass;
-  - timing for 10 parallel runs before and after.
-- Commit in the local-only history.
+**Revised during the build.** The planned prefilter already existed: the wrapper exits in bash before Python when the payload has no `.env`. The `git-context.sh` hardening and both timeout raises (guard 10→30 s, git-context 5→15 s) were already on disk as another session's uncommitted work, and are left to it.
+
+What shipped (local history `993c8f8`):
+- **Owner decision (2026-10-29): keep `onFailure: "block"`.** Failing open was offered and declined.
+- **A temporary timing log** in `env-shell-guard.sh`. It uses builtins only, so no forks, and a failed write is ignored.
+  - Each call writes a `start` line, an `in` line after stdin is read, and one EXIT-trap line `<phase>:<code>` carrying the pid and tool use id.
+  - It goes to `.claude/hooks/logs/env-shell-guard-timing.log`.
+  - After the next heavy afternoon, join the timeouts to the log. A gap before `start` means process start-up; a gap after it means the script. Then remove the log.
+  - The memory `project_env_shell_guard_timing_diagnostic.md` tracks this.
+- **`.claude/hooks/tests/env-shell-guard.test.mjs`:** a 21-case decision table, spawned from Node as Claude Code does. It passes on both the old and the new hook.
+- **Rejected: `$(</dev/stdin)` in place of `$(cat)`.** Under a Node-spawned hook, Git Bash has no `/dev/stdin`, so the hook read nothing and passed every `.env` write. It was live for 51 s before the revert, and no `.env` command ran in that window. Benchmarks of `read` and `mapfile` run from Node were too noisy to justify any change.
 
 ### Phase 5: `gexbot-api` skill
 
@@ -142,8 +147,8 @@ One implementer at a time. The main session checks each phase against this spec 
 ### Phase 7: Unity projects (`cthulhu-crpg`, `mecha-ttrpg`, `space-attorney`)
 
 - Run `dotnet tool install -g csharp-ls`.
-- In each Unity project, at project scope: enable `csharp-lsp` and install the `unity` plugin.
-- Check the `unity` plugin's skills for one that runs tests. Only if none exists, add a `run-unity-tests` skill to mecha-ttrpg (TestRunnerApi through the Unity MCP). 18 of 31 RunCommand calls were hand-written test runners.
+- In each Unity project, at **local** scope (`.claude/settings.local.json`, covered by the global git ignore): enable `csharp-lsp` and install the `unity` plugin. Local scope means nothing is committed in those repos.
+- **Test runner:** `unity:unity-cli` already covers it (`unity test <path> --mode EditMode|PlayMode`), so no skill was added. What's still uncovered is running tests inside an open Editor through the Unity MCP. The evidence for that is two sessions in Aug–Sep, so it's deferred.
 
 ### Phase 8: lost-question rule
 
@@ -162,16 +167,20 @@ One implementer at a time. The main session checks each phase against this spec 
   - `claude-code-guide` had 0 dispatches against about 12 harness questions.
 - **Open question 3 is decided:** on 2026-10-29 the owner removed `pr-review-toolkit` and the `code-review` plugin (0 uses each).
 - **Status view:** show "waiting on owner:" with the question in full.
+- **Dangling references left by phase 1's removals,** in skill files this plan doesn't own:
+  - `fixing-accessibility/references/manual-testing.md` names `chrome-devtools-mcp:a11y-debugging`.
+  - `performance-optimizer/SKILL.md` names the chrome-devtools MCP tools and `chrome-devtools-mcp:debug-optimize-lcp`.
+  - `vercel-deployment/SKILL.md` names `vercel:access-protected-vercel-deployment`, from a plugin that is now disabled.
 
 ## Files to create or modify
 
 - **Phase 1:** user config only: `~/.claude/settings.json`, `~/.claude/plugins/`, `~/.claude/skills/{use-railway,context7-mcp}`
 - **Phase 2:** global npm packages, `~/.claude/settings.json`
 - **Phase 3:** `~/.claude.json` (through `claude mcp add`), `~/.claude/settings.json`, one memory file
-- **Phase 4:** `.claude/hooks/env-shell-guard.sh`, `.claude/hooks/git-context.sh`, plus their tests
+- **Phase 4:** `.claude/hooks/env-shell-guard.sh`, `.claude/hooks/tests/env-shell-guard.test.mjs`
 - **Phase 5:** `.claude/skills/gexbot-api/SKILL.md`
 - **Phase 6:** `.claude/skills/r2-storage/SKILL.md`
-- **Phase 7:** the Unity projects' `.claude/settings.json`; possibly one skill
+- **Phase 7:** the Unity projects' `.claude/settings.local.json`
 - **Phase 8:** one memory file, plus the proposal text
 
 ## Data dependencies
@@ -182,7 +191,28 @@ One implementer at a time. The main session checks each phase against this spec 
 
 ## Open questions (defaults in bold)
 
-1. Make the Neon MCP read-only? **Yes.** Waiting on the owner's answer (asked 2026-10-29).
-2. `chrome-devtools-mcp`: **remove it.** 0 calls, and `npx lighthouse` covers Lighthouse if it's ever needed.
-3. The `vercel` plugin: **disable it at user level and keep it installed.**
-4. The Go and Rust language-server plugins: **leave them installed and disabled.**
+1. Make the Neon MCP read-only? **Decided by the owner on 2026-10-29: yes.**
+2. `chrome-devtools-mcp`: **removed.** 0 calls, and `npx lighthouse` covers Lighthouse if it's ever needed.
+3. The `vercel` plugin: **disabled at user level, still installed.**
+4. The Go and Rust language-server plugins: **left installed and disabled.**
+5. `env-shell-guard` when it can't finish in time: **decided by the owner on 2026-10-29: keep blocking.**
+
+## Follow-ups
+
+- **Owner:**
+  - Add the UW MCP with the scratchpad script.
+  - Log in to `neon-readonly` through `/mcp`.
+  - Paste the handoff line into the skill-cleanup session.
+  - The phase 8 `~/.claude/CLAUDE.md` line was declined by the owner on 2026-10-29; the memory note stands alone.
+- **`env-guard.sh` (the Edit/Write `.env` guard), found 2026-10-29. Not fixed yet.**
+  - Its timeout is 5 s, while the shell guard now gets 30 s.
+  - It starts `python3` (about 0.6 s idle) for every `.env*` path, through `hook_file_path`.
+  - A direct run on an Edit of the worktree's `.env.example` took 8.2 s, so it timed out three times and blocked an approved edit.
+  - The same run also returned the "secrets file" ask for `.env.example`, which `env_secret_path` should class as a template. The cause is unconfirmed: suspect the path `hook_file_path` returns, maybe a trailing `\r` from Windows Python.
+  - Fix it with the full loop, a case table like `env-shell-guard.test.mjs`, and a timeout raise. Note that `settings.json` currently carries another session's uncommitted hook-timeout edits.
+- **After the next heavy afternoon:** analyze the guard timing log, pick the real fix, and remove the log.
+- **Adjacent fixes found during the build. All done 2026-10-29, except the last item:**
+  - `scripts/upload-fulltape-to-r2.py` now heads each upload and compares its size. A failed check deletes the object and exits 3; a TLS-guard error exits 4. There are 13 tests, and the code review passed.
+  - CLAUDE.md's R2 rows now name Vercel, and say no code reads `R2_ACCOUNT_ID`. The matching `.env.example` comment was changed with the owner's one-time approval, despite the never-edit-`.env*` rule.
+  - The `api/cron/archive-gexbot.ts` header now points at the EOD ZIP capture.
+  - `ml/.venv` has no `fsspec`/`s3fs`, so reading the Full Tape from R2 there raises `ImportError`.
