@@ -139,23 +139,25 @@ const OLD_MULTILEG_COLUMNS = [
 // win-rate day cache resolves [] without SQL by default (it is kicked
 // before the tick scan, so a real loader would shift every mock sequence);
 // the warm-up tests swap in the real cache. Per-fire scoreLottery returns
-// { prob: null, version: null, features: null } via a plain function
-// (vi.fn().mockReturnValue chains can lose the return value inside vi.mock
-// factories on some module-resolution paths).
+// { prob: null, version: null, features: null }; its default is set in
+// beforeEach, since vi.resetAllMocks() there would drop one set here. The
+// scoring tests override it.
 const {
   mockLoadTakeitDetectContext,
   mockPriorSessionWinRatesForDay,
   mockAwaitWinRateWarmup,
+  mockScoreLottery,
 } = vi.hoisted(() => ({
   mockLoadTakeitDetectContext: vi.fn(),
   mockPriorSessionWinRatesForDay: vi.fn(),
   mockAwaitWinRateWarmup: vi.fn(),
+  mockScoreLottery: vi.fn(),
 }));
 vi.mock('../_lib/takeit-detect.js', () => ({
   loadTakeitDetectContext: mockLoadTakeitDetectContext,
   priorSessionWinRatesForDay: mockPriorSessionWinRatesForDay,
   awaitWinRateWarmup: mockAwaitWinRateWarmup,
-  scoreLottery: () => ({ prob: null, version: null, features: null }),
+  scoreLottery: mockScoreLottery,
 }));
 // The real takeit-detect (used by the prefetch-deadline test) loads its
 // bundle through here.
@@ -213,6 +215,7 @@ import { cronGuard as realCronGuard } from '../_lib/cron-helpers.js';
 import { TransientDbError } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
+import { BundleSchemaError } from '../_lib/takeit-score.js';
 
 // The real candle client. Its `uwFetch` import still resolves to the
 // mocked api-helpers above, so routing mockFetchStockCandles1m through
@@ -377,10 +380,16 @@ describe('detect-lottery-fires handler', () => {
     // existing test keeps its live-weight behavior. The cluster-bonus
     // test sets a numeric override.
     mockComputeLotteryScoreV2.override = null;
-    // Default: no Take-It context, no prefetch or warm-up queries.
+    // Default: no Take-It context, no prefetch or warm-up queries, and so
+    // no score.
     mockLoadTakeitDetectContext.mockResolvedValue(null);
     mockPriorSessionWinRatesForDay.mockResolvedValue([]);
     mockAwaitWinRateWarmup.mockResolvedValue(undefined);
+    mockScoreLottery.mockReturnValue({
+      prob: null,
+      version: null,
+      features: null,
+    });
     // Default: every fire finds its (single-leg) anchor, as on a live tick.
     mockLookupAnchorLegs.mockImplementation(
       async (requests) =>
@@ -2504,7 +2513,14 @@ describe('detect-lottery-fires handler', () => {
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({ status: 'success', rows: 1 });
+    // A ticker GexBot doesn't cover is no failure: the run stays clean.
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      gexOutOfUniverse: 1,
+      gexMisses: 0,
+      gexLookupFailures: 0,
+    });
 
     expect(mockGetLatestGexbotSnapshotAt).not.toHaveBeenCalled();
     expectAllGexBindsNull(extractInsertBinds(mockSql, 'lottery_finder_fires'));
@@ -2922,6 +2938,8 @@ describe('detect-lottery-fires handler', () => {
       'Take-It prefetch passed its 5000 ms deadline' as const;
     const TAKEIT_WARN =
       'detect-lottery-fires: Take-It prefetch failed; takeit_prob left null';
+    const TAKEIT_ERROR =
+      'detect-lottery-fires: Take-It prefetch error; takeit_prob left null';
     const FLOW_FAILED_MSG =
       'detect-lottery-fires: ticker flow series failed; fires written without flow features';
     const FLOW_ERROR_MSG =
@@ -3182,7 +3200,7 @@ describe('detect-lottery-fires handler', () => {
           takeitPrefetchError: broken.message,
           takeitPrefetchFailureKind: 'error',
         },
-        'detect-lottery-fires: Take-It prefetch query error; takeit_prob left null',
+        TAKEIT_ERROR,
       );
     });
 
@@ -3218,6 +3236,191 @@ describe('detect-lottery-fires handler', () => {
         },
         TAKEIT_WARN,
       );
+    });
+
+    // The real helper, over getBundle mocked at its module boundary.
+    async function useRealTakeitHelper() {
+      const actual = await vi.importActual<
+        typeof import('../_lib/takeit-detect.js')
+      >('../_lib/takeit-detect.js');
+      mockLoadTakeitDetectContext.mockImplementation(
+        actual.loadTakeitDetectContext,
+      );
+    }
+
+    // getBundle with no bundle to give, reporting why as the loader does.
+    function bundleUnavailable(reason: string, kind: 'transient' | 'error') {
+      mockGetBundle.mockImplementation(
+        async (
+          _alertType: string,
+          onUnavailable: (u: { reason: string; kind: string }) => void,
+        ) => {
+          onUnavailable({ reason, kind });
+          return null;
+        },
+      );
+    }
+
+    // One SNDK fire: ticks, prior fires, its flow and macro lookups, then
+    // the INSERT answering `insertRows` ([] = ON CONFLICT, nothing written).
+    function stageOneFire(insertRows: unknown[]) {
+      mockTicks(fireableSndkStream())
+        .mockResolvedValueOnce([]) // prior fires
+        .mockResolvedValueOnce([]) // ticker_flow_snapshot
+        .mockResolvedValueOnce([]) // flow_data
+        .mockResolvedValueOnce([]) // spot_exposures
+        .mockResolvedValueOnce(insertRows); // insert
+    }
+
+    const SCHEMA_ERROR =
+      'TakeitBundle validation failed at isotonic.out_of_bounds: expected clip';
+    const NO_LOTTERY_BUNDLE = 'Take-It manifest names no lottery bundle';
+
+    it.each([
+      {
+        label: 'a bundle that fails validation',
+        arrange: () =>
+          mockGetBundle.mockRejectedValue(new BundleSchemaError(SCHEMA_ERROR)),
+        reason: SCHEMA_ERROR,
+      },
+      {
+        label: 'a manifest with no lottery bundle',
+        arrange: () => bundleUnavailable(NO_LOTTERY_BUNDLE, 'error'),
+        reason: NO_LOTTERY_BUNDLE,
+      },
+    ])(
+      'fails the run when Take-It has no bundle because of $label, and still writes the fire',
+      async ({ arrange, reason }) => {
+        await useRealTakeitHelper();
+        arrange();
+        stageOneFire([{ id: 42 }]);
+
+        const res = mockResponse();
+        await handler(authorizedReq(), res);
+
+        // Bad config or a bad upload, not Blob being slow: red check-in,
+        // whatever was written.
+        expect(res._status).toBe(200);
+        expect(res._json).toMatchObject({
+          status: 'error',
+          inserted: 1,
+          takeitPrefetchFailures: 1,
+          takeitPrefetchError: reason,
+          takeitPrefetchFailureKind: 'error',
+          takeitScoreFailures: 0,
+        });
+        expect(
+          extractInsertBinds(mockSql, 'lottery_finder_fires').get(
+            'takeit_prob',
+          ),
+        ).toBeNull();
+        expect(logger.error).toHaveBeenCalledWith(
+          { takeitPrefetchError: reason, takeitPrefetchFailureKind: 'error' },
+          TAKEIT_ERROR,
+        );
+        expect(vi.mocked(reportCronRun).mock.calls[0]![1]).toMatchObject({
+          status: 'error',
+          takeitPrefetchError: reason,
+          takeitPrefetchFailureKind: 'error',
+        });
+      },
+    );
+
+    it('writes the fire with takeit_prob NULL and reports partial when Blob is unreachable and no bundle is cached', async () => {
+      const blobDown =
+        'Take-It manifest unavailable: Vercel Blob: The blob service is currently not available. Please try again.';
+      await useRealTakeitHelper();
+      bundleUnavailable(blobDown, 'transient');
+      stageOneFire([{ id: 42 }]);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        inserted: 1,
+        takeitPrefetchFailures: 1,
+        takeitPrefetchError: blobDown,
+        takeitPrefetchFailureKind: 'transient',
+      });
+      expect(
+        extractInsertBinds(mockSql, 'lottery_finder_fires').get('takeit_prob'),
+      ).toBeNull();
+      expect(logger.warn).toHaveBeenCalledWith(
+        {
+          takeitPrefetchError: blobDown,
+          takeitPrefetchFailureKind: 'transient',
+        },
+        TAKEIT_WARN,
+      );
+      expect(logger.error).not.toHaveBeenCalled();
+      // The Axiom event says the same: partial, a transient prefetch
+      // failure, and no scoring failure (nothing was scored at all).
+      expect(reportCronRun).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(reportCronRun).mock.calls[0]![1]).toMatchObject({
+        status: 'partial',
+        takeitPrefetchFailures: 1,
+        takeitPrefetchFailureKind: 'transient',
+        takeitScoreFailures: 0,
+      });
+    });
+
+    // A loaded Take-It context, and what scoreLottery returns for a row it
+    // scored or one whose scoring threw (it catches, sends the Sentry event
+    // and returns no version).
+    const TAKEIT_CTX = { bundle: { version: 'test-v1' }, ctx: {} };
+    const SCORED = { prob: 0.42, version: 'test-v1', features: { a: 1 } };
+    const SCORE_FAILED = { prob: null, version: null, features: null };
+
+    it('writes the fire with takeit_* NULL and reports partial with a counter when scoring its row fails', async () => {
+      mockLoadTakeitDetectContext.mockResolvedValue(TAKEIT_CTX);
+      mockScoreLottery.mockReturnValue(SCORE_FAILED);
+      stageOneFire([{ id: 42 }]);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        inserted: 1,
+        takeitScoreFailures: 1,
+        takeitPrefetchFailures: 0,
+      });
+      expect(mockScoreLottery).toHaveBeenCalledExactlyOnceWith(
+        TAKEIT_CTX,
+        expect.objectContaining({ underlying_symbol: 'SNDK' }),
+      );
+      const binds = extractInsertBinds(mockSql, 'lottery_finder_fires');
+      expect(binds.get('takeit_prob')).toBeNull();
+      expect(binds.get('takeit_model_version')).toBeNull();
+      expect(binds.get('takeit_features')).toBeNull();
+      // The counter lands in Axiom `meta`, not as a new top-level column.
+      expect(vi.mocked(reportCronRun).mock.calls[0]![1]).toMatchObject({
+        status: 'partial',
+        takeitScoreFailures: 1,
+      });
+      expect(AXIOM_TOP_LEVEL_KEYS.has('takeitScoreFailures')).toBe(false);
+    });
+
+    it('stays success when scoring a row fails but nothing was written', async () => {
+      mockLoadTakeitDetectContext.mockResolvedValue(TAKEIT_CTX);
+      mockScoreLottery.mockReturnValue(SCORE_FAILED);
+      stageOneFire([]); // ON CONFLICT: the fire was already written
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'success',
+        inserted: 0,
+        takeitScoreFailures: 1,
+      });
+      // The Axiom event carries the same status and counter.
+      expect(vi.mocked(reportCronRun).mock.calls[0]![1]).toMatchObject({
+        status: 'success',
+        takeitScoreFailures: 1,
+      });
     });
 
     it('writes a ticker’s fires without flow features on a transient flow-series failure, then skips the rest by breaker, and reports it once', async () => {
@@ -3449,21 +3652,24 @@ describe('detect-lottery-fires handler', () => {
     });
 
     it('reports no setup degradation on a clean run', async () => {
-      mockTicks(fireableSndkStream())
-        .mockResolvedValueOnce([]) // prior fires
-        .mockResolvedValueOnce([]) // ticker_flow_snapshot
-        .mockResolvedValueOnce([]) // flow_data
-        .mockResolvedValueOnce([]) // spot_exposures
-        .mockResolvedValueOnce([{ id: 42 }]); // insert
+      mockLoadTakeitDetectContext.mockResolvedValue(TAKEIT_CTX);
+      mockScoreLottery.mockReturnValue(SCORED);
+      stageOneFire([{ id: 42 }]);
 
       const res = mockResponse();
       await handler(authorizedReq(), res);
 
+      expect(
+        extractInsertBinds(mockSql, 'lottery_finder_fires').get(
+          'takeit_model_version',
+        ),
+      ).toBe('test-v1');
       expect(res._json).toMatchObject({
         status: 'success',
         takeitPrefetchFailures: 0,
         takeitPrefetchError: null,
         takeitPrefetchFailureKind: null,
+        takeitScoreFailures: 0,
         flowSeriesFailures: 0,
         flowSeriesSkippedBreaker: 0,
         flowSeriesGenuineFailures: 0,

@@ -507,12 +507,13 @@ export default withCronInstrumentation(
     );
     const takeitPrefetchError = takeitPrefetchFailure?.reason ?? null;
     const takeitPrefetchFailureKind = takeitPrefetchFailure?.kind ?? null;
-    // The helper already sent this run's one Sentry event (an error for a
-    // broken query, else a warning).
+    // The helper or the bundle loader already sent this run's Sentry event.
+    // 'error' is a broken query, an invalid bundle or a Blob config problem
+    // (such as a manifest without a silentboom bundle).
     if (takeitPrefetchFailureKind === 'error') {
       ctx.logger.error(
         { takeitPrefetchError, takeitPrefetchFailureKind },
-        'detect-silent-boom: Take-It prefetch query error; takeit_prob left null',
+        'detect-silent-boom: Take-It prefetch error; takeit_prob left null',
       );
     } else if (takeitPrefetchFailureKind != null) {
       ctx.logger.warn(
@@ -762,6 +763,10 @@ export default withCronInstrumentation(
     // snapshot bound), so hits + misses + out-of-universe stays one per
     // alert; this is the subset that failed rather than found nothing.
     let gexLookupFailures = 0;
+    // Alerts whose Take-It scoring threw although the run had a Take-It
+    // context (scoreSilentBoom caught it and sent the Sentry event):
+    // written with takeit_* NULL.
+    let takeitScoreFailures = 0;
 
     // Per-(ticker, date) cumulative net-flow series cache. Shared across
     // all chain groups so two TSLA chains in the same cron tick fetch
@@ -1143,6 +1148,9 @@ export default withCronInstrumentation(
         version: takeitVersion,
         features: takeitFeatures,
       } = scoreSilentBoom(takeitCtx, takeitRow);
+      // A loaded context always scores with the bundle's version, so a null
+      // one means this row's scoring threw.
+      if (takeitCtx != null && takeitVersion == null) takeitScoreFailures += 1;
 
       // TAKE-IT-conditioned gate exemption (spec:
       // docs/superpowers/specs/2026-05-27-takeit-conditioned-gate-fix-design.md).
@@ -1343,6 +1351,7 @@ export default withCronInstrumentation(
         macroSeriesFailed,
         macroGenuineFailures: genuineFailures,
         takeitPrefetchFailures: takeitPrefetchError == null ? 0 : 1,
+        takeitScoreFailures,
         flowSeriesFailures,
         flowSeriesSkippedBreaker,
         flowSeriesGenuineFailures,
@@ -1356,17 +1365,21 @@ export default withCronInstrumentation(
     // Status contract (FIX #1 + #9). Alerts ALWAYS land — status only
     // signals degradation:
     //   - a genuine (non-transient) macro, flow-series or Take-It prefetch
-    //     error → 'error' (loud; pages via the cron monitor), REGARDLESS of
+    //     error (for Take-It: a broken query, an invalid bundle, or a Blob
+    //     config problem such as a manifest without a silentboom bundle) →
+    //     'error' (loud; pages via the cron monitor), REGARDLESS of
     //     inserted count: a genuine schema bug is real even on a 0-fire
     //     tick.
     //   - else a transient macro failure, a Take-It prefetch that timed out
-    //     or hit a Neon blip (takeit_prob NULL), a flow series that
-    //     failed or was skipped by the breaker (cum_* NULL), a failed
-    //     anchor-legs lookup, transient or not (anchor columns NULL on
-    //     every alert; the lookup's own Sentry event pages a broken query),
-    //     or a GexBot snapshot lookup that threw (gex_* NULL on that alert),
-    //     AND inserted > 0 → 'partial' (observably degraded). On a 0-fire
-    //     tick no row was degraded → stays 'success' (do NOT escalate).
+    //     or hit a Neon blip, or Blob unreachable with no bundle cached
+    //     (takeit_prob NULL), an alert whose Take-It scoring threw
+    //     (takeit_* NULL on that alert), a flow series that failed or was
+    //     skipped by the breaker (cum_* NULL), a failed anchor-legs lookup,
+    //     transient or not (anchor columns NULL on every alert; the
+    //     lookup's own Sentry event pages a broken query), or a GexBot
+    //     snapshot lookup that threw (gex_* NULL on that alert), AND
+    //     inserted > 0 → 'partial' (observably degraded). On a 0-fire tick
+    //     no row was degraded → stays 'success' (do NOT escalate).
     //   - else → 'success'.
     // A GexBot lookup that answered with no fresh snapshot (a miss) or a
     // ticker outside the GexBot universe doesn't count: neither is a
@@ -1374,6 +1387,7 @@ export default withCronInstrumentation(
     const degraded =
       transientFailures > 0 ||
       takeitPrefetchError != null ||
+      takeitScoreFailures > 0 ||
       flowSeriesFailures > 0 ||
       flowSeriesSkippedBreaker > 0 ||
       anchorLookupError != null ||
@@ -1407,6 +1421,7 @@ export default withCronInstrumentation(
         takeitPrefetchFailures: takeitPrefetchError == null ? 0 : 1,
         takeitPrefetchError,
         takeitPrefetchFailureKind,
+        takeitScoreFailures,
         flowSeriesFailures,
         flowSeriesSkippedBreaker,
         flowSeriesGenuineFailures,

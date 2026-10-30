@@ -122,6 +122,12 @@ vi.mock('../_lib/takeit-detect.js', () => ({
   awaitWinRateWarmup: mockAwaitWinRateWarmup,
   scoreSilentBoom: mockScoreSilentBoom,
 }));
+// The real takeit-detect (used by the no-bundle tests) loads its bundle
+// through here.
+const mockGetBundle = vi.hoisted(() => vi.fn());
+vi.mock('../_lib/takeit-bundle-loader.js', () => ({
+  getBundle: mockGetBundle,
+}));
 
 // GexBot context lookup is fail-open (migration #180). Default the
 // helper to return null so the INSERT writes NULL into the gex_*
@@ -145,6 +151,7 @@ import { AXIOM_TOP_LEVEL_KEYS } from '../_lib/axiom-fields.js';
 import { TransientDbError } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
+import { BundleSchemaError } from '../_lib/takeit-score.js';
 
 const GUARD = { apiKey: '', today: '2026-05-07' };
 
@@ -656,6 +663,14 @@ describe('detect-silent-boom handler', () => {
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(200);
+    // A ticker GexBot doesn't cover is no failure: the run stays clean.
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      gexOutOfUniverse: 1,
+      gexMisses: 0,
+      gexLookupFailures: 0,
+    });
 
     expect(mockGetLatestGexbotSnapshotAt).not.toHaveBeenCalled();
     expectAllGexBindsNull(extractInsertBinds(mockSql, 'silent_boom_alerts'));
@@ -2334,6 +2349,10 @@ describe('detect-silent-boom handler', () => {
   // must not time the run out, and each degraded path is surfaced.
   describe('setup-phase degradation', () => {
     const TAKEIT_TIMEOUT = 'Take-It prefetch passed its 5000 ms deadline';
+    const TAKEIT_WARN =
+      'detect-silent-boom: Take-It prefetch failed; takeit_prob left null';
+    const TAKEIT_ERROR =
+      'detect-silent-boom: Take-It prefetch error; takeit_prob left null';
     const FLOW_FAILED_MSG =
       'detect-silent-boom: ticker flow series failed; alerts written without flow features';
     const FLOW_ERROR_MSG =
@@ -2562,7 +2581,7 @@ describe('detect-silent-boom handler', () => {
       ).toBeNull();
       expect(logger.error).toHaveBeenCalledWith(
         { takeitPrefetchError: broken, takeitPrefetchFailureKind: 'error' },
-        'detect-silent-boom: Take-It prefetch query error; takeit_prob left null',
+        TAKEIT_ERROR,
       );
     });
 
@@ -2601,6 +2620,186 @@ describe('detect-silent-boom handler', () => {
         expect(payload).toHaveProperty(key);
         expect(AXIOM_TOP_LEVEL_KEYS.has(key)).toBe(false);
       }
+    });
+
+    // The real helper, over getBundle mocked at its module boundary.
+    async function useRealTakeitHelper() {
+      const actual = await vi.importActual<
+        typeof import('../_lib/takeit-detect.js')
+      >('../_lib/takeit-detect.js');
+      mockLoadTakeitDetectContext.mockImplementation(
+        actual.loadTakeitDetectContext,
+      );
+    }
+
+    // getBundle with no bundle to give, reporting why as the loader does.
+    function bundleUnavailable(reason: string, kind: 'transient' | 'error') {
+      mockGetBundle.mockImplementation(
+        async (
+          _alertType: string,
+          onUnavailable: (u: { reason: string; kind: string }) => void,
+        ) => {
+          onUnavailable({ reason, kind });
+          return null;
+        },
+      );
+    }
+
+    // One SNDK alert up to its INSERT, which answers `insertRows` ([] =
+    // ON CONFLICT, nothing written).
+    function stageOneAlert(insertRows: unknown[]) {
+      stageUpToFlowSeries()
+        .mockResolvedValueOnce([]) // ticker_flow_snapshot
+        .mockResolvedValueOnce(insertRows); // insert
+    }
+
+    const SCHEMA_ERROR =
+      'TakeitBundle validation failed at isotonic.out_of_bounds: expected clip';
+    const NO_SILENTBOOM_BUNDLE = 'Take-It manifest names no silentboom bundle';
+
+    it.each([
+      {
+        label: 'a bundle that fails validation',
+        arrange: () =>
+          mockGetBundle.mockRejectedValue(new BundleSchemaError(SCHEMA_ERROR)),
+        reason: SCHEMA_ERROR,
+      },
+      {
+        label: 'a manifest with no silentboom bundle',
+        arrange: () => bundleUnavailable(NO_SILENTBOOM_BUNDLE, 'error'),
+        reason: NO_SILENTBOOM_BUNDLE,
+      },
+    ])(
+      'fails the run when Take-It has no bundle because of $label, and still writes the alert',
+      async ({ arrange, reason }) => {
+        await useRealTakeitHelper();
+        arrange();
+        stageOneAlert([{ id: 11 }]);
+
+        const res = mockResponse();
+        await handler(authorizedReq(), res);
+
+        // Bad config or a bad upload, not Blob being slow: red check-in,
+        // whatever was written.
+        expect(res._status).toBe(200);
+        expect(res._json).toMatchObject({
+          status: 'error',
+          inserted: 1,
+          takeitPrefetchFailures: 1,
+          takeitPrefetchError: reason,
+          takeitPrefetchFailureKind: 'error',
+          takeitScoreFailures: 0,
+        });
+        expect(
+          extractInsertBinds(mockSql, 'silent_boom_alerts').get('takeit_prob'),
+        ).toBeNull();
+        expect(logger.error).toHaveBeenCalledWith(
+          { takeitPrefetchError: reason, takeitPrefetchFailureKind: 'error' },
+          TAKEIT_ERROR,
+        );
+        expect(vi.mocked(reportCronRun).mock.calls[0]![1]).toMatchObject({
+          status: 'error',
+          takeitPrefetchError: reason,
+          takeitPrefetchFailureKind: 'error',
+        });
+      },
+    );
+
+    it('writes the alert with takeit_prob NULL and reports partial when Blob is unreachable and no bundle is cached', async () => {
+      const blobDown =
+        'Take-It manifest unavailable: Vercel Blob: The blob service is currently not available. Please try again.';
+      await useRealTakeitHelper();
+      bundleUnavailable(blobDown, 'transient');
+      stageOneAlert([{ id: 12 }]);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        inserted: 1,
+        takeitPrefetchFailures: 1,
+        takeitPrefetchError: blobDown,
+        takeitPrefetchFailureKind: 'transient',
+      });
+      expect(
+        extractInsertBinds(mockSql, 'silent_boom_alerts').get('takeit_prob'),
+      ).toBeNull();
+      expect(logger.warn).toHaveBeenCalledWith(
+        {
+          takeitPrefetchError: blobDown,
+          takeitPrefetchFailureKind: 'transient',
+        },
+        TAKEIT_WARN,
+      );
+      expect(logger.error).not.toHaveBeenCalled();
+      // The Axiom event says the same: partial, a transient prefetch
+      // failure, and no scoring failure (nothing was scored at all).
+      expect(reportCronRun).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(reportCronRun).mock.calls[0]![1]).toMatchObject({
+        status: 'partial',
+        takeitPrefetchFailures: 1,
+        takeitPrefetchFailureKind: 'transient',
+        takeitScoreFailures: 0,
+      });
+    });
+
+    // A loaded Take-It context, and what scoreSilentBoom returns for a row
+    // it scored or one whose scoring threw (it catches, sends the Sentry
+    // event and returns no version).
+    const TAKEIT_CTX = { bundle: { version: 'test-v1' }, ctx: {} };
+    const SCORED = { prob: 0.42, version: 'test-v1', features: { a: 1 } };
+    const SCORE_FAILED = { prob: null, version: null, features: null };
+
+    it('writes the alert with takeit_* NULL and reports partial with a counter when scoring its row fails', async () => {
+      mockLoadTakeitDetectContext.mockResolvedValue(TAKEIT_CTX);
+      mockScoreSilentBoom.mockReturnValue(SCORE_FAILED);
+      stageOneAlert([{ id: 13 }]);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        inserted: 1,
+        takeitScoreFailures: 1,
+        takeitPrefetchFailures: 0,
+      });
+      expect(mockScoreSilentBoom).toHaveBeenCalledExactlyOnceWith(
+        TAKEIT_CTX,
+        expect.objectContaining({ underlying_symbol: 'SNDK' }),
+      );
+      const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+      expect(binds.get('takeit_prob')).toBeNull();
+      expect(binds.get('takeit_model_version')).toBeNull();
+      expect(binds.get('takeit_features')).toBeNull();
+      // The counter lands in Axiom `meta`, not as a new top-level column.
+      expect(vi.mocked(reportCronRun).mock.calls[0]![1]).toMatchObject({
+        status: 'partial',
+        takeitScoreFailures: 1,
+      });
+      expect(AXIOM_TOP_LEVEL_KEYS.has('takeitScoreFailures')).toBe(false);
+    });
+
+    it('stays success when scoring a row fails but nothing was written', async () => {
+      mockLoadTakeitDetectContext.mockResolvedValue(TAKEIT_CTX);
+      mockScoreSilentBoom.mockReturnValue(SCORE_FAILED);
+      stageOneAlert([]); // ON CONFLICT: the alert was already written
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'success',
+        inserted: 0,
+        takeitScoreFailures: 1,
+      });
+      // The Axiom event carries the same status and counter.
+      expect(vi.mocked(reportCronRun).mock.calls[0]![1]).toMatchObject({
+        status: 'success',
+        takeitScoreFailures: 1,
+      });
     });
 
     it('writes the alert without flow features when its flow series fails transiently, and reports it once', async () => {
@@ -2753,18 +2952,24 @@ describe('detect-silent-boom handler', () => {
     });
 
     it('reports no setup degradation on a clean run', async () => {
-      stageUpToFlowSeries()
-        .mockResolvedValueOnce([]) // ticker_flow_snapshot
-        .mockResolvedValueOnce([{ id: 9 }]); // insert
+      mockLoadTakeitDetectContext.mockResolvedValue(TAKEIT_CTX);
+      mockScoreSilentBoom.mockReturnValue(SCORED);
+      stageOneAlert([{ id: 9 }]);
 
       const res = mockResponse();
       await handler(authorizedReq(), res);
 
+      expect(
+        extractInsertBinds(mockSql, 'silent_boom_alerts').get(
+          'takeit_model_version',
+        ),
+      ).toBe('test-v1');
       expect(res._json).toMatchObject({
         status: 'success',
         takeitPrefetchFailures: 0,
         takeitPrefetchError: null,
         takeitPrefetchFailureKind: null,
+        takeitScoreFailures: 0,
         flowSeriesFailures: 0,
         flowSeriesSkippedBreaker: 0,
         flowSeriesGenuineFailures: 0,
