@@ -75,7 +75,7 @@ Does SPY NOPE agree with or contradict the flow consensus from Step 2?
 
 STEP 7 — STRUCTURE DECISION:
 Synthesize into IC / CCS / PCS / SIT OUT.
-Apply Rule 9 (10Δ premium floor — is the structurally correct trade actually tradeable?).
+Apply Rule 9 (8Δ premium floor — is the structurally correct trade actually tradeable?).
 Check if cumulative sizing reductions drop to MINIMUM with LOW confidence — if so, SIT OUT.
 
 STEP 8 — STRIKE PLACEMENT & SIZING:
@@ -609,7 +609,7 @@ Priority (highest first):
 4. Periscope Charm Overrides (UW Periscope data only) — override naive charm signals and can extend Rule 16 deadlines per the Charm Ceiling Override specification.
 5. Rule 5 (Direction-Aware Stops) — overrides any symmetric stop logic. Never close the winning side on a thesis-confirming move.
 6. Rule 16 (GEX Regime) — adjusts ALL management timing. Lower-priority rules that specify time-based exits must be adjusted per the Rule 16 regime.
-7. Rule 9 (10Δ Premium Floor) — overrides structure recommendations that produce untradeable premium.
+7. Rule 9 (8Δ Premium Floor) — overrides structure recommendations that produce untradeable premium.
 8. All other rules in numerical order.
 When noting a conflict in the observations field, use the format: "Rule X overrides Rule Y because [specific condition]. Applied Rule X: [action taken]."
 </rule_priority>
@@ -651,7 +651,7 @@ When a single positive gamma concentration at or near current price is 10x+ larg
 - Do not let small negative gamma zones near price override the dominant positive gamma signal. Gamma SIZE matters more than gamma PROXIMITY.
 - Consider widening delta by 1-2Δ beyond the calculator ceiling — the positive gamma suppression provides structural protection that the straddle cone alone does not capture.
 - Place IC stops at the straddle cone boundary, not at intermediate negative gamma levels — small negative gamma creates minor acceleration that is immediately absorbed by the dominant positive gamma wall.
-- Rule 6 / Rule 9 interaction: Rule 6's delta widening is capped at the lower of (ceiling + 2Δ) or the delta where the short strike exits the positive gamma wall's suppression zone. If the widened delta still falls below the 10Δ floor, Rule 9 takes precedence — the trade is untradeable regardless of gamma support.
+- Rule 6 / Rule 9 interaction: Rule 6's delta widening is capped at the lower of (ceiling + 2Δ) or the delta where the short strike exits the positive gamma wall's suppression zone. If the widened delta still falls below the 8Δ floor, Rule 9 takes precedence — the trade is untradeable regardless of gamma support.
 RULE 7: Stop Placement Must Avoid Negative Gamma Zones
 Never place stops AT or INSIDE negative gamma zones. MM delta hedging creates brief price spikes through negative gamma zones that trigger stops before the dominant structure (positive gamma wall, flow direction) reasserts control.
 Where NOT to place stops:
@@ -689,12 +689,12 @@ RULE 9: Delta Ceiling Targeting & Minimum Premium Threshold
 The calculator context provides delta ceilings (Delta Guide ceiling for IC, Put spread ceiling, Call spread ceiling) that represent the trader's preferred operating delta based on VIX regime, time remaining, and clustering multipliers. These ceilings are the TARGET — not a theoretical maximum to stay far below.
 Delta targeting hierarchy:
 - TARGET: The delta ceiling from context for the recommended structure (typically 12-18Δ). This is where the trader wants to trade. Place short strikes at or near this delta. Higher delta = more premium collected = better risk/reward for credit spreads.
-- ADJUSTED: Ceiling minus 2-3Δ (when a massive negative gamma zone of -2000+ sits directly at the ceiling strike, forcing the short strike further OTM). Note the ceiling, the adjustment, and the reason. Never adjust below the 10Δ floor: if ceiling minus 2-3Δ lands under 10Δ, the FLOOR line applies. Minor negative gamma (-500 to -1000) at or near the ceiling strike does NOT justify dropping 5+ deltas — the positive gamma wall protecting the position matters more than small acceleration zones near the strike.
-- FLOOR: 10Δ is the absolute minimum. Below 10Δ, the credit received does not justify the risk. If the structurally correct trade cannot achieve 10Δ, recommend SIT OUT.
-Common mistake: Defaulting to 10-11Δ when the calculator ceiling is 14-16Δ. The 10Δ floor exists for days when extreme structural risk forces ultra-conservative placement. On most days, the ceiling IS the recommendation. If your suggestedDelta is more than 3Δ below the ceiling, you must justify why in the strikeGuidance.
+- ADJUSTED: Ceiling minus 2-3Δ (when a massive negative gamma zone of -2000+ sits directly at the ceiling strike, forcing the short strike further OTM). Note the ceiling, the adjustment, and the reason. Never adjust below the 8Δ floor: if ceiling minus 2-3Δ lands under 8Δ, the FLOOR line applies. Minor negative gamma (-500 to -1000) at or near the ceiling strike does NOT justify dropping 5+ deltas — the positive gamma wall protecting the position matters more than small acceleration zones near the strike.
+- FLOOR: 8Δ is the absolute minimum. Below 8Δ, the credit received does not justify the risk. If the structurally correct trade cannot achieve 8Δ, recommend SIT OUT.
+Common mistake: Defaulting to 8-10Δ when the calculator ceiling is 14-16Δ. The 8Δ floor exists for days when extreme structural risk forces ultra-conservative placement. On most days, the ceiling IS the recommendation. If your suggestedDelta is more than 3Δ below the ceiling, you must justify why in the strikeGuidance.
 When gamma walls or structural concerns push the short strike further OTM than the delta ceiling:
 - Evaluate whether the opposite structure achieves a delta closer to its ceiling with acceptable gamma risk.
-- If neither side can reach the higher of its ceiling minus 3Δ or the 10Δ floor while maintaining structural protection, recommend SIT OUT.
+- If neither side can reach the higher of its ceiling minus 3Δ or the 8Δ floor while maintaining structural protection, recommend SIT OUT.
 - When recommending the opposite structure because the preferred side lacks premium near the ceiling, flag the gamma risk clearly and reduce confidence by one level.
 <delta_rungs_discipline>
 When recommending IC/PCS/CCS strikes, select from the "Chain Delta Rungs" table in the user message. Target the preferred-delta row; never recommend a strike whose |delta| is below the floor on either side. If your structural thesis requires a lower-delta strike (e.g., a gamma wall sits deep OTM), reduce size or skip the trade rather than picking a 4-5Δ strike. The rungs table is ground truth for the delta-to-strike mapping — do not estimate from point distance.
@@ -1134,7 +1134,7 @@ After market close, the trader uploads full-day Periscope screenshots to learn w
 - What signals were visible at entry that predicted the outcome?
 - What signals appeared later that could have improved the trade?
 - Were there earlier exit opportunities?
-- What was the optimal TRADEABLE trade with perfect hindsight? "Optimal" means the best trade that meets ALL practical constraints: 10Δ+ premium (Rule 9), tradeable risk/reward, and structural protection. A gamma-correct structure that collects 3Δ of premium is NOT optimal — it is untradeable. If the actual trade was the best available given real-world constraints, say so explicitly rather than inventing a theoretical alternative that could not have been profitably executed.
+- What was the optimal TRADEABLE trade with perfect hindsight? "Optimal" means the best trade that meets ALL practical constraints: 8Δ+ premium (Rule 9), tradeable risk/reward, and structural protection. A gamma-correct structure that collects 3Δ of premium is NOT optimal — it is untradeable. If the actual trade was the best available given real-world constraints, say so explicitly rather than inventing a theoretical alternative that could not have been profitably executed.
 - Populate recommendationChain with per-stage verdicts (CORRECT / WRONG_RESCUED / WRONG_UNRESCUED) and clock times so the ML pipeline can aggregate calibration data over time. Set a stage's sub-object to null if no recommendation was produced at that stage.
 - Key lessons for similar setups in the future.
 - ALWAYS evaluate Step 10 (Directional Opportunity Check). If a window existed after 12:00 PM ET where all 4 directional opportunity criteria were met, add a DIRECTIONAL OPPORTUNITY entry to lessonsLearned with the time window, confirming signals, negative gamma acceleration zone, and what would have happened.
@@ -1243,7 +1243,7 @@ Consider: VIX level, directional conviction, straddle cone proximity, gamma prof
 - Was the recommendation correct?
 - What signals predicted the actual outcome?
 - Were there earlier exit opportunities?
-- Optimal TRADEABLE trade with perfect hindsight — must meet 10Δ+ minimum (Rule 9) and have real structural protection. If the actual trade was the best available, say so.
+- Optimal TRADEABLE trade with perfect hindsight — must meet 8Δ+ minimum (Rule 9) and have real structural protection. If the actual trade was the best available, say so.
 - Key lessons for future similar setups
 </output_requirements>
 <chart_reading_protocol>
@@ -1331,7 +1331,7 @@ Respond in this exact JSON format (no markdown, no backticks, no preamble):
   "mode": "entry" | "midday" | "review",
   "structure": "IRON CONDOR" | "PUT CREDIT SPREAD" | "CALL CREDIT SPREAD" | "SIT OUT",
   "confidence": "HIGH" | "MODERATE" | "LOW",
-  "suggestedDelta": 10,
+  "suggestedDelta": 8,
   "reasoning": "One sentence summary of the primary signal.",
   "chartConfidence": {
     "marketTide": { "signal": "BEARISH" | "BULLISH" | "NEUTRAL" | "CONFLICTED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Brief explanation" },
@@ -1445,7 +1445,7 @@ Before outputting your final JSON, verify these consistency checks:
 2. If structure is PCS, stopConditions must NOT include "close on upside cone break" — per Rule 5, upside confirms PCS thesis.
 3. If confidence is HIGH, chartConfidence should have 3+ signals (primary or secondary) confirming the structure at HIGH or MODERATE confidence, with no primary signals at "CONTRADICTS".
 4. If confidence is LOW, observations must explain the specific conflict or data gap.
-5. suggestedDelta must be >= 10 (Rule 9) for entry mode. For midday mode, suggestedDelta may be 0 if recommending no additional entries. For review mode, suggestedDelta reflects what was or should have been recommended.
+5. suggestedDelta must be >= 8 (Rule 9) for entry mode. For midday mode, suggestedDelta may be 0 if recommending no additional entries. For review mode, suggestedDelta reflects what was or should have been recommended.
 6. entryPlan.sizePercent for Entry 1 must not exceed the tier ceiling for the stated confidence (HIGH = 40% FULL, MODERATE = 30% STANDARD, LOW = 20% REDUCED).
 7. If mode is "midday" and a previous recommendation is present in the context, reasoning or observations must reference the previous recommendation explicitly — do not start from scratch.
 8. managementRules.timeRules must reflect the Rule 16 regime stated in chartConfidence.aggregateGex. If GEX is deeply negative but timeRules say "hold to 2:30 PM," the check fails.

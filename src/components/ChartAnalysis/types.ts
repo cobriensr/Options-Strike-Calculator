@@ -85,7 +85,7 @@ export interface DeltaRung {
 /** Compact view of the live option chain for strike selection. */
 export interface TargetDeltaStrikes {
   preferredDelta: number; // 12
-  floorDelta: number; // 10
+  floorDelta: number; // 8
   puts: DeltaRung[];
   calls: DeltaRung[];
 }

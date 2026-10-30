@@ -252,7 +252,7 @@ export const PREFERRED_ENTRY_DELTA = 12;
  * IC). Below this floor the credit received does not justify the tail risk —
  * if the structurally correct trade cannot reach the floor, SIT OUT.
  */
-export const FLOOR_ENTRY_DELTA = 10;
+export const FLOOR_ENTRY_DELTA = 8;
 
 /**
  * Delta rungs (|delta|, as integer percent) sampled from the live option chain

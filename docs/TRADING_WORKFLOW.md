@@ -114,7 +114,7 @@ Stops must account for the structure: a downside cone break CONFIRMS a CCS thesi
 
 ### Rule 6: Dominant Positive Gamma Confirms IC
 
-A single positive gamma concentration 10x+ larger than surrounding negative gamma is a strong IC signal. Price mean-reverts to the wall repeatedly. Consider widening delta 1–2Δ beyond the ceiling, capped at the lower of ceiling + 2Δ or the delta where the short strike leaves the wall's suppression zone. Widening needs a shelf, not a pin (Rule 18), and Rule 9's 10Δ floor still applies. Place stops at the straddle cone boundary, not at intermediate negative gamma.
+A single positive gamma concentration 10x+ larger than surrounding negative gamma is a strong IC signal. Price mean-reverts to the wall repeatedly. Consider widening delta 1–2Δ beyond the ceiling, capped at the lower of ceiling + 2Δ or the delta where the short strike leaves the wall's suppression zone. Widening needs a shelf, not a pin (Rule 18), and Rule 9's 8Δ floor still applies. Place stops at the straddle cone boundary, not at intermediate negative gamma.
 
 ### Rule 7: Stop Placement Must Avoid Negative Gamma Zones
 
@@ -126,15 +126,15 @@ The prompt cites backtested directional accuracy across 36 labeled trading days 
 
 Weights: Market Tide 30%, QQQ Net Flow 25%, SPY/QQQ ETF Tide 20%, SPY Net Flow 15%, SPX Net Flow 10%. Market Tide and QQQ agreeing = HIGH confidence; when they contradict, MODERATE confidence with ETF Tide and SPY as tiebreakers. When SPX Net Flow is the only signal pointing one way, trust the consensus. Above VIX 25, SPX rises to 35% and Market Tide drops to 25% (see Rule 10).
 
-### Rule 9: Delta Ceiling Targeting & Minimum Premium Threshold (10Δ Floor)
+### Rule 9: Delta Ceiling Targeting & Minimum Premium Threshold (8Δ Floor)
 
 The calculator's delta ceilings (IC, put spread, call spread; typically 12–18Δ) are the target, not a maximum to stay far below.
 
 - **Target:** the ceiling for the recommended structure. On most days the ceiling is the recommendation.
 - **Adjusted:** ceiling minus 2–3Δ, only when a −2000+ gamma zone sits at the ceiling strike. Minor negative gamma (−500 to −1000) does not justify dropping 5+Δ. Adjusted never goes below the floor.
-- **Floor:** 10Δ is the trader's minimum tradeable delta; below it, the credit doesn't justify the risk. If the structurally correct trade can't reach 10Δ, SIT OUT.
+- **Floor:** 8Δ is the trader's minimum tradeable delta; below it, the credit doesn't justify the risk. If the structurally correct trade can't reach 8Δ, SIT OUT.
 
-A suggested delta more than 3Δ below the ceiling must be justified. When gamma walls push the short strike further OTM than the ceiling (e.g., gamma favors CCS but premium above the wall is 3–5Δ), evaluate the opposite structure, flag its gamma risk and reduce confidence one level. If neither side can reach the higher of its ceiling − 3Δ or 10Δ with structural protection, SIT OUT. Don't recommend untradeable structures just because gamma favors them. Strikes come from the Chain Delta Rungs table, never below the floor on either side.
+A suggested delta more than 3Δ below the ceiling must be justified. When gamma walls push the short strike further OTM than the ceiling (e.g., gamma favors CCS but premium above the wall is 3–5Δ), evaluate the opposite structure, flag its gamma risk and reduce confidence one level. If neither side can reach the higher of its ceiling − 3Δ or 8Δ with structural protection, SIT OUT. Don't recommend untradeable structures just because gamma favors them. Strikes come from the Chain Delta Rungs table, never below the floor on either side.
 
 ### Rule 10: SPX Net Flow Hedging Divergence
 
@@ -210,7 +210,7 @@ When rules conflict, the higher-priority rule wins and Claude notes the conflict
 4. Periscope Charm overrides
 5. Rule 5 (direction-aware stops)
 6. Rule 16 (GEX regime)
-7. Rule 9 (10Δ premium floor)
+7. Rule 9 (8Δ premium floor)
 8. All other rules in numerical order
 
 ### Sizing Tiers

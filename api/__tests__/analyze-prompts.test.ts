@@ -482,8 +482,8 @@ describe('analyze system prompt — Rule 9 short-strike delta floor', () => {
     return Number(match![1]);
   }
 
-  it('pins the floor at 10Δ (owner decision 2026-10-28)', () => {
-    expect(FLOOR_ENTRY_DELTA).toBe(10);
+  it('pins the floor at 8Δ (owner decision 2026-10-29)', () => {
+    expect(FLOOR_ENTRY_DELTA).toBe(8);
   });
 
   it('states the floor the Chain Delta Rungs block enforces', () => {
@@ -517,13 +517,16 @@ describe('analyze system prompt — Rule 9 short-strike delta floor', () => {
     expect(new Set(stated)).toEqual(new Set([FLOOR_ENTRY_DELTA]));
   });
 
-  it.each(MODES)('has no leftover 8Δ floor wording (%s)', (mode) => {
+  it.each(MODES)('states no other floor in any other phrasing (%s)', (mode) => {
+    // Covers the floor phrasings the check above doesn't match. A plain
+    // "10Δ" stays allowed: the examples cite 10Δ trades and a 10Δ ceiling.
     const text = stableSystemText(mode);
-    expect(text).not.toMatch(/\b8Δ (premium )?floor/i);
-    expect(text).not.toContain('8Δ is the absolute minimum');
-    expect(text).not.toMatch(/\b8Δ\+/);
-    expect(text).not.toMatch(/\b8-10Δ/);
-    expect(text).not.toMatch(/suggestedDelta must be >= 8\b/);
+    const stated = (re: RegExp) =>
+      new Set([...text.matchAll(re)].map((m) => Number(m[1])));
+    const floorOnly = new Set([FLOOR_ENTRY_DELTA]);
+    expect(stated(/\b(\d+)Δ\+/g)).toEqual(floorOnly);
+    expect(stated(/\b(\d+)Δ is the absolute minimum/g)).toEqual(floorOnly);
+    expect(stated(/suggestedDelta must be >= (\d+)\b/g)).toEqual(floorOnly);
   });
 
   it('shows no sub-floor suggestedDelta in the entry calibration example', () => {
@@ -542,9 +545,16 @@ describe('analyze system prompt — Rule 9 short-strike delta floor', () => {
   });
 
   it('keeps the "ceiling is the recommendation" guidance above the floor', () => {
-    expect(PROMPT).toContain(
-      `Common mistake: Defaulting to ${FLOOR_ENTRY_DELTA}-${FLOOR_ENTRY_DELTA + 1}Δ when the calculator ceiling is 14-16Δ.`,
-    );
+    // The range the model wrongly defaults to starts at the floor and stays
+    // under the 14-16Δ ceiling the line contrasts it with.
+    const mistake =
+      /Common mistake: Defaulting to (\d+)-(\d+)Δ when the calculator ceiling is 14-16Δ\./.exec(
+        PROMPT,
+      );
+    expect(mistake).not.toBeNull();
+    expect(Number(mistake![1])).toBe(FLOOR_ENTRY_DELTA);
+    expect(Number(mistake![2])).toBeGreaterThan(FLOOR_ENTRY_DELTA);
+    expect(Number(mistake![2])).toBeLessThan(14);
     expect(PROMPT).toContain(
       'On most days, the ceiling IS the recommendation.',
     );

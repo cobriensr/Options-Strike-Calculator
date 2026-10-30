@@ -188,17 +188,17 @@ From the live Schwab 0DTE chain (owner and guest):
 
 ### Live Option Chain (Schwab)
 
-| Feature  | Detail                                                                                                  |
-| -------- | ------------------------------------------------------------------------------------------------------- |
-| Endpoint | `GET /api/chain`                                                                                        |
-| Symbol   | `$SPX`, range=ALL, strikeCount=80                                                                       |
-| Returns  | Nearest chain strike to each target delta with actual put/call delta, IV, credit, theta, vega           |
-| Stale    | Excludes quotes with bid <= 0 or spread > 50% of mid price                                              |
-| Max pain | `calcMaxPain()` -- strike minimizing total OI-weighted payout, with distance from spot                  |
-| Pin risk | Top 3 put/call OI walls                                                                                 |
-| Used by  | Settlement Pin Risk table; Chain Delta Rungs in the AI analysis (rungs 5–25Δ, preferred 12Δ, floor 10Δ) |
-| Cache    | 30 seconds during market hours, 300 seconds after                                                       |
-| Access   | Owner or guest                                                                                          |
+| Feature  | Detail                                                                                                 |
+| -------- | ------------------------------------------------------------------------------------------------------ |
+| Endpoint | `GET /api/chain`                                                                                       |
+| Symbol   | `$SPX`, range=ALL, strikeCount=80                                                                      |
+| Returns  | Nearest chain strike to each target delta with actual put/call delta, IV, credit, theta, vega          |
+| Stale    | Excludes quotes with bid <= 0 or spread > 50% of mid price                                             |
+| Max pain | `calcMaxPain()` -- strike minimizing total OI-weighted payout, with distance from spot                 |
+| Pin risk | Top 3 put/call OI walls                                                                                |
+| Used by  | Settlement Pin Risk table; Chain Delta Rungs in the AI analysis (rungs 5–25Δ, preferred 12Δ, floor 8Δ) |
+| Cache    | 30 seconds during market hours, 300 seconds after                                                      |
+| Access   | Owner or guest                                                                                         |
 
 This addresses the single-σ model limitation: VIX1D is aggregate IV across the entire strip, but on high-skew days OTM put IV ≠ VIX1D, so the AI analysis is given actual per-strike deltas from the Schwab chain.
 
@@ -308,7 +308,7 @@ The centerpiece feature (owner only; guests see the panel with submit disabled):
 
 - Up to 2 chart images (Zod `max(2)`, 5 MB each), labelled Periscope (Gamma) and Periscope Charm (SPX)
 - Full calculator context: SPX, VIX, VIX1D, VIX9D, VVIX, σ, T, hours remaining, delta ceiling, spread ceilings, regime zone, cluster multiplier (symmetric + directional put/call), DOW label, opening range signal, term structure signal + curve shape, RV/IV ratio, IV acceleration multiplier, overnight gap
-- Chain Delta Rungs: actual strikes at 5–25Δ from the live Schwab chain, with the preferred 12Δ entry and the 10Δ floor
+- Chain Delta Rungs: actual strikes at 5–25Δ from the live Schwab chain, with the preferred 12Δ entry and the 8Δ floor
 - Live Schwab positions: Current SPX 0DTE spreads with strikes, credits, P&L, cushion distances, and net greeks — auto-fetched before each analysis so Claude knows what's already open
 - Database-driven market context: flow data (Market Tide, SPX/SPY/QQQ Net Flow, ETF Tide, 0DTE Index Flow, Delta Flow), Greek exposure, aggregate and per-strike GEX, SPX candles, dark pool blocks, max pain, economic events — all assembled by `buildAnalysisContext()`
 - **Futures context**: 6 futures symbols (ES, NQ, ZN, RTY, CL, GC, fed by the Unusual Whales futures stream) with ES-SPX basis, NQ-ES divergence, ZN flight-to-safety, and VIX term structure (VIX/VIX3M)

@@ -716,7 +716,7 @@ describe('useAnalysisContext', () => {
 
     const rungs = ctx.targetDeltaStrikes!;
     expect(rungs.preferredDelta).toBe(12);
-    expect(rungs.floorDelta).toBe(10);
+    expect(rungs.floorDelta).toBe(8);
     expect(rungs.puts).toHaveLength(7);
     expect(rungs.calls).toHaveLength(7);
 
