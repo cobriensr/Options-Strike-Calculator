@@ -712,13 +712,17 @@ describe('DST: gated crons reach the same ET window in both regimes', () => {
         'compute-cone', // timeCheck: isConeCalcWindow (one slot per regime)
       ]),
     );
-    // Custom gates are left to each cron's own tests.
+    // Custom gates are left to each cron's own tests. Each must still be a
+    // vercel.json cron, or `not.toContain` would pass vacuously.
+    const vercelJobs = loadVercelCrons();
     for (const custom of [
-      'compute-es-overnight', // local isAfterCashOpen
+      'auto-prefill-premarket', // local isAfterCashOpen
       'evaluate-round-trip', // inline timeCheck
       'build-features', // dynamicTimeCheck
       'fetch-vol-surface', // marketHours: false
+      'archive-gexbot-eod', // marketHours: false
     ]) {
+      expect(vercelJobs.has(custom), `${custom} is not a cron`).toBe(true);
       expect(jobs).not.toContain(custom);
     }
   });

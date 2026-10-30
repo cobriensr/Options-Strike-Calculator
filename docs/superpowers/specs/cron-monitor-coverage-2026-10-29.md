@@ -106,7 +106,7 @@ Owner-approved on 2026-10-29 ("match the siblings"). Four `withCronCheckin` cron
 vercel.json crontabs are UTC, but most gates are ET (EDT is UTC-4; EST is UTC-5 from Sunday 2026-11-01). Every cron path's ticks were checked against its gate in both regimes. Two crons would have lost runs in EST. Both were caught before the first EST session (Monday 2026-11-02). Both date from May 2026 and have only ever run in EDT, so no history is affected and nothing needs a backfill.
 
 - **compute-cone** (since 2026-05-07). It ran only at `32 13` UTC behind the default market gate (09:25 ET on). In EST every run would have been an intentional skip, and no cone would have been written all winter.
-  - It now runs at `32 13,14` with a 09:30–09:45 ET `timeCheck`, following compute-es-overnight's `35 13,14`.
+  - It now runs at `32 13,14` with a 09:30–09:45 ET `timeCheck`: the two-slot pattern auto-prefill-premarket uses (`30 13,14`), as compute-es-overnight did before it was retired.
   - Exactly one slot runs per regime; the other takes the paired skip check-in.
 - **refresh-tracker-contracts** (since 2026-05-17). `*/5 13-20` would never have fired 16:00 or 16:05 ET in EST, so a contract expiring that day would have closed on its 15:55 mark. It is now `*/5 13-21`, and the market gate trims the extra ticks. Its Sentry monitor moves from `*/5 9-15` to `*/5 9-16` ET to expect the 16:00 and 16:05 ET runs; the 16:10–16:55 ticks are served and answered by the paired skip check-in.
 
@@ -116,6 +116,11 @@ Every other cron reaches its gate in both regimes, mostly because `13-21` UTC co
 - the first and last in-gate ET minute match, except for two written exemptions (fetch-greek-exposure-strike, fetch-oi-per-strike).
 
 Custom gates (local or inline `timeCheck`, `dynamicTimeCheck`) are left to each cron's own tests.
+
+Cron-set changes since the audit, both from upstream on 2026-10-29:
+
+- **compute-es-overnight was retired** (2b13ed98). The audit had found it fine in both regimes, running twice in EDT as an idempotent upsert.
+- **archive-gexbot-eod and audit-gexbot-eod were added.** Both are ungated (`marketHours: false`), so the DST rule leaves them out. audit-gexbot-eod's 19:45 UTC slot is DST-aware by design: it leaves 75 minutes before its 17:00 ET download window closes in EDT, and more in EST. Both pass the coverage and wrapper-scan tests.
 
 ## History backfill
 
