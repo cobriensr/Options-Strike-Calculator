@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import '@testing-library/jest-dom';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 import { useGexbotData } from '../hooks/useGexbotData';
@@ -223,10 +223,127 @@ describe('useGexbotData', () => {
       expect(mockFetchJson).toHaveBeenCalledTimes(1);
     });
 
-    // The "polls every 30s" path lives in `usePolling`, which has
-    // its own coverage. Re-asserting it here would require swapping
-    // timers mid-hook (the setInterval is scheduled with real timers
-    // and fake-timer mode would have to be active before mount).
-    // Verifying the gate semantics (above) is sufficient at this layer.
+    it('polls the snapshots view every 30 s while marketOpen', async () => {
+      vi.useFakeTimers();
+      mockFetchJson.mockResolvedValue({ data: { rows: [] } });
+      renderHook(() => useGexbotData({ view: 'snapshots-latest' }, true));
+      await vi.advanceTimersByTimeAsync(60_000);
+      // mount fetch + ticks at 30 s and 60 s
+      expect(mockFetchJson).toHaveBeenCalledTimes(3);
+    });
+
+    it('never polls sibling-confirm: the read at a past fire time is final', async () => {
+      vi.useFakeTimers();
+      mockFetchJson.mockResolvedValue({ data: { rows: [] } });
+      renderHook(() =>
+        useGexbotData(
+          {
+            view: 'sibling-confirm',
+            ticker: 'AAPL',
+            side: 'call',
+            at: '2026-10-29T14:00:10.000Z',
+          },
+          true,
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(mockFetchJson).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ── Superseded sibling-confirm requests ───────────────────
+
+  describe('sibling-confirm when the fire time changes', () => {
+    const AT_OLD = '2026-10-29T14:00:10.000Z';
+    const AT_NEW = '2026-10-29T15:00:10.000Z';
+    const useSibling = ({ at }: { at: string }) =>
+      useGexbotData(
+        { view: 'sibling-confirm', ticker: 'AAPL', side: 'call', at },
+        true,
+      );
+
+    // Let a late promise settle and any state update it triggers flush.
+    const settle = () =>
+      act(async () => {
+        await new Promise((r) => setTimeout(r, 20));
+      });
+
+    function deferred() {
+      let resolve!: (v: unknown) => void;
+      const promise = new Promise((r) => {
+        resolve = r;
+      });
+      return { promise, resolve };
+    }
+
+    it('ignores a late response for the superseded fire time', async () => {
+      const oldReq = deferred();
+      const newReq = deferred();
+      mockFetchJson
+        .mockReturnValueOnce(oldReq.promise)
+        .mockReturnValueOnce(newReq.promise);
+      const { result, rerender } = renderHook(useSibling, {
+        initialProps: { at: AT_OLD },
+      });
+      await waitFor(() => expect(mockFetchJson).toHaveBeenCalledTimes(1));
+      rerender({ at: AT_NEW });
+      await waitFor(() => expect(mockFetchJson).toHaveBeenCalledTimes(2));
+
+      newReq.resolve({ data: { rows: [{ ticker: 'SPY', verdict: 'agree' }] } });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.rows).toEqual([
+        { ticker: 'SPY', verdict: 'agree' },
+      ]);
+
+      // The older request lands last and must not overwrite the newer one.
+      oldReq.resolve({
+        data: { rows: [{ ticker: 'QQQ', verdict: 'disagree' }] },
+      });
+      await settle();
+      expect(result.current.rows).toEqual([
+        { ticker: 'SPY', verdict: 'agree' },
+      ]);
+    });
+
+    it('ignores a late error for the superseded fire time', async () => {
+      const oldReq = deferred();
+      const newReq = deferred();
+      mockFetchJson
+        .mockReturnValueOnce(oldReq.promise)
+        .mockReturnValueOnce(newReq.promise);
+      const { result, rerender } = renderHook(useSibling, {
+        initialProps: { at: AT_OLD },
+      });
+      await waitFor(() => expect(mockFetchJson).toHaveBeenCalledTimes(1));
+      rerender({ at: AT_NEW });
+      await waitFor(() => expect(mockFetchJson).toHaveBeenCalledTimes(2));
+      newReq.resolve({ data: { rows: [] } });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      oldReq.resolve({ error: 'Internal error', status: 500 });
+      await settle();
+      expect(result.current.error).toBeNull();
+    });
+
+    it('drops the previous fire rows and shows loading until the new read lands', async () => {
+      const newReq = deferred();
+      mockFetchJson
+        .mockResolvedValueOnce({
+          data: { rows: [{ ticker: 'QQQ', verdict: 'agree' }] },
+        })
+        .mockReturnValueOnce(newReq.promise);
+      const { result, rerender } = renderHook(useSibling, {
+        initialProps: { at: AT_OLD },
+      });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.rows).toHaveLength(1);
+
+      rerender({ at: AT_NEW });
+      expect(result.current.loading).toBe(true);
+      expect(result.current.rows).toEqual([]);
+      expect(result.current.freshestAt).toBeNull();
+
+      newReq.resolve({ data: { rows: [] } });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+    });
   });
 });

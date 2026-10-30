@@ -784,6 +784,7 @@ export const LotteryRow = memo(function LotteryRow({
           ticker={fire.underlyingSymbol}
           side={fire.optionType === 'C' ? 'call' : 'put'}
           firedAt={fire.triggerTimeCt}
+          asOfLabel="latest fire"
           marketOpen={marketOpen}
         />
         {/* GexBot context badge — GEXBot taker-flow snapshot at fire time

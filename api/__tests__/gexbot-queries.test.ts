@@ -12,6 +12,7 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 import {
+  FIRE_TIME_MAX_AGE_SECONDS,
   getConvexityTrend,
   getLatestGexbotSnapshotAt,
   getLatestSnapshots,
@@ -385,6 +386,24 @@ describe('gexbot-queries', () => {
       const args = (mockSql.mock.calls[0] as unknown[]).slice(1);
       expect(args).toContain('2026-10-29T14:00:10.000Z');
       expect(args).toContain('2026-10-29T13:57:10.000Z');
+    });
+
+    it('shares one freshness window with getLatestGexbotSnapshotAt', async () => {
+      expect(FIRE_TIME_MAX_AGE_SECONDS).toBe(180);
+      mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+      await getSiblingConfirmation('SPY', 'call', FIRE);
+      await getLatestGexbotSnapshotAt('SPY', FIRE);
+      const lower = '2026-10-29T13:57:10.000Z';
+      expect((mockSql.mock.calls[0] as unknown[]).slice(1)).toContain(lower);
+      expect((mockSql.mock.calls[1] as unknown[]).slice(1)).toContain(lower);
+    });
+
+    it('requires the vendor timestamp (Unix seconds) to sit in the window', async () => {
+      mockSql.mockResolvedValueOnce([]);
+      await getSiblingConfirmation('SPY', 'call', FIRE);
+      const text = (mockSql.mock.calls[0]?.[0] as string[]).join('?');
+      expect(text).toMatch(/source_timestamp IS NULL/);
+      expect(text).toMatch(/source_timestamp >= extract\(epoch FROM/);
     });
 
     it('does not read zcvr or delta_risk_reversal', async () => {

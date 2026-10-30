@@ -15,7 +15,8 @@
  *   ?view=sibling-confirm      → requires &ticker=AAPL&side=call|put&at=<ISO
  *                                fire time>: sibling taker-flow direction then
  *
- * Spec: docs/superpowers/specs/gexbot-frontend-2026-05-16.md
+ * Spec: docs/superpowers/specs/gexbot-frontend-2026-05-16.md (sibling-confirm
+ * superseded by P12a: docs/superpowers/specs/gexbot-refresh-2026-10-28.md)
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';

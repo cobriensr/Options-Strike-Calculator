@@ -43,12 +43,17 @@ function loaded(rows: SiblingConfirmRow[]) {
   });
 }
 
-function renderBar(side: 'call' | 'put' = 'call', firedAt = FIRED_AT) {
+function renderBar(
+  side: 'call' | 'put' = 'call',
+  firedAt = FIRED_AT,
+  asOfLabel = 'latest fire',
+) {
   return render(
     <SiblingAssetConfirmationBar
       ticker="AAPL"
       side={side}
       firedAt={firedAt}
+      asOfLabel={asOfLabel}
       marketOpen
     />,
   );
@@ -76,8 +81,22 @@ describe('<SiblingAssetConfirmationBar>', () => {
     });
   });
 
-  it('renders nothing, and never fetches, when the fire time is not a date', () => {
-    const { container } = renderBar('call', 'not-a-date');
+  it('reads a CST (-06:00) fire time as the right UTC instant', () => {
+    loaded([]);
+    renderBar('call', '2026-12-04T08:30:10-06:00');
+    expect(mockUseGexbotData.mock.calls[0]?.[0]).toMatchObject({
+      at: '2026-12-04T14:30:10.000Z',
+    });
+  });
+
+  it.each([
+    'not-a-date',
+    '2026-10-29T14:00:10', // no zone: would parse as browser-local time
+    '2026-10-29',
+    '2026-10-29 14:00:10',
+    '',
+  ])('renders nothing, and never fetches, for fire time %j', (bad) => {
+    const { container } = renderBar('call', bad);
     expect(container.firstChild).toBeNull();
     expect(mockUseGexbotData).not.toHaveBeenCalled();
   });
@@ -147,7 +166,7 @@ describe('<SiblingAssetConfirmationBar>', () => {
     const pill = screen.getByTestId('sibling-pill-AAPL-QQQ');
     expect(pill).toHaveTextContent('—');
     expect(pill.className).toMatch(/tertiary/);
-    expect(pill).toHaveAttribute('aria-label', 'QQQ taker flow —');
+    expect(pill).toHaveAttribute('aria-label', 'QQQ taker flow: no reading');
   });
 
   it('says "no data" once, not per pill, when no sibling has a read', () => {
@@ -167,6 +186,27 @@ describe('<SiblingAssetConfirmationBar>', () => {
     expect(title).toMatch(/1\.50M/);
     expect(title).toMatch(/zgr 0\.83/);
     expect(title).toMatch(/context, unvalidated/);
+  });
+
+  it('names the moment the read reflects and the snapshot time', () => {
+    loaded([
+      makeRow('SPY', 'agree', { capturedAt: '2026-10-29T14:00:00.000Z' }),
+    ]);
+    renderBar('call', FIRED_AT, '5-min bucket start');
+    const title =
+      screen.getByTestId('sibling-pill-AAPL-SPY').getAttribute('title') ?? '';
+    // 14:00:00Z is 09:00 CDT.
+    expect(title).toMatch(/as of 5-min bucket start/);
+    expect(title).toMatch(/snapshot 9:00/);
+    expect(title).not.toMatch(/fire time/);
+  });
+
+  it('uses the label in the no-data title too', () => {
+    loaded([makeRow('SPY', 'none'), makeRow('QQQ', 'none')]);
+    renderBar('call', FIRED_AT, '5-min bucket start');
+    const noData = screen.getByText(/no data/i);
+    expect(noData.getAttribute('title')).toMatch(/5-min bucket start/);
+    expect(noData.getAttribute('title')).not.toMatch(/fire time/);
   });
 
   it('omits null readings from the tooltip', () => {

@@ -150,6 +150,8 @@ state) until then.
 
 #### 8. `<SiblingAssetConfirmationBar />` (lives inline in lottery/silent-boom rows)
 
+> **Superseded by P12a (2026-10-29), see [gexbot-refresh-2026-10-28.md](./gexbot-refresh-2026-10-28.md).** The `zcvr` / `delta_risk_reversal` heuristic below misread net convexity as a call/put ratio and judged the current minute. The pills now compare each sibling's `net_dex` sign with the alert's side at the alert's fire time (see `api/_lib/gexbot-queries.ts` `getSiblingConfirmation`). The text below is kept as history.
+
 - **Data:** Given a lottery row for `{ticker, side}`, query `gexbot_snapshots` for sibling tickers' `zcvr` + `delta_risk_reversal` direction over the last 5 minutes. "Sibling" = same asset class (large-cap = SPX/SPY/QQQ/IWM/NDX; volatility = VIX; commodity = GLD/USO/SLV; etc.).
 - **Render:** Inline 3-pill bar next to existing TakeItScore badges. Each pill represents a sibling ticker; color indicates whether it confirms (green) or contradicts (red) the lottery row's direction. Tooltip on hover shows the underlying convexity ratio.
 - **Sketch:**
@@ -237,7 +239,7 @@ None — design decisions all locked.
   "abnormally high convexity") need a week of distribution data
   before they can be set meaningfully. v0 uses naive 3-band heatmap
   on observed range; v1 will calibrate on observed quantiles.
-- **Sibling confirmation logic is heuristic.** Direction of `zcvr` or
+- **(Superseded by P12a, 2026-10-29; see gexbot-refresh-2026-10-28.md.)** **Sibling confirmation logic is heuristic.** Direction of `zcvr` or
   `delta_risk_reversal` ≠ direction of the underlying. Needs
   validation that "SPY zcvr rising" reliably maps to "broad market
   call pressure rising" before this signal influences any decision.

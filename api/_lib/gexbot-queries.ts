@@ -474,11 +474,12 @@ export async function getMaxchangeWinners(): Promise<MaxchangeWinnerRow[]> {
 // ────────────────────────────────────────────────────────────
 
 /**
- * How far before the fire time a snapshot may sit and still count. Matches
- * `getLatestGexbotSnapshotAt`'s default: fetch-gexbot-fast runs once a
- * minute, so 180 s tolerates two consecutive missed runs.
+ * How far before a fire time a snapshot may sit and still count, for every
+ * fire-time lookup (`getLatestGexbotSnapshotAt` and the sibling read).
+ * fetch-gexbot-fast runs once a minute, so 180 s tolerates two consecutive
+ * missed runs; the older 120 s budget survived only one.
  */
-const SIBLING_MAX_AGE_SECONDS = 180;
+export const FIRE_TIME_MAX_AGE_SECONDS = 180;
 
 /**
  * Direction read of one sibling against the alert's side.
@@ -510,6 +511,11 @@ interface RawSiblingRow {
  * (the alert's fire time) and no more than 180 s older. `zgr` rides along
  * as context only; it does not enter the verdict.
  *
+ * A row also needs a vendor `source_timestamp` (Unix seconds) inside the
+ * same window. At the 09:30-09:31 ET open the vendor repeats VIX's prior
+ * close, so a fresh `captured_at` can carry the previous session's reading.
+ * A NULL `source_timestamp` carries no evidence either way and is kept.
+ *
  * Returns one row per sibling. A sibling with no snapshot in the window
  * (fire older than the live table's ~2 sessions, cron miss) gets a
  * `none` row with null readings. The Parquet archive is not read.
@@ -525,7 +531,7 @@ export async function getSiblingConfirmation(
   const sql = getDb();
   const upperBound = asOf.toISOString();
   const lowerBound = new Date(
-    asOf.getTime() - SIBLING_MAX_AGE_SECONDS * 1000,
+    asOf.getTime() - FIRE_TIME_MAX_AGE_SECONDS * 1000,
   ).toISOString();
   const rows = (await withDbRetry(
     () => sql`
@@ -535,6 +541,8 @@ export async function getSiblingConfirmation(
       WHERE ticker = ANY(${siblings as readonly string[]}::text[])
         AND captured_at >= ${lowerBound}::timestamptz
         AND captured_at <= ${upperBound}::timestamptz
+        AND (source_timestamp IS NULL
+             OR source_timestamp >= extract(epoch FROM ${lowerBound}::timestamptz))
       ORDER BY ticker, captured_at DESC
     `,
     READ_RETRIES,
@@ -630,7 +638,7 @@ interface RawFireTimeRow {
 export async function getLatestGexbotSnapshotAt(
   gexbotTicker: string,
   asOf: Date,
-  maxAgeSeconds = 180,
+  maxAgeSeconds = FIRE_TIME_MAX_AGE_SECONDS,
 ): Promise<FireTimeGexbotSnapshot | null> {
   const sql = getDb();
   const lowerBoundMs = asOf.getTime() - maxAgeSeconds * 1000;

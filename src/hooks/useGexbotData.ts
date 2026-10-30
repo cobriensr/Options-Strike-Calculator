@@ -13,7 +13,7 @@
  * indefinitely (no automatic stale-clearing).
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { POLL_INTERVALS } from '../constants';
 import { fetchJson } from './useMarketData.fetchers';
@@ -193,14 +193,23 @@ function fetchDeduped(url: string): Promise<GexbotFetchResult> {
 // Hook
 // ────────────────────────────────────────────────────────────
 
+interface FetchState<V extends GexbotView['view']> {
+  /** The request URL this state answers; stale once the spec changes. */
+  url: string;
+  rows: ViewPayload[V];
+  error: string | null;
+  freshestAt: string | null;
+}
+
 export function useGexbotData<V extends GexbotView['view']>(
   spec: GexbotView & { view: V },
   marketOpen: boolean,
 ): UseGexbotDataResult<V> {
-  const [rows, setRows] = useState<ViewPayload[V]>([] as ViewPayload[V]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [freshestAt, setFreshestAt] = useState<string | null>(null);
+  const [state, setState] = useState<FetchState<V> | null>(null);
+  // The newest URL this hook asked for. A response for any other URL is
+  // from a superseded request (a Lottery re-fire changes `at`) and must not
+  // overwrite the newer one.
+  const latestUrl = useRef<string | null>(null);
 
   // Depend on primitives — callers may pass a fresh `spec` object each
   // render. Pulling primitives out keeps the fetcher reference stable
@@ -212,38 +221,61 @@ export function useGexbotData<V extends GexbotView['view']>(
   const side = 'side' in spec ? spec.side : undefined;
   const at = 'at' in spec ? spec.at : undefined;
 
+  const url =
+    view === 'sibling-confirm'
+      ? buildUrl({ view, ticker: ticker!, side: side!, at: at! })
+      : buildUrl({ view } as GexbotView);
+
   const fetchNow = useCallback(async () => {
-    const url =
-      view === 'sibling-confirm'
-        ? buildUrl({ view, ticker: ticker!, side: side!, at: at! })
-        : buildUrl({ view } as GexbotView);
+    latestUrl.current = url;
     const result = (await fetchDeduped(url)) as
       | { data: { rows?: ViewPayload[V] } }
       | { error: string; status: number };
+    if (latestUrl.current !== url) return;
     if ('error' in result) {
-      setError(`${result.error} (HTTP ${result.status})`);
-      setLoading(false);
+      const message = `${result.error} (HTTP ${result.status})`;
+      // Keep the last good rows for this URL; a different URL has none.
+      setState((prev) => ({
+        url,
+        rows: prev?.url === url ? prev.rows : ([] as ViewPayload[V]),
+        freshestAt: prev?.url === url ? prev.freshestAt : null,
+        error: message,
+      }));
       return;
     }
     const list = result.data.rows ?? ([] as ViewPayload[V]);
-    setRows(list);
-    setFreshestAt(freshestFrom(list as unknown[]));
-    setError(null);
-    setLoading(false);
-  }, [view, ticker, side, at]);
+    setState({
+      url,
+      rows: list,
+      freshestAt: freshestFrom(list as unknown[]),
+      error: null,
+    });
+  }, [url]);
 
   // Eager mount fetch — usePolling only schedules the recurring tick.
   useEffect(() => {
     void fetchNow();
   }, [fetchNow]);
 
+  // A sibling-confirm read is final once its fire time has passed: the
+  // snapshot it uses is already in the table, and every alert row has its
+  // own URL, so a 30 s tick would be one uncached Neon query per mounted
+  // row per tick for an answer that cannot change. Fetch it once.
   usePolling(
     () => {
       void fetchNow();
     },
     POLL_INTERVALS.OTM_FLOW, // 30_000 — matches the spec's requested cadence
-    [marketOpen],
+    [marketOpen, view !== 'sibling-confirm'],
   );
 
-  return { rows, loading, error, freshestAt };
+  // State from a previous URL answers a different question (another fire
+  // time): show it as not loaded yet, not as this URL's rows.
+  const current = state?.url === url ? state : null;
+  return {
+    rows: current?.rows ?? ([] as ViewPayload[V]),
+    loading: current === null,
+    error: current?.error ?? null,
+    freshestAt: current?.freshestAt ?? null,
+  };
 }

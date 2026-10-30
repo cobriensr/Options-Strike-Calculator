@@ -682,6 +682,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
           ticker={alert.underlyingSymbol}
           side={alert.optionType === 'C' ? 'call' : 'put'}
           firedAt={alert.bucketCt}
+          asOfLabel="5-min bucket start"
           marketOpen={marketOpen}
         />
         {/* Spread-Confirmed badge — surfaces alerts in the 10-50%

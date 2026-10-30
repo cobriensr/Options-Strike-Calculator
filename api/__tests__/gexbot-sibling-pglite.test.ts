@@ -47,11 +47,13 @@ async function seed(
   capturedAt: string,
   netDex: number | null,
   zgr: number | null = null,
+  sourceTimestamp: number | null = null,
 ) {
   await pg.query(
-    `INSERT INTO gexbot_snapshots (ticker, captured_at, net_dex, zgr, raw_response)
-     VALUES ($1, $2::timestamptz, $3, $4, '{}'::jsonb)`,
-    [ticker, capturedAt, netDex, zgr],
+    `INSERT INTO gexbot_snapshots
+       (ticker, captured_at, net_dex, zgr, source_timestamp, raw_response)
+     VALUES ($1, $2::timestamptz, $3, $4, $5, '{}'::jsonb)`,
+    [ticker, capturedAt, netDex, zgr, sourceTimestamp],
   );
 }
 
@@ -128,6 +130,61 @@ describe('getSiblingConfirmation against real SQL', () => {
     const rows = await getSiblingConfirmation('SPY', 'call', FIRE);
     expect(rows.find((r) => r.ticker === 'QQQ')?.verdict).toBe('none');
     expect(rows.find((r) => r.ticker === 'IWM')?.verdict).toBe('none');
+  });
+
+  // source_timestamp is the vendor payload timestamp in Unix SECONDS. At the
+  // 09:30-09:31 ET open the vendor repeats VIX's prior close, so a fresh
+  // captured_at can carry yesterday's reading (and yesterday's net_dex).
+  const secs = (iso: string) => Date.parse(iso) / 1000;
+
+  it('drops a row whose vendor timestamp predates the fire window', async () => {
+    await seed(
+      'VIX',
+      '2026-10-29T14:00:00Z',
+      4_000_000,
+      null,
+      secs('2026-10-28T20:00:00Z'),
+    );
+    const rows = await getSiblingConfirmation('UVXY', 'call', FIRE);
+    expect(rows.find((r) => r.ticker === 'VIX')).toMatchObject({
+      netDex: null,
+      capturedAt: null,
+      verdict: 'none',
+    });
+  });
+
+  it('keeps a row whose vendor timestamp is inside the window', async () => {
+    await seed(
+      'VIX',
+      '2026-10-29T14:00:00Z',
+      4_000_000,
+      null,
+      secs('2026-10-29T13:59:59Z'),
+    );
+    const rows = await getSiblingConfirmation('UVXY', 'call', FIRE);
+    expect(rows.find((r) => r.ticker === 'VIX')?.verdict).toBe('agree');
+  });
+
+  it('falls back to an older fresh row when the newest carries a stale vendor timestamp', async () => {
+    await seed(
+      'VIX',
+      '2026-10-29T13:59:00Z',
+      -2_000_000,
+      null,
+      secs('2026-10-29T13:58:59Z'),
+    );
+    await seed(
+      'VIX',
+      '2026-10-29T14:00:00Z',
+      4_000_000,
+      null,
+      secs('2026-10-28T20:00:00Z'),
+    );
+    const rows = await getSiblingConfirmation('UVXY', 'call', FIRE);
+    expect(rows.find((r) => r.ticker === 'VIX')).toMatchObject({
+      netDex: -2_000_000,
+      verdict: 'disagree',
+    });
   });
 
   it('never reads the futures views even when they have rows', async () => {

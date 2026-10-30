@@ -59,6 +59,20 @@ vi.mock('../components/charts/TickerNetFlowChart', () => ({
   ),
 }));
 
+const { mockUseGexbotData } = vi.hoisted(() => ({
+  mockUseGexbotData: vi.fn(
+    (): {
+      rows: unknown[];
+      loading: boolean;
+      error: string | null;
+      freshestAt: string | null;
+    } => ({ rows: [], loading: true, error: null, freshestAt: null }),
+  ),
+}));
+vi.mock('../hooks/useGexbotData', () => ({
+  useGexbotData: mockUseGexbotData,
+}));
+
 // Static import AFTER mocks so the mocks are registered first.
 import { LotteryRow } from '../components/LotteryFinder/LotteryRow';
 
@@ -2181,5 +2195,45 @@ describe('LotteryRow: reignite-list leg markers', () => {
   it('shows no markers when no fire carries a leg kind', () => {
     const list = openList({ second: null, third: undefined, latest: null });
     expect(within(list).queryByRole('img')).not.toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// SIBLING PILLS
+// ============================================================
+
+describe('LotteryRow: sibling taker-flow pills', () => {
+  it('asks for the read at the fire trigger time and labels it "latest fire"', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [
+        {
+          ticker: 'SPY',
+          netDex: 1_500_000,
+          zgr: 0.8,
+          capturedAt: '2026-05-08T14:30:00.000Z',
+          verdict: 'agree',
+        },
+      ],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-08T14:30:00.000Z',
+    });
+    render(
+      <LotteryRow
+        fire={makeFire({ triggerTimeCt: '2026-05-08T14:30:00Z' })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(mockUseGexbotData).toHaveBeenCalledWith(
+      expect.objectContaining({
+        view: 'sibling-confirm',
+        at: '2026-05-08T14:30:00.000Z',
+      }),
+      false,
+    );
+    const title =
+      screen.getByTestId('sibling-pill-AAPL-SPY').getAttribute('title') ?? '';
+    expect(title).toMatch(/as of latest fire/);
   });
 });
