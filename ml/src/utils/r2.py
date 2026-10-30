@@ -14,7 +14,7 @@ Two read backends are exposed because they have different sweet spots:
     where you don't need every column.
 
 Auth: same env vars as scripts/upload-fulltape-to-r2.py
-  R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY,
+  R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY,
   R2_ENDPOINT_URL, R2_BUCKET_FULLTAPE
 """
 

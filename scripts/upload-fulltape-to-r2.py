@@ -8,8 +8,12 @@ called repeatedly as new daily parquets land in the local dir.
 Naming convention in R2 mirrors the local convention:
     fulltape/{YYYY-MM-DD}-fulltape.parquet
 
+Each upload is verified: a head request must report the local byte count.
+A missing object or a size mismatch fails that day (exit 3), and its key is
+deleted, because the nightly service counts a day as landed when its key
+exists. Same check as R2Store.put_tape in nightly/src/r2_store.py.
+
 Auth — required env vars (set in .env.local):
-    R2_ACCOUNT_ID
     R2_ACCESS_KEY_ID
     R2_SECRET_ACCESS_KEY
     R2_ENDPOINT_URL          # https://<account-id>.r2.cloudflarestorage.com
@@ -121,11 +125,48 @@ def list_remote_keys(client, bucket: str) -> set[str]:
     return keys
 
 
-def is_tls_guard_error(e: Exception) -> bool:
+class UploadVerifyError(Exception):
+    """An uploaded object is missing from R2 or its size differs from the local file."""
+
+
+def is_tls_guard_error(e: BaseException | None) -> bool:
     """True when botocore gave up after urllib3's unverified-HTTPS guard fired."""
     return isinstance(e, HTTPClientError) and isinstance(
         e.kwargs.get("error"), urllib3.exceptions.InsecureRequestWarning
     )
+
+
+def verify_upload(client, bucket: str, key: str, local_size: int) -> None:
+    """Check R2 holds `local_size` bytes at `key`.
+
+    Any failure deletes the key (best effort) before raising UploadVerifyError,
+    as R2Store.put_tape does: an unverified object would otherwise count as
+    landed forever. The cause, if any, is chained as __cause__; a TLS-guard
+    error on the head stays the cause even when the delete then fails, so the
+    caller still aborts the run.
+    """
+    try:
+        remote = client.head_object(Bucket=bucket, Key=key)["ContentLength"]
+        if remote != local_size:
+            raise UploadVerifyError(
+                f"{key}: uploaded {local_size} bytes but R2 reports {remote}"
+            )
+    except Exception as exc:
+        try:
+            client.delete_object(Bucket=bucket, Key=key)
+        except Exception as delete_exc:
+            message = (
+                f"{key}: could not verify {local_size} uploaded bytes and could "
+                f"not delete it; the key may remain ({delete_exc})"
+            )
+            if is_tls_guard_error(exc):
+                raise UploadVerifyError(message) from exc
+            raise UploadVerifyError(message) from delete_exc
+        if isinstance(exc, UploadVerifyError):
+            raise
+        raise UploadVerifyError(
+            f"{key}: could not verify {local_size} uploaded bytes ({exc})"
+        ) from exc
 
 
 def local_to_key(path: Path) -> str:
@@ -228,7 +269,13 @@ def main() -> int:
                 Key=key,
                 ExtraArgs={"ContentType": "application/x-parquet"},
             )
-        except (ClientError, BotoCoreError, S3UploadFailedError) as e:
+            verify_upload(client, bucket, key, size)
+        except (
+            ClientError,
+            BotoCoreError,
+            S3UploadFailedError,
+            UploadVerifyError,
+        ) as e:
             # boto3's upload_file re-raises a ClientError from the transfer as
             # S3UploadFailedError (a Boto3Error), so catch that as well.
             # Catch BotoCoreError too — transient transport failures
@@ -238,13 +285,18 @@ def main() -> int:
             # Don't abandon the batch — every upload is idempotent (skip-if-
             # present), so we record the failure and keep going. Operator gets
             # a full list at the end and can re-run to retry just the failures.
-            if is_tls_guard_error(e):
+            # A failed verification deletes its key, so a re-run uploads that
+            # day again; when the delete fails too, the error says the key may
+            # remain, and only --force DATE re-uploads it.
+            if is_tls_guard_error(e) or is_tls_guard_error(e.__cause__):
                 # Retries ran out on unverified connections: TLS on this box
                 # is broken, so every later file would hit the same thing.
                 sys.stderr.write(
                     f"❌ [{i}/{len(to_upload)}] {f.name}: TLS verification was "
                     "skipped for R2 requests; aborting the run.\n"
                 )
+                if isinstance(e, UploadVerifyError):
+                    sys.stderr.write(f"   {e}\n")
                 return 4
             sys.stderr.write(f"❌ [{i}/{len(to_upload)}] {f.name}: {e}\n")
             failed.append((f.name, str(e)))
