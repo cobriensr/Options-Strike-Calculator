@@ -331,11 +331,11 @@ Required env vars (pulled via `vercel env pull .env.local`):
 | `LOG_LEVEL`                                              | pino log level (opt.)                                       |
 | `WS_CHANNELS`, `VERCEL_NOTIFY_URL`                       | uw-stream (Railway only)                                    |
 | `INTERNAL_METRICS_TOKEN`                                 | uw-stream `/metrics` header token (Railway only)            |
-| `R2_ACCOUNT_ID`                                          | Cloudflare R2 (local tape scripts only; api/ ignores it)    |
-| `R2_ACCESS_KEY_ID`                                       | Cloudflare R2 (Railway nightly, local tape scripts)         |
-| `R2_SECRET_ACCESS_KEY`                                   | Cloudflare R2 (Railway nightly, local tape scripts)         |
-| `R2_ENDPOINT_URL`                                        | Cloudflare R2 (Railway nightly, local tape scripts)         |
-| `R2_BUCKET_FULLTAPE`                                     | Cloudflare R2 (Railway nightly, local tape scripts)         |
+| `R2_ACCOUNT_ID`                                          | Cloudflare R2 account ID; no code reads it                  |
+| `R2_ACCESS_KEY_ID`                                       | Cloudflare R2 (Vercel, Railway nightly, local tape scripts) |
+| `R2_SECRET_ACCESS_KEY`                                   | Cloudflare R2 (Vercel, Railway nightly, local tape scripts) |
+| `R2_ENDPOINT_URL`                                        | Cloudflare R2 (Vercel, Railway nightly, local tape scripts) |
+| `R2_BUCKET_FULLTAPE`                                     | Cloudflare R2 (Vercel, Railway nightly, local tape scripts) |
 | `BLOB_READ_WRITE_TOKEN`                                  | Vercel Blob (also on Railway)                               |
 | `ARCHIVE_MANIFEST_URL`                                   | Archive manifest (Railway only)                             |
 | `ARCHIVE_SEED_TOKEN`                                     | Gates seed POST (Railway only)                              |

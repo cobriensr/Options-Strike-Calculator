@@ -3,8 +3,10 @@
  *
  * Daily Parquet export of the GEXBot capture tables to Vercel Blob.
  * Bridges the gap between live DB (kept short by `cleanup-gexbot`)
- * and the historical archive — GEXBot has no daily download files
- * of its own, so we are the archive of record during the trial.
+ * and the historical archive. GEXBot does publish a daily end-of-day
+ * report ZIP per ticker, which `archive-gexbot-eod` stores in R2
+ * (`api/_lib/gexbot-eod.ts`); this export keeps the rows we polled
+ * ourselves, so we stay their archive of record during the trial.
  *
  * Catch-up semantics: each run archives EVERY un-archived session, oldest
  * first, not just yesterday. A session is un-archived for a table when the
