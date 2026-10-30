@@ -420,11 +420,32 @@ describe('analyze system prompt — Periscope rules run on UW data only (D1 revi
     );
   });
 
-  it('lists QQQ flow as primary, not secondary, in every confidence list (I2)', () => {
+  it('keeps QQQ flow out of the "Secondary signals:" list (I2)', () => {
     expect(lineStartingWith('Secondary signals:')).toContain(
       'Secondary signals: SPY Net Flow, charm,',
     );
     expect(lineStartingWith('Secondary signals:')).not.toContain('QQQ');
+  });
+
+  it('shows no QQQ-as-secondary wording in the Prior-Day Flow Trend rules (m6)', () => {
+    // QQQ flow is a Missing Data Protocol primary; the formatter labels the
+    // prior-day readings "Confirmation:", so the rules say the same.
+    expect(PROMPT).toContain(
+      'Market Tide intraday arc (open → midday → close) and confirmation-source terminal values',
+    );
+    expect(PROMPT).toContain(
+      '- Confirmation-source alignment (SPX Flow, SPY Flow, QQQ Flow, SPY ETF Tide, QQQ ETF Tide)',
+    );
+    expect(PROMPT).not.toContain('secondary flow source terminal values');
+    expect(PROMPT).not.toContain('Secondary source alignment');
+  });
+
+  it('keeps a missing SPX Net Flow at no confidence change in the sample observation (I4)', () => {
+    expect(PROMPT).toContain(
+      '"SPX Net Flow unavailable — flow assessment relies on Market Tide, QQQ Net Flow and SPY Net Flow. No confidence change."',
+    );
+    expect(PROMPT).not.toContain('reducing directional conviction');
+    expect(PROMPT).not.toContain('relies on Market Tide and SPY only');
   });
 
   it('scopes periscopeNotes to UW Periscope data', () => {

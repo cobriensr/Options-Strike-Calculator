@@ -464,7 +464,7 @@ ${vixDivergenceContext ? `\n## VIX/SPX Divergence Flag (from market_snapshots + 
 ${uwDeltasContext ? `\n## UW Deltas — Rate-of-Change Signals (from dark_pool_prints + spot_exposures + flow_alerts + flow_data)\nFour institutional-activity velocity / delta reads computed from data already ingested by UW crons and the uw-stream daemon. Dark pool print velocity (vs 60-min baseline), OI GEX intraday delta (vs RTH open), whale flow net call/put positioning, and SPY/QQQ ETF tide divergence. See <uw_deltas_rules> in the system prompt for interpretation; combine 3-of-4 agreement for highest-confidence reads.\n${uwDeltasContext}\n` : ''}
 ${
   straddleConeUpper && straddleConeLower && !spxCandlesContext
-    ? `\n## Straddle Cone Boundaries (from Periscope)
+    ? `\n## Straddle Cone Boundaries (computed 0DTE ATM straddle; not Periscope data)
   Upper: ${straddleConeUpper.toFixed(1)}
   Lower: ${straddleConeLower.toFixed(1)}
   Width: ${(straddleConeUpper - straddleConeLower).toFixed(0)} pts

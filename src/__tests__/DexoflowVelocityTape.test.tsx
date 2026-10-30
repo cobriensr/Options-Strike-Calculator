@@ -49,13 +49,28 @@ describe('isUnusual', () => {
     expect(isUnusual(makeRow({ dAggDex: 3, typicalAbsDAggDex: 1 }))).toBe(true);
   });
 
-  it('flags exactly 2x and not below it', () => {
-    expect(isUnusual(makeRow({ dAggDex: -2, typicalAbsDAggDex: 1 }))).toBe(
+  it('flags exactly 3x and not below it', () => {
+    expect(isUnusual(makeRow({ dAggDex: -3, typicalAbsDAggDex: 1 }))).toBe(
       true,
     );
-    expect(isUnusual(makeRow({ dAggDex: 1.9, typicalAbsDAggDex: 1 }))).toBe(
+    expect(isUnusual(makeRow({ dAggDex: 2.9, typicalAbsDAggDex: 1 }))).toBe(
       false,
     );
+  });
+
+  it('flags a median above the floor at exactly 3x, not just under it', () => {
+    // 3 * 0.4 is 1.2000000000000002 in floating point; a Δ of 1.20 is
+    // exactly 3x the median and must still count.
+    expect(
+      isUnusual(
+        makeRow({ ticker: 'SPX', dAggDex: 1.2, typicalAbsDAggDex: 0.4 }),
+      ),
+    ).toBe(true);
+    expect(
+      isUnusual(
+        makeRow({ ticker: 'SPX', dAggDex: 1.1, typicalAbsDAggDex: 0.4 }),
+      ),
+    ).toBe(false);
   });
 
   it('does not flag a one-tick move on a ticker whose median is 0', () => {
@@ -67,19 +82,25 @@ describe('isUnusual', () => {
     ).toBe(false);
   });
 
-  it('flags a real move on a ticker whose median is 0', () => {
+  it('does not flag 0.12 on a ticker whose median is 0 (threshold is 0.75)', () => {
     expect(
       isUnusual(
         makeRow({ ticker: 'HYG', dAggDex: 0.12, typicalAbsDAggDex: 0 }),
       ),
+    ).toBe(false);
+  });
+
+  it('flags a real move on a ticker whose median is 0', () => {
+    expect(
+      isUnusual(makeRow({ ticker: 'HYG', dAggDex: 0.8, typicalAbsDAggDex: 0 })),
     ).toBe(true);
   });
 
   it('treats an unknown median like 0 (floor applies)', () => {
-    expect(isUnusual(makeRow({ dAggDex: 0.04, typicalAbsDAggDex: null }))).toBe(
+    expect(isUnusual(makeRow({ dAggDex: 0.4, typicalAbsDAggDex: null }))).toBe(
       false,
     );
-    expect(isUnusual(makeRow({ dAggDex: 0.4, typicalAbsDAggDex: null }))).toBe(
+    expect(isUnusual(makeRow({ dAggDex: 0.75, typicalAbsDAggDex: null }))).toBe(
       true,
     );
   });
@@ -239,6 +260,12 @@ describe('<DexoflowVelocityTape>', () => {
     expect(flagged('HYG')).toBe('false');
     expect(flagged('IWM')).toBe('false');
     expect(screen.getByText(/unusual/i, { selector: 'td *' })).toBeTruthy();
+  });
+
+  it('states the threshold as three times the ticker typical minute', () => {
+    mockRows([makeRow({ ticker: 'SPX', dAggDex: 1 })]);
+    render(<DexoflowVelocityTape marketOpen />);
+    expect(screen.getByText(/at least three times that/)).toBeTruthy();
   });
 
   it('shows sub-unit values to 2 decimals and a zero as 0', () => {

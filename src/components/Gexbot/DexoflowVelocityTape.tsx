@@ -15,7 +15,7 @@
  * of more than 3 minutes, or the vendor repeating its prior source
  * timestamp) — not a zero. Rows stay in the fixed underlying order (owner
  * decision 2026-10-29); a row is highlighted when its |Δ agg_dex| is at
- * least twice that ticker's own typical minute (see velocity-tape.ts).
+ * least three times that ticker's own typical minute (see velocity-tape.ts).
  * Futures views (ES_SPX / NQ_NDX) are excluded: they duplicate SPX / NDX.
  *
  * Each cell shows the value with a trend arrow (▲/▼/─) from its sign.
@@ -150,8 +150,8 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
       </table>
       <p className="text-tertiary border-t border-white/5 px-3 py-1.5 text-[10px]">
         Δ = this minute minus the last. — means no clean prior minute. Fixed
-        order; &ldquo;unusual&rdquo; marks a taker Δ flow at least twice that
-        ticker&rsquo;s own typical minute.
+        order; &ldquo;unusual&rdquo; marks a taker Δ flow at least three times
+        that ticker&rsquo;s own typical minute.
       </p>
     </div>
   );

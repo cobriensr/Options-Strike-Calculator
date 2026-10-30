@@ -11,23 +11,34 @@
 import type { VelocityRow } from '../../hooks/useGexbotData';
 import { GEXBOT_UNDERLYING_ORDER } from './ticker-order';
 
-/** A minute counts as unusual at this multiple of the ticker's typical one. */
-export const UNUSUAL_MULTIPLE = 2;
+/**
+ * A minute counts as unusual at this multiple of the ticker's typical one.
+ * Owner decision (2026-10-29), from a tune check on the 2026-10-28 and
+ * 2026-10-29 sessions: 2x with a 0.05 floor lit SPX, SPY and QQQ in about 20%
+ * of minutes (about 2.4 of the 14 rows each minute), which is too much to
+ * read as unusual. 3x with a 0.25 floor lights the liquid names in about 9%
+ * of minutes, the thin ones (HYG, VIX, UVXY) in about 0-0.5%, and about one
+ * row per minute. This rests on only two sessions; re-tune on more history.
+ */
+const UNUSUAL_MULTIPLE = 3;
 
 /**
  * Floor on the "typical" minute change used for the highlight. agg_dex is
  * rounded to 0.01, so the illiquid tickers (HYG, VIX, UVXY) have a median
  * |Δ| of exactly 0; without a floor a single 0.01 tick would be "infinitely
- * unusual" and flag them all day. At 0.05 the threshold is 0.10, ten ticks.
+ * unusual" and flag them all day. At 0.25 the threshold is 0.75.
  */
-export const TYPICAL_FLOOR = 0.05;
+const TYPICAL_FLOOR = 0.25;
 
-/** True when |Δ agg_dex| ≥ 2 × max(typical |Δ|, floor). A null Δ never is. */
+/** Slack for floating-point products such as 3 * 0.4 = 1.2000000000000002. */
+const EPSILON = 1e-9;
+
+/** True when |Δ agg_dex| ≥ 3 × max(typical |Δ|, floor). A null Δ never is. */
 export function isUnusual(row: VelocityRow): boolean {
   const { dAggDex, typicalAbsDAggDex } = row;
   if (dAggDex == null || Number.isNaN(dAggDex)) return false;
   const typical = Math.max(typicalAbsDAggDex ?? 0, TYPICAL_FLOOR);
-  return Math.abs(dAggDex) >= UNUSUAL_MULTIPLE * typical;
+  return Math.abs(dAggDex) + EPSILON >= UNUSUAL_MULTIPLE * typical;
 }
 
 /**

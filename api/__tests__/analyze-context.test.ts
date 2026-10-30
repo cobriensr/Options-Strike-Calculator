@@ -756,6 +756,16 @@ describe('buildAnalysisContext', () => {
       const text = (manifest as { type: 'text'; text: string }).text;
       expect(text).not.toContain('- QQQ Net Flow');
       expect(text).toContain('- SPX Net Flow');
+      // The QQQ block header says it is a primary API signal in the
+      // Missing Data Protocol, not a secondary one.
+      const qqq = result.content.find(
+        (b) => b.type === 'text' && b.text.includes('## QQQ Net Flow Data'),
+      );
+      const qqqText = (qqq as { type: 'text'; text: string }).text;
+      expect(qqqText).toContain(
+        'Primary API signal in the Missing Data Protocol',
+      );
+      expect(qqqText).not.toContain('Secondary directional signal');
     } finally {
       vi.mocked(db.formatFlowDataForClaude).mockReset();
       vi.mocked(db.formatFlowDataForClaude).mockReturnValue(null);
@@ -1925,6 +1935,11 @@ describe('buildAnalysisContext: context text fields', () => {
     expect(text).toContain('5750.0');
     expect(text).toContain('5650.0');
     expect(text).toContain('Width: 100 pts');
+    // The cone is computed from the 0DTE ATM straddle, not read from Periscope.
+    expect(text).toContain(
+      '## Straddle Cone Boundaries (computed 0DTE ATM straddle; not Periscope data)',
+    );
+    expect(text).not.toContain('from Periscope');
     vi.unstubAllGlobals();
   });
 

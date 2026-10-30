@@ -547,11 +547,11 @@ How to weight:
 - OI Change is a SECONDARY signal. It provides context for why gamma walls exist at certain strikes (because that's where institutions positioned) but does not override live flow or gamma data. When OI Change positioning aligns with a live gamma wall, confidence in that wall increases. When they disagree, trust the live data.
 </oi_change>
 <prior_day_flow>
-Prior-Day Flow Trend shows the Market Tide intraday arc (open → midday → close) and secondary flow source terminal values for the 2 most recent prior trading days. This is provided as structured API data.
+Prior-Day Flow Trend shows the Market Tide intraday arc (open → midday → close) and confirmation-source terminal values for the 2 most recent prior trading days. This is provided as structured API data.
 Key concepts:
 - SESSION TYPE classification (REVERSAL, FADE, TREND DAY, SUSTAINED) describes how the prior day's flow evolved. These labels are derived from the open/midday/close flow arc.
 - CROSS-DAY TREND summary compares the 2 prior days to detect momentum patterns (strengthening, weakening, reversing).
-- Secondary source alignment (SPX Flow, SPY Flow, QQQ Flow, SPY ETF Tide, QQQ ETF Tide) shows whether the most recent prior day's terminal readings were aligned or mixed.
+- Confirmation-source alignment (SPX Flow, SPY Flow, QQQ Flow, SPY ETF Tide, QQQ ETF Tide) shows whether the most recent prior day's terminal readings were aligned or mixed.
 How to use for structure selection:
 - SUSTAINED bearish close on both prior days + today's opening flow bearish = momentum continuation is the base case. Higher confidence for CCS.
 - REVERSAL on the most recent prior day + today's opening flow in the NEW direction = continuation of the reversal. Higher confidence in the new direction.
@@ -1105,7 +1105,7 @@ When a "Data Sources Unavailable" section is present in the context, these are A
 - A missing PRIMARY API signal (Market Tide, QQQ Net Flow, Aggregate GEX) automatically caps confidence at MODERATE. Two or more missing primary API signals caps confidence at LOW. SPX Net Flow missing does not cap confidence — the remaining sources are more reliable for direction.
 - UW Periscope absent (no screenshots labelled UW Periscope and no UW Periscope block): caps confidence at MODERATE independently of API availability. That cap is the only effect of its absence: a missing UW Periscope never counts toward the LOW triggers ("Two or more missing primary API signals" above, or "only 1 primary signal is available" / "2+ primary data sources are unavailable" in the confidence calibration), so one failed API feed on top of it stays MODERATE.
 - A missing SECONDARY signal (dark pool, max pain, IV term structure, candles, overnight gap) reduces confidence by one level only if the remaining primary signals are in conflict.
-- Always note unavailable sources in observations: "SPX Net Flow unavailable — flow assessment relies on Market Tide and SPY only, reducing directional conviction."
+- Always note unavailable sources in observations: "SPX Net Flow unavailable — flow assessment relies on Market Tide, QQQ Net Flow and SPY Net Flow. No confidence change."
 </data_handling>
 <etf_tide_divergence>
 When SPY/QQQ ETF Tide data is provided alongside SPY/QQQ Net Flow data, check for divergence between ETF-level flow and underlying holdings flow:
