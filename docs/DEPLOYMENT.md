@@ -146,26 +146,26 @@ Every axe scan runs on Chromium only.
 ### ML Tests (pytest)
 
 ```bash
-make -C ml test       # 52 test files in ml/tests/
+make -C ml test       # 51 test files in ml/tests/
 make -C ml test-cov   # same, failing under 70% coverage
 ```
 
 `ml/Makefile` defaults to `PYTHON=.venv/Scripts/python` on Windows and `.venv/bin/python` elsewhere (it picks by `$(OS)`); pass `PYTHON=...` only to override.
 
-| Files                                                                                                                                | Coverage                                                                       |
-| ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
-| `test_utils`, `test_health`, `test_milestone`, `test_explore`, `test_visualize` (5)                                                  | Pipeline plumbing: DB helpers, freshness, milestones, export, plots            |
-| `test_clustering`, `test_eda`, `test_phase2`, `test_backtest`, `test_pin`, `test_calibration`, `test_nope_eda` (7)                   | Core analyses: clustering, EDA, walk-forward, backtest, pin, calibration, NOPE |
-| `test_setups_backtest_*` (13)                                                                                                        | Futures setup backtest harness, loaders, metrics, setups 1–8                   |
-| `test_lottery_scoring`, `test_lottery_ticker_quality`, `test_score_components`, `test_takeit_*` (7)                                  | Lottery Finder scoring and Take-It training, export, drift                     |
-| `test_flow_*`, `test_fulltape_ingest` (6)                                                                                            | EOD flow archive and Full Tape ingest, EDA, outcomes, outliers                 |
-| `test_imbalance_*`, `test_moc_features_loaders` (5)                                                                                  | Imbalance and MOC features                                                     |
-| `test_microstructure_*`, `test_options_features_*`, `test_multileg_*`, `test_periscope_gamma_wall_lib`, `test_day_analog_parity` (9) | Microstructure, options features, multi-leg, Periscope walls, day analogs      |
+| Files                                                                                                              | Coverage                                                                       |
+| ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| `test_utils`, `test_health`, `test_milestone`, `test_explore`, `test_visualize` (5)                                | Pipeline plumbing: DB helpers, freshness, milestones, export, plots            |
+| `test_clustering`, `test_eda`, `test_phase2`, `test_backtest`, `test_pin`, `test_calibration`, `test_nope_eda` (7) | Core analyses: clustering, EDA, walk-forward, backtest, pin, calibration, NOPE |
+| `test_setups_backtest_*` (13)                                                                                      | Futures setup backtest harness, loaders, metrics, setups 1–8                   |
+| `test_lottery_scoring`, `test_lottery_ticker_quality`, `test_score_components`, `test_takeit_*` (7)                | Lottery Finder scoring and Take-It training, export, drift                     |
+| `test_flow_*`, `test_fulltape_ingest` (6)                                                                          | EOD flow archive and Full Tape ingest, EDA, outcomes, outliers                 |
+| `test_imbalance_*`, `test_moc_features_loaders` (5)                                                                | Imbalance and MOC features                                                     |
+| `test_microstructure_*`, `test_options_features_*`, `test_periscope_gamma_wall_lib`, `test_day_analog_parity` (7)  | Microstructure, options features, Periscope walls, day analogs                 |
 
 ### Service Tests (pytest)
 
 - **sidecar**: 10 files. `make -C sidecar test-cov`; no coverage gate.
-- **uw-stream**: 26 files. CI runs `ruff check`, `ruff format --check` and `pytest --cov`, with no gate.
+- **uw-stream**: 27 files. CI runs `ruff check`, `ruff format --check` and `pytest --cov`, with no gate.
 - **nightly**: 9 files. CI runs `ruff check`, `ruff format --check` and `pytest --cov`, with no coverage gate; `pyproject.toml` makes pytest fail on any warning.
 
 `make py-test-cov` (root `Makefile`) runs ml, sidecar and uw-stream; nightly runs on its own (`cd nightly && python -m pytest`). `npm run review:python` runs ml and sidecar. Six more test files sit outside any suite and CI: `scripts/test_*.py` (5) and `scripts/ws-canary/test_canary.py`.
