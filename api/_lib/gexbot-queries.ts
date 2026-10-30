@@ -74,12 +74,17 @@ export interface ConvexityTrendRow {
   series: Array<[string, number]>;
 }
 
+export type SiblingVerdict = 'agree' | 'disagree' | 'none';
+
 export interface SiblingConfirmRow {
   ticker: string;
-  zcvr: number | null;
-  deltaRiskReversal: number | null;
-  /** 'confirm' / 'contradict' / 'neutral' relative to the calling row's side. */
-  verdict: 'confirm' | 'contradict' | 'neutral';
+  /** Net taker delta (0DTE chain) at the fire time. + = net long delta. */
+  netDex: number | null;
+  /** Call minus put GEX imbalance. Context only; not in the verdict. */
+  zgr: number | null;
+  /** When the snapshot behind this row was captured; null when none. */
+  capturedAt: string | null;
+  verdict: SiblingVerdict;
 }
 
 // ────────────────────────────────────────────────────────────
@@ -326,54 +331,88 @@ export async function getMaxchangeWinners(): Promise<MaxchangeWinnerRow[]> {
 }
 
 // ────────────────────────────────────────────────────────────
-// Query: sibling confirmation
+// Query: sibling taker-flow direction at an alert's fire time
 // ────────────────────────────────────────────────────────────
 
 /**
- * For an alert on `ticker` going `side` (call or put), pull the latest
- * `zcvr` + `delta_risk_reversal` for each sibling and label whether
- * the sibling confirms or contradicts the alert's direction.
+ * How far before the fire time a snapshot may sit and still count. Matches
+ * `getLatestGexbotSnapshotAt`'s default: fetch-gexbot-fast runs once a
+ * minute, so 180 s tolerates two consecutive missed runs.
+ */
+const SIBLING_MAX_AGE_SECONDS = 180;
+
+/**
+ * Direction read of one sibling against the alert's side.
+ * `net_dex` is the net taker delta across the 0DTE chain: positive means
+ * takers are net long delta (call-side flow), negative the opposite.
+ *   - call alert: net_dex > 0 → agree, net_dex < 0 → disagree
+ *   - put alert:  net_dex < 0 → agree, net_dex > 0 → disagree
+ *   - zero or missing → none (never agree on both sides)
+ */
+export function siblingVerdict(
+  side: 'call' | 'put',
+  netDex: number | null,
+): SiblingVerdict {
+  if (netDex === null || netDex === 0) return 'none';
+  const callSide = netDex > 0;
+  return callSide === (side === 'call') ? 'agree' : 'disagree';
+}
+
+interface RawSiblingRow {
+  ticker: string;
+  captured_at: string | Date;
+  net_dex: unknown;
+  zgr: unknown;
+}
+
+/**
+ * For an alert on `ticker` going `side`, read each sibling's taker-flow
+ * direction (the sign of `net_dex`) from the snapshot at or before `asOf`
+ * (the alert's fire time) and no more than 180 s older. `zgr` rides along
+ * as context only; it does not enter the verdict.
  *
- * Heuristic verdict (v0; spec calls out this needs validation):
- *   - call alerts: sibling zcvr > 1 OR delta_risk_reversal > 0 → confirm
- *   - put alerts:  sibling zcvr < 1 OR delta_risk_reversal < 0 → confirm
- *   - else neutral
+ * Returns one row per sibling. A sibling with no snapshot in the window
+ * (fire older than the live table's ~2 sessions, cron miss) gets a
+ * `none` row with null readings. The Parquet archive is not read.
  */
 export async function getSiblingConfirmation(
   ticker: string,
   side: 'call' | 'put',
+  asOf: Date,
 ): Promise<SiblingConfirmRow[]> {
-  const siblings = siblingsFor(ticker);
+  const siblings = siblingsFor(mapToGexbotTicker(ticker) ?? ticker);
   if (siblings.length === 0) return [];
 
   const sql = getDb();
+  const upperBound = asOf.toISOString();
+  const lowerBound = new Date(
+    asOf.getTime() - SIBLING_MAX_AGE_SECONDS * 1000,
+  ).toISOString();
   const rows = (await withDbRetry(
     () => sql`
       SELECT DISTINCT ON (ticker)
-        ticker, zcvr, delta_risk_reversal
+        ticker, captured_at, net_dex, zgr
       FROM gexbot_snapshots
       WHERE ticker = ANY(${siblings as readonly string[]}::text[])
-        AND captured_at >= now() - INTERVAL '5 minutes'
+        AND captured_at >= ${lowerBound}::timestamptz
+        AND captured_at <= ${upperBound}::timestamptz
       ORDER BY ticker, captured_at DESC
     `,
     READ_RETRIES,
     READ_TIMEOUT_MS,
-  )) as Array<{ ticker: string; zcvr: unknown; delta_risk_reversal: unknown }>;
+  )) as RawSiblingRow[];
 
-  return rows.map((r) => {
-    const zcvr = toNum(r.zcvr);
-    const drr = toNum(r.delta_risk_reversal);
-    const callBias = (zcvr !== null && zcvr > 1) || (drr !== null && drr > 0);
-    const putBias = (zcvr !== null && zcvr < 1) || (drr !== null && drr < 0);
-    let verdict: 'confirm' | 'contradict' | 'neutral' = 'neutral';
-    if (side === 'call') {
-      if (callBias) verdict = 'confirm';
-      else if (putBias) verdict = 'contradict';
-    } else {
-      if (putBias) verdict = 'confirm';
-      else if (callBias) verdict = 'contradict';
-    }
-    return { ticker: r.ticker, zcvr, deltaRiskReversal: drr, verdict };
+  const byTicker = new Map(rows.map((r) => [r.ticker, r]));
+  return siblings.map((sibling) => {
+    const r = byTicker.get(sibling);
+    const netDex = r ? toNum(r.net_dex) : null;
+    return {
+      ticker: sibling,
+      netDex,
+      zgr: r ? toNum(r.zgr) : null,
+      capturedAt: r ? toIso(r.captured_at) : null,
+      verdict: siblingVerdict(side, netDex),
+    };
   });
 }
 

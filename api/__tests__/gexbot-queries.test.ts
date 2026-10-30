@@ -17,6 +17,7 @@ import {
   getLatestSnapshots,
   getMaxchangeWinners,
   getSiblingConfirmation,
+  siblingVerdict,
   mapToGexbotTicker,
   SIBLING_GROUPS,
 } from '../_lib/gexbot-queries.js';
@@ -225,49 +226,131 @@ describe('gexbot-queries', () => {
     });
   });
 
+  // ── siblingVerdict ───────────────────────────────────────
+
+  describe('siblingVerdict', () => {
+    it.each([
+      ['call', 1_500_000, 'agree'],
+      ['call', -1_500_000, 'disagree'],
+      ['put', 1_500_000, 'disagree'],
+      ['put', -1_500_000, 'agree'],
+      ['call', 0, 'none'],
+      ['put', 0, 'none'],
+      ['call', null, 'none'],
+      ['put', null, 'none'],
+    ] as const)('%s alert with net_dex %s reads %s', (side, netDex, want) => {
+      expect(siblingVerdict(side, netDex)).toBe(want);
+    });
+
+    it.each([1, -1, 0.0001, -0.0001, 0, null])(
+      'is never agree for both sides (net_dex %s)',
+      (netDex) => {
+        const both =
+          siblingVerdict('call', netDex) === 'agree' &&
+          siblingVerdict('put', netDex) === 'agree';
+        expect(both).toBe(false);
+      },
+    );
+  });
+
   // ── getSiblingConfirmation ───────────────────────────────
 
   describe('getSiblingConfirmation', () => {
-    it('returns confirm for call when sibling zcvr > 1', async () => {
+    const FIRE = new Date('2026-10-29T14:00:10.000Z');
+
+    it('reads agree for a call when the sibling net_dex is positive', async () => {
       mockSql.mockResolvedValueOnce([
-        { ticker: 'QQQ', zcvr: '1.3', delta_risk_reversal: '0.02' },
+        {
+          ticker: 'QQQ',
+          captured_at: new Date('2026-10-29T14:00:00Z'),
+          net_dex: '1500000',
+          zgr: '0.83',
+        },
       ]);
-      const [row] = await getSiblingConfirmation('SPY', 'call');
-      expect(row!.verdict).toBe('confirm');
+      const rows = await getSiblingConfirmation('SPY', 'call', FIRE);
+      const qqq = rows.find((r) => r.ticker === 'QQQ');
+      expect(qqq).toEqual({
+        ticker: 'QQQ',
+        netDex: 1_500_000,
+        zgr: 0.83,
+        capturedAt: '2026-10-29T14:00:00.000Z',
+        verdict: 'agree',
+      });
     });
 
-    it('returns contradict for call when sibling zcvr < 1 and DRR < 0', async () => {
+    it('reads disagree for a put when the sibling net_dex is positive', async () => {
       mockSql.mockResolvedValueOnce([
-        { ticker: 'QQQ', zcvr: '0.8', delta_risk_reversal: '-0.04' },
+        {
+          ticker: 'QQQ',
+          captured_at: new Date('2026-10-29T14:00:00Z'),
+          net_dex: '1500000',
+          zgr: null,
+        },
       ]);
-      const [row] = await getSiblingConfirmation('SPY', 'call');
-      expect(row!.verdict).toBe('contradict');
+      const rows = await getSiblingConfirmation('SPY', 'put', FIRE);
+      expect(rows.find((r) => r.ticker === 'QQQ')?.verdict).toBe('disagree');
     });
 
-    it('mirrors logic for put alerts', async () => {
+    it('reads none for zero or null net_dex', async () => {
       mockSql.mockResolvedValueOnce([
-        { ticker: 'QQQ', zcvr: '0.8', delta_risk_reversal: '-0.02' },
+        {
+          ticker: 'QQQ',
+          captured_at: new Date('2026-10-29T14:00:00Z'),
+          net_dex: '0',
+          zgr: '1.2',
+        },
+        {
+          ticker: 'IWM',
+          captured_at: new Date('2026-10-29T14:00:00Z'),
+          net_dex: null,
+          zgr: '1.2',
+        },
       ]);
-      const [row] = await getSiblingConfirmation('SPY', 'put');
-      expect(row!.verdict).toBe('confirm');
+      const rows = await getSiblingConfirmation('SPY', 'call', FIRE);
+      expect(rows.find((r) => r.ticker === 'QQQ')?.verdict).toBe('none');
+      expect(rows.find((r) => r.ticker === 'IWM')?.verdict).toBe('none');
     });
 
-    it('returns neutral when both metrics are null', async () => {
-      mockSql.mockResolvedValueOnce([
-        { ticker: 'QQQ', zcvr: null, delta_risk_reversal: null },
-      ]);
-      const [row] = await getSiblingConfirmation('SPY', 'call');
-      expect(row!.verdict).toBe('neutral');
-    });
-
-    it('returns [] when sibling group resolution yields no siblings', async () => {
-      // A ticker not in any group → falls back to broad siblings minus
-      // itself. SPX is in broad, so siblings should be [SPY,QQQ,IWM,NDX]
-      // — non-empty. Use a fake ticker via group inspection instead.
-      // For an "alone" ticker the function returns broad-minus-self.
+    it('returns a no-data row for every sibling that has no snapshot', async () => {
       mockSql.mockResolvedValueOnce([]);
-      const result = await getSiblingConfirmation('SPY', 'call');
-      expect(result).toEqual([]);
+      const rows = await getSiblingConfirmation('SPY', 'call', FIRE);
+      expect(rows.map((r) => r.ticker).sort()).toEqual([
+        'IWM',
+        'NDX',
+        'QQQ',
+        'SPX',
+      ]);
+      for (const r of rows) {
+        expect(r).toMatchObject({
+          netDex: null,
+          zgr: null,
+          capturedAt: null,
+          verdict: 'none',
+        });
+      }
+    });
+
+    it('bounds the lookup to [fire - 180 s, fire]', async () => {
+      mockSql.mockResolvedValueOnce([]);
+      await getSiblingConfirmation('SPY', 'call', FIRE);
+      const args = (mockSql.mock.calls[0] as unknown[]).slice(1);
+      expect(args).toContain('2026-10-29T14:00:10.000Z');
+      expect(args).toContain('2026-10-29T13:57:10.000Z');
+    });
+
+    it('does not read zcvr or delta_risk_reversal', async () => {
+      mockSql.mockResolvedValueOnce([]);
+      await getSiblingConfirmation('SPY', 'call', FIRE);
+      const text = (mockSql.mock.calls[0]?.[0] as string[]).join('?');
+      expect(text).toContain('net_dex');
+      expect(text).not.toMatch(/zcvr|delta_risk_reversal/);
+    });
+
+    it('propagates a DB failure', async () => {
+      mockSql.mockRejectedValueOnce(new Error('connection lost'));
+      await expect(getSiblingConfirmation('SPY', 'call', FIRE)).rejects.toThrow(
+        'connection lost',
+      );
     });
 
     // ── Group resolution matrix ────────────────────────────
@@ -289,60 +372,63 @@ describe('gexbot-queries', () => {
 
     it('resolves vol-group siblings for a VIX call (UVXY only)', async () => {
       mockSql.mockResolvedValueOnce([]);
-      await getSiblingConfirmation('VIX', 'call');
+      await getSiblingConfirmation('VIX', 'call', FIRE);
       const siblings = siblingsPassedTo(mockSql.mock.calls[0] as unknown[]);
       expect(siblings).toEqual(['UVXY']);
     });
 
     it('resolves bonds-group siblings for a TLT put (HYG only)', async () => {
       mockSql.mockResolvedValueOnce([]);
-      await getSiblingConfirmation('TLT', 'put');
+      await getSiblingConfirmation('TLT', 'put', FIRE);
       const siblings = siblingsPassedTo(mockSql.mock.calls[0] as unknown[]);
       expect(siblings).toEqual(['HYG']);
     });
 
     it('resolves metals-group siblings for a GLD call (SLV only)', async () => {
       mockSql.mockResolvedValueOnce([]);
-      await getSiblingConfirmation('GLD', 'call');
+      await getSiblingConfirmation('GLD', 'call', FIRE);
       const siblings = siblingsPassedTo(mockSql.mock.calls[0] as unknown[]);
       expect(siblings).toEqual(['SLV']);
     });
 
     it('returns [] without sql call for energy-group USO (no siblings)', async () => {
-      // USO is alone in the energy group → siblingsFor returns [].
-      // The function should short-circuit before issuing the SQL query.
-      const result = await getSiblingConfirmation('USO', 'put');
+      const result = await getSiblingConfirmation('USO', 'put', FIRE);
       expect(result).toEqual([]);
       expect(mockSql).not.toHaveBeenCalled();
     });
 
     it('resolves broad-group siblings for an SPX call (4 others, self excluded)', async () => {
       mockSql.mockResolvedValueOnce([]);
-      await getSiblingConfirmation('SPX', 'call');
+      await getSiblingConfirmation('SPX', 'call', FIRE);
       const siblings = siblingsPassedTo(mockSql.mock.calls[0] as unknown[]);
-      // broad = [SPX, SPY, QQQ, IWM, NDX]; SPX excluded → 4 siblings.
       expect(siblings.sort()).toEqual(['IWM', 'NDX', 'QQQ', 'SPY']);
       expect(siblings).not.toContain('SPX');
     });
 
+    it('excludes the cash index itself for an SPXW alert', async () => {
+      mockSql.mockResolvedValueOnce([]);
+      await getSiblingConfirmation('SPXW', 'call', FIRE);
+      const siblings = siblingsPassedTo(mockSql.mock.calls[0] as unknown[]);
+      expect(siblings.sort()).toEqual(['IWM', 'NDX', 'QQQ', 'SPY']);
+    });
+
     it('falls back to broad-market siblings for an out-of-group single stock', async () => {
       mockSql.mockResolvedValueOnce([]);
-      await getSiblingConfirmation('AAPL', 'put');
+      await getSiblingConfirmation('AAPL', 'put', FIRE);
       const siblings = siblingsPassedTo(mockSql.mock.calls[0] as unknown[]);
-      // AAPL isn't in any group → broad-minus-self. AAPL isn't in
-      // broad either so all 5 broad tickers come through.
       expect(siblings.sort()).toEqual(['IWM', 'NDX', 'QQQ', 'SPX', 'SPY']);
     });
 
-    it('classifies neutral when only zcvr OR only DRR has a same-direction signal', async () => {
-      // Reviewer note v0: heuristic is OR semantics. zcvr=1.05 (only
-      // mildly call-leaning, below threshold) + DRR=null → callBias
-      // false (zcvr ≤ 1 threshold) → neutral.
-      mockSql.mockResolvedValueOnce([
-        { ticker: 'QQQ', zcvr: '1.0', delta_risk_reversal: null },
-      ]);
-      const [row] = await getSiblingConfirmation('SPY', 'call');
-      expect(row!.verdict).toBe('neutral');
+    it('never asks for the futures views', async () => {
+      for (const t of ['SPX', 'NDX', 'AAPL', 'VIX']) {
+        mockSql.mockResolvedValueOnce([]);
+        await getSiblingConfirmation(t, 'call', FIRE);
+      }
+      for (const call of mockSql.mock.calls) {
+        const siblings = siblingsPassedTo(call as unknown[]);
+        expect(siblings).not.toContain('ES_SPX');
+        expect(siblings).not.toContain('NQ_NDX');
+      }
     });
   });
 

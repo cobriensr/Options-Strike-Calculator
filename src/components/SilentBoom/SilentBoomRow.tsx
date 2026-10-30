@@ -675,12 +675,13 @@ export const SilentBoomRow = memo(function SilentBoomRow({
           topFeatures={alert.takeitTopFeatures}
           expanded
         />
-        {/* Sibling-asset confirmation bar (gexbot-frontend spec Phase 4).
-            Renders cross-asset confirm/contradict pills inline next to
-            TakeItScore. Empty when GEXBot data hasn't landed yet. */}
+        {/* Sibling taker-flow pills: does each sibling's taker flow point
+            the same way as this alert, as of the alert's bucket start.
+            Empty when GEXBot data hasn't landed yet. */}
         <SiblingAssetConfirmationBar
           ticker={alert.underlyingSymbol}
           side={alert.optionType === 'C' ? 'call' : 'put'}
+          firedAt={alert.bucketCt}
           marketOpen={marketOpen}
         />
         {/* Spread-Confirmed badge — surfaces alerts in the 10-50%

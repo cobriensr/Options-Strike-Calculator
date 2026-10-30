@@ -777,12 +777,13 @@ export const LotteryRow = memo(function LotteryRow({
           peakAt={fire.peakTakeitAt}
           expanded
         />
-        {/* Sibling-asset confirmation bar (gexbot-frontend spec Phase 4).
-            Renders cross-asset confirm/contradict pills inline next to
-            TakeItScore. Empty when GEXBot data hasn't landed yet. */}
+        {/* Sibling taker-flow pills: does each sibling's taker flow point
+            the same way as this fire, as of the fire's trigger time.
+            Empty when GEXBot data hasn't landed yet. */}
         <SiblingAssetConfirmationBar
           ticker={fire.underlyingSymbol}
           side={fire.optionType === 'C' ? 'call' : 'put'}
+          firedAt={fire.triggerTimeCt}
           marketOpen={marketOpen}
         />
         {/* GexBot context badge — GEXBot taker-flow snapshot at fire time

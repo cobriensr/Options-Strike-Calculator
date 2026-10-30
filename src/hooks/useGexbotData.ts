@@ -75,9 +75,12 @@ export interface MaxchangeWinnerRow {
 
 export interface SiblingConfirmRow {
   ticker: string;
-  zcvr: number | null;
-  deltaRiskReversal: number | null;
-  verdict: 'confirm' | 'contradict' | 'neutral';
+  /** Net taker delta (0DTE chain) at the alert's fire time. + = net long. */
+  netDex: number | null;
+  /** Call minus put GEX imbalance. Context only; not in the verdict. */
+  zgr: number | null;
+  capturedAt: string | null;
+  verdict: 'agree' | 'disagree' | 'none';
 }
 
 // ────────────────────────────────────────────────────────────
@@ -88,7 +91,13 @@ export type GexbotView =
   | { view: 'snapshots-latest' }
   | { view: 'convexity-trend' }
   | { view: 'maxchange-winners' }
-  | { view: 'sibling-confirm'; ticker: string; side: 'call' | 'put' };
+  | {
+      view: 'sibling-confirm';
+      ticker: string;
+      side: 'call' | 'put';
+      /** The alert's fire time, ISO 8601. */
+      at: string;
+    };
 
 interface ViewPayload {
   'snapshots-latest': SnapshotsLatestRow[];
@@ -114,6 +123,7 @@ function buildUrl(spec: GexbotView): string {
   if (spec.view === 'sibling-confirm') {
     qs.set('ticker', spec.ticker);
     qs.set('side', spec.side);
+    qs.set('at', spec.at);
   }
   return `/api/gexbot?${qs.toString()}`;
 }
@@ -184,11 +194,12 @@ export function useGexbotData<V extends GexbotView['view']>(
   const view = spec.view;
   const ticker = 'ticker' in spec ? spec.ticker : undefined;
   const side = 'side' in spec ? spec.side : undefined;
+  const at = 'at' in spec ? spec.at : undefined;
 
   const fetchNow = useCallback(async () => {
     const url =
       view === 'sibling-confirm'
-        ? buildUrl({ view, ticker: ticker!, side: side! })
+        ? buildUrl({ view, ticker: ticker!, side: side!, at: at! })
         : buildUrl({ view } as GexbotView);
     const result = (await fetchDeduped(url)) as
       | { data: { rows?: ViewPayload[V] } }
@@ -203,7 +214,7 @@ export function useGexbotData<V extends GexbotView['view']>(
     setFreshestAt(freshestFrom(list as unknown[]));
     setError(null);
     setLoading(false);
-  }, [view, ticker, side]);
+  }, [view, ticker, side, at]);
 
   // Eager mount fetch — usePolling only schedules the recurring tick.
   useEffect(() => {

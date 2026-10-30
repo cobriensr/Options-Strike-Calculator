@@ -295,11 +295,13 @@ export type TickerCandlesQuery = z.infer<typeof tickerCandlesQuerySchema>;
  *   - `snapshots-latest` → latest snapshot row per ticker (16 rows)
  *   - `convexity-trend`  → 60-min zcvr timeseries per ticker
  *   - `maxchange-winners` → latest maxchange winner per (ticker, category)
- *   - `sibling-confirm`  → requires `ticker` + `side`; returns sibling
- *                          confirmation rows for an alert
+ *   - `sibling-confirm`  → requires `ticker` + `side` + `at`; returns each
+ *                          sibling's taker-flow direction at the alert's
+ *                          fire time
  *
- * Optional `ticker` (1-8 A-Z) and `side` ('call'|'put') only consumed
- * by the `sibling-confirm` view; both required when that view is used.
+ * Optional `ticker` (1-8 A-Z), `side` ('call'|'put') and `at` (the alert's
+ * fire time, ISO 8601 datetime) are only consumed by the `sibling-confirm`
+ * view; all three are required when that view is used.
  */
 export const gexbotQuerySchema = z
   .object({
@@ -314,9 +316,10 @@ export const gexbotQuerySchema = z
       .regex(/^[A-Z]{1,8}$/, 'ticker must be 1-8 uppercase letters')
       .optional(),
     side: z.enum(['call', 'put']).optional(),
+    at: z.iso.datetime({ offset: true }).optional(),
   })
-  .refine((v) => v.view !== 'sibling-confirm' || (v.ticker && v.side), {
-    message: 'sibling-confirm requires ticker and side',
+  .refine((v) => v.view !== 'sibling-confirm' || (v.ticker && v.side && v.at), {
+    message: 'sibling-confirm requires ticker, side and at',
     path: ['view'],
   });
 

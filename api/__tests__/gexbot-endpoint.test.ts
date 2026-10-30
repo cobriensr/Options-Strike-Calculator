@@ -35,6 +35,7 @@ vi.mock('../_lib/logger.js', () => ({
 
 import handler from '../gexbot.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
+import { Sentry } from '../_lib/sentry.js';
 
 describe('GET /api/gexbot', () => {
   beforeEach(() => {
@@ -67,13 +68,40 @@ describe('GET /api/gexbot', () => {
     expect(res._status).toBe(400);
   });
 
-  it('returns 400 when sibling-confirm is missing ticker/side', async () => {
+  it('returns 400 when sibling-confirm is missing ticker/side/at', async () => {
     const res = mockResponse();
     await handler(
       mockRequest({ method: 'GET', query: { view: 'sibling-confirm' } }),
       res,
     );
     expect(res._status).toBe(400);
+    expect(mockGetSibling).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['no fire time', { ticker: 'SPY', side: 'call' }],
+    ['a non-date fire time', { ticker: 'SPY', side: 'call', at: 'yesterday' }],
+    [
+      'a date-only fire time',
+      { ticker: 'SPY', side: 'call', at: '2026-10-29' },
+    ],
+    ['no side', { ticker: 'SPY', at: '2026-10-29T14:00:10.000Z' }],
+    ['no ticker', { side: 'call', at: '2026-10-29T14:00:10.000Z' }],
+    [
+      'a lowercase ticker',
+      { ticker: 'spy', side: 'call', at: '2026-10-29T14:00:10.000Z' },
+    ],
+  ])('returns 400 for sibling-confirm with %s', async (_label, extra) => {
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { view: 'sibling-confirm', ...extra },
+      }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    expect(mockGetSibling).not.toHaveBeenCalled();
   });
 
   it('returns 200 with rows for snapshots-latest', async () => {
@@ -116,20 +144,60 @@ describe('GET /api/gexbot', () => {
     expect(mockGetMax).toHaveBeenCalledTimes(1);
   });
 
-  it('returns 200 for sibling-confirm with valid ticker + side', async () => {
-    mockGetSibling.mockResolvedValue([
-      { ticker: 'QQQ', verdict: 'confirm', zcvr: 1.2, deltaRiskReversal: 0.02 },
-    ]);
+  it('returns 200 for sibling-confirm and passes the fire time through', async () => {
+    const row = {
+      ticker: 'QQQ',
+      verdict: 'agree',
+      netDex: 1_200_000,
+      zgr: 0.8,
+      capturedAt: '2026-10-29T14:00:00.000Z',
+    };
+    mockGetSibling.mockResolvedValue([row]);
     const res = mockResponse();
     await handler(
       mockRequest({
         method: 'GET',
-        query: { view: 'sibling-confirm', ticker: 'SPY', side: 'call' },
+        query: {
+          view: 'sibling-confirm',
+          ticker: 'SPY',
+          side: 'call',
+          at: '2026-10-29T14:00:10.000Z',
+        },
       }),
       res,
     );
     expect(res._status).toBe(200);
-    expect(mockGetSibling).toHaveBeenCalledWith('SPY', 'call');
+    expect(res._json).toEqual({ rows: [row] });
+    expect(mockGetSibling).toHaveBeenCalledWith(
+      'SPY',
+      'call',
+      new Date('2026-10-29T14:00:10.000Z'),
+    );
+  });
+
+  it('surfaces a sibling-confirm DB failure as 500 and a Sentry capture', async () => {
+    mockGetSibling.mockRejectedValue(new Error('connection lost'));
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: {
+          view: 'sibling-confirm',
+          ticker: 'SPY',
+          side: 'put',
+          at: '2026-10-29T14:00:10.000Z',
+        },
+      }),
+      res,
+    );
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'Internal error' });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'connection lost' }),
+      expect.objectContaining({
+        tags: { route: '/api/gexbot', view: 'sibling-confirm' },
+      }),
+    );
   });
 
   it('rejects via guard when not authorized', async () => {

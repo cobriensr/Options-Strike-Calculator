@@ -46,17 +46,40 @@ describe('useGexbotData', () => {
       );
     });
 
-    it('builds URL with ticker + side query for sibling-confirm', async () => {
+    it('builds URL with ticker + side + fire time for sibling-confirm', async () => {
       mockFetchJson.mockResolvedValue({ data: { rows: [] } });
       renderHook(() =>
         useGexbotData(
-          { view: 'sibling-confirm', ticker: 'AAPL', side: 'call' },
+          {
+            view: 'sibling-confirm',
+            ticker: 'AAPL',
+            side: 'call',
+            at: '2026-10-29T14:00:10.000Z',
+          },
           true,
         ),
       );
       await waitFor(() => expect(mockFetchJson).toHaveBeenCalled());
       expect(mockFetchJson.mock.calls[0]![0]).toBe(
-        '/api/gexbot?view=sibling-confirm&ticker=AAPL&side=call',
+        '/api/gexbot?view=sibling-confirm&ticker=AAPL&side=call&at=2026-10-29T14%3A00%3A10.000Z',
+      );
+    });
+
+    it('re-fetches when the fire time changes (sibling-confirm view)', async () => {
+      mockFetchJson.mockResolvedValue({ data: { rows: [] } });
+      const { rerender } = renderHook(
+        ({ at }: { at: string }) =>
+          useGexbotData(
+            { view: 'sibling-confirm', ticker: 'AAPL', side: 'call', at },
+            true,
+          ),
+        { initialProps: { at: '2026-10-29T14:00:10.000Z' } },
+      );
+      await waitFor(() => expect(mockFetchJson).toHaveBeenCalledTimes(1));
+      rerender({ at: '2026-10-29T15:00:10.000Z' });
+      await waitFor(() => expect(mockFetchJson).toHaveBeenCalledTimes(2));
+      expect(mockFetchJson.mock.calls[1]![0]).toContain(
+        'at=2026-10-29T15%3A00%3A10.000Z',
       );
     });
 
@@ -104,7 +127,12 @@ describe('useGexbotData', () => {
       const { rerender } = renderHook(
         ({ ticker }: { ticker: string }) =>
           useGexbotData(
-            { view: 'sibling-confirm', ticker, side: 'call' },
+            {
+              view: 'sibling-confirm',
+              ticker,
+              side: 'call',
+              at: '2026-10-29T14:00:10.000Z',
+            },
             true,
           ),
         { initialProps: { ticker: 'AAPL' } },
@@ -113,7 +141,7 @@ describe('useGexbotData', () => {
       rerender({ ticker: 'NVDA' });
       await waitFor(() => expect(mockFetchJson).toHaveBeenCalledTimes(2));
       expect(mockFetchJson.mock.calls[1]![0]).toBe(
-        '/api/gexbot?view=sibling-confirm&ticker=NVDA&side=call',
+        '/api/gexbot?view=sibling-confirm&ticker=NVDA&side=call&at=2026-10-29T14%3A00%3A10.000Z',
       );
     });
 
