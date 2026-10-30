@@ -96,8 +96,26 @@ Owner-approved on 2026-10-29 ("match the siblings"). Four `withCronCheckin` cron
 
 - **Status.** `ok`, `partial` or `error`, awaited before the response. A guard rejection sends nothing. The catch reports `error` with `String(err)`.
 - **Curate crons.** Status is `ok` when nothing failed, `error` when nothing landed, and `partial` otherwise. An `error` run sends one fingerprinted Sentry message, because such a run still answers 200 with an ok check-in.
-- **Cleanup budget stops.** cleanup-ws-gex-strike-expiry reports `partial`: it runs once a day, so leftover rows are abnormal. cleanup-ws-option-trades reports `ok`: a budget stop is its normal busy night, and its >24 h backlog warning carries the alert.
-- **`WALL_BUDGET_MS` 280 000 → 240 000 in both cleanups.** The awaited ingest can take up to 40 s: axiom-js times out at 20 s, and `reportCronRun` retries a rejected event once. That 40 s has to fit in maxDuration 300 alongside the two check-ins (≤ 5 s each) and the last batch's overrun.
+- **Cleanup budget stops.**
+  - cleanup-ws-gex-strike-expiry reports `partial` and logs a warning: it runs once a day, so leftover rows are abnormal.
+  - cleanup-ws-option-trades reports `ok` on a budget stop within a session of the cutoff, which is its normal busy night. It reports `partial` when the stop also sends the >24 h backlog warning, since the sweep is then not keeping pace.
+- **`WALL_BUDGET_MS` 280 000 → 240 000 in both cleanups.** The awaited ingest can take ~42 s. `reportCronRun` makes up to two ingests (the event, then a retry without `meta`), and each is bounded by axiom-js's 20 s abort signal plus fetch-retry's 1 s retry delay. That ~42 s has to fit in maxDuration 300 alongside the two check-ins (≤ 5 s each), leaving ~8 s for the last batch's overrun.
+
+### Follow-up: DST audit of every cron gate
+
+vercel.json crontabs are UTC, but most gates are ET (EDT is UTC-4; EST is UTC-5 from Sunday 2026-11-01). Every cron path's ticks were checked against its gate in both regimes. Two crons would have lost runs in EST. Both were caught before the first EST session (Monday 2026-11-02). Both date from May 2026 and have only ever run in EDT, so no history is affected and nothing needs a backfill.
+
+- **compute-cone** (since 2026-05-07). It ran only at `32 13` UTC behind the default market gate (09:25 ET on). In EST every run would have been an intentional skip, and no cone would have been written all winter.
+  - It now runs at `32 13,14` with a 09:30–09:45 ET `timeCheck`, following compute-es-overnight's `35 13,14`.
+  - Exactly one slot runs per regime; the other takes the paired skip check-in.
+- **refresh-tracker-contracts** (since 2026-05-17). `*/5 13-20` would never have fired 16:00 or 16:05 ET in EST, so a contract expiring that day would have closed on its 15:55 mark. It is now `*/5 13-21`, and the market gate trims the extra ticks.
+
+Every other cron reaches its gate in both regimes, mostly because `13-21` UTC covers 09:25–16:05 ET either way. A few run once more in EDT (`13,14` pairs and `20,21` post-close pairs), and all of those are idempotent upserts. `cron-schedules.test.ts` now encodes the rule. For each cron whose gate the source scan can name (the default `isMarketHours`, `isGexbotLiveCt` or `isFuturesRthCt`), it evaluates the real gate at every vercel.json tick on an EDT and an EST weekday, and asserts:
+
+- there are in-gate ticks in both regimes;
+- the first and last in-gate ET minute match, except for two written exemptions (fetch-greek-exposure-strike, fetch-oi-per-strike).
+
+Custom gates (local or inline `timeCheck`, `dynamicTimeCheck`) are left to each cron's own tests.
 
 ## History backfill
 
@@ -106,7 +124,7 @@ Owner-approved on 2026-10-29 ("match the siblings"). Four `withCronCheckin` cron
 - 1,125 fires since 2026-02-27, and 0 with no outcome written at all.
 - 57 with `ret_30m` NULL. None can be filled: no SPX RTH bar exists in their 30-minute window.
   - 56 of the 57 fired at or after 15:30 ET, so their 30-minute mark falls at or after the 16:00 close.
-  - The other fired at 12:12 ET, on a day with partial SPX 1-min data. The probe reported two partial days: 2026-09-21 with 169 RTH bars and 2026-07-22 with 82 (a full session has 390).
+  - The other, an `e1_long_call`, fired at 12:12 ET on 2026-09-21, a day with partial SPX 1-min data: 169 RTH bars against 390 in a full session. The probe found one other partial day, 2026-07-22, with 82.
 - The Friday→Monday window bug never lost an outcome. The same-day run after the close (21:30 UTC) resolves every horizon, so the retry window it broke was never needed.
 
 The write in section 2 was not run. The SQL stays as a reference for any future outcome gap.

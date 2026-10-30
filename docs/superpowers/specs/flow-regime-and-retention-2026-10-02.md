@@ -285,7 +285,7 @@ cost.
 | Constant                         | Value                | Why                                                            |
 | -------------------------------- | -------------------- | -------------------------------------------------------------- |
 | Cleanup `BATCH_SIZE`             | 50,000               | Unchanged; ~2.5 s per batch                                    |
-| Cleanup `WALL_BUDGET_MS`         | 240,000              | Last batch, estimate, check-ins, Axiom (≤ 40 s) in 300 s       |
+| Cleanup `WALL_BUDGET_MS`         | 240,000              | Last batch, estimate, check-ins, Axiom (~42 s) in 300 s        |
 | Cleanup backlog alert lag        | 24 h                 | > 1 session behind = not keeping pace                          |
 | Cleanup schedule                 | `5 0-12,22-23 * * *` | 15 runs per day, off-hours only                                |
 | `SLOT_SETTLE_MS`                 | 300,000              | Covers uw-stream's ~90 s retry path; free (loader skips today) |
@@ -293,7 +293,7 @@ cost.
 | Daily fill wall budget           | 120,000 ms           | 120 + 126 (fill) + 33 (read) + 10 (check-in) = 289 s < 300 s   |
 | `MIN_DAY_SLOT_TRADES`            | 500                  | Unchanged                                                      |
 
-`WALL_BUDGET_MS` was 280,000 until 2026-10-29. The cron then began awaiting its Axiom event, which can take up to 40 s (two 20 s axiom-js timeouts), so the budget dropped to 240,000 (cron-monitor-coverage-2026-10-29.md). The 5.9M, 88M and 4.4M figures above assume the older budget. At 240 s:
+`WALL_BUDGET_MS` was 280,000 until 2026-10-29. The cron then began awaiting its Axiom event, which can take ~42 s (two ingests, each bounded by axiom-js's 20 s abort signal plus fetch-retry's 1 s retry delay), so the budget dropped to 240,000 (cron-monitor-coverage-2026-10-29.md). The 5.9M, 88M and 4.4M figures above assume the older budget. At 240 s:
 
 - At the ~20k rows/s estimate, a run deletes ~4.8M rows. That is still two runs per session, with a thin margin: 2 × 4.8M = 9.6M against sessions of up to 9.2M.
 - At the pessimistic 15k rows/s, a run deletes ~3.6M rows, so a session takes three runs. That still fits the 8–9 runs before 12:05 UTC.
