@@ -1,6 +1,6 @@
 # ML Pipeline
 
-Python ML and research code for the strike calculator: the daily day-type and structure models (Phases 1-2), the Take-It alert-scoring model and Lottery score weights that feed the app, the multileg matcher used by `classifier/`, and dated research studies (flow, MOC imbalance, Periscope, futures setups).
+Python ML and research code for the strike calculator: the daily day-type and structure models (Phases 1-2), the Take-It alert-scoring model and Lottery score weights that feed the app, and dated research studies (flow, MOC imbalance, Periscope, futures setups).
 
 ## Quick Start
 
