@@ -11,7 +11,6 @@ const { mockCapture, mockException, mockReport, mockError, eod } = vi.hoisted(
     mockError: vi.fn(),
     eod: {
       fetchEodTickers: vi.fn(),
-      latestEligibleReportDate: vi.fn(),
       listStoredTickers: vi.fn(),
     },
   }),
@@ -35,7 +34,8 @@ import handler from '../cron/audit-gexbot-eod.js';
 
 const AUTH = { authorization: 'Bearer test-secret' };
 const DATE = '2026-10-28';
-const NOW = new Date('2026-10-29T19:45:00.000Z');
+// Thu 22:30 UTC: the window of Wed 2026-10-28's report closed at 21:00 UTC.
+const NOW = new Date('2026-10-29T22:30:00.000Z');
 
 type Json = Record<string, any>;
 
@@ -58,7 +58,6 @@ describe('audit-gexbot-eod', () => {
     vi.setSystemTime(NOW);
     process.env = { ...originalEnv };
     process.env.CRON_SECRET = 'test-secret';
-    eod.latestEligibleReportDate.mockReturnValue(DATE);
     eod.listStoredTickers.mockResolvedValue(new Set(['SPX', 'NDX']));
     setTickers(['SPX', 'NDX']);
   });
@@ -89,29 +88,37 @@ describe('audit-gexbot-eod', () => {
     expect(mockError).not.toHaveBeenCalled();
   });
 
-  it('derives the date from latestEligibleReportDate(now)', async () => {
-    await run();
-    expect(eod.latestEligibleReportDate).toHaveBeenCalledWith(NOW);
-    expect(eod.listStoredTickers).toHaveBeenCalledWith(DATE);
-  });
-
+  // Real calendar helpers, fixed `now`.
   it.each([
-    ['2026-10-29T19:45:00.000Z', '2026-10-28'],
-    ['2026-11-02T19:45:00.000Z', '2026-10-30'],
+    ['Thu, EDT', '2026-10-29T22:30:00.000Z', '2026-10-28'],
+    ['Mon, EST', '2026-11-02T22:30:00.000Z', '2026-10-30'],
+    [
+      'Fri after Thanksgiving (half day)',
+      '2026-11-27T22:30:00.000Z',
+      '2026-11-25',
+    ],
   ])(
-    'audits the real previous trading day at %s (EDT and EST)',
-    async (now, expected) => {
-      const actual = await vi.importActual<
-        typeof import('../_lib/gexbot-eod.js')
-      >('../_lib/gexbot-eod.js');
+    'checks the report whose window just closed: %s',
+    async (_n, now, want) => {
       vi.setSystemTime(new Date(now));
-      eod.latestEligibleReportDate.mockImplementation(
-        actual.latestEligibleReportDate,
-      );
-      await run();
-      expect(eod.listStoredTickers).toHaveBeenCalledWith(expected);
+      const res = await run();
+      expect(eod.listStoredTickers).toHaveBeenCalledWith(want);
+      expect((res._json as Json).date).toBe(want);
     },
   );
+
+  it('skips with no other call on a market holiday', async () => {
+    // Thanksgiving 2026-11-26: no window closed today.
+    vi.setSystemTime(new Date('2026-11-26T22:30:00.000Z'));
+    const res = await run();
+    const body = res._json as Json;
+    expect(res._status).toBe(200);
+    expect(body.status).toBe('skipped');
+    expect(body.message).toBe('no download window closed today');
+    expect(eod.fetchEodTickers).not.toHaveBeenCalled();
+    expect(eod.listStoredTickers).not.toHaveBeenCalled();
+    expect(mockCapture).not.toHaveBeenCalled();
+  });
 
   it('returns error and alerts once when tickers are missing', async () => {
     eod.listStoredTickers.mockResolvedValue(new Set(['SPX']));
@@ -127,7 +134,7 @@ describe('audit-gexbot-eod', () => {
     );
     expect(mockCapture).toHaveBeenCalledTimes(1);
     expect(mockCapture).toHaveBeenCalledWith(
-      `GEXBot EOD reports missing for ${DATE}: 2 tickers`,
+      `GEXBot EOD reports lost for ${DATE}: 2 tickers (download window closed; automatic retries could not capture them)`,
       {
         level: 'error',
         fingerprint: ['gexbot-eod', 'missed-window'],
