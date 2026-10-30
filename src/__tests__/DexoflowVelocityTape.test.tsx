@@ -4,8 +4,8 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import { DexoflowVelocityTape } from '../components/Gexbot/DexoflowVelocityTape';
 import {
-  sortVelocityRows,
-  velocityScore,
+  isUnusual,
+  orderVelocityRows,
 } from '../components/Gexbot/velocity-tape';
 import { GEXBOT_UNDERLYING_ORDER } from '../components/Gexbot/ticker-order';
 import type { VelocityRow } from '../hooks/useGexbotData';
@@ -44,72 +44,78 @@ function mockRows(rows: VelocityRow[]) {
   });
 }
 
-describe('velocityScore / sortVelocityRows', () => {
-  it('scores |change| relative to the ticker own typical minute change', () => {
-    expect(
-      velocityScore(makeRow({ dAggDex: -300, typicalAbsDAggDex: 100 })),
-    ).toBe(3);
+describe('isUnusual', () => {
+  it('flags a move at 3x the ticker own median', () => {
+    expect(isUnusual(makeRow({ dAggDex: 3, typicalAbsDAggDex: 1 }))).toBe(true);
   });
 
-  it('scores a missing change as null so it sorts last', () => {
-    expect(
-      velocityScore(makeRow({ dAggDex: null, typicalAbsDAggDex: 100 })),
-    ).toBe(null);
-  });
-
-  it('treats a nonzero change against a zero or unknown baseline as infinitely unusual', () => {
-    expect(velocityScore(makeRow({ dAggDex: 5, typicalAbsDAggDex: 0 }))).toBe(
-      Infinity,
+  it('flags exactly 2x and not below it', () => {
+    expect(isUnusual(makeRow({ dAggDex: -2, typicalAbsDAggDex: 1 }))).toBe(
+      true,
     );
-    expect(
-      velocityScore(makeRow({ dAggDex: 5, typicalAbsDAggDex: null })),
-    ).toBe(Infinity);
-  });
-
-  it('scores a zero change as zero whatever the baseline', () => {
-    expect(velocityScore(makeRow({ dAggDex: 0, typicalAbsDAggDex: 0 }))).toBe(
-      0,
+    expect(isUnusual(makeRow({ dAggDex: 1.9, typicalAbsDAggDex: 1 }))).toBe(
+      false,
     );
+  });
+
+  it('does not flag a one-tick move on a ticker whose median is 0', () => {
+    // HYG: agg_dex rounds to 0.01, median |change| is 0.
     expect(
-      velocityScore(makeRow({ dAggDex: 0, typicalAbsDAggDex: null })),
-    ).toBe(0);
+      isUnusual(
+        makeRow({ ticker: 'HYG', dAggDex: 0.01, typicalAbsDAggDex: 0 }),
+      ),
+    ).toBe(false);
   });
 
-  it('ranks by the relative score, not the raw dollar size', () => {
-    // SPX moved 10x more dollars than HYG, but only 2x its own norm; HYG is
-    // 8x its own norm. Summing raw units would put SPX first.
-    const sorted = sortVelocityRows([
-      makeRow({
-        ticker: 'SPX',
-        dAggDex: 20_000_000,
-        typicalAbsDAggDex: 10_000_000,
-      }),
-      makeRow({
-        ticker: 'HYG',
-        dAggDex: 2_000_000,
-        typicalAbsDAggDex: 250_000,
-      }),
-    ]);
-    expect(sorted.map((r) => r.ticker)).toEqual(['HYG', 'SPX']);
+  it('flags a real move on a ticker whose median is 0', () => {
+    expect(
+      isUnusual(
+        makeRow({ ticker: 'HYG', dAggDex: 0.12, typicalAbsDAggDex: 0 }),
+      ),
+    ).toBe(true);
   });
 
-  it('sorts rows without a change last, then ties by ticker', () => {
-    const sorted = sortVelocityRows([
-      makeRow({ ticker: 'VIX', dAggDex: null }),
-      makeRow({ ticker: 'QQQ', dAggDex: 10, typicalAbsDAggDex: 10 }),
-      makeRow({ ticker: 'IWM', dAggDex: 10, typicalAbsDAggDex: 10 }),
-      makeRow({ ticker: 'GLD', dAggDex: null }),
+  it('treats an unknown median like 0 (floor applies)', () => {
+    expect(isUnusual(makeRow({ dAggDex: 0.04, typicalAbsDAggDex: null }))).toBe(
+      false,
+    );
+    expect(isUnusual(makeRow({ dAggDex: 0.4, typicalAbsDAggDex: null }))).toBe(
+      true,
+    );
+  });
+
+  it('never flags a null or NaN change', () => {
+    expect(isUnusual(makeRow({ dAggDex: null, typicalAbsDAggDex: 0 }))).toBe(
+      false,
+    );
+    expect(isUnusual(makeRow({ dAggDex: Number.NaN }))).toBe(false);
+  });
+});
+
+describe('orderVelocityRows', () => {
+  it('returns the underlyings in the fixed order whatever the input order or values', () => {
+    const shuffled = [...GEXBOT_UNDERLYING_ORDER]
+      .reverse()
+      .map((ticker, i) => makeRow({ ticker, dAggDex: i * 1000 }));
+    expect(orderVelocityRows(shuffled).map((r) => r.ticker)).toEqual([
+      ...GEXBOT_UNDERLYING_ORDER,
     ]);
-    expect(sorted.map((r) => r.ticker)).toEqual(['IWM', 'QQQ', 'GLD', 'VIX']);
+  });
+
+  it('drops the futures views and unknown tickers, and skips missing ones', () => {
+    const rows = ['ES_SPX', 'QQQ', 'NQ_NDX', 'ZZZ', 'SPX'].map((ticker) =>
+      makeRow({ ticker }),
+    );
+    expect(orderVelocityRows(rows).map((r) => r.ticker)).toEqual([
+      'SPX',
+      'QQQ',
+    ]);
   });
 
   it('does not mutate its input', () => {
-    const input = [
-      makeRow({ ticker: 'B', dAggDex: 1, typicalAbsDAggDex: 10 }),
-      makeRow({ ticker: 'A', dAggDex: 9, typicalAbsDAggDex: 10 }),
-    ];
-    sortVelocityRows(input);
-    expect(input.map((r) => r.ticker)).toEqual(['B', 'A']);
+    const input = [makeRow({ ticker: 'QQQ' }), makeRow({ ticker: 'SPX' })];
+    orderVelocityRows(input);
+    expect(input.map((r) => r.ticker)).toEqual(['QQQ', 'SPX']);
   });
 });
 
@@ -153,8 +159,8 @@ describe('<DexoflowVelocityTape>', () => {
   });
 
   it('renders the server-computed minute changes with K/M suffixes and signs', () => {
-    // 3-snapshot fixture, already differenced server-side: agg_dex
-    // 100 -> 130 -> 1_630_000 gives the latest minute change below.
+    // Already differenced server-side: agg_dex 130 -> 1_500_130 gives the
+    // latest minute change below.
     mockRows([
       makeRow({
         ticker: 'SPX',
@@ -202,25 +208,50 @@ describe('<DexoflowVelocityTape>', () => {
     expect(container.querySelector('.text-rose-300')).not.toBeNull();
   });
 
-  it('orders rows by change relative to each ticker own norm', () => {
+  it('keeps a fixed row order regardless of the values', () => {
     mockRows([
-      makeRow({
-        ticker: 'SPX',
-        dAggDex: 20_000_000,
-        typicalAbsDAggDex: 10_000_000,
-      }),
-      makeRow({
-        ticker: 'HYG',
-        dAggDex: 2_000_000,
-        typicalAbsDAggDex: 250_000,
-      }),
+      makeRow({ ticker: 'HYG', dAggDex: 9_000_000, typicalAbsDAggDex: 10 }),
       makeRow({ ticker: 'QQQ', dAggDex: null }),
+      makeRow({ ticker: 'SPX', dAggDex: 1 }),
     ]);
     render(<DexoflowVelocityTape marketOpen />);
     const rows = screen.getAllByRole('row').slice(1);
-    expect(rows[0]).toHaveTextContent('HYG');
-    expect(rows[1]).toHaveTextContent('SPX');
-    expect(rows[2]).toHaveTextContent('QQQ');
+    expect(rows[0]).toHaveTextContent('SPX');
+    expect(rows[1]).toHaveTextContent('QQQ');
+    expect(rows[2]).toHaveTextContent('HYG');
+  });
+
+  it('highlights an unusually large minute and only that row', () => {
+    mockRows([
+      makeRow({ ticker: 'SPX', dAggDex: 300, typicalAbsDAggDex: 100 }),
+      makeRow({ ticker: 'QQQ', dAggDex: 100, typicalAbsDAggDex: 100 }),
+      makeRow({ ticker: 'HYG', dAggDex: 0.01, typicalAbsDAggDex: 0 }),
+      makeRow({ ticker: 'IWM', dAggDex: null }),
+    ]);
+    render(<DexoflowVelocityTape marketOpen />);
+    const flagged = (t: string) =>
+      screen
+        .getAllByRole('row')
+        .find((r) => r.textContent?.startsWith(t))
+        ?.getAttribute('data-unusual');
+    expect(flagged('SPX')).toBe('true');
+    expect(flagged('QQQ')).toBe('false');
+    expect(flagged('HYG')).toBe('false');
+    expect(flagged('IWM')).toBe('false');
+    expect(screen.getByText(/unusual/i, { selector: 'td *' })).toBeTruthy();
+  });
+
+  it('shows sub-unit values to 2 decimals and a zero as 0', () => {
+    mockRows([makeRow({ ticker: 'SPX', dAggDex: 0.07, dZgr: -0.5, dZcvr: 0 })]);
+    const { container } = render(<DexoflowVelocityTape marketOpen />);
+    const text = container.querySelector('tbody')?.textContent ?? '';
+    expect(text).toContain('+0.07');
+    expect(text).toContain('−0.50');
+    expect(text).not.toMatch(/\d\.\d{3,}/);
+    const labels = Array.from(
+      container.querySelectorAll('td span[aria-label]'),
+    ).map((el) => el.getAttribute('aria-label'));
+    expect(labels).toContain('flat 0');
   });
 
   it('shows only the 14 underlyings, never the futures views', () => {

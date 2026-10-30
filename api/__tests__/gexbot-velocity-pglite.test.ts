@@ -57,6 +57,11 @@ interface SeedRow {
   dte?: number | null;
 }
 
+const epoch = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+const EPOCH_1403 = epoch('2026-10-29T14:03:00Z');
+
+// Vendor `timestamp` is Unix seconds; by default it tracks the capture time,
+// like a live feed. Pass `src` to model a replayed or null timestamp.
 async function seed(r: SeedRow) {
   await pg.query(
     `INSERT INTO gexbot_snapshots
@@ -65,7 +70,7 @@ async function seed(r: SeedRow) {
     [
       r.ticker ?? 'SPX',
       r.at,
-      r.src === undefined ? null : r.src,
+      r.src === undefined ? epoch(r.at) : r.src,
       r.agg ?? null,
       r.zgr ?? null,
       r.zcvr ?? null,
@@ -98,21 +103,18 @@ describe('getVelocityTape against real SQL', () => {
   it('returns the minute-over-minute change from the latest two snapshots', async () => {
     await seed({
       at: '2026-10-29T14:02:00Z',
-      src: 1,
       agg: 100,
       zgr: 1.0,
       zcvr: 5,
     });
     await seed({
       at: '2026-10-29T14:03:00Z',
-      src: 2,
       agg: 130,
       zgr: 1.25,
       zcvr: 4,
     });
     await seed({
       at: '2026-10-29T14:04:00Z',
-      src: 3,
       agg: 170,
       zgr: 1.0,
       zcvr: 6,
@@ -132,7 +134,6 @@ describe('getVelocityTape against real SQL', () => {
   it('gives null deltas on the first snapshot of the session', async () => {
     await seed({
       at: '2026-10-29T14:04:00Z',
-      src: 1,
       agg: 170,
       zgr: 1,
       zcvr: 6,
@@ -150,14 +151,12 @@ describe('getVelocityTape against real SQL', () => {
     // Yesterday 15:59 ET; agg_dex is session-cumulative so it would be junk.
     await seed({
       at: '2026-10-28T19:59:00Z',
-      src: 1,
       agg: 9_000_000,
       zgr: 3,
       zcvr: 9,
     });
     await seed({
       at: '2026-10-29T14:04:00Z',
-      src: 2,
       agg: 170,
       zgr: 1,
       zcvr: 6,
@@ -169,14 +168,12 @@ describe('getVelocityTape against real SQL', () => {
   it('gives null deltas when the prior snapshot is more than 3 minutes older', async () => {
     await seed({
       at: '2026-10-29T13:59:30Z',
-      src: 1,
       agg: 100,
       zgr: 1,
       zcvr: 5,
     });
     await seed({
       at: '2026-10-29T14:04:00Z',
-      src: 2,
       agg: 170,
       zgr: 2,
       zcvr: 6,
@@ -186,8 +183,8 @@ describe('getVelocityTape against real SQL', () => {
   });
 
   it('keeps the delta when the prior snapshot is exactly 3 minutes older', async () => {
-    await seed({ at: '2026-10-29T14:01:00Z', src: 1, agg: 100 });
-    await seed({ at: '2026-10-29T14:04:00Z', src: 2, agg: 170 });
+    await seed({ at: '2026-10-29T14:01:00Z', agg: 100 });
+    await seed({ at: '2026-10-29T14:04:00Z', agg: 170 });
     const [row] = await getVelocityTape();
     expect(row?.dAggDex).toBe(70);
   });
@@ -195,15 +192,55 @@ describe('getVelocityTape against real SQL', () => {
   it('gives null deltas when the vendor repeated the prior source timestamp', async () => {
     // The 09:30 VIX case: the feed replays the prior close with the same
     // source timestamp, so the "change" is an artifact.
-    await seed({ ticker: 'VIX', at: '2026-10-29T14:03:00Z', src: 77, agg: 10 });
-    await seed({ ticker: 'VIX', at: '2026-10-29T14:04:00Z', src: 77, agg: 10 });
-    await seed({ at: '2026-10-29T14:03:00Z', src: 1, agg: 100 });
-    await seed({ at: '2026-10-29T14:04:00Z', src: 2, agg: 150 });
+    await seed({
+      ticker: 'VIX',
+      at: '2026-10-29T14:03:00Z',
+      src: EPOCH_1403,
+      agg: 10,
+    });
+    await seed({
+      ticker: 'VIX',
+      at: '2026-10-29T14:04:00Z',
+      src: EPOCH_1403,
+      agg: 10,
+    });
+    await seed({ at: '2026-10-29T14:03:00Z', agg: 100 });
+    await seed({ at: '2026-10-29T14:04:00Z', agg: 150 });
     const rows = await getVelocityTape();
     const vix = rows.find((r) => r.ticker === 'VIX');
     const spx = rows.find((r) => r.ticker === 'SPX');
     expect(vix?.dAggDex).toBeNull();
     expect(spx?.dAggDex).toBe(50);
+  });
+
+  it("keeps VIX's open jump out of the typical change", async () => {
+    // Prod pattern: the open row carries the prior close's vendor timestamp
+    // and agg_dex (-1.24); the next row is fresh. Without the session check
+    // the 1.24 jump would be VIX's largest "change" of the day.
+    await seed({
+      ticker: 'VIX',
+      at: '2026-10-29T14:02:00Z',
+      src: epoch('2026-10-28T20:00:00Z'),
+      agg: -1.24,
+    });
+    await seed({ ticker: 'VIX', at: '2026-10-29T14:03:00Z', agg: 0 });
+    await seed({ ticker: 'VIX', at: '2026-10-29T14:04:00Z', agg: 0.02 });
+    const [vix] = await getVelocityTape();
+    expect(vix?.dAggDex).toBeCloseTo(0.02, 10);
+    expect(vix?.typicalAbsDAggDex).toBeCloseTo(0.02, 10);
+  });
+
+  it('nulls the open delta itself when the prior is from the prior session', async () => {
+    await seed({
+      ticker: 'VIX',
+      at: '2026-10-29T14:03:00Z',
+      src: epoch('2026-10-28T20:00:00Z'),
+      agg: -1.24,
+    });
+    await seed({ ticker: 'VIX', at: '2026-10-29T14:04:00Z', agg: 0 });
+    const [vix] = await getVelocityTape();
+    expect(vix?.dAggDex).toBeNull();
+    expect(vix?.typicalAbsDAggDex).toBeNull();
   });
 
   it('still computes a delta when source timestamps are missing', async () => {
@@ -216,14 +253,12 @@ describe('getVelocityTape against real SQL', () => {
   it('computes each delta independently when one scalar is null', async () => {
     await seed({
       at: '2026-10-29T14:03:00Z',
-      src: 1,
       agg: null,
       zgr: 1,
       zcvr: 5,
     });
     await seed({
       at: '2026-10-29T14:04:00Z',
-      src: 2,
       agg: 50,
       zgr: 3,
       zcvr: 5,
@@ -234,25 +269,25 @@ describe('getVelocityTape against real SQL', () => {
 
   it('reports the median |change| of the ticker over the session', async () => {
     // agg_dex: 0, 10, 40, 40 -> |d| = 10, 30, 0 -> median 10.
-    await seed({ at: '2026-10-29T14:01:00Z', src: 1, agg: 0 });
-    await seed({ at: '2026-10-29T14:02:00Z', src: 2, agg: 10 });
-    await seed({ at: '2026-10-29T14:03:00Z', src: 3, agg: 40 });
-    await seed({ at: '2026-10-29T14:04:00Z', src: 4, agg: 40 });
+    await seed({ at: '2026-10-29T14:01:00Z', agg: 0 });
+    await seed({ at: '2026-10-29T14:02:00Z', agg: 10 });
+    await seed({ at: '2026-10-29T14:03:00Z', agg: 40 });
+    await seed({ at: '2026-10-29T14:04:00Z', agg: 40 });
     const [row] = await getVelocityTape();
     expect(row?.dAggDex).toBe(0);
     expect(row?.typicalAbsDAggDex).toBe(10);
   });
 
   it('leaves the median null when the session has no valid change yet', async () => {
-    await seed({ at: '2026-10-29T14:04:00Z', src: 1, agg: 40 });
+    await seed({ at: '2026-10-29T14:04:00Z', agg: 40 });
     const [row] = await getVelocityTape();
     expect(row?.typicalAbsDAggDex).toBeNull();
   });
 
   it('drops tickers whose newest snapshot is older than 15 minutes', async () => {
-    await seed({ ticker: 'SLV', at: '2026-10-29T13:40:00Z', src: 1, agg: 1 });
-    await seed({ ticker: 'SLV', at: '2026-10-29T13:41:00Z', src: 2, agg: 2 });
-    await seed({ at: '2026-10-29T14:04:00Z', src: 1, agg: 40 });
+    await seed({ ticker: 'SLV', at: '2026-10-29T13:40:00Z', agg: 1 });
+    await seed({ ticker: 'SLV', at: '2026-10-29T13:41:00Z', agg: 2 });
+    await seed({ at: '2026-10-29T14:04:00Z', agg: 40 });
     const rows = await getVelocityTape();
     expect(rows.map((r) => r.ticker)).toEqual(['SPX']);
   });
@@ -261,28 +296,24 @@ describe('getVelocityTape against real SQL', () => {
     await seed({
       ticker: 'SPX',
       at: '2026-10-29T14:03:00Z',
-      src: 1,
       agg: 100,
       dte: 0,
     });
     await seed({
       ticker: 'SPX',
       at: '2026-10-29T14:04:00Z',
-      src: 2,
       agg: 110,
       dte: 0,
     });
     await seed({
       ticker: 'HYG',
       at: '2026-10-29T14:03:00Z',
-      src: 1,
       agg: 5,
       dte: 2,
     });
     await seed({
       ticker: 'HYG',
       at: '2026-10-29T14:04:00Z',
-      src: 2,
       agg: -5,
       dte: 2,
     });

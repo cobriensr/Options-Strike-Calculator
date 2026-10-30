@@ -1,5 +1,5 @@
 /**
- * useGexbotData — single polled hook serving all 8 GEXBot components.
+ * useGexbotData — single polled hook serving the 7 GEXBot components.
  *
  * Polls `/api/gexbot?view=...` every 30s during market hours. The hook
  * is parameterized by `view` so callers only pay for the data they
@@ -163,9 +163,10 @@ function freshestFrom(rows: unknown[]): string | null {
 // In-flight request dedupe
 // ────────────────────────────────────────────────────────────
 //
-// Five Gexbot components subscribe to `view=snapshots-latest` and mount
+// Three Gexbot components (CharmClock, DealerStateSummaryStrip,
+// GammaCompass) subscribe to `view=snapshots-latest` and mount
 // simultaneously on pageload. Without dedupe each issues its own
-// fetch → 5× identical hits + Sentry's N+1 detector firing on every
+// fetch → 3× identical hits + Sentry's N+1 detector firing on every
 // session (SENTRY-EMERALD-DESERT-8J). Dedupe collapses concurrent
 // hits for the same URL into a single in-flight promise; per-component
 // state (rows/loading/error) stays independent, only the network call

@@ -1,8 +1,8 @@
 /**
  * Single source of truth for the 16-ticker capture order shared
- * across Gexbot grid/chart components (ConvexityMatrix, etc.). Mirrors the GEXBOT_TICKERS const in
- * api/_lib/gexbot-client.ts which drives what the capture crons
- * actually fetch.
+ * across Gexbot grid/chart components (ConvexityMatrix, etc.). Mirrors
+ * the GEXBOT_TICKERS const in api/_lib/gexbot-client.ts which drives
+ * what the capture crons actually fetch.
  *
  * Keep this list in sync with the backend GEXBOT_TICKERS — any
  * additions on the cron side need a corresponding update here so

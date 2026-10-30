@@ -13,10 +13,10 @@
  *
  * A dash means the change is unavailable (first minute of the session, a gap
  * of more than 3 minutes, or the vendor repeating its prior source
- * timestamp) — not a zero. Rows are ranked by |Δ agg_dex| against the
- * ticker's own median minute change (see velocity-tape.ts), never by a raw
- * sum of mixed units. Futures views (ES_SPX / NQ_NDX) are excluded: they
- * duplicate SPX / NDX.
+ * timestamp) — not a zero. Rows stay in the fixed underlying order (owner
+ * decision 2026-10-29); a row is highlighted when its |Δ agg_dex| is at
+ * least twice that ticker's own typical minute (see velocity-tape.ts).
+ * Futures views (ES_SPX / NQ_NDX) are excluded: they duplicate SPX / NDX.
  *
  * Each cell shows the value with a trend arrow (▲/▼/─) from its sign.
  * Each row shows the ticker's own DTE from `min_dte`.
@@ -27,16 +27,14 @@
 import { memo, useMemo } from 'react';
 
 import { useGexbotData } from '../../hooks/useGexbotData';
-import { GEXBOT_FUTURES_VIEWS } from './ticker-order';
 import { formatDte } from './types';
-import { sortVelocityRows } from './velocity-tape';
+import { isUnusual, orderVelocityRows } from './velocity-tape';
 
 interface DexoflowVelocityTapeProps {
   marketOpen: boolean;
 }
 
 const SPEC = { view: 'velocity' as const };
-const FUTURES_VIEWS: readonly string[] = GEXBOT_FUTURES_VIEWS;
 
 function arrow(value: number | null): { glyph: string; cls: string } {
   if (value == null) return { glyph: '·', cls: 'text-tertiary' };
@@ -47,22 +45,18 @@ function arrow(value: number | null): { glyph: string; cls: string } {
 
 function formatScalar(value: number | null): string {
   if (value == null) return '—';
+  if (value === 0) return '0';
   const abs = Math.abs(value);
   const sign = value >= 0 ? '+' : '−';
   if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(2)}M`;
   if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(2)}K`;
-  if (abs >= 1) return `${sign}${abs.toFixed(2)}`;
-  return `${sign}${abs.toFixed(4)}`;
+  return `${sign}${abs.toFixed(2)}`;
 }
 
 function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
   const { rows, loading, error } = useGexbotData(SPEC, marketOpen);
 
-  const velocityRows = useMemo(
-    () =>
-      sortVelocityRows(rows.filter((r) => !FUTURES_VIEWS.includes(r.ticker))),
-    [rows],
-  );
+  const velocityRows = useMemo(() => orderVelocityRows(rows), [rows]);
 
   if (loading) {
     return (
@@ -72,7 +66,7 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
         data-testid="dexoflow-tape-loading"
         className="text-tertiary rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs"
       >
-        Dexoflow Velocity — loading…
+        Velocity — loading…
       </div>
     );
   }
@@ -85,7 +79,7 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
         data-testid="dexoflow-tape-error"
         className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-300/80"
       >
-        Dexoflow Velocity — {error}
+        Velocity — {error}
       </div>
     );
   }
@@ -98,7 +92,7 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
         data-testid="dexoflow-tape-empty"
         className="text-tertiary rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs"
       >
-        Dexoflow Velocity — awaiting first GEXBot tick
+        Velocity — awaiting first GEXBot tick
       </div>
     );
   }
@@ -127,24 +121,37 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
           </tr>
         </thead>
         <tbody>
-          {velocityRows.map((row) => (
-            <tr key={row.ticker} className="border-t border-white/5">
-              <td className="px-3 py-1.5 font-medium">
-                {row.ticker}
-                <span className="text-tertiary ml-1.5 text-[10px] font-normal">
-                  {formatDte(row.minDte)}
-                </span>
-              </td>
-              <Cell value={row.dAggDex} />
-              <Cell value={row.dZgr} />
-              <Cell value={row.dZcvr} />
-            </tr>
-          ))}
+          {velocityRows.map((row) => {
+            const unusual = isUnusual(row);
+            return (
+              <tr
+                key={row.ticker}
+                data-unusual={unusual}
+                className={`border-t border-white/5 ${unusual ? 'bg-amber-400/10' : ''}`}
+              >
+                <td className="px-3 py-1.5 font-medium">
+                  {row.ticker}
+                  <span className="text-tertiary ml-1.5 text-[10px] font-normal">
+                    {formatDte(row.minDte)}
+                  </span>
+                  {unusual && (
+                    <span className="ml-1.5 text-[10px] font-normal text-amber-300">
+                      unusual
+                    </span>
+                  )}
+                </td>
+                <Cell value={row.dAggDex} />
+                <Cell value={row.dZgr} />
+                <Cell value={row.dZcvr} />
+              </tr>
+            );
+          })}
         </tbody>
       </table>
       <p className="text-tertiary border-t border-white/5 px-3 py-1.5 text-[10px]">
-        Δ = this minute minus the last. — means no clean prior minute. Sorted by
-        taker Δ flow against each ticker&rsquo;s own typical minute.
+        Δ = this minute minus the last. — means no clean prior minute. Fixed
+        order; &ldquo;unusual&rdquo; marks a taker Δ flow at least twice that
+        ticker&rsquo;s own typical minute.
       </p>
     </div>
   );

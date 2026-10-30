@@ -261,6 +261,9 @@ interface RawVelocityRow {
  *   up as one minute.
  * - Stale rule: a prior with the same `source_timestamp` is the vendor
  *   replaying its last value, so the "change" is an artifact; null deltas.
+ *   A prior whose `source_timestamp` predates the ET session is the same
+ *   artifact: VIX's 09:30 row carries the prior close's timestamp, so the
+ *   09:31 "change" would be a jump from yesterday's close.
  * - Freshness: tickers whose newest snapshot is over 15 minutes old are
  *   dropped, matching `getLatestSnapshots`.
  * - `typical_abs_d_agg_dex` is the per-ticker median |Δagg_dex| over the
@@ -301,10 +304,12 @@ export async function getVelocityTape(): Promise<VelocityRow[]> {
           (
             l.prev_at IS NOT NULL
             AND l.captured_at - l.prev_at <= INTERVAL '3 minutes'
-            AND NOT (l.source_timestamp IS NOT NULL
-                     AND l.source_timestamp = l.prev_src)
+            AND (l.prev_src IS NULL
+                 OR l.prev_src >= extract(epoch FROM b.day_start))
+            AND (l.source_timestamp IS NULL
+                 OR l.source_timestamp IS DISTINCT FROM l.prev_src)
           ) AS ok
-        FROM lagged l
+        FROM lagged l, bounds b
       ),
       diffs AS (
         SELECT
