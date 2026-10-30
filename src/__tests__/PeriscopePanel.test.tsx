@@ -93,7 +93,7 @@ describe('PeriscopePanel: smoke', () => {
     render(<PeriscopePanel {...baseProps} view={view} />);
     expect(
       screen.getByRole('heading', {
-        name: 'Periscope Exposure (GEXBot, taker)',
+        name: 'GEXBot Exposure (taker)',
       }),
     ).toBeInTheDocument();
     expect(

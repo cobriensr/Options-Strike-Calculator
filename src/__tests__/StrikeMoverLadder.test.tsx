@@ -145,6 +145,20 @@ describe('<StrikeMoverLadder>', () => {
     expect(row).not.toHaveTextContent('ES');
   });
 
+  it('explains the N✓ badge as weak, non-independent confirmation', () => {
+    withRows([
+      makeWinner('SPX', CAT, 6750, 2_100),
+      makeWinner('SPY', CAT, 675, 1_500),
+    ]);
+    render(<StrikeMoverLadder marketOpen spxSpot={6750} />);
+    const badge = screen.getByTitle(/SPX and SPY agree on sign/);
+    expect(badge).toHaveTextContent('2✓');
+    expect(badge.getAttribute('title')).toMatch(
+      /weak, non-independent confirmation/,
+    );
+    expect(badge).toHaveAttribute('aria-label', badge.getAttribute('title'));
+  });
+
   it('colours a row by its sign alone, the same above and below spot', () => {
     withRows([
       makeWinner('SPX', CAT, 6800, 1_000),

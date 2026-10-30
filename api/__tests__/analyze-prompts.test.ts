@@ -368,7 +368,7 @@ describe('analyze system prompt — Periscope rules run on UW data only (D1 revi
       '- UW Periscope absent (no screenshots labelled UW Periscope and no UW Periscope block): caps confidence at MODERATE',
     );
     expect(PROMPT).toContain(
-      'You will receive up to 2 screenshots; only those labelled UW Periscope (Gamma or Charm) are Periscope data,',
+      'You will receive up to 2 screenshots. Only screenshots labelled UW Periscope (Gamma or Charm) are Periscope data. You will also receive structured API data (flow, GEX, per-strike Greek profiles), which is separate from Periscope,',
     );
     expect(PROMPT).not.toContain(
       'You will receive up to 2 Periscope screenshots',
@@ -390,22 +390,33 @@ describe('analyze system prompt — Periscope rules run on UW data only (D1 revi
     );
     // NB1: the absence sentence names UW Periscope, not "Its".
     expect(line).toContain(
-      "UW Periscope's absence applies only the MODERATE cap.",
+      "UW Periscope's absence applies only the MODERATE cap;",
     );
     expect(line).not.toContain('Its absence applies only the MODERATE cap.');
   });
 
-  it('keeps one failed feed at MODERATE when UW Periscope is absent (N1)', () => {
-    // Without UW Periscope the structure primaries are SPX Net Flow and
-    // Market Tide, so "only 1 primary available" would fire LOW on one
-    // failed feed. The LOW triggers count the Missing Data Protocol's list.
-    expect(
-      lineStartingWith('Primary signals for structure selection'),
-    ).toContain(
-      'Without UW Periscope data, both LOW triggers ("only 1 primary signal is available" and "2+ primary data sources are unavailable") count only the Missing Data Protocol\'s primary API list (Market Tide, QQQ Net Flow, Aggregate GEX): one unavailable feed stays MODERATE, and a missing SPX Net Flow never lowers confidence.',
+  it('defines "primary" for both LOW triggers as the Missing Data Protocol API list, Periscope or not (CR1/CR2)', () => {
+    // Owner decision (I4). Scenarios the sentence must settle:
+    //  - Periscope present, QQQ + Aggregate GEX missing: two missing
+    //    protocol primaries -> LOW (was MODERATE under the old structure
+    //    primaries SPX Net Flow / Market Tide / Periscope).
+    //  - Periscope present, Market Tide + SPX Net Flow missing: one counted
+    //    feed -> MODERATE (SPX Net Flow never counts).
+    //  - No Periscope, one feed missing: MODERATE cap only.
+    const line = lineStartingWith('Primary signals for structure selection');
+    expect(line).toContain(
+      `Whether or not UW Periscope data is present, both LOW triggers ("only 1 primary signal is available" and "2+ primary data sources are unavailable") count only the Missing Data Protocol's primary API list (Market Tide, QQQ Net Flow, Aggregate GEX): one unavailable feed stays MODERATE, and two or more is LOW.`,
     );
-    expect(PROMPT).not.toContain(
-      'judge the LOW triggers on the API primaries alone',
+    expect(line).toContain(
+      "UW Periscope's absence applies only the MODERATE cap; when present it adds its own confirm/contradict weight and never changes which feeds count toward the LOW triggers.",
+    );
+    expect(line).toContain(
+      'a missing SPX Net Flow never counts toward either LOW trigger.',
+    );
+    expect(line).not.toContain('Without UW Periscope data, both LOW triggers');
+    // The protocol list the sentence points at stays as the definition.
+    expect(PROMPT).toContain(
+      'A missing PRIMARY API signal (Market Tide, QQQ Net Flow, Aggregate GEX) automatically caps confidence at MODERATE. Two or more missing primary API signals caps confidence at LOW.',
     );
   });
 

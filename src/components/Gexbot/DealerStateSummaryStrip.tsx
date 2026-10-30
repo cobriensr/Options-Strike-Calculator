@@ -21,7 +21,7 @@ import {
   useGexbotData,
   type SnapshotsLatestRow,
 } from '../../hooks/useGexbotData';
-import { GEXBOT_FUTURES_VIEWS, GEXBOT_UNDERLYING_ORDER } from './ticker-order';
+import { GEXBOT_UNDERLYING_ORDER, isFuturesView } from './ticker-order';
 import { deriveGammaSign, type GammaSign } from './types';
 
 interface DealerStateSummaryStripProps {
@@ -96,10 +96,6 @@ function countBreadth(rows: SnapshotsLatestRow[]): BreadthCounts {
 interface LoudestPick {
   ticker: string;
   dexoflow: number;
-}
-
-function isFuturesView(ticker: string): boolean {
-  return (GEXBOT_FUTURES_VIEWS as readonly string[]).includes(ticker);
 }
 
 function pickLoudest(rows: SnapshotsLatestRow[]): LoudestPick | null {

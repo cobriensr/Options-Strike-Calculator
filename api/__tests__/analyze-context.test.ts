@@ -20,6 +20,11 @@ import {
   buildAnalysisContext,
 } from '../_lib/analyze-context.js';
 import { Sentry } from '../_lib/sentry.js';
+import {
+  SYSTEM_PROMPT_PART1,
+  SYSTEM_PROMPT_PART2,
+} from '../_lib/analyze-prompts.js';
+import { PERISCOPE_GEXBOT_CUTOVER } from '../../src/utils/periscope-source.js';
 
 // ── numOrUndef ─────────────────────────────────────────────
 
@@ -1086,6 +1091,29 @@ describe('buildAnalysisContext', () => {
     );
     expect(block).not.toContain('periscope skill');
     expect(block).not.toContain('CONTEXT ONLY');
+    vi.unstubAllGlobals();
+  });
+
+  it('spells the GEXBot cutover in the prompt and the block the same as PERISCOPE_GEXBOT_CUTOVER', async () => {
+    // The cached prompt keeps a static literal; this pins it to the constant.
+    const cutover = new Date(PERISCOPE_GEXBOT_CUTOVER);
+    const ct = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'America/Chicago',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(cutover);
+    const iso = cutover.toISOString();
+    const text = `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC (${ct} CT)`;
+    expect(text).toBe('2026-05-26 17:20 UTC (12:20 CT)');
+    const prompt = SYSTEM_PROMPT_PART1 + SYSTEM_PROMPT_PART2;
+    expect(prompt.split(text).length - 1).toBe(3);
+    const block = await periscopeSection(
+      'scraper',
+      '2026-05-07',
+      '## Periscope Exposure — UW Periscope',
+    );
+    expect(block).toContain(text);
     vi.unstubAllGlobals();
   });
 

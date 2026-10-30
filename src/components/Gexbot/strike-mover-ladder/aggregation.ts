@@ -21,7 +21,7 @@
 
 import type { MaxchangeWinnerRow } from '../../../hooks/useGexbotData';
 import {
-  ATM_BAND_BPS,
+  NEAR_SPOT_BAND_BPS,
   CROSS_ASSET_TOLERANCE_PTS,
   LADDER_CATEGORY,
   MAX_ROWS_PER_SIDE,
@@ -169,7 +169,7 @@ export function sortAndCapRows(
   rows: AggregatedRow[],
   spot: number,
 ): AggregatedRow[] {
-  const bandWidth = spot * (ATM_BAND_BPS / 10_000);
+  const bandWidth = spot * (NEAR_SPOT_BAND_BPS / 10_000);
   const above: AggregatedRow[] = [];
   const below: AggregatedRow[] = [];
   const atm: AggregatedRow[] = [];
@@ -185,7 +185,7 @@ export function sortAndCapRows(
   atm.sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));
   const trimmedAbove = above.slice(0, MAX_ROWS_PER_SIDE);
   const trimmedBelow = below.slice(0, MAX_ROWS_PER_SIDE);
-  // Cap ATM at the same per-side budget. With ATM_BAND_BPS = 25 (±0.25%
+  // Cap ATM at the same per-side budget. With NEAR_SPOT_BAND_BPS = 25 (±0.25%
   // of spot) and 5-pt SPX strikes, only ~6 strikes can land in the band
   // at any time, but capping keeps the contract symmetric with the
   // above/below sides and prevents pathological inputs from blowing

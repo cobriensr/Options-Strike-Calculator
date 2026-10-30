@@ -39,12 +39,15 @@ export type GexbotTicker = (typeof GEXBOT_TICKER_ORDER)[number];
  */
 export const GEXBOT_FUTURES_VIEWS = ['ES_SPX', 'NQ_NDX'] as const;
 
+/** True for the futures views (ES_SPX, NQ_NDX) that repeat SPX / NDX. */
+export function isFuturesView(ticker: string): boolean {
+  return (GEXBOT_FUTURES_VIEWS as readonly string[]).includes(ticker);
+}
+
 /**
  * The 14 distinct underlyings, in display order: GEXBOT_TICKER_ORDER minus
  * the futures views. Grids and breadth counts use this by default; a view
  * that wants the futures rows too must opt in by using GEXBOT_TICKER_ORDER.
  */
 export const GEXBOT_UNDERLYING_ORDER: readonly GexbotTicker[] =
-  GEXBOT_TICKER_ORDER.filter(
-    (t) => !(GEXBOT_FUTURES_VIEWS as readonly string[]).includes(t),
-  );
+  GEXBOT_TICKER_ORDER.filter((t) => !isFuturesView(t));

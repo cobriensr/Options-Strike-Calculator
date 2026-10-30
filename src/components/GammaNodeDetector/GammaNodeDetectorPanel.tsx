@@ -54,7 +54,7 @@ export const GammaNodeDetectorPanel = memo(function GammaNodeDetectorPanel({
           {data.paused && (
             <UwTunedPausedBanner noun="setups" label="Gamma setups paused" />
           )}
-          <RollingStatsBar marketOpen={marketOpen} />
+          {!data.paused && <RollingStatsBar marketOpen={marketOpen} />}
           <DayConfidenceBanner data={data} />
           {data.fires.length === 0 ? (
             <div className="border-edge bg-surface-alt rounded border p-2 text-[11px] text-neutral-500">

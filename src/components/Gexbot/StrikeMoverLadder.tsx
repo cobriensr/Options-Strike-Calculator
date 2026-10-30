@@ -13,7 +13,9 @@
  * snapshots-latest is intentionally NOT used here because its minute
  * cadence can lag the divider position by ~60 s during fast moves.
  *
- * Spec: docs/superpowers/specs/strike-mover-ladder-2026-05-19.md
+ * Spec: docs/superpowers/specs/strike-mover-ladder-2026-05-19.md is
+ * SUPERSEDED by P6 of docs/superpowers/specs/gexbot-refresh-2026-10-28.md.
+ * The 05-19 spec describes the retired five-tab colour-matrix design.
  */
 
 import { memo, useMemo, useState } from 'react';
@@ -37,6 +39,10 @@ interface StrikeMoverLadderProps {
   /** SPX last price from Schwab via useMarketData in App.tsx. Null when unauth or pre-fetch. */
   spxSpot: number | null;
 }
+
+/** Tooltip + accessible name for the N✓ badge on a ladder row. */
+const CONFIRM_TITLE =
+  'SPX and SPY agree on sign. SPY tracks the same index, so this is weak, non-independent confirmation.';
 
 const SPEC = { view: 'maxchange-winners' as const };
 const TABS: readonly ModelTab[] = ['classic', 'state'];
@@ -233,7 +239,11 @@ const LadderRow = memo(function LadderRow({
       </span>
 
       {row.confirmCount > 0 && (
-        <span className="rounded-sm bg-white/10 px-1 text-[10px] font-semibold">
+        <span
+          className="rounded-sm bg-white/10 px-1 text-[10px] font-semibold"
+          title={CONFIRM_TITLE}
+          aria-label={CONFIRM_TITLE}
+        >
           {row.confirmCount}✓
         </span>
       )}

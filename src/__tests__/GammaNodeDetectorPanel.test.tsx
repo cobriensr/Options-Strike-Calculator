@@ -196,6 +196,8 @@ describe('GammaNodeDetectorPanel', () => {
     );
     expect(screen.getByTestId('gamma-fire-5')).toBeDefined();
     expect(screen.queryByText('No setups detected yet today.')).toBeNull();
+    // The rolling stats bar is 30 days of GEXBot-era fires of a paused rule.
+    expect(screen.queryByTestId('rolling-stats-bar-stub')).toBeNull();
   });
 
   it('shows no pause banner when the setups are live', () => {
@@ -204,5 +206,6 @@ describe('GammaNodeDetectorPanel', () => {
     expect(
       screen.queryByRole('status', { name: 'Gamma setups paused' }),
     ).toBeNull();
+    expect(screen.getByTestId('rolling-stats-bar-stub')).toBeDefined();
   });
 });

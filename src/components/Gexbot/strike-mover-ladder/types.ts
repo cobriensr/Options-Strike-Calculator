@@ -33,7 +33,7 @@ export interface AggregatedRow {
 }
 
 /** Width of the near-spot band, in basis points of spot. 25 bps ≈ ±0.25%. */
-export const ATM_BAND_BPS = 25;
+export const NEAR_SPOT_BAND_BPS = 25;
 
 /** ±N points around a strike used to bin cross-asset winners together. */
 export const CROSS_ASSET_TOLERANCE_PTS = 5;

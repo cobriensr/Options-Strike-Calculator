@@ -109,16 +109,17 @@ describe('StrikeBox: table structure', () => {
     expect(screen.getByText('DEX')).toBeInTheDocument();
     expect(screen.getByText('VEX')).toBeInTheDocument();
     expect(screen.getByText('Hedge/1%')).toBeInTheDocument();
-    expect(screen.getByText('Periscope Γ')).toBeInTheDocument();
+    expect(screen.getByText('Periscope/GEXBot Γ')).toBeInTheDocument();
     expect(screen.queryByText('MM Γ')).toBeNull();
     expect(screen.getByText('HOT%')).toBeInTheDocument();
   });
 
-  it('Periscope Γ header gives both meanings, since the column can show either era', () => {
+  it('neutral Γ header gives both meanings, since the column can show either era', () => {
     render(
       <StrikeBox mmGammaCapturedAt={null} leaderboard={[makeStrike(5800)]} />,
     );
-    const title = screen.getByText('Periscope Γ').getAttribute('title') ?? '';
+    const title =
+      screen.getByText('Periscope/GEXBot Γ').getAttribute('title') ?? '';
     expect(title).toMatch(
       /since 2026-05-26 it is GEXBot gamma in GEXBot's taker-side sign \(positive = traders net long gamma at the strike\)/,
     );
@@ -157,6 +158,20 @@ describe('StrikeBox: Periscope Γ overlay', () => {
   /** A UW Periscope (scraper-era) slice and a GEXBot slice. */
   const UW_SLICE = '2026-05-08T15:00:00Z';
   const GEXBOT_SLICE = '2026-10-27T15:00:00Z';
+
+  it.each([
+    ['UW-era', UW_SLICE, 'UW Periscope Γ'],
+    ['GEXBot', GEXBOT_SLICE, 'GEXBot Γ (taker)'],
+    ['unknown-time', null, 'Periscope/GEXBot Γ'],
+  ])('titles the Γ column header for a %s slice', (_l, capturedAt, header) => {
+    render(
+      <StrikeBox
+        leaderboard={[makeStrike(5800)]}
+        mmGammaCapturedAt={capturedAt}
+      />,
+    );
+    expect(screen.getByText(header)).toBeInTheDocument();
+  });
 
   it('shows the ✓ marker on a UW-era slice when the Periscope gamma sign matches the naive Hedge sign', () => {
     // Naive gexDollars defaults to +2B (positive). Periscope gamma also positive → match.
