@@ -12,7 +12,7 @@ corrected passages win.
   reports rescued for 2026-10-28 were indexed from R2 (no re-download). DB and R2 counts and byte totals
   match for both dates (60 rows each; 1.75 GB for 10-28, 1.63 GB for 10-29).
 - **Schedules** (`vercel.json`, `api/_lib/cron-schedules.ts`): capture `archive-gexbot-eod` at
-  `0 2,12-21,23 * * *` and the loss report `audit-gexbot-eod` at `30 22 * * 1-5`, both as set by Amendment 1
+  `0 2,12-21,23 * * *` and the loss report `audit-gexbot-eod` at `30 22,23 * * 1-5`, both as set by Amendment 1
   below. The first production run used the original `0 2,12,19,23 * * *` and `45 19 * * 1-5`.
 - **Migration 195** creates `gexbot_eod_reports`.
 - **Code:** `api/_lib/gexbot-eod.ts`, `api/_lib/gexbot-eod-zip.ts`, `api/_lib/r2.ts`,
@@ -49,7 +49,7 @@ UTC in EDT, and 22:00 UTC to 22:00 UTC in EST (from 2026-11-02).
   A ticker still lands in exactly one bucket. Two new metadata keys count retries: `retried` (tickers that
   needed at least one retry) and `recoveredByRetry` (tickers stored or indexed after a retry). Neither is an
   Axiom top-level column. Each retry logs a warning.
-- **C. Quota guard.** Three consecutive `notYetPublished` results (reports GEXBot has not yet published) stop
+- **C. Quota guard.** A run of consecutive `notYetPublished` results (reports GEXBot has not yet published; see the threshold below) stops
   the run with `stopReason` `not_published` and the rest go to `leftover`, so 12 runs a day cannot spend 60
   requests each while GEXBot is late. The threshold is `max(3, ceil(todo / 4))` consecutive results, where
   `todo` is the number of tickers the run has to fetch: a full run of 60 stops after 15 in a row, a run with 8
