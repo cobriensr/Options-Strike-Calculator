@@ -680,6 +680,7 @@ describe('archive-gexbot-eod', () => {
       const json = (await run())._json as Json;
       expect(json.storedCount).toBe(1);
       expect(json.recoveredByRetry).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
     });
 
     it('retries a truncated body, a zip error and a store failure', async () => {
@@ -724,6 +725,7 @@ describe('archive-gexbot-eod', () => {
       expect(json.leftover).toEqual(['A']);
       expect(json.failed).toEqual([]);
       expect(json.stopReason).toBe('quota');
+      expect(json.leftoverAfterFailure).toEqual([]);
       expect(json.retried).toBe(0);
       expect(vi.getTimerCount()).toBe(0);
     });
@@ -752,6 +754,9 @@ describe('archive-gexbot-eod', () => {
       // 590 s + the 15 s wait = 605 s, past the cutoff.
       expect(eod.requestEodReport).toHaveBeenCalledTimes(1);
       expect(json.leftover).toEqual(['A']);
+      expect(json.leftoverAfterFailure).toEqual([
+        { ticker: 'A', reason: 'http_503' },
+      ]);
       expect(json.failed).toEqual([]);
       expect(json.stopReason).toBe('budget');
       expect(json.retried).toBe(0);
@@ -793,10 +798,17 @@ describe('archive-gexbot-eod', () => {
             return http(503);
           },
         );
+        const t0 = Date.now();
         const json = (await run())._json as Json;
+        // The abort fired 5 s in; the 15 s wait ended at once.
+        expect(Date.now() - t0).toBeLessThan(15_000);
         expect(eod.requestEodReport).toHaveBeenCalledTimes(1);
         expect(json.leftover).toEqual(['A']);
+        expect(json.leftoverAfterFailure).toEqual([
+          { ticker: 'A', reason: 'http_503' },
+        ]);
         expect(json.failed).toEqual([]);
+        expect(json.retried).toBe(0);
         expect(json.stopReason).toBe('budget');
         expect(vi.getTimerCount()).toBe(0);
       } finally {
@@ -836,6 +848,90 @@ describe('archive-gexbot-eod', () => {
       expect(json.storedCount).toBe(3);
       expect(json.leftover).toEqual([]);
       expect(eod.requestEodReport).toHaveBeenCalledTimes(5);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('does not let 3 stale head tickers starve the fresh ones (todo of 20)', async () => {
+      const many = Array.from({ length: 20 }, (_, i) => `T${i}`);
+      setTickers(many);
+      const stale = new Set(['T0', 'T1', 'T2']);
+      eod.listStoredTickers.mockImplementation(async (d: string) =>
+        d === '2026-10-27' ? stale : new Set(),
+      );
+      eod.requestEodReport.mockImplementation(async (_k: string, t: string) =>
+        ok({ servedDate: stale.has(t) ? '2026-10-27' : EXPECTED }),
+      );
+      const json = (await run())._json as Json;
+      // Threshold is max(3, ceil(20 / 4)) = 5, so 3 stale in a row is fine.
+      expect(json.stopReason).toBeNull();
+      expect(json.notYetPublished).toBe(3);
+      expect(json.storedCount).toBe(17);
+      expect(json.leftover).toEqual([]);
+      expect(eod.requestEodReport).toHaveBeenCalledTimes(20);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('stops after 15 consecutive stale results when 60 tickers are left', async () => {
+      const many = Array.from({ length: 60 }, (_, i) => `T${i}`);
+      setTickers(many);
+      eod.listStoredTickers.mockImplementation(async (d: string) =>
+        d === '2026-10-27' ? new Set(many) : new Set(),
+      );
+      eod.requestEodReport.mockImplementation(async () =>
+        ok({ servedDate: '2026-10-27' }),
+      );
+      const json = (await run())._json as Json;
+      const requests = eod.requestEodReport.mock.calls.length;
+      expect(json.stopReason).toBe('not_published');
+      // The 15th completion stops the run; at most 2 other workers are in
+      // flight at that moment.
+      expect(json.notYetPublished).toBeGreaterThanOrEqual(15);
+      expect(json.notYetPublished).toBeLessThanOrEqual(17);
+      expect(requests).toBe(json.notYetPublished);
+      expect(json.leftover).toHaveLength(60 - requests);
+      expect(json.leftover).toContain('T59');
+      expect(json.status).toBe('partial');
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it.each([
+      ['with a row', true],
+      ['without a row', false],
+    ])(
+      'fails a newer served date %s as superseded without reading the body',
+      async (_n, hasRow) => {
+        setTickers(['A']);
+        eod.listStoredTickers.mockImplementation(async (d: string) =>
+          d === '2026-10-29' && hasRow ? new Set(['A']) : new Set(),
+        );
+        const r = ok({ servedDate: '2026-10-29' });
+        eod.requestEodReport.mockResolvedValue(r);
+        const res = await run();
+        const json = res._json as Json;
+        expect(json.failed).toEqual([{ ticker: 'A', reason: 'superseded' }]);
+        expect(r.discard).toHaveBeenCalledTimes(1);
+        expect(r.readBody).not.toHaveBeenCalled();
+        expect(eod.storeEodReport).not.toHaveBeenCalled();
+        // Not retried: the expected report is gone, retrying cannot help.
+        expect(eod.requestEodReport).toHaveBeenCalledTimes(1);
+        expect(json.status).toBe('error');
+        expect(failureCaptures()).toHaveLength(1);
+        expect(vi.getTimerCount()).toBe(0);
+      },
+    );
+
+    it('lists a leftover ticker that had failed in leftoverAfterFailure', async () => {
+      setTickers(['A', 'B']);
+      eod.requestEodReport.mockImplementation(async (_k: string, t: string) =>
+        t === 'A' ? http(503) : { kind: 'quota' as const },
+      );
+      const json = (await run())._json as Json;
+      // B hit the 429 with no earlier failure; A failed, then the stop flag
+      // sent it to leftover.
+      expect([...json.leftover].sort()).toEqual(['A', 'B']);
+      expect(json.leftoverAfterFailure).toEqual([
+        { ticker: 'A', reason: 'http_503' },
+      ]);
       expect(vi.getTimerCount()).toBe(0);
     });
   });

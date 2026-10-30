@@ -91,6 +91,7 @@ describe('audit-gexbot-eod', () => {
   // Real calendar helpers, fixed `now`.
   it.each([
     ['Thu, EDT', '2026-10-29T22:30:00.000Z', '2026-10-28'],
+    ['Thu, second run 23:30Z', '2026-10-29T23:30:00.000Z', '2026-10-28'],
     ['Mon, EST', '2026-11-02T22:30:00.000Z', '2026-10-30'],
     [
       'Fri after Thanksgiving (half day)',

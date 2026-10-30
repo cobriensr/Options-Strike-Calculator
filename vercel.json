@@ -327,7 +327,7 @@
     },
     {
       "path": "/api/cron/audit-gexbot-eod",
-      "schedule": "30 22 * * 1-5"
+      "schedule": "30 22,23 * * 1-5"
     },
     {
       "path": "/api/cron/cleanup-gexbot",

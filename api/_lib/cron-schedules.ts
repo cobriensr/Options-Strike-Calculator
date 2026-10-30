@@ -636,9 +636,9 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: 14,
   },
   'audit-gexbot-eod': {
-    // Loss report for a GEXBot EOD day, weekdays 22:30 UTC, after the download window closes (21:00 UTC EDT, 22:00 UTC EST).
+    // Loss report for a GEXBot EOD day, weekdays 22:30 UTC, after the download window closes (21:00 UTC EDT, 22:00 UTC EST). The 23:30 UTC run checks the same date (ET is still the same day) and gives a failed first audit a retry.
     // Spec: docs/superpowers/specs/2026-10-28-gexbot-eod-capture-design.md
-    schedule: '30 22 * * 1-5',
+    schedule: '30 22,23 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },

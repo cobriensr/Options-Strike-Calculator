@@ -66,8 +66,16 @@ const EXPECTED_ENTRIES = 15;
 const REASON_MAX_CHARS = 120;
 /** Waits before the 2nd and 3rd attempt of a ticker (3 attempts in all). */
 const RETRY_DELAYS_MS: readonly number[] = [15_000, 45_000];
-/** Consecutive `notYetPublished` results that stop the run. */
-const NOT_PUBLISHED_STOP_AFTER = 3;
+const NOT_PUBLISHED_MIN_STOP_AFTER = 3;
+
+/**
+ * Consecutive `notYetPublished` results that stop the run. Scales with the
+ * run so a few head tickers that serve yesterday's report cannot starve the
+ * other tickers: a full run of 60 stops after 15, a run with 8 left after 3.
+ */
+function notPublishedStopAfter(todoCount: number): number {
+  return Math.max(NOT_PUBLISHED_MIN_STOP_AFTER, Math.ceil(todoCount / 4));
+}
 
 type StopReason = 'quota' | 'budget' | 'not_published';
 
@@ -138,6 +146,7 @@ export default withCronInstrumentation(
     const expectedStored = await storedFor(expected);
     const todo = tickers.filter((t) => !expectedStored.has(t));
 
+    const stopAfterNotPublished = notPublishedStopAfter(todo.length);
     const elapsed = (): number => Date.now() - ctx.startTimeMs;
     const controller = new AbortController();
     const abortTimer = setTimeout(
@@ -163,6 +172,8 @@ export default withCronInstrumentation(
     let notPublishedStreak = 0;
     const failed: { ticker: string; reason: string }[] = [];
     const leftover: string[] = [];
+    // Leftover tickers that had failed at least once, with the last reason.
+    const leftoverAfterFailure: { ticker: string; reason: string }[] = [];
     const entryCountWarnings: { ticker: string; entryCount: number }[] = [];
 
     const recordFailure = (
@@ -213,6 +224,13 @@ export default withCronInstrumentation(
         }
         if (res.kind === 'bad_response') {
           return { kind: 'failed', reason: res.reason, retryable: true };
+        }
+        if (res.servedDate > expected) {
+          // GEXBot serves only its latest report and has published the next
+          // one early, so the expected report can no longer be fetched. Store
+          // nothing; the next run, once `expected` advances, stores this one.
+          await res.discard();
+          return { kind: 'failed', reason: 'superseded', retryable: false };
         }
         const have = await storedFor(res.servedDate).catch(async (err) => {
           await res.discard();
@@ -294,7 +312,7 @@ export default withCronInstrumentation(
         return;
       }
       notPublishedStreak += 1;
-      if (notPublishedStreak >= NOT_PUBLISHED_STOP_AFTER && !stop) {
+      if (notPublishedStreak >= stopAfterNotPublished && !stop) {
         stop = true;
         stopReason = 'not_published';
       }
@@ -302,16 +320,24 @@ export default withCronInstrumentation(
 
     const processTicker = async (ticker: string): Promise<void> => {
       let attempt = 1;
+      let lastFailure: string | undefined;
+      const toLeftover = (): void => {
+        leftover.push(ticker);
+        if (lastFailure !== undefined) {
+          leftoverAfterFailure.push({ ticker, reason: lastFailure });
+        }
+      };
       for (;;) {
         const result = await attemptTicker(ticker);
         if (result.kind === 'leftover') {
-          leftover.push(ticker);
+          toLeftover();
           return;
         }
         if (result.kind !== 'failed') {
           finish(result.kind, attempt > 1);
           return;
         }
+        lastFailure = result.reason;
         const delay = RETRY_DELAYS_MS[attempt - 1];
         // After the abort a failure is a real one (the abort did not cause
         // it), so it is booked as failed, as before retries existed.
@@ -327,20 +353,21 @@ export default withCronInstrumentation(
         // Never start an attempt, or sleep, at or past the start cutoff.
         if (stop || elapsed() + delay >= START_CUTOFF_MS) {
           stopReason ??= 'budget';
-          leftover.push(ticker);
+          toLeftover();
           return;
         }
+        if (!(await abortableSleep(delay, controller.signal))) {
+          stopReason ??= 'budget';
+          toLeftover();
+          return;
+        }
+        // Counted and logged as a retry only once the wait has really ended.
         attempt += 1;
         if (attempt === 2) retried += 1;
         ctx.logger.warn(
           { ticker, attempt, reason: result.reason },
           'gexbot-eod retry',
         );
-        if (!(await abortableSleep(delay, controller.signal))) {
-          stopReason ??= 'budget';
-          leftover.push(ticker);
-          return;
-        }
       }
     };
 
@@ -401,6 +428,7 @@ export default withCronInstrumentation(
         notYetPublished,
         failed,
         leftover,
+        leftoverAfterFailure,
         stopReason,
         retried,
         recoveredByRetry,

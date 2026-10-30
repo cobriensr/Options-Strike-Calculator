@@ -1,7 +1,8 @@
 /**
  * GET /api/cron/audit-gexbot-eod
  *
- * Loss report for a GEXBot EOD day. Runs at 22:30 UTC on weekdays, after the
+ * Loss report for a GEXBot EOD day. Runs at 22:30 and 23:30 UTC on weekdays (the
+ * second run retries a failed first one and checks the same date), after the
  * download window of the previous trading day's report has closed (17:00 ET
  * today: 21:00 UTC in EDT, 22:00 UTC in EST). The hourly capture cron retries
  * missing reports on its own until then, so a ticker still missing here is
