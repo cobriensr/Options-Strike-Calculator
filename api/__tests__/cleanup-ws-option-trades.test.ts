@@ -323,6 +323,11 @@ describe('cleanup-ws-option-trades handler', () => {
       expect.objectContaining({ stopReason: 'wall_budget', lagHours: 10 }),
       expect.stringContaining('budget'),
     );
+    // Within a session of the cutoff: a normal busy night, not partial.
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'cleanup-ws-option-trades',
+      expect.objectContaining({ status: 'ok', stopReason: 'wall_budget' }),
+    );
   });
 
   it('still alerts, with a null estimate, when the backlog estimate query fails', async () => {
@@ -382,6 +387,30 @@ describe('cleanup-ws-option-trades handler', () => {
         oldestRemaining: null,
       }),
     });
+    // An unknown lag counts as falling behind: partial, like the warning.
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'cleanup-ws-option-trades',
+      expect.objectContaining({ status: 'partial', stopReason: 'wall_budget' }),
+    );
+  });
+
+  it('treats a lag of exactly 24 h as within a session: ok, no warning', async () => {
+    // The threshold is "more than" BACKLOG_ALERT_LAG_HOURS, so 24 h itself
+    // is still a normal busy night.
+    routeQueries({
+      batches: [batch(BATCH, 24)],
+      batchMs: 150_000,
+      explain: async () => explainRows(8_000_000),
+    });
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._json).toMatchObject({ backlog: { lagHours: 24 } });
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'cleanup-ws-option-trades',
+      expect.objectContaining({ status: 'ok', stopReason: 'wall_budget' }),
+    );
   });
 
   it('reads the estimate when the driver hands EXPLAIN JSON back as a string', async () => {
@@ -491,9 +520,10 @@ describe('cleanup-ws-option-trades handler', () => {
       });
     });
 
-    it('reports ok with the backlog when the wall budget stops the sweep', async () => {
-      // Same run as the >1 day backlog test above: still `ok` (a budget stop
-      // is not a failed write); the Sentry warning carries the alert.
+    it('reports partial with the backlog when a budget stop trails by more than a session', async () => {
+      // Same run as the >1 day backlog test above (72 h lag): the sweep is
+      // not keeping pace, so Axiom says partial alongside the Sentry warning.
+      // A budget stop within a session stays ok (tested above).
       routeQueries({
         batches: [batch(BATCH, 80), batch(BATCH, 72)],
         batchMs: 100_000,
@@ -506,7 +536,7 @@ describe('cleanup-ws-option-trades handler', () => {
       expect(Sentry.captureMessage).toHaveBeenCalledOnce();
       expect(reportCronRun).toHaveBeenCalledOnce();
       expect(reportCronRun).toHaveBeenCalledWith(JOB, {
-        status: 'ok',
+        status: 'partial',
         today: '2026-05-18',
         totalDeleted: 100_000,
         batches: 2,

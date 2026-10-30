@@ -55,12 +55,13 @@ const BATCH_SIZE = 50_000;
  * the first batch of pass 2, so no DELETE starts that is expected to end past
  * the budget. Of maxDuration's 300 s, the budget leaves out: the in-progress
  * and completion check-ins (≤ 5 s each; `startedAt` is taken inside
- * withCronCheckin), up to 40 s for the awaited reportCronRun (axiom-js times
- * an ingest out at 20 s, and reportCronRun retries a rejected event once),
- * and ~10 s for a final batch that overruns the slowest so far plus the
- * response. So the run ends with a partial report instead of being killed
- * mid-DELETE or mid-ingest (which would page as a monitor timeout). Same rule
- * and budget as cleanup-ws-option-trades.
+ * withCronCheckin), ~42 s for the awaited reportCronRun (each of its two
+ * ingests, the event and its retry without `meta`, is bounded by axiom-js's
+ * 20 s abort signal plus fetch-retry's 1 s retry delay), and ~8 s for a
+ * final batch that overruns the slowest so far plus the response. So the
+ * run ends with a partial report instead of being killed mid-DELETE or
+ * mid-ingest (which would page as a monitor timeout). Same rule and budget
+ * as cleanup-ws-option-trades.
  */
 const WALL_BUDGET_MS = 240_000;
 
@@ -142,7 +143,11 @@ async function handler(req: VercelRequest, res: VercelResponse) {
         totalDeleted += deleted;
         batches += 1;
 
-        if (deleted === 0) break;
+        // The batch takes up to BATCH_SIZE rows matching the pass predicate,
+        // so a short one means the pass is drained: no extra empty DELETE,
+        // and a budget stop can't follow a pass that had nothing left (which
+        // would report `partial` with no rows remaining).
+        if (deleted < BATCH_SIZE) break;
       }
       if (stopReason === 'wall_budget') break;
     }
@@ -154,9 +159,17 @@ async function handler(req: VercelRequest, res: VercelResponse) {
       durationMs: Date.now() - startedAt,
       stopReason,
     };
-    logger.info(summary, 'ws_gex_strike_expiry retention sweep complete');
+    const budgetStop = stopReason === 'wall_budget';
+    if (budgetStop) {
+      logger.warn(
+        summary,
+        'ws_gex_strike_expiry retention: wall budget exhausted with expired rows remaining',
+      );
+    } else {
+      logger.info(summary, 'ws_gex_strike_expiry retention sweep complete');
+    }
     await reportCronRun(JOB, {
-      status: stopReason === 'wall_budget' ? 'partial' : 'ok',
+      status: budgetStop ? 'partial' : 'ok',
       ...summary,
     });
     res.status(200).json(summary);

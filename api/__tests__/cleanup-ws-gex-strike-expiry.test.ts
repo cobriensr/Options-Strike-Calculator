@@ -41,6 +41,7 @@ import handler from '../cron/cleanup-ws-gex-strike-expiry.js';
 import { reportCronRun } from '../_lib/axiom.js';
 import { _resetDsnCacheForTest } from '../_lib/cron-instrumentation.js';
 import { SCHEDULE_MAP } from '../_lib/cron-schedules.js';
+import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 
 const JOB = 'cleanup-ws-gex-strike-expiry';
@@ -134,6 +135,31 @@ describe('cleanup-ws-gex-strike-expiry handler', () => {
       stopReason: 'drained',
     });
     expect(mockQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it('ends a pass on a short batch, without an extra empty DELETE', async () => {
+    // A batch under BATCH_SIZE means the pass predicate has nothing left.
+    const shortBatch = Array.from({ length: 1_234 }, (_, i) => ({ id: i }));
+    mockQuery
+      .mockResolvedValueOnce(FULL_BATCH) // pass 1 batch 1
+      .mockResolvedValueOnce(shortBatch) // pass 1 drained by a short batch
+      .mockResolvedValueOnce(shortBatch); // pass 2 drained the same way
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      totalDeleted: 52_468,
+      batches: 3,
+      stopReason: 'drained',
+    });
+    expect(mockQuery).toHaveBeenCalledTimes(3);
+    expect(mockQuery.mock.calls.map(([sql]) => sql as string)).toEqual([
+      expect.stringContaining('expiry < $1::date'),
+      expect.stringContaining('expiry < $1::date'),
+      expect.stringContaining('expiry >= $1::date'),
+    ]);
   });
 
   it('drains both passes across multiple batches', async () => {
@@ -341,6 +367,11 @@ describe('cleanup-ws-gex-strike-expiry handler', () => {
         durationMs: expect.any(Number),
         stopReason: 'drained',
       });
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ stopReason: 'drained' }),
+        'ws_gex_strike_expiry retention sweep complete',
+      );
+      expect(logger.warn).not.toHaveBeenCalled();
     });
 
     it('reports partial when the wall budget ends the sweep with rows left', async () => {
@@ -365,6 +396,15 @@ describe('cleanup-ws-gex-strike-expiry handler', () => {
         durationMs: 120_250,
         stopReason: 'wall_budget',
       });
+      // Logged as a warning, not as a completed sweep.
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ stopReason: 'wall_budget' }),
+        'ws_gex_strike_expiry retention: wall budget exhausted with expired rows remaining',
+      );
+      expect(logger.info).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'ws_gex_strike_expiry retention sweep complete',
+      );
     });
 
     it('reports error with the partial counts when a DELETE fails, never ok', async () => {

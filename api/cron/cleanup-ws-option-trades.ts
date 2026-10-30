@@ -53,8 +53,10 @@
  * Auth: CRON_SECRET via cronGuard. No UW key — DB-only.
  * Time gate: none (`marketHours: false`); the schedule keeps it off-hours.
  * Axiom: one reportCronRun event per run that passes the guard, carrying the
- * response body: `ok` (a budget stop, the designed outcome of a busy night,
- * adds `backlog`) or `error` with the partial counts.
+ * response body. `ok` when drained, or on a budget stop within a session of
+ * the cutoff (the designed outcome of a busy night); `partial` on a budget
+ * stop that sends the backlog warning; both stops add `backlog`. `error`
+ * with the partial counts when a DELETE fails.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
@@ -76,12 +78,12 @@ const BATCH_SIZE = 50_000;
  * Stop issuing batches once elapsed time plus the slowest batch so far would
  * pass this. Of maxDuration's 300 s, the budget leaves out: the in-progress
  * and completion check-ins (≤ 5 s each; `startedAt` is taken inside
- * withCronCheckin), up to 40 s for the awaited reportCronRun (axiom-js times
- * an ingest out at 20 s, and reportCronRun retries a rejected event once),
- * and ~10 s for the final batch to overrun the slowest so far, plus the
- * backlog estimate and the response. Beyond that the invocation is killed
- * mid-statement; the DELETE is atomic, and the next hourly run picks up where
- * it stopped.
+ * withCronCheckin), ~42 s for the awaited reportCronRun (each of its two
+ * ingests, the event and its retry without `meta`, is bounded by axiom-js's
+ * 20 s abort signal plus fetch-retry's 1 s retry delay), and ~8 s for the
+ * final batch to overrun the slowest so far, plus the backlog estimate and
+ * the response. Beyond that the invocation is killed mid-statement; the
+ * DELETE is atomic, and the next hourly run picks up where it stopped.
  */
 const WALL_BUDGET_MS = 240_000;
 
@@ -330,7 +332,9 @@ async function handler(req: VercelRequest, res: VercelResponse) {
     { ...summary, ...backlog },
     'ws_option_trades retention: wall budget exhausted with expired rows remaining',
   );
-  if (backlog.lagHours == null || backlog.lagHours > BACKLOG_ALERT_LAG_HOURS) {
+  const fallingBehind =
+    backlog.lagHours == null || backlog.lagHours > BACKLOG_ALERT_LAG_HOURS;
+  if (fallingBehind) {
     const estimate = backlog.estimatedBacklogRows ?? 'unknown';
     const lag = backlog.lagHours ?? 'unknown';
     Sentry.captureMessage(
@@ -344,10 +348,15 @@ async function handler(req: VercelRequest, res: VercelResponse) {
       },
     );
   }
-  // A budget stop is the designed outcome of a busy night, not a failed
-  // write: `ok`, with the backlog in `meta`. Falling behind is surfaced by
-  // the Sentry warning above, not by the run status.
-  await reportCronRun(JOB, { status: 'ok', ...summary, backlog });
+  // A budget stop within a session of the cutoff is the designed outcome of
+  // a busy night, not a failed write: `ok`. One that trails by more than a
+  // session (the warning above) is `partial`, so Axiom shows it too. The
+  // backlog goes in `meta` either way.
+  await reportCronRun(JOB, {
+    status: fallingBehind ? 'partial' : 'ok',
+    ...summary,
+    backlog,
+  });
   res.status(200).json({ ...summary, backlog });
 }
 
