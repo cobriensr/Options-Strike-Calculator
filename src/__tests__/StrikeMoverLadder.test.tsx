@@ -156,7 +156,12 @@ describe('<StrikeMoverLadder>', () => {
     expect(badge.getAttribute('title')).toMatch(
       /weak, non-independent confirmation/,
     );
-    expect(badge).toHaveAttribute('aria-label', badge.getAttribute('title'));
+    // A bare span's aria-label is ignored, so the badge is an image role.
+    expect(badge).toHaveAttribute('role', 'img');
+    expect(badge).toHaveAttribute(
+      'aria-label',
+      `2 confirmations. ${badge.getAttribute('title')}`,
+    );
   });
 
   it('colours a row by its sign alone, the same above and below spot', () => {

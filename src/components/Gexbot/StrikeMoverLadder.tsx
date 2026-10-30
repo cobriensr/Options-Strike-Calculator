@@ -241,8 +241,9 @@ const LadderRow = memo(function LadderRow({
       {row.confirmCount > 0 && (
         <span
           className="rounded-sm bg-white/10 px-1 text-[10px] font-semibold"
+          role="img"
           title={CONFIRM_TITLE}
-          aria-label={CONFIRM_TITLE}
+          aria-label={`${row.confirmCount} confirmations. ${CONFIRM_TITLE}`}
         >
           {row.confirmCount}✓
         </span>
