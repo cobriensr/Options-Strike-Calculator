@@ -758,6 +758,10 @@ export default withCronInstrumentation(
     let gexHits = 0;
     let gexMisses = 0;
     let gexOutOfUniverse = 0;
+    // GexBot lookups that threw. They still count in gexMisses (no
+    // snapshot bound), so hits + misses + out-of-universe stays one per
+    // alert; this is the subset that failed rather than found nothing.
+    let gexLookupFailures = 0;
 
     // Per-(ticker, date) cumulative net-flow series cache. Shared across
     // all chain groups so two TSLA chains in the same cron tick fetch
@@ -1161,7 +1165,8 @@ export default withCronInstrumentation(
 
       // GexBot context snapshot at fire time (migration #180). Fail-open:
       // a lookup error must not block the alert insert — leave gex_*
-      // columns NULL and continue. Probe basis:
+      // columns NULL, count it (gexLookupFailures, which makes the run
+      // 'partial') and continue. Probe basis:
       // docs/superpowers/specs/silent-boom-gexbot-probe-findings-2026-05-26.md
       const gexbotTicker = mapToGexbotTicker(g.ticker);
       let gexSnapshot: FireTimeGexbotSnapshot | null = null;
@@ -1174,6 +1179,7 @@ export default withCronInstrumentation(
             f.bucketTs,
           );
         } catch (err) {
+          gexLookupFailures += 1;
           Sentry.captureException(err, {
             tags: {
               cron: 'detect-silent-boom',
@@ -1332,6 +1338,7 @@ export default withCronInstrumentation(
         gexHits,
         gexMisses,
         gexOutOfUniverse,
+        gexLookupFailures,
         macroDegraded,
         macroSeriesFailed,
         macroGenuineFailures: genuineFailures,
@@ -1354,18 +1361,23 @@ export default withCronInstrumentation(
     //     tick.
     //   - else a transient macro failure, a Take-It prefetch that timed out
     //     or hit a Neon blip (takeit_prob NULL), a flow series that
-    //     failed or was skipped by the breaker (cum_* NULL), or a failed
+    //     failed or was skipped by the breaker (cum_* NULL), a failed
     //     anchor-legs lookup, transient or not (anchor columns NULL on
     //     every alert; the lookup's own Sentry event pages a broken query),
+    //     or a GexBot snapshot lookup that threw (gex_* NULL on that alert),
     //     AND inserted > 0 → 'partial' (observably degraded). On a 0-fire
     //     tick no row was degraded → stays 'success' (do NOT escalate).
     //   - else → 'success'.
+    // A GexBot lookup that answered with no fresh snapshot (a miss) or a
+    // ticker outside the GexBot universe doesn't count: neither is a
+    // failure, and gexMisses / gexOutOfUniverse track them.
     const degraded =
       transientFailures > 0 ||
       takeitPrefetchError != null ||
       flowSeriesFailures > 0 ||
       flowSeriesSkippedBreaker > 0 ||
-      anchorLookupError != null;
+      anchorLookupError != null ||
+      gexLookupFailures > 0;
     const status: CronStatus =
       genuineFailures > 0 ||
       flowSeriesGenuineFailures > 0 ||
@@ -1388,6 +1400,7 @@ export default withCronInstrumentation(
         gexHits,
         gexMisses,
         gexOutOfUniverse,
+        gexLookupFailures,
         macroDegraded,
         macroSeriesFailed,
         macroGenuineFailures: genuineFailures,

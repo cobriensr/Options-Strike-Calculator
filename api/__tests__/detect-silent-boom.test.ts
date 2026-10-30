@@ -661,47 +661,135 @@ describe('detect-silent-boom handler', () => {
     expectAllGexBindsNull(extractInsertBinds(mockSql, 'silent_boom_alerts'));
   });
 
-  it('fails open and binds NULL gex_* when the snapshot lookup throws', async () => {
+  it('fails open and binds NULL gex_* when the snapshot lookup throws, and reports partial', async () => {
     // Fail-open contract: a thrown error from getLatestGexbotSnapshotAt
     // MUST NOT block the INSERT. Sentry should capture, and all 8 gex_*
-    // binds should resolve to NULL.
-    const sentryModule = await import('../_lib/sentry.js');
-    const mockedSentryCapture = vi.mocked(sentryModule.Sentry.captureException);
-    mockedSentryCapture.mockClear();
+    // binds should resolve to NULL. The written row is missing its GexBot
+    // context, so the run is 'partial', not 'success' (R4).
     mockGetLatestGexbotSnapshotAt.mockRejectedValue(new Error('neon timeout'));
     mockSql
       .mockResolvedValueOnce(fireableSilentBoomStream())
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ id: 42 }]);
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // tide ticks
+      .mockResolvedValueOnce([]) // tide_otm ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 42 }]); // insert: written
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
     const res = mockResponse();
-    await handler(req, res);
+    await handler(authorizedReq(), res);
     expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({ status: 'success', rows: 1 });
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      rows: 1,
+      inserted: 1,
+      // A thrown lookup is counted as a miss, never a hit, and also as a
+      // lookup failure (the subset of misses that threw).
+      gexHits: 0,
+      gexMisses: 1,
+      gexOutOfUniverse: 0,
+      gexLookupFailures: 1,
+    });
 
     // Sentry capture invoked with the expected tags.
-    expect(mockedSentryCapture).toHaveBeenCalledWith(
-      expect.any(Error),
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'neon timeout' }),
       expect.objectContaining({
         tags: expect.objectContaining({
           cron: 'detect-silent-boom',
           op: 'getLatestGexbotSnapshotAt',
+          ticker: 'SNDK',
         }),
       }),
     );
 
     // INSERT still landed; gex_* binds are all NULL.
     expectAllGexBindsNull(extractInsertBinds(mockSql, 'silent_boom_alerts'));
+
+    expect(reportCronRun).toHaveBeenCalledTimes(1);
+    const payload = vi.mocked(reportCronRun).mock.calls[0]![1];
+    expect(payload).toMatchObject({ status: 'partial', gexLookupFailures: 1 });
+    // The counter lands in Axiom `meta`, not as a new top-level column.
+    expect(AXIOM_TOP_LEVEL_KEYS.has('gexLookupFailures')).toBe(false);
+  });
+
+  it('stays success when the GexBot lookup throws but no alert is written, and still reports the failure', async () => {
+    mockGetLatestGexbotSnapshotAt.mockRejectedValue(new Error('neon timeout'));
+    mockSql
+      .mockResolvedValueOnce(fireableSilentBoomStream())
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // tide ticks
+      .mockResolvedValueOnce([]) // tide_otm ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([]); // insert: ON CONFLICT, nothing written
+
+    const res = mockResponse();
+    await handler(authorizedReq(), res);
+
+    // No row lost its GexBot context, so the run stays 'success'; the
+    // counter and the Sentry event still show the failure.
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 0,
+      totalFires: 1,
+      inserted: 0,
+      gexMisses: 1,
+      gexLookupFailures: 1,
+    });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'neon timeout' }),
+      expect.objectContaining({
+        tags: expect.objectContaining({ op: 'getLatestGexbotSnapshotAt' }),
+      }),
+    );
+    expect(reportCronRun).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(reportCronRun).mock.calls[0]![1]).toMatchObject({
+      status: 'success',
+      gexLookupFailures: 1,
+    });
+  });
+
+  it('stays success on a plain GexBot miss (no fresh snapshot): a miss is not a failure', async () => {
+    // beforeEach default: the lookup resolves null (no snapshot in the
+    // freshness window). gex_* stay NULL, gexMisses tracks it, and the
+    // run is not degraded.
+    mockSql
+      .mockResolvedValueOnce(fireableSilentBoomStream())
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // tide ticks
+      .mockResolvedValueOnce([]) // tide_otm ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 42 }]); // insert: written
+
+    const res = mockResponse();
+    await handler(authorizedReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(mockGetLatestGexbotSnapshotAt).toHaveBeenCalledTimes(1);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      inserted: 1,
+      gexHits: 0,
+      gexMisses: 1,
+      gexLookupFailures: 0,
+    });
+    expectAllGexBindsNull(extractInsertBinds(mockSql, 'silent_boom_alerts'));
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(reportCronRun).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(reportCronRun).mock.calls[0]![1]).toMatchObject({
+      status: 'success',
+      gexLookupFailures: 0,
+    });
   });
 
   it('binds null tide diff when the latest tick is older than 30 minutes', async () => {
@@ -2686,6 +2774,7 @@ describe('detect-silent-boom handler', () => {
         anchorsMissing: 0,
         anchorLookupFailures: 0,
         anchorLookupError: null,
+        gexLookupFailures: 0,
       });
       expect(logger.error).not.toHaveBeenCalled();
       expect(logger.warn).not.toHaveBeenCalled();
