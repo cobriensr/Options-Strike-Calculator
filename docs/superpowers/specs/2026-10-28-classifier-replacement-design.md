@@ -231,7 +231,7 @@ Both nightly lottery refits moved from `inferred_structure IS NULL` to `anchor_l
 
 No fire has `anchor_leg_kind` set before the 2026-10-29 18:22 CT deploy, so the filter has no history yet. `ml/src/lottery_refit_guard.py` therefore still blocks the refit. Its text now names the new reason. It comes off when all three hold:
 
-- (a) `anchor_leg_kind` is backfilled from the full tape for the 90-day training window. `ws_option_trades` keeps only 2 days, so the source is the UW Full Tape, where the trade code is the `upstream_condition_detail` column. The backfill is handed to the nightly-pipeline work.
+- (a) `anchor_leg_kind` is backfilled from the full tape for the 90-day training window. `ws_option_trades` keeps only 2 days, so the source is the UW Full Tape, where the trade code is the `upstream_condition_detail` column. The owner asked this project to run it (2026-10-29); see "History backfill from the full tape" below.
 - (b) The outcome backfill has landed, and the old bug signature (flow_inv > peak × 1.05) has been measured, per the nightly spec's "Refit" section.
 - (c) The two phase-4 fixes in the nightly spec are in: the backfill's `<` vs `<=` boundary, and the EMA's evening no-op from `CURRENT_DATE` in GMT.
 
@@ -245,3 +245,61 @@ Research scripts that still filter on `inferred_structure` reproduce classifier-
 - `scripts/vix_regime_analysis.py`
 - `scripts/walk_forward_backtest_v22.py`
 - `scripts/walk_forward_backtest_v22_corrected.py`
+
+## History backfill from the full tape (2026-10-29)
+
+Owner request, 2026-10-29: "let's go ahead and run that lottery fire and silent boom backfill if possible". The goal is to fill the five anchor columns (`anchor_ws_trade_id`, `anchor_trade_code`, `anchor_leg_kind`, `spread_shape`, `spread_legs`) on every `lottery_finder_fires` and `silent_boom_alerts` row that predates the live code. It reuses the production rules, so a backfilled row matches what the live cron would have written.
+
+### What makes it possible
+
+Checked read-only on 2026-10-29:
+
+- **The full tape is the same feed as `ws_option_trades`.**
+  - The tape's `id` is the live `ws_trade_id`, so `anchor_ws_trade_id` can be filled with the real id.
+  - `upstream_condition_detail` carries the same lowercase OPRA codes as `raw_payload->>'trade_code'` (`mlat`, `mlet`, `mesl`, `tlet`, `exht`, ...).
+  - The tape's `executed_at` has microseconds. The live table stores milliseconds, truncated (tape `06:30:02.187411` → live `.187`).
+- **R2 has 152 landed tape days**, `fulltape/{date}-fulltape.parquet`, from 2026-01-02 to 10-28 (183.6 GB).
+  - 06-16 to 09-01 is missing (the data outage).
+  - 10-29 lands with the nightly run at 07:15 UTC on 10-30.
+- **Rows:** 1,019,038 `lottery_finder_fires` and 77,190 `silent_boom_alerts` over 176 dates (01-02 to 10-29). The rows on dates with no landed tape stay NULL.
+- **Parity reference.** `ws_option_trades` keeps 2 days, so 10-27 and 10-28 were run through the production `lookupAnchorLegs` before the sweep. Results are saved in `docs/tmp/anchor-backfill/wsref-{date}.json`, keyed `{date}|lf:{id}` / `{date}|sb:{id}`.
+  - 10-27: 4,791 rows, all with an anchor; 4,252 `single`, 535 `multi_leg`, 4 `stock_tied`.
+  - 10-28: 5,934 rows, all with an anchor; 5,179 `single`, 750 `multi_leg`, 5 `stock_tied`.
+
+### Design
+
+Two steps, so the shape logic stays in one place, the production `describeAnchor` in `api/_lib/anchor-legs.ts`:
+
+1. **Extract** (Python, `ml/.venv`, DuckDB over R2). For each landed date:
+   - Read the rows that still need an anchor from Neon (read-only): `anchor_ws_trade_id IS NULL AND anchor_leg_kind IS NULL`.
+   - Lottery requests are `underlying_symbol`, `option_chain_id`, and the window [`trigger_time_ct` − 30 s, + 30 s).
+   - Silent Boom requests are `underlying_symbol`, `option_chain_id`, and the window [`bucket_ct`, + 5 min).
+   - These are the same windows the crons build (`detect-lottery-fires.ts` ~L806, `detect-silent-boom.ts` ~L948).
+   - Run the production anchor and sibling selection against the day's tape, translated from the two queries in `lookupAnchorLegs`:
+     - Truncate `executed_at` to the millisecond before any comparison.
+     - Anchor: same chain and ticker, inside the window, `canceled = false`, `price > 0`. Highest notional first, then earliest, then `id`.
+     - Compare notional as an exact integer, `round(price × 10000) × size`. A DOUBLE product can flip a tie that the live NUMERIC product wouldn't.
+     - Siblings (multi-leg anchors only): same ticker, same millisecond, `canceled = false`, multi-leg code, no price filter.
+   - Write one NDJSON line per request: `{table, id, anchor, siblings}`. The prints use the `TapePrint` field names, and an empty trade code becomes null.
+2. **Apply** (TS, `tsx`).
+   - Read the NDJSON, call the production `describeAnchor` for each anchor, and write the five columns with batched `unnest` UPDATEs of 500 rows (R5).
+   - Serialize `spread_legs` the way the crons do (`JSON.stringify(spreadLegs)`).
+   - The UPDATE is conditional, `WHERE anchor_ws_trade_id IS NULL AND anchor_leg_kind IS NULL`. It never overwrites a live-written row, and a rerun is a no-op (R6).
+   - A request with no anchor in the tape stays NULL, which means unknown, as in the live code.
+
+### Gates before any write
+
+- **Parity:** extract and describe 10-27 and 10-28 and compare with the saved references.
+  - Over rows where both sides found an anchor, anchor-id agreement must be at least 99.5%, and `anchor_leg_kind` agreement at least 99.5%.
+  - The share of rows where only one side found an anchor must be at most 0.5%.
+  - Below that, stop and explain the mismatch before writing anything.
+- **Timing probe:** a dry run and then one real date, timed, before the bulk run (`batched-inserts` rule).
+
+### Provenance
+
+There is no new column. Rows dated on or before 2026-10-29 were filled from the tape by this backfill, and rows from 2026-10-30 on come from the live crons. The ids and codes are the same feed, which is what the parity gate checks.
+
+### Not in scope
+
+- Re-running dates with no landed tape. They need the tape first; the tool takes a date range, so they can run later.
+- Changing the refit guard. The backfill satisfies its condition (a) only. Conditions (b) and (c) still hold it.
