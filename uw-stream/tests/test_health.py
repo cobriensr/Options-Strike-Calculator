@@ -17,9 +17,10 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from aiohttp.test_utils import TestClient, TestServer
 
-from config import settings
-from health import HEALTH_STARTUP_GRACE_S, _is_trading_hours, healthz, metrics
+from config import Settings, settings
+from health import HEALTH_STARTUP_GRACE_S, _is_trading_hours, build_app, healthz, metrics
 from state import state
 
 
@@ -262,6 +263,9 @@ def test_is_trading_hours_false_after_close():
 
 # ── /metrics auth gate ───────────────────────────────────────
 
+_TOKEN = "expected-token"
+_UNAUTHORIZED = {"error": "unauthorized"}
+
 
 class _StubRequest:
     """Minimal stand-in for aiohttp.web.Request — `metrics()` only
@@ -279,40 +283,180 @@ def _restore_metrics_token():
     settings.internal_metrics_token = saved
 
 
-async def test_metrics_open_when_token_env_unset(_restore_metrics_token):
-    """Default deployment: no INTERNAL_METRICS_TOKEN → /metrics returns
-    200 without any header so operator scrape scripts keep working.
+@pytest.fixture
+def metrics_warnings(monkeypatch) -> list[str]:
+    """Capture ``health.log.warning`` messages and reset the log-once flag.
+
+    The project logger sets ``propagate=False``, so ``caplog`` never sees
+    its records. Patching the bound ``log.warning`` is the direct contract
+    check (as in ``test_handlers._record_warnings``).
+    """
+    import health as health_mod
+
+    captured: list[str] = []
+
+    def _warning(msg, *args, **_kwargs):
+        captured.append(msg % args if args else msg)
+
+    monkeypatch.setattr(health_mod.log, "warning", _warning)
+    monkeypatch.setattr(health_mod, "_metrics_token_unset_logged", False)
+    return captured
+
+
+async def test_metrics_refuses_when_token_unset(_restore_metrics_token, metrics_warnings):
+    """No INTERNAL_METRICS_TOKEN → 401 with the refusal body and none of
+    the metrics fields, plus a warning that names the variable.
     """
     settings.internal_metrics_token = ""
     resp = await metrics(_StubRequest())  # type: ignore[arg-type]
-    assert resp.status == 200
+
+    assert resp.status == 401
+    assert await _read_json(resp) == _UNAUTHORIZED
+    assert len(metrics_warnings) == 1
+    assert "INTERNAL_METRICS_TOKEN" in metrics_warnings[0]
 
 
-async def test_metrics_requires_token_when_configured(_restore_metrics_token):
-    """With INTERNAL_METRICS_TOKEN set, a request without the matching
+async def test_metrics_refuses_empty_header_when_token_unset(
+    _restore_metrics_token, metrics_warnings
+):
+    """An empty X-Metrics-Token header never matches an unset token."""
+    settings.internal_metrics_token = ""
+    resp = await metrics(
+        _StubRequest({"X-Metrics-Token": ""}),  # type: ignore[arg-type]
+    )
+
+    assert resp.status == 401
+    assert await _read_json(resp) == _UNAUTHORIZED
+
+
+async def test_metrics_unset_token_warning_logs_once(_restore_metrics_token, metrics_warnings):
+    """Repeated requests with the token unset all get 401, but the warning
+    is written once per process, not once per request.
+    """
+    settings.internal_metrics_token = ""
+    for _ in range(3):
+        resp = await metrics(_StubRequest())  # type: ignore[arg-type]
+        assert resp.status == 401
+
+    assert len(metrics_warnings) == 1
+
+
+async def test_metrics_requires_token_when_configured(_restore_metrics_token, metrics_warnings):
+    """With INTERNAL_METRICS_TOKEN set, a request without the
     X-Metrics-Token header is rejected 401.
     """
-    settings.internal_metrics_token = "expected-token"
+    settings.internal_metrics_token = _TOKEN
     resp = await metrics(_StubRequest())  # type: ignore[arg-type]
+
     assert resp.status == 401
+    assert await _read_json(resp) == _UNAUTHORIZED
+    assert metrics_warnings == []
 
 
-async def test_metrics_rejects_wrong_token(_restore_metrics_token):
-    """With INTERNAL_METRICS_TOKEN set, a mismatched header is rejected."""
-    settings.internal_metrics_token = "expected-token"
+async def test_metrics_rejects_wrong_token(_restore_metrics_token, metrics_warnings):
+    """With INTERNAL_METRICS_TOKEN set, a mismatched header is rejected 401."""
+    settings.internal_metrics_token = _TOKEN
     resp = await metrics(
         _StubRequest({"X-Metrics-Token": "wrong"}),  # type: ignore[arg-type]
     )
+
     assert resp.status == 401
+    assert await _read_json(resp) == _UNAUTHORIZED
 
 
-async def test_metrics_accepts_matching_token(_restore_metrics_token):
-    """With INTERNAL_METRICS_TOKEN set, a matching header passes through."""
-    settings.internal_metrics_token = "expected-token"
+async def test_metrics_rejects_non_ascii_token_with_401(_restore_metrics_token, metrics_warnings):
+    """aiohttp decodes header bytes as UTF-8 with surrogateescape, so a
+    header can carry non-ASCII text. It is a 401 like any other mismatch.
+    """
+    settings.internal_metrics_token = _TOKEN
+    for value in ("tökén", "\udcff"):
+        resp = await metrics(
+            _StubRequest({"X-Metrics-Token": value}),  # type: ignore[arg-type]
+        )
+        assert resp.status == 401
+        assert await _read_json(resp) == _UNAUTHORIZED
+
+
+async def test_metrics_accepts_matching_token(_restore_metrics_token, metrics_warnings):
+    """With INTERNAL_METRICS_TOKEN set, a matching header gets the JSON."""
+    settings.internal_metrics_token = _TOKEN
     resp = await metrics(
-        _StubRequest({"X-Metrics-Token": "expected-token"}),  # type: ignore[arg-type]
+        _StubRequest({"X-Metrics-Token": _TOKEN}),  # type: ignore[arg-type]
     )
+    body = await _read_json(resp)
+
     assert resp.status == 200
+    assert {"uptime_seconds", "ws_connected", "channels", "handlers"} <= body.keys()
+    assert metrics_warnings == []
+
+
+def test_settings_boot_without_metrics_token(monkeypatch):
+    """Settings constructs with INTERNAL_METRICS_TOKEN absent: the token
+    defaults empty, so the service boots and only /metrics refuses.
+    """
+    monkeypatch.delenv("INTERNAL_METRICS_TOKEN", raising=False)
+    s = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        database_url="postgresql://test",
+        uw_api_key="test",
+        kv_rest_api_url="https://test.upstash.io",
+        kv_rest_api_token="test-token",
+    )
+
+    assert s.internal_metrics_token == ""
+
+
+# ── Routing through build_app() ──────────────────────────────
+
+
+@pytest.fixture
+async def app_client():
+    """The real aiohttp app on a loopback test server."""
+    async with TestClient(TestServer(build_app())) as client:
+        yield client
+
+
+@pytest.mark.parametrize("token", ["", _TOKEN])
+async def test_healthz_route_needs_no_header(app_client, _restore_metrics_token, token):
+    """/healthz answers without an X-Metrics-Token header whether or not
+    the metrics token is configured.
+    """
+    settings.internal_metrics_token = token
+    state.started_at = datetime.now(UTC) - timedelta(seconds=60)
+    state.last_message_ts = None
+
+    resp = await app_client.get("/healthz")
+
+    assert resp.status == 200
+    assert await resp.json() == {"status": "starting"}
+
+
+async def test_metrics_route_requires_header(app_client, _restore_metrics_token, metrics_warnings):
+    """Through the app's router: no header → 401, matching header → 200."""
+    settings.internal_metrics_token = _TOKEN
+
+    missing = await app_client.get("/metrics")
+    assert missing.status == 401
+    assert await missing.json() == _UNAUTHORIZED
+
+    ok = await app_client.get("/metrics", headers={"X-Metrics-Token": _TOKEN})
+    assert ok.status == 200
+    assert "handlers" in await ok.json()
+
+
+async def test_metrics_route_refuses_when_token_unset(
+    app_client, _restore_metrics_token, metrics_warnings
+):
+    """Through the app's router with the token unset: 401 even for a
+    request carrying an empty header.
+    """
+    settings.internal_metrics_token = ""
+
+    resp = await app_client.get("/metrics", headers={"X-Metrics-Token": ""})
+
+    assert resp.status == 401
+    assert await resp.json() == _UNAUTHORIZED
+    assert len(metrics_warnings) == 1
 
 
 # ── /metrics shape: channels vs handlers (E5) ────────────────
@@ -348,7 +492,7 @@ async def test_metrics_reports_handler_counters_under_handlers(
     monkeypatch.setattr(db, "bulk_insert_ignore_conflict", _one_conflict_skip)
     monkeypatch.setattr(settings, "ws_queue_size", 1)
     monkeypatch.setattr(settings, "ws_backpressure_policy", "drop_newest")
-    settings.internal_metrics_token = ""
+    settings.internal_metrics_token = _TOKEN
 
     state.channel("net_flow:TSLA").subscribed = True
     h = NetFlowHandler()
@@ -356,7 +500,7 @@ async def test_metrics_reports_handler_counters_under_handlers(
     await h.enqueue({"seq": 2})  # queue full → drop_newest → drop_count 1
     await h._safe_flush([(1,), (2,), (3,)])  # attempted 3, written 2
 
-    resp = await metrics(_StubRequest())  # type: ignore[arg-type]
+    resp = await metrics(_StubRequest({"X-Metrics-Token": _TOKEN}))  # type: ignore[arg-type]
     body = await _read_json(resp)
 
     assert resp.status == 200
@@ -418,10 +562,12 @@ async def test_metrics_lists_constructed_handler_with_zeroed_counters(
     """
     from handlers.flow_alerts import FlowAlertsHandler
 
-    settings.internal_metrics_token = ""
+    settings.internal_metrics_token = _TOKEN
     FlowAlertsHandler()
 
-    body = await _read_json(await metrics(_StubRequest()))  # type: ignore[arg-type]
+    body = await _read_json(
+        await metrics(_StubRequest({"X-Metrics-Token": _TOKEN}))  # type: ignore[arg-type]
+    )
 
     assert body["handlers"] == {
         "flow-alerts": {

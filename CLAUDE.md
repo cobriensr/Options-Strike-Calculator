@@ -324,6 +324,7 @@ Required env vars (pulled via `vercel env pull .env.local`):
 | `DAY_ANALOG_BACKEND`                                     | Analog-day backend (opt.; `features`, else text embeddings) |
 | `LOG_LEVEL`                                              | pino log level (opt.)                                       |
 | `WS_CHANNELS`, `VERCEL_NOTIFY_URL`                       | uw-stream (Railway only)                                    |
+| `INTERNAL_METRICS_TOKEN`                                 | uw-stream `/metrics` header token (Railway only)            |
 | `R2_ACCOUNT_ID`                                          | Cloudflare R2 (local tape scripts only; api/ ignores it)    |
 | `R2_ACCESS_KEY_ID`                                       | Cloudflare R2 (Railway nightly, local tape scripts)         |
 | `R2_SECRET_ACCESS_KEY`                                   | Cloudflare R2 (Railway nightly, local tape scripts)         |
