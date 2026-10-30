@@ -44,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ml" / "src"))
 
 from _pipeline_retry import connect_with_retry  # noqa: E402
 from lottery_refit_guard import announce_skip, refit_blocked  # noqa: E402
+from lottery_scoring import SINGLE_LEG_FILTER  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -93,7 +94,7 @@ def load_env() -> None:
 # DB fetch — today's enriched aligned fires
 # ---------------------------------------------------------------------------
 
-TODAY_QUERY = """
+TODAY_QUERY = f"""
 SELECT
     underlying_symbol,
     realized_flow_inversion_pct,
@@ -110,7 +111,7 @@ WHERE
         (option_type = 'C' AND cum_ncp_at_fire > cum_npp_at_fire)
         OR (option_type = 'P' AND cum_npp_at_fire > cum_ncp_at_fire)
     )
-    AND inferred_structure IS NULL
+    AND {SINGLE_LEG_FILTER}
     AND COALESCE(realized_flow_inversion_pct, realized_eod_pct) IS NOT NULL
 ORDER BY id
 """

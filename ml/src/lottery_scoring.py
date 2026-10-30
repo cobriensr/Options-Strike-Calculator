@@ -12,9 +12,10 @@ Alignment gate (spec decision 6): only fires where option direction agrees
   Call = ncp > npp, Put = npp > ncp.
 
 Drops (spec decisions 3, 7):
-  - inferred_structure IS NOT NULL (35% enrichment bug in structure rows)
-  - rows where realized_flow_inversion_pct > peak_ceiling_pct * 1.05 (0.5%
-    bug tail in non-structure rows)
+  - anchor_leg_kind is not 'single' (multi-leg, stock-tied and unknown rows;
+    classifier-era structure rows carried a 35% enrichment bug)
+  - rows where realized_flow_inversion_pct > peak_ceiling_pct * 1.05 (the
+    enrichment-bug signature; impossible for clean data)
   - reload_tagged (UI badge only, negative EV found in EDA)
   - range_pos_at_trigger (no signal)
   - trigger_iv (outlier data quality issue, defer)
@@ -99,7 +100,14 @@ MIN_OBS_TICKER = 100
 # Data fetch
 # ---------------------------------------------------------------------------
 
-FETCH_QUERY = """
+# The one definition of "not part of a multi-leg structure" for the lottery
+# refits (nightly spec, "Refit" section; shared with
+# scripts/online_ticker_update.py). Keeps only fires whose anchor print the
+# exchange's OPRA trade code marks as a single-leg trade (migration #197).
+# Multi-leg, stock-tied and NULL (unknown) rows are excluded on purpose.
+SINGLE_LEG_FILTER = "anchor_leg_kind = 'single'"
+
+FETCH_QUERY = f"""
 SELECT
     underlying_symbol,
     option_type,
@@ -113,7 +121,6 @@ SELECT
     peak_ceiling_pct,
     cum_ncp_at_fire,
     cum_npp_at_fire,
-    inferred_structure,
     date
 FROM lottery_finder_fires
 WHERE
@@ -126,8 +133,8 @@ WHERE
         (option_type = 'C' AND cum_ncp_at_fire > cum_npp_at_fire)
         OR (option_type = 'P' AND cum_npp_at_fire > cum_ncp_at_fire)
     )
-    -- drop structure rows (enrichment bug; spec decision 7)
-    AND inferred_structure IS NULL
+    -- keep single-leg fires only (spec decision 7; SINGLE_LEG_FILTER)
+    AND {SINGLE_LEG_FILTER}
     -- require at least one outcome column to be non-null
     AND COALESCE(realized_flow_inversion_pct, realized_eod_pct) IS NOT NULL
 ORDER BY date
@@ -148,7 +155,7 @@ def fetch_training_data() -> pd.DataFrame:
         df["realized_eod_pct"]
     )
 
-    # Drop the 0.5% of non-structure rows with the enrichment bug
+    # Drop rows with the enrichment-bug signature
     # (flow_inv > peak_ceiling * 1.05 is mathematically impossible for clean data)
     pre_len = len(df)
     mask_bug = (
@@ -457,7 +464,7 @@ def main() -> None:
             "filters_applied": [
                 "last 90 days",
                 "aligned only (cum_ncp > cum_npp for calls, vice versa for puts)",
-                "inferred_structure IS NULL (enrichment bug on structure rows)",
+                "anchor_leg_kind = 'single' (drops multi-leg, stock-tied and unknown rows)",
                 "realized_flow_inversion_pct <= peak_ceiling_pct * 1.05",
                 "outcome_pct = COALESCE(realized_flow_inversion_pct, realized_eod_pct)",
             ],

@@ -23,7 +23,9 @@ import pandas as pd
 import pytest
 
 from lottery_scoring import (
+    FETCH_QUERY,
     MIN_OBS_BUCKET,
+    SINGLE_LEG_FILTER,
     TICKER_CLAMP_MAX,
     TICKER_CLAMP_MIN,
     apply_weights,
@@ -539,3 +541,17 @@ def test_apply_weights_returns_series_indexed_like_input():
     score = apply_weights(df, _full_weights(), _VOL_OI_B, _GAMMA_B, _ASK_B)
     assert list(score.index) == [10, 20]
     assert len(score) == 2
+
+
+# ---------------------------------------------------------------------------
+# training filter
+# ---------------------------------------------------------------------------
+
+
+def test_single_leg_filter_is_the_exchange_derived_kind() -> None:
+    assert SINGLE_LEG_FILTER == "anchor_leg_kind = 'single'"
+
+
+def test_fetch_query_uses_the_shared_filter_not_the_classifier_label() -> None:
+    assert SINGLE_LEG_FILTER in FETCH_QUERY
+    assert "inferred_structure" not in FETCH_QUERY
