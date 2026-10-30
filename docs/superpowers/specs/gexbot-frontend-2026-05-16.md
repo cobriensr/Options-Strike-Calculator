@@ -80,6 +80,8 @@ state) until then.
 
 #### 4. `<DexoflowVelocityTape />`
 
+> **Superseded by P12b (2026-10-29), see [gexbot-refresh-2026-10-28.md](./gexbot-refresh-2026-10-28.md).** The vendor `dexoflow` / `gexoflow` / `cvroflow` scalars are each the change over one 1–2 s step sampled once a minute, so 70–99% of them were exact zeros on the smaller tickers. The tape now shows the minute-over-minute change of `agg_dex`, `zgr` and `zcvr`, differenced server-side (`view=velocity`), in a fixed ticker order with an "unusual" highlight. The text below is kept as history.
+
 - **Data:** `gexbot_snapshots.{dexoflow, gexoflow, cvroflow}` per ticker, last 5 ticks (5 min history)
 - **Render:** Per-ticker row showing the 3 flow-rate scalars as small speedometer-style gauges. Color-graded by direction (positive = green, negative = red). Trend arrow showing 5-min slope.
 - **Sketch:**
@@ -117,6 +119,8 @@ state) until then.
   ```
 
 #### 6. `<CrossAssetSkewDashboard />`
+
+> **Removed in P12b (2026-10-29), see [gexbot-refresh-2026-10-28.md](./gexbot-refresh-2026-10-28.md).** The vendor lists `delta_risk_reversal` as "Vestigial metric, discontinued". The component and `deltaRiskReversal` on the client path are gone; the database column, the capture cron and the Parquet schema are untouched. The text below is kept as history.
 
 - **Data:** `gexbot_snapshots.delta_risk_reversal` per ticker, latest + 1-day-ago
 - **Render:** Bar chart, one bar per ticker, height = risk reversal value. Positive (call-skewed/greed) above zero line, negative (put-skewed/fear) below. Today vs 1d-ago overlay.

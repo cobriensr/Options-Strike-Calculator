@@ -75,8 +75,8 @@ Owner decisions (each becomes a phase once decided; default pick in brackets):
 |---|---|---|---|
 | D1 | Sign convention for `periscope_snapshots` and its readers: (a) negate GEXBot on ingest to MM sign, (b) keep taker sign and rewrite readers/rules, (c) run a study on GEXBot-era history first | C8, C9, C10, C12, C25, C26, C30, C31, C32 | [c — study first; add a `source` column either way] |
 | D2 | Analyze prompt: charm thresholds re-derived in $MM/hr; the structured Periscope block counts as "available" (no MODERATE cap) | C23, C24 | [yes, re-derive on GEXBot-era history] |
-| D3 | Strike Mover Ladder: Classic or State winners (or two labelled ladders), and the colour matrix per model | C2, C4 | [Classic only, vendor colour semantics] |
-| D4 | Keep / redesign / remove: sibling pills, skew dashboard (discontinued DRR), velocity tape (1-s samples), fire badge | C14, C15, C16, C22, I9 | [redesign sibling on `zgr`/`net_dex` at fire time; remove skew dashboard; velocity tape → minute-over-minute Δ of `agg_dex`/`zgr`/`zcvr`; keep badge] |
+| D3 | Strike Mover Ladder: Classic or State winners (or two labelled ladders), and the colour matrix per model | C2, C4 | [Classic only, vendor colour semantics] → decided, see Decisions recorded (two tabs; the default was superseded) |
+| D4 | Keep / redesign / remove: sibling pills, skew dashboard (discontinued DRR), velocity tape (1-s samples), fire badge | C14, C15, C16, C22, I9 | [redesign sibling on `zgr`/`net_dex` at fire time; remove skew dashboard; velocity tape → minute-over-minute Δ of `agg_dex`/`zgr`/`zcvr`; keep badge] → decided, see Decisions recorded |
 | D5 | Capture expansion (owner prefers more/faster data): persist Classic `strikes[]` + `max_priors` (already fetched); daily `/hist/eod` pull to Blob (2-s full day, ~85 MB/ticker); more tickers (44 available); true 1-min Δ next to 5/15/30 | 10-02 §3, V | [persist strikes[]; EOD pull for SPX/SPY/QQQ first; tickers later] |
 | D6 | Data hygiene: unique keys on both capture tables + dedupe the ~240 dup rows/day (destructive on live rows); stale-row policy (skip vs flag); `periscope_snapshots` retention; `REINDEX CONCURRENTLY` (~200 MB) | I6, I7, I11, I12 | [unique keys + ON CONFLICT DO NOTHING; flag stale, don't skip; keep periscope rows; reindex] |
 | D7 | Research: recover outcomes for fires 06-12 → 10-22 (DB write), then the GEXBot re-probe; re-validate Periscope lottery filters, gamma setups, PCS threshold on GEXBot-era data | R5, C27, C31, C32 | [recover, then re-probe] |
@@ -118,6 +118,17 @@ Owner decisions (each becomes a phase once decided; default pick in brackets):
   (populate), `timezone: 'America/New_York'`, `failureIssueThreshold: 3`.
 - `maxDuration` for fetch-gexbot-fast: 60 s.
 - INT32 sentinel: drop any maxchange/max_priors value `<= -2147483`.
+- Fire-time lookups (`FIRE_TIME_MAX_AGE_SECONDS`, `api/_lib/gexbot-queries.ts`):
+  a snapshot counts when it is at or before the fire time and at most 180 s
+  older (two consecutive missed 1-min cron runs). Used by both
+  `getLatestGexbotSnapshotAt` and the sibling read.
+- Velocity tape gap rule: a prior snapshot more than 3 minutes older gives null
+  deltas (two missed 1-min runs; exactly 3 minutes is kept).
+- Velocity tape highlight (`src/components/Gexbot/velocity-tape.ts`): a row is
+  "unusual" when |Δ`agg_dex`| + 1e-9 ≥ 3 × max(typical, 0.25), where typical is
+  the ticker's session median |Δ`agg_dex`|. The 1e-9 absorbs floating-point
+  error at exact multiples (3 × 0.4 = 1.2000000000000002). Tuned on the
+  2026-10-28 and 2026-10-29 sessions only; re-tune on more history.
 
 ## Decisions recorded
 
@@ -140,6 +151,31 @@ Owner decisions (each becomes a phase once decided; default pick in brackets):
   labels (P5). Rule re-validation on GEXBot-era history follows (D7).
 - 2026-10-28: D6 → **yes**: dedupe the live capture tables (~480 rows; Blob
   archive untouched), add unique keys, `ON CONFLICT DO NOTHING`.
+- 2026-10-29 (times are CT): five owner decisions followed the revised D1
+  (next section). They are listed here in the order they were made.
+  - **I4, ~12:25** (the analyze prompt's confidence rule), final wording after
+    review rounds CR1/CR2. The Missing Data Protocol list (Market Tide, QQQ Net
+    Flow, Aggregate GEX) defines "primary" for both LOW triggers, whether or
+    not UW Periscope is present. A missing SPX Net Flow never counts. A missing
+    UW Periscope applies the MODERATE cap only. "Periscope" means UW Periscope
+    only, and GEXBot is never Periscope or a primary signal.
+  - **D4 → defaults, 13:01.** Sibling pills are judged by the sign of `net_dex`
+    at fire time (P12a). The skew dashboard is removed and the
+    `delta_risk_reversal` column is kept (P12b). The velocity tape becomes the
+    minute-over-minute Δ of `agg_dex` / `zgr` / `zcvr` (P12b). The fire badge
+    is kept and the 2026-05-26 probe r-values are dropped from it.
+  - **D3 → two tabs, ~18:45.** The Strike Mover Ladder shows both models as
+    two tabs, "Classic GEX" and "State (taker)", with sign-only sky/violet
+    colours. This supersedes the bracketed default in the D3 row above
+    (Classic only, vendor colour semantics).
+  - **D-tape: fixed order, 20:09 (option A).** Tape rows stay in the fixed
+    `GEXBOT_UNDERLYING_ORDER` (no sort by size), and a row is highlighted when
+    its |Δ`agg_dex`| is unusually large for that ticker.
+  - **Highlight threshold, 21:18.** 3 × max(typical, 0.25), replacing the first
+    pick of 2 × max(typical, 0.05) (which lit the liquid names in about 20% of
+    minutes; 3× / 0.25 does so in about 9%). It rests on the 2026-10-28 and
+    2026-10-29 sessions only; re-tune on more history (see Thresholds /
+    constants).
 
 ## Phases added by the D1 / D6 decisions
 
@@ -177,7 +213,7 @@ Owner decision: keep the sources separate, with separate rules per source.
   `ws_periscope_snapshots` table on prod). New capture via `uw-stream`,
   own spec.
 
-Revised phases (replace P10b):
+Revised phases (replace P10b; P12a and P12b come from the D4 decision):
 
 | Phase | Scope |
 |---|---|
@@ -186,6 +222,8 @@ Revised phases (replace P10b):
 | P11 known gap | `/api/gamma-setups/weekly-stats` and `/api/gamma-setups/export` still mix scraper-era and GEXBot-era fires without flagging them. |
 | R1 (research) | GEXBot-specific rules from GEXBot-era history (pre-registered, vendor semantics) |
 | S1 (spec) | UW Periscope websocket capture in `uw-stream` → separate table, so UW and GEXBot can be compared live (Railway deploy after the close; handler before `WS_CHANNELS`) |
+| P12a (D4) | Sibling pills judged at the alert's fire time. `GET /api/gexbot?view=sibling-confirm&ticker=&side=&at=` (`at` is a zoned ISO datetime, required for this view). `getSiblingConfirmation` reads each sibling's newest `gexbot_snapshots` row at or before `at` and at most `FIRE_TIME_MAX_AGE_SECONDS` = 180 s older, and the verdict is the sign of `net_dex` against the alert's side (zero, null or no row = none; `zgr` is tooltip context only). A row whose vendor `source_timestamp` predates the window is dropped (a NULL one is kept), so VIX's 09:30 prior-close row cannot pose as the fire-time reading. The client fetches once per fire URL (no 30 s polling) and ignores a response for a superseded fire time. No migration |
+| P12b (D4) | Velocity tape rebuilt, skew dashboard removed. `GET /api/gexbot?view=velocity` differences the latest snapshot per ticker against the one before it with `LAG`, current ET session only. Deltas are null when there is no prior in the session, when the prior is more than 3 minutes older, when the vendor repeated the prior `source_timestamp`, or when the prior's `source_timestamp` predates the ET session (VIX's 09:30 row carries the prior close). `typicalAbsDAggDex` is the ticker's session median \|Δ`agg_dex`\| over valid minutes. The tape keeps the fixed `GEXBOT_UNDERLYING_ORDER` and highlights per the Thresholds / constants rule. `CrossAssetSkewDashboard` and `deltaRiskReversal` leave the client path; the DB column, the capture cron and the Parquet schema are untouched. No migration |
 
 D5 note (2026-10-28): the daily `/hist/eod` capture is owned by a separate
 spec from another session, `2026-10-28-gexbot-eod-capture-design.md` (R2
