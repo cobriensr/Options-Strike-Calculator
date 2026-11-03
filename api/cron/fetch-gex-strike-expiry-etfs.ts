@@ -57,6 +57,7 @@ import {
   getPrimaryExpiry,
   type ZeroGammaTicker,
 } from '../_lib/zero-gamma-tickers.js';
+import { getETCloseUtcIso } from '../../src/utils/timezone.js';
 
 // ── Ticker config ─────────────────────────────────────────────
 
@@ -231,7 +232,16 @@ async function storeStrikes(
   // row a second time") — see api/_lib/bulk-upsert.ts contract. UW can
   // emit duplicates across paging boundaries or when sub-minute samples
   // floor to the same minute.
-  const fallbackTsMinute = new Date(`${expiry}T21:00:00Z`).toISOString();
+  // A row whose UW `time` does not parse lands at the 4:00 PM ET close of its
+  // expiry day: 20:00Z in EDT, 21:00Z in EST. A fixed `T21:00:00Z` was right
+  // only in winter.
+  const fallbackTsMinute = getETCloseUtcIso(expiry);
+  if (fallbackTsMinute === null) {
+    // `expiry` comes from getPrimaryExpiry, always a valid YYYY-MM-DD; a null
+    // here means that contract broke. Fail the ticker loudly rather than
+    // write a made-up timestamp.
+    throw new Error(`Invalid expiry date for ts_minute fallback: ${expiry}`);
+  }
   const byKey = new Map<
     string,
     { row: (typeof filtered)[number]; tsMinute: string }
@@ -363,7 +373,7 @@ async function storeStrikes(
   // because the deterministic sort above means both writers now queue
   // for the same row in the same order.
   const MAX_ATTEMPTS = 2;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 1; ; attempt++) {
     try {
       const result = (await sql.query(insertSql, sqlParams)) as Array<{
         was_insert: boolean;
@@ -381,17 +391,13 @@ async function storeStrikes(
         await new Promise((resolve) => setTimeout(resolve, 100));
         continue;
       }
-      logger.warn(
-        { err, ticker },
-        'fetch-gex-strike-expiry-etfs: batch insert failed',
-      );
-      Sentry.captureException(err);
-      return { stored: 0, skipped: deduped.length };
+      // A write that still fails propagates: processTicker rejects and the
+      // handler's allSettled loop counts the ticker as failed, captures it
+      // and logs it, so the run is `partial` or `error`. Returning it here as
+      // `skipped` used to leave the run `success` with the rows missing (R4).
+      throw err;
     }
   }
-  // Unreachable: the loop above either returns or falls through to the
-  // catch's return. Satisfies TS's control-flow analysis.
-  return { stored: 0, skipped: deduped.length };
 }
 
 // ── Per-ticker orchestrator ───────────────────────────────────
