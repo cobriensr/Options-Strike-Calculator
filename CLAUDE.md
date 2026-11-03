@@ -195,7 +195,7 @@ Everything else gets the full loop.
 - **Upstash Redis** — stores Schwab OAuth tokens (access + refresh). Env vars: `KV_REST_API_URL` / `UPSTASH_REDIS_REST_URL`.
 - **Input validation** — Zod schemas in `api/_lib/validation/` (re-exported by `api/_lib/validation.ts`) validate at system boundaries before data reaches Anthropic or Postgres.
 - **Cron jobs** — every job is registered in `vercel.json` `crons` and verifies `CRON_SECRET`. Most market data fetches run every 1–5 min during market hours (13-21 UTC, Mon-Fri).
-  - A new cron also needs a `SCHEDULE_MAP` entry in `api/_lib/cron-schedules.ts` (or a spec-cited exemption in `UNMONITORED_CRONS`) and a `withCronInstrumentation` / `withCronCheckin` wrapper under the same job name. Without the entry it sends no Sentry check-ins; `api/__tests__/cron-schedules.test.ts` fails on either gap.
+  - A new cron also needs a `SCHEDULE_MAP` entry in `api/_lib/cron-schedules.ts` (or a spec-cited exemption in `UNMONITORED_CRONS` in `api/__tests__/cron-schedules.test.ts`) and a `withCronInstrumentation` / `withCronCheckin` wrapper under the same job name. Without the entry it sends no Sentry check-ins; that test fails on either gap.
 - **Unusual Whales: websocket over REST (owner rule, 2026-10-28)** — when a UW websocket channel carries the same data as a UW REST endpoint, ingest it in `uw-stream/`. Don't add a polling cron for it, and retire an existing one once the websocket writer is live and checked against it. Why: every cron costs Vercel compute plus its own Sentry and Axiom monitoring, and the websocket is fresher.
   - Exception, gap repair: the websocket has no replay, so a REST job may fill holes after the fact (after the close or on a detected gap, like `api/cron/backfill-futures-gaps.ts`), never on an intraday polling schedule.
   - Exception, no channel: data with no websocket channel stays on REST.
@@ -213,7 +213,7 @@ Key modules beyond the basics:
 - `db.ts` — `initDb()` (base tables) + `migrateDb()` (numbered migrations, stored in `api/_lib/db-migrations.ts`). New tables go in `migrateDb()` only, never `initDb()`.
 - `db-analyses.ts`, `db-flow.ts`, `db-snapshots.ts`, `db-positions.ts`, `db-strike-helpers.ts` — query modules split from db.ts.
 - `analyze-prompts.ts` — static Anthropic prompt text (system prompt parts, rules, chart type descriptions).
-- `analyze-context.ts` — dynamic context assembly; `analyze-context-fetchers.ts` fetches each source and calls its `format*ForClaude` formatter. The formatters are spread across `api/_lib/` (`analyze-context-formatters.ts`, `db-strike-formatters.ts`, `db-flow.ts`, `lessons.ts`, per-domain modules); find one with `grep -rn "function format.*ForClaude" api/`.
+- `analyze-context.ts` — dynamic context assembly, mostly through `analyze-context-fetchers.ts`. The `format*ForClaude` formatters are spread across `api/` (mostly `_lib/`); find one with `grep -rn "function format.*ForClaude" api/`.
 - `lessons.ts` — lesson curation logic.
 - `overnight-gap.ts`, `spx-candles.ts`, `max-pain.ts`, `darkpool.ts`, `embeddings.ts`, `csv-parser.ts` — domain-specific modules.
 - `schwab.ts`, `api-helpers.ts`, `sentry.ts`, `validation.ts`, `logger.ts`, `constants.ts` — infrastructure.
@@ -228,8 +228,9 @@ When adding a migration to `MIGRATIONS` in `api/_lib/db-migrations.ts`, you must
 
 - Add `{ id: N }` to the applied-ids mock
 - Add `#N: <description>` to the expected-output list
-- Raise the `mockSql` total by the migration's statement count + 1 (the tracking INSERT), and extend the breakdown comment above it
+- Raise the `mockSql` total by the migration's statement count + 1 (the tracking INSERT)
 - Raise the `mockSql.transaction` total by 1 (each `statements:` migration runs in one `sql.transaction()`)
+- Extend the breakdown comments above both totals (the one above the `mockSql.transaction` total names the top migration id)
 
 ### Frontend (src/)
 
@@ -251,7 +252,6 @@ When adding a migration to `MIGRATIONS` in `api/_lib/db-migrations.ts`, you must
 - **Coverage floors** — `npm run review` fails when any file drops below the per-file floor (`FLOORS` in `scripts/_lib/coverage-floor.mjs`, checked from `coverage/lcov.info` by `scripts/check-coverage-floor.mjs`) or any folder's aggregate drops below its glob floor (branches + lines per folder in `vite.config.ts` `coverage.thresholds`). Raise them by hand after a test pass lands; never lower one to make a run pass. A folder glob that matches no files passes silently, so `scripts/_lib/coverage-thresholds.test.mjs` fails on one: rename the key when you rename the folder, and update its key counts when you add or remove a folder floor.
 - Test files must end in `.test.ts` or `.test.tsx` (unit) or `.spec.ts` (e2e).
 - **Cron test pattern** — mock the DB module with a factory, `vi.mock('../_lib/db.js', () => ({ getDb: vi.fn(() => mockSql), … }))`, and queue `mockSql.mockResolvedValueOnce` in the same sequence as the handler's DB queries (`vi.mocked(getDb)` is the rarer form). Provide `CRON_SECRET` in `process.env`.
-- **Mock the module the code under test imports from** — crons and `cron-instrumentation.ts` import `cronGuard` from `api/_lib/api-helpers.js`, so tests mock it there, not in `cron-helpers.js`.
 
 ## Code Style
 
