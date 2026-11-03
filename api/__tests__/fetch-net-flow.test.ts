@@ -542,7 +542,7 @@ describe('fetch-net-flow handler', () => {
 
     // Reject the batch INSERT for one source only. The txn stub records the
     // bound values so the failing leg is chosen by its `source`, not by call
-    // order (the two tickers run concurrently).
+    // order (the three sources run one after another).
     const dbError = new Error('connection lost');
     mockTransaction.mockImplementation(
       async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {

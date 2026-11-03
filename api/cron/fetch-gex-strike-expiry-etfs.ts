@@ -395,6 +395,10 @@ async function storeStrikes(
       // handler's allSettled loop counts the ticker as failed, captures it
       // and logs it, so the run is `partial` or `error`. Returning it here as
       // `skipped` used to leave the run `success` with the rows missing (R4).
+      // processTicker's withRetry re-runs the whole store when the message
+      // looks transient (timeout, fetch failed, ECONNRESET, ...), up to 3
+      // times with a 1 s then 2 s backoff; that is safe because the write is
+      // an idempotent UPSERT, and only the final failure is captured.
       throw err;
     }
   }

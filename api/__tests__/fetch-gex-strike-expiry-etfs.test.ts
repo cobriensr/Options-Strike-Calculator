@@ -877,6 +877,80 @@ describe('fetch-gex-strike-expiry-etfs handler', () => {
     });
   });
 
+  // processTicker wraps storeStrikes in withRetry, which re-runs it when the
+  // error message looks transient. The UPSERT is idempotent, so a retry that
+  // lands is a clean run, and one that never lands is captured once.
+
+  function stubSpyRows() {
+    vi.stubGlobal(
+      'fetch',
+      makeRoutedFetchMock({
+        '/SPY/spot-exposures/strike': async () => ({
+          ok: true,
+          json: async () => ({ data: [{ price: '590.5' }] }),
+        }),
+        '/SPY/spot-exposures/expiry-strike': async () => ({
+          ok: true,
+          json: async () => ({ data: [makeStrikeRow({ price: '590.5' })] }),
+        }),
+      }),
+    );
+  }
+
+  async function runWithBackoff() {
+    // setTimeout is faked so withRetry's 1 s + 2 s backoff costs no wall time.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
+    vi.setSystemTime(MARKET_TIME);
+    const res = mockResponse();
+    const run = handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    await run;
+    return res;
+  }
+
+  it('re-runs a transient write error and reports success when the retry lands', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubSpyRows();
+    mockQuery
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockImplementationOnce(defaultQueryMock);
+
+    const res = await runWithBackoff();
+
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      failureCount: 0,
+    });
+  });
+
+  it('captures a transient write error once when every retry fails', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubSpyRows();
+    const dbError = new Error('fetch failed');
+    mockQuery.mockRejectedValue(dbError);
+
+    const res = await runWithBackoff();
+
+    // withRetry: the first attempt plus two retries.
+    expect(mockQuery).toHaveBeenCalledTimes(3);
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      rows: 0,
+      failureCount: 1,
+    });
+  });
+
   // ── ts_minute fallback for an unparseable UW `time` ────────
   //
   // The fallback is the expiry's 4:00 PM ET close, which is a different UTC

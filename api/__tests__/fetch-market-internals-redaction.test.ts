@@ -120,6 +120,7 @@ describe('fetch-market-internals: Schwab error body redaction', () => {
 
     // The response is what the Axiom event is built from.
     expect(JSON.stringify(res._json)).not.toContain(TOKEN);
+    expect(reportCronRun).toHaveBeenCalled();
     expect(JSON.stringify(vi.mocked(reportCronRun).mock.calls)).not.toContain(
       TOKEN,
     );

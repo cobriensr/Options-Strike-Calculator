@@ -224,5 +224,7 @@ export default withCronInstrumentation(
       },
     };
   },
-  { timeCheck: isPastCashOpen, requireApiKey: false },
+  // Wrapped, not passed by value: isPastCashOpen's parameter is a grace in
+  // minutes, so an argument added by the caller would land there.
+  { timeCheck: () => isPastCashOpen(), requireApiKey: false },
 );
