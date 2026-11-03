@@ -40,7 +40,8 @@ import {
  * The 5-minute open buffer lets crons running at :00 catch the open.
  * `afterCloseMin` (default 5) is the close-side buffer; evaluate-round-trip
  * passes 80 so the session's last fires are evaluated after their 60-min
- * window, before the weekend tape sweep.
+ * window, before the weekend tape sweep, and wave2-confirmation passes 75 so
+ * the session's last fire reaches its 60-min fizzle cutoff.
  */
 export function isMarketHours(afterCloseMin = 5): boolean {
   const now = new Date();

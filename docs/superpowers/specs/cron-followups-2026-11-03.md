@@ -1,5 +1,5 @@
 ---
-status: Done
+status: Code done; open questions 1 and 3 await the owner
 date: 2026-11-03
 ---
 
@@ -7,7 +7,7 @@ date: 2026-11-03
 
 ## Goal
 
-Close eleven queued cron findings in one worktree (`fix/2026-11-03-cron-batch`, off `origin/main` `6b4b75de`): stop two crons from clobbering or mis-gating data, make failed writes report as failures (R4), plug two missing Axiom error events, fix a DST-sensitive fallback, and evaluate late-day wave-2 fires. Owner approved the whole batch on 2026-11-03. Nothing is pushed; the owner reviews and pushes.
+Close eleven queued cron findings in one worktree (`fix/2026-11-03-cron-batch`, rebased onto `origin/main` `0b05efab`): stop two crons from clobbering or mis-gating data, make failed writes report as failures (R4), plug two missing Axiom error events, fix a DST-sensitive fallback, and evaluate late-day wave-2 fires. Owner approved the whole batch on 2026-11-03. Nothing is pushed; the owner reviews and pushes.
 
 Every claim below was re-checked against current code on `origin/main` before it was written down. None of the eleven was already fixed upstream.
 
@@ -56,7 +56,7 @@ Every claim below was re-checked against current code on `origin/main` before it
 - **Confirmed by code AND data.** The cron runs `isMarketHours()` (09:25 ET to close + 5 min = 16:05 ET), a fire becomes eligible to fizzle at age 60 min, and `LOOKBACK_MIN = 70` drops it from the candidate query soon after. A fire after about 15:05 ET therefore hits 16:05 ET before age 60, and the next morning it is far outside the 70-minute lookback. It is never evaluated unless a follow-up exists (which is labelled in-day). Read-only check on prod Neon, `lottery_finder_fires`, fires since 2026-10-01 older than a day: 1,400 of 124,217 have `wave2_status IS NULL`; all of them fired between 15:06 and 16:05 ET (hour 15: 1,224 of 19,048 NULL; hour 16: 176 of 368), and none before 15:00 ET. So late-day "fizzled" fires sit at NULL, which biases the fizzle rate.
 - **Fix (same as `evaluate-round-trip`, fixed 2026-10-02):** gate with `isMarketHours(POST_CLOSE_EVAL_MIN)` where `POST_CLOSE_EVAL_MIN = 75`. The detectors' last alert fires by close + 5:59; it reaches age 60 at close + 65:59, so the close + 70 tick is the first to see it and the close + 75 tick is one retry (age 69:01, still inside the 70-minute lookback). Per-tick load is unchanged because the lookback is unchanged. `vercel.json` and `SCHEDULE_MAP` go from `*/5 13-21` to `*/5 13-22` so the close + 70 and + 75 ticks exist in EST (17:10 and 17:15 ET are 22:10 and 22:15 UTC); in EDT they are 21:10 and 21:15 and already served.
 - **Rejected alternative:** a lookback that spans the overnight. The first 09:25 ET tick would then walk the whole prior late-day backlog (about 450 candidates on a Friday evening, two sequential queries each) inside the 60-second function budget (R5).
-- **Tests:** at 17:10 ET the handler runs and fizzles a 16:05 ET fire; at 17:20 ET it skips; the same in EST with 22:15 / 22:20 UTC; a half-day (close 13:00 ET) ends at 14:15 ET; `cron-schedules.test.ts` gains the post-close tick check for wave2 in both regimes.
+- **Tests:** at 17:10 ET the handler runs and fizzles a 16:05:59 ET fire (age 64:01), while at 17:05 ET that same fire is still in flight (age 59:01, no UPDATE); at 17:20 ET it skips; the same in EST with 22:15 / 22:20 UTC; a half-day (close 13:00 ET) ends at 14:15 ET; `cron-schedules.test.ts` gains the post-close tick check for wave2 in both regimes.
 - **Not done here:** backfilling the historical NULL late-day rows. That is a production write; see Open questions. Dry-run counts (read-only SELECT on prod Neon, rows older than 2 days, since 2026-05-18, late means fired at or after 15:05 ET; the verdict is what the cron's own rules would assign): lottery 5,963 late-day NULL rows (4,805 fizzled, 1,152 confirmed, 6 lagging), silent boom 1,915 (1,771 fizzled, 125 confirmed, 19 lagging). The early-day NULLs in the same range (lottery 13,392 rows on 4 days between 2026-05-18 and 2026-06-10, silent boom 817) have another cause (cron gaps in that period) and are not part of this fix.
 
 ### 8. fetch-futures-session-stats in CST
@@ -91,8 +91,8 @@ Findings and the recommendation are in the final report. Summary: the two UW RES
 | 0   | `docs(spec): Plan the 2026-11-03 cron follow-up batch`                                   | plan     | this doc                                                                                                                                          |
 | 1   | `fix(auto-prefill): Protect hand-saved pre-market data and skip holidays`                | 1, 2     | cron, `auto-prefill-premarket.test.ts`, new pglite test, new gate test                                                                            |
 | 2   | `fix(schwab): Redact upstream error bodies in the shared fetch helper`                   | 3        | `schwab-fetch.ts`, `api-helpers.test.ts`, new `fetch-market-internals-redaction.test.ts`                                                          |
-| 3   | `refactor(cron): Drop call-site Schwab body redaction`                                   | 3, 11    | `compute-cone.ts`, `fetch-strike-iv.ts` (+ `code` type), their two tests                                                                          |
-| 4   | `fix(cron): Report a rejected flow write as a failed run`                                | 4        | `fetch-etf-tide.ts`, `fetch-net-flow.ts`, their two tests                                                                                         |
+| 3   | `refactor(cron): Drop call-site Schwab body redaction and type the strike-iv code`       | 3, 11    | `compute-cone.ts`, `fetch-strike-iv.ts` (+ `code` type), their two tests                                                                          |
+| 4   | `fix(cron): Report a rejected flow_data write as a failed run`                           | 4        | `fetch-etf-tide.ts`, `fetch-net-flow.ts`, their two tests                                                                                         |
 | 5   | `fix(gex-etf): Fail the run on a rejected write and anchor the fallback to the ET close` | 4, 6     | `fetch-gex-strike-expiry-etfs.ts`, its test                                                                                                       |
 | 6   | `fix(cron): Send an Axiom error event from futures-snapshot and vol-surface`             | 5        | the two crons, their two tests                                                                                                                    |
 | 7   | `fix(wave2): Evaluate late-day fires after the close`                                    | 7        | `wave2-confirmation.ts`, `vercel.json`, `cron-schedules.ts`, `cron-wave2-confirmation.test.ts`, `cron-schedules.test.ts`                          |
@@ -105,7 +105,7 @@ No new tables, migrations or env vars. Item 7 changes one `vercel.json` cron sch
 
 ## Open questions
 
-1. **Item 7 backfill (needs the owner).** Historical late-day `wave2_status IS NULL` rows (about 1,400 lottery rows since 2026-10-01, more before) stay NULL after this fix, which only covers new fires. Backfilling them is a production write, and the Neon connection available here is read-only. Proposed: a one-off set-based UPDATE to `fizzled` where no same-ticker, same-type follow-up exists within 60 minutes, `confirmed` or `lagging` with `wave2_detected_at` where one does. A dry-run SELECT count by verdict is in the final report.
+1. **Item 7 backfill (needs the owner).** Historical late-day `wave2_status IS NULL` rows (about 1,400 lottery rows since 2026-10-01, more before) stay NULL after this fix, which only covers new fires. Backfilling them is a production write, and the Neon connection available here is read-only. Proposed: a one-off set-based UPDATE to `fizzled` where no same-ticker, same-type follow-up exists within 60 minutes, `confirmed` or `lagging` with `wave2_detected_at` where one does. The dry-run counts by verdict are in item 7.
 2. **Item 8**: resolved, no schedule change (see its verdict). Re-check only if open-interest rows are ever seen to differ from what UW serves later in the day.
 3. **Item 10** whether to migrate: recommendation in the final report (default: no).
 

@@ -818,7 +818,7 @@ describe('fetch-futures-snapshot handler', () => {
 
     expect(res._status).toBe(500);
     expect(res._json).toEqual({ error: 'Internal error' });
-    expect(Sentry.captureException).toHaveBeenCalled();
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
     // ...and as an Axiom error event carrying the thrown message.
     expect(reportCronRun).toHaveBeenCalledTimes(1);
     expect(reportCronRun).toHaveBeenCalledWith(

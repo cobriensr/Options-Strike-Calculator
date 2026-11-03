@@ -42,8 +42,8 @@ import handler from '../cron/wave2-confirmation.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 
-// 10:00 AM ET (14:00 UTC EDT in May) — comfortably inside the market-hours
-// gate cronGuard applies by default. The handler also uses Date.now() to
+// 10:00 AM ET (14:00 UTC EDT in May) — comfortably inside the cron's time
+// gate. The handler also uses Date.now() to
 // compute candidate age in minutes, so this NOW anchor lets us stage
 // wave-1 trigger_time values at known offsets in the past.
 const NOW = new Date('2026-05-21T14:00:00.000Z');
@@ -461,10 +461,11 @@ describe('cron wave2-confirmation post-close window', () => {
   }
 
   it('fizzles the last fire of the session at the close + 70 tick (17:10 ET, EDT)', async () => {
-    // 2026-05-21 is a Thursday in EDT. The last alert fired 16:05 ET
-    // (20:05Z); at 17:10 ET (21:10Z) it is 65 min old with no follow-up.
+    // 2026-05-21 is a Thursday in EDT. The session's last alert fired at
+    // 16:05:59 ET (20:05:59Z); at 17:10 ET (21:10Z) it is 64:01 old with no
+    // follow-up.
     mockSql
-      .mockResolvedValueOnce([lotteryCandidate(7, '2026-05-21T20:05:00.000Z')])
+      .mockResolvedValueOnce([lotteryCandidate(7, '2026-05-21T20:05:59.000Z')])
       .mockResolvedValueOnce([]) // no followup
       .mockResolvedValueOnce([]) // UPDATE -> fizzled
       .mockResolvedValueOnce([]); // silent-boom candidates
@@ -479,6 +480,29 @@ describe('cron wave2-confirmation post-close window', () => {
     });
     const updateSql = (mockSql.mock.calls[2]![0] as string[]).join('?');
     expect(updateSql).toMatch(/SET wave2_status = 'fizzled'/);
+  });
+
+  it('leaves that same fire in flight one tick earlier (17:05 ET), pinning close + 70 as the first evaluable tick', async () => {
+    // Same fire (16:05:59 ET) at 17:05 ET (21:05Z): age 59:01, still under
+    // the 60-min cutoff, so it stays NULL and no UPDATE runs.
+    mockSql
+      .mockResolvedValueOnce([lotteryCandidate(7, '2026-05-21T20:05:59.000Z')])
+      .mockResolvedValueOnce([]) // no followup
+      .mockResolvedValueOnce([]); // silent-boom candidates
+
+    const res = await runAt('2026-05-21T21:05:00.000Z');
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      lotteryProcessed: 0,
+      lotteryFizzled: 0,
+    });
+    // Candidate SELECT, follow-up SELECT, silent-boom SELECT: no UPDATE.
+    expect(mockSql).toHaveBeenCalledTimes(3);
+    for (const call of mockSql.mock.calls) {
+      expect((call[0] as string[]).join('?')).not.toMatch(/UPDATE/);
+    }
   });
 
   it.each([

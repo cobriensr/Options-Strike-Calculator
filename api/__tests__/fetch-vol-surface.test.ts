@@ -581,7 +581,7 @@ describe('fetch-vol-surface cron handler', () => {
     await handler(makeCronReq(), res);
 
     expect(res._status).toBe(500);
-    expect(Sentry.captureException).toHaveBeenCalled();
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
     expect(logger.error).toHaveBeenCalled();
     // The catch also reaches Axiom as an error event (R4), not only Sentry.
     expect(reportCronRun).toHaveBeenCalledTimes(1);
@@ -611,7 +611,8 @@ describe('fetch-vol-surface cron handler', () => {
     await handler(makeCronReq(), res);
 
     expect(res._status).toBe(500);
-    expect(Sentry.captureException).toHaveBeenCalled();
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(reportCronRun).toHaveBeenCalledTimes(1);
     expect(reportCronRun).toHaveBeenCalledWith(
       'fetch-vol-surface',
       expect.objectContaining({

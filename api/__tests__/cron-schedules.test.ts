@@ -724,6 +724,7 @@ describe('DST: gated crons reach the same ET window in both regimes', () => {
     for (const custom of [
       'auto-prefill-premarket', // local isAfterCashOpen
       'evaluate-round-trip', // inline timeCheck
+      'wave2-confirmation', // inline timeCheck
       'build-features', // dynamicTimeCheck
       'fetch-vol-surface', // marketHours: false
       'archive-gexbot-eod', // marketHours: false
