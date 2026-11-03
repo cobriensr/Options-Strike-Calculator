@@ -393,26 +393,32 @@ describe('cron-schedules SCHEDULE_MAP', () => {
     },
   );
 
-  it('evaluate-round-trip: vercel.json serves the post-close evaluation ticks in BOTH DST regimes', () => {
-    // The handler gate runs to close + 80 so the session's last fires
-    // (close + 5) are evaluated after their 60-min window and before the
-    // weekend prunes their tape: the close + 70 tick is the first to see
-    // them, close + 80 is the retry. Both must actually be fired by
-    // vercel.json — in EST 17:20 ET is 22:20 UTC, outside a `14-21` hour
-    // range, which is how Friday's last fires went un-evaluated.
-    const vercel = vercelCrons.get('evaluate-round-trip');
-    expect(vercel).toBeDefined();
-    const servedUtc = unionTickSet(vercel ?? []);
-    for (const offset of [5, 4]) {
-      for (const afterClose of [70, 80]) {
-        const utcTotal = MARKET_MINUTES.CLOSE + afterClose + offset * 60;
-        expect(
-          servedUtc.has(utcTotal),
-          `${offset === 5 ? 'EST' : 'EDT'}: close + ${afterClose} min → ${Math.floor(utcTotal / 60)}:${String(utcTotal % 60).padStart(2, '0')} UTC not fired`,
-        ).toBe(true);
+  // The handler gate of these crons runs past the close so the session's last
+  // fires (close + 5) can be evaluated after their 60-min window: the
+  // close + 70 tick is the first to see them, the last tick of the gate is the
+  // retry. Both must actually be fired by vercel.json — in EST 17:20 ET is
+  // 22:20 UTC, outside a `14-21` hour range, which is how Friday's last fires
+  // went un-evaluated.
+  it.each([
+    ['evaluate-round-trip', [70, 80]],
+    ['wave2-confirmation', [70, 75]],
+  ])(
+    '%s: vercel.json serves the post-close evaluation ticks in BOTH DST regimes',
+    (jobName, afterCloseTicks) => {
+      const vercel = vercelCrons.get(jobName);
+      expect(vercel).toBeDefined();
+      const servedUtc = unionTickSet(vercel ?? []);
+      for (const offset of [5, 4]) {
+        for (const afterClose of afterCloseTicks) {
+          const utcTotal = MARKET_MINUTES.CLOSE + afterClose + offset * 60;
+          expect(
+            servedUtc.has(utcTotal),
+            `${offset === 5 ? 'EST' : 'EDT'}: close + ${afterClose} min → ${Math.floor(utcTotal / 60)}:${String(utcTotal % 60).padStart(2, '0')} UTC not fired`,
+          ).toBe(true);
+        }
       }
-    }
-  });
+    },
+  );
 
   it('every entry has positive checkinMargin and maxRuntime', () => {
     for (const [name, cfg] of Object.entries(SCHEDULE_MAP)) {

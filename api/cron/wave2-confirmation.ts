@@ -25,7 +25,8 @@
  * wave-2 for a silent boom alert is another silent boom alert. Cross-type
  * detection is deferred to v2.
  *
- * Cadence: every 5 min during market hours (13-21 UTC, Mon-Fri).
+ * Cadence: every 5 min from the 09:25 ET open buffer until 75 min after the
+ * day's close (see POST_CLOSE_EVAL_MIN), Mon-Fri.
  *
  * The 'fizzled' label is itself a training signal — the next weekly takeit
  * retrain gets free "this alert didn't follow through" labels for the
@@ -35,6 +36,7 @@
  */
 
 import { getDb, withDbRetry } from '../_lib/db.js';
+import { isMarketHours } from '../_lib/cron-helpers.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -57,6 +59,29 @@ const GRACE_SECONDS = 60;
 // once it appears in the window). The IS NULL guard makes the lookback
 // safe to widen; the partial index keeps the scan cheap.
 const LOOKBACK_MIN = 70;
+
+/**
+ * How long past the day's close the cron keeps running. The fire detectors
+ * stop at isMarketHours()' close + 5 gate, so the last wave-1 fires by
+ * close + 5:59 (observed max: 16:05:13 ET). It reaches the 60-minute fizzle
+ * age at close + 65:59, which the close + 70 tick of the every-5-minutes
+ * schedule is the first to see; the close + 75 tick is one retry, and it is
+ * the last that still has the fire inside LOOKBACK_MIN (age 69:01 of 70).
+ *
+ * Before this, the gate was isMarketHours() (close + 5), so a fire after
+ * about 15:05 ET never reached age 60 while the cron ran, and the next
+ * morning it was far outside the lookback: with no follow-up it stayed NULL
+ * forever instead of 'fizzled' (1,400 lottery rows from 2026-10-01 to
+ * 2026-11-02, all fired 15:06-16:05 ET). That biased the fizzle rate low
+ * for late fires.
+ *
+ * Applied as `isMarketHours(POST_CLOSE_EVAL_MIN)`: same 09:25 ET open buffer,
+ * weekend/holiday handling and half-day close (13:00 -> 14:15 ET).
+ * vercel.json's UTC hours must reach 17:15 ET in EST (22:15 UTC), and the
+ * Sentry monitor schedule in cron-schedules.ts mirrors them. Same shape as
+ * evaluate-round-trip's POST_CLOSE_EVAL_MIN.
+ */
+const POST_CLOSE_EVAL_MIN = 75;
 
 // Wave-2 windows, in minutes from wave-1 trigger time.
 const CONFIRMED_WINDOW_MIN = 30;
@@ -360,5 +385,8 @@ async function wave2ConfirmationHandler(): Promise<CronResult> {
 export default withCronInstrumentation(
   'wave2-confirmation',
   wave2ConfirmationHandler,
-  { requireApiKey: false },
+  {
+    requireApiKey: false,
+    timeCheck: () => isMarketHours(POST_CLOSE_EVAL_MIN),
+  },
 );

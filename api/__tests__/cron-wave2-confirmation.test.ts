@@ -428,3 +428,85 @@ describe('cron wave2-confirmation', () => {
     expect(mockSql).toHaveBeenCalledTimes(8);
   });
 });
+
+// ── Post-close window ───────────────────────────────────────
+//
+// A fire after ~15:05 ET reaches age 60 only after the 16:05 ET close + 5
+// gate, and the next morning it is outside the 70-min lookback, so with no
+// follow-up it stayed NULL instead of 'fizzled'. The gate now runs to close
+// + 75: the close + 70 tick is the first to see the session's last fire
+// (16:05:59 ET, age 64:01) and close + 75 is one retry (age 69:01 < 70).
+// These tests use the real cronGuard under the pinned clock.
+
+describe('cron wave2-confirmation post-close window', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.useFakeTimers();
+    process.env = { ...originalEnv };
+    process.env.CRON_SECRET = 'test-secret';
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.useRealTimers();
+  });
+
+  async function runAt(iso: string) {
+    vi.setSystemTime(new Date(iso));
+    const res = mockResponse();
+    await handler(authedReq(), res);
+    return res;
+  }
+
+  it('fizzles the last fire of the session at the close + 70 tick (17:10 ET, EDT)', async () => {
+    // 2026-05-21 is a Thursday in EDT. The last alert fired 16:05 ET
+    // (20:05Z); at 17:10 ET (21:10Z) it is 65 min old with no follow-up.
+    mockSql
+      .mockResolvedValueOnce([lotteryCandidate(7, '2026-05-21T20:05:00.000Z')])
+      .mockResolvedValueOnce([]) // no followup
+      .mockResolvedValueOnce([]) // UPDATE -> fizzled
+      .mockResolvedValueOnce([]); // silent-boom candidates
+
+    const res = await runAt('2026-05-21T21:10:00.000Z');
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      lotteryProcessed: 1,
+      lotteryFizzled: 1,
+    });
+    const updateSql = (mockSql.mock.calls[2]![0] as string[]).join('?');
+    expect(updateSql).toMatch(/SET wave2_status = 'fizzled'/);
+  });
+
+  it.each([
+    ['EDT close + 75 (17:15 ET)', '2026-05-21T21:15:00.000Z'],
+    ['EST close + 75 (17:15 ET)', '2026-12-02T22:15:00.000Z'],
+    ['half-day close + 75 (14:15 ET)', '2026-11-27T19:15:00.000Z'],
+  ])('still runs at %s', async (_label, iso) => {
+    mockSql.mockResolvedValue([]);
+
+    const res = await runAt(iso);
+
+    expect(res._json).not.toMatchObject({ reason: 'Outside time window' });
+    // One candidate SELECT per table.
+    expect(mockSql).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['EDT close + 80 (17:20 ET)', '2026-05-21T21:20:00.000Z'],
+    ['EST close + 80 (17:20 ET)', '2026-12-02T22:20:00.000Z'],
+    ['half-day close + 80 (14:20 ET)', '2026-11-27T19:20:00.000Z'],
+    ['a market holiday (Thanksgiving) mid-session', '2026-11-26T15:00:00.000Z'],
+  ])('skips at %s, past the gate', async (_label, iso) => {
+    const res = await runAt(iso);
+
+    expect(res._json).toEqual({
+      skipped: true,
+      reason: 'Outside time window',
+    });
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+});
