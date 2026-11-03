@@ -312,6 +312,39 @@ describe('api-helpers', () => {
       vi.unstubAllGlobals();
     });
 
+    it('masks a token-like run in the upstream body and caps it once', async () => {
+      // Every caller puts `error` in a log line, a thrown Error, Sentry
+      // `extra` or Axiom metadata, none of which scrub body text. The helper
+      // redacts once; a 403 avoids the 5xx retry backoff.
+      vi.mocked(getAccessToken).mockResolvedValue({ token: 'tok123' });
+      const token = 'A'.repeat(40);
+      const body = `{"error":"bad","echo":"${token}","pad":"${'x '.repeat(150)}"}`;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: false,
+          status: 403,
+          text: () => Promise.resolve(body),
+        }),
+      );
+      const result = await schwabFetch('/quotes');
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toMatch(
+          /^\[SCHWAB_API_403\] Schwab API error \(403\): /,
+        );
+        expect(result.error).not.toContain(token);
+        expect(result.error).toContain('[redacted]');
+        // Capped, with the ORIGINAL body length, not a re-measured one.
+        expect(result.error).toMatch(
+          new RegExp(String.raw`… \(${body.length} chars\)$`),
+        );
+        expect(result.status).toBe(502);
+        expect(result.code).toBe('SCHWAB_API_403');
+      }
+      vi.unstubAllGlobals();
+    });
+
     it('returns 401 status when Schwab returns 401', async () => {
       vi.mocked(getAccessToken).mockResolvedValue({ token: 'tok123' });
       vi.stubGlobal(
