@@ -64,7 +64,8 @@ function relativeValueImports(file) {
   const visit = (node) => {
     let spec;
     if (ts.isImportDeclaration(node)) {
-      if (node.importClause?.isTypeOnly !== true) spec = node.moduleSpecifier;
+      if (node.importClause?.phaseModifier !== ts.SyntaxKind.TypeKeyword)
+        spec = node.moduleSpecifier;
     } else if (ts.isExportDeclaration(node)) {
       if (!node.isTypeOnly) spec = node.moduleSpecifier;
     } else if (
