@@ -720,14 +720,16 @@ describe('fetch-strike-iv handler', () => {
     },
   );
 
-  it('masks a token-like run in the Schwab body before it reaches the log', async () => {
+  it('logs the Schwab error as schwabFetch redacted it, without capping it again', async () => {
     // pino has no redact config, and this logs once a minute per failing
-    // ticker.
-    const token = 'B'.repeat(40);
+    // ticker. schwabFetch masks and caps the body once (api/_lib/
+    // schwab-fetch.ts); this error is 255 characters, so a second
+    // redactUpstreamBody here would cut it to 200 and rewrite "… (N chars)".
+    const error = `[SCHWAB_API_502] Schwab API error (502): ${'y '.repeat(100)}… (4031 chars)`;
     vi.mocked(schwabFetch).mockResolvedValue({
       ok: false,
       status: 502,
-      error: `[SCHWAB_API_502] Schwab API error (502): {"echo":"${token}"}`,
+      error,
       code: 'SCHWAB_API_502',
     });
 
@@ -741,8 +743,7 @@ describe('fetch-strike-iv handler', () => {
       );
     expect(warned.length).toBeGreaterThan(0);
     for (const [fields] of warned) {
-      expect((fields as { error: string }).error).toContain('[redacted]');
-      expect(JSON.stringify(fields)).not.toContain(token);
+      expect((fields as { error: string }).error).toBe(error);
     }
   });
 

@@ -43,11 +43,11 @@
 
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
-import { redactUpstreamBody } from '../_lib/redact-upstream-body.js';
 import {
   mapWithConcurrency,
   schwabFetch,
   type ApiResult,
+  type SchwabErrorCode,
 } from '../_lib/api-helpers.js';
 import {
   STRIKE_IV_TICKER_CONCURRENCY,
@@ -347,12 +347,15 @@ async function fetchChain(
     `&fromDate=${fromDate}&toDate=${toDate}&strikeCount=500`;
   const result = await schwabFetch<SchwabChainResponse>(path);
   if (!result.ok && result.code !== 'SCHWAB_TOKEN_EXPIRED') {
-    // result.error embeds the raw Schwab body and pino has no redact config.
+    // result.error embeds the Schwab body, which schwabFetch already masked
+    // and capped; pino has no redact config, so that is what keeps a token
+    // out of this line. Don't redact it again (a second pass would report
+    // the capped length).
     logger.warn(
       {
         ticker,
         status: result.status,
-        error: redactUpstreamBody(result.error),
+        error: result.error,
       },
       'fetch-strike-iv: Schwab chain fetch failed',
     );
@@ -527,7 +530,7 @@ interface TickerResult {
   skipped: boolean;
   reason?: string;
   /** schwabFetch's failure code, on `schwab_error` legs only. */
-  code?: string;
+  code?: SchwabErrorCode;
 }
 
 async function runTicker(

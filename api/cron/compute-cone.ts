@@ -52,7 +52,6 @@ import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
-import { redactUpstreamBody } from '../_lib/redact-upstream-body.js';
 import { Sentry } from '../_lib/sentry.js';
 
 interface SchwabOptionContract {
@@ -194,13 +193,13 @@ export default withCronInstrumentation(
           metadata: { reason: 'schwab_logged_out' },
         };
       }
-      // result.error embeds the raw Schwab body. Mask token-like runs and cap
-      // it once, for every place it goes: pino (no redact config), Sentry
-      // `extra` (beforeSend scrubs by key name only), and the Axiom event and
-      // JSON response via `metadata`.
-      const safeError = redactUpstreamBody(result.error);
+      // result.error embeds the Schwab body, which schwabFetch already masked
+      // and capped, so it is safe for every place it goes: pino (no redact
+      // config), Sentry `extra` (beforeSend scrubs by key name only), and the
+      // Axiom event and JSON response via `metadata`. Don't redact it again:
+      // a second pass would report the capped length, not the body's.
       logger.warn(
-        { status: result.status, error: safeError },
+        { status: result.status, error: result.error },
         'compute-cone: Schwab chain fetch failed',
       );
       // schwabFetch captures nothing for a non-2xx or network failure, and
@@ -213,11 +212,11 @@ export default withCronInstrumentation(
           'cron.anomaly': 'schwab-fetch-failed',
           'schwab.code': result.code,
         },
-        extra: { status: result.status, error: safeError },
+        extra: { status: result.status, error: result.error },
       });
       return {
         status: 'error',
-        metadata: { reason: 'schwab_fetch_failed', error: safeError },
+        metadata: { reason: 'schwab_fetch_failed', error: result.error },
       };
     }
 

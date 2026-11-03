@@ -486,17 +486,17 @@ describe('compute-cone handler', () => {
     },
   );
 
-  it('masks a token-like run and caps the Schwab body everywhere it goes', async () => {
-    // beforeSend scrubs `extra` by key name only and pino has no redact
-    // config, so the body is redacted once at the call site
-    // (redactUpstreamBody: mask 24+ token chars, cap 200) and that copy
-    // feeds Sentry, the log line and the response (= the Axiom metadata).
-    const token = 'A'.repeat(40);
-    const body = `{"error":"bad","echo":"${token}","pad":"${'x '.repeat(150)}"}`;
+  it('passes the Schwab error through as schwabFetch redacted it, without capping it again', async () => {
+    // schwabFetch masks token-like runs and caps the body to 200 characters
+    // once (api/_lib/schwab-fetch.ts), so `error` is already safe for
+    // Sentry, pino and the Axiom event. This one is 255 characters: a second
+    // redactUpstreamBody here would cut it to 200 and swap the original body
+    // length in "… (N chars)" for its own.
+    const error = `[SCHWAB_API_502] Schwab API error (502): ${'y '.repeat(100)}… (4031 chars)`;
     vi.mocked(schwabFetch).mockResolvedValueOnce({
       ok: false,
       status: 502,
-      error: `[SCHWAB_API_502] Schwab API error (502): ${body}`,
+      error,
       code: 'SCHWAB_API_502',
     });
 
@@ -504,17 +504,12 @@ describe('compute-cone handler', () => {
     await handler(authedReq(), res);
 
     const [, context] = vi.mocked(Sentry.captureMessage).mock.calls[0]!;
-    const sent = (context as { extra: { error: string } }).extra.error;
-    expect(sent).not.toContain(token);
-    expect(sent).toContain('[redacted]');
-    expect(sent).toMatch(/… \(\d+ chars\)$/);
-
-    // The same redacted copy is in the response (the wrapper merges
-    // `metadata` into both the body and the Axiom event) and the log line.
-    expect(res._json).toMatchObject({ status: 'error', error: sent });
-    expect(JSON.stringify(res._json)).not.toContain(token);
+    expect((context as { extra: { error: string } }).extra.error).toBe(error);
+    // The same string is in the response (the wrapper merges `metadata`
+    // into both the body and the Axiom event) and the log line.
+    expect(res._json).toMatchObject({ status: 'error', error });
     expect(logger.warn).toHaveBeenCalledWith(
-      { status: 502, error: sent },
+      { status: 502, error },
       'compute-cone: Schwab chain fetch failed',
     );
   });
