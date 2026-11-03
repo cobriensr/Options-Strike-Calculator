@@ -354,6 +354,82 @@ describe('fetch-etf-tide handler', () => {
     vi.unstubAllGlobals();
   });
 
+  it('partial: one ticker batch INSERT rejects → status partial, captured once, not success (R4)', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [makeEtfTideRow()] }),
+      }),
+    );
+
+    // Reject the batch INSERT for one source only. The txn stub records the
+    // bound values so the failing leg is chosen by its `source`, not by call
+    // order (the two tickers run concurrently).
+    const dbError = new Error('connection lost');
+    mockTransaction.mockImplementation(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const bound: unknown[][] = [];
+        const queries = fn((_strings: unknown, ...values: unknown[]) => {
+          bound.push(values);
+          return {};
+        });
+        if (bound.some((values) => values.includes('spy_etf_tide')))
+          throw dbError;
+        return queries.map(() => [{ id: 1 }]);
+      },
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      failureCount: 1,
+      results: {
+        spy_etf_tide: { stored: 0 },
+        // The healthy QQQ leg still landed its row.
+        qqq_etf_tide: { stored: 1 },
+      },
+    });
+    // One capture for the one failed write, not two.
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
+    vi.unstubAllGlobals();
+  });
+
+  it('error: every ticker batch INSERT rejects → status error, one capture each (R4)', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [makeEtfTideRow()] }),
+      }),
+    );
+    const dbError = new Error('connection lost');
+    mockTransaction.mockRejectedValue(dbError);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'error', failureCount: 2 });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(2);
+    expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
+    vi.unstubAllGlobals();
+  });
+
   it('success: all tickers succeed → status success', async () => {
     process.env.UW_API_KEY = 'uwkey';
     const row = makeEtfTideRow();

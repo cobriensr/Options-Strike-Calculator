@@ -135,38 +135,37 @@ async function storeAllCandles(
 
   const sql = getDb();
 
-  try {
-    // One transaction = one Neon round-trip. Collapses the prior per-row
-    // awaited INSERT loop (N round-trips) while preserving the exact
-    // ON CONFLICT clause and per-row RETURNING-id stored/skipped accounting.
-    const results = await sql.transaction((txn) =>
-      candles.map(
-        (candle) => txn`
-          INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
-          VALUES (
-            ${candle.date},
-            ${candle.timestamp},
-            ${source},
-            ${candle.ncp},
-            ${candle.npp},
-            ${candle.netVolume}
-          )
-          ON CONFLICT (date, timestamp, source) DO NOTHING
-          RETURNING id
-        `,
-      ),
-    );
+  // One transaction = one Neon round-trip. Collapses the prior per-row
+  // awaited INSERT loop (N round-trips) while preserving the exact
+  // ON CONFLICT clause and per-row RETURNING-id stored/skipped accounting.
+  //
+  // A rejected write throws to the per-source catch in the handler, which
+  // counts it as a failed leg and captures it with the cron/ticker/source
+  // tags. Swallowing it here as "skipped" used to leave the run reporting
+  // `success` while the flow_data rows were missing (R4).
+  const results = await sql.transaction((txn) =>
+    candles.map(
+      (candle) => txn`
+        INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
+        VALUES (
+          ${candle.date},
+          ${candle.timestamp},
+          ${source},
+          ${candle.ncp},
+          ${candle.npp},
+          ${candle.netVolume}
+        )
+        ON CONFLICT (date, timestamp, source) DO NOTHING
+        RETURNING id
+      `,
+    ),
+  );
 
-    let stored = 0;
-    for (const result of results) {
-      if (result.length > 0) stored++;
-    }
-    return { stored, skipped: candles.length - stored };
-  } catch (err) {
-    Sentry.captureException(err);
-    logger.warn({ err, source }, 'Batch flow_data insert failed');
-    return { stored: 0, skipped: candles.length };
+  let stored = 0;
+  for (const result of results) {
+    if (result.length > 0) stored++;
   }
+  return { stored, skipped: candles.length - stored };
 }
 
 // ── Handler ─────────────────────────────────────────────────
