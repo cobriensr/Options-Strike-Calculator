@@ -53,7 +53,7 @@ import {
 export const config = { maxDuration: 780 };
 
 interface RunReport {
-  /** False when no lesson landed, so the body never reads as a clean run. */
+  /** False on an error run, so the body never reads as a clean run. */
   ok: boolean;
   /** The run status Axiom gets, so a manual or ?dry=true response matches. */
   status: 'ok' | 'partial' | 'error';

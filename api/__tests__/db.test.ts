@@ -977,7 +977,7 @@ describe('db.ts', () => {
       ).toThrow('at index 2');
     });
 
-    it('passes on the real MIGRATIONS array (ids 1..189, no dups)', () => {
+    it('passes on the real MIGRATIONS array (strictly increasing ids, no dups)', () => {
       // This is the critical integration assertion: the actual compile-time
       // MIGRATIONS constant must satisfy the guard that migrateDb() calls.
       expect(() => assertMigrationsWellFormed(MIGRATIONS)).not.toThrow();
