@@ -644,6 +644,19 @@ describe('fetch-futures-snapshot handler', () => {
     expect(json.errors).toContain('ES: connection reset');
     expect(Sentry.captureException).toHaveBeenCalledTimes(6);
     expect(insertedSymbols()).toEqual([]);
+    // The 500 also reaches Axiom as an error event (R4): Sentry alone left
+    // the cron-runs dataset showing nothing for the failed run.
+    expect(reportCronRun).toHaveBeenCalledTimes(1);
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'fetch-futures-snapshot',
+      expect.objectContaining({
+        status: 'error',
+        message: 'All symbols failed',
+        errorsCount: 6,
+        errors: expect.arrayContaining(['ES: connection reset']),
+        durationMs: expect.any(Number),
+      }),
+    );
   });
 
   it('handles DB errors on individual symbol queries', async () => {
@@ -806,6 +819,17 @@ describe('fetch-futures-snapshot handler', () => {
     expect(res._status).toBe(500);
     expect(res._json).toEqual({ error: 'Internal error' });
     expect(Sentry.captureException).toHaveBeenCalled();
+    // ...and as an Axiom error event carrying the thrown message.
+    expect(reportCronRun).toHaveBeenCalledTimes(1);
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'fetch-futures-snapshot',
+      expect.objectContaining({
+        status: 'error',
+        message: 'upsert failed',
+        error: 'upsert failed',
+        durationMs: expect.any(Number),
+      }),
+    );
   });
 
   // SENTRY-EMERALD-DESERT-5E: when futures are closed (Sat all day, Fri-Sun

@@ -32,9 +32,14 @@ vi.mock('../_lib/api-helpers.js', () => ({
   withRetry: vi.fn((fn: () => unknown) => fn()),
 }));
 
+vi.mock('../_lib/axiom.js', () => ({
+  reportCronRun: vi.fn(),
+}));
+
 import handler from '../cron/fetch-vol-surface.js';
 import { cronGuard, uwFetch } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
+import { reportCronRun } from '../_lib/axiom.js';
 import logger from '../_lib/logger.js';
 
 // ── Helpers ───────────────────────────────────────────────
@@ -578,6 +583,17 @@ describe('fetch-vol-surface cron handler', () => {
     expect(res._status).toBe(500);
     expect(Sentry.captureException).toHaveBeenCalled();
     expect(logger.error).toHaveBeenCalled();
+    // The catch also reaches Axiom as an error event (R4), not only Sentry.
+    expect(reportCronRun).toHaveBeenCalledTimes(1);
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'fetch-vol-surface',
+      expect.objectContaining({
+        status: 'error',
+        message: 'DB unavailable',
+        error: 'DB unavailable',
+        durationMs: expect.any(Number),
+      }),
+    );
   });
 
   it('returns 500 on DB write error during realized vol insert', async () => {
@@ -596,5 +612,13 @@ describe('fetch-vol-surface cron handler', () => {
 
     expect(res._status).toBe(500);
     expect(Sentry.captureException).toHaveBeenCalled();
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'fetch-vol-surface',
+      expect.objectContaining({
+        status: 'error',
+        message: 'disk full',
+        error: 'disk full',
+      }),
+    );
   });
 });
