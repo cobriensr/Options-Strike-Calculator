@@ -10,7 +10,7 @@ Phases 1 to 6 are done (project skills: 103 → 51 after 3b). Phase 7 is next. P
 
 | Phase | State | Record |
 |---|---|---|
-| 1 rule conflicts | done | `9c8fa3a1` + local history baseline |
+| 1 rule conflicts | done | `9c8fa3a1` + local history baseline, `234d310` |
 | 2 prune | done | `c60d0798`; local history `67f48fd`, `9e1817e` |
 | 3a merges (security, observability, a11y, claude-api, deps) | done, reviewed | `b93d784a` (stale README/comment); local history `247c781` |
 | 3b merges (perf, risk, agents-md, pandas-pro, github) | done, review fixes applied | local history `c0977e9`, fixes `bc4ad48` |
@@ -18,8 +18,8 @@ Phases 1 to 6 are done (project skills: 103 → 51 after 3b). Phase 7 is next. P
 | 4b fix survivors (everything else) | done, review fixes applied | local history `0bfac3e`, fixes `7cbdcbd` |
 | 5 rewrite high-traffic skills | done, re-review pass | local history `ed2d2fd`, `14533c0`, `499c1c8`, fixes `1dff191` |
 | 6 agents | done, two review rounds | local history `742164a`, `2b4e9cd`, `a8bedaa`, `d1fe809`, `85f8e71`, `88327e0`, `0c215e1` |
-| 6 repo (CLAUDE.md facts, ESLint `.js` scope) | done | `a86835a6`, `365db57c` |
-| (side stream) cron monitor coverage | shipped 2026-10-29 | `58526e46`..`4bf97642`; see `cron-monitor-coverage-2026-10-29.md` |
+| 6 repo (CLAUDE.md facts, ESLint `.js` scope) | done | `ea8c1636`, `b0eabe05` |
+| (side stream) cron monitor coverage | shipped 2026-10-29 | `58526e46`..`4bf97642`; local history `2df9154`; see `cron-monitor-coverage-2026-10-29.md` |
 
 ## Evidence
 
@@ -154,11 +154,11 @@ Each rewrite must cite real repo files. The reviewer checks every cited path and
 - **Project `CLAUDE.md`:**
   - formatter locations (the `format*ForClaude` formatters are spread across `api/_lib/`; `db-flow.ts` holds `formatFlowDataForClaude`, `formatGreekExposureForClaude` and `formatSpotExposuresForClaude`);
   - the `ml/.venv` path on the Windows workstation;
-  - "69 numbered migrations" (the highest migration id is 199).
-  
-  Done in `a86835a6`, with more drift the phase 5 and 6a writers found (cron test pattern, migration test totals, `SCHEDULE_MAP`, TRACE Live). `c43d89d3` had already fixed `useAppState`, the venv path, the migration count, `cleanupOutdatedCaches()` and analyze's 780s.
+  - "69 numbered migrations" (the highest migration id was 199 when this was found).
+
+  Done in `ea8c1636`, with more drift the phase 5 and 6a writers found (cron test pattern, migration test totals, `SCHEDULE_MAP`, TRACE Live). `c43d89d3` had already fixed `useAppState`, the venv path, the migration count, `cleanupOutdatedCaches()` and analyze's 780s.
 - **`npm run review:ml` on Windows:** the ml Makefile defaulted to `.venv/bin/python`, so the target failed unless `PYTHON` was set. Fixed in `b573ee78` (`Scripts` on Windows; CI's `PYTHON: python` still wins).
-- **`.js`-extension lint scope:** `src/components/LotteryFinder/ct-window.ts` is imported by `api/` but sat outside the ESLint glob that enforces `.js` extensions. Added in `365db57c`, with `scripts/_lib/eslint-api-src-scope.test.mjs` failing on any future gap.
+- **`.js`-extension lint scope:** `src/components/LotteryFinder/ct-window.ts` is imported by `api/` but sat outside the ESLint glob that enforces `.js` extensions. Added in `b0eabe05`, with `scripts/_lib/eslint-api-src-scope.test.mjs` failing on any future gap.
 
 ### Phase 7: scripts and agent definitions for repeated work (code: full loop, tests required)
 
