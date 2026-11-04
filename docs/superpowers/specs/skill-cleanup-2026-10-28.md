@@ -20,6 +20,8 @@ Phases 1 to 6 are done (project skills: 103 → 51 after 3b). Phase 7 is next. P
 | 6 agents | done, two review rounds | local history `742164a`, `2b4e9cd`, `a8bedaa`, `d1fe809`, `85f8e71`, `88327e0`, `0c215e1` |
 | 6 repo (CLAUDE.md facts, ESLint `.js` scope) | done | `ea8c1636`, `b0eabe05` |
 | (side stream) cron monitor coverage | shipped 2026-10-29 | `58526e46`..`4bf97642`; local history `2df9154`; see `cron-monitor-coverage-2026-10-29.md` |
+| (side stream) E2E CI repair phase 2 | on main | `15db7163`..`d3b80398`; see `e2e-ci-repair-2026-10-26.md` |
+| (side stream) commit gate | shipped and active 2026-10-29 (`d45eaf6d`, `eaa89513`, `c3887206`; `core.hooksPath` set) | see `commit-gate-2026-10-28.md` |
 
 ## Evidence
 
@@ -105,14 +107,14 @@ Each group becomes one skill that carries this repo's rules. Bodies come from th
 - **Data:** `data-transform` → into `pandas-pro`.
 - **GitHub:** `issues` → into `github`.
 - **Simplify:** `kaizen`, `code-refactoring-refactor-clean`. Delete both; the built-in `simplify` covers them.
-- **ML:** `data-scientist` → fold the useful parts into `scikit-learn` / `statistical-analysis`.
+- **ML:** `data-scientist` → fold the useful parts into `scikit-learn` / `statistical-analysis`. (As done: deleted outright; its body was a generic capability list with nothing repo-specific to fold.)
 
 ### Phase 4: fix survivors
 
 Split for review:
 
 - **4a (code-path skills):** `typescript-expert`, `git-advanced-workflows`, `postgres-pro`, `auth-implementation-patterns` (fold its unique Schwab OAuth content into `cc-skill-security-review`, then delete it), `vercel-deployment`, `progressive-web-app`, `playwright-expert`, `unusual-whales-api`.
-- **4b (everything else):** `matplotlib`, `scikit-learn` and `statistical-analysis` (both over 500 lines; move detail to `references/`), `pydantic-models-py`, `zod`, `csv-data-summarizer`, `ui-styling`, and the ALWAYS/MUST description sweep.
+- **4b (everything else):** `matplotlib`, `scikit-learn` and `statistical-analysis` (both over 500 lines; move detail to `references/`), `pydantic-models-py`, `zod`, `csv-data-summarizer`, `ui-styling`, the ALWAYS/MUST description sweep, and a `related-skills` sweep (phase 4a found five skills naming skills that don't exist).
 
 Items:
 
@@ -205,5 +207,5 @@ None. No tables, migrations, env vars or external APIs. Phase 7's `watch-deploy`
 3. The `code-review` and `pr-review-toolkit` plugins are PR-centric. **Keep for now**, and revisit after the phase 2 listing check.
 4. `.agents/skills/` holds a stale third copy, probably for Codex. **Mirror the deletions and keep the folder.**
 5. Retire `codebase-scout`? **Delete it** (phase 6).
-6. The `periscope` skill still asks for a trailing structured-JSON block. It was written for the deleted `/api/periscope-chat` endpoint. `api/_lib/periscope-synthesize.ts` parses its own prompt's output, not the skill's, so in chat the block isn't consumed. **Keep it until the owner decides.**
+6. The `periscope` skill still asks for a trailing structured-JSON block. It was written for the deleted `/api/periscope-chat` endpoint. `api/_lib/periscope-synthesize.ts` parses its own prompt's output, not the skill's, so in chat the block isn't consumed. **Decided (owner, 2026-10-28): keep the block.** Fix only the stale wording that says the backend persists it (around :391, the heading at :405, and :478, "outside the persistence endpoint"); do this in phase 6.
 7. `.claude/settings.local.json` allow-lists `Skill(...)` entries for deleted skills (e.g. `data-scientist`). They're harmless. **Leave them**: it's the owner's local permissions file.
