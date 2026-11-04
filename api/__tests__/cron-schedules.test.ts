@@ -394,14 +394,20 @@ describe('cron-schedules SCHEDULE_MAP', () => {
   );
 
   // The handler gate of these crons runs past the close so the session's last
-  // fires (close + 5) can be evaluated after their 60-min window: the
-  // close + 70 tick is the first to see them, the last tick of the gate is the
+  // fires (close + 5) can be evaluated once they are old enough: the first
+  // tick that sees them old enough, then the last tick of the gate as the
   // retry. Both must actually be fired by vercel.json — in EST 17:20 ET is
   // 22:20 UTC, outside a `14-21` hour range, which is how Friday's last fires
   // went un-evaluated.
+  //   - evaluate-round-trip evaluates after the 60-min window: close + 70,
+  //     retry close + 80.
+  //   - wave2-confirmation labels at 75 min, the window plus the 15-min
+  //     insert margin (SETTLE_AGE_MIN): the last fire (16:05:59 ET) is 75 min
+  //     old at 17:20:59, so close + 85 (17:25 ET) is the first tick and
+  //     close + 90 (17:30 ET, 22:30 UTC in EST) the retry.
   it.each([
     ['evaluate-round-trip', [70, 80]],
-    ['wave2-confirmation', [70, 75]],
+    ['wave2-confirmation', [85, 90]],
   ])(
     '%s: vercel.json serves the post-close evaluation ticks in BOTH DST regimes',
     (jobName, afterCloseTicks) => {

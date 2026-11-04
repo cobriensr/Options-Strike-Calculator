@@ -559,9 +559,10 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
   'wave2-confirmation': {
     // Every 5 min in the 13-22 UTC window: labels wave-2 confirmation on
     // recent Lottery and Silent Boom fires. The handler gate runs to close +
-    // 75 min (17:15 ET = 22:15 UTC in EST, hence hour 22) so the session's
-    // last fires reach their 60-min fizzle age; ticks past the gate are
-    // satisfied by the wrapper's skip check-in. High-freq → relaxed threshold.
+    // 90 min (17:30 ET = 22:30 UTC in EST, hence hour 22) so the session's
+    // last fires reach their 75-min settle age (the 60-min window plus the
+    // 15-min insert margin); ticks past the gate are satisfied by the
+    // wrapper's skip check-in. High-freq → relaxed threshold.
     schedule: '*/5 13-22 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
