@@ -17,8 +17,7 @@ def _make_trades(pnls: list[float], starts: list[str] | None = None) -> pd.DataF
     if starts is None:
         starts = [
             (
-                pd.Timestamp("2026-01-05", tz="UTC")
-                + pd.Timedelta(days=i, hours=14)
+                pd.Timestamp("2026-01-05", tz="UTC") + pd.Timedelta(days=i, hours=14)
             ).isoformat()
             for i in range(len(pnls))
         ]
@@ -90,8 +89,11 @@ def test_time_of_day_bucket():
 
 
 def test_format_report_zero_signals():
-    md = metrics.format_report("test-setup", metrics.compute_metrics(pd.DataFrame()),
-                                ("2026-01-01", "2026-04-17"))
+    md = metrics.format_report(
+        "test-setup",
+        metrics.compute_metrics(pd.DataFrame()),
+        ("2026-01-01", "2026-04-17"),
+    )
     assert "No signals fired" in md
     assert "test-setup" in md
 

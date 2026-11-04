@@ -255,9 +255,7 @@ def get_connection() -> psycopg2.extensions.connection:
     attempts = 6
     for attempt in range(attempts):
         try:
-            return psycopg2.connect(
-                database_url, sslmode="require", connect_timeout=10
-            )
+            return psycopg2.connect(database_url, sslmode="require", connect_timeout=10)
         except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
             if attempt == attempts - 1:
                 print(f"Error: Could not connect to database: {e}")

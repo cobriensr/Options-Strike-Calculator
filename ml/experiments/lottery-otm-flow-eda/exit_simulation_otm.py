@@ -22,7 +22,11 @@ import psycopg2
 from scipy.signal import find_peaks
 
 # Reuse layout primitives from the all-NCP sim
-ALL_NCP_RESULTS = Path(__file__).parents[1] / "lottery-net-flow-eda" / "exit_simulation_results.parquet"
+ALL_NCP_RESULTS = (
+    Path(__file__).parents[1]
+    / "lottery-net-flow-eda"
+    / "exit_simulation_results.parquet"
+)
 PARQUET_DIR = Path("/Users/charlesobrien/Desktop/Bot-Eod-parquet")
 OTM_FLOW = Path(__file__).parent / "otm_flow.parquet"
 OUT_PARQUET = Path(__file__).parent / "exit_simulation_otm_results.parquet"
@@ -103,9 +107,7 @@ def simulate_inversion(minutes, flow_day, matched_side, entry_price, trigger_ts)
         .replace(hour=EOD_CT_HOUR, minute=0, second=0, microsecond=0)
         .tz_convert("UTC")
     )
-    flow_post = flow_day[
-        (flow_day["ts"] > trigger_ts) & (flow_day["ts"] <= eod_ts)
-    ]
+    flow_post = flow_day[(flow_day["ts"] > trigger_ts) & (flow_day["ts"] <= eod_ts)]
     if len(flow_post) < 5:
         return None, "insufficient_flow_data"
     cum = flow_post[matched_side].cumsum().to_numpy()
@@ -122,7 +124,9 @@ def simulate_inversion(minutes, flow_day, matched_side, entry_price, trigger_ts)
     cum_after = flow_after_peak[matched_side].cumsum().to_numpy()
     slopes = np.full(len(cum_after), np.nan)
     for i in range(INVERSION_SLOPE_WINDOW_MIN, len(cum_after)):
-        slopes[i] = (cum_after[i] - cum_after[i - INVERSION_SLOPE_WINDOW_MIN]) / INVERSION_SLOPE_WINDOW_MIN
+        slopes[i] = (
+            cum_after[i] - cum_after[i - INVERSION_SLOPE_WINDOW_MIN]
+        ) / INVERSION_SLOPE_WINDOW_MIN
     neg_streak = 0
     inversion_idx = None
     for i, s in enumerate(slopes):
@@ -145,7 +149,9 @@ def _exit_at_or_after(minute_prices, target_ts, entry_price, status):
     at_or_after = minute_prices[minute_prices["minute"] >= target_ts]
     if at_or_after.empty:
         last = minute_prices.iloc[-1]
-        return float((last["mid"] - entry_price) / entry_price * 100), f"{status}_eod_fallback"
+        return float(
+            (last["mid"] - entry_price) / entry_price * 100
+        ), f"{status}_eod_fallback"
     row = at_or_after.iloc[0]
     return float((row["mid"] - entry_price) / entry_price * 100), status
 
@@ -179,7 +185,9 @@ def main() -> int:
     fires["trigger_time_ct"] = pd.to_datetime(fires["trigger_time_ct"], utc=True)
     otm["ts"] = pd.to_datetime(otm["ts"], utc=True)
     otm["session_date"] = otm["ts"].dt.tz_convert("America/Chicago").dt.date
-    fires["fire_session_date"] = fires["trigger_time_ct"].dt.tz_convert("America/Chicago").dt.date
+    fires["fire_session_date"] = (
+        fires["trigger_time_ct"].dt.tz_convert("America/Chicago").dt.date
+    )
     fires["fire_date"] = fires["date"].astype(str)
 
     print(f"  fires:    {len(fires):,}")
@@ -197,7 +205,13 @@ def main() -> int:
         chains = day_fires["option_chain_id"].unique().tolist()
         all_trades = pd.read_parquet(
             path,
-            columns=["executed_at", "option_chain_id", "nbbo_bid", "nbbo_ask", "canceled"],
+            columns=[
+                "executed_at",
+                "option_chain_id",
+                "nbbo_bid",
+                "nbbo_ask",
+                "canceled",
+            ],
         )
         day_trades = all_trades[all_trades["option_chain_id"].isin(chains)].copy()
         chain_groups = day_trades.groupby("option_chain_id", observed=True)
@@ -216,7 +230,9 @@ def main() -> int:
                 continue
             otm_day = otm_groups.get_group(otm_key)
             matched = "otm_ncp" if fire.option_type == "C" else "otm_npp"
-            inv_pct, inv_status = simulate_inversion(minutes, otm_day, matched, entry_price, trigger_ts)
+            inv_pct, inv_status = simulate_inversion(
+                minutes, otm_day, matched, entry_price, trigger_ts
+            )
             if trail_pct is None or inv_pct is None:
                 continue
             entry_min = minutes.iloc[0]
@@ -225,27 +241,34 @@ def main() -> int:
                 if entry_min["mid"] > 0
                 else 0
             )
-            rows.append({
-                "fire_id": fire.id,
-                "trail_pct": trail_pct,
-                "inversion_pct_otm": inv_pct,
-                "trail_net_pct": apply_costs(trail_pct, entry_price, spread_pct),
-                "inversion_net_pct_otm": apply_costs(inv_pct, entry_price, spread_pct),
-                "inversion_status_otm": inv_status,
-                "peak_ceiling_pct": float(fire.peak_ceiling_pct or 0),
-                "mode": fire.mode,
-                "tod": fire.tod,
-                "option_type": fire.option_type,
-                "ticker": fire.ticker,
-                "date_str": date_str,
-            })
+            rows.append(
+                {
+                    "fire_id": fire.id,
+                    "trail_pct": trail_pct,
+                    "inversion_pct_otm": inv_pct,
+                    "trail_net_pct": apply_costs(trail_pct, entry_price, spread_pct),
+                    "inversion_net_pct_otm": apply_costs(
+                        inv_pct, entry_price, spread_pct
+                    ),
+                    "inversion_status_otm": inv_status,
+                    "peak_ceiling_pct": float(fire.peak_ceiling_pct or 0),
+                    "mode": fire.mode,
+                    "tod": fire.tod,
+                    "option_type": fire.option_type,
+                    "ticker": fire.ticker,
+                    "date_str": date_str,
+                }
+            )
         del all_trades, day_trades
         print(f"  {date_str}: cumulative {len(rows):,}")
 
     out = pd.DataFrame(rows)
     # Join in the all-NCP results for head-to-head comparison
     all_slim = all_ncp[["fire_id", "inversion_pct", "inversion_net_pct"]].rename(
-        columns={"inversion_pct": "inversion_pct_all", "inversion_net_pct": "inversion_net_pct_all"}
+        columns={
+            "inversion_pct": "inversion_pct_all",
+            "inversion_net_pct": "inversion_net_pct_all",
+        }
     )
     merged = out.merge(all_slim, on="fire_id", how="left")
     merged.to_parquet(OUT_PARQUET, index=False)
@@ -255,8 +278,12 @@ def main() -> int:
     print(f"  median inv all:  {merged['inversion_pct_all'].median():+.1f}%")
     print(f"  median inv otm:  {merged['inversion_pct_otm'].median():+.1f}%")
     print(f"  lottery rate trail: {(merged['trail_pct'] >= 100).mean() * 100:.2f}%")
-    print(f"  lottery rate all:   {(merged['inversion_pct_all'] >= 100).mean() * 100:.2f}%")
-    print(f"  lottery rate otm:   {(merged['inversion_pct_otm'] >= 100).mean() * 100:.2f}%")
+    print(
+        f"  lottery rate all:   {(merged['inversion_pct_all'] >= 100).mean() * 100:.2f}%"
+    )
+    print(
+        f"  lottery rate otm:   {(merged['inversion_pct_otm'] >= 100).mean() * 100:.2f}%"
+    )
     return 0
 
 

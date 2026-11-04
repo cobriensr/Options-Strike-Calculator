@@ -53,7 +53,9 @@ def quartile_lift(df: pd.DataFrame, feature: str, outcome: str) -> pd.DataFrame:
     if len(sub) < 40:
         return pd.DataFrame()
     try:
-        sub["q"] = pd.qcut(sub[feature], q=4, labels=["Q1", "Q2", "Q3", "Q4"], duplicates="drop")
+        sub["q"] = pd.qcut(
+            sub[feature], q=4, labels=["Q1", "Q2", "Q3", "Q4"], duplicates="drop"
+        )
     except ValueError:
         return pd.DataFrame()
     summary = (
@@ -150,7 +152,9 @@ def plot_quartile_lifts(df: pd.DataFrame, feature: str) -> Path | None:
             ax.set_title(f"{policy} — insufficient data")
             ax.axis("off")
             continue
-        ax.bar(summary["q"].astype(str), summary["lottery_rate"] * 100, color="steelblue")
+        ax.bar(
+            summary["q"].astype(str), summary["lottery_rate"] * 100, color="steelblue"
+        )
         ax.axhline(
             (df[policy] >= LOTTERY_THRESHOLD_PCT).mean() * 100,
             color="red",
@@ -245,7 +249,11 @@ def write_report(df: pd.DataFrame, ranked: list[tuple[str, float]]) -> None:
     lines.append("| Feature | Q4 - Q1 lift | Direction |")
     lines.append("| --- | ---: | :--- |")
     for feat, lift in ranked:
-        sign = "↑ Q4 > Q1 (top quartile is higher-rate)" if lift > 0 else "↓ Q4 < Q1 (bottom quartile is higher-rate)"
+        sign = (
+            "↑ Q4 > Q1 (top quartile is higher-rate)"
+            if lift > 0
+            else "↓ Q4 < Q1 (bottom quartile is higher-rate)"
+        )
         lines.append(f"| `{feat}` | {fmt_pp(lift)} | {sign} |")
     lines.append("")
 
@@ -278,7 +286,9 @@ def write_report(df: pd.DataFrame, ranked: list[tuple[str, float]]) -> None:
             continue
         lines.append(f"### `{feat}`")
         lines.append("")
-        lines.append("| Quartile | n | mean return % | median return % | lottery rate | lift vs baseline |")
+        lines.append(
+            "| Quartile | n | mean return % | median return % | lottery rate | lift vs baseline |"
+        )
         lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")
         for _, r in summary.iterrows():
             lines.append(
@@ -311,7 +321,11 @@ def write_report(df: pd.DataFrame, ranked: list[tuple[str, float]]) -> None:
                     f"| {r['stratum']} | {int(r['n_total']):,} | {int(r['n_q4']):,} | "
                     f"{fmt_pct(r['rate_q4'])} | {fmt_pct(r['rate_rest'])} | {fmt_pp(r['lift'])} |"
                 )
-            cv = strat_df["lift"].std() / abs(strat_df["lift"].mean()) if abs(strat_df["lift"].mean()) > 1e-9 else None
+            cv = (
+                strat_df["lift"].std() / abs(strat_df["lift"].mean())
+                if abs(strat_df["lift"].mean()) > 1e-9
+                else None
+            )
             if cv is not None:
                 verdict = (
                     "LIKELY LEAKAGE — uniform lift across strata (CV < 0.5)"
@@ -319,15 +333,21 @@ def write_report(df: pd.DataFrame, ranked: list[tuple[str, float]]) -> None:
                     else "Likely real — concentrated lift (CV >= 0.5)"
                 )
                 lines.append("")
-                lines.append(f"Coefficient of variation across strata: {cv:.2f} → **{verdict}**")
+                lines.append(
+                    f"Coefficient of variation across strata: {cv:.2f} → **{verdict}**"
+                )
             lines.append("")
 
     # Plots index
     lines.append("## Plots")
     lines.append("")
-    lines.append("- [Correlation matrix](../../plots/lottery-net-flow-eda/correlation_matrix.png)")
+    lines.append(
+        "- [Correlation matrix](../../plots/lottery-net-flow-eda/correlation_matrix.png)"
+    )
     for feat, _ in ranked[:5]:
-        lines.append(f"- [{feat} quartile lift](../../plots/lottery-net-flow-eda/{feat}_quartile_lift.png)")
+        lines.append(
+            f"- [{feat} quartile lift](../../plots/lottery-net-flow-eda/{feat}_quartile_lift.png)"
+        )
     lines.append("")
 
     # Recommendation

@@ -4,7 +4,7 @@ import math
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 from enrich_lottery_outcomes import (
     inversion_blend,
@@ -53,23 +53,24 @@ def test_inversion_blend_neither():
 
 
 def test_quintile_cuts_basic_universe():
-    blends = {f'T{i:02d}': i * 0.01 for i in range(1, 26)}
+    blends = {f"T{i:02d}": i * 0.01 for i in range(1, 26)}
     quintiles = quintile_cuts(blends)
     from collections import Counter
+
     counts = Counter(quintiles.values())
     for q in (1, 2, 3, 4, 5):
         assert counts[q] == 5, f"quintile {q} has {counts[q]}, expected 5"
 
 
 def test_quintile_cuts_skips_none_values():
-    blends = {'A': 0.1, 'B': None, 'C': 0.9, 'D': None}
+    blends = {"A": 0.1, "B": None, "C": 0.9, "D": None}
     quintiles = quintile_cuts(blends)
-    assert 'B' not in quintiles
-    assert 'D' not in quintiles
-    assert quintiles['A'] == 1
-    assert quintiles['C'] == 5
+    assert "B" not in quintiles
+    assert "D" not in quintiles
+    assert quintiles["A"] == 1
+    assert quintiles["C"] == 5
 
 
 def test_quintile_cuts_empty_universe():
     assert quintile_cuts({}) == {}
-    assert quintile_cuts({'A': None}) == {}
+    assert quintile_cuts({"A": None}) == {}

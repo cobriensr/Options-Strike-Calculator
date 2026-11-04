@@ -176,6 +176,7 @@ def fetch_training_data() -> pd.DataFrame:
 # Feature bucket helpers
 # ---------------------------------------------------------------------------
 
+
 def quintile_boundaries(series: pd.Series) -> list[float]:
     """Compute the 4 quintile cut-points (Q1/Q2/Q3/Q4/Q5 boundaries)."""
     clean = series.dropna()
@@ -195,6 +196,7 @@ def assign_quintile(series: pd.Series, boundaries: list[float]) -> pd.Series:
 # ---------------------------------------------------------------------------
 # Weight computation
 # ---------------------------------------------------------------------------
+
 
 def compute_categorical_weights(
     df: pd.DataFrame,
@@ -304,6 +306,7 @@ def compute_ticker_weights(
 # Score application
 # ---------------------------------------------------------------------------
 
+
 def apply_weights(
     df: pd.DataFrame,
     weights: dict,
@@ -360,6 +363,7 @@ def apply_weights(
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     if refit_blocked(date.today()):
         announce_skip("lottery_scoring.py")
@@ -369,16 +373,18 @@ def main() -> None:
 
     global_mean = float(df["outcome_pct"].mean())
     print(f"\nGlobal mean outcome_pct: {global_mean:.2f}")
-    print(f"Sample: {len(df):,} rows | date range: {df['date'].min()} → {df['date'].max()}")
+    print(
+        f"Sample: {len(df):,} rows | date range: {df['date'].min()} → {df['date'].max()}"
+    )
 
     # ---- Quintile boundaries (computed from training set) ----
     vol_oi_boundaries = quintile_boundaries(df["trigger_vol_to_oi_window"])
     gamma_boundaries = quintile_boundaries(df["gamma_at_trigger"])
     ask_pct_boundaries = quintile_boundaries(df["trigger_ask_pct"])
 
-    print(f"\nVol/OI quintile boundaries: {[round(b,4) for b in vol_oi_boundaries]}")
-    print(f"Gamma quintile boundaries:  {[round(b,4) for b in gamma_boundaries]}")
-    print(f"Ask_pct quintile boundaries:{[round(b,4) for b in ask_pct_boundaries]}")
+    print(f"\nVol/OI quintile boundaries: {[round(b, 4) for b in vol_oi_boundaries]}")
+    print(f"Gamma quintile boundaries:  {[round(b, 4) for b in gamma_boundaries]}")
+    print(f"Ask_pct quintile boundaries:{[round(b, 4) for b in ask_pct_boundaries]}")
 
     # ---- Add quintile columns to df ----
     df["vol_q"] = assign_quintile(df["trigger_vol_to_oi_window"], vol_oi_boundaries)
@@ -401,16 +407,25 @@ def main() -> None:
     df["date"] = pd.to_datetime(df["date"])
     df["day_of_week"] = df["date"].dt.day_name()
     monday_df = df[df["day_of_week"] == "Monday"].copy()
-    monday_global_mean = float(monday_df["outcome_pct"].mean()) if len(monday_df) > 0 else global_mean
-    print(f"\nMonday subset: {len(monday_df):,} rows | mean outcome_pct: {monday_global_mean:.2f}")
+    monday_global_mean = (
+        float(monday_df["outcome_pct"].mean()) if len(monday_df) > 0 else global_mean
+    )
+    print(
+        f"\nMonday subset: {len(monday_df):,} rows | mean outcome_pct: {monday_global_mean:.2f}"
+    )
     if len(monday_df) >= MIN_OBS_BUCKET * 2:
         monday_tod_weights = compute_categorical_weights(
-            monday_df, "tod", ["AM_open", "MID", "LUNCH", "PM"],
-            TOD_SCALE, monday_global_mean
+            monday_df,
+            "tod",
+            ["AM_open", "MID", "LUNCH", "PM"],
+            TOD_SCALE,
+            monday_global_mean,
         )
         print(f"Monday TOD weights: {monday_tod_weights}")
         print(f"  (vs global TOD weights: {tod_weights})")
-        tod_weights_dow_overrides: dict[str, dict[str, int]] = {"Monday": monday_tod_weights}
+        tod_weights_dow_overrides: dict[str, dict[str, int]] = {
+            "Monday": monday_tod_weights
+        }
     else:
         print(
             f"WARNING: Monday subset too small ({len(monday_df)} rows < {MIN_OBS_BUCKET * 2} "
@@ -448,8 +463,10 @@ def main() -> None:
 
     # ---- Ticker weights ----
     ticker_weights = compute_ticker_weights(df, global_mean, min_obs=100)
-    print(f"Ticker weights ({len(ticker_weights)} tickers): "
-          f"min={min(ticker_weights.values())}, max={max(ticker_weights.values())}")
+    print(
+        f"Ticker weights ({len(ticker_weights)} tickers): "
+        f"min={min(ticker_weights.values())}, max={max(ticker_weights.values())}"
+    )
 
     # ---- Build weights dict ----
     weights = {
@@ -506,7 +523,9 @@ def main() -> None:
         "t2": t2,
         "derivation": "Phase 1 placeholder: 95th/85th percentile of training-set score distribution. To be re-derived in Phase 5 against the full post-backfill distribution; values may shift.",
     }
-    print(f"\nCutoffs: t1={t1} (95th pct), t2={t2} (85th pct) — PLACEHOLDER, Phase 5 will re-derive")
+    print(
+        f"\nCutoffs: t1={t1} (95th pct), t2={t2} (85th pct) — PLACEHOLDER, Phase 5 will re-derive"
+    )
 
     # ---- Validation metrics ----
     tier1 = df[df["score"] >= t1]
@@ -519,9 +538,15 @@ def main() -> None:
         "tier1_count": int(len(tier1)),
         "tier2_count": int(len(tier2)),
         "tier3_count": int(len(tier3)),
-        "tier1_mean_outcome_pct": float(tier1["outcome_pct"].mean()) if len(tier1) > 0 else 0.0,
-        "tier2_mean_outcome_pct": float(tier2["outcome_pct"].mean()) if len(tier2) > 0 else 0.0,
-        "tier3_mean_outcome_pct": float(tier3["outcome_pct"].mean()) if len(tier3) > 0 else 0.0,
+        "tier1_mean_outcome_pct": float(tier1["outcome_pct"].mean())
+        if len(tier1) > 0
+        else 0.0,
+        "tier2_mean_outcome_pct": float(tier2["outcome_pct"].mean())
+        if len(tier2) > 0
+        else 0.0,
+        "tier3_mean_outcome_pct": float(tier3["outcome_pct"].mean())
+        if len(tier3) > 0
+        else 0.0,
         "spearman_score_outcome": float(spearman_r),
         "spearman_p_value": float(spearman_p),
     }
@@ -559,7 +584,9 @@ def main() -> None:
     print("\n" + "=" * 70)
     print("RESCORE-V1 MODEL SUMMARY")
     print("=" * 70)
-    print(f"\nTraining sample: {len(df):,} rows  |  global mean outcome_pct: {global_mean:.1f}%")
+    print(
+        f"\nTraining sample: {len(df):,} rows  |  global mean outcome_pct: {global_mean:.1f}%"
+    )
     print("\nTOD weights (target: AM_open > PM):")
     for k, v in tod_weights.items():
         bar = "#" * (v + 5)
@@ -576,34 +603,44 @@ def main() -> None:
         lo = vol_oi_boundaries[i - 1] if i > 0 else 0
         hi = vol_oi_boundaries[i] if i < 4 else float("inf")
         bar = "#" * (w + 5)
-        print(f"  Q{i+1} [{lo:.3f},{hi:.3f}): {w:+4d}  {bar}")
+        print(f"  Q{i + 1} [{lo:.3f},{hi:.3f}): {w:+4d}  {bar}")
 
     print("\nGamma quintile weights (target: Q4 highest or near-top):")
     for i, w in enumerate(gamma_weights):
         lo = gamma_boundaries[i - 1] if i > 0 else 0
         hi = gamma_boundaries[i] if i < 4 else float("inf")
         bar = "#" * (w + 5)
-        print(f"  Q{i+1} [{lo:.4f},{hi:.4f}): {w:+4d}  {bar}")
+        print(f"  Q{i + 1} [{lo:.4f},{hi:.4f}): {w:+4d}  {bar}")
 
     print("\nAsk_pct quintile weights (target: Q1 highest, monotonic-decreasing):")
     for i, w in enumerate(ask_pct_weights):
         lo = ask_pct_boundaries[i - 1] if i > 0 else 0.0
         hi = ask_pct_boundaries[i] if i < 4 else 1.0
         bar = "#" * (w + 5)
-        print(f"  Q{i+1} [{lo:.3f},{hi:.3f}): {w:+4d}  {bar}")
+        print(f"  Q{i + 1} [{lo:.3f},{hi:.3f}): {w:+4d}  {bar}")
 
-    print(f"\nOption type weights: C={opt_type_weights.get('C', 0):+d}, P={opt_type_weights.get('P', 0):+d}")
+    print(
+        f"\nOption type weights: C={opt_type_weights.get('C', 0):+d}, P={opt_type_weights.get('P', 0):+d}"
+    )
     print("\nTicker weights (non-zero only):")
-    nonzero = {k: v for k, v in sorted(ticker_weights.items(), key=lambda x: -x[1]) if v != 0}
+    nonzero = {
+        k: v for k, v in sorted(ticker_weights.items(), key=lambda x: -x[1]) if v != 0
+    }
     for ticker, w in nonzero.items():
         bar = "#" * (w + 6)
         print(f"  {ticker:8s}: {w:+4d}  {bar}")
 
     print(f"\nCutoffs: t1={t1}, t2={t2}")
     print("\nTier distribution (training set):")
-    print(f"  Tier 1 (score >= {t1}): {len(tier1):6,}  | mean outcome: {weights['validation']['tier1_mean_outcome_pct']:.1f}%")
-    print(f"  Tier 2 (score >= {t2}): {len(tier2):6,}  | mean outcome: {weights['validation']['tier2_mean_outcome_pct']:.1f}%")
-    print(f"  Tier 3 (score <  {t2}): {len(tier3):6,}  | mean outcome: {weights['validation']['tier3_mean_outcome_pct']:.1f}%")
+    print(
+        f"  Tier 1 (score >= {t1}): {len(tier1):6,}  | mean outcome: {weights['validation']['tier1_mean_outcome_pct']:.1f}%"
+    )
+    print(
+        f"  Tier 2 (score >= {t2}): {len(tier2):6,}  | mean outcome: {weights['validation']['tier2_mean_outcome_pct']:.1f}%"
+    )
+    print(
+        f"  Tier 3 (score <  {t2}): {len(tier3):6,}  | mean outcome: {weights['validation']['tier3_mean_outcome_pct']:.1f}%"
+    )
 
     print(f"\nSpearman(score, outcome_pct): r={spearman_r:.4f}, p={spearman_p:.2e}")
 

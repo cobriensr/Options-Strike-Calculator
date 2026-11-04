@@ -29,6 +29,7 @@ def _fixture_lottery_frame(n: int = 600, seed: int = 42) -> pd.DataFrame:
     from test_takeit_train import (
         _synthetic_lottery_frame,  # type: ignore[attr-defined]
     )
+
     return _synthetic_lottery_frame(n=n, seed=seed)
 
 

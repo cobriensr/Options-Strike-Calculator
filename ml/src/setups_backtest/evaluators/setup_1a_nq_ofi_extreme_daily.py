@@ -87,10 +87,12 @@ def _compute_daily_threshold(conn) -> tuple[float, int]:
         sub = tbbo.loc[rth_mask].sort_values("minute").reset_index(drop=True)
         if len(sub) < OFI_WINDOW_MIN:
             continue
-        buy_60 = sub["buy_vol"].rolling(OFI_WINDOW_MIN, min_periods=OFI_WINDOW_MIN).sum()
-        sell_60 = sub["sell_vol"].rolling(
-            OFI_WINDOW_MIN, min_periods=OFI_WINDOW_MIN
-        ).sum()
+        buy_60 = (
+            sub["buy_vol"].rolling(OFI_WINDOW_MIN, min_periods=OFI_WINDOW_MIN).sum()
+        )
+        sell_60 = (
+            sub["sell_vol"].rolling(OFI_WINDOW_MIN, min_periods=OFI_WINDOW_MIN).sum()
+        )
         denom = buy_60 + sell_60
         ofi = ((buy_60 - sell_60) / denom.where(denom > 0)).abs()
         clean = ofi.dropna()
@@ -115,9 +117,7 @@ def _load_cl_bars(conn, pg, start: date, end: date) -> pd.DataFrame:
     """Same fallback chain as Setup 1: parquet → Neon → empty."""
     df = data_loaders.load_cross_asset_minute(conn, pg, "CL", start, end)
     if df.empty and pg is None:
-        log.warning(
-            "Setup 1a: CL bars unavailable; MACRO-STRESS disqualifier skipped."
-        )
+        log.warning("Setup 1a: CL bars unavailable; MACRO-STRESS disqualifier skipped.")
     return df
 
 
@@ -130,9 +130,7 @@ def _get_tbbo_for_day(
     return ctx.tbbo_cache[key]
 
 
-def _get_prior_profile(
-    ctx: _Setup1aContext, conn, today: date
-) -> dict[str, float]:
+def _get_prior_profile(ctx: _Setup1aContext, conn, today: date) -> dict[str, float]:
     key = today.isoformat()
     if key in ctx.prior_profile_cache:
         return ctx.prior_profile_cache[key]

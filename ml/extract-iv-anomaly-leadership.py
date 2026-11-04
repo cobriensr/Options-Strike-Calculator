@@ -14,6 +14,7 @@ Outputs:
 - ml/findings/iv-anomaly-leadership-2026-04-25.json
 - ml/reports/iv-anomaly-leadership-2026-04-25.md
 """
+
 from __future__ import annotations
 
 import json
@@ -80,7 +81,9 @@ def fetch_index_grid(conn) -> pd.DataFrame:
     fut = pd.read_sql_query(futures_sql, conn)
     fut["ts"] = pd.to_datetime(fut["ts"], utc=True)
     fut["close"] = fut["close"].astype(float)
-    grid = fut.pivot_table(index="ts", columns="symbol", values="close", aggfunc="first")
+    grid = fut.pivot_table(
+        index="ts", columns="symbol", values="close", aggfunc="first"
+    )
 
     print("[query 2/3] SPX grid...", file=sys.stderr)
     spx = pd.read_sql_query(spx_sql, conn)
@@ -121,7 +124,9 @@ def per_alert_features(
 ) -> dict:
     """Compute leadership features for one alert."""
     lo = alert_ts - pd.Timedelta(minutes=WINDOW_MIN)
-    win_idx = idx_returns.loc[(idx_returns.index >= lo) & (idx_returns.index <= alert_ts)]
+    win_idx = idx_returns.loc[
+        (idx_returns.index >= lo) & (idx_returns.index <= alert_ts)
+    ]
     if len(win_idx) < 5:
         return {
             "corr_nq_to_spx_15m": np.nan,
@@ -148,9 +153,21 @@ def per_alert_features(
     common_es = spx.index.intersection(es.index)
     common_rty = spx.index.intersection(rty.index)
 
-    corr_nq = float(spx.loc[common_nq].corr(nq.loc[common_nq])) if len(common_nq) >= 5 else np.nan
-    corr_es = float(spx.loc[common_es].corr(es.loc[common_es])) if len(common_es) >= 5 else np.nan
-    corr_rty = float(spx.loc[common_rty].corr(rty.loc[common_rty])) if len(common_rty) >= 5 else np.nan
+    corr_nq = (
+        float(spx.loc[common_nq].corr(nq.loc[common_nq]))
+        if len(common_nq) >= 5
+        else np.nan
+    )
+    corr_es = (
+        float(spx.loc[common_es].corr(es.loc[common_es]))
+        if len(common_es) >= 5
+        else np.nan
+    )
+    corr_rty = (
+        float(spx.loc[common_rty].corr(rty.loc[common_rty]))
+        if len(common_rty) >= 5
+        else np.nan
+    )
 
     # Lag of NQ vs SPX: argmax cross-correlation in [-LAG_MAX, +LAG_MAX]; positive = NQ leads SPX
     lag = np.nan
@@ -199,7 +216,9 @@ def per_alert_features(
 
     dirs = [spx_dir, nq_dir, es_dir, rty_dir]
     if not any(pd.isna(d) for d in dirs) and not pd.isna(und_dir):
-        same = (np.array(dirs + [und_dir]) > 0).all() or (np.array(dirs + [und_dir]) < 0).all()
+        same = (np.array(dirs + [und_dir]) > 0).all() or (
+            np.array(dirs + [und_dir]) < 0
+        ).all()
         direction_consistent = bool(same)
     else:
         direction_consistent = False
@@ -208,9 +227,13 @@ def per_alert_features(
     if pd.isna(spx_dir):
         align = "missing"
     elif side == "call":
-        align = "aligned" if spx_dir > 0 else ("contradicted" if spx_dir < 0 else "neutral")
+        align = (
+            "aligned" if spx_dir > 0 else ("contradicted" if spx_dir < 0 else "neutral")
+        )
     else:  # put
-        align = "aligned" if spx_dir < 0 else ("contradicted" if spx_dir > 0 else "neutral")
+        align = (
+            "aligned" if spx_dir < 0 else ("contradicted" if spx_dir > 0 else "neutral")
+        )
 
     return {
         "corr_nq_to_spx_15m": corr_nq,
@@ -232,8 +255,6 @@ def per_alert_features(
 def _attach_session_regime(df: pd.DataFrame) -> pd.DataFrame:
     """Use shared session-bounded regime labels (Phase A-E review fix)."""
     return attach_regime(df, load_session_regime_labels())
-
-
 
 
 def aggregate(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
@@ -261,8 +282,14 @@ def main() -> None:
         idx_grid = fetch_index_grid(conn)
         und_grid = fetch_underlying_grid(conn)
 
-    print(f"Index grid: {len(idx_grid):,} rows × {idx_grid.shape[1]} cols", file=sys.stderr)
-    print(f"Underlying grid: {len(und_grid):,} rows × {und_grid.shape[1]} cols", file=sys.stderr)
+    print(
+        f"Index grid: {len(idx_grid):,} rows × {idx_grid.shape[1]} cols",
+        file=sys.stderr,
+    )
+    print(
+        f"Underlying grid: {len(und_grid):,} rows × {und_grid.shape[1]} cols",
+        file=sys.stderr,
+    )
 
     idx_ret = compute_returns(idx_grid)
     und_ret = compute_returns(und_grid)
@@ -270,32 +297,59 @@ def main() -> None:
     print(f"Computing leadership features for {len(df):,} alerts...", file=sys.stderr)
     feats = []
     for i, alert in df.iterrows():
-        feats.append(per_alert_features(
-            alert["alert_ts"], alert["ticker"], alert["side"], idx_ret, und_ret,
-        ))
+        feats.append(
+            per_alert_features(
+                alert["alert_ts"],
+                alert["ticker"],
+                alert["side"],
+                idx_ret,
+                und_ret,
+            )
+        )
         if (i + 1) % 2000 == 0:
-            print(f"  ... {i+1:,} done", file=sys.stderr)
+            print(f"  ... {i + 1:,} done", file=sys.stderr)
     feat_df = pd.DataFrame(feats)
     df = pd.concat([df.reset_index(drop=True), feat_df.reset_index(drop=True)], axis=1)
 
     df = _attach_session_regime(df)
     best = pick_best_strategy_per_ticker_regime(df)
-    df["best_strategy"] = df.apply(lambda r: best.get((r["ticker"], r["regime"]), "pnl_eod"), axis=1)
-    df["best_pnl_pct"] = df.apply(lambda r: r[r["best_strategy"]] if pd.notna(r[r["best_strategy"]]) else np.nan, axis=1)
+    df["best_strategy"] = df.apply(
+        lambda r: best.get((r["ticker"], r["regime"]), "pnl_eod"), axis=1
+    )
+    df["best_pnl_pct"] = df.apply(
+        lambda r: r[r["best_strategy"]] if pd.notna(r[r["best_strategy"]]) else np.nan,
+        axis=1,
+    )
     df["entry_dollars"] = df["entry_premium"].astype(float) * 100.0
     df["best_dollar"] = df["entry_dollars"] * df["best_pnl_pct"]
 
     # Quartile bucket on the SPX 15-min cumulative return magnitude
-    df["spx_15m_ret_pct"] = df["spx_dir_15m"]  # placeholder; we use alignment label primarily
+    df["spx_15m_ret_pct"] = df[
+        "spx_dir_15m"
+    ]  # placeholder; we use alignment label primarily
 
     findings = {
         "n_total": int(len(df)),
         "n_with_features": int((~df["alignment_with_alert"].eq("missing")).sum()),
-        "by_alignment": aggregate(df, ["alignment_with_alert", "side"]).reset_index().to_dict(orient="records"),
-        "by_alignment_regime": aggregate(df, ["regime", "alignment_with_alert", "side"]).reset_index().to_dict(orient="records"),
-        "by_direction_consistent": aggregate(df, ["direction_consistent", "side"]).reset_index().to_dict(orient="records"),
-        "by_direction_consistent_regime": aggregate(df, ["regime", "direction_consistent", "side"]).reset_index().to_dict(orient="records"),
-        "by_alignment_per_ticker": aggregate(df, ["ticker", "alignment_with_alert", "side"]).reset_index().to_dict(orient="records"),
+        "by_alignment": aggregate(df, ["alignment_with_alert", "side"])
+        .reset_index()
+        .to_dict(orient="records"),
+        "by_alignment_regime": aggregate(df, ["regime", "alignment_with_alert", "side"])
+        .reset_index()
+        .to_dict(orient="records"),
+        "by_direction_consistent": aggregate(df, ["direction_consistent", "side"])
+        .reset_index()
+        .to_dict(orient="records"),
+        "by_direction_consistent_regime": aggregate(
+            df, ["regime", "direction_consistent", "side"]
+        )
+        .reset_index()
+        .to_dict(orient="records"),
+        "by_alignment_per_ticker": aggregate(
+            df, ["ticker", "alignment_with_alert", "side"]
+        )
+        .reset_index()
+        .to_dict(orient="records"),
     }
     OUT_FINDINGS.parent.mkdir(parents=True, exist_ok=True)
     OUT_FINDINGS.write_text(json.dumps(findings, indent=2, default=to_jsonable))
@@ -304,41 +358,51 @@ def main() -> None:
     # ──────── Markdown report ────────
     lines: list[str] = []
     lines.append("# IV-Anomaly Leadership (Phase E1) — 2026-04-25")
-    lines.append(f"**Sample:** {len(df):,} alerts; {(~df['alignment_with_alert'].eq('missing')).sum():,} with leadership features computed.")
+    lines.append(
+        f"**Sample:** {len(df):,} alerts; {(~df['alignment_with_alert'].eq('missing')).sum():,} with leadership features computed."
+    )
     lines.append("")
-    lines.append("**Method:** for each alert, computes correlations (SPX vs NQ/ES/RTY) and "
-                 "cumulative-return signs over the 15-minute window ending at alert_ts. "
-                 "Direction consistent = SPX, NQ, ES, RTY, AND the alerted underlying ALL "
-                 "moved the same direction. Alignment = SPX direction matches alert direction "
-                 "(call→up, put→down).")
+    lines.append(
+        "**Method:** for each alert, computes correlations (SPX vs NQ/ES/RTY) and "
+        "cumulative-return signs over the 15-minute window ending at alert_ts. "
+        "Direction consistent = SPX, NQ, ES, RTY, AND the alerted underlying ALL "
+        "moved the same direction. Alignment = SPX direction matches alert direction "
+        "(call→up, put→down)."
+    )
     lines.append("")
-    lines.append("**Caveat:** SPX has 6.5h cash-session coverage; futures cover 24h. Alerts "
-                 "outside SPX session show 'missing' alignment (~few percent of sample).")
+    lines.append(
+        "**Caveat:** SPX has 6.5h cash-session coverage; futures cover 24h. Alerts "
+        "outside SPX session show 'missing' alignment (~few percent of sample)."
+    )
     lines.append("")
 
     lines.append("## Aggregate — alignment vs side")
     lines.append("")
-    lines.append("Direct test of the user's question: alerts on tape that already agrees vs disagrees.")
+    lines.append(
+        "Direct test of the user's question: alerts on tape that already agrees vs disagrees."
+    )
     lines.append("")
     lines.append("| alignment | side | n | win% | mean% | mean $ |")
     lines.append("| --- | --- | ---: | ---: | ---: | ---: |")
     for (a, side), row in aggregate(df, ["alignment_with_alert", "side"]).iterrows():
         lines.append(
             f"| {a} | {side} | {int(row['n']):,} | {row['win_pct']:.1f}% | "
-            f"{row['mean_pct']*100:.1f}% | ${row['mean_dollar']:,.0f} |"
+            f"{row['mean_pct'] * 100:.1f}% | ${row['mean_dollar']:,.0f} |"
         )
     lines.append("")
 
     lines.append("## Aggregate — direction_consistent vs side")
     lines.append("")
-    lines.append("All 5 of (SPX, NQ, ES, RTY, underlying) moved same direction over 15-min window.")
+    lines.append(
+        "All 5 of (SPX, NQ, ES, RTY, underlying) moved same direction over 15-min window."
+    )
     lines.append("")
     lines.append("| direction_consistent | side | n | win% | mean% | mean $ |")
     lines.append("| --- | --- | ---: | ---: | ---: | ---: |")
     for (dc, side), row in aggregate(df, ["direction_consistent", "side"]).iterrows():
         lines.append(
             f"| {dc} | {side} | {int(row['n']):,} | {row['win_pct']:.1f}% | "
-            f"{row['mean_pct']*100:.1f}% | ${row['mean_dollar']:,.0f} |"
+            f"{row['mean_pct'] * 100:.1f}% | ${row['mean_dollar']:,.0f} |"
         )
     lines.append("")
 
@@ -348,13 +412,15 @@ def main() -> None:
     lines.append("")
     lines.append("| regime | alignment | side | n | win% | mean% | mean $ |")
     lines.append("| --- | --- | --- | ---: | ---: | ---: | ---: |")
-    for (regime, a, side), row in aggregate(df, ["regime", "alignment_with_alert", "side"]).iterrows():
+    for (regime, a, side), row in aggregate(
+        df, ["regime", "alignment_with_alert", "side"]
+    ).iterrows():
         n = int(row["n"])
         if n < 30:
             continue
         lines.append(
             f"| {regime} | {a} | {side} | {n:,} | {row['win_pct']:.1f}% | "
-            f"{row['mean_pct']*100:.1f}% | ${row['mean_dollar']:,.0f} |"
+            f"{row['mean_pct'] * 100:.1f}% | ${row['mean_dollar']:,.0f} |"
         )
     lines.append("")
 
@@ -362,13 +428,15 @@ def main() -> None:
     lines.append("")
     lines.append("| ticker | alignment | side | n | win% | mean% | mean $ |")
     lines.append("| --- | --- | --- | ---: | ---: | ---: | ---: |")
-    for (ticker, a, side), row in aggregate(df, ["ticker", "alignment_with_alert", "side"]).iterrows():
+    for (ticker, a, side), row in aggregate(
+        df, ["ticker", "alignment_with_alert", "side"]
+    ).iterrows():
         n = int(row["n"])
         if n < 30:
             continue
         lines.append(
             f"| {ticker} | {a} | {side} | {n:,} | {row['win_pct']:.1f}% | "
-            f"{row['mean_pct']*100:.1f}% | ${row['mean_dollar']:,.0f} |"
+            f"{row['mean_pct'] * 100:.1f}% | ${row['mean_dollar']:,.0f} |"
         )
     lines.append("")
 

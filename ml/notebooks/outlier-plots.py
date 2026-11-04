@@ -107,7 +107,12 @@ def _heatmap_panel(
         & (pl.col("dte_bucket") == dte_bucket)
     )
 
-    directions = ["bullish_call_buy", "bullish_put_sell", "bearish_call_sell", "bearish_put_buy"]
+    directions = [
+        "bullish_call_buy",
+        "bullish_put_sell",
+        "bearish_call_sell",
+        "bearish_put_buy",
+    ]
     times = ["open", "morning", "midday", "afternoon", "close"]
 
     grid = np.full((len(directions), len(times)), np.nan)
@@ -140,15 +145,17 @@ def plot_bucket_heatmap(outcomes: pl.DataFrame, out: Path) -> None:
 
     families = ["index_etf", "spx_complex", "single_name"]
     dtes = ["0DTE", "1DTE", "2-7DTE", "8DTE+"]
-    fig, axes = plt.subplots(
-        len(families), len(dtes), figsize=(16, 9), squeeze=False
-    )
+    fig, axes = plt.subplots(len(families), len(dtes), figsize=(16, 9), squeeze=False)
     last_im = None
     for i, fam in enumerate(families):
         for j, dte in enumerate(dtes):
-            last_im = _heatmap_panel(summary, ticker_family=fam, dte_bucket=dte, ax=axes[i, j])
+            last_im = _heatmap_panel(
+                summary, ticker_family=fam, dte_bucket=dte, ax=axes[i, j]
+            )
     if last_im is not None:
-        cbar = fig.colorbar(last_im, ax=axes.ravel().tolist(), label="Win rate", shrink=0.7)
+        cbar = fig.colorbar(
+            last_im, ax=axes.ravel().tolist(), label="Win rate", shrink=0.7
+        )
         cbar.set_ticks([0, 0.25, 0.5, 0.6, 0.75, 1.0])
     fig.suptitle(
         f"Win rate by signed direction × time-of-day, faceted by family × DTE "
@@ -239,7 +246,12 @@ def plot_score_distribution(out: Path, *, dates: list) -> None:
     counts = score_counts["len"].to_list()
     colors = ["#3498db" if s < MIN_SCORE else "#e67e22" for s in scores]
     ax.bar(scores, counts, color=colors, edgecolor="#222", linewidth=0.5)
-    ax.axvline(MIN_SCORE - 0.5, color="#e74c3c", linestyle="--", label=f"min_score = {MIN_SCORE}")
+    ax.axvline(
+        MIN_SCORE - 0.5,
+        color="#e74c3c",
+        linestyle="--",
+        label=f"min_score = {MIN_SCORE}",
+    )
     ax.set_yscale("log")
     ax.set_xlabel("significance_score")
     ax.set_ylabel("Count of prints (log)")
@@ -267,7 +279,11 @@ def main() -> int:
     print(f"→ Writing CSVs to {OUT_DIR}/")
     # Drop nested `score_breakdown` struct — CSV can't represent it.
     # Inspect via Parquet/JSON if needed.
-    csv_outcomes = outcomes.drop("score_breakdown") if "score_breakdown" in outcomes.columns else outcomes
+    csv_outcomes = (
+        outcomes.drop("score_breakdown")
+        if "score_breakdown" in outcomes.columns
+        else outcomes
+    )
     csv_outcomes.write_csv(OUT_DIR / "outliers_with_outcomes.csv")
     summary = summarize_outliers(outcomes)
     summary.write_csv(OUT_DIR / "bucket_summary.csv")

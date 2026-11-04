@@ -115,7 +115,9 @@ def simulate_trail(minutes, entry_price, trigger_ts):
     return float((last["mid"] - entry_price) / entry_price * 100)
 
 
-def simulate_dirdelta_inversion(minutes, flow_day, option_type, entry_price, trigger_ts):
+def simulate_dirdelta_inversion(
+    minutes, flow_day, option_type, entry_price, trigger_ts
+):
     """Inversion exit using dir_delta_flow. For puts, negate the series
     so the bullish-equivalent direction is consistently positive."""
     post = minutes[minutes["minute"] > trigger_ts]
@@ -173,7 +175,9 @@ def _exit_at_or_after(minute_prices, target_ts, entry_price, status):
     at_or_after = minute_prices[minute_prices["minute"] >= target_ts]
     if at_or_after.empty:
         last = minute_prices.iloc[-1]
-        return float((last["mid"] - entry_price) / entry_price * 100), f"{status}_eod_fallback"
+        return float(
+            (last["mid"] - entry_price) / entry_price * 100
+        ), f"{status}_eod_fallback"
     row = at_or_after.iloc[0]
     return float((row["mid"] - entry_price) / entry_price * 100), status
 
@@ -209,9 +213,9 @@ def main() -> int:
     fires["trigger_time_ct"] = pd.to_datetime(fires["trigger_time_ct"], utc=True)
     flow["ts"] = pd.to_datetime(flow["ts"], utc=True)
     flow["session_date"] = flow["ts"].dt.tz_convert("America/Chicago").dt.date
-    fires["fire_session_date"] = fires["trigger_time_ct"].dt.tz_convert(
-        "America/Chicago"
-    ).dt.date
+    fires["fire_session_date"] = (
+        fires["trigger_time_ct"].dt.tz_convert("America/Chicago").dt.date
+    )
     fires["fire_date"] = fires["date"].astype(str)
 
     fires_by_date = fires.groupby("fire_date")
@@ -225,7 +229,13 @@ def main() -> int:
         chains = day_fires["option_chain_id"].unique().tolist()
         all_trades = pd.read_parquet(
             path,
-            columns=["executed_at", "option_chain_id", "nbbo_bid", "nbbo_ask", "canceled"],
+            columns=[
+                "executed_at",
+                "option_chain_id",
+                "nbbo_bid",
+                "nbbo_ask",
+                "canceled",
+            ],
         )
         day_trades = all_trades[all_trades["option_chain_id"].isin(chains)].copy()
         chain_groups = day_trades.groupby("option_chain_id", observed=True)
@@ -254,20 +264,24 @@ def main() -> int:
                 if entry_min["mid"] > 0
                 else 0
             )
-            rows.append({
-                "fire_id": fire.id,
-                "trail_pct": trail_pct,
-                "inversion_pct_dirdelta": inv_pct,
-                "trail_net_pct": apply_costs(trail_pct, entry_price, spread_pct),
-                "inversion_net_pct_dirdelta": apply_costs(inv_pct, entry_price, spread_pct),
-                "inversion_status_dirdelta": inv_status,
-                "peak_ceiling_pct": float(fire.peak_ceiling_pct or 0),
-                "mode": fire.mode,
-                "tod": fire.tod,
-                "option_type": fire.option_type,
-                "ticker": fire.ticker,
-                "date_str": date_str,
-            })
+            rows.append(
+                {
+                    "fire_id": fire.id,
+                    "trail_pct": trail_pct,
+                    "inversion_pct_dirdelta": inv_pct,
+                    "trail_net_pct": apply_costs(trail_pct, entry_price, spread_pct),
+                    "inversion_net_pct_dirdelta": apply_costs(
+                        inv_pct, entry_price, spread_pct
+                    ),
+                    "inversion_status_dirdelta": inv_status,
+                    "peak_ceiling_pct": float(fire.peak_ceiling_pct or 0),
+                    "mode": fire.mode,
+                    "tod": fire.tod,
+                    "option_type": fire.option_type,
+                    "ticker": fire.ticker,
+                    "date_str": date_str,
+                }
+            )
         del all_trades, day_trades
         print(f"  {date_str}: cumulative {len(rows):,}")
 
@@ -286,8 +300,12 @@ def main() -> int:
     print(f"  median inv all-NCP:  {merged['inversion_pct_all'].median():+.1f}%")
     print(f"  median inv dirdelta: {merged['inversion_pct_dirdelta'].median():+.1f}%")
     print(f"  lottery rate trail:    {(merged['trail_pct'] >= 100).mean() * 100:.2f}%")
-    print(f"  lottery rate all-NCP:  {(merged['inversion_pct_all'] >= 100).mean() * 100:.2f}%")
-    print(f"  lottery rate dirdelta: {(merged['inversion_pct_dirdelta'] >= 100).mean() * 100:.2f}%")
+    print(
+        f"  lottery rate all-NCP:  {(merged['inversion_pct_all'] >= 100).mean() * 100:.2f}%"
+    )
+    print(
+        f"  lottery rate dirdelta: {(merged['inversion_pct_dirdelta'] >= 100).mean() * 100:.2f}%"
+    )
     return 0
 
 

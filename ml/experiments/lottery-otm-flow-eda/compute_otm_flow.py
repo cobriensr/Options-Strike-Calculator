@@ -29,12 +29,58 @@ OUT_PARQUET = EXPERIMENT_DIR / "otm_flow.parquet"
 # Snapshot of LOTTERY_V3_TICKERS ∪ LOTTERY_EXTENDED_TICKERS from
 # api/_lib/lottery-finder.ts. KEEP IN SYNC.
 LOTTERY_TICKERS = {
-    "USAR", "WMT", "STX", "SOUN", "RIVN", "TSM", "SNDK", "XOM", "WDC",
-    "SQQQ", "NDXP", "USO", "TNA", "RDDT", "SMCI", "TSLL", "SNOW", "TEAM",
-    "RKLB", "SOFI", "RUTW", "TSLA", "SOXS", "WULF", "SLV", "SMH", "UBER",
-    "MSTR", "TQQQ", "RIOT", "SOXL", "UNH", "QQQ", "RBLX", "SPY", "IWM",
-    "MU", "META", "AMD", "NVDA", "INTC", "MSFT", "AMZN", "PLTR", "AVGO",
-    "GOOGL", "GOOG", "COIN", "HOOD", "MRVL", "ORCL", "AAPL",
+    "USAR",
+    "WMT",
+    "STX",
+    "SOUN",
+    "RIVN",
+    "TSM",
+    "SNDK",
+    "XOM",
+    "WDC",
+    "SQQQ",
+    "NDXP",
+    "USO",
+    "TNA",
+    "RDDT",
+    "SMCI",
+    "TSLL",
+    "SNOW",
+    "TEAM",
+    "RKLB",
+    "SOFI",
+    "RUTW",
+    "TSLA",
+    "SOXS",
+    "WULF",
+    "SLV",
+    "SMH",
+    "UBER",
+    "MSTR",
+    "TQQQ",
+    "RIOT",
+    "SOXL",
+    "UNH",
+    "QQQ",
+    "RBLX",
+    "SPY",
+    "IWM",
+    "MU",
+    "META",
+    "AMD",
+    "NVDA",
+    "INTC",
+    "MSFT",
+    "AMZN",
+    "PLTR",
+    "AVGO",
+    "GOOGL",
+    "GOOG",
+    "COIN",
+    "HOOD",
+    "MRVL",
+    "ORCL",
+    "AAPL",
 }
 
 
@@ -79,12 +125,14 @@ def process_day(path: Path) -> pd.DataFrame:
     df["minute"] = df["executed_at"].dt.floor("min")
 
     # Tag side-of-flow: call premiums into otm_ncp, put into otm_npp
-    df["leg"] = df["option_type"].str[0].str.lower().map(
-        {"c": "otm_ncp", "p": "otm_npp"}
+    df["leg"] = (
+        df["option_type"].str[0].str.lower().map({"c": "otm_ncp", "p": "otm_npp"})
     )
 
     pivot = (
-        df.groupby(["underlying_symbol", "minute", "leg"], observed=True)["signed_premium"]
+        df.groupby(["underlying_symbol", "minute", "leg"], observed=True)[
+            "signed_premium"
+        ]
         .sum()
         .unstack("leg", fill_value=0.0)
         .reset_index()
@@ -128,7 +176,9 @@ def main() -> int:
     print(f"\nwrote {OUT_PARQUET}")
     print(f"  total rows:    {len(combined):,}")
     print(f"  unique tickers:{combined['ticker'].nunique()}")
-    print(f"  date range:    {combined['session_date'].min()} → {combined['session_date'].max()}")
+    print(
+        f"  date range:    {combined['session_date'].min()} → {combined['session_date'].max()}"
+    )
     return 0
 
 

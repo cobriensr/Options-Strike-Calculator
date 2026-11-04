@@ -43,7 +43,9 @@ def _es_bars_down(n: int = 60, peak: float = 6100.0) -> pd.DataFrame:
     ).assign(ts=lambda d: pd.to_datetime(d["ts"], utc=True), symbol="ESM6")
 
 
-def _cross_asset_bars(start_price: float, end_price: float, ts_anchor: pd.Timestamp, n: int = 30) -> pd.DataFrame:
+def _cross_asset_bars(
+    start_price: float, end_price: float, ts_anchor: pd.Timestamp, n: int = 30
+) -> pd.DataFrame:
     """Build a 1m bar frame linearly ramping start → end across n minutes
     ending just before ``ts_anchor``."""
     rows = []
@@ -124,7 +126,11 @@ def test_no_signal_when_es_not_declining_enough(monkeypatch):
     rows = [
         (
             (start + pd.Timedelta(minutes=i)).isoformat(),
-            6100.0, 6100.5, 6099.5, 6100.0, 100,
+            6100.0,
+            6100.5,
+            6099.5,
+            6100.0,
+            100,
         )
         for i in range(60)
     ]

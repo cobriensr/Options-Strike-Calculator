@@ -23,7 +23,9 @@ try:
     import seaborn as sns
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/Scripts/pip install psycopg2-binary pandas numpy matplotlib seaborn")
+    print(
+        "  ml/.venv/Scripts/pip install psycopg2-binary pandas numpy matplotlib seaborn"
+    )
     sys.exit(1)
 
 from utils import (

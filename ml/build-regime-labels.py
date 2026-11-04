@@ -10,6 +10,7 @@ Re-run after any backfill that adds new dates or new tickers.
 Usage:
     ml/.venv/Scripts/python ml/build-regime-labels.py
 """
+
 from __future__ import annotations
 
 import os
@@ -29,8 +30,19 @@ from iv_anomaly_utils import (  # noqa: E402
 ENV_LOCAL = REPO_ROOT / ".env.local"
 
 TICKERS = [
-    "SPXW", "NDXP", "SPY", "QQQ", "IWM", "SMH",
-    "NVDA", "TSLA", "META", "MSFT", "SNDK", "MSTR", "MU",
+    "SPXW",
+    "NDXP",
+    "SPY",
+    "QQQ",
+    "IWM",
+    "SMH",
+    "NVDA",
+    "TSLA",
+    "META",
+    "MSFT",
+    "SNDK",
+    "MSTR",
+    "MU",
 ]
 
 
@@ -59,8 +71,10 @@ def main() -> None:
     out = REPO_ROOT / REGIME_LABELS_PARQUET
     out.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)
-    print(f"Wrote {out} ({len(df):,} rows; {df['ticker'].nunique()} tickers, "
-          f"{df['date'].nunique()} dates)")
+    print(
+        f"Wrote {out} ({len(df):,} rows; {df['ticker'].nunique()} tickers, "
+        f"{df['date'].nunique()} dates)"
+    )
     print("\nRegime distribution:")
     print(df["regime"].value_counts().to_string())
 

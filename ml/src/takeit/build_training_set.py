@@ -301,13 +301,13 @@ def _derive_forced_flow_features(
         # Stub: no VIX intraday data in the alert row → 0. The model
         # learns the all-zero feature carries no info; rewire when VIX
         # joins the training SELECT.
-        out["cross_asset_stress_flag"] = pd.Series(
-            0, index=out.index, dtype="int8"
-        )
+        out["cross_asset_stress_flag"] = pd.Series(0, index=out.index, dtype="int8")
     return out
 
 
-def derive_common_features(df: pd.DataFrame, spot_col: str, ask_pct_col: str) -> pd.DataFrame:
+def derive_common_features(
+    df: pd.DataFrame, spot_col: str, ask_pct_col: str
+) -> pd.DataFrame:
     """Derive features common to both alert types.
 
     spot_col: column holding the underlying spot at fire time
@@ -334,9 +334,7 @@ def derive_common_features(df: pd.DataFrame, spot_col: str, ask_pct_col: str) ->
     valid_spot_strike = spot.notna() & strike.notna()
     is_itm_bool = (is_call & (spot >= strike)) | (~is_call & (spot <= strike))
     # Use nullable Int8 so NaN spot/strike produces <NA> rather than silent False.
-    out["is_itm_at_fire"] = (
-        is_itm_bool.astype("Int8").where(valid_spot_strike, pd.NA)
-    )
+    out["is_itm_at_fire"] = is_itm_bool.astype("Int8").where(valid_spot_strike, pd.NA)
     # otm_distance_pct positive when OTM, negative when ITM. NaN propagates.
     otm_call = (strike - spot) / spot
     otm_put = (spot - strike) / spot
@@ -353,8 +351,8 @@ def derive_common_features(df: pd.DataFrame, spot_col: str, ask_pct_col: str) ->
         out["dealer_gamma_sign"] = sign
 
     out["aggressive_premium_flag"] = (
-        (out[ask_pct_col] >= AGGRESSIVE_ASK_PCT_THRESHOLD).astype("Int8")
-    )
+        out[ask_pct_col] >= AGGRESSIVE_ASK_PCT_THRESHOLD
+    ).astype("Int8")
 
     # Phase 5 (meta-detectors): forced-flow features. ct DatetimeIndex
     # is reused so we don't pay the tz conversion twice.
@@ -419,7 +417,9 @@ def add_cofire_flag(
     other_sorted = other[["option_chain_id", "fire_time"]].copy()
     other_sorted["fire_time"] = pd.to_datetime(other_sorted["fire_time"], utc=True)
     other_sorted = other_sorted.sort_values("fire_time")
-    by_chain = other_sorted.groupby("option_chain_id")["fire_time"].apply(list).to_dict()
+    by_chain = (
+        other_sorted.groupby("option_chain_id")["fire_time"].apply(list).to_dict()
+    )
     for i, row in out.iterrows():
         candidates = by_chain.get(row["option_chain_id"], [])
         t = row["fire_time"]
@@ -493,7 +493,9 @@ def add_sequential_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # Same-direction fires in the last 30 min: same ticker + option_type, fire_time
     # strictly less than current, within 30-min lookback.
-    out["_dir_key"] = out["underlying_symbol"].astype(str) + "::" + out["option_type"].astype(str)
+    out["_dir_key"] = (
+        out["underlying_symbol"].astype(str) + "::" + out["option_type"].astype(str)
+    )
     same_dir_count = pd.Series(0, index=out.index, dtype="int32")
     window = pd.Timedelta(minutes=30)
     by_key: dict[str, deque] = {}
@@ -504,7 +506,9 @@ def add_sequential_features(df: pd.DataFrame) -> pd.DataFrame:
         cutoff = t - window
         while dq and dq[0] < cutoff:
             dq.popleft()
-        same_dir_count.at[i] = len(dq)  # strictly prior fires (current not yet appended)
+        same_dir_count.at[i] = len(
+            dq
+        )  # strictly prior fires (current not yet appended)
         dq.append(t)
     out["n_same_dir_fires_last_30min"] = same_dir_count
     out = out.drop(columns=["_dir_key"])
@@ -513,7 +517,9 @@ def add_sequential_features(df: pd.DataFrame) -> pd.DataFrame:
     # earlier dates, what fraction had peak_ceiling_pct >= threshold. Uses an
     # expanding mean. Maps NaN when the ticker has never fired before.
     out["_is_win"] = (out["peak_ceiling_pct"] >= WIN_LABEL_THRESHOLD_PCT).astype(float)
-    out = out.sort_values(["underlying_symbol", "date", "fire_time"]).reset_index(drop=True)
+    out = out.sort_values(["underlying_symbol", "date", "fire_time"]).reset_index(
+        drop=True
+    )
     # Per-ticker per-date aggregate, then expanding mean shifted by 1 date.
     daily = (
         out.groupby(["underlying_symbol", "date"])["_is_win"]
@@ -535,9 +541,9 @@ def add_sequential_features(df: pd.DataFrame) -> pd.DataFrame:
         .mean()
         .reset_index(level=0, drop=True)
     )
-    daily["prior_session_win_rate_same_ticker"] = daily.groupby(
-        "underlying_symbol"
-    )["_expanding_win_rate"].shift(1)
+    daily["prior_session_win_rate_same_ticker"] = daily.groupby("underlying_symbol")[
+        "_expanding_win_rate"
+    ].shift(1)
     daily = daily.drop(columns=["_expanding_win_rate"])
     out = out.merge(
         daily[["underlying_symbol", "date", "prior_session_win_rate_same_ticker"]],
@@ -608,7 +614,10 @@ def main() -> None:
     lot.to_parquet(lot_path, index=False)
     sb.to_parquet(sb_path, index=False)
 
-    for s in (_summarize(lot, "lottery", lot_path), _summarize(sb, "silentboom", sb_path)):
+    for s in (
+        _summarize(lot, "lottery", lot_path),
+        _summarize(sb, "silentboom", sb_path),
+    ):
         print(
             f"[takeit] {s.alert_type:10s} rows={s.rows_out:>7d} "
             f"win_rate={s.win_rate:.3f} "

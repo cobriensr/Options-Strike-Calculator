@@ -143,7 +143,9 @@ def test_future_tbbo_does_not_leak(monkeypatch):
     from setups_backtest.evaluators import setup_6_cvd_divergence as mod
 
     monkeypatch.setattr(mod, "_get_es_tbbo", lambda c, t: tbbo_now)
-    sig_truncated = EVALUATOR.evaluate_minute(decision_ts, _Setup6Context(conn=None), bars)
+    sig_truncated = EVALUATOR.evaluate_minute(
+        decision_ts, _Setup6Context(conn=None), bars
+    )
 
     monkeypatch.setattr(mod, "_get_es_tbbo", lambda c, t: tbbo_full)
     sig_full = EVALUATOR.evaluate_minute(decision_ts, _Setup6Context(conn=None), bars)

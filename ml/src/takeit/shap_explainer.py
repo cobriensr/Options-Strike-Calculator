@@ -77,7 +77,9 @@ def _align_features(row: pd.Series | dict, feature_cols: list[str]) -> pd.DataFr
     else:
         s = row
     # Fill missing columns with NaN so XGBoost handles them.
-    aligned = pd.DataFrame([[s.get(c, np.nan) for c in feature_cols]], columns=feature_cols)
+    aligned = pd.DataFrame(
+        [[s.get(c, np.nan) for c in feature_cols]], columns=feature_cols
+    )
     nullable_int_dtypes = {"Int8", "Int16", "Int32", "Int64"}
     for c in aligned.columns:
         if aligned[c].dtype == bool or str(aligned[c].dtype) in nullable_int_dtypes:

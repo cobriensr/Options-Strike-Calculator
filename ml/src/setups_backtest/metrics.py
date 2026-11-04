@@ -68,9 +68,7 @@ def compute_metrics(trades: pd.DataFrame) -> dict[str, Any]:
 
     gross_win = float(trades.loc[trades["is_win"], "net_pnl_dollars"].sum())
     gross_loss = float(trades.loc[trades["is_loss"], "net_pnl_dollars"].sum())
-    profit_factor = (
-        gross_win / abs(gross_loss) if gross_loss < 0 else float("inf")
-    )
+    profit_factor = gross_win / abs(gross_loss) if gross_loss < 0 else float("inf")
 
     max_consec_losers = _max_consecutive(trades["is_loss"].to_list())
 
@@ -142,7 +140,9 @@ def _tod_breakdown(trades: pd.DataFrame) -> dict[str, dict[str, Any]]:
         return {}
     rth_open_minutes = 13 * 60 + 30  # 13:30 UTC
     entry_minutes = (
-        trades["entry_ts"].dt.hour * 60 + trades["entry_ts"].dt.minute - rth_open_minutes
+        trades["entry_ts"].dt.hour * 60
+        + trades["entry_ts"].dt.minute
+        - rth_open_minutes
     )
     out: dict[str, dict[str, Any]] = {}
     for label, lo, hi in TOD_BUCKETS_MIN:

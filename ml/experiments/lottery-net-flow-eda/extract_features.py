@@ -139,9 +139,9 @@ def features_for_fire(
     level_pct = float(matched_so_far.iloc[-1] / day_high) if day_high > 0 else None
 
     # Variance of per-minute deltas over prior 30 min.
-    pre_window_mask = (flow_day["ts"] >= fire_ts - pd.Timedelta(minutes=PRE_FIRE_WINDOW_MIN)) & (
-        flow_day["ts"] <= fire_ts
-    )
+    pre_window_mask = (
+        flow_day["ts"] >= fire_ts - pd.Timedelta(minutes=PRE_FIRE_WINDOW_MIN)
+    ) & (flow_day["ts"] <= fire_ts)
     pre_window_deltas = flow_day.loc[pre_window_mask, matched_side]
     pre_fire_var = (
         float(pre_window_deltas.std(ddof=0)) if len(pre_window_deltas) >= 2 else None

@@ -271,8 +271,8 @@ def test_dow_override_lunch_is_positive_on_monday():
     }
     components_monday = compute_components(fire, STUB_WEIGHTS, dow="Monday")
     components_global = compute_components(fire, STUB_WEIGHTS, dow=None)
-    assert components_monday["tod"] == 2    # Monday override
-    assert components_global["tod"] == -4   # global
+    assert components_monday["tod"] == 2  # Monday override
+    assert components_global["tod"] == -4  # global
 
 
 def test_dow_override_falls_back_to_global_when_dow_not_in_overrides():
@@ -338,7 +338,7 @@ def test_composite_winning_bonus_applied():
         "dte": 1,
         "option_type": "C",
         "vol_oi_window": None,
-        "gamma": 0.005,   # below 0.012 → Q0
+        "gamma": 0.005,  # below 0.012 → Q0
         "ask_pct": None,
     }
     components = compute_components(fire, STUB_WEIGHTS_WITH_COMPOSITES)
@@ -358,7 +358,7 @@ def test_composite_losing_penalty_applied():
         "option_type": "C",
         "vol_oi_window": None,
         "gamma": None,
-        "ask_pct": 0.50,   # below 0.53 → Q0
+        "ask_pct": 0.50,  # below 0.53 → Q0
     }
     components = compute_components(fire, STUB_WEIGHTS_WITH_COMPOSITES)
     assert components["composite"] == -5
@@ -390,7 +390,7 @@ def test_composite_partial_match_does_not_fire():
         "dte": 1,
         "option_type": "C",
         "vol_oi_window": None,
-        "gamma": 0.05,    # above all boundaries → Q4, not Q0
+        "gamma": 0.05,  # above all boundaries → Q4, not Q0
         "ask_pct": None,
     }
     components = compute_components(fire, STUB_WEIGHTS_WITH_COMPOSITES)
@@ -408,7 +408,7 @@ def test_composite_multiple_matches_sum():
         "dte": 1,
         "option_type": "C",
         "vol_oi_window": None,
-        "gamma": 0.005,   # Q0
+        "gamma": 0.005,  # Q0
         "ask_pct": 0.50,  # Q0 (ask_pct_q=0), but match key is ticker=WDC
     }
     components = compute_components(fire, STUB_WEIGHTS_WITH_COMPOSITES)
@@ -451,8 +451,8 @@ def test_context_feature_contributes_correctly():
         "vol_oi_window": None,
         "gamma": None,
         "ask_pct": None,
-        "mkt_tide_ncp": 2e8,       # Q4 → weight=+1
-        "mkt_tide_npp": -1e8,      # Q0 → weight=-2
+        "mkt_tide_ncp": 2e8,  # Q4 → weight=+1
+        "mkt_tide_npp": -1e8,  # Q0 → weight=-2
         "mkt_tide_diff": None,
         "mkt_tide_otm_diff": None,
         "spx_spot_charm_oi": None,
@@ -492,8 +492,13 @@ def test_null_context_feature_contributes_zero():
     }
     components = compute_components(fire, STUB_WEIGHTS)
     for key in (
-        "mkt_tide_ncp", "mkt_tide_npp", "mkt_tide_diff", "mkt_tide_otm_diff",
-        "spx_spot_charm_oi", "spx_spot_vanna_oi", "spx_spot_gamma_oi",
+        "mkt_tide_ncp",
+        "mkt_tide_npp",
+        "mkt_tide_diff",
+        "mkt_tide_otm_diff",
+        "spx_spot_charm_oi",
+        "spx_spot_vanna_oi",
+        "spx_spot_gamma_oi",
     ):
         assert components[key] == 0, f"{key} should be 0 when None"
     component_sum = sum(v for k, v in components.items() if k != "total")
@@ -519,8 +524,13 @@ def test_backward_compat_no_context_blocks_in_stub_weights_no_overrides():
     components = compute_components(fire, STUB_WEIGHTS_NO_OVERRIDES)
     # All context components are 0 because the weights block is absent.
     for key in (
-        "mkt_tide_ncp", "mkt_tide_npp", "mkt_tide_diff", "mkt_tide_otm_diff",
-        "spx_spot_charm_oi", "spx_spot_vanna_oi", "spx_spot_gamma_oi",
+        "mkt_tide_ncp",
+        "mkt_tide_npp",
+        "mkt_tide_diff",
+        "mkt_tide_otm_diff",
+        "spx_spot_charm_oi",
+        "spx_spot_vanna_oi",
+        "spx_spot_gamma_oi",
     ):
         assert components[key] == 0, f"{key} should be 0 (no weights block)"
     component_sum = sum(v for k, v in components.items() if k != "total")
@@ -538,9 +548,7 @@ def test_live_db_sum_invariant():
     if "DATABASE_URL" not in os.environ:
         pytest.skip("DATABASE_URL not set — skipping live-DB integration test")
     weights_path = (
-        Path(__file__).resolve().parent.parent
-        / "output"
-        / "lottery_score_weights.json"
+        Path(__file__).resolve().parent.parent / "output" / "lottery_score_weights.json"
     )
     if not weights_path.exists():
         pytest.skip(f"Weights JSON not found at {weights_path}")
@@ -576,9 +584,7 @@ def test_live_db_sum_invariant():
             "tod": tod,
             "dte": int(dte),
             "option_type": ot,
-            "vol_oi_window": (
-                float(vol_oi) if vol_oi is not None else None
-            ),
+            "vol_oi_window": (float(vol_oi) if vol_oi is not None else None),
             "gamma": float(gamma) if gamma is not None else None,
             "ask_pct": float(ask_pct) if ask_pct is not None else None,
         }

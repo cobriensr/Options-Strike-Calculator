@@ -80,8 +80,12 @@ def load_backtest() -> pd.DataFrame:
     return df
 
 
-def stratify(df: pd.DataFrame, by: str, bins: list[float] | None = None,
-             labels: list[str] | None = None) -> pd.DataFrame:
+def stratify(
+    df: pd.DataFrame,
+    by: str,
+    bins: list[float] | None = None,
+    labels: list[str] | None = None,
+) -> pd.DataFrame:
     """Group by `by` (or by binned numeric), compute win rate + PnL stats."""
     work = df.copy()
     group_col = by
@@ -108,7 +112,9 @@ def stratify(df: pd.DataFrame, by: str, bins: list[float] | None = None,
     return pd.DataFrame(rows)
 
 
-def per_ticker_stratify(df: pd.DataFrame, by: str, bins=None, labels=None) -> pd.DataFrame:
+def per_ticker_stratify(
+    df: pd.DataFrame, by: str, bins=None, labels=None
+) -> pd.DataFrame:
     """Stratify but with ticker as a second axis."""
     rows = []
     for ticker, sub in df.groupby("ticker", observed=True):
@@ -139,7 +145,16 @@ def render_table(df: pd.DataFrame, group_col: str, title: str) -> str:
         return f"### {title}\n\n_No data._\n"
     has_ticker = "ticker" in df.columns
     cols = ["ticker"] if has_ticker else []
-    cols += [group_col, "n", "win%", "30%+ win", "mean", "median", "max loss", "max gain"]
+    cols += [
+        group_col,
+        "n",
+        "win%",
+        "30%+ win",
+        "mean",
+        "median",
+        "max loss",
+        "max gain",
+    ]
     lines = [f"### {title}\n"]
     lines.append("| " + " | ".join(cols) + " |")
     lines.append("| " + " | ".join(["---"] * len(cols)) + " |")
@@ -171,8 +186,8 @@ def main() -> None:
         "(NDXP/MSFT/META/MU/QQQ/SPY/SPXW/NVDA → hold-to-EOD; IWM/TSLA/MSTR/SNDK/SMH → "
         "sell-on-ITM-touch).\n\n"
         "Each table groups alerts by gate dimension and reports the win rate "
-        "+ PnL stats on the best-strategy outcome — directly answers \"does this "
-        "gate value concentrate winners?\"\n\n"
+        '+ PnL stats on the best-strategy outcome — directly answers "does this '
+        'gate value concentrate winners?"\n\n'
         "**Caveats:** 10-day sample; per-bucket subsets get small fast. Treat as "
         "directional. Live data thickens the population over time.\n"
     )
@@ -290,20 +305,48 @@ def main() -> None:
     )
 
     # Pull key numbers programmatically
-    voi_5_10 = q4[q4["bucket"] == "5-10×"]["win_rate"].iloc[0] if not q4.empty and "5-10×" in q4["bucket"].values else None
-    voi_50_200 = q4[q4["bucket"] == "50-200×"]["win_rate"].iloc[0] if not q4.empty and "50-200×" in q4["bucket"].values else None
-    voi_200_plus = q4[q4["bucket"] == "200×+"]["win_rate"].iloc[0] if not q4.empty and "200×+" in q4["bucket"].values else None
-    otm_005 = q5[q5["bucket"] == "<0.5%"]["win_rate"].iloc[0] if not q5.empty and "<0.5%" in q5["bucket"].values else None
-    otm_510 = q5[q5["bucket"] == "5-10%"]["win_rate"].iloc[0] if not q5.empty and "5-10%" in q5["bucket"].values else None
-    sig_1 = q2[q2["bucket"] == "1"]["win_rate"].iloc[0] if not q2.empty and "1" in q2["bucket"].values else None
-    sig_2 = q2[q2["bucket"] == "2"]["win_rate"].iloc[0] if not q2.empty and "2" in q2["bucket"].values else None
+    voi_5_10 = (
+        q4[q4["bucket"] == "5-10×"]["win_rate"].iloc[0]
+        if not q4.empty and "5-10×" in q4["bucket"].values
+        else None
+    )
+    voi_50_200 = (
+        q4[q4["bucket"] == "50-200×"]["win_rate"].iloc[0]
+        if not q4.empty and "50-200×" in q4["bucket"].values
+        else None
+    )
+    voi_200_plus = (
+        q4[q4["bucket"] == "200×+"]["win_rate"].iloc[0]
+        if not q4.empty and "200×+" in q4["bucket"].values
+        else None
+    )
+    otm_005 = (
+        q5[q5["bucket"] == "<0.5%"]["win_rate"].iloc[0]
+        if not q5.empty and "<0.5%" in q5["bucket"].values
+        else None
+    )
+    otm_510 = (
+        q5[q5["bucket"] == "5-10%"]["win_rate"].iloc[0]
+        if not q5.empty and "5-10%" in q5["bucket"].values
+        else None
+    )
+    sig_1 = (
+        q2[q2["bucket"] == "1"]["win_rate"].iloc[0]
+        if not q2.empty and "1" in q2["bucket"].values
+        else None
+    )
+    sig_2 = (
+        q2[q2["bucket"] == "2"]["win_rate"].iloc[0]
+        if not q2.empty and "2" in q2["bucket"].values
+        else None
+    )
 
     findings_md = []
     findings_md.append("### 1. Vol/OI ratio is COUNTERINTUITIVELY non-monotonic\n")
     if voi_5_10 is not None and voi_200_plus is not None:
         findings_md.append(
-            f"Win rate by vol/OI bucket: 5-10× = {voi_5_10*100:.1f}%, "
-            f"50-200× = {voi_50_200*100:.1f}%, 200×+ = {voi_200_plus*100:.1f}%. "
+            f"Win rate by vol/OI bucket: 5-10× = {voi_5_10 * 100:.1f}%, "
+            f"50-200× = {voi_50_200 * 100:.1f}%, 200×+ = {voi_200_plus * 100:.1f}%. "
             "**The highest ratios produce the LOWEST win rates.** Likely "
             "interpretation: extreme vol/OI fires on lottery-ticket strikes "
             "where smart money is closing inventory or where MMs are "
@@ -314,8 +357,8 @@ def main() -> None:
     findings_md.append("### 2. OTM distance: closer to ATM wins more\n")
     if otm_005 is not None and otm_510 is not None:
         findings_md.append(
-            f"Win rate at <0.5% OTM: {otm_005*100:.1f}%. At 5-10% OTM: "
-            f"{otm_510*100:.1f}%. Closer-to-ATM strikes are more likely to "
+            f"Win rate at <0.5% OTM: {otm_005 * 100:.1f}%. At 5-10% OTM: "
+            f"{otm_510 * 100:.1f}%. Closer-to-ATM strikes are more likely to "
             "finish ITM (need a smaller move). The ±12% cash-index gate "
             "captures a lot of unactionable far-OTM lottery tickets — "
             "consider tightening to ±5% for SPXW/NDXP if win rate matters "
@@ -324,8 +367,8 @@ def main() -> None:
     findings_md.append("### 3. Signal-stack count NOT predictive on average\n")
     if sig_1 is not None and sig_2 is not None:
         findings_md.append(
-            f"Win rate with 1 signal: {sig_1*100:.1f}%. With 2 signals: "
-            f"{sig_2*100:.1f}%. Multi-signal alerts are NOT systematically "
+            f"Win rate with 1 signal: {sig_1 * 100:.1f}%. With 2 signals: "
+            f"{sig_2 * 100:.1f}%. Multi-signal alerts are NOT systematically "
             "better — and on some tickers (NVDA, MU, MSTR) they're actually "
             "worse. Hypothesis: z_score firing on top of skew_delta often "
             "indicates the signal is already 'in motion' (mid-phase / late) "

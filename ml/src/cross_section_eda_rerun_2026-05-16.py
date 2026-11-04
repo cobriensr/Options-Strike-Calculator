@@ -270,8 +270,8 @@ def f4_macro_window(lf: pd.DataFrame, events: pd.DataFrame) -> dict:
         .sort_values()
         .values.astype("datetime64[ns]")
     )
-    fire_times = lf["trigger_time_ct"].dt.tz_convert(None).values.astype(
-        "datetime64[ns]"
+    fire_times = (
+        lf["trigger_time_ct"].dt.tz_convert(None).values.astype("datetime64[ns]")
     )
     idx = np.searchsorted(event_times, fire_times, side="left")
     in_bounds = idx < len(event_times)
@@ -317,7 +317,12 @@ def main():
         "rerun confirms that.\n\n"
         f"_LF enriched rows: {len(lf):,} · SB enriched rows: {len(sb):,} · macro events: {len(events):,}_\n"
     )
-    for k in ["f1_range_kill", "f2_vol_to_oi", "f3_spread_confirmed", "f4_macro_window"]:
+    for k in [
+        "f1_range_kill",
+        "f2_vol_to_oi",
+        "f3_spread_confirmed",
+        "f4_macro_window",
+    ]:
         report += "\n" + results[k]["markdown"]
 
     report_path = FINDINGS_DIR / "report.md"

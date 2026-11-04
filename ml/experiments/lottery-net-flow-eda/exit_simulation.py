@@ -65,7 +65,9 @@ def load_fires(conn) -> pd.DataFrame:
     return fires
 
 
-def load_flow_for_dates(conn, tickers: list[str], date_lo: str, date_hi: str) -> pd.DataFrame:
+def load_flow_for_dates(
+    conn, tickers: list[str], date_lo: str, date_hi: str
+) -> pd.DataFrame:
     flow = pd.read_sql(
         """
         SELECT ticker, ts, net_call_prem, net_put_prem
@@ -170,11 +172,15 @@ def simulate_flow_inversion(
     if len(flow_after_peak) < INVERSION_SLOPE_WINDOW_MIN + INVERSION_NEG_PERSIST_MIN:
         # Use EOD as the inversion fallback when there's not enough
         # post-peak data to detect inversion — flow peaked too late.
-        return _exit_at_or_after(post, eod_ts, entry_price, status="eod_no_inversion_window")
+        return _exit_at_or_after(
+            post, eod_ts, entry_price, status="eod_no_inversion_window"
+        )
     cum_after_peak = flow_after_peak[matched_side].cumsum().to_numpy()
     slopes = np.full(len(cum_after_peak), np.nan)
     for i in range(INVERSION_SLOPE_WINDOW_MIN, len(cum_after_peak)):
-        slopes[i] = (cum_after_peak[i] - cum_after_peak[i - INVERSION_SLOPE_WINDOW_MIN]) / INVERSION_SLOPE_WINDOW_MIN
+        slopes[i] = (
+            cum_after_peak[i] - cum_after_peak[i - INVERSION_SLOPE_WINDOW_MIN]
+        ) / INVERSION_SLOPE_WINDOW_MIN
     neg_streak = 0
     inversion_idx = None
     for i, s in enumerate(slopes):
@@ -188,7 +194,9 @@ def simulate_flow_inversion(
         else:
             neg_streak = 0
     if inversion_idx is None:
-        return _exit_at_or_after(post, eod_ts, entry_price, status="eod_no_inversion_found")
+        return _exit_at_or_after(
+            post, eod_ts, entry_price, status="eod_no_inversion_found"
+        )
     inversion_ts = flow_after_peak["ts"].iloc[inversion_idx]
     return _exit_at_or_after(post, inversion_ts, entry_price, status="inversion")
 
@@ -203,7 +211,11 @@ def _exit_at_or_after(
     at_or_after = minute_prices[minute_prices["minute"] >= target_ts]
     if at_or_after.empty:
         last = minute_prices.iloc[-1]
-        return float((last["mid"] - entry_price) / entry_price * 100), last["minute"], f"{status}_eod_fallback"
+        return (
+            float((last["mid"] - entry_price) / entry_price * 100),
+            last["minute"],
+            f"{status}_eod_fallback",
+        )
     row = at_or_after.iloc[0]
     return float((row["mid"] - entry_price) / entry_price * 100), row["minute"], status
 
@@ -240,6 +252,7 @@ def write_report(results: pd.DataFrame) -> None:
     lines.append("")
     lines.append("| metric | trail-30/10 | flow-inversion | diff (inv-trail) |")
     lines.append("| --- | ---: | ---: | ---: |")
+
     def _apply(series: pd.Series, op):
         return getattr(series, op)() if isinstance(op, str) else op(series)
 
@@ -296,7 +309,9 @@ def write_report(results: pd.DataFrame) -> None:
             continue
         t = group["trail_pct"].median()
         i = group["inversion_pct"].median()
-        lines.append(f"| {mode} | {len(group):,} | {fmt(t)} | {fmt(i)} | {fmt(i - t)} |")
+        lines.append(
+            f"| {mode} | {len(group):,} | {fmt(t)} | {fmt(i)} | {fmt(i - t)} |"
+        )
     lines.append("")
     lines.append("## Stratified by tod")
     lines.append("")
@@ -334,8 +349,20 @@ def plot_results(results: pd.DataFrame) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     # Side-by-side return histograms (clipped for readability)
     bins = np.linspace(-100, 200, 60)
-    axes[0].hist(results["trail_pct"].clip(-100, 200), bins=bins, alpha=0.55, label=f"trail-30/10 (med {results['trail_pct'].median():+.1f})", color="steelblue")
-    axes[0].hist(results["inversion_pct"].clip(-100, 200), bins=bins, alpha=0.55, label=f"flow-inversion (med {results['inversion_pct'].median():+.1f})", color="darkorange")
+    axes[0].hist(
+        results["trail_pct"].clip(-100, 200),
+        bins=bins,
+        alpha=0.55,
+        label=f"trail-30/10 (med {results['trail_pct'].median():+.1f})",
+        color="steelblue",
+    )
+    axes[0].hist(
+        results["inversion_pct"].clip(-100, 200),
+        bins=bins,
+        alpha=0.55,
+        label=f"flow-inversion (med {results['inversion_pct'].median():+.1f})",
+        color="darkorange",
+    )
     axes[0].axvline(0, color="gray", linestyle="--")
     axes[0].set_xlabel("Realized return % (mid, no costs)")
     axes[0].set_ylabel("Fires")
@@ -396,8 +423,12 @@ def main() -> int:
         all_trades = pd.read_parquet(
             path,
             columns=[
-                "executed_at", "option_chain_id",
-                "nbbo_bid", "nbbo_ask", "price", "canceled",
+                "executed_at",
+                "option_chain_id",
+                "nbbo_bid",
+                "nbbo_ask",
+                "price",
+                "canceled",
             ],
         )
         day_trades = all_trades[all_trades["option_chain_id"].isin(chains)].copy()
@@ -418,7 +449,9 @@ def main() -> int:
             if flow_key not in flow_groups.groups:
                 continue
             flow_day = flow_groups.get_group(flow_key)
-            matched_side = "net_call_prem" if fire.option_type == "C" else "net_put_prem"
+            matched_side = (
+                "net_call_prem" if fire.option_type == "C" else "net_put_prem"
+            )
             inv_pct, _, inv_status = simulate_flow_inversion(
                 minutes, flow_day, matched_side, entry_price, trigger_ts
             )
@@ -464,8 +497,12 @@ def main() -> int:
     print(f"\nWrote {REPORT_OUT}")
     print(f"  median trail:     {results['trail_pct'].median():+.1f}%")
     print(f"  median inversion: {results['inversion_pct'].median():+.1f}%")
-    print(f"  median diff:      {(results['inversion_pct'] - results['trail_pct']).median():+.1f}pp")
-    print(f"  median diff net:  {(results['inversion_net_pct'] - results['trail_net_pct']).median():+.1f}pp")
+    print(
+        f"  median diff:      {(results['inversion_pct'] - results['trail_pct']).median():+.1f}pp"
+    )
+    print(
+        f"  median diff net:  {(results['inversion_net_pct'] - results['trail_net_pct']).median():+.1f}pp"
+    )
 
     if os.environ.get("WRITE_DB") == "1":
         write_back_to_db(results, db_url)
@@ -480,7 +517,9 @@ def write_back_to_db(results: pd.DataFrame, db_url: str) -> None:
     from decimal import Decimal
 
     BATCH = 500
-    print(f"\nWRITE_DB=1 — updating realized_flow_inversion_pct for {len(results):,} rows...")
+    print(
+        f"\nWRITE_DB=1 — updating realized_flow_inversion_pct for {len(results):,} rows..."
+    )
     updated = 0
     with psycopg2.connect(db_url) as conn:
         with conn.cursor() as cur:
@@ -488,7 +527,9 @@ def write_back_to_db(results: pd.DataFrame, db_url: str) -> None:
                 chunk = results.iloc[start : start + BATCH]
                 ids = chunk["fire_id"].astype(int).tolist()
                 # Convert to Decimal so psycopg2 binds as NUMERIC cleanly.
-                pcts = [Decimal(str(round(float(p), 4))) for p in chunk["inversion_pct"]]
+                pcts = [
+                    Decimal(str(round(float(p), 4))) for p in chunk["inversion_pct"]
+                ]
                 cur.execute(
                     """
                     UPDATE lottery_finder_fires AS f

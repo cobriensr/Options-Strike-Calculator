@@ -279,7 +279,9 @@ def test_compute_quintile_weights_underpopulated_quintile_falls_back():
     big = MIN_OBS_BUCKET + 5
     rows = [{"q": 0.0, "outcome_pct": 0.0} for _ in range(big)]
     rows += [{"q": 4.0, "outcome_pct": 10.0} for _ in range(big)]
-    rows += [{"q": float(q), "outcome_pct": -999.0} for q in (1, 2, 3) for _ in range(3)]
+    rows += [
+        {"q": float(q), "outcome_pct": -999.0} for q in (1, 2, 3) for _ in range(3)
+    ]
     df = pd.DataFrame(rows)
     assert compute_quintile_weights(df, "q", scale=5.0, global_mean=5.0) == [
         -2,
@@ -300,8 +302,7 @@ def _ticker_frame(specs: dict[str, tuple[float, int]]) -> pd.DataFrame:
     rows = []
     for ticker, (outcome, count) in specs.items():
         rows += [
-            {"underlying_symbol": ticker, "outcome_pct": outcome}
-            for _ in range(count)
+            {"underlying_symbol": ticker, "outcome_pct": outcome} for _ in range(count)
         ]
     return pd.DataFrame(rows)
 

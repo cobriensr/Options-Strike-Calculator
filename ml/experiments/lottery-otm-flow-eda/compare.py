@@ -70,7 +70,9 @@ def stratified(df: pd.DataFrame, col: str, min_n: int = 50) -> list[str]:
     return lines
 
 
-def concentration_cv(df: pd.DataFrame, col: str, target: str = "inversion_pct_otm", min_n: int = 50) -> float | None:
+def concentration_cv(
+    df: pd.DataFrame, col: str, target: str = "inversion_pct_otm", min_n: int = 50
+) -> float | None:
     rates = []
     for _, group in df.groupby(col, observed=True):
         if len(group) >= min_n:
@@ -87,7 +89,9 @@ def main() -> int:
     if not RESULTS.exists():
         print(f"Missing {RESULTS} — run exit_simulation_otm.py first")
         return 1
-    df = pd.read_parquet(RESULTS).dropna(subset=["inversion_pct_all", "inversion_pct_otm"])
+    df = pd.read_parquet(RESULTS).dropna(
+        subset=["inversion_pct_all", "inversion_pct_otm"]
+    )
     n = len(df)
 
     # Headline
@@ -143,7 +147,11 @@ def main() -> int:
     lines.append("")
     for col in ["date_str", "ticker", "mode", "tod"]:
         cv = concentration_cv(df, col)
-        lines.append(f"- CV(lottery_rate_otm) across `{col}`: {cv:.2f}" if cv else f"- CV across `{col}`: insufficient data")
+        lines.append(
+            f"- CV(lottery_rate_otm) across `{col}`: {cv:.2f}"
+            if cv
+            else f"- CV across `{col}`: insufficient data"
+        )
     lines.append("")
     lines.append(
         "Per `feedback_uniform_lift_is_leakage`: high CV (≥1.0) = concentrated edge; "

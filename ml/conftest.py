@@ -5,6 +5,7 @@ The takeit suite (test_takeit_export.py) reuses the synthetic-frame
 builder from test_takeit_train.py to avoid duplicating the ~30-line
 fixture, so the tests dir needs to be importable as well.
 """
+
 import sys
 from pathlib import Path
 

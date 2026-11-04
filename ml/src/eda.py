@@ -383,9 +383,13 @@ def structure_analysis(df: pd.DataFrame) -> None:
             f"  Always predicting '{majority.index[0]}' would be correct "
             f"{majority.iloc[0]}/{total_labeled} ({majority.iloc[0] / total_labeled:.0%})"
         )
-        print("  Any ML model must beat this with walk-forward validation to be useful.")
+        print(
+            "  Any ML model must beat this with walk-forward validation to be useful."
+        )
     else:
-        print("  No labeled rows — skipping baseline (rerun once Phase 2 labels arrive).")
+        print(
+            "  No labeled rows — skipping baseline (rerun once Phase 2 labels arrive)."
+        )
 
 
 # ── Analysis 4: Feature Importance ───────────────────────────

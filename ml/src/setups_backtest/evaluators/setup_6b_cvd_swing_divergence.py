@@ -169,7 +169,9 @@ class _CvdSwingDivergenceFadeEvaluator:
         )
 
 
-def _cvd_at_bar(es_tbbo: pd.DataFrame, session_start: pd.Timestamp, end_ts: pd.Timestamp) -> float:
+def _cvd_at_bar(
+    es_tbbo: pd.DataFrame, session_start: pd.Timestamp, end_ts: pd.Timestamp
+) -> float:
     """Cumulative CVD from session_start through end_ts (exclusive)."""
     return features.cvd_session(es_tbbo, session_start, end_ts)
 

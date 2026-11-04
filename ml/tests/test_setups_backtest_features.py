@@ -20,7 +20,9 @@ def _utc(ts: str) -> pd.Timestamp:
     return pd.Timestamp(ts, tz="UTC")
 
 
-def _make_tbbo(minutes: list[str], buy_vols: list[int], sell_vols: list[int]) -> pd.DataFrame:
+def _make_tbbo(
+    minutes: list[str], buy_vols: list[int], sell_vols: list[int]
+) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "minute": [_utc(m) for m in minutes],
@@ -30,7 +32,9 @@ def _make_tbbo(minutes: list[str], buy_vols: list[int], sell_vols: list[int]) ->
     )
 
 
-def _make_ohlcv(rows: list[tuple[str, float, float, float, float, int]]) -> pd.DataFrame:
+def _make_ohlcv(
+    rows: list[tuple[str, float, float, float, float, int]],
+) -> pd.DataFrame:
     return pd.DataFrame(
         rows, columns=["ts", "open", "high", "low", "close", "volume"]
     ).assign(ts=lambda d: pd.to_datetime(d["ts"], utc=True))
@@ -60,28 +64,20 @@ def test_ofi_window_empty_returns_nan():
 
 
 def test_ofi_window_no_trades_in_window_returns_nan():
-    tbbo = _make_tbbo(
-        minutes=["2026-04-15 13:00"], buy_vols=[100], sell_vols=[100]
-    )
+    tbbo = _make_tbbo(minutes=["2026-04-15 13:00"], buy_vols=[100], sell_vols=[100])
     val = features.ofi_window(tbbo, _utc("2026-04-15 14:00"), window_minutes=5)
     assert pd.isna(val)
 
 
 def test_ofi_window_exclusive_end():
     # Trade at exactly end_ts must be excluded.
-    tbbo = _make_tbbo(
-        minutes=["2026-04-15 14:00"], buy_vols=[100], sell_vols=[0]
-    )
-    val = features.ofi_window(
-        tbbo, _utc("2026-04-15 14:00"), window_minutes=5
-    )
+    tbbo = _make_tbbo(minutes=["2026-04-15 14:00"], buy_vols=[100], sell_vols=[0])
+    val = features.ofi_window(tbbo, _utc("2026-04-15 14:00"), window_minutes=5)
     assert pd.isna(val)
 
 
 def test_ofi_window_perfect_buy():
-    tbbo = _make_tbbo(
-        minutes=["2026-04-15 14:00"], buy_vols=[1000], sell_vols=[0]
-    )
+    tbbo = _make_tbbo(minutes=["2026-04-15 14:00"], buy_vols=[1000], sell_vols=[0])
     val = features.ofi_window(tbbo, _utc("2026-04-15 14:01"), window_minutes=5)
     assert val == pytest.approx(1.0)
 
@@ -97,9 +93,7 @@ def test_cvd_session_cumulative():
         buy_vols=[100, 200, 50],
         sell_vols=[50, 150, 100],
     )
-    val = features.cvd_session(
-        tbbo, _utc("2026-04-15 13:30"), _utc("2026-04-15 13:33")
-    )
+    val = features.cvd_session(tbbo, _utc("2026-04-15 13:30"), _utc("2026-04-15 13:33"))
     # (100-50) + (200-150) + (50-100) = 50 + 50 - 50 = 50
     assert val == pytest.approx(50.0)
 
@@ -107,20 +101,14 @@ def test_cvd_session_cumulative():
 def test_cvd_session_empty_window_is_nan():
     # No data → NaN (not 0.0) so callers distinguish "no data" from "balanced".
     tbbo = _make_tbbo(minutes=[], buy_vols=[], sell_vols=[])
-    val = features.cvd_session(
-        tbbo, _utc("2026-04-15 13:30"), _utc("2026-04-15 13:33")
-    )
+    val = features.cvd_session(tbbo, _utc("2026-04-15 13:30"), _utc("2026-04-15 13:33"))
     assert pd.isna(val)
 
 
 def test_cvd_session_window_with_no_rows_is_nan():
     # Data exists but none in the requested window.
-    tbbo = _make_tbbo(
-        minutes=["2026-04-15 14:00"], buy_vols=[100], sell_vols=[100]
-    )
-    val = features.cvd_session(
-        tbbo, _utc("2026-04-15 13:30"), _utc("2026-04-15 13:33")
-    )
+    tbbo = _make_tbbo(minutes=["2026-04-15 14:00"], buy_vols=[100], sell_vols=[100])
+    val = features.cvd_session(tbbo, _utc("2026-04-15 13:30"), _utc("2026-04-15 13:33"))
     assert pd.isna(val)
 
 
@@ -373,7 +361,9 @@ def test_macro_stress_quiet_market():
         ("2026-04-15 13:25", 80.0, 80.0, 80.0, 80.5, 100),  # +0.625% over 30m
     ]
     cl = _make_ohlcv(rows)
-    assert not features.macro_stress_30m(cl, _utc("2026-04-15 13:30"), pct_threshold=2.0)
+    assert not features.macro_stress_30m(
+        cl, _utc("2026-04-15 13:30"), pct_threshold=2.0
+    )
 
 
 def test_macro_stress_insufficient_data():

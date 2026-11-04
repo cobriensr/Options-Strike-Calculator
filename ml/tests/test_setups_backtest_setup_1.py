@@ -151,7 +151,11 @@ def test_short_signal_fires_on_strong_sell(monkeypatch):
     def fake_loader(ctx_, conn, contract, d):
         end = pd.Timestamp(decision_ts)
         rows = [
-            {"minute": end - pd.Timedelta(minutes=90 - i), "buy_vol": 50, "sell_vol": 1000}
+            {
+                "minute": end - pd.Timedelta(minutes=90 - i),
+                "buy_vol": 50,
+                "sell_vol": 1000,
+            }
             for i in range(90)
         ]
         return pd.DataFrame(rows)
@@ -312,7 +316,11 @@ def test_below_threshold_returns_none(monkeypatch):
     def fake_balanced(ctx_, conn, contract, d):
         end = pd.Timestamp(decision_ts)
         rows = [
-            {"minute": end - pd.Timedelta(minutes=90 - i), "buy_vol": 100, "sell_vol": 100}
+            {
+                "minute": end - pd.Timedelta(minutes=90 - i),
+                "buy_vol": 100,
+                "sell_vol": 100,
+            }
             for i in range(90)
         ]
         return pd.DataFrame(rows)

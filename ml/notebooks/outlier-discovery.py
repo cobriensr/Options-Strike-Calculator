@@ -74,9 +74,7 @@ def main() -> int:
             f"({time.perf_counter() - t_day:.1f}s)"
         )
     outliers = pl.concat(per_day_outliers, how="vertical_relaxed")
-    print(
-        f"\nTotal: {outliers.height:,} outliers in {time.perf_counter() - t0:.1f}s"
-    )
+    print(f"\nTotal: {outliers.height:,} outliers in {time.perf_counter() - t0:.1f}s")
 
     if outliers.is_empty():
         print(
@@ -117,14 +115,11 @@ def main() -> int:
     t0 = time.perf_counter()
     per_day_bars: list[pl.DataFrame] = []
     for d in dates:
-        flow_day = (
-            load_flow(
-                d,
-                tickers=needed_tickers,
-                columns=["executed_at", "underlying_symbol", "underlying_price"],
-            )
-            .collect()
-        )
+        flow_day = load_flow(
+            d,
+            tickers=needed_tickers,
+            columns=["executed_at", "underlying_symbol", "underlying_price"],
+        ).collect()
         bars_day = synthesize_minute_bars(flow_day)
         per_day_bars.append(bars_day)
     bars = pl.concat(per_day_bars, how="vertical_relaxed")
@@ -137,7 +132,9 @@ def main() -> int:
     _h("4. Compute outcomes (touch-ITM win + path diagnostics)")
     t0 = time.perf_counter()
     enriched = compute_outcomes(outliers, bars)
-    print(f"Joined outcomes onto {enriched.height:,} outliers in {time.perf_counter() - t0:.1f}s")
+    print(
+        f"Joined outcomes onto {enriched.height:,} outliers in {time.perf_counter() - t0:.1f}s"
+    )
 
     # Summary of the won column
     won_dist = enriched["won"].value_counts().sort("count", descending=True)

@@ -113,7 +113,9 @@ def write_report(df: pd.DataFrame) -> None:
             f"CV(lottery_rate_inv) across {len(by_date)} dates = **{cv_date:.2f}**"
         )
         if cv_date >= 1.0:
-            lines.append("→ **Concentrated** — a few outlier days carry most of the edge.")
+            lines.append(
+                "→ **Concentrated** — a few outlier days carry most of the edge."
+            )
         elif cv_date < 0.5:
             lines.append("→ **Uniform** — leakage fingerprint; treat with suspicion.")
         else:
@@ -124,7 +126,9 @@ def write_report(df: pd.DataFrame) -> None:
     lines.append("## By ticker (top 15 by inversion lottery rate)")
     lines.append("")
     by_ticker = stratum_breakdown(df, "ticker", min_n=50).head(15)
-    lines.append("| ticker | n | lottery rate inv | lottery rate trail | mean inv | mean trail |")
+    lines.append(
+        "| ticker | n | lottery rate inv | lottery rate trail | mean inv | mean trail |"
+    )
     lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")
     for _, r in by_ticker.iterrows():
         lines.append(
@@ -133,15 +137,14 @@ def write_report(df: pd.DataFrame) -> None:
         )
     by_ticker_full = stratum_breakdown(df, "ticker", min_n=50)
     cv_ticker = (
-        by_ticker_full["lottery_rate_inv"].std() / by_ticker_full["lottery_rate_inv"].mean()
+        by_ticker_full["lottery_rate_inv"].std()
+        / by_ticker_full["lottery_rate_inv"].mean()
         if by_ticker_full["lottery_rate_inv"].mean() > 0
         else None
     )
     lines.append("")
     if cv_ticker is not None:
-        lines.append(
-            f"CV across {len(by_ticker_full)} tickers = **{cv_ticker:.2f}**"
-        )
+        lines.append(f"CV across {len(by_ticker_full)} tickers = **{cv_ticker:.2f}**")
         if cv_ticker >= 1.0:
             lines.append("→ **Concentrated** — winners cluster on specific tickers.")
         elif cv_ticker < 0.5:
@@ -173,7 +176,9 @@ def write_report(df: pd.DataFrame) -> None:
         lines.append("")
 
     # Top single-day-ticker contributions
-    lines.append("## Top 20 (date, ticker) cells contributing inversion lottery winners")
+    lines.append(
+        "## Top 20 (date, ticker) cells contributing inversion lottery winners"
+    )
     lines.append("")
     lottery_only = df[df["inversion_pct"] >= LOTTERY_THRESHOLD_PCT].copy()
     if not lottery_only.empty:

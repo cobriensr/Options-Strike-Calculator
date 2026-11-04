@@ -455,7 +455,9 @@ def prior_session_profile(
 
     for back in range(1, max_back + 1):
         prior = today - pd.Timedelta(days=back).to_pytimedelta()
-        contract = pick_front_month(conn, symbol_prefix, prior.date() if hasattr(prior, "date") else prior)
+        contract = pick_front_month(
+            conn, symbol_prefix, prior.date() if hasattr(prior, "date") else prior
+        )
         if contract is None:
             continue
         prior_d = prior.date() if hasattr(prior, "date") else prior

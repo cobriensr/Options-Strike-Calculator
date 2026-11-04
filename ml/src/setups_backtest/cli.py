@@ -115,7 +115,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             if not trading_days:
                 log.warning(
                     "No trading days in window %s -> %s; writing empty result.",
-                    start, end,
+                    start,
+                    end,
                 )
                 trades = []
             else:
@@ -125,9 +126,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                     trading_days[0],
                     trading_days[-1],
                 )
-                trades = harness.run_backtest(
-                    evaluator, trading_days, conn=conn, pg=pg
-                )
+                trades = harness.run_backtest(evaluator, trading_days, conn=conn, pg=pg)
         finally:
             if pg is not None:
                 pg.close()

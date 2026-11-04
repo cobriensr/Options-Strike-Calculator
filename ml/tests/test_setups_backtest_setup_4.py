@@ -35,7 +35,9 @@ def _es_bars(n: int = 60, base: float = 6000.0) -> pd.DataFrame:
     ).assign(ts=lambda d: pd.to_datetime(d["ts"], utc=True), symbol="ESM6")
 
 
-def _spx_with_basis(es_close: float, basis: float, decision_ts: pd.Timestamp) -> pd.DataFrame:
+def _spx_with_basis(
+    es_close: float, basis: float, decision_ts: pd.Timestamp
+) -> pd.DataFrame:
     """SPX bar one minute before decision_ts where SPX = es_close - basis."""
     return pd.DataFrame(
         {

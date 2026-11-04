@@ -13,6 +13,7 @@ Outputs:
 - ml/findings/iv-anomaly-signal-magnitude-2026-04-25.json
 - ml/reports/iv-anomaly-signal-magnitude-2026-04-25.md
 """
+
 from __future__ import annotations
 
 import json
@@ -38,7 +39,9 @@ from iv_anomaly_utils import (  # noqa: E402
 
 silence_pandas_psycopg2_warning()
 BACKTEST_PATH = REPO_ROOT / "ml" / "data" / "iv-anomaly-backtest-2026-04-25.parquet"
-OUT_FINDINGS = REPO_ROOT / "ml" / "findings" / "iv-anomaly-signal-magnitude-2026-04-25.json"
+OUT_FINDINGS = (
+    REPO_ROOT / "ml" / "findings" / "iv-anomaly-signal-magnitude-2026-04-25.json"
+)
 OUT_REPORT = REPO_ROOT / "ml" / "reports" / "iv-anomaly-signal-magnitude-2026-04-25.md"
 
 NON_ORACLE = ["pnl_itm_touch", "pnl_eod"]
@@ -116,7 +119,9 @@ def bucket_side_skew(s: float) -> str:
     return "ss_095plus"
 
 
-def aggregate_by_signal_bucket(df: pd.DataFrame, signal_name: str, bucket_col: str) -> pd.DataFrame:
+def aggregate_by_signal_bucket(
+    df: pd.DataFrame, signal_name: str, bucket_col: str
+) -> pd.DataFrame:
     """Aggregate win rate / mean PnL by (regime, side, signal_bucket)."""
     sub = df.dropna(subset=["best_pnl_pct"])
     g = sub.groupby(["regime", "side", bucket_col]).agg(
@@ -131,12 +136,14 @@ def aggregate_by_signal_bucket(df: pd.DataFrame, signal_name: str, bucket_col: s
 
 def composite_intensity(df: pd.DataFrame) -> pd.Series:
     """Z-score-standardize each signal magnitude across alerts where it fired, sum the standardized values."""
-    abs_sigs = pd.DataFrame({
-        "z_score": df["z_score"].abs(),
-        "skew_delta": df["skew_delta"].abs(),
-        "ask_mid_div": df["ask_mid_div"].abs(),
-        "vol_oi_ratio": df["vol_oi_ratio"],
-    })
+    abs_sigs = pd.DataFrame(
+        {
+            "z_score": df["z_score"].abs(),
+            "skew_delta": df["skew_delta"].abs(),
+            "ask_mid_div": df["ask_mid_div"].abs(),
+            "vol_oi_ratio": df["vol_oi_ratio"],
+        }
+    )
     standardized = abs_sigs.copy()
     for col in standardized.columns:
         present = standardized[col].dropna()
@@ -159,7 +166,9 @@ def main() -> None:
     df["bucket_vo"] = df["vol_oi_ratio"].apply(bucket_vol_oi)
     df["bucket_ss"] = df["side_skew"].apply(bucket_side_skew)
     df["intensity"] = composite_intensity(df)
-    df["bucket_intensity"] = pd.qcut(df["intensity"], 4, labels=["q1_low", "q2", "q3", "q4_high"], duplicates="drop")
+    df["bucket_intensity"] = pd.qcut(
+        df["intensity"], 4, labels=["q1_low", "q2", "q3", "q4_high"], duplicates="drop"
+    )
 
     # Aggregations
     by_z = aggregate_by_signal_bucket(df, "z_score", "bucket_z")
@@ -187,16 +196,22 @@ def main() -> None:
     OUT_REPORT.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
     lines.append("# IV-Anomaly Signal Magnitude (Phase D2) — 2026-04-25")
-    lines.append(f"**Sample:** {len(df):,} alerts, sliced by regime × side × signal-magnitude bucket.")
+    lines.append(
+        f"**Sample:** {len(df):,} alerts, sliced by regime × side × signal-magnitude bucket."
+    )
     lines.append("")
-    lines.append("**Key question:** does signal *strength* (e.g. 5σ z-score) predict better outcomes than signal "
-                 "*presence* alone? Phase C answered the count question (no). This answers magnitude.")
+    lines.append(
+        "**Key question:** does signal *strength* (e.g. 5σ z-score) predict better outcomes than signal "
+        "*presence* alone? Phase C answered the count question (no). This answers magnitude."
+    )
     lines.append("")
 
     def _emit(title: str, table: pd.DataFrame, bucket_label: str) -> None:
         lines.append(f"## {title}")
         lines.append("")
-        lines.append(f"| regime | side | {bucket_label} | n | win% | mean% | mean $ | median $ |")
+        lines.append(
+            f"| regime | side | {bucket_label} | n | win% | mean% | mean $ | median $ |"
+        )
         lines.append("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |")
         for (regime, side, bucket), row in table.iterrows():
             n = int(row["n"])
@@ -204,7 +219,7 @@ def main() -> None:
                 continue
             lines.append(
                 f"| {regime} | {side} | {bucket} | {n:,} | {row['win_pct']:.1f}% | "
-                f"{row['mean_pct']*100:.1f}% | ${row['mean_dollar']:,.0f} | ${row['median_dollar']:,.0f} |"
+                f"{row['mean_pct'] * 100:.1f}% | ${row['mean_dollar']:,.0f} | ${row['median_dollar']:,.0f} |"
             )
         lines.append("")
 

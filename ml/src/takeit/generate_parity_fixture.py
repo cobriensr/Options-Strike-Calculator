@@ -52,12 +52,16 @@ def _coerce(value: object) -> object:
 def generate_one(alert_type: str, rng: np.random.Generator) -> dict:
     df = pd.read_parquet(DATA_DIR / f"{alert_type}_training.parquet")
     if len(df) > N_ROWS:
-        df = df.sample(n=N_ROWS, random_state=int(rng.integers(0, 2**31 - 1))).reset_index(drop=True)
+        df = df.sample(
+            n=N_ROWS, random_state=int(rng.integers(0, 2**31 - 1))
+        ).reset_index(drop=True)
 
     bundle = joblib.load(DATA_DIR / f"{alert_type}_classifier.joblib")
     feature_cols: list[str] = bundle["feature_cols"]
 
-    X, _, prepared_cols, _ = prepare_features(df, alert_type, top_tickers=bundle["top_tickers"])
+    X, _, prepared_cols, _ = prepare_features(
+        df, alert_type, top_tickers=bundle["top_tickers"]
+    )
     # Ensure the columns line up with the trained model exactly.
     missing = set(feature_cols) - set(prepared_cols)
     if missing:
@@ -73,11 +77,13 @@ def generate_one(alert_type: str, rng: np.random.Generator) -> dict:
     rows = []
     for i in range(len(X)):
         row_features = {col: _coerce(X.iloc[i][col]) for col in feature_cols}
-        rows.append({
-            "features": row_features,
-            "expected_prob_raw": float(raw[i]),
-            "expected_prob_calibrated": float(cal[i]),
-        })
+        rows.append(
+            {
+                "features": row_features,
+                "expected_prob_raw": float(raw[i]),
+                "expected_prob_calibrated": float(cal[i]),
+            }
+        )
 
     return {
         "alert_type": alert_type,

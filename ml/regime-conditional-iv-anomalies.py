@@ -19,6 +19,7 @@ Outputs:
 - ml/reports/iv-anomaly-regime-conditional-2026-04-25.md
 - ml/plots/iv-anomaly-regime-conditional/*.png
 """
+
 from __future__ import annotations
 
 import json
@@ -45,8 +46,12 @@ from iv_anomaly_utils import (  # noqa: E402
 silence_pandas_psycopg2_warning()
 
 BACKTEST_PATH = REPO_ROOT / "ml" / "data" / "iv-anomaly-backtest-2026-04-25.parquet"
-OUT_FINDINGS = REPO_ROOT / "ml" / "findings" / "iv-anomaly-regime-conditional-2026-04-25.json"
-OUT_REPORT = REPO_ROOT / "ml" / "reports" / "iv-anomaly-regime-conditional-2026-04-25.md"
+OUT_FINDINGS = (
+    REPO_ROOT / "ml" / "findings" / "iv-anomaly-regime-conditional-2026-04-25.json"
+)
+OUT_REPORT = (
+    REPO_ROOT / "ml" / "reports" / "iv-anomaly-regime-conditional-2026-04-25.md"
+)
 OUT_PLOTS = REPO_ROOT / "ml" / "plots" / "iv-anomaly-regime-conditional"
 
 
@@ -57,7 +62,9 @@ def load_and_label() -> pd.DataFrame:
     return df
 
 
-def aggregate(df: pd.DataFrame, group_cols: list[str], strategy_col: str) -> pd.DataFrame:
+def aggregate(
+    df: pd.DataFrame, group_cols: list[str], strategy_col: str
+) -> pd.DataFrame:
     """Phase D0 aggregate has extra max-loss / max-gain columns; the shared
     helper omits those for compactness, so D0 keeps its own version."""
     pnl = df[strategy_col]
@@ -81,9 +88,18 @@ def aggregate(df: pd.DataFrame, group_cols: list[str], strategy_col: str) -> pd.
 
 # ──────── Plotting ────────
 
+
 def plot_regime_winrate_by_ticker(df: pd.DataFrame, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    base_regimes = ["chop", "mild_trend_up", "strong_trend_up", "extreme_up", "mild_trend_down", "strong_trend_down", "extreme_down"]
+    base_regimes = [
+        "chop",
+        "mild_trend_up",
+        "strong_trend_up",
+        "extreme_up",
+        "mild_trend_down",
+        "strong_trend_down",
+        "extreme_down",
+    ]
     for ticker in sorted(df["ticker"].unique()):
         sub = df[df["ticker"] == ticker].dropna(subset=["best_pnl_pct"])
         if len(sub) < 30:
@@ -116,14 +132,28 @@ def plot_regime_winrate_by_ticker(df: pd.DataFrame, out_dir: Path) -> None:
                 else 0
                 for r in regimes
             ]
-            bars = ax.bar(x + (i - 0.5) * width, vals, width, label=side, color="#1f77b4" if side == "call" else "#d62728")
+            bars = ax.bar(
+                x + (i - 0.5) * width,
+                vals,
+                width,
+                label=side,
+                color="#1f77b4" if side == "call" else "#d62728",
+            )
             for bar, n in zip(bars, ns):
                 if n > 0:
-                    ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1, f"n={n}", ha="center", fontsize=7)
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 1,
+                        f"n={n}",
+                        ha="center",
+                        fontsize=7,
+                    )
         ax.set_xticks(x)
         ax.set_xticklabels([r.replace("_", "\n") for r in regimes], fontsize=8)
         ax.set_ylabel("win rate %")
-        ax.set_title(f"{ticker} — win rate by regime × side (best strategy per (ticker, regime))")
+        ax.set_title(
+            f"{ticker} — win rate by regime × side (best strategy per (ticker, regime))"
+        )
         ax.legend()
         ax.grid(axis="y", alpha=0.3)
         plt.tight_layout()
@@ -133,7 +163,15 @@ def plot_regime_winrate_by_ticker(df: pd.DataFrame, out_dir: Path) -> None:
 
 def plot_aggregate_regime(df: pd.DataFrame, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    base_regimes = ["chop", "mild_trend_up", "strong_trend_up", "extreme_up", "mild_trend_down", "strong_trend_down", "extreme_down"]
+    base_regimes = [
+        "chop",
+        "mild_trend_up",
+        "strong_trend_up",
+        "extreme_up",
+        "mild_trend_down",
+        "strong_trend_down",
+        "extreme_down",
+    ]
     sub = df.dropna(subset=["best_pnl_pct"])
     agg = (
         sub.groupby(["regime", "side"])
@@ -162,8 +200,20 @@ def plot_aggregate_regime(df: pd.DataFrame, out_dir: Path) -> None:
             else 0.0
             for r in regimes
         ]
-        axes[0].bar(x + (i - 0.5) * width, vals_w, width, label=side, color="#1f77b4" if side == "call" else "#d62728")
-        axes[1].bar(x + (i - 0.5) * width, vals_d, width, label=side, color="#1f77b4" if side == "call" else "#d62728")
+        axes[0].bar(
+            x + (i - 0.5) * width,
+            vals_w,
+            width,
+            label=side,
+            color="#1f77b4" if side == "call" else "#d62728",
+        )
+        axes[1].bar(
+            x + (i - 0.5) * width,
+            vals_d,
+            width,
+            label=side,
+            color="#1f77b4" if side == "call" else "#d62728",
+        )
     for ax in axes:
         ax.set_xticks(x)
         ax.set_xticklabels([r.replace("_", "\n") for r in regimes], fontsize=8)
@@ -180,10 +230,13 @@ def plot_aggregate_regime(df: pd.DataFrame, out_dir: Path) -> None:
 
 # ──────── Main ────────
 
+
 def main() -> None:
     df = load_and_label()
-    print(f"Loaded {len(df):,} alerts across {df['ticker'].nunique()} tickers and "
-          f"{df['date'].nunique()} trading days.")
+    print(
+        f"Loaded {len(df):,} alerts across {df['ticker'].nunique()} tickers and "
+        f"{df['date'].nunique()} trading days."
+    )
 
     best_map = pick_best_strategy_per_ticker_regime(df)
     df = apply_best_strategy(df, best_map)
@@ -227,12 +280,16 @@ def main() -> None:
             "do not yet know how the day will close. Read these numbers as "
             "'given you correctly identify the regime, this is the available edge.'"
         ),
-        "per_ticker_regime_best_strategy": {f"{k[0]}__{k[1]}": v for k, v in best_map.items()},
+        "per_ticker_regime_best_strategy": {
+            f"{k[0]}__{k[1]}": v for k, v in best_map.items()
+        },
         "ticker_level_best_strategy": ticker_level,
         "per_ticker_regime_side": pts.reset_index().to_dict(orient="records"),
         "aggregate_regime_side": agg.reset_index().to_dict(orient="records"),
         "aggregate_regime": agg_no_side.reset_index().to_dict(orient="records"),
-        "ticker_regime_day_summary": day_summary.reset_index().to_dict(orient="records"),
+        "ticker_regime_day_summary": day_summary.reset_index().to_dict(
+            orient="records"
+        ),
     }
     OUT_FINDINGS.parent.mkdir(parents=True, exist_ok=True)
     OUT_FINDINGS.write_text(json.dumps(findings, indent=2, default=to_jsonable))
@@ -242,10 +299,14 @@ def main() -> None:
     OUT_REPORT.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
     lines.append("# IV-Anomaly Regime-Conditional (Phase D0) — 2026-04-25")
-    lines.append(f"**Sample:** {len(df):,} alerts, {df['date'].nunique()} trading days, "
-                 f"{df['ticker'].nunique()} tickers.")
-    lines.append("**Regime label:** the **underlying ticker's own** daily % change "
-                 "(open ≈ first observed spot of day; close ≈ last observed spot).")
+    lines.append(
+        f"**Sample:** {len(df):,} alerts, {df['date'].nunique()} trading days, "
+        f"{df['ticker'].nunique()} tickers."
+    )
+    lines.append(
+        "**Regime label:** the **underlying ticker's own** daily % change "
+        "(open ≈ first observed spot of day; close ≈ last observed spot)."
+    )
     lines.append("")
     lines.append("**Thresholds:**")
     lines.append("")
@@ -254,10 +315,12 @@ def main() -> None:
     lines.append("- strong_trend_(up|down): `1.0–2.0%`")
     lines.append("- extreme_(up|down): `>2.0%`")
     lines.append("")
-    lines.append("**Lookahead caveat:** uses the day's actual close to label regime. "
-                 "These numbers tell you 'given you correctly identify the regime at "
-                 "alert_ts, this is the available edge' — not 'this is what the alert "
-                 "predicts going forward.'")
+    lines.append(
+        "**Lookahead caveat:** uses the day's actual close to label regime. "
+        "These numbers tell you 'given you correctly identify the regime at "
+        "alert_ts, this is the available edge' — not 'this is what the alert "
+        "predicts going forward.'"
+    )
     lines.append("")
 
     # Aggregate × regime × side
@@ -265,12 +328,14 @@ def main() -> None:
     lines.append("")
     lines.append("### Regime × side")
     lines.append("")
-    lines.append("| regime | side | n | win% | mean% | mean $ | median $ | max gain $ | max loss $ |")
+    lines.append(
+        "| regime | side | n | win% | mean% | mean $ | median $ | max gain $ | max loss $ |"
+    )
     lines.append("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     for (regime, side), row in agg.iterrows():
         lines.append(
             f"| {regime} | {side} | {int(row['n']):,} | {row['win_pct']:.1f}% | "
-            f"{row['mean_pct']*100:.1f}% | ${row['mean_dollar']:,.0f} | "
+            f"{row['mean_pct'] * 100:.1f}% | ${row['mean_dollar']:,.0f} | "
             f"${row['median_dollar']:,.0f} | ${row['max_gain_dollar']:,.0f} | "
             f"${row['max_loss_dollar']:,.0f} |"
         )
@@ -279,16 +344,20 @@ def main() -> None:
     # Per-ticker breakdown
     lines.append("## Per-ticker × regime × side")
     lines.append("")
-    lines.append("Best strategy is re-picked per `(ticker, regime)` when n ≥ 30, else "
-                 "falls back to ticker-level Sharpe-ish pick.")
+    lines.append(
+        "Best strategy is re-picked per `(ticker, regime)` when n ≥ 30, else "
+        "falls back to ticker-level Sharpe-ish pick."
+    )
     lines.append("")
-    lines.append("| ticker | regime | side | best strat | n | win% | mean% | mean $ | median $ | max loss $ |")
+    lines.append(
+        "| ticker | regime | side | best strat | n | win% | mean% | mean $ | median $ | max loss $ |"
+    )
     lines.append("| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |")
     for (ticker, regime, side), row in pts.iterrows():
         strat = best_map.get((ticker, regime), "pnl_eod").replace("pnl_", "")
         lines.append(
             f"| {ticker} | {regime} | {side} | {strat} | {int(row['n']):,} | "
-            f"{row['win_pct']:.1f}% | {row['mean_pct']*100:.1f}% | "
+            f"{row['win_pct']:.1f}% | {row['mean_pct'] * 100:.1f}% | "
             f"${row['mean_dollar']:,.0f} | ${row['median_dollar']:,.0f} | "
             f"${row['max_loss_dollar']:,.0f} |"
         )
