@@ -311,8 +311,8 @@ function tally(rows: ReadonlyArray<{ status: Wave2Status }>): StatusCounts {
  * Write a page: at most PAGE_SIZE rows in total, in the cron's two UPDATE
  * shapes. A follow-up verdict sets `wave2_status` and `wave2_detected_at`;
  * a fizzle sets `wave2_status` only. Both require `wave2_status IS NULL`,
- * so a row labelled meanwhile is skipped and not counted. Returns what was
- * actually written, from RETURNING.
+ * so a row already labelled when the UPDATE runs is skipped and not counted.
+ * Returns what was actually written, from RETURNING.
  */
 async function writePage(t: Wave2Table, plan: PagePlan): Promise<StatusCounts> {
   const written = emptyCounts();
@@ -353,7 +353,11 @@ async function writePage(t: Wave2Table, plan: PagePlan): Promise<StatusCounts> {
 interface DayOutcome {
   /** Rows given a verdict this day: written, or planned in a dry run. */
   counts: StatusCounts;
-  /** Rows the plan wanted to write but a concurrent writer had labelled. */
+  /**
+   * Rows the plan wanted to write but found already labelled when the UPDATE
+   * ran: another writer, or an earlier attempt of the same UPDATE that
+   * `withDbRetry` abandoned on its client-side timeout but that committed.
+   */
   skippedLabelled: number;
   inFlight: number;
 }
@@ -388,7 +392,7 @@ async function processDay(
     outcome.skippedLabelled += sumCounts(planned) - sumCounts(done);
     outcome.inFlight += plan.inFlight;
     // The cursor moves past every row read, written or not, so a row that
-    // stays NULL (in flight, or lost to a concurrent writer) cannot loop.
+    // stays NULL (in flight) or was already labelled cannot loop.
     afterId = rows.at(-1)?.id ?? afterId;
     if (rows.length < size) break;
   }
@@ -441,7 +445,7 @@ async function backfillTable(
     );
     if (day.skippedLabelled > 0) {
       console.warn(
-        `  warning: ${day.skippedLabelled} rows on ${d.day} were labelled by another writer during the run and were left as they are.`,
+        `  warning: ${day.skippedLabelled} rows on ${d.day} were already labelled when the UPDATE ran (another writer, or an earlier attempt that timed out but committed) and were left as they are.`,
       );
     }
   }

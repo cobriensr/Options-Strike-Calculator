@@ -390,6 +390,25 @@ const EXTRA = {
     side: 'C',
     at: '2026-11-02T22:31:00.000Z',
   },
+  // The follow-up lookup scans the whole table: no status, scope or day
+  // filter, as in the cron. Its earliest follow-up here is the already
+  // labelled LBL1 row (+10 min), which a `wave2_status IS NULL` filter in
+  // the lookup would hide: confirmed, not fizzled.
+  followsLabelled: {
+    label: 'follows-labelled',
+    sym: 'LBL1',
+    side: 'C',
+    at: '2026-11-02T20:25:00.000Z',
+  },
+  // Its earliest follow-up is the too-recent REC row (+51 min), which sits
+  // past the 2 h cutoff; a cutoff bound in the lookup would hide it:
+  // lagging, not fizzled. That row itself stays NULL.
+  followsRecent: {
+    label: 'follows-recent',
+    sym: 'REC',
+    side: 'C',
+    at: '2026-11-02T21:40:00.000Z',
+  },
 } satisfies Record<string, SeedRow>;
 
 const EXTRAS: SeedRow[] = Object.values(EXTRA);
@@ -612,6 +631,20 @@ describe('wave2 backfill: parity with the cron (real Postgres)', () => {
       expect(results.get(table)?.get('too-recent')).toBe('NULL @ -');
       expect(results.get(table)?.get('just-old-enough')).toBe('fizzled @ -');
     });
+
+    // The cron database holds only the grid, so these two rows are outside
+    // the parity comparison; their labels are written out by hand from the
+    // rule, and the cron's own follow-up SELECT has no status or scope
+    // filter either.
+    it('counts a follow-up the scope itself excludes: already labelled, or under 2 hours old', () => {
+      expect(results.get(table)?.get('follows-labelled')).toBe(
+        'confirmed @ 2026-11-02T20:35:00.000Z',
+      );
+      expect(results.get(table)?.get('follows-recent')).toBe(
+        'lagging @ 2026-11-02T22:31:00.000Z',
+      );
+      expect(results.get(table)?.get('too-recent')).toBe('NULL @ -');
+    });
   });
 
   it('a rerun changes nothing and reports nothing written', async () => {
@@ -645,7 +678,7 @@ describe('wave2 backfill: modes', () => {
     return all;
   }
 
-  /** Verdict counts the grid and the just-old-enough extra should produce. */
+  /** Verdict counts the grid and the in-scope extras should produce. */
   function expectedTotals(day?: string): Record<Status, number> {
     const totals: Record<Status, number> = {
       confirmed: 0,
@@ -656,8 +689,14 @@ describe('wave2 backfill: modes', () => {
       if (day !== undefined && cluster.day !== day) continue;
       for (const s of SCENARIOS) for (const r of s.rows) totals[r.want] += 1;
     }
-    // 'just-old-enough' fizzles on the EST day (2026-11-02).
-    if (day === undefined || day === '2026-11-02') totals.fizzled += 1;
+    // Three in-scope extras fall on the EST day (2026-11-02):
+    // 'just-old-enough' fizzles, 'follows-labelled' is confirmed and
+    // 'follows-recent' is lagging.
+    if (day === undefined || day === '2026-11-02') {
+      totals.fizzled += 1;
+      totals.confirmed += 1;
+      totals.lagging += 1;
+    }
     return totals;
   }
 
