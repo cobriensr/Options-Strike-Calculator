@@ -17,20 +17,14 @@ Mock strategy:
 
 from __future__ import annotations
 
-import os
 import signal
 from unittest.mock import MagicMock
 
-# Required env var for config.py's pydantic-settings validation, which
-# runs at import time. The early-exit tests below mutate os.environ
-# AFTER import to drive the missing-env code path.
-_FAKE_DB_URL = "postgresql://test:" + "fakefixture" + "@localhost/test"
-os.environ.setdefault("DATABASE_URL", _FAKE_DB_URL)
+import pytest
 
-import pytest  # noqa: E402
-
-import config  # noqa: E402
-import main  # noqa: E402
+import config
+import main
+from conftest import FAKE_DATABASE_URL as _FAKE_DB_URL
 
 
 @pytest.fixture()
