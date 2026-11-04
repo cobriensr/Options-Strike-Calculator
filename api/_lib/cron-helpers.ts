@@ -41,8 +41,8 @@ import {
  * `afterCloseMin` (default 5) is the close-side buffer; evaluate-round-trip
  * passes 80 so the session's last fires are evaluated after their 60-min
  * window, before the weekend tape sweep, and wave2-confirmation passes 90 so
- * the session's last fire reaches its 75-min settle age (close + 85) with one
- * retry tick (close + 90).
+ * the session's last fire is first labelled at close + 85 (its 75-min settle
+ * age) with one retry tick (close + 90).
  */
 export function isMarketHours(afterCloseMin = 5): boolean {
   const now = new Date();

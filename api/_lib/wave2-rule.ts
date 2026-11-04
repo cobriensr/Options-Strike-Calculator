@@ -2,7 +2,7 @@
  * The wave-2 verdict rule, in one place.
  *
  * Two callers decide a wave-2 label and must never disagree:
- *   - api/cron/wave2-confirmation.ts, every 5 min, for fires 75 to 85 min old;
+ *   - api/cron/wave2-confirmation.ts, every 5 min, for fires 75 to 90 min old;
  *   - scripts/_lib/wave2-backfill.ts, a one-shot over old NULL rows.
  *
  * What is shared here:
@@ -33,9 +33,14 @@ export const LAGGING_WINDOW_MIN = 60;
  * How long after its own trigger time a fire can still be written to the
  * database. The detectors insert a fire 40 s to 9 min after the trigger time
  * it carries: median 40-105 s, p95 about 5-7 min, max about 9 min (production,
- * the week to 2026-11-03). A follow-up that triggered inside a wave-1 fire's
- * 60-minute window can therefore be missing from the table for minutes after
- * that window closes. 15 min is that 9-minute worst case plus headroom.
+ * the week to 2026-11-03). 9 min is the observed worst case for lottery. For
+ * silent boom, `bucket_ct` is the start of the 5-minute bucket, so the bucket
+ * itself counts toward the lag, and detect-silent-boom (every 5 minutes,
+ * SCAN_WINDOW_MIN = 35) could lag 15-20 min if a detector tick fails. A
+ * follow-up that triggered inside a wave-1 fire's 60-minute window can
+ * therefore be missing from the table for minutes after that window closes.
+ * 15 min covers the observed steady state for both tables and about one
+ * failed silent-boom detector tick.
  */
 export const INSERT_MARGIN_MIN = 15;
 
@@ -45,8 +50,8 @@ export const INSERT_MARGIN_MIN = 15;
  * written, so the label is the one a complete table gives, which is also what
  * the backfill (which only reads old rows) produces. Labelling earlier saw an
  * incomplete table: it fizzled a fire whose follow-up was not written yet
- * (184 rows since May) and recorded a later follow-up as the first when an
- * earlier one arrived late (about 5.6% of rows had a wrong
+ * (184 lottery rows since May) and recorded a later follow-up as the first
+ * when an earlier one arrived late (about 5.6% of rows had a wrong
  * `wave2_detected_at`).
  */
 export const SETTLE_AGE_MIN = LAGGING_WINDOW_MIN + INSERT_MARGIN_MIN;
