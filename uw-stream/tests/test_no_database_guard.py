@@ -54,17 +54,17 @@ def test_asyncpg_entry_points_are_blocked_and_recorded(target, kind, db_block_at
     # The call itself raises, before anything is awaited.
     with pytest.raises(DatabaseAccessBlocked, match=MESSAGE):
         target(DSN)
-    assert db_block_attempts == [kind]
-    db_block_attempts.clear()
+    assert db_block_attempts.new == [kind]
+    db_block_attempts.discard()
 
 
 async def test_init_pool_cannot_reach_a_database(db_block_attempts):
     # The production path: src/db.py's init_pool with the fake settings.
     with pytest.raises(DatabaseAccessBlocked, match=MESSAGE):
         await db.init_pool()
-    assert db_block_attempts == ["asyncpg.create_pool"]
+    assert db_block_attempts.new == ["asyncpg.create_pool"]
     assert db._pool is None
-    db_block_attempts.clear()
+    db_block_attempts.discard()
 
 
 async def test_a_test_that_patches_create_pool_replaces_the_stub(monkeypatch):
@@ -83,7 +83,7 @@ def test_blocked_error_is_not_an_exception():
 def test_message_does_not_echo_the_dsn(db_block_attempts):
     with pytest.raises(DatabaseAccessBlocked) as caught:
         asyncpg.create_pool(DSN)
-    db_block_attempts.clear()
+    db_block_attempts.discard()
     assert "hunter2" not in str(caught.value)
 
 
@@ -100,11 +100,11 @@ def test_a_non_loopback_connect_is_blocked_and_recorded(db_block_attempts):
             sock.connect_ex(("192.0.2.1", 5432))
     finally:
         sock.close()
-    assert db_block_attempts == [
+    assert db_block_attempts.new == [
         "socket.connect 192.0.2.1",
         "socket.connect 192.0.2.1",
     ]
-    db_block_attempts.clear()
+    db_block_attempts.discard()
 
 
 def test_a_loopback_connect_still_works(db_block_attempts):
@@ -117,7 +117,7 @@ def test_a_loopback_connect_still_works(db_block_attempts):
     finally:
         client.close()
         server.close()
-    assert db_block_attempts == []
+    assert db_block_attempts.new == []
 
 
 # ── Forced env ───────────────────────────────────────────────────────────────
@@ -231,3 +231,32 @@ def test_swallowed_socket_attempt_fails_the_session(tmp_path):
     output = result.stdout + result.stderr
     assert result.returncode != 0, output
     assert "socket.connect 192.0.2.1" in output
+
+
+def test_discarding_in_a_self_test_does_not_hide_an_earlier_offender(tmp_path):
+    # test_a swallows the block; test_b is a well-behaved self-test that
+    # discards its own attempt. Wiping the whole log (the old `.clear()`)
+    # would erase test_a's entry and turn the session green.
+    result = _run_probe(
+        tmp_path,
+        """
+        import asyncpg
+        import pytest
+        from conftest import DatabaseAccessBlocked
+
+        def test_a_swallows_the_block():
+            try:
+                asyncpg.create_pool("postgresql://x@invalid.invalid/db")
+            except BaseException:
+                pass
+
+        def test_b_self_test_discards_its_own_attempt(db_block_attempts):
+            with pytest.raises(DatabaseAccessBlocked):
+                asyncpg.create_pool("postgresql://x@invalid.invalid/db")
+            assert db_block_attempts.new == ["asyncpg.create_pool"]
+            db_block_attempts.discard()
+        """,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert "tried 1 time(s)" in output

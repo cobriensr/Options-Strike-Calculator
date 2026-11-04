@@ -18,8 +18,13 @@ It also keeps every test off a real database and the network (owner rule,
   need a pool patch it themselves (`patch("db.asyncpg.create_pool", ...)`),
   which replaces the stub for that test.
 - A connect to a non-loopback address is recorded and raises too, in the
-  manner of nightly/conftest.py, so a path that bypasses those two names
-  (asyncpg's connect_utils, a websocket, aiohttp) fails as well.
+  manner of nightly/conftest.py, so a path that bypasses those names
+  (asyncpg's connect_utils, a websocket, aiohttp) fails as well. Two gaps:
+  the guard wraps only socket.connect and socket.connect_ex, which is what
+  the selector event loop on Linux (CI, Railway) calls, but on Windows the
+  asyncio loop is the Proactor and IocpProactor.connect calls ConnectEx, so
+  it bypasses the guard there; and loopback is allowed, so a bypass of the
+  four asyncpg stubs that reaches a Postgres on localhost:5432 is not blocked.
 - A session-end fixture fails the run if any attempt was recorded, which
   catches a caller that swallowed the raise (`except BaseException`, a bare
   `except:`).
@@ -157,7 +162,12 @@ def _is_loopback(address: object) -> bool:
 @pytest.fixture(autouse=True)
 def _tests_have_no_database_env_or_network(monkeypatch: pytest.MonkeyPatch) -> None:
     """Start every test with the fake env, no writable-store token and a
-    socket layer that refuses non-loopback connects."""
+    socket layer that refuses non-loopback connects.
+
+    The refusal covers socket.connect and connect_ex only. The selector event
+    loop (Linux) calls those; the Windows Proactor loop does not (it uses
+    ConnectEx), so the socket guard does not bind there. Loopback is allowed.
+    """
     for name, value in FAKE_ENV.items():
         monkeypatch.setenv(name, value)
     for name in BLOCKED_ENV_NAMES:
@@ -179,10 +189,30 @@ def _tests_have_no_database_env_or_network(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(socket.socket, "connect_ex", _guard(real_connect_ex))
 
 
+class _AttemptsSinceTestStart:
+    """The attempts one test made, for a self-test that provokes them.
+
+    Entries logged before the test started belong to some other test that
+    swallowed the block. They stay in the log, so the session-end check still
+    names that offender; wiping the whole log would hide it.
+    """
+
+    def __init__(self) -> None:
+        self._start = len(_attempts)
+
+    @property
+    def new(self) -> list[str]:
+        return _attempts[self._start :]
+
+    def discard(self) -> None:
+        """Drop the entries this test added, and nothing earlier."""
+        del _attempts[self._start :]
+
+
 @pytest.fixture
-def db_block_attempts() -> list[str]:
-    """The guard's attempt log. A self-test that provokes one clears it."""
-    return _attempts
+def db_block_attempts() -> _AttemptsSinceTestStart:
+    """The attempts this test makes. A self-test that provokes one discards it."""
+    return _AttemptsSinceTestStart()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -190,10 +220,8 @@ def _tests_never_reach_a_database():
     """Fail the session if any test attempted a database or network connect.
 
     The stub raises in the test that tried, but a caller may swallow that;
-    the log still has it. Re-installs the block at session start in case
-    something replaced it between import and the first test.
+    the log still has it.
     """
-    _install_db_block()
     yield
     if _attempts:
         listed = "\n".join(f"  {kind}" for kind in _attempts)
@@ -202,7 +230,7 @@ def _tests_never_reach_a_database():
             f"{listed}\n"
             "Mock the connection at the module boundary (patch "
             "db.asyncpg.create_pool, or the handler that calls it). A "
-            "self-test that provokes an attempt on purpose clears the "
-            "db_block_attempts log itself.",
+            "self-test that provokes an attempt on purpose calls "
+            "db_block_attempts.discard() itself.",
             pytrace=False,
         )
