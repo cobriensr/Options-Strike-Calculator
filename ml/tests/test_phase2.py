@@ -6,6 +6,8 @@ Uses sklearn's SimpleImputer + DecisionTreeClassifier in a Pipeline
 as the model_factory to avoid XGBoost dependency issues in CI.
 """
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -1530,6 +1532,12 @@ class TestMain:
             "ML_ROOT",
             tmp_path,
         )
+        # main() saves its findings through utils.save_section_findings,
+        # which resolves utils.ML_ROOT at call time, so patch it there too or
+        # the write lands in the tracked ml/findings.json. Dropping
+        # DATABASE_URL keeps its optional ml_findings upsert off a real DB.
+        monkeypatch.setattr("utils.ML_ROOT", tmp_path)
+        monkeypatch.delenv("DATABASE_URL", raising=False)
         # Suppress save_experiment file I/O
         monkeypatch.setattr(
             phase2_early,
@@ -1552,6 +1560,9 @@ class TestMain:
         assert "WALK-FORWARD VALIDATION" in captured.out
         assert "RESULTS" in captured.out
         assert "VERDICT" in captured.out
+        # The findings land under tmp_path, not in the tracked ml/findings.json.
+        saved = json.loads((tmp_path / "findings.json").read_text())
+        assert saved["phase2"]["n_labeled_days"] > 0
 
     def test_main_early_exit_with_insufficient_labels(
         self, monkeypatch, capsys, tmp_path

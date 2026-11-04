@@ -3,8 +3,8 @@ Tests for ml/src/flow_eda.py.
 
 Uses seeded synthetic DataFrames to verify each Q function runs end-to-end
 and returns the expected findings shape. Plots are exercised via the
-non-interactive 'Agg' backend — files may be written to ml/plots/ but
-contents are not asserted.
+non-interactive 'Agg' backend and written to tmp_path, never to the tracked
+ml/plots/; contents are not asserted.
 
 Run:
     cd ml && .venv/Scripts/python -m pytest tests/test_flow_eda.py -v
@@ -18,7 +18,9 @@ matplotlib.use("Agg")  # noqa: E402  — must precede pyplot imports downstream
 
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
+import pytest  # noqa: E402
 
+import flow_eda  # type: ignore[import-not-found]  # noqa: E402
 from flow_eda import (  # type: ignore[import-not-found]  # noqa: E402
     _classify_direction,
     q1_distributions,
@@ -27,6 +29,18 @@ from flow_eda import (  # type: ignore[import-not-found]  # noqa: E402
     q4_returns_by_rule,
     q5_premium_vs_return,
 )
+
+
+@pytest.fixture(autouse=True)
+def plot_dir(tmp_path, monkeypatch):
+    """Send every q* plot to tmp_path instead of the tracked ml/plots/.
+
+    The q* functions savefig into the module-level PLOT_DIR, so patching it
+    there redirects them all.
+    """
+    monkeypatch.setattr(flow_eda, "PLOT_DIR", tmp_path)
+    return tmp_path
+
 
 # ── Synthetic factories ────────────────────────────────────
 
@@ -85,7 +99,7 @@ def test_classify_direction_categories() -> None:
 # ── Q1 ─────────────────────────────────────────────────────
 
 
-def test_q1_distributions_returns_expected_keys() -> None:
+def test_q1_distributions_returns_expected_keys(plot_dir) -> None:
     df = _make_flow_df(60)
     result = q1_distributions(df)
     assert result["question"] == "q1_distributions"
@@ -94,30 +108,33 @@ def test_q1_distributions_returns_expected_keys() -> None:
     assert "alert_rule_counts" in result
     # All three alert rules should be represented given seed.
     assert sum(result["alert_rule_counts"].values()) == 60
+    assert (plot_dir / "flow_q1_distributions.png").exists()
 
 
 # ── Q2 ─────────────────────────────────────────────────────
 
 
-def test_q2_time_of_day_runs() -> None:
+def test_q2_time_of_day_runs(plot_dir) -> None:
     df = _make_flow_df(40)
     result = q2_time_of_day(df)
     assert result["question"] == "q2_time_of_day"
     assert result["n"] == 40
     assert isinstance(result["hour_counts_ct"], dict)
     assert sum(result["hour_counts_ct"].values()) == 40
+    assert (plot_dir / "flow_q2_time_of_day.png").exists()
 
 
 # ── Q3 ─────────────────────────────────────────────────────
 
 
-def test_q3_directional_classifies_all_rows() -> None:
+def test_q3_directional_classifies_all_rows(plot_dir) -> None:
     df = _make_flow_df(50)
     result = q3_directional(df)
     assert result["question"] == "q3_directional"
     counts = result["counts"]
     assert set(counts.keys()) >= {"bullish", "bearish", "neutral"}
     assert sum(counts.values()) == 50
+    assert (plot_dir / "flow_q3_directional.png").exists()
 
 
 def test_q3_directional_empty_df() -> None:
@@ -129,7 +146,7 @@ def test_q3_directional_empty_df() -> None:
 # ── Q4 ─────────────────────────────────────────────────────
 
 
-def test_q4_returns_by_rule_group_means() -> None:
+def test_q4_returns_by_rule_group_means(plot_dir) -> None:
     df = _make_flow_df_with_outcomes(60)
     result = q4_returns_by_rule(df)
     assert result["question"] == "q4_returns_by_rule"
@@ -138,6 +155,7 @@ def test_q4_returns_by_rule_group_means() -> None:
     for payload in result["groups"].values():
         assert "mean_ret_fwd_15" in payload
         assert payload["n"] >= 1
+    assert (plot_dir / "flow_q4_returns_by_rule.png").exists()
 
 
 def test_q4_missing_outcome_column() -> None:
@@ -149,19 +167,21 @@ def test_q4_missing_outcome_column() -> None:
 # ── Q5 ─────────────────────────────────────────────────────
 
 
-def test_q5_premium_vs_return_correlation() -> None:
+def test_q5_premium_vs_return_correlation(plot_dir) -> None:
     df = _make_flow_df_with_outcomes(60)
     result = q5_premium_vs_return(df)
     assert result["question"] == "q5_premium_vs_return"
     assert -1.0 <= result["pearson_r"] <= 1.0
     assert 0.0 <= result["p_value"] <= 1.0
     assert result["n"] > 0
+    assert (plot_dir / "flow_q5_premium_vs_return.png").exists()
 
 
-def test_q5_insufficient_n() -> None:
+def test_q5_insufficient_n(plot_dir) -> None:
     df = _make_flow_df_with_outcomes(5)
     result = q5_premium_vs_return(df)
     assert result["status"] == "insufficient"
+    assert (plot_dir / "flow_q5_premium_vs_return.png").exists()
 
 
 def test_q5_missing_columns() -> None:
@@ -175,8 +195,6 @@ def test_q5_missing_columns() -> None:
 
 def test_main_empty_short_circuits(monkeypatch) -> None:
     """main() must no-op cleanly when the source table is empty."""
-    import flow_eda  # type: ignore[import-not-found]
-
     monkeypatch.setattr(flow_eda, "load_flow_alerts", lambda: pd.DataFrame())
     called: dict[str, bool] = {}
 
