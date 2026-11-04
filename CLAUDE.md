@@ -107,6 +107,8 @@ The required loop for any multi-task plan:
 3. Sub-agents do the work.
 4. **The main session reviews** every sub-agent's output (spec compliance, then code quality via the `code-reviewer` agent) **before presenting results.** The user sees reviewed output, not raw sub-agent dumps.
 
+Implementer and reviewer briefs carry scope only (goal, files, constraints, acceptance); standing rules live in the `implementer`, `verifier` and `code-reviewer` agent definitions in `.claude/agents/` (local-only), so dispatch to the matching agent and don't repeat them in the brief.
+
 This is a standing, non-negotiable preference. Don't second-guess it or offer alternatives.
 
 ### Plan First (Large Changes)
