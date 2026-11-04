@@ -60,8 +60,10 @@ export default [
       '.vercel',
       'coverage',
       'ml/.venv',
-      '.claude/skills',
-      '.claude/worktrees',
+      // Gitignored local Claude Code config (only periscope skill markdown is
+      // tracked). Local-only scripts there, such as hook tests, would
+      // otherwise fail the gate in the main checkout but never in CI.
+      '.claude',
       // Parallel-session git worktrees live under .worktrees/ (gitignored).
       // Each carries its own tsconfig.json, and letting eslint traverse them
       // trips typescript-eslint's "multiple candidate TSConfigRootDirs" error
