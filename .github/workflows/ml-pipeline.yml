@@ -150,9 +150,11 @@ jobs:
     needs: pipeline
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # No secret is set at job level: each is scoped to the one step that reads
+    # it (the training-set build reads DATABASE_URL, the bundle upload reads
+    # BLOB_READ_WRITE_TOKEN), so the installs, the training step and the
+    # summary never hold either one.
     env:
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
       PYTHON: python
 
     steps:
@@ -176,12 +178,14 @@ jobs:
 
       - name: Install Node dependencies for Blob upload
         # Pinned to the exact version in the committed package-lock.json
-        # (AUD-M35). This job holds the prod DATABASE_URL + Blob token in
-        # `env:`, so an unpinned install is a supply-chain exposure.
+        # (AUD-M35), so a malicious newer publish cannot land in a job that
+        # later uploads with the Blob token.
         run: npm install @vercel/blob@2.4.0
 
       - name: Build training set from production DB
         run: PYTHONPATH=. python -m ml.src.takeit.build_training_set
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
       - name: Train + calibrate + emit JSON bundles
         run: PYTHONPATH=. python -m ml.src.takeit.train
@@ -203,6 +207,8 @@ jobs:
 
       - name: Upload bundles to Vercel Blob
         run: node scripts/upload_takeit_bundles.mjs
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
 
       - name: Summary
         run: |
