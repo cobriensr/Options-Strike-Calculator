@@ -1,0 +1,85 @@
+
+> 0dte-strike-calculator@1.0.0 review
+> node scripts/review-gate.mjs clear && npm run type-check && eslint . && prettier --write "**/*.{ts,tsx,js,jsx,mjs,cjs}" && vite build && node scripts/check-build-output.mjs && vitest run --coverage && node scripts/check-coverage-floor.mjs && node scripts/review-gate.mjs seal
+
+
+> 0dte-strike-calculator@1.0.0 type-check
+> tsc --noEmit && tsc --noEmit -p tsconfig.api.json && tsc --noEmit -p tsconfig.scripts.json
+
+[90mapi/__tests__/alert-thresholds.test.ts[39m 55ms (unchanged)
+[90mapi/__tests__/deadline.test.ts[39m 2ms (unchanged)
+[90mapi/__tests__/greek-exposure-strike.test.ts[39m 8ms (unchanged)
+src/utils/format.ts 14ms
+[90mapi/__tests__/plot-analysis-prompts.test.ts[39m 6ms (unchanged)
+[90mapi/_lib/alert-thresholds.ts[39m 1ms (unchanged)
+[90mapi/_lib/json-fence.ts[39m 2ms (unchanged)
+[90mapi/_lib/validation/greek-heatmap.ts[39m 2ms (unchanged)
+[90mapi/cron/fetch-strike-trade-volume.ts[39m 6ms (unchanged)
+[90mapi/vix-ohlc.ts[39m 2ms (unchanged)
+[90mscripts/_probe-conviction-c-coverage.ts[39m 1ms (unchanged)
+[90mscripts/backfill-zero-gamma.ts[39m 8ms (unchanged)
+[90msrc/__tests__/components/LessonLibrary.test.tsx[39m 7ms (unchanged)
+[90msrc/__tests__/hooks/useChainData.test.ts[39m 7ms (unchanged)
+[90msrc/__tests__/Tracker/PositionSizeEntryEditor.test.tsx[39m 6ms (unchanged)
+[90msrc/__tests__/ViewToggle.test.tsx[39m 3ms (unchanged)
+[90msrc/components/Gexbot/CharmClock.tsx[39m 9ms (unchanged)
+[90msrc/components/OpeningRangeCheck/RangeConsumptionBar.tsx[39m 3ms (unchanged)
+[90msrc/components/StrikeBattleMap/__tests__/concentration.test.tsx[39m 9ms (unchanged)
+[90msrc/hooks/useDarkPoolLevels.ts[39m 5ms (unchanged)
+[90msrc/types/settlement.ts[39m 1ms (unchanged)
+
+[36mvite v7.3.7 [32mbuilding client environment for production...[36m[39m
+[sentry-vite-plugin] Info: Sending telemetry data on issues and performance to Sentry. To disable telemetry, set `options.telemetry` to `false`.
+transforming...
+[33mnode_modules/zod/v4/core/regexes.js (74:0): A comment
+
+"/** Anchors a pattern source. The interpolation lives here rather than at the call site because
+ * esbuild will not drop a `@__PURE__` call whose own argument interpolates a variable, but it
+ * will drop `anchor(dateSource)`. Keeping it inline pinned `date` into every bundle. */"
+
+in "node_modules/zod/v4/core/regexes.js" contains an annotation that Rollup cannot interpret due to the position of the comment. The comment will be removed to avoid issues.[39m
+[33mnode_modules/zod/v4/core/util.js (400:0): A comment
+
+"// Wrapped in a `@__PURE__` IIFE: esbuild never tree-shakes a top-level initializer that contains a member access on `Number`, so the bare object literal survived into every bundle."
+
+in "node_modules/zod/v4/core/util.js" contains an annotation that Rollup cannot interpret due to the position of the comment. The comment will be removed to avoid issues.[39m
+[32m✓[39m 1193 modules transformed.
+rendering chunks...
+[sentry-vite-plugin] Warning: No auth token provided. Will not create release. Please set the `authToken` option. You can find information on how to generate a Sentry auth token here: https://docs.sentry.io/api/auth/
+computing gzip size...
+[sentry-vite-plugin] Warning: No auth token provided. Will not upload source maps. Please set the `authToken` option. You can find information on how to generate a Sentry auth token here: https://docs.sentry.io/api/auth/
+[2mdist/[22m[32mmanifest.webmanifest                        [39m[1m[2m  0.50 kB[22m[1m[22m
+[2mdist/[22m[32mindex.html                                  [39m[1m[2m  1.35 kB[22m[1m[22m[2m │ gzip:   0.62 kB[22m
+[2mdist/[22m[35massets/index-D8ucNJHZ.css                   [39m[1m[2m132.32 kB[22m[1m[22m[2m │ gzip:  20.37 kB[22m
+[2mdist/[22m[36massets/UwTunedPausedBanner-BA9EyQsK.js      [39m[1m[2m  0.89 kB[22m[1m[22m[2m │ gzip:   0.57 kB[22m[2m │ map:     3.36 kB[22m
+[2mdist/[22m[36massets/persist-encoding-CTXdI0Rz.js         [39m[1m[2m  0.91 kB[22m[1m[22m[2m │ gzip:   0.47 kB[22m[2m │ map:     3.75 kB[22m
+[2mdist/[22m[36massets/export-DD3mHSwH.js                   [39m[1m[2m429.79 kB[22m[1m[22m[2m │ gzip: 143.19 kB[22m[2m │ map: 1,675.31 kB[22m
+[2mdist/[22m[36massets/index-BhqKNTso.js                    [39m[1m[33m526.75 kB[39m[22m[2m │ gzip: 147.09 kB[22m[2m │ map: 2,280.95 kB[22m
+[33m
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.[39m
+[32m✓ built in 4.93s[39m
+
+PWA v1.3.0
+Building src/sw.ts service worker ("es" format)...
+[36mvite v7.3.7 [32mbuilding client environment for production...[36m[39m
+transforming...
+[32m✓[39m 82 modules transformed.
+rendering chunks...
+computing gzip size...
+[2mdist/[22m[36msw.mjs  [39m[1m[2m26.53 kB[22m[1m[22m[2m │ gzip: 8.70 kB[22m[2m │ map: 227.51 kB[22m
+[32m✓ built in 128ms[39m
+
+PWA v1.3.0
+mode      injectManifest
+format:   es
+precache  45 entries (2476.86 KiB)
+files generated
+  dist/sw.js
+build output: dist/index.html line 1 has an inline <script> (no src): <script>console.log(1)</script>. The CSP allows no inline scripts, so the browser would block it.
+build output: no chunk in dist/assets contains "remarkPlugins", so the react-markdown rule cannot see it. Update its marker in scripts/_lib/build-output.mjs, or drop the entry if react-markdown is gone.
+build output: no chunk in dist/assets has a name starting "charts-", so the lightweight-charts rule cannot see it. Update its chunkPrefix in scripts/_lib/build-output.mjs to match manualChunks in vite.config.ts, or drop the entry if lightweight-charts is gone.
+build output: no chunk in dist/assets contains "DndDescribedBy", so the @dnd-kit rule cannot see it. Update its marker in scripts/_lib/build-output.mjs, or drop the entry if @dnd-kit is gone.
+build output: FAILED, 4 problems in dist/.

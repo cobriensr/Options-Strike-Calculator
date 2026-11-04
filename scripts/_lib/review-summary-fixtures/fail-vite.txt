@@ -1,0 +1,41 @@
+
+> 0dte-strike-calculator@1.0.0 review
+> node scripts/review-gate.mjs clear && npm run type-check && eslint . && prettier --write "**/*.{ts,tsx,js,jsx,mjs,cjs}" && vite build && node scripts/check-build-output.mjs && vitest run --coverage && node scripts/check-coverage-floor.mjs && node scripts/review-gate.mjs seal
+
+
+> 0dte-strike-calculator@1.0.0 type-check
+> tsc --noEmit && tsc --noEmit -p tsconfig.api.json && tsc --noEmit -p tsconfig.scripts.json
+
+[90mapi/__tests__/alert-thresholds.test.ts[39m 55ms (unchanged)
+[90mapi/__tests__/deadline.test.ts[39m 2ms (unchanged)
+[90mapi/__tests__/greek-exposure-strike.test.ts[39m 8ms (unchanged)
+src/utils/format.ts 14ms
+[90mapi/__tests__/plot-analysis-prompts.test.ts[39m 6ms (unchanged)
+[90mapi/_lib/alert-thresholds.ts[39m 1ms (unchanged)
+[90mapi/_lib/json-fence.ts[39m 2ms (unchanged)
+[90mapi/_lib/validation/greek-heatmap.ts[39m 2ms (unchanged)
+[90mapi/cron/fetch-strike-trade-volume.ts[39m 6ms (unchanged)
+[90mapi/vix-ohlc.ts[39m 2ms (unchanged)
+[90mscripts/_probe-conviction-c-coverage.ts[39m 1ms (unchanged)
+[90mscripts/backfill-zero-gamma.ts[39m 8ms (unchanged)
+[90msrc/__tests__/components/LessonLibrary.test.tsx[39m 7ms (unchanged)
+[90msrc/__tests__/hooks/useChainData.test.ts[39m 7ms (unchanged)
+[90msrc/__tests__/Tracker/PositionSizeEntryEditor.test.tsx[39m 6ms (unchanged)
+[90msrc/__tests__/ViewToggle.test.tsx[39m 3ms (unchanged)
+[90msrc/components/Gexbot/CharmClock.tsx[39m 9ms (unchanged)
+[90msrc/components/OpeningRangeCheck/RangeConsumptionBar.tsx[39m 3ms (unchanged)
+[90msrc/components/StrikeBattleMap/__tests__/concentration.test.tsx[39m 9ms (unchanged)
+[90msrc/hooks/useDarkPoolLevels.ts[39m 5ms (unchanged)
+[90msrc/types/settlement.ts[39m 1ms (unchanged)
+
+[36mvite v7.3.7 [32mbuilding client environment for production...[36m[39m
+transforming...
+[32m✓[39m 3 modules transformed.
+[31m✗[39m Build failed in 48ms
+[31merror during build:
+[31mCould not resolve "./missing.js" from "src/main.js"[31m
+file: [36m/repo/src/main.js[31m
+    at getRollupError (file:////repo/node_modules/rollup/dist/es/shared/parseAst.js:317:41)
+    at error (file:////repo/node_modules/rollup/dist/es/shared/parseAst.js:313:42)
+    at ModuleLoader.handleInvalidResolvedId (file:////repo/node_modules/rollup/dist/es/shared/node-entry.js:22119:24)
+    at file:////repo/node_modules/rollup/dist/es/shared/node-entry.js:22079:26[39m

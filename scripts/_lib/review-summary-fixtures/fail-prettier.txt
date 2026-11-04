@@ -1,0 +1,14 @@
+
+> 0dte-strike-calculator@1.0.0 review
+> node scripts/review-gate.mjs clear && npm run type-check && eslint . && prettier --write "**/*.{ts,tsx,js,jsx,mjs,cjs}" && vite build && node scripts/check-build-output.mjs && vitest run --coverage && node scripts/check-coverage-floor.mjs && node scripts/review-gate.mjs seal
+
+
+> 0dte-strike-calculator@1.0.0 type-check
+> tsc --noEmit && tsc --noEmit -p tsconfig.api.json && tsc --noEmit -p tsconfig.scripts.json
+
+[[31merror[39m] src/bad.ts: SyntaxError: Variable declaration expected. (1:14)
+[[31merror[39m] [0m[31m[1m>[22m[39m[90m 1 |[39m [36mexport[39m [36mconst[39m [33m=[39m [33m;[39m
+[[31merror[39m]  [90m   |[39m              [31m[1m^[22m[39m
+[[31merror[39m]  [90m 2 |[39m [36mfunction[39m (
+[[31merror[39m]  [90m 3 |[39m[0m
+[90msrc/good.ts[39m 8ms (unchanged)

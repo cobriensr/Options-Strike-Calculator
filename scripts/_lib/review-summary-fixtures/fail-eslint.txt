@@ -1,0 +1,15 @@
+
+> 0dte-strike-calculator@1.0.0 review
+> node scripts/review-gate.mjs clear && npm run type-check && eslint . && prettier --write "**/*.{ts,tsx,js,jsx,mjs,cjs}" && vite build && node scripts/check-build-output.mjs && vitest run --coverage && node scripts/check-coverage-floor.mjs && node scripts/review-gate.mjs seal
+
+
+> 0dte-strike-calculator@1.0.0 type-check
+> tsc --noEmit && tsc --noEmit -p tsconfig.api.json && tsc --noEmit -p tsconfig.scripts.json
+
+
+C:\work\repo\src\utils\scratch-lint.ts
+  1:7  error  'unused' is assigned a value but never used   @typescript-eslint/no-unused-vars
+  3:7  error  'x' is never reassigned. Use 'const' instead  prefer-const
+
+✖ 2 problems (2 errors, 0 warnings)
+  1 error and 0 warnings potentially fixable with the `--fix` option.

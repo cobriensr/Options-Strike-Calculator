@@ -1,0 +1,139 @@
+
+> 0dte-strike-calculator@1.0.0 review
+> node scripts/review-gate.mjs clear && npm run type-check && eslint . && prettier --write "**/*.{ts,tsx,js,jsx,mjs,cjs}" && vite build && node scripts/check-build-output.mjs && vitest run --coverage && node scripts/check-coverage-floor.mjs && node scripts/review-gate.mjs seal
+
+> 0dte-strike-calculator@1.0.0 type-check
+> tsc --noEmit && tsc --noEmit -p tsconfig.api.json && tsc --noEmit -p tsconfig.scripts.json
+
+[90mapi/__tests__/alert-thresholds.test.ts[39m 55ms (unchanged)
+[90mapi/__tests__/deadline.test.ts[39m 2ms (unchanged)
+[90mapi/__tests__/greek-exposure-strike.test.ts[39m 8ms (unchanged)
+src/utils/format.ts 14ms
+[90mapi/__tests__/plot-analysis-prompts.test.ts[39m 6ms (unchanged)
+[90mapi/_lib/alert-thresholds.ts[39m 1ms (unchanged)
+[90mapi/_lib/json-fence.ts[39m 2ms (unchanged)
+[90mapi/_lib/validation/greek-heatmap.ts[39m 2ms (unchanged)
+[90mapi/cron/fetch-strike-trade-volume.ts[39m 6ms (unchanged)
+[90mapi/vix-ohlc.ts[39m 2ms (unchanged)
+[90mscripts/_probe-conviction-c-coverage.ts[39m 1ms (unchanged)
+[90mscripts/backfill-zero-gamma.ts[39m 8ms (unchanged)
+[90msrc/__tests__/components/LessonLibrary.test.tsx[39m 7ms (unchanged)
+[90msrc/__tests__/hooks/useChainData.test.ts[39m 7ms (unchanged)
+[90msrc/__tests__/Tracker/PositionSizeEntryEditor.test.tsx[39m 6ms (unchanged)
+[90msrc/__tests__/ViewToggle.test.tsx[39m 3ms (unchanged)
+[90msrc/components/Gexbot/CharmClock.tsx[39m 9ms (unchanged)
+[90msrc/components/OpeningRangeCheck/RangeConsumptionBar.tsx[39m 3ms (unchanged)
+[90msrc/components/StrikeBattleMap/__tests__/concentration.test.tsx[39m 9ms (unchanged)
+[90msrc/hooks/useDarkPoolLevels.ts[39m 5ms (unchanged)
+[90msrc/types/settlement.ts[39m 1ms (unchanged)
+
+[36mvite v7.3.7 [32mbuilding client environment for production...[36m[39m
+[sentry-vite-plugin] Info: Sending telemetry data on issues and performance to Sentry. To disable telemetry, set `options.telemetry` to `false`.
+transforming...
+[33mnode_modules/zod/v4/core/regexes.js (74:0): A comment
+
+"/** Anchors a pattern source. The interpolation lives here rather than at the call site because
+ * esbuild will not drop a `@__PURE__` call whose own argument interpolates a variable, but it
+ * will drop `anchor(dateSource)`. Keeping it inline pinned `date` into every bundle. */"
+
+in "node_modules/zod/v4/core/regexes.js" contains an annotation that Rollup cannot interpret due to the position of the comment. The comment will be removed to avoid issues.[39m
+[33mnode_modules/zod/v4/core/util.js (400:0): A comment
+
+"// Wrapped in a `@__PURE__` IIFE: esbuild never tree-shakes a top-level initializer that contains a member access on `Number`, so the bare object literal survived into every bundle."
+
+in "node_modules/zod/v4/core/util.js" contains an annotation that Rollup cannot interpret due to the position of the comment. The comment will be removed to avoid issues.[39m
+[32m✓[39m 1193 modules transformed.
+rendering chunks...
+[sentry-vite-plugin] Warning: No auth token provided. Will not create release. Please set the `authToken` option. You can find information on how to generate a Sentry auth token here: https://docs.sentry.io/api/auth/
+computing gzip size...
+[sentry-vite-plugin] Warning: No auth token provided. Will not upload source maps. Please set the `authToken` option. You can find information on how to generate a Sentry auth token here: https://docs.sentry.io/api/auth/
+[2mdist/[22m[32mmanifest.webmanifest                        [39m[1m[2m  0.50 kB[22m[1m[22m
+[2mdist/[22m[32mindex.html                                  [39m[1m[2m  1.35 kB[22m[1m[22m[2m │ gzip:   0.62 kB[22m
+[2mdist/[22m[35massets/index-D8ucNJHZ.css                   [39m[1m[2m132.32 kB[22m[1m[22m[2m │ gzip:  20.37 kB[22m
+[2mdist/[22m[36massets/UwTunedPausedBanner-BA9EyQsK.js      [39m[1m[2m  0.89 kB[22m[1m[22m[2m │ gzip:   0.57 kB[22m[2m │ map:     3.36 kB[22m
+[2mdist/[22m[36massets/persist-encoding-CTXdI0Rz.js         [39m[1m[2m  0.91 kB[22m[1m[22m[2m │ gzip:   0.47 kB[22m[2m │ map:     3.75 kB[22m
+[2mdist/[22m[36massets/export-DD3mHSwH.js                   [39m[1m[2m429.79 kB[22m[1m[22m[2m │ gzip: 143.19 kB[22m[2m │ map: 1,675.31 kB[22m
+[2mdist/[22m[36massets/index-BhqKNTso.js                    [39m[1m[33m526.75 kB[39m[22m[2m │ gzip: 147.09 kB[22m[2m │ map: 2,280.95 kB[22m
+[33m
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.[39m
+[32m✓ built in 4.93s[39m
+
+PWA v1.3.0
+Building src/sw.ts service worker ("es" format)...
+[36mvite v7.3.7 [32mbuilding client environment for production...[36m[39m
+transforming...
+[32m✓[39m 82 modules transformed.
+rendering chunks...
+computing gzip size...
+[2mdist/[22m[36msw.mjs  [39m[1m[2m26.53 kB[22m[1m[22m[2m │ gzip: 8.70 kB[22m[2m │ map: 227.51 kB[22m
+[32m✓ built in 128ms[39m
+
+PWA v1.3.0
+mode      injectManifest
+format:   es
+precache  45 entries (2476.86 KiB)
+files generated
+  dist/sw.js
+build output: OK, first paint loads 4 chunks (index-BhqKNTso.js, vendor-DbZqnTz9.js, sentry-BF9QQEvD.js, vix-data-ByaSlxff.js); no inline scripts; kept out of first paint: react-markdown, lightweight-charts, @dnd-kit
+
+ RUN  v4.1.12 /repo
+      Coverage enabled with v8
+
+{"level":"error","time":1793745705059,"err":{"type":"RateLimitError","message":"Rate limited","stack":"RateLimitError: Rate limited\n    at /repo/api/__tests__/analyze.test.ts:428:17\n    at file:////repo/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:////repo/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:////repo/node_modules/@vitest/runner/dist/c
+{"level":"error","time":1793745705062,"err":{"type":"SyntaxError","message":"Unexpected token 'N', \"Not valid \"... is not valid JSON","stack":"SyntaxError: Unexpected token 'N', \"Not valid \"... is not valid JSON\n    at JSON.parse (<anonymous>)\n    at Module.handler (/repo/api/analyze.ts:309:27)\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at /repo/api/__te
+{"level":"error","time":1793745705062,"stopReason":null,"textLen":23,"msg":"Returning 502 — response text present but unparseable"}
+{"level":"error","time":1793745705070,"err":{"type":"Error","message":"Network failure","stack":"Error: Network failure\n    at Object.<anonymous> (/repo/api/__tests__/analyze.test.ts:485:13)\n    at Object.Mock [as stream] (file:////repo/node_modules/@vitest/spy/dist/index.js:332:34)\n    at buildStream (/repo/api/_lib/anthropic-call.ts:235:28)\n    at runCachedAnthropicCall (/repo/api/_lib/anthr
+{"level":"error","time":1793745705072,"err":"something weird","msg":"analyze unhandled error"}
+{"level":"error","time":1793745705084,"err":{"type":"AuthenticationError","message":"Invalid API key","stack":"AuthenticationError: Invalid API key\n    at /repo/api/__tests__/analyze.test.ts:646:7\n    at file:////repo/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:////repo/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:////repo/node_modules/@vites
+{"level":"error","time":1793745705086,"err":{"type":"APIError","message":"Internal server error","stack":"APIError: Internal server error\n    at /repo/api/__tests__/analyze.test.ts:660:17\n    at file:////repo/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:////repo/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:////repo/node_modules/@vitest/runner/
+{"level":"error","time":1793745705088,"err":{"type":"Error","message":"DB down","stack":"Error: DB down\n    at /repo/api/__tests__/analyze.test.ts:677:51\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file:////repo/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"},"attempt":1,"msg":"analyze DB save failed"}
+{"level":"info","time":1793745705044,"model":"claude-opus-4-7","mode":"entry","input":100,"output":200,"cache_write":0,"cache_read":0,"msg":"analyze usage"}
+{"level":"info","time":1793745705054,"err":{"type":"RateLimitError","message":"Rate limited","stack":"RateLimitError: Rate limited\n    at /repo/api/__tests__/analyze.test.ts:428:17\n    at file:////repo/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:////repo/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:////repo/node_modules/@vitest/runner/dist/ch
+{"level":"warn","time":1793745705067,"issues":[{"code":"invalid_value","values":["entry","midday","review"],"path":["mode"],"message":"Invalid option: expected one of \"entry\"|\"midday\"|\"review\""},{"expected":"object","code":"invalid_type","path":["chartConfidence"],"message":"Invalid input: expected object, received undefined"},{"expected":"object","code":"invalid_type","path":["strikeGuidanc
+{"level":"warn","time":1793745705073,"issues":[{"code":"invalid_value","values":["entry","midday","review"],"path":["mode"],"message":"Invalid option: expected one of \"entry\"|\"midday\"|\"review\""},{"expected":"object","code":"invalid_type","path":["chartConfidence"],"message":"Invalid input: expected object, received undefined"},{"expected":"object","code":"invalid_type","path":["strikeGuidanc
+{"level":"warn","time":1793745705079,"issues":[{"code":"invalid_value","values":["entry","midday","review"],"path":["mode"],"message":"Invalid option: expected one of \"entry\"|\"midday\"|\"review\""},{"expected":"object","code":"invalid_type","path":["chartConfidence"],"message":"Invalid input: expected object, received undefined"},{"expected":"object","code":"invalid_type","path":["strikeGuidanc
+{"level":"info","time":1793745705088,"model":"claude-opus-4-7","mode":"entry","input":100,"output":200,"cache_write":0,"cache_read":0,"msg":"analyze usage"}
+{"level":"info","time":1793745706378,"model":"claude-opus-4-7","mode":"entry","input":100,"output":200,"cache_write":0,"cache_read":0,"msg":"analyze usage"}
+{"level":"info","time":1793745708715,"err":{"type":"APIError","message":"Internal server error","stack":"APIError: Internal server error\n    at /repo/api/__tests__/analyze.test.ts:742:23\n    at file:////repo/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:////repo/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:////repo/node_modules/@vitest/runner/d
+{"level":"error","time":1793745708722,"err":{"type":"SyntaxError","message":"Unexpected end of JSON input","stack":"SyntaxError: Unexpected end of JSON input\n    at JSON.parse (<anonymous>)\n    at Module.handler (/repo/api/analyze.ts:309:27)\n    at /repo/api/__tests__/analyze.test.ts:787:5\n    at file:////repo/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"},"raw":"","stopReason":n
+{"level":"info","time":1793745708728,"model":"claude-opus-4-7","mode":"entry","input":100,"output":200,"cache_write":0,"cache_read":0,"msg":"analyze usage"}
+
+ ❯ src/components/PanelPrefsModal/__tests__/LazyPanelPrefsModal.test.tsx (5 tests | 1 failed) 6252ms
+     × imports the modal on open and shows the dialog 1030ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/components/PanelPrefsModal/__tests__/LazyPanelPrefsModal.test.tsx > LazyPanelPrefsModal > imports the modal on open and shows the dialog
+TestingLibraryElementError: Unable to find role="dialog"
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div />[39m
+[36m</body>[39m
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div />[39m
+[36m</body>[39m
+ ❯ waitForWrapper ../../node_modules/@testing-library/dom/dist/wait-for.js:163:27
+ ❯ ../../node_modules/@testing-library/dom/dist/query-helpers.js:86:33
+ ❯ src/components/PanelPrefsModal/__tests__/LazyPanelPrefsModal.test.tsx:87:25
+     85|       />,
+     86|     );
+     87|     expect(await screen.findByRole('dialog')).toBeInTheDocument();
+       |                         ^
+     88|     expect(
+     89|       screen.getByRole('heading', { name: 'Show / Hide / Reorder Panel…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+ Test Files  1 failed | 714 passed | 1 skipped (716)
+      Tests  1 failed | 16014 passed | 4 skipped (16019)
+   Start at  16:41:16
+   Duration  216.58s (transform 109.79s, setup 441.99s, import 448.05s, tests 963.64s, environment 628.53s)
+
+exit=1
+
