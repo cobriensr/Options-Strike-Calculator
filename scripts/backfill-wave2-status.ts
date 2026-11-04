@@ -3,7 +3,8 @@
  * lottery_finder_fires and silent_boom_alerts, for old rows that
  * api/cron/wave2-confirmation.ts never labelled: late-day fires from before
  * the 2026-11-03 post-close fix (commit 600cb6b5) and the fires of the cron
- * outage days. The cron only looks back 70 minutes, so nothing else will.
+ * outage days. The cron only looks at fires 75 to 85 minutes old, so nothing
+ * else will.
  *
  * It applies the cron's own rule (api/_lib/wave2-rule.ts) and writes the
  * cron's columns, nothing else: no push, no notification. Scope, per table:

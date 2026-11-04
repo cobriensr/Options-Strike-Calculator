@@ -5,14 +5,15 @@
  * (scripts/_lib/**).
  *
  * Why: api/cron/wave2-confirmation.ts labels a fire 'confirmed', 'lagging'
- * or 'fizzled', but it only looks back 70 minutes and its gate used to stop
- * at the close, so fires from about 15:00 ET on never got a label, and a
- * cron outage day (2026-05-18 before the deploy, 05-20, 05-26, 06-10) left
- * every fire of the day unevaluated. Nothing revisits a NULL row older than
- * 70 minutes. This does, once.
+ * or 'fizzled', but it only looks at fires 75 to 85 minutes old (it labels a
+ * fire once it has settled) and its gate used to stop at the close, so fires
+ * from about 15:00 ET on never got a label, and a cron outage day
+ * (2026-05-18 before the deploy, 05-20, 05-26, 06-10) left every fire of the
+ * day unevaluated. Nothing revisits a NULL row older than 85 minutes. This
+ * does, once.
  *
  * The rule is the cron's, not a copy of it. The verdict (the 30 and 60
- * minute bounds, the fizzle age, the `wave2_detected_at` value) is
+ * minute bounds, the 75-minute settle age, the `wave2_detected_at` value) is
  * `wave2Verdict` from api/_lib/wave2-rule.ts, the same function the cron
  * calls. Only the follow-up LOOKUP is restated here, as a LATERAL join over
  * a page of candidates instead of one SELECT per candidate; it applies the
