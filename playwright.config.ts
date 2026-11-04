@@ -28,6 +28,14 @@ export default defineConfig({
   webServer: {
     command: 'npm run dev',
     url: 'http://localhost:5173',
-    reuseExistingServer: !isCI,
+    // No test may reach a real database (owner rule, 2026-11-04; spec
+    // docs/superpowers/specs/tests-no-db-2026-11-04.md). Vite proxies /api to
+    // VITE_API_TARGET, which defaults to a local `vercel dev` on :3000 that
+    // is wired to whatever DATABASE_URL the shell has. Point it at a closed
+    // port instead, so a request that no spec stubbed is refused. Always
+    // start our own server: a dev server already on :5173 would keep the
+    // default proxy target.
+    reuseExistingServer: false,
+    env: { VITE_API_TARGET: 'http://127.0.0.1:9' },
   },
 });

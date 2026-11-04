@@ -205,9 +205,13 @@ test.describe('Contract Tracker', () => {
         sameSite: 'Strict',
       },
     ]);
-    // Explicit routes table. Auth probe → owner. Tracker → tracker
-    // mocks (installed per-test). Everything else → abort so the rest
-    // of the app doesn't 500 during the section gate render.
+    // Explicit routes table. Playwright runs the last-registered matching
+    // route first, so the order here is: the per-test tracker mocks
+    // (installed in each test), then the auth probe → owner, then this
+    // catch-all. Whatever none of them handles is aborted, never passed on:
+    // a fallback reaches the Vite proxy and a backend wired to a real
+    // database (no test may touch one).
+    await page.route('**/api/**', (route) => route.abort());
     await page.route('**/api/auth/whoami', (route) =>
       route.fulfill({
         status: 200,
@@ -215,12 +219,6 @@ test.describe('Contract Tracker', () => {
         body: JSON.stringify({ mode: 'owner' }),
       }),
     );
-    await page.route('**/api/**', (route) => {
-      const url = route.request().url();
-      if (url.includes('/api/tracker/')) return route.fallback();
-      if (url.includes('/api/auth/whoami')) return route.fallback();
-      return route.abort();
-    });
   });
 
   test('renders the Active tab with a fetched contract row', async ({
