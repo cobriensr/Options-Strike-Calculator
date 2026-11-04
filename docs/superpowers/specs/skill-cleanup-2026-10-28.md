@@ -6,7 +6,7 @@ Cut the Claude Code instruction surface for this repo down to what gets used and
 
 ## Status
 
-Phases 1 to 6 are done (project skills: 103 → 51 after 3b). Phase 7 is next. Phases run one implementer at a time, in order. Phase 8 (the weekly loop) gets its own spec after phase 7.
+Phases 1 to 6 are done (project skills: 103 → 51 after 3b). Phase 7a (scripts) and 7b (agent definitions) are done; 7c (the status view) is next. Phases run one implementer at a time, in order. Phase 8 (the weekly loop) has a draft spec, `weekly-improvement-loop-2026-11-04.md`, awaiting the owner's scope approval.
 
 | Phase | State | Record |
 |---|---|---|
@@ -19,6 +19,8 @@ Phases 1 to 6 are done (project skills: 103 → 51 after 3b). Phase 7 is next. P
 | 5 rewrite high-traffic skills | done, re-review pass | local history `ed2d2fd`, `14533c0`, `499c1c8`, fixes `1dff191` |
 | 6 agents | done, two review rounds | local history `742164a`, `2b4e9cd`, `a8bedaa`, `d1fe809`, `85f8e71`, `88327e0`, `0c215e1` |
 | 6 repo (CLAUDE.md facts, ESLint `.js` scope) | done | `ea8c1636`, `b0eabe05` |
+| 7a scripts (`review-summary`, `watch-deploy`) | done, reviewed, review fixes applied | `0e057ac2`, `775a0e8d`, fixes `544cfe87`, `95828a30` |
+| 7b agents (`implementer`, `verifier`) + CLAUDE.md brief line | done | local history `97f5225`; `122f0861` |
 | (side stream) cron monitor coverage | shipped 2026-10-29 | `58526e46`..`4bf97642`; local history `2df9154`; see `cron-monitor-coverage-2026-10-29.md` |
 | (side stream) E2E CI repair phase 2 | on main | `15db7163`..`d3b80398`; see `e2e-ci-repair-2026-10-26.md` |
 | (side stream) commit gate | shipped and active 2026-10-29 (`d45eaf6d`, `eaa89513`, `c3887206`; `core.hooksPath` set) | see `commit-gate-2026-10-28.md` |
