@@ -103,10 +103,30 @@ def _tests_have_no_database_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+class _AttemptsSinceTestStart:
+    """The attempts one test made, for a self-test that provokes them.
+
+    Entries logged before the test started belong to some other test that
+    swallowed the block. They stay in the log, so the session-end check still
+    names that offender; wiping the whole log would hide it.
+    """
+
+    def __init__(self) -> None:
+        self._start = len(_attempts)
+
+    @property
+    def new(self) -> list[str]:
+        return _attempts[self._start :]
+
+    def discard(self) -> None:
+        """Drop the entries this test added, and nothing earlier."""
+        del _attempts[self._start :]
+
+
 @pytest.fixture
-def db_block_attempts() -> list[str]:
-    """The guard's attempt log. A self-test that provokes one clears it."""
-    return _attempts
+def db_block_attempts() -> _AttemptsSinceTestStart:
+    """The attempts this test makes. A self-test that provokes one discards it."""
+    return _AttemptsSinceTestStart()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -124,8 +144,8 @@ def _tests_never_reach_a_database():
             f"{listed}\n"
             "Mock the connection at the module boundary (patch "
             "psycopg2.pool.ThreadedConnectionPool, or the loader that calls "
-            "it). A self-test that provokes an attempt on purpose clears the "
-            "db_block_attempts log itself.",
+            "it). A self-test that provokes an attempt on purpose calls "
+            "db_block_attempts.discard() itself.",
             pytrace=False,
         )
 
@@ -134,10 +154,11 @@ def _tests_never_reach_a_database():
 # Minimal external-package mocks
 # ---------------------------------------------------------------------------
 #
-# Installed or not, each is mocked unconditionally, replacing whatever a
-# plugin or an earlier import put in sys.modules. Nothing in the sidecar
-# imports either before this conftest loads, so the tests always get the
-# mock and never the real package.
+# psycopg2 is mocked unconditionally, replacing whatever a plugin or an
+# earlier import put in sys.modules, so the tests never get the real driver.
+# sentry_sdk is mocked only when nothing has imported it yet (the "not in
+# sys.modules" check below), so a real install that a plugin imported first
+# stays. Nothing in the sidecar imports either before this conftest loads.
 #
 # Packages like `db`, `logger_setup`, `config`, and `sentry_setup` are
 # all sidecar source modules that exist on disk and can be imported

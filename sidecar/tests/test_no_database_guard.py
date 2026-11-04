@@ -24,6 +24,7 @@ import psycopg2
 import psycopg2.pool
 import pytest
 
+import db
 from conftest import BLOCKED_ENV_NAMES, FAKE_DATABASE_URL, DatabaseAccessBlocked
 
 DSN = "postgresql://user:hunter2@invalid.invalid/db"
@@ -38,15 +39,27 @@ def test_psycopg2_is_the_mock_not_the_driver():
 def test_connect_is_blocked_and_recorded(db_block_attempts):
     with pytest.raises(DatabaseAccessBlocked, match=MESSAGE):
         psycopg2.connect(DSN)
-    assert db_block_attempts == ["psycopg2.connect"]
-    db_block_attempts.clear()
+    assert db_block_attempts.new == ["psycopg2.connect"]
+    db_block_attempts.discard()
 
 
 def test_pool_construction_is_blocked_and_recorded(db_block_attempts):
     with pytest.raises(DatabaseAccessBlocked, match=MESSAGE):
         psycopg2.pool.ThreadedConnectionPool(1, 2, DSN)
-    assert db_block_attempts == ["psycopg2.pool.ThreadedConnectionPool"]
-    db_block_attempts.clear()
+    assert db_block_attempts.new == ["psycopg2.pool.ThreadedConnectionPool"]
+    db_block_attempts.discard()
+
+
+def test_get_pool_cannot_reach_a_database(monkeypatch, db_block_attempts):
+    # The production path: src/db.py's get_pool() with the fake settings
+    # builds psycopg2.pool.ThreadedConnectionPool, the one connection the
+    # sidecar makes.
+    monkeypatch.setattr(db, "_pool", None)
+    with pytest.raises(DatabaseAccessBlocked, match=MESSAGE):
+        db.get_pool()
+    assert db_block_attempts.new == ["psycopg2.pool.ThreadedConnectionPool"]
+    assert db._pool is None
+    db_block_attempts.discard()
 
 
 def test_a_test_that_patches_the_pool_replaces_the_stub(monkeypatch):
@@ -65,7 +78,7 @@ def test_blocked_error_is_not_an_exception():
 def test_message_does_not_echo_the_dsn(db_block_attempts):
     with pytest.raises(DatabaseAccessBlocked) as caught:
         psycopg2.connect(DSN)
-    db_block_attempts.clear()
+    db_block_attempts.discard()
     assert "hunter2" not in str(caught.value)
 
 
@@ -144,11 +157,21 @@ def test_env_is_forced_to_the_fake_and_scrubbed(tmp_path):
 def test_the_mock_replaces_a_driver_imported_first(tmp_path):
     # A plugin that imports the real psycopg2 before the conftest loads used
     # to make the conftest skip its mock; the mock is now unconditional.
+    #
+    # The plugin records whether it really imported the driver. Without that
+    # the probe would pass vacuously in a venv that lacks psycopg2 (the plugin's
+    # `except ImportError` would leave nothing for the conftest to replace), so
+    # the probe asserts the preload happened.
     result = _run_probe(
         tmp_path,
         """
         import sys
         from unittest.mock import MagicMock
+
+        import preload_psycopg2
+
+        def test_the_plugin_really_imported_the_driver_first():
+            assert preload_psycopg2.PRELOADED_REAL
 
         def test_the_mock_won():
             assert isinstance(sys.modules["psycopg2"], MagicMock)
@@ -156,9 +179,12 @@ def test_the_mock_replaces_a_driver_imported_first(tmp_path):
         """,
         extra_files={
             "preload_psycopg2.py": """
+                PRELOADED_REAL = False
                 try:
                     import psycopg2  # the real driver, imported first
                     import psycopg2.pool  # noqa: F401
+
+                    PRELOADED_REAL = True
                 except ImportError:
                     pass
             """
@@ -185,3 +211,32 @@ def test_swallowed_attempt_fails_the_session(tmp_path):
     assert result.returncode != 0, output
     assert "psycopg2.connect" in output
     assert MESSAGE in output
+
+
+def test_discarding_in_a_self_test_does_not_hide_an_earlier_offender(tmp_path):
+    # test_a swallows the block; test_b is a well-behaved self-test that
+    # discards its own attempt. Wiping the whole log (the old `.clear()`)
+    # would erase test_a's entry and turn the session green.
+    result = _run_probe(
+        tmp_path,
+        """
+        import psycopg2
+        import pytest
+        from conftest import DatabaseAccessBlocked
+
+        def test_a_swallows_the_block():
+            try:
+                psycopg2.connect("postgresql://x@invalid.invalid/db")
+            except BaseException:
+                pass
+
+        def test_b_self_test_discards_its_own_attempt(db_block_attempts):
+            with pytest.raises(DatabaseAccessBlocked):
+                psycopg2.connect("postgresql://x@invalid.invalid/db")
+            assert db_block_attempts.new == ["psycopg2.connect"]
+            db_block_attempts.discard()
+        """,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert "tried 1 time(s)" in output
