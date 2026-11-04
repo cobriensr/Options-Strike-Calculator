@@ -25,13 +25,12 @@ import sys
 try:
     import numpy as np
     import pandas as pd
-    from sqlalchemy import create_engine
 except ImportError:
     print("Missing dependencies. Run:")
     print("  ml/.venv/Scripts/pip install pandas numpy sqlalchemy psycopg2-binary")
     sys.exit(1)
 
-from utils import load_env  # noqa: E402
+from utils import load_env, make_engine  # noqa: E402
 
 # ── Column typing ───────────────────────────────────────────
 
@@ -94,7 +93,7 @@ def _engine():
     if not database_url:
         print("Error: DATABASE_URL not found in .env")
         sys.exit(1)
-    return create_engine(database_url)
+    return make_engine(database_url)
 
 
 def _coerce_types(df: pd.DataFrame) -> pd.DataFrame:

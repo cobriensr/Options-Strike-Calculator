@@ -15,6 +15,7 @@ import pandas as pd
 import psycopg2
 import pytest
 
+from conftest import DatabaseAccessBlocked
 from utils import (
     GEX_FEATURES_T1T2,
     GREEK_FEATURES_CORE,
@@ -22,6 +23,7 @@ from utils import (
     get_connection,
     load_data,
     load_env,
+    make_engine,
 )
 
 # ── Feature group constant tests ──────────────────────────────
@@ -425,9 +427,10 @@ class TestLoadData:
     @patch("utils.create_engine")
     @patch("utils.load_env")
     def test_creates_engine_with_database_url(self, mock_load_env, mock_engine):
-        """Should pass DATABASE_URL to create_engine."""
-        url = "postgres://user:pass@host:5432/mydb"
-        mock_load_env.return_value = {"DATABASE_URL": url}
+        """Should build the engine from DATABASE_URL, on the psycopg2 driver."""
+        mock_load_env.return_value = {
+            "DATABASE_URL": "postgresql://user:pass@host:5432/mydb"
+        }
         mock_eng = MagicMock()
         mock_engine.return_value = mock_eng
 
@@ -437,7 +440,24 @@ class TestLoadData:
         with patch("utils.pd.read_sql_query", return_value=test_df):
             load_data("SELECT 1")
 
-        mock_engine.assert_called_once_with(url)
+        mock_engine.assert_called_once_with(
+            "postgresql+psycopg2://user:pass@host:5432/mydb"
+        )
+
+    @patch("utils.create_engine")
+    @patch("utils.load_env")
+    def test_an_engine_that_cannot_be_built_raises_as_itself(
+        self, mock_load_env, mock_engine
+    ):
+        """A missing driver must surface as ModuleNotFoundError, not as the
+        UnboundLocalError the `finally: engine.dispose()` used to raise."""
+        mock_load_env.return_value = {
+            "DATABASE_URL": "postgresql://user:pass@host:5432/mydb"
+        }
+        mock_engine.side_effect = ModuleNotFoundError("No module named 'psycopg'")
+
+        with pytest.raises(ModuleNotFoundError, match="psycopg"):
+            load_data("SELECT 1")
 
     @patch("utils.create_engine")
     @patch("utils.load_env")
@@ -457,3 +477,48 @@ class TestLoadData:
         assert "vix" in result.columns
         assert "spy" in result.columns
         assert len(result) == 2
+
+
+# ── make_engine tests ──────────────────────────────────────────
+
+
+class TestMakeEngine:
+    """make_engine pins the psycopg2 driver for a bare postgresql:// URL."""
+
+    @patch("utils.create_engine")
+    def test_bare_postgresql_url_gets_the_psycopg2_driver(self, mock_create):
+        make_engine("postgresql://user:pass@host:5432/mydb?sslmode=require")
+        mock_create.assert_called_once_with(
+            "postgresql+psycopg2://user:pass@host:5432/mydb?sslmode=require"
+        )
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "postgresql+psycopg2://user:pass@host/db",
+            "postgresql+asyncpg://user:pass@host/db",
+            "sqlite:///local.db",
+        ],
+    )
+    @patch("utils.create_engine")
+    def test_a_url_that_names_a_driver_is_left_alone(self, mock_create, url):
+        make_engine(url)
+        mock_create.assert_called_once_with(url)
+
+    def test_a_bare_url_builds_a_psycopg2_engine_whatever_sqlalchemy_does(self):
+        # SQLAlchemy 2.1 resolves a bare postgresql:// to psycopg 3, which is
+        # not installed: create_engine raised ModuleNotFoundError. No connect
+        # happens here; create_engine is lazy.
+        engine = make_engine("postgresql://user:pass@invalid.invalid/db")
+        assert engine.dialect.driver == "psycopg2"
+        engine.dispose()
+
+    def test_a_connect_through_the_engine_reaches_the_psycopg2_block(
+        self, db_block_attempts
+    ):
+        engine = make_engine("postgresql://user:pass@invalid.invalid/db")
+        with pytest.raises(DatabaseAccessBlocked):
+            engine.connect()
+        assert db_block_attempts.new == ["psycopg2.connect"]
+        db_block_attempts.discard()
+        engine.dispose()
