@@ -8,8 +8,10 @@
  * Polls the commit's statuses (Vercel and the Railway `Theta-Options -
  * <service>` contexts) and check runs through the authenticated `gh` CLI
  * every 30 s, until none is queued, in progress or pending and at least one
- * check run exists. Prints a line per status and check run, then a verdict.
- * --timeout is in minutes (default 30); --repo defaults to origin's.
+ * check run exists, then polls once more 10 s later and gives the verdict only
+ * if the same check runs are there (a job that `needs:` another is created
+ * only when that one completes). Prints a line per status and check run, then
+ * a verdict. --timeout is in minutes (default 30); --repo defaults to origin's.
  *
  * Exit codes: 0 everything success, skipped or neutral; 1 any failure,
  * cancellation or timed-out check; 2 the timeout was reached; 3 bad

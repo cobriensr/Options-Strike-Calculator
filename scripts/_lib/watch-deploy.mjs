@@ -18,6 +18,23 @@ import { git } from './git-run.mjs';
 export const POLL_INTERVAL_MS = 30_000;
 export const DEFAULT_TIMEOUT_MINUTES = 30;
 
+/**
+ * How long to wait, after a poll first reads "done", before polling again to
+ * confirm it. GitHub Actions creates a `needs:` job only when the job it waits
+ * on completes (E2E Tests' `created_at` equals App Quality Gate's
+ * `completed_at`), so a poll that lands in that instant sees every check run
+ * finished, nothing pending, and would call the deploy green before the
+ * dependent job exists. The gap is a second or two; 10 s covers it.
+ */
+export const SETTLE_DELAY_MS = 10_000;
+
+/**
+ * Longest one `gh api` call may run. A call that stalls (a dead connection
+ * `gh` never gives up on) would otherwise block the loop forever and with it
+ * the --timeout, which is only checked between polls.
+ */
+const GH_CALL_TIMEOUT_MS = 60_000;
+
 /** Process exit codes of scripts/watch-deploy.mjs. */
 export const EXIT = Object.freeze({
   OK: 0,
@@ -371,6 +388,7 @@ function count(n, one, many) {
  *   summary: string,
  *   pending: string[],
  *   failing: string[],
+ *   checkNames: string[],
  * }}
  * @throws {PayloadError}
  */
@@ -392,6 +410,9 @@ export function evaluateDeploy({ status, checkRuns }) {
   const failingItems = items.filter((item) => item.outcome === 'failed');
   const pending = pendingItems.map((item) => item.name);
   const failing = failingItems.map((item) => item.name);
+  const checkNames = items
+    .filter((item) => item.kind === 'check')
+    .map((item) => item.name);
 
   const done = runs.length > 0 && pending.length === 0;
   if (!done) {
@@ -405,6 +426,7 @@ export function evaluateDeploy({ status, checkRuns }) {
       summary: `verdict: pending (${reasons.join('; ')})`,
       pending,
       failing,
+      checkNames,
     };
   }
   if (failingItems.length > 0) {
@@ -416,6 +438,7 @@ export function evaluateDeploy({ status, checkRuns }) {
       summary: `verdict: failure (${what.join(', ')})`,
       pending,
       failing,
+      checkNames,
     };
   }
   const total = `${count(statuses.length, 'status', 'statuses')}, ${count(runs.length, 'check run', 'check runs')}`;
@@ -426,6 +449,7 @@ export function evaluateDeploy({ status, checkRuns }) {
     summary: `verdict: success (${total})`,
     pending,
     failing,
+    checkNames,
   };
 }
 
@@ -457,13 +481,28 @@ function runGh(args) {
       // eslint-disable-next-line sonarjs/no-os-command-from-path
       'gh',
       args,
-      { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, windowsHide: true },
+      {
+        encoding: 'utf8',
+        maxBuffer: 16 * 1024 * 1024,
+        timeout: GH_CALL_TIMEOUT_MS,
+        windowsHide: true,
+      },
       (error, stdout, stderr) => {
         if (!error) {
           resolve(String(stdout));
         } else if (error.code === 'ENOENT') {
           reject(
             new GhError('the `gh` CLI is not installed or not on PATH', true),
+          );
+        } else if (error.killed) {
+          // execFile killed the child at the timeout. Whatever it printed
+          // before then says nothing about the cause, so never read it as a
+          // fatal 4xx: the next poll tries again.
+          reject(
+            new GhError(
+              `gh ${args.join(' ')} timed out after ${GH_CALL_TIMEOUT_MS / 1000}s`,
+              false,
+            ),
           );
         } else {
           const text = String(stderr).trim() || error.message;
@@ -475,7 +514,11 @@ function runGh(args) {
 }
 
 /**
- * True when `gh` can run at all.
+ * True when `gh` can run at all. The CLI calls it before `resolveRepo` so a
+ * missing `gh` fails at once with its own message, not after a `git remote`
+ * lookup or an unrelated "pass --repo" error. `runGh` still handles ENOENT,
+ * because `gh` can vanish between this check and a poll, and `watchDeploy` is
+ * callable without it.
  *
  * @returns {Promise<boolean>}
  */
@@ -534,6 +577,11 @@ function sleep(ms) {
  * statuses and check runs whenever they change and a verdict line at the
  * end. Progress and retry notes go to stderr.
  *
+ * A poll that reads "done" is not trusted at once: a job that `needs:` another
+ * does not exist until that one completes (see SETTLE_DELAY_MS). The verdict
+ * waits for a second poll, SETTLE_DELAY_MS later, that is also done and shows
+ * the same check runs. Anything else goes back to polling.
+ *
  * Returns the exit code: 0 all passed, 1 a failure, 2 timeout, 3 `gh` missing
  * or an error retrying cannot fix (not logged in, unknown commit).
  *
@@ -544,6 +592,8 @@ export async function watchDeploy({ repo, sha, timeoutMinutes }) {
   const startedAt = Date.now();
   const deadline = startedAt + timeoutMinutes * 60_000;
   let printed = null;
+  // The check runs the last poll found done, until a later poll confirms them.
+  let unconfirmed = null;
 
   for (;;) {
     let result = null;
@@ -561,6 +611,7 @@ export async function watchDeploy({ repo, sha, timeoutMinutes }) {
       );
     }
 
+    let wait = POLL_INTERVAL_MS;
     if (result !== null) {
       const table = result.lines.join('\n');
       if (table !== printed) {
@@ -568,12 +619,24 @@ export async function watchDeploy({ repo, sha, timeoutMinutes }) {
         printed = table;
       }
       if (result.done) {
-        console.log(result.summary);
-        return result.verdict === 'success' ? EXIT.OK : EXIT.FAILED;
+        const checks = result.checkNames.join('\n');
+        if (checks === unconfirmed) {
+          console.log(result.summary);
+          return result.verdict === 'success' ? EXIT.OK : EXIT.FAILED;
+        }
+        unconfirmed = checks;
+        wait = SETTLE_DELAY_MS;
+        console.error(
+          `watch-deploy: everything is finished; checking again in ${SETTLE_DELAY_MS / 1000}s in case a dependent job has yet to start`,
+        );
+      } else {
+        unconfirmed = null;
+        const elapsed = Math.round((Date.now() - startedAt) / 1000);
+        const waiting = result.pending.join(', ') || 'the first check run';
+        console.error(
+          `watch-deploy: ${elapsed}s elapsed, waiting on ${waiting}`,
+        );
       }
-      const elapsed = Math.round((Date.now() - startedAt) / 1000);
-      const waiting = result.pending.join(', ') || 'the first check run';
-      console.error(`watch-deploy: ${elapsed}s elapsed, waiting on ${waiting}`);
     }
 
     const remaining = deadline - Date.now();
@@ -581,7 +644,7 @@ export async function watchDeploy({ repo, sha, timeoutMinutes }) {
       console.log(timeoutLine(timeoutMinutes, failure, result));
       return EXIT.TIMEOUT;
     }
-    await sleep(Math.min(POLL_INTERVAL_MS, remaining));
+    await sleep(Math.min(wait, remaining));
   }
 }
 
@@ -597,6 +660,9 @@ function timeoutLine(timeoutMinutes, failure, result) {
   const head = `verdict: timeout after ${timeoutMinutes} min`;
   if (result === null) {
     return `${head}, no answer from GitHub (last error: ${failure})`;
+  }
+  if (result.done) {
+    return `${head}, every check run had finished but the set was not confirmed (a dependent job may be yet to start)`;
   }
   const waiting = result.pending.join(', ') || 'the first check run';
   const failed =

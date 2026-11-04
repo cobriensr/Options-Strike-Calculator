@@ -25,6 +25,7 @@ import {
   DEFAULT_TIMEOUT_MINUTES,
   PayloadError,
   POLL_INTERVAL_MS,
+  SETTLE_DELAY_MS,
   UsageError,
   evaluateDeploy,
   ghAvailable,
@@ -76,6 +77,10 @@ describe('constants', () => {
   it('polls every 30 seconds and waits 30 minutes by default', () => {
     expect(POLL_INTERVAL_MS).toBe(30_000);
     expect(DEFAULT_TIMEOUT_MINUTES).toBe(30);
+  });
+
+  it('confirms a finished deploy 10 seconds after the poll that found it', () => {
+    expect(SETTLE_DELAY_MS).toBe(10_000);
   });
 });
 
@@ -460,7 +465,7 @@ describe('repoFromRemoteUrl', () => {
       'ssh://git@github.com/cobriensr/Options-Strike-Calculator.git',
       'cobriensr/Options-Strike-Calculator',
     ],
-    ['https://x-access-token:s3cret@github.com/o/n.git', 'o/n'],
+    ['https://x-access-token:FAKE-TOKEN-FOR-TEST@github.com/o/n.git', 'o/n'],
     ['https://github.com/o/n.js.git', 'o/n.js'],
   ])('reads %s', (url, repo) => {
     expect(repoFromRemoteUrl(url)).toBe(repo);
@@ -572,12 +577,16 @@ describe('watchDeploy', () => {
   const run = (timeoutMinutes = 30) =>
     watchDeploy({ repo: 'o/n', sha: SHA, timeoutMinutes });
 
-  it('returns 0 on the first poll when everything already passed', async () => {
+  /** Let the confirming poll that follows a poll reading "done" happen. */
+  const settle = () => vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS);
+
+  it('returns 0 once a second poll confirms that everything already passed', async () => {
     const gh = scriptGh([snapshot()]);
+    const result = run();
+    await settle();
 
-    await expect(run()).resolves.toBe(0);
-
-    expect(gh.polls()).toBe(1);
+    await expect(result).resolves.toBe(0);
+    expect(gh.polls()).toBe(2);
     expect(out).toHaveLength(2);
     expect(out[0].split('\n')).toHaveLength(15);
     expect(out[1]).toBe('verdict: success (5 statuses, 10 check runs)');
@@ -585,7 +594,9 @@ describe('watchDeploy', () => {
 
   it('calls gh api for the status and the check runs of the sha', async () => {
     scriptGh([snapshot()]);
-    await run();
+    const result = run();
+    await settle();
+    await result;
 
     const calls = vi
       .mocked(execFile)
@@ -611,19 +622,22 @@ describe('watchDeploy', () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(gh.polls()).toBe(2);
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    expect(gh.polls()).toBe(3);
+    await settle();
 
     await expect(result).resolves.toBe(0);
-    expect(gh.polls()).toBe(3);
+    expect(gh.polls()).toBe(4);
     expect(out.at(-1)).toMatch(/^verdict: success/);
   });
 
   it('prints the table when it changes, not on every poll', async () => {
     scriptGh([pendingSnapshot(), pendingSnapshot(), snapshot()]);
     const result = run();
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 2);
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 2 + SETTLE_DELAY_MS);
     await result;
 
-    // pending table (once, though polled twice), final table, verdict.
+    // pending table (once, though polled twice), final table (once, though
+    // polled twice), verdict.
     expect(out).toHaveLength(3);
     expect(out[0]).toContain('in_progress');
     expect(out[1]).not.toContain('in_progress');
@@ -633,7 +647,7 @@ describe('watchDeploy', () => {
   it('says on stderr that it is still waiting, and on what', async () => {
     scriptGh([pendingSnapshot(), snapshot()]);
     const result = run();
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS + SETTLE_DELAY_MS);
     await result;
 
     expect(err.some((l) => l.includes('waiting on App Quality Gate'))).toBe(
@@ -645,8 +659,10 @@ describe('watchDeploy', () => {
     scriptGh([
       snapshot((s) => patchCheck(s, 'E2E Tests', { conclusion: 'failure' })),
     ]);
+    const result = run();
+    await settle();
 
-    await expect(run()).resolves.toBe(1);
+    await expect(result).resolves.toBe(1);
     expect(out.at(-1)).toBe('verdict: failure (E2E Tests: failure)');
   });
 
@@ -654,7 +670,10 @@ describe('watchDeploy', () => {
     scriptGh([
       snapshot((s) => patchCheck(s, 'E2E Tests', { conclusion: 'cancelled' })),
     ]);
-    await expect(run()).resolves.toBe(1);
+    const result = run();
+    await settle();
+
+    await expect(result).resolves.toBe(1);
   });
 
   it('returns 0 when the only Vercel result is a canceled, superseded deploy', async () => {
@@ -663,7 +682,124 @@ describe('watchDeploy', () => {
         patchStatus(s, 'Vercel', { state: 'failure', description: 'Canceled' }),
       ),
     ]);
-    await expect(run()).resolves.toBe(0);
+    const result = run();
+    await settle();
+
+    await expect(result).resolves.toBe(0);
+  });
+
+  describe('confirming a finished deploy', () => {
+    // GitHub Actions creates a `needs:` job only when the job it waits on
+    // completes: E2E Tests' created_at equals App Quality Gate's
+    // completed_at. A poll in that instant sees every check run finished and
+    // no E2E Tests at all.
+    const beforeE2E = () =>
+      snapshot((s) => {
+        s.checkRuns.check_runs = s.checkRuns.check_runs.filter(
+          (r) => r.name !== 'E2E Tests',
+        );
+      });
+    const e2eRunning = () =>
+      snapshot((s) =>
+        patchCheck(s, 'E2E Tests', { status: 'in_progress', conclusion: null }),
+      );
+    const e2eDone = (conclusion) =>
+      snapshot((s) => patchCheck(s, 'E2E Tests', { conclusion }));
+
+    /** Resolves to the exit code once `run` settles; stays null until then. */
+    function watch(timeoutMinutes) {
+      const outcome = { code: null };
+      run(timeoutMinutes).then((code) => {
+        outcome.code = code;
+      });
+      return outcome;
+    }
+
+    it('re-polls SETTLE_DELAY_MS after a done poll, and returns 0 when nothing changed', async () => {
+      const gh = scriptGh([snapshot()]);
+      const outcome = watch();
+
+      await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS - 1);
+      expect(gh.polls()).toBe(1);
+      expect(outcome.code).toBeNull();
+      expect(out.some((l) => l.startsWith('verdict:'))).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(gh.polls()).toBe(2);
+      expect(outcome.code).toBe(0);
+      expect(out.at(-1)).toBe('verdict: success (5 statuses, 10 check runs)');
+      // No 30 s wait was involved.
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it.each([
+      ['success', 0, 'verdict: success (5 statuses, 10 check runs)'],
+      ['failure', 1, 'verdict: failure (E2E Tests: failure)'],
+    ])(
+      'does not exit until a job that appears after the first poll completes (%s)',
+      async (conclusion, code, verdict) => {
+        const gh = scriptGh([
+          beforeE2E(), // t = 0: all 9 check runs done, E2E Tests not created yet
+          e2eRunning(), // t = 10 s: it exists now
+          e2eRunning(), // t = 40 s
+          e2eDone(conclusion), // t = 70 s: done again, so confirm
+        ]);
+        const outcome = watch();
+
+        await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS);
+        expect(gh.polls()).toBe(2);
+        expect(outcome.code).toBeNull();
+        expect(out.some((l) => l.startsWith('verdict:'))).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+        expect(gh.polls()).toBe(3);
+        expect(outcome.code).toBeNull();
+
+        await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+        expect(gh.polls()).toBe(4);
+        expect(outcome.code).toBeNull(); // done, but not yet confirmed
+
+        await settle();
+        expect(gh.polls()).toBe(5);
+        expect(outcome.code).toBe(code);
+        expect(out.at(-1)).toBe(verdict);
+      },
+    );
+
+    it('confirms again when the second done poll shows a different set of check runs', async () => {
+      const gh = scriptGh([beforeE2E(), snapshot()]);
+      const outcome = watch();
+
+      await settle(); // t = 10 s: done, but with E2E Tests now
+      expect(gh.polls()).toBe(2);
+      expect(outcome.code).toBeNull();
+
+      await settle(); // t = 20 s: same set as the poll before
+      expect(gh.polls()).toBe(3);
+      expect(outcome.code).toBe(0);
+      expect(out.at(-1)).toBe('verdict: success (5 statuses, 10 check runs)');
+    });
+
+    it('gives up with exit 2 when the timeout passes before a changed set is confirmed', async () => {
+      scriptGh([beforeE2E(), snapshot()]);
+      const outcome = watch(0.1); // 6 s, shorter than one settle delay
+
+      await vi.advanceTimersByTimeAsync(6_000);
+
+      expect(outcome.code).toBe(2);
+      expect(out.at(-1)).toMatch(
+        /^verdict: timeout after 0\.1 min, every check run had finished but the set was not confirmed/,
+      );
+    });
+
+    it('says on stderr that it is confirming', async () => {
+      scriptGh([snapshot()]);
+      const outcome = watch();
+      await settle();
+
+      expect(outcome.code).toBe(0);
+      expect(err.some((l) => l.includes('checking again in 10s'))).toBe(true);
+    });
   });
 
   it('returns 2 at the timeout, after one last poll at the deadline', async () => {
@@ -692,10 +828,10 @@ describe('watchDeploy', () => {
   it('retries after a transient gh failure and carries on', async () => {
     const gh = scriptGh([new Error('gh: HTTP 502: Bad Gateway'), snapshot()]);
     const result = run();
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS + SETTLE_DELAY_MS);
 
     await expect(result).resolves.toBe(0);
-    expect(gh.polls()).toBe(2);
+    expect(gh.polls()).toBe(3);
     expect(
       err.some((l) => l.includes('HTTP 502') && l.includes('retrying')),
     ).toBe(true);
@@ -704,7 +840,7 @@ describe('watchDeploy', () => {
   it('keeps polling through a payload that is not JSON', async () => {
     scriptGh(['<html>Unicorn</html>', snapshot()]);
     const result = run();
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS + SETTLE_DELAY_MS);
 
     await expect(result).resolves.toBe(0);
     expect(err.some((l) => l.includes('not JSON'))).toBe(true);
@@ -713,7 +849,7 @@ describe('watchDeploy', () => {
   it('keeps polling through a payload with the wrong shape, and says why', async () => {
     scriptGh([{ status: {}, checkRuns: {} }, snapshot()]);
     const result = run();
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS + SETTLE_DELAY_MS);
 
     await expect(result).resolves.toBe(0);
     expect(
@@ -748,7 +884,7 @@ describe('watchDeploy', () => {
   it('retries a 403 that is a rate limit, but not one that is a permission error', async () => {
     scriptGh([new Error('gh: API rate limit exceeded (HTTP 403)'), snapshot()]);
     const limited = run();
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS + SETTLE_DELAY_MS);
     await expect(limited).resolves.toBe(0);
 
     scriptGh([new Error('gh: Resource not accessible (HTTP 403)')]);
@@ -766,6 +902,53 @@ describe('watchDeploy', () => {
 
     await expect(run()).resolves.toBe(3);
     expect(err.join('\n')).toContain('`gh`');
+  });
+
+  describe('a gh call that stalls', () => {
+    it('gives every gh call a 60 second timeout, so --timeout can be enforced', async () => {
+      scriptGh([snapshot()]);
+      const result = run();
+      await settle();
+      await result;
+
+      const calls = vi.mocked(execFile).mock.calls;
+      expect(calls.length).toBeGreaterThan(0);
+      for (const [, , options] of calls) expect(options.timeout).toBe(60_000);
+    });
+
+    it('retries a call execFile killed at the timeout, even when it had printed a 4xx', async () => {
+      let calls = 0;
+      vi.mocked(execFile).mockImplementation(
+        (file, args, options, callback) => {
+          calls += 1;
+          if (calls === 1) {
+            // What execFile reports once its timeout has killed the child.
+            callback(
+              Object.assign(new Error('timed out'), { killed: true }),
+              '',
+              'gh: HTTP 404: Not Found',
+            );
+            return;
+          }
+          const snap = snapshot();
+          const isChecks = args[1].includes('/check-runs');
+          callback(
+            null,
+            JSON.stringify(isChecks ? snap.checkRuns : snap.status),
+            '',
+          );
+        },
+      );
+      const result = run();
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS + SETTLE_DELAY_MS);
+
+      await expect(result).resolves.toBe(0);
+      expect(
+        err.some(
+          (l) => l.includes('timed out after 60s') && l.includes('retrying'),
+        ),
+      ).toBe(true);
+    });
   });
 });
 
