@@ -63,5 +63,26 @@
     // only parses local Vercel CLI auth/config files. Once
     // `npm view @vercel/cli-config dependencies.zod` reports >=4.6.6, drop
     // the override and the Dependabot ignore.
+
+    // glob is NOT allowlisted: package.json `overrides` forces glob onto
+    // the patched 14.x line (`^14.0.2`, GHSA-3g3m-2fjr-6pw4: an aborted
+    // async walk keeps reading directories) under each of its three users.
+    // Nested overrides only apply inside the named package, so each needs
+    // an entry. No parent upgrade exists (checked 2026-11-03): the latest
+    // @sentry/bundler-plugin-core 5.3.0 (and @sentry/bundler-plugins 11.10.0
+    // behind @sentry/vite-plugin 11.x) and @vercel/nft 1.11.0 depend on
+    // `glob ^13`, and workbox-build 7.4.1 (the latest) on `glob ^11`.
+    // The jump is safe for all three. glob 14 removes the `debug` option,
+    // renames Pattern/Processor internals, makes walk() return arrays and
+    // roots an `ignore` pattern that starts with `/` at the cwd root. Each
+    // parent calls only glob()/globSync() with cwd, absolute, nodir,
+    // ignore, dot, mark and follow, and none passes `signal`. For those
+    // call shapes glob 11.1.0, 13.0.6 and 14.0.3 return identical file sets
+    // on this repo's dist/ and on a tree with node_modules and dot
+    // directories. All three are build-time tools: the Sentry plugin and
+    // workbox-build run in `vite build`, nft inside @vercel/node. glob 14
+    // also depends on minimatch ^11.0.2, which clears GHSA-g3hv-75wg-m249
+    // on these three paths. Remove each entry once
+    // `npm view <parent> dependencies.glob` reports >=14.0.2.
   ],
 }
