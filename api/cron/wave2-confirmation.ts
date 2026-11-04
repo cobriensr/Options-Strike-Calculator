@@ -3,17 +3,25 @@
  *
  * Phase 4 of meta-detectors-2026-05-16.md.
  *
- * For each Lottery Finder fire and Silent Boom alert in the last 60-70 min
+ * For each Lottery Finder fire and Silent Boom alert that is 75-85 min old
  * with wave2_status IS NULL, scan the same table for a second qualifying
  * event on the same underlying_symbol + same option_type within 60 min of
  * the wave-1 trigger time. Write one of three labels:
  *
  *   - 'confirmed' — wave-2 event landed within 0-30 min of wave-1
  *   - 'lagging'   — wave-2 event landed 30-60 min after wave-1
- *   - 'fizzled'   — 60 min elapsed with no qualifying follow-up
+ *   - 'fizzled'   — no qualifying follow-up in the 60 min after wave-1
  *
- * Rows with no follow-up that are still < 60 min old are SKIPPED — they're
- * still in flight and the next cron tick (every 5 min) will revisit.
+ * A fire is labelled only once it is 75 min old (SETTLE_AGE_MIN in
+ * wave2-rule.ts): the 60-min window plus a 15-min insert margin. The
+ * detectors write a fire to the table up to about 9 min after the trigger
+ * time it carries, so an earlier look saw an incomplete table. It fizzled
+ * fires whose follow-up was not written yet and picked a later follow-up when
+ * an earlier one arrived late. At 75 min every follow-up that can count is in
+ * the table, so a live label equals the complete-information label the
+ * backfill (scripts/_lib/wave2-backfill.ts) writes. The price is a label
+ * about 15 min later than before; nothing reads it live. A younger fire is
+ * not a candidate and is revisited by the tick that finds it 75 min old.
  *
  * Status transitions are one-way (NULL → confirmed/lagging/fizzled). The
  * cron never reverses a verdict; the IS NULL guard on the read makes the
@@ -25,7 +33,7 @@
  * wave-2 for a silent boom alert is another silent boom alert. Cross-type
  * detection is deferred to v2.
  *
- * Cadence: every 5 min from the 09:25 ET open buffer until 75 min after the
+ * Cadence: every 5 min from the 09:25 ET open buffer until 90 min after the
  * day's close (see POST_CLOSE_EVAL_MIN), Mon-Fri.
  *
  * The 'fizzled' label is itself a training signal — the next weekly takeit
@@ -46,54 +54,56 @@ import logger from '../_lib/logger.js';
 import {
   LAGGING_WINDOW_MIN,
   LOTTERY_TABLE,
+  SETTLE_AGE_MIN,
   SILENT_BOOM_TABLE,
   wave2Verdict,
   type Wave2Table,
 } from '../_lib/wave2-rule.js';
 
-// 60s grace: a wave-2 event arriving within the same minute we're
-// classifying needs to land in the table before we mark the wave-1
-// fizzled. Without it, a fire at T+60:00 with a wave-2 print queued at
-// T+59:30 but not yet inserted would be marked fizzled then re-evaluated
-// next tick — except we never re-evaluate (status transitions are one-way),
-// so the fizzle would be permanent. The 60s window absorbs ingestion lag.
-const GRACE_SECONDS = 60;
-
-// 70-min lookback: 60-min fizzle threshold + 10-min slop so a slow cron
-// tick can't drop a candidate that crossed the threshold between scans.
-// Anything older than 70 min would already have been visited in a prior
-// tick (or is a legacy row pre-migration #164 — still gets classified
-// once it appears in the window). The IS NULL guard makes the lookback
-// safe to widen; the partial index keeps the scan cheap.
-const LOOKBACK_MIN = 70;
+// Lookback: the 75-min settle age plus 10 min of slop (85 min), so a slow
+// cron tick can't drop a candidate that crossed the settle age between
+// scans. The tick that first sees a fire is at most 5 min after it turns 75,
+// and the one after it is a retry. Anything older would already have been
+// visited in a prior tick (or is a legacy row pre-migration #164, which the
+// backfill labels). The IS NULL guard makes the lookback safe to widen; the
+// partial index keeps the scan cheap.
+//
+// There is no extra grace at the upper bound any more. A 60 s grace used to
+// stand in for ingestion lag before a fizzle; the 15-min insert margin inside
+// SETTLE_AGE_MIN covers that and far more.
+const LOOKBACK_MIN = SETTLE_AGE_MIN + 10;
 
 /**
- * How long past the day's close the cron keeps running. The fire detectors
- * stop at isMarketHours()' close + 5 gate, so the last wave-1 fires by
- * close + 5:59 (observed max: 16:05:13 ET). It reaches the 60-minute fizzle
- * age at close + 65:59, which the close + 70 tick of the every-5-minutes
- * schedule is the first to see; the close + 75 tick is one retry, and it is
- * the last that still has the fire inside LOOKBACK_MIN (age 69:01 of 70).
+ * How long past the day's close the cron keeps running (90 min). The fire
+ * detectors stop at isMarketHours()' close + 5 gate, so the last wave-1 fires
+ * by close + 5:59 (observed max: 16:05:59 ET). It reaches the 75-minute settle
+ * age at close + 80:59 (17:20:59 ET), which the close + 85 tick (17:25 ET) of
+ * the every-5-minutes schedule is the first to see (age 79:01). The close + 90
+ * tick (17:30 ET) is one retry, and it is the last that still has the fire
+ * inside LOOKBACK_MIN (age 84:01 of 85).
  *
- * Before this, the gate was isMarketHours() (close + 5), so a fire after
- * about 15:05 ET never reached age 60 while the cron ran, and the next
- * morning it was far outside the lookback: with no follow-up it stayed NULL
- * forever instead of 'fizzled' (1,400 lottery rows from 2026-10-01 to
- * 2026-11-02, all fired 15:06-16:05 ET). That biased the fizzle rate low
- * for late fires.
+ * isMarketHours() compares whole ET minutes with `<= close + afterCloseMin`,
+ * so 90 includes the 17:30 tick (17:30 -> 1050 <= 960 + 90) and excludes
+ * 17:35.
+ *
+ * Before the gate ran past the close, a fire after about 15:05 ET never
+ * reached the fizzle age while the cron ran, and the next morning it was far
+ * outside the lookback: with no follow-up it stayed NULL forever instead of
+ * 'fizzled' (1,400 lottery rows from 2026-10-01 to 2026-11-02, all fired
+ * 15:06-16:05 ET). That biased the fizzle rate low for late fires.
  *
  * Applied as `isMarketHours(POST_CLOSE_EVAL_MIN)`: same 09:25 ET open buffer,
- * weekend/holiday handling and half-day close (13:00 -> 14:15 ET).
- * vercel.json's UTC hours must reach 17:15 ET in EST (22:15 UTC), and the
+ * weekend/holiday handling and half-day close (13:00 -> 14:30 ET).
+ * vercel.json's UTC hours must reach 17:30 ET in EST (22:30 UTC), and the
  * Sentry monitor schedule in cron-schedules.ts mirrors them. Same shape as
  * evaluate-round-trip's POST_CLOSE_EVAL_MIN.
  */
-const POST_CLOSE_EVAL_MIN = 75;
+const POST_CLOSE_EVAL_MIN = 90;
 
-// The wave-2 windows (30 / 60 min), the verdict decision and the two table
-// descriptors live in api/_lib/wave2-rule.ts, shared with the one-shot
-// backfill scripts/_lib/wave2-backfill.ts so the two cannot drift. The
-// follow-up lookup below is mirrored there as a LATERAL join; the parity
+// The wave-2 windows (30 / 60 min), the settle age, the verdict decision and
+// the two table descriptors live in api/_lib/wave2-rule.ts, shared with the
+// one-shot backfill scripts/_lib/wave2-backfill.ts so the two cannot drift.
+// The follow-up lookup below is mirrored there as a LATERAL join; the parity
 // test scripts/_lib/wave2-backfill.test.ts keeps them equal.
 
 type DbTimestamp = string | Date;
@@ -139,11 +149,11 @@ async function processTable(
   db: DbClient,
   cfg: Wave2Table,
 ): Promise<TableResult> {
-  // Candidate set: rows still in the wave-2 evaluation window OR past
-  // it. The 60s grace at the upper bound lets a same-minute follow-up
-  // print reach the table before we'd otherwise mark the wave-1 fizzled.
-  // The IS NULL guard makes this idempotent — every prior tick's verdicts
-  // are excluded automatically.
+  // Candidate set: rows that have just settled, i.e. at least SETTLE_AGE_MIN
+  // old (every follow-up that can count is written by then) and at most
+  // LOOKBACK_MIN old. A younger fire is not a candidate: it is labelled by
+  // the tick that finds it SETTLE_AGE_MIN old. The IS NULL guard makes this
+  // idempotent — every prior tick's verdicts are excluded automatically.
   const candidates =
     cfg.name === 'lottery'
       ? ((await withDbRetry(
@@ -152,7 +162,7 @@ async function processTable(
             FROM lottery_finder_fires
             WHERE wave2_status IS NULL
               AND trigger_time_ct >= NOW() - (${LOOKBACK_MIN}::int * INTERVAL '1 minute')
-              AND trigger_time_ct <= NOW() - (${GRACE_SECONDS}::int * INTERVAL '1 second')
+              AND trigger_time_ct <= NOW() - (${SETTLE_AGE_MIN}::int * INTERVAL '1 minute')
           `,
           2,
           10_000,
@@ -163,7 +173,7 @@ async function processTable(
             FROM silent_boom_alerts
             WHERE wave2_status IS NULL
               AND bucket_ct >= NOW() - (${LOOKBACK_MIN}::int * INTERVAL '1 minute')
-              AND bucket_ct <= NOW() - (${GRACE_SECONDS}::int * INTERVAL '1 second')
+              AND bucket_ct <= NOW() - (${SETTLE_AGE_MIN}::int * INTERVAL '1 minute')
           `,
           2,
           10_000,
@@ -229,8 +239,11 @@ async function processTable(
       nowMs,
     );
 
-    // No follow-up and under 60 min old: still in flight. Leave NULL and let
-    // the next 5-min tick re-evaluate. This is the only path that lets a
+    // Not settled by this process's clock. The candidate SELECT already
+    // limits rows to the settle age by the database clock, so this is only a
+    // fire that crossed the bound in the last instant and the clocks differ
+    // by less than a second. Leave NULL: the next 5-min tick (the lookback
+    // keeps it a candidate) labels it. This is the only path that lets a
     // candidate survive the cron unchanged.
     if (verdict === null) continue;
 

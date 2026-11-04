@@ -11,8 +11,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CONFIRMED_WINDOW_MIN,
+  INSERT_MARGIN_MIN,
   LAGGING_WINDOW_MIN,
   LOTTERY_TABLE,
+  SETTLE_AGE_MIN,
   SILENT_BOOM_TABLE,
   WAVE2_TABLES,
   wave2Verdict,
@@ -29,6 +31,12 @@ describe('wave2Verdict', () => {
   it('pins the windows the owner specified: 30 and 60 minutes', () => {
     expect(CONFIRMED_WINDOW_MIN).toBe(30);
     expect(LAGGING_WINDOW_MIN).toBe(60);
+  });
+
+  it('settles a fire after the lagging window plus a 15-minute insert margin: 75 minutes', () => {
+    expect(INSERT_MARGIN_MIN).toBe(15);
+    expect(SETTLE_AGE_MIN).toBe(75);
+    expect(SETTLE_AGE_MIN).toBe(LAGGING_WINDOW_MIN + INSERT_MARGIN_MIN);
   });
 
   it.each([
@@ -50,14 +58,44 @@ describe('wave2Verdict', () => {
     },
   );
 
-  it('labels a follow-up at once, without waiting for the fire to age', () => {
-    // 2 minutes after the trigger, the follow-up already settles it.
-    const followupMs = TRIGGER + min(1);
-    expect(wave2Verdict(TRIGGER, followupMs, TRIGGER + min(2))).toEqual({
-      status: 'confirmed',
-      detectedAtIso: new Date(followupMs).toISOString(),
-    });
-  });
+  it.each([
+    ['a confirmed-range follow-up', min(1)],
+    ['a lagging-range follow-up', min(45)],
+    ['a follow-up at the 60:00 edge', min(60)],
+  ] as const)(
+    'does not label a fire with %s until it is 75 minutes old',
+    (_label, followupOffsetMs) => {
+      // The follow-up present now may not be the earliest one (an earlier
+      // one can still be waiting to be written), so nothing is decided.
+      const followupMs = TRIGGER + followupOffsetMs;
+      for (const ageMs of [
+        min(2),
+        min(30),
+        min(60),
+        min(74),
+        min(75) - sec(1),
+        min(75) - 1,
+      ]) {
+        expect(wave2Verdict(TRIGGER, followupMs, TRIGGER + ageMs)).toBeNull();
+      }
+    },
+  );
+
+  it.each([
+    ['a follow-up at +1 min', min(1), 'confirmed'],
+    ['a follow-up at exactly +30:00', min(30), 'confirmed'],
+    ['a follow-up at +30:00.001', min(30) + 1, 'lagging'],
+    ['a follow-up at exactly +60:00', min(60), 'lagging'],
+  ] as const)(
+    'labels a fire with %s at exactly 75:00 old (the settle bound is inclusive): %s',
+    (_label, followupOffsetMs, expectedStatus) => {
+      const followupMs = TRIGGER + followupOffsetMs;
+      expect(wave2Verdict(TRIGGER, followupMs, TRIGGER + min(75))).toEqual({
+        status: expectedStatus,
+        detectedAtIso: new Date(followupMs).toISOString(),
+      });
+    },
+  );
 
   it('writes wave2_detected_at at millisecond precision, as the cron always has', () => {
     const verdict = wave2Verdict(TRIGGER, TRIGGER + min(10) + 123, LATE);
@@ -66,8 +104,10 @@ describe('wave2Verdict', () => {
 
   it.each([
     ['59:59.999 old', min(60) - 1, null],
-    ['exactly 60:00 old (inclusive)', min(60), 'fizzled'],
-    ['60:00.001 old', min(60) + 1, 'fizzled'],
+    ['exactly 60:00 old (the window is over, not yet settled)', min(60), null],
+    ['74:59.999 old', min(75) - 1, null],
+    ['exactly 75:00 old (inclusive)', min(75), 'fizzled'],
+    ['75:00.001 old', min(75) + 1, 'fizzled'],
     ['3 hours old', min(180), 'fizzled'],
   ] as const)(
     'with no follow-up, a fire %s is %s',
@@ -82,7 +122,7 @@ describe('wave2Verdict', () => {
     },
   );
 
-  it('treats a brand-new fire with no follow-up as in flight', () => {
+  it('treats a brand-new fire with no follow-up as not settled', () => {
     expect(wave2Verdict(TRIGGER, null, TRIGGER + sec(61))).toBeNull();
   });
 });

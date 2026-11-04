@@ -6,11 +6,16 @@
  * Phase 4 of meta-detectors-2026-05-16.md. Scans both lottery_finder_fires
  * and silent_boom_alerts for wave-1 events lacking a wave2_status, then
  * classifies each as 'confirmed' (follow-up <=30 min), 'lagging' (30-60),
- * 'fizzled' (>=60 min with no follow-up), or skipped (still in flight).
+ * 'fizzled' (no follow-up in the 60 min after the trigger), or skipped (not
+ * settled: under 75 min old, the 60-min window plus the 15-min insert margin).
  *
- * Covers: auth guard, empty tables, all three verdicts on both tables,
- * in-flight skip, per-table fault isolation, and the partial/error
- * status propagation through the CronResult shape.
+ * The SQL is mocked here, so the candidate SELECT's age bounds and a table
+ * that changes between ticks are NOT exercised; the real-SQL timeline in
+ * cron-wave2-confirmation-pglite.test.ts covers those.
+ *
+ * Covers: auth guard, empty tables, all three verdicts on both tables, the
+ * not-settled skip, per-table fault isolation, the partial/error status
+ * propagation through the CronResult shape, and the post-close time gate.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -146,7 +151,7 @@ describe('cron wave2-confirmation', () => {
   // ── Lottery: confirmed verdict ───────────────────────────
 
   it('marks a lottery candidate as confirmed when a follow-up lands within 30 min', async () => {
-    const trigger = isoMinutesAgo(60); // wave-1 fired 60 min ago
+    const trigger = isoMinutesAgo(76); // wave-1 fired 76 min ago: settled
     const followup = isoMinutesAfter(trigger, 15); // wave-2 +15 min later
 
     mockSql
@@ -171,16 +176,17 @@ describe('cron wave2-confirmation', () => {
     // + silent-boom candidates.
     expect(mockSql).toHaveBeenCalledTimes(4);
 
-    // Inspect the UPDATE bind args for 'confirmed'.
+    // Inspect the UPDATE bind args for 'confirmed' and the follow-up time.
     const updateCall = mockSql.mock.calls[2]!;
     const verdictArg = updateCall.slice(1).find((v) => v === 'confirmed');
     expect(verdictArg).toBe('confirmed');
+    expect(updateCall.slice(1)).toContain(followup);
   });
 
   // ── Lottery: lagging verdict ─────────────────────────────
 
   it('marks a lottery candidate as lagging when a follow-up lands 30-60 min later', async () => {
-    const trigger = isoMinutesAgo(65);
+    const trigger = isoMinutesAgo(80);
     const followup = isoMinutesAfter(trigger, 45);
 
     mockSql
@@ -206,8 +212,8 @@ describe('cron wave2-confirmation', () => {
 
   // ── Lottery: fizzled verdict ─────────────────────────────
 
-  it('marks a lottery candidate as fizzled when no follow-up arrives and ageMin >= 60', async () => {
-    const trigger = isoMinutesAgo(60); // exactly at the cutoff
+  it('marks a lottery candidate as fizzled when no follow-up arrives and ageMin >= 75', async () => {
+    const trigger = isoMinutesAgo(75); // exactly at the settle age
 
     mockSql
       .mockResolvedValueOnce([lotteryCandidate(3, trigger)])
@@ -237,38 +243,97 @@ describe('cron wave2-confirmation', () => {
     expect(bindValues).not.toContain('lagging');
   });
 
-  // ── Lottery: in-flight (no follow-up, ageMin < 60) ───────
+  // ── Lottery: not settled (under 75 min old) ──────────────
 
-  it('skips a lottery candidate still in flight (no followup, ageMin < 60)', async () => {
-    const trigger = isoMinutesAgo(30); // 30 min ago — past the 60s grace,
-    // within the lookback, but not yet past the fizzle cutoff. The
-    // candidate SELECT in production would return this row; inside the
-    // loop the ageMin guard skips the UPDATE silently.
+  // In production the candidate SELECT keeps a fire under 75 min old out of
+  // the set (that bound is exercised on real SQL in
+  // cron-wave2-confirmation-pglite.test.ts). The mock returns one anyway, as
+  // the database clock running a little ahead of this process's would, so the
+  // verdict's own age guard is what is tested here: it labels nothing.
+
+  it.each([
+    ['30 min', 30],
+    ['exactly 60 min, the old fizzle age', 60],
+    ['65 min', 65],
+    ['74 min', 74],
+    ['74 min 59 s', 74 + 59 / 60],
+  ])(
+    'gives a lottery fire %s old and with a follow-up already there NO label and no UPDATE',
+    async (_label, ageMin) => {
+      const trigger = isoMinutesAgo(ageMin);
+      const followup = isoMinutesAfter(trigger, 10);
+
+      mockSql
+        .mockResolvedValueOnce([lotteryCandidate(4, trigger)])
+        .mockResolvedValueOnce([{ trigger_time: followup }]) // follow-up found
+        .mockResolvedValueOnce([]); // silent-boom candidates (empty)
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(200);
+      const body = res._json as Record<string, unknown>;
+      expect(body.status).toBe('success');
+      expect(body.lotteryProcessed).toBe(0);
+      expect(body.lotteryConfirmed).toBe(0);
+      expect(body.lotteryLagging).toBe(0);
+      expect(body.lotteryFizzled).toBe(0);
+      expect(body.rows).toBe(0);
+      // 3 SQL calls: lottery candidates + lottery follow-up + silent-boom
+      // candidates. No UPDATE.
+      expect(mockSql).toHaveBeenCalledTimes(3);
+      for (const call of mockSql.mock.calls) {
+        expect((call[0] as string[]).join('?')).not.toMatch(/UPDATE/);
+      }
+    },
+  );
+
+  it.each([
+    ['30 min', 30],
+    ['exactly 60 min, the old fizzle age', 60],
+    ['74 min', 74],
+  ])(
+    'gives a lottery fire %s old and with no follow-up yet NO label (it is not fizzled)',
+    async (_label, ageMin) => {
+      mockSql
+        .mockResolvedValueOnce([lotteryCandidate(4, isoMinutesAgo(ageMin))])
+        .mockResolvedValueOnce([]) // no follow-up
+        .mockResolvedValueOnce([]); // silent-boom candidates (empty)
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      const body = res._json as Record<string, unknown>;
+      expect(body.status).toBe('success');
+      expect(body.lotteryProcessed).toBe(0);
+      expect(body.lotteryFizzled).toBe(0);
+      expect(mockSql).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it('gives a silent-boom alert under 75 min old NO label either', async () => {
+    const trigger = isoMinutesAgo(70);
 
     mockSql
-      .mockResolvedValueOnce([lotteryCandidate(4, trigger)])
-      .mockResolvedValueOnce([]) // no followup
-      .mockResolvedValueOnce([]); // silent-boom candidates (empty)
+      .mockResolvedValueOnce([]) // lottery candidates (empty)
+      .mockResolvedValueOnce([lotteryCandidate(6, trigger)]) // silent-boom candidate
+      .mockResolvedValueOnce([{ trigger_time: isoMinutesAfter(trigger, 5) }]);
 
     const res = mockResponse();
     await handler(authedReq(), res);
 
-    expect(res._status).toBe(200);
     const body = res._json as Record<string, unknown>;
     expect(body.status).toBe('success');
-    expect(body.lotteryProcessed).toBe(0);
-    expect(body.lotteryConfirmed).toBe(0);
-    expect(body.lotteryLagging).toBe(0);
-    expect(body.lotteryFizzled).toBe(0);
-    // 3 SQL calls: lottery candidates + lottery followup + silent-boom
-    // candidates. No UPDATE.
+    expect(body.silentBoomProcessed).toBe(0);
+    expect(body.rows).toBe(0);
+    // Candidates x2 + one follow-up lookup; no UPDATE.
     expect(mockSql).toHaveBeenCalledTimes(3);
   });
 
   // ── Silent-boom: same flow, different table ──────────────
 
   it('processes a silent-boom fizzle independently of the lottery scan', async () => {
-    const trigger = isoMinutesAgo(60);
+    const trigger = isoMinutesAgo(75);
 
     mockSql
       .mockResolvedValueOnce([]) // lottery candidates (empty)
@@ -301,7 +366,7 @@ describe('cron wave2-confirmation', () => {
   // ── Silent-boom: confirmed verdict (covers the silent_boom_alerts UPDATE) ──
 
   it('marks a silent-boom candidate as confirmed when a follow-up lands within 30 min', async () => {
-    const trigger = isoMinutesAgo(60);
+    const trigger = isoMinutesAgo(76);
     const followup = isoMinutesAfter(trigger, 10);
 
     mockSql
@@ -387,15 +452,15 @@ describe('cron wave2-confirmation', () => {
 
   it('classifies multiple lottery candidates with mixed verdicts in a single pass', async () => {
     // Candidate A: confirmed (followup at +15 min)
-    const triggerA = isoMinutesAgo(60);
+    const triggerA = isoMinutesAgo(76);
     const followupA = isoMinutesAfter(triggerA, 15);
 
     // Candidate B: lagging (followup at +45 min)
-    const triggerB = isoMinutesAgo(65);
+    const triggerB = isoMinutesAgo(80);
     const followupB = isoMinutesAfter(triggerB, 45);
 
-    // Candidate C: fizzled (no followup, age 70 min)
-    const triggerC = isoMinutesAgo(70);
+    // Candidate C: fizzled (no followup, age 84 min)
+    const triggerC = isoMinutesAgo(84);
 
     mockSql
       // Lottery candidates SELECT — three rows, distinct symbols so the
@@ -431,11 +496,17 @@ describe('cron wave2-confirmation', () => {
 
 // ── Post-close window ───────────────────────────────────────
 //
-// A fire after ~15:05 ET reaches age 60 only after the 16:05 ET close + 5
-// gate, and the next morning it is outside the 70-min lookback, so with no
-// follow-up it stayed NULL instead of 'fizzled'. The gate now runs to close
-// + 75: the close + 70 tick is the first to see the session's last fire
-// (16:05:59 ET, age 64:01) and close + 75 is one retry (age 69:01 < 70).
+// A fire is labelled only once it is 75 min old. The session's last fire
+// (16:05:59 ET, the detectors stop at close + 5) is 75 min old at 17:20:59 ET,
+// so the close + 85 tick (17:25 ET, age 79:01) is the first to label it and
+// close + 90 (17:30 ET, age 84:01) is one retry, the last tick that still has
+// it inside the 85-min lookback. Without a gate past the close, a fire after
+// about 15:05 ET never got labelled: the next morning it was outside the
+// lookback and stayed NULL instead of 'fizzled'.
+//
+// Here the SQL is mocked, so these tests pin the time gate and the verdict.
+// That the candidate SELECT really returns the fire at 17:25 and 17:30, and
+// not at 17:20, is pinned on real SQL in cron-wave2-confirmation-pglite.test.ts.
 // These tests use the real cronGuard under the pinned clock.
 
 describe('cron wave2-confirmation post-close window', () => {
@@ -460,9 +531,9 @@ describe('cron wave2-confirmation post-close window', () => {
     return res;
   }
 
-  it('fizzles the last fire of the session at the close + 70 tick (17:10 ET, EDT)', async () => {
+  it('fizzles the last fire of the session at the close + 85 tick (17:25 ET, EDT)', async () => {
     // 2026-05-21 is a Thursday in EDT. The session's last alert fired at
-    // 16:05:59 ET (20:05:59Z); at 17:10 ET (21:10Z) it is 64:01 old with no
+    // 16:05:59 ET (20:05:59Z); at 17:25 ET (21:25Z) it is 79:01 old with no
     // follow-up.
     mockSql
       .mockResolvedValueOnce([lotteryCandidate(7, '2026-05-21T20:05:59.000Z')])
@@ -470,7 +541,7 @@ describe('cron wave2-confirmation post-close window', () => {
       .mockResolvedValueOnce([]) // UPDATE -> fizzled
       .mockResolvedValueOnce([]); // silent-boom candidates
 
-    const res = await runAt('2026-05-21T21:10:00.000Z');
+    const res = await runAt('2026-05-21T21:25:00.000Z');
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
@@ -482,20 +553,38 @@ describe('cron wave2-confirmation post-close window', () => {
     expect(updateSql).toMatch(/SET wave2_status = 'fizzled'/);
   });
 
-  it('leaves that same fire in flight one tick earlier (17:05 ET), pinning close + 70 as the first evaluable tick', async () => {
-    // Same fire (16:05:59 ET) at 17:05 ET (21:05Z): age 59:01, still under
-    // the 60-min cutoff, so it stays NULL and no UPDATE runs.
+  it('still fizzles it at the close + 90 retry tick (17:30 ET, EDT), 84:01 old', async () => {
     mockSql
       .mockResolvedValueOnce([lotteryCandidate(7, '2026-05-21T20:05:59.000Z')])
       .mockResolvedValueOnce([]) // no followup
+      .mockResolvedValueOnce([]) // UPDATE -> fizzled
       .mockResolvedValueOnce([]); // silent-boom candidates
 
-    const res = await runAt('2026-05-21T21:05:00.000Z');
+    const res = await runAt('2026-05-21T21:30:00.000Z');
+
+    expect(res._json).toMatchObject({
+      status: 'success',
+      lotteryProcessed: 1,
+      lotteryFizzled: 1,
+    });
+  });
+
+  it('leaves that same fire unlabelled one tick earlier (17:20 ET), pinning close + 85 as the first evaluable tick', async () => {
+    // Same fire (16:05:59 ET) at 17:20 ET (21:20Z): age 74:01, still under
+    // the 75-min settle age, so it stays NULL and no UPDATE runs. The mock
+    // hands it over as a candidate regardless; the verdict decides.
+    mockSql
+      .mockResolvedValueOnce([lotteryCandidate(7, '2026-05-21T20:05:59.000Z')])
+      .mockResolvedValueOnce([{ trigger_time: '2026-05-21T20:10:00.000Z' }]) // a follow-up is already there
+      .mockResolvedValueOnce([]); // silent-boom candidates
+
+    const res = await runAt('2026-05-21T21:20:00.000Z');
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       status: 'success',
       lotteryProcessed: 0,
+      lotteryConfirmed: 0,
       lotteryFizzled: 0,
     });
     // Candidate SELECT, follow-up SELECT, silent-boom SELECT: no UPDATE.
@@ -506,9 +595,12 @@ describe('cron wave2-confirmation post-close window', () => {
   });
 
   it.each([
-    ['EDT close + 75 (17:15 ET)', '2026-05-21T21:15:00.000Z'],
-    ['EST close + 75 (17:15 ET)', '2026-12-02T22:15:00.000Z'],
-    ['half-day close + 75 (14:15 ET)', '2026-11-27T19:15:00.000Z'],
+    ['EDT close + 85 (17:25 ET)', '2026-05-21T21:25:00.000Z'],
+    ['EDT close + 90 (17:30 ET)', '2026-05-21T21:30:00.000Z'],
+    ['EST close + 85 (17:25 ET)', '2026-12-02T22:25:00.000Z'],
+    ['EST close + 90 (17:30 ET)', '2026-12-02T22:30:00.000Z'],
+    ['half-day close + 85 (14:25 ET)', '2026-11-27T19:25:00.000Z'],
+    ['half-day close + 90 (14:30 ET)', '2026-11-27T19:30:00.000Z'],
   ])('still runs at %s', async (_label, iso) => {
     mockSql.mockResolvedValue([]);
 
@@ -520,9 +612,9 @@ describe('cron wave2-confirmation post-close window', () => {
   });
 
   it.each([
-    ['EDT close + 80 (17:20 ET)', '2026-05-21T21:20:00.000Z'],
-    ['EST close + 80 (17:20 ET)', '2026-12-02T22:20:00.000Z'],
-    ['half-day close + 80 (14:20 ET)', '2026-11-27T19:20:00.000Z'],
+    ['EDT close + 95 (17:35 ET)', '2026-05-21T21:35:00.000Z'],
+    ['EST close + 95 (17:35 ET)', '2026-12-02T22:35:00.000Z'],
+    ['half-day close + 95 (14:35 ET)', '2026-11-27T19:35:00.000Z'],
     ['a market holiday (Thanksgiving) mid-session', '2026-11-26T15:00:00.000Z'],
   ])('skips at %s, past the gate', async (_label, iso) => {
     const res = await runAt(iso);

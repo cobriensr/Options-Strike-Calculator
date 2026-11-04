@@ -2,18 +2,18 @@
  * The wave-2 verdict rule, in one place.
  *
  * Two callers decide a wave-2 label and must never disagree:
- *   - api/cron/wave2-confirmation.ts, every 5 min, for fires 1 to 70 min old;
+ *   - api/cron/wave2-confirmation.ts, every 5 min, for fires 75 to 85 min old;
  *   - scripts/_lib/wave2-backfill.ts, a one-shot over old NULL rows.
  *
  * What is shared here:
  *   - the window constants and the two table descriptors;
  *   - `wave2Verdict`, the pure decision: given the wave-1 trigger time, the
  *     earliest follow-up time (or none) and "now", it returns the status and
- *     the `wave2_detected_at` value, or null while the fire is still in
- *     flight. The cron calls it per candidate. The backfill calls the same
- *     function on rows it reads in bulk, so the 30-minute bound, the
- *     inclusive 60-minute bound, the 60-minute fizzle age and the
- *     millisecond truncation of `wave2_detected_at` exist exactly once.
+ *     the `wave2_detected_at` value, or null while the fire has not settled.
+ *     The cron calls it per candidate. The backfill calls the same function
+ *     on rows it reads in bulk, so the 30-minute bound, the inclusive
+ *     60-minute bound, the settle age and the millisecond truncation of
+ *     `wave2_detected_at` exist exactly once.
  *
  * What is NOT shared: the follow-up lookup. The cron runs it as one indexed
  * SELECT per candidate; the backfill runs it as a LATERAL join over a page
@@ -28,6 +28,28 @@
 /** Wave-2 windows, in minutes from the wave-1 trigger time. */
 export const CONFIRMED_WINDOW_MIN = 30;
 export const LAGGING_WINDOW_MIN = 60;
+
+/**
+ * How long after its own trigger time a fire can still be written to the
+ * database. The detectors insert a fire 40 s to 9 min after the trigger time
+ * it carries: median 40-105 s, p95 about 5-7 min, max about 9 min (production,
+ * the week to 2026-11-03). A follow-up that triggered inside a wave-1 fire's
+ * 60-minute window can therefore be missing from the table for minutes after
+ * that window closes. 15 min is that 9-minute worst case plus headroom.
+ */
+export const INSERT_MARGIN_MIN = 15;
+
+/**
+ * A fire is labelled only once it is this old (75 min): the lagging window
+ * plus the insert margin. By then every follow-up that can count has been
+ * written, so the label is the one a complete table gives, which is also what
+ * the backfill (which only reads old rows) produces. Labelling earlier saw an
+ * incomplete table: it fizzled a fire whose follow-up was not written yet
+ * (184 rows since May) and recorded a later follow-up as the first when an
+ * earlier one arrived late (about 5.6% of rows had a wrong
+ * `wave2_detected_at`).
+ */
+export const SETTLE_AGE_MIN = LAGGING_WINDOW_MIN + INSERT_MARGIN_MIN;
 
 export type Wave2Status = 'confirmed' | 'lagging' | 'fizzled';
 
@@ -70,13 +92,15 @@ export type Wave2Verdict =
 /**
  * Decide one fire's label.
  *
- * - A follow-up exists (the lookup already limited it to the 60 minutes
- *   after the trigger): 'confirmed' when it landed within
- *   CONFIRMED_WINDOW_MIN (inclusive), else 'lagging'. This needs no age
- *   check; the follow-up is the evidence.
- * - No follow-up and the fire is LAGGING_WINDOW_MIN minutes old or more
- *   (inclusive): 'fizzled'.
- * - Otherwise null: still in flight, a later run decides.
+ * - Younger than SETTLE_AGE_MIN (inclusive at the bound): null, whatever the
+ *   table holds. A follow-up already present may not be the earliest one,
+ *   and the absence of one may only mean it is not written yet; a later run
+ *   decides.
+ * - Settled, a follow-up exists (the lookup already limited it to the 60
+ *   minutes after the trigger): 'confirmed' when it landed within
+ *   CONFIRMED_WINDOW_MIN (inclusive), else 'lagging'.
+ * - Settled, no follow-up: 'fizzled'. A settled fire is past the lagging
+ *   window and the insert margin, so a missing follow-up is not coming.
  *
  * Inputs are epoch milliseconds, as `new Date(value).getTime()` gives them
  * for the timestamptz values the driver returns.
@@ -86,15 +110,12 @@ export function wave2Verdict(
   followupMs: number | null,
   nowMs: number,
 ): Wave2Verdict | null {
-  if (followupMs !== null) {
-    const deltaMin = (followupMs - triggerMs) / 60_000;
-    return {
-      status: deltaMin <= CONFIRMED_WINDOW_MIN ? 'confirmed' : 'lagging',
-      detectedAtIso: new Date(followupMs).toISOString(),
-    };
-  }
   const ageMin = (nowMs - triggerMs) / 60_000;
-  return ageMin >= LAGGING_WINDOW_MIN
-    ? { status: 'fizzled', detectedAtIso: null }
-    : null;
+  if (ageMin < SETTLE_AGE_MIN) return null;
+  if (followupMs === null) return { status: 'fizzled', detectedAtIso: null };
+  const deltaMin = (followupMs - triggerMs) / 60_000;
+  return {
+    status: deltaMin <= CONFIRMED_WINDOW_MIN ? 'confirmed' : 'lagging',
+    detectedAtIso: new Date(followupMs).toISOString(),
+  };
 }

@@ -9,7 +9,9 @@
  * tick on one pglite database, runs the backfill on a second database seeded
  * with the same rows, and compares every row's status and wave2_detected_at.
  * pglite's now() follows the faked Date, which is what lets the cron see the
- * old fixtures inside its 70-minute lookback.
+ * old fixtures inside its 75-to-85-minute candidate window (a fire is labelled
+ * once it is 75 minutes old). The ticks run until the last fixture row, the
+ * one at +70 minutes, has passed that window.
  *
  * Tables come from the REAL migrations (#110 lottery_finder_fires, #134
  * silent_boom_alerts, #164 the wave2 columns and indexes). The session time
@@ -488,16 +490,24 @@ function printed(): string {
 }
 
 /**
+ * The last tick, in minutes after a cluster's base. The latest fixture row
+ * (EARLY-e3, +70 min) is 75 minutes old at +145 and leaves the 85-minute
+ * lookback at +155, so the cron has seen every row through its whole
+ * candidate window by +160.
+ */
+const LAST_TICK_MIN = 160;
+
+/**
  * Run the cron's real handler every 5 minutes, from one minute after each
- * cluster's first fire until every row has passed its 60-minute fizzle age
- * and left the 70-minute lookback. `?force=1` skips only the market-hours
+ * cluster's first fire until every row has passed its 75-minute settle age
+ * and left the 85-minute lookback. `?force=1` skips only the market-hours
  * window, so the same ticks serve both ET regimes.
  */
 async function runCronTicks(): Promise<void> {
   holder.sql = neonOverPglite(cronPg);
   for (const cluster of CLUSTERS) {
     const baseMs = Date.parse(cluster.base);
-    for (let minute = 1; minute <= 135; minute += 5) {
+    for (let minute = 1; minute <= LAST_TICK_MIN; minute += 5) {
       vi.setSystemTime(new Date(baseMs + minute * 60_000));
       const res = mockResponse();
       await handler(
