@@ -476,7 +476,7 @@ describe.each(TABLES)('wave2-confirmation lost slice: %s', (table) => {
     );
   });
 
-  it('counts the unlabelled rows of today older than the lookback and warns once, with their first and last trigger time', async () => {
+  it('counts the unlabelled rows of today older than the lookback and alerts once, with their first and last trigger time', async () => {
     const t = await tick(LAST_TICK);
 
     expect(t.body).toMatchObject({
@@ -489,8 +489,8 @@ describe.each(TABLES)('wave2-confirmation lost slice: %s', (table) => {
     expect(Sentry.captureMessage).toHaveBeenCalledWith(
       expect.stringContaining('scripts/backfill-wave2-status.ts'),
       {
-        level: 'warning',
-        fingerprint: ['wave2-confirmation', 'lost-slice', table],
+        level: 'error',
+        fingerprint: ['wave2-confirmation', 'lost-slice', table, '2026-05-21'],
         tags: { 'cron.anomaly': 'wave2-lost-slice' },
         extra: {
           table,
@@ -523,7 +523,7 @@ describe.each(TABLES)('wave2-confirmation lost slice: %s', (table) => {
     }
   });
 
-  it('sends no count and no warning at the 17:25 ET tick', async () => {
+  it('sends no count and no alert at the 17:25 ET tick', async () => {
     const t = await tick('2026-05-21T21:25:00.000Z');
 
     expect(lostSliceCounts(t)).toEqual([]);
@@ -531,7 +531,7 @@ describe.each(TABLES)('wave2-confirmation lost slice: %s', (table) => {
     expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 
-  it('sends no warning when nothing is lost', async () => {
+  it('sends no alert when nothing is lost', async () => {
     await pg.query(
       `UPDATE ${table} SET wave2_status = 'fizzled' WHERE wave2_status IS NULL`,
     );

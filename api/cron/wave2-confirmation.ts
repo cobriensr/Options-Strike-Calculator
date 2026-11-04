@@ -25,7 +25,7 @@
  *
  * A fire the cron misses for longer than LOOKBACK_MIN (90 min) is never
  * labelled by it. On the last tick of the session the cron counts today's
- * rows in that state and raises one Sentry warning per table (see
+ * rows in that state and raises one error-level Sentry message per table (see
  * warnOnLostSlice); scripts/backfill-wave2-status.ts repairs them.
  *
  * Status transitions are one-way (NULL → confirmed/lagging/fizzled). The
@@ -324,12 +324,29 @@ interface LostSliceRow {
 }
 
 /**
+ * A trigger time as an ISO string, or null when it is absent or unparseable.
+ * The driver returns a timestamptz as an ISO string or a Date. This runs
+ * before the alert is sent, so it must not throw: a garbage timestamp would
+ * otherwise be reported as a failed count and lose an alert whose count is
+ * already known.
+ */
+function toIsoOrNull(value: DbTimestamp | null): string | null {
+  if (value == null) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+/**
  * True on the session's final tick: the ET minute that is the day's close +
  * POST_CLOSE_EVAL_MIN, the last minute isMarketHours(POST_CLOSE_EVAL_MIN)
  * admits. The close comes from the market calendar, so a half-day ends at
  * 14:30 ET and a holiday has no last tick. The schedule fires on multiples of
  * 5 and the close + 90 minute is one (17:30 or 14:30 ET), so exactly one tick
  * per session matches.
+ *
+ * It reads the wall clock when called, so the handler calls it once, before
+ * any work: a tick that starts at 17:30:40 and labels for 25 s would read
+ * 17:31 afterwards and skip the check.
  */
 function isLastTickOfSession(today: string): boolean {
   const closeHour = getMarketCloseHourET(today);
@@ -343,7 +360,12 @@ function isLastTickOfSession(today: string): boolean {
  * than LOOKBACK_MIN. No later tick can label them (the candidate SELECT stops
  * at LOOKBACK_MIN, and this is the last tick of the session), so they would
  * stay NULL silently: two or more ticks in a row failed or never ran. Raises
- * one fingerprinted Sentry warning per table when any exist.
+ * one fingerprinted Sentry error-level message per table when any exist. It is
+ * error level on purpose: in this Sentry project a warning-level Issue Stream
+ * event notifies nobody (the only rule covers high-priority issues), and an
+ * error-level one gets high priority, so the existing rule emails the owner.
+ * The fingerprint carries the ET date, so a lost slice on a later day opens a
+ * new issue instead of attaching to a still-open one and sending nothing.
  *
  * One COUNT per table, served by the partial wave2-pending index (a range on
  * the trigger column over NULL rows). Returns the count, or null when the
@@ -388,19 +410,14 @@ async function warnOnLostSlice(
             10_000,
           )) as LostSliceRow[]);
 
-    // An aggregate without GROUP BY always returns one row; none is a driver
-    // fault, not "zero lost".
+    // An aggregate without GROUP BY always returns one row. A missing row
+    // means the driver misbehaved; it does not mean zero rows were lost.
     const row = rows[0];
     if (!row) throw new Error('lost-slice count returned no row');
     const lost = Number(row.lost);
     if (lost > 0) {
-      // The driver returns a timestamptz as an ISO string or a Date.
-      const earliestTrigger = row.earliest
-        ? new Date(row.earliest).toISOString()
-        : null;
-      const latestTrigger = row.latest
-        ? new Date(row.latest).toISOString()
-        : null;
+      const earliestTrigger = toIsoOrNull(row.earliest);
+      const latestTrigger = toIsoOrNull(row.latest);
       const message =
         `wave2-confirmation: ${lost} ${cfg.table} row(s) from ${today} were ` +
         `never labelled and are older than the ${LOOKBACK_MIN}-min lookback; ` +
@@ -412,8 +429,8 @@ async function warnOnLostSlice(
         'wave2-confirmation: lost slice',
       );
       Sentry.captureMessage(message, {
-        level: 'warning',
-        fingerprint: ['wave2-confirmation', 'lost-slice', cfg.table],
+        level: 'error',
+        fingerprint: ['wave2-confirmation', 'lost-slice', cfg.table, today],
         tags: { 'cron.anomaly': 'wave2-lost-slice' },
         extra: {
           table: cfg.table,
@@ -437,6 +454,9 @@ async function warnOnLostSlice(
 }
 
 async function wave2ConfirmationHandler(ctx: CronContext): Promise<CronResult> {
+  // Read the clock before any work. Labelling can take long enough to cross
+  // the minute, and a read after it would miss the last tick.
+  const lastTick = isLastTickOfSession(ctx.today);
   const db = getDb();
 
   // Run lottery + silent-boom independently. A thrown error on one table
@@ -476,7 +496,6 @@ async function wave2ConfirmationHandler(ctx: CronContext): Promise<CronResult> {
 
   // Last tick of the session only: count the rows no later tick can label.
   // A count that failed is null in the metadata (and was captured above).
-  const lastTick = isLastTickOfSession(ctx.today);
   const lotteryLost = lastTick
     ? await warnOnLostSlice(db, LOTTERY_TABLE, ctx.today)
     : null;

@@ -666,9 +666,11 @@ describe('cron wave2-confirmation post-close window', () => {
 // A fire the cron misses for more than the 90-min lookback is never labelled
 // by it. On the last tick of the session (close + 90, 17:30 ET) the cron
 // counts today's NULL rows older than the lookback in each table and sends one
-// fingerprinted warning per table. The count SQL itself (ET-midnight bound,
-// the NULL and age predicates) runs on real Postgres in
-// cron-wave2-confirmation-pglite.test.ts.
+// fingerprinted error-level message per table (error, because that is the
+// level the Sentry project's high-priority rule emails the owner for). The
+// fingerprint ends in the ET date, so a later day opens a new issue. The count
+// SQL itself (ET-midnight bound, the NULL and age predicates) runs on real
+// Postgres in cron-wave2-confirmation-pglite.test.ts.
 
 describe('cron wave2-confirmation lost-slice alert', () => {
   const originalEnv = process.env;
@@ -677,11 +679,13 @@ describe('cron wave2-confirmation lost-slice alert', () => {
     'wave2-confirmation',
     'lost-slice',
     'lottery_finder_fires',
+    '2026-05-21',
   ];
   const SILENT_BOOM_FINGERPRINT = [
     'wave2-confirmation',
     'lost-slice',
     'silent_boom_alerts',
+    '2026-05-21',
   ];
 
   beforeEach(() => {
@@ -705,7 +709,7 @@ describe('cron wave2-confirmation lost-slice alert', () => {
       .mockResolvedValueOnce(silentBoom); // silent-boom lost-slice COUNT
   }
 
-  it('sends one fingerprinted warning per table with the count and the first and last trigger time', async () => {
+  it('sends one error-level, fingerprinted alert per table with the count and the first and last trigger time', async () => {
     queueLastTick(
       [
         {
@@ -732,7 +736,7 @@ describe('cron wave2-confirmation lost-slice alert', () => {
       1,
       expect.stringContaining('3 lottery_finder_fires row(s)'),
       {
-        level: 'warning',
+        level: 'error',
         fingerprint: LOTTERY_FINGERPRINT,
         tags: { 'cron.anomaly': 'wave2-lost-slice' },
         extra: {
@@ -749,7 +753,7 @@ describe('cron wave2-confirmation lost-slice alert', () => {
       2,
       expect.stringContaining('2 silent_boom_alerts row(s)'),
       {
-        level: 'warning',
+        level: 'error',
         fingerprint: SILENT_BOOM_FINGERPRINT,
         tags: { 'cron.anomaly': 'wave2-lost-slice' },
         extra: {
@@ -762,7 +766,7 @@ describe('cron wave2-confirmation lost-slice alert', () => {
         },
       },
     );
-    // The warning says how to repair the rows.
+    // The alert says how to repair the rows.
     const message = vi.mocked(Sentry.captureMessage).mock.calls[0]![0];
     expect(message).toContain('scripts/backfill-wave2-status.ts');
     // The count is in the run's metadata too, and the run itself is healthy.
@@ -789,7 +793,7 @@ describe('cron wave2-confirmation lost-slice alert', () => {
     }
   });
 
-  it('warns only for the table that lost rows', async () => {
+  it('alerts only for the table that lost rows', async () => {
     queueLastTick(NO_LOST_SLICE, [
       {
         lost: 1,
@@ -811,7 +815,7 @@ describe('cron wave2-confirmation lost-slice alert', () => {
     });
   });
 
-  it('sends no warning when nothing is lost, and records the zero counts', async () => {
+  it('sends no alert when nothing is lost, and records the zero counts', async () => {
     queueLastTick(NO_LOST_SLICE, NO_LOST_SLICE);
 
     const res = await runAt(LAST_TICK);
@@ -830,7 +834,7 @@ describe('cron wave2-confirmation lost-slice alert', () => {
     ['the 17:25 ET tick, close + 85 (EDT)', '2026-05-21T21:25:00.000Z'],
     ['the 17:25 ET tick, close + 85 (EST)', '2026-12-02T22:25:00.000Z'],
     ['the 14:25 ET tick of a half-day', '2026-11-27T19:25:00.000Z'],
-  ])('runs no count and sends no warning at %s', async (_label, iso) => {
+  ])('runs no count and sends no alert at %s', async (_label, iso) => {
     mockSql.mockResolvedValue([]); // nothing to label
 
     const res = await runAt(iso);
@@ -855,11 +859,11 @@ describe('cron wave2-confirmation lost-slice alert', () => {
   });
 
   it.each([
-    ['EST (17:30 ET)', '2026-12-02T22:30:00.000Z'],
-    ['a half-day (14:30 ET)', '2026-11-27T19:30:00.000Z'],
+    ['EST (17:30 ET)', '2026-12-02T22:30:00.000Z', '2026-12-02'],
+    ['a half-day (14:30 ET)', '2026-11-27T19:30:00.000Z', '2026-11-27'],
   ])(
     'finds the last tick on %s through the market calendar',
-    async (_label, iso) => {
+    async (_label, iso, etDate) => {
       queueLastTick(
         [
           {
@@ -874,6 +878,18 @@ describe('cron wave2-confirmation lost-slice alert', () => {
       const res = await runAt(iso);
 
       expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+      // The fingerprint ends in that run's own ET date, not a fixed one.
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          fingerprint: [
+            'wave2-confirmation',
+            'lost-slice',
+            'lottery_finder_fires',
+            etDate,
+          ],
+        }),
+      );
       expect(res._json).toMatchObject({ lotteryLostSlice: 4 });
     },
   );
@@ -934,4 +950,153 @@ describe('cron wave2-confirmation lost-slice alert', () => {
       'wave2-confirmation: lottery lost-slice count failed',
     );
   });
+
+  it('still sends the alert, with null first and last trigger times, when the COUNT returns an unparseable timestamp', async () => {
+    // A positive count is known. A garbage timestamp must not turn it into a
+    // "count failed" and lose the alert (new Date(...).toISOString() throws a
+    // RangeError on an invalid date). A string and a Date are both covered.
+    queueLastTick(
+      [
+        {
+          lost: 2,
+          earliest: 'not-a-timestamp',
+          latest: new Date(Number.NaN),
+        },
+      ],
+      NO_LOST_SLICE,
+    );
+
+    const res = await runAt(LAST_TICK);
+
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('2 lottery_finder_fires row(s)'),
+      {
+        level: 'error',
+        fingerprint: LOTTERY_FINGERPRINT,
+        tags: { 'cron.anomaly': 'wave2-lost-slice' },
+        extra: {
+          table: 'lottery_finder_fires',
+          date: '2026-05-21',
+          lost: 2,
+          earliestTrigger: null,
+          latestTrigger: null,
+          lookbackMin: 90,
+        },
+      },
+    );
+    expect(res._json).toMatchObject({
+      status: 'success',
+      lotteryLostSlice: 2,
+      silentBoomLostSlice: 0,
+    });
+  });
+
+  it('reads the last-tick clock before labelling, so a run that crosses 17:31 still counts the lost slice', async () => {
+    // The tick starts at 17:30:40 ET (21:30:40Z). The first candidate SELECT
+    // takes 25 s, so by the time labelling ends the wall clock reads 17:31:05
+    // and a last-tick check made then would see 17:31 and skip the count.
+    const STARTED_AT = '2026-05-21T21:30:40.000Z';
+    mockSql
+      .mockImplementationOnce(async () => {
+        vi.advanceTimersByTime(25_000); // labelling takes 25 s
+        return [];
+      }) // lottery candidates
+      .mockResolvedValueOnce([]) // silent-boom candidates
+      .mockResolvedValueOnce([
+        {
+          lost: 3,
+          earliest: '2026-05-21T13:41:00.000Z',
+          latest: '2026-05-21T19:55:00.000Z',
+        },
+      ]) // lottery lost-slice COUNT
+      .mockResolvedValueOnce(NO_LOST_SLICE); // silent-boom lost-slice COUNT
+
+    const res = await runAt(STARTED_AT);
+
+    // The clock really did cross 17:31:00 ET while the tick ran.
+    expect(Date.now()).toBeGreaterThan(
+      new Date('2026-05-21T21:31:00.000Z').getTime(),
+    );
+    // Two candidate SELECTs and two COUNTs ran, and the alert went out.
+    expect(mockSql).toHaveBeenCalledTimes(4);
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('3 lottery_finder_fires row(s)'),
+      expect.objectContaining({
+        level: 'error',
+        fingerprint: LOTTERY_FINGERPRINT,
+      }),
+    );
+    expect(res._json).toMatchObject({
+      status: 'success',
+      lotteryLostSlice: 3,
+      silentBoomLostSlice: 0,
+    });
+  });
+
+  it.each([
+    ['lottery', 'lotteryError'],
+    ['silent-boom', 'silentboomError'],
+  ])(
+    'on the last tick, still counts both tables and alerts when the %s scan throws, and reports a partial run',
+    async (failing, errorKey) => {
+      const scanErr = new Error(`${failing} scan down`);
+      const queueScan = (fails: boolean) =>
+        fails
+          ? mockSql.mockRejectedValueOnce(scanErr)
+          : mockSql.mockResolvedValueOnce([]);
+      queueScan(failing === 'lottery'); // lottery candidates
+      queueScan(failing === 'silent-boom'); // silent-boom candidates
+      mockSql
+        .mockResolvedValueOnce([
+          {
+            lost: 2,
+            earliest: '2026-05-21T13:41:00.000Z',
+            latest: '2026-05-21T19:55:00.000Z',
+          },
+        ]) // lottery lost-slice COUNT
+        .mockResolvedValueOnce([
+          {
+            lost: 1,
+            earliest: '2026-05-21T16:00:00.000Z',
+            latest: '2026-05-21T16:00:00.000Z',
+          },
+        ]); // silent-boom lost-slice COUNT
+
+      const res = await runAt(LAST_TICK);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        [errorKey]: scanErr.message,
+        lotteryLostSlice: 2,
+        silentBoomLostSlice: 1,
+      });
+      // The scan failure is the only exception captured; the counts did not fail.
+      expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureException).toHaveBeenCalledWith(scanErr);
+      // Two scans and two COUNTs ran, and each table raised its alert.
+      expect(mockSql).toHaveBeenCalledTimes(4);
+      expect(Sentry.captureMessage).toHaveBeenCalledTimes(2);
+      expect(Sentry.captureMessage).toHaveBeenNthCalledWith(
+        1,
+        expect.stringContaining('2 lottery_finder_fires row(s)'),
+        expect.objectContaining({
+          level: 'error',
+          fingerprint: LOTTERY_FINGERPRINT,
+        }),
+      );
+      expect(Sentry.captureMessage).toHaveBeenNthCalledWith(
+        2,
+        expect.stringContaining('1 silent_boom_alerts row(s)'),
+        expect.objectContaining({
+          level: 'error',
+          fingerprint: SILENT_BOOM_FINGERPRINT,
+        }),
+      );
+    },
+  );
 });
