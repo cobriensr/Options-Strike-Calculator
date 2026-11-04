@@ -57,21 +57,29 @@ const PRETTIER_TIMING = /^\S+ \d+(?:\.\d+)?ms(?: \([a-z]+\))?$/;
 const PRETTIER_DIAGNOSTIC = /^\[(?:error|warn)\] /;
 const VITE_BANNER = /^vite v\S+ building\b/;
 const VITE_FAILED = /^(?:error during build:|✗ Build failed\b)/;
-const BUILD_OUTPUT = /^build output: (.*)$/;
+// The stages that fail through `console.error` (build-output, the coverage
+// floor, the review gate) allow the `npm : ` that Windows PowerShell 5.1 puts
+// in front of the first stderr line it merges with `2>&1`.
+const BUILD_OUTPUT = /^(?:\S+ : )?build output: (.*)$/;
 const VITEST_RUN = /^\s*RUN\s+v\d/;
 // vitest's totals, `Tests  1 failed | 16014 passed (16019)`: a count and a
 // status word, so a test that prints "Tests ..." itself is not mistaken for them.
 const VITEST_FILES =
   /^\s*Test Files\s+(\d+ (?:passed|failed|skipped|todo)\b.*)$/;
 const VITEST_TESTS = /^\s*Tests\s+(\d+ (?:passed|failed|skipped|todo)\b.*)$/;
-const VITEST_FAIL = /^\s*FAIL\s+(\S.*)$/;
+// vitest prints ` FAIL  <file> > <test>`: one space before, two after. A test
+// that prints its own `FAIL ...` line is not a failed test.
+const VITEST_FAIL = /^ FAIL {2}(\S.*)$/;
 const VITEST_UNHANDLED = /^Vitest caught \d+ unhandled errors?\b/;
 const VITEST_COVERAGE_ERROR = /^ERROR: (?:Coverage|Uncovered) /;
-const FLOOR_RESULT = /^coverage floor: (OK|FAILED)\b/;
+const FLOOR_RESULT = /^(?:\S+ : )?coverage floor: (OK|FAILED)\b/;
 const FLOOR_VIOLATION =
-  /^\S+: (?:branches|functions|lines) \d+(?:\.\d+)?% < \d+%$/;
+  /^(?:\S+ : )?\S+: (?:branches|functions|lines) \d+(?:\.\d+)?% < \d+%$/;
 const SEAL_OK = /^review-gate: sealed\b/;
-const SEAL_FAILED = /^review-gate seal failed:/;
+const SEAL_FAILED = /^(?:\S+ : )?review-gate seal failed:/;
+// `review-gate clear` runs before type-check, so its failure belongs there.
+const CLEAR_FAILED = /^(?:\S+ : )?review-gate clear failed:/;
+const SHELL_PREFIX = /^\S+ : /;
 
 /** Lines that start a later zone, as [zone, test]. Zones only move forward. */
 const ZONE_STARTS = [
@@ -98,7 +106,7 @@ export function decodeLog(buffer) {
     return buffer.subarray(2).toString('utf16le');
   }
   const text = buffer.toString('utf8');
-  return text.startsWith('﻿') ? text.slice(1) : text;
+  return text.startsWith('\uFEFF') ? text.slice(1) : text;
 }
 
 /** @param {string} text */
@@ -156,9 +164,15 @@ function emptyScan() {
     tests: '',
     floorFooter: '',
     floorViolations: [],
+    clearFailed: '',
     sealFailed: '',
     sealLine: '',
   };
+}
+
+/** `line` without the `npm : ` PowerShell may have put in front of it. */
+function withoutShellPrefix(line) {
+  return line.replace(SHELL_PREFIX, '');
 }
 
 /** Collapse runs of spaces: `Tests  1 failed` -> `Tests 1 failed`. */
@@ -267,7 +281,7 @@ function scanVitest(scan, line) {
   } else if (VITEST_UNHANDLED.test(line) || VITEST_COVERAGE_ERROR.test(line)) {
     scan.vitestErrors.push(line);
   } else if (FLOOR_VIOLATION.test(line)) {
-    scan.floorViolations.push(line);
+    scan.floorViolations.push(withoutShellPrefix(line));
   } else {
     const files = VITEST_FILES.exec(line);
     const tests = files ? null : VITEST_TESTS.exec(line);
@@ -278,6 +292,11 @@ function scanVitest(scan, line) {
 
 /** Fold one cleaned line into the scan. */
 function scanLine(scan, line, state, root) {
+  if (CLEAR_FAILED.test(line)) {
+    scan.evidence['type-check'].failed = true;
+    scan.clearFailed = withoutShellPrefix(line);
+    return;
+  }
   if (REVIEW_BANNER.test(line)) scan.evidence['type-check'].seen = true;
   if (TYPECHECK_BANNER.test(line)) {
     scan.evidence['type-check'].seen = true;
@@ -306,14 +325,14 @@ function scanResultLines(scan, line) {
   if (floor) {
     scan.evidence['coverage-floor'][floor[1] === 'OK' ? 'passed' : 'failed'] =
       true;
-    if (floor[1] === 'FAILED') scan.floorFooter = line;
+    if (floor[1] === 'FAILED') scan.floorFooter = withoutShellPrefix(line);
   }
   if (SEAL_OK.test(line)) {
     scan.evidence.seal.passed = true;
     scan.sealLine = line;
   } else if (SEAL_FAILED.test(line)) {
     scan.evidence.seal.failed = true;
-    scan.sealFailed = line;
+    scan.sealFailed = withoutShellPrefix(line);
   }
 }
 
@@ -346,6 +365,8 @@ function capped(list) {
 function detailsFor(id, scan) {
   switch (id) {
     case 'type-check':
+      // The gate's `clear` step runs first; when it fails, tsc never ran.
+      if (scan.clearFailed) return [clip(scan.clearFailed)];
       return capped(scan.tsc.map(clip));
     case 'eslint': {
       const errors = scan.eslintIssues.filter((i) => i.severity === 'error');
@@ -445,7 +466,7 @@ export function parseReviewLog(text, { root } = {}) {
  * @param {ReturnType<typeof parseReviewLog>} parsed
  * @returns {string[]}
  */
-export function formatSummary({ stages, sealLine }) {
+function formatSummary({ stages, sealLine }) {
   const lines = [];
   for (const { label, status, details, note } of stages) {
     const suffix = note ? `  ${note}` : '';

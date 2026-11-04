@@ -495,6 +495,25 @@ describe('vitest output', () => {
     );
   });
 
+  it('does not count a FAIL line that a test prints itself as a failed test', () => {
+    const lines = fixture('pass.txt').split('\n');
+    const run = lines.findIndex((l) => l.startsWith(' RUN'));
+    // Vitest's own line is ` FAIL  <file> > <test>`: one space, then two.
+    lines.splice(
+      run + 1,
+      0,
+      'FAIL something broke',
+      'FAIL  two spaces and nothing before them',
+      '  FAIL  two spaces before',
+      ' FAIL only one space after',
+    );
+    const log = lines.join('\n');
+
+    expect(statusesOf(log)).toEqual(expectedStatuses(8, false));
+    expect(summarizeReviewLog(log).ok).toBe(true);
+    expect(detailOf(log, 'vitest')).toEqual([]);
+  });
+
   it('lists a failed test once even when vitest prints it twice', () => {
     const log = fixture('fail-vitest.txt');
     const failLine = log.split('\n').find((l) => l.startsWith(' FAIL '));
@@ -504,6 +523,71 @@ describe('vitest output', () => {
       d.startsWith('FAIL '),
     );
     expect(fails).toHaveLength(1);
+  });
+});
+
+describe('a failed `review-gate clear`', () => {
+  const message =
+    'review-gate clear failed: EPERM: operation not permitted, unlink F:\\dev\\x\\.git\\review-marker';
+
+  /** pass.txt up to the line that lists the chain, then the clear failure. */
+  function clearFailureLog(failureLine) {
+    const lines = fixture('pass.txt').split('\n');
+    const chain = lines.findIndex((l) =>
+      l.startsWith('> node scripts/review-gate.mjs clear'),
+    );
+    return `${lines.slice(0, chain + 1).join('\n')}\n\n${failureLine}\n`;
+  }
+
+  it('shows the gate message under type-check, with no "no result" note', () => {
+    const log = clearFailureLog(message);
+
+    expect(statusesOf(log)).toEqual(expectedStatuses(0, true));
+    expect(detailOf(log, 'type-check')).toEqual([message]);
+
+    const summary = summarizeReviewLog(log);
+    expect(summary.ok).toBe(false);
+    expect(summary.lines.join('\n')).not.toContain('no result');
+    const [first, second] = summary.lines;
+    expect(first).toMatch(/^type-check\s+fail$/);
+    expect(second).toBe(`  ${message}`);
+  });
+
+  it('reads the message the same behind the PowerShell "npm : " prefix', () => {
+    const log = clearFailureLog(`npm : ${message}`);
+
+    expect(detailOf(log, 'type-check')).toEqual([message]);
+    expect(summarizeReviewLog(log)).toEqual(
+      summarizeReviewLog(clearFailureLog(message)),
+    );
+  });
+});
+
+describe('the "npm : " prefix Windows PowerShell 5.1 puts on the first stderr line', () => {
+  /** `log` with `npm : ` in front of its first line that starts with `start`. */
+  function prefixed(log, start) {
+    const lines = log.split('\n');
+    const at = lines.findIndex((l) => l.startsWith(start));
+    expect(at, `no line starts with ${start}`).toBeGreaterThanOrEqual(0);
+    lines[at] = `npm : ${lines[at]}`;
+    return lines.join('\n');
+  }
+
+  it.each([
+    ['coverage-floor', 'fail-coverage-floor.txt', 'api/_lib/x.ts: branches'],
+    ['coverage-floor', 'fail-coverage-floor.txt', 'coverage floor: FAILED'],
+    ['build-output', 'fail-build-output.txt', 'build output: dist/index.html'],
+    ['build-output', 'fail-build-output.txt', 'build output: FAILED'],
+    ['seal', 'fail-seal.txt', 'review-gate seal failed:'],
+  ])('is read through on a %s failure (%s, line "%s")', (id, name, start) => {
+    const plain = fixture(name);
+    const log = prefixed(plain, start);
+    expect(log).not.toBe(plain);
+
+    expect(statusesOf(log)).toEqual(statusesOf(plain));
+    expect(statusesOf(log)[id]).toBe('fail');
+    expect(detailOf(log, id)).toEqual(detailOf(plain, id));
+    expect(summarizeReviewLog(log).lines.join('\n')).not.toContain('npm :');
   });
 });
 
@@ -576,5 +660,17 @@ describe('review-summary CLI', () => {
 
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('usage: node scripts/review-summary.mjs');
+  });
+
+  it('exits 2 and prints usage for an option, --help included', () => {
+    for (const option of ['--help', '-h']) {
+      const result = run([option]);
+
+      expect(result.status, option).toBe(2);
+      expect(result.stdout, option).toBe('');
+      expect(result.stderr, option).toContain(
+        'usage: node scripts/review-summary.mjs',
+      );
+    }
   });
 });
