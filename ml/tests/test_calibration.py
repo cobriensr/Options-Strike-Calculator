@@ -560,6 +560,12 @@ class TestMain:
         (repo_root / "ml").mkdir(exist_ok=True)
         monkeypatch.setattr(calibration, "REPO_ROOT", repo_root)
 
+        # main() calls load_env(), which setdefaults every line of the real
+        # .env.local into os.environ; point it at a file that does not exist.
+        monkeypatch.setattr(
+            calibration, "ENV_LOCAL", repo_root / ".env.local.nonexistent"
+        )
+
         # Patch psycopg2.connect to avoid real DB
         mock_conn = MagicMock()
         mock_conn.__enter__ = MagicMock(return_value=mock_conn)

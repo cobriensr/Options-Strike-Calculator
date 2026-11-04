@@ -818,11 +818,14 @@ class TestMain:
         """Send main()'s findings write to tmp_path instead of ml/findings.json.
 
         save_section_findings resolves utils.ML_ROOT at call time, so patching
-        it there redirects the file. Dropping DATABASE_URL keeps its optional
-        ml_findings upsert from reaching a real database.
+        it there redirects the file. The same redirect keeps its optional
+        ml_findings upsert off a real database: utils.load_env reads the
+        repo-root .env file from ML_ROOT.parent, so it finds no
+        DATABASE_URL under tmp_path. Dropping the env var alone would not
+        do it, as the .env file overrides os.environ. ml/conftest.py also
+        blocks the connect call itself.
         """
         monkeypatch.setattr("utils.ML_ROOT", tmp_path)
-        monkeypatch.delenv("DATABASE_URL", raising=False)
         return tmp_path
 
     @patch("health.print_summary")

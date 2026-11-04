@@ -1534,10 +1534,12 @@ class TestMain:
         )
         # main() saves its findings through utils.save_section_findings,
         # which resolves utils.ML_ROOT at call time, so patch it there too or
-        # the write lands in the tracked ml/findings.json. Dropping
-        # DATABASE_URL keeps its optional ml_findings upsert off a real DB.
+        # the write lands in the tracked ml/findings.json. The same redirect
+        # keeps its optional ml_findings upsert off a real DB: load_env reads
+        # the repo-root .env file from ML_ROOT.parent, which holds none under
+        # tmp_path. Dropping DATABASE_URL from os.environ would not do it, as
+        # the .env file overrides it; ml/conftest.py also blocks the connect.
         monkeypatch.setattr("utils.ML_ROOT", tmp_path)
-        monkeypatch.delenv("DATABASE_URL", raising=False)
         # Suppress save_experiment file I/O
         monkeypatch.setattr(
             phase2_early,
