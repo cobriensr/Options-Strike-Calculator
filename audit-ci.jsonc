@@ -83,7 +83,10 @@
     // workbox-build run in `vite build`, nft inside @vercel/node. glob 14
     // also depends on minimatch ^11.0.2, which clears GHSA-g3hv-75wg-m249
     // on these three paths. Remove each entry once
-    // `npm view <parent> dependencies.glob` reports >=14.0.2.
+    // `npm view <parent> dependencies.glob` reports >=14.0.2; for
+    // @vercel/nft, check the exact version @vercel/node pins, not nft's
+    // latest. If @sentry/vite-plugin moves to 11.x, re-key the Sentry entry
+    // to @sentry/bundler-plugins, or glob 13 comes back (audit-ci flags it).
 
     // ── minimatch (dev and build tooling only) ────────────────────────────
     // GHSA-g3hv-75wg-m249: at `optimizationLevel >= 2` a crafted glob
@@ -118,7 +121,8 @@
     // Reachability: the vulnerable code runs only when `optimizationLevel`
     // is 2 or more, and the default is 1. None of the lint packages sets
     // it (grepped in node_modules). The one level-2 caller in the tree is
-    // glob, which now resolves minimatch 11.0.4. 3.1.5 and 5.1.9 predate
+    // glob, whose default entry bundles its own patched minimatch 11.x
+    // (the nested 11.0.4 serves only `glob/raw`). 3.1.5 and 5.1.9 predate
     // the code: they have no firstPhasePreProcess, secondPhasePreProcess or
     // optimizationLevel. The patterns are this repo's own lint globs, rule
     // options and dependency names, never request input, and nothing here
