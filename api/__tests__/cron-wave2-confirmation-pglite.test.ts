@@ -17,7 +17,9 @@
  * fizzled fires whose follow-up was not written yet, and recorded a later
  * follow-up as the first one when an earlier one arrived late. The cron now
  * waits until a fire is 75 minutes old (SETTLE_AGE_MIN), so every label is the
- * one a complete table gives.
+ * one a complete table gives. The lookback is 90 minutes (SETTLE_AGE_MIN + 15),
+ * so a fire survives two missed ticks in a row, and on the session's last tick
+ * the cron counts today's rows that fell out of it (a lost slice).
  *
  * Every expected label is written out by hand, from the rule, not read back
  * from the code. pglite's now() follows the faked Date. The session time zone
@@ -63,6 +65,7 @@ vi.mock('../_lib/sentry.js', () => ({
 }));
 
 import handler from '../cron/wave2-confirmation.js';
+import { Sentry } from '../_lib/sentry.js';
 
 type TableName = 'lottery_finder_fires' | 'silent_boom_alerts';
 const TABLES: TableName[] = ['lottery_finder_fires', 'silent_boom_alerts'];
@@ -184,6 +187,8 @@ async function tick(
 
 const updates = (t: Tick) => t.sent.filter((s) => /UPDATE/.test(s));
 const followupLookups = (t: Tick) => t.sent.filter((s) => /ORDER BY/.test(s));
+const lostSliceCounts = (t: Tick) =>
+  t.sent.filter((s) => /COUNT\(\*\)/.test(s));
 
 // ── Late writes: the fires the old cron got wrong ────────────────────
 
@@ -314,9 +319,10 @@ describe.each(TABLES)('wave2-confirmation timeline: %s', (table) => {
 /**
  * The session's last fire, 16:05:59 ET (the detectors stop at close + 5), with
  * no follow-up. It is 75 minutes old at 17:20:59 ET, so the 17:25 tick is the
- * first that can label it and the 17:30 tick is the retry. The retry is the
- * last tick that still has it inside the 85-minute lookback (age 84:01); the
- * gate (close + 90) ends there.
+ * first that can label it and the 17:30 tick is the retry (age 84:01, inside
+ * the 90-minute lookback). The gate (close + 90) ends the retries there, not
+ * the lookback: at 17:35 the fire would still be a candidate (age 89:01), and
+ * only at 17:40 (age 94:01) is it outside the lookback.
  */
 const REGIMES = [
   {
@@ -326,6 +332,7 @@ const REGIMES = [
     t1725: '2026-05-21T21:25:00.000Z',
     t1730: '2026-05-21T21:30:00.000Z',
     t1735: '2026-05-21T21:35:00.000Z',
+    t1740: '2026-05-21T21:40:00.000Z',
   },
   {
     name: 'EST',
@@ -334,6 +341,7 @@ const REGIMES = [
     t1725: '2026-12-02T22:25:00.000Z',
     t1730: '2026-12-02T22:30:00.000Z',
     t1735: '2026-12-02T22:35:00.000Z',
+    t1740: '2026-12-02T22:40:00.000Z',
   },
 ] as const;
 
@@ -365,12 +373,172 @@ describe.each(TABLES)('wave2-confirmation post-close: %s', (table) => {
       expect((await snapshot(table)).get('LAST')).toBe('fizzled @ -');
     });
 
-    it('would find it at 17:35 ET only past the lookback, so the gate ends at 17:30', async () => {
-      // The gate skips 17:35; `force=1` goes around it to show the SELECT
-      // would no longer return the fire (age 89:01 of an 85-minute lookback).
+    it('sends nothing at 17:35 ET: the gate is closed, though the fire is still inside the lookback', async () => {
+      // The real gate answers before any SQL is sent.
+      const t = await tick(r.t1735);
+      expect(t.body).toEqual({ skipped: true, reason: 'Outside time window' });
+      expect(t.sent).toEqual([]);
+      expect((await snapshot(table)).get('LAST')).toBe('NULL @ -');
+    });
+
+    it('would still find it at 17:35 ET with force=1 (89:01 of a 90-minute lookback), so the gate ends the retries, not the lookback', async () => {
       const t = await tick(r.t1735, { force: '1' });
+      expect(updates(t).length).toBe(1);
+      expect((await snapshot(table)).get('LAST')).toBe('fizzled @ -');
+    });
+
+    it('no longer finds it at 17:40 ET with force=1 (94:01 old), past the lookback', async () => {
+      const t = await tick(r.t1740, { force: '1' });
       expect(t.sent.length).toBe(2);
       expect((await snapshot(table)).get('LAST')).toBe('NULL @ -');
     });
+  });
+});
+
+// ── Missed ticks: the 90-minute lookback ─────────────────────────────
+
+/**
+ * A fire is a candidate from age 75:00 to 90:00, so three 5-minute ticks look
+ * at it. A fire that first turns 75 at the +77 tick has its looks at +77, +82
+ * and +87 (age 77, 82, 87). The lookback was 85 minutes: two missed ticks in a
+ * row left the +87 look outside it and the fire NULL forever.
+ */
+describe.each(TABLES)('wave2-confirmation missed ticks: %s', (table) => {
+  beforeEach(async () => {
+    await resetTables();
+    await insertRow(table, { label: 'W', sym: 'MISS', at: minuteIso(0) });
+  });
+
+  it('labels a fire at its third look (age 87) when the two ticks before it never ran', async () => {
+    const t = await tick(minuteIso(87));
+    expect(updates(t).length).toBe(1);
+    expect((await snapshot(table)).get('W')).toBe('fizzled @ -');
+  });
+
+  it('still labels it at exactly 90:00 old, the inclusive bound', async () => {
+    const t = await tick(minuteIso(90));
+    expect(updates(t).length).toBe(1);
+    expect((await snapshot(table)).get('W')).toBe('fizzled @ -');
+  });
+
+  it('no longer sees it at 90:01 old: that fire is a lost slice for the cron', async () => {
+    const t = await tick(new Date(T0 + 90 * 60_000 + 1000).toISOString());
+    expect(t.sent.length).toBe(2);
+    expect((await snapshot(table)).get('W')).toBe('NULL @ -');
+  });
+});
+
+// ── The lost-slice check on the last tick ────────────────────────────
+
+/** 17:30 ET on 2026-05-21 (EDT): close + 90, the last tick of the session. */
+const LAST_TICK = '2026-05-21T21:30:00.000Z';
+
+/**
+ * Rows on one table, all NULL unless noted. Written out by hand: which of
+ * them the last tick must count (older than 90 minutes at 17:30 ET and fired
+ * on 2026-05-21 ET) and which it must leave alone.
+ *
+ *   counted:  MIDNIGHT 00:00:30 ET, LOST_AM 09:41 ET, LOST_PM 15:55 ET (95 min)
+ *   not:      PREV_LATE 23:59:30 ET the day before (a bound read in the Tokyo
+ *             session zone would count it), PREV_DAY 15:00 ET the day before,
+ *             DONE (already labelled), JUST_IN 16:00:30 ET (89:30 old, still a
+ *             candidate, so this very tick labels it) and LAST 16:05:59 ET.
+ */
+const LOST_ROWS = [
+  { label: 'MIDNIGHT', at: '2026-05-21T04:00:30.000Z' },
+  { label: 'LOST_AM', at: '2026-05-21T13:41:00.000Z' },
+  { label: 'LOST_PM', at: '2026-05-21T19:55:00.000Z' },
+  { label: 'PREV_LATE', at: '2026-05-21T03:59:30.000Z' },
+  { label: 'PREV_DAY', at: '2026-05-20T19:00:00.000Z' },
+  { label: 'DONE', at: '2026-05-21T14:00:00.000Z' },
+  { label: 'JUST_IN', at: '2026-05-21T20:00:30.000Z' },
+  { label: 'LAST', at: '2026-05-21T20:05:59.000Z' },
+] as const;
+
+const LOST_KEY = {
+  lottery_finder_fires: 'lotteryLostSlice',
+  silent_boom_alerts: 'silentBoomLostSlice',
+} as const;
+
+describe.each(TABLES)('wave2-confirmation lost slice: %s', (table) => {
+  const own = LOST_KEY[table];
+  const other = LOST_KEY[TABLES.find((t) => t !== table) ?? table];
+
+  beforeEach(async () => {
+    vi.mocked(Sentry.captureMessage).mockClear();
+    vi.mocked(Sentry.captureException).mockClear();
+    await resetTables();
+    for (const row of LOST_ROWS) {
+      await insertRow(table, { label: row.label, sym: row.label, at: row.at });
+    }
+    await pg.query(
+      `UPDATE ${table} SET wave2_status = 'fizzled' WHERE option_chain_id = 'DONE'`,
+    );
+  });
+
+  it('counts the unlabelled rows of today older than the lookback and warns once, with their first and last trigger time', async () => {
+    const t = await tick(LAST_TICK);
+
+    expect(t.body).toMatchObject({
+      status: 'success',
+      [own]: 3,
+      [other]: 0,
+    });
+    expect(lostSliceCounts(t).length).toBe(2);
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('scripts/backfill-wave2-status.ts'),
+      {
+        level: 'warning',
+        fingerprint: ['wave2-confirmation', 'lost-slice', table],
+        tags: { 'cron.anomaly': 'wave2-lost-slice' },
+        extra: {
+          table,
+          date: '2026-05-21',
+          lost: 3,
+          earliestTrigger: '2026-05-21T04:00:30.000Z',
+          latestTrigger: '2026-05-21T19:55:00.000Z',
+          lookbackMin: 90,
+        },
+      },
+    );
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('labels the rows still inside the lookback in the same tick and leaves the lost ones NULL', async () => {
+    await tick(LAST_TICK);
+
+    const rows = await snapshot(table);
+    expect(rows.get('JUST_IN')).toBe('fizzled @ -');
+    expect(rows.get('LAST')).toBe('fizzled @ -');
+    expect(rows.get('DONE')).toBe('fizzled @ -');
+    for (const label of [
+      'MIDNIGHT',
+      'LOST_AM',
+      'LOST_PM',
+      'PREV_LATE',
+      'PREV_DAY',
+    ]) {
+      expect(rows.get(label), label).toBe('NULL @ -');
+    }
+  });
+
+  it('sends no count and no warning at the 17:25 ET tick', async () => {
+    const t = await tick('2026-05-21T21:25:00.000Z');
+
+    expect(lostSliceCounts(t)).toEqual([]);
+    expect(t.body).not.toHaveProperty(own);
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('sends no warning when nothing is lost', async () => {
+    await pg.query(
+      `UPDATE ${table} SET wave2_status = 'fizzled' WHERE wave2_status IS NULL`,
+    );
+
+    const t = await tick(LAST_TICK);
+
+    expect(t.body).toMatchObject({ [own]: 0, [other]: 0 });
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 });

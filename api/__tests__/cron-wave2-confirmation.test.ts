@@ -146,6 +146,15 @@ describe('cron wave2-confirmation', () => {
     expect(body.silentBoomFizzled).toBe(0);
     // Two candidate SELECTs total, nothing else.
     expect(mockSql).toHaveBeenCalledTimes(2);
+    // Each binds the lookback and the settle age: 90 (75 + 15) and 75. The
+    // SQL is mocked, so this is the only place the unit tests see them.
+    for (const call of mockSql.mock.calls) {
+      expect(call.slice(1)).toEqual([90, 75]);
+    }
+    // Not the last tick of the session: no lost-slice check, no metadata.
+    expect(body).not.toHaveProperty('lotteryLostSlice');
+    expect(body).not.toHaveProperty('silentBoomLostSlice');
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 
   // ── Lottery: confirmed verdict ───────────────────────────
@@ -499,15 +508,28 @@ describe('cron wave2-confirmation', () => {
 // A fire is labelled only once it is 75 min old. The session's last fire
 // (16:05:59 ET, the detectors stop at close + 5) is 75 min old at 17:20:59 ET,
 // so the close + 85 tick (17:25 ET, age 79:01) is the first to label it and
-// close + 90 (17:30 ET, age 84:01) is one retry, the last tick that still has
-// it inside the 85-min lookback. Without a gate past the close, a fire after
-// about 15:05 ET never got labelled: the next morning it was outside the
-// lookback and stayed NULL instead of 'fizzled'.
+// close + 90 (17:30 ET, age 84:01) is one retry, inside the 90-min lookback,
+// and the last tick of the session (the gate ends there; 17:35 is closed even
+// though the fire would still be inside the lookback at age 89:01). Without a
+// gate past the close, a fire after about 15:05 ET never got labelled: the
+// next morning it was outside the lookback and stayed NULL instead of
+// 'fizzled'.
 //
 // Here the SQL is mocked, so these tests pin the time gate and the verdict.
 // That the candidate SELECT really returns the fire at 17:25 and 17:30, and
 // not at 17:20, is pinned on real SQL in cron-wave2-confirmation-pglite.test.ts.
 // These tests use the real cronGuard under the pinned clock.
+
+/** What the lost-slice COUNT returns when nothing is lost. */
+const NO_LOST_SLICE = [{ lost: 0, earliest: null, latest: null }];
+
+/** Run the real handler once with the clock pinned at `iso`. */
+async function runAt(iso: string) {
+  vi.setSystemTime(new Date(iso));
+  const res = mockResponse();
+  await handler(authedReq(), res);
+  return res;
+}
 
 describe('cron wave2-confirmation post-close window', () => {
   const originalEnv = process.env;
@@ -523,13 +545,6 @@ describe('cron wave2-confirmation post-close window', () => {
     process.env = originalEnv;
     vi.useRealTimers();
   });
-
-  async function runAt(iso: string) {
-    vi.setSystemTime(new Date(iso));
-    const res = mockResponse();
-    await handler(authedReq(), res);
-    return res;
-  }
 
   it('fizzles the last fire of the session at the close + 85 tick (17:25 ET, EDT)', async () => {
     // 2026-05-21 is a Thursday in EDT. The session's last alert fired at
@@ -558,7 +573,9 @@ describe('cron wave2-confirmation post-close window', () => {
       .mockResolvedValueOnce([lotteryCandidate(7, '2026-05-21T20:05:59.000Z')])
       .mockResolvedValueOnce([]) // no followup
       .mockResolvedValueOnce([]) // UPDATE -> fizzled
-      .mockResolvedValueOnce([]); // silent-boom candidates
+      .mockResolvedValueOnce([]) // silent-boom candidates
+      .mockResolvedValueOnce(NO_LOST_SLICE) // last tick: lottery lost-slice count
+      .mockResolvedValueOnce(NO_LOST_SLICE); // last tick: silent-boom count
 
     const res = await runAt('2026-05-21T21:30:00.000Z');
 
@@ -566,6 +583,8 @@ describe('cron wave2-confirmation post-close window', () => {
       status: 'success',
       lotteryProcessed: 1,
       lotteryFizzled: 1,
+      lotteryLostSlice: 0,
+      silentBoomLostSlice: 0,
     });
   });
 
@@ -596,19 +615,34 @@ describe('cron wave2-confirmation post-close window', () => {
 
   it.each([
     ['EDT close + 85 (17:25 ET)', '2026-05-21T21:25:00.000Z'],
-    ['EDT close + 90 (17:30 ET)', '2026-05-21T21:30:00.000Z'],
     ['EST close + 85 (17:25 ET)', '2026-12-02T22:25:00.000Z'],
-    ['EST close + 90 (17:30 ET)', '2026-12-02T22:30:00.000Z'],
     ['half-day close + 85 (14:25 ET)', '2026-11-27T19:25:00.000Z'],
-    ['half-day close + 90 (14:30 ET)', '2026-11-27T19:30:00.000Z'],
   ])('still runs at %s', async (_label, iso) => {
     mockSql.mockResolvedValue([]);
 
     const res = await runAt(iso);
 
     expect(res._json).not.toMatchObject({ reason: 'Outside time window' });
-    // One candidate SELECT per table.
+    // One candidate SELECT per table, and no lost-slice count: not the last tick.
     expect(mockSql).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['EDT close + 90 (17:30 ET)', '2026-05-21T21:30:00.000Z'],
+    ['EST close + 90 (17:30 ET)', '2026-12-02T22:30:00.000Z'],
+    ['half-day close + 90 (14:30 ET)', '2026-11-27T19:30:00.000Z'],
+  ])('still runs at %s, the last tick', async (_label, iso) => {
+    mockSql
+      .mockResolvedValueOnce([]) // lottery candidates
+      .mockResolvedValueOnce([]) // silent-boom candidates
+      .mockResolvedValueOnce(NO_LOST_SLICE) // lottery lost-slice count
+      .mockResolvedValueOnce(NO_LOST_SLICE); // silent-boom lost-slice count
+
+    const res = await runAt(iso);
+
+    expect(res._json).not.toMatchObject({ reason: 'Outside time window' });
+    // One candidate SELECT and one lost-slice COUNT per table.
+    expect(mockSql).toHaveBeenCalledTimes(4);
   });
 
   it.each([
@@ -624,5 +658,280 @@ describe('cron wave2-confirmation post-close window', () => {
       reason: 'Outside time window',
     });
     expect(mockSql).not.toHaveBeenCalled();
+  });
+});
+
+// ── Lost-slice alert (last tick of the session) ──────────────
+//
+// A fire the cron misses for more than the 90-min lookback is never labelled
+// by it. On the last tick of the session (close + 90, 17:30 ET) the cron
+// counts today's NULL rows older than the lookback in each table and sends one
+// fingerprinted warning per table. The count SQL itself (ET-midnight bound,
+// the NULL and age predicates) runs on real Postgres in
+// cron-wave2-confirmation-pglite.test.ts.
+
+describe('cron wave2-confirmation lost-slice alert', () => {
+  const originalEnv = process.env;
+  const LAST_TICK = '2026-05-21T21:30:00.000Z'; // 17:30 ET, EDT
+  const LOTTERY_FINGERPRINT = [
+    'wave2-confirmation',
+    'lost-slice',
+    'lottery_finder_fires',
+  ];
+  const SILENT_BOOM_FINGERPRINT = [
+    'wave2-confirmation',
+    'lost-slice',
+    'silent_boom_alerts',
+  ];
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.useFakeTimers();
+    process.env = { ...originalEnv };
+    process.env.CRON_SECRET = 'test-secret';
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.useRealTimers();
+  });
+
+  /** Both candidate SELECTs empty, then the two lost-slice COUNTs. */
+  function queueLastTick(lottery: unknown, silentBoom: unknown) {
+    mockSql
+      .mockResolvedValueOnce([]) // lottery candidates
+      .mockResolvedValueOnce([]) // silent-boom candidates
+      .mockResolvedValueOnce(lottery) // lottery lost-slice COUNT
+      .mockResolvedValueOnce(silentBoom); // silent-boom lost-slice COUNT
+  }
+
+  it('sends one fingerprinted warning per table with the count and the first and last trigger time', async () => {
+    queueLastTick(
+      [
+        {
+          lost: 3,
+          earliest: '2026-05-21T13:41:00.000Z',
+          latest: '2026-05-21T19:55:00.000Z',
+        },
+      ],
+      // The driver may hand back a Date; the extra carries an ISO string.
+      [
+        {
+          lost: 2,
+          earliest: new Date('2026-05-21T14:05:00.000Z'),
+          latest: new Date('2026-05-21T15:10:00.000Z'),
+        },
+      ],
+    );
+
+    const res = await runAt(LAST_TICK);
+
+    expect(res._status).toBe(200);
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(2);
+    expect(Sentry.captureMessage).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining('3 lottery_finder_fires row(s)'),
+      {
+        level: 'warning',
+        fingerprint: LOTTERY_FINGERPRINT,
+        tags: { 'cron.anomaly': 'wave2-lost-slice' },
+        extra: {
+          table: 'lottery_finder_fires',
+          date: '2026-05-21',
+          lost: 3,
+          earliestTrigger: '2026-05-21T13:41:00.000Z',
+          latestTrigger: '2026-05-21T19:55:00.000Z',
+          lookbackMin: 90,
+        },
+      },
+    );
+    expect(Sentry.captureMessage).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('2 silent_boom_alerts row(s)'),
+      {
+        level: 'warning',
+        fingerprint: SILENT_BOOM_FINGERPRINT,
+        tags: { 'cron.anomaly': 'wave2-lost-slice' },
+        extra: {
+          table: 'silent_boom_alerts',
+          date: '2026-05-21',
+          lost: 2,
+          earliestTrigger: '2026-05-21T14:05:00.000Z',
+          latestTrigger: '2026-05-21T15:10:00.000Z',
+          lookbackMin: 90,
+        },
+      },
+    );
+    // The warning says how to repair the rows.
+    const message = vi.mocked(Sentry.captureMessage).mock.calls[0]![0];
+    expect(message).toContain('scripts/backfill-wave2-status.ts');
+    // The count is in the run's metadata too, and the run itself is healthy.
+    expect(res._json).toMatchObject({
+      status: 'success',
+      lotteryLostSlice: 3,
+      silentBoomLostSlice: 2,
+    });
+    expect(logger.warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('binds today (ET) and the 90-min lookback in both COUNTs, over NULL rows only', async () => {
+    queueLastTick(NO_LOST_SLICE, NO_LOST_SLICE);
+
+    await runAt(LAST_TICK);
+
+    expect(mockSql).toHaveBeenCalledTimes(4);
+    for (const index of [2, 3]) {
+      const call = mockSql.mock.calls[index]!;
+      expect((call[0] as string[]).join('?')).toMatch(
+        /COUNT\(\*\).*wave2_status IS NULL/s,
+      );
+      expect(call.slice(1)).toEqual(['2026-05-21', 90]);
+    }
+  });
+
+  it('warns only for the table that lost rows', async () => {
+    queueLastTick(NO_LOST_SLICE, [
+      {
+        lost: 1,
+        earliest: '2026-05-21T16:00:00.000Z',
+        latest: '2026-05-21T16:00:00.000Z',
+      },
+    ]);
+
+    const res = await runAt(LAST_TICK);
+
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ fingerprint: SILENT_BOOM_FINGERPRINT }),
+    );
+    expect(res._json).toMatchObject({
+      lotteryLostSlice: 0,
+      silentBoomLostSlice: 1,
+    });
+  });
+
+  it('sends no warning when nothing is lost, and records the zero counts', async () => {
+    queueLastTick(NO_LOST_SLICE, NO_LOST_SLICE);
+
+    const res = await runAt(LAST_TICK);
+
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(res._json).toMatchObject({
+      status: 'success',
+      lotteryLostSlice: 0,
+      silentBoomLostSlice: 0,
+    });
+  });
+
+  it.each([
+    ['mid-session (10:00 ET)', '2026-05-21T14:00:00.000Z'],
+    ['the 17:25 ET tick, close + 85 (EDT)', '2026-05-21T21:25:00.000Z'],
+    ['the 17:25 ET tick, close + 85 (EST)', '2026-12-02T22:25:00.000Z'],
+    ['the 14:25 ET tick of a half-day', '2026-11-27T19:25:00.000Z'],
+  ])('runs no count and sends no warning at %s', async (_label, iso) => {
+    mockSql.mockResolvedValue([]); // nothing to label
+
+    const res = await runAt(iso);
+
+    // The two candidate SELECTs only: not the last tick.
+    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(res._json).not.toHaveProperty('lotteryLostSlice');
+    expect(res._json).not.toHaveProperty('silentBoomLostSlice');
+  });
+
+  it('runs no count at 17:35 ET, which the gate skips', async () => {
+    const res = await runAt('2026-05-21T21:35:00.000Z');
+
+    expect(res._json).toEqual({
+      skipped: true,
+      reason: 'Outside time window',
+    });
+    expect(mockSql).not.toHaveBeenCalled();
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['EST (17:30 ET)', '2026-12-02T22:30:00.000Z'],
+    ['a half-day (14:30 ET)', '2026-11-27T19:30:00.000Z'],
+  ])(
+    'finds the last tick on %s through the market calendar',
+    async (_label, iso) => {
+      queueLastTick(
+        [
+          {
+            lost: 4,
+            earliest: '2026-05-21T13:41:00.000Z',
+            latest: '2026-05-21T13:59:00.000Z',
+          },
+        ],
+        NO_LOST_SLICE,
+      );
+
+      const res = await runAt(iso);
+
+      expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+      expect(res._json).toMatchObject({ lotteryLostSlice: 4 });
+    },
+  );
+
+  it('catches a failed COUNT, surfaces it by name, still checks the other table and does not fail the run', async () => {
+    const countErr = new Error('connection lost');
+    mockSql
+      .mockResolvedValueOnce([]) // lottery candidates
+      .mockResolvedValueOnce([]) // silent-boom candidates
+      .mockRejectedValueOnce(countErr) // lottery lost-slice COUNT
+      .mockResolvedValueOnce([
+        {
+          lost: 1,
+          earliest: '2026-05-21T16:00:00.000Z',
+          latest: '2026-05-21T16:00:00.000Z',
+        },
+      ]); // silent-boom lost-slice COUNT
+
+    const res = await runAt(LAST_TICK);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      lotteryLostSlice: null,
+      silentBoomLostSlice: 1,
+    });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(countErr);
+    expect(logger.error).toHaveBeenCalledWith(
+      { err: countErr },
+      'wave2-confirmation: lottery lost-slice count failed',
+    );
+    // The other table's COUNT still ran and still warned.
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ fingerprint: SILENT_BOOM_FINGERPRINT }),
+    );
+  });
+
+  it('treats a COUNT that returns no row as a failure, not as zero lost', async () => {
+    queueLastTick([], NO_LOST_SLICE);
+
+    const res = await runAt(LAST_TICK);
+
+    expect(res._json).toMatchObject({
+      status: 'success',
+      lotteryLostSlice: null,
+      silentBoomLostSlice: 0,
+    });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'lost-slice count returned no row',
+      }),
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      'wave2-confirmation: lottery lost-slice count failed',
+    );
   });
 });
