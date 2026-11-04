@@ -9,7 +9,7 @@
  * tick on one pglite database, runs the backfill on a second database seeded
  * with the same rows, and compares every row's status and wave2_detected_at.
  * pglite's now() follows the faked Date, which is what lets the cron see the
- * old fixtures inside its 75-to-85-minute candidate window (a fire is labelled
+ * old fixtures inside its 75-to-90-minute candidate window (a fire is labelled
  * once it is 75 minutes old). The ticks run until the last fixture row, the
  * one at +70 minutes, has passed that window.
  *
@@ -491,16 +491,16 @@ function printed(): string {
 
 /**
  * The last tick, in minutes after a cluster's base. The latest fixture row
- * (EARLY-e3, +70 min) is 75 minutes old at +145 and leaves the 85-minute
- * lookback at +155, so the cron has seen every row through its whole
- * candidate window by +160.
+ * (EARLY-e3, +70 min) is 75 minutes old at +145 and leaves the 90-minute
+ * lookback at +160, so the cron has seen every row through its whole
+ * candidate window by +165.
  */
-const LAST_TICK_MIN = 160;
+const LAST_TICK_MIN = 165;
 
 /**
  * Run the cron's real handler every 5 minutes, from one minute after each
  * cluster's first fire until every row has passed its 75-minute settle age
- * and left the 85-minute lookback. `?force=1` skips only the market-hours
+ * and left the 90-minute lookback. `?force=1` skips only the market-hours
  * window, so the same ticks serve both ET regimes.
  */
 async function runCronTicks(): Promise<void> {

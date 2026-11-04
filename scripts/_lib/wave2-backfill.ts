@@ -5,11 +5,11 @@
  * (scripts/_lib/**).
  *
  * Why: api/cron/wave2-confirmation.ts labels a fire 'confirmed', 'lagging'
- * or 'fizzled', but it only looks at fires 75 to 85 minutes old (it labels a
+ * or 'fizzled', but it only looks at fires 75 to 90 minutes old (it labels a
  * fire once it has settled) and its gate used to stop at the close, so fires
  * from about 15:00 ET on never got a label, and a cron outage day
  * (2026-05-18 before the deploy, 05-20, 05-26, 06-10) left every fire of the
- * day unevaluated. Nothing revisits a NULL row older than 85 minutes. This
+ * day unevaluated. Nothing revisits a NULL row older than 90 minutes. This
  * does, once.
  *
  * The rule is the cron's, not a copy of it. The verdict (the 30 and 60
