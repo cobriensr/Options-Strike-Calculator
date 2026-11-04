@@ -32,8 +32,9 @@ A worktree is removed only when every check below passes. The checks run in this
    - a freshly created worktree an agent is about to use, which has no commits and is clean;
    - a worktree between phases just after a cherry-pick, which is merged and clean.
 9. **Clean.** `git --no-optional-locks status --porcelain --untracked-files=normal --ignore-submodules=none` prints nothing. The `--no-optional-locks` flag stops the check from refreshing the index, which would reset the idle clock. The explicit modes override any config that would hide changes.
-10. **No scratch files.** `git ls-files --others --ignored --exclude-standard -- docs/tmp` prints nothing. `docs/tmp/` is gitignored, so `git status` is blind to it, but sessions put scratch reports there and `git worktree remove` would delete them. Generated files there also keep a worktree, such as `__pycache__/` or the `outputs/*.csv` files that `.gitignore` lists. That errs on the safe side, and the reason printed names them. Clear `docs/tmp/` to let the worktree prune.
-11. **HEAD unchanged.** HEAD, read again after the other checks, still matches the HEAD the checks ran on. This catches a commit made during the run, including on a detached HEAD.
+10. **No operation in progress.** None of `rebase-merge`, `rebase-apply`, `MERGE_HEAD`, `CHERRY_PICK_HEAD` and `BISECT_LOG` exists in the worktree's admin dir (`git rev-parse --absolute-git-dir`). A `rebase -i` stopped at `break` leaves a clean tree and a HEAD at the commit it rebases onto, which rule 6 reads as merged, while the commits still to replay exist only in `rebase-merge/git-rebase-todo`. Removing the worktree would lose that state. Added 2026-11-04 during the review of `scripts/session-status.mjs`, which asks the same questions through the exported `checkInUse` (rules 3 and 4) and `checkSettled` (rules 8, 9, 10 and 11), so "safe to remove" has one definition.
+11. **No scratch files.** `git ls-files --others --ignored --exclude-standard -- docs/tmp` prints nothing. `docs/tmp/` is gitignored, so `git status` is blind to it, but sessions put scratch reports there and `git worktree remove` would delete them. Generated files there also keep a worktree, such as `__pycache__/` or the `outputs/*.csv` files that `.gitignore` lists. That errs on the safe side, and the reason printed names them. Clear `docs/tmp/` to let the worktree prune.
+12. **HEAD unchanged.** HEAD, read again after the other checks, still matches the HEAD the checks ran on. This catches a commit made during the run, including on a detached HEAD.
 
 When every check passes, the script runs these steps:
 
@@ -73,7 +74,7 @@ Git only. No tables, env vars or external APIs.
 
 - `MIN_IDLE_HOURS = 24`. This is the default picked on 2026-10-27. It is longer than a typical gap between phases and shorter than the 2–3 days over which worktrees piled up before this.
 - The base ref is the local `main`. A cherry-pick that has not been pushed yet still counts as merged.
-- The scratch folder checked by rule 10 is `docs/tmp`. That rule was added on 2026-10-27 during code review.
+- The scratch folder checked by rule 11 is `docs/tmp`. That rule was added on 2026-10-27 during code review.
 
 ## Open questions
 

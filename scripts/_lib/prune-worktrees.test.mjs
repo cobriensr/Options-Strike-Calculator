@@ -18,7 +18,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   FIXTURE_TIMEOUT,
   addWorktree,
@@ -32,13 +32,17 @@ import {
   initRepo,
   listedPaths,
   makeTempDir,
+  pauseRebase,
   setupScratchGit,
 } from './prune-worktrees.fixtures.mjs';
 import {
   MIN_IDLE_HOURS,
+  checkInUse,
+  checkSettled,
   findRepoRoot,
   formatResult,
   formatSummary,
+  gitEnv,
   parseWorktreeList,
   pruneWorktrees,
 } from './prune-worktrees.mjs';
@@ -645,6 +649,205 @@ describe('pruneWorktrees with main checked out in a worktree', () => {
     },
     FIXTURE_TIMEOUT,
   );
+});
+
+describe('pruneWorktrees with an operation in progress', () => {
+  let repo = '';
+  let outcome;
+  let results;
+  const wts = {};
+
+  beforeAll(() => {
+    repo = initRepo(makeTempDir('prune-wt-op-'));
+    // Every worktree below starts at main's tip, so it is merged, clean and,
+    // once aged, idle: only the operation can hold it back.
+    commitFile(repo, 'x.txt', 'x\n');
+
+    // The control: nothing in progress, so it is removed.
+    wts.finished = addWorktree(repo, '.worktrees/finished', 'fix/finished');
+
+    // `git rebase -i` stopped at `break`: HEAD is detached at main's tip,
+    // the tree is clean, and the commit still to be replayed sits only in
+    // .git/worktrees/paused/rebase-merge/.
+    wts.paused = addWorktree(repo, '.worktrees/paused', 'fix/paused');
+    commitFile(wts.paused, 'later.txt', 'later\n');
+    pauseRebase(wts.paused, 'main');
+
+    wts.bisecting = addWorktree(repo, '.worktrees/bisecting', 'fix/bisecting');
+    git(wts.bisecting, 'bisect', 'start');
+
+    // A merge stopped before its commit whose result equals HEAD: clean to
+    // git status, with MERGE_HEAD in the admin dir. `side` adds x.txt with
+    // the same content main's commit has, so the merge changes nothing.
+    wts.merging = addWorktree(repo, '.worktrees/merging', 'fix/merging');
+    git(wts.merging, 'checkout', '-q', '-b', 'side', 'HEAD~1');
+    commitFile(wts.merging, 'x.txt', 'x\n');
+    git(wts.merging, 'checkout', '-q', 'fix/merging');
+    git(wts.merging, 'merge', '--no-commit', '--no-ff', 'side');
+
+    // The two markers git leaves only when a command stops on a conflict or
+    // an error, which would also make the tree dirty: written by hand.
+    wts.picking = addWorktree(repo, '.worktrees/picking', 'fix/picking');
+    writeFileSync(
+      path.join(adminDir(wts.picking), 'CHERRY_PICK_HEAD'),
+      `${git(wts.picking, 'rev-parse', 'HEAD')}\n`,
+    );
+    wts.applying = addWorktree(repo, '.worktrees/applying', 'fix/applying');
+    mkdirSync(path.join(adminDir(wts.applying), 'rebase-apply'));
+
+    for (const wt of Object.values(wts)) age(wt);
+    outcome = pruneWorktrees({ repoRoot: repo });
+    results = byName(outcome);
+  }, FIXTURE_TIMEOUT);
+
+  it('is set up so that only the operation holds each worktree back', () => {
+    expect(outcome.errors).toEqual([]);
+    expect(results.get('finished')).toMatchObject({
+      action: 'removed',
+      deletedBranchSha: expect.any(String),
+    });
+    for (const name of ['paused', 'bisecting', 'merging']) {
+      // Clean and merged: git itself sees nothing to keep.
+      expect(git(wts[name], 'status', '--porcelain'), name).toBe('');
+      expect(git(wts[name], 'cherry', 'main', 'HEAD'), name).toBe('');
+    }
+  });
+
+  it.each([
+    ['a paused rebase -i', 'paused', 'rebase in progress'],
+    ['a bisect', 'bisecting', 'bisect in progress'],
+    ['a merge stopped before its commit', 'merging', 'merge in progress'],
+    ['a cherry-pick (CHERRY_PICK_HEAD)', 'picking', 'cherry-pick in progress'],
+    ['a rebase or am (rebase-apply)', 'applying', 'rebase in progress'],
+  ])('keeps a merged, clean, idle worktree in %s', (_label, name, reason) => {
+    expect(results.get(name)).toMatchObject({ action: 'kept', reason });
+    expect(existsSync(wts[name])).toBe(true);
+  });
+
+  it('leaves the paused rebase and its todo list in place', () => {
+    const todo = path.join(adminDir(wts.paused), 'rebase-merge');
+    expect(existsSync(path.join(todo, 'git-rebase-todo'))).toBe(true);
+  });
+});
+
+describe('the checks pruneWorktrees shares', () => {
+  let repo = '';
+  const wts = {};
+
+  beforeAll(() => {
+    repo = initRepo(makeTempDir('prune-wt-shared-'));
+    wts.settled = addWorktree(repo, '.worktrees/settled', 'fix/settled');
+    wts.fresh = addWorktree(repo, '.worktrees/fresh', 'fix/fresh');
+    wts.dirty = addWorktree(repo, '.worktrees/dirty', 'fix/dirty');
+    writeFileSync(path.join(wts.dirty, 'wip.txt'), 'wip\n');
+    wts.scratch = addWorktree(repo, '.worktrees/scratch', 'fix/scratch');
+    mkdirSync(path.join(wts.scratch, 'docs', 'tmp'), { recursive: true });
+    writeFileSync(path.join(wts.scratch, 'docs', 'tmp', 'a.log'), 'x\n');
+    wts.onMain = path.join(repo, '.worktrees', 'on-main');
+    git(repo, 'checkout', '-q', '-b', 'other');
+    git(repo, 'worktree', 'add', '-q', wts.onMain, 'main');
+    for (const name of ['settled', 'dirty', 'scratch']) age(wts[name]);
+  }, FIXTURE_TIMEOUT);
+
+  describe('checkSettled', () => {
+    it('passes an idle, clean worktree, and returns how long it has been idle', () => {
+      const verdict = checkSettled(wts.settled);
+      expect(verdict.keep).toBeNull();
+      expect(verdict.idle).toBeGreaterThanOrEqual(47);
+    });
+
+    it('holds a fresh worktree as idle, with the hours', () => {
+      const verdict = checkSettled(wts.fresh);
+      expect(verdict).toMatchObject({
+        keep: expect.stringMatching(/^idle 0\.\dh, under the 24h minimum$/),
+        kind: 'idle',
+      });
+      expect(verdict.idle).toBeLessThan(1);
+    });
+
+    it('applies the idle floor it is given', () => {
+      expect(checkSettled(wts.fresh, { minIdleHours: 0 }).keep).toBeNull();
+      expect(checkSettled(wts.settled, { minIdleHours: 100 }).kind).toBe(
+        'idle',
+      );
+    });
+
+    it('holds a worktree with ignored scratch files in docs/tmp/', () => {
+      expect(checkSettled(wts.scratch)).toMatchObject({
+        keep: 'ignored scratch files in docs/tmp/: docs/tmp/a.log',
+        kind: 'scratch',
+      });
+    });
+
+    it('holds a dirty worktree, unless the caller already knows the tree is clean', () => {
+      expect(checkSettled(wts.dirty)).toMatchObject({
+        keep: 'uncommitted changes: ?? wip.txt',
+        kind: 'dirty',
+      });
+      expect(checkSettled(wts.dirty, { statusKnownClean: true }).keep).toBe(
+        null,
+      );
+    });
+
+    it('still checks the scratch files when the caller knows the tree is clean', () => {
+      const verdict = checkSettled(wts.scratch, { statusKnownClean: true });
+      expect(verdict.kind).toBe('scratch');
+    });
+  });
+
+  describe('checkInUse', () => {
+    it('holds a worktree that contains the current directory', () => {
+      const inside = path.join(wts.settled, 'docs');
+      const entry = { path: wts.settled, branch: 'fix/settled' };
+      expect(checkInUse(entry, inside)).toEqual({
+        keep: 'the current directory is inside it',
+        kind: 'cwd',
+      });
+      expect(checkInUse(entry, wts.settled).kind).toBe('cwd');
+    });
+
+    it('holds a worktree with main checked out', () => {
+      const entry = { path: wts.onMain, branch: 'main' };
+      expect(checkInUse(entry, repo)).toEqual({
+        keep: 'it has main checked out',
+        kind: 'base-branch',
+      });
+    });
+
+    it('does not hold a worktree elsewhere, a sibling with a similar name included', () => {
+      const entry = { path: wts.settled, branch: 'fix/settled' };
+      expect(checkInUse(entry, repo)).toEqual({ keep: null });
+      expect(checkInUse(entry, `${wts.settled}-copy`)).toEqual({ keep: null });
+    });
+  });
+});
+
+describe('gitEnv', () => {
+  const names = [
+    'GIT_DIR',
+    'GIT_INDEX_FILE',
+    'GIT_WORK_TREE',
+    'PRUNE_TEST_KEEP',
+  ];
+
+  it('drops the variables that tie git to one repository and keeps the rest', () => {
+    const before = Object.fromEntries(names.map((n) => [n, process.env[n]]));
+    vi.stubEnv('GIT_DIR', '/decoy/.git');
+    vi.stubEnv('GIT_INDEX_FILE', '/decoy/.git/index');
+    vi.stubEnv('GIT_WORK_TREE', '/decoy');
+    vi.stubEnv('PRUNE_TEST_KEEP', 'yes');
+    try {
+      const env = gitEnv();
+      expect(env).not.toHaveProperty('GIT_DIR');
+      expect(env).not.toHaveProperty('GIT_INDEX_FILE');
+      expect(env).not.toHaveProperty('GIT_WORK_TREE');
+      expect(env.PRUNE_TEST_KEEP).toBe('yes');
+    } finally {
+      // Only these: unstubAllEnvs would also drop the file's GIT_CONFIG
+      // stubs. Stubbing undefined deletes the var.
+      for (const name of names) vi.stubEnv(name, before[name]);
+    }
+  });
 });
 
 describe('prune-merged-worktrees CLI', () => {

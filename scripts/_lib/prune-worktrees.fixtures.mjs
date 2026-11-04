@@ -8,7 +8,7 @@
  */
 import { mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { adminDir, git } from './scratch-git.fixtures.mjs';
+import { adminDir, git, makeTempDir } from './scratch-git.fixtures.mjs';
 
 export {
   FIXTURE_TIMEOUT,
@@ -58,6 +58,28 @@ export function commitFile(cwd, file, body) {
   git(cwd, 'add', '--', file);
   git(cwd, 'commit', '-q', '-m', file);
   return git(cwd, 'rev-parse', 'HEAD');
+}
+
+/**
+ * Start `git rebase -i <upstream>` in `wt` and stop it at once, at a `break`
+ * before its first pick. HEAD is then detached at upstream's tip, the tree is
+ * clean, and the commits still to replay are only in the worktree's admin
+ * dir (under rebase-merge/). `wt` needs a commit that upstream
+ * lacks, or git has nothing to rebase.
+ */
+export function pauseRebase(wt, upstream) {
+  const script = path.join(makeTempDir('break-first-'), 'break-first.cjs');
+  writeFileSync(
+    script,
+    [
+      "const fs = require('node:fs');",
+      'const todo = process.argv[2];',
+      "fs.writeFileSync(todo, 'break\\n' + fs.readFileSync(todo, 'utf8'));",
+      '',
+    ].join('\n'),
+  );
+  const editor = `node "${script.replaceAll('\\', '/')}"`;
+  git(wt, '-c', `sequence.editor=${editor}`, 'rebase', '-i', upstream);
 }
 
 /** The files the idle check reads. */

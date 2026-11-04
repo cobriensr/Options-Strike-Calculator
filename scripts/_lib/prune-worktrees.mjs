@@ -12,9 +12,15 @@
  *   (`git cherry` skips merge commits, which can carry changes of their own);
  * - it has been idle for at least MIN_IDLE_HOURS;
  * - `git status` is clean;
+ * - no rebase, merge, cherry-pick or bisect is in progress in it: a paused
+ *   `rebase -i` leaves a clean tree and a HEAD that looks merged, with the
+ *   commits still to replay only in the worktree's admin dir;
  * - it has no gitignored scratch files in docs/tmp/, which a removal would
  *   delete;
  * - its HEAD did not move while it was being checked.
+ * checkInUse and checkSettled are exported so that scripts/_lib/
+ * session-status.mjs asks the same questions: "safe to remove" has one
+ * definition.
  * Removal is `git worktree remove` without --force, then `git branch -D` on
  * its branch if that still points at the checked HEAD. git's own check before
  * removing honours status.showUntrackedFiles, so with `no` it would delete
@@ -81,9 +87,10 @@ const LOCAL_ENV_VARS = Object.freeze([
 
 /**
  * The env for every git call here: process.env without LOCAL_ENV_VARS, read
- * at call time.
+ * at call time. Exported for scripts/_lib/session-status.mjs, which runs git
+ * asynchronously and so cannot use this module's runGit and git.
  */
-function gitEnv() {
+export function gitEnv() {
   const env = { ...process.env };
   for (const name of LOCAL_ENV_VARS) delete env[name];
   return env;
@@ -268,13 +275,17 @@ function unmergedMerge(root, head) {
   return out === '' ? null : out;
 }
 
+/** The worktree's own admin dir (.git, or .git/worktrees/<name>). */
+function adminDirOf(wtPath) {
+  return git(['-C', wtPath, 'rev-parse', '--absolute-git-dir']).trim();
+}
+
 /**
- * Hours since the newest mtime of the worktree's admin `index` and
- * `logs/HEAD`, or null when neither exists. A clock that runs behind a file's
- * mtime reads as 0, not negative.
+ * Hours since the newest mtime of the admin dir's `index` and `logs/HEAD`, or
+ * null when neither exists. A clock that runs behind a file's mtime reads as
+ * 0, not negative.
  */
-function idleHours(wtPath) {
-  const admin = git(['-C', wtPath, 'rev-parse', '--absolute-git-dir']).trim();
+function idleHours(admin) {
   const mtimes = [path.join(admin, 'index'), path.join(admin, 'logs', 'HEAD')]
     .map((file) => statSync(file, { throwIfNoEntry: false })?.mtimeMs)
     .filter((mtime) => mtime !== undefined);
@@ -318,9 +329,111 @@ function scratchFiles(wtPath) {
 }
 
 /**
+ * What git leaves in a worktree's admin dir while a command is stopped: the
+ * file or folder, and the command. Any of them can sit with a clean tree and
+ * a HEAD already in main (a `rebase -i` stopped at `break` is at the commit
+ * it rebases onto), the work still to do kept only here.
+ */
+const IN_PROGRESS = Object.freeze([
+  ['rebase-merge', 'rebase'],
+  ['rebase-apply', 'rebase'],
+  ['MERGE_HEAD', 'merge'],
+  ['CHERRY_PICK_HEAD', 'cherry-pick'],
+  ['BISECT_LOG', 'bisect'],
+]);
+
+/** The command stopped in the worktree with this admin dir, or null. */
+function operationInProgress(admin) {
+  const found = IN_PROGRESS.find(([marker]) =>
+    existsSync(path.join(admin, marker)),
+  );
+  return found === undefined ? null : found[1];
+}
+
+/**
+ * Whether a session is working in the worktree right now, from what the
+ * caller knows without reading its files: the current directory, and which
+ * branch it has out. `entry` is `{ path, branch }`.
+ *
+ * Returns `{ keep, kind }` with kind 'cwd' or 'base-branch', or
+ * `{ keep: null }` when nothing says it is in use.
+ */
+export function checkInUse(entry, cwd) {
+  if (pathWithin(entry.path, cwd) !== null) {
+    return { keep: 'the current directory is inside it', kind: 'cwd' };
+  }
+  if (entry.branch === BASE_BRANCH) {
+    return { keep: `it has ${BASE_BRANCH} checked out`, kind: 'base-branch' };
+  }
+  return { keep: null };
+}
+
+/**
+ * The checks on a worktree that hold whatever commits it has: idle for at
+ * least `minIdleHours`, a clean `git status`, no stopped rebase, merge,
+ * cherry-pick or bisect, no gitignored scratch files. Cheapest first;
+ * `git status` on a full checkout is the slow one.
+ *
+ * Returns `{ keep: null, idle }` (idle in hours) when all pass, else
+ * `{ keep, kind }`: the reason, and the kind 'idle-unknown', 'idle' (with
+ * `idle`), 'dirty', 'in-progress' (with `operation`) or 'scratch'.
+ *
+ * `statusKnownClean` skips the `git status` run, for a caller that has just
+ * read the status itself.
+ *
+ * @param {string} wtPath
+ * @param {{ minIdleHours?: number, statusKnownClean?: boolean }} [options]
+ */
+export function checkSettled(
+  wtPath,
+  { minIdleHours = MIN_IDLE_HOURS, statusKnownClean = false } = {},
+) {
+  const admin = adminDirOf(wtPath);
+  const idle = idleHours(admin);
+  if (idle === null) {
+    return {
+      keep: 'idle time unknown: no admin index or logs/HEAD',
+      kind: 'idle-unknown',
+    };
+  }
+  if (idle < minIdleHours) {
+    return {
+      keep: `idle ${formatHours(idle)}, under the ${minIdleHours}h minimum`,
+      kind: 'idle',
+      idle,
+    };
+  }
+  if (!statusKnownClean) {
+    const dirty = uncommittedPaths(wtPath);
+    if (dirty.length > 0) {
+      return {
+        keep: `uncommitted changes: ${sample(dirty, (line) => line.trim())}`,
+        kind: 'dirty',
+      };
+    }
+  }
+  const operation = operationInProgress(admin);
+  if (operation !== null) {
+    return {
+      keep: `${operation} in progress`,
+      kind: 'in-progress',
+      operation,
+    };
+  }
+  const scratch = scratchFiles(wtPath);
+  if (scratch.length > 0) {
+    return {
+      keep: `ignored scratch files in ${SCRATCH_DIR}/: ${sample(scratch, (file) => file)}`,
+      kind: 'scratch',
+    };
+  }
+  return { keep: null, idle };
+}
+
+/**
  * `{ keep: reason }` when `entry` must be kept, else `{ keep: null, idle }`.
- * Cheapest checks first; `git status` on a full checkout is the slow one.
- * The HEAD re-read comes last, so a commit made during the checks is caught.
+ * The commit checks first, then checkSettled. The HEAD re-read comes last,
+ * so a commit made during the checks is caught.
  */
 function checkWorktree(entry, { root, minIdleHours }) {
   if (entry.head === null) return { keep: 'no commits yet' };
@@ -334,30 +447,11 @@ function checkWorktree(entry, { root, minIdleHours }) {
   if (merge !== null) {
     return { keep: `merge commit not in ${BASE_BRANCH}: ${shortSha(merge)}` };
   }
-  const idle = idleHours(entry.path);
-  if (idle === null) {
-    return { keep: 'idle time unknown: no admin index or logs/HEAD' };
-  }
-  if (idle < minIdleHours) {
-    return {
-      keep: `idle ${formatHours(idle)}, under the ${minIdleHours}h minimum`,
-    };
-  }
-  const dirty = uncommittedPaths(entry.path);
-  if (dirty.length > 0) {
-    return {
-      keep: `uncommitted changes: ${sample(dirty, (line) => line.trim())}`,
-    };
-  }
-  const scratch = scratchFiles(entry.path);
-  if (scratch.length > 0) {
-    return {
-      keep: `ignored scratch files in ${SCRATCH_DIR}/: ${sample(scratch, (file) => file)}`,
-    };
-  }
+  const settled = checkSettled(entry.path, { minIdleHours });
+  if (settled.keep !== null) return settled;
   const head = git(['-C', entry.path, 'rev-parse', 'HEAD']).trim();
   if (head !== entry.head) return { keep: 'HEAD moved during the check' };
-  return { keep: null, idle };
+  return { keep: null, idle: settled.idle };
 }
 
 /** Its checkout is already deleted; `git worktree prune` clears the entry. */
@@ -446,12 +540,8 @@ function pruneOne(entry, wt, ctx) {
   if (isGone(entry.path)) {
     return alreadyGone(entry, ctx, 'already removed by another run');
   }
-  if (pathWithin(entry.path, ctx.cwd) !== null) {
-    return kept('the current directory is inside it');
-  }
-  if (entry.branch === BASE_BRANCH) {
-    return kept(`it has ${BASE_BRANCH} checked out`);
-  }
+  const inUse = checkInUse(entry, ctx.cwd);
+  if (inUse.keep !== null) return kept(inUse.keep);
 
   let verdict;
   try {
