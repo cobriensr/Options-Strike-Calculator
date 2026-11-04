@@ -11,8 +11,10 @@
  *
  * `safeDb` and similar best-effort wrappers swallow what their callback
  * throws, so a thrown block alone could still leave a green run. Every
- * attempt is therefore also recorded in `dbAttempts`, and the `afterEach` in
- * `setup.ts` fails the test that made one.
+ * attempt is therefore also recorded in `dbAttempts`. The `afterEach` in
+ * `setup.ts` fails the test that made one, and its `afterAll` fails the file
+ * for one made after the last test (in the file's own `afterAll`, or by work
+ * still running then). A file whose tests are all skipped runs no hooks.
  *
  * Twin of the Python guards in ml/conftest.py and scripts/conftest.py.
  */
@@ -45,10 +47,32 @@ export const BLOCKED_ENV_NAMES = [
 
 /**
  * Every attempt the mocked client constructors saw, in order. A self-test
- * that provokes one on purpose clears it (`dbAttempts.length = 0`). Test-only
- * module state: it lives for one test file and holds one entry per attempt.
+ * that provokes one on purpose drops its own entries with `trackDbAttempts`.
+ * Test-only module state: it lives for one test file and holds one entry per
+ * attempt.
  */
 export const dbAttempts: string[] = [];
+
+/**
+ * The attempts made since this call, for a self-test that provokes them on
+ * purpose. `discard()` drops only those entries. Emptying the whole log would
+ * also erase an earlier offender (an attempt a `beforeAll` swallowed), and the
+ * check would then pass without naming it.
+ */
+export function trackDbAttempts(): {
+  readonly made: string[];
+  discard(): void;
+} {
+  const start = dbAttempts.length;
+  return {
+    get made() {
+      return dbAttempts.slice(start);
+    },
+    discard() {
+      dbAttempts.splice(start);
+    },
+  };
+}
 
 /** Delete the database and writable-store env names from `process.env`. */
 export function scrubDbEnv(): void {

@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { afterEach, vi } from 'vitest';
+import { afterAll, afterEach, vi } from 'vitest';
 import { cleanup } from '@testing-library/react';
 import { assertNoDbAttempts, scrubDbEnv } from './db-guard';
 
@@ -41,9 +41,16 @@ vi.mock('@neondatabase/serverless', async (importOriginal) => {
 // See the April 2026 CI OOM investigation.
 //
 // Third, an attempt that a best-effort wrapper (safeDb) swallowed still
-// fails the test that made it.
+// fails the test that made it. The afterAll covers what no afterEach sees: an
+// attempt made in a file's own afterAll (which runs before this one, hooks
+// run in stack order) or by work still running after the last test. A file
+// whose tests are all skipped runs no hooks at all, so it is not covered.
 afterEach(() => {
   cleanup();
+  assertNoDbAttempts();
+});
+
+afterAll(() => {
   assertNoDbAttempts();
 });
 
