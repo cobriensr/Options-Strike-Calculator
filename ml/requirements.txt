@@ -39,7 +39,8 @@ threadpoolctl==3.6.0
 urllib3>=2.8.0
 xgboost>=2.1
 pytest-cov>=6.0
-ruff>=0.11
+# Exact pin: ruff's formatter output shifts between releases, and CI runs `ruff format --check`.
+ruff==0.17.3
 anthropic>=0.94.0
 yfinance>=1.2.1
 smartmoneyconcepts==0.0.27

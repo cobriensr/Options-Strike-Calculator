@@ -322,7 +322,7 @@ These tables contain data that could be engineered into future features:
 
 ## Tests
 
-`make test` (pytest over `ml/tests/`), `make test-cov` (70% floor; the run-once research scripts are omitted from coverage, see `pyproject.toml`), `make review` (ruff auto-fix + test-cov). CI's ML Quality Gate runs `make review` on Python 3.13 whenever `ml/**` changes. On Windows add `PYTHON=.venv/Scripts/python`.
+`make test` (pytest over `ml/tests/`), `make test-cov` (70% floor; the run-once research scripts are omitted from coverage, see `pyproject.toml`), `make review` (ruff auto-fix + test-cov). CI's ML Quality Gate runs `ruff format --check .` (ruff is pinned in `requirements.txt`, so bump it with a reformat), then `make review`, on Python 3.13 whenever `ml/**` changes. `make lint` and `make format` run `ruff format .` over all of `ml/`, the same scope as the CI check. On Windows add `PYTHON=.venv/Scripts/python`.
 
 ## Automation
 

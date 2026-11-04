@@ -191,7 +191,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r ml/requirements.txt
 
-      - name: Lint, Format Check & Tests
+      # Runs before `make review`: its lint target runs `ruff format` in
+      # write mode, which would repair drift on the runner and pass.
+      - name: Format check
+        run: cd ml && python -m ruff format --check .
+
+      - name: Lint & Tests
         run: cd ml && make review
 
   sidecar:
@@ -222,10 +227,11 @@ jobs:
       - name: Lint, Format Check & Tests
         run: cd sidecar && make review PYTHON=python
 
-  # uw-stream gates check-only: unlike ml/sidecar's
-  # `make review` (ruff --fix + ruff format in write mode), fixable lint and
-  # format drift fail the job. Every gate after install runs even if an
-  # earlier one failed, so a Dependabot bump still reports its test result.
+  # uw-stream gates check-only: unlike ml/sidecar's `make review` (ruff --fix
+  # + ruff format in write mode; ml adds a check-only format step before it),
+  # fixable lint and format drift fail the job. Every gate after install runs
+  # even if an earlier one failed, so a Dependabot bump still reports its test
+  # result.
   uw-stream:
     name: uw-stream Quality Gate
     needs: [changes]
