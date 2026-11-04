@@ -43,6 +43,13 @@ import {
 } from '../_lib/cron-instrumentation.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
+import {
+  LAGGING_WINDOW_MIN,
+  LOTTERY_TABLE,
+  SILENT_BOOM_TABLE,
+  wave2Verdict,
+  type Wave2Table,
+} from '../_lib/wave2-rule.js';
 
 // 60s grace: a wave-2 event arriving within the same minute we're
 // classifying needs to land in the table before we mark the wave-1
@@ -83,9 +90,11 @@ const LOOKBACK_MIN = 70;
  */
 const POST_CLOSE_EVAL_MIN = 75;
 
-// Wave-2 windows, in minutes from wave-1 trigger time.
-const CONFIRMED_WINDOW_MIN = 30;
-const LAGGING_WINDOW_MIN = 60;
+// The wave-2 windows (30 / 60 min), the verdict decision and the two table
+// descriptors live in api/_lib/wave2-rule.ts, shared with the one-shot
+// backfill scripts/_lib/wave2-backfill.ts so the two cannot drift. The
+// follow-up lookup below is mirrored there as a LATERAL join; the parity
+// test scripts/_lib/wave2-backfill.test.ts keeps them equal.
 
 type DbTimestamp = string | Date;
 
@@ -108,29 +117,6 @@ interface DbClient {
   (strings: TemplateStringsArray, ...values: unknown[]): Promise<any[]>;
 }
 
-type TableKey = 'lottery' | 'silentboom';
-
-interface TableConfig {
-  /** Display name for logs/metadata. */
-  name: TableKey;
-  /** Fully qualified SQL identifier for the table. */
-  table: 'lottery_finder_fires' | 'silent_boom_alerts';
-  /** Name of the trigger-time column on this table. */
-  triggerCol: 'trigger_time_ct' | 'bucket_ct';
-}
-
-const LOTTERY_TABLE: TableConfig = {
-  name: 'lottery',
-  table: 'lottery_finder_fires',
-  triggerCol: 'trigger_time_ct',
-};
-
-const SILENT_BOOM_TABLE: TableConfig = {
-  name: 'silentboom',
-  table: 'silent_boom_alerts',
-  triggerCol: 'bucket_ct',
-};
-
 interface TableResult {
   processed: number;
   confirmed: number;
@@ -151,7 +137,7 @@ interface TableResult {
  */
 async function processTable(
   db: DbClient,
-  cfg: TableConfig,
+  cfg: Wave2Table,
 ): Promise<TableResult> {
   // Candidate set: rows still in the wave-2 evaluation window OR past
   // it. The 60s grace at the upper bound lets a same-minute follow-up
@@ -198,9 +184,6 @@ async function processTable(
 
   for (const cand of candidates) {
     const triggerMs = new Date(cand.trigger_time).getTime();
-    const ageMs = nowMs - triggerMs;
-    const ageMin = ageMs / 60_000;
-
     const triggerIso = new Date(triggerMs).toISOString();
 
     // Look for the earliest qualifying follow-up in (trigger, trigger+60min].
@@ -240,52 +223,18 @@ async function processTable(
           )) as FollowupRow[]);
 
     const followup = followups[0];
+    const verdict = wave2Verdict(
+      triggerMs,
+      followup ? new Date(followup.trigger_time).getTime() : null,
+      nowMs,
+    );
 
-    if (followup) {
-      const followupMs = new Date(followup.trigger_time).getTime();
-      const deltaMin = (followupMs - triggerMs) / 60_000;
-      const followupIso = new Date(followupMs).toISOString();
-      const verdict =
-        deltaMin <= CONFIRMED_WINDOW_MIN ? 'confirmed' : 'lagging';
+    // No follow-up and under 60 min old: still in flight. Leave NULL and let
+    // the next 5-min tick re-evaluate. This is the only path that lets a
+    // candidate survive the cron unchanged.
+    if (verdict === null) continue;
 
-      if (cfg.name === 'lottery') {
-        await withDbRetry(
-          () => db`
-            UPDATE lottery_finder_fires
-            SET wave2_status = ${verdict},
-                wave2_detected_at = ${followupIso}::timestamptz
-            WHERE id = ${cand.id}
-              AND wave2_status IS NULL
-          `,
-          2,
-          10_000,
-        );
-      } else {
-        await withDbRetry(
-          () => db`
-            UPDATE silent_boom_alerts
-            SET wave2_status = ${verdict},
-                wave2_detected_at = ${followupIso}::timestamptz
-            WHERE id = ${cand.id}
-              AND wave2_status IS NULL
-          `,
-          2,
-          10_000,
-        );
-      }
-      result.processed += 1;
-      if (verdict === 'confirmed') {
-        result.confirmed += 1;
-      } else {
-        result.lagging += 1;
-      }
-      continue;
-    }
-
-    // No follow-up. Fizzle only if past the 60-min cutoff; otherwise
-    // leave NULL and let the next 5-min tick re-evaluate. This is the
-    // only path that lets a candidate survive the cron unchanged.
-    if (ageMin >= LAGGING_WINDOW_MIN) {
+    if (verdict.status === 'fizzled') {
       if (cfg.name === 'lottery') {
         await withDbRetry(
           () => db`
@@ -309,10 +258,33 @@ async function processTable(
           10_000,
         );
       }
-      result.processed += 1;
-      result.fizzled += 1;
+    } else if (cfg.name === 'lottery') {
+      await withDbRetry(
+        () => db`
+          UPDATE lottery_finder_fires
+          SET wave2_status = ${verdict.status},
+              wave2_detected_at = ${verdict.detectedAtIso}::timestamptz
+          WHERE id = ${cand.id}
+            AND wave2_status IS NULL
+        `,
+        2,
+        10_000,
+      );
+    } else {
+      await withDbRetry(
+        () => db`
+          UPDATE silent_boom_alerts
+          SET wave2_status = ${verdict.status},
+              wave2_detected_at = ${verdict.detectedAtIso}::timestamptz
+          WHERE id = ${cand.id}
+            AND wave2_status IS NULL
+        `,
+        2,
+        10_000,
+      );
     }
-    // else: still in flight — skip silently. Next tick revisits.
+    result.processed += 1;
+    result[verdict.status] += 1;
   }
 
   return result;
