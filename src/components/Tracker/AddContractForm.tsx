@@ -99,8 +99,13 @@ export const AddContractForm = memo(function AddContractForm({
       setFreeText('');
       setPasteInput('');
       setMode('structured');
-      // Focus the first field on open for keyboard users.
-      const t = setTimeout(() => firstFieldRef.current?.focus(), 50);
+      // Focus the first field on open for keyboard users, unless the user
+      // is already inside the dialog: a fast typist who has moved to a later
+      // field must not be pulled back, or the next keystrokes land in Ticker.
+      const t = setTimeout(() => {
+        if (dialogRef.current?.contains(document.activeElement)) return;
+        firstFieldRef.current?.focus();
+      }, 50);
       return () => clearTimeout(t);
     }
   }, [open]);
