@@ -28,6 +28,7 @@ import {
   SETTLE_DELAY_MS,
   UsageError,
   evaluateDeploy,
+  fetchPayloads,
   ghAvailable,
   parseArgs,
   repoFromRemoteUrl,
@@ -356,6 +357,41 @@ describe('evaluateDeploy: a canceled Vercel deployment', () => {
       });
     });
     expect(result.done).toBe(false);
+  });
+});
+
+describe('evaluateDeploy: canceled names', () => {
+  it('lists no name when nothing was superseded', () => {
+    expect(evaluate().canceled).toEqual([]);
+  });
+
+  it('lists the Vercel status that a newer deploy superseded', () => {
+    const result = evaluate((snap) => {
+      patchStatus(snap, 'Vercel', {
+        state: 'error',
+        description: 'Deployment canceled by a newer deployment',
+      });
+    });
+    expect(result.canceled).toEqual(['Vercel']);
+  });
+
+  it('does not list a Vercel status that succeeded with "Canceled" in its text', () => {
+    // The real payload: state success, "Canceled by Ignored Build Step".
+    const result = evaluate();
+    expect(result.lines.find((l) => l.includes('Vercel'))).toContain(
+      'Canceled by Ignored Build Step',
+    );
+    expect(result.canceled).toEqual([]);
+  });
+
+  it('does not list a failing Railway status, canceled or not', () => {
+    const result = evaluate((snap) => {
+      patchStatus(snap, 'Theta-Options - sidecar', {
+        state: 'failure',
+        description: 'Deployment canceled',
+      });
+    });
+    expect(result.canceled).toEqual([]);
   });
 });
 
@@ -949,6 +985,66 @@ describe('watchDeploy', () => {
         ),
       ).toBe(true);
     });
+  });
+});
+
+describe('fetchPayloads', () => {
+  beforeEach(() => {
+    vi.mocked(execFile).mockReset();
+  });
+
+  /** Answer each `gh api` call with the fixture for its endpoint. */
+  function answerWithFixtures() {
+    vi.mocked(execFile).mockImplementation((file, args, options, callback) => {
+      const body = args[1].includes('/check-runs') ? CHECK_RUNS : STATUS;
+      callback(null, JSON.stringify(body), '');
+    });
+  }
+
+  it('fetches the status and the check runs of the commit', async () => {
+    answerWithFixtures();
+
+    const payloads = await fetchPayloads('o/n', SHA);
+
+    expect(payloads).toEqual({ status: STATUS, checkRuns: CHECK_RUNS });
+    const endpoints = vi
+      .mocked(execFile)
+      .mock.calls.map((call) => call[1].join(' '))
+      .sort();
+    expect(endpoints).toEqual([
+      `api repos/o/n/commits/${SHA}/check-runs?per_page=100`,
+      `api repos/o/n/commits/${SHA}/status?per_page=100`,
+    ]);
+  });
+
+  it('cuts each gh call off after 60 seconds unless told otherwise', async () => {
+    answerWithFixtures();
+    await fetchPayloads('o/n', SHA);
+    const timeouts = vi.mocked(execFile).mock.calls.map((c) => c[2].timeout);
+    expect(timeouts).toEqual([60_000, 60_000]);
+  });
+
+  it('passes a shorter timeout down to every gh call', async () => {
+    answerWithFixtures();
+    await fetchPayloads('o/n', SHA, 15_000);
+    const timeouts = vi.mocked(execFile).mock.calls.map((c) => c[2].timeout);
+    expect(timeouts).toEqual([15_000, 15_000]);
+  });
+
+  it('rejects with the gh error when a call fails', async () => {
+    vi.mocked(execFile).mockImplementation((file, args, options, callback) => {
+      callback(Object.assign(new Error('exit 1'), { code: 1 }), '', 'gh: boom');
+    });
+    await expect(fetchPayloads('o/n', SHA)).rejects.toThrow('gh: boom');
+  });
+
+  it('names the timeout in the error when a call is killed at it', async () => {
+    vi.mocked(execFile).mockImplementation((file, args, options, callback) => {
+      callback(Object.assign(new Error('killed'), { killed: true }), '', '');
+    });
+    await expect(fetchPayloads('o/n', SHA, 15_000)).rejects.toThrow(
+      /timed out after 15s/,
+    );
   });
 });
 

@@ -377,7 +377,7 @@ function count(n, one, many) {
  * run counts as a failure unless it concluded success, skipped or neutral
  * (cancelled and timed_out fail). A Vercel status in failure or error whose
  * description says it was canceled is a deploy a newer commit superseded:
- * reported as canceled, not failing.
+ * reported as canceled, not failing, and named in `canceled`.
  *
  * @param {{ status: unknown, checkRuns: unknown }} payloads parsed JSON of
  *   `commits/<sha>/status` and `commits/<sha>/check-runs`
@@ -388,6 +388,7 @@ function count(n, one, many) {
  *   summary: string,
  *   pending: string[],
  *   failing: string[],
+ *   canceled: string[],
  *   checkNames: string[],
  * }}
  * @throws {PayloadError}
@@ -410,6 +411,9 @@ export function evaluateDeploy({ status, checkRuns }) {
   const failingItems = items.filter((item) => item.outcome === 'failed');
   const pending = pendingItems.map((item) => item.name);
   const failing = failingItems.map((item) => item.name);
+  const canceled = items
+    .filter((item) => item.note === CANCELED_NOTE)
+    .map((item) => item.name);
   const checkNames = items
     .filter((item) => item.kind === 'check')
     .map((item) => item.name);
@@ -426,6 +430,7 @@ export function evaluateDeploy({ status, checkRuns }) {
       summary: `verdict: pending (${reasons.join('; ')})`,
       pending,
       failing,
+      canceled,
       checkNames,
     };
   }
@@ -438,6 +443,7 @@ export function evaluateDeploy({ status, checkRuns }) {
       summary: `verdict: failure (${what.join(', ')})`,
       pending,
       failing,
+      canceled,
       checkNames,
     };
   }
@@ -449,6 +455,7 @@ export function evaluateDeploy({ status, checkRuns }) {
     summary: `verdict: success (${total})`,
     pending,
     failing,
+    canceled,
     checkNames,
   };
 }
@@ -471,9 +478,10 @@ function isFatalGhError(text) {
  * Run `gh <args>`; resolves to stdout.
  *
  * @param {string[]} args
+ * @param {number} timeoutMs
  * @returns {Promise<string>}
  */
-function runGh(args) {
+function runGh(args, timeoutMs) {
   return new Promise((resolve, reject) => {
     // `gh` from PATH, as for every gh command a developer runs. Arguments go
     // in an array, so nothing is shell-parsed.
@@ -484,7 +492,7 @@ function runGh(args) {
       {
         encoding: 'utf8',
         maxBuffer: 16 * 1024 * 1024,
-        timeout: GH_CALL_TIMEOUT_MS,
+        timeout: timeoutMs,
         windowsHide: true,
       },
       (error, stdout, stderr) => {
@@ -500,7 +508,7 @@ function runGh(args) {
           // fatal 4xx: the next poll tries again.
           reject(
             new GhError(
-              `gh ${args.join(' ')} timed out after ${GH_CALL_TIMEOUT_MS / 1000}s`,
+              `gh ${args.join(' ')} timed out after ${timeoutMs / 1000}s`,
               false,
             ),
           );
@@ -535,10 +543,11 @@ export function ghAvailable() {
  * `gh api <endpoint>`, parsed.
  *
  * @param {string} endpoint
+ * @param {number} timeoutMs
  * @returns {Promise<unknown>}
  */
-async function ghJson(endpoint) {
-  const stdout = await runGh(['api', endpoint]);
+async function ghJson(endpoint, timeoutMs) {
+  const stdout = await runGh(['api', endpoint], timeoutMs);
   try {
     return JSON.parse(stdout);
   } catch {
@@ -550,14 +559,19 @@ async function ghJson(endpoint) {
 }
 
 /**
+ * The two payloads `evaluateDeploy` reads, for one commit. Rejects with a
+ * GhError (its message says why) when either `gh` call fails. scripts/
+ * session-status.mjs calls it with a shorter `timeoutMs` than a watch needs.
+ *
  * @param {string} repo owner/name
  * @param {string} sha
+ * @param {number} [timeoutMs] longest one `gh api` call may run
  */
-async function fetchPayloads(repo, sha) {
+export async function fetchPayloads(repo, sha, timeoutMs = GH_CALL_TIMEOUT_MS) {
   const base = `repos/${repo}/commits/${sha}`;
   const [status, checkRuns] = await Promise.all([
-    ghJson(`${base}/status?per_page=100`),
-    ghJson(`${base}/check-runs?per_page=100`),
+    ghJson(`${base}/status?per_page=100`, timeoutMs),
+    ghJson(`${base}/check-runs?per_page=100`, timeoutMs),
   ]);
   return { status, checkRuns };
 }
