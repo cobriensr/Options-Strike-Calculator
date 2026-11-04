@@ -1,0 +1,5 @@
+# Mechanical reformats that git blame should skip.
+# Local use: git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# style(ml): Apply ruff format to the ml folder
+b7a8a976d0fedcf394959f95d028f5f7e94131db
