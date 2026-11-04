@@ -1,8 +1,8 @@
 /**
  * Read-only status of the work: the main checkout, every linked worktree
  * (ahead/behind origin/main, uncommitted files, last commit, and whether it
- * is merged and so a cleanup candidate) and the CI verdict of the last few
- * commits on origin/main. The CLI wrapper is scripts/session-status.mjs.
+ * is merged and safe to remove) and the CI verdict of the last few commits
+ * on origin/main. The CLI wrapper is scripts/session-status.mjs.
  *
  * The parsers, tagging and formatting are pure functions over git and gh
  * output. `collectStatus` runs the git and gh calls around them: git through
@@ -14,17 +14,33 @@
  * with --no-optional-locks so it cannot refresh an index, and the one write,
  * `git fetch origin`, runs only when `fetch` is set (the --fetch flag).
  *
- * "Merged" means no commit on the branch is missing from origin/main by patch
- * (`git cherry`), so a squashed or rebased branch counts, and no merge commit
- * of its own is missing either (`git cherry` skips merge commits, which can
- * carry conflict resolutions), and the tree is clean. Ancestry alone would
- * call every squash-merged branch unmerged.
+ * "Merged" is a fact about the commits and the tree: no commit on the branch
+ * is missing from origin/main by patch (`git cherry`), so a rebased or
+ * cherry-picked branch counts, and a squash of a single commit too (a squash
+ * of several has a patch that matches none of them, and reads as ahead); no
+ * merge commit of its own is missing either (`git cherry` skips merge
+ * commits, which can carry conflict resolutions); and the tree is clean.
+ * Ancestry alone would call every rebased branch unmerged.
+ *
+ * "Cleanup candidate" is more: the worktree must also pass the checks
+ * `npm run worktrees:prune` applies before it removes one. They are
+ * prune-worktrees.mjs's own `checkInUse` and `checkSettled`, not copies, so
+ * "safe to remove" has one definition: idle for 24 hours, no stopped rebase,
+ * merge, cherry-pick or bisect, no ignored scratch files in docs/tmp/, and
+ * the current directory not inside it. A merged worktree that fails one is
+ * tagged `merged (why)`. One difference remains: prune compares with the
+ * local main and this module with origin/main.
  */
 import { execFile } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { parseArgs as parseNodeArgs } from 'node:util';
 import { GitError } from './git-run.mjs';
-import { parseWorktreeList } from './prune-worktrees.mjs';
+import {
+  checkInUse,
+  checkSettled,
+  gitEnv,
+  parseWorktreeList,
+} from './prune-worktrees.mjs';
 import {
   UsageError,
   evaluateDeploy,
@@ -93,8 +109,12 @@ export const USAGE = [
 
 /** git cannot be used here: not installed, not a repository, no base ref. */
 export class SetupError extends Error {
-  constructor(message) {
-    super(message);
+  /**
+   * @param {string} message
+   * @param {{ cause?: unknown }} [options] the git failure behind it
+   */
+  constructor(message, options) {
+    super(message, options);
     this.name = 'SetupError';
   }
 }
@@ -225,10 +245,11 @@ export function parseRecentCommits(text) {
 // Tagging, naming, ordering
 
 /**
- * What to say about one checkout. "merged" is the only cleanup candidate: its
- * work is in origin/main, its tree is clean, it is neither locked nor gone.
- * Anything else lists what needs a look. A worktree git could not read is
- * just "error".
+ * What to say about one checkout. A worktree whose work is in origin/main
+ * and whose tree is clean (neither locked nor gone) is "merged". It is a
+ * cleanup candidate only when nothing in `hold` says prune would keep it;
+ * otherwise the tag reads `merged (why)`. Anything else lists what needs a
+ * look. A worktree git could not read is just "error".
  *
  * @param {{
  *   error: string | null,
@@ -237,8 +258,12 @@ export function parseRecentCommits(text) {
  *   unborn: boolean,
  *   uncommitted: number | null,
  *   ahead: number | null,
- *   merged: boolean | null,
- * }} facts `merged`: every commit ahead is in origin/main by patch
+ *   notInBase: number | null,
+ *   hold: string | null,
+ * }} facts `ahead`: commits ahead of origin/main, by ancestry. `notInBase`:
+ * how many of the commits ahead are missing from origin/main by patch (a
+ * merge commit of its own counts); 0 is merged. `hold`: why a merged, clean
+ * worktree is still not safe to remove (see `holdLabel`), or null.
  * @returns {{ tags: string[], cleanup: boolean }}
  */
 export function tagWorktree(facts) {
@@ -248,11 +273,61 @@ export function tagWorktree(facts) {
   if (facts.locked) tags.push('locked');
   if (facts.unborn) tags.push('unborn');
   if (facts.uncommitted !== null && facts.uncommitted > 0) tags.push('dirty');
-  if (facts.ahead !== null && facts.ahead > 0 && facts.merged === false) {
-    tags.push(`ahead ${facts.ahead}`);
+  if (
+    facts.ahead !== null &&
+    facts.ahead > 0 &&
+    facts.notInBase !== null &&
+    facts.notInBase > 0
+  ) {
+    const unlike =
+      facts.notInBase < facts.ahead ? ` (${facts.notInBase} not in main)` : '';
+    tags.push(`ahead ${facts.ahead}${unlike}`);
   }
-  if (tags.length === 0) return { tags: ['merged'], cleanup: true };
-  return { tags, cleanup: false };
+  if (tags.length > 0) return { tags, cleanup: false };
+  if (facts.hold !== null) {
+    return { tags: [`merged (${facts.hold})`], cleanup: false };
+  }
+  return { tags: ['merged'], cleanup: true };
+}
+
+/**
+ * Why prune would keep a merged, clean worktree, in a few words, from the
+ * verdict of prune-worktrees.mjs's `checkInUse` or `checkSettled`.
+ *
+ * @param {{ keep: string, kind?: string, idle?: number, operation?: string }} verdict
+ * @returns {string}
+ */
+export function holdLabel(verdict) {
+  switch (verdict.kind) {
+    case 'cwd':
+      return 'current directory';
+    case 'base-branch':
+      return 'main checked out';
+    case 'idle':
+      return `active ${formatSpan((verdict.idle ?? 0) * 3600)}`;
+    case 'idle-unknown':
+      return 'idle time unknown';
+    case 'in-progress':
+      return `${verdict.operation} in progress`;
+    case 'scratch':
+      return 'docs/tmp files';
+    default:
+      return verdict.keep;
+  }
+}
+
+/**
+ * "<1m", "12m", "5h", "3d": the largest whole unit.
+ *
+ * @param {number} seconds
+ */
+function formatSpan(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 1) return '<1m';
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
 /**
@@ -262,12 +337,8 @@ export function tagWorktree(facts) {
  */
 export function formatAge(seconds) {
   if (seconds === null) return '?';
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
+  const span = formatSpan(seconds);
+  return span === '<1m' ? 'just now' : `${span} ago`;
 }
 
 /** Forward slashes, no trailing slash. */
@@ -334,13 +405,18 @@ export function sortWorktrees(rows) {
  * "no-ci" is a commit with no check run that is older than NO_CI_AFTER_SEC.
  * GitHub runs the push workflows for the newest commit of a push only, so an
  * earlier commit of a multi-commit push never gets one, and watch-deploy's
- * "no check runs reported yet" would read "pending" for it forever.
+ * "no check runs reported yet" would read "pending" for it forever. The tip
+ * of origin/main is never "no-ci": it is the newest commit of the latest
+ * push, and the age here is the commit's own time, so a commit made an hour
+ * ago and pushed a minute ago looks old while its check runs are not there
+ * yet.
  *
  * @param {ReturnType<typeof evaluateDeploy>} evaluation
  * @param {number} commitAgeSec seconds since the commit was made
+ * @param {{ isTip?: boolean }} [options] `isTip`: the commit is the tip of origin/main
  * @returns {{ verdict: 'success' | 'failure' | 'pending' | 'canceled-superseded' | 'no-ci', details: string[] }}
  */
-export function summarizeCi(evaluation, commitAgeSec) {
+export function summarizeCi(evaluation, commitAgeSec, { isTip = false } = {}) {
   const details = [];
   if (evaluation.failing.length > 0) {
     details.push(`failing: ${evaluation.failing.join(', ')}`);
@@ -354,6 +430,7 @@ export function summarizeCi(evaluation, commitAgeSec) {
   if (evaluation.failing.length > 0) return { verdict: 'failure', details };
   if (evaluation.verdict === 'pending') {
     const never =
+      !isTip &&
       evaluation.checkNames.length === 0 &&
       evaluation.pending.length === 0 &&
       commitAgeSec > NO_CI_AFTER_SEC;
@@ -500,7 +577,9 @@ export function formatReport(report) {
 /**
  * Run `git <args>` in the current directory; resolves to stdout. Rejects with
  * SetupError when git is not installed, GitError (stderr in `detail`)
- * otherwise.
+ * otherwise. The env is prune-worktrees.mjs's `gitEnv()`: a git hook exports
+ * GIT_DIR and GIT_INDEX_FILE, which would aim every `-C <dir>` call here at
+ * the hook's repository.
  *
  * @param {string[]} args
  * @returns {Promise<string>}
@@ -513,7 +592,12 @@ function git(args) {
       // eslint-disable-next-line sonarjs/no-os-command-from-path
       'git',
       args,
-      { encoding: 'utf8', maxBuffer: MAX_GIT_OUTPUT, windowsHide: true },
+      {
+        encoding: 'utf8',
+        env: gitEnv(),
+        maxBuffer: MAX_GIT_OUTPUT,
+        windowsHide: true,
+      },
       (error, stdout, stderr) => {
         if (!error) {
           resolve(String(stdout));
@@ -559,18 +643,23 @@ export async function mapLimit(items, limit, fn) {
 // ---------------------------------------------------------------------------
 // Collecting
 
-/** Whether every commit ahead of origin/main is in it by patch. */
-async function patchesAreInBase(head) {
-  const { unmerged } = parseCherry(await git(['cherry', BASE_REF, head]));
-  if (unmerged > 0) return false;
-  const merge = await git([
-    'rev-list',
-    '--merges',
-    '--max-count=1',
-    head,
-    `^${BASE_REF}`,
+/**
+ * How many commits ahead of origin/main are not in it by patch: the `+`
+ * lines of `git cherry`, plus the merge commits of its own that it lacks
+ * (`git cherry` skips merge commits). 0 means merged.
+ */
+async function commitsNotInBase(head) {
+  const [cherry, merges] = await Promise.all([
+    git(['cherry', BASE_REF, head]),
+    git(['rev-list', '--merges', '--count', head, `^${BASE_REF}`]),
   ]);
-  return merge.trim() === '';
+  const own = merges.trim();
+  if (!/^\d+$/.test(own)) {
+    throw new Error(
+      `git rev-list --merges --count: unexpected output "${own}"`,
+    );
+  }
+  return parseCherry(cherry).unmerged + Number(own);
 }
 
 /**
@@ -639,7 +728,7 @@ async function branchAheadBehind() {
 
 /**
  * What git knows about each commit, for one run. Several worktrees can sit
- * on the same commit; a count or a merged check is made once and shared.
+ * on the same commit; a count or a patch check is made once and shared.
  *
  * @param {Map<string, number>} times
  * @param {Map<string, { ahead: number, behind: number }>} branchCounts
@@ -648,7 +737,7 @@ function makeLookups(times, branchCounts) {
   const counts = new Map(
     [...branchCounts].map(([head, found]) => [head, Promise.resolve(found)]),
   );
-  const merged = new Map();
+  const notInBase = new Map();
   return {
     /** @param {string} head */
     time: (head) => times.get(head) ?? null,
@@ -667,11 +756,11 @@ function makeLookups(times, branchCounts) {
       return found;
     },
     /** @param {string} head */
-    merged(head) {
-      let found = merged.get(head);
+    notInBase(head) {
+      let found = notInBase.get(head);
       if (found === undefined) {
-        found = patchesAreInBase(head);
-        merged.set(head, found);
+        found = commitsNotInBase(head);
+        notInBase.set(head, found);
       }
       return found;
     },
@@ -691,24 +780,41 @@ function statusCount(wtPath) {
 }
 
 /**
- * Ahead, behind and whether the commits ahead are in origin/main by patch.
- * A head with nothing ahead is merged without asking git.
+ * Ahead, behind and how many of the commits ahead are not in origin/main by
+ * patch. A head with nothing ahead has none, without asking git.
  */
 async function headFacts(head, lookups) {
   const { ahead, behind } = await lookups.counts(head);
-  const merged = ahead === 0 || (await lookups.merged(head));
-  return { ahead, behind, merged };
+  const notInBase = ahead === 0 ? 0 : await lookups.notInBase(head);
+  return { ahead, behind, notInBase };
+}
+
+/**
+ * Why prune would keep a merged, clean worktree, or null when it would
+ * remove it: prune-worktrees.mjs's own checks (see the module doc). They are
+ * synchronous git calls, made only for the few worktrees that get this far.
+ * `git status` is not run again: the caller read it.
+ */
+function holdFor(entry) {
+  const inUse = checkInUse(entry, process.cwd());
+  const verdict =
+    inUse.keep === null
+      ? checkSettled(entry.path, { statusKnownClean: true })
+      : inUse;
+  return verdict.keep === null ? null : holdLabel(verdict);
 }
 
 /**
  * Everything about one checkout. A git failure becomes `error`, not a throw,
- * so one broken worktree cannot hide the others.
+ * so one broken worktree cannot hide the others. `linked` is false for the
+ * main checkout, which is never a cleanup candidate and so is not asked.
  *
  * @param {{ path: string, head: string | null, branch: string | null, locked: string | null, prunable: string | null }} entry
  * @param {string} mainPath
  * @param {ReturnType<typeof makeLookups>} lookups
+ * @param {boolean} linked
  */
-async function inspectCheckout(entry, mainPath, lookups) {
+async function inspectCheckout(entry, mainPath, lookups, linked) {
   const { head } = entry;
   const missing = entry.prunable !== null || !existsSync(entry.path);
   const row = {
@@ -722,30 +828,40 @@ async function inspectCheckout(entry, mainPath, lookups) {
     lastCommitSec: head === null ? null : lookups.time(head),
     error: null,
   };
-  let merged = null;
+  let notInBase = null;
   try {
-    const [facts, uncommitted] = await Promise.all([
+    const [counted, uncommitted] = await Promise.all([
       head === null ? null : headFacts(head, lookups),
       missing ? null : statusCount(entry.path),
     ]);
-    if (facts !== null) {
-      ({ ahead: row.ahead, behind: row.behind, merged } = facts);
+    if (counted !== null) {
+      ({ ahead: row.ahead, behind: row.behind, notInBase } = counted);
     }
     row.uncommitted = uncommitted;
   } catch (err) {
     row.error = reason(err);
   }
 
-  const { tags, cleanup } = tagWorktree({
+  const facts = {
     error: row.error,
     missing,
     locked: entry.locked !== null,
     unborn: head === null,
     uncommitted: row.uncommitted,
     ahead: row.ahead,
-    merged,
-  });
-  return { ...row, tags, cleanup };
+    notInBase,
+    hold: null,
+  };
+  let verdict = tagWorktree(facts);
+  if (linked && verdict.cleanup) {
+    try {
+      verdict = tagWorktree({ ...facts, hold: holdFor(entry) });
+    } catch (err) {
+      row.error = reason(err);
+      verdict = tagWorktree({ ...facts, error: row.error });
+    }
+  }
+  return { ...row, ...verdict };
 }
 
 /** Newest time FETCH_HEAD was written, or undefined when it cannot be read. */
@@ -810,12 +926,12 @@ async function githubRepo() {
 }
 
 /** One commit's verdict. A failed gh call or odd payload is "unknown". */
-async function ciFor(repo, problem, commit) {
+async function ciFor(repo, problem, commit, isTip) {
   if (repo === null) return { verdict: 'unknown', details: [problem] };
   try {
     const payloads = await fetchPayloads(repo, commit.sha, CI_CALL_TIMEOUT_MS);
     const ageSec = Date.now() / 1000 - commit.time;
-    return summarizeCi(evaluateDeploy(payloads), ageSec);
+    return summarizeCi(evaluateDeploy(payloads), ageSec, { isTip });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { verdict: 'unknown', details: [message] };
@@ -832,11 +948,12 @@ async function collectRecent(count) {
   ]);
   const commits = parseRecentCommits(log);
   const { repo, problem } = await githubRepo();
+  // The log is newest first: the first commit is the tip of origin/main.
   return mapLimit(commits, CI_CONCURRENCY, async (commit) => ({
     sha: commit.sha,
     subject: commit.subject,
     time: commit.time,
-    ...(await ciFor(repo, problem, commit)),
+    ...(await ciFor(repo, problem, commit, commit === commits[0])),
   }));
 }
 
@@ -898,9 +1015,9 @@ export async function collectStatus({ ci, count, fetch }) {
     ([times, counts]) => {
       const lookups = makeLookups(times, counts);
       return Promise.all([
-        inspectCheckout(mainEntry, mainEntry.path, lookups),
+        inspectCheckout(mainEntry, mainEntry.path, lookups, false),
         mapLimit(others, WORKTREE_CONCURRENCY, (entry) =>
-          inspectCheckout(entry, mainEntry.path, lookups),
+          inspectCheckout(entry, mainEntry.path, lookups, true),
         ),
       ]);
     },

@@ -11,7 +11,10 @@
  *   files;
  * - each worktree: branch, ahead/behind, uncommitted files, age of the last
  *   commit and a tag (merged, dirty, ahead N, missing, locked), cleanup
- *   candidates last. "merged" counts a squashed or rebased branch;
+ *   candidates last. "merged" counts a rebased or cherry-picked branch (a
+ *   single-commit squash too). A plain "merged" is a cleanup candidate: it
+ *   also passes the checks `npm run worktrees:prune` makes. "merged (why)"
+ *   is merged but not yet safe to remove, e.g. "merged (active 2h)";
  * - the last commits on origin/main, each with one poll of its CI
  *   (success, failure, pending, canceled-superseded, no-ci for an old commit
  *   that never had a check run, or unknown when gh could not say). --no-ci

@@ -5,7 +5,10 @@
  * formatting, then the collector with `git` and `gh` faked at the
  * child_process module and the two fs calls it makes (existsSync, statSync)
  * faked at node:fs. The faked git is a table (`world`) that each test edits.
- * One real git run, in scratch repos, is in session-status.cli.test.mjs.
+ * prune-worktrees.mjs's checkInUse and checkSettled, which decide whether a
+ * merged worktree is a cleanup candidate, are faked at their module the same
+ * way. Real git, in scratch repos, runs them for real in
+ * session-status.cli.test.mjs and prune-worktrees.test.mjs.
  *
  * The CI cases run the real evaluateDeploy over edits of the trimmed real
  * payloads in watch-deploy-fixtures/.
@@ -26,6 +29,7 @@ import {
   countLines,
   formatAge,
   formatReport,
+  holdLabel,
   mapLimit,
   parseAheadBehind,
   parseArgs,
@@ -36,8 +40,13 @@ import {
   tagWorktree,
   worktreeName,
 } from './session-status.mjs';
+import { GitError } from './git-run.mjs';
 import { UsageError, evaluateDeploy } from './watch-deploy.mjs';
-import { parseWorktreeList } from './prune-worktrees.mjs';
+import {
+  checkInUse,
+  checkSettled,
+  parseWorktreeList,
+} from './prune-worktrees.mjs';
 
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
@@ -47,6 +56,11 @@ vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal();
   return { ...actual, default: actual, existsSync: vi.fn(), statSync: vi.fn() };
 });
+vi.mock('./prune-worktrees.mjs', async (importOriginal) => ({
+  ...(await importOriginal()),
+  checkInUse: vi.fn(),
+  checkSettled: vi.fn(),
+}));
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, 'watch-deploy-fixtures');
@@ -229,41 +243,43 @@ describe('tagWorktree', () => {
     unborn: false,
     uncommitted: 0,
     ahead: 0,
-    merged: true,
+    notInBase: 0,
+    hold: null,
   };
 
   it.each([
     ['merged and clean', {}, ['merged'], true],
     [
-      'ahead by commits whose patches are all in origin/main (squash, rebase)',
-      { ahead: 4, merged: true },
+      'ahead by commits whose patches are all in origin/main (rebase, cherry-pick)',
+      { ahead: 4 },
       ['merged'],
       true,
     ],
     [
-      'ahead with commits not in origin/main',
-      { ahead: 2, merged: false },
+      'ahead with every commit missing from origin/main',
+      { ahead: 2, notInBase: 2 },
       ['ahead 2'],
+      false,
+    ],
+    [
+      'ahead with some commits missing from origin/main',
+      { ahead: 8, notInBase: 3 },
+      ['ahead 8 (3 not in main)'],
       false,
     ],
     ['dirty', { uncommitted: 3 }, ['dirty'], false],
     [
       'dirty and ahead',
-      { uncommitted: 1, ahead: 2, merged: false },
+      { uncommitted: 1, ahead: 2, notInBase: 2 },
       ['dirty', 'ahead 2'],
       false,
     ],
     ['merged but locked', { locked: true }, ['locked'], false],
-    [
-      'merged but dirty',
-      { uncommitted: 1, ahead: 1, merged: true },
-      ['dirty'],
-      false,
-    ],
+    ['merged but dirty', { uncommitted: 1, ahead: 1 }, ['dirty'], false],
     ['folder gone', { missing: true, uncommitted: null }, ['missing'], false],
     [
       'folder gone with commits only on its branch',
-      { missing: true, uncommitted: null, ahead: 3, merged: false },
+      { missing: true, uncommitted: null, ahead: 3, notInBase: 3 },
       ['missing', 'ahead 3'],
       false,
     ],
@@ -275,7 +291,7 @@ describe('tagWorktree', () => {
     ],
     [
       'no commits yet',
-      { unborn: true, ahead: null, merged: null },
+      { unborn: true, ahead: null, notInBase: null },
       ['unborn'],
       false,
     ],
@@ -287,6 +303,73 @@ describe('tagWorktree', () => {
   it('never calls an uncommitted tree merged, whatever origin/main holds', () => {
     const { cleanup } = tagWorktree({ ...clean, uncommitted: 1 });
     expect(cleanup).toBe(false);
+  });
+
+  it('keeps the merged fact but is no cleanup candidate while prune would keep it', () => {
+    expect(tagWorktree({ ...clean, hold: 'active 2h' })).toEqual({
+      tags: ['merged (active 2h)'],
+      cleanup: false,
+    });
+  });
+
+  it('shows the hold only on a worktree that is otherwise merged and clean', () => {
+    const hold = 'docs/tmp files';
+    expect(tagWorktree({ ...clean, hold, uncommitted: 1 }).tags).toEqual([
+      'dirty',
+    ]);
+    expect(tagWorktree({ ...clean, hold, locked: true }).tags).toEqual([
+      'locked',
+    ]);
+    expect(
+      tagWorktree({ ...clean, hold, ahead: 2, notInBase: 1 }).tags,
+    ).toEqual(['ahead 2 (1 not in main)']);
+  });
+});
+
+describe('holdLabel', () => {
+  it.each([
+    [
+      { kind: 'cwd', keep: 'the current directory is inside it' },
+      'current directory',
+    ],
+    [
+      { kind: 'base-branch', keep: 'it has main checked out' },
+      'main checked out',
+    ],
+    [
+      { kind: 'idle', keep: 'idle 2.2h, under the 24h minimum', idle: 2.2 },
+      'active 2h',
+    ],
+    [{ kind: 'idle', keep: 'idle 0.0h', idle: 0.004 }, 'active <1m'],
+    [{ kind: 'idle', keep: 'idle 0.6h', idle: 0.6 }, 'active 36m'],
+    [{ kind: 'idle', keep: 'idle 23.9h', idle: 23.9 }, 'active 23h'],
+    [
+      { kind: 'idle-unknown', keep: 'idle time unknown: no admin index' },
+      'idle time unknown',
+    ],
+    [
+      { kind: 'in-progress', keep: 'rebase in progress', operation: 'rebase' },
+      'rebase in progress',
+    ],
+    [
+      { kind: 'in-progress', keep: 'bisect in progress', operation: 'bisect' },
+      'bisect in progress',
+    ],
+    [
+      {
+        kind: 'scratch',
+        keep: 'ignored scratch files in docs/tmp/: docs/tmp/a',
+      },
+      'docs/tmp files',
+    ],
+  ])('%j reads %s', (verdict, label) => {
+    expect(holdLabel(verdict)).toBe(label);
+  });
+
+  it('falls back to the whole reason for a kind it does not know', () => {
+    expect(holdLabel({ kind: 'new-check', keep: 'a new reason' })).toBe(
+      'a new reason',
+    );
   });
 });
 
@@ -395,8 +478,8 @@ const patchStatus = (snap, context, patch) =>
 
 describe('summarizeCi', () => {
   /** A commit an hour old, unless `ageSec` says otherwise. */
-  const summarize = (edit, ageSec = 3600) =>
-    summarizeCi(evaluateDeploy(snapshot(edit)), ageSec);
+  const summarize = (edit, ageSec = 3600, options) =>
+    summarizeCi(evaluateDeploy(snapshot(edit)), ageSec, options);
 
   it('is success when everything passed or was skipped', () => {
     expect(summarize()).toEqual({ verdict: 'success', details: [] });
@@ -450,6 +533,18 @@ describe('summarizeCi', () => {
     const result = summarize(noCheckRuns, NO_CI_AFTER_SEC + 1);
     expect(result.verdict).toBe('no-ci');
     expect(result.details.join(' ')).toMatch(/newest commit of a push/);
+  });
+
+  it('never calls the tip of origin/main no-ci, however old the commit: its check runs may not exist yet', () => {
+    // Made an hour ago, pushed a minute ago: committer time says "old".
+    const result = summarize(noCheckRuns, 3600, { isTip: true });
+    expect(result).toEqual({
+      verdict: 'pending',
+      details: ['no check runs reported yet'],
+    });
+    expect(summarize(noCheckRuns, 3600, { isTip: false }).verdict).toBe(
+      'no-ci',
+    );
   });
 
   it('stays pending, however old, while check runs exist and one still runs', () => {
@@ -855,14 +950,14 @@ function freshWorld() {
       [ROOT]: [' M a.ts', '?? b.ts'],
       [`${ROOT}/.worktrees/dirty`]: ['?? x', ' M y', 'A  z'],
     },
-    // `git cherry` and `git rev-list --merges`, by head.
+    // `git cherry` and `git rev-list --merges --count`, by head.
     cherry: {
       [sha(2)]: `- ${sha(20)}\n- ${sha(21)}\n`,
       [sha(3)]: `+ ${sha(22)}\n- ${sha(23)}\n`,
       [sha(7)]: `+ ${sha(24)}\n`,
       [sha(8)]: `- ${sha(25)}\n- ${sha(26)}\n- ${sha(27)}\n`,
     },
-    merges: { [sha(8)]: `${sha(28)}\n` },
+    merges: { [sha(8)]: 1 },
     remote: GOOD_REMOTE,
     baseSha: sha(0xfeed),
     commonDir: 'F:/dev/repo/.git',
@@ -877,6 +972,10 @@ function freshWorld() {
     })),
     // gh payloads by commit sha; anything absent is a clean pass.
     gh: {},
+    // What checkInUse and checkSettled answer, by worktree path; absent is
+    // "free to remove": no hold, idle two days.
+    inUse: {},
+    settled: {},
   };
 }
 
@@ -931,13 +1030,18 @@ function fakeGit(allArgs) {
           .map((a) => `${world.times[a]} ${a}`)
           .join('\n');
       }
+      if (more.includes('--merges')) {
+        const head = more.find((a) => /^[0-9a-f]{40}$/.test(a));
+        const count = world.merges[head] ?? 0;
+        if (count instanceof Error) throw count;
+        return `${count}\n`;
+      }
       if (more.includes('--count')) {
         const head = more.at(-1).replace('origin/main...', '');
         const [behind, ahead] = byHead(world.counts, head, 'counts');
         return `${behind}\t${ahead}\n`;
       }
-      const head = more.find((a) => /^[0-9a-f]{40}$/.test(a));
-      return world.merges[head] ?? '';
+      throw new Failure(`unscripted rev-list ${joined}`);
     }
     case 'cherry':
       return byHead(world.cherry, more.at(-1), 'cherry');
@@ -1005,6 +1109,14 @@ function installFakes() {
       }
     });
   });
+  vi.mocked(checkInUse).mockImplementation(
+    (entry) => world.inUse[entry.path] ?? { keep: null },
+  );
+  vi.mocked(checkSettled).mockImplementation((wtPath) => {
+    const verdict = world.settled[wtPath] ?? { keep: null, idle: 48 };
+    if (verdict instanceof Error) throw verdict;
+    return verdict;
+  });
   vi.mocked(existsSync).mockImplementation((p) => !gone.has(String(p)));
   vi.mocked(statSync).mockImplementation((p) => {
     if (String(p).endsWith('FETCH_HEAD') && world.fetchHeadMtimeMs !== null) {
@@ -1019,6 +1131,16 @@ const ENOENT = () =>
 
 const OPTIONS = { ci: false, count: 5, fetch: false };
 
+/** The row for the worktree called `name`. */
+async function rowOf(name) {
+  const { worktrees } = await collectStatus(OPTIONS);
+  const found = worktrees.find((w) => w.name === name);
+  if (!found) {
+    throw new Error(`no row ${name}: ${worktrees.map((w) => w.name)}`);
+  }
+  return found;
+}
+
 const gitCalls = () =>
   calls.filter(([file]) => file === 'git').map((c) => c.slice(1));
 const ghCalls = () => calls.filter(([file]) => file === 'gh');
@@ -1030,6 +1152,8 @@ beforeEach(() => {
   gone = new Set([`${ROOT}/.worktrees/gone`]);
   world = freshWorld();
   vi.mocked(execFile).mockReset();
+  vi.mocked(checkInUse).mockReset();
+  vi.mocked(checkSettled).mockReset();
   vi.mocked(existsSync).mockReset();
   vi.mocked(statSync).mockReset();
   installFakes();
@@ -1059,15 +1183,6 @@ describe('collectStatus: the main checkout', () => {
 });
 
 describe('collectStatus: worktrees', () => {
-  /** The row for `name`. */
-  async function rowOf(name) {
-    const { worktrees } = await collectStatus(OPTIONS);
-    const found = worktrees.find((w) => w.name === name);
-    if (!found)
-      throw new Error(`no row ${name}: ${worktrees.map((w) => w.name)}`);
-    return found;
-  }
-
   it('lists every linked worktree, named by the path below .worktrees/', async () => {
     const { worktrees } = await collectStatus(OPTIONS);
     expect(worktrees.map((w) => w.name).sort()).toEqual(
@@ -1098,15 +1213,51 @@ describe('collectStatus: worktrees', () => {
     });
   });
 
-  it('tags a branch with a commit missing from origin/main as ahead', async () => {
+  it('tags a branch with a commit missing from origin/main as ahead, and says how many are', async () => {
+    // Two commits ahead by ancestry, one "+" and one "-" in git cherry.
     const row = await rowOf('wip');
-    expect(row).toMatchObject({ ahead: 2, tags: ['ahead 2'], cleanup: false });
+    expect(row).toMatchObject({
+      ahead: 2,
+      tags: ['ahead 2 (1 not in main)'],
+      cleanup: false,
+    });
+  });
+
+  it('gives the plain ahead count when every commit ahead is missing from origin/main', async () => {
+    const row = await rowOf('gone');
+    expect(row.tags).toEqual(['missing', 'ahead 1']);
+  });
+
+  it('counts the commits not in origin/main from the "+" lines of git cherry, not the raw rev-list count', async () => {
+    // 8 commits ahead, 5 of them cherry-picked into origin/main under other ids.
+    world.counts[sha(3)] = [0, 8];
+    world.cherry[sha(3)] = `+ ${sha(30)}\n+ ${sha(31)}\n+ ${sha(32)}\n${[
+      40, 41, 42, 43, 44,
+    ]
+      .map((n) => `- ${sha(n)}\n`)
+      .join('')}`;
+    const row = await rowOf('wip');
+    expect(row.tags).toEqual(['ahead 8 (3 not in main)']);
   });
 
   it('does not call a branch merged while a merge commit of its own is missing from origin/main', async () => {
-    // git cherry skips merge commits, so every line is "-" here.
+    // git cherry skips merge commits, so every line is "-" here; the one
+    // merge commit is the only commit not in origin/main.
     const row = await rowOf('merge-commit');
-    expect(row).toMatchObject({ ahead: 3, tags: ['ahead 3'], cleanup: false });
+    expect(row).toMatchObject({
+      ahead: 3,
+      tags: ['ahead 3 (1 not in main)'],
+      cleanup: false,
+    });
+  });
+
+  it('adds the merge commits of its own to the "+" lines', async () => {
+    // 5 commits ahead: one "+", one "-" and two merge commits of its own,
+    // and one commit that is neither (a plain commit, shown "-").
+    world.counts[sha(3)] = [0, 5];
+    world.merges[sha(3)] = 2;
+    const row = await rowOf('wip');
+    expect(row.tags).toEqual(['ahead 5 (3 not in main)']);
   });
 
   it('tags an uncommitted tree dirty and counts the files', async () => {
@@ -1184,15 +1335,23 @@ describe('collectStatus: worktrees', () => {
     expect(flags[0]).toBe(false);
   });
 
-  it('skips the merge-commit check for a branch with nothing ahead', async () => {
+  it('checks the patches and the merge commits of a branch ahead, and of no other', async () => {
     await collectStatus(OPTIONS);
+    const ahead = [sha(2), sha(3), sha(7), sha(8)].sort();
     const mergeChecks = gitCalls().filter((a) => a.includes('--merges'));
-    // rebased (ahead 2, no "+") and merge-commit are checked; the rest are not.
-    expect(mergeChecks).toHaveLength(2);
+    expect(
+      mergeChecks.map((a) => a.find((x) => /^[0-9a-f]{40}$/.test(x))).sort(),
+    ).toEqual(ahead);
     const cherryChecks = gitCalls().filter((a) => a.includes('cherry'));
-    expect(cherryChecks.map((a) => a.at(-1)).sort()).toEqual(
-      [sha(2), sha(3), sha(7), sha(8)].sort(),
-    );
+    expect(cherryChecks.map((a) => a.at(-1)).sort()).toEqual(ahead);
+  });
+
+  it('shows a branch whose merge-commit count git cannot give as error', async () => {
+    world.merges[sha(3)] = new Failure('fatal: bad revision', 128);
+    const { worktrees } = await collectStatus(OPTIONS);
+    const row = worktrees.find((w) => w.name === 'wip');
+    expect(row.tags).toEqual(['error']);
+    expect(row.error).toMatch(/bad revision/);
   });
 
   it('shows a worktree whose git fails as error and still reports the others', async () => {
@@ -1204,7 +1363,9 @@ describe('collectStatus: worktrees', () => {
     expect(broken.tags).toEqual(['error']);
     expect(broken.cleanup).toBe(false);
     expect(broken.error).toMatch(/bad index file/);
-    expect(worktrees.find((w) => w.name === 'wip').tags).toEqual(['ahead 2']);
+    expect(worktrees.find((w) => w.name === 'wip').tags).toEqual([
+      'ahead 2 (1 not in main)',
+    ]);
   });
 
   it('shows the main checkout as an error, not a crash, when its status fails', async () => {
@@ -1218,6 +1379,152 @@ describe('collectStatus: worktrees', () => {
     world.checkouts = world.checkouts.slice(0, 1);
     const { worktrees } = await collectStatus(OPTIONS);
     expect(worktrees).toEqual([]);
+  });
+});
+
+describe('collectStatus: cleanup candidates', () => {
+  const REBASED = `${ROOT}/.worktrees/rebased`;
+  const DETACHED = `${ROOT}/.worktrees/detached`;
+  const ELSEWHERE = 'F:/other/place';
+
+  it('is a plain merged candidate when prune would remove it', async () => {
+    expect(await rowOf('rebased')).toMatchObject({
+      tags: ['merged'],
+      cleanup: true,
+    });
+  });
+
+  it.each([
+    [
+      'was active in the last day',
+      { keep: 'idle 2.2h, under the 24h minimum', kind: 'idle', idle: 2.2 },
+      'merged (active 2h)',
+    ],
+    [
+      'has ignored scratch files in docs/tmp/',
+      {
+        keep: 'ignored scratch files in docs/tmp/: docs/tmp/a.log',
+        kind: 'scratch',
+      },
+      'merged (docs/tmp files)',
+    ],
+    [
+      'has a rebase stopped in it',
+      { keep: 'rebase in progress', kind: 'in-progress', operation: 'rebase' },
+      'merged (rebase in progress)',
+    ],
+    [
+      'has no idle time to read',
+      {
+        keep: 'idle time unknown: no admin index or logs/HEAD',
+        kind: 'idle-unknown',
+      },
+      'merged (idle time unknown)',
+    ],
+  ])(
+    'keeps the merged fact but no candidate for a worktree that %s',
+    async (_why, verdict, tag) => {
+      world.settled[REBASED] = verdict;
+      const row = await rowOf('rebased');
+      expect(row).toMatchObject({ tags: [tag], cleanup: false });
+      // Still a plain candidate next to it.
+      expect(await rowOf('detached')).toMatchObject({
+        tags: ['merged'],
+        cleanup: true,
+      });
+    },
+  );
+
+  it('keeps a worktree that holds the current directory out of the candidates', async () => {
+    world.inUse[REBASED] = {
+      keep: 'the current directory is inside it',
+      kind: 'cwd',
+    };
+    expect(await rowOf('rebased')).toMatchObject({
+      tags: ['merged (current directory)'],
+      cleanup: false,
+    });
+  });
+
+  it('keeps a worktree with main checked out out of the candidates, without reading its files', async () => {
+    world.inUse[REBASED] = {
+      keep: 'it has main checked out',
+      kind: 'base-branch',
+    };
+    expect(await rowOf('rebased')).toMatchObject({
+      tags: ['merged (main checked out)'],
+      cleanup: false,
+    });
+    expect(vi.mocked(checkSettled).mock.calls.map(([p]) => p)).not.toContain(
+      REBASED,
+    );
+  });
+
+  it('counts only the candidates, and sorts the held ones with the active rows', async () => {
+    world.settled[REBASED] = { keep: 'idle 1.0h', kind: 'idle', idle: 1 };
+    const report = await collectStatus(OPTIONS);
+    const candidates = report.worktrees.filter((w) => w.cleanup);
+    expect(candidates.map((w) => w.name).sort()).toEqual([
+      'F:/other/place',
+      'detached',
+    ]);
+    expect(report.worktrees.slice(-2).every((w) => w.cleanup)).toBe(true);
+    expect(report.worktrees.map((w) => w.name)).toContain('rebased');
+    expect(formatReport(report)).toContain(
+      'WORKTREES (9) - cleanup candidates: 2',
+    );
+    expect(formatReport(report)).toMatch(/rebased .* merged \(active 1h\)\n/);
+  });
+
+  it('asks prune only about a worktree that is otherwise a candidate, once, and not to read its status again', async () => {
+    await collectStatus(OPTIONS);
+    // rebased, detached and the one elsewhere are merged and clean; every
+    // other row, and the main checkout, is dirty, ahead, locked, gone or
+    // unborn, or is the main one.
+    const settled = vi.mocked(checkSettled).mock.calls;
+    expect(settled.map(([wtPath]) => wtPath).sort()).toEqual(
+      [REBASED, DETACHED, ELSEWHERE].sort(),
+    );
+    for (const [, options] of settled) {
+      expect(options).toEqual({ statusKnownClean: true });
+    }
+    expect(
+      vi
+        .mocked(checkInUse)
+        .mock.calls.map(([entry]) => entry.path)
+        .sort(),
+    ).toEqual([REBASED, DETACHED, ELSEWHERE].sort());
+  });
+
+  it('asks about the directory the command runs in', async () => {
+    await collectStatus(OPTIONS);
+    const asked = vi.mocked(checkInUse).mock.calls;
+    expect(asked).toHaveLength(3);
+    for (const [, cwd] of asked) expect(cwd).toBe(process.cwd());
+  });
+
+  it('hands prune the worktree path and branch', async () => {
+    await collectStatus(OPTIONS);
+    const entries = vi.mocked(checkInUse).mock.calls.map(([entry]) => entry);
+    expect(entries.find((e) => e.path === REBASED)).toMatchObject({
+      branch: 'feat/rebased',
+    });
+    expect(entries.find((e) => e.path === DETACHED)).toMatchObject({
+      branch: null,
+    });
+  });
+
+  it('shows a worktree whose prune check fails as error and still reports the others', async () => {
+    world.settled[REBASED] = new Error(
+      'git rev-parse: fatal: not a git repository',
+    );
+    const rebased = await rowOf('rebased');
+    expect(rebased).toMatchObject({ tags: ['error'], cleanup: false });
+    expect(rebased.error).toMatch(/not a git repository/);
+    expect(await rowOf('detached')).toMatchObject({
+      tags: ['merged'],
+      cleanup: true,
+    });
   });
 });
 
@@ -1314,7 +1621,7 @@ describe('collectStatus: few git calls', () => {
       1,
     );
     const copy = worktrees.find((w) => w.name === 'wip-copy');
-    expect(copy.tags).toEqual(['ahead 2']);
+    expect(copy.tags).toEqual(['ahead 2 (1 not in main)']);
   });
 
   it('shares a failure of such a lookup among the worktrees that asked', async () => {
@@ -1334,29 +1641,37 @@ describe('collectStatus: few git calls', () => {
 });
 
 describe('collectStatus: read-only', () => {
+  /**
+   * Every git command it may run without --fetch, down to the verb where the
+   * command also has writing verbs (worktree add, reflog expire, remote add).
+   */
   const READ_ONLY = new Set([
-    'worktree',
+    'worktree list',
+    'reflog show',
+    'remote get-url',
     'rev-parse',
     'rev-list',
-    'log',
-    'cherry',
-    'status',
-    'remote',
-    'reflog',
     'for-each-ref',
+    'cherry',
+    'log',
+    'status',
   ]);
+  const WITH_VERBS = new Set(['worktree', 'reflog', 'remote']);
 
-  /** The git subcommand of a call, past -C <dir> and --no-optional-locks. */
+  /** The git command of a call, past -C <dir> and --no-optional-locks. */
   function subcommand(args) {
     const rest = args.filter((a) => a !== '--no-optional-locks');
-    return rest[0] === '-C' ? rest[2] : rest[0];
+    const [command, verb] = rest[0] === '-C' ? rest.slice(2) : rest;
+    return WITH_VERBS.has(command) ? `${command} ${verb}` : command;
   }
 
-  it('runs only read-only git subcommands by default', async () => {
+  it('runs only read-only git commands by default, down to the verb', async () => {
+    // No FETCH_HEAD: the age of origin/main comes from the reflog.
+    world.fetchHeadMtimeMs = null;
     await collectStatus({ ...OPTIONS, ci: true });
     const used = new Set(gitCalls().map(subcommand));
     expect([...used].filter((c) => !READ_ONLY.has(c))).toEqual([]);
-    expect(used.has('status')).toBe(true);
+    expect([...used].sort()).toEqual([...READ_ONLY].sort());
   });
 
   it('never fetches without --fetch', async () => {
@@ -1369,6 +1684,40 @@ describe('collectStatus: read-only', () => {
     const statuses = gitCalls().filter((a) => subcommand(a) === 'status');
     expect(statuses.length).toBeGreaterThan(5);
     for (const args of statuses) expect(args[0]).toBe('--no-optional-locks');
+  });
+
+  it('lists untracked files in every git status, whatever the repository config says', async () => {
+    await collectStatus(OPTIONS);
+    const statuses = gitCalls().filter((a) => subcommand(a) === 'status');
+    expect(statuses.length).toBeGreaterThan(5);
+    for (const args of statuses)
+      expect(args).toContain('--untracked-files=normal');
+  });
+});
+
+describe('collectStatus: the environment of git', () => {
+  it('runs every git call without the variables a git hook exports, and with the rest', async () => {
+    // A hook exports GIT_DIR and GIT_INDEX_FILE: inherited, they would aim
+    // every `-C <dir>` call at the hook's repository.
+    vi.stubEnv('GIT_DIR', '/hook/repo/.git');
+    vi.stubEnv('GIT_INDEX_FILE', '/hook/repo/.git/index');
+    vi.stubEnv('SESSION_STATUS_TEST_KEEP', 'yes');
+    try {
+      await collectStatus({ ...OPTIONS, ci: true });
+      const envs = vi
+        .mocked(execFile)
+        .mock.calls.filter(([file]) => file === 'git')
+        .map(([, , options]) => options.env);
+      expect(envs.length).toBeGreaterThan(10);
+      for (const env of envs) {
+        expect(env).toBeDefined();
+        expect(env).not.toHaveProperty('GIT_DIR');
+        expect(env).not.toHaveProperty('GIT_INDEX_FILE');
+        expect(env.SESSION_STATUS_TEST_KEEP).toBe('yes');
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
@@ -1446,6 +1795,8 @@ describe('collectStatus: git is not usable here', () => {
     const error = await collectStatus(OPTIONS).catch((e) => e);
     expect(error).toBeInstanceOf(SetupError);
     expect(error.message).toMatch(/not a git repository/);
+    expect(error.cause).toBeInstanceOf(GitError);
+    expect(error.cause.detail).toMatch(/not a git repository/);
   });
 
   it('throws SetupError, naming the fix, when origin/main does not exist', async () => {
@@ -1454,6 +1805,7 @@ describe('collectStatus: git is not usable here', () => {
     expect(error).toBeInstanceOf(SetupError);
     expect(error.message).toMatch(/origin\/main/);
     expect(error.message).toMatch(/--fetch/);
+    expect(error.cause).toBeInstanceOf(GitError);
   });
 
   it('lets an unexpected git failure through as itself, not as a setup problem', async () => {
@@ -1521,6 +1873,26 @@ describe('collectStatus: recent pushes and CI', () => {
       'pending',
       'no-ci',
     ]);
+  });
+
+  it('never calls the tip of origin/main "no-ci", though its commit time is old: it may have just been pushed', async () => {
+    const [tip, next] = world.log.slice(0, 2).map((c) => c.sha);
+    const empty = snapshot((s) => {
+      s.checkRuns.check_runs = [];
+    });
+    world.gh[tip] = empty;
+    world.gh[next] = empty;
+    // Made an hour ago, pushed a minute ago.
+    world.log[0].time = NOW_MS / 1000 - 3600;
+
+    const { recent } = await collectStatus(OPTIONS_CI);
+
+    expect(recent[0]).toMatchObject({
+      sha: tip,
+      verdict: 'pending',
+      details: ['no check runs reported yet'],
+    });
+    expect(recent[1].verdict).toBe('no-ci');
   });
 
   it('shows unknown, with the reason, for a commit whose gh call fails, and still reports the rest', async () => {
