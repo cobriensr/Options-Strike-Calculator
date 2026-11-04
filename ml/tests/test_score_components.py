@@ -2,17 +2,12 @@
 Tests for ml/src/score_components.py — V2 score component recovery.
 
 Unit tests use synthetic fire rows + a stub weights dict. The
-sum-invariant against the live DB is exercised separately (and only
-runs when DATABASE_URL is set) so CI stays self-contained.
+sum-invariant against the live DB is a manual script that reads
+production: scripts/check_lottery_score_sum_invariant.py. A test must
+never connect to a database.
 """
 
 from __future__ import annotations
-
-import json
-import os
-from pathlib import Path
-
-import pytest
 
 from score_components import assign_quintile, compute_components
 
@@ -535,77 +530,3 @@ def test_backward_compat_no_context_blocks_in_stub_weights_no_overrides():
         assert components[key] == 0, f"{key} should be 0 (no weights block)"
     component_sum = sum(v for k, v in components.items() if k != "total")
     assert components["total"] == component_sum
-
-
-# ---------------------------------------------------------------------------
-# Optional integration: live-DB sum invariant. Only runs when DATABASE_URL
-# is set and the live ml/output/lottery_score_weights.json exists. Skipped
-# in CI / fresh clones so the unit tests above don't depend on infra.
-# ---------------------------------------------------------------------------
-
-
-def test_live_db_sum_invariant():
-    if "DATABASE_URL" not in os.environ:
-        pytest.skip("DATABASE_URL not set — skipping live-DB integration test")
-    weights_path = (
-        Path(__file__).resolve().parent.parent / "output" / "lottery_score_weights.json"
-    )
-    if not weights_path.exists():
-        pytest.skip(f"Weights JSON not found at {weights_path}")
-
-    try:
-        import psycopg2  # noqa: PLC0415
-    except ImportError:
-        pytest.skip("psycopg2 not available")
-
-    weights = json.loads(weights_path.read_text())
-    conn = psycopg2.connect(os.environ["DATABASE_URL"])
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT underlying_symbol, tod, dte, option_type,
-                   trigger_vol_to_oi_window, gamma_at_trigger, trigger_ask_pct,
-                   score
-            FROM lottery_finder_fires
-            WHERE score IS NOT NULL
-            ORDER BY random()
-            LIMIT 100
-            """
-        )
-        rows = cur.fetchall()
-    finally:
-        conn.close()
-
-    mismatches: list[dict] = []
-    for ticker, tod, dte, ot, vol_oi, gamma, ask_pct, score in rows:
-        fire = {
-            "ticker": ticker,
-            "tod": tod,
-            "dte": int(dte),
-            "option_type": ot,
-            "vol_oi_window": (float(vol_oi) if vol_oi is not None else None),
-            "gamma": float(gamma) if gamma is not None else None,
-            "ask_pct": float(ask_pct) if ask_pct is not None else None,
-        }
-        components = compute_components(fire, weights)
-        if components["total"] != int(score):
-            mismatches.append(
-                {
-                    "expected": int(score),
-                    "got": components["total"],
-                    "diff": components["total"] - int(score),
-                    "fire": {**fire, "components": components},
-                }
-            )
-
-    # Allow up to 5% mismatch rate. The bulk-fix invariant (Phase 4 backfill)
-    # already proves the formula is right; small drift can come from fires
-    # written by the live cron between when we snapshot the weights JSON and
-    # when we query the DB (the cron writes new fires every 5 min). Systemic
-    # drift (>5%) would mean the helper is structurally wrong.
-    mismatch_rate = len(mismatches) / max(len(rows), 1)
-    assert mismatch_rate <= 0.05, (
-        f"{len(mismatches)}/{len(rows)} fires mismatch component-sum vs score "
-        f"(rate {mismatch_rate:.1%}). First 3 mismatches: {mismatches[:3]}"
-    )
