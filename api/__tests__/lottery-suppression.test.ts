@@ -1,9 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import {
-  neon,
-  SqlTemplate,
-  type NeonQueryFunction,
-} from '@neondatabase/serverless';
+import { describe, it, expect, vi } from 'vitest';
+import { SqlTemplate, type NeonQueryFunction } from '@neondatabase/serverless';
 import {
   keptSuppressionSql,
   SYMBOL_ALIAS_WHITELIST,
@@ -13,7 +9,15 @@ import {
 // A real neon query function. No connection is ever opened — every test only
 // BUILDS the tagged-template query and inspects the parameterized form via
 // `SqlTemplate.toParameterizedQuery`, exactly the path the driver takes before
-// it would send the query over HTTP.
+// it would send the query over HTTP. The global setup mock blocks neon() for
+// every test file (no test may reach a database), so this file takes the real
+// one from importActual and makes sure an awaited query could not fetch.
+const { neon, neonConfig } = await vi.importActual<
+  typeof import('@neondatabase/serverless')
+>('@neondatabase/serverless');
+neonConfig.fetchFunction = () => {
+  throw new Error('this test builds queries only; it must not run one');
+};
 const db: NeonQueryFunction<false, false> = neon(
   'postgresql://u:p@localhost/db',
 );
