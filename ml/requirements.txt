@@ -29,6 +29,7 @@ python-dateutil==2.9.0.post0
 requests==2.34.2
 s3transfer==0.19.3
 scikit-learn==1.8.0
+# No upper bound: src/utils make_engine names the psycopg2 driver, so SQLAlchemy 2.1's psycopg 3 default for a bare postgresql:// URL is never used.
 sqlalchemy>=2.0
 scipy==1.17.1
 seaborn==0.13.2
