@@ -33,8 +33,8 @@ MESSAGE = "tests must not connect to a database"
 def test_psycopg2_connect_is_blocked_and_recorded(db_block_attempts):
     with pytest.raises(DatabaseAccessBlocked, match=MESSAGE):
         psycopg2.connect(DSN)
-    assert db_block_attempts == ["psycopg2.connect"]
-    db_block_attempts.clear()
+    assert db_block_attempts.new == ["psycopg2.connect"]
+    db_block_attempts.discard()
 
 
 def test_blocked_error_is_not_an_exception():
@@ -47,7 +47,7 @@ def test_message_does_not_echo_the_dsn(db_block_attempts):
     secret_dsn = "postgresql://user:hunter2@invalid.invalid/db"
     with pytest.raises(DatabaseAccessBlocked) as caught:
         psycopg2.connect(secret_dsn)
-    db_block_attempts.clear()
+    db_block_attempts.discard()
     assert "hunter2" not in str(caught.value)
 
 
@@ -63,8 +63,24 @@ def _engine_connect():
 def test_pool_and_sqlalchemy_paths_are_blocked(attempt, db_block_attempts):
     with pytest.raises(DatabaseAccessBlocked, match=MESSAGE):
         attempt()
-    assert db_block_attempts == ["psycopg2.connect"]
-    db_block_attempts.clear()
+    assert db_block_attempts.new == ["psycopg2.connect"]
+    db_block_attempts.discard()
+
+
+def test_a_bare_postgresql_url_cannot_reach_a_database(db_block_attempts):
+    # SQLAlchemy 2.1 resolves a bare postgresql:// URL to psycopg 3, which is
+    # not installed here: the engine fails with ModuleNotFoundError. SQLAlchemy
+    # 2.0 resolves it to psycopg2, which hits the block. A venv that has
+    # psycopg 3 hits its block. Whichever driver wins, no connection is made.
+    try:
+        create_engine("postgresql://x@invalid.invalid/db").connect()
+    except ModuleNotFoundError:
+        assert db_block_attempts.new == []
+    except DatabaseAccessBlocked:
+        assert len(db_block_attempts.new) == 1
+        db_block_attempts.discard()
+    else:  # pragma: no cover - would mean a real connection succeeded
+        pytest.fail("a bare postgresql:// URL connected to invalid.invalid")
 
 
 def test_except_exception_in_library_code_does_not_swallow_it(
@@ -77,8 +93,8 @@ def test_except_exception_in_library_code_does_not_swallow_it(
     monkeypatch.setattr(utils, "load_env", lambda: {"DATABASE_URL": DSN})
     with pytest.raises(DatabaseAccessBlocked, match=MESSAGE):
         utils._upsert_findings_db({"a": 1})
-    assert db_block_attempts == ["psycopg2.connect"]
-    db_block_attempts.clear()
+    assert db_block_attempts.new == ["psycopg2.connect"]
+    db_block_attempts.discard()
 
 
 def test_env_names_cover_the_database_and_writable_stores():
@@ -175,8 +191,8 @@ def test_asyncpg_connect_and_create_pool_are_blocked(tmp_path):
                 asyncpg.connect("postgresql://x@invalid.invalid/db")
             with pytest.raises(BaseException, match="tests must not connect"):
                 asyncpg.create_pool("postgresql://x@invalid.invalid/db")
-            assert db_block_attempts == ["asyncpg.connect", "asyncpg.create_pool"]
-            db_block_attempts.clear()
+            assert db_block_attempts.new == ["asyncpg.connect", "asyncpg.create_pool"]
+            db_block_attempts.discard()
         """,
         extra_files={
             "asyncpg/__init__.py": """
@@ -189,3 +205,76 @@ def test_asyncpg_connect_and_create_pool_are_blocked(tmp_path):
         },
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_psycopg3_connect_points_are_blocked(tmp_path):
+    # psycopg 3 is not an ml dependency, so the probe brings a stand-in with
+    # the real module's shape: a Connection class, an AsyncConnection class,
+    # and a module-level `connect` bound to Connection.connect.
+    result = _run_probe(
+        tmp_path,
+        """
+        import psycopg
+        import pytest
+
+        def test_every_entry_point_is_blocked(db_block_attempts):
+            for call in (
+                lambda: psycopg.connect("postgresql://x@invalid.invalid/db"),
+                lambda: psycopg.Connection.connect("postgresql://x@invalid.invalid/db"),
+                lambda: psycopg.AsyncConnection.connect("postgresql://x@invalid.invalid/db"),
+            ):
+                with pytest.raises(BaseException, match="tests must not connect"):
+                    call()
+            assert db_block_attempts.new == [
+                "psycopg.connect",
+                "psycopg.Connection.connect",
+                "psycopg.AsyncConnection.connect",
+            ]
+            db_block_attempts.discard()
+        """,
+        extra_files={
+            "psycopg/__init__.py": """
+                class Connection:
+                    @classmethod
+                    def connect(cls, *args, **kwargs):
+                        raise AssertionError("real psycopg connect was reached")
+
+                class AsyncConnection:
+                    @classmethod
+                    async def connect(cls, *args, **kwargs):
+                        raise AssertionError("real psycopg async connect was reached")
+
+                connect = Connection.connect
+            """
+        },
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_discarding_in_a_self_test_does_not_hide_an_earlier_offender(tmp_path):
+    # test_a swallows the block; test_b is a well-behaved self-test that
+    # discards its own attempt. Wiping the whole log (the old `.clear()`)
+    # would erase test_a's entry and turn the session green.
+    result = _run_probe(
+        tmp_path,
+        """
+        import psycopg2
+        import pytest
+        from conftest import DatabaseAccessBlocked
+
+        def test_a_swallows_the_block():
+            try:
+                psycopg2.connect("postgresql://x@invalid.invalid/db")
+            except BaseException:
+                pass
+
+        def test_b_self_test_discards_its_own_attempt(db_block_attempts):
+            with pytest.raises(DatabaseAccessBlocked):
+                psycopg2.connect("postgresql://x@invalid.invalid/db")
+            assert db_block_attempts.new == ["psycopg2.connect"]
+            db_block_attempts.discard()
+        """,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert "tried 1 time(s)" in output
