@@ -168,16 +168,26 @@ def test_no_signal_when_history_too_short():
 
 def test_no_signal_when_no_swings(monkeypatch):
     """Steady uptrend with no pivots — no signal."""
-    rows = [(100 + i * 0.5, 100 + i * 0.5 + 0.5, 100 + i * 0.5 - 0.5, 100 + i * 0.5 + 0.25)
-            for i in range(50)]
+    rows = [
+        (100 + i * 0.5, 100 + i * 0.5 + 0.5, 100 + i * 0.5 - 0.5, 100 + i * 0.5 + 0.25)
+        for i in range(50)
+    ]
     bars = _ohlcv(rows)
     decision_ts = bars["ts"].iloc[-1] + pd.Timedelta(minutes=1)
 
     from setups_backtest.evaluators import setup_6b_cvd_swing_divergence as mod
 
-    monkeypatch.setattr(mod, "_get_es_tbbo", lambda c, t: pd.DataFrame(
-        {"minute": bars["ts"], "buy_vol": [100] * len(bars), "sell_vol": [100] * len(bars)}
-    ))
+    monkeypatch.setattr(
+        mod,
+        "_get_es_tbbo",
+        lambda c, t: pd.DataFrame(
+            {
+                "minute": bars["ts"],
+                "buy_vol": [100] * len(bars),
+                "sell_vol": [100] * len(bars),
+            }
+        ),
+    )
 
     ctx = _Setup6bContext(conn=None)
     assert EVALUATOR.evaluate_minute(decision_ts, ctx, bars) is None

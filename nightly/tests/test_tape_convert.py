@@ -28,6 +28,7 @@ from tape_convert import (
     _gate_problems,
     convert_zip,
     plausibility_warnings,
+    session_window,
 )
 
 SESSION = date(2026, 7, 31)
@@ -668,25 +669,25 @@ JUNE_15 = date(2026, 6, 15)
 OPEN, CLOSE = _et(JUNE_15, 9, 30), _et(JUNE_15, 18, 4, 15)
 MEDIAN = 1_000_000
 # Ten days whose median is exactly MEDIAN.
-TRAILING = [MEDIAN + 1_000 * d for d in (-100, -50, -20, -10, 0, 0, 10, 50, 100, 200)]
+BASELINE = [MEDIAN + 1_000 * d for d in (-100, -50, -20, -10, 0, 0, 10, 50, 100, 200)]
 
 
 @pytest.mark.parametrize(
-    ("rows", "trailing", "warns"),
+    ("rows", "baseline", "warns"),
     [
-        pytest.param(640_000, TRAILING, True, id="0.64-warns"),
-        pytest.param(650_000, TRAILING, False, id="0.65-exactly-does-not"),
-        pytest.param(660_000, TRAILING, False, id="0.66-does-not"),
-        pytest.param(640_000, TRAILING[:9], False, id="fewer-than-10-trailing"),
+        pytest.param(640_000, BASELINE, True, id="0.64-warns"),
+        pytest.param(650_000, BASELINE, False, id="0.65-exactly-does-not"),
+        pytest.param(660_000, BASELINE, False, id="0.66-does-not"),
+        pytest.param(640_000, BASELINE[:9], False, id="fewer-than-10-baseline"),
         pytest.param(0, [], False, id="no-history"),
     ],
 )
-def test_plausibility_ratio(rows: int, trailing: list[int], warns: bool) -> None:
-    assert len(TRAILING) == 10
-    warnings = plausibility_warnings(rows, trailing, OPEN, CLOSE, JUNE_15)
+def test_plausibility_ratio(rows: int, baseline: list[int], warns: bool) -> None:
+    assert len(BASELINE) == 10
+    warnings = plausibility_warnings(rows, baseline, OPEN, CLOSE, JUNE_15)
 
     if warns:
-        assert warnings == ["rows 640,000 below 0.65 x the trailing median 1,000,000 of 10 day(s)"]
+        assert warnings == ["rows 640,000 below 0.65 x the baseline median 1,000,000 of 10 day(s)"]
     else:
         assert warnings == []
 
@@ -740,7 +741,7 @@ JUNE_END = "executed_at ends at or after the session window end (2026-06-15T20:0
 def test_plausibility_time_window(
     session: date, low: datetime | None, high: datetime | None, expected: list[str]
 ) -> None:
-    warnings = plausibility_warnings(MEDIAN, TRAILING, low, high, session)
+    warnings = plausibility_warnings(MEDIAN, BASELINE, low, high, session)
 
     assert warnings == expected
     # The warning names the crossed edge, never the observed value (logs and Sentry
@@ -755,10 +756,26 @@ def test_plausibility_time_window(
             assert all(text not in w for w in warnings), text
 
 
+@pytest.mark.parametrize(
+    ("session", "start", "end"),
+    [
+        pytest.param(JUNE_15, "2026-06-14T20:00:00-04:00", "2026-06-15T20:00:00-04:00", id="edt"),
+        pytest.param(
+            date(2026, 1, 2), "2026-01-01T20:00:00-05:00", "2026-01-02T20:00:00-05:00", id="est"
+        ),
+    ],
+)
+def test_session_window_is_the_tapes_own_daily_boundary(
+    session: date, start: str, end: str
+) -> None:
+    # tape_job's wrong-day check and the plausibility warnings share this window.
+    assert tuple(t.isoformat() for t in session_window(session)) == (start, end)
+
+
 def test_plausibility_reports_both_kinds_together() -> None:
-    warnings = plausibility_warnings(100, TRAILING, OPEN, _et(JUNE_15, 20, 30), JUNE_15)
+    warnings = plausibility_warnings(100, BASELINE, OPEN, _et(JUNE_15, 20, 30), JUNE_15)
 
     assert warnings == [
-        "rows 100 below 0.65 x the trailing median 1,000,000 of 10 day(s)",
+        "rows 100 below 0.65 x the baseline median 1,000,000 of 10 day(s)",
         JUNE_END,
     ]

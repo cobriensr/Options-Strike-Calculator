@@ -76,8 +76,7 @@ def _compute_threshold(conn) -> tuple[float, int]:
     """p95 of |trailing-1h OFI| sampled at every RTH minute of the training split."""
     days = data_loaders.list_trading_days(conn, TRAIN_START, TRAIN_END)
     log.info(
-        "Setup 1: computing |OFI| p95 from %d training days "
-        "(%s -> %s)...",
+        "Setup 1: computing |OFI| p95 from %d training days (%s -> %s)...",
         len(days),
         TRAIN_START,
         TRAIN_END,
@@ -100,18 +99,18 @@ def _compute_threshold(conn) -> tuple[float, int]:
         sub = tbbo.loc[rth_mask].sort_values("minute").reset_index(drop=True)
         if len(sub) < OFI_WINDOW_MIN:
             continue
-        buy_60 = sub["buy_vol"].rolling(OFI_WINDOW_MIN, min_periods=OFI_WINDOW_MIN).sum()
-        sell_60 = sub["sell_vol"].rolling(
-            OFI_WINDOW_MIN, min_periods=OFI_WINDOW_MIN
-        ).sum()
+        buy_60 = (
+            sub["buy_vol"].rolling(OFI_WINDOW_MIN, min_periods=OFI_WINDOW_MIN).sum()
+        )
+        sell_60 = (
+            sub["sell_vol"].rolling(OFI_WINDOW_MIN, min_periods=OFI_WINDOW_MIN).sum()
+        )
         denom = buy_60 + sell_60
         ofi = ((buy_60 - sell_60) / denom.where(denom > 0)).abs()
         samples.append(ofi.dropna().to_numpy())
 
     if not samples:
-        log.warning(
-            "Setup 1: no training samples computed; threshold will be NaN."
-        )
+        log.warning("Setup 1: no training samples computed; threshold will be NaN.")
         return float("nan"), 0
 
     combined = np.concatenate(samples)
@@ -137,9 +136,7 @@ def _load_cl_bars(conn, pg, start: date, end: date) -> pd.DataFrame:
     """
     df = data_loaders.load_cross_asset_minute(conn, pg, "CL", start, end)
     if not df.empty:
-        log.info(
-            "Setup 1: loaded %d CL bars for macro-stress disqualifier.", len(df)
-        )
+        log.info("Setup 1: loaded %d CL bars for macro-stress disqualifier.", len(df))
     elif pg is None:
         log.warning(
             "Setup 1: CL not in OHLCV parquet and no Neon pg connection; "
@@ -171,9 +168,7 @@ def _get_tbbo_for_day(
     return ctx.tbbo_cache[key]
 
 
-def _get_prior_profile(
-    ctx: _Setup1Context, conn, today: date
-) -> dict[str, float]:
+def _get_prior_profile(ctx: _Setup1Context, conn, today: date) -> dict[str, float]:
     """Lazy-load yesterday's NQ volume profile (POC/VAH/VAL).
 
     Delegates to the shared ``data_loaders.prior_session_profile`` helper so
@@ -302,7 +297,11 @@ class _NqOfiExtremeEvaluator:
         # Target candidates: yesterday's VAH/VAL on favorable side, or last_close + 2*ATR.
         profile = _get_prior_profile(ctx, ctx.conn, today)
 
-        target_atr = last_close + sign * ATR_TARGET_MULTIPLE * atr_val if np.isfinite(atr_val) else float("nan")
+        target_atr = (
+            last_close + sign * ATR_TARGET_MULTIPLE * atr_val
+            if np.isfinite(atr_val)
+            else float("nan")
+        )
         target_profile = (
             profile.get("vah", float("nan"))
             if direction is Direction.LONG

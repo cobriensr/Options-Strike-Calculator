@@ -10,6 +10,7 @@ Outputs:
 - ml/reports/iv-anomaly-cohort-2026-04-25.md
 - ml/plots/iv-anomaly-cohort/*.png
 """
+
 from __future__ import annotations
 
 import json
@@ -51,9 +52,22 @@ def load_label_and_pick() -> pd.DataFrame:
 
     # Compound key per (ticker, strike, side, expiry, date)
     df = df.sort_values("alert_ct")
-    df["compound_key"] = df["ticker"] + "|" + df["strike"].astype(str) + "|" + df["side"] + "|" + df["expiry"].astype(str)
+    df["compound_key"] = (
+        df["ticker"]
+        + "|"
+        + df["strike"].astype(str)
+        + "|"
+        + df["side"]
+        + "|"
+        + df["expiry"].astype(str)
+    )
     df["firing_index"] = df.groupby(["compound_key", "date"]).cumcount() + 1
-    counts = df.groupby(["compound_key", "date"]).size().rename("firings_in_key_today").reset_index()
+    counts = (
+        df.groupby(["compound_key", "date"])
+        .size()
+        .rename("firings_in_key_today")
+        .reset_index()
+    )
     df = df.merge(counts, on=["compound_key", "date"])
     df["is_first_of_day"] = df["firing_index"] == 1
     df["is_single_firing"] = df["firings_in_key_today"] == 1
@@ -79,11 +93,15 @@ def aggregate_by(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
 def plot_per_day_winrate(df: pd.DataFrame, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     sub = df.dropna(subset=["best_pnl_pct"])
-    g = sub.groupby("date").agg(
-        n=("anomaly_id", "count"),
-        win_pct=("best_pnl_pct", lambda x: float((x > 0).mean() * 100)),
-        mean_dollar=("best_dollar", "mean"),
-    ).reset_index()
+    g = (
+        sub.groupby("date")
+        .agg(
+            n=("anomaly_id", "count"),
+            win_pct=("best_pnl_pct", lambda x: float((x > 0).mean() * 100)),
+            mean_dollar=("best_dollar", "mean"),
+        )
+        .reset_index()
+    )
     fig, axes = plt.subplots(2, 1, figsize=(12, 7))
     axes[0].bar(range(len(g)), g["win_pct"], color="#1f77b4")
     axes[0].set_xticks(range(len(g)))
@@ -107,28 +125,53 @@ def plot_per_day_winrate(df: pd.DataFrame, out_dir: Path) -> None:
 
 def main() -> None:
     df = load_label_and_pick()
-    print(f"Loaded {len(df):,} alerts, {df['compound_key'].nunique():,} unique compound keys.")
+    print(
+        f"Loaded {len(df):,} alerts, {df['compound_key'].nunique():,} unique compound keys."
+    )
 
     findings = {
         "n_total": int(len(df)),
         "n_compound_keys": int(df["compound_key"].nunique()),
         "n_single_firing": int(df["is_single_firing"].sum()),
         # Q: first vs Nth firing of same key
-        "by_first_of_day": aggregate_by(df, ["is_first_of_day", "side"]).reset_index().to_dict(orient="records"),
-        "by_single_firing": aggregate_by(df, ["is_single_firing", "side"]).reset_index().to_dict(orient="records"),
+        "by_first_of_day": aggregate_by(df, ["is_first_of_day", "side"])
+        .reset_index()
+        .to_dict(orient="records"),
+        "by_single_firing": aggregate_by(df, ["is_single_firing", "side"])
+        .reset_index()
+        .to_dict(orient="records"),
         # Q: per-day homogeneity
         "by_date": aggregate_by(df, ["date"]).reset_index().to_dict(orient="records"),
-        "by_date_regime_side": aggregate_by(df, ["date", "regime", "side"]).reset_index().to_dict(orient="records"),
+        "by_date_regime_side": aggregate_by(df, ["date", "regime", "side"])
+        .reset_index()
+        .to_dict(orient="records"),
         # Q: alerts-on-day density
         "by_density_quartile": aggregate_by(
-            df.assign(density_q=pd.qcut(df["alerts_on_day"], 4, labels=["q1_lowest", "q2", "q3", "q4_highest"], duplicates="drop")),
+            df.assign(
+                density_q=pd.qcut(
+                    df["alerts_on_day"],
+                    4,
+                    labels=["q1_lowest", "q2", "q3", "q4_highest"],
+                    duplicates="drop",
+                )
+            ),
             ["density_q", "side"],
-        ).reset_index().to_dict(orient="records"),
+        )
+        .reset_index()
+        .to_dict(orient="records"),
         # Q: firing index buckets
         "by_firing_index": aggregate_by(
-            df.assign(fi_bucket=pd.cut(df["firing_index"], bins=[0, 1, 5, 20, np.inf], labels=["1st", "2nd-5th", "6th-20th", "21st+"])),
+            df.assign(
+                fi_bucket=pd.cut(
+                    df["firing_index"],
+                    bins=[0, 1, 5, 20, np.inf],
+                    labels=["1st", "2nd-5th", "6th-20th", "21st+"],
+                )
+            ),
             ["fi_bucket", "side"],
-        ).reset_index().to_dict(orient="records"),
+        )
+        .reset_index()
+        .to_dict(orient="records"),
     }
     OUT_FINDINGS.parent.mkdir(parents=True, exist_ok=True)
     OUT_FINDINGS.write_text(json.dumps(findings, indent=2, default=to_jsonable))
@@ -138,8 +181,10 @@ def main() -> None:
     OUT_REPORT.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
     lines.append("# IV-Anomaly Cohort (Phase D3) — 2026-04-25")
-    lines.append(f"**Sample:** {len(df):,} alerts, {df['compound_key'].nunique():,} unique compound keys, "
-                 f"{int(df['is_single_firing'].sum()):,} single-firing.")
+    lines.append(
+        f"**Sample:** {len(df):,} alerts, {df['compound_key'].nunique():,} unique compound keys, "
+        f"{int(df['is_single_firing'].sum()):,} single-firing."
+    )
     lines.append("")
 
     lines.append("## Per-day win rate")
@@ -152,7 +197,7 @@ def main() -> None:
     for date, row in by_date.iterrows():
         lines.append(
             f"| {date} | {int(row['n']):,} | {row['win_pct']:.1f}% | "
-            f"{row['mean_pct']*100:.1f}% | ${row['mean_dollar']:,.0f} |"
+            f"{row['mean_pct'] * 100:.1f}% | ${row['mean_dollar']:,.0f} |"
         )
     lines.append("")
 
@@ -160,35 +205,47 @@ def main() -> None:
     lines.append("")
     lines.append("| is_first_of_day | side | n | win% | mean% | mean $ |")
     lines.append("| --- | --- | ---: | ---: | ---: | ---: |")
-    for (is_first, side), row in aggregate_by(df, ["is_first_of_day", "side"]).iterrows():
+    for (is_first, side), row in aggregate_by(
+        df, ["is_first_of_day", "side"]
+    ).iterrows():
         lines.append(
             f"| {is_first} | {side} | {int(row['n']):,} | {row['win_pct']:.1f}% | "
-            f"{row['mean_pct']*100:.1f}% | ${row['mean_dollar']:,.0f} |"
+            f"{row['mean_pct'] * 100:.1f}% | ${row['mean_dollar']:,.0f} |"
         )
     lines.append("")
 
     lines.append("## Single-firing keys vs multi-firing")
     lines.append("")
-    lines.append("Hypothesis: a key that fires once and never repeats may be noise vs a persistent setup.")
+    lines.append(
+        "Hypothesis: a key that fires once and never repeats may be noise vs a persistent setup."
+    )
     lines.append("")
     lines.append("| is_single_firing | side | n | win% | mean% | mean $ |")
     lines.append("| --- | --- | ---: | ---: | ---: | ---: |")
-    for (is_single, side), row in aggregate_by(df, ["is_single_firing", "side"]).iterrows():
+    for (is_single, side), row in aggregate_by(
+        df, ["is_single_firing", "side"]
+    ).iterrows():
         lines.append(
             f"| {is_single} | {side} | {int(row['n']):,} | {row['win_pct']:.1f}% | "
-            f"{row['mean_pct']*100:.1f}% | ${row['mean_dollar']:,.0f} |"
+            f"{row['mean_pct'] * 100:.1f}% | ${row['mean_dollar']:,.0f} |"
         )
     lines.append("")
 
     lines.append("## Firing-index bucket (1st, 2-5th, 6-20th, 21+)")
     lines.append("")
-    fi = df.assign(fi_bucket=pd.cut(df["firing_index"], bins=[0, 1, 5, 20, np.inf], labels=["1st", "2nd-5th", "6th-20th", "21st+"]))
+    fi = df.assign(
+        fi_bucket=pd.cut(
+            df["firing_index"],
+            bins=[0, 1, 5, 20, np.inf],
+            labels=["1st", "2nd-5th", "6th-20th", "21st+"],
+        )
+    )
     lines.append("| fi_bucket | side | n | win% | mean% | mean $ |")
     lines.append("| --- | --- | ---: | ---: | ---: | ---: |")
     for (fi_bucket, side), row in aggregate_by(fi, ["fi_bucket", "side"]).iterrows():
         lines.append(
             f"| {fi_bucket} | {side} | {int(row['n']):,} | {row['win_pct']:.1f}% | "
-            f"{row['mean_pct']*100:.1f}% | ${row['mean_dollar']:,.0f} |"
+            f"{row['mean_pct'] * 100:.1f}% | ${row['mean_dollar']:,.0f} |"
         )
     lines.append("")
 
@@ -196,13 +253,20 @@ def main() -> None:
     lines.append("")
     lines.append("Days where lots of alerts fire across all tickers vs quiet days.")
     lines.append("")
-    dq = df.assign(density_q=pd.qcut(df["alerts_on_day"], 4, labels=["q1_lowest", "q2", "q3", "q4_highest"], duplicates="drop"))
+    dq = df.assign(
+        density_q=pd.qcut(
+            df["alerts_on_day"],
+            4,
+            labels=["q1_lowest", "q2", "q3", "q4_highest"],
+            duplicates="drop",
+        )
+    )
     lines.append("| density_q | side | n | win% | mean% | mean $ |")
     lines.append("| --- | --- | ---: | ---: | ---: | ---: |")
     for (q, side), row in aggregate_by(dq, ["density_q", "side"]).iterrows():
         lines.append(
             f"| {q} | {side} | {int(row['n']):,} | {row['win_pct']:.1f}% | "
-            f"{row['mean_pct']*100:.1f}% | ${row['mean_dollar']:,.0f} |"
+            f"{row['mean_pct'] * 100:.1f}% | ${row['mean_dollar']:,.0f} |"
         )
     lines.append("")
 

@@ -28,7 +28,9 @@ class SmokeEvaluator:
         del conn, pg, start, end
         return None
 
-    def evaluate_minute(self, now: pd.Timestamp, ctx, bars: pd.DataFrame) -> Signal | None:
+    def evaluate_minute(
+        self, now: pd.Timestamp, ctx, bars: pd.DataFrame
+    ) -> Signal | None:
         del ctx  # No prepared context needed for the stub.
         if len(bars) == 2:
             last = float(bars.iloc[-1]["close"])

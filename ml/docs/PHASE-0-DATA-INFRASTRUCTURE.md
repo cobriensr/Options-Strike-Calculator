@@ -278,7 +278,7 @@ import pandas as pd
 resp = requests.get(
     "https://your-app.vercel.app/api/ml/export",
     params={"minFeatureCompleteness": 0.5, "format": "json"},
-    cookies={"owner": "YOUR_COOKIE"}
+    cookies={"owner": "YOUR_COOKIE"},
 )
 df = pd.DataFrame(resp.json())
 print(f"Dataset: {len(df)} days, {len(df.columns)} features")

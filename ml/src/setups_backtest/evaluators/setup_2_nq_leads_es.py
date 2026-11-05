@@ -147,13 +147,14 @@ class _NqLeadsEsEvaluator:
         nq_window = nq_ohlcv[
             (nq_ohlcv["ts"] >= window_start) & (nq_ohlcv["ts"] < now)
         ].copy()
-        if len(es_window) < CORR_WINDOW_MIN // 2 or len(nq_window) < CORR_WINDOW_MIN // 2:
+        if (
+            len(es_window) < CORR_WINDOW_MIN // 2
+            or len(nq_window) < CORR_WINDOW_MIN // 2
+        ):
             return None
         es_ret = features.returns_minute(es_window)
         nq_ret = features.returns_minute(nq_window)
-        aligned = pd.concat(
-            [es_ret.rename("es"), nq_ret.rename("nq")], axis=1
-        ).dropna()
+        aligned = pd.concat([es_ret.rename("es"), nq_ret.rename("nq")], axis=1).dropna()
         if len(aligned) < CORR_WINDOW_MIN // 2:
             return None
         corr = float(aligned["es"].corr(aligned["nq"]))

@@ -326,6 +326,15 @@ export default withCronCheckin('fetch-vol-surface', async (req, res) => {
     Sentry.setTag('cron.job', 'fetch-vol-surface');
     Sentry.captureException(err);
     logger.error({ err }, 'fetch-vol-surface error');
+    // Same shape withCronInstrumentation sends for a throw: `message` is a
+    // top-level Axiom column, `error` lands in `meta`.
+    const message = err instanceof Error ? err.message : String(err);
+    await reportCronRun('fetch-vol-surface', {
+      status: 'error',
+      message,
+      error: message,
+      durationMs: Date.now() - startTime,
+    });
     return res.status(500).json({ error: 'Internal error' });
   }
 });

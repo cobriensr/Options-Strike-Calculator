@@ -32,14 +32,16 @@ A worktree is removed only when every check below passes. The checks run in this
    - a freshly created worktree an agent is about to use, which has no commits and is clean;
    - a worktree between phases just after a cherry-pick, which is merged and clean.
 9. **Clean.** `git --no-optional-locks status --porcelain --untracked-files=normal --ignore-submodules=none` prints nothing. The `--no-optional-locks` flag stops the check from refreshing the index, which would reset the idle clock. The explicit modes override any config that would hide changes.
-10. **No scratch files.** `git ls-files --others --ignored --exclude-standard -- docs/tmp` prints nothing. `docs/tmp/` is gitignored, so `git status` is blind to it, but sessions put scratch reports there and `git worktree remove` would delete them. Generated files there also keep a worktree, such as `__pycache__/` or the `outputs/*.csv` files that `.gitignore` lists. That errs on the safe side, and the reason printed names them. Clear `docs/tmp/` to let the worktree prune.
-11. **HEAD unchanged.** HEAD, read again after the other checks, still matches the HEAD the checks ran on. This catches a commit made during the run, including on a detached HEAD.
+10. **No operation in progress.** None of `rebase-merge`, `rebase-apply`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `sequencer` and `BISECT_LOG` exists in the worktree's admin dir (`git rev-parse --absolute-git-dir`). A `rebase -i` stopped at `break` leaves a clean tree and a HEAD at the commit it rebases onto, which rule 6 reads as merged, while the commits still to replay exist only in `rebase-merge/git-rebase-todo`. Removing the worktree would lose that state. `sequencer/` is the queue of a cherry-pick or revert of several commits: git leaves it alone, with a clean tree and no `CHERRY_PICK_HEAD` or `REVERT_HEAD`, when the sequence stops on a pick or revert that changes nothing, or when a commit is made in the middle of it. Added 2026-11-04 during the review of `scripts/session-status.mjs`, which asks the same questions through the exported `checkInUse` (rules 3 and 4) and `checkSettled` (rules 8, 9, 10 and 11), and through `pruneName` for the `.worktrees/` scope above, so "safe to remove" has one definition. `REVERT_HEAD` and `sequencer` were added in the follow-up round (7c-2); the first version missed them.
+11. **No scratch files.** `git ls-files --others --ignored --exclude-standard -- docs/tmp` prints nothing. `docs/tmp/` is gitignored, so `git status` is blind to it, but sessions put scratch reports there and `git worktree remove` would delete them. Generated files there also keep a worktree, such as `__pycache__/` or the `outputs/*.csv` files that `.gitignore` lists. That errs on the safe side, and the reason printed names them. Clear `docs/tmp/` to let the worktree prune.
+12. **HEAD unchanged.** HEAD, read again after the other checks, still matches the HEAD the checks ran on. This catches a commit made during the run, including on a detached HEAD.
 
 When every check passes, the script runs these steps:
 
 1. `git worktree remove <path>` without `--force`. git runs its own check first, but that check honours `status.showUntrackedFiles`: when it is set to `no`, git deletes untracked files. The real guard is rule 9's explicit `--untracked-files=normal` status.
-2. `git branch -D <branch>`, if the worktree was on a branch and the branch still points at the HEAD that passed the checks. If it moved, the branch is kept. Rules 6 and 7 already showed it is merged. The script prints the old SHA so the branch can be recovered.
-3. `git worktree prune`, once at the end of the run.
+2. Clear what git left behind, if the folder still exists. On Windows `git worktree remove` exits 0 and prints nothing, but leaves an ignored `node_modules` junction and its folder (git 2.55.0.windows.5). git has already dropped the worktree, so without this step the run would report "removed", no later run would list the folder, and the name could not be reused. Only links are deleted, and never followed: a junction's target is the main checkout's `node_modules`. The calls are non-recursive (`lstat` to tell a link from anything else, `unlink` on the link itself, `rmdir` on the folder once it is empty); nothing may walk through a link. If anything but a link is left, or a delete fails, the folder is kept and the result line says so, as an error, instead of a clean removal; the branch is kept.
+3. `git branch -D <branch>`, if the worktree was on a branch and the branch still points at the HEAD that passed the checks. If it moved, the branch is kept. Rules 6 and 7 already showed it is merged. The script prints the old SHA so the branch can be recovered.
+4. `git worktree prune`, once at the end of the run.
 
 A worktree that another run already removed counts as removed, not as a failure, and its branch is left to the run that removed it. That covers two sessions starting at the same moment. A removal that stops partway is an error: git deletes the `.git` file and admin entry, then stops at a file it cannot delete, such as a locked file on Windows. The leftover directory is no longer a worktree, so no later run would list it. The branch is kept.
 
@@ -50,7 +52,7 @@ node scripts/prune-merged-worktrees.mjs [--dry-run] [--min-idle-hours N]
 npm run worktrees:prune -- [--dry-run] [--min-idle-hours N]
 ```
 
-The script prints one line per worktree: either `removed`, or `kept` with the reason. A dry run prints `would remove` instead of `removed`. It exits with 1 only if a git command failed, a missing local `main` included, and with 2 on bad arguments.
+The script prints one line per worktree: either `removed`, or `kept` with the reason. A dry run prints `would remove` instead of `removed`. It exits with 1 only if a git command or a clean-up failed, a missing local `main` included, and with 2 on bad arguments.
 
 `--min-idle-hours` lets the owner prune a worktree that has only just finished: use `--min-idle-hours 0`.
 
@@ -73,7 +75,7 @@ Git only. No tables, env vars or external APIs.
 
 - `MIN_IDLE_HOURS = 24`. This is the default picked on 2026-10-27. It is longer than a typical gap between phases and shorter than the 2–3 days over which worktrees piled up before this.
 - The base ref is the local `main`. A cherry-pick that has not been pushed yet still counts as merged.
-- The scratch folder checked by rule 10 is `docs/tmp`. That rule was added on 2026-10-27 during code review.
+- The scratch folder checked by rule 11 is `docs/tmp`. That rule was added on 2026-10-27 during code review.
 
 ## Open questions
 

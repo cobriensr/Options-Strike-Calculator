@@ -554,6 +554,18 @@ class TestMain:
         monkeypatch.setattr(calibration, "PLOTS_DIR", plots_dir)
         monkeypatch.setattr(calibration, "FINDINGS_DIR", findings_dir)
 
+        # main() merges the summary into REPO_ROOT / "ml" / "findings.json",
+        # the tracked file, so give it a throwaway repo root as well.
+        repo_root = plots_dir.parent
+        (repo_root / "ml").mkdir(exist_ok=True)
+        monkeypatch.setattr(calibration, "REPO_ROOT", repo_root)
+
+        # main() calls load_env(), which setdefaults every line of the real
+        # .env.local into os.environ; point it at a file that does not exist.
+        monkeypatch.setattr(
+            calibration, "ENV_LOCAL", repo_root / ".env.local.nonexistent"
+        )
+
         # Patch psycopg2.connect to avoid real DB
         mock_conn = MagicMock()
         mock_conn.__enter__ = MagicMock(return_value=mock_conn)
@@ -636,6 +648,11 @@ class TestMain:
         assert "total_rows" in loaded
         assert "calibration_score" in loaded
         assert "by_regime" in loaded
+
+        # The calibration block is merged into findings.json under the
+        # patched repo root, leaving the tracked ml/findings.json alone.
+        merged = json.loads((tmp_path / "ml" / "findings.json").read_text())
+        assert merged["calibration"]["total_rows"] == loaded["total_rows"]
 
     def test_main_warns_on_insufficient_rows(self, monkeypatch, capsys, tmp_path: Path):
         """

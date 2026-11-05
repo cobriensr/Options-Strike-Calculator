@@ -226,10 +226,16 @@ export async function awaitWinRateWarmup(
 }
 
 /**
- * Why a Take-It prefetch failed, for the cron's run status:
- *   - 'timeout': it passed PREFETCH_DEADLINE_MS (Neon slow);
- *   - 'transient': a retryable Neon error (a blip);
- *   - 'error': anything else, i.e. a broken query. A bug: the run reports
+ * Why loadTakeitDetectContext has no context for the run (so every row it
+ * writes has takeit_prob NULL), for the cron's run status. "Prefetch"
+ * covers everything loaded before scoring: the bundle and the sequential
+ * context.
+ *   - 'timeout': the prefetch passed PREFETCH_DEADLINE_MS (Neon slow);
+ *   - 'transient': a retryable Neon error (a blip), or Blob unreachable
+ *     with no bundle cached (getBundle's BundleUnavailable);
+ *   - 'error': anything else: a broken query, a bundle that fails
+ *     validation, or a Blob config problem such as a manifest with no
+ *     bundle for this alert type. A bug or bad config: the run reports
  *     'error'.
  */
 export interface TakeitPrefetchFailure {
@@ -244,15 +250,20 @@ export interface TakeitDetectContext {
 
 /**
  * Build the per-cron-run context: load the bundle and pre-fetch the three
- * sequential-feature inputs. Returns null if the bundle is unreachable or
+ * sequential-feature inputs. Returns null if the bundle is unavailable or
  * the prefetch fails — caller should proceed without takeit scoring
  * (heuristic INSERT only).
  *
- * The prefetch runs under PREFETCH_DEADLINE_MS. A failure (deadline or
- * rejection) sends one Sentry event per call, that is one per cron run (a
- * warning for a timeout or a Neon blip, an error for a broken query), and
- * is passed to `onPrefetchFailure` so the run can count it and report its
- * status.
+ * Every null return is passed to `onPrefetchFailure`, so the run can count
+ * it and report its status:
+ *   - no bundle: getBundle's own report (BundleUnavailable). The loader
+ *     already sent the Sentry event;
+ *   - an invalid bundle (getBundle throws): kind 'error', after one
+ *     Sentry capture here;
+ *   - the prefetch, which runs under PREFETCH_DEADLINE_MS: a failure
+ *     (deadline or rejection) sends one Sentry event per call, that is one
+ *     per cron run (a warning for a timeout or a Neon blip, an error for a
+ *     broken query).
  */
 export async function loadTakeitDetectContext(
   alertType: AlertType,
@@ -261,13 +272,18 @@ export async function loadTakeitDetectContext(
 ): Promise<TakeitDetectContext | null> {
   let bundle: TakeitBundle | null;
   try {
-    bundle = await getBundle(alertType);
+    bundle = await getBundle(alertType, onPrefetchFailure);
   } catch (err) {
     // BundleSchemaError is the only thrown case (fail-closed). For detect we
     // log + skip — silent miscompute is worse, but a broken alert flow is
-    // also bad. Log loud + skip the score, heuristic still lands.
+    // also bad. Log loud + skip the score, heuristic still lands. It is a
+    // bad upload or a bug, so the run reports 'error'.
     Sentry.captureException(err as Error, {
       extra: { alertType, where: 'loadTakeitDetectContext' },
+    });
+    onPrefetchFailure?.({
+      reason: err instanceof Error ? err.message : String(err),
+      kind: 'error',
     });
     return null;
   }

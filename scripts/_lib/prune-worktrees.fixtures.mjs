@@ -1,14 +1,15 @@
 /**
  * Fixtures for the prune-worktrees tests (prune-worktrees.test.mjs and
- * prune-worktrees.races.test.mjs): scratch repos with linked worktrees under
- * .worktrees/, commits, and backdated idle clocks. The generic temp-repo
- * helpers live in scratch-git.fixtures.mjs; they are re-exported here, so
- * the prune tests import every fixture from this one file. Not itself a test
- * file; vitest only collects *.test.mjs.
+ * prune-worktrees.races.test.mjs) and for session-status.cli.test.mjs, which
+ * runs the same prune checks for real: scratch repos with linked worktrees
+ * under .worktrees/, commits, and backdated idle clocks. The generic
+ * temp-repo helpers live in scratch-git.fixtures.mjs; they are re-exported
+ * here, so those tests import every fixture from this one file. Not itself a
+ * test file; vitest only collects *.test.mjs.
  */
 import { mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { adminDir, git } from './scratch-git.fixtures.mjs';
+import { adminDir, git, makeTempDir } from './scratch-git.fixtures.mjs';
 
 export {
   FIXTURE_TIMEOUT,
@@ -52,12 +53,39 @@ export function addWorktree(repo, where, branch) {
 /**
  * Commit one file in `cwd`; returns the new HEAD SHA. Stages only that file,
  * so committing in the main worktree never picks up .worktrees/.
+ *
+ * Every fixture commit carries one date (see PINNED_COMMIT_DATE), so two
+ * commits with the same parent, file, body and `message` are the same commit.
+ * `message` defaults to the file name; pass a different one when a second
+ * commit on a parent adds the same file with the same body.
  */
-export function commitFile(cwd, file, body) {
+export function commitFile(cwd, file, body, message = file) {
   writeFileSync(path.join(cwd, file), body);
   git(cwd, 'add', '--', file);
-  git(cwd, 'commit', '-q', '-m', file);
+  git(cwd, 'commit', '-q', '-m', message);
   return git(cwd, 'rev-parse', 'HEAD');
+}
+
+/**
+ * Start `git rebase -i <upstream>` in `wt` and stop it at once, at a `break`
+ * before its first pick. HEAD is then detached at upstream's tip, the tree is
+ * clean, and the commits still to replay are only in the worktree's admin
+ * dir (under rebase-merge/). `wt` needs a commit that upstream
+ * lacks, or git has nothing to rebase.
+ */
+export function pauseRebase(wt, upstream) {
+  const script = path.join(makeTempDir('break-first-'), 'break-first.cjs');
+  writeFileSync(
+    script,
+    [
+      "const fs = require('node:fs');",
+      'const todo = process.argv[2];',
+      "fs.writeFileSync(todo, 'break\\n' + fs.readFileSync(todo, 'utf8'));",
+      '',
+    ].join('\n'),
+  );
+  const editor = `node "${script.replaceAll('\\', '/')}"`;
+  git(wt, '-c', `sequence.editor=${editor}`, 'rebase', '-i', upstream);
 }
 
 /** The files the idle check reads. */

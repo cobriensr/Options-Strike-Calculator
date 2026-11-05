@@ -1,8 +1,0 @@
-# Multileg classifier service deps — see
-# docs/superpowers/specs/multileg-classifier-service-split-2026-05-28.md
-polars>=1.40.0
-pydantic>=2.7.0
-sentry-sdk>=2.0.0
-numpy>=1.26.0
-# Windows has no system IANA tz database; CI and python:3.12-slim (Linux) do.
-tzdata; sys_platform == "win32"

@@ -128,8 +128,12 @@ def print_dist(label: str, d: dict) -> None:
         print(f"  {label}: NO DATA")
         return
     print(f"  {label}:")
-    print(f"    n={d['n']:,}  mean={d['mean']:.2f}  median={d['median']:.2f}  std={d['std']:.2f}")
-    print(f"    P75={d['P75']:.2f}  P90={d['P90']:.2f}  P95={d['P95']:.2f}  max={d['max']:.2f}")
+    print(
+        f"    n={d['n']:,}  mean={d['mean']:.2f}  median={d['median']:.2f}  std={d['std']:.2f}"
+    )
+    print(
+        f"    P75={d['P75']:.2f}  P90={d['P90']:.2f}  P95={d['P95']:.2f}  max={d['max']:.2f}"
+    )
     for k, v in d.items():
         if k.startswith("pct_above_"):
             thr = k.replace("pct_above_", "")
@@ -162,13 +166,16 @@ def parse_features(df: pd.DataFrame) -> pd.DataFrame:
 
 # ── Section A ─────────────────────────────────────────────────────────────────
 def section_a(full_df: pd.DataFrame, feat_df_base: pd.DataFrame, label: str) -> None:
-    print(f"\n{'='*62}")
+    print(f"\n{'=' * 62}")
     print(f"SECTION A — PAYOFF DISTRIBUTION: {label}")
-    print(f"{'='*62}")
+    print(f"{'=' * 62}")
     print(f"  Full enriched set (90d): n={len(full_df):,}")
     print(f"  Rows with takeit_features: n={len(feat_df_base):,}")
 
-    for df_use, set_name in [(full_df, "All enriched"), (feat_df_base, "Features-only subset")]:
+    for df_use, set_name in [
+        (full_df, "All enriched"),
+        (feat_df_base, "Features-only subset"),
+    ]:
         print(f"\n  -- {set_name} --")
         for col, name in [
             ("realized_trail_r", "Realized trail30/10 R"),
@@ -177,18 +184,24 @@ def section_a(full_df: pd.DataFrame, feat_df_base: pd.DataFrame, label: str) -> 
             if col in df_use.columns:
                 print_dist(name, dist_stats(df_use[col]))
         if "peak_ceiling_pct" in df_use.columns:
-            s = pd.to_numeric(df_use["peak_ceiling_pct"], errors="coerce").dropna().clip(lower=0)
+            s = (
+                pd.to_numeric(df_use["peak_ceiling_pct"], errors="coerce")
+                .dropna()
+                .clip(lower=0)
+            )
             if len(s) > 0:
                 log_s = np.log1p(s)
-                print(f"  log1p(peak): mean={log_s.mean():.3f}  std={log_s.std():.3f}  "
-                      f"P75={log_s.quantile(0.75):.3f}  P90={log_s.quantile(0.90):.3f}")
+                print(
+                    f"  log1p(peak): mean={log_s.mean():.3f}  std={log_s.std():.3f}  "
+                    f"P75={log_s.quantile(0.75):.3f}  P90={log_s.quantile(0.90):.3f}"
+                )
 
 
 # ── Section B ─────────────────────────────────────────────────────────────────
 def section_b(full_df: pd.DataFrame, label: str) -> None:
-    print(f"\n{'='*62}")
+    print(f"\n{'=' * 62}")
     print(f"SECTION B — ORTHOGONALITY TO TAKE-IT: {label}")
-    print(f"{'='*62}")
+    print(f"{'=' * 62}")
 
     sub = full_df.copy()
     sub["takeit_prob"] = pd.to_numeric(sub["takeit_prob"], errors="coerce")
@@ -197,8 +210,10 @@ def section_b(full_df: pd.DataFrame, label: str) -> None:
 
     n_total = len(sub)
     n_with_prob = sub["takeit_prob"].notna().sum()
-    print(f"  takeit_prob present: {n_with_prob:,} / {n_total:,} ({100*n_with_prob/max(n_total,1):.1f}%)")
-    print(f"  takeit_prob NULL rate: {100*(1-n_with_prob/max(n_total,1)):.1f}%")
+    print(
+        f"  takeit_prob present: {n_with_prob:,} / {n_total:,} ({100 * n_with_prob / max(n_total, 1):.1f}%)"
+    )
+    print(f"  takeit_prob NULL rate: {100 * (1 - n_with_prob / max(n_total, 1)):.1f}%")
 
     sub = sub[sub["takeit_prob"].notna()].copy()
     if len(sub) < 30:
@@ -207,7 +222,10 @@ def section_b(full_df: pd.DataFrame, label: str) -> None:
 
     tp = sub["takeit_prob"]
 
-    for col, name in [("realized_trail_r", "trail30/10 R"), ("peak_ceiling_pct", "peak %")]:
+    for col, name in [
+        ("realized_trail_r", "trail30/10 R"),
+        ("peak_ceiling_pct", "peak %"),
+    ]:
         y = sub[col].dropna()
         if len(y) < 10:
             continue
@@ -220,13 +238,20 @@ def section_b(full_df: pd.DataFrame, label: str) -> None:
 
     bins = [0.0, 0.40, 0.55, 0.70, 1.01]
     band_labels = ["<0.40", "0.40-0.55", "0.55-0.70", ">0.70"]
-    sub["takeit_band"] = pd.cut(sub["takeit_prob"], bins=bins, labels=band_labels, right=False)
+    sub["takeit_band"] = pd.cut(
+        sub["takeit_prob"], bins=bins, labels=band_labels, right=False
+    )
 
-    for col, name in [("realized_trail_r", "trail30/10 R"), ("peak_ceiling_pct", "peak %")]:
+    for col, name in [
+        ("realized_trail_r", "trail30/10 R"),
+        ("peak_ceiling_pct", "peak %"),
+    ]:
         if col not in sub.columns:
             continue
         print(f"\n  Within-band distribution of {name}:")
-        print(f"  {'Band':<14} {'N':>7} {'Mean':>9} {'Median':>9} {'P75':>9} {'P90':>9}")
+        print(
+            f"  {'Band':<14} {'N':>7} {'Mean':>9} {'Median':>9} {'P75':>9} {'P90':>9}"
+        )
         for band in band_labels:
             bdf = sub[sub["takeit_band"] == band][col].dropna()
             if len(bdf) == 0:
@@ -245,13 +270,17 @@ def section_b(full_df: pd.DataFrame, label: str) -> None:
         band_means = sub2.groupby("takeit_band")["peak_ceiling_pct"].mean()
         overall_mean = sub2["peak_ceiling_pct"].mean()
         ss_between = sum(
-            (sub2[sub2["takeit_band"] == b].shape[0]) * (band_means[b] - overall_mean) ** 2
-            for b in band_labels if b in band_means
+            (sub2[sub2["takeit_band"] == b].shape[0])
+            * (band_means[b] - overall_mean) ** 2
+            for b in band_labels
+            if b in band_means
         )
         ss_total = float(sub2["peak_ceiling_pct"].var() * (len(sub2) - 1))
         eta_sq = ss_between / ss_total if ss_total > 0 else 0.0
-        print(f"\n  Variance explained by take-it band (eta²): {100*eta_sq:.2f}%")
-        print(f"  Residual unexplained: {100*(1-eta_sq):.2f}% of total peak variance")
+        print(f"\n  Variance explained by take-it band (eta²): {100 * eta_sq:.2f}%")
+        print(
+            f"  Residual unexplained: {100 * (1 - eta_sq):.2f}% of total peak variance"
+        )
 
     return sub
 
@@ -262,13 +291,15 @@ def section_c(feat_df: pd.DataFrame, outcomes_df: pd.DataFrame, label: str) -> d
     feat_df: index-aligned numeric features
     outcomes_df: must have 'date', 'peak_ceiling_pct', 'realized_trail_r'
     """
-    print(f"\n{'='*62}")
+    print(f"\n{'=' * 62}")
     print(f"SECTION C — PREDICTABILITY FROM ENTRY FEATURES: {label}")
-    print(f"{'='*62}")
+    print(f"{'=' * 62}")
 
     feature_cols = list(feat_df.columns)
     print(f"  Feature count: {len(feature_cols)}")
-    print(f"  Feature names: {feature_cols[:20]}{'...' if len(feature_cols)>20 else ''}")
+    print(
+        f"  Feature names: {feature_cols[:20]}{'...' if len(feature_cols) > 20 else ''}"
+    )
 
     # Build combined df
     combined = outcomes_df[["date", "peak_ceiling_pct", "realized_trail_r"]].copy()
@@ -283,7 +314,9 @@ def section_c(feat_df: pd.DataFrame, outcomes_df: pd.DataFrame, label: str) -> d
         print(f"  Insufficient data for split (n={len(combined)})")
         return {}
     split_date = combined.iloc[split_idx]["date"]
-    print(f"  Train/test split at date={split_date} (train={split_idx}, test={len(combined)-split_idx})")
+    print(
+        f"  Train/test split at date={split_date} (train={split_idx}, test={len(combined) - split_idx})"
+    )
 
     fi_store = {}
     targets = [
@@ -294,9 +327,11 @@ def section_c(feat_df: pd.DataFrame, outcomes_df: pd.DataFrame, label: str) -> d
 
     try:
         from xgboost import XGBRegressor
+
         use_xgb = True
     except ImportError:
         from sklearn.ensemble import HistGradientBoostingRegressor
+
         use_xgb = False
 
     for target_col, target_name in targets:
@@ -315,7 +350,9 @@ def section_c(feat_df: pd.DataFrame, outcomes_df: pd.DataFrame, label: str) -> d
         y_train, y_test = y[train_mask], y[test_mask]
 
         if len(X_train) < 15 or len(X_test) < 5:
-            print(f"\n  [{target_name}]: split too small (train={len(X_train)}, test={len(X_test)})")
+            print(
+                f"\n  [{target_name}]: split too small (train={len(X_train)}, test={len(X_test)})"
+            )
             continue
 
         if use_xgb:
@@ -331,13 +368,19 @@ def section_c(feat_df: pd.DataFrame, outcomes_df: pd.DataFrame, label: str) -> d
             )
             model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
             y_pred = model.predict(X_test)
-            fi = pd.Series(model.feature_importances_, index=feature_cols).sort_values(ascending=False)
+            fi = pd.Series(model.feature_importances_, index=feature_cols).sort_values(
+                ascending=False
+            )
             fi_store[target_col] = fi
         else:
             from sklearn.ensemble import HistGradientBoostingRegressor
+
             model = HistGradientBoostingRegressor(
-                max_iter=300, max_depth=4, learning_rate=0.05,
-                min_samples_leaf=10, random_state=42
+                max_iter=300,
+                max_depth=4,
+                learning_rate=0.05,
+                min_samples_leaf=10,
+                random_state=42,
             )
             model.fit(X_train.values, y_train.values)
             y_pred = model.predict(X_test.values)
@@ -360,7 +403,9 @@ def section_c(feat_df: pd.DataFrame, outcomes_df: pd.DataFrame, label: str) -> d
         print(f"    train n={len(X_train):,}  test n={len(X_test):,}")
         print(f"    OOS R²={r2:.4f}  (mean-baseline R²={r2_base:.4f})")
         if np.isnan(sp):
-            print("    OOS Spearman: undefined (constant prediction — model collapsed to mean)")
+            print(
+                "    OOS Spearman: undefined (constant prediction — model collapsed to mean)"
+            )
         else:
             print(f"    OOS Spearman(pred, actual)={sp:.4f}  p={sp_p:.4e}")
 
@@ -377,14 +422,18 @@ def section_c(feat_df: pd.DataFrame, outcomes_df: pd.DataFrame, label: str) -> d
 
 # ── Section E ─────────────────────────────────────────────────────────────────
 def section_e(feat_df: pd.DataFrame, outcomes_df: pd.DataFrame, label: str) -> None:
-    print(f"\n{'='*62}")
+    print(f"\n{'=' * 62}")
     print(f"SECTION E — QUANTILE REGRESSOR SANITY CHECK: {label}")
-    print(f"{'='*62}")
+    print(f"{'=' * 62}")
 
     feature_cols = list(feat_df.columns)
     combined = outcomes_df[["date", "peak_ceiling_pct"]].copy()
     combined = combined.join(feat_df)
-    combined = combined.dropna(subset=["peak_ceiling_pct"]).sort_values("date").reset_index(drop=True)
+    combined = (
+        combined.dropna(subset=["peak_ceiling_pct"])
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
 
     split_idx = int(len(combined) * 0.70)
     if split_idx < 15 or (len(combined) - split_idx) < 5:
@@ -398,11 +447,16 @@ def section_e(feat_df: pd.DataFrame, outcomes_df: pd.DataFrame, label: str) -> N
 
     try:
         from sklearn.ensemble import HistGradientBoostingRegressor
+
         for q, q_label in [(0.75, "P75"), (0.90, "P90")]:
             mq = HistGradientBoostingRegressor(
-                loss="quantile", quantile=q,
-                max_iter=300, max_depth=4, learning_rate=0.05,
-                min_samples_leaf=5, random_state=42
+                loss="quantile",
+                quantile=q,
+                max_iter=300,
+                max_depth=4,
+                learning_rate=0.05,
+                min_samples_leaf=5,
+                random_state=42,
             )
             mq.fit(X_train.values, y_train.values)
             pred_q = mq.predict(X_test.values)
@@ -412,13 +466,15 @@ def section_e(feat_df: pd.DataFrame, outcomes_df: pd.DataFrame, label: str) -> N
 
             const_q = float(y_train.quantile(q))
             base_res = y_test.values - const_q
-            base_pinball = float(np.mean(np.where(base_res >= 0, q * base_res, (q - 1) * base_res)))
+            base_pinball = float(
+                np.mean(np.where(base_res >= 0, q * base_res, (q - 1) * base_res))
+            )
 
             lift = 1 - pinball / base_pinball if base_pinball > 0 else 0.0
             print(f"\n  Quantile {q_label} (q={q}):")
             print(f"    Model pinball:   {pinball:.4f}")
             print(f"    Baseline pinball:{base_pinball:.4f}")
-            print(f"    Relative lift:   {lift*100:+.1f}%")
+            print(f"    Relative lift:   {lift * 100:+.1f}%")
             print(f"    Train {q_label} value: {const_q:.2f}")
 
     except Exception as e:
@@ -426,36 +482,56 @@ def section_e(feat_df: pd.DataFrame, outcomes_df: pd.DataFrame, label: str) -> N
 
 
 # ── Plots ─────────────────────────────────────────────────────────────────────
-def make_plots(lot_full: pd.DataFrame, sb_full: pd.DataFrame,
-               lot_feat: pd.DataFrame) -> list[str]:
+def make_plots(
+    lot_full: pd.DataFrame, sb_full: pd.DataFrame, lot_feat: pd.DataFrame
+) -> list[str]:
     saved = []
 
     # 1. Distribution plots (full enriched set)
     fig, axes = plt.subplots(2, 3, figsize=(16, 9))
     fig.suptitle("Payoff/Ceiling Distributions — 90-day enriched set", fontsize=13)
 
-    for row_i, (df, lbl) in enumerate([(lot_full, "Lottery"), (sb_full, "Silent Boom")]):
+    for row_i, (df, lbl) in enumerate(
+        [(lot_full, "Lottery"), (sb_full, "Silent Boom")]
+    ):
         peak = pd.to_numeric(df["peak_ceiling_pct"], errors="coerce").dropna()
         trail = pd.to_numeric(df["realized_trail_r"], errors="coerce").dropna()
 
         ax = axes[row_i][0]
         clip99 = float(peak.quantile(0.99)) if len(peak) > 0 else 200
-        ax.hist(peak.clip(upper=clip99), bins=60, color="steelblue", alpha=0.75, edgecolor="none")
+        ax.hist(
+            peak.clip(upper=clip99),
+            bins=60,
+            color="steelblue",
+            alpha=0.75,
+            edgecolor="none",
+        )
         ax.set_title(f"{lbl} — Peak ceiling % (clipped P99={clip99:.0f})")
         ax.set_xlabel("peak_ceiling_pct")
         ax.set_ylabel("Count")
 
         ax = axes[row_i][1]
         if len(peak) > 0:
-            ax.hist(np.log1p(peak.clip(lower=0)), bins=60, color="steelblue", alpha=0.75, edgecolor="none")
+            ax.hist(
+                np.log1p(peak.clip(lower=0)),
+                bins=60,
+                color="steelblue",
+                alpha=0.75,
+                edgecolor="none",
+            )
         ax.set_title(f"{lbl} — log1p(peak_ceiling_pct)")
         ax.set_xlabel("log1p(peak %)")
 
         ax = axes[row_i][2]
         clip99t = float(trail.quantile(0.99)) if len(trail) > 0 else 100
         clip1t = float(trail.quantile(0.01)) if len(trail) > 0 else -50
-        ax.hist(trail.clip(lower=clip1t, upper=clip99t), bins=60,
-                color="coral", alpha=0.75, edgecolor="none")
+        ax.hist(
+            trail.clip(lower=clip1t, upper=clip99t),
+            bins=60,
+            color="coral",
+            alpha=0.75,
+            edgecolor="none",
+        )
         ax.set_title(f"{lbl} — Trail30/10 R (clipped P1/P99)")
         ax.set_xlabel("realized_trail_r")
 
@@ -470,35 +546,54 @@ def make_plots(lot_full: pd.DataFrame, sb_full: pd.DataFrame,
     bins = [0.0, 0.40, 0.55, 0.70, 1.01]
     band_labels = ["<0.40", "0.40-0.55", "0.55-0.70", ">0.70"]
 
-    for col_i, (df, lbl) in enumerate([(lot_full, "Lottery"), (sb_full, "Silent Boom")]):
+    for col_i, (df, lbl) in enumerate(
+        [(lot_full, "Lottery"), (sb_full, "Silent Boom")]
+    ):
         sub = df.copy()
         sub["takeit_prob"] = pd.to_numeric(sub["takeit_prob"], errors="coerce")
-        sub["peak_ceiling_pct"] = pd.to_numeric(sub["peak_ceiling_pct"], errors="coerce")
+        sub["peak_ceiling_pct"] = pd.to_numeric(
+            sub["peak_ceiling_pct"], errors="coerce"
+        )
         sub = sub.dropna(subset=["takeit_prob", "peak_ceiling_pct"])
 
         # Scatter
         ax = axes[0][col_i]
         if len(sub) > 0:
             clip_peak = float(sub["peak_ceiling_pct"].quantile(0.95))
-            ax.scatter(sub["takeit_prob"], sub["peak_ceiling_pct"].clip(upper=clip_peak),
-                       alpha=0.15, s=5, color="steelblue")
+            ax.scatter(
+                sub["takeit_prob"],
+                sub["peak_ceiling_pct"].clip(upper=clip_peak),
+                alpha=0.15,
+                s=5,
+                color="steelblue",
+            )
             sp, _ = stats.spearmanr(sub["takeit_prob"], sub["peak_ceiling_pct"])
             pr, _ = stats.pearsonr(sub["takeit_prob"], sub["peak_ceiling_pct"])
-            ax.set_title(f"{lbl}: takeit_prob vs peak (n={len(sub):,})\nSpearman={sp:.3f}  Pearson={pr:.3f}")
+            ax.set_title(
+                f"{lbl}: takeit_prob vs peak (n={len(sub):,})\nSpearman={sp:.3f}  Pearson={pr:.3f}"
+            )
         ax.set_xlabel("takeit_prob")
         ax.set_ylabel(f"peak (clipped P95={clip_peak:.0f}%)")
 
         # Band boxplot
         ax = axes[1][col_i]
         if len(sub) > 0:
-            sub["band"] = pd.cut(sub["takeit_prob"], bins=bins, labels=band_labels, right=False)
+            sub["band"] = pd.cut(
+                sub["takeit_prob"], bins=bins, labels=band_labels, right=False
+            )
             band_data = [
-                sub[sub["band"] == b]["peak_ceiling_pct"].clip(upper=clip_peak).dropna().values
+                sub[sub["band"] == b]["peak_ceiling_pct"]
+                .clip(upper=clip_peak)
+                .dropna()
+                .values
                 for b in band_labels
             ]
             ns = [len(d) for d in band_data]
-            ax.boxplot(band_data, labels=[f"{b}\n(n={n:,})" for b, n in zip(band_labels, ns)],
-                       showfliers=False)
+            ax.boxplot(
+                band_data,
+                labels=[f"{b}\n(n={n:,})" for b, n in zip(band_labels, ns)],
+                showfliers=False,
+            )
             ax.set_title(f"{lbl}: peak by takeit band")
             ax.set_ylabel(f"peak (clipped @{clip_peak:.0f}%)")
 
@@ -536,7 +631,9 @@ def main():
     print("\nLoading takeit_features-populated subsets (90d)...")
     lot_feat_raw = pd.read_sql_query(LOTTERY_SQL, conn)
     sb_feat_raw = pd.read_sql_query(SILENTBOOM_SQL, conn)
-    print(f"  Lottery w/features: {len(lot_feat_raw):,}  |  SB w/features: {len(sb_feat_raw):,}")
+    print(
+        f"  Lottery w/features: {len(lot_feat_raw):,}  |  SB w/features: {len(sb_feat_raw):,}"
+    )
     conn.close()
 
     # Parse JSONB features
@@ -551,9 +648,9 @@ def main():
         if "date" in df.columns:
             df["date"] = pd.to_datetime(df["date"])
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("PAYOFF / CEILING MODEL — DECISION-GRADE EDA PROBE")
-    print("="*70)
+    print("=" * 70)
 
     # ── Section A ──
     section_a(lot_full, lot_feat_raw, "LOTTERY")
@@ -572,12 +669,16 @@ def main():
     if len(lot_feat_raw) >= 30:
         lot_fi = section_c(lot_feat, lot_feat_raw, "LOTTERY")
     else:
-        print(f"\n  [LOTTERY Section C] Skipped — only {len(lot_feat_raw)} rows with features")
+        print(
+            f"\n  [LOTTERY Section C] Skipped — only {len(lot_feat_raw)} rows with features"
+        )
 
     if len(sb_feat_raw) >= 30:
         section_c(sb_feat, sb_feat_raw, "SILENT BOOM")
     else:
-        print(f"\n  [SILENT BOOM Section C] Skipped — only {len(sb_feat_raw)} rows with features")
+        print(
+            f"\n  [SILENT BOOM Section C] Skipped — only {len(sb_feat_raw)} rows with features"
+        )
 
     if len(lot_feat_raw) >= 30:
         section_e(lot_feat, lot_feat_raw, "LOTTERY")
@@ -585,9 +686,9 @@ def main():
         section_e(sb_feat, sb_feat_raw, "SILENT BOOM")
 
     # ── Section D summary ──
-    print(f"\n{'='*62}")
+    print(f"\n{'=' * 62}")
     print("SECTION D — FEATURE DRIVER COMPARISON SUMMARY")
-    print(f"{'='*62}")
+    print(f"{'=' * 62}")
     if lot_fi:
         for target, fi in lot_fi.items():
             print(f"\n  [LOTTERY — {target}] Top 5 gain features:")
@@ -597,9 +698,9 @@ def main():
         print("  No feature importance data available (insufficient rows).")
 
     # ── Plots ──
-    print(f"\n{'='*62}")
+    print(f"\n{'=' * 62}")
     print("GENERATING PLOTS")
-    print(f"{'='*62}")
+    print(f"{'=' * 62}")
     saved = make_plots(lot_full, sb_full, lot_feat_raw)
     for p in saved:
         print(f"  Saved: {p}")

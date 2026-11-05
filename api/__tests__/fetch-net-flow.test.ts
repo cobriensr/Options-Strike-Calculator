@@ -42,6 +42,8 @@ vi.mock('../_lib/sentry.js', () => ({
 let txnInsertValues: unknown[][] = [];
 
 import handler from '../cron/fetch-net-flow.js';
+import logger from '../_lib/logger.js';
+import { Sentry } from '../_lib/sentry.js';
 
 // Fixed "market hours" date: Tuesday 10:00 AM ET
 const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
@@ -532,6 +534,83 @@ describe('fetch-net-flow handler', () => {
       failureCount: 3,
       stored: false,
     });
+  });
+
+  it('partial: one source batch INSERT rejects → status partial, tagged capture, not success (R4)', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetchWith([makeNetPremTick()]);
+
+    // Reject the batch INSERT for one source only. The txn stub records the
+    // bound values so the failing leg is chosen by its `source`, not by call
+    // order (the three sources run one after another).
+    const dbError = new Error('connection lost');
+    mockTransaction.mockImplementation(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const bound: unknown[][] = [];
+        const queries = fn((_strings: unknown, ...values: unknown[]) => {
+          bound.push(values);
+          return {};
+        });
+        if (bound.some((values) => values.includes('spx_flow'))) throw dbError;
+        return queries.map(() => [{ id: 1 }]);
+      },
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      failureCount: 1,
+      // SPY and QQQ still landed, so something was stored.
+      stored: true,
+      results: {
+        spx_flow: { stored: 0 },
+        spy_flow: { stored: 1 },
+        qqq_flow: { stored: 1 },
+      },
+    });
+    // One capture for the one failed write, carrying the leg's tags.
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      dbError,
+      expect.objectContaining({
+        tags: expect.objectContaining({
+          cron: 'fetch-net-flow',
+          source: 'spx_flow',
+        }),
+      }),
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: dbError, source: 'spx_flow' }),
+      'Failed to fetch net flow',
+    );
+  });
+
+  it('error: every source batch INSERT rejects → status error and stored:false (R4)', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetchWith([makeNetPremTick()]);
+    mockTransaction.mockRejectedValue(new Error('connection lost'));
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'error',
+      failureCount: 3,
+      stored: false,
+    });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(3);
   });
 
   it('success: all sources succeed → status success', async () => {

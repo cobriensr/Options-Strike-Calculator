@@ -34,6 +34,10 @@ vi.mock('../_lib/sentry.js', () => ({
   },
 }));
 
+vi.mock('../_lib/axiom.js', () => ({
+  reportCronRun: vi.fn(),
+}));
+
 // The check-in wrapper is exercised in cron-instrumentation.test.ts; here it
 // is a passthrough that records the monitor slug it was registered under.
 vi.mock('../_lib/cron-instrumentation.js', () => ({
@@ -44,6 +48,7 @@ vi.mock('../_lib/cron-instrumentation.js', () => ({
 }));
 
 import handler from '../cron/cleanup-ws-option-trades.js';
+import { reportCronRun } from '../_lib/axiom.js';
 import { SCHEDULE_MAP } from '../_lib/cron-schedules.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
@@ -249,7 +254,7 @@ describe('cleanup-ws-option-trades handler', () => {
 
   it('budget exhaustion with more than a day of backlog sends a fingerprinted Sentry warning with the estimate', async () => {
     // 100 s per batch: after batch 2, elapsed (200 s) + slowest (100 s)
-    // passes the 280 s budget → stop before a third batch.
+    // passes the 240 s budget → stop before a third batch.
     routeQueries({
       batches: [batch(BATCH, 80), batch(BATCH, 72)],
       batchMs: 100_000,
@@ -318,6 +323,11 @@ describe('cleanup-ws-option-trades handler', () => {
       expect.objectContaining({ stopReason: 'wall_budget', lagHours: 10 }),
       expect.stringContaining('budget'),
     );
+    // Within a session of the cutoff: a normal busy night, not partial.
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'cleanup-ws-option-trades',
+      expect.objectContaining({ status: 'ok', stopReason: 'wall_budget' }),
+    );
   });
 
   it('still alerts, with a null estimate, when the backlog estimate query fails', async () => {
@@ -377,6 +387,30 @@ describe('cleanup-ws-option-trades handler', () => {
         oldestRemaining: null,
       }),
     });
+    // An unknown lag counts as falling behind: partial, like the warning.
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'cleanup-ws-option-trades',
+      expect.objectContaining({ status: 'partial', stopReason: 'wall_budget' }),
+    );
+  });
+
+  it('treats a lag of exactly 24 h as within a session: ok, no warning', async () => {
+    // The threshold is "more than" BACKLOG_ALERT_LAG_HOURS, so 24 h itself
+    // is still a normal busy night.
+    routeQueries({
+      batches: [batch(BATCH, 24)],
+      batchMs: 150_000,
+      explain: async () => explainRows(8_000_000),
+    });
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._json).toMatchObject({ backlog: { lagHours: 24 } });
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'cleanup-ws-option-trades',
+      expect.objectContaining({ status: 'ok', stopReason: 'wall_budget' }),
+    );
   });
 
   it('reads the estimate when the driver hands EXPLAIN JSON back as a string', async () => {
@@ -463,6 +497,100 @@ describe('cleanup-ws-option-trades handler', () => {
       expect.objectContaining({ err: expect.any(Error) }),
       'cleanup-ws-option-trades failed',
     );
+  });
+
+  describe('Axiom run event', () => {
+    const JOB = 'cleanup-ws-option-trades';
+
+    it('reports ok with the response summary on a drained run', async () => {
+      routeQueries({ batches: [batch(BATCH), batch(1_234)], batchMs: 10_000 });
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(reportCronRun).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledWith(JOB, {
+        status: 'ok',
+        today: '2026-05-18',
+        totalDeleted: 51_234,
+        batches: 2,
+        durationMs: 20_000,
+        rowsPerSec: 2_562,
+        stopReason: 'drained',
+      });
+    });
+
+    it('reports partial with the backlog when a budget stop trails by more than a session', async () => {
+      // Same run as the >1 day backlog test above (72 h lag): the sweep is
+      // not keeping pace, so Axiom says partial alongside the Sentry warning.
+      // A budget stop within a session stays ok (tested above).
+      routeQueries({
+        batches: [batch(BATCH, 80), batch(BATCH, 72)],
+        batchMs: 100_000,
+        explain: async () => explainRows(24_000_000),
+      });
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(Sentry.captureMessage).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledWith(JOB, {
+        status: 'partial',
+        today: '2026-05-18',
+        totalDeleted: 100_000,
+        batches: 2,
+        durationMs: 200_000,
+        rowsPerSec: 500,
+        stopReason: 'wall_budget',
+        backlog: {
+          estimatedBacklogRows: 24_000_000,
+          oldestRemaining: new Date(
+            CUTOFF.getTime() - 72 * HOUR_MS,
+          ).toISOString(),
+          cutoff: CUTOFF.toISOString(),
+          lagHours: 72,
+        },
+      });
+    });
+
+    it('reports error with the partial counts when a DELETE fails, never ok', async () => {
+      let call = 0;
+      mockQuery.mockImplementation(async () => {
+        call += 1;
+        if (call === 1) return batch(BATCH);
+        throw new Error('connection lost');
+      });
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(500);
+      expect(Sentry.captureException).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledWith(JOB, {
+        status: 'error',
+        error: 'Error: connection lost',
+        today: '2026-05-18',
+        totalDeleted: 50_000,
+        batches: 1,
+        durationMs: expect.any(Number),
+      });
+    });
+
+    it('sends no event when the guard rejects the request', async () => {
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          headers: { authorization: 'Bearer wrong' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(401);
+      expect(reportCronRun).not.toHaveBeenCalled();
+    });
   });
 
   it('tags Sentry with the job name on the success path', async () => {

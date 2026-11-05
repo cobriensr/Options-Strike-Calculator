@@ -40,7 +40,9 @@ import {
  * The 5-minute open buffer lets crons running at :00 catch the open.
  * `afterCloseMin` (default 5) is the close-side buffer; evaluate-round-trip
  * passes 80 so the session's last fires are evaluated after their 60-min
- * window, before the weekend tape sweep.
+ * window, before the weekend tape sweep, and wave2-confirmation passes 90 so
+ * the session's last fire is first labelled at close + 85 (its 75-min settle
+ * age) with one retry tick (close + 90).
  */
 export function isMarketHours(afterCloseMin = 5): boolean {
   const now = new Date();
@@ -87,6 +89,18 @@ export function isPastCashOpen(graceMinutes = 0): boolean {
   const totalMin = hour * 60 + minute;
   const closeMin = closeHour * 60;
   return totalMin >= MARKET_MINUTES.OPEN + graceMinutes && totalMin <= closeMin;
+}
+
+/**
+ * compute-cone's window: 09:30–09:45 ET on a trading day (isPastCashOpen
+ * handles weekends, holidays and the open). The cron fires `32 13,14` UTC,
+ * and the 09:45 cap admits exactly one of those slots in each DST regime:
+ * 13:32 UTC in EDT and 14:32 UTC in EST, both 09:32 ET.
+ */
+export function isConeCalcWindow(): boolean {
+  if (!isPastCashOpen()) return false;
+  const { hour, minute } = getETTime(new Date());
+  return hour * 60 + minute <= 9 * 60 + 45;
 }
 
 /**

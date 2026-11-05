@@ -64,17 +64,26 @@
   },
   "overrides": {
     "@opentelemetry/instrumentation-http": "0.214.0",
+    "@sentry/bundler-plugin-core": {
+      "glob": "^14.0.2"
+    },
     "@vercel/blob": {
       "undici": "^6.29.1"
     },
     "@vercel/cli-config": {
       "zod": "^4.6.6"
     },
+    "@vercel/nft": {
+      "glob": "^14.0.2"
+    },
     "@vercel/node": {
       "undici": "^6.29.1"
     },
     "thrift": {
       "uuid": "^11.1.1"
+    },
+    "workbox-build": {
+      "glob": "^14.0.2"
     }
   },
   "devDependencies": {

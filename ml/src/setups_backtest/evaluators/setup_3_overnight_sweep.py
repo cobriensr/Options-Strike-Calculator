@@ -166,9 +166,13 @@ class _OvernightSweepEvaluator:
             eth_extreme = eth_low
 
         # Sanity: stop and target on correct sides of last_close.
-        if direction is Direction.LONG and (stop_price >= last_close or target_price <= last_close):
+        if direction is Direction.LONG and (
+            stop_price >= last_close or target_price <= last_close
+        ):
             return None
-        if direction is Direction.SHORT and (stop_price <= last_close or target_price >= last_close):
+        if direction is Direction.SHORT and (
+            stop_price <= last_close or target_price >= last_close
+        ):
             return None
 
         return Signal(

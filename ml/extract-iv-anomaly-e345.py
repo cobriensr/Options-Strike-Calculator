@@ -18,6 +18,7 @@ Outputs:
 - ml/reports/iv-anomaly-gex-position-2026-04-25.md
 - ml/reports/iv-anomaly-macro-events-2026-04-25.md
 """
+
 from __future__ import annotations
 
 import json
@@ -65,8 +66,6 @@ def _attach_session_regime(df: pd.DataFrame) -> pd.DataFrame:
     return attach_regime(df, load_session_regime_labels())
 
 
-
-
 def aggregate(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
     sub = df.dropna(subset=["best_pnl_pct"])
     g = sub.groupby(group_cols).agg(
@@ -78,7 +77,9 @@ def aggregate(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
     return g.round(2)
 
 
-def emit_table(lines: list[str], title: str, table: pd.DataFrame, min_n: int = 30) -> None:
+def emit_table(
+    lines: list[str], title: str, table: pd.DataFrame, min_n: int = 30
+) -> None:
     lines.append(f"## {title}")
     lines.append("")
     cols = list(table.index.names)
@@ -94,12 +95,13 @@ def emit_table(lines: list[str], title: str, table: pd.DataFrame, min_n: int = 3
         vals = " | ".join(str(v) for v in ix)
         lines.append(
             f"| {vals} | {n:,} | {row['win_pct']:.1f}% | "
-            f"{row['mean_pct']*100:.1f}% | ${row['mean_dollar']:,.0f} |"
+            f"{row['mean_pct'] * 100:.1f}% | ${row['mean_dollar']:,.0f} |"
         )
     lines.append("")
 
 
 # ──────── E3 — VIX direction ────────
+
 
 def run_e3(df: pd.DataFrame, conn) -> None:
     """VIX direction over 30 min before alert_ts."""
@@ -113,18 +115,33 @@ def run_e3(df: pd.DataFrame, conn) -> None:
     snaps = pd.read_sql_query(sql, conn)
     # entry_time is text like "10:15 AM CT" or "pre-market". Strip " CT" suffix and
     # filter out non-time entries before parsing.
-    cleaned = snaps["entry_time"].astype(str).str.replace(r"\s*CT\s*$", "", regex=True).str.strip()
+    cleaned = (
+        snaps["entry_time"]
+        .astype(str)
+        .str.replace(r"\s*CT\s*$", "", regex=True)
+        .str.strip()
+    )
     snaps["entry_time_clean"] = cleaned
-    snaps = snaps[snaps["entry_time_clean"].str.match(r"^\d{1,2}:\d{2}\s*(AM|PM)$", case=False, na=False)].copy()
+    snaps = snaps[
+        snaps["entry_time_clean"].str.match(
+            r"^\d{1,2}:\d{2}\s*(AM|PM)$", case=False, na=False
+        )
+    ].copy()
     snaps["snap_ts"] = pd.to_datetime(
         snaps["date"].astype(str) + " " + snaps["entry_time_clean"],
         format="%Y-%m-%d %I:%M %p",
         errors="coerce",
     )
     snaps["snap_ts"] = (
-        snaps["snap_ts"].dt.tz_localize("US/Central", ambiguous="NaT", nonexistent="NaT").dt.tz_convert("UTC")
+        snaps["snap_ts"]
+        .dt.tz_localize("US/Central", ambiguous="NaT", nonexistent="NaT")
+        .dt.tz_convert("UTC")
     )
-    snaps = snaps.dropna(subset=["snap_ts", "vix"]).sort_values("snap_ts").reset_index(drop=True)
+    snaps = (
+        snaps.dropna(subset=["snap_ts", "vix"])
+        .sort_values("snap_ts")
+        .reset_index(drop=True)
+    )
     snaps["vix"] = snaps["vix"].astype(float)
     print(f"[E3] {len(snaps):,} usable VIX snapshots after cleanup", file=sys.stderr)
 
@@ -140,19 +157,35 @@ def run_e3(df: pd.DataFrame, conn) -> None:
         prior_30 = alert_ts - pd.Timedelta(minutes=30)
         recent = snaps[(snaps["snap_ts"] <= alert_ts)]
         if len(recent) < 2:
-            feats.append({"vix_at_alert": np.nan, "vix_change_30m": np.nan, "vix_regime": "unknown"})
+            feats.append(
+                {
+                    "vix_at_alert": np.nan,
+                    "vix_change_30m": np.nan,
+                    "vix_regime": "unknown",
+                }
+            )
             continue
         # vix_now: closest snap to alert_ts (already filtered to <= alert_ts).
         vix_now_row = recent.iloc[-1]
         # vix_then: snap closest to prior_30 in absolute distance.
         recent_with_prior = recent.copy()
-        recent_with_prior["dist_to_prior"] = (recent_with_prior["snap_ts"] - prior_30).abs()
+        recent_with_prior["dist_to_prior"] = (
+            recent_with_prior["snap_ts"] - prior_30
+        ).abs()
         vix_then_row = recent_with_prior.sort_values("dist_to_prior").iloc[0]
         # Sanity: require at least 20-min separation between the two anchors;
         # otherwise the "30-min change" would be a few-minute change.
-        sep_min = (vix_now_row["snap_ts"] - vix_then_row["snap_ts"]).total_seconds() / 60.0
+        sep_min = (
+            vix_now_row["snap_ts"] - vix_then_row["snap_ts"]
+        ).total_seconds() / 60.0
         if sep_min < 20:
-            feats.append({"vix_at_alert": np.nan, "vix_change_30m": np.nan, "vix_regime": "unknown"})
+            feats.append(
+                {
+                    "vix_at_alert": np.nan,
+                    "vix_change_30m": np.nan,
+                    "vix_regime": "unknown",
+                }
+            )
             continue
         vix_now = float(vix_now_row["vix"])
         vix_then = float(vix_then_row["vix"])
@@ -163,36 +196,57 @@ def run_e3(df: pd.DataFrame, conn) -> None:
             r = "falling"
         else:
             r = "flat"
-        feats.append({"vix_at_alert": vix_now, "vix_change_30m": delta, "vix_regime": r})
+        feats.append(
+            {"vix_at_alert": vix_now, "vix_change_30m": delta, "vix_regime": r}
+        )
 
     df = df.copy()
-    df = pd.concat([df.reset_index(drop=True), pd.DataFrame(feats).reset_index(drop=True)], axis=1)
+    df = pd.concat(
+        [df.reset_index(drop=True), pd.DataFrame(feats).reset_index(drop=True)], axis=1
+    )
 
     findings = {
         "n_total": int(len(df)),
         "n_with_vix": int((~df["vix_regime"].eq("unknown")).sum()),
-        "by_vix_regime": aggregate(df, ["vix_regime", "side"]).reset_index().to_dict(orient="records"),
-        "by_vix_regime_outer_regime": aggregate(df, ["regime", "vix_regime", "side"]).reset_index().to_dict(orient="records"),
+        "by_vix_regime": aggregate(df, ["vix_regime", "side"])
+        .reset_index()
+        .to_dict(orient="records"),
+        "by_vix_regime_outer_regime": aggregate(df, ["regime", "vix_regime", "side"])
+        .reset_index()
+        .to_dict(orient="records"),
     }
-    out_findings = REPO_ROOT / "ml" / "findings" / "iv-anomaly-vix-direction-2026-04-25.json"
+    out_findings = (
+        REPO_ROOT / "ml" / "findings" / "iv-anomaly-vix-direction-2026-04-25.json"
+    )
     out_findings.write_text(json.dumps(findings, indent=2, default=to_jsonable))
     print(f"[E3] wrote {out_findings}")
 
     lines: list[str] = []
     lines.append("# IV-Anomaly VIX Direction (Phase E3) — 2026-04-25")
-    lines.append(f"**Sample:** {len(df):,} alerts; {int((~df['vix_regime'].eq('unknown')).sum()):,} with VIX features computed.")
+    lines.append(
+        f"**Sample:** {len(df):,} alerts; {int((~df['vix_regime'].eq('unknown')).sum()):,} with VIX features computed."
+    )
     lines.append("")
-    lines.append("**Method:** for each alert, computes VIX change over the 30-min window ending at alert_ts. "
-                 "Rising = +0.2pt or more; falling = -0.2pt or more; flat = in between.")
+    lines.append(
+        "**Method:** for each alert, computes VIX change over the 30-min window ending at alert_ts. "
+        "Rising = +0.2pt or more; falling = -0.2pt or more; flat = in between."
+    )
     lines.append("")
-    emit_table(lines, "VIX regime × side (aggregate)", aggregate(df, ["vix_regime", "side"]))
-    emit_table(lines, "Outer regime × VIX direction × side", aggregate(df, ["regime", "vix_regime", "side"]))
+    emit_table(
+        lines, "VIX regime × side (aggregate)", aggregate(df, ["vix_regime", "side"])
+    )
+    emit_table(
+        lines,
+        "Outer regime × VIX direction × side",
+        aggregate(df, ["regime", "vix_regime", "side"]),
+    )
     out_report = REPO_ROOT / "ml" / "reports" / "iv-anomaly-vix-direction-2026-04-25.md"
     out_report.write_text("\n".join(lines))
     print(f"[E3] wrote {out_report}")
 
 
 # ──────── E4 — GEX position ────────
+
 
 def run_e4(df: pd.DataFrame, conn) -> None:
     """For each SPX-family alert, position relative to nearest top-3 abs_gex strike."""
@@ -219,13 +273,23 @@ def run_e4(df: pd.DataFrame, conn) -> None:
         ad = alert["date"]
         ae = alert["expiry"]
         a_strike = float(alert["strike"])
-        a_spot = float(alert["spot_at_detect"]) if pd.notna(alert["spot_at_detect"]) else np.nan
+        a_spot = (
+            float(alert["spot_at_detect"])
+            if pd.notna(alert["spot_at_detect"])
+            else np.nan
+        )
         sub = top3[(top3["date"] == ad) & (top3["expiry"].astype(str) == str(ae))]
         if len(sub) == 0 or pd.isna(a_spot):
-            feats.append({
-                "n_top3_gex": 0, "nearest_gex_strike": np.nan, "dist_to_gex_pct": np.nan,
-                "gex_above_or_below": "missing", "alert_in_gex_zone": False, "nearest_gex_net": np.nan,
-            })
+            feats.append(
+                {
+                    "n_top3_gex": 0,
+                    "nearest_gex_strike": np.nan,
+                    "dist_to_gex_pct": np.nan,
+                    "gex_above_or_below": "missing",
+                    "alert_in_gex_zone": False,
+                    "nearest_gex_net": np.nan,
+                }
+            )
             continue
         sub = sub.copy()
         sub["dist"] = (sub["strike"] - a_strike).abs()
@@ -240,20 +304,24 @@ def run_e4(df: pd.DataFrame, conn) -> None:
         else:
             pos = "at_spot"
         # Is the alert strike in the gamma zone (between spot and nearest top-3 GEX)?
-        in_zone = (
-            (a_spot <= a_strike <= nearest_strike) or (nearest_strike <= a_strike <= a_spot)
+        in_zone = (a_spot <= a_strike <= nearest_strike) or (
+            nearest_strike <= a_strike <= a_spot
         )
-        feats.append({
-            "n_top3_gex": int(len(sub)),
-            "nearest_gex_strike": nearest_strike,
-            "dist_to_gex_pct": float((nearest_strike - a_spot) / a_spot * 100),
-            "gex_above_or_below": pos,
-            "alert_in_gex_zone": bool(in_zone),
-            "nearest_gex_net": nearest_net,
-        })
+        feats.append(
+            {
+                "n_top3_gex": int(len(sub)),
+                "nearest_gex_strike": nearest_strike,
+                "dist_to_gex_pct": float((nearest_strike - a_spot) / a_spot * 100),
+                "gex_above_or_below": pos,
+                "alert_in_gex_zone": bool(in_zone),
+                "nearest_gex_net": nearest_net,
+            }
+        )
 
     df = df.copy()
-    df = pd.concat([df.reset_index(drop=True), pd.DataFrame(feats).reset_index(drop=True)], axis=1)
+    df = pd.concat(
+        [df.reset_index(drop=True), pd.DataFrame(feats).reset_index(drop=True)], axis=1
+    )
 
     # Restrict to SPX-family for reporting (other tickers may not have greek_exposure_strike rows)
     spx_family = df[df["ticker"].isin(["SPXW", "SPY", "QQQ", "NDXP", "IWM"])].copy()
@@ -261,31 +329,58 @@ def run_e4(df: pd.DataFrame, conn) -> None:
     findings = {
         "n_total": int(len(df)),
         "n_with_gex": int((~df["gex_above_or_below"].eq("missing")).sum()),
-        "by_gex_position": aggregate(df, ["gex_above_or_below", "side"]).reset_index().to_dict(orient="records"),
-        "by_gex_zone": aggregate(df, ["alert_in_gex_zone", "side"]).reset_index().to_dict(orient="records"),
-        "by_gex_position_regime": aggregate(spx_family, ["regime", "gex_above_or_below", "side"]).reset_index().to_dict(orient="records"),
+        "by_gex_position": aggregate(df, ["gex_above_or_below", "side"])
+        .reset_index()
+        .to_dict(orient="records"),
+        "by_gex_zone": aggregate(df, ["alert_in_gex_zone", "side"])
+        .reset_index()
+        .to_dict(orient="records"),
+        "by_gex_position_regime": aggregate(
+            spx_family, ["regime", "gex_above_or_below", "side"]
+        )
+        .reset_index()
+        .to_dict(orient="records"),
     }
-    out_findings = REPO_ROOT / "ml" / "findings" / "iv-anomaly-gex-position-2026-04-25.json"
+    out_findings = (
+        REPO_ROOT / "ml" / "findings" / "iv-anomaly-gex-position-2026-04-25.json"
+    )
     out_findings.write_text(json.dumps(findings, indent=2, default=to_jsonable))
     print(f"[E4] wrote {out_findings}")
 
     lines: list[str] = []
     lines.append("# IV-Anomaly GEX Position (Phase E4) — 2026-04-25")
-    lines.append(f"**Sample:** {len(df):,} alerts; {int((~df['gex_above_or_below'].eq('missing')).sum()):,} with GEX features computed.")
+    lines.append(
+        f"**Sample:** {len(df):,} alerts; {int((~df['gex_above_or_below'].eq('missing')).sum()):,} with GEX features computed."
+    )
     lines.append("")
-    lines.append("**Method:** for each alert, finds the top-3 abs_gex strikes for that (date, expiry) and "
-                 "checks the position of the *nearest* one relative to current spot. "
-                 "`alert_in_gex_zone` is true when the alert strike is between spot and the nearest top-3 GEX.")
+    lines.append(
+        "**Method:** for each alert, finds the top-3 abs_gex strikes for that (date, expiry) and "
+        "checks the position of the *nearest* one relative to current spot. "
+        "`alert_in_gex_zone` is true when the alert strike is between spot and the nearest top-3 GEX."
+    )
     lines.append("")
-    emit_table(lines, "Nearest top-3 GEX above/below spot × side", aggregate(df, ["gex_above_or_below", "side"]))
-    emit_table(lines, "Alert strike in gamma zone × side", aggregate(df, ["alert_in_gex_zone", "side"]))
-    emit_table(lines, "SPX-family: regime × GEX position × side", aggregate(spx_family, ["regime", "gex_above_or_below", "side"]))
+    emit_table(
+        lines,
+        "Nearest top-3 GEX above/below spot × side",
+        aggregate(df, ["gex_above_or_below", "side"]),
+    )
+    emit_table(
+        lines,
+        "Alert strike in gamma zone × side",
+        aggregate(df, ["alert_in_gex_zone", "side"]),
+    )
+    emit_table(
+        lines,
+        "SPX-family: regime × GEX position × side",
+        aggregate(spx_family, ["regime", "gex_above_or_below", "side"]),
+    )
     out_report = REPO_ROOT / "ml" / "reports" / "iv-anomaly-gex-position-2026-04-25.md"
     out_report.write_text("\n".join(lines))
     print(f"[E4] wrote {out_report}")
 
 
 # ──────── E5 — Macro events ────────
+
 
 def run_e5(df: pd.DataFrame, conn) -> None:
     print("[E5] fetching economic_events...", file=sys.stderr)
@@ -297,47 +392,87 @@ def run_e5(df: pd.DataFrame, conn) -> None:
     """
     events = pd.read_sql_query(sql, conn)
     events["event_time"] = pd.to_datetime(events["event_time"], utc=True)
-    high_impact_keywords = ("FOMC", "CPI", "PPI", "NFP", "Nonfarm", "Retail Sales", "GDP", "Powell")
-    events["high_impact"] = events["event_name"].str.contains("|".join(high_impact_keywords), case=False, na=False)
-    high = events[events["high_impact"]].sort_values("event_time").reset_index(drop=True)
-    print(f"[E5] {len(events)} total events, {len(high)} high-impact in window", file=sys.stderr)
+    high_impact_keywords = (
+        "FOMC",
+        "CPI",
+        "PPI",
+        "NFP",
+        "Nonfarm",
+        "Retail Sales",
+        "GDP",
+        "Powell",
+    )
+    events["high_impact"] = events["event_name"].str.contains(
+        "|".join(high_impact_keywords), case=False, na=False
+    )
+    high = (
+        events[events["high_impact"]].sort_values("event_time").reset_index(drop=True)
+    )
+    print(
+        f"[E5] {len(events)} total events, {len(high)} high-impact in window",
+        file=sys.stderr,
+    )
 
     feats = []
     for _, alert in df.iterrows():
         alert_ts = alert["alert_ts"]
         if len(high) == 0:
-            feats.append({"nearest_event_minutes": np.nan, "in_event_window": False, "nearest_event_name": None})
+            feats.append(
+                {
+                    "nearest_event_minutes": np.nan,
+                    "in_event_window": False,
+                    "nearest_event_name": None,
+                }
+            )
             continue
         deltas = (high["event_time"] - alert_ts).dt.total_seconds() / 60.0
         idx_min = deltas.abs().idxmin()
         nearest_min = float(deltas.loc[idx_min])
-        feats.append({
-            "nearest_event_minutes": nearest_min,
-            "in_event_window": bool(abs(nearest_min) < 30),
-            "nearest_event_name": str(high.loc[idx_min, "event_name"]),
-        })
+        feats.append(
+            {
+                "nearest_event_minutes": nearest_min,
+                "in_event_window": bool(abs(nearest_min) < 30),
+                "nearest_event_name": str(high.loc[idx_min, "event_name"]),
+            }
+        )
 
     df = df.copy()
-    df = pd.concat([df.reset_index(drop=True), pd.DataFrame(feats).reset_index(drop=True)], axis=1)
+    df = pd.concat(
+        [df.reset_index(drop=True), pd.DataFrame(feats).reset_index(drop=True)], axis=1
+    )
 
     findings = {
         "n_total": int(len(df)),
         "n_high_impact_events_in_window": int(len(high)),
-        "by_in_event_window": aggregate(df, ["in_event_window", "side"]).reset_index().to_dict(orient="records"),
-        "by_in_event_window_regime": aggregate(df, ["regime", "in_event_window", "side"]).reset_index().to_dict(orient="records"),
+        "by_in_event_window": aggregate(df, ["in_event_window", "side"])
+        .reset_index()
+        .to_dict(orient="records"),
+        "by_in_event_window_regime": aggregate(
+            df, ["regime", "in_event_window", "side"]
+        )
+        .reset_index()
+        .to_dict(orient="records"),
         "events_in_window": [
-            {"event_time": str(r["event_time"]), "name": str(r["event_name"]), "type": str(r["event_type"])}
+            {
+                "event_time": str(r["event_time"]),
+                "name": str(r["event_name"]),
+                "type": str(r["event_type"]),
+            }
             for _, r in high.iterrows()
         ],
     }
-    out_findings = REPO_ROOT / "ml" / "findings" / "iv-anomaly-macro-events-2026-04-25.json"
+    out_findings = (
+        REPO_ROOT / "ml" / "findings" / "iv-anomaly-macro-events-2026-04-25.json"
+    )
     out_findings.write_text(json.dumps(findings, indent=2, default=to_jsonable))
     print(f"[E5] wrote {out_findings}")
 
     lines: list[str] = []
     lines.append("# IV-Anomaly Macro Events (Phase E5) — 2026-04-25")
-    lines.append(f"**Sample:** {len(df):,} alerts; {len(high)} high-impact events in window "
-                 "(FOMC, CPI, PPI, NFP, Retail Sales, GDP, Powell).")
+    lines.append(
+        f"**Sample:** {len(df):,} alerts; {len(high)} high-impact events in window "
+        "(FOMC, CPI, PPI, NFP, Retail Sales, GDP, Powell)."
+    )
     lines.append("")
     if len(high) > 0:
         lines.append("**Events in window:**")
@@ -347,14 +482,21 @@ def run_e5(df: pd.DataFrame, conn) -> None:
         lines.append("")
     lines.append("**Method:** event window = ±30 min of alert_ts.")
     lines.append("")
-    emit_table(lines, "In-event window × side", aggregate(df, ["in_event_window", "side"]))
-    emit_table(lines, "Outer regime × in_event_window × side", aggregate(df, ["regime", "in_event_window", "side"]))
+    emit_table(
+        lines, "In-event window × side", aggregate(df, ["in_event_window", "side"])
+    )
+    emit_table(
+        lines,
+        "Outer regime × in_event_window × side",
+        aggregate(df, ["regime", "in_event_window", "side"]),
+    )
     out_report = REPO_ROOT / "ml" / "reports" / "iv-anomaly-macro-events-2026-04-25.md"
     out_report.write_text("\n".join(lines))
     print(f"[E5] wrote {out_report}")
 
 
 # ──────── Main ────────
+
 
 def main() -> None:
     load_env()
@@ -367,8 +509,13 @@ def main() -> None:
     df["alert_ts"] = pd.to_datetime(df["alert_ts"], utc=True)
     df = _attach_session_regime(df)
     best = pick_best_strategy_per_ticker_regime(df)
-    df["best_strategy"] = df.apply(lambda r: best.get((r["ticker"], r["regime"]), "pnl_eod"), axis=1)
-    df["best_pnl_pct"] = df.apply(lambda r: r[r["best_strategy"]] if pd.notna(r[r["best_strategy"]]) else np.nan, axis=1)
+    df["best_strategy"] = df.apply(
+        lambda r: best.get((r["ticker"], r["regime"]), "pnl_eod"), axis=1
+    )
+    df["best_pnl_pct"] = df.apply(
+        lambda r: r[r["best_strategy"]] if pd.notna(r[r["best_strategy"]]) else np.nan,
+        axis=1,
+    )
     df["entry_dollars"] = df["entry_premium"].astype(float) * 100.0
     df["best_dollar"] = df["entry_dollars"] * df["best_pnl_pct"]
 

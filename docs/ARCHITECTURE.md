@@ -106,7 +106,7 @@ File counts are as of 2026-10-29.
 ├── sidecar/                              # SHAP + frozen archive sidecar (see sidecar/README.md)
 ├── uw-stream/                            # UW websocket consumer (see uw-stream/README.md)
 ├── scripts/                              # Backfill + utility scripts (see scripts/README.md)
-├── e2e/                                  # 41 Playwright E2E specs (see e2e/README.md)
+├── e2e/                                  # 43 Playwright E2E specs (see e2e/README.md)
 ├── docs/                                 # Design documents + superpowers specs (see docs/INDEX.md)
 ├── public/
 │   ├── vix-data.json                     # VIX daily OHLC, 1990-01-02 → 2026-03-06 (static snapshot)
@@ -448,7 +448,7 @@ npm run build:analyze    # Opens dist/bundle-stats.html
 
 ### Database Schema
 
-As of 2026-10-29: 194 numbered migrations and about 88 live tables.
+As of 2026-10-29: 200 numbered migrations and about 90 live tables.
 
 **Core Trading Tables:**
 
@@ -493,7 +493,7 @@ As of 2026-10-29: 194 numbered migrations and about 88 live tables.
 
 ### Intraday Data Collection
 
-As of 2026-10-29: 76 cron handlers in `api/cron/` plus `/api/health`, on 83 schedules in `vercel.json` (some jobs have more than one).
+As of 2026-10-29: 79 cron handlers in `api/cron/` plus `/api/health`, on 87 schedules in `vercel.json` (some jobs have more than one).
 
 Every handler in `api/cron/` checks `CRON_SECRET` (with `bearerMatches`). Most run during market hours (13–21 UTC, Mon–Fri). Dark pool data no longer comes from a cron: uw-stream's `off_lit_trades` handler writes `dark_pool_prints` over the websocket.
 
@@ -531,31 +531,38 @@ Every handler in `api/cron/` checks `CRON_SECRET` (with `bearerMatches`). Most r
 
 Schedules are UTC, with the ET time in EDT. Jobs that must land at a fixed ET time run on two UTC slots an hour apart, so one of them is on time in both EDT and EST; the other run skips itself or repeats idempotently.
 
-| Cron                      | Schedule (UTC)          | Data                                                                                     |
-| ------------------------- | ----------------------- | ---------------------------------------------------------------------------------------- |
-| `fetch-outcomes`          | 20:25, 21:25 (4:25 PM)  | SPX OHLC settlement + VIX close                                                          |
-| `fetch-oi-change`         | 21:30 (5:30 PM)         | Open interest changes                                                                    |
-| `fetch-oi-per-strike`     | 14:30 (10:30 AM)        | Per-strike OI snapshot                                                                   |
-| `fetch-vol-surface`       | 21:35 (5:35 PM)         | IV term structure + realized vol                                                         |
-| `fetch-economic-calendar` | 13:25, 14:25 (9:25 AM)  | UW economic calendar → `economic_events`                                                 |
-| `compute-es-overnight`    | 13:35, 14:35 (9:35 AM)  | ES overnight session summary from `es_bars` (no live writer since Databento was removed) |
-| `build-features`          | 20:45, 21:45 (4:45 PM)  | ML feature engineering (100+ features)                                                   |
-| `curate-lessons`          | Sat 03:00               | Weekly lessons curation pipeline                                                         |
-| `backup-tables`           | Sun 05:00               | Database backup to Vercel Blob                                                           |
-| `health`                  | Mon–Fri 13:25 (9:25 AM) | Postgres + Redis + Schwab token check                                                    |
+| Cron                          | Schedule (UTC)                                   | Data                                                                                                                 |
+| ----------------------------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `fetch-outcomes`              | 20:25, 21:25 (4:25 PM)                           | SPX OHLC settlement + VIX close                                                                                      |
+| `fetch-oi-change`             | 21:30 (5:30 PM)                                  | Open interest changes                                                                                                |
+| `fetch-oi-per-strike`         | 14:30 (10:30 AM)                                 | Per-strike OI snapshot                                                                                               |
+| `fetch-vol-surface`           | 21:35 (5:35 PM)                                  | IV term structure + realized vol                                                                                     |
+| `fetch-economic-calendar`     | 13:25, 14:25 (9:25 AM)                           | UW economic calendar → `economic_events`                                                                             |
+| `fetch-greek-exposure-strike` | 13:30, 14:30 (9:30 AM)                           | Per-strike SPX 0DTE Greek exposure → `greek_exposure_strike`                                                         |
+| `build-features`              | 20:45, 21:45 (4:45 PM)                           | ML feature engineering (100+ features)                                                                               |
+| `fetch-net-flow-history`      | 21:25 (5:25 PM)                                  | Lottery Finder universe per-minute net flow → `net_flow_per_ticker_history`, before `enrich-lottery-outcomes`        |
+| `capture-flow-regime-daily`   | 21:55 (5:55 PM)                                  | Fills the flow-regime slots the live cron missed (normally the last, 3:30–4:00 PM)                                   |
+| `fetch-futures-session-stats` | Tue–Sat 12:30 (8:30 AM), Mon–Fri 21:30 (5:30 PM) | CME settlement, open interest and session volume, front two contracts of each futures root → `futures_session_stats` |
+| `repair-futures-blocks`       | 22:15 (6:15 PM)                                  | Repairs `futures_blocks` from UW REST for blocks the websocket dropped                                               |
+| `fetch-day-ohlc`              | Tue–Sat 23:00 (7:00 PM)                          | OHLC + excursions on the prior trading day's `day_embeddings` row                                                    |
+| `audit-gexbot-eod`            | 19:45 (3:45 PM)                                  | Alarms when a GEXBot EOD report is missing from `gexbot_eod_reports`, in time for a manual rescue run                |
+| `archive-gexbot-eod`          | Daily 02:00, 12:00, 19:00, 23:00                 | GEXBot end-of-day report ZIPs (60 tickers) → private R2, indexed in `gexbot_eod_reports`                             |
+| `curate-lessons`              | Sat 03:00                                        | Weekly lessons curation pipeline                                                                                     |
+| `backup-tables`               | Sun 05:00                                        | Database backup to Vercel Blob                                                                                       |
+| `health`                      | Mon–Fri 13:25 (9:25 AM)                          | Postgres + Redis + Schwab token check                                                                                |
 
 **Other jobs, by group (examples):**
 
-| Group                 | Crons                                                                                                                                                                                  |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GEXBot                | `fetch-gexbot-fast`, `fetch-gexbot-strikes`, `populate-periscope-from-gexbot`, `archive-gexbot`, `cleanup-gexbot`, `audit-gexbot-health`                                               |
-| Lottery / Silent Boom | `detect-lottery-fires`, `detect-silent-boom`, `detect-periscope-call-lottery`, `detect-periscope-put-lottery`, `enrich-*-outcomes`, `refit-lottery-ticker-stats`, `wave2-confirmation` |
-| Take-It               | `takeit-fill-shap`, `audit-takeit-calibration`, `audit-takeit-health`                                                                                                                  |
-| Futures / VIX         | `fetch-futures-snapshot`, `backfill-futures-gaps`, `auto-prefill-premarket`, `refresh-vix1d`                                                                                           |
-| Gamma / cone          | `compute-zero-gamma`, `compute-cone`, `check-cone-breach`, `detect-gamma-setups`, `backfill-gamma-setup-outcomes`, `check-gamma-setup-drift`                                           |
-| Flow regime / signals | `capture-flow-regime`, `capture-opening-flow-signal`, `capture-regime-0dte`, `monitor-vega-spike`, `refresh-tracker-contracts`                                                         |
-| uw-stream upkeep      | `cleanup-ws-option-trades`, `cleanup-ws-gex-strike-expiry`, `rollup-ws-gex-strike-expiry`, `reconcile-greek-flow-etf`                                                                  |
-| Housekeeping          | `embed-yesterday`, `schwab-reauth-reminder`, `audit-migration-drift`, `backup-tables`, `curate-periscope-lessons`                                                                      |
+| Group                 | Crons                                                                                                                                                                                                         |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GEXBot                | `fetch-gexbot-fast`, `fetch-gexbot-strikes`, `populate-periscope-from-gexbot`, `archive-gexbot`, `cleanup-gexbot`, `audit-gexbot-health`                                                                      |
+| Lottery / Silent Boom | `detect-lottery-fires`, `detect-silent-boom`, `detect-periscope-call-lottery`, `detect-periscope-put-lottery`, `enrich-*-outcomes`, `refit-lottery-ticker-stats`, `wave2-confirmation`, `evaluate-round-trip` |
+| Take-It               | `takeit-fill-shap`, `audit-takeit-calibration`, `audit-takeit-health`                                                                                                                                         |
+| Futures / VIX         | `fetch-futures-snapshot`, `backfill-futures-gaps`, `auto-prefill-premarket`, `refresh-vix1d`                                                                                                                  |
+| Gamma / cone          | `compute-zero-gamma`, `compute-cone`, `check-cone-breach`, `detect-gamma-setups`, `backfill-gamma-setup-outcomes`, `check-gamma-setup-drift`                                                                  |
+| Flow regime / signals | `capture-flow-regime`, `capture-opening-flow-signal`, `capture-regime-0dte`, `monitor-vega-spike`, `enrich-vega-spike-returns`, `refresh-tracker-contracts`                                                   |
+| uw-stream upkeep      | `cleanup-ws-option-trades`, `cleanup-ws-gex-strike-expiry`, `rollup-ws-gex-strike-expiry`, `reconcile-greek-flow-etf`                                                                                         |
+| Housekeeping          | `embed-yesterday`, `schwab-reauth-reminder`, `audit-migration-drift`, `backup-tables`, `curate-periscope-lessons`                                                                                             |
 
 ### ML Pipeline (Python)
 

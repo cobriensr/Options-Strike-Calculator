@@ -1,6 +1,6 @@
 # End-to-end tests
 
-Playwright suites for the calculator UI, the analyze flow, the Options Alerts view (Lottery Finder + Silent Boom), Contract Tracker, the Vega Spike feed, the 0DTE regime panel, panel reordering, malformed-payload handling and accessibility. 41 spec files as of 2026-10-29, with three browser projects (chromium, firefox, webkit) in [playwright.config.ts](../playwright.config.ts). CI runs chromium; the nightly job runs all three.
+Playwright suites for the calculator UI, the analyze flow, the Options Alerts view (Lottery Finder + Silent Boom), Contract Tracker, the Vega Spike feed, the 0DTE regime panel, panel reordering, malformed-payload handling and accessibility. 43 spec files as of 2026-10-29, with three browser projects (chromium, firefox, webkit) in [playwright.config.ts](../playwright.config.ts). CI runs chromium; the nightly job runs all three.
 
 ## Run
 

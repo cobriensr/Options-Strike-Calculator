@@ -63,14 +63,26 @@ UW requests are throttled to ≤300/min so the live crons keep the rest of the k
    - Add a date-range option to `backfill-net-prem-ticks.mjs`.
    - Fix the stale "last 3 trading days" comment in `scripts/download-fulltape.sh`.
 2. **Full Tape.**
-   - Download the 33 days, convert to Parquet, and extend the R2 mirror (`theta-options-fulltape`, today 2026-01-02 → 06-15).
-   - Then cut per-day replay tapes for the 86-ticker universe, the same rows `replay-day.ts` reads. The mapping is in `reload-ws-option-trades-from-fulltape.py`: drop canceled and zero-price prints, and take side from `tags`.
-   - Disk: ~50–80 GB of zips, transient; F: has 2.8 TB free.
+   - **Landed by the `nightly` Railway service, not locally** (found 2026-10-29). It fills every missing session since 2026-01-02 into `fulltape/{date}-fulltape.parquet`, newest first, up to 30 per run, Tue–Sat 07:15 UTC. The gap lands over the 10-30 and 10-31 runs. Do not run `download-fulltape.sh`, `ingest-fulltape.py` or `upload-fulltape-to-r2.py` for these days: they would duplicate about 60 GB of downloads, and the service deletes a key whose post-upload size check fails, racing a local upload. A push touching `nightly/` redeploys the service and kills a run in progress.
+   - Then cut per-day replay tapes for the 86-ticker universe from the R2 objects, the same rows `replay-day.ts` reads. That needs an R2 → local download step (no script exists yet; see the phase B/E plan, E2). The mapping is in `reload-ws-option-trades-from-fulltape.py`: drop canceled and zero-price prints, and take side from `tags`. Don't run that reload script itself: `ws_option_trades`'s 2-day retention deletes reloaded rows.
 3. **REST inputs.**
    - One existing script per table, run over 07-22 → 09-04 (table list and scripts in the inventory, §2a).
    - ~9–10K UW requests in all, ~2.9K of them for `net_flow_per_ticker_history`.
    - Write new scripts only where none exists: `strike_trade_volume` (`/stock/{t}/flow-per-strike-intraday?date=`, probe first) and `economic_events` (probe past-date support first).
    - Dark pool: ~1.3–1.65K paged requests, with the three UW filter rules applied.
+   - **Done 2026-10-29** (0 failures each): `net_flow_per_ticker_history` 1,063,486 rows (all 86 tickers × 33 days), `vega_flow_etf` 0DTE 26,574 rows (+162 07-22 morning minutes updated to their final values), `gex_strike_0dte` end-of-day snapshots 2,652 rows.
+   - **The rest need code first.** The 2026-10-29 script audit (local, `docs/tmp/summer-gap-2026-10-29/phase3-script-audit.md`) found most scripts take only a lookback count and warn-and-exit-0 on UW or DB errors. Retrofit `--from/--to`, the market-hours guard, the throttle and error counting from `scripts/_lib/net-prem-ticks-backfill.mjs`. Scripts not to run as they are:
+     - `backfill-greek-flow-etf.mjs`: its conflict target was dropped by migration #129, so every row fails while it exits 0;
+     - `backfill-greek-flow.mjs`: doesn't write `otm_ncp/otm_npp`, so DO NOTHING would leave them NULL for good;
+     - `backfill-zero-dte-flow.mjs`: DO NOTHING keeps the untrusted intermittent rows (needs DO UPDATE and the cron's all-null guard);
+     - `backfill-flow-ratio.mjs`: duplicates on tick vs wall-clock time, unclamped ratio overflow, silent UW errors;
+     - `backfill-spot-gex.mjs`: keeps the last tick per 5-minute bucket (look-ahead); write every tick as the cron does;
+     - `backfill-vol-surface.mjs`: stores forward realized vol (fix in `docs/superpowers/plans/2026-10-23-uw-rest-fixes.md`, R2);
+     - `backfill-nope.mjs`, `backfill-oi-*`: a lookback run overwrites live days or misdates around Labor Day;
+     - the strike-exposure trio (NDX, timestamp, holiday-aware 1DTE, resume scoping, strike-all paging);
+     - the SPX/NDX candle scripts (hardcoded 30 days, constant ratio);
+     - `backfill-dark-pool-prints.mjs` (swallows failures, no ET-date stop).
+   - Owner decisions this phase needs: the SPX/NDX price-ratio source for July–September index candles, and the realized-vol D2 fix. Defaults from standing rules for the rest: 1-minute spot exposures (as live), the dark-pool filter rule applied, NDX dropped from `strike_exposures` (as live), lookback runs fill holes only.
 4. **Derived tables.** Rebuild from the refilled inputs and the Full Tape, overwriting the placeholder rows:
    - `interval_ba_alerts`, `opening_flow_signals`, `flow_regime_snapshots`;
    - `gex_target_features`, `zero_gamma_levels`;
@@ -78,7 +90,12 @@ UW requests are throttled to ≤300/min so the live crons keep the rest of the k
    - `ws_gamma_setup_fires`, `cone_breach_events`;
    - `periscope_lottery_fires`.
    - Write scripts where none exists: `flow_regime_snapshots`, `cone_breach_events`.
-5. **Fire replay.** This is phase E of `lottery-cron-timeouts-2026-10-28.md`, and it needs that spec's phase B, which makes the detector callable as a library.
+   - Cautions from the 2026-10-29 audit:
+     - `backfill-zero-gamma.ts` deletes every row from its window start through today, live rows included; scope it before any run.
+     - `gex_target_features` and `flow_regime_0dte_daily` stay dark for 07-23 → 09-04: neither can be built from one end-of-day snapshot a day.
+     - The gamma-setup and periscope-lottery backfills are paused on GEXBot data and do nothing without `--include-gexbot`; leave them dark until that pause is lifted.
+     - `day_embeddings` needs a Postgres-sourced script (the existing one reads a sidecar archive frozen at 04-17), and `opening_flow_signals` needs a Full Tape reader.
+5. **Fire replay.** This is phase E of `lottery-cron-timeouts-2026-10-28.md`, and it needs that spec's phase B, which makes the detector callable as a library. The detailed design is `docs/superpowers/plans/2026-10-29-lottery-phase-b-e.md`; the summer days run in its `pit` (point-in-time) visibility mode.
    - Run day by day, lottery and silent boom together, in date order. Each day's prior-session win rate is built from the previous days' outcomes, so outcomes are enriched between days.
    - GEXBot context comes from the Blob archive, not Neon.
    - Seed cooldown from the live 07-22 morning rows. Insert only chains with no live fire within ±5 min.

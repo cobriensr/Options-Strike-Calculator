@@ -106,28 +106,25 @@ async function storeAllCandles(
 
   const sql = getDb();
 
-  try {
-    const results = await sql.transaction((txn) =>
-      candles.map(
-        (candle) => txn`
-          INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
-          VALUES (${date}, ${candle.timestamp}, ${source}, ${candle.ncp}, ${candle.npp}, ${candle.netVolume})
-          ON CONFLICT (date, timestamp, source) DO NOTHING
-          RETURNING id
-        `,
-      ),
-    );
+  // A rejected write throws to the per-ticker catch in the handler, which
+  // counts it as a failed leg, logs it and captures it once. Swallowing it
+  // here as "skipped" used to leave the run reporting `success` (R4).
+  const results = await sql.transaction((txn) =>
+    candles.map(
+      (candle) => txn`
+        INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
+        VALUES (${date}, ${candle.timestamp}, ${source}, ${candle.ncp}, ${candle.npp}, ${candle.netVolume})
+        ON CONFLICT (date, timestamp, source) DO NOTHING
+        RETURNING id
+      `,
+    ),
+  );
 
-    let stored = 0;
-    for (const result of results) {
-      if (result.length > 0) stored++;
-    }
-    return { stored, skipped: candles.length - stored };
-  } catch (err) {
-    Sentry.captureException(err);
-    logger.warn({ err, source }, 'Batch flow_data insert failed');
-    return { stored: 0, skipped: candles.length };
+  let stored = 0;
+  for (const result of results) {
+    if (result.length > 0) stored++;
   }
+  return { stored, skipped: candles.length - stored };
 }
 
 // ── Handler ─────────────────────────────────────────────────
@@ -156,6 +153,8 @@ export default withCronInstrumentation(
           results[source] = { ...result, candles: candles.length };
         } catch (err) {
           failureCount += 1;
+          // Covers the UW fetch AND the flow_data write: either failing
+          // leaves the leg without fresh rows.
           logger.warn({ err, ticker, source }, 'Failed to fetch ETF Tide');
           metrics.increment('fetch_etf_tide.fetch_error');
           Sentry.captureException(err);

@@ -54,9 +54,10 @@ import {
   isTradingDay,
 } from '../../src/data/marketHours.js';
 
-// maxDuration is set authoritatively in vercel.json's `functions{}` block
-// (`"api/cron/embed-yesterday.ts": { "maxDuration": 60 }`). Raw Vercel
-// Functions (non-Next.js) do not honor a module-level `export const config`.
+// maxDuration (60s) is set in vercel.json's `functions{}` block
+// (`"api/cron/embed-yesterday.ts": { "maxDuration": 60 }`). Vercel's docs
+// also show a file-level `export const config = { maxDuration }` for
+// Node.js api/ functions; this file doesn't set one.
 
 /** Return YYYY-MM-DD for the most recent previous weekday relative to `today`. */
 function priorWeekday(today: string): string {

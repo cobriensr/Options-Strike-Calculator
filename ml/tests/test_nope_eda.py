@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import nope_eda  # type: ignore[import-not-found]
 from nope_eda import (  # type: ignore[import-not-found]
     _has_nope_data,
     q1_direction_by_sign,
@@ -26,6 +27,17 @@ from nope_eda import (  # type: ignore[import-not-found]
 )
 
 # ── Helpers ─────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def plot_dir(tmp_path, monkeypatch):
+    """Send every q* plot to tmp_path instead of the tracked ml/plots/.
+
+    The q* functions savefig into the module-level PLOT_DIR, so patching it
+    there redirects them all.
+    """
+    monkeypatch.setattr(nope_eda, "PLOT_DIR", tmp_path)
+    return tmp_path
 
 
 def _make_nope_df(n: int = 40, seed: int = 42) -> pd.DataFrame:
@@ -121,16 +133,17 @@ def test_question_returns_insufficient_when_empty(func) -> None:
 # ── Successful runs ─────────────────────────────────────────
 
 
-def test_q1_returns_expected_keys_on_sufficient_data() -> None:
+def test_q1_returns_expected_keys_on_sufficient_data(plot_dir) -> None:
     df = _make_nope_df(40)
     result = q1_direction_by_sign(df)
     assert "baseline_up_rate" in result
     assert "positive_nope_up_rate" in result
     assert "negative_nope_up_rate" in result
     assert 0 <= result["baseline_up_rate"] <= 1
+    assert (plot_dir / "nope_direction_by_sign.png").exists()
 
 
-def test_q2_returns_expected_counts() -> None:
+def test_q2_returns_expected_counts(plot_dir) -> None:
     df = _make_nope_df(40)
     result = q2_mt_agreement(df)
     assert result["n"] > 0
@@ -138,24 +151,27 @@ def test_q2_returns_expected_counts() -> None:
         result["agree_bull_n"] + result["agree_bear_n"] + result["disagree_n"]
         == result["n"]
     )
+    assert (plot_dir / "nope_mt_agreement.png").exists()
 
 
-def test_q3_returns_spearman_correlation() -> None:
+def test_q3_returns_spearman_correlation(plot_dir) -> None:
     df = _make_nope_df(40)
     result = q3_flips_vs_range(df)
     assert "spearman_rho" in result
     assert -1.0 <= result["spearman_rho"] <= 1.0
     assert 0.0 <= result["p_value"] <= 1.0
+    assert (plot_dir / "nope_flips_vs_range.png").exists()
 
 
-def test_q4_returns_pearson_correlation() -> None:
+def test_q4_returns_pearson_correlation(plot_dir) -> None:
     df = _make_nope_df(40)
     result = q4_cumdelta_vs_move(df)
     assert "pearson_r" in result
     assert -1.0 <= result["pearson_r"] <= 1.0
+    assert (plot_dir / "nope_cumdelta_vs_move.png").exists()
 
 
-def test_q5_returns_bucket_means() -> None:
+def test_q5_returns_bucket_means(plot_dir) -> None:
     df = _make_nope_df(40)
     result = q5_magnitude_vs_move(df)
     assert "bucket_means" in result
@@ -163,3 +179,4 @@ def test_q5_returns_bucket_means() -> None:
     for bucket in result["bucket_means"].values():
         assert bucket["mean_abs_move"] >= 0
         assert bucket["n"] >= 0
+    assert (plot_dir / "nope_magnitude_vs_move.png").exists()

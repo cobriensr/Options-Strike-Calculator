@@ -30,22 +30,10 @@ vi.mock('../_lib/axiom.js', () => ({
   reportCronRun: vi.fn(),
 }));
 
-// Use the REAL getETMarketOpenUtcIso so the DST window-end math is
-// genuinely exercised; stub getETDateStr (cronGuard's date source) and
-// getETTime (the post-cash-open gate) so tests control them.
-// vi.hoisted lets the mock factory (hoisted to the top) reference the spy.
-const { mockGetETTime } = vi.hoisted(() => ({
-  mockGetETTime: vi.fn(() => ({ hour: 9, minute: 35 })), // after open
-}));
-vi.mock('../../src/utils/timezone.js', async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import('../../src/utils/timezone.js')>();
-  return {
-    ...actual,
-    getETDateStr: vi.fn(() => '2026-04-03'),
-    getETTime: mockGetETTime,
-  };
-});
+// timezone.js is NOT mocked: the real getETMarketOpenUtcIso exercises the DST
+// window-end math, and cronGuard (stubbed above, so it supplies `today`)
+// never reaches the cron's time gate. The gate has its own test file with the
+// real guard: auto-prefill-premarket-gate.test.ts.
 
 import handler from '../cron/auto-prefill-premarket.js';
 import { cronGuard } from '../_lib/api-helpers.js';
@@ -65,7 +53,6 @@ describe('auto-prefill-premarket handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockSql.mockResolvedValue([]);
-    mockGetETTime.mockReturnValue({ hour: 9, minute: 35 }); // after cash open
     process.env = { ...originalEnv };
     process.env.CRON_SECRET = 'test-secret';
 
@@ -151,7 +138,7 @@ describe('auto-prefill-premarket handler', () => {
       },
     ]);
     mockSql.mockResolvedValueOnce([{ id: 1 }]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
 
     await handler(makeCronReq(), mockResponse());
 
@@ -171,7 +158,7 @@ describe('auto-prefill-premarket handler', () => {
       },
     ]);
     mockSql.mockResolvedValueOnce([{ id: 1 }]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
 
     await handler(makeCronReq(), mockResponse());
 
@@ -193,8 +180,8 @@ describe('auto-prefill-premarket handler', () => {
     ]);
     // 2. SELECT id FROM market_snapshots → existing row
     mockSql.mockResolvedValueOnce([{ id: 99 }]);
-    // 3. UPDATE market_snapshots
-    mockSql.mockResolvedValueOnce([]);
+    // 3. UPDATE market_snapshots ... RETURNING id → the row was writable
+    mockSql.mockResolvedValueOnce([{ id: 99 }]);
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -212,6 +199,51 @@ describe('auto-prefill-premarket handler', () => {
     });
     // 3 SQL calls: SELECT bars, SELECT snapshot, UPDATE snapshot
     expect(mockSql).toHaveBeenCalledTimes(3);
+  });
+
+  // ── Hand-saved pre-market data ────────────────────────────
+  //
+  // The UPDATE only writes rows whose pre_market_data is NULL or carries
+  // autoFilled:true. A hand save (POST /api/pre-market) has no autoFilled
+  // key, so the guarded UPDATE matches nothing and RETURNING comes back
+  // empty. The guard's jsonb semantics run against real Postgres in
+  // auto-prefill-premarket-pglite.test.ts; this pins the handler's reaction.
+
+  it('skips, writes nothing else and says why when the row holds a hand save', async () => {
+    mockSql.mockResolvedValueOnce([
+      {
+        globex_high: '5720.50',
+        globex_low: '5685.25',
+        globex_close: '5710.00',
+        vwap: '5702.375',
+        bar_count: '42',
+      },
+    ]);
+    mockSql.mockResolvedValueOnce([{ id: 99 }]); // target row
+    mockSql.mockResolvedValueOnce([]); // guarded UPDATE ... RETURNING: no match
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'skipped',
+      skipped: true,
+      reason: 'manual_pre_market_data',
+      tradeDate: '2026-04-03',
+    });
+    // bars SELECT, target SELECT, guarded UPDATE — and no INSERT fallback.
+    expect(mockSql).toHaveBeenCalledTimes(3);
+    const updateSql = (mockSql.mock.calls[2]![0] as string[]).join('?');
+    expect(updateSql).toMatch(/UPDATE market_snapshots/);
+    expect(updateSql).toMatch(/autoFilled/);
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'auto-prefill-premarket',
+      expect.objectContaining({
+        status: 'skipped',
+        reason: 'manual_pre_market_data',
+      }),
+    );
   });
 
   // ── Happy path: no existing snapshot ──────────────────────
@@ -262,7 +294,7 @@ describe('auto-prefill-premarket handler', () => {
       },
     ]);
     mockSql.mockResolvedValueOnce([{ id: 1 }]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
 
     const res = mockResponse();
     await handler(makeCronReq(), res);

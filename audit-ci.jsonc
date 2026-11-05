@@ -63,5 +63,71 @@
     // only parses local Vercel CLI auth/config files. Once
     // `npm view @vercel/cli-config dependencies.zod` reports >=4.6.6, drop
     // the override and the Dependabot ignore.
+
+    // glob is NOT allowlisted: package.json `overrides` forces glob onto
+    // the patched 14.x line (`^14.0.2`, GHSA-3g3m-2fjr-6pw4: an aborted
+    // async walk keeps reading directories) under each of its three users.
+    // Nested overrides only apply inside the named package, so each needs
+    // an entry. No parent upgrade exists (checked 2026-11-03): the latest
+    // @sentry/bundler-plugin-core 5.3.0 (and @sentry/bundler-plugins 11.10.0
+    // behind @sentry/vite-plugin 11.x) and @vercel/nft 1.11.0 depend on
+    // `glob ^13`, and workbox-build 7.4.1 (the latest) on `glob ^11`.
+    // The jump is safe for all three. glob 14 removes the `debug` option,
+    // renames Pattern/Processor internals, makes walk() return arrays and
+    // roots an `ignore` pattern that starts with `/` at the cwd root. Each
+    // parent calls only glob()/globSync() with cwd, absolute, nodir,
+    // ignore, dot, mark and follow, and none passes `signal`. For those
+    // call shapes glob 11.1.0, 13.0.6 and 14.0.3 return identical file sets
+    // on this repo's dist/ and on a tree with node_modules and dot
+    // directories. All three are build-time tools: the Sentry plugin and
+    // workbox-build run in `vite build`, nft inside @vercel/node. glob 14
+    // also depends on minimatch ^11.0.2, which clears GHSA-g3hv-75wg-m249
+    // on these three paths. Remove each entry once
+    // `npm view <parent> dependencies.glob` reports >=14.0.2; for
+    // @vercel/nft, check the exact version @vercel/node pins, not nft's
+    // latest. If @sentry/vite-plugin moves to 11.x, re-key the Sentry entry
+    // to @sentry/bundler-plugins, or glob 13 comes back (audit-ci flags it).
+
+    // ── minimatch (dev and build tooling only) ────────────────────────────
+    // GHSA-g3hv-75wg-m249: at `optimizationLevel >= 2` a crafted glob
+    // pattern amplifies minimatch's internal pattern list
+    // (firstPhasePreProcess), then a quadratic pass (secondPhasePreProcess)
+    // exhausts CPU and memory. Fixed in 11.0.1. After the glob overrides
+    // above, three copies below 11.0.1 remain (checked 2026-11-03):
+    // - 10.2.6 at the root: eslint, @eslint/config-array,
+    //   @typescript-eslint/typescript-estree, eslint-plugin-import-x and
+    //   eslint-plugin-sonarjs, i.e. the lint chain.
+    // - 3.1.5 under @ts-morph/common (ts-morph 12, pinned by @vercel/node
+    //   and @vercel/static-config): `vercel dev` / `vercel build` only.
+    // - 5.1.9 under filelist (jake, ejs, workbox-build's off-main-thread
+    //   plugin): never loaded, since ejs's lib does not require jake.
+    //
+    // No fix exists:
+    // - Parent upgrade: the latest eslint 10.14.0, eslint-plugin-sonarjs
+    //   4.2.2, typescript-estree 8.72.1, @eslint/config-array 0.23.5,
+    //   eslint-plugin-import-x 4.17.1 and @ts-morph/common 0.29.0 all still
+    //   depend on `minimatch ^10` (import-x: `^9 || ^10`), and @vercel/node
+    //   29.0.1 still pins ts-morph 12.0.0.
+    // - Override: unsafe. minimatch 11 drops makeRe(), and import-x's ESM
+    //   entry does `import { makeRe } from 'minimatch'`
+    //   (rules/no-internal-modules.js), a SyntaxError at load, so the root
+    //   copy must stay on 10.x. @ts-morph/common and filelist call
+    //   `require('minimatch')` as a function, which is an object in 11
+    //   (TypeError). Moving only eslint, config-array, typescript-estree
+    //   and sonarjs to 11 would not remove this entry, and would run every
+    //   lint on a major eslint has not adopted: its file walk calls
+    //   Minimatch#match(path, partial), whose `**` handling 11 changes.
+    //
+    // Reachability: the vulnerable code runs only when `optimizationLevel`
+    // is 2 or more, and the default is 1. None of the lint packages sets
+    // it (grepped in node_modules). The one level-2 caller in the tree is
+    // glob, whose default entry bundles its own patched minimatch 11.x
+    // (the nested 11.0.4 serves only `glob/raw`). 3.1.5 and 5.1.9 predate
+    // the code: they have no firstPhasePreProcess, secondPhasePreProcess or
+    // optimizationLevel. The patterns are this repo's own lint globs, rule
+    // options and dependency names, never request input, and nothing here
+    // ships to production. Remove this entry once `npm ls minimatch` shows
+    // no copy below 11.0.1.
+    "GHSA-g3hv-75wg-m249", // minimatch globparts amplification
   ],
 }

@@ -30,12 +30,18 @@ vi.mock('../_lib/sentry.js', () => ({
   Sentry: { setTag: vi.fn(), captureException: vi.fn() },
 }));
 
+vi.mock('../_lib/axiom.js', () => ({
+  reportCronRun: vi.fn(),
+}));
+
 // cron-instrumentation.js stays real: the handler is wrapped in
 // withCronCheckin, and the check-in tests below drive that wrapper end to
 // end through a stubbed fetch.
 import handler from '../cron/cleanup-ws-gex-strike-expiry.js';
+import { reportCronRun } from '../_lib/axiom.js';
 import { _resetDsnCacheForTest } from '../_lib/cron-instrumentation.js';
 import { SCHEDULE_MAP } from '../_lib/cron-schedules.js';
+import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 
 const JOB = 'cleanup-ws-gex-strike-expiry';
@@ -131,6 +137,31 @@ describe('cleanup-ws-gex-strike-expiry handler', () => {
     expect(mockQuery).toHaveBeenCalledTimes(2);
   });
 
+  it('ends a pass on a short batch, without an extra empty DELETE', async () => {
+    // A batch under BATCH_SIZE means the pass predicate has nothing left.
+    const shortBatch = Array.from({ length: 1_234 }, (_, i) => ({ id: i }));
+    mockQuery
+      .mockResolvedValueOnce(FULL_BATCH) // pass 1 batch 1
+      .mockResolvedValueOnce(shortBatch) // pass 1 drained by a short batch
+      .mockResolvedValueOnce(shortBatch); // pass 2 drained the same way
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      totalDeleted: 52_468,
+      batches: 3,
+      stopReason: 'drained',
+    });
+    expect(mockQuery).toHaveBeenCalledTimes(3);
+    expect(mockQuery.mock.calls.map(([sql]) => sql as string)).toEqual([
+      expect.stringContaining('expiry < $1::date'),
+      expect.stringContaining('expiry < $1::date'),
+      expect.stringContaining('expiry >= $1::date'),
+    ]);
+  });
+
   it('drains both passes across multiple batches', async () => {
     // Pass 1 (past_expiry): 2 full batches then drained.
     // Pass 2 (pre_today_minutes): 1 full batch then drained.
@@ -201,24 +232,24 @@ describe('cleanup-ws-gex-strike-expiry handler', () => {
 
   it.each([
     {
-      // Equal terms. Under the old 295 s after-the-batch check, the 280.5 s
+      // Equal terms. Under the old 295 s after-the-batch check, the 240.5 s
       // case below would have kept going.
-      projection: 'elapsed 139.75 s + slowest 139.75 s = 279.5 s',
-      fullBatchesMs: [139_750],
+      projection: 'elapsed 119.75 s + slowest 119.75 s = 239.5 s',
+      fullBatchesMs: [119_750],
       queries: 3, // batch 2 drains pass 1, then pass 2 drains
       stopReason: 'drained',
     },
     {
-      projection: 'elapsed 140.25 s + slowest 140.25 s = 280.5 s',
-      fullBatchesMs: [140_250],
+      projection: 'elapsed 120.25 s + slowest 120.25 s = 240.5 s',
+      fullBatchesMs: [120_250],
       queries: 1,
       stopReason: 'wall_budget',
     },
     {
       // Unequal terms, so each one is pinned on its own: `2 * elapsed`
-      // (280.8 s) would stop here.
-      projection: 'elapsed 140.4 s + slowest 139.4 s = 279.8 s',
-      fullBatchesMs: [1_000, 139_400],
+      // (240.8 s) would stop here.
+      projection: 'elapsed 120.4 s + slowest 119.4 s = 239.8 s',
+      fullBatchesMs: [1_000, 119_400],
       queries: 4,
       stopReason: 'drained',
     },
@@ -235,7 +266,7 @@ describe('cleanup-ws-gex-strike-expiry handler', () => {
       // Full batches taking the listed times; every later batch takes no
       // time and deletes nothing. Before each batch after the first, the
       // projection is elapsed time plus the slowest batch so far, against
-      // the 280 s budget.
+      // the 240 s budget.
       const advance = fakeClock();
       for (const ms of fullBatchesMs) {
         mockQuery.mockImplementationOnce(async () => {
@@ -257,7 +288,7 @@ describe('cleanup-ws-gex-strike-expiry handler', () => {
   );
 
   it('checks the budget at the pass boundary, so pass 2 never starts after a late pass 1', async () => {
-    // Pass 1: a quick full batch, then its draining batch ends at 281 s.
+    // Pass 1: a quick full batch, then its draining batch ends at 241 s.
     // The budget used to be checked only after a non-empty batch, so pass
     // 2's first DELETE started past the budget and could run into
     // maxDuration, where the kill reads as a monitor timeout.
@@ -268,7 +299,7 @@ describe('cleanup-ws-gex-strike-expiry handler', () => {
         return FULL_BATCH;
       })
       .mockImplementationOnce(async () => {
-        advance(280_000); // pass 1 batch 2: drains, ends at 281 s
+        advance(240_000); // pass 1 batch 2: drains, ends at 241 s
         return [];
       });
 
@@ -312,6 +343,104 @@ describe('cleanup-ws-gex-strike-expiry handler', () => {
       'cron.job',
       'cleanup-ws-gex-strike-expiry',
     );
+  });
+
+  // ── Axiom run event (reportCronRun) ─────────────────────────────
+
+  describe('Axiom run event', () => {
+    it('reports ok with the response summary on a drained run', async () => {
+      mockQuery
+        .mockResolvedValueOnce(FULL_BATCH) // pass 1 batch 1
+        .mockResolvedValueOnce([]) //         pass 1 drained
+        .mockResolvedValueOnce([]); //        pass 2 drained
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(reportCronRun).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledWith(JOB, {
+        status: 'ok',
+        today: '2026-05-15',
+        totalDeleted: 50_000,
+        batches: 3,
+        durationMs: expect.any(Number),
+        stopReason: 'drained',
+      });
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ stopReason: 'drained' }),
+        'ws_gex_strike_expiry retention sweep complete',
+      );
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    it('reports partial when the wall budget ends the sweep with rows left', async () => {
+      // Once a day, a handful of batches should drain the table, so a budget
+      // stop leaves expired rows until tomorrow: not a clean `ok`.
+      const advance = fakeClock();
+      mockQuery.mockImplementationOnce(async () => {
+        advance(120_250); // elapsed + slowest = 240.5 s > 240 s budget
+        return FULL_BATCH;
+      });
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(reportCronRun).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledWith(JOB, {
+        status: 'partial',
+        today: '2026-05-15',
+        totalDeleted: 50_000,
+        batches: 1,
+        durationMs: 120_250,
+        stopReason: 'wall_budget',
+      });
+      // Logged as a warning, not as a completed sweep.
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ stopReason: 'wall_budget' }),
+        'ws_gex_strike_expiry retention: wall budget exhausted with expired rows remaining',
+      );
+      expect(logger.info).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'ws_gex_strike_expiry retention sweep complete',
+      );
+    });
+
+    it('reports error with the partial counts when a DELETE fails, never ok', async () => {
+      mockQuery
+        .mockResolvedValueOnce(FULL_BATCH)
+        .mockRejectedValueOnce(new Error('connection lost'));
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(500);
+      expect(Sentry.captureException).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledOnce();
+      expect(reportCronRun).toHaveBeenCalledWith(JOB, {
+        status: 'error',
+        error: 'Error: connection lost',
+        today: '2026-05-15',
+        totalDeleted: 50_000,
+        batches: 1,
+        durationMs: expect.any(Number),
+      });
+    });
+
+    it('sends no event when the guard rejects the request', async () => {
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          headers: { authorization: 'Bearer wrong' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(401);
+      expect(reportCronRun).not.toHaveBeenCalled();
+    });
   });
 
   // ── Sentry cron monitor (withCronCheckin) ───────────────────────

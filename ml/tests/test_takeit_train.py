@@ -30,71 +30,75 @@ def _synthetic_lottery_frame(n: int = 400, seed: int = 42) -> pd.DataFrame:
     """
     rng = np.random.default_rng(seed)
     base = pd.to_datetime("2026-04-01 14:30:00+00:00", utc=True)
-    fire_times = [base + pd.Timedelta(minutes=int(m)) for m in rng.integers(0, 5 * 24 * 60, n)]
+    fire_times = [
+        base + pd.Timedelta(minutes=int(m)) for m in rng.integers(0, 5 * 24 * 60, n)
+    ]
     fire_times.sort()  # time-ordered for walk-forward
 
-    df = pd.DataFrame({
-        "id": range(n),
-        "date": [t.date() for t in fire_times],
-        "fire_time": fire_times,
-        "option_chain_id": [f"SPY_{i % 50}" for i in range(n)],
-        "underlying_symbol": rng.choice(["SPY", "QQQ", "SPXW", "AAPL", "NVDA"], n),
-        "option_type": rng.choice(["C", "P"], n),
-        "strike": rng.uniform(100, 600, n),
-        "expiry": [t.date() for t in fire_times],
-        "dte": rng.integers(0, 5, n),
-        "trigger_vol_to_oi_window": rng.uniform(0.5, 5, n),
-        "trigger_vol_to_oi_cum": rng.uniform(0.5, 5, n),
-        "trigger_iv": rng.uniform(0.1, 0.6, n),
-        "trigger_delta": rng.uniform(0.05, 0.40, n),
-        "trigger_ask_pct": rng.uniform(0.3, 0.95, n),
-        "trigger_window_size": rng.integers(3, 15, n),
-        "trigger_window_prints": rng.integers(2, 10, n),
-        "entry_price": rng.uniform(0.5, 5, n),
-        "open_interest": rng.integers(10, 1000, n),
-        "spot_at_first": rng.uniform(100, 600, n),
-        "alert_seq": rng.integers(1, 5, n),
-        "minutes_since_prev_fire": rng.uniform(1, 240, n),
-        "flow_quad": rng.choice(["Q1", "Q2", "Q3", "Q4"], n),
-        "tod": rng.choice(["AM_open", "MID", "LUNCH", "PM_close"], n),
-        "mode": rng.choice(["A_intraday_0DTE", "B_multi_day_DTE1_3"], n),
-        "reload_tagged": rng.random(n) < 0.05,
-        "cheap_call_pm_tagged": rng.random(n) < 0.05,
-        "burst_ratio_vs_prev": rng.uniform(0.5, 3, n),
-        "entry_drop_pct_vs_prev": rng.uniform(-0.5, 0.5, n),
-        "mkt_tide_ncp": rng.normal(0, 1, n),
-        "mkt_tide_npp": rng.normal(0, 1, n),
-        "mkt_tide_diff": rng.normal(0, 2, n),
-        "mkt_tide_otm_diff": rng.normal(0, 2, n),
-        "spx_flow_diff": rng.normal(0, 1, n),
-        "spy_etf_diff": rng.normal(0, 1, n),
-        "qqq_etf_diff": rng.normal(0, 1, n),
-        "zero_dte_diff": rng.normal(0, 1, n),
-        "spx_spot_gamma_oi": rng.normal(0, 3, n),
-        "spx_spot_gamma_vol": rng.normal(0, 1, n),
-        "spx_spot_charm_oi": rng.normal(0, 1, n),
-        "spx_spot_vanna_oi": rng.normal(0, 1, n),
-        "gex_strike_call_minus_put": rng.normal(0, 1, n),
-        "gex_strike_call_ask_minus_bid": rng.normal(0, 1, n),
-        "gex_strike_put_ask_minus_bid": rng.normal(0, 1, n),
-        "gex_strike_actual_strike": rng.uniform(100, 600, n),
-        "score": rng.integers(0, 25, n),
-        "direction_gated": rng.random(n) < 0.05,
-        "alert_type": "lottery",
-        # Phase-1 derived features:
-        "minute_of_day_ct": rng.integers(8 * 60 + 30, 15 * 60, n),
-        "day_of_week": rng.integers(0, 5, n),
-        "session_phase": rng.integers(1, 6, n),
-        "is_itm_at_fire": rng.integers(0, 2, n).astype(np.int8),
-        "otm_distance_pct": rng.uniform(-0.1, 0.1, n),
-        "dealer_gamma_sign": rng.choice([-1, 1], n).astype(np.int8),
-        "aggressive_premium_flag": (rng.random(n) < 0.25).astype(np.int8),
-        "burst_storm_badge": rng.integers(0, 2, n).astype(np.int8),
-        "burst_storm_distinct_count": rng.integers(0, 8, n),
-        "silent_boom_cofire_within_5min": (rng.random(n) < 0.1).astype(np.int8),
-        "n_same_dir_fires_last_30min": rng.integers(0, 5, n),
-        "prior_session_win_rate_same_ticker": rng.uniform(0, 1, n),
-    })
+    df = pd.DataFrame(
+        {
+            "id": range(n),
+            "date": [t.date() for t in fire_times],
+            "fire_time": fire_times,
+            "option_chain_id": [f"SPY_{i % 50}" for i in range(n)],
+            "underlying_symbol": rng.choice(["SPY", "QQQ", "SPXW", "AAPL", "NVDA"], n),
+            "option_type": rng.choice(["C", "P"], n),
+            "strike": rng.uniform(100, 600, n),
+            "expiry": [t.date() for t in fire_times],
+            "dte": rng.integers(0, 5, n),
+            "trigger_vol_to_oi_window": rng.uniform(0.5, 5, n),
+            "trigger_vol_to_oi_cum": rng.uniform(0.5, 5, n),
+            "trigger_iv": rng.uniform(0.1, 0.6, n),
+            "trigger_delta": rng.uniform(0.05, 0.40, n),
+            "trigger_ask_pct": rng.uniform(0.3, 0.95, n),
+            "trigger_window_size": rng.integers(3, 15, n),
+            "trigger_window_prints": rng.integers(2, 10, n),
+            "entry_price": rng.uniform(0.5, 5, n),
+            "open_interest": rng.integers(10, 1000, n),
+            "spot_at_first": rng.uniform(100, 600, n),
+            "alert_seq": rng.integers(1, 5, n),
+            "minutes_since_prev_fire": rng.uniform(1, 240, n),
+            "flow_quad": rng.choice(["Q1", "Q2", "Q3", "Q4"], n),
+            "tod": rng.choice(["AM_open", "MID", "LUNCH", "PM_close"], n),
+            "mode": rng.choice(["A_intraday_0DTE", "B_multi_day_DTE1_3"], n),
+            "reload_tagged": rng.random(n) < 0.05,
+            "cheap_call_pm_tagged": rng.random(n) < 0.05,
+            "burst_ratio_vs_prev": rng.uniform(0.5, 3, n),
+            "entry_drop_pct_vs_prev": rng.uniform(-0.5, 0.5, n),
+            "mkt_tide_ncp": rng.normal(0, 1, n),
+            "mkt_tide_npp": rng.normal(0, 1, n),
+            "mkt_tide_diff": rng.normal(0, 2, n),
+            "mkt_tide_otm_diff": rng.normal(0, 2, n),
+            "spx_flow_diff": rng.normal(0, 1, n),
+            "spy_etf_diff": rng.normal(0, 1, n),
+            "qqq_etf_diff": rng.normal(0, 1, n),
+            "zero_dte_diff": rng.normal(0, 1, n),
+            "spx_spot_gamma_oi": rng.normal(0, 3, n),
+            "spx_spot_gamma_vol": rng.normal(0, 1, n),
+            "spx_spot_charm_oi": rng.normal(0, 1, n),
+            "spx_spot_vanna_oi": rng.normal(0, 1, n),
+            "gex_strike_call_minus_put": rng.normal(0, 1, n),
+            "gex_strike_call_ask_minus_bid": rng.normal(0, 1, n),
+            "gex_strike_put_ask_minus_bid": rng.normal(0, 1, n),
+            "gex_strike_actual_strike": rng.uniform(100, 600, n),
+            "score": rng.integers(0, 25, n),
+            "direction_gated": rng.random(n) < 0.05,
+            "alert_type": "lottery",
+            # Phase-1 derived features:
+            "minute_of_day_ct": rng.integers(8 * 60 + 30, 15 * 60, n),
+            "day_of_week": rng.integers(0, 5, n),
+            "session_phase": rng.integers(1, 6, n),
+            "is_itm_at_fire": rng.integers(0, 2, n).astype(np.int8),
+            "otm_distance_pct": rng.uniform(-0.1, 0.1, n),
+            "dealer_gamma_sign": rng.choice([-1, 1], n).astype(np.int8),
+            "aggressive_premium_flag": (rng.random(n) < 0.25).astype(np.int8),
+            "burst_storm_badge": rng.integers(0, 2, n).astype(np.int8),
+            "burst_storm_distinct_count": rng.integers(0, 8, n),
+            "silent_boom_cofire_within_5min": (rng.random(n) < 0.1).astype(np.int8),
+            "n_same_dir_fires_last_30min": rng.integers(0, 5, n),
+            "prior_session_win_rate_same_ticker": rng.uniform(0, 1, n),
+        }
+    )
 
     # Inject a real signal so AUC > heuristic baseline.
     logit = (
@@ -105,9 +109,9 @@ def _synthetic_lottery_frame(n: int = 400, seed: int = 42) -> pd.DataFrame:
     )
     p = 1.0 / (1.0 + np.exp(-logit))
     df["win"] = (rng.random(n) < p).astype(int)
-    df["peak_ceiling_pct"] = np.where(df["win"] == 1,
-                                       rng.uniform(20, 100, n),
-                                       rng.uniform(0, 19, n))
+    df["peak_ceiling_pct"] = np.where(
+        df["win"] == 1, rng.uniform(20, 100, n), rng.uniform(0, 19, n)
+    )
     return df
 
 
@@ -118,11 +122,21 @@ def test_prepare_features_drops_identifiers_and_target() -> None:
     df = _synthetic_lottery_frame(n=100)
     X, y, feature_cols, _ = prepare_features(df, "lottery")
     for forbidden in (
-        "id", "date", "fire_time", "option_chain_id", "underlying_symbol",
-        "alert_type", "expiry", "peak_ceiling_pct", "win", "strike",
+        "id",
+        "date",
+        "fire_time",
+        "option_chain_id",
+        "underlying_symbol",
+        "alert_type",
+        "expiry",
+        "peak_ceiling_pct",
+        "win",
+        "strike",
         "gex_strike_actual_strike",
     ):
-        assert forbidden not in feature_cols, f"non-feature column {forbidden} leaked into X"
+        assert forbidden not in feature_cols, (
+            f"non-feature column {forbidden} leaked into X"
+        )
     assert len(X) == len(df)
     assert len(y) == len(df)
     assert set(y.tolist()).issubset({0, 1})
@@ -161,6 +175,7 @@ def test_walk_forward_cv_produces_oof_predictions() -> None:
     assert len(fold_metrics) == 3
     # On synthetic data with a planted signal, OOF AUC must beat random.
     from sklearn.metrics import roc_auc_score as _auc
+
     assert _auc(y[oof_mask], oof_preds[oof_mask]) > 0.55
 
 
@@ -228,6 +243,7 @@ def test_explain_row_returns_top_k(tmp_path: Path) -> None:
     train_one_alert_type("lottery", data_dir, out_dir, findings_dir)
 
     import joblib
+
     bundle = joblib.load(out_dir / "lottery_classifier.joblib")
     # Use a row from the original frame.
     X, _, _, _ = prepare_features(df, "lottery")
@@ -272,6 +288,7 @@ def test_explain_batch_chunked_matches_unchunked(tmp_path: Path) -> None:
     train_one_alert_type("lottery", data_dir, out_dir, findings_dir)
 
     import joblib
+
     bundle = joblib.load(out_dir / "lottery_classifier.joblib")
     X, _, _, _ = prepare_features(df, "lottery")
 
@@ -280,7 +297,9 @@ def test_explain_batch_chunked_matches_unchunked(tmp_path: Path) -> None:
     assert len(big) == len(small) == 50
     for i in range(50):
         assert big[i].prob_raw == pytest.approx(small[i].prob_raw, abs=1e-9)
-        assert big[i].prob_calibrated == pytest.approx(small[i].prob_calibrated, abs=1e-9)
+        assert big[i].prob_calibrated == pytest.approx(
+            small[i].prob_calibrated, abs=1e-9
+        )
 
 
 def test_bundle_round_trip_predicts_in_unit_interval(tmp_path: Path) -> None:
@@ -299,6 +318,7 @@ def test_bundle_round_trip_predicts_in_unit_interval(tmp_path: Path) -> None:
     train_one_alert_type("lottery", data_dir, out_dir, findings_dir)
 
     import joblib
+
     bundle = joblib.load(out_dir / "lottery_classifier.joblib")
     assert isinstance(bundle["calibrator"], IsotonicRegression)
     assert "feature_cols" in bundle
@@ -345,6 +365,7 @@ def test_explain_batch_matches_explain_row(tmp_path: Path) -> None:
     train_one_alert_type("lottery", data_dir, out_dir, findings_dir)
 
     import joblib
+
     bundle = joblib.load(out_dir / "lottery_classifier.joblib")
     X, _, _, _ = prepare_features(df, "lottery")
     batch = explain_batch(bundle, X.iloc[:5])
@@ -368,6 +389,7 @@ def test_explanation_to_dict_is_json_serializable(tmp_path: Path) -> None:
     import json
 
     import joblib
+
     bundle = joblib.load(out_dir / "lottery_classifier.joblib")
     X, _, _, _ = prepare_features(df, "lottery")
     explanation = explain_row(bundle, X.iloc[0])
@@ -406,7 +428,9 @@ _SELECTED_GEX_COLS = [
 ]
 
 
-def test_prepare_features_only_selects_gex_features_the_live_featurizer_serves() -> None:
+def test_prepare_features_only_selects_gex_features_the_live_featurizer_serves() -> (
+    None
+):
     df = _synthetic_lottery_frame()
     rng = np.random.default_rng(0)
     for col in _SELECTED_GEX_COLS:

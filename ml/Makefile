@@ -51,11 +51,11 @@ calibration: ## Run TRACE Live calibration dashboard (confidence vs actual hit-r
 
 lint: ## Check and auto-fix code quality (ruff lint + format)
 	$(PYTHON) -m ruff check --fix src/ tests/
-	$(PYTHON) -m ruff format src/ tests/
+	$(PYTHON) -m ruff format .
 
 format: ## Auto-fix formatting and lint issues
 	$(PYTHON) -m ruff check --fix src/ tests/
-	$(PYTHON) -m ruff format src/ tests/
+	$(PYTHON) -m ruff format .
 
 review: lint test-cov ## Full quality gate: lint + tests + coverage
 

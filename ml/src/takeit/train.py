@@ -263,21 +263,29 @@ def train_final_with_calibration(
     iso.fit(raw, y_cal)
     cal = iso.transform(raw)
 
-    return model, iso, {
-        "n_train": cut,
-        "n_cal": n - cut,
-        "raw_auc": float(roc_auc_score(y_cal, raw)),
-        "cal_auc": float(roc_auc_score(y_cal, cal)),
-        "cal_brier": float(brier_score_loss(y_cal, cal)),
-        "raw_brier": float(brier_score_loss(y_cal, raw)),
-    }
+    return (
+        model,
+        iso,
+        {
+            "n_train": cut,
+            "n_cal": n - cut,
+            "raw_auc": float(roc_auc_score(y_cal, raw)),
+            "cal_auc": float(roc_auc_score(y_cal, cal)),
+            "cal_brier": float(brier_score_loss(y_cal, cal)),
+            "raw_brier": float(brier_score_loss(y_cal, raw)),
+        },
+    )
 
 
 # ── Plotting ─────────────────────────────────────────────────────────────────
 
 
-def plot_reliability(y_true: np.ndarray, y_prob: np.ndarray, out_path: Path, title: str) -> None:
-    frac_pos, mean_pred = calibration_curve(y_true, y_prob, n_bins=10, strategy="quantile")
+def plot_reliability(
+    y_true: np.ndarray, y_prob: np.ndarray, out_path: Path, title: str
+) -> None:
+    frac_pos, mean_pred = calibration_curve(
+        y_true, y_prob, n_bins=10, strategy="quantile"
+    )
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.plot([0, 1], [0, 1], "k--", linewidth=1, label="perfect")
     ax.plot(mean_pred, frac_pos, "o-", color="#4477aa", label="model")
@@ -293,7 +301,9 @@ def plot_reliability(y_true: np.ndarray, y_prob: np.ndarray, out_path: Path, tit
     plt.close(fig)
 
 
-def plot_roc(y_true: np.ndarray, y_prob: np.ndarray, out_path: Path, title: str) -> None:
+def plot_roc(
+    y_true: np.ndarray, y_prob: np.ndarray, out_path: Path, title: str
+) -> None:
     fpr, tpr, _ = roc_curve(y_true, y_prob)
     auc = roc_auc_score(y_true, y_prob)
     fig, ax = plt.subplots(figsize=(6, 6))
@@ -343,7 +353,9 @@ def train_one_alert_type(
         return None
 
     X, y, feature_cols, top_tickers = prepare_features(df, alert_type)
-    print(f"[takeit-train] {alert_type}: shape={X.shape}, win_rate={y.mean():.3f}, features={len(feature_cols)}")
+    print(
+        f"[takeit-train] {alert_type}: shape={X.shape}, win_rate={y.mean():.3f}, features={len(feature_cols)}"
+    )
 
     # Walk-forward CV for honest OOF metrics on the full feature set (including
     # the existing heuristic `score` column).
@@ -386,12 +398,14 @@ def train_one_alert_type(
 
     # Plots from OOF predictions.
     plot_reliability(
-        y[oof_mask], oof_preds[oof_mask],
+        y[oof_mask],
+        oof_preds[oof_mask],
         findings_dir / f"{alert_type}_reliability_oof.png",
         f"{alert_type} OOF reliability (n={int(oof_mask.sum()):,})",
     )
     plot_roc(
-        y[oof_mask], oof_preds[oof_mask],
+        y[oof_mask],
+        oof_preds[oof_mask],
         findings_dir / f"{alert_type}_roc_oof.png",
         f"{alert_type} OOF ROC",
     )
@@ -424,9 +438,7 @@ def train_one_alert_type(
     json_path = out_dir / f"{alert_type}_classifier.json"
     export_bundle(
         bundle,
-        metrics={
-            k: v for k, v in asdict(summary).items() if k != "fold_metrics"
-        },
+        metrics={k: v for k, v in asdict(summary).items() if k != "fold_metrics"},
         out_path=json_path,
     )
 
@@ -462,21 +474,29 @@ def main() -> None:
         help="Which alert type to train (default: both).",
     )
     parser.add_argument(
-        "--data-dir", type=Path, default=DATA_DIR,
+        "--data-dir",
+        type=Path,
+        default=DATA_DIR,
         help="Directory containing Phase 1 training parquets.",
     )
     parser.add_argument(
-        "--out-dir", type=Path, default=DATA_DIR,
+        "--out-dir",
+        type=Path,
+        default=DATA_DIR,
         help="Directory for the trained model bundles.",
     )
     parser.add_argument(
-        "--findings-dir", type=Path, default=None,
+        "--findings-dir",
+        type=Path,
+        default=None,
         help="Directory for plots + metrics JSON (default: ml/findings/takeit-v1-{today}).",
     )
     args = parser.parse_args()
 
     if args.findings_dir is None:
-        args.findings_dir = Path(f"ml/findings/takeit-v1-{date_type.today().isoformat()}")
+        args.findings_dir = Path(
+            f"ml/findings/takeit-v1-{date_type.today().isoformat()}"
+        )
     args.findings_dir.mkdir(parents=True, exist_ok=True)
 
     alert_types: list[AlertType]

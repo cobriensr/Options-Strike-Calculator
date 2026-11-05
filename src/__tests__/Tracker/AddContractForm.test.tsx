@@ -1,5 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  act,
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+} from '@testing-library/react';
 import { AddContractForm } from '../../components/Tracker/AddContractForm';
 
 describe('AddContractForm', () => {
@@ -219,5 +225,37 @@ describe('AddContractForm', () => {
       expect(screen.queryByRole('alert')).toHaveTextContent('Conflict 409'),
     );
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  describe('autofocus on open', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('focuses Ticker once the open timer fires when nothing else has focus', () => {
+      setup();
+      expect(screen.getByLabelText(/Ticker/i)).not.toHaveFocus();
+      act(() => {
+        vi.advanceTimersByTime(50);
+      });
+      expect(screen.getByLabelText(/Ticker/i)).toHaveFocus();
+    });
+
+    it('leaves focus alone when the user is already inside the dialog', () => {
+      // A fast typist (or Playwright's fill(), which is focus-then-insert)
+      // can reach Strike before the timer fires. Pulling focus back to
+      // Ticker would send the next keystrokes to the wrong field.
+      setup();
+      const strike = screen.getByLabelText(/Strike/i);
+      strike.focus();
+      act(() => {
+        vi.advanceTimersByTime(50);
+      });
+      expect(strike).toHaveFocus();
+      expect(screen.getByLabelText(/Ticker/i)).not.toHaveFocus();
+    });
   });
 });

@@ -7,12 +7,16 @@ import sonarjs from 'eslint-plugin-sonarjs';
 import importX, { createNodeResolver } from 'eslint-plugin-import-x';
 import prettier from 'eslint-config-prettier';
 
-// src/ modules that api/ compiles, so they get the `.js` extension rule below.
+// src/ modules that api/ compiles, so they get the `.js` extension rule below:
+// four shared folders, plus any file elsewhere in src/ that api/ imports.
+// scripts/_lib/eslint-api-src-scope.test.mjs fails when api/ reaches a src/
+// file this list misses.
 const API_COMPILED_SRC = [
   'src/utils/**/*.ts',
   'src/types/**/*.ts',
   'src/data/**/*.ts',
   'src/constants/**/*.ts',
+  'src/components/LotteryFinder/ct-window.ts',
 ];
 const SRC_TESTS = [
   'src/__tests__/**',
@@ -56,8 +60,10 @@ export default [
       '.vercel',
       'coverage',
       'ml/.venv',
-      '.claude/skills',
-      '.claude/worktrees',
+      // Gitignored local Claude Code config (only periscope skill markdown is
+      // tracked). Local-only scripts there, such as hook tests, would
+      // otherwise fail the gate in the main checkout but never in CI.
+      '.claude',
       // Parallel-session git worktrees live under .worktrees/ (gitignored).
       // Each carries its own tsconfig.json, and letting eslint traverse them
       // trips typescript-eslint's "multiple candidate TSConfigRootDirs" error
@@ -69,10 +75,6 @@ export default [
       'uw-stream',
       // Railway cron service (Python), same pattern as uw-stream.
       'nightly',
-      // Standalone Python service for multileg classifier — same pattern
-      // as sidecar/uw-stream. Its own .venv contains third-party JS files
-      // that fail lint by no fault of ours.
-      'classifier',
       // periscope-scraper service was retired 2026-05-26 but local
       // dist/ + node_modules can linger on dev machines. Keep the
       // root-dir ignore so eslint doesn't choke on the compiled JS.
@@ -117,9 +119,9 @@ export default [
   // part of the api/ Vercel Functions compile graph. Node ESM's strict
   // resolution requires the extension at runtime; TypeScript's `bundler`
   // moduleResolution happily compiles bare imports that then crash in prod.
-  // Scope: api/**, plus the shared src/ modules api/ transitively imports
-  // (pure logic — types, utils, data, constants). Frontend-only .tsx files
-  // go through Vite, which handles resolution, so they're exempt.
+  // Scope: api/**, plus the src/ modules api/ transitively imports
+  // (API_COMPILED_SRC). Frontend-only .tsx files go through Vite, which
+  // handles resolution, so they're exempt.
   {
     files: ['api/**/*.ts', ...API_COMPILED_SRC],
     ignores: ['**/*.test.ts', '**/*.test.tsx', '**/__tests__/**'],

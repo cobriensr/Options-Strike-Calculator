@@ -108,21 +108,39 @@ async def healthz(_request: web.Request) -> web.Response:
     return web.json_response({"status": "stale"}, status=503)
 
 
+# Set by the first /metrics request that finds INTERNAL_METRICS_TOKEN
+# unset, so that warning is written once per process, not per request.
+_metrics_token_unset_logged = False
+
+
+def _unauthorized() -> web.Response:
+    return web.json_response({"error": "unauthorized"}, status=401)
+
+
 async def metrics(request: web.Request) -> web.Response:
     """JSON snapshot of per-channel subscription state, per-handler counters,
     and global state.
 
-    Optionally gated on ``INTERNAL_METRICS_TOKEN``: when set, the
-    request must carry a matching ``X-Metrics-Token`` header. When
-    unset, the endpoint is open (backward compatible with existing
-    operator scrape scripts). The comparison is constant-time to
-    prevent timing-based token guessing.
+    Requires ``INTERNAL_METRICS_TOKEN``: the request must carry a matching
+    ``X-Metrics-Token`` header, compared in constant time, or it gets 401.
+    With the token unset, every request gets the same 401 and the first
+    one logs a warning. The service still boots without the token; only
+    this route depends on it.
     """
+    global _metrics_token_unset_logged
     expected = settings.internal_metrics_token
-    if expected:
-        got = request.headers.get("X-Metrics-Token", "")
-        if not hmac.compare_digest(got, expected):
-            return web.json_response({"error": "unauthorized"}, status=401)
+    if not expected:
+        if not _metrics_token_unset_logged:
+            _metrics_token_unset_logged = True
+            log.warning("INTERNAL_METRICS_TOKEN is unset; /metrics answers 401 to every request")
+        return _unauthorized()
+    # Compare bytes: aiohttp decodes header bytes as UTF-8 with
+    # surrogateescape, and compare_digest raises on non-ASCII str input.
+    got = request.headers.get("X-Metrics-Token", "")
+    if not hmac.compare_digest(
+        got.encode("utf-8", "surrogateescape"), expected.encode("utf-8", "surrogateescape")
+    ):
+        return _unauthorized()
     now = datetime.now(UTC)
     body = {
         "uptime_seconds": int((now - state.started_at).total_seconds()),

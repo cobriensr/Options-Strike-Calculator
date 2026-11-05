@@ -23,6 +23,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import online_ticker_update as otu  # noqa: E402
+from lottery_scoring import SINGLE_LEG_FILTER  # noqa: E402
 
 
 def _rows(csv_path: Path) -> list[dict]:
@@ -166,3 +167,8 @@ def test_main_unguarded_before_cutoff_proceeds(monkeypatch) -> None:
     with pytest.raises(SystemExit):
         otu.main()
     assert reached == [True]
+
+
+def test_today_query_uses_the_shared_single_leg_filter() -> None:
+    assert SINGLE_LEG_FILTER in otu.TODAY_QUERY
+    assert "inferred_structure" not in otu.TODAY_QUERY

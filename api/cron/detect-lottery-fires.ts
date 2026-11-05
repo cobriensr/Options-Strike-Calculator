@@ -17,7 +17,9 @@
  *
  * Macro snapshot is **display-only** (per spec Appendix A — every
  * macro-augmented selection rule UNDERPERFORMED the cheap-call-PM-only
- * baseline on total realized $ in the 15-day backtest).
+ * baseline on total realized $ in the 15-day backtest). That has since
+ * changed: macro now sets direction_gated (V2.2 Phase C.9) and feeds the
+ * Take-It row.
  *
  * Calls UW once per ticker-day per run for 1-min stock candles
  * (range_pos), so cronGuard's default UW_API_KEY check applies: a
@@ -427,6 +429,17 @@ export default withCronInstrumentation(
     let gexHits = 0;
     let gexMisses = 0;
     let gexOutOfUniverse = 0;
+    // GexBot lookups that threw. They still count in gexMisses (no
+    // snapshot bound), so hits + misses + out-of-universe stays one per
+    // fire; this is the subset that failed rather than found nothing.
+    let gexLookupFailures = 0;
+    // Fires whose macro snapshot lookup threw and fell back to EMPTY_MACRO:
+    // no tide, SPX gamma or strike GEX, and direction_gated false.
+    let macroSnapshotFailures = 0;
+    // Fires whose Take-It scoring threw although the run had a Take-It
+    // context (scoreLottery caught it and sent the Sentry event): written
+    // with takeit_* NULL.
+    let takeitScoreFailures = 0;
 
     // Seed cooldown state from the DB so successive cron runs don't
     // re-qualify the next tick within the 5-min window. Without this,
@@ -518,12 +531,13 @@ export default withCronInstrumentation(
     );
     const takeitPrefetchError = takeitPrefetchFailure?.reason ?? null;
     const takeitPrefetchFailureKind = takeitPrefetchFailure?.kind ?? null;
-    // The helper already sent this run's one Sentry event (an error for a
-    // broken query, else a warning).
+    // The helper or the bundle loader already sent this run's Sentry event.
+    // 'error' is a broken query, an invalid bundle or a Blob config problem
+    // (such as a manifest without a lottery bundle).
     if (takeitPrefetchFailureKind === 'error') {
       ctx.logger.error(
         { takeitPrefetchError, takeitPrefetchFailureKind },
-        'detect-lottery-fires: Take-It prefetch query error; takeit_prob left null',
+        'detect-lottery-fires: Take-It prefetch error; takeit_prob left null',
       );
     } else if (takeitPrefetchFailureKind != null) {
       ctx.logger.warn(
@@ -570,7 +584,8 @@ export default withCronInstrumentation(
     // included), days UW returned no candles for, cash-index days skipped
     // by design, and days skipped once the breaker opened. All go in the
     // Axiom payload (→ `meta`). Failures and empty days each raise one
-    // Sentry warning per run, after the insert loop.
+    // Sentry warning per run, after the insert loop, and all but the
+    // index skips make a run that wrote fires 'partial' (see Status below).
     let candleFetchFailures = 0;
     let candleFetchEmpty = 0;
     let candleFetchSkippedIndex = 0;
@@ -840,9 +855,11 @@ export default withCronInstrumentation(
       const { rec, score, cumNcpAtFire, cumNppAtFire } = prepared;
       {
         // A transient flow_data / spot_exposures issue must not drop
-        // the fire — macro is display-only (per spec Appendix A), so
-        // fall back to EMPTY_MACRO and continue. The fire itself is
-        // the load-bearing record.
+        // the fire. Macro sets direction_gated and feeds the Take-It row,
+        // but the fire is the load-bearing record, so fall back to
+        // EMPTY_MACRO (direction_gated false, Take-It without macro) and
+        // continue. The fallback is counted (macroSnapshotFailures) and
+        // makes the run 'partial'.
         let macro: MacroSnapshot;
         try {
           // As-of MUST be THIS fire's own trigger time — not the chain's
@@ -853,6 +870,7 @@ export default withCronInstrumentation(
           // Silent Boom already does this per-fire (tideDiffAt(bucketTs)).
           macro = await fetchMacroSnapshot(db, rec, rec.triggerTimeCt);
         } catch (macroErr) {
+          macroSnapshotFailures += 1;
           ctx.logger.warn(
             { err: macroErr, optionChain: rec.optionChainId },
             'detect-lottery-fires macro snapshot failed; using EMPTY_MACRO',
@@ -1046,6 +1064,10 @@ export default withCronInstrumentation(
           version: takeitVersion,
           features: takeitFeatures,
         } = scoreLottery(takeitCtx, takeitRow);
+        // A loaded context always scores with the bundle's version, so a
+        // null one means this row's scoring threw.
+        if (takeitCtx != null && takeitVersion == null)
+          takeitScoreFailures += 1;
         // Stash the feature dict alongside prob so the SHAP fill cron has
         // the exact bundle-shaped input the explainer needs (one-hots,
         // derived flags, sequential context) without re-deriving from raw
@@ -1055,7 +1077,8 @@ export default withCronInstrumentation(
 
         // GexBot context snapshot at fire time (migration #181). Fail-open:
         // a lookup error must not block the alert insert — leave gex_*
-        // columns NULL and continue. Mirrors the Silent Boom integration
+        // columns NULL, count it (gexLookupFailures, which makes the run
+        // 'partial') and continue. Mirrors the Silent Boom integration
         // (migration #180, commit 3c2069a0). Probe basis:
         // docs/superpowers/specs/silent-boom-gexbot-probe-findings-2026-05-26.md.
         const gexbotTicker = mapToGexbotTicker(rec.underlyingSymbol);
@@ -1069,6 +1092,7 @@ export default withCronInstrumentation(
               rec.triggerTimeCt,
             );
           } catch (err) {
+            gexLookupFailures += 1;
             Sentry.captureException(err, {
               tags: {
                 cron: 'detect-lottery-fires',
@@ -1346,11 +1370,14 @@ export default withCronInstrumentation(
         gexHits,
         gexMisses,
         gexOutOfUniverse,
+        gexLookupFailures,
+        macroSnapshotFailures,
         candleFetchFailures,
         candleFetchEmpty,
         candleFetchSkippedIndex,
         candleFetchSkippedBreaker,
         takeitPrefetchFailures: takeitPrefetchError == null ? 0 : 1,
+        takeitScoreFailures,
         flowSeriesFailures,
         flowSeriesSkippedBreaker,
         flowSeriesGenuineFailures,
@@ -1362,22 +1389,43 @@ export default withCronInstrumentation(
     );
 
     // Status:
-    //   - a genuine flow-series or Take-It prefetch error (a broken query)
-    //     → 'error', whatever was written: it is a bug, and the cron monitor
-    //     goes red;
-    //   - else a Take-It prefetch that timed out or hit a Neon blip
-    //     (takeit_prob NULL on every fire), a flow series that failed or
-    //     was skipped by the breaker (no flow features or V2 score on that
-    //     ticker's fires), or a failed anchor-legs lookup, transient or not
-    //     (anchor columns NULL on every fire), makes the run 'partial'
-    //     when it wrote fires. With
-    //     nothing written, no row was degraded and the run stays 'success';
-    //     the counters and the Sentry event still show the failure.
+    //   - a genuine flow-series error or a Take-It prefetch error (a broken
+    //     query, an invalid bundle, or a Blob config problem such as a
+    //     manifest without a lottery bundle) → 'error', whatever was
+    //     written: it is a bug or bad config, and the cron monitor goes red;
+    //   - else a Take-It prefetch that timed out or hit a Neon blip, or Blob
+    //     unreachable with no bundle cached (takeit_prob NULL on every
+    //     fire), a fire whose Take-It scoring threw (takeit_* NULL on that
+    //     fire), a flow series that failed or was skipped by the breaker
+    //     (no flow features or V2 score on that ticker's fires), a failed
+    //     anchor-legs lookup, transient or not (anchor columns NULL on every
+    //     fire), a stock candle lookup that failed, was skipped by the
+    //     breaker or came back empty (range_pos NULL on that ticker's
+    //     fires), a macro snapshot lookup that threw (that fire written with
+    //     EMPTY_MACRO, so no direction gate), or a GexBot snapshot lookup
+    //     that threw (gex_* NULL on that fire) makes the run 'partial' when
+    //     it wrote fires. With nothing written, no row was degraded and the
+    //     run stays 'success'; the counters and the Sentry event still show
+    //     the failure.
+    //
+    // An empty candle answer counts: fires come from a live session's
+    // trades, so UW having no 1-min bars for that ticker-day is a data gap,
+    // and the row is written without range_pos. A cash-index root
+    // (candleFetchSkippedIndex) doesn't count: UW won't serve its prices,
+    // so its fires keep range_pos NULL by design (owner decision, D8). A
+    // GexBot lookup that answered with no fresh snapshot (a miss) doesn't
+    // count either: it is not a failure, and gexMisses tracks it.
     const degraded =
       takeitPrefetchError != null ||
+      takeitScoreFailures > 0 ||
       flowSeriesFailures > 0 ||
       flowSeriesSkippedBreaker > 0 ||
-      anchorLookupError != null;
+      anchorLookupError != null ||
+      candleFetchFailures > 0 ||
+      candleFetchSkippedBreaker > 0 ||
+      candleFetchEmpty > 0 ||
+      macroSnapshotFailures > 0 ||
+      gexLookupFailures > 0;
     const status: CronStatus =
       flowSeriesGenuineFailures > 0 || takeitPrefetchFailureKind === 'error'
         ? 'error'
@@ -1401,6 +1449,8 @@ export default withCronInstrumentation(
         gexHits,
         gexMisses,
         gexOutOfUniverse,
+        gexLookupFailures,
+        macroSnapshotFailures,
         candleFetchFailures,
         candleFetchEmpty,
         candleFetchSkippedIndex,
@@ -1408,6 +1458,7 @@ export default withCronInstrumentation(
         takeitPrefetchFailures: takeitPrefetchError == null ? 0 : 1,
         takeitPrefetchError,
         takeitPrefetchFailureKind,
+        takeitScoreFailures,
         flowSeriesFailures,
         flowSeriesSkippedBreaker,
         flowSeriesGenuineFailures,

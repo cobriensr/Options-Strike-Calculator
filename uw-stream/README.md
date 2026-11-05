@@ -100,9 +100,11 @@ Single asyncio process:
      `gex_strike_expiry`), so one `handlers` row covers that family's
      per-ticker channels. Exception: `option_trades:SPY` / `SPXW` / `QQQ`
      get dedicated Interval B/A handlers with their own `handlers` rows,
-     which the `option_trades` row does not include. When
-     `INTERNAL_METRICS_TOKEN` is set, requests need a matching
-     `X-Metrics-Token` header.
+     which the `option_trades` row does not include. Requests need an
+     `X-Metrics-Token` header matching `INTERNAL_METRICS_TOKEN`; a missing
+     or wrong header gets 401. While `INTERNAL_METRICS_TOKEN` is unset,
+     every request gets 401 and the first one logs a warning. `/healthz`
+     needs no header.
 6. **Subscription watchdog** (`src/subscription_watchdog.py`): checks
    every 120 s after a 5-minute grace, and sends a Sentry warning when a
    configured channel stays unsubscribed for two checks in a row.
@@ -278,7 +280,7 @@ at boot, not at first use.
 | `INTERVAL_BA_PUSH_CONFLUENCE_ONLY`             | no             | Default `true`. Only alerts with a cross-symbol confluence partner send a Web Push                                                                                                                                                                                                                                                                   |
 | `VERCEL_NOTIFY_URL`                            | no             | Vercel `/api/push/notify` URL. Push is off unless this and the secret are set                                                                                                                                                                                                                                                                        |
 | `INTERNAL_NOTIFY_SECRET`                       | no             | Shared with Vercel's variable of the same name                                                                                                                                                                                                                                                                                                       |
-| `INTERNAL_METRICS_TOKEN`                       | no             | When set, `/metrics` requires a matching `X-Metrics-Token` header                                                                                                                                                                                                                                                                                    |
+| `INTERNAL_METRICS_TOKEN`                       | cond.          | Required for `/metrics`: requests must send it in an `X-Metrics-Token` header. Unset, `/metrics` answers 401 to every request; the service still boots                                                                                                                                                                                               |
 | `WS_LEASE_ENABLED`                             | no             | Default `true`. WS connection lease (deploy-overlap guard, see below). `false` bypasses it. When `true`, both KV vars below are required                                                                                                                                                                                                             |
 | `KV_REST_API_URL`                              | cond.          | Upstash REST base URL, same store the main app uses. Required when `WS_LEASE_ENABLED=true`                                                                                                                                                                                                                                                           |
 | `KV_REST_API_TOKEN`                            | cond.          | Upstash REST bearer token. Required when `WS_LEASE_ENABLED=true`                                                                                                                                                                                                                                                                                     |
@@ -302,9 +304,9 @@ pip install -r requirements-dev.txt  # runtime deps + pytest/ruff; the image ins
 # create .env from the env table above; set WS_LEASE_ENABLED=false unless you
 # also set both KV_REST_API_* vars
 PYTHONPATH=src python -m main        # same as the image (ENV PYTHONPATH=/app/src); works on Windows too
-# in another shell:
+# in another shell, with INTERNAL_METRICS_TOKEN exported to the value in .env:
 curl http://localhost:8080/healthz
-curl http://localhost:8080/metrics | jq
+curl -H "X-Metrics-Token: $INTERNAL_METRICS_TOKEN" http://localhost:8080/metrics | jq
 ```
 
 `requirements.txt` pulls `tzdata` on Windows for the CT and ET time

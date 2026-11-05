@@ -80,7 +80,7 @@ const HIGH_FREQ_FAILURE_THRESHOLD = 3;
  * mismatch:
  *
  *   - vercel.json runs these on a fixed-UTC every-5/10-min crontab over
- *     the UTC hours 13-21 (or 13-20) sized to cover the EST cash session
+ *     the UTC hours 13-21 sized to cover the EST cash session
  *     (close 21:00 UTC).
  *   - The handler gate, cronGuard → isMarketHours(), is ET-anchored:
  *     it opens ~09:25 ET and closes ~16:05 ET. In EDT (summer) 16:05 ET
@@ -254,7 +254,9 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: LONG_RUNNER_MAX_RUNTIME,
   },
   'compute-cone': {
-    schedule: '32 13 * * 1-5',
+    // Two UTC slots, one per DST regime (09:32 ET in both); the handler's
+    // 09:30–09:45 ET timeCheck skips the other with a paired ok check-in.
+    schedule: '32 13,14 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
@@ -555,9 +557,13 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
   'wave2-confirmation': {
-    // Every 5 min in the 13-21 UTC window: labels wave-2 confirmation on
-    // recent Lottery and Silent Boom fires. High-freq → relaxed threshold.
-    schedule: '*/5 13-21 * * 1-5',
+    // Every 5 min in the 13-22 UTC window: labels wave-2 confirmation on
+    // recent Lottery and Silent Boom fires. The handler gate runs to close +
+    // 90 min (17:30 ET = 22:30 UTC in EST, hence hour 22) so the session's
+    // last fires reach their 75-min settle age (the 60-min window plus the
+    // 15-min insert margin); ticks past the gate are satisfied by the
+    // wrapper's skip check-in. High-freq → relaxed threshold.
+    schedule: '*/5 13-22 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
@@ -626,17 +632,17 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     failureIssueThreshold: 2,
   },
   'archive-gexbot-eod': {
-    // GEXBot EOD report capture, every day (weekend runs find nothing new).
+    // GEXBot EOD report capture, every day: hourly 12:00-21:00 UTC retries missing reports until the window closes (a run with nothing missing makes no report request), plus 23:00 and 02:00.
     // Spec: docs/superpowers/specs/2026-10-28-gexbot-eod-capture-design.md
-    schedule: '0 2,12,19,23 * * *',
+    schedule: '0 2,12-21,23 * * *',
     checkinMargin: DEFAULT_MARGIN,
     // Long-runner: 800 s Vercel timeout (budget: no new downloads after 600 s, abort at 740 s). 14 min covers it with headroom.
     maxRuntime: 14,
   },
   'audit-gexbot-eod': {
-    // Alarm for a lost GEXBot EOD day, weekdays 19:45 UTC.
+    // Loss report for a GEXBot EOD day, weekdays 22:30 UTC, after the download window closes (21:00 UTC EDT, 22:00 UTC EST). The 23:30 UTC run checks the same date (ET is still the same day) and gives a failed first audit a retry.
     // Spec: docs/superpowers/specs/2026-10-28-gexbot-eod-capture-design.md
-    schedule: '45 19 * * 1-5',
+    schedule: '30 22,23 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
@@ -714,11 +720,15 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
   'refresh-tracker-contracts': {
-    // ET-local schedule — see DST_TAIL_NOTE. vercel.json fires `*/5 13-20`
-    // UTC. 20 UTC = 15 ET (EST) / 16 ET (EDT); since EST caps the fired
-    // window at 15:00 ET, the guaranteed served-AND-fired subset across
-    // both regimes is 09:00–15:00 ET → ET-local `*/5 9-15`.
-    schedule: '*/5 9-15 * * 1-5',
+    // ET-local schedule — see DST_TAIL_NOTE. vercel.json fires `*/5 13-21`
+    // UTC. It was 13-20 until 2026-10-29, which in EST would never fire the
+    // 16:00 and 16:05 ET ticks, so an expiring contract would close on its
+    // 15:55 mark. Caught before the first EST session (2026-11-02): the cron
+    // dates from 2026-05-17, so no history is affected.
+    // ET hour 16 is served in both regimes by 13-21 UTC, so the monitor
+    // expects the 16:00 and 16:05 ET runs that restores; 16:10–16:55 ET
+    // are past the market gate and satisfied by the paired skip check-in.
+    schedule: '*/5 9-16 * * 1-5',
     timezone: MARKET_HOURS_TZ,
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,

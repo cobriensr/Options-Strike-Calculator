@@ -34,7 +34,11 @@ def _ib_bars(open_price: float, n: int = 10) -> pd.DataFrame:
         rows.append(
             (
                 (start + pd.Timedelta(minutes=i)).isoformat(),
-                o, h, lo, c, 100,
+                o,
+                h,
+                lo,
+                c,
+                100,
             )
         )
     return pd.DataFrame(

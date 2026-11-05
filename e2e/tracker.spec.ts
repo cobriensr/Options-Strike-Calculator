@@ -16,7 +16,13 @@
  * production build.
  */
 
-import { test, expect, type Page, type Route } from '@playwright/test';
+import {
+  test,
+  expect,
+  type Locator,
+  type Page,
+  type Route,
+} from '@playwright/test';
 
 interface TrackerContractFixture {
   id: number;
@@ -192,8 +198,27 @@ async function installTrackerMocks(page: Page, state: MockState) {
   });
 }
 
+/**
+ * Expand the Contract Tracker section with one click and check it opened.
+ * The click is not retried: beforeEach turns smooth scrolling off, which was
+ * what made it miss.
+ */
+async function openTracker(section: Locator): Promise<void> {
+  const toggle = section.getByRole('button', {
+    name: /Toggle Contract Tracker/i,
+  });
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+}
+
 test.describe('Contract Tracker', () => {
   test.beforeEach(async ({ context, page }) => {
+    // src/index.css sets `html { scroll-behavior: smooth }` and fades each
+    // section in (`animate-fade-in-up`). On WebKit the section toggle click
+    // could land while the page was still scrolling and miss, leaving the
+    // section collapsed. The app honours prefers-reduced-motion by turning
+    // both off, so emulate it for this spec's pages (not the whole suite).
+    await page.emulateMedia({ reducedMotion: 'reduce' });
     // Seed `sc-hint` so a non-DEV build would still resolve owner mode.
     // Under `vite dev` this is redundant (DEV short-circuits) but keeps
     // the spec robust to future build-target changes.
@@ -205,9 +230,13 @@ test.describe('Contract Tracker', () => {
         sameSite: 'Strict',
       },
     ]);
-    // Explicit routes table. Auth probe → owner. Tracker → tracker
-    // mocks (installed per-test). Everything else → abort so the rest
-    // of the app doesn't 500 during the section gate render.
+    // Explicit routes table. Playwright runs the last-registered matching
+    // route first, so the order here is: the per-test tracker mocks
+    // (installed in each test), then the auth probe → owner, then this
+    // catch-all. Whatever none of them handles is aborted, never passed on:
+    // a fallback reaches the Vite proxy and a backend wired to a real
+    // database (no test may touch one).
+    await page.route('**/api/**', (route) => route.abort());
     await page.route('**/api/auth/whoami', (route) =>
       route.fulfill({
         status: 200,
@@ -215,12 +244,6 @@ test.describe('Contract Tracker', () => {
         body: JSON.stringify({ mode: 'owner' }),
       }),
     );
-    await page.route('**/api/**', (route) => {
-      const url = route.request().url();
-      if (url.includes('/api/tracker/')) return route.fallback();
-      if (url.includes('/api/auth/whoami')) return route.fallback();
-      return route.abort();
-    });
   });
 
   test('renders the Active tab with a fetched contract row', async ({
@@ -238,9 +261,7 @@ test.describe('Contract Tracker', () => {
     // builds. The section must render — no conditional skip.
     const section = page.getByRole('region', { name: 'Contract Tracker' });
     await expect(section).toBeVisible({ timeout: 10000 });
-    await section
-      .getByRole('button', { name: /Toggle Contract Tracker/i })
-      .click();
+    await openTracker(section);
     await expect(section.getByText('NVDA')).toBeVisible({ timeout: 5000 });
     await expect(section.getByText('225P 05/22')).toBeVisible();
   });
@@ -254,13 +275,17 @@ test.describe('Contract Tracker', () => {
 
     const section = page.getByRole('region', { name: 'Contract Tracker' });
     await expect(section).toBeVisible({ timeout: 10000 });
-    await section
-      .getByRole('button', { name: /Toggle Contract Tracker/i })
-      .click();
+    await openTracker(section);
     await section.getByRole('button', { name: /Add new contract/i }).click();
 
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible();
+    // The form autofocuses Ticker on a 50 ms timer. fill() is focus-then-
+    // insertText, so a timer that fires between the two steps of a later
+    // fill() moves focus back to Ticker and the value lands there ("AMD200"),
+    // leaving the required Strike empty: native validation then blocks Save
+    // silently. Wait for the autofocus before the first fill.
+    await expect(dialog.getByLabel(/Ticker/i)).toBeFocused();
     await dialog.getByLabel(/Ticker/i).fill('AMD');
     await dialog.getByLabel(/Expiry/i).fill('2026-06-20');
     await dialog.getByLabel(/Strike/i).fill('200');

@@ -139,10 +139,11 @@ export default withCronInstrumentation(
       },
     };
   },
-  // marketHours: false — runs at 14:50 UTC. In CDT that's 09:50 CT
-  // (post-open, but cronGuard's default check still fits); in CST
-  // that's 08:50 CT (BEFORE 09:30 CT open). The opt is set false
-  // year-round so the gate behavior is DST-independent.
+  // marketHours: false — runs at 14:50 UTC. In CDT that's 09:50 CT; in CST
+  // that's 08:50 CT. The cash open is 08:30 CT (09:30 ET), so both are
+  // after the open and cronGuard's default window (09:25 ET on) would admit
+  // either. The opt is set false year-round so the gate behavior is
+  // DST-independent.
   // requireApiKey: false — this cron doesn't talk to UW; it only
   // reads from our own ws_option_trades table via the evaluator.
   { marketHours: false, requireApiKey: false },

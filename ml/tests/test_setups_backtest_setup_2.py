@@ -39,7 +39,9 @@ def _es_bars(n: int = 120, base: float = 6000.0) -> pd.DataFrame:
     )
 
 
-def _nq_bars_synced(n: int = 120, base: float = 20000.0, slope: float = 4.0) -> pd.DataFrame:
+def _nq_bars_synced(
+    n: int = 120, base: float = 20000.0, slope: float = 4.0
+) -> pd.DataFrame:
     """NQ bars on the same timestamps, rising 4 pts/min (faster than ES)."""
     start = pd.Timestamp("2026-04-15", tz="UTC") + pd.Timedelta(hours=13, minutes=30)
     rows = []
@@ -210,7 +212,9 @@ def test_no_signal_when_nq_ohlcv_empty(monkeypatch):
     from setups_backtest.evaluators import setup_2_nq_leads_es as mod
 
     monkeypatch.setattr(
-        mod, "_cached_tbbo", lambda cache, conn, prefix, d: _tbbo_strong_buy(decision_ts)
+        mod,
+        "_cached_tbbo",
+        lambda cache, conn, prefix, d: _tbbo_strong_buy(decision_ts),
     )
     monkeypatch.setattr(mod, "_cached_ohlcv_nq", lambda cache, conn, d: pd.DataFrame())
 

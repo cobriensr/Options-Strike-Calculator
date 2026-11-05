@@ -71,11 +71,29 @@ describe('loadTakeitDetectContext', () => {
     expect(baseDeps.fetchRecentSameType).not.toHaveBeenCalled();
   });
 
-  it('returns null + captures exception when getBundle throws (fail-closed)', async () => {
-    vi.mocked(getBundle).mockRejectedValueOnce(new Error('schema mismatch'));
-    const ctx = await loadTakeitDetectContext('lottery', baseDeps);
+  it('returns null, captures once and reports an error when getBundle throws (an invalid bundle)', async () => {
+    const invalid = new Error('schema mismatch');
+    vi.mocked(getBundle).mockRejectedValueOnce(invalid);
+    const onPrefetchFailure = vi.fn();
+
+    const ctx = await loadTakeitDetectContext(
+      'lottery',
+      baseDeps,
+      onPrefetchFailure,
+    );
+
     expect(ctx).toBeNull();
-    expect(Sentry.captureException).toHaveBeenCalledOnce();
+    expect(baseDeps.fetchRecentSameType).not.toHaveBeenCalled();
+    // A bundle that fails validation is a bug or a bad upload, not Blob
+    // being slow: the run reports 'error'.
+    expect(onPrefetchFailure).toHaveBeenCalledExactlyOnceWith({
+      reason: 'schema mismatch',
+      kind: 'error',
+    });
+    // The existing capture, unchanged.
+    expect(Sentry.captureException).toHaveBeenCalledExactlyOnceWith(invalid, {
+      extra: { alertType: 'lottery', where: 'loadTakeitDetectContext' },
+    });
   });
 
   it('runs all three prefetches in parallel and builds the SequentialContext', async () => {
@@ -251,14 +269,43 @@ describe('loadTakeitDetectContext prefetch deadline', () => {
     expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
-  it('does not call onPrefetchFailure when the bundle is missing (nothing was prefetched)', async () => {
-    vi.mocked(getBundle).mockResolvedValueOnce(null);
-    const onPrefetchFailure = vi.fn();
+  // getBundle reports why it has no bundle (Blob unreachable → 'transient',
+  // a config problem such as a manifest without this alert type → 'error'),
+  // and the run's status depends on hearing it.
+  it.each([
+    {
+      reason: 'Take-It manifest unavailable: fetch failed',
+      kind: 'transient',
+    },
+    { reason: 'Take-It manifest names no silentboom bundle', kind: 'error' },
+  ] as const)(
+    'passes getBundle’s report of no bundle ($kind) to onPrefetchFailure and prefetches nothing',
+    async (unavailable) => {
+      vi.mocked(getBundle).mockImplementationOnce(
+        async (_alertType, onUnavailable) => {
+          onUnavailable?.(unavailable);
+          return null;
+        },
+      );
+      const onPrefetchFailure = vi.fn();
 
-    await loadTakeitDetectContext('lottery', baseDeps, onPrefetchFailure);
+      const ctx = await loadTakeitDetectContext(
+        'silentboom',
+        baseDeps,
+        onPrefetchFailure,
+      );
 
-    expect(onPrefetchFailure).not.toHaveBeenCalled();
-  });
+      expect(ctx).toBeNull();
+      expect(getBundle).toHaveBeenCalledExactlyOnceWith(
+        'silentboom',
+        expect.any(Function),
+      );
+      expect(onPrefetchFailure).toHaveBeenCalledExactlyOnceWith(unavailable);
+      expect(baseDeps.fetchRecentSameType).not.toHaveBeenCalled();
+      // getBundle sent its own Sentry event; the helper adds none.
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+    },
+  );
 });
 
 // The win-rate cache is module state that outlives a test, as it outlives

@@ -21,6 +21,7 @@ Auth: same env vars as scripts/upload-fulltape-to-r2.py
 from __future__ import annotations
 
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -93,6 +94,43 @@ def read_fulltape(
     )
 
 
+_MEMORY_LIMIT_RE = re.compile(r"\d+(\.\d+)? ?(KB|MB|GB|TB|KiB|MiB|GiB|TiB)")
+
+
+def fulltape_connection(threads: int | None = None, memory_limit: str | None = None):
+    """A fresh DuckDB connection with httpfs configured for the R2 bucket.
+
+    One connection per caller: DuckDB connections are not shared across
+    processes, and each worker process builds its own.
+
+    DuckDB's defaults are every core and 80% of RAM per connection, which
+    N parallel workers would each claim. A multi-worker caller passes its
+    share: `threads` (an int >= 1) and `memory_limit` (e.g. "6000MiB").
+    Left as None, the defaults stand (query_fulltape's behavior).
+    """
+    import duckdb  # local import: keeps cold-start light for read_fulltape users
+
+    if threads is not None and threads < 1:
+        raise ValueError(f"threads must be >= 1, got {threads!r}")
+    if memory_limit is not None and not _MEMORY_LIMIT_RE.fullmatch(memory_limit):
+        raise ValueError(f"bad memory_limit {memory_limit!r}, want e.g. '6000MiB'")
+
+    con = duckdb.connect()
+    con.execute("INSTALL httpfs; LOAD httpfs;")
+    if threads is not None:
+        con.execute(f"SET threads={int(threads)};")
+    if memory_limit is not None:
+        con.execute(f"SET memory_limit='{memory_limit}';")
+    con.execute(
+        f"SET s3_endpoint='{_must_env('R2_ENDPOINT_URL').replace('https://', '')}';"
+    )
+    con.execute(f"SET s3_access_key_id='{_must_env('R2_ACCESS_KEY_ID')}';")
+    con.execute(f"SET s3_secret_access_key='{_must_env('R2_SECRET_ACCESS_KEY')}';")
+    con.execute("SET s3_url_style='path';")
+    con.execute("SET s3_region='auto';")
+    return con
+
+
 def query_fulltape(sql: str, dates: list[str]) -> pd.DataFrame:
     """Run a DuckDB SQL query against the R2 parquets for the given dates.
 
@@ -115,8 +153,6 @@ def query_fulltape(sql: str, dates: list[str]) -> pd.DataFrame:
             dates=["2026-03-15", "2026-03-16"],
         )
     """
-    import duckdb  # local import — keeps cold-start light when caller only needs read_fulltape
-
     if not dates:
         raise ValueError("query_fulltape: dates list is empty")
 
@@ -126,14 +162,5 @@ def query_fulltape(sql: str, dates: list[str]) -> pd.DataFrame:
     url_list = "[" + ", ".join(f"'{u}'" for u in urls) + "]"
     expanded = sql.replace("__TAPE__", f"read_parquet({url_list})")
 
-    con = duckdb.connect()
-    # Configure the httpfs extension to talk to R2.
-    con.execute("INSTALL httpfs; LOAD httpfs;")
-    con.execute(
-        f"SET s3_endpoint='{_must_env('R2_ENDPOINT_URL').replace('https://', '')}';"
-    )
-    con.execute(f"SET s3_access_key_id='{_must_env('R2_ACCESS_KEY_ID')}';")
-    con.execute(f"SET s3_secret_access_key='{_must_env('R2_SECRET_ACCESS_KEY')}';")
-    con.execute("SET s3_url_style='path';")
-    con.execute("SET s3_region='auto';")
+    con = fulltape_connection()
     return con.execute(expanded).df()

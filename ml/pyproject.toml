@@ -51,7 +51,7 @@ omit = [
   # them blended the maintained-library surface (~85%) with ~7k untested
   # research statements, dragging the headline coverage to ~42%. Omitting them
   # makes the metric reflect the code we actually maintain. Production/library
-  # modules (multileg_*, takeit/*, score_components, setups_backtest harness,
+  # modules (takeit/*, score_components, setups_backtest harness,
   # etc.) are deliberately NOT omitted.
   "src/moc_*.py",
   "src/eod_flow_*.py",

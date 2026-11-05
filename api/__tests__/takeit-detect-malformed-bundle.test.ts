@@ -170,10 +170,15 @@ afterEach(() => {
 });
 
 describe('a bundle with split_conditions: [] from Blob', () => {
-  it('is rejected at load, captured to Sentry twice, and scores as null', async () => {
+  it('is rejected at load, captured to Sentry twice, reported as an error, and scores as null', async () => {
     serveFromBlob(malformedBundle());
+    const onPrefetchFailure = vi.fn();
 
-    const detectCtx = await loadTakeitDetectContext('lottery', noPriorFires);
+    const detectCtx = await loadTakeitDetectContext(
+      'lottery',
+      noPriorFires,
+      onPrefetchFailure,
+    );
 
     // The bundle never reaches the scorer, so no prefetch runs either.
     expect(detectCtx).toBeNull();
@@ -194,6 +199,13 @@ describe('a bundle with split_conditions: [] from Blob', () => {
     });
     expect(vi.mocked(Sentry.captureException).mock.calls[1]?.[1]).toEqual({
       extra: { alertType: 'lottery', where: 'loadTakeitDetectContext' },
+    });
+
+    // The cron hears it as an error (a bad upload or a bug), so the run
+    // reports 'error' rather than 'success' with every takeit_prob NULL.
+    expect(onPrefetchFailure).toHaveBeenCalledExactlyOnceWith({
+      reason: err.message,
+      kind: 'error',
     });
 
     // With no context, the cron writes takeit_prob = NULL.

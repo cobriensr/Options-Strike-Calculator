@@ -3,7 +3,7 @@
 # Dockerfile copies src/ (this file is not in the image), so there is no
 # [project] or [build-system] table.
 #
-# The rule set is pinned explicitly, matching uw-stream/ and classifier/.
+# The rule set is pinned explicitly, matching uw-stream/.
 # Without a `select`, ruff falls back to its built-in defaults, which grow
 # between releases; while ruff floated (`>=0.11`), an upgrade alone broke
 # the Sidecar Quality Gate. requirements-dev.txt also caps ruff below the

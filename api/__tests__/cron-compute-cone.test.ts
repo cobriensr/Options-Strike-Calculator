@@ -19,48 +19,32 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { setTag: vi.fn(), captureException: vi.fn() },
+  Sentry: {
+    setTag: vi.fn(),
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+  },
   metrics: { increment: vi.fn() },
 }));
 
-vi.mock('../_lib/api-helpers.js', () => ({
+// The real cronGuard runs (it applies the handler's timeCheck, which the
+// DST tests below exercise); only the Schwab call is stubbed.
+vi.mock('../_lib/api-helpers.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../_lib/api-helpers.js')>()),
   schwabFetch: vi.fn(),
-  cronGuard: vi.fn((req, res) => {
-    if (req.method !== 'GET') {
-      res.status(405).json({ error: 'GET only' });
-      return null;
-    }
-    const secret = process.env.CRON_SECRET;
-    const authHeader = req.headers.authorization ?? '';
-    if (!secret || authHeader !== `Bearer ${secret}`) {
-      res.status(401).json({ error: 'Unauthorized' });
-      return null;
-    }
-    const now = new Date();
-    const utcDay = now.getUTCDay();
-    const utcHour = now.getUTCHours();
-    const isMarketHours =
-      utcDay >= 1 && utcDay <= 5 && utcHour >= 13 && utcHour <= 21;
-    if (!isMarketHours) {
-      res.status(200).json({ skipped: true, reason: 'Outside time window' });
-      return null;
-    }
-    return {
-      apiKey: '',
-      today: now.toISOString().slice(0, 10),
-    };
-  }),
 }));
 
 import handler from '../cron/compute-cone.js';
 import { schwabFetch } from '../_lib/api-helpers.js';
+import { _resetDsnCacheForTest } from '../_lib/cron-instrumentation.js';
+import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 
 // ── Fixtures ──────────────────────────────────────────────────
 
 // 2026-05-08 = Friday; 13:32Z = 9:32 EDT (1 min after compute-cone's
-// scheduled fire). Inside the market-hours window the test cronGuard
-// mock requires.
+// scheduled fire). Inside the 09:30–09:45 ET window the handler's timeCheck
+// requires.
 const MARKET_TIME = new Date('2026-05-08T13:32:00.000Z');
 const TODAY = '2026-05-08';
 
@@ -155,6 +139,100 @@ describe('compute-cone handler', () => {
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET', headers: {} }), res);
     expect(res._status).toBe(401);
+  });
+
+  // ── DST: one of the two UTC slots runs in each regime ─────
+  //
+  // vercel.json fires `32 13,14 * * 1-5`. The 09:30–09:45 ET timeCheck
+  // admits 13:32 UTC in EDT and 14:32 UTC in EST, and nothing on a holiday.
+
+  function symmetricChain(expiry: string) {
+    return {
+      ok: true as const,
+      data: makeChain({
+        spot: 5800,
+        callStrikes: [[5800, 10.0]],
+        putStrikes: [[5800, 10.0]],
+        expiry,
+      }),
+    };
+  }
+
+  it.each([
+    // EDT (UTC-4): Fri 2026-10-30, the last weekday before DST ends.
+    ['EDT 13:32 UTC = 09:32 ET', '2026-10-30T13:32:00.000Z', '2026-10-30'],
+    // EST (UTC-5): Mon 2026-11-02, the first weekday after.
+    ['EST 14:32 UTC = 09:32 ET', '2026-11-02T14:32:00.000Z', '2026-11-02'],
+    // Black Friday closes at 13:00 ET; 09:32 is still in session.
+    ['early-close day, 14:32 UTC', '2026-11-27T14:32:00.000Z', '2026-11-27'],
+  ])('runs at %s and writes the cone', async (_label, instant, date) => {
+    vi.setSystemTime(new Date(instant));
+    vi.mocked(schwabFetch).mockResolvedValueOnce(symmetricChain(date));
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._json).toMatchObject({ job: 'compute-cone', status: 'success' });
+    expect(schwabFetch).toHaveBeenCalledOnce();
+    expect(String(vi.mocked(schwabFetch).mock.calls[0]![0])).toContain(
+      `fromDate=${date}&toDate=${date}`,
+    );
+    expect(mockSql).toHaveBeenCalledOnce();
+    expect((mockSql.mock.calls[0]!.slice(1) as unknown[])[0]).toBe(date);
+  });
+
+  it.each([
+    ['EDT 14:32 UTC = 10:32 ET', '2026-10-30T14:32:00.000Z'],
+    ['EST 13:32 UTC = 08:32 ET', '2026-11-02T13:32:00.000Z'],
+    ['Thanksgiving 13:32 UTC', '2026-11-26T13:32:00.000Z'],
+    ['Thanksgiving 14:32 UTC = 09:32 ET', '2026-11-26T14:32:00.000Z'],
+  ])('skips at %s without calling Schwab', async (_label, instant) => {
+    vi.setSystemTime(new Date(instant));
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toEqual({
+      skipped: true,
+      reason: 'Outside time window',
+    });
+    expect(schwabFetch).not.toHaveBeenCalled();
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('answers the skipped slot with a paired in_progress → ok check-in', async () => {
+    // The off-regime slot must not turn the Sentry monitor red.
+    process.env.SENTRY_DSN = 'https://pubkey@o1.ingest.us.sentry.io/42';
+    _resetDsnCacheForTest();
+    const fetchMock = vi.fn<typeof fetch>(
+      async () => new Response(null, { status: 202 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      vi.setSystemTime(new Date('2026-11-02T13:32:00.000Z')); // 08:32 EST
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._json).toMatchObject({ skipped: true });
+      const bodies = fetchMock.mock.calls.map(
+        ([, init]) =>
+          JSON.parse(String(init?.body)) as {
+            monitor_slug: string;
+            status: string;
+            check_in_id: string;
+          },
+      );
+      expect(bodies.map((b) => [b.monitor_slug, b.status])).toEqual([
+        ['compute-cone', 'in_progress'],
+        ['compute-cone', 'ok'],
+      ]);
+      expect(bodies[1]!.check_in_id).toBe(bodies[0]!.check_in_id);
+    } finally {
+      vi.unstubAllGlobals();
+      _resetDsnCacheForTest();
+    }
   });
 
   // ── Happy path ────────────────────────────────────────────
@@ -367,14 +445,16 @@ describe('compute-cone handler', () => {
     });
     expect(mockSql).not.toHaveBeenCalled();
     expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 
   it.each([
     ['SCHWAB_TOKEN_ERROR', 500],
     ['SCHWAB_API_REJECTED', 401],
     ['SCHWAB_API_502', 502],
+    ['SCHWAB_API_NETWORK', 504],
   ] as const)(
-    'still reports error (red check-in) on %s',
+    'still reports error (red check-in) on %s, with a Sentry warning',
     async (code, status) => {
       vi.mocked(schwabFetch).mockResolvedValueOnce({
         ok: false,
@@ -391,8 +471,68 @@ describe('compute-cone handler', () => {
         reason: 'schwab_fetch_failed',
       });
       expect(mockSql).not.toHaveBeenCalled();
+      // schwabFetch captures none of these, and the wrapper captures only
+      // throws, so this message is the run's only Sentry event (R4).
+      expect(Sentry.captureMessage).toHaveBeenCalledOnce();
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'compute-cone: Schwab chain fetch failed',
+        expect.objectContaining({
+          level: 'warning',
+          fingerprint: ['compute-cone', 'schwab-fetch-failed'],
+          tags: expect.objectContaining({ 'schwab.code': code }),
+          extra: { status, error: `[${code}] boom` },
+        }),
+      );
     },
   );
+
+  it('passes the Schwab error through as schwabFetch redacted it, without capping it again', async () => {
+    // schwabFetch masks token-like runs and caps the body to 200 characters
+    // once (api/_lib/schwab-fetch.ts), so `error` is already safe for
+    // Sentry, pino and the Axiom event. This one is 255 characters: a second
+    // redactUpstreamBody here would cut it to 200 and swap the original body
+    // length in "… (N chars)" for its own.
+    const error = `[SCHWAB_API_502] Schwab API error (502): ${'y '.repeat(100)}… (4031 chars)`;
+    vi.mocked(schwabFetch).mockResolvedValueOnce({
+      ok: false,
+      status: 502,
+      error,
+      code: 'SCHWAB_API_502',
+    });
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    const [, context] = vi.mocked(Sentry.captureMessage).mock.calls[0]!;
+    expect((context as { extra: { error: string } }).extra.error).toBe(error);
+    // The same string is in the response (the wrapper merges `metadata`
+    // into both the body and the Axiom event) and the log line.
+    expect(res._json).toMatchObject({ status: 'error', error });
+    expect(logger.warn).toHaveBeenCalledWith(
+      { status: 502, error },
+      'compute-cone: Schwab chain fetch failed',
+    );
+  });
+
+  it('surfaces a failed cone_levels INSERT as a 500 with a captured exception', async () => {
+    vi.mocked(schwabFetch).mockResolvedValueOnce({
+      ok: true,
+      data: makeChain({
+        spot: 5800,
+        callStrikes: [[5800, 10.0]],
+        putStrikes: [[5800, 10.0]],
+      }),
+    });
+    const insertError = new Error('insert failed');
+    mockSql.mockRejectedValueOnce(insertError);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ job: 'compute-cone', error: 'Internal error' });
+    expect(Sentry.captureException).toHaveBeenCalledWith(insertError);
+  });
 
   it('does not INSERT when underlying.last is invalid', async () => {
     vi.mocked(schwabFetch).mockResolvedValueOnce({

@@ -1,0 +1,10 @@
+
+> 0dte-strike-calculator@1.0.0 review
+> node scripts/review-gate.mjs clear && npm run type-check && eslint . && prettier --write "**/*.{ts,tsx,js,jsx,mjs,cjs}" && vite build && node scripts/check-build-output.mjs && vitest run --coverage && node scripts/check-coverage-floor.mjs && node scripts/review-gate.mjs seal
+
+
+> 0dte-strike-calculator@1.0.0 type-check
+> tsc --noEmit && tsc --noEmit -p tsconfig.api.json && tsc --noEmit -p tsconfig.scripts.json
+
+api/__tests__/cron-compute-cone.test.ts(219,13): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+api/__tests__/cron-compute-cone.test.ts(220,23): error TS2352: Conversion of type 'undefined' to type '{ body: string; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.

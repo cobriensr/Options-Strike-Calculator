@@ -45,21 +45,39 @@ def _eth_bars(low: float, high: float) -> pd.DataFrame:
     for i in range(60):
         # alternate touching low and high to ensure the extremes hold
         if i == 5:
-            rows.append((
-                (base + pd.Timedelta(minutes=i)).isoformat(),
-                low + 5, low + 5, low, low + 2, 100,
-            ))
+            rows.append(
+                (
+                    (base + pd.Timedelta(minutes=i)).isoformat(),
+                    low + 5,
+                    low + 5,
+                    low,
+                    low + 2,
+                    100,
+                )
+            )
         elif i == 30:
-            rows.append((
-                (base + pd.Timedelta(minutes=i)).isoformat(),
-                high - 5, high, high - 5, high - 2, 100,
-            ))
+            rows.append(
+                (
+                    (base + pd.Timedelta(minutes=i)).isoformat(),
+                    high - 5,
+                    high,
+                    high - 5,
+                    high - 2,
+                    100,
+                )
+            )
         else:
             mid = (low + high) / 2
-            rows.append((
-                (base + pd.Timedelta(minutes=i)).isoformat(),
-                mid, mid + 1, mid - 1, mid + 0.25, 100,
-            ))
+            rows.append(
+                (
+                    (base + pd.Timedelta(minutes=i)).isoformat(),
+                    mid,
+                    mid + 1,
+                    mid - 1,
+                    mid + 0.25,
+                    100,
+                )
+            )
     return pd.DataFrame(
         rows, columns=["ts", "open", "high", "low", "close", "volume"]
     ).assign(ts=lambda d: pd.to_datetime(d["ts"], utc=True))
@@ -68,7 +86,11 @@ def _eth_bars(low: float, high: float) -> pd.DataFrame:
 def test_fires_on_upside_sweep_then_revert(monkeypatch):
     """ETH range [5990, 6010]. First 15min sweeps to 6015 then reverts to 6005."""
     eth = _eth_bars(low=5990, high=6010)
-    rth_rows = [(6000, 6005, 5998, 6002)] * 5 + [(6010, 6015, 6008, 6013)] + [(6010, 6013, 6000, 6005)] * 9
+    rth_rows = (
+        [(6000, 6005, 5998, 6002)] * 5
+        + [(6010, 6015, 6008, 6013)]
+        + [(6010, 6013, 6000, 6005)] * 9
+    )
     bars = _bars_15(rth_rows)
     decision_ts = bars["ts"].iloc[-1] + pd.Timedelta(minutes=1)
 
@@ -88,7 +110,11 @@ def test_fires_on_upside_sweep_then_revert(monkeypatch):
 
 def test_fires_on_downside_sweep_then_revert(monkeypatch):
     eth = _eth_bars(low=5990, high=6010)
-    rth_rows = [(6000, 6002, 5998, 6000)] * 5 + [(5990, 5995, 5985, 5988)] + [(5990, 5995, 5988, 5995)] * 9
+    rth_rows = (
+        [(6000, 6002, 5998, 6000)] * 5
+        + [(5990, 5995, 5985, 5988)]
+        + [(5990, 5995, 5988, 5995)] * 9
+    )
     bars = _bars_15(rth_rows)
     decision_ts = bars["ts"].iloc[-1] + pd.Timedelta(minutes=1)
 
@@ -140,7 +166,11 @@ def test_econ_calendar_disqualifies(monkeypatch):
     from datetime import date as date_cls
 
     eth = _eth_bars(low=5990, high=6010)
-    rth_rows = [(6000, 6005, 5998, 6002)] * 5 + [(6010, 6015, 6008, 6013)] + [(6010, 6013, 6000, 6005)] * 9
+    rth_rows = (
+        [(6000, 6005, 5998, 6002)] * 5
+        + [(6010, 6015, 6008, 6013)]
+        + [(6010, 6013, 6000, 6005)] * 9
+    )
     bars = _bars_15(rth_rows)
     decision_ts = bars["ts"].iloc[-1] + pd.Timedelta(minutes=1)
 

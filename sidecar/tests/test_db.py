@@ -16,20 +16,13 @@ Mock strategy:
 
 from __future__ import annotations
 
-import os
 import sys
 from collections.abc import Generator
 from unittest.mock import MagicMock
 
-# Required env vars for config.py's pydantic-settings validation.
-# The DATABASE_URL is a throwaway test fixture — psycopg2 is mocked
-# via conftest.py so no real connection is ever attempted.
-_FAKE_DB_URL = "postgresql://test:" + "fakefixture" + "@localhost/test"
-os.environ.setdefault("DATABASE_URL", _FAKE_DB_URL)
+import pytest
 
-import pytest  # noqa: E402
-
-import db  # noqa: E402
+import db
 
 # ---------------------------------------------------------------------------
 # Fixtures

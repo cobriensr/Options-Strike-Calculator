@@ -6,15 +6,26 @@ Cut the Claude Code instruction surface for this repo down to what gets used and
 
 ## Status
 
-Phases 1, 2 and 3a are done (project skills: 103 → 51 after 3b). 3b is in review and 4a is running. Phases run one implementer at a time, in order. Phase 8 (the weekly loop) gets its own spec after phase 7.
+Phases 1 to 7 are done (project skills: 103 → 51 after 3b): 7a (scripts), 7b (agent definitions) and 7c (the status view). Phases run one implementer at a time, in order. Phase 8 (the weekly loop) has its scope approved by the owner (2026-11-04, all defaults; decisions in `weekly-improvement-loop-2026-11-04.md`) and is built after the current queue empties.
 
 | Phase | State | Record |
 |---|---|---|
-| 1 rule conflicts | done | `9c8fa3a1` + local history baseline |
+| 1 rule conflicts | done | `9c8fa3a1` + local history baseline, `234d310` |
 | 2 prune | done | `c60d0798`; local history `67f48fd`, `9e1817e` |
 | 3a merges (security, observability, a11y, claude-api, deps) | done, reviewed | `b93d784a` (stale README/comment); local history `247c781` |
-| 3b merges (perf, risk, agents-md, pandas-pro, github) | in review | – |
-| 4a fix survivors (code-path skills) | running | – |
+| 3b merges (perf, risk, agents-md, pandas-pro, github) | done, review fixes applied | local history `c0977e9`, fixes `bc4ad48` |
+| 4a fix survivors (code-path skills) | done, review fixes applied | local history `c0977e9`, fixes `bc4ad48` |
+| 4b fix survivors (everything else) | done, review fixes applied | local history `0bfac3e`, fixes `7cbdcbd` |
+| 5 rewrite high-traffic skills | done, re-review pass | local history `ed2d2fd`, `14533c0`, `499c1c8`, fixes `1dff191` |
+| 6 agents | done, two review rounds | local history `742164a`, `2b4e9cd`, `a8bedaa`, `d1fe809`, `85f8e71`, `88327e0`, `0c215e1` |
+| 6 repo (CLAUDE.md facts, ESLint `.js` scope) | done | `ea8c1636`, `b0eabe05` |
+| 7a scripts (`review-summary`, `watch-deploy`) | done, reviewed, review fixes applied | `0e057ac2`, `775a0e8d`, fixes `544cfe87`, `95828a30` |
+| 7b agents (`implementer`, `verifier`) + CLAUDE.md brief line | done | local history `97f5225`; `122f0861` |
+| 7c status view (`scripts/session-status.mjs`: worktrees, branches, recent CI; prune's "safe to remove" checks shared) | done, delta review pass, pushed 2026-11-04 | `6b7a6e44`, `20449411`, `d0cdd23a`, `5ec41828`; follow-up round in the next row |
+| 7c-2 follow-up (Linux CI fix for the real-git fixtures, prune keeps a stopped revert or pick sequence, prune clears the node_modules junction `git worktree remove` leaves on Windows, "candidate" means in prune's scope, review nits) | done | Linux CI fix `3ddd64fa`, then the round's own commits: `git log 3ddd64fa..main -- scripts/_lib/prune-worktrees.mjs scripts/_lib/session-status.mjs` |
+| (side stream) cron monitor coverage | shipped 2026-10-29 | `58526e46`..`4bf97642`; local history `2df9154`; see `cron-monitor-coverage-2026-10-29.md` |
+| (side stream) E2E CI repair phase 2 | on main | `15db7163`..`d3b80398`; see `e2e-ci-repair-2026-10-26.md` |
+| (side stream) commit gate | shipped and active 2026-10-29 (`d45eaf6d`, `eaa89513`, `c3887206`; `core.hooksPath` set) | see `commit-gate-2026-10-28.md` |
 
 ## Evidence
 
@@ -100,14 +111,14 @@ Each group becomes one skill that carries this repo's rules. Bodies come from th
 - **Data:** `data-transform` → into `pandas-pro`.
 - **GitHub:** `issues` → into `github`.
 - **Simplify:** `kaizen`, `code-refactoring-refactor-clean`. Delete both; the built-in `simplify` covers them.
-- **ML:** `data-scientist` → fold the useful parts into `scikit-learn` / `statistical-analysis`.
+- **ML:** `data-scientist` → fold the useful parts into `scikit-learn` / `statistical-analysis`. (As done: deleted outright; its body was a generic capability list with nothing repo-specific to fold.)
 
 ### Phase 4: fix survivors
 
 Split for review:
 
 - **4a (code-path skills):** `typescript-expert`, `git-advanced-workflows`, `postgres-pro`, `auth-implementation-patterns` (fold its unique Schwab OAuth content into `cc-skill-security-review`, then delete it), `vercel-deployment`, `progressive-web-app`, `playwright-expert`, `unusual-whales-api`.
-- **4b (everything else):** `matplotlib`, `scikit-learn` and `statistical-analysis` (both over 500 lines; move detail to `references/`), `pydantic-models-py`, `zod`, `csv-data-summarizer`, `ui-styling`, and the ALWAYS/MUST description sweep.
+- **4b (everything else):** `matplotlib`, `scikit-learn` and `statistical-analysis` (both over 500 lines; move detail to `references/`), `pydantic-models-py`, `zod`, `csv-data-summarizer`, `ui-styling`, the ALWAYS/MUST description sweep, and a `related-skills` sweep (phase 4a found five skills naming skills that don't exist).
 
 Items:
 
@@ -147,16 +158,19 @@ Each rewrite must cite real repo files. The reviewer checks every cited path and
 - **Rewrite `ml-pipeline-analyst`:** the Windows venv path, the `ml/src/utils` package, `ml/conftest.py`, the current phase status.
 - **Delete `codebase-scout`:** its map has been stale since 2026-05-10, and the built-in Explore agent covers it.
 - **Project `CLAUDE.md`:**
-  - formatter locations (only `formatSpotExposuresForClaude` is in `db-flow.ts`);
+  - formatter locations (the `format*ForClaude` formatters are spread across `api/_lib/`; `db-flow.ts` holds `formatFlowDataForClaude`, `formatGreekExposureForClaude` and `formatSpotExposuresForClaude`);
   - the `ml/.venv` path on the Windows workstation;
-  - "69 numbered migrations" (the highest migration id is 191).
-- **`npm run review:ml` on Windows:** the ml Makefile defaults to `.venv/bin/python`, so the target fails unless `PYTHON` is set. Fix the default for Windows, or document the override.
+  - "69 numbered migrations" (the highest migration id was 199 when this was found).
+
+  Done in `ea8c1636`, with more drift the phase 5 and 6a writers found (cron test pattern, migration test totals, `SCHEDULE_MAP`, TRACE Live). `c43d89d3` had already fixed `useAppState`, the venv path, the migration count, `cleanupOutdatedCaches()` and analyze's 780s.
+- **`npm run review:ml` on Windows:** the ml Makefile defaulted to `.venv/bin/python`, so the target failed unless `PYTHON` was set. Fixed in `b573ee78` (`Scripts` on Windows; CI's `PYTHON: python` still wins).
+- **`.js`-extension lint scope:** `src/components/LotteryFinder/ct-window.ts` is imported by `api/` but sat outside the ESLint glob that enforces `.js` extensions. Added in `b0eabe05`, with `scripts/_lib/eslint-api-src-scope.test.mjs` failing on any future gap.
 
 ### Phase 7: scripts and agent definitions for repeated work (code: full loop, tests required)
 
 - **`scripts/review-summary.mjs`:** reads the `npm run review` output and prints a short pass/fail per stage with the first errors. This replaces the hand-written grep/tail calls that followed 360 runs.
 - **`scripts/watch-deploy.mjs <sha>`:** polls the GitHub commit status (Vercel and Railway contexts) until a terminal state, prints one line, and sets the exit code. This replaces about 5 ad-hoc calls per push.
-- **Status view:** a statusline or Stop-hook footer showing the active stream, the queue, git ahead/behind and the last deploy state. Status asks went up after the watch-background-work memory was written, so this has to be something the owner can see, not another rule.
+- **Status view:** a statusline or Stop-hook footer showing the active stream, the queue, git ahead/behind and the last deploy state. Status asks went up after the watch-background-work memory was written, so this has to be something the owner can see, not another rule. **Built (7c) as `scripts/session-status.mjs`**, read-only and run on demand: the main checkout, every worktree with a merged/ahead/dirty tag, and the CI verdict of the last pushes on `origin/main`. A "cleanup candidate" is a merged worktree that `npm run worktrees:prune` would remove, by its own checks (`scripts/README.md`, "Session status"). Not built: a statusline or hook footer, and the active-stream and queue lines (they live in the main session, not in git).
 - **Agent definitions:**
   - `implementer`: commit rules, `npm run review`, R1–R7 pointer, one stream.
   - `verifier`: read-only, verifies against the source.
@@ -177,7 +191,7 @@ Each rewrite must cite real repo files. The reviewer checks every cited path and
 - **Phase 3:** about 26 skill dirs merged into about 10
 - **Phase 4:** about 17 skill files
 - **Phase 5:** `test-master`, `backend-development` (+2 deleted), `react-expert`
-- **Phase 6:** 8 agent files, `CLAUDE.md`
+- **Phase 6:** 8 agent files, `CLAUDE.md`, `.gitignore`, `api/cron/embed-yesterday.ts` (a comment), `eslint.config.ts` + `scripts/_lib/eslint-api-src-scope.test.mjs`
 - **Phase 7:** `scripts/review-summary.mjs`, `scripts/watch-deploy.mjs` (+ tests), the status script and its settings, 2 new agent files, `CLAUDE.md`
 
 ## Data dependencies
@@ -197,5 +211,5 @@ None. No tables, migrations, env vars or external APIs. Phase 7's `watch-deploy`
 3. The `code-review` and `pr-review-toolkit` plugins are PR-centric. **Keep for now**, and revisit after the phase 2 listing check.
 4. `.agents/skills/` holds a stale third copy, probably for Codex. **Mirror the deletions and keep the folder.**
 5. Retire `codebase-scout`? **Delete it** (phase 6).
-6. The `periscope` skill still asks for a trailing structured-JSON block. It was written for the deleted `/api/periscope-chat` endpoint. `api/_lib/periscope-synthesize.ts` parses its own prompt's output, not the skill's, so in chat the block isn't consumed. **Keep it until the owner decides.**
+6. The `periscope` skill still asks for a trailing structured-JSON block. It was written for the deleted `/api/periscope-chat` endpoint. `api/_lib/periscope-synthesize.ts` parses its own prompt's output, not the skill's, so in chat the block isn't consumed. **Decided (owner, 2026-10-28): keep the block.** Fix only the stale wording that says the backend persists it (around :391, the heading at :405, and :478, "outside the persistence endpoint"); do this in phase 6.
 7. `.claude/settings.local.json` allow-lists `Skill(...)` entries for deleted skills (e.g. `data-scientist`). They're harmless. **Leave them**: it's the owner's local permissions file.

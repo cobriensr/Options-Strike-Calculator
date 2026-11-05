@@ -12,6 +12,7 @@
 import { getAccessToken } from './schwab.js';
 import { TIMEOUTS } from './constants.js';
 import logger from './logger.js';
+import { redactUpstreamBody } from './redact-upstream-body.js';
 import { metrics } from './sentry.js';
 
 const SCHWAB_BASE = 'https://api.schwabapi.com/marketdata/v1';
@@ -41,7 +42,9 @@ export type SchwabErrorCode =
 /**
  * Discriminated union for internal API call results.
  * Use `result.ok` to narrow the type instead of `'error' in result`, and
- * `result.code` to branch on the failure kind.
+ * `result.code` to branch on the failure kind. `error` embeds the upstream
+ * response body already masked and capped (see redactUpstreamBody), so it is
+ * safe to log, throw or send to Sentry and Axiom as it stands.
  */
 export type ApiResult<T> =
   | { ok: true; data: T }
@@ -146,9 +149,15 @@ async function schwabApiFetch<T>(
     const body = await res.text();
     const code: SchwabErrorCode =
       res.status === 401 ? 'SCHWAB_API_REJECTED' : `SCHWAB_API_${res.status}`;
+    // The body is third-party text and every caller puts `error` somewhere
+    // unscrubbed: pino has no redact config, Sentry's beforeSend scrubs by
+    // key name only, and Axiom metadata and cron responses carry it as-is.
+    // So mask token-like runs and cap it once, here. Callers must not
+    // redact `error` again: a second pass would report the capped length
+    // instead of the original body length.
     return {
       ok: false,
-      error: `[${code}] Schwab API error (${res.status}): ${body}`,
+      error: `[${code}] Schwab API error (${res.status}): ${redactUpstreamBody(body)}`,
       status: res.status === 401 ? 401 : res.status === 429 ? 429 : 502,
       code,
     };

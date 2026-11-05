@@ -255,9 +255,7 @@ def get_connection() -> psycopg2.extensions.connection:
     attempts = 6
     for attempt in range(attempts):
         try:
-            return psycopg2.connect(
-                database_url, sslmode="require", connect_timeout=10
-            )
+            return psycopg2.connect(database_url, sslmode="require", connect_timeout=10)
         except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
             if attempt == attempts - 1:
                 print(f"Error: Could not connect to database: {e}")
@@ -274,6 +272,21 @@ def get_connection() -> psycopg2.extensions.connection:
     raise RuntimeError("unreachable")  # pragma: no cover
 
 
+def make_engine(database_url: str):
+    """Build a SQLAlchemy engine on psycopg2, the driver this project installs.
+
+    A bare `postgresql://` URL names no driver. SQLAlchemy 2.0 picked
+    psycopg2 for it; 2.1 picks psycopg 3, which is not a dependency here, so
+    the engine fails with ModuleNotFoundError. Every ml/ engine goes through
+    this helper so the driver never depends on the SQLAlchemy version. A URL
+    that names its own driver is left alone.
+    """
+    bare = "postgresql://"
+    if database_url.startswith(bare):
+        database_url = "postgresql+psycopg2://" + database_url.removeprefix(bare)
+    return create_engine(database_url)
+
+
 def load_data(query: str) -> pd.DataFrame:
     """Execute a SQL query and return a DataFrame indexed by date."""
     env = load_env()
@@ -282,8 +295,10 @@ def load_data(query: str) -> pd.DataFrame:
         print("Error: DATABASE_URL not found in .env")
         sys.exit(1)
 
+    # Outside the try: an engine that cannot be built (a missing driver) must
+    # raise as itself, not leave `engine` unbound for the finally below.
+    engine = make_engine(database_url)
     try:
-        engine = create_engine(database_url)
         df = pd.read_sql_query(query, engine, parse_dates=["date"])
     except Exception as e:
         print(f"Error: Query failed: {e}")

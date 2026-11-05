@@ -1,6 +1,6 @@
 # ML Pipeline
 
-Python ML and research code for the strike calculator: the daily day-type and structure models (Phases 1-2), the Take-It alert-scoring model and Lottery score weights that feed the app, the multileg matcher used by `classifier/`, and dated research studies (flow, MOC imbalance, Periscope, futures setups).
+Python ML and research code for the strike calculator: the daily day-type and structure models (Phases 1-2), the Take-It alert-scoring model and Lottery score weights that feed the app, and dated research studies (flow, MOC imbalance, Periscope, futures setups).
 
 ## Quick Start
 
@@ -265,7 +265,6 @@ One line each, from each module's docstring. "Root `make`" means the repo-root `
 | `src/lottery_scoring.py`                                                                                   | Lottery fire score weights (rescore-v1). Writes `ml/output/lottery_score_weights.json`, which `scripts/sync_lottery_score_weights_v2.py` syncs into TS                                                                                                                                                              | root `make refit` (part of `make update`)                                                                                 |
 | `src/score_components.py`                                                                                  | V2 lottery score component recovery                                                                                                                                                                                                                                                                                 | library                                                                                                                   |
 | `src/enrich_lottery_outcomes.py`, `src/lottery_exit_policies.py`                                           | Realized exit-policy outcomes for `lottery_finder_fires`; the exit-policy math is reused by `scripts/enrich_silent_boom_outcomes.py`                                                                                                                                                                                | manual; the exit policies run via root `make enrich`                                                                      |
-| `src/multileg_assembler.py`, `src/multileg_patterns.py`                                                    | Multileg spread pattern matcher for UW Full Tape trades. Source of truth for `classifier/_vendored_ml/`                                                                                                                                                                                                             | imported by the classifier service                                                                                        |
 | `src/setups_backtest/`                                                                                     | Walk-forward harness, point-in-time features and metrics for 8 futures setups (NQ OFI extreme, NQ-leads-ES, overnight sweep, basis stress, zero-gamma magnet, CVD divergence, flight to safety, mega-cap earnings)                                                                                                  | `cd ml && .venv/bin/python -m src.setups_backtest.cli run --setup N --start ... --end ... --out ...`                      |
 | `src/day_analog_parity.py`                                                                                 | Parity check: frozen Databento archive vs `futures_bars` for day analogs                                                                                                                                                                                                                                            | manual                                                                                                                    |
 | `src/eod_flow_*.py`, `src/flow_archive.py`, `src/flow_outliers.py`, `src/flow_outcomes.py`                 | Bot EOD options-flow archive: ingest, baselines, bursts, decomposition, forward returns, outliers                                                                                                                                                                                                                   | manual                                                                                                                    |
@@ -301,17 +300,16 @@ On Windows, use `ml/.venv/Scripts/python` (or `.venv/Scripts/python` from `ml/`)
 
 These tables contain data that could be engineered into future features:
 
-| Table                                     | Frequency | Potential Features                                                                                                                        |
-| ----------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `futures_bars` (beyond the studies above) | 1-min     | Overnight price action, pre-market momentum (ES, NQ, RTY, CL, GC, ZN)                                                                     |
-| `es_overnight_summaries`                  | Daily     | Gap analysis, VWAP signal, fill probability. Frozen: computed from `es_bars`, which has had no writer since Databento ended on 2026-09-29 |
-| `iv_monitor`                              | 1-min     | Intraday IV time-series dynamics. No live writer since 2026-04-30                                                                         |
-| `flow_ratio_monitor`                      | 1-min     | Intraday PCR dynamics (beyond daily aggregates)                                                                                           |
-| `market_alerts`                           | On-demand | Alert frequency/severity as a feature                                                                                                     |
-| `dark_pool_prints`                        | Per print | Intraday dark-pool cluster formation (SPY, QQQ)                                                                                           |
-| `dark_pool_snapshots`                     | On-demand | Point-in-time DP state at analysis time                                                                                                   |
-| `lessons`                                 | Weekly    | Semantic similarity to current conditions (vector embeddings)                                                                             |
-| `positions`                               | On-demand | Real vs simulated P&L validation                                                                                                          |
+| Table                                     | Frequency | Potential Features                                                    |
+| ----------------------------------------- | --------- | --------------------------------------------------------------------- |
+| `futures_bars` (beyond the studies above) | 1-min     | Overnight price action, pre-market momentum (ES, NQ, RTY, CL, GC, ZN) |
+| `iv_monitor`                              | 1-min     | Intraday IV time-series dynamics. No live writer since 2026-04-30     |
+| `flow_ratio_monitor`                      | 1-min     | Intraday PCR dynamics (beyond daily aggregates)                       |
+| `market_alerts`                           | On-demand | Alert frequency/severity as a feature                                 |
+| `dark_pool_prints`                        | Per print | Intraday dark-pool cluster formation (SPY, QQQ)                       |
+| `dark_pool_snapshots`                     | On-demand | Point-in-time DP state at analysis time                               |
+| `lessons`                                 | Weekly    | Semantic similarity to current conditions (vector embeddings)         |
+| `positions`                               | On-demand | Real vs simulated P&L validation                                      |
 
 ## Adding New Features
 
@@ -324,7 +322,7 @@ These tables contain data that could be engineered into future features:
 
 ## Tests
 
-`make test` (pytest over `ml/tests/`), `make test-cov` (70% floor; the run-once research scripts are omitted from coverage, see `pyproject.toml`), `make review` (ruff auto-fix + test-cov). CI's ML Quality Gate runs `make review` on Python 3.13 whenever `ml/**` changes. On Windows add `PYTHON=.venv/Scripts/python`.
+`make test` (pytest over `ml/tests/`), `make test-cov` (70% floor; the run-once research scripts are omitted from coverage, see `pyproject.toml`), `make review` (ruff auto-fix + test-cov). CI's ML Quality Gate runs `ruff format --check .` (ruff is pinned in `requirements.txt`, so bump it with a reformat), then `make review`, on Python 3.13 whenever `ml/**` changes. `make lint` and `make format` run `ruff format .` over all of `ml/`, the same scope as the CI check. On Windows add `PYTHON=.venv/Scripts/python`.
 
 ## Automation
 

@@ -665,7 +665,7 @@ describe('fetch-gex-strike-expiry-etfs handler', () => {
 
   // ── DB batch error ────────────────────────────────────────
 
-  it('returns stored=0 for a ticker when its batch insert throws', async () => {
+  it('reports partial and captures once when a ticker batch insert throws (R4)', async () => {
     process.env.UW_API_KEY = 'uwkey';
     vi.stubGlobal(
       'fetch',
@@ -681,8 +681,9 @@ describe('fetch-gex-strike-expiry-etfs handler', () => {
       }),
     );
 
-    // SPY INSERT fails
-    mockQuery.mockRejectedValueOnce(new Error('DB connection lost'));
+    // SPY INSERT fails; QQQ and NDX return no data, so they never insert.
+    const dbError = new Error('DB connection lost');
+    mockQuery.mockRejectedValueOnce(dbError);
 
     const res = mockResponse();
     await handler(
@@ -693,16 +694,63 @@ describe('fetch-gex-strike-expiry-etfs handler', () => {
       res,
     );
 
-    // storeStrikes catches the error and returns {stored: 0, skipped: N}
-    // so the ticker doesn't throw — the handler still returns 200 success
+    // The write error propagates out of storeStrikes, so SPY is a failed
+    // leg: the run is partial (QQQ/NDX had nothing to write and succeeded),
+    // never `success` with the rows silently missing.
     expect(res._status).toBe(200);
-    expect(logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ err: expect.any(Error), ticker: 'SPY' }),
-      'fetch-gex-strike-expiry-etfs: batch insert failed',
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      rows: 0,
+      failureCount: 1,
+      tickers: expect.arrayContaining([
+        expect.objectContaining({
+          ticker: 'SPY',
+          stored: 0,
+          error: 'DB connection lost',
+        }),
+      ]),
+    });
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: dbError, ticker: 'SPY' }),
+      'fetch-gex-strike-expiry-etfs: ticker failed',
     );
-    expect(Sentry.captureException).toHaveBeenCalledWith(expect.any(Error));
-    // withCronInstrumentation spreads metadata as top-level keys
-    expect(res._json).toMatchObject({ rows: 0, status: 'success' });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
+  });
+
+  it('reports error when every ticker batch insert throws (R4)', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    vi.stubGlobal(
+      'fetch',
+      makeRoutedFetchMock({
+        '/spot-exposures/strike': async () => ({
+          ok: true,
+          json: async () => ({ data: [{ price: '590.5' }] }),
+        }),
+        '/spot-exposures/expiry-strike': async () => ({
+          ok: true,
+          json: async () => ({ data: [makeStrikeRow({ price: '590.5' })] }),
+        }),
+      }),
+    );
+    mockQuery.mockRejectedValue(new Error('DB connection lost'));
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'error',
+      rows: 0,
+      failureCount: 3,
+    });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(3);
   });
 
   // ── Min strike / max strike in UW call ──────────────────
@@ -786,7 +834,7 @@ describe('fetch-gex-strike-expiry-etfs handler', () => {
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
   });
 
-  it('captures and skips when deadlock persists across retries', async () => {
+  it('fails the ticker (partial) when a deadlock persists across retries', async () => {
     process.env.UW_API_KEY = 'uwkey';
     vi.stubGlobal(
       'fetch',
@@ -820,8 +868,134 @@ describe('fetch-gex-strike-expiry-etfs handler', () => {
 
     expect(res._status).toBe(200);
     expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
     expect(Sentry.captureException).toHaveBeenCalledWith(deadlockErr);
-    expect(res._json).toMatchObject({ status: 'success', rows: 0 });
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      rows: 0,
+      failureCount: 1,
+    });
+  });
+
+  // processTicker wraps storeStrikes in withRetry, which re-runs it when the
+  // error message looks transient. The UPSERT is idempotent, so a retry that
+  // lands is a clean run, and one that never lands is captured once.
+
+  function stubSpyRows() {
+    vi.stubGlobal(
+      'fetch',
+      makeRoutedFetchMock({
+        '/SPY/spot-exposures/strike': async () => ({
+          ok: true,
+          json: async () => ({ data: [{ price: '590.5' }] }),
+        }),
+        '/SPY/spot-exposures/expiry-strike': async () => ({
+          ok: true,
+          json: async () => ({ data: [makeStrikeRow({ price: '590.5' })] }),
+        }),
+      }),
+    );
+  }
+
+  async function runWithBackoff() {
+    // setTimeout is faked so withRetry's 1 s + 2 s backoff costs no wall time.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
+    vi.setSystemTime(MARKET_TIME);
+    const res = mockResponse();
+    const run = handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    await run;
+    return res;
+  }
+
+  it('re-runs a transient write error and reports success when the retry lands', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubSpyRows();
+    mockQuery
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockImplementationOnce(defaultQueryMock);
+
+    const res = await runWithBackoff();
+
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      failureCount: 0,
+    });
+  });
+
+  it('captures a transient write error once when every retry fails', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubSpyRows();
+    const dbError = new Error('fetch failed');
+    mockQuery.mockRejectedValue(dbError);
+
+    const res = await runWithBackoff();
+
+    // withRetry: the first attempt plus two retries.
+    expect(mockQuery).toHaveBeenCalledTimes(3);
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      rows: 0,
+      failureCount: 1,
+    });
+  });
+
+  // ── ts_minute fallback for an unparseable UW `time` ────────
+  //
+  // The fallback is the expiry's 4:00 PM ET close, which is a different UTC
+  // instant in each DST regime. A fixed T21:00:00Z was right only in EST.
+
+  async function runWithUnparseableTime(): Promise<string> {
+    process.env.UW_API_KEY = 'uwkey';
+    vi.stubGlobal(
+      'fetch',
+      makeRoutedFetchMock({
+        '/SPY/spot-exposures/strike': async () => ({
+          ok: true,
+          json: async () => ({ data: [{ price: '590.5' }] }),
+        }),
+        '/SPY/spot-exposures/expiry-strike': async () => ({
+          ok: true,
+          json: async () => ({
+            data: [makeStrikeRow({ price: '590.5', time: 'not-a-time' })],
+          }),
+        }),
+      }),
+    );
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      mockResponse(),
+    );
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    // Slot layout: 1=ticker, 2=expiry, 3=strike, 4=ts_minute.
+    expect(params[0]).toBe('SPY');
+    return params[3] as string;
+  }
+
+  it('falls back to the 4 PM ET close, 20:00Z, for an unparseable time in EDT', async () => {
+    // beforeEach pins 2026-05-06 (EDT); SPY's 0DTE expiry is today.
+    expect(await runWithUnparseableTime()).toBe('2026-05-06T20:00:00.000Z');
+  });
+
+  it('falls back to the 4 PM ET close, 21:00Z, for an unparseable time in EST', async () => {
+    // Wednesday 2026-01-14 10:00 ET (15:00Z), inside the futures RTH gate.
+    vi.setSystemTime(new Date('2026-01-14T15:00:00.000Z'));
+    expect(await runWithUnparseableTime()).toBe('2026-01-14T21:00:00.000Z');
   });
 
   // ── Deterministic strike ordering ─────────────────────────

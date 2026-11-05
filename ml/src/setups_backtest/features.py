@@ -319,8 +319,10 @@ def rolling_correlation(
     aligned = pd.concat([a.rename("a"), b.rename("b")], axis=1).dropna()
     if aligned.empty:
         return pd.Series(dtype="float64")
-    return aligned["a"].rolling(window=window_minutes, min_periods=window_minutes).corr(
-        aligned["b"]
+    return (
+        aligned["a"]
+        .rolling(window=window_minutes, min_periods=window_minutes)
+        .corr(aligned["b"])
     )
 
 
@@ -378,15 +380,13 @@ def fractal_pivots(
         h = highs[i]
         l_ = lows[i]
         # Strict inequality on both sides — equal-high "double tops" don't qualify.
-        if (
-            (highs[i - lookback : i] < h).all()
-            and (highs[i + 1 : i + lookback + 1] < h).all()
-        ):
+        if (highs[i - lookback : i] < h).all() and (
+            highs[i + 1 : i + lookback + 1] < h
+        ).all():
             swing_highs.append(i)
-        if (
-            (lows[i - lookback : i] > l_).all()
-            and (lows[i + 1 : i + lookback + 1] > l_).all()
-        ):
+        if (lows[i - lookback : i] > l_).all() and (
+            lows[i + 1 : i + lookback + 1] > l_
+        ).all():
             swing_lows.append(i)
     return swing_highs, swing_lows
 

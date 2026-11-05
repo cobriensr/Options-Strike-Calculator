@@ -45,8 +45,9 @@ from tape_job import DayOutcome, DayStatus, run_tape
 log = logging.getLogger(__name__)
 
 MONITOR_SLUG = "nightly-tape"
-# Matches railway.toml's cronSchedule. Margin and runtime are minutes; 330 covers the
-# 5 h run deadline plus the watchdog's grace.
+# The crontab must match the cron schedule set on the Railway `nightly` service (there
+# is no railway.toml): changing one means changing both. Margin and runtime are
+# minutes; 330 covers the 5 h run deadline plus the watchdog's grace.
 MONITOR_CONFIG = {
     "schedule": {"type": "crontab", "value": "15 7 * * 2-6"},
     "timezone": "UTC",
@@ -66,7 +67,13 @@ def main() -> int:
 
 
 def _main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    # stdout, not basicConfig's default stderr: Railway labels every stderr line an
+    # error, so each INFO line would show red. The level is in the line itself.
+    logging.basicConfig(
+        stream=sys.stdout,
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     # httpx logs every request line, signed GCS URL included, at INFO.
     for name in ("httpx", "httpcore"):
         logging.getLogger(name).setLevel(logging.WARNING)

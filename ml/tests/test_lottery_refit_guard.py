@@ -1,7 +1,8 @@
 """Tests for the temporary lottery refit guard (ml/src/lottery_refit_guard.py).
 
-The guard blocks lottery_scoring.py from training once fires are unclassified
-(inferred_structure NULL on every row from 2026-10-29). Remove with the guard.
+The guard blocks lottery_scoring.py from training until the anchor_leg_kind
+training filter has history (the classifier label is gone from 2026-10-29 and
+anchor_leg_kind is not yet backfilled). Remove with the guard.
 """
 
 from __future__ import annotations

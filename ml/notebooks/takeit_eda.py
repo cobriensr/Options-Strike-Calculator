@@ -111,7 +111,12 @@ def plot_winrate_by_session_phase(lot: pd.DataFrame, sb: pd.DataFrame) -> None:
     for ax, df, name in zip(axes, [lot, sb], ["lottery", "silentboom"]):
         grp = df.groupby("session_phase")["win"].agg(["count", "mean"]).reset_index()
         ax.bar(grp["session_phase"].astype(str), grp["mean"], color="#4477aa")
-        ax.axhline(df["win"].mean(), color="red", linestyle="--", label=f"base={df['win'].mean():.2f}")
+        ax.axhline(
+            df["win"].mean(),
+            color="red",
+            linestyle="--",
+            label=f"base={df['win'].mean():.2f}",
+        )
         for i, (cnt, mn) in enumerate(zip(grp["count"], grp["mean"])):
             ax.text(i, mn, f"n={cnt:,}\n{mn:.2f}", ha="center", va="bottom", fontsize=8)
         ax.set_ylim(0, 1)
@@ -145,7 +150,9 @@ def plot_winrate_by_dte(lot: pd.DataFrame, sb: pd.DataFrame) -> None:
     plt.close(fig)
 
 
-def plot_winrate_by_ticker(lot: pd.DataFrame, sb: pd.DataFrame, top_n: int = 15) -> None:
+def plot_winrate_by_ticker(
+    lot: pd.DataFrame, sb: pd.DataFrame, top_n: int = 15
+) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
     for ax, df, name in zip(axes, [lot, sb], ["lottery", "silentboom"]):
         top = df["underlying_symbol"].value_counts().head(top_n).index
@@ -157,7 +164,12 @@ def plot_winrate_by_ticker(lot: pd.DataFrame, sb: pd.DataFrame, top_n: int = 15)
             .reset_index()
         )
         ax.barh(grp["underlying_symbol"], grp["mean"], color="#5577cc")
-        ax.axvline(df["win"].mean(), color="red", linestyle="--", label=f"base={df['win'].mean():.2f}")
+        ax.axvline(
+            df["win"].mean(),
+            color="red",
+            linestyle="--",
+            label=f"base={df['win'].mean():.2f}",
+        )
         for i, (cnt, mn) in enumerate(zip(grp["count"], grp["mean"])):
             ax.text(mn, i, f" n={cnt:,}", va="center", fontsize=7)
         ax.set_xlim(0, 1)
@@ -170,7 +182,9 @@ def plot_winrate_by_ticker(lot: pd.DataFrame, sb: pd.DataFrame, top_n: int = 15)
     plt.close(fig)
 
 
-def plot_winrate_binary_features(df: pd.DataFrame, alert_type: str, extras: list[str]) -> None:
+def plot_winrate_binary_features(
+    df: pd.DataFrame, alert_type: str, extras: list[str]
+) -> None:
     features = BINARY_FEATURES + extras
     features = [f for f in features if f in df.columns]
     base = df["win"].mean()
@@ -200,16 +214,21 @@ def plot_winrate_binary_features(df: pd.DataFrame, alert_type: str, extras: list
     ax.set_title(f"{alert_type} — win rate by binary/categorical feature value")
     ax.legend()
     fig.tight_layout()
-    fig.savefig(PLOTS_DIR / f"takeit_phase1_winrate_binary_features_{alert_type}.png", dpi=120)
+    fig.savefig(
+        PLOTS_DIR / f"takeit_phase1_winrate_binary_features_{alert_type}.png", dpi=120
+    )
     plt.close(fig)
 
 
-def plot_winrate_quantile_features(df: pd.DataFrame, alert_type: str, extras: list[str], n_bins: int = 5) -> None:
+def plot_winrate_quantile_features(
+    df: pd.DataFrame, alert_type: str, extras: list[str], n_bins: int = 5
+) -> None:
     features = NUMERIC_FEATURES + extras
     features = [f for f in features if f in df.columns]
     base = df["win"].mean()
     fig, axes = plt.subplots(
-        nrows=(len(features) + 2) // 3, ncols=3,
+        nrows=(len(features) + 2) // 3,
+        ncols=3,
         figsize=(14, 3 * ((len(features) + 2) // 3)),
     )
     axes = axes.flatten()
@@ -233,15 +252,19 @@ def plot_winrate_quantile_features(df: pd.DataFrame, alert_type: str, extras: li
         ax.set_title(f, fontsize=9)
         ax.tick_params(labelsize=7)
     df.drop(columns=["_q"], errors="ignore", inplace=True)
-    for ax in axes[len(features):]:
+    for ax in axes[len(features) :]:
         ax.set_visible(False)
     fig.suptitle(f"{alert_type} — win rate by quantile bin (5-bin)")
     fig.tight_layout()
-    fig.savefig(PLOTS_DIR / f"takeit_phase1_winrate_quantile_features_{alert_type}.png", dpi=120)
+    fig.savefig(
+        PLOTS_DIR / f"takeit_phase1_winrate_quantile_features_{alert_type}.png", dpi=120
+    )
     plt.close(fig)
 
 
-def plot_correlation_matrix(df: pd.DataFrame, alert_type: str, extras: list[str]) -> None:
+def plot_correlation_matrix(
+    df: pd.DataFrame, alert_type: str, extras: list[str]
+) -> None:
     features = NUMERIC_FEATURES + extras + ["win"]
     features = [f for f in features if f in df.columns]
     sub = df[features].copy()
@@ -258,12 +281,21 @@ def plot_correlation_matrix(df: pd.DataFrame, alert_type: str, extras: list[str]
     for i in range(len(features)):
         for j in range(len(features)):
             val = corr.values[i, j]
-            ax.text(j, i, f"{val:.2f}", ha="center", va="center",
-                    fontsize=6, color="white" if abs(val) > 0.5 else "black")
+            ax.text(
+                j,
+                i,
+                f"{val:.2f}",
+                ha="center",
+                va="center",
+                fontsize=6,
+                color="white" if abs(val) > 0.5 else "black",
+            )
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     ax.set_title(f"{alert_type} — Spearman correlation (numeric features + win)")
     fig.tight_layout()
-    fig.savefig(PLOTS_DIR / f"takeit_phase1_correlation_matrix_{alert_type}.png", dpi=120)
+    fig.savefig(
+        PLOTS_DIR / f"takeit_phase1_correlation_matrix_{alert_type}.png", dpi=120
+    )
     plt.close(fig)
 
 

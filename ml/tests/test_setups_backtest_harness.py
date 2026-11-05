@@ -61,15 +61,20 @@ def test_simulate_exit_long_target_hit():
     # 2nd bar's high reaches the target.
     bars = _bars(
         [
-            ("2026-04-15 14:01", 5005, 5006, 5004, 5005, 100),  # entry bar (skipped here)
+            (
+                "2026-04-15 14:01",
+                5005,
+                5006,
+                5004,
+                5005,
+                100,
+            ),  # entry bar (skipped here)
             ("2026-04-15 14:02", 5005, 5012, 5004, 5008, 100),  # target hit at 5010
             ("2026-04-15 14:03", 5008, 5009, 5007, 5008, 100),
         ]
     )
     # _simulate_exit walks from the first bar passed (post-entry).
-    exit_ts, price, reason = _simulate_exit(
-        sig, bars.iloc[1:].reset_index(drop=True)
-    )
+    exit_ts, price, reason = _simulate_exit(sig, bars.iloc[1:].reset_index(drop=True))
     assert reason is ExitReason.TARGET
     assert price == pytest.approx(5010.0)
     assert exit_ts == _utc("2026-04-15 14:02")
@@ -365,7 +370,9 @@ def test_one_position_at_a_time(monkeypatch):
     assert len(trades) > 1, "Harness silently locked to one trade per day"
     # Trades should not overlap in time.
     for prev, nxt in zip(trades, trades[1:]):
-        assert nxt.entry_ts > prev.exit_ts, "Overlapping trades — position reset is wrong"
+        assert nxt.entry_ts > prev.exit_ts, (
+            "Overlapping trades — position reset is wrong"
+        )
 
 
 def test_trades_to_dataframe_columns():

@@ -2,8 +2,9 @@
  * Shared fixtures for tests that run real git in throwaway repos under the OS
  * temp dir, with git config isolated from the developer's: the review-gate
  * tests (directly and through review-gate.fixtures.mjs), git-run.test.mjs,
- * and the prune-worktrees tests through prune-worktrees.fixtures.mjs. Not
- * itself a test file; vitest only collects *.test.mjs.
+ * and the prune-worktrees tests and session-status.cli.test.mjs through
+ * prune-worktrees.fixtures.mjs. Not itself a test file; vitest only collects
+ * *.test.mjs.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -18,6 +19,23 @@ import { afterAll, beforeAll, vi } from 'vitest';
  * one after it finishes: this is a ceiling, not a cutoff.
  */
 export const FIXTURE_TIMEOUT = 600_000;
+
+/**
+ * The one date every fixture commit carries (author and committer), in git's
+ * raw "<epoch seconds> <zone>" form, frozen when this module loads so a
+ * commit still reads as just made. git names a commit by parent, tree,
+ * message, identity and second: two fixture commits meant to differ, with the
+ * same parent, tree and message, share one SHA when they land in the same
+ * second. Windows spawns are slow enough to hide that; a fast Linux runner is
+ * not (main's CI, 2026-11-04). With one date for all of them, every machine
+ * sees the collision, every run.
+ *
+ * A test that needs commits at different times, or in an order, passes its
+ * own dates to cleanEnv (`GIT_AUTHOR_DATE`, `GIT_COMMITTER_DATE`), which
+ * replace the pin; none does today. Idle checks read file mtimes (see
+ * prune-worktrees.fixtures.mjs `age`), not commit dates.
+ */
+export const PINNED_COMMIT_DATE = `${Math.floor(Date.now() / 1000)} +0000`;
 
 /** Every temp dir made through makeTempDir; removed in afterAll. */
 const tempDirs = [];
@@ -62,7 +80,8 @@ export function setupScratchGit() {
  * pre-commit running tests) exports GIT_DIR / GIT_INDEX_FILE, which would
  * point the scratch repo's git calls at the real repository. System and
  * global config are replaced by an empty file so a developer's config cannot
- * change the scratch repo. `extra` goes on last, and an `extra` value of
+ * change the scratch repo. Author and committer date are pinned to
+ * PINNED_COMMIT_DATE. `extra` goes on last, and an `extra` value of
  * undefined unsets the var.
  *
  * Names are matched upper-cased: Windows env names are case-insensitive, and
@@ -83,6 +102,8 @@ export function cleanEnv(extra = {}, drop = []) {
   Object.assign(env, {
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_CONFIG_GLOBAL: gitconfig,
+    GIT_AUTHOR_DATE: PINNED_COMMIT_DATE,
+    GIT_COMMITTER_DATE: PINNED_COMMIT_DATE,
     ...extra,
   });
   for (const [key, value] of Object.entries(env)) {

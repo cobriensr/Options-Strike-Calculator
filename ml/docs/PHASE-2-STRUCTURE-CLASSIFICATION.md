@@ -176,14 +176,14 @@ label_map = {
 ```python
 params = {
     "objective": "multi:softprob",
-    "num_class": 4,   # or 3 if SIT OUT still absent
-    "max_depth": 3,    # shallow trees for small dataset
+    "num_class": 4,  # or 3 if SIT OUT still absent
+    "max_depth": 3,  # shallow trees for small dataset
     "n_estimators": 50,  # few trees to prevent overfitting
     "learning_rate": 0.1,
     "min_child_weight": 3,  # prevent overfitting to rare classes
     "subsample": 0.8,
     "colsample_bytree": 0.8,
-    "reg_alpha": 1.0,   # L1 regularization
+    "reg_alpha": 1.0,  # L1 regularization
     "reg_lambda": 2.0,  # L2 regularization
 }
 ```

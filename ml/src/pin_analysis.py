@@ -29,7 +29,7 @@ try:
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import LabelEncoder, StandardScaler
     from sklearn.tree import DecisionTreeClassifier
-    from sqlalchemy import create_engine, text
+    from sqlalchemy import text
 except ImportError:
     print("Missing dependencies. Run:")
     print(
@@ -40,6 +40,7 @@ except ImportError:
 from utils import (
     ML_ROOT,
     load_env,
+    make_engine,
     save_section_findings,
     section,
     subsection,
@@ -94,7 +95,7 @@ def load_strike_data(dte_filter: str = "0dte") -> pd.DataFrame:
             "Expected '0dte', '1dte', or 'combined'."
         )
 
-    engine = create_engine(database_url)
+    engine = make_engine(database_url)
     try:
         df = pd.read_sql_query(
             text(f"""
@@ -528,7 +529,7 @@ def load_oi_per_strike() -> pd.DataFrame:
     if not database_url:
         return pd.DataFrame()
 
-    engine = create_engine(database_url)
+    engine = make_engine(database_url)
     try:
         # Check if table exists first
         check = pd.read_sql_query(
@@ -617,7 +618,7 @@ def load_max_pain() -> pd.DataFrame:
     if not database_url:
         return pd.DataFrame()
 
-    engine = create_engine(database_url)
+    engine = make_engine(database_url)
     try:
         df = pd.read_sql_query(
             text("""
@@ -1149,7 +1150,7 @@ def analyze_dte_regime() -> None:
     # Load training_features for VIX and regime context
     env = load_env()
     database_url = env.get("DATABASE_URL", "")
-    engine = create_engine(database_url)
+    engine = make_engine(database_url)
     try:
         tf = pd.read_sql_query(
             text("""

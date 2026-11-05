@@ -47,7 +47,8 @@ def _load_pipeline() -> pl.DataFrame:
     per_day_bars: list[pl.DataFrame] = []
     for d in dates:
         flow_day = load_flow(
-            d, tickers=needed,
+            d,
+            tickers=needed,
             columns=["executed_at", "underlying_symbol", "underlying_price"],
         ).collect()
         per_day_bars.append(synthesize_minute_bars(flow_day))
@@ -92,11 +93,21 @@ def main() -> int:
 
     # Console: top N tickers
     top_tickers = summary.head(TOP_N).select(
-        ["underlying_symbol", "ticker_family", "n_outliers", "n_wins",
-         "n_losses", "n_undirected", "win_rate", "median_premium_m"]
+        [
+            "underlying_symbol",
+            "ticker_family",
+            "n_outliers",
+            "n_wins",
+            "n_losses",
+            "n_undirected",
+            "win_rate",
+            "median_premium_m",
+        ]
     )
     print(f"\nTop {TOP_N} tickers by outlier count:")
-    with pl.Config(tbl_rows=TOP_N, tbl_cols=10, fmt_str_lengths=20, tbl_width_chars=140):
+    with pl.Config(
+        tbl_rows=TOP_N, tbl_cols=10, fmt_str_lengths=20, tbl_width_chars=140
+    ):
         print(top_tickers)
 
     # For each of the top 10 tickers, break down by signed_direction
@@ -132,14 +143,25 @@ def main() -> int:
     candidates = summary.filter(
         (pl.col("n_directed") >= 20) & (pl.col("win_rate") >= 0.55)
     ).sort("win_rate", descending=True)
-    print(f"\n*** Tickers worth focusing on (n_directed≥20 AND win_rate≥55%): "
-          f"{candidates.height} of {summary.height}")
+    print(
+        f"\n*** Tickers worth focusing on (n_directed≥20 AND win_rate≥55%): "
+        f"{candidates.height} of {summary.height}"
+    )
     if not candidates.is_empty():
-        with pl.Config(tbl_rows=20, tbl_cols=10, fmt_str_lengths=20, tbl_width_chars=140):
-            print(candidates.select(
-                ["underlying_symbol", "ticker_family", "n_directed",
-                 "win_rate", "median_premium_m"]
-            ))
+        with pl.Config(
+            tbl_rows=20, tbl_cols=10, fmt_str_lengths=20, tbl_width_chars=140
+        ):
+            print(
+                candidates.select(
+                    [
+                        "underlying_symbol",
+                        "ticker_family",
+                        "n_directed",
+                        "win_rate",
+                        "median_premium_m",
+                    ]
+                )
+            )
 
     print(f"\nDone in {time.perf_counter() - t0:.1f}s")
     return 0

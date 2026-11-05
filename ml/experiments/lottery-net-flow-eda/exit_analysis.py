@@ -33,7 +33,9 @@ PLOTS_DIR = Path(__file__).parents[2] / "plots" / "lottery-net-flow-eda"
 REPORT_OUT = EXPERIMENT_DIR / "exit_analysis.md"
 
 PEAK_PROMINENCE_RATIO = 0.05  # same as extract_features.py
-LEAD_MIN_THRESHOLD_PCT = 50.0  # only analyze fires that hit >=+50% peak (room to need an exit)
+LEAD_MIN_THRESHOLD_PCT = (
+    50.0  # only analyze fires that hit >=+50% peak (room to need an exit)
+)
 
 
 def load_data(conn) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -185,7 +187,12 @@ def plot_lead_histogram(leads_df: pd.DataFrame) -> None:
     leads = leads_df["lead_min"].clip(-30, 60)  # tail clip for readability
     ax.hist(leads, bins=45, color="steelblue", edgecolor="white", alpha=0.85)
     ax.axvline(0, color="red", linestyle="--", label="coincident")
-    ax.axvline(leads.median(), color="darkorange", linestyle="-", label=f"median {leads.median():+.1f} min")
+    ax.axvline(
+        leads.median(),
+        color="darkorange",
+        linestyle="-",
+        label=f"median {leads.median():+.1f} min",
+    )
     ax.set_xlabel("Lead (min) — flow peak BEFORE option peak →")
     ax.set_ylabel("Fires")
     ax.set_title(
@@ -209,7 +216,9 @@ def main() -> int:
     if fires.empty:
         print("No fires meet the peak_ceiling threshold.")
         return 0
-    print(f"  fires meeting >=+{LEAD_MIN_THRESHOLD_PCT:.0f}% peak threshold: {len(fires):,}")
+    print(
+        f"  fires meeting >=+{LEAD_MIN_THRESHOLD_PCT:.0f}% peak threshold: {len(fires):,}"
+    )
     print(f"  flow rows: {len(flow):,}")
 
     flow["ts"] = pd.to_datetime(flow["ts"], utc=True)
@@ -239,7 +248,9 @@ def main() -> int:
         if flow_peak_ts is None:
             no_peak_found += 1
             continue
-        option_peak_ts = fire.trigger_time_ct + pd.Timedelta(minutes=float(fire.minutes_to_peak))
+        option_peak_ts = fire.trigger_time_ct + pd.Timedelta(
+            minutes=float(fire.minutes_to_peak)
+        )
         lead_min = (option_peak_ts - flow_peak_ts).total_seconds() / 60.0
         rows.append(
             {

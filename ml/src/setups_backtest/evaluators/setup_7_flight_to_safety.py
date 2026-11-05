@@ -125,11 +125,7 @@ class _FlightToSafetyEvaluator:
             float(es_window.iloc[-1]["close"]) / float(es_window.iloc[0]["open"]) - 1.0
         ) * 100.0
 
-        if not (
-            np.isfinite(zn_ret)
-            and np.isfinite(gc_ret)
-            and np.isfinite(es_ret)
-        ):
+        if not (np.isfinite(zn_ret) and np.isfinite(gc_ret) and np.isfinite(es_ret)):
             return None
         if zn_ret < ZN_TRIGGER_PCT:
             return None

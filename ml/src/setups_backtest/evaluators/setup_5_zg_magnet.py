@@ -92,7 +92,11 @@ class _ZeroGammaMagnetEvaluator:
         start = max(start, SETUP_5_START)
         end = min(end, SETUP_5_END)
         zg = _load_zg(pg, start, end)
-        gamma = data_loaders.load_dealer_gamma(pg, "SPX", start, end) if pg else pd.DataFrame()
+        gamma = (
+            data_loaders.load_dealer_gamma(pg, "SPX", start, end)
+            if pg
+            else pd.DataFrame()
+        )
         missing = []
         if zg.empty:
             missing.append("zero_gamma_levels (no DATABASE_URL or no rows in window)")
@@ -162,7 +166,9 @@ class _ZeroGammaMagnetEvaluator:
         # breakthrough overshoot). Documented in report_notes.
         if es_close < zg:
             direction = Direction.LONG
-            stop_price = es_close - ZG_PROXIMITY_ATR_FRACTION * atr_val  # 0.25 ATR adverse
+            stop_price = (
+                es_close - ZG_PROXIMITY_ATR_FRACTION * atr_val
+            )  # 0.25 ATR adverse
             target_price = zg + TARGET_ATR_MULTIPLE * atr_val
         elif es_close > zg:
             direction = Direction.SHORT
@@ -197,9 +203,13 @@ class _ZeroGammaMagnetEvaluator:
                     return None
 
         # Side sanity.
-        if direction is Direction.LONG and (stop_price >= es_close or target_price <= es_close):
+        if direction is Direction.LONG and (
+            stop_price >= es_close or target_price <= es_close
+        ):
             return None
-        if direction is Direction.SHORT and (stop_price <= es_close or target_price >= es_close):
+        if direction is Direction.SHORT and (
+            stop_price <= es_close or target_price >= es_close
+        ):
             return None
 
         return Signal(

@@ -34,7 +34,9 @@ try:
     from statsmodels.stats.proportion import proportion_confint
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/Scripts/pip install psycopg2-binary pandas scikit-learn matplotlib")
+    print(
+        "  ml/.venv/Scripts/pip install psycopg2-binary pandas scikit-learn matplotlib"
+    )
     sys.exit(1)
 
 from utils import (

@@ -50,11 +50,11 @@ uw-stream/        UnusualWhales websocket consumer (Python, Railway, NOT Vercel)
                   Own Dockerfile, README.md, requirements.txt (runtime) + requirements-dev.txt (test/lint), conftest.py — own pytest suite under tests/.
 
 nightly/          Full Tape lander (Python, Railway cron service `nightly`, NOT Vercel). Tue–Sat 07:15 UTC
-                  (railway.toml cronSchedule, the morning after each session) it downloads each missing session's UW options Full Tape, converts it
+                  (a cron set on the Railway service, the morning after each session) it downloads each missing session's UW options Full Tape, converts it
                   to Parquet with polars and uploads one object per day to Cloudflare R2
                   (fulltape/{date}-fulltape.parquet), newest missing day first, up to 30 days of catch-up. Re-lands a
                   recent day whose UW ETag changed, and marks a day unavailable only on UW's own evidence. Runs once
-                  and exits: 0 ok, 1 a day did not land, 2 bad config, 3 watchdog. Sentry server_name=nightly plus
+                  and exits: 0 ok, 1 a day did not land, 2 bad config, 3 watchdog, 143 SIGTERM. Sentry server_name=nightly plus
                   the `nightly-tape` cron monitor. Writes nothing to Neon. Env: UW_API_KEY, R2_*, SENTRY_DSN.
                   Own Dockerfile, README.md (runbook and alert meanings), requirements.txt + requirements-dev.txt,
                   conftest.py — own pytest suite under tests/. Spec: docs/superpowers/specs/2026-10-28-nightly-pipeline-automation-design.md.
@@ -70,7 +70,7 @@ ml/               Python ML pipeline (clustering, EDA, classification, visualiza
   experiments/    JSON experiment results (phase2_early runs)
   .venv/          Python venv — run scripts with `ml/.venv/bin/python` (macOS/Linux) or `ml/.venv/Scripts/python`
                   (Windows), not system python3
-  conftest.py     Adds ml/src/ to sys.path for test imports
+  conftest.py     Adds ml/src/ and ml/tests/ to sys.path for test imports
 
 docs/             Design artifacts
   superpowers/    specs/ and plans/ for feature design documents
@@ -106,6 +106,8 @@ The required loop for any multi-task plan:
 2. **Load each sub-agent with the skills its task needs** — name them in the prompt (e.g. `react-expert`, `backend-development`, `test-master`, `postgres-pro`, `playwright-expert`) per the task domain.
 3. Sub-agents do the work.
 4. **The main session reviews** every sub-agent's output (spec compliance, then code quality via the `code-reviewer` agent) **before presenting results.** The user sees reviewed output, not raw sub-agent dumps.
+
+Implementer and reviewer briefs carry scope only (goal, files, constraints, acceptance); standing rules live in the `implementer`, `verifier` and `code-reviewer` agent definitions in `.claude/agents/` (local-only), so dispatch to the matching agent and don't repeat them in the brief.
 
 This is a standing, non-negotiable preference. Don't second-guess it or offer alternatives.
 
@@ -189,12 +191,13 @@ Everything else gets the full loop.
 
 ### Backend (api/)
 
-- **Auth is single-owner + optional guest keys** — one Schwab OAuth session via httpOnly cookie. Plaintext cookie is intentional. The owner can hand out comma-separated guest keys via `GUEST_ACCESS_KEYS`. Guests can read owner-gated data endpoints (dark pool, GEX, TRACE Live, etc.). Every client-initiated write is owner-only (`guardOwnerEndpoint`) except a guest's own panel layout (`api/panel-prefs.ts`, keyed per guest key). The Anthropic-backed `api/analyze.ts` stays owner-only. See `api/_lib/guest-auth.ts` (`rejectIfNotOwnerOrGuest`, `guardOwnerOrGuestEndpoint`) and `src/utils/auth.ts` (`getAccessMode`).
+- **Auth is single-owner + optional guest keys** — one Schwab OAuth session via httpOnly cookie. Plaintext cookie is intentional. The owner can hand out comma-separated guest keys via `GUEST_ACCESS_KEYS`. Guests can read owner-gated data endpoints (dark pool, GEX, Periscope, etc.). Every client-initiated write is owner-only (`guardOwnerEndpoint`) except a guest's own panel layout (`api/panel-prefs.ts`, keyed per guest key). The Anthropic-backed `api/analyze.ts` stays owner-only. See `api/_lib/guest-auth.ts` (`rejectIfNotOwnerOrGuest`, `guardOwnerOrGuestEndpoint`) and `src/utils/auth.ts` (`getAccessMode`).
 - **Data-licensing rule** — Schwab data may be served to anyone, with no auth. Data from Unusual Whales or GEXBot, including values computed from it, must require owner or guest auth: `guardOwnerOrGuestEndpoint`, or `withDbReader(..., 'owner-or-guest')`. Never serve it from a `'public'` or unguarded endpoint. One exception, by owner decision (2026-10-25): the ML research carousel (`/api/ml/plots`, `/api/ml/plot-image`) stays public. It serves aggregate tests and plots, not market data.
 - **Neon Postgres** — `@neondatabase/serverless`, lazy singleton via `getDb()` (HTTP driver, `neon(url)`). Tables managed by numbered migrations in `migrateDb()` (tracked in `schema_migrations`).
 - **Upstash Redis** — stores Schwab OAuth tokens (access + refresh). Env vars: `KV_REST_API_URL` / `UPSTASH_REDIS_REST_URL`.
 - **Input validation** — Zod schemas in `api/_lib/validation/` (re-exported by `api/_lib/validation.ts`) validate at system boundaries before data reaches Anthropic or Postgres.
 - **Cron jobs** — every job is registered in `vercel.json` `crons` and verifies `CRON_SECRET`. Most market data fetches run every 1–5 min during market hours (13-21 UTC, Mon-Fri).
+  - A new cron also needs a `SCHEDULE_MAP` entry in `api/_lib/cron-schedules.ts` (or a spec-cited exemption in `UNMONITORED_CRONS` in `api/__tests__/cron-schedules.test.ts`) and a `withCronInstrumentation` / `withCronCheckin` wrapper under the same job name. Without the entry it sends no Sentry check-ins; that test fails on either gap.
 - **Unusual Whales: websocket over REST (owner rule, 2026-10-28)** — when a UW websocket channel carries the same data as a UW REST endpoint, ingest it in `uw-stream/`. Don't add a polling cron for it, and retire an existing one once the websocket writer is live and checked against it. Why: every cron costs Vercel compute plus its own Sentry and Axiom monitoring, and the websocket is fresher.
   - Exception, gap repair: the websocket has no replay, so a REST job may fill holes after the fact (after the close or on a detected gap, like `api/cron/backfill-futures-gaps.ts`), never on an intraday polling schedule.
   - Exception, no channel: data with no websocket channel stays on REST.
@@ -212,22 +215,24 @@ Key modules beyond the basics:
 - `db.ts` — `initDb()` (base tables) + `migrateDb()` (numbered migrations, stored in `api/_lib/db-migrations.ts`). New tables go in `migrateDb()` only, never `initDb()`.
 - `db-analyses.ts`, `db-flow.ts`, `db-snapshots.ts`, `db-positions.ts`, `db-strike-helpers.ts` — query modules split from db.ts.
 - `analyze-prompts.ts` — static Anthropic prompt text (system prompt parts, rules, chart type descriptions).
-- `analyze-context.ts` — dynamic context assembly; calls formatters from `db-flow.ts` (e.g. `formatSpotExposuresForClaude()`).
+- `analyze-context.ts` — dynamic context assembly, mostly through `analyze-context-fetchers.ts`. The `format*ForClaude` formatters are spread across `api/` (mostly `_lib/`); find one with `grep -rn "function format.*ForClaude" api/`.
 - `lessons.ts` — lesson curation logic.
 - `overnight-gap.ts`, `spx-candles.ts`, `max-pain.ts`, `darkpool.ts`, `embeddings.ts`, `csv-parser.ts` — domain-specific modules.
 - `schwab.ts`, `api-helpers.ts`, `sentry.ts`, `validation.ts`, `logger.ts`, `constants.ts` — infrastructure.
 
 #### Chain Data Boundary
 
-Chain data (per-strike OI, IV, skew) lives in **frontend state only** via `useChainData`. To use it in the analyze endpoint, it must be explicitly passed in the `AnalysisContext` payload. Formatters for server-side data live in `db-flow.ts`.
+Chain data (per-strike OI, IV, skew) lives in **frontend state only** via `useChainData`. To use it in the analyze endpoint, it must be explicitly passed in the `AnalysisContext` payload. Server-side data reaches the prompt through the `format*ForClaude` formatters (see Backend Modules).
 
 #### DB Migrations
 
-When adding a migration to `migrateDb()` in `db.ts`, you must also update `api/__tests__/db.test.ts`:
+When adding a migration to `MIGRATIONS` in `api/_lib/db-migrations.ts`, you must also update the `migrateDb` tests in `api/__tests__/db.test.ts`:
 
-- Add `{ id: N }` to the applied-migrations mock
-- Add the migration to the expected-output list
-- Update the SQL call count (each migration = 1 CREATE/ALTER + 1 INSERT INTO schema_migrations)
+- Add `{ id: N }` to the applied-ids mock
+- Add `#N: <description>` to the expected-output list
+- Raise the `mockSql` total by the migration's statement count + 1 (the tracking INSERT)
+- Raise the `mockSql.transaction` total by 1 (each `statements:` migration runs in one `sql.transaction()`)
+- Extend the breakdown comments above both totals (the one above the `mockSql.transaction` total names the top migration id)
 
 ### Frontend (src/)
 
@@ -243,12 +248,13 @@ When adding a migration to `migrateDb()` in `db.ts`, you must also update `api/_
 ### Testing
 
 - **Tests ship with the feature** — see "Tests Are Mandatory (TDD Preferred)" above. Code without tests is not done.
-- **Unit tests** — Vitest with `@testing-library/react`. Frontend tests mostly in `src/__tests__/` (some in colocated `__tests__/` folders), backend tests in `api/__tests__/`.
+- **No test touches a real database or production store** — blocks in `src/__tests__/setup.ts` and the `ml/`, `scripts/`, `sidecar/` and `uw-stream/` conftests fail the run that reaches a database. Redis, Blob and R2 keys are stripped, but their clients aren't blocked yet. Use pglite or `vi.mock`; a new suite or client extends its block. Known gaps: `docs/superpowers/specs/tests-no-db-2026-11-04.md`.
+- **Unit tests** — Vitest with `@testing-library/react`. Frontend tests mostly in `src/__tests__/` (some colocated: `src/hooks/__tests__/`, component `__tests__/` folders), backend tests in `api/__tests__/`.
 - **E2E tests** — Playwright with `@axe-core/playwright` for accessibility. Specs in `e2e/`. Use semantic selectors (`getByRole`, `getByLabel`, `data-testid`).
 - **Coverage** — `npm run test:coverage` for V8 coverage.
 - **Coverage floors** — `npm run review` fails when any file drops below the per-file floor (`FLOORS` in `scripts/_lib/coverage-floor.mjs`, checked from `coverage/lcov.info` by `scripts/check-coverage-floor.mjs`) or any folder's aggregate drops below its glob floor (branches + lines per folder in `vite.config.ts` `coverage.thresholds`). Raise them by hand after a test pass lands; never lower one to make a run pass. A folder glob that matches no files passes silently, so `scripts/_lib/coverage-thresholds.test.mjs` fails on one: rename the key when you rename the folder, and update its key counts when you add or remove a folder floor.
 - Test files must end in `.test.ts` or `.test.tsx` (unit) or `.spec.ts` (e2e).
-- **Cron test pattern** — mock `getDb` via `vi.mocked(getDb)`. Use `mockResolvedValueOnce` in the same sequence as the handler's DB queries. Provide `CRON_SECRET` in `process.env`.
+- **Cron test pattern** — mock the DB module with a factory, `vi.mock('../_lib/db.js', () => ({ getDb: vi.fn(() => mockSql), … }))`, and queue `mockSql.mockResolvedValueOnce` in the same sequence as the handler's DB queries (`vi.mocked(getDb)` is the rarer form). Provide `CRON_SECRET` in `process.env`.
 
 ## Code Style
 
@@ -258,7 +264,7 @@ When adding a migration to `migrateDb()` in `db.ts`, you must also update `api/_
 - **SonarJS rules to remember**: use `Number.parseFloat`/`Number.parseInt` (not globals), use `.at(-1)` not `[arr.length - 1]`, no nested template literals (extract to variable).
 - Run `npm run lint` before reporting any task complete. Lint covers root project only — `sidecar/` and `playwright-report/` are in the ESLint ignores list.
 - Use `type` imports for type-only imports (`import type { ... }`).
-- **Explicit `.js` extensions in relative imports from `src/` that are imported by `api/`** — any file in `src/` that an `api/*` handler imports (directly or transitively) must use explicit `.js` extensions on all relative imports, e.g. `import { x } from './foo.js'` not `'./foo'`. Vite rewrites extension-less imports for the browser bundle, but Vercel Functions run Node's strict ESM resolver which does not. Failure mode: production Function crashes with `ERR_MODULE_NOT_FOUND` for the extension-less path while local dev + tests still pass. Type-only imports (`import type { ... }`) are erased at compile time and do NOT need `.js`. Examples of server-pulled `src/` files in this repo: `src/utils/timezone.ts`, `src/data/marketHours.ts`, `src/components/LotteryFinder/ct-window.ts`, `src/utils/gex-target/index.ts`, `src/utils/zero-gamma.ts`, `src/utils/black-scholes.ts`. When adding a new `src/` module that `api/` will import, add `.js` to every non-type relative import inside it and inside its transitive deps.
+- **Explicit `.js` extensions in relative imports from `src/` that are imported by `api/`** — any file in `src/` that an `api/*` handler imports (directly or transitively) must use explicit `.js` extensions on all relative imports, e.g. `import { x } from './foo.js'` not `'./foo'`. Vite rewrites extension-less imports for the browser bundle, but Vercel Functions run Node's strict ESM resolver which does not. Failure mode: production Function crashes with `ERR_MODULE_NOT_FOUND` for the extension-less path while local dev + tests still pass. Type-only imports (`import type { ... }`) are erased at compile time and do NOT need `.js`. Examples of server-pulled `src/` files in this repo: `src/utils/timezone.ts`, `src/data/marketHours.ts`, `src/components/LotteryFinder/ct-window.ts`, `src/utils/gex-target/index.ts`, `src/utils/zero-gamma.ts`, `src/utils/black-scholes.ts`. When adding a new `src/` module that `api/` will import, add `.js` to every non-type relative import inside it and inside its transitive deps. ESLint enforces this only for `API_COMPILED_SRC` in `eslint.config.ts`; `scripts/_lib/eslint-api-src-scope.test.mjs` fails when `api/` reaches a `src/` file outside it, so add that file to the list.
 
 ### Optional props policy (`exactOptionalPropertyTypes` is OFF — intentional)
 
@@ -324,6 +330,7 @@ Required env vars (pulled via `vercel env pull .env.local`):
 | `DAY_ANALOG_BACKEND`                                     | Analog-day backend (opt.; `features`, else text embeddings) |
 | `LOG_LEVEL`                                              | pino log level (opt.)                                       |
 | `WS_CHANNELS`, `VERCEL_NOTIFY_URL`                       | uw-stream (Railway only)                                    |
+| `INTERNAL_METRICS_TOKEN`                                 | uw-stream `/metrics` header token (Railway only)            |
 | `R2_ACCOUNT_ID`                                          | Cloudflare R2 (local tape scripts only; api/ ignores it)    |
 | `R2_ACCESS_KEY_ID`                                       | Cloudflare R2 (Railway nightly, local tape scripts)         |
 | `R2_SECRET_ACCESS_KEY`                                   | Cloudflare R2 (Railway nightly, local tape scripts)         |
@@ -349,7 +356,7 @@ see `docs/superpowers/specs/archive-volume-seed-2026-04-18.md`.
 - **Config**: `vercel.json` — crons, security headers, CSP, bot protection rewrites, SPA fallback, `ignoreCommand` skips builds when only `sidecar/`, `uw-stream/`, `nightly/`, `ml/`, `scripts/`, `pine/`, `docs/`, or `*.md` files change
 - **Long-running functions**: `api/analyze.ts`, `api/cron/curate-lessons.ts` and `api/cron/curate-periscope-lessons.ts` (780s), `api/cron/backfill-futures-gaps.ts` (800s), and 300s crons such as `api/cron/build-features.ts`. Full list: `vercel.json` `functions`.
 - **DB setup**: `POST /api/journal/init` creates all tables and runs all migrations
-- **Railway services**: `sidecar/`, `uw-stream/` and `nightly/` (a cron service: `railway.toml` `cronSchedule`, runs once and exits), each with its own Dockerfile, `railway.toml` `watchPatterns` and env vars in Railway, not Vercel. Sidecar env: `DATABASE_URL` (only for its `/health` db check), `SENTRY_DSN`, `TAKEIT_*`, `ARCHIVE_*`. Nightly env: `UW_API_KEY`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`, `R2_BUCKET_FULLTAPE`, optional `SENTRY_DSN`.
+- **Railway services**: `sidecar/`, `uw-stream/` and `nightly/` (a cron service that runs once and exits), each with its own Dockerfile and env vars in Railway, not Vercel. `sidecar/` and `uw-stream/` keep `railway.toml` `watchPatterns`. `nightly/` has no `railway.toml`: its cron schedule, restart policy and watch paths are set on the Railway service (see `nightly/README.md`). Sidecar env: `DATABASE_URL` (only for its `/health` db check), `SENTRY_DSN`, `TAKEIT_*`, `ARCHIVE_*`. Nightly env: `UW_API_KEY`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`, `R2_BUCKET_FULLTAPE`, optional `SENTRY_DSN`.
 
 ## Anthropic Integration
 

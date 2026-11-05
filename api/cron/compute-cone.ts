@@ -1,7 +1,7 @@
 /**
  * GET /api/cron/compute-cone
  *
- * Computes the SPX 0DTE straddle breakeven cone at 9:31 ET each weekday and
+ * Computes the SPX 0DTE straddle breakeven cone at 9:32 ET each weekday and
  * persists it to `cone_levels`. Replaces the user-facing manual cone input
  * with an auto-computed pair derived from the ATM call+put marks on the
  * SPX 0DTE chain.
@@ -23,15 +23,23 @@
  * fetch shape as `fetch-strike-iv` (which we mirror for parity). The
  * 0DTE chain is fromDate=today, toDate=today.
  *
- * Schedule: `32 13 * * 1-5` (13:32 UTC = 9:32 EDT — 1 min after the
- * 9:31 ET Periscope cone-calc anchor, giving Schwab time to settle the
- * opening chain marks). DST-tuned to match the rest of the cron fleet —
- * every other RTH cron in vercel.json uses 13–21 UTC under the same
- * DST convention.
+ * Schedule: `32 13,14 * * 1-5`, to run at 9:32 ET (1 min after the 9:31 ET
+ * Periscope cone-calc anchor, giving Schwab time to settle the opening
+ * chain marks) in both DST regimes: 13:32 UTC is 9:32 EDT and 14:32 UTC is
+ * 9:32 EST. The `isConeCalcWindow` timeCheck (09:30–09:45 ET on a trading
+ * day) admits exactly one of the two slots; the other (8:32 EST, 10:32 EDT)
+ * is an intentional skip with a paired ok check-in. With only the 13:32
+ * slot and the default market gate (09:25 ET on), every EST run would have
+ * been skipped and no cone written all winter; caught on 2026-10-29, before
+ * the first EST session since the cron's 2026-05-07 start.
  *
  * Idempotency: cone_levels has DATE PRIMARY KEY. We `ON CONFLICT DO
  * NOTHING` so a same-day re-fire (e.g. accidental backfill) is a no-op
  * rather than overwriting the morning's cone with later marks.
+ *
+ * Errors: a Schwab chain failure other than logged-out returns `error` (a
+ * red check-in) and sends a fingerprinted Sentry warning, since the wrapper
+ * captures only thrown errors.
  *
  * Spec: docs/superpowers/specs/periscope-html-ingestion-2026-05-07.md
  *       (Phase 1 — cone auto-compute)
@@ -39,10 +47,12 @@
 
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { schwabFetch } from '../_lib/api-helpers.js';
+import { isConeCalcWindow } from '../_lib/cron-helpers.js';
 import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
+import { Sentry } from '../_lib/sentry.js';
 
 interface SchwabOptionContract {
   putCall: 'PUT' | 'CALL';
@@ -183,10 +193,27 @@ export default withCronInstrumentation(
           metadata: { reason: 'schwab_logged_out' },
         };
       }
+      // result.error embeds the Schwab body, which schwabFetch already masked
+      // and capped, so it is safe for every place it goes: pino (no redact
+      // config), Sentry `extra` (beforeSend scrubs by key name only), and the
+      // Axiom event and JSON response via `metadata`. Don't redact it again:
+      // a second pass would report the capped length, not the body's.
       logger.warn(
         { status: result.status, error: result.error },
         'compute-cone: Schwab chain fetch failed',
       );
+      // schwabFetch captures nothing for a non-2xx or network failure, and
+      // the wrapper answers a returned `error` with a red check-in only, so
+      // this is the run's Sentry event. No cone today means no cone breaches.
+      Sentry.captureMessage('compute-cone: Schwab chain fetch failed', {
+        level: 'warning',
+        fingerprint: ['compute-cone', 'schwab-fetch-failed'],
+        tags: {
+          'cron.anomaly': 'schwab-fetch-failed',
+          'schwab.code': result.code,
+        },
+        extra: { status: result.status, error: result.error },
+      });
       return {
         status: 'error',
         metadata: { reason: 'schwab_fetch_failed', error: result.error },
@@ -273,5 +300,5 @@ export default withCronInstrumentation(
       },
     };
   },
-  { requireApiKey: false },
+  { requireApiKey: false, timeCheck: isConeCalcWindow },
 );

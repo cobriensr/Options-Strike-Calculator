@@ -23,7 +23,9 @@ import pandas as pd
 import pytest
 
 from lottery_scoring import (
+    FETCH_QUERY,
     MIN_OBS_BUCKET,
+    SINGLE_LEG_FILTER,
     TICKER_CLAMP_MAX,
     TICKER_CLAMP_MIN,
     apply_weights,
@@ -277,7 +279,9 @@ def test_compute_quintile_weights_underpopulated_quintile_falls_back():
     big = MIN_OBS_BUCKET + 5
     rows = [{"q": 0.0, "outcome_pct": 0.0} for _ in range(big)]
     rows += [{"q": 4.0, "outcome_pct": 10.0} for _ in range(big)]
-    rows += [{"q": float(q), "outcome_pct": -999.0} for q in (1, 2, 3) for _ in range(3)]
+    rows += [
+        {"q": float(q), "outcome_pct": -999.0} for q in (1, 2, 3) for _ in range(3)
+    ]
     df = pd.DataFrame(rows)
     assert compute_quintile_weights(df, "q", scale=5.0, global_mean=5.0) == [
         -2,
@@ -298,8 +302,7 @@ def _ticker_frame(specs: dict[str, tuple[float, int]]) -> pd.DataFrame:
     rows = []
     for ticker, (outcome, count) in specs.items():
         rows += [
-            {"underlying_symbol": ticker, "outcome_pct": outcome}
-            for _ in range(count)
+            {"underlying_symbol": ticker, "outcome_pct": outcome} for _ in range(count)
         ]
     return pd.DataFrame(rows)
 
@@ -539,3 +542,17 @@ def test_apply_weights_returns_series_indexed_like_input():
     score = apply_weights(df, _full_weights(), _VOL_OI_B, _GAMMA_B, _ASK_B)
     assert list(score.index) == [10, 20]
     assert len(score) == 2
+
+
+# ---------------------------------------------------------------------------
+# training filter
+# ---------------------------------------------------------------------------
+
+
+def test_single_leg_filter_is_the_exchange_derived_kind() -> None:
+    assert SINGLE_LEG_FILTER == "anchor_leg_kind = 'single'"
+
+
+def test_fetch_query_uses_the_shared_filter_not_the_classifier_label() -> None:
+    assert SINGLE_LEG_FILTER in FETCH_QUERY
+    assert "inferred_structure" not in FETCH_QUERY

@@ -60,6 +60,7 @@ def _fire_matches_composite(
     quintile is represented as the string "null" in the match dict. Missing
     keys in `match` are wildcards.
     """
+
     def _q_label(q: int | None) -> str:
         return "null" if q is None else str(q)
 
@@ -120,18 +121,14 @@ def compute_components(
     # Resolve TOD weights: use DOW override if available, else global.
     overrides = f.get("tod_weights_dow_overrides", {})
     tod_weights_to_use = (
-        overrides[dow]
-        if dow is not None and dow in overrides
-        else f["tod_weights"]
+        overrides[dow] if dow is not None and dow in overrides else f["tod_weights"]
     )
 
     components: dict[str, int] = {
         "ticker": int(f["ticker_weights"].get(fire_row["ticker"], 0)),
         "tod": int(tod_weights_to_use.get(fire_row["tod"], 0)),
         "dte": int(f["dte_weights"].get(str(fire_row["dte"]), 0)),
-        "option_type": int(
-            f["option_type_weights"].get(fire_row["option_type"], 0)
-        ),
+        "option_type": int(f["option_type_weights"].get(fire_row["option_type"], 0)),
     }
 
     vol_oi_q = assign_quintile(
@@ -141,9 +138,7 @@ def compute_components(
         int(f["vol_oi_quintile_weights"][vol_oi_q]) if vol_oi_q is not None else 0
     )
 
-    gamma_q = assign_quintile(
-        fire_row.get("gamma"), f["gamma_quintile_boundaries"]
-    )
+    gamma_q = assign_quintile(fire_row.get("gamma"), f["gamma_quintile_boundaries"])
     components["gamma_q"] = (
         int(f["gamma_quintile_weights"][gamma_q]) if gamma_q is not None else 0
     )
@@ -152,9 +147,7 @@ def compute_components(
         fire_row.get("ask_pct"), f["ask_pct_quintile_boundaries"]
     )
     components["ask_pct_q"] = (
-        int(f["ask_pct_quintile_weights"][ask_pct_q])
-        if ask_pct_q is not None
-        else 0
+        int(f["ask_pct_quintile_weights"][ask_pct_q]) if ask_pct_q is not None else 0
     )
 
     # Context features (V2.2 Phase D) — 7 macro-level quintile features.
@@ -176,9 +169,7 @@ def compute_components(
             components[fire_key] = 0
             continue
         q = assign_quintile(fire_row.get(fire_key), f[boundaries_key])
-        components[fire_key] = (
-            int(f[weights_key][q]) if q is not None else 0
-        )
+        components[fire_key] = int(f[weights_key][q]) if q is not None else 0
 
     # Composite bonuses/penalties — sum all matching entries.
     composite_total = 0
@@ -189,7 +180,5 @@ def compute_components(
             composite_total += int(entry["bonus"])
     components["composite"] = composite_total
 
-    components["total"] = sum(
-        v for k, v in components.items() if k != "total"
-    )
+    components["total"] = sum(v for k, v in components.items() if k != "total")
     return components

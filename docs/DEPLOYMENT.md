@@ -17,10 +17,10 @@ Pushing to `main` deploys. Vercel builds the push unless the ignore command (bel
 **Ignore command** (`vercel.json` `ignoreCommand`):
 
 ```sh
-BASE="$VERCEL_GIT_PREVIOUS_SHA"; [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null || exit 1; git diff --quiet "$BASE" HEAD -- ':!sidecar' ':!ml' ':!uw-stream' ':!docs' ':!scripts' ':!pine' ':!*.md' || exit 1
+BASE="$VERCEL_GIT_PREVIOUS_SHA"; [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null || exit 1; git diff --quiet "$BASE" HEAD -- ':!sidecar' ':!ml' ':!uw-stream' ':!nightly' ':!docs' ':!scripts' ':!pine' ':!*.md' || exit 1
 ```
 
-It diffs `HEAD` against the last deployed commit. If the only changes are under `sidecar/`, `ml/`, `uw-stream/`, `docs/`, `scripts/` or `pine/`, or are `*.md` files, the build is skipped. If that commit is unset or not in the clone, it builds.
+It diffs `HEAD` against the last deployed commit. If the only changes are under `sidecar/`, `ml/`, `uw-stream/`, `nightly/`, `docs/`, `scripts/` or `pine/`, or are `*.md` files, the build is skipped. If that commit is unset or not in the clone, it builds.
 
 **Long-running functions** (`vercel.json` `functions` sets `maxDuration` for 25 functions; the rest use the platform default):
 
@@ -30,21 +30,22 @@ It diffs `HEAD` against the last deployed commit. If the only changes are under 
 - `api/cron/curate-periscope-lessons.ts`: 780 s (Periscope debrief lesson curation)
 - `api/cron/build-features.ts`, `enrich-lottery-outcomes.ts`, `rollup-ws-gex-strike-expiry.ts` and `archive-gexbot.ts`: 300 s
 
-**Cron jobs**: `vercel.json` registers 83 schedules across 77 paths: 76 handlers in `api/cron/` plus `/api/health` (13:25 UTC weekdays). `fetch-gexbot-fast`, `fetch-gexbot-strikes` and `populate-periscope-from-gexbot` each have three entries. Schedules are UTC, and every handler checks `CRON_SECRET`.
+**Cron jobs**: `vercel.json` registers 87 schedules across 80 paths: 79 handlers in `api/cron/` plus `/api/health` (13:25 UTC weekdays). `fetch-gexbot-fast`, `fetch-gexbot-strikes` and `populate-periscope-from-gexbot` each have three entries, and `fetch-futures-session-stats` has two. Schedules are UTC, and every handler checks `CRON_SECRET`.
 
 **Headers and rewrites** (`vercel.json`): security headers, including the CSP, on every path except the BotID proxy; `Cache-Control: no-cache, no-store, must-revalidate` on `/sw.js`; two BotID rewrites to Vercel's bot-protection service; and a last SPA fallback that sends every non-`/api/` path with no file extension to `/index.html`.
 
-### Railway (sidecar + uw-stream + ws-canary)
+### Railway (sidecar + uw-stream + nightly + ws-canary)
 
-Two long-running Railway services, each with its own Dockerfile, `railway.toml` `watchPatterns` and env vars, plus one temporary service:
+Two long-running Railway services, each with its own Dockerfile, `railway.toml` `watchPatterns` and env vars, plus one cron service and one temporary service:
 
 - [sidecar/README.md](../sidecar/README.md): Take-It SHAP + frozen archive (Theta and the multileg-classify fallback were removed 2026-10-02)
 - [uw-stream/README.md](../uw-stream/README.md): UW websocket consumer (also the live source of `futures_bars`)
+- [nightly/README.md](../nightly/README.md): a cron service that lands the UW options Full Tape in Cloudflare R2, one Parquet per trading day, then exits. It has no `railway.toml`: its schedule (`15 7 * * 2-6` UTC, Tue–Sat), restart policy (`NEVER`) and watch paths are set on the Railway service. Env: `UW_API_KEY`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`, `R2_BUCKET_FULLTAPE`, optional `SENTRY_DSN`. Its README is the runbook: alert meanings, markers, re-lands.
 - [scripts/ws-canary/README.md](../scripts/ws-canary/README.md): a temporary canary that holds test websockets from uw-stream's Railway region, to find which network hop resets uw-stream's connections. It is deleted once the verdict is in.
 
-Watch paths: `sidecar/**`, `uw-stream/**` and `/scripts/ws-canary/**`. Railway doesn't read config-as-code for a new service, so the canary's settings are set on the service and its `railway.toml` only records them. A change under `scripts/` alone redeploys the canary without building Vercel, since the ignore command leaves that folder out.
+Watch paths: `sidecar/**`, `uw-stream/**`, `/nightly/Dockerfile`, `/nightly/requirements.txt` and `/nightly/src/**` (only the image inputs), and `/scripts/ws-canary/**`. Railway doesn't read config-as-code for a new service, so the canary's settings are set on the service and its `railway.toml` only records them. A change under `scripts/` alone redeploys the canary without building Vercel, since the ignore command leaves that folder out.
 
-Hold pushes that touch `uw-stream/` or `sidecar/` until after the 15:00 CT close: a redeploy drops the websocket mid-session and briefly takes down Take-It scoring.
+Hold pushes that touch `uw-stream/` or `sidecar/` until after the 15:00 CT close: a redeploy drops the websocket mid-session and briefly takes down Take-It scoring. Keep pushes to `nightly/src` out of its run window (about 07:15 to 12:30 UTC): a redeploy can stop the run, and a stopped run waits for the next night unless someone runs `railway cron run --service nightly`.
 
 ### Post-Deploy Setup
 
@@ -62,7 +63,7 @@ Hold pushes that touch `uw-stream/` or `sidecar/` until after the 15:00 CT close
 
 ## Testing
 
-As of 2026-10-29: **about 14,960 Vitest tests in 686 files**, plus 41 Playwright spec files (three browser projects: CI runs Chromium, the nightly job runs all three), all type-checked in strict mode. Python: 88 pytest files across ml (52), uw-stream (26) and sidecar (10), plus 7 in the retired `classifier/` folder, which CI no longer runs. Coverage on the 2026-10-29 gate run: 95.2% statements / 88.0% branches / 96.1% functions / 96.9% lines.
+As of 2026-10-29: **about 15,800 Vitest tests in 711 files**, plus 43 Playwright spec files (three browser projects: CI runs Chromium, the nightly job runs all three), all type-checked in strict mode. Python: 97 pytest files across ml (51), uw-stream (27), sidecar (10) and nightly (9). Coverage on the 2026-10-29 gate run: 95.5% statements / 88.4% branches / 96.5% functions / 97.1% lines.
 
 ### Unit Tests (Vitest)
 
@@ -145,28 +146,29 @@ Every axe scan runs on Chromium only.
 ### ML Tests (pytest)
 
 ```bash
-make -C ml test       # 52 test files in ml/tests/
+make -C ml test       # 51 test files in ml/tests/
 make -C ml test-cov   # same, failing under 70% coverage
 ```
 
 `ml/Makefile` defaults to `PYTHON=.venv/Scripts/python` on Windows and `.venv/bin/python` elsewhere (it picks by `$(OS)`); pass `PYTHON=...` only to override.
 
-| Files                                                                                                                                | Coverage                                                                       |
-| ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
-| `test_utils`, `test_health`, `test_milestone`, `test_explore`, `test_visualize` (5)                                                  | Pipeline plumbing: DB helpers, freshness, milestones, export, plots            |
-| `test_clustering`, `test_eda`, `test_phase2`, `test_backtest`, `test_pin`, `test_calibration`, `test_nope_eda` (7)                   | Core analyses: clustering, EDA, walk-forward, backtest, pin, calibration, NOPE |
-| `test_setups_backtest_*` (13)                                                                                                        | Futures setup backtest harness, loaders, metrics, setups 1–8                   |
-| `test_lottery_scoring`, `test_lottery_ticker_quality`, `test_score_components`, `test_takeit_*` (7)                                  | Lottery Finder scoring and Take-It training, export, drift                     |
-| `test_flow_*`, `test_fulltape_ingest` (6)                                                                                            | EOD flow archive and Full Tape ingest, EDA, outcomes, outliers                 |
-| `test_imbalance_*`, `test_moc_features_loaders` (5)                                                                                  | Imbalance and MOC features                                                     |
-| `test_microstructure_*`, `test_options_features_*`, `test_multileg_*`, `test_periscope_gamma_wall_lib`, `test_day_analog_parity` (9) | Microstructure, options features, multi-leg, Periscope walls, day analogs      |
+| Files                                                                                                              | Coverage                                                                       |
+| ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| `test_utils`, `test_health`, `test_milestone`, `test_explore`, `test_visualize` (5)                                | Pipeline plumbing: DB helpers, freshness, milestones, export, plots            |
+| `test_clustering`, `test_eda`, `test_phase2`, `test_backtest`, `test_pin`, `test_calibration`, `test_nope_eda` (7) | Core analyses: clustering, EDA, walk-forward, backtest, pin, calibration, NOPE |
+| `test_setups_backtest_*` (13)                                                                                      | Futures setup backtest harness, loaders, metrics, setups 1–8                   |
+| `test_lottery_scoring`, `test_lottery_ticker_quality`, `test_score_components`, `test_takeit_*` (7)                | Lottery Finder scoring and Take-It training, export, drift                     |
+| `test_flow_*`, `test_fulltape_ingest` (6)                                                                          | EOD flow archive and Full Tape ingest, EDA, outcomes, outliers                 |
+| `test_imbalance_*`, `test_moc_features_loaders` (5)                                                                | Imbalance and MOC features                                                     |
+| `test_microstructure_*`, `test_options_features_*`, `test_periscope_gamma_wall_lib`, `test_day_analog_parity` (7)  | Microstructure, options features, Periscope walls, day analogs                 |
 
 ### Service Tests (pytest)
 
 - **sidecar**: 10 files. `make -C sidecar test-cov`; no coverage gate.
-- **uw-stream**: 26 files. CI runs `ruff check`, `ruff format --check` and `pytest --cov`, with no gate.
+- **uw-stream**: 27 files. CI runs `ruff check`, `ruff format --check` and `pytest --cov`, with no gate.
+- **nightly**: 9 files. CI runs `ruff check`, `ruff format --check` and `pytest --cov`, with no coverage gate; `pyproject.toml` makes pytest fail on any warning.
 
-`make py-test-cov` (root `Makefile`) runs all four Python suites. `npm run review:python` runs ml and sidecar. Six more test files sit outside any suite and CI: `scripts/test_*.py` (5) and `scripts/ws-canary/test_canary.py`.
+`make py-test-cov` (root `Makefile`) runs ml, sidecar and uw-stream; nightly runs on its own (`cd nightly && python -m pytest`). `npm run review:python` runs ml and sidecar. Six more test files sit outside any suite and CI: `scripts/test_*.py` (5) and `scripts/ws-canary/test_canary.py`.
 
 ---
 
@@ -235,7 +237,7 @@ About 255 scripts in `scripts/` (plus `_lib/`, `ops/`, `eod-flow-analysis/` and 
 
 Four workflow files in `.github/workflows/`:
 
-- **ci.yml**: on pushes to main, PRs and manual dispatch. A `paths-filter` job picks the gates that run. The **App Quality Gate** (`npm run audit` + `npm run review`) runs when `src/`, `api/`, `scripts/`, `e2e/`, `.github/`, config or lockfiles change. **E2E Tests** (Chromium only) runs after the app gate passes, when a file the browser loads changes (`src/`, `e2e/`, `playwright.config.ts`, `vite.config.ts`, `tsconfig.json`, `index.html`, `public/`, `package*.json`, or the two workflow files); `api/`-only changes skip it. The **ML**, **Sidecar** and **uw-stream** gates each run when their folder changes.
+- **ci.yml**: on pushes to main, PRs and manual dispatch. A `paths-filter` job picks the gates that run. The **App Quality Gate** (`npm run audit` + `npm run review`) runs when `src/`, `api/`, `scripts/`, `e2e/`, `.github/`, config or lockfiles change. **E2E Tests** (Chromium only) runs after the app gate passes, when a file the browser loads changes (`src/`, `e2e/`, `playwright.config.ts`, `vite.config.ts`, `tsconfig.json`, `index.html`, `public/`, `package*.json`, or the two workflow files); `api/`-only changes skip it. The **ML**, **Sidecar**, **uw-stream** and **nightly** gates each run when their folder changes.
 - **e2e-nightly.yml**: all three browsers, weekdays at 23:00 UTC and on manual dispatch, with no path filter.
 - **ml-pipeline.yml**: 01:45 UTC Tue–Sat and manual dispatch. Job `pipeline` runs `make all`, uploads plots to Vercel Blob, calls `/api/ml/analyze-plots`, and commits `ml/findings.json` + plots. Job `takeit-retrain` then rebuilds the Take-It training set, retrains, warns when out-of-fold Brier > 0.27, and uploads bundles with `scripts/upload_takeit_bundles.mjs`. **The workflow is disabled in GitHub** (last run 2026-04-17), so neither job runs.
 - **neon_workflow.yml**: creates a Neon branch per PR (expires after 14 days) and deletes it when the PR closes.

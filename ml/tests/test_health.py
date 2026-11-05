@@ -8,6 +8,7 @@ Run:
     cd ml && .venv/Scripts/python -m pytest test_health.py -v
 """
 
+import json
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -812,6 +813,21 @@ class TestPrintSummary:
 class TestMain:
     """Tests for the main orchestrator."""
 
+    @pytest.fixture(autouse=True)
+    def findings_root(self, tmp_path, monkeypatch):
+        """Send main()'s findings write to tmp_path instead of ml/findings.json.
+
+        save_section_findings resolves utils.ML_ROOT at call time, so patching
+        it there redirects the file. The same redirect keeps its optional
+        ml_findings upsert off a real database: utils.load_env reads the
+        repo-root .env file from ML_ROOT.parent, so it finds no
+        DATABASE_URL under tmp_path. Dropping the env var alone would not
+        do it, as the .env file overrides os.environ. ml/conftest.py also
+        blocks the connect call itself.
+        """
+        monkeypatch.setattr("utils.ML_ROOT", tmp_path)
+        return tmp_path
+
     @patch("health.print_summary")
     @patch("health.check_stationarity")
     @patch("health.check_column_coverage")
@@ -827,6 +843,7 @@ class TestMain:
         mock_stat,
         mock_summary,
         capsys,
+        findings_root,
     ):
         """main() should call each check function exactly once."""
         health.main()
@@ -837,6 +854,9 @@ class TestMain:
         mock_col.assert_called_once()
         mock_stat.assert_called_once()
         mock_summary.assert_called_once()
+        # The findings land under tmp_path, not in the tracked ml/findings.json.
+        saved = json.loads((findings_root / "findings.json").read_text())
+        assert saved["health"]["status"] == "PASS"
 
     @patch("health.print_summary")
     @patch("health.check_stationarity")
@@ -853,6 +873,7 @@ class TestMain:
         mock_stat,
         mock_summary,
         capsys,
+        findings_root,
     ):
         """main() should sys.exit(1) when warnings are present."""
 
@@ -865,6 +886,9 @@ class TestMain:
         with pytest.raises(SystemExit) as exc_info:
             health.main()
         assert exc_info.value.code == 1
+        saved = json.loads((findings_root / "findings.json").read_text())
+        assert saved["health"]["status"] == "WARN"
+        assert saved["health"]["warnings"] == ["test warning"]
 
     @patch("health.print_summary")
     @patch("health.check_stationarity")
@@ -881,6 +905,7 @@ class TestMain:
         mock_stat,
         mock_summary,
         capsys,
+        findings_root,
     ):
         """main() should sys.exit(1) when failures are present."""
 
@@ -892,6 +917,9 @@ class TestMain:
         with pytest.raises(SystemExit) as exc_info:
             health.main()
         assert exc_info.value.code == 1
+        saved = json.loads((findings_root / "findings.json").read_text())
+        assert saved["health"]["status"] == "FAIL"
+        assert saved["health"]["failures"] == ["test failure"]
 
     @patch("health.print_summary")
     @patch("health.check_stationarity")
@@ -908,7 +936,9 @@ class TestMain:
         mock_stat,
         mock_summary,
         capsys,
+        findings_root,
     ):
         """main() should not exit when all checks pass."""
         # No side effects = no warnings/failures added
         health.main()  # Should return normally, no SystemExit
+        assert (findings_root / "findings.json").exists()

@@ -152,8 +152,15 @@ def _sb_row(
 
 def test_derive_common_features_session_phase_buckets() -> None:
     rows = [
-        _lot_row(id_=i, fire_time=t, chain="X", underlying="SPY", option_type="C",
-                 strike=500, spot=500)
+        _lot_row(
+            id_=i,
+            fire_time=t,
+            chain="X",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+        )
         for i, t in enumerate(
             [
                 "2026-04-01 13:35:00+00:00",  # 8:35 CT -> phase 1
@@ -171,14 +178,42 @@ def test_derive_common_features_session_phase_buckets() -> None:
 
 def test_derive_common_features_itm_and_otm_signs() -> None:
     rows = [
-        _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="A",
-                 underlying="SPY", option_type="C", strike=500, spot=510),  # ITM call
-        _lot_row(id_=2, fire_time="2026-04-01 14:30:00+00:00", chain="B",
-                 underlying="SPY", option_type="C", strike=510, spot=500),  # OTM call
-        _lot_row(id_=3, fire_time="2026-04-01 14:30:00+00:00", chain="C",
-                 underlying="SPY", option_type="P", strike=500, spot=510),  # OTM put
-        _lot_row(id_=4, fire_time="2026-04-01 14:30:00+00:00", chain="D",
-                 underlying="SPY", option_type="P", strike=510, spot=500),  # ITM put
+        _lot_row(
+            id_=1,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="A",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=510,
+        ),  # ITM call
+        _lot_row(
+            id_=2,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="B",
+            underlying="SPY",
+            option_type="C",
+            strike=510,
+            spot=500,
+        ),  # OTM call
+        _lot_row(
+            id_=3,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="C",
+            underlying="SPY",
+            option_type="P",
+            strike=500,
+            spot=510,
+        ),  # OTM put
+        _lot_row(
+            id_=4,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="D",
+            underlying="SPY",
+            option_type="P",
+            strike=510,
+            spot=500,
+        ),  # ITM put
     ]
     df = pd.DataFrame(rows)
     out = derive_common_features(df, "spot_at_first", "trigger_ask_pct")
@@ -193,8 +228,15 @@ def test_derive_common_features_itm_and_otm_signs() -> None:
 def test_derive_common_features_nan_spot_yields_na_itm() -> None:
     """When spot is NaN, is_itm_at_fire must be <NA>, not silently 0/1."""
     rows = [
-        _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="A",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
+        _lot_row(
+            id_=1,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="A",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+        ),
     ]
     df = pd.DataFrame(rows)
     df.loc[0, "spot_at_first"] = pd.NA  # simulate the silentboom pre-backfill case
@@ -205,12 +247,33 @@ def test_derive_common_features_nan_spot_yields_na_itm() -> None:
 
 def test_dealer_gamma_sign_signs_correctly() -> None:
     rows = [
-        _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="A",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
-        _lot_row(id_=2, fire_time="2026-04-01 14:30:00+00:00", chain="B",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
-        _lot_row(id_=3, fire_time="2026-04-01 14:30:00+00:00", chain="C",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
+        _lot_row(
+            id_=1,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="A",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+        ),
+        _lot_row(
+            id_=2,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="B",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+        ),
+        _lot_row(
+            id_=3,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="C",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+        ),
     ]
     df = pd.DataFrame(rows)
     df["spx_spot_gamma_oi"] = [5.0, -3.0, 0.0]
@@ -222,12 +285,26 @@ def test_dealer_gamma_sign_signs_correctly() -> None:
 
 def test_aggressive_premium_threshold_inclusive() -> None:
     rows = [
-        _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="A",
-                 underlying="SPY", option_type="C", strike=500, spot=500,
-                 ask_pct=AGGRESSIVE_ASK_PCT_THRESHOLD - 0.01),
-        _lot_row(id_=2, fire_time="2026-04-01 14:30:00+00:00", chain="B",
-                 underlying="SPY", option_type="C", strike=500, spot=500,
-                 ask_pct=AGGRESSIVE_ASK_PCT_THRESHOLD),
+        _lot_row(
+            id_=1,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="A",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+            ask_pct=AGGRESSIVE_ASK_PCT_THRESHOLD - 0.01,
+        ),
+        _lot_row(
+            id_=2,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="B",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+            ask_pct=AGGRESSIVE_ASK_PCT_THRESHOLD,
+        ),
     ]
     df = pd.DataFrame(rows)
     out = derive_common_features(df, "spot_at_first", "trigger_ask_pct")
@@ -244,10 +321,17 @@ def test_burst_storm_requires_min_distinct_underlyings() -> None:
     rows = []
     for i, tk in enumerate(tickers):
         t = pd.to_datetime(base, utc=True) + pd.Timedelta(minutes=i)
-        rows.append(_lot_row(
-            id_=i, fire_time=t.isoformat(), chain=f"{tk}_X",
-            underlying=tk, option_type="C", strike=100, spot=100,
-        ))
+        rows.append(
+            _lot_row(
+                id_=i,
+                fire_time=t.isoformat(),
+                chain=f"{tk}_X",
+                underlying=tk,
+                option_type="C",
+                strike=100,
+                spot=100,
+            )
+        )
     df = pd.DataFrame(rows)
     df = derive_common_features(df, "spot_at_first", "trigger_ask_pct")
     out = add_burst_storm(df)
@@ -264,10 +348,17 @@ def test_burst_storm_fires_when_threshold_met() -> None:
     rows = []
     for i, tk in enumerate(tickers):
         t = pd.to_datetime(base, utc=True) + pd.Timedelta(minutes=i)
-        rows.append(_lot_row(
-            id_=i, fire_time=t.isoformat(), chain=f"{tk}_X",
-            underlying=tk, option_type="C", strike=100, spot=100,
-        ))
+        rows.append(
+            _lot_row(
+                id_=i,
+                fire_time=t.isoformat(),
+                chain=f"{tk}_X",
+                underlying=tk,
+                option_type="C",
+                strike=100,
+                spot=100,
+            )
+        )
     df = pd.DataFrame(rows)
     df = derive_common_features(df, "spot_at_first", "trigger_ask_pct")
     out = add_burst_storm(df)
@@ -285,10 +376,17 @@ def test_burst_storm_respects_window_eviction() -> None:
     rows = []
     for i, tk in enumerate(tickers):
         t = base + pd.Timedelta(minutes=i * 7)  # 0, 7, 14, 21, 28, 35
-        rows.append(_lot_row(
-            id_=i, fire_time=t.isoformat(), chain=f"{tk}_X",
-            underlying=tk, option_type="C", strike=100, spot=100,
-        ))
+        rows.append(
+            _lot_row(
+                id_=i,
+                fire_time=t.isoformat(),
+                chain=f"{tk}_X",
+                underlying=tk,
+                option_type="C",
+                strike=100,
+                spot=100,
+            )
+        )
     df = pd.DataFrame(rows)
     df = derive_common_features(df, "spot_at_first", "trigger_ask_pct")
     out = add_burst_storm(df)
@@ -306,18 +404,35 @@ def test_cofire_flag_within_window_prior_counterpart() -> None:
     PIT-correct: only prior counterparts count.
     """
     base = pd.to_datetime("2026-04-01 14:30:00+00:00", utc=True)
-    target = pd.DataFrame([
-        _lot_row(id_=1, fire_time=base.isoformat(), chain="SPY_500C",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
-    ])
+    target = pd.DataFrame(
+        [
+            _lot_row(
+                id_=1,
+                fire_time=base.isoformat(),
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=500,
+            ),
+        ]
+    )
     target = derive_common_features(target, "spot_at_first", "trigger_ask_pct")
 
     # Counterpart 3 min BEFORE target (within COFIRE_WINDOW_MIN=5).
-    other = pd.DataFrame([
-        _sb_row(id_=10, fire_time=(base - pd.Timedelta(minutes=3)).isoformat(),
-                chain="SPY_500C", underlying="SPY", option_type="C",
-                strike=500, spot=500),
-    ])
+    other = pd.DataFrame(
+        [
+            _sb_row(
+                id_=10,
+                fire_time=(base - pd.Timedelta(minutes=3)).isoformat(),
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=500,
+            ),
+        ]
+    )
     other = derive_common_features(other, "underlying_price_at_spike", "ask_pct")
     out = add_cofire_flag(target, other, "silent_boom_cofire_within_5min")
     assert out["silent_boom_cofire_within_5min"].iloc[0] == 1
@@ -330,16 +445,33 @@ def test_cofire_flag_future_counterpart_not_counted() -> None:
     cofires must not contribute.
     """
     base = pd.to_datetime("2026-04-01 14:30:00+00:00", utc=True)
-    target = pd.DataFrame([
-        _lot_row(id_=1, fire_time=base.isoformat(), chain="SPY_500C",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
-    ])
+    target = pd.DataFrame(
+        [
+            _lot_row(
+                id_=1,
+                fire_time=base.isoformat(),
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=500,
+            ),
+        ]
+    )
     target = derive_common_features(target, "spot_at_first", "trigger_ask_pct")
-    other = pd.DataFrame([
-        _sb_row(id_=10, fire_time=(base + pd.Timedelta(minutes=2)).isoformat(),
-                chain="SPY_500C", underlying="SPY", option_type="C",
-                strike=500, spot=500),
-    ])
+    other = pd.DataFrame(
+        [
+            _sb_row(
+                id_=10,
+                fire_time=(base + pd.Timedelta(minutes=2)).isoformat(),
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=500,
+            ),
+        ]
+    )
     other = derive_common_features(other, "underlying_price_at_spike", "ask_pct")
     out = add_cofire_flag(target, other, "silent_boom_cofire_within_5min")
     assert out["silent_boom_cofire_within_5min"].iloc[0] == 0
@@ -347,16 +479,35 @@ def test_cofire_flag_future_counterpart_not_counted() -> None:
 
 def test_cofire_flag_outside_window_prior_counterpart() -> None:
     base = pd.to_datetime("2026-04-01 14:30:00+00:00", utc=True)
-    target = pd.DataFrame([
-        _lot_row(id_=1, fire_time=base.isoformat(), chain="SPY_500C",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
-    ])
+    target = pd.DataFrame(
+        [
+            _lot_row(
+                id_=1,
+                fire_time=base.isoformat(),
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=500,
+            ),
+        ]
+    )
     target = derive_common_features(target, "spot_at_first", "trigger_ask_pct")
-    other = pd.DataFrame([
-        _sb_row(id_=10, fire_time=(base - pd.Timedelta(minutes=COFIRE_WINDOW_MIN + 1)).isoformat(),
-                chain="SPY_500C", underlying="SPY", option_type="C",
-                strike=500, spot=500),
-    ])
+    other = pd.DataFrame(
+        [
+            _sb_row(
+                id_=10,
+                fire_time=(
+                    base - pd.Timedelta(minutes=COFIRE_WINDOW_MIN + 1)
+                ).isoformat(),
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=500,
+            ),
+        ]
+    )
     other = derive_common_features(other, "underlying_price_at_spike", "ask_pct")
     out = add_cofire_flag(target, other, "silent_boom_cofire_within_5min")
     assert out["silent_boom_cofire_within_5min"].iloc[0] == 0
@@ -364,16 +515,33 @@ def test_cofire_flag_outside_window_prior_counterpart() -> None:
 
 def test_cofire_flag_different_chain_id_not_counted() -> None:
     base = pd.to_datetime("2026-04-01 14:30:00+00:00", utc=True)
-    target = pd.DataFrame([
-        _lot_row(id_=1, fire_time=base.isoformat(), chain="SPY_500C",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
-    ])
+    target = pd.DataFrame(
+        [
+            _lot_row(
+                id_=1,
+                fire_time=base.isoformat(),
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=500,
+            ),
+        ]
+    )
     target = derive_common_features(target, "spot_at_first", "trigger_ask_pct")
-    other = pd.DataFrame([
-        _sb_row(id_=10, fire_time=base.isoformat(),
-                chain="SPY_510C", underlying="SPY", option_type="C",
-                strike=510, spot=500),
-    ])
+    other = pd.DataFrame(
+        [
+            _sb_row(
+                id_=10,
+                fire_time=base.isoformat(),
+                chain="SPY_510C",
+                underlying="SPY",
+                option_type="C",
+                strike=510,
+                spot=500,
+            ),
+        ]
+    )
     other = derive_common_features(other, "underlying_price_at_spike", "ask_pct")
     out = add_cofire_flag(target, other, "silent_boom_cofire_within_5min")
     assert out["silent_boom_cofire_within_5min"].iloc[0] == 0
@@ -381,10 +549,19 @@ def test_cofire_flag_different_chain_id_not_counted() -> None:
 
 def test_cofire_flag_empty_other_yields_zeros() -> None:
     base = "2026-04-01 14:30:00+00:00"
-    target = pd.DataFrame([
-        _lot_row(id_=1, fire_time=base, chain="SPY_500C",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
-    ])
+    target = pd.DataFrame(
+        [
+            _lot_row(
+                id_=1,
+                fire_time=base,
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=500,
+            ),
+        ]
+    )
     target = derive_common_features(target, "spot_at_first", "trigger_ask_pct")
     other = pd.DataFrame(columns=["option_chain_id", "fire_time"])
     out = add_cofire_flag(target, other, "silent_boom_cofire_within_5min")
@@ -398,16 +575,33 @@ def test_diff_chain_cofire_sibling_within_window() -> None:
     """Sibling chain (same ticker + option_type, different chain id) fires
     within window strictly prior → flag = 1."""
     base = pd.to_datetime("2026-04-01 14:30:00+00:00", utc=True)
-    target = pd.DataFrame([
-        _lot_row(id_=1, fire_time=base.isoformat(), chain="SPY_500C",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
-    ])
+    target = pd.DataFrame(
+        [
+            _lot_row(
+                id_=1,
+                fire_time=base.isoformat(),
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=500,
+            ),
+        ]
+    )
     target = derive_common_features(target, "spot_at_first", "trigger_ask_pct")
-    other = pd.DataFrame([
-        _sb_row(id_=10, fire_time=(base - pd.Timedelta(minutes=2)).isoformat(),
-                chain="SPY_505C", underlying="SPY", option_type="C",
-                strike=505, spot=500),
-    ])
+    other = pd.DataFrame(
+        [
+            _sb_row(
+                id_=10,
+                fire_time=(base - pd.Timedelta(minutes=2)).isoformat(),
+                chain="SPY_505C",
+                underlying="SPY",
+                option_type="C",
+                strike=505,
+                spot=500,
+            ),
+        ]
+    )
     other = derive_common_features(other, "underlying_price_at_spike", "ask_pct")
     out = add_cofire_diff_chain_flag(
         target, other, "silent_boom_cofire_diff_chain_within_5min"
@@ -419,16 +613,33 @@ def test_diff_chain_cofire_same_chain_excluded() -> None:
     """Same chain id only → flag = 0 (same-chain hits belong to the regular
     cofire flag, not the diff-chain flag)."""
     base = pd.to_datetime("2026-04-01 14:30:00+00:00", utc=True)
-    target = pd.DataFrame([
-        _lot_row(id_=1, fire_time=base.isoformat(), chain="SPY_500C",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
-    ])
+    target = pd.DataFrame(
+        [
+            _lot_row(
+                id_=1,
+                fire_time=base.isoformat(),
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=500,
+            ),
+        ]
+    )
     target = derive_common_features(target, "spot_at_first", "trigger_ask_pct")
-    other = pd.DataFrame([
-        _sb_row(id_=10, fire_time=(base - pd.Timedelta(minutes=2)).isoformat(),
-                chain="SPY_500C", underlying="SPY", option_type="C",
-                strike=500, spot=500),
-    ])
+    other = pd.DataFrame(
+        [
+            _sb_row(
+                id_=10,
+                fire_time=(base - pd.Timedelta(minutes=2)).isoformat(),
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=500,
+            ),
+        ]
+    )
     other = derive_common_features(other, "underlying_price_at_spike", "ask_pct")
     out = add_cofire_diff_chain_flag(
         target, other, "silent_boom_cofire_diff_chain_within_5min"
@@ -439,16 +650,33 @@ def test_diff_chain_cofire_same_chain_excluded() -> None:
 def test_diff_chain_cofire_opposite_option_type_excluded() -> None:
     """Same ticker, OPPOSITE option_type → flag = 0 (direction-locked)."""
     base = pd.to_datetime("2026-04-01 14:30:00+00:00", utc=True)
-    target = pd.DataFrame([
-        _lot_row(id_=1, fire_time=base.isoformat(), chain="SPY_500C",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
-    ])
+    target = pd.DataFrame(
+        [
+            _lot_row(
+                id_=1,
+                fire_time=base.isoformat(),
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=500,
+            ),
+        ]
+    )
     target = derive_common_features(target, "spot_at_first", "trigger_ask_pct")
-    other = pd.DataFrame([
-        _sb_row(id_=10, fire_time=(base - pd.Timedelta(minutes=2)).isoformat(),
-                chain="SPY_500P", underlying="SPY", option_type="P",
-                strike=500, spot=500),
-    ])
+    other = pd.DataFrame(
+        [
+            _sb_row(
+                id_=10,
+                fire_time=(base - pd.Timedelta(minutes=2)).isoformat(),
+                chain="SPY_500P",
+                underlying="SPY",
+                option_type="P",
+                strike=500,
+                spot=500,
+            ),
+        ]
+    )
     other = derive_common_features(other, "underlying_price_at_spike", "ask_pct")
     out = add_cofire_diff_chain_flag(
         target, other, "silent_boom_cofire_diff_chain_within_5min"
@@ -459,17 +687,35 @@ def test_diff_chain_cofire_opposite_option_type_excluded() -> None:
 def test_diff_chain_cofire_outside_window_excluded() -> None:
     """Sibling chain fire outside COFIRE_WINDOW_MIN → flag = 0."""
     base = pd.to_datetime("2026-04-01 14:30:00+00:00", utc=True)
-    target = pd.DataFrame([
-        _lot_row(id_=1, fire_time=base.isoformat(), chain="SPY_500C",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
-    ])
+    target = pd.DataFrame(
+        [
+            _lot_row(
+                id_=1,
+                fire_time=base.isoformat(),
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=500,
+            ),
+        ]
+    )
     target = derive_common_features(target, "spot_at_first", "trigger_ask_pct")
-    other = pd.DataFrame([
-        _sb_row(id_=10,
-                fire_time=(base - pd.Timedelta(minutes=COFIRE_WINDOW_MIN + 1)).isoformat(),
-                chain="SPY_505C", underlying="SPY", option_type="C",
-                strike=505, spot=500),
-    ])
+    other = pd.DataFrame(
+        [
+            _sb_row(
+                id_=10,
+                fire_time=(
+                    base - pd.Timedelta(minutes=COFIRE_WINDOW_MIN + 1)
+                ).isoformat(),
+                chain="SPY_505C",
+                underlying="SPY",
+                option_type="C",
+                strike=505,
+                spot=500,
+            ),
+        ]
+    )
     other = derive_common_features(other, "underlying_price_at_spike", "ask_pct")
     out = add_cofire_diff_chain_flag(
         target, other, "silent_boom_cofire_diff_chain_within_5min"
@@ -480,16 +726,33 @@ def test_diff_chain_cofire_outside_window_excluded() -> None:
 def test_diff_chain_cofire_future_excluded_pit_correct() -> None:
     """Sibling chain fire in the FUTURE → flag = 0 (PIT-correct)."""
     base = pd.to_datetime("2026-04-01 14:30:00+00:00", utc=True)
-    target = pd.DataFrame([
-        _lot_row(id_=1, fire_time=base.isoformat(), chain="SPY_500C",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
-    ])
+    target = pd.DataFrame(
+        [
+            _lot_row(
+                id_=1,
+                fire_time=base.isoformat(),
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=500,
+            ),
+        ]
+    )
     target = derive_common_features(target, "spot_at_first", "trigger_ask_pct")
-    other = pd.DataFrame([
-        _sb_row(id_=10, fire_time=(base + pd.Timedelta(minutes=2)).isoformat(),
-                chain="SPY_505C", underlying="SPY", option_type="C",
-                strike=505, spot=500),
-    ])
+    other = pd.DataFrame(
+        [
+            _sb_row(
+                id_=10,
+                fire_time=(base + pd.Timedelta(minutes=2)).isoformat(),
+                chain="SPY_505C",
+                underlying="SPY",
+                option_type="C",
+                strike=505,
+                spot=500,
+            ),
+        ]
+    )
     other = derive_common_features(other, "underlying_price_at_spike", "ask_pct")
     out = add_cofire_diff_chain_flag(
         target, other, "silent_boom_cofire_diff_chain_within_5min"
@@ -502,19 +765,42 @@ def test_diff_chain_cofire_independent_of_same_chain() -> None:
     within window. Diff-chain flag must flip because the sibling exists. This
     is the not-mutually-exclusive contract from the Phase 6 spec."""
     base = pd.to_datetime("2026-04-01 14:30:00+00:00", utc=True)
-    target = pd.DataFrame([
-        _lot_row(id_=1, fire_time=base.isoformat(), chain="SPY_500C",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
-    ])
+    target = pd.DataFrame(
+        [
+            _lot_row(
+                id_=1,
+                fire_time=base.isoformat(),
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=500,
+            ),
+        ]
+    )
     target = derive_common_features(target, "spot_at_first", "trigger_ask_pct")
-    other = pd.DataFrame([
-        _sb_row(id_=10, fire_time=(base - pd.Timedelta(minutes=2)).isoformat(),
-                chain="SPY_500C", underlying="SPY", option_type="C",
-                strike=500, spot=500),
-        _sb_row(id_=11, fire_time=(base - pd.Timedelta(minutes=3)).isoformat(),
-                chain="SPY_505C", underlying="SPY", option_type="C",
-                strike=505, spot=500),
-    ])
+    other = pd.DataFrame(
+        [
+            _sb_row(
+                id_=10,
+                fire_time=(base - pd.Timedelta(minutes=2)).isoformat(),
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=500,
+            ),
+            _sb_row(
+                id_=11,
+                fire_time=(base - pd.Timedelta(minutes=3)).isoformat(),
+                chain="SPY_505C",
+                underlying="SPY",
+                option_type="C",
+                strike=505,
+                spot=500,
+            ),
+        ]
+    )
     other = derive_common_features(other, "underlying_price_at_spike", "ask_pct")
     out = add_cofire_diff_chain_flag(
         target, other, "silent_boom_cofire_diff_chain_within_5min"
@@ -524,10 +810,19 @@ def test_diff_chain_cofire_independent_of_same_chain() -> None:
 
 def test_diff_chain_cofire_empty_other_yields_zeros() -> None:
     base = "2026-04-01 14:30:00+00:00"
-    target = pd.DataFrame([
-        _lot_row(id_=1, fire_time=base, chain="SPY_500C",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
-    ])
+    target = pd.DataFrame(
+        [
+            _lot_row(
+                id_=1,
+                fire_time=base,
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=500,
+            ),
+        ]
+    )
     target = derive_common_features(target, "spot_at_first", "trigger_ask_pct")
     other = pd.DataFrame(
         columns=["option_chain_id", "underlying_symbol", "option_type", "fire_time"]
@@ -546,9 +841,16 @@ def test_same_dir_count_uses_only_prior_fires() -> None:
     fires with fire_time strictly less than row N's fire_time."""
     base = pd.to_datetime("2026-04-01 14:00:00+00:00", utc=True)
     rows = [
-        _lot_row(id_=i, fire_time=(base + pd.Timedelta(minutes=i * 5)).isoformat(),
-                 chain=f"SPY_{i}", underlying="SPY", option_type="C",
-                 strike=500, spot=500, peak_ceiling_pct=25.0)
+        _lot_row(
+            id_=i,
+            fire_time=(base + pd.Timedelta(minutes=i * 5)).isoformat(),
+            chain=f"SPY_{i}",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+            peak_ceiling_pct=25.0,
+        )
         for i in range(4)
     ]
     df = pd.DataFrame(rows)
@@ -563,9 +865,16 @@ def test_prior_session_win_rate_nan_for_first_ever_ticker_fire() -> None:
     """A ticker firing for the FIRST time has no history -> prior_session_win_rate
     must be NaN."""
     rows = [
-        _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="A",
-                 underlying="OBSCURE", option_type="C", strike=500, spot=500,
-                 peak_ceiling_pct=30.0),
+        _lot_row(
+            id_=1,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="A",
+            underlying="OBSCURE",
+            option_type="C",
+            strike=500,
+            spot=500,
+            peak_ceiling_pct=30.0,
+        ),
     ]
     df = pd.DataFrame(rows)
     df = derive_common_features(df, "spot_at_first", "trigger_ask_pct")
@@ -579,17 +888,38 @@ def test_prior_session_win_rate_excludes_current_day() -> None:
     alert on day D — only to alerts on day D+1 or later."""
     rows = [
         # Day 1: one fire on SPY, won.
-        _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="A",
-                 underlying="SPY", option_type="C", strike=500, spot=500,
-                 peak_ceiling_pct=50.0),  # win
+        _lot_row(
+            id_=1,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="A",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+            peak_ceiling_pct=50.0,
+        ),  # win
         # Day 1: another SPY fire same day. Must NOT see day 1 win.
-        _lot_row(id_=2, fire_time="2026-04-01 15:00:00+00:00", chain="B",
-                 underlying="SPY", option_type="C", strike=500, spot=500,
-                 peak_ceiling_pct=5.0),  # loss
+        _lot_row(
+            id_=2,
+            fire_time="2026-04-01 15:00:00+00:00",
+            chain="B",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+            peak_ceiling_pct=5.0,
+        ),  # loss
         # Day 2: SPY fire. Should see day 1's daily win rate = 0.5.
-        _lot_row(id_=3, fire_time="2026-04-02 14:30:00+00:00", chain="C",
-                 underlying="SPY", option_type="C", strike=500, spot=500,
-                 peak_ceiling_pct=10.0),
+        _lot_row(
+            id_=3,
+            fire_time="2026-04-02 14:30:00+00:00",
+            chain="C",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+            peak_ceiling_pct=10.0,
+        ),
     ]
     df = pd.DataFrame(rows)
     df = derive_common_features(df, "spot_at_first", "trigger_ask_pct")
@@ -609,20 +939,48 @@ def test_prior_session_win_rate_no_cross_ticker_leak() -> None:
     first-ever date must be NaN regardless of other tickers' history."""
     rows = [
         # Ticker AAA: two winning days -> expanding win rate 1.0.
-        _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="A1",
-                 underlying="AAA", option_type="C", strike=500, spot=500,
-                 peak_ceiling_pct=80.0),  # win
-        _lot_row(id_=2, fire_time="2026-04-02 14:30:00+00:00", chain="A2",
-                 underlying="AAA", option_type="C", strike=500, spot=500,
-                 peak_ceiling_pct=80.0),  # win
+        _lot_row(
+            id_=1,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="A1",
+            underlying="AAA",
+            option_type="C",
+            strike=500,
+            spot=500,
+            peak_ceiling_pct=80.0,
+        ),  # win
+        _lot_row(
+            id_=2,
+            fire_time="2026-04-02 14:30:00+00:00",
+            chain="A2",
+            underlying="AAA",
+            option_type="C",
+            strike=500,
+            spot=500,
+            peak_ceiling_pct=80.0,
+        ),  # win
         # Ticker BBB: first-ever fire — must be NaN, NOT AAA's 1.0.
-        _lot_row(id_=3, fire_time="2026-04-03 14:30:00+00:00", chain="B1",
-                 underlying="BBB", option_type="C", strike=500, spot=500,
-                 peak_ceiling_pct=5.0),  # loss
+        _lot_row(
+            id_=3,
+            fire_time="2026-04-03 14:30:00+00:00",
+            chain="B1",
+            underlying="BBB",
+            option_type="C",
+            strike=500,
+            spot=500,
+            peak_ceiling_pct=5.0,
+        ),  # loss
         # Ticker BBB second day: sees only BBB day-1 (loss) -> 0.0.
-        _lot_row(id_=4, fire_time="2026-04-04 14:30:00+00:00", chain="B2",
-                 underlying="BBB", option_type="C", strike=500, spot=500,
-                 peak_ceiling_pct=5.0),
+        _lot_row(
+            id_=4,
+            fire_time="2026-04-04 14:30:00+00:00",
+            chain="B2",
+            underlying="BBB",
+            option_type="C",
+            strike=500,
+            spot=500,
+            peak_ceiling_pct=5.0,
+        ),
     ]
     df = pd.DataFrame(rows)
     df = derive_common_features(df, "spot_at_first", "trigger_ask_pct")
@@ -640,15 +998,36 @@ def test_prior_session_win_rate_no_cross_ticker_leak() -> None:
 
 def test_label_threshold_at_default() -> None:
     rows = [
-        _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="A",
-                 underlying="SPY", option_type="C", strike=500, spot=500,
-                 peak_ceiling_pct=WIN_LABEL_THRESHOLD_PCT - 0.01),
-        _lot_row(id_=2, fire_time="2026-04-01 14:30:00+00:00", chain="B",
-                 underlying="SPY", option_type="C", strike=500, spot=500,
-                 peak_ceiling_pct=WIN_LABEL_THRESHOLD_PCT),
-        _lot_row(id_=3, fire_time="2026-04-01 14:30:00+00:00", chain="C",
-                 underlying="SPY", option_type="C", strike=500, spot=500,
-                 peak_ceiling_pct=WIN_LABEL_THRESHOLD_PCT + 10),
+        _lot_row(
+            id_=1,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="A",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+            peak_ceiling_pct=WIN_LABEL_THRESHOLD_PCT - 0.01,
+        ),
+        _lot_row(
+            id_=2,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="B",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+            peak_ceiling_pct=WIN_LABEL_THRESHOLD_PCT,
+        ),
+        _lot_row(
+            id_=3,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="C",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+            peak_ceiling_pct=WIN_LABEL_THRESHOLD_PCT + 10,
+        ),
     ]
     df = pd.DataFrame(rows)
     out = add_label(df, WIN_LABEL_THRESHOLD_PCT)
@@ -661,18 +1040,43 @@ def test_label_threshold_at_default() -> None:
 def test_build_lottery_from_raw_produces_expected_columns() -> None:
     # SB alert at 14:28 fires BEFORE the SPY_500C lottery at 14:30 -> cofire=1
     # (PIT-correct: counterpart must precede target).
-    lot_raw = pd.DataFrame([
-        _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="SPY_500C",
-                 underlying="SPY", option_type="C", strike=500, spot=505,
-                 peak_ceiling_pct=30.0),
-        _lot_row(id_=2, fire_time="2026-04-01 14:32:00+00:00", chain="QQQ_400C",
-                 underlying="QQQ", option_type="C", strike=400, spot=395,
-                 peak_ceiling_pct=5.0),
-    ])
-    sb_raw = pd.DataFrame([
-        _sb_row(id_=10, fire_time="2026-04-01 14:28:00+00:00", chain="SPY_500C",
-                underlying="SPY", option_type="C", strike=500, spot=505),
-    ])
+    lot_raw = pd.DataFrame(
+        [
+            _lot_row(
+                id_=1,
+                fire_time="2026-04-01 14:30:00+00:00",
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=505,
+                peak_ceiling_pct=30.0,
+            ),
+            _lot_row(
+                id_=2,
+                fire_time="2026-04-01 14:32:00+00:00",
+                chain="QQQ_400C",
+                underlying="QQQ",
+                option_type="C",
+                strike=400,
+                spot=395,
+                peak_ceiling_pct=5.0,
+            ),
+        ]
+    )
+    sb_raw = pd.DataFrame(
+        [
+            _sb_row(
+                id_=10,
+                fire_time="2026-04-01 14:28:00+00:00",
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=505,
+            ),
+        ]
+    )
     out = build_lottery_from_raw(lot_raw, sb_raw, WIN_LABEL_THRESHOLD_PCT)
     # Required derived columns present.
     for col in [
@@ -705,15 +1109,33 @@ def test_build_lottery_from_raw_produces_expected_columns() -> None:
 
 
 def test_build_silentboom_from_raw_produces_expected_columns() -> None:
-    sb_raw = pd.DataFrame([
-        _sb_row(id_=10, fire_time="2026-04-01 14:31:00+00:00", chain="SPY_500C",
-                underlying="SPY", option_type="C", strike=500, spot=505,
-                peak_ceiling_pct=30.0),
-    ])
-    lot_raw = pd.DataFrame([
-        _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="SPY_500C",
-                 underlying="SPY", option_type="C", strike=500, spot=505),
-    ])
+    sb_raw = pd.DataFrame(
+        [
+            _sb_row(
+                id_=10,
+                fire_time="2026-04-01 14:31:00+00:00",
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=505,
+                peak_ceiling_pct=30.0,
+            ),
+        ]
+    )
+    lot_raw = pd.DataFrame(
+        [
+            _lot_row(
+                id_=1,
+                fire_time="2026-04-01 14:30:00+00:00",
+                chain="SPY_500C",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=505,
+            ),
+        ]
+    )
     out = build_silentboom_from_raw(sb_raw, lot_raw, WIN_LABEL_THRESHOLD_PCT)
     assert "lottery_cofire_within_5min" in out.columns
     assert "lottery_cofire_diff_chain_within_5min" in out.columns
@@ -765,10 +1187,24 @@ def test_derive_common_features_emits_session_phase_cat() -> None:
     """derive_common_features adds the new session_phase_cat column alongside
     the legacy numeric session_phase."""
     rows = [
-        _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="A",
-                 underlying="SPY", option_type="C", strike=500, spot=500),  # 9:30 CT
-        _lot_row(id_=2, fire_time="2026-04-01 19:30:00+00:00", chain="B",
-                 underlying="SPY", option_type="C", strike=500, spot=500),  # 14:30 CT
+        _lot_row(
+            id_=1,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="A",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+        ),  # 9:30 CT
+        _lot_row(
+            id_=2,
+            fire_time="2026-04-01 19:30:00+00:00",
+            chain="B",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+        ),  # 14:30 CT
     ]
     df = pd.DataFrame(rows)
     out = derive_common_features(df, "spot_at_first", "trigger_ask_pct")
@@ -821,8 +1257,15 @@ def test_forced_flow_features_present_with_stub_defaults() -> None:
     are 0 by design; calendar_adjacency reflects real CT-time gating.
     """
     rows = [
-        _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="A",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
+        _lot_row(
+            id_=1,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="A",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+        ),
     ]
     df = pd.DataFrame(rows)
     out = derive_common_features(df, "spot_at_first", "trigger_ask_pct")
@@ -846,8 +1289,15 @@ def test_calendar_adjacency_fires_on_quarter_end_last_hour() -> None:
     """Mar 31 2026 14:30 CT (Tue, last weekday of Q1) → calendar_adjacency = 1."""
     rows = [
         # 19:30 UTC = 14:30 CT (CDT, daylight time) on Mar 31 2026.
-        _lot_row(id_=1, fire_time="2026-03-31 19:30:00+00:00", chain="A",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
+        _lot_row(
+            id_=1,
+            fire_time="2026-03-31 19:30:00+00:00",
+            chain="A",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+        ),
     ]
     df = pd.DataFrame(rows)
     out = derive_common_features(df, "spot_at_first", "trigger_ask_pct")
@@ -858,12 +1308,33 @@ def test_cross_asset_stress_uses_vix_intraday_change_when_present() -> None:
     """If the training row carries `vix_intraday_change`, flag fires for
     values strictly greater than +3 pts."""
     rows = [
-        _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="A",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
-        _lot_row(id_=2, fire_time="2026-04-01 14:30:00+00:00", chain="B",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
-        _lot_row(id_=3, fire_time="2026-04-01 14:30:00+00:00", chain="C",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
+        _lot_row(
+            id_=1,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="A",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+        ),
+        _lot_row(
+            id_=2,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="B",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+        ),
+        _lot_row(
+            id_=3,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="C",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+        ),
     ]
     df = pd.DataFrame(rows)
     # Inject vix_intraday_change post-hoc to simulate a future SQL join.
@@ -905,10 +1376,24 @@ def test_wave2_columns_pass_through_unchanged() -> None:
     output DataFrame so train.py can exclude them (see NON_FEATURE_COLS).
     """
     rows = [
-        _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="A",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
-        _lot_row(id_=2, fire_time="2026-04-01 14:35:00+00:00", chain="B",
-                 underlying="SPY", option_type="P", strike=500, spot=500),
+        _lot_row(
+            id_=1,
+            fire_time="2026-04-01 14:30:00+00:00",
+            chain="A",
+            underlying="SPY",
+            option_type="C",
+            strike=500,
+            spot=500,
+        ),
+        _lot_row(
+            id_=2,
+            fire_time="2026-04-01 14:35:00+00:00",
+            chain="B",
+            underlying="SPY",
+            option_type="P",
+            strike=500,
+            spot=500,
+        ),
     ]
     df = pd.DataFrame(rows)
     df["wave2_status"] = ["confirmed", "fizzled"]
@@ -925,14 +1410,32 @@ def test_no_realized_columns_leak_into_feature_set() -> None:
     column. This test verifies the built feature frames don't carry
     realized_eod_pct, realized_trail30_10_pct, or minutes_to_peak — which would
     indicate the SQL accidentally selected outcome columns."""
-    lot_raw = pd.DataFrame([
-        _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="X",
-                 underlying="SPY", option_type="C", strike=500, spot=500),
-    ])
-    sb_raw = pd.DataFrame([
-        _sb_row(id_=10, fire_time="2026-04-01 14:30:00+00:00", chain="Y",
-                underlying="SPY", option_type="C", strike=500, spot=500),
-    ])
+    lot_raw = pd.DataFrame(
+        [
+            _lot_row(
+                id_=1,
+                fire_time="2026-04-01 14:30:00+00:00",
+                chain="X",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=500,
+            ),
+        ]
+    )
+    sb_raw = pd.DataFrame(
+        [
+            _sb_row(
+                id_=10,
+                fire_time="2026-04-01 14:30:00+00:00",
+                chain="Y",
+                underlying="SPY",
+                option_type="C",
+                strike=500,
+                spot=500,
+            ),
+        ]
+    )
     out_lot = build_lottery_from_raw(lot_raw, sb_raw, WIN_LABEL_THRESHOLD_PCT)
     out_sb = build_silentboom_from_raw(sb_raw, lot_raw, WIN_LABEL_THRESHOLD_PCT)
     for df in (out_lot, out_sb):

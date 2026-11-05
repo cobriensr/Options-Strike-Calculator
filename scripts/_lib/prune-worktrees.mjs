@@ -12,13 +12,23 @@
  *   (`git cherry` skips merge commits, which can carry changes of their own);
  * - it has been idle for at least MIN_IDLE_HOURS;
  * - `git status` is clean;
+ * - no rebase, merge, cherry-pick, revert or bisect is in progress in it (a
+ *   stopped sequence of several picks or reverts included): a paused
+ *   `rebase -i` leaves a clean tree and a HEAD that looks merged, with the
+ *   commits still to replay only in the worktree's admin dir;
  * - it has no gitignored scratch files in docs/tmp/, which a removal would
  *   delete;
  * - its HEAD did not move while it was being checked.
- * Removal is `git worktree remove` without --force, then `git branch -D` on
- * its branch if that still points at the checked HEAD. git's own check before
- * removing honours status.showUntrackedFiles, so with `no` it would delete
- * untracked files: the guard is this module's explicit
+ * checkInUse, checkSettled and pruneName (the .worktrees/ scope test) are
+ * exported so that scripts/_lib/session-status.mjs asks the same questions:
+ * "safe to remove" has one definition.
+ * Removal is `git worktree remove` without --force, then any link it left
+ * behind and the emptied folder (on Windows git leaves an ignored
+ * node_modules junction: see clearLeftover), then `git branch -D` on its
+ * branch if that still points at the checked HEAD. A folder that still holds
+ * anything but links after that is reported as kept, not as removed.
+ * git's own check before removing honours status.showUntrackedFiles, so with
+ * `no` it would delete untracked files: the guard is this module's explicit
  * `--untracked-files=normal` status check above, not git's.
  *
  * Worktrees outside .worktrees/ are never checked or removed, but the one
@@ -26,7 +36,14 @@
  * every unlocked worktree whose directory is already gone, wherever it was.
  * Spec: docs/superpowers/specs/worktree-auto-prune-2026-10-27.md.
  */
-import { existsSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  readdirSync,
+  rmdirSync,
+  statSync,
+  unlinkSync,
+} from 'node:fs';
 import path from 'node:path';
 import {
   GitError,
@@ -81,9 +98,10 @@ const LOCAL_ENV_VARS = Object.freeze([
 
 /**
  * The env for every git call here: process.env without LOCAL_ENV_VARS, read
- * at call time.
+ * at call time. Exported for scripts/_lib/session-status.mjs, which runs git
+ * asynchronously and so cannot use this module's runGit and git.
  */
-function gitEnv() {
+export function gitEnv() {
   const env = { ...process.env };
   for (const name of LOCAL_ENV_VARS) delete env[name];
   return env;
@@ -222,6 +240,19 @@ function pathWithin(parent, child) {
   return outside ? null : rel;
 }
 
+/**
+ * The name prune gives a worktree: its path below `<repoRoot>/.worktrees/`,
+ * with forward slashes. Null when prune never checks or removes it: the main
+ * worktree, `.worktrees/` itself, anything outside that folder. Exported for
+ * scripts/_lib/session-status.mjs, so that "prune would remove it" has one
+ * scope test.
+ */
+export function pruneName(repoRoot, wtPath) {
+  const scope = path.join(path.resolve(repoRoot), WORKTREES_DIR);
+  const rel = pathWithin(scope, path.resolve(wtPath));
+  return rel ? rel.split(path.sep).join('/') : null;
+}
+
 /** A worktree whose checkout, or its .git file, has been deleted. */
 function isGone(wtPath) {
   return !existsSync(path.join(wtPath, '.git'));
@@ -268,13 +299,17 @@ function unmergedMerge(root, head) {
   return out === '' ? null : out;
 }
 
+/** The worktree's own admin dir (.git, or .git/worktrees/<name>). */
+function adminDirOf(wtPath) {
+  return git(['-C', wtPath, 'rev-parse', '--absolute-git-dir']).trim();
+}
+
 /**
- * Hours since the newest mtime of the worktree's admin `index` and
- * `logs/HEAD`, or null when neither exists. A clock that runs behind a file's
- * mtime reads as 0, not negative.
+ * Hours since the newest mtime of the admin dir's `index` and `logs/HEAD`, or
+ * null when neither exists. A clock that runs behind a file's mtime reads as
+ * 0, not negative.
  */
-function idleHours(wtPath) {
-  const admin = git(['-C', wtPath, 'rev-parse', '--absolute-git-dir']).trim();
+function idleHours(admin) {
   const mtimes = [path.join(admin, 'index'), path.join(admin, 'logs', 'HEAD')]
     .map((file) => statSync(file, { throwIfNoEntry: false })?.mtimeMs)
     .filter((mtime) => mtime !== undefined);
@@ -318,9 +353,116 @@ function scratchFiles(wtPath) {
 }
 
 /**
+ * What git leaves in a worktree's admin dir while a command is stopped: the
+ * file or folder, and the command. Any of them can sit with a clean tree and
+ * a HEAD already in main (a `rebase -i` stopped at `break` is at the commit
+ * it rebases onto), the work still to do kept only here.
+ */
+const IN_PROGRESS = Object.freeze([
+  ['rebase-merge', 'rebase'],
+  ['rebase-apply', 'rebase'],
+  ['MERGE_HEAD', 'merge'],
+  ['CHERRY_PICK_HEAD', 'cherry-pick'],
+  ['REVERT_HEAD', 'revert'],
+  // The queue of a cherry-pick or revert of several commits. A stop on an
+  // empty pick or revert leaves it alone (a revert writes no REVERT_HEAD
+  // then), and so does a commit made in the middle of the sequence.
+  ['sequencer', 'cherry-pick or revert'],
+  ['BISECT_LOG', 'bisect'],
+]);
+
+/** The command stopped in the worktree with this admin dir, or null. */
+function operationInProgress(admin) {
+  const found = IN_PROGRESS.find(([marker]) =>
+    existsSync(path.join(admin, marker)),
+  );
+  return found === undefined ? null : found[1];
+}
+
+/**
+ * Whether a session is working in the worktree right now, from what the
+ * caller knows without reading its files: the current directory, and which
+ * branch it has out. `entry` is `{ path, branch }`.
+ *
+ * Returns `{ keep, kind }` with kind 'cwd' or 'base-branch', or
+ * `{ keep: null }` when nothing says it is in use.
+ */
+export function checkInUse(entry, cwd) {
+  if (pathWithin(entry.path, cwd) !== null) {
+    return { keep: 'the current directory is inside it', kind: 'cwd' };
+  }
+  if (entry.branch === BASE_BRANCH) {
+    return { keep: `it has ${BASE_BRANCH} checked out`, kind: 'base-branch' };
+  }
+  return { keep: null };
+}
+
+/**
+ * The checks on a worktree that hold whatever commits it has: idle for at
+ * least `minIdleHours`, a clean `git status`, no stopped rebase, merge,
+ * cherry-pick, revert or bisect, no gitignored scratch files. Cheapest first;
+ * `git status` on a full checkout is the slow one.
+ *
+ * Returns `{ keep: null, idle }` (idle in hours) when all pass, else
+ * `{ keep, kind }`: the reason, and the kind 'idle-unknown', 'idle' (with
+ * `idle`), 'dirty', 'in-progress' (with `operation`) or 'scratch'.
+ *
+ * `statusKnownClean` skips the `git status` run, for a caller that has just
+ * read the status itself.
+ *
+ * @param {string} wtPath
+ * @param {{ minIdleHours?: number, statusKnownClean?: boolean }} [options]
+ */
+export function checkSettled(
+  wtPath,
+  { minIdleHours = MIN_IDLE_HOURS, statusKnownClean = false } = {},
+) {
+  const admin = adminDirOf(wtPath);
+  const idle = idleHours(admin);
+  if (idle === null) {
+    return {
+      keep: 'idle time unknown: no admin index or logs/HEAD',
+      kind: 'idle-unknown',
+    };
+  }
+  if (idle < minIdleHours) {
+    return {
+      keep: `idle ${formatHours(idle)}, under the ${minIdleHours}h minimum`,
+      kind: 'idle',
+      idle,
+    };
+  }
+  if (!statusKnownClean) {
+    const dirty = uncommittedPaths(wtPath);
+    if (dirty.length > 0) {
+      return {
+        keep: `uncommitted changes: ${sample(dirty, (line) => line.trim())}`,
+        kind: 'dirty',
+      };
+    }
+  }
+  const operation = operationInProgress(admin);
+  if (operation !== null) {
+    return {
+      keep: `${operation} in progress`,
+      kind: 'in-progress',
+      operation,
+    };
+  }
+  const scratch = scratchFiles(wtPath);
+  if (scratch.length > 0) {
+    return {
+      keep: `ignored scratch files in ${SCRATCH_DIR}/: ${sample(scratch, (file) => file)}`,
+      kind: 'scratch',
+    };
+  }
+  return { keep: null, idle };
+}
+
+/**
  * `{ keep: reason }` when `entry` must be kept, else `{ keep: null, idle }`.
- * Cheapest checks first; `git status` on a full checkout is the slow one.
- * The HEAD re-read comes last, so a commit made during the checks is caught.
+ * The commit checks first, then checkSettled. The HEAD re-read comes last,
+ * so a commit made during the checks is caught.
  */
 function checkWorktree(entry, { root, minIdleHours }) {
   if (entry.head === null) return { keep: 'no commits yet' };
@@ -334,30 +476,11 @@ function checkWorktree(entry, { root, minIdleHours }) {
   if (merge !== null) {
     return { keep: `merge commit not in ${BASE_BRANCH}: ${shortSha(merge)}` };
   }
-  const idle = idleHours(entry.path);
-  if (idle === null) {
-    return { keep: 'idle time unknown: no admin index or logs/HEAD' };
-  }
-  if (idle < minIdleHours) {
-    return {
-      keep: `idle ${formatHours(idle)}, under the ${minIdleHours}h minimum`,
-    };
-  }
-  const dirty = uncommittedPaths(entry.path);
-  if (dirty.length > 0) {
-    return {
-      keep: `uncommitted changes: ${sample(dirty, (line) => line.trim())}`,
-    };
-  }
-  const scratch = scratchFiles(entry.path);
-  if (scratch.length > 0) {
-    return {
-      keep: `ignored scratch files in ${SCRATCH_DIR}/: ${sample(scratch, (file) => file)}`,
-    };
-  }
+  const settled = checkSettled(entry.path, { minIdleHours });
+  if (settled.keep !== null) return settled;
   const head = git(['-C', entry.path, 'rev-parse', 'HEAD']).trim();
   if (head !== entry.head) return { keep: 'HEAD moved during the check' };
-  return { keep: null, idle };
+  return { keep: null, idle: settled.idle };
 }
 
 /** Its checkout is already deleted; `git worktree prune` clears the entry. */
@@ -400,6 +523,54 @@ function deleteBranch(entry, ctx, removed) {
   }
 }
 
+/**
+ * Clear what `git worktree remove` left of a worktree it reported removing.
+ * On Windows git exits 0 and prints nothing, yet leaves an ignored
+ * node_modules junction and its folder (git 2.55.0.windows.5), after dropping
+ * the worktree: no later run would list the folder, and the name could not be
+ * reused.
+ *
+ * Only links are deleted, and never followed: a junction's target is the main
+ * checkout's node_modules. So every call is non-recursive: lstat to tell a link
+ * from anything else, unlink on the link itself, rmdir on the folder once it
+ * is empty. Never `rmSync` or any call that can walk through a link.
+ *
+ * Returns null when the folder is gone or was emptied and removed, else why
+ * it is kept: the caller reports that instead of a clean removal.
+ */
+function clearLeftover(wtPath) {
+  const stuck = [];
+  try {
+    const folder = lstatSync(wtPath, { throwIfNoEntry: false });
+    if (folder === undefined) return null;
+    if (!folder.isDirectory()) {
+      return `git worktree remove left ${wtPath}, which is not a folder`;
+    }
+    for (const name of readdirSync(wtPath)) {
+      const file = path.join(wtPath, name);
+      try {
+        const kind = lstatSync(file, { throwIfNoEntry: false });
+        if (kind === undefined) continue;
+        if (kind.isSymbolicLink()) unlinkSync(file);
+        else stuck.push(name);
+      } catch (err) {
+        stuck.push(`could not delete ${name} (${err.message})`);
+      }
+    }
+    if (stuck.length === 0) {
+      try {
+        rmdirSync(wtPath);
+      } catch (err) {
+        return `git worktree remove left ${wtPath}: could not delete the folder (${err.message})`;
+      }
+      return null;
+    }
+  } catch (err) {
+    return `git worktree remove left ${wtPath}: could not clear it (${err.message})`;
+  }
+  return `git worktree remove left files at ${wtPath}: ${sample(stuck, (item) => item)}`;
+}
+
 /** Remove one eligible worktree, then its branch. */
 function removeWorktree(entry, ctx, note) {
   try {
@@ -424,6 +595,12 @@ function removeWorktree(entry, ctx, note) {
       reason: `git worktree remove failed: ${detail}`,
     };
   }
+  // git exited 0, yet may have left the folder: see clearLeftover.
+  const leftover = clearLeftover(entry.path);
+  if (leftover !== null) {
+    ctx.errors.push(`${entry.name}: ${leftover}`);
+    return { ...entry, action: 'kept', reason: leftover };
+  }
   const removed = { ...entry, action: 'removed', reason: note };
   if (entry.branch === null) {
     return {
@@ -446,12 +623,8 @@ function pruneOne(entry, wt, ctx) {
   if (isGone(entry.path)) {
     return alreadyGone(entry, ctx, 'already removed by another run');
   }
-  if (pathWithin(entry.path, ctx.cwd) !== null) {
-    return kept('the current directory is inside it');
-  }
-  if (entry.branch === BASE_BRANCH) {
-    return kept(`it has ${BASE_BRANCH} checked out`);
-  }
+  const inUse = checkInUse(entry, ctx.cwd);
+  if (inUse.keep !== null) return kept(inUse.keep);
 
   let verdict;
   try {
@@ -483,8 +656,9 @@ function pruneOne(entry, wt, ctx) {
  * under .worktrees/: `{ name, path, branch, head, action, reason,
  * deletedBranchSha? }`, where action is 'removed', 'kept', or on a dry run
  * 'would-remove', and name is the path below .worktrees/. errors holds one
- * message per failed git command; a missing local main is one error and
- * stops the run before any worktree is checked.
+ * message per failed git command or failed clean-up of a removed worktree's
+ * folder; a missing local main is one error and stops the run before any
+ * worktree is checked.
  *
  * @param {{ repoRoot: string, minIdleHours?: number, dryRun?: boolean }} options
  */
@@ -494,7 +668,6 @@ export function pruneWorktrees({
   dryRun = false,
 }) {
   const root = path.resolve(repoRoot);
-  const scope = path.join(root, WORKTREES_DIR);
   const ctx = {
     root,
     minIdleHours,
@@ -521,12 +694,11 @@ export function pruneWorktrees({
 
   const results = [];
   for (const wt of worktrees) {
-    const wtPath = path.resolve(wt.path);
-    const rel = pathWithin(scope, wtPath);
-    if (!rel) continue; // outside .worktrees/, or .worktrees itself
+    const name = pruneName(root, wt.path);
+    if (name === null) continue; // outside .worktrees/, or .worktrees itself
     const entry = {
-      name: rel.split(path.sep).join('/'),
-      path: wtPath,
+      name,
+      path: path.resolve(wt.path),
       branch: wt.branch,
       head: wt.head,
     };

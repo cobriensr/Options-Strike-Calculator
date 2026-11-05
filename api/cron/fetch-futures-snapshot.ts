@@ -165,6 +165,16 @@ export default withCronCheckin('fetch-futures-snapshot', async (req, res) => {
     }
 
     if (snapshots.length === 0 && errors.length > 0) {
+      // The 500 below makes the Sentry cron monitor red; this is the matching
+      // Axiom event, so the failure shows up in the cron-runs dataset too.
+      await reportCronRun('fetch-futures-snapshot', {
+        status: 'error',
+        message: 'All symbols failed',
+        feedStale,
+        errorsCount: errors.length,
+        errors,
+        durationMs: Date.now() - startTime,
+      });
       return res.status(500).json({
         error: 'All symbols failed',
         errors,
@@ -221,6 +231,15 @@ export default withCronCheckin('fetch-futures-snapshot', async (req, res) => {
     Sentry.setTag('cron.job', 'fetch-futures-snapshot');
     Sentry.captureException(err);
     logger.error({ err }, 'fetch-futures-snapshot failed');
+    // Same shape withCronInstrumentation sends for a throw: `message` is a
+    // top-level Axiom column, `error` lands in `meta`.
+    const message = err instanceof Error ? err.message : String(err);
+    await reportCronRun('fetch-futures-snapshot', {
+      status: 'error',
+      message,
+      error: message,
+      durationMs: Date.now() - startTime,
+    });
     return res.status(500).json({ error: 'Internal error' });
   }
 });

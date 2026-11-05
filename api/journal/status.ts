@@ -45,8 +45,6 @@ const DIAGNOSTIC_TABLE_ALLOWLIST = new Set<string>([
   'index_candles_1m',
   'strike_iv_snapshots',
   'theta_option_eod',
-  'trace_live_analyses',
-  'trace_predictions',
   'training_features',
   'vega_spike_events',
   'vol_term_structure',

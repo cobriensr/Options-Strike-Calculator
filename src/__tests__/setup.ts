@@ -1,14 +1,57 @@
 import '@testing-library/jest-dom/vitest';
-import { afterEach } from 'vitest';
+import { afterAll, afterEach, vi } from 'vitest';
 import { cleanup } from '@testing-library/react';
+import { assertNoDbAttempts, scrubDbEnv } from './db-guard';
+
+// No test may connect to or write to a real database (owner rule,
+// 2026-11-04; see ./db-guard.ts and
+// docs/superpowers/specs/tests-no-db-2026-11-04.md). First, a shell that
+// exports DATABASE_URL, a Redis token or a bucket key must not reach any
+// test: tests that need a value stub their own fake after this runs.
+scrubDbEnv();
+
+// Second, the one place the app builds a Neon client is neon() in
+// api/_lib/db.ts. Every test file gets a package whose neon(), Pool and
+// Client record the attempt and throw. A file that mocks the package itself
+// overrides this one, and in-process pglite never touches it.
+vi.mock('@neondatabase/serverless', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@neondatabase/serverless')>();
+  const { blockDbAccess: block } = await import('./db-guard');
+  return {
+    ...actual,
+    neon: () => block('neon'),
+    Pool: class {
+      constructor() {
+        block('Pool');
+      }
+    },
+    Client: class {
+      constructor() {
+        block('Client');
+      }
+    },
+  };
+});
 
 // Vitest doesn't auto-run @testing-library's cleanup (unlike Jest). Without
 // this, every render()/renderHook() call leaves React roots + JSDOM mounts
 // allocated for the entire test run, accumulating into gigabytes across
 // ~7700 tests and eventually blowing past the Node heap ceiling in CI.
 // See the April 2026 CI OOM investigation.
+//
+// Third, an attempt that a best-effort wrapper (safeDb) swallowed still
+// fails the test that made it. The afterAll covers what no afterEach sees: an
+// attempt made in a file's own afterAll (which runs before this one, hooks
+// run in stack order) or by work still running after the last test. A file
+// whose tests are all skipped runs no hooks at all, so it is not covered.
 afterEach(() => {
   cleanup();
+  assertNoDbAttempts();
+});
+
+afterAll(() => {
+  assertNoDbAttempts();
 });
 
 // jsdom doesn't implement createImageBitmap / OffscreenCanvas — stub them for compressImage()

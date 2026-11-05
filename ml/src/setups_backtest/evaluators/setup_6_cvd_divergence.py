@@ -144,7 +144,8 @@ class _CvdDivergenceFadeEvaluator:
             price_at_cvd_peak = _price_at_ts(bars, cvd_peak_ts)
             if (
                 np.isfinite(price_at_cvd_peak)
-                and price_at_cvd_peak < last_high - 0.5  # prior high was meaningfully lower
+                and price_at_cvd_peak
+                < last_high - 0.5  # prior high was meaningfully lower
                 and cvd_at_now < cvd_peak_val  # divergence: CVD lower than prior peak
             ):
                 sig_direction = Direction.SHORT
@@ -186,9 +187,13 @@ class _CvdDivergenceFadeEvaluator:
         contract = str(bars["symbol"].iloc[-1])
 
         # Side sanity.
-        if sig_direction is Direction.SHORT and (stop_price <= last_close or target_price >= last_close):
+        if sig_direction is Direction.SHORT and (
+            stop_price <= last_close or target_price >= last_close
+        ):
             return None
-        if sig_direction is Direction.LONG and (stop_price >= last_close or target_price <= last_close):
+        if sig_direction is Direction.LONG and (
+            stop_price >= last_close or target_price <= last_close
+        ):
             return None
 
         return Signal(

@@ -21,10 +21,12 @@ export interface PgliteQuery extends PromiseLike<unknown[]> {
 
 /**
  * Neon-shaped client over pglite: the tagged template (lazy, so a
- * `statements` array is applied strictly in order) plus
- * `transaction([...])`, which runs the queries in order inside one pglite
- * transaction and resolves to one row array per query, as the neon HTTP
- * driver does. Hand it to code under test through a `vi.mock` of `getDb`.
+ * `statements` array is applied strictly in order), `query(text, params)`
+ * for SQL text built at runtime (rows, as the neon HTTP driver returns
+ * them), and `transaction([...])`, which runs the queries in order inside
+ * one pglite transaction and resolves to one row array per query, as the
+ * neon HTTP driver does. Hand it to code under test through a `vi.mock` of
+ * `getDb`.
  */
 export function neonOverPglite(pg: PGlite) {
   const tag = (
@@ -43,6 +45,8 @@ export function neonOverPglite(pg: PGlite) {
     };
   };
   return Object.assign(tag, {
+    query: (text: string, params: unknown[] = []) =>
+      pg.query(text, params).then((r) => r.rows),
     transaction: (queries: PgliteQuery[]) =>
       pg.transaction(async (tx) => {
         const results: unknown[][] = [];

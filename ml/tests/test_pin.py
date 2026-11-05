@@ -1452,7 +1452,7 @@ class TestLoadStrikeData:
         with pytest.raises(ValueError, match="Invalid dte_filter"):
             load_strike_data("invalid")
 
-    @patch("pin_analysis.create_engine")
+    @patch("pin_analysis.make_engine")
     @patch("pin_analysis.load_env")
     def test_returns_dataframe_with_correct_columns(self, mock_env, mock_engine):
         """Should return a DataFrame with expected columns."""
@@ -1500,7 +1500,7 @@ class TestLoadOiPerStrike:
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 0
 
-    @patch("pin_analysis.create_engine")
+    @patch("pin_analysis.make_engine")
     @patch("pin_analysis.load_env")
     def test_returns_empty_when_table_missing(self, mock_env, mock_engine):
         """Should return empty DataFrame when oi_per_strike table doesn't exist."""
@@ -1517,7 +1517,7 @@ class TestLoadOiPerStrike:
         assert len(result) == 0
         engine_instance.dispose.assert_called_once()
 
-    @patch("pin_analysis.create_engine")
+    @patch("pin_analysis.make_engine")
     @patch("pin_analysis.load_env")
     def test_returns_empty_on_exception(self, mock_env, mock_engine):
         """Should return empty DataFrame on SQL exception."""
@@ -1547,7 +1547,7 @@ class TestLoadMaxPain:
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 0
 
-    @patch("pin_analysis.create_engine")
+    @patch("pin_analysis.make_engine")
     @patch("pin_analysis.load_env")
     def test_returns_dataframe_on_success(self, mock_env, mock_engine):
         """Should return DataFrame with converted date column."""
@@ -1572,7 +1572,7 @@ class TestLoadMaxPain:
         assert pd.api.types.is_datetime64_any_dtype(result["date"])
         engine_instance.dispose.assert_called_once()
 
-    @patch("pin_analysis.create_engine")
+    @patch("pin_analysis.make_engine")
     @patch("pin_analysis.load_env")
     def test_returns_empty_on_exception(self, mock_env, mock_engine):
         """Should return empty DataFrame on SQL exception."""
@@ -1590,7 +1590,7 @@ class TestLoadMaxPain:
         assert len(result) == 0
         engine_instance.dispose.assert_called_once()
 
-    @patch("pin_analysis.create_engine")
+    @patch("pin_analysis.make_engine")
     @patch("pin_analysis.load_env")
     def test_returns_empty_when_no_rows(self, mock_env, mock_engine):
         """Should return empty DataFrame when query returns 0 rows."""
@@ -1615,7 +1615,7 @@ class TestLoadMaxPain:
 class TestLoadOiPerStrikeSuccess:
     """Tests for the successful load path in load_oi_per_strike."""
 
-    @patch("pin_analysis.create_engine")
+    @patch("pin_analysis.make_engine")
     @patch("pin_analysis.load_env")
     def test_successful_load_returns_data(self, mock_env, mock_engine):
         """When table exists and has data, return converted DataFrame."""
@@ -1647,7 +1647,7 @@ class TestLoadOiPerStrikeSuccess:
         assert pd.api.types.is_datetime64_any_dtype(result["date"])
         engine_instance.dispose.assert_called_once()
 
-    @patch("pin_analysis.create_engine")
+    @patch("pin_analysis.make_engine")
     @patch("pin_analysis.load_env")
     def test_empty_table_returns_empty(self, mock_env, mock_engine):
         """When table exists but has no rows, return empty DataFrame."""
