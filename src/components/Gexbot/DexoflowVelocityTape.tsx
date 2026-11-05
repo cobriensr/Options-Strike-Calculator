@@ -28,7 +28,11 @@ import { memo, useMemo } from 'react';
 
 import { useGexbotData } from '../../hooks/useGexbotData';
 import { formatDte } from './types';
-import { isUnusual, orderVelocityRows } from './velocity-tape';
+import {
+  formatTakerDelta,
+  isUnusual,
+  orderVelocityRows,
+} from './velocity-tape';
 
 interface DexoflowVelocityTapeProps {
   marketOpen: boolean;
@@ -41,16 +45,6 @@ function arrow(value: number | null): { glyph: string; cls: string } {
   if (value > 0) return { glyph: '▲', cls: 'text-emerald-300' };
   if (value < 0) return { glyph: '▼', cls: 'text-rose-300' };
   return { glyph: '─', cls: 'text-tertiary' };
-}
-
-function formatScalar(value: number | null): string {
-  if (value == null) return '—';
-  if (value === 0) return '0';
-  const abs = Math.abs(value);
-  const sign = value >= 0 ? '+' : '−';
-  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(2)}M`;
-  if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(2)}K`;
-  return `${sign}${abs.toFixed(2)}`;
 }
 
 function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
@@ -167,14 +161,14 @@ function Cell({ value }: { value: number | null }) {
         : value < 0
           ? 'negative'
           : 'flat';
-  const ariaLabel = `${verdict} ${formatScalar(value)}`;
+  const ariaLabel = `${verdict} ${formatTakerDelta(value)}`;
   return (
     <td className="px-3 py-1.5 text-right tabular-nums">
       <span className={cls} aria-label={ariaLabel}>
         <span className="mr-1.5" aria-hidden>
           {glyph}
         </span>
-        {formatScalar(value)}
+        {formatTakerDelta(value)}
       </span>
     </td>
   );

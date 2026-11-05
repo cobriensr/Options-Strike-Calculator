@@ -4,7 +4,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import { DealerStateSummaryStrip } from '../components/Gexbot/DealerStateSummaryStrip';
 import { dealerClaims } from './helpers/dealer-claims';
-import type { SnapshotsLatestRow } from '../hooks/useGexbotData';
+import type { SnapshotsLatestRow, VelocityRow } from '../hooks/useGexbotData';
 
 const mockUseGexbotData = vi.fn();
 vi.mock('../hooks/useGexbotData', async () => {
@@ -38,7 +38,6 @@ function makeRow(
     ogr: null,
     ovanna: null,
     ocharm: null,
-    dexoflow: null,
     oneDexoflow: null,
     oneGexoflow: null,
     oneCvroflow: null,
@@ -47,13 +46,54 @@ function makeRow(
   };
 }
 
+function makeVelocity(
+  ticker: string,
+  overrides: Partial<VelocityRow> = {},
+): VelocityRow {
+  return {
+    ticker,
+    capturedAt: '2026-10-29T14:04:00Z',
+    minDte: 0,
+    dAggDex: null,
+    dZgr: null,
+    dZcvr: null,
+    typicalAbsDAggDex: null,
+    ...overrides,
+  };
+}
+
+interface HookState {
+  rows: unknown[];
+  loading: boolean;
+  error: string | null;
+  freshestAt: string | null;
+}
+
+const EMPTY_VELOCITY: HookState = {
+  rows: [],
+  loading: false,
+  error: null,
+  freshestAt: null,
+};
+
+/** The strip reads two views: snapshots-latest (tiles) and velocity (LOUDEST). */
+function mockViews(snapshots: HookState, velocity: HookState = EMPTY_VELOCITY) {
+  mockUseGexbotData.mockImplementation((spec: { view: string }) =>
+    spec.view === 'velocity' ? velocity : snapshots,
+  );
+}
+
+function velocityState(rows: VelocityRow[]): HookState {
+  return { rows, loading: false, error: null, freshestAt: null };
+}
+
 describe('<DealerStateSummaryStrip>', () => {
   beforeEach(() => {
     mockUseGexbotData.mockReset();
   });
 
   it('shows a loading chip while loading', () => {
-    mockUseGexbotData.mockReturnValue({
+    mockViews({
       rows: [],
       loading: true,
       error: null,
@@ -66,7 +106,7 @@ describe('<DealerStateSummaryStrip>', () => {
   });
 
   it('shows an error chip when the hook surfaces an error', () => {
-    mockUseGexbotData.mockReturnValue({
+    mockViews({
       rows: [],
       loading: false,
       error: 'HTTP 500',
@@ -79,7 +119,7 @@ describe('<DealerStateSummaryStrip>', () => {
   });
 
   it('shows an empty chip when there are no rows', () => {
-    mockUseGexbotData.mockReturnValue({
+    mockViews({
       rows: [],
       loading: false,
       error: null,
@@ -92,26 +132,21 @@ describe('<DealerStateSummaryStrip>', () => {
   });
 
   it('renders all four tiles on a full payload', () => {
-    mockUseGexbotData.mockReturnValue({
-      rows: [
-        makeRow('SPX', { spot: 5847, zeroGamma: 5820, dexoflow: 1_200_000 }),
-        makeRow('VIX', { spot: 14.3, zeroGamma: 15.8 }),
-        makeRow('NDX', {
-          spot: 19_200,
-          zeroGamma: 19_100,
-          dexoflow: 2_500_000,
-        }),
-        makeRow('NQ_NDX', {
-          spot: 19_210,
-          zeroGamma: 19_080,
-          dexoflow: -5_000_000,
-        }),
-        makeRow('SPY', { spot: 584, zeroGamma: 582 }),
-      ],
-      loading: false,
-      error: null,
-      freshestAt: '2026-05-19T19:32:11Z',
-    });
+    mockViews(
+      {
+        rows: [
+          makeRow('SPX', { spot: 5847, zeroGamma: 5820 }),
+          makeRow('VIX', { spot: 14.3, zeroGamma: 15.8 }),
+          makeRow('NDX', { spot: 19_200, zeroGamma: 19_100 }),
+          makeRow('NQ_NDX', { spot: 19_210, zeroGamma: 19_080 }),
+          makeRow('SPY', { spot: 584, zeroGamma: 582 }),
+        ],
+        loading: false,
+        error: null,
+        freshestAt: '2026-05-19T19:32:11Z',
+      },
+      velocityState([makeVelocity('NDX', { dAggDex: 2.5 })]),
+    );
     render(<DealerStateSummaryStrip marketOpen />);
     expect(
       screen.getByTestId('dealer-state-summary-strip'),
@@ -127,7 +162,7 @@ describe('<DealerStateSummaryStrip>', () => {
   });
 
   it('renders SPX LONG γ when spot > zeroGamma', () => {
-    mockUseGexbotData.mockReturnValue({
+    mockViews({
       rows: [makeRow('SPX', { spot: 5847, zeroGamma: 5820 })],
       loading: false,
       error: null,
@@ -140,7 +175,7 @@ describe('<DealerStateSummaryStrip>', () => {
   });
 
   it('renders SPX SHORT γ when spot < zeroGamma', () => {
-    mockUseGexbotData.mockReturnValue({
+    mockViews({
       rows: [makeRow('SPX', { spot: 5800, zeroGamma: 5820 })],
       loading: false,
       error: null,
@@ -153,7 +188,7 @@ describe('<DealerStateSummaryStrip>', () => {
   });
 
   it('renders VIX SHORT γ when VIX spot < zeroGamma (vol expansion regime)', () => {
-    mockUseGexbotData.mockReturnValue({
+    mockViews({
       rows: [makeRow('VIX', { spot: 14.3, zeroGamma: 15.8 })],
       loading: false,
       error: null,
@@ -165,7 +200,7 @@ describe('<DealerStateSummaryStrip>', () => {
   });
 
   it('shows "—" in SPX tile when the SPX row is missing but VIX is present', () => {
-    mockUseGexbotData.mockReturnValue({
+    mockViews({
       rows: [makeRow('VIX', { spot: 14.3, zeroGamma: 15.8 })],
       loading: false,
       error: null,
@@ -177,7 +212,7 @@ describe('<DealerStateSummaryStrip>', () => {
   });
 
   it('counts cross-asset breadth as long vs short majorities', () => {
-    mockUseGexbotData.mockReturnValue({
+    mockViews({
       rows: [
         makeRow('SPX', { spot: 5847, zeroGamma: 5820 }), // long
         makeRow('NDX', { spot: 19_200, zeroGamma: 19_100 }), // long
@@ -196,38 +231,137 @@ describe('<DealerStateSummaryStrip>', () => {
     expect(tile).toHaveTextContent(/LONG γ/i);
   });
 
-  it('picks the underlying with the largest |dexoflow| as loudest, ignoring futures views', () => {
-    mockUseGexbotData.mockReturnValue({
-      rows: [
-        makeRow('SPX', { dexoflow: 1_200_000 }),
-        makeRow('NDX', { dexoflow: 2_500_000 }),
-        makeRow('NQ_NDX', { dexoflow: -5_000_000 }),
-        makeRow('ES_SPX', { dexoflow: 9_000_000 }),
-      ],
-      loading: false,
-      error: null,
-      freshestAt: '2026-05-19T19:32:11Z',
-    });
-    render(<DealerStateSummaryStrip marketOpen />);
-    const tile = screen.getByTestId('dealer-state-strip-loudest');
-    expect(tile).toHaveTextContent(/NDX/);
-    expect(tile).not.toHaveTextContent(/NQ_NDX|ES_SPX/);
-  });
-
-  it('shows "—" in the loudest tile when no row has a dexoflow value', () => {
-    mockUseGexbotData.mockReturnValue({
+  describe('LOUDEST tile (velocity view)', () => {
+    const SNAP: HookState = {
       rows: [makeRow('SPX', { spot: 5847, zeroGamma: 5820 })],
       loading: false,
       error: null,
       freshestAt: '2026-05-19T19:32:11Z',
+    };
+    const tile = () => screen.getByTestId('dealer-state-strip-loudest');
+
+    it('reads the velocity view as well as snapshots-latest', () => {
+      mockViews(SNAP);
+      render(<DealerStateSummaryStrip marketOpen />);
+      expect(mockUseGexbotData).toHaveBeenCalledWith(
+        { view: 'snapshots-latest' },
+        true,
+      );
+      expect(mockUseGexbotData).toHaveBeenCalledWith(
+        { view: 'velocity' },
+        true,
+      );
     });
-    render(<DealerStateSummaryStrip marketOpen />);
-    const tile = screen.getByTestId('dealer-state-strip-loudest');
-    expect(within(tile).getByText('—')).toBeInTheDocument();
+
+    it('picks the highest ratio to its own typical minute, not the highest raw change', () => {
+      // SPX 1.0 / 0.5 = 2x. HYG 0.9 / max(0, 0.25) = 3.6x. HYG wins.
+      mockViews(
+        SNAP,
+        velocityState([
+          makeVelocity('SPX', { dAggDex: 1.0, typicalAbsDAggDex: 0.5 }),
+          makeVelocity('HYG', { dAggDex: 0.9, typicalAbsDAggDex: 0 }),
+        ]),
+      );
+      render(<DealerStateSummaryStrip marketOpen />);
+      expect(tile()).toHaveTextContent(/HYG/);
+      expect(tile()).not.toHaveTextContent(/SPX/);
+      expect(tile()).toHaveTextContent(/3\.6× typical/);
+    });
+
+    it('skips rows with a null change', () => {
+      mockViews(
+        SNAP,
+        velocityState([
+          makeVelocity('SPX', { dAggDex: null, typicalAbsDAggDex: 0.1 }),
+          makeVelocity('QQQ', { dAggDex: 0.5, typicalAbsDAggDex: 0.5 }),
+        ]),
+      );
+      render(<DealerStateSummaryStrip marketOpen />);
+      expect(tile()).toHaveTextContent(/QQQ/);
+      expect(tile()).not.toHaveTextContent(/SPX/);
+    });
+
+    it('ignores the futures views however large their change', () => {
+      mockViews(
+        SNAP,
+        velocityState([
+          makeVelocity('ES_SPX', { dAggDex: 900, typicalAbsDAggDex: 0 }),
+          makeVelocity('NQ_NDX', { dAggDex: -900, typicalAbsDAggDex: 0 }),
+          makeVelocity('NDX', { dAggDex: 1, typicalAbsDAggDex: 1 }),
+        ]),
+      );
+      render(<DealerStateSummaryStrip marketOpen />);
+      expect(tile()).toHaveTextContent(/NDX/);
+      expect(tile()).not.toHaveTextContent(/NQ_NDX|ES_SPX/);
+    });
+
+    it.each([
+      ['no rows', []],
+      [
+        'only null changes (first minute of the session)',
+        [makeVelocity('SPX'), makeVelocity('QQQ')],
+      ],
+      ['only zero changes', [makeVelocity('SPX', { dAggDex: 0 })]],
+    ])('shows the empty state for %s', (_name, rows) => {
+      mockViews(SNAP, velocityState(rows));
+      render(<DealerStateSummaryStrip marketOpen />);
+      expect(tile()).toHaveTextContent(/LOUDEST · —/);
+      expect(within(tile()).getByText('—')).toBeInTheDocument();
+    });
+
+    it('shows the empty state while the velocity read is loading or failed', () => {
+      for (const velocity of [
+        { rows: [], loading: true, error: null, freshestAt: null },
+        { rows: [], loading: false, error: 'HTTP 500', freshestAt: null },
+      ]) {
+        mockViews(SNAP, velocity);
+        const { unmount } = render(<DealerStateSummaryStrip marketOpen />);
+        expect(tile()).toHaveTextContent(/LOUDEST · —/);
+        unmount();
+      }
+    });
+
+    it('does not use the vendor one-step dexoflow in snapshots', () => {
+      mockViews(
+        {
+          ...SNAP,
+          rows: [{ ...makeRow('SPX'), dexoflow: 9_000_000 }],
+        },
+        velocityState([]),
+      );
+      render(<DealerStateSummaryStrip marketOpen />);
+      expect(tile()).toHaveTextContent(/LOUDEST · —/);
+    });
+
+    it('is labelled as the most unusual taker Δ per minute, not a raw size', () => {
+      mockViews(
+        SNAP,
+        velocityState([
+          makeVelocity('SPX', { dAggDex: 1.2, typicalAbsDAggDex: 0.4 }),
+        ]),
+      );
+      render(<DealerStateSummaryStrip marketOpen />);
+      expect(tile()).toHaveTextContent(/most unusual taker Δ \/ min/);
+      expect(tile()).toHaveTextContent(/taker \+Δ flow \+1\.20/);
+      expect(tile()).toHaveTextContent(/3\.0× typical/);
+      expect(tile()).not.toHaveTextContent(/raw|cross-ticker/i);
+    });
+
+    it('shows a falling change as taker −Δ flow', () => {
+      mockViews(
+        SNAP,
+        velocityState([
+          makeVelocity('SPY', { dAggDex: -0.6, typicalAbsDAggDex: 0.3 }),
+        ]),
+      );
+      render(<DealerStateSummaryStrip marketOpen />);
+      expect(tile()).toHaveTextContent(/taker −Δ flow −0\.60/);
+      expect(tile().className).toMatch(/rose/);
+    });
   });
 
   it('does not double-count the ES_SPX / NQ_NDX futures views in breadth', () => {
-    mockUseGexbotData.mockReturnValue({
+    mockViews({
       rows: [
         makeRow('SPX', { spot: 5847, zeroGamma: 5820 }), // long
         makeRow('ES_SPX', { spot: 5847, zeroGamma: 5820 }), // same data
@@ -244,39 +378,33 @@ describe('<DealerStateSummaryStrip>', () => {
     expect(tile).not.toHaveTextContent(/4 \/ /);
   });
 
-  it('labels the loudest tile as taker flow, not dealer flow', () => {
-    mockUseGexbotData.mockReturnValue({
-      rows: [makeRow('SPX', { dexoflow: 1_200_000 })],
-      loading: false,
-      error: null,
-      freshestAt: '2026-05-19T19:32:11Z',
-    });
-    render(<DealerStateSummaryStrip marketOpen />);
-    const tile = screen.getByTestId('dealer-state-strip-loudest');
-    expect(tile).toHaveTextContent(/taker \+Δ flow/);
-    expect(tile).toHaveTextContent(/raw/i);
-  });
-
   it('makes no dealer / market-maker claims in any state', () => {
-    mockUseGexbotData.mockReturnValue({
-      rows: [
-        makeRow('SPX', { spot: 5847, zeroGamma: 5820, dexoflow: -3e6 }),
-        makeRow('VIX', { spot: 14, zeroGamma: 15 }),
-      ],
-      loading: false,
-      error: null,
-      freshestAt: '2026-05-19T19:32:11Z',
-    });
+    const velocity = velocityState([
+      makeVelocity('SPX', { dAggDex: -3, typicalAbsDAggDex: 1 }),
+    ]);
+    mockViews(
+      {
+        rows: [
+          makeRow('SPX', { spot: 5847, zeroGamma: 5820 }),
+          makeRow('VIX', { spot: 14, zeroGamma: 15 }),
+        ],
+        loading: false,
+        error: null,
+        freshestAt: '2026-05-19T19:32:11Z',
+      },
+      velocity,
+    );
     const { container, rerender } = render(
       <DealerStateSummaryStrip marketOpen />,
     );
+    expect(container.textContent).toContain('most unusual');
     expect(dealerClaims(container.textContent ?? '')).toEqual([]);
     for (const state of [
       { rows: [], loading: true, error: null, freshestAt: null },
       { rows: [], loading: false, error: 'HTTP 500', freshestAt: null },
       { rows: [], loading: false, error: null, freshestAt: null },
     ]) {
-      mockUseGexbotData.mockReturnValue(state);
+      mockViews(state, velocity);
       rerender(<DealerStateSummaryStrip marketOpen />);
       expect(dealerClaims(container.textContent ?? '')).toEqual([]);
     }

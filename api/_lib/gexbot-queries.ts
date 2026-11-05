@@ -45,7 +45,6 @@ export interface SnapshotsLatestRow {
   ogr: number | null;
   ovanna: number | null;
   ocharm: number | null;
-  dexoflow: number | null;
   oneDexoflow: number | null;
   oneGexoflow: number | null;
   oneCvroflow: number | null;
@@ -181,7 +180,6 @@ interface RawSnapshotsRow {
   ogr: unknown;
   ovanna: unknown;
   ocharm: unknown;
-  dexoflow: unknown;
   one_dexoflow: unknown;
   one_gexoflow: unknown;
   one_cvroflow: unknown;
@@ -201,7 +199,6 @@ export async function getLatestSnapshots(): Promise<SnapshotsLatestRow[]> {
         spot, zero_gamma,
         z_mlgamma, z_msgamma, zcvr, zgr, zvanna, zcharm,
         o_mlgamma, o_msgamma, ocvr, ogr, ovanna, ocharm,
-        dexoflow,
         one_dexoflow, one_gexoflow, one_cvroflow,
         min_dte
       FROM gexbot_snapshots
@@ -229,7 +226,6 @@ export async function getLatestSnapshots(): Promise<SnapshotsLatestRow[]> {
     ogr: toNum(r.ogr),
     ovanna: toNum(r.ovanna),
     ocharm: toNum(r.ocharm),
-    dexoflow: toNum(r.dexoflow),
     oneDexoflow: toNum(r.one_dexoflow),
     oneGexoflow: toNum(r.one_gexoflow),
     oneCvroflow: toNum(r.one_cvroflow),

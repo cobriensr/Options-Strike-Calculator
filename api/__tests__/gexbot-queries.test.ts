@@ -57,7 +57,6 @@ describe('gexbot-queries', () => {
           ogr: '0.9',
           ovanna: null,
           ocharm: null,
-          dexoflow: '1234.5',
           one_dexoflow: null,
           one_gexoflow: null,
           one_cvroflow: null,
@@ -68,9 +67,9 @@ describe('gexbot-queries', () => {
       expect(row!.minDte).toBe(2);
       expect(row).not.toHaveProperty('deltaRiskReversal');
       // The vendor's 1-2 s step fields for the nearest expiry are unread.
+      expect(row).not.toHaveProperty('dexoflow');
       expect(row).not.toHaveProperty('gexoflow');
       expect(row).not.toHaveProperty('cvroflow');
-      expect(row!.dexoflow).toBe(1234.5);
       expect(row!.spot).toBe(5985.2);
       expect(row!.zcvr).toBe(1.25);
       expect(row!.zvanna).toBeNull();

@@ -176,6 +176,15 @@ Owner decisions (each becomes a phase once decided; default pick in brackets):
     minutes; 3× / 0.25 does so in about 9%). It rests on the 2026-10-28 and
     2026-10-29 sessions only; re-tune on more history (see Thresholds /
     constants).
+- 2026-11-05: **I2 → (a).** The strip's LOUDEST tile reads `view=velocity`
+  (it shares the tape's in-flight fetch) and picks the underlying with the
+  largest |Δ`agg_dex`| ÷ max(typical, 0.25), using the same typical-minute
+  rule as the tape's highlight (`velocity-tape.ts`). It is labelled "most
+  unusual taker Δ / min". Rows with no valid Δ are never picked; with none,
+  the tile shows its empty state. This replaces ranking by the vendor
+  `dexoflow` (a single 1–2 s step, which could show the opposite sign to the
+  tape's row for the same ticker). `dexoflow` leaves the snapshots-latest
+  read and type, being unread.
 
 ## Phases added by the D1 / D6 decisions
 

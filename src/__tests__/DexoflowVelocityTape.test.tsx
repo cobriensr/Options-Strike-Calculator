@@ -6,6 +6,8 @@ import { DexoflowVelocityTape } from '../components/Gexbot/DexoflowVelocityTape'
 import {
   isUnusual,
   orderVelocityRows,
+  pickMostUnusual,
+  unusualRatio,
 } from '../components/Gexbot/velocity-tape';
 import { GEXBOT_UNDERLYING_ORDER } from '../components/Gexbot/ticker-order';
 import type { VelocityRow } from '../hooks/useGexbotData';
@@ -110,6 +112,100 @@ describe('isUnusual', () => {
       false,
     );
     expect(isUnusual(makeRow({ dAggDex: Number.NaN }))).toBe(false);
+  });
+});
+
+describe('unusualRatio', () => {
+  it.each([
+    [1.0, 0.5, 2],
+    [0.9, 0, 3.6],
+    [-0.6, null, 2.4],
+    [1, 0.1, 4],
+    [-3, 1, 3],
+    [0, 1, 0],
+  ] as const)(
+    '|%s| against a typical minute of %s is %s times typical',
+    (dAggDex, typical, want) => {
+      const row = makeRow({ dAggDex, typicalAbsDAggDex: typical });
+      expect(unusualRatio(row)).toBeCloseTo(want, 10);
+    },
+  );
+
+  it('is null without a valid change', () => {
+    expect(unusualRatio(makeRow({ dAggDex: null }))).toBeNull();
+    expect(unusualRatio(makeRow({ dAggDex: Number.NaN }))).toBeNull();
+  });
+
+  it('agrees with isUnusual away from the exact 3x boundary', () => {
+    for (const [dAggDex, typical] of [
+      [2.9, 1],
+      [3.1, 1],
+      [0.7, 0],
+      [0.8, 0],
+      [-9, 2],
+      [-5, 2],
+    ] as const) {
+      const row = makeRow({ dAggDex, typicalAbsDAggDex: typical });
+      expect(isUnusual(row)).toBe((unusualRatio(row) ?? 0) >= 3);
+    }
+  });
+});
+
+describe('pickMostUnusual', () => {
+  it('picks the highest ratio, not the highest raw change', () => {
+    // SPX: 1.0 / 0.5 = 2x. HYG: 0.9 / max(0, 0.25) = 3.6x. HYG wins.
+    const picked = pickMostUnusual([
+      makeRow({ ticker: 'SPX', dAggDex: 1.0, typicalAbsDAggDex: 0.5 }),
+      makeRow({ ticker: 'HYG', dAggDex: 0.9, typicalAbsDAggDex: 0 }),
+    ]);
+    expect(picked?.row.ticker).toBe('HYG');
+    expect(picked?.ratio).toBeCloseTo(3.6, 10);
+  });
+
+  it('never picks a row with a null or NaN change', () => {
+    const picked = pickMostUnusual([
+      makeRow({ ticker: 'SPX', dAggDex: null, typicalAbsDAggDex: 0.1 }),
+      makeRow({ ticker: 'SPY', dAggDex: Number.NaN }),
+      makeRow({ ticker: 'QQQ', dAggDex: 0.3, typicalAbsDAggDex: 0.5 }),
+    ]);
+    expect(picked?.row.ticker).toBe('QQQ');
+  });
+
+  it('returns null when no row has a valid change', () => {
+    expect(pickMostUnusual([])).toBeNull();
+    expect(
+      pickMostUnusual([
+        makeRow({ ticker: 'SPX', dAggDex: null }),
+        makeRow({ ticker: 'QQQ', dAggDex: null }),
+      ]),
+    ).toBeNull();
+  });
+
+  it('returns null when every change is exactly zero', () => {
+    expect(
+      pickMostUnusual([
+        makeRow({ ticker: 'SPX', dAggDex: 0, typicalAbsDAggDex: 1 }),
+        makeRow({ ticker: 'QQQ', dAggDex: 0 }),
+      ]),
+    ).toBeNull();
+  });
+
+  it('ignores the futures views however large their ratio', () => {
+    const picked = pickMostUnusual([
+      makeRow({ ticker: 'ES_SPX', dAggDex: 900, typicalAbsDAggDex: 0 }),
+      makeRow({ ticker: 'NQ_NDX', dAggDex: -900, typicalAbsDAggDex: 0 }),
+      makeRow({ ticker: 'NDX', dAggDex: 1, typicalAbsDAggDex: 1 }),
+    ]);
+    expect(picked?.row.ticker).toBe('NDX');
+  });
+
+  it('breaks a tie by the fixed underlying order, whatever the input order', () => {
+    const rows = [
+      makeRow({ ticker: 'QQQ', dAggDex: 2, typicalAbsDAggDex: 1 }),
+      makeRow({ ticker: 'SPX', dAggDex: -2, typicalAbsDAggDex: 1 }),
+    ];
+    expect(pickMostUnusual(rows)?.row.ticker).toBe('SPX');
+    expect(pickMostUnusual([...rows].reverse())?.row.ticker).toBe('SPX');
   });
 });
 

@@ -42,7 +42,6 @@ export interface SnapshotsLatestRow {
   ogr: number | null;
   ovanna: number | null;
   ocharm: number | null;
-  dexoflow: number | null;
   oneDexoflow: number | null;
   oneGexoflow: number | null;
   oneCvroflow: number | null;

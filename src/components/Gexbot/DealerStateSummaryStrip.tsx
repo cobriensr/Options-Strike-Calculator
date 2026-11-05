@@ -7,7 +7,9 @@
  *   2. VIX net-γ sign
  *   3. Breadth across the 14 distinct underlyings (the ES_SPX / NQ_NDX
  *      futures views are excluded: they repeat SPX / NDX)
- *   4. Loudest taker Δ flow (max |dexoflow|, raw cross-ticker, futures views
+ *   4. The most unusual taker Δ flow of the last minute: the underlying
+ *      whose |Δ agg_dex| is the largest multiple of its own typical minute
+ *      (velocity view, same rule as the Velocity tape; futures views
  *      skipped) + freshness
  *
  * The file and component name and the `dealer-state-*` test ids are legacy
@@ -21,14 +23,18 @@ import {
   useGexbotData,
   type SnapshotsLatestRow,
 } from '../../hooks/useGexbotData';
-import { GEXBOT_UNDERLYING_ORDER, isFuturesView } from './ticker-order';
+import { GEXBOT_UNDERLYING_ORDER } from './ticker-order';
 import { deriveGammaSign, type GammaSign } from './types';
+import { formatTakerDelta, pickMostUnusual } from './velocity-tape';
 
 interface DealerStateSummaryStripProps {
   marketOpen: boolean;
 }
 
 const SPEC = { view: 'snapshots-latest' as const };
+// Same URL as the Velocity tape, so the hook's in-flight dedupe shares one
+// request between them.
+const VELOCITY_SPEC = { view: 'velocity' as const };
 
 function formatLevel(value: number | null): string {
   if (value == null) return '—';
@@ -95,38 +101,39 @@ function countBreadth(rows: SnapshotsLatestRow[]): BreadthCounts {
 
 interface LoudestPick {
   ticker: string;
-  dexoflow: number;
-}
-
-function pickLoudest(rows: SnapshotsLatestRow[]): LoudestPick | null {
-  let best: LoudestPick | null = null;
-  let bestMag = 0;
-  for (const r of rows) {
-    if (r.dexoflow == null || isFuturesView(r.ticker)) continue;
-    const mag = Math.abs(r.dexoflow);
-    if (mag > bestMag) {
-      bestMag = mag;
-      best = { ticker: r.ticker, dexoflow: r.dexoflow };
-    }
-  }
-  return best;
+  /** Last-minute Δ agg_dex: the taker delta flow. Never 0. */
+  dAggDex: number;
+  /** |Δ agg_dex| as a multiple of the ticker's own typical minute. */
+  ratio: number;
 }
 
 function DealerStateSummaryStripInner({
   marketOpen,
 }: DealerStateSummaryStripProps) {
   const { rows, loading, error, freshestAt } = useGexbotData(SPEC, marketOpen);
+  // A loading or failed velocity read leaves the tile on its empty state;
+  // it must not take the whole strip down.
+  const velocity = useGexbotData(VELOCITY_SPEC, marketOpen);
 
-  const { spx, vix, breadth, loudest } = useMemo(() => {
+  const { spx, vix, breadth } = useMemo(() => {
     const spxRow = rows.find((r) => r.ticker === 'SPX');
     const vixRow = rows.find((r) => r.ticker === 'VIX');
     return {
       spx: spxRow ?? null,
       vix: vixRow ?? null,
       breadth: countBreadth(rows),
-      loudest: pickLoudest(rows),
     };
   }, [rows]);
+
+  const loudest = useMemo((): LoudestPick | null => {
+    const picked = pickMostUnusual(velocity.rows);
+    if (!picked || picked.row.dAggDex == null) return null;
+    return {
+      ticker: picked.row.ticker,
+      dAggDex: picked.row.dAggDex,
+      ratio: picked.ratio,
+    };
+  }, [velocity.rows]);
 
   if (loading) {
     return (
@@ -273,6 +280,8 @@ interface LoudestTileProps {
   pick: LoudestPick | null;
 }
 
+const LOUDEST_LABEL = 'most unusual taker Δ / min';
+
 function LoudestTile({ pick }: LoudestTileProps) {
   const tone = toneClasses('unknown');
 
@@ -291,11 +300,14 @@ function LoudestTile({ pick }: LoudestTileProps) {
           </span>
         </div>
         <div className="text-tertiary mt-1 text-[10px] leading-tight">—</div>
+        <div className="text-tertiary text-[9px] leading-tight tracking-wide uppercase">
+          {LOUDEST_LABEL}
+        </div>
       </div>
     );
   }
 
-  const isPositive = pick.dexoflow >= 0;
+  const isPositive = pick.dAggDex > 0;
   const flowLabel = isPositive ? 'taker +Δ flow' : 'taker −Δ flow';
   const flowTone = isPositive ? toneClasses('long') : toneClasses('short');
 
@@ -317,9 +329,13 @@ function LoudestTile({ pick }: LoudestTileProps) {
       </div>
       <div
         className="text-tertiary mt-1 text-[10px] leading-tight"
-        title="Raw taker delta change between snapshots, compared across tickers: SPX notional dominates. Compare within a ticker."
+        title="Last-minute change in taker delta (Δ agg_dex) as a multiple of this ticker's own typical minute (its session median, never under 0.25). Ranked by that multiple, not by raw size, because sizes are not comparable across tickers."
       >
-        {flowLabel} {formatSignedDelta(pick.dexoflow)} · raw, cross-ticker
+        {flowLabel} {formatTakerDelta(pick.dAggDex)} · {pick.ratio.toFixed(1)}×
+        typical
+      </div>
+      <div className="text-tertiary text-[9px] leading-tight tracking-wide uppercase">
+        {LOUDEST_LABEL}
       </div>
     </div>
   );
