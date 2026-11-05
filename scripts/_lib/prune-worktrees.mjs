@@ -12,15 +12,16 @@
  *   (`git cherry` skips merge commits, which can carry changes of their own);
  * - it has been idle for at least MIN_IDLE_HOURS;
  * - `git status` is clean;
- * - no rebase, merge, cherry-pick or bisect is in progress in it: a paused
+ * - no rebase, merge, cherry-pick, revert or bisect is in progress in it (a
+ *   stopped sequence of several picks or reverts included): a paused
  *   `rebase -i` leaves a clean tree and a HEAD that looks merged, with the
  *   commits still to replay only in the worktree's admin dir;
  * - it has no gitignored scratch files in docs/tmp/, which a removal would
  *   delete;
  * - its HEAD did not move while it was being checked.
- * checkInUse and checkSettled are exported so that scripts/_lib/
- * session-status.mjs asks the same questions: "safe to remove" has one
- * definition.
+ * checkInUse, checkSettled and pruneName (the .worktrees/ scope test) are
+ * exported so that scripts/_lib/session-status.mjs asks the same questions:
+ * "safe to remove" has one definition.
  * Removal is `git worktree remove` without --force, then `git branch -D` on
  * its branch if that still points at the checked HEAD. git's own check before
  * removing honours status.showUntrackedFiles, so with `no` it would delete
@@ -229,6 +230,19 @@ function pathWithin(parent, child) {
   return outside ? null : rel;
 }
 
+/**
+ * The name prune gives a worktree: its path below `<repoRoot>/.worktrees/`,
+ * with forward slashes. Null when prune never checks or removes it: the main
+ * worktree, `.worktrees/` itself, anything outside that folder. Exported for
+ * scripts/_lib/session-status.mjs, so that "prune would remove it" has one
+ * scope test.
+ */
+export function pruneName(repoRoot, wtPath) {
+  const scope = path.join(path.resolve(repoRoot), WORKTREES_DIR);
+  const rel = pathWithin(scope, path.resolve(wtPath));
+  return rel ? rel.split(path.sep).join('/') : null;
+}
+
 /** A worktree whose checkout, or its .git file, has been deleted. */
 function isGone(wtPath) {
   return !existsSync(path.join(wtPath, '.git'));
@@ -339,6 +353,11 @@ const IN_PROGRESS = Object.freeze([
   ['rebase-apply', 'rebase'],
   ['MERGE_HEAD', 'merge'],
   ['CHERRY_PICK_HEAD', 'cherry-pick'],
+  ['REVERT_HEAD', 'revert'],
+  // The queue of a cherry-pick or revert of several commits. A stop on an
+  // empty pick or revert leaves it alone (a revert writes no REVERT_HEAD
+  // then), and so does a commit made in the middle of the sequence.
+  ['sequencer', 'cherry-pick or revert'],
   ['BISECT_LOG', 'bisect'],
 ]);
 
@@ -371,7 +390,7 @@ export function checkInUse(entry, cwd) {
 /**
  * The checks on a worktree that hold whatever commits it has: idle for at
  * least `minIdleHours`, a clean `git status`, no stopped rebase, merge,
- * cherry-pick or bisect, no gitignored scratch files. Cheapest first;
+ * cherry-pick, revert or bisect, no gitignored scratch files. Cheapest first;
  * `git status` on a full checkout is the slow one.
  *
  * Returns `{ keep: null, idle }` (idle in hours) when all pass, else
@@ -584,7 +603,6 @@ export function pruneWorktrees({
   dryRun = false,
 }) {
   const root = path.resolve(repoRoot);
-  const scope = path.join(root, WORKTREES_DIR);
   const ctx = {
     root,
     minIdleHours,
@@ -611,12 +629,11 @@ export function pruneWorktrees({
 
   const results = [];
   for (const wt of worktrees) {
-    const wtPath = path.resolve(wt.path);
-    const rel = pathWithin(scope, wtPath);
-    if (!rel) continue; // outside .worktrees/, or .worktrees itself
+    const name = pruneName(root, wt.path);
+    if (name === null) continue; // outside .worktrees/, or .worktrees itself
     const entry = {
-      name: rel.split(path.sep).join('/'),
-      path: wtPath,
+      name,
+      path: path.resolve(wt.path),
       branch: wt.branch,
       head: wt.head,
     };

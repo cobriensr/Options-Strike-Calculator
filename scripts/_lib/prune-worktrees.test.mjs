@@ -44,6 +44,7 @@ import {
   formatSummary,
   gitEnv,
   parseWorktreeList,
+  pruneName,
   pruneWorktrees,
 } from './prune-worktrees.mjs';
 
@@ -64,6 +65,50 @@ describe('MIN_IDLE_HOURS', () => {
   it('defaults the idle floor to the spec value of 24 hours', () => {
     expect(MIN_IDLE_HOURS).toBe(24);
   });
+});
+
+describe('pruneName', () => {
+  const root = path.resolve('repo-root');
+  const at = (...parts) => path.join(root, ...parts);
+
+  it.each([
+    ['a worktree directly under .worktrees/', ['.worktrees', 'feat'], 'feat'],
+    [
+      'a nested one, named by its whole path below .worktrees/',
+      ['.worktrees', 'group', 'feat'],
+      'group/feat',
+    ],
+  ])('names %s', (_label, parts, name) => {
+    expect(pruneName(root, at(...parts))).toBe(name);
+  });
+
+  it.each([
+    ['the main worktree', []],
+    ['.worktrees/ itself', ['.worktrees']],
+    ['a look-alike folder', ['.worktrees-old', 'feat']],
+    ['a sibling of the repository', ['..', 'repo-root-other']],
+    ['a worktree kept elsewhere', ['..', 'elsewhere', 'feat']],
+  ])(
+    'returns null for %s, which prune never checks or removes',
+    (_l, parts) => {
+      expect(pruneName(root, at(...parts))).toBeNull();
+    },
+  );
+
+  it('reads a relative root and path against the current directory', () => {
+    expect(
+      pruneName('repo-root', path.join('repo-root', '.worktrees', 'a')),
+    ).toBe('a');
+  });
+
+  it.runIf(process.platform === 'win32')(
+    'matches paths that differ in drive-letter case and slash style',
+    () => {
+      expect(pruneName('F:/dev/repo', 'f:\\dev\\repo\\.worktrees\\feat')).toBe(
+        'feat',
+      );
+    },
+  );
 });
 
 describe('parseWorktreeList', () => {
@@ -670,7 +715,14 @@ describe('pruneWorktrees with an operation in progress', () => {
     repo = initRepo(makeTempDir('prune-wt-op-'));
     // Every worktree below starts at main's tip, so it is merged, clean and,
     // once aged, idle: only the operation can hold it back.
-    commitFile(repo, 'x.txt', 'x\n');
+    const xCommit = commitFile(repo, 'x.txt', 'x\n');
+    // For the revert and cherry-pick cases below: `c.txt` is changed twice, so
+    // reverting the first change conflicts; `r.txt` is added and reverted on
+    // main, so reverting that add again changes nothing.
+    const cOne = commitFile(repo, 'c.txt', 'one\n', 'c one');
+    commitFile(repo, 'c.txt', 'two\n', 'c two');
+    const rAdd = commitFile(repo, 'r.txt', 'r\n');
+    git(repo, 'revert', '--no-edit', rAdd);
 
     // The control: nothing in progress, so it is removed.
     wts.finished = addWorktree(repo, '.worktrees/finished', 'fix/finished');
@@ -691,7 +743,7 @@ describe('pruneWorktrees with an operation in progress', () => {
     // message differs from main's commit: same parent, file, body and message
     // would be the same commit, and there would be nothing to merge at all.
     wts.merging = addWorktree(repo, '.worktrees/merging', 'fix/merging');
-    git(wts.merging, 'checkout', '-q', '-b', 'side', 'HEAD~1');
+    git(wts.merging, 'checkout', '-q', '-b', 'side', `${xCommit}~1`);
     commitFile(wts.merging, 'x.txt', 'x\n', 'side adds x.txt');
     git(wts.merging, 'checkout', '-q', 'fix/merging');
     git(wts.merging, 'merge', '--no-commit', '--no-ff', 'side');
@@ -706,6 +758,25 @@ describe('pruneWorktrees with an operation in progress', () => {
     wts.applying = addWorktree(repo, '.worktrees/applying', 'fix/applying');
     mkdirSync(path.join(adminDir(wts.applying), 'rebase-apply'));
 
+    // A revert that conflicted, its conflict then settled by taking HEAD's
+    // file back: the tree is clean and REVERT_HEAD stays in the admin dir.
+    wts.reverting = addWorktree(repo, '.worktrees/reverting', 'fix/reverting');
+    expect(() => git(wts.reverting, 'revert', '--no-edit', cOne)).toThrow();
+    git(wts.reverting, 'checkout', 'HEAD', '--', 'c.txt');
+
+    // A revert of several commits that stops on its first, which changes
+    // nothing (`rAdd` is already reverted): a clean tree, and only the
+    // sequencer/ folder with the revert still to make.
+    wts.revertSeq = addWorktree(repo, '.worktrees/revertSeq', 'fix/revertSeq');
+    expect(() =>
+      git(wts.revertSeq, 'revert', '--no-edit', rAdd, xCommit),
+    ).toThrow();
+
+    // A cherry-pick of several commits that stops on its first, which `HEAD`
+    // already has: CHERRY_PICK_HEAD and sequencer/, and a clean tree.
+    wts.pickSeq = addWorktree(repo, '.worktrees/pickSeq', 'fix/pickSeq');
+    expect(() => git(wts.pickSeq, 'cherry-pick', xCommit, rAdd)).toThrow();
+
     for (const wt of Object.values(wts)) age(wt);
     outcome = pruneWorktrees({ repoRoot: repo });
     results = byName(outcome);
@@ -717,7 +788,14 @@ describe('pruneWorktrees with an operation in progress', () => {
       action: 'removed',
       deletedBranchSha: expect.any(String),
     });
-    for (const name of ['paused', 'bisecting', 'merging']) {
+    for (const name of [
+      'paused',
+      'bisecting',
+      'merging',
+      'reverting',
+      'revertSeq',
+      'pickSeq',
+    ]) {
       // git run in a removed worktree fails with ENOENT, which hides why:
       // name the worktree instead.
       expect(existsSync(wts[name]), `${name} was removed`).toBe(true);
@@ -727,12 +805,36 @@ describe('pruneWorktrees with an operation in progress', () => {
     }
   });
 
+  it('is set up so that each revert or pick case leaves the marker it is named for', () => {
+    const has = (name, marker) =>
+      existsSync(path.join(adminDir(wts[name]), marker));
+    expect(has('reverting', 'REVERT_HEAD')).toBe(true);
+    // The sequencer/ folder alone: with REVERT_HEAD or CHERRY_PICK_HEAD
+    // beside it, the case would not show that sequencer/ holds the worktree.
+    expect(has('revertSeq', 'sequencer')).toBe(true);
+    expect(has('revertSeq', 'REVERT_HEAD')).toBe(false);
+    expect(has('revertSeq', 'CHERRY_PICK_HEAD')).toBe(false);
+    expect(has('pickSeq', 'sequencer')).toBe(true);
+    expect(has('pickSeq', 'CHERRY_PICK_HEAD')).toBe(true);
+  });
+
   it.each([
     ['a paused rebase -i', 'paused', 'rebase in progress'],
     ['a bisect', 'bisecting', 'bisect in progress'],
     ['a merge stopped before its commit', 'merging', 'merge in progress'],
     ['a cherry-pick (CHERRY_PICK_HEAD)', 'picking', 'cherry-pick in progress'],
     ['a rebase or am (rebase-apply)', 'applying', 'rebase in progress'],
+    ['a stopped revert (REVERT_HEAD)', 'reverting', 'revert in progress'],
+    [
+      'a stopped multi-commit revert (sequencer/)',
+      'revertSeq',
+      'cherry-pick or revert in progress',
+    ],
+    [
+      'a stopped multi-commit cherry-pick',
+      'pickSeq',
+      'cherry-pick in progress',
+    ],
   ])('keeps a merged, clean, idle worktree in %s', (_label, name, reason) => {
     expect(results.get(name)).toMatchObject({ action: 'kept', reason });
     expect(existsSync(wts[name])).toBe(true);
