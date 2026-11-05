@@ -32,7 +32,9 @@ Usage (from the repo root):
 
 Secrets come from .env.local (DATABASE_URL, R2_*). A worktree has none, so the
 file is resolved from --env-file, then the repo's own .env.local, then the
-main checkout's. Values are never printed.
+main checkout's. Values are never printed. The extract refuses to connect when
+the DATABASE_URL it would use (a repo-root .env overrides the environment in
+utils.load_env) differs from the one in that file, which the apply step loads.
 """
 
 from __future__ import annotations
@@ -317,8 +319,12 @@ def write_ndjson_atomic(path: Path, records: Iterable[dict]) -> None:
 # ── Environment, Neon, R2 ───────────────────────────────────────────────────
 
 
-def load_env_local(path: Path) -> None:
-    """Load KEY=VALUE pairs into os.environ without overwriting, never printing."""
+def parse_env_file(path: Path) -> dict[str, str]:
+    """KEY=VALUE pairs of an env file, the first occurrence of a key winning.
+
+    Quotes and a trailing ' #' comment are stripped from each value.
+    """
+    pairs: dict[str, str] = {}
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -329,7 +335,15 @@ def load_env_local(path: Path) -> None:
         comment_idx = val.find(" #")
         if comment_idx >= 0:
             val = val[:comment_idx].rstrip()
-        if key and key not in os.environ:
+        if key:
+            pairs.setdefault(key, val)
+    return pairs
+
+
+def load_env_local(path: Path) -> None:
+    """Load KEY=VALUE pairs into os.environ without overwriting, never printing."""
+    for key, val in parse_env_file(path).items():
+        if key not in os.environ:
             os.environ[key] = val
 
 
@@ -353,25 +367,47 @@ def resolve_env_file(cli_path: str | None) -> Path | None:
     return next((p for p in candidates if p.is_file()), None)
 
 
-def connect_neon():
+def connect_neon(env_file: Path):
     """A read-only connection via utils.get_connection (Neon connect retries).
 
-    get_connection exits the process when its retries run out; a worker must
-    raise instead, so the failed date is named by the caller.
-    """
-    from utils import get_connection
+    Refuses to connect when the DATABASE_URL the connection would use differs
+    from the one in `env_file`, the file the apply step loads. utils.load_env
+    lets a repo-root .env override the environment, so the two can disagree and
+    the extract would read one database while the apply step writes another.
+    Neither URL is ever printed or put in the message.
 
+    get_connection exits the process when DATABASE_URL is missing or its
+    retries run out (it prints why first); a worker must raise instead, so the
+    failed date is named by the caller.
+    """
+    from utils import ML_ROOT, get_connection, load_env
+
+    used = load_env().get("DATABASE_URL") or None
+    wanted = parse_env_file(env_file).get("DATABASE_URL") or None
+    if used != wanted:
+        dotenv = ML_ROOT.parent / ".env"
+        override = "utils.load_env, which overrides the environment"
+        if not dotenv.is_file():
+            override = "absent: the environment's own DATABASE_URL is the one in use"
+        raise RuntimeError(
+            f"the env files disagree on DATABASE_URL: {env_file} (loaded by the "
+            f"apply step) and {dotenv} ({override}). Not connecting, because the "
+            "extract and the apply step could use different databases. Make them "
+            "agree. The values are not shown."
+        )
     try:
         con = get_connection()
     except SystemExit as exit_:
-        raise RuntimeError("could not connect to Neon (retries exhausted)") from exit_
+        raise RuntimeError(
+            "could not connect to Neon (see the output above)"
+        ) from exit_
     con.set_session(readonly=True, autocommit=True)
     return con
 
 
-def fetch_requests(date: str) -> tuple[list[tuple], list[tuple]]:
+def fetch_requests(date: str, env_file: Path) -> tuple[list[tuple], list[tuple]]:
     """The rows that still need an anchor on `date` (read-only SELECTs)."""
-    con = connect_neon()
+    con = connect_neon(env_file)
     try:
         with con.cursor() as cur:
             cur.execute(_SELECT_LOTTERY, (date,))
@@ -468,19 +504,21 @@ def output_path(out_dir: Path, date: str) -> Path:
 def extract_date(
     date: str,
     out_dir: Path,
+    env_file: Path,
     force: bool = False,
     threads: int | None = None,
     memory_limit: str | None = None,
 ) -> dict:
     """Extract one date. Returns its stats; raises on any failure.
 
+    `env_file` is the resolved .env.local (see connect_neon's guard).
     `threads` and `memory_limit` are this worker's share of the machine.
     """
     target = output_path(out_dir, date)
     if target.exists() and not force:
         return {"date": date, "skipped": True}
     started = time.monotonic()
-    lottery, silent_boom = fetch_requests(date)
+    lottery, silent_boom = fetch_requests(date, env_file)
     requests = build_requests(lottery, silent_boom)
     records: list[dict] = []
     if len(requests) > 0:
@@ -515,9 +553,11 @@ def format_stats(stats: dict) -> str:
     )
 
 
-def _run_date(args: tuple[str, str, bool, int, str]) -> dict:
-    date, out_dir, force, threads, memory_limit = args
-    return extract_date(date, Path(out_dir), force, threads, memory_limit)
+def _run_date(args: tuple[str, str, str, bool, int, str]) -> dict:
+    date, out_dir, env_file, force, threads, memory_limit = args
+    return extract_date(
+        date, Path(out_dir), Path(env_file), force, threads, memory_limit
+    )
 
 
 def select_dates(
@@ -569,7 +609,10 @@ def main(argv: list[str] | None = None) -> int:
     failed: list[str] = []
     threads, memory_limit = worker_resources(args.workers)
     print(f"per worker: threads={threads} memory_limit={memory_limit}", flush=True)
-    jobs = [(d, str(args.out), args.force, threads, memory_limit) for d in dates]
+    jobs = [
+        (d, str(args.out), str(env_file), args.force, threads, memory_limit)
+        for d in dates
+    ]
     with ProcessPoolExecutor(max_workers=max(1, args.workers)) as pool:
         futures = [(job[0], pool.submit(_run_date, job)) for job in jobs]
         for date, future in futures:

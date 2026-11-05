@@ -9,6 +9,7 @@ tape_url).
 from __future__ import annotations
 
 import json
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -23,6 +24,8 @@ DAY = "2026-10-28"
 T0 = datetime(2026, 10, 28, 15, 0, 0, tzinfo=UTC)  # a bucket / trigger start
 CHAIN = "SPY261030C00785000"
 OTHER = "SPY261030P00780000"
+# Handed to extract_date; never read, because fetch_requests is replaced below.
+ENV_FILE = Path("unused.env.local")
 
 
 def print_row(
@@ -399,7 +402,7 @@ def patched(monkeypatch, tmp_path):
     monkeypatch.setattr(
         ex,
         "fetch_requests",
-        lambda date: (
+        lambda date, env_file: (
             [(11, "SPY", CHAIN, T0)],
             [(22, "SPY", "SPY261030C00999000", T0)],
         ),
@@ -408,7 +411,7 @@ def patched(monkeypatch, tmp_path):
 
 
 def test_extract_date_writes_ndjson_and_reports_counts(patched):
-    stats = ex.extract_date(DAY, patched)
+    stats = ex.extract_date(DAY, patched, ENV_FILE)
     assert (stats["lf"], stats["sb"], stats["anchors"]) == (1, 1, 1)
     assert (stats["multi_leg"], stats["siblings"]) == (1, 2)
     lines = [
@@ -428,37 +431,86 @@ def test_extract_date_skips_an_existing_output_without_touching_neon(
     (patched).mkdir(parents=True)
     (patched / f"{DAY}.ndjson").write_text("keep\n")
 
-    def boom(date):
+    def boom(date, env_file):
         raise AssertionError("must not query Neon for a skipped date")
 
     monkeypatch.setattr(ex, "fetch_requests", boom)
-    assert ex.extract_date(DAY, patched) == {"date": DAY, "skipped": True}
+    assert ex.extract_date(DAY, patched, ENV_FILE) == {"date": DAY, "skipped": True}
     assert (patched / f"{DAY}.ndjson").read_text() == "keep\n"
 
 
 def test_extract_date_force_redoes_an_existing_output(patched):
     patched.mkdir(parents=True)
     (patched / f"{DAY}.ndjson").write_text("stale\n")
-    stats = ex.extract_date(DAY, patched, force=True)
+    stats = ex.extract_date(DAY, patched, ENV_FILE, force=True)
     assert stats["skipped"] is False
     assert "stale" not in (patched / f"{DAY}.ndjson").read_text()
 
 
 def test_a_neon_failure_surfaces_and_leaves_no_output(monkeypatch, patched):
-    def reject(date):
+    def reject(date, env_file):
         raise RuntimeError("connection lost")
 
     monkeypatch.setattr(ex, "fetch_requests", reject)
     with pytest.raises(RuntimeError, match="connection lost"):
-        ex.extract_date(DAY, patched)
+        ex.extract_date(DAY, patched, ENV_FILE)
     assert not (patched / f"{DAY}.ndjson").exists()
 
 
 def test_a_date_with_no_pending_rows_writes_an_empty_file(monkeypatch, patched):
-    monkeypatch.setattr(ex, "fetch_requests", lambda date: ([], []))
-    stats = ex.extract_date(DAY, patched)
+    monkeypatch.setattr(ex, "fetch_requests", lambda date, env_file: ([], []))
+    stats = ex.extract_date(DAY, patched, ENV_FILE)
     assert stats["anchors"] == 0
     assert (patched / f"{DAY}.ndjson").read_text() == ""
+
+
+def test_extract_date_hands_its_env_file_to_the_neon_query(monkeypatch, patched):
+    seen: list[tuple] = []
+
+    def fetch(date, env_file):
+        seen.append((date, env_file))
+        return ([], [])
+
+    monkeypatch.setattr(ex, "fetch_requests", fetch)
+    ex.extract_date(DAY, patched, ENV_FILE)
+    assert seen == [(DAY, ENV_FILE)]
+
+
+def test_fetch_requests_connects_through_the_guarded_helper(monkeypatch):
+    seen: list[Path] = []
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, sql, params):
+            pass
+
+        def fetchall(self):
+            return []
+
+    class Connection:
+        closed = False
+
+        def cursor(self):
+            return Cursor()
+
+        def close(self):
+            self.closed = True
+
+    con = Connection()
+
+    def connect(env_file):
+        seen.append(env_file)
+        return con
+
+    monkeypatch.setattr(ex, "connect_neon", connect)
+    assert ex.fetch_requests(DAY, ENV_FILE) == ([], [])
+    assert seen == [ENV_FILE]
+    assert con.closed
 
 
 def test_extract_date_hands_its_worker_share_to_the_duckdb_connection(
@@ -471,7 +523,7 @@ def test_extract_date_hands_its_worker_share_to_the_duckdb_connection(
         return duckdb.connect()
 
     monkeypatch.setattr(ex, "fulltape_connection", connect)
-    ex.extract_date(DAY, patched, threads=3, memory_limit="900MiB")
+    ex.extract_date(DAY, patched, ENV_FILE, threads=3, memory_limit="900MiB")
     assert seen == {"threads": 3, "memory_limit": "900MiB"}
 
 
@@ -484,14 +536,15 @@ def test_main_splits_the_machine_across_the_workers(monkeypatch, patched, capsys
     monkeypatch.setattr(ex, "total_ram_bytes", lambda: 64 * 2**30)
     seen: list[tuple] = []
 
-    def record(date, out_dir, force, threads, memory_limit):
-        seen.append((date, threads, memory_limit))
+    def record(date, out_dir, env_file, force, threads, memory_limit):
+        seen.append((date, env_file, threads, memory_limit))
         return {"date": date, "skipped": True}
 
     monkeypatch.setattr(ex, "extract_date", record)
     assert ex.main(["--dates", DAY, "--workers", "4", "--out", str(patched)]) == 0
-    # 16 cores / 4 workers; 64 GiB * 0.6 / 4 = 9830.4 MiB, rounded down.
-    assert seen == [(DAY, 4, "9830MiB")]
+    # 16 cores / 4 workers; 64 GiB * 0.6 / 4 = 9830.4 MiB, rounded down. Every
+    # worker gets the env file main resolved, for the database-mismatch guard.
+    assert seen == [(DAY, Path(__file__), 4, "9830MiB")]
     assert "per worker: threads=4 memory_limit=9830MiB" in capsys.readouterr().out
 
 
@@ -501,7 +554,7 @@ def test_main_exits_nonzero_and_names_the_failed_date(monkeypatch, patched, caps
     monkeypatch.setattr(ex, "list_landed_dates", lambda: ["2026-10-27", DAY])
     monkeypatch.setattr(ex, "ProcessPoolExecutor", ThreadPoolExecutor)
 
-    def fetch(date):
+    def fetch(date, env_file):
         if date == "2026-10-27":
             raise RuntimeError("neon down")
         return ([], [])
@@ -585,24 +638,147 @@ class FakeNeonConnection:
         self.session = kwargs
 
 
-def test_connect_neon_reuses_the_retrying_helper_and_is_read_only(monkeypatch):
+# Two distinct fake URLs. The marker words must never reach an error message.
+URL_A = "postgresql://owner:hunter2-AAA@ep-a.neon.invalid/db"
+URL_B = "postgresql://owner:hunter2-BBB@ep-b.neon.invalid/db"
+URL_MARKERS = ("hunter2", "ep-a", "ep-b", "neon.invalid", "postgresql://")
+
+
+@pytest.fixture
+def env_files(monkeypatch, tmp_path):
+    """(repo-root .env, --env-file), neither written yet.
+
+    utils.load_env reads <ML_ROOT>/../.env; ML_ROOT is pointed at tmp_path/ml so
+    that file is tmp_path/.env and the real checkout's one is never read.
+    """
     import utils
 
-    con = FakeNeonConnection()
-    monkeypatch.setattr(utils, "get_connection", lambda: con)
-    assert ex.connect_neon() is con
-    assert con.session == {"readonly": True, "autocommit": True}
+    monkeypatch.setattr(utils, "ML_ROOT", tmp_path / "ml")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    return tmp_path / ".env", tmp_path / "env.local"
 
 
-def test_connect_neon_raises_instead_of_exiting_when_retries_run_out(monkeypatch):
+@pytest.fixture
+def get_connection_spy(monkeypatch):
+    """Replaces utils.get_connection; .calls counts the connects attempted."""
     import utils
+
+    class Spy:
+        con = FakeNeonConnection()
+        calls = 0
+
+        def __call__(self):
+            self.calls += 1
+            return self.con
+
+    spy = Spy()
+    monkeypatch.setattr(utils, "get_connection", spy)
+    return spy
+
+
+def test_connect_neon_reuses_the_retrying_helper_and_is_read_only(
+    env_files, get_connection_spy
+):
+    dotenv, env_file = env_files
+    dotenv.write_text(f"DATABASE_URL={URL_A}\n")
+    env_file.write_text(f'DATABASE_URL="{URL_A}"\n')  # as `vercel env pull` writes it
+    assert ex.connect_neon(env_file) is get_connection_spy.con
+    assert get_connection_spy.calls == 1
+    assert get_connection_spy.con.session == {"readonly": True, "autocommit": True}
+
+
+def test_connect_neon_connects_when_the_environment_matches_the_env_file(
+    monkeypatch, env_files, get_connection_spy
+):
+    # No repo-root .env: main()'s load_env_local put the file's URL in os.environ.
+    _, env_file = env_files
+    env_file.write_text(f"DATABASE_URL={URL_A}\n")
+    monkeypatch.setenv("DATABASE_URL", URL_A)
+    assert ex.connect_neon(env_file) is get_connection_spy.con
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "dotenv_overrides",
+        "environment_differs",
+        "file_defines_none",
+        "environment_none",
+    ],
+)
+def test_connect_neon_refuses_when_the_env_files_disagree_on_the_database(
+    case, monkeypatch, env_files, get_connection_spy
+):
+    dotenv, env_file = env_files
+    if case == "dotenv_overrides":
+        dotenv.write_text(f"DATABASE_URL={URL_A}\n")
+        env_file.write_text(f"DATABASE_URL={URL_B}\n")
+    elif case == "environment_differs":
+        env_file.write_text(f"DATABASE_URL={URL_B}\n")
+        monkeypatch.setenv("DATABASE_URL", URL_A)
+    elif case == "file_defines_none":
+        dotenv.write_text(f"DATABASE_URL={URL_A}\n")
+        env_file.write_text("R2_BUCKET_FULLTAPE=tape\n")
+    else:  # the env file names a database, nothing else resolves one
+        env_file.write_text(f"DATABASE_URL={URL_B}\n")
+
+    with pytest.raises(RuntimeError) as raised:
+        ex.connect_neon(env_file)
+
+    message = str(raised.value)
+    assert get_connection_spy.calls == 0  # refused before any connect
+    assert "disagree on DATABASE_URL" in message
+    assert str(env_file) in message and str(dotenv) in message
+    for marker in URL_MARKERS:
+        assert marker not in message
+
+
+def test_connect_neon_raises_instead_of_exiting_when_it_cannot_connect(
+    monkeypatch, env_files
+):
+    import utils
+
+    dotenv, env_file = env_files
+    dotenv.write_text(f"DATABASE_URL={URL_A}\n")
+    env_file.write_text(f"DATABASE_URL={URL_A}\n")
 
     def exhausted():
         raise SystemExit(1)
 
     monkeypatch.setattr(utils, "get_connection", exhausted)
-    with pytest.raises(RuntimeError, match="could not connect to Neon"):
-        ex.connect_neon()
+    with pytest.raises(
+        RuntimeError, match=r"^could not connect to Neon \(see the output above\)$"
+    ):
+        ex.connect_neon(env_file)
+
+
+def test_parse_env_file_strips_quotes_comments_and_blank_lines(tmp_path):
+    env_file = tmp_path / "env.local"
+    env_file.write_text(
+        "# a comment\n"
+        "\n"
+        "PLAIN=one\n"
+        'QUOTED="two"\n'
+        "SINGLE='three'\n"
+        "TRAILING=four # why\n"
+        "NO_EQUALS_LINE\n"
+        "PLAIN=ignored\n"
+    )
+    assert ex.parse_env_file(env_file) == {
+        "PLAIN": "one",
+        "QUOTED": "two",
+        "SINGLE": "three",
+        "TRAILING": "four",
+    }
+
+
+def test_load_env_local_fills_gaps_and_never_overwrites(monkeypatch, tmp_path):
+    env_file = tmp_path / "env.local"
+    env_file.write_text("KEPT=from-file\nFRESH=from-file\nKEPT=again\n")
+    environ = {"KEPT": "from-shell"}
+    monkeypatch.setattr(os, "environ", environ)  # a scratch copy, nothing leaks
+    ex.load_env_local(env_file)
+    assert environ == {"KEPT": "from-shell", "FRESH": "from-file"}
 
 
 def test_the_env_file_override_variable_is_gone(monkeypatch, tmp_path):
