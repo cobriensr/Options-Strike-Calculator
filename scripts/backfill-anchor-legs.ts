@@ -19,12 +19,13 @@
  *   --compare f1 ...   parity vs reference JSON files (no DB), exit 1 on gate fail
  *   --report <path>    compare report (default <out>/../compare-report.txt);
  *                      the first 50 mismatches go beside it as .mismatches.json
- *   --env-file <path>  .env.local to load (default: the nearest one up the tree)
+ *   --env-file <path>  .env.local to load (default: the nearest one up the tree);
+ *                      a path that does not exist is an error, never a fallback
  *   --force            reapply dates that have a done marker
  */
 
 import { config } from 'dotenv';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import {
   applyDate,
@@ -32,6 +33,7 @@ import {
   formatCompareReport,
   formatDateResult,
   parseNdjson,
+  resolveEnvFile,
   type ExtractLine,
   type Reference,
 } from './_lib/anchor-backfill.js';
@@ -85,19 +87,9 @@ function parseArgs(argv: string[]): Args {
   return args;
 }
 
-/** --env-file, else the nearest .env.local up the tree (a worktree sits under the main checkout). */
+/** Load --env-file, else the nearest .env.local up the tree (see resolveEnvFile). */
 function loadEnv(explicit: string | null): void {
-  let found = explicit != null && existsSync(explicit) ? explicit : null;
-  let dir = resolve('.');
-  while (found == null) {
-    const candidate = join(dir, '.env.local');
-    if (existsSync(candidate)) found = candidate;
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  if (found == null) throw new Error('no .env.local found; pass --env-file');
-  config({ path: found, quiet: true });
+  config({ path: resolveEnvFile(explicit, '.'), quiet: true });
 }
 
 function datesIn(out: string, only: string[]): string[] {

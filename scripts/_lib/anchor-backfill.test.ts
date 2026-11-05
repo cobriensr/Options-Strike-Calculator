@@ -5,7 +5,13 @@
  * mock is the DB module boundary (getDb); describeAnchor is the real thing.
  */
 
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -27,6 +33,7 @@ import {
   formatDateResult,
   markerPath,
   parseNdjson,
+  resolveEnvFile,
   toColumns,
   type ExtractLine,
   type Reference,
@@ -131,6 +138,32 @@ describe('parseNdjson', () => {
       line('lottery_finder_fires', 1, print({ optionType: 'call' as 'C' })),
     );
     expect(() => parseNdjson(badType, 'x')).toThrow(/anchor\.optionType/);
+  });
+});
+
+describe('resolveEnvFile', () => {
+  it('returns an explicit --env-file that exists', () => {
+    const file = join(dir, 'chosen.env');
+    writeFileSync(file, 'DATABASE_URL=x\n');
+    expect(resolveEnvFile(file, dir)).toBe(file);
+  });
+
+  it('throws "--env-file <path> not found" for a missing explicit path instead of falling back to the nearest .env.local', () => {
+    // A .env.local sits right there: it is the production one in the real
+    // tree, and silently using it for a typo'd path would write to prod.
+    writeFileSync(join(dir, '.env.local'), 'DATABASE_URL=prod\n');
+    const missing = join(dir, 'typo.env');
+    expect(() => resolveEnvFile(missing, dir)).toThrow(
+      `--env-file ${missing} not found`,
+    );
+  });
+
+  it('walks up from the start directory to the nearest .env.local when no path is given', () => {
+    const nested = join(dir, 'a', 'b');
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(dir, '.env.local'), 'DATABASE_URL=outer\n');
+    writeFileSync(join(dir, 'a', '.env.local'), 'DATABASE_URL=nearer\n');
+    expect(resolveEnvFile(null, nested)).toBe(join(dir, 'a', '.env.local'));
   });
 });
 

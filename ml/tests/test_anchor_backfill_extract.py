@@ -591,19 +591,26 @@ GIB = 2**30
     ],
 )
 def test_worker_resources_split_cores_and_sixty_percent_of_ram(
-    workers, cpus, ram_gib, expected
+    monkeypatch, workers, cpus, ram_gib, expected
 ):
-    assert (
-        ex.worker_resources(workers, cpu_count=cpus, ram_bytes=ram_gib * GIB)
-        == expected
-    )
+    monkeypatch.setattr(ex.os, "cpu_count", lambda: cpus)
+    monkeypatch.setattr(ex, "total_ram_bytes", lambda: ram_gib * GIB)
+    assert ex.worker_resources(workers) == expected
 
 
-def test_all_workers_together_stay_within_the_machine():
+def test_all_workers_together_stay_within_the_machine(monkeypatch):
+    monkeypatch.setattr(ex.os, "cpu_count", lambda: 16)
+    monkeypatch.setattr(ex, "total_ram_bytes", lambda: 64 * GIB)
     for workers in range(1, 17):
-        threads, limit = ex.worker_resources(workers, cpu_count=16, ram_bytes=64 * GIB)
+        threads, limit = ex.worker_resources(workers)
         assert threads * workers <= 16
         assert ex.parse_size(limit) * workers <= 0.6 * 64 * GIB
+
+
+def test_worker_resources_treat_an_unknown_core_count_as_one(monkeypatch):
+    monkeypatch.setattr(ex.os, "cpu_count", lambda: None)
+    monkeypatch.setattr(ex, "total_ram_bytes", lambda: 64 * GIB)
+    assert ex.worker_resources(4) == (1, "9830MiB")
 
 
 def test_worker_resources_default_to_this_machine():

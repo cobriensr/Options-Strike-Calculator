@@ -476,9 +476,7 @@ def total_ram_bytes() -> int:
     return int(parse_size(limit) / _DUCKDB_DEFAULT_RAM_SHARE)
 
 
-def worker_resources(
-    workers: int, cpu_count: int | None = None, ram_bytes: int | None = None
-) -> tuple[int, str]:
+def worker_resources(workers: int) -> tuple[int, str]:
     """(threads, memory_limit) for one of `workers` parallel DuckDB workers.
 
     Threads split the cores evenly (at least 1); memory splits _RAM_SHARE of
@@ -487,10 +485,9 @@ def worker_resources(
     ~115 s per date against ~25 s at 2.
     """
     workers = max(1, workers)
-    cores = cpu_count if cpu_count is not None else (os.cpu_count() or 1)
-    ram = ram_bytes if ram_bytes is not None else total_ram_bytes()
+    cores = os.cpu_count() or 1
     threads = max(1, cores // workers)
-    mib = max(_MIN_MEMORY_MIB, int(ram * _RAM_SHARE / workers) // 2**20)
+    mib = max(_MIN_MEMORY_MIB, int(total_ram_bytes() * _RAM_SHARE / workers) // 2**20)
     return threads, f"{mib}MiB"
 
 
