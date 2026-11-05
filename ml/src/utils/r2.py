@@ -21,6 +21,7 @@ Auth: same env vars as scripts/upload-fulltape-to-r2.py
 from __future__ import annotations
 
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -93,16 +94,33 @@ def read_fulltape(
     )
 
 
-def fulltape_connection():
+_MEMORY_LIMIT_RE = re.compile(r"\d+(\.\d+)? ?(KB|MB|GB|TB|KiB|MiB|GiB|TiB)")
+
+
+def fulltape_connection(threads: int | None = None, memory_limit: str | None = None):
     """A fresh DuckDB connection with httpfs configured for the R2 bucket.
 
     One connection per caller: DuckDB connections are not shared across
     processes, and each worker process builds its own.
+
+    DuckDB's defaults are every core and 80% of RAM per connection, which
+    N parallel workers would each claim. A multi-worker caller passes its
+    share: `threads` (an int >= 1) and `memory_limit` (e.g. "6000MiB").
+    Left as None, the defaults stand (query_fulltape's behavior).
     """
     import duckdb  # local import: keeps cold-start light for read_fulltape users
 
+    if threads is not None and threads < 1:
+        raise ValueError(f"threads must be >= 1, got {threads!r}")
+    if memory_limit is not None and not _MEMORY_LIMIT_RE.fullmatch(memory_limit):
+        raise ValueError(f"bad memory_limit {memory_limit!r}, want e.g. '6000MiB'")
+
     con = duckdb.connect()
     con.execute("INSTALL httpfs; LOAD httpfs;")
+    if threads is not None:
+        con.execute(f"SET threads={int(threads)};")
+    if memory_limit is not None:
+        con.execute(f"SET memory_limit='{memory_limit}';")
     con.execute(
         f"SET s3_endpoint='{_must_env('R2_ENDPOINT_URL').replace('https://', '')}';"
     )

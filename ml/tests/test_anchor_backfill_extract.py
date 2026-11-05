@@ -331,7 +331,7 @@ def patched(monkeypatch, tmp_path):
         ],
     )
     monkeypatch.setattr(ex, "tape_url", lambda date: tape)
-    monkeypatch.setattr(ex, "fulltape_connection", lambda: duckdb.connect())
+    monkeypatch.setattr(ex, "fulltape_connection", lambda **kwargs: duckdb.connect())
     monkeypatch.setattr(
         ex,
         "fetch_requests",
@@ -390,6 +390,38 @@ def test_a_date_with_no_pending_rows_writes_an_empty_file(monkeypatch, patched):
     assert (patched / f"{DAY}.ndjson").read_text() == ""
 
 
+def test_extract_date_hands_its_worker_share_to_the_duckdb_connection(monkeypatch, patched):
+    seen: dict = {}
+
+    def connect(**kwargs):
+        seen.update(kwargs)
+        return duckdb.connect()
+
+    monkeypatch.setattr(ex, "fulltape_connection", connect)
+    ex.extract_date(DAY, patched, threads=3, memory_limit="900MiB")
+    assert seen == {"threads": 3, "memory_limit": "900MiB"}
+
+
+def test_main_splits_the_machine_across_the_workers(monkeypatch, patched, capsys):
+    monkeypatch.setattr(ex, "resolve_env_file", lambda p: Path(__file__))
+    monkeypatch.setattr(ex, "load_env_local", lambda p: None)
+    monkeypatch.setattr(ex, "list_landed_dates", lambda: [DAY])
+    monkeypatch.setattr(ex, "ProcessPoolExecutor", ThreadPoolExecutor)
+    monkeypatch.setattr(ex.os, "cpu_count", lambda: 16)
+    monkeypatch.setattr(ex, "total_ram_bytes", lambda: 64 * 2**30)
+    seen: list[tuple] = []
+
+    def record(date, out_dir, force, threads, memory_limit):
+        seen.append((date, threads, memory_limit))
+        return {"date": date, "skipped": True}
+
+    monkeypatch.setattr(ex, "extract_date", record)
+    assert ex.main(["--dates", DAY, "--workers", "4", "--out", str(patched)]) == 0
+    # 16 cores / 4 workers; 64 GiB * 0.6 / 4 = 9830.4 MiB, rounded down.
+    assert seen == [(DAY, 4, "9830MiB")]
+    assert "per worker: threads=4 memory_limit=9830MiB" in capsys.readouterr().out
+
+
 def test_main_exits_nonzero_and_names_the_failed_date(monkeypatch, patched, capsys):
     monkeypatch.setattr(ex, "resolve_env_file", lambda p: Path(__file__))
     monkeypatch.setattr(ex, "load_env_local", lambda p: None)
@@ -407,6 +439,101 @@ def test_main_exits_nonzero_and_names_the_failed_date(monkeypatch, patched, caps
     assert code == 1
     assert "2026-10-27 FAILED" in err and "neon down" in err
     assert (patched / f"{DAY}.ndjson").exists()
+
+
+# ── Per-worker DuckDB resources ─────────────────────────────────────────────
+
+GIB = 2**30
+
+
+@pytest.mark.parametrize(
+    ("workers", "cpus", "ram_gib", "expected"),
+    [
+        # 16 cores / 4; 64 GiB * 0.6 / 4 = 9830.4 MiB, rounded down.
+        (4, 16, 64, (4, "9830MiB")),
+        # One worker keeps all the cores and 60% of RAM (19660.8 MiB).
+        (1, 8, 32, (8, "19660MiB")),
+        # More workers than cores: one thread each, never zero.
+        (6, 4, 64, (1, "6553MiB")),
+        (2, 1, 16, (1, "4915MiB")),
+        # Uneven split rounds the threads down: 10 // 4.
+        (4, 10, 64, (2, "9830MiB")),
+        # A nonsense worker count is treated as one worker.
+        (0, 8, 16, (8, "9830MiB")),
+        # A small machine still gets a usable floor.
+        (8, 8, 2, (1, "512MiB")),
+    ],
+)
+def test_worker_resources_split_cores_and_sixty_percent_of_ram(
+    workers, cpus, ram_gib, expected
+):
+    assert ex.worker_resources(workers, cpu_count=cpus, ram_bytes=ram_gib * GIB) == expected
+
+
+def test_all_workers_together_stay_within_the_machine():
+    for workers in range(1, 17):
+        threads, limit = ex.worker_resources(workers, cpu_count=16, ram_bytes=64 * GIB)
+        assert threads * workers <= 16
+        assert ex.parse_size(limit) * workers <= 0.6 * 64 * GIB
+
+
+def test_worker_resources_default_to_this_machine():
+    threads, limit = ex.worker_resources(2)
+    assert threads >= 1
+    assert ex.parse_size(limit) >= 512 * 2**20
+
+
+def test_parse_size_reads_duckdbs_memory_limit_format():
+    assert ex.parse_size("512MiB") == 512 * 2**20
+    assert ex.parse_size("24.9 GiB") == int(24.9 * 2**30)
+    assert ex.parse_size("2GB") == 2_000_000_000
+    assert ex.parse_size("1 tib") == 2**40
+    for bad in ("", "lots", "10", "10 parsecs"):
+        with pytest.raises(ValueError, match="cannot parse size"):
+            ex.parse_size(bad)
+
+
+def test_total_ram_is_read_back_from_duckdbs_default_limit():
+    # DuckDB defaults to 80% of RAM, so any real machine reports well over 1 GiB.
+    assert ex.total_ram_bytes() > GIB
+
+
+# ── Neon connection ─────────────────────────────────────────────────────────
+
+
+class FakeNeonConnection:
+    def __init__(self) -> None:
+        self.session: dict | None = None
+
+    def set_session(self, **kwargs) -> None:
+        self.session = kwargs
+
+
+def test_connect_neon_reuses_the_retrying_helper_and_is_read_only(monkeypatch):
+    import utils
+
+    con = FakeNeonConnection()
+    monkeypatch.setattr(utils, "get_connection", lambda: con)
+    assert ex.connect_neon() is con
+    assert con.session == {"readonly": True, "autocommit": True}
+
+
+def test_connect_neon_raises_instead_of_exiting_when_retries_run_out(monkeypatch):
+    import utils
+
+    def exhausted():
+        raise SystemExit(1)
+
+    monkeypatch.setattr(utils, "get_connection", exhausted)
+    with pytest.raises(RuntimeError, match="could not connect to Neon"):
+        ex.connect_neon()
+
+
+def test_the_env_file_override_variable_is_gone(monkeypatch, tmp_path):
+    shadow = tmp_path / "shadow.env"
+    shadow.write_text("X=1\n")
+    monkeypatch.setenv("ANCHOR_BACKFILL_ENV_FILE", str(shadow))
+    assert ex.resolve_env_file(None) != shadow
 
 
 # ── Dates and keys ──────────────────────────────────────────────────────────

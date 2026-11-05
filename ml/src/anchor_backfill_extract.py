@@ -31,8 +31,8 @@ Usage (from the repo root):
         --from 2026-01-02 --to 2026-10-28 --workers 4
 
 Secrets come from .env.local (DATABASE_URL, R2_*). A worktree has none, so the
-file is resolved from --env-file, then $ANCHOR_BACKFILL_ENV_FILE, then the
-repo's own .env.local, then the main checkout's. Values are never printed.
+file is resolved from --env-file, then the repo's own .env.local, then the
+main checkout's. Values are never printed.
 """
 
 from __future__ import annotations
@@ -336,12 +336,10 @@ def load_env_local(path: Path) -> None:
 
 
 def resolve_env_file(cli_path: str | None) -> Path | None:
-    """--env-file, $ANCHOR_BACKFILL_ENV_FILE, this checkout, then the main one."""
+    """--env-file, then this checkout's .env.local, then the main checkout's."""
     candidates: list[Path] = []
     if cli_path:
         candidates.append(Path(cli_path))
-    if os.environ.get("ANCHOR_BACKFILL_ENV_FILE"):
-        candidates.append(Path(os.environ["ANCHOR_BACKFILL_ENV_FILE"]))
     candidates.append(REPO_ROOT / ".env.local")
     try:
         common = subprocess.run(
@@ -358,23 +356,19 @@ def resolve_env_file(cli_path: str | None) -> Path | None:
 
 
 def connect_neon():
-    """A read-only psycopg2 connection, retrying Neon's transient connect blips."""
-    import psycopg2
+    """A read-only connection via utils.get_connection (Neon connect retries).
 
-    url = os.environ.get("DATABASE_URL", "").strip()
-    if not url:
-        raise RuntimeError("DATABASE_URL is not set (load .env.local)")
-    attempts = 4
-    for attempt in range(attempts):
-        try:
-            con = psycopg2.connect(url, sslmode="require", connect_timeout=10)
-            con.set_session(readonly=True, autocommit=True)
-            return con
-        except (psycopg2.OperationalError, psycopg2.InterfaceError):
-            if attempt == attempts - 1:
-                raise
-            time.sleep(2**attempt)
-    raise AssertionError("unreachable")
+    get_connection exits the process when its retries run out; a worker must
+    raise instead, so the failed date is named by the caller.
+    """
+    from utils import get_connection
+
+    try:
+        con = get_connection()
+    except SystemExit as exit_:
+        raise RuntimeError("could not connect to Neon (retries exhausted)") from exit_
+    con.set_session(readonly=True, autocommit=True)
+    return con
 
 
 def fetch_requests(date: str) -> tuple[list[tuple], list[tuple]]:
@@ -391,10 +385,10 @@ def fetch_requests(date: str) -> tuple[list[tuple], list[tuple]]:
     return lottery, silent_boom
 
 
-def fulltape_connection():
+def fulltape_connection(threads: int | None = None, memory_limit: str | None = None):
     from utils.r2 import fulltape_connection as _connect
 
-    return _connect()
+    return _connect(threads=threads, memory_limit=memory_limit)
 
 
 def tape_url(date: str) -> str:
@@ -414,6 +408,58 @@ def list_landed_dates() -> list[str]:
     return landed_dates(r[0].removeprefix(prefix) for r in rows)
 
 
+# ── Per-worker DuckDB resources ─────────────────────────────────────────────
+
+# DuckDB's default memory_limit is 80% of physical RAM; the extract's workers
+# together use this share of it (leaving room for Python, pandas and the OS).
+_RAM_SHARE = 0.6
+_DUCKDB_DEFAULT_RAM_SHARE = 0.8
+_MIN_MEMORY_MIB = 512
+_SIZE_UNITS = {
+    "KB": 10**3, "MB": 10**6, "GB": 10**9, "TB": 10**12,
+    "KIB": 2**10, "MIB": 2**20, "GIB": 2**30, "TIB": 2**40,
+}  # fmt: skip
+_SIZE_RE = re.compile(r"^\s*([\d.]+)\s*([KMGT]i?B)\s*$", re.IGNORECASE)
+
+
+def parse_size(text: str) -> int:
+    """'24.9 GiB' (DuckDB's memory_limit format) -> bytes."""
+    match = _SIZE_RE.match(text)
+    if not match:
+        raise ValueError(f"cannot parse size {text!r}")
+    return int(float(match.group(1)) * _SIZE_UNITS[match.group(2).upper()])
+
+
+def total_ram_bytes() -> int:
+    """Physical RAM, read back from DuckDB's default limit (80% of RAM)."""
+    import duckdb
+
+    con = duckdb.connect()
+    try:
+        limit = con.execute("SELECT current_setting('memory_limit')").fetchone()[0]
+    finally:
+        con.close()
+    return int(parse_size(limit) / _DUCKDB_DEFAULT_RAM_SHARE)
+
+
+def worker_resources(
+    workers: int, cpu_count: int | None = None, ram_bytes: int | None = None
+) -> tuple[int, str]:
+    """(threads, memory_limit) for one of `workers` parallel DuckDB workers.
+
+    Threads split the cores evenly (at least 1); memory splits _RAM_SHARE of
+    physical RAM evenly (at least _MIN_MEMORY_MIB). Without the split each
+    worker claims every core and 80% of RAM and they thrash: 6 workers took
+    ~115 s per date against ~25 s at 2.
+    """
+    workers = max(1, workers)
+    cores = cpu_count if cpu_count is not None else (os.cpu_count() or 1)
+    ram = ram_bytes if ram_bytes is not None else total_ram_bytes()
+    threads = max(1, cores // workers)
+    mib = max(_MIN_MEMORY_MIB, int(ram * _RAM_SHARE / workers) // 2**20)
+    return threads, f"{mib}MiB"
+
+
 # ── Per-date run and CLI ────────────────────────────────────────────────────
 
 
@@ -421,8 +467,17 @@ def output_path(out_dir: Path, date: str) -> Path:
     return out_dir / f"{date}.ndjson"
 
 
-def extract_date(date: str, out_dir: Path, force: bool = False) -> dict:
-    """Extract one date. Returns its stats; raises on any failure."""
+def extract_date(
+    date: str,
+    out_dir: Path,
+    force: bool = False,
+    threads: int | None = None,
+    memory_limit: str | None = None,
+) -> dict:
+    """Extract one date. Returns its stats; raises on any failure.
+
+    `threads` and `memory_limit` are this worker's share of the machine.
+    """
     target = output_path(out_dir, date)
     if target.exists() and not force:
         return {"date": date, "skipped": True}
@@ -431,7 +486,7 @@ def extract_date(date: str, out_dir: Path, force: bool = False) -> dict:
     requests = build_requests(lottery, silent_boom)
     records: list[dict] = []
     if len(requests) > 0:
-        con = fulltape_connection()
+        con = fulltape_connection(threads=threads, memory_limit=memory_limit)
         try:
             records = select_anchors(con, tape_url(date), requests)
         finally:
@@ -462,9 +517,9 @@ def format_stats(stats: dict) -> str:
     )
 
 
-def _run_date(args: tuple[str, str, bool]) -> dict:
-    date, out_dir, force = args
-    return extract_date(date, Path(out_dir), force)
+def _run_date(args: tuple[str, str, bool, int, str]) -> dict:
+    date, out_dir, force, threads, memory_limit = args
+    return extract_date(date, Path(out_dir), force, threads, memory_limit)
 
 
 def select_dates(
@@ -512,7 +567,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{len(dates)} date(s), workers={args.workers}, out={args.out}", flush=True)
 
     failed: list[str] = []
-    jobs = [(d, str(args.out), args.force) for d in dates]
+    threads, memory_limit = worker_resources(args.workers)
+    print(f"per worker: threads={threads} memory_limit={memory_limit}", flush=True)
+    jobs = [(d, str(args.out), args.force, threads, memory_limit) for d in dates]
     with ProcessPoolExecutor(max_workers=max(1, args.workers)) as pool:
         futures = [(job[0], pool.submit(_run_date, job)) for job in jobs]
         for date, future in futures:
