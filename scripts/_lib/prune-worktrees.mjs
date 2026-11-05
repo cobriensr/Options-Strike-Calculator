@@ -22,10 +22,13 @@
  * checkInUse, checkSettled and pruneName (the .worktrees/ scope test) are
  * exported so that scripts/_lib/session-status.mjs asks the same questions:
  * "safe to remove" has one definition.
- * Removal is `git worktree remove` without --force, then `git branch -D` on
- * its branch if that still points at the checked HEAD. git's own check before
- * removing honours status.showUntrackedFiles, so with `no` it would delete
- * untracked files: the guard is this module's explicit
+ * Removal is `git worktree remove` without --force, then any link it left
+ * behind and the emptied folder (on Windows git leaves an ignored
+ * node_modules junction: see clearLeftover), then `git branch -D` on its
+ * branch if that still points at the checked HEAD. A folder that still holds
+ * anything but links after that is reported as kept, not as removed.
+ * git's own check before removing honours status.showUntrackedFiles, so with
+ * `no` it would delete untracked files: the guard is this module's explicit
  * `--untracked-files=normal` status check above, not git's.
  *
  * Worktrees outside .worktrees/ are never checked or removed, but the one
@@ -33,7 +36,14 @@
  * every unlocked worktree whose directory is already gone, wherever it was.
  * Spec: docs/superpowers/specs/worktree-auto-prune-2026-10-27.md.
  */
-import { existsSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  readdirSync,
+  rmdirSync,
+  statSync,
+  unlinkSync,
+} from 'node:fs';
 import path from 'node:path';
 import {
   GitError,
@@ -513,6 +523,54 @@ function deleteBranch(entry, ctx, removed) {
   }
 }
 
+/**
+ * Clear what `git worktree remove` left of a worktree it reported removing.
+ * On Windows git exits 0 and prints nothing, yet leaves an ignored
+ * node_modules junction and its folder (git 2.55.0.windows.5), after dropping
+ * the worktree: no later run would list the folder, and the name could not be
+ * reused.
+ *
+ * Only links are deleted, and never followed: a junction's target is the main
+ * checkout's node_modules. So every call is non-recursive: lstat to tell a link
+ * from anything else, unlink on the link itself, rmdir on the folder once it
+ * is empty. Never `rmSync` or any call that can walk through a link.
+ *
+ * Returns null when the folder is gone or was emptied and removed, else why
+ * it is kept: the caller reports that instead of a clean removal.
+ */
+function clearLeftover(wtPath) {
+  const stuck = [];
+  try {
+    const folder = lstatSync(wtPath, { throwIfNoEntry: false });
+    if (folder === undefined) return null;
+    if (!folder.isDirectory()) {
+      return `git worktree remove left ${wtPath}, which is not a folder`;
+    }
+    for (const name of readdirSync(wtPath)) {
+      const file = path.join(wtPath, name);
+      try {
+        const kind = lstatSync(file, { throwIfNoEntry: false });
+        if (kind === undefined) continue;
+        if (kind.isSymbolicLink()) unlinkSync(file);
+        else stuck.push(name);
+      } catch (err) {
+        stuck.push(`could not delete ${name} (${err.message})`);
+      }
+    }
+    if (stuck.length === 0) {
+      try {
+        rmdirSync(wtPath);
+      } catch (err) {
+        return `git worktree remove left ${wtPath}: could not delete the folder (${err.message})`;
+      }
+      return null;
+    }
+  } catch (err) {
+    return `git worktree remove left ${wtPath}: could not clear it (${err.message})`;
+  }
+  return `git worktree remove left files at ${wtPath}: ${sample(stuck, (item) => item)}`;
+}
+
 /** Remove one eligible worktree, then its branch. */
 function removeWorktree(entry, ctx, note) {
   try {
@@ -536,6 +594,12 @@ function removeWorktree(entry, ctx, note) {
       action: 'kept',
       reason: `git worktree remove failed: ${detail}`,
     };
+  }
+  // git exited 0, yet may have left the folder: see clearLeftover.
+  const leftover = clearLeftover(entry.path);
+  if (leftover !== null) {
+    ctx.errors.push(`${entry.name}: ${leftover}`);
+    return { ...entry, action: 'kept', reason: leftover };
   }
   const removed = { ...entry, action: 'removed', reason: note };
   if (entry.branch === null) {

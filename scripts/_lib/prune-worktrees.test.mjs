@@ -13,8 +13,10 @@ import { spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
+  readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
@@ -845,6 +847,56 @@ describe('pruneWorktrees with an operation in progress', () => {
     expect(existsSync(path.join(todo, 'git-rebase-todo'))).toBe(true);
   });
 });
+
+// On Windows, `git worktree remove` of a worktree holding an ignored
+// node_modules junction exits 0 and prints nothing, but leaves the junction
+// and its folder behind (git 2.55.0.windows.5). Nothing like it happens on
+// Linux or macOS, where an ignored link is simply deleted. The platform-neutral
+// cases for the cleanup are in prune-worktrees.races.test.mjs.
+describe.runIf(process.platform === 'win32')(
+  'pruneWorktrees with a node_modules junction',
+  () => {
+    let repo = '';
+    let target = '';
+    let outcome;
+    let wt = '';
+
+    beforeAll(() => {
+      const base = makeTempDir('prune-wt-junction-');
+      repo = initRepo(base);
+      // The real .gitignore lists node_modules/, which is why the junction
+      // does not make the worktree dirty.
+      commitFile(repo, '.gitignore', 'docs/tmp/\nnode_modules/\n', 'ignore');
+      // Stands in for the main checkout's node_modules.
+      target = makeTempDir('prune-wt-junction-target-');
+      mkdirSync(path.join(target, 'nested', 'deep'), { recursive: true });
+      writeFileSync(path.join(target, 'top.txt'), 'top\n');
+      writeFileSync(path.join(target, 'nested', 'deep', 'deep.txt'), 'deep\n');
+
+      wt = addWorktree(repo, '.worktrees/linked', 'fix/linked');
+      symlinkSync(target, path.join(wt, 'node_modules'), 'junction');
+      age(wt);
+      outcome = pruneWorktrees({ repoRoot: repo });
+    }, FIXTURE_TIMEOUT);
+
+    it('removes the worktree, its junction and its folder, and reports a clean removal', () => {
+      expect(outcome.errors).toEqual([]);
+      expect(byName(outcome).get('linked')).toMatchObject({
+        action: 'removed',
+        deletedBranchSha: expect.any(String),
+      });
+      expect(existsSync(wt)).toBe(false);
+      expect(branches(repo)).toEqual(['main']);
+    });
+
+    it('leaves the files the junction points at alone', () => {
+      expect(readFileSync(path.join(target, 'top.txt'), 'utf8')).toBe('top\n');
+      expect(
+        readFileSync(path.join(target, 'nested', 'deep', 'deep.txt'), 'utf8'),
+      ).toBe('deep\n');
+    });
+  },
+);
 
 describe('the checks pruneWorktrees shares', () => {
   let repo = '';

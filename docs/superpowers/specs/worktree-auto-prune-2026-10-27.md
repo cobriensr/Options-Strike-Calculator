@@ -39,8 +39,9 @@ A worktree is removed only when every check below passes. The checks run in this
 When every check passes, the script runs these steps:
 
 1. `git worktree remove <path>` without `--force`. git runs its own check first, but that check honours `status.showUntrackedFiles`: when it is set to `no`, git deletes untracked files. The real guard is rule 9's explicit `--untracked-files=normal` status.
-2. `git branch -D <branch>`, if the worktree was on a branch and the branch still points at the HEAD that passed the checks. If it moved, the branch is kept. Rules 6 and 7 already showed it is merged. The script prints the old SHA so the branch can be recovered.
-3. `git worktree prune`, once at the end of the run.
+2. Clear what git left behind, if the folder still exists. On Windows `git worktree remove` exits 0 and prints nothing, but leaves an ignored `node_modules` junction and its folder (git 2.55.0.windows.5). git has already dropped the worktree, so without this step the run would report "removed", no later run would list the folder, and the name could not be reused. Only links are deleted, and never followed: a junction's target is the main checkout's `node_modules`. The calls are non-recursive (`lstat` to tell a link from anything else, `unlink` on the link itself, `rmdir` on the folder once it is empty); nothing may walk through a link. If anything but a link is left, or a delete fails, the folder is kept and the result line says so, as an error, instead of a clean removal; the branch is kept.
+3. `git branch -D <branch>`, if the worktree was on a branch and the branch still points at the HEAD that passed the checks. If it moved, the branch is kept. Rules 6 and 7 already showed it is merged. The script prints the old SHA so the branch can be recovered.
+4. `git worktree prune`, once at the end of the run.
 
 A worktree that another run already removed counts as removed, not as a failure, and its branch is left to the run that removed it. That covers two sessions starting at the same moment. A removal that stops partway is an error: git deletes the `.git` file and admin entry, then stops at a file it cannot delete, such as a locked file on Windows. The leftover directory is no longer a worktree, so no later run would list it. The branch is kept.
 
