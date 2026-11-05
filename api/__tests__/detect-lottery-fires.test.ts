@@ -18,9 +18,10 @@ import {
 const mockSql = vi.fn();
 
 // `db.unsafe(raw)` → raw-SQL marker (mirrors neon's UnsafeRawSql; the feed-
-// tier monitor splices INVERSION_BONUS_CASE_SQL via db.unsafe). The mockSql
-// tagged template ignores its actual SQL (returns canned rows), so this just
-// needs to be a non-throwing passthrough.
+// tier monitor splices INVERSION_BONUS_CASE_SQL via db.unsafe). The router
+// sees the marker as an ordinary bound value (a `$N` param), not as SQL text,
+// and routes on the template's literal text around it, so this just needs to
+// be a non-throwing passthrough.
 (mockSql as unknown as { unsafe: (raw: string) => { raw: string } }).unsafe = (
   raw: string,
 ) => ({ raw });
@@ -154,8 +155,9 @@ vi.mock('../_lib/uw-stock-candles.js', async (importOriginal) => {
 
 // The exchange multi-leg anchor lookup that replaced the classifier, mocked
 // at the module boundary: its SQL has its own PGlite tests, and keeping it
-// off mockSql leaves every query sequence in this file unchanged. The
-// default (set in beforeEach) answers DEFAULT_ANCHOR, a single-leg anchor,
+// off mockSql means it needs no route here: the router only sees the cron's
+// own statements. The default (set in beforeEach) answers DEFAULT_ANCHOR, a
+// single-leg anchor,
 // for every fire, as on a live tick: a fire's own trigger print always
 // qualifies as its anchor.
 const DEFAULT_ANCHOR: AnchorLegs = {
@@ -188,9 +190,9 @@ const OLD_MULTILEG_COLUMNS = [
 // INSERTs with null takeit_prob/takeit_model_version/takeit_features and
 // that's the intended degraded-path behavior. The Take-It tests below
 // override it, to run the cron's prefetch queries or the real helper. The
-// win-rate day cache resolves [] without SQL by default (it is kicked
-// before the tick scan, so a real loader would shift every mock sequence);
-// the warm-up tests swap in the real cache. Per-fire scoreLottery returns
+// win-rate day cache resolves [] without SQL by default, so the winRates
+// route isn't hit; the warm-up tests swap in the real cache, which loads
+// through that route. Per-fire scoreLottery returns
 // { prob: null, version: null, features: null }; its default is set in
 // beforeEach, since vi.resetAllMocks() there would drop one set here. The
 // scoring tests override it.
@@ -220,8 +222,9 @@ vi.mock('../_lib/takeit-bundle-loader.js', () => ({
 
 // GexBot context lookup is fail-open (migration #181). Default the
 // helper to return null so the INSERT writes NULL into the gex_*
-// columns and the SQL call count stays stable. Real-world fixtures
-// where a snapshot was found are tested in the gexbot-queries unit
+// columns. It is mocked at its module boundary, so it adds no route here.
+// Real-world fixtures where a snapshot was found are tested in the
+// gexbot-queries unit
 // tests; here we only need the integration-level no-snapshot path
 // plus the populated-path assertion below.
 const mockGetLatestGexbotSnapshotAt = vi.hoisted(() => vi.fn());
@@ -1435,11 +1438,10 @@ describe('detect-lottery-fires handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
-    // Migration #158 added a per-fire ticker_flow_snapshot query between
-    // spot_exposures and INSERT — bumps the SPY path from 6 to 7 calls.
-    // 2026-05-22: ticks SELECT now batched into 3 parallel queries
-    // (SENTRY-EMERALD-DESERT-CB), so total = 7 + 2 extra ticks calls = 9.
-    // 2026-06-03: + the post-loop feed-tier monitor query (today's fires) = 10.
+    // Every statement the run sent: the partitioned tick scan, the cooldown
+    // seed, the ticker-day's flow series, the three macro queries (SPY is a
+    // strike ticker, so strike_exposures runs next to flow_data and
+    // spot_exposures), the INSERT and the post-loop tier monitor.
     expect(router.counts()).toEqual({
       ticks: TICK_QUERIES,
       priorFires: 1,
@@ -1472,6 +1474,12 @@ describe('detect-lottery-fires handler', () => {
       totalFires: 0,
       inserted: 0,
     });
+    // No chain qualifies, so there is nothing to seed: no prior-fires lookup,
+    // no flow series, no macro, no INSERT. Only the scan and the monitor run.
+    expect(router.counts()).toEqual({
+      ticks: TICK_QUERIES,
+      tierMonitor: 1,
+    });
   });
 
   it('skips OUT_OF_UNIVERSE chains (e.g. unknown ticker)', async () => {
@@ -1496,10 +1504,10 @@ describe('detect-lottery-fires handler', () => {
       totalFires: 1,
       inserted: 0,
     });
-    // 3-batch ticks SELECT + prior-fires lookup — fire was detected but
-    // mode classifier dropped it as OUT_OF_UNIVERSE so no macro lookups
-    // happen. (Ticks SELECT split into 3 parallel batches 2026-05-22.)
-    // 2026-06-03: + the post-loop feed-tier monitor query = 5.
+    // The fire was detected but the mode classifier dropped it as
+    // OUT_OF_UNIVERSE, so there is no flow series, macro lookup or INSERT.
+    // Only the scan, the prior-fires lookup (the chain passed min-prints) and
+    // the post-loop tier monitor ran.
     expect(router.counts()).toEqual({
       ticks: TICK_QUERIES,
       priorFires: 1,
@@ -1633,9 +1641,9 @@ describe('detect-lottery-fires handler', () => {
       inserted: 0,
       priorSeeds: 1,
     });
-    // Four SQL calls: 3 ticks-batch SELECTs (split 2026-05-22) + the
-    // prior-fires lookup. No macro queries, no insert.
-    // 2026-06-03: + the post-loop feed-tier monitor query = 5.
+    // The cooldown suppresses the fire before it reaches the flow series, the
+    // macro queries or the INSERT: only the scan, the prior-fires seed and
+    // the post-loop tier monitor ran.
     expect(router.counts()).toEqual({
       ticks: TICK_QUERIES,
       priorFires: 1,
@@ -1824,6 +1832,11 @@ describe('detect-lottery-fires handler', () => {
       totalFires: 11,
       inserted: 11,
     });
+    // One flow series for the SNDK ticker-day, reused by all 11 fires: the
+    // per-run cache holds on the healthy path, not only after a failure.
+    expect(router.calls('flowSeries').map((c) => c.params[0])).toEqual([
+      'SNDK',
+    ]);
     expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
       'multileg.classify.high_null_rate',
       expect.anything(),
@@ -2083,6 +2096,10 @@ describe('detect-lottery-fires handler', () => {
         anchorsMissing: 1,
         anchorLookupFailures: 0,
       });
+      // The four SNDK chains share one ticker-day, so one flow series.
+      expect(router.calls('flowSeries').map((c) => c.params[0])).toEqual([
+        'SNDK',
+      ]);
 
       // R5: one call for the tick, one request per fire, keys unique.
       expect(mockLookupAnchorLegs).toHaveBeenCalledTimes(1);
@@ -2701,6 +2718,11 @@ describe('detect-lottery-fires handler', () => {
       totalFires: 2,
       inserted: 2,
     });
+    // Fetched once for SNDK and reused by the second fire (cached per
+    // ticker+date), while each fire still runs its own macro lookups.
+    expect(router.calls('flowSeries').map((c) => c.params[0])).toEqual([
+      'SNDK',
+    ]);
 
     const asOfs = flowDataAsOfs();
     expect(asOfs).toHaveLength(2);
@@ -2746,6 +2768,10 @@ describe('detect-lottery-fires handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
+    // Both fires are on the SNDK ticker-day: one flow series.
+    expect(router.calls('flowSeries').map((c) => c.params[0])).toEqual([
+      'SNDK',
+    ]);
     const allBinds = extractAllInsertBinds(mockSql, 'lottery_finder_fires');
     expect(allBinds).toHaveLength(2);
     // Fire 1: no OTM tick at its as-of → ungated.
@@ -3733,12 +3759,25 @@ describe('detect-lottery-fires handler', () => {
       });
     });
 
-    it('reports 0 for the stages that had no work, and total equal to the tick scan', async () => {
+    it('reports 0 for the stages that did no work (no seed, flow series, fire, insert or candle) and keeps the time of the stages that always run', async () => {
       const advance = useStepClock();
       // Only 4 ticks: below the per-chain minimum, so no seeds, no fires.
       router.on('ticks', (call) => {
         advance(10);
         return call.params.at(-1) === 0 ? fireableSndkStream().slice(0, 4) : [];
+      });
+      // These three run on every non-empty tick, fire or not, and take time.
+      mockLoadTakeitDetectContext.mockImplementation(async () => {
+        advance(11);
+        return null;
+      });
+      mockLookupAnchorLegs.mockImplementation(async () => {
+        advance(17);
+        return new Map();
+      });
+      router.on('tierMonitor', () => {
+        advance(37);
+        return [];
       });
 
       const res = mockResponse();
@@ -3747,14 +3786,14 @@ describe('detect-lottery-fires handler', () => {
       expect(timingsOf(res)).toEqual({
         tickScan: 30,
         seeds: 0,
-        takeitPrefetch: 0,
+        takeitPrefetch: 11,
         pass1Flow: 0,
-        anchors: 0,
+        anchors: 17,
         pass2: 0,
         insert: 0,
         candles: 0,
-        tierMonitor: 0,
-        total: 30,
+        tierMonitor: 37,
+        total: 95,
       });
     });
 
