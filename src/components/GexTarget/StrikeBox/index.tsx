@@ -53,14 +53,21 @@ export interface StrikeBoxProps {
 const TH_CLS =
   'px-1.5 py-1 text-[10px] uppercase tracking-wide font-mono text-left whitespace-nowrap';
 
+/** Γ column header by the displayed slice's feed; neutral when unknown. */
+const GAMMA_HEADER = {
+  scraper: 'UW Periscope Γ',
+  gexbot: 'GEXBot Γ (taker)',
+  unknown: 'Periscope/GEXBot Γ',
+} as const;
+
 export const StrikeBox = memo(function StrikeBox({
   leaderboard,
   mmGammaMap,
   mmGammaCapturedAt,
 }: StrikeBoxProps) {
-  const showSignCheck =
-    mmGammaCapturedAt != null &&
-    periscopeSourceAt(mmGammaCapturedAt) === PERISCOPE_SOURCE.scraper;
+  const gammaSource =
+    mmGammaCapturedAt == null ? null : periscopeSourceAt(mmGammaCapturedAt);
+  const showSignCheck = gammaSource === PERISCOPE_SOURCE.scraper;
   // The parent (GexTarget/index.tsx) pre-sorts the leaderboard by |gexDollars|
   // and slices to 5 before passing it in. Use it directly — no re-sort needed.
   const top5 = leaderboard;
@@ -166,7 +173,7 @@ export const StrikeBox = memo(function StrikeBox({
                   scope="col"
                   title="Per-strike dollar gamma from periscope_snapshots (every 10 min during RTH). Its meaning depends on the slice: since 2026-05-26 it is GEXBot gamma in GEXBot's taker-side sign (positive = traders net long gamma at the strike); before that it was UW Periscope's market-maker position estimate. Scale differs from Hedge/1%, so compare signs only. On UW-era slices only, ✓ = the sign matches the naive Hedge/1% sign and ✗ = it differs; GEXBot slices show no marker, since comparing taker flow with a dealer-convention estimate is UW-era logic that does not carry over."
                 >
-                  Periscope Γ
+                  {GAMMA_HEADER[gammaSource ?? 'unknown']}
                 </th>
                 <th
                   className={TH_CLS}

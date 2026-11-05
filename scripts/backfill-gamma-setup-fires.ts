@@ -50,7 +50,6 @@ import {
 
 import {
   GEXBOT_INCLUDE_WARNING,
-  parseIncludeGexbot,
   resolveBackfillScope,
 } from './_lib/uw-tuned-backfill.js';
 
@@ -75,7 +74,7 @@ const BAR_LOOKBACK = 20; // matches detect-gamma-setups (loadRecentBars)
 // CLI ARGS
 // ============================================================
 
-function parseArgs(): { from: string; to: string; includeGexbot: boolean } {
+function parseArgs(): { from: string; to: string } {
   let from = DEFAULT_FROM;
   let to = DEFAULT_TO;
   const argv = process.argv.slice(2);
@@ -88,7 +87,7 @@ function parseArgs(): { from: string; to: string; includeGexbot: boolean } {
       i += 1;
     }
   }
-  return { from, to, includeGexbot: parseIncludeGexbot(argv) };
+  return { from, to };
 }
 
 // ============================================================

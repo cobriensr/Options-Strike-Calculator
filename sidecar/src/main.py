@@ -14,9 +14,10 @@ trade ticks, and ES options trades/statistics from Databento. That
 subscription was cancelled and the ingestion path was removed on
 2026-09-29; futures data now arrives via the ``uw-stream`` Railway
 service. The co-resident Theta Data Terminal (never run in production)
-and the ``/takeit/multileg-classify`` fallback (served by the standalone
-``classifier/`` service) were removed on 2026-10-02. The Twilio-backed
-alert engine was removed earlier, on 2026-04-08 (SIDE-001).
+and the ``/takeit/multileg-classify`` fallback (which the standalone
+``classifier/`` service then served; that service was itself retired on
+2026-10-29) were removed on 2026-10-02. The Twilio-backed alert engine was
+removed earlier, on 2026-04-08 (SIDE-001).
 
 Runs 24/7 on Railway as a persistent process.
 """

@@ -1,8 +1,10 @@
 /**
- * useGexbotData — single polled hook serving all 8 GEXBot components.
+ * useGexbotData — single hook serving the GEXBot components.
  *
- * Polls `/api/gexbot?view=...` every 30s during market hours. The hook
- * is parameterized by `view` so callers only pay for the data they
+ * Polls `/api/gexbot?view=...` every 30s during market hours, except
+ * `sibling-confirm`: that read answers for a past fire time, so it is
+ * fetched once per URL and re-polled only while its last read errored. The
+ * hook is parameterized by `view` so callers only pay for the data they
  * need; components share the same hook signature so a future move to
  * shared cache (SWR / TanStack Query) is one diff away.
  *
@@ -13,7 +15,7 @@
  * indefinitely (no automatic stale-clearing).
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { POLL_INTERVALS } from '../constants';
 import { fetchJson } from './useMarketData.fetchers';
@@ -40,15 +42,26 @@ export interface SnapshotsLatestRow {
   ogr: number | null;
   ovanna: number | null;
   ocharm: number | null;
-  dexoflow: number | null;
-  gexoflow: number | null;
-  cvroflow: number | null;
   oneDexoflow: number | null;
   oneGexoflow: number | null;
   oneCvroflow: number | null;
-  deltaRiskReversal: number | null;
   /** Nearest listed expiry in days (0 = same-day). Differs per ticker. */
   minDte: number | null;
+}
+
+/** Minute-over-minute change per ticker; null = unavailable (see server). */
+export interface VelocityRow {
+  ticker: string;
+  capturedAt: string;
+  minDte: number | null;
+  /** Δ agg_dex: taker delta flow over the last minute. */
+  dAggDex: number | null;
+  /** Δ zgr: change in call − put GEX imbalance. */
+  dZgr: number | null;
+  /** Δ zcvr: change in net convexity. */
+  dZcvr: number | null;
+  /** Median |Δ agg_dex| over this ticker's session minutes. */
+  typicalAbsDAggDex: number | null;
 }
 
 export interface ConvexityTrendRow {
@@ -75,9 +88,15 @@ export interface MaxchangeWinnerRow {
 
 export interface SiblingConfirmRow {
   ticker: string;
-  zcvr: number | null;
-  deltaRiskReversal: number | null;
-  verdict: 'confirm' | 'contradict' | 'neutral';
+  /**
+   * Net taker delta across the nearest-expiry chain (`min_dte`; not always
+   * 0DTE) at the alert's fire time. + = net long.
+   */
+  netDex: number | null;
+  /** Call minus put GEX imbalance. Context only; not in the verdict. */
+  zgr: number | null;
+  capturedAt: string | null;
+  verdict: 'agree' | 'disagree' | 'none';
 }
 
 // ────────────────────────────────────────────────────────────
@@ -86,12 +105,20 @@ export interface SiblingConfirmRow {
 
 export type GexbotView =
   | { view: 'snapshots-latest' }
+  | { view: 'velocity' }
   | { view: 'convexity-trend' }
   | { view: 'maxchange-winners' }
-  | { view: 'sibling-confirm'; ticker: string; side: 'call' | 'put' };
+  | {
+      view: 'sibling-confirm';
+      ticker: string;
+      side: 'call' | 'put';
+      /** The alert's fire time, ISO 8601. */
+      at: string;
+    };
 
 interface ViewPayload {
   'snapshots-latest': SnapshotsLatestRow[];
+  velocity: VelocityRow[];
   'convexity-trend': ConvexityTrendRow[];
   'maxchange-winners': MaxchangeWinnerRow[];
   'sibling-confirm': SiblingConfirmRow[];
@@ -114,6 +141,7 @@ function buildUrl(spec: GexbotView): string {
   if (spec.view === 'sibling-confirm') {
     qs.set('ticker', spec.ticker);
     qs.set('side', spec.side);
+    qs.set('at', spec.at);
   }
   return `/api/gexbot?${qs.toString()}`;
 }
@@ -137,9 +165,10 @@ function freshestFrom(rows: unknown[]): string | null {
 // In-flight request dedupe
 // ────────────────────────────────────────────────────────────
 //
-// Five Gexbot components subscribe to `view=snapshots-latest` and mount
+// Three Gexbot components (CharmClock, DealerStateSummaryStrip,
+// GammaCompass) subscribe to `view=snapshots-latest` and mount
 // simultaneously on pageload. Without dedupe each issues its own
-// fetch → 5× identical hits + Sentry's N+1 detector firing on every
+// fetch → 3× identical hits + Sentry's N+1 detector firing on every
 // session (SENTRY-EMERALD-DESERT-8J). Dedupe collapses concurrent
 // hits for the same URL into a single in-flight promise; per-component
 // state (rows/loading/error) stays independent, only the network call
@@ -167,14 +196,23 @@ function fetchDeduped(url: string): Promise<GexbotFetchResult> {
 // Hook
 // ────────────────────────────────────────────────────────────
 
+interface FetchState<V extends GexbotView['view']> {
+  /** The request URL this state answers; stale once the spec changes. */
+  url: string;
+  rows: ViewPayload[V];
+  error: string | null;
+  freshestAt: string | null;
+}
+
 export function useGexbotData<V extends GexbotView['view']>(
   spec: GexbotView & { view: V },
   marketOpen: boolean,
 ): UseGexbotDataResult<V> {
-  const [rows, setRows] = useState<ViewPayload[V]>([] as ViewPayload[V]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [freshestAt, setFreshestAt] = useState<string | null>(null);
+  const [state, setState] = useState<FetchState<V> | null>(null);
+  // The newest URL this hook asked for. A response for any other URL is
+  // from a superseded request (a Lottery re-fire changes `at`) and must not
+  // overwrite the newer one.
+  const latestUrl = useRef<string | null>(null);
 
   // Depend on primitives — callers may pass a fresh `spec` object each
   // render. Pulling primitives out keeps the fetcher reference stable
@@ -184,39 +222,67 @@ export function useGexbotData<V extends GexbotView['view']>(
   const view = spec.view;
   const ticker = 'ticker' in spec ? spec.ticker : undefined;
   const side = 'side' in spec ? spec.side : undefined;
+  const at = 'at' in spec ? spec.at : undefined;
+
+  const url =
+    view === 'sibling-confirm'
+      ? buildUrl({ view, ticker: ticker!, side: side!, at: at! })
+      : buildUrl({ view } as GexbotView);
 
   const fetchNow = useCallback(async () => {
-    const url =
-      view === 'sibling-confirm'
-        ? buildUrl({ view, ticker: ticker!, side: side! })
-        : buildUrl({ view } as GexbotView);
+    latestUrl.current = url;
     const result = (await fetchDeduped(url)) as
       | { data: { rows?: ViewPayload[V] } }
       | { error: string; status: number };
+    if (latestUrl.current !== url) return;
     if ('error' in result) {
-      setError(`${result.error} (HTTP ${result.status})`);
-      setLoading(false);
+      const message = `${result.error} (HTTP ${result.status})`;
+      // Keep the last good rows for this URL; a different URL has none.
+      setState((prev) => ({
+        url,
+        rows: prev?.url === url ? prev.rows : ([] as ViewPayload[V]),
+        freshestAt: prev?.url === url ? prev.freshestAt : null,
+        error: message,
+      }));
       return;
     }
     const list = result.data.rows ?? ([] as ViewPayload[V]);
-    setRows(list);
-    setFreshestAt(freshestFrom(list as unknown[]));
-    setError(null);
-    setLoading(false);
-  }, [view, ticker, side]);
+    setState({
+      url,
+      rows: list,
+      freshestAt: freshestFrom(list as unknown[]),
+      error: null,
+    });
+  }, [url]);
 
   // Eager mount fetch — usePolling only schedules the recurring tick.
   useEffect(() => {
     void fetchNow();
   }, [fetchNow]);
 
+  // State from a previous URL answers a different question (another fire
+  // time): show it as not loaded yet, not as this URL's rows.
+  const current = state?.url === url ? state : null;
+
+  // A sibling-confirm read is final once its fire time has passed: the
+  // snapshot it uses is already in the table, and every alert row has its
+  // own URL, so a 30 s tick would be one uncached Neon query per mounted
+  // row per tick for an answer that cannot change. Fetch it once, and tick
+  // only while that read is errored (a Neon blip at mount would otherwise
+  // leave the row without pills until it remounts). The first good read
+  // clears the error and closes the gate.
   usePolling(
     () => {
       void fetchNow();
     },
     POLL_INTERVALS.OTM_FLOW, // 30_000 — matches the spec's requested cadence
-    [marketOpen],
+    [marketOpen, view !== 'sibling-confirm' || current?.error != null],
   );
 
-  return { rows, loading, error, freshestAt };
+  return {
+    rows: current?.rows ?? ([] as ViewPayload[V]),
+    loading: current === null,
+    error: current?.error ?? null,
+    freshestAt: current?.freshestAt ?? null,
+  };
 }

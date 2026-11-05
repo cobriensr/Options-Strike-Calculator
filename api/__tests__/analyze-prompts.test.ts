@@ -368,7 +368,7 @@ describe('analyze system prompt — Periscope rules run on UW data only (D1 revi
       '- UW Periscope absent (no screenshots labelled UW Periscope and no UW Periscope block): caps confidence at MODERATE',
     );
     expect(PROMPT).toContain(
-      'You will receive up to 2 screenshots; only those labelled UW Periscope (Gamma or Charm) are Periscope data,',
+      'You will receive up to 2 screenshots. Periscope data means only screenshots labelled UW Periscope (Gamma or Charm) or a "Periscope Exposure — UW Periscope" block in the context. The rest of the structured API data (flow, GEX, per-strike Greek profiles, and any GEXBot block) is separate from Periscope. You also receive the trader\'s current calculator context and analysis mode.',
     );
     expect(PROMPT).not.toContain(
       'You will receive up to 2 Periscope screenshots',
@@ -386,27 +386,86 @@ describe('analyze system prompt — Periscope rules run on UW data only (D1 revi
   it('never counts a missing SPX Net Flow toward a LOW trigger, in every case (I4)', () => {
     const line = lineStartingWith('Primary signals for structure selection');
     expect(line).toContain(
-      'In every case, a missing SPX Net Flow never counts toward either LOW trigger.',
+      'In every case, a missing SPX Net Flow never counts toward either LOW trigger or as a "missing primary data source" in the MODERATE clause.',
     );
     // NB1: the absence sentence names UW Periscope, not "Its".
     expect(line).toContain(
-      "UW Periscope's absence applies only the MODERATE cap.",
+      "UW Periscope's absence applies only the MODERATE cap;",
     );
     expect(line).not.toContain('Its absence applies only the MODERATE cap.');
   });
 
-  it('keeps one failed feed at MODERATE when UW Periscope is absent (N1)', () => {
-    // Without UW Periscope the structure primaries are SPX Net Flow and
-    // Market Tide, so "only 1 primary available" would fire LOW on one
-    // failed feed. The LOW triggers count the Missing Data Protocol's list.
-    expect(
-      lineStartingWith('Primary signals for structure selection'),
-    ).toContain(
-      'Without UW Periscope data, both LOW triggers ("only 1 primary signal is available" and "2+ primary data sources are unavailable") count only the Missing Data Protocol\'s primary API list (Market Tide, QQQ Net Flow, Aggregate GEX): one unavailable feed stays MODERATE, and a missing SPX Net Flow never lowers confidence.',
+  it('defines "primary" for both LOW triggers as the Missing Data Protocol API list, Periscope or not (CR1/CR2)', () => {
+    // Owner decision (I4). Scenarios the sentence must settle:
+    //  - Periscope present, QQQ + Aggregate GEX missing: two missing
+    //    protocol primaries -> LOW (was MODERATE under the old structure
+    //    primaries SPX Net Flow / Market Tide / Periscope).
+    //  - Periscope present, Market Tide + SPX Net Flow missing: one counted
+    //    feed -> MODERATE (SPX Net Flow never counts).
+    //  - No Periscope, one feed missing: MODERATE cap only.
+    const line = lineStartingWith('Primary signals for structure selection');
+    expect(line).toContain(
+      `Whether or not UW Periscope data is present, both LOW triggers ("only 1 primary signal is available" and "2+ primary data sources are unavailable") count only the Missing Data Protocol's primary API list (Market Tide, QQQ Net Flow, Aggregate GEX): one unavailable feed stays MODERATE, and two or more is LOW.`,
     );
-    expect(PROMPT).not.toContain(
-      'judge the LOW triggers on the API primaries alone',
+    expect(line).toContain(
+      "UW Periscope's absence applies only the MODERATE cap; when present it adds its own confirm/contradict weight and never changes which feeds count toward the LOW triggers.",
     );
+    expect(line).toContain(
+      'a missing SPX Net Flow never counts toward either LOW trigger or as a "missing primary data source" in the MODERATE clause.',
+    );
+    expect(line).not.toContain('Without UW Periscope data, both LOW triggers');
+    // The protocol list the sentence points at stays as the definition.
+    expect(PROMPT).toContain(
+      'A missing PRIMARY API signal (Market Tide, QQQ Net Flow, Aggregate GEX) automatically caps confidence at MODERATE. Two or more missing primary API signals caps confidence at LOW.',
+    );
+  });
+
+  it('rates a flow-vs-gamma split LOW, directly after the LOW line (owner 2026-11-05)', () => {
+    // Settles the old contradiction between MODERATE ("at most 1
+    // contradicting primary signal") and LOW ("flow says one direction,
+    // gamma says another"): LOW wins.
+    const rule =
+      '- Flow vs gamma outranks MODERATE: when the Rule 8 flow consensus (Market Tide, QQQ Net Flow, ETF Tide) points one way and the UW Periscope Gamma profile points the other, the answer is LOW even if that is the only contradicting primary signal. SPX Net Flow alone disagreeing with gamma is not a flow-vs-gamma conflict (Rule 8 treats it as an anti-signal).';
+    expect(PROMPT.split(rule).length - 1).toBe(1);
+    const lowAt = PROMPT.indexOf('\n- LOW: Primary signals conflict');
+    const ruleAt = PROMPT.indexOf(rule);
+    const primaryAt = PROMPT.indexOf(
+      '\nPrimary signals for structure selection:',
+    );
+    expect(lowAt).toBeGreaterThan(-1);
+    expect(ruleAt).toBeGreaterThan(lowAt);
+    // The LOW line, then the new item on the very next line, then the
+    // "Primary signals" line.
+    expect(PROMPT.slice(lowAt + 1, ruleAt).split('\n')).toHaveLength(2);
+    expect(primaryAt).toBe(ruleAt + rule.length);
+  });
+
+  it('keeps QQQ flow out of the "Secondary signals:" list (I2)', () => {
+    expect(lineStartingWith('Secondary signals:')).toContain(
+      'Secondary signals: SPY Net Flow, charm,',
+    );
+    expect(lineStartingWith('Secondary signals:')).not.toContain('QQQ');
+  });
+
+  it('shows no QQQ-as-secondary wording in the Prior-Day Flow Trend rules (m6)', () => {
+    // QQQ flow is a Missing Data Protocol primary; the formatter labels the
+    // prior-day readings "Confirmation:", so the rules say the same.
+    expect(PROMPT).toContain(
+      'Market Tide intraday arc (open → midday → close) and confirmation-source terminal values',
+    );
+    expect(PROMPT).toContain(
+      '- Confirmation-source alignment (SPX Flow, SPY Flow, QQQ Flow, SPY ETF Tide, QQQ ETF Tide)',
+    );
+    expect(PROMPT).not.toContain('secondary flow source terminal values');
+    expect(PROMPT).not.toContain('Secondary source alignment');
+  });
+
+  it('keeps a missing SPX Net Flow at no confidence change in the sample observation (I4)', () => {
+    expect(PROMPT).toContain(
+      '"SPX Net Flow unavailable — flow assessment relies on Market Tide, QQQ Net Flow and SPY Net Flow. No confidence change."',
+    );
+    expect(PROMPT).not.toContain('reducing directional conviction');
+    expect(PROMPT).not.toContain('relies on Market Tide and SPY only');
   });
 
   it('scopes periscopeNotes to UW Periscope data', () => {

@@ -8,11 +8,15 @@
  *
  * Views:
  *   ?view=snapshots-latest     → latest snapshot row per ticker
+ *   ?view=velocity             → minute-over-minute change per ticker
+ *                                (Δagg_dex, Δzgr, Δzcvr via LAG)
  *   ?view=convexity-trend      → 60-min zcvr timeseries per ticker
  *   ?view=maxchange-winners    → latest maxchange winner per (ticker, cat)
- *   ?view=sibling-confirm      → requires &ticker=AAPL&side=call|put
+ *   ?view=sibling-confirm      → requires &ticker=AAPL&side=call|put&at=<ISO
+ *                                fire time>: sibling taker-flow direction then
  *
- * Spec: docs/superpowers/specs/gexbot-frontend-2026-05-16.md
+ * Spec: docs/superpowers/specs/gexbot-frontend-2026-05-16.md (sibling-confirm
+ * superseded by P12a: docs/superpowers/specs/gexbot-refresh-2026-10-28.md)
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
@@ -26,6 +30,7 @@ import {
   getLatestSnapshots,
   getMaxchangeWinners,
   getSiblingConfirmation,
+  getVelocityTape,
 } from './_lib/gexbot-queries.js';
 import logger from './_lib/logger.js';
 import { Sentry, metrics } from './_lib/sentry.js';
@@ -51,13 +56,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const { view, ticker, side } = parsed.data;
+  const { view, ticker, side, at } = parsed.data;
 
   try {
     let body: unknown;
     switch (view) {
       case 'snapshots-latest':
         body = { rows: await getLatestSnapshots() };
+        break;
+      case 'velocity':
+        body = { rows: await getVelocityTape() };
         break;
       case 'convexity-trend':
         body = { rows: await getConvexityTrend() };
@@ -69,14 +77,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // Zod .refine guarantees these are set, but TS narrowing
         // doesn't propagate through .refine — guard explicitly to
         // avoid non-null assertions on user input.
-        if (!ticker || !side) {
+        if (!ticker || !side || !at) {
           done({ status: 400 });
           res.status(400).json({
-            error: 'sibling-confirm requires ticker and side',
+            error: 'sibling-confirm requires ticker, side and at',
           });
           return;
         }
-        body = { rows: await getSiblingConfirmation(ticker, side) };
+        body = {
+          rows: await getSiblingConfirmation(ticker, side, new Date(at)),
+        };
         break;
       }
     }
@@ -89,7 +99,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(200).json(body);
   } catch (err) {
     Sentry.captureException(err, { tags: { route: '/api/gexbot', view } });
-    logger.error({ err, view, ticker, side }, '/api/gexbot failed');
+    logger.error({ err, view, ticker, side, at }, '/api/gexbot failed');
     done({ status: 500 });
     res.status(500).json({ error: 'Internal error' });
   }

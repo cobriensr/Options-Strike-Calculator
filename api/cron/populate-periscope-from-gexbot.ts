@@ -82,8 +82,10 @@ function inOpenWarmup(now: Date): boolean {
 export { decodeStrikes };
 
 /**
- * Build the "HH:MM - HH:MM" CT timeframe label matching the scraper's
- * convention. Floors `capturedAt` to the prior 10-min CT slot.
+ * Build the "HH:MM - HH:MM" CT timeframe label for the 10-min CT slot that
+ * CONTAINS `capturedAt`. The scraper labelled the slot before its capture
+ * (or none), so this label deliberately does not match the scraper's;
+ * scripts/_lib/tag-periscope-source.ts relies on that to tell the eras apart.
  */
 function formatTimeframe(capturedAt: Date): string {
   const ctOpts = { timeZone: 'America/Chicago', hour12: false } as const;

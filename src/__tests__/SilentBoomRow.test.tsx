@@ -48,6 +48,20 @@ vi.mock('../components/charts/TickerNetFlowChart', () => ({
   ),
 }));
 
+const { mockUseGexbotData } = vi.hoisted(() => ({
+  mockUseGexbotData: vi.fn(
+    (): {
+      rows: unknown[];
+      loading: boolean;
+      error: string | null;
+      freshestAt: string | null;
+    } => ({ rows: [], loading: true, error: null, freshestAt: null }),
+  ),
+}));
+vi.mock('../hooks/useGexbotData', () => ({
+  useGexbotData: mockUseGexbotData,
+}));
+
 // Static import AFTER mocks so the mocks are registered first.
 import { SilentBoomRow } from '../components/SilentBoom/SilentBoomRow';
 import type { TickerNetFlowSnapshot } from '../hooks/useTickerNetFlowBatch';
@@ -1339,5 +1353,39 @@ describe('SilentBoomRow: trigger-print leg badge', () => {
       screen.getByTestId('silent-boom-spread-confirmed-badge'),
     ).toBeInTheDocument();
     expect(screen.queryByText(/trigger print:/)).not.toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// SIBLING PILLS
+// ============================================================
+
+describe('SilentBoomRow: sibling taker-flow pills', () => {
+  it('asks for the read at the bucket start and labels it "5-min bucket start"', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [
+        {
+          ticker: 'SPY',
+          netDex: 1_500_000,
+          zgr: 0.8,
+          capturedAt: '2026-05-08T14:30:00.000Z',
+          verdict: 'agree',
+        },
+      ],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-08T14:30:00.000Z',
+    });
+    renderRow(makeAlert({ bucketCt: '2026-05-08T14:30:00Z' }));
+    expect(mockUseGexbotData).toHaveBeenCalledWith(
+      expect.objectContaining({
+        view: 'sibling-confirm',
+        at: '2026-05-08T14:30:00.000Z',
+      }),
+      false,
+    );
+    const title =
+      screen.getByTestId('sibling-pill-AAPL-SPY').getAttribute('title') ?? '';
+    expect(title).toMatch(/as of 5-min bucket start/);
   });
 });

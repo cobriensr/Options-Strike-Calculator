@@ -31,8 +31,9 @@ Usage (from the repo root):
         --from 2026-01-02 --to 2026-10-28 --workers 4
 
 Secrets come from .env.local (DATABASE_URL, R2_*). A worktree has none, so the
-file is resolved from --env-file, then the repo's own .env.local, then the
-main checkout's. Values are never printed. The extract refuses to connect when
+file is resolved from --env-file (which must exist: a missing one exits, it
+never falls back), else the repo's own .env.local, else the main checkout's.
+Values are never printed. The extract refuses to connect when
 the DATABASE_URL it would use (a repo-root .env overrides the environment in
 utils.load_env) differs from the one in that file, which the apply step loads.
 """
@@ -348,11 +349,18 @@ def load_env_local(path: Path) -> None:
 
 
 def resolve_env_file(cli_path: str | None) -> Path | None:
-    """--env-file, then this checkout's .env.local, then the main checkout's."""
-    candidates: list[Path] = []
-    if cli_path:
-        candidates.append(Path(cli_path))
-    candidates.append(REPO_ROOT / ".env.local")
+    """--env-file, else this checkout's .env.local, else the main checkout's.
+
+    An explicit --env-file that is not a file exits rather than falling back,
+    as the TS side's resolveEnvFile throws: the fallbacks hold the production
+    DATABASE_URL, and a typo must not quietly aim the run at it.
+    """
+    if cli_path is not None:
+        explicit = Path(cli_path)
+        if not explicit.is_file():
+            raise SystemExit(f"--env-file {cli_path} not found")
+        return explicit
+    candidates: list[Path] = [REPO_ROOT / ".env.local"]
     try:
         common = subprocess.run(
             ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -476,9 +484,7 @@ def total_ram_bytes() -> int:
     return int(parse_size(limit) / _DUCKDB_DEFAULT_RAM_SHARE)
 
 
-def worker_resources(
-    workers: int, cpu_count: int | None = None, ram_bytes: int | None = None
-) -> tuple[int, str]:
+def worker_resources(workers: int) -> tuple[int, str]:
     """(threads, memory_limit) for one of `workers` parallel DuckDB workers.
 
     Threads split the cores evenly (at least 1); memory splits _RAM_SHARE of
@@ -487,10 +493,9 @@ def worker_resources(
     ~115 s per date against ~25 s at 2.
     """
     workers = max(1, workers)
-    cores = cpu_count if cpu_count is not None else (os.cpu_count() or 1)
-    ram = ram_bytes if ram_bytes is not None else total_ram_bytes()
+    cores = os.cpu_count() or 1
     threads = max(1, cores // workers)
-    mib = max(_MIN_MEMORY_MIB, int(ram * _RAM_SHARE / workers) // 2**20)
+    mib = max(_MIN_MEMORY_MIB, int(total_ram_bytes() * _RAM_SHARE / workers) // 2**20)
     return threads, f"{mib}MiB"
 
 

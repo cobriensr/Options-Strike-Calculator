@@ -30,7 +30,7 @@ So: read the flag, find the sibling legs, show the trader a badge, and retire th
 - Adding the flag as a Take-It feature. That waits for a retrain that shows lift.
 - Spread direction (debit vs credit, bought vs sold). UW's side tags on multi-leg legs are unreliable; working it out needs price/NBBO logic. Out of scope.
 - Spreads entered one leg at a time. They aren't tagged; they will show as single-leg. Accepted.
-- Backfilling the new columns for fires older than `ws_option_trades` retention (~2 days). History before ship stays NULL in the new columns.
+- Backfilling the new columns for fires older than `ws_option_trades` retention (~2 days). History before ship stays NULL in the new columns (reversed 2026-10-29: see "History backfill from the full tape").
 - The separate Take-It one-hot scoring bug (memory `project_takeit_onehot_missing_bug.md`). The owner approved fixing it on 10-28. It ships as its own change, before this project's phases.
 
 ## Anti-goals (fails even if it "works")
@@ -101,7 +101,7 @@ Use only prints already received at detect time. This matched the full-window an
 | `spread_shape` | `text` | from the table above; NULL unless `multi_leg` |
 | `spread_legs` | `jsonb` | array of `{optionType, strike, expiry, size, price, tradeCode}` (camelCase, matching `SpreadLeg` in src/types/spread-legs.ts), anchor first, capped at 8 legs |
 
-All nullable. NULL `anchor_leg_kind` means no anchor print was found.
+All nullable. A NULL `anchor_ws_trade_id` means no anchor print was found. A NULL `anchor_leg_kind` with an anchor id means the anchor print carried no trade code (UW sent none, or an empty string), which is not the same as `single`.
 
 **Old columns** (`inferred_structure`, `is_isolated_leg`, `match_confidence`, `pattern_group_id`): kept for history, no longer written. Dropping them is a separate, later decision.
 
@@ -122,6 +122,8 @@ All nullable. NULL `anchor_leg_kind` means no anchor print was found.
   - When every fire is a spread leg it reads `spread leg on all <n> fires · …`.
 - Each entry in the reignites list (`historicalFires` / `ReignitionSection`) gets a small spread-leg marker when that fire's anchor was `multi_leg` (`stock_tied` gets its own marker).
 - The feed must therefore return per-fire `anchor_leg_kind` (and shape) in `historicalFires`, plus k and n for the row.
+
+*Ruling 9 (null shape or legs on a `multi_leg` anchor):* a `multi_leg` anchor with null shape/legs cannot occur (`describeAnchor` always sets both). If it did, Silent Boom shows a bare "trigger print: spread leg" and Lottery Finder omits the badge in that state. The asymmetry is accepted.
 
 **Take-It:** remove the dead classifier wiring so a future retrain can't learn from columns that will now always be NULL:
 - `takeit-features.ts` (the `inferred_structure` one-hot inputs, `is_isolated_leg`, `match_confidence`)
@@ -202,9 +204,9 @@ Each phase lands on main by itself and passes `npm run review` and the code-revi
 
 ## Known side effects
 
-- `ml/src/lottery_scoring.py:129` trains only on rows with `inferred_structure IS NULL`. After phase 4, every new row qualifies, so that filter stops meaning anything. Flag at the next rescore; not changed here.
-  - Since 2026-10-29 a guard (`ml/src/lottery_refit_guard.py`) blocks both nightly refits, because new rows are unclassified. It also covers `TODAY_QUERY` in `scripts/online_ticker_update.py`, which this spec doesn't name, and a third site, `scripts/backfill_lottery_scores.py`.
-    Remove the guard when `FETCH_QUERY` and `TODAY_QUERY` both move to `anchor_leg_kind`.
+- `ml/src/lottery_scoring.py` trained only on rows with `inferred_structure IS NULL`. After phase 4, every new row would qualify, so that filter would stop meaning anything. It was moved to `anchor_leg_kind = 'single'` on 2026-10-29: see "Lottery refit training filter" below.
+  - Since 2026-10-29 a guard (`ml/src/lottery_refit_guard.py`) blocks both nightly refits. It also covers `TODAY_QUERY` in `scripts/online_ticker_update.py`, which this spec doesn't name, and a third site, `scripts/backfill_lottery_scores.py`.
+    The guard comes off on the conditions listed in that section, not when the queries move.
 - Silent Boom's `multi_leg_share` (a live Take-It feature) shifts slightly once `cbmo` counts and `mfto` is gone. Approved.
 
 ## Settled during the builder check
@@ -229,14 +231,21 @@ Each phase lands on main by itself and passes `npm run review` and the code-revi
 
 Both nightly lottery refits moved from `inferred_structure IS NULL` to `anchor_leg_kind = 'single'`. The one definition is `SINGLE_LEG_FILTER` in `ml/src/lottery_scoring.py`, and `scripts/online_ticker_update.py` imports it. This follows the "Refit" section of the nightly pipeline spec: one definition of "not part of a multi-leg structure", switched to the exchange-derived flag once the classifier is retired. The filter excludes `multi_leg`, `stock_tied` and NULL (unknown) rows, which is the conservative reading of "spread legs stay excluded".
 
-No fire has `anchor_leg_kind` set before the 2026-10-29 18:22 CT deploy, so the filter has no history yet. `ml/src/lottery_refit_guard.py` therefore still blocks the refit. Its text now names the new reason. It comes off when all three hold:
+No fire had `anchor_leg_kind` set before the 2026-10-29 18:22 CT deploy. The full-tape backfill (below) has since filled the older fires (2026-11-04), so the filter now has history. `ml/src/lottery_refit_guard.py` still blocks the refit: it now waits only on (b) and (c). It comes off when all three hold:
 
-- (a) `anchor_leg_kind` is backfilled from the full tape for the 90-day training window. `ws_option_trades` keeps only 2 days, so the source is the UW Full Tape, where the trade code is the `upstream_condition_detail` column. The owner asked this project to run it (2026-10-29); see "History backfill from the full tape" below.
+- (a) **Done 2026-11-04.** `anchor_leg_kind` is backfilled from the full tape for the 90-day training window. `ws_option_trades` keeps only 2 days, so the source is the UW Full Tape, where the trade code is the `upstream_condition_detail` column. The owner asked this project to run it (2026-10-29); see "History backfill from the full tape" below. Lottery is 1,049,951 of 1,049,953 fires, and the 90-day training window is 100% covered.
 - (b) The outcome backfill has landed, and the old bug signature (flow_inv > peak × 1.05) has been measured, per the nightly spec's "Refit" section.
 - (c) The two phase-4 fixes in the nightly spec are in: the backfill's `<` vs `<=` boundary, and the EMA's evening no-op from `CURRENT_DATE` in GMT.
 
-Research scripts that still filter on `inferred_structure` reproduce classifier-era studies and were left as-is, by design:
+Research scripts that still read the old classifier columns (`inferred_structure`, `is_isolated_leg`) reproduce classifier-era studies and were left as-is, by design. They keep running because the old columns are kept:
 
+- `scripts/_probe-conviction-c-coverage.ts`
+- `scripts/_probe-conviction-c-struct-dates.ts`
+- `scripts/_probe-lf-tags.ts`
+- `scripts/analyze-conviction-c-signals-2026-05-29.ts`
+- `scripts/analyze-conviction-edge-2026-05-29.ts`
+- `scripts/analyze-tag-scorecard-2026-05-29.ts`
+- `scripts/audit-inferred-structure-outliers.mjs`
 - `scripts/backtest_stop_target_by_tier.py`
 - `scripts/context_feature_lift_study.py`
 - `scripts/mine_outcome_patterns.py`

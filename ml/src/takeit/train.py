@@ -107,7 +107,10 @@ CATEGORICAL_COLS: Final = {
     # Phase 3 (time-of-day): `session_phase_cat` is the 7-bucket categorical
     # label (pre_open, open, opening_30, morning, lunch, afternoon, closing).
     # NULL-safe via pd.get_dummies(dummy_na=False) → NULL rows produce
-    # an all-zero one-hot block, which XGBoost handles via NaN-default routing.
+    # an all-zero one-hot block. The zeros are explicit 0.0, not NaN, so
+    # XGBoost scores them as "inactive", not through NaN-default routing;
+    # expandOneHotCategoricals (api/_lib/takeit-features.ts) emits the same
+    # explicit zeros at serving time.
     "lottery": [
         "option_type",
         "mode",

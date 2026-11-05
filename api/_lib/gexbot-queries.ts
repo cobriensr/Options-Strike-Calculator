@@ -5,8 +5,14 @@
  *
  * Spec: docs/superpowers/specs/gexbot-frontend-2026-05-16.md
  *
- * All helpers return `[]` when the source tables are empty — the
- * frontend renders empty-state for that case. They do NOT throw.
+ * The list readers (`getLatestSnapshots`, `getVelocityTape`,
+ * `getConvexityTrend`, `getMaxchangeWinners`) return `[]` when the source
+ * tables are empty — the frontend renders empty-state for that case.
+ * `getSiblingConfirmation` returns one no-data row per sibling instead (and
+ * `[]` only for a ticker with no siblings). `getLatestGexbotSnapshotAt`
+ * returns `null` when no row is in its window. A DB failure propagates from
+ * every helper (after `withDbRetry`); `api/gexbot.ts` turns it into a 500
+ * plus a Sentry capture.
  */
 
 import { getDb, withDbRetry } from './db.js';
@@ -39,15 +45,36 @@ export interface SnapshotsLatestRow {
   ogr: number | null;
   ovanna: number | null;
   ocharm: number | null;
-  dexoflow: number | null;
-  gexoflow: number | null;
-  cvroflow: number | null;
   oneDexoflow: number | null;
   oneGexoflow: number | null;
   oneCvroflow: number | null;
-  deltaRiskReversal: number | null;
   /** Nearest listed expiry in days (0 = same-day). Differs per ticker. */
   minDte: number | null;
+}
+
+/**
+ * One ticker's minute-over-minute change, for the velocity tape. Every delta
+ * is `null` when it cannot be trusted: no prior snapshot in the ET session,
+ * the prior is more than 3 minutes older, or the vendor repeated the prior
+ * `source_timestamp` (the 09:30 VIX repeat of the prior close).
+ */
+export interface VelocityRow {
+  ticker: string;
+  capturedAt: string;
+  /** Nearest listed expiry in days (0 = same-day). Differs per ticker. */
+  minDte: number | null;
+  /** Change in `agg_dex` (session-cumulative taker delta) over the minute. */
+  dAggDex: number | null;
+  /** Change in `zgr` (call minus put GEX imbalance) over the minute. */
+  dZgr: number | null;
+  /** Change in `zcvr` (net convexity) over the minute. */
+  dZcvr: number | null;
+  /**
+   * Median |dAggDex| over the ticker's valid minutes this ET session, so the
+   * client can rank a move against that ticker's own norm. Null until the
+   * session has one valid change.
+   */
+  typicalAbsDAggDex: number | null;
 }
 
 export interface MaxchangeWinnerRow {
@@ -74,12 +101,20 @@ export interface ConvexityTrendRow {
   series: Array<[string, number]>;
 }
 
+export type SiblingVerdict = 'agree' | 'disagree' | 'none';
+
 export interface SiblingConfirmRow {
   ticker: string;
-  zcvr: number | null;
-  deltaRiskReversal: number | null;
-  /** 'confirm' / 'contradict' / 'neutral' relative to the calling row's side. */
-  verdict: 'confirm' | 'contradict' | 'neutral';
+  /**
+   * Net taker delta across the nearest-expiry chain (`min_dte`; not always
+   * 0DTE) at the fire time. + = net long delta.
+   */
+  netDex: number | null;
+  /** Call minus put GEX imbalance. Context only; not in the verdict. */
+  zgr: number | null;
+  /** When the snapshot behind this row was captured; null when none. */
+  capturedAt: string | null;
+  verdict: SiblingVerdict;
 }
 
 // ────────────────────────────────────────────────────────────
@@ -145,13 +180,9 @@ interface RawSnapshotsRow {
   ogr: unknown;
   ovanna: unknown;
   ocharm: unknown;
-  dexoflow: unknown;
-  gexoflow: unknown;
-  cvroflow: unknown;
   one_dexoflow: unknown;
   one_gexoflow: unknown;
   one_cvroflow: unknown;
-  delta_risk_reversal: unknown;
   min_dte: unknown;
 }
 
@@ -168,9 +199,8 @@ export async function getLatestSnapshots(): Promise<SnapshotsLatestRow[]> {
         spot, zero_gamma,
         z_mlgamma, z_msgamma, zcvr, zgr, zvanna, zcharm,
         o_mlgamma, o_msgamma, ocvr, ogr, ovanna, ocharm,
-        dexoflow, gexoflow, cvroflow,
         one_dexoflow, one_gexoflow, one_cvroflow,
-        delta_risk_reversal, min_dte
+        min_dte
       FROM gexbot_snapshots
       WHERE captured_at >= now() - INTERVAL '15 minutes'
       ORDER BY ticker, captured_at DESC
@@ -196,14 +226,132 @@ export async function getLatestSnapshots(): Promise<SnapshotsLatestRow[]> {
     ogr: toNum(r.ogr),
     ovanna: toNum(r.ovanna),
     ocharm: toNum(r.ocharm),
-    dexoflow: toNum(r.dexoflow),
-    gexoflow: toNum(r.gexoflow),
-    cvroflow: toNum(r.cvroflow),
     oneDexoflow: toNum(r.one_dexoflow),
     oneGexoflow: toNum(r.one_gexoflow),
     oneCvroflow: toNum(r.one_cvroflow),
-    deltaRiskReversal: toNum(r.delta_risk_reversal),
     minDte: toNum(r.min_dte),
+  }));
+}
+
+// ────────────────────────────────────────────────────────────
+// Query: velocity tape (minute-over-minute change per ticker)
+// ────────────────────────────────────────────────────────────
+
+interface RawVelocityRow {
+  ticker: string;
+  captured_at: string | Date;
+  min_dte: unknown;
+  d_agg_dex: unknown;
+  d_zgr: unknown;
+  d_zcvr: unknown;
+  typical_abs_d_agg_dex: unknown;
+}
+
+/**
+ * Latest snapshot per ticker, differenced against the snapshot before it
+ * with `LAG` over `captured_at`.
+ *
+ * - Scope: the current ET session only (`agg_dex` is session-cumulative, so
+ *   a difference across the overnight reset is meaningless). The ET-midnight
+ *   bound truncates the ET wall-clock timestamp, then converts it back to
+ *   timestamptz, so it is right on both sides of a DST change.
+ * - Gap rule: a prior snapshot more than 3 minutes older (about two missed
+ *   1-min cron runs) yields null deltas, never a multi-minute change dressed
+ *   up as one minute.
+ * - Stale rule: a prior with the same `source_timestamp` is the vendor
+ *   replaying its last value, so the "change" is an artifact; null deltas.
+ *   A prior whose `source_timestamp` predates the ET session is the same
+ *   artifact: VIX's 09:30 row carries the prior close's timestamp, so the
+ *   09:31 "change" would be a jump from yesterday's close.
+ * - Freshness: tickers whose newest snapshot is over 15 minutes old are
+ *   dropped, matching `getLatestSnapshots`.
+ * - `typical_abs_d_agg_dex` is the per-ticker median |Δagg_dex| over the
+ *   session's valid minutes (at most ~390 rows per ticker, so a cheap
+ *   ordered-set aggregate).
+ *
+ * "Now" is a bound JS clock reading rather than SQL `now()`, so the whole
+ * statement is evaluated against one instant.
+ */
+export async function getVelocityTape(): Promise<VelocityRow[]> {
+  const sql = getDb();
+  const nowIso = new Date().toISOString();
+  const rows = (await withDbRetry(
+    () => sql`
+      WITH bounds AS (
+        SELECT
+          ${nowIso}::timestamptz AS now_ts,
+          date_trunc('day', ${nowIso}::timestamptz AT TIME ZONE 'America/New_York')
+            AT TIME ZONE 'America/New_York' AS day_start
+      ),
+      lagged AS (
+        SELECT
+          s.ticker, s.captured_at, s.min_dte, s.source_timestamp,
+          s.agg_dex, s.zgr, s.zcvr,
+          LAG(s.captured_at)       OVER w AS prev_at,
+          LAG(s.source_timestamp)  OVER w AS prev_src,
+          LAG(s.agg_dex)           OVER w AS prev_agg_dex,
+          LAG(s.zgr)               OVER w AS prev_zgr,
+          LAG(s.zcvr)              OVER w AS prev_zcvr
+        FROM gexbot_snapshots s, bounds b
+        WHERE s.captured_at >= b.day_start
+          AND s.captured_at <= b.now_ts
+        WINDOW w AS (PARTITION BY s.ticker ORDER BY s.captured_at)
+      ),
+      paired AS (
+        SELECT
+          l.*,
+          (
+            l.prev_at IS NOT NULL
+            AND l.captured_at - l.prev_at <= INTERVAL '3 minutes'
+            AND (l.prev_src IS NULL
+                 OR l.prev_src >= extract(epoch FROM b.day_start))
+            AND (l.source_timestamp IS NULL
+                 OR l.source_timestamp IS DISTINCT FROM l.prev_src)
+          ) AS ok
+        FROM lagged l, bounds b
+      ),
+      diffs AS (
+        SELECT
+          p.ticker, p.captured_at, p.min_dte,
+          CASE WHEN p.ok THEN (p.agg_dex - p.prev_agg_dex)::float8 END AS d_agg_dex,
+          CASE WHEN p.ok THEN (p.zgr - p.prev_zgr)::float8 END AS d_zgr,
+          CASE WHEN p.ok THEN (p.zcvr - p.prev_zcvr)::float8 END AS d_zcvr
+        FROM paired p
+      ),
+      typical AS (
+        SELECT
+          ticker,
+          percentile_cont(0.5) WITHIN GROUP (ORDER BY abs(d_agg_dex)) AS median_abs
+        FROM diffs
+        WHERE d_agg_dex IS NOT NULL
+        GROUP BY ticker
+      ),
+      latest AS (
+        SELECT DISTINCT ON (d.ticker) d.*
+        FROM diffs d, bounds b
+        WHERE d.captured_at >= b.now_ts - INTERVAL '15 minutes'
+        ORDER BY d.ticker, d.captured_at DESC
+      )
+      SELECT
+        l.ticker, l.captured_at, l.min_dte,
+        l.d_agg_dex, l.d_zgr, l.d_zcvr,
+        t.median_abs::float8 AS typical_abs_d_agg_dex
+      FROM latest l
+      LEFT JOIN typical t USING (ticker)
+      ORDER BY l.ticker
+    `,
+    READ_RETRIES,
+    READ_TIMEOUT_MS,
+  )) as RawVelocityRow[];
+
+  return rows.map((r) => ({
+    ticker: r.ticker,
+    capturedAt: toIso(r.captured_at),
+    minDte: toNum(r.min_dte),
+    dAggDex: toNum(r.d_agg_dex),
+    dZgr: toNum(r.d_zgr),
+    dZcvr: toNum(r.d_zcvr),
+    typicalAbsDAggDex: toNum(r.typical_abs_d_agg_dex),
   }));
 }
 
@@ -266,13 +414,24 @@ interface RawCaptureRow {
   raw_response: unknown;
 }
 
+/**
+ * GEXBot's INT32 "no value" sentinel (-2147483.648) shows up in maxchange
+ * windows around the close (seen 15:59:46-16:00:00 ET). Anything at or below
+ * this floor is the sentinel, never a real strike or change, so the whole
+ * tuple is dropped.
+ */
+const MAXCHANGE_SENTINEL_FLOOR = -2_147_483;
+
 function pickWindowTuple(raw: unknown, key: string): [number, number] | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const value = (raw as Record<string, unknown>)[key];
   if (!Array.isArray(value) || value.length < 2) return null;
   const strike = toNum(value[0]);
   const change = toNum(value[1]);
-  return strike !== null && change !== null ? [strike, change] : null;
+  if (strike === null || change === null) return null;
+  if (strike <= MAXCHANGE_SENTINEL_FLOOR || change <= MAXCHANGE_SENTINEL_FLOOR)
+    return null;
+  return [strike, change];
 }
 
 export async function getMaxchangeWinners(): Promise<MaxchangeWinnerRow[]> {
@@ -315,54 +474,97 @@ export async function getMaxchangeWinners(): Promise<MaxchangeWinnerRow[]> {
 }
 
 // ────────────────────────────────────────────────────────────
-// Query: sibling confirmation
+// Query: sibling taker-flow direction at an alert's fire time
 // ────────────────────────────────────────────────────────────
 
 /**
- * For an alert on `ticker` going `side` (call or put), pull the latest
- * `zcvr` + `delta_risk_reversal` for each sibling and label whether
- * the sibling confirms or contradicts the alert's direction.
+ * How far before a fire time a snapshot may sit and still count, for every
+ * fire-time lookup (`getLatestGexbotSnapshotAt` and the sibling read).
+ * fetch-gexbot-fast runs once a minute, so 180 s tolerates two consecutive
+ * missed runs; the older 120 s budget survived only one.
+ */
+export const FIRE_TIME_MAX_AGE_SECONDS = 180;
+
+/**
+ * Direction read of one sibling against the alert's side.
+ * `net_dex` is the net taker delta across the nearest-expiry chain
+ * (`min_dte`; 0DTE only on a ticker with a same-day expiry): positive means
+ * takers are net long delta (call-side flow), negative the opposite.
+ *   - call alert: net_dex > 0 → agree, net_dex < 0 → disagree
+ *   - put alert:  net_dex < 0 → agree, net_dex > 0 → disagree
+ *   - zero or missing → none (never agree on both sides)
+ */
+export function siblingVerdict(
+  side: 'call' | 'put',
+  netDex: number | null,
+): SiblingVerdict {
+  if (netDex === null || netDex === 0) return 'none';
+  const callSide = netDex > 0;
+  return callSide === (side === 'call') ? 'agree' : 'disagree';
+}
+
+interface RawSiblingRow {
+  ticker: string;
+  captured_at: string | Date;
+  net_dex: unknown;
+  zgr: unknown;
+}
+
+/**
+ * For an alert on `ticker` going `side`, read each sibling's taker-flow
+ * direction (the sign of `net_dex`) from the snapshot at or before `asOf`
+ * (the alert's fire time) and no more than 180 s older. `zgr` rides along
+ * as context only; it does not enter the verdict.
  *
- * Heuristic verdict (v0; spec calls out this needs validation):
- *   - call alerts: sibling zcvr > 1 OR delta_risk_reversal > 0 → confirm
- *   - put alerts:  sibling zcvr < 1 OR delta_risk_reversal < 0 → confirm
- *   - else neutral
+ * A row also needs a vendor `source_timestamp` (Unix seconds) inside the
+ * same window. At the 09:30-09:31 ET open the vendor repeats VIX's prior
+ * close, so a fresh `captured_at` can carry the previous session's reading.
+ * A NULL `source_timestamp` carries no evidence either way and is kept.
+ *
+ * Returns one row per sibling. A sibling with no snapshot in the window
+ * (fire older than the live table's ~2 sessions, cron miss) gets a
+ * `none` row with null readings. The Parquet archive is not read.
  */
 export async function getSiblingConfirmation(
   ticker: string,
   side: 'call' | 'put',
+  asOf: Date,
 ): Promise<SiblingConfirmRow[]> {
-  const siblings = siblingsFor(ticker);
+  const siblings = siblingsFor(mapToGexbotTicker(ticker) ?? ticker);
   if (siblings.length === 0) return [];
 
   const sql = getDb();
+  const upperBound = asOf.toISOString();
+  const lowerBound = new Date(
+    asOf.getTime() - FIRE_TIME_MAX_AGE_SECONDS * 1000,
+  ).toISOString();
   const rows = (await withDbRetry(
     () => sql`
       SELECT DISTINCT ON (ticker)
-        ticker, zcvr, delta_risk_reversal
+        ticker, captured_at, net_dex, zgr
       FROM gexbot_snapshots
       WHERE ticker = ANY(${siblings as readonly string[]}::text[])
-        AND captured_at >= now() - INTERVAL '5 minutes'
+        AND captured_at >= ${lowerBound}::timestamptz
+        AND captured_at <= ${upperBound}::timestamptz
+        AND (source_timestamp IS NULL
+             OR source_timestamp >= extract(epoch FROM ${lowerBound}::timestamptz))
       ORDER BY ticker, captured_at DESC
     `,
     READ_RETRIES,
     READ_TIMEOUT_MS,
-  )) as Array<{ ticker: string; zcvr: unknown; delta_risk_reversal: unknown }>;
+  )) as RawSiblingRow[];
 
-  return rows.map((r) => {
-    const zcvr = toNum(r.zcvr);
-    const drr = toNum(r.delta_risk_reversal);
-    const callBias = (zcvr !== null && zcvr > 1) || (drr !== null && drr > 0);
-    const putBias = (zcvr !== null && zcvr < 1) || (drr !== null && drr < 0);
-    let verdict: 'confirm' | 'contradict' | 'neutral' = 'neutral';
-    if (side === 'call') {
-      if (callBias) verdict = 'confirm';
-      else if (putBias) verdict = 'contradict';
-    } else {
-      if (putBias) verdict = 'confirm';
-      else if (callBias) verdict = 'contradict';
-    }
-    return { ticker: r.ticker, zcvr, deltaRiskReversal: drr, verdict };
+  const byTicker = new Map(rows.map((r) => [r.ticker, r]));
+  return siblings.map((sibling) => {
+    const r = byTicker.get(sibling);
+    const netDex = r ? toNum(r.net_dex) : null;
+    return {
+      ticker: sibling,
+      netDex,
+      zgr: r ? toNum(r.zgr) : null,
+      capturedAt: r ? toIso(r.captured_at) : null,
+      verdict: siblingVerdict(side, netDex),
+    };
   });
 }
 
@@ -430,6 +632,12 @@ interface RawFireTimeRow {
  * Fetch the most recent `gexbot_snapshots` row for `gexbotTicker` whose
  * `captured_at` is at-or-before `asOf` but no older than `maxAgeSeconds`.
  *
+ * Same stale-vendor-timestamp rule as the sibling read: a row whose
+ * `source_timestamp` (Unix seconds) predates the window is the vendor
+ * replaying an older reading (VIX's prior close at the 09:30 open), so it
+ * is not "at fire time" even though its `captured_at` is fresh. A NULL
+ * `source_timestamp` carries no evidence either way and is kept.
+ *
  * Returns `null` when no row matches the freshness window — callers MUST
  * be prepared for that case (ticker outside cron coverage, cron miss,
  * weekend hour, etc.) and write NULL into the gex_ columns.
@@ -441,7 +649,7 @@ interface RawFireTimeRow {
 export async function getLatestGexbotSnapshotAt(
   gexbotTicker: string,
   asOf: Date,
-  maxAgeSeconds = 180,
+  maxAgeSeconds = FIRE_TIME_MAX_AGE_SECONDS,
 ): Promise<FireTimeGexbotSnapshot | null> {
   const sql = getDb();
   const lowerBoundMs = asOf.getTime() - maxAgeSeconds * 1000;
@@ -458,6 +666,8 @@ export async function getLatestGexbotSnapshotAt(
       WHERE ticker = ${gexbotTicker}
         AND captured_at >= ${lowerBound}::timestamptz
         AND captured_at <= ${upperBound}::timestamptz
+        AND (source_timestamp IS NULL
+             OR source_timestamp >= extract(epoch FROM ${lowerBound}::timestamptz))
       ORDER BY captured_at DESC
       LIMIT 1
     `,

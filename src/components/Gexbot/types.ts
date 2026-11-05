@@ -13,8 +13,8 @@ export type {
 
 /**
  * Long-gamma / short-gamma / unknown derivation from spot vs zero_gamma.
- * spot > zero_gamma → long gamma (vol stable / suppression).
- * spot < zero_gamma → short gamma (vol expansion regime).
+ * spot > zero_gamma → long gamma.
+ * spot < zero_gamma → short gamma.
  *
  * GEXBot sends `zero_gamma = 0` when no volume has printed yet (the
  * vendor hides the level in that case). A zero level is a sentinel, not

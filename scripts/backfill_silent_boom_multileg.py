@@ -1,11 +1,18 @@
 #!/usr/bin/env python
 """Backfill silent_boom_alerts.multi_leg_share from EOD parquets.
 
+HISTORICAL (one-off, 2026-05): kept for the record, not for reuse as is. Its
+trade-code list below is the pre-2026-10-29 one (it still has ``mfto``, which
+is not an OPRA code, and lacks ``cbmo`` and ``mctp``). The current list, which
+the crons and the anchor lookup use, is api/_lib/multileg-codes.ts. It also
+reads the retired Mac's ``~/Desktop`` parquet folders, which do not exist on
+the current machine.
+
 For every row where multi_leg_share IS NULL, look up the 5-min spike
 bucket in the day's per-trade parquet and compute the multi-leg share
 of bucket size — sum of size whose `upstream_condition_detail` is one
-of mlat/mlet/mlft/mfto/masl/mesl/mfsl/mlct (OPRA-standard multi-leg
-sale conditions, same set used by api/cron/detect-silent-boom.ts).
+of mlat/mlet/mlft/mfto/masl/mesl/mfsl/mlct (the multi-leg sale
+conditions as of the 2026-05 backfill).
 
 Two parquet roots tried in order — full-tape has richer columns but
 Bot-Eod is a smaller per-day file that loads faster when both are
@@ -38,6 +45,8 @@ ENV_FILE = ROOT / '.env.local'
 BOT_EOD_DIR = pathlib.Path.home() / 'Desktop' / 'Bot-Eod-parquet'
 FULL_TAPE_DIR = pathlib.Path.home() / 'Desktop' / 'Eod-Full-Tape-parquet'
 
+# Pre-2026-10-29 list, frozen with this historical script (see the docstring);
+# the current one is api/_lib/multileg-codes.ts.
 MULTI_LEG_CODES = frozenset(
     ('mlat', 'mlet', 'mlft', 'mfto', 'masl', 'mesl', 'mfsl', 'mlct'),
 )

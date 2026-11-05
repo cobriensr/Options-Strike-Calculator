@@ -80,6 +80,8 @@ state) until then.
 
 #### 4. `<DexoflowVelocityTape />`
 
+> **Superseded by P12b (2026-10-29), see [gexbot-refresh-2026-10-28.md](./gexbot-refresh-2026-10-28.md).** The vendor `dexoflow` / `gexoflow` / `cvroflow` scalars are each the change over one 1–2 s step sampled once a minute, so 70–99% of them were exact zeros on the smaller tickers. The tape now shows the minute-over-minute change of `agg_dex`, `zgr` and `zcvr`, differenced server-side (`view=velocity`), in a fixed ticker order with an "unusual" highlight. The text below is kept as history.
+
 - **Data:** `gexbot_snapshots.{dexoflow, gexoflow, cvroflow}` per ticker, last 5 ticks (5 min history)
 - **Render:** Per-ticker row showing the 3 flow-rate scalars as small speedometer-style gauges. Color-graded by direction (positive = green, negative = red). Trend arrow showing 5-min slope.
 - **Sketch:**
@@ -118,6 +120,8 @@ state) until then.
 
 #### 6. `<CrossAssetSkewDashboard />`
 
+> **Removed in P12b (2026-10-29), see [gexbot-refresh-2026-10-28.md](./gexbot-refresh-2026-10-28.md).** The vendor lists `delta_risk_reversal` as "Vestigial metric, discontinued". The component and `deltaRiskReversal` on the client path are gone; the database column, the capture cron and the Parquet schema are untouched. The text below is kept as history.
+
 - **Data:** `gexbot_snapshots.delta_risk_reversal` per ticker, latest + 1-day-ago
 - **Render:** Bar chart, one bar per ticker, height = risk reversal value. Positive (call-skewed/greed) above zero line, negative (put-skewed/fear) below. Today vs 1d-ago overlay.
 - **Sketch:**
@@ -149,6 +153,8 @@ state) until then.
 ### Wave 4 — Integrated component (1)
 
 #### 8. `<SiblingAssetConfirmationBar />` (lives inline in lottery/silent-boom rows)
+
+> **Superseded by P12a (2026-10-29), see [gexbot-refresh-2026-10-28.md](./gexbot-refresh-2026-10-28.md).** The `zcvr` / `delta_risk_reversal` heuristic below misread net convexity as a call/put ratio and judged the current minute. The pills now compare each sibling's `net_dex` sign with the alert's side at the alert's fire time (see `api/_lib/gexbot-queries.ts` `getSiblingConfirmation`). The text below is kept as history.
 
 - **Data:** Given a lottery row for `{ticker, side}`, query `gexbot_snapshots` for sibling tickers' `zcvr` + `delta_risk_reversal` direction over the last 5 minutes. "Sibling" = same asset class (large-cap = SPX/SPY/QQQ/IWM/NDX; volatility = VIX; commodity = GLD/USO/SLV; etc.).
 - **Render:** Inline 3-pill bar next to existing TakeItScore badges. Each pill represents a sibling ticker; color indicates whether it confirms (green) or contradicts (red) the lottery row's direction. Tooltip on hover shows the underlying convexity ratio.
@@ -237,7 +243,7 @@ None — design decisions all locked.
   "abnormally high convexity") need a week of distribution data
   before they can be set meaningfully. v0 uses naive 3-band heatmap
   on observed range; v1 will calibrate on observed quantiles.
-- **Sibling confirmation logic is heuristic.** Direction of `zcvr` or
+- **(Superseded by P12a, 2026-10-29; see gexbot-refresh-2026-10-28.md.)** **Sibling confirmation logic is heuristic.** Direction of `zcvr` or
   `delta_risk_reversal` ≠ direction of the underlying. Needs
   validation that "SPY zcvr rising" reliably maps to "broad market
   call pressure rising" before this signal influences any decision.

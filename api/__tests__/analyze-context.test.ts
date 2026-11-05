@@ -20,6 +20,11 @@ import {
   buildAnalysisContext,
 } from '../_lib/analyze-context.js';
 import { Sentry } from '../_lib/sentry.js';
+import {
+  SYSTEM_PROMPT_PART1,
+  SYSTEM_PROMPT_PART2,
+} from '../_lib/analyze-prompts.js';
+import { PERISCOPE_GEXBOT_CUTOVER } from '../../src/utils/periscope-source.js';
 
 // ── numOrUndef ─────────────────────────────────────────────
 
@@ -734,6 +739,40 @@ describe('buildAnalysisContext', () => {
     vi.unstubAllGlobals();
   });
 
+  it('lists QQQ Net Flow as unavailable only when its fetch produced nothing', async () => {
+    const db = await import('../_lib/db.js');
+    vi.mocked(db.formatFlowDataForClaude).mockImplementation(((
+      _rows: unknown,
+      label: string,
+    ) => (label === 'QQQ Net Flow' ? 'QQQ flow body' : null)) as never);
+    try {
+      const result = await buildAnalysisContext([], {
+        mode: 'entry',
+        selectedDate: '2026-04-04',
+      });
+      const manifest = result.content.find(
+        (b) => b.type === 'text' && b.text.includes('Data Sources Unavailable'),
+      );
+      const text = (manifest as { type: 'text'; text: string }).text;
+      expect(text).not.toContain('- QQQ Net Flow');
+      expect(text).toContain('- SPX Net Flow');
+      // The QQQ block header says it is a primary API signal in the
+      // Missing Data Protocol, not a secondary one.
+      const qqq = result.content.find(
+        (b) => b.type === 'text' && b.text.includes('## QQQ Net Flow Data'),
+      );
+      const qqqText = (qqq as { type: 'text'; text: string }).text;
+      expect(qqqText).toContain(
+        'Primary API signal in the Missing Data Protocol',
+      );
+      expect(qqqText).not.toContain('Secondary directional signal');
+    } finally {
+      vi.mocked(db.formatFlowDataForClaude).mockReset();
+      vi.mocked(db.formatFlowDataForClaude).mockReturnValue(null);
+    }
+    vi.unstubAllGlobals();
+  });
+
   it('populates unavailable data manifest when nothing is fetched', async () => {
     const result = await buildAnalysisContext([], {
       mode: 'entry',
@@ -746,6 +785,9 @@ describe('buildAnalysisContext', () => {
     expect(textBlock).toBeDefined();
     const text = (textBlock as { type: 'text'; text: string }).text;
     expect(text).toContain('SPX Net Flow');
+    // QQQ Net Flow is a primary API signal in the Missing Data Protocol, so
+    // a failed fetch must be listed or two missing primaries read as one.
+    expect(text).toContain('- QQQ Net Flow');
     expect(text).toContain('Dark Pool Blocks');
     expect(text).toContain('Max Pain');
     expect(text).toContain('Cross-Asset Regime');
@@ -1086,6 +1128,29 @@ describe('buildAnalysisContext', () => {
     );
     expect(block).not.toContain('periscope skill');
     expect(block).not.toContain('CONTEXT ONLY');
+    vi.unstubAllGlobals();
+  });
+
+  it('spells the GEXBot cutover in the prompt and the block the same as PERISCOPE_GEXBOT_CUTOVER', async () => {
+    // The cached prompt keeps a static literal; this pins it to the constant.
+    const cutover = new Date(PERISCOPE_GEXBOT_CUTOVER);
+    const ct = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'America/Chicago',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(cutover);
+    const iso = cutover.toISOString();
+    const text = `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC (${ct} CT)`;
+    expect(text).toBe('2026-05-26 17:20 UTC (12:20 CT)');
+    const prompt = SYSTEM_PROMPT_PART1 + SYSTEM_PROMPT_PART2;
+    expect(prompt.split(text).length - 1).toBe(3);
+    const block = await periscopeSection(
+      'scraper',
+      '2026-05-07',
+      '## Periscope Exposure — UW Periscope',
+    );
+    expect(block).toContain(text);
     vi.unstubAllGlobals();
   });
 
@@ -1870,6 +1935,11 @@ describe('buildAnalysisContext: context text fields', () => {
     expect(text).toContain('5750.0');
     expect(text).toContain('5650.0');
     expect(text).toContain('Width: 100 pts');
+    // The cone is computed from the 0DTE ATM straddle, not read from Periscope.
+    expect(text).toContain(
+      '## Straddle Cone Boundaries (computed 0DTE ATM straddle; not Periscope data)',
+    );
+    expect(text).not.toContain('from Periscope');
     vi.unstubAllGlobals();
   });
 

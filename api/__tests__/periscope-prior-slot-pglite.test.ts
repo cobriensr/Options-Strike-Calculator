@@ -30,18 +30,10 @@ vi.mock('@neondatabase/serverless', () => ({ neon: () => holder.sql }));
 
 import { _resetDb } from '../_lib/db.js';
 import { fetchPriorPeriscopeSlot } from '../_lib/periscope-format.js';
-import { applyMigration } from './pglite-migrations.js';
+import { applyMigration, neonOverPglite } from './pglite-migrations.js';
 
 let pg: PGlite;
 const originalUrl = process.env.DATABASE_URL;
-
-/** Neon-shaped tagged template over pglite: resolves to the rows. */
-function taggedSql(db: PGlite) {
-  return async (strings: TemplateStringsArray, ...values: unknown[]) => {
-    const text = strings.reduce((acc, part, i) => `${acc}$${i}${part}`);
-    return (await db.query(text, values)).rows;
-  };
-}
 
 const EXPIRY = '2026-05-26';
 const SCRAPER_EARLIER = '2026-05-26T17:03:26.000Z';
@@ -51,7 +43,7 @@ const GEXBOT_SECOND = '2026-05-26T17:39:32.000Z';
 
 beforeAll(async () => {
   pg = await PGlite.create();
-  holder.sql = taggedSql(pg);
+  holder.sql = neonOverPglite(pg);
   process.env.DATABASE_URL = 'postgres://pglite';
   _resetDb();
   await applyMigration(pg, 140);

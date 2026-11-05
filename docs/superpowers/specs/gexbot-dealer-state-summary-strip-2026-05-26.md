@@ -26,6 +26,13 @@ load-bearing facts up front:
 4. **Loudest dealer flow + freshness** — top ticker by
    `max(|zMlgamma|, |zMsgamma|)` and the last GEXBot capture timestamp.
 
+> **Tile 4 changed (2026-11-05, see
+> [gexbot-refresh-2026-10-28.md](./gexbot-refresh-2026-10-28.md), I2).** It
+> is now the underlying with the most unusual last-minute taker Δ flow
+> (|Δ`agg_dex`| as a multiple of its own typical minute, from `view=velocity`,
+> the same rule as the Velocity tape's highlight), labelled "most unusual taker
+> Δ / min". The ranking above is kept as history.
+
 ## Files
 
 **New**

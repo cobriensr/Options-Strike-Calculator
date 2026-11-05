@@ -346,6 +346,7 @@ export async function buildAnalysisContext(
   const unavailable: string[] = [];
   if (!main.spxFlowContext) unavailable.push('SPX Net Flow');
   if (!main.marketTideContext) unavailable.push('Market Tide');
+  if (!main.qqqFlowContext) unavailable.push('QQQ Net Flow');
   if (!main.spotGexContext) unavailable.push('Aggregate GEX Panel');
   if (!main.greekExposureContext) unavailable.push('Greek Exposure (OI-based)');
   if (!main.strikeExposureContext) unavailable.push('Per-Strike Greek Profile');
@@ -436,7 +437,7 @@ ${priorDayFlowContext ? `\n${priorDayFlowContext}\n` : ''}
 ${main.marketTideContext ? `\n## Market Tide Data (from API — 5-min intervals)\nThis is exact data from the Unusual Whales API. Primary flow signal (Rule 8, 30% weight) — the highest-weighted single bucket in the flow consensus. Use these values instead of estimating from the Market Tide screenshot. If a Market Tide screenshot is also provided, use it for visual confirmation only — trust the API values for NCP/NPP readings.\n\n${main.marketTideContext}\n${marketTideOtmSection}` : ''}
 ${main.spxFlowContext ? `\n## SPX Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for SPX. Index-level directional read (Rule 8, 10% weight). Trust these values over screenshot estimates.\n\n${main.spxFlowContext}\n` : ''}
 ${main.spyFlowContext ? `\n## SPY Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for SPY. Confirmation signal (Rule 8, 15% weight).\n\n${main.spyFlowContext}\n` : ''}
-${main.qqqFlowContext ? `\n## QQQ Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for QQQ. Secondary directional signal — tech-leadership read (Rule 8, 25% weight).\n\n${main.qqqFlowContext}\n` : ''}
+${main.qqqFlowContext ? `\n## QQQ Net Flow Data (from API — 5-min intervals)\nExact cumulative NCP/NPP values for QQQ. Primary API signal in the Missing Data Protocol — tech-leadership read (Rule 8, 25% weight).\n\n${main.qqqFlowContext}\n` : ''}
 ${main.spyEtfTideContext ? `\n## SPY ETF Tide — Holdings Flow (from API — 5-min intervals)\nOptions flow on the individual stocks inside SPY (AAPL, MSFT, NVDA, etc), not on SPY itself. ETF Tide signal (Rule 8 ETF Tide bucket, 20% weight — combined with QQQ ETF Tide). When SPY Net Flow is bullish but SPY ETF Tide is bearish, the SPY call buying is likely hedging — the underlying stocks are seeing directional put buying. Use as a confirmation/divergence layer against SPY Net Flow.\n\n${main.spyEtfTideContext}\n` : ''}
 ${main.qqqEtfTideContext ? `\n## QQQ ETF Tide — Holdings Flow (from API — 5-min intervals)\nOptions flow on the individual stocks inside QQQ (AAPL, MSFT, NVDA, AMZN, etc), not on QQQ itself. ETF Tide signal (Rule 8 ETF Tide bucket, 20% weight — combined with SPY ETF Tide). Same divergence logic as SPY ETF Tide — when QQQ flow and QQQ ETF Tide disagree, the underlying holdings flow is more directionally reliable.\n\n${main.qqqEtfTideContext}\n` : ''}
 ${main.zeroDteIndexContext ? `\n## 0DTE Index-Only Net Flow (from API)\nPure 0DTE flow from index products (SPX, NDX) only — excludes weekly/monthly expirations and ETFs/equities. When this diverges from aggregate SPX Net Flow, the aggregate signal contains longer-dated hedging noise. Trust 0DTE index flow for same-session directional reads. When both agree, highest conviction.\n\n${main.zeroDteIndexContext}\n` : ''}
@@ -463,7 +464,7 @@ ${vixDivergenceContext ? `\n## VIX/SPX Divergence Flag (from market_snapshots + 
 ${uwDeltasContext ? `\n## UW Deltas — Rate-of-Change Signals (from dark_pool_prints + spot_exposures + flow_alerts + flow_data)\nFour institutional-activity velocity / delta reads computed from data already ingested by UW crons and the uw-stream daemon. Dark pool print velocity (vs 60-min baseline), OI GEX intraday delta (vs RTH open), whale flow net call/put positioning, and SPY/QQQ ETF tide divergence. See <uw_deltas_rules> in the system prompt for interpretation; combine 3-of-4 agreement for highest-confidence reads.\n${uwDeltasContext}\n` : ''}
 ${
   straddleConeUpper && straddleConeLower && !spxCandlesContext
-    ? `\n## Straddle Cone Boundaries (from Periscope)
+    ? `\n## Straddle Cone Boundaries (computed 0DTE ATM straddle; not Periscope data)
   Upper: ${straddleConeUpper.toFixed(1)}
   Lower: ${straddleConeLower.toFixed(1)}
   Width: ${(straddleConeUpper - straddleConeLower).toFixed(0)} pts

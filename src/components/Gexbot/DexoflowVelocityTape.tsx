@@ -1,49 +1,44 @@
 /**
- * DexoflowVelocityTape — per-ticker view of the three flow-rate
- * scalars from the orderflow endpoint:
- *   dexoflow  — dollar-delta flow rate
- *   gexoflow  — dollar-gamma flow rate
- *   cvroflow  — convexity-ratio flow rate
+ * DexoflowVelocityTape — per-ticker minute-over-minute change in taker
+ * exposure. (Legacy name: the tape used to show the vendor's
+ * dexoflow / gexoflow / cvroflow scalars, which are the change over ONE 1-2 s
+ * vendor step sampled once a minute, so 70-99% of values were exact zeros on
+ * the smaller tickers. Owner decision D4 replaced them.)
  *
- * These are velocity metrics — per the GEXBot spec, the change in net
- * taker exposure between consecutive vendor snapshots (taker-signed;
- * positive dexoflow = takers net bought delta). We sample once a minute,
- * so each value is one short change taken at the minute mark, not the
- * change across the minute. Distinct from cumulative flow totals: a high
- * cvroflow means net convexity (zcvr) is changing fast, not just that it
- * is high.
+ * Columns, differenced server-side with a SQL window (`view=velocity`):
+ *   Δ agg_dex — session-cumulative taker delta, so its minute difference is
+ *               the taker delta flow over the last minute;
+ *   Δ zgr     — change in the call − put GEX imbalance;
+ *   Δ zcvr    — change in net convexity.
  *
- * Each row shows the ticker's own DTE from `min_dte`. The metric itself
- * is unchanged here (owner decision D4 reworks it in a later phase).
+ * A dash means the change is unavailable (first minute of the session, a gap
+ * of more than 3 minutes, or the vendor repeating its prior source
+ * timestamp) — not a zero. Rows stay in the fixed underlying order (owner
+ * decision 2026-10-29); a row is highlighted when its |Δ agg_dex| is at
+ * least three times that ticker's own typical minute (see velocity-tape.ts).
+ * Futures views (ES_SPX / NQ_NDX) are excluded: they duplicate SPX / NDX.
  *
- * Each cell shows the current value with a trend arrow (▲/▼/─)
- * derived from the sign alone (v0). When historical series are
- * captured we can switch to a 5-min slope.
+ * Each cell shows the value with a trend arrow (▲/▼/─) from its sign.
+ * Each row shows the ticker's own DTE from `min_dte`.
  *
  * Spec: docs/superpowers/specs/gexbot-frontend-2026-05-16.md
  */
 
 import { memo, useMemo } from 'react';
 
-import {
-  useGexbotData,
-  type SnapshotsLatestRow,
-} from '../../hooks/useGexbotData';
+import { useGexbotData } from '../../hooks/useGexbotData';
 import { formatDte } from './types';
+import {
+  formatTakerDelta,
+  isUnusual,
+  orderVelocityRows,
+} from './velocity-tape';
 
 interface DexoflowVelocityTapeProps {
   marketOpen: boolean;
 }
 
-interface VelocityRow {
-  ticker: string;
-  minDte: number | null;
-  dexoflow: number | null;
-  gexoflow: number | null;
-  cvroflow: number | null;
-}
-
-const SPEC = { view: 'snapshots-latest' as const };
+const SPEC = { view: 'velocity' as const };
 
 function arrow(value: number | null): { glyph: string; cls: string } {
   if (value == null) return { glyph: '·', cls: 'text-tertiary' };
@@ -52,61 +47,10 @@ function arrow(value: number | null): { glyph: string; cls: string } {
   return { glyph: '─', cls: 'text-tertiary' };
 }
 
-function formatScalar(value: number | null): string {
-  if (value == null) return '—';
-  const abs = Math.abs(value);
-  const sign = value >= 0 ? '+' : '−';
-  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(2)}M`;
-  if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(2)}K`;
-  if (abs >= 1) return `${sign}${abs.toFixed(2)}`;
-  return `${sign}${abs.toFixed(4)}`;
-}
-
-function magnitude(value: number | null): number {
-  // Defensive against NaN: Math.abs(NaN) === NaN, and NaN comparisons
-  // return false, which makes Array.prototype.sort non-deterministic.
-  if (value == null || Number.isNaN(value)) return 0;
-  return Math.abs(value);
-}
-
 function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
   const { rows, loading, error } = useGexbotData(SPEC, marketOpen);
 
-  const velocityRows = useMemo<VelocityRow[]>(() => {
-    return rows
-      .filter(
-        // Drop rows where every flow-rate is null OR zero. GEXBot
-        // returns explicit zeros for the smaller ETFs and VIX when
-        // there's no measurable flow — surfacing them here just
-        // makes the tape harder to scan. Magnitude-sum > 0 keeps any
-        // row with at least one meaningful scalar.
-        (r: SnapshotsLatestRow) =>
-          magnitude(r.dexoflow) +
-            magnitude(r.gexoflow) +
-            magnitude(r.cvroflow) >
-          0,
-      )
-      .map((r) => ({
-        ticker: r.ticker,
-        minDte: r.minDte,
-        dexoflow: r.dexoflow,
-        gexoflow: r.gexoflow,
-        cvroflow: r.cvroflow,
-      }))
-      .sort((a, b) => {
-        // Combined velocity magnitude across all three flow scalars.
-        // CVR included so a row where only cvroflow fires doesn't sink
-        // to the bottom — convexity acceleration is the marquee signal
-        // per the JSDoc.
-        const aMag =
-          magnitude(a.dexoflow) + magnitude(a.gexoflow) + magnitude(a.cvroflow);
-        const bMag =
-          magnitude(b.dexoflow) + magnitude(b.gexoflow) + magnitude(b.cvroflow);
-        // Stable tiebreaker on ticker so render order is deterministic
-        // when magnitudes match.
-        return bMag - aMag || a.ticker.localeCompare(b.ticker);
-      });
-  }, [rows]);
+  const velocityRows = useMemo(() => orderVelocityRows(rows), [rows]);
 
   if (loading) {
     return (
@@ -116,7 +60,7 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
         data-testid="dexoflow-tape-loading"
         className="text-tertiary rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs"
       >
-        Dexoflow Velocity — loading…
+        Velocity — loading…
       </div>
     );
   }
@@ -129,7 +73,7 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
         data-testid="dexoflow-tape-error"
         className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-300/80"
       >
-        Dexoflow Velocity — {error}
+        Velocity — {error}
       </div>
     );
   }
@@ -142,7 +86,7 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
         data-testid="dexoflow-tape-empty"
         className="text-tertiary rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs"
       >
-        Dexoflow Velocity — awaiting first GEXBot tick
+        Velocity — awaiting first GEXBot tick
       </div>
     );
   }
@@ -153,35 +97,56 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
       className="rounded-md border border-white/5 bg-white/[0.02]"
     >
       <div className="text-tertiary border-b border-white/5 px-3 py-2 text-[10px] tracking-wide uppercase">
-        Dexoflow Velocity — taker flow-rate scalars, DTE per ticker
+        Velocity — taker change over the last minute, DTE per ticker
       </div>
       <table className="w-full text-left text-xs">
         <thead className="text-tertiary text-[10px] tracking-wide uppercase">
           <tr>
             <th className="px-3 py-1.5 font-medium">Ticker</th>
-            <th className="px-3 py-1.5 text-right font-medium">Taker Δ flow</th>
-            <th className="px-3 py-1.5 text-right font-medium">Taker γ flow</th>
             <th className="px-3 py-1.5 text-right font-medium">
-              Net convexity flow
+              Taker Δ flow / min
+            </th>
+            <th className="px-3 py-1.5 text-right font-medium">
+              Call−put GEX Δ / min
+            </th>
+            <th className="px-3 py-1.5 text-right font-medium">
+              Net convexity Δ / min
             </th>
           </tr>
         </thead>
         <tbody>
-          {velocityRows.map((row) => (
-            <tr key={row.ticker} className="border-t border-white/5">
-              <td className="px-3 py-1.5 font-medium">
-                {row.ticker}
-                <span className="text-tertiary ml-1.5 text-[10px] font-normal">
-                  {formatDte(row.minDte)}
-                </span>
-              </td>
-              <Cell value={row.dexoflow} />
-              <Cell value={row.gexoflow} />
-              <Cell value={row.cvroflow} />
-            </tr>
-          ))}
+          {velocityRows.map((row) => {
+            const unusual = isUnusual(row);
+            return (
+              <tr
+                key={row.ticker}
+                data-unusual={unusual}
+                className={`border-t border-white/5 ${unusual ? 'bg-amber-400/10' : ''}`}
+              >
+                <td className="px-3 py-1.5 font-medium">
+                  {row.ticker}
+                  <span className="text-tertiary ml-1.5 text-[10px] font-normal">
+                    {formatDte(row.minDte)}
+                  </span>
+                  {unusual && (
+                    <span className="ml-1.5 text-[10px] font-normal text-amber-300">
+                      unusual
+                    </span>
+                  )}
+                </td>
+                <Cell value={row.dAggDex} />
+                <Cell value={row.dZgr} />
+                <Cell value={row.dZcvr} />
+              </tr>
+            );
+          })}
         </tbody>
       </table>
+      <p className="text-tertiary border-t border-white/5 px-3 py-1.5 text-[10px]">
+        Δ = this minute minus the last. — means no clean prior minute. Fixed
+        order; &ldquo;unusual&rdquo; marks a taker Δ flow at least three times
+        that ticker&rsquo;s own typical minute, and never under 0.75.
+      </p>
     </div>
   );
 }
@@ -196,14 +161,14 @@ function Cell({ value }: { value: number | null }) {
         : value < 0
           ? 'negative'
           : 'flat';
-  const ariaLabel = `${verdict} ${formatScalar(value)}`;
+  const ariaLabel = `${verdict} ${formatTakerDelta(value)}`;
   return (
     <td className="px-3 py-1.5 text-right tabular-nums">
       <span className={cls} aria-label={ariaLabel}>
         <span className="mr-1.5" aria-hidden>
           {glyph}
         </span>
-        {formatScalar(value)}
+        {formatTakerDelta(value)}
       </span>
     </td>
   );

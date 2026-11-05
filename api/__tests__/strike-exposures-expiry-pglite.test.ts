@@ -32,18 +32,10 @@ vi.mock('@neondatabase/serverless', () => ({ neon: () => holder.sql }));
 import { _resetDb } from '../_lib/db.js';
 import { getStrikeExposures } from '../_lib/db-strike-helpers.js';
 import { analyzeZeroGamma } from '../../src/utils/zero-gamma.js';
-import { applyMigration } from './pglite-migrations.js';
+import { applyMigration, neonOverPglite } from './pglite-migrations.js';
 
 let pg: PGlite;
 const originalUrl = process.env.DATABASE_URL;
-
-/** Neon-shaped tagged template over pglite: resolves to the rows. */
-function taggedSql(db: PGlite) {
-  return async (strings: TemplateStringsArray, ...values: unknown[]) => {
-    const text = strings.reduce((acc, part, i) => `${acc}$${i}${part}`);
-    return (await db.query(text, values)).rows;
-  };
-}
 
 const DATE = '2026-10-29';
 const NEXT_EXPIRY = '2026-10-30';
@@ -68,7 +60,7 @@ async function insertRow(
 
 beforeAll(async () => {
   pg = await PGlite.create();
-  holder.sql = taggedSql(pg);
+  holder.sql = neonOverPglite(pg);
   process.env.DATABASE_URL = 'postgres://pglite';
   _resetDb();
   await applyMigration(pg, 8);

@@ -52,7 +52,15 @@ describe('<GexbotSection>', () => {
     expect(dealerClaims(footer?.textContent ?? '')).toEqual([]);
   });
 
-  it('mounts all 7 child components (drives empty-state testids)', () => {
+  it('no longer renders the cross-asset skew dashboard', () => {
+    // Built on delta_risk_reversal, which GEXBot lists as discontinued.
+    const { container } = render(<GexbotSection marketOpen spxSpot={6750} />);
+    expect(screen.queryByTestId('skew-dashboard-empty')).toBeNull();
+    expect(screen.queryByTestId('skew-dashboard')).toBeNull();
+    expect(container.textContent ?? '').not.toMatch(/skew/i);
+  });
+
+  it('mounts the 6 remaining child components (drives empty-state testids)', () => {
     render(<GexbotSection marketOpen spxSpot={6750} />);
     expect(
       screen.getByTestId('dealer-state-summary-strip-empty'),
@@ -62,7 +70,6 @@ describe('<GexbotSection>', () => {
     expect(screen.getByTestId('gamma-compass-empty')).toBeInTheDocument();
     expect(screen.getByTestId('dexoflow-tape-empty')).toBeInTheDocument();
     expect(screen.getByTestId('convexity-matrix-empty')).toBeInTheDocument();
-    expect(screen.getByTestId('skew-dashboard-empty')).toBeInTheDocument();
   });
 
   it('forwards marketOpen=false to the data hook for each child', () => {

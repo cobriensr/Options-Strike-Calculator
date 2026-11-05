@@ -32,7 +32,7 @@ import { periscopeSourceAt } from '../../utils/periscope-source';
 /** Section title by the displayed slice's feed (owner decision D1 revised). */
 const PANEL_TITLE = {
   scraper: 'Periscope MM Exposure (UW)',
-  gexbot: 'Periscope Exposure (GEXBot, taker)',
+  gexbot: 'GEXBot Exposure (taker)',
   unknown: 'Periscope Exposure',
 } as const;
 
