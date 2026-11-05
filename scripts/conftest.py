@@ -13,7 +13,10 @@ attempt is recorded and raises a BaseException, which an `except Exception`
 does not swallow. A caller that swallows it anyway (`except BaseException`,
 a bare `except:`) is caught by the session-end check. Left open:
 constructing psycopg2.extensions.connection(...) directly, which bypasses
-_connect.
+_connect. The production stores follow the same design: botocore.client.
+BaseClient._make_api_call, where every boto3 call to R2 or S3 ends, is replaced
+by a stub with its own message ("tests must not reach a production store"),
+reads included, when botocore imports.
 
 Run the suite the way the test docstrings say, from the repo root:
 
@@ -56,6 +59,7 @@ BLOCKED_ENV_NAMES = (
 )
 
 _BLOCK_MESSAGE = "tests must not connect to a database"
+_STORE_BLOCK_MESSAGE = "tests must not reach a production store"
 
 # Every attempt the stubs saw, in order. Module state is fine here: the list
 # lives for one test process and never grows past the attempts of one run.
@@ -63,7 +67,7 @@ _attempts: list[str] = []
 
 
 class DatabaseAccessBlocked(BaseException):
-    """A test reached for a real database.
+    """A test reached for a real database or a production store.
 
     A BaseException on purpose: the code under test wraps its connects in
     `except Exception`, which a plain Exception subclass would let swallow
@@ -71,11 +75,11 @@ class DatabaseAccessBlocked(BaseException):
     """
 
 
-def _blocked(kind: str):
+def _blocked(kind: str, message: str = _BLOCK_MESSAGE):
     def stub(*args, **kwargs):
         # The DSN is not recorded or echoed: it may be a real secret.
         _attempts.append(kind)
-        raise DatabaseAccessBlocked(f"{kind}: {_BLOCK_MESSAGE}")
+        raise DatabaseAccessBlocked(f"{kind}: {message}")
 
     return stub
 
@@ -92,22 +96,36 @@ _CONNECT_POINTS = (
     ("asyncpg", "create_pool", "asyncpg.create_pool"),
 )
 
+# The production stores, blocked where a call leaves the process. R2 and
+# S3 are reached through boto3, whose every operation (reads included, a
+# read reaches production as surely as a write) ends in
+# BaseClient._make_api_call. Presigning signs locally and is untouched.
+_STORE_POINTS = (
+    ("botocore.client", "BaseClient._make_api_call", "botocore.make_api_call"),
+)
+
+_STORE_KINDS = frozenset(kind for _, _, kind in _STORE_POINTS)
+
 
 def _install_db_block() -> None:
-    """Replace each driver's connect call with the blocking stub.
+    """Replace each driver's connect call, and each store's call, with a stub.
 
     Safe to call again: it only reassigns. A driver that is not installed
     has nothing to block.
     """
-    for module_name, path, kind in _CONNECT_POINTS:
-        try:
-            owner = importlib.import_module(module_name)
-        except ImportError:
-            continue
-        *parents, attribute = path.split(".")
-        for parent in parents:
-            owner = getattr(owner, parent)
-        setattr(owner, attribute, _blocked(kind))
+    for points, message in (
+        (_CONNECT_POINTS, _BLOCK_MESSAGE),
+        (_STORE_POINTS, _STORE_BLOCK_MESSAGE),
+    ):
+        for module_name, path, kind in points:
+            try:
+                owner = importlib.import_module(module_name)
+            except ImportError:
+                continue
+            *parents, attribute = path.split(".")
+            for parent in parents:
+                owner = getattr(owner, parent)
+            setattr(owner, attribute, _blocked(kind, message))
 
 
 _install_db_block()
@@ -158,12 +176,19 @@ def _tests_never_reach_a_database():
     yield
     if _attempts:
         listed = "\n".join(f"  {kind}" for kind in _attempts)
+        rules = "; ".join(
+            dict.fromkeys(
+                _STORE_BLOCK_MESSAGE if kind in _STORE_KINDS else _BLOCK_MESSAGE
+                for kind in _attempts
+            )
+        )
         pytest.fail(
-            f"{_BLOCK_MESSAGE}; this run tried {len(_attempts)} time(s):\n"
+            f"{rules}; this run tried {len(_attempts)} time(s):\n"
             f"{listed}\n"
             "Mock the connection at the module boundary (patch psycopg2.connect, "
-            "or the loader that calls it). A self-test that provokes an attempt "
-            "on purpose calls db_block_attempts.discard() itself.",
+            "the boto3 client, or the loader that calls them). A self-test that "
+            "provokes an attempt on purpose calls db_block_attempts.discard() "
+            "itself.",
             pytrace=False,
         )
 

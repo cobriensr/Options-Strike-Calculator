@@ -278,3 +278,121 @@ def test_discarding_in_a_self_test_does_not_hide_an_earlier_offender(tmp_path):
     output = result.stdout + result.stderr
     assert result.returncode != 0, output
     assert "tried 1 time(s)" in output
+
+
+# ── Production stores: boto3 / botocore (R2 and S3) ──────────────────────────
+
+STORE_MESSAGE = "tests must not reach a production store"
+
+
+def _s3_client():
+    boto3 = pytest.importorskip("boto3")
+    return boto3.client(
+        "s3",
+        region_name="auto",
+        endpoint_url="https://example.invalid",
+        aws_access_key_id="AKIA-test",
+        aws_secret_access_key="hunter2-secret",
+    )
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda c: c.head_object(Bucket="b", Key="k"),
+        lambda c: c.get_object(Bucket="b", Key="k"),
+        lambda c: c.put_object(Bucket="b", Key="k", Body=b"x"),
+        lambda c: c.list_objects_v2(Bucket="b"),
+        lambda c: c.delete_object(Bucket="b", Key="k"),
+    ],
+    ids=["head", "get", "put", "list", "delete"],
+)
+def test_boto3_calls_are_blocked_and_recorded(call, db_block_attempts):
+    # Reads reach production as surely as writes, so both are blocked.
+    client = _s3_client()
+    with pytest.raises(DatabaseAccessBlocked, match=STORE_MESSAGE):
+        call(client)
+    assert db_block_attempts.new == ["botocore.make_api_call"]
+    db_block_attempts.discard()
+
+
+def test_store_message_does_not_echo_the_credentials(db_block_attempts):
+    client = _s3_client()
+    with pytest.raises(DatabaseAccessBlocked) as caught:
+        client.head_object(Bucket="b", Key="k")
+    db_block_attempts.discard()
+    assert "hunter2" not in str(caught.value)
+    assert "AKIA-test" not in str(caught.value)
+
+
+def test_presigning_signs_locally_and_is_not_blocked(db_block_attempts):
+    url = _s3_client().generate_presigned_url(
+        "get_object", Params={"Bucket": "b", "Key": "k"}
+    )
+    assert url.startswith("https://example.invalid/")
+    assert db_block_attempts.new == []
+
+
+def test_botocore_stand_in_is_blocked_where_botocore_is_a_package_of_its_own(
+    tmp_path,
+):
+    # The probe brings a stand-in whose _make_api_call would "really" call out;
+    # the guard must replace it, even in a venv without boto3.
+    result = _run_probe(
+        tmp_path,
+        """
+        import pytest
+        from botocore.client import BaseClient
+
+        def test_make_api_call_is_blocked(db_block_attempts):
+            with pytest.raises(BaseException, match="tests must not reach"):
+                BaseClient()._make_api_call("HeadObject", {})
+            assert db_block_attempts.new == ["botocore.make_api_call"]
+            db_block_attempts.discard()
+        """,
+        extra_files={
+            "botocore/__init__.py": "",
+            "botocore/client.py": """
+                class BaseClient:
+                    def _make_api_call(self, operation_name, api_params):
+                        raise AssertionError("real _make_api_call was reached")
+            """,
+        },
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_swallowed_store_call_fails_the_session_and_names_both_rules(tmp_path):
+    result = _run_probe(
+        tmp_path,
+        """
+        import psycopg2
+        from botocore.client import BaseClient
+
+        def test_swallows_a_store_call():
+            try:
+                BaseClient()._make_api_call("PutObject", {})
+            except BaseException:
+                pass
+
+        def test_swallows_a_database_call():
+            try:
+                psycopg2.connect("postgresql://x@invalid.invalid/db")
+            except BaseException:
+                pass
+        """,
+        extra_files={
+            "botocore/__init__.py": "",
+            "botocore/client.py": """
+                class BaseClient:
+                    def _make_api_call(self, operation_name, api_params):
+                        raise AssertionError("real _make_api_call was reached")
+            """,
+        },
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert "botocore.make_api_call" in output
+    assert STORE_MESSAGE in output
+    assert MESSAGE in output
+    assert "tried 2 time(s)" in output
