@@ -420,6 +420,26 @@ describe('analyze system prompt — Periscope rules run on UW data only (D1 revi
     );
   });
 
+  it('rates a flow-vs-gamma split LOW, directly after the LOW line (owner 2026-11-05)', () => {
+    // Settles the old contradiction between MODERATE ("at most 1
+    // contradicting primary signal") and LOW ("flow says one direction,
+    // gamma says another"): LOW wins.
+    const rule =
+      '- Flow vs gamma outranks MODERATE: when the Rule 8 flow consensus (Market Tide, QQQ Net Flow, ETF Tide) points one way and the UW Periscope Gamma profile points the other, the answer is LOW even if that is the only contradicting primary signal. SPX Net Flow alone disagreeing with gamma is not a flow-vs-gamma conflict (Rule 8 treats it as an anti-signal).';
+    expect(PROMPT.split(rule).length - 1).toBe(1);
+    const lowAt = PROMPT.indexOf('\n- LOW: Primary signals conflict');
+    const ruleAt = PROMPT.indexOf(rule);
+    const primaryAt = PROMPT.indexOf(
+      '\nPrimary signals for structure selection:',
+    );
+    expect(lowAt).toBeGreaterThan(-1);
+    expect(ruleAt).toBeGreaterThan(lowAt);
+    // The LOW line, then the new item on the very next line, then the
+    // "Primary signals" line.
+    expect(PROMPT.slice(lowAt + 1, ruleAt).split('\n')).toHaveLength(2);
+    expect(primaryAt).toBe(ruleAt + rule.length);
+  });
+
   it('keeps QQQ flow out of the "Secondary signals:" list (I2)', () => {
     expect(lineStartingWith('Secondary signals:')).toContain(
       'Secondary signals: SPY Net Flow, charm,',

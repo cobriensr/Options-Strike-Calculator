@@ -185,6 +185,16 @@ Owner decisions (each becomes a phase once decided; default pick in brackets):
   `dexoflow` (a single 1–2 s step, which could show the opposite sign to the
   tape's row for the same ticker). `dexoflow` leaves the snapshots-latest
   read and type, being unread.
+- 2026-11-05 (owner): **flow-vs-gamma split → LOW.** In the analyze prompt's
+  CONFIDENCE CALIBRATION, when the Rule 8 flow consensus (Market Tide, QQQ Net
+  Flow, ETF Tide) and the UW Periscope Gamma profile point opposite ways, the
+  answer is LOW even if that is the only contradicting primary signal. SPX Net
+  Flow alone disagreeing with gamma does not count (Rule 8 treats it as an
+  anti-signal). This settles the old conflict between the MODERATE line ("at
+  most 1 contradicting primary signal") and the LOW line ("flow says one
+  direction, gamma says another"). One new list item after the LOW line in
+  `api/_lib/analyze-prompts.ts`; the cached static block changes, so one cache
+  write.
 
 ## Phases added by the D1 / D6 decisions
 
