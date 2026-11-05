@@ -217,7 +217,7 @@ refit:
 	@echo "════════════════════════════════════════════════════════════════"
 	@echo "  REFIT — recompute V2 ticker weights + backfill scores"
 	@echo "════════════════════════════════════════════════════════════════"
-	@# TEMPORARY GUARD (2026-10-29): ml/src/lottery_refit_guard.py blocks lottery_scoring.py, online_ticker_update.py and backfill_lottery_scores.py (exit 0) until the anchor_leg_kind training filter has history (see the guard's REMOVAL note).
+	@# TEMPORARY GUARD (2026-10-29): ml/src/lottery_refit_guard.py blocks lottery_scoring.py, online_ticker_update.py and backfill_lottery_scores.py (exit 0) until the outcome backfill and the two phase-4 fixes land, REMOVAL (b) and (c) in the guard's docstring (the anchor_leg_kind history, (a), is done).
 	@# Guard removed 2026-05-23 — V2 rescore + V2.2 improvements fully landed
 	@# (composites, cluster, direction-gate fix, context features, online ticker
 	@# EMA). lottery_scoring.py now preserves composite_bonuses across retrains
