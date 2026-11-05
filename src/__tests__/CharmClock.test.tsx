@@ -35,8 +35,6 @@ function makeRow(overrides: Partial<SnapshotsLatestRow>): SnapshotsLatestRow {
     ovanna: null,
     ocharm: null,
     dexoflow: null,
-    gexoflow: null,
-    cvroflow: null,
     oneDexoflow: null,
     oneGexoflow: null,
     oneCvroflow: null,

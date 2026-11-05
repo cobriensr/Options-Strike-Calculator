@@ -16,7 +16,9 @@
  *   4. Compute confirmCount (sign agreement among distinct underlyings).
  *   5. Mark the largest |Δ| row.
  *
- * Spec: docs/superpowers/specs/strike-mover-ladder-2026-05-19.md
+ * Spec: docs/superpowers/specs/strike-mover-ladder-2026-05-19.md is
+ * SUPERSEDED by P6 of docs/superpowers/specs/gexbot-refresh-2026-10-28.md
+ * (two model tabs; the 05-19 spec describes the retired five-tab design).
  */
 
 import type { MaxchangeWinnerRow } from '../../../hooks/useGexbotData';

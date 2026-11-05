@@ -249,6 +249,65 @@ describe('useGexbotData', () => {
       await vi.advanceTimersByTimeAsync(120_000);
       expect(mockFetchJson).toHaveBeenCalledTimes(1);
     });
+
+    describe('a failed sibling-confirm read', () => {
+      const SIBLING = {
+        view: 'sibling-confirm' as const,
+        ticker: 'AAPL',
+        side: 'call' as const,
+        at: '2026-10-29T14:00:10.000Z',
+      };
+      const OK = { data: { rows: [{ ticker: 'QQQ', verdict: 'agree' }] } };
+      const FAIL = { error: 'Internal error', status: 500 };
+      const advance = (ms: number) =>
+        act(async () => {
+          await vi.advanceTimersByTimeAsync(ms);
+        });
+
+      it('retries on the 30 s tick, then stops once a read succeeds', async () => {
+        vi.useFakeTimers();
+        mockFetchJson.mockResolvedValueOnce(FAIL).mockResolvedValue(OK);
+        const { result } = renderHook(() => useGexbotData(SIBLING, true));
+        await advance(0);
+        expect(result.current.error).toBe('Internal error (HTTP 500)');
+        expect(mockFetchJson).toHaveBeenCalledTimes(1);
+
+        await advance(30_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+        expect(result.current.error).toBeNull();
+        expect(result.current.rows).toHaveLength(1);
+
+        // Recovered: a past fire's answer is final, so no further reads.
+        await advance(120_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+      });
+
+      it('keeps retrying while the read keeps failing', async () => {
+        vi.useFakeTimers();
+        mockFetchJson
+          .mockResolvedValueOnce(FAIL)
+          .mockResolvedValueOnce(FAIL)
+          .mockResolvedValue(OK);
+        const { result } = renderHook(() => useGexbotData(SIBLING, true));
+        await advance(0);
+        await advance(30_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+        expect(result.current.error).toBe('Internal error (HTTP 500)');
+        await advance(30_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(3);
+        expect(result.current.error).toBeNull();
+        await advance(120_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(3);
+      });
+
+      it('does not retry while the market is closed', async () => {
+        vi.useFakeTimers();
+        mockFetchJson.mockResolvedValue(FAIL);
+        renderHook(() => useGexbotData(SIBLING, false));
+        await advance(120_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(1);
+      });
+    });
   });
 
   // ── Superseded sibling-confirm requests ───────────────────

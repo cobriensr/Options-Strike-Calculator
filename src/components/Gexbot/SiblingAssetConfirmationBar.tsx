@@ -7,16 +7,17 @@
  * one pill per sibling showing whether that sibling's taker flow pointed
  * the same way as the alert when it fired.
  *
- * The read is GEXBot's `net_dex`, the net taker delta across the 0DTE
- * chain (+ = takers net long delta, call-side flow). A call alert agrees
- * with a positive sibling net_dex, a put alert with a negative one; zero
- * or missing reads as "—". The snapshot used is the latest one at or
- * before `firedAt`, so an alert viewed hours later is still judged
- * against the market as it was. What `firedAt` means differs by feed
- * (a Lottery row's latest fire, a Silent Boom 5-min bucket start), so the
- * caller names it in `asOfLabel` and every tooltip repeats it. The live table only holds ~2 sessions,
- * older fires show "no data". `zgr` appears in the tooltip as context. It
- * is not in the verdict, and the whole read is unvalidated.
+ * The read is GEXBot's `net_dex`, the net taker delta across the
+ * nearest-expiry chain (`min_dte`; not always 0DTE; + = takers net long
+ * delta, call-side flow). A call alert agrees with a positive sibling
+ * net_dex, a put alert with a negative one; zero or missing reads as "—".
+ * The snapshot used is the latest one at or before `firedAt`, so an alert
+ * viewed hours later is still judged against the market as it was. What
+ * `firedAt` means differs by feed (a Lottery row's latest fire, a Silent
+ * Boom 5-min bucket start), so the caller names it in `asOfLabel` and every
+ * tooltip repeats it. The live table only holds ~2 sessions, so older fires
+ * show "no data". `zgr` appears in the tooltip as context. It is not in the
+ * verdict, and the whole read is unvalidated.
  *
  * Siblings are the 14 underlyings (no futures views). Groups are defined
  * server-side in `api/_lib/gexbot-queries.ts` (`SIBLING_GROUPS`).

@@ -24,6 +24,9 @@ export interface GexbotBadgeSpec {
   ariaLabel: string;
 }
 
+/** The three flow lines are one 1-2 s vendor step, not a per-minute rate. */
+const STEP_NOTE = '(1–2 s vendor step at fire time)';
+
 export function gexbotBadge(gex: GexbotFireContext): GexbotBadgeSpec | null {
   if (gex.capturedAt == null) return null;
   const cvr = gex.oneCvroflow;
@@ -42,11 +45,11 @@ export function gexbotBadge(gex: GexbotFireContext): GexbotBadgeSpec | null {
       : 'zero-γ unavailable';
   const tooltip = [
     'GEXBot taker-flow snapshot at fire time (informational; not used in score).',
-    `Next-expiry cvroflow: ${cvrStr}  ${direction}`,
+    `Next-expiry cvroflow: ${cvrStr}  ${direction} ${STEP_NOTE}`,
     `Net convexity (zcvr): ${zcvrStr}`,
     `Net put DEX: ${dexStr}`,
-    `Next-expiry dexoflow: ${dexoStr}`,
-    `Next-expiry gexoflow: ${gexoStr}`,
+    `Next-expiry dexoflow: ${dexoStr} ${STEP_NOTE}`,
+    `Next-expiry gexoflow: ${gexoStr} ${STEP_NOTE}`,
     zg,
     `Snapshot at: ${gex.capturedAt} (UTC)`,
   ].join('\n');

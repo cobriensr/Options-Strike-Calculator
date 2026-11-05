@@ -268,6 +268,14 @@ describe('<DexoflowVelocityTape>', () => {
     expect(screen.getByText(/at least three times that/)).toBeTruthy();
   });
 
+  it('states the 0.75 floor in the footnote', () => {
+    mockRows([makeRow({ ticker: 'SPX', dAggDex: 1 })]);
+    render(<DexoflowVelocityTape marketOpen />);
+    expect(
+      screen.getByText(/own typical minute, and never under 0\.75\./),
+    ).toBeTruthy();
+  });
+
   it('shows sub-unit values to 2 decimals and a zero as 0', () => {
     mockRows([makeRow({ ticker: 'SPX', dAggDex: 0.07, dZgr: -0.5, dZcvr: 0 })]);
     const { container } = render(<DexoflowVelocityTape marketOpen />);

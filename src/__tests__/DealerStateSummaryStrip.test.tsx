@@ -39,8 +39,6 @@ function makeRow(
     ovanna: null,
     ocharm: null,
     dexoflow: null,
-    gexoflow: null,
-    cvroflow: null,
     oneDexoflow: null,
     oneGexoflow: null,
     oneCvroflow: null,

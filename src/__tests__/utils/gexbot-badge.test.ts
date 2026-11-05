@@ -78,6 +78,20 @@ describe('gexbotBadge — tooltip formatting', () => {
     expect(b?.tooltip).toContain('Snapshot at: 2026-05-26T19:35:00Z');
   });
 
+  it('marks the three flow lines as 1-2 s vendor steps at fire time', () => {
+    const lines = (gexbotBadge(ctx())?.tooltip ?? '').split('\n');
+    const note = '(1–2 s vendor step at fire time)';
+    for (const name of ['cvroflow', 'dexoflow', 'gexoflow']) {
+      const line = lines.find((l) => l.startsWith(`Next-expiry ${name}:`));
+      expect(line, name).toContain(note);
+    }
+    // The other scalars are not one-step figures.
+    for (const name of ['Net convexity (zcvr)', 'Net put DEX']) {
+      const line = lines.find((l) => l.startsWith(`${name}:`));
+      expect(line, name).not.toContain('vendor step');
+    }
+  });
+
   it('renders em-dash for each null numeric field independently', () => {
     const b = gexbotBadge(
       ctx({

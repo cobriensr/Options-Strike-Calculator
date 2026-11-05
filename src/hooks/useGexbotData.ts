@@ -1,8 +1,10 @@
 /**
- * useGexbotData — single polled hook serving the 7 GEXBot components.
+ * useGexbotData — single hook serving the GEXBot components.
  *
- * Polls `/api/gexbot?view=...` every 30s during market hours. The hook
- * is parameterized by `view` so callers only pay for the data they
+ * Polls `/api/gexbot?view=...` every 30s during market hours, except
+ * `sibling-confirm`: that read answers for a past fire time, so it is
+ * fetched once per URL and re-polled only while its last read errored. The
+ * hook is parameterized by `view` so callers only pay for the data they
  * need; components share the same hook signature so a future move to
  * shared cache (SWR / TanStack Query) is one diff away.
  *
@@ -41,8 +43,6 @@ export interface SnapshotsLatestRow {
   ovanna: number | null;
   ocharm: number | null;
   dexoflow: number | null;
-  gexoflow: number | null;
-  cvroflow: number | null;
   oneDexoflow: number | null;
   oneGexoflow: number | null;
   oneCvroflow: number | null;
@@ -89,7 +89,10 @@ export interface MaxchangeWinnerRow {
 
 export interface SiblingConfirmRow {
   ticker: string;
-  /** Net taker delta (0DTE chain) at the alert's fire time. + = net long. */
+  /**
+   * Net taker delta across the nearest-expiry chain (`min_dte`; not always
+   * 0DTE) at the alert's fire time. + = net long.
+   */
   netDex: number | null;
   /** Call minus put GEX imbalance. Context only; not in the verdict. */
   zgr: number | null;
@@ -258,21 +261,25 @@ export function useGexbotData<V extends GexbotView['view']>(
     void fetchNow();
   }, [fetchNow]);
 
+  // State from a previous URL answers a different question (another fire
+  // time): show it as not loaded yet, not as this URL's rows.
+  const current = state?.url === url ? state : null;
+
   // A sibling-confirm read is final once its fire time has passed: the
   // snapshot it uses is already in the table, and every alert row has its
   // own URL, so a 30 s tick would be one uncached Neon query per mounted
-  // row per tick for an answer that cannot change. Fetch it once.
+  // row per tick for an answer that cannot change. Fetch it once, and tick
+  // only while that read is errored (a Neon blip at mount would otherwise
+  // leave the row without pills until it remounts). The first good read
+  // clears the error and closes the gate.
   usePolling(
     () => {
       void fetchNow();
     },
     POLL_INTERVALS.OTM_FLOW, // 30_000 — matches the spec's requested cadence
-    [marketOpen, view !== 'sibling-confirm'],
+    [marketOpen, view !== 'sibling-confirm' || current?.error != null],
   );
 
-  // State from a previous URL answers a different question (another fire
-  // time): show it as not loaded yet, not as this URL's rows.
-  const current = state?.url === url ? state : null;
   return {
     rows: current?.rows ?? ([] as ViewPayload[V]),
     loading: current === null,

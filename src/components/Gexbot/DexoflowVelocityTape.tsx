@@ -151,7 +151,7 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
       <p className="text-tertiary border-t border-white/5 px-3 py-1.5 text-[10px]">
         Δ = this minute minus the last. — means no clean prior minute. Fixed
         order; &ldquo;unusual&rdquo; marks a taker Δ flow at least three times
-        that ticker&rsquo;s own typical minute.
+        that ticker&rsquo;s own typical minute, and never under 0.75.
       </p>
     </div>
   );
