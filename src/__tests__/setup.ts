@@ -34,17 +34,45 @@ vi.mock('@neondatabase/serverless', async (importOriginal) => {
   };
 });
 
+// Third, the production stores get the same treatment, reads included (a
+// read reaches production as surely as a write). Upstash Redis: every
+// command funnels through the HTTP client's request method, which the block
+// replaces when the package is first imported. A test file that mocks one of
+// these packages itself overrides that mock, as with Neon above.
+vi.mock('@upstash/redis', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@upstash/redis')>();
+  const { blockRedisRequests } = await import('./db-guard');
+  blockRedisRequests(actual.Redis);
+  return actual;
+});
+
+// Vercel Blob has no client object, so each network-calling export is
+// replaced by name; the error classes and pure helpers are kept.
+vi.mock('@vercel/blob', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@vercel/blob')>();
+  const { blockBlobExports } = await import('./db-guard');
+  return blockBlobExports(actual);
+});
+
+// Cloudflare R2 is S3-compatible and is reached only through S3Client.send.
+vi.mock('@aws-sdk/client-s3', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-s3')>();
+  const { blockS3Sends } = await import('./db-guard');
+  blockS3Sends(actual.S3Client);
+  return actual;
+});
+
 // Vitest doesn't auto-run @testing-library's cleanup (unlike Jest). Without
 // this, every render()/renderHook() call leaves React roots + JSDOM mounts
 // allocated for the entire test run, accumulating into gigabytes across
 // ~7700 tests and eventually blowing past the Node heap ceiling in CI.
 // See the April 2026 CI OOM investigation.
 //
-// Third, an attempt that a best-effort wrapper (safeDb) swallowed still
-// fails the test that made it. The afterAll covers what no afterEach sees: an
-// attempt made in a file's own afterAll (which runs before this one, hooks
-// run in stack order) or by work still running after the last test. A file
-// whose tests are all skipped runs no hooks at all, so it is not covered.
+// Fourth, an attempt that a best-effort wrapper (safeDb, safeRedis) swallowed
+// still fails the test that made it. The afterAll covers what no afterEach
+// sees: an attempt made in a file's own afterAll (which runs before this one,
+// hooks run in stack order) or by work still running after the last test. A
+// file whose tests are all skipped runs no hooks at all, so it is not covered.
 afterEach(() => {
   cleanup();
   assertNoDbAttempts();
