@@ -231,7 +231,7 @@ Both nightly lottery refits moved from `inferred_structure IS NULL` to `anchor_l
 
 No fire has `anchor_leg_kind` set before the 2026-10-29 18:22 CT deploy, so the filter has no history yet. `ml/src/lottery_refit_guard.py` therefore still blocks the refit. Its text now names the new reason. It comes off when all three hold:
 
-- (a) `anchor_leg_kind` is backfilled from the full tape for the 90-day training window. `ws_option_trades` keeps only 2 days, so the source is the UW Full Tape, where the trade code is the `upstream_condition_detail` column. The owner asked this project to run it (2026-10-29); see "History backfill from the full tape" below.
+- (a) **Done 2026-11-04.** `anchor_leg_kind` is backfilled from the full tape for the 90-day training window. `ws_option_trades` keeps only 2 days, so the source is the UW Full Tape, where the trade code is the `upstream_condition_detail` column. The owner asked this project to run it (2026-10-29); see "History backfill from the full tape" below. Lottery is 1,049,951 of 1,049,953 fires, and the 90-day training window is 100% covered.
 - (b) The outcome backfill has landed, and the old bug signature (flow_inv > peak × 1.05) has been measured, per the nightly spec's "Refit" section.
 - (c) The two phase-4 fixes in the nightly spec are in: the backfill's `<` vs `<=` boundary, and the EMA's evening no-op from `CURRENT_DATE` in GMT.
 

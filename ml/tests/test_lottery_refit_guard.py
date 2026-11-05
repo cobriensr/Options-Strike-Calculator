@@ -1,8 +1,8 @@
 """Tests for the temporary lottery refit guard (ml/src/lottery_refit_guard.py).
 
-The guard blocks lottery_scoring.py from training until the anchor_leg_kind
-training filter has history (the classifier label is gone from 2026-10-29 and
-anchor_leg_kind is not yet backfilled). Remove with the guard.
+The guard blocks the lottery refits from training until the outcome backfill
+and the two phase-4 fixes land. anchor_leg_kind is backfilled (2026-11-04), so
+that is no longer a reason to block. Remove with the guard.
 """
 
 from __future__ import annotations
@@ -47,8 +47,13 @@ def test_skip_message_names_script_cutoff_and_removal() -> None:
     msg = skip_message("lottery_scoring.py")
     assert "lottery_scoring.py" in msg
     assert "2026-10-29" in msg
-    assert "anchor_leg_kind" in msg
+    assert "outcome backfill" in msg
+    assert "phase-4 fixes" in msg
+    assert "lottery_refit_guard.py" in msg
     assert "unchanged" in msg
+    # The anchor_leg_kind history was backfilled, so it is no longer the reason.
+    assert "anchor_leg_kind" not in msg
+    assert "no history" not in msg
     assert msg.startswith("═")
     assert msg.splitlines()[1].startswith("REFIT BLOCKED:")
     assert "SKIP" not in msg
