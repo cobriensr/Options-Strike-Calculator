@@ -58,8 +58,6 @@ describe('gexbot-queries', () => {
           ovanna: null,
           ocharm: null,
           dexoflow: '1234.5',
-          gexoflow: '567.8',
-          cvroflow: '0.12',
           one_dexoflow: null,
           one_gexoflow: null,
           one_cvroflow: null,
@@ -69,6 +67,10 @@ describe('gexbot-queries', () => {
       const [row] = await getLatestSnapshots();
       expect(row!.minDte).toBe(2);
       expect(row).not.toHaveProperty('deltaRiskReversal');
+      // The vendor's 1-2 s step fields for the nearest expiry are unread.
+      expect(row).not.toHaveProperty('gexoflow');
+      expect(row).not.toHaveProperty('cvroflow');
+      expect(row!.dexoflow).toBe(1234.5);
       expect(row!.spot).toBe(5985.2);
       expect(row!.zcvr).toBe(1.25);
       expect(row!.zvanna).toBeNull();
@@ -576,6 +578,21 @@ describe('gexbot-queries', () => {
       expect(row!.zeroGamma).toBe(5990);
       expect(row!.spot).toBe(5985.2);
       expect(row!.capturedAt.toISOString()).toBe(captured.toISOString());
+    });
+
+    it('requires the vendor timestamp (Unix seconds) to sit in the window', async () => {
+      mockSql.mockResolvedValueOnce([]);
+      await getLatestGexbotSnapshotAt('VIX', new Date('2026-05-22T14:00:00Z'));
+      const text = (mockSql.mock.calls[0]?.[0] as string[]).join('?');
+      expect(text).toMatch(/source_timestamp IS NULL/);
+      expect(text).toMatch(/source_timestamp >= extract\(epoch FROM/);
+    });
+
+    it('propagates a DB failure', async () => {
+      mockSql.mockRejectedValueOnce(new Error('connection lost'));
+      await expect(
+        getLatestGexbotSnapshotAt('SPX', new Date('2026-05-22T14:00:00Z')),
+      ).rejects.toThrow('connection lost');
     });
 
     it('coerces string captured_at to Date', async () => {

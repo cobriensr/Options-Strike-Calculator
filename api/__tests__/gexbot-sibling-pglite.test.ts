@@ -1,11 +1,13 @@
 // @vitest-environment node
 
 /**
- * REAL-SQL test for the sibling taker-flow lookup. The mocked
- * gexbot-queries tests can only match SQL text; this one runs the actual
- * query against pglite on the table built by migration #156, so "the
- * snapshot at or before the fire time, not the latest" is proven by data:
- * a later row of the opposite sign sits in the table and must not be read.
+ * REAL-SQL test for the two fire-time lookups: the sibling taker-flow read
+ * (`getSiblingConfirmation`) and the fire-time badge stash
+ * (`getLatestGexbotSnapshotAt`). The mocked gexbot-queries tests can only
+ * match SQL text; this one runs the actual queries against pglite on the
+ * table built by migration #156, so "the snapshot at or before the fire
+ * time, not the latest" is proven by data: a later row of the opposite sign
+ * sits in the table and must not be read.
  */
 
 import {
@@ -19,26 +21,19 @@ import {
 } from 'vitest';
 import { PGlite } from '@electric-sql/pglite';
 
-import { applyMigration } from './pglite-migrations';
+import { applyMigration, neonOverPglite } from './pglite-migrations';
 
-const holder = vi.hoisted(() => ({
-  pg: null as unknown as {
-    query: (t: string, p?: unknown[]) => Promise<{ rows: unknown[] }>;
-  },
-}));
+const holder = vi.hoisted(() => ({ sql: null as unknown }));
 
 vi.mock('../_lib/db.js', () => ({
-  getDb: () => {
-    const tag = (strings: TemplateStringsArray, ...params: unknown[]) => {
-      const text = strings.reduce((acc, part, i) => `${acc}$${i}${part}`);
-      return holder.pg.query(text, params).then((r) => r.rows);
-    };
-    return tag;
-  },
+  getDb: () => holder.sql,
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
-import { getSiblingConfirmation } from '../_lib/gexbot-queries.js';
+import {
+  getLatestGexbotSnapshotAt,
+  getSiblingConfirmation,
+} from '../_lib/gexbot-queries.js';
 
 let pg: PGlite;
 
@@ -57,21 +52,21 @@ async function seed(
   );
 }
 
+beforeAll(async () => {
+  pg = new PGlite();
+  holder.sql = neonOverPglite(pg);
+  await applyMigration(pg, 156);
+});
+
+afterAll(async () => {
+  await pg.close();
+});
+
+beforeEach(async () => {
+  await pg.query('DELETE FROM gexbot_snapshots');
+});
+
 describe('getSiblingConfirmation against real SQL', () => {
-  beforeAll(async () => {
-    pg = new PGlite();
-    holder.pg = pg;
-    await applyMigration(pg, 156);
-  });
-
-  afterAll(async () => {
-    await pg.close();
-  });
-
-  beforeEach(async () => {
-    await pg.query('DELETE FROM gexbot_snapshots');
-  });
-
   const FIRE = new Date('2026-10-29T14:00:10.000Z');
 
   it('reads the snapshot at or before the fire time, not a later one', async () => {
@@ -193,5 +188,105 @@ describe('getSiblingConfirmation against real SQL', () => {
     const rows = await getSiblingConfirmation('SPX', 'call', FIRE);
     expect(rows.map((r) => r.ticker)).not.toContain('ES_SPX');
     expect(rows.map((r) => r.ticker)).not.toContain('NQ_NDX');
+  });
+});
+
+describe('getLatestGexbotSnapshotAt against real SQL', () => {
+  const FIRE = new Date('2026-10-29T14:00:10.000Z');
+  const secs = (iso: string) => Date.parse(iso) / 1000;
+
+  async function seedFire(
+    ticker: string,
+    capturedAt: string,
+    zcvr: number,
+    sourceTimestamp: number | null,
+  ) {
+    await pg.query(
+      `INSERT INTO gexbot_snapshots
+         (ticker, captured_at, zcvr, source_timestamp, raw_response)
+       VALUES ($1, $2::timestamptz, $3, $4, '{}'::jsonb)`,
+      [ticker, capturedAt, zcvr, sourceTimestamp],
+    );
+  }
+
+  it('reads the newest row at or before the fire time', async () => {
+    await seedFire(
+      'VIX',
+      '2026-10-29T13:59:30Z',
+      1,
+      secs('2026-10-29T13:59:29Z'),
+    );
+    await seedFire(
+      'VIX',
+      '2026-10-29T14:00:05Z',
+      2,
+      secs('2026-10-29T14:00:04Z'),
+    );
+    await seedFire(
+      'VIX',
+      '2026-10-29T14:00:40Z',
+      3,
+      secs('2026-10-29T14:00:39Z'),
+    );
+    const snap = await getLatestGexbotSnapshotAt('VIX', FIRE);
+    expect(snap?.zcvr).toBe(2);
+  });
+
+  // The same rule as the sibling read: at the 09:30-09:31 ET open the vendor
+  // repeats VIX's prior close, so a fresh captured_at can carry yesterday's
+  // reading. The badge on the alert must not call it "at fire time".
+  it('drops a row whose vendor timestamp predates the fire window', async () => {
+    await seedFire(
+      'VIX',
+      '2026-10-29T14:00:00Z',
+      9,
+      secs('2026-10-28T20:00:00Z'),
+    );
+    expect(await getLatestGexbotSnapshotAt('VIX', FIRE)).toBeNull();
+  });
+
+  it('falls back to an older fresh row when the newest carries a stale vendor timestamp', async () => {
+    await seedFire(
+      'VIX',
+      '2026-10-29T13:59:00Z',
+      4,
+      secs('2026-10-29T13:58:59Z'),
+    );
+    await seedFire(
+      'VIX',
+      '2026-10-29T14:00:00Z',
+      9,
+      secs('2026-10-28T20:00:00Z'),
+    );
+    const snap = await getLatestGexbotSnapshotAt('VIX', FIRE);
+    expect(snap?.zcvr).toBe(4);
+  });
+
+  it('keeps a row with no vendor timestamp', async () => {
+    await seedFire('VIX', '2026-10-29T14:00:00Z', 5, null);
+    const snap = await getLatestGexbotSnapshotAt('VIX', FIRE);
+    expect(snap?.zcvr).toBe(5);
+  });
+
+  it('keeps a row whose vendor timestamp is inside the window', async () => {
+    await seedFire(
+      'VIX',
+      '2026-10-29T14:00:00Z',
+      6,
+      secs('2026-10-29T13:59:59Z'),
+    );
+    const snap = await getLatestGexbotSnapshotAt('VIX', FIRE);
+    expect(snap).toMatchObject({ zcvr: 6 });
+    expect(snap?.capturedAt.toISOString()).toBe('2026-10-29T14:00:00.000Z');
+  });
+
+  it('returns null when the only row is older than the window', async () => {
+    await seedFire(
+      'VIX',
+      '2026-10-29T13:56:00Z',
+      7,
+      secs('2026-10-29T13:55:59Z'),
+    );
+    expect(await getLatestGexbotSnapshotAt('VIX', FIRE)).toBeNull();
   });
 });

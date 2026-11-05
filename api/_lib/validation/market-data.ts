@@ -293,6 +293,8 @@ export type TickerCandlesQuery = z.infer<typeof tickerCandlesQuerySchema>;
  * Discriminated by the `view` param. Each view maps to one query
  * helper in `api/_lib/gexbot-queries.ts`:
  *   - `snapshots-latest` → latest snapshot row per ticker (16 rows)
+ *   - `velocity`         → minute-over-minute change of agg_dex, zgr and
+ *                          zcvr per ticker, plus its session-typical |Δ|
  *   - `convexity-trend`  → 60-min zcvr timeseries per ticker
  *   - `maxchange-winners` → latest maxchange winner per (ticker, category)
  *   - `sibling-confirm`  → requires `ticker` + `side` + `at`; returns each

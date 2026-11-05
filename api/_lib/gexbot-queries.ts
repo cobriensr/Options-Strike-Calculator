@@ -5,8 +5,14 @@
  *
  * Spec: docs/superpowers/specs/gexbot-frontend-2026-05-16.md
  *
- * All helpers return `[]` when the source tables are empty — the
- * frontend renders empty-state for that case. They do NOT throw.
+ * The list readers (`getLatestSnapshots`, `getVelocityTape`,
+ * `getConvexityTrend`, `getMaxchangeWinners`) return `[]` when the source
+ * tables are empty — the frontend renders empty-state for that case.
+ * `getSiblingConfirmation` returns one no-data row per sibling instead (and
+ * `[]` only for a ticker with no siblings). `getLatestGexbotSnapshotAt`
+ * returns `null` when no row is in its window. A DB failure propagates from
+ * every helper (after `withDbRetry`); `api/gexbot.ts` turns it into a 500
+ * plus a Sentry capture.
  */
 
 import { getDb, withDbRetry } from './db.js';
@@ -40,8 +46,6 @@ export interface SnapshotsLatestRow {
   ovanna: number | null;
   ocharm: number | null;
   dexoflow: number | null;
-  gexoflow: number | null;
-  cvroflow: number | null;
   oneDexoflow: number | null;
   oneGexoflow: number | null;
   oneCvroflow: number | null;
@@ -102,7 +106,10 @@ export type SiblingVerdict = 'agree' | 'disagree' | 'none';
 
 export interface SiblingConfirmRow {
   ticker: string;
-  /** Net taker delta (0DTE chain) at the fire time. + = net long delta. */
+  /**
+   * Net taker delta across the nearest-expiry chain (`min_dte`; not always
+   * 0DTE) at the fire time. + = net long delta.
+   */
   netDex: number | null;
   /** Call minus put GEX imbalance. Context only; not in the verdict. */
   zgr: number | null;
@@ -175,8 +182,6 @@ interface RawSnapshotsRow {
   ovanna: unknown;
   ocharm: unknown;
   dexoflow: unknown;
-  gexoflow: unknown;
-  cvroflow: unknown;
   one_dexoflow: unknown;
   one_gexoflow: unknown;
   one_cvroflow: unknown;
@@ -196,7 +201,7 @@ export async function getLatestSnapshots(): Promise<SnapshotsLatestRow[]> {
         spot, zero_gamma,
         z_mlgamma, z_msgamma, zcvr, zgr, zvanna, zcharm,
         o_mlgamma, o_msgamma, ocvr, ogr, ovanna, ocharm,
-        dexoflow, gexoflow, cvroflow,
+        dexoflow,
         one_dexoflow, one_gexoflow, one_cvroflow,
         min_dte
       FROM gexbot_snapshots
@@ -225,8 +230,6 @@ export async function getLatestSnapshots(): Promise<SnapshotsLatestRow[]> {
     ovanna: toNum(r.ovanna),
     ocharm: toNum(r.ocharm),
     dexoflow: toNum(r.dexoflow),
-    gexoflow: toNum(r.gexoflow),
-    cvroflow: toNum(r.cvroflow),
     oneDexoflow: toNum(r.one_dexoflow),
     oneGexoflow: toNum(r.one_gexoflow),
     oneCvroflow: toNum(r.one_cvroflow),
@@ -488,7 +491,8 @@ export const FIRE_TIME_MAX_AGE_SECONDS = 180;
 
 /**
  * Direction read of one sibling against the alert's side.
- * `net_dex` is the net taker delta across the 0DTE chain: positive means
+ * `net_dex` is the net taker delta across the nearest-expiry chain
+ * (`min_dte`; 0DTE only on a ticker with a same-day expiry): positive means
  * takers are net long delta (call-side flow), negative the opposite.
  *   - call alert: net_dex > 0 → agree, net_dex < 0 → disagree
  *   - put alert:  net_dex < 0 → agree, net_dex > 0 → disagree
@@ -632,6 +636,12 @@ interface RawFireTimeRow {
  * Fetch the most recent `gexbot_snapshots` row for `gexbotTicker` whose
  * `captured_at` is at-or-before `asOf` but no older than `maxAgeSeconds`.
  *
+ * Same stale-vendor-timestamp rule as the sibling read: a row whose
+ * `source_timestamp` (Unix seconds) predates the window is the vendor
+ * replaying an older reading (VIX's prior close at the 09:30 open), so it
+ * is not "at fire time" even though its `captured_at` is fresh. A NULL
+ * `source_timestamp` carries no evidence either way and is kept.
+ *
  * Returns `null` when no row matches the freshness window — callers MUST
  * be prepared for that case (ticker outside cron coverage, cron miss,
  * weekend hour, etc.) and write NULL into the gex_ columns.
@@ -660,6 +670,8 @@ export async function getLatestGexbotSnapshotAt(
       WHERE ticker = ${gexbotTicker}
         AND captured_at >= ${lowerBound}::timestamptz
         AND captured_at <= ${upperBound}::timestamptz
+        AND (source_timestamp IS NULL
+             OR source_timestamp >= extract(epoch FROM ${lowerBound}::timestamptz))
       ORDER BY captured_at DESC
       LIMIT 1
     `,

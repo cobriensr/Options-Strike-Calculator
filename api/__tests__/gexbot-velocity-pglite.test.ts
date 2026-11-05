@@ -20,22 +20,12 @@ import {
 } from 'vitest';
 import { PGlite } from '@electric-sql/pglite';
 
-import { applyMigration } from './pglite-migrations';
+import { applyMigration, neonOverPglite } from './pglite-migrations';
 
-const holder = vi.hoisted(() => ({
-  pg: null as unknown as {
-    query: (t: string, p?: unknown[]) => Promise<{ rows: unknown[] }>;
-  },
-}));
+const holder = vi.hoisted(() => ({ sql: null as unknown }));
 
 vi.mock('../_lib/db.js', () => ({
-  getDb: () => {
-    const tag = (strings: TemplateStringsArray, ...params: unknown[]) => {
-      const text = strings.reduce((acc, part, i) => `${acc}$${i}${part}`);
-      return holder.pg.query(text, params).then((r) => r.rows);
-    };
-    return tag;
-  },
+  getDb: () => holder.sql,
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
@@ -82,7 +72,7 @@ async function seed(r: SeedRow) {
 describe('getVelocityTape against real SQL', () => {
   beforeAll(async () => {
     pg = new PGlite();
-    holder.pg = pg;
+    holder.sql = neonOverPglite(pg);
     await applyMigration(pg, 156);
   });
 
@@ -276,6 +266,51 @@ describe('getVelocityTape against real SQL', () => {
     const [row] = await getVelocityTape();
     expect(row?.dAggDex).toBe(0);
     expect(row?.typicalAbsDAggDex).toBe(10);
+  });
+
+  it("keeps the previous ET session's minutes out of the typical change", async () => {
+    // Yesterday's minutes move 100 apiece; today's move 1. Yesterday's rows
+    // carry no vendor timestamp (NULL = no evidence, so the pre-session
+    // prior rule cannot null them), and the 3-minute gap rule only nulls
+    // today's first delta. That leaves the ET-midnight bound as the one
+    // thing keeping yesterday's four 100s out of the median. Without it the
+    // median would be 100, and today's highlight would be judged against
+    // yesterday's tape.
+    for (const [at, agg, src] of [
+      ['2026-10-28T14:00:00Z', 1000, null],
+      ['2026-10-28T14:01:00Z', 1100, null],
+      ['2026-10-28T14:02:00Z', 1200, null],
+      ['2026-10-28T14:03:00Z', 1300, null],
+      ['2026-10-28T14:04:00Z', 1400, null],
+      ['2026-10-29T14:01:00Z', 5, undefined],
+      ['2026-10-29T14:02:00Z', 6, undefined],
+      ['2026-10-29T14:03:00Z', 7, undefined],
+      ['2026-10-29T14:04:00Z', 8, undefined],
+    ] as const) {
+      await seed({ at, agg, src });
+    }
+    const [row] = await getVelocityTape();
+    expect(row?.dAggDex).toBe(1);
+    expect(row?.typicalAbsDAggDex).toBe(1);
+  });
+
+  it('puts the ET-midnight bound at 05:00Z once the clocks fall back (EST)', async () => {
+    // 2026-11-01 is the DST change, so Monday 11-02 starts at 05:00Z, not
+    // 04:00Z. A fixed EDT offset would let the 04:58Z-04:59Z minutes (23:58
+    // and 23:59 EST on Sunday) into Monday's median. NULL vendor timestamps,
+    // as above, so only the bound can exclude them.
+    vi.setSystemTime(new Date('2026-11-02T15:05:00.000Z'));
+    for (const [at, agg, src] of [
+      ['2026-11-02T04:58:00Z', 100, null],
+      ['2026-11-02T04:59:00Z', 150, null],
+      ['2026-11-02T15:03:00Z', 10, undefined],
+      ['2026-11-02T15:04:00Z', 11, undefined],
+    ] as const) {
+      await seed({ at, agg, src });
+    }
+    const [row] = await getVelocityTape();
+    expect(row?.dAggDex).toBe(1);
+    expect(row?.typicalAbsDAggDex).toBe(1);
   });
 
   it('leaves the median null when the session has no valid change yet', async () => {
