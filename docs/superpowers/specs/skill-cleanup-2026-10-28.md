@@ -6,7 +6,7 @@ Cut the Claude Code instruction surface for this repo down to what gets used and
 
 ## Status
 
-Phases 1 to 6 are done (project skills: 103 → 51 after 3b). Phase 7a (scripts) and 7b (agent definitions) are done; 7c (the status view) is next. Phases run one implementer at a time, in order. Phase 8 (the weekly loop) has a draft spec, `weekly-improvement-loop-2026-11-04.md`, awaiting the owner's scope approval.
+Phases 1 to 7 are done (project skills: 103 → 51 after 3b): 7a (scripts), 7b (agent definitions) and 7c (the status view). Phases run one implementer at a time, in order. Phase 8 (the weekly loop) has its scope approved by the owner (2026-11-04, all defaults; decisions in `weekly-improvement-loop-2026-11-04.md`) and is built after the current queue empties.
 
 | Phase | State | Record |
 |---|---|---|
@@ -21,6 +21,8 @@ Phases 1 to 6 are done (project skills: 103 → 51 after 3b). Phase 7a (scripts)
 | 6 repo (CLAUDE.md facts, ESLint `.js` scope) | done | `ea8c1636`, `b0eabe05` |
 | 7a scripts (`review-summary`, `watch-deploy`) | done, reviewed, review fixes applied | `0e057ac2`, `775a0e8d`, fixes `544cfe87`, `95828a30` |
 | 7b agents (`implementer`, `verifier`) + CLAUDE.md brief line | done | local history `97f5225`; `122f0861` |
+| 7c status view (`scripts/session-status.mjs`: worktrees, branches, recent CI; prune's "safe to remove" checks shared) | done, delta review pass, pushed 2026-11-04 | `6b7a6e44`, `20449411`, `d0cdd23a`, `5ec41828`; follow-up round in the next row |
+| 7c-2 follow-up (Linux CI fix for the real-git fixtures, prune keeps a stopped revert or pick sequence, "candidate" means in prune's scope, review nits) | done | Linux CI fix `3ddd64fa`, then the round's own commits: `git log 3ddd64fa..main -- scripts/_lib/prune-worktrees.mjs` |
 | (side stream) cron monitor coverage | shipped 2026-10-29 | `58526e46`..`4bf97642`; local history `2df9154`; see `cron-monitor-coverage-2026-10-29.md` |
 | (side stream) E2E CI repair phase 2 | on main | `15db7163`..`d3b80398`; see `e2e-ci-repair-2026-10-26.md` |
 | (side stream) commit gate | shipped and active 2026-10-29 (`d45eaf6d`, `eaa89513`, `c3887206`; `core.hooksPath` set) | see `commit-gate-2026-10-28.md` |
@@ -168,7 +170,7 @@ Each rewrite must cite real repo files. The reviewer checks every cited path and
 
 - **`scripts/review-summary.mjs`:** reads the `npm run review` output and prints a short pass/fail per stage with the first errors. This replaces the hand-written grep/tail calls that followed 360 runs.
 - **`scripts/watch-deploy.mjs <sha>`:** polls the GitHub commit status (Vercel and Railway contexts) until a terminal state, prints one line, and sets the exit code. This replaces about 5 ad-hoc calls per push.
-- **Status view:** a statusline or Stop-hook footer showing the active stream, the queue, git ahead/behind and the last deploy state. Status asks went up after the watch-background-work memory was written, so this has to be something the owner can see, not another rule.
+- **Status view:** a statusline or Stop-hook footer showing the active stream, the queue, git ahead/behind and the last deploy state. Status asks went up after the watch-background-work memory was written, so this has to be something the owner can see, not another rule. **Built (7c) as `scripts/session-status.mjs`**, read-only and run on demand: the main checkout, every worktree with a merged/ahead/dirty tag, and the CI verdict of the last pushes on `origin/main`. A "cleanup candidate" is a merged worktree that `npm run worktrees:prune` would remove, by its own checks (`scripts/README.md`, "Session status"). Not built: a statusline or hook footer, and the active-stream and queue lines (they live in the main session, not in git).
 - **Agent definitions:**
   - `implementer`: commit rules, `npm run review`, R1–R7 pointer, one stream.
   - `verifier`: read-only, verifies against the source.

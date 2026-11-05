@@ -1,6 +1,6 @@
 # Weekly improvement loop (2026-11-04)
 
-Phase 8 of `skill-cleanup-2026-10-28.md`. Draft; the owner approves scope before any build.
+Phase 8 of `skill-cleanup-2026-10-28.md`. **Scope approved by the owner on 2026-11-04 (about 14:15 CT), with the default pick on all four open questions below.** It is built after the current queue empties: about 3.5 days over the 5 phases, one implementer stream.
 
 ## Goal
 
@@ -70,9 +70,9 @@ No tables, env vars or services.
 - Flaky: fails then passes on rerun with no change, 2 or more times a week.
 - Rule efficacy window: 2 weeks before vs everything since. A rule needs at least 5 target events across both windows to be judged.
 
-## Open questions (defaults in bold)
+## Decisions (owner, 2026-11-04 about 14:15 CT: all defaults)
 
-1. Where the miners live. **`.claude/scripts/` (local only)**, or `scripts/` in the public repo, since the code itself quotes nothing private.
-2. Cadence. **Manual `/weekly-review` plus a SessionStart reminder.** The alternative is a weekly Windows Task Scheduler job running `claude -p` headless.
-3. Report format. **Markdown in `docs/tmp/`**, or a private Artifact page with the charts.
-4. Whether to include CI history (`gh run list`) in the flaky-test signal. **Yes, if it stays under a minute.**
+1. **Where the miners live: `.claude/scripts/weekly-review/` (local only).** Not `scripts/` in the public repo, though the code itself quotes nothing private.
+2. **Cadence: manual `/weekly-review`, plus a SessionStart reminder when the last report is over 7 days old.** No scheduled job: the alternative, a weekly Windows Task Scheduler job running `claude -p` headless, was not chosen.
+3. **Report format: Markdown in `docs/tmp/weekly-review/<date>/`.** Not a private Artifact page with charts.
+4. **The flaky-test signal includes `gh run list` CI history, when it takes under 1 minute.**
