@@ -25,6 +25,10 @@
   "include": [
     "scripts/_lib/uw-tuned-backfill.ts",
     "scripts/_lib/uw-tuned-backfill.test.ts",
+    "scripts/backfill-anchor-legs.ts",
+    "scripts/_lib/anchor-backfill.ts",
+    "scripts/_lib/anchor-backfill.test.ts",
+    "scripts/_lib/anchor-backfill-pglite.test.ts",
     "scripts/backfill-futures-flow.ts",
     "scripts/_lib/futures-flow-backfill.ts",
     "scripts/_lib/futures-flow-backfill.test.ts",
