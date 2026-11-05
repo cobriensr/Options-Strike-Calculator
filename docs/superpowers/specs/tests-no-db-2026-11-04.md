@@ -1,10 +1,10 @@
-# No test touches a real database
+# No test touches a real database or production store
 
-Status: approved by the owner 2026-11-04 (a standing rule, not a proposal). Phase A is in this change; phase B follows after 15:00 CT because it edits Railway service folders.
+Status: approved by the owner 2026-11-04 (a standing rule, not a proposal). Phase A is in this change; phase B follows after 15:00 CT because it edits Railway service folders. The production stores (Upstash Redis, Vercel Blob, Cloudflare R2) joined the rule on 2026-11-05: see "Production stores" below.
 
 ## Goal
 
-No test, in any suite, may connect to or write to a real database. Each suite has one choke point where a connection attempt fails loudly, up front, instead of being noticed afterwards. In-process pglite stays allowed.
+No test, in any suite, may connect to or write to a real database or a production store (Redis, Blob, R2). Each suite has one choke point where an attempt fails loudly, up front, instead of being noticed afterwards. In-process pglite stays allowed.
 
 ## Why
 
@@ -30,6 +30,20 @@ The CI job `takeit-retrain` (`.github/workflows/ml-pipeline.yml`) is not a test,
 
 `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `POSTGRES_URL`, `POSTGRES_URL_NON_POOLING`, `POSTGRES_PRISMA_URL`, `NEON_DATABASE_URL`, plus the writable remote stores `KV_REST_API_URL`, `KV_REST_API_TOKEN`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, `BLOB_READ_WRITE_TOKEN` and the `R2_*` credentials (`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`, `R2_BUCKET_FULLTAPE`). A test that needs a value sets its own fake after the setup has run.
 
+## Production stores (2026-11-05)
+
+The same design, extended: the stores record into the same attempts log, so the existing `afterEach` and `afterAll` checks (Vitest) and the session-end check (Python) fail a run that swallowed an attempt. The message is "tests must not reach a production store". A read reaches production as surely as a write, so reads are blocked too.
+
+| Suite               | Choke point                                                                                                                                                                    | Block                                                                                                                                                                                                                                                                            | Self-test                                 |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| Vitest, Redis       | `HttpClient.request` of `@upstash/redis`, the one method every command, pipeline and auto-pipeline ends in                                                                     | `setup.ts` mocks the package with `importOriginal` and replaces `request` (`blockRedisRequests` in `db-guard.ts`); it records `redis` and rejects. A test that replaced `globalThis.fetch` with its own double gets through, since a stub cannot reach the store.                | `api/__tests__/no-store-guard.test.ts`    |
+| Vitest, Blob        | the functions `@vercel/blob` exports that call the Blob API: `get`, `head`, `list`, `put`, `del`, `copy`, `createFolder`, the multipart four, `issueSignedToken`, `presignUrl` | `setup.ts` mocks the package, spreads `importOriginal` and replaces each of those by name (`BLOCKED_BLOB_EXPORTS`); each records `blob.<name>` and rejects. Error classes and the pure helpers survive. The self-test compares both lists against the installed package.         | same                                      |
+| Vitest, R2          | `S3Client.prototype.send` of `@aws-sdk/client-s3` (`api/_lib/r2.ts` is the only user; the aggregated `S3` client extends `S3Client`)                                           | `setup.ts` mocks the package with `importOriginal` and replaces `send` (`blockS3Sends`); it records `s3` and rejects. The command classes and exceptions survive.                                                                                                                | same                                      |
+| ml and root scripts | `botocore.client.BaseClient._make_api_call`, where every boto3 operation ends (presigning signs locally and is left alone)                                                     | `ml/conftest.py` and `scripts/conftest.py` replace it at import, when botocore imports, with the stub that records `botocore.make_api_call` and raises `DatabaseAccessBlocked`. The guard sections stay byte-identical (`scripts/test_guard_twins.py`).                          | `test_no_database_guard.py` in each suite |
+| nightly             | sockets                                                                                                                                                                        | Left alone. `nightly/conftest.py` forces fake `R2_*` values and an autouse fixture makes `socket.connect` / `connect_ex` raise for any non-loopback address, which stops boto3 (a sync client) from reaching R2. Tests use moto. It raises a `RuntimeError` and records nothing. | exists                                    |
+
+A test file that mocks one of these packages itself overrides that block, by design (12 files do today); its mock must not reach the network. `api/_lib/redis.ts` and `api/_lib/r2.ts` build their clients behind env checks, and a test that imports them unmocked still passes: with the env stripped the client is built unconfigured and fails only when a command is sent, which now records and rejects. The full Vitest run (729 files) recorded no attempt, so no test was found building and using a real client.
+
 ## Phases
 
 - **A (pushable now, no Railway folder touched):** ml, root scripts, Vitest, Playwright, the workflow, the deleted live-DB test, and this doc.
@@ -39,7 +53,7 @@ The CI job `takeit-retrain` (`.github/workflows/ml-pipeline.yml`) is not a test,
 
 - `test_live_db_sum_invariant` was deleted, not skipped. Its check (stored lottery scores equal the component sum on 100 random rows) is kept as a manual, read-only script, `scripts/check_lottery_score_sum_invariant.py`, that says in its docstring that it reads production. Pytest does not collect it.
 - A second Vitest layer that wraps `globalThis.fetch` to reject `*.neon.tech` was not added. Tests that stub fetch replace the wrapper, and every Neon client goes through the three mocked constructors anyway.
-- Only database drivers are blocked in code. Redis, Blob and R2 are covered by stripping their env names; blocking their clients would be a separate change.
+- The Redis, Blob and R2 clients are blocked in code too (2026-11-05), reads as well as writes, on the owner's words: "I would rather mock these things than have them run writes against production resources." Until then they were covered only by stripping their env names (see "Production stores").
 
 ## E2E follow-ups found while verifying Part A (2026-11-04)
 
@@ -56,6 +70,11 @@ The CI job `takeit-retrain` (`.github/workflows/ml-pipeline.yml`) is not a test,
 - sidecar: the psycopg2 mock blocks `connect` and `ThreadedConnectionPool` only. `SimpleConnectionPool` and the other children of the MagicMock still return MagicMocks (nothing in `sidecar/src` uses them). `sentry_sdk` is mocked only when no plugin imported it first.
 - Vitest: the `afterAll` check does not run in a file whose tests are all skipped (Vitest runs no hooks for it), so a swallowed module-level attempt in such a file goes unseen.
 - The scripts twin check (`scripts/test_guard_twins.py`) runs only where the scripts suite runs. CI does not run `scripts/test_*.py`.
+- Vitest, Redis: a request goes through when a test has replaced `globalThis.fetch`, because a double cannot reach the store. A test that stubs `fetch` and also builds a real Redis client therefore passes unrecorded. Only the package's Node entry is mocked; nothing imports `@upstash/redis/cloudflare` or `/fastly`.
+- Vitest, Blob: only the functions in `BLOCKED_BLOB_EXPORTS` are replaced, and the self-test fails when an upgrade adds an export that is in neither list. The `@vercel/blob/client` subpath is not mocked (nothing imports it). A test that makes a raw `fetch` to a Blob, Upstash or R2 URL on its own, with `fetch` left real, is not caught: the blocks sit at the packages, not at the network.
+- Python stores: only boto3 (botocore) is blocked. Python reaches Vercel Blob with raw `requests` calls in `ml/src/flow_archive.py` (`requests.get`, read) and `scripts/ingest-flow.py` (`requests.put` and `post`, write), which no block covers. Their tests patch `flow_archive.requests.get`, and `BLOB_READ_WRITE_TOKEN` is stripped, so none reaches Blob today. Blocking it would be a host check on `requests`; not done. No ml or scripts code uses an Upstash client.
+- sidecar: its conftest strips the store env names but blocks no sockets, unlike nightly and uw-stream, so a test that sets its own fake token and lets `archive_seeder` call out would reach Blob (a read). Not changed here (Railway folder, market hours).
+- nightly: the R2 guard raises a `RuntimeError` (an `Exception`) and records nothing, so a bare `except Exception` could swallow it; moto keeps the R2 tests in process.
 
 ## Acceptance
 
