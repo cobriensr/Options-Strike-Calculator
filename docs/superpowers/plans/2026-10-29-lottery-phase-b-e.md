@@ -52,8 +52,12 @@ Order, one implementer stream at a time: B0 → B1 → B2 → B3 → B5 → E0 �
 
 ### B0. Measure, and decouple the tests from query order (no behavior change; M)
 
-- **B0.1** (`api/cron/detect-lottery-fires.ts`, its test): add `timingsMs: { tickScan, seeds, takeitPrefetch, pass1Flow, pass2, insert, candles, tierMonitor, total }` to `metadata`, so it lands in Axiom `meta` (no new top-level keys). Collect one full session as the baseline before B1 ships. This takes over the setup-timings item from phase D.
-- **B0.2** (new `api/__tests__/helpers/sql-router.ts`, the cron test): route `mockSql` on distinctive SQL text (`FROM ws_option_trades`, `FROM lottery_finder_fires … MAX(trigger_time_ct)`, `FROM flow_data`, `INSERT INTO lottery_finder_fires`, …). Unmatched SQL throws, and the router records which routes ran. Convert all 53 tests (203 ordered `mockResolvedValueOnce` calls); without this every B phase rewrites most tests.
+- **B0.1** (`api/cron/detect-lottery-fires.ts`, its test): add `timingsMs: { tickScan, seeds, takeitPrefetch, pass1Flow, anchors, pass2, insert, candles, tierMonitor, total }` to `metadata`, so it lands in Axiom `meta` (no new top-level keys). Collect one full session as the baseline before B1 ships. This takes over the setup-timings item from phase D.
+  - `anchors` is the batched anchor-legs lookup, a DB stage between Pass 1 and Pass 2 that B3.2 moves into the context batch.
+  - `pass1Flow` is the whole Pass 1 loop, CPU included (detect, enrich, score), not only the flow-series wait. The flow-series fetch is its only I/O.
+  - `insert` and `candles` are summed across the per-fire loop in Pass 2, so both sit inside `pass2`.
+  - A skipped run (empty scan) reports only `tickScan` and `total`; its `total` includes the win-rate warm-up wait.
+- **B0.2** (new `api/__tests__/helpers/sql-router.ts`, the cron test): route `mockSql` on distinctive SQL text (`FROM ws_option_trades`, `FROM lottery_finder_fires … MAX(trigger_time_ct)`, `FROM flow_data`, `INSERT INTO lottery_finder_fires`, …). Unmatched SQL throws, and the router records which routes ran. Convert all 71 tests (241 ordered `mockResolvedValueOnce` / `mockRejectedValueOnce` calls, counted 2026-11-05; the first count was 53 tests and 203 calls); without this every B phase rewrites most tests.
 - **Risk:** the router hides an unexpected extra query. Unmatched SQL throws, and tests assert the routes that ran.
 - **Verify in prod:** deploy, then read `parse_json(meta).timingsMs` p50/p90 per hour for a session.
 
