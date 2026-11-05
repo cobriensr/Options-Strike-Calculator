@@ -245,10 +245,64 @@ const TICKERS_WITH_GEX_STRIKE = new Set([
   'QQQ',
 ]);
 
+// Milliseconds since a performance.now() reading. That clock is monotonic, so
+// a stage can't come out negative if the system clock steps during a run.
+const msSince = (startedAt: number): number => performance.now() - startedAt;
+
+// Round every timing to a whole millisecond. Stages are summed unrounded
+// (insert and candles add up over the per-fire loop) and rounded once here,
+// so rounding never makes a total smaller than a stage it contains.
+function wholeMs<K extends string>(
+  timings: Record<K, number>,
+): Record<K, number> {
+  const rounded = {} as Record<K, number>;
+  for (const key of Object.keys(timings) as K[]) {
+    rounded[key] = Math.round(timings[key]);
+  }
+  return rounded;
+}
+
 export default withCronInstrumentation(
   'detect-lottery-fires',
   async (ctx): Promise<CronResult> => {
+    const runStartedAt = performance.now();
     const db = getDb();
+
+    // Where this run's time goes, in ms, reported as metadata.timingsMs and so
+    // in Axiom `meta` (an object value is never a top-level column: read it
+    // with `parse_json(meta).timingsMs`). Each stage is its own start-to-end
+    // wall time, measured around the existing code:
+    //   tickScan        the tick queries, three hash partitions run in
+    //                   parallel (Promise.all), so the slowest, not their sum
+    //   seeds           the cooldown seed query (0 when no chain qualifies)
+    //   takeitPrefetch  loadTakeitDetectContext. The win-rate load it joins
+    //                   starts before the scan and runs in the background, so
+    //                   only the part still pending at the join is counted
+    //   pass1Flow       the whole Pass 1 loop: detect, enrich, score, and the
+    //                   per-ticker-day flow-series fetch that is its I/O
+    //   anchors         the batched anchor-legs lookup
+    //   pass2           the whole Pass 2 loop: macro (its three queries run in
+    //                   parallel), candles, GexBot, Take-It scoring, INSERT
+    //   insert, candles summed over the per-fire loop, so both are inside
+    //                   pass2
+    //   tierMonitor     the post-loop feed-tier query
+    //   total           handler start to the end, including untimed glue
+    //                   such as grouping rows
+    // Today the stages run one after another, so they nearly sum to total.
+    // Phase B1 runs the Take-It prefetch and seeds in parallel with the scan:
+    // each then still reports its own duration, they overlap, and the stages
+    // no longer sum to total.
+    const stageMs = {
+      tickScan: 0,
+      seeds: 0,
+      takeitPrefetch: 0,
+      pass1Flow: 0,
+      anchors: 0,
+      pass2: 0,
+      insert: 0,
+      candles: 0,
+      tierMonitor: 0,
+    };
 
     // Mean of daily win-rates (PIT-correct: only strictly-earlier dates)
     // per ticker, a Take-It input. A parallel seq scan of the whole table
@@ -302,6 +356,7 @@ export default withCronInstrumentation(
     // UTC). 10s per-attempt timeout matches the secondary
     // lottery_finder_fires query below.
     const TICK_QUERY_BATCHES = 3;
+    const tickScanStartedAt = performance.now();
     const tickBatches = await Promise.all(
       Array.from({ length: TICK_QUERY_BATCHES }, (_, batchIdx) =>
         withDbRetry(
@@ -324,6 +379,7 @@ export default withCronInstrumentation(
         ),
       ),
     );
+    stageMs.tickScan = msSince(tickScanStartedAt);
     const rows = tickBatches.flat() as TickRow[];
 
     if (rows.length === 0) {
@@ -362,7 +418,15 @@ export default withCronInstrumentation(
       return {
         status: 'skipped',
         message: 'no ticks in scan window',
-        metadata: { scanned: 0 },
+        metadata: {
+          scanned: 0,
+          // Only the stages a skipped run reaches. The warm-up wait above is
+          // in total, not in tickScan.
+          timingsMs: wholeMs({
+            tickScan: stageMs.tickScan,
+            total: msSince(runStartedAt),
+          }),
+        },
       };
     }
 
@@ -454,6 +518,7 @@ export default withCronInstrumentation(
     }
     const priorByChain = new Map<string, number>();
     if (eligibleChainIds.length > 0) {
+      const seedsStartedAt = performance.now();
       const priorRows = (await withDbRetry(
         () => db`
           SELECT
@@ -467,6 +532,7 @@ export default withCronInstrumentation(
         2,
         10_000,
       )) as { option_chain_id: string; last_ms: DbNullableNumeric }[];
+      stageMs.seeds = msSince(seedsStartedAt);
       for (const r of priorRows) {
         if (r.last_ms != null) {
           priorByChain.set(r.option_chain_id, Number(r.last_ms));
@@ -490,6 +556,7 @@ export default withCronInstrumentation(
     // second, uncancelled copy of the query on Neon. Yesterday is included
     // so a lookback that crosses ET midnight still sees its fires.
     let takeitPrefetchFailure = null as TakeitPrefetchFailure | null;
+    const takeitStartedAt = performance.now();
     const takeitCtx = await loadTakeitDetectContext(
       'lottery',
       {
@@ -529,6 +596,7 @@ export default withCronInstrumentation(
         takeitPrefetchFailure = failure;
       },
     );
+    stageMs.takeitPrefetch = msSince(takeitStartedAt);
     const takeitPrefetchError = takeitPrefetchFailure?.reason ?? null;
     const takeitPrefetchFailureKind = takeitPrefetchFailure?.kind ?? null;
     // The helper or the bundle loader already sent this run's Sentry event.
@@ -618,6 +686,7 @@ export default withCronInstrumentation(
     const preparedFires: PreparedFire[] = [];
 
     // ── Pass 1: detect + score every in-universe fire ──────────────────
+    const pass1StartedAt = performance.now();
     for (const g of groups.values()) {
       if (g.ticks.length < PER_CHAIN_MIN_PRINTS) {
         skippedShort += 1;
@@ -765,6 +834,7 @@ export default withCronInstrumentation(
         });
       }
     }
+    stageMs.pass1Flow = msSince(pass1StartedAt);
 
     // ── Pre-pass: symmetric co-fire membership over ALL this-tick fires ─
     // Includes ALL scored fires (even those that will hit ON CONFLICT) so
@@ -814,6 +884,7 @@ export default withCronInstrumentation(
     });
     let anchorsByKey = new Map<string, AnchorLegs | null>();
     let anchorLookupError: string | null = null;
+    const anchorsStartedAt = performance.now();
     try {
       anchorsByKey = await withDbRetry(
         () => lookupAnchorLegs(anchorRequests),
@@ -841,6 +912,7 @@ export default withCronInstrumentation(
         extra: { fires: anchorRequests.length },
       });
     }
+    stageMs.anchors = msSince(anchorsStartedAt);
     // anchorsFound / anchorsMissing count every looked-up fire, including
     // fires that then hit ON CONFLICT, not inserted rows.
     let anchorsFound = 0;
@@ -851,6 +923,7 @@ export default withCronInstrumentation(
     const anchorsMissing = anchorsByKey.size - anchorsFound;
 
     // ── Pass 2: macro / gexbot / takeit + INSERT ───────────────────────
+    const pass2StartedAt = performance.now();
     for (const prepared of preparedFires) {
       const { rec, score, cumNcpAtFire, cumNppAtFire } = prepared;
       {
@@ -911,6 +984,7 @@ export default withCronInstrumentation(
           } else if (candleBreakerOpen) {
             candleFetchSkippedBreaker += 1;
           } else {
+            const candleStartedAt = performance.now();
             try {
               // One at a time on purpose: every UW call shares the global
               // 3-slot concurrency semaphore with the other crons.
@@ -952,6 +1026,8 @@ export default withCronInstrumentation(
                 candleBreakerOpen = true;
               }
             }
+            // Only lookups that went out count; skips cost nothing.
+            stageMs.candles += msSince(candleStartedAt);
           }
           candleCache.set(cacheKey, candles);
         }
@@ -1105,6 +1181,7 @@ export default withCronInstrumentation(
           else gexHits += 1;
         }
 
+        const insertStartedAt = performance.now();
         const result = (await withDbRetry(
           () => db`
           INSERT INTO lottery_finder_fires (
@@ -1170,11 +1247,13 @@ export default withCronInstrumentation(
           2,
           10_000,
         )) as { id: number }[];
+        stageMs.insert += msSince(insertStartedAt);
         if (result.length > 0) {
           inserted += 1;
         }
       }
     }
+    stageMs.pass2 = msSince(pass2StartedAt);
 
     // Feed-tier monitor (Phase 6 + lottery-feed-tier-recalibration-2026-06-03).
     // Count today's fires through the EXACT feed tier logic so the
@@ -1206,6 +1285,7 @@ export default withCronInstrumentation(
     let feedTier1 = 0;
     let feedTier2 = 0;
     let feedTier3 = 0;
+    const tierMonitorStartedAt = performance.now();
     try {
       const todays = (await withDbRetry(
         () => db`
@@ -1250,6 +1330,7 @@ export default withCronInstrumentation(
         'detect-lottery-fires: feed-tier monitor query failed (non-fatal)',
       );
     }
+    stageMs.tierMonitor = msSince(tierMonitorStartedAt);
 
     // Candle and flow-series problems leave columns null on the row; the
     // fire itself is written. Each kind is reported once per run, with its
@@ -1468,6 +1549,8 @@ export default withCronInstrumentation(
         anchorsMissing,
         anchorLookupFailures: anchorLookupError == null ? 0 : 1,
         anchorLookupError,
+        // An object: Axiom folds it into `meta`. total is read here, last.
+        timingsMs: wholeMs({ ...stageMs, total: msSince(runStartedAt) }),
       },
     };
   },

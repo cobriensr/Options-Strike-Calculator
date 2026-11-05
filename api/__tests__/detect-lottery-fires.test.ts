@@ -3572,4 +3572,259 @@ describe('detect-lottery-fires handler', () => {
       expect(logger.error).not.toHaveBeenCalled();
     });
   });
+
+  // Plan 2026-10-29-lottery-phase-b-e.md, B0.1: per-stage wall time in the
+  // run's metadata, so Axiom `meta` carries a baseline before phases B1-B3
+  // reorder and merge the queries.
+  describe('timingsMs', () => {
+    const STAGES = [
+      'tickScan',
+      'seeds',
+      'takeitPrefetch',
+      'pass1Flow',
+      'anchors',
+      'pass2',
+      'insert',
+      'candles',
+      'tierMonitor',
+      'total',
+    ] as const;
+    type Timings = Record<(typeof STAGES)[number], number>;
+
+    function timingsOf(res: ReturnType<typeof mockResponse>): Timings {
+      return (res._json as { timingsMs: Timings }).timingsMs;
+    }
+
+    // Fakes only performance.now(), which the cron times with. CPU time then
+    // counts for nothing, and each stub below moves the clock by a known
+    // amount, so a stage's number is exact. Timers stay real, so the 5 s
+    // deadlines still behave.
+    function useStepClock(): (ms: number) => void {
+      vi.useFakeTimers({ toFake: ['performance'] });
+      return (ms) => {
+        vi.advanceTimersByTime(ms);
+      };
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('reports every stage as a non-negative whole number of ms, total covering each, and sends it to Axiom under meta', async () => {
+      stageTicks(fireableSndkStream());
+      router.on('insert', [{ id: 42 }]);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._status).toBe(200);
+      const timings = timingsOf(res);
+      expect(Object.keys(timings).sort()).toEqual([...STAGES].sort());
+      for (const stage of STAGES) {
+        expect(Number.isInteger(timings[stage])).toBe(true);
+        expect(timings[stage]).toBeGreaterThanOrEqual(0);
+        expect(timings.total).toBeGreaterThanOrEqual(timings[stage]);
+      }
+      // insert and candles are summed inside the Pass 2 loop.
+      expect(timings.pass2).toBeGreaterThanOrEqual(timings.insert);
+      expect(timings.pass2).toBeGreaterThanOrEqual(timings.candles);
+      // An object value is never a top-level Axiom column: reportCronRun
+      // folds it into `meta`, which is how `parse_json(meta).timingsMs`
+      // reads it.
+      expect(vi.mocked(reportCronRun).mock.calls[0]![1]).toMatchObject({
+        timingsMs: timings,
+      });
+      expect(AXIOM_TOP_LEVEL_KEYS.has('timingsMs')).toBe(false);
+    });
+
+    it('attributes each stage its own time: scan, seeds, Take-It, flow, anchors, then Pass 2 with its insert and candles inside', async () => {
+      const advance = useStepClock();
+      // Three partitioned tick queries, 10 ms each.
+      router.on('ticks', (call) => {
+        advance(10);
+        return call.params.at(-1) === 0 ? fireableSndkStream() : [];
+      });
+      router.on('priorFires', () => {
+        advance(7);
+        return [];
+      });
+      mockLoadTakeitDetectContext.mockImplementation(async () => {
+        advance(11);
+        return null;
+      });
+      router.on('flowSeries', () => {
+        advance(13);
+        return [];
+      });
+      mockLookupAnchorLegs.mockImplementation(async (requests) => {
+        advance(17);
+        return new Map(
+          requests.map((r): [string, AnchorLegs | null] => [
+            r.key,
+            DEFAULT_ANCHOR,
+          ]),
+        );
+      });
+      // Pass 2: macro, candles, GexBot and the INSERT all take time.
+      router.on('flowData', () => {
+        advance(19);
+        return [];
+      });
+      mockFetchStockCandles1m.mockImplementation(async () => {
+        advance(23);
+        return SESSION_CANDLES;
+      });
+      mockGetLatestGexbotSnapshotAt.mockImplementation(async () => {
+        advance(29);
+        return null;
+      });
+      router.on('insert', () => {
+        advance(31);
+        return [{ id: 42 }];
+      });
+      router.on('tierMonitor', () => {
+        advance(37);
+        return [];
+      });
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(timingsOf(res)).toEqual({
+        tickScan: 30,
+        seeds: 7,
+        takeitPrefetch: 11,
+        pass1Flow: 13,
+        anchors: 17,
+        // flow_data 19 + candles 23 + GexBot 29 + insert 31.
+        pass2: 102,
+        insert: 31,
+        candles: 23,
+        tierMonitor: 37,
+        total: 217,
+      });
+    });
+
+    it('sums insert and candles across the fires of Pass 2', async () => {
+      const advance = useStepClock();
+      stageTicks([
+        ...fireableSndkStream(),
+        ...streamFor('TSLA', 'TSLA260501C01175000'),
+      ]);
+      router.on('insert', () => {
+        advance(31);
+        return [{ id: 42 }];
+      });
+      mockFetchStockCandles1m.mockImplementation(async () => {
+        advance(23);
+        return SESSION_CANDLES;
+      });
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      // Two fires: two INSERTs, and one candle fetch per ticker-day.
+      expect(timingsOf(res)).toMatchObject({
+        insert: 62,
+        candles: 46,
+        pass2: 108,
+        total: 108,
+      });
+    });
+
+    it('reports 0 for the stages that had no work, and total equal to the tick scan', async () => {
+      const advance = useStepClock();
+      // Only 4 ticks: below the per-chain minimum, so no seeds, no fires.
+      router.on('ticks', (call) => {
+        advance(10);
+        return call.params.at(-1) === 0 ? fireableSndkStream().slice(0, 4) : [];
+      });
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(timingsOf(res)).toEqual({
+        tickScan: 30,
+        seeds: 0,
+        takeitPrefetch: 0,
+        pass1Flow: 0,
+        anchors: 0,
+        pass2: 0,
+        insert: 0,
+        candles: 0,
+        tierMonitor: 0,
+        total: 30,
+      });
+    });
+
+    it('still reports a skipped run, with the tick scan and the total, which includes the win-rate warm-up wait', async () => {
+      const advance = useStepClock();
+      router.on('ticks', () => {
+        advance(10);
+        return [];
+      });
+      mockAwaitWinRateWarmup.mockImplementation(async () => {
+        advance(5);
+      });
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({ status: 'skipped' });
+      expect(timingsOf(res)).toEqual({ tickScan: 30, total: 35 });
+      expect(vi.mocked(reportCronRun).mock.calls[0]![1]).toMatchObject({
+        status: 'skipped',
+        timingsMs: { tickScan: 30, total: 35 },
+      });
+    });
+
+    // A stage that fails open is still timed: its clock stops on the catch
+    // path too, or a failing dependency would read as a fast one.
+    it.each([
+      {
+        stage: 'anchors',
+        ms: 17,
+        arrange: (advance: (ms: number) => void) =>
+          mockLookupAnchorLegs.mockImplementation(async () => {
+            advance(17);
+            throw new Error('anchor lookup down');
+          }),
+      },
+      {
+        stage: 'candles',
+        ms: 23,
+        arrange: (advance: (ms: number) => void) =>
+          // A definite 4xx: not retried, so the fetch is called once.
+          mockFetchStockCandles1m.mockImplementation(async () => {
+            advance(23);
+            throw new Error('UW API 404: Not Found');
+          }),
+      },
+      {
+        stage: 'tierMonitor',
+        ms: 37,
+        arrange: (advance: (ms: number) => void) =>
+          router.on('tierMonitor', () => {
+            advance(37);
+            return new Error('feed-tier monitor down');
+          }),
+      },
+    ])(
+      'times the $stage stage even when it fails',
+      async ({ stage, ms, arrange }) => {
+        const advance = useStepClock();
+        stageTicks(fireableSndkStream());
+        router.on('insert', [{ id: 42 }]);
+        arrange(advance);
+
+        const res = mockResponse();
+        await handler(authorizedReq(), res);
+
+        expect(res._status).toBe(200);
+        expect(timingsOf(res)[stage as keyof Timings]).toBe(ms);
+        expect(timingsOf(res).total).toBeGreaterThanOrEqual(ms);
+      },
+    );
+  });
 });
