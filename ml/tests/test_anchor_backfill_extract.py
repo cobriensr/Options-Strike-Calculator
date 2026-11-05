@@ -77,7 +77,9 @@ def select(tmp_path: Path, rows: list[tuple], requests=None) -> list[dict]:
     tape = write_tape(tmp_path / "tape.parquet", rows)
     con = duckdb.connect()
     try:
-        return ex.select_anchors(con, tape, requests if requests is not None else sb_request())
+        return ex.select_anchors(
+            con, tape, requests if requests is not None else sb_request()
+        )
     finally:
         con.close()
 
@@ -146,8 +148,12 @@ def test_canceled_print_is_never_the_anchor(tmp_path):
 
 def test_zero_price_is_no_anchor_but_is_a_sibling(tmp_path):
     rows = [
-        print_row("legA", "15:00:01.000000", chain=CHAIN, price=2.0, size=10, code="mlet"),
-        print_row("wing", "15:00:01.000400", chain=OTHER, price=0.0, size=10, code="mlet"),
+        print_row(
+            "legA", "15:00:01.000000", chain=CHAIN, price=2.0, size=10, code="mlet"
+        ),
+        print_row(
+            "wing", "15:00:01.000400", chain=OTHER, price=0.0, size=10, code="mlet"
+        ),
     ]
     (record,) = select(tmp_path, rows)
     assert record["anchor"]["wsTradeId"] == "legA"
@@ -227,18 +233,55 @@ def test_lottery_window_is_trigger_plus_minus_30_seconds(tmp_path):
 
 def test_siblings_are_same_ticker_same_millisecond_multi_leg_only(tmp_path):
     rows = [
-        print_row("anchor", "15:00:01.123456", chain=CHAIN, price=2.0, size=9, code="mlet"),
-        print_row("same-ms-other-us", "15:00:01.123999", chain=OTHER, price=1.0, size=1, code="MLAT"),
-        print_row("other-ms", "15:00:01.124000", chain=OTHER, price=1.0, size=1, code="mlet"),
-        print_row("single-code", "15:00:01.123500", chain=OTHER, price=1.0, size=1, code="slan"),
-        print_row("no-code", "15:00:01.123600", chain=OTHER, price=1.0, size=1, code=None),
-        print_row("cancelled", "15:00:01.123700", chain=OTHER, price=1.0, size=1, code="mlet", canceled=True),
-        print_row("other-ticker", "15:00:01.123800", ticker="QQQ", chain="QQQ261030C00500000", code="mlet"),
+        print_row(
+            "anchor", "15:00:01.123456", chain=CHAIN, price=2.0, size=9, code="mlet"
+        ),
+        print_row(
+            "same-ms-other-us",
+            "15:00:01.123999",
+            chain=OTHER,
+            price=1.0,
+            size=1,
+            code="MLAT",
+        ),
+        print_row(
+            "other-ms", "15:00:01.124000", chain=OTHER, price=1.0, size=1, code="mlet"
+        ),
+        print_row(
+            "single-code",
+            "15:00:01.123500",
+            chain=OTHER,
+            price=1.0,
+            size=1,
+            code="slan",
+        ),
+        print_row(
+            "no-code", "15:00:01.123600", chain=OTHER, price=1.0, size=1, code=None
+        ),
+        print_row(
+            "cancelled",
+            "15:00:01.123700",
+            chain=OTHER,
+            price=1.0,
+            size=1,
+            code="mlet",
+            canceled=True,
+        ),
+        print_row(
+            "other-ticker",
+            "15:00:01.123800",
+            ticker="QQQ",
+            chain="QQQ261030C00500000",
+            code="mlet",
+        ),
     ]
     (record,) = select(tmp_path, rows)
     assert record["anchor"]["wsTradeId"] == "anchor"
     # Anchor included; ordered by microsecond.
-    assert [s["wsTradeId"] for s in record["siblings"]] == ["anchor", "same-ms-other-us"]
+    assert [s["wsTradeId"] for s in record["siblings"]] == [
+        "anchor",
+        "same-ms-other-us",
+    ]
 
 
 def test_non_multi_leg_anchor_gets_no_siblings(tmp_path):
@@ -253,7 +296,9 @@ def test_non_multi_leg_anchor_gets_no_siblings(tmp_path):
 def test_two_requests_sharing_a_millisecond_each_get_the_siblings(tmp_path):
     rows = [
         print_row("a1", "15:00:01.000100", chain=CHAIN, price=2.0, size=9, code="mlet"),
-        print_row("leg2", "15:00:01.000200", chain=OTHER, price=1.0, size=1, code="mlet"),
+        print_row(
+            "leg2", "15:00:01.000200", chain=OTHER, price=1.0, size=1, code="mlet"
+        ),
     ]
     requests = ex.build_requests([], [(1, "SPY", CHAIN, T0), (2, "SPY", OTHER, T0)])
     records = select(tmp_path, rows, requests)
@@ -275,7 +320,17 @@ def test_every_request_gets_a_line_even_without_an_anchor(tmp_path):
 
 
 def test_tape_print_fields_types_and_empty_code_to_null(tmp_path):
-    rows = [print_row("p1", "15:00:01.123456", price=1.25, size=3, code="", option_type="put", strike=780.5)]
+    rows = [
+        print_row(
+            "p1",
+            "15:00:01.123456",
+            price=1.25,
+            size=3,
+            code="",
+            option_type="put",
+            strike=780.5,
+        )
+    ]
     (record,) = select(tmp_path, rows, sb_request())
     anchor = record["anchor"]
     assert set(anchor) == {
@@ -310,7 +365,9 @@ def test_iso_ms_zero_pads_milliseconds():
 
 def test_ndjson_file_is_atomic_lf_and_one_json_object_per_line(tmp_path):
     out = tmp_path / "out" / "2026-10-28.ndjson"
-    records = [{"table": "lottery_finder_fires", "id": 1, "anchor": None, "siblings": []}]
+    records = [
+        {"table": "lottery_finder_fires", "id": 1, "anchor": None, "siblings": []}
+    ]
     ex.write_ndjson_atomic(out, records)
     raw = out.read_bytes()
     assert b"\r" not in raw
@@ -327,7 +384,14 @@ def patched(monkeypatch, tmp_path):
         tmp_path / "tape.parquet",
         [
             print_row("lf-anchor", "15:00:01.500000", code="mlet", price=2.0, size=5),
-            print_row("lf-leg2", "15:00:01.500200", chain=OTHER, code="mlet", price=1.0, size=5),
+            print_row(
+                "lf-leg2",
+                "15:00:01.500200",
+                chain=OTHER,
+                code="mlet",
+                price=1.0,
+                size=5,
+            ),
         ],
     )
     monkeypatch.setattr(ex, "tape_url", lambda date: tape)
@@ -335,7 +399,10 @@ def patched(monkeypatch, tmp_path):
     monkeypatch.setattr(
         ex,
         "fetch_requests",
-        lambda date: ([(11, "SPY", CHAIN, T0)], [(22, "SPY", "SPY261030C00999000", T0)]),
+        lambda date: (
+            [(11, "SPY", CHAIN, T0)],
+            [(22, "SPY", "SPY261030C00999000", T0)],
+        ),
     )
     return tmp_path / "out"
 
@@ -344,7 +411,9 @@ def test_extract_date_writes_ndjson_and_reports_counts(patched):
     stats = ex.extract_date(DAY, patched)
     assert (stats["lf"], stats["sb"], stats["anchors"]) == (1, 1, 1)
     assert (stats["multi_leg"], stats["siblings"]) == (1, 2)
-    lines = [json.loads(x) for x in (patched / f"{DAY}.ndjson").read_text().splitlines()]
+    lines = [
+        json.loads(x) for x in (patched / f"{DAY}.ndjson").read_text().splitlines()
+    ]
     assert [(r["table"], r["id"]) for r in lines] == [
         ("lottery_finder_fires", 11),
         ("silent_boom_alerts", 22),
@@ -353,7 +422,9 @@ def test_extract_date_writes_ndjson_and_reports_counts(patched):
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2} lf=1 sb=1 .*", ex.format_stats(stats))
 
 
-def test_extract_date_skips_an_existing_output_without_touching_neon(monkeypatch, patched):
+def test_extract_date_skips_an_existing_output_without_touching_neon(
+    monkeypatch, patched
+):
     (patched).mkdir(parents=True)
     (patched / f"{DAY}.ndjson").write_text("keep\n")
 
@@ -390,7 +461,9 @@ def test_a_date_with_no_pending_rows_writes_an_empty_file(monkeypatch, patched):
     assert (patched / f"{DAY}.ndjson").read_text() == ""
 
 
-def test_extract_date_hands_its_worker_share_to_the_duckdb_connection(monkeypatch, patched):
+def test_extract_date_hands_its_worker_share_to_the_duckdb_connection(
+    monkeypatch, patched
+):
     seen: dict = {}
 
     def connect(**kwargs):
@@ -467,7 +540,10 @@ GIB = 2**30
 def test_worker_resources_split_cores_and_sixty_percent_of_ram(
     workers, cpus, ram_gib, expected
 ):
-    assert ex.worker_resources(workers, cpu_count=cpus, ram_bytes=ram_gib * GIB) == expected
+    assert (
+        ex.worker_resources(workers, cpu_count=cpus, ram_bytes=ram_gib * GIB)
+        == expected
+    )
 
 
 def test_all_workers_together_stay_within_the_machine():
@@ -554,7 +630,10 @@ def test_landed_dates_keep_only_exact_day_keys():
 
 def test_select_dates_restricts_to_landed_and_rejects_unlanded():
     landed = ["2026-10-26", "2026-10-27", "2026-10-28"]
-    assert ex.select_dates(landed, None, "2026-10-27", None) == ["2026-10-27", "2026-10-28"]
+    assert ex.select_dates(landed, None, "2026-10-27", None) == [
+        "2026-10-27",
+        "2026-10-28",
+    ]
     assert ex.select_dates(landed, None, None, "2026-10-26") == ["2026-10-26"]
     assert ex.select_dates(landed, ["2026-10-28"], None, None) == ["2026-10-28"]
     with pytest.raises(ValueError, match="no landed tape for: 2026-07-01"):

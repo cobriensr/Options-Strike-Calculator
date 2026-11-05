@@ -166,9 +166,7 @@ def build_requests(
         columns=["tbl", "row_id", "ticker", "chain", "start_ms", "end_ms"],
     )
     frame.insert(0, "req_idx", range(len(frame)))
-    return frame.astype(
-        {"start_ms": "int64", "end_ms": "int64", "row_id": "int64"}
-    )
+    return frame.astype({"start_ms": "int64", "end_ms": "int64", "row_id": "int64"})
 
 
 def _sql_str_list(values: Iterable[str]) -> str:
@@ -537,7 +535,9 @@ def select_dates(
         if missing:
             raise ValueError(f"no landed tape for: {', '.join(missing)}")
         return sorted(set(dates))
-    return [d for d in landed if (start is None or d >= start) and (end is None or d <= end)]
+    return [
+        d for d in landed if (start is None or d >= start) and (end is None or d <= end)
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
