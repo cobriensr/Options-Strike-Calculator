@@ -509,7 +509,7 @@ describe('detect-silent-boom handler', () => {
     expect(mockSql).toHaveBeenCalledTimes(6);
   });
 
-  it('matches the bucket scan’s multi-leg trade codes case-insensitively, as the anchor lookup does', async () => {
+  it("matches the bucket scan's multi-leg trade codes case-insensitively, as the anchor lookup does", async () => {
     mockSql.mockResolvedValue([]);
 
     const res = mockResponse();

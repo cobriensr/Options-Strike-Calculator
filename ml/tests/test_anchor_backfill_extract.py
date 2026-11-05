@@ -795,6 +795,64 @@ def test_the_env_file_override_variable_is_gone(monkeypatch, tmp_path):
     assert ex.resolve_env_file(None) != shadow
 
 
+@pytest.fixture
+def fallback_env_files(monkeypatch, tmp_path):
+    """(this checkout's .env.local, the main checkout's), both written.
+
+    REPO_ROOT points at tmp_path/checkout and `git rev-parse --git-common-dir`
+    answers tmp_path/main/.git, so the real repo's production .env.local is
+    never a candidate.
+    """
+    from types import SimpleNamespace
+
+    checkout, main = tmp_path / "checkout", tmp_path / "main"
+    (main / ".git").mkdir(parents=True)
+    checkout.mkdir()
+    own, shared = checkout / ".env.local", main / ".env.local"
+    own.write_text("DATABASE_URL=checkout\n")
+    shared.write_text("DATABASE_URL=main\n")
+    monkeypatch.setattr(ex, "REPO_ROOT", checkout)
+    monkeypatch.setattr(
+        ex.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=f"{main / '.git'}\n"),
+    )
+    return own, shared
+
+
+def test_resolve_env_file_refuses_a_missing_explicit_path_over_the_fallbacks(
+    fallback_env_files, tmp_path
+):
+    missing = tmp_path / "typo.env"
+    with pytest.raises(SystemExit) as raised:
+        ex.resolve_env_file(str(missing))
+    assert raised.value.code == f"--env-file {missing} not found"
+
+
+def test_resolve_env_file_refuses_an_explicit_directory(fallback_env_files, tmp_path):
+    with pytest.raises(SystemExit, match="not found"):
+        ex.resolve_env_file(str(tmp_path))
+
+
+def test_resolve_env_file_returns_an_existing_explicit_path(
+    fallback_env_files, tmp_path
+):
+    explicit = tmp_path / "chosen.env"
+    explicit.write_text("DATABASE_URL=chosen\n")
+    assert ex.resolve_env_file(str(explicit)) == explicit
+
+
+def test_resolve_env_file_without_a_path_prefers_this_checkout_then_the_main_one(
+    fallback_env_files,
+):
+    own, shared = fallback_env_files
+    assert ex.resolve_env_file(None) == own
+    own.unlink()
+    assert ex.resolve_env_file(None) == shared
+    shared.unlink()
+    assert ex.resolve_env_file(None) is None
+
+
 # ── Dates and keys ──────────────────────────────────────────────────────────
 
 
