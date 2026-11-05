@@ -23,6 +23,10 @@
  *     still caught: call `assertNoUnmatched()` in `afterEach`.
  *   - SQL that two routes match rejects too. Patterns must be distinctive,
  *     so the route never depends on table order.
+ *   - The router's other own failures are recorded in `unmatched` the same
+ *     way before they reject: a call that is not a tagged template, and a
+ *     `when()` predicate that throws (a test bug). A responder that throws is
+ *     not one of these: that is a failure the test simulates on purpose.
  *   - Every call that reached a route is recorded, so a test can assert which
  *     routes ran (`ran()`, `counts()`) and with which binds (`calls()`).
  *
@@ -54,6 +58,8 @@ export interface UnmatchedSqlCall {
   text: string;
   params: unknown[];
   via: 'template' | 'query';
+  /** Why the router could not route or answer it. */
+  why: string;
 }
 
 export type SqlRows = unknown[];
@@ -86,9 +92,12 @@ export interface SqlRouter<R extends string> {
   ran(): R[];
   /** Calls per route; routes that never ran are absent. */
   counts(): Partial<Record<R, number>>;
-  /** SQL that no route (or more than one) matched. */
+  /**
+   * SQL the router could not route or answer: no route, more than one route,
+   * a call that is not a tagged template, or a throwing `when()` predicate.
+   */
   readonly unmatched: readonly UnmatchedSqlCall[];
-  /** Throws, naming the SQL, when any call was unmatched or ambiguous. */
+  /** Throws, naming each SQL and why, when `unmatched` is not empty. */
   assertNoUnmatched(): void;
 }
 
@@ -170,7 +179,7 @@ export function createSqlRouter<R extends string>(
     params: unknown[],
     via: 'template' | 'query',
   ): Promise<never> => {
-    unmatched.push({ text, params, via });
+    unmatched.push({ text, params, via, why });
     return Promise.reject(
       new Error(
         `sql-router: ${why}:\n  ${snippet(text)}\nroutes: ${names.join(', ')}`,
@@ -188,10 +197,25 @@ export function createSqlRouter<R extends string>(
     nth: number,
   ): Promise<SqlRows> {
     const queued = entry.queue.shift();
-    const response =
-      queued ??
-      entry.rules.find((rule) => rule.predicate(call))?.response ??
-      entry.fallback;
+    let rule: Rule<R> | undefined;
+    if (queued === undefined) {
+      try {
+        rule = entry.rules.find((r) => r.predicate(call));
+      } catch (err) {
+        // A broken predicate is a test bug. Record it, so a fail-open catch
+        // that swallows this rejection can't hide it from assertNoUnmatched().
+        unmatched.push({
+          text: call.text,
+          params: call.params,
+          via: call.via,
+          why: `a when() predicate for route "${call.route}" threw: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        });
+        throw err;
+      }
+    }
+    const response = queued ?? rule?.response ?? entry.fallback;
     const value =
       typeof response === 'function' ? await response(call, nth) : response;
     if (value instanceof Error) throw value;
@@ -230,10 +254,11 @@ export function createSqlRouter<R extends string>(
   sql.mockImplementation((...args: unknown[]): Promise<SqlRows> => {
     const [strings, ...params] = args;
     if (!isTemplateStrings(strings)) {
-      return Promise.reject(
-        new Error(
-          'sql-router: sql() can only be called as a tagged template; use sql.query(text, params) for a string',
-        ),
+      return reject(
+        'sql() can only be called as a tagged template; use sql.query(text, params) for a string',
+        String(strings),
+        params,
+        'template',
       );
     }
     return dispatch(templateText(strings), strings, params, 'template');
@@ -274,9 +299,11 @@ export function createSqlRouter<R extends string>(
     unmatched,
     assertNoUnmatched() {
       if (unmatched.length === 0) return;
-      const list = unmatched.map((u) => `  ${snippet(u.text)}`).join('\n');
+      const list = unmatched
+        .map((u) => `  ${u.why}: ${snippet(u.text)}`)
+        .join('\n');
       throw new Error(
-        `sql-router: ${unmatched.length} unmatched or ambiguous SQL call(s):\n${list}`,
+        `sql-router: ${unmatched.length} unmatched SQL call(s):\n${list}`,
       );
     },
   };

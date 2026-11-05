@@ -211,6 +211,30 @@ describe('createSqlRouter: responses', () => {
       result = selectUsers(1);
     }).not.toThrow();
     await expect(result).rejects.toThrow('bad predicate');
+
+    // A broken predicate is a test bug, not a simulated database failure, so
+    // it is recorded where a swallowing fail-open catch can't hide it. (A
+    // responder that throws, by contrast, is a deliberate failure and isn't.)
+    expect(router.unmatched).toHaveLength(1);
+    expect(router.unmatched[0]).toMatchObject({
+      text: 'SELECT id FROM users WHERE id = $1',
+      params: [1],
+      via: 'template',
+    });
+    expect(() => router.assertNoUnmatched()).toThrow(
+      /1 unmatched.*bad predicate.*SELECT id FROM users/s,
+    );
+  });
+
+  it('does not count a responder that throws as unmatched: that is a simulated failure', async () => {
+    router.on('users', () => {
+      throw new Error('simulated outage');
+    });
+
+    await expect(selectUsers(1)).rejects.toThrow('simulated outage');
+
+    expect(router.unmatched).toHaveLength(0);
+    router.assertNoUnmatched();
   });
 
   it('consumes once() answers in call order when queries are issued in parallel', async () => {
@@ -287,6 +311,17 @@ describe('createSqlRouter: unmatched and ambiguous SQL', () => {
         'SELECT 1 FROM users',
       ),
     ).rejects.toThrow(/tagged template/);
+
+    // Recorded, so assertNoUnmatched() catches it even when the caller's
+    // fail-open catch swallowed the rejection.
+    expect(router.unmatched).toHaveLength(1);
+    expect(router.unmatched[0]).toMatchObject({
+      text: 'SELECT 1 FROM users',
+      via: 'template',
+    });
+    expect(() => router.assertNoUnmatched()).toThrow(
+      /1 unmatched.*tagged template.*SELECT 1 FROM users/s,
+    );
   });
 });
 
