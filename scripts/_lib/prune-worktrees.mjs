@@ -656,8 +656,9 @@ function pruneOne(entry, wt, ctx) {
  * under .worktrees/: `{ name, path, branch, head, action, reason,
  * deletedBranchSha? }`, where action is 'removed', 'kept', or on a dry run
  * 'would-remove', and name is the path below .worktrees/. errors holds one
- * message per failed git command; a missing local main is one error and
- * stops the run before any worktree is checked.
+ * message per failed git command or failed clean-up of a removed worktree's
+ * folder; a missing local main is one error and stops the run before any
+ * worktree is checked.
  *
  * @param {{ repoRoot: string, minIdleHours?: number, dryRun?: boolean }} options
  */

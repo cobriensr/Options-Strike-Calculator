@@ -13,8 +13,8 @@
  * Runs from anywhere in the repo, a linked worktree included: the root is
  * the main worktree git reports, and the worktree holding the current
  * directory is kept. Prints one line per worktree under .worktrees/, then a
- * summary; git failures go to stderr. Exits 1 if a git command failed, 2 on
- * bad arguments.
+ * summary; failures go to stderr. Exits 1 if a git command or a clean-up
+ * failed, 2 on bad arguments.
  */
 import { parseArgs } from 'node:util';
 import {

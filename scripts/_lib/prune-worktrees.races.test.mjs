@@ -422,6 +422,25 @@ describe('pruneWorktrees races and git failures', () => {
       expect(git(repo, 'rev-parse', 'refs/heads/fix/x')).toBe(head);
     });
 
+    it('keeps the folder, and says so, when a real folder holds a link', () => {
+      leaveAfterRemoval(() => {
+        mkdirSync(path.join(wt, 'sub'), { recursive: true });
+        symlinkSync(target, path.join(wt, 'sub', 'node_modules'), linkType);
+      });
+
+      const { result, errors } = prune();
+
+      const reason = `git worktree remove left files at ${wt}: sub`;
+      expect(result).toMatchObject({ action: 'kept', reason });
+      expect(errors).toEqual([`x: ${reason}`]);
+      // The real folder is not entered, so the link inside it is not deleted.
+      expect(isLink(path.join(wt, 'sub', 'node_modules'))).toBe(true);
+      expect(vi.mocked(unlinkSync)).not.toHaveBeenCalled();
+      expect(vi.mocked(rmSync)).not.toHaveBeenCalled();
+      expectTargetIntact();
+      expect(git(repo, 'rev-parse', 'refs/heads/fix/x')).toBe(head);
+    });
+
     it('does not enter the worktree path when that is itself a link', () => {
       leaveAfterRemoval(() => symlinkSync(target, wt, linkType));
 

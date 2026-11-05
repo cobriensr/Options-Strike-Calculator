@@ -52,7 +52,7 @@ node scripts/prune-merged-worktrees.mjs [--dry-run] [--min-idle-hours N]
 npm run worktrees:prune -- [--dry-run] [--min-idle-hours N]
 ```
 
-The script prints one line per worktree: either `removed`, or `kept` with the reason. A dry run prints `would remove` instead of `removed`. It exits with 1 only if a git command failed, a missing local `main` included, and with 2 on bad arguments.
+The script prints one line per worktree: either `removed`, or `kept` with the reason. A dry run prints `would remove` instead of `removed`. It exits with 1 only if a git command or a clean-up failed, a missing local `main` included, and with 2 on bad arguments.
 
 `--min-idle-hours` lets the owner prune a worktree that has only just finished: use `--min-idle-hours 0`.
 
