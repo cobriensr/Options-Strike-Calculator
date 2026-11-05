@@ -12,7 +12,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockSql = vi.hoisted(() => vi.fn());
 
-vi.mock('../../api/_lib/db.js', () => ({
+// Real withDbRetry (its retry loop is part of the write path); fake getDb.
+vi.mock('../../api/_lib/db.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api/_lib/db.js')>()),
   getDb: () => mockSql,
 }));
 
@@ -192,7 +194,11 @@ describe('applyDate', () => {
         lottery_finder_fires: { updated: 1, skipped: 1, noAnchor: 1 },
         silent_boom_alerts: { updated: 1, skipped: 0, noAnchor: 0 },
       },
+      seconds: expect.any(Number),
     });
+    expect(formatDateResult(result, DATE, false)).toMatch(
+      /^2026-10-27 lf updated=1 skipped=1 no_anchor=1 \| sb updated=1 skipped=0 no_anchor=0 \| secs=\d+\.\d$/,
+    );
     expect(mockSql).toHaveBeenCalledTimes(2);
     const first = mockSql.mock.calls[0] as unknown[];
     const text = sqlText(first);
@@ -203,9 +209,22 @@ describe('applyDate', () => {
     );
     expect(text).toContain('RETURNING t.id');
     expect(text).toContain('v.legs::jsonb');
-    expect(sqlText(mockSql.mock.calls[1] as unknown[])).toContain(
-      'UPDATE silent_boom_alerts t',
+    expect(text).toContain('AND t.date = ?::date');
+    // The second statement is the silent_boom one, with its own ids and the
+    // same guards.
+    const second = mockSql.mock.calls[1] as unknown[];
+    const secondText = sqlText(second);
+    expect(secondText).toContain('UPDATE silent_boom_alerts t');
+    expect(secondText).toContain('t.id = v.id');
+    expect(secondText).toContain('AND t.date = ?::date');
+    expect(secondText).toContain(
+      'AND t.anchor_ws_trade_id IS NULL AND t.anchor_leg_kind IS NULL',
     );
+    expect(secondText).toContain('RETURNING t.id');
+    expect(second[1]).toEqual([21]);
+    expect(second[2]).toEqual([print().wsTradeId]);
+    expect(second.at(-1)).toBe(DATE);
+    expect(first.at(-1)).toBe(DATE);
     // Parameters: ids, ws ids, codes, kinds, shapes, legs (no-anchor row excluded).
     const [, ids, wsIds, codes, kinds, shapes, legs] = first;
     expect(ids).toEqual([11, 12]);
@@ -278,6 +297,50 @@ describe('applyDate', () => {
       'apply failed: date 2026-10-27, table lottery_finder_fires, batch 1: connection lost',
     );
     expect(existsSync(markerPath(dir, DATE))).toBe(false);
+  });
+
+  describe('transient DB errors (real withDbRetry, fake timers)', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('retries a transient failure once and then counts the batch', async () => {
+      writeDate([line('silent_boom_alerts', 1, print())]);
+      mockSql
+        .mockRejectedValueOnce(new Error('fetch failed'))
+        .mockResolvedValueOnce([{ id: 1 }]);
+      const pending = applyDate(DATE, { outDir: dir });
+      await vi.advanceTimersByTimeAsync(1000);
+      const result = await pending;
+      expect(mockSql).toHaveBeenCalledTimes(2);
+      expect(result?.counts.silent_boom_alerts.updated).toBe(1);
+      expect(existsSync(markerPath(dir, DATE))).toBe(true);
+    });
+
+    it('surfaces a transient error that outlasts the retries, with date, table and batch', async () => {
+      writeDate([line('silent_boom_alerts', 1, print())]);
+      mockSql.mockRejectedValue(new Error('fetch failed'));
+      const pending = applyDate(DATE, { outDir: dir });
+      const settled = expect(pending).rejects.toThrow(
+        'apply failed: date 2026-10-27, table silent_boom_alerts, batch 0: fetch failed',
+      );
+      await vi.advanceTimersByTimeAsync(3000);
+      await settled;
+      expect(mockSql).toHaveBeenCalledTimes(3);
+      expect(existsSync(markerPath(dir, DATE))).toBe(false);
+    });
+
+    it('does not retry a genuine error', async () => {
+      writeDate([line('silent_boom_alerts', 1, print())]);
+      mockSql.mockRejectedValue(new Error('column "x" does not exist'));
+      await expect(applyDate(DATE, { outDir: dir })).rejects.toThrow(
+        /batch 0: column "x" does not exist/,
+      );
+      expect(mockSql).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('a malformed NDJSON line throws before any write', async () => {

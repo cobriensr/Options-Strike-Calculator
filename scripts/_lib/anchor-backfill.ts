@@ -22,7 +22,7 @@ import {
   type AnchorLegs,
   type TapePrint,
 } from '../../api/_lib/anchor-legs.js';
-import { getDb } from '../../api/_lib/db.js';
+import { getDb, withDbRetry } from '../../api/_lib/db.js';
 
 /** Rows per UPDATE statement (R5: batch around 500 rows). */
 export const WRITE_CHUNK = 500;
@@ -135,6 +135,8 @@ export interface TableCounts {
 export interface DateResult {
   date: string;
   counts: Record<BackfillTable, TableCounts>;
+  /** Wall-clock seconds the date took (the spec's timing probe reads this). */
+  seconds: number;
 }
 
 interface IdRow {
@@ -143,8 +145,16 @@ interface IdRow {
 
 type ColumnRow = AnchorColumns & { id: number };
 
+/**
+ * One batched UPDATE, returning the ids it wrote. `AND t.date = ${date}`
+ * ties each write to the tape day that produced it, so a misnamed or copied
+ * NDJSON can't write to another day. The table name cannot be a bind
+ * parameter; one literal statement per table keeps every identifier a code
+ * constant.
+ */
 async function updateBatch(
   table: BackfillTable,
+  date: string,
   batch: ColumnRow[],
 ): Promise<number> {
   const sql = getDb();
@@ -154,11 +164,10 @@ async function updateBatch(
   const kinds = batch.map((r) => r.anchor_leg_kind);
   const shapes = batch.map((r) => r.spread_shape);
   const legs = batch.map((r) => r.spread_legs);
-  // The table name cannot be a bind parameter; one literal statement per
-  // table keeps every identifier a code constant.
-  const rows = (
+  // Idempotent (the conditional WHERE), so a transient retry is safe.
+  const rows = (await withDbRetry(() =>
     table === 'lottery_finder_fires'
-      ? await sql`
+      ? sql`
           UPDATE lottery_finder_fires t
              SET anchor_ws_trade_id = v.ws_id,
                  anchor_trade_code = v.code,
@@ -169,10 +178,11 @@ async function updateBatch(
                         ${kinds}::text[], ${shapes}::text[], ${legs}::text[])
                  AS v(id, ws_id, code, kind, shape, legs)
            WHERE t.id = v.id
+             AND t.date = ${date}::date
              AND t.anchor_ws_trade_id IS NULL
              AND t.anchor_leg_kind IS NULL
           RETURNING t.id`
-      : await sql`
+      : sql`
           UPDATE silent_boom_alerts t
              SET anchor_ws_trade_id = v.ws_id,
                  anchor_trade_code = v.code,
@@ -183,10 +193,11 @@ async function updateBatch(
                         ${kinds}::text[], ${shapes}::text[], ${legs}::text[])
                  AS v(id, ws_id, code, kind, shape, legs)
            WHERE t.id = v.id
+             AND t.date = ${date}::date
              AND t.anchor_ws_trade_id IS NULL
              AND t.anchor_leg_kind IS NULL
-          RETURNING t.id`
-  ) as IdRow[];
+          RETURNING t.id`,
+  )) as IdRow[];
   return rows.length;
 }
 
@@ -213,6 +224,7 @@ export async function applyDate(
 ): Promise<DateResult | null> {
   const marker = markerPath(opts.outDir, date);
   if (!opts.force && existsSync(marker)) return null;
+  const started = performance.now();
   const file = join(opts.outDir, `${date}.ndjson`);
   const lines = parseNdjson(readFileSync(file, 'utf8'), file);
 
@@ -237,7 +249,7 @@ export async function applyDate(
       const batchIndex = i / WRITE_CHUNK;
       let written: number;
       try {
-        written = await updateBatch(table, batch);
+        written = await updateBatch(table, date, batch);
       } catch (err) {
         throw new Error(
           `apply failed: date ${date}, table ${table}, batch ${batchIndex}: ${
@@ -251,7 +263,8 @@ export async function applyDate(
     }
   }
   if (!opts.dryRun) writeFileSync(marker, `${new Date().toISOString()}\n`);
-  return { date, counts };
+  const seconds = (performance.now() - started) / 1000;
+  return { date, counts, seconds };
 }
 
 export function formatDateResult(
@@ -263,7 +276,8 @@ export function formatDateResult(
   const part = (label: string, c: TableCounts) =>
     `${label} updated=${c.updated} skipped=${c.skipped} no_anchor=${c.noAnchor}`;
   const mode = dryRun ? 'dry-run ' : '';
-  return `${date} ${mode}${part('lf', result.counts.lottery_finder_fires)} | ${part('sb', result.counts.silent_boom_alerts)}`;
+  const secs = `secs=${result.seconds.toFixed(1)}`;
+  return `${date} ${mode}${part('lf', result.counts.lottery_finder_fires)} | ${part('sb', result.counts.silent_boom_alerts)} | ${secs}`;
 }
 
 // ── Compare against a production-lookup reference ───────────────────────────
