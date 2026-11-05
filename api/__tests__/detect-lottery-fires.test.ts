@@ -9,6 +9,11 @@ import {
   extractAllInsertBinds,
   extractInsertBinds,
 } from './insert-binds';
+import {
+  createSqlRouter,
+  type SqlCall,
+  type SqlRouter,
+} from './helpers/sql-router.js';
 
 const mockSql = vi.fn();
 
@@ -20,17 +25,64 @@ const mockSql = vi.fn();
   raw: string,
 ) => ({ raw });
 
-// detect-lottery-fires batches the ticks SELECT into 3 hash-partitioned
-// parallel queries (Promise.all) to stay under Neon's 64MB HTTP cap.
-// Tests stage the ticks data via this helper — batch 0 returns `rows`,
-// batches 1-2 return empty. Returns the mockSql instance so callers can
-// chain the remaining .mockResolvedValueOnce(...) calls in sequence.
-function mockTicks(rows: unknown) {
-  return mockSql
-    .mockResolvedValueOnce(rows)
-    .mockResolvedValueOnce([])
-    .mockResolvedValueOnce([]);
+// Every statement the cron sends through `db`, named by what it asks for.
+// A test answers a route (router.on / once / when), not "the Nth query", so
+// reordering or merging queries doesn't rewrite the tests. SQL that matches
+// no route rejects, and afterEach fails the test even if the cron swallowed
+// the rejection. Patterns must not overlap: a call two routes match rejects.
+const LOTTERY_ROUTES = {
+  // loadPriorWinRates: the per-ticker mean of daily win rates.
+  winRates: /AVG\(daily_rate\)/,
+  // The tick scan, hash-partitioned into TICK_QUERIES parallel queries.
+  ticks: /FROM ws_option_trades/,
+  // The cooldown seed: latest prior trigger per eligible chain.
+  priorFires: /MAX\(trigger_time_ct\)/,
+  // Take-It prefetch: recent lottery fires, and recent Silent Boom alerts.
+  recentFires: /trigger_time_ct AS fire_time/,
+  recentSilentBoom: /FROM silent_boom_alerts/,
+  // Pass 1: one ticker-day cumulative net-flow series.
+  flowSeries: /FROM ws_net_flow_per_ticker/,
+  // Pass 2 macro snapshot, one query per table.
+  flowData: /FROM flow_data/,
+  spotExposures: /FROM spot_exposures/,
+  strikeExposures: /FROM strike_exposures/,
+  // One INSERT per fire; an empty answer is ON CONFLICT (nothing written).
+  insert: /INSERT INTO lottery_finder_fires/,
+  // The post-loop feed-tier monitor.
+  tierMonitor: /LEFT JOIN lottery_ticker_stats/,
+} as const;
+type LotteryRoute = keyof typeof LOTTERY_ROUTES;
+// Created in beforeEach, after vi.resetAllMocks() wipes the mock.
+let router: SqlRouter<LotteryRoute>;
+
+// detect-lottery-fires splits the ticks SELECT into this many
+// hash-partitioned parallel queries (Promise.all) to stay under Neon's 64MB
+// HTTP cap. The partition is the last bound value of each query.
+const TICK_QUERIES = 3;
+
+// Stage the tick scan: partition 0 returns `rows`, the others return
+// nothing, so every row reaches the cron exactly once.
+function stageTicks(rows: unknown[]): void {
+  router.on('ticks', (call) => (call.params.at(-1) === 0 ? rows : []));
 }
+
+// Predicates for router.when(): pick a call by what it was bound to, not by
+// where it fell in the run.
+const flowSeriesOf =
+  (ticker: string) =>
+  (call: SqlCall<LotteryRoute>): boolean =>
+    call.params[0] === ticker;
+
+function insertBindsOf(call: SqlCall<LotteryRoute>): Map<string, unknown> {
+  return extractAllInsertBinds(
+    { mock: { calls: [[call.strings, ...call.params]] } },
+    'lottery_finder_fires',
+  )[0]!;
+}
+const insertFor =
+  (symbol: string) =>
+  (call: SqlCall<LotteryRoute>): boolean =>
+    insertBindsOf(call).get('underlying_symbol') === symbol;
 
 // withDbRetry calls the thunk once; it is a spy so tests can pin the retry
 // arguments a query is given (vi.fn(impl) keeps impl across resetAllMocks).
@@ -366,7 +418,9 @@ describe('detect-lottery-fires handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockCronGuard.mockReturnValue(GUARD);
-    mockSql.mockResolvedValue([]);
+    // Every route answers [] until a test says otherwise: the INSERT hits
+    // ON CONFLICT, and no macro, flow or prior-fire rows exist.
+    router = createSqlRouter(mockSql, LOTTERY_ROUTES);
     // Default UW candle fetch returns a session range (range_pos 0.4 for
     // the SNDK fixture). Tests of the empty, failed and breaker-skip paths
     // override this per-case.
@@ -403,6 +457,12 @@ describe('detect-lottery-fires handler', () => {
     process.env.CRON_SECRET = 'test-secret';
   });
 
+  afterEach(() => {
+    // A query no route claims rejects; this catches one the cron swallowed
+    // in a fail-open catch, which would otherwise pass unseen.
+    router.assertNoUnmatched();
+  });
+
   it('returns skipped + warns when no ticks are in the scan window (active session)', async () => {
     // Three SQL calls (one per ticks batch), all returning []. The
     // handler short-circuits on rows.length === 0 and never reaches
@@ -413,7 +473,7 @@ describe('detect-lottery-fires handler', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-05-29T15:00:00Z')); // 11:00 ET, active
     mockSentryCaptureMessage.mockClear();
-    mockTicks([]);
+    stageTicks([]);
 
     const req = mockRequest({
       method: 'GET',
@@ -428,7 +488,7 @@ describe('detect-lottery-fires handler', () => {
       message: 'no ticks in scan window',
     });
     // Only the initial SELECT — no macro lookups, no inserts.
-    expect(mockSql).toHaveBeenCalledTimes(3);
+    expect(router.counts()).toEqual({ ticks: TICK_QUERIES });
     // Empty trade window during active market hours is anomalous — emit
     // a Sentry warning so silent stalls like the 2026-05-18 Neon blip
     // surface as alerts instead of zero-row DB hours.
@@ -454,7 +514,7 @@ describe('detect-lottery-fires handler', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-05-29T13:29:00Z')); // 9:29 ET, pre-open
     mockSentryCaptureMessage.mockClear();
-    mockTicks([]);
+    stageTicks([]);
 
     const req = mockRequest({
       method: 'GET',
@@ -473,22 +533,15 @@ describe('detect-lottery-fires handler', () => {
   });
 
   it('inserts a fire when the v4 detector matches a chain', async () => {
-    // Mock sequence:
-    //   1. SELECT recent ticks → fireable SNDK stream
-    //   2. SELECT prior fires per chain → [] (no cooldown seed)
-    //   3. flow_data macro lookup → []
-    //   4. spot_exposures macro lookup → []
-    //   5. INSERT → [{ id: 42 }]
+    // Routes: the tick scan answers the fireable SNDK stream, the INSERT
+    // answers [{ id: 42 }], and every other route answers [] (no cooldown
+    // seed, no macro rows, no flow series).
     // Note: SNDK is in the LOTTERY_V3_TICKERS list and DTE=0, so the
     // mode-classifier returns A_intraday_0DTE; the strike-exposures
     // query is gated on TICKERS_WITH_GEX_STRIKE which excludes SNDK,
     // so it is NOT called.
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // flow_data
-      .mockResolvedValueOnce([]) // spot_exposures
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
-      .mockResolvedValueOnce([{ id: 42 }]); // insert
+    stageTicks(fireableSndkStream());
+    router.on('insert', [{ id: 42 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -506,6 +559,17 @@ describe('detect-lottery-fires handler', () => {
       chains: 1,
       totalFires: 1,
       inserted: 1,
+    });
+    // The statements that ran, and no others: the router rejects unknown SQL,
+    // and this pins an extra or missing one (no strike_exposures for SNDK).
+    expect(router.counts()).toEqual({
+      ticks: TICK_QUERIES,
+      priorFires: 1,
+      flowSeries: 1,
+      flowData: 1,
+      spotExposures: 1,
+      insert: 1,
+      tierMonitor: 1,
     });
   });
 
@@ -532,23 +596,19 @@ describe('detect-lottery-fires handler', () => {
     // dropped. Under the old combined_score-reading monitor it would have
     // tipped to tier1 and diverged from the feed.
     // => feedTier1=2, feedTier2=2, feedTier3=3
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // flow_data
-      .mockResolvedValueOnce([]) // spot_exposures
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
-      .mockResolvedValueOnce([{ id: 42 }]) // insert
-      .mockResolvedValueOnce([
-        { score: 5, qas: 13, direction_gated: false, inversion_quintile: 3 },
-        { score: 5, qas: 13, direction_gated: false, inversion_quintile: 5 },
-        { score: 5, qas: 10, direction_gated: false, inversion_quintile: 3 },
-        { score: 5, qas: 5, direction_gated: false, inversion_quintile: 3 },
-        { score: 5, qas: 20, direction_gated: true, inversion_quintile: 3 },
-        { score: null, qas: 8, direction_gated: false, inversion_quintile: 5 },
-        // HIGH-GAMMA boundary: no-gamma qas 12 (feed shows tier2). If the
-        // monitor still read combined_score it would see 13 -> tier1.
-        { score: 11, qas: 12, direction_gated: false, inversion_quintile: 3 },
-      ]); // post-loop feed-tier monitor query
+    stageTicks(fireableSndkStream());
+    router.on('insert', [{ id: 42 }]);
+    router.on('tierMonitor', [
+      { score: 5, qas: 13, direction_gated: false, inversion_quintile: 3 },
+      { score: 5, qas: 13, direction_gated: false, inversion_quintile: 5 },
+      { score: 5, qas: 10, direction_gated: false, inversion_quintile: 3 },
+      { score: 5, qas: 5, direction_gated: false, inversion_quintile: 3 },
+      { score: 5, qas: 20, direction_gated: true, inversion_quintile: 3 },
+      { score: null, qas: 8, direction_gated: false, inversion_quintile: 5 },
+      // HIGH-GAMMA boundary: no-gamma qas 12 (feed shows tier2). If the
+      // monitor still read combined_score it would see 13 -> tier1.
+      { score: 11, qas: 12, direction_gated: false, inversion_quintile: 3 },
+    ]); // post-loop feed-tier monitor query
 
     const req = mockRequest({
       method: 'GET',
@@ -573,12 +633,8 @@ describe('detect-lottery-fires handler', () => {
     // UI treats null as tier3) against future field renames in the INSERT.
     // Tests that need a non-null score must mock the ticker_flow_snapshot
     // with actual cumulative flow data.
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
-      .mockResolvedValueOnce([{ id: 42 }]);
+    stageTicks(fireableSndkStream());
+    router.on('insert', [{ id: 42 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -625,20 +681,15 @@ describe('detect-lottery-fires handler', () => {
     // real integer sum of weights. We don't pin the exact integer (model
     // retrains shift weights and that test would constantly break) —
     // type + non-null is enough to lock the wiring.
-    // Query order (two-pass, Fix 3): prior-fires → [Pass 1]
-    // ticker_flow_snapshot (drives the score) → [Pass 2] flow_data,
-    // spot_exposures → INSERT.
     const flowTs = '2026-05-01T13:29:30Z';
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([
-        // CALL fire + cum_ncp > cum_npp → isAligned=true → V2 returns
-        // a real integer score instead of short-circuiting to null.
-        { ts: flowTs, cum_ncp: '5000000', cum_npp: '1000000' },
-      ]) // ticker_flow_snapshot (Pass 1)
-      .mockResolvedValueOnce([]) // flow_data (Pass 2)
-      .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
-      .mockResolvedValueOnce([{ id: 42 }]); // insert
+    stageTicks(fireableSndkStream());
+    // The flow series drives the score.
+    router.on('flowSeries', [
+      // CALL fire + cum_ncp > cum_npp → isAligned=true → V2 returns
+      // a real integer score instead of short-circuiting to null.
+      { ts: flowTs, cum_ncp: '5000000', cum_npp: '1000000' },
+    ]);
+    router.on('insert', [{ id: 42 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -679,12 +730,8 @@ describe('detect-lottery-fires handler', () => {
       },
     ];
     mockFetchStockCandles1m.mockResolvedValue(stockCandles);
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
-      .mockResolvedValueOnce([{ id: 42 }]);
+    stageTicks(fireableSndkStream());
+    router.on('insert', [{ id: 42 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -723,12 +770,8 @@ describe('detect-lottery-fires handler', () => {
       },
     ];
     mockFetchStockCandles1m.mockResolvedValue(stockCandles);
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
-      .mockResolvedValueOnce([{ id: 42 }]);
+    stageTicks(fireableSndkStream());
+    router.on('insert', [{ id: 42 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -792,7 +835,7 @@ describe('detect-lottery-fires handler', () => {
     it('passes the real UW_API_KEY from cronGuard to the candle fetch', async () => {
       process.env.UW_API_KEY = 'uw-real-key';
       mockCronGuard.mockImplementation(realCronGuard);
-      mockTicks(fireableSndkStream());
+      stageTicks(fireableSndkStream());
 
       const res = mockResponse();
       // force=1 lifts only the time gate; CRON_SECRET and the key check
@@ -846,12 +889,8 @@ describe('detect-lottery-fires handler', () => {
       async (_label, stageUw, expectedError) => {
         mockFetchStockCandles1m.mockImplementation(realFetchStockCandles1m);
         stageUw();
-        mockTicks(fireableSndkStream())
-          .mockResolvedValueOnce([]) // prior fires
-          .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
-          .mockResolvedValueOnce([]) // flow_data (Pass 2)
-          .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
-          .mockResolvedValueOnce([{ id: 42 }]); // insert
+        stageTicks(fireableSndkStream());
+        router.on('insert', [{ id: 42 }]);
 
         const res = mockResponse();
         await runWithFakeTimers(res);
@@ -913,7 +952,7 @@ describe('detect-lottery-fires handler', () => {
         new Error('UW API 404: Not Found'),
       );
       // Two SNDK chains (one ticker-day) plus one TSLA chain.
-      mockTicks([
+      stageTicks([
         ...fireableSndkStream(),
         ...streamFor('SNDK', 'SNDK260501C01180000'),
         ...streamFor('TSLA', 'TSLA260501C01175000'),
@@ -951,7 +990,7 @@ describe('detect-lottery-fires handler', () => {
     });
 
     it('skips the candle fetch for cash-index roots (D8) and leaves their range_pos null', async () => {
-      mockTicks([
+      stageTicks([
         ...streamFor('SPXW', 'SPXW260501C01175000'),
         ...fireableSndkStream(),
       ]);
@@ -985,7 +1024,7 @@ describe('detect-lottery-fires handler', () => {
 
     it('surfaces a day UW returns no candles for as empty, not as a failure', async () => {
       mockFetchStockCandles1m.mockResolvedValue([]);
-      mockTicks(fireableSndkStream());
+      stageTicks(fireableSndkStream());
 
       const res = mockResponse();
       await handler(authorizedReq(), res);
@@ -1031,7 +1070,7 @@ describe('detect-lottery-fires handler', () => {
       'stops asking UW for candles for the rest of the run after %s (breaker)',
       async (_label, uwError) => {
         mockFetchStockCandles1m.mockRejectedValue(uwError);
-        mockTicks([
+        stageTicks([
           ...fireableSndkStream(),
           ...streamFor('TSLA', 'TSLA260501C01175000'),
         ]);
@@ -1068,7 +1107,7 @@ describe('detect-lottery-fires handler', () => {
       mockFetchStockCandles1m
         .mockRejectedValueOnce(new Error('UW API 503: Service Unavailable'))
         .mockResolvedValueOnce(SESSION_CANDLES);
-      mockTicks(fireableSndkStream());
+      stageTicks(fireableSndkStream());
 
       const res = mockResponse();
       await runWithFakeTimers(res);
@@ -1094,19 +1133,12 @@ describe('detect-lottery-fires handler', () => {
             ? new Promise<never>(() => {})
             : Promise.resolve(SESSION_CANDLES),
       );
-      mockTicks([
+      stageTicks([
         ...fireableSndkStream(),
         ...streamFor('TSLA', 'TSLA260501C01175000'),
-      ])
-        .mockResolvedValueOnce([]) // prior fires
-        .mockResolvedValueOnce([]) // SNDK ticker_flow_snapshot (Pass 1)
-        .mockResolvedValueOnce([]) // TSLA ticker_flow_snapshot (Pass 1)
-        .mockResolvedValueOnce([]) // SNDK flow_data (Pass 2)
-        .mockResolvedValueOnce([]) // SNDK spot_exposures (Pass 2)
-        .mockResolvedValueOnce([{ id: 1 }]) // SNDK insert
-        .mockResolvedValueOnce([]) // TSLA flow_data (Pass 2)
-        .mockResolvedValueOnce([]) // TSLA spot_exposures (Pass 2)
-        .mockResolvedValueOnce([{ id: 2 }]); // TSLA insert
+      ]);
+      // Both fires' INSERTs write (ids 1 and 2).
+      router.on('insert', (_call, nth) => [{ id: nth + 1 }]);
 
       const res = mockResponse();
       await runWithFakeTimers(res, 5_000);
@@ -1151,7 +1183,7 @@ describe('detect-lottery-fires handler', () => {
     });
 
     it('reports every candle counter to Axiom under meta, never as a top-level column', async () => {
-      mockTicks(fireableSndkStream());
+      stageTicks(fireableSndkStream());
 
       await handler(authorizedReq(), mockResponse());
 
@@ -1189,19 +1221,12 @@ describe('detect-lottery-fires handler', () => {
         mockFetchStockCandles1m.mockRejectedValue(
           new Error('UW API 503: Service Unavailable'),
         );
-        mockTicks([
+        stageTicks([
           ...fireableSndkStream(),
           ...streamFor('TSLA', 'TSLA260501C01175000'),
-        ])
-          .mockResolvedValueOnce([]) // prior fires
-          .mockResolvedValueOnce([]) // SNDK ticker_flow_snapshot (Pass 1)
-          .mockResolvedValueOnce([]) // TSLA ticker_flow_snapshot (Pass 1)
-          .mockResolvedValueOnce([]) // SNDK flow_data (Pass 2)
-          .mockResolvedValueOnce([]) // SNDK spot_exposures (Pass 2)
-          .mockResolvedValueOnce([]) // SNDK insert: ON CONFLICT, not written
-          .mockResolvedValueOnce([]) // TSLA flow_data (Pass 2)
-          .mockResolvedValueOnce([]) // TSLA spot_exposures (Pass 2)
-          .mockResolvedValueOnce([{ id: 7 }]); // TSLA insert: written
+        ]);
+        // SNDK's INSERT hits ON CONFLICT (nothing written); TSLA's writes.
+        router.when('insert', insertFor('TSLA'), [{ id: 7 }]);
 
         const res = mockResponse();
         await runWithFakeTimers(res);
@@ -1227,12 +1252,8 @@ describe('detect-lottery-fires handler', () => {
 
       it('reports partial when UW returns no candles for the ticker of a written fire', async () => {
         mockFetchStockCandles1m.mockResolvedValue([]);
-        mockTicks(fireableSndkStream())
-          .mockResolvedValueOnce([]) // prior fires
-          .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
-          .mockResolvedValueOnce([]) // flow_data (Pass 2)
-          .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
-          .mockResolvedValueOnce([{ id: 42 }]); // insert
+        stageTicks(fireableSndkStream());
+        router.on('insert', [{ id: 42 }]);
 
         const res = mockResponse();
         await handler(authorizedReq(), res);
@@ -1260,18 +1281,15 @@ describe('detect-lottery-fires handler', () => {
       });
 
       it('stays success for an index-root fire whose candle fetch is skipped by design', async () => {
-        mockTicks(streamFor('SPXW', 'SPXW260501C01175000'))
-          .mockResolvedValueOnce([]) // prior fires
-          .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
-          .mockResolvedValueOnce([]) // flow_data (Pass 2)
-          .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
-          .mockResolvedValueOnce([]) // strike_exposures (Pass 2; SPXW has per-strike GEX)
-          .mockResolvedValueOnce([{ id: 42 }]); // insert
+        stageTicks(streamFor('SPXW', 'SPXW260501C01175000'));
+        router.on('insert', [{ id: 42 }]);
 
         const res = mockResponse();
         await handler(authorizedReq(), res);
 
         expect(res._status).toBe(200);
+        // SPXW has per-strike GEX, so its macro snapshot runs strike_exposures.
+        expect(router.counts().strikeExposures).toBe(1);
         expect(mockFetchStockCandles1m).not.toHaveBeenCalled();
         expect(res._json).toMatchObject({
           status: 'success',
@@ -1294,7 +1312,7 @@ describe('detect-lottery-fires handler', () => {
           new Error('UW API 404: Not Found'),
         );
         // Default [] everywhere: the INSERT hits ON CONFLICT and returns no id.
-        mockTicks(fireableSndkStream());
+        stageTicks(fireableSndkStream());
 
         const res = mockResponse();
         await handler(authorizedReq(), res);
@@ -1323,12 +1341,8 @@ describe('detect-lottery-fires handler', () => {
       mockFetchStockCandles1m.mockRejectedValue(
         new Error('UW API 404: Not Found'),
       );
-      mockTicks(fireableSndkStream())
-        .mockResolvedValueOnce([]) // prior fires
-        .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
-        .mockResolvedValueOnce([]) // flow_data (Pass 2)
-        .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
-        .mockRejectedValueOnce(writeError); // insert
+      stageTicks(fireableSndkStream());
+      router.on('insert', writeError);
 
       const res = mockResponse();
       await handler(authorizedReq(), res);
@@ -1352,16 +1366,11 @@ describe('detect-lottery-fires handler', () => {
     // form computed otm.otmNcp - otm.otmNpp and produced NULL on every
     // historical lottery fire (verified 0/96,781 coverage). This test
     // pins the correct read so the bug cannot reappear silently.
-    // Query order (two-pass, Fix 3): prior-fires → ticker_flow_snapshot
-    // (Pass 1) → flow_data, spot_exposures (Pass 2) → INSERT.
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
-      .mockResolvedValueOnce([
-        { source: 'market_tide_otm', ncp: '4000', npp: '1000' },
-      ]) // flow_data (Pass 2)
-      .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
-      .mockResolvedValueOnce([{ id: 42 }]); // insert
+    stageTicks(fireableSndkStream());
+    router.on('flowData', [
+      { source: 'market_tide_otm', ncp: '4000', npp: '1000' },
+    ]);
+    router.on('insert', [{ id: 42 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -1385,16 +1394,10 @@ describe('detect-lottery-fires handler', () => {
   });
 
   it('binds null mkt_tide_otm_diff when no market_tide_otm row is in the macro window', async () => {
-    // Query order (two-pass, Fix 3): prior-fires → ticker_flow_snapshot
-    // (Pass 1) → flow_data, spot_exposures (Pass 2) → INSERT.
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
-      .mockResolvedValueOnce([
-        { source: 'market_tide', ncp: '500', npp: '300' },
-      ]) // flow_data — only all-in tide, no OTM (Pass 2)
-      .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
-      .mockResolvedValueOnce([{ id: 42 }]); // insert
+    stageTicks(fireableSndkStream());
+    // flow_data holds only the all-in tide, no OTM tick.
+    router.on('flowData', [{ source: 'market_tide', ncp: '500', npp: '300' }]);
+    router.on('insert', [{ id: 42 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -1418,16 +1421,10 @@ describe('detect-lottery-fires handler', () => {
       strike: 500,
       underlying_price: 500,
     }));
-    // 5 queries for non-strike tickers, 6 for strike tickers (extra
-    // strike_exposures lookup): ticks, prior fires, flow_data,
-    // spot_exposures, strike_exposures, insert.
-    mockTicks(spyStream)
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // flow_data
-      .mockResolvedValueOnce([]) // spot_exposures
-      .mockResolvedValueOnce([]) // strike_exposures
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
-      .mockResolvedValueOnce([{ id: 1 }]); // insert
+    // A strike ticker runs one more macro query than a non-strike ticker:
+    // strike_exposures, next to flow_data and spot_exposures.
+    stageTicks(spyStream);
+    router.on('insert', [{ id: 1 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -1443,14 +1440,23 @@ describe('detect-lottery-fires handler', () => {
     // 2026-05-22: ticks SELECT now batched into 3 parallel queries
     // (SENTRY-EMERALD-DESERT-CB), so total = 7 + 2 extra ticks calls = 9.
     // 2026-06-03: + the post-loop feed-tier monitor query (today's fires) = 10.
-    expect(mockSql).toHaveBeenCalledTimes(10);
+    expect(router.counts()).toEqual({
+      ticks: TICK_QUERIES,
+      priorFires: 1,
+      flowSeries: 1,
+      flowData: 1,
+      spotExposures: 1,
+      strikeExposures: 1,
+      insert: 1,
+      tierMonitor: 1,
+    });
   });
 
   it('skips chains with fewer than the per-chain min prints', async () => {
     // Only 4 ticks — below PER_CHAIN_MIN_PRINTS (5). Handler bails
     // before macro lookups.
     const shortStream = fireableSndkStream().slice(0, 4);
-    mockTicks(shortStream);
+    stageTicks(shortStream);
 
     const req = mockRequest({
       method: 'GET',
@@ -1475,7 +1481,7 @@ describe('detect-lottery-fires handler', () => {
       option_chain: 'FAKE260501C00100000',
       strike: 100,
     }));
-    mockTicks(fakeStream).mockResolvedValueOnce([]); // prior fires (chain passes min-prints)
+    stageTicks(fakeStream); // the chain passes min-prints, so priorFires runs
 
     const req = mockRequest({
       method: 'GET',
@@ -1494,25 +1500,21 @@ describe('detect-lottery-fires handler', () => {
     // mode classifier dropped it as OUT_OF_UNIVERSE so no macro lookups
     // happen. (Ticks SELECT split into 3 parallel batches 2026-05-22.)
     // 2026-06-03: + the post-loop feed-tier monitor query = 5.
-    expect(mockSql).toHaveBeenCalledTimes(5);
+    expect(router.counts()).toEqual({
+      ticks: TICK_QUERIES,
+      priorFires: 1,
+      tierMonitor: 1,
+    });
   });
 
   it('continues with EMPTY_MACRO when the macro snapshot lookup throws, and reports partial', async () => {
-    // Mock sequence (two-pass, Fix 3): tick SELECT → prior-fires →
-    // [Pass 1] ticker_flow_snapshot → [Pass 2] flow_data REJECTS → insert
-    // still happens because the cron catches macro errors. The other two
-    // parallel macro queries are scheduled but the .then chain on
-    // flow_data rejects first inside Promise.all, so we only need one
-    // mocked query to drive the failure path.
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
-      .mockRejectedValueOnce(new Error('flow_data ECONNRESET')) // flow_data (Pass 2)
-      // Promise.all evaluates all three macro queries in parallel; the
-      // remaining one (spot_exposures) is still consumed even though
-      // Promise.all already short-circuited via the rejection.
-      .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
-      .mockResolvedValueOnce([{ id: 99 }]); // insert proceeds with EMPTY_MACRO
+    // flow_data REJECTS in Pass 2; the fire's INSERT still happens because
+    // the cron catches macro errors. The other two parallel macro queries
+    // are still issued (Promise.all starts all three), so only flow_data
+    // needs to fail to drive the failure path.
+    stageTicks(fireableSndkStream());
+    router.on('flowData', new Error('flow_data ECONNRESET'));
+    router.on('insert', [{ id: 99 }]); // the insert proceeds with EMPTY_MACRO
 
     const req = mockRequest({
       method: 'GET',
@@ -1552,10 +1554,8 @@ describe('detect-lottery-fires handler', () => {
   });
 
   it('stays success when the macro snapshot lookup throws but no fire is written, and still reports the failure', async () => {
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
-      .mockRejectedValueOnce(new Error('flow_data ECONNRESET')); // flow_data (Pass 2)
+    stageTicks(fireableSndkStream());
+    router.on('flowData', new Error('flow_data ECONNRESET'));
     // Default [] for the rest: the INSERT hits ON CONFLICT, no id back.
 
     const res = mockResponse();
@@ -1581,11 +1581,7 @@ describe('detect-lottery-fires handler', () => {
   });
 
   it('honors ON CONFLICT (returns 0 inserted when DB returns no rows)', async () => {
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]); // insert returns no rows = ON CONFLICT hit
+    stageTicks(fireableSndkStream()); // insert returns no rows = ON CONFLICT hit
 
     const req = mockRequest({
       method: 'GET',
@@ -1613,12 +1609,14 @@ describe('detect-lottery-fires handler', () => {
     // first tick → within the 5-min cooldown). detectChainFires must
     // suppress the fire entirely. No flow_data / spot / insert calls.
     const priorMs = Date.parse('2026-05-01T13:28:00Z');
-    mockTicks(fireableSndkStream()).mockResolvedValueOnce([
+    stageTicks(fireableSndkStream());
+    // prior fires — cooldown active
+    router.on('priorFires', [
       {
         option_chain_id: 'SNDK260501C01175000',
         last_ms: String(priorMs),
       },
-    ]); // prior fires — cooldown active
+    ]);
 
     const req = mockRequest({
       method: 'GET',
@@ -1638,7 +1636,11 @@ describe('detect-lottery-fires handler', () => {
     // Four SQL calls: 3 ticks-batch SELECTs (split 2026-05-22) + the
     // prior-fires lookup. No macro queries, no insert.
     // 2026-06-03: + the post-loop feed-tier monitor query = 5.
-    expect(mockSql).toHaveBeenCalledTimes(5);
+    expect(router.counts()).toEqual({
+      ticks: TICK_QUERIES,
+      priorFires: 1,
+      tierMonitor: 1,
+    });
   });
 
   it('does NOT gate a counter-trend put fire even when mkt_tide_otm_diff > +150M (V2.2 C.9)', async () => {
@@ -1658,16 +1660,11 @@ describe('detect-lottery-fires handler', () => {
       option_chain: 'SNDK260501P01175000',
       delta: -0.18, // puts have negative delta
     }));
-    // Query order (two-pass, Fix 3): prior-fires → ticker_flow_snapshot
-    // (Pass 1) → flow_data, spot_exposures (Pass 2) → INSERT.
-    mockTicks(putStream)
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
-      .mockResolvedValueOnce([
-        { source: 'market_tide_otm', ncp: '300000000', npp: '100000000' },
-      ]) // flow_data → otm_diff +200_000_000 (Pass 2)
-      .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
-      .mockResolvedValueOnce([{ id: 1 }]); // insert
+    stageTicks(putStream);
+    router.on('flowData', [
+      { source: 'market_tide_otm', ncp: '300000000', npp: '100000000' },
+    ]); // flow_data → otm_diff +200_000_000
+    router.on('insert', [{ id: 1 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -1697,16 +1694,11 @@ describe('detect-lottery-fires handler', () => {
     // correctly demotes them. This test drives a CALL fire with
     // otm_diff = -200M (below the -150M threshold).
     // flow_data mock: ncp=100M, npp=300M → otm_diff = -200_000_000.
-    // Query order (two-pass, Fix 3): prior-fires → ticker_flow_snapshot
-    // (Pass 1) → flow_data, spot_exposures (Pass 2) → INSERT.
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
-      .mockResolvedValueOnce([
-        { source: 'market_tide_otm', ncp: '100000000', npp: '300000000' },
-      ]) // flow_data → otm_diff -200_000_000 (Pass 2)
-      .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
-      .mockResolvedValueOnce([{ id: 1 }]); // insert
+    stageTicks(fireableSndkStream());
+    router.on('flowData', [
+      { source: 'market_tide_otm', ncp: '100000000', npp: '300000000' },
+    ]); // flow_data → otm_diff -200_000_000
+    router.on('insert', [{ id: 1 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -1738,8 +1730,7 @@ describe('detect-lottery-fires handler', () => {
 
   /**
    * Build N independent firing chains by varying the strike on the
-   * SNDK fixture. Each chain produces exactly one fire when paired with
-   * queuePerFireMocks(N, ...).
+   * SNDK fixture. Each chain produces exactly one fire.
    */
   function manyFireableSndkStreams(count: number) {
     const all: ReturnType<typeof tick>[] = [];
@@ -1757,38 +1748,20 @@ describe('detect-lottery-fires handler', () => {
   }
 
   /**
-   * Queue the per-fire SQL mocks once per chain. With `inserted=true`
-   * each chain returns `[{ id }]` from its INSERT; with `inserted=false`
-   * the INSERT returns `[]` to simulate ON CONFLICT.
-   *
-   * Per-fire shape: flow_data + spot_exposures + INSERT. The
-   * `ticker_flow_snapshot` lookup is cached per (ticker, date), so it
-   * fires once on the FIRST SNDK fire only — every subsequent SNDK fire
-   * hits the in-memory cache. `strike_exposures` is gated on
-   * `TICKERS_WITH_GEX_STRIKE`, which excludes SNDK, so no DB call.
+   * Answer every fire's INSERT. With `inserted=true` each call returns
+   * `[{ id }]` (ids 100, 101, … by call); with `inserted=false` it returns
+   * `[]` to simulate ON CONFLICT. The per-fire lookups answer [] by default.
+   * (The flow series is cached per ticker-day, so it runs once for all the
+   * SNDK chains; strike_exposures is gated on `TICKERS_WITH_GEX_STRIKE`,
+   * which excludes SNDK, so it doesn't run.)
    */
-  function queuePerFireMocks(count: number, inserted: boolean) {
-    // Prior-fires lookup is one query at the start (covers all eligible
-    // chains in a single ANY()), not per-fire.
-    mockSql.mockResolvedValueOnce([]); // prior-fires
-    for (let i = 0; i < count; i += 1) {
-      mockSql
-        .mockResolvedValueOnce([]) // flow_data
-        .mockResolvedValueOnce([]); // spot_exposures
-      if (i === 0) {
-        mockSql.mockResolvedValueOnce([]); // ticker_flow_snapshot (cache miss on fire 0 only)
-      }
-      mockSql.mockResolvedValueOnce(inserted ? [{ id: 100 + i }] : []); // INSERT
-    }
+  function answerInserts(inserted: boolean) {
+    router.on('insert', inserted ? (_call, nth) => [{ id: 100 + nth }] : []);
   }
 
   it('leaves the four old columns out of the INSERT', async () => {
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
-      .mockResolvedValueOnce([]) // flow_data (Pass 2)
-      .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
-      .mockResolvedValueOnce([{ id: 11 }]); // insert
+    stageTicks(fireableSndkStream());
+    router.on('insert', [{ id: 11 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -1834,8 +1807,8 @@ describe('detect-lottery-fires handler', () => {
     // 11 fires. Before the removal this tick made 11 serial classifier
     // calls, and an all-null result raised multileg.classify.high_null_rate
     // (inserted > 10, hit rate < 50%).
-    mockTicks(manyFireableSndkStreams(11));
-    queuePerFireMocks(11, true);
+    stageTicks(manyFireableSndkStreams(11));
+    answerInserts(true);
 
     const req = mockRequest({
       method: 'GET',
@@ -1960,14 +1933,10 @@ describe('detect-lottery-fires handler', () => {
       );
     }
 
-    /** One SNDK fire: ticks, prior fires, flow series, macro, INSERT. */
-    function queueOneSndkFire(insertedId: number | null) {
-      mockTicks(fireableSndkStream())
-        .mockResolvedValueOnce([]) // prior fires
-        .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
-        .mockResolvedValueOnce([]) // flow_data (Pass 2)
-        .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
-        .mockResolvedValueOnce(insertedId == null ? [] : [{ id: insertedId }]); // insert
+    /** One SNDK fire; its INSERT writes `insertedId`, or hits ON CONFLICT (null). */
+    function stageOneSndkFire(insertedId: number | null) {
+      stageTicks(fireableSndkStream());
+      router.on('insert', insertedId == null ? [] : [{ id: insertedId }]);
     }
 
     function anchorBinds(binds: Map<string, unknown>) {
@@ -2014,7 +1983,7 @@ describe('detect-lottery-fires handler', () => {
 
     it('looks the anchor up once, before the INSERT, and writes a spread leg’s five columns in place of the four old ones', async () => {
       answerAnchorsByChain({ [SNDK_CHAIN]: SPREAD_LEG_ANCHOR });
-      queueOneSndkFire(42);
+      stageOneSndkFire(42);
 
       const res = mockResponse();
       await handler(authorizedReq(), res);
@@ -2101,8 +2070,8 @@ describe('detect-lottery-fires handler', () => {
         SNDK260501C01177000: STOCK_TIED_ANCHOR,
         // SNDK260501C01178000: no anchor print in its window.
       });
-      mockTicks(manyFireableSndkStreams(4));
-      queuePerFireMocks(4, true);
+      stageTicks(manyFireableSndkStreams(4));
+      answerInserts(true);
 
       const res = mockResponse();
       await handler(authorizedReq(), res);
@@ -2163,7 +2132,7 @@ describe('detect-lottery-fires handler', () => {
 
     it('writes NULL anchor columns and stays success when a fresh fire finds no anchor print, and warns once per run', async () => {
       answerNoAnchors();
-      queueOneSndkFire(42);
+      stageOneSndkFire(42);
 
       const res = mockResponse();
       await handler(authorizedReq(), res);
@@ -2213,7 +2182,7 @@ describe('detect-lottery-fires handler', () => {
     it('still writes the fire with NULL anchor columns when the lookup fails, names anchor_legs.lookup_failed in Sentry and the log, and reports partial', async () => {
       const broken = new Error('column "trade_code" does not exist');
       mockLookupAnchorLegs.mockRejectedValue(broken);
-      queueOneSndkFire(42);
+      stageOneSndkFire(42);
 
       const res = mockResponse();
       await handler(authorizedReq(), res);
@@ -2272,7 +2241,7 @@ describe('detect-lottery-fires handler', () => {
     it('reports a lookup that exhausted its retries on a Neon blip at warning level, and still reports partial', async () => {
       const blip = new TransientDbError(new Error('fetch failed'));
       mockLookupAnchorLegs.mockRejectedValue(blip);
-      queueOneSndkFire(42);
+      stageOneSndkFire(42);
 
       const res = mockResponse();
       await handler(authorizedReq(), res);
@@ -2299,7 +2268,7 @@ describe('detect-lottery-fires handler', () => {
 
     it('stays success when the lookup fails but every fire hit ON CONFLICT (no row lost its anchor), and still raises the failure', async () => {
       mockLookupAnchorLegs.mockRejectedValue(new Error('boom'));
-      queueOneSndkFire(null);
+      stageOneSndkFire(null);
 
       const res = mockResponse();
       await handler(authorizedReq(), res);
@@ -2419,18 +2388,11 @@ describe('detect-lottery-fires handler', () => {
     const alignedFlow = [
       { ts: flowTs, cum_ncp: '5000000', cum_npp: '1000000' },
     ];
-    mockTicks([...sounTicks, ...rklbTicks])
-      .mockResolvedValueOnce([]) // prior fires (both chains eligible)
-      // SOUN fire (processed first by Map insertion order):
-      .mockResolvedValueOnce([]) // SOUN flow_data
-      .mockResolvedValueOnce([]) // SOUN spot_exposures
-      .mockResolvedValueOnce(alignedFlow) // SOUN ticker_flow_snapshot → isAligned=true
-      .mockResolvedValueOnce([{ id: 1 }]) // SOUN INSERT
-      // RKLB fire (processed second):
-      .mockResolvedValueOnce([]) // RKLB flow_data
-      .mockResolvedValueOnce([]) // RKLB spot_exposures
-      .mockResolvedValueOnce(alignedFlow) // RKLB ticker_flow_snapshot → isAligned=true
-      .mockResolvedValueOnce([{ id: 2 }]); // RKLB INSERT
+    stageTicks([...sounTicks, ...rklbTicks]);
+    // Both tickers' flow series are aligned → isAligned=true for CALL fires.
+    router.on('flowSeries', alignedFlow);
+    router.when('insert', insertFor('SOUN'), [{ id: 1 }]);
+    router.when('insert', insertFor('RKLB'), [{ id: 2 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -2446,19 +2408,20 @@ describe('detect-lottery-fires handler', () => {
       inserted: 2,
     });
 
-    // cluster_bonus is at bind position -1 of each INSERT call.
-    // Call sequence (post-prior-fires): SOUN [flow, spot, flow_snapshot, INSERT]
-    // then RKLB [flow, spot, flow_snapshot, INSERT]. Total 8 per-fire calls.
-    // RKLB INSERT is at(-1); SOUN INSERT is at(-5) (4 RKLB calls separate them).
-    const allCalls = mockSql.mock.calls;
-    const rklbInsert = allCalls.at(-1) as unknown[];
-    const sounInsert = allCalls.at(-5) as unknown[];
+    // Read each fire's cluster_bonus by its symbol, not by its position in
+    // the run.
+    const bonusBySymbol = new Map(
+      extractAllInsertBinds(mockSql, 'lottery_finder_fires').map((binds) => [
+        binds.get('underlying_symbol'),
+        binds.get('cluster_bonus'),
+      ]),
+    );
 
     // SOUN: first fire in batch, committedFires empty → isolated → cluster_bonus=0.
-    expect(sounInsert.at(-1)).toBe(0);
+    expect(bonusBySymbol.get('SOUN')).toBe(0);
     // RKLB: SOUN in committedFires with score=13 (>= tier1=9) at same trigger time
     // → clusterSize=2 → pair bonus → cluster_bonus=1.
-    expect(rklbInsert.at(-1)).toBe(1);
+    expect(bonusBySymbol.get('RKLB')).toBe(1);
   });
 
   it('still fires when prior-fire is older than the 5-min cooldown', async () => {
@@ -2466,17 +2429,14 @@ describe('detect-lottery-fires handler', () => {
     // tick — outside the cooldown window. detectChainFires lets the
     // current trigger through as if no prior had been recorded.
     const priorMs = Date.parse('2026-05-01T13:24:00Z');
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([
-        {
-          option_chain_id: 'SNDK260501C01175000',
-          last_ms: String(priorMs),
-        },
-      ])
-      .mockResolvedValueOnce([]) // flow_data
-      .mockResolvedValueOnce([]) // spot_exposures
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
-      .mockResolvedValueOnce([{ id: 7 }]); // insert
+    stageTicks(fireableSndkStream());
+    router.on('priorFires', [
+      {
+        option_chain_id: 'SNDK260501C01175000',
+        last_ms: String(priorMs),
+      },
+    ]);
+    router.on('insert', [{ id: 7 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -2499,12 +2459,8 @@ describe('detect-lottery-fires handler', () => {
     // returns null → lookup MUST NOT fire → all 8 gex_* binds (last 8
     // positions of the INSERT) stay NULL.
     mockMapToGexbotTicker.mockReturnValue(null);
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // flow_data
-      .mockResolvedValueOnce([]) // spot_exposures
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
-      .mockResolvedValueOnce([{ id: 42 }]); // insert
+    stageTicks(fireableSndkStream());
+    router.on('insert', [{ id: 42 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -2535,12 +2491,8 @@ describe('detect-lottery-fires handler', () => {
     const mockedSentryCapture = vi.mocked(sentryModule.Sentry.captureException);
     mockedSentryCapture.mockClear();
     mockGetLatestGexbotSnapshotAt.mockRejectedValue(new Error('neon timeout'));
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // flow_data
-      .mockResolvedValueOnce([]) // spot_exposures
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
-      .mockResolvedValueOnce([{ id: 42 }]); // insert
+    stageTicks(fireableSndkStream());
+    router.on('insert', [{ id: 42 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -2576,7 +2528,7 @@ describe('detect-lottery-fires handler', () => {
   it('stays success when the GexBot lookup throws but no fire is written, and still reports the failure', async () => {
     mockGetLatestGexbotSnapshotAt.mockRejectedValue(new Error('neon timeout'));
     // Default [] everywhere: the INSERT hits ON CONFLICT and returns no id.
-    mockTicks(fireableSndkStream());
+    stageTicks(fireableSndkStream());
 
     const res = mockResponse();
     await handler(authorizedReq(), res);
@@ -2609,12 +2561,8 @@ describe('detect-lottery-fires handler', () => {
     // a non-null ticker (default pass-through mock) so the lookup is
     // attempted. The fire still inserts (fail-open).
     mockGetLatestGexbotSnapshotAt.mockRejectedValue(new Error('neon timeout'));
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // flow_data
-      .mockResolvedValueOnce([]) // spot_exposures
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
-      .mockResolvedValueOnce([{ id: 42 }]); // insert proceeds
+    stageTicks(fireableSndkStream());
+    router.on('insert', [{ id: 42 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -2651,12 +2599,8 @@ describe('detect-lottery-fires handler', () => {
     const ticks = fireableSndkStream();
 
     // ── Run 1: fire detected, row written ──
-    mockTicks(ticks)
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // flow_data
-      .mockResolvedValueOnce([]) // spot_exposures
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
-      .mockResolvedValueOnce([{ id: 42 }]); // INSERT → first write wins
+    stageTicks(ticks);
+    router.on('insert', [{ id: 42 }]); // INSERT → first write wins
 
     const res1 = mockResponse();
     await handler(
@@ -2675,12 +2619,8 @@ describe('detect-lottery-fires handler', () => {
 
     // ── Run 2: same window, same fire detected, but the row already
     //          exists so ON CONFLICT DO NOTHING returns no RETURNING rows ──
-    mockTicks(ticks)
-      .mockResolvedValueOnce([]) // prior fires (cooldown not seeded in mock)
-      .mockResolvedValueOnce([]) // flow_data
-      .mockResolvedValueOnce([]) // spot_exposures
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
-      .mockResolvedValueOnce([]); // INSERT → ON CONFLICT, 0 rows returned
+    stageTicks(ticks);
+    router.on('insert', []); // INSERT → ON CONFLICT, 0 rows returned
 
     const res2 = mockResponse();
     await handler(
@@ -2738,29 +2678,14 @@ describe('detect-lottery-fires handler', () => {
    *  call order. fetchMacroSnapshot binds asOf.toISOString() as the first
    *  interpolation of the flow_data SELECT. */
   function flowDataAsOfs(): string[] {
-    return mockSql.mock.calls
-      .filter((c) => {
-        const strings = c[0] as readonly string[] | undefined;
-        return Boolean(strings?.[0]?.includes('FROM flow_data'));
-      })
-      .map((c) => c[1] as string);
+    return router.calls('flowData').map((c) => c.params[0] as string);
   }
 
   it('snapshots macro at each fire’s own trigger time (Fix 1: 2nd fire ≠ first-tick as-of)', async () => {
-    // Query order (two-pass, Fix 3): prior-fires → [Pass 1]
-    // ticker_flow_snapshot (once, cached per ticker+date) → [Pass 2]
-    // per fire: flow_data, spot_exposures, INSERT.
-    mockTicks(twoFireSndkStream())
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1, once for SNDK)
-      // Fire 1 (Pass 2): flow_data, spot_exposures, INSERT
-      .mockResolvedValueOnce([]) // flow_data (fire 1)
-      .mockResolvedValueOnce([]) // spot_exposures (fire 1)
-      .mockResolvedValueOnce([{ id: 1 }]) // INSERT (fire 1)
-      // Fire 2 (Pass 2): flow_data, spot_exposures, INSERT
-      .mockResolvedValueOnce([]) // flow_data (fire 2)
-      .mockResolvedValueOnce([]) // spot_exposures (fire 2)
-      .mockResolvedValueOnce([{ id: 2 }]); // INSERT (fire 2)
+    // The flow series is fetched once for SNDK (cached per ticker+date);
+    // each of the two fires then runs its own macro lookups and INSERT.
+    stageTicks(twoFireSndkStream());
+    router.on('insert', (_call, nth) => [{ id: nth + 1 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -2800,21 +2725,18 @@ describe('detect-lottery-fires handler', () => {
       ncp: '100000000',
       npp: '300000000', // diff = -200M, below the -150M call gate
     };
-    // Query order (two-pass, Fix 3): prior-fires → [Pass 1]
-    // ticker_flow_snapshot (once) → [Pass 2] per fire: flow_data,
-    // spot_exposures, INSERT. Fires are processed in trigger-time order
-    // (fire 1 then fire 2).
-    mockTicks(twoFireSndkStream())
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1, once for SNDK)
-      // Fire 1 (13:31:00Z): flow_data returns NO otm tick → ungated.
-      .mockResolvedValueOnce([]) // flow_data (fire 1)
-      .mockResolvedValueOnce([]) // spot_exposures (fire 1)
-      .mockResolvedValueOnce([{ id: 1 }]) // INSERT (fire 1)
-      // Fire 2 (13:36:50Z): flow_data returns the -200M otm tick → gated.
-      .mockResolvedValueOnce([otmTickAtFire2]) // flow_data (fire 2)
-      .mockResolvedValueOnce([]) // spot_exposures (fire 2)
-      .mockResolvedValueOnce([{ id: 2 }]); // INSERT (fire 2)
+    stageTicks(twoFireSndkStream());
+    router.on('insert', (_call, nth) => [{ id: nth + 1 }]);
+    // Fire 1 (13:31:00Z): flow_data holds NO otm tick yet → ungated.
+    // Fire 2 (13:36:50Z): the -200M otm tick (printed at 13:36:50) is in its
+    // 30-minute window → gated. flow_data answers by the as-of it was asked
+    // for, which is the macro lookup's first bound value.
+    const otmTickPrintedAt = Date.parse('2026-05-01T13:36:50Z');
+    router.when(
+      'flowData',
+      (call) => Date.parse(call.params[0] as string) >= otmTickPrintedAt,
+      [otmTickAtFire2],
+    );
 
     const req = mockRequest({
       method: 'GET',
@@ -2856,14 +2778,8 @@ describe('detect-lottery-fires handler', () => {
       apiKey: 'test-uw-key',
       today: '2026-05-02',
     });
-    // Query order (two-pass, Fix 3): prior-fires → ticker_flow_snapshot
-    // (Pass 1) → flow_data, spot_exposures (Pass 2) → INSERT.
-    mockTicks(fireableSndkStream())
-      .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
-      .mockResolvedValueOnce([]) // flow_data (Pass 2)
-      .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
-      .mockResolvedValueOnce([{ id: 42 }]); // insert
+    stageTicks(fireableSndkStream());
+    router.on('insert', [{ id: 42 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -2905,12 +2821,12 @@ describe('detect-lottery-fires handler', () => {
       ticker: 'RKLB',
       option_chain: 'RKLB260501C01175000',
     }));
-    // Every DB call defaults to [] (mockSql.mockResolvedValue([]) in
-    // beforeEach), which is fine here: the assertions read the INSERT
-    // binds via SQL-text parsing (extractAllInsertBinds), not the INSERT
-    // return value, so we don't need to stage per-call `[{id}]` rows. Only
-    // the ticks batches need staging so the two chains are present.
-    mockTicks([...sndk, ...rklb]);
+    // Every route defaults to [] (router in beforeEach), which is fine here:
+    // the assertions read the INSERT binds via SQL-text parsing
+    // (extractAllInsertBinds), not the INSERT return value, so we don't need
+    // to answer the INSERT with `[{id}]` rows. Only the tick scan needs
+    // staging so the two chains are present.
+    stageTicks([...sndk, ...rklb]);
 
     const req = mockRequest({
       method: 'GET',
@@ -3001,8 +2917,8 @@ describe('detect-lottery-fires handler', () => {
       const today = '2026-06-01';
       await useRealWinRateCache(today);
       runPrefetchClosures();
-      mockSql.mockResolvedValueOnce([]); // win-rate load, kicked before the tick scan
-      mockTicks(fireableSndkStream());
+      // The win-rate load (kicked before the tick scan) answers [] by default.
+      stageTicks(fireableSndkStream());
 
       await handler(authorizedReq(), mockResponse());
 
@@ -3037,7 +2953,7 @@ describe('detect-lottery-fires handler', () => {
       expect(winRate.text).toContain('AND date < ${}::date');
       expect(winRate.params).toEqual([today]);
       // ...and it went out before the tick scan, not after it.
-      expect(sqlCalls()[0]!.text).toContain('AVG(daily_rate)');
+      expect(router.ran()[0]).toBe('winRates');
 
       // Both recent-fire queries get one retry and no per-attempt cap: the
       // 5 s prefetch deadline bounds the total, and a cap would turn a slow
@@ -3053,10 +2969,8 @@ describe('detect-lottery-fires handler', () => {
     it('starts the win-rate load on an empty pre-open scan and waits for it, so the cache is warm at the open', async () => {
       const today = '2026-06-02';
       await useRealWinRateCache(today);
-      mockSql.mockResolvedValueOnce([
-        { underlying_symbol: 'SNDK', win_rate: 0.4 },
-      ]); // win-rate warm-up
-      mockTicks([]);
+      router.on('winRates', [{ underlying_symbol: 'SNDK', win_rate: 0.4 }]); // win-rate warm-up
+      stageTicks([]);
 
       const res = mockResponse();
       await handler(authorizedReq(), res);
@@ -3088,16 +3002,12 @@ describe('detect-lottery-fires handler', () => {
         actual.loadTakeitDetectContext,
       );
       mockGetBundle.mockResolvedValue({ version: 'test-v1' });
-      const hang = () => new Promise(() => {});
+      const hang = () => new Promise<never>(() => {});
       // The win-rate load comes from the mocked day cache (resolves []).
-      mockTicks(fireableSndkStream())
-        .mockResolvedValueOnce([]) // prior fires
-        .mockReturnValueOnce(hang()) // recent same-type fires: never answers
-        .mockReturnValueOnce(hang()) // recent silent-boom fires: never answers
-        .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
-        .mockResolvedValueOnce([]) // flow_data (Pass 2)
-        .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
-        .mockResolvedValueOnce([{ id: 42 }]); // insert
+      stageTicks(fireableSndkStream());
+      router.on('recentFires', hang); // recent same-type fires: never answers
+      router.on('recentSilentBoom', hang); // recent silent-boom fires: never answers
+      router.on('insert', [{ id: 42 }]);
 
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
       const res = mockResponse();
@@ -3163,14 +3073,9 @@ describe('detect-lottery-fires handler', () => {
       );
       mockGetBundle.mockResolvedValue({ version: 'test-v1' });
       const broken = new Error('column "trigger_time_ct" does not exist');
-      mockTicks(fireableSndkStream())
-        .mockResolvedValueOnce([]) // prior fires
-        .mockRejectedValueOnce(broken) // recent same-type fires: broken query
-        .mockResolvedValueOnce([]) // recent silent-boom fires
-        .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
-        .mockResolvedValueOnce([]) // flow_data (Pass 2)
-        .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
-        .mockResolvedValueOnce([{ id: 42 }]); // insert
+      stageTicks(fireableSndkStream());
+      router.on('recentFires', broken); // recent same-type fires: broken query
+      router.on('insert', [{ id: 42 }]);
 
       const res = mockResponse();
       await handler(authorizedReq(), res);
@@ -3219,7 +3124,7 @@ describe('detect-lottery-fires handler', () => {
         },
       );
       // Default [] everywhere: the INSERT hits ON CONFLICT and returns no id.
-      mockTicks(fireableSndkStream());
+      stageTicks(fireableSndkStream());
 
       const res = mockResponse();
       await handler(authorizedReq(), res);
@@ -3261,15 +3166,11 @@ describe('detect-lottery-fires handler', () => {
       );
     }
 
-    // One SNDK fire: ticks, prior fires, its flow and macro lookups, then
-    // the INSERT answering `insertRows` ([] = ON CONFLICT, nothing written).
+    // One SNDK fire, its INSERT answering `insertRows` ([] = ON CONFLICT,
+    // nothing written).
     function stageOneFire(insertRows: unknown[]) {
-      mockTicks(fireableSndkStream())
-        .mockResolvedValueOnce([]) // prior fires
-        .mockResolvedValueOnce([]) // ticker_flow_snapshot
-        .mockResolvedValueOnce([]) // flow_data
-        .mockResolvedValueOnce([]) // spot_exposures
-        .mockResolvedValueOnce(insertRows); // insert
+      stageTicks(fireableSndkStream());
+      router.on('insert', insertRows);
     }
 
     const SCHEMA_ERROR =
@@ -3425,36 +3326,24 @@ describe('detect-lottery-fires handler', () => {
 
     it('writes a ticker’s fires without flow features on a transient flow-series failure, then skips the rest by breaker, and reports it once', async () => {
       const flowError = 'db attempt timeout';
-      mockTicks([
+      stageTicks([
         ...fireableSndkStream(),
         ...streamFor('TSLA', 'TSLA260501C01175000'),
         ...streamFor('TSLA', 'TSLA260501C01180000'),
         ...streamFor('RKLB', 'RKLB260501C01175000'),
-      ])
-        .mockResolvedValueOnce([]) // prior fires
-        // Pass 1, one flow series per ticker-day.
-        .mockResolvedValueOnce([
-          {
-            ts: '2026-05-01T13:29:30Z',
-            cum_ncp: '5000000',
-            cum_npp: '1000000',
-          },
-        ]) // SNDK: aligned call
-        .mockRejectedValueOnce(new Error(flowError)) // TSLA: transient failure
-        // TSLA's second chain reuses the failed day; RKLB is skipped.
-        // Pass 2, per fire: flow_data, spot_exposures, INSERT.
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([{ id: 1 }])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([{ id: 2 }])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([{ id: 3 }])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([{ id: 4 }]);
+      ]);
+      // Pass 1, one flow series per ticker-day.
+      router.when('flowSeries', flowSeriesOf('SNDK'), [
+        {
+          ts: '2026-05-01T13:29:30Z',
+          cum_ncp: '5000000',
+          cum_npp: '1000000',
+        },
+      ]); // SNDK: aligned call
+      router.when('flowSeries', flowSeriesOf('TSLA'), new Error(flowError)); // TSLA: transient failure
+      // TSLA's second chain reuses the failed day; RKLB is skipped, so it
+      // has no flowSeries answer. All four fires' INSERTs write (ids 1-4).
+      router.on('insert', (_call, nth) => [{ id: nth + 1 }]);
 
       const res = mockResponse();
       await handler(authorizedReq(), res);
@@ -3474,9 +3363,10 @@ describe('detect-lottery-fires handler', () => {
       });
       // The failed ticker-day is not retried for its second chain, and the
       // breaker keeps RKLB from asking a struggling Neon at all.
-      expect(
-        sqlCalls().filter((c) => c.text.includes('ws_net_flow_per_ticker')),
-      ).toHaveLength(2);
+      expect(router.calls('flowSeries').map((c) => c.params[0])).toEqual([
+        'SNDK',
+        'TSLA',
+      ]);
 
       const [sndk, tsla1, tsla2, rklb] = extractAllInsertBinds(
         mockSql,
@@ -3532,20 +3422,18 @@ describe('detect-lottery-fires handler', () => {
     });
 
     it('gives a stalled flow series 5 s, then opens the breaker so the next ticker is not fetched', async () => {
-      mockTicks([
+      stageTicks([
         ...fireableSndkStream(),
         ...streamFor('TSLA', 'TSLA260501C01175000'),
-      ])
-        .mockResolvedValueOnce([]) // prior fires
-        .mockReturnValueOnce(new Promise(() => {})) // SNDK flow series: stalls
-        // TSLA's flow series is skipped. Pass 2 per fire: flow_data,
-        // spot_exposures, INSERT.
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([{ id: 1 }])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([{ id: 2 }]);
+      ]);
+      // SNDK flow series: stalls. TSLA's is skipped by the breaker, so it
+      // is never asked for. Both fires' INSERTs write (ids 1 and 2).
+      router.when(
+        'flowSeries',
+        flowSeriesOf('SNDK'),
+        () => new Promise<never>(() => {}),
+      );
+      router.on('insert', (_call, nth) => [{ id: nth + 1 }]);
 
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
       const res = mockResponse();
@@ -3565,9 +3453,9 @@ describe('detect-lottery-fires handler', () => {
           error: FLOW_DEADLINE,
         },
       });
-      expect(
-        sqlCalls().filter((c) => c.text.includes('ws_net_flow_per_ticker')),
-      ).toHaveLength(1);
+      expect(router.calls('flowSeries').map((c) => c.params[0])).toEqual([
+        'SNDK',
+      ]);
       for (const binds of extractAllInsertBinds(
         mockSql,
         'lottery_finder_fires',
@@ -3588,19 +3476,14 @@ describe('detect-lottery-fires handler', () => {
 
     it('reports a genuine flow-series error at error level and fails the run, but still writes every fire and does not open the breaker', async () => {
       const flowError = new Error('column "net_call_prem" does not exist');
-      mockTicks([
+      stageTicks([
         ...fireableSndkStream(),
         ...streamFor('TSLA', 'TSLA260501C01175000'),
-      ])
-        .mockResolvedValueOnce([]) // prior fires
-        .mockRejectedValueOnce(flowError) // SNDK flow series: broken query
-        .mockResolvedValueOnce([]) // TSLA flow series: still asked
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([{ id: 1 }])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([{ id: 2 }]);
+      ]);
+      // SNDK flow series: broken query. TSLA's is still asked, and answers [].
+      // Both fires' INSERTs write (ids 1 and 2).
+      router.when('flowSeries', flowSeriesOf('SNDK'), flowError);
+      router.on('insert', (_call, nth) => [{ id: nth + 1 }]);
 
       const res = mockResponse();
       await handler(authorizedReq(), res);
@@ -3619,9 +3502,10 @@ describe('detect-lottery-fires handler', () => {
           error: 'column "net_call_prem" does not exist',
         },
       });
-      expect(
-        sqlCalls().filter((c) => c.text.includes('ws_net_flow_per_ticker')),
-      ).toHaveLength(2);
+      expect(router.calls('flowSeries').map((c) => c.params[0])).toEqual([
+        'SNDK',
+        'TSLA',
+      ]);
       expect(
         extractInsertBinds(mockSql, 'lottery_finder_fires').get(
           'underlying_symbol',
