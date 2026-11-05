@@ -789,7 +789,8 @@ export default withCronInstrumentation(
     // batch they cost nothing extra.
     //
     // A fire with no anchor print gets NULL columns, and that is not a
-    // failure (counted as anchorsMissing). A failed lookup also leaves the
+    // failure (counted as anchorsMissing; an anchor whose print has no trade
+    // code is counted as anchorsNoCode). A failed lookup also leaves the
     // columns NULL, on every fire, so it is reported apart: a Sentry event
     // and a log line named anchor_legs.lookup_failed, anchorLookupError in
     // the run payload, and status 'partial' when the run wrote fires.
@@ -841,11 +842,16 @@ export default withCronInstrumentation(
         extra: { fires: anchorRequests.length },
       });
     }
-    // anchorsFound / anchorsMissing count every looked-up fire, including
-    // fires that then hit ON CONFLICT, not inserted rows.
+    // anchorsFound / anchorsMissing / anchorsNoCode count every looked-up
+    // fire, including fires that then hit ON CONFLICT, not inserted rows.
+    // anchorsNoCode is the anchors found whose print carried no trade code
+    // (legKind null): they keep their anchor id but anchor_leg_kind is NULL.
     let anchorsFound = 0;
+    let anchorsNoCode = 0;
     for (const anchor of anchorsByKey.values()) {
-      if (anchor != null) anchorsFound += 1;
+      if (anchor == null) continue;
+      anchorsFound += 1;
+      if (anchor.legKind == null) anchorsNoCode += 1;
     }
     // Empty map after a failed lookup, so a failure never counts as missing.
     const anchorsMissing = anchorsByKey.size - anchorsFound;
@@ -1343,6 +1349,19 @@ export default withCronInstrumentation(
         { anchorsMissing, anchorsFound },
       );
     }
+    // An anchor was found but its print carried no trade code (UW sends ''
+    // or omits it on some prints), so the fire is stored with an anchor id
+    // and anchor_leg_kind NULL, which is not 'single'. Neither the badge nor
+    // the refit filter can use it, and without this warning nothing shows
+    // that the code stopped arriving. The rows are written and the status
+    // stays 'success', as for anchor-missing.
+    if (anchorsNoCode > 0) {
+      reportRunProblem(
+        'anchor-no-trade-code',
+        'detect-lottery-fires: anchor print carries no trade code; anchor_leg_kind left null',
+        { anchorsNoCode, anchorsFound },
+      );
+    }
 
     // Phase 6: per-tier counts live in the structured log payload below.
     // Sentry alert for "zero tier1 fires for N consecutive trading days"
@@ -1383,6 +1402,7 @@ export default withCronInstrumentation(
         flowSeriesGenuineFailures,
         anchorsFound,
         anchorsMissing,
+        anchorsNoCode,
         anchorLookupFailures: anchorLookupError == null ? 0 : 1,
       },
       'detect-lottery-fires completed',
@@ -1466,6 +1486,7 @@ export default withCronInstrumentation(
         firstFlowSeriesGenuineError: firstFlowSeriesGenuineErrorMeta,
         anchorsFound,
         anchorsMissing,
+        anchorsNoCode,
         anchorLookupFailures: anchorLookupError == null ? 0 : 1,
         anchorLookupError,
       },

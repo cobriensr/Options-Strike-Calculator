@@ -248,7 +248,7 @@ export default withCronInstrumentation(
         COALESCE(SUM(size) FILTER (WHERE side = 'ask'), 0) AS ask_size,
         COALESCE(SUM(size) FILTER (WHERE side = 'bid'), 0) AS bid_size,
         COALESCE(SUM(size) FILTER (
-          WHERE raw_payload->>'trade_code' = ANY(${MULTI_LEG_TRADE_CODES as string[]}::text[])
+          WHERE lower(raw_payload->>'trade_code') = ANY(${MULTI_LEG_TRADE_CODES as string[]}::text[])
         ), 0) AS multi_leg_size,
         SUM(price * size) AS notional,
         MAX(open_interest) AS bucket_max_oi,
@@ -933,7 +933,8 @@ export default withCronInstrumentation(
     // reported apart from a missing anchor: a Sentry event and a log line
     // named anchor_legs.lookup_failed, anchorLookupError in the run
     // payload, and status 'partial' when the run wrote alerts. A missing
-    // anchor is a warning of its own (see anchor-missing below).
+    // anchor is a warning of its own (see anchor-missing below), and so is
+    // an anchor print with no trade code (anchor-no-trade-code).
     //
     // Retry budget: on prod (2026-10-29) the 5-min window is an index scan
     // on ws_option_trades_chain_executed_idx at 5.6 ms per alert cold, and
@@ -982,11 +983,16 @@ export default withCronInstrumentation(
         extra: { alerts: anchorRequests.length },
       });
     }
-    // anchorsFound / anchorsMissing count every looked-up alert, including
-    // alerts that then hit ON CONFLICT, not inserted rows.
+    // anchorsFound / anchorsMissing / anchorsNoCode count every looked-up
+    // alert, including alerts that then hit ON CONFLICT, not inserted rows.
+    // anchorsNoCode is the anchors found whose print carried no trade code
+    // (legKind null): they keep their anchor id but anchor_leg_kind is NULL.
     let anchorsFound = 0;
+    let anchorsNoCode = 0;
     for (const anchor of anchorsByKey.values()) {
-      if (anchor != null) anchorsFound += 1;
+      if (anchor == null) continue;
+      anchorsFound += 1;
+      if (anchor.legKind == null) anchorsNoCode += 1;
     }
     // Empty map after a failed lookup, so a failure never counts as missing.
     const anchorsMissing = anchorsByKey.size - anchorsFound;
@@ -1275,6 +1281,27 @@ export default withCronInstrumentation(
         extra: detail,
       });
     }
+    // An anchor was found but its print carried no trade code (UW sends ''
+    // or omits it on some prints), so the alert is stored with an anchor id
+    // and anchor_leg_kind NULL, which is not 'single'. The badge can't use
+    // it, and without this warning nothing shows that the code stopped
+    // arriving. The rows are written and the status stays 'success', as for
+    // anchor-missing; once per run.
+    if (anchorsNoCode > 0) {
+      const message =
+        'detect-silent-boom: anchor print carries no trade code; anchor_leg_kind left null';
+      const detail = { anchorsNoCode, anchorsFound };
+      ctx.logger.warn(detail, message);
+      Sentry.captureMessage(message, {
+        level: 'warning',
+        fingerprint: ['detect-silent-boom', 'anchor-no-trade-code'],
+        tags: {
+          'cron.job': 'detect-silent-boom',
+          'cron.anomaly': 'anchor-no-trade-code',
+        },
+        extra: detail,
+      });
+    }
 
     // Flow-series failures leave cum_ncp/cum_npp null on the row; the alert
     // itself is written. Each kind is reported once per run, with its first
@@ -1357,6 +1384,7 @@ export default withCronInstrumentation(
         flowSeriesGenuineFailures,
         anchorsFound,
         anchorsMissing,
+        anchorsNoCode,
         anchorLookupFailures: anchorLookupError == null ? 0 : 1,
       },
       'detect-silent-boom completed',
@@ -1429,6 +1457,7 @@ export default withCronInstrumentation(
         firstFlowSeriesGenuineError: firstFlowSeriesGenuineErrorMeta,
         anchorsFound,
         anchorsMissing,
+        anchorsNoCode,
         anchorLookupFailures: anchorLookupError == null ? 0 : 1,
         anchorLookupError,
       },

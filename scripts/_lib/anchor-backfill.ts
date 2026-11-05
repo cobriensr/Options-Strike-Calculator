@@ -14,7 +14,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import {
@@ -34,6 +34,34 @@ export const GATE_MAX_ONE_SIDED_PCT = 0.5;
 
 /** How many mismatches `--compare` writes out. */
 export const MISMATCH_SAMPLE = 50;
+
+// ── Environment file ────────────────────────────────────────────────────────
+
+/**
+ * The .env.local to load: an explicit `--env-file`, else the nearest one up
+ * from `startDir` (a worktree sits under the main checkout, whose .env.local
+ * points at PRODUCTION). An explicit path that does not exist throws instead
+ * of falling back to the nearest one: the caller named a file, and silently
+ * writing to a different database than they meant is the one bad outcome.
+ */
+export function resolveEnvFile(
+  explicit: string | null,
+  startDir: string,
+): string {
+  if (explicit != null) {
+    if (existsSync(explicit)) return explicit;
+    throw new Error(`--env-file ${explicit} not found`);
+  }
+  let dir = resolve(startDir);
+  for (;;) {
+    const candidate = join(dir, '.env.local');
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  throw new Error('no .env.local found; pass --env-file');
+}
 
 // ── Parse ───────────────────────────────────────────────────────────────────
 

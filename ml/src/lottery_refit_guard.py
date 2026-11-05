@@ -9,12 +9,14 @@ their "not a spread leg" filter:
   - ml/src/lottery_scoring.py (FETCH_QUERY)
   - scripts/online_ticker_update.py (TODAY_QUERY)
 
-``anchor_leg_kind`` (migration #197) exists only on fires inserted after the
-2026-10-29 18:22 CT deploy. Older fires are NULL, which the filter excludes, so
-a refit now would train on a few days of rows and silently change the V2
-weights and tiers (``lottery-score-weights-v2.ts``). Owner decision
-(2026-10-29): refuse to train instead, so the live weights stay exactly as they
-are.
+``anchor_leg_kind`` (migration #197) was set only on fires inserted after the
+2026-10-29 18:22 CT deploy until the full-tape backfill filled the older ones
+(2026-11-04; see "History backfill from the full tape" in the classifier spec),
+so the filter now has history. What still blocks a refit is the outcome data
+and the two phase-4 fixes (REMOVAL (b) and (c) below): a refit now would
+silently change the V2 weights and tiers (``lottery-score-weights-v2.ts``).
+Owner decision (2026-10-29): refuse to train instead, so the live weights stay
+exactly as they are.
 
 A third site is guarded too: scripts/backfill_lottery_scores.py. It re-scores
 stored fires, and even with unchanged weights its left-closed quintile bounds
@@ -27,15 +29,17 @@ untouched, so the following ``sync_lottery_score_weights_v2.py`` re-renders the
 same TS from the same JSON (idempotent), the backfill is skipped, and
 ``make update`` carries on.
 
-REMOVAL: delete this module and all three call sites when all of these hold:
-(a) ``anchor_leg_kind`` is backfilled from the full tape for the 90-day
-training window; (b) the outcome backfill has landed and the old bug signature
+REMOVAL: delete this module and all three call sites when (b) and (c) below
+hold. Condition (a) is met: DONE 2026-11-04, ``anchor_leg_kind`` is backfilled
+from the full tape and the 90-day training window is 100% covered (see "History
+backfill from the full tape" in
+docs/superpowers/specs/2026-10-28-classifier-replacement-design.md).
+(b) the outcome backfill has landed and the old bug signature
 (flow_inv > peak * 1.05) has been measured, per the "Refit" section of
 docs/superpowers/specs/2026-10-28-nightly-pipeline-automation-design.md; (c) the
 two phase-4 fixes in that spec are in: the backfill's ``<`` vs ``<=`` boundary
 rewrite, and the EMA's evening no-op, since ``TODAY_QUERY`` uses
-``date = CURRENT_DATE`` in Neon (session time zone GMT). See also
-docs/superpowers/specs/2026-10-28-classifier-replacement-design.md.
+``date = CURRENT_DATE`` in Neon (session time zone GMT).
 """
 
 from __future__ import annotations
@@ -68,12 +72,11 @@ def skip_message(script: str) -> str:
             _BAR,
             f"REFIT BLOCKED: {script} did NOT run.",
             f"  Fires dated >= {UNCLASSIFIED_FROM.isoformat()} have no "
-            "classifier label, and the",
-            "  anchor_leg_kind training filter has no history yet, so a refit "
-            "would shift the V2 weights.",
-            "  Weights left unchanged. Guard comes off when anchor_leg_kind "
-            "is backfilled for the",
-            "  training window (see ml/src/lottery_refit_guard.py).",
+            "classifier label. Waiting on the",
+            "  outcome backfill and the phase-4 fixes (conditions b and c); a refit",
+            "  before then would shift the V2 weights. Weights left unchanged. "
+            "Guard comes",
+            "  off when both land (see ml/src/lottery_refit_guard.py).",
             _BAR,
         ]
     )

@@ -591,19 +591,26 @@ GIB = 2**30
     ],
 )
 def test_worker_resources_split_cores_and_sixty_percent_of_ram(
-    workers, cpus, ram_gib, expected
+    monkeypatch, workers, cpus, ram_gib, expected
 ):
-    assert (
-        ex.worker_resources(workers, cpu_count=cpus, ram_bytes=ram_gib * GIB)
-        == expected
-    )
+    monkeypatch.setattr(ex.os, "cpu_count", lambda: cpus)
+    monkeypatch.setattr(ex, "total_ram_bytes", lambda: ram_gib * GIB)
+    assert ex.worker_resources(workers) == expected
 
 
-def test_all_workers_together_stay_within_the_machine():
+def test_all_workers_together_stay_within_the_machine(monkeypatch):
+    monkeypatch.setattr(ex.os, "cpu_count", lambda: 16)
+    monkeypatch.setattr(ex, "total_ram_bytes", lambda: 64 * GIB)
     for workers in range(1, 17):
-        threads, limit = ex.worker_resources(workers, cpu_count=16, ram_bytes=64 * GIB)
+        threads, limit = ex.worker_resources(workers)
         assert threads * workers <= 16
         assert ex.parse_size(limit) * workers <= 0.6 * 64 * GIB
+
+
+def test_worker_resources_treat_an_unknown_core_count_as_one(monkeypatch):
+    monkeypatch.setattr(ex.os, "cpu_count", lambda: None)
+    monkeypatch.setattr(ex, "total_ram_bytes", lambda: 64 * GIB)
+    assert ex.worker_resources(4) == (1, "9830MiB")
 
 
 def test_worker_resources_default_to_this_machine():
@@ -786,6 +793,64 @@ def test_the_env_file_override_variable_is_gone(monkeypatch, tmp_path):
     shadow.write_text("X=1\n")
     monkeypatch.setenv("ANCHOR_BACKFILL_ENV_FILE", str(shadow))
     assert ex.resolve_env_file(None) != shadow
+
+
+@pytest.fixture
+def fallback_env_files(monkeypatch, tmp_path):
+    """(this checkout's .env.local, the main checkout's), both written.
+
+    REPO_ROOT points at tmp_path/checkout and `git rev-parse --git-common-dir`
+    answers tmp_path/main/.git, so the real repo's production .env.local is
+    never a candidate.
+    """
+    from types import SimpleNamespace
+
+    checkout, main = tmp_path / "checkout", tmp_path / "main"
+    (main / ".git").mkdir(parents=True)
+    checkout.mkdir()
+    own, shared = checkout / ".env.local", main / ".env.local"
+    own.write_text("DATABASE_URL=checkout\n")
+    shared.write_text("DATABASE_URL=main\n")
+    monkeypatch.setattr(ex, "REPO_ROOT", checkout)
+    monkeypatch.setattr(
+        ex.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=f"{main / '.git'}\n"),
+    )
+    return own, shared
+
+
+def test_resolve_env_file_refuses_a_missing_explicit_path_over_the_fallbacks(
+    fallback_env_files, tmp_path
+):
+    missing = tmp_path / "typo.env"
+    with pytest.raises(SystemExit) as raised:
+        ex.resolve_env_file(str(missing))
+    assert raised.value.code == f"--env-file {missing} not found"
+
+
+def test_resolve_env_file_refuses_an_explicit_directory(fallback_env_files, tmp_path):
+    with pytest.raises(SystemExit, match="not found"):
+        ex.resolve_env_file(str(tmp_path))
+
+
+def test_resolve_env_file_returns_an_existing_explicit_path(
+    fallback_env_files, tmp_path
+):
+    explicit = tmp_path / "chosen.env"
+    explicit.write_text("DATABASE_URL=chosen\n")
+    assert ex.resolve_env_file(str(explicit)) == explicit
+
+
+def test_resolve_env_file_without_a_path_prefers_this_checkout_then_the_main_one(
+    fallback_env_files,
+):
+    own, shared = fallback_env_files
+    assert ex.resolve_env_file(None) == own
+    own.unlink()
+    assert ex.resolve_env_file(None) == shared
+    shared.unlink()
+    assert ex.resolve_env_file(None) is None
 
 
 # ── Dates and keys ──────────────────────────────────────────────────────────
