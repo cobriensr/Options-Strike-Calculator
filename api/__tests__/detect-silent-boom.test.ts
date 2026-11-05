@@ -4,6 +4,7 @@ import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 import type { AnchorLegs, AnchorRequest } from '../_lib/anchor-legs.js';
 import type { SpreadLeg } from '../../src/types/spread-legs.js';
+import { MULTI_LEG_TRADE_CODES } from '../_lib/multileg-codes.js';
 import {
   expectAllGexBindsNull,
   extractAllInsertBinds,
@@ -506,6 +507,35 @@ describe('detect-silent-boom handler', () => {
     // snapshot SELECTs (tide / tide_otm / zero_dte / spx_gamma).
     // No insert because the cooldown gate suppressed the fire entirely.
     expect(mockSql).toHaveBeenCalledTimes(6);
+  });
+
+  it('matches the bucket scan’s multi-leg trade codes case-insensitively, as the anchor lookup does', async () => {
+    mockSql.mockResolvedValue([]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const scanCall = mockSql.mock.calls.find((call) =>
+      (call[0] as readonly string[]).join('?').includes('AS multi_leg_size'),
+    );
+    expect(scanCall).toBeDefined();
+    const sqlText = (scanCall![0] as readonly string[]).join('?');
+    // The SQL text is the behavior: a bare `raw_payload->>'trade_code' =
+    // ANY(...)` would miss an upper-case code that anchor-legs.ts matches.
+    expect(sqlText).toMatch(/lower\(raw_payload->>'trade_code'\)\s*=\s*ANY\(/);
+    expect(sqlText).not.toMatch(/WHERE\s+raw_payload->>'trade_code'/);
+    // lower() only matches because every listed code is lower-case.
+    expect(scanCall!.slice(1)).toContainEqual([...MULTI_LEG_TRADE_CODES]);
+    for (const code of MULTI_LEG_TRADE_CODES) {
+      expect(code).toBe(code.toLowerCase());
+    }
   });
 
   it('binds the latest market_tide tick (NCP - NPP) to the INSERT', async () => {
@@ -1224,6 +1254,8 @@ describe('detect-silent-boom handler', () => {
     const ANCHOR_FAILED = 'anchor_legs.lookup_failed';
     const ANCHOR_MISSING_MSG =
       'detect-silent-boom: no anchor print found for a fresh alert; anchor columns left null';
+    const ANCHOR_NO_CODE_MSG =
+      'detect-silent-boom: anchor print carries no trade code; anchor_leg_kind left null';
     const ANCHOR_COLUMNS = [
       'anchor_ws_trade_id',
       'anchor_trade_code',
@@ -1268,6 +1300,15 @@ describe('detect-silent-boom handler', () => {
       anchorWsTradeId: 'b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e',
       anchorTradeCode: 'tlet',
       legKind: 'stock_tied',
+      spreadShape: null,
+      spreadLegs: null,
+    };
+    // An anchor print was found but UW reported no trade code on it
+    // (describeAnchor: legKind null, not 'single').
+    const NO_CODE_ANCHOR: AnchorLegs = {
+      anchorWsTradeId: 'c9d8e7f6-a5b4-4c3d-8e2f-1a0b9c8d7e6f',
+      anchorTradeCode: null,
+      legKind: null,
       spreadShape: null,
       spreadLegs: null,
     };
@@ -1333,6 +1374,12 @@ describe('detect-silent-boom handler', () => {
       );
     }
 
+    function anchorNoCodeCaptures() {
+      return mockSentryCaptureMessage.mock.calls.filter(
+        (call) => call[0] === ANCHOR_NO_CODE_MSG,
+      );
+    }
+
     function completedLog() {
       const call = vi
         .mocked(logger.info)
@@ -1356,6 +1403,7 @@ describe('detect-silent-boom handler', () => {
         inserted: 1,
         anchorsFound: 1,
         anchorsMissing: 0,
+        anchorsNoCode: 0,
         anchorLookupFailures: 0,
         anchorLookupError: null,
       });
@@ -1422,11 +1470,17 @@ describe('detect-silent-boom handler', () => {
         mockSql.mock.invocationCallOrder[insertIdx]!,
       );
       expect(anchorFailedCaptures()).toHaveLength(0);
-      // Every alert found its anchor: no anchor-missing warning.
+      // Every alert found its anchor, and every anchor carried a trade
+      // code: neither warning is raised.
       expect(anchorMissingCaptures()).toHaveLength(0);
       expect(logger.warn).not.toHaveBeenCalledWith(
         expect.anything(),
         ANCHOR_MISSING_MSG,
+      );
+      expect(anchorNoCodeCaptures()).toHaveLength(0);
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        expect.anything(),
+        ANCHOR_NO_CODE_MSG,
       );
     });
 
@@ -1448,8 +1502,11 @@ describe('detect-silent-boom handler', () => {
         inserted: 4,
         anchorsFound: 3,
         anchorsMissing: 1,
+        anchorsNoCode: 0,
         anchorLookupFailures: 0,
       });
+      // Every anchor that was found carried a code: no no-code warning.
+      expect(anchorNoCodeCaptures()).toHaveLength(0);
 
       // R5: one call for the tick, one request per alert, keys unique.
       expect(mockLookupAnchorLegs).toHaveBeenCalledTimes(1);
@@ -1544,6 +1601,99 @@ describe('detect-silent-boom handler', () => {
         anchorsMissing: 1,
         anchorLookupFailures: 0,
       });
+      // A missing anchor is not a no-code anchor.
+      expect(anchorNoCodeCaptures()).toHaveLength(0);
+    });
+
+    it('warns once per run, counts anchorsNoCode in the run metadata and stays success when an anchor print carries no trade code', async () => {
+      answerAnchorsByChain({ [SNDK_CHAIN]: NO_CODE_ANCHOR });
+      queueOneSndkAlert(42);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._status).toBe(200);
+      // The anchor WAS found, so it is not counted as missing; the run is
+      // not degraded, so the status stays success.
+      expect(res._json).toMatchObject({
+        status: 'success',
+        inserted: 1,
+        anchorsFound: 1,
+        anchorsMissing: 0,
+        anchorsNoCode: 1,
+        anchorLookupFailures: 0,
+        anchorLookupError: null,
+      });
+      // The row keeps the print's id; only the kind stays NULL.
+      expect(
+        anchorBinds(extractInsertBinds(mockSql, 'silent_boom_alerts')),
+      ).toEqual({
+        ...ALL_NULL,
+        anchor_ws_trade_id: NO_CODE_ANCHOR.anchorWsTradeId,
+      });
+
+      const noCode = anchorNoCodeCaptures();
+      expect(noCode).toHaveLength(1);
+      expect(noCode[0]![1]).toEqual({
+        level: 'warning',
+        fingerprint: ['detect-silent-boom', 'anchor-no-trade-code'],
+        tags: {
+          'cron.job': 'detect-silent-boom',
+          'cron.anomaly': 'anchor-no-trade-code',
+        },
+        extra: { anchorsNoCode: 1, anchorsFound: 1 },
+      });
+      expect(logger.warn).toHaveBeenCalledWith(
+        { anchorsNoCode: 1, anchorsFound: 1 },
+        ANCHOR_NO_CODE_MSG,
+      );
+      // Neither of the other two anchor problems fired.
+      expect(anchorMissingCaptures()).toHaveLength(0);
+      expect(anchorFailedCaptures()).toHaveLength(0);
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(completedLog()).toMatchObject({
+        anchorsFound: 1,
+        anchorsMissing: 0,
+        anchorsNoCode: 1,
+      });
+
+      // Axiom: the count rides in `meta`, not in a new top-level column.
+      const payload = vi.mocked(reportCronRun).mock.calls[0]![1];
+      expect(payload).toMatchObject({ status: 'success', anchorsNoCode: 1 });
+      expect(AXIOM_TOP_LEVEL_KEYS.has('anchorsNoCode')).toBe(false);
+    });
+
+    it('counts no-code anchors apart from missing and coded ones, with one warning of each kind for the run', async () => {
+      answerAnchorsByChain({
+        SNDK260507C01175000: NO_CODE_ANCHOR,
+        SNDK260507C01176000: NO_CODE_ANCHOR,
+        SNDK260507C01177000: SINGLE_ANCHOR,
+        // SNDK260507C01178000: no anchor print in its window.
+      });
+      queueScanAndMacro(manyFireableSilentBoomStreams(4));
+      queueSilentBoomPerFireMocks(4, true);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'success',
+        inserted: 4,
+        anchorsFound: 3,
+        anchorsMissing: 1,
+        anchorsNoCode: 2,
+      });
+      const noCode = anchorNoCodeCaptures();
+      expect(noCode).toHaveLength(1);
+      expect(noCode[0]![1]).toMatchObject({
+        level: 'warning',
+        extra: { anchorsNoCode: 2, anchorsFound: 3 },
+      });
+      const missing = anchorMissingCaptures();
+      expect(missing).toHaveLength(1);
+      expect(missing[0]![1]).toMatchObject({
+        extra: { anchorsMissing: 1, anchorsFound: 3 },
+      });
     });
 
     it('still writes the alert with NULL anchor columns when the lookup fails, names anchor_legs.lookup_failed in Sentry and the log, and reports partial', async () => {
@@ -1585,11 +1735,13 @@ describe('detect-silent-boom handler', () => {
         expect.objectContaining({ err: broken, alerts: 1 }),
         expect.stringContaining(ANCHOR_FAILED),
       );
-      // A failed lookup is not reported as missing anchors.
+      // A failed lookup is not reported as missing or no-code anchors.
       expect(anchorMissingCaptures()).toHaveLength(0);
+      expect(anchorNoCodeCaptures()).toHaveLength(0);
       expect(completedLog()).toMatchObject({
         anchorsFound: 0,
         anchorsMissing: 0,
+        anchorsNoCode: 0,
         anchorLookupFailures: 1,
       });
 
@@ -1598,10 +1750,12 @@ describe('detect-silent-boom handler', () => {
       expect(payload).toMatchObject({
         status: 'partial',
         anchorLookupError: broken.message,
+        anchorsNoCode: 0,
       });
       for (const key of [
         'anchorsFound',
         'anchorsMissing',
+        'anchorsNoCode',
         'anchorLookupFailures',
         'anchorLookupError',
       ]) {
