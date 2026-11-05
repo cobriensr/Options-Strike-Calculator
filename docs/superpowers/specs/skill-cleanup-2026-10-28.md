@@ -22,7 +22,7 @@ Phases 1 to 7 are done (project skills: 103 → 51 after 3b): 7a (scripts), 7b (
 | 7a scripts (`review-summary`, `watch-deploy`) | done, reviewed, review fixes applied | `0e057ac2`, `775a0e8d`, fixes `544cfe87`, `95828a30` |
 | 7b agents (`implementer`, `verifier`) + CLAUDE.md brief line | done | local history `97f5225`; `122f0861` |
 | 7c status view (`scripts/session-status.mjs`: worktrees, branches, recent CI; prune's "safe to remove" checks shared) | done, delta review pass, pushed 2026-11-04 | `6b7a6e44`, `20449411`, `d0cdd23a`, `5ec41828`; follow-up round in the next row |
-| 7c-2 follow-up (Linux CI fix for the real-git fixtures, prune keeps a stopped revert or pick sequence, "candidate" means in prune's scope, review nits) | done | Linux CI fix `3ddd64fa`, then the round's own commits: `git log 3ddd64fa..main -- scripts/_lib/prune-worktrees.mjs` |
+| 7c-2 follow-up (Linux CI fix for the real-git fixtures, prune keeps a stopped revert or pick sequence, prune clears the node_modules junction `git worktree remove` leaves on Windows, "candidate" means in prune's scope, review nits) | done | Linux CI fix `3ddd64fa`, then the round's own commits: `git log 3ddd64fa..main -- scripts/_lib/prune-worktrees.mjs scripts/_lib/session-status.mjs` |
 | (side stream) cron monitor coverage | shipped 2026-10-29 | `58526e46`..`4bf97642`; local history `2df9154`; see `cron-monitor-coverage-2026-10-29.md` |
 | (side stream) E2E CI repair phase 2 | on main | `15db7163`..`d3b80398`; see `e2e-ci-repair-2026-10-26.md` |
 | (side stream) commit gate | shipped and active 2026-10-29 (`d45eaf6d`, `eaa89513`, `c3887206`; `core.hooksPath` set) | see `commit-gate-2026-10-28.md` |

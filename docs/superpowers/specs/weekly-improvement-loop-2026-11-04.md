@@ -1,6 +1,6 @@
 # Weekly improvement loop (2026-11-04)
 
-Phase 8 of `skill-cleanup-2026-10-28.md`. **Scope approved by the owner on 2026-11-04 (about 14:15 CT), with the default pick on all four open questions below.** It is built after the current queue empties: about 3.5 days over the 5 phases, one implementer stream.
+Phase 8 of `skill-cleanup-2026-10-28.md`. **Scope approved by the owner on 2026-11-04 (about 14:15 CT), with the default pick on all four decisions below.** It is built after the current queue empties: about 3.5 days over the 5 phases, one implementer stream.
 
 ## Goal
 
