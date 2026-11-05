@@ -52,11 +52,16 @@ export function addWorktree(repo, where, branch) {
 /**
  * Commit one file in `cwd`; returns the new HEAD SHA. Stages only that file,
  * so committing in the main worktree never picks up .worktrees/.
+ *
+ * Every fixture commit carries one date (see PINNED_COMMIT_DATE), so two
+ * commits with the same parent, file, body and `message` are the same commit.
+ * `message` defaults to the file name; pass a different one when a second
+ * commit on a parent adds the same file with the same body.
  */
-export function commitFile(cwd, file, body) {
+export function commitFile(cwd, file, body, message = file) {
   writeFileSync(path.join(cwd, file), body);
   git(cwd, 'add', '--', file);
-  git(cwd, 'commit', '-q', '-m', file);
+  git(cwd, 'commit', '-q', '-m', message);
   return git(cwd, 'rev-parse', 'HEAD');
 }
 

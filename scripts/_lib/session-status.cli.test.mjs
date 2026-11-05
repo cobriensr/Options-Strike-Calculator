@@ -173,9 +173,11 @@ describe('session-status CLI: a real repository', () => {
     commitFile(paused, 'later.txt', 'later\n');
 
     // feat/rebased lands on main as a different commit with the same patch:
-    // not an ancestor of origin/main, but merged all the same.
-    git(repo, 'cherry-pick', rebasedBranchTip);
-    git(repo, 'cherry-pick', partialFirst);
+    // not an ancestor of origin/main, but merged all the same. -x adds a line
+    // to the message: a pick onto the commit's own parent, with the same tree,
+    // author and date, would otherwise be the very same commit.
+    git(repo, 'cherry-pick', '-x', rebasedBranchTip);
+    git(repo, 'cherry-pick', '-x', partialFirst);
     git(repo, 'push', '-q', 'origin', 'main');
     git(repo, 'fetch', '-q', 'origin');
 

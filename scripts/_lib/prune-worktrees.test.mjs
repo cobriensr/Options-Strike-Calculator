@@ -253,9 +253,12 @@ describe('pruneWorktrees', () => {
     repo = initRepo(makeTempDir('prune-wt-'));
 
     // One commit, cherry-picked onto main: a new SHA with the same patch id.
+    // -x adds a line to the message. The pick has the same parent (main's
+    // tip), tree, author and date as the original, so without it git would
+    // make the same commit again, not a new one.
     wts.picked = addWorktree(repo, '.worktrees/picked', 'fix/picked');
     shas.picked = commitFile(wts.picked, 'picked.txt', 'picked\n');
-    git(repo, 'cherry-pick', shas.picked);
+    git(repo, 'cherry-pick', '-x', shas.picked);
 
     // A --no-ff merge whose merge commit adds a file of its own. Its side
     // commit is cherry-picked onto main, so `git cherry` (which skips merge
@@ -267,7 +270,7 @@ describe('pruneWorktrees', () => {
     git(wts.noff, 'merge', '-q', '--no-ff', '--no-commit', 'noff-side');
     commitFile(wts.noff, 'extra.txt', 'only in the merge commit\n');
     shas.noffMerge = git(wts.noff, 'rev-parse', 'HEAD');
-    git(repo, 'cherry-pick', side);
+    git(repo, 'cherry-pick', '-x', side);
 
     // No commits of its own: a worktree an agent created and never used.
     wts.empty = addWorktree(repo, '.worktrees/empty', 'fix/empty');
@@ -362,6 +365,11 @@ describe('pruneWorktrees', () => {
   it(
     'removes a worktree whose commit was cherry-picked onto main and deletes its branch',
     () => {
+      // Fixture check: the pick is a new commit, so this is the patch-id rule
+      // at work, not main already containing the commit.
+      expect(() =>
+        git(repo, 'merge-base', '--is-ancestor', shas.picked, 'main'),
+      ).toThrow();
       expect(results.get('picked')).toMatchObject({
         action: 'removed',
         branch: 'fix/picked',
@@ -430,7 +438,8 @@ describe('pruneWorktrees', () => {
   it('keeps a merged, clean worktree that has not been idle for MIN_IDLE_HOURS', () => {
     const result = results.get('recent');
     expect(result.action).toBe('kept');
-    expect(result.reason).toBe('idle 0.0h, under the 24h minimum');
+    // The fixture takes minutes on a loaded machine: 0.0h to 0.9h all count.
+    expect(result.reason).toMatch(/^idle 0\.\dh, under the 24h minimum$/);
     expect(existsSync(wts.recent)).toBe(true);
   });
 
@@ -678,10 +687,12 @@ describe('pruneWorktrees with an operation in progress', () => {
 
     // A merge stopped before its commit whose result equals HEAD: clean to
     // git status, with MERGE_HEAD in the admin dir. `side` adds x.txt with
-    // the same content main's commit has, so the merge changes nothing.
+    // the same content main's commit has, so the merge changes nothing. Its
+    // message differs from main's commit: same parent, file, body and message
+    // would be the same commit, and there would be nothing to merge at all.
     wts.merging = addWorktree(repo, '.worktrees/merging', 'fix/merging');
     git(wts.merging, 'checkout', '-q', '-b', 'side', 'HEAD~1');
-    commitFile(wts.merging, 'x.txt', 'x\n');
+    commitFile(wts.merging, 'x.txt', 'x\n', 'side adds x.txt');
     git(wts.merging, 'checkout', '-q', 'fix/merging');
     git(wts.merging, 'merge', '--no-commit', '--no-ff', 'side');
 
@@ -707,6 +718,9 @@ describe('pruneWorktrees with an operation in progress', () => {
       deletedBranchSha: expect.any(String),
     });
     for (const name of ['paused', 'bisecting', 'merging']) {
+      // git run in a removed worktree fails with ENOENT, which hides why:
+      // name the worktree instead.
+      expect(existsSync(wts[name]), `${name} was removed`).toBe(true);
       // Clean and merged: git itself sees nothing to keep.
       expect(git(wts[name], 'status', '--porcelain'), name).toBe('');
       expect(git(wts[name], 'cherry', 'main', 'HEAD'), name).toBe('');
