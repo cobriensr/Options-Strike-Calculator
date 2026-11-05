@@ -2,8 +2,9 @@
  * Shared fixtures for tests that run real git in throwaway repos under the OS
  * temp dir, with git config isolated from the developer's: the review-gate
  * tests (directly and through review-gate.fixtures.mjs), git-run.test.mjs,
- * and the prune-worktrees tests through prune-worktrees.fixtures.mjs. Not
- * itself a test file; vitest only collects *.test.mjs.
+ * and the prune-worktrees tests and session-status.cli.test.mjs through
+ * prune-worktrees.fixtures.mjs. Not itself a test file; vitest only collects
+ * *.test.mjs.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';

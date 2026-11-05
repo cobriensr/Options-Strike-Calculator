@@ -6,8 +6,9 @@
  * scratch repos with real git (an origin, a clone with linked worktrees in
  * each state the tags describe), with --no-ci so nothing reaches GitHub. The
  * collector's logic, with git faked, is in session-status.test.mjs; here the
- * checks it takes from prune-worktrees.mjs (idle time, docs/tmp scratch, a
- * stopped rebase, the current directory) run for real.
+ * scope test and checks it takes from prune-worktrees.mjs (under .worktrees/,
+ * idle time, docs/tmp scratch, a stopped rebase, the current directory) run
+ * for real.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -158,8 +159,11 @@ describe('session-status CLI: a real repository', () => {
     rmSync(gone, { recursive: true, force: true });
     addWorktree(repo, '.worktrees/locked', 'feat/locked');
     git(repo, 'worktree', 'lock', '--reason', 'on usb', '.worktrees/locked');
-    // Merged and clean, but only just made: prune would keep it.
-    addWorktree(repo, '.worktrees/fresh', 'feat/fresh');
+    // Merged and clean, but last active 3 hours ago: prune keeps it for 24.
+    const fresh = addWorktree(repo, '.worktrees/fresh', 'feat/fresh');
+    // Merged, clean and old (below), but outside .worktrees/: prune never
+    // checks or removes it.
+    const outside = addWorktree(repo, '../outside', 'feat/outside');
     // Merged, clean and old (below), but docs/tmp/ holds an ignored file.
     const scratch = addWorktree(repo, '.worktrees/scratch', 'feat/scratch');
     mkdirSync(path.join(scratch, 'docs', 'tmp'), { recursive: true });
@@ -187,7 +191,8 @@ describe('session-status CLI: a real repository', () => {
     pauseRebase(paused, 'origin/main');
 
     // Old enough for prune. The rest are fresh, or not clean, or not merged.
-    for (const wt of [rebased, detached, scratch, paused]) age(wt);
+    for (const wt of [rebased, detached, scratch, paused, outside]) age(wt);
+    age(fresh, 3);
 
     first = run(['--no-ci'], { cwd: repo });
   });
@@ -246,10 +251,16 @@ describe('session-status CLI: a real repository', () => {
     expect(cells[5]).toBe('ahead 2 (1 not in main)');
   });
 
-  it('keeps the merged tag but no candidate for a merged worktree that is only just made', () => {
-    expect(row(first.stdout, 'fresh')[5]).toMatch(
-      /^merged \(active (<1m|\d+m)\)$/,
+  it('keeps the merged tag but no candidate for a merged worktree that was active a few hours ago', () => {
+    expect(row(first.stdout, 'fresh')[5]).toBe('merged (active 3h)');
+  });
+
+  it('keeps the merged tag but no candidate for a merged, old worktree outside .worktrees/', () => {
+    // Named by its whole path, so found by its tag; its branch says which.
+    const held = worktreeRows(first.stdout).filter(
+      (cells) => cells[5] === 'merged (outside .worktrees/)',
     );
+    expect(held.map((cells) => cells[1])).toEqual(['feat/outside']);
   });
 
   it('keeps the merged tag but no candidate while an ignored file sits in docs/tmp/', () => {
@@ -287,9 +298,9 @@ describe('session-status CLI: a real repository', () => {
 
   it('lists the cleanup candidates last, and counts only those prune would remove', () => {
     const names = worktreeRows(first.stdout).map((cells) => cells[0]);
-    expect(names).toHaveLength(10);
+    expect(names).toHaveLength(11);
     expect(names.slice(-2).sort()).toEqual(['detached', 'rebased']);
-    expect(first.stdout).toContain('WORKTREES (10) - cleanup candidates: 2');
+    expect(first.stdout).toContain('WORKTREES (11) - cleanup candidates: 2');
   });
 
   it('agrees with `npm run worktrees:prune`: every plain merged row is one it would remove, and it keeps each held row for the reason shown', () => {
@@ -325,7 +336,7 @@ describe('session-status CLI: a real repository', () => {
     expect(inside.status).toBe(0);
     expect(row(inside.stdout, 'rebased')[5]).toBe('merged (current directory)');
     expect(row(inside.stdout, 'detached')[5]).toBe('merged');
-    expect(inside.stdout).toContain('WORKTREES (10) - cleanup candidates: 1');
+    expect(inside.stdout).toContain('WORKTREES (11) - cleanup candidates: 1');
   });
 
   it('reads the right repository when a git hook exports GIT_DIR and GIT_INDEX_FILE', () => {
@@ -344,14 +355,9 @@ describe('session-status CLI: a real repository', () => {
 
     expect(hook.stderr).toBe('');
     expect(hook.status).toBe(0);
-    // Not the age column, nor the minutes in "active 1m": both can tick over
-    // between the two runs.
+    // Not the age column: it can tick over between the two runs.
     const stable = (stdout) =>
-      worktreeRows(stdout).map((cells) =>
-        cells
-          .filter((_, i) => i !== 4)
-          .map((cell) => cell.replace(/active (<1m|\d+m)/, 'active N')),
-      );
+      worktreeRows(stdout).map((cells) => cells.filter((_, i) => i !== 4));
     expect(stable(hook.stdout)).toEqual(stable(first.stdout));
   });
 

@@ -1354,6 +1354,17 @@ describe('collectStatus: worktrees', () => {
     expect(row.error).toMatch(/bad revision/);
   });
 
+  it.each([['many'], ['']])(
+    'shows a branch whose merge-commit count is "%s", not a number, as error rather than merged',
+    async (output) => {
+      world.merges[sha(3)] = output;
+      const row = await rowOf('wip');
+      expect(row.tags).toEqual(['error']);
+      expect(row.error).toMatch(/unexpected output/);
+      expect(row.cleanup).toBe(false);
+    },
+  );
+
   it('shows a worktree whose git fails as error and still reports the others', async () => {
     world.status[`${ROOT}/.worktrees/dirty`] = new Failure(
       'fatal: bad index file',
@@ -1460,30 +1471,45 @@ describe('collectStatus: cleanup candidates', () => {
     );
   });
 
+  it('keeps a merged worktree outside .worktrees/ out of the candidates, since prune never touches it', async () => {
+    expect(await rowOf(ELSEWHERE)).toMatchObject({
+      tags: ['merged (outside .worktrees/)'],
+      cleanup: false,
+    });
+    // The scope test comes first: prune's checks are not run for it.
+    expect(vi.mocked(checkInUse).mock.calls.map(([e]) => e.path)).not.toContain(
+      ELSEWHERE,
+    );
+    expect(vi.mocked(checkSettled).mock.calls.map(([p]) => p)).not.toContain(
+      ELSEWHERE,
+    );
+  });
+
   it('counts only the candidates, and sorts the held ones with the active rows', async () => {
     world.settled[REBASED] = { keep: 'idle 1.0h', kind: 'idle', idle: 1 };
     const report = await collectStatus(OPTIONS);
     const candidates = report.worktrees.filter((w) => w.cleanup);
-    expect(candidates.map((w) => w.name).sort()).toEqual([
-      'F:/other/place',
-      'detached',
-    ]);
-    expect(report.worktrees.slice(-2).every((w) => w.cleanup)).toBe(true);
+    expect(candidates.map((w) => w.name)).toEqual(['detached']);
+    expect(report.worktrees.at(-1)).toMatchObject({
+      name: 'detached',
+      cleanup: true,
+    });
     expect(report.worktrees.map((w) => w.name)).toContain('rebased');
     expect(formatReport(report)).toContain(
-      'WORKTREES (9) - cleanup candidates: 2',
+      'WORKTREES (9) - cleanup candidates: 1',
     );
     expect(formatReport(report)).toMatch(/rebased .* merged \(active 1h\)\n/);
   });
 
   it('asks prune only about a worktree that is otherwise a candidate, once, and not to read its status again', async () => {
     await collectStatus(OPTIONS);
-    // rebased, detached and the one elsewhere are merged and clean; every
-    // other row, and the main checkout, is dirty, ahead, locked, gone or
-    // unborn, or is the main one.
+    // rebased and detached are merged and clean, and under .worktrees/;
+    // every other row, and the main checkout, is dirty, ahead, locked, gone
+    // or unborn, is the main one, or (the one elsewhere) is outside
+    // .worktrees/, which prune never checks.
     const settled = vi.mocked(checkSettled).mock.calls;
     expect(settled.map(([wtPath]) => wtPath).sort()).toEqual(
-      [REBASED, DETACHED, ELSEWHERE].sort(),
+      [REBASED, DETACHED].sort(),
     );
     for (const [, options] of settled) {
       expect(options).toEqual({ statusKnownClean: true });
@@ -1493,13 +1519,13 @@ describe('collectStatus: cleanup candidates', () => {
         .mocked(checkInUse)
         .mock.calls.map(([entry]) => entry.path)
         .sort(),
-    ).toEqual([REBASED, DETACHED, ELSEWHERE].sort());
+    ).toEqual([REBASED, DETACHED].sort());
   });
 
   it('asks about the directory the command runs in', async () => {
     await collectStatus(OPTIONS);
     const asked = vi.mocked(checkInUse).mock.calls;
-    expect(asked).toHaveLength(3);
+    expect(asked).toHaveLength(2);
     for (const [, cwd] of asked) expect(cwd).toBe(process.cwd());
   });
 
@@ -1693,6 +1719,14 @@ describe('collectStatus: read-only', () => {
     for (const args of statuses)
       expect(args).toContain('--untracked-files=normal');
   });
+
+  it('counts submodule changes in every git status, as prune does, whatever the repository config says', async () => {
+    await collectStatus(OPTIONS);
+    const statuses = gitCalls().filter((a) => subcommand(a) === 'status');
+    expect(statuses.length).toBeGreaterThan(5);
+    for (const args of statuses)
+      expect(args).toContain('--ignore-submodules=none');
+  });
 });
 
 describe('collectStatus: the environment of git', () => {
@@ -1780,12 +1814,14 @@ describe('collectStatus: how stale origin/main is', () => {
 
 describe('collectStatus: git is not usable here', () => {
   it('throws SetupError when git is not installed', async () => {
+    const spawnFailure = ENOENT();
     vi.mocked(execFile).mockImplementation((file, args, options, callback) => {
-      callback(ENOENT(), '', '');
+      callback(spawnFailure, '', '');
     });
     const error = await collectStatus(OPTIONS).catch((e) => e);
     expect(error).toBeInstanceOf(SetupError);
     expect(error.message).toMatch(/git.*not installed/);
+    expect(error.cause).toBe(spawnFailure);
   });
 
   it('throws SetupError outside a git repository', async () => {

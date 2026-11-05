@@ -1,10 +1,11 @@
 /**
  * Fixtures for the prune-worktrees tests (prune-worktrees.test.mjs and
- * prune-worktrees.races.test.mjs): scratch repos with linked worktrees under
- * .worktrees/, commits, and backdated idle clocks. The generic temp-repo
- * helpers live in scratch-git.fixtures.mjs; they are re-exported here, so
- * the prune tests import every fixture from this one file. Not itself a test
- * file; vitest only collects *.test.mjs.
+ * prune-worktrees.races.test.mjs) and for session-status.cli.test.mjs, which
+ * runs the same prune checks for real: scratch repos with linked worktrees
+ * under .worktrees/, commits, and backdated idle clocks. The generic
+ * temp-repo helpers live in scratch-git.fixtures.mjs; they are re-exported
+ * here, so those tests import every fixture from this one file. Not itself a
+ * test file; vitest only collects *.test.mjs.
  */
 import { mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import path from 'node:path';

@@ -22,14 +22,15 @@
  * commits, which can carry conflict resolutions); and the tree is clean.
  * Ancestry alone would call every rebased branch unmerged.
  *
- * "Cleanup candidate" is more: the worktree must also pass the checks
- * `npm run worktrees:prune` applies before it removes one. They are
- * prune-worktrees.mjs's own `checkInUse` and `checkSettled`, not copies, so
- * "safe to remove" has one definition: idle for 24 hours, no stopped rebase,
- * merge, cherry-pick or bisect, no ignored scratch files in docs/tmp/, and
- * the current directory not inside it. A merged worktree that fails one is
- * tagged `merged (why)`. One difference remains: prune compares with the
- * local main and this module with origin/main.
+ * "Cleanup candidate" is more: the worktree must also be one
+ * `npm run worktrees:prune` would remove. That is prune-worktrees.mjs's own
+ * scope test (`pruneName`: under <repo>/.worktrees/) and its `checkInUse` and
+ * `checkSettled`, not copies, so "safe to remove" has one definition: idle for
+ * 24 hours, no stopped rebase, merge, cherry-pick, revert or bisect, no
+ * ignored scratch files in docs/tmp/, and the current directory not inside
+ * it. A merged worktree that fails one is tagged `merged (why)`. One
+ * difference remains: prune compares with the local main and this module with
+ * origin/main.
  */
 import { execFile } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
@@ -40,6 +41,7 @@ import {
   checkSettled,
   gitEnv,
   parseWorktreeList,
+  pruneName,
 } from './prune-worktrees.mjs';
 import {
   UsageError,
@@ -602,7 +604,11 @@ function git(args) {
         if (!error) {
           resolve(String(stdout));
         } else if (error.code === 'ENOENT') {
-          reject(new SetupError('git is not installed or not on PATH'));
+          reject(
+            new SetupError('git is not installed or not on PATH', {
+              cause: error,
+            }),
+          );
         } else {
           reject(new GitError(args, String(stderr).trim() || error.message));
         }
@@ -767,7 +773,11 @@ function makeLookups(times, branchCounts) {
   };
 }
 
-/** `git status --porcelain` in a checkout; read-only (see the module doc). */
+/**
+ * `git status --porcelain` in a checkout; read-only (see the module doc). The
+ * explicit untracked and submodule modes are prune's: they override any config
+ * that would hide changes.
+ */
 function statusCount(wtPath) {
   return git([
     '--no-optional-locks',
@@ -776,6 +786,7 @@ function statusCount(wtPath) {
     'status',
     '--porcelain',
     '--untracked-files=normal',
+    '--ignore-submodules=none',
   ]).then(countLines);
 }
 
@@ -791,11 +802,12 @@ async function headFacts(head, lookups) {
 
 /**
  * Why prune would keep a merged, clean worktree, or null when it would
- * remove it: prune-worktrees.mjs's own checks (see the module doc). They are
- * synchronous git calls, made only for the few worktrees that get this far.
- * `git status` is not run again: the caller read it.
+ * remove it: prune-worktrees.mjs's own scope test and checks (see the module
+ * doc). The checks are synchronous git calls, made only for the few worktrees
+ * that get this far. `git status` is not run again: the caller read it.
  */
-function holdFor(entry) {
+function holdFor(entry, mainPath) {
+  if (pruneName(mainPath, entry.path) === null) return 'outside .worktrees/';
   const inUse = checkInUse(entry, process.cwd());
   const verdict =
     inUse.keep === null
@@ -855,7 +867,7 @@ async function inspectCheckout(entry, mainPath, lookups, linked) {
   let verdict = tagWorktree(facts);
   if (linked && verdict.cleanup) {
     try {
-      verdict = tagWorktree({ ...facts, hold: holdFor(entry) });
+      verdict = tagWorktree({ ...facts, hold: holdFor(entry, mainPath) });
     } catch (err) {
       row.error = reason(err);
       verdict = tagWorktree({ ...facts, error: row.error });
