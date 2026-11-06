@@ -12,9 +12,9 @@ without failing. The session guard below catches that.
 
 No test may connect to or write to a real database (owner rule, 2026-11-04;
 spec: docs/superpowers/specs/tests-no-db-2026-11-04.md). The src modules
-read DATABASE_URL from os.environ, from the repo-root .env FILE
-(utils.load_env, which overrides os.environ) and from .env.local
-(calibration), so unsetting env vars alone cannot keep a run off a database.
+read DATABASE_URL from os.environ and from the repo-root .env FILE
+(utils.load_env, which overrides os.environ), so unsetting env vars alone
+cannot keep a run off a database.
 The block is therefore the connect call itself: this file replaces
 psycopg2._connect (and psycopg 3's connect, Connection.connect and
 AsyncConnection.connect, and asyncpg.connect / create_pool, when those are
