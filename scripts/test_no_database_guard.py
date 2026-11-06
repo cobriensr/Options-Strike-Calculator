@@ -404,11 +404,12 @@ def test_a_swallowed_store_call_fails_the_session_and_names_both_rules(tmp_path)
 
 
 def test_the_env_file_loader_is_wrapped_once_where_the_module_exists(tmp_path):
-    # The scripts tree has no `utils` module, so the wrapper has nothing to
-    # wrap here (the ml twin proves it against the real one). The probe brings
-    # a stand-in `utils` whose load_env returns every store name next to a
-    # harmless one and a database URL, the way ml's does when the repo-root
-    # .env holds them.
+    # No `utils` is importable when scripts/conftest.py loads (ml/src joins
+    # sys.path only later, from online_ticker_update), so the wrapper does
+    # nothing in this suite itself; the ml twin proves it against the real
+    # one. The probe brings a stand-in `utils` whose load_env returns every
+    # store name next to a harmless one and a database URL, the way ml's does
+    # when the repo-root .env holds them.
     stand_in = f"""
         def load_env():
             env = {{name: 'fake' for name in {list(_STORE_ENV_NAMES)!r}}}

@@ -17,8 +17,9 @@ _connect. The production stores follow the same design: botocore.client.
 BaseClient._make_api_call, where every boto3 call to R2 or S3 ends, is replaced
 by a stub with its own message ("tests must not reach a production store"),
 reads included, when botocore imports. The guard section also wraps ml's
-utils.load_env where a module of that name exists (it does not in this tree,
-so the wrapper is a no-op here; ml/conftest.py has the effect).
+utils.load_env if such a module is importable when this file loads. In this
+suite it is not (ml/src joins sys.path only later, from online_ticker_update),
+so the wrapper does nothing here and ml/conftest.py has the effect.
 
 Run the suite the way the test docstrings say, from the repo root:
 
@@ -141,8 +142,12 @@ _install_db_block()
 # it, so those credentials are closed at the source: the loader drops the
 # store names. The database names stay in what it returns. The connect call is
 # their block, and a loader that returned no URL would end get_connection in
-# sys.exit before the attempt is recorded. A suite whose tree has no such
-# module has nothing to wrap.
+# sys.exit before the attempt is recorded. The wrap happens here, at conftest
+# import, so it reaches only a module that is importable by then. ml's is. The
+# scripts suite puts ml/src on sys.path later (online_ticker_update does, and
+# lottery_scoring then imports the real utils), so there it stays unwrapped.
+# That leaves no R2 hole: utils/r2.py reads os.environ, which the fixture
+# below clears.
 _ENV_FILE_LOADERS = (("utils", "load_env"),)
 
 

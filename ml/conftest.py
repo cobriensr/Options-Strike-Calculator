@@ -155,8 +155,12 @@ _install_db_block()
 # it, so those credentials are closed at the source: the loader drops the
 # store names. The database names stay in what it returns. The connect call is
 # their block, and a loader that returned no URL would end get_connection in
-# sys.exit before the attempt is recorded. A suite whose tree has no such
-# module has nothing to wrap.
+# sys.exit before the attempt is recorded. The wrap happens here, at conftest
+# import, so it reaches only a module that is importable by then. ml's is. The
+# scripts suite puts ml/src on sys.path later (online_ticker_update does, and
+# lottery_scoring then imports the real utils), so there it stays unwrapped.
+# That leaves no R2 hole: utils/r2.py reads os.environ, which the fixture
+# below clears.
 _ENV_FILE_LOADERS = (("utils", "load_env"),)
 
 
