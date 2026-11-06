@@ -80,6 +80,21 @@ A TypeScript script in `scripts/` that turns the Phase 1 file into writes. It re
 | `ws_gamma_setup_fires.es_basis_change_5m` | 248 rows | Recompute the column. List the fires whose PCS Monday gate result flips; don't delete or add fires (the detector is paused) |
 | `periscope_grades.trade_sims` | 77 rows (05-07, 05-08) | Re-run `scripts/grade-periscope-day.mjs` for both dates |
 | `analyses.full_response` | 52 rows | Not recomputable (LLM output). Recorded here only |
+| `lessons` / similar analyses | 35 lessons trace to window reviews; 6 rest on the bad futures context | **DONE 2026-11-06 18:30Z (owner OK)**, details below |
+
+**Lessons cleanup, done 2026-11-06 18:30Z (owner OK; investigation in `docs/tmp/es-contract-month-2026-11-06/d-lessons.md`):**
+- Archived (`status='archived'`, reversible): L229, L235, L236, L239, L243, L249.
+- Restored L211, the clean 04-02 predecessor of L229: `active`, `superseded_by`/`superseded_at` cleared.
+- Cleared `analysis_embedding` on every window entry analysis that saw bad futures inputs, so similar-analysis retrieval no longer returns them:
+  - 217, 224, 232, 244 (18:30Z);
+  - 210, 237, 254, 258, 260, 261 (18:45Z, owner OK, second batch).
+  - The window's only retrievable entry rows left are 248, 249, 250 and 252 (04-14..04-17, clean inputs).
+- Backups, with the vectors included:
+  - `docs/tmp/es-contract-month-2026-11-06/e/backup-lessons-analyses-20261106T183009Z.jsonl` (11 rows);
+  - `e/backup-analyses-batch2-20261106T184524Z.jsonl` (6 rows).
+  - Scripts: `e/retire_lessons.py`, `e/unembed_more.py`.
+- **Caveat:** `scripts/backfill-analysis-embeddings.mjs` without `--force` re-embeds any row whose embedding is NULL. Running it would put these 10 back. No cron does this.
+- Side finding, not fixed (the owner reworks the lessons code): `getActiveLessons()` orders by `source_date` with no tie-break, so which tied lessons fill the last of the 20 slots can change between runs. No new lessons have been curated since 2026-04-20.
 
 Same pattern as Phase 2: dry run, backup, owner OK, apply, verify.
 
