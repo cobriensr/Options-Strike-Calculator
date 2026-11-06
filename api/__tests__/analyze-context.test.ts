@@ -1414,6 +1414,23 @@ describe('formatEconomicCalendarForClaude', () => {
     expect(lines[1]).toContain('PMI');
   });
 
+  it('renders a FED event (speech, minutes) as HIGH, not MEDIUM', () => {
+    const rows = [
+      {
+        event_name: 'Fed speech: Fed governor Michelle Bowman',
+        event_time: '2026-04-10T17:00:00.000Z',
+        event_type: 'FED',
+        forecast: null,
+        previous: null,
+        reported_period: null,
+      },
+    ];
+    const result = formatEconomicCalendarForClaude(rows);
+    expect(result).toContain('🔴');
+    expect(result).toContain('[HIGH]');
+    expect(result).not.toContain('[MEDIUM]');
+  });
+
   it('recognizes all high-severity types: FOMC, CPI, PCE, JOBS, GDP', () => {
     const highTypes = ['FOMC', 'CPI', 'PCE', 'JOBS', 'GDP'];
     for (const eventType of highTypes) {

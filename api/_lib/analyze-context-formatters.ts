@@ -37,7 +37,16 @@ export interface VolRealizedRow {
   iv_rank: NumericColumn;
 }
 
-const HIGH_SEVERITY_TYPES = new Set(['FOMC', 'CPI', 'PCE', 'JOBS', 'GDP']);
+// FED (speeches, testimony, minutes, Beige Book) stays [HIGH]: analyze Rule 12
+// hard-exits on Fed speeches after 1 PM ET (owner decision 2026-11-06).
+const HIGH_SEVERITY_TYPES = new Set([
+  'FOMC',
+  'FED',
+  'CPI',
+  'PCE',
+  'JOBS',
+  'GDP',
+]);
 
 const FLOW_SOURCE_LABELS: Record<string, string> = {
   market_tide: 'Market Tide',
