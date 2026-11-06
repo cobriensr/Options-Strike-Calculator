@@ -134,6 +134,20 @@ def test_a_steady_trend_flags_nothing():
     assert not minutes.front_absent.any()
 
 
+def test_a_sharp_rally_below_half_a_carry_is_not_front_absent():
+    # The shape of NQ 2026-06-10 12:30Z (the 08:30 ET data): the front jumped
+    # ~100 pts for one minute, more than G but well under one carry (~280).
+    # The front did print, so the minute must keep its bar.
+    levels = [(28740.0 + i, 29020.0 + i) for i in range(5)]
+    levels += [(28845.0, 29125.0)]
+    levels += [(28745.0 + i, 29025.0 + i) for i in range(5)]
+    minutes = fcr.rebuild_from_ticks(series(levels), NQ)
+    jump = minutes.iloc[5]
+    assert jump.level - jump.ref > NQ.gap
+    assert not minutes.front_absent.any()
+    assert NQ.carry / 2 > jump.level - jump.ref
+
+
 def test_an_isolated_minute_is_kept_without_a_reference():
     minutes = fcr.rebuild_from_ticks(series([(None, 7060.0)]), ES)
     assert not minutes.front_absent.any()
@@ -159,7 +173,7 @@ def test_the_gap_is_per_root():
     assert (es.clusters, es.high, es.volume) == (2, 20000.25, 2)
     assert (nq.clusters, nq.high, nq.volume) == (1, 20050.25, 4)
     assert ES.gap == 25.0
-    assert NQ.gap > ES.gap
+    assert NQ.gap == 87.5  # the middle of the flat 75..100 band (team-lead ruling)
 
 
 def test_a_gap_of_exactly_g_does_not_split():
@@ -211,15 +225,25 @@ def test_time_order_ties_break_by_seq(shuffle):
 
 
 def test_bars_output_schema():
-    minutes = fcr.rebuild_from_ticks(series([(7000.0, 7058.0)] * 3), ES)
+    minutes = fcr.rebuild_from_ticks(series([(7000.0, 7058.0), (7001.0, None)]), ES)
     bars = fcr.bars_output(minutes, "ES", "ticks")
     assert list(bars.columns) == list(fcr.OUTPUT_COLUMNS)
     assert str(bars.ts.dtype) == "datetime64[us, UTC]"
     for col in ("open", "high", "low", "close"):
         assert bars[col].dtype == "float64"
     assert bars.volume.dtype == "int64"
+    # Phase 2 updates only the minutes the ticks show as mixed (n_clusters > 1).
+    assert bars.n_clusters.dtype == "int64"
+    assert bars.n_clusters.tolist() == [2, 1]
     assert set(bars.symbol) == {"ES"}
     assert set(bars.source) == {"ticks"}
+
+
+def test_archive_bars_count_one_cluster():
+    front = front_minutes([("2026-04-08 14:30", 1, 2, 0, 1, 100)])
+    bars = fcr.bars_output(fcr.archive_minutes(front), "ES", "archive")
+    assert bars.n_clusters.tolist() == [1]
+    assert bars.n_clusters.dtype == "int64"
 
 
 def archive_bars(rows: list[tuple[str, str, float, int]]):
@@ -403,28 +427,42 @@ def test_per_day_summary_splits_by_utc_day():
     assert pd.isna(summary.min_split_gap.iloc[1])
 
 
-def test_archive_summary_leaves_cluster_and_print_counts_empty():
+def test_archive_summary_has_one_contract_and_no_print_counts():
     front = front_minutes([("2026-04-08 14:30", 1, 2, 0, 1, 100)])
     summary = fcr.per_day_summary(fcr.archive_minutes(front), "ES", "archive")
     row = summary.iloc[0]
     assert (row.bars, row.front_absent, row.source) == (1, 0, "archive")
-    assert pd.isna(row.multi_cluster)
+    assert row.multi_cluster == 0
     assert pd.isna(row.prints)
+
+
+def test_archive_trades_reject_an_unknown_clock():
+    with pytest.raises(ValueError, match="clock"):
+        fcr.read_archive_trades(
+            fcr.Path("unused"), ES, fcr.GROUND_TRUTH_SPAN, clock="ts_out"
+        )
 
 
 # ── main: the readers are replaced at the module boundary ───────────────────
 
 
-def gate_table(es_exact: int = 1000, nq_exact: int = 1000) -> pd.DataFrame:
+def gate_table(
+    es_exact: int = 1000, nq_exact: int = 1000, clock: str = "ts_recv"
+) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "root": ["ES", "NQ"],
             "day": ["2026-04-08", "2026-04-08"],
+            "clock": clock,
             "minutes": [1000, 1000],
             "exact_ohlc": [es_exact, nq_exact],
             "volume_within_1pct": [1000, 1000],
         }
     )
+
+
+def both_clocks(recv: pd.DataFrame, event: pd.DataFrame) -> pd.DataFrame:
+    return pd.concat([recv, event.assign(clock="ts_event")], ignore_index=True)
 
 
 def must_not_run(*_args, **_kwargs):
@@ -441,9 +479,12 @@ def run_main(tmp_path, monkeypatch, gate: pd.DataFrame) -> int:
 def test_a_failed_gate_writes_the_table_and_no_bars(tmp_path, monkeypatch):
     monkeypatch.setattr(fcr, "run_archive_span", must_not_run)
     monkeypatch.setattr(fcr, "run_tick_span", must_not_run)
-    assert run_main(tmp_path, monkeypatch, gate_table(es_exact=998)) == 1
+    gate = both_clocks(gate_table(es_exact=998), gate_table())
+    assert run_main(tmp_path, monkeypatch, gate) == 1
     out = tmp_path / "out"
-    assert len(pd.read_csv(out / "ground_truth.csv")) == 2
+    written = pd.read_csv(out / "ground_truth.csv")
+    assert sorted(written.clock.unique()) == ["ts_event", "ts_recv"]
+    assert len(written) == 4
     assert not (out / "rebuilt_bars.parquet").exists()
     assert not (out / "per_day.csv").exists()
 
@@ -464,7 +505,9 @@ def test_a_passing_run_writes_every_output(tmp_path, monkeypatch):
 
     monkeypatch.setattr(fcr, "run_archive_span", archive_span)
     monkeypatch.setattr(fcr, "run_tick_span", tick_span)
-    assert run_main(tmp_path, monkeypatch, gate_table()) == 0
+    # The gate scores the ts_recv rows; the ts_event rows are on record only.
+    gate = both_clocks(gate_table(), gate_table(es_exact=990, nq_exact=990))
+    assert run_main(tmp_path, monkeypatch, gate) == 0
 
     out = tmp_path / "out"
     bars = pd.read_parquet(out / "rebuilt_bars.parquet")
@@ -475,6 +518,11 @@ def test_a_passing_run_writes_every_output(tmp_path, monkeypatch):
         ("ES", "ticks"): 10,
         ("NQ", "archive"): 1,
         ("NQ", "ticks"): 10,
+    }
+    clusters = bars.groupby("source")["n_clusters"].unique().to_dict()
+    assert {k: v.tolist() for k, v in clusters.items()} == {
+        "archive": [1],
+        "ticks": [2],
     }
     absent = pd.read_csv(out / "front_absent.csv")
     assert absent.symbol.tolist() == ["ES", "NQ"]

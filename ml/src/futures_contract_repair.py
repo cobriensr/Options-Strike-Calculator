@@ -33,35 +33,62 @@ Back-month-only minutes: when the front month didn't print, the lowest cluster
 is the next contract, about one carry above the front. Each minute's kept level
 (the median of its kept prints) is compared with the median kept level of its
 neighbours: the nearest 5 minutes with prints on each side, within 30 minutes.
-A minute more than G above that reference is `front_absent`: it gets no bar
-and is listed in front_absent.csv, so Phase 2 can delete that row. The
-reference uses only the neighbours' own stateless picks, never an earlier
-decision, so one wrong minute can't latch the series onto another contract; it
-is one value of up to ten in a median. A minute with no neighbour in the window
-has no reference and keeps its pick.
+A minute more than half a carry above that reference sits closer to the next
+contract than to the front. It is `front_absent`: it gets no bar and is listed
+in front_absent.csv, so Phase 2 can delete that row. The reference uses only
+the neighbours' own stateless picks, never an earlier decision, so one wrong
+minute can't latch the series onto another contract; it is one value of up to
+ten in a median. A minute with no neighbour in the window has no reference and
+keeps its pick.
+
+Carry is the next contract's premium over the front, as seen in 5-second slices
+of the tick span where both printed: ES 55..62 (60 used), NQ 264..300 (280
+used, the spec's ~277). The half-carry threshold (ES 30, NQ 140) replaced G
+after the first tick run. With G as the threshold, two sharp NQ rallies in the
+front itself were flagged: 06-10 12:30Z, the 08:30 ET data, ~91 above its
+neighbours, and 06-11 17:30Z, ~119 above. Neither minute had a back-month-only
+print, and a real back-only minute sits about 280 above.
 
 G per root (measured on the ground-truth run below: 13,680 minutes per root).
 G has to clear three numbers. On one side are the widest step between adjacent
 kept prices, and the furthest a minute's level sat above its neighbours'
-median (G is also the front_absent threshold). On the other side is the
-narrowest step that split the front from the next contract.
+median. On the other side is the narrowest step that split the front from the
+next contract.
 
   * ES 25 points, from the investigation (q16 / q18). Widest kept step 12.0,
     level at most 13.5 above the neighbours' median, narrowest split 26.25
     (0.1% quantile 30.6). G = 15, 20 and 25 give the same matches.
-  * NQ 75 points. Widest kept step 25.75 (one minute above 20), level at most
-    60.3 above the neighbours' median (99.9th percentile 35.9), narrowest split
-    104.5 (0.1% quantile 142.3; carry 188..266, median 229). 75 sits between
-    60.3 and 104.5. The match count is flat for G = 75..100. Below 75, good
-    minutes get flagged front_absent: 1 at G = 60, 3 at 50, 7 at 40, 31 at 30.
-    Over the tick span the carry is about 277, which widens the split side.
+  * NQ 87.5 points (team-lead ruling: the middle of the flat 75..100 band seen
+    while G was also the front_absent threshold). Widest kept step 25.75 (one
+    minute above 20), level at most 60.3 above the neighbours' median (99.9th
+    percentile 35.9), narrowest split 104.5 (0.1% quantile 142.3; carry
+    188..266, median 229). On the tick span: widest kept step 16.0 outside the
+    one mixed minute, narrowest split 87.75 (06-11 17:28Z). The NQ tick bars
+    are identical at G = 60 and 87.5.
+
+  Sweep with the half-carry absent rule (no minute is flagged at any G):
+  exact-OHLC minutes out of 13,680, by archive clock.
+
+      G      ES ts_recv  ES ts_event | NQ ts_recv  NQ ts_event
+      15     13,677      13,660      |
+      20     13,677      13,660      |
+      25     13,677      13,660      |
+      30     13,674      13,657      | 13,680      13,638
+      40     13,647      13,631      | 13,680      13,638
+      50 .. 100                      | 13,680      13,638
+      110, 125                       | 13,679      13,637
+
+  While G was also the absent threshold, NQ below 75 lost good minutes to
+  false flags: 1 at G = 60, 3 at 50, 7 at 40, 31 at 30.
 
 Minutes: a print belongs to the minute of its `ts`. The tick table's `ts` is
-Databento's ts_event, the only clock the sidecar stored. Databento built the
-archive's `ohlcv_1m` by ts_recv instead. A print whose two clocks straddle a
-minute boundary lands one minute earlier here, which moves that minute's close
-and the next minute's open by about a tick. That happened to 43 ES and 48 NQ
-trades in 04-06..04-17.
+Databento's ts_event, the only clock the sidecar stored, so tick-span bars use
+ts_event. Databento built the archive's `ohlcv_1m` by ts_recv instead. A print
+whose two clocks straddle a minute boundary lands one minute earlier here,
+which moves that minute's close and the next minute's open by about a tick.
+That happened to 43 ES and 48 NQ trades in 04-06..04-17. The output's
+`n_clusters` lets Phase 2 rewrite only mixed minutes, so a clean minute keeps
+Databento's own bar and the boundary difference never reaches the table.
 
 Usage (from the repo root; the archive lives in the main checkout only):
 
@@ -71,23 +98,26 @@ Usage (from the repo root; the archive lives in the main checkout only):
 Outputs (--out-dir, default ml/data/futures-contract-repair/, gitignored):
 
   * rebuilt_bars.parquet: symbol, ts (UTC bar-open minute), open, high, low,
-    close (float64, on the 0.25 tick), volume (int64), source (archive|ticks).
-    Only minutes the source covers: a minute with no ticks gets no row.
+    close (float64, on the 0.25 tick), volume (int64), n_clusters (int64: the
+    contracts the minute's prints held, 1 on the archive), source
+    (archive|ticks). Only minutes the source covers: a minute with no ticks
+    gets no row.
   * per_day.csv: per root, UTC day and source: the bars built, front_absent
     minutes, multi-cluster minutes, prints, the widest bar, the first and last
     minute, and G's margins (the widest kept step, the narrowest split).
   * front_absent.csv: symbol, ts of each tick minute where only a back month
     printed.
-  * ground_truth.csv: the gate below, per root and day.
+  * ground_truth.csv: the gate below, per root, day and archive clock.
 
 The ground-truth gate runs first: the cluster rule on the archive's TBBO trades
 for 04-06..04-17 with the symbol dropped (every month merged, as in the ticks),
 compared with the archive's front-month bars. It needs, per root, an exact
 open/high/low/close on at least 99.9% of minutes and volume within 1% on at
-least 99.9%. Below that the run stops and writes no bars. The trades are
-bucketed by ts_event, as the ticks are. That scores ES 99.854% and NQ 99.693%
-exact, so the gate fails on the clock difference above. Bucketed by ts_recv
-(the rule alone), it scores ES 99.978% and NQ 100%.
+least 99.9%. Below that the run stops and writes no bars. The gate buckets the
+trades by ts_recv, the archive bars' own clock, with ties in file order, so it
+tests the cluster rule alone (team-lead ruling, 2026-11-06). The ts_event rows
+are written next to it to record the clock effect. By ts_event, the rule scores
+about 99.85% (ES) and 99.69% (NQ).
 
 DATABASE_URL comes from --env-file, else this checkout's .env.local, else the
 main checkout's. It is never printed.
@@ -125,12 +155,13 @@ class Root:
     symbol: str  # the root as futures_bars stores it
     front: str  # the front-month contract for the whole window
     gap: float  # G: a larger gap between adjacent prices splits contracts
+    carry: float  # the next contract's premium; half of it marks front_absent
     tick: float = 0.25
 
 
 ROOTS: dict[str, Root] = {
-    "ES": Root("ES", "ESM6", 25.0),
-    "NQ": Root("NQ", "NQM6", 75.0),
+    "ES": Root("ES", "ESM6", 25.0, 60.0),
+    "NQ": Root("NQ", "NQM6", 87.5, 280.0),
 }
 
 # [start, end) in UTC; each end is one minute past the last bar-open minute.
@@ -151,8 +182,21 @@ GATE_RATE = 0.999
 VOLUME_TOLERANCE = 0.01
 NEIGHBOURS = 5  # per side
 NEIGHBOUR_WINDOW_MINUTES = 30
+# The archive clock the gate scores; the other one is written for the record.
+GATE_CLOCK = "ts_recv"
+ARCHIVE_CLOCKS = ("ts_recv", "ts_event")
 
-OUTPUT_COLUMNS = ("symbol", "ts", "open", "high", "low", "close", "volume", "source")
+OUTPUT_COLUMNS = (
+    "symbol",
+    "ts",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "n_clusters",
+    "source",
+)
 MINUTE_COLUMNS = (
     "ts",
     "open",
@@ -237,8 +281,9 @@ def build_minutes(ticks: pd.DataFrame, cfg: Root) -> pd.DataFrame:
 def mark_front_absent(minutes: pd.DataFrame, cfg: Root) -> pd.DataFrame:
     """Add `ref` (the neighbours' median level) and `front_absent`.
 
-    A minute is front_absent when its level sits more than G above `ref`: the
-    only contract that printed was a back month. See the module docstring.
+    A minute is front_absent when its level sits more than half a carry above
+    `ref`: the only contract that printed was a back month. See the module
+    docstring.
     """
     out = minutes.sort_values("ts", ignore_index=True)
     n = len(out)
@@ -259,7 +304,7 @@ def mark_front_absent(minutes: pd.DataFrame, cfg: Root) -> pd.DataFrame:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN rows: no ref
         ref = np.nanmedian(np.column_stack(columns), axis=1)
-    return out.assign(ref=ref, front_absent=(level - ref) > cfg.gap)
+    return out.assign(ref=ref, front_absent=(level - ref) > cfg.carry / 2)
 
 
 def rebuild_from_ticks(ticks: pd.DataFrame, cfg: Root) -> pd.DataFrame:
@@ -268,7 +313,12 @@ def rebuild_from_ticks(ticks: pd.DataFrame, cfg: Root) -> pd.DataFrame:
 
 
 def bars_output(minutes: pd.DataFrame, symbol: str, source: str) -> pd.DataFrame:
-    """The rebuilt_bars.parquet rows: every minute that has a front-month bar."""
+    """The rebuilt_bars.parquet rows: every minute that has a front-month bar.
+
+    n_clusters is how many contracts the minute's prints held (1 on the
+    archive): Phase 2 rewrites only mixed minutes, or rows far off the rebuild,
+    so a clean minute keeps Databento's own ts_recv-built bar.
+    """
     kept = minutes[~minutes["front_absent"].astype(bool)]
     out = pd.DataFrame(
         {
@@ -279,6 +329,7 @@ def bars_output(minutes: pd.DataFrame, symbol: str, source: str) -> pd.DataFrame
             "low": kept["low"].astype("float64"),
             "close": kept["close"].astype("float64"),
             "volume": kept["volume"].astype("int64"),
+            "n_clusters": kept["clusters"].astype("int64"),
             "source": source,
         }
     )
@@ -288,7 +339,8 @@ def bars_output(minutes: pd.DataFrame, symbol: str, source: str) -> pd.DataFrame
 def per_day_summary(minutes: pd.DataFrame, symbol: str, source: str) -> pd.DataFrame:
     """Per UTC day: bars built, front_absent, multi-cluster minutes, prints.
 
-    Archive minutes carry no cluster or print counts; those columns stay empty.
+    Archive minutes are one contract each and carry no print counts, so their
+    prints column stays empty.
     """
     absent = minutes["front_absent"].astype(bool)
     frame = pd.DataFrame(
@@ -296,7 +348,7 @@ def per_day_summary(minutes: pd.DataFrame, symbol: str, source: str) -> pd.DataF
             "day": minutes["ts"].dt.strftime("%Y-%m-%d"),
             "bars": (~absent).astype("int64"),
             "front_absent": absent.astype("int64"),
-            "multi_cluster": (minutes["clusters"].astype("Int64") > 1).astype("Int64"),
+            "multi_cluster": (minutes["clusters"] > 1).astype("int64"),
             "prints": minutes["prints"].astype("Int64"),
             "max_range": (minutes["high"] - minutes["low"]).where(~absent),
             "ts": minutes["ts"],
@@ -307,7 +359,7 @@ def per_day_summary(minutes: pd.DataFrame, symbol: str, source: str) -> pd.DataF
         {
             "bars": grouped["bars"].sum(),
             "front_absent": grouped["front_absent"].sum(),
-            "multi_cluster": grouped["multi_cluster"].sum(min_count=1),
+            "multi_cluster": grouped["multi_cluster"].sum(),
             "prints": grouped["prints"].sum(min_count=1),
             "max_range": grouped["max_range"].max(),
             "first_minute": grouped["ts"].min(),
@@ -372,10 +424,10 @@ def archive_front_bars(bars: pd.DataFrame, cfg: Root) -> pd.DataFrame:
 
 
 def archive_minutes(front: pd.DataFrame) -> pd.DataFrame:
-    """Archive bars in the minutes shape (no cluster or print counts)."""
+    """Archive bars in the minutes shape: one contract each, no print counts."""
     return front.assign(
         level=np.nan,
-        clusters=pd.array([pd.NA] * len(front), dtype="Int64"),
+        clusters=1,
         prints=pd.array([pd.NA] * len(front), dtype="Int64"),
         kept_gap=np.nan,
         split_gap=np.nan,
@@ -501,20 +553,28 @@ def read_archive_bars(
 
 
 def read_archive_trades(
-    archive: Path, cfg: Root, span: tuple[pd.Timestamp, pd.Timestamp]
+    archive: Path,
+    cfg: Root,
+    span: tuple[pd.Timestamp, pd.Timestamp],
+    clock: str = GATE_CLOCK,
 ) -> pd.DataFrame:
     """The root's outright TBBO trades in [span), symbol dropped (ts, seq, price, size).
 
-    seq is the file row number: the file is in ts_event order, and DuckDB's
-    microsecond timestamps tie where Databento's nanoseconds didn't.
+    `clock` picks the timestamp that places a trade in its minute: ts_recv, as
+    Databento built the archive bars, or ts_event, as the ticks carry it.
+    seq is the file row number: the file is in order of both clocks, and
+    DuckDB's microsecond timestamps tie where Databento's nanoseconds didn't.
     """
+    if clock not in ARCHIVE_CLOCKS:
+        raise ValueError(f"unknown clock {clock!r}; want one of {ARCHIVE_CLOCKS}")
     path = (archive / "tbbo" / "year=2026" / "part.parquet").as_posix()
     con = _duckdb()
     try:
+        # `clock` is one of two column names, checked above.
         frame = con.execute(
-            """SELECT ts_event AS ts, file_row_number AS seq, price, size
+            f"""SELECT {clock} AS ts, file_row_number AS seq, price, size
                FROM read_parquet(?, file_row_number = true)
-               WHERE ts_event >= ? AND ts_event < ? AND regexp_full_match(symbol, ?)""",
+               WHERE {clock} >= ? AND {clock} < ? AND regexp_full_match(symbol, ?)""",
             [
                 path,
                 span[0].to_pydatetime(),
@@ -542,27 +602,29 @@ _SELECT_TICKS = (
 
 
 def connect_readonly(env_file: Path):
-    """A read-only, autocommit session with a statement timeout. Never prints the URL."""
+    """A connection holding one open read-only transaction with a statement timeout.
+
+    Use it for one read, then close it (which rolls back). Neon's pooler runs
+    in transaction mode, so a session-level SET may land on another server
+    connection, and it refuses statement_timeout as a startup option.
+    Everything therefore lives in one transaction: the session default
+    (startup option), psycopg2's BEGIN READ ONLY, SET LOCAL statement_timeout,
+    and a check that the transaction really is read-only. Never prints the URL.
+    """
     import psycopg2
 
     url = parse_env_file(env_file).get("DATABASE_URL")
     if not url:
         raise RuntimeError(f"no DATABASE_URL in {env_file}")
-    con = psycopg2.connect(
-        url,
-        options=(
-            "-c default_transaction_read_only=on "
-            f"-c statement_timeout={_STATEMENT_TIMEOUT_MS}"
-        ),
-    )
-    con.set_session(readonly=True, autocommit=True)
+    con = psycopg2.connect(url, options="-c default_transaction_read_only=on")
+    con.set_session(readonly=True, autocommit=False)
     with con.cursor() as cur:
         cur.execute("SET default_transaction_read_only = on")
-        cur.execute(f"SET statement_timeout = {_STATEMENT_TIMEOUT_MS}")
-        cur.execute("SHOW default_transaction_read_only")
+        cur.execute(f"SET LOCAL statement_timeout = {_STATEMENT_TIMEOUT_MS}")
+        cur.execute("SHOW transaction_read_only")
         if cur.fetchone()[0] != "on":
             con.close()
-            raise RuntimeError("the session did not turn read-only; not reading")
+            raise RuntimeError("the transaction is not read-only; not reading")
     return con
 
 
@@ -606,16 +668,25 @@ def _log(message: str) -> None:
 
 
 def run_ground_truth(archive: Path) -> pd.DataFrame:
-    """The gate's per-day table for both roots."""
+    """The per-day table for both roots under both archive clocks.
+
+    The gate scores the GATE_CLOCK rows; the others record the clock effect.
+    """
     tables = []
     for cfg in ROOTS.values():
-        trades = read_archive_trades(archive, cfg, GROUND_TRUTH_SPAN)
         front = archive_front_bars(
             read_archive_bars(archive, cfg, GROUND_TRUTH_SPAN), cfg
         )
-        rebuilt = rebuild_from_ticks(trades, cfg)
-        tables.append(compare_with_archive(rebuilt, front, cfg.symbol))
-        _log(f"ground truth {cfg.symbol}: {len(trades):,} trades, {len(front):,} bars")
+        for clock in ARCHIVE_CLOCKS:
+            trades = read_archive_trades(archive, cfg, GROUND_TRUTH_SPAN, clock)
+            rebuilt = rebuild_from_ticks(trades, cfg)
+            table = compare_with_archive(rebuilt, front, cfg.symbol)
+            table.insert(2, "clock", clock)
+            tables.append(table)
+            _log(
+                f"ground truth {cfg.symbol} by {clock}: {len(trades):,} trades, "
+                f"{len(front):,} bars"
+            )
     return pd.concat(tables, ignore_index=True)
 
 
@@ -682,13 +753,17 @@ def main(argv: list[str] | None = None) -> int:
 
     gt = run_ground_truth(args.archive)
     _write_csv(args.out_dir / "ground_truth.csv", gt)
-    gate = gate_result(gt)
-    for root, res in gate.items():
-        _log(
-            f"gate {root}: {res['exact_ohlc']:,}/{res['minutes']:,} exact OHLC "
-            f"({res['exact_rate']:.4%}), {res['volume_within_1pct']:,} volume within "
-            f"1% ({res['volume_rate']:.4%}) -> {'PASS' if res['passed'] else 'FAIL'}"
-        )
+    for clock in ARCHIVE_CLOCKS:
+        scored = "gate" if clock == GATE_CLOCK else "record"
+        for root, res in gate_result(gt[gt["clock"] == clock]).items():
+            verdict = "PASS" if res["passed"] else "FAIL"
+            _log(
+                f"{scored} {root} by {clock}: {res['exact_ohlc']:,}/"
+                f"{res['minutes']:,} exact OHLC ({res['exact_rate']:.4%}), "
+                f"{res['volume_within_1pct']:,} volume within 1% "
+                f"({res['volume_rate']:.4%}) -> {verdict}"
+            )
+    gate = gate_result(gt[gt["clock"] == GATE_CLOCK])
     if not all(res["passed"] for res in gate.values()) or set(gate) != set(ROOTS):
         print("ground-truth gate failed; no bars written", file=sys.stderr)
         return 1
