@@ -737,46 +737,48 @@ async function buildActualDirectionMap(startIso, endIso) {
       `${SIDECAR_URL}/archive/day-summary-batch?from=${cur}&to=${stop}`,
       { headers: sidecarArchiveHeaders() },
     );
-    if (res.ok) {
-      const body = await res.json();
-      for (const r of body.rows ?? []) {
-        // Prefer structured fields if the sidecar emits them (new format);
-        // fall back to regex-parsed summary text (legacy format).
-        const hasStructured =
-          typeof r.open === 'number' && typeof r.range === 'number';
-        let o;
-        let rng;
-        let d;
-        let upExc = null;
-        let downExc = null;
-        if (hasStructured) {
-          o = r.open;
-          rng = r.range;
-          d =
-            typeof r.close === 'number'
-              ? r.close - r.open
-              : parseCloseDelta(r.summary);
-          if (typeof r.up_excursion === 'number') upExc = r.up_excursion;
-          if (typeof r.down_excursion === 'number') downExc = r.down_excursion;
-        } else {
-          o = parseOpen(r.summary);
-          rng = parseRange(r.summary);
-          d = parseCloseDelta(r.summary);
-        }
-        if (Number.isFinite(d)) {
-          const cls = classifyDay(d, rng);
-          map.set(r.date, {
-            dir: d > 0 ? 'UP' : 'DOWN',
-            delta: d,
-            open: Number.isFinite(o) ? o : null,
-            range: Number.isFinite(rng) ? rng : null,
-            upExcursion: Number.isFinite(upExc) ? upExc : null,
-            downExcursion: Number.isFinite(downExc) ? downExc : null,
-            trendScore: cls.trendScore,
-            isChop: cls.isChop,
-            isTrend: cls.isTrend,
-          });
-        }
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`sidecar ${res.status}: ${text.slice(0, 200)}`);
+    }
+    const body = await res.json();
+    for (const r of body.rows ?? []) {
+      // Prefer structured fields if the sidecar emits them (new format);
+      // fall back to regex-parsed summary text (legacy format).
+      const hasStructured =
+        typeof r.open === 'number' && typeof r.range === 'number';
+      let o;
+      let rng;
+      let d;
+      let upExc = null;
+      let downExc = null;
+      if (hasStructured) {
+        o = r.open;
+        rng = r.range;
+        d =
+          typeof r.close === 'number'
+            ? r.close - r.open
+            : parseCloseDelta(r.summary);
+        if (typeof r.up_excursion === 'number') upExc = r.up_excursion;
+        if (typeof r.down_excursion === 'number') downExc = r.down_excursion;
+      } else {
+        o = parseOpen(r.summary);
+        rng = parseRange(r.summary);
+        d = parseCloseDelta(r.summary);
+      }
+      if (Number.isFinite(d)) {
+        const cls = classifyDay(d, rng);
+        map.set(r.date, {
+          dir: d > 0 ? 'UP' : 'DOWN',
+          delta: d,
+          open: Number.isFinite(o) ? o : null,
+          range: Number.isFinite(rng) ? rng : null,
+          upExcursion: Number.isFinite(upExc) ? upExc : null,
+          downExcursion: Number.isFinite(downExc) ? downExc : null,
+          trendScore: cls.trendScore,
+          isChop: cls.isChop,
+          isTrend: cls.isTrend,
+        });
       }
     }
     if (stop === endIso) break;

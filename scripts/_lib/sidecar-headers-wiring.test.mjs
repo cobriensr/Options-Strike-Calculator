@@ -17,6 +17,8 @@ describe('scripts that call the sidecar archive', () => {
   // is still caught.
   const ARCHIVE_CALL = /\$\{\w+\}\/archive\//g;
   const HEADERS_ARG = /headers: sidecarArchiveHeaders\(\)/g;
+  // A 401 or 503 chunk must stop the run, not be skipped.
+  const THROWS_ON_NON_2XX = /throw new Error\(`sidecar \$\{res\.status\}/g;
 
   const callers = readdirSync(scriptsDir)
     .filter((name) => /\.(mjs|mts|ts|js)$/.test(name))
@@ -54,6 +56,16 @@ describe('scripts that call the sidecar archive', () => {
       expect(source.match(HEADERS_ARG)?.length ?? 0).toBeGreaterThanOrEqual(
         source.match(ARCHIVE_CALL).length,
       );
+    },
+  );
+
+  it.each(callers.map(({ name }) => [name]))(
+    '%s throws on a non-2xx sidecar response',
+    (name) => {
+      const source = callers.find((c) => c.name === name).source;
+      expect(
+        source.match(THROWS_ON_NON_2XX)?.length ?? 0,
+      ).toBeGreaterThanOrEqual(source.match(ARCHIVE_CALL).length);
     },
   );
 });
