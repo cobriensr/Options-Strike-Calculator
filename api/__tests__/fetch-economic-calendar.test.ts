@@ -459,6 +459,41 @@ describe('fetch-economic-calendar handler', () => {
     expect(logger.warn).toHaveBeenCalledTimes(1);
   });
 
+  it('stores two events with the same name at different times', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+
+    // A name alone is not an event: the table's unique key is (date, name,
+    // time), and the Fed speaks more than once a day. UW also lists every
+    // row twice, so each speech appears twice here and is stored once.
+    const morning = makeCalendarEvent({
+      event: 'Fed speech',
+      time: '2026-03-25T13:30:00Z',
+    });
+    const afternoon = makeCalendarEvent({
+      event: 'Fed speech',
+      time: '2026-03-25T19:00:00Z',
+    });
+    stubFetch([morning, afternoon, { ...morning }, { ...afternoon }]);
+
+    const res = await runCron();
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      eventsStored: 2,
+      events: ['Fed speech', 'Fed speech'],
+    });
+    // One bulk insert; each 7-column tuple is date, name, time, type, ...
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params).toHaveLength(14);
+    expect([params[2], params[9]]).toEqual([
+      '2026-03-25T13:30:00Z',
+      '2026-03-25T19:00:00Z',
+    ]);
+    expect([params[1], params[8]]).toEqual(['Fed speech', 'Fed speech']);
+  });
+
   it('reports error and stores nothing when every event has a bad time', async () => {
     process.env.UW_API_KEY = 'uwkey';
 
@@ -558,6 +593,7 @@ describe('fetch-economic-calendar handler', () => {
       'fetch',
       vi.fn().mockResolvedValue({
         ok: true,
+        status: 200,
         json: async () => ({ error: 'upstream hiccup' }),
       }),
     );
@@ -573,6 +609,8 @@ describe('fetch-economic-calendar handler', () => {
       }),
     );
     expect(mockQuery).not.toHaveBeenCalled();
+    // A malformed body is not transient: it must not be retried.
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
   });
 
   it('fails the run when the data field is not an array', async () => {
@@ -581,6 +619,7 @@ describe('fetch-economic-calendar handler', () => {
       'fetch',
       vi.fn().mockResolvedValue({
         ok: true,
+        status: 200,
         json: async () => ({ data: null }),
       }),
     );
@@ -593,6 +632,7 @@ describe('fetch-economic-calendar handler', () => {
         message: expect.stringContaining('no data array'),
       }),
     );
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
   });
 
   it('fails the run when a 2xx response body is not JSON', async () => {
@@ -601,6 +641,7 @@ describe('fetch-economic-calendar handler', () => {
       'fetch',
       vi.fn().mockResolvedValue({
         ok: true,
+        status: 200,
         json: () => Promise.reject(new SyntaxError('Unexpected token <')),
       }),
     );
@@ -614,5 +655,6 @@ describe('fetch-economic-calendar handler', () => {
       expect.any(SyntaxError),
     );
     expect(mockQuery).not.toHaveBeenCalled();
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
   });
 });
