@@ -63,6 +63,9 @@ jobs:
             # Listing ci.yml means an edit to a job's definition runs that job.
             ml:
               - 'ml/**'
+              # The root scripts/ tests run in this job too (see "Scripts
+              # tests" below), so a change to them or to their conftest runs it.
+              - 'scripts/**'
               - '.github/workflows/ci.yml'
             sidecar:
               - 'sidecar/**'
@@ -195,6 +198,15 @@ jobs:
       # write mode, which would repair drift on the runner and pass.
       - name: Format check
         run: cd ml && python -m ruff format --check .
+
+      # The root scripts/ tests carry their own copy of the no-database guard
+      # (scripts/conftest.py), and nothing else in CI runs it.
+      # scripts/test_guard_twins.py fails when it drifts from ml/conftest.py.
+      # Run from the repo root so scripts/conftest.py loads, not ml/'s. Every
+      # import these tests need is in ml/requirements.txt; the websockets that
+      # scripts/ws-canary/test_canary.py imports arrives through yfinance.
+      - name: Scripts tests
+        run: python -m pytest scripts/test_*.py scripts/ws-canary/test_canary.py -q
 
       - name: Lint & Tests
         run: cd ml && make review
