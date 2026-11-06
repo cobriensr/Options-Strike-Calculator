@@ -32,8 +32,8 @@ import {
   detectChainFires,
   enrichFires,
   type LotteryFireRecord,
-  type OptionTradeTick,
 } from '../_lib/lottery-finder.js';
+import { scanLotteryTicks } from '../_lib/lottery-tick-scan.js';
 import {
   computeLotteryScoreV2,
   LOTTERY_TIER_THRESHOLDS_V2,
@@ -107,10 +107,6 @@ const CANDLE_FETCH_DEADLINE_MS = 5_000;
 // keeps running on Neon, retries included; the breaker stops a second one.
 const FLOW_SERIES_DEADLINE_MS = 5_000;
 
-// 7-minute scan window — 5-min v4 window + 2-min slack so a slow cron
-// tick can't drop a trigger that landed at the start of its window.
-const SCAN_WINDOW_MIN = 7;
-
 // Per-chain print floor — matches the Python p14.py MIN_PRINTS / 14
 // scaling for a 7-min slice. The detector also gates on cntWindowMin
 // (≥5 in the rolling window) but we filter at the SQL level too so the
@@ -134,44 +130,6 @@ const CLUSTER_BONUS_LARGE = 1; // cluster_size 5+ (signal dilutes)
 
 type DbNumeric = string | number;
 type DbNullableNumeric = DbNumeric | null;
-type DbTimestamp = string | Date;
-type DbSide = 'ask' | 'bid' | 'mid' | 'no_side';
-
-interface TickRow {
-  ticker: string;
-  option_chain: string;
-  option_type: 'C' | 'P';
-  strike: DbNumeric;
-  // expiry is selected as `expiry::text` so the wire value is always a
-  // YYYY-MM-DD string, bypassing any driver-side Date<->TIMESTAMPTZ
-  // round-trip that could shift the date by a TZ offset.
-  expiry: string;
-  executed_at: DbTimestamp;
-  price: DbNumeric;
-  size: number;
-  underlying_price: DbNullableNumeric;
-  side: DbSide;
-  implied_volatility: DbNullableNumeric;
-  delta: DbNullableNumeric;
-  // Gamma is extracted from raw_payload JSONB at SELECT time —
-  // ws_option_trades' typed columns only carry implied_volatility and
-  // delta; the full UW payload (which includes gamma) lives in
-  // raw_payload. Migration #168 added the storage column on
-  // lottery_finder_fires; this is the read side.
-  gamma: DbNullableNumeric;
-  open_interest: number | null;
-}
-
-interface ChainGroup {
-  ticker: string;
-  optionChain: string;
-  optionType: 'C' | 'P';
-  strike: number;
-  // YYYY-MM-DD string (read from SQL as ::text — see TickRow.expiry).
-  expiry: string;
-  ticks: OptionTradeTick[];
-  oi: number;
-}
 
 interface FlowMacroRow {
   source: string;
@@ -266,15 +224,24 @@ export default withCronInstrumentation(
   'detect-lottery-fires',
   async (ctx): Promise<CronResult> => {
     const runStartedAt = performance.now();
+    // The one instant this run counts every time bound from: the tick window,
+    // the seed lookback and both Take-It lookbacks. Captured once, before any
+    // query goes out, and bound into each as a parameter, so the database's
+    // NOW() is read nowhere and the run is internally consistent. A replay
+    // supplies its own simulated instant here (plan 2026-10-29, B1).
+    const scanEnd = new Date();
+    const scanEndIso = scanEnd.toISOString();
     const db = getDb();
 
     // Where this run's time goes, in ms, reported as metadata.timingsMs and so
     // in Axiom `meta` (an object value is never a top-level column: read it
     // with `parse_json(meta).timingsMs`). Each stage is its own start-to-end
     // wall time, measured around the existing code:
-    //   tickScan        the tick queries, three hash partitions run in
-    //                   parallel (Promise.all), so the slowest, not their sum
-    //   seeds           the cooldown seed query (0 when no chain qualifies)
+    //   tickScan        the 7 one-minute slice queries, run in parallel, and
+    //                   any split of a slice that Neon refused as too large:
+    //                   the slowest slice, not their sum
+    //   seeds           the cooldown seed query. It starts with the scan, so
+    //                   it runs (and has a time) even when no chain qualifies
     //   takeitPrefetch  loadTakeitDetectContext. The win-rate load it joins
     //                   starts before the scan and runs in the background, so
     //                   only the part still pending at the join is counted
@@ -288,10 +255,10 @@ export default withCronInstrumentation(
     //   tierMonitor     the post-loop feed-tier query
     //   total           handler start to the end, including untimed glue
     //                   such as grouping rows
-    // Today the stages run one after another, so they nearly sum to total.
-    // Phase B1 runs the Take-It prefetch and seeds in parallel with the scan:
-    // each then still reports its own duration, they overlap, and the stages
-    // no longer sum to total.
+    // tickScan, seeds and takeitPrefetch run together (since B1): each keeps
+    // its own duration, they overlap, and the stages no longer sum to total,
+    // which counts the slowest of the three once. The rest run one after
+    // another.
     const stageMs = {
       tickScan: 0,
       seeds: 0,
@@ -303,15 +270,32 @@ export default withCronInstrumentation(
       candles: 0,
       tierMonitor: 0,
     };
+    // Runs `work` and records its start-to-end wall time as stageMs[stage],
+    // on a rejection too: a failing dependency must not read as a fast one.
+    const timed = async <T>(
+      stage: keyof typeof stageMs,
+      work: () => Promise<T>,
+    ): Promise<T> => {
+      const startedAt = performance.now();
+      try {
+        return await work();
+      } finally {
+        stageMs[stage] = msSince(startedAt);
+      }
+    };
 
     // Mean of daily win-rates (PIT-correct: only strictly-earlier dates)
     // per ticker, a Take-It input. A parallel seq scan of the whole table
     // (~5 s idle), and its answer only changes with the ET date, so it is
-    // loaded once per ET day and shared across runs. Started here, before
-    // the tick scan, so a cold load (the day's first run on an instance)
-    // has the whole setup phase to finish before the 5 s Take-It prefetch
-    // asks for it. Not awaited: the cache handles a rejection, and the
-    // prefetch below joins the load or retries it if this one failed.
+    // loaded once per ET day and shared across runs. Started here, first,
+    // ahead of the scan: the Take-It prefetch below now starts with the scan
+    // and joins this load, so it has only the prefetch's own 5 s deadline to
+    // finish, no longer the scan and seed time on top. The pre-open runs
+    // (08:25–08:30 CT) wait for it (see the empty-scan branch), which warms
+    // the cache; an instance that first runs after the open pays a cold load
+    // on its first run of the ET day and can report a Take-It timeout then.
+    // Not awaited: the cache handles a rejection, and the prefetch below
+    // joins the load or retries it if this one failed.
     const loadPriorWinRates = async (
       beforeDate: string,
     ): Promise<PriorWinRateRow[]> =>
@@ -333,56 +317,129 @@ export default withCronInstrumentation(
       loadPriorWinRates,
     );
 
-    // Pull every tick in the scan window, ordered for chain-grouping.
-    // expiry is cast to ::text so the wire value is a stable YYYY-MM-DD
-    // string — bypasses any driver-side Date<->TZ round-trip that could
-    // shift the date by an offset.
+    // Take-It prefetch failure, set by the helper's callback (best-effort:
+    // the helper gives the prefetch 5 s and on any failure returns null, so
+    // takeit_prob stays NULL, the heuristic INSERT still lands, and it tells
+    // us why through the callback).
+    let takeitPrefetchFailure = null as TakeitPrefetchFailure | null;
+
+    // ── Setup: three independent reads, started together ───────────────
+    // Nothing here needs another's answer, so the run waits for the slowest
+    // instead of their sum.
     //
-    // Hash-partitioned into TICK_QUERY_BATCHES parallel queries by
-    // ticker. The single-shot SELECT used to hit Neon's HTTP 64MB
-    // response cap during the 8:30-9:00 CT volume spike — see
-    // SENTRY-EMERALD-DESERT-CB (2026-05-22). hashtext is deterministic
-    // so every chain lands in exactly one batch; cross-batch ordering
-    // doesn't matter because the downstream chain-keyed Map only
-    // requires executed_at ordering WITHIN each chain, which the
-    // per-batch ORDER BY preserves. Gamma extracted from raw_payload
-    // JSONB (migration #168) — uw-stream only promotes delta to a
-    // typed column; NULLIF guards against UW's literal empty-string
-    // payloads (~0.3%) before the ::numeric cast.
+    // 1. The tick window, 7 one-minute slices read once (lottery-tick-scan.ts;
+    //    it replaced three hash partitions that each scanned the whole
+    //    window). withDbRetry covers transient Neon HTTP failures inside it
+    //    (SENTRY-EMERALD-DESERT-8X, 2026-05-18, 2h Neon blip that silently
+    //    zeroed out hours 18-20 UTC), and a slice Neon refuses as too large
+    //    is split in half (SENTRY-EMERALD-DESERT-CB, 2026-05-22).
+    const scanPromise = timed('tickScan', () => scanLotteryTicks(db, scanEnd));
+
+    // 2. The cooldown seed: every chain's latest fire in the last
+    //    PRIOR_FIRE_LOOKBACK_MIN minutes, so successive cron runs don't
+    //    re-qualify the next tick within the 5-min window. Without this, the
+    //    in-memory cooldown in detectChainFires resets each invocation and
+    //    the same logical trigger emits 2-7 rows with slightly later
+    //    trigger_time_ct values — bypassing the unique index. It can't wait
+    //    for the scan to learn which chains qualify, so it asks for all of
+    //    them (a handful of rows) and the run keeps the eligible ones below.
+    //    The `date` bound is the leading column of
+    //    lottery_finder_fires_date_ts_idx (date DESC, trigger_time_ct DESC):
+    //    a two-day range (yesterday covers a window that crosses ET
+    //    midnight), then the time bound inside it.
     //
-    // withDbRetry covers transient Neon HTTP failures (ECONNRESET /
-    // fetch failed / socket hang up) — see SENTRY-EMERALD-DESERT-8X
-    // (2026-05-18, 2h Neon blip that silently zeroed out hours 18-20
-    // UTC). 10s per-attempt timeout matches the secondary
-    // lottery_finder_fires query below.
-    const TICK_QUERY_BATCHES = 3;
-    const tickScanStartedAt = performance.now();
-    const tickBatches = await Promise.all(
-      Array.from({ length: TICK_QUERY_BATCHES }, (_, batchIdx) =>
-        withDbRetry(
+    //    A failure is held, not thrown: it only matters if some chain turns
+    //    out to need a seed (see below), as when the query ran after the scan
+    //    and only for eligible chains.
+    const seedsPromise = timed(
+      'seeds',
+      async () =>
+        (await withDbRetry(
           () => db`
             SELECT
-              ticker, option_chain, option_type, strike, expiry::text AS expiry,
-              executed_at, price, size, underlying_price, side,
-              implied_volatility, delta,
-              NULLIF(raw_payload->>'gamma', '')::numeric AS gamma,
-              open_interest
-            FROM ws_option_trades
-            WHERE executed_at >= NOW() - (${SCAN_WINDOW_MIN}::int * INTERVAL '1 minute')
-              AND canceled = FALSE
-              AND price > 0
-              AND mod(abs(hashtextextended(ticker, 0)), ${TICK_QUERY_BATCHES}::int) = ${batchIdx}::int
-            ORDER BY option_chain, executed_at ASC
+              option_chain_id,
+              EXTRACT(EPOCH FROM MAX(trigger_time_ct)) * 1000 AS last_ms
+            FROM lottery_finder_fires
+            WHERE date >= ${ctx.today}::date - 1
+              AND trigger_time_ct >= ${scanEndIso}::timestamptz - (${PRIOR_FIRE_LOOKBACK_MIN}::int * INTERVAL '1 minute')
+            GROUP BY option_chain_id
           `,
           2,
           10_000,
-        ),
+        )) as { option_chain_id: string; last_ms: DbNullableNumeric }[],
+    ).then(
+      (rows) => ({ ok: true as const, rows }),
+      (err: unknown) => ({ ok: false as const, err }),
+    );
+
+    // 3. The Take-It bundle + sequential context: two recent-fire queries
+    //    plus the win-rate day cache (started at the top of the run), once
+    //    per cron tick.
+    //
+    //    The two recent-fire lookbacks (35 and 10 min) carry a `date` bound
+    //    too: it is the leading column of the (date, trigger_time_ct) and
+    //    (date, bucket_ct) indexes, so the scan is a two-day range instead of
+    //    the whole index (planner cost ~41,500 → ~190, 2026-10-28). That
+    //    makes them sub-second, so each gets one retry for a Neon blip (after
+    //    a 1 s backoff). No per-attempt cap: the 5 s prefetch deadline bounds
+    //    the total, and a cap would turn a slow success into a failure plus a
+    //    second, uncancelled copy of the query on Neon. Yesterday is included
+    //    so a lookback that crosses ET midnight still sees its fires.
+    const takeitPromise = timed('takeitPrefetch', () =>
+      loadTakeitDetectContext(
+        'lottery',
+        {
+          fetchRecentSameType: async (lookbackMin) =>
+            (await withDbRetry(
+              () => db`
+                SELECT trigger_time_ct AS fire_time, underlying_symbol, option_type
+                FROM lottery_finder_fires
+                WHERE date >= ${ctx.today}::date - 1
+                  AND trigger_time_ct >= ${scanEndIso}::timestamptz - (${lookbackMin}::int * INTERVAL '1 minute')
+              `,
+              1,
+            )) as RecentFireRow[],
+          // Pulls underlying_symbol + option_type too so the same row set
+          // powers both the chain-keyed cofire map AND the sibling-chain
+          // (ticker+dir) cofire map. One round-trip.
+          fetchRecentOtherTypeByChain: async (lookbackMin) =>
+            (await withDbRetry(
+              () => db`
+                SELECT
+                  option_chain_id,
+                  underlying_symbol,
+                  option_type,
+                  bucket_ct AS fire_time
+                FROM silent_boom_alerts
+                WHERE date >= ${ctx.today}::date - 1
+                  AND bucket_ct >= ${scanEndIso}::timestamptz - (${lookbackMin}::int * INTERVAL '1 minute')
+              `,
+              1,
+            )) as RecentCofireRow[],
+          // Joins the load started at the top of the run, or retries it if
+          // that one already failed (see loadPriorWinRates).
+          fetchPriorSessionWinRateByTicker: () =>
+            priorSessionWinRatesForDay('lottery', ctx.today, loadPriorWinRates),
+        },
+        (failure) => {
+          takeitPrefetchFailure = failure;
+        },
       ),
     );
-    stageMs.tickScan = msSince(tickScanStartedAt);
-    const rows = tickBatches.flat() as TickRow[];
 
-    if (rows.length === 0) {
+    // All three are in flight before the first await, so a rejection from
+    // any can't go unhandled: Promise.all subscribes to each. The seed
+    // promise never rejects (held above) and the helper never throws; a
+    // failed scan fails the run.
+    const [scan, seeds, takeitCtx] = await Promise.all([
+      scanPromise,
+      seedsPromise,
+      takeitPromise,
+    ]);
+    const { groups } = scan;
+    const scanned = scan.scanned;
+
+    if (scanned === 0) {
       // We're inside the market-hours-gated handler, so an empty trade
       // window is anomalous — ws_option_trades fills continuously during
       // open hours. Most likely cause: a Neon read failure that withDbRetry
@@ -410,18 +467,22 @@ export default withCronInstrumentation(
           },
         );
       }
-      // Nothing else to do: wait for the win-rate load started above, so
-      // the 08:25–08:30 CT pre-open runs warm the cache instead of leaving
-      // the load to freeze with the instance. Bounded from the run's start
-      // (45 s), so a slow tick scan plus the wait can't pass maxDuration.
+      // Nothing else to do: the seed query and the Take-It prefetch have
+      // already settled with the scan, so nothing is left running behind the
+      // response. Wait for the win-rate load started above, so the 08:25–08:30
+      // CT pre-open runs warm the cache instead of leaving the load to freeze
+      // with the instance. Bounded from the run's start (45 s), so a slow tick
+      // scan plus the wait can't pass maxDuration.
       await awaitWinRateWarmup(winRateWarmup, ctx.startTimeMs);
       return {
         status: 'skipped',
         message: 'no ticks in scan window',
         metadata: {
           scanned: 0,
-          // Only the stages a skipped run reaches. The warm-up wait above is
-          // in total, not in tickScan.
+          // Only the stage that decided the run. The seed and Take-It stages
+          // ran too, but they are reported for runs that go on to fire, so
+          // their distributions stay comparable run to run. The warm-up wait
+          // above is in total, not in tickScan.
           timingsMs: wholeMs({
             tickScan: stageMs.tickScan,
             total: msSince(runStartedAt),
@@ -430,47 +491,21 @@ export default withCronInstrumentation(
       };
     }
 
-    // Group by chain. Already sorted by (chain, time) in SQL so a
-    // single linear pass is enough.
-    const groups = new Map<string, ChainGroup>();
-    for (const r of rows) {
-      let g = groups.get(r.option_chain);
-      if (!g) {
-        g = {
-          ticker: r.ticker,
-          optionChain: r.option_chain,
-          optionType: r.option_type,
-          strike: Number(r.strike),
-          expiry: r.expiry,
-          ticks: [],
-          oi: 0,
-        };
-        groups.set(r.option_chain, g);
-      }
-      g.ticks.push({
-        executedAt: new Date(r.executed_at),
-        optionChain: r.option_chain,
-        optionType: r.option_type,
-        strike: Number(r.strike),
-        // OptionTradeTick.expiry is typed as Date — the detector uses it
-        // for parity with the parquet shape; a UTC midnight Date matches.
-        expiry: new Date(`${r.expiry}T00:00:00Z`),
-        price: Number(r.price),
-        size: r.size,
-        underlyingPrice:
-          r.underlying_price != null ? Number(r.underlying_price) : null,
-        side: r.side,
-        impliedVolatility:
-          r.implied_volatility != null ? Number(r.implied_volatility) : null,
-        delta: r.delta != null ? Number(r.delta) : null,
-        gamma: r.gamma != null ? Number(r.gamma) : null,
-        openInterest: r.open_interest,
-      });
-      // Take the per-chain max OI — matches Python p14.py
-      // `g['open_interest'].max()`.
-      if (r.open_interest != null && r.open_interest > g.oi) {
-        g.oi = r.open_interest;
-      }
+    const takeitPrefetchError = takeitPrefetchFailure?.reason ?? null;
+    const takeitPrefetchFailureKind = takeitPrefetchFailure?.kind ?? null;
+    // The helper or the bundle loader already sent this run's Sentry event.
+    // 'error' is a broken query, an invalid bundle or a Blob config problem
+    // (such as a manifest without a lottery bundle).
+    if (takeitPrefetchFailureKind === 'error') {
+      ctx.logger.error(
+        { takeitPrefetchError, takeitPrefetchFailureKind },
+        'detect-lottery-fires: Take-It prefetch error; takeit_prob left null',
+      );
+    } else if (takeitPrefetchFailureKind != null) {
+      ctx.logger.warn(
+        { takeitPrefetchError, takeitPrefetchFailureKind },
+        'detect-lottery-fires: Take-It prefetch failed; takeit_prob left null',
+      );
     }
 
     let totalFires = 0;
@@ -505,113 +540,29 @@ export default withCronInstrumentation(
     // with takeit_* NULL.
     let takeitScoreFailures = 0;
 
-    // Seed cooldown state from the DB so successive cron runs don't
-    // re-qualify the next tick within the 5-min window. Without this,
-    // the in-memory cooldown in detectChainFires resets each invocation
-    // and the same logical trigger emits 2-7 rows with slightly later
-    // trigger_time_ct values — bypassing the unique index.
-    const eligibleChainIds: string[] = [];
+    // Seed the detector's cooldown from the seed query's answer, for the
+    // chains it will actually run (those with the print floor and open
+    // interest). The query didn't know which chains those are, so it
+    // returned every chain with a fire in the lookback; the rest are
+    // dropped here, which is what keeps `priorSeeds` meaning "eligible
+    // chains with a recent fire". Only now does a failed query matter.
+    const eligibleChains = new Set<string>();
     for (const g of groups.values()) {
       if (g.ticks.length >= PER_CHAIN_MIN_PRINTS && g.oi > 0) {
-        eligibleChainIds.push(g.optionChain);
+        eligibleChains.add(g.optionChain);
       }
     }
     const priorByChain = new Map<string, number>();
-    if (eligibleChainIds.length > 0) {
-      const seedsStartedAt = performance.now();
-      const priorRows = (await withDbRetry(
-        () => db`
-          SELECT
-            option_chain_id,
-            EXTRACT(EPOCH FROM MAX(trigger_time_ct)) * 1000 AS last_ms
-          FROM lottery_finder_fires
-          WHERE option_chain_id = ANY(${eligibleChainIds}::text[])
-            AND trigger_time_ct >= NOW() - (${PRIOR_FIRE_LOOKBACK_MIN}::int * INTERVAL '1 minute')
-          GROUP BY option_chain_id
-        `,
-        2,
-        10_000,
-      )) as { option_chain_id: string; last_ms: DbNullableNumeric }[];
-      stageMs.seeds = msSince(seedsStartedAt);
-      for (const r of priorRows) {
-        if (r.last_ms != null) {
+    if (eligibleChains.size > 0) {
+      // Without the seed an eligible chain would re-fire a trigger the last
+      // run already wrote (the duplicate pattern above), so this fails the
+      // run as the awaited query did when it ran after the scan.
+      if (!seeds.ok) throw seeds.err;
+      for (const r of seeds.rows) {
+        if (r.last_ms != null && eligibleChains.has(r.option_chain_id)) {
           priorByChain.set(r.option_chain_id, Number(r.last_ms));
         }
       }
-    }
-
-    // Pre-fetch Take-It bundle + sequential context: two recent-fire
-    // queries plus the win-rate day cache (started at the top of the run),
-    // once per cron tick. Best-effort: the helper gives them 5 s, and on
-    // any failure returns null (takeit_prob stays NULL, the heuristic
-    // INSERT still lands) and tells us why via the callback.
-    //
-    // The two recent-fire lookbacks (35 and 10 min) carry a `date` bound
-    // too: it is the leading column of the (date, trigger_time_ct) and
-    // (date, bucket_ct) indexes, so the scan is a two-day range instead of
-    // the whole index (planner cost ~41,500 → ~190, 2026-10-28). That
-    // makes them sub-second, so each gets one retry for a Neon blip (after
-    // a 1 s backoff). No per-attempt cap: the 5 s prefetch deadline bounds
-    // the total, and a cap would turn a slow success into a failure plus a
-    // second, uncancelled copy of the query on Neon. Yesterday is included
-    // so a lookback that crosses ET midnight still sees its fires.
-    let takeitPrefetchFailure = null as TakeitPrefetchFailure | null;
-    const takeitStartedAt = performance.now();
-    const takeitCtx = await loadTakeitDetectContext(
-      'lottery',
-      {
-        fetchRecentSameType: async (lookbackMin) =>
-          (await withDbRetry(
-            () => db`
-              SELECT trigger_time_ct AS fire_time, underlying_symbol, option_type
-              FROM lottery_finder_fires
-              WHERE date >= ${ctx.today}::date - 1
-                AND trigger_time_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
-            `,
-            1,
-          )) as RecentFireRow[],
-        // Pulls underlying_symbol + option_type too so the same row set powers
-        // both the chain-keyed cofire map AND the sibling-chain (ticker+dir)
-        // cofire map. One round-trip.
-        fetchRecentOtherTypeByChain: async (lookbackMin) =>
-          (await withDbRetry(
-            () => db`
-              SELECT
-                option_chain_id,
-                underlying_symbol,
-                option_type,
-                bucket_ct AS fire_time
-              FROM silent_boom_alerts
-              WHERE date >= ${ctx.today}::date - 1
-                AND bucket_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
-            `,
-            1,
-          )) as RecentCofireRow[],
-        // Joins the load started at the top of the run, or retries it if
-        // that one already failed (see loadPriorWinRates).
-        fetchPriorSessionWinRateByTicker: () =>
-          priorSessionWinRatesForDay('lottery', ctx.today, loadPriorWinRates),
-      },
-      (failure) => {
-        takeitPrefetchFailure = failure;
-      },
-    );
-    stageMs.takeitPrefetch = msSince(takeitStartedAt);
-    const takeitPrefetchError = takeitPrefetchFailure?.reason ?? null;
-    const takeitPrefetchFailureKind = takeitPrefetchFailure?.kind ?? null;
-    // The helper or the bundle loader already sent this run's Sentry event.
-    // 'error' is a broken query, an invalid bundle or a Blob config problem
-    // (such as a manifest without a lottery bundle).
-    if (takeitPrefetchFailureKind === 'error') {
-      ctx.logger.error(
-        { takeitPrefetchError, takeitPrefetchFailureKind },
-        'detect-lottery-fires: Take-It prefetch error; takeit_prob left null',
-      );
-    } else if (takeitPrefetchFailureKind != null) {
-      ctx.logger.warn(
-        { takeitPrefetchError, takeitPrefetchFailureKind },
-        'detect-lottery-fires: Take-It prefetch failed; takeit_prob left null',
-      );
     }
 
     // Per-(ticker, date) ticker net-flow cumulative series cache. Shared
@@ -1457,7 +1408,7 @@ export default withCronInstrumentation(
     // was removed; repoint the Sentry query to feedTier1.
     ctx.logger.info(
       {
-        scanned: rows.length,
+        scanned,
         chains: groups.size,
         skippedShort,
         skippedNoOi,
@@ -1537,7 +1488,7 @@ export default withCronInstrumentation(
       status,
       rows: inserted,
       metadata: {
-        scanned: rows.length,
+        scanned,
         chains: groups.size,
         skippedShort,
         skippedNoOi,

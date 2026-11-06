@@ -34,9 +34,9 @@ const mockSql = vi.fn();
 const LOTTERY_ROUTES = {
   // loadPriorWinRates: the per-ticker mean of daily win rates.
   winRates: /AVG\(daily_rate\)/,
-  // The tick scan, hash-partitioned into TICK_QUERIES parallel queries.
+  // The tick scan: one query per one-minute slice, TICK_SLICES in parallel.
   ticks: /FROM ws_option_trades/,
-  // The cooldown seed: latest prior trigger per eligible chain.
+  // The cooldown seed: latest trigger per chain in the last 10 minutes.
   priorFires: /MAX\(trigger_time_ct\)/,
   // Take-It prefetch: recent lottery fires, and recent Silent Boom alerts.
   recentFires: /trigger_time_ct AS fire_time/,
@@ -56,15 +56,36 @@ type LotteryRoute = keyof typeof LOTTERY_ROUTES;
 // Created in beforeEach, after vi.resetAllMocks() wipes the mock.
 let router: SqlRouter<LotteryRoute>;
 
-// detect-lottery-fires splits the ticks SELECT into this many
-// hash-partitioned parallel queries (Promise.all) to stay under Neon's 64MB
-// HTTP cap. The partition is the last bound value of each query.
-const TICK_QUERIES = 3;
+// detect-lottery-fires reads the 7-minute window as this many one-minute
+// slice queries, run in parallel (lottery-tick-scan.ts). The slice bounds are
+// the first two bound values of each query.
+const TICK_SLICES = 7;
 
-// Stage the tick scan: partition 0 returns `rows`, the others return
-// nothing, so every row reaches the cron exactly once.
+// Stage the tick scan: the first slice query of each scan returns `rows`, the
+// other six return nothing, so every row reaches the cron exactly once per
+// run (nth counts the route's calls across the whole test, so a test that
+// runs the handler twice stages both scans). The rows carry fixed 2026-05-01
+// times, so what a slice query returns is not decided by its bounds here; the
+// bounds are checked where they are the point (the scanEnd-anchoring test
+// below and lottery-tick-scan.test.ts).
 function stageTicks(rows: unknown[]): void {
-  router.on('ticks', (call) => (call.params.at(-1) === 0 ? rows : []));
+  router.on('ticks', (_call, nth) => (nth % TICK_SLICES === 0 ? rows : []));
+}
+
+// Lets every promise that is already settled run its continuations: a
+// macrotask runs after the microtask queue drains.
+const flush = (): Promise<void> =>
+  new Promise((resolve) => {
+    setImmediate(resolve);
+  });
+
+// A promise the test settles by hand, to hold a query until it says so.
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
 }
 
 // Predicates for router.when(): pick a call by what it was bound to, not by
@@ -467,9 +488,8 @@ describe('detect-lottery-fires handler', () => {
   });
 
   it('returns skipped + warns when no ticks are in the scan window (active session)', async () => {
-    // Three SQL calls (one per ticks batch), all returning []. The
-    // handler short-circuits on rows.length === 0 and never reaches
-    // macro / insert queries.
+    // Seven slice queries, all returning []. The handler short-circuits on
+    // rows.length === 0 and never reaches macro / insert queries.
     // Fake only the clock to a clearly-active session time (11:00 ET) so
     // the isPastCashOpen() gate on the empty-window warning is satisfied
     // deterministically regardless of when CI runs.
@@ -490,8 +510,10 @@ describe('detect-lottery-fires handler', () => {
       status: 'skipped',
       message: 'no ticks in scan window',
     });
-    // Only the initial SELECT — no macro lookups, no inserts.
-    expect(router.counts()).toEqual({ ticks: TICK_QUERIES });
+    // The scan's slices and the cooldown seed, which starts with the scan
+    // because it can't wait to learn which chains qualify — no macro lookups,
+    // no inserts.
+    expect(router.counts()).toEqual({ ticks: TICK_SLICES, priorFires: 1 });
     // Empty trade window during active market hours is anomalous — emit
     // a Sentry warning so silent stalls like the 2026-05-18 Neon blip
     // surface as alerts instead of zero-row DB hours.
@@ -566,7 +588,7 @@ describe('detect-lottery-fires handler', () => {
     // The statements that ran, and no others: the router rejects unknown SQL,
     // and this pins an extra or missing one (no strike_exposures for SNDK).
     expect(router.counts()).toEqual({
-      ticks: TICK_QUERIES,
+      ticks: TICK_SLICES,
       priorFires: 1,
       flowSeries: 1,
       flowData: 1,
@@ -1443,7 +1465,7 @@ describe('detect-lottery-fires handler', () => {
     // strike ticker, so strike_exposures runs next to flow_data and
     // spot_exposures), the INSERT and the post-loop tier monitor.
     expect(router.counts()).toEqual({
-      ticks: TICK_QUERIES,
+      ticks: TICK_SLICES,
       priorFires: 1,
       flowSeries: 1,
       flowData: 1,
@@ -1474,10 +1496,12 @@ describe('detect-lottery-fires handler', () => {
       totalFires: 0,
       inserted: 0,
     });
-    // No chain qualifies, so there is nothing to seed: no prior-fires lookup,
-    // no flow series, no macro, no INSERT. Only the scan and the monitor run.
+    // No chain qualifies: no flow series, no macro, no INSERT. Only the scan,
+    // the seed query (it started with the scan, before this was known; its
+    // answer is unused) and the monitor run.
     expect(router.counts()).toEqual({
-      ticks: TICK_QUERIES,
+      ticks: TICK_SLICES,
+      priorFires: 1,
       tierMonitor: 1,
     });
   });
@@ -1509,7 +1533,7 @@ describe('detect-lottery-fires handler', () => {
     // Only the scan, the prior-fires lookup (the chain passed min-prints) and
     // the post-loop tier monitor ran.
     expect(router.counts()).toEqual({
-      ticks: TICK_QUERIES,
+      ticks: TICK_SLICES,
       priorFires: 1,
       tierMonitor: 1,
     });
@@ -1645,7 +1669,7 @@ describe('detect-lottery-fires handler', () => {
     // macro queries or the INSERT: only the scan, the prior-fires seed and
     // the post-loop tier monitor ran.
     expect(router.counts()).toEqual({
-      ticks: TICK_QUERIES,
+      ticks: TICK_SLICES,
       priorFires: 1,
       tierMonitor: 1,
     });
@@ -3078,18 +3102,18 @@ describe('detect-lottery-fires handler', () => {
         'trigger_time_ct AS fire_time',
       );
       expect(sameType.text).toMatch(
-        /WHERE date >= \$\{\}::date - 1\s+AND trigger_time_ct >= NOW\(\)/,
+        /WHERE date >= \$\{\}::date - 1\s+AND trigger_time_ct >= \$\{\}::timestamptz - /,
       );
-      expect(sameType.params).toEqual([today, 35]);
+      expect(sameType.params).toEqual([today, expect.any(String), 35]);
 
       const otherType = sqlCall(
         'FROM silent_boom_alerts',
         'bucket_ct AS fire_time',
       );
       expect(otherType.text).toMatch(
-        /WHERE date >= \$\{\}::date - 1\s+AND bucket_ct >= NOW\(\)/,
+        /WHERE date >= \$\{\}::date - 1\s+AND bucket_ct >= \$\{\}::timestamptz - /,
       );
-      expect(otherType.params).toEqual([today, 10]);
+      expect(otherType.params).toEqual([today, expect.any(String), 10]);
 
       // Kicked at the top of the run, then asked for again by the prefetch:
       // the same loader both times, and one query, since the prefetch joins
@@ -3724,7 +3748,9 @@ describe('detect-lottery-fires handler', () => {
 
   // Plan 2026-10-29-lottery-phase-b-e.md, B0.1: per-stage wall time in the
   // run's metadata, so Axiom `meta` carries a baseline before phases B1-B3
-  // reorder and merge the queries.
+  // reorder and merge the queries. Since B1
+  // the tick scan, the seed query and the Take-It prefetch run together: each
+  // keeps its own start-to-end time, and the stages no longer sum to `total`.
   describe('timingsMs', () => {
     const STAGES = [
       'tickScan',
@@ -3786,21 +3812,56 @@ describe('detect-lottery-fires handler', () => {
       expect(AXIOM_TOP_LEVEL_KEYS.has('timingsMs')).toBe(false);
     });
 
-    it('attributes each stage its own time: scan, seeds, Take-It, flow, anchors, then Pass 2 with its insert and candles inside', async () => {
-      const advance = useStepClock();
-      // Three partitioned tick queries, 10 ms each.
-      router.on('ticks', (call) => {
-        advance(10);
-        return call.params.at(-1) === 0 ? fireableSndkStream() : [];
+    // The tick scan, the seed query and the Take-It prefetch run together,
+    // so a stub that advanced the clock when it was called would bleed into
+    // the other stages' windows. Each is held until the test releases it
+    // instead: `finishAt` is how many ms after the run started each one
+    // answers. Returns the driver that moves the clock and releases them in
+    // time order. Start the handler, `await flush()` so all three have
+    // started, then `await` the driver.
+    function holdSetup(
+      advance: (ms: number) => void,
+      finishAt: Record<'tickScan' | 'seeds' | 'takeitPrefetch', number>,
+      tickRows: unknown[],
+    ): () => Promise<void> {
+      const gates = {
+        tickScan: deferred(),
+        seeds: deferred(),
+        takeitPrefetch: deferred(),
+      };
+      router.on('ticks', async (_call, nth) => {
+        await gates.tickScan.promise;
+        return nth === 0 ? tickRows : [];
       });
-      router.on('priorFires', () => {
-        advance(7);
+      router.on('priorFires', async () => {
+        await gates.seeds.promise;
         return [];
       });
       mockLoadTakeitDetectContext.mockImplementation(async () => {
-        advance(11);
+        await gates.takeitPrefetch.promise;
         return null;
       });
+      return async () => {
+        let now = 0;
+        const inOrder = (
+          Object.keys(finishAt) as (keyof typeof finishAt)[]
+        ).sort((a, b) => finishAt[a] - finishAt[b]);
+        for (const stage of inOrder) {
+          advance(finishAt[stage] - now);
+          now = finishAt[stage];
+          gates[stage].resolve();
+          await flush();
+        }
+      };
+    }
+
+    it('attributes each stage its own time: the setup stages overlap, then flow, anchors, and Pass 2 with its insert and candles inside', async () => {
+      const advance = useStepClock();
+      const releaseSetup = holdSetup(
+        advance,
+        { tickScan: 30, seeds: 7, takeitPrefetch: 11 },
+        fireableSndkStream(),
+      );
       router.on('flowSeries', () => {
         advance(13);
         return [];
@@ -3837,7 +3898,10 @@ describe('detect-lottery-fires handler', () => {
       });
 
       const res = mockResponse();
-      await handler(authorizedReq(), res);
+      const running = handler(authorizedReq(), res);
+      await flush();
+      await releaseSetup();
+      await running;
 
       expect(res._status).toBe(200);
       expect(timingsOf(res)).toEqual({
@@ -3851,7 +3915,9 @@ describe('detect-lottery-fires handler', () => {
         insert: 31,
         candles: 23,
         tierMonitor: 37,
-        total: 217,
+        // The setup stages overlap, so the run waits for the slowest (30),
+        // then 13 + 17 + 102 + 37. The stages sum to 266, not to this.
+        total: 199,
       });
     });
 
@@ -3882,18 +3948,15 @@ describe('detect-lottery-fires handler', () => {
       });
     });
 
-    it('reports 0 for the stages that did no work (no seed, flow series, fire, insert or candle) and keeps the time of the stages that always run', async () => {
+    it('reports the seed query even when no chain qualifies, 0 for the stages that did no work (flow series, fire, insert, candle) and the time of the stages that always run', async () => {
       const advance = useStepClock();
-      // Only 4 ticks: below the per-chain minimum, so no seeds, no fires.
-      router.on('ticks', (call) => {
-        advance(10);
-        return call.params.at(-1) === 0 ? fireableSndkStream().slice(0, 4) : [];
-      });
-      // These three run on every non-empty tick, fire or not, and take time.
-      mockLoadTakeitDetectContext.mockImplementation(async () => {
-        advance(11);
-        return null;
-      });
+      // Only 4 ticks: below the per-chain minimum, so no fires.
+      const releaseSetup = holdSetup(
+        advance,
+        { tickScan: 30, seeds: 7, takeitPrefetch: 11 },
+        fireableSndkStream().slice(0, 4),
+      );
+      // These two run on every non-empty tick, fire or not, and take time.
       mockLookupAnchorLegs.mockImplementation(async () => {
         advance(17);
         return new Map();
@@ -3904,11 +3967,16 @@ describe('detect-lottery-fires handler', () => {
       });
 
       const res = mockResponse();
-      await handler(authorizedReq(), res);
+      const running = handler(authorizedReq(), res);
+      await flush();
+      await releaseSetup();
+      await running;
 
       expect(timingsOf(res)).toEqual({
         tickScan: 30,
-        seeds: 0,
+        // The seed query starts with the scan, before it is known that no
+        // chain qualifies, so it always runs and always has a time.
+        seeds: 7,
         takeitPrefetch: 11,
         pass1Flow: 0,
         anchors: 17,
@@ -3916,28 +3984,32 @@ describe('detect-lottery-fires handler', () => {
         insert: 0,
         candles: 0,
         tierMonitor: 37,
-        total: 95,
+        total: 84,
       });
     });
 
-    it('still reports a skipped run, with the tick scan and the total, which includes the win-rate warm-up wait', async () => {
+    it('still reports a skipped run, with the tick scan and the total, which includes the setup stages it waited for and the win-rate warm-up wait', async () => {
       const advance = useStepClock();
-      router.on('ticks', () => {
-        advance(10);
-        return [];
-      });
+      const releaseSetup = holdSetup(
+        advance,
+        { tickScan: 10, seeds: 4, takeitPrefetch: 6 },
+        [],
+      );
       mockAwaitWinRateWarmup.mockImplementation(async () => {
         advance(5);
       });
 
       const res = mockResponse();
-      await handler(authorizedReq(), res);
+      const running = handler(authorizedReq(), res);
+      await flush();
+      await releaseSetup();
+      await running;
 
       expect(res._json).toMatchObject({ status: 'skipped' });
-      expect(timingsOf(res)).toEqual({ tickScan: 30, total: 35 });
+      expect(timingsOf(res)).toEqual({ tickScan: 10, total: 15 });
       expect(vi.mocked(reportCronRun).mock.calls[0]![1]).toMatchObject({
         status: 'skipped',
-        timingsMs: { tickScan: 30, total: 35 },
+        timingsMs: { tickScan: 10, total: 15 },
       });
     });
 
@@ -3988,5 +4060,269 @@ describe('detect-lottery-fires handler', () => {
         expect(timingsOf(res).total).toBeGreaterThanOrEqual(ms);
       },
     );
+  });
+
+  // Plan 2026-10-29-lottery-phase-b-e.md, B1: the tick window is read in
+  // one-minute slices, every time bound is one captured scanEnd, and the scan,
+  // the cooldown seed query and the Take-It prefetch run together.
+  describe('B1: sliced scan, one clock, parallel setup', () => {
+    const SCAN_END = '2026-05-01T13:33:00.456Z';
+    const MINUTE = 60_000;
+    const iso = (ms: number): string => new Date(ms).toISOString();
+    const SNDK_CHAIN = 'SNDK260501C01175000';
+    const COOLDOWN_SEED = String(Date.parse('2026-05-01T13:28:00Z'));
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('anchors the tick window, the seed lookback and both Take-It lookbacks on one scanEnd, and asks the database for no time', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(SCAN_END));
+      // Run both recent-fire lookbacks, as loadTakeitDetectContext does, with
+      // the clock a minute and a half later than when the run began: a query
+      // that read the clock for itself, instead of the captured scanEnd,
+      // would bind this instant.
+      mockLoadTakeitDetectContext.mockImplementation(
+        async (
+          _alertType: string,
+          deps: {
+            fetchRecentSameType: (m: number) => Promise<unknown>;
+            fetchRecentOtherTypeByChain: (m: number) => Promise<unknown>;
+          },
+        ) => {
+          vi.setSystemTime(new Date('2026-05-01T13:34:30.000Z'));
+          await deps.fetchRecentSameType(35);
+          await deps.fetchRecentOtherTypeByChain(10);
+          return null;
+        },
+      );
+      stageTicks(fireableSndkStream());
+      router.on('insert', [{ id: 1 }]);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+      expect(res._status).toBe(200);
+
+      // Seven one-minute slices from scanEnd - 7 min, the last one open.
+      const startMs = Date.parse(SCAN_END) - 7 * MINUTE;
+      expect(router.calls('ticks').map((c) => c.params)).toEqual(
+        Array.from({ length: 7 }, (_, i) => [
+          iso(startMs + i * MINUTE),
+          i === 6 ? 'infinity' : iso(startMs + (i + 1) * MINUTE),
+        ]),
+      );
+      // The seed and both Take-It lookbacks count back from the same instant.
+      expect(router.calls('priorFires').map((c) => c.params)).toEqual([
+        [GUARD.today, SCAN_END, 10],
+      ]);
+      expect(router.calls('recentFires').map((c) => c.params)).toEqual([
+        [GUARD.today, SCAN_END, 35],
+      ]);
+      expect(router.calls('recentSilentBoom').map((c) => c.params)).toEqual([
+        [GUARD.today, SCAN_END, 10],
+      ]);
+      // No statement the cron sends reads the database clock.
+      for (const call of router.calls()) {
+        expect(call.text).not.toMatch(/NOW\(\)/i);
+      }
+    });
+
+    it('starts the scan, the seed query and the Take-It prefetch together, before any of them answers', async () => {
+      const release = deferred();
+      router.on('ticks', async () => {
+        await release.promise;
+        return [];
+      });
+      router.on('priorFires', async () => {
+        await release.promise;
+        return [];
+      });
+      mockLoadTakeitDetectContext.mockImplementation(async () => {
+        await release.promise;
+        return null;
+      });
+
+      const res = mockResponse();
+      const running = handler(authorizedReq(), res);
+      await flush();
+
+      // All three are in flight and none has answered.
+      expect(router.counts()).toEqual({ ticks: TICK_SLICES, priorFires: 1 });
+      expect(mockLoadTakeitDetectContext).toHaveBeenCalledTimes(1);
+      expect(res._json).toBeNull();
+
+      release.resolve();
+      await running;
+      // An empty scan still waited for the other two to settle, so nothing
+      // is left running behind the response.
+      expect(res._json).toMatchObject({ status: 'skipped' });
+    });
+
+    it('keeps only the seeds of chains the run can fire, so priorSeeds counts those', async () => {
+      const shortTsla = streamFor('TSLA', 'TSLA260501C01175000').slice(0, 4);
+      stageTicks([...fireableSndkStream(), ...shortTsla]);
+      router.on('priorFires', [
+        // In the scan and eligible: its cooldown holds.
+        { option_chain_id: SNDK_CHAIN, last_ms: COOLDOWN_SEED },
+        // In the scan, but under the per-chain print floor.
+        { option_chain_id: 'TSLA260501C01175000', last_ms: COOLDOWN_SEED },
+        // Not in the scan at all.
+        { option_chain_id: 'ZZZZ260501C00100000', last_ms: COOLDOWN_SEED },
+      ]);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'success',
+        priorSeeds: 1,
+        skippedShort: 1,
+        // The SNDK seed suppressed its fire.
+        totalFires: 0,
+        inserted: 0,
+      });
+    });
+
+    describe('a seed query that fails', () => {
+      const seedError = new Error('seed query down');
+
+      it('fails the run, with a Sentry capture, when a chain needs the seed', async () => {
+        stageTicks(fireableSndkStream());
+        router.on('priorFires', seedError);
+
+        const res = mockResponse();
+        await handler(authorizedReq(), res);
+
+        expect(res._status).toBe(500);
+        expect(reportCronRun).toHaveBeenCalledWith(
+          'detect-lottery-fires',
+          expect.objectContaining({
+            status: 'error',
+            message: seedError.message,
+          }),
+        );
+        expect(Sentry.captureException).toHaveBeenCalledWith(seedError);
+        // Without its cooldown seed the chain must not fire: nothing written.
+        expect(router.ran()).not.toContain('insert');
+      });
+
+      it('does not fail a run in which no chain qualifies, as before the seed started with the scan', async () => {
+        stageTicks(fireableSndkStream().slice(0, 4));
+        router.on('priorFires', seedError);
+
+        const res = mockResponse();
+        await handler(authorizedReq(), res);
+
+        expect(res._status).toBe(200);
+        expect(res._json).toMatchObject({ status: 'success', skippedShort: 1 });
+      });
+
+      it('does not fail an empty-scan run', async () => {
+        stageTicks([]);
+        router.on('priorFires', seedError);
+
+        const res = mockResponse();
+        await handler(authorizedReq(), res);
+
+        expect(res._status).toBe(200);
+        expect(res._json).toMatchObject({ status: 'skipped' });
+      });
+    });
+
+    describe('a tick slice that fails', () => {
+      it('fails the run, with a Sentry capture, when one slice rejects, and writes nothing', async () => {
+        const sliceError = new Error('ws_option_trades slice read failed');
+        stageTicks(fireableSndkStream());
+        // The open last slice rejects; the other six answer.
+        router.when(
+          'ticks',
+          (call) => call.params[1] === 'infinity',
+          sliceError,
+        );
+
+        const res = mockResponse();
+        await handler(authorizedReq(), res);
+
+        expect(res._status).toBe(500);
+        expect(reportCronRun).toHaveBeenCalledWith(
+          'detect-lottery-fires',
+          expect.objectContaining({
+            status: 'error',
+            message: sliceError.message,
+          }),
+        );
+        expect(Sentry.captureException).toHaveBeenCalledWith(sliceError);
+        // Not read as a smaller window: nothing after the scan ran.
+        const ran = router.ran();
+        for (const route of ['flowSeries', 'insert', 'tierMonitor'] as const) {
+          expect(ran).not.toContain(route);
+        }
+      });
+
+      it('splits a slice Neon refuses as too large, and still detects the fire from the rows of its halves', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date(SCAN_END));
+        const openFrom = Date.parse(SCAN_END) - MINUTE;
+        const upperFrom = iso(openFrom + MINUTE / 2);
+        const tooLarge = new Error(
+          'Server error (HTTP status 507): response too large',
+        );
+        router.when(
+          'ticks',
+          (call) =>
+            call.params[0] === iso(openFrom) && call.params[1] === 'infinity',
+          tooLarge,
+        );
+        router.on('ticks', (call) =>
+          call.params[0] === upperFrom ? fireableSndkStream() : [],
+        );
+        router.on('insert', [{ id: 42 }]);
+
+        const res = mockResponse();
+        await handler(authorizedReq(), res);
+
+        expect(res._json).toMatchObject({
+          status: 'success',
+          scanned: 6,
+          inserted: 1,
+        });
+        // The refused slice, then its two halves; the upper one stays open.
+        expect(router.counts().ticks).toBe(TICK_SLICES + 2);
+        expect(
+          router
+            .calls('ticks')
+            .slice(TICK_SLICES)
+            .map((c) => c.params),
+        ).toEqual([
+          [iso(openFrom), iso(openFrom + MINUTE / 2)],
+          [upperFrom, 'infinity'],
+        ]);
+      });
+
+      it('fails the run, with a Sentry capture, when a slice is still too large after 3 splits', async () => {
+        router.on(
+          'ticks',
+          new Error('Server error (HTTP status 507): response too large'),
+        );
+
+        const res = mockResponse();
+        await handler(authorizedReq(), res);
+
+        expect(res._status).toBe(500);
+        expect(reportCronRun).toHaveBeenCalledWith(
+          'detect-lottery-fires',
+          expect.objectContaining({
+            status: 'error',
+            message: expect.stringMatching(/still too large after 3 splits/),
+          }),
+        );
+        expect(Sentry.captureException).toHaveBeenCalledWith(
+          expect.objectContaining({
+            message: expect.stringMatching(/still too large after 3 splits/),
+          }),
+        );
+      });
+    });
   });
 });
