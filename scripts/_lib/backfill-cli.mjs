@@ -20,9 +20,12 @@
  *     before each day, each failure recorded against its day with a kind
  *     (classifyFailure: uw_http_<n>, network, timeout, malformed, db, other)
  *     and a redacted detail.
- *   - summarizeRun: failures counted by day and by kind, plus the exit code.
- * A worker marks a DB failure by running its Neon calls through
- * retryTransientDb, which tags whatever it throws.
+ *   - summarizeRun: failures counted by day and by kind, the empty days, and
+ *     the exit code (EXIT_OK, EXIT_FAILED, EXIT_GUARD_STOP);
+ *     formatRunSummary turns it into printable lines.
+ * A worker returns counts, not rows: { fetched, stored }. It marks a DB
+ * failure by running its Neon calls, and only them, through
+ * retryTransientDb, which labels whatever it throws.
  *
  * Two parsers, on purpose: parseArgs lets --from and --to come alone (the
  * range-pos backfill), parseRangeArgs also requires them together and
@@ -41,8 +44,19 @@ function messageOf(err) {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** How far down an error's `cause` chain to look for a retryTransientDb error. */
-const MAX_CAUSE_DEPTH = 5;
+// ── Exit codes ─────────────────────────────────────────────
+
+/** Every day ran and none failed. */
+export const EXIT_OK = 0;
+/** A day failed (summarizeRun), or a script's env is missing. */
+export const EXIT_FAILED = 1;
+/** The flags did not parse. */
+export const EXIT_BAD_ARGS = 2;
+/**
+ * The market-hours guard refused or stopped the run: before any work in the
+ * scripts, or, from summarizeRun, mid-run with no day failed.
+ */
+export const EXIT_GUARD_STOP = 3;
 
 // ── Arguments ──────────────────────────────────────────────
 
@@ -58,7 +72,9 @@ function isIsoDate(value) {
  * Parse the CLI flags. Throws with a message naming the bad flag.
  *   --dry-run             compute and report, but write nothing
  *   --allow-market-hours  run even inside isMarketHoursCt's window
- *   --limit N             at most N ticker-days (newest first)
+ *   --limit N             a whole number ≥ 1; what it counts is the script's
+ *                         own (for runDays scripts: the first N trading days
+ *                         of the range, by slicing the dates)
  *   --from YYYY-MM-DD     first trading date to fill (inclusive)
  *   --to YYYY-MM-DD       last trading date to fill (inclusive)
  * --from and --to may come alone here; parseRangeArgs is the stricter form.
@@ -81,9 +97,7 @@ export function parseArgs(argv) {
       const raw = argv[++i];
       const n = Number(raw);
       if (!Number.isInteger(n) || n < 1) {
-        throw new Error(
-          `--limit needs a whole number of ticker-days, got ${raw}`,
-        );
+        throw new Error(`--limit needs a whole number, got ${raw}`);
       }
       args.limit = n;
     } else if (flag === '--from' || flag === '--to') {
@@ -321,6 +335,9 @@ async function withAttemptDeadline(fn) {
  * Every error retryTransientDb has thrown. This is how a day's failure is
  * told apart as `db` (see classifyFailure): the error object itself is left
  * as it was, and a WeakSet lets it be collected once nothing holds it.
+ * Membership is by identity, so the label survives only while the error
+ * itself, or an error holding it as `cause`, is what reaches classifyFailure.
+ * A DB error that is caught and re-wrapped without `cause` loses it.
  */
 const dbErrors = new WeakSet();
 
@@ -329,12 +346,18 @@ function markDbError(err) {
   return err;
 }
 
+/**
+ * How many `cause` links below the error isDbError follows: the error itself
+ * and up to this many causes are checked.
+ */
+const MAX_CAUSE_DEPTH = 5;
+
 /** True for an error out of retryTransientDb, or one that has it as a cause. */
 function isDbError(err) {
   let current = err;
   for (
     let depth = 0;
-    depth < MAX_CAUSE_DEPTH && current !== null && typeof current === 'object';
+    depth <= MAX_CAUSE_DEPTH && current !== null && typeof current === 'object';
     depth++
   ) {
     if (dbErrors.has(current)) return true;
@@ -346,9 +369,15 @@ function isDbError(err) {
 /**
  * Run a Neon query with a 30 s deadline per attempt, retrying a transient
  * failure (the deadline included) twice, after 2 s and then 4 s. A
- * genuine error (bad SQL, constraint) rethrows at once. Whatever it throws,
- * the deadline error too, is a `db` failure to classifyFailure: route every
- * Neon call of a day worker through it.
+ * genuine error (bad SQL, constraint) rethrows at once.
+ *
+ * Whatever it throws, the deadline error too, is labelled `db` for
+ * classifyFailure. That has two halves for a day worker:
+ *   - The closure holds the Neon call and nothing else. Anything thrown
+ *     inside it, a bug in code that doesn't touch Neon included, is
+ *     labelled `db`.
+ *   - A Neon call outside it is not recognised as `db` (it lands in `other`),
+ *     and a DB error caught and re-thrown must keep the original as `cause`.
  */
 export async function retryTransientDb(fn) {
   for (let attempt = 0; ; attempt++) {
@@ -390,9 +419,16 @@ export async function runTickerDays(
 /**
  * Run `worker(date)` over `dates`, one day at a time, in order. The
  * market-hours guard is checked before every day (the first included)
- * unless `allowMarketHours`, so a run started at 08:05 CT stops at 08:15;
- * the refusal that stopped it comes back as `stoppedBy`, and the days it
- * never started as `notRun`.
+ * unless `allowMarketHours`, so a run started at 08:05 CT stops taking new
+ * days at 08:15 while the day in flight finishes. The refusal that stopped
+ * it comes back as `stoppedBy`, and the days it never started as `notRun`.
+ *
+ * A worker returns counts, not rows: `{ fetched, stored }`, both whole
+ * numbers ≥ 0, plus any extra count fields it wants (formatRunSummary
+ * prints them). `fetched: 0` marks an empty day in summarizeRun: UW had no
+ * rows for a trading day, a hole worth a look. A return value of any other
+ * shape fails that day as `other`, so a worker can't hide an empty day by
+ * leaving `fetched` out.
  *
  * One day's failure never ends the run. It is recorded against that day and
  * the loop moves on. A day fails when its worker
@@ -401,7 +437,12 @@ export async function runTickerDays(
  *   - or returns a UW error outcome, `{ kind: 'error', status, detail }`,
  *     the way fetchUwDayRows gives one: `uw_http_<n>`, `network`,
  *     `timeout` or `malformed`.
- * Any other return value is the day's `value` and counts as done.
+ *
+ * One failure is recorded per day: the first. A worker that fans out over
+ * tickers with runPool stops starting new tickers after its first rejection,
+ * so that day's summary understates the failed tickers and leaves the rest
+ * untried. To try every ticker, catch per ticker and throw once at the end
+ * of the day, naming how many failed.
  *
  * `secrets` is `{ uwKey, databaseUrl }`; every failure detail is redacted
  * with them before it is stored, so it is safe to print.
@@ -435,7 +476,36 @@ async function runOneDay(date, worker, secrets) {
     return failedDay(date, err, secrets);
   }
   if (isUwErrorOutcome(value)) return failedDay(date, value, secrets);
+  if (!isDayCounts(value)) {
+    const wrong = new TypeError(
+      'worker value must be { fetched, stored } as whole numbers ≥ 0, ' +
+        `got ${describeValue(value)}`,
+    );
+    return failedDay(date, wrong, secrets);
+  }
   return { date, ok: true, value };
+}
+
+function isCount(n) {
+  return Number.isInteger(n) && n >= 0;
+}
+
+function isDayCounts(value) {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    isCount(value.fetched) &&
+    isCount(value.stored)
+  );
+}
+
+/** A short, safe description of a bad worker value: never the value itself. */
+function describeValue(value) {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  if (typeof value !== 'object') return typeof value;
+  const show = (n) => (typeof n === 'number' ? String(n) : typeof n);
+  return `{ fetched: ${show(value.fetched)}, stored: ${show(value.stored)} }`;
 }
 
 function failedDay(date, failed, secrets) {
@@ -513,22 +583,33 @@ function kindOfThrown(err, text) {
 
 /**
  * The end-of-run numbers for a runDays result: how many days ran and
- * succeeded, the failed days in run order, the failures counted by kind
- * (most days first, ties by kind name, each with its dates and its first
- * example), and the exit code.
+ * succeeded, the succeeded days with their counts (`okDays`), the dates among
+ * them with `fetched: 0` (`emptyDays`: UW had no rows for a trading day, a
+ * hole worth a look; it never changes the exit code), the failed days in run
+ * order, the failures counted by kind (most days first, ties by kind name,
+ * each with its dates and its first example), and the exit code.
  *
- * exitCode is 0 only when every day ran and none failed. Otherwise it is 1,
- * a run stopped by the market-hours guard included: the days in `notRun`
- * are still unfilled, so a clean 0 would hide them. (The refusal before any
- * work starts is the script's own check and exit code: 3 in
- * backfill-range-pos.mjs. backfill-net-prem-ticks.mjs, which doesn't use
- * this loop, also exits 3 when the guard stops it mid-run.)
+ * exitCode, by plain precedence:
+ *   1 (EXIT_FAILED) when any day failed, whether or not the guard also
+ *     stopped the run, so a failure is never reported as a plain stop;
+ *   3 (EXIT_GUARD_STOP, the scripts' refusal code) when the market-hours
+ *     guard stopped the run and no day failed: the days in `notRun` are
+ *     still unfilled, so a 0 would hide them;
+ *   0 (EXIT_OK) otherwise.
+ * backfill-net-prem-ticks.mjs doesn't use this loop; it puts its guard stop
+ * ahead of failures (3 even when ticker-days failed) and is left as it was.
  */
 export function summarizeRun({ days, stoppedBy, notRun = [] }) {
+  const okDays = [];
+  const emptyDays = [];
   const failedDays = [];
   const byKind = new Map();
   for (const day of days) {
-    if (day.ok) continue;
+    if (day.ok) {
+      okDays.push({ date: day.date, value: day.value });
+      if (day.value.fetched === 0) emptyDays.push(day.date);
+      continue;
+    }
     const { kind, detail } = day.failure;
     failedDays.push({ date: day.date, kind, detail });
     const entry = byKind.get(kind);
@@ -546,15 +627,74 @@ export function summarizeRun({ days, stoppedBy, notRun = [] }) {
   }
   return {
     attempted: days.length,
-    succeeded: days.length - failedDays.length,
+    succeeded: okDays.length,
+    okDays,
+    emptyDays,
     failedDays,
     byKind: [...byKind.values()].sort(
       (a, b) => b.count - a.count || a.kind.localeCompare(b.kind),
     ),
     stoppedBy,
     notRun,
-    exitCode: failedDays.length === 0 && stoppedBy == null ? 0 : 1,
+    exitCode: exitCodeOf(failedDays.length, stoppedBy),
   };
+}
+
+function exitCodeOf(failedCount, stoppedBy) {
+  if (failedCount > 0) return EXIT_FAILED;
+  if (stoppedBy != null) return EXIT_GUARD_STOP;
+  return EXIT_OK;
+}
+
+/**
+ * The printable lines for a summarizeRun result: the day counts, each
+ * succeeded day's fetched/stored (and any extra counts) with the totals, the
+ * failures by kind with their dates and first example, the empty days, and
+ * the guard stop with the days not run. Pure: the caller prints the lines.
+ * Failure details are already redacted when the days came from runDays.
+ */
+export function formatRunSummary(summary) {
+  const { okDays, emptyDays, failedDays, byKind, stoppedBy, notRun } = summary;
+  const lines = [
+    `days: ${summary.attempted} run, ${summary.succeeded} done, ` +
+      `${failedDays.length} failed`,
+  ];
+  let fetched = 0;
+  let stored = 0;
+  for (const { date, value } of okDays) {
+    fetched += value.fetched;
+    stored += value.stored;
+    lines.push(`  ${date}  ${countsOf(value)}`);
+  }
+  if (okDays.length > 0) {
+    lines.push(`  ${'total'.padEnd(10)}  fetched ${fetched}  stored ${stored}`);
+  }
+  if (byKind.length > 0) {
+    lines.push('failures by kind:');
+    for (const { kind, count, dates, example } of byKind) {
+      lines.push(
+        `  ${kind}: ${count} ${count === 1 ? 'day' : 'days'} ` +
+          `(${dates.join(', ')}); first: ${example.date}: ${example.detail}`,
+      );
+    }
+  }
+  if (emptyDays.length > 0) {
+    lines.push(`empty days (UW had no rows): ${emptyDays.join(', ')}`);
+  }
+  if (stoppedBy != null) lines.push(`stopped: ${stoppedBy}`);
+  if (notRun.length > 0) {
+    lines.push(`not run (${notRun.length}): ${notRun.join(', ')}`);
+  }
+  return lines;
+}
+
+/** "fetched 405  stored 390" plus any extra count fields, as "name N". */
+function countsOf({ fetched, stored, ...extras }) {
+  const parts = [`fetched ${fetched}`, `stored ${stored}`];
+  for (const [name, count] of Object.entries(extras)) {
+    parts.push(`${name} ${count}`);
+  }
+  return parts.join('  ');
 }
 
 /** Failures by status, most common first, each with its first example. */

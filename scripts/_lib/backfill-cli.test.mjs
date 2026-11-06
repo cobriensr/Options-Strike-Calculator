@@ -6,10 +6,15 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  EXIT_BAD_ARGS,
+  EXIT_FAILED,
+  EXIT_GUARD_STOP,
+  EXIT_OK,
   UW_REQUESTS_PER_MINUTE,
   chunk,
   classifyFailure,
   createRequestThrottle,
+  formatRunSummary,
   isMarketHoursCt,
   marketHoursRefusal,
   parseArgs,
@@ -27,6 +32,7 @@ import {
 } from './backfill-cli.mjs';
 import * as netPrem from './net-prem-ticks-backfill.mjs';
 import * as rangePos from './range-pos-backfill.mjs';
+import { fetchUwDayRows } from './uw-day-fetch.mjs';
 
 // 2026-10-29 is a Thursday, CDT (UTC−5). 22:00 UTC = 17:00 CT, after the
 // close, so the market-hours guard is quiet unless a test moves the clock.
@@ -145,6 +151,12 @@ describe('parseArgs', () => {
     [['--force'], 'Unknown argument: --force'],
   ])('rejects %j', (argv, message) => {
     expect(() => parseArgs(argv)).toThrow(message);
+  });
+
+  it('words a bad --limit generically: what it counts is the script’s own', () => {
+    expect(() => parseArgs(['--limit', 'abc'])).toThrow(
+      '--limit needs a whole number, got abc',
+    );
   });
 });
 
@@ -642,6 +654,24 @@ describe('classifyFailure', () => {
     expect(classifyFailure(wrapped).kind).toBe('db');
   });
 
+  it('follows a cause chain to 5 causes deep and no further', async () => {
+    const dbErr = await retryTransientDb(async () => {
+      throw new Error('relation "nope" does not exist');
+    }).catch((e) => e);
+    // The error itself, then `links` wrappers each holding the last as cause.
+    const wrap = (inner, links) => {
+      let err = inner;
+      for (let i = 0; i < links; i++) {
+        err = new Error(`wrapped ${i}`, { cause: err });
+      }
+      return err;
+    };
+
+    expect(classifyFailure(wrap(dbErr, 0)).kind).toBe('db');
+    expect(classifyFailure(wrap(dbErr, 5)).kind).toBe('db');
+    expect(classifyFailure(wrap(dbErr, 6)).kind).toBe('other');
+  });
+
   it('does not call an untagged error db, whatever its message says', () => {
     expect(classifyFailure(new Error('connection terminated')).kind).toBe(
       'other',
@@ -673,31 +703,77 @@ describe('runDays', () => {
       await Promise.resolve();
       order.push(date);
       inFlight--;
-      return { stored: order.length };
+      return { fetched: order.length * 10, stored: order.length };
     });
 
     expect(order).toEqual(DATES);
     expect(maxInFlight).toBe(1);
     expect(run).toEqual({
       days: [
-        { date: '2026-07-22', ok: true, value: { stored: 1 } },
-        { date: '2026-07-23', ok: true, value: { stored: 2 } },
-        { date: '2026-07-24', ok: true, value: { stored: 3 } },
+        { date: '2026-07-22', ok: true, value: { fetched: 10, stored: 1 } },
+        { date: '2026-07-23', ok: true, value: { fetched: 20, stored: 2 } },
+        { date: '2026-07-24', ok: true, value: { fetched: 30, stored: 3 } },
       ],
       stoppedBy: null,
       notRun: [],
     });
   });
 
-  it('treats a UW ok or empty outcome as a day that ran', async () => {
+  it('keeps extra count fields a worker returns beside fetched and stored', async () => {
     atTime(AFTER_CLOSE);
-    const outcomes = [{ kind: 'ok', rows: [1] }, { kind: 'empty' }];
-    const run = await runDays(DATES.slice(0, 2), after, async (date) =>
-      date === DATES[0] ? outcomes[0] : outcomes[1],
-    );
-    expect(run.days.map((d) => d.ok)).toEqual([true, true]);
-    expect(run.days.map((d) => d.value)).toEqual(outcomes);
+    const value = { fetched: 405, stored: 390, duplicates: 15 };
+    const run = await runDays(['2026-07-22'], after, async () => value);
+    expect(run.days).toEqual([{ date: '2026-07-22', ok: true, value }]);
   });
+
+  it.each([
+    ['nothing', undefined, 'undefined'],
+    ['null', null, 'null'],
+    ['a string', 'done', 'string'],
+    ['an array of rows', [{ start_time: 'x' }], 'an array'],
+    [
+      'a UW ok outcome (rows, not counts)',
+      { kind: 'ok', rows: [1] },
+      '{ fetched: undefined, stored: undefined }',
+    ],
+    [
+      'an empty UW outcome',
+      { kind: 'empty' },
+      '{ fetched: undefined, stored: undefined }',
+    ],
+    ['no stored count', { fetched: 5 }, '{ fetched: 5, stored: undefined }'],
+    [
+      'a count that is a string',
+      { fetched: '5', stored: 5 },
+      '{ fetched: string, stored: 5 }',
+    ],
+    [
+      'a negative count',
+      { fetched: 5, stored: -1 },
+      '{ fetched: 5, stored: -1 }',
+    ],
+    [
+      'a fractional count',
+      { fetched: 1.5, stored: 0 },
+      '{ fetched: 1.5, stored: 0 }',
+    ],
+  ])(
+    'fails the day as other when the worker returns %s, not counts',
+    async (_label, returned, described) => {
+      atTime(AFTER_CLOSE);
+      const run = await runDays(['2026-07-22'], after, async () => returned);
+      expect(run.days).toEqual([
+        {
+          date: '2026-07-22',
+          ok: false,
+          failure: {
+            kind: 'other',
+            detail: `worker value must be { fetched, stored } as whole numbers ≥ 0, got ${described}`,
+          },
+        },
+      ]);
+    },
+  );
 
   it('counts a DB rejection against its day, as db, and moves on', async () => {
     atTime(AFTER_CLOSE);
@@ -710,12 +786,12 @@ describe('runDays', () => {
           throw new Error('duplicate key value violates unique constraint "x"');
         });
       }
-      return 'done';
+      return { fetched: 1, stored: 1 };
     });
 
     expect(seen).toEqual(DATES);
     expect(run.days).toEqual([
-      { date: '2026-07-22', ok: true, value: 'done' },
+      { date: '2026-07-22', ok: true, value: { fetched: 1, stored: 1 } },
       {
         date: '2026-07-23',
         ok: false,
@@ -724,7 +800,7 @@ describe('runDays', () => {
           detail: 'duplicate key value violates unique constraint "x"',
         },
       },
-      { date: '2026-07-24', ok: true, value: 'done' },
+      { date: '2026-07-24', ok: true, value: { fetched: 1, stored: 1 } },
     ]);
     expect(run.stoppedBy).toBeNull();
   });
@@ -769,7 +845,7 @@ describe('runDays', () => {
     const run = await runDays(dates, after, async (date) => {
       seen.push(date);
       const fail = failures.get(date);
-      return fail ? fail() : 'ok';
+      return fail ? fail() : { fetched: 1, stored: 1 };
     });
 
     expect(seen).toEqual(dates);
@@ -820,7 +896,7 @@ describe('runDays', () => {
     ]);
   });
 
-  it('stops taking days once the 08:15 CT window opens, and says which are left', async () => {
+  it('stops taking new days once the 08:15 CT window opens, lets the day in flight finish, and says which are left', async () => {
     // 08:14:20 CT. Each day takes 20 s of (fake) wall clock.
     atTime(JUST_BEFORE_OPEN);
     const dates = [
@@ -835,12 +911,14 @@ describe('runDays', () => {
     const run = await runDays(dates, after, async (date) => {
       seen.push(date);
       vi.setSystemTime(Date.now() + 20_000);
-      return date;
+      return { fetched: 1, stored: 1 };
     });
 
-    // 08:14:20 and 08:14:40 run; at 08:15:00 the guard refuses.
+    // 08:14:20 and 08:14:40 run, the second finishing at 08:15:00 inside the
+    // window; then the guard refuses the next day.
     expect(seen).toEqual(['2026-07-22', '2026-07-23']);
     expect(run.days.map((d) => d.date)).toEqual(['2026-07-22', '2026-07-23']);
+    expect(run.days.every((d) => d.ok)).toBe(true);
     expect(run.stoppedBy).toContain(GUARD_MESSAGE);
     expect(run.notRun).toEqual(['2026-07-24', '2026-07-27', '2026-07-28']);
   });
@@ -864,7 +942,7 @@ describe('runDays', () => {
     const run = await runDays(
       DATES,
       { allowMarketHours: true, secrets },
-      async (date) => date,
+      async () => ({ fetched: 1, stored: 1 }),
     );
     expect(run.days).toHaveLength(3);
     expect(run.stoppedBy).toBeNull();
@@ -881,16 +959,140 @@ describe('runDays', () => {
   });
 });
 
+// ── runDays over the real UW fetch ─────────────────────────
+
+function jsonResponse(body, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  };
+}
+
+function textResponse(text, status) {
+  return { ok: false, status, json: async () => ({}), text: async () => text };
+}
+
+describe('runDays over the real fetchUwDayRows', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('reads each failure the real producer gives as its own kind, and exits 1', async () => {
+    // Date for the guard, timers for fetchUwDayRows's 1 s retry backoff.
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    vi.setSystemTime(new Date(AFTER_CLOSE));
+    const timedOut = () =>
+      new DOMException('The operation timed out', 'TimeoutError');
+    // One row per day. `fetches` are that day's fetch results in call order:
+    // a 5xx, a 429, a network error or a timeout is tried twice.
+    const cases = [
+      {
+        date: '2026-07-22',
+        label: '503 twice',
+        fetches: [
+          textResponse('Service Unavailable', 503),
+          textResponse('Service Unavailable', 503),
+        ],
+        kind: 'uw_http_503',
+      },
+      {
+        date: '2026-07-23',
+        label: 'a 403 outside the plan window',
+        fetches: [textResponse('{"code":"historic_data_access_missing"}', 403)],
+        kind: 'uw_http_403',
+      },
+      {
+        date: '2026-07-24',
+        label: 'fetch rejecting with TypeError fetch failed',
+        fetches: [new TypeError('fetch failed'), new TypeError('fetch failed')],
+        kind: 'network',
+      },
+      {
+        date: '2026-07-27',
+        label: 'a TimeoutError',
+        fetches: [timedOut(), timedOut()],
+        kind: 'timeout',
+      },
+      {
+        date: '2026-07-28',
+        label: 'a 200 whose body is not JSON',
+        fetches: [
+          {
+            ok: true,
+            status: 200,
+            json: async () => {
+              throw new SyntaxError('Unexpected token < in JSON at position 0');
+            },
+          },
+        ],
+        kind: 'malformed',
+      },
+      {
+        date: '2026-07-29',
+        label: 'a 200 with a non-array data',
+        fetches: [jsonResponse({ data: 'x' })],
+        kind: 'malformed',
+      },
+    ];
+    const fetchMock = vi.fn();
+    for (const { fetches } of cases) {
+      for (const result of fetches) {
+        if (result instanceof Error) fetchMock.mockRejectedValueOnce(result);
+        else fetchMock.mockResolvedValueOnce(result);
+      }
+    }
+    vi.stubGlobal('fetch', fetchMock);
+    const secrets = { uwKey: 'uw-key', databaseUrl: undefined };
+
+    const pending = runDays(
+      cases.map((c) => c.date),
+      { allowMarketHours: false, secrets },
+      async (date) => {
+        const outcome = await fetchUwDayRows(
+          `https://api.unusualwhales.com/api/stock/SPY/ohlc/1m?date=${date}`,
+          secrets.uwKey,
+          { rowField: 'start_time', rowLabel: 'candle', userAgent: 'test' },
+        );
+        if (outcome.kind === 'error') return outcome;
+        return {
+          fetched: outcome.kind === 'ok' ? outcome.rows.length : 0,
+          stored: 0,
+        };
+      },
+    );
+    await vi.advanceTimersByTimeAsync(10_000);
+    const run = await pending;
+
+    expect(run.days.map((d) => d.date)).toEqual(cases.map((c) => c.date));
+    cases.forEach((c, i) => {
+      const day = run.days[i];
+      expect(day.ok, c.label).toBe(false);
+      expect(day.failure.kind, c.label).toBe(c.kind);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(9);
+    expect(summarizeRun(run).exitCode).toBe(EXIT_FAILED);
+  });
+});
+
 // ── summarizeRun ───────────────────────────────────────────
+
+/** A hand-built failed day, as runDays gives one. */
+const bad = (date, kind, detail = `${kind} detail`) => ({
+  date,
+  ok: false,
+  failure: { kind, detail },
+});
 
 describe('summarizeRun', () => {
   afterEach(() => vi.useRealTimers());
 
-  const ok = (date) => ({ date, ok: true, value: null });
-  const bad = (date, kind, detail = `${kind} detail`) => ({
+  const ok = (date, fetched = 5, stored = fetched) => ({
     date,
-    ok: false,
-    failure: { kind, detail },
+    ok: true,
+    value: { fetched, stored },
   });
 
   it('exits 0 when every day ran and none failed', () => {
@@ -902,12 +1104,51 @@ describe('summarizeRun', () => {
     expect(summary).toEqual({
       attempted: 2,
       succeeded: 2,
+      okDays: [
+        { date: '2026-07-22', value: { fetched: 5, stored: 5 } },
+        { date: '2026-07-23', value: { fetched: 5, stored: 5 } },
+      ],
+      emptyDays: [],
       failedDays: [],
       byKind: [],
       stoppedBy: null,
       notRun: [],
-      exitCode: 0,
+      exitCode: EXIT_OK,
     });
+  });
+
+  it('pins the exit codes the scripts share', () => {
+    expect([EXIT_OK, EXIT_FAILED, EXIT_BAD_ARGS, EXIT_GUARD_STOP]).toEqual([
+      0, 1, 2, 3,
+    ]);
+  });
+
+  it('lists the done days that fetched nothing, and still exits 0', () => {
+    const summary = summarizeRun({
+      days: [
+        ok('2026-07-22', 405, 390),
+        ok('2026-07-23', 0, 0),
+        bad('2026-07-24', 'db'),
+        ok('2026-07-27', 0, 0),
+        // Fetched rows but stored none (all already there): not empty.
+        ok('2026-07-28', 12, 0),
+      ],
+      stoppedBy: null,
+      notRun: [],
+    });
+
+    expect(summary.emptyDays).toEqual(['2026-07-23', '2026-07-27']);
+    expect(summary.succeeded).toBe(4);
+    // A failed day is a failure, not an empty day.
+    expect(summary.emptyDays).not.toContain('2026-07-24');
+
+    const onlyEmpty = summarizeRun({
+      days: [ok('2026-07-23', 0, 0)],
+      stoppedBy: null,
+      notRun: [],
+    });
+    expect(onlyEmpty.emptyDays).toEqual(['2026-07-23']);
+    expect(onlyEmpty.exitCode).toBe(EXIT_OK);
   });
 
   it('counts failures by day and by kind, most common kind first', () => {
@@ -955,7 +1196,7 @@ describe('summarizeRun', () => {
         example: { date: '2026-07-28', detail: 'reset' },
       },
     ]);
-    expect(summary.exitCode).toBe(1);
+    expect(summary.exitCode).toBe(EXIT_FAILED);
   });
 
   it('breaks a tie between kinds by name', () => {
@@ -967,7 +1208,7 @@ describe('summarizeRun', () => {
     expect(summary.byKind.map((k) => k.kind)).toEqual(['network', 'timeout']);
   });
 
-  it('exits 1 for a run the market-hours guard stopped, though no day failed', () => {
+  it('exits 3 for a run the market-hours guard stopped, when no day failed', () => {
     const summary = summarizeRun({
       days: [ok('2026-07-22')],
       stoppedBy: `Refusing to run ${GUARD_MESSAGE} on a weekday`,
@@ -976,27 +1217,123 @@ describe('summarizeRun', () => {
     expect(summary.failedDays).toEqual([]);
     expect(summary.stoppedBy).toContain(GUARD_MESSAGE);
     expect(summary.notRun).toEqual(['2026-07-23', '2026-07-24']);
-    expect(summary.exitCode).toBe(1);
+    expect(summary.exitCode).toBe(EXIT_GUARD_STOP);
   });
 
-  it('gives the exit code of a real run: 0 clean, 1 with a failed day, 1 when stopped', async () => {
+  it('exits 1, not 3, when a day failed and the guard also stopped the run', () => {
+    const summary = summarizeRun({
+      days: [ok('2026-07-22'), bad('2026-07-23', 'db')],
+      stoppedBy: `Refusing to run ${GUARD_MESSAGE} on a weekday`,
+      notRun: ['2026-07-24'],
+    });
+    expect(summary.exitCode).toBe(EXIT_FAILED);
+  });
+
+  it('exits 3 when the guard stopped a run before its first day', () => {
+    const summary = summarizeRun({
+      days: [],
+      stoppedBy: `Refusing to run ${GUARD_MESSAGE} on a weekday`,
+      notRun: ['2026-07-22'],
+    });
+    expect(summary.attempted).toBe(0);
+    expect(summary.exitCode).toBe(EXIT_GUARD_STOP);
+  });
+
+  it('gives the exit code of a real run: 0 clean, 1 with a failed day, 3 when stopped, 1 for both', async () => {
     atTime(AFTER_CLOSE);
     const secrets = { uwKey: 'k-12345', databaseUrl: undefined };
     const opts = { allowMarketHours: false, secrets };
     const dates = ['2026-07-22', '2026-07-23'];
+    const counts = { fetched: 5, stored: 5 };
 
-    const clean = await runDays(dates, opts, async () => 'ok');
-    expect(summarizeRun(clean).exitCode).toBe(0);
+    const clean = await runDays(dates, opts, async () => counts);
+    expect(summarizeRun(clean).exitCode).toBe(EXIT_OK);
 
     const failed = await runDays(dates, opts, async (date) => {
       if (date === dates[1]) throw new Error('boom');
-      return 'ok';
+      return counts;
     });
-    expect(summarizeRun(failed).exitCode).toBe(1);
+    expect(summarizeRun(failed).exitCode).toBe(EXIT_FAILED);
 
     atTime(MID_SESSION);
-    const stopped = await runDays(dates, opts, async () => 'ok');
-    expect(summarizeRun(stopped).exitCode).toBe(1);
+    const stopped = await runDays(dates, opts, async () => counts);
+    expect(summarizeRun(stopped).exitCode).toBe(EXIT_GUARD_STOP);
+
+    // 08:14:20 CT: the first day fails and runs past 08:15, so the second
+    // day is refused. A failure wins over the stop.
+    atTime(JUST_BEFORE_OPEN);
+    const both = await runDays(dates, opts, async () => {
+      vi.setSystemTime(Date.now() + 60_000);
+      throw new Error('boom');
+    });
+    expect(both.stoppedBy).toContain(GUARD_MESSAGE);
+    expect(summarizeRun(both).exitCode).toBe(EXIT_FAILED);
+  });
+});
+
+// ── formatRunSummary ───────────────────────────────────────
+
+describe('formatRunSummary', () => {
+  const ok = (date, value) => ({ date, ok: true, value });
+
+  it('prints each day, the failures by kind, the empty days, the guard stop and the days not run', () => {
+    const summary = summarizeRun({
+      days: [
+        ok('2026-07-22', { fetched: 405, stored: 390 }),
+        ok('2026-07-23', { fetched: 0, stored: 0 }),
+        bad('2026-07-24', 'db', 'lost'),
+        bad('2026-07-27', 'network', 'reset'),
+        ok('2026-07-28', { fetched: 10, stored: 4, skipped: 6 }),
+        bad('2026-07-29', 'db', 'gone'),
+      ],
+      stoppedBy: `Refusing to run ${GUARD_MESSAGE} on a weekday`,
+      notRun: ['2026-07-30', '2026-07-31'],
+    });
+
+    expect(formatRunSummary(summary)).toEqual([
+      'days: 6 run, 3 done, 3 failed',
+      '  2026-07-22  fetched 405  stored 390',
+      '  2026-07-23  fetched 0  stored 0',
+      '  2026-07-28  fetched 10  stored 4  skipped 6',
+      '  total       fetched 415  stored 394',
+      'failures by kind:',
+      '  db: 2 days (2026-07-24, 2026-07-29); first: 2026-07-24: lost',
+      '  network: 1 day (2026-07-27); first: 2026-07-27: reset',
+      'empty days (UW had no rows): 2026-07-23',
+      `stopped: Refusing to run ${GUARD_MESSAGE} on a weekday`,
+      'not run (2): 2026-07-30, 2026-07-31',
+    ]);
+  });
+
+  it('prints only the day lines and the total for a clean run', () => {
+    const summary = summarizeRun({
+      days: [
+        ok('2026-07-22', { fetched: 5, stored: 5 }),
+        ok('2026-07-23', { fetched: 7, stored: 6 }),
+      ],
+      stoppedBy: null,
+      notRun: [],
+    });
+
+    expect(formatRunSummary(summary)).toEqual([
+      'days: 2 run, 2 done, 0 failed',
+      '  2026-07-22  fetched 5  stored 5',
+      '  2026-07-23  fetched 7  stored 6',
+      '  total       fetched 12  stored 11',
+    ]);
+  });
+
+  it('prints just the stop for a run the guard refused before any day', () => {
+    const summary = summarizeRun({
+      days: [],
+      stoppedBy: 'refused',
+      notRun: ['2026-07-22'],
+    });
+    expect(formatRunSummary(summary)).toEqual([
+      'days: 0 run, 0 done, 0 failed',
+      'stopped: refused',
+      'not run (1): 2026-07-22',
+    ]);
   });
 });
 
@@ -1011,17 +1348,19 @@ describe('backfill-range-pos CLI', { timeout: CLI_TIMEOUT }, () => {
   const cli = path.resolve(process.cwd(), 'scripts', 'backfill-range-pos.mjs');
 
   it('loads the shared module and its .ts calendar under plain node, and names a bad flag', () => {
-    const env = { ...process.env };
-    delete env.UW_API_KEY;
-    delete env.DATABASE_URL;
-    // Exits at argument parsing, before the guard and the env checks, so no
-    // UW or DB call can start.
+    // A minimal env: PATH, and the SystemRoot node needs on Windows. No real
+    // UW key or database URL reaches the script whatever order it checks in.
+    const env = {};
+    for (const name of ['PATH', 'SystemRoot']) {
+      if (process.env[name] != null) env[name] = process.env[name];
+    }
+    // Exits at argument parsing, before the guard and the env checks.
     const result = spawnSync(process.execPath, [cli, '--bogus'], {
       env,
       encoding: 'utf8',
     });
 
-    expect(result.status).toBe(2);
+    expect(result.status).toBe(EXIT_BAD_ARGS);
     expect(result.stderr).toContain('Unknown argument: --bogus');
   });
 });
