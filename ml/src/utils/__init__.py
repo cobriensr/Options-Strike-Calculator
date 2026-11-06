@@ -12,7 +12,9 @@ import time
 import warnings
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
+import numpy as np
 import pandas as pd
 import psycopg2
 from scipy.stats import ConstantInputWarning
@@ -405,37 +407,103 @@ def takeaway(text: str) -> None:
 # ── Findings Persistence ───────────────────────────────────────
 
 
-def _upsert_findings_db(findings: dict) -> None:
-    """Upsert consolidated findings into ml_findings table.
+_RESERVED_SECTIONS = frozenset({"generated_at", "pipeline_sections"})
 
-    Skips gracefully when DATABASE_URL is unavailable (CI, local dev
-    without .env). The JSON file is the primary artifact; DB is optional.
+# One atomic statement: merge a single top-level key into the singleton row.
+# `||` replaces only the named keys; every other section already in the row,
+# including ones this machine has never computed, is left alone. The row lock
+# serializes concurrent writers, and under READ COMMITTED the second DO UPDATE
+# re-reads the committed row, so two sections saved at once cannot lose each
+# other. generated_at and pipeline_sections are kept in the same statement.
+_MERGE_SECTION_SQL = """
+    INSERT INTO ml_findings (id, findings, updated_at)
+    VALUES (
+      1,
+      jsonb_build_object(
+        %(name)s::text, %(data)s::jsonb,
+        'generated_at', %(generated_at)s::text,
+        'pipeline_sections', jsonb_build_array(%(name)s::text)
+      ),
+      NOW()
+    )
+    ON CONFLICT (id) DO UPDATE
+      SET findings = ml_findings.findings
+            || jsonb_build_object(
+                 %(name)s::text, %(data)s::jsonb,
+                 'generated_at', %(generated_at)s::text)
+            || jsonb_build_object(
+                 'pipeline_sections',
+                 CASE
+                   WHEN COALESCE(ml_findings.findings->'pipeline_sections', '[]'::jsonb)
+                        @> to_jsonb(%(name)s::text)
+                   THEN COALESCE(ml_findings.findings->'pipeline_sections', '[]'::jsonb)
+                   ELSE COALESCE(ml_findings.findings->'pipeline_sections', '[]'::jsonb)
+                        || to_jsonb(%(name)s::text)
+                 END),
+          updated_at = NOW()
+"""
+
+
+def _null_non_finite(value: Any, section_name: str, path: str = "") -> Any:
+    """Return `value` with every NaN or infinity replaced by None.
+
+    Recurses through dicts, lists and tuples (tuples come back as lists, as
+    JSON would write them) and returns a new structure; the caller's data is
+    not mutated. Each replacement prints a warning naming the section and the
+    key path. json.dumps writes a bare NaN token for a float subclass, which
+    Postgres jsonb rejects, and sends a numpy float that is not a float
+    subclass (float32, float16) through default=str, which would save the
+    string "nan". Both are caught here, so a non-finite value is always null.
+    """
+    if isinstance(value, dict):
+        return {
+            key: _null_non_finite(
+                item, section_name, f"{path}.{key}" if path else str(key)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [
+            _null_non_finite(item, section_name, f"{path}[{i}]")
+            for i, item in enumerate(value)
+        ]
+    if isinstance(value, (float, np.floating)) and not np.isfinite(value):
+        print(
+            f"  Warning: non-finite value in section '{section_name}' "
+            f"at '{path or '<root>'}' saved as null"
+        )
+        return None
+    return value
+
+
+def _upsert_findings_db(section_name: str, data: dict, generated_at: str) -> None:
+    """Merge ONE section into the ml_findings singleton row.
+
+    Sends only the section this script computed, never the local findings.json,
+    so a stale or test-made section in the local file cannot reach production
+    and a section this machine lacks is not deleted there. Skips quietly when
+    DATABASE_URL is unavailable (CI, local dev without .env); the JSON file is
+    the primary artifact. A database error propagates: a save that did not
+    reach the table must not look like one that did.
     """
     env = load_env()
     database_url = env.get("DATABASE_URL", "")
     if not database_url:
         return  # No DB configured — skip silently, JSON file is enough
 
+    # allow_nan=False is the backstop: jsonb rejects NaN, and the caller has
+    # already turned every non-finite float into null.
+    payload = json.dumps(data, default=str, allow_nan=False)
+    conn = psycopg2.connect(database_url, sslmode="require", connect_timeout=10)
     try:
-        conn = psycopg2.connect(database_url, sslmode="require", connect_timeout=10)
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO ml_findings (id, findings, updated_at)
-            VALUES (1, %s, NOW())
-            ON CONFLICT (id) DO UPDATE
-              SET findings = EXCLUDED.findings,
-                  updated_at = NOW()
-            """,
-            (json.dumps(findings, default=str),),
-        )
-        conn.commit()
-        cur.close()
+        with conn, conn.cursor() as cur:  # commit on success, roll back on error
+            cur.execute(
+                _MERGE_SECTION_SQL,
+                {"name": section_name, "data": payload, "generated_at": generated_at},
+            )
+    finally:
         conn.close()
-        print("  Saved: ml_findings table (DB)")
-    except Exception as e:
-        print(f"  Warning: Could not upsert ml_findings to DB: {e}")
-        print("  (findings.json was still saved locally)")
+    print("  Saved: ml_findings table (DB)")
 
 
 def save_section_findings(section_name: str, data: dict) -> None:
@@ -443,36 +511,49 @@ def save_section_findings(section_name: str, data: dict) -> None:
     Write a named section into the consolidated ml/findings.json.
 
     Read-modify-writes the file so multiple scripts can each contribute
-    their own section without clobbering each other. After writing the
-    file, upserts the full consolidated JSON to the ml_findings DB table.
+    their own section without clobbering each other. The DB gets ONLY this
+    section (a JSONB merge into ml_findings id 1), never the whole file.
+
+    A non-finite float anywhere in a section is saved as null, with a printed
+    warning. Errors are not swallowed: a database error propagates after the
+    local file has been written, so a save that missed the table fails the
+    script instead of printing a warning that scrolls past.
     """
+    if section_name in _RESERVED_SECTIONS:
+        raise ValueError(f"{section_name!r} is a metadata key, not a section")
+
     findings_path = ML_ROOT / "findings.json"
 
-    try:
-        # Load existing findings if present
-        if findings_path.exists():
-            findings = json.loads(findings_path.read_text())
-        else:
-            findings = {}
+    # Load existing findings if present. A NaN an older run left in another
+    # section is nulled too (with a warning naming that section) so it cannot
+    # break the strict write below.
+    if findings_path.exists():
+        existing = json.loads(findings_path.read_text())
+        findings = {
+            name: _null_non_finite(section, name) for name, section in existing.items()
+        }
+    else:
+        findings = {}
 
-        # Update the section
-        findings[section_name] = data
+    # Update the section
+    data = _null_non_finite(data, section_name)
+    findings[section_name] = data
 
-        # Update metadata
-        findings["generated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+    # Update metadata
+    generated_at = datetime.now(UTC).isoformat(timespec="seconds")
+    findings["generated_at"] = generated_at
 
-        # Maintain pipeline_sections list
-        sections = findings.get("pipeline_sections", [])
-        if section_name not in sections:
-            sections.append(section_name)
-        findings["pipeline_sections"] = sections
+    # Maintain pipeline_sections list
+    sections = findings.get("pipeline_sections", [])
+    if section_name not in sections:
+        sections.append(section_name)
+    findings["pipeline_sections"] = sections
 
-        # Write back
-        findings_path.write_text(json.dumps(findings, indent=2, default=str) + "\n")
-        print(f"  Saved: ml/findings.json (section: {section_name})")
+    # Write back
+    findings_path.write_text(
+        json.dumps(findings, indent=2, default=str, allow_nan=False) + "\n"
+    )
+    print(f"  Saved: ml/findings.json (section: {section_name})")
 
-        # Persist to DB
-        _upsert_findings_db(findings)
-
-    except Exception as e:
-        print(f"  Warning: Could not save findings for '{section_name}': {e}")
+    # Persist to DB: this section only
+    _upsert_findings_db(section_name, data, generated_at)

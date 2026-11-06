@@ -13,7 +13,7 @@ Outputs:
     ml/plots/periscope-eda/magnet_predictor_quality.png
     ml/plots/periscope-eda/charm_zero_cross_rates.png
     ml/exports/gamma_wall_events.csv
-    ml/findings.json   (appends three blocks)
+    ml/findings.json   (section periscope_gamma_wall_edge, three result blocks)
 
 CLI::
 
@@ -53,10 +53,10 @@ from periscope_gamma_wall_lib import (  # noqa: E402
     distance_bucket,
     mirror_strike,
 )
+from utils import save_section_findings  # noqa: E402
 
 PLOT_DIR = Path("ml/plots/periscope-eda")
 CSV_PATH = Path("ml/exports/gamma_wall_events.csv")
-FINDINGS_PATH = Path("ml/findings.json")
 
 BONFERRONI_ALPHA = 0.05 / 3
 EFFECT_SIZE_THRESHOLD_PP = 0.10  # 10 percentage points
@@ -612,29 +612,24 @@ def plot_charm_zero(charm_df: pd.DataFrame, out_path: Path) -> None:
     plt.close(fig)
 
 
-def append_findings(
-    findings_path: Path,
-    blocks: list[dict],
-    data_window: dict,
-) -> None:
-    """Append a list of result blocks to findings.json under a top-level key.
+def save_findings(blocks: list[dict], data_window: dict) -> None:
+    """Save the result blocks as the 'periscope_gamma_wall_edge' section.
 
-    Existing findings.json is preserved; we add (or overwrite) the
-    'periscope_gamma_wall_edge' key with today's run summary, including
+    Goes through save_section_findings like every other pipeline script: the
+    local findings.json keeps its other sections, and the ml_findings table
+    gets this section alone. The section holds today's run summary, including
     a data_window block with the date range, distinct-day count, and a
     prominent caveat string when the window is narrow.
     """
-    if findings_path.exists():
-        existing = json.loads(findings_path.read_text())
-    else:
-        existing = {}
-    existing["periscope_gamma_wall_edge"] = {
-        "experiment": "periscope-gamma-wall-edge",
-        "run_date_utc": datetime.now(UTC).isoformat(),
-        "data_window": data_window,
-        "results": blocks,
-    }
-    findings_path.write_text(json.dumps(existing, indent=2, default=str) + "\n")
+    save_section_findings(
+        "periscope_gamma_wall_edge",
+        {
+            "experiment": "periscope-gamma-wall-edge",
+            "run_date_utc": datetime.now(UTC).isoformat(),
+            "data_window": data_window,
+            "results": blocks,
+        },
+    )
 
 
 def build_data_window(reads: pd.DataFrame) -> dict:
@@ -727,12 +722,7 @@ def main() -> int:
         print("\nDATA WINDOW WARNINGS:")
         for w in data_window["warnings"]:
             print(f"  ! {w}")
-    append_findings(
-        FINDINGS_PATH,
-        [walls_result, magnet_result, charm_result],
-        data_window,
-    )
-    print(f"\nWrote findings to {FINDINGS_PATH}")
+    save_findings([walls_result, magnet_result, charm_result], data_window)
 
     return 0
 

@@ -83,16 +83,31 @@ def test_a_bare_postgresql_url_cannot_reach_a_database(db_block_attempts):
         pytest.fail("a bare postgresql:// URL connected to invalid.invalid")
 
 
+def _upsert_findings():
+    import utils
+
+    utils._upsert_findings_db("a", {"x": 1}, "2026-11-04T00:00:00+00:00")
+
+
+def _load_data():
+    import utils
+
+    utils.load_data("SELECT 1")
+
+
+@pytest.mark.parametrize("attempt", [_upsert_findings, _load_data])
 def test_except_exception_in_library_code_does_not_swallow_it(
-    monkeypatch, db_block_attempts
+    attempt, monkeypatch, db_block_attempts
 ):
-    # utils._upsert_findings_db wraps its connect in `except Exception`.
+    # utils.load_data wraps its query in `except Exception`, and
+    # utils._upsert_findings_db used to wrap its connect the same way (it lets
+    # every error out now). The block must surface through either.
     import utils
 
     monkeypatch.setenv("DATABASE_URL", DSN)
     monkeypatch.setattr(utils, "load_env", lambda: {"DATABASE_URL": DSN})
     with pytest.raises(DatabaseAccessBlocked, match=MESSAGE):
-        utils._upsert_findings_db({"a": 1})
+        attempt()
     assert db_block_attempts.new == ["psycopg2.connect"]
     db_block_attempts.discard()
 

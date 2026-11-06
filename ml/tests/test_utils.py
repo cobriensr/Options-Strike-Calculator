@@ -9,14 +9,20 @@ Note: validate_dataframe, section, subsection, verdict, and takeaway are
 already covered in test_ml.py — those are NOT duplicated here.
 """
 
+import json
+import re
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pandas as pd
 import psycopg2
 import pytest
 
 from conftest import DatabaseAccessBlocked
 from utils import (
+    _MERGE_SECTION_SQL,
     GEX_FEATURES_T1T2,
     GREEK_FEATURES_CORE,
     VOLATILITY_FEATURES,
@@ -24,6 +30,7 @@ from utils import (
     load_data,
     load_env,
     make_engine,
+    save_section_findings,
 )
 
 # ── Feature group constant tests ──────────────────────────────
@@ -543,3 +550,226 @@ class TestMakeEngine:
         assert db_block_attempts.new == ["psycopg2.connect"]
         db_block_attempts.discard()
         engine.dispose()
+
+
+# ── save_section_findings tests ────────────────────────────────
+
+
+def _reject_constant(token: str):
+    raise ValueError(f"bare {token} token in JSON")
+
+
+def _load_strict(path: Path) -> dict:
+    """Parse a findings file the way Postgres jsonb would: no NaN or Infinity."""
+    return json.loads(path.read_text(), parse_constant=_reject_constant)
+
+
+class TestSaveSectionFindings:
+    """The file takes every section; the database takes only the one saved."""
+
+    DSN = "postgresql://u:p@db.invalid/neondb"  # fake: psycopg2.connect is patched
+
+    @pytest.fixture
+    def root(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("utils.ML_ROOT", tmp_path)
+        monkeypatch.setattr("utils.load_env", lambda: {"DATABASE_URL": self.DSN})
+        return tmp_path
+
+    @pytest.fixture
+    def db(self, monkeypatch):
+        cur = MagicMock()
+        conn = MagicMock()
+        conn.__enter__.return_value = conn
+        conn.cursor.return_value.__enter__.return_value = cur
+        connect = MagicMock(return_value=conn)
+        monkeypatch.setattr("utils.psycopg2.connect", connect)
+        return SimpleNamespace(connect=connect, conn=conn, cur=cur)
+
+    # ── what reaches the database ──
+
+    def test_db_receives_only_the_section(self, root, db):
+        (root / "findings.json").write_text(
+            json.dumps(
+                {
+                    "phase2": {"fake": 1},
+                    "calibration": {"fake": 2},
+                    "pipeline_sections": ["phase2"],
+                }
+            )
+        )
+        save_section_findings("health", {"status": "PASS"})
+        db.cur.execute.assert_called_once()
+        sql, params = db.cur.execute.call_args.args
+        assert sql is _MERGE_SECTION_SQL
+        assert params["name"] == "health"
+        assert json.loads(params["data"]) == {"status": "PASS"}
+        # Nothing from the dirty local file travels.
+        assert "fake" not in repr(params)
+        assert "phase2" not in repr(params)
+        assert "calibration" not in repr(params)
+
+    def test_sql_merges_and_never_replaces(self):
+        assert "EXCLUDED.findings" not in _MERGE_SECTION_SQL
+        assert "ml_findings.findings" in _MERGE_SECTION_SQL
+        assert "||" in _MERGE_SECTION_SQL
+
+    def test_sql_placeholders_match_the_params_sent(self, root, db):
+        save_section_findings("a", {"x": 1})
+        params = db.cur.execute.call_args.args[1]
+        assert set(re.findall(r"%\((\w+)\)s", _MERGE_SECTION_SQL)) == set(params)
+
+    def test_same_generated_at_in_file_and_db(self, root, db):
+        save_section_findings("a", {"x": 1})
+        saved = _load_strict(root / "findings.json")
+        assert db.cur.execute.call_args.args[1]["generated_at"] == saved["generated_at"]
+
+    def test_the_connection_is_closed_after_a_save(self, root, db):
+        save_section_findings("a", {"x": 1})
+        db.conn.close.assert_called_once()
+
+    def test_no_database_url_skips_the_db(self, root, db, monkeypatch):
+        monkeypatch.setattr("utils.load_env", lambda: {})
+        save_section_findings("a", {"x": 1})
+        db.connect.assert_not_called()
+        assert _load_strict(root / "findings.json")["a"] == {"x": 1}
+
+    # ── the local file ──
+
+    def test_local_file_still_accumulates_sections(self, root, db):
+        save_section_findings("a", {"x": 1})
+        save_section_findings("b", {"y": 2})
+        saved = _load_strict(root / "findings.json")
+        assert saved["a"] == {"x": 1}
+        assert saved["b"] == {"y": 2}
+        assert saved["pipeline_sections"] == ["a", "b"]
+
+    def test_saving_a_section_twice_lists_it_once(self, root, db):
+        save_section_findings("a", {"x": 1})
+        save_section_findings("a", {"x": 2})
+        saved = _load_strict(root / "findings.json")
+        assert saved["a"] == {"x": 2}
+        assert saved["pipeline_sections"] == ["a"]
+
+    @pytest.mark.parametrize("name", ["generated_at", "pipeline_sections"])
+    def test_metadata_names_are_not_sections(self, root, db, name):
+        with pytest.raises(ValueError, match=name):
+            save_section_findings(name, {"x": 1})
+        # Rejected before any write: no file, no connection.
+        assert not (root / "findings.json").exists()
+        db.connect.assert_not_called()
+
+    # ── a database error is not swallowed ──
+
+    def test_an_execute_error_propagates_after_the_file_is_written(
+        self, root, db, capsys
+    ):
+        db.cur.execute.side_effect = psycopg2.OperationalError("connection lost")
+        with pytest.raises(psycopg2.OperationalError, match="connection lost"):
+            save_section_findings("a", {"x": 1})
+        assert _load_strict(root / "findings.json")["a"] == {"x": 1}
+        out = capsys.readouterr().out
+        assert "Could not upsert" not in out
+        assert "Saved: ml_findings" not in out
+
+    def test_the_connection_is_closed_when_the_merge_fails(self, root, db):
+        db.cur.execute.side_effect = psycopg2.OperationalError("connection lost")
+        with pytest.raises(psycopg2.OperationalError):
+            save_section_findings("a", {"x": 1})
+        db.conn.close.assert_called_once()
+
+    def test_a_connect_error_propagates_after_the_file_is_written(self, root, db):
+        db.connect.side_effect = psycopg2.OperationalError("connection refused")
+        with pytest.raises(psycopg2.OperationalError, match="connection refused"):
+            save_section_findings("a", {"x": 1})
+        assert _load_strict(root / "findings.json")["a"] == {"x": 1}
+
+    def test_a_malformed_findings_file_propagates(self, root, db):
+        (root / "findings.json").write_text("{not json")
+        with pytest.raises(json.JSONDecodeError):
+            save_section_findings("a", {"x": 1})
+        db.connect.assert_not_called()
+
+    # ── non-finite floats become null ──
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            np.float64("nan"),
+            np.float32("nan"),
+            np.float32("-inf"),
+            np.float16("inf"),
+        ],
+        ids=[
+            "float-nan",
+            "float-inf",
+            "float-neg-inf",
+            "np.float64-nan",
+            "np.float32-nan",
+            "np.float32-neg-inf",
+            "np.float16-inf",
+        ],
+    )
+    def test_a_non_finite_value_is_saved_as_null_in_the_file_and_the_db(
+        self, root, db, capsys, bad
+    ):
+        save_section_findings("eda", {"results": {"q1": {"p_value": bad, "n": 5}}})
+        expected = {"results": {"q1": {"p_value": None, "n": 5}}}
+        assert _load_strict(root / "findings.json")["eda"] == expected
+        payload = db.cur.execute.call_args.args[1]["data"]
+        assert json.loads(payload, parse_constant=_reject_constant) == expected
+        out = capsys.readouterr().out
+        assert "'eda'" in out
+        assert "results.q1.p_value" in out
+
+    def test_non_finite_values_are_found_inside_lists_and_tuples(
+        self, root, db, capsys
+    ):
+        data = {
+            "rows": [1.0, float("nan"), {"x": np.float32("nan")}],
+            "pair": (np.float64("inf"), 2),
+        }
+        save_section_findings("eda", data)
+        expected = {"rows": [1.0, None, {"x": None}], "pair": [None, 2]}
+        assert _load_strict(root / "findings.json")["eda"] == expected
+        payload = db.cur.execute.call_args.args[1]["data"]
+        assert json.loads(payload, parse_constant=_reject_constant) == expected
+        out = capsys.readouterr().out
+        assert "rows[1]" in out
+        assert "rows[2].x" in out
+        assert "pair[0]" in out
+
+    def test_finite_values_pass_through_untouched(self, root, db, capsys):
+        data = {"a": 0.0, "b": 3, "c": np.float64(1.5), "d": True, "e": "x", "f": None}
+        save_section_findings("eda", data)
+        assert _load_strict(root / "findings.json")["eda"] == {
+            "a": 0.0,
+            "b": 3,
+            "c": 1.5,
+            "d": True,
+            "e": "x",
+            "f": None,
+        }
+        assert "non-finite" not in capsys.readouterr().out
+
+    def test_the_callers_data_is_not_mutated(self, root, db):
+        data = {"a": [float("nan")], "b": {"c": np.float32("nan")}}
+        save_section_findings("eda", data)
+        assert np.isnan(data["a"][0])
+        assert np.isnan(data["b"]["c"])
+
+    def test_a_nan_left_in_another_section_of_the_file_is_healed(
+        self, root, db, capsys
+    ):
+        # An older run wrote a bare NaN token. It must neither break this save
+        # nor stay in the file, and the warning names the section it was in.
+        (root / "findings.json").write_text('{"old": {"score": NaN}}')
+        save_section_findings("new", {"x": 1})
+        saved = _load_strict(root / "findings.json")
+        assert saved["old"] == {"score": None}
+        assert saved["new"] == {"x": 1}
+        out = capsys.readouterr().out
+        assert "'old'" in out
+        assert "score" in out
