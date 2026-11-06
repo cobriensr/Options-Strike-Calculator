@@ -9,7 +9,9 @@
  *
  * Schwab tokens are read from Upstash Redis (same store the production
  * cron uses). If the access token is expired, the script auto-refreshes
- * it via the stored refresh token.
+ * it via the stored refresh token (scripts/_lib/schwab-local.mjs, shared
+ * with the candle backfill). This script only asks you to keep to the idle
+ * window below; the candle backfill enforces it with schwabCronsBusyRefusal.
  *
  * WARNING — this runs against PRODUCTION: `.env.local` points at the
  * production Neon branch AND the production Upstash Redis that holds the
@@ -35,58 +37,39 @@
 import { neon } from '@neondatabase/serverless';
 import { Redis } from '@upstash/redis';
 
+import {
+  SCHWAB_BASE,
+  SchwabAuthError,
+  getSchwabAccessToken,
+  readSchwabEnv,
+} from './_lib/schwab-local.mjs';
+
 // ── Env check ──────────────────────────────────────────────
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const REDIS_URL =
-  process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
-const REDIS_TOKEN =
-  process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
-const SCHWAB_CLIENT_ID = process.env.SCHWAB_CLIENT_ID;
-const SCHWAB_CLIENT_SECRET = process.env.SCHWAB_CLIENT_SECRET;
+const schwabEnv = readSchwabEnv();
 
 if (!DATABASE_URL) {
   console.error('Missing DATABASE_URL');
   process.exit(1);
 }
-if (!REDIS_URL || !REDIS_TOKEN) {
-  console.error('Missing UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN');
-  process.exit(1);
-}
-if (!SCHWAB_CLIENT_ID || !SCHWAB_CLIENT_SECRET) {
-  console.error('Missing SCHWAB_CLIENT_ID / SCHWAB_CLIENT_SECRET');
+if (schwabEnv.problem) {
+  console.error(schwabEnv.problem);
   process.exit(1);
 }
 
 const sql = neon(DATABASE_URL);
-const redis = new Redis({ url: REDIS_URL, token: REDIS_TOKEN });
+const redis = new Redis({
+  url: schwabEnv.redisUrl,
+  token: schwabEnv.redisToken,
+});
 
 // ── Config ─────────────────────────────────────────────────
 
 const SYMBOLS = ['$TICK', '$ADD', '$VOLD', '$TRIN'];
 const DEFAULT_LOOKBACK_DAYS = 20;
-const SCHWAB_BASE = 'https://api.schwabapi.com/marketdata/v1';
-const TOKEN_URL = 'https://api.schwabapi.com/v1/oauth/token';
-const KV_KEY = 'schwab:tokens';
-const BUFFER_MS = 60_000;
 
-/**
- * Compare-and-set of a refreshed token record — keep in sync with
- * STORE_REFRESHED_LUA in api/_lib/schwab.ts. Writes only if the record still
- * holds the refresh token we refreshed with (plain-find on its
- * `"refreshToken":<JSON>` fragment), so a re-login that lands mid-refresh is
- * never overwritten and a cleared record is never resurrected.
- * Returns: 0 = key absent, 1 = written, 2 = key holds a different token.
- */
-const STORE_REFRESHED_LUA = `
-  local raw = redis.call('GET', KEYS[1])
-  if not raw then return 0 end
-  if not string.find(raw, ARGV[1], 1, true) then return 2 end
-  redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
-  return 1
-`;
-
-// ── ET timezone helpers (mirrors backfill-spx-candles-1m) ──
+// ── ET timezone helpers ────────────────────────────────────
 
 const ET_MINUTES_FMT = new Intl.DateTimeFormat('en-US', {
   timeZone: 'America/New_York',
@@ -113,115 +96,19 @@ const SESSION_CLOSE_MIN = 960; // 4:00 PM ET
 
 // ── Schwab auth ────────────────────────────────────────────
 
-/**
- * Mask token-like runs, then cap the length — same rule as
- * api/_lib/redact-upstream-body.ts (keep in sync): 24+ chars of
- * `A-Za-z0-9+/=_.-\%` become `[redacted]`, then truncate to 200.
- */
-function redactBody(body) {
-  const masked = body.replaceAll(/[A-Za-z0-9+/=_.%\\-]{24,}/g, '[redacted]');
-  if (masked.length <= 200) return masked;
-  return `${masked.slice(0, 200)}… (${body.length} chars)`;
-}
-
+// The token read, refresh and compare-and-set live in _lib/schwab-local.mjs,
+// shared with the candle backfill. It throws; this script ends the run.
 async function getSchwabToken() {
-  const stored = await redis.get(KV_KEY);
-  if (!stored) {
-    console.error(
-      'No Schwab tokens in Redis. Run /api/auth/init to authenticate first.',
-    );
+  try {
+    return await getSchwabAccessToken(redis, {
+      clientId: schwabEnv.clientId,
+      clientSecret: schwabEnv.clientSecret,
+    });
+  } catch (err) {
+    if (!(err instanceof SchwabAuthError)) throw err;
+    console.error(err.message);
     process.exit(1);
   }
-
-  // Refresh token lapsed? It lives 7 days from the ORIGINAL login; sending a
-  // dead one only earns a 400 invalid_grant.
-  if (Date.now() > stored.refreshExpiresAt) {
-    console.error(
-      'Schwab refresh token expired. Run /api/auth/init to re-authenticate.',
-    );
-    process.exit(1);
-  }
-
-  // Token still valid?
-  if (Date.now() < stored.expiresAt - BUFFER_MS) {
-    return stored.accessToken;
-  }
-
-  // Refresh
-  console.log('  Schwab access token expired, refreshing...');
-  const encoded = Buffer.from(
-    `${SCHWAB_CLIENT_ID}:${SCHWAB_CLIENT_SECRET}`,
-  ).toString('base64');
-
-  const res = await fetch(TOKEN_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Authorization: `Basic ${encoded}`,
-    },
-    body: new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: stored.refreshToken,
-    }),
-    signal: AbortSignal.timeout(30_000),
-  });
-
-  if (!res.ok) {
-    const body = await res.text();
-    console.error(`Token refresh failed (${res.status}): ${redactBody(body)}`);
-    process.exit(1);
-  }
-
-  const data = await res.json();
-  if (
-    typeof data.access_token !== 'string' ||
-    data.access_token === '' ||
-    typeof data.expires_in !== 'number'
-  ) {
-    console.error('Token refresh returned a malformed response; not storing.');
-    process.exit(1);
-  }
-  const now = Date.now();
-  const newTokens = {
-    accessToken: data.access_token,
-    // Schwab may omit refresh_token on a refresh; the stored one stays valid.
-    refreshToken: data.refresh_token ?? stored.refreshToken,
-    expiresAt: now + data.expires_in * 1000,
-    // Fixed at the original login — a refresh must NOT slide the 7-day
-    // window forward (same rule as api/_lib/schwab.ts).
-    refreshExpiresAt: stored.refreshExpiresAt,
-  };
-
-  const ttlSec = Math.max(
-    Math.floor((newTokens.refreshExpiresAt - now + 86_400_000) / 1000),
-    3600,
-  );
-  const written = await redis.eval(
-    STORE_REFRESHED_LUA,
-    [KV_KEY],
-    [
-      `"refreshToken":${JSON.stringify(stored.refreshToken)}`,
-      JSON.stringify(newTokens),
-      String(ttlSec),
-    ],
-  );
-  if (written !== 1) {
-    // The record changed under us (a re-login, or a clear). Use what is
-    // stored now if it's valid; otherwise stop rather than overwrite it.
-    const current = await redis.get(KV_KEY);
-    if (current && Date.now() < current.expiresAt - BUFFER_MS) {
-      console.log(
-        '  Token record changed during refresh (re-login?); using the stored token.',
-      );
-      return current.accessToken;
-    }
-    console.error(
-      'Token record changed or was cleared during refresh; not overwriting it. Re-run the script.',
-    );
-    process.exit(1);
-  }
-  console.log('  Token refreshed and stored.');
-  return newTokens.accessToken;
 }
 
 // ── Schwab fetch ───────────────────────────────────────────
