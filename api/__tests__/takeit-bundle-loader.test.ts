@@ -1,11 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Only list() is replaced: the loader tells a transient Blob failure from
-// a config one by the SDK's real error classes.
-vi.mock('@vercel/blob', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@vercel/blob')>()),
-  list: vi.fn(),
-}));
+// a config one by the SDK's real error classes. The rest of the package goes
+// through blockBlobExports, because this mock replaces the global one in
+// setup.ts and would otherwise leave the writers (put, del) real.
+vi.mock('@vercel/blob', async (importOriginal) => {
+  const { blockBlobExports } = await import('../../src/__tests__/db-guard.js');
+  return {
+    ...blockBlobExports(await importOriginal<typeof import('@vercel/blob')>()),
+    list: vi.fn(),
+  };
+});
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
@@ -22,8 +27,13 @@ import {
   BlobStoreNotFoundError,
   BlobUnknownError,
   list,
+  put,
 } from '@vercel/blob';
 
+import {
+  STORE_BLOCK_MESSAGE,
+  trackDbAttempts,
+} from '../../src/__tests__/db-guard.js';
 import { Sentry } from '../_lib/sentry.js';
 import {
   _resetBundleCacheForTests,
@@ -879,5 +889,16 @@ describe('getBundle: why it has no bundle', () => {
       'unsupported xgb_json_schema',
     );
     expect(onUnavailable).not.toHaveBeenCalled();
+  });
+});
+
+describe('the rest of @vercel/blob under a partial mock', () => {
+  it('stays blocked: only list() is replaced, the writers are not real', async () => {
+    const attempts = trackDbAttempts();
+    await expect(put('p', 'x', { access: 'public' })).rejects.toThrow(
+      STORE_BLOCK_MESSAGE,
+    );
+    expect(attempts.made).toEqual(['blob.put']);
+    attempts.discard();
   });
 });
