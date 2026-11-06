@@ -347,6 +347,39 @@ def test_handle_explain_401_on_bad_bearer() -> None:
     assert body == {"error": "unauthorized"}
 
 
+def test_handle_explain_401_on_missing_bearer() -> None:
+    with patch.dict(
+        "os.environ", {"TAKEIT_SIDECAR_SHARED_SECRET": "right"}, clear=False
+    ):
+        status, body = takeit_server.handle_explain_payload(b"{}", "")
+    assert status == 401
+    assert body == {"error": "unauthorized"}
+
+
+@pytest.mark.parametrize("header", ["Bearer caf\xe9", "Bearer \u0105"])
+def test_handle_explain_401_on_non_ascii_bearer(header: str) -> None:
+    """http.server hands the handler header bytes decoded as latin-1; a
+    non-ASCII value must be rejected, not raise out of the comparison."""
+    with patch.dict(
+        "os.environ", {"TAKEIT_SIDECAR_SHARED_SECRET": "right"}, clear=False
+    ):
+        status, body = takeit_server.handle_explain_payload(b"{}", header)
+    assert status == 401
+    assert body == {"error": "unauthorized"}
+
+
+def test_handle_explain_delegates_the_bearer_check_to_auth() -> None:
+    """The comparison lives in `auth.bearer_ok`, not in a block of its own."""
+    with (
+        patch.dict("os.environ", {"TAKEIT_SIDECAR_SHARED_SECRET": "s"}, clear=False),
+        patch("takeit_server.bearer_ok", return_value=False) as bearer_ok,
+    ):
+        status, body = takeit_server.handle_explain_payload(b"{}", _bearer("s"))
+    assert status == 401
+    assert body == {"error": "unauthorized"}
+    bearer_ok.assert_called_once_with(_bearer("s"), "s")
+
+
 def test_handle_explain_400_on_invalid_json() -> None:
     with patch.dict("os.environ", {"TAKEIT_SIDECAR_SHARED_SECRET": "s"}, clear=False):
         status, body = takeit_server.handle_explain_payload(b"not json{", _bearer("s"))

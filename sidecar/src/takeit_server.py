@@ -34,7 +34,6 @@ Endpoint (wired in sidecar/src/health.py):
 
 from __future__ import annotations
 
-import hmac
 import io
 import json
 import logging
@@ -43,6 +42,8 @@ import threading
 import urllib.parse
 import urllib.request
 from typing import Any
+
+from auth import bearer_ok, shared_secret
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +204,7 @@ def is_enabled() -> bool:
             e.name,
         )
         return False
-    if not os.environ.get("TAKEIT_SIDECAR_SHARED_SECRET", ""):
+    if not shared_secret():
         logger.warning("takeit_server: TAKEIT_SIDECAR_SHARED_SECRET not set")
         return False
     return True
@@ -225,11 +226,10 @@ def handle_explain_payload(body_bytes: bytes, auth_header: str) -> tuple[int, di
     The HealthHandler caller is responsible for writing the response headers
     + body; we just emit the status code and the JSON payload.
     """
-    shared_secret = os.environ.get("TAKEIT_SIDECAR_SHARED_SECRET", "")
-    if not shared_secret:
+    secret = shared_secret()
+    if not secret:
         return 503, {"error": "TAKEIT_SIDECAR_SHARED_SECRET not configured"}
-    # Constant-time compare — a raw `!=` leaks the secret via timing.
-    if not hmac.compare_digest(auth_header, f"Bearer {shared_secret}"):
+    if not bearer_ok(auth_header, secret):
         return 401, {"error": "unauthorized"}
 
     try:
