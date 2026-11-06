@@ -176,6 +176,42 @@ describe('archive-sidecar', () => {
     );
   });
 
+  it('returns null and warns when a 2xx body is not JSON', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError('Unexpected token <');
+      },
+    } as unknown as Response);
+
+    expect(await fetchDaySummary('2024-08-05')).toBeNull();
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(SyntaxError) }),
+      'Sidecar archive fetch failed',
+    );
+  });
+
+  it('returns the vector when fetchDayFeatures gets a 200 with an array', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ date: '2024-08-05', dim: 2, vector: [0.1, -0.2] }),
+    } as Response);
+
+    expect(await fetchDayFeatures('2024-08-05')).toEqual([0.1, -0.2]);
+  });
+
+  it('returns null when fetchDayFeatures gets a 200 whose vector is not an array', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ vector: 'x' }),
+    } as Response);
+
+    expect(await fetchDayFeatures('2024-08-05')).toBeNull();
+  });
+
   it('URL-encodes the date parameter', async () => {
     const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
       ok: true,

@@ -13,11 +13,13 @@ import { describe, expect, it } from 'vitest';
 describe('scripts that call the sidecar archive', () => {
   // vitest runs from the repo root (same convention as eslint-api-guard.test.mjs).
   const scriptsDir = path.join(process.cwd(), 'scripts');
-  const ARCHIVE_CALL = /\$\{SIDECAR_URL\}\/archive\//g;
+  // Any template variable, so a script that names its base URL differently
+  // is still caught.
+  const ARCHIVE_CALL = /\$\{\w+\}\/archive\//g;
   const HEADERS_ARG = /headers: sidecarArchiveHeaders\(\)/g;
 
   const callers = readdirSync(scriptsDir)
-    .filter((name) => name.endsWith('.mjs'))
+    .filter((name) => /\.(mjs|mts|ts|js)$/.test(name))
     .map((name) => ({
       name,
       source: readFileSync(path.join(scriptsDir, name), 'utf8'),

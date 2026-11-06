@@ -370,6 +370,7 @@ describe('fetch-day-ohlc handler', () => {
       expect.stringContaining('/archive/day-summary-batch?'),
       expect.objectContaining({
         headers: { Authorization: 'Bearer s3cret' },
+        signal: expect.any(AbortSignal),
       }),
     );
     expect(res._json).toMatchObject({ status: 'success', updated: 1 });
