@@ -684,6 +684,43 @@ describe('classifyFailure', () => {
     expect(classifyFailure(new Error(message)).kind).toBe('other');
   });
 
+  it.each([
+    'uw_http_503',
+    'uw_http_403',
+    'network',
+    'timeout',
+    'malformed',
+    'db',
+    'other',
+  ])('lets a DayFailure carry the kind %s', (kind) => {
+    expect(new DayFailure(kind, 'why').kind).toBe(kind);
+  });
+
+  it.each([
+    ['an unknown word', 'banana'],
+    ['undefined', undefined],
+    ['null', null],
+    ['a number', 503],
+    ['a kind with a newline', 'db\nother'],
+    ['a kind with a trailing newline', 'db\n'],
+    ['a kind in the wrong case', 'DB'],
+    ['uw_http_ without a status', 'uw_http_'],
+    ['uw_http_ with a non-numeric status', 'uw_http_5xx'],
+  ])('rejects %s as a DayFailure kind, naming it', (_label, kind) => {
+    let thrown;
+    try {
+      new DayFailure(kind, 'why');
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(TypeError);
+    expect(thrown.message).toContain('DayFailure kind');
+    expect(thrown.message).toContain(JSON.stringify(String(kind)));
+    // The bad kind is quoted, so a newline in it can't break the message.
+    expect(thrown.message).not.toMatch(/[\r\n]/);
+  });
+
   it('does not call an untagged error db, whatever its message says', () => {
     expect(classifyFailure(new Error('connection terminated')).kind).toBe(
       'other',
@@ -808,6 +845,28 @@ describe('runDays', () => {
     expect(detail).toContain('got keys apiKey, rows, fetched;');
     expect(detail).toContain('fetched is string');
     expect(detail).not.toContain('sekret');
+  });
+
+  it('marks a key list cut at 10 with ", ..." and leaves a list of exactly 10 alone', async () => {
+    atTime(AFTER_CLOSE);
+    const withKeys = (count) =>
+      Object.fromEntries(
+        Array.from({ length: count }, (_, i) => [`k${i + 1}`, i]),
+      );
+
+    const cut = await runDays(['2026-07-22'], after, async () => withKeys(14));
+    const exact = await runDays(['2026-07-22'], after, async () =>
+      withKeys(10),
+    );
+
+    expect(cut.days[0].failure.detail).toContain(
+      'got keys k1, k2, k3, k4, k5, k6, k7, k8, k9, k10, ...; fetched is',
+    );
+    expect(cut.days[0].failure.detail).not.toContain('k11');
+    expect(exact.days[0].failure.detail).toContain(
+      'got keys k1, k2, k3, k4, k5, k6, k7, k8, k9, k10; fetched is',
+    );
+    expect(exact.days[0].failure.detail).not.toContain('...');
   });
 
   it('counts a DB rejection against its day, as db, and moves on', async () => {

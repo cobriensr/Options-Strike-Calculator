@@ -512,7 +512,7 @@ function isDayCounts(value) {
   );
 }
 
-/** How many key names of a wrong worker value to list. */
+/** How many key names of a wrong worker value to list; more end in ", ...". */
 const MAX_KEYS_SHOWN = 10;
 
 /**
@@ -524,7 +524,9 @@ function describeValue(value) {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'an array';
   if (typeof value !== 'object') return typeof value;
-  const names = Object.keys(value).slice(0, MAX_KEYS_SHOWN).join(', ');
+  const keys = Object.keys(value);
+  const shown = keys.slice(0, MAX_KEYS_SHOWN).join(', ');
+  const names = keys.length > MAX_KEYS_SHOWN ? `${shown}, ...` : shown;
   const show = (n) => (typeof n === 'number' ? String(n) : typeof n);
   return (
     `keys ${names === '' ? '(none)' : names}; ` +
@@ -542,6 +544,13 @@ function failedDay(date, failed, secrets) {
 }
 
 /**
+ * The kinds a failure may carry. Checked on a DayFailure because its kind is
+ * trusted as given: an undefined one would make summarizeRun's sort throw,
+ * and a newline in one would break a printed line.
+ */
+const FAILURE_KIND = /^(uw_http_\d+|network|timeout|malformed|db|other)$/;
+
+/**
  * A failure whose kind is stated, not read off an error: classifyFailure
  * returns `kind` as given, one of its kinds (`uw_http_<n>`, `network`,
  * `timeout`, `malformed`, `db`, `other`). runDayItems throws one. A plain
@@ -551,6 +560,13 @@ function failedDay(date, failed, secrets) {
 export class DayFailure extends Error {
   constructor(kind, message) {
     super(message);
+    if (typeof kind !== 'string' || !FAILURE_KIND.test(kind)) {
+      // Quoted, so a newline in a bad kind can't break the message.
+      throw new TypeError(
+        'DayFailure kind must be uw_http_<n>, network, timeout, malformed, ' +
+          `db or other, got ${JSON.stringify(String(kind))}`,
+      );
+    }
     this.name = 'DayFailure';
     this.kind = kind;
   }
