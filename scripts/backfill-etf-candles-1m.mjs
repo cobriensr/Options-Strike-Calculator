@@ -1,176 +1,130 @@
 #!/usr/bin/env node
 
 /**
- * Local backfill script for raw 1-min OHLC candles on SPY and QQQ.
+ * Backfill of etf_candles_1m: raw 1-minute SPY and QQQ bars (extended hours
+ * included, as the live cron stores them) from Unusual Whales
+ * /stock/{ticker}/ohlc/1m?date=, for a range of finished ET trading days.
  *
- * Pulls /stock/{ticker}/ohlc/1m?date={date} from Unusual Whales for the
- * last N trading days (default 30) and stores raw prices in the
- * etf_candles_1m table. Idempotent on (ticker, timestamp).
+ * Mirrors api/cron/fetch-etf-candles-1m.ts: the prices as UW sends them,
+ * ON CONFLICT (ticker, timestamp) DO NOTHING, so a re-run only adds what is
+ * missing and a day the live cron half filled (2026-07-22) keeps its rows.
+ * Run this before the SPX/NDX candles: those are scaled from the same bars,
+ * and the dark-pool reader divides an index bar by the matching ETF bar.
  *
- * This populates the historical candles needed by
- * api/cron/enrich-vega-spike-returns.ts to backfill forward-return
- * columns on the 30-day spike history already in vega_spike_events.
+ * Which days: --from and --to are required, inclusive, NYSE trading days from
+ * src/data/marketHours.ts (holidays skipped). --to must be before today (ET):
+ * the live crons fill today. There is no lookback default and no positional N
+ * any more (the old 30-day default could not reach a gap).
  *
- * Usage:
- *   UW_API_KEY=your_key DATABASE_URL="postgresql://..." node scripts/backfill-etf-candles-1m.mjs
+ * UW: at most UW_REQUESTS_PER_MINUTE (300) requests a minute, one retry
+ * after 1 s on a 5xx, a 429, a network error or a timeout. limit=2500 (UW's
+ * cap; a full extended session is about 960 bars). A 4xx or malformed answer,
+ * or one that reaches the cap, fails that day (exit 1); a day UW has no bars
+ * for is listed as empty, not failed. Refuses to start 08:15–15:30 CT on a
+ * weekday, and stops taking days (exit 3) when that window opens mid-run: its
+ * calls skip the shared Redis semaphore and compete with the production
+ * crons.
  *
- * Options:
- *   node scripts/backfill-etf-candles-1m.mjs 5    # 5 days instead of 30
+ * Writes: ≤500 rows per INSERT. Runs against whatever DATABASE_URL points at
+ * (.env.local = PRODUCTION).
+ *
+ * Usage (from the repo root; the key and URL are never printed):
+ *   node --env-file=.env.local scripts/backfill-etf-candles-1m.mjs \
+ *     --from 2026-07-22 --to 2026-09-04 [flags]
+ *
+ * Flags:
+ *   --from YYYY-MM-DD     first trading date (inclusive), required
+ *   --to YYYY-MM-DD       last trading date (inclusive), required
+ *   --dry-run             fetch and map, write nothing; needs no DATABASE_URL
+ *   --limit N             only the first N trading days of the range
+ *   --allow-market-hours  start even inside the 08:15–15:30 CT window
+ *
+ * Exit codes: 0 every day done, 1 a day failed (or a key is missing),
+ * 2 bad flags, 3 the market-hours guard refused or stopped the run.
+ *
+ * Plan: docs/superpowers/plans/2026-11-05-summer-gap-phase3-retrofits.md (P3.1).
  */
 
 import { neon } from '@neondatabase/serverless';
 
+import {
+  EXIT_BAD_ARGS,
+  EXIT_FAILED,
+  EXIT_GUARD_STOP,
+  UW_REQUESTS_PER_MINUTE,
+  createRequestThrottle,
+  formatRunSummary,
+  marketHoursRefusal,
+  redact,
+  runDays,
+  summarizeRun,
+} from './_lib/backfill-cli.mjs';
+import {
+  ETF_TICKERS,
+  planCandleDays,
+  processEtfDay,
+} from './_lib/candles-backfill.mjs';
+
+let plan;
+try {
+  plan = planCandleDays(process.argv.slice(2));
+} catch (err) {
+  console.error(err.message);
+  process.exit(EXIT_BAD_ARGS);
+}
+const { args, dates } = plan;
+
+const refusal = marketHoursRefusal(args);
+if (refusal) {
+  console.error(refusal);
+  process.exit(EXIT_GUARD_STOP);
+}
+
 const UW_API_KEY = process.env.UW_API_KEY;
 const DATABASE_URL = process.env.DATABASE_URL;
-
 if (!UW_API_KEY) {
-  console.error('Missing UW_API_KEY');
-  process.exit(1);
+  console.error('Missing UW_API_KEY (run with --env-file=.env.local)');
+  process.exit(EXIT_FAILED);
 }
-if (!DATABASE_URL) {
-  console.error('Missing DATABASE_URL');
-  process.exit(1);
-}
-
-const sql = neon(DATABASE_URL);
-const UW_BASE = 'https://api.unusualwhales.com/api';
-const TICKERS = ['SPY', 'QQQ'];
-
-const days = Number.parseInt(process.argv[2] ?? '30', 10);
-
-// ── Generate last N trading days ────────────────────────────
-
-const WEEKDAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-
-/**
- * Compute the calendar date AND day-of-week in US/Eastern (the market
- * timezone) so the two are internally consistent. The naive impl using
- * d.toISOString() + d.getDay() drifts by 1 day after ~7 PM CT because
- * toISOString() returns UTC while getDay() returns local — so a Friday
- * evening run produces date strings labeled Saturday and shifts the
- * whole window. Use ET for both halves.
- */
-function getETDayInfo(d) {
-  const date = d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-  const weekday = d.toLocaleDateString('en-US', {
-    timeZone: 'America/New_York',
-    weekday: 'short',
-  });
-  return { date, weekdayIdx: WEEKDAY_NAMES.indexOf(weekday) };
+if (!args.dryRun && !DATABASE_URL) {
+  console.error('Missing DATABASE_URL (or pass --dry-run to skip writes)');
+  process.exit(EXIT_FAILED);
 }
 
-function getTradingDays(count) {
-  const dates = [];
-  const d = new Date();
+const secrets = { uwKey: UW_API_KEY, databaseUrl: DATABASE_URL };
+const say = (line = '') => console.log(redact(line, secrets));
 
-  while (dates.length < count) {
-    const { date, weekdayIdx } = getETDayInfo(d);
-    if (weekdayIdx !== 0 && weekdayIdx !== 6) {
-      dates.push(date);
-    }
-    d.setUTCDate(d.getUTCDate() - 1);
-  }
+say(
+  `Backfilling etf_candles_1m (${ETF_TICKERS.join(', ')}, raw prices)` +
+    (args.dryRun ? ' (DRY RUN: no writes)' : ''),
+);
+say(
+  `  ${dates.length} trading days, ${dates[0]} → ${dates.at(-1)}` +
+    (args.limit == null ? '' : ` (--limit ${args.limit})`),
+);
 
-  return dates.reverse();
-}
+const ctx = {
+  apiKey: UW_API_KEY,
+  sql: args.dryRun ? null : neon(DATABASE_URL),
+  dryRun: args.dryRun,
+  waitForSlot: createRequestThrottle(UW_REQUESTS_PER_MINUTE),
+};
 
-// ── Fetch 1-min OHLC for one (ticker, date) ─────────────────
-
-async function fetchCandles(ticker, date, counters) {
-  const res = await fetch(`${UW_BASE}/stock/${ticker}/ohlc/1m?date=${date}`, {
-    headers: { Authorization: `Bearer ${UW_API_KEY}` },
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    console.warn(
-      `  UW API ${res.status} for ${ticker} ${date}: ${text.slice(0, 100)}`,
-    );
-    counters.failed++;
-    return [];
-  }
-
-  const body = await res.json();
-  return body.data ?? [];
-}
-
-// ── Store every minute candle ───────────────────────────────
-
-async function storeCandles(candles, ticker, counters) {
-  if (candles.length === 0) return { stored: 0, total: 0 };
-
-  let stored = 0;
-
-  for (const candle of candles) {
-    try {
-      const result = await sql`
-        INSERT INTO etf_candles_1m (
-          ticker, timestamp, open, high, low, close, volume
-        )
-        VALUES (
-          ${ticker}, ${candle.start_time},
-          ${candle.open}, ${candle.high}, ${candle.low}, ${candle.close},
-          ${candle.volume ?? null}
-        )
-        ON CONFLICT (ticker, timestamp) DO NOTHING
-        RETURNING id
-      `;
-      if (result.length > 0) stored++;
-    } catch (err) {
-      console.warn(`  Insert error: ${err.message}`);
-      counters.failed++;
-    }
-  }
-
-  return { stored, total: candles.length };
-}
-
-// ── Main ────────────────────────────────────────────────────
-
-async function main() {
-  const tradingDays = getTradingDays(days);
-
-  console.log(`Backfilling ETF 1-min OHLC candles (SPY, QQQ — raw prices)`);
-  console.log(
-    `Days: ${tradingDays.length} (${tradingDays[0]} to ${tradingDays.at(-1)})`,
-  );
-  console.log(`Tickers: ${TICKERS.join(', ')}\n`);
-
-  let totalStored = 0;
-  let totalBars = 0;
-  const counters = { failed: 0 };
-
-  for (const date of tradingDays) {
-    for (const ticker of TICKERS) {
-      // Pause between (date, ticker) pairs to avoid 429s.
-      await new Promise((r) => setTimeout(r, 300));
-
-      const candles = await fetchCandles(ticker, date, counters);
-      const result = await storeCandles(candles, ticker, counters);
-
-      totalStored += result.stored;
-      totalBars += result.total;
-
-      console.log(
-        `  ${date} ${ticker}: ${result.total} bars (${result.stored} new)`,
-      );
-    }
-  }
-
-  console.log(`\nDone!`);
-  console.log(`  Days × tickers: ${tradingDays.length} × ${TICKERS.length}`);
-  console.log(`  Total bars seen: ${totalBars}`);
-  console.log(`  Newly stored: ${totalStored}`);
-  console.log(`  Skipped (duplicates): ${totalBars - totalStored}`);
-  console.log(`  Failures: ${counters.failed}`);
-
-  // Surface partial failures to CI/operators via a non-zero exit code.
-  if (counters.failed > 0) process.exitCode = 1;
-}
-
+let exitCode;
 try {
-  await main();
+  const run = await runDays(
+    dates,
+    { allowMarketHours: args.allowMarketHours, secrets },
+    (date) => processEtfDay(date, ctx),
+  );
+  const summary = summarizeRun(run);
+  say();
+  for (const line of formatRunSummary(summary)) say(line);
+  if (args.dryRun)
+    say('(dry run: stored is 0 by design; kept is what would go in)');
+  exitCode = summary.exitCode;
 } catch (err) {
-  console.error('Backfill failed:', err);
-  process.exit(1);
+  console.error(redact(`backfill aborted: ${err?.message ?? err}`, secrets));
+  exitCode = EXIT_FAILED;
 }
+process.exitCode = exitCode;
