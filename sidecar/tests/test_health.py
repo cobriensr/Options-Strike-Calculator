@@ -119,6 +119,52 @@ def test_removed_tbbo_routes_fall_through_to_404(
     assert body == {"_raw": "Not found"}
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/archive/es-range?date=2025-01-15",
+        "/archive/analog-days?date=2025-01-15&k=5",
+        "/archive/day-summary-prediction?date=2025-01-15",
+    ],
+)
+def test_removed_archive_routes_fall_through_to_404(
+    configure_base_callables, path: str
+) -> None:
+    """Routes with no caller were removed; they must not dispatch.
+
+    `/archive/day-summary-prediction` shares a prefix with the live
+    `/archive/day-summary` route, so it also proves routing is by exact
+    path: a stale caller gets a 404, not another route's summary.
+    """
+    with patch("archive_query.day_summary_text") as day_summary:
+        status, body = _run_request(path=path)
+    assert status == 404
+    assert body == {"_raw": "Not found"}
+    day_summary.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/archive/day-summary/?date=2025-01-15",
+        "/archive/day-summary-extra?date=2025-01-15",
+        "/archive/day-features-batches?from=2025-01-01&to=2025-01-02",
+    ],
+)
+def test_archive_routes_match_the_exact_path(
+    configure_base_callables, path: str
+) -> None:
+    """A path that merely starts with a route's path is not that route."""
+    with (
+        patch("archive_query.day_summary_text") as day_summary,
+        patch("archive_query.day_features_batch") as features_batch,
+    ):
+        status, _body = _run_request(path=path)
+    assert status == 404
+    day_summary.assert_not_called()
+    features_batch.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # SIDE-017 — /archive/day-summary and /archive/day-features short-circuit
 # today/future dates to avoid memory-expensive DuckDB queries that are
@@ -261,28 +307,6 @@ class TestParseHelpers:
 
         with pytest.raises(health._BadRequestError, match="date must be YYYY-MM-DD"):
             health._parse_date_param({}, "date")
-
-    def test_parse_optional_int_returns_none_when_absent(self) -> None:
-        import health
-
-        assert health._parse_optional_int({}, "k") is None
-
-    def test_parse_optional_int_returns_value_when_present(self) -> None:
-        import health
-
-        assert health._parse_optional_int({"k": ["20"]}, "k") == 20
-
-    def test_parse_optional_int_rejects_non_int(self) -> None:
-        import health
-
-        with pytest.raises(health._BadRequestError, match="k must be an integer"):
-            health._parse_optional_int({"k": ["abc"]}, "k")
-
-    def test_parse_optional_int_rejects_below_lo(self) -> None:
-        import health
-
-        with pytest.raises(health._BadRequestError, match=">= 1"):
-            health._parse_optional_int({"horizon_days": ["0"]}, "horizon_days", lo=1)
 
     def test_parse_date_range_happy(self) -> None:
         import health
@@ -509,93 +533,6 @@ class TestSeedArchivePost:
 
 
 # ---------------------------------------------------------------------------
-# /archive/es-range
-# ---------------------------------------------------------------------------
-
-
-class TestArchiveEsRange:
-    def test_es_range_400_on_bad_date(self, configure_base_callables) -> None:
-        status, body = _run_request("/archive/es-range?date=bad")
-        assert status == 400
-        assert "YYYY-MM-DD" in body["error"]
-
-    def test_es_range_200_happy(self, configure_base_callables) -> None:
-        with patch(
-            "archive_query.es_day_summary",
-            return_value={"date": "2024-01-15", "high": 4800.0},
-        ):
-            status, body = _run_request("/archive/es-range?date=2024-01-15")
-        assert status == 200
-        assert body["high"] == pytest.approx(4800.0)
-
-    def test_es_range_404_on_value_error(self, configure_base_callables) -> None:
-        with patch(
-            "archive_query.es_day_summary",
-            side_effect=ValueError("no data"),
-        ):
-            status, body = _run_request("/archive/es-range?date=2099-01-01")
-        assert status == 404
-        assert body["error"] == "no data"
-
-    def test_es_range_500_on_unexpected_exception(
-        self, configure_base_callables
-    ) -> None:
-        with patch(
-            "archive_query.es_day_summary",
-            side_effect=RuntimeError("duckdb crashed"),
-        ):
-            status, body = _run_request("/archive/es-range?date=2024-01-15")
-        assert status == 500
-        assert body["error"] == "query failed"
-
-
-# ---------------------------------------------------------------------------
-# /archive/analog-days
-# ---------------------------------------------------------------------------
-
-
-class TestArchiveAnalogDays:
-    def test_analog_days_400_on_bad_date(self, configure_base_callables) -> None:
-        status, body = _run_request("/archive/analog-days?date=bad")
-        assert status == 400
-        assert "YYYY-MM-DD" in body["error"]
-
-    def test_analog_days_400_on_bad_optional_int(
-        self, configure_base_callables
-    ) -> None:
-        status, body = _run_request("/archive/analog-days?date=2024-01-15&k=notanint")
-        assert status == 400
-        assert "k must be an integer" in body["error"]
-
-    def test_analog_days_200_passes_kwargs(self, configure_base_callables) -> None:
-        sample = {"neighbors": [{"date": "2023-05-01", "distance": 0.1}]}
-        with patch("archive_query.analog_days", return_value=sample) as mock_q:
-            status, body = _run_request(
-                "/archive/analog-days?date=2024-01-15&until_minute=60&k=20"
-            )
-        assert status == 200
-        assert body == sample
-        mock_q.assert_called_once_with("2024-01-15", until_minute=60, k=20)
-
-    def test_analog_days_400_on_value_error(self, configure_base_callables) -> None:
-        with patch(
-            "archive_query.analog_days",
-            side_effect=ValueError("k must be 1..50"),
-        ):
-            status, body = _run_request("/archive/analog-days?date=2024-01-15&k=999")
-        assert status == 400
-        assert "k must be" in body["error"]
-
-    def test_analog_days_500_on_unexpected_exception(
-        self, configure_base_callables
-    ) -> None:
-        with patch("archive_query.analog_days", side_effect=RuntimeError("oops")):
-            status, body = _run_request("/archive/analog-days?date=2024-01-15")
-        assert status == 500
-        assert body["error"] == "query failed"
-
-
-# ---------------------------------------------------------------------------
 # /archive/day-summary — exception path
 # ---------------------------------------------------------------------------
 
@@ -722,49 +659,6 @@ class TestArchiveBatchHandlers:
                 "/archive/day-summary-batch?from=2024-01-01&to=2024-01-02"
             )
         assert status == 500
-
-    def test_summary_prediction_400_on_bad_date(self, configure_base_callables) -> None:
-        status, body = _run_request("/archive/day-summary-prediction?date=nope")
-        assert status == 400
-        assert "YYYY-MM-DD" in body["error"]
-
-    def test_summary_prediction_200(self, configure_base_callables) -> None:
-        with patch(
-            "archive_query.day_summary_prediction",
-            return_value="leakage-free text",
-        ):
-            status, body = _run_request(
-                "/archive/day-summary-prediction?date=2024-01-15"
-            )
-        assert status == 200
-        assert body["date"] == "2024-01-15"
-        assert body["summary"] == "leakage-free text"
-
-    def test_summary_prediction_404_on_value_error(
-        self, configure_base_callables
-    ) -> None:
-        with patch(
-            "archive_query.day_summary_prediction",
-            side_effect=ValueError("missing"),
-        ):
-            status, body = _run_request(
-                "/archive/day-summary-prediction?date=2024-01-15"
-            )
-        assert status == 404
-        assert body["error"] == "missing"
-
-    def test_summary_prediction_500_on_unexpected(
-        self, configure_base_callables
-    ) -> None:
-        with patch(
-            "archive_query.day_summary_prediction",
-            side_effect=RuntimeError("boom"),
-        ):
-            status, body = _run_request(
-                "/archive/day-summary-prediction?date=2024-01-15"
-            )
-        assert status == 500
-        assert body["error"] == "query failed"
 
     def test_summary_prediction_batch_400(self, configure_base_callables) -> None:
         status, _body = _run_request(
@@ -1104,21 +998,25 @@ class TestTakeitExplainBodyCap:
 
 
 class TestArchive500Sentry:
-    def test_es_range_500_captures_to_sentry(self, configure_base_callables) -> None:
+    def test_day_features_batch_500_captures_to_sentry(
+        self, configure_base_callables
+    ) -> None:
         with (
             patch(
-                "archive_query.es_day_summary",
+                "archive_query.day_features_batch",
                 side_effect=RuntimeError("duckdb crashed"),
             ),
             patch("sentry_setup.capture_exception") as cap,
         ):
-            status, body = _run_request("/archive/es-range?date=2024-01-15")
+            status, body = _run_request(
+                "/archive/day-features-batch?from=2024-01-01&to=2024-01-02"
+            )
         assert status == 500
         assert body["error"] == "query failed"
         cap.assert_called_once()
         # Route tag carries the endpoint name for Sentry filtering.
         _args, kwargs = cap.call_args
-        assert kwargs["tags"]["route"] == "es-range"
+        assert kwargs["tags"]["route"] == "day-features-batch"
         assert kwargs["tags"]["component"] == "archive"
         # Caller-supplied tags (`**tags` in _archive_500) reach Sentry too.
-        assert kwargs["tags"]["date"] == "2024-01-15"
+        assert kwargs["tags"]["date"] == "2024-01-01..2024-01-02"

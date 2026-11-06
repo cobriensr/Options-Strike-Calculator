@@ -19,7 +19,7 @@ import threading
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import parse_qs, urlparse
 
 from archive_seeder import SeedBusyError
@@ -79,28 +79,6 @@ def _parse_date_param(qs: dict[str, list[str]], name: str) -> str:
     if not _DATE_RE.fullmatch(raw):
         raise _BadRequestError(f"{name} must be YYYY-MM-DD")
     return raw
-
-
-def _parse_optional_int(
-    qs: dict[str, list[str]], name: str, *, lo: int | None = None
-) -> int | None:
-    """Parse an optional integer query param, or raise _BadRequestError.
-
-    Returns None when the param is absent (so the caller can omit the
-    kwarg and let the query layer apply its own default). When present
-    but unparseable / below ``lo``, raises with the same messages each
-    handler used previously.
-    """
-    raw = (qs.get(name) or [""])[0]
-    if not raw:
-        return None
-    try:
-        value = int(raw)
-    except ValueError:
-        raise _BadRequestError(f"{name} must be an integer") from None
-    if lo is not None and value < lo:
-        raise _BadRequestError(f"{name} must be >= {lo}")
-    return value
 
 
 def _parse_date_range(
@@ -193,42 +171,34 @@ class HealthHandler(BaseHTTPRequestHandler):
     seed_archive: Callable[[], dict[str, Any]] | None = None
     seed_is_busy: Callable[[], bool] | None = None
 
-    # Archive route prefix → bound, heavy DuckDB handler. Ordered by
-    # specificity — longer/more-specific prefixes MUST come before shorter
-    # ones or they get swallowed (e.g. `/archive/day-summary-prediction`
-    # would match `/archive/day-summary` if that route check ran first).
-    # Every entry runs a DuckDB query, so the whole group is gated behind
-    # `archive_query_slot()` in do_GET (AUD-M25 concurrency bound).
-    _ARCHIVE_ROUTES: tuple[tuple[str, str], ...] = (
-        ("/archive/es-range", "_handle_archive_es_range"),
-        ("/archive/analog-days", "_handle_archive_analog_days"),
-        (
-            "/archive/day-summary-prediction-batch",
-            "_handle_archive_day_summary_prediction_batch",
+    # Archive route path → bound, heavy DuckDB handler. Matched on the exact
+    # path with the query string removed, never on a prefix: a prefix match
+    # would hand `/archive/day-summary-prediction` to the `/archive/day-summary`
+    # handler. Every entry runs a DuckDB query, so the whole group is gated
+    # behind `archive_query_slot()` in do_GET (AUD-M25 concurrency bound).
+    _ARCHIVE_ROUTES: ClassVar[dict[str, str]] = {
+        "/archive/day-summary-prediction-batch": (
+            "_handle_archive_day_summary_prediction_batch"
         ),
-        (
-            "/archive/day-summary-prediction",
-            "_handle_archive_day_summary_prediction",
-        ),
-        ("/archive/day-summary-batch", "_handle_archive_day_summary_batch"),
-        ("/archive/day-summary", "_handle_archive_day_summary"),
-        ("/archive/day-features-batch", "_handle_archive_day_features_batch"),
-        ("/archive/day-features", "_handle_archive_day_features"),
-    )
+        "/archive/day-summary-batch": "_handle_archive_day_summary_batch",
+        "/archive/day-summary": "_handle_archive_day_summary",
+        "/archive/day-features-batch": "_handle_archive_day_features_batch",
+        "/archive/day-features": "_handle_archive_day_features",
+    }
 
     def do_GET(self) -> None:
         # /archive/* routes all run heavy, unbounded-memory DuckDB queries.
-        # Bound their concurrency so N unauthenticated requests can't each
+        # Bound their concurrency so N concurrent requests can't each
         # spawn a 500 MB + ~2 GB-temp DuckDB connection and OOM the box
         # (AUD-M25). When the cap is saturated, return 503 instead of
         # piling on another connection. The slot wraps the FULL handler so
         # the bound also covers the query the handler dispatches; cheap
         # input validation inside the handler runs under the slot too, but
         # that cost is negligible next to the DuckDB scan it protects.
-        for prefix, handler_name in self._ARCHIVE_ROUTES:
-            if self.path.startswith(prefix):
-                self._dispatch_bounded_archive(handler_name)
-                return
+        handler_name = self._ARCHIVE_ROUTES.get(self.path.partition("?")[0])
+        if handler_name is not None:
+            self._dispatch_bounded_archive(handler_name)
+            return
 
         if self.path == "/takeit/health":
             self._handle_takeit_health()
@@ -402,65 +372,6 @@ class HealthHandler(BaseHTTPRequestHandler):
                 json.dumps({"error": "archive busy, retry shortly"}).encode()
             )
 
-    def _handle_archive_es_range(self) -> None:
-        """GET /archive/es-range?date=YYYY-MM-DD → ES day summary from archive.
-
-        Unauthenticated read endpoint. Data is already public market data
-        and the archive itself doesn't contain any secrets. Date is the
-        only input and is validated to match YYYY-MM-DD exactly.
-        """
-        qs = parse_qs(urlparse(self.path).query)
-        try:
-            d = _parse_date_param(qs, "date")
-        except _BadRequestError as exc:
-            self._send_json(400, {"error": str(exc)})
-            return
-
-        try:
-            result = _aq().es_day_summary(d)
-            self._send_json(200, result)
-        except ValueError as exc:
-            # Known "no data for this date" — return 404 with message.
-            self._send_json(404, {"error": str(exc)})
-        except Exception as exc:
-            self._archive_500(
-                "es-range", exc, "es-range query failed for %s: %s", d, exc, date=d
-            )
-
-    def _handle_archive_analog_days(self) -> None:
-        """GET /archive/analog-days?date=YYYY-MM-DD&until_minute=60&k=20"""
-        qs = parse_qs(urlparse(self.path).query)
-        try:
-            d = _parse_date_param(qs, "date")
-            # `until_minute` and `k` have defaults in the query layer —
-            # only pass through when supplied so validation errors come
-            # from the ONE place that knows the bounds.
-            kwargs: dict[str, int] = {}
-            for name in ("until_minute", "k"):
-                value = _parse_optional_int(qs, name)
-                if value is not None:
-                    kwargs[name] = value
-        except _BadRequestError as exc:
-            self._send_json(400, {"error": str(exc)})
-            return
-
-        try:
-            result = _aq().analog_days(d, **kwargs)
-            self._send_json(200, result)
-        except ValueError as exc:
-            # Bounds errors ("k must be...") and no-data errors both
-            # surface as ValueError; the message is user-facing either way.
-            self._send_json(400, {"error": str(exc)})
-        except Exception as exc:
-            self._archive_500(
-                "analog-days",
-                exc,
-                "analog-days query failed for %s: %s",
-                d,
-                exc,
-                date=d,
-            )
-
     def _handle_archive_day_summary(self) -> None:
         """GET /archive/day-summary?date=YYYY-MM-DD → deterministic text.
 
@@ -590,36 +501,6 @@ class HealthHandler(BaseHTTPRequestHandler):
                 end,
                 exc,
                 date=f"{start}..{end}",
-            )
-
-    def _handle_archive_day_summary_prediction(self) -> None:
-        """GET /archive/day-summary-prediction?date=YYYY-MM-DD
-
-        Leakage-free text summary for a single date. Same endpoint
-        shape as /archive/day-summary but the response text only
-        includes fields available by the end of the first trading hour
-        (no EOD close, no full-day range, no full-day volume).
-        """
-        qs = parse_qs(urlparse(self.path).query)
-        try:
-            d = _parse_date_param(qs, "date")
-        except _BadRequestError as exc:
-            self._send_json(400, {"error": str(exc)})
-            return
-
-        try:
-            text = _aq().day_summary_prediction(d)
-            self._send_json(200, {"date": d, "summary": text})
-        except ValueError as exc:
-            self._send_json(404, {"error": str(exc)})
-        except Exception as exc:
-            self._archive_500(
-                "day-summary-prediction",
-                exc,
-                "day-summary-prediction failed for %s: %s",
-                d,
-                exc,
-                date=d,
             )
 
     def _handle_archive_day_summary_prediction_batch(self) -> None:

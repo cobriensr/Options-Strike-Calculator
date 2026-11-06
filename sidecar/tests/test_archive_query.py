@@ -101,245 +101,6 @@ def _reset_archive_query_state() -> Iterator[None]:
 
 
 # ---------------------------------------------------------------------------
-# es_day_summary
-# ---------------------------------------------------------------------------
-
-
-def test_es_day_summary_picks_highest_volume_es_contract(tmp_path: Path) -> None:
-    """With two active ES contracts, the one with more volume wins."""
-    from datetime import datetime
-
-    day = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
-    bars = [
-        # Front month (high volume)
-        (day, 101, 5300.0, 5305.0, 5299.0, 5304.0, 10_000),
-        (day.replace(hour=15), 101, 5304.0, 5310.0, 5303.0, 5308.0, 12_000),
-        # Back month (low volume — should NOT win front-month pick)
-        (day, 202, 5350.0, 5352.0, 5349.0, 5351.0, 500),
-    ]
-    symbology = [
-        (101, "ESU4", day, day),
-        (202, "ESZ4", day, day),
-    ]
-    _build_archive(tmp_path, bars, symbology)
-
-    result = archive_query.es_day_summary("2024-06-03", root=tmp_path)
-
-    assert result["symbol"] == "ESU4"
-    assert result["open"] == 5300.0
-    assert result["high"] == 5310.0
-    assert result["low"] == 5299.0
-    assert result["close"] == 5308.0
-    assert result["volume"] == 22_000
-    assert result["bar_count"] == 2
-
-
-def test_es_day_summary_excludes_option_symbols(tmp_path: Path) -> None:
-    """Option symbols (which contain spaces) must not be considered ES."""
-    from datetime import datetime
-
-    day = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
-    bars = [
-        (day, 101, 5300.0, 5305.0, 5299.0, 5304.0, 1_000),
-        # A high-volume option that would win if not filtered.
-        (day, 999, 10.0, 11.0, 9.5, 10.5, 999_999),
-    ]
-    symbology = [
-        (101, "ESU4", day, day),
-        # Real Databento option symbol format: has spaces.
-        (999, "ES 24 09 20 C5400", day, day),
-    ]
-    _build_archive(tmp_path, bars, symbology)
-
-    result = archive_query.es_day_summary("2024-06-03", root=tmp_path)
-
-    # Should be the futures contract, NOT the option.
-    assert result["symbol"] == "ESU4"
-    assert result["volume"] == 1_000
-
-
-def test_es_day_summary_excludes_non_es_symbols(tmp_path: Path) -> None:
-    """NQ bars on the same day must not leak into ES summary."""
-    from datetime import datetime
-
-    day = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
-    bars = [
-        (day, 101, 5300.0, 5305.0, 5299.0, 5304.0, 1_000),
-        (day, 301, 18_000.0, 18_050.0, 17_950.0, 18_025.0, 5_000),
-    ]
-    symbology = [
-        (101, "ESU4", day, day),
-        (301, "NQU4", day, day),
-    ]
-    _build_archive(tmp_path, bars, symbology)
-
-    result = archive_query.es_day_summary("2024-06-03", root=tmp_path)
-    assert result["symbol"] == "ESU4"
-
-
-def test_es_day_summary_raises_on_date_with_no_data(tmp_path: Path) -> None:
-    from datetime import datetime
-
-    day = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
-    bars = [(day, 101, 5300.0, 5305.0, 5299.0, 5304.0, 1_000)]
-    symbology = [(101, "ESU4", day, day)]
-    _build_archive(tmp_path, bars, symbology)
-
-    with pytest.raises(ValueError, match="2024-06-04"):
-        archive_query.es_day_summary("2024-06-04", root=tmp_path)
-
-
-def test_es_day_summary_isolates_day_from_surrounding_data(
-    tmp_path: Path,
-) -> None:
-    """Bars from 06-02 must not be pulled into 06-03's summary."""
-    from datetime import datetime
-
-    d2 = datetime(2024, 6, 2, 14, 30, tzinfo=UTC)
-    d3 = datetime(2024, 6, 3, 14, 30, tzinfo=UTC)
-    bars = [
-        # Prior day — different close.
-        (d2, 101, 5200.0, 5210.0, 5190.0, 5205.0, 5_000),
-        # Target day.
-        (d3, 101, 5300.0, 5305.0, 5299.0, 5304.0, 1_000),
-    ]
-    symbology = [(101, "ESU4", d2, d3)]
-    _build_archive(tmp_path, bars, symbology)
-
-    result = archive_query.es_day_summary("2024-06-03", root=tmp_path)
-    assert result["open"] == 5300.0
-    assert result["close"] == 5304.0
-    assert result["volume"] == 1_000
-
-
-# ---------------------------------------------------------------------------
-# analog_days
-# ---------------------------------------------------------------------------
-
-
-def _two_bar_day(
-    date_tuple: tuple[int, int, int],
-    instrument_id: int,
-    open_price: float,
-    close_at_1h: float,
-    close_eod: float,
-) -> list[tuple]:
-    """Build a two-bar day: one at session open, one 60 min later.
-
-    Enough to exercise the window-based delta comparison without writing
-    60 bars per test day. A third bar at 15:00 UTC gives us an EOD close
-    distinct from the window close.
-    """
-    from datetime import datetime
-
-    d0 = datetime(*date_tuple, 14, 30, tzinfo=UTC)
-    d1 = datetime(*date_tuple, 15, 30, tzinfo=UTC)  # +60m
-    d2 = datetime(*date_tuple, 21, 0, tzinfo=UTC)  # EOD
-    # open/high/low/close — keep simple by making high = max of the
-    # prices we reference and low = min.
-    hi = max(open_price, close_at_1h, close_eod)
-    lo = min(open_price, close_at_1h, close_eod)
-    return [
-        (d0, instrument_id, open_price, hi, lo, open_price, 1_000),
-        (d1, instrument_id, open_price, hi, lo, close_at_1h, 1_000),
-        (d2, instrument_id, close_at_1h, hi, lo, close_eod, 1_000),
-    ]
-
-
-def test_analog_days_returns_nearest_by_window_delta(tmp_path: Path) -> None:
-    """Target delta = +5. Closest analog should be the day with delta closest to +5."""
-    from datetime import datetime
-
-    # days: (date, delta in first 60min)
-    # target:  2024-06-05, open=5300 close_at_1h=5305  -> delta +5
-    # day A:   2024-06-04, open=4000 close_at_1h=4004  -> delta +4  (distance 1)
-    # day B:   2024-06-03, open=4000 close_at_1h=4010  -> delta +10 (distance 5)
-    # day C:   2024-06-02, open=4000 close_at_1h=3995  -> delta -5  (distance 10)
-    # day D:   2024-06-01, open=4000 close_at_1h=4005  -> delta +5  (distance 0, best)
-    bars: list[tuple] = []
-    bars += _two_bar_day((2024, 6, 1), 101, 4000.0, 4005.0, 4020.0)  # D
-    bars += _two_bar_day((2024, 6, 2), 101, 4000.0, 3995.0, 3990.0)  # C
-    bars += _two_bar_day((2024, 6, 3), 101, 4000.0, 4010.0, 4015.0)  # B
-    bars += _two_bar_day((2024, 6, 4), 101, 4000.0, 4004.0, 4025.0)  # A
-    bars += _two_bar_day((2024, 6, 5), 101, 5300.0, 5305.0, 5330.0)  # target
-    sym_open = datetime(2024, 6, 1, 14, 30, tzinfo=UTC)
-    sym_close = datetime(2024, 6, 5, 21, 0, tzinfo=UTC)
-    symbology = [(101, "ESU4", sym_open, sym_close)]
-    _build_archive(tmp_path, bars, symbology)
-
-    result = archive_query.analog_days(
-        "2024-06-05", until_minute=60, k=3, root=tmp_path
-    )
-
-    # Target delta is +5.
-    assert result["target"]["delta"] == pytest.approx(5.0)
-    assert result["window_minutes"] == 60
-
-    # 3 nearest by |delta - 5|: D(0), A(1), C(5) or B(5) — tie; DuckDB
-    # orders by distance ASC, then arbitrary. Test that D and A come
-    # first and that the 3rd is either B or C.
-    distances = [a["distance"] for a in result["analogs"]]
-    assert distances == sorted(distances)
-    assert result["analogs"][0]["date"] == "2024-06-01"  # D — delta +5, dist 0
-    assert result["analogs"][1]["date"] == "2024-06-04"  # A — delta +4, dist 1
-    assert result["analogs"][2]["date"] in {"2024-06-02", "2024-06-03"}  # dist 5 tie
-
-
-def test_analog_days_excludes_target_from_results(tmp_path: Path) -> None:
-    from datetime import datetime
-
-    bars: list[tuple] = []
-    bars += _two_bar_day((2024, 6, 4), 101, 4000.0, 4005.0, 4010.0)
-    bars += _two_bar_day((2024, 6, 5), 101, 5300.0, 5305.0, 5310.0)
-    sym = [
-        (
-            101,
-            "ESU4",
-            datetime(2024, 6, 4, 14, 30, tzinfo=UTC),
-            datetime(2024, 6, 5, 21, 0, tzinfo=UTC),
-        )
-    ]
-    _build_archive(tmp_path, bars, sym)
-
-    result = archive_query.analog_days(
-        "2024-06-05", until_minute=60, k=10, root=tmp_path
-    )
-    assert all(a["date"] != "2024-06-05" for a in result["analogs"])
-
-
-def test_analog_days_raises_on_no_data_for_target(tmp_path: Path) -> None:
-    from datetime import datetime
-
-    bars: list[tuple] = _two_bar_day((2024, 6, 4), 101, 4000.0, 4005.0, 4010.0)
-    sym = [
-        (
-            101,
-            "ESU4",
-            datetime(2024, 6, 4, 14, 30, tzinfo=UTC),
-            datetime(2024, 6, 4, 21, 0, tzinfo=UTC),
-        )
-    ]
-    _build_archive(tmp_path, bars, sym)
-
-    with pytest.raises(ValueError, match="2024-06-05"):
-        archive_query.analog_days("2024-06-05", root=tmp_path)
-
-
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        {"k": 0},
-        {"k": 999},
-        {"until_minute": 0},
-        {"until_minute": 1000},
-    ],
-)
-def test_analog_days_validates_bounds(tmp_path: Path, kwargs: dict) -> None:
-    with pytest.raises(ValueError):
-        archive_query.analog_days("2024-06-05", root=tmp_path, **kwargs)
-
-
-# ---------------------------------------------------------------------------
 # day_summary_text
 # ---------------------------------------------------------------------------
 
@@ -518,7 +279,10 @@ def test_day_summary_prediction_has_no_close_field(tmp_path: Path) -> None:
         ],
     )
 
-    summary = archive_query.day_summary_prediction("2024-06-03", root=tmp_path)
+    [row] = archive_query.day_summary_prediction_batch(
+        "2024-06-03", "2024-06-03", root=tmp_path
+    )
+    summary = row["summary"]
     # Must NOT contain any form of "close" (EOD outcome).
     assert "close" not in summary
     # But must contain the first-hour fields.
@@ -529,7 +293,9 @@ def test_day_summary_prediction_has_no_close_field(tmp_path: Path) -> None:
     assert summary.startswith("2024-06-03 ESU4 | open 5300.00")
 
 
-def test_day_summary_prediction_batch_matches_per_date(tmp_path: Path) -> None:
+def test_day_summary_prediction_batch_summary_format(tmp_path: Path) -> None:
+    """The summary text is the deterministic input to the embedding call:
+    pin it byte for byte so a reordered or reworded field fails here."""
     from datetime import datetime
 
     closes_a = [5300.0 + i for i in range(1, 61)]
@@ -552,19 +318,30 @@ def test_day_summary_prediction_batch_matches_per_date(tmp_path: Path) -> None:
     batch = archive_query.day_summary_prediction_batch(
         "2024-06-03", "2024-06-04", root=tmp_path
     )
-    assert len(batch) == 2
-    archive_query.reset_connection_for_tests()
-    single_a = archive_query.day_summary_prediction("2024-06-03", root=tmp_path)
-    archive_query.reset_connection_for_tests()
-    single_b = archive_query.day_summary_prediction("2024-06-04", root=tmp_path)
-    by_date = {r["date"]: r for r in batch}
-    # Byte-for-byte match across per-date and batched.
-    assert by_date["2024-06-03"]["summary"] == single_a
-    assert by_date["2024-06-04"]["summary"] == single_b
+    assert batch == [
+        {
+            "date": "2024-06-03",
+            "symbol": "ESU4",
+            "summary": (
+                "2024-06-03 ESU4 | open 5300.00 | 1h delta +60.00 "
+                "| 1h high 5360.00 | 1h low 5301.00 | 1h range 59.00 "
+                "| 1h vol 60.0K"
+            ),
+        },
+        {
+            "date": "2024-06-04",
+            "symbol": "ESU4",
+            "summary": (
+                "2024-06-04 ESU4 | open 5400.00 | 1h delta +30.00 "
+                "| 1h high 5430.00 | 1h low 5400.50 | 1h range 29.50 "
+                "| 1h vol 60.0K"
+            ),
+        },
+    ]
 
 
-def test_day_summary_prediction_rejects_sparse_days(tmp_path: Path) -> None:
-    """Same <10-bar guard as day_features_vector — sparse days (halts,
+def test_day_summary_prediction_batch_skips_sparse_days(tmp_path: Path) -> None:
+    """Same <10-bar guard as day_features_batch — sparse days (halts,
     partial data) produce no embedding rather than a noisy one."""
     from datetime import datetime, timedelta
 
@@ -586,8 +363,12 @@ def test_day_summary_prediction_rejects_sparse_days(tmp_path: Path) -> None:
         bars,
         [(101, "ESU4", d0, d0 + timedelta(minutes=4))],
     )
-    with pytest.raises(ValueError, match="Insufficient"):
-        archive_query.day_summary_prediction("2024-06-03", root=tmp_path)
+    assert (
+        archive_query.day_summary_prediction_batch(
+            "2024-06-03", "2024-06-03", root=tmp_path
+        )
+        == []
+    )
 
 
 def test_day_features_batch_matches_per_date_vectors(tmp_path: Path) -> None:
@@ -743,7 +524,7 @@ def test_day_features_vector_forward_fills_gaps(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_es_day_summary_honors_utc_day_on_non_utc_host(
+def test_single_date_queries_honor_utc_day_on_non_utc_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -757,7 +538,7 @@ def test_es_day_summary_honors_utc_day_on_non_utc_host(
     Chicago (CT, UTC-5/-6) host would bucket into the 2025-10-15 CT
     calendar day. Every single-date archive query shares this bucketing
     (the ``*_batch`` variants use ``session_date_expr``), so
-    ``es_day_summary`` stands in for all of them. (This guard previously
+    ``day_summary_text`` stands in for all of them. (This guard previously
     lived on the TBBO microstructure query, removed with Databento.)
 
     The test forces ``TZ=America/Chicago`` via ``monkeypatch.setenv`` +
@@ -786,16 +567,17 @@ def test_es_day_summary_honors_utc_day_on_non_utc_host(
     ]
     _build_archive(tmp_path, bars, [(101, "ESZ5", ts_boundary, ts_midday)])
 
-    # UTC date 2025-10-16 must see BOTH bars.
-    result = archive_query.es_day_summary("2025-10-16", root=tmp_path)
-    assert result["bar_count"] == 2
-    assert result["volume"] == 3_000
-    assert result["open"] == 5300.0
+    # UTC date 2025-10-16 must see BOTH bars (open from the 00:30 bar,
+    # volume 1_000 + 2_000).
+    assert archive_query.day_summary_text("2025-10-16", root=tmp_path) == (
+        "2025-10-16 ESZ5 | open 5300.00 | 1h delta +1.00 | 2h delta +1.00 "
+        "| 3h delta +1.00 | range 6.00 | vol 3.0K | close 5304.00 (+4.00)"
+    )
 
     # UTC date 2025-10-15 has no bars. Pre-fix, the 00:30 UTC bar would
     # leak into the 2025-10-15 CT day and this would not raise.
     with pytest.raises(ValueError, match="2025-10-15"):
-        archive_query.es_day_summary("2025-10-15", root=tmp_path)
+        archive_query.day_summary_text("2025-10-15", root=tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -846,19 +628,15 @@ def test_utc_day_bucket_keeps_last_nanosecond_before_midnight(
     ]
     _build_archive(tmp_path, bars, [(101, "ESU4", midday, next_midnight)])
 
-    day = archive_query.es_day_summary("2024-06-03", root=tmp_path)
-    assert day["bar_count"] == 2
-    assert day["volume"] == 3_000
-    assert day["close"] == 5302.0
-
-    next_day = archive_query.es_day_summary("2024-06-04", root=tmp_path)
-    assert next_day["bar_count"] == 1
-    assert next_day["open"] == 5400.0
-
-    # The `/archive/day-summary` path: front-month pick + interval windows.
+    # The 1 ns bar stays on 06-03: two bars, volume 3.0K, close 5302.
     assert archive_query.day_summary_text("2024-06-03", root=tmp_path) == (
         "2024-06-03 ESU4 | open 5300.00 | 1h delta +1.00 | 2h delta +1.00 "
         "| 3h delta +1.00 | range 6.00 | vol 3.0K | close 5302.00 (+2.00)"
+    )
+    # The midnight bar opens 06-04 on its own.
+    assert archive_query.day_summary_text("2024-06-04", root=tmp_path) == (
+        "2024-06-04 ESU4 | open 5400.00 | 1h delta +0.00 | 2h delta +0.00 "
+        "| 3h delta +0.00 | range 2.00 | vol 4.0K | close 5400.00 (+0.00)"
     )
 
 
@@ -908,9 +686,11 @@ def test_utc_day_bucket_follows_session_timezone(tmp_path: Path) -> None:
     )
     archive_query._connection().execute("SET TimeZone = 'America/Chicago'")
 
-    assert archive_query.es_day_summary("2024-06-03", root=tmp_path)["bar_count"] == 1
+    assert archive_query.day_summary_text("2024-06-03", root=tmp_path).startswith(
+        "2024-06-03 ESU4 | open 5300.00"
+    )
     with pytest.raises(ValueError, match="2024-06-04"):
-        archive_query.es_day_summary("2024-06-04", root=tmp_path)
+        archive_query.day_summary_text("2024-06-04", root=tmp_path)
 
 
 # ---------------------------------------------------------------------------

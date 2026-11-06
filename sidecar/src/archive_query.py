@@ -52,13 +52,12 @@ _UTC_DAY = f"CAST(date_trunc('day', {_TS}) AS DATE)"
 # Concurrency bound for archive query execution (SIDE / AUD-M25)
 # ---------------------------------------------------------------------------
 #
-# The /archive/* routes are unauthenticated and run on an unbounded
-# `ThreadingHTTPServer` (one thread per request — see health.py). Each
-# DuckDB connection is capped at `memory_limit='500MB'` PLUS up to ~2 GB
-# of on-disk temp spill, and those caps are PER thread-local connection.
-# So N concurrent /archive/* requests cost N x (500 MB RAM + ~2 GB temp)
-# on a 3-vCPU Railway box with a documented OOM history — a trivial
-# unauthenticated memory-exhaustion DoS.
+# The /archive/* routes run on an unbounded `ThreadingHTTPServer` (one
+# thread per request — see health.py). Each DuckDB connection is capped at
+# `memory_limit='500MB'` PLUS up to ~2 GB of on-disk temp spill, and those
+# caps are PER thread-local connection. So N concurrent /archive/* requests
+# cost N x (500 MB RAM + ~2 GB temp) on a 3-vCPU Railway box with a
+# documented OOM history, whoever the callers are.
 #
 # This semaphore bounds how many archive queries may execute DuckDB work
 # at once. Callers that find the cap saturated must NOT block-and-spawn
@@ -139,9 +138,8 @@ def _connection() -> duckdb.DuckDBPyConnection:
         # activity into the wrong per-day aggregate. The Phase 4c ML
         # pipeline (`ml/src/features/microstructure.py::_new_connection`)
         # was patched with the exact same hook; this is the sidecar
-        # counterpart. The single-date queries (`es_day_summary`,
-        # `analog_days`, `day_summary_text`, `day_features_vector`,
-        # `day_summary_prediction`) bucket with `_UTC_DAY`, a
+        # counterpart. The single-date queries (`day_summary_text`,
+        # `day_features_vector`) bucket with `_UTC_DAY`, a
         # `date_trunc('day', ...)` over the normalized TIMESTAMPTZ `_TS`,
         # and depend on it. The `*_batch` variants bucket by CME session
         # date via `front_month.session_date_expr`, which is session-TZ
@@ -212,95 +210,6 @@ def reset_connection_for_tests() -> None:
 # ---------------------------------------------------------------------------
 
 
-def es_day_summary(
-    date_iso: str,
-    *,
-    root: Path | None = None,
-) -> dict[str, Any]:
-    """Return a day-level summary of ES futures activity.
-
-    Picks the top ES contract by volume for `date_iso` (de facto front
-    month) and returns its OHLC + volume + bar count. `date_iso` is a
-    `YYYY-MM-DD` string in UTC.
-
-    Raises ValueError if the date has no ES bars in the archive.
-    """
-    conn = _connection()
-    ohlcv = _ohlcv_glob(root)
-    symbology = _symbology_path(root)
-
-    # Step 1 — pick the top ES contract by volume on this date.
-    # Symbology uses 'ESH5' etc. for futures; options carry 'ES <date> C<strike>'
-    # (note the space), which we exclude by forbidding spaces in the symbol.
-    # nosemgrep: sqlalchemy-execute-raw-query -- SQL constants only; values bound via ?
-    top_row = conn.execute(
-        f"""
-        SELECT sym.symbol
-        FROM read_parquet(?) AS bars
-        JOIN read_parquet(?) AS sym USING (instrument_id)
-        WHERE sym.symbol LIKE 'ES%'
-          AND strpos(sym.symbol, ' ') = 0
-          AND {_UTC_DAY} = ?::DATE
-        GROUP BY sym.symbol
-        ORDER BY SUM(bars.volume) DESC
-        LIMIT 1
-        """,
-        [ohlcv, symbology, date_iso],
-    ).fetchone()
-
-    if top_row is None:
-        raise ValueError(f"No ES bars found for {date_iso}")
-
-    top_symbol = top_row[0]
-
-    # Step 2 — aggregate OHLC for just that contract on that day.
-    # nosemgrep: sqlalchemy-execute-raw-query -- SQL constants only; values bound via ?
-    summary = conn.execute(
-        f"""
-        WITH filtered AS (
-            SELECT {_TS} AS ts_event, bars.open, bars.high, bars.low,
-                   bars.close, bars.volume
-            FROM read_parquet(?) AS bars
-            JOIN read_parquet(?) AS sym USING (instrument_id)
-            WHERE sym.symbol = ?
-              AND {_UTC_DAY} = ?::DATE
-        )
-        SELECT FIRST(open ORDER BY ts_event) AS day_open,
-               MAX(high)                     AS day_high,
-               MIN(low)                      AS day_low,
-               LAST(close ORDER BY ts_event) AS day_close,
-               SUM(volume)                   AS day_volume,
-               COUNT(*)                      AS bar_count
-        FROM filtered
-        """,
-        [ohlcv, symbology, top_symbol, date_iso],
-    ).fetchone()
-
-    assert summary is not None  # filtered is non-empty by construction
-    day_open, day_high, day_low, day_close, day_volume, bar_count = summary
-
-    return {
-        "date": date_iso,
-        "symbol": top_symbol,
-        "open": float(day_open),
-        "high": float(day_high),
-        "low": float(day_low),
-        "close": float(day_close),
-        "volume": int(day_volume),
-        "bar_count": int(bar_count),
-    }
-
-
-# ---------------------------------------------------------------------------
-# analog_days
-# ---------------------------------------------------------------------------
-
-
-_ANALOG_MAX_K = 50
-_ANALOG_MIN_WINDOW = 10
-_ANALOG_MAX_WINDOW = 390  # one regular session
-
-
 def _front_month_symbol(
     conn: duckdb.DuckDBPyConnection,
     ohlcv: str,
@@ -324,221 +233,6 @@ def _front_month_symbol(
         [ohlcv, symbology, date_iso],
     ).fetchone()
     return row[0] if row else None
-
-
-def analog_days(
-    date_iso: str,
-    *,
-    until_minute: int = 60,
-    k: int = 20,
-    root: Path | None = None,
-) -> dict[str, Any]:
-    """Find historical trading days whose early-session ES path best matches `date_iso`.
-
-    Similarity is measured by absolute difference in the delta (close at
-    `until_minute` minutes into the session minus the day's open) between
-    each historical day and `date_iso`. `until_minute` bounded [10, 390].
-
-    Returns {target, analogs:[{...}]} where each analog also carries the
-    eventual day close and high/low so the caller can answer "what usually
-    happens after a morning like this?".
-
-    Raises ValueError if `date_iso` has no ES bars OR if `k`/`until_minute`
-    are out of range.
-    """
-    if k < 1 or k > _ANALOG_MAX_K:
-        raise ValueError(f"k must be in 1..{_ANALOG_MAX_K}, got {k}")
-    if until_minute < _ANALOG_MIN_WINDOW or until_minute > _ANALOG_MAX_WINDOW:
-        raise ValueError(
-            f"until_minute must be in {_ANALOG_MIN_WINDOW}..{_ANALOG_MAX_WINDOW}"
-        )
-
-    conn = _connection()
-    ohlcv = _ohlcv_glob(root)
-    symbology = _symbology_path(root)
-
-    # Single SQL computes target + all candidates + ordering in one pass.
-    # `per_day` derives open and close-at-window for every ES front-month
-    # contract-day in the archive; the outer query joins the target row
-    # to compute |delta - target_delta| and sorts.
-    #
-    # "Session open" = the minute ts of the first bar of each contract-day
-    # (not 08:30 CT) so Globex overnight activity is captured cleanly and
-    # the function stays TZ-agnostic.
-    # nosemgrep: sqlalchemy-execute-raw-query -- SQL constants only; values bound via ?
-    rows = conn.execute(
-        f"""
-        WITH es_bars AS (
-            SELECT {_TS} AS ts_event,
-                   bars.open,
-                   bars.high,
-                   bars.low,
-                   bars.close,
-                   bars.volume,
-                   sym.symbol,
-                   {_UTC_DAY} AS day
-            FROM read_parquet(?) AS bars
-            JOIN read_parquet(?) AS sym USING (instrument_id)
-            WHERE sym.symbol LIKE 'ES%'
-              AND strpos(sym.symbol, ' ') = 0
-        ),
-        day_front AS (
-            SELECT day,
-                   symbol,
-                   SUM(volume) AS day_volume,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY day ORDER BY SUM(volume) DESC
-                   ) AS rank
-            FROM es_bars
-            GROUP BY day, symbol
-        ),
-        front_only AS (
-            SELECT b.*
-            FROM es_bars b
-            JOIN day_front f
-              ON b.day = f.day AND b.symbol = f.symbol AND f.rank = 1
-        ),
-        per_day AS (
-            SELECT day,
-                   symbol,
-                   FIRST(ts_event ORDER BY ts_event) AS session_open_ts,
-                   FIRST(open ORDER BY ts_event) AS day_open,
-                   MAX(high) AS day_high,
-                   MIN(low) AS day_low,
-                   LAST(close ORDER BY ts_event) AS day_close,
-                   SUM(volume) AS day_volume
-            FROM front_only
-            GROUP BY day, symbol
-        ),
-        window_closes AS (
-            SELECT f.day,
-                   LAST(f.close ORDER BY f.ts_event) AS close_at_window
-            FROM front_only f
-            JOIN per_day p USING (day, symbol)
-            WHERE f.ts_event
-                  <= p.session_open_ts + CAST(? AS INTEGER) * INTERVAL 1 MINUTE
-            GROUP BY f.day
-        ),
-        path AS (
-            SELECT p.day,
-                   p.symbol,
-                   p.day_open,
-                   p.day_high,
-                   p.day_low,
-                   p.day_close,
-                   p.day_volume,
-                   w.close_at_window,
-                   w.close_at_window - p.day_open AS delta
-            FROM per_day p
-            JOIN window_closes w USING (day)
-        ),
-        target AS (
-            SELECT delta AS target_delta
-            FROM path
-            WHERE day = ?::DATE
-        )
-        SELECT p.day, p.symbol, p.day_open, p.day_high, p.day_low,
-               p.day_close, p.day_volume, p.close_at_window, p.delta,
-               abs(p.delta - t.target_delta) AS distance
-        FROM path p, target t
-        WHERE p.day <> ?::DATE
-        ORDER BY distance
-        LIMIT ?
-        """,
-        [ohlcv, symbology, until_minute, date_iso, date_iso, k],
-    ).fetchall()
-
-    # target row — separate query to keep the main one focused on k-nearest
-    # (LIMIT k would otherwise bump the target out of the top rows when it
-    # fully matches itself, giving a confusing API shape).
-    # nosemgrep: sqlalchemy-execute-raw-query -- SQL constants only; values bound via ?
-    target_row = conn.execute(
-        f"""
-        WITH es_bars AS (
-            SELECT {_TS} AS ts_event, bars.open, bars.high, bars.low,
-                   bars.close, bars.volume, sym.symbol,
-                   {_UTC_DAY} AS day
-            FROM read_parquet(?) AS bars
-            JOIN read_parquet(?) AS sym USING (instrument_id)
-            WHERE sym.symbol LIKE 'ES%'
-              AND strpos(sym.symbol, ' ') = 0
-              AND {_UTC_DAY} = ?::DATE
-        ),
-        top AS (
-            SELECT symbol
-            FROM es_bars
-            GROUP BY symbol
-            ORDER BY SUM(volume) DESC
-            LIMIT 1
-        ),
-        f AS (
-            SELECT b.*
-            FROM es_bars b
-            JOIN top USING (symbol)
-        ),
-        agg AS (
-            SELECT FIRST(ts_event ORDER BY ts_event) AS session_open_ts,
-                   FIRST(open ORDER BY ts_event) AS day_open,
-                   MAX(high) AS day_high,
-                   MIN(low) AS day_low,
-                   LAST(close ORDER BY ts_event) AS day_close,
-                   SUM(volume) AS day_volume,
-                   (SELECT symbol FROM top) AS symbol
-            FROM f
-        ),
-        win AS (
-            SELECT LAST(close ORDER BY ts_event) AS close_at_window
-            FROM f
-            WHERE ts_event
-                  <= (SELECT session_open_ts FROM agg)
-                     + CAST(? AS INTEGER) * INTERVAL 1 MINUTE
-        )
-        SELECT a.symbol, a.day_open, a.day_high, a.day_low, a.day_close,
-               a.day_volume, w.close_at_window,
-               w.close_at_window - a.day_open AS delta
-        FROM agg a, win w
-        """,
-        [ohlcv, symbology, date_iso, until_minute],
-    ).fetchone()
-
-    if target_row is None or target_row[0] is None:
-        raise ValueError(f"No ES bars found for {date_iso}")
-
-    tgt_symbol, tgt_open, tgt_high, tgt_low, tgt_close, tgt_vol, tgt_win, tgt_delta = (
-        target_row
-    )
-
-    analogs = [
-        {
-            "date": r[0].isoformat(),
-            "symbol": r[1],
-            "open": float(r[2]),
-            "high": float(r[3]),
-            "low": float(r[4]),
-            "close": float(r[5]),
-            "volume": int(r[6]),
-            "close_at_window": float(r[7]),
-            "delta": float(r[8]),
-            "distance": float(r[9]),
-        }
-        for r in rows
-    ]
-
-    return {
-        "target": {
-            "date": date_iso,
-            "symbol": tgt_symbol,
-            "open": float(tgt_open),
-            "high": float(tgt_high),
-            "low": float(tgt_low),
-            "close": float(tgt_close),
-            "volume": int(tgt_vol),
-            "close_at_window": float(tgt_win),
-            "delta": float(tgt_delta),
-        },
-        "window_minutes": until_minute,
-        "analogs": analogs,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -743,97 +437,6 @@ def day_features_vector(
         vector.append((last_seen - day_open) / day_open)
 
     return vector
-
-
-# ---------------------------------------------------------------------------
-# Prediction-time summary (leakage-free, first-hour only)
-# ---------------------------------------------------------------------------
-#
-# The "close (delta)" field in day_summary_text embeds an EOD outcome
-# into the query text. When we use that summary as OpenAI embedding
-# input, analog retrieval for a target day effectively filters by
-# future knowledge — target closed +20 pulls analogs that also
-# closed +20, even though at analyze time we wouldn't have known that.
-#
-# The prediction variant only uses information available by +60 min
-# from session open: same time-cut as `day_features_vector`, so text
-# and feature embeddings become apples-to-apples.
-
-
-def day_summary_prediction(
-    date_iso: str,
-    *,
-    root: Path | None = None,
-) -> str:
-    """Return a prediction-time text summary (no future leakage).
-
-    Fields: date, symbol, open, 1h delta, first-hour high/low/range/vol.
-    All extracted from the first 60 minutes of the front-month ES bars.
-
-    Format stability matters: this is the deterministic input to the
-    OpenAI embedding call. Reordering fields invalidates stored rows.
-    """
-    conn = _connection()
-    ohlcv = _ohlcv_glob(root)
-    symbology = _symbology_path(root)
-
-    top_symbol = _front_month_symbol(conn, ohlcv, symbology, date_iso)
-    if top_symbol is None:
-        raise ValueError(f"No ES bars found for {date_iso}")
-
-    # nosemgrep: sqlalchemy-execute-raw-query -- SQL constants only; values bound via ?
-    row = conn.execute(
-        f"""
-        WITH f AS (
-            SELECT {_TS} AS ts_event, bars.open, bars.high, bars.low,
-                   bars.close, bars.volume
-            FROM read_parquet(?) AS bars
-            JOIN read_parquet(?) AS sym USING (instrument_id)
-            WHERE sym.symbol = ?
-              AND {_UTC_DAY} = ?::DATE
-        ),
-        bounds AS (
-            SELECT MIN(ts_event) AS open_ts,
-                   FIRST(open ORDER BY ts_event) AS day_open
-            FROM f
-        ),
-        first_hour AS (
-            SELECT f.*
-            FROM f, bounds b
-            WHERE f.ts_event > b.open_ts
-              AND f.ts_event <= b.open_ts + INTERVAL 60 MINUTE
-        )
-        SELECT
-            b.day_open,
-            (SELECT LAST(close ORDER BY ts_event) FROM first_hour) AS close_60,
-            (SELECT MAX(high) FROM first_hour) AS hour_high,
-            (SELECT MIN(low)  FROM first_hour) AS hour_low,
-            (SELECT SUM(volume) FROM first_hour) AS hour_volume,
-            (SELECT COUNT(*) FROM first_hour) AS hour_bars
-        FROM bounds b
-        """,
-        [ohlcv, symbology, top_symbol, date_iso],
-    ).fetchone()
-
-    assert row is not None
-    day_open, close_60, hour_high, hour_low, hour_volume, hour_bars = row
-
-    if hour_bars is None or hour_bars < 10:
-        raise ValueError(
-            f"Insufficient first-hour bars for {date_iso}: got {hour_bars}"
-        )
-
-    d1 = float(close_60) - float(day_open)
-
-    return (
-        f"{date_iso} {top_symbol} | "
-        f"open {float(day_open):.2f} | "
-        f"1h delta {d1:+.2f} | "
-        f"1h high {float(hour_high):.2f} | "
-        f"1h low {float(hour_low):.2f} | "
-        f"1h range {float(hour_high) - float(hour_low):.2f} | "
-        f"1h vol {_format_volume(float(hour_volume))}"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1075,8 +678,22 @@ def day_summary_prediction_batch(
     *,
     root: Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Batched leakage-free summaries. Byte-identical format to
-    `day_summary_prediction`. Single DuckDB query per call.
+    """Leakage-free text summary per ES trading day in [start_date, end_date].
+
+    Returns list of {date, symbol, summary}, one DuckDB query per call.
+
+    `day_summary_text` embeds the EOD close, so using it as embedding input
+    makes analog retrieval filter by future knowledge: a target that closed
+    +20 pulls analogs that also closed +20, even though at analyze time
+    that is unknown. This summary only uses information available by +60 min
+    from session open, the same time-cut as `day_features_vector`, so text
+    and feature embeddings are apples-to-apples.
+
+    Fields: date, symbol, open, 1h delta, first-hour high/low/range/vol.
+    Days with fewer than 10 first-hour bars are skipped, like
+    `day_features_batch`. Format stability matters: this is the
+    deterministic input to the OpenAI embedding call, and reordering fields
+    invalidates stored rows.
     """
     conn = _connection()
     ohlcv = _ohlcv_glob(root)

@@ -1,9 +1,8 @@
 """Tests for the /archive/* concurrency bound (AUD-M25).
 
 `archive_query` runs DuckDB with a per-connection `memory_limit='500MB'`
-plus ~2 GB of temp spill, and the routes are unauthenticated on an
-unbounded `ThreadingHTTPServer`. Without a cap, N concurrent requests =
-N heavy DuckDB connections = a trivial unauthenticated OOM DoS.
+plus ~2 GB of temp spill, on an unbounded `ThreadingHTTPServer`. Without a
+cap, N concurrent requests = N heavy DuckDB connections = an OOM.
 
 These tests pin:
   1. `archive_query_slot()` admits at most `_ARCHIVE_QUERY_CONCURRENCY`
@@ -200,13 +199,13 @@ def test_archive_handler_returns_503_when_cap_saturated() -> None:
         held1.__enter__()
         held2.__enter__()
         try:
-            # If saturation works, es_day_summary is never reached.
+            # If saturation works, day_summary_batch is never reached.
             with patch(
-                "archive_query.es_day_summary",
+                "archive_query.day_summary_batch",
                 side_effect=AssertionError("query must not run when saturated"),
             ):
                 status, body, headers = _run_request(
-                    path="/archive/es-range?date=2025-01-15"
+                    path="/archive/day-summary-batch?from=2025-01-15&to=2025-01-16"
                 )
         finally:
             held1.__exit__(None, None, None)
@@ -219,12 +218,14 @@ def test_archive_handler_returns_503_when_cap_saturated() -> None:
 
 def test_archive_handler_runs_query_when_slot_available() -> None:
     """With slots free, the route dispatches the query normally (200)."""
-    sample = {"date": "2025-01-15", "symbol": "ESH5", "open": 1.0}
+    rows = [{"date": "2025-01-15", "symbol": "ESH5", "open": 1.0}]
     sema = threading.BoundedSemaphore(2)
     with (
         patch.object(archive_query, "_archive_query_semaphore", sema),
-        patch("archive_query.es_day_summary", return_value=sample),
+        patch("archive_query.day_summary_batch", return_value=rows),
     ):
-        status, body, _ = _run_request(path="/archive/es-range?date=2025-01-15")
+        status, body, _ = _run_request(
+            path="/archive/day-summary-batch?from=2025-01-15&to=2025-01-16"
+        )
     assert status == 200
-    assert body == sample
+    assert body == {"from": "2025-01-15", "to": "2025-01-16", "rows": rows}
