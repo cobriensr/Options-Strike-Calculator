@@ -179,14 +179,24 @@ async function seedAll(): Promise<void> {
     '2026-11-06T12:30:00Z',
     'OTHER',
   );
+  // The first row in the table (id 8): earlier dates predate it.
+  await seedEvent(
+    '2026-03-25',
+    'Initial jobless claims',
+    '2026-03-25T12:30:00Z',
+    'OTHER',
+  );
 
   // training_features: (date, is_fomc, event_type, days_to_next, event_count,
   // is_event_day). event_count is 9, 8, ... so a rewrite would show.
-  await seedFeature('2026-03-18', false, null, null, 9, false); // decision day, before the table
+  await seedFeature('2026-03-18', false, null, 6, 9, false); // decision day, before the table; old gap of 6 to 03-25
+  await seedFeature('2026-03-24', false, null, 1, 10, false); // the day before the first event row: still before the table
   await seedFeature('2026-04-29', true, 'FOMC', 7, 8, false); // decision day, right but is_event_day false
   await seedFeature('2026-05-06', true, 'FOMC', null, 7, true); // the old wrong date
   await seedFeature('2026-06-10', true, 'FOMC', 126, 6, false); // budget typed FOMC
   await seedFeature('2026-07-29', false, null, null, 5, false); // decision day in the gap
+  await seedFeature('2026-10-17', false, null, 4, 12, false); // 11 days to 10-28: a hole in the calendar
+  await seedFeature('2026-10-18', false, null, 99, 13, false); // 10 days to 10-28: the largest plausible gap
   await seedFeature('2026-10-28', false, 'OTHER', 8, 4, false); // decision typed OTHER
   await seedFeature('2026-11-05', false, null, 1, 3, false); // already right
   await seedFeature('2026-11-06', false, 'JOBS', 0, 2, false); // last event day, old 0
@@ -272,22 +282,30 @@ describe('economic-event label backfill (pglite)', () => {
     expect(await dump()).toEqual(before);
 
     const { plan } = result;
-    expect(plan.eventRows).toBe(7);
+    expect(plan.eventRows).toBe(8);
     expect(plan.eventChanges.map((c) => [c.id, c.from, c.to])).toEqual([
       [1, 'FOMC', 'FED'],
       [2, 'FOMC', 'FED'],
       [3, 'FOMC', 'OTHER'],
       [4, 'OTHER', 'FOMC'],
     ]);
-    expect(plan.featureRows).toBe(8);
+    expect(plan.featureRows).toBe(11);
     expect(plan.featureChanges.map((c) => c.date)).toEqual([
       '2026-03-18',
+      '2026-03-24',
       '2026-05-06',
       '2026-06-10',
       '2026-07-29',
+      '2026-10-17',
+      '2026-10-18',
       '2026-10-28',
       '2026-11-06',
     ]);
+    // The two NULL rules, counted apart: 03-18 and 03-24 predate the table
+    // (gaps of 7 and 1); 05-06, 06-10, 07-29 and 10-17 sit over a hole.
+    expect(plan.firstEventDate).toBe('2026-03-25');
+    expect(plan.featureRowsBeforeFirstEvent).toBe(2);
+    expect(plan.featureRowsNulledByGap).toBe(4);
     expect(plan.isFomcBefore).toBe(3);
     expect(plan.isFomcAfter).toBe(4);
     expect(plan.snapshotsMissed).toEqual({ total: 3, matched: 2 });
@@ -306,7 +324,7 @@ describe('economic-event label backfill (pglite)', () => {
     expect(result.written).toEqual(plannedWrites(result.plan));
     expect(result.written).toEqual({
       economic_events: 4,
-      training_features: 6,
+      training_features: 9,
       market_snapshots_missed: 2,
       market_snapshots_wrong: 2,
       training_features_event_day_missed: 1,
@@ -325,21 +343,34 @@ describe('economic-event label backfill (pglite)', () => {
       before.events[4],
       before.events[5],
       before.events[6],
+      before.events[7],
     ]);
 
     // 2. training_features: exact integers, and event_count is untouched.
+    // days_to_next_event is NULL where the value would come from missing
+    // data: before the first event row (03-25), or more than 10 days to the
+    // next one.
     expect(after.features).toEqual([
-      // Decision day before the table: FOMC from the schedule, 49 days to
-      // the first event row (05-06).
+      // Decision day before the table: FOMC from the schedule. The gap to
+      // 03-25 is 7, but the table did not exist yet: NULL (old value 6).
       {
         date: '2026-03-18',
         is_fomc: true,
         event_type: 'FOMC',
-        days_to_next_event: 49,
+        days_to_next_event: null,
         event_count: 9,
         is_event_day: false,
       },
-      // Already right in step 2; step 3 sets is_event_day.
+      // One day before the first event row: still before the table.
+      {
+        date: '2026-03-24',
+        is_fomc: false,
+        event_type: null,
+        days_to_next_event: null,
+        event_count: 10,
+        is_event_day: false,
+      },
+      // Already right in step 2 (7 days to 05-06); step 3 sets is_event_day.
       {
         date: '2026-04-29',
         is_fomc: true,
@@ -348,31 +379,51 @@ describe('economic-event label backfill (pglite)', () => {
         event_count: 8,
         is_event_day: true,
       },
-      // The speech day: not FOMC any more, 35 days to 06-10; step 4 clears
-      // is_event_day (no names are left on the snapshots).
+      // The speech day: not FOMC any more. 35 days to 06-10 is a hole in the
+      // calendar: NULL. Step 4 clears is_event_day (no names are left on the
+      // snapshots).
       {
         date: '2026-05-06',
         is_fomc: false,
         event_type: 'FED',
-        days_to_next_event: 35,
+        days_to_next_event: null,
         event_count: 7,
         is_event_day: false,
       },
+      // 140 days to 10-28: NULL (old value 126).
       {
         date: '2026-06-10',
         is_fomc: false,
         event_type: 'OTHER',
-        days_to_next_event: 140,
+        days_to_next_event: null,
         event_count: 6,
         is_event_day: false,
       },
-      // The decision day with no event rows: 91 days to 10-28.
+      // The decision day with no event rows; 91 days to 10-28: NULL.
       {
         date: '2026-07-29',
         is_fomc: true,
         event_type: 'FOMC',
-        days_to_next_event: 91,
+        days_to_next_event: null,
         event_count: 5,
+        is_event_day: false,
+      },
+      // 11 days to 10-28: one past the limit, NULL (old value 4).
+      {
+        date: '2026-10-17',
+        is_fomc: false,
+        event_type: null,
+        days_to_next_event: null,
+        event_count: 12,
+        is_event_day: false,
+      },
+      // 10 days to 10-28: the largest plausible gap, kept (old value 99).
+      {
+        date: '2026-10-18',
+        is_fomc: false,
+        event_type: null,
+        days_to_next_event: 10,
+        event_count: 13,
         is_event_day: false,
       },
       {

@@ -9,7 +9,11 @@
  *   2. training_features: is_fomc, event_type and days_to_next_event, for
  *      every row, from the corrected rows (summarizeDayEvents, the rule
  *      build-features uses) and the calendar-day gap to the next event date.
- *      event_count is not touched.
+ *      days_to_next_event is NULL where the value would come from missing
+ *      data, not the calendar: a row dated before the first economic_events
+ *      row (the table did not exist yet), or a gap over
+ *      MAX_PLAUSIBLE_EVENT_GAP_DAYS (plausibleEventGap, shared with
+ *      build-features). event_count is not touched.
  *   3. 2026-04-29 (the real decision day the old static date missed):
  *      market_snapshots and training_features.is_event_day become true.
  *   4. 2026-05-06 (the old wrong date): FOMC leaves market_snapshots.
@@ -23,7 +27,11 @@
  * about to change, so a second run matches zero rows.
  */
 
-import { summarizeDayEvents } from '../../api/_lib/build-features-phase2.js';
+import {
+  MAX_PLAUSIBLE_EVENT_GAP_DAYS,
+  plausibleEventGap,
+  summarizeDayEvents,
+} from '../../api/_lib/build-features-phase2.js';
 import { getDb, withDbRetry } from '../../api/_lib/db.js';
 import {
   classifyEconomicEvent,
@@ -126,7 +134,13 @@ export interface TablePlan {
   isFomcAfter: number;
   /** Earliest economic_events date, and the feature rows dated before it. */
   firstEventDate: string | null;
+  /** Their days_to_next_event is NULL: the table did not exist yet. */
   featureRowsBeforeFirstEvent: number;
+  /**
+   * Rows on or after the first event date whose next event row is more than
+   * MAX_PLAUSIBLE_EVENT_GAP_DAYS away: NULL, the calendar has a hole.
+   */
+  featureRowsNulledByGap: number;
 }
 
 const MS_PER_DAY = 86_400_000;
@@ -147,8 +161,9 @@ export function daysBetween(from: string, to: string): number {
  * training_features row from the corrected types. The Fed-schedule and
  * priority rule is `summarizeDayEvents`; this adds nothing to it.
  * `days_to_next_event` is the gap to the next economic_events date after the
- * row's own, or null when there is none (the same rule addEventFeatures
- * applies live).
+ * row's own, or null when there is none or the gap is implausible (the same
+ * plausibleEventGap rule addEventFeatures applies live). A row dated before
+ * the first event row is also null: the table did not exist yet.
  */
 export function buildPlan(
   events: readonly EventRow[],
@@ -178,19 +193,22 @@ export function buildPlan(
   let isFomcBefore = 0;
   let isFomcAfter = 0;
   let featureRowsBeforeFirstEvent = 0;
+  let featureRowsNulledByGap = 0;
   for (const f of features) {
     const { isFomc, eventType } = summarizeDayEvents(
       f.date,
       typesByDate.get(f.date) ?? new Set<string>(),
     );
     const nextDate = eventDates.find((d) => d > f.date);
-    const daysToNextEvent =
-      nextDate == null ? null : daysBetween(f.date, nextDate);
+    const beforeTable = firstEventDate != null && f.date < firstEventDate;
+    const rawGap = nextDate == null ? null : daysBetween(f.date, nextDate);
+    const daysToNextEvent = beforeTable ? null : plausibleEventGap(rawGap);
+    if (beforeTable) featureRowsBeforeFirstEvent += 1;
+    else if (rawGap != null && daysToNextEvent === null) {
+      featureRowsNulledByGap += 1;
+    }
     if (f.isFomc === true) isFomcBefore += 1;
     if (isFomc) isFomcAfter += 1;
-    if (firstEventDate != null && f.date < firstEventDate) {
-      featureRowsBeforeFirstEvent += 1;
-    }
     if (
       f.isFomc !== isFomc ||
       f.eventType !== eventType ||
@@ -213,6 +231,7 @@ export function buildPlan(
     isFomcAfter,
     firstEventDate,
     featureRowsBeforeFirstEvent,
+    featureRowsNulledByGap,
   };
 }
 
@@ -661,9 +680,12 @@ function featureLines(plan: BackfillPlan): string[] {
   ];
   if (plan.firstEventDate != null) {
     lines.push(
-      `  first economic_events date: ${plan.firstEventDate}; training_features rows before it: ${plan.featureRowsBeforeFirstEvent} (their days_to_next_event is the gap to that date)`,
+      `  first economic_events date: ${plan.firstEventDate}; training_features rows before it: ${plan.featureRowsBeforeFirstEvent} (days_to_next_event NULL: the table did not exist yet)`,
     );
   }
+  lines.push(
+    `  rows NULLed by the gap rule (next event row more than ${MAX_PLAUSIBLE_EVENT_GAP_DAYS} days out, so calendar rows are missing): ${plan.featureRowsNulledByGap}`,
+  );
   return lines;
 }
 

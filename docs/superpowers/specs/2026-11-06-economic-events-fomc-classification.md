@@ -140,6 +140,13 @@ The first matching rule wins:
   - `days_to_next_event` is computed in SQL as
     `(MIN(date) - ${dateStr}::date)`, an integer number of calendar days. It's
     left unset when no later row exists.
+  - It is also left unset when the gap is more than
+    `MAX_PLAUSIBLE_EVENT_GAP_DAYS` = 10 (controller's call 2026-11-06). UW's
+    calendar has weekly jobless claims plus several releases most days, so a
+    longer gap means calendar rows are missing (the 2026-07-22..09-07 hole),
+    not a quiet calendar. The constant and `plausibleEventGap()` live in
+    `build-features-phase2.ts`; `addEventFeatures` and the backfill both use
+    them. A gap of 10 is kept; 11 is unset.
 - **Analyze formatter** (`analyze-context-formatters.ts` `HIGH_SEVERITY_TYPES`):
   see Q1.
 - **Gamma detector:**
@@ -232,9 +239,14 @@ work (A) is pushed; rebase onto it first, since both touch `api/events.ts`.
           `COALESCE` can't clear stale values.
         - `event_count` doesn't change.
         - `days_to_next_event` is the gap to the next `economic_events` date
-          after the row's own, so a row dated before the first event row
-          (2026-03-25) gets the gap to that date. The dry run prints how many
-          rows that is.
+          after the row's own, or NULL where the value would come from missing
+          data, not the calendar (controller's call 2026-11-06):
+          - a row dated before the first `economic_events` date (2026-03-25)
+            gets NULL, since the table did not exist yet;
+          - a gap over `MAX_PLAUSIBLE_EVENT_GAP_DAYS` = 10 gets NULL (the
+            shared `plausibleEventGap()`, as in `addEventFeatures`).
+            The dry run prints both counts: the rows before the first event
+            date, and the rows NULLed by the gap rule.
      3. `market_snapshots` and `training_features.is_event_day`. Use
         conditional updates guarded by the current values, so a second run
         changes nothing.
@@ -327,3 +339,5 @@ carry `FOMC` on speech days, and build-features ORs `FOMC` rows into
 - `event_type` priority: FOMC, CPI, PCE, JOBS, GDP, FED, PMI, RETAIL,
   SENTIMENT, OTHER.
 - Lottery MACRO types are unchanged: FOMC, CPI, PCE, JOBS.
+- `MAX_PLAUSIBLE_EVENT_GAP_DAYS` = 10 (`build-features-phase2.ts`): the longest
+  calendar-day gap to the next event row that still counts as "the next event".

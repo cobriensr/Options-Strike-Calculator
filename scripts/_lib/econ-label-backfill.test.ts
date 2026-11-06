@@ -135,13 +135,15 @@ describe('buildPlan', () => {
 
   it('recomputes is_fomc, event_type and days_to_next_event from the corrected rows', () => {
     const plan = buildPlan(EVENTS, [
-      // A wrongly-FOMC speech day: not a decision day, FED, 35 days to 06-10.
+      // A wrongly-FOMC speech day: not a decision day, FED. The next event
+      // row (06-10) is 35 days out, so no days_to_next_event.
       feature('2026-05-06', true, 'FOMC', null),
       // A decision day with no rows at all: FOMC from the schedule alone.
+      // 91 days to the next row is a hole in the calendar: NULL.
       feature('2026-07-29', false, null, null),
       // The decision typed OTHER: FOMC now; the next event is 9 days out.
       feature('2026-10-28', false, 'OTHER', 8),
-      // A budget release that was typed FOMC: OTHER.
+      // A budget release that was typed FOMC: OTHER (140 days out: NULL).
       feature('2026-06-10', true, 'FOMC', 126),
       // Correct already: one day before the 11-06 payrolls.
       feature('2026-11-05', false, null, 1),
@@ -154,13 +156,13 @@ describe('buildPlan', () => {
       date: '2026-05-06',
       isFomc: { from: true, to: false },
       eventType: { from: 'FOMC', to: 'FED' },
-      daysToNextEvent: { from: null, to: 35 },
+      daysToNextEvent: { from: null, to: null },
     });
     expect(byDate.get('2026-07-29')).toEqual({
       date: '2026-07-29',
       isFomc: { from: false, to: true },
       eventType: { from: null, to: 'FOMC' },
-      daysToNextEvent: { from: null, to: 91 },
+      daysToNextEvent: { from: null, to: null },
     });
     expect(byDate.get('2026-10-28')).toEqual({
       date: '2026-10-28',
@@ -172,7 +174,7 @@ describe('buildPlan', () => {
       date: '2026-06-10',
       isFomc: { from: true, to: false },
       eventType: { from: 'FOMC', to: 'OTHER' },
-      daysToNextEvent: { from: 126, to: 140 },
+      daysToNextEvent: { from: 126, to: null },
     });
     expect(byDate.has('2026-11-05')).toBe(false);
     expect(byDate.get('2026-11-06')).toEqual({
@@ -185,6 +187,38 @@ describe('buildPlan', () => {
     expect(plan.featureChanges).toHaveLength(5);
   });
 
+  // The shared plausibleEventGap rule: 10 days is the next event, 11 is a
+  // hole in the calendar.
+  it('keeps a gap of 10 days and NULLs a gap of 11', () => {
+    const plan = buildPlan(EVENTS, [
+      feature('2026-05-31', false, 'JOBS', 99), // 10 days to 06-10
+      feature('2026-05-30', false, 'JOBS', 99), // 11 days to 06-10
+    ]);
+    const byDate = new Map(plan.featureChanges.map((c) => [c.date, c]));
+    expect(byDate.get('2026-05-31')?.daysToNextEvent).toEqual({
+      from: 99,
+      to: 10,
+    });
+    expect(byDate.get('2026-05-30')?.daysToNextEvent).toEqual({
+      from: 99,
+      to: null,
+    });
+    expect(plan.featureRowsNulledByGap).toBe(1);
+  });
+
+  // The table did not exist before its first row, so a short gap to that row
+  // is still no value.
+  it('NULLs a row dated before the first event row even when the gap is short', () => {
+    const plan = buildPlan(EVENTS, [feature('2026-05-01', false, null, 5)]); // 5 days to 05-06
+    expect(plan.featureChanges[0]?.daysToNextEvent).toEqual({
+      from: 5,
+      to: null,
+    });
+    expect(plan.featureRowsBeforeFirstEvent).toBe(1);
+    // Not the gap rule: the gap is 5.
+    expect(plan.featureRowsNulledByGap).toBe(0);
+  });
+
   it('counts is_fomc before and after, and what precedes the first event row', () => {
     const plan = buildPlan(EVENTS, [
       feature('2026-03-18', false, null, null), // decision day, before the table
@@ -195,6 +229,7 @@ describe('buildPlan', () => {
     expect(plan.isFomcAfter).toBe(2); // 03-18 and 07-29
     expect(plan.firstEventDate).toBe('2026-05-06');
     expect(plan.featureRowsBeforeFirstEvent).toBe(1); // 03-18
+    expect(plan.featureRowsNulledByGap).toBe(2); // 05-06 (35 days), 07-29 (91)
   });
 
   it('a NULL is_fomc is written but is not a flip', () => {
@@ -212,7 +247,8 @@ describe('buildPlan', () => {
         event(2, '2026-10-28', 'U.S. interest rate decision', 'FOMC'),
       ],
       [
-        feature('2026-05-06', false, 'FED', 175),
+        // 175 days to the next row is a hole, so the stored value is NULL.
+        feature('2026-05-06', false, 'FED', null),
         feature('2026-10-28', true, 'FOMC', null),
       ],
     );
@@ -224,6 +260,7 @@ describe('buildPlan', () => {
     const plan = buildPlan([], [feature('2026-03-18', false, null, null)]);
     expect(plan.firstEventDate).toBeNull();
     expect(plan.featureRowsBeforeFirstEvent).toBe(0);
+    expect(plan.featureRowsNulledByGap).toBe(0);
     // The decision day is still FOMC from the schedule.
     expect(plan.featureChanges[0]?.isFomc).toEqual({ from: false, to: true });
   });
@@ -271,7 +308,12 @@ describe('formatReport', () => {
       /is_fomc flips \(2\): 2026-05-06 true→false, 2026-10-28 false→true/,
     );
     expect(text).toMatch(/event_type changes: 2/);
-    expect(text).toMatch(/days_to_next_event changes: 2/);
+    // 10-28 loses its 8 (no later row); 05-06 stays NULL (the gap rule).
+    expect(text).toMatch(/days_to_next_event changes: 1/);
+    expect(text).toMatch(/training_features rows before it: 0/);
+    expect(text).toMatch(
+      /rows NULLed by the gap rule \(next event row more than 10 days out, so calendar rows are missing\): 1/,
+    );
     expect(text).toMatch(/2026-04-29: market_snapshots 71 of 71 rows match/);
     expect(text).toMatch(/2026-05-06: market_snapshots 66 of 66 rows match/);
     expect(text).toMatch(/ws_gamma_setup_fires: 3 of 12 rows match/);
