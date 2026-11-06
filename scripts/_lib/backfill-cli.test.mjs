@@ -6,6 +6,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  DayFailure,
   EXIT_BAD_ARGS,
   EXIT_FAILED,
   EXIT_GUARD_STOP,
@@ -21,6 +22,7 @@ import {
   parseRangeArgs,
   redact,
   retryTransientDb,
+  runDayItems,
   runDays,
   runPool,
   runTickerDays,
@@ -672,6 +674,16 @@ describe('classifyFailure', () => {
     expect(classifyFailure(wrap(dbErr, 6)).kind).toBe('other');
   });
 
+  it('trusts the kind of a DayFailure as given, and reads a plain Error as other', () => {
+    const message = '1 of 3 tickers failed; first (QQQ): down';
+
+    expect(classifyFailure(new DayFailure('uw_http_503', message))).toEqual({
+      kind: 'uw_http_503',
+      detail: message,
+    });
+    expect(classifyFailure(new Error(message)).kind).toBe('other');
+  });
+
   it('does not call an untagged error db, whatever its message says', () => {
     expect(classifyFailure(new Error('connection terminated')).kind).toBe(
       'other',
@@ -734,28 +746,37 @@ describe('runDays', () => {
     [
       'a UW ok outcome (rows, not counts)',
       { kind: 'ok', rows: [1] },
-      '{ fetched: undefined, stored: undefined }',
+      'keys kind, rows; fetched is undefined, stored is undefined',
     ],
     [
       'an empty UW outcome',
       { kind: 'empty' },
-      '{ fetched: undefined, stored: undefined }',
+      'keys kind; fetched is undefined, stored is undefined',
     ],
-    ['no stored count', { fetched: 5 }, '{ fetched: 5, stored: undefined }'],
+    [
+      'an object with no keys',
+      {},
+      'keys (none); fetched is undefined, stored is undefined',
+    ],
+    [
+      'no stored count',
+      { fetched: 5 },
+      'keys fetched; fetched is 5, stored is undefined',
+    ],
     [
       'a count that is a string',
       { fetched: '5', stored: 5 },
-      '{ fetched: string, stored: 5 }',
+      'keys fetched, stored; fetched is string, stored is 5',
     ],
     [
       'a negative count',
       { fetched: 5, stored: -1 },
-      '{ fetched: 5, stored: -1 }',
+      'keys fetched, stored; fetched is 5, stored is -1',
     ],
     [
       'a fractional count',
       { fetched: 1.5, stored: 0 },
-      '{ fetched: 1.5, stored: 0 }',
+      'keys fetched, stored; fetched is 1.5, stored is 0',
     ],
   ])(
     'fails the day as other when the worker returns %s, not counts',
@@ -774,6 +795,20 @@ describe('runDays', () => {
       ]);
     },
   );
+
+  it('names the keys of a wrong worker value, never its values', async () => {
+    atTime(AFTER_CLOSE);
+    const run = await runDays(['2026-07-22'], after, async () => ({
+      apiKey: 'sekret-value',
+      rows: ['row-with-sekret'],
+      fetched: 'sekret-count',
+    }));
+
+    const detail = run.days[0].failure.detail;
+    expect(detail).toContain('got keys apiKey, rows, fetched;');
+    expect(detail).toContain('fetched is string');
+    expect(detail).not.toContain('sekret');
+  });
 
   it('counts a DB rejection against its day, as db, and moves on', async () => {
     atTime(AFTER_CLOSE);
@@ -957,6 +992,251 @@ describe('runDays', () => {
     ).rejects.toThrow('secrets');
     expect(worker).not.toHaveBeenCalled();
   });
+});
+
+// ── runDayItems ────────────────────────────────────────────
+
+describe('runDayItems', () => {
+  afterEach(() => vi.useRealTimers());
+
+  const secrets = {
+    uwKey: 'uw-secret-key',
+    databaseUrl: 'postgresql://owner:s3cr3t@ep-x.neon.tech/neondb',
+  };
+  const ITEMS = ['A', 'B', 'C'];
+  const counts = { fetched: 10, stored: 8 };
+
+  it('tries all three tickers when the second returns a 503, and fails the day as uw_http_503', async () => {
+    atTime(AFTER_CLOSE);
+    const tried = [];
+
+    const run = await runDays(
+      ['2026-07-22'],
+      { allowMarketHours: false, secrets },
+      () =>
+        runDayItems(
+          ['SPY', 'QQQ', 'IWM'],
+          async (ticker) => {
+            tried.push(ticker);
+            if (ticker === 'QQQ') {
+              return { kind: 'error', status: 'http_503', detail: 'down' };
+            }
+            return counts;
+          },
+          { label: 'tickers' },
+        ),
+    );
+
+    expect(tried).toEqual(['SPY', 'QQQ', 'IWM']);
+    expect(run.days).toEqual([
+      {
+        date: '2026-07-22',
+        ok: false,
+        failure: {
+          kind: 'uw_http_503',
+          detail: '1 of 3 tickers failed; first (QQQ): down',
+        },
+      },
+    ]);
+    expect(summarizeRun(run).exitCode).toBe(EXIT_FAILED);
+  });
+
+  it.each([
+    [
+      'an http_503 outcome',
+      async () => ({ kind: 'error', status: 'http_503', detail: 'down' }),
+      'uw_http_503',
+      'down',
+    ],
+    [
+      'an http_403 outcome',
+      async () => ({ kind: 'error', status: 'http_403', detail: 'no plan' }),
+      'uw_http_403',
+      'no plan',
+    ],
+    [
+      'a network outcome',
+      async () => ({ kind: 'error', status: 'network', detail: 'reset' }),
+      'network',
+      'reset',
+    ],
+    [
+      'a thrown TimeoutError',
+      async () => {
+        throw new DOMException('The operation timed out', 'TimeoutError');
+      },
+      'timeout',
+      'The operation timed out',
+    ],
+    [
+      'a thrown fetch failure',
+      async () => {
+        throw new TypeError('fetch failed');
+      },
+      'network',
+      'fetch failed',
+    ],
+    [
+      'a thrown SyntaxError',
+      async () => {
+        throw new SyntaxError('Unexpected end of JSON input');
+      },
+      'malformed',
+      'Unexpected end of JSON input',
+    ],
+    [
+      'a db error thrown through retryTransientDb',
+      async () => {
+        await retryTransientDb(async () => {
+          throw new Error('relation "t" does not exist');
+        });
+      },
+      'db',
+      'relation "t" does not exist',
+    ],
+    [
+      'an ordinary error',
+      async () => {
+        throw new Error('boom');
+      },
+      'other',
+      'boom',
+    ],
+    [
+      'a raw UW ok outcome instead of counts',
+      async () => ({ kind: 'ok', rows: [1] }),
+      'other',
+      'worker value must be { fetched, stored } as whole numbers ≥ 0, got keys kind, rows;',
+    ],
+  ])(
+    'keeps the kind of %s, and still tries every item',
+    async (_label, failing, kind, detail) => {
+      const tried = [];
+
+      const err = await runDayItems(ITEMS, async (item, index) => {
+        tried.push(item);
+        return index === 1 ? failing() : counts;
+      }).catch((e) => e);
+
+      expect(tried).toEqual(ITEMS);
+      expect(err).toBeInstanceOf(DayFailure);
+      expect(err.kind).toBe(kind);
+      expect(err.message).toContain('1 of 3 items failed; first (B): ');
+      expect(err.message).toContain(detail);
+    },
+  );
+
+  it('sums the counts of a day whose items all succeed, extra numeric fields too', async () => {
+    const totals = await runDayItems(ITEMS, async (item) => ({
+      fetched: 10,
+      stored: 8,
+      skipped: item === 'B' ? 1 : 0,
+      note: 'not a count',
+    }));
+
+    expect(totals).toEqual({ fetched: 30, stored: 24, skipped: 1 });
+  });
+
+  it('gives zero counts for a day with no items', async () => {
+    const perItem = vi.fn();
+    await expect(runDayItems([], perItem)).resolves.toEqual({
+      fetched: 0,
+      stored: 0,
+    });
+    expect(perItem).not.toHaveBeenCalled();
+  });
+
+  it('with concurrency above 1 still tries every item, and never more than that at once', async () => {
+    const items = ['A', 'B', 'C', 'D', 'E', 'F'];
+    const tried = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    const err = await runDayItems(
+      items,
+      async (item) => {
+        tried.push(item);
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 3));
+        inFlight--;
+        // B fails at once; the rest are still to be tried.
+        if (item === 'B') throw new Error('boom');
+        return counts;
+      },
+      { concurrency: 3 },
+    ).catch((e) => e);
+
+    expect(tried.toSorted()).toEqual(items);
+    expect(maxInFlight).toBe(3);
+    expect(err.message).toContain('1 of 6 items failed; first (B): boom');
+  });
+
+  it('names the first failure in item order, not in completion order', async () => {
+    const err = await runDayItems(
+      ['A', 'B'],
+      async (item) => {
+        if (item === 'A') {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          throw new Error('slow a');
+        }
+        await retryTransientDb(async () => {
+          throw new Error('fast b');
+        });
+      },
+      { concurrency: 2 },
+    ).catch((e) => e);
+
+    expect(err.kind).toBe('other');
+    expect(err.message).toBe('2 of 2 items failed; first (A): slow a');
+  });
+
+  it('names a numeric item by itself and any other item by its position', async () => {
+    const byNumber = await runDayItems([4500, 4550], async (strike) => {
+      if (strike === 4550) throw new Error('boom');
+      return counts;
+    }).catch((e) => e);
+    expect(byNumber.message).toBe('1 of 2 items failed; first (4550): boom');
+
+    const byPosition = await runDayItems(
+      [{ ticker: 'SPY' }, { ticker: 'QQQ' }],
+      async (_item, index) => {
+        if (index === 1) throw new Error('boom');
+        return counts;
+      },
+    ).catch((e) => e);
+    expect(byPosition.message).toBe('1 of 2 items failed; first (#1): boom');
+  });
+
+  it('redacts the secrets from the failure when it runs under runDays', async () => {
+    atTime(AFTER_CLOSE);
+    const run = await runDays(
+      ['2026-07-22'],
+      { allowMarketHours: false, secrets },
+      () =>
+        runDayItems(['A'], async () => ({
+          kind: 'error',
+          status: 'http_401',
+          detail: `bad key ${secrets.uwKey}`,
+        })),
+    );
+
+    expect(run.days[0].failure).toEqual({
+      kind: 'uw_http_401',
+      detail: '1 of 1 items failed; first (A): bad key [redacted]',
+    });
+  });
+
+  it.each([0, -1, 1.5, Number.NaN])(
+    'rejects a concurrency of %s without trying anything',
+    async (concurrency) => {
+      const perItem = vi.fn(async () => counts);
+      await expect(
+        runDayItems(ITEMS, perItem, { concurrency }),
+      ).rejects.toThrow('concurrency');
+      expect(perItem).not.toHaveBeenCalled();
+    },
+  );
 });
 
 // ── runDays over the real UW fetch ─────────────────────────
@@ -1303,6 +1583,35 @@ describe('formatRunSummary', () => {
       `stopped: Refusing to run ${GUARD_MESSAGE} on a weekday`,
       'not run (2): 2026-07-30, 2026-07-31',
     ]);
+  });
+
+  it('collapses whitespace in a failure detail and an extra field, so a newline cannot break a line', () => {
+    const summary = summarizeRun({
+      days: [
+        ok('2026-07-22', {
+          fetched: 5,
+          stored: 5,
+          note: 'two\nlines\tand   gaps',
+        }),
+        bad(
+          '2026-07-23',
+          'other',
+          'first line\nsecond line\r\n   third\tfourth ',
+        ),
+      ],
+      stoppedBy: null,
+      notRun: [],
+    });
+
+    const lines = formatRunSummary(summary);
+
+    expect(lines).toContain(
+      '  2026-07-22  fetched 5  stored 5  note two lines and gaps',
+    );
+    expect(lines).toContain(
+      '  other: 1 day (2026-07-23); first: 2026-07-23: first line second line third fourth',
+    );
+    expect(lines.every((line) => !/[\r\n\t]/.test(line))).toBe(true);
   });
 
   it('prints only the day lines and the total for a clean run', () => {

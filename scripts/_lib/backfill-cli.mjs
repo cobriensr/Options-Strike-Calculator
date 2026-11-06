@@ -20,6 +20,8 @@
  *     before each day, each failure recorded against its day with a kind
  *     (classifyFailure: uw_http_<n>, network, timeout, malformed, db, other)
  *     and a redacted detail.
+ *   - runDayItems: a day's fan-out over tickers or strikes. Tries every item
+ *     and throws one DayFailure that keeps the first failure's kind.
  *   - summarizeRun: failures counted by day and by kind, the empty days, and
  *     the exit code (EXIT_OK, EXIT_FAILED, EXIT_GUARD_STOP);
  *     formatRunSummary turns it into printable lines.
@@ -424,11 +426,18 @@ export async function runTickerDays(
  * it comes back as `stoppedBy`, and the days it never started as `notRun`.
  *
  * A worker returns counts, not rows: `{ fetched, stored }`, both whole
- * numbers ≥ 0, plus any extra count fields it wants (formatRunSummary
- * prints them). `fetched: 0` marks an empty day in summarizeRun: UW had no
- * rows for a trading day, a hole worth a look. A return value of any other
- * shape fails that day as `other`, so a worker can't hide an empty day by
- * leaving `fetched` out.
+ * numbers ≥ 0.
+ *   - `fetched` is the rows UW returned, before any filter. `fetched: 0` is
+ *     the empty-day signal in summarizeRun: UW had no rows for a trading
+ *     day, a hole worth a look.
+ *   - `stored` is the rows actually written, so 0 on `--dry-run`. A count of
+ *     what a dry run would have written goes in an extra field such as
+ *     `wouldStore`.
+ *   - Any extra fields are left unchecked and printed by formatRunSummary as
+ *     `name value`. Keep them small: summarizeRun holds them for every day
+ *     of the run.
+ * A return value without the two counts fails that day as `other`, so a
+ * worker can't hide an empty day by leaving `fetched` out.
  *
  * One day's failure never ends the run. It is recorded against that day and
  * the loop moves on. A day fails when its worker
@@ -439,10 +448,11 @@ export async function runTickerDays(
  *     `timeout` or `malformed`.
  *
  * One failure is recorded per day: the first. A worker that fans out over
- * tickers with runPool stops starting new tickers after its first rejection,
- * so that day's summary understates the failed tickers and leaves the rest
- * untried. To try every ticker, catch per ticker and throw once at the end
- * of the day, naming how many failed.
+ * tickers, strikes or the like should use runDayItems: it tries every item
+ * and throws one DayFailure that keeps the first failure's kind. A plain
+ * `new Error` thrown at the end of the day is `other`, whatever failed
+ * behind it, and a runPool fan-out stops starting items after its first
+ * rejection.
  *
  * `secrets` is `{ uwKey, databaseUrl }`; every failure detail is redacted
  * with them before it is stored, so it is safe to print.
@@ -477,13 +487,16 @@ async function runOneDay(date, worker, secrets) {
   }
   if (isUwErrorOutcome(value)) return failedDay(date, value, secrets);
   if (!isDayCounts(value)) {
-    const wrong = new TypeError(
-      'worker value must be { fetched, stored } as whole numbers ≥ 0, ' +
-        `got ${describeValue(value)}`,
-    );
-    return failedDay(date, wrong, secrets);
+    return failedDay(date, wrongValueError(value), secrets);
   }
   return { date, ok: true, value };
+}
+
+function wrongValueError(value) {
+  return new TypeError(
+    'worker value must be { fetched, stored } as whole numbers ≥ 0, ' +
+      `got ${describeValue(value)}`,
+  );
 }
 
 function isCount(n) {
@@ -499,13 +512,24 @@ function isDayCounts(value) {
   );
 }
 
-/** A short, safe description of a bad worker value: never the value itself. */
+/** How many key names of a wrong worker value to list. */
+const MAX_KEYS_SHOWN = 10;
+
+/**
+ * A short, safe description of a bad worker value: an object's key names and
+ * the two counts (a number as itself, anything else as its type), never any
+ * other value. `return await fetchUwDayRows(...)` reads as "keys kind, rows".
+ */
 function describeValue(value) {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'an array';
   if (typeof value !== 'object') return typeof value;
+  const names = Object.keys(value).slice(0, MAX_KEYS_SHOWN).join(', ');
   const show = (n) => (typeof n === 'number' ? String(n) : typeof n);
-  return `{ fetched: ${show(value.fetched)}, stored: ${show(value.stored)} }`;
+  return (
+    `keys ${names === '' ? '(none)' : names}; ` +
+    `fetched is ${show(value.fetched)}, stored is ${show(value.stored)}`
+  );
 }
 
 function failedDay(date, failed, secrets) {
@@ -515,6 +539,100 @@ function failedDay(date, failed, secrets) {
     ok: false,
     failure: { kind, detail: redact(detail, secrets) },
   };
+}
+
+/**
+ * A failure whose kind is stated, not read off an error: classifyFailure
+ * returns `kind` as given, one of its kinds (`uw_http_<n>`, `network`,
+ * `timeout`, `malformed`, `db`, `other`). runDayItems throws one. A plain
+ * `new Error` thrown at the end of a day is `other`, whatever failed behind
+ * it, and wrapping the errors as `cause` keeps only `db` and `network`.
+ */
+export class DayFailure extends Error {
+  constructor(kind, message) {
+    super(message);
+    this.name = 'DayFailure';
+    this.kind = kind;
+  }
+}
+
+/**
+ * The fan-out of one day over its items (tickers, strikes, expiries):
+ * `perItem(item, index)` runs for every item, `concurrency` at a time
+ * (default 1), and one item's failure never stops the others. It returns
+ * counts like a runDays worker (`{ fetched, stored }` plus extras) or a UW
+ * error outcome, or it throws; any other return value is a failure.
+ *
+ * All items succeeded: the counts are summed over the items, every numeric
+ * field, extras included (a non-numeric extra is dropped; an extra that isn't
+ * additive, a ratio, belongs on the totals the worker returns, not on the
+ * items).
+ *
+ * Any item failed: it throws one DayFailure that keeps the kind of the first
+ * failure in item order (classifyFailure, so a retryTransientDb error stays
+ * `db`), with the message "<k> of <n> <label> failed; first (<item>):
+ * <detail>". The counts of the items that did succeed are lost then. That is
+ * fine for the one-failure-per-day rule: the day is re-run, and its writes
+ * are idempotent (ON CONFLICT). `<item>` is a string or number item as it
+ * is, any other item by its position, `#<index>`. The detail is raw, and
+ * runDays redacts it.
+ *
+ * The throttle is the caller's: perItem awaits it before each UW request
+ * (fetchUwDayRows' `waitForSlot`), so a higher concurrency shares it.
+ */
+export async function runDayItems(
+  items,
+  perItem,
+  { concurrency = 1, label = 'items' } = {},
+) {
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new RangeError(
+      `concurrency must be a whole number ≥ 1, got ${concurrency}`,
+    );
+  }
+  const results = await runPool(items, concurrency, (item, index) =>
+    tryItem(item, index, perItem),
+  );
+  const totals = { fetched: 0, stored: 0 };
+  let failedCount = 0;
+  let first = null;
+  for (const result of results) {
+    if (result.ok) {
+      addCounts(totals, result.value);
+    } else {
+      failedCount++;
+      first ??= result;
+    }
+  }
+  if (first == null) return totals;
+  const { kind, detail } = classifyFailure(first.failed);
+  throw new DayFailure(
+    kind,
+    `${failedCount} of ${items.length} ${label} failed; ` +
+      `first (${first.name}): ${detail}`,
+  );
+}
+
+/** One item, never rejecting: { ok: true, value } | { ok: false, name, failed }. */
+async function tryItem(item, index, perItem) {
+  const named = typeof item === 'string' || typeof item === 'number';
+  const name = named ? String(item) : `#${index}`;
+  try {
+    const value = await perItem(item, index);
+    if (isUwErrorOutcome(value)) return { ok: false, name, failed: value };
+    if (!isDayCounts(value)) {
+      return { ok: false, name, failed: wrongValueError(value) };
+    }
+    return { ok: true, value };
+  } catch (err) {
+    return { ok: false, name, failed: err };
+  }
+}
+
+function addCounts(totals, value) {
+  for (const [name, n] of Object.entries(value)) {
+    if (typeof n === 'number') totals[name] = (totals[name] ?? 0) + n;
+  }
 }
 
 // ── Failures ───────────────────────────────────────────────
@@ -547,11 +665,15 @@ function isUwErrorOutcome(value) {
  *                error included (a db timeout is a db failure, not a timeout)
  *   other        everything else; a UW outcome with an unknown status keeps
  *                the status in its detail
+ * A DayFailure is the exception: its `kind` is returned as given.
  * `failed` is a UW error outcome or a thrown value. The detail is the raw
  * message (with the cause's code when it has one): redact it before printing.
  */
 export function classifyFailure(failed) {
   if (isUwErrorOutcome(failed)) return classifyUwOutcome(failed);
+  if (failed instanceof DayFailure) {
+    return { kind: failed.kind, detail: failed.message };
+  }
   const message = messageOf(failed);
   const cause = failed?.cause?.code ?? failed?.cause?.message;
   const hint = typeof cause === 'string' && cause !== '' ? cause : null;
@@ -648,10 +770,12 @@ function exitCodeOf(failedCount, stoppedBy) {
 
 /**
  * The printable lines for a summarizeRun result: the day counts, each
- * succeeded day's fetched/stored (and any extra counts) with the totals, the
- * failures by kind with their dates and first example, the empty days, and
- * the guard stop with the days not run. Pure: the caller prints the lines.
- * Failure details are already redacted when the days came from runDays.
+ * succeeded day's fetched/stored (and any extra fields, as `name value`)
+ * with the totals, the failures by kind with their dates and first example,
+ * the empty days, and the guard stop with the days not run. Pure: the caller
+ * prints the lines. Failure details are already redacted when the days came
+ * from runDays. A detail or an extra with a newline in it is printed on one
+ * line, its whitespace collapsed.
  */
 export function formatRunSummary(summary) {
   const { okDays, emptyDays, failedDays, byKind, stoppedBy, notRun } = summary;
@@ -674,7 +798,8 @@ export function formatRunSummary(summary) {
     for (const { kind, count, dates, example } of byKind) {
       lines.push(
         `  ${kind}: ${count} ${count === 1 ? 'day' : 'days'} ` +
-          `(${dates.join(', ')}); first: ${example.date}: ${example.detail}`,
+          `(${dates.join(', ')}); first: ${example.date}: ` +
+          oneLine(example.detail),
       );
     }
   }
@@ -688,13 +813,18 @@ export function formatRunSummary(summary) {
   return lines;
 }
 
-/** "fetched 405  stored 390" plus any extra count fields, as "name N". */
+/** "fetched 405  stored 390" plus any extra fields, each as "name value". */
 function countsOf({ fetched, stored, ...extras }) {
   const parts = [`fetched ${fetched}`, `stored ${stored}`];
-  for (const [name, count] of Object.entries(extras)) {
-    parts.push(`${name} ${count}`);
+  for (const [name, extra] of Object.entries(extras)) {
+    parts.push(oneLine(`${name} ${extra}`));
   }
   return parts.join('  ');
+}
+
+/** Any run of whitespace, a newline included, as one space: one printed line. */
+function oneLine(text) {
+  return String(text).replaceAll(/\s+/g, ' ').trim();
 }
 
 /** Failures by status, most common first, each with its first example. */
