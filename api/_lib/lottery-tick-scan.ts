@@ -20,7 +20,9 @@
  * 2026-05-22, the 08:30–09:00 CT spike). Volume at the open isn't uniform, so
  * a slice can still overflow: it is then split in half and each half is read
  * again, at most MAX_SPLIT_DEPTH levels down (down to 7.5 s pieces), and the
- * scan fails after that. Any other error fails the scan at once.
+ * scan fails after that. Any other error fails the scan too. A failing scan
+ * still waits for every other slice and split half to settle, then throws the
+ * first failure in slice order, so no query is left running behind the caller.
  *
  * The slices are appended in time order, so each chain's ticks stay sorted by
  * `executed_at`; `ORDER BY executed_at, id` makes the order of prints in the
@@ -107,11 +109,13 @@ interface Slice {
 }
 
 /**
- * Whether Neon refused a response for its size. The HTTP driver
- * (@neondatabase/serverless) turns every non-400 failure into a NeonDbError
- * whose message is `Server error (HTTP status <status>): <body>`, and Neon
- * answers 507 when a result passes the 64 MiB cap (see also
- * api/_lib/flow-regime-rows.ts and
+ * Whether Neon refused a response for its size. For a response that is not OK
+ * and not a 400, the HTTP driver (@neondatabase/serverless) throws a
+ * NeonDbError whose message is `Server error (HTTP status <status>): <body>`.
+ * Other failures take other shapes: a 400 carries Neon's own message, a
+ * failed fetch is `Error connecting to database: ...`, and a malformed 200 is
+ * a driver error of its own. Neon answers 507 when a result passes the
+ * 64 MiB cap (see also api/_lib/flow-regime-rows.ts and
  * docs/superpowers/specs/sentry-railway-triage-fixes-2026-06-08.md). Match
  * the status the driver writes, not Neon's wording of the body.
  */
@@ -168,7 +172,8 @@ async function readSlice(
       );
     }
     const midMs = slice.fromMs + (slice.toMs - slice.fromMs) / 2;
-    const [lower, upper] = await Promise.all([
+    // Lower half first, so the merged rows stay in time order.
+    const halves = await settleAll([
       readSlice(
         db,
         { fromMs: slice.fromMs, toMs: midMs, open: false },
@@ -180,8 +185,24 @@ async function readSlice(
         depth + 1,
       ),
     ]);
-    return [...lower, ...upper];
+    return halves.flat();
   }
+}
+
+/**
+ * Settle every promise before returning, so a failure doesn't leave the
+ * others running behind the caller. Returns the values in order, or throws the
+ * first rejection in input order (not in time order, so the error is the same
+ * on every run of the same failure).
+ */
+async function settleAll<T>(promises: Promise<T>[]): Promise<T[]> {
+  const settled = await Promise.allSettled(promises);
+  const values: T[] = [];
+  for (const outcome of settled) {
+    if (outcome.status === 'rejected') throw outcome.reason;
+    values.push(outcome.value);
+  }
+  return values;
 }
 
 /**
@@ -243,7 +264,7 @@ export async function scanLotteryTicks(
   scanEnd: Date,
 ): Promise<LotteryTickScan> {
   const firstMs = scanEnd.getTime() - SCAN_WINDOW_MIN * SLICE_MS;
-  const perSlice = await Promise.all(
+  const perSlice = await settleAll(
     Array.from({ length: SCAN_WINDOW_MIN }, (_, i) =>
       readSlice(
         db,

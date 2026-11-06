@@ -11,7 +11,10 @@
  * needs the hot working set for live features.
  *
  * Read-horizon audit (the enrichment crons read past same-day):
- *   - detect-lottery-fires, detect-silent-boom: NOW() - SCAN_WINDOW_MIN
+ *   - detect-lottery-fires: scanEnd - SCAN_WINDOW_MIN, scanEnd being the
+ *     run's captured clock, with the last slice open-ended
+ *     (api/_lib/lottery-tick-scan.ts); detect-silent-boom:
+ *     NOW() - SCAN_WINDOW_MIN
  *   - enrich-lottery-outcomes, enrich-silent-boom-outcomes,
  *     enrich-periscope-lottery-outcomes: unenriched fires/alerts back to
  *     NOW() - WS_OPTION_TRADES_RETENTION_DAYS

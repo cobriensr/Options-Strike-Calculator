@@ -468,6 +468,98 @@ describe('scanLotteryTicks size-error bisection', () => {
   });
 });
 
+describe('scanLotteryTicks when a slice fails', () => {
+  // A db whose answer for each query is chosen by its lower bound: a row
+  // list, an Error to reject with at once, or a gate the test opens later.
+  type Behaviour = TickRow[] | Error | { gate: Promise<TickRow[] | Error> };
+  function scriptedDb(script: (call: SliceCall) => Behaviour) {
+    const calls: SliceCall[] = [];
+    const db = vi.fn(
+      async (strings: TemplateStringsArray, from: string, to: string) => {
+        const call: SliceCall = { from, to, sql: strings.join('?') };
+        calls.push(call);
+        const behaviour = script(call);
+        const outcome = 'gate' in behaviour ? await behaviour.gate : behaviour;
+        if (outcome instanceof Error) throw outcome;
+        return outcome;
+      },
+    );
+    return { db: db as never, calls };
+  }
+  const settled = async (p: Promise<unknown>): Promise<boolean> => {
+    let done = false;
+    p.then(
+      () => {
+        done = true;
+      },
+      () => {
+        done = true;
+      },
+    );
+    await new Promise((resolve) => {
+      setImmediate(resolve);
+    });
+    return done;
+  };
+
+  it('waits for every other slice to settle before it rejects, then throws the first failure in slice order', async () => {
+    const early = new Error('slice 4 failed first');
+    const late = new Error('slice 1 failed last');
+    let failSlice1!: (e: Error) => void;
+    const slice1 = new Promise<Error>((resolve) => {
+      failSlice1 = resolve;
+    });
+    let finishSlice6!: (rows: TickRow[]) => void;
+    const slice6 = new Promise<TickRow[]>((resolve) => {
+      finishSlice6 = resolve;
+    });
+    const { db } = scriptedDb((call) => {
+      if (call.from === iso(sliceStart(4))) return early;
+      if (call.from === iso(sliceStart(1))) return { gate: slice1 };
+      if (call.from === iso(sliceStart(6))) return { gate: slice6 };
+      return [];
+    });
+
+    const scan = scanLotteryTicks(db, SCAN_END);
+    const outcome = scan.catch((err: unknown) => err);
+
+    // Slice 4 has failed, but slices 1 and 6 are still out: not settled.
+    expect(await settled(outcome)).toBe(false);
+    failSlice1(late);
+    // Slice 1 failed too, slice 6 is still out: still not settled.
+    expect(await settled(outcome)).toBe(false);
+    finishSlice6([]);
+    // Slice 1 is earlier in slice order than slice 4, so its error wins,
+    // although slice 4 failed first.
+    expect(await outcome).toBe(late);
+  });
+
+  it('waits for the other half of a split slice before it rejects', async () => {
+    const SLICE = 2;
+    const start = sliceStart(SLICE);
+    const lowerFailure = new Error('lower half failed');
+    let finishUpper!: (rows: TickRow[]) => void;
+    const upper = new Promise<TickRow[]>((resolve) => {
+      finishUpper = resolve;
+    });
+    const { db } = scriptedDb((call) => {
+      const isSlice =
+        call.from === iso(start) && call.to === iso(start + MINUTE);
+      if (isSlice) return tooLarge();
+      if (call.from === iso(start)) return lowerFailure;
+      if (call.from === iso(start + MINUTE / 2)) return { gate: upper };
+      return [];
+    });
+
+    const outcome = scanLotteryTicks(db, SCAN_END).catch((err: unknown) => err);
+
+    // The lower half failed at once; the upper half is still out.
+    expect(await settled(outcome)).toBe(false);
+    finishUpper([]);
+    expect(await outcome).toBe(lowerFailure);
+  });
+});
+
 describe('isResponseTooLargeError', () => {
   it('matches the error the real Neon driver throws for an HTTP 507', async () => {
     // The driver's own code builds the message: any non-400 failure is
