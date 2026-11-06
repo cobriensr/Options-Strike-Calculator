@@ -6,7 +6,7 @@ Cut the Claude Code instruction surface for this repo down to what gets used and
 
 ## Status
 
-Phases 1 to 7 are done (project skills: 103 → 51 after 3b): 7a (scripts), 7b (agent definitions) and 7c (the status view). Phases run one implementer at a time, in order. Phase 8 (the weekly loop) has its scope approved by the owner (2026-11-04, all defaults; decisions in `weekly-improvement-loop-2026-11-04.md`) and is built after the current queue empties.
+Phases 1 to 8 are done (project skills: 103 → 51 after 3b): 7a (scripts), 7b (agent definitions), 7c (the status view) and 8 (the weekly loop, built by 2026-11-06; scope and thresholds in `weekly-improvement-loop-2026-11-04.md`). Phases ran one implementer at a time, in order.
 
 | Phase | State | Record |
 |---|---|---|
@@ -177,7 +177,7 @@ Each rewrite must cite real repo files. The reviewer checks every cited path and
   
   These replace the boilerplate rewritten into 135 briefs. Add a `CLAUDE.md` line saying reviewer and implementer briefs carry scope only.
 
-### Phase 8: weekly loop (separate spec)
+### Phase 8: weekly loop (separate spec, DONE 2026-11-06)
 
 - Reuse the transcript-mining approach from the audit (re-home the scripts, which lived in a session's temp folder).
 - Add a before/after check on each rule's creation date; it would have caught all five rules that aren't working.

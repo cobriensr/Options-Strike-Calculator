@@ -1,6 +1,6 @@
 # Weekly improvement loop (2026-11-04)
 
-Phase 8 of `skill-cleanup-2026-10-28.md`. **Scope approved by the owner on 2026-11-04 (about 14:15 CT), with the default pick on all four decisions below.** It is built after the current queue empties: about 3.5 days over the 5 phases, one implementer stream.
+Phase 8 of `skill-cleanup-2026-10-28.md`. **Scope approved by the owner on 2026-11-04 (about 14:15 CT), with the default pick on all four decisions below.** All 5 phases were built by 2026-11-06. The tool, the `/weekly-review` skill and the SessionStart reminder are local-only under `.claude/`, recorded in its history repo. How to run it and its limits are in `.claude/scripts/weekly-review/README.md`.
 
 ## Goal
 
@@ -69,6 +69,16 @@ No tables, env vars or services.
 - Repeat: the same normalised pattern 5 or more times a week, in 2 or more sessions.
 - Flaky: fails then passes on rerun with no change, 2 or more times a week.
 - Rule efficacy window: 2 weeks before vs everything since. A rule needs at least 5 target events across both windows to be judged.
+
+The spec left these open. They were picked during the build (2026-11-06), not by the owner, so the owner can overrule them:
+
+- Rule verdict: the rate since the rule divided by the rate before it. Keep at 0.5 or less, replace with a hook or script at 1.0 or more, reword in between. A verdict needs the whole 95% interval (z = 1.96) inside one band. Otherwise the row is inconclusive and names the bands it spans.
+- Rates use the kind of call the rule watches as the denominator: shell commands, Agent calls, tool calls or sessions. The rule's own day is in neither window.
+- Each window also needs 5 active days, and 100 watched calls or 3 sessions. No events before the rule reads "no baseline", with no verdict. With no events since, the upper bound is the exact one for a zero count.
+- Proposals need 3 approval waits of one kind, 3 runs left asleep, 3 corrections or 2 flips of one test. A hook or script needs a confident replace or a known case recurring. An inconclusive row can only ask for a rewording, and only when its bands exclude keep.
+- "Owner away" means an approval wait over 6 h. Approval figures lead with wall-clock and market-hours time, with overlapping waits counted once.
+
+The transcripts only went back to 2026-10-22 at the first run, so the before windows then were 6 to 7 days, not 14.
 
 ## Decisions (owner, 2026-11-04 about 14:15 CT: all defaults)
 
