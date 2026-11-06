@@ -26,9 +26,11 @@
  * Schedule: 0 23 * * 2-6   (6 PM CT Tue-Sat — after ES settles at
  *                           4 PM CT)
  *
- * Environment: CRON_SECRET, SIDECAR_URL, DATABASE_URL
+ * Environment: CRON_SECRET, SIDECAR_URL, SIDECAR_TAKEIT_SECRET (the
+ * sidecar bearer, via sidecarArchiveHeaders), DATABASE_URL
  */
 
+import { sidecarArchiveHeaders } from '../_lib/archive-sidecar.js';
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { readDayOhlcFromPostgres } from '../_lib/postgres-day-summary.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
@@ -101,6 +103,7 @@ export default withCronInstrumentation(
       `${sidecarUrl}/archive/day-summary-batch` +
       `?from=${encodeURIComponent(targetDate)}&to=${encodeURIComponent(targetDate)}`;
     const sidecarRes = await fetch(url, {
+      headers: sidecarArchiveHeaders(),
       signal: AbortSignal.timeout(15_000),
     });
     if (!sidecarRes.ok && sidecarRes.status !== 404) {

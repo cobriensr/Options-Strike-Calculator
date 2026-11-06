@@ -45,6 +45,7 @@ import handler from '../cron/fetch-day-ohlc.js';
 import { cronGuard } from '../_lib/api-helpers.js';
 import { readDayOhlcFromPostgres } from '../_lib/postgres-day-summary.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 /** cronGuard hands the handler its ET "today" (ctx.today). */
 function runOn(etToday: string) {
@@ -356,6 +357,50 @@ describe('fetch-day-ohlc handler', () => {
     expect(res._status).toBe(500);
     expect(Sentry.captureException).toHaveBeenCalled();
   });
+
+  it('sends the sidecar bearer on the archive request', async () => {
+    process.env.SIDECAR_TAKEIT_SECRET = 's3cret';
+    sidecarRow('2026-04-20');
+    mockSql.mockResolvedValueOnce([{ date: '2026-04-20' }]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/archive/day-summary-batch?'),
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer s3cret' },
+      }),
+    );
+    expect(res._json).toMatchObject({ status: 'success', updated: 1 });
+  });
+
+  it.each([401, 403])(
+    'fails the run, not success, when the sidecar answers %i',
+    async (status) => {
+      process.env.SIDECAR_TAKEIT_SECRET = 'wrong';
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status,
+        json: async () => ({ error: 'unauthorized' }),
+      });
+
+      const res = mockResponse();
+      await handler(makeCronReq(), res);
+
+      expect(res._status).toBe(500);
+      expect(res._json).not.toMatchObject({ status: 'success' });
+      expect(Sentry.captureException).toHaveBeenCalledWith(
+        expect.objectContaining({ message: `sidecar ${status}` }),
+      );
+      expect(reportCronRun).toHaveBeenCalledWith(
+        'fetch-day-ohlc',
+        expect.objectContaining({ status: 'error' }),
+      );
+      expect(mockedReadOhlcPg).not.toHaveBeenCalled();
+      expect(mockSql).not.toHaveBeenCalled();
+    },
+  );
 
   it('500s and reports to Sentry when the sidecar fetch rejects (timeout)', async () => {
     // AbortSignal.timeout(15_000) rejects the fetch with a TimeoutError.

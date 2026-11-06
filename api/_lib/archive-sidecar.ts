@@ -13,20 +13,45 @@
  *     The analyze endpoint treats archive context as additive — a
  *     failed fetch should degrade the prompt, not break the call.
  *   - Errors go to logger.warn, not Sentry. A sidecar outage is worth
- *     knowing about but it's not an application bug.
+ *     knowing about but it's not an application bug. The exception is
+ *     a 401/403: the sidecar refused our bearer, which is a config
+ *     error, so it also raises the `archive_sidecar.unauthorized` Sentry
+ *     warning.
+ *   - Every request carries `sidecarArchiveHeaders()`.
  *
  * Env:
  *   SIDECAR_URL — required. No default; absence disables archive
  *                 context gracefully.
+ *   SIDECAR_TAKEIT_SECRET — the sidecar's bearer (equal to Railway's
+ *                 TAKEIT_SIDECAR_SHARED_SECRET), sent as
+ *                 `Authorization: Bearer <secret>`.
  */
 
 import logger from './logger.js';
+import { Sentry } from './sentry.js';
 
 const DEFAULT_TIMEOUT_MS = 2000;
 
 function sidecarUrl(): string | null {
   const url = process.env.SIDECAR_URL?.trim();
   return url ? url.replace(/\/$/, '') : null;
+}
+
+/**
+ * Request headers for the sidecar's /archive/* routes: the bearer from
+ * SIDECAR_TAKEIT_SECRET, the same secret its /takeit/* routes take.
+ * With the secret unset it returns no header and logs a warning.
+ * Shared by `getJson` and `api/cron/fetch-day-ohlc.ts`.
+ */
+export function sidecarArchiveHeaders(): Record<string, string> {
+  const secret = process.env.SIDECAR_TAKEIT_SECRET;
+  if (!secret) {
+    logger.warn(
+      'SIDECAR_TAKEIT_SECRET unset: sidecar archive request sent without Authorization',
+    );
+    return {};
+  }
+  return { Authorization: `Bearer ${secret}` };
 }
 
 async function getJson<T>(
@@ -39,7 +64,22 @@ async function getJson<T>(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`${base}${path}`, { signal: controller.signal });
+    const res = await fetch(`${base}${path}`, {
+      headers: sidecarArchiveHeaders(),
+      signal: controller.signal,
+    });
+    if (res.status === 401 || res.status === 403) {
+      logger.warn(
+        { path, status: res.status },
+        'Sidecar archive request refused: check SIDECAR_TAKEIT_SECRET',
+      );
+      Sentry.captureMessage('archive_sidecar.unauthorized', {
+        level: 'warning',
+        fingerprint: ['archive_sidecar.unauthorized'],
+        extra: { path, status: res.status },
+      });
+      return null;
+    }
     if (!res.ok) {
       logger.warn(
         { path, status: res.status },
