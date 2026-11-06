@@ -2,12 +2,14 @@
 
 From 2026-04-05 evening to 2026-06-15 14:11Z, `futures_bars` merged every
 contract month of each root into one row per minute. This extract rebuilds the
-true front-month (ESM6 / NQM6) 1-minute bars for ES and NQ and writes them to a
-file. It is read-only: the archive is local Parquet, Postgres is read in
-read-only sessions, and nothing is written to any database. Phase 2 (a
-TypeScript apply tool) turns the file into writes.
+true front-month (ESM6 / NQM6) 1-minute bars for ES and NQ and writes them to
+files. It is read-only: the archive is local Parquet, Postgres is read in
+read-only transactions, and nothing is written to any database. Phase 2 (a
+TypeScript apply tool) turns the files into writes.
 
 Spec: docs/superpowers/specs/futures-contract-mix-repair-2026-11-06.md.
+Rulings and evidence: .superpowers/sdd/futures-contract-mix-repair-2026-11-06/
+(task-1-fix1.md, task-1-fix2.md, task-1-report.md).
 
 Sources (UTC, bar-open minutes):
 
@@ -29,98 +31,166 @@ The cluster rule (tick span), per root and minute:
      timestamp keep the tick table's own `id` order (its insert order, which
      follows `ts`); on the archive the file row order plays that part.
 
-Back-month-only minutes: when the front month didn't print, the lowest cluster
-is the next contract, about one carry above the front. Each minute's kept level
-(the median of its kept prints) is compared with the median kept level of its
-neighbours: the nearest 5 minutes with prints on each side, within 30 minutes.
-A minute more than half a carry above that reference sits closer to the next
-contract than to the front. It is `front_absent`: it gets no bar and is listed
-in front_absent.csv, so Phase 2 can delete that row. The reference uses only
-the neighbours' own stateless picks, never an earlier decision, so one wrong
-minute can't latch the series onto another contract; it is one value of up to
-ten in a median. A minute with no neighbour in the window has no reference and
-keeps its pick.
+The time-order pass. Step 2 fails when the front month's own sweep inside one
+minute is about as wide as the carry: the front's extreme and the back month's
+nearest print sit within G and the clusters merge. The ticks showed this on ES
+2026-04-21 20:09Z and NQ 06-09 16:38Z. The pass walks the kept prints in time
+order and tracks the front level, the last accepted print.
 
-Carry (Root.carry) is measured on the tick span. In every multi-cluster minute
-it is the median price of the second cluster minus that of the first. ES:
-18,605 minutes, median 60.75, p1 53.75, p95 63.75; weekly medians ran from 55
-in April to 64 by mid-June. NQ: 17,523 minutes, median 279.75, p1 239.25, p95
-300; weekly 245 to 301. The absent threshold is half the median: ES 30.375, NQ
-139.875. It was G until the first tick run. With G as the threshold, two sharp
-NQ rallies in the front itself were flagged: 06-10 12:30Z, the 08:30 ET data,
-~91 above its neighbours, and 06-11 17:30Z, ~119 above. Neither minute had a
-back-month-only print. A real back-only minute sits a whole carry above, and
-even the p1 carry clears the threshold.
+  * A print more than CARRY_HALF (half the carry) above that level is dropped
+    as back-month, but only if the front prints again near the level within
+    WALK_CONFIRM_SECONDS. The look-ahead reaches into the next minute.
+  * If the front never comes back, the jump is the front's own move and the
+    print is kept. Without this rule the walk truncated the genuine +31 ES jump
+    at the 08:30 ET data on 06-10 12:30Z, dropping 5,220 of 7,848 lots.
+  * A print below the level is always kept. A wrong (too high) level is
+    therefore replaced by the first front print, and can't outlive its minute.
+  * The walk is seeded with the previous minute's close, when that minute is
+    contiguous, is a bar and passed the post-check below. Otherwise it is
+    seeded with the minute's lowest kept price.
+  * It runs only on minutes where a drop is possible: kept range above
+    CARRY_HALF, a high more than CARRY_HALF above the previous minute's low,
+    or the first minute of a page. Everywhere else the walk provably keeps
+    every print.
+  * Over the whole tick span it changes exactly the two minutes above. Its
+    output there equals the verifier's re-derivation from raw ticks, and W =
+    1, 2 and 5 s give the same bars.
 
-G per root: the midpoint of the band of G where the ground-truth result
-(ts_recv, exact OHLC and volume within 1%) is flat, rounded to the tick.
+Back-month-only minutes. When the front month didn't print, the lowest cluster
+is the next contract, about one carry above the front.
+
+  * Each minute's kept level (the median of its kept prints) is compared with
+    the median kept level of its neighbours: the nearest 5 minutes with prints
+    on each side, within 30 minutes.
+  * A minute at least CARRY_HALF above that reference is `front_absent`: it
+    gets no bar and is listed in front_absent.csv, so Phase 2 can delete that
+    row.
+  * The reference uses only the neighbours' own stateless picks, so a single
+    wrong minute can't latch the series onto another contract.
+  * A run of 6 or more back-only minutes masks its own middle, though: its
+    neighbours' median sits on the back month too. The post-check below
+    catches such a run by its carry-sized step on entry and exit.
+
+The post-check (fails the run). Over each stretch of contiguous tick minutes
+(front_absent minutes don't break a stretch), a bar is listed when either
+
+  * high - max(open, close) > CARRY_HALF ("wick"), or
+  * |open - the previous bar's close| > CARRY_HALF ("step").
+
+Every listed minute must be in the reviewed allowlist (--allowlist: symbol, ts,
+reason, with 5-second-slice evidence that it is a genuine front-month move).
+Any other listed minute goes to unsplittable.csv and the run fails without
+writing bars.
+
+Carry (Root.carry) is measured on the tick span: in every multi-cluster minute,
+the median price of the second cluster minus that of the first.
+
+| Root | Minutes | Median | p1 | p95 | Weekly medians |
+|---|---|---|---|---|---|
+| ES | 18,605 | 60.75 | 53.75 | 63.75 | 55 in April to 64 by mid-June |
+| NQ | 17,523 | 279.75 | 239.25 | 300 | 245 to 301 |
+
+CARRY_HALF is half the median: ES 30.375, NQ 139.875.
+
+G per root: the midpoint of the band of G where the gap rule alone (no walk)
+keeps the ground-truth result (ts_recv clock, exact OHLC and volume within 1%)
+flat, rounded to the tick. The band edges are the measured margins: the widest
+step between adjacent prices of one contract inside a minute, and the narrowest
+gap between contracts. With the walk, the ground truth scores 13,680 exact on
+both roots from the lower edge up to at least ES 40 / NQ 130, because the walk
+repairs the merges a wide G makes. That leaves no upper edge, so G stays at the
+gap rule's own midpoint and only has to separate clean minutes.
 
   * ES 17.0. Flat from 8.25 to 26.0: 13,677 exact, 13,680 volume.
-    - Lower edge: at G = 8.0 the widest ESM6 step inside one minute (8.25)
-      splits the front and a minute's volume drops.
-    - Upper edge: at 26.25 the narrowest split between contracts (26.25,
-      04-07) merges them.
-    - Midpoint 17.125, rounded half-to-even to 17.0.
-    - G = 3..4 scores 13,679 exact by splitting the three 04-07 overlap
-      minutes, but it loses volume elsewhere because the front itself
-      starts to split, so it is not a band.
+    - Lower edge: the widest ESM6 step inside a minute is 8.25 (archive
+      `tbbo`). Below that the front splits and a minute loses volume.
+    - Upper edge: the narrowest inter-contract gap in the ground truth is
+      26.25 (04-07). The tick span's narrowest, outside the merged minute,
+      is 20.75 (06-11).
+    - Midpoint 17.125, rounded half-to-even to 17.0, so 8.25 < 17 < 20.75.
+    - G = 3..4 scores 13,679 exact by cutting the three 04-07 overlap
+      minutes apart, but the front itself starts to split there (volume
+      13,679), so it is not a band.
   * NQ 65.0. Flat from 25.75 to 104.25: 13,680 exact, 13,680 volume.
-    - Lower edge: the widest NQM6 step inside one minute is 25.75.
-    - Upper edge: the narrowest split is 104.5.
-    - Midpoint 65.0.
+    - Lower edge: the widest NQM6 step inside a minute is 25.75.
+    - Upper edge: the narrowest inter-contract gap in the ground truth is
+      104.5; on the tick span it is 87.75 (06-11 17:28Z).
+    - Midpoint 65.0, so 25.75 < 65 < 87.75.
 
-  Sweep, exact-OHLC minutes out of 13,680 (ts_recv / ts_event), no minute
-  flagged front_absent at any G:
+  Sweep of the gap rule alone, exact-OHLC minutes out of 13,680 (ts_recv;
+  ts_event in brackets). With the walk added, ES scores 13,680 from G 8.25
+  (the three 04-07 overlap minutes are repaired) and NQ from G 25.75.
 
       ES G   1-2: 13,678   3-4: 13,679   5-8: 13,677-678 (volume < 13,680)
-             8.25-26.0: 13,677 / 13,660   27-29: 13,676   30: 13,674
+             8.25-26.0: 13,677 (13,660)   27-29: 13,676   30: 13,674
              35: 13,667   40: 13,647
-      NQ G   5-15: 13,678   20-25.5: 13,679   25.75-104.25: 13,680 / 13,638
+      NQ G   5-15: 13,678   20-25.5: 13,679   25.75-104.25: 13,680 (13,638)
              104.5-130: 13,679
 
-Coverage: `partial` marks a tick minute at the edge of tick coverage, where the
-stream started or stopped inside the minute. The test is that the minute
-before or after it has a `futures_bars` row (the market traded) but no ticks.
-An edge facing a closed market (daily halt, weekend) has no such row and is
-not partial. Phase 2 reports partial minutes instead of writing them.
+Minutes and clocks.
 
-Minutes: a print belongs to the minute of its `ts`. The tick table's `ts` is
-Databento's ts_event, the only clock the sidecar stored, so tick-span bars use
-ts_event. Databento built the archive's `ohlcv_1m` by ts_recv instead. A print
-whose two clocks straddle a minute boundary lands one minute earlier here,
-which moves that minute's close and the next minute's open by about a tick.
-That happened to 43 ES and 48 NQ trades in 04-06..04-17. The output's
-`n_clusters` lets Phase 2 rewrite only mixed minutes, so a clean minute keeps
-Databento's own bar and the boundary difference never reaches the table.
+  * A print belongs to the minute of its `ts`.
+  * The tick table's `ts` is Databento's ts_event, the only clock the sidecar
+    stored, so tick-span bars use ts_event.
+  * Databento built the archive's `ohlcv_1m` by ts_recv instead. A print whose
+    two clocks straddle a minute boundary lands one minute earlier here, which
+    moves that minute's close and the next minute's open by about a tick. That
+    happened to 43 ES and 48 NQ trades in 04-06..04-17.
+  * Phase 2 writes a rebuilt bar wherever it differs from the row. `n_clusters`
+    is informational: single-cluster minutes can still differ, when the tick
+    table had no back-month prints but the row did.
+
+Coverage.
+
+  * `partial` is true when an open-market tick-stream silence of at least
+    PARTIAL_GAP_SECONDS overlaps the minute. Phase 2 then keeps the row's
+    volume.
+  * A silence is two consecutive ticks that far apart, including the span's
+    own edges: the stream started at 04-20 01:56:53 and stopped at 06-15
+    14:11:30.
+  * The part of a silence that falls in a scheduled closure doesn't count:
+    the daily 16:00-17:00 CT halt, the weekend, and the 2026-05-25 Memorial
+    Day halt from 12:00 CT.
+  * So the 20:59 close and the 22:00 open are whole minutes, and an interior
+    drop-out (often 13:00Z) is partial.
+  * tickless_windows.csv lists every whole minute in the span with no ticks.
 
 Usage (from the repo root; the archive lives in the main checkout only):
 
     ml/.venv/Scripts/python ml/src/futures_contract_repair.py \\
         --archive F:/dev/strike-calculator/ml/data/archive
 
-Outputs (--out-dir, default ml/data/futures-contract-repair/, gitignored):
+Outputs (--out-dir, default ml/data/futures-contract-repair/, gitignored). Every
+earlier output there is deleted when a run starts, and `manifest.json` is
+written last. Phase 2 refuses a directory whose manifest doesn't say "passed".
 
-  * rebuilt_bars.parquet: symbol, ts (UTC bar-open minute), open, high, low,
-    close (float64, on the 0.25 tick), volume (int64), n_clusters (int64: the
-    contracts the minute's prints held, 1 on the archive), partial (bool,
-    false on the archive), source (archive|ticks). Only minutes the source
-    covers: a minute with no ticks gets no row.
-  * per_day.csv: per root, UTC day and source: the bars built, front_absent,
-    multi-cluster and partial minutes, prints, the widest bar, the first and
-    last minute, and G's margins (the widest kept step, the narrowest split).
-  * front_absent.csv: symbol, ts of each tick minute where only a back month
-    printed.
-  * ground_truth.csv: the gate below, per root, day and archive clock.
+| File | Contents |
+|---|---|
+| `rebuilt_bars.parquet` | symbol, ts (UTC bar-open minute), open, high, low, close (float64, on the 0.25 tick), volume (int64), n_clusters (int64: 1 on the archive, +1 where the walk dropped prints), partial (bool), source (archive or ticks). Only minutes the source covers. |
+| `ndjson/{ROOT}-{YYYY-MM-DD}.ndjson` | The same rows, one JSON object per line, UTC day files. |
+| `per_day.csv` | Per root, UTC day and source: bars, front_absent, multi-cluster, walked and partial minutes, prints, the widest bar, the first and last minute, and G's margins. |
+| `front_absent.csv` | symbol, ts of each tick minute where only a back month printed. |
+| `post_check.csv` | Every minute the post-check listed, with its allowlist status. |
+| `unsplittable.csv` | The listed minutes not on the allowlist. Empty when the run passes. |
+| `suspect.csv` | Tick bars with a range above 0.7 x carry. |
+| `tickless_windows.csv` | Tick-span windows with no ticks. |
+| `ground_truth.csv` | The gate below, per root, day and archive clock. |
+| `manifest.json` | The status, G and carry per root, spans, gate, counts, and the git commit. |
 
-The ground-truth gate runs first: the cluster rule on the archive's TBBO trades
-for 04-06..04-17 with the symbol dropped (every month merged, as in the ticks),
-compared with the archive's front-month bars. It needs, per root, an exact
-open/high/low/close on at least 99.9% of minutes and volume within 1% on at
-least 99.9%. Below that the run stops and writes no bars. The gate buckets the
-trades by ts_recv, the archive bars' own clock, with ties in file order, so it
-tests the cluster rule alone (team-lead ruling, 2026-11-06). The ts_event rows
-are written next to it to record the clock effect. By ts_event, the rule scores
-about 99.85% (ES) and 99.69% (NQ).
+The ground-truth gate runs first.
+
+  * It runs the full tick rule (clusters, walk, absent test) on the archive's
+    TBBO trades for 04-06..04-17, with the symbol dropped so every month is
+    merged as in the ticks. It compares the result with the archive's
+    front-month bars.
+  * It needs, per root, an exact open/high/low/close on at least 99.9% of
+    minutes and volume within 1% on at least 99.9%. Below that the run stops
+    and writes no bars.
+  * The trades are bucketed by ts_recv, the archive bars' own clock, with ties
+    in file order, so the gate tests the rule alone (team-lead ruling,
+    2026-11-06). It scores 100% on both roots.
+  * The ts_event rows are written next to it to record the clock effect. By
+    ts_event the rule scores 99.876% (ES) and 99.693% (NQ).
 
 DATABASE_URL comes from --env-file, else this checkout's .env.local, else the
 main checkout's. It is never printed.
@@ -130,7 +200,9 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
+import subprocess
 import sys
 import time
 import warnings
@@ -158,8 +230,13 @@ class Root:
     symbol: str  # the root as futures_bars stores it
     front: str  # the front-month contract for the whole window
     gap: float  # G: a larger gap between adjacent prices splits contracts
-    carry: float  # the next contract's premium; half of it marks front_absent
+    carry: float  # the next contract's premium, measured on the tick span
     tick: float = 0.25
+
+    @property
+    def carry_half(self) -> float:
+        """CARRY_HALF: the walk's drop threshold, the absent and post-check limit."""
+        return self.carry / 2
 
 
 ROOTS: dict[str, Root] = {
@@ -185,9 +262,19 @@ GATE_RATE = 0.999
 VOLUME_TOLERANCE = 0.01
 NEIGHBOURS = 5  # per side
 NEIGHBOUR_WINDOW_MINUTES = 30
+WALK_CONFIRM_SECONDS = 5
+PARTIAL_GAP_SECONDS = 20
+SUSPECT_RANGE_SHARE = 0.7  # of the carry
 # The archive clock the gate scores; the other one is written for the record.
 GATE_CLOCK = "ts_recv"
 ARCHIVE_CLOCKS = ("ts_recv", "ts_event")
+
+# CME equity-index futures closures in the window, in exchange (Chicago) time:
+# the daily 16:00-17:00 halt Monday to Thursday, the weekend from Friday 16:00
+# to Sunday 17:00, and Memorial Day 2026-05-25 from 12:00 (the data has no
+# ticks or bars 17:00-22:00Z that day).
+_EXCHANGE_TZ = "America/Chicago"
+_HOLIDAY_CLOSURES = (("2026-05-25 12:00", "2026-05-25 17:00"),)
 
 OUTPUT_COLUMNS = (
     "symbol",
@@ -214,9 +301,23 @@ MINUTE_COLUMNS = (
     "kept_gap",
     "split_gap",
 )
+# Every file a run writes; a run deletes them all before it starts.
+OUTPUT_FILES = (
+    "rebuilt_bars.parquet",
+    "per_day.csv",
+    "front_absent.csv",
+    "post_check.csv",
+    "unsplittable.csv",
+    "suspect.csv",
+    "tickless_windows.csv",
+    "ground_truth.csv",
+    "manifest.json",
+)
+NDJSON_DIR = "ndjson"
 # Outright month codes; spreads ("ESM6-ESU6") and options ("ESM6 C6475") don't match.
 _OUTRIGHT = "^{root}[FGHJKMNQUVXZ][0-9]{{1,2}}$"
 _EPOCH = pd.Timestamp("1970-01-01", tz="UTC")
+_MINUTE = pd.Timedelta(minutes=1)
 
 
 class FrontMonthMismatch(ValueError):
@@ -231,17 +332,27 @@ def round_to_tick(values: pd.Series, tick: float) -> pd.Series:
     return (values / tick).round() * tick
 
 
-def build_minutes(ticks: pd.DataFrame, cfg: Root) -> pd.DataFrame:
-    """One row per minute with prints: the lowest cluster's bar and its counts.
+def _minute_numbers(stamps) -> np.ndarray:
+    return ((pd.Series(stamps) - _EPOCH) // _MINUTE).to_numpy()
+
+
+def build_minutes(ticks: pd.DataFrame, cfg: Root) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The lowest cluster's bar per minute, and the prints the walk needs.
 
     `ticks` has ts (tz-aware UTC), seq (the tie-break order), price and size,
-    for one root. The result has MINUTE_COLUMNS; `level` is the median kept
-    price, `clusters` the minute's cluster count and `prints` every print in it.
-    `kept_gap` (the widest step between adjacent kept prices) and `split_gap`
-    (the step to the next cluster) show how far each side sat from G.
+    for one root. The first result has MINUTE_COLUMNS; `level` is the median
+    kept price, `clusters` the minute's cluster count and `prints` every print
+    in it. `kept_gap` (the widest step between adjacent kept prices) and
+    `split_gap` (the step to the next cluster) show how far each side sat from G.
+
+    The second result holds kept prints (minute, ts, seq, price, size) for the
+    minutes the time-order pass may change, and the first WALK_CONFIRM_SECONDS
+    of the minute after each, plus the frame's first minute (its predecessor
+    lives in another frame).
     """
+    empty = pd.DataFrame({c: [] for c in ("minute", "ts", "seq", "price", "size")})
     if ticks.empty:
-        return pd.DataFrame({c: [] for c in MINUTE_COLUMNS})
+        return pd.DataFrame({c: [] for c in MINUTE_COLUMNS}), empty
     t = pd.DataFrame(
         {
             "minute": ticks["ts"].dt.floor("min"),
@@ -279,26 +390,170 @@ def build_minutes(ticks: pd.DataFrame, cfg: Root) -> pd.DataFrame:
     # The step that opened the second cluster: G's margin on the split side.
     second = t[(t["rank"] == 1) & new_cluster]
     out["split_gap"] = second.set_index("minute")["step"]
-    return out.rename_axis("ts").reset_index()[list(MINUTE_COLUMNS)]
+    minutes = out.rename_axis("ts").reset_index()[list(MINUTE_COLUMNS)]
+
+    walk = _walk_minutes(minutes, cfg)
+    after = walk + 1
+    numbers = _minute_numbers(kept["minute"])
+    into = (kept["ts"] - kept["minute"]) < pd.Timedelta(seconds=WALK_CONFIRM_SECONDS)
+    keep = np.isin(numbers, walk) | (np.isin(numbers, after) & into.to_numpy())
+    columns = ["minute", "ts", "seq", "price", "size"]
+    return minutes, kept.loc[keep, columns].reset_index(drop=True)
+
+
+def _walk_minutes(minutes: pd.DataFrame, cfg: Root) -> np.ndarray:
+    """Minute numbers where the time-order pass can drop a print.
+
+    Elsewhere every kept print lies within CARRY_HALF of whatever level the walk
+    can hold (the seed is a print of the previous minute or the minute's own
+    lowest print), so the walk keeps them all.
+    """
+    numbers = _minute_numbers(minutes["ts"])
+    high = minutes["high"].to_numpy(dtype="float64")
+    low = minutes["low"].to_numpy(dtype="float64")
+    wide = high - low > cfg.carry_half
+    contiguous = np.r_[False, np.diff(numbers) == 1]
+    previous_low = np.r_[np.nan, low[:-1]]
+    above = contiguous & (high > previous_low + cfg.carry_half)
+    first = np.zeros(len(numbers), dtype=bool)
+    first[:1] = True
+    return numbers[wide | above | first]
+
+
+def walk_front(
+    prints: pd.DataFrame, lookahead: pd.DataFrame, seed: float, cfg: Root
+) -> np.ndarray:
+    """Which of the minute's kept prints (time order) are the front month.
+
+    A print more than CARRY_HALF above the front level (the last accepted print,
+    seeded with `seed`) is dropped when a later print within WALK_CONFIRM_SECONDS
+    (this minute's, then the next minute's `lookahead`) comes back to within
+    CARRY_HALF of that level. Otherwise it is the front's own jump and is kept.
+    """
+    price = prints["price"].to_numpy(dtype="float64")
+    # Both arrays are in time order, the look-ahead after the minute's own prints.
+    ahead_price = np.r_[price, lookahead["price"].to_numpy(dtype="float64")]
+    ahead_ns = np.r_[_nanoseconds(prints["ts"]), _nanoseconds(lookahead["ts"])]
+    window = pd.Timedelta(seconds=WALK_CONFIRM_SECONDS).value
+    level = seed
+    keep = np.ones(len(price), dtype=bool)
+    for i, p in enumerate(price):
+        if p <= level + cfg.carry_half:
+            level = p
+            continue
+        end = np.searchsorted(ahead_ns, ahead_ns[i] + window, side="right")
+        if (ahead_price[i + 1 : end] <= level + cfg.carry_half).any():
+            keep[i] = False  # the front printed again near its level: back month
+        else:
+            level = p  # the front itself moved
+    return keep
+
+
+def _nanoseconds(stamps: pd.Series) -> np.ndarray:
+    return (
+        stamps.dt.tz_convert("UTC")
+        .dt.tz_localize(None)
+        .astype("datetime64[ns]")
+        .astype("int64")
+        .to_numpy()
+    )
+
+
+def time_order_pass(
+    minutes: pd.DataFrame,
+    walk_prints: pd.DataFrame,
+    cfg: Root,
+    allowlisted: frozenset[pd.Timestamp] = frozenset(),
+) -> pd.DataFrame:
+    """Walk the minutes that need it, then run the post-check on every bar.
+
+    Adds `dropped` (prints the walk removed), `wick`, `step` and `passed` (the
+    bar passed the post-check, or its minute is in `allowlisted`). A minute's
+    walk is seeded from the previous minute's close only when that minute is
+    contiguous, is a bar and passed. See the module docstring.
+    """
+    out = minutes.sort_values("ts", ignore_index=True)
+    n = len(out)
+    numbers = _minute_numbers(out["ts"])
+    prices = ("open", "high", "low", "close")
+    cols = {c: out[c].to_numpy(dtype="float64").copy() for c in prices}
+    volume = out["volume"].to_numpy(dtype="int64").copy()
+    clusters = out["clusters"].to_numpy(dtype="int64").copy()
+    absent = out["front_absent"].to_numpy(dtype=bool)
+    dropped = np.zeros(n, dtype="int64")
+    wick = np.zeros(n, dtype=bool)
+    step = np.zeros(n, dtype=bool)
+    passed = np.zeros(n, dtype=bool)
+
+    groups = {}
+    if len(walk_prints):
+        keys = _minute_numbers(walk_prints["minute"])
+        for number, group in walk_prints.groupby(keys):
+            groups[int(number)] = group.sort_values(["ts", "seq"], kind="stable")
+    stamps = pd.Series(list(allowlisted), dtype="datetime64[ns, UTC]")
+    allowed = set(_minute_numbers(stamps).tolist())
+
+    stretch_close = np.nan  # the last bar's close in this contiguous stretch
+    previous = (-2, False, np.nan)  # (minute number, a passed bar?, close)
+    for i in range(n):
+        number = int(numbers[i])
+        if i == 0 or number - int(numbers[i - 1]) != 1:
+            stretch_close = np.nan
+        if absent[i]:
+            previous = (number, False, np.nan)
+            continue
+        prints = groups.get(number)
+        if prints is not None and len(prints):
+            seeded = previous[0] == number - 1 and previous[1]
+            seed = previous[2] if seeded else float(prints["price"].min())
+            ahead = groups.get(number + 1, prints.iloc[:0])
+            keep = walk_front(prints, ahead, seed, cfg)
+            if not keep.all():
+                front = prints[keep]
+                cols["open"][i] = front["price"].iloc[0]
+                cols["high"][i] = front["price"].max()
+                cols["low"][i] = front["price"].min()
+                cols["close"][i] = front["price"].iloc[-1]
+                volume[i] = int(front["size"].sum())
+                dropped[i] = int((~keep).sum())
+                clusters[i] += 1
+        high, open_, close = cols["high"][i], cols["open"][i], cols["close"][i]
+        wick[i] = high - max(open_, close) > cfg.carry_half
+        step[i] = (
+            not np.isnan(stretch_close) and abs(open_ - stretch_close) > cfg.carry_half
+        )
+        passed[i] = not (wick[i] or step[i]) or number in allowed
+        stretch_close = close
+        previous = (number, bool(passed[i]), close)
+
+    return out.assign(
+        **cols,
+        volume=volume,
+        clusters=clusters,
+        dropped=dropped,
+        wick=wick,
+        step=step,
+        passed=passed,
+    )
 
 
 def mark_front_absent(minutes: pd.DataFrame, cfg: Root) -> pd.DataFrame:
     """Add `ref` (the neighbours' median level) and `front_absent`.
 
-    A minute is front_absent when its level sits more than half a carry above
+    A minute is front_absent when its level sits at least CARRY_HALF above
     `ref`: the only contract that printed was a back month. See the module
-    docstring.
+    docstring for the 6-minute limit and the post-check backstop.
     """
     out = minutes.sort_values("ts", ignore_index=True)
     n = len(out)
     if n == 0:
         return out.assign(ref=pd.Series(dtype="float64"), front_absent=False)
     level = out["level"].to_numpy(dtype="float64")
-    minute_no = ((out["ts"] - _EPOCH) // pd.Timedelta(minutes=1)).to_numpy()
+    minute_no = _minute_numbers(out["ts"])
     rows = np.arange(n)
     columns = []
-    for step in range(1, NEIGHBOURS + 1):
-        for other in (rows - step, rows + step):
+    for distance in range(1, NEIGHBOURS + 1):
+        for other in (rows - distance, rows + distance):
             inside = (other >= 0) & (other < n)
             other = np.clip(other, 0, n - 1)
             near = inside & (
@@ -308,41 +563,145 @@ def mark_front_absent(minutes: pd.DataFrame, cfg: Root) -> pd.DataFrame:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN rows: no ref
         ref = np.nanmedian(np.column_stack(columns), axis=1)
-    return out.assign(ref=ref, front_absent=(level - ref) > cfg.carry / 2)
+    return out.assign(ref=ref, front_absent=(level - ref) >= cfg.carry_half)
 
 
-def rebuild_from_ticks(ticks: pd.DataFrame, cfg: Root) -> pd.DataFrame:
-    """build_minutes then mark_front_absent, for one root's prints."""
-    return mark_front_absent(build_minutes(ticks, cfg), cfg)
+def rebuild_from_ticks(
+    ticks: pd.DataFrame,
+    cfg: Root,
+    allowlisted: frozenset[pd.Timestamp] = frozenset(),
+) -> pd.DataFrame:
+    """The whole tick rule for one root's prints: clusters, absent test, walk."""
+    minutes, walk_prints = build_minutes(ticks, cfg)
+    return time_order_pass(
+        mark_front_absent(minutes, cfg), walk_prints, cfg, allowlisted
+    )
 
 
-def mark_partial(minutes: pd.DataFrame, traded: pd.DatetimeIndex) -> pd.DataFrame:
-    """Add `partial`: the tick stream started or stopped inside the minute.
+def closures_between(
+    lo: pd.Timestamp, hi: pd.Timestamp
+) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """The scheduled closures overlapping [lo, hi), in UTC."""
+    first = lo.tz_convert(_EXCHANGE_TZ).normalize() - pd.Timedelta(days=3)
+    last = hi.tz_convert(_EXCHANGE_TZ).normalize() + pd.Timedelta(days=1)
+    spans = []
+    for day in pd.date_range(first.tz_localize(None), last.tz_localize(None), freq="D"):
+        if day.weekday() <= 3:  # Monday..Thursday: the daily halt
+            spans.append((day + pd.Timedelta(hours=16), day + pd.Timedelta(hours=17)))
+        elif day.weekday() == 4:  # Friday 16:00 to Sunday 17:00
+            spans.append(
+                (day + pd.Timedelta(hours=16), day + pd.Timedelta(days=2, hours=17))
+            )
+    spans += [(pd.Timestamp(a), pd.Timestamp(b)) for a, b in _HOLIDAY_CLOSURES]
+    merged: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    for a, b in sorted(spans):
+        start = a.tz_localize(_EXCHANGE_TZ).tz_convert("UTC")
+        end = b.tz_localize(_EXCHANGE_TZ).tz_convert("UTC")
+        if merged and start <= merged[-1][1]:  # overlapping (holiday + halt)
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return [(a, b) for a, b in merged if a < hi and b > lo]
 
-    `traded` holds the minutes `futures_bars` has a row for, so the market
-    traded in them. A tick minute is partial when the minute before or after it
-    traded but has no ticks: that edge of its coverage run is an outage, not a
-    closed market (daily halt, weekend), so its bar may miss part of the minute.
+
+def open_pieces(
+    start: pd.Timestamp, end: pd.Timestamp
+) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """[start, end) minus the scheduled closures: the open-market parts."""
+    pieces = [(start, end)]
+    for a, b in closures_between(start, end):
+        cut = []
+        for s, e in pieces:
+            if b <= s or a >= e:
+                cut.append((s, e))
+                continue
+            if s < a:
+                cut.append((s, a))
+            if b < e:
+                cut.append((b, e))
+        pieces = cut
+    return pieces
+
+
+def tick_gaps(stamps: pd.Series) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """Consecutive ticks (time order) at least PARTIAL_GAP_SECONDS apart."""
+    if len(stamps) < 2:
+        return []
+    s = stamps.sort_values(ignore_index=True)
+    apart = s.diff() >= pd.Timedelta(seconds=PARTIAL_GAP_SECONDS)
+    idx = np.flatnonzero(apart.to_numpy())
+    return [(s.iloc[i - 1], s.iloc[i]) for i in idx]
+
+
+def stream_gaps(
+    pages: list[tuple[pd.Timestamp, pd.Timestamp, list]],
+    span: tuple[pd.Timestamp, pd.Timestamp],
+) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """All silences of the stream over `span` from per-page (first, last, gaps).
+
+    Adds the span's own edges (start to the first tick, last tick to the end)
+    and the joins between pages. Pages with no ticks are passed as None.
     """
+    gaps: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    cursor = span[0]  # the last tick so far, or the span start
+    for page in pages:
+        if page is None:
+            continue
+        first, last, inner = page
+        gaps.append((cursor, first))
+        gaps.extend(inner)
+        cursor = last
+    gaps.append((cursor, span[1]))
+    limit = pd.Timedelta(seconds=PARTIAL_GAP_SECONDS)
+    return [(a, b) for a, b in gaps if b - a >= limit]
 
-    def minute_numbers(stamps) -> np.ndarray:
-        return ((pd.Series(stamps) - _EPOCH) // pd.Timedelta(minutes=1)).to_numpy()
 
-    covered = minute_numbers(minutes["ts"])
-    traded_numbers = minute_numbers(traded)
-    missed = traded_numbers[~np.isin(traded_numbers, covered)]
-    partial = np.isin(covered - 1, missed) | np.isin(covered + 1, missed)
-    return minutes.assign(partial=partial)
+def mark_partial(
+    minutes: pd.DataFrame, gaps: list[tuple[pd.Timestamp, pd.Timestamp]]
+) -> pd.DataFrame:
+    """Add `partial`: an open-market stream silence of >= 20 s overlaps the minute."""
+    limit = pd.Timedelta(seconds=PARTIAL_GAP_SECONDS)
+    touched: set[int] = set()
+    for a, b in gaps:
+        for s, e in open_pieces(a, b):
+            if e - s >= limit:
+                first = int(_minute_numbers([s])[0])
+                last = int(_minute_numbers([e - pd.Timedelta(microseconds=1)])[0])
+                touched.update(range(first, last + 1))
+    numbers = _minute_numbers(minutes["ts"])
+    return minutes.assign(partial=np.isin(numbers, list(touched)))
+
+
+def tickless_windows(
+    gaps: list[tuple[pd.Timestamp, pd.Timestamp]],
+    span: tuple[pd.Timestamp, pd.Timestamp],
+    symbol: str,
+) -> pd.DataFrame:
+    """Every run of whole minutes in `span` with no ticks, from the silences.
+
+    open_minutes counts the window's minutes outside the scheduled closures.
+    """
+    rows = []
+    for a, b in gaps:
+        start = a if a == span[0] else a.floor("min") + _MINUTE
+        stop = b if b == span[1] else b.floor("min")  # exclusive
+        if stop <= start:
+            continue
+        minutes = int((stop - start) / _MINUTE)
+        closed = sum(
+            (min(e, stop) - max(s, start) for s, e in closures_between(start, stop)),
+            pd.Timedelta(0),
+        )
+        open_minutes = int(round((stop - start - closed) / _MINUTE))
+        rows.append((symbol, start, stop - _MINUTE, minutes, open_minutes))
+    return pd.DataFrame(
+        rows,
+        columns=["symbol", "first_minute", "last_minute", "minutes", "open_minutes"],
+    )
 
 
 def bars_output(minutes: pd.DataFrame, symbol: str, source: str) -> pd.DataFrame:
-    """The rebuilt_bars.parquet rows: every minute that has a front-month bar.
-
-    n_clusters is how many contracts the minute's prints held (1 on the
-    archive): Phase 2 rewrites only mixed minutes, or rows far off the rebuild,
-    so a clean minute keeps Databento's own ts_recv-built bar. Phase 2 reports
-    `partial` minutes instead of writing them.
-    """
+    """The rebuilt_bars.parquet rows: every minute that has a front-month bar."""
     kept = minutes[~minutes["front_absent"].astype(bool)]
     out = pd.DataFrame(
         {
@@ -361,8 +720,72 @@ def bars_output(minutes: pd.DataFrame, symbol: str, source: str) -> pd.DataFrame
     return out[list(OUTPUT_COLUMNS)].reset_index(drop=True)
 
 
+def ndjson_lines(bars: pd.DataFrame) -> dict[str, list[str]]:
+    """One JSON line per bar, grouped by file name ({ROOT}-{YYYY-MM-DD}.ndjson)."""
+    files: dict[str, list[str]] = {}
+    for row in bars.sort_values(["symbol", "ts"]).itertuples(index=False):
+        record = {
+            "symbol": row.symbol,
+            "ts": row.ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "open": float(row.open),
+            "high": float(row.high),
+            "low": float(row.low),
+            "close": float(row.close),
+            "volume": int(row.volume),
+            "source": row.source,
+            "n_clusters": int(row.n_clusters),
+            "partial": bool(row.partial),
+        }
+        name = f"{row.symbol}-{row.ts:%Y-%m-%d}.ndjson"
+        files.setdefault(name, []).append(json.dumps(record, separators=(",", ":")))
+    return files
+
+
+def post_check_rows(
+    minutes: pd.DataFrame, symbol: str, allowlist: pd.DataFrame
+) -> pd.DataFrame:
+    """The bars the post-check listed, with their allowlist reason (or none)."""
+    listed = minutes[(minutes["wick"] | minutes["step"]) & ~minutes["front_absent"]]
+    rules = np.where(
+        listed["wick"] & listed["step"],
+        "wick+step",
+        np.where(listed["wick"], "wick", "step"),
+    )
+    out = pd.DataFrame(
+        {
+            "symbol": symbol,
+            "ts": listed["ts"].astype("datetime64[us, UTC]"),
+            "rule": rules,
+            "open": listed["open"],
+            "high": listed["high"],
+            "low": listed["low"],
+            "close": listed["close"],
+        }
+    )
+    reasons = allowlist[allowlist["symbol"] == symbol].set_index("ts")["reason"]
+    out["allowlisted"] = out["ts"].isin(reasons.index)
+    out["reason"] = out["ts"].map(reasons)
+    return out.reset_index(drop=True)
+
+
+def suspect_rows(minutes: pd.DataFrame, cfg: Root) -> pd.DataFrame:
+    """Tick bars whose range exceeds SUSPECT_RANGE_SHARE of the carry."""
+    bars = minutes[~minutes["front_absent"]]
+    wide = bars[bars["high"] - bars["low"] > SUSPECT_RANGE_SHARE * cfg.carry]
+    return pd.DataFrame(
+        {
+            "symbol": cfg.symbol,
+            "ts": wide["ts"].astype("datetime64[us, UTC]"),
+            "range": wide["high"] - wide["low"],
+            "n_clusters": wide["clusters"],
+            "dropped": wide["dropped"],
+            "partial": wide["partial"],
+        }
+    ).reset_index(drop=True)
+
+
 def per_day_summary(minutes: pd.DataFrame, symbol: str, source: str) -> pd.DataFrame:
-    """Per UTC day: bars built, front_absent, multi-cluster and partial minutes,
+    """Per UTC day: bars, front_absent, multi-cluster, walked and partial minutes,
     prints.
 
     Archive minutes are one contract each and carry no print counts, so their
@@ -375,6 +798,7 @@ def per_day_summary(minutes: pd.DataFrame, symbol: str, source: str) -> pd.DataF
             "bars": (~absent).astype("int64"),
             "front_absent": absent.astype("int64"),
             "multi_cluster": (minutes["clusters"] > 1).astype("int64"),
+            "walked": (minutes["dropped"] > 0).astype("int64"),
             "partial": (minutes["partial"].astype(bool) & ~absent).astype("int64"),
             "prints": minutes["prints"].astype("Int64"),
             "max_range": (minutes["high"] - minutes["low"]).where(~absent),
@@ -387,6 +811,7 @@ def per_day_summary(minutes: pd.DataFrame, symbol: str, source: str) -> pd.DataF
             "bars": grouped["bars"].sum(),
             "front_absent": grouped["front_absent"].sum(),
             "multi_cluster": grouped["multi_cluster"].sum(),
+            "walked": grouped["walked"].sum(),
             "partial": grouped["partial"].sum(),
             "prints": grouped["prints"].sum(min_count=1),
             "max_range": grouped["max_range"].max(),
@@ -453,7 +878,7 @@ def archive_front_bars(bars: pd.DataFrame, cfg: Root) -> pd.DataFrame:
 
 def archive_minutes(front: pd.DataFrame) -> pd.DataFrame:
     """Archive bars in the minutes shape: one contract each, no print counts,
-    and whole minutes (Databento built them from its full feed)."""
+    whole minutes (Databento built them from its full feed), never walked."""
     return front.assign(
         level=np.nan,
         clusters=1,
@@ -462,6 +887,10 @@ def archive_minutes(front: pd.DataFrame) -> pd.DataFrame:
         split_gap=np.nan,
         ref=np.nan,
         front_absent=False,
+        dropped=0,
+        wick=False,
+        step=False,
+        passed=True,
         partial=False,
     )
 
@@ -629,10 +1058,6 @@ _SELECT_TICKS = (
     "FROM futures_trade_ticks WHERE symbol = %s AND ts >= %s AND ts < %s "
     "ORDER BY ts, id"
 )
-_SELECT_BAR_MINUTES = (
-    "SELECT (extract(epoch FROM ts) * 1000000)::bigint FROM futures_bars "
-    "WHERE symbol = %s AND ts >= %s AND ts < %s ORDER BY ts"
-)
 
 
 def connect_readonly(env_file: Path):
@@ -663,8 +1088,13 @@ def connect_readonly(env_file: Path):
 
 
 def _copy_out(env_file: Path, select: str, params: tuple) -> io.StringIO:
-    """One read-only SELECT as CSV, retried on a dropped connection."""
+    """One read-only SELECT as CSV, retried on a dropped connection.
+
+    A statement timeout (QueryCanceled) would recur on a retry, so it isn't
+    retried.
+    """
     import psycopg2
+    import psycopg2.errors
 
     for attempt in range(1, _PAGE_ATTEMPTS + 1):
         try:
@@ -678,24 +1108,13 @@ def _copy_out(env_file: Path, select: str, params: tuple) -> io.StringIO:
                 con.close()
             buf.seek(0)
             return buf
+        except psycopg2.errors.QueryCanceled:
+            raise
         except (psycopg2.OperationalError, psycopg2.InterfaceError):
             if attempt == _PAGE_ATTEMPTS:
                 raise
             time.sleep(2 * attempt)
     raise AssertionError("unreachable")
-
-
-def fetch_traded_minutes(
-    env_file: Path, cfg: Root, lo: pd.Timestamp, hi: pd.Timestamp
-) -> pd.DatetimeIndex:
-    """The minutes in [lo, hi) that `futures_bars` has a row for (the market traded)."""
-    buf = _copy_out(
-        env_file,
-        _SELECT_BAR_MINUTES,
-        (cfg.symbol, lo.to_pydatetime(), hi.to_pydatetime()),
-    )
-    us = pd.read_csv(buf, names=["us"], dtype={"us": "int64"})["us"]
-    return pd.DatetimeIndex(pd.to_datetime(us, unit="us", utc=True))
 
 
 def fetch_tick_page(
@@ -739,7 +1158,7 @@ def run_ground_truth(archive: Path) -> pd.DataFrame:
             tables.append(table)
             _log(
                 f"ground truth {cfg.symbol} by {clock}: {len(trades):,} trades, "
-                f"{len(front):,} bars"
+                f"{len(front):,} bars, {int((rebuilt['dropped'] > 0).sum())} walked"
             )
     return pd.concat(tables, ignore_index=True)
 
@@ -749,34 +1168,91 @@ def run_archive_span(archive: Path, cfg: Root) -> pd.DataFrame:
     return archive_minutes(front)
 
 
-def run_tick_span(env_file: Path, cfg: Root, workers: int) -> pd.DataFrame:
-    """Every tick page of the root, built per page, then checked as one series."""
+def run_tick_span(
+    env_file: Path, cfg: Root, workers: int, allowlisted: frozenset[pd.Timestamp]
+) -> tuple[pd.DataFrame, list[tuple[pd.Timestamp, pd.Timestamp]]]:
+    """Every tick page of the root, built per page, then walked and checked as
+    one series. Returns the minutes and the stream's silences."""
     pages = tick_pages(*TICK_SPAN)
 
-    def one(page: tuple[pd.Timestamp, pd.Timestamp]) -> pd.DataFrame:
+    def one(page: tuple[pd.Timestamp, pd.Timestamp]):
         started = time.monotonic()
         try:
             ticks = fetch_tick_page(env_file, cfg, *page)
         except Exception as err:
             raise RuntimeError(f"{cfg.symbol} page {page[0]:%Y-%m-%d} failed") from err
-        minutes = build_minutes(ticks, cfg)
+        minutes, walk_prints = build_minutes(ticks, cfg)
         _log(
             f"{cfg.symbol} {page[0]:%Y-%m-%d}: {len(ticks):,} ticks, "
             f"{len(minutes):,} minutes, {time.monotonic() - started:.1f}s"
         )
-        return minutes
+        if ticks.empty:
+            return minutes, walk_prints, None
+        stamps = ticks["ts"]
+        return minutes, walk_prints, (stamps.min(), stamps.max(), tick_gaps(stamps))
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        parts = [p for p in pool.map(one, pages) if not p.empty]
+        results = list(pool.map(one, pages))
+    parts = [minutes for minutes, _, _ in results if not minutes.empty]
     if not parts:
         raise RuntimeError(f"no {cfg.symbol} ticks in the tick span")
+    walk_prints = pd.concat([w for _, w, _ in results if len(w)], ignore_index=True)
     minutes = mark_front_absent(pd.concat(parts, ignore_index=True), cfg)
-    # One minute either side, so the span's own first and last minutes are judged.
-    edge = pd.Timedelta(minutes=1)
-    traded = fetch_traded_minutes(
-        env_file, cfg, TICK_SPAN[0] - edge, TICK_SPAN[1] + edge
-    )
-    return mark_partial(minutes, traded)
+    minutes = time_order_pass(minutes, walk_prints, cfg, allowlisted)
+    gaps = stream_gaps([info for _, _, info in results], TICK_SPAN)
+    return mark_partial(minutes, gaps), gaps
+
+
+def load_allowlist(path: Path | None) -> pd.DataFrame:
+    """The reviewed post-check allowlist (symbol, ts, reason); none means empty."""
+    if path is None or not path.is_file():
+        return pd.DataFrame(
+            {
+                "symbol": [],
+                "ts": pd.Series([], dtype="datetime64[us, UTC]"),
+                "reason": [],
+            }
+        )
+    frame = pd.read_csv(path, dtype={"symbol": str, "reason": str})
+    missing = {"symbol", "ts", "reason"} - set(frame.columns)
+    if missing:
+        raise ValueError(f"{path} lacks columns {sorted(missing)}")
+    if frame["reason"].isna().any():
+        raise ValueError(f"{path}: every allowlisted minute needs a reason")
+    frame["ts"] = pd.to_datetime(frame["ts"], utc=True).astype("datetime64[us, UTC]")
+    return frame[["symbol", "ts", "reason"]]
+
+
+def clean_outputs(out_dir: Path) -> None:
+    """Delete every earlier output in `out_dir`, and nothing else."""
+    for name in OUTPUT_FILES:
+        (out_dir / name).unlink(missing_ok=True)
+    ndjson = out_dir / NDJSON_DIR
+    if ndjson.is_dir():
+        for file in ndjson.glob("*.ndjson"):
+            file.unlink()
+
+
+def git_state() -> dict:
+    """The commit the extract ran from, and whether its module was edited."""
+
+    def git(*args: str) -> str:
+        try:
+            return subprocess.run(
+                ["git", *args],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        except (OSError, subprocess.CalledProcessError):
+            return ""
+
+    module = Path(__file__).resolve().relative_to(REPO_ROOT).as_posix()
+    return {
+        "head": git("rev-parse", "HEAD") or "unknown",
+        "module_edited": bool(git("status", "--porcelain", "--", module)),
+    }
 
 
 def _write_atomic(path: Path, write: Callable[[Path], None]) -> None:
@@ -789,6 +1265,45 @@ def _write_csv(path: Path, frame: pd.DataFrame) -> None:
     _write_atomic(path, lambda p: frame.to_csv(p, index=False, lineterminator="\n"))
 
 
+def _write_text(path: Path, text: str) -> None:
+    def write(p: Path) -> None:
+        with open(p, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+
+    _write_atomic(path, write)
+
+
+def _manifest(status: str, reason: str, started: float, **parts) -> dict:
+    return {
+        "status": status,
+        "reason": reason,
+        "git": git_state(),
+        "finished_utc": pd.Timestamp.now(tz="UTC").isoformat(),
+        "run_seconds": round(time.monotonic() - started, 1),
+        "spans": {
+            "archive": [str(t) for t in ARCHIVE_SPAN],
+            "ticks": [str(t) for t in TICK_SPAN],
+            "ground_truth": [str(t) for t in GROUND_TRUTH_SPAN],
+        },
+        "roots": {
+            r.symbol: {
+                "front": r.front,
+                "gap": r.gap,
+                "carry": r.carry,
+                "carry_half": r.carry_half,
+            }
+            for r in ROOTS.values()
+        },
+        "walk_confirm_seconds": WALK_CONFIRM_SECONDS,
+        "partial_gap_seconds": PARTIAL_GAP_SECONDS,
+        **parts,
+    }
+
+
+def _write_manifest(out_dir: Path, manifest: dict) -> None:
+    _write_text(out_dir / "manifest.json", json.dumps(manifest, indent=2) + "\n")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument(
@@ -797,6 +1312,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--env-file", help="path to .env.local")
     parser.add_argument("--workers", type=int, default=3, help="parallel tick pages")
+    parser.add_argument(
+        "--allowlist", type=Path, help="reviewed post-check allowlist CSV"
+    )
     parser.add_argument(
         "--ground-truth-only", action="store_true", help="stop after the gate"
     )
@@ -809,13 +1327,18 @@ def main(argv: list[str] | None = None) -> int:
         if env_file is None:
             print("no .env.local found; pass --env-file", file=sys.stderr)
             return 2
-    args.out_dir.mkdir(parents=True, exist_ok=True)
+    allowlist = load_allowlist(args.allowlist)
+    out_dir = args.out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    clean_outputs(out_dir)
 
     gt = run_ground_truth(args.archive)
-    _write_csv(args.out_dir / "ground_truth.csv", gt)
+    _write_csv(out_dir / "ground_truth.csv", gt)
+    gates = {}
     for clock in ARCHIVE_CLOCKS:
         scored = "gate" if clock == GATE_CLOCK else "record"
-        for root, res in gate_result(gt[gt["clock"] == clock]).items():
+        gates[clock] = gate_result(gt[gt["clock"] == clock])
+        for root, res in gates[clock].items():
             verdict = "PASS" if res["passed"] else "FAIL"
             _log(
                 f"{scored} {root} by {clock}: {res['exact_ohlc']:,}/"
@@ -823,28 +1346,60 @@ def main(argv: list[str] | None = None) -> int:
                 f"{res['volume_within_1pct']:,} volume within 1% "
                 f"({res['volume_rate']:.4%}) -> {verdict}"
             )
-    gate = gate_result(gt[gt["clock"] == GATE_CLOCK])
+    gate = gates[GATE_CLOCK]
     if not all(res["passed"] for res in gate.values()) or set(gate) != set(ROOTS):
+        _write_manifest(
+            out_dir, _manifest("failed", "ground-truth gate", started, gate=gates)
+        )
         print("ground-truth gate failed; no bars written", file=sys.stderr)
         return 1
     if args.ground_truth_only:
+        _write_manifest(out_dir, _manifest("gate-only", "", started, gate=gates))
         return 0
 
-    bars, summaries, absent = [], [], []
+    bars, summaries, absent, checks, suspects, windows = [], [], [], [], [], []
+    partial_counts = {}
     for cfg in ROOTS.values():
+        listed = allowlist[allowlist["symbol"] == cfg.symbol]["ts"]
         archived = run_archive_span(args.archive, cfg)
-        ticked = run_tick_span(env_file, cfg, args.workers)
+        ticked, gaps = run_tick_span(env_file, cfg, args.workers, frozenset(listed))
         for minutes, source in ((archived, "archive"), (ticked, "ticks")):
             bars.append(bars_output(minutes, cfg.symbol, source))
             summaries.append(per_day_summary(minutes, cfg.symbol, source))
         flagged = ticked[ticked["front_absent"]]
         absent.append(pd.DataFrame({"symbol": cfg.symbol, "ts": flagged["ts"]}))
+        checks.append(post_check_rows(ticked, cfg.symbol, allowlist))
+        suspects.append(suspect_rows(ticked, cfg))
+        windows.append(tickless_windows(gaps, TICK_SPAN, cfg.symbol))
         built = ticked[~ticked["front_absent"]]
+        partial_counts[cfg.symbol] = int(built["partial"].sum())
         _log(
             f"{cfg.symbol}: {len(archived):,} archive bars, {len(built):,} tick bars "
-            f"({int(built['partial'].sum()):,} partial), "
+            f"({partial_counts[cfg.symbol]:,} partial, "
+            f"{int((built['dropped'] > 0).sum())} walked), "
             f"{len(flagged):,} front_absent"
         )
+
+    check = pd.concat(checks, ignore_index=True)
+    unsplittable = check[~check["allowlisted"]]
+    _write_csv(out_dir / "post_check.csv", check)
+    _write_csv(out_dir / "unsplittable.csv", unsplittable)
+    post = {
+        "listed": len(check),
+        "allowlisted": int(check["allowlisted"].sum()),
+        "unsplittable": len(unsplittable),
+    }
+    if len(unsplittable):
+        _write_manifest(
+            out_dir,
+            _manifest("failed", "post-check", started, gate=gates, post_check=post),
+        )
+        print(
+            f"post-check failed: {len(unsplittable)} minute(s) in unsplittable.csv; "
+            "no bars written",
+            file=sys.stderr,
+        )
+        return 1
 
     out = pd.concat(bars, ignore_index=True).sort_values(
         ["symbol", "ts"], ignore_index=True
@@ -852,13 +1407,34 @@ def main(argv: list[str] | None = None) -> int:
     if out.duplicated(["symbol", "ts"]).any():
         raise RuntimeError("duplicate (symbol, ts) rows in the rebuild")
     _write_atomic(
-        args.out_dir / "rebuilt_bars.parquet",
+        out_dir / "rebuilt_bars.parquet",
         lambda p: out.to_parquet(p, index=False),
     )
-    _write_csv(args.out_dir / "per_day.csv", pd.concat(summaries, ignore_index=True))
-    _write_csv(args.out_dir / "front_absent.csv", pd.concat(absent, ignore_index=True))
+    files = ndjson_lines(out)
+    (out_dir / NDJSON_DIR).mkdir(exist_ok=True)
+    for name, lines in files.items():
+        _write_text(out_dir / NDJSON_DIR / name, "\n".join(lines) + "\n")
+    _write_csv(out_dir / "per_day.csv", pd.concat(summaries, ignore_index=True))
+    _write_csv(out_dir / "front_absent.csv", pd.concat(absent, ignore_index=True))
+    _write_csv(out_dir / "suspect.csv", pd.concat(suspects, ignore_index=True))
+    _write_csv(out_dir / "tickless_windows.csv", pd.concat(windows, ignore_index=True))
+    rows = out.groupby(["symbol", "source"]).size()
+    _write_manifest(
+        out_dir,
+        _manifest(
+            "passed",
+            "",
+            started,
+            gate=gates,
+            post_check=post,
+            rows={f"{s}/{src}": int(n) for (s, src), n in rows.items()},
+            partial=partial_counts,
+            front_absent=int(sum(len(a) for a in absent)),
+            ndjson_files=len(files),
+        ),
+    )
     _log(
-        f"wrote {len(out):,} bars to {args.out_dir} in "
+        f"wrote {len(out):,} bars and {len(files)} NDJSON files to {out_dir} in "
         f"{time.monotonic() - started:.0f}s"
     )
     return 0
