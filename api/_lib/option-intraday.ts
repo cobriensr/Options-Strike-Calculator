@@ -10,8 +10,8 @@
  *
  * The UW endpoint does not expose nbbo_bid / nbbo_ask directly. We
  * derive a synthetic mid in `deriveMid()` from the side-split fields
- * (premium_ask_side / volume_ask_side ≈ avg ask price; same for bid)
- * with (high+low)/2 and close fallbacks. See migration #127.
+ * (premium_ask_side / (volume_ask_side x 100) ≈ avg ask price per share;
+ * same for bid) with (high+low)/2 and close fallbacks. See migration #127.
  */
 
 import { getDb } from './db.js';
@@ -51,6 +51,13 @@ interface CachedRow {
   volume_bid_side: number | null;
 }
 
+/**
+ * Shares per option contract. UW's premium_*_side fields already include
+ * it (premium = price x contracts x 100), so per-share price needs it
+ * divided back out. See `deriveMid()`.
+ */
+const UW_CONTRACT_MULTIPLIER = 100;
+
 function parseNum(v: string | number | null | undefined): number | null {
   if (v == null) return null;
   const n = typeof v === 'number' ? v : Number.parseFloat(v);
@@ -59,8 +66,8 @@ function parseNum(v: string | number | null | undefined): number | null {
 
 /**
  * Synthetic mid in dollars per share. Best path is per-side avg price
- * ((premium_ask_side / volume_ask_side + premium_bid_side / volume_bid_side) / 2).
- * Falls back to (high+low)/2 then close then avg_price.
+ * (premium_side / (volume_side x 100); the average of the ask-side and
+ * bid-side prices). Falls back to (high+low)/2 then close then avg_price.
  */
 export function deriveMid(input: {
   premiumAskSide: number | null;
@@ -82,13 +89,16 @@ export function deriveMid(input: {
     volumeBidSide != null &&
     volumeBidSide > 0
   ) {
-    // UW premium fields are price×volume (no contract multiplier), so
-    // dividing yields per-share avg price. Verified against the docs
-    // example where avg_price=30.186 and premium_ask_side/volume_ask_side
-    // = 3138/104 = 30.17 (the ask-side avg, slightly above the all-side
-    // mean as expected).
-    const avgAsk = premiumAskSide / volumeAskSide;
-    const avgBid = premiumBidSide / volumeBidSide;
+    // UW premium_*_side is dollars INCLUDING the x100 contract multiplier:
+    // premium = price x contracts x 100. So premium / (volume x 100) is the
+    // per-share average price. Verified 2026-11-05 against cached
+    // option_intraday_nbbo rows: premium_side / volume_side / avg_price was
+    // 100.0 on every cached date, May-Nov 2026 (on 2026-10-27 branch 1 priced
+    // 44.9% of minutes and its mid / ((high+low)/2) had a median of 100.0
+    // before this fix). Dividing by volume alone gives a per-contract dollar
+    // value, 100x the per-share price the fallbacks and callers use.
+    const avgAsk = premiumAskSide / (volumeAskSide * UW_CONTRACT_MULTIPLIER);
+    const avgBid = premiumBidSide / (volumeBidSide * UW_CONTRACT_MULTIPLIER);
     return (avgAsk + avgBid) / 2;
   }
   if (input.high != null && input.low != null) {
