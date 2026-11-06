@@ -258,13 +258,20 @@ export function useSnapshotSave(
   // Per key: posts so far and whether its failure was reported. An entry
   // is dropped when the key saves, so it holds failing keys only.
   const attemptsRef = useRef<Map<string, KeyAttempts>>(new Map());
-  // The POSTs in flight. The effect below re-runs on any dependency change
-  // and must not abort them (see the header); unmount does.
-  const inFlightRef = useRef<Set<AbortController>>(new Set());
+  // The POSTs in flight, each with its key. The effect below re-runs on any
+  // dependency change and must not abort them (see the header); unmount does,
+  // and releases their keys. That is a no-op on a real unmount; it matters
+  // under StrictMode, whose simulated unmount aborts the mount pass's POST
+  // and re-runs the effect, which must then post that key again.
+  const inFlightRef = useRef<Map<AbortController, string>>(new Map());
   useEffect(() => {
     const inFlight = inFlightRef.current;
+    const saved = savedRef.current;
     return () => {
-      for (const controller of inFlight) controller.abort();
+      for (const [controller, key] of inFlight) {
+        controller.abort();
+        saved.delete(key);
+      }
       inFlight.clear();
     };
   }, []);
@@ -410,7 +417,7 @@ export function useSnapshotSave(
 
     // Fire-and-forget — don't block the UI
     const controller = new AbortController();
-    inFlightRef.current.add(controller);
+    inFlightRef.current.set(controller, key);
 
     fetch('/api/snapshot', {
       method: 'POST',

@@ -237,8 +237,8 @@ describe('useSnapshotSave', () => {
   });
 
   it('does not remove key from saved set when fetch rejects with AbortError', async () => {
-    // AbortError means the component unmounted or deps changed — the key should
-    // remain in the saved set (no retry desired)
+    // AbortError means the component unmounted (a dependency change no longer
+    // aborts) — the key should remain in the saved set (no retry desired)
     const abortError = new DOMException('signal was aborted', 'AbortError');
     fetchSpy.mockRejectedValueOnce(abortError);
 
@@ -286,11 +286,17 @@ describe('useSnapshotSave', () => {
     expect(signal?.aborted).toBe(false);
   });
 
-  it('aborts the saves still in flight when the hook unmounts', () => {
+  it('aborts the saves still in flight when the hook unmounts, without reporting or retrying them', async () => {
     const signals: AbortSignal[] = [];
     fetchSpy.mockImplementation((_url: string, init?: RequestInit) => {
-      signals.push(init!.signal!);
-      return new Promise<Response>(() => {});
+      const signal = init!.signal!;
+      signals.push(signal);
+      // As fetch does: reject with an AbortError once the signal aborts.
+      return new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener('abort', () =>
+          reject(new DOMException('aborted', 'AbortError')),
+        );
+      });
     });
     const results = makeResults();
     const { rerender, unmount } = renderHook(
@@ -302,8 +308,30 @@ describe('useSnapshotSave', () => {
     expect(signals.map((s) => s.aborted)).toEqual([false, false]);
 
     unmount();
-
     expect(signals.map((s) => s.aborted)).toEqual([true, true]);
+    // Let the AbortError rejections reach their handlers (only Date is faked).
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(captureUnlessAuth).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('posts again after StrictMode’s simulated unmount aborted the mount pass’s POST', () => {
+    // StrictMode mounts, cleans up and mounts again. That cleanup aborts the
+    // first pass's POST, so its key must be released for the re-run to post.
+    const signals: AbortSignal[] = [];
+    fetchSpy.mockImplementation((_url: string, init?: RequestInit) => {
+      signals.push(init!.signal!);
+      return new Promise<Response>(() => {});
+    });
+    const results = makeResults();
+
+    renderHook(() => useSnapshotSave(results, defaultSignals, baseMeta, true), {
+      reactStrictMode: true,
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(signals.map((s) => s.aborted)).toEqual([true, false]);
   });
 
   it('skips allDeltas entries with errors', () => {
@@ -1068,6 +1096,55 @@ describe('useSnapshotSave — a failed save', () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+  });
+
+  /** fetch that stays pending until the test answers each POST in turn. */
+  function deferredPosts() {
+    const pending: ((res: Response) => void)[] = [];
+    fetchSpy.mockImplementation(
+      () => new Promise<Response>((resolve) => pending.push(resolve)),
+    );
+    return pending;
+  }
+
+  it('reports a 503 that lands after a dependency re-run, and posts again on the next change', async () => {
+    const pending = deferredPosts();
+    const { rerender } = renderHook(
+      ({ results }) => useSnapshotSave(results, defaultSignals, baseMeta, true),
+      { initialProps: { results: makeResults() } },
+    );
+    // A re-run while the POST is in flight: the key is marked, so no second.
+    rerender({ results: makeResults() });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    pending[0]!(new Response('{}', { status: 503 }));
+    await settle();
+
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+    expect(captureUnlessAuth).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 503 }),
+      TAGS,
+    );
+    rerender({ results: makeResults() });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('posts a key again after its POST fails mid-flight while another entry time posted', async () => {
+    const pending = deferredPosts();
+    const { rerender } = renderHook(
+      ({ meta }) => useSnapshotSave(makeResults(), defaultSignals, meta, true),
+      { initialProps: { meta: baseMeta } },
+    );
+    rerender({ meta: { ...baseMeta, entryTime: '09:40' } });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    pending[0]!(new Response('{}', { status: 500 }));
+    pending[1]!(new Response(JSON.stringify({ id: 'row', saved: true })));
+    await settle();
+    rerender({ meta: baseMeta });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(body(2).entryTime).toBe('09:35');
   });
 
   it('gives each entry time its own attempts and its own report', async () => {
