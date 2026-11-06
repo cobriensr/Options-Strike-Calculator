@@ -48,8 +48,11 @@
  * UW: at most UW_REQUESTS_PER_MINUTE (300) requests a minute, one retry after
  * 1 s on a 5xx, a 429, a network error or a timeout, limit=2500. A 4xx,
  * malformed answer, or one that reaches the cap fails that day. A day UW has
- * no bars for is listed as empty. Refuses 08:15–15:30 CT on a weekday and
- * stops taking days when that window opens mid-run (exit 3).
+ * no bars for is listed as empty. A symbol whose ETF has no bars on a day that
+ * otherwise has rows (SPX when SPY is empty) is named in a "partly empty days"
+ * line at the end of the summary: listed, not failed, exit code unchanged.
+ * Refuses 08:15–15:30 CT on a weekday and stops taking days when that window
+ * opens mid-run (exit 3).
  *
  * Writes: ≤500 rows per INSERT. Runs against whatever DATABASE_URL points at
  * (.env.local = PRODUCTION).
@@ -133,7 +136,9 @@ const say = (line = '') => console.log(redact(line, secrets));
 say(
   `Backfilling index_candles_1m (${INDEXES.map((i) => i.symbol).join(', ')}, ` +
     'scaled from SPY and QQQ)' +
-    (args.dryRun ? ' (DRY RUN: no Neon writes)' : ''),
+    (args.dryRun
+      ? ' (DRY RUN: no Neon writes; may refresh the Schwab token in Upstash)'
+      : ''),
 );
 say(
   `  ${dates.length} trading days, ${dates[0]} → ${dates.at(-1)}` +

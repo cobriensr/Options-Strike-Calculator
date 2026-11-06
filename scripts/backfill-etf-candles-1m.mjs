@@ -20,10 +20,12 @@
  * after 1 s on a 5xx, a 429, a network error or a timeout. limit=2500 (UW's
  * cap; a full extended session is about 960 bars). A 4xx or malformed answer,
  * or one that reaches the cap, fails that day (exit 1); a day UW has no bars
- * for is listed as empty, not failed. Refuses to start 08:15–15:30 CT on a
- * weekday, and stops taking days (exit 3) when that window opens mid-run: its
- * calls skip the shared Redis semaphore and compete with the production
- * crons.
+ * for is listed as empty, not failed. A ticker with no bars on a day that
+ * otherwise has rows is named in a "partly empty days" line at the end of the
+ * summary: listed, not failed, exit code unchanged. Refuses to start
+ * 08:15–15:30 CT on a weekday, and stops taking days (exit 3) when that window
+ * opens mid-run: its calls skip the shared Redis semaphore and compete with
+ * the production crons.
  *
  * Writes: ≤500 rows per INSERT. Runs against whatever DATABASE_URL points at
  * (.env.local = PRODUCTION).
