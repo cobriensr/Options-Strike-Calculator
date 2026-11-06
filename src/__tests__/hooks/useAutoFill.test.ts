@@ -1564,3 +1564,143 @@ describe('useAutoFill: static VIX1D loading', () => {
     expect(result.current.ivMode).toBe(IV_MODES.DIRECT);
   });
 });
+
+// ============================================================
+// LIVE MOMENTS VS HISTORY
+// ============================================================
+
+describe('useAutoFill: today at the current time vs its loaded history', () => {
+  // The clock is 11:30 CT (12:30 ET) on 2026-03-17.
+  const TODAY_DATE = '2026-03-17';
+  const setters = createSetters();
+  const fixed = {
+    spotEdited: { current: false },
+    spxEdited: { current: false },
+    vixEdited: { current: false },
+    timeEdited: { current: false },
+    ivModeEdited: { current: false },
+    timeHour: '11',
+    timeAmPm: 'AM' as const,
+    timezone: 'CT' as const,
+    ...setters,
+    // Built once: fresh objects would re-run the effects on every render.
+    vix: createVix({ selectedDate: TODAY_DATE }),
+    vix1dStatic: createVix1dStatic(),
+  };
+
+  /** Today's history as the page loaded it: SPX 5750, SPY 575, VIX 20.50. */
+  const todaysHistory = createHistoryData({
+    hasHistory: true,
+    history: mockHistory(TODAY_DATE),
+    getStateAtTime: vi
+      .fn()
+      .mockReturnValue(makeHistorySnapshot({ vix: 20.5, vix1d: null })),
+  });
+
+  /** A poll's quotes: SPX `spx`, SPY `spx / 10`, VIX `vix`. */
+  const poll = (spx: number, vix: number): MarketDataState => ({
+    ...createMarket({
+      ...mockQuotes,
+      spx: { ...mockQuotes.spx!, price: spx },
+      spy: { ...mockQuotes.spy!, price: spx / 10 },
+      vix: { ...mockQuotes.vix!, price: vix },
+    }),
+    session: 'regular',
+    marketOpen: true,
+  });
+
+  interface Props {
+    market: MarketDataState;
+    timeMinute: string;
+  }
+
+  function renderToday(initial: Props) {
+    return renderHook(
+      ({ market, timeMinute }: Props) =>
+        useAutoFill({
+          ...fixed,
+          market,
+          timeMinute,
+          historyData: todaysHistory,
+        }),
+      { initialProps: initial },
+    );
+  }
+
+  const lastCall = (fn: ReturnType<typeof vi.fn>) => fn.mock.calls.at(-1)?.[0];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-17T16:30:00Z'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('keeps the live quotes over the history through a poll and a time step', () => {
+    const { result, rerender } = renderToday({
+      market: poll(5820, 18.5),
+      timeMinute: '30',
+    });
+    expect(lastCall(setters.setSpxDirect)).toBe('5820');
+    expect(lastCall(setters.setSpotPrice)).toBe('582.00');
+    expect(lastCall(setters.setVixInput)).toBe('18.50');
+
+    // The next poll: new quotes, the same history.
+    rerender({ market: poll(5825, 18.6), timeMinute: '30' });
+    expect(lastCall(setters.setSpxDirect)).toBe('5825');
+    expect(lastCall(setters.setSpotPrice)).toBe('582.50');
+    expect(lastCall(setters.setVixInput)).toBe('18.60');
+
+    // Five minutes on: the time step re-runs the history effect too.
+    vi.setSystemTime(new Date('2026-03-17T16:35:05Z'));
+    rerender({ market: poll(5830, 18.7), timeMinute: '35' });
+    expect(lastCall(setters.setSpxDirect)).toBe('5830');
+    expect(lastCall(setters.setSpotPrice)).toBe('583.00');
+    expect(lastCall(setters.setVixInput)).toBe('18.70');
+
+    // No history snapshot for a live moment: the signals read the live feeds.
+    expect(result.current).toBeNull();
+  });
+
+  it('still counts a time up to 5 minutes behind the clock as live', () => {
+    // The time sync snaps the time down to 5 minutes: 11:30 at 11:34:50.
+    vi.setSystemTime(new Date('2026-03-17T16:34:50Z'));
+    const { result } = renderToday({
+      market: poll(5820, 18.5),
+      timeMinute: '30',
+    });
+
+    expect(lastCall(setters.setSpxDirect)).toBe('5820');
+    expect(result.current).toBeNull();
+  });
+
+  it('fills from the history when today is scrubbed back more than 5 minutes', () => {
+    const { result } = renderToday({
+      market: poll(5820, 18.5),
+      timeMinute: '15',
+    });
+
+    expect(lastCall(setters.setSpxDirect)).toBe('5750');
+    expect(lastCall(setters.setSpotPrice)).toBe('575.00');
+    expect(lastCall(setters.setVixInput)).toBe('20.50');
+    expect(result.current?.spot).toBe(5750);
+  });
+
+  it('fills the display from the history while no live quotes exist, then hands over to them', () => {
+    // A guest's view of today, or the quotes still loading.
+    const { result, rerender } = renderToday({
+      market: createMarket(null),
+      timeMinute: '30',
+    });
+    expect(lastCall(setters.setSpxDirect)).toBe('5750');
+    expect(result.current?.spot).toBe(5750);
+
+    rerender({ market: poll(5820, 18.5), timeMinute: '30' });
+    expect(lastCall(setters.setSpxDirect)).toBe('5820');
+    expect(lastCall(setters.setVixInput)).toBe('18.50');
+    expect(result.current).toBeNull();
+  });
+});

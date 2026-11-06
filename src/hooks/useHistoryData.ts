@@ -4,7 +4,9 @@
  * Fetches 5-min candles for SPX, VIX, VIX1D, VIX9D, and VVIX for the
  * selected date. All time navigation is client-side after the initial fetch.
  *
- * For today's date, returns null — live Schwab data is used instead.
+ * Today's date fetches too, once, when it is selected: the candles up to
+ * that moment, never refreshed. useAutoFill uses them for a scrubbed-back
+ * time, not for today at the current time, where live Schwab data stands.
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';

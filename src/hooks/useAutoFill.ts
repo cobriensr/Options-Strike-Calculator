@@ -4,14 +4,20 @@
  * Two responsibilities:
  *   1. Live auto-fill: When Schwab quotes arrive, populate empty fields
  *      (spot, SPX, VIX, VIX1D) and set the current time.
- *   2. History auto-fill: When a past date is selected, fill inputs from
- *      historical candle data; restore live data when switching back to today.
+ *   2. History auto-fill: When the selected moment is history (a past date,
+ *      or today scrubbed back more than 5 minutes: isBacktestMode), fill
+ *      inputs from historical candle data; restore live data otherwise.
+ *      Today at the current time keeps the live quotes on every poll and
+ *      time step: today's candles are fetched once, at page load, so the
+ *      last one is no later than the load. With no live quotes at all (a
+ *      guest's view of today) they fill the display, as the only source.
  *      A past date without intraday history still gets its own IV mode and
  *      σ: the static VIX1D table's value, else VIX mode on the date's daily
  *      VIX OHLC (useVixData). No past date gets today's live VIX1D or VIX.
  *
  * Also computes and returns `historySnapshot` — the resolved historical
- * state at the selected time (with VIX1D static fallback).
+ * state at the selected time (with VIX1D static fallback), or null when the
+ * moment is not history: the signals then read the live feeds.
  *
  * Extracted from App.tsx to reduce the root component's complexity.
  */
@@ -20,7 +26,12 @@ import { useEffect, useRef } from 'react';
 import type { AmPm, IVMode } from '../types';
 import { IV_MODES } from '../constants';
 import { toETTime } from '../utils/calculator';
-import { getCTTime, getETToday, isPastETDate } from '../utils/timezone';
+import {
+  getCTTime,
+  getETToday,
+  isBacktestMode,
+  isPastETDate,
+} from '../utils/timezone';
 import type { MarketDataState } from './useMarketData';
 import type { UseVixDataReturn } from './useVixData';
 import type { UseHistoryDataReturn, HistorySnapshot } from './useHistoryData';
@@ -118,6 +129,22 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
   const ownHistory =
     historyData.hasHistory && historyData.history?.date === selectedDate;
 
+  const { etHour, etMinute } = toETTime(
+    timeHour,
+    timeMinute,
+    timeAmPm,
+    timezone,
+  );
+  // The date's own history applies where the selected moment is history. On
+  // today at the current time it never does: useHistoryData fetches today
+  // once and never again, so its last candle is the page load's and would
+  // pin the inputs, and the signals read from them, to it on every poll. Its
+  // one use on a live moment is when no live quotes exist to take its place.
+  const fromHistory =
+    ownHistory &&
+    (isBacktestMode(selectedDate, etHour * 60 + etMinute) ||
+      !market.data.quotes);
+
   // Track which date we last auto-set IV mode for so we don't override the
   // user's manual toggle on every re-run (the effect re-runs on every time
   // scrub, table load and quote refresh).
@@ -212,16 +239,9 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     timeEdited,
   ]);
 
-  // ── Auto-fill from historical data when a past date is selected,
-  //    or restore live data when switching back to today ──
+  // ── Auto-fill from historical data when the selected moment is history,
+  //    or restore live data when it is today at the current time ──
   useEffect(() => {
-    const { etHour, etMinute } = toETTime(
-      timeHour,
-      timeMinute,
-      timeAmPm,
-      timezone,
-    );
-
     // Auto-use the date's VIX1D as σ when available. Choose the IV mode on
     // a new date, which also drops the last date's manual pick. Choose once
     // more when this run knows more of the date's VIX1D than the last
@@ -251,8 +271,8 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
       if (chooseMode) ivModeAutoFill.current = { date, knew };
     };
 
-    if (ownHistory) {
-      // Past date: fill from historical candles
+    if (fromHistory) {
+      // History: fill from the date's candles
       const snapshot = historyData.getStateAtTime(etHour, etMinute);
       if (!snapshot) return;
 
@@ -280,7 +300,8 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
       return;
     }
 
-    // No intraday history: today, or a past date with none (older than ~60
+    // Not history: today at the current time (its candles stopped at the
+    // page load), or a past date with no intraday history (older than ~60
     // days, a failed fetch, a weekend or holiday) or whose fetch is in
     // flight. Restore live prices if available.
     if (market.data.quotes) {
@@ -314,7 +335,7 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     // selected time on a date with intraday history.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    ownHistory,
+    fromHistory,
     historyData.history,
     historyData.getStateAtTime,
     selectedDate,
@@ -336,16 +357,11 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
   ]);
 
   // ── Compute current history snapshot for downstream components ──
-  // Only the selected date's: none while its history loads after another
-  // date's.
-  if (!ownHistory) return null;
+  // Only where the selected moment is history, and the selected date's: none
+  // on today at the current time, nor while the date's history loads after
+  // another date's.
+  if (!fromHistory) return null;
 
-  const { etHour, etMinute } = toETTime(
-    timeHour,
-    timeMinute,
-    timeAmPm,
-    timezone,
-  );
   const snapshot = historyData.getStateAtTime(etHour, etMinute);
   if (!snapshot) return null;
 
