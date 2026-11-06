@@ -85,7 +85,6 @@ class TestIsFomc:
                 f"Expected 7-9 FOMC dates in {year}, got {len(by_year[year])}"
             )
 
-
     def test_fomc_dates_2025_to_2027_match_fed_calendar(self):
         """Decision days from federalreserve.gov/monetarypolicy/fomccalendars.htm
         (fetched 2026-11-06); api/events.ts carries the same list."""
