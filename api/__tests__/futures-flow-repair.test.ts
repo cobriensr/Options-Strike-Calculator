@@ -482,6 +482,44 @@ describe('fetchContractFlow OHLC', () => {
     },
   );
 
+  it('a size-0 print makes the minute’s ohlc null (the live handler drops it) and leaves the flow exactly as it was', async () => {
+    const m = await minuteOf(
+      [
+        print(3, '2026-10-28T14:00:30.000000Z', 4, 'buy'),
+        print(2, '2026-10-28T14:00:20.000000Z', 0, 'sell'),
+      ],
+      ENDER,
+    );
+
+    expect(m.ohlc).toBeNull();
+    // The zero-size print still counts as a sell print, as it did before.
+    expect(m).toMatchObject({
+      volume: 4,
+      buyVolume: 4,
+      sellVolume: 0,
+      buyPrints: 1,
+      sellPrints: 1,
+      sideSeen: true,
+    });
+  });
+
+  it.each<[string, number, boolean]>([
+    ['1', 1, true],
+    ['2^31 - 1, the largest the live handler keeps', 2 ** 31 - 1, true],
+    ['2^31, which would overflow its INSERT', 2 ** 31, false],
+  ])(
+    'a print of size %s: volume is counted, the ohlc follows the live rule',
+    async (_label, size, keeps) => {
+      const m = await minuteOf(
+        [print(3, '2026-10-28T14:00:30.000000Z', size, 'buy')],
+        ENDER,
+      );
+
+      expect(m.ohlc).toEqual(keeps ? FLAT_OHLC : null);
+      expect(m).toMatchObject({ volume: size, buyVolume: size });
+    },
+  );
+
   it('a row with no price key at all still counts its flow (not malformed)', async () => {
     const noPrice: Record<string, unknown> = {
       ...print(2, '2026-10-28T14:00:30.000000Z', 5, 'buy'),

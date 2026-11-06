@@ -90,8 +90,9 @@ export interface FlowMinute {
    * The counted prints' prices. `open` is the earliest print by
    * (executed_at µs, trade_id) and `close` the latest; `high` and `low`
    * compare numerically. Null when any counted print has a missing or
-   * invalid price: the live handler drops such a print, so the bar can't
-   * be rebuilt exactly. The flow fields are filled either way.
+   * invalid price, or a size of 0 or over 2^31 - 1: the live handler
+   * drops such a print, so the bar can't be rebuilt exactly. The flow
+   * fields are filled either way, counting that print as before.
    */
   ohlc: MinuteOhlc | null;
 }
@@ -232,9 +233,15 @@ interface MinuteAcc {
   close: PricePoint | null;
   high: { n: number; price: string } | null;
   low: { n: number; price: string } | null;
-  /** A counted print had no usable price. */
-  priceGap: boolean;
+  /** A counted print the live handler would have dropped (see `addPrint`). */
+  dropped: boolean;
 }
+
+/**
+ * The largest size the live handler keeps: summed into a BIGINT volume, a
+ * bigger one would overflow the shared INSERT (futures_trades.py).
+ */
+const LIVE_MAX_SIZE = 2 ** 31 - 1;
 
 function addPrint(
   minutes: Map<number, MinuteAcc>,
@@ -258,7 +265,7 @@ function addPrint(
       close: null,
       high: null,
       low: null,
-      priceGap: false,
+      dropped: false,
     };
     minutes.set(minuteMs, acc);
   }
@@ -273,8 +280,12 @@ function addPrint(
     m.sellPrints += 1;
   }
 
-  if (p.price === null) {
-    acc.priceGap = true;
+  // The live handler drops a print with no usable price or a size outside
+  // 1..LIVE_MAX_SIZE before its dedup, tally, OHLC and side. The flow above
+  // keeps counting it (the nightly pass is unchanged); the minute's bar
+  // can't be rebuilt exactly, so its ohlc is withheld.
+  if (p.price === null || p.size <= 0 || p.size > LIVE_MAX_SIZE) {
+    acc.dropped = true;
     return;
   }
   const point: PricePoint = { us: p.us, id: p.id, price: p.price };
@@ -285,10 +296,10 @@ function addPrint(
   if (acc.low === null || n < acc.low.n) acc.low = { n, price: p.price };
 }
 
-/** The finished minute: `ohlc` set once, only if every price was usable. */
+/** The finished minute: `ohlc` set once, only if no print was dropped. */
 function finishMinute(acc: MinuteAcc): FlowMinute {
   const { open, close, high, low } = acc;
-  if (!acc.priceGap && open && close && high && low) {
+  if (!acc.dropped && open && close && high && low) {
     acc.flow.ohlc = {
       open: open.price,
       high: high.price,
