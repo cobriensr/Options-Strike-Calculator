@@ -15,11 +15,14 @@ import {
   archiveChanges,
   buildPlan,
   classifySession,
+  dayDigest,
   excursions,
   formatReport,
   loadManifest,
   loadRebuild,
   loadTicklessWindows,
+  markerPath,
+  markerState,
   parseNdjson,
   parseRepairArgs,
   roundNumeric,
@@ -312,6 +315,62 @@ describe('tickChanges', () => {
         nClusters: 3,
       });
       expect(tickChanges(bar, rb, CARRY_HALF_ES).length).toBe(applies ? 1 : 0);
+    });
+  });
+
+  describe('volume follows a replaced low', () => {
+    // A back-only minute: no front-month bar was ever merged into the row, so
+    // every PG field is the back month's and its volume is a handful of lots.
+    const backOnly = (stamp: string, over: Partial<RebuiltBar> = {}) => ({
+      bar: pg('ES', stamp, [7060.75, 7062, 7060, 7061], 33),
+      rb: rebuilt('ES', stamp, [7000, 7001.25, 6999.5, 7000.5], {
+        volume: 8436,
+        ...over,
+      }),
+    });
+
+    it('writes the rebuilt volume outside the roll week, even on a partial minute', () => {
+      const { bar, rb } = backOnly('2026-05-20T15:18:00Z', { partial: true });
+      const changes = tickChanges(bar, rb, CARRY_HALF_ES);
+      expect(changes.map((c) => c.field)).toEqual([
+        'open',
+        'high',
+        'low',
+        'close',
+        'volume',
+      ]);
+      expect(changes.at(-1)).toEqual({ field: 'volume', from: 33, to: 8436 });
+    });
+
+    it('writes it in the roll week on a partial single-cluster minute too', () => {
+      const { bar, rb } = backOnly('2026-06-10T15:18:00Z', {
+        partial: true,
+        nClusters: 1,
+      });
+      expect(tickChanges(bar, rb, CARRY_HALF_ES).map((c) => c.field)).toContain(
+        'volume',
+      );
+    });
+
+    it('is not a change when the replaced low comes with an equal volume', () => {
+      const { bar, rb } = backOnly('2026-05-20T15:18:00Z', { volume: 33 });
+      expect(tickChanges(bar, rb, CARRY_HALF_ES).map((c) => c.field)).toEqual([
+        'open',
+        'high',
+        'low',
+        'close',
+      ]);
+    });
+
+    it('leaves a differing volume alone when only the high is replaced', () => {
+      const stamp = '2026-05-20T15:18:00Z';
+      const bar = pg('ES', stamp, [7000, 7062, 6999, 7000], 33);
+      const rb = rebuilt('ES', stamp, [7000, 7001, 6999, 7000], {
+        volume: 8436,
+      });
+      expect(tickChanges(bar, rb, CARRY_HALF_ES).map((c) => c.field)).toEqual([
+        'high',
+      ]);
     });
   });
 });
@@ -1183,6 +1242,91 @@ describe('inputs', () => {
   });
 });
 
+// ── Done markers ────────────────────────────────────────────────────────────
+
+describe('dayDigest and markerState', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'repair-markers-'));
+    mkdirSync(join(dir, 'ndjson'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const day = '2026-04-21';
+  const write = (name: string, text: string) =>
+    writeFileSync(join(dir, 'ndjson', name), text);
+  const stamp = (ndjsonSha256: string, gitHead = 'aaaaaaaa11112222') => ({
+    gitHead,
+    ndjsonSha256,
+  });
+  const mark = (body: unknown) =>
+    writeFileSync(
+      markerPath(dir, day),
+      typeof body === 'string' ? body : JSON.stringify(body),
+    );
+
+  it('hashes both roots files of the day, so a change to either shows', () => {
+    write(`ES-${day}.ndjson`, 'a');
+    const first = dayDigest(dir, day);
+    expect(dayDigest(dir, day)).toBe(first);
+    write(`ES-${day}.ndjson`, 'b');
+    const second = dayDigest(dir, day);
+    expect(second).not.toBe(first);
+    write(`NQ-${day}.ndjson`, 'c');
+    expect(dayDigest(dir, day)).not.toBe(second);
+  });
+
+  it('tells a day with no file from a day whose file is empty', () => {
+    const absent = dayDigest(dir, day);
+    write(`ES-${day}.ndjson`, '');
+    expect(dayDigest(dir, day)).not.toBe(absent);
+  });
+
+  it('is none without a marker', () => {
+    expect(markerState(dir, day, stamp('x'))).toEqual({ state: 'none' });
+  });
+
+  it('is done when the marker names this Phase 1 run and these bars', () => {
+    mark({ ...stamp('x'), appliedAt: '2026-11-08T12:00:00Z' });
+    expect(markerState(dir, day, stamp('x'))).toEqual({ state: 'done' });
+  });
+
+  it('ignores a marker from another Phase 1 git SHA, naming both', () => {
+    mark({ ...stamp('x', 'bbbbbbbb33334444'), appliedAt: 'now' });
+    expect(markerState(dir, day, stamp('x'))).toEqual({
+      state: 'stale',
+      reason: 'is from Phase 1 git bbbbbbbb, not aaaaaaaa',
+    });
+  });
+
+  it('ignores a marker written for different rebuilt bars', () => {
+    mark({ ...stamp('old'), appliedAt: 'now' });
+    expect(markerState(dir, day, stamp('new'))).toEqual({
+      state: 'stale',
+      reason: 'was written for different rebuilt bars',
+    });
+  });
+
+  it.each([
+    [
+      'a bare timestamp (the first version of the tool)',
+      '2026-11-08T12:00:00.000Z',
+    ],
+    ['text that is not JSON', '{nope'],
+    ['JSON without the stamp', JSON.stringify({ appliedAt: 'now' })],
+  ])('ignores a marker that is %s', (_label, body) => {
+    mark(body);
+    expect(markerState(dir, day, stamp('x'))).toEqual({
+      state: 'stale',
+      reason: 'is unreadable',
+    });
+  });
+});
+
 // ── Arguments ───────────────────────────────────────────────────────────────
 
 describe('parseRepairArgs', () => {
@@ -1193,6 +1337,8 @@ describe('parseRepairArgs', () => {
       apply: false,
       force: false,
       dates: [],
+      expectUpdates: null,
+      expectDeletes: null,
       envFile: null,
     });
   });
@@ -1205,6 +1351,10 @@ describe('parseRepairArgs', () => {
         '--work-dir',
         'out',
         '--apply',
+        '--expect-updates',
+        '39061',
+        '--expect-deletes',
+        '0',
         '--force',
         '--dates',
         '2026-04-07',
@@ -1218,6 +1368,8 @@ describe('parseRepairArgs', () => {
       apply: true,
       force: true,
       dates: ['2026-04-07', '2026-04-08'],
+      expectUpdates: 39061,
+      expectDeletes: 0,
       envFile: '.env.test',
     });
   });
@@ -1232,6 +1384,32 @@ describe('parseRepairArgs', () => {
     [['--dates', '2026-4-7'], /not a YYYY-MM-DD date/],
     [['--dates', '2026-02-30'], /not a YYYY-MM-DD date/],
     [['--force'], /--force only applies with --apply/],
+    [['--apply'], /--apply needs --expect-updates N and --expect-deletes M/],
+    [
+      ['--apply', '--expect-updates', '5'],
+      /--apply needs --expect-updates N and --expect-deletes M/,
+    ],
+    [
+      ['--apply', '--expect-deletes', '5'],
+      /--apply needs --expect-updates N and --expect-deletes M/,
+    ],
+    [
+      ['--expect-updates', '5', '--expect-deletes', '1'],
+      /only apply with --apply/,
+    ],
+    [['--apply', '--expect-updates'], /--expect-updates needs a value/],
+    [
+      ['--apply', '--expect-updates', 'many', '--expect-deletes', '1'],
+      /--expect-updates needs a whole number, got "many"/,
+    ],
+    [
+      ['--apply', '--expect-updates', '1', '--expect-deletes', '-1'],
+      /--expect-deletes needs a whole number, got "-1"/,
+    ],
+    [
+      ['--apply', '--expect-updates', '1.5', '--expect-deletes', '1'],
+      /--expect-updates needs a whole number, got "1.5"/,
+    ],
   ])('rejects %j', (argv, message) => {
     expect(() => parseRepairArgs(argv)).toThrow(message);
   });
@@ -1260,6 +1438,8 @@ describe('runRepair guards', () => {
     apply: true,
     force: false,
     dates: [],
+    expectUpdates: null,
+    expectDeletes: null,
     ...over,
   });
 

@@ -32,6 +32,7 @@ import {
   readFileSync,
   writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { isMarketHours } from '../../api/_lib/cron-helpers.js';
@@ -563,9 +564,16 @@ export function archiveChanges(bar: PgBar, rb: RebuiltBar): FieldChange[] {
  * the rebuilt value: a field from the wrong contract sits a full carry off,
  * while a field from the front month is Databento's own full-minute value and
  * differs from the rebuild by a boundary print or a feed gap. Volume follows
- * the rebuild only in the roll week, on a non-partial minute with more than one
- * cluster (PG volume is the GREATEST across contracts, which equals the front's
- * volume unless the back month out-traded it within the minute).
+ * the rebuild in two cases:
+ *
+ * - The roll week, on a non-partial minute with more than one cluster (PG
+ *   volume is the GREATEST across contracts, which equals the front's volume
+ *   unless the back month out-traded it within the minute).
+ * - Whenever `low` is replaced, roll week or not, partial or not. The stored
+ *   low is the LEAST across contracts, so a low a carry above the rebuilt one
+ *   means no front-month bar was ever merged into the row: its volume is the
+ *   back month's (1 to 33 lots against a front of 949 to 9,526). Even a
+ *   partial rebuild's volume is far closer.
  */
 export function tickChanges(
   bar: PgBar,
@@ -578,12 +586,9 @@ export function tickChanges(
       out.push({ field, from: bar[field], to: roundNumeric(rb[field]) });
     }
   }
-  if (
-    inRollWeek(bar.tsMs) &&
-    rb.nClusters > 1 &&
-    !rb.partial &&
-    !sameValue(bar.volume, rb.volume)
-  ) {
+  const lowReplaced = out.some((c) => c.field === 'low');
+  const rollWeekMixed = inRollWeek(bar.tsMs) && rb.nClusters > 1 && !rb.partial;
+  if ((lowReplaced || rollWeekMixed) && !sameValue(bar.volume, rb.volume)) {
     out.push({ field: 'volume', from: bar.volume, to: rb.volume });
   }
   return out;
@@ -647,14 +652,6 @@ export function excursions(bars: PgBar[], x: number): Excursion[] {
 
 export type PlanSpan = 'archive' | 'ticks';
 
-export interface Values {
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
-
 export interface PlannedUpdate {
   symbol: Root;
   tsMs: number;
@@ -662,10 +659,13 @@ export interface PlannedUpdate {
   span: PlanSpan;
   /** The row as read, for the backup. */
   row: PgRow;
+  /** The fields the rule picks. Every other field is left as the database has it. */
   changes: FieldChange[];
-  /** All five fields after the update (unchanged ones keep PG's value). */
-  target: Values;
 }
+
+/** The value the update writes to `field`, or null when the rule leaves it alone. */
+const pickedValue = (u: PlannedUpdate, field: Field): number | null =>
+  u.changes.find((c) => c.field === field)?.to ?? null;
 
 export type DeleteReason =
   | 'junk_window'
@@ -711,18 +711,6 @@ function spanOf(m: Manifest, tsMs: number): PlanSpan | null {
   if (inSpan(m.spans.archive, tsMs)) return 'archive';
   if (inSpan(m.spans.ticks, tsMs)) return 'ticks';
   return null;
-}
-
-function targetOf(bar: PgBar, changes: FieldChange[]): Values {
-  const target: Values = {
-    open: bar.open,
-    high: bar.high,
-    low: bar.low,
-    close: bar.close,
-    volume: bar.volume,
-  };
-  for (const c of changes) target[c.field] = c.to;
-  return target;
 }
 
 const bySymbolTime = (
@@ -812,7 +800,6 @@ export function buildPlan(input: PlanInput): RepairPlan {
         span,
         row: bar.row,
         changes,
-        target: targetOf(bar, changes),
       });
     });
 
@@ -1139,22 +1126,32 @@ async function readSnapshot(m: Manifest): Promise<PgSnapshot> {
 
 type Sql = ReturnType<typeof getDb>;
 
+/**
+ * Writes only the fields the rule picked: every other field arrives as NULL
+ * and COALESCE keeps the database's own value, so a change made to a kept
+ * field after the plan was read survives (and fails the verify, instead of
+ * being put back). The guard compares the same picked values, so a row that
+ * already holds them is not rewritten.
+ */
 function updateStatement(sql: Sql, rows: PlannedUpdate[]) {
   return sql`
     UPDATE futures_bars f
-       SET open = r.open, high = r.high, low = r.low, close = r.close,
-           volume = r.volume
+       SET open = COALESCE(r.open, f.open), high = COALESCE(r.high, f.high),
+           low = COALESCE(r.low, f.low), close = COALESCE(r.close, f.close),
+           volume = COALESCE(r.volume, f.volume)
       FROM unnest(${rows.map((u) => u.symbol)}::text[],
                   ${rows.map((u) => isoMinute(u.tsMs))}::timestamptz[],
-                  ${rows.map((u) => u.target.open)}::numeric[],
-                  ${rows.map((u) => u.target.high)}::numeric[],
-                  ${rows.map((u) => u.target.low)}::numeric[],
-                  ${rows.map((u) => u.target.close)}::numeric[],
-                  ${rows.map((u) => u.target.volume)}::bigint[])
+                  ${rows.map((u) => pickedValue(u, 'open'))}::numeric[],
+                  ${rows.map((u) => pickedValue(u, 'high'))}::numeric[],
+                  ${rows.map((u) => pickedValue(u, 'low'))}::numeric[],
+                  ${rows.map((u) => pickedValue(u, 'close'))}::numeric[],
+                  ${rows.map((u) => pickedValue(u, 'volume'))}::bigint[])
            AS r(symbol, ts, open, high, low, close, volume)
      WHERE f.symbol = r.symbol AND f.ts = r.ts
        AND (f.open, f.high, f.low, f.close, f.volume)
-           IS DISTINCT FROM (r.open, r.high, r.low, r.close, r.volume)
+           IS DISTINCT FROM (COALESCE(r.open, f.open), COALESCE(r.high, f.high),
+                             COALESCE(r.low, f.low), COALESCE(r.close, f.close),
+                             COALESCE(r.volume, f.volume))
     RETURNING f.id`;
 }
 
@@ -1184,7 +1181,17 @@ function chunks<T>(items: T[], size = WRITE_CHUNK): T[][] {
   return out;
 }
 
-/** One UTC day in one transaction: all of it commits, or none of it does. */
+/**
+ * One UTC day in one transaction. The UPDATEs and DELETEs commit or roll back
+ * together at the SQL level, but the DELETE's value check is NOT atomic with
+ * the day's plan: a row that changed since the backup is skipped without an
+ * error, so the day's updates commit while that delete does not. The check
+ * stays outside the transaction on purpose: `withDbRetry` replays the
+ * transaction when a commit's response is lost, and the replay deletes 0 rows,
+ * so an in-transaction count check would fail a day that fully succeeded.
+ * `verifyDay` catches the skipped delete after the commit, fails the day
+ * (unmarked, exit 1), and a rerun re-plans from the new state and converges.
+ */
 async function writeDay(
   day: DayPlan,
 ): Promise<{ updated: number; deleted: number }> {
@@ -1242,6 +1249,69 @@ function writeBackup(workDir: string, days: DayPlan[]): string {
 export const markerPath = (workDir: string, day: string): string =>
   join(workDir, `${day}.applied`);
 
+/** SHA-256 over the day's ES and NQ NDJSON (name and bytes; a missing file counts as absent). */
+export function dayDigest(dir: string, day: string): string {
+  const hash = createHash('sha256');
+  for (const root of ROOTS) {
+    const name = `${root}-${day}.ndjson`;
+    const path = join(dir, 'ndjson', name);
+    hash.update(
+      existsSync(path)
+        ? `${name}\n${readFileSync(path, 'utf8')}\n`
+        : `${name} absent\n`,
+    );
+  }
+  return hash.digest('hex');
+}
+
+/**
+ * A done marker is tied to the Phase 1 run (its git SHA) and to that day's
+ * rebuilt bars (the digest), so re-running Phase 1 with a changed value never
+ * leaves a stale marker skipping a day that now has a different plan.
+ */
+const markerSchema = z.object({
+  gitHead: z.string(),
+  ndjsonSha256: z.string(),
+  appliedAt: z.string(),
+});
+
+export interface MarkerStamp {
+  gitHead: string;
+  ndjsonSha256: string;
+}
+
+export type MarkerState =
+  | { state: 'none' }
+  | { state: 'done' }
+  | { state: 'stale'; reason: string };
+
+/** 'done' only when the marker was written for this Phase 1 run and these bars. */
+export function markerState(
+  workDir: string,
+  day: string,
+  expected: MarkerStamp,
+): MarkerState {
+  const path = markerPath(workDir, day);
+  if (!existsSync(path)) return { state: 'none' };
+  let parsed: ReturnType<typeof markerSchema.safeParse>;
+  try {
+    parsed = markerSchema.safeParse(JSON.parse(readFileSync(path, 'utf8')));
+  } catch {
+    return { state: 'stale', reason: 'is unreadable' };
+  }
+  if (!parsed.success) return { state: 'stale', reason: 'is unreadable' };
+  if (parsed.data.gitHead !== expected.gitHead) {
+    return {
+      state: 'stale',
+      reason: `is from Phase 1 git ${parsed.data.gitHead.slice(0, 8)}, not ${expected.gitHead.slice(0, 8)}`,
+    };
+  }
+  if (parsed.data.ndjsonSha256 !== expected.ndjsonSha256) {
+    return { state: 'stale', reason: 'was written for different rebuilt bars' };
+  }
+  return { state: 'done' };
+}
+
 const canon = (r: PgRow): string =>
   [
     r.id,
@@ -1256,8 +1326,10 @@ const canon = (r: PgRow): string =>
 
 /**
  * Re-read the day and require the rows to equal the pre-write rows with the
- * plan applied: updated rows at their targets, deleted rows gone, every other
- * row (and every other column) untouched. Prints before and after counts.
+ * plan applied: the picked fields of an updated row at their new values, deleted
+ * rows gone, every other field, row and column untouched. A change made to a
+ * kept field after the plan was read therefore fails the day. Prints before and
+ * after counts.
  */
 async function verifyDay(day: DayPlan, snap: PgSnapshot): Promise<void> {
   const dayStart = Date.parse(`${day.day}T00:00:00Z`);
@@ -1265,7 +1337,7 @@ async function verifyDay(day: DayPlan, snap: PgSnapshot): Promise<void> {
     ...new Set([...day.updates, ...day.deletes].map((x) => x.symbol)),
   ];
   const gone = new Set(day.deletes.map((d) => d.id));
-  const target = new Map(day.updates.map((u) => [u.id, u.target]));
+  const picked = new Map(day.updates.map((u) => [u.id, u.changes]));
   for (const symbol of symbols.sort()) {
     const cover = snap.cover[symbol];
     if (cover == null)
@@ -1279,17 +1351,9 @@ async function verifyDay(day: DayPlan, snap: PgSnapshot): Promise<void> {
     const expected = before
       .filter((r) => !gone.has(r.id))
       .map((r) => {
-        const t = target.get(r.id);
-        return t == null
-          ? r
-          : {
-              ...r,
-              open: String(t.open),
-              high: String(t.high),
-              low: String(t.low),
-              close: String(t.close),
-              volume: String(t.volume),
-            };
+        const row = { ...r };
+        for (const c of picked.get(r.id) ?? []) row[c.field] = String(c.to);
+        return row;
       });
     const actual = await readRows(symbol, fromMs, toMs);
     console.log(
@@ -1329,6 +1393,13 @@ export interface RepairOptions {
   force: boolean;
   /** Only these UTC days; empty means all. */
   dates: string[];
+  /**
+   * The totals of the dry run the owner approved. `--apply` refuses, before it
+   * writes anything, when the fresh plan's rows to update or delete differ.
+   * Null on a dry run.
+   */
+  expectUpdates: number | null;
+  expectDeletes: number | null;
 }
 
 export interface RepairArgs extends RepairOptions {
@@ -1344,6 +1415,13 @@ const isRealDate = (text: string): boolean => {
   );
 };
 
+function parseCount(flag: string, value: string): number {
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`${flag} needs a whole number, got "${value}"`);
+  }
+  return Number.parseInt(value, 10);
+}
+
 export function parseRepairArgs(argv: string[]): RepairArgs {
   const args: RepairArgs = {
     dir: 'ml/data/futures-contract-repair',
@@ -1351,6 +1429,8 @@ export function parseRepairArgs(argv: string[]): RepairArgs {
     apply: false,
     force: false,
     dates: [],
+    expectUpdates: null,
+    expectDeletes: null,
     envFile: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -1372,7 +1452,11 @@ export function parseRepairArgs(argv: string[]): RepairArgs {
       const bad = values.find((v) => !isRealDate(v));
       if (bad != null) throw new Error(`${bad} is not a YYYY-MM-DD date`);
       args.dates = values;
-    } else if (flag === '--dir') args.dir = next();
+    } else if (flag === '--expect-updates')
+      args.expectUpdates = parseCount(flag, next());
+    else if (flag === '--expect-deletes')
+      args.expectDeletes = parseCount(flag, next());
+    else if (flag === '--dir') args.dir = next();
     else if (flag === '--work-dir') args.workDir = next();
     else if (flag === '--env-file') args.envFile = next();
     else if (flag === '--apply') args.apply = true;
@@ -1381,12 +1465,24 @@ export function parseRepairArgs(argv: string[]): RepairArgs {
   }
   if (args.force && !args.apply)
     throw new Error('--force only applies with --apply');
+  const expects = [args.expectUpdates, args.expectDeletes];
+  if (args.apply && expects.some((n) => n == null)) {
+    throw new Error(
+      '--apply needs --expect-updates N and --expect-deletes M: the totals of the dry run you approved',
+    );
+  }
+  if (!args.apply && expects.some((n) => n != null)) {
+    throw new Error(
+      '--expect-updates and --expect-deletes only apply with --apply',
+    );
+  }
   return args;
 }
 
 // ── Run ─────────────────────────────────────────────────────────────────────
 
-async function run(opts: RepairOptions): Promise<void> {
+/** Exit codes: 0 done, 1 failed or refused, 2 stopped between days (market hours began). */
+async function run(opts: RepairOptions): Promise<number> {
   if (opts.apply && isMarketHours()) {
     throw new Error(
       'Refusing to --apply during market hours (09:25 to 16:05 ET): run after the close.',
@@ -1425,19 +1521,53 @@ async function run(opts: RepairOptions): Promise<void> {
   writeFileSync(join(opts.workDir, 'delete-list.csv'), deleteCsv(plan.deletes));
   console.log(`\nreport: ${join(opts.workDir, 'report.txt')}`);
   console.log(`delete list: ${join(opts.workDir, 'delete-list.csv')}`);
-  if (!opts.apply) return;
+  if (!opts.apply) return 0;
 
-  const pending = days.filter(
-    (d) => opts.force || !existsSync(markerPath(opts.workDir, d.day)),
-  );
+  // The plan must be the one the owner approved. Checked on the whole fresh
+  // plan, before any marker, backup or write.
+  if (
+    plan.updates.length !== opts.expectUpdates ||
+    plan.deletes.length !== opts.expectDeletes
+  ) {
+    throw new Error(
+      `Refusing to --apply: the fresh plan has ${plan.updates.length} updates and ${plan.deletes.length} deletes, ` +
+        `but --expect-updates ${opts.expectUpdates ?? 'missing'} and --expect-deletes ${opts.expectDeletes ?? 'missing'} were given. ` +
+        'Nothing was written. Review a fresh dry run (after a partial --apply it reports only the days left) and pass its totals.',
+    );
+  }
+
+  const stamp = (day: string): MarkerStamp => ({
+    gitHead: m.gitHead,
+    ndjsonSha256: dayDigest(opts.dir, day),
+  });
+  const pending = days.filter((d) => {
+    if (opts.force) return true;
+    const state = markerState(opts.workDir, d.day, stamp(d.day));
+    if (state.state === 'stale') {
+      console.log(`marker for ${d.day} ${state.reason}; re-planning`);
+    }
+    return state.state !== 'done';
+  });
   console.log(
     `\n${days.length - pending.length} day(s) already applied (done marker), ${pending.length} to apply`,
   );
-  if (pending.length === 0) return;
+  if (pending.length === 0) return 0;
 
   const backup = writeBackup(opts.workDir, pending);
   console.log(`backup: ${backup}`);
-  for (const day of pending) {
+  for (const [index, day] of pending.entries()) {
+    // A full apply can outlast the close, so the guard is checked before every
+    // day, not only at the start. Finished days are already marked.
+    if (isMarketHours()) {
+      const left = pending.slice(index);
+      console.error(
+        `apply stopped before day ${day.day}: market hours began (09:25 ET). ` +
+          `${index} day(s) done and marked; ${left.length} left ` +
+          `(${left.reduce((n, d) => n + d.updates.length, 0)} updates, ${left.reduce((n, d) => n + d.deletes.length, 0)} deletes). ` +
+          'After the close, run a fresh dry run and --apply with its totals.',
+      );
+      return 2;
+    }
     try {
       const { updated, deleted } = await writeDay(day);
       console.log(`${day.day} updated ${updated} deleted ${deleted}`);
@@ -1450,16 +1580,16 @@ async function run(opts: RepairOptions): Promise<void> {
     }
     writeFileSync(
       markerPath(opts.workDir, day.day),
-      `${new Date().toISOString()}\n`,
+      `${JSON.stringify({ ...stamp(day.day), appliedAt: new Date().toISOString() })}\n`,
     );
   }
+  return 0;
 }
 
-/** Runs the repair and returns the process exit code. */
+/** Runs the repair and returns the process exit code: 0 done, 1 failed or refused, 2 stopped between days at the open. */
 export async function runRepair(opts: RepairOptions): Promise<number> {
   try {
-    await run(opts);
-    return 0;
+    return await run(opts);
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     return 1;

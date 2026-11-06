@@ -98,7 +98,7 @@ vi.mock('../../api/_lib/db.js', async (importOriginal) => {
 
 import { neonOverPglite } from '../../api/__tests__/pglite-migrations';
 import { MIGRATIONS } from '../../api/_lib/db-migrations.js';
-import { markerPath, runRepair } from './futures-contract-repair.js';
+import { dayDigest, markerPath, runRepair } from './futures-contract-repair.js';
 
 // ── Schema and seed helpers ─────────────────────────────────────────────────
 
@@ -441,15 +441,34 @@ let dir: string;
 let inDir: string;
 let workDir: string;
 
-const run = (over: Partial<Parameters<typeof runRepair>[0]> = {}) =>
-  runRepair({
+/** The fixture's plan: 5 rows to update, 18 to delete. An apply must be told so. */
+const run = (over: Partial<Parameters<typeof runRepair>[0]> = {}) => {
+  const apply = over.apply ?? true;
+  return runRepair({
     dir: inDir,
     workDir,
-    apply: true,
+    apply,
     force: false,
     dates: [],
+    expectUpdates: apply ? 5 : null,
+    expectDeletes: apply ? 18 : null,
     ...over,
   });
+};
+
+/** Rewrite one rebuilt-bar file in place, as a Phase 1 re-run would. */
+function editNdjson(
+  file: string,
+  edit: (bar: Record<string, unknown>) => void,
+): void {
+  const path = join(inDir, 'ndjson', file);
+  const bars = readFileSync(path, 'utf8')
+    .split('\n')
+    .filter((l) => l !== '')
+    .map((l) => JSON.parse(l) as Record<string, unknown>);
+  bars.forEach(edit);
+  writeFileSync(path, `${bars.map((b) => JSON.stringify(b)).join('\n')}\n`);
+}
 
 const logged = (): string =>
   vi
@@ -669,8 +688,9 @@ describe('--apply on real SQL (pglite)', () => {
     }
 
     // Nothing is left to plan, so a rerun, forced or not, writes nothing.
-    expect(await run()).toBe(0);
-    expect(await run({ force: true })).toBe(0);
+    const none = { expectUpdates: 0, expectDeletes: 0 };
+    expect(await run(none)).toBe(0);
+    expect(await run({ ...none, force: true })).toBe(0);
 
     expect(logged()).toContain('total updates 0, total deletes 0');
     expect(hooks.writes).toBe(writesAfterFirst);
@@ -686,7 +706,8 @@ describe('--apply on real SQL (pglite)', () => {
     );
     const writes = hooks.writes;
 
-    expect(await run()).toBe(0);
+    const one = { expectUpdates: 1, expectDeletes: 0 };
+    expect(await run(one)).toBe(0);
     expect(logged()).toContain(
       '1 day(s) already applied (done marker), 0 to apply',
     );
@@ -695,7 +716,7 @@ describe('--apply on real SQL (pglite)', () => {
       '7062.0000',
     );
 
-    expect(await run({ force: true })).toBe(0);
+    expect(await run({ ...one, force: true })).toBe(0);
     expect(hooks.writes).toBe(writes + 1);
     expect((await table(pg)).get('ES 2026-04-21T13:05:00Z')?.high).toBe(
       '7001.0000',
@@ -750,20 +771,112 @@ describe('--apply on real SQL (pglite)', () => {
     expect(await table(pg)).toEqual(before);
   });
 
-  it('does not delete a row whose values changed since the backup, and says so', async () => {
+  it('does not delete a row whose values changed since the backup; the day fails and a rerun converges', async () => {
+    let fired = false;
     hooks.beforeWrite = async () => {
+      if (fired) return;
+      fired = true;
       await pg.query(
         `UPDATE futures_bars SET close = close + 1
           WHERE symbol = 'ES' AND ts = '2026-04-07T14:33:00Z'`,
       );
     };
+
     expect(await run()).toBe(1);
+
     expect(errored()).toMatch(
       /apply failed: day 2026-04-07: verify failed for ES 2026-04-07.*value check/s,
     );
+    // The day's updates committed, its skipped delete did not, and the day is unmarked.
+    expect(hooks.writes).toBe(1);
+    const mid = await table(pg);
+    expect(ohlcv(mid, 'ES 2026-04-07T14:31:00Z')).toBe(
+      '7000.0000/7001.2500/6999.0000/7000.5000/300',
+    );
+    expect(mid.get('ES 2026-04-07T14:33:00Z')?.close).toBe('7001.5000'); // still there, as changed
     expect(existsSync(markerPath(workDir, '2026-04-07'))).toBe(false);
-    const row = (await table(pg)).get('ES 2026-04-07T14:33:00Z');
-    expect(row?.close).toBe('7001.5000'); // the changed row is still there, as changed
+
+    // The rerun re-plans: the day's updates are done, the changed row is judged
+    // again (still no rebuilt minute), and every later day follows.
+    vi.setSystemTime(new Date('2026-11-08T12:05:00Z'));
+    expect(await run({ expectUpdates: 2, expectDeletes: 18 })).toBe(0);
+
+    const after = await table(pg);
+    expect(after.has('ES 2026-04-07T14:33:00Z')).toBe(false);
+    for (const day of [
+      '2026-04-07',
+      '2026-04-10',
+      '2026-04-11',
+      '2026-04-12',
+      '2026-04-20',
+      '2026-04-21',
+      '2026-06-10',
+    ]) {
+      expect(existsSync(markerPath(workDir, day))).toBe(true);
+    }
+    const backups = readdirSync(workDir)
+      .filter((f) => f.startsWith('backup-'))
+      .sort();
+    expect(backups).toHaveLength(2);
+    const lines = readFileSync(join(workDir, backups[1] ?? ''), 'utf8')
+      .split('\n')
+      .filter((l) => l !== '')
+      .map((l) => JSON.parse(l) as { op: string; row: Record<string, string> });
+    expect(
+      lines.find((l) => l.row.ts === '2026-04-07T14:33:00Z'),
+    ).toMatchObject({ op: 'delete', row: { close: '7001.5000' } });
+
+    // And a third run has nothing to do.
+    const writes = hooks.writes;
+    expect(await run({ expectUpdates: 0, expectDeletes: 0 })).toBe(0);
+    expect(hooks.writes).toBe(writes);
+  });
+
+  it('writes only the picked fields: a change to a kept field stays, and the day fails', async () => {
+    // ES 13:05 is a high-only update. Something sets its volume after the plan.
+    hooks.beforeWrite = async () => {
+      await pg.query(
+        `UPDATE futures_bars SET volume = 777
+          WHERE symbol = 'ES' AND ts = '2026-04-21T13:05:00Z'`,
+      );
+    };
+
+    expect(await run()).toBe(1);
+
+    expect(errored()).toMatch(
+      /apply failed: day 2026-04-21: verify failed for ES 2026-04-21/,
+    );
+    const row = (await table(pg)).get('ES 2026-04-21T13:05:00Z');
+    expect(row?.high).toBe('7001.0000'); // the picked field was written
+    expect(row?.volume).toBe('777'); // the concurrent change was not undone
+    expect(existsSync(markerPath(workDir, '2026-04-21'))).toBe(false);
+    expect(existsSync(markerPath(workDir, '2026-04-20'))).toBe(true);
+  });
+
+  it('writes the rebuilt volume with a replaced low, whatever the roll week or partial say', async () => {
+    const ts = '2026-05-20T15:18:00Z';
+    const fixture = baseFixture();
+    fixture.pgRows.push({
+      symbol: 'ES',
+      ts,
+      p: [7060.75, 7062, 7060, 7061],
+      v: 33,
+    });
+    fixture.rebuilt.push({
+      symbol: 'ES',
+      ts,
+      p: [7000, 7001.25, 6999.5, 7000.5],
+      v: 8436,
+      source: 'ticks',
+      partial: true,
+    });
+    await reset(fixture);
+
+    expect(await run({ expectUpdates: 6, expectDeletes: 18 })).toBe(0);
+
+    expect(ohlcv(await table(pg), `ES ${ts}`)).toBe(
+      '7000.0000/7001.2500/6999.5000/7000.5000/8436',
+    );
   });
 
   it('fails the day when a write did not land, instead of marking it done', async () => {
@@ -796,7 +909,7 @@ describe('--apply on real SQL (pglite)', () => {
     }
     await reset(fixture);
 
-    expect(await run()).toBe(0);
+    expect(await run({ expectUpdates: 1100, expectDeletes: 0 })).toBe(0);
 
     const writes = hooks.calls.filter((c) => !c.readOnly);
     expect(writes).toHaveLength(1);
@@ -812,7 +925,13 @@ describe('--apply on real SQL (pglite)', () => {
 
   it('with --dates writes only those days', async () => {
     const before = await table(pg);
-    expect(await run({ dates: ['2026-04-21'] })).toBe(0);
+    expect(
+      await run({
+        dates: ['2026-04-21'],
+        expectUpdates: 1,
+        expectDeletes: 1,
+      }),
+    ).toBe(0);
     const after = await table(pg);
     expect(ohlcv(after, 'ES 2026-04-21T13:05:00Z')).toBe(
       '7000.0000/7001.0000/6999.0000/7000.0000/300',
@@ -826,6 +945,119 @@ describe('--apply on real SQL (pglite)', () => {
     expect(readdirSync(workDir).filter((f) => f.endsWith('.applied'))).toEqual([
       '2026-04-21.applied',
     ]);
+  });
+
+  it('stops between days when market hours begin: exit 2, finished days marked', async () => {
+    // The open arrives while the first day is being written.
+    hooks.beforeWrite = () => {
+      if (hooks.writes === 1) {
+        vi.setSystemTime(new Date('2026-11-09T16:00:00Z')); // Monday 11:00 ET
+      }
+    };
+
+    expect(await run()).toBe(2);
+
+    expect(hooks.writes).toBe(1);
+    expect(errored()).toContain(
+      'apply stopped before day 2026-04-10: market hours began (09:25 ET). 1 day(s) done and marked; 6 left (2 updates, 17 deletes).',
+    );
+    expect(existsSync(markerPath(workDir, '2026-04-07'))).toBe(true);
+    expect(existsSync(markerPath(workDir, '2026-04-10'))).toBe(false);
+    expect((await table(pg)).has('RTY 2026-04-10T21:00:00Z')).toBe(true);
+
+    // After the close, a fresh dry run's totals finish the job.
+    vi.setSystemTime(new Date('2026-11-09T22:30:00Z')); // Monday 17:30 ET
+    expect(await run({ expectUpdates: 2, expectDeletes: 17 })).toBe(0);
+    expect((await table(pg)).has('RTY 2026-04-10T21:00:00Z')).toBe(false);
+    expect(existsSync(markerPath(workDir, '2026-06-10'))).toBe(true);
+  });
+
+  it('refuses, before any write, when the fresh plan is not the approved totals', async () => {
+    const before = await table(pg);
+
+    expect(await run({ expectUpdates: 5, expectDeletes: 17 })).toBe(1);
+
+    expect(errored()).toContain(
+      'the fresh plan has 5 updates and 18 deletes, but --expect-updates 5 and --expect-deletes 17 were given',
+    );
+    expect(hooks.writes).toBe(0);
+    expect(await table(pg)).toEqual(before);
+    expect(
+      readdirSync(workDir).filter(
+        (f) => f.startsWith('backup-') || f.endsWith('.applied'),
+      ),
+    ).toEqual([]);
+  });
+
+  it('refuses when the updates differ, and when no totals were given', async () => {
+    expect(await run({ expectUpdates: 6, expectDeletes: 18 })).toBe(1);
+    expect(errored()).toContain('--expect-updates 6 and --expect-deletes 18');
+    expect(await run({ expectUpdates: null, expectDeletes: null })).toBe(1);
+    expect(errored()).toContain(
+      '--expect-updates missing and --expect-deletes missing',
+    );
+    expect(hooks.writes).toBe(0);
+  });
+
+  it('writes a marker that names the Phase 1 run and the day bars', async () => {
+    await run();
+    const marker = JSON.parse(
+      readFileSync(markerPath(workDir, '2026-04-21'), 'utf8'),
+    ) as Record<string, string>;
+    expect(marker.gitHead).toBe('fbe7c057154fee85ca59ed5a43ecac1cfa4f720a');
+    expect(marker.ndjsonSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(marker.ndjsonSha256).toBe(dayDigest(inDir, '2026-04-21'));
+  });
+
+  it('re-plans a marked day whose rebuilt bars changed, and skips one that did not', async () => {
+    await run();
+    // Phase 1 is re-run: one rebuilt high on 04-21 changes, counts do not.
+    editNdjson('ES-2026-04-21.ndjson', (bar) => {
+      if (bar.ts === '2026-04-21T13:05:00Z') bar.high = 7001.5;
+    });
+    await pg.query(
+      `UPDATE futures_bars SET high = 7062
+        WHERE symbol = 'ES' AND ts = '2026-04-21T13:05:00Z'`,
+    );
+    await pg.query(
+      `UPDATE futures_bars SET open = 7060.75
+        WHERE symbol = 'ES' AND ts = '2026-04-07T14:31:00Z'`,
+    );
+
+    expect(await run({ expectUpdates: 2, expectDeletes: 0 })).toBe(0);
+
+    expect(logged()).toContain(
+      'marker for 2026-04-21 was written for different rebuilt bars; re-planning',
+    );
+    expect(logged()).toContain(
+      '1 day(s) already applied (done marker), 1 to apply',
+    );
+    const after = await table(pg);
+    expect(after.get('ES 2026-04-21T13:05:00Z')?.high).toBe('7001.5000');
+    expect(after.get('ES 2026-04-07T14:31:00Z')?.open).toBe('7060.7500'); // marker still good
+  });
+
+  it('re-plans every marked day when Phase 1 was re-run under another git SHA', async () => {
+    await run();
+    const path = join(inDir, 'manifest.json');
+    const manifest = JSON.parse(readFileSync(path, 'utf8')) as {
+      git: { head: string };
+    };
+    manifest.git.head = '0123456789abcdef0123456789abcdef01234567';
+    writeFileSync(path, JSON.stringify(manifest));
+    await pg.query(
+      `UPDATE futures_bars SET high = 7062
+        WHERE symbol = 'ES' AND ts = '2026-04-21T13:05:00Z'`,
+    );
+
+    expect(await run({ expectUpdates: 1, expectDeletes: 0 })).toBe(0);
+
+    expect(logged()).toContain(
+      'marker for 2026-04-21 is from Phase 1 git fbe7c057, not 01234567; re-planning',
+    );
+    expect((await table(pg)).get('ES 2026-04-21T13:05:00Z')?.high).toBe(
+      '7001.0000',
+    );
   });
 
   it('refuses to apply while Phase 1 lists an unsplittable minute', async () => {

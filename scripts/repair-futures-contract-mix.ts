@@ -5,20 +5,25 @@
  * docs/superpowers/specs/futures-contract-mix-repair-2026-11-06.md.
  *
  *   npx tsx scripts/repair-futures-contract-mix.ts                 # dry run
- *   npx tsx scripts/repair-futures-contract-mix.ts --apply         # writes
- *   npx tsx scripts/repair-futures-contract-mix.ts --apply --dates 2026-04-07
+ *   npx tsx scripts/repair-futures-contract-mix.ts --apply --expect-updates N --expect-deletes M
+ *   npx tsx scripts/repair-futures-contract-mix.ts --apply --expect-updates 1 --expect-deletes 1 --dates 2026-04-07
  *
  * The default is a DRY RUN: it reads the database DATABASE_URL points at
  * (production, in .env.local) through read-only transactions, prints the
  * summary and the full delete list, and writes only the report files into
  * --work-dir. --apply WRITES to that database, after the close, and only
- * after the owner has seen the dry run.
+ * after the owner has seen the dry run. Exit codes: 0 done, 1 failed or
+ * refused, 2 stopped between days because market hours began.
  *
  * Options:
  *   --dir <dir>        Phase 1 output (default ml/data/futures-contract-repair)
  *   --work-dir <dir>   report.txt, delete-list.csv, backup-*.jsonl and the
  *                      {day}.applied markers (default docs/tmp/futures-contract-repair)
- *   --apply            write (backup first, one UTC day per transaction)
+ *   --apply            write (backup first, one UTC day per transaction); needs
+ *                      --expect-updates and --expect-deletes
+ *   --expect-updates N the rows to update in the dry run the owner approved
+ *   --expect-deletes M the rows to delete in that dry run; --apply refuses, before
+ *                      any write, when the fresh plan's totals differ
  *   --dates d1 d2 ...  only these UTC days
  *   --force            with --apply, redo days that have a done marker
  *   --env-file <path>  .env.local to load (default: the nearest one up the tree);
