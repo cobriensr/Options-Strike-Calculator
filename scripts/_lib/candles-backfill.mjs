@@ -31,10 +31,12 @@ import {
   DayFailure,
   chunk,
   classifyFailure,
+  formatRunSummary,
   parseRangeArgs,
   retryTransientDb,
   runDayItems,
   selectDates,
+  summarizeRun,
 } from './backfill-cli.mjs';
 import {
   SCHWAB_BASE,
@@ -543,16 +545,28 @@ async function ingestEtfTicker(ticker, date, ctx) {
   if (outcome) return outcome;
   const { rows, dropped } = toEtfRows(ticker, date, bars);
   const stored = await storeCandleRows(ctx.sql, ETF_TARGET, rows, ctx);
-  return { fetched: bars.length, stored, kept: rows.length, dropped };
+  return {
+    fetched: bars.length,
+    stored,
+    kept: rows.length,
+    dropped,
+    emptyItems: bars.length === 0 ? 1 : 0,
+  };
 }
 
 /**
  * One day of etf_candles_1m: SPY and QQQ, each fetched, mapped and written.
- * A runDays worker. Returns `{ fetched, stored, kept, dropped }` summed over
- * the tickers (`fetched` the bars UW sent, `kept` the rows that passed the
- * filters, so the would-be count on a dry run, `stored` the rows the database
- * took). One ticker failing doesn't stop the other; the day then fails with
- * the first failure's kind (runDayItems).
+ * A runDays worker. Returns `{ fetched, stored, kept, dropped, emptyItems }`
+ * summed over the tickers (`fetched` the bars UW sent, `kept` the rows that
+ * passed the filters, so the would-be count on a dry run, `stored` the rows
+ * the database took, `emptyItems` how many tickers UW sent no bars for). One
+ * ticker failing doesn't stop the other; the day then fails with the first
+ * failure's kind (runDayItems).
+ *
+ * `emptyItems` is there because the other totals hide a hole: with SPY empty
+ * and QQQ at 960 bars the day reads `fetched 960 stored 960`. It is not a
+ * failure (a wholly empty day isn't either); summarizeCandleRun lists the
+ * dates.
  */
 export function processEtfDay(date, ctx) {
   return runDayItems(
@@ -570,14 +584,22 @@ async function ingestIndex(symbol, date, ctx) {
   if (outcome) return outcome;
   const { rows, dropped } = toIndexRows(symbol, date, bars, ratio);
   const stored = await storeCandleRows(ctx.sql, INDEX_TARGET, rows, ctx);
-  return { fetched: bars.length, stored, kept: rows.length, dropped };
+  return {
+    fetched: bars.length,
+    stored,
+    kept: rows.length,
+    dropped,
+    emptyItems: bars.length === 0 ? 1 : 0,
+  };
 }
 
 /**
  * One day of index_candles_1m: SPX from SPY and NDX from QQQ, each at that
- * date's Schwab ratio. A runDays worker with processEtfDay's counts. A symbol
- * with no ratio for the date fails (ratioFor) before UW is asked for it; the
- * other symbol still runs, and the day fails with the first failure's kind.
+ * date's Schwab ratio. A runDays worker with processEtfDay's counts
+ * (`emptyItems` counts the symbols whose ETF UW sent no bars for: SPX has no
+ * rows when SPY is empty). A symbol with no ratio for the date fails
+ * (ratioFor) before UW is asked for it; the other symbol still runs, and the
+ * day fails with the first failure's kind.
  */
 export function processIndexDay(date, ctx) {
   return runDayItems(
@@ -585,4 +607,36 @@ export function processIndexDay(date, ctx) {
     (symbol) => ingestIndex(symbol, date, ctx),
     { label: 'symbols' },
   );
+}
+
+// ── Report ─────────────────────────────────────────────────
+
+/**
+ * The end-of-run report for a runDays result of processEtfDay or
+ * processIndexDay: backfill-cli's summary lines and exit code, plus one line
+ * naming the dates that were partly empty. `itemCount` is how many items a day
+ * fans out over and `itemLabel` what they are called ('tickers' or 'symbols').
+ *
+ * A partly empty day is a done day (UW answered, the rest was written) where
+ * some, not all, of the items had no bars: its totals look healthy while one
+ * ticker or symbol has no rows. It is a hole to look at, not a failure, so it
+ * does not change the exit code, like a wholly empty day, which the shared
+ * summary already lists as an empty day.
+ */
+export function summarizeCandleRun(run, itemCount, itemLabel) {
+  const summary = summarizeRun(run);
+  const lines = formatRunSummary(summary);
+  const partly = run.days.filter(
+    (day) => day.ok && day.value.fetched > 0 && day.value.emptyItems > 0,
+  );
+  if (partly.length > 0) {
+    const dates = partly
+      .map((day) => `${day.date} (${day.value.emptyItems} empty)`)
+      .join(', ');
+    lines.push(
+      `partly empty days (UW had no bars for some of the ${itemCount} ` +
+        `${itemLabel}; a hole to look at, not a failure): ${dates}`,
+    );
+  }
+  return { lines, exitCode: summary.exitCode };
 }

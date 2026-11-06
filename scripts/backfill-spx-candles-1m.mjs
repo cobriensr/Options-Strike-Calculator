@@ -35,7 +35,15 @@
  * re-login). So this script also refuses to start on a weekday 13:00–21:59 UTC,
  * when the Schwab crons run, and the market-hours guard below applies too;
  * --allow-market-hours lifts both (a market holiday). --dry-run still calls
- * Schwab and UW (read-only) and writes nothing.
+ * Schwab and UW and writes nothing to Neon; it may refresh the Schwab token
+ * record in Upstash (production).
+ *
+ * First run: the Schwab daily /pricehistory request shape (periodType=year with
+ * startDate/endDate, $NDX included) is unconfirmed against the live API. Probe
+ * Monday 2026-07-27 with --dry-run first: its padded Schwab window holds a
+ * Monday, so the check that fails a daily candle stamped on a non-trading day
+ * runs. A Thursday probe never exercises it. If Schwab answers 400, the ratio
+ * table names it; the fallback request is in the plan's P3.1 as-built note.
  *
  * UW: at most UW_REQUESTS_PER_MINUTE (300) requests a minute, one retry after
  * 1 s on a 5xx, a 429, a network error or a timeout, limit=2500. A 4xx,
@@ -72,11 +80,9 @@ import {
   EXIT_GUARD_STOP,
   UW_REQUESTS_PER_MINUTE,
   createRequestThrottle,
-  formatRunSummary,
   marketHoursRefusal,
   redact,
   runDays,
-  summarizeRun,
 } from './_lib/backfill-cli.mjs';
 import {
   INDEXES,
@@ -84,6 +90,7 @@ import {
   planCandleDays,
   processIndexDay,
   ratioLines,
+  summarizeCandleRun,
 } from './_lib/candles-backfill.mjs';
 import { readSchwabEnv, schwabCronsBusyRefusal } from './_lib/schwab-local.mjs';
 
@@ -112,7 +119,7 @@ if (!UW_API_KEY) {
   process.exit(EXIT_FAILED);
 }
 if (!args.dryRun && !DATABASE_URL) {
-  console.error('Missing DATABASE_URL (or pass --dry-run to skip writes)');
+  console.error('Missing DATABASE_URL (or pass --dry-run to skip Neon writes)');
   process.exit(EXIT_FAILED);
 }
 if (schwabEnv.problem) {
@@ -126,7 +133,7 @@ const say = (line = '') => console.log(redact(line, secrets));
 say(
   `Backfilling index_candles_1m (${INDEXES.map((i) => i.symbol).join(', ')}, ` +
     'scaled from SPY and QQQ)' +
-    (args.dryRun ? ' (DRY RUN: no writes)' : ''),
+    (args.dryRun ? ' (DRY RUN: no Neon writes)' : ''),
 );
 say(
   `  ${dates.length} trading days, ${dates[0]} → ${dates.at(-1)}` +
@@ -159,11 +166,11 @@ try {
     { allowMarketHours: args.allowMarketHours, secrets },
     (date) => processIndexDay(date, ctx),
   );
-  const summary = summarizeRun(run);
-  for (const line of formatRunSummary(summary)) say(line);
+  const report = summarizeCandleRun(run, INDEXES.length, 'symbols');
+  for (const line of report.lines) say(line);
   if (args.dryRun)
     say('(dry run: stored is 0 by design; kept is what would go in)');
-  exitCode = summary.exitCode;
+  exitCode = report.exitCode;
 } catch (err) {
   console.error(redact(`backfill aborted: ${err?.message ?? err}`, secrets));
   exitCode = EXIT_FAILED;

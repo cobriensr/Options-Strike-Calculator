@@ -23,6 +23,7 @@ import {
   ratioFor,
   ratioLines,
   storeCandleRows,
+  summarizeCandleRun,
   toEtfRows,
   toIndexRows,
 } from './candles-backfill.mjs';
@@ -369,6 +370,27 @@ describe('fetchSchwabDailyCloses', () => {
     expect(err.message).toContain('HTTP 401');
     expect(err.message).toContain('Unauthorized [redacted]');
     expect(err.message).not.toContain('abcdefghijklmnopqrstuvwxyz012345');
+  });
+
+  it('throws a SyntaxError when a 200 body is not JSON, and the failure kind is malformed', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError('Unexpected token < in JSON at position 0');
+        },
+        text: async () => '<html>',
+      })),
+    );
+
+    const err = await fetchSchwabDailyCloses('tok', '$SPX', D1, D2).catch(
+      (e) => e,
+    );
+
+    expect(err).toBeInstanceOf(SyntaxError);
+    expect(classifyFailure(err).kind).toBe('malformed');
   });
 
   it('throws a SyntaxError when the body has no candles array', async () => {
@@ -1015,7 +1037,7 @@ describe('processEtfDay', () => {
       {
         date: D1,
         ok: true,
-        value: { fetched: 7, stored: 7, kept: 7, dropped: 0 },
+        value: { fetched: 7, stored: 7, kept: 7, dropped: 0, emptyItems: 0 },
       },
     ]);
     expect(fetchMock.mock.calls.map(([u]) => u)).toEqual([
@@ -1025,6 +1047,10 @@ describe('processEtfDay', () => {
     expect(sql.query).toHaveBeenCalledTimes(2);
     expect(sql.query.mock.calls.map(([, v]) => v[0])).toEqual(['SPY', 'QQQ']);
     expect(summarizeRun(run).exitCode).toBe(0);
+    // Nothing partly empty: the summary has no such line.
+    expect(
+      summarizeCandleRun(run, ETF_TICKERS.length, 'tickers').lines.join('\n'),
+    ).not.toContain('partly empty');
   });
 
   it('on a dry run fetches and maps but writes nothing: stored 0, kept the would-be count', async () => {
@@ -1040,6 +1066,7 @@ describe('processEtfDay', () => {
       stored: 0,
       kept: 7,
       dropped: 0,
+      emptyItems: 0,
     });
     expect(sql.query).not.toHaveBeenCalled();
   });
@@ -1056,6 +1083,7 @@ describe('processEtfDay', () => {
       stored: 12,
       kept: 20,
       dropped: 0,
+      emptyItems: 0,
     });
     expect(sql.query.mock.calls[0][0]).toContain('DO NOTHING');
   });
@@ -1066,11 +1094,103 @@ describe('processEtfDay', () => {
 
     const run = await runWorker([D1], (date) => processEtfDay(date, ctx(sql)));
 
-    expect(run.days[0]).toMatchObject({ ok: true, value: { fetched: 0 } });
+    expect(run.days[0]).toMatchObject({
+      ok: true,
+      value: { fetched: 0, emptyItems: 2 },
+    });
     const summary = summarizeRun(run);
     expect(summary.emptyDays).toEqual([D1]);
     expect(summary.exitCode).toBe(0);
     expect(sql.query).not.toHaveBeenCalled();
+    // The shared summary already lists a wholly empty day; it is not "partly".
+    const { lines, exitCode } = summarizeCandleRun(
+      run,
+      ETF_TICKERS.length,
+      'tickers',
+    );
+    expect(lines).toContain(`empty days (UW had no rows): ${D1}`);
+    expect(lines.join('\n')).not.toContain('partly empty');
+    expect(exitCode).toBe(0);
+  });
+
+  it('shows a ticker UW had no bars for: emptyItems on the day, the date in the summary, exit 0', async () => {
+    // SPY answers an empty array while QQQ has bars: a hole in SPY that the
+    // day's totals (fetched 4, stored 4) would otherwise hide.
+    stubFetch({ uw: { SPY: [], QQQ: bars(4) } });
+    const sql = fakeSql();
+
+    const run = await runWorker([D1], (date) => processEtfDay(date, ctx(sql)));
+
+    expect(run.days[0]).toEqual({
+      date: D1,
+      ok: true,
+      value: { fetched: 4, stored: 4, kept: 4, dropped: 0, emptyItems: 1 },
+    });
+    // Only QQQ was written; SPY has no rows for the day.
+    expect(sql.query).toHaveBeenCalledTimes(1);
+    expect(sql.query.mock.calls[0][1][0]).toBe('QQQ');
+
+    const { lines, exitCode } = summarizeCandleRun(
+      run,
+      ETF_TICKERS.length,
+      'tickers',
+    );
+    // Visible in the day's own line ...
+    expect(lines).toContain(
+      `  ${D1}  fetched 4  stored 4  kept 4  dropped 0  emptyItems 1`,
+    );
+    // ... and again, by date, at the end of the summary.
+    expect(lines.at(-1)).toBe(
+      `partly empty days (UW had no bars for some of the 2 tickers; a hole to look at, not a failure): ${D1} (1 empty)`,
+    );
+    // Not a failure, and not a wholly empty day.
+    expect(exitCode).toBe(0);
+    expect(summarizeRun(run).emptyDays).toEqual([]);
+  });
+
+  it('lists a partly empty day beside a failed one, and a failure still exits 1', async () => {
+    stubFetch({
+      uw: {
+        SPY: (date) =>
+          date === D1
+            ? jsonResponse({}, { ok: false, status: 404 })
+            : jsonResponse({ data: [] }),
+        QQQ: barsOnDate(2),
+      },
+    });
+
+    const run = await runWorker([D1, D2], (date) =>
+      processEtfDay(date, ctx(fakeSql())),
+    );
+
+    expect(run.days.map((d) => d.ok)).toEqual([false, true]);
+    const { lines, exitCode } = summarizeCandleRun(
+      run,
+      ETF_TICKERS.length,
+      'tickers',
+    );
+    expect(exitCode).toBe(1);
+    expect(lines.some((l) => l.startsWith('  uw_http_404: 1 day'))).toBe(true);
+    expect(lines.at(-1)).toMatch(new RegExp(`: ${D2} \\(1 empty\\)$`));
+    expect(lines.at(-1)).not.toContain(D1);
+  });
+
+  it('lists only the partly empty days among several', async () => {
+    stubFetch({
+      uw: {
+        SPY: (date) => jsonResponse({ data: date === D2 ? [] : bars(2, date) }),
+        QQQ: barsOnDate(2),
+      },
+    });
+
+    const run = await runWorker([D1, D2], (date) =>
+      processEtfDay(date, ctx(fakeSql())),
+    );
+
+    const { lines } = summarizeCandleRun(run, ETF_TICKERS.length, 'tickers');
+    expect(lines.filter((l) => l.startsWith('partly empty days'))).toEqual([
+      expect.stringMatching(new RegExp(`: ${D2} \\(1 empty\\)$`)),
+    ]);
   });
 
   it('fails the day as uw_http_503 when UW keeps answering 503, and still tries QQQ', async () => {
@@ -1229,6 +1349,7 @@ describe('processIndexDay', () => {
       stored: 5,
       kept: 5,
       dropped: 0,
+      emptyItems: 0,
     });
     // SPX from SPY, NDX from QQQ.
     expect(
@@ -1288,8 +1409,41 @@ describe('processIndexDay', () => {
       stored: 0,
       kept: 4,
       dropped: 0,
+      emptyItems: 0,
     });
     expect(sql.query).not.toHaveBeenCalled();
+  });
+
+  it('shows an index whose ETF had no bars: SPX has no rows when SPY is empty, the day is flagged and exits 0', async () => {
+    // SPX is SPY's bars times the ratio, so an empty SPY leaves SPX with no
+    // rows while NDX (from QQQ) lands and the day's totals look healthy.
+    stubFetch({ uw: { SPY: [], QQQ: bars(3) } });
+    const sql = fakeSql({ columns: 11 });
+
+    const run = await runWorker([D1], (date) =>
+      processIndexDay(date, ctx(sql)),
+    );
+
+    expect(run.days[0]).toEqual({
+      date: D1,
+      ok: true,
+      value: { fetched: 3, stored: 3, kept: 3, dropped: 0, emptyItems: 1 },
+    });
+    expect(sql.query).toHaveBeenCalledTimes(1);
+    expect(sql.query.mock.calls[0][1][0]).toBe('NDX');
+
+    const { lines, exitCode } = summarizeCandleRun(
+      run,
+      INDEXES.length,
+      'symbols',
+    );
+    expect(lines).toContain(
+      `  ${D1}  fetched 3  stored 3  kept 3  dropped 0  emptyItems 1`,
+    );
+    expect(lines.at(-1)).toBe(
+      `partly empty days (UW had no bars for some of the 2 symbols; a hole to look at, not a failure): ${D1} (1 empty)`,
+    );
+    expect(exitCode).toBe(0);
   });
 
   it('fails the day, by name, when a date has no Schwab close, without asking UW for that symbol', async () => {

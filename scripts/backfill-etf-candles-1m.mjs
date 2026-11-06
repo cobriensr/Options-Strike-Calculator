@@ -53,16 +53,15 @@ import {
   EXIT_GUARD_STOP,
   UW_REQUESTS_PER_MINUTE,
   createRequestThrottle,
-  formatRunSummary,
   marketHoursRefusal,
   redact,
   runDays,
-  summarizeRun,
 } from './_lib/backfill-cli.mjs';
 import {
   ETF_TICKERS,
   planCandleDays,
   processEtfDay,
+  summarizeCandleRun,
 } from './_lib/candles-backfill.mjs';
 
 let plan;
@@ -117,12 +116,12 @@ try {
     { allowMarketHours: args.allowMarketHours, secrets },
     (date) => processEtfDay(date, ctx),
   );
-  const summary = summarizeRun(run);
+  const report = summarizeCandleRun(run, ETF_TICKERS.length, 'tickers');
   say();
-  for (const line of formatRunSummary(summary)) say(line);
+  for (const line of report.lines) say(line);
   if (args.dryRun)
     say('(dry run: stored is 0 by design; kept is what would go in)');
-  exitCode = summary.exitCode;
+  exitCode = report.exitCode;
 } catch (err) {
   console.error(redact(`backfill aborted: ${err?.message ?? err}`, secrets));
   exitCode = EXIT_FAILED;
