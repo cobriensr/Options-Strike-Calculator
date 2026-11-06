@@ -26,6 +26,7 @@
 import type { NeonQueryFunction } from '@neondatabase/serverless';
 
 import { withDbRetry } from './db.js';
+import { isFomcDecisionDay } from './fomc-schedule.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 
 type Sql = NeonQueryFunction<false, false>;
@@ -358,15 +359,10 @@ export async function loadPreDayFilter(
 
 /**
  * Assemble the full DayContext: today's open, gap-from-yesterday, pre-day
- * filter status, DOM-based calendar anti-filter flags. FOMC-day flag is
- * NOT populated here — pass it in from the caller (cron uses a stub for
- * Phase 1, can be wired to `economic_events` later).
+ * filter status, calendar anti-filter flags (FOMC decision day from the Fed
+ * schedule, day-of-month windows).
  */
-export async function loadDayContext(
-  sql: Sql,
-  now: Date,
-  opts: { isFomcDay?: boolean } = {},
-): Promise<DayContext> {
+export async function loadDayContext(sql: Sql, now: Date): Promise<DayContext> {
   const today = getETDateStr(now);
   const dowLabel = getDowLabel(now);
   const dom = getDomFromEtDateStr(today);
@@ -418,7 +414,7 @@ export async function loadDayContext(
     prior_5d_ret,
     prior_iv_rank,
     pre_day_filter_fires: preDayFilterFires,
-    is_fomc_day: opts.isFomcDay === true,
+    is_fomc_day: isFomcDecisionDay(today),
     is_dom_1_5: dom >= 1 && dom <= 5,
     is_dom_16_20: dom >= 16 && dom <= 20,
   };

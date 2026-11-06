@@ -47,6 +47,7 @@ import {
   type GammaNode,
   type SignalType,
 } from '../api/_lib/gamma-detector.js';
+import { isFomcDecisionDay } from '../api/_lib/fomc-schedule.js';
 
 import {
   GEXBOT_INCLUDE_WARNING,
@@ -615,7 +616,7 @@ async function main(): Promise<void> {
       prior_5d_ret: dayCtxBuild.prior_5d_ret,
       prior_iv_rank: dayCtxBuild.prior_iv_rank,
       pre_day_filter_fires: dayCtxBuild.pre_day_filter_fires,
-      is_fomc_day: false, // not wired to economic_events for backfill
+      is_fomc_day: isFomcDecisionDay(currentDate),
       is_dom_1_5: dom >= 1 && dom <= 5,
       is_dom_16_20: dom >= 16 && dom <= 20,
     };
@@ -664,7 +665,7 @@ async function main(): Promise<void> {
         prior_iv_rank: dayCtx.prior_iv_rank,
         pre_day_filter_fires: dayCtx.pre_day_filter_fires,
         open_gap_pct: dayCtx.open_gap_pct,
-        is_fomc_day: false,
+        is_fomc_day: dayCtx.is_fomc_day,
         is_dom_1_5: dayCtx.is_dom_1_5,
         is_dom_16_20: dayCtx.is_dom_16_20,
       });
@@ -691,7 +692,7 @@ async function main(): Promise<void> {
         prior_iv_rank: dayCtx.prior_iv_rank,
         pre_day_filter_fires: dayCtx.pre_day_filter_fires,
         open_gap_pct: dayCtx.open_gap_pct,
-        is_fomc_day: false,
+        is_fomc_day: dayCtx.is_fomc_day,
         is_dom_1_5: dayCtx.is_dom_1_5,
         is_dom_16_20: dayCtx.is_dom_16_20,
       });
@@ -718,7 +719,7 @@ async function main(): Promise<void> {
         prior_iv_rank: dayCtx.prior_iv_rank,
         pre_day_filter_fires: dayCtx.pre_day_filter_fires,
         open_gap_pct: dayCtx.open_gap_pct,
-        is_fomc_day: false,
+        is_fomc_day: dayCtx.is_fomc_day,
         is_dom_1_5: dayCtx.is_dom_1_5,
         is_dom_16_20: dayCtx.is_dom_16_20,
       });

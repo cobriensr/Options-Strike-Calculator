@@ -506,7 +506,6 @@ describe('loadDayContext', () => {
     // 5d return = (7400 - 7300) / 7300 = +0.013...  > -0.01, so pre-day
     // filter does NOT fire (it requires <-0.01 AND iv_rank>25).
     expect(ctx.pre_day_filter_fires).toBe(false);
-    expect(ctx.is_fomc_day).toBe(false);
     expect(ctx.is_dom_1_5).toBe(false);
     expect(ctx.is_dom_16_20).toBe(false);
   });
@@ -543,15 +542,35 @@ describe('loadDayContext', () => {
     expect(ctx.open_gap_pct).toBe(0);
   });
 
-  it('passes isFomcDay through from caller opts', async () => {
+  it.each([
+    ['2026-10-28T14:00:00Z', true, 'the October 2026 decision day'],
+    ['2026-10-27T14:00:00Z', false, 'the day before it (day 1 of the meeting)'],
+    ['2026-05-25T14:00:00Z', false, 'a day with no meeting'],
+  ])(
+    'sets is_fomc_day from the Fed schedule: %s is %s (%s)',
+    async (now, expected) => {
+      const { sql } = makeMockSql([
+        [{ day_open: 7400 }],
+        [{ day_close: 7400 }],
+        [],
+        [],
+      ]);
+      const ctx = await loadDayContext(sql, new Date(now));
+      expect(ctx.is_fomc_day).toBe(expected);
+    },
+  );
+
+  it('keys is_fomc_day on the ET date, not the UTC date', async () => {
     const { sql } = makeMockSql([
       [{ day_open: 7400 }],
       [{ day_close: 7400 }],
       [],
       [],
     ]);
-    const ctx = await loadDayContext(sql, REFERENCE_TIME, { isFomcDay: true });
-    expect(ctx.is_fomc_day).toBe(true);
+    // 2026-10-29T02:00Z is still 22:00 ET on the 28th.
+    const late = await loadDayContext(sql, new Date('2026-10-29T02:00:00Z'));
+    expect(late.today).toBe('2026-10-28');
+    expect(late.is_fomc_day).toBe(true);
   });
 
   it('flags is_dom_1_5 for early-month dates', async () => {
