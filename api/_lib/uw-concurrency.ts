@@ -36,6 +36,7 @@
  * behavior, add another ARGV slot.
  */
 
+import { isRedisConfigured } from './env.js';
 import { limiterRedis } from './redis.js';
 import { metrics, Sentry } from './sentry.js';
 import logger from './logger.js';
@@ -85,12 +86,6 @@ export const WAIT_JITTER_MS = 250;
 // ── Internal ────────────────────────────────────────────────────
 
 const KEY = 'uw:cc';
-
-function isRedisConfigured(): boolean {
-  return Boolean(
-    process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL,
-  );
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

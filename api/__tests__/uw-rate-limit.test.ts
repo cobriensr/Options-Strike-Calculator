@@ -80,6 +80,27 @@ describe('uw-rate-limit', () => {
     expect(mockIncrement).not.toHaveBeenCalled();
   });
 
+  it('is a no-op when no Redis REST URL is configured', async () => {
+    delete process.env.KV_REST_API_URL;
+    delete process.env.UPSTASH_REDIS_REST_URL;
+
+    await expect(acquireUWSlot()).resolves.toBeUndefined();
+
+    expect(mockPipeline.exec).not.toHaveBeenCalled();
+    expect(mockMinuteCount).not.toHaveBeenCalled();
+  });
+
+  it('counts when KV_REST_API_URL is empty but the Upstash URL is set', async () => {
+    process.env.KV_REST_API_URL = '';
+    process.env.UPSTASH_REDIS_REST_URL = 'https://test.upstash.io';
+    mockPipeline.exec.mockResolvedValueOnce([1, 1]);
+
+    await acquireUWSlot();
+
+    expect(mockPipeline.exec).toHaveBeenCalledTimes(1);
+    expect(mockMinuteCount).toHaveBeenCalledWith(1);
+  });
+
   it('throws immediately when per-minute cap is exceeded', async () => {
     mockPipeline.exec.mockResolvedValueOnce([UW_PER_MINUTE_CAP + 1, 1]);
 

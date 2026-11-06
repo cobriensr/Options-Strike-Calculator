@@ -26,22 +26,10 @@
  * `docs/superpowers/specs/uw-rate-limiter-2026-04-27.md` for context.
  */
 
+import { isRedisConfigured } from './env.js';
 import { limiterRedis } from './redis.js';
 import { metrics, Sentry } from './sentry.js';
 import logger from './logger.js';
-
-/**
- * The limiter is a no-op when no KV REST URL is configured. Test
- * environments and local dev without Upstash linkage don't have these
- * env vars set; production and preview deployments do. Skipping cleanly
- * here keeps existing fetch-mocked cron tests from accidentally
- * consuming their first `fetch` call on the Upstash REST endpoint.
- */
-function isRedisConfigured(): boolean {
-  return Boolean(
-    process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL,
-  );
-}
 
 // ── Tuning ────────────────────────────────────────────────────
 

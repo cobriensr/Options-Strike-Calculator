@@ -177,6 +177,15 @@ describe('uw-concurrency', () => {
     expect(mockZrem).toHaveBeenCalledWith('uw:cc', 'slot-uuid-123');
   });
 
+  it('release is a no-op when Redis is not configured', async () => {
+    delete process.env.KV_REST_API_URL;
+    delete process.env.UPSTASH_REDIS_REST_URL;
+
+    await releaseConcurrencySlot('slot-uuid-123');
+
+    expect(mockZrem).not.toHaveBeenCalled();
+  });
+
   it('release is a no-op for empty slotId (the no-op acquire path)', async () => {
     await releaseConcurrencySlot('');
 
