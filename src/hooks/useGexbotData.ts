@@ -198,9 +198,9 @@ function fetchDeduped(url: string): Promise<GexbotFetchResult> {
 // ────────────────────────────────────────────────────────────
 
 /**
- * Failed reads of one sibling-confirm URL that are retried, 30 s apart (about
- * 2.5 minutes): enough to ride out a Neon blip without leaving every mounted
- * alert row querying forever.
+ * Retries of a failed sibling-confirm read, 30 s apart (about 2.5 minutes):
+ * enough to ride out a Neon blip without leaving every mounted alert row
+ * querying forever.
  */
 const SIBLING_MAX_RETRIES = 5;
 
@@ -216,15 +216,26 @@ function isTransientStatus(status: number): boolean {
 // Hook
 // ────────────────────────────────────────────────────────────
 
+/** The latest read of a URL failed. A good read replaces it with null. */
+interface FetchFailure {
+  /** Text shown to the caller. */
+  message: string;
+  /** HTTP status of the failed read; 0 = no response. */
+  status: number;
+  /**
+   * Retries already made after the first failed read of this URL: 0 for that
+   * first failure, one more for each failed retry. Dev StrictMode runs the
+   * mount effect twice; both calls share one deduped request, so its first
+   * failure is counted twice and a dev row gets one retry fewer.
+   */
+  retries: number;
+}
+
 interface FetchState<V extends GexbotView['view']> {
   /** The request URL this state answers; stale once the spec changes. */
   url: string;
   rows: ViewPayload[V];
-  error: string | null;
-  /** HTTP status of the failed read (0 = no response); null after a good one. */
-  status: number | null;
-  /** Consecutive failed reads of `url`; 0 after a good one. */
-  failures: number;
+  error: FetchFailure | null;
   freshestAt: string | null;
 }
 
@@ -261,17 +272,18 @@ export function useGexbotData<V extends GexbotView['view']>(
     if (latestUrl.current !== url) return;
     if ('error' in result) {
       const message = `${result.error} (HTTP ${result.status})`;
-      // Keep the last good rows for this URL; a different URL has none, and
-      // starts its failure count over.
+      // Keep the last good rows for this URL; a different URL has none.
       setState((prev) => {
         const same = prev?.url === url ? prev : null;
         return {
           url,
           rows: same?.rows ?? ([] as ViewPayload[V]),
           freshestAt: same?.freshestAt ?? null,
-          error: message,
-          status: result.status,
-          failures: (same?.failures ?? 0) + 1,
+          error: {
+            message,
+            status: result.status,
+            retries: same?.error ? same.error.retries + 1 : 0,
+          },
         };
       });
       return;
@@ -282,15 +294,16 @@ export function useGexbotData<V extends GexbotView['view']>(
       rows: list,
       freshestAt: freshestFrom(list as unknown[]),
       error: null,
-      status: null,
-      failures: 0,
     });
   }, [url]);
 
   // Eager mount fetch — usePolling only schedules the recurring tick.
   useEffect(() => {
+    // Leaving a URL drops its state, so coming back to it (even before the
+    // other URL has answered) starts with no rows and a fresh retry count.
+    setState((prev) => (prev?.url === url ? prev : null));
     void fetchNow();
-  }, [fetchNow]);
+  }, [fetchNow, url]);
 
   // State from a previous URL answers a different question (another fire
   // time): show it as not loaded yet, not as this URL's rows.
@@ -305,12 +318,12 @@ export function useGexbotData<V extends GexbotView['view']>(
   // retry, not polling, so it ignores `marketOpen`: a row reviewed after the
   // close still recovers. The gate closes on the first good read, on a
   // permanent failure, and after SIBLING_MAX_RETRIES failed retries (a URL
-  // change starts the count over, since `current` is then another URL's).
-  // Every other view polls only while the market is open.
+  // change starts the count over, see the mount effect). Every other view
+  // polls only while the market is open.
   const siblingRetryDue =
-    current?.status != null &&
-    isTransientStatus(current.status) &&
-    current.failures <= SIBLING_MAX_RETRIES;
+    current?.error != null &&
+    isTransientStatus(current.error.status) &&
+    current.error.retries < SIBLING_MAX_RETRIES;
   usePolling(
     () => {
       void fetchNow();
@@ -322,7 +335,7 @@ export function useGexbotData<V extends GexbotView['view']>(
   return {
     rows: current?.rows ?? ([] as ViewPayload[V]),
     loading: current === null,
-    error: current?.error ?? null,
+    error: current?.error?.message ?? null,
     freshestAt: current?.freshestAt ?? null,
   };
 }

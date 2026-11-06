@@ -404,6 +404,71 @@ describe('useGexbotData', () => {
       });
     });
 
+    describe('a round trip through a URL that never answers', () => {
+      const SIBLING = {
+        view: 'sibling-confirm' as const,
+        ticker: 'AAPL',
+        side: 'call' as const,
+        at: '2026-10-29T14:00:10.000Z',
+      };
+      // Its own fire time: the hook's in-flight map is module state, so a
+      // pending read of a URL other tests use would hang them.
+      const AT_PENDING = '2026-10-29T16:00:10.000Z';
+      const OK = { data: { rows: [{ ticker: 'QQQ', verdict: 'agree' }] } };
+      const FAIL_503 = { error: 'Unavailable', status: 503 };
+
+      it.each([
+        ['after three failed reads', 3, false],
+        ['after three failed reads and then a good one', 3, true],
+      ])(
+        'gives the URL a fresh count when the user comes back to it %s',
+        async (_name, failedReads, goodReadFirst) => {
+          vi.useFakeTimers();
+          let resolvePending!: (v: unknown) => void;
+          const pending = new Promise((r) => {
+            resolvePending = r;
+          });
+          let aReads = 0;
+          mockFetchJson.mockImplementation((url: string) => {
+            if (url.includes('T16%3A00%3A10')) return pending;
+            aReads += 1;
+            return Promise.resolve(
+              goodReadFirst && aReads === failedReads + 1 ? OK : FAIL_503,
+            );
+          });
+          const { rerender } = renderHook(
+            ({ at }: { at: string }) => useGexbotData({ ...SIBLING, at }, true),
+            { initialProps: { at: SIBLING.at } },
+          );
+          await advance(0);
+          const readsBeforeLeaving = failedReads + (goodReadFirst ? 1 : 0);
+          for (let tick = 1; tick < readsBeforeLeaving; tick += 1) {
+            await advance(30_000);
+          }
+          expect(aReads).toBe(readsBeforeLeaving);
+
+          // Away to a URL that has not answered, then back to the first.
+          rerender({ at: AT_PENDING });
+          await advance(0);
+          rerender({ at: SIBLING.at });
+          await advance(0);
+          expect(aReads).toBe(readsBeforeLeaving + 1);
+
+          // A fresh read plus its own five retries, then nothing.
+          for (let retry = 1; retry <= 5; retry += 1) {
+            await advance(30_000);
+            expect(aReads).toBe(readsBeforeLeaving + 1 + retry);
+          }
+          await advance(60_000);
+          expect(aReads).toBe(readsBeforeLeaving + 6);
+
+          // Release the module's in-flight slot for the pending URL.
+          resolvePending({ data: { rows: [] } });
+          await advance(0);
+        },
+      );
+    });
+
     describe('a failed read on any other view', () => {
       it('keeps the market-open gate: no retry after hours', async () => {
         vi.useFakeTimers();

@@ -378,6 +378,25 @@ describe('<DealerStateSummaryStrip>', () => {
       expect(tile()).not.toHaveTextContent(/raw|cross-ticker/i);
     });
 
+    it('explains the quiet rule in the subline tooltip', () => {
+      mockViews(
+        SNAP,
+        velocityState([
+          makeVelocity('SPX', { dAggDex: 1.2, typicalAbsDAggDex: 0.4 }),
+        ]),
+      );
+      render(<DealerStateSummaryStrip marketOpen />);
+      const subline = within(tile()).getByTitle(/own typical minute/);
+      expect(subline).toHaveAttribute(
+        'title',
+        expect.stringContaining('A grey tile means nothing reached 3×.'),
+      );
+      expect(subline).toHaveAttribute(
+        'title',
+        expect.stringContaining('never under 0.25'),
+      );
+    });
+
     it('shows a falling change as taker −Δ flow', () => {
       // 1.2 / 0.3 = 4x typical.
       mockViews(
@@ -470,6 +489,28 @@ describe('<DealerStateSummaryStrip>', () => {
         expect(tile()).toHaveTextContent('quiet · nothing ≥ 3× typical');
         expectNeutral();
       });
+
+      it.each([
+        // 0.74 / 0.25 = 2.96 and 1.19 / 0.4 = 2.975: toFixed(1) would print
+        // "3.0×" beside "nothing ≥ 3× typical".
+        ['against the floor', 'HYG', 0, 0.74, '2.9× the 0.25 floor'],
+        ['against its own typical minute', 'SPX', 0.4, 1.19, '2.9× typical'],
+      ])(
+        'rounds a pick just under 3x down, never to "3.0×" (%s)',
+        (_name, ticker, typical, dAggDex, shown) => {
+          mockViews(
+            SNAP,
+            velocityState([
+              makeVelocity(ticker, { dAggDex, typicalAbsDAggDex: typical }),
+            ]),
+          );
+          render(<DealerStateSummaryStrip marketOpen />);
+          expect(tile()).toHaveTextContent(shown);
+          expect(tile()).not.toHaveTextContent('3.0×');
+          expect(tile()).toHaveTextContent('quiet · nothing ≥ 3× typical');
+          expectNeutral();
+        },
+      );
 
       it.each([
         ['above the floor', 'SPX', 0.4, 1.2],

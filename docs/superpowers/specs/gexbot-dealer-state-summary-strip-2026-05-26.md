@@ -31,7 +31,11 @@ load-bearing facts up front:
 > is now the underlying with the most unusual last-minute taker Δ flow
 > (|Δ`agg_dex`| as a multiple of its own typical minute, from `view=velocity`,
 > the same rule as the Velocity tape's highlight), labelled "most unusual taker
-> Δ / min". The ranking above is kept as history.
+> Δ / min". When nothing reaches 3× (the tape's highlight rule) the tile still
+> shows the top ratio, but neutral and labelled "quiet · nothing ≥ 3× typical";
+> a ratio against the 0.25 floor reads "N× the 0.25 floor"; a failed velocity
+> read with nothing to show reads "velocity read failed". The ranking above is
+> kept as history.
 
 ## Files
 

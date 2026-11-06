@@ -301,6 +301,15 @@ interface LoudestTileProps {
 
 const LOUDEST_LABEL = 'most unusual taker Δ / min';
 const QUIET_LABEL = `quiet · nothing ≥ ${UNUSUAL_MULTIPLE}× typical`;
+const LOUDEST_TITLE = `Last-minute change in taker delta (Δ agg_dex) as a multiple of this ticker's own typical minute (its session median, never under ${TYPICAL_FLOOR}). Ranked by that multiple, not by raw size, because sizes are not comparable across tickers. A grey tile means nothing reached ${UNUSUAL_MULTIPLE}×.`;
+
+/**
+ * One decimal. A pick that is not unusual rounds down, so a ratio just under
+ * the multiple (2.96) never prints as "3.0×" beside "nothing ≥ 3× typical".
+ */
+function formatRatio(ratio: number, unusual: boolean): string {
+  return (unusual ? ratio : Math.floor(ratio * 10) / 10).toFixed(1);
+}
 
 function LoudestTile({ pick, readFailed }: LoudestTileProps) {
   const tone = toneClasses('unknown');
@@ -360,10 +369,10 @@ function LoudestTile({ pick, readFailed }: LoudestTileProps) {
       </div>
       <div
         className="text-tertiary mt-1 text-[10px] leading-tight"
-        title="Last-minute change in taker delta (Δ agg_dex) as a multiple of this ticker's own typical minute (its session median, never under 0.25). Ranked by that multiple, not by raw size, because sizes are not comparable across tickers."
+        title={LOUDEST_TITLE}
       >
-        {flowLabel} {formatTakerDelta(pick.dAggDex)} · {pick.ratio.toFixed(1)}×{' '}
-        {against}
+        {flowLabel} {formatTakerDelta(pick.dAggDex)} ·{' '}
+        {formatRatio(pick.ratio, pick.unusual)}× {against}
       </div>
       <div className="text-tertiary text-[9px] leading-tight tracking-wide uppercase">
         {pick.unusual ? LOUDEST_LABEL : QUIET_LABEL}

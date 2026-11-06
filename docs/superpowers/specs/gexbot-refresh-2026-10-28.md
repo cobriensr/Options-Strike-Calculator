@@ -132,7 +132,8 @@ Owner decisions (each becomes a phase once decided; default pick in brackets):
 - LOUDEST tile quiet rule (2026-11-05): the tile keeps showing the top
   ratio, but when `isUnusual` is false it is neutral and reads "quiet · nothing
   ≥ 3× typical"; when the floor is the denominator (typical < 0.25 or none) the
-  subline reads "N× the 0.25 floor", not "N× typical".
+  subline reads "N× the 0.25 floor", not "N× typical". A quiet pick's ratio is
+  rounded down, so 2.96 prints as 2.9× and never as 3.0× beside the quiet label.
 - Sibling-confirm retry (2026-11-05; `useGexbotData`): after a failed
   read the hook retries every 30 s at any hour, transient failures only
   (status 0, 408, 429, 5xx), at most 5 retries per URL (`SIBLING_MAX_RETRIES`,
@@ -251,7 +252,7 @@ Revised phases (replace P10b; P12a and P12b come from the D4 decision):
 | P11 known gap | `/api/gamma-setups/weekly-stats` and `/api/gamma-setups/export` still mix scraper-era and GEXBot-era fires without flagging them. |
 | R1 (research) | GEXBot-specific rules from GEXBot-era history (pre-registered, vendor semantics) |
 | S1 (spec) | UW Periscope websocket capture in `uw-stream` → separate table, so UW and GEXBot can be compared live (Railway deploy after the close; handler before `WS_CHANNELS`) |
-| P12a (D4) | Sibling pills judged at the alert's fire time. `GET /api/gexbot?view=sibling-confirm&ticker=&side=&at=` (`at` is a zoned ISO datetime, required for this view). `getSiblingConfirmation` reads each sibling's newest `gexbot_snapshots` row at or before `at` and at most `FIRE_TIME_MAX_AGE_SECONDS` = 180 s older, and the verdict is the sign of `net_dex` against the alert's side (zero, null or no row = none; `zgr` is tooltip context only). A row whose vendor `source_timestamp` predates the window is dropped (a NULL one is kept), so VIX's 09:30 prior-close row cannot pose as the fire-time reading. The client fetches once per fire URL (no 30 s polling) and ignores a response for a superseded fire time. No migration |
+| P12a (D4) | Sibling pills judged at the alert's fire time. `GET /api/gexbot?view=sibling-confirm&ticker=&side=&at=` (`at` is a zoned ISO datetime, required for this view). `getSiblingConfirmation` reads each sibling's newest `gexbot_snapshots` row at or before `at` and at most `FIRE_TIME_MAX_AGE_SECONDS` = 180 s older, and the verdict is the sign of `net_dex` against the alert's side (zero, null or no row = none; `zgr` is tooltip context only). A row whose vendor `source_timestamp` predates the window is dropped (a NULL one is kept), so VIX's 09:30 prior-close row cannot pose as the fire-time reading. The client fetches once per fire URL, retries only a transient failure (status 0, 408, 429, 5xx) every 30 s, at most 5 times, at any hour, and ignores a response for a superseded fire time. No migration |
 | P12b (D4) | Velocity tape rebuilt, skew dashboard removed. `GET /api/gexbot?view=velocity` differences the latest snapshot per ticker against the one before it with `LAG`, current ET session only. Deltas are null when there is no prior in the session, when the prior is more than 3 minutes older, when the vendor repeated the prior `source_timestamp`, or when the prior's `source_timestamp` predates the ET session (VIX's 09:30 row carries the prior close). `typicalAbsDAggDex` is the ticker's session median \|Δ`agg_dex`\| over valid minutes. The tape keeps the fixed `GEXBOT_UNDERLYING_ORDER` and highlights per the Thresholds / constants rule. `CrossAssetSkewDashboard` and `deltaRiskReversal` leave the client path; the DB column, the capture cron and the Parquet schema are untouched. No migration |
 
 D5 note (2026-10-28): the daily `/hist/eod` capture is owned by a separate
