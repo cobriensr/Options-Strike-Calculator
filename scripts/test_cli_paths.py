@@ -147,6 +147,7 @@ def test_load_env_file_strips_quotes_and_skips_non_assignments(
         '\n'
         'FAKE_DOUBLE="double value"\n'
         "FAKE_SINGLE='single value'\n"
+        "FAKE_MIXED='\"inner\"'\n"
         '  FAKE_PADDED=padded value  \n'
         'FAKE_EMPTY=\n'
         'FAKE_WITH_EQUALS=https://example.invalid/?a=1&b=2\n'
@@ -163,6 +164,9 @@ def test_load_env_file_strips_quotes_and_skips_non_assignments(
 
     assert environ['FAKE_DOUBLE'] == 'double value'
     assert environ['FAKE_SINGLE'] == 'single value'
+    # Double quotes come off first, then single: the inner pair of a
+    # single-quoted value is data and stays.
+    assert environ['FAKE_MIXED'] == '"inner"'
     assert environ['FAKE_PADDED'] == 'padded value'
     assert environ['FAKE_EMPTY'] == ''
     assert environ['FAKE_WITH_EQUALS'] == 'https://example.invalid/?a=1&b=2'
@@ -170,6 +174,7 @@ def test_load_env_file_strips_quotes_and_skips_non_assignments(
     assert set(environ) - before == {
         'FAKE_DOUBLE',
         'FAKE_SINGLE',
+        'FAKE_MIXED',
         'FAKE_PADDED',
         'FAKE_EMPTY',
         'FAKE_WITH_EQUALS',

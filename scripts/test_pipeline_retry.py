@@ -26,6 +26,7 @@ from _pipeline_retry import (  # noqa: E402
 
 # An obvious fake standing in for a Neon host a psycopg2 message can carry.
 MARKER_HOST = 'ep-marker-host-zz.example.invalid'
+MARKER_MESSAGE = f'could not translate host name "{MARKER_HOST}" to address'
 
 
 def test_backoff_sequence_matches_documented_cadence() -> None:
@@ -172,16 +173,34 @@ def test_retry_log_names_only_the_class_without_error_detail(
     )
 
 
-def test_connect_with_retry_hides_the_error_text_when_asked(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
+@pytest.fixture
+def refused_connect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """psycopg2.connect raises a transient error that carries the marker host."""
+
     def refuse(*args: object, **kwargs: object) -> None:
-        raise psycopg2.OperationalError(
-            f'could not translate host name "{MARKER_HOST}" to address'
-        )
+        raise psycopg2.OperationalError(MARKER_MESSAGE)
 
     monkeypatch.setattr(psycopg2, 'connect', refuse)
 
+
+@pytest.mark.usefixtures('refused_connect')
+def test_connect_with_retry_keeps_the_error_text_by_default(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(psycopg2.OperationalError, match=MARKER_HOST):
+        connect_with_retry('dbname=fake', attempts=2, sleep=lambda seconds: None)
+
+    # Local runs print the host so the owner can see which endpoint refused.
+    assert capsys.readouterr().err == (
+        '[retry] psycopg2.connect attempt 1/2 failed '
+        f'(OperationalError: {MARKER_MESSAGE}); retrying in 1s\n'
+    )
+
+
+@pytest.mark.usefixtures('refused_connect')
+def test_connect_with_retry_hides_the_error_text_when_asked(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     with pytest.raises(psycopg2.OperationalError, match=MARKER_HOST):
         connect_with_retry(
             'dbname=fake',
