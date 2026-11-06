@@ -608,10 +608,9 @@ class TestSaveSectionFindings:
         assert "phase2" not in repr(params)
         assert "calibration" not in repr(params)
 
-    def test_sql_merges_and_never_replaces(self):
-        assert "EXCLUDED.findings" not in _MERGE_SECTION_SQL
-        assert "ml_findings.findings" in _MERGE_SECTION_SQL
-        assert "||" in _MERGE_SECTION_SQL
+    # That the SQL merges rather than replaces cannot be seen from here (no
+    # database is allowed in pytest). api/__tests__/ml-findings-merge-pglite.test.ts
+    # runs the shipped text on pglite.
 
     def test_sql_placeholders_match_the_params_sent(self, root, db):
         save_section_findings("a", {"x": 1})

@@ -60,6 +60,10 @@ jobs:
               # needs this job, so if app is skipped, e2e is skipped too.
               - 'e2e/**'
               - 'playwright.config.ts'
+              # api/__tests__/ml-findings-merge-pglite.test.ts reads the merge
+              # SQL out of this Python file and runs it, so an edit to the
+              # file must run this job (ml/** alone starts only the ml job).
+              - 'ml/src/utils/__init__.py'
             # Listing ci.yml means an edit to a job's definition runs that job.
             ml:
               - 'ml/**'
