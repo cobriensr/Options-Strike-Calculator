@@ -26,6 +26,8 @@ import {
   engineerPhase2Features,
   isWithinUWWindow,
   summarizeDayEvents,
+  plausibleEventGap,
+  MAX_PLAUSIBLE_EVENT_GAP_DAYS,
   addEventFeatures,
   addPrevDayFeatures,
   addRealizedVolFeatures,
@@ -828,6 +830,24 @@ describe('engineerPhase2Features', () => {
         expect(mockSql.mock.calls[1]?.slice(1)).toEqual([dateStr, dateStr]);
       },
     );
+
+    // UW's calendar has weekly claims and several releases most days, so a
+    // longer gap means missing rows (the 2026-07-22..09-07 hole), not a quiet
+    // calendar.
+    it.each([
+      ['the largest plausible gap is kept', 10, 10],
+      ['one day past it is unset', 11, undefined],
+      ['a gap across the 2026 summer hole is unset', 47, undefined],
+    ])('%s', async (_label, gap, expected) => {
+      const features = makeFeatures();
+
+      mockSql.mockResolvedValueOnce([]); // eventRows
+      mockSql.mockResolvedValueOnce([{ days_to_next: gap }]); // nextEventRow
+
+      await addEventFeatures(mockSql as never, DATE_STR, features);
+
+      expect(features.days_to_next_event).toBe(expected);
+    });
 
     it('leaves days_to_next_event unset when the next-event query returns no row', async () => {
       const features = makeFeatures();
@@ -1898,6 +1918,26 @@ describe('engineerPhase2Features', () => {
       expect(features.opt_call_volume).toBe(150000);
       expect(features.opt_vol_pcr).toBeCloseTo(200000 / 150000);
     });
+  });
+});
+
+// ── plausibleEventGap (the missing-calendar-data rule) ─────
+
+describe('plausibleEventGap', () => {
+  it('allows up to ten calendar days', () => {
+    expect(MAX_PLAUSIBLE_EVENT_GAP_DAYS).toBe(10);
+  });
+
+  it.each([
+    [0, 0],
+    [1, 1],
+    [10, 10],
+    [11, null],
+    [140, null],
+    [null, null],
+    [undefined, null],
+  ])('%s -> %s', (days, expected) => {
+    expect(plausibleEventGap(days)).toBe(expected);
   });
 });
 

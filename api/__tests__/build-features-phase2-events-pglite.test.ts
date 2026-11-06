@@ -90,6 +90,18 @@ describe('addEventFeatures real SQL', () => {
     expect((await eventFeatures(today)).days_to_next_event).toBe(gap);
   });
 
+  // A longer gap means calendar rows are missing, not a quiet calendar.
+  it.each([
+    ['10 days is kept', '2026-04-03', 10],
+    ['11 days is unset', '2026-04-04', undefined],
+  ])('gap rule on real dates: %s', async (_label, next, expected) => {
+    await insertEvents([[next, 'Some release', 'CPI']]);
+
+    expect((await eventFeatures('2026-03-24')).days_to_next_event).toBe(
+      expected,
+    );
+  });
+
   it('measures to the earliest later date, not a later one', async () => {
     await insertEvents([
       ['2026-04-10', 'Far release', 'GDP'],

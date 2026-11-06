@@ -263,6 +263,26 @@ export function summarizeDayEvents(
 }
 
 /**
+ * The longest calendar-day gap to the next `economic_events` row that still
+ * means "the next event". UW's calendar has weekly jobless claims plus several
+ * releases most days, so a gap over 10 days means rows are missing (the
+ * 2026-07-22..09-07 hole), not a quiet calendar. A longer gap is no feature
+ * value at all. `addEventFeatures` and the history backfill both apply it.
+ */
+export const MAX_PLAUSIBLE_EVENT_GAP_DAYS = 10;
+
+/**
+ * `days` when it is a plausible gap to the next event row (see
+ * MAX_PLAUSIBLE_EVENT_GAP_DAYS), else null: no later row, or a gap long enough
+ * to mean missing data.
+ */
+export function plausibleEventGap(
+  days: number | null | undefined,
+): number | null {
+  return days != null && days <= MAX_PLAUSIBLE_EVENT_GAP_DAYS ? days : null;
+}
+
+/**
  * Economic event features: FOMC / OPEX / event_type / event_count /
  * days_to_next_event. Mixes a `economic_events` lookup with the Fed
  * decision-day schedule (`summarizeDayEvents`) and a calendar computation
@@ -300,13 +320,16 @@ export async function addEventFeatures(
 
   // Days to next event: the integer calendar-day gap, computed on DATEs in
   // SQL. (DATE - DATE is an integer; the aggregate is NULL with no later row.)
+  // A gap over MAX_PLAUSIBLE_EVENT_GAP_DAYS is missing calendar data and, like
+  // no later row, leaves the field unset.
   const nextEventRow = await sql`
     SELECT (MIN(date) - ${dateStr}::date) AS days_to_next
     FROM economic_events
     WHERE date > ${dateStr}
   `;
-  const daysToNext = nextEventRow[0]?.days_to_next;
-  if (daysToNext != null) features.days_to_next_event = Number(daysToNext);
+  const rawGap = nextEventRow[0]?.days_to_next;
+  const daysToNext = plausibleEventGap(rawGap == null ? null : Number(rawGap));
+  if (daysToNext !== null) features.days_to_next_event = daysToNext;
 }
 
 /**
