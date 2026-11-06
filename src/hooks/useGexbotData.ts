@@ -3,16 +3,17 @@
  *
  * Polls `/api/gexbot?view=...` every 30s during market hours, except
  * `sibling-confirm`: that read answers for a past fire time, so it is
- * fetched once per URL and re-polled only while its last read errored. The
- * hook is parameterized by `view` so callers only pay for the data they
- * need; components share the same hook signature so a future move to
- * shared cache (SWR / TanStack Query) is one diff away.
+ * fetched once per URL and retried only after a transient failure (see
+ * `SIBLING_MAX_RETRIES`). The hook is parameterized by `view` so callers only
+ * pay for the data they need; components share the same hook signature so a
+ * future move to shared cache (SWR / TanStack Query) is one diff away.
  *
  * Spec: docs/superpowers/specs/gexbot-frontend-2026-05-16.md
  *
  * Polling gate: `marketOpen` (passed in) — 30s tick happens only
  * during regular hours. Out-of-hours, returns the last-known data
- * indefinitely (no automatic stale-clearing).
+ * indefinitely (no automatic stale-clearing). `sibling-confirm` ignores
+ * `marketOpen`: its error retry runs at any hour.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -193,6 +194,25 @@ function fetchDeduped(url: string): Promise<GexbotFetchResult> {
 }
 
 // ────────────────────────────────────────────────────────────
+// Sibling-confirm error retry
+// ────────────────────────────────────────────────────────────
+
+/**
+ * Failed reads of one sibling-confirm URL that are retried, 30 s apart (about
+ * 2.5 minutes): enough to ride out a Neon blip without leaving every mounted
+ * alert row querying forever.
+ */
+const SIBLING_MAX_RETRIES = 5;
+
+/**
+ * A failure that another try can clear: network, timeout or abort (status 0),
+ * 408, 429 and 5xx. Any other 4xx is the request itself being refused.
+ */
+function isTransientStatus(status: number): boolean {
+  return status === 0 || status === 408 || status === 429 || status >= 500;
+}
+
+// ────────────────────────────────────────────────────────────
 // Hook
 // ────────────────────────────────────────────────────────────
 
@@ -201,6 +221,10 @@ interface FetchState<V extends GexbotView['view']> {
   url: string;
   rows: ViewPayload[V];
   error: string | null;
+  /** HTTP status of the failed read (0 = no response); null after a good one. */
+  status: number | null;
+  /** Consecutive failed reads of `url`; 0 after a good one. */
+  failures: number;
   freshestAt: string | null;
 }
 
@@ -237,13 +261,19 @@ export function useGexbotData<V extends GexbotView['view']>(
     if (latestUrl.current !== url) return;
     if ('error' in result) {
       const message = `${result.error} (HTTP ${result.status})`;
-      // Keep the last good rows for this URL; a different URL has none.
-      setState((prev) => ({
-        url,
-        rows: prev?.url === url ? prev.rows : ([] as ViewPayload[V]),
-        freshestAt: prev?.url === url ? prev.freshestAt : null,
-        error: message,
-      }));
+      // Keep the last good rows for this URL; a different URL has none, and
+      // starts its failure count over.
+      setState((prev) => {
+        const same = prev?.url === url ? prev : null;
+        return {
+          url,
+          rows: same?.rows ?? ([] as ViewPayload[V]),
+          freshestAt: same?.freshestAt ?? null,
+          error: message,
+          status: result.status,
+          failures: (same?.failures ?? 0) + 1,
+        };
+      });
       return;
     }
     const list = result.data.rows ?? ([] as ViewPayload[V]);
@@ -252,6 +282,8 @@ export function useGexbotData<V extends GexbotView['view']>(
       rows: list,
       freshestAt: freshestFrom(list as unknown[]),
       error: null,
+      status: null,
+      failures: 0,
     });
   }, [url]);
 
@@ -268,15 +300,23 @@ export function useGexbotData<V extends GexbotView['view']>(
   // snapshot it uses is already in the table, and every alert row has its
   // own URL, so a 30 s tick would be one uncached Neon query per mounted
   // row per tick for an answer that cannot change. Fetch it once, and tick
-  // only while that read is errored (a Neon blip at mount would otherwise
-  // leave the row without pills until it remounts). The first good read
-  // clears the error and closes the gate.
+  // only to retry a transient failure (a Neon blip at mount would otherwise
+  // leave the row without pills until it remounts). That is a bounded error
+  // retry, not polling, so it ignores `marketOpen`: a row reviewed after the
+  // close still recovers. The gate closes on the first good read, on a
+  // permanent failure, and after SIBLING_MAX_RETRIES failed retries (a URL
+  // change starts the count over, since `current` is then another URL's).
+  // Every other view polls only while the market is open.
+  const siblingRetryDue =
+    current?.status != null &&
+    isTransientStatus(current.status) &&
+    current.failures <= SIBLING_MAX_RETRIES;
   usePolling(
     () => {
       void fetchNow();
     },
     POLL_INTERVALS.OTM_FLOW, // 30_000 — matches the spec's requested cadence
-    [marketOpen, view !== 'sibling-confirm' || current?.error != null],
+    [view === 'sibling-confirm' ? siblingRetryDue : marketOpen],
   );
 
   return {

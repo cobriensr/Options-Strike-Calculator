@@ -129,6 +129,16 @@ Owner decisions (each becomes a phase once decided; default pick in brackets):
   the ticker's session median |Δ`agg_dex`|. The 1e-9 absorbs floating-point
   error at exact multiples (3 × 0.4 = 1.2000000000000002). Tuned on the
   2026-10-28 and 2026-10-29 sessions only; re-tune on more history.
+- LOUDEST tile quiet rule (2026-11-05): the tile keeps showing the top
+  ratio, but when `isUnusual` is false it is neutral and reads "quiet · nothing
+  ≥ 3× typical"; when the floor is the denominator (typical < 0.25 or none) the
+  subline reads "N× the 0.25 floor", not "N× typical".
+- Sibling-confirm retry (2026-11-05; `useGexbotData`): after a failed
+  read the hook retries every 30 s at any hour, transient failures only
+  (status 0, 408, 429, 5xx), at most 5 retries per URL (`SIBLING_MAX_RETRIES`,
+  about 2.5 minutes), then stops; a good read or a permanent 4xx stops it
+  sooner, and a URL change resets the count. Other views keep the
+  market-open gate.
 
 ## Decisions recorded
 

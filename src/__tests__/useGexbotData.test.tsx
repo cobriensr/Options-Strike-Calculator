@@ -209,6 +209,12 @@ describe('useGexbotData', () => {
   // ── Polling tests need fake timers ────────────────────────
 
   describe('polling behavior (fake timers)', () => {
+    // Advance the fake clock inside act so state updates render between ticks.
+    const advance = (ms: number) =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+
     it('does not poll while marketOpen=false', async () => {
       mockFetchJson.mockResolvedValue({ data: { rows: [] } });
       renderHook(() => useGexbotData({ view: 'snapshots-latest' }, false));
@@ -259,10 +265,6 @@ describe('useGexbotData', () => {
       };
       const OK = { data: { rows: [{ ticker: 'QQQ', verdict: 'agree' }] } };
       const FAIL = { error: 'Internal error', status: 500 };
-      const advance = (ms: number) =>
-        act(async () => {
-          await vi.advanceTimersByTimeAsync(ms);
-        });
 
       it('retries on the 30 s tick, then stops once a read succeeds', async () => {
         vi.useFakeTimers();
@@ -300,12 +302,124 @@ describe('useGexbotData', () => {
         expect(mockFetchJson).toHaveBeenCalledTimes(3);
       });
 
-      it('does not retry while the market is closed', async () => {
+      it.each([
+        ['a network failure, timeout or abort', 0],
+        ['a request timeout', 408],
+        ['rate limiting', 429],
+        ['a server error', 500],
+        ['an unavailable upstream', 503],
+      ])(
+        'retries %s (status %i) with the market closed, then stops once a read succeeds',
+        async (_name, status) => {
+          vi.useFakeTimers();
+          mockFetchJson
+            .mockResolvedValueOnce({ error: 'Upstream down', status })
+            .mockResolvedValue(OK);
+          const { result } = renderHook(() => useGexbotData(SIBLING, false));
+          await advance(0);
+          expect(result.current.error).toBe(`Upstream down (HTTP ${status})`);
+          expect(mockFetchJson).toHaveBeenCalledTimes(1);
+
+          await advance(30_000);
+          expect(mockFetchJson).toHaveBeenCalledTimes(2);
+          expect(result.current.error).toBeNull();
+          expect(result.current.rows).toHaveLength(1);
+
+          await advance(120_000);
+          expect(mockFetchJson).toHaveBeenCalledTimes(2);
+        },
+      );
+
+      it.each(
+        [400, 401, 403, 404].flatMap((status) => [
+          [status, true],
+          [status, false],
+        ]),
+      )(
+        'does not retry a permanent failure (status %i, marketOpen %s)',
+        async (status, marketOpen) => {
+          vi.useFakeTimers();
+          mockFetchJson.mockResolvedValue({ error: 'Rejected', status });
+          const { result } = renderHook(() =>
+            useGexbotData(SIBLING, marketOpen as boolean),
+          );
+          await advance(0);
+          expect(result.current.error).toBe(`Rejected (HTTP ${status})`);
+          // Step tick by tick: the gate opens on a render, not mid-advance.
+          for (let tick = 0; tick < 4; tick += 1) await advance(30_000);
+          expect(mockFetchJson).toHaveBeenCalledTimes(1);
+        },
+      );
+
+      it('stops after 5 failed retries: the mount read plus 5 retries, then nothing', async () => {
         vi.useFakeTimers();
-        mockFetchJson.mockResolvedValue(FAIL);
-        renderHook(() => useGexbotData(SIBLING, false));
+        mockFetchJson.mockResolvedValue({ error: 'Unavailable', status: 503 });
+        const { result } = renderHook(() => useGexbotData(SIBLING, true));
+        await advance(0);
+        for (let retry = 1; retry <= 5; retry += 1) {
+          await advance(30_000);
+          expect(mockFetchJson).toHaveBeenCalledTimes(1 + retry);
+        }
+        await advance(60_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(6);
+        // The row keeps showing why it has no pills.
+        expect(result.current.error).toBe('Unavailable (HTTP 503)');
+      });
+
+      it('counts a mix of transient failures and ends on a permanent one', async () => {
+        vi.useFakeTimers();
+        mockFetchJson
+          .mockResolvedValueOnce({ error: 'Unavailable', status: 503 })
+          .mockResolvedValueOnce({ error: 'Too many requests', status: 429 })
+          .mockResolvedValue({ error: 'Forbidden', status: 403 });
+        const { result } = renderHook(() => useGexbotData(SIBLING, true));
+        await advance(0);
+        await advance(30_000);
+        await advance(30_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(3);
+        expect(result.current.error).toBe('Forbidden (HTTP 403)');
+        await advance(120_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(3);
+      });
+
+      it('starts the count again when the fire time changes', async () => {
+        vi.useFakeTimers();
+        mockFetchJson.mockResolvedValue({ error: 'Unavailable', status: 503 });
+        const { rerender } = renderHook(
+          ({ at }: { at: string }) => useGexbotData({ ...SIBLING, at }, true),
+          { initialProps: { at: SIBLING.at } },
+        );
+        await advance(0);
+        for (let retry = 0; retry < 3; retry += 1) await advance(30_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(4);
+
+        rerender({ at: '2026-10-29T15:00:10.000Z' });
+        await advance(0);
+        expect(mockFetchJson).toHaveBeenCalledTimes(5);
+        // The new URL gets its own five retries, not the two left over.
+        for (let retry = 0; retry < 5; retry += 1) await advance(30_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(10);
+        await advance(60_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(10);
+      });
+    });
+
+    describe('a failed read on any other view', () => {
+      it('keeps the market-open gate: no retry after hours', async () => {
+        vi.useFakeTimers();
+        mockFetchJson.mockResolvedValue({ error: 'Unavailable', status: 503 });
+        renderHook(() => useGexbotData({ view: 'snapshots-latest' }, false));
         await advance(120_000);
         expect(mockFetchJson).toHaveBeenCalledTimes(1);
+      });
+
+      it('keeps polling every 30 s while open, with no cap or status filter', async () => {
+        vi.useFakeTimers();
+        mockFetchJson.mockResolvedValue({ error: 'Forbidden', status: 403 });
+        renderHook(() => useGexbotData({ view: 'snapshots-latest' }, true));
+        await advance(0);
+        for (let tick = 0; tick < 10; tick += 1) await advance(30_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(11);
       });
     });
   });
