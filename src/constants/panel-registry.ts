@@ -117,6 +117,12 @@ export function getPanelRegistry(
         label: 'Gamma-Node Composite Detector',
         group: 'Market Context',
       },
+      // /api/periscope-map and /api/periscope-exposure are owner-or-guest.
+      {
+        id: 'sec-periscope-exposure',
+        label: 'Periscope Exposure',
+        group: 'Market Context',
+      },
     );
   }
   if (isAuthenticated) {
@@ -143,13 +149,6 @@ export function getPanelRegistry(
       id: 'sec-ml-insights',
       label: 'ML Insights',
       group: 'Charts & History',
-    });
-  }
-  if (hasMarketOrSnapshot) {
-    list.push({
-      id: 'sec-periscope-exposure',
-      label: 'Periscope Exposure',
-      group: 'Market Context',
     });
   }
   if (isAuthenticated) {

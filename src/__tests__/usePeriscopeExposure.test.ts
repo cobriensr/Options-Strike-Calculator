@@ -81,6 +81,32 @@ describe('usePeriscopeExposure: access mode', () => {
     expect(result.current.view).toBeNull();
   });
 
+  it('does not poll the live endpoint when access mode is public', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('public');
+    renderHook(() => usePeriscopeExposure({ marketOpen: true }));
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.PERISCOPE * 3);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('does not fetch a picked slot or refresh when access mode is public', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('public');
+    const { result } = renderHook(() =>
+      usePeriscopeExposure({
+        marketOpen: true,
+        selectedSlot: { date: '2026-05-08', time: '09:30' },
+      }),
+    );
+    await act(async () => {});
+    expect(mockFetch).not.toHaveBeenCalled();
+
+    await act(async () => {
+      result.current.refresh();
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
   it('fetches when access mode is owner', async () => {
     mockFetch.mockResolvedValue(
       jsonResponse({

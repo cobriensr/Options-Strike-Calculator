@@ -88,6 +88,23 @@ describe('Default-order panel render contract', () => {
     expect(sequence).toContain('results');
   });
 
+  it('public visitor with market data: owner/guest-only Market Context panels stay hidden', () => {
+    const registry = getPanelRegistry({
+      isAuthenticated: false,
+      hasMarketOrSnapshot: true,
+    });
+    const groups = resolveGroupOrder([], registryGroups);
+    const sequence: string[] = [];
+    for (const group of groups) {
+      sequence.push(...resolvePanelOrder([], registry, group));
+    }
+    // Market data alone unlocks the chart panel but not the Periscope panel,
+    // whose endpoints are owner-or-guest.
+    expect(sequence).toContain('sec-charts');
+    expect(sequence).not.toContain('sec-periscope-exposure');
+    expect(sequence).not.toContain('sec-gexbot');
+  });
+
   it('user-reordered groups: outer loop honors stored group_order', () => {
     const groups = resolveGroupOrder(
       ['Trading', 'Market Context'],

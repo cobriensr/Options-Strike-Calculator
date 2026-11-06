@@ -24,19 +24,53 @@ describe('getPanelRegistry', () => {
     ]);
   });
 
-  it('adds sec-charts and sec-periscope-exposure when hasMarketOrSnapshot is true (no auth)', () => {
+  it('adds sec-charts when hasMarketOrSnapshot is true (no auth)', () => {
     const ids = getPanelRegistry({
       isAuthenticated: false,
       hasMarketOrSnapshot: true,
     }).map((e) => e.id);
 
     expect(ids).toContain('sec-charts');
-    expect(ids).toContain('sec-periscope-exposure');
     // auth-only panels still excluded
     expect(ids).not.toContain('sec-futures');
     expect(ids).not.toContain('sec-bwb');
     expect(ids).not.toContain('sec-tracker');
     expect(ids).not.toContain('sec-darkpool'); // needs auth+market
+  });
+
+  // Both /api/periscope-map and /api/periscope-exposure sit behind
+  // guardOwnerOrGuestEndpoint, so a public visitor must not get a nav or
+  // prefs entry for the panel they back, market data or not.
+  it('omits sec-periscope-exposure for a public visitor even with market data', () => {
+    for (const hasMarketOrSnapshot of [true, false]) {
+      const ids = getPanelRegistry({
+        isAuthenticated: false,
+        hasMarketOrSnapshot,
+      }).map((e) => e.id);
+      expect(ids).not.toContain('sec-periscope-exposure');
+    }
+  });
+
+  it('adds sec-periscope-exposure for an owner or guest with market data, last in Market Context', () => {
+    const entries = getPanelRegistry({
+      isAuthenticated: true,
+      hasMarketOrSnapshot: true,
+    });
+    const marketContext = entries
+      .filter((e) => e.group === 'Market Context')
+      .map((e) => e.id);
+
+    expect(marketContext).toContain('sec-periscope-exposure');
+    expect(marketContext.at(-1)).toBe('sec-periscope-exposure');
+    expect(marketContext.slice(-2)[0]).toBe('sec-gamma-node-detector');
+  });
+
+  it('omits sec-periscope-exposure for an owner or guest with no market data (App renders it only under hasMarketContext)', () => {
+    const ids = getPanelRegistry({
+      isAuthenticated: true,
+      hasMarketOrSnapshot: false,
+    }).map((e) => e.id);
+    expect(ids).not.toContain('sec-periscope-exposure');
   });
 
   it('adds auth-only panels when isAuthenticated is true (no market data)', () => {
