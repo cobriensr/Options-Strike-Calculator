@@ -105,6 +105,10 @@ def test_back_month_only_minute_emits_no_bar_and_is_counted():
     minutes = fcr.rebuild_from_ticks(series(levels), ES)
     absent = minutes[minutes.front_absent]
     assert list(absent.ts) == [T0 + pd.Timedelta(minutes=5)]
+    # A back-only minute still had ticks: it is coverage, not an outage.
+    traded = pd.DatetimeIndex([T0 + pd.Timedelta(minutes=i) for i in range(11)])
+    minutes = fcr.mark_partial(minutes, traded)
+    assert not minutes.partial.any()
     bars = fcr.bars_output(minutes, "ES", "ticks")
     assert len(bars) == 10
     assert T0 + pd.Timedelta(minutes=5) not in set(bars.ts)
@@ -172,8 +176,15 @@ def test_the_gap_is_per_root():
     nq = fcr.rebuild_from_ticks(t, NQ).iloc[0]
     assert (es.clusters, es.high, es.volume) == (2, 20000.25, 2)
     assert (nq.clusters, nq.high, nq.volume) == (1, 20050.25, 4)
-    assert ES.gap == 25.0
-    assert NQ.gap == 87.5  # the middle of the flat 75..100 band (team-lead ruling)
+    # The middle of each root's flat ground-truth band, on the tick (fix round 1).
+    assert ES.gap == 17.0
+    assert NQ.gap == 65.0
+
+
+def test_carry_is_the_tick_span_measurement():
+    # Median cluster-1 minus cluster-0 level over every multi-cluster tick minute.
+    assert ES.carry == 60.75
+    assert NQ.carry == 279.75
 
 
 def test_a_gap_of_exactly_g_does_not_split():
@@ -224,8 +235,13 @@ def test_time_order_ties_break_by_seq(shuffle):
     assert got.close == 7002.0  # seq 21 after seq 20
 
 
+def minute(i: int) -> pd.Timestamp:
+    return T0 + pd.Timedelta(minutes=i)
+
+
 def test_bars_output_schema():
     minutes = fcr.rebuild_from_ticks(series([(7000.0, 7058.0), (7001.0, None)]), ES)
+    minutes = fcr.mark_partial(minutes, pd.DatetimeIndex([minute(-1)]))
     bars = fcr.bars_output(minutes, "ES", "ticks")
     assert list(bars.columns) == list(fcr.OUTPUT_COLUMNS)
     assert str(bars.ts.dtype) == "datetime64[us, UTC]"
@@ -235,15 +251,61 @@ def test_bars_output_schema():
     # Phase 2 updates only the minutes the ticks show as mixed (n_clusters > 1).
     assert bars.n_clusters.dtype == "int64"
     assert bars.n_clusters.tolist() == [2, 1]
+    # ... and reports, without updating, a minute the stream only partly saw.
+    assert bars.partial.dtype == "bool"
+    assert bars.partial.tolist() == [True, False]
     assert set(bars.symbol) == {"ES"}
     assert set(bars.source) == {"ticks"}
 
 
-def test_archive_bars_count_one_cluster():
+def test_archive_bars_count_one_cluster_and_are_never_partial():
     front = front_minutes([("2026-04-08 14:30", 1, 2, 0, 1, 100)])
     bars = fcr.bars_output(fcr.archive_minutes(front), "ES", "archive")
     assert bars.n_clusters.tolist() == [1]
     assert bars.n_clusters.dtype == "int64"
+    assert bars.partial.tolist() == [False]
+
+
+def covered(*indices: int) -> pd.DataFrame:
+    """Tick minutes at T0 + each index, one contract each."""
+    frames = [minute_of(7000.0, start=minute(i)) for i in indices]
+    t = pd.concat(frames, ignore_index=True)
+    t["seq"] = range(len(t))
+    return fcr.rebuild_from_ticks(t, ES)
+
+
+def test_a_minute_at_a_coverage_edge_is_partial():
+    # Ticks cover minutes 0..4 and 6..8. The market traded (futures_bars has a
+    # row) in minute -1, 5 and 9, which the stream missed: it started inside
+    # minute 0, dropped around 5 and stopped inside 8.
+    minutes = covered(0, 1, 2, 3, 4, 6, 7, 8)
+    traded = pd.DatetimeIndex([minute(i) for i in range(-1, 10)])
+    marked = fcr.mark_partial(minutes, traded)
+    assert marked.set_index("ts").partial.to_dict() == {
+        minute(0): True,
+        minute(1): False,
+        minute(2): False,
+        minute(3): False,
+        minute(4): True,
+        minute(6): True,
+        minute(7): False,
+        minute(8): True,
+    }
+
+
+def test_a_closed_market_gap_is_not_partial():
+    # Same coverage, but no futures_bars row around it: the market was shut
+    # (daily halt, weekend), so the stream missed nothing.
+    minutes = covered(0, 1, 2, 3, 4, 6, 7, 8)
+    traded = pd.DatetimeIndex([minute(i) for i in (0, 1, 2, 3, 4, 6, 7, 8)])
+    assert not fcr.mark_partial(minutes, traded).partial.any()
+
+
+def test_a_traded_neighbour_the_ticks_cover_is_not_an_edge():
+    # Every traded minute has ticks: interior and end minutes alike are whole.
+    minutes = covered(0, 1, 2)
+    traded = pd.DatetimeIndex([minute(i) for i in (0, 1, 2)])
+    assert not fcr.mark_partial(minutes, traded).partial.any()
 
 
 def archive_bars(rows: list[tuple[str, str, float, int]]):
@@ -416,10 +478,13 @@ def test_per_day_summary_splits_by_utc_day():
     t = pd.concat([late.assign(ts=late.ts + pd.Timedelta(hours=9, minutes=29)), early])
     t["seq"] = range(len(t))
     minutes = fcr.rebuild_from_ticks(t, ES)
-    summary = fcr.per_day_summary(minutes, "ES", "ticks")
+    # The stream stopped inside 00:00: 00:01 traded but has no ticks.
+    traded = pd.DatetimeIndex([pd.Timestamp("2026-05-06 00:01", tz="UTC")])
+    summary = fcr.per_day_summary(fcr.mark_partial(minutes, traded), "ES", "ticks")
     assert summary.day.tolist() == ["2026-05-05", "2026-05-06"]
     assert summary.bars.tolist() == [1, 1]
     assert summary.multi_cluster.tolist() == [1, 0]
+    assert summary.partial.tolist() == [0, 1]
     assert summary.prints.tolist() == [6, 4]
     assert summary.source.tolist() == ["ticks", "ticks"]
     assert summary.max_kept_gap.tolist() == [1.0, 1.0]
@@ -433,6 +498,7 @@ def test_archive_summary_has_one_contract_and_no_print_counts():
     row = summary.iloc[0]
     assert (row.bars, row.front_absent, row.source) == (1, 0, "archive")
     assert row.multi_cluster == 0
+    assert row.partial == 0
     assert pd.isna(row.prints)
 
 
@@ -501,7 +567,9 @@ def test_a_passing_run_writes_every_output(tmp_path, monkeypatch):
         carry = 60.0 if cfg.symbol == "ES" else 280.0
         levels = [(base + i, base + carry + i) for i in range(11)]
         levels[5] = (None, base + carry + 5)
-        return fcr.rebuild_from_ticks(series(levels), cfg)
+        # The stream started inside minute 0: minute -1 traded, unseen.
+        traded = pd.DatetimeIndex([minute(i) for i in range(-1, 11)])
+        return fcr.mark_partial(fcr.rebuild_from_ticks(series(levels), cfg), traded)
 
     monkeypatch.setattr(fcr, "run_archive_span", archive_span)
     monkeypatch.setattr(fcr, "run_tick_span", tick_span)
@@ -524,13 +592,19 @@ def test_a_passing_run_writes_every_output(tmp_path, monkeypatch):
         "archive": [1],
         "ticks": [2],
     }
+    partial = bars[bars.partial]
+    assert partial[["symbol", "ts"]].values.tolist() == [
+        ["ES", minute(0)],
+        ["NQ", minute(0)],
+    ]
     absent = pd.read_csv(out / "front_absent.csv")
     assert absent.symbol.tolist() == ["ES", "NQ"]
     assert set(pd.to_datetime(absent.ts)) == {T0 + pd.Timedelta(minutes=5)}
     per_day = pd.read_csv(out / "per_day.csv")
-    assert per_day[["root", "source", "bars", "front_absent"]].values.tolist() == [
-        ["ES", "archive", 1, 0],
-        ["ES", "ticks", 10, 1],
-        ["NQ", "archive", 1, 0],
-        ["NQ", "ticks", 10, 1],
+    cols = ["root", "source", "bars", "front_absent", "partial"]
+    assert per_day[cols].values.tolist() == [
+        ["ES", "archive", 1, 0, 0],
+        ["ES", "ticks", 10, 1, 1],
+        ["NQ", "archive", 1, 0, 0],
+        ["NQ", "ticks", 10, 1, 1],
     ]
