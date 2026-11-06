@@ -25,7 +25,14 @@ import {
 } from '../../hooks/useGexbotData';
 import { GEXBOT_UNDERLYING_ORDER } from './ticker-order';
 import { deriveGammaSign, type GammaSign } from './types';
-import { formatTakerDelta, pickMostUnusual } from './velocity-tape';
+import {
+  formatTakerDelta,
+  isUnusual,
+  pickMostUnusual,
+  TYPICAL_FLOOR,
+  UNUSUAL_MULTIPLE,
+  usesTypicalFloor,
+} from './velocity-tape';
 
 interface DealerStateSummaryStripProps {
   marketOpen: boolean;
@@ -103,8 +110,12 @@ interface LoudestPick {
   ticker: string;
   /** Last-minute Δ agg_dex: the taker delta flow. Never 0. */
   dAggDex: number;
-  /** |Δ agg_dex| as a multiple of the ticker's own typical minute. */
+  /** |Δ agg_dex| as a multiple of the ticker's typical minute or the floor. */
   ratio: number;
+  /** True when `ratio` is a multiple of the floor, not of the ticker's own. */
+  floored: boolean;
+  /** Whether the tape would call this row unusual (the 3x rule). */
+  unusual: boolean;
 }
 
 function DealerStateSummaryStripInner({
@@ -132,6 +143,8 @@ function DealerStateSummaryStripInner({
       ticker: picked.row.ticker,
       dAggDex: picked.row.dAggDex,
       ratio: picked.ratio,
+      floored: usesTypicalFloor(picked.row),
+      unusual: isUnusual(picked.row),
     };
   }, [velocity.rows]);
 
@@ -185,7 +198,7 @@ function DealerStateSummaryStripInner({
         <GammaTile testid="dealer-state-strip-spx" label="SPX" row={spx} />
         <GammaTile testid="dealer-state-strip-vix" label="VIX" row={vix} />
         <BreadthTile counts={breadth} />
-        <LoudestTile pick={loudest} />
+        <LoudestTile pick={loudest} readFailed={velocity.error != null} />
       </div>
       <div className="text-tertiary px-1 text-[10px] tracking-wide uppercase">
         last GEXBot tick {formatCTClock(freshestAt)} CT
@@ -278,11 +291,18 @@ function BreadthTile({ counts }: { counts: BreadthCounts }) {
 
 interface LoudestTileProps {
   pick: LoudestPick | null;
+  /**
+   * The latest velocity read errored. Shown only when there is no pick: the
+   * hook keeps the last good rows for the same URL, and a pick from them is
+   * still the best answer.
+   */
+  readFailed: boolean;
 }
 
 const LOUDEST_LABEL = 'most unusual taker Δ / min';
+const QUIET_LABEL = `quiet · nothing ≥ ${UNUSUAL_MULTIPLE}× typical`;
 
-function LoudestTile({ pick }: LoudestTileProps) {
+function LoudestTile({ pick, readFailed }: LoudestTileProps) {
   const tone = toneClasses('unknown');
 
   if (!pick) {
@@ -299,7 +319,13 @@ function LoudestTile({ pick }: LoudestTileProps) {
             LOUDEST · —
           </span>
         </div>
-        <div className="text-tertiary mt-1 text-[10px] leading-tight">—</div>
+        {readFailed ? (
+          <div className="mt-1 text-[10px] leading-tight text-amber-300/80">
+            velocity read failed
+          </div>
+        ) : (
+          <div className="text-tertiary mt-1 text-[10px] leading-tight">—</div>
+        )}
         <div className="text-tertiary text-[9px] leading-tight tracking-wide uppercase">
           {LOUDEST_LABEL}
         </div>
@@ -309,7 +335,12 @@ function LoudestTile({ pick }: LoudestTileProps) {
 
   const isPositive = pick.dAggDex > 0;
   const flowLabel = isPositive ? 'taker +Δ flow' : 'taker −Δ flow';
-  const flowTone = isPositive ? toneClasses('long') : toneClasses('short');
+  // A top pick that is not unusual (the tape would not mark it) stays neutral:
+  // green or red would present a quiet minute as a signal.
+  const flowTone = pick.unusual
+    ? toneClasses(isPositive ? 'long' : 'short')
+    : tone;
+  const against = pick.floored ? `the ${TYPICAL_FLOOR} floor` : 'typical';
 
   return (
     <div
@@ -331,11 +362,11 @@ function LoudestTile({ pick }: LoudestTileProps) {
         className="text-tertiary mt-1 text-[10px] leading-tight"
         title="Last-minute change in taker delta (Δ agg_dex) as a multiple of this ticker's own typical minute (its session median, never under 0.25). Ranked by that multiple, not by raw size, because sizes are not comparable across tickers."
       >
-        {flowLabel} {formatTakerDelta(pick.dAggDex)} · {pick.ratio.toFixed(1)}×
-        typical
+        {flowLabel} {formatTakerDelta(pick.dAggDex)} · {pick.ratio.toFixed(1)}×{' '}
+        {against}
       </div>
       <div className="text-tertiary text-[9px] leading-tight tracking-wide uppercase">
-        {LOUDEST_LABEL}
+        {pick.unusual ? LOUDEST_LABEL : QUIET_LABEL}
       </div>
     </div>
   );

@@ -25,7 +25,7 @@ import { GEXBOT_UNDERLYING_ORDER } from './ticker-order';
  * of minutes, the thin ones (HYG, VIX, UVXY) in about 0-0.5%, and about one
  * row per minute. This rests on only two sessions; re-tune on more history.
  */
-const UNUSUAL_MULTIPLE = 3;
+export const UNUSUAL_MULTIPLE = 3;
 
 /**
  * Floor on the "typical" minute change used for the highlight. agg_dex is
@@ -33,7 +33,7 @@ const UNUSUAL_MULTIPLE = 3;
  * |Δ| of exactly 0; without a floor a single 0.01 tick would be "infinitely
  * unusual" and flag them all day. At 0.25 the threshold is 0.75.
  */
-const TYPICAL_FLOOR = 0.25;
+export const TYPICAL_FLOOR = 0.25;
 
 /** Slack for floating-point products such as 3 * 0.4 = 1.2000000000000002. */
 const EPSILON = 1e-9;
@@ -47,6 +47,15 @@ function validChange(row: VelocityRow): number | null {
 /** The ticker's typical minute for comparison: its session median, floored. */
 function typicalMinute(row: VelocityRow): number {
   return Math.max(row.typicalAbsDAggDex ?? 0, TYPICAL_FLOOR);
+}
+
+/**
+ * True when the floor, not the ticker's own median, is the denominator of
+ * `unusualRatio` (a median under the floor, or none). The ratio is then a
+ * multiple of the floor and must not be called a multiple of "typical".
+ */
+export function usesTypicalFloor(row: VelocityRow): boolean {
+  return (row.typicalAbsDAggDex ?? 0) < TYPICAL_FLOOR;
 }
 
 /** True when |Δ agg_dex| ≥ 3 × max(typical |Δ|, floor). A null Δ never is. */
@@ -84,7 +93,9 @@ export function orderVelocityRows(rows: readonly VelocityRow[]): VelocityRow[] {
  * tickers are skipped, as are rows with no valid change and rows whose
  * change is exactly 0. A tie goes to the earlier ticker in
  * GEXBOT_UNDERLYING_ORDER. Null when no row qualifies (for example in the
- * first minute of the session, when every change is null).
+ * first minute of the session, when every change is null). The pick need not
+ * be unusual: when nothing reaches the multiple it is still the top ratio, and
+ * the caller asks `isUnusual(pick.row)` whether to call it that.
  */
 export function pickMostUnusual(
   rows: readonly VelocityRow[],

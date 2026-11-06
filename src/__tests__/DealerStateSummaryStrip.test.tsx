@@ -265,7 +265,7 @@ describe('<DealerStateSummaryStrip>', () => {
       render(<DealerStateSummaryStrip marketOpen />);
       expect(tile()).toHaveTextContent(/HYG/);
       expect(tile()).not.toHaveTextContent(/SPX/);
-      expect(tile()).toHaveTextContent(/3\.6× typical/);
+      expect(tile()).toHaveTextContent(/3\.6× the 0\.25 floor/);
     });
 
     it('skips rows with a null change', () => {
@@ -307,18 +307,49 @@ describe('<DealerStateSummaryStrip>', () => {
       render(<DealerStateSummaryStrip marketOpen />);
       expect(tile()).toHaveTextContent(/LOUDEST · —/);
       expect(within(tile()).getByText('—')).toBeInTheDocument();
+      expect(tile()).not.toHaveTextContent(/velocity read failed/);
     });
 
-    it('shows the empty state while the velocity read is loading or failed', () => {
-      for (const velocity of [
-        { rows: [], loading: true, error: null, freshestAt: null },
-        { rows: [], loading: false, error: 'HTTP 500', freshestAt: null },
-      ]) {
-        mockViews(SNAP, velocity);
-        const { unmount } = render(<DealerStateSummaryStrip marketOpen />);
+    it('shows the empty state while the velocity read is loading', () => {
+      mockViews(SNAP, {
+        rows: [],
+        loading: true,
+        error: null,
+        freshestAt: null,
+      });
+      render(<DealerStateSummaryStrip marketOpen />);
+      expect(tile()).toHaveTextContent(/LOUDEST · —/);
+      expect(within(tile()).getByText('—')).toBeInTheDocument();
+      expect(tile()).not.toHaveTextContent(/velocity read failed/);
+    });
+
+    describe('a failed velocity read', () => {
+      it('says so when there is nothing to show, in the strip error style', () => {
+        mockViews(SNAP, {
+          rows: [],
+          loading: false,
+          error: 'Internal error (HTTP 500)',
+          freshestAt: null,
+        });
+        render(<DealerStateSummaryStrip marketOpen />);
         expect(tile()).toHaveTextContent(/LOUDEST · —/);
-        unmount();
-      }
+        const failed = within(tile()).getByText('velocity read failed');
+        expect(failed).toHaveClass('text-amber-300/80');
+        expect(within(tile()).queryByText('—')).not.toBeInTheDocument();
+      });
+
+      it('still shows the pick when the hook kept the last good rows', () => {
+        mockViews(SNAP, {
+          rows: [makeVelocity('SPX', { dAggDex: 1.2, typicalAbsDAggDex: 0.4 })],
+          loading: false,
+          error: 'Internal error (HTTP 500)',
+          freshestAt: null,
+        });
+        render(<DealerStateSummaryStrip marketOpen />);
+        expect(tile()).toHaveTextContent(/LOUDEST · SPX/);
+        expect(tile()).toHaveTextContent(/taker \+Δ flow \+1\.20/);
+        expect(tile()).not.toHaveTextContent(/velocity read failed/);
+      });
     });
 
     it('does not use the vendor one-step dexoflow in snapshots', () => {
@@ -348,15 +379,118 @@ describe('<DealerStateSummaryStrip>', () => {
     });
 
     it('shows a falling change as taker −Δ flow', () => {
+      // 1.2 / 0.3 = 4x typical.
       mockViews(
         SNAP,
         velocityState([
-          makeVelocity('SPY', { dAggDex: -0.6, typicalAbsDAggDex: 0.3 }),
+          makeVelocity('SPY', { dAggDex: -1.2, typicalAbsDAggDex: 0.3 }),
         ]),
       );
       render(<DealerStateSummaryStrip marketOpen />);
-      expect(tile()).toHaveTextContent(/taker −Δ flow −0\.60/);
+      expect(tile()).toHaveTextContent(/taker −Δ flow −1\.20/);
       expect(tile().className).toMatch(/rose/);
+    });
+
+    describe('the denominator the multiple is quoted against', () => {
+      it.each([
+        ['has no typical minute', null],
+        ['has a typical minute of 0', 0],
+        ['has a typical minute under the floor', 0.1],
+      ])('names the floor when the ticker %s', (_name, typical) => {
+        // 0.9 / max(typical, 0.25) = 3.6x the floor.
+        mockViews(
+          SNAP,
+          velocityState([
+            makeVelocity('HYG', { dAggDex: 0.9, typicalAbsDAggDex: typical }),
+          ]),
+        );
+        render(<DealerStateSummaryStrip marketOpen />);
+        expect(tile()).toHaveTextContent(/3\.6× the 0\.25 floor/);
+        expect(tile()).not.toHaveTextContent(/× typical/);
+      });
+
+      it.each([
+        ['above the floor', 0.4, 1.2, '3.0'],
+        ['exactly the floor', 0.25, 1.0, '4.0'],
+      ])(
+        'says "typical" when the ticker own typical minute is %s',
+        (_name, typical, dAggDex, ratio) => {
+          mockViews(
+            SNAP,
+            velocityState([
+              makeVelocity('SPX', { dAggDex, typicalAbsDAggDex: typical }),
+            ]),
+          );
+          render(<DealerStateSummaryStrip marketOpen />);
+          expect(tile()).toHaveTextContent(`${ratio}× typical`);
+          expect(tile()).not.toHaveTextContent(/floor/);
+        },
+      );
+    });
+
+    describe('when the top pick is under 3x its typical minute', () => {
+      const expectNeutral = () => {
+        expect(tile().className).toMatch(/border-white\/10/);
+        expect(tile().className).not.toMatch(/emerald|rose/);
+      };
+
+      it.each([
+        ['rising', 1.0],
+        ['falling', -1.0],
+      ])(
+        'shows a %s change in the neutral tone with the quiet label',
+        (_name, dAggDex) => {
+          // 1.0 / 0.5 = 2x: the best of the day so far, but not unusual.
+          mockViews(
+            SNAP,
+            velocityState([
+              makeVelocity('SPX', { dAggDex, typicalAbsDAggDex: 0.5 }),
+              makeVelocity('QQQ', { dAggDex: 0.1, typicalAbsDAggDex: 0.5 }),
+            ]),
+          );
+          render(<DealerStateSummaryStrip marketOpen />);
+          expect(tile()).toHaveTextContent(/LOUDEST · SPX/);
+          expect(tile()).toHaveTextContent(/2\.0× typical/);
+          expect(tile()).toHaveTextContent('quiet · nothing ≥ 3× typical');
+          expect(tile()).not.toHaveTextContent(/most unusual/);
+          expectNeutral();
+        },
+      );
+
+      it('quotes a floored sub-3x pick against the floor and still reads as quiet', () => {
+        // 0.5 / 0.25 = 2x the floor.
+        mockViews(
+          SNAP,
+          velocityState([
+            makeVelocity('HYG', { dAggDex: 0.5, typicalAbsDAggDex: 0 }),
+          ]),
+        );
+        render(<DealerStateSummaryStrip marketOpen />);
+        expect(tile()).toHaveTextContent(/2\.0× the 0\.25 floor/);
+        expect(tile()).toHaveTextContent('quiet · nothing ≥ 3× typical');
+        expectNeutral();
+      });
+
+      it.each([
+        ['above the floor', 'SPX', 0.4, 1.2],
+        ['on the floor', 'HYG', 0, 0.75],
+      ])(
+        'reads an exactly-3x pick (typical %s) as unusual, sign-toned',
+        (_name, ticker, typical, dAggDex) => {
+          // 1.2 / 0.4 and 0.75 / 0.25 are exactly 3x; floating point must not
+          // push them under (isUnusual's epsilon).
+          mockViews(
+            SNAP,
+            velocityState([
+              makeVelocity(ticker, { dAggDex, typicalAbsDAggDex: typical }),
+            ]),
+          );
+          render(<DealerStateSummaryStrip marketOpen />);
+          expect(tile()).toHaveTextContent(/most unusual taker Δ \/ min/);
+          expect(tile()).not.toHaveTextContent(/quiet/);
+          expect(tile().className).toMatch(/emerald/);
+        },
+      );
     });
   });
 

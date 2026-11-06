@@ -7,7 +7,9 @@ import {
   isUnusual,
   orderVelocityRows,
   pickMostUnusual,
+  TYPICAL_FLOOR,
   unusualRatio,
+  usesTypicalFloor,
 } from '../components/Gexbot/velocity-tape';
 import { GEXBOT_UNDERLYING_ORDER } from '../components/Gexbot/ticker-order';
 import type { VelocityRow } from '../hooks/useGexbotData';
@@ -148,6 +150,31 @@ describe('unusualRatio', () => {
       const row = makeRow({ dAggDex, typicalAbsDAggDex: typical });
       expect(isUnusual(row)).toBe((unusualRatio(row) ?? 0) >= 3);
     }
+  });
+});
+
+describe('usesTypicalFloor', () => {
+  it.each([
+    [null, true],
+    [0, true],
+    [0.24, true],
+    [0.25, false],
+    [0.4, false],
+    [3, false],
+  ] as const)('a typical minute of %s uses the floor: %s', (typical, want) => {
+    expect(usesTypicalFloor(makeRow({ typicalAbsDAggDex: typical }))).toBe(
+      want,
+    );
+  });
+
+  it('is true exactly when the ratio divides by the floor', () => {
+    // The ratio of a row on the floor is |Δ| / TYPICAL_FLOOR; off it, |Δ| / typical.
+    const floored = makeRow({ dAggDex: 0.5, typicalAbsDAggDex: 0.1 });
+    expect(usesTypicalFloor(floored)).toBe(true);
+    expect(unusualRatio(floored)).toBeCloseTo(0.5 / TYPICAL_FLOOR, 10);
+    const own = makeRow({ dAggDex: 0.5, typicalAbsDAggDex: 0.5 });
+    expect(usesTypicalFloor(own)).toBe(false);
+    expect(unusualRatio(own)).toBeCloseTo(1, 10);
   });
 });
 

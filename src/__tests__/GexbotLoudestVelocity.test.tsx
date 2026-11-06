@@ -113,4 +113,30 @@ describe('LOUDEST tile and velocity tape together', () => {
       ).toHaveTextContent(tileText);
     },
   );
+
+  it.each([
+    ['at 3x its typical minute', 1.2, true],
+    ['under 3x its typical minute', 1.1, false],
+  ])(
+    'agree on whether a row %s is unusual',
+    async (_name, dAggDex, unusual) => {
+      serve([velocityRow('SPX', { dAggDex, typicalAbsDAggDex: 0.4 })]);
+      renderBoth();
+      const tape = await screen.findByTestId('dexoflow-tape');
+      const spxRow = within(tape)
+        .getAllByRole('row')
+        .find((r) => r.textContent?.startsWith('SPX'))!;
+      expect(spxRow.getAttribute('data-unusual')).toBe(String(unusual));
+
+      const tile = screen.getByTestId('dealer-state-strip-loudest');
+      await waitFor(() => expect(tile).toHaveTextContent(/LOUDEST · SPX/));
+      if (unusual) {
+        expect(tile).toHaveTextContent(/most unusual taker Δ \/ min/);
+        expect(tile).not.toHaveTextContent(/quiet/);
+      } else {
+        expect(tile).toHaveTextContent('quiet · nothing ≥ 3× typical');
+        expect(tile).not.toHaveTextContent(/most unusual/);
+      }
+    },
+  );
 });
