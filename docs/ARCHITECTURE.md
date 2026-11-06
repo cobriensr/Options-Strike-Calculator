@@ -681,13 +681,12 @@ Boot requires only `DATABASE_URL`, which now backs nothing but the `/health` db 
 | `GET /archive/day-features?date=YYYY-MM-DD`         | 60-dim numeric vector for engineered-analog retrieval |
 | `GET /archive/day-summary-batch?from&to`            | Batched summaries for backfill (capped 3 yrs)         |
 | `GET /archive/day-features-batch?from&to`           | Batched vectors for backfill                          |
-| `GET /archive/day-summary-prediction?date`          | Leakage-free prediction summary (no outcome fields)   |
 | `GET /archive/day-summary-prediction-batch?from&to` | Batched leakage-free prediction summaries             |
-| `GET /archive/analog-days?date&k`                   | k-nearest historical mornings by window similarity    |
-| `GET /archive/es-range?date=YYYY-MM-DD`             | ES day summary from the archive                       |
 | `POST /admin/seed-archive`                          | One-shot archive seed trigger                         |
 
-The TBBO microstructure routes (`/archive/tbbo-day-microstructure`, `/archive/tbbo-ofi-percentile`) were removed with Databento, and `POST /takeit/multileg-classify` was removed with the F4 strip; all three now return 404.
+Every `/archive/*` request needs `Authorization: Bearer <TAKEIT_SIDECAR_SHARED_SECRET>` (the Vercel side holds the same value as `SIDECAR_TAKEIT_SECRET`); `/health` and `/takeit/health` are open.
+
+The TBBO microstructure routes (`/archive/tbbo-day-microstructure`, `/archive/tbbo-ofi-percentile`) were removed with Databento, and `POST /takeit/multileg-classify` was removed with the F4 strip. `/archive/es-range`, `/archive/analog-days` and the single-date `/archive/day-summary-prediction` were removed too, since nothing called them. All six now return 404 to an authenticated caller.
 
 **Consumed by the Vercel side via:**
 
