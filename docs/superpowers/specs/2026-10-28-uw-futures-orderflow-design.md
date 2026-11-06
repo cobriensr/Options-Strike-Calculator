@@ -441,4 +441,23 @@ There are 1,044 frames from 389 sampled prints (ES 201, NQ 188; `trade_id % 500 
 - **Integrity:** sampled ES trade ids are contiguous (201 of 201), so nothing was lost. NQ's sparsity matches REST: its id counter is shared.
 - **D1 = NO.** The websocket carries no match-event fields, so **Phase 3 (sweeps) is not built from the websocket**. Sweeps would need REST `/futures/flow`, which is out of scope.
 - **D2 = copies differ only in the post-trade NBBO**, so first-copy-wins is correct. No side-disagreement counter is needed.
-- **Open:** this sample is overnight only, with no spread syms seen. Re-check non-outright syms on the RTH capture before removing the capture code.
+- **RTH re-check (2026-10-29, after the close): closed.** 5,110 frames from 1,722 sampled prints. The syms were only outrights: `ESZ6`/`NQZ6` plus a few back-month `ESH7`/`NQH7`, and no spreads. There were no extra keys, `is_block` was never true, `side` never differed between copies, and copies ≤ size + 1 still held (r = 0.82). The capture code was removed afterwards (6c6bb534).
+
+## Deploy and backfill results (2026-10-29 → 11-05)
+
+- **Landed:** pushed `2abb94c8` on 2026-10-29 at 16:26 CT (24 commits). Both deploys succeeded: Railway uw-stream and Vercel. Migrations #193, #196 and #198 were already in prod, applied by another session's migrate run.
+- **`futures_blocks` channel:** added to Railway `WS_CHANNELS` at 16:38 CT. It makes the fourth global channel and fills the existing shard to exactly 45, so no new socket was opened (D6). The join was acked at 21:39:58Z with no error frame.
+- **Live checks, 2026-10-29:**
+  - At 22:09Z, all 52 bars since the Globex reopen had flow, with no bar where buy + sell > volume. On ES and NQ, buy + sell = volume exactly.
+  - The first 6c run loaded 6,486 blocks over 5 trade dates.
+  - A manual session-stats run wrote 12 contracts. Their `settlement_date` was still 10-28, because UW rolls it late.
+- **The first week (checked 2026-11-05):**
+  - Every bar has flow on every day since 10-30, with no violations.
+  - `futures_blocks` holds 1,100–1,800 blocks per trade date.
+  - `futures_session_stats` holds 12 rows per settlement date.
+- **6b backfill:**
+  - **ES and NQ:** 127,857 minutes repaired and 31,978 skipped, over 83,166 pages, with no failed root-days. From 07-26 on, coverage is 99.41% (127,820 of 128,575 bars).
+  - **RTY, CL, GC and ZN:** 205,391 minutes repaired and 22,339 skipped, over 38,901 pages, with no failed root-days. RTY, CL and ZN are at 99.9% from 07-26 on.
+- **UW REST futures history is usable from 2026-07-26,** the Sunday-evening session. Before that, a day returns 4–90 pages against about 1,046 for a full ES day, so the 2% rule skips those bars, as designed. The backfill therefore gives about 66 sessions, enough for the OFI re-test (Phase 1 consequences).
+- **GC is thin before October,** and the backfill isn't the cause: the bars themselves barely exist (993 in July, 461 in August and 2,797 in September, against about 29,000 in a normal month). The old Databento pipeline missed GC. October fills normally.
+- **Gap found, not fixed:** ES, NQ and CL have no bars at all from 2026-09-03 to 09-29 (ES has 6,898 for all of September). That is the stretch between Databento's end and the switch to UW. `backfill-futures-gaps` looks back only 3 days, so it never refilled these. Fixing it means an OHLC backfill from UW candles, then the flow pass. That is offered to the owner but not scheduled.

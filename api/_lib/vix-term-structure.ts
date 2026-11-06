@@ -1,9 +1,10 @@
 /**
  * VIX term structure from the spot VIX / VIX3M ratio.
  *
- * Replaces the VX1/VX2 futures spread, which had no data source: Databento
- * never carried CFE, the UW futures feed is CME-only, and UW's VIX futures
- * endpoint needs a volatility add-on we don't have (see
+ * Replaces the VX1/VX2 futures spread, which had no data source: our
+ * Databento plan never carried CFE (Databento itself is cancelled), the UW
+ * futures feed is CME-only, and UW's VIX futures endpoint needs a volatility
+ * add-on we don't have (see
  * docs/superpowers/specs/databento-removal-2026-09-29.md).
  *
  * Sources — all of them "now", none with history:
