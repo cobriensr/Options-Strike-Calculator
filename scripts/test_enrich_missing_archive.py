@@ -73,7 +73,8 @@ class FakeCursor:
     def execute(self, sql: str, params: tuple | None = None) -> None:
         self.db.executed.append((sql, params))
         self.rows = self.db.answer(sql, params)
-        self.rowcount = len(params[0]) if 'UPDATE' in sql and params else 0
+        # A tag-only UPDATE carries (source, version, ids): ids come last.
+        self.rowcount = len(params[-1]) if 'UPDATE' in sql and params else 0
 
     def fetchall(self) -> list:
         return self.rows
@@ -120,7 +121,7 @@ class FakeDb:
             ids.update(int(r[0]) for r in rows)
         for sql, params in self.executed:
             if 'UPDATE' in sql and params:
-                ids.update(int(i) for i in params[0])
+                ids.update(int(i) for i in params[-1])
         return ids
 
 
@@ -148,6 +149,7 @@ def run_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         lottery, 'PARQUET_FILE_PATTERN', lottery.PARQUET_FORMATS['trades']
     )
+    monkeypatch.setattr(lottery, 'SOURCE_TAG', lottery.ARCHIVE_SOURCES['trades'])
     monkeypatch.setattr(silent_boom, 'PARQUET_DIR', None)
 
 
@@ -155,8 +157,11 @@ def _fake_db(module, table: str, monkeypatch: pytest.MonkeyPatch) -> FakeDb:
     db = FakeDb(table)
     monkeypatch.setattr(module, 'connect_with_retry', lambda _url: db)
 
-    def record(_cur, sql, rows, **_kwargs):
-        db.values_writes.append((sql, list(rows)))
+    def record(_cur, sql, rows, **kwargs):
+        rows = list(rows)
+        db.values_writes.append((sql, rows))
+        # fetch=True is an UPDATE ... RETURNING id: every row was written.
+        return [(r[0],) for r in rows] if kwargs.get('fetch') else None
 
     monkeypatch.setattr(module, 'execute_values', record)
     return db

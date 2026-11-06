@@ -19,6 +19,15 @@ Computes:
   - realized_flow_inversion_pct (second pass — needs net_flow_per_ticker_history;
     runs `make backfill-flow` first if that table is empty for the date)
 
+The Vercel enrich cron writes the same rows, so every write here is
+conditional (it fills only a row nobody has filled, and counts what the
+database says it wrote) and tagged: outcome_source / inversion_source name
+the archive ('bot_eod' for `--parquet-format trades`, 'fulltape' for
+fulltape) and the version says which computation. A fire the tape cannot
+price (no chain, no print at or after entry) is tagged with its outcomes
+left NULL, so it is not picked again. A fire whose matched-side net flow
+does not exist yet is left untagged until it does.
+
 Usage
 -----
     ml/.venv/Scripts/python scripts/enrich_lottery_outcomes.py --parquet-dir <bot-eod-dir>
@@ -40,13 +49,14 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date as DateType, datetime, timezone
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 from psycopg2.extras import execute_values
 
-from _cli_paths import existing_dir, format_dates, warn_missing_archive
+from _cli_paths import existing_dir, format_dates, load_env_file, warn_missing_archive
 from _pipeline_retry import connect_with_retry
 
 
@@ -132,13 +142,52 @@ PARQUET_FORMATS = {
     'trades': '{date}-trades.parquet',
     'fulltape': '{date}-fulltape.parquet',
 }
+# Which archive a format reads, as outcome_source / inversion_source name it
+# (migration #201's CHECKs allow only these two for the inversion column).
+ARCHIVE_SOURCES = {
+    'trades': 'bot_eod',
+    'fulltape': 'fulltape',
+}
+OUTCOME_VERSION = 1
+INVERSION_VERSION = 1
+
+# Which fires a run picks up for the outcome pass. A fire a writer tagged
+# (outcome_source set, even with the outcome NULL) is tried, not pending.
+#   pending: enriched_at IS NULL (what a nightly run needs).
+#   empty:   marked enriched (before tagging existed) with no outcome and no
+#            tag.
+#   all:     any fire with no outcome and no tag. list_work_dates also adds
+#            the inversion work for this select.
+Select = Literal['pending', 'empty', 'all']
+OUTCOME_WORK = {
+    'pending': 'enriched_at IS NULL',
+    'empty': (
+        'enriched_at IS NOT NULL AND peak_ceiling_pct IS NULL '
+        'AND outcome_source IS NULL'
+    ),
+    'all': 'peak_ceiling_pct IS NULL AND outcome_source IS NULL',
+}
+INVERSION_WORK = 'realized_flow_inversion_pct IS NULL AND inversion_source IS NULL'
+# Rows written per statement: execute_values page size and stamp id chunk.
+WRITE_BATCH = 500
+
 # Module-level mutable so functions can read without threading args
-# through every call. Populated in main() from --parquet-dir (no default);
-# scripts/recompute_peak_from_parquet.py sets both when it reuses the
-# loaders.
+# through every call. Populated by configure_archive (main() routes
+# --parquet-dir / --parquet-format through it, no default);
+# scripts/recompute_peak_from_parquet.py assigns PARQUET_DIR and
+# PARQUET_FILE_PATTERN directly when it reuses the loaders (it never writes).
 PARQUET_DIR: Path | None = None
 PARQUET_FILE_PATTERN = PARQUET_FORMATS['trades']
+SOURCE_TAG = ARCHIVE_SOURCES['trades']
 ENV_FILE = Path(__file__).resolve().parent.parent / '.env.local'
+
+
+def configure_archive(parquet_dir: Path, parquet_format: str) -> None:
+    """Point the loaders at an archive and tag every write with its source."""
+    global PARQUET_DIR, PARQUET_FILE_PATTERN, SOURCE_TAG
+    PARQUET_DIR = parquet_dir
+    PARQUET_FILE_PATTERN = PARQUET_FORMATS[parquet_format]
+    SOURCE_TAG = ARCHIVE_SOURCES[parquet_format]
 
 
 # ============================================================
@@ -396,13 +445,10 @@ class FlowFire:
 
 
 def load_env() -> None:
-    if not ENV_FILE.exists():
-        sys.exit(f'Missing env file: {ENV_FILE}')
-    with ENV_FILE.open() as f:
-        for line in f:
-            m = re.match(r'^([A-Z_][A-Z0-9_]*)=(.*)$', line.strip())
-            if m:
-                os.environ.setdefault(m.group(1), m.group(2).strip('"').strip("'"))
+    """Fill the process env from ENV_FILE; a missing file is fine (the
+    nightly service has none). ENV_FILE is read at call time because
+    scripts/recompute_peak_from_parquet.py assigns it before calling this."""
+    load_env_file(ENV_FILE)
 
 
 def detect_latest_date() -> str:
@@ -416,13 +462,16 @@ def detect_latest_date() -> str:
     return m.group(1)
 
 
-def fetch_unenriched(conn, target_date: str) -> list[Fire]:
+def fetch_unenriched(
+    conn, target_date: str, select: Select = 'pending'
+) -> list[Fire]:
+    """The date's fires that `select` names (see OUTCOME_WORK)."""
     cur = conn.cursor()
     cur.execute(
-        """
+        f"""
         SELECT id, option_chain_id, entry_time_ct, entry_price
         FROM lottery_finder_fires
-        WHERE date = %s AND enriched_at IS NULL
+        WHERE date = %s AND {OUTCOME_WORK[select]}
         ORDER BY inserted_at ASC
         """,
         (target_date,),
@@ -554,17 +603,17 @@ def load_matched_flow(
 
 
 def fetch_flow_unfilled(conn, target_date: str) -> list[FlowFire]:
-    """Fires for the target date that lack realized_flow_inversion_pct.
-    Independent of the main pass's enriched_at WHERE clause — even
-    fires we already marked enriched-with-NULLs for the trail/peak
-    metrics get a flow-inversion attempt here."""
+    """Fires for the target date with no flow-inversion value and no
+    inversion tag. Independent of the main pass's select — even fires
+    we already marked enriched-with-NULLs for the trail/peak metrics get
+    a flow-inversion attempt here."""
     cur = conn.cursor()
     cur.execute(
-        """
+        f"""
         SELECT id, option_chain_id, underlying_symbol, option_type,
                trigger_time_ct, entry_price, date
         FROM lottery_finder_fires
-        WHERE date = %s AND realized_flow_inversion_pct IS NULL
+        WHERE date = %s AND {INVERSION_WORK}
         ORDER BY id ASC
         """,
         (target_date,),
@@ -584,33 +633,92 @@ def fetch_flow_unfilled(conn, target_date: str) -> list[FlowFire]:
     ]
 
 
-def update_flow_inversion(conn, updates: list[tuple[int, float]]) -> None:
+def update_flow_inversion(
+    conn, updates: list[tuple[int, float]], source: str
+) -> int:
+    """Write (fire id, exit pct) pairs tagged with `source`, only onto rows
+    still without an inversion value or tag. Returns the rows the database
+    says it wrote; fewer than sent means the cron got there first."""
     if not updates:
-        return
+        return 0
     cur = conn.cursor()
-    execute_values(
+    written = execute_values(
         cur,
         """
         UPDATE lottery_finder_fires AS f
-        SET realized_flow_inversion_pct = v.exit_pct
-        FROM (VALUES %s) AS v(id, exit_pct)
+        SET realized_flow_inversion_pct = v.exit_pct,
+            inversion_source = v.source,
+            inversion_version = v.version
+        FROM (VALUES %s) AS v(id, exit_pct, source, version)
         WHERE f.id = v.id
+          AND f.realized_flow_inversion_pct IS NULL
+          AND f.inversion_source IS NULL
+        RETURNING f.id
         """,
-        updates,
-        template='(%s::bigint, %s::numeric)',
-        page_size=500,
+        [(*u, source, INVERSION_VERSION) for u in updates],
+        template='(%s::bigint, %s::numeric, %s::text, %s::smallint)',
+        page_size=WRITE_BATCH,
+        fetch=True,
     )
     conn.commit()
+    return len(written)
+
+
+def stamp_inversion_undefined(conn, fire_ids: list[int], source: str) -> int:
+    """Tag fires whose inversion exit is undefined, leaving the value NULL,
+    so they are not picked again. Counts rows changed: fewer than the ids
+    is normal (the cron got there first)."""
+    if not fire_ids:
+        return 0
+    cur = conn.cursor()
+    stamped = 0
+    for i in range(0, len(fire_ids), WRITE_BATCH):
+        cur.execute(
+            """
+            UPDATE lottery_finder_fires
+            SET inversion_source = %s, inversion_version = %s
+            WHERE id = ANY(%s::bigint[])
+              AND realized_flow_inversion_pct IS NULL
+              AND inversion_source IS NULL
+            """,
+            (source, INVERSION_VERSION, fire_ids[i : i + WRITE_BATCH]),
+        )
+        stamped += cur.rowcount
+    conn.commit()
+    return stamped
+
+
+@dataclass
+class FlowPassResult:
+    written: int = 0
+    stamped_undefined: int = 0
+    # Fires left untagged: no net flow exists yet for their ticker and side.
+    input_missing: int = 0
 
 
 def run_flow_inversion_pass(
-    conn, target_date: str, fires: list[FlowFire]
-) -> int:
+    conn,
+    target_date: str,
+    fires: list[FlowFire],
+    source: str,
+    dry_run: bool = False,
+) -> FlowPassResult:
     """Fill realized_flow_inversion_pct for `fires` (fetch_flow_unfilled's
-    rows for the date). Returns how many rows were written."""
+    rows for the date), tagged with `source`.
+
+    - A finite exit is written.
+    - Any other outcome (no chain in the tape, no print after the trigger,
+      too little flow, flat flow, no peak) is a settled "undefined": the
+      fire is tagged, its value stays NULL, and it is not picked again.
+    - A fire whose (ticker, side) has no net-flow rows at all is left
+      untagged and counted as input_missing: it stays NULL until the flow
+      exists (the chip uses realized_eod_pct for it meanwhile).
+
+    With dry_run nothing is written and the counts are what would be.
+    """
     print(f'[flow-inv] fires lacking flow_inversion: {len(fires):,}')
     if not fires:
-        return 0
+        return FlowPassResult()
 
     chain_index = load_parquet_chain_index(
         target_date, {f.option_chain_id for f in fires}, include_nbbo=True
@@ -623,12 +731,15 @@ def run_flow_inversion_pass(
 
     t0 = time.time()
     updates: list[tuple[int, float]] = []
+    undefined_ids: list[int] = []
+    input_missing = 0
     status_counts: dict[str, int] = {}
 
     for fire in fires:
         chain_df = chain_index.get(fire.option_chain_id)
         if chain_df is None:
             status_counts['no_chain'] = status_counts.get('no_chain', 0) + 1
+            undefined_ids.append(fire.id)
             continue
 
         if fire.option_chain_id not in minute_cache:
@@ -641,6 +752,10 @@ def run_flow_inversion_pass(
                 conn, target_date, fire.underlying_symbol, fire.option_type
             )
         flow = flow_cache[flow_key]
+        if not flow:
+            status_counts['input_missing'] = status_counts.get('input_missing', 0) + 1
+            input_missing += 1
+            continue
 
         trigger_dt = fire.trigger_time_ct
         if trigger_dt.tz is None:
@@ -653,6 +768,8 @@ def run_flow_inversion_pass(
         status_counts[status] = status_counts.get(status, 0) + 1
         if exit_pct is not None and np.isfinite(exit_pct):
             updates.append((fire.id, exit_pct))
+        else:
+            undefined_ids.append(fire.id)
 
     print(
         f'[flow-inv] computed {len(updates):,} exits '
@@ -661,9 +778,19 @@ def run_flow_inversion_pass(
     for status, n in sorted(status_counts.items(), key=lambda x: -x[1]):
         print(f'[flow-inv]   {status}: {n}')
 
-    update_flow_inversion(conn, updates)
-    print(f'[flow-inv] DB updated: {len(updates):,} rows')
-    return len(updates)
+    if dry_run:
+        written, stamped = len(updates), len(undefined_ids)
+    else:
+        written = update_flow_inversion(conn, updates, source)
+        stamped = stamp_inversion_undefined(conn, undefined_ids, source)
+    print(
+        f'[flow-inv] {"DRY RUN would write" if dry_run else "DB updated"}: '
+        f'{written:,} rows, {stamped:,} tagged undefined; '
+        f'{input_missing:,} left for missing net flow'
+    )
+    return FlowPassResult(
+        written=written, stamped_undefined=stamped, input_missing=input_missing
+    )
 
 
 def compute_fire_outcomes(
@@ -688,12 +815,14 @@ def compute_fire_outcomes(
     return trail, hard30, tier50, eod, peak, mtp
 
 
-def update_fires(conn, updates: list[tuple]) -> None:
-    """Bulk UPDATE via VALUES + UPDATE FROM. Faster than per-row UPDATE."""
+def update_fires(conn, updates: list[tuple], source: str) -> int:
+    """Bulk UPDATE via VALUES + UPDATE FROM, tagged with `source`, only onto
+    rows nobody has filled. Returns the rows the database says it wrote;
+    fewer than sent means the cron got there first."""
     if not updates:
-        return
+        return 0
     cur = conn.cursor()
-    execute_values(
+    written = execute_values(
         cur,
         """
         UPDATE lottery_finder_fires AS f
@@ -703,52 +832,61 @@ def update_fires(conn, updates: list[tuple]) -> None:
             realized_eod_pct              = v.eod,
             peak_ceiling_pct              = v.peak,
             minutes_to_peak               = v.mtp,
-            enriched_at                   = NOW()
-        FROM (VALUES %s) AS v(id, trail, hard30, tier50, eod, peak, mtp)
+            enriched_at                   = NOW(),
+            outcome_source                = v.source,
+            outcome_version               = v.version
+        FROM (VALUES %s) AS v(id, trail, hard30, tier50, eod, peak, mtp, source, version)
         WHERE f.id = v.id
+          AND f.peak_ceiling_pct IS NULL
+          AND f.outcome_source IS NULL
+        RETURNING f.id
         """,
-        updates,
-        template='(%s::bigint, %s, %s, %s, %s, %s, %s)',
-        page_size=500,
+        [(*u, source, OUTCOME_VERSION) for u in updates],
+        template='(%s::bigint, %s, %s, %s, %s, %s, %s, %s::text, %s::smallint)',
+        page_size=WRITE_BATCH,
+        fetch=True,
     )
     conn.commit()
+    return len(written)
 
 
-def mark_no_post_ticks(conn, fire_ids: list[int]) -> None:
-    """Mark fires whose entry was the last print as enriched-with-NULLs so
-    we stop re-scanning them on every nightly run. Realized columns stay
-    NULL — there is no realizable exit by definition.
-    """
+def stamp_no_outcome(conn, fire_ids: list[int], source: str) -> int:
+    """Tag fires the tape cannot price (no chain, or no print at or after
+    entry) and mark them enriched, leaving the realized columns NULL: there
+    is no realizable exit, and a source next to a NULL outcome means tried,
+    not pending. Counts rows changed: fewer than the ids is normal (the cron
+    got there first)."""
     if not fire_ids:
-        return
+        return 0
     cur = conn.cursor()
-    cur.execute(
-        """
-        UPDATE lottery_finder_fires
-        SET enriched_at = NOW()
-        WHERE id = ANY(%s::bigint[])
-        """,
-        (fire_ids,),
-    )
-    conn.commit()
-    # Warn if the UPDATE silently affected fewer rows than expected — happens
-    # if a fire row was deleted between the fetch and this UPDATE. Without
-    # this guard we'd commit cleanly and re-scan those IDs on the next nightly.
-    if cur.rowcount != len(fire_ids):
-        print(
-            f'[enrich] WARN mark_no_post_ticks: expected {len(fire_ids)} rows '
-            f'updated, got {cur.rowcount}',
-            file=sys.stderr,
+    stamped = 0
+    for i in range(0, len(fire_ids), WRITE_BATCH):
+        cur.execute(
+            """
+            UPDATE lottery_finder_fires
+            SET enriched_at = NOW(), outcome_source = %s, outcome_version = %s
+            WHERE id = ANY(%s::bigint[])
+              AND peak_ceiling_pct IS NULL
+              AND outcome_source IS NULL
+            """,
+            (source, OUTCOME_VERSION, fire_ids[i : i + WRITE_BATCH]),
         )
+        stamped += cur.rowcount
+    conn.commit()
+    return stamped
 
 
 def refit_ticker_inversion_stats(
     conn,
-    write_db: bool,
     sim_csv_path: Path | None = None,
 ) -> None:
-    """Recompute lottery_ticker_stats.inversion_* columns from the rolling
-    21d / 90d window of realized_flow_inversion_pct values.
+    """Recompute each ticker's inversion quality (Wilson LCB blend and
+    quintile) from the rolling 21d / 90d window of
+    realized_flow_inversion_pct values, and print the counts.
+
+    Read-only: it never writes lottery_ticker_stats. The live stats come
+    from the refit-lottery-ticker-stats cron
+    (api/cron/refit-lottery-ticker-stats.ts).
 
     When sim_csv_path is provided, also writes the tune-before-ship CSV
     (one row per historical fire in the last 90 days) so the operator
@@ -785,36 +923,15 @@ def refit_ticker_inversion_stats(
         rows = cur.fetchall()
 
     blends: dict[str, float | None] = {}
-    per_ticker: dict[str, dict] = {}
     for ticker, n_21d, w_21d, n_90d, w_90d in rows:
         lcb_21 = wilson_lcb(w_21d, n_21d)
         lcb_90 = wilson_lcb(w_90d, n_90d)
-        blend = inversion_blend(lcb_21, lcb_90)
-        blends[ticker] = blend
-        per_ticker[ticker] = {
-            'lcb_21d': lcb_21,
-            'lcb_90d': lcb_90,
-            'blend': blend,
-            'n_21d': n_21d,
-            'n_90d': n_90d,
-        }
+        blends[ticker] = inversion_blend(lcb_21, lcb_90)
 
     quintiles = quintile_cuts(blends)
 
-    upsert_rows = []
-    for ticker, stats in per_ticker.items():
-        upsert_rows.append((
-            ticker,
-            stats['lcb_21d'],
-            stats['lcb_90d'],
-            stats['blend'],
-            quintiles.get(ticker),
-            stats['n_21d'],
-            stats['n_90d'],
-        ))
-
     quintile_counts = Counter(quintiles.values())
-    print(f'[ticker-quality] {len(per_ticker)} tickers seen in 90d window')
+    print(f'[ticker-quality] {len(blends)} tickers seen in 90d window')
     print(
         f'[ticker-quality] quintile distribution: '
         f'{dict(sorted(quintile_counts.items()))}'
@@ -824,50 +941,6 @@ def refit_ticker_inversion_stats(
         f'[ticker-quality] {null_count} tickers had NULL blend '
         f'(no window with N >= {SAMPLE_SIZE_FLOOR})'
     )
-
-    if not write_db:
-        print('[ticker-quality] WRITE_DB not set — skipping UPDATE')
-    else:
-        # UPDATE-only — lottery_ticker_stats has legacy NOT NULL columns
-        # (n_fires, high_peak_rate, ci_*, tier) that this refit doesn't
-        # populate. New tickers (in 90d window but not yet in the table)
-        # are seeded separately by api/_lib/lottery-ticker-stats-seed.ts;
-        # until that runs they keep NULL inversion_quintile, which the
-        # API treats as cold-start (bonus 0, never filtered).
-        with conn.cursor() as cur:
-            batch_size = 500
-            for i in range(0, len(upsert_rows), batch_size):
-                batch = upsert_rows[i:i + batch_size]
-                execute_values(
-                    cur,
-                    """
-                    UPDATE lottery_ticker_stats AS t SET
-                      inversion_lcb_21d = u.lcb_21d,
-                      inversion_lcb_90d = u.lcb_90d,
-                      inversion_blend = u.blend,
-                      inversion_quintile = u.quintile,
-                      inversion_n_21d = u.n_21d,
-                      inversion_n_90d = u.n_90d,
-                      updated_at = NOW()
-                    FROM (VALUES %s) AS u(
-                      ticker, lcb_21d, lcb_90d, blend, quintile, n_21d, n_90d
-                    )
-                    WHERE t.ticker = u.ticker
-                    """,
-                    batch,
-                    template='(%s, %s, %s, %s, %s, %s, %s)',
-                )
-            cur.execute(
-                'SELECT COUNT(*) FROM lottery_ticker_stats '
-                'WHERE inversion_quintile IS NOT NULL'
-            )
-            updated_count = cur.fetchone()[0]
-        conn.commit()
-        skipped = len(upsert_rows) - updated_count
-        print(
-            f'[ticker-quality] UPDATED {updated_count} existing rows; '
-            f'{skipped} new tickers skipped (not yet in lottery_ticker_stats)'
-        )
 
     if sim_csv_path is not None:
         _write_tune_csv(conn, quintiles, sim_csv_path)
@@ -941,23 +1014,73 @@ def _write_tune_csv(
         print(f'  >={t1:>2}   >={t2:>2}     {med:>5.1f}{marker}')
 
 
-def list_unenriched_dates(conn) -> list[str]:
-    """Distinct YYYY-MM-DD dates with at least one pending fire (enriched_at NULL).
+def list_work_dates(
+    conn,
+    select: Select,
+    since: str | None = None,
+    through: str | None = None,
+) -> list[str]:
+    """Distinct YYYY-MM-DD dates with outcome work for `select` (see
+    OUTCOME_WORK), ascending, within [since, through] when given.
+
+    'all' also lists the dates with inversion work, but only where the
+    matched side's net flow exists for the ticker on the same UTC day
+    load_matched_flow reads: a date whose only work is inversion for flow
+    that has not arrived is not listed until it does.
 
     Used by --all-unenriched so post-nightly manual backfills don't get
     stranded when the per-date enrich-one pass in the nightly loop missed
     them (e.g. alerts inserted by scripts/backfill_lottery_fires_for_ticker.py
     after `make nightly` already ran its per-CSV pipeline).
     """
+    bounds = ''
+    bound_params: list[str] = []
+    if since is not None:
+        bounds += ' AND date >= %s::date'
+        bound_params.append(since)
+    if through is not None:
+        bounds += ' AND date <= %s::date'
+        bound_params.append(through)
+
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT DISTINCT date::text
-        FROM lottery_finder_fires
-        WHERE enriched_at IS NULL
-        ORDER BY date ASC
-        """
-    )
+    if select != 'all':
+        cur.execute(
+            f"""
+            SELECT DISTINCT date::text
+            FROM lottery_finder_fires
+            WHERE {OUTCOME_WORK[select]}{bounds}
+            ORDER BY 1
+            """,
+            tuple(bound_params),
+        )
+    else:
+        cur.execute(
+            f"""
+            SELECT DISTINCT date::text
+            FROM (
+              SELECT date
+              FROM lottery_finder_fires
+              WHERE {OUTCOME_WORK['all']}{bounds}
+              UNION ALL
+              SELECT w.date
+              FROM (
+                SELECT DISTINCT date, underlying_symbol, option_type
+                FROM lottery_finder_fires
+                WHERE {INVERSION_WORK}{bounds}
+              ) w
+              WHERE EXISTS (SELECT 1
+                            FROM net_flow_per_ticker_history n
+                            WHERE n.ticker = w.underlying_symbol
+                              AND n.ts >= w.date::timestamp AT TIME ZONE 'UTC'
+                              AND n.ts < (w.date + 1)::timestamp AT TIME ZONE 'UTC'
+                              AND CASE WHEN w.option_type = 'C'
+                                       THEN n.net_call_prem
+                                       ELSE n.net_put_prem END IS NOT NULL)
+            ) d
+            ORDER BY 1
+            """,
+            tuple(bound_params) * 2,
+        )
     return [r[0] for r in cur.fetchall()]
 
 
@@ -966,14 +1089,32 @@ class DayResult:
     """What enrich_one_date did for one date."""
 
     archive_missing: bool = False
-    # Main pass: outcome rows written plus fires marked enriched-with-NULLs.
+    # Main pass: outcome rows written plus unpriced fires tagged.
     fires_written: int = 0
     flow_written: int = 0
+    # Main pass: fires selected, outcome rows written (the database's count,
+    # at most the priced fires), unpriced fires tagged.
+    fires_selected: int = 0
+    outcomes_written: int = 0
+    stamped_no_outcome: int = 0
+    # Flow pass: fires selected, tagged undefined, left for missing net flow.
+    flow_selected: int = 0
+    flow_stamped_undefined: int = 0
+    flow_input_missing: int = 0
 
 
-def enrich_one_date(conn, target_date: str) -> DayResult:
+def enrich_one_date(
+    conn,
+    target_date: str,
+    select: Select = 'pending',
+    dry_run: bool = False,
+) -> DayResult:
     """Per-date passes: main outcome computation + flow-inversion. Caller
     runs the global ticker-quality refit once after the date loop.
+
+    Every write is tagged with SOURCE_TAG (see configure_archive) and only
+    fills a row nobody has filled, so the counts are what the database
+    wrote. With dry_run nothing is written and the counts are what would be.
 
     A day with work to do whose archive file is missing is skipped: one
     line names it (warn_missing_archive) and nothing is written for it, so
@@ -981,10 +1122,10 @@ def enrich_one_date(conn, target_date: str) -> DayResult:
     later run with the file in place (a Full Tape backfill, say). Every
     other failure (DB, unreadable parquet) still raises.
     """
-    fires = fetch_unenriched(conn, target_date)
-    print(f'[enrich] {target_date} unenriched fires: {len(fires):,}')
-    # The flow pass ignores enriched_at, and the main pass never writes its
-    # column, so its fires can be fetched before the main pass runs.
+    fires = fetch_unenriched(conn, target_date, select)
+    print(f'[enrich] {target_date} unenriched fires ({select}): {len(fires):,}')
+    # The flow pass ignores the main select, and the main pass never writes
+    # its columns, so its fires can be fetched before the main pass runs.
     flow_fires = fetch_flow_unfilled(conn, target_date)
     path = day_archive_path(target_date)
     if (fires or flow_fires) and not path.exists():
@@ -997,7 +1138,7 @@ def enrich_one_date(conn, target_date: str) -> DayResult:
         )
         return DayResult(archive_missing=True)
 
-    result = DayResult()
+    result = DayResult(fires_selected=len(fires), flow_selected=len(flow_fires))
     if not fires:
         print(f'[enrich] {target_date} main pass: nothing to do')
     else:
@@ -1008,16 +1149,17 @@ def enrich_one_date(conn, target_date: str) -> DayResult:
 
         t0 = time.time()
         updates: list[tuple] = []
-        no_post_tick_ids: list[int] = []
-        skipped_chain_missing = 0
+        unpriced_ids: list[int] = []
+        no_chain = 0
         for fire in fires:
             chain_df = chain_index.get(fire.option_chain_id)
             if chain_df is None:
-                skipped_chain_missing += 1
+                no_chain += 1
+                unpriced_ids.append(fire.id)
                 continue
             res = compute_fire_outcomes(fire, chain_df)
             if res is None:
-                no_post_tick_ids.append(fire.id)
+                unpriced_ids.append(fire.id)
                 continue
             trail, hard30, tier50, eod, peak, mtp = res
             updates.append(
@@ -1027,23 +1169,36 @@ def enrich_one_date(conn, target_date: str) -> DayResult:
         print(
             f'[enrich] {target_date} computed {len(updates):,} outcomes '
             f'in {time.time() - t0:.1f}s '
-            f'(skipped: {skipped_chain_missing} no-chain, '
-            f'{len(no_post_tick_ids)} no-post-ticks)'
+            f'(unpriced: {no_chain} no-chain, '
+            f'{len(unpriced_ids) - no_chain} no-post-ticks)'
         )
 
-        update_fires(conn, updates)
-        mark_no_post_ticks(conn, no_post_tick_ids)
+        if dry_run:
+            result.outcomes_written = len(updates)
+            result.stamped_no_outcome = len(unpriced_ids)
+        else:
+            result.outcomes_written = update_fires(conn, updates, SOURCE_TAG)
+            result.stamped_no_outcome = stamp_no_outcome(
+                conn, unpriced_ids, SOURCE_TAG
+            )
         print(
-            f'[enrich] {target_date} DB updated: {len(updates):,} rows '
-            f'(+ {len(no_post_tick_ids)} marked enriched-with-NULLs)'
+            f'[enrich] {target_date} '
+            f'{"DRY RUN would write" if dry_run else "DB updated"}: '
+            f'{result.outcomes_written:,} rows '
+            f'(+ {result.stamped_no_outcome} tagged with no outcome)'
         )
-        result.fires_written = len(updates) + len(no_post_tick_ids)
+        result.fires_written = result.outcomes_written + result.stamped_no_outcome
 
-    # Second pass — flow-inversion. Targets `realized_flow_inversion_pct
-    # IS NULL` regardless of enriched_at, so it backfills both the
-    # rows we just enriched AND any historical fires the Vercel cron
+    # Second pass — flow-inversion. Targets the fires with no inversion
+    # value and no tag, regardless of the main select, so it backfills both
+    # the rows we just enriched AND any historical fires the Vercel cron
     # missed.
-    result.flow_written = run_flow_inversion_pass(conn, target_date, flow_fires)
+    flow = run_flow_inversion_pass(
+        conn, target_date, flow_fires, SOURCE_TAG, dry_run=dry_run
+    )
+    result.flow_written = flow.written
+    result.flow_stamped_undefined = flow.stamped_undefined
+    result.flow_input_missing = flow.input_missing
     return result
 
 
@@ -1105,9 +1260,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
 
-    global PARQUET_DIR, PARQUET_FILE_PATTERN
-    PARQUET_DIR = args.parquet_dir
-    PARQUET_FILE_PATTERN = PARQUET_FORMATS[args.parquet_format]
+    configure_archive(args.parquet_dir, args.parquet_format)
 
     load_env()
 
@@ -1121,7 +1274,7 @@ def main(argv: list[str] | None = None) -> None:
     results: dict[str, DayResult] = {}
     try:
         if args.all_unenriched:
-            dates = list_unenriched_dates(conn)
+            dates = list_work_dates(conn, 'pending')
             if not dates:
                 # Nothing pending — fall through to the global refit so the
                 # caller (make enrich) still gets a stats refresh.
@@ -1149,11 +1302,7 @@ def main(argv: list[str] | None = None) -> None:
         # lottery_finder_fires regardless of whether today's main pass ran.
         # Stamp the sim CSV with the most recent date we touched.
         sim_csv = Path(f'docs/tmp/lottery-quality-sim-{latest_date}.csv')
-        refit_ticker_inversion_stats(
-            conn,
-            write_db=bool(int(os.environ.get('WRITE_DB', '0'))),
-            sim_csv_path=sim_csv,
-        )
+        refit_ticker_inversion_stats(conn, sim_csv_path=sim_csv)
         print_run_summary(results)
 
     finally:

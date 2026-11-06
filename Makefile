@@ -194,12 +194,13 @@ enrich:
 	@# Three passes per date plus a global third pass:
 	@#   1. trail/hard/tier50/peak/eod/min_to_peak from parquet (per-date)
 	@#   2. flow_inversion from parquet NBBO mids + net_flow_per_ticker_history (per-date)
-	@#   3. per-ticker inversion-quality refit (Wilson LCB + quintile) into
-	@#      lottery_ticker_stats (global, runs once after the date loop).
-	@#      Gated by WRITE_DB=1; staleness >3 days raises a Sentry warning
-	@#      from the next /api/cron/refresh-vix1d run (see spec
+	@#   3. per-ticker inversion-quality refit (Wilson LCB + quintile; global,
+	@#      runs once after the date loop). It prints the [ticker-quality]
+	@#      lines and writes the optional sim CSV. It never writes
+	@#      lottery_ticker_stats: the live stats come from the
+	@#      refit-lottery-ticker-stats cron (see spec
 	@#      lottery-inversion-quality-filter-2026-05-19.md).
-	WRITE_DB=1 $(PYTHON) scripts/enrich_lottery_outcomes.py --all-unenriched --parquet-dir "$(PARQUET_DIR)"
+	$(PYTHON) scripts/enrich_lottery_outcomes.py --all-unenriched --parquet-dir "$(PARQUET_DIR)"
 	@echo ""
 	@echo "════════════════════════════════════════════════════════════════"
 	@echo "  STEP 5/5 (cont.) — enrich_silent_boom_outcomes.py --all-unenriched"
