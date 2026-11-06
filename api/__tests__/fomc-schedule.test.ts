@@ -56,16 +56,29 @@ describe('isSepMeeting', () => {
   });
 
   it('only ever marks a decision day, and marks four a year', () => {
+    // Scan every day from the first listed year to the last, so a year added
+    // to the schedule is checked without editing this test.
+    const firstYear = Number.parseInt(
+      FOMC_DECISION_DATES[0]?.slice(0, 4) ?? '',
+      10,
+    );
+    const lastYear = Number.parseInt(
+      FOMC_DECISION_DATES.at(-1)?.slice(0, 4) ?? '',
+      10,
+    );
     const sepDays: string[] = [];
-    const cursor = new Date(Date.UTC(2025, 0, 1));
-    const end = Date.UTC(2027, 11, 31);
+    const cursor = new Date(Date.UTC(firstYear, 0, 1));
+    const end = Date.UTC(lastYear, 11, 31);
     while (cursor.getTime() <= end) {
       const day = cursor.toISOString().slice(0, 10);
       if (isSepMeeting(day)) sepDays.push(day);
       cursor.setUTCDate(cursor.getUTCDate() + 1);
     }
     expect(sepDays.filter((d) => !isFomcDecisionDay(d))).toEqual([]);
-    expect(sepDays).toHaveLength(12);
+    for (let year = firstYear; year <= lastYear; year++) {
+      expect(sepDays.filter((d) => d.startsWith(`${year}-`))).toHaveLength(4);
+    }
+    expect(sepDays).toHaveLength(4 * (lastYear - firstYear + 1));
   });
 });
 
@@ -87,19 +100,19 @@ describe('FOMC_DECISION_DATES', () => {
       [...new Set(FOMC_DECISION_DATES)].sort(),
     );
   });
-
-  it('agrees with isFomcDecisionDay for every entry', () => {
-    expect(FOMC_DECISION_DATES.every(isFomcDecisionDay)).toBe(true);
-  });
 });
 
 /**
  * Drift guard, Python. `ml/src/options_features/calendar.py` keeps its own
  * `FOMC_DATES` frozenset of `date(Y, M, D)` entries, starting in 2024. The
- * 2024 entries have no TypeScript counterpart, so only dates on or after the
- * first TypeScript date are compared; a later year present on one side only
- * fails.
+ * 2024 entries have no TypeScript counterpart, so only dates from 1 January
+ * of the first TypeScript year on are compared; any other date present on one
+ * side only fails, including an early-year date that sits before the first
+ * TypeScript date.
  */
+const PYTHON_DATE_ENTRY =
+  /date\(\s*(\d{4})\s*,\s*(\d{1,2})\s*,\s*(\d{1,2})\s*\)/g;
+
 function readPythonFomcDates(): string[] {
   const source = readFileSync(
     resolve(process.cwd(), 'ml', 'src', 'options_features', 'calendar.py'),
@@ -112,11 +125,24 @@ function readPythonFomcDates(): string[] {
   }
   // Drop `# ...` comments so a commented-out date( ) entry is not counted.
   const body = literal[1].replaceAll(/#.*$/gm, '');
+  // An entry written any other way (`date.fromisoformat('2028-01-26')`) would
+  // be skipped by the match below, so require that nothing but `date(Y, M, D)`
+  // entries, commas and whitespace is in the literal.
+  const unparsed = body
+    .replaceAll(PYTHON_DATE_ENTRY, '')
+    .replaceAll(/[\s,]/g, '');
+  if (unparsed !== '') {
+    throw new Error(
+      `calendar.py: FOMC_DATES holds an entry other than date(Y, M, D): ${unparsed}`,
+    );
+  }
   const dates = [
-    ...body.matchAll(/date\(\s*(\d{4})\s*,\s*(\d{1,2})\s*,\s*(\d{1,2})\s*\)/g),
-  ]
-    .map(([, y, m, d]) => `${y}-${m?.padStart(2, '0')}-${d?.padStart(2, '0')}`)
-    .sort();
+    ...new Set(
+      [...body.matchAll(PYTHON_DATE_ENTRY)].map(
+        ([, y, m, d]) => `${y}-${m?.padStart(2, '0')}-${d?.padStart(2, '0')}`,
+      ),
+    ),
+  ].sort();
   if (dates.length === 0) {
     throw new Error('calendar.py: FOMC_DATES held no date(Y, M, D) entries');
   }
@@ -125,9 +151,14 @@ function readPythonFomcDates(): string[] {
 
 describe('drift guard: ml/src/options_features/calendar.py', () => {
   it('holds the same decision days as FOMC_DECISION_DATES (2024 aside)', () => {
-    const firstTsDate = FOMC_DECISION_DATES[0] ?? '';
-    const pythonDates = readPythonFomcDates().filter((d) => d >= firstTsDate);
-    expect(pythonDates).toEqual([...FOMC_DECISION_DATES]);
+    const firstTsYear = (FOMC_DECISION_DATES[0] ?? '').slice(0, 4);
+    const pythonDates = readPythonFomcDates().filter(
+      (d) => d >= `${firstTsYear}-01-01`,
+    );
+    expect(
+      pythonDates,
+      'ml/src/options_features/calendar.py FOMC_DATES and api/_lib/fomc-schedule.ts FOMC_DECISION_DATES must hold the same dates: edit both together',
+    ).toEqual([...FOMC_DECISION_DATES]);
   });
 });
 

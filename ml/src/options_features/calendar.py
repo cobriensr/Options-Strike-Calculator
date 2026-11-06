@@ -4,8 +4,9 @@ OPEX (monthly options expiration) is the **third Friday** of every calendar
 month. Computable deterministically from the date alone.
 
 FOMC meeting dates are a published calendar the Fed releases annually. We
-maintain a static frozenset for 2024 through 2027 — extend when the Fed
-releases 2028 dates. A missed FOMC flag is safe (the day just doesn't get
+maintain a static frozenset for 2024 through 2027 — extend it, together with
+api/_lib/fomc-schedule.ts, when the Fed releases 2028 dates (see the comment
+above FOMC_DATES). A missed FOMC flag is safe (the day just doesn't get
 tagged); a wrong flag is noisy, so prefer omission over invention.
 
 These flags feed the backtest's `event_day_filter` param so the sweep can
@@ -24,6 +25,7 @@ import pandas as pd
 # transcribed. Extend annually when the Fed publishes the next year's dates.
 # Flag policy: include only the decision-day date itself. Day-before "start
 # of meeting" is a media term, not a market event, and we don't tag it.
+# Edit with api/_lib/fomc-schedule.ts; api/__tests__/fomc-schedule.test.ts checks both.
 FOMC_DATES: frozenset[date] = frozenset(
     {
         # 2024
