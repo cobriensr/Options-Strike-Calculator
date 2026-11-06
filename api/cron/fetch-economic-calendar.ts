@@ -5,7 +5,8 @@
  * today's events in the economic_events table.
  *
  * Runs once daily before market open (9:00-9:30 AM ET on weekdays).
- * Categorizes each event by type (FOMC, CPI, PCE, JOBS, GDP, PMI, etc.)
+ * Classifies each event by name (FOMC, FED, CPI, PCE, JOBS, GDP, PMI, etc.)
+ * with classifyEconomicEvent.
  *
  * Total API calls per invocation: 1
  *
@@ -14,6 +15,7 @@
 
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { bulkUpsert } from '../_lib/bulk-upsert.js';
+import { classifyEconomicEvent } from '../_lib/economic-event-type.js';
 import { uwFetch, withRetry, checkDataQuality } from '../_lib/api-helpers.js';
 import {
   withCronInstrumentation,
@@ -54,21 +56,6 @@ function isPreMarket(): boolean {
   return totalMin >= 540 && totalMin <= 570;
 }
 
-// ── Event type categorization ───────────────────────────────
-
-function categorizeEvent(eventName: string): string {
-  const name = eventName;
-  if (/FOMC|Federal Reserve|Fed/i.test(name)) return 'FOMC';
-  if (/CPI|Consumer Price/i.test(name)) return 'CPI';
-  if (/PCE/i.test(name)) return 'PCE';
-  if (/Nonfarm|Employment|Jobs/i.test(name)) return 'JOBS';
-  if (/GDP/i.test(name)) return 'GDP';
-  if (/PMI/i.test(name)) return 'PMI';
-  if (/Retail/i.test(name)) return 'RETAIL';
-  if (/sentiment/i.test(name)) return 'SENTIMENT';
-  return 'OTHER';
-}
-
 // ── Handler ─────────────────────────────────────────────────
 
 export default withCronInstrumentation(
@@ -80,11 +67,23 @@ export default withCronInstrumentation(
       uwFetch<CalendarEvent>(apiKey, '/market/economic-calendar'),
     );
 
-    // Filter to today's events only
-    const todayEvents = events.filter((e) => {
-      const eventDate = getETDateStr(new Date(e.time));
-      return eventDate === todayStr;
-    });
+    // Filter to today's events only. An event whose `time` doesn't parse is
+    // skipped and counted: formatting an Invalid Date throws, and one bad row
+    // must not fail the whole day's run.
+    const todayEvents: CalendarEvent[] = [];
+    let invalidTimeSkipped = 0;
+    for (const e of events) {
+      const eventAt = new Date(e.time);
+      if (Number.isNaN(eventAt.getTime())) {
+        invalidTimeSkipped++;
+        logger.warn(
+          { event: e.event, time: e.time },
+          'fetch-economic-calendar: skipping event with unparseable time',
+        );
+        continue;
+      }
+      if (getETDateStr(eventAt) === todayStr) todayEvents.push(e);
+    }
 
     const sql = getDb();
 
@@ -94,7 +93,7 @@ export default withCronInstrumentation(
       date: todayStr,
       event_name: e.event,
       event_time: e.time,
-      event_type: categorizeEvent(e.event),
+      event_type: classifyEconomicEvent(e.event),
       forecast: e.forecast,
       previous: e.prev,
       reported_period: e.reported_period,
@@ -164,6 +163,8 @@ export default withCronInstrumentation(
         date: todayStr,
         eventsStored: todayEvents.length,
         events: todayEvents.map((e) => e.event),
+        // Not in AXIOM_TOP_LEVEL_KEYS, so it lands in the Axiom `meta` string.
+        invalidTimeSkipped,
       },
     };
   },

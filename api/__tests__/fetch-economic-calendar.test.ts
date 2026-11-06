@@ -24,6 +24,7 @@ vi.mock('../_lib/logger.js', () => ({
   },
 }));
 
+import logger from '../_lib/logger.js';
 import handler from '../cron/fetch-economic-calendar.js';
 
 // Fixed times — 2026-03-25 is a Wednesday
@@ -208,6 +209,7 @@ describe('fetch-economic-calendar handler', () => {
       date: '2026-03-25',
       eventsStored: 0,
       events: [],
+      invalidTimeSkipped: 0,
     });
     expect(mockSql).not.toHaveBeenCalled();
   });
@@ -270,9 +272,10 @@ describe('fetch-economic-calendar handler', () => {
     // Data-quality SELECT still uses the tagged-template form.
     expect(mockSql).toHaveBeenCalledTimes(1);
 
+    // "FOMC Meeting Minutes" is a Fed mention, not the decision day: FED.
     const expectedTypes = [
       'CPI',
-      'FOMC',
+      'FED',
       'PCE',
       'JOBS',
       'GDP',
@@ -319,6 +322,50 @@ describe('fetch-economic-calendar handler', () => {
     // 1 bulk insert (sql.query) + 1 data-quality SELECT (tagged template).
     expect(mockQuery).toHaveBeenCalledTimes(1);
     expect(mockSql).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips an event with an unparseable time, logs it, and still succeeds', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+
+    stubFetch([
+      makeCalendarEvent({ event: 'CPI', time: '2026-03-25T13:30:00Z' }),
+      makeCalendarEvent({ event: 'Broken Event', time: 'not-a-date' }),
+      makeCalendarEvent({
+        event: 'Retail Sales',
+        time: '2026-03-25T13:30:00Z',
+      }),
+    ]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // The bad row doesn't fail the run: 200, status success, no 500 body.
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      date: '2026-03-25',
+      eventsStored: 2,
+      events: ['CPI', 'Retail Sales'],
+      invalidTimeSkipped: 1,
+    });
+    expect(res._json).not.toHaveProperty('error');
+
+    // The bad event is named in the log, and only the 2 good rows are stored
+    // (event_name is the 2nd param of each 7-column tuple).
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'Broken Event', time: 'not-a-date' }),
+      expect.stringContaining('unparseable time'),
+    );
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params).toHaveLength(2 * 7);
+    expect(params[1]).toBe('CPI');
+    expect(params[8]).toBe('Retail Sales');
+    expect(params).not.toContain('Broken Event');
   });
 
   // ── Error handling ────────────────────────────────────────

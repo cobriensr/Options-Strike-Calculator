@@ -131,7 +131,8 @@ The first matching rule wins:
   - an event with an unparseable `time` currently throws inside the filter
     and fails the whole day's run;
   - instead, skip that event, log it with its name, and count it in the run
-    metadata.
+    metadata as `invalidTimeSkipped` (not an Axiom top-level key, so it lands
+    in `meta`).
 
 ## Phases
 
@@ -217,14 +218,13 @@ winter), so that day's row is covered.
 ## Open questions
 
 **Q1. Fed speeches, minutes and the Beige Book: their own type, or OTHER?**
-- The owner approved OTHER.
+- The owner first approved OTHER.
 - The catch: analyze Rule 12 (`analyze-prompts.ts:726`) hard-exits on "Fed
   speeches after 1:00 PM ET". As OTHER they would drop from `[HIGH]` to
   `[MEDIUM]` in the analyze prompt.
-- **Default pick:** a `FED` type that stays in `HIGH_SEVERITY_TYPES`, so the
-  analyze prompt reads them exactly as it does today. They leave `is_fomc` and
-  the MACRO badge.
-- Pending the owner's answer.
+- **Resolved 2026-11-06:** owner chose `FED`, kept in `HIGH_SEVERITY_TYPES`.
+  The analyze prompt reads Fed speeches, testimony, minutes and the Beige Book
+  exactly as it does today. They leave `is_fomc` and the MACRO badge.
 
 **Q2. The MACRO badge's lift figures were measured on the mislabelled data.**
 - The figures: 72–168 h, 1.19× / 1.28×, N=57,533, in
