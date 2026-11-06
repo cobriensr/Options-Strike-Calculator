@@ -346,6 +346,8 @@ describe('runBarBackfill', () => {
       /ES 2026-09-15 {2}missing 1379 {2}built 2 {2}inserted 2 {2}unbuildable 0/,
     );
     expect(out()).not.toContain('uw-key');
+    // ESU6 printed; the two empty candidates don't make it a no-prints day.
+    expect(out()).not.toMatch(/prints 0/);
   });
 
   it('on a roll day writes only the leader’s bar for each minute, and leaves a minute empty when the leader did not print', async () => {
@@ -591,7 +593,72 @@ describe('runBarBackfill', () => {
       expect(out()).toMatch(/14:01:00Z .*volume rest 2 stored 3/);
       expect(out()).toMatch(/14:01:00Z .*sellVolume rest 2 stored NULL/);
       expect(out()).not.toMatch(/14:00:00Z/);
-      expect(out()).toMatch(/ZN {2}matched 1 of 2 compared \(50\.00%\)/);
+      expect(out()).not.toMatch(/prints 0/);
+      // Of the 3 stored bars, 1 matched: a stored bar REST can't rebuild
+      // counts against the root, not just the 2 that were compared.
+      expect(out()).toMatch(
+        /ZN {2}matched 1 of 3 stored \(33\.33%\) {2}compared 2 {2}stored-only 1 {2}rest-only 1/,
+      );
+    });
+
+    it('a stored bar no print rebuilds lowers the root’s percentage even when every compared bar matches', async () => {
+      routeSql({
+        ZN: [
+          storedRow('2026-09-15T14:00:00Z', {
+            open: '107.2031',
+            high: '107.2031',
+            low: '107.2031',
+            close: '107.2031',
+            volume: 4,
+            buy_volume: 4,
+          }),
+          storedRow('2026-09-15T14:05:00Z'), // a leader or roll disagreement
+        ],
+      });
+      routeZn([
+        print(2, '2026-09-15T14:00:30.000000Z', 4, 'buy', '107.203125000'),
+      ]);
+
+      await run({ compare: true, roots: ['ZN'] });
+
+      expect(out()).toMatch(
+        /ZN {2}matched 1 of 2 stored \(50\.00%\) {2}compared 1 {2}stored-only 1 {2}rest-only 0/,
+      );
+    });
+
+    it('adds a root’s days together and reports each root on its own line', async () => {
+      // The stored-bar mock ignores the day window, so both days read the
+      // same bar; each day's prints rebuild none of it.
+      routeSql({
+        ZN: [storedRow('2026-09-15T14:05:00Z')],
+        ES: [storedRow('2026-09-15T14:05:00Z')],
+      });
+      routeTrades({
+        ZNU6: [[ENDER], [ENDER]],
+        ZNZ6: [[], []],
+        ZNH7: [[], []],
+        ESU6: [[ENDER], [ENDER]],
+        ESZ6: [[], []],
+        ESH7: [[], []],
+      });
+
+      await run({
+        compare: true,
+        roots: ['ZN', 'ES'],
+        dates: [DAY, '2026-09-16'],
+      });
+
+      expect(out()).toMatch(/ZN {2}matched 0 of 2 stored \(0\.00%\)/);
+      expect(out()).toMatch(/ES {2}matched 0 of 2 stored \(0\.00%\)/);
+    });
+
+    it('marks a root-day whose candidates returned no prints', async () => {
+      routeSql({ ZN: [storedRow('2026-09-15T14:05:00Z')] });
+      routeZn([]);
+
+      await run({ compare: true, roots: ['ZN'] });
+
+      expect(out()).toMatch(/ZN 2026-09-15 .*stored-only 1 .*prints 0/);
     });
 
     it('prints only the first few differences per root-day', async () => {
@@ -649,6 +716,54 @@ describe('runBarBackfill', () => {
     expect(insertCalls()).toHaveLength(1);
     expect(inserted().symbol).toBe('NQ');
     expect(out()).toMatch(/1 failed root-days/);
+    // The end of the run names what to re-run: explicit dates stay dates.
+    expect(out()).toMatch(/Failed root-days: ES 2026-09-15$/m);
+    expect(out()).toMatch(
+      /Re-run with 2026-09-15 --roots ES --max-pages 20000$/m,
+    );
+  });
+
+  it('lists every failed root-day at the end, with a re-run line over the failed dates and roots', async () => {
+    mockUwFetch.mockImplementation(async (_key: string, path: string) => {
+      const dayAfter = (d: string) => `older_than=${d}`;
+      if (
+        path.startsWith('/futures/ESU6/') &&
+        path.includes(dayAfter('2026-09-16'))
+      ) {
+        throw new Error('UW API 502: bad gateway');
+      }
+      if (
+        path.startsWith('/futures/NQU6/') &&
+        path.includes(dayAfter('2026-09-18'))
+      ) {
+        throw new Error('UW API 503: unavailable');
+      }
+      return [];
+    });
+
+    const code = await run({
+      dates: null,
+      from: '2026-09-15',
+      to: '2026-09-17',
+      roots: ['ES', 'NQ', 'CL'],
+    });
+
+    expect(code).toBe(1);
+    expect(out()).toMatch(/Failed root-days: ES 2026-09-15, NQ 2026-09-17$/m);
+    expect(out()).toMatch(
+      /Re-run with --from 2026-09-15 --to 2026-09-17 --roots ES,NQ --max-pages 20000$/m,
+    );
+    expect(out()).not.toMatch(/finished root-days are skipped/);
+  });
+
+  it('keeps the mode flag in the re-run line', async () => {
+    mockSql.mockRejectedValue(new Error('connection terminated'));
+
+    await run({ compare: true });
+
+    expect(out()).toMatch(
+      /Re-run with 2026-09-15 --roots ES --max-pages 20000 --compare$/m,
+    );
   });
 
   it('a rejected INSERT fails that root-day and the exit code, not a clean run', async () => {
@@ -669,7 +784,7 @@ describe('runBarBackfill', () => {
 
     expect(code).toBe(1);
     expect(out()).toMatch(/ES 2026-09-15 FAILED: connection terminated/);
-    expect(out()).toMatch(/Re-run the failed dates/);
+    expect(out()).toMatch(/Re-run with 2026-09-15 --roots ES/);
   });
 
   it('a rejected read of the stored bars fails the root-day before any UW call', async () => {
@@ -698,6 +813,14 @@ describe('runBarBackfill', () => {
     expect(out()).toMatch(/ES 2026-09-15 FAILED: ESU6: more than 5000 pages/);
     expect(out()).toMatch(/\(after 5000 pages\)/);
     expect(out()).toMatch(/Page budget spent.*--from 2026-09-16/is);
+    // A failure and an early stop together: both are listed at the end.
+    expect(out()).toMatch(/Failed root-days: ES 2026-09-15$/m);
+    expect(out()).toMatch(
+      /Re-run with 2026-09-15 --roots ES --max-pages 100$/m,
+    );
+    expect(out()).toMatch(
+      /Incomplete: stopped before 2026-09-16\. Resume with 2026-09-16 --roots ES --max-pages 100$/m,
+    );
   });
 
   it('refuses to start during market hours (UW concurrency is shared with the crons)', async () => {
@@ -724,13 +847,18 @@ describe('runBarBackfill', () => {
 
     const code = await run({ dates: [DAY, '2026-09-16'] });
 
-    expect(code).toBe(0);
+    // Dates were left unprocessed, so the run is not a success.
+    expect(code).toBe(1);
     expect(insertCalls()).toHaveLength(1);
     expect(out()).toMatch(/Market hours began: stopping before 2026-09-16/);
     expect(out()).toMatch(/--from 2026-09-16/);
+    expect(out()).toMatch(
+      /Incomplete: stopped before 2026-09-16\. Resume with 2026-09-16 --roots ES --max-pages 20000$/m,
+    );
+    expect(out()).not.toMatch(/Failed root-days/);
   });
 
-  it('stops before the next date once the page budget is spent', async () => {
+  it('stops before the next date once the page budget is spent, and exits 1 with the dates to resume', async () => {
     routeTrades({
       ESU6: [[print(2, '2026-09-15T14:00:30.000000Z', 1, 'buy'), ENDER]],
       ESZ6: [[]],
@@ -739,9 +867,58 @@ describe('runBarBackfill', () => {
 
     const code = await run({ dates: [DAY, '2026-09-16'], maxPages: 2 });
 
-    expect(code).toBe(0);
+    expect(code).toBe(1);
     // 09-15 used 3 pages; 09-16 never starts.
     expect(out()).toMatch(/Page budget spent \(3 of 2\).*--from 2026-09-16/is);
     expect(insertCalls()).toHaveLength(1);
+    expect(out()).toMatch(
+      /Incomplete: stopped before 2026-09-16\. Resume with 2026-09-16 --roots ES --max-pages 2$/m,
+    );
+  });
+
+  it('a range run that stops early resumes with --from and the same --to', async () => {
+    mockIsMarketHours
+      .mockReturnValueOnce(false) // the start guard
+      .mockReturnValueOnce(false) // before 09-15
+      .mockReturnValue(true); // before 09-16
+    routeTrades({
+      ESU6: [[print(2, '2026-09-15T14:00:30.000000Z', 1, 'buy'), ENDER]],
+      ESZ6: [[]],
+      ESH7: [[]],
+    });
+
+    const code = await run({
+      dates: null,
+      from: DAY,
+      to: '2026-09-17',
+      compare: true,
+    });
+
+    expect(code).toBe(1);
+    expect(out()).toMatch(
+      /Incomplete: stopped before 2026-09-16\. Resume with --from 2026-09-16 --to 2026-09-17 --roots ES --max-pages 20000 --compare$/m,
+    );
+  });
+
+  it('a run that reaches its last date is not marked incomplete', async () => {
+    routeTrades({
+      ESU6: [[], []],
+      ESZ6: [[], []],
+      ESH7: [[], []],
+    });
+
+    const code = await run({ dates: [DAY, '2026-09-16'], maxPages: 100_000 });
+
+    expect(code).toBe(0);
+    expect(out()).not.toMatch(/Incomplete/);
+  });
+
+  it('marks a root-day whose candidates returned no prints, so a UW history hole shows', async () => {
+    routeTrades({ ESU6: [[]], ESZ6: [[]], ESH7: [[]] });
+
+    const code = await run();
+
+    expect(code).toBe(0);
+    expect(out()).toMatch(/ES 2026-09-15 .*built 0 .*pages 3 {2}prints 0$/m);
   });
 });

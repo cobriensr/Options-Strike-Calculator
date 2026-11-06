@@ -84,19 +84,22 @@ Owner approval: 2026-11-06 ("yes please" to the Sept 3–29 backfill). The appro
 
 - **Flow NULL rule uses `sideSeen`, not `buyPrints + sellPrints = 0`.** The live handler sets `side_seen` on any known side, `none` included, and a bar whose only prints are `none` writes zeros. So `FlowMinute` also gains `sideSeen` (true once a counted print had side buy, sell or none), and the script writes NULL flow only when `sideSeen` is false.
 - **The current UTC day is never processed.** A bar built from a minute still in progress would be locked in by DO NOTHING while the live handler is writing it. The plan's range ends 09-28, so nothing changes for the rollout.
-- **A root-day with nothing to do makes no UW call**, like the flow backfill: no Globex-open minute without a stored bar (`--compare`: no stored bar at all). A re-run resumes where it stopped; a day with minutes UW has no prints for is paged again.
+- **A root-day with nothing to do makes no UW call**, like the flow backfill: no Globex-open minute without a stored bar (`--compare`: no stored bar at all). A re-run skips what it already filled, but a root-day with any missing Globex-open minute (a sparse overnight tape, a holiday) is paged again on every re-run.
+- **An incomplete run exits 1.** A root-day that failed, or a stop before the last date (market hours began, or the page budget was spent), makes the exit code 1. The log ends with the failed root-days and a `Re-run with …` line (the failed dates, roots, `--max-pages` and mode flag; a range is re-given as `--from`/`--to`, explicit dates as dates), then `Incomplete: stopped before D. Resume with …` for the dates never reached. `runPlannedDays` returns `failed` and `stoppedBefore` for this; `runBackfill` ignores them.
+- **Prints the live handler drops.** A counted print with a size of 0 or over 2^31 - 1 (`futures_trades.py` drops it before its dedup, tally, OHLC and side) makes its minute's `ohlc` null, like an invalid price. The flow numbers are unchanged, so the nightly flow pass is too.
+- **`prints 0`** ends a root-day's line when no candidate contract returned a counted print all day (a hole in UW's history, a holiday, a wrong candidate list).
 - **`insertFuturesBars(symbol: string, bars)`** takes any symbol string. A reader, `fetchFuturesBars(symbol, startIso, endIso)`, sits beside it in `api/_lib/futures-bars.ts` for the script's step 1.
 - **Shared with the flow backfill, exported from `scripts/_lib/futures-flow-backfill.ts`:** `parseArgs(argv, usage)`, `pageDayContracts`, `runPlannedDays` (the date loop with the market-hours and page-budget stops), `refuseDuringMarketHours`, `RootDayError`, `DAY_MS`, `MINUTE_MS`. `runBackfill` now uses them; its behavior and tests are unchanged.
 - **CLI:** `npx tsx scripts/backfill-futures-bars.ts (--from D --to D | D ...) [--roots ES,NQ,...] [--max-pages N] [--dry-run | --compare]`.
-- **`--compare` output** per root-day: stored, compared, matched, differ, stored-only (a stored bar no print rebuilds), rest-only (a rebuildable minute with no stored bar), malformed, pages; then the first 3 differing minutes with field, REST value (4 dp) and stored value; then per root `matched M of C compared (P%)`.
+- **`--compare` output** per root-day: stored, compared, matched, differ, stored-only (a stored bar no print rebuilds), rest-only (a rebuildable minute with no stored bar), malformed, pages; then the first 3 differing minutes with field, REST value (4 dp) and stored value; then per root `matched M of S stored (P%)  compared C  stored-only O  rest-only R`, where S = C + O. A stored bar no print rebuilds is a leader or roll disagreement, so it counts against the root.
 - **Malformed prints** withhold their minute (as in the flow pass), which can leave the leader absent for it; each day's line shows the `malformed` count.
 
 ## Phase 2: rollout (main session)
 
 1. Run the gate, review, commit and push. `api/_lib` triggers a Vercel deploy; nothing deploys on Railway.
-2. Run `--compare` on 2026-10-30 for all six roots, a day of full live bars. Acceptance: ≥ 99% exact per root. Any systematic diff (not a µs tie) stops the rollout.
-3. Run `--dry-run --from 2026-09-04 --to 2026-09-28`.
-4. The real run, in the background. Estimate: about 20–35k pages, 1–2 h at the 10-29 rate.
+2. Run `--compare` on 2026-10-30 for all six roots, a day of full live bars. Acceptance: ≥ 99% exact per root, on the per-root line `matched M of S stored`. Any systematic diff (not a µs tie) stops the rollout.
+3. Run `--dry-run --from 2026-09-04 --to 2026-09-28 --max-pages 60000`.
+4. The real run, in the background: `--from 2026-09-04 --to 2026-09-28 --max-pages 60000`. The default budget of 20,000 pages stops short of the range and exits 1. Estimate: about 20–35k pages, 1–2 h at the 10-29 rate.
 5. Verify:
    - each root's bars per day against its neighbours (ES about 1,380 on a full weekday);
    - buy + sell ≤ volume;
@@ -117,4 +120,4 @@ Owner approval: 2026-11-06 ("yes please" to the Sept 3–29 backfill). The appro
 ## Open questions (defaults taken)
 
 - **All six roots, not three:** yes, because all six are missing.
-- **A tie on executed_at µs:** order by trade_id. The live handler uses arrival order, so a rare tie could pick a different open or close print, always at the same price level within that microsecond.
+- **A tie on executed_at µs:** order by trade_id. Live timestamps are epoch milliseconds, and among prints sharing a millisecond the first arrival is the open and the last arrival the close. REST is microseconds, ties by trade_id. The two orders can pick different prints, and those prints need not share a price. `--compare` is the arbiter of how often that happens.

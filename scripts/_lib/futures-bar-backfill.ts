@@ -11,8 +11,9 @@
  *
  * Per root and UTC day, oldest first:
  *   1. The day's stored bars (`fetchFuturesBars`). No missing Globex-open
- *      minute → nothing to do, no UW call: a re-run resumes where the last
- *      one stopped.
+ *      minute → nothing to do, no UW call, so a re-run skips what it
+ *      already filled. A root-day with any missing minute (a sparse
+ *      overnight tape, a holiday) is paged again on every re-run.
  *   2. Every candidate contract's prints over the whole day [00:00, 24:00)
  *      UTC (`pageDayContracts`): the front month's tally runs from 00:00.
  *   3. `replayFrontMonth` picks each minute's leader, the same rule the
@@ -21,7 +22,8 @@
  *      (a back month trades at a carry basis).
  *   4. A bar for each leader minute that has no bar yet and whose `ohlc`
  *      is known (`fetchContractFlow`: null when a counted print had no
- *      usable price, which the live handler would have dropped). Flow
+ *      usable price or a size of 0 or over 2^31 - 1, which the live
+ *      handler would have dropped). Flow
  *      follows the live NULL-vs-0 rule: no print with a known side
  *      (`sideSeen` false) → all four flow columns NULL, otherwise the four
  *      counts, `none`-side prints counting toward volume only.
@@ -32,7 +34,10 @@
  * nothing either: for minutes that already have a bar it counts how many
  * REST-built bars equal the stored bar (prices rounded to 4 dp, as the
  * NUMERIC(12,4) column stores them) and prints the first few differences.
- * That is the acceptance check against a day of full live bars.
+ * That is the acceptance check against a day of full live bars. Its
+ * percentage is matched / (compared + stored-only): a stored bar no print
+ * rebuilds is a leader or roll disagreement, so it counts against the
+ * root.
  *
  * The current UTC day is never processed: the live handler is still
  * writing it, and a bar built from a minute still in progress would be
@@ -42,9 +47,15 @@
  * which supplies the argument parser, plan, paging and date loop): at most
  * UW_CONCURRENCY_CAP requests in flight, no start during market hours and
  * a stop between dates if they begin, a page budget checked between dates.
- * A tie on executed_at µs is broken by trade_id (the live handler uses
- * arrival order), so a rare tie can pick a different open or close print
- * at the same price level within that microsecond.
+ * A run that fails a root-day or stops before its last date exits 1, and
+ * ends by naming the failed root-days and the arguments that re-run them.
+ *
+ * Open and close can differ from a live bar. Live timestamps are epoch
+ * milliseconds, and among prints sharing a millisecond the first arrival
+ * is the open and the last arrival the close. REST timestamps are
+ * microseconds, with ties broken by trade_id. The two orders can pick
+ * different prints, and those prints need not share a price. `--compare`
+ * is the arbiter of how often that happens.
  */
 
 import {
@@ -69,6 +80,8 @@ import {
   refuseDuringMarketHours,
   runPlannedDays,
   type BackfillOptions,
+  type DayLoopResult,
+  type DayPlan,
   type PagingTally,
 } from './futures-flow-backfill.js';
 
@@ -232,6 +245,11 @@ interface BarRootDayResult {
   leaderAbsent: number;
   malformed: number;
   pages: number;
+  /**
+   * No candidate contract returned a counted print all day: a hole in
+   * UW's history, a holiday, or a wrong candidate list.
+   */
+  noPrints: boolean;
   /** Contracts that led at least one built minute. */
   leaders: string[];
   compare: CompareCounts | null;
@@ -248,6 +266,7 @@ function emptyResult(over: Partial<BarRootDayResult>): BarRootDayResult {
     leaderAbsent: 0,
     malformed: 0,
     pages: 0,
+    noPrints: false,
     leaders: [],
     compare: null,
     ...over,
@@ -324,6 +343,7 @@ async function backfillBarRootDay(
       missing,
       malformed: tally.malformed,
       pages: tally.pages,
+      noPrints: [...byContract.values()].every((rows) => rows.length === 0),
     });
     if (mode === 'compare') {
       return { ...base, compare: compareStored(leaders, stored) };
@@ -368,6 +388,51 @@ function modeOf(opts: BarBackfillOptions): Mode {
   return opts.dryRun ? 'dry' : 'write';
 }
 
+/**
+ * The arguments that re-run `dates` for `roots` with this run's page
+ * budget and mode: explicit dates stay dates, a range is re-given as
+ * --from/--to.
+ */
+function rerunArgs(
+  opts: BarBackfillOptions,
+  dates: readonly string[],
+  roots: readonly FuturesRoot[],
+): string {
+  const first = dates[0] ?? '';
+  const last = dates.at(-1) ?? '';
+  const when =
+    opts.dates !== null ? dates.join(' ') : `--from ${first} --to ${last}`;
+  const flag = opts.compare ? ' --compare' : opts.dryRun ? ' --dry-run' : '';
+  return `${when} --roots ${roots.join(',')} --max-pages ${opts.maxPages}${flag}`;
+}
+
+/**
+ * Says what a re-run must still cover: every failed root-day, and every
+ * date the loop never reached. Silent when the run was complete.
+ */
+function reportIncomplete(
+  opts: BarBackfillOptions,
+  plan: readonly DayPlan[],
+  loop: DayLoopResult,
+): void {
+  if (loop.failed.length > 0) {
+    const list = loop.failed.map((f) => `${f.root} ${f.date}`).join(', ');
+    const dates = [...new Set(loop.failed.map((f) => f.date))].sort();
+    const failedRoots = new Set(loop.failed.map((f) => f.root));
+    const roots = opts.roots.filter((r) => failedRoots.has(r));
+    console.error(`Failed root-days: ${list}`);
+    console.error(`Re-run with ${rerunArgs(opts, dates, roots)}`);
+  }
+  if (loop.stoppedBefore !== null) {
+    const from = loop.stoppedBefore;
+    const dates = plan.map((d) => d.date).filter((d) => d >= from);
+    console.error(
+      `Incomplete: stopped before ${from}. ` +
+        `Resume with ${rerunArgs(opts, dates, opts.roots)}`,
+    );
+  }
+}
+
 /** Runs the rebuild and returns the process exit code. */
 export async function runBarBackfill(
   opts: BarBackfillOptions & { apiKey: string },
@@ -390,9 +455,12 @@ export async function runBarBackfill(
 
   const verb = mode === 'dry' ? 'would insert' : 'inserted';
   const totals = { built: 0, inserted: 0, unbuildable: 0, nothingToDo: 0 };
-  const byRoot = new Map<FuturesRoot, { compared: number; matched: number }>();
+  const byRoot = new Map<
+    FuturesRoot,
+    { matched: number; compared: number; storedOnly: number; restOnly: number }
+  >();
 
-  const { pages, failures } = await runPlannedDays(
+  const loop = await runPlannedDays(
     plan,
     opts.maxPages,
     (root, date) => backfillBarRootDay(opts.apiKey, root, date, mode),
@@ -402,17 +470,26 @@ export async function runBarBackfill(
         return;
       }
       const front = res.leaders.join('/') || '-';
+      // A hole in UW's history shows here, not as a clean empty day.
+      const marker = res.noPrints ? '  prints 0' : '';
       if (res.compare !== null) {
         const c = res.compare;
-        const sum = byRoot.get(root) ?? { compared: 0, matched: 0 };
-        sum.compared += c.compared;
+        const sum = byRoot.get(root) ?? {
+          matched: 0,
+          compared: 0,
+          storedOnly: 0,
+          restOnly: 0,
+        };
         sum.matched += c.matched;
+        sum.compared += c.compared;
+        sum.storedOnly += c.storedOnly;
+        sum.restOnly += c.restOnly;
         byRoot.set(root, sum);
         console.log(
           `  ${root} ${date}  stored ${res.stored}  compared ${c.compared}` +
             `  matched ${c.matched}  differ ${c.compared - c.matched}` +
             `  stored-only ${c.storedOnly}  rest-only ${c.restOnly}` +
-            `  malformed ${res.malformed}  pages ${res.pages}`,
+            `  malformed ${res.malformed}  pages ${res.pages}${marker}`,
         );
         for (const d of c.diffs) console.log(`    ${d}`);
         return;
@@ -425,32 +502,35 @@ export async function runBarBackfill(
         `  ${root} ${date}  missing ${res.missing}  built ${res.built}` +
           `  ${verb} ${res.inserted}  unbuildable ${unbuildable}` +
           ` (invalid price ${res.invalidPrice}, leader absent ${res.leaderAbsent})` +
-          `  malformed ${res.malformed}  front ${front}  pages ${res.pages}`,
+          `  malformed ${res.malformed}  front ${front}  pages ${res.pages}${marker}`,
       );
     },
   );
 
   if (mode === 'compare') {
+    // A stored bar REST can't rebuild is a leader or roll disagreement, so
+    // it counts against the root: the denominator is every stored bar.
     for (const [root, s] of byRoot) {
+      const stored = s.compared + s.storedOnly;
       console.log(
-        `  ${root}  matched ${s.matched} of ${s.compared} compared ` +
-          `(${percent(s.matched, s.compared)})`,
+        `  ${root}  matched ${s.matched} of ${stored} stored ` +
+          `(${percent(s.matched, stored)})  compared ${s.compared}` +
+          `  stored-only ${s.storedOnly}  rest-only ${s.restOnly}`,
       );
     }
     console.log(
-      `\nDone: ${pages} pages, ${totals.nothingToDo} root-days with no ` +
-        `stored bar, ${failures} failed root-days.`,
+      `\nDone: ${loop.pages} pages, ${totals.nothingToDo} root-days with no ` +
+        `stored bar, ${loop.failures} failed root-days.`,
     );
   } else {
     console.log(
       `\nDone: ${verb} ${totals.inserted} bars (built ${totals.built}, ` +
-        `unbuildable ${totals.unbuildable}), ${pages} pages, ` +
+        `unbuildable ${totals.unbuildable}), ${loop.pages} pages, ` +
         `${totals.nothingToDo} root-days with nothing to do, ` +
-        `${failures} failed root-days.`,
+        `${loop.failures} failed root-days.`,
     );
-    if (failures > 0) {
-      console.error('Re-run the failed dates; finished root-days are skipped.');
-    }
   }
-  return failures > 0 ? 1 : 0;
+  reportIncomplete(opts, plan, loop);
+  // Dates the loop never reached are as unfinished as failed root-days.
+  return loop.failures > 0 || loop.stoppedBefore !== null ? 1 : 0;
 }

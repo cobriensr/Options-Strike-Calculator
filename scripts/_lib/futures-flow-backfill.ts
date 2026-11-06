@@ -435,28 +435,49 @@ type RootDayOutcome<R> =
   | { root: FuturesRoot; ok: R }
   | { root: FuturesRoot; err: string; pages: number };
 
+/** A root-day that threw. */
+export interface FailedRootDay {
+  root: FuturesRoot;
+  date: string;
+}
+
+export interface DayLoopResult {
+  pages: number;
+  failures: number;
+  /** The failed root-days, in the order they finished. */
+  failed: FailedRootDay[];
+  /**
+   * The first date left unprocessed because market hours began or the page
+   * budget was spent, or null when the loop reached the end of the plan.
+   */
+  stoppedBefore: string | null;
+}
+
 /**
  * The date loop both backfills share, oldest date first: stops before a
  * date once market hours begin or the page budget is spent (the log says
  * where to resume), runs a date's roots up to UW_CONCURRENCY_CAP at a
  * time, and hands each finished root-day to `report`. A root-day that
  * throws is logged with its pages, counted as a failure, and the run goes
- * on. Returns the pages used and the failed root-days.
+ * on. Returns the pages used, the failed root-days, and where it stopped
+ * early (if it did).
  */
 export async function runPlannedDays<R extends { pages: number }>(
   plan: readonly DayPlan[],
   maxPages: number,
   work: (root: FuturesRoot, date: string) => Promise<R>,
   report: (root: FuturesRoot, date: string, result: R) => void,
-): Promise<{ pages: number; failures: number }> {
+): Promise<DayLoopResult> {
   let pages = 0;
-  let failures = 0;
+  const failed: FailedRootDay[] = [];
+  let stoppedBefore: string | null = null;
   for (const [i, day] of plan.entries()) {
     if (isMarketHours()) {
       console.error(
         `\nMarket hours began: stopping before ${day.date}. ` +
           `Re-run after the close with --from ${day.date}.`,
       );
+      stoppedBefore = day.date;
       break;
     }
     if (pages >= maxPages) {
@@ -464,6 +485,7 @@ export async function runPlannedDays<R extends { pages: number }>(
         `\nPage budget spent (${pages} of ${maxPages}): stopping before ` +
           `${day.date}. Resume with --from ${day.date}.`,
       );
+      stoppedBefore = day.date;
       break;
     }
     console.log(`[${i + 1}/${plan.length}] ${day.date} ${day.roots.join(',')}`);
@@ -486,7 +508,7 @@ export async function runPlannedDays<R extends { pages: number }>(
 
     for (const r of results) {
       if ('err' in r) {
-        failures += 1;
+        failed.push({ root: r.root, date: day.date });
         pages += r.pages;
         console.error(
           `  ${r.root} ${day.date} FAILED: ${r.err} (after ${r.pages} pages)`,
@@ -497,7 +519,7 @@ export async function runPlannedDays<R extends { pages: number }>(
       report(r.root, day.date, r.ok);
     }
   }
-  return { pages, failures };
+  return { pages, failures: failed.length, failed, stoppedBefore };
 }
 
 /** Runs the backfill and returns the process exit code. */
