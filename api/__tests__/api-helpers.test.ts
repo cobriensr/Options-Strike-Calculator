@@ -10,16 +10,10 @@ vi.mock('botid/server', () => ({
 }));
 
 // Mock schwab module before importing api-helpers
-const mockPipeline = {
-  incr: vi.fn().mockReturnThis(),
-  expire: vi.fn().mockReturnThis(),
-  exec: vi.fn().mockResolvedValue([0]),
-};
 vi.mock('../_lib/redis.js', () => ({
   redis: {
     incr: vi.fn(),
     expire: vi.fn(),
-    pipeline: vi.fn(() => mockPipeline),
   },
 }));
 
@@ -80,7 +74,6 @@ import {
   rejectIfNotOwner,
   OWNER_COOKIE,
   OWNER_COOKIE_MAX_AGE,
-  rejectIfRateLimited,
   schwabFetch,
   schwabTraderFetch,
   setCacheHeaders,
@@ -209,29 +202,7 @@ describe('api-helpers', () => {
     });
   });
 
-  // ============================================================
-  // RATE LIMITING
-  // ============================================================
-
-  describe('rejectIfRateLimited', () => {
-    it('sends 429 when rate limited', async () => {
-      mockPipeline.exec.mockResolvedValue([100]);
-      const req = mockRequest({ headers: {} });
-      const res = mockResponse();
-      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
-      expect(rejected).toBe(true);
-      expect(res._status).toBe(429);
-      expect(res._headers['Retry-After']).toBe('60');
-    });
-
-    it('returns false when not rate limited', async () => {
-      mockPipeline.exec.mockResolvedValue([1]);
-      const req = mockRequest({ headers: {} });
-      const res = mockResponse();
-      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
-      expect(rejected).toBe(false);
-    });
-  });
+  // `rejectIfRateLimited` is covered by auth-helpers-rate-limit.test.ts.
 
   // ============================================================
   // SCHWAB FETCH
@@ -1885,23 +1856,6 @@ describe('api-helpers', () => {
       expect(result).toEqual({ ok: true, data: mockData });
       expect(mockFetch).toHaveBeenCalledTimes(2);
     }, 10000);
-  });
-
-  // ============================================================
-  // IS RATE LIMITED — REDIS ERROR PATH
-  // ============================================================
-
-  describe('rejectIfRateLimited (Redis error path)', () => {
-    it('fails open when Redis pipeline throws', async () => {
-      mockPipeline.exec.mockRejectedValueOnce(
-        new Error('Redis connection refused'),
-      );
-      const req = mockRequest({ headers: {} });
-      const res = mockResponse();
-      // Fails open — should not block the request
-      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
-      expect(rejected).toBe(false);
-    });
   });
 
   // ============================================================

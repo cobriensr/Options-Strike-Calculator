@@ -14,7 +14,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { ZodSafeParseResult, ZodSafeParseError } from 'zod';
 import { checkBotId } from 'botid/server';
 
-import { redis } from './redis.js';
+import { limiterRedis } from './redis.js';
 import logger from './logger.js';
 import { metrics, Sentry } from './sentry.js';
 import { secretEquals } from './secret-compare.js';
@@ -227,34 +227,100 @@ export function respondIfInvalid<T>(
 // RATE LIMITING
 // ============================================================
 
+const MINUTE_MS = 60_000;
+
+/**
+ * Lifetime of a minute-bucket counter, sent with every INCR in the same
+ * pipelined request. The epoch minute is part of the key name, so renewing
+ * the TTL on each request cannot stretch a window: the next minute reads a
+ * different key. The bucket is only written during its own minute, so 120 s
+ * covers it with a full minute spare for clock skew between instances, and
+ * the key then expires on its own. The pipeline is not a transaction: if the
+ * server fails between INCR and EXPIRE, that one minute-keyed counter keeps
+ * no TTL, and no later request reads it.
+ */
+const RATE_LIMIT_KEY_TTL_SEC = 120;
+
+/**
+ * No Upstash linkage (local dev, most test environments): skip the limiter
+ * instead of failing open with a Sentry event on every request. Same check
+ * as `uw-rate-limit.ts`.
+ */
+function isRedisConfigured(): boolean {
+  return Boolean(
+    process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL,
+  );
+}
+
+/**
+ * Sentry context shared by every limiter failure. The pinned fingerprint
+ * collapses an Upstash outage, which fires on every guarded request, into
+ * one warning-level issue instead of one per transaction.
+ */
+function limiterFailureContext() {
+  return {
+    level: 'warning' as const,
+    fingerprint: ['request-limiter-redis-unavailable'],
+    tags: { limiter: 'request' },
+  };
+}
+
 /**
  * Check if a request should be rate-limited.
- * Uses Upstash Redis to track request counts per key per minute.
+ * Uses Upstash Redis to count requests per key in fixed epoch-minute buckets
+ * (`ratelimit:<key>:<epoch minute>`), so the count resets at every minute
+ * boundary no matter how steadily the client calls. INCR and EXPIRE go out
+ * together in one pipelined request, so a request costs a single round trip.
+ * Requests that arrive while blocked still INCR; that only affects the
+ * current bucket.
  *
  * Used on auth endpoints to prevent brute-force and abuse.
- * Fails open (returns false) if Redis is unavailable — don't block
- * legitimate requests if the rate limiter itself is down.
+ * Fails open (returns false) if Redis is unavailable or answers with
+ * something other than a count: don't block legitimate requests if the rate
+ * limiter itself is down. Uses the fail-fast `limiterRedis` client (no
+ * retries, 1.5 s timeout) and that single round trip, so an outage costs
+ * each guarded request at most ~1.5 s instead of the default client's retry
+ * backoff.
  *
  * @param key - Unique identifier (e.g. IP address, endpoint name)
- * @param maxPerMinute - Maximum requests allowed per 60-second window
+ * @param maxPerMinute - Maximum requests allowed per epoch-minute bucket
+ * @param minute - The epoch-minute bucket the request falls in
  * @returns true if the request should be blocked
  */
 async function isRateLimited(
   key: string,
-  maxPerMinute: number = 5,
+  maxPerMinute: number,
+  minute: number,
 ): Promise<boolean> {
+  if (!isRedisConfigured()) return false;
+
+  const redisKey = `ratelimit:${key}:${minute}`;
   try {
-    const redisKey = `ratelimit:${key}`;
-    const pipe = redis.pipeline();
-    pipe.incr(redisKey);
-    pipe.expire(redisKey, 60);
-    const results = await pipe.exec();
-    const count = results[0] as number;
+    const results = await limiterRedis
+      .pipeline()
+      .incr(redisKey)
+      .expire(redisKey, RATE_LIMIT_KEY_TTL_SEC)
+      .exec();
+    const count: unknown = results[0];
+    if (typeof count !== 'number') {
+      // E.g. the "Aborted" pseudo-result Upstash fabricates for an
+      // already-aborted static signal: a limiter failure, not a count.
+      logger.warn(
+        { count },
+        'Rate limiter got a malformed INCR reply; failing open',
+      );
+      metrics.increment('api_helpers.rate_limit_redis_error');
+      Sentry.captureMessage(
+        'Rate limiter got a malformed INCR reply',
+        limiterFailureContext(),
+      );
+      return false; // fail open
+    }
     return count > maxPerMinute;
   } catch (err) {
     logger.warn({ err }, 'Rate limiter Redis call failed; failing open');
     metrics.increment('api_helpers.rate_limit_redis_error');
-    Sentry.captureException(err);
+    Sentry.captureException(err, limiterFailureContext());
     return false; // fail open
   }
 }
@@ -278,6 +344,10 @@ function getRateLimitKey(req: VercelRequest, endpoint: string): string {
 /**
  * Guard an endpoint with rate limiting.
  * Returns true if the request was rejected (response already sent).
+ *
+ * The 429 carries `Retry-After` set to the seconds left in the current
+ * minute bucket (1 to 60: the remainder is at most 59 999 ms, so the ceil
+ * never reaches 0), when the count resets.
  */
 export async function rejectIfRateLimited(
   req: VercelRequest,
@@ -286,13 +356,21 @@ export async function rejectIfRateLimited(
   maxPerMinute: number = 5,
 ): Promise<boolean> {
   const key = getRateLimitKey(req, endpoint);
-  const limited = await isRateLimited(key, maxPerMinute);
+  // One clock reading for both the bucket and Retry-After, so they agree.
+  const nowMs = Date.now();
+  const limited = await isRateLimited(
+    key,
+    maxPerMinute,
+    Math.floor(nowMs / MINUTE_MS),
+  );
   if (limited) {
     metrics.rateLimited(endpoint);
-    res.setHeader('Retry-After', '60');
-    res
-      .status(429)
-      .json({ error: 'Too many requests. Try again in 60 seconds.' });
+    const retryAfterSec = Math.ceil((MINUTE_MS - (nowMs % MINUTE_MS)) / 1000);
+    res.setHeader('Retry-After', String(retryAfterSec));
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(429).json({
+      error: `Too many requests. Try again in ${retryAfterSec} seconds.`,
+    });
     return true;
   }
   return false;

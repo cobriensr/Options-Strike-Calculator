@@ -49,14 +49,15 @@ export function createRedis(tuning: RedisTuning = {}): Redis {
 export const redis = createRedis();
 
 /**
- * Fail-fast client for the UW rate-limit and concurrency limiters, which
- * both fail OPEN on any Redis error. On Upstash defaults (5 retries with
- * exponential backoff, undici's 10 s connect timeout) one limiter call took
- * ~64 s to give up during the 2026-09-29 connect-timeout outage, and
- * `uwFetch` makes up to three of them per UW request — stalling crons for
- * minutes and dropping minute snapshots. Here a call either answers within
- * 1.5 s (normal latency is single-digit ms) or throws, so the limiter fails
- * open after one attempt:
+ * Fail-fast client for the limiters: the UW rate-limit and concurrency
+ * limiters and the per-IP request limiter (`rejectIfRateLimited` in
+ * `auth-helpers.ts`), which all fail OPEN on any Redis error. On Upstash
+ * defaults (5 retries with exponential backoff, undici's 10 s connect
+ * timeout) one limiter call took ~64 s to give up during the 2026-09-29
+ * connect-timeout outage, and `uwFetch` makes up to three of them per UW
+ * request — stalling crons for minutes and dropping minute snapshots. Here a
+ * call either answers within 1.5 s (normal latency is single-digit ms) or
+ * throws, so the limiter fails open after one attempt:
  *
  *   - `retry: { retries: 0 }` — exactly one fetch. (Note `retry: false`
  *     would still make TWO: Upstash maps it to `attempts: 1` and loops
