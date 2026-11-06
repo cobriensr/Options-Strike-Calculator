@@ -43,6 +43,13 @@ function emptyCandles(
   };
 }
 
+// "polls today" pins the fake clock to CT noon. Without `now` the fake clock
+// starts at the real time, and the hook's URL is derived from `date`, which the
+// test takes from todayCt(). In the 30 s before 00:00 CT the poll interval
+// rolls todayCt() on the re-render, the URL changes, the eager-fetch effect
+// fires again and the test sees 3 fetches, not 2.
+const PINNED_NOW = new Date('2026-05-07T17:00:00Z');
+
 const todayCt = (): string =>
   new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/Chicago',
@@ -174,7 +181,7 @@ describe('useTickerCandles', () => {
   });
 
   it('polls today + marketOpen + enabled', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ now: PINNED_NOW });
     fetchMock.mockResolvedValue(jsonResponse(emptyCandles()));
     renderHook(() =>
       useTickerCandles({

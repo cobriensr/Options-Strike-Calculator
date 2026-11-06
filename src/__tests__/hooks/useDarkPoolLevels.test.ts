@@ -362,6 +362,13 @@ describe('useDarkPoolLevels: error handling', () => {
   });
 
   it('clears error on successful subsequent fetch', async () => {
+    // Pin the clock to ET noon. The hook recomputes isToday on every render
+    // (it flips at midnight ET), and the effect that fetches re-runs when it
+    // does. A start within 60 s before 00:00 ET crosses midnight on the first
+    // poll, an extra fetch lands outside the sequence queued below, and the
+    // error this test waits for does not show.
+    vi.setSystemTime(new Date('2026-04-02T16:00:00Z'));
+
     // Two consecutive failures first to actually surface the error.
     mockFetch.mockResolvedValueOnce({
       ok: false,

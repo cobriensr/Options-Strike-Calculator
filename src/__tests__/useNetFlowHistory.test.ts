@@ -45,6 +45,13 @@ function emptyHistory(
   };
 }
 
+// The fake-timer tests pin the clock to CT noon. Without `now`, the fake clock
+// starts at the real time, and the hook's URL is derived from `date`, which
+// these tests take from todayCt(). In the 30 s before 00:00 CT, advancing the
+// 30 s poll interval rolls todayCt() on the re-render, the URL changes, the
+// eager-fetch effect fires again and "polls today" sees 3 fetches, not 2.
+const PINNED_NOW = new Date('2026-05-07T17:00:00Z');
+
 const todayCt = (): string =>
   new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/Chicago',
@@ -172,7 +179,7 @@ describe('useNetFlowHistory', () => {
   });
 
   it('polls today + marketOpen + enabled', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ now: PINNED_NOW });
     fetchMock.mockResolvedValue(jsonResponse(emptyHistory()));
     renderHook(() =>
       useNetFlowHistory({
@@ -193,7 +200,7 @@ describe('useNetFlowHistory', () => {
   });
 
   it('does not poll when historical (date != today)', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ now: PINNED_NOW });
     fetchMock.mockResolvedValue(jsonResponse(emptyHistory()));
     renderHook(() =>
       useNetFlowHistory({
@@ -214,7 +221,7 @@ describe('useNetFlowHistory', () => {
   });
 
   it('does not poll when marketOpen=false', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ now: PINNED_NOW });
     fetchMock.mockResolvedValue(jsonResponse(emptyHistory()));
     renderHook(() =>
       useNetFlowHistory({
