@@ -8,12 +8,13 @@
  *
  * A row's date must own its data, so the selected date decides the save:
  *   - Today (ET) at the current time, on a session day: a live row
- *     (is_backtest false), with or without today's intraday history, once
- *     the inputs carry today's data: the SPX and VIX inputs each match the
- *     live quote or today's history at the entry time. A weekend or
- *     holiday today saves nothing: its quotes are the last session's. Nor
- *     does an entry time ahead of the clock (today scrubbed forward): its
- *     inputs are now's.
+ *     (is_backtest false), once the SPX and VIX inputs each match today's
+ *     live quote. Today's intraday history is never a source: it stops at
+ *     the page load, so a candle from it need not cover the entry time,
+ *     and useAutoFill fills the inputs from it only for a replay, or to
+ *     display when no quotes exist. A weekend or holiday today saves
+ *     nothing: its quotes are the last session's. Nor does an entry time
+ *     ahead of the clock (today scrubbed forward): its inputs are now's.
  *   - A past date with its own intraday history, or today scrubbed back
  *     more than 5 minutes (isBacktestMode): a backtest row (is_backtest
  *     true), once the inputs carry that history's SPX and SPY at the entry
@@ -25,9 +26,11 @@
  *
  * The DB upserts on UNIQUE(date, entry_time). Each key posts once per
  * session unless the post fails, and a failing key posts at most
- * MAX_POSTS_PER_KEY times. Once a history snapshot exists App's signals
- * change identity on every render, so an uncapped retry would post (and
- * report) on every render:
+ * MAX_POSTS_PER_KEY times. A replay's signals change identity on every
+ * render (its history snapshot is a new object each time), so an uncapped
+ * retry would post (and report) on every render, and a POST aborted by a
+ * re-render, say on a late answer from another hook, would be lost for
+ * good: its key is already marked. Only unmount aborts a POST. A failure:
  *   - a network error, a 5xx, a 429 (rate limited) or a 401 (a lapsed
  *     owner session, which the auth interceptor clears) releases the key,
  *     so the next change posts it again, up to the cap;
@@ -194,8 +197,8 @@ function near(
  * Which row a save for `date` at `etMinutes` (the entry time, minutes past
  * ET midnight) writes: 'backtest' for a past date, or today scrubbed back
  * more than 5 minutes, whose own history the inputs already carry; 'live'
- * for today at the current time once its inputs carry today's data; else
- * null (none).
+ * for today at the current time once its inputs match the live quotes;
+ * else null (none).
  */
 function rowKind(
   date: string,
@@ -228,14 +231,13 @@ function rowKind(
   // No session today (a weekend or holiday): the quotes are the last
   // session's closing prints, not this date's.
   if (!isTradingDay(date)) return null;
+  // Only the live quotes: today's history is frozen at the page load, so
+  // matching its candle says nothing about this entry time.
   const live = meta.live ?? null;
-  const spotIsToday =
-    near(spot, live?.spot, SPX_TOLERANCE) ||
-    near(spot, history?.spot, SPX_TOLERANCE);
-  const vixIsToday =
-    near(meta.vix, live?.vix, VIX_TOLERANCE) ||
-    near(meta.vix, history?.vix, VIX_TOLERANCE);
-  return spotIsToday && vixIsToday ? 'live' : null;
+  return near(spot, live?.spot, SPX_TOLERANCE) &&
+    near(meta.vix, live?.vix, VIX_TOLERANCE)
+    ? 'live'
+    : null;
 }
 
 /**
@@ -256,6 +258,16 @@ export function useSnapshotSave(
   // Per key: posts so far and whether its failure was reported. An entry
   // is dropped when the key saves, so it holds failing keys only.
   const attemptsRef = useRef<Map<string, KeyAttempts>>(new Map());
+  // The POSTs in flight. The effect below re-runs on any dependency change
+  // and must not abort them (see the header); unmount does.
+  const inFlightRef = useRef<Set<AbortController>>(new Set());
+  useEffect(() => {
+    const inFlight = inFlightRef.current;
+    return () => {
+      for (const controller of inFlight) controller.abort();
+      inFlight.clear();
+    };
+  }, []);
   // Primitives, so the effect keys on values: App builds the meta afresh
   // every render.
   const historyDate = meta.history?.date;
@@ -398,6 +410,7 @@ export function useSnapshotSave(
 
     // Fire-and-forget — don't block the UI
     const controller = new AbortController();
+    inFlightRef.current.add(controller);
 
     fetch('/api/snapshot', {
       method: 'POST',
@@ -430,15 +443,14 @@ export function useSnapshotSave(
         reportOnce(err, status === 403 ? 'warning' : undefined);
       })
       .catch((err: unknown) => {
-        // Don't retry on abort — component unmounted or deps changed
+        // Don't retry on abort — the component unmounted
         if (err instanceof DOMException && err.name === 'AbortError') return;
         // Network error — report it (the retry hides the symptom from the
         // UI), and post again up to the cap.
         reportOnce(err);
         retry();
-      });
-
-    return () => controller.abort();
+      })
+      .finally(() => inFlightRef.current.delete(controller));
   }, [
     results,
     signals,

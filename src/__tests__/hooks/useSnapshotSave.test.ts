@@ -265,6 +265,47 @@ describe('useSnapshotSave', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
+  it('keeps an in-flight save running when a dependency changes', () => {
+    // Once a replay holds a history snapshot, App's signals change identity
+    // on every render (a late /api/vix-ohlc answer is enough). The key is
+    // already marked saved, so an aborted POST would never be posted again.
+    let signal: AbortSignal | null | undefined;
+    fetchSpy.mockImplementationOnce((_url: string, init?: RequestInit) => {
+      signal = init?.signal;
+      return new Promise<Response>(() => {});
+    });
+    const results = makeResults();
+    const { rerender } = renderHook(
+      ({ signals }) => useSnapshotSave(results, signals, baseMeta, true),
+      { initialProps: { signals: defaultSignals } },
+    );
+
+    rerender({ signals: { ...defaultSignals } });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(signal?.aborted).toBe(false);
+  });
+
+  it('aborts the saves still in flight when the hook unmounts', () => {
+    const signals: AbortSignal[] = [];
+    fetchSpy.mockImplementation((_url: string, init?: RequestInit) => {
+      signals.push(init!.signal!);
+      return new Promise<Response>(() => {});
+    });
+    const results = makeResults();
+    const { rerender, unmount } = renderHook(
+      ({ meta }) => useSnapshotSave(results, defaultSignals, meta, true),
+      { initialProps: { meta: baseMeta } },
+    );
+    rerender({ meta: { ...baseMeta, entryTime: '09:40' } });
+    expect(signals).toHaveLength(2);
+    expect(signals.map((s) => s.aborted)).toEqual([false, false]);
+
+    unmount();
+
+    expect(signals.map((s) => s.aborted)).toEqual([true, true]);
+  });
+
   it('skips allDeltas entries with errors', () => {
     const results = makeResults({
       allDeltas: [
@@ -713,27 +754,34 @@ describe('useSnapshotSave — a save carries its own date’s inputs', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('saves today as live from today’s own history when it differs from the live quote', () => {
-    // Today with its own history: useAutoFill fills the inputs from the
-    // 5-minute snapshot at the entry time, over the live quotes.
-    renderHook(() =>
-      useSnapshotSave(
-        makeResults({ spot: 6790 }),
-        defaultSignals,
-        {
-          ...liveMeta,
-          history: { date: TODAY, spot: 6790.2, spy: 679.02, vix: 19.4 },
-          spy: 679.02,
-          vix: 19.4,
-        },
-        true,
-      ),
-    );
+  it.each([
+    ['live quotes that differ from it', LIVE],
+    ['no live quotes', null],
+  ])(
+    'makes no save call for today when the inputs hold its history candle and there are %s',
+    (_label, live) => {
+      // Today's history stops at the page load, so its candle need not cover
+      // this entry time: filed as a live row, it would freeze the row's SPX
+      // and VIX at the load. useAutoFill fills the inputs from it only for a
+      // replay, or to display with no quotes at all.
+      renderHook(() =>
+        useSnapshotSave(
+          makeResults({ spot: 6790 }),
+          defaultSignals,
+          {
+            ...liveMeta,
+            live,
+            history: { date: TODAY, spot: 6790.2, spy: 679.02, vix: 19.4 },
+            spy: 679.02,
+            vix: 19.4,
+          },
+          true,
+        ),
+      );
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(body().spx).toBe(6790);
-    expect(body().isBacktest).toBe(false);
-  });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    },
+  );
 
   it('makes no save call for today while it holds another date’s history', () => {
     // Inputs that match the live quotes still don't save under a history
