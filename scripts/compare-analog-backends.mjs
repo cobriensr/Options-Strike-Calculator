@@ -32,6 +32,10 @@
  *     --start 2024-01-01 --end 2024-12-31 --k 15 --out comparison.md
  *
  *   --every N : sample every Nth weekday (default 1 = all).
+ *
+ * Env: DATABASE_URL (required), SIDECAR_URL (ground-truth directions;
+ * none without it), SIDECAR_TAKEIT_SECRET (the sidecar's bearer, sent on
+ * /archive/* calls).
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -40,6 +44,8 @@ import { argv, exit } from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { neon } from '@neondatabase/serverless';
+
+import { sidecarArchiveHeaders } from './_lib/sidecar-headers.mjs';
 
 function arg(name, fallback) {
   const i = argv.indexOf(name);
@@ -729,6 +735,7 @@ async function buildActualDirectionMap(startIso, endIso) {
     const stop = addYears(cur, 3) < endIso ? addYears(cur, 3) : endIso;
     const res = await fetch(
       `${SIDECAR_URL}/archive/day-summary-batch?from=${cur}&to=${stop}`,
+      { headers: sidecarArchiveHeaders() },
     );
     if (res.ok) {
       const body = await res.json();

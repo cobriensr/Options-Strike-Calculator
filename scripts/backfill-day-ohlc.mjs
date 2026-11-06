@@ -17,12 +17,15 @@
  *   BACKFILL_START  — YYYY-MM-DD (default 2010-06-07)
  *   BACKFILL_END    — YYYY-MM-DD (default yesterday UTC)
  *   SIDECAR_URL     — required
+ *   SIDECAR_TAKEIT_SECRET — the sidecar's bearer, sent on /archive/* calls
  *   DATABASE_URL    — required
  */
 
 import process from 'node:process';
 
 import { neon } from '@neondatabase/serverless';
+
+import { sidecarArchiveHeaders } from './_lib/sidecar-headers.mjs';
 
 const SIDECAR_URL = process.env.SIDECAR_URL?.trim().replace(/\/$/, '');
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -47,6 +50,7 @@ const sql = neon(DATABASE_URL);
 async function fetchBatch(fromIso, toIso) {
   const res = await fetch(
     `${SIDECAR_URL}/archive/day-summary-batch?from=${fromIso}&to=${toIso}`,
+    { headers: sidecarArchiveHeaders() },
   );
   if (!res.ok) {
     const text = await res.text().catch(() => '');

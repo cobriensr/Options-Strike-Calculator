@@ -19,6 +19,7 @@
  *   BACKFILL_START  — YYYY-MM-DD (default 2010-06-07)
  *   BACKFILL_END    — YYYY-MM-DD (default yesterday UTC)
  *   SIDECAR_URL     — required
+ *   SIDECAR_TAKEIT_SECRET — the sidecar's bearer, sent on /archive/* calls
  *   DATABASE_URL    — required
  *   CONCURRENCY     — default 4 (sidecar DuckDB bottleneck means
  *                     higher values buy nothing until that's fixed)
@@ -27,6 +28,8 @@
 import process from 'node:process';
 
 import { neon } from '@neondatabase/serverless';
+
+import { sidecarArchiveHeaders } from './_lib/sidecar-headers.mjs';
 
 const SIDECAR_URL = process.env.SIDECAR_URL?.trim().replace(/\/$/, '');
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -57,6 +60,7 @@ async function fetchBatch(fromIso, toIso) {
   // ~500-1000 rows/sec in the sidecar vs ~0.1 rows/sec per-date.
   const res = await fetch(
     `${SIDECAR_URL}/archive/day-features-batch?from=${fromIso}&to=${toIso}`,
+    { headers: sidecarArchiveHeaders() },
   );
   if (!res.ok) {
     const text = await res.text().catch(() => '');
