@@ -26,6 +26,7 @@ import {
 import { GEXBOT_UNDERLYING_ORDER } from './ticker-order';
 import { deriveGammaSign, type GammaSign } from './types';
 import {
+  EPSILON,
   formatTakerDelta,
   isUnusual,
   pickMostUnusual,
@@ -306,9 +307,12 @@ const LOUDEST_TITLE = `Last-minute change in taker delta (Δ agg_dex) as a multi
 /**
  * One decimal. A pick that is not unusual rounds down, so a ratio just under
  * the multiple (2.96) never prints as "3.0×" beside "nothing ≥ 3× typical".
+ * EPSILON keeps an exact tenth that floating point lands just under
+ * (0.04 / 0.4 = 0.09999999999999999) from losing it; a quiet ratio is under 3
+ * by far more than that, so it cannot reach "3.0".
  */
 function formatRatio(ratio: number, unusual: boolean): string {
-  return (unusual ? ratio : Math.floor(ratio * 10) / 10).toFixed(1);
+  return (unusual ? ratio : Math.floor(ratio * 10 + EPSILON) / 10).toFixed(1);
 }
 
 function LoudestTile({ pick, readFailed }: LoudestTileProps) {

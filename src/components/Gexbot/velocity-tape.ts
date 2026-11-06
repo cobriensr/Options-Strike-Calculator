@@ -36,7 +36,7 @@ export const UNUSUAL_MULTIPLE = 3;
 export const TYPICAL_FLOOR = 0.25;
 
 /** Slack for floating-point products such as 3 * 0.4 = 1.2000000000000002. */
-const EPSILON = 1e-9;
+export const EPSILON = 1e-9;
 
 /** The row's Δ agg_dex, or null when it is missing or not a number. */
 function validChange(row: VelocityRow): number | null {

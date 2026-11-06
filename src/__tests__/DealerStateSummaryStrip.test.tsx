@@ -513,6 +513,27 @@ describe('<DealerStateSummaryStrip>', () => {
       );
 
       it.each([
+        // On a typical of 0.4 these ratios are exact tenths that floating
+        // point lands just under (0.04 / 0.4 = 0.09999999999999999).
+        [0.04, '0.1× typical'],
+        [0.16, '0.4× typical'],
+        [1.16, '2.9× typical'],
+      ])(
+        'does not lose a tenth to floating point: %s on 0.4 reads %s',
+        (dAggDex, shown) => {
+          mockViews(
+            SNAP,
+            velocityState([
+              makeVelocity('SPX', { dAggDex, typicalAbsDAggDex: 0.4 }),
+            ]),
+          );
+          render(<DealerStateSummaryStrip marketOpen />);
+          expect(tile()).toHaveTextContent(shown);
+          expect(tile()).toHaveTextContent('quiet · nothing ≥ 3× typical');
+        },
+      );
+
+      it.each([
         ['above the floor', 'SPX', 0.4, 1.2],
         ['on the floor', 'HYG', 0, 0.75],
       ])(

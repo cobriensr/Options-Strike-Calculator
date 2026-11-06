@@ -469,6 +469,29 @@ describe('useGexbotData', () => {
       );
     });
 
+    describe('a failed read after a good one for the same URL', () => {
+      it('keeps the last good rows and freshest time and sets the error', async () => {
+        vi.useFakeTimers();
+        const rows = [{ ticker: 'SPX', capturedAt: '2026-10-29T14:04:00Z' }];
+        mockFetchJson
+          .mockResolvedValueOnce({ data: { rows } })
+          .mockResolvedValue({ error: 'Unavailable', status: 503 });
+        const { result } = renderHook(() =>
+          useGexbotData({ view: 'snapshots-latest' }, true),
+        );
+        await advance(0);
+        expect(result.current.error).toBeNull();
+        expect(result.current.rows).toEqual(rows);
+
+        await advance(30_000);
+        expect(mockFetchJson).toHaveBeenCalledTimes(2);
+        expect(result.current.error).toBe('Unavailable (HTTP 503)');
+        expect(result.current.loading).toBe(false);
+        expect(result.current.rows).toEqual(rows);
+        expect(result.current.freshestAt).toBe('2026-10-29T14:04:00Z');
+      });
+    });
+
     describe('a failed read on any other view', () => {
       it('keeps the market-open gate: no retry after hours', async () => {
         vi.useFakeTimers();
