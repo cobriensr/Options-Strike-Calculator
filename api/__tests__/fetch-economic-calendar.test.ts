@@ -24,7 +24,19 @@ vi.mock('../_lib/logger.js', () => ({
   },
 }));
 
+// The cron raises its own warning through Sentry.captureMessage and metrics,
+// and uwFetch / the wrapper call setTag, uwRateLimit and uwBudget.
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: {
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+    setTag: vi.fn(),
+  },
+  metrics: { increment: vi.fn(), uwRateLimit: vi.fn(), uwBudget: vi.fn() },
+}));
+
 import logger from '../_lib/logger.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import handler from '../cron/fetch-economic-calendar.js';
 
 // Fixed times — 2026-03-25 is a Wednesday
@@ -324,7 +336,24 @@ describe('fetch-economic-calendar handler', () => {
     expect(mockSql).toHaveBeenCalledTimes(1);
   });
 
-  it('skips an event with an unparseable time, logs it, and still succeeds', async () => {
+  // ── Events with an unparseable time ───────────────────────
+
+  const SKIP_MESSAGE =
+    'fetch-economic-calendar: events with unparseable time skipped';
+
+  async function runCron() {
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+    return res;
+  }
+
+  it('skips an event with an unparseable time, alerts, and reports partial', async () => {
     process.env.UW_API_KEY = 'uwkey';
 
     stubFetch([
@@ -336,17 +365,13 @@ describe('fetch-economic-calendar handler', () => {
       }),
     ]);
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
+    const res = await runCron();
 
-    // The bad row doesn't fail the run: 200, status success, no 500 body.
+    // The bad row doesn't fail the run (200, no error body), but the run is
+    // not clean either: partial, with the good rows stored.
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
-      status: 'success',
+      status: 'partial',
       date: '2026-03-25',
       eventsStored: 2,
       events: ['CPI', 'Retail Sales'],
@@ -366,11 +391,124 @@ describe('fetch-economic-calendar handler', () => {
     expect(params[1]).toBe('CPI');
     expect(params[8]).toBe('Retail Sales');
     expect(params).not.toContain('Broken Event');
+
+    // One Sentry warning per run, naming the skipped event, plus a counter.
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(SKIP_MESSAGE, {
+      level: 'warning',
+      extra: { skipped: [{ event: 'Broken Event', time: 'not-a-date' }] },
+    });
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'fetch_economic_calendar.invalid_time',
+    );
+  });
+
+  it('counts an event with a null time as skipped', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+
+    // new Date(null) is the epoch, so without an explicit null check this
+    // event would be dropped by the today filter without being counted.
+    stubFetch([
+      makeCalendarEvent({ event: 'CPI', time: '2026-03-25T13:30:00Z' }),
+      makeCalendarEvent({ event: 'No Time Event', time: null }),
+    ]);
+
+    const res = await runCron();
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      eventsStored: 1,
+      events: ['CPI'],
+      invalidTimeSkipped: 1,
+    });
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(SKIP_MESSAGE, {
+      level: 'warning',
+      extra: { skipped: [{ event: 'No Time Event', time: null }] },
+    });
+  });
+
+  it('counts a bad event once when UW returns every row twice', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+
+    // UW's feed lists every event twice (68 rows, 34 unique).
+    const cpi = makeCalendarEvent({
+      event: 'CPI',
+      time: '2026-03-25T13:30:00Z',
+    });
+    const broken = makeCalendarEvent({
+      event: 'Broken Event',
+      time: 'not-a-date',
+    });
+    stubFetch([cpi, broken, { ...cpi }, { ...broken }]);
+
+    const res = await runCron();
+
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      eventsStored: 1,
+      events: ['CPI'],
+      invalidTimeSkipped: 1,
+    });
+    // One warning, one entry: not two for the duplicate row.
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(SKIP_MESSAGE, {
+      level: 'warning',
+      extra: { skipped: [{ event: 'Broken Event', time: 'not-a-date' }] },
+    });
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports error and stores nothing when every event has a bad time', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+
+    // Duplicated rows: 4 rows, 2 distinct events, so "all 2 events".
+    const a = makeCalendarEvent({ event: 'Event A', time: 'not-a-date' });
+    const b = makeCalendarEvent({ event: 'Event B', time: null });
+    stubFetch([a, b, { ...a }, { ...b }]);
+
+    const res = await runCron();
+
+    // HTTP 200 (the wrapper's contract for a returned status), but the run
+    // reads as failed and says why.
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'error',
+      message: expect.stringContaining('all 2 events had unparseable times'),
+      eventsStored: 0,
+      invalidTimeSkipped: 2,
+    });
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockSql).not.toHaveBeenCalled();
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(SKIP_MESSAGE, {
+      level: 'warning',
+      extra: {
+        skipped: [
+          { event: 'Event A', time: 'not-a-date' },
+          { event: 'Event B', time: null },
+        ],
+      },
+    });
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'fetch_economic_calendar.invalid_time',
+    );
+  });
+
+  it('stays success and silent when every time parses', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch([makeCalendarEvent()]);
+
+    const res = await runCron();
+
+    expect(res._json).toMatchObject({ status: 'success' });
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(metrics.increment).not.toHaveBeenCalled();
   });
 
   // ── Error handling ────────────────────────────────────────
 
-  it('handles fetch failure gracefully', async () => {
+  it('surfaces a UW 429 as a 500 and sends the exception to Sentry', async () => {
     process.env.UW_API_KEY = 'uwkey';
     vi.stubGlobal(
       'fetch',
@@ -381,16 +519,100 @@ describe('fetch-economic-calendar handler', () => {
       }),
     );
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
+    const res = await runCron();
 
     expect(res._status).toBe(500);
     expect(res._json).toMatchObject({
       error: 'Internal error',
     });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining('UW API 429'),
+      }),
+    );
+  });
+
+  it('surfaces a DB insert failure as a 500 and sends it to Sentry', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch([makeCalendarEvent()]);
+    mockQuery.mockRejectedValueOnce(new Error('connection lost'));
+
+    const res = await runCron();
+
+    // A failed write is never a success run.
+    expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({ error: 'Internal error' });
+    expect(res._json).not.toHaveProperty('status', 'success');
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'connection lost' }),
+    );
+  });
+
+  it('fails the run when a 2xx response has no data field', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // uwFetch alone would turn this into [] (plus a Sentry warning of its
+    // own), which the cron would report as a clean day with no events.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ error: 'upstream hiccup' }),
+      }),
+    );
+
+    const res = await runCron();
+
+    expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({ error: 'Internal error' });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining('no data array'),
+      }),
+    );
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('fails the run when the data field is not an array', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: null }),
+      }),
+    );
+
+    const res = await runCron();
+
+    expect(res._status).toBe(500);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining('no data array'),
+      }),
+    );
+  });
+
+  it('fails the run when a 2xx response body is not JSON', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.reject(new SyntaxError('Unexpected token <')),
+      }),
+    );
+
+    const res = await runCron();
+
+    expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({ error: 'Internal error' });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.any(SyntaxError),
+    );
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 });

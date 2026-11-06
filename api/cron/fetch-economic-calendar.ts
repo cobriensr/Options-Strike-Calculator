@@ -14,6 +14,7 @@
  */
 
 import { getDb, withDbRetry } from '../_lib/db.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import { bulkUpsert } from '../_lib/bulk-upsert.js';
 import { classifyEconomicEvent } from '../_lib/economic-event-type.js';
 import { uwFetch, withRetry, checkDataQuality } from '../_lib/api-helpers.js';
@@ -39,7 +40,8 @@ interface CalendarEvent {
   forecast: string;
   prev: string;
   reported_period: string;
-  time: string;
+  /** Null or unparseable: the event is skipped and alerted, never stored. */
+  time: string | null;
   type: string;
 }
 
@@ -64,18 +66,37 @@ export default withCronInstrumentation(
     const { apiKey, today: todayStr, logger } = ctx;
 
     const events = await withRetry(() =>
-      uwFetch<CalendarEvent>(apiKey, '/market/economic-calendar'),
+      uwFetch<CalendarEvent>(apiKey, '/market/economic-calendar', (body) => {
+        // Without an extractor uwFetch turns a body with no `data` into []
+        // (plus a Sentry warning of its own), and this cron would report a
+        // clean day with no events. A 2xx with no array is a failed run.
+        if (!Array.isArray(body.data)) {
+          throw new Error('economic-calendar response has no data array');
+        }
+        return body.data as CalendarEvent[];
+      }),
     );
 
-    // Filter to today's events only. An event whose `time` doesn't parse is
-    // skipped and counted: formatting an Invalid Date throws, and one bad row
-    // must not fail the whole day's run.
+    // Filter to today's events only. An event whose `time` is missing or
+    // doesn't parse is skipped and counted: formatting an Invalid Date
+    // throws, and one bad row must not fail the whole day's run. A null time
+    // needs its own check because `new Date(null)` is the epoch, which
+    // parses and is never today, so it would be dropped without a count.
+    //
+    // UW returns every row twice, so rows are keyed on (event, time), the
+    // same pair the table's unique key uses (with the date), and each event
+    // is counted and alerted once.
+    const seen = new Set<string>();
     const todayEvents: CalendarEvent[] = [];
-    let invalidTimeSkipped = 0;
+    const skipped: Array<{ event: string; time: string | null }> = [];
     for (const e of events) {
-      const eventAt = new Date(e.time);
-      if (Number.isNaN(eventAt.getTime())) {
-        invalidTimeSkipped++;
+      const key = JSON.stringify([e.event, e.time]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const eventAt = e.time == null ? null : new Date(e.time);
+      if (eventAt === null || Number.isNaN(eventAt.getTime())) {
+        skipped.push({ event: e.event, time: e.time });
         logger.warn(
           { event: e.event, time: e.time },
           'fetch-economic-calendar: skipping event with unparseable time',
@@ -83,6 +104,28 @@ export default withCronInstrumentation(
         continue;
       }
       if (getETDateStr(eventAt) === todayStr) todayEvents.push(e);
+    }
+    const invalidTimeSkipped = skipped.length;
+
+    // One alert per run, after the loop. Every event skipped means UW's time
+    // format changed rather than one row going bad: a failed run. Some
+    // skipped is partial (the rest are stored), which the wrapper maps to an
+    // ok check-in, so the Sentry warning is what pages.
+    let status: CronResult['status'] = 'success';
+    let message: string | undefined;
+    if (invalidTimeSkipped > 0) {
+      metrics.increment('fetch_economic_calendar.invalid_time');
+      Sentry.captureMessage(
+        'fetch-economic-calendar: events with unparseable time skipped',
+        { level: 'warning', extra: { skipped } },
+      );
+      if (invalidTimeSkipped === seen.size) {
+        status = 'error';
+        message = `all ${seen.size} events had unparseable times`;
+      } else {
+        status = 'partial';
+        message = `${invalidTimeSkipped} of ${seen.size} events skipped for an unparseable time`;
+      }
     }
 
     const sql = getDb();
@@ -151,14 +194,17 @@ export default withCronInstrumentation(
     logger.info(
       {
         date: todayStr,
+        status,
         eventsStored: todayEvents.length,
         events: todayEvents.map((e) => e.event),
+        invalidTimeSkipped,
       },
       'fetch-economic-calendar completed',
     );
 
     return {
-      status: 'success',
+      status,
+      message,
       metadata: {
         date: todayStr,
         eventsStored: todayEvents.length,

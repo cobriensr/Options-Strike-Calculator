@@ -77,8 +77,8 @@ The first matching rule wins:
 
 | # | Type | Rule (by event name) | Examples from the inventory |
 |---|---|---|---|
-| 1 | `FOMC` | rate decision, FOMC statement, Fed/FOMC press conference, economic projections | "U.S. interest rate decision", "FOMC interest-rate decision", "Fed Chair Powell press conference", "Fed Chairman Warsh press conference", "Federal Reserve economic projections" |
-| 2 | `PMI` | a regional Fed survey or index, or the Empire State survey, or ISM | "Philadelphia Fed manufacturing survey", "Philadelphia Fed Business Outlook Survey", "Kansas City Fed Survey", "Empire State Manufacturing Survey", "ISM manufacturing", "ISM services" |
+| 1 | `FOMC` | any "rate decision" (`\brate decision\b`), FOMC statement, Fed/FOMC press conference, economic projections | "U.S. interest rate decision", "FOMC interest-rate decision", "Fed rate decision", "FOMC rate decision", "Fed Chair Powell press conference", "Fed Chairman Warsh press conference", "Federal Reserve economic projections" |
+| 2 | `PMI` | a district name + "Fed" + at most three whole words + "survey" or "index"; or the Empire State survey; or ISM | "Philadelphia Fed manufacturing survey", "Philadelphia Fed Business Outlook Survey", "Kansas City Fed Survey", "Empire State Manufacturing Survey", "ISM manufacturing", "ISM services" |
 | 3 | `FED` (see Q1) | any other Fed mention: word `Fed`, `FRB`, `Federal Reserve`, `FOMC`, `Federal Open Market Committee`, `Beige Book` | speeches, testimony, panels, "Minutes of Fed's June FOMC meeting", "Federal Open Market Committee meeting minutes", "Fed Beige Book", "FRB Chicago President … speaks" |
 | 4–9 | `CPI`, `PCE`, `JOBS`, `GDP`, `PMI`, `RETAIL` | today's rules, unchanged | |
 | 10 | `SENTIMENT` | today's rule, plus "Michigan … Consumer" | "U. Michigan Prelim Consumer Survey" |
@@ -86,6 +86,13 @@ The first matching rule wins:
 
 - `Fed` must match as a whole word, so "federal" never matches it.
 - Rules 1 and 2 must run before rule 3.
+- Rule 1 takes any "rate decision", not only "interest rate decision". UW's
+  calendar is US-only, so a foreign central bank's "rate decision" isn't a
+  live risk.
+- Rule 2 bounds the gap by words, not characters. "Philadelphia Fed President
+  Anna Paulson speaks on Survey of Professional Forecasters" has five words
+  between "Fed" and "Survey", so it stays `FED`; "Dallas Fed Texas
+  Manufacturing Outlook Survey" has three, so it is `PMI`.
 - The classifier moves to a pure module, `api/_lib/economic-event-type.ts`
   (`classifyEconomicEvent(name: string): EconomicEventType`). It has two
   consumers: the cron and the backfill script.
@@ -139,12 +146,28 @@ The first matching rule wins:
   ('FOMC','CPI','PCE','JOBS')`):
   - no code change;
   - it will now fire on real decision days only (see Q2).
-- **Cron hardening** (`fetch-economic-calendar.ts:84-87`):
+- **Cron hardening** (`fetch-economic-calendar.ts`):
   - an event with an unparseable `time` currently throws inside the filter
     and fails the whole day's run;
   - instead, skip that event, log it with its name, and count it in the run
     metadata as `invalidTimeSkipped` (not an Axiom top-level key, so it lands
-    in `meta`).
+    in `meta`). A `null` time counts as unparseable (`new Date(null)` is the
+    epoch, which would otherwise be dropped without a count);
+  - the feed lists every row twice, so events are deduped on `(event, time)`
+    first, and `invalidTimeSkipped` counts distinct events;
+  - once per run, after the loop, when `invalidTimeSkipped > 0`: increment
+    `fetch_economic_calendar.invalid_time` and send one Sentry warning,
+    `fetch-economic-calendar: events with unparseable time skipped`, with
+    `extra.skipped = [{ event, time }, …]` (the pattern in
+    `fetch-etf-candles-1m.ts`). The per-event `logger.warn` stays;
+  - run status: none skipped is `success`; some skipped is `partial` (the
+    wrapper maps it to an ok check-in, so the Sentry warning is what alerts);
+    every event skipped (and at least one event) is `error` with the message
+    "all N events had unparseable times" (the wrapper maps it to an error
+    check-in);
+  - a 2xx body with no `data` array, or `data: null`, now fails the run (500
+    and `Sentry.captureException`). Before, `uwFetch` turned it into `[]` with
+    only a Sentry warning, and the cron reported a clean day with no events.
 
 ## Phases
 
