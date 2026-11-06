@@ -74,6 +74,13 @@ Order, one implementer stream at a time: B0 → B1 → B2 → B3 → B5 → E0 �
   - PGlite property test: random rows, including edge rows exactly at slice bounds and at scanStart, canceled rows and price-0 rows. Oracle: the old 3-way hash query with `NOW()` replaced by the anchor. The multisets must be equal.
 - **Risk:** slice-edge drops or duplicates (property test); a size spike (bisection).
 - **Verify in prod:** `timingsMs.tickScan` against the B0 baseline; the `scanned` distribution per hour against the prior 3 days; fires per hour against prior days; no new `db attempt timeout` events from this cron.
+- **As built** (`api/_lib/lottery-tick-scan.ts`):
+  - **Size error:** the Neon driver throws every non-400 failure as `NeonDbError("Server error (HTTP status <status>): <body>")`, so the split triggers on the `HTTP status 507` the driver writes (`isResponseTooLargeError`), not on Neon's body wording. A unit test builds the error with the real driver against a stubbed fetch. The body text was not seen on the wire.
+  - **Open slice:** the last slice binds the upper bound `'infinity'`, which Postgres reads as above every instant. One query text serves all slices. A split of the open slice splits its nominal minute, so the upper half stays open.
+  - **Seeds:** the query starts with the scan, so it cannot know the eligible chains. It runs on every run, including an empty scan, and returns every chain with a fire in the last 10 minutes (a handful of rows). The cron keeps the eligible ones, so `priorSeeds` is unchanged. A failed query is held and fails the run only if some chain is eligible, as before.
+  - **Skipped runs** wait for the seed query and the Take-It prefetch to settle, so nothing runs on behind the response. They still report only `tickScan` and `total` in `timingsMs`, so those distributions stay comparable.
+  - **Win-rate cold load:** the Take-It prefetch used to start after the scan and seeds, which gave a cold `loadPriorWinRates` (~5 s idle) their time as a head start. It now has only the prefetch's 5 s deadline. The pre-open runs still warm the cache; an instance that first runs after the open can report one Take-It timeout (`takeitPrefetchFailures`) on its first run of the ET day. Watch for it in the verify step.
+  - **Oracle:** the PGlite test copies the old three-way query from `a02fef66` (introduced in `d67ac753`).
 
 ### B2. Batched lookups as modules, proven equal, not yet wired (M–L)
 
