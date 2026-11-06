@@ -1,171 +1,57 @@
 #!/usr/bin/env node
 
 /**
- * Local backfill script for ETF Tide (SPY and QQQ underlying holdings flow).
+ * Backfill of flow_data's ETF Tide (options flow on the holdings of an ETF,
+ * not on the ETF itself): source spy_etf_tide and qqq_etf_tide, from Unusual
+ * Whales /market/{SPY,QQQ}/etf-tide?date=, for a range of finished ET trading
+ * days. Two UW requests a day.
  *
- * Usage:
- *   UW_API_KEY=your_key DATABASE_URL="postgresql://..." node scripts/backfill-etf-tide.mjs
+ * Mirrors api/cron/fetch-etf-tide.ts: UW sends one cumulative row a minute;
+ * the last row of each 5-minute window is kept, stamped at the window start,
+ * ON CONFLICT (date, timestamp, source) DO NOTHING (the unique key of
+ * migration #4). A re-run only adds what is missing, and a day the live cron
+ * already filled keeps its rows. Differences from the old script and the cron:
+ * the rows are put in time order before the last of a window is picked, and a
+ * row whose premium is not a number is left out and counted ("dropped")
+ * instead of being stored as 0.
  *
- * Options:
- *   node scripts/backfill-etf-tide.mjs 5          # 5 days instead of 30
- *   node scripts/backfill-etf-tide.mjs 30 SPY     # SPY only
- *   node scripts/backfill-etf-tide.mjs 30 QQQ     # QQQ only
+ * Which days: --from and --to are required, inclusive, NYSE trading days from
+ * src/data/marketHours.ts (holidays skipped). --to must be before today (ET):
+ * the live cron fills today (and notes that UW answers ?date=<today> with
+ * zeros). There is no lookback default, no positional N and no ticker list
+ * any more (to fill one ticker, run both: the writes are DO NOTHING).
+ *
+ * UW: at most UW_REQUESTS_PER_MINUTE (300) requests a minute, one retry
+ * after 1 s on a 5xx, a 429, a network error or a timeout, an explicit
+ * User-Agent. A 4xx or malformed answer fails that day (exit 1); a day UW has
+ * no rows for is listed as empty, not failed. A ticker with no rows on a day
+ * that otherwise has rows is named in a "partly empty days" line at the end of
+ * the summary: listed, not failed, exit code unchanged. A database error fails
+ * the day too: nothing is only warned about. Refuses to start 08:15–15:30 CT
+ * on a weekday, and stops taking days (exit 3) when that window opens mid-run:
+ * its calls skip the shared Redis semaphore and compete with the production
+ * crons.
+ *
+ * Writes: ≤500 rows per INSERT. Runs against whatever DATABASE_URL points at
+ * (.env.local = PRODUCTION).
+ *
+ * Usage (from the repo root; the key and URL are never printed):
+ *   node --env-file=.env.local scripts/backfill-etf-tide.mjs \
+ *     --from 2026-07-22 --to 2026-09-04 [flags]
+ *
+ * Flags:
+ *   --from YYYY-MM-DD     first trading date (inclusive), required
+ *   --to YYYY-MM-DD       last trading date (inclusive), required
+ *   --dry-run             fetch and map, write nothing; needs no DATABASE_URL
+ *   --limit N             only the first N trading days of the range
+ *   --allow-market-hours  start even inside the 08:15–15:30 CT window
+ *
+ * Exit codes: 0 every day done, 1 a day failed (or a key is missing),
+ * 2 bad flags, 3 the market-hours guard refused or stopped the run.
+ *
+ * Plan: docs/superpowers/plans/2026-11-05-summer-gap-phase3-retrofits.md (P3.2).
  */
 
-import { neon } from '@neondatabase/serverless';
+import { ETF_TIDE, runFlowScript } from './_lib/flow-data-backfill.mjs';
 
-import { getTradingDays } from './_lib/trading-days.mjs';
-
-const UW_API_KEY = process.env.UW_API_KEY;
-const DATABASE_URL = process.env.DATABASE_URL;
-
-if (!UW_API_KEY) {
-  console.error('Missing UW_API_KEY');
-  process.exit(1);
-}
-if (!DATABASE_URL) {
-  console.error('Missing DATABASE_URL');
-  process.exit(1);
-}
-
-const sql = neon(DATABASE_URL);
-const UW_BASE = 'https://api.unusualwhales.com/api';
-
-const ALL_TICKERS = [
-  { ticker: 'SPY', source: 'spy_etf_tide' },
-  { ticker: 'QQQ', source: 'qqq_etf_tide' },
-];
-
-// ── Parse args ──────────────────────────────────────────────
-
-const args = process.argv.slice(2);
-const days = Number.parseInt(args[0] ?? '30', 10);
-const tickerFilter = args.slice(1).map((t) => t.toUpperCase());
-const tickers =
-  tickerFilter.length > 0
-    ? ALL_TICKERS.filter((t) => tickerFilter.includes(t.ticker))
-    : ALL_TICKERS;
-
-// ── Fetch ETF Tide for one date ─────────────────────────────
-
-async function fetchEtfTide(ticker, date, counters) {
-  const res = await fetch(`${UW_BASE}/market/${ticker}/etf-tide?date=${date}`, {
-    headers: { Authorization: `Bearer ${UW_API_KEY}` },
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    console.warn(
-      `  UW API ${res.status} for ${ticker} ETF Tide ${date}: ${text.slice(0, 100)}`,
-    );
-    counters.failed++;
-    return [];
-  }
-
-  const body = await res.json();
-  return body.data ?? [];
-}
-
-// ── Sample to 5-min intervals ───────────────────────────────
-
-function sampleTo5Min(rows) {
-  if (rows.length === 0) return [];
-
-  const sampled = new Map();
-
-  for (const row of rows) {
-    const dt = new Date(row.timestamp);
-    const minutes = dt.getMinutes();
-    const rounded = new Date(dt);
-    rounded.setMinutes(minutes - (minutes % 5), 0, 0);
-    const key = rounded.toISOString();
-
-    sampled.set(key, {
-      date: row.date ?? dt.toISOString().slice(0, 10),
-      timestamp: key,
-      ncp: Number.parseFloat(row.net_call_premium) || 0,
-      npp: Number.parseFloat(row.net_put_premium) || 0,
-      netVolume: row.net_volume || 0,
-    });
-  }
-
-  return Array.from(sampled.values()).sort(
-    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-  );
-}
-
-// ── Store all sampled candles ───────────────────────────────
-
-async function storeCandles(candles, source, date, counters) {
-  let stored = 0;
-
-  for (const c of candles) {
-    try {
-      const result = await sql`
-        INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
-        VALUES (${date}, ${c.timestamp}, ${source}, ${c.ncp}, ${c.npp}, ${c.netVolume})
-        ON CONFLICT (date, timestamp, source) DO NOTHING
-        RETURNING id
-      `;
-      if (result.length > 0) stored++;
-    } catch (err) {
-      console.warn(`  Insert error: ${err.message}`);
-      counters.failed++;
-    }
-  }
-
-  return stored;
-}
-
-// ── Main ────────────────────────────────────────────────────
-
-async function main() {
-  const tradingDays = getTradingDays(days);
-
-  console.log(
-    `Backfilling ETF Tide for: ${tickers.map((t) => t.ticker).join(', ')}`,
-  );
-  console.log(
-    `Days: ${tradingDays.length} (${tradingDays[0]} to ${tradingDays.at(-1)})\n`,
-  );
-
-  const totals = { candles: 0, stored: 0 };
-  const counters = { failed: 0 };
-
-  for (const date of tradingDays) {
-    await new Promise((r) => setTimeout(r, 300));
-
-    const dayResults = [];
-
-    for (const { ticker, source } of tickers) {
-      await new Promise((r) => setTimeout(r, 100));
-
-      const rows = await fetchEtfTide(ticker, date, counters);
-      const candles = sampleTo5Min(rows);
-      const stored = await storeCandles(candles, source, date, counters);
-
-      totals.candles += candles.length;
-      totals.stored += stored;
-
-      dayResults.push(`${ticker}: ${candles.length} (${stored} new)`);
-    }
-
-    console.log(`  ${date}: ${dayResults.join(', ')}`);
-  }
-
-  console.log(`\nDone!`);
-  console.log(`  Total candles: ${totals.candles}`);
-  console.log(`  Newly stored: ${totals.stored}`);
-  console.log(`  Skipped (duplicates): ${totals.candles - totals.stored}`);
-  console.log(`  Failures: ${counters.failed}`);
-
-  // Surface partial failures to CI/operators via a non-zero exit code.
-  if (counters.failed > 0) process.exitCode = 1;
-}
-
-try {
-  await main();
-} catch (err) {
-  console.error('Backfill failed:', err);
-  process.exit(1);
-}
+await runFlowScript(ETF_TIDE);

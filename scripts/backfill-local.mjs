@@ -1,135 +1,55 @@
 #!/usr/bin/env node
 
 /**
- * Local backfill script — run from your terminal.
- * Fetches 30 days of Market Tide data from UW API and inserts directly into Neon.
+ * Backfill of flow_data's Market Tide: source market_tide (all-in) and
+ * market_tide_otm (out-of-the-money only), from Unusual Whales
+ * /market/market-tide?date=&interval_5m=true[&otm_only=true], for a range of
+ * finished ET trading days. Two UW requests a day.
  *
- * Usage:
- *   UW_API_KEY=your_key DATABASE_URL="postgresql://..." node backfill-local.mjs
+ * Mirrors api/cron/fetch-flow.ts: the 5-minute rows as UW sends them (the
+ * timestamp is not moved), the premiums and net volume as numbers,
+ * ON CONFLICT (date, timestamp, source) DO NOTHING (the unique key of
+ * migration #4). A re-run only adds what is missing, and a day the live cron
+ * half filled (2026-07-22: 17 of 80 rows) keeps its rows.
  *
- * Or with your .env.local:
- *   source .env.local && node backfill-local.mjs
+ * Which days: --from and --to are required, inclusive, NYSE trading days from
+ * src/data/marketHours.ts (holidays skipped). --to must be before today (ET):
+ * the live cron fills today. There is no lookback default and no positional N
+ * any more: the old N counted weekdays back from today, holidays and the
+ * unfinished day included, and could not target a gap.
+ *
+ * UW: at most UW_REQUESTS_PER_MINUTE (300) requests a minute, one retry
+ * after 1 s on a 5xx, a 429, a network error or a timeout, an explicit
+ * User-Agent. A 4xx or malformed answer fails that day (exit 1); a day UW has
+ * no rows for is listed as empty, not failed. A source with no rows on a day
+ * that otherwise has rows is named in a "partly empty days" line at the end of
+ * the summary: listed, not failed, exit code unchanged. A row for another ET
+ * day, or with a premium that is not a number, is left out and counted
+ * ("dropped"). A database error fails the day too: nothing is only warned
+ * about. Refuses to start 08:15–15:30 CT on a weekday, and stops taking days
+ * (exit 3) when that window opens mid-run: its calls skip the shared Redis
+ * semaphore and compete with the production crons.
+ *
+ * Writes: ≤500 rows per INSERT. Runs against whatever DATABASE_URL points at
+ * (.env.local = PRODUCTION).
+ *
+ * Usage (from the repo root; the key and URL are never printed):
+ *   node --env-file=.env.local scripts/backfill-local.mjs \
+ *     --from 2026-07-22 --to 2026-09-04 [flags]
+ *
+ * Flags:
+ *   --from YYYY-MM-DD     first trading date (inclusive), required
+ *   --to YYYY-MM-DD       last trading date (inclusive), required
+ *   --dry-run             fetch and map, write nothing; needs no DATABASE_URL
+ *   --limit N             only the first N trading days of the range
+ *   --allow-market-hours  start even inside the 08:15–15:30 CT window
+ *
+ * Exit codes: 0 every day done, 1 a day failed (or a key is missing),
+ * 2 bad flags, 3 the market-hours guard refused or stopped the run.
+ *
+ * Plan: docs/superpowers/plans/2026-11-05-summer-gap-phase3-retrofits.md (P3.2).
  */
 
-import { neon } from '@neondatabase/serverless';
+import { MARKET_TIDE, runFlowScript } from './_lib/flow-data-backfill.mjs';
 
-import { getTradingDays } from './_lib/trading-days.mjs';
-
-const UW_API_KEY = process.env.UW_API_KEY;
-const DATABASE_URL = process.env.DATABASE_URL;
-
-if (!UW_API_KEY) {
-  console.error('Missing UW_API_KEY');
-  process.exit(1);
-}
-if (!DATABASE_URL) {
-  console.error('Missing DATABASE_URL');
-  process.exit(1);
-}
-
-const sql = neon(DATABASE_URL);
-const UW_BASE = 'https://api.unusualwhales.com/api';
-
-// ── Fetch Market Tide for one date ──────────────────────────
-
-let fetchFailures = 0;
-
-async function fetchMarketTide(date, otmOnly) {
-  const params = new URLSearchParams({ date, interval_5m: 'true' });
-  if (otmOnly) params.set('otm_only', 'true');
-
-  const res = await fetch(`${UW_BASE}/market/market-tide?${params}`, {
-    headers: { Authorization: `Bearer ${UW_API_KEY}` },
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    console.warn(
-      `  UW API ${res.status} for ${date} (${otmOnly ? 'OTM' : 'all-in'}): ${text.slice(0, 100)}`,
-    );
-    fetchFailures++;
-    return [];
-  }
-
-  const body = await res.json();
-  return body.data ?? [];
-}
-
-// ── Store all candles for one date + source ─────────────────
-
-async function storeCandles(rows, source) {
-  let stored = 0;
-
-  for (const row of rows) {
-    try {
-      const result = await sql`
-        INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
-        VALUES (
-          ${row.date},
-          ${row.timestamp},
-          ${source},
-          ${row.net_call_premium},
-          ${row.net_put_premium},
-          ${row.net_volume}
-        )
-        ON CONFLICT (date, timestamp, source) DO NOTHING
-        RETURNING id
-      `;
-      if (result.length > 0) stored++;
-    } catch (err) {
-      console.warn(`  Insert error: ${err.message}`);
-    }
-  }
-
-  return stored;
-}
-
-// ── Main ────────────────────────────────────────────────────
-
-async function main() {
-  const days = Number.parseInt(process.argv[2] ?? '30', 10);
-  const tradingDays = getTradingDays(days);
-
-  console.log(`Backfilling ${tradingDays.length} trading days...`);
-  console.log(`Range: ${tradingDays[0]} to ${tradingDays.at(-1)}\n`);
-
-  let totalRows = 0;
-  let totalStored = 0;
-
-  for (const date of tradingDays) {
-    // Small delay to respect rate limits
-    await new Promise((r) => setTimeout(r, 200));
-
-    const [allInRows, otmRows] = await Promise.all([
-      fetchMarketTide(date, false),
-      fetchMarketTide(date, true),
-    ]);
-
-    const allInStored = await storeCandles(allInRows, 'market_tide');
-    const otmStored = await storeCandles(otmRows, 'market_tide_otm');
-
-    totalRows += allInRows.length + otmRows.length;
-    totalStored += allInStored + otmStored;
-
-    console.log(
-      `  ${date}: all-in ${allInRows.length} candles (${allInStored} new), OTM ${otmRows.length} candles (${otmStored} new)`,
-    );
-  }
-
-  console.log(`\nDone!`);
-  console.log(`  Total candles: ${totalRows}`);
-  console.log(`  Newly stored: ${totalStored}`);
-  console.log(`  Skipped (duplicates): ${totalRows - totalStored}`);
-  console.log(`  Fetch failures: ${fetchFailures}`);
-
-  if (fetchFailures > 0) {
-    process.exitCode = 1;
-  }
-}
-
-try {
-  await main();
-} catch (err) {
-  console.error('Backfill failed:', err);
-  process.exit(1);
-}
+await runFlowScript(MARKET_TIDE);

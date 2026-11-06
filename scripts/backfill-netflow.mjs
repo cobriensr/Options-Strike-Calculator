@@ -1,203 +1,63 @@
 #!/usr/bin/env node
 
 /**
- * Local backfill script for Net Flow ticks (SPX, SPY, QQQ).
- * Fetches per-minute incremental data, cumulates, samples to 5-min, stores to Neon.
+ * Backfill of flow_data's Net Flow (cumulative net call and put premium and
+ * net volume): source spx_flow, spy_flow and qqq_flow, from Unusual Whales
+ * /stock/{SPX,SPY,QQQ}/net-prem-ticks?date=, for a range of finished ET trading
+ * days. Three UW requests a day.
  *
- * Usage:
- *   UW_API_KEY=your_key DATABASE_URL="postgresql://..." node scripts/backfill-net-flow.mjs
+ * Mirrors api/cron/fetch-net-flow.ts: UW sends the change for each minute; the
+ * ticks are added up in time order (they are sorted first, UW does not promise
+ * an order), the running total is kept at the last tick of each 5-minute
+ * window and stamped at the window start, ON CONFLICT (date, timestamp,
+ * source) DO NOTHING (the unique key of migration #4). A re-run only adds what
+ * is missing. A tick for another ET day, or with a premium that is not a
+ * number, is left out before anything is added up and counted ("dropped").
  *
- * Options:
- *   node scripts/backfill-net-flow.mjs 5          # backfill 5 days instead of 30
- *   node scripts/backfill-net-flow.mjs 30 SPX     # backfill only SPX
- *   node scripts/backfill-net-flow.mjs 30 SPY QQQ # backfill only SPY and QQQ
+ * 07-22 and the live rows: the live cron's morning rows are totals of the
+ * ticks as they stood that morning; this script's rows for the rest of the day
+ * are totals of the day's ticks as UW has them now, after the close. DO NOTHING
+ * keeps the live rows, so a small step in the running total where the two
+ * meet is possible (UW is known to restate some per-minute aggregates after
+ * the close; this endpoint is suspected of it, not verified).
+ *
+ * Which days: --from and --to are required, inclusive, NYSE trading days from
+ * src/data/marketHours.ts (holidays skipped). --to must be before today (ET):
+ * the live cron fills today. There is no lookback default, no positional N and
+ * no ticker list any more (to fill one ticker, run all three: the writes are
+ * DO NOTHING).
+ *
+ * UW: at most UW_REQUESTS_PER_MINUTE (300) requests a minute, one retry
+ * after 1 s on a 5xx, a 429, a network error or a timeout, an explicit
+ * User-Agent. A 4xx or malformed answer fails that day (exit 1); a day UW has
+ * no ticks for is listed as empty, not failed. A ticker with no ticks on a day
+ * that otherwise has some is named in a "partly empty days" line at the end of
+ * the summary: listed, not failed, exit code unchanged. A database error fails
+ * the day too: nothing is only warned about. Refuses to start 08:15–15:30 CT
+ * on a weekday, and stops taking days (exit 3) when that window opens mid-run:
+ * its calls skip the shared Redis semaphore and compete with the production
+ * crons.
+ *
+ * Writes: ≤500 rows per INSERT. Runs against whatever DATABASE_URL points at
+ * (.env.local = PRODUCTION).
+ *
+ * Usage (from the repo root; the key and URL are never printed):
+ *   node --env-file=.env.local scripts/backfill-netflow.mjs \
+ *     --from 2026-07-22 --to 2026-09-04 [flags]
+ *
+ * Flags:
+ *   --from YYYY-MM-DD     first trading date (inclusive), required
+ *   --to YYYY-MM-DD       last trading date (inclusive), required
+ *   --dry-run             fetch and map, write nothing; needs no DATABASE_URL
+ *   --limit N             only the first N trading days of the range
+ *   --allow-market-hours  start even inside the 08:15–15:30 CT window
+ *
+ * Exit codes: 0 every day done, 1 a day failed (or a key is missing),
+ * 2 bad flags, 3 the market-hours guard refused or stopped the run.
+ *
+ * Plan: docs/superpowers/plans/2026-11-05-summer-gap-phase3-retrofits.md (P3.2).
  */
 
-import { neon } from '@neondatabase/serverless';
+import { NET_FLOW, runFlowScript } from './_lib/flow-data-backfill.mjs';
 
-import { getTradingDays } from './_lib/trading-days.mjs';
-
-const UW_API_KEY = process.env.UW_API_KEY;
-const DATABASE_URL = process.env.DATABASE_URL;
-
-if (!UW_API_KEY) {
-  console.error('Missing UW_API_KEY');
-  process.exit(1);
-}
-if (!DATABASE_URL) {
-  console.error('Missing DATABASE_URL');
-  process.exit(1);
-}
-
-const sql = neon(DATABASE_URL);
-const UW_BASE = 'https://api.unusualwhales.com/api';
-
-const ALL_TICKERS = [
-  { ticker: 'SPX', source: 'spx_flow' },
-  { ticker: 'SPY', source: 'spy_flow' },
-  { ticker: 'QQQ', source: 'qqq_flow' },
-];
-
-// ── Parse args ──────────────────────────────────────────────
-
-const args = process.argv.slice(2);
-const days = Number.parseInt(args[0] ?? '30', 10);
-const tickerFilter = args.slice(1).map((t) => t.toUpperCase());
-const tickers =
-  tickerFilter.length > 0
-    ? ALL_TICKERS.filter((t) => tickerFilter.includes(t.ticker))
-    : ALL_TICKERS;
-
-// ── Fetch + cumulate + sample ───────────────────────────────
-
-let fetchFailures = 0;
-
-async function fetchNetFlowForDate(ticker, date) {
-  const res = await fetch(
-    `${UW_BASE}/stock/${ticker}/net-prem-ticks?date=${date}`,
-    {
-      headers: { Authorization: `Bearer ${UW_API_KEY}` },
-    },
-  );
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    console.warn(
-      `  UW API ${res.status} for ${ticker} ${date}: ${text.slice(0, 100)}`,
-    );
-    fetchFailures++;
-    return [];
-  }
-
-  const body = await res.json();
-  const ticks = body.data ?? [];
-
-  if (ticks.length === 0) return [];
-
-  // The running sums below assume chronological order, but UW does not
-  // guarantee net-prem-ticks come back sorted. Sort ascending by tape_time
-  // before cumulating so the cumulative NCP/NPP/volume series is correct.
-  ticks.sort(
-    (a, b) => new Date(a.tape_time).getTime() - new Date(b.tape_time).getTime(),
-  );
-
-  // Cumulate incremental ticks
-  let runningNcp = 0;
-  let runningNpp = 0;
-  let runningCallVol = 0;
-  let runningPutVol = 0;
-
-  const cumulated = ticks.map((tick) => {
-    runningNcp += Number.parseFloat(tick.net_call_premium) || 0;
-    runningNpp += Number.parseFloat(tick.net_put_premium) || 0;
-    runningCallVol += tick.net_call_volume || 0;
-    runningPutVol += tick.net_put_volume || 0;
-
-    return {
-      date: tick.date,
-      timestamp: tick.tape_time,
-      ncp: runningNcp,
-      npp: runningNpp,
-      netVolume: runningCallVol + runningPutVol,
-    };
-  });
-
-  // Sample at 5-minute intervals (last tick per 5-min window)
-  const sampled = new Map();
-
-  for (const tick of cumulated) {
-    const dt = new Date(tick.timestamp);
-    const minutes = dt.getMinutes();
-    const rounded = new Date(dt);
-    rounded.setMinutes(minutes - (minutes % 5), 0, 0);
-    const key = rounded.toISOString();
-
-    sampled.set(key, {
-      date: tick.date,
-      timestamp: key,
-      ncp: tick.ncp,
-      npp: tick.npp,
-      netVolume: tick.netVolume,
-    });
-  }
-
-  return Array.from(sampled.values()).sort(
-    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-  );
-}
-
-// ── Store all sampled candles ───────────────────────────────
-
-async function storeCandles(candles, source) {
-  let stored = 0;
-
-  for (const c of candles) {
-    try {
-      const result = await sql`
-        INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
-        VALUES (${c.date}, ${c.timestamp}, ${source}, ${c.ncp}, ${c.npp}, ${c.netVolume})
-        ON CONFLICT (date, timestamp, source) DO NOTHING
-        RETURNING id
-      `;
-      if (result.length > 0) stored++;
-    } catch (err) {
-      console.warn(`  Insert error: ${err.message}`);
-    }
-  }
-
-  return stored;
-}
-
-// ── Main ────────────────────────────────────────────────────
-
-async function main() {
-  const tradingDays = getTradingDays(days);
-
-  console.log(
-    `Backfilling net flow for: ${tickers.map((t) => t.ticker).join(', ')}`,
-  );
-  console.log(
-    `Days: ${tradingDays.length} (${tradingDays[0]} to ${tradingDays.at(-1)})\n`,
-  );
-
-  const totals = { candles: 0, stored: 0 };
-
-  for (const date of tradingDays) {
-    // Delay between dates to respect rate limits
-    await new Promise((r) => setTimeout(r, 300));
-
-    const dayResults = [];
-
-    for (const { ticker, source } of tickers) {
-      // Small delay between tickers
-      await new Promise((r) => setTimeout(r, 100));
-
-      const candles = await fetchNetFlowForDate(ticker, date);
-      const stored = await storeCandles(candles, source);
-
-      totals.candles += candles.length;
-      totals.stored += stored;
-
-      dayResults.push(`${ticker}: ${candles.length} (${stored} new)`);
-    }
-
-    console.log(`  ${date}: ${dayResults.join(', ')}`);
-  }
-
-  console.log(`\nDone!`);
-  console.log(`  Total candles: ${totals.candles}`);
-  console.log(`  Newly stored: ${totals.stored}`);
-  console.log(`  Skipped (duplicates): ${totals.candles - totals.stored}`);
-  console.log(`  Fetch failures: ${fetchFailures}`);
-
-  if (fetchFailures > 0) {
-    process.exitCode = 1;
-  }
-}
-
-try {
-  await main();
-} catch (err) {
-  console.error('Backfill failed:', err);
-  process.exit(1);
-}
+await runFlowScript(NET_FLOW);
