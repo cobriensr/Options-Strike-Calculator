@@ -55,12 +55,31 @@ export const BLOCKED_ENV_NAMES = [
 ] as const;
 
 /**
- * Every attempt the mocked client constructors saw, in order. A self-test
- * that provokes one on purpose drops its own entries with `trackDbAttempts`.
- * Test-only module state: it lives for one test file and holds one entry per
- * attempt.
+ * The attempts log and the store kinds, held on `globalThis` so that every
+ * instance of this module shares them. The `setup.ts` mock factories import
+ * this module, and `vi.resetModules()` makes the next factory run build a new
+ * instance; module-level arrays would then split in two, and the `afterEach`
+ * check would read one while the block wrote to the other, losing a swallowed
+ * attempt. `??=` keeps the first instance's state. Test-only state: it lives
+ * for one test file and holds one entry per attempt.
  */
-export const dbAttempts: string[] = [];
+interface GuardState {
+  attempts: string[];
+  storeKinds: Set<string>;
+}
+
+const GUARD_STATE = Symbol.for('strike-calculator.test-db-guard');
+
+const state = ((globalThis as { [GUARD_STATE]?: GuardState })[GUARD_STATE] ??= {
+  attempts: [],
+  storeKinds: new Set(),
+});
+
+/**
+ * Every attempt the mocked clients saw, in order. A self-test that provokes
+ * one on purpose drops its own entries with `trackDbAttempts`.
+ */
+export const dbAttempts: string[] = state.attempts;
 
 /**
  * The attempts made since this call, for a self-test that provokes them on
@@ -97,14 +116,12 @@ export function blockDbAccess(kind: string): never {
 }
 
 /**
- * The kinds `blockStoreAccess` has recorded, so the check below can name the
- * store rule for them. A fixed, small set: one name per blocked entry point.
+ * Record an attempt on a production store and throw. Nothing is echoed. The
+ * kind goes into `state.storeKinds` (a fixed, small set: one name per blocked
+ * entry point) so the check below can name the store rule for it.
  */
-const storeKinds = new Set<string>();
-
-/** Record an attempt on a production store and throw. Nothing is echoed. */
 export function blockStoreAccess(kind: string): never {
-  storeKinds.add(kind);
+  state.storeKinds.add(kind);
   dbAttempts.push(kind);
   throw new Error(`${kind}: ${STORE_BLOCK_MESSAGE}`);
 }
@@ -119,7 +136,7 @@ export function assertNoDbAttempts(): void {
   const kinds = dbAttempts.splice(0);
   const rules = new Set(
     kinds.map((kind) =>
-      storeKinds.has(kind) ? STORE_BLOCK_MESSAGE : BLOCK_MESSAGE,
+      state.storeKinds.has(kind) ? STORE_BLOCK_MESSAGE : BLOCK_MESSAGE,
     ),
   );
   throw new Error(
@@ -144,9 +161,9 @@ export function blockS3Sends(S3Client: {
  * Every function `@vercel/blob` exports that calls the Blob API: the reads
  * (`get`, `head`, `list`), the writes and the signing calls. They are plain
  * functions with no shared client to patch, so the mocked package replaces
- * each by name. The self-test compares this list and `PURE_BLOB_EXPORTS`
- * against the installed package, so an export added by an upgrade fails it
- * instead of slipping through.
+ * each by name. The self-test classifies every export of the installed
+ * package as blocked, pure or an error class (the three lists below), so an
+ * export added by an upgrade fails it instead of slipping through.
  */
 export const BLOCKED_BLOB_EXPORTS = [
   'completeMultipartUpload',
@@ -172,26 +189,83 @@ export const PURE_BLOB_EXPORTS = [
 ] as const;
 
 /**
- * The real `@vercel/blob` module with `BLOCKED_BLOB_EXPORTS` replaced by
- * functions that record and reject. Everything else survives, the error
- * classes included, since production code branches on `instanceof`.
+ * The error classes `@vercel/blob` exports. Production code branches on
+ * `instanceof`, so they stay real.
  */
-export function blockBlobExports<T extends object>(actual: T): T {
+export const BLOB_ERROR_CLASSES = [
+  'BlobAccessError',
+  'BlobClientTokenExpiredError',
+  'BlobContentTypeNotAllowedError',
+  'BlobError',
+  'BlobFileTooLargeError',
+  'BlobNotFoundError',
+  'BlobPathnameMismatchError',
+  'BlobPreconditionFailedError',
+  'BlobRequestAbortedError',
+  'BlobServiceNotAvailable',
+  'BlobServiceRateLimited',
+  'BlobStoreNotFoundError',
+  'BlobStoreSuspendedError',
+  'BlobUnknownError',
+] as const;
+
+/**
+ * The same, for the separate `@vercel/blob/client` entry point (browser
+ * uploads). Nothing imports it today. The upload functions call the API with
+ * a client token, so they are blocked like the server ones.
+ */
+export const BLOCKED_BLOB_CLIENT_EXPORTS = [
+  'completeMultipartUpload',
+  'createFolder',
+  'createMultipartUpload',
+  'createMultipartUploader',
+  'put',
+  'upload',
+  'uploadPart',
+  'uploadPresigned',
+] as const;
+
+/**
+ * Client-entry exports that only sign or verify locally: the two token
+ * helpers, and the two route handlers, which generate a token or verify a
+ * callback signature and call the API in neither case.
+ */
+export const PURE_BLOB_CLIENT_EXPORTS = [
+  'generateClientTokenFromReadWriteToken',
+  'getPayloadFromClientToken',
+  'handleUpload',
+  'handleUploadPresigned',
+] as const;
+
+/** Replace the named exports of a module with record-and-reject functions. */
+function blockNamedExports<T extends object>(
+  actual: T,
+  names: readonly string[],
+  prefix: string,
+): T {
   const blocked = Object.fromEntries(
-    BLOCKED_BLOB_EXPORTS.map((name) => [
+    names.map((name) => [
       name,
-      async () => blockStoreAccess(`blob.${name}`),
+      async () => blockStoreAccess(`${prefix}.${name}`),
     ]),
   );
   return { ...actual, ...blocked };
 }
 
 /**
- * The fetch this file saw at load, which `setup.ts` imports before any test
- * code runs. A Redis request is let through only when a test has replaced
- * `globalThis.fetch` with its own double.
+ * The real `@vercel/blob` module with `BLOCKED_BLOB_EXPORTS` replaced by
+ * functions that record (as `blob.<name>`) and reject. Everything else
+ * survives, the error classes included, since production code branches on
+ * `instanceof`.
  */
-const realFetch = globalThis.fetch;
+export function blockBlobExports<T extends object>(actual: T): T {
+  return blockNamedExports(actual, BLOCKED_BLOB_EXPORTS, 'blob');
+}
+
+/** The same for `@vercel/blob/client`; attempts record as `blob.client.<name>`. */
+export function blockBlobClientExports<T extends object>(actual: T): T {
+  return blockNamedExports(actual, BLOCKED_BLOB_CLIENT_EXPORTS, 'blob.client');
+}
 
 interface RedisHttpClient {
   request(req: unknown): Promise<unknown>;
@@ -202,8 +276,11 @@ interface RedisHttpClient {
  * method that all commands, pipelines and the auto-pipeline funnel through
  * (it calls the global `fetch`). The class is not exported by the package, so
  * its prototype is reached from a throwaway client, which opens no
- * connection. A test that stubbed `fetch` gets its stub, since that cannot
- * reach the store.
+ * connection. The block is unconditional: a `fetch` stub, spy or wrapper is
+ * not a reliable sign that the request stays in the process (a call-through
+ * spy reaches the store). A test that builds a real client against its own
+ * `fetch` double opts out per file, with
+ * `vi.mock('@upstash/redis', (importOriginal) => importOriginal())`.
  */
 export function blockRedisRequests(
   Redis: new (config: { url: string; token: string }) => unknown,
@@ -215,9 +292,5 @@ export function blockRedisRequests(
     client: RedisHttpClient;
   };
   const proto = Object.getPrototypeOf(client) as RedisHttpClient;
-  const real = proto.request;
-  proto.request = async function (this: RedisHttpClient, req) {
-    if (globalThis.fetch === realFetch) blockStoreAccess('redis');
-    return real.call(this, req);
-  };
+  proto.request = async () => blockStoreAccess('redis');
 }

@@ -15,6 +15,11 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+// This file builds and uses the real client against its own fetch stub, so it
+// opts out of the global block in src/__tests__/setup.ts, which rejects every
+// Redis request. The stub below is the only thing that can answer.
+vi.mock('@upstash/redis', (importOriginal) => importOriginal());
+
 vi.mock('../_lib/sentry.js', () => ({
   metrics: { increment: vi.fn() },
 }));

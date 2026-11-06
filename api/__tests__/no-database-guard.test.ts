@@ -132,8 +132,10 @@ describe('trackDbAttempts', () => {
 // that loads the real setup.ts, under node_modules/.cache so that `vitest` and
 // the Neon package resolve. The probe's own afterAll runs first (hooks run in
 // stack order) and makes an attempt that a try/catch swallows, the way safeDb
-// would.
-describe('the setup.ts afterAll', () => {
+// would. The same runner probes the afterEach for a package first imported
+// after vi.resetModules(), which this file cannot do: it has already imported
+// every package at the top.
+describe('the setup.ts hooks, run in a one-file project', () => {
   const repoRoot = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
     '../..',
@@ -203,6 +205,69 @@ describe('the setup.ts afterAll', () => {
 
   it('passes the same file when nothing tried', () => {
     const { status, output } = runProbe(probe('void neon;'));
+    expect(status, output).toBe(0);
+  }, 130_000);
+
+  // The import after the reset runs the setup.ts mock factory afresh, which
+  // imports a new db-guard instance. A swallowed attempt must still land in
+  // the log that the afterEach (bound to the first instance) reads.
+  const afterReset = (pkg: string, call: string) => `
+    it('swallows an attempt made after a module reset', async () => {
+      vi.resetModules();
+      const mod = await import(${JSON.stringify(pkg)});
+      try {
+        ${call}
+      } catch {
+        // swallowed, as a best-effort wrapper would
+      }
+    });
+  `;
+
+  it.each([
+    [
+      'Neon',
+      '@neondatabase/serverless',
+      "mod.neon('postgres://user:hunter2@invalid.invalid/db');",
+      'neon',
+      BLOCK_MESSAGE,
+    ],
+    [
+      'Redis',
+      '@upstash/redis',
+      "await new mod.Redis({ url: 'https://example.invalid', token: 'hunter2' }).get('k');",
+      'redis',
+      guard.STORE_BLOCK_MESSAGE,
+    ],
+    [
+      'Blob',
+      '@vercel/blob',
+      "await mod.list({ prefix: 'ml/' });",
+      'blob.list',
+      guard.STORE_BLOCK_MESSAGE,
+    ],
+    [
+      'R2',
+      '@aws-sdk/client-s3',
+      `await new mod.S3Client({ region: 'auto', endpoint: 'https://example.invalid', credentials: { accessKeyId: 'a', secretAccessKey: 'hunter2' } }).send(new mod.HeadObjectCommand({ Bucket: 'b', Key: 'k' }));`,
+      's3',
+      guard.STORE_BLOCK_MESSAGE,
+    ],
+  ])(
+    'fails the test for a %s attempt made after vi.resetModules()',
+    (_name, pkg, call, kind, message) => {
+      const { status, output } = runProbe(afterReset(pkg, call));
+      expect(status, output).not.toBe(0);
+      expect(output).toContain(message);
+      expect(output).toContain(`this test tried: ${kind}`);
+      expect(output).not.toContain('hunter2');
+    },
+    130_000,
+  );
+
+  it('passes a reset-and-import that makes no call', () => {
+    const { status, output } = runProbe(
+      afterReset('@neondatabase/serverless', 'void mod;'),
+    );
     expect(status, output).toBe(0);
   }, 130_000);
 });

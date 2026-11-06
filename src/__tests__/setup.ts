@@ -54,6 +54,14 @@ vi.mock('@vercel/blob', async (importOriginal) => {
   return blockBlobExports(actual);
 });
 
+// The browser-upload entry point is a separate package export, so it needs
+// its own mock. Nothing imports it today; this keeps a future import blocked.
+vi.mock('@vercel/blob/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@vercel/blob/client')>();
+  const { blockBlobClientExports } = await import('./db-guard');
+  return blockBlobClientExports(actual);
+});
+
 // Cloudflare R2 is S3-compatible and is reached only through S3Client.send.
 vi.mock('@aws-sdk/client-s3', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-s3')>();

@@ -21,11 +21,15 @@ import {
 } from '@aws-sdk/client-s3';
 import { Redis } from '@upstash/redis';
 import * as blob from '@vercel/blob';
+import * as blobClient from '@vercel/blob/client';
 import { limiterRedis, redis, safeRedis } from '../_lib/redis.js';
 import * as guard from '../../src/__tests__/db-guard.js';
 
 const {
+  BLOB_ERROR_CLASSES,
+  BLOCKED_BLOB_CLIENT_EXPORTS,
   BLOCKED_BLOB_EXPORTS,
+  PURE_BLOB_CLIENT_EXPORTS,
   PURE_BLOB_EXPORTS,
   STORE_BLOCK_MESSAGE,
   trackDbAttempts,
@@ -79,22 +83,57 @@ describe('the global @upstash/redis block', () => {
     },
   );
 
-  it('lets a request through when the test has replaced fetch itself', async () => {
-    // A stubbed fetch is a test double, not a route to the store.
+  it('stays blocked when a test has replaced fetch with a stub', async () => {
     const attempts = trackDbAttempts();
-    const stub = vi.fn(
-      async () =>
-        new Response(JSON.stringify([{ result: 'v' }]), { status: 200 }),
-    );
+    const stub = vi.fn(async () => new Response('[]', { status: 200 }));
     vi.stubGlobal('fetch', stub);
-    const client = new Redis({
-      url: REDIS_URL,
-      token: TOKEN,
-      responseEncoding: false,
-    });
-    await expect(client.get('k')).resolves.toBe('v');
-    expect(stub).toHaveBeenCalledOnce();
-    expect(attempts.made).toEqual([]);
+    const client = new Redis({ url: REDIS_URL, token: TOKEN });
+    await expect(client.get('k')).rejects.toThrow(STORE_BLOCK_MESSAGE);
+    expect(stub).not.toHaveBeenCalled();
+    expect(attempts.made).toEqual(['redis']);
+    attempts.discard();
+  });
+
+  it('stays blocked behind a call-through spy on fetch, which would reach the store', async () => {
+    // archive-sidecar.test.ts and build-features-phase2.test.ts spy this way.
+    const attempts = trackDbAttempts();
+    const spy = vi.spyOn(globalThis, 'fetch');
+    const client = new Redis({ url: REDIS_URL, token: TOKEN });
+    await expect(client.get('k')).rejects.toThrow(STORE_BLOCK_MESSAGE);
+    expect(spy).not.toHaveBeenCalled();
+    expect(attempts.made).toEqual(['redis']);
+    attempts.discard();
+    spy.mockRestore();
+  });
+
+  it('stays blocked behind a wrapper that delegates to the original fetch', async () => {
+    const attempts = trackDbAttempts();
+    const original = globalThis.fetch;
+    const wrapper = vi.fn((...args: Parameters<typeof fetch>) =>
+      original(...args),
+    );
+    vi.stubGlobal('fetch', wrapper);
+    const client = new Redis({ url: REDIS_URL, token: TOKEN });
+    await expect(client.get('k')).rejects.toThrow(STORE_BLOCK_MESSAGE);
+    expect(wrapper).not.toHaveBeenCalled();
+    expect(attempts.made).toEqual(['redis']);
+    attempts.discard();
+  });
+
+  it('stays blocked when fetch is stubbed before modules are reset and the package is imported afresh', async () => {
+    const attempts = trackDbAttempts();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('[]', { status: 200 })),
+    );
+    vi.resetModules();
+    const { Redis: FreshRedis } = await import('@upstash/redis');
+    const client = new FreshRedis({ url: REDIS_URL, token: TOKEN });
+    await expect(client.get('k')).rejects.toThrow(STORE_BLOCK_MESSAGE);
+    // The attempt lands in the log this file's own setup.ts afterEach reads,
+    // although the fresh import re-ran the mock factory.
+    expect(attempts.made).toEqual(['redis']);
+    attempts.discard();
   });
 });
 
@@ -218,19 +257,6 @@ describe('the global @vercel/blob block', () => {
     expect((err as Error).message).not.toContain('hunter2');
   });
 
-  it('classifies every function the real package exports, so a new one cannot slip by', async () => {
-    const actual =
-      await vi.importActual<Record<string, unknown>>('@vercel/blob');
-    const isClass = (fn: unknown) =>
-      Function.prototype.toString.call(fn).startsWith('class');
-    const functions = Object.entries(actual)
-      .filter(([, value]) => typeof value === 'function' && !isClass(value))
-      .map(([name]) => name);
-    expect(functions.sort()).toEqual(
-      [...BLOCKED_BLOB_EXPORTS, ...PURE_BLOB_EXPORTS].sort(),
-    );
-  });
-
   it('keeps the pure helpers and the error classes the code relies on', () => {
     expect(blob.getDownloadUrl('https://store.example.invalid/a.png')).toBe(
       'https://store.example.invalid/a.png?download=1',
@@ -240,6 +266,109 @@ describe('the global @vercel/blob block', () => {
     expect(notFound).toBeInstanceOf(blob.BlobNotFoundError);
     expect(notFound).toBeInstanceOf(blob.BlobError);
     expect(notFound).toBeInstanceOf(Error);
+  });
+});
+
+describe('the global @vercel/blob/client block', () => {
+  // A separate package export with its own mock. Nothing imports it today.
+  it.each(BLOCKED_BLOB_CLIENT_EXPORTS)(
+    '%s rejects with the block message and records the attempt',
+    async (name) => {
+      const attempts = trackDbAttempts();
+      const call = blobClient[name] as () => Promise<unknown>;
+      await expect(call()).rejects.toThrow(STORE_BLOCK_MESSAGE);
+      expect(attempts.made).toEqual([`blob.client.${name}`]);
+      attempts.discard();
+    },
+  );
+});
+
+describe('the Blob export lists', () => {
+  const isClass = (value: unknown) =>
+    typeof value === 'function' &&
+    Function.prototype.toString.call(value).startsWith('class');
+
+  // Every export of the installed package must be named in exactly one list,
+  // so a function, class or object added by an upgrade fails here instead of
+  // slipping through unblocked.
+  it.each([
+    [
+      '@vercel/blob',
+      BLOCKED_BLOB_EXPORTS,
+      PURE_BLOB_EXPORTS,
+      BLOB_ERROR_CLASSES,
+    ],
+    [
+      '@vercel/blob/client',
+      BLOCKED_BLOB_CLIENT_EXPORTS,
+      PURE_BLOB_CLIENT_EXPORTS,
+      [],
+    ],
+  ] as [string, readonly string[], readonly string[], readonly string[]][])(
+    'classify every export of %s as blocked, pure or an error class',
+    async (specifier, blocked, pure, errorClasses) => {
+      const actual = await vi.importActual<Record<string, unknown>>(specifier);
+
+      const classified = [...blocked, ...pure, ...errorClasses];
+      expect(
+        Object.keys(actual).filter((name) => !classified.includes(name)),
+        'exports in no list',
+      ).toEqual([]);
+      expect(
+        classified.filter((name) => !(name in actual)),
+        'listed names the package no longer exports',
+      ).toEqual([]);
+      expect(new Set(classified).size, 'a name in two lists').toBe(
+        classified.length,
+      );
+
+      for (const name of [...blocked, ...pure]) {
+        expect(typeof actual[name], name).toBe('function');
+        expect(isClass(actual[name]), `${name} is a class`).toBe(false);
+      }
+      for (const name of errorClasses) {
+        expect(isClass(actual[name]), `${name} is a class`).toBe(true);
+      }
+    },
+  );
+
+  it.each([
+    ['@vercel/blob', blob, PURE_BLOB_EXPORTS],
+    ['@vercel/blob/client', blobClient, PURE_BLOB_CLIENT_EXPORTS],
+  ] as [string, Record<string, unknown>, readonly string[]][])(
+    'leave the pure and error-class exports of %s as the real ones',
+    async (specifier, mocked, pure) => {
+      const actual = await vi.importActual<Record<string, unknown>>(specifier);
+      for (const name of pure) expect(mocked[name], name).toBe(actual[name]);
+      if (specifier === '@vercel/blob') {
+        for (const name of BLOB_ERROR_CLASSES) {
+          expect(mocked[name], name).toBe(actual[name]);
+        }
+      }
+    },
+  );
+});
+
+describe('the attempts log across vi.resetModules()', () => {
+  // A package imported for the first time after a reset re-runs its setup.ts
+  // factory, which imports a new db-guard instance. The end-to-end case is
+  // probed in no-database-guard.test.ts; this pins the shared state itself.
+  it('is one log and one set of store kinds: a fresh db-guard instance writes where the check reads', async () => {
+    vi.resetModules();
+    const fresh = await import('../../src/__tests__/db-guard.js');
+    expect(fresh).not.toBe(guard);
+    expect(fresh.dbAttempts).toBe(guard.dbAttempts);
+
+    const attempts = trackDbAttempts();
+    expect(() => fresh.blockStoreAccess('blob.list')).toThrow(
+      STORE_BLOCK_MESSAGE,
+    );
+    expect(attempts.made).toEqual(['blob.list']);
+    // The original instance names the store rule for a kind the fresh one saw.
+    expect(() => guard.assertNoDbAttempts()).toThrow(
+      new RegExp(`^${STORE_BLOCK_MESSAGE}; this test tried: blob.list`),
+    );
+    expect(guard.dbAttempts).toEqual([]);
   });
 });
 
