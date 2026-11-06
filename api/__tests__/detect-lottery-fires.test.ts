@@ -80,12 +80,18 @@ const flush = (): Promise<void> =>
   });
 
 // A promise the test settles by hand, to hold a query until it says so.
-function deferred(): { promise: Promise<void>; resolve: () => void } {
+function deferred(): {
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (reason: Error) => void;
+} {
   let resolve!: () => void;
-  const promise = new Promise<void>((r) => {
-    resolve = r;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 // Predicates for router.when(): pick a call by what it was bound to, not by
@@ -4128,35 +4134,129 @@ describe('detect-lottery-fires handler', () => {
       }
     });
 
-    it('starts the scan, the seed query and the Take-It prefetch together, before any of them answers', async () => {
-      const release = deferred();
-      router.on('ticks', async () => {
-        await release.promise;
-        return [];
-      });
-      router.on('priorFires', async () => {
-        await release.promise;
-        return [];
-      });
-      mockLoadTakeitDetectContext.mockImplementation(async () => {
-        await release.promise;
-        return null;
+    describe('when the Take-It prefetch starts', () => {
+      // The prefetch's 5 s deadline covers waiting for a cold win-rate load
+      // (4.9 s idle, over 10 s under load), so it is gated on that load: at
+      // once when the cache is warm; when cold, once the load settles or the
+      // scan answers with ticks; never for an empty scan on a cold cache.
+      // The default mock answers the day cache with an already-resolved
+      // promise, a warm cache.
+
+      it('starts the scan, the seed query and the Take-It prefetch together on a warm win-rate cache, before any of them answers', async () => {
+        const release = deferred();
+        router.on('ticks', async () => {
+          await release.promise;
+          return [];
+        });
+        router.on('priorFires', async () => {
+          await release.promise;
+          return [];
+        });
+        mockLoadTakeitDetectContext.mockImplementation(async () => {
+          await release.promise;
+          return null;
+        });
+
+        const res = mockResponse();
+        const running = handler(authorizedReq(), res);
+        await flush();
+
+        // All three are in flight and none has answered.
+        expect(router.counts()).toEqual({ ticks: TICK_SLICES, priorFires: 1 });
+        expect(mockLoadTakeitDetectContext).toHaveBeenCalledTimes(1);
+        expect(res._json).toBeNull();
+
+        release.resolve();
+        await running;
+        // An empty scan still waited for the other two to settle, so nothing
+        // is left running behind the response.
+        expect(res._json).toMatchObject({ status: 'skipped' });
       });
 
-      const res = mockResponse();
-      const running = handler(authorizedReq(), res);
-      await flush();
+      it('never starts the prefetch for an empty scan on a cold win-rate cache, and still queries the seeds', async () => {
+        // The load never finishes within the run: cold.
+        mockPriorSessionWinRatesForDay.mockReturnValue(new Promise(() => {}));
+        stageTicks([]);
 
-      // All three are in flight and none has answered.
-      expect(router.counts()).toEqual({ ticks: TICK_SLICES, priorFires: 1 });
-      expect(mockLoadTakeitDetectContext).toHaveBeenCalledTimes(1);
-      expect(res._json).toBeNull();
+        const res = mockResponse();
+        await handler(authorizedReq(), res);
 
-      release.resolve();
-      await running;
-      // An empty scan still waited for the other two to settle, so nothing
-      // is left running behind the response.
-      expect(res._json).toMatchObject({ status: 'skipped' });
+        expect(res._json).toMatchObject({ status: 'skipped' });
+        expect(mockLoadTakeitDetectContext).not.toHaveBeenCalled();
+        expect(router.counts()).toEqual({ ticks: TICK_SLICES, priorFires: 1 });
+        // The skipped run still waits on the load it started: that wait is
+        // what warms the cache for the first run after the open.
+        expect(mockAwaitWinRateWarmup).toHaveBeenCalledTimes(1);
+      });
+
+      it('holds the prefetch back on a cold cache until the scan answers with ticks', async () => {
+        const winRates = deferred();
+        mockPriorSessionWinRatesForDay.mockReturnValue(
+          winRates.promise.then(() => []),
+        );
+        const scanAnswers = deferred();
+        router.on('ticks', async (_call, nth) => {
+          await scanAnswers.promise;
+          return nth % TICK_SLICES === 0 ? fireableSndkStream() : [];
+        });
+
+        const res = mockResponse();
+        const running = handler(authorizedReq(), res);
+        await flush();
+
+        // The scan and the seeds are in flight; the load is cold and the scan
+        // has not answered, so the prefetch has not started.
+        expect(router.counts()).toEqual({ ticks: TICK_SLICES, priorFires: 1 });
+        expect(mockLoadTakeitDetectContext).not.toHaveBeenCalled();
+
+        scanAnswers.resolve();
+        await flush();
+        // The scan answered with ticks: the prefetch starts, with the load
+        // still pending, so the load has had the scan's time as a head start.
+        expect(mockLoadTakeitDetectContext).toHaveBeenCalledTimes(1);
+
+        winRates.resolve();
+        await running;
+        expect(res._status).toBe(200);
+        expect(res._json).toMatchObject({ scanned: 6 });
+      });
+
+      it.each([
+        ['finishes', (load: ReturnType<typeof deferred>) => load.resolve()],
+        [
+          'fails',
+          (load: ReturnType<typeof deferred>) =>
+            load.reject(new Error('win-rate load failed')),
+        ],
+      ])(
+        'starts the prefetch on a cold cache as soon as the load %s, without waiting for the scan',
+        async (_label, settle) => {
+          const winRates = deferred();
+          mockPriorSessionWinRatesForDay.mockReturnValue(
+            winRates.promise.then(() => []),
+          );
+          const scanAnswers = deferred();
+          router.on('ticks', async (_call, nth) => {
+            await scanAnswers.promise;
+            return nth % TICK_SLICES === 0 ? fireableSndkStream() : [];
+          });
+
+          const res = mockResponse();
+          const running = handler(authorizedReq(), res);
+          await flush();
+          expect(mockLoadTakeitDetectContext).not.toHaveBeenCalled();
+
+          // The load settles first; the scan is still out. A failed load
+          // counts too: the prefetch then retries it.
+          settle(winRates);
+          await flush();
+          expect(mockLoadTakeitDetectContext).toHaveBeenCalledTimes(1);
+
+          scanAnswers.resolve();
+          await running;
+          expect(res._status).toBe(200);
+        },
+      );
     });
 
     it('keeps only the seeds of chains the run can fire, so priorSeeds counts those', async () => {
@@ -4186,6 +4286,8 @@ describe('detect-lottery-fires handler', () => {
 
     describe('a seed query that fails', () => {
       const seedError = new Error('seed query down');
+      const SEED_UNNEEDED_WARNING =
+        'detect-lottery-fires: cooldown seed query failed; no chain needed it this run';
 
       it('fails the run, with a Sentry capture, when a chain needs the seed', async () => {
         stageTicks(fireableSndkStream());
@@ -4205,6 +4307,11 @@ describe('detect-lottery-fires handler', () => {
         expect(Sentry.captureException).toHaveBeenCalledWith(seedError);
         // Without its cooldown seed the chain must not fire: nothing written.
         expect(router.ran()).not.toContain('insert');
+        // It was needed, so it is the run's error, not the "unneeded" warning.
+        expect(logger.warn).not.toHaveBeenCalledWith(
+          expect.anything(),
+          SEED_UNNEEDED_WARNING,
+        );
       });
 
       it('does not fail a run in which no chain qualifies, as before the seed started with the scan', async () => {
@@ -4216,6 +4323,11 @@ describe('detect-lottery-fires handler', () => {
 
         expect(res._status).toBe(200);
         expect(res._json).toMatchObject({ status: 'success', skippedShort: 1 });
+        // Not an error, but not silent either.
+        expect(logger.warn).toHaveBeenCalledWith(
+          { err: seedError },
+          SEED_UNNEEDED_WARNING,
+        );
       });
 
       it('does not fail an empty-scan run', async () => {
@@ -4227,10 +4339,53 @@ describe('detect-lottery-fires handler', () => {
 
         expect(res._status).toBe(200);
         expect(res._json).toMatchObject({ status: 'skipped' });
+        expect(logger.warn).toHaveBeenCalledWith(
+          { err: seedError },
+          SEED_UNNEEDED_WARNING,
+        );
       });
     });
 
     describe('a tick slice that fails', () => {
+      it('answers only after the seed query and the Take-It prefetch have settled, so nothing runs on behind the response', async () => {
+        const sliceError = new Error('ws_option_trades slice read failed');
+        const release = deferred();
+        // Every slice rejects at once; the other two reads are still out.
+        router.on('ticks', sliceError);
+        router.on('priorFires', async () => {
+          await release.promise;
+          return [];
+        });
+        mockLoadTakeitDetectContext.mockImplementation(async () => {
+          await release.promise;
+          return null;
+        });
+
+        const res = mockResponse();
+        const running = handler(authorizedReq(), res);
+        await flush();
+
+        // All three started, the scan has failed, and the run has not
+        // answered or reported anything yet.
+        expect(router.counts()).toEqual({ ticks: TICK_SLICES, priorFires: 1 });
+        expect(mockLoadTakeitDetectContext).toHaveBeenCalledTimes(1);
+        expect(res._json).toBeNull();
+        expect(Sentry.captureException).not.toHaveBeenCalled();
+
+        release.resolve();
+        await running;
+
+        expect(res._status).toBe(500);
+        expect(Sentry.captureException).toHaveBeenCalledWith(sliceError);
+        expect(reportCronRun).toHaveBeenCalledWith(
+          'detect-lottery-fires',
+          expect.objectContaining({
+            status: 'error',
+            message: sliceError.message,
+          }),
+        );
+      });
+
       it('fails the run, with a Sentry capture, when one slice rejects, and writes nothing', async () => {
         const sliceError = new Error('ws_option_trades slice read failed');
         stageTicks(fireableSndkStream());

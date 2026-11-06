@@ -220,15 +220,23 @@ function wholeMs<K extends string>(
   return rounded;
 }
 
+// The value of a settled promise, or its rejection thrown.
+function unwrap<T>(outcome: PromiseSettledResult<T>): T {
+  if (outcome.status === 'rejected') throw outcome.reason;
+  return outcome.value;
+}
+
 export default withCronInstrumentation(
   'detect-lottery-fires',
   async (ctx): Promise<CronResult> => {
     const runStartedAt = performance.now();
     // The one instant this run counts every time bound from: the tick window,
     // the seed lookback and both Take-It lookbacks. Captured once, before any
-    // query goes out, and bound into each as a parameter, so the database's
-    // NOW() is read nowhere and the run is internally consistent. A replay
-    // supplies its own simulated instant here (plan 2026-10-29, B1).
+    // query goes out, and bound into each as a parameter, so no statement
+    // reads the database's NOW() for a bound and the run is internally
+    // consistent. (The fire INSERT still lets inserted_at default to NOW().)
+    // The phase-E replay driver will pass its own instant here (plan
+    // 2026-10-29).
     const scanEnd = new Date();
     const scanEndIso = scanEnd.toISOString();
     const db = getDb();
@@ -242,9 +250,13 @@ export default withCronInstrumentation(
     //                   the slowest slice, not their sum
     //   seeds           the cooldown seed query. It starts with the scan, so
     //                   it runs (and has a time) even when no chain qualifies
-    //   takeitPrefetch  loadTakeitDetectContext. The win-rate load it joins
-    //                   starts before the scan and runs in the background, so
-    //                   only the part still pending at the join is counted
+    //   takeitPrefetch  loadTakeitDetectContext, from its own start. It starts
+    //                   with the scan when the day's win-rate cache is warm,
+    //                   else when that load settles or the scan answers with
+    //                   ticks (see 3 below), and it joins the load, so a cold
+    //                   run counts the part still pending at the join. 0 when
+    //                   it never started (an empty scan on a cold cache,
+    //                   which is a skipped run and doesn't report it)
     //   pass1Flow       the whole Pass 1 loop: detect, enrich, score, and the
     //                   per-ticker-day flow-series fetch that is its I/O
     //   anchors         the batched anchor-legs lookup
@@ -255,10 +267,10 @@ export default withCronInstrumentation(
     //   tierMonitor     the post-loop feed-tier query
     //   total           handler start to the end, including untimed glue
     //                   such as grouping rows
-    // tickScan, seeds and takeitPrefetch run together (since B1): each keeps
-    // its own duration, they overlap, and the stages no longer sum to total,
-    // which counts the slowest of the three once. The rest run one after
-    // another.
+    // tickScan and seeds start together, and takeitPrefetch with them or soon
+    // after (since B1): each keeps its own duration, they overlap, and the
+    // stages no longer sum to total, which counts the overlap once. The rest
+    // run one after another.
     const stageMs = {
       tickScan: 0,
       seeds: 0,
@@ -287,15 +299,15 @@ export default withCronInstrumentation(
     // Mean of daily win-rates (PIT-correct: only strictly-earlier dates)
     // per ticker, a Take-It input. A parallel seq scan of the whole table
     // (~5 s idle), and its answer only changes with the ET date, so it is
-    // loaded once per ET day and shared across runs. Started here, first,
-    // ahead of the scan: the Take-It prefetch below now starts with the scan
-    // and joins this load, so it has only the prefetch's own 5 s deadline to
-    // finish, no longer the scan and seed time on top. The pre-open runs
+    // loaded once per ET day and shared across runs. A cold load took 4.9 s
+    // on an idle Neon and passed 10 s under load (WIN_RATE_LOAD_TIMEOUT_MS),
+    // and the Take-It prefetch's 5 s deadline covers waiting for it, so the
+    // prefetch is gated on it (see 3 below) rather than started with the
+    // scan. Started here, first, ahead of the scan. The pre-open runs
     // (08:25–08:30 CT) wait for it (see the empty-scan branch), which warms
-    // the cache; an instance that first runs after the open pays a cold load
-    // on its first run of the ET day and can report a Take-It timeout then.
-    // Not awaited: the cache handles a rejection, and the prefetch below
-    // joins the load or retries it if this one failed.
+    // the cache before the open. Not awaited here: the cache handles a
+    // rejection, and the prefetch joins the load or retries it if this one
+    // failed.
     const loadPriorWinRates = async (
       beforeDate: string,
     ): Promise<PriorWinRateRow[]> =>
@@ -323,9 +335,11 @@ export default withCronInstrumentation(
     // us why through the callback).
     let takeitPrefetchFailure = null as TakeitPrefetchFailure | null;
 
-    // ── Setup: three independent reads, started together ───────────────
+    // ── Setup: three independent reads, in parallel ────────────────────
     // Nothing here needs another's answer, so the run waits for the slowest
-    // instead of their sum.
+    // instead of their sum. The scan and the seed query start together; the
+    // Take-It prefetch starts with them unless the win-rate cache is cold
+    // (see 3).
     //
     // 1. The tick window, 7 one-minute slices read once (lottery-tick-scan.ts;
     //    it replaced three hash partitions that each scanned the whole
@@ -376,6 +390,20 @@ export default withCronInstrumentation(
     //    plus the win-rate day cache (started at the top of the run), once
     //    per cron tick.
     //
+    //    When it starts depends on that cache, because the prefetch's 5 s
+    //    deadline covers waiting for a cold load (4.9 s idle, over 10 s under
+    //    load):
+    //      - warm cache: the load promise has already settled, so it
+    //        resolves within a few microtasks, long before the scan's round
+    //        trips, and the prefetch starts with the scan;
+    //      - cold cache: it starts when the load settles (success or
+    //        failure: the prefetch then joins or retries it) or when the scan
+    //        answers with ticks, whichever comes first, which gives the load
+    //        the scan's time as a head start;
+    //      - cold cache and an empty scan: it never starts. That is the
+    //        08:25 CT run of each instance's first ET day, which only warms
+    //        the cache (see the empty-scan branch).
+    //
     //    The two recent-fire lookbacks (35 and 10 min) carry a `date` bound
     //    too: it is the leading column of the (date, trigger_time_ct) and
     //    (date, bucket_ct) indexes, so the scan is a two-day range instead of
@@ -385,59 +413,94 @@ export default withCronInstrumentation(
     //    the total, and a cap would turn a slow success into a failure plus a
     //    second, uncancelled copy of the query on Neon. Yesterday is included
     //    so a lookback that crosses ET midnight still sees its fires.
-    const takeitPromise = timed('takeitPrefetch', () =>
-      loadTakeitDetectContext(
-        'lottery',
-        {
-          fetchRecentSameType: async (lookbackMin) =>
-            (await withDbRetry(
-              () => db`
-                SELECT trigger_time_ct AS fire_time, underlying_symbol, option_type
-                FROM lottery_finder_fires
-                WHERE date >= ${ctx.today}::date - 1
-                  AND trigger_time_ct >= ${scanEndIso}::timestamptz - (${lookbackMin}::int * INTERVAL '1 minute')
-              `,
-              1,
-            )) as RecentFireRow[],
-          // Pulls underlying_symbol + option_type too so the same row set
-          // powers both the chain-keyed cofire map AND the sibling-chain
-          // (ticker+dir) cofire map. One round-trip.
-          fetchRecentOtherTypeByChain: async (lookbackMin) =>
-            (await withDbRetry(
-              () => db`
-                SELECT
-                  option_chain_id,
-                  underlying_symbol,
-                  option_type,
-                  bucket_ct AS fire_time
-                FROM silent_boom_alerts
-                WHERE date >= ${ctx.today}::date - 1
-                  AND bucket_ct >= ${scanEndIso}::timestamptz - (${lookbackMin}::int * INTERVAL '1 minute')
-              `,
-              1,
-            )) as RecentCofireRow[],
-          // Joins the load started at the top of the run, or retries it if
-          // that one already failed (see loadPriorWinRates).
-          fetchPriorSessionWinRateByTicker: () =>
-            priorSessionWinRatesForDay('lottery', ctx.today, loadPriorWinRates),
-        },
-        (failure) => {
-          takeitPrefetchFailure = failure;
-        },
-      ),
+    const winRatesSettled = winRateWarmup.then(
+      () => true,
+      () => true,
+    );
+    const scanHasTicks = scanPromise.then(
+      (s) => s.scanned > 0,
+      () => false,
+    );
+    const takeitPromise = Promise.race([winRatesSettled, scanHasTicks]).then(
+      (start) =>
+        start
+          ? timed('takeitPrefetch', () =>
+              loadTakeitDetectContext(
+                'lottery',
+                {
+                  fetchRecentSameType: async (lookbackMin) =>
+                    (await withDbRetry(
+                      () => db`
+                        SELECT trigger_time_ct AS fire_time, underlying_symbol, option_type
+                        FROM lottery_finder_fires
+                        WHERE date >= ${ctx.today}::date - 1
+                          AND trigger_time_ct >= ${scanEndIso}::timestamptz - (${lookbackMin}::int * INTERVAL '1 minute')
+                      `,
+                      1,
+                    )) as RecentFireRow[],
+                  // Pulls underlying_symbol + option_type too so the same row
+                  // set powers both the chain-keyed cofire map AND the
+                  // sibling-chain (ticker+dir) cofire map. One round-trip.
+                  fetchRecentOtherTypeByChain: async (lookbackMin) =>
+                    (await withDbRetry(
+                      () => db`
+                        SELECT
+                          option_chain_id,
+                          underlying_symbol,
+                          option_type,
+                          bucket_ct AS fire_time
+                        FROM silent_boom_alerts
+                        WHERE date >= ${ctx.today}::date - 1
+                          AND bucket_ct >= ${scanEndIso}::timestamptz - (${lookbackMin}::int * INTERVAL '1 minute')
+                      `,
+                      1,
+                    )) as RecentCofireRow[],
+                  // Joins the load started at the top of the run, or retries
+                  // it if that one already failed (see loadPriorWinRates).
+                  fetchPriorSessionWinRateByTicker: () =>
+                    priorSessionWinRatesForDay(
+                      'lottery',
+                      ctx.today,
+                      loadPriorWinRates,
+                    ),
+                },
+                (failure) => {
+                  takeitPrefetchFailure = failure;
+                },
+              ),
+            )
+          : null,
     );
 
-    // All three are in flight before the first await, so a rejection from
-    // any can't go unhandled: Promise.all subscribes to each. The seed
-    // promise never rejects (held above) and the helper never throws; a
-    // failed scan fails the run.
-    const [scan, seeds, takeitCtx] = await Promise.all([
-      scanPromise,
-      seedsPromise,
-      takeitPromise,
-    ]);
+    // All three are in flight before the first await, so none can go
+    // unhandled. Wait for every one to settle even when the scan has failed,
+    // so the seed query, the Take-It prefetch (which reports to Sentry and
+    // sets the failure above) and the scan's other slices are not left
+    // running behind the 500; then fail the run on the scan's reason. The
+    // wait is bounded by the seed query's retries and the prefetch's 5 s
+    // deadline, which ran alongside the scan. The seed promise never rejects
+    // (held above) and the helper never throws, so only the scan can fail
+    // here; a rejection from either of the others would still fail the run.
+    const [scanOutcome, seedsOutcome, takeitOutcome] = await Promise.allSettled(
+      [scanPromise, seedsPromise, takeitPromise],
+    );
+    const scan = unwrap(scanOutcome);
+    const seeds = unwrap(seedsOutcome);
+    const takeitCtx = unwrap(takeitOutcome);
     const { groups } = scan;
     const scanned = scan.scanned;
+    // A seed query that failed matters only when a chain needs its answer
+    // (below). When none does, as before B1 when it ran only for eligible
+    // chains, the run goes on, but the failure is logged: it is Neon
+    // misbehaving, and nothing else would show it.
+    const warnUnneededSeedFailure = (): void => {
+      if (!seeds.ok) {
+        ctx.logger.warn(
+          { err: seeds.err },
+          'detect-lottery-fires: cooldown seed query failed; no chain needed it this run',
+        );
+      }
+    };
 
     if (scanned === 0) {
       // We're inside the market-hours-gated handler, so an empty trade
@@ -467,22 +530,23 @@ export default withCronInstrumentation(
           },
         );
       }
-      // Nothing else to do: the seed query and the Take-It prefetch have
-      // already settled with the scan, so nothing is left running behind the
-      // response. Wait for the win-rate load started above, so the 08:25–08:30
-      // CT pre-open runs warm the cache instead of leaving the load to freeze
-      // with the instance. Bounded from the run's start (45 s), so a slow tick
-      // scan plus the wait can't pass maxDuration.
+      warnUnneededSeedFailure();
+      // Nothing else to do. The scan, the seed query and the Take-It prefetch
+      // (if it started) have all settled, so the only thing still running is
+      // the win-rate load started above, which later runs share. Wait for it,
+      // so the 08:25–08:30 CT pre-open runs warm the cache instead of leaving
+      // the load to freeze with the instance. Bounded from the run's start
+      // (45 s), so a slow tick scan plus the wait can't pass maxDuration.
       await awaitWinRateWarmup(winRateWarmup, ctx.startTimeMs);
       return {
         status: 'skipped',
         message: 'no ticks in scan window',
         metadata: {
           scanned: 0,
-          // Only the stage that decided the run. The seed and Take-It stages
-          // ran too, but they are reported for runs that go on to fire, so
-          // their distributions stay comparable run to run. The warm-up wait
-          // above is in total, not in tickScan.
+          // Only the stage that decided the run. The seed stage ran too (and
+          // the Take-It one, on a warm cache), but they are reported for runs
+          // that go on to fire, so their distributions stay comparable run to
+          // run. The warm-up wait above is in total, not in tickScan.
           timingsMs: wholeMs({
             tickScan: stageMs.tickScan,
             total: msSince(runStartedAt),
@@ -563,6 +627,8 @@ export default withCronInstrumentation(
           priorByChain.set(r.option_chain_id, Number(r.last_ms));
         }
       }
+    } else {
+      warnUnneededSeedFailure();
     }
 
     // Per-(ticker, date) ticker net-flow cumulative series cache. Shared
