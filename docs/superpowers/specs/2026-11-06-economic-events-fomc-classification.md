@@ -88,9 +88,12 @@ The first matching rule wins:
 - Rules 1 and 2 must run before rule 3.
 - Rule 1 takes any "rate decision", not only "interest rate decision". A
   foreign central bank's decision is excluded from every rule-1 pattern
-  (names that mention ECB, BoE, BoJ, Bank of England, Bank of Japan, Bank of
-  Canada, RBA, RBNZ, SNB, PBOC, Riksbank or Norges Bank), so "ECB interest
-  rate decision" is `OTHER`. Why: `is_fomc` ORs in `FOMC` rows, so a false
+  (names that mention an abbreviation such as ECB, BoE, BoJ, BoC, BoK, RBA,
+  RBNZ, RBI, SNB, PBOC, CBRT or Banxico, or a spelled-out name such as Bank of
+  England, Bank of Japan, Bank of Canada, Bank of Korea, European Central
+  Bank, Reserve Bank of Australia, New Zealand or India, Swiss National Bank,
+  People's Bank of China, Riksbank or Norges Bank), so "ECB interest rate
+  decision" and "European Central Bank rate decision" are `OTHER`. Why: `is_fomc` ORs in `FOMC` rows, so a false
   `FOMC` flips the ML feature on a day the Fed is silent.
 - Rule 2 bounds the gap by words, not characters, and a name with a speaker
   word (President, Governor, Chair, Chairman, Chairwoman, speaks, speech,

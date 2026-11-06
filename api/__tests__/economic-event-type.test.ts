@@ -189,6 +189,19 @@ describe('classifyEconomicEvent', () => {
     'PBOC loan prime rate decision',
     'Riksbank interest rate decision',
     'Norges Bank interest rate decision',
+    'BoC interest rate decision',
+    'BoK interest rate decision',
+    'RBI interest rate decision',
+    'CBRT interest rate decision',
+    'Banxico interest rate decision',
+    'European Central Bank rate decision',
+    'Reserve Bank of Australia rate decision',
+    'Reserve Bank of New Zealand rate decision',
+    'Reserve Bank of India rate decision',
+    'Swiss National Bank rate decision',
+    "People's Bank of China rate decision",
+    'People’s Bank of China rate decision',
+    'Bank of Korea rate decision',
   ])('foreign central bank decision is OTHER: %s', (name) => {
     expect(classifyEconomicEvent(name)).toBe('OTHER');
   });
@@ -198,6 +211,7 @@ describe('classifyEconomicEvent', () => {
     'ECB economic projections',
     'BoE economic projections',
     'ECB President Lagarde press conference',
+    'European Central Bank economic projections',
   ])('foreign central bank release is not FOMC: %s', (name) => {
     expect(classifyEconomicEvent(name)).not.toBe('FOMC');
   });

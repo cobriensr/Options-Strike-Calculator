@@ -36,10 +36,14 @@ type Rule = readonly [
 
 // A foreign central bank's decision is not the Fed's. build-features ORs FOMC
 // rows into is_fomc, so one typed FOMC would flip the ML feature on a day the
-// Fed is silent. Guards every FOMC rule.
+// Fed is silent. Guards every FOMC rule. Abbreviations and spelled-out names
+// are separate regexes so each stays under `sonarjs/regex-complexity`.
 const FOREIGN_CENTRAL_BANK: readonly RegExp[] = [
-  /\b(?:ECB|BoE|BoJ|RBA|RBNZ|SNB|PBOC)\b/i,
-  /\b(?:Bank of (?:England|Japan|Canada)|Riksbank|Norges Bank)\b/i,
+  /\b(?:ECB|BoE|BoJ|BoC|BoK|RBA|RBNZ|RBI|SNB|PBOC|CBRT|Banxico)\b/i,
+  /\bBank of (?:England|Japan|Canada|Korea)\b/i,
+  /\bReserve Bank of (?:Australia|New Zealand|India)\b/i,
+  /\b(?:European Central Bank|Swiss National Bank|Riksbank|Norges Bank)\b/i,
+  /\bPeople['’]s Bank of China\b/i,
 ];
 
 // A person speaking is never a survey, even when the title mentions one
