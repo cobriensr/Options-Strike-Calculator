@@ -25,6 +25,8 @@ vi.mock('../_lib/sentry.js', () => ({
 import {
   engineerPhase2Features,
   isWithinUWWindow,
+  summarizeDayEvents,
+  addEventFeatures,
   addPrevDayFeatures,
   addRealizedVolFeatures,
   addRealizedIvRatioFeatures,
@@ -699,19 +701,19 @@ describe('engineerPhase2Features', () => {
       expect(features.is_opex).toBe(false);
     });
 
-    it('sets days_to_next_event from next event in DB', async () => {
+    it('sets days_to_next_event from the calendar-day gap the query returns', async () => {
       const features = makeFeatures();
 
       mockSql.mockResolvedValueOnce([]); // prevDayRows
       mockSql.mockResolvedValueOnce([]); // settlements
       mockSql.mockResolvedValueOnce([]); // eventRows
-      mockSql.mockResolvedValueOnce([{ next_date: '2026-03-27' }]); // nextEventRow
+      mockSql.mockResolvedValueOnce([{ days_to_next: 3 }]); // nextEventRow
 
       await engineerPhase2Features(mockSql as never, DATE_STR, features);
 
-      // new Date('2026-03-27') = midnight UTC, thisDate = 2026-03-24T17:00 UTC
-      // Difference rounds to 2 days
-      expect(features.days_to_next_event).toBe(2);
+      // 2026-03-24 to 2026-03-27 is 3 calendar days. The old JS arithmetic
+      // turned the DATE into UTC midnight and subtracted noon ET, giving 2.
+      expect(features.days_to_next_event).toBe(3);
     });
 
     it('handles no events (defaults)', async () => {
@@ -731,13 +733,13 @@ describe('engineerPhase2Features', () => {
       expect(features.days_to_next_event).toBeUndefined();
     });
 
-    it('handles next event with null next_date', async () => {
+    it('handles next event with null days_to_next', async () => {
       const features = makeFeatures();
 
       mockSql.mockResolvedValueOnce([]); // prevDayRows
       mockSql.mockResolvedValueOnce([]); // settlements
       mockSql.mockResolvedValueOnce([]); // eventRows
-      mockSql.mockResolvedValueOnce([{ next_date: null }]); // nextEventRow
+      mockSql.mockResolvedValueOnce([{ days_to_next: null }]); // nextEventRow
 
       await engineerPhase2Features(mockSql as never, DATE_STR, features);
 
@@ -759,6 +761,83 @@ describe('engineerPhase2Features', () => {
 
       expect(features.event_type).toBe('FOMC');
       expect(features.is_fomc).toBe(true);
+    });
+
+    // The cases below call addEventFeatures directly with its two queries
+    // queued (event rows, then the next-event gap). The rule itself is
+    // tabulated under `summarizeDayEvents`; these pin how the SQL results
+    // reach it.
+
+    it('flags a scheduled decision day as FOMC even with no event rows', async () => {
+      const features = makeFeatures();
+
+      mockSql.mockResolvedValueOnce([]); // eventRows
+      mockSql.mockResolvedValueOnce([]); // nextEventRow
+
+      await addEventFeatures(mockSql as never, '2026-07-29', features);
+
+      expect(features.is_fomc).toBe(true);
+      expect(features.event_type).toBe('FOMC');
+      expect(features.event_count).toBe(0);
+    });
+
+    it('does not flag a non-decision day whose only rows are FED', async () => {
+      const features = makeFeatures();
+
+      mockSql.mockResolvedValueOnce([
+        { event_name: 'Fed Chair speaks', event_type: 'FED', event_time: null },
+      ]); // eventRows
+      mockSql.mockResolvedValueOnce([]); // nextEventRow
+
+      await addEventFeatures(mockSql as never, DATE_STR, features);
+
+      expect(features.is_fomc).toBe(false);
+      expect(features.event_type).toBe('FED');
+      expect(features.event_count).toBe(1);
+    });
+
+    it('keeps a FOMC-typed row on a non-decision day as an unscheduled decision', async () => {
+      const features = makeFeatures();
+
+      mockSql.mockResolvedValueOnce([
+        { event_name: 'Emergency cut', event_type: 'FOMC', event_time: null },
+      ]); // eventRows
+      mockSql.mockResolvedValueOnce([]); // nextEventRow
+
+      await addEventFeatures(mockSql as never, DATE_STR, features);
+
+      expect(features.is_fomc).toBe(true);
+      expect(features.event_type).toBe('FOMC');
+    });
+
+    it.each([
+      ['the next calendar day', '2026-03-24', 1],
+      ['Friday to Monday', '2026-03-27', 3],
+    ])(
+      'passes the gap through for %s, with the date bound twice',
+      async (_label, dateStr, gap) => {
+        const features = makeFeatures();
+
+        mockSql.mockResolvedValueOnce([]); // eventRows
+        mockSql.mockResolvedValueOnce([{ days_to_next: gap }]); // nextEventRow
+
+        await addEventFeatures(mockSql as never, dateStr, features);
+
+        expect(features.days_to_next_event).toBe(gap);
+        // `(MIN(date) - $1::date)` and `date > $2` take the trade date.
+        expect(mockSql.mock.calls[1]?.slice(1)).toEqual([dateStr, dateStr]);
+      },
+    );
+
+    it('leaves days_to_next_event unset when the next-event query returns no row', async () => {
+      const features = makeFeatures();
+
+      mockSql.mockResolvedValueOnce([]); // eventRows
+      mockSql.mockResolvedValueOnce([]); // nextEventRow
+
+      await addEventFeatures(mockSql as never, DATE_STR, features);
+
+      expect(features.days_to_next_event).toBeUndefined();
     });
   });
 
@@ -1759,7 +1838,7 @@ describe('engineerPhase2Features', () => {
       ]);
 
       // Query 5: nextEventRow
-      mockSql.mockResolvedValueOnce([{ next_date: '2026-03-27' }]);
+      mockSql.mockResolvedValueOnce([{ days_to_next: 3 }]);
 
       // Max pain
       mockedFetchMaxPain.mockResolvedValueOnce({
@@ -1811,7 +1890,7 @@ describe('engineerPhase2Features', () => {
       expect(features.vvix_percentile).toBeDefined();
       expect(features.event_type).toBe('CPI');
       expect(features.event_count).toBe(1);
-      expect(features.days_to_next_event).toBe(2);
+      expect(features.days_to_next_event).toBe(3);
       expect(features.max_pain_0dte).toBe(5785);
       expect(features.max_pain_dist).toBe(-15);
       expect(features.dp_total_premium).toBe(500000);
@@ -1819,6 +1898,105 @@ describe('engineerPhase2Features', () => {
       expect(features.opt_call_volume).toBe(150000);
       expect(features.opt_vol_pcr).toBeCloseTo(200000 / 150000);
     });
+  });
+});
+
+// ── summarizeDayEvents (the is_fomc / event_type rule) ─────
+
+describe('summarizeDayEvents', () => {
+  // 2026-07-29 is a scheduled decision day; 2026-03-24 is not.
+  const DECISION_DAY = '2026-07-29';
+  const PLAIN_DAY = '2026-03-24';
+
+  it.each<{
+    name: string;
+    date: string;
+    types: string[];
+    expected: { isFomc: boolean; eventType: string | null };
+  }>([
+    {
+      name: 'a decision day with no event rows',
+      date: DECISION_DAY,
+      types: [],
+      expected: { isFomc: true, eventType: 'FOMC' },
+    },
+    {
+      name: 'a decision day whose only rows are FED',
+      date: DECISION_DAY,
+      types: ['FED'],
+      expected: { isFomc: true, eventType: 'FOMC' },
+    },
+    {
+      name: 'a non-decision day whose only rows are FED',
+      date: PLAIN_DAY,
+      types: ['FED'],
+      expected: { isFomc: false, eventType: 'FED' },
+    },
+    {
+      name: 'GDP and FED: GDP wins',
+      date: PLAIN_DAY,
+      types: ['FED', 'GDP'],
+      expected: { isFomc: false, eventType: 'GDP' },
+    },
+    {
+      name: 'FED and PMI: FED wins',
+      date: PLAIN_DAY,
+      types: ['PMI', 'FED'],
+      expected: { isFomc: false, eventType: 'FED' },
+    },
+    {
+      name: 'a FOMC-typed row on a non-decision day (unscheduled decision)',
+      date: PLAIN_DAY,
+      types: ['FOMC'],
+      expected: { isFomc: true, eventType: 'FOMC' },
+    },
+    {
+      name: 'a FOMC-typed row beats every other type',
+      date: PLAIN_DAY,
+      types: ['CPI', 'FED', 'FOMC', 'OTHER'],
+      expected: { isFomc: true, eventType: 'FOMC' },
+    },
+    {
+      name: 'the old wrong April 2026 date (2026-05-06) is not a decision day',
+      date: '2026-05-06',
+      types: ['FED'],
+      expected: { isFomc: false, eventType: 'FED' },
+    },
+    {
+      name: 'no rows on a non-decision day',
+      date: PLAIN_DAY,
+      types: [],
+      expected: { isFomc: false, eventType: null },
+    },
+    {
+      name: 'only a type outside the priority list',
+      date: PLAIN_DAY,
+      types: ['MYSTERY'],
+      expected: { isFomc: false, eventType: null },
+    },
+  ])('$name', ({ date, types, expected }) => {
+    expect(summarizeDayEvents(date, new Set(types))).toEqual(expected);
+  });
+
+  it('ranks the types FOMC, CPI, PCE, JOBS, GDP, FED, PMI, RETAIL, SENTIMENT, OTHER', () => {
+    const order = [
+      'FOMC',
+      'CPI',
+      'PCE',
+      'JOBS',
+      'GDP',
+      'FED',
+      'PMI',
+      'RETAIL',
+      'SENTIMENT',
+      'OTHER',
+    ];
+    // With a type and everything below it present, the type itself wins.
+    for (const [i, type] of order.entries()) {
+      expect(
+        summarizeDayEvents(PLAIN_DAY, new Set(order.slice(i))).eventType,
+      ).toBe(type);
+    }
   });
 });
 

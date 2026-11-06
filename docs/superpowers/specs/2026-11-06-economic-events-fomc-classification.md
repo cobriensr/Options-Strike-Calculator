@@ -111,17 +111,29 @@ The first matching rule wins:
 
 ### Consumers
 
-- **`addEventFeatures`** (`build-features-phase2.ts`):
-  - `is_fomc = isFomcDecisionDay(dateStr)`.
-  - `event_type` is `'FOMC'` on a decision day, even with no rows; otherwise
-    it's the first type found in this order: FOMC, CPI, PCE, JOBS, GDP, FED,
-    PMI, RETAIL, SENTIMENT, OTHER. It's null when there are no rows.
-  - `days_to_next_event` is computed in SQL as `MIN(date) - ${dateStr}::date`,
-    an integer number of calendar days.
+- **`addEventFeatures`** (`build-features-phase2.ts`; the rule lives in the
+  exported `summarizeDayEvents`, which the phase 5 backfill reuses):
+  - `is_fomc = isFomcDecisionDay(dateStr) || types.has('FOMC')` (controller's
+    call 2026-11-06: OR with FOMC rows, to cover unscheduled decisions).
+    - The schedule guarantees every scheduled meeting counts even with no
+      rows (before the table existed, or in the 07-22..09-07 gap).
+    - With the new classifier, only decision-type releases are typed `FOMC`,
+      so a `FOMC` row on a non-decision day is an unscheduled decision.
+  - `event_type` is `'FOMC'` when `is_fomc`; otherwise it's the first type
+    found in this order: FOMC, CPI, PCE, JOBS, GDP, FED, PMI, RETAIL,
+    SENTIMENT, OTHER. It's left unset when there are no rows and the day isn't
+    a decision day.
+  - `days_to_next_event` is computed in SQL as
+    `(MIN(date) - ${dateStr}::date)`, an integer number of calendar days. It's
+    left unset when no later row exists.
 - **Analyze formatter** (`analyze-context-formatters.ts` `HIGH_SEVERITY_TYPES`):
   see Q1.
 - **Gamma detector:**
-  - both callers pass `isFomcDay: isFomcDecisionDay(date)`;
+  - `loadDayContext` sets `is_fomc_day: isFomcDecisionDay(today)` itself (the
+    `opts.isFomcDay` parameter had no caller and is gone), so the cron and
+    `api/gamma-setups/active.ts` need no change;
+  - the backfill script (`scripts/backfill-gamma-setup-fires.ts`) does the same
+    from each bar's date;
   - this turns on the dead "FOMC DAY" chip and starts storing true values.
 - **Lottery MACRO badge** (`lottery-finder.ts`, `event_type IN
   ('FOMC','CPI','PCE','JOBS')`):

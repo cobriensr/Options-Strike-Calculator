@@ -17,6 +17,8 @@
 import type { NeonQueryFunction } from '@neondatabase/serverless';
 import type { FeatureRow } from './build-features-types.js';
 import { getDarkPoolLevels } from './dark-pool-query.js';
+import type { EconomicEventType } from './economic-event-type.js';
+import { isFomcDecisionDay } from './fomc-schedule.js';
 import { fetchMaxPain } from './max-pain.js';
 import { uwFetch } from './api-helpers.js';
 import logger from './logger.js';
@@ -216,11 +218,50 @@ export async function addVvixPercentileFeatures(
   }
 }
 
+// Which event type labels a day when several are present, highest first.
+const EVENT_TYPE_PRIORITY: readonly EconomicEventType[] = [
+  'FOMC',
+  'CPI',
+  'PCE',
+  'JOBS',
+  'GDP',
+  'FED',
+  'PMI',
+  'RETAIL',
+  'SENTIMENT',
+  'OTHER',
+];
+
+/**
+ * The one rule behind a day's `is_fomc` and `event_type`, given the
+ * `event_type`s of that day's `economic_events` rows (none is an empty set).
+ * `addEventFeatures` and the history backfill both call it.
+ *
+ * - `isFomc`: the Fed schedule says it is a decision day, so a scheduled
+ *   meeting counts with no rows at all (before the table existed, or in a
+ *   gap), OR a row is typed `FOMC`, which the classifier gives only to
+ *   decision-type releases, so it covers an unscheduled (emergency) decision.
+ * - `eventType`: `FOMC` when `isFomc`, else the first present type in
+ *   `EVENT_TYPE_PRIORITY`, else null (no rows, or none of the known types).
+ */
+export function summarizeDayEvents(
+  dateStr: string,
+  types: ReadonlySet<string>,
+): { isFomc: boolean; eventType: string | null } {
+  const isFomc = isFomcDecisionDay(dateStr) || types.has('FOMC');
+  if (isFomc) return { isFomc, eventType: 'FOMC' };
+  return {
+    isFomc,
+    eventType: EVENT_TYPE_PRIORITY.find((p) => types.has(p)) ?? null,
+  };
+}
+
 /**
  * Economic event features: FOMC / OPEX / event_type / event_count /
- * days_to_next_event. Mixes a `economic_events` lookup with a calendar
- * computation for OPEX (3rd Friday of month). Sets defaults so even an
- * empty calendar day still has populated fields.
+ * days_to_next_event. Mixes a `economic_events` lookup with the Fed
+ * decision-day schedule (`summarizeDayEvents`) and a calendar computation
+ * for OPEX (3rd Friday of month). Sets defaults so even an empty calendar
+ * day still has populated fields.
  */
 export async function addEventFeatures(
   sql: Sql,
@@ -228,7 +269,6 @@ export async function addEventFeatures(
   features: FeatureRow,
 ): Promise<void> {
   features.is_opex = false;
-  features.is_fomc = false;
   features.event_count = 0;
 
   const eventRows = await sql`
@@ -237,23 +277,13 @@ export async function addEventFeatures(
     WHERE date = ${dateStr}
   `;
 
-  if (eventRows.length > 0) {
-    features.event_count = eventRows.length;
-    const types = new Set(eventRows.map((r) => r.event_type as string));
-    const priority = [
-      'FOMC',
-      'CPI',
-      'PCE',
-      'JOBS',
-      'GDP',
-      'PMI',
-      'RETAIL',
-      'SENTIMENT',
-      'OTHER',
-    ];
-    features.event_type = priority.find((p) => types.has(p)) ?? null;
-    features.is_fomc = types.has('FOMC');
-  }
+  features.event_count = eventRows.length;
+  const { isFomc, eventType } = summarizeDayEvents(
+    dateStr,
+    new Set(eventRows.map((r) => r.event_type as string)),
+  );
+  features.is_fomc = isFomc;
+  if (eventType !== null) features.event_type = eventType;
 
   // Check if today is OPEX (3rd Friday of month)
   const opexDate = new Date(`${dateStr}T12:00:00-05:00`);
@@ -262,24 +292,15 @@ export async function addEventFeatures(
     features.is_opex = dayOfMonth >= 15 && dayOfMonth <= 21;
   }
 
-  // Days to next event
+  // Days to next event: the integer calendar-day gap, computed on DATEs in
+  // SQL. (DATE - DATE is an integer; the aggregate is NULL with no later row.)
   const nextEventRow = await sql`
-    SELECT MIN(date) AS next_date
+    SELECT (MIN(date) - ${dateStr}::date) AS days_to_next
     FROM economic_events
     WHERE date > ${dateStr}
   `;
-  if (nextEventRow.length > 0 && nextEventRow[0]!.next_date != null) {
-    const nextDate = new Date(String(nextEventRow[0]!.next_date));
-    const thisDate = new Date(`${dateStr}T12:00:00-05:00`);
-    if (
-      !Number.isNaN(nextDate.getTime()) &&
-      !Number.isNaN(thisDate.getTime())
-    ) {
-      features.days_to_next_event = Math.round(
-        (nextDate.getTime() - thisDate.getTime()) / (24 * 60 * 60 * 1000),
-      );
-    }
-  }
+  const daysToNext = nextEventRow[0]?.days_to_next;
+  if (daysToNext != null) features.days_to_next_event = Number(daysToNext);
 }
 
 /**

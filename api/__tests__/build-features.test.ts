@@ -1289,17 +1289,18 @@ describe('build-features handler', () => {
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
 
-    // Calls 2-9: buildFeaturesForDate queries → empty (no vvix → no vvixHistory)
-    for (let i = 0; i < 8; i++) mockSql.mockResolvedValueOnce([]);
-    // Call 9: economic events → has events (so is_opex gets set inside block then overridden)
+    // Calls 2-10: the nine buildFeaturesForDate queries before the events
+    // lookup → empty (no vvix → no vvixHistory)
+    for (let i = 0; i < 9; i++) mockSql.mockResolvedValueOnce([]);
+    // Call 11: economic events → has events (so is_opex gets set inside block then overridden)
     mockSql.mockResolvedValueOnce([
       { event_name: 'GDP', event_type: 'GDP', event_time: '08:30' },
     ]);
-    // Call 10: next event → empty
+    // Call 12: next event → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 11: upsertFeatures
+    // Call 13: dark_pool_snapshots → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 12: extractLabelsForDate → empty
+    // Call 14: oicRows → empty
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({
@@ -1321,15 +1322,16 @@ describe('build-features handler', () => {
 
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
-    // Calls 2-9: all empty (no vvix → no vvixHistory)
-    for (let i = 0; i < 8; i++) mockSql.mockResolvedValueOnce([]);
-    // Call 9: economic events → empty (is_opex never enters events block)
+    // Calls 2-10: the nine queries before the events lookup → empty (no
+    // vvix → no vvixHistory)
+    for (let i = 0; i < 9; i++) mockSql.mockResolvedValueOnce([]);
+    // Call 11: economic events → empty (is_opex never enters events block)
     mockSql.mockResolvedValueOnce([]);
-    // Call 10: next event → empty
+    // Call 12: next event → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 11: upsertFeatures
+    // Call 13: dark_pool_snapshots → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 12: extractLabelsForDate → empty
+    // Call 14: oicRows → empty
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({
@@ -1346,6 +1348,19 @@ describe('build-features handler', () => {
 
   // ── Days to next event ──────────────────────────────────────
 
+  /** Bound parameters of the training_features INSERT the handler issued. */
+  function upsertParams(): unknown[] {
+    const upsertCall = mockSql.mock.calls.find(
+      (call) =>
+        Array.isArray(call[0]) &&
+        (call[0] as string[])
+          .join(' ')
+          .includes('INSERT INTO training_features'),
+    );
+    expect(upsertCall).toBeDefined();
+    return upsertCall!.slice(1);
+  }
+
   it('computes days_to_next_event when DB returns a next event date', async () => {
     prefillHandlerPreamble();
     const DATE = '2026-03-24';
@@ -1353,19 +1368,20 @@ describe('build-features handler', () => {
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
 
-    // Calls 2-9: buildFeaturesForDate queries → empty (no vvix → no vvixHistory)
-    for (let i = 0; i < 8; i++) mockSql.mockResolvedValueOnce([]);
+    // Calls 2-10: the nine buildFeaturesForDate queries before the events
+    // lookup → empty (no vvix → no vvixHistory)
+    for (let i = 0; i < 9; i++) mockSql.mockResolvedValueOnce([]);
 
-    // Call 9: economic events → empty
+    // Call 11: economic events → empty
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 10: next event → returns a date 10 days out
-    mockSql.mockResolvedValueOnce([{ next_date: '2026-04-03' }]);
+    // Call 12: next event → the query returns the gap, 10 calendar days
+    mockSql.mockResolvedValueOnce([{ days_to_next: 10 }]);
 
-    // Call 11: upsertFeatures
+    // Call 13: dark_pool_snapshots → empty
     mockSql.mockResolvedValueOnce([]);
 
-    // Call 12: extractLabelsForDate → empty
+    // Call 14: oicRows → empty
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({
@@ -1378,23 +1394,26 @@ describe('build-features handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ featuresBuilt: 1 });
+
+    // The gap reaches the training_features upsert as a bound parameter.
+    expect(upsertParams()).toContain(10);
   });
 
-  it('handles next event query returning null next_date', async () => {
+  it('handles next event query returning null days_to_next', async () => {
     prefillHandlerPreamble();
     const DATE = '2026-03-24';
 
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
-    // Calls 2-9: all empty
-    for (let i = 0; i < 8; i++) mockSql.mockResolvedValueOnce([]);
-    // Call 9: economic events → empty
+    // Calls 2-10: the nine queries before the events lookup → empty
+    for (let i = 0; i < 9; i++) mockSql.mockResolvedValueOnce([]);
+    // Call 11: economic events → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 10: next event → returns a row but next_date is null
-    mockSql.mockResolvedValueOnce([{ next_date: null }]);
-    // Call 11: upsertFeatures
+    // Call 12: next event → returns a row but days_to_next is null
+    mockSql.mockResolvedValueOnce([{ days_to_next: null }]);
+    // Call 13: dark_pool_snapshots → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 12: extractLabelsForDate → empty
+    // Call 14: oicRows → empty
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({
@@ -1417,10 +1436,11 @@ describe('build-features handler', () => {
 
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
-    // Calls 2-9: all empty (no vvix → no vvixHistory)
-    for (let i = 0; i < 8; i++) mockSql.mockResolvedValueOnce([]);
+    // Calls 2-10: the nine queries before the events lookup → empty (no
+    // vvix → no vvixHistory)
+    for (let i = 0; i < 9; i++) mockSql.mockResolvedValueOnce([]);
 
-    // Call 9: economic events → multiple events including FOMC
+    // Call 11: economic events → multiple events including FOMC
     mockSql.mockResolvedValueOnce([
       { event_name: 'CPI Report', event_type: 'CPI', event_time: '08:30' },
       {
@@ -1435,11 +1455,11 @@ describe('build-features handler', () => {
       },
     ]);
 
-    // Call 10: next event → empty
+    // Call 12: next event → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 11: upsertFeatures
+    // Call 13: dark_pool_snapshots → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 12: extractLabelsForDate → empty
+    // Call 14: oicRows → empty
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({
@@ -1452,6 +1472,9 @@ describe('build-features handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ featuresBuilt: 1 });
+
+    // FOMC outranks CPI and SENTIMENT in the stored event_type.
+    expect(upsertParams()).toContain('FOMC');
   });
 
   it('selects lower-priority event type when only low-priority events present', async () => {
@@ -1460,10 +1483,10 @@ describe('build-features handler', () => {
 
     // Call 1: SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
-    // Calls 2-9: all empty
-    for (let i = 0; i < 8; i++) mockSql.mockResolvedValueOnce([]);
+    // Calls 2-10: the nine queries before the events lookup → empty
+    for (let i = 0; i < 9; i++) mockSql.mockResolvedValueOnce([]);
 
-    // Call 9: economic events → only low-priority types
+    // Call 11: economic events → only low-priority types
     mockSql.mockResolvedValueOnce([
       {
         event_name: 'Consumer Sentiment',
@@ -1477,11 +1500,11 @@ describe('build-features handler', () => {
       },
     ]);
 
-    // Call 10: next event → empty
+    // Call 12: next event → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 11: upsertFeatures
+    // Call 13: dark_pool_snapshots → empty
     mockSql.mockResolvedValueOnce([]);
-    // Call 12: extractLabelsForDate → empty
+    // Call 14: oicRows → empty
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({
@@ -1494,6 +1517,9 @@ describe('build-features handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ featuresBuilt: 1 });
+
+    // RETAIL outranks SENTIMENT in the stored event_type.
+    expect(upsertParams()).toContain('RETAIL');
   });
 
   // ── Flow directional agreement ──────────────────────────────
