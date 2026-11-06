@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Only list() is replaced: the loader tells a transient Blob failure from
@@ -718,6 +719,21 @@ describe('getBundle: why it has no bundle', () => {
       kind: 'transient',
     },
     {
+      // What fetch() rejects with when its signal aborts (Node 24, probed
+      // 2026-11-06), and when the signal is AbortSignal.timeout().
+      label: 'a fetch aborted by its signal',
+      err: new DOMException('This operation was aborted', 'AbortError'),
+      kind: 'transient',
+    },
+    {
+      label: 'a fetch cut off by a timeout signal',
+      err: new DOMException(
+        'The operation was aborted due to timeout',
+        'TimeoutError',
+      ),
+      kind: 'transient',
+    },
+    {
       label: 'a token Blob refuses',
       err: new BlobAccessError(),
       kind: 'error',
@@ -889,6 +905,305 @@ describe('getBundle: why it has no bundle', () => {
       'unsupported xgb_json_schema',
     );
     expect(onUnavailable).not.toHaveBeenCalled();
+  });
+});
+
+// One deadline covers a whole getBundle() refresh (the manifest read, the
+// bundle download and every retry between them) and one AbortSignal cancels
+// every request in it, so a hung Blob request cannot hold a detect cron run
+// until its 60 s maxDuration. The tests run on fake timers and name the
+// deadline as 10 s, so changing the constant breaks them on purpose.
+describe('getBundle: the load deadline', () => {
+  const MANIFEST_PATH = 'takeit/latest.json';
+  const BUNDLE_PATH = 'takeit/lottery_classifier_v2026-05-16.json';
+  const NEW_BUNDLE_PATH = 'takeit/lottery_classifier_v2026-05-23.json';
+  const MANIFEST = {
+    lottery: BUNDLE_PATH,
+    silentboom: 'takeit/silentboom_classifier_v2026-05-16.json',
+  };
+  const DEADLINE = 'bundle load passed its 10000 ms deadline';
+  const blobUrl = (pathname: string) => `https://blob.example/${pathname}`;
+
+  type Answer = (init: RequestInit | undefined) => Response | Promise<Response>;
+
+  /**
+   * Serve Blob paths: list() finds each path in `answers` and fetch() answers
+   * it. `answers` stays editable, so a test can change what Blob says
+   * between two loads.
+   */
+  function serve(answers: Record<string, Answer>) {
+    vi.mocked(list).mockImplementation(async (opts) => {
+      const pathname = opts?.prefix ?? '';
+      const url = blobUrl(pathname);
+      return {
+        blobs:
+          answers[pathname] == null
+            ? []
+            : [{ pathname, url, downloadUrl: url }],
+        cursor: undefined,
+        hasMore: false,
+      } as unknown as Awaited<ReturnType<typeof list>>;
+    });
+    return vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      const answer = answers[String(url).replace(blobUrl(''), '')];
+      if (answer == null) {
+        throw new Error(`unexpected fetch url ${String(url)}`);
+      }
+      return answer(init);
+    });
+  }
+  const json =
+    (body: unknown): Answer =>
+    () =>
+      new Response(JSON.stringify(body));
+  const after =
+    (ms: number, answer: Answer): Answer =>
+    (init) =>
+      new Promise((resolve) => {
+        setTimeout(() => resolve(answer(init)), ms);
+      });
+  /**
+   * A 200 whose body never arrives. Like a real fetch(), its body errors
+   * when the request's signal aborts (probed on Node 24, 2026-11-06).
+   */
+  const hungBody: Answer = (init) =>
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          const signal = init?.signal;
+          if (signal) {
+            signal.addEventListener('abort', () =>
+              controller.error(signal.reason),
+            );
+          }
+        },
+      }),
+    );
+
+  const listSignals = () =>
+    vi.mocked(list).mock.calls.map(([opts]) => opts?.abortSignal);
+  const fetchSignals = (fetchSpy: ReturnType<typeof serve>) =>
+    fetchSpy.mock.calls.map(([, init]) => init?.signal);
+
+  /** Whether `pending` has settled, readable at any point. */
+  function settledFlag(pending: Promise<unknown>): () => boolean {
+    let done = false;
+    const markDone = () => {
+      done = true;
+    };
+    pending.then(markDone, markDone);
+    return () => done;
+  }
+
+  beforeEach(() => {
+    _resetBundleCacheForTests();
+    vi.resetAllMocks();
+    process.env.BLOB_READ_WRITE_TOKEN = 'test-token';
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it('gives up at the deadline when list() never answers, and starts no further attempt', async () => {
+    // Ignores the signal on purpose: the deadline must not depend on the
+    // SDK honouring it (its own retry sleeps do not).
+    vi.mocked(list).mockImplementation(() => new Promise(() => {}));
+    const onUnavailable = vi.fn();
+
+    const pending = getBundle('lottery', onUnavailable);
+    const settled = settledFlag(pending);
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(settled()).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(settled()).toBe(true);
+    expect(await pending).toBeNull();
+    expect(onUnavailable).toHaveBeenCalledExactlyOnceWith({
+      reason: `Take-It manifest unavailable: ${DEADLINE}`,
+      kind: 'transient',
+    });
+    expect(Sentry.captureMessage).toHaveBeenCalledExactlyOnceWith(
+      'takeit.bundle.manifest_fetch_failed',
+      expect.objectContaining({ level: 'warning' }),
+    );
+    // list() was handed a signal, and the deadline aborted it, with the
+    // default AbortError reason: the real SDK stops on that one only and
+    // retries any other reason (AbortSignal.timeout() included) with its own
+    // backoff (probed 2026-11-06, a mock of list() cannot show it).
+    expect(listSignals()[0]?.aborted).toBe(true);
+    expect(listSignals()[0]?.reason).toMatchObject({ name: 'AbortError' });
+
+    // Long after: no second attempt, and no timer left armed.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('gives up at the deadline when a download body never finishes, on the signal list() got', async () => {
+    const fetchSpy = serve({ [MANIFEST_PATH]: hungBody });
+    const onUnavailable = vi.fn();
+
+    const pending = getBundle('lottery', onUnavailable);
+    const settled = settledFlag(pending);
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(settled()).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(settled()).toBe(true);
+    expect(await pending).toBeNull();
+    expect(onUnavailable).toHaveBeenCalledExactlyOnceWith({
+      reason: `Take-It manifest unavailable: ${DEADLINE}`,
+      kind: 'transient',
+    });
+    // The body was read under the request's signal: the one list() was
+    // given, aborted by the deadline.
+    const [downloadSignal] = fetchSignals(fetchSpy);
+    expect(downloadSignal).toBe(listSignals()[0]);
+    expect(downloadSignal?.aborted).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('counts the deadline over the whole load, not per request', async () => {
+    // The manifest takes 6 s and the bundle download hangs: the deadline is
+    // 10 s from the start, so 4 s into the download, not 10 s after it.
+    const fetchSpy = serve({
+      [MANIFEST_PATH]: after(6_000, json(MANIFEST)),
+      [BUNDLE_PATH]: hungBody,
+    });
+    const onUnavailable = vi.fn();
+
+    const pending = getBundle('lottery', onUnavailable);
+    const settled = settledFlag(pending);
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(settled()).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(settled()).toBe(true);
+    expect(await pending).toBeNull();
+    expect(onUnavailable).toHaveBeenCalledExactlyOnceWith({
+      reason: `Take-It bundle ${BUNDLE_PATH} unavailable: ${DEADLINE}`,
+      kind: 'transient',
+    });
+    expect(Sentry.captureException).toHaveBeenCalledOnce();
+    // One signal for all four requests (two list() calls, two downloads).
+    const signals = [...listSignals(), ...fetchSignals(fetchSpy)];
+    expect(signals).toHaveLength(4);
+    expect(new Set(signals).size).toBe(1);
+    expect(signals[0]?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('serves the stale bundle when the refresh passes the deadline', async () => {
+    vi.setSystemTime(new Date('2026-05-16T12:00:00Z'));
+    const answers: Record<string, Answer> = {
+      [MANIFEST_PATH]: json(MANIFEST),
+      [BUNDLE_PATH]: json(mockBundle('v2026-05-16')),
+    };
+    serve(answers);
+    expect((await getBundle('lottery'))?.version).toBe('v2026-05-16');
+
+    // Past the 15-min TTL a new bundle is published, and its download hangs.
+    vi.setSystemTime(new Date('2026-05-16T12:20:00Z'));
+    answers[MANIFEST_PATH] = json({ ...MANIFEST, lottery: NEW_BUNDLE_PATH });
+    answers[NEW_BUNDLE_PATH] = hungBody;
+    const onUnavailable = vi.fn();
+
+    const pending = getBundle('lottery', onUnavailable);
+    const settled = settledFlag(pending);
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(settled()).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(settled()).toBe(true);
+    expect((await pending)?.version).toBe('v2026-05-16');
+    // Scoring still works, so nothing is reported as unavailable; the
+    // failed refresh is still the run's one Sentry event.
+    expect(onUnavailable).not.toHaveBeenCalled();
+    expect(Sentry.captureException).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('stops retrying when the deadline lands mid-backoff', async () => {
+    // The first attempt fails at 9.9 s, so its 200 ms backoff is under way
+    // when the deadline passes at 10 s.
+    vi.mocked(list).mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          setTimeout(() => reject(new Error('blob 503')), 9_900);
+        }),
+    );
+    const onUnavailable = vi.fn();
+
+    const pending = getBundle('lottery', onUnavailable);
+    const settled = settledFlag(pending);
+    await vi.advanceTimersByTimeAsync(9_900);
+    expect(settled()).toBe(false);
+    expect(Sentry.captureMessage).toHaveBeenCalledExactlyOnceWith(
+      'takeit-bundle: fetchManifest attempt 1 failed, retrying',
+      expect.objectContaining({ level: 'info' }),
+    );
+    await vi.advanceTimersByTimeAsync(100);
+
+    // Done at the deadline, not when the backoff would have ended.
+    expect(settled()).toBe(true);
+    expect(await pending).toBeNull();
+    expect(onUnavailable).toHaveBeenCalledExactlyOnceWith({
+      reason: `Take-It manifest unavailable: ${DEADLINE}`,
+      kind: 'transient',
+    });
+    // The retry's info message plus the failure's one warning, no more.
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(2);
+
+    // No second attempt starts, and the backoff timer is gone.
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it('loads as before inside the deadline, on one signal that stays unaborted', async () => {
+    const fetchSpy = serve({
+      [MANIFEST_PATH]: json(MANIFEST),
+      [BUNDLE_PATH]: json(mockBundle('v2026-05-16')),
+    });
+    const onUnavailable = vi.fn();
+
+    const bundle = await getBundle('lottery', onUnavailable);
+
+    expect(bundle?.version).toBe('v2026-05-16');
+    expect(onUnavailable).not.toHaveBeenCalled();
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    const signals = [...listSignals(), ...fetchSignals(fetchSpy)];
+    expect(signals).toHaveLength(4);
+    expect(new Set(signals).size).toBe(1);
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+    // The deadline timer is cleared once the load settles, so it can
+    // neither fire later nor hold the function open.
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(signals[0]?.aborted).toBe(false);
+  });
+
+  it('still throws an invalid bundle, and leaves no deadline timer armed', async () => {
+    const bad = mockBundle('v2026-05-16');
+    bad.xgb_json_schema = '9.99';
+    serve({ [MANIFEST_PATH]: json(MANIFEST), [BUNDLE_PATH]: json(bad) });
+    const onUnavailable = vi.fn();
+
+    await expect(getBundle('lottery', onUnavailable)).rejects.toThrow(
+      'unsupported xgb_json_schema',
+    );
+
+    expect(onUnavailable).not.toHaveBeenCalled();
+    expect(Sentry.captureException).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 

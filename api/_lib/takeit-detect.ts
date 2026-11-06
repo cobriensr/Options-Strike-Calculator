@@ -96,6 +96,10 @@ const COFIRE_LOOKBACK_MIN = 10;
  * lottery-cron-timeouts-2026-10-28.md). On the deadline the run scores
  * nothing (takeit_prob NULL) and writes its fires anyway. The queries are
  * not cancelled; Neon finishes them and the result is dropped.
+ *
+ * It does not cover the bundle load that runs before it: getBundle has its
+ * own deadline (BUNDLE_LOAD_DEADLINE_MS, 10 s, takeit-bundle-loader.ts), so
+ * a stalled Blob plus a slow Neon cost a run up to 10 + 5 = 15 s here.
  */
 const PREFETCH_DEADLINE_MS = 5_000;
 
@@ -232,7 +236,8 @@ export async function awaitWinRateWarmup(
  * context.
  *   - 'timeout': the prefetch passed PREFETCH_DEADLINE_MS (Neon slow);
  *   - 'transient': a retryable Neon error (a blip), or Blob unreachable
- *     with no bundle cached (getBundle's BundleUnavailable);
+ *     (or past the bundle load's own deadline) with no bundle cached
+ *     (getBundle's BundleUnavailable);
  *   - 'error': anything else: a broken query, a bundle that fails
  *     validation, or a Blob config problem such as a manifest with no
  *     bundle for this alert type. A bug or bad config: the run reports
@@ -257,7 +262,10 @@ export interface TakeitDetectContext {
  * Every null return is passed to `onPrefetchFailure`, so the run can count
  * it and report its status:
  *   - no bundle: getBundle's own report (BundleUnavailable). The loader
- *     already sent the Sentry event;
+ *     already sent the Sentry event. A hung Blob request ends here too,
+ *     after the loader's own 10 s deadline (BUNDLE_LOAD_DEADLINE_MS), as
+ *     kind 'transient': that deadline is not the prefetch's below, which
+ *     starts only once a bundle is in hand;
  *   - an invalid bundle (getBundle throws): kind 'error', after one
  *     Sentry capture here;
  *   - the prefetch, which runs under PREFETCH_DEADLINE_MS: a failure

@@ -22,6 +22,8 @@
  *     `onUnavailable` hears why (BundleUnavailable), so a detect cron can
  *     report its run 'partial' or 'error' instead of 'success'.
  *   - Bundle fetch fails → same as above.
+ *   - The refresh passes BUNDLE_LOAD_DEADLINE_MS (a hung Blob request) →
+ *     same as above, reported 'transient' (see getBundle).
  *   - assertBundleCompat rejects the bundle → THROW. It checks the Zod
  *     structure (including equal per-node tree array lengths), that
  *     `xgb_json_schema` is in the supported set, and that
@@ -38,6 +40,7 @@ import {
   list,
 } from '@vercel/blob';
 
+import { DeadlineError } from './deadline.js';
 import { Sentry } from './sentry.js';
 import {
   assertBundleCompat,
@@ -51,11 +54,77 @@ const MANIFEST_PATH = 'takeit/latest.json';
 const BUNDLE_FETCH_MAX_RETRIES = 2;
 const BUNDLE_FETCH_BACKOFFS_MS = [200, 800];
 
-async function withRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
+/**
+ * One deadline for a whole getBundle() refresh: the manifest read, the
+ * bundle download (~3.5 MB) and every retry between them. A healthy read
+ * takes well under 1 s. Nothing below it had a bound: the SDK's list()
+ * retries a failing Blob up to 10 times with growing sleeps, and a fetch()
+ * to a stalled Blob waits out undici's 5-minute defaults, so a hung request
+ * held a detect cron run until its 60 s maxDuration, with the run's fires
+ * unwritten.
+ *
+ * Sized against the 60 s the detect crons share between setup and Pass 2.
+ * The bundle load runs inside loadTakeitDetectContext, which then gives
+ * the sequential-context prefetch its own 5 s (PREFETCH_DEADLINE_MS), so a
+ * stalled Blob costs at most 10 + 5 = 15 s. In detect-lottery-fires that
+ * sits beside the seed query, which can already spend about 33 s in setup
+ * (3 attempts of 10 s plus 1 s and 2 s of backoff), so setup is no longer
+ * than it was. Short enough to leave Pass 2 its time, long enough to be 10x
+ * a healthy read. A timeout knob: change it with care.
+ */
+const BUNDLE_LOAD_DEADLINE_MS = 10_000;
+
+const deadlineError = (): DeadlineError =>
+  new DeadlineError('bundle load', BUNDLE_LOAD_DEADLINE_MS);
+
+/**
+ * `work`, or a DeadlineError the moment `signal` aborts. The signal cancels
+ * the requests, but the SDK sleeps between its own retries without looking
+ * at it: against a 503 answer, list() took 1.5 s to reject an abort sent at
+ * 0.3 s (probed 2026-11-06), and the sleeps grow with every retry. The
+ * race makes the deadline a wall-clock bound; the signal stops the
+ * requests (and the SDK's retries) behind it.
+ */
+function untilDeadline<T>(signal: AbortSignal, work: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const expire = () => reject(deadlineError());
+    signal.addEventListener('abort', expire, { once: true });
+    work
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener('abort', expire));
+  });
+}
+
+/** Sleep `ms`, or wake at once if `signal` aborts; either way no timer is left. */
+function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const wake = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', wake);
+      resolve();
+    };
+    const timer = setTimeout(wake, ms);
+    signal.addEventListener('abort', wake, { once: true });
+  });
+}
+
+/**
+ * Retry `fn` up to BUNDLE_FETCH_MAX_RETRIES more times, with backoffs, until
+ * `signal` aborts: from then on no attempt starts and no backoff is slept,
+ * and a deadline that lands mid-attempt or mid-backoff ends the loop with a
+ * DeadlineError.
+ */
+async function withRetry<T>(
+  label: string,
+  signal: AbortSignal,
+  fn: () => Promise<T>,
+): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 0; attempt <= BUNDLE_FETCH_MAX_RETRIES; attempt++) {
+    // Reached by waking early from a backoff the deadline cut short.
+    if (signal.aborted) throw deadlineError();
     try {
-      return await fn();
+      return await untilDeadline(signal, fn());
     } catch (err) {
       // Schema errors are deterministic — retrying won't fix them.
       // Re-throw immediately so the caller's fail-closed path runs.
@@ -68,7 +137,7 @@ async function withRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
       if (isSchemaErr) throw err;
 
       lastErr = err;
-      if (attempt >= BUNDLE_FETCH_MAX_RETRIES) break;
+      if (attempt >= BUNDLE_FETCH_MAX_RETRIES || signal.aborted) break;
       const delay = BUNDLE_FETCH_BACKOFFS_MS[attempt] ?? 1000;
       Sentry.captureMessage(
         `takeit-bundle: ${label} attempt ${attempt + 1} failed, retrying`,
@@ -78,7 +147,7 @@ async function withRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
           extra: { error: String(err) },
         },
       );
-      await new Promise((r) => setTimeout(r, delay));
+      await sleepUnlessAborted(delay, signal);
     }
   }
   throw lastErr;
@@ -108,8 +177,9 @@ class BlobDownloadError extends Error {
 /**
  * Why getBundle has no bundle to give (none cached and the load failed),
  * for a detect cron's run status:
- *   - 'transient': Blob didn't answer through every retry (a network
- *     error, a 5xx or 429, an aborted request); the next run may load it;
+ *   - 'transient': Blob didn't answer through every retry, or within
+ *     BUNDLE_LOAD_DEADLINE_MS (a network error, a 5xx or 429, an aborted
+ *     request, the deadline); the next run may load it;
  *   - 'error': a config problem every later run hits too: the manifest
  *     names no bundle for this alert type, or Blob refused the read (a 403
  *     or 404, a missing token or blob, a manifest that isn't JSON).
@@ -147,7 +217,17 @@ function fetchFailureKind(err: unknown): BundleUnavailable['kind'] {
     // persistent permission problem shows as 'partial' plus a Sentry
     // warning on every run, not as a red check-in.
     err instanceof BlobUnknownError ||
-    err instanceof BlobRequestAbortedError;
+    // The deadline passed. What the signal's abort throws, by request:
+    // list() throws BlobRequestAbortedError (the SDK turns an AbortError
+    // into it; any other abort reason it retries instead), and fetch() or
+    // the read of its body a DOMException, 'AbortError' for a plain abort
+    // and 'TimeoutError' for AbortSignal.timeout (both probed on Node 24,
+    // 2026-11-06). untilDeadline pre-empts them with a DeadlineError, so
+    // those two names are only for an abort that gets here unwrapped.
+    err instanceof BlobRequestAbortedError ||
+    err instanceof DeadlineError ||
+    (err instanceof Error &&
+      (err.name === 'AbortError' || err.name === 'TimeoutError'));
   return unreachable ? 'transient' : 'error';
 }
 
@@ -185,24 +265,34 @@ function isFresh(entry: CacheEntry | undefined): boolean {
  * The manifest is the single editable pointer to whichever versions are
  * currently in production; rolling back is one Blob upload.
  */
-async function fetchManifest(): Promise<ManifestPayload> {
-  const { blobs } = await list({ prefix: MANIFEST_PATH });
+async function fetchManifest(signal: AbortSignal): Promise<ManifestPayload> {
+  const { blobs } = await list({ prefix: MANIFEST_PATH, abortSignal: signal });
   const entry = blobs.find((b) => b.pathname === MANIFEST_PATH);
   if (!entry) {
     throw new Error(`take-it manifest missing at ${MANIFEST_PATH}`);
   }
-  const res = await fetch(entry.downloadUrl, { headers: blobAuthHeaders() });
+  // The signal covers the body too: res.json() rejects if it aborts mid-read.
+  const res = await fetch(entry.downloadUrl, {
+    headers: blobAuthHeaders(),
+    signal,
+  });
   if (!res.ok) throw new BlobDownloadError('manifest', res);
   return (await res.json()) as ManifestPayload;
 }
 
-async function fetchBundleByPath(blobPath: string): Promise<TakeitBundle> {
-  const { blobs } = await list({ prefix: blobPath });
+async function fetchBundleByPath(
+  blobPath: string,
+  signal: AbortSignal,
+): Promise<TakeitBundle> {
+  const { blobs } = await list({ prefix: blobPath, abortSignal: signal });
   const entry = blobs.find((b) => b.pathname === blobPath);
   if (!entry) {
     throw new Error(`take-it bundle missing at ${blobPath}`);
   }
-  const res = await fetch(entry.downloadUrl, { headers: blobAuthHeaders() });
+  const res = await fetch(entry.downloadUrl, {
+    headers: blobAuthHeaders(),
+    signal,
+  });
   if (!res.ok) throw new BlobDownloadError('bundle', res);
   const bundle = (await res.json()) as TakeitBundle;
   assertBundleCompat(bundle); // throws BundleSchemaError on any failed check
@@ -220,6 +310,10 @@ async function fetchBundleByPath(blobPath: string): Promise<TakeitBundle> {
  * conditions here; the scorer's non-finite-logit guard fails per row, not
  * per bundle.
  *
+ * A refresh that has not finished BUNDLE_LOAD_DEADLINE_MS after it started
+ * is cut off, whichever request is stuck, and fails like any other: the
+ * stale bundle if there is one, else null reported as 'transient'.
+ *
  * `onUnavailable` is called once, just before getBundle resolves null,
  * with why. Not when it serves a stale bundle in place of a failed refresh
  * (scoring still works), and not for a BundleSchemaError (thrown instead).
@@ -230,6 +324,30 @@ export async function getBundle(
 ): Promise<TakeitBundle | null> {
   const cached: CacheEntry | undefined = CACHE[alertType];
   if (cached !== undefined && isFresh(cached)) return cached.bundle;
+
+  // One signal for every request of the refresh. abort() takes no reason
+  // on purpose: the SDK's list() stops on an AbortError, but retries any
+  // other reason (AbortSignal.timeout() included) with its own backoff.
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), BUNDLE_LOAD_DEADLINE_MS);
+  try {
+    return await refreshBundle(
+      alertType,
+      cached,
+      deadline.signal,
+      onUnavailable,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function refreshBundle(
+  alertType: AlertType,
+  cached: CacheEntry | undefined,
+  signal: AbortSignal,
+  onUnavailable?: (unavailable: BundleUnavailable) => void,
+): Promise<TakeitBundle | null> {
   const fallback: TakeitBundle | null = cached ? cached.bundle : null;
   // Every failed load returns through here: the stale bundle if there is
   // one, else null with the reason passed on.
@@ -240,7 +358,9 @@ export async function getBundle(
 
   let manifest: ManifestPayload;
   try {
-    manifest = await withRetry('fetchManifest', () => fetchManifest());
+    manifest = await withRetry('fetchManifest', signal, () =>
+      fetchManifest(signal),
+    );
   } catch (err) {
     Sentry.captureMessage('takeit.bundle.manifest_fetch_failed', {
       level: 'warning',
@@ -275,8 +395,8 @@ export async function getBundle(
   }
 
   try {
-    const bundle = await withRetry(`fetchBundle:${alertType}`, () =>
-      fetchBundleByPath(targetPath),
+    const bundle = await withRetry(`fetchBundle:${alertType}`, signal, () =>
+      fetchBundleByPath(targetPath, signal),
     );
     CACHE[alertType] = { bundle, fetchedAt: Date.now() };
     return bundle;
