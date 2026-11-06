@@ -71,6 +71,17 @@ function cursorOf(idx: number): string | null {
   return new URL(`https://uw.test${path}`).searchParams.get('older_than');
 }
 
+/** The fixture price of `print()`, as UW sends it. */
+const PX = '7765.750000000';
+
+/** A minute whose counted prints all traded at `PX`. */
+const FLAT_OHLC: NonNullable<FlowMinute['ohlc']> = {
+  open: PX,
+  high: PX,
+  low: PX,
+  close: PX,
+};
+
 function flow(
   ts: string,
   volume: number,
@@ -78,8 +89,19 @@ function flow(
   sellVolume = 0,
   buyPrints = 0,
   sellPrints = 0,
+  ohlc: FlowMinute['ohlc'] = null,
+  sideSeen = buyPrints + sellPrints > 0,
 ): FlowMinute {
-  return { ts, volume, buyVolume, sellVolume, buyPrints, sellPrints };
+  return {
+    ts,
+    volume,
+    buyVolume,
+    sellVolume,
+    buyPrints,
+    sellPrints,
+    sideSeen,
+    ohlc,
+  };
 }
 
 function sqlText(idx: number): string {
@@ -130,9 +152,9 @@ describe('fetchContractFlow', () => {
     expect(out.malformed).toBe(0);
     expect(b.pagesLeft).toBe(8);
     expect([...out.minutes.values()]).toEqual([
-      flow('2026-10-28T14:02:00.000Z', 5, 3, 2, 1, 1),
-      flow('2026-10-28T14:01:00.000Z', 9, 0, 5, 0, 1),
-      flow('2026-10-28T14:00:00.000Z', 2, 2, 0, 1, 0),
+      flow('2026-10-28T14:02:00.000Z', 5, 3, 2, 1, 1, FLAT_OHLC),
+      flow('2026-10-28T14:01:00.000Z', 9, 0, 5, 0, 1, FLAT_OHLC),
+      flow('2026-10-28T14:00:00.000Z', 2, 2, 0, 1, 0, FLAT_OHLC),
     ]);
 
     const path = mockUwFetch.mock.calls[0]![1] as string;
@@ -275,8 +297,248 @@ describe('fetchContractFlow', () => {
     expect(cursorOf(2)).toBe('2026-10-28T14:01:30.000000Z');
     expect(out.stop).toBe('complete');
     expect([...out.minutes.values()]).toEqual([
-      flow('2026-10-28T14:00:00.000Z', 4, 0, 4, 0, 1),
+      flow('2026-10-28T14:00:00.000Z', 4, 0, 4, 0, 1, FLAT_OHLC),
     ]);
+  });
+});
+
+// ── fetchContractFlow: per-minute OHLC and sideSeen ───────
+
+describe('fetchContractFlow OHLC', () => {
+  const M = '2026-10-28T14:00:00.000Z';
+
+  /** Pages `pages` newest-first through START..END and returns minute `M`. */
+  async function minuteOf(...pages: unknown[][]): Promise<FlowMinute> {
+    for (const page of pages) mockUwFetch.mockResolvedValueOnce(page);
+    const out = await fetchContractFlow('k', 'ESZ6', START, END, budget());
+    const m = out.minutes.get(M);
+    if (!m) throw new Error('no 14:00 minute');
+    return m;
+  }
+
+  /** A page that ends the range: a print before START. */
+  const ENDER = [print(900, '2026-10-28T13:59:00.000000Z', 1, 'buy')];
+
+  it('takes open and close by executed_at, not arrival, within a page and across pages', async () => {
+    const m = await minuteOf(
+      [
+        // Shuffled: not newest-first.
+        print(5, '2026-10-28T14:00:40.000000Z', 1, 'buy', { price: '7702.5' }),
+        print(3, '2026-10-28T14:00:05.000000Z', 1, 'buy', { price: '7700.25' }),
+        print(4, '2026-10-28T14:00:20.000000Z', 1, 'sell', { price: '7710' }),
+      ],
+      // The next page holds the minute's earliest prints, arriving last.
+      [
+        print(2, '2026-10-28T14:00:01.000000Z', 1, 'buy', { price: '7690.75' }),
+        print(0, '2026-10-28T13:59:59.000000Z', 1, 'buy'),
+      ],
+    );
+
+    expect(m.ohlc).toEqual({
+      open: '7690.75', // 14:00:01, seen on page 2
+      high: '7710',
+      low: '7690.75',
+      close: '7702.5', // 14:00:40
+    });
+    expect(m.volume).toBe(4);
+  });
+
+  it('breaks an executed_at tie by trade_id: lowest id opens, highest id closes', async () => {
+    const t0 = '2026-10-28T14:00:10.000000Z';
+    const t1 = '2026-10-28T14:00:50.000000Z';
+    const m = await minuteOf(
+      [
+        print(10, t1, 1, 'buy', { price: '7711' }),
+        print(9, t1, 1, 'buy', { price: '7712' }),
+        print(5, t0, 1, 'sell', { price: '7700' }),
+        print(4, t0, 1, 'sell', { price: '7701' }),
+      ],
+      ENDER,
+    );
+
+    expect(m.ohlc).toEqual({
+      open: '7701', // id 4 beats id 5 at t0
+      high: '7712',
+      low: '7700',
+      close: '7711', // id 10 beats id 9 at t1
+    });
+  });
+
+  it('compares high and low numerically, and returns UW’s decimal strings unchanged', async () => {
+    const m = await minuteOf(
+      [
+        print(3, '2026-10-28T14:00:30.000000Z', 1, 'buy', {
+          price: '1000.250000000',
+        }),
+        print(2, '2026-10-28T14:00:20.000000Z', 1, 'buy', {
+          price: '999.500000000',
+        }),
+        print(1, '2026-10-28T14:00:10.000000Z', 1, 'buy', {
+          price: '1000.000000000',
+        }),
+      ],
+      ENDER,
+    );
+
+    // Lexicographically '999.5…' > '1000.2…'; numerically it is the low.
+    expect(m.ohlc).toEqual({
+      open: '1000.000000000',
+      high: '1000.250000000',
+      low: '999.500000000',
+      close: '1000.250000000',
+    });
+  });
+
+  it('leaves spread and block prints out of the OHLC (and the flow)', async () => {
+    const m = await minuteOf(
+      [
+        print(6, '2026-10-28T14:00:50.000000Z', 9, 'buy', {
+          is_spread: true,
+          price: '9999',
+        }),
+        {
+          is_block: true,
+          is_spread: false,
+          trade_id: 5,
+          executed_at: '2026-10-28T14:00:45.000000Z',
+          qty: '50',
+          size: null,
+          side: null,
+          price: '0.5',
+        },
+        print(4, '2026-10-28T14:00:30.000000Z', 2, 'buy', { price: '7701' }),
+        print(3, '2026-10-28T14:00:20.000000Z', 3, 'sell', { price: '7699' }),
+        print(2, '2026-10-28T14:00:00.000001Z', 9, 'sell', {
+          is_spread: true,
+          price: '1',
+        }),
+      ],
+      ENDER,
+    );
+
+    expect(m.ohlc).toEqual({
+      open: '7699',
+      high: '7701',
+      low: '7699',
+      close: '7701',
+    });
+    expect(m).toMatchObject({ volume: 5, buyVolume: 2, sellVolume: 3 });
+  });
+
+  it('a print repeated across the +1 µs cursor boundary does not move open, close, high or low', async () => {
+    const atBoundary = '2026-10-28T14:00:10.000000Z';
+    const m = await minuteOf(
+      [
+        print(3, '2026-10-28T14:00:50.000000Z', 1, 'buy', { price: '7705' }),
+        print(2, atBoundary, 1, 'sell', { price: '7700' }),
+      ],
+      [
+        // Re-returned by the inclusive cursor, here with a different price:
+        // the copy already counted wins.
+        print(2, atBoundary, 1, 'sell', { price: '7800' }),
+        print(1, '2026-10-28T14:00:00.500000Z', 1, 'buy', { price: '7702' }),
+        print(0, '2026-10-28T13:59:00.000000Z', 1, 'buy'),
+      ],
+    );
+
+    expect(m.ohlc).toEqual({
+      open: '7702',
+      high: '7705',
+      low: '7700',
+      close: '7705',
+    });
+    expect(m.volume).toBe(3);
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ['missing', { price: undefined }],
+    ['null', { price: null }],
+    ['zero', { price: '0.000000000' }],
+    ['negative', { price: '-5' }],
+    ['not a number', { price: 'abc' }],
+    ['non-finite', { price: 'Infinity' }],
+    ['exponent form', { price: '7e3' }],
+    ['a JSON number', { price: 7700.5 }],
+  ])(
+    'an invalid price (%s) makes the minute’s ohlc null; flow is unchanged',
+    async (_label, bad) => {
+      const m = await minuteOf(
+        [
+          print(3, '2026-10-28T14:00:30.000000Z', 4, 'buy'),
+          print(2, '2026-10-28T14:00:20.000000Z', 6, 'sell', bad),
+          print(1, '2026-10-28T14:00:10.000000Z', 2, 'none'),
+        ],
+        ENDER,
+      );
+
+      expect(m.ohlc).toBeNull();
+      expect(m).toMatchObject({
+        volume: 12,
+        buyVolume: 4,
+        sellVolume: 6,
+        buyPrints: 1,
+        sellPrints: 1,
+      });
+    },
+  );
+
+  it('a row with no price key at all still counts its flow (not malformed)', async () => {
+    const noPrice: Record<string, unknown> = {
+      ...print(2, '2026-10-28T14:00:30.000000Z', 5, 'buy'),
+    };
+    delete noPrice.price;
+    mockUwFetch.mockResolvedValueOnce([noPrice, ...ENDER]);
+
+    const out = await fetchContractFlow('k', 'ESZ6', START, END, budget());
+
+    expect(out.malformed).toBe(0);
+    expect(out.minutes.get(M)).toMatchObject({
+      ohlc: null,
+      volume: 5,
+      buyVolume: 5,
+      buyPrints: 1,
+    });
+  });
+
+  it('an invalid price withholds only its own minute’s ohlc', async () => {
+    mockUwFetch.mockResolvedValueOnce([
+      print(2, '2026-10-28T14:01:30.000000Z', 1, 'buy'),
+      print(1, '2026-10-28T14:00:30.000000Z', 1, 'buy', { price: null }),
+      print(0, '2026-10-28T13:59:00.000000Z', 1, 'buy'),
+    ]);
+
+    const out = await fetchContractFlow('k', 'ESZ6', START, END, budget());
+
+    expect(out.minutes.get(M)?.ohlc).toBeNull();
+    expect(out.minutes.get('2026-10-28T14:01:00.000Z')?.ohlc).toEqual(
+      FLAT_OHLC,
+    );
+    expect(out.malformed).toBe(0);
+  });
+
+  it('sideSeen is true once any counted print has a known side, "none" included, and false for unknown sides', async () => {
+    mockUwFetch.mockResolvedValueOnce([
+      print(4, '2026-10-28T14:02:30.000000Z', 3, null), // unknown side
+      print(3, '2026-10-28T14:01:30.000000Z', 2, 'none'),
+      print(2, '2026-10-28T14:00:30.000000Z', 1, 'buy'),
+      print(1, '2026-10-28T13:59:00.000000Z', 1, 'buy'),
+    ]);
+
+    const out = await fetchContractFlow('k', 'ESZ6', START, END, budget());
+
+    const at = (ts: string) => out.minutes.get(ts);
+    expect(at('2026-10-28T14:00:00.000Z')).toMatchObject({ sideSeen: true });
+    // Only a "none" print: a known zero, not unknown.
+    expect(at('2026-10-28T14:01:00.000Z')).toMatchObject({
+      sideSeen: true,
+      volume: 2,
+      buyPrints: 0,
+      sellPrints: 0,
+    });
+    expect(at('2026-10-28T14:02:00.000Z')).toMatchObject({
+      sideSeen: false,
+      volume: 3,
+    });
   });
 });
 

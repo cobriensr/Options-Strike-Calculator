@@ -17,6 +17,9 @@
  *     volume by UW `side`: the exchange aggressor flag (99.1% tick-test
  *     agreement). `none` or a missing side counts toward volume only, so
  *     buy + sell ≤ volume. Never classify on `nbbo_*`: it is post-trade.
+ *     Each minute also carries the OHLC of the same counted prints, for
+ *     rebuilding a bar (`scripts/backfill-futures-bars.ts`); the flow
+ *     passes ignore it.
  *   - `matchFlowToBars` keeps a minute only when its REST volume is within
  *     2% of the bar's `volume` and buy + sell fits inside it. Deduped
  *     non-spread print volume matched websocket bars exactly (30 of 30
@@ -55,6 +58,17 @@ const MINUTE_US = 60_000_000n;
 
 // ── Types ───────────────────────────────────────────────────
 
+/**
+ * A minute's prices as UW's decimal strings (`"7659.000000000"`), kept
+ * as sent so the caller rounds them once, in the database.
+ */
+export interface MinuteOhlc {
+  open: string;
+  high: string;
+  low: string;
+  close: string;
+}
+
 /** One minute's aggressor flow for one contract. */
 export interface FlowMinute {
   /** The minute, `toISOString()` form (UTC). */
@@ -65,6 +79,21 @@ export interface FlowMinute {
   sellVolume: number;
   buyPrints: number;
   sellPrints: number;
+  /**
+   * True once any counted print carried a known side, `none` included:
+   * the four flow numbers are then known (possibly 0). False means every
+   * print's side was missing, so the flow is unknown. This is the live
+   * handler's `side_seen`, which decides NULL vs 0 for a bar's flow.
+   */
+  sideSeen: boolean;
+  /**
+   * The counted prints' prices. `open` is the earliest print by
+   * (executed_at µs, trade_id) and `close` the latest; `high` and `low`
+   * compare numerically. Null when any counted print has a missing or
+   * invalid price: the live handler drops such a print, so the bar can't
+   * be rebuilt exactly. The flow fields are filled either way.
+   */
+  ohlc: MinuteOhlc | null;
 }
 
 /**
@@ -124,18 +153,35 @@ const TradeRow = z.object({
   is_block: z.boolean().nullish(),
   size: z.number().int().nonnegative().nullish(),
   side: z.enum(['buy', 'sell', 'none']).nullish(),
+  // Checked apart from the schema (`parsePriceText`): a bad price only
+  // costs its minute's ohlc, and must never make the print malformed.
+  price: z.unknown().optional(),
 });
 
-type Print =
-  | {
-      ok: true;
-      id: number;
-      us: bigint;
-      counted: boolean;
-      size: number;
-      side: 'buy' | 'sell' | null;
-    }
-  | { ok: false; us: bigint };
+interface CountedPrint {
+  ok: true;
+  id: number;
+  us: bigint;
+  counted: boolean;
+  size: number;
+  side: 'buy' | 'sell' | 'none' | null;
+  /** UW's price string, or null when missing or not a positive decimal. */
+  price: string | null;
+}
+
+type Print = CountedPrint | { ok: false; us: bigint };
+
+const DECIMAL_RE = /^\d+(?:\.\d+)?$/;
+
+/**
+ * UW's price string when it is a plain positive decimal, else null: the
+ * live handler drops a print whose price is missing, non-finite or ≤ 0.
+ */
+function parsePriceText(raw: unknown): string | null {
+  if (typeof raw !== 'string' || !DECIMAL_RE.test(raw)) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? raw : null;
+}
 
 function parsePrint(contract: string, raw: unknown): Print {
   const at = typeof raw === 'object' && raw !== null ? raw : {};
@@ -159,7 +205,8 @@ function parsePrint(contract: string, raw: unknown): Print {
     us,
     counted: !block && !r.is_spread,
     size: r.size ?? 0,
-    side: r.side === 'buy' || r.side === 'sell' ? r.side : null,
+    side: r.side ?? null,
+    price: parsePriceText(r.price),
   };
 }
 
@@ -167,32 +214,89 @@ function minuteMsOf(us: bigint): number {
   return Number(us / MINUTE_US) * MINUTE_MS;
 }
 
+/** A print's place in time: executed_at, then trade_id for a tie. */
+interface PricePoint {
+  us: bigint;
+  id: number;
+  price: string;
+}
+
+function isEarlier(a: PricePoint, b: PricePoint): boolean {
+  return a.us < b.us || (a.us === b.us && a.id < b.id);
+}
+
+/** One minute while paging: its flow plus the running OHLC. */
+interface MinuteAcc {
+  flow: FlowMinute;
+  open: PricePoint | null;
+  close: PricePoint | null;
+  high: { n: number; price: string } | null;
+  low: { n: number; price: string } | null;
+  /** A counted print had no usable price. */
+  priceGap: boolean;
+}
+
 function addPrint(
-  minutes: Map<number, FlowMinute>,
+  minutes: Map<number, MinuteAcc>,
   minuteMs: number,
-  size: number,
-  side: 'buy' | 'sell' | null,
+  p: CountedPrint,
 ): void {
-  let m = minutes.get(minuteMs);
-  if (!m) {
-    m = {
-      ts: new Date(minuteMs).toISOString(),
-      volume: 0,
-      buyVolume: 0,
-      sellVolume: 0,
-      buyPrints: 0,
-      sellPrints: 0,
+  let acc = minutes.get(minuteMs);
+  if (!acc) {
+    acc = {
+      flow: {
+        ts: new Date(minuteMs).toISOString(),
+        volume: 0,
+        buyVolume: 0,
+        sellVolume: 0,
+        buyPrints: 0,
+        sellPrints: 0,
+        sideSeen: false,
+        ohlc: null,
+      },
+      open: null,
+      close: null,
+      high: null,
+      low: null,
+      priceGap: false,
     };
-    minutes.set(minuteMs, m);
+    minutes.set(minuteMs, acc);
   }
-  m.volume += size;
-  if (side === 'buy') {
-    m.buyVolume += size;
+  const m = acc.flow;
+  m.volume += p.size;
+  if (p.side !== null) m.sideSeen = true;
+  if (p.side === 'buy') {
+    m.buyVolume += p.size;
     m.buyPrints += 1;
-  } else if (side === 'sell') {
-    m.sellVolume += size;
+  } else if (p.side === 'sell') {
+    m.sellVolume += p.size;
     m.sellPrints += 1;
   }
+
+  if (p.price === null) {
+    acc.priceGap = true;
+    return;
+  }
+  const point: PricePoint = { us: p.us, id: p.id, price: p.price };
+  const n = Number(p.price);
+  if (acc.open === null || isEarlier(point, acc.open)) acc.open = point;
+  if (acc.close === null || isEarlier(acc.close, point)) acc.close = point;
+  if (acc.high === null || n > acc.high.n) acc.high = { n, price: p.price };
+  if (acc.low === null || n < acc.low.n) acc.low = { n, price: p.price };
+}
+
+/** The finished minute: `ohlc` set once, only if every price was usable. */
+function finishMinute(acc: MinuteAcc): FlowMinute {
+  const { open, close, high, low } = acc;
+  if (!acc.priceGap && open && close && high && low) {
+    acc.flow.ohlc = {
+      open: open.price,
+      high: high.price,
+      low: low.price,
+      close: close.price,
+    };
+  }
+  return acc.flow;
 }
 
 /**
@@ -211,7 +315,7 @@ export async function fetchContractFlow(
 ): Promise<ContractFlow> {
   const startUs = BigInt(startMs) * 1000n;
   const endUs = BigInt(endMs) * 1000n;
-  const byMinute = new Map<number, FlowMinute>();
+  const byMinute = new Map<number, MinuteAcc>();
   const withheld = new Set<number>();
   let cursorUs = endUs;
   // Trade ids already counted at the current cursor's boundary time: the
@@ -269,7 +373,7 @@ export async function fetchContractFlow(
       if (p.us === boundaryUs && boundaryIds.has(p.id)) continue;
       added += 1;
       if (!p.counted || p.us < startUs || p.us >= endUs) continue;
-      addPrint(byMinute, minuteMsOf(p.us), p.size, p.side);
+      addPrint(byMinute, minuteMsOf(p.us), p);
     }
 
     const atOldest = new Set(
@@ -307,9 +411,9 @@ export async function fetchContractFlow(
         : Math.max(startMs, minuteMsOf(oldestUs) + MINUTE_MS);
 
   const minutes = new Map<string, FlowMinute>();
-  for (const [minuteMs, m] of byMinute) {
+  for (const [minuteMs, acc] of byMinute) {
     if (minuteMs < coveredFromMs || withheld.has(minuteMs)) continue;
-    minutes.set(m.ts, m);
+    minutes.set(acc.flow.ts, finishMinute(acc));
   }
   return { minutes, coveredFromMs, stop, pages, malformed };
 }
@@ -337,6 +441,8 @@ export function matchFlowToBars(
       sellVolume: 0,
       buyPrints: 0,
       sellPrints: 0,
+      sideSeen: false,
+      ohlc: null,
     };
     const withinTolerance =
       Math.abs(m.volume - bar.volume) <= FLOW_VOLUME_TOLERANCE * bar.volume;

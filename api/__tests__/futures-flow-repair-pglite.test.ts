@@ -119,6 +119,8 @@ function flow(ts: string, buy: number, sell: number, bp: number, sp: number) {
     sellVolume: sell,
     buyPrints: bp,
     sellPrints: sp,
+    sideSeen: true,
+    ohlc: null,
   } satisfies FlowMinute;
 }
 
