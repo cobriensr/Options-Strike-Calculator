@@ -187,7 +187,7 @@ describe('buildPlan', () => {
     expect(plan.featureChanges).toHaveLength(5);
   });
 
-  // The shared plausibleEventGap rule: 10 days is the next event, 11 is a
+  // The shared nextEventGap rule: 10 days is the next event, 11 is a
   // hole in the calendar.
   it('keeps a gap of 10 days and NULLs a gap of 11', () => {
     const plan = buildPlan(EVENTS, [

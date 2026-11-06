@@ -47,7 +47,10 @@ vi.mock('../../api/_lib/db.js', async (importOriginal) => ({
   getDb: () => holder.sql,
 }));
 
+import { addEventFeatures } from '../../api/_lib/build-features-phase2.js';
+import type { FeatureRow } from '../../api/_lib/build-features-types.js';
 import {
+  buildPlan,
   plannedWrites,
   runBackfill,
   writePlan,
@@ -607,6 +610,81 @@ describe('economic-event label backfill (pglite)', () => {
 
     expect(plan.eventRows).toBe(0);
     expect(plan.featureRows).toBe(0);
+  });
+
+  // One rule, two computations: the live builder takes the gap and the
+  // table-start flag from SQL, the backfill works them out from the rows.
+  // They must agree on every date, the ones before the table, on its first
+  // day and on both sides of the 10-day limit included.
+  it('gives the live builder and the backfill the same days_to_next_event', async () => {
+    const dates = [
+      '2026-03-18', // before the table (first row 03-25)
+      '2026-03-24', // the day before it
+      '2026-03-25', // the first row's own day: 42 days to 05-06
+      '2026-05-01', // 5 days to 05-06
+      '2026-05-06',
+      '2026-05-26', // 15 days to 06-10
+      '2026-05-30', // 11 days: one past the limit
+      '2026-05-31', // 10 days: the limit
+      '2026-10-17', // 11 days to 10-28
+      '2026-10-18', // 10 days
+      '2026-11-05', // 1 day
+      '2026-11-06', // the last row: nothing later
+      '2026-11-07',
+    ];
+
+    const live = new Map<string, number | null>();
+    for (const date of dates) {
+      const features: FeatureRow = {};
+      await addEventFeatures(pgSql() as never, date, features);
+      const gap = features.days_to_next_event;
+      live.set(date, typeof gap === 'number' ? gap : null);
+    }
+
+    const rows = (
+      await db.query<{
+        id: number;
+        date: string;
+        event_name: string;
+        event_type: string;
+      }>(
+        `SELECT id, to_char(date, 'YYYY-MM-DD') AS date, event_name, event_type
+           FROM economic_events ORDER BY id`,
+      )
+    ).rows;
+    // A stored -1 differs from every computed value, so each date appears in
+    // the plan with the value the backfill would write.
+    const plan = buildPlan(
+      rows.map((r) => ({
+        id: r.id,
+        date: r.date,
+        eventName: r.event_name,
+        eventType: r.event_type,
+      })),
+      dates.map((date) => ({
+        date,
+        isFomc: null,
+        eventType: null,
+        daysToNextEvent: -1,
+      })),
+    );
+    const backfill = new Map(
+      plan.featureChanges.map((c) => [c.date, c.daysToNextEvent.to]),
+    );
+
+    expect(Object.fromEntries(backfill)).toEqual(Object.fromEntries(live));
+    // Not two walls of NULL: the kept values are there too.
+    expect(Object.fromEntries(live)).toMatchObject({
+      '2026-03-18': null,
+      '2026-03-24': null,
+      '2026-05-01': 5,
+      '2026-05-30': null,
+      '2026-05-31': 10,
+      '2026-10-17': null,
+      '2026-10-18': 10,
+      '2026-11-05': 1,
+      '2026-11-06': null,
+    });
   });
 
   it('a failing read rejects before any write', async () => {
