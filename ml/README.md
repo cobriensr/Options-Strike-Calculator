@@ -16,7 +16,7 @@ Scripts read `DATABASE_URL` from the environment, or from a `.env` file at the r
 ```bash
 cd ml
 make health        # Windows: make health PYTHON=.venv/Scripts/python
-make all           # health eda cluster visualize early backtest pin nope flow calibration
+make all           # health eda cluster visualize early backtest pin nope flow
 ```
 
 The Makefile defaults `PYTHON` to `.venv/Scripts/python` on Windows and `.venv/bin/python` elsewhere (chosen by `$(OS)`), so no override is needed on either. To run one script directly: `ml/.venv/bin/python ml/src/eda.py` (Windows: `ml/.venv/Scripts/python ml/src/eda.py`).
@@ -32,14 +32,11 @@ The Makefile defaults `PYTHON` to `.venv/Scripts/python` on Windows and `.venv/b
 | `pin`                          | `src/pin_analysis.py`                                       |
 | `nope`                         | `src/nope_eda.py`                                           |
 | `flow`                         | `src/flow_eda.py`                                           |
-| `calibration`                  | `src/calibration.py`. **Not working:** see below            |
 | `milestone`                    | `src/milestone_check.py`                                    |
 | `full`                         | health + all + backtest + milestone                         |
 | `test` / `test-cov` / `review` | pytest / pytest with a 70% coverage floor / lint + test-cov |
 | `lint` / `format`              | `ruff check --fix` + `ruff format` (write mode)             |
 | `clean`                        | deletes `plots/*.png`                                       |
-
-`make calibration` (also part of `make all`) reads `trace_live_analyses`, which was dropped in migration #128 when TRACE Live was removed from the app. It finds no rows, prints a warning, and produces nothing useful.
 
 ## Architecture
 
@@ -77,7 +74,7 @@ training_features (daily feature vector, 100+ columns)
   LEFT JOIN day_labels (Claude review labels, structure correctness)
 ```
 
-The `build-features.ts` cron job populates `training_features` daily post-close by aggregating data from 15+ upstream tables. `save_section_findings()` writes each script's results into `ml/findings.json` and upserts the whole file into the `ml_findings` table, which the app's ML research carousel reads. Newer pipelines read other tables (see "Database Tables Used").
+The `build-features.ts` cron job populates `training_features` daily post-close by aggregating data from 15+ upstream tables. `save_section_findings()` writes each script's results into `ml/findings.json` and merges that one section (never the whole file) into the `ml_findings` table, which the app's ML research carousel reads. Newer pipelines read other tables (see "Database Tables Used").
 
 ## Feature Groups
 
@@ -259,7 +256,6 @@ One line each, from each module's docstring. "Root `make`" means the repo-root `
 | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `src/nope_eda.py`                                                                                          | SPY NOPE EDA: directional, agreement and regime plots                                                                                                                                                                                                                                                               | `make nope`                                                                                                               |
 | `src/flow_eda.py`                                                                                          | Flow Alerts EDA: distributions, time-of-day, direction, returns                                                                                                                                                                                                                                                     | `make flow`                                                                                                               |
-| `src/calibration.py`                                                                                       | TRACE Live calibration: confidence vs actual hit rate. Its table is gone (see Quick Start)                                                                                                                                                                                                                          | `make calibration`                                                                                                        |
 | `src/takeit/` (`build_training_set`, `train`, `export_model`, `shap_explainer`, `generate_parity_fixture`) | Take-It score: per-alert calibrated XGBoost win probability for Lottery and Silent Boom fires. Writes `ml/data/takeit/` and `ml/findings/takeit-v1-<date>/`. `scripts/upload_takeit_bundles.mjs` uploads the bundles to private Blob (`takeit/latest.json` manifest) for the TS scorer and the sidecar's SHAP route | from the repo root: `PYTHONPATH=. ml/.venv/bin/python -m ml.src.takeit.build_training_set`, then `-m ml.src.takeit.train` |
 | `src/takeit_drift_monitor.py`                                                                              | Daily Take-It drift and validation: rolling AUC and reliability; writes `takeit_health_daily` and `plots/takeit-drift/`                                                                                                                                                                                             | root `make takeit-drift` (also run by root `make update`)                                                                 |
 | `src/lottery_scoring.py`                                                                                   | Lottery fire score weights (rescore-v1). Writes `ml/output/lottery_score_weights.json`, which `scripts/sync_lottery_score_weights_v2.py` syncs into TS                                                                                                                                                              | root `make refit` (part of `make update`)                                                                                 |
@@ -294,7 +290,7 @@ On Windows, use `ml/.venv/Scripts/python` (or `.venv/Scripts/python` from `ml/`)
 | `flow_alerts`                                | `load_flow_alerts.py`                                                                                       | Flow alerts                                   |
 | `futures_bars`                               | `day_analog_parity.py`, `setups_backtest/`, `nq_flow_leadership/`                                           | 1-min futures bars                            |
 | `economic_events`                            | `cross_section_eda*.py`                                                                                     | Event calendar                                |
-| `ml_findings`                                | `utils.save_section_findings`                                                                               | Consolidated findings (write)                 |
+| `ml_findings`                                | `utils.save_section_findings`                                                                               | Findings (write; one section per save)        |
 
 ## Database Tables NOT Yet Used by ML
 

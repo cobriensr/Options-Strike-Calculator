@@ -606,7 +606,7 @@ A multi-phase ML system that augments the rule-based analyze endpoint with stati
 
 **Source modules (`ml/src/`):**
 
-Core pipeline scripts: `utils/` (package), `eda.py`, `clustering.py`, `phase2_early.py`, `visualize.py`, `backtest.py`, `pin_analysis.py`, `nope_eda.py`, `flow_eda.py`, `calibration.py`, `health.py`, `milestone_check.py`, `explore.py`.
+Core pipeline scripts: `utils/` (package), `eda.py`, `clustering.py`, `phase2_early.py`, `visualize.py`, `backtest.py`, `pin_analysis.py`, `nope_eda.py`, `flow_eda.py`, `health.py`, `milestone_check.py`, `explore.py`.
 
 Microstructure pipeline (`ml/src/features/`): OFI feature engineering over the frozen TBBO archive (research only; the DBN → Parquet converters were removed 2026-09-30). Uses DuckDB through its own `_new_connection()`, which forces session `TimeZone = 'UTC'` like the sidecar.
 
@@ -632,7 +632,7 @@ Output: One row per trading day in `training_features` (100+ columns), then labe
 - **Trigger:** Cron + manual dispatch
 - **Job `pipeline`:**
   1. Setup Python 3.13 + Node 24
-  2. `make lint`, then `make all` (health → eda → cluster → visualize → early → backtest → pin → nope → flow → calibration)
+  2. `make lint`, then `make all` (health → eda → cluster → visualize → early → backtest → pin → nope → flow)
   3. Upload plots to Vercel Blob (`ml-plots/latest/`, private)
   4. Trigger Claude vision analysis (`POST /api/ml/analyze-plots`)
   5. Commit `findings.json` + plots if changed

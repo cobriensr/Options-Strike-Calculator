@@ -122,7 +122,7 @@ Build `ml/src/full_tape/` new, but import/model these tested modules. The **only
 | Zero-gamma level | `api/_lib/zero-gamma.ts:computeZeroGammaLevel` (port to Python) + Neon `zero_gamma_levels` (reliable 2026-03-01+) via `setups_backtest/data_loaders.py:load_zero_gamma` | FT-1 zero-gamma curve feature; grid: 30 pts, ±3% |
 | Dealer-sign authority | `api/_lib/market-mechanics.ts`; `spot_exposures.gamma_oi` ← UW `gamma_per_one_percent_move_oi` (`api/_lib/fetch-spot-gex.ts:44,114`); `takeit/build_training_set.py:363-371` (`gamma_oi>0 ⇒ dealer long ⇒ suppressive`) | FT-1 sign gate reference |
 | Anomaly/baseline machinery | `ml/src/eod_flow_baselines.py`, `flow_outliers.py`, `clustering.py` | FT-5 morning-feature + scaling conventions |
-| Calibration | `ml/src/calibration.py:compute_calibration_score`, `bucket_summary` | all probabilistic heads |
+| Calibration | Idea only: a score over confidence buckets (`compute_calibration_score`, `bucket_summary`). `ml/src/calibration.py` is gone (the TRACE Live calibration pipeline was retired); it was last present at commit `d1217a3c`, so recover it with `git show d1217a3c:ml/src/calibration.py` | all probabilistic heads |
 | Time-aware train conventions | `ml/src/takeit/train.py` + `config.py` (`WALK_FORWARD_FOLDS=5`, `ISOTONIC_HOLDOUT_FRAC=0.20`, XGB params) | FT-3/FT-4 |
 | Shared infra | `ml/src/utils/__init__.py` (`get_connection` Neon-retry, `load_env`, `validate_dataframe`, `save_section_findings`) | importable as top-level `utils` (conftest path) |
 
@@ -171,7 +171,7 @@ ml/tests/test_full_tape_*.py , test_ftN_*.py
 
 **Dealer-sign convention (RESOLVED 2026-06-09 — see §2A):** empirically reconciled against Neon `spot_exposures.gamma_oi`, the app-aligned sign uses **`+signed_dir`** (ask-side `signed_dir=+1`, bid-side `-1`, mid `0`): `dealer_greek = +signed_dir × greek × ... × size × 100`. This is the **inverse** of the textbook dealer-short convention (which scored only 11.9% sign agreement vs Neon; `+signed_dir` scored 88.1%, ρ=+0.512). Result aligns with the app's existing `gamma_oi>0 ⇒ suppressive` convention; the Neon OI anchor is used directly (same perspective, no negation). Mid/untagged excluded from signed sums (still counted in volume/premium). **G1 gate PASSED** — magnitudes are now trustworthy.
 
-**Shared eval discipline (mandatory):** walk-forward only (never random-split time series); beat ≥3 baselines (majority/naive, persistence, relevant existing rule); leakage reflex — *uniform lift across stratified buckets = leakage* ([memory: feedback_uniform_lift_is_leakage]), and audit feature timestamps for look-ahead; score with realized R under a stop, not peak/EOD ([memory: feedback_path_matters_not_endpoint]); calibration via `calibration.py`. FT-1/2/3 have a dealer-hedging mechanism (why they should hold OOS); FT-4/5 are empirical — higher bar.
+**Shared eval discipline (mandatory):** walk-forward only (never random-split time series); beat ≥3 baselines (majority/naive, persistence, relevant existing rule); leakage reflex — *uniform lift across stratified buckets = leakage* ([memory: feedback_uniform_lift_is_leakage]), and audit feature timestamps for look-ahead; score with realized R under a stop, not peak/EOD ([memory: feedback_path_matters_not_endpoint]); calibration via a bucketed score (see the Calibration row above; `calibration.py` is gone). FT-1/2/3 have a dealer-hedging mechanism (why they should hold OOS); FT-4/5 are empirical — higher bar.
 
 ---
 

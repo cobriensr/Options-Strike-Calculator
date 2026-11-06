@@ -146,7 +146,7 @@ Every axe scan runs on Chromium only.
 ### ML Tests (pytest)
 
 ```bash
-make -C ml test       # 51 test files in ml/tests/
+make -C ml test       # 54 test files in ml/tests/
 make -C ml test-cov   # same, failing under 70% coverage
 ```
 
@@ -155,12 +155,12 @@ make -C ml test-cov   # same, failing under 70% coverage
 | Files                                                                                                              | Coverage                                                                       |
 | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
 | `test_utils`, `test_health`, `test_milestone`, `test_explore`, `test_visualize` (5)                                | Pipeline plumbing: DB helpers, freshness, milestones, export, plots            |
-| `test_clustering`, `test_eda`, `test_phase2`, `test_backtest`, `test_pin`, `test_calibration`, `test_nope_eda` (7) | Core analyses: clustering, EDA, walk-forward, backtest, pin, calibration, NOPE |
+| `test_clustering`, `test_eda`, `test_phase2`, `test_backtest`, `test_pin`, `test_nope_eda` (6)                     | Core analyses: clustering, EDA, walk-forward, backtest, pin, NOPE              |
 | `test_setups_backtest_*` (13)                                                                                      | Futures setup backtest harness, loaders, metrics, setups 1–8                   |
 | `test_lottery_scoring`, `test_lottery_ticker_quality`, `test_score_components`, `test_takeit_*` (7)                | Lottery Finder scoring and Take-It training, export, drift                     |
 | `test_flow_*`, `test_fulltape_ingest` (6)                                                                          | EOD flow archive and Full Tape ingest, EDA, outcomes, outliers                 |
 | `test_imbalance_*`, `test_moc_features_loaders` (5)                                                                | Imbalance and MOC features                                                     |
-| `test_microstructure_*`, `test_options_features_*`, `test_periscope_gamma_wall_lib`, `test_day_analog_parity` (7)  | Microstructure, options features, Periscope walls, day analogs                 |
+| `test_microstructure_*`, `test_options_features_*`, `test_periscope_gamma_wall_*`, `test_day_analog_parity` (8)    | Microstructure, options features, Periscope walls, day analogs                 |
 
 ### Service Tests (pytest)
 
@@ -205,7 +205,7 @@ Coverage floors: global 90/80/90/90 (statements/branches/functions/lines); per f
 
 | Command                  | Description                                                                                               |
 | ------------------------ | --------------------------------------------------------------------------------------------------------- |
-| `make -C ml all`         | Full ML pipeline: health → eda → cluster → visualize → early → backtest → pin → nope → flow → calibration |
+| `make -C ml all`         | Full ML pipeline: health → eda → cluster → visualize → early → backtest → pin → nope → flow               |
 | `make -C ml full`        | health + all + backtest + milestone                                                                       |
 | `make -C ml health`      | Pipeline health check (freshness, stationarity)                                                           |
 | `make -C ml eda`         | Exploratory data analysis only                                                                            |
@@ -217,7 +217,6 @@ Coverage floors: global 90/80/90/90 (statements/branches/functions/lines); per f
 | `make -C ml pin`         | Settlement pin risk / gamma correlation                                                                   |
 | `make -C ml nope`        | NOPE EDA                                                                                                  |
 | `make -C ml flow`        | Flow EDA                                                                                                  |
-| `make -C ml calibration` | TRACE Live calibration dashboard (its table was dropped with TRACE Live, so it finds no rows)             |
 | `make -C ml milestone`   | Data milestones + script recommendations                                                                  |
 | `make -C ml lint`        | ruff lint + format check                                                                                  |
 | `make -C ml format`      | Auto-fix formatting and lint issues                                                                       |
