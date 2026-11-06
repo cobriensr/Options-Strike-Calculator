@@ -24,6 +24,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import health
 from health import HealthHandler
 
 SHARED_SECRET = "test-shared-secret"
@@ -32,8 +33,10 @@ VALID_BEARER = {"Authorization": f"Bearer {SHARED_SECRET}"}
 
 @pytest.fixture(autouse=True)
 def _shared_secret_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every test starts with the bearer secret configured."""
+    """Every test starts with the bearer secret configured, and with the
+    once-per-process unset-secret error not yet logged."""
     monkeypatch.setenv("TAKEIT_SIDECAR_SHARED_SECRET", SHARED_SECRET)
+    monkeypatch.setattr(health, "_unset_secret_logged", False)
 
 
 def _header_lines(headers: Mapping[str, str] | None) -> str:
@@ -336,6 +339,27 @@ class TestArchiveBearerGate:
         assert len(errors) == 1
         assert "TAKEIT_SIDECAR_SHARED_SECRET" in errors[0].getMessage()
 
+    def test_unset_secret_raises_one_error_across_requests(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Sentry turns each ERROR log into an event, so a misconfigured
+        deploy answering many requests must log the error once; the other
+        requests log a warning."""
+        monkeypatch.delenv("TAKEIT_SIDECAR_SHARED_SECRET")
+        paths = [row[0] for row in _ARCHIVE_ROUTE_ROWS] * 2
+        for path in paths:
+            status, body = _run_request(path, headers={})
+            assert status == 503
+            assert body == {"error": "archive unavailable"}
+        mentions = [
+            r
+            for r in caplog.records
+            if "TAKEIT_SIDECAR_SHARED_SECRET" in r.getMessage()
+        ]
+        assert [r.levelname for r in mentions] == ["ERROR"] + ["WARNING"] * (
+            len(paths) - 1
+        )
+
     def test_log_tells_a_missing_header_from_a_wrong_bearer(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -354,6 +378,20 @@ class TestArchiveBearerGate:
         # Neither the configured secret nor the offered value is logged.
         assert SHARED_SECRET not in caplog.text
         assert "wrong-secret-value" not in caplog.text
+
+
+class TestArchiveRouteTable:
+    def test_every_route_sits_under_the_gated_prefix(self) -> None:
+        """do_GET gates `/archive/` paths only, so a route outside that prefix
+        would be dispatched without the bearer check."""
+        assert HealthHandler._ARCHIVE_ROUTES
+        assert all(
+            route.startswith("/archive/") for route in HealthHandler._ARCHIVE_ROUTES
+        )
+
+    def test_every_route_names_a_handler_method(self) -> None:
+        for handler_name in HealthHandler._ARCHIVE_ROUTES.values():
+            assert callable(getattr(HealthHandler, handler_name))
 
 
 class TestOpenRoutes:

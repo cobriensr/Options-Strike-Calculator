@@ -37,6 +37,24 @@ _BATCH_RANGE_MAX_DAYS = 366 * 3
 # Compiled once — every archive handler reuses this.
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
+# The error for an unset bearer secret is logged once per process. Sentry
+# turns every ERROR log into an event, and the check runs on every
+# /archive/* request, so a misconfigured deploy would otherwise raise one
+# event per request. Later requests log a warning.
+_unset_secret_lock = threading.Lock()
+_unset_secret_logged = False
+
+
+def _log_unset_secret() -> None:
+    """Log that the bearer secret is unset: ERROR the first time, then WARNING."""
+    global _unset_secret_logged
+    with _unset_secret_lock:
+        first = not _unset_secret_logged
+        _unset_secret_logged = True
+    level = log.error if first else log.warning
+    level("%s is not set; /archive/* is unavailable", SHARED_SECRET_ENV)
+
+
 # Upper bound on POST /takeit/explain request bodies.
 # The server binds 0.0.0.0, so an unbounded `rfile.read(content_length)`
 # is a remote-OOM vector. We reject by *declared* Content-Length before
@@ -386,7 +404,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         """
         secret = shared_secret()
         if not secret:
-            log.error("%s is not set; /archive/* is unavailable", SHARED_SECRET_ENV)
+            _log_unset_secret()
             self._send_json(503, {"error": "archive unavailable"})
             return False
         return self._require_bearer(secret, "archive request")
