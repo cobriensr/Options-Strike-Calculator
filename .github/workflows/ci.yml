@@ -136,7 +136,10 @@ jobs:
     # the browser loads changes (see the e2e filter above; api/-only changes
     # skip it). All three browsers run nightly in e2e-nightly.yml.
     if: needs.changes.outputs.e2e == 'true'
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to ubuntu-26.04 on 2026-11-05, and Playwright
+    # 1.60 can't install its browsers there. Back to ubuntu-latest once the
+    # installed Playwright supports it. e2e-nightly.yml carries the same pin.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true

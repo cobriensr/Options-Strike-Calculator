@@ -19,7 +19,10 @@ concurrency:
 jobs:
   e2e:
     name: E2E Tests (all browsers)
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to ubuntu-26.04 on 2026-11-05, and Playwright
+    # 1.60 can't install its browsers there. Back to ubuntu-latest once the
+    # installed Playwright supports it. ci.yml carries the same pin.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
