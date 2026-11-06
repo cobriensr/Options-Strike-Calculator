@@ -182,6 +182,25 @@ export function optionalEnv(key: EnvKey): string | undefined {
   return env[key] ?? undefined;
 }
 
+/**
+ * Whether a Redis REST URL is configured. The limiters (`uw-rate-limit`,
+ * `uw-concurrency`, the per-IP request limiter in `auth-helpers`) are no-ops
+ * without one: test environments and local dev without Upstash linkage don't
+ * set it, and skipping cleanly keeps fetch-mocked tests from spending their
+ * first `fetch` on the Upstash REST endpoint.
+ *
+ * Reads `process.env` on every call, not the cached validated env, so a test
+ * that sets or clears the URL takes effect at once. An empty string counts as
+ * unset (`||`, not `??`), the same as `requireEnvGroup('redis')`, so
+ * `KV_REST_API_URL=''` next to a real `UPSTASH_REDIS_REST_URL` still counts
+ * as configured (see `getValidatedEnv` on empty strings).
+ */
+export function isRedisConfigured(): boolean {
+  return Boolean(
+    process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
+  );
+}
+
 // ============================================================
 // GROUPED ACCESSORS — validate related vars together
 // ============================================================

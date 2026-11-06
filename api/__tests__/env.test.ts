@@ -4,6 +4,7 @@ import {
   requireEnv,
   optionalEnv,
   requireEnvGroup,
+  isRedisConfigured,
   _resetEnvCache,
 } from '../_lib/env.js';
 
@@ -91,6 +92,56 @@ describe('optionalEnv', () => {
     vi.stubEnv('FRED_API_KEY', '');
     // Zod min(1) rejects empty strings, so parse drops it
     expect(optionalEnv('FRED_API_KEY')).toBeUndefined();
+  });
+});
+
+// ── isRedisConfigured ─────────────────────────────────────────
+
+describe('isRedisConfigured', () => {
+  it.each([
+    ['KV_REST_API_URL alone', 'https://kv.example', undefined, true],
+    ['UPSTASH_REDIS_REST_URL alone', undefined, 'https://up.example', true],
+    ['both', 'https://kv.example', 'https://up.example', true],
+    ['neither', undefined, undefined, false],
+    [
+      'an empty KV_REST_API_URL and an UPSTASH url',
+      '',
+      'https://up.example',
+      true,
+    ],
+    [
+      'a KV url and an empty UPSTASH_REDIS_REST_URL',
+      'https://kv.example',
+      '',
+      true,
+    ],
+    ['both empty', '', '', false],
+  ])('with %s', (_label, kvUrl, upstashUrl, expected) => {
+    vi.stubEnv('KV_REST_API_URL', kvUrl);
+    vi.stubEnv('UPSTASH_REDIS_REST_URL', upstashUrl);
+
+    expect(isRedisConfigured()).toBe(expected);
+  });
+
+  it('treats an empty KV url as unset, the way requireEnvGroup does', () => {
+    vi.stubEnv('KV_REST_API_URL', '');
+    vi.stubEnv('UPSTASH_REDIS_REST_URL', 'https://up.example');
+    vi.stubEnv('KV_REST_API_TOKEN', 'kv-token');
+
+    expect(isRedisConfigured()).toBe(true);
+    expect(requireEnvGroup('redis').url).toBe('https://up.example');
+  });
+
+  it('reads process.env on every call, not the cached validated env', () => {
+    vi.stubEnv('KV_REST_API_URL', undefined);
+    vi.stubEnv('UPSTASH_REDIS_REST_URL', undefined);
+    // Warm the validated-env cache with no Redis URL in it.
+    expect(optionalEnv('KV_REST_API_URL')).toBeUndefined();
+    expect(isRedisConfigured()).toBe(false);
+
+    vi.stubEnv('KV_REST_API_URL', 'https://kv.example');
+
+    expect(isRedisConfigured()).toBe(true);
   });
 });
 

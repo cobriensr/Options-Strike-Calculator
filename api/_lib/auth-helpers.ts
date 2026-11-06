@@ -14,6 +14,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { ZodSafeParseResult, ZodSafeParseError } from 'zod';
 import { checkBotId } from 'botid/server';
 
+import { isRedisConfigured } from './env.js';
 import { limiterRedis } from './redis.js';
 import logger from './logger.js';
 import { metrics, Sentry } from './sentry.js';
@@ -242,17 +243,6 @@ const MINUTE_MS = 60_000;
 const RATE_LIMIT_KEY_TTL_SEC = 120;
 
 /**
- * No Upstash linkage (local dev, most test environments): skip the limiter
- * instead of failing open with a Sentry event on every request. Same check
- * as `uw-rate-limit.ts`.
- */
-function isRedisConfigured(): boolean {
-  return Boolean(
-    process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL,
-  );
-}
-
-/**
  * Sentry context shared by every limiter failure. The pinned fingerprint
  * collapses an Upstash outage, which fires on every guarded request, into
  * one warning-level issue instead of one per transaction.
@@ -292,6 +282,8 @@ async function isRateLimited(
   maxPerMinute: number,
   minute: number,
 ): Promise<boolean> {
+  // No Upstash linkage (local dev, most test environments): skip the limiter
+  // instead of failing open with a Sentry event on every request.
   if (!isRedisConfigured()) return false;
 
   const redisKey = `ratelimit:${key}:${minute}`;
