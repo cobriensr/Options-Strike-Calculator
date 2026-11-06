@@ -10,10 +10,13 @@
  * (#179) come from the production migrations. market_snapshots is created in
  * initDb, not a migration, so it is the same columns the backfill uses, with
  * the production types. Only the DB handle is replaced: getDb() returns a
- * neon-shaped client over pglite, and withDbRetry runs its callback once.
+ * neon-shaped client over pglite.
  *
- * The session runs in America/Chicago, not Neon's UTC: nothing here may
- * depend on the session time zone.
+ * The session runs in America/Chicago, not Neon's UTC, and the fires are
+ * seeded so that the Chicago date, the UTC date and the ET date differ for
+ * some of them (00:30 ET falls on the previous day in Chicago, in both EDT
+ * and EST). A bare `fired_at::date` therefore fails here: the decision day
+ * is the fire's ET date.
  *
  * The seed is a small production-shaped slice: speeches typed FOMC on days
  * the Fed is silent, the real decision typed OTHER, a budget release typed
@@ -42,7 +45,6 @@ const holder = vi.hoisted(() => ({ sql: null as unknown }));
 vi.mock('../../api/_lib/db.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/_lib/db.js')>()),
   getDb: () => holder.sql,
-  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
 import {
@@ -218,6 +220,10 @@ async function seedAll(): Promise<void> {
   await seedFire('2026-10-27T15:00:00Z', false); // not a decision day
   await seedFire('2026-07-29T15:00:00Z', true); // already true
   await seedFire('2026-10-29T01:00:00Z', false); // 21:00 ET on 10-28: UTC date 10-29, ET date 10-28
+  // The ET date of these two is a decision day, but their Chicago date is the
+  // day before: a bare fired_at::date in this session would miss them.
+  await seedFire('2026-10-28T04:30:00Z', false); // 00:30 EDT on 10-28; 23:30 CDT on 10-27
+  await seedFire('2027-01-27T05:30:00Z', false); // 00:30 EST on 01-27; 23:30 CST on 01-26
 }
 
 interface Dump {
@@ -312,7 +318,7 @@ describe('economic-event label backfill (pglite)', () => {
     expect(plan.snapshotsWrong).toEqual({ total: 4, matched: 2 });
     expect(plan.featuresEventDayMissed).toEqual({ total: 1, matched: 1 });
     expect(plan.featuresEventDayWrong).toEqual({ total: 1, matched: 1 });
-    expect(plan.fires).toEqual({ total: 6, matched: 3 });
+    expect(plan.fires).toEqual({ total: 8, matched: 5 });
   });
 
   it('--apply writes the corrected values and nothing else', async () => {
@@ -329,7 +335,7 @@ describe('economic-event label backfill (pglite)', () => {
       market_snapshots_wrong: 2,
       training_features_event_day_missed: 1,
       training_features_event_day_wrong: 1,
-      ws_gamma_setup_fires: 3,
+      ws_gamma_setup_fires: 5,
     });
 
     const after = await dump();
@@ -501,6 +507,8 @@ describe('economic-event label backfill (pglite)', () => {
       { id: 4, fired_at: '2026-10-27T15:00', is_fomc_day: false },
       { id: 5, fired_at: '2026-07-29T15:00', is_fomc_day: true },
       { id: 6, fired_at: '2026-10-29T01:00', is_fomc_day: true },
+      { id: 7, fired_at: '2026-10-28T04:30', is_fomc_day: true },
+      { id: 8, fired_at: '2027-01-27T05:30', is_fomc_day: true },
     ]);
   });
 
@@ -566,6 +574,39 @@ describe('economic-event label backfill (pglite)', () => {
     // The failure left nothing half-done: the next apply still finds it all.
     const retry = await runBackfill({ apply: true });
     expect(retry.written?.economic_events).toBe(4);
+  });
+
+  // An empty economic_events read would reclassify nothing and then rewrite
+  // every training_features row from an empty calendar (no event_type, no
+  // days_to_next_event, is_fomc from the schedule alone). Hard stop.
+  it.each([
+    ['a dry run', false],
+    ['an apply', true],
+  ])(
+    '%s refuses to plan over an empty economic_events',
+    async (_label, apply) => {
+      await db.query('TRUNCATE economic_events RESTART IDENTITY');
+      const before = await dump();
+      const transaction = vi.spyOn(pgSql(), 'transaction');
+
+      await expect(runBackfill({ apply })).rejects.toThrow(
+        'economic_events read returned 0 rows; refusing to touch training_features',
+      );
+
+      expect(transaction).not.toHaveBeenCalled();
+      expect(await dump()).toEqual(before);
+    },
+  );
+
+  it('plans normally when both economic_events and training_features are empty', async () => {
+    await db.query(
+      'TRUNCATE economic_events, training_features RESTART IDENTITY',
+    );
+
+    const { plan } = await runBackfill({ apply: false });
+
+    expect(plan.eventRows).toBe(0);
+    expect(plan.featureRows).toBe(0);
   });
 
   it('a failing read rejects before any write', async () => {

@@ -611,8 +611,9 @@ export interface BackfillResult {
 /**
  * Read everything, compute the plan, and (with `apply`) write it in one
  * transaction. A plan with nothing to change writes nothing and opens no
- * transaction. A DB error propagates after withDbRetry; the transaction
- * rolls back as a whole.
+ * transaction. An economic_events read of zero rows, with training_features
+ * rows present, throws in both modes before anything is planned. A DB error
+ * propagates after withDbRetry; the transaction rolls back as a whole.
  */
 export async function runBackfill(opts: {
   apply: boolean;
@@ -623,6 +624,14 @@ export async function runBackfill(opts: {
     readFeatures(sql),
     readSqlCounts(sql),
   ]);
+  // Hard stop, dry run included. With no events every training_features row
+  // would be recomputed from an empty calendar: no event_type, no
+  // days_to_next_event, is_fomc from the schedule alone.
+  if (events.length === 0 && features.length > 0) {
+    throw new Error(
+      'economic_events read returned 0 rows; refusing to touch training_features',
+    );
+  }
   const plan: BackfillPlan = { ...buildPlan(events, features), ...sqlCounts };
   if (!opts.apply || totalPlanned(plan) === 0) {
     return { plan, apply: opts.apply, written: null };
