@@ -224,7 +224,7 @@ What you need a paid account / API key for, in rough priority order.
 - **Sign up**: [railway.app](https://railway.app).
 - **Cost**: ~$5–20/month/service for personal usage tier. Check your actual Railway bill.
 - **Sidecar env vars**: `DATABASE_URL` (only for its `/health` db check), `SENTRY_DSN`, `TAKEIT_SERVER_ENABLED`, `TAKEIT_SIDECAR_SHARED_SECRET`, `ARCHIVE_*`, `BLOB_READ_WRITE_TOKEN`. See [sidecar/README.md](../sidecar/README.md).
-- **Vercel env vars for the sidecar**: `SIDECAR_URL` (archive queries for analog days and `fetch-day-ohlc`), `SIDECAR_TAKEIT_URL` and `SIDECAR_TAKEIT_SECRET` (same value as the sidecar's `TAKEIT_SIDECAR_SHARED_SECRET`, sent as a bearer token by the `takeit-fill-shap` cron).
+- **Vercel env vars for the sidecar**: `SIDECAR_URL` (archive queries for analog days and `fetch-day-ohlc`), `SIDECAR_TAKEIT_URL` and `SIDECAR_TAKEIT_SECRET` (same value as the sidecar's `TAKEIT_SIDECAR_SHARED_SECRET`, sent as a bearer token by the `takeit-fill-shap` cron and on the sidecar's `/archive/*` calls, see `api/_lib/archive-sidecar.ts` and `scripts/_lib/sidecar-headers.mjs`).
 
 ### Required for the websocket consumer (Railway service #2)
 

@@ -320,7 +320,7 @@ Required env vars (pulled via `vercel env pull .env.local`):
 | `AXIOM_DATASET`                                          | Axiom dataset name (opt.)                                   |
 | `UW_PER_MINUTE_CAP`                                      | UW limiter override (opt., def 2000)                        |
 | `SIDECAR_URL`                                            | Railway sidecar (archive queries)                           |
-| `SIDECAR_TAKEIT_URL`, `SIDECAR_TAKEIT_SECRET`            | Sidecar SHAP (= `TAKEIT_SIDECAR_SHARED_SECRET`)             |
+| `SIDECAR_TAKEIT_URL`, `SIDECAR_TAKEIT_SECRET`            | SHAP + /archive/* bearer (= `TAKEIT_SIDECAR_SHARED_SECRET`) |
 | `INTERNAL_NOTIFY_SECRET`                                 | uw-stream → `/api/push/notify` (also on Railway)            |
 | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Web Push (opt.)                                             |
 | `VITE_VAPID_PUBLIC_KEY`, `VITE_SENTRY_DSN`               | Frontend build-time (opt.)                                  |
