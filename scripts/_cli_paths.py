@@ -14,13 +14,21 @@ A day whose file is missing from an existing archive is a different case:
 the enrich and timing scripts skip it with `warn_missing_archive` and list
 the skipped days at the end (`format_dates`), so one absent day doesn't
 stop `make update`.
+
+`load_env_file` is the shared `.env.local` reader. A missing file is fine:
+the nightly service on Railway has no env file and gets its variables from
+the service.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
+import re
 import sys
 from pathlib import Path
+
+_ENV_ASSIGNMENT = re.compile(r'^([A-Z_][A-Z0-9_]*)=(.*)$')
 
 
 def existing_dir(value: str) -> Path:
@@ -61,3 +69,23 @@ def format_dates(dates: list[str], keep: int = 3) -> str:
     head = ', '.join(dates[:keep])
     tail = ', '.join(dates[-keep:])
     return f'{head} … {tail}'
+
+
+def load_env_file(path: Path) -> None:
+    """Copy ``NAME=value`` lines from an env file into ``os.environ``.
+
+    A name that is already set keeps its value, so a shell or service
+    variable beats the file. Matching lines are ``[A-Z_][A-Z0-9_]*=...``
+    after ``strip()``; comments, ``export`` lines and the rest are skipped.
+    Double quotes, then single quotes, are stripped from both ends of the
+    value. A missing file is a no-op, not an exit.
+    """
+    try:
+        f = path.open(encoding='utf-8')
+    except FileNotFoundError:
+        return
+    with f:
+        for line in f:
+            m = _ENV_ASSIGNMENT.match(line.strip())
+            if m:
+                os.environ.setdefault(m.group(1), m.group(2).strip('"').strip("'"))

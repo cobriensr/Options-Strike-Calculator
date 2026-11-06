@@ -72,6 +72,7 @@ def retry_call(
     max_delay: float = DEFAULT_MAX_DELAY,
     label: str = 'call',
     sleep: Callable[[float], None] = time.sleep,
+    error_detail: bool = True,
 ) -> T:
     """Call fn() with bounded exponential backoff on retryable exceptions.
 
@@ -79,6 +80,10 @@ def retry_call(
     exception is transient (retry) or permanent (re-raise immediately). After
     the final attempt the last exception propagates unchanged, so callers keep
     their existing fail-loud behavior.
+
+    The `[retry]` line on stderr carries the exception's class and message.
+    With `error_detail=False` it carries the class name only, for a service
+    whose logs must not hold a host or credential a message can echo.
 
     NOTE: the loop catches BaseException so the predicate has full control, which
     means `retryable` MUST return False for KeyboardInterrupt / SystemExit (all
@@ -96,9 +101,12 @@ def retry_call(
                 raise
             last_exc = exc
             wait = backoff_delay(attempt, base_delay, max_delay)
+            failure = type(exc).__name__
+            if error_detail:
+                failure = f'{failure}: {exc}'
             print(
                 f'[retry] {label} attempt {attempt + 1}/{attempts} failed '
-                f'({type(exc).__name__}: {exc}); retrying in {wait:.0f}s',
+                f'({failure}); retrying in {wait:.0f}s',
                 file=sys.stderr,
             )
             sleep(wait)
@@ -114,12 +122,16 @@ def connect_with_retry(
     base_delay: float = DEFAULT_BASE_DELAY,
     max_delay: float = DEFAULT_MAX_DELAY,
     sleep: Callable[[float], None] = time.sleep,
+    error_detail: bool = True,
     **connect_kwargs,
 ):
     """psycopg2.connect with backoff on transient Neon connection errors.
 
     A permanent failure (bad DSN, auth) is not in is_retryable_db_error's set,
     so it raises on the first attempt exactly as a plain connect would.
+
+    A psycopg2 message can carry the Neon host, so a service that logs class
+    names only passes `error_detail=False` (see retry_call).
     """
     import psycopg2
 
@@ -131,4 +143,5 @@ def connect_with_retry(
         max_delay=max_delay,
         label='psycopg2.connect',
         sleep=sleep,
+        error_detail=error_detail,
     )

@@ -18,10 +18,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _pipeline_retry import (  # noqa: E402
     RETRYABLE_HTTP_STATUS,
     backoff_delay,
+    connect_with_retry,
     is_retryable_db_error,
     is_retryable_http_status,
     retry_call,
 )
+
+# An obvious fake standing in for a Neon host a psycopg2 message can carry.
+MARKER_HOST = 'ep-marker-host-zz.example.invalid'
 
 
 def test_backoff_sequence_matches_documented_cadence() -> None:
@@ -121,3 +125,74 @@ def test_retry_call_does_not_retry_permanent_error() -> None:
         )
     assert calls['n'] == 1  # tried exactly once
     assert sleeps == []
+
+
+def test_retry_log_keeps_the_message_by_default(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def always_fail() -> str:
+        raise ConnectionError('upstream reset')
+
+    with pytest.raises(ConnectionError, match='upstream reset'):
+        retry_call(
+            always_fail,
+            retryable=lambda exc: True,
+            attempts=2,
+            label='probe',
+            sleep=lambda seconds: None,
+        )
+
+    assert capsys.readouterr().err == (
+        '[retry] probe attempt 1/2 failed '
+        '(ConnectionError: upstream reset); retrying in 1s\n'
+    )
+
+
+def test_retry_log_names_only_the_class_without_error_detail(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def always_fail() -> str:
+        raise ConnectionError(f'could not translate host name "{MARKER_HOST}"')
+
+    # The last exception still carries its message; only the log line drops it.
+    with pytest.raises(ConnectionError, match=MARKER_HOST):
+        retry_call(
+            always_fail,
+            retryable=lambda exc: True,
+            attempts=2,
+            label='probe',
+            sleep=lambda seconds: None,
+            error_detail=False,
+        )
+
+    err = capsys.readouterr().err
+    assert MARKER_HOST not in err
+    assert err == (
+        '[retry] probe attempt 1/2 failed (ConnectionError); retrying in 1s\n'
+    )
+
+
+def test_connect_with_retry_hides_the_error_text_when_asked(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise psycopg2.OperationalError(
+            f'could not translate host name "{MARKER_HOST}" to address'
+        )
+
+    monkeypatch.setattr(psycopg2, 'connect', refuse)
+
+    with pytest.raises(psycopg2.OperationalError, match=MARKER_HOST):
+        connect_with_retry(
+            'dbname=fake',
+            attempts=2,
+            sleep=lambda seconds: None,
+            error_detail=False,
+        )
+
+    err = capsys.readouterr().err
+    assert MARKER_HOST not in err
+    assert err == (
+        '[retry] psycopg2.connect attempt 1/2 failed (OperationalError); '
+        'retrying in 1s\n'
+    )
