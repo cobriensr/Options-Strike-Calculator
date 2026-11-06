@@ -6,8 +6,8 @@
  * `fetch-spx-candles-1m` cron populates that table every minute
  * during market hours, translating UW SPY candles to SPX prices via
  * the live SPX/SPY ratio before insert. The backfill script
- * `scripts/backfill-spx-candles-1m.mjs` seeds the last 30 days of
- * history.
+ * `scripts/backfill-spx-candles-1m.mjs` fills a --from/--to range of
+ * history (SPX and NDX, each day at its Schwab daily-close ratio).
  *
  * Fallback path: if the table has zero rows for the requested date
  * (e.g., transition window before the cron has run, or a missed date),
