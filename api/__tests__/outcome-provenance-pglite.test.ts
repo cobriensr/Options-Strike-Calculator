@@ -15,7 +15,14 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PGlite } from '@electric-sql/pglite';
 
-import { applyMigration } from './pglite-migrations';
+import { MIGRATIONS, type Migration } from '../_lib/db-migrations.js';
+import {
+  applyMigration,
+  neonOverPglite,
+  type PgliteQuery,
+} from './pglite-migrations';
+
+type NeonSql = Parameters<NonNullable<Migration['statements']>>[0];
 
 const LOTTERY_CREATE_ID = 110;
 const SILENT_BOOM_CREATE_ID = 134;
@@ -238,7 +245,8 @@ describe('migration #201 on pglite', () => {
     });
   });
 
-  it('keeps the rows written before the migration NULL, and a re-run is a no-op', async () => {
+  it('keeps the rows written before the migration NULL, and a re-run is a no-op that leaves tags alone', async () => {
+    const untagged = { source: null, version: null };
     const count = async (sql: string) =>
       Number((await pg.query<{ n: number }>(sql)).rows[0]!.n);
     const columns = `SELECT count(*)::int AS n FROM information_schema.columns
@@ -246,6 +254,20 @@ describe('migration #201 on pglite', () => {
     const checks = `SELECT count(*)::int AS n FROM pg_constraint
                      WHERE conname ~ '_source_chk$'`;
     expect([await count(columns), await count(checks)]).toEqual([6, 3]);
+    for (const target of TARGETS) {
+      expect(await readTag(target, seeded[target.table])).toEqual(untagged);
+    }
+
+    // Tag the pre-migration rows the way a tape writer would (outcome on both
+    // tables, inversion on the lottery row), and keep one untagged control row
+    // per table.
+    const controls = {
+      lottery_finder_fires: await insertRow('lottery_finder_fires'),
+      silent_boom_alerts: await insertRow('silent_boom_alerts'),
+    };
+    for (const target of TARGETS) {
+      await tag(target, seeded[target.table], 'fulltape', 1);
+    }
 
     // Runs again without error: every ADD COLUMN is IF NOT EXISTS, and every
     // constraint is dropped before it is added.
@@ -254,10 +276,40 @@ describe('migration #201 on pglite', () => {
     expect([await count(columns), await count(checks)]).toEqual([6, 3]);
     for (const target of TARGETS) {
       expect(await readTag(target, seeded[target.table])).toEqual({
-        source: null,
-        version: null,
+        source: 'fulltape',
+        version: 1,
+      });
+      expect(await readTag(target, controls[target.table])).toEqual(untagged);
+      // The re-added check still binds.
+      await expect(
+        tag(target, controls[target.table], 'tape', 1),
+      ).rejects.toMatchObject({
+        code: CHECK_VIOLATION,
+        constraint: target.constraint,
       });
     }
+  });
+
+  it('sets lock_timeout with SET LOCAL, so it ends with the migration transaction', async () => {
+    const migration = MIGRATIONS.find((m) => m.id === PROVENANCE_ID);
+    if (!migration?.statements) throw new Error('#201 has no statements');
+    // applyMigration runs each statement outside a transaction, where SET
+    // LOCAL does nothing; run them in one, as migrateDb() does.
+    const queries = migration.statements(
+      neonOverPglite(pg) as unknown as NeonSql,
+    ) as unknown as PgliteQuery[];
+    const showTimeout = async (db: Pick<PGlite, 'query'>) =>
+      (await db.query<{ lock_timeout: string }>('SHOW lock_timeout')).rows;
+
+    const inside = await pg.transaction(async (tx) => {
+      for (const q of queries) await tx.query(q.text, q.params);
+      return showTimeout(tx);
+    });
+
+    expect(inside).toEqual([{ lock_timeout: '5s' }]);
+    // SET LOCAL, not SET: the 5s timeout must not outlive the transaction on
+    // a pooled backend.
+    expect(await showTimeout(pg)).toEqual([{ lock_timeout: '0' }]);
   });
 
   it('adds the checks NOT VALID, so existing rows are not scanned', async () => {
