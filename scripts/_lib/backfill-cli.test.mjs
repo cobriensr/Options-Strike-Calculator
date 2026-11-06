@@ -12,6 +12,7 @@ import {
   EXIT_GUARD_STOP,
   EXIT_OK,
   UW_REQUESTS_PER_MINUTE,
+  WRITE_BATCH,
   chunk,
   classifyFailure,
   createRequestThrottle,
@@ -20,6 +21,7 @@ import {
   marketHoursRefusal,
   parseArgs,
   parseRangeArgs,
+  planRangeDays,
   redact,
   retryTransientDb,
   runDayItems,
@@ -27,8 +29,10 @@ import {
   runPool,
   runTickerDays,
   selectDates,
+  storeRows,
   summarizeByDay,
   summarizeFailures,
+  summarizeItemRun,
   summarizeRun,
   tradingDaysInRange,
 } from './backfill-cli.mjs';
@@ -1702,6 +1706,287 @@ describe('formatRunSummary', () => {
       'stopped: refused',
       'not run (1): 2026-07-22',
     ]);
+  });
+});
+
+// ── planRangeDays ──────────────────────────────────────────
+
+describe('planRangeDays', () => {
+  // 03:00 ET on 2026-11-06: the finished days end on the 5th.
+  const NOW = '2026-11-06T08:00:00Z';
+  const WHY = 'this backfill has no default window';
+
+  afterEach(() => vi.useRealTimers());
+
+  it('plans the trading days of the range, holidays skipped, and reads the flags', () => {
+    atTime(NOW);
+    // 2026-09-07 is Labor Day.
+    const { args, dates } = planRangeDays(
+      [
+        '--from',
+        '2026-09-03',
+        '--to',
+        '2026-09-08',
+        '--dry-run',
+        '--allow-market-hours',
+      ],
+      WHY,
+    );
+    expect(dates).toEqual(['2026-09-03', '2026-09-04', '2026-09-08']);
+    expect(args).toMatchObject({ dryRun: true, allowMarketHours: true });
+  });
+
+  it('keeps the first N trading days of the range for --limit, in order', () => {
+    atTime(NOW);
+    const { dates } = planRangeDays(
+      ['--from', '2026-07-22', '--to', '2026-09-04', '--limit', '3'],
+      WHY,
+    );
+    expect(dates).toEqual(['2026-07-22', '2026-07-23', '2026-07-24']);
+  });
+
+  it.each([
+    [[], '--from and --to are required: this backfill has no default window'],
+    [['--dry-run'], '--from and --to are required'],
+    [['--from', '2026-08-12'], '--from and --to go together'],
+    [['--to', '2026-08-12'], '--from and --to go together'],
+    [['--from', '2026-08-13', '--to', '2026-08-12'], 'is after --to'],
+    [['5'], 'Unknown argument'],
+    [['--from', '2026-08-12', '--to', '2026-08-12', '--limit', '0'], '--limit'],
+    [
+      ['--from', '2026-09-05', '--to', '2026-09-07'],
+      'no trading days between --from 2026-09-05 and --to 2026-09-07',
+    ],
+  ])('rejects %j', (argv, message) => {
+    atTime(NOW);
+    expect(() => planRangeDays(argv, WHY)).toThrow(message);
+  });
+
+  it('refuses a range that reaches today: the live crons own the unfinished day', () => {
+    atTime(NOW);
+    expect(() =>
+      planRangeDays(['--from', '2026-11-05', '--to', '2026-11-06'], WHY),
+    ).toThrow('--to 2026-11-06 is not a finished day (today is 2026-11-06 ET)');
+    expect(
+      planRangeDays(['--from', '2026-11-05', '--to', '2026-11-05'], WHY).dates,
+    ).toEqual(['2026-11-05']);
+  });
+
+  it('late in the evening CT, already the next day in ET, the day that just ended is finished and the new one is not', () => {
+    // 23:30 CT on the 5th is 00:30 ET on the 6th.
+    atTime('2026-11-06T05:30:00Z');
+    expect(
+      planRangeDays(['--from', '2026-11-05', '--to', '2026-11-05'], WHY).dates,
+    ).toEqual(['2026-11-05']);
+    expect(() =>
+      planRangeDays(['--from', '2026-11-05', '--to', '2026-11-06'], WHY),
+    ).toThrow(/is after today|not a finished day/);
+  });
+});
+
+// ── storeRows ──────────────────────────────────────────────
+
+describe('storeRows', () => {
+  const TARGET = {
+    table: 'demo_rows',
+    columns: ['day', 'label', 'amount'],
+    conflictTarget: '(day, label)',
+  };
+  const row = (n) => ({ day: '2026-08-12', label: `L${n}`, amount: n });
+
+  /** A sql handle answering like RETURNING id: one row per row inserted. */
+  function fakeSql({ conflicts = 0 } = {}) {
+    return {
+      query: vi.fn(async (_text, values) =>
+        Array.from(
+          { length: Math.max(0, values.length / 3 - conflicts) },
+          (_, i) => ({ id: i }),
+        ),
+      ),
+    };
+  }
+
+  afterEach(() => vi.useRealTimers());
+
+  it('writes one multi-row INSERT ... ON CONFLICT DO NOTHING on the target key, every value a parameter', async () => {
+    const sql = fakeSql();
+
+    const stored = await storeRows(sql, TARGET, [row(1), row(2)], {
+      dryRun: false,
+    });
+
+    expect(stored).toBe(2);
+    expect(sql.query).toHaveBeenCalledTimes(1);
+    const [text, values] = sql.query.mock.calls[0];
+    expect(text).toBe(
+      'INSERT INTO demo_rows (day, label, amount) VALUES ' +
+        '($1, $2, $3), ($4, $5, $6) ' +
+        'ON CONFLICT (day, label) DO NOTHING RETURNING id',
+    );
+    expect(values).toEqual(['2026-08-12', 'L1', 1, '2026-08-12', 'L2', 2]);
+  });
+
+  it('sends a missing field as NULL', async () => {
+    const sql = fakeSql();
+    await storeRows(sql, TARGET, [{ day: '2026-08-12', label: 'L1' }], {
+      dryRun: false,
+    });
+    expect(sql.query.mock.calls[0][1]).toEqual(['2026-08-12', 'L1', null]);
+  });
+
+  it('splits the rows into statements of at most 500', async () => {
+    const sql = fakeSql();
+    const rows = Array.from({ length: 1200 }, (_, i) => row(i));
+
+    const stored = await storeRows(sql, TARGET, rows, { dryRun: false });
+
+    expect(WRITE_BATCH).toBe(500);
+    expect(stored).toBe(1200);
+    expect(sql.query.mock.calls.map(([, v]) => v.length / 3)).toEqual([
+      500, 500, 200,
+    ]);
+  });
+
+  it('counts only the rows ON CONFLICT let in', async () => {
+    const sql = fakeSql({ conflicts: 2 });
+    expect(
+      await storeRows(sql, TARGET, [row(1), row(2), row(3), row(4), row(5)], {
+        dryRun: false,
+      }),
+    ).toBe(3);
+  });
+
+  it('reads a fullResults-shaped answer too', async () => {
+    const sql = {
+      query: vi.fn(async () => ({ rows: [{ id: 1 }, { id: 2 }] })),
+    };
+    expect(
+      await storeRows(sql, TARGET, [row(1), row(2)], { dryRun: false }),
+    ).toBe(2);
+  });
+
+  it('writes nothing on a dry run, and nothing for no rows', async () => {
+    const sql = fakeSql();
+    expect(await storeRows(sql, TARGET, [row(1)], { dryRun: true })).toBe(0);
+    expect(await storeRows(sql, TARGET, [], { dryRun: false })).toBe(0);
+    expect(sql.query).not.toHaveBeenCalled();
+  });
+
+  it('labels a rejected write as a db failure, and keeps the error message', async () => {
+    const sql = {
+      query: vi.fn(async () => {
+        throw new Error('relation "demo_rows" does not exist');
+      }),
+    };
+
+    const err = await storeRows(sql, TARGET, [row(1)], { dryRun: false }).catch(
+      (e) => e,
+    );
+
+    expect(classifyFailure(err)).toEqual({
+      kind: 'db',
+      detail: 'relation "demo_rows" does not exist',
+    });
+  });
+
+  it('retries a transient Neon error, then stores the rows', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const query = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockResolvedValueOnce([{ id: 1 }]);
+
+    const pending = storeRows({ query }, TARGET, [row(1)], { dryRun: false });
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(pending).resolves.toBe(1);
+    expect(query).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops at the first chunk that fails: no later chunk is written', async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce([{ id: 1 }])
+      .mockRejectedValueOnce(new Error('disk full'));
+    const rows = Array.from({ length: 1200 }, (_, i) => row(i));
+
+    await expect(
+      storeRows({ query }, TARGET, rows, { dryRun: false }),
+    ).rejects.toThrow('disk full');
+    expect(query).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ── summarizeItemRun ───────────────────────────────────────
+
+describe('summarizeItemRun', () => {
+  const day = (date, value) => ({ date, ok: true, value });
+  const counts = (fetched, emptyItems) => ({
+    fetched,
+    stored: fetched,
+    emptyItems,
+  });
+
+  it('adds nothing to the shared summary when no day is partly empty', () => {
+    const run = {
+      days: [day('2026-08-12', counts(7, 0))],
+      stoppedBy: null,
+      notRun: [],
+    };
+
+    const { lines, exitCode } = summarizeItemRun(run, 2, 'tickers', 'bars');
+
+    expect(lines).toEqual(formatRunSummary(summarizeRun(run)));
+    expect(exitCode).toBe(EXIT_OK);
+  });
+
+  it('names the days where some, not all, of the items had no rows, once each, and still exits 0', () => {
+    const run = {
+      days: [
+        day('2026-08-12', counts(4, 1)),
+        day('2026-08-13', counts(9, 0)),
+        day('2026-08-14', counts(3, 2)),
+      ],
+      stoppedBy: null,
+      notRun: [],
+    };
+
+    const { lines, exitCode } = summarizeItemRun(run, 3, 'sources', 'rows');
+
+    expect(lines.at(-1)).toBe(
+      'partly empty days (UW had no rows for some of the 3 sources; ' +
+        'a hole to look at, not a failure): ' +
+        '2026-08-12 (1 empty), 2026-08-14 (2 empty)',
+    );
+    expect(exitCode).toBe(EXIT_OK);
+  });
+
+  it('uses the row noun it is given', () => {
+    const run = {
+      days: [day('2026-08-12', counts(4, 1))],
+      stoppedBy: null,
+      notRun: [],
+    };
+    expect(summarizeItemRun(run, 2, 'tickers', 'bars').lines.at(-1)).toContain(
+      'UW had no bars for some of the 2 tickers',
+    );
+  });
+
+  it('leaves a wholly empty day to the shared empty-days line, and a failed day out', () => {
+    const run = {
+      days: [
+        day('2026-08-12', counts(0, 2)),
+        bad('2026-08-13', 'uw_http_503', 'down'),
+      ],
+      stoppedBy: null,
+      notRun: [],
+    };
+
+    const { lines, exitCode } = summarizeItemRun(run, 2, 'tickers', 'rows');
+
+    expect(lines).toContain('empty days (UW had no rows): 2026-08-12');
+    expect(lines.join('\n')).not.toContain('partly empty');
+    expect(exitCode).toBe(EXIT_FAILED);
   });
 });
 

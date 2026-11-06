@@ -24,7 +24,12 @@
  *     and throws one DayFailure that keeps the first failure's kind.
  *   - summarizeRun: failures counted by day and by kind, the empty days, and
  *     the exit code (EXIT_OK, EXIT_FAILED, EXIT_GUARD_STOP);
- *     formatRunSummary turns it into printable lines.
+ *     formatRunSummary turns it into printable lines; summarizeItemRun adds
+ *     the days where only some of a day's items had rows.
+ *   - planRangeDays: the flags and days of a retrofit that has no lookback
+ *     default (--from/--to required, --to a finished ET day, --limit).
+ *   - storeRows: the batched (≤ WRITE_BATCH rows) INSERT ... ON CONFLICT DO
+ *     NOTHING, the write side of a worker.
  * A worker returns counts, not rows: { fetched, stored }. It marks a DB
  * failure by running its Neon calls, and only them, through
  * retryTransientDb, which labels whatever it throws.
@@ -38,6 +43,7 @@
  */
 
 import { isTradingDay } from '../../src/data/marketHours.ts';
+import { getETToday } from '../../src/utils/timezone.ts';
 import { ctDateStr, getTradingDays } from './trading-days.mjs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -227,6 +233,33 @@ export function selectDates({ from, to }, lookbackDays) {
   return { mode: 'range', dates };
 }
 
+/**
+ * The flags and the days of a backfill that has no lookback default: --from
+ * and --to are both required (`noDefaultReason` says why, in the error), and
+ * --to must be a finished ET day, because for today the live crons own the
+ * rows and the day's last print is still forming. --limit N keeps the first N
+ * trading days of the range, in order. Returns `{ args, dates }`, or throws a
+ * message naming the problem, which the scripts print and exit 2 on.
+ */
+export function planRangeDays(argv, noDefaultReason) {
+  const args = parseRangeArgs(argv);
+  if (args.from == null) {
+    throw new Error(`--from and --to are required: ${noDefaultReason}`);
+  }
+  const etToday = getETToday();
+  if (args.to >= etToday) {
+    throw new Error(
+      `--to ${args.to} is not a finished day (today is ${etToday} ET): ` +
+        'the live crons fill today',
+    );
+  }
+  const { dates } = selectDates(args);
+  return {
+    args,
+    dates: args.limit == null ? dates : dates.slice(0, args.limit),
+  };
+}
+
 // ── Batching and concurrency ───────────────────────────────
 
 export function chunk(items, size) {
@@ -393,6 +426,53 @@ export async function retryTransientDb(fn) {
       await sleep(delay);
     }
   }
+}
+
+/** Rows per INSERT (the ≤500 batching rule). */
+export const WRITE_BATCH = 500;
+
+/**
+ * One multi-row INSERT for `rows`. `target` is `{ table, columns,
+ * conflictTarget }`: constants in the calling module, never data, because they
+ * are spliced into the text. Every value is a bound parameter, a missing field
+ * a NULL. DO NOTHING, so a row already stored (a live cron's) stays as it is.
+ * RETURNING id counts the rows ON CONFLICT let in, so the table needs an `id`.
+ */
+function insertStatement({ table, columns, conflictTarget }, rows) {
+  const values = [];
+  const groups = rows.map((row) => {
+    const params = columns.map((column) => {
+      values.push(row[column] ?? null);
+      return `$${values.length}`;
+    });
+    return `(${params.join(', ')})`;
+  });
+  const text =
+    `INSERT INTO ${table} (${columns.join(', ')}) VALUES ${groups.join(', ')} ` +
+    `ON CONFLICT ${conflictTarget} DO NOTHING RETURNING id`;
+  return { text, values };
+}
+
+/**
+ * Write `rows` to `target` in statements of WRITE_BATCH rows, in order, and stop
+ * at the first that fails. Returns how many rows the database took (RETURNING
+ * counts only rows ON CONFLICT let in); a dry run writes nothing and returns 0.
+ * Each statement goes through retryTransientDb, so a transient Neon error is
+ * retried and any Neon error comes out labelled `db`. A retry after a lost
+ * response finds its rows already stored, so the count can read low, never the
+ * data.
+ */
+export async function storeRows(sql, target, rows, { dryRun }) {
+  if (dryRun || rows.length === 0) return 0;
+  let stored = 0;
+  for (const part of chunk(rows, WRITE_BATCH)) {
+    const { text, values } = insertStatement(target, part);
+    const result = await retryTransientDb(() => sql.query(text, values));
+    stored += Array.isArray(result)
+      ? result.length
+      : (result.rows?.length ?? 0);
+  }
+  return stored;
 }
 
 // ── Run loops ──────────────────────────────────────────────
@@ -827,6 +907,38 @@ export function formatRunSummary(summary) {
     lines.push(`not run (${notRun.length}): ${notRun.join(', ')}`);
   }
   return lines;
+}
+
+/**
+ * summarizeRun and formatRunSummary for a run whose day worker fans out over
+ * items (runDayItems) and returns `emptyItems`, how many of its items UW sent
+ * no rows for. `{ lines, exitCode }`: the shared summary's lines and exit code,
+ * plus one line naming the dates that were partly empty. `itemCount` is how
+ * many items a day fans out over, `itemLabel` what they are called ('tickers',
+ * 'sources') and `rowNoun` what UW sends for each ('bars', 'rows').
+ *
+ * A partly empty day is a done day (UW answered, the rest was written) where
+ * some, not all, of the items had no rows: its totals look healthy while one
+ * ticker or source has no rows. It is a hole to look at, not a failure, so it
+ * does not change the exit code, like a wholly empty day, which the shared
+ * summary already lists as an empty day.
+ */
+export function summarizeItemRun(run, itemCount, itemLabel, rowNoun) {
+  const summary = summarizeRun(run);
+  const lines = formatRunSummary(summary);
+  const partly = run.days.filter(
+    (day) => day.ok && day.value.fetched > 0 && day.value.emptyItems > 0,
+  );
+  if (partly.length > 0) {
+    const dates = partly
+      .map((day) => `${day.date} (${day.value.emptyItems} empty)`)
+      .join(', ');
+    lines.push(
+      `partly empty days (UW had no ${rowNoun} for some of the ${itemCount} ` +
+        `${itemLabel}; a hole to look at, not a failure): ${dates}`,
+    );
+  }
+  return { lines, exitCode: summary.exitCode };
 }
 
 /** "fetched 405  stored 390" plus any extra fields, each as "name value". */

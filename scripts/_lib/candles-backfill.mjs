@@ -11,8 +11,8 @@
  *     (NDX ÷ QQQ) for a date, ratioLines prints the table for review;
  *   - the bar mapping, mirroring api/cron/fetch-etf-candles-1m.ts and
  *     api/cron/fetch-spx-candles-1m.ts: toEtfRows, toIndexRows;
- *   - storeCandleRows: ≤500-row INSERT ... ON CONFLICT DO NOTHING on the
- *     table's real unique key;
+ *   - ETF_TARGET and INDEX_TARGET: each table's real unique key, for
+ *     backfill-cli's storeRows (≤500-row INSERT ... ON CONFLICT DO NOTHING);
  *   - the two day workers, processEtfDay and processIndexDay, which fan out
  *     over tickers or symbols with runDayItems.
  *
@@ -26,17 +26,14 @@
  */
 
 import { isTradingDay } from '../../src/data/marketHours.ts';
-import { getETDateStr, getETToday } from '../../src/utils/timezone.ts';
+import { getETDateStr } from '../../src/utils/timezone.ts';
 import {
   DayFailure,
-  chunk,
   classifyFailure,
-  formatRunSummary,
-  parseRangeArgs,
-  retryTransientDb,
+  planRangeDays,
   runDayItems,
-  selectDates,
-  summarizeRun,
+  storeRows,
+  summarizeItemRun,
 } from './backfill-cli.mjs';
 import {
   SCHWAB_BASE,
@@ -57,9 +54,6 @@ export const UW_USER_AGENT = 'strike-calculator-candles-backfill (node)';
  * limit is far lower: the old etf script sent none and read a 500-bar slice.
  */
 export const UW_CANDLE_LIMIT = 2500;
-
-/** Rows per INSERT (the ≤500 batching rule). */
-export const WRITE_BATCH = 500;
 
 /** The tickers etf_candles_1m holds: what fetch-etf-candles-1m.ts covers. */
 export const ETF_TICKERS = ['SPY', 'QQQ'];
@@ -92,25 +86,11 @@ const DAY_MS = 86_400_000;
  * --limit keeps the first N trading days of the range, in order.
  */
 export function planCandleDays(argv) {
-  const args = parseRangeArgs(argv);
-  if (args.from == null) {
-    throw new Error(
-      '--from and --to are required: the candle backfills have no default ' +
-        'window (the old 30-day one could not reach a gap)',
-    );
-  }
-  const etToday = getETToday();
-  if (args.to >= etToday) {
-    throw new Error(
-      `--to ${args.to} is not a finished day (today is ${etToday} ET): ` +
-        'the live crons fill today',
-    );
-  }
-  const { dates } = selectDates(args);
-  return {
-    args,
-    dates: args.limit == null ? dates : dates.slice(0, args.limit),
-  };
+  return planRangeDays(
+    argv,
+    'the candle backfills have no default window ' +
+      '(the old 30-day one could not reach a gap)',
+  );
 }
 
 // ── Schwab daily closes and the per-day ratio ──────────────
@@ -415,6 +395,9 @@ export function toIndexRows(symbol, date, bars, ratio) {
 }
 
 // ── Writes ─────────────────────────────────────────────────
+// storeRows (backfill-cli.mjs) writes DO NOTHING like the live crons: a closed
+// bar doesn't restate, so the 07-22 partial day keeps the rows the live cron
+// wrote that morning.
 
 /** Where etf rows go: etf_candles_1m, UNIQUE (ticker, timestamp) (migration #94). */
 export const ETF_TARGET = {
@@ -441,48 +424,6 @@ export const INDEX_TARGET = {
   ],
   conflictTarget: '(symbol, date, timestamp)',
 };
-
-/**
- * One multi-row INSERT for `rows`. The table, columns and conflict target are
- * the constants above, never data; every value is a bound parameter. DO
- * NOTHING like the live crons: a closed bar doesn't restate, so the 07-22
- * partial day keeps the rows the live cron wrote that morning.
- */
-function insertStatement({ table, columns, conflictTarget }, rows) {
-  const values = [];
-  const groups = rows.map((row) => {
-    const params = columns.map((column) => {
-      values.push(row[column] ?? null);
-      return `$${values.length}`;
-    });
-    return `(${params.join(', ')})`;
-  });
-  const text =
-    `INSERT INTO ${table} (${columns.join(', ')}) VALUES ${groups.join(', ')} ` +
-    `ON CONFLICT ${conflictTarget} DO NOTHING RETURNING id`;
-  return { text, values };
-}
-
-/**
- * Write `rows` in statements of WRITE_BATCH rows. Returns how many rows the
- * database took (RETURNING counts only rows ON CONFLICT let in); a dry run
- * writes nothing and returns 0. A transient Neon error is retried
- * (retryTransientDb); any Neon error comes out labelled `db`. A retry after a
- * lost response finds its rows already stored, so the count can read low,
- * never the data.
- */
-export async function storeCandleRows(sql, target, rows, { dryRun }) {
-  if (dryRun || rows.length === 0) return 0;
-  let stored = 0;
-  for (const part of chunk(rows, WRITE_BATCH)) {
-    const { text, values } = insertStatement(target, part);
-    const result = await retryTransientDb(() => sql.query(text, values));
-    stored += Array.isArray(result)
-      ? result.length
-      : (result.rows?.length ?? 0);
-  }
-  return stored;
-}
 
 // ── UW ─────────────────────────────────────────────────────
 
@@ -544,7 +485,7 @@ async function ingestEtfTicker(ticker, date, ctx) {
   const { bars, outcome } = await barsOf(ctx, ticker, date);
   if (outcome) return outcome;
   const { rows, dropped } = toEtfRows(ticker, date, bars);
-  const stored = await storeCandleRows(ctx.sql, ETF_TARGET, rows, ctx);
+  const stored = await storeRows(ctx.sql, ETF_TARGET, rows, ctx);
   return {
     fetched: bars.length,
     stored,
@@ -583,7 +524,7 @@ async function ingestIndex(symbol, date, ctx) {
   const { bars, outcome } = await barsOf(ctx, etf, date);
   if (outcome) return outcome;
   const { rows, dropped } = toIndexRows(symbol, date, bars, ratio);
-  const stored = await storeCandleRows(ctx.sql, INDEX_TARGET, rows, ctx);
+  const stored = await storeRows(ctx.sql, INDEX_TARGET, rows, ctx);
   return {
     fetched: bars.length,
     stored,
@@ -614,29 +555,10 @@ export function processIndexDay(date, ctx) {
 /**
  * The end-of-run report for a runDays result of processEtfDay or
  * processIndexDay: backfill-cli's summary lines and exit code, plus one line
- * naming the dates that were partly empty. `itemCount` is how many items a day
- * fans out over and `itemLabel` what they are called ('tickers' or 'symbols').
- *
- * A partly empty day is a done day (UW answered, the rest was written) where
- * some, not all, of the items had no bars: its totals look healthy while one
- * ticker or symbol has no rows. It is a hole to look at, not a failure, so it
- * does not change the exit code, like a wholly empty day, which the shared
- * summary already lists as an empty day.
+ * naming the days where some, not all, of the tickers or symbols had no bars
+ * (summarizeItemRun). `itemCount` is how many items a day fans out over and
+ * `itemLabel` what they are called ('tickers' or 'symbols').
  */
 export function summarizeCandleRun(run, itemCount, itemLabel) {
-  const summary = summarizeRun(run);
-  const lines = formatRunSummary(summary);
-  const partly = run.days.filter(
-    (day) => day.ok && day.value.fetched > 0 && day.value.emptyItems > 0,
-  );
-  if (partly.length > 0) {
-    const dates = partly
-      .map((day) => `${day.date} (${day.value.emptyItems} empty)`)
-      .join(', ');
-    lines.push(
-      `partly empty days (UW had no bars for some of the ${itemCount} ` +
-        `${itemLabel}; a hole to look at, not a failure): ${dates}`,
-    );
-  }
-  return { lines, exitCode: summary.exitCode };
+  return summarizeItemRun(run, itemCount, itemLabel, 'bars');
 }

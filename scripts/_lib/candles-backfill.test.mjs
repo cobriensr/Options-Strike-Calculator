@@ -5,7 +5,13 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { classifyFailure, runDays, summarizeRun } from './backfill-cli.mjs';
+import {
+  WRITE_BATCH,
+  classifyFailure,
+  runDays,
+  storeRows,
+  summarizeRun,
+} from './backfill-cli.mjs';
 import {
   ETF_TARGET,
   ETF_TICKERS,
@@ -13,7 +19,6 @@ import {
   INDEXES,
   UW_CANDLE_LIMIT,
   UW_USER_AGENT,
-  WRITE_BATCH,
   fetchSchwabDailyCloses,
   fetchUwCandles,
   loadSchwabCloses,
@@ -22,7 +27,6 @@ import {
   processIndexDay,
   ratioFor,
   ratioLines,
-  storeCandleRows,
   summarizeCandleRun,
   toEtfRows,
   toIndexRows,
@@ -837,7 +841,7 @@ describe('toIndexRows', () => {
 
 // ── Writes ─────────────────────────────────────────────────
 
-describe('storeCandleRows', () => {
+describe('storeRows', () => {
   function etfRows(n) {
     return toEtfRows('SPY', D1, bars(n)).rows;
   }
@@ -845,7 +849,7 @@ describe('storeCandleRows', () => {
   it('writes ON CONFLICT DO NOTHING on the real unique key, one statement for a small day', async () => {
     const sql = fakeSql();
 
-    const stored = await storeCandleRows(sql, ETF_TARGET, etfRows(3), {
+    const stored = await storeRows(sql, ETF_TARGET, etfRows(3), {
       dryRun: false,
     });
 
@@ -875,7 +879,7 @@ describe('storeCandleRows', () => {
     const sql = fakeSql({ columns: 11 });
     const { rows } = toIndexRows('NDX', D1, bars(2), 41);
 
-    await storeCandleRows(sql, INDEX_TARGET, rows, { dryRun: false });
+    await storeRows(sql, INDEX_TARGET, rows, { dryRun: false });
 
     const [text, values] = sql.query.mock.calls[0];
     expect(text).toContain('INSERT INTO index_candles_1m');
@@ -894,7 +898,7 @@ describe('storeCandleRows', () => {
       timestamp: new Date(start + i * 60_000).toISOString(),
     }));
 
-    const stored = await storeCandleRows(sql, ETF_TARGET, rows, {
+    const stored = await storeRows(sql, ETF_TARGET, rows, {
       dryRun: false,
     });
 
@@ -908,7 +912,7 @@ describe('storeCandleRows', () => {
 
   it('counts only the rows ON CONFLICT let in: stored reads below kept on a partly filled day', async () => {
     const sql = fakeSql({ conflicts: 2 });
-    const stored = await storeCandleRows(sql, ETF_TARGET, etfRows(5), {
+    const stored = await storeRows(sql, ETF_TARGET, etfRows(5), {
       dryRun: false,
     });
     expect(stored).toBe(3);
@@ -918,7 +922,7 @@ describe('storeCandleRows', () => {
     const sql = {
       query: vi.fn(async () => ({ rows: [{ id: 1 }, { id: 2 }] })),
     };
-    const stored = await storeCandleRows(sql, ETF_TARGET, etfRows(2), {
+    const stored = await storeRows(sql, ETF_TARGET, etfRows(2), {
       dryRun: false,
     });
     expect(stored).toBe(2);
@@ -926,12 +930,10 @@ describe('storeCandleRows', () => {
 
   it('writes nothing on a dry run, and nothing for an empty day', async () => {
     const sql = fakeSql();
-    expect(
-      await storeCandleRows(sql, ETF_TARGET, etfRows(4), { dryRun: true }),
-    ).toBe(0);
-    expect(await storeCandleRows(sql, ETF_TARGET, [], { dryRun: false })).toBe(
+    expect(await storeRows(sql, ETF_TARGET, etfRows(4), { dryRun: true })).toBe(
       0,
     );
+    expect(await storeRows(sql, ETF_TARGET, [], { dryRun: false })).toBe(0);
     expect(sql.query).not.toHaveBeenCalled();
   });
 
@@ -942,7 +944,7 @@ describe('storeCandleRows', () => {
       }),
     };
 
-    const err = await storeCandleRows(sql, ETF_TARGET, etfRows(2), {
+    const err = await storeRows(sql, ETF_TARGET, etfRows(2), {
       dryRun: false,
     }).catch((e) => e);
 
