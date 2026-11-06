@@ -25,9 +25,11 @@ const { fetchAndCacheOptionIntraday, deriveMid } =
 
 // UW premium_*_side fields are dollars INCLUDING the x100 contract
 // multiplier: premium = price x contracts x 100. Verified 2026-11-05
-// against cached option_intraday_nbbo rows (premium_side / volume_side /
-// avg_price = 100.0 on every cached date, May-Nov 2026). Fixtures below
-// use that real shape: ask 104 contracts at $30.20 -> 314,080.
+// against cached option_intraday_nbbo rows (median premium_side /
+// volume_side / avg_price ≈ 100.0 per cached date, May-Nov 2026). Fixtures
+// below are modeled on that shape: ask 104 contracts at $30.20 -> 314,080
+// (the OpenAPI example's 104 contracts at ~$30.19 rescaled by x100, not a
+// cached row).
 describe('deriveMid', () => {
   it('returns per-share synthetic mid when both sides have volume', () => {
     // ask: 104 contracts at $30.20 -> 30.20 * 104 * 100 = 314,080
@@ -47,8 +49,11 @@ describe('deriveMid', () => {
   });
 
   it('agrees with (high+low)/2 to within a few percent when the range brackets the sides', () => {
-    const high = 30.4;
-    const low = 29.8;
+    // Asymmetric on purpose: the range brackets both sides (bid 30.00 >= low,
+    // ask 30.20 <= high) but its midpoint (30.20) differs from the sides'
+    // midpoint (30.10), so the tolerance below is a real comparison.
+    const high = 30.5;
+    const low = 29.9;
     const mid = deriveMid({
       premiumAskSide: 314_080,
       premiumBidSide: 150_000,
@@ -61,6 +66,8 @@ describe('deriveMid', () => {
     });
     const rangeMid = (high + low) / 2;
     expect(mid).not.toBeNull();
+    // Guard against fixture drift back to a symmetric range (vacuous check).
+    expect(Math.abs(mid! - rangeMid)).toBeGreaterThan(0.05);
     // The old bug returned 100x rangeMid; the corrected value is within 2%.
     expect(Math.abs(mid! / rangeMid - 1)).toBeLessThan(0.02);
   });

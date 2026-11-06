@@ -92,11 +92,16 @@ export function deriveMid(input: {
     // UW premium_*_side is dollars INCLUDING the x100 contract multiplier:
     // premium = price x contracts x 100. So premium / (volume x 100) is the
     // per-share average price. Verified 2026-11-05 against cached
-    // option_intraday_nbbo rows: premium_side / volume_side / avg_price was
-    // 100.0 on every cached date, May-Nov 2026 (on 2026-10-27 branch 1 priced
-    // 44.9% of minutes and its mid / ((high+low)/2) had a median of 100.0
-    // before this fix). Dividing by volume alone gives a per-contract dollar
-    // value, 100x the per-share price the fallbacks and callers use.
+    // option_intraday_nbbo rows: the median of premium_side / volume_side /
+    // avg_price was ≈ 100.0 per cached date, May-Nov 2026 (it is a median
+    // because a side-only average over an all-sides average cannot be exactly
+    // 100.0 on every row). On 2026-10-27 branch 1 priced 44.9% of minutes and
+    // its mid / ((high+low)/2) had a median of 100.0 before this fix.
+    // Dividing by volume alone gives a per-contract dollar value, 100x the
+    // per-share price the fallbacks and callers use. UW's OpenAPI "Option
+    // Contract Minute Ticks" example (docs/unusual-whales-openapi.yaml:8839-
+    // 8853: premium_ask_side '3138.00' for 104 contracts at avg_price 30.186)
+    // omits the x100 multiplier. Live data contradicts it, and live data wins.
     const avgAsk = premiumAskSide / (volumeAskSide * UW_CONTRACT_MULTIPLIER);
     const avgBid = premiumBidSide / (volumeBidSide * UW_CONTRACT_MULTIPLIER);
     return (avgAsk + avgBid) / 2;
