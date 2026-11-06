@@ -24,6 +24,8 @@ const NAMES_BY_TYPE: Record<EconomicEventType, readonly string[]> = {
     'Philadelphia Fed manufacturing survey',
     'Philadelphia Fed Business Outlook Survey',
     'Kansas City Fed Survey',
+    "Atlanta Fed's Business Inflation Expectations survey",
+    'Dallas Fed Texas Service Sector Outlook Survey',
     'Empire State Manufacturing Survey',
     'Empire State manufacturing survey',
     'ISM manufacturing',
@@ -48,6 +50,7 @@ const NAMES_BY_TYPE: Record<EconomicEventType, readonly string[]> = {
     'Atlantic Council event with Federal Reserve Vice Chair Michelle Bowman',
     'Economic Club of Washington, DC event with Federal Reserve Bank of Richmond President Thomas Barkin',
     'Philadelphia Fed President Anna Paulson speech',
+    'Philadelphia Fed President Paulson speaks on survey',
     'Boston Fed President Susan Collins, Richmond Fed President Tom Barkin and Philadelphia Fed President Anna Paulson on a panel about rural economy',
     'New York Fed President John Williams speaks',
   ],
@@ -135,6 +138,33 @@ describe('classifyEconomicEvent', () => {
     ).toBe('PMI');
   });
 
+  // The possessive ("Atlanta Fed's ...") is the same survey, curly apostrophe
+  // included.
+  it.each([
+    "Atlanta Fed's Business Inflation Expectations survey",
+    'Atlanta Fed’s Business Inflation Expectations survey',
+  ])('possessive district survey is PMI: %s', (name) => {
+    expect(classifyEconomicEvent(name)).toBe('PMI');
+  });
+
+  // Four words may sit between "Fed" and "survey", so a short speech title
+  // would pass the gap. A speaker word keeps it FED.
+  it.each([
+    'President',
+    'Governor',
+    'Chair',
+    'Chairman',
+    'Chairwoman',
+    'Vice Chair',
+    'speaks',
+    'speech',
+    'remarks',
+    'testifies',
+    'panel',
+  ])('a title with the speaker word "%s" is never a survey', (word) => {
+    expect(classifyEconomicEvent(`Richmond Fed ${word} survey`)).toBe('FED');
+  });
+
   // UW calls the decision "U.S. interest rate decision", but the phrase is
   // not fixed, so any "rate decision" is the decision day.
   it.each(['Fed rate decision', 'FOMC rate decision'])(
@@ -143,4 +173,36 @@ describe('classifyEconomicEvent', () => {
       expect(classifyEconomicEvent(name)).toBe('FOMC');
     },
   );
+
+  // build-features ORs FOMC rows into is_fomc, so a foreign central bank's
+  // decision typed FOMC would flip the ML feature on a day the Fed is silent.
+  it.each([
+    'ECB interest rate decision',
+    'Bank of Canada rate decision',
+    'BoE interest rate decision',
+    'BoJ interest rate decision',
+    'Bank of England interest rate decision',
+    'Bank of Japan rate decision',
+    'RBA interest rate decision',
+    'RBNZ interest rate decision',
+    'SNB interest rate decision',
+    'PBOC loan prime rate decision',
+    'Riksbank interest rate decision',
+    'Norges Bank interest rate decision',
+  ])('foreign central bank decision is OTHER: %s', (name) => {
+    expect(classifyEconomicEvent(name)).toBe('OTHER');
+  });
+
+  // The exclusion covers every FOMC rule, not only the rate-decision one.
+  it.each([
+    'ECB economic projections',
+    'BoE economic projections',
+    'ECB President Lagarde press conference',
+  ])('foreign central bank release is not FOMC: %s', (name) => {
+    expect(classifyEconomicEvent(name)).not.toBe('FOMC');
+  });
+
+  it('keeps the U.S. decision FOMC beside the foreign ones', () => {
+    expect(classifyEconomicEvent('U.S. interest rate decision')).toBe('FOMC');
+  });
 });

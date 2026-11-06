@@ -61,7 +61,7 @@ made the same day.
    - 2026-05-06: 66 rows with `is_event_day = true`, `event_names = {FOMC}`;
    - `training_features.is_event_day` carries the same error: 04-29 false,
      05-06 true.
-9. **`gamma_setup_fires.is_fomc_day` is always false.**
+9. **`ws_gamma_setup_fires.is_fomc_day` is always false.**
    - `loadDayContext` takes `opts.isFomcDay`, but neither caller passes it:
      `api/cron/detect-gamma-setups.ts:68` and `api/gamma-setups/active.ts:170`.
    - So the "FOMC DAY" chip in `DayConfidenceBanner.tsx` never shows.
@@ -75,24 +75,31 @@ made the same day.
 
 The first matching rule wins:
 
-| # | Type | Rule (by event name) | Examples from the inventory |
-|---|---|---|---|
-| 1 | `FOMC` | any "rate decision" (`\brate decision\b`), FOMC statement, Fed/FOMC press conference, economic projections | "U.S. interest rate decision", "FOMC interest-rate decision", "Fed rate decision", "FOMC rate decision", "Fed Chair Powell press conference", "Fed Chairman Warsh press conference", "Federal Reserve economic projections" |
-| 2 | `PMI` | a district name + "Fed" + at most three whole words + "survey" or "index"; or the Empire State survey; or ISM | "Philadelphia Fed manufacturing survey", "Philadelphia Fed Business Outlook Survey", "Kansas City Fed Survey", "Empire State Manufacturing Survey", "ISM manufacturing", "ISM services" |
-| 3 | `FED` (see Q1) | any other Fed mention: word `Fed`, `FRB`, `Federal Reserve`, `FOMC`, `Federal Open Market Committee`, `Beige Book` | speeches, testimony, panels, "Minutes of Fed's June FOMC meeting", "Federal Open Market Committee meeting minutes", "Fed Beige Book", "FRB Chicago President … speaks" |
-| 4–9 | `CPI`, `PCE`, `JOBS`, `GDP`, `PMI`, `RETAIL` | today's rules, unchanged | |
-| 10 | `SENTIMENT` | today's rule, plus "Michigan … Consumer" | "U. Michigan Prelim Consumer Survey" |
-| 11 | `OTHER` | everything else | "Monthly U.S. federal budget", PPI, claims |
+| #   | Type                                         | Rule (by event name)                                                                                                                                        | Examples from the inventory                                                                                                                                                                                                 |
+| --- | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `FOMC`                                       | any "rate decision" (`\brate decision\b`), FOMC statement, Fed/FOMC press conference, economic projections                                                  | "U.S. interest rate decision", "FOMC interest-rate decision", "Fed rate decision", "FOMC rate decision", "Fed Chair Powell press conference", "Fed Chairman Warsh press conference", "Federal Reserve economic projections" |
+| 2   | `PMI`                                        | a district name + "Fed" or "Fed's" + at most four whole words + "survey" or "index", unless the name has a speaker word; or the Empire State survey; or ISM | "Philadelphia Fed manufacturing survey", "Philadelphia Fed Business Outlook Survey", "Kansas City Fed Survey", "Empire State Manufacturing Survey", "ISM manufacturing", "ISM services"                                     |
+| 3   | `FED` (see Q1)                               | any other Fed mention: word `Fed`, `FRB`, `Federal Reserve`, `FOMC`, `Federal Open Market Committee`, `Beige Book`                                          | speeches, testimony, panels, "Minutes of Fed's June FOMC meeting", "Federal Open Market Committee meeting minutes", "Fed Beige Book", "FRB Chicago President … speaks"                                                      |
+| 4–9 | `CPI`, `PCE`, `JOBS`, `GDP`, `PMI`, `RETAIL` | today's rules, unchanged                                                                                                                                    |                                                                                                                                                                                                                             |
+| 10  | `SENTIMENT`                                  | today's rule, plus "Michigan … Consumer"                                                                                                                    | "U. Michigan Prelim Consumer Survey"                                                                                                                                                                                        |
+| 11  | `OTHER`                                      | everything else                                                                                                                                             | "Monthly U.S. federal budget", PPI, claims                                                                                                                                                                                  |
 
 - `Fed` must match as a whole word, so "federal" never matches it.
 - Rules 1 and 2 must run before rule 3.
-- Rule 1 takes any "rate decision", not only "interest rate decision". UW's
-  calendar is US-only, so a foreign central bank's "rate decision" isn't a
-  live risk.
-- Rule 2 bounds the gap by words, not characters. "Philadelphia Fed President
+- Rule 1 takes any "rate decision", not only "interest rate decision". A
+  foreign central bank's decision is excluded from every rule-1 pattern
+  (names that mention ECB, BoE, BoJ, Bank of England, Bank of Japan, Bank of
+  Canada, RBA, RBNZ, SNB, PBOC, Riksbank or Norges Bank), so "ECB interest
+  rate decision" is `OTHER`. Why: `is_fomc` ORs in `FOMC` rows, so a false
+  `FOMC` flips the ML feature on a day the Fed is silent.
+- Rule 2 bounds the gap by words, not characters, and a name with a speaker
+  word (President, Governor, Chair, Chairman, Chairwoman, speaks, speech,
+  remarks, testifies, panel) never matches it. "Philadelphia Fed President
   Anna Paulson speaks on Survey of Professional Forecasters" has five words
-  between "Fed" and "Survey", so it stays `FED`; "Dallas Fed Texas
-  Manufacturing Outlook Survey" has three, so it is `PMI`.
+  between "Fed" and "Survey", and "Philadelphia Fed President Paulson speaks
+  on survey" has four, so both stay `FED` (the second only because of the
+  speaker word); "Dallas Fed Texas Service Sector Outlook Survey" has four, so
+  it is `PMI`, as is "Atlanta Fed's Business Inflation Expectations survey".
 - The classifier moves to a pure module, `api/_lib/economic-event-type.ts`
   (`classifyEconomicEvent(name: string): EconomicEventType`). It has two
   consumers: the cron and the backfill script.
@@ -108,7 +115,7 @@ The first matching rule wins:
   - the SEP set;
   - `isFomcDecisionDay(date: string): boolean`;
   - `isSepMeeting(date: string): boolean`.
-  `api/events.ts` imports it.
+    `api/events.ts` imports it.
 - **Drift guard.** A test in the module's suite parses `FOMC_DATES` in
   `ml/src/options_features/calendar.py` and the FOMC rows of
   `ml/src/setups_backtest/econ_calendar.csv`.
@@ -143,7 +150,7 @@ The first matching rule wins:
     from each bar's date;
   - this turns on the dead "FOMC DAY" chip and starts storing true values.
 - **Lottery MACRO badge** (`lottery-finder.ts`, `event_type IN
-  ('FOMC','CPI','PCE','JOBS')`):
+('FOMC','CPI','PCE','JOBS')`):
   - no code change;
   - it will now fire on real decision days only (see Q2).
 - **Cron hardening** (`fetch-economic-calendar.ts`):
@@ -186,39 +193,55 @@ work (A) is pushed; rebase onto it first, since both touch `api/events.ts`.
      the cron hardening).
    - Modify: `api/__tests__/fetch-economic-calendar.test.ts`. Flip the
      "FOMC Meeting Minutes" case, and add the invalid-time case.
+   - The analyze formatter change (`api/_lib/analyze-context-formatters.ts`,
+     `api/__tests__/analyze-context.test.ts`) landed here, in phase 2, not in
+     phase 3.
 3. **Consumers** (~1.5 h)
    - Modify: `api/_lib/build-features-phase2.ts`,
-     `api/__tests__/build-features-phase2.test.ts`,
-     `api/_lib/analyze-context-formatters.ts`,
-     `api/__tests__/analyze-context.test.ts`.
+     `api/__tests__/build-features-phase2.test.ts`.
    - Modify `api/__tests__/build-features.test.ts` only if it pins the old
      priority.
 4. **Gamma detector wiring** (~45 min)
-   - Modify: `api/cron/detect-gamma-setups.ts`, `api/gamma-setups/active.ts`,
-     and their tests.
+   - The callers (`api/cron/detect-gamma-setups.ts`,
+     `api/gamma-setups/active.ts`): no change needed; `loadDayContext` derives
+     the flag.
+   - Modify: `api/_lib/gamma-detector.ts`, `api/__tests__/gamma-detector.test.ts`,
+     `scripts/backfill-gamma-setup-fires.ts`.
 5. **Backfill script** (~1.5 h)
-   - Create: `scripts/backfill-economic-event-labels.ts` and its test. Follow
-     the pattern of `scripts/backfill-gamma-setup-fires.ts` and how it's run.
+   - Created: `scripts/backfill-economic-event-labels.ts` (the thin CLI),
+     `scripts/_lib/econ-label-backfill.ts` (the logic),
+     `scripts/_lib/econ-label-backfill.test.ts` (plan and arguments) and
+     `scripts/_lib/econ-label-backfill-pglite.test.ts` (real SQL). Follows
+     the pattern of `scripts/backfill-anchor-legs.ts` and
+     `scripts/_lib/anchor-backfill.ts`.
    - Dry run by default. Prints each table's before and after counts and every
      changed `economic_events` name.
-   - `--apply` runs all writes in one `sql.transaction()`. Each table is one
-     batched `unnest` statement (R5).
+   - `--apply` computes the plan up front and runs all writes in one
+     `sql.transaction()`. The `unnest` writes go in chunks of 500 rows (R5).
+     Every UPDATE is guarded by the value it changes, so a second `--apply`
+     matches zero rows and opens no transaction.
    - Steps:
      1. `economic_events.event_type`: reclassify every row; update the
-        changed ones.
+        changed ones, keyed on the primary key `id` (the unique key
+        `(date, event_name, event_time)` can hold a NULL time, which never
+        `=` itself).
      2. `training_features`: for every row, recompute `is_fomc`,
         `event_type` and `days_to_next_event` from the corrected rows plus the
         schedule.
         - A direct `UPDATE`, not the build-features upsert. The upsert's
           `COALESCE` can't clear stale values.
         - `event_count` doesn't change.
+        - `days_to_next_event` is the gap to the next `economic_events` date
+          after the row's own, so a row dated before the first event row
+          (2026-03-25) gets the gap to that date. The dry run prints how many
+          rows that is.
      3. `market_snapshots` and `training_features.is_event_day`. Use
         conditional updates guarded by the current values, so a second run
         changes nothing.
         - 2026-04-29 → `is_event_day = true`, `event_names = {FOMC}`.
         - 2026-05-06 → remove `FOMC` from `event_names`. Then set
           `is_event_day = cardinality(event_names) > 0`.
-     4. `gamma_setup_fires.is_fomc_day = true` for fires on decision days.
+     4. `ws_gamma_setup_fires.is_fomc_day = true` for fires on decision days.
 6. **Store the whole UW window** (pending the owner; see Q3)
    - Keep the current and next week, not just today.
    - Write with `ON CONFLICT … DO UPDATE` of forecast, previous, type and
@@ -230,10 +253,16 @@ work (A) is pushed; rebase onto it first, since both touch `api/events.ts`.
 
 **Production backfill** runs after the 15:00 CT close. It also runs after that
 day's `build-features` post-close run (`45 20,21 * * 1-5` UTC; 15:45 CT in
-winter), so that day's row is covered.
+winter), so that day's row is covered. Deploy first. Do not re-run
+build-features with `?backfill=true` or `?date=` before step 1 of the script
+has reclassified `economic_events`: rows stored under the old classifier still
+carry `FOMC` on speech days, and build-features ORs `FOMC` rows into
+`is_fomc`.
 
-1. Dry run first; the controller reads the diff.
-2. Then `--apply`.
+1. Dry run first (`npx tsx scripts/backfill-economic-event-labels.ts`); the
+   controller reads the diff.
+2. Then `--apply`
+   (`npx tsx scripts/backfill-economic-event-labels.ts --apply`).
 3. Then re-run the read-only inventory and confirm the expected counts:
    - `is_fomc` true on exactly the decision days in range;
    - no `FOMC` row whose name fails rule 1.
@@ -247,12 +276,13 @@ winter), so that day's row is covered.
     `is_event_day`;
   - `market_snapshots` 2026-04-29 and 2026-05-06: `is_event_day` and
     `event_names`;
-  - `gamma_setup_fires.is_fomc_day`.
+  - `ws_gamma_setup_fires.is_fomc_day`.
 - External: none new. The Fed's calendar page is the source for the schedule.
 
 ## Open questions
 
 **Q1. Fed speeches, minutes and the Beige Book: their own type, or OTHER?**
+
 - The owner first approved OTHER.
 - The catch: analyze Rule 12 (`analyze-prompts.ts:726`) hard-exits on "Fed
   speeches after 1:00 PM ET". As OTHER they would drop from `[HIGH]` to
@@ -262,6 +292,7 @@ winter), so that day's row is covered.
   exactly as it does today. They leave `is_fomc` and the MACRO badge.
 
 **Q2. The MACRO badge's lift figures were measured on the mislabelled data.**
+
 - The figures: 72–168 h, 1.19× / 1.28×, N=57,533, in
   `LotteryFinderTickerGroup.tsx:34-41`.
 - With nearly every day carrying a "FOMC" speech, the hours to the next macro
@@ -270,11 +301,13 @@ winter), so that day's row is covered.
   update or remove the figures.
 
 **Q3. Store the whole UW window in the cron?**
+
 - **Default:** yes (phase 6), since it fixes a diagnosed train/serve skew.
 - It changes what the MACRO badge and live `days_to_next_event` see, so it
   waits for the owner's OK.
 
 **Q4. The 2026-07-22 → 09-07 gap: answered (2026-11-06, read-only).**
+
 - The gap isn't specific to this cron. Between 07-17 and 09-11:
   - `spot_exposures` has rows on 9 days and `dark_pool_prints` on 8;
   - `flow_data` has 32 and `training_features` 40.

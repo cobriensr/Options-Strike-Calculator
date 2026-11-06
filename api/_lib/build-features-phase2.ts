@@ -218,19 +218,25 @@ export async function addVvixPercentileFeatures(
   }
 }
 
-// Which event type labels a day when several are present, highest first.
-const EVENT_TYPE_PRIORITY: readonly EconomicEventType[] = [
-  'FOMC',
-  'CPI',
-  'PCE',
-  'JOBS',
-  'GDP',
-  'FED',
-  'PMI',
-  'RETAIL',
-  'SENTIMENT',
-  'OTHER',
-];
+// Which event type labels a day when several are present: the lowest rank
+// wins. A Record, not a list, so a new `EconomicEventType` member fails
+// type-check here until it is ranked.
+const EVENT_TYPE_RANK: Record<EconomicEventType, number> = {
+  FOMC: 0,
+  CPI: 1,
+  PCE: 2,
+  JOBS: 3,
+  GDP: 4,
+  FED: 5,
+  PMI: 6,
+  RETAIL: 7,
+  SENTIMENT: 8,
+  OTHER: 9,
+};
+
+const EVENT_TYPES_BY_RANK = (
+  Object.keys(EVENT_TYPE_RANK) as EconomicEventType[]
+).sort((a, b) => EVENT_TYPE_RANK[a] - EVENT_TYPE_RANK[b]);
 
 /**
  * The one rule behind a day's `is_fomc` and `event_type`, given the
@@ -242,7 +248,7 @@ const EVENT_TYPE_PRIORITY: readonly EconomicEventType[] = [
  *   gap), OR a row is typed `FOMC`, which the classifier gives only to
  *   decision-type releases, so it covers an unscheduled (emergency) decision.
  * - `eventType`: `FOMC` when `isFomc`, else the first present type in
- *   `EVENT_TYPE_PRIORITY`, else null (no rows, or none of the known types).
+ *   `EVENT_TYPE_RANK`, else null (no rows, or none of the known types).
  */
 export function summarizeDayEvents(
   dateStr: string,
@@ -252,7 +258,7 @@ export function summarizeDayEvents(
   if (isFomc) return { isFomc, eventType: 'FOMC' };
   return {
     isFomc,
-    eventType: EVENT_TYPE_PRIORITY.find((p) => types.has(p)) ?? null,
+    eventType: EVENT_TYPES_BY_RANK.find((p) => types.has(p)) ?? null,
   };
 }
 
