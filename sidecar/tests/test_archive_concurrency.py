@@ -31,6 +31,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import archive_query
 from health import HealthHandler
 
+SHARED_SECRET = "test-shared-secret"
+VALID_BEARER = {"Authorization": f"Bearer {SHARED_SECRET}"}
+
+
+@pytest.fixture(autouse=True)
+def _shared_secret_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The archive routes need the bearer secret configured."""
+    monkeypatch.setenv("TAKEIT_SIDECAR_SHARED_SECRET", SHARED_SECRET)
+
+
 # ---------------------------------------------------------------------------
 # Semaphore-layer tests (archive_query.archive_query_slot)
 # ---------------------------------------------------------------------------
@@ -144,9 +154,12 @@ def test_slot_bounds_concurrency_under_threads() -> None:
 class _FakeRequest:
     """Minimal request stub BaseHTTPRequestHandler expects."""
 
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, headers: dict[str, str]) -> None:
         self.path = path
-        self.raw = f"GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode()
+        header_lines = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
+        self.raw = (
+            f"GET {path} HTTP/1.1\r\nHost: localhost\r\n{header_lines}\r\n"
+        ).encode("latin-1")
 
     def makefile(self, mode: str, *_args: object) -> io.BytesIO:
         if "r" in mode:
@@ -154,9 +167,17 @@ class _FakeRequest:
         return io.BytesIO()
 
 
-def _run_request(path: str) -> tuple[int, dict[str, Any], dict[str, str]]:
-    """Drive HealthHandler for one GET; return (status, body, headers)."""
-    req = _FakeRequest(path=path)
+def _run_request(
+    path: str, request_headers: dict[str, str] | None = None
+) -> tuple[int, dict[str, Any], dict[str, str]]:
+    """Drive HealthHandler for one GET; return (status, body, headers).
+
+    ``request_headers=None`` sends the valid bearer; pass ``{}`` to send none.
+    """
+    req = _FakeRequest(
+        path=path,
+        headers=VALID_BEARER if request_headers is None else request_headers,
+    )
     output = io.BytesIO()
 
     class _H(HealthHandler):
@@ -214,6 +235,45 @@ def test_archive_handler_returns_503_when_cap_saturated() -> None:
     assert status == 503
     assert headers.get("Retry-After") == "1"
     assert "busy" in body["error"]
+
+
+def test_unauthenticated_request_is_401_not_503_when_cap_saturated() -> None:
+    """The bearer is checked before a slot is taken, so a caller without it
+    learns nothing about load and holds no slot."""
+    sema = threading.BoundedSemaphore(2)
+    with patch.object(archive_query, "_archive_query_semaphore", sema):
+        held1 = archive_query.archive_query_slot()
+        held2 = archive_query.archive_query_slot()
+        held1.__enter__()
+        held2.__enter__()
+        try:
+            with patch("archive_query.day_summary_batch") as query:
+                status, body, headers = _run_request(
+                    path="/archive/day-summary-batch?from=2025-01-15&to=2025-01-16",
+                    request_headers={},
+                )
+        finally:
+            held1.__exit__(None, None, None)
+            held2.__exit__(None, None, None)
+
+    assert status == 401
+    assert body == {"error": "unauthorized"}
+    assert "Retry-After" not in headers
+    query.assert_not_called()
+
+
+def test_rejected_requests_do_not_hold_a_slot() -> None:
+    """After refused requests, both slots are still free for a real one."""
+    sema = threading.BoundedSemaphore(2)
+    with patch.object(archive_query, "_archive_query_semaphore", sema):
+        for _ in range(5):
+            status, _body, _headers = _run_request(
+                path="/archive/day-summary-batch?from=2025-01-15&to=2025-01-16",
+                request_headers={},
+            )
+            assert status == 401
+        with archive_query.archive_query_slot(), archive_query.archive_query_slot():
+            pass
 
 
 def test_archive_handler_runs_query_when_slot_available() -> None:

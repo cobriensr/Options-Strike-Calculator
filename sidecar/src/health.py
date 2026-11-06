@@ -4,14 +4,15 @@ Serves `GET /health` for liveness/readiness monitoring (DB
 reachability), the take-it SHAP routes under `/takeit/*`,
 read-only DuckDB queries under `/archive/*`, and
 `POST /admin/seed-archive` for one-shot seeding of the persistent
-volume from Vercel Blob. The admin endpoint is gated on a shared token
+volume from Vercel Blob. Every `/archive/*` path and `POST /takeit/explain`
+need `Authorization: Bearer <TAKEIT_SIDECAR_SHARED_SECRET>`; `/health` and
+`/takeit/health` are open. The admin endpoint is gated on a shared token
 and is safe to leave deployed — subsequent calls are cheap (SHA-based
 resume) and guarded by a single-flight lock in `archive_seeder`.
 """
 
 from __future__ import annotations
 
-import hmac
 import json
 import os
 import re
@@ -23,6 +24,7 @@ from typing import Any, ClassVar
 from urllib.parse import parse_qs, urlparse
 
 from archive_seeder import SeedBusyError
+from auth import SHARED_SECRET_ENV, bearer_ok, shared_secret, token_ok
 from logger_setup import log
 
 # 3-year window cap on /archive/*-batch range queries. A 3-year range
@@ -37,9 +39,9 @@ _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 # Upper bound on POST /takeit/explain request bodies.
 # The server binds 0.0.0.0, so an unbounded `rfile.read(content_length)`
-# is a trivial unauthenticated remote-OOM vector. We reject by *declared*
-# Content-Length before allocating, which is sufficient to prevent the
-# allocation. Configurable via env; default 1 MiB.
+# is a remote-OOM vector. We reject by *declared* Content-Length before
+# allocating, which is sufficient to prevent the allocation. Configurable
+# via env; default 1 MiB.
 MAX_BODY_BYTES = int(os.environ.get("TAKEIT_MAX_BODY_BYTES", str(1 * 1024 * 1024)))
 
 
@@ -175,7 +177,8 @@ class HealthHandler(BaseHTTPRequestHandler):
     # path with the query string removed, never on a prefix: a prefix match
     # would hand `/archive/day-summary-prediction` to the `/archive/day-summary`
     # handler. Every entry runs a DuckDB query, so the whole group is gated
-    # behind `archive_query_slot()` in do_GET (AUD-M25 concurrency bound).
+    # behind the bearer check and then `archive_query_slot()` in do_GET
+    # (AUD-M25 concurrency bound).
     _ARCHIVE_ROUTES: ClassVar[dict[str, str]] = {
         "/archive/day-summary-prediction-batch": (
             "_handle_archive_day_summary_prediction_batch"
@@ -187,6 +190,14 @@ class HealthHandler(BaseHTTPRequestHandler):
     }
 
     def do_GET(self) -> None:
+        # Every /archive/* path needs the shared bearer, known routes or not,
+        # and the check runs before a concurrency slot is taken or DuckDB is
+        # imported. The gate and the route lookup read the same `route`, so a
+        # request target can't pass one and be dispatched by the other.
+        route = self.path.partition("?")[0]
+        if route.startswith("/archive/") and not self._archive_authorized():
+            return
+
         # /archive/* routes all run heavy, unbounded-memory DuckDB queries.
         # Bound their concurrency so N concurrent requests can't each
         # spawn a 500 MB + ~2 GB-temp DuckDB connection and OOM the box
@@ -195,7 +206,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         # the bound also covers the query the handler dispatches; cheap
         # input validation inside the handler runs under the slot too, but
         # that cost is negligible next to the DuckDB scan it protects.
-        handler_name = self._ARCHIVE_ROUTES.get(self.path.partition("?")[0])
+        handler_name = self._ARCHIVE_ROUTES.get(route)
         if handler_name is not None:
             self._dispatch_bounded_archive(handler_name)
             return
@@ -261,11 +272,11 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": "unauthorized"}).encode())
             return
 
-        # Auth gate — single-owner token from env. `hmac.compare_digest`
-        # prevents timing-based token guessing (constant-time comparison).
-        expected = os.environ.get("ARCHIVE_SEED_TOKEN", "")
-        got = self.headers.get("X-Admin-Token", "")
-        if not expected or not hmac.compare_digest(got, expected):
+        # Auth gate — single-owner token from env, compared in constant time
+        # (see auth.token_ok) so it can't be guessed from response timing.
+        if not token_ok(
+            self.headers.get("X-Admin-Token"), os.environ.get("ARCHIVE_SEED_TOKEN", "")
+        ):
             self.send_response(401)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -324,6 +335,9 @@ class HealthHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if not self._require_bearer(shared_secret(), "takeit explain"):
+            return
+
         content_length = int(self.headers.get("Content-Length", "0") or 0)
         if content_length <= 0:
             self.send_response(400)
@@ -342,11 +356,40 @@ class HealthHandler(BaseHTTPRequestHandler):
 
         body_bytes = self.rfile.read(content_length)
         auth_header = self.headers.get("Authorization", "")
+        # handle_explain_payload checks the bearer again: it is the payload
+        # boundary and stays safe to call from anywhere.
         status, body = takeit_server.handle_explain_payload(body_bytes, auth_header)
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(json.dumps(body).encode())
+
+    def _require_bearer(self, secret: str, what: str) -> bool:
+        """Return True when the request carries `Bearer <secret>`.
+
+        Otherwise answer 401 and return False. The log line says whether the
+        header was missing or wrong, and never the value of either.
+        """
+        header = self.headers.get("Authorization")
+        if bearer_ok(header, secret):
+            return True
+        reason = "no Authorization header" if header is None else "bearer mismatch"
+        log.warning("%s rejected: %s", what, reason)
+        self._send_json(401, {"error": "unauthorized"})
+        return False
+
+    def _archive_authorized(self) -> bool:
+        """Gate for every /archive/* path; True means carry on.
+
+        With no secret configured the routes are unavailable (503, generic
+        body), whatever the request carries.
+        """
+        secret = shared_secret()
+        if not secret:
+            log.error("%s is not set; /archive/* is unavailable", SHARED_SECRET_ENV)
+            self._send_json(503, {"error": "archive unavailable"})
+            return False
+        return self._require_bearer(secret, "archive request")
 
     def _dispatch_bounded_archive(self, handler_name: str) -> None:
         """Run an /archive/* handler under the concurrency-bound slot.

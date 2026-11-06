@@ -14,7 +14,7 @@ The DuckDB archive needs a persistent `/data` volume, and the SHAP explainer kee
 
 - **Archive volume**: persistent `/data/archive` on Railway, seeded from Vercel Blob by a one-shot, SHA-resumable `POST /admin/seed-archive`. Frozen: the last archived session is 2026-04-17 and nothing appends to it, so for later dates the `embed-yesterday` and `fetch-day-ohlc` crons fall back to Postgres (`api/_lib/postgres-day-summary.ts`). See `docs/superpowers/specs/archive-volume-seed-2026-04-18.md`.
 - **Take-It SHAP server**: `src/takeit_server.py` serves `/takeit/explain` and `/takeit/health` for the `takeit-fill-shap` cron. On the first request per alert type it downloads that model bundle from private Vercel Blob (the `takeit/latest.json` manifest, then the versioned `.joblib`) and keeps it loaded.
-- **Archive reads**: `src/archive_query.py` runs DuckDB over the Parquet archive for the read-only `/archive/*` routes, with a cap on concurrent queries.
+- **Archive reads**: `src/archive_query.py` runs DuckDB over the Parquet archive for the read-only `/archive/*` routes, with a cap on concurrent queries. Every `/archive/*` request must carry `Authorization: Bearer <TAKEIT_SIDECAR_SHARED_SECRET>`, checked before a query slot is taken; with the variable unset the routes answer 503. `/health` and `/takeit/health` need no header.
 
 The sidecar writes nothing to Postgres. Its callers are [`api/_lib/archive-sidecar.ts`](../api/_lib/archive-sidecar.ts) and [`api/cron/fetch-day-ohlc.ts`](../api/cron/fetch-day-ohlc.ts) (both via `SIDECAR_URL`), and [`api/cron/takeit-fill-shap.ts`](../api/cron/takeit-fill-shap.ts) (via `SIDECAR_TAKEIT_URL`).
 
@@ -53,7 +53,7 @@ Sidecar is the canonical owner of these in **Railway**, not Vercel. `.env.exampl
 | `DATABASE_URL`                                 | yes (boot exits without it)        | Neon connection, used only by the `/health` db check (psycopg2)                                                     |
 | `SENTRY_DSN`                                   | optional                           | Error tracking; empty disables Sentry. Events carry `server_name=futures-sidecar`                                   |
 | `TAKEIT_SERVER_ENABLED`                        | optional, default `0`              | `1` enables `POST /takeit/explain`; otherwise it returns 503                                                        |
-| `TAKEIT_SIDECAR_SHARED_SECRET`                 | when Take-It is enabled            | Bearer secret for `/takeit/explain`; without it the route stays at 503. Must equal Vercel's `SIDECAR_TAKEIT_SECRET` |
+| `TAKEIT_SIDECAR_SHARED_SECRET`                 | for `/archive/*` and Take-It       | Bearer for `/archive/*` and `/takeit/explain`; unset: both 503. Must equal Vercel's `SIDECAR_TAKEIT_SECRET`         |
 | `BLOB_READ_WRITE_TOKEN`                        | when Take-It or seeding is enabled | Reads the Take-It model bundles and the archive files the seeder pulls                                              |
 | `ARCHIVE_MANIFEST_URL`                         | to enable seeding                  | Manifest of archive files in Blob. Without it (or the Blob token), `POST /admin/seed-archive` returns 401           |
 | `ARCHIVE_SEED_TOKEN`                           | to enable seeding                  | Must match the `X-Admin-Token` header on `POST /admin/seed-archive`                                                 |
@@ -87,6 +87,7 @@ railway redeploy --service sidecar -y
 ```text
 src/
   main.py             # Entry point: env check, HTTP server
+  auth.py             # Shared-secret checks (bearer, admin token), compared as bytes
   config.py           # Env vars + settings
   db.py               # psycopg2 pool, boot verification, /health probe
   front_month.py      # Front-month CTE SQL for archive queries

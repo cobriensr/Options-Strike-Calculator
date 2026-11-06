@@ -14,9 +14,20 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from health import HealthHandler
+
+SHARED_SECRET = "test-secret"
+
+
+@pytest.fixture(autouse=True)
+def _shared_secret_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """/takeit/explain checks the bearer against this secret before it reads
+    the body; the requests below carry `Bearer test-secret`."""
+    monkeypatch.setenv("TAKEIT_SIDECAR_SHARED_SECRET", SHARED_SECRET)
 
 
 class _FakeRequest:
@@ -120,6 +131,7 @@ def test_takeit_explain_400_on_empty_body() -> None:
             b"POST /takeit/explain HTTP/1.1\r\n"
             b"Host: localhost\r\n"
             b"Content-Length: 0\r\n"
+            b"Authorization: Bearer test-secret\r\n"
             b"\r\n"
         )
         output = io.BytesIO()

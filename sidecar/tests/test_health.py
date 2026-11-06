@@ -13,11 +13,12 @@ import json
 import os
 import sys
 import types
+from collections.abc import Mapping
 from datetime import UTC
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -25,13 +26,30 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from health import HealthHandler
 
+SHARED_SECRET = "test-shared-secret"
+VALID_BEARER = {"Authorization": f"Bearer {SHARED_SECRET}"}
+
+
+@pytest.fixture(autouse=True)
+def _shared_secret_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test starts with the bearer secret configured."""
+    monkeypatch.setenv("TAKEIT_SIDECAR_SHARED_SECRET", SHARED_SECRET)
+
+
+def _header_lines(headers: Mapping[str, str] | None) -> str:
+    return "".join(f"{k}: {v}\r\n" for k, v in (headers or {}).items())
+
 
 class _FakeRequest:
     """Minimal request stub BaseHTTPRequestHandler expects."""
 
-    def __init__(self, path: str = "/health") -> None:
+    def __init__(self, path: str, headers: Mapping[str, str] | None = None) -> None:
         self.path = path
-        self.raw = f"GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode()
+        # latin-1 on the wire, as http.server decodes it: a header such as
+        # "caf\xe9" arrives as the single byte 0xE9.
+        self.raw = (
+            f"GET {path} HTTP/1.1\r\nHost: localhost\r\n{_header_lines(headers)}\r\n"
+        ).encode("latin-1")
 
     def makefile(self, mode: str, *_args: object) -> io.BytesIO:
         if "r" in mode:
@@ -39,9 +57,15 @@ class _FakeRequest:
         return io.BytesIO()
 
 
-def _run_request(path: str = "/health") -> tuple[int, dict]:
-    """Drive HealthHandler for one request; return (status, body_obj)."""
-    req = _FakeRequest(path=path)
+def _run_request(
+    path: str = "/health", headers: Mapping[str, str] | None = None
+) -> tuple[int, dict]:
+    """Drive HealthHandler for one request; return (status, body_obj).
+
+    ``headers=None`` sends the valid bearer, so the archive tests reach their
+    handlers; pass ``{}`` to send no headers at all.
+    """
+    req = _FakeRequest(path=path, headers=VALID_BEARER if headers is None else headers)
     # Write buffer lives on the instance as `wfile` once BaseHTTPRequestHandler
     # runs setup(). We capture everything it writes for later parsing.
     output = io.BytesIO()
@@ -163,6 +187,193 @@ def test_archive_routes_match_the_exact_path(
     assert status == 404
     day_summary.assert_not_called()
     features_batch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Bearer gate — every /archive/* path needs `Bearer <shared secret>`, checked
+# before the concurrency slot is taken or DuckDB is imported
+# ---------------------------------------------------------------------------
+
+# (path, the archive_query function the route calls, what that call returns)
+_ARCHIVE_ROUTE_ROWS = [
+    ("/archive/day-summary?date=2024-01-15", "day_summary_text", "text"),
+    ("/archive/day-features?date=2024-01-15", "day_features_vector", [0.1]),
+    (
+        "/archive/day-summary-batch?from=2024-01-01&to=2024-01-02",
+        "day_summary_batch",
+        [],
+    ),
+    (
+        "/archive/day-features-batch?from=2024-01-01&to=2024-01-02",
+        "day_features_batch",
+        [],
+    ),
+    (
+        "/archive/day-summary-prediction-batch?from=2024-01-01&to=2024-01-02",
+        "day_summary_prediction_batch",
+        [],
+    ),
+]
+_ARCHIVE_ROUTE_CASES = [pytest.param(*row, id=row[1]) for row in _ARCHIVE_ROUTE_ROWS]
+
+
+class TestArchiveBearerGate:
+    @pytest.mark.parametrize(("path", "query", "_result"), _ARCHIVE_ROUTE_CASES)
+    def test_no_header_is_401_and_never_reaches_duckdb(
+        self, path: str, query: str, _result: object
+    ) -> None:
+        with (
+            patch(f"archive_query.{query}") as query_fn,
+            patch("health._aq", side_effect=AssertionError("DuckDB must not load")),
+        ):
+            status, body = _run_request(path, headers={})
+        assert status == 401
+        assert body == {"error": "unauthorized"}
+        query_fn.assert_not_called()
+
+    @pytest.mark.parametrize(("path", "query", "_result"), _ARCHIVE_ROUTE_CASES)
+    @pytest.mark.parametrize(
+        "authorization",
+        [
+            "Bearer wrong-secret",
+            f"Bearer {SHARED_SECRET}x",
+            f"bearer {SHARED_SECRET}",
+            SHARED_SECRET,
+            "Bearer ",
+        ],
+    )
+    def test_wrong_bearer_is_401_and_never_reaches_duckdb(
+        self, path: str, query: str, _result: object, authorization: str
+    ) -> None:
+        with (
+            patch(f"archive_query.{query}") as query_fn,
+            patch("health._aq", side_effect=AssertionError("DuckDB must not load")),
+        ):
+            status, body = _run_request(path, headers={"Authorization": authorization})
+        assert status == 401
+        assert body == {"error": "unauthorized"}
+        query_fn.assert_not_called()
+
+    @pytest.mark.parametrize(("path", "query", "result"), _ARCHIVE_ROUTE_CASES)
+    def test_right_bearer_reaches_the_handler(
+        self, path: str, query: str, result: object
+    ) -> None:
+        with patch(f"archive_query.{query}", return_value=result) as query_fn:
+            status, _body = _run_request(path, headers=VALID_BEARER)
+        assert status == 200
+        query_fn.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/archive/unknown",
+            "/archive/",
+            "/archive/day-summary/extra?date=2024-01-15",
+            "/archive/es-range?date=2024-01-15",
+            "/archive/../health",
+            "//archive/day-summary?date=2024-01-15",
+        ],
+    )
+    def test_any_archive_path_is_401_without_the_bearer(self, path: str) -> None:
+        """Unknown and removed paths answer 401, not 404, so the gate says
+        nothing about which routes exist."""
+        status, body = _run_request(path, headers={})
+        assert status == 401
+        assert body == {"error": "unauthorized"}
+
+    def test_unknown_archive_path_with_the_bearer_is_404(self) -> None:
+        status, body = _run_request("/archive/unknown", headers=VALID_BEARER)
+        assert status == 404
+        assert body == {"_raw": "Not found"}
+
+    def test_absolute_form_target_is_never_dispatched(self) -> None:
+        """An absolute-URI request target can't reach a handler around the
+        gate: it matches no route."""
+        with patch("archive_query.day_summary_text") as day_summary:
+            status, _body = _run_request(
+                "http://example.test/archive/day-summary?date=2024-01-15",
+                headers={},
+            )
+        assert status == 404
+        day_summary.assert_not_called()
+
+    @pytest.mark.parametrize("authorization", ["Bearer caf\xe9", "caf\xe9"])
+    def test_non_ascii_authorization_is_401(self, authorization: str) -> None:
+        with patch("archive_query.day_summary_text") as day_summary:
+            status, body = _run_request(
+                "/archive/day-summary?date=2024-01-15",
+                headers={"Authorization": authorization},
+            )
+        assert status == 401
+        assert body == {"error": "unauthorized"}
+        day_summary.assert_not_called()
+
+    @pytest.mark.parametrize("how", ["unset", "empty"])
+    @pytest.mark.parametrize(("path", "query", "_result"), _ARCHIVE_ROUTE_CASES)
+    def test_secret_not_configured_is_503_naming_the_variable_in_the_log(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        how: str,
+        path: str,
+        query: str,
+        _result: object,
+    ) -> None:
+        if how == "unset":
+            monkeypatch.delenv("TAKEIT_SIDECAR_SHARED_SECRET")
+        else:
+            monkeypatch.setenv("TAKEIT_SIDECAR_SHARED_SECRET", "")
+        with (
+            patch(f"archive_query.{query}") as query_fn,
+            patch("health._aq", side_effect=AssertionError("DuckDB must not load")),
+        ):
+            # `Bearer ` with nothing after it must not pass an empty secret.
+            status, body = _run_request(path, headers={"Authorization": "Bearer "})
+        assert status == 503
+        assert body == {"error": "archive unavailable"}
+        query_fn.assert_not_called()
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(errors) == 1
+        assert "TAKEIT_SIDECAR_SHARED_SECRET" in errors[0].getMessage()
+
+    def test_log_tells_a_missing_header_from_a_wrong_bearer(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        path = "/archive/day-summary?date=2024-01-15"
+        wrong = "Bearer wrong-secret-value"
+
+        _run_request(path, headers={})
+        assert "no Authorization header" in caplog.text
+        assert "bearer mismatch" not in caplog.text
+
+        caplog.clear()
+        _run_request(path, headers={"Authorization": wrong})
+        assert "bearer mismatch" in caplog.text
+        assert "no Authorization header" not in caplog.text
+
+        # Neither the configured secret nor the offered value is logged.
+        assert SHARED_SECRET not in caplog.text
+        assert "wrong-secret-value" not in caplog.text
+
+
+class TestOpenRoutes:
+    def test_health_needs_no_bearer(self, configure_base_callables) -> None:
+        status, body = _run_request("/health", headers={})
+        assert status == 200
+        assert body == {"status": "ok", "checks": {"db": True}}
+
+    def test_takeit_health_needs_no_bearer(self) -> None:
+        with patch("takeit_server.is_enabled", return_value=False):
+            status, body = _run_request("/takeit/health", headers={})
+        assert status == 200
+        assert body["status"] == "ok"
+
+    def test_health_stays_open_when_the_secret_is_not_configured(
+        self, monkeypatch: pytest.MonkeyPatch, configure_base_callables
+    ) -> None:
+        monkeypatch.delenv("TAKEIT_SIDECAR_SHARED_SECRET")
+        status, _body = _run_request("/health", headers={})
+        assert status == 200
 
 
 # ---------------------------------------------------------------------------
@@ -383,12 +594,10 @@ class _FakePostRequest:
         headers: dict[str, str] | None = None,
     ) -> None:
         self.path = path
-        header_lines = "Host: localhost\r\n"
-        for k, v in (headers or {}).items():
-            header_lines += f"{k}: {v}\r\n"
+        header_lines = "Host: localhost\r\n" + _header_lines(headers)
         self.raw = (
             f"POST {path} HTTP/1.1\r\n{header_lines}Content-Length: 0\r\n\r\n"
-        ).encode()
+        ).encode("latin-1")
 
     def makefile(self, mode: str, *_args: object) -> io.BytesIO:
         if "r" in mode:
@@ -530,6 +739,24 @@ class TestSeedArchivePost:
         status, body = _run_post_request(headers={"X-Admin-Token": "tok"})
         assert status == 500
         assert body["error"] == "disk full"
+
+    @pytest.mark.parametrize("token", ["caf\xe9", "\xff"])
+    def test_post_401_on_non_ascii_token(self, token: str) -> None:
+        """A non-ASCII X-Admin-Token is rejected, not raised."""
+        seed = MagicMock(return_value={"failed": 0})
+        HealthHandler.seed_archive = staticmethod(seed)
+        os.environ["ARCHIVE_SEED_TOKEN"] = "tok"
+        status, body = _run_post_request(headers={"X-Admin-Token": token})
+        assert status == 401
+        assert body["error"] == "unauthorized"
+        seed.assert_not_called()
+
+    def test_post_401_when_token_is_empty_and_none_configured(self) -> None:
+        HealthHandler.seed_archive = staticmethod(lambda: {"failed": 0})
+        os.environ["ARCHIVE_SEED_TOKEN"] = ""
+        status, body = _run_post_request(headers={"X-Admin-Token": ""})
+        assert status == 401
+        assert body["error"] == "unauthorized"
 
 
 # ---------------------------------------------------------------------------
@@ -870,12 +1097,10 @@ def _run_post_with_body(
     allocating a giant body.
     """
     length = declared_length if declared_length is not None else len(body)
-    header_lines = "Host: localhost\r\n"
-    for k, v in (headers or {}).items():
-        header_lines += f"{k}: {v}\r\n"
+    header_lines = "Host: localhost\r\n" + _header_lines(headers)
     request_head = (
         f"POST {path} HTTP/1.1\r\n{header_lines}Content-Length: {length}\r\n\r\n"
-    ).encode()
+    ).encode("latin-1")
 
     output = io.BytesIO()
     rfile = _TrackingRfile(body)
@@ -990,6 +1215,102 @@ class TestTakeitExplainBodyCap:
             )
         assert status == 200
         assert read_called is True
+
+
+# ---------------------------------------------------------------------------
+# POST /takeit/explain — the bearer is checked before the body is read
+# ---------------------------------------------------------------------------
+
+
+def _fake_takeit(enabled: bool = True) -> types.ModuleType:
+    fake = types.ModuleType("takeit_server")
+    fake.is_enabled = lambda: enabled  # type: ignore[attr-defined]
+    fake.handle_explain_payload = MagicMock(  # type: ignore[attr-defined]
+        return_value=(200, {"results": []})
+    )
+    return fake
+
+
+class TestTakeitExplainBearerGate:
+    @pytest.mark.parametrize(
+        "headers",
+        [
+            {},
+            {"Authorization": "Bearer wrong"},
+            {"Authorization": SHARED_SECRET},
+            {"Authorization": "Bearer caf\xe9"},
+        ],
+        ids=["missing", "wrong", "no-scheme", "non-ascii"],
+    )
+    def test_401_without_reading_the_body(self, headers: dict[str, str]) -> None:
+        fake = _fake_takeit()
+        with patch.dict(sys.modules, {"takeit_server": fake}):
+            status, body, read_called = _run_post_with_body(
+                "/takeit/explain", body=b"{}", headers=headers
+            )
+        assert status == 401
+        assert body == {"error": "unauthorized"}
+        assert read_called is False
+        fake.handle_explain_payload.assert_not_called()
+
+    def test_oversize_declared_length_is_401_before_413(self) -> None:
+        from health import MAX_BODY_BYTES
+
+        with patch.dict(sys.modules, {"takeit_server": _fake_takeit()}):
+            status, _body, read_called = _run_post_with_body(
+                "/takeit/explain",
+                body=b"{}",
+                headers={},
+                declared_length=MAX_BODY_BYTES + 1,
+            )
+        assert status == 401
+        assert read_called is False
+
+    def test_empty_body_is_401_before_400(self) -> None:
+        with patch.dict(sys.modules, {"takeit_server": _fake_takeit()}):
+            status, _body, _read = _run_post_with_body(
+                "/takeit/explain", body=b"", headers={}
+            )
+        assert status == 401
+
+    def test_valid_bearer_reaches_the_handler_with_the_header(self) -> None:
+        fake = _fake_takeit()
+        with patch.dict(sys.modules, {"takeit_server": fake}):
+            status, _body, read_called = _run_post_with_body(
+                "/takeit/explain",
+                body=b'{"alert_type": "lottery", "rows": []}',
+                headers=VALID_BEARER,
+            )
+        assert status == 200
+        assert read_called is True
+        _body_bytes, auth_header = fake.handle_explain_payload.call_args.args
+        assert auth_header == f"Bearer {SHARED_SECRET}"
+
+    def test_disabled_server_stays_503_even_without_a_bearer(self) -> None:
+        fake = _fake_takeit(enabled=False)
+        with patch.dict(sys.modules, {"takeit_server": fake}):
+            status, body, read_called = _run_post_with_body(
+                "/takeit/explain", body=b"{}", headers={}
+            )
+        assert status == 503
+        assert "disabled" in body["error"]
+        assert read_called is False
+        fake.handle_explain_payload.assert_not_called()
+
+    def test_missing_secret_rejects_even_a_bearer_with_nothing_after_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TAKEIT_SIDECAR_SHARED_SECRET", "")
+        fake = _fake_takeit()
+        with patch.dict(sys.modules, {"takeit_server": fake}):
+            status, _body, read_called = _run_post_with_body(
+                "/takeit/explain",
+                body=b"{}",
+                headers={"Authorization": "Bearer "},
+            )
+        assert status == 401
+        assert read_called is False
+        fake.handle_explain_payload.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
