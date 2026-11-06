@@ -30,6 +30,11 @@
  * a stop between dates if they begin; the page budget is checked between
  * dates, so a run overshoots it by at most one date.
  *
+ * The argument parser, date plan, contract candidates, per-day paging,
+ * date loop and market-hours guard are exported for
+ * `futures-bar-backfill.ts` (the September bar rebuild), which runs the
+ * same loop over the same prints.
+ *
  * Spec: docs/superpowers/specs/2026-10-28-uw-futures-orderflow-design.md
  * (Phase 6b, as amended by probe 0a).
  */
@@ -98,8 +103,8 @@ const CONTRACT_CYCLE: Readonly<Record<FuturesRoot, string>> = {
  */
 const CANDIDATES_PER_DAY = 3;
 
-const DAY_MS = 86_400_000;
-const MINUTE_MS = 60_000;
+export const DAY_MS = 86_400_000;
+export const MINUTE_MS = 60_000;
 const DATE_RX = /^\d{4}-\d{2}-\d{2}$/;
 
 // ── Arguments ───────────────────────────────────────────────
@@ -127,8 +132,14 @@ function isDate(s: string): boolean {
   return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === s;
 }
 
-/** Parses the CLI arguments. Throws an Error naming the bad argument. */
-export function parseArgs(argv: readonly string[]): BackfillOptions {
+/**
+ * Parses the CLI arguments. Throws an Error naming the bad argument, with
+ * `usage` (the calling script's) where the message points at the syntax.
+ */
+export function parseArgs(
+  argv: readonly string[],
+  usage: string = USAGE,
+): BackfillOptions {
   const out: BackfillOptions = {
     dates: null,
     from: null,
@@ -141,7 +152,7 @@ export function parseArgs(argv: readonly string[]): BackfillOptions {
   const value = (i: number, flag: string): string => {
     const v = argv[i + 1];
     if (v === undefined || v.startsWith('--')) {
-      throw new Error(`${flag} needs a value\n${USAGE}`);
+      throw new Error(`${flag} needs a value\n${usage}`);
     }
     return v;
   };
@@ -194,7 +205,7 @@ export function parseArgs(argv: readonly string[]): BackfillOptions {
       }
       default:
         if (arg.startsWith('--')) {
-          throw new Error(`Unknown flag ${arg}\n${USAGE}`);
+          throw new Error(`Unknown flag ${arg}\n${usage}`);
         }
         if (!isDate(arg)) {
           throw new Error(`Dates must be YYYY-MM-DD, got ${arg}`);
@@ -288,12 +299,8 @@ interface RootDayResult {
   leaders: string[];
 }
 
-type RootDayOutcome =
-  | { root: FuturesRoot; ok: RootDayResult }
-  | { root: FuturesRoot; err: string; pages: number };
-
 /** A failed root-day, carrying the UW pages it used before failing. */
-class RootDayError extends Error {
+export class RootDayError extends Error {
   readonly pages: number;
 
   constructor(cause: unknown, pages: number) {
@@ -301,6 +308,57 @@ class RootDayError extends Error {
     this.name = 'RootDayError';
     this.pages = pages;
   }
+}
+
+/**
+ * What one root-day's paging has used so far. The caller owns it, so a
+ * fetch that throws part-way still leaves the pages it used on it.
+ */
+export interface PagingTally {
+  pages: number;
+  /** Malformed prints skipped (each withholds its minute). */
+  malformed: number;
+}
+
+/**
+ * Pages every candidate contract of `root` over [00:00 UTC of `date`,
+ * `endMs`), one after another, and returns each one's counted minutes.
+ * The front month's tally runs from 00:00 UTC, so the whole span is
+ * needed even for one late minute. Throws on an upstream error, and when
+ * a contract needs more than MAX_PAGES_PER_CONTRACT_DAY pages.
+ */
+export async function pageDayContracts(
+  apiKey: string,
+  root: FuturesRoot,
+  date: string,
+  endMs: number,
+  tally: PagingTally,
+): Promise<Map<string, FlowMinute[]>> {
+  const dayStartMs = Date.parse(`${date}T00:00:00Z`);
+  const byContract = new Map<string, FlowMinute[]>();
+  for (const contract of contractCandidates(root, date)) {
+    const budget: PageBudget = {
+      pagesLeft: MAX_PAGES_PER_CONTRACT_DAY,
+      deadlineMs: Number.POSITIVE_INFINITY,
+    };
+    const flow = await fetchContractFlow(
+      apiKey,
+      contract,
+      dayStartMs,
+      endMs,
+      budget,
+    ).finally(() => {
+      tally.pages += MAX_PAGES_PER_CONTRACT_DAY - budget.pagesLeft;
+    });
+    tally.malformed += flow.malformed;
+    if (flow.stop === 'budget') {
+      throw new Error(
+        `${contract}: more than ${MAX_PAGES_PER_CONTRACT_DAY} pages for one day`,
+      );
+    }
+    byContract.set(contract, [...flow.minutes.values()]);
+  }
+  return byContract;
 }
 
 async function backfillRootDay(
@@ -326,32 +384,11 @@ async function backfillRootDay(
   }
   const endMs = Date.parse(bars.at(-1)!.ts) + MINUTE_MS;
 
-  // Counted from each contract's budget, so a fetch that throws part-way
-  // still charges the pages it used to the run's budget.
-  let pages = 0;
+  // A fetch that throws part-way still charges the pages it used to the
+  // run's budget.
+  const tally: PagingTally = { pages: 0, malformed: 0 };
   try {
-    const byContract = new Map<string, FlowMinute[]>();
-    for (const contract of contractCandidates(root, date)) {
-      const budget: PageBudget = {
-        pagesLeft: MAX_PAGES_PER_CONTRACT_DAY,
-        deadlineMs: Number.POSITIVE_INFINITY,
-      };
-      const flow = await fetchContractFlow(
-        apiKey,
-        contract,
-        dayStartMs,
-        endMs,
-        budget,
-      ).finally(() => {
-        pages += MAX_PAGES_PER_CONTRACT_DAY - budget.pagesLeft;
-      });
-      if (flow.stop === 'budget') {
-        throw new Error(
-          `${contract}: more than ${MAX_PAGES_PER_CONTRACT_DAY} pages for one day`,
-        );
-      }
-      byContract.set(contract, [...flow.minutes.values()]);
-    }
+    const byContract = await pageDayContracts(apiKey, root, date, endMs, tally);
 
     const leaderOf = new Map<string, string>();
     const front = new Map<string, FlowMinute>();
@@ -370,43 +407,50 @@ async function backfillRootDay(
       nullMinutes: bars.length,
       written,
       skippedTolerance,
-      pages,
+      pages: tally.pages,
       leaders,
     };
   } catch (err) {
-    throw new RootDayError(err, pages);
+    throw new RootDayError(err, tally.pages);
   }
 }
 
 // ── Run ─────────────────────────────────────────────────────
 
-/** Runs the backfill and returns the process exit code. */
-export async function runBackfill(
-  opts: BackfillOptions & { apiKey: string },
-): Promise<number> {
-  // UW_CONCURRENCY_CAP is UW's plan-wide in-flight limit, shared with the
-  // live crons through Redis, so stay out of the session entirely.
-  if (isMarketHours()) {
-    console.error(
-      'Refusing to run during market hours: UW concurrency is shared with ' +
-        'the live crons. Run after the close.',
-    );
-    return 1;
-  }
-
-  const today = new Date().toISOString().slice(0, 10);
-  const plan = planDates(opts, today);
-  const verb = opts.dryRun ? 'would write' : 'repaired';
-  console.log(
-    `Futures order-flow backfill${opts.dryRun ? ' (DRY RUN: no writes)' : ''}: ` +
-      `${plan.length} dates, ${plan[0]?.date ?? '-'} → ${plan.at(-1)?.date ?? '-'}, ` +
-      `roots ${opts.roots.join(',')}, page budget ${opts.maxPages}`,
+/**
+ * True, after saying why, when it is market hours. UW_CONCURRENCY_CAP is
+ * UW's plan-wide in-flight limit, shared with the live crons through
+ * Redis, so a backfill stays out of the session entirely.
+ */
+export function refuseDuringMarketHours(): boolean {
+  if (!isMarketHours()) return false;
+  console.error(
+    'Refusing to run during market hours: UW concurrency is shared with ' +
+      'the live crons. Run after the close.',
   );
+  return true;
+}
 
+type RootDayOutcome<R> =
+  | { root: FuturesRoot; ok: R }
+  | { root: FuturesRoot; err: string; pages: number };
+
+/**
+ * The date loop both backfills share, oldest date first: stops before a
+ * date once market hours begin or the page budget is spent (the log says
+ * where to resume), runs a date's roots up to UW_CONCURRENCY_CAP at a
+ * time, and hands each finished root-day to `report`. A root-day that
+ * throws is logged with its pages, counted as a failure, and the run goes
+ * on. Returns the pages used and the failed root-days.
+ */
+export async function runPlannedDays<R extends { pages: number }>(
+  plan: readonly DayPlan[],
+  maxPages: number,
+  work: (root: FuturesRoot, date: string) => Promise<R>,
+  report: (root: FuturesRoot, date: string, result: R) => void,
+): Promise<{ pages: number; failures: number }> {
   let pages = 0;
   let failures = 0;
-  let written = 0;
-  let skipped = 0;
   for (const [i, day] of plan.entries()) {
     if (isMarketHours()) {
       console.error(
@@ -415,9 +459,9 @@ export async function runBackfill(
       );
       break;
     }
-    if (pages >= opts.maxPages) {
+    if (pages >= maxPages) {
       console.log(
-        `\nPage budget spent (${pages} of ${opts.maxPages}): stopping before ` +
+        `\nPage budget spent (${pages} of ${maxPages}): stopping before ` +
           `${day.date}. Resume with --from ${day.date}.`,
       );
       break;
@@ -427,12 +471,9 @@ export async function runBackfill(
     const results = await mapWithConcurrency(
       day.roots,
       UW_CONCURRENCY_CAP,
-      async (root): Promise<RootDayOutcome> => {
+      async (root): Promise<RootDayOutcome<R>> => {
         try {
-          return {
-            root,
-            ok: await backfillRootDay(opts.apiKey, root, day.date, opts.dryRun),
-          };
+          return { root, ok: await work(root, day.date) };
         } catch (err) {
           return {
             root,
@@ -452,18 +493,45 @@ export async function runBackfill(
         );
         continue;
       }
-      const res = r.ok;
-      pages += res.pages;
+      pages += r.ok.pages;
+      report(r.root, day.date, r.ok);
+    }
+  }
+  return { pages, failures };
+}
+
+/** Runs the backfill and returns the process exit code. */
+export async function runBackfill(
+  opts: BackfillOptions & { apiKey: string },
+): Promise<number> {
+  if (refuseDuringMarketHours()) return 1;
+
+  const today = new Date().toISOString().slice(0, 10);
+  const plan = planDates(opts, today);
+  const verb = opts.dryRun ? 'would write' : 'repaired';
+  console.log(
+    `Futures order-flow backfill${opts.dryRun ? ' (DRY RUN: no writes)' : ''}: ` +
+      `${plan.length} dates, ${plan[0]?.date ?? '-'} → ${plan.at(-1)?.date ?? '-'}, ` +
+      `roots ${opts.roots.join(',')}, page budget ${opts.maxPages}`,
+  );
+
+  let written = 0;
+  let skipped = 0;
+  const { pages, failures } = await runPlannedDays(
+    plan,
+    opts.maxPages,
+    (root, date) => backfillRootDay(opts.apiKey, root, date, opts.dryRun),
+    (root, date, res) => {
       written += res.written;
       skipped += res.skippedTolerance;
-      if (res.nullMinutes === 0) continue;
+      if (res.nullMinutes === 0) return;
       console.log(
-        `  ${r.root} ${day.date}  null ${res.nullMinutes}  ${verb} ${res.written}` +
+        `  ${root} ${date}  null ${res.nullMinutes}  ${verb} ${res.written}` +
           `  skipped ${res.skippedTolerance}  pages ${res.pages}` +
           `  front ${res.leaders.join('/') || '-'}`,
       );
-    }
-  }
+    },
+  );
 
   console.log(
     `\nDone: ${verb} ${written} minutes, skipped ${skipped} (outside 2%), ` +

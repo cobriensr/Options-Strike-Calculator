@@ -1,0 +1,58 @@
+/**
+ * One-time rebuild of missing futures_bars rows (1-minute OHLCV plus the
+ * four aggressor-flow columns) from Unusual Whales REST prints, by the
+ * live uw-stream handler's rules. Built for the UTC days 2026-09-04 →
+ * 09-28, which hold no bar for any root. Writes only minutes that have no
+ * bar (ON CONFLICT DO NOTHING), so a re-run skips what it already filled
+ * and never replaces a live bar. Logic and rules:
+ * scripts/_lib/futures-bar-backfill.ts.
+ *
+ * Usage (env from .env.local, like the other scripts: DATABASE_URL and
+ * UW_API_KEY, never printed). Run after the close: it refuses to start
+ * during market hours and stops between dates if they begin. A date range
+ * is required; every root-day in it is paged in full (about 1,000 pages
+ * for an ES day).
+ *   npx tsx scripts/backfill-futures-bars.ts --compare 2026-10-30
+ *   npx tsx scripts/backfill-futures-bars.ts --dry-run --from 2026-09-04 --to 2026-09-28
+ *   npx tsx scripts/backfill-futures-bars.ts --from 2026-09-04 --to 2026-09-28
+ *   npx tsx scripts/backfill-futures-bars.ts 2026-09-04 2026-09-05 --roots ES,NQ
+ * Flags: --from/--to YYYY-MM-DD (UTC, inclusive) or explicit dates ·
+ *        --roots ES,NQ,... (default all six) · --max-pages N (default
+ *        20000, checked between dates; the log says where to resume) ·
+ *        --dry-run (read, page and build; write nothing) · --compare
+ *        (write nothing; count how many REST-built bars equal the bars
+ *        already stored, and print the first few differences).
+ * The current UTC day is never processed.
+ *
+ * Spec: docs/superpowers/specs/2026-11-06-futures-sept-bar-backfill.md
+ */
+
+import { config as loadEnv } from 'dotenv';
+
+// Load env BEFORE importing the backfill: the UW limiter's Redis client is
+// built at import time, and without KV_REST_API_* it fails open, so the
+// run would not share the crons' concurrency slots.
+loadEnv({ path: '.env.local' });
+const { parseBarArgs, runBarBackfill } =
+  await import('./_lib/futures-bar-backfill.js');
+
+let options: ReturnType<typeof parseBarArgs>;
+try {
+  options = parseBarArgs(process.argv.slice(2));
+} catch (err) {
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exit(1);
+}
+
+const apiKey = process.env.UW_API_KEY;
+if (!process.env.DATABASE_URL || !apiKey) {
+  console.error('Missing DATABASE_URL or UW_API_KEY — load .env.local first.');
+  process.exit(1);
+}
+
+try {
+  process.exitCode = await runBarBackfill({ ...options, apiKey });
+} catch (err) {
+  console.error('Backfill failed:', err);
+  process.exitCode = 1;
+}
