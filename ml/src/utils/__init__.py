@@ -277,13 +277,16 @@ def make_engine(database_url: str):
 
     A bare `postgresql://` URL names no driver. SQLAlchemy 2.0 picked
     psycopg2 for it; 2.1 picks psycopg 3, which is not a dependency here, so
-    the engine fails with ModuleNotFoundError. Every ml/ engine goes through
+    the engine fails with ModuleNotFoundError. A bare `postgres://` URL (the
+    older spelling some providers hand out) names no dialect at all, and
+    SQLAlchemy raises NoSuchModuleError for it. Every ml/ engine goes through
     this helper so the driver never depends on the SQLAlchemy version. A URL
     that names its own driver is left alone.
     """
-    bare = "postgresql://"
-    if database_url.startswith(bare):
-        database_url = "postgresql+psycopg2://" + database_url.removeprefix(bare)
+    for bare in ("postgresql://", "postgres://"):
+        if database_url.startswith(bare):
+            database_url = "postgresql+psycopg2://" + database_url.removeprefix(bare)
+            break
     return create_engine(database_url)
 
 

@@ -483,14 +483,33 @@ class TestLoadData:
 
 
 class TestMakeEngine:
-    """make_engine pins the psycopg2 driver for a bare postgresql:// URL."""
+    """make_engine pins the psycopg2 driver for a bare postgres(ql):// URL."""
 
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            (
+                "postgresql://user:pass@host:5432/mydb?sslmode=require",
+                "postgresql+psycopg2://user:pass@host:5432/mydb?sslmode=require",
+            ),
+            # Heroku-style and older DATABASE_URLs: SQLAlchemy 1.4+ no longer
+            # loads a dialect named "postgres", so it needs the rewrite too.
+            (
+                "postgres://user:pass@host:5432/mydb?sslmode=require",
+                "postgresql+psycopg2://user:pass@host:5432/mydb?sslmode=require",
+            ),
+            # Already names its driver: passed through untouched.
+            (
+                "postgresql+psycopg2://user:pass@host:5432/mydb",
+                "postgresql+psycopg2://user:pass@host:5432/mydb",
+            ),
+        ],
+        ids=["postgresql", "postgres", "driver-named"],
+    )
     @patch("utils.create_engine")
-    def test_bare_postgresql_url_gets_the_psycopg2_driver(self, mock_create):
-        make_engine("postgresql://user:pass@host:5432/mydb?sslmode=require")
-        mock_create.assert_called_once_with(
-            "postgresql+psycopg2://user:pass@host:5432/mydb?sslmode=require"
-        )
+    def test_a_bare_url_gets_the_psycopg2_driver(self, mock_create, url, expected):
+        make_engine(url)
+        mock_create.assert_called_once_with(expected)
 
     @pytest.mark.parametrize(
         "url",
@@ -505,11 +524,13 @@ class TestMakeEngine:
         make_engine(url)
         mock_create.assert_called_once_with(url)
 
-    def test_a_bare_url_builds_a_psycopg2_engine_whatever_sqlalchemy_does(self):
+    @pytest.mark.parametrize("scheme", ["postgresql", "postgres"])
+    def test_a_bare_url_builds_a_psycopg2_engine_whatever_sqlalchemy_does(self, scheme):
         # SQLAlchemy 2.1 resolves a bare postgresql:// to psycopg 3, which is
-        # not installed: create_engine raised ModuleNotFoundError. No connect
+        # not installed: create_engine raised ModuleNotFoundError. A bare
+        # postgres:// names no dialect at all (NoSuchModuleError). No connect
         # happens here; create_engine is lazy.
-        engine = make_engine("postgresql://user:pass@invalid.invalid/db")
+        engine = make_engine(f"{scheme}://user:pass@invalid.invalid/db")
         assert engine.dialect.driver == "psycopg2"
         engine.dispose()
 
