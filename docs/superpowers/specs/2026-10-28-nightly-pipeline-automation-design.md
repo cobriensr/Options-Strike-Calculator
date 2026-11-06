@@ -72,6 +72,7 @@ The owner asked for the whole process: downloading the file, saving it, uploadin
    - Each night, a backstop re-enriches any fire the live cron left empty.
 4. **Every research output `make nightly update` produced keeps updating from the tape:**
    - the per-day chains parquet, the cumulative rollup and headlines, the whale plots, the lottery tracking and ticker-weight-history CSVs;
+   - **Retired by owner decision, 2026-11-06:** the ticker-weight-history CSV, with the ticker EMA that wrote it. The EMA moved 0 tickers in 115 sessions. See "Owner decisions (2026-11-06)".
    - the Take-It drift monitor (`takeit_health_daily`);
    - the dated research reports: `exit_policy_search`, `feature_audit`, `flow_inversion_timing`, `mine_outcome_patterns`, `score_lineage_audit` and the lottery quality sim.
 5. **The lottery score refit, and the nightly ticker-weight update, run safely.** New weights go live only when they pass gates; otherwise the current ones stay.
@@ -228,6 +229,17 @@ The owner asked for the whole process: downloading the file, saving it, uploadin
    - Reasons: it honours Q23, keeps Take-It's behaviour exactly as it is today, and keeps changes in Take-It traceable while the one-hot bug is open.
    - The pin moves only when Take-It is retrained after its side-by-side.
    - Until the first promotion the two scores are identical.
+
+## Owner decisions (2026-11-06)
+
+Made while amending the phase 2–4 plans after the cross-phase review.
+
+1. **Build order.** Phase 2 (all tasks), then phase 4 through its first shadow runs, then phase 3 (built during phase 4's 10-session shadow), then phase 4's promotion. This reverses the phase list's order for phases 3 and 4. A promotion waits for the research reports to read the version it activates. At runtime the steps run in this order: tape, phase 2's steps, `lottery-refit`, then the research steps.
+2. **The cron's flow-inversion pass is deleted in phase 2.**
+   - The live cron's inversions carried a ×100 error (fixed 2026-11-05). The bad values are found by provenance, not by value: fires whose (`option_chain_id`, `date`) has an `ok` row in `option_intraday_nbbo_fetches`, 111,645 rows from May, June, October and November.
+   - On 2026-11-06 they were set to NULL, with a copy in R2 at `backups/lottery-flow-inversion/2026-11-06-x100-reset.parquet`. The tape pass is the only writer from now on, and its backfill refills them. While a value is NULL, the Lottery Finder chip falls back to `realized_eod_pct`.
+3. **The ticker EMA and the ticker-weight-history CSV are retired.** It moved 0 tickers in 115 sessions. The nightly refit takes ticker weights from its training alone, so Goal 4's CSV, Goal 5's "nightly ticker-weight update", the matching line under Decided → Refit, the weight-history CSV in Phases item 3 and `scripts/online_ticker_update.py` in Files item 4 (phase 4 deletes it) no longer apply.
+4. **UW-derived files already tracked stay.** The by-day parquets, the rollup, the headlines and the plots that are in the public repo today are not removed, so "Row-level files stop being tracked in git" under Decided → Research outputs, "Untrack the row-level files" in Phases item 3 and `.gitignore` in Files item 3 are not carried out. The rule that UW row-level data stays out of the public repo covers new outputs: the job still never commits any.
 
 ## Left to the builder
 
