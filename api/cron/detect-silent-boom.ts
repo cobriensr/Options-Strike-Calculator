@@ -447,9 +447,11 @@ export default withCronInstrumentation(
 
     // Pre-fetch Take-It bundle + sequential context: two recent-fire
     // queries plus the win-rate day cache (started at the top of the run),
-    // once per cron tick. Best-effort: the helper gives them 5 s, and on
-    // any failure returns null (takeit_prob stays NULL, the heuristic
-    // INSERT still lands) and tells us why via the callback.
+    // once per cron tick. Best-effort: the helper gives the bundle load its
+    // own 10 s deadline (BUNDLE_LOAD_DEADLINE_MS in takeit-bundle-loader.ts)
+    // and then the queries 5 s, so 15 s at most, and on any failure returns
+    // null (takeit_prob stays NULL, the heuristic INSERT still lands) and
+    // tells us why via the callback.
     //
     // The two recent-fire lookbacks (35 and 10 min) carry a `date` bound
     // too: it is the leading column of the (date, bucket_ct) and (date,

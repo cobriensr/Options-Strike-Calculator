@@ -250,12 +250,14 @@ export default withCronInstrumentation(
     //                   the slowest slice, not their sum
     //   seeds           the cooldown seed query. It starts with the scan, so
     //                   it runs (and has a time) even when no chain qualifies
-    //   takeitPrefetch  loadTakeitDetectContext, from its own start. It starts
-    //                   with the scan when the day's win-rate cache is warm,
-    //                   else when that load settles or the scan answers with
-    //                   ticks (see 3 below), and it joins the load, so a cold
-    //                   run counts the part still pending at the join. 0 when
-    //                   it never started (an empty scan on a cold cache,
+    //   takeitPrefetch  loadTakeitDetectContext, from its own start: the
+    //                   bundle load, under its own 10 s deadline, then the
+    //                   sequential-context prefetch, under a 5 s one. It
+    //                   starts with the scan when the day's win-rate cache is
+    //                   warm, else when that load settles or the scan answers
+    //                   with ticks (see 3 below), and it joins the load, so a
+    //                   cold run counts the part still pending at the join. 0
+    //                   when it never started (an empty scan on a cold cache,
     //                   which is a skipped run and doesn't report it)
     //   pass1Flow       the whole Pass 1 loop: detect, enrich, score, and the
     //                   per-ticker-day flow-series fetch that is its I/O
@@ -330,9 +332,10 @@ export default withCronInstrumentation(
     );
 
     // Take-It prefetch failure, set by the helper's callback (best-effort:
-    // the helper gives the prefetch 5 s and on any failure returns null, so
-    // takeit_prob stays NULL, the heuristic INSERT still lands, and it tells
-    // us why through the callback).
+    // the helper gives the bundle load 10 s (its own deadline) and then the
+    // prefetch 5 s, and on any failure returns null, so takeit_prob stays
+    // NULL, the heuristic INSERT still lands, and it tells us why through
+    // the callback).
     let takeitPrefetchFailure = null as TakeitPrefetchFailure | null;
 
     // ── Setup: three independent reads, in parallel ────────────────────
@@ -477,10 +480,12 @@ export default withCronInstrumentation(
     // so the seed query, the Take-It prefetch (which reports to Sentry and
     // sets the failure above) and the scan's other slices are not left
     // running behind the 500; then fail the run on the scan's reason. The
-    // wait is bounded by the seed query's retries and the prefetch's 5 s
-    // deadline, which ran alongside the scan. The seed promise never rejects
-    // (held above) and the helper never throws, so only the scan can fail
-    // here; a rejection from either of the others would still fail the run.
+    // wait is bounded by the seed query's retries (about 33 s) and by the
+    // Take-It load, which ran alongside the scan: the bundle load's own
+    // 10 s deadline (BUNDLE_LOAD_DEADLINE_MS in takeit-bundle-loader.ts),
+    // then the prefetch's 5 s one. The seed promise never rejects (held
+    // above) and the helper never throws, so only the scan can fail here; a
+    // rejection from either of the others would still fail the run.
     const [scanOutcome, seedsOutcome, takeitOutcome] = await Promise.allSettled(
       [scanPromise, seedsPromise, takeitPromise],
     );
