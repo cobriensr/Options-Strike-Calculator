@@ -72,6 +72,15 @@ async function eventFeatures(dateStr: string): Promise<FeatureRow> {
   return features;
 }
 
+// The table's first row. A date before the first row predates the table, and
+// days_to_next_event is unset for it (see nextEventGap). The arithmetic cases
+// below start the table here so that their dates are inside it.
+const FIRST_ROW: [string, string, string] = [
+  '2025-01-02',
+  'First calendar row',
+  'OTHER',
+];
+
 describe('addEventFeatures real SQL', () => {
   it.each([
     ['the next calendar day', '2026-03-24', '2026-03-25', 1],
@@ -85,7 +94,7 @@ describe('addEventFeatures real SQL', () => {
     ['across the fall DST change', '2026-10-30', '2026-11-03', 4],
     ['across a month and a year end', '2026-12-30', '2027-01-04', 5],
   ])('counts calendar days: %s', async (_label, today, next, gap) => {
-    await insertEvents([[next, 'Some release', 'CPI']]);
+    await insertEvents([FIRST_ROW, [next, 'Some release', 'CPI']]);
 
     expect((await eventFeatures(today)).days_to_next_event).toBe(gap);
   });
@@ -95,15 +104,39 @@ describe('addEventFeatures real SQL', () => {
     ['10 days is kept', '2026-04-03', 10],
     ['11 days is unset', '2026-04-04', undefined],
   ])('gap rule on real dates: %s', async (_label, next, expected) => {
-    await insertEvents([[next, 'Some release', 'CPI']]);
+    await insertEvents([FIRST_ROW, [next, 'Some release', 'CPI']]);
 
     expect((await eventFeatures('2026-03-24')).days_to_next_event).toBe(
       expected,
     );
   });
 
+  // The case this replaces counted 03-24 to a first row on 03-25 as 1 day.
+  // That gap measures when the table began, so it is no value; the backfill
+  // NULLs such rows and a live rebuild must not write one back.
+  it('is unset for a date before the first event row, even one day before', async () => {
+    await insertEvents([['2026-03-25', 'Some release', 'CPI']]);
+
+    expect((await eventFeatures('2026-03-24')).days_to_next_event).toBe(
+      undefined,
+    );
+    expect((await eventFeatures('2026-03-18')).days_to_next_event).toBe(
+      undefined,
+    );
+  });
+
+  it('treats the first event row day itself as inside the table', async () => {
+    await insertEvents([
+      ['2026-03-25', 'First release', 'CPI'],
+      ['2026-03-26', 'Next release', 'PCE'],
+    ]);
+
+    expect((await eventFeatures('2026-03-25')).days_to_next_event).toBe(1);
+  });
+
   it('measures to the earliest later date, not a later one', async () => {
     await insertEvents([
+      FIRST_ROW,
       ['2026-04-10', 'Far release', 'GDP'],
       ['2026-03-30', 'Near release', 'CPI'],
       ['2026-03-30', 'Same-day release', 'PCE'],

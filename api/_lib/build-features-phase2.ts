@@ -17,8 +17,7 @@
 import type { NeonQueryFunction } from '@neondatabase/serverless';
 import type { FeatureRow } from './build-features-types.js';
 import { getDarkPoolLevels } from './dark-pool-query.js';
-import type { EconomicEventType } from './economic-event-type.js';
-import { isFomcDecisionDay } from './fomc-schedule.js';
+import { nextEventGap, summarizeDayEvents } from './economic-event-features.js';
 import { fetchMaxPain } from './max-pain.js';
 import { uwFetch } from './api-helpers.js';
 import logger from './logger.js';
@@ -218,76 +217,12 @@ export async function addVvixPercentileFeatures(
   }
 }
 
-// Which event type labels a day when several are present: the lowest rank
-// wins. A Record, not a list, so a new `EconomicEventType` member fails
-// type-check here until it is ranked.
-const EVENT_TYPE_RANK: Record<EconomicEventType, number> = {
-  FOMC: 0,
-  CPI: 1,
-  PCE: 2,
-  JOBS: 3,
-  GDP: 4,
-  FED: 5,
-  PMI: 6,
-  RETAIL: 7,
-  SENTIMENT: 8,
-  OTHER: 9,
-};
-
-const EVENT_TYPES_BY_RANK = (
-  Object.keys(EVENT_TYPE_RANK) as EconomicEventType[]
-).sort((a, b) => EVENT_TYPE_RANK[a] - EVENT_TYPE_RANK[b]);
-
-/**
- * The one rule behind a day's `is_fomc` and `event_type`, given the
- * `event_type`s of that day's `economic_events` rows (none is an empty set).
- * `addEventFeatures` and the history backfill both call it.
- *
- * - `isFomc`: the Fed schedule says it is a decision day, so a scheduled
- *   meeting counts with no rows at all (before the table existed, or in a
- *   gap), OR a row is typed `FOMC`, which the classifier gives only to
- *   decision-type releases, so it covers an unscheduled (emergency) decision.
- * - `eventType`: `FOMC` when `isFomc`, else the first present type in
- *   `EVENT_TYPE_RANK`, else null (no rows, or none of the known types).
- */
-export function summarizeDayEvents(
-  dateStr: string,
-  types: ReadonlySet<string>,
-): { isFomc: boolean; eventType: string | null } {
-  const isFomc = isFomcDecisionDay(dateStr) || types.has('FOMC');
-  if (isFomc) return { isFomc, eventType: 'FOMC' };
-  return {
-    isFomc,
-    eventType: EVENT_TYPES_BY_RANK.find((p) => types.has(p)) ?? null,
-  };
-}
-
-/**
- * The longest calendar-day gap to the next `economic_events` row that still
- * means "the next event". UW's calendar has weekly jobless claims plus several
- * releases most days, so a gap over 10 days means rows are missing (the
- * 2026-07-22..09-07 hole), not a quiet calendar. A longer gap is no feature
- * value at all. `addEventFeatures` and the history backfill both apply it.
- */
-export const MAX_PLAUSIBLE_EVENT_GAP_DAYS = 10;
-
-/**
- * `days` when it is a plausible gap to the next event row (see
- * MAX_PLAUSIBLE_EVENT_GAP_DAYS), else null: no later row, or a gap long enough
- * to mean missing data.
- */
-export function plausibleEventGap(
-  days: number | null | undefined,
-): number | null {
-  return days != null && days <= MAX_PLAUSIBLE_EVENT_GAP_DAYS ? days : null;
-}
-
 /**
  * Economic event features: FOMC / OPEX / event_type / event_count /
  * days_to_next_event. Mixes a `economic_events` lookup with the Fed
- * decision-day schedule (`summarizeDayEvents`) and a calendar computation
- * for OPEX (3rd Friday of month). Sets defaults so even an empty calendar
- * day still has populated fields.
+ * decision-day schedule (`summarizeDayEvents`, in economic-event-features.ts)
+ * and a calendar computation for OPEX (3rd Friday of month). Sets defaults so
+ * even an empty calendar day still has populated fields.
  */
 export async function addEventFeatures(
   sql: Sql,
@@ -319,16 +254,22 @@ export async function addEventFeatures(
   }
 
   // Days to next event: the integer calendar-day gap, computed on DATEs in
-  // SQL. (DATE - DATE is an integer; the aggregate is NULL with no later row.)
-  // A gap over MAX_PLAUSIBLE_EVENT_GAP_DAYS is missing calendar data and, like
-  // no later row, leaves the field unset.
+  // SQL. (DATE - DATE is an integer; each MIN is NULL with no matching row.)
+  // `before_table` is true when the day precedes the first economic_events
+  // row. nextEventGap leaves the field unset for a day before the table
+  // existed and for a gap over MAX_PLAUSIBLE_EVENT_GAP_DAYS (missing calendar
+  // data), as it does with no later row. The backfill applies the same rule.
   const nextEventRow = await sql`
-    SELECT (MIN(date) - ${dateStr}::date) AS days_to_next
-    FROM economic_events
-    WHERE date > ${dateStr}
+    SELECT
+      (SELECT MIN(date) FROM economic_events WHERE date > ${dateStr}::date)
+        - ${dateStr}::date AS days_to_next,
+      (SELECT MIN(date) FROM economic_events) > ${dateStr}::date AS before_table
   `;
   const rawGap = nextEventRow[0]?.days_to_next;
-  const daysToNext = plausibleEventGap(rawGap == null ? null : Number(rawGap));
+  const daysToNext = nextEventGap(
+    rawGap == null ? null : Number(rawGap),
+    nextEventRow[0]?.before_table as boolean | null | undefined,
+  );
   if (daysToNext !== null) features.days_to_next_event = daysToNext;
 }
 

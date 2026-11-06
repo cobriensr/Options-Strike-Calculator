@@ -25,9 +25,6 @@ vi.mock('../_lib/sentry.js', () => ({
 import {
   engineerPhase2Features,
   isWithinUWWindow,
-  summarizeDayEvents,
-  plausibleEventGap,
-  MAX_PLAUSIBLE_EVENT_GAP_DAYS,
   addEventFeatures,
   addPrevDayFeatures,
   addRealizedVolFeatures,
@@ -767,7 +764,7 @@ describe('engineerPhase2Features', () => {
 
     // The cases below call addEventFeatures directly with its two queries
     // queued (event rows, then the next-event gap). The rule itself is
-    // tabulated under `summarizeDayEvents`; these pin how the SQL results
+    // tabulated under `summarizeDayEvents` in economic-event-features.test.ts; these pin how the SQL results
     // reach it.
 
     it('flags a scheduled decision day as FOMC even with no event rows', async () => {
@@ -816,7 +813,7 @@ describe('engineerPhase2Features', () => {
       ['the next calendar day', '2026-03-24', 1],
       ['Friday to Monday', '2026-03-27', 3],
     ])(
-      'passes the gap through for %s, with the date bound twice',
+      'passes the gap through for %s, with the date bound three times',
       async (_label, dateStr, gap) => {
         const features = makeFeatures();
 
@@ -826,8 +823,13 @@ describe('engineerPhase2Features', () => {
         await addEventFeatures(mockSql as never, dateStr, features);
 
         expect(features.days_to_next_event).toBe(gap);
-        // `(MIN(date) - $1::date)` and `date > $2` take the trade date.
-        expect(mockSql.mock.calls[1]?.slice(1)).toEqual([dateStr, dateStr]);
+        // The gap's `date > $1`, its `- $2::date` and the table-start
+        // `> $3::date` each take the trade date.
+        expect(mockSql.mock.calls[1]?.slice(1)).toEqual([
+          dateStr,
+          dateStr,
+          dateStr,
+        ]);
       },
     );
 
@@ -843,6 +845,26 @@ describe('engineerPhase2Features', () => {
 
       mockSql.mockResolvedValueOnce([]); // eventRows
       mockSql.mockResolvedValueOnce([{ days_to_next: gap }]); // nextEventRow
+
+      await addEventFeatures(mockSql as never, DATE_STR, features);
+
+      expect(features.days_to_next_event).toBe(expected);
+    });
+
+    // A day dated before the first economic_events row predates the table:
+    // the gap to that row measures when the table began (the backfill NULLs
+    // such rows, so a live rebuild must not write one back).
+    it.each([
+      ['before the first event row, even for a gap of 1', 1, true, undefined],
+      ['on or after the first event row, the gap is kept', 1, false, 1],
+      ['an empty table (NULL flag) is not before it', 3, null, 3],
+    ])('%s', async (_label, gap, beforeTable, expected) => {
+      const features = makeFeatures();
+
+      mockSql.mockResolvedValueOnce([]); // eventRows
+      mockSql.mockResolvedValueOnce([
+        { days_to_next: gap, before_table: beforeTable },
+      ]); // nextEventRow
 
       await addEventFeatures(mockSql as never, DATE_STR, features);
 
@@ -1918,125 +1940,6 @@ describe('engineerPhase2Features', () => {
       expect(features.opt_call_volume).toBe(150000);
       expect(features.opt_vol_pcr).toBeCloseTo(200000 / 150000);
     });
-  });
-});
-
-// ── plausibleEventGap (the missing-calendar-data rule) ─────
-
-describe('plausibleEventGap', () => {
-  it('allows up to ten calendar days', () => {
-    expect(MAX_PLAUSIBLE_EVENT_GAP_DAYS).toBe(10);
-  });
-
-  it.each([
-    [0, 0],
-    [1, 1],
-    [10, 10],
-    [11, null],
-    [140, null],
-    [null, null],
-    [undefined, null],
-  ])('%s -> %s', (days, expected) => {
-    expect(plausibleEventGap(days)).toBe(expected);
-  });
-});
-
-// ── summarizeDayEvents (the is_fomc / event_type rule) ─────
-
-describe('summarizeDayEvents', () => {
-  // 2026-07-29 is a scheduled decision day; 2026-03-24 is not.
-  const DECISION_DAY = '2026-07-29';
-  const PLAIN_DAY = '2026-03-24';
-
-  it.each<{
-    name: string;
-    date: string;
-    types: string[];
-    expected: { isFomc: boolean; eventType: string | null };
-  }>([
-    {
-      name: 'a decision day with no event rows',
-      date: DECISION_DAY,
-      types: [],
-      expected: { isFomc: true, eventType: 'FOMC' },
-    },
-    {
-      name: 'a decision day whose only rows are FED',
-      date: DECISION_DAY,
-      types: ['FED'],
-      expected: { isFomc: true, eventType: 'FOMC' },
-    },
-    {
-      name: 'a non-decision day whose only rows are FED',
-      date: PLAIN_DAY,
-      types: ['FED'],
-      expected: { isFomc: false, eventType: 'FED' },
-    },
-    {
-      name: 'GDP and FED: GDP wins',
-      date: PLAIN_DAY,
-      types: ['FED', 'GDP'],
-      expected: { isFomc: false, eventType: 'GDP' },
-    },
-    {
-      name: 'FED and PMI: FED wins',
-      date: PLAIN_DAY,
-      types: ['PMI', 'FED'],
-      expected: { isFomc: false, eventType: 'FED' },
-    },
-    {
-      name: 'a FOMC-typed row on a non-decision day (unscheduled decision)',
-      date: PLAIN_DAY,
-      types: ['FOMC'],
-      expected: { isFomc: true, eventType: 'FOMC' },
-    },
-    {
-      name: 'a FOMC-typed row beats every other type',
-      date: PLAIN_DAY,
-      types: ['CPI', 'FED', 'FOMC', 'OTHER'],
-      expected: { isFomc: true, eventType: 'FOMC' },
-    },
-    {
-      name: 'the old wrong April 2026 date (2026-05-06) is not a decision day',
-      date: '2026-05-06',
-      types: ['FED'],
-      expected: { isFomc: false, eventType: 'FED' },
-    },
-    {
-      name: 'no rows on a non-decision day',
-      date: PLAIN_DAY,
-      types: [],
-      expected: { isFomc: false, eventType: null },
-    },
-    {
-      name: 'only a type outside the priority list',
-      date: PLAIN_DAY,
-      types: ['MYSTERY'],
-      expected: { isFomc: false, eventType: null },
-    },
-  ])('$name', ({ date, types, expected }) => {
-    expect(summarizeDayEvents(date, new Set(types))).toEqual(expected);
-  });
-
-  it('ranks the types FOMC, CPI, PCE, JOBS, GDP, FED, PMI, RETAIL, SENTIMENT, OTHER', () => {
-    const order = [
-      'FOMC',
-      'CPI',
-      'PCE',
-      'JOBS',
-      'GDP',
-      'FED',
-      'PMI',
-      'RETAIL',
-      'SENTIMENT',
-      'OTHER',
-    ];
-    // With a type and everything below it present, the type itself wins.
-    for (const [i, type] of order.entries()) {
-      expect(
-        summarizeDayEvents(PLAIN_DAY, new Set(order.slice(i))).eventType,
-      ).toBe(type);
-    }
   });
 });
 
