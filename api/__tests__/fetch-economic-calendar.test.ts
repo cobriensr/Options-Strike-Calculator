@@ -224,6 +224,32 @@ describe('fetch-economic-calendar handler', () => {
       invalidTimeSkipped: 0,
     });
     expect(mockSql).not.toHaveBeenCalled();
+    // UW serves a two-week window, so an empty one on a weekday is abnormal:
+    // the run stays a success (nothing failed) but it is not silent.
+    expect(res._json).toMatchObject({ status: 'success' });
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'fetch_economic_calendar.empty',
+    );
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'fetch-economic-calendar: UW returned an empty calendar',
+      { level: 'warning' },
+    );
+  });
+
+  it('does not raise the empty-calendar alert when UW has events but none today', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch([
+      makeCalendarEvent({ event: 'CPI', time: '2026-03-26T13:30:00Z' }),
+    ]);
+
+    const res = await runCron();
+
+    expect(res._json).toMatchObject({ status: 'success', eventsStored: 0 });
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(metrics.increment).not.toHaveBeenCalledWith(
+      'fetch_economic_calendar.empty',
+    );
   });
 
   it('stores events and categorizes types correctly', async () => {

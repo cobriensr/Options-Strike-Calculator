@@ -77,6 +77,19 @@ export default withCronInstrumentation(
       }),
     );
 
+    // UW serves a two-week window, so a 2xx with `data: []` on a weekday is
+    // abnormal: an outage or a changed feed, not a quiet calendar. Nothing
+    // failed here, so the run stays a success, but it is not silent.
+    if (events.length === 0) {
+      metrics.increment('fetch_economic_calendar.empty');
+      Sentry.captureMessage(
+        'fetch-economic-calendar: UW returned an empty calendar',
+        {
+          level: 'warning',
+        },
+      );
+    }
+
     // Filter to today's events only. An event whose `time` is missing or
     // doesn't parse is skipped and counted: formatting an Invalid Date
     // throws, and one bad row must not fail the whole day's run. A null time
