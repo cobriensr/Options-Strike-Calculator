@@ -1,8 +1,12 @@
 /**
  * Pure pieces of scripts/backfill-range-pos.mjs, kept here so they can be
- * tested: argument parsing, the selection window, the UW candle fetch,
- * range_pos row mapping, chunking, a small concurrency pool, a Neon retry
- * and the report helpers.
+ * tested: the selection window, the UW candle fetch, range_pos row mapping
+ * and the month report.
+ *
+ * The generic pieces (argument parsing, the market-hours guard, chunking, a
+ * small concurrency pool, the Neon retry and the failure/redact helpers)
+ * live in backfill-cli.mjs and are re-exported below under their old names,
+ * so the script and its tests import them from here as before.
  *
  * Plain `node` can't import the TypeScript originals (their relative
  * `./x.js` imports only resolve under a bundler, and uwFetch pulls in the
@@ -18,8 +22,19 @@
  * net-prem-ticks backfill.
  */
 
+import { chunk } from './backfill-cli.mjs';
 import { ctDateStr } from './trading-days.mjs';
 import { UW_BASE, fetchUwDayRows } from './uw-day-fetch.mjs';
+
+export {
+  chunk,
+  isMarketHoursCt,
+  parseArgs,
+  redact,
+  retryTransientDb,
+  runPool,
+  summarizeFailures,
+} from './backfill-cli.mjs';
 
 // ── Mirrors of the TypeScript sources ─────────────────────
 
@@ -71,62 +86,7 @@ export function computeRangePos(candles, triggerTimeIso, spotAtFirst) {
   return Math.max(0, Math.min(1, pos));
 }
 
-// ── Arguments and selection ────────────────────────────────
-
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-
-function isIsoDate(value) {
-  if (typeof value !== 'string' || !ISO_DATE.test(value)) return false;
-  const d = new Date(`${value}T00:00:00Z`);
-  return !Number.isNaN(d.getTime()) && d.toISOString().startsWith(value);
-}
-
-/**
- * Parse the CLI flags. Throws with a message naming the bad flag.
- *   --dry-run             compute and report, but write nothing
- *   --allow-market-hours  run even inside isMarketHoursCt's window
- *   --limit N             at most N ticker-days (newest first)
- *   --from YYYY-MM-DD     first trading date to fill (inclusive)
- *   --to YYYY-MM-DD       last trading date to fill (inclusive)
- */
-export function parseArgs(argv) {
-  const args = {
-    dryRun: false,
-    allowMarketHours: false,
-    limit: null,
-    from: null,
-    to: null,
-  };
-  for (let i = 0; i < argv.length; i++) {
-    const flag = argv[i];
-    if (flag === '--dry-run') {
-      args.dryRun = true;
-    } else if (flag === '--allow-market-hours') {
-      args.allowMarketHours = true;
-    } else if (flag === '--limit') {
-      const raw = argv[++i];
-      const n = Number(raw);
-      if (!Number.isInteger(n) || n < 1) {
-        throw new Error(
-          `--limit needs a whole number of ticker-days, got ${raw}`,
-        );
-      }
-      args.limit = n;
-    } else if (flag === '--from' || flag === '--to') {
-      const raw = argv[++i];
-      if (!isIsoDate(raw)) {
-        throw new Error(`${flag} needs a YYYY-MM-DD date, got ${raw}`);
-      }
-      args[flag.slice(2)] = raw;
-    } else {
-      throw new Error(`Unknown argument: ${flag}`);
-    }
-  }
-  if (args.from != null && args.to != null && args.from > args.to) {
-    throw new Error(`--from ${args.from} is after --to ${args.to}`);
-  }
-  return args;
-}
+// ── Selection ──────────────────────────────────────────────
 
 /**
  * Date bounds for the run. `before` is today's CT date: the selection
@@ -136,35 +96,6 @@ export function parseArgs(argv) {
  */
 export function selectionWindow({ from, to }) {
   return { from, to, before: ctDateStr() };
-}
-
-const CT_CLOCK = new Intl.DateTimeFormat('en-US', {
-  timeZone: 'America/Chicago',
-  weekday: 'short',
-  hour: '2-digit',
-  minute: '2-digit',
-  hourCycle: 'h23',
-});
-/** 08:15 CT, a little before the open. */
-const GUARD_START_MIN = 8 * 60 + 15;
-/** 15:30 CT, a little after the close. */
-const GUARD_END_MIN = 15 * 60 + 30;
-
-/**
- * True on a weekday from 08:15 up to 15:30 CT. The backfill refuses to
- * run then (unless --allow-market-hours): its UW calls skip the shared
- * Redis semaphore, so they compete with the live crons for the key's 3
- * concurrent slots, and a 429 there opens detect-lottery-fires' candle
- * breaker. Holidays aren't known here; the flag covers them.
- * (scripts/_lib/trading-days.mjs only does dates, not time of day.)
- */
-export function isMarketHoursCt() {
-  const parts = Object.fromEntries(
-    CT_CLOCK.formatToParts(new Date()).map((p) => [p.type, p.value]),
-  );
-  if (parts.weekday === 'Sat' || parts.weekday === 'Sun') return false;
-  const minute = Number(parts.hour) * 60 + Number(parts.minute);
-  return minute >= GUARD_START_MIN && minute < GUARD_END_MIN;
 }
 
 // ── Row mapping and batching ───────────────────────────────
@@ -216,52 +147,10 @@ export function takeReadyChunks(pending, size, final) {
   };
 }
 
-export function chunk(items, size) {
-  if (!Number.isInteger(size) || size < 1) {
-    throw new Error(`chunk size must be at least 1, got ${size}`);
-  }
-  const out = [];
-  for (let i = 0; i < items.length; i += size) {
-    out.push(items.slice(i, i + size));
-  }
-  return out;
-}
-
-/**
- * Run `worker` over `items` with at most `limit` in flight, results in
- * input order. After a worker throws, no new item starts and the pool
- * rejects with that error.
- */
-export async function runPool(items, limit, worker) {
-  const results = new Array(items.length);
-  let cursor = 0;
-  let failed = false;
-  const lane = async () => {
-    while (!failed && cursor < items.length) {
-      const i = cursor++;
-      try {
-        results[i] = await worker(items[i], i);
-      } catch (err) {
-        failed = true;
-        throw err;
-      }
-    }
-  };
-  const lanes = Math.max(1, Math.min(limit, items.length));
-  await Promise.all(Array.from({ length: lanes }, lane));
-  return results;
-}
-
 // ── Unusual Whales ─────────────────────────────────────────
 
 /** Explicit UA: UW turns away some default client UAs (Python-urllib). */
 export const UW_USER_AGENT = 'strike-calculator-range-pos-backfill (node)';
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function messageOf(err) {
-  return err instanceof Error ? err.message : String(err);
-}
 
 /**
  * One UW 1-min OHLC call for a ticker-day (fetchUwDayRows: retries once,
@@ -280,62 +169,6 @@ export async function fetchDayCandles(apiKey, ticker, date) {
   return outcome.kind === 'ok'
     ? { kind: 'ok', candles: outcome.rows }
     : outcome;
-}
-
-// ── Neon ───────────────────────────────────────────────────
-
-/** Same transient pattern as DB_RETRYABLE_RX in api/_lib/db.ts. */
-const DB_TRANSIENT =
-  /timeout|ECONNREFUSED|ECONNRESET|ENETUNREACH|ENOTFOUND|fetch failed|socket hang up|TLS connection|EAI_AGAIN|recovery_mode|server_login_retry|Too many connections|connection closed|server conn crashed/i;
-const DB_RETRY_DELAYS_MS = [2_000, 4_000];
-/**
- * Per-attempt deadline. The heaviest call (the per-month counts over the
- * table) takes seconds; this only cuts off a hung HTTP request or a long
- * row-lock wait. Its "timeout" message is transient, so it's retried.
- */
-const DB_ATTEMPT_TIMEOUT_MS = 30_000;
-
-/**
- * Race one attempt against DB_ATTEMPT_TIMEOUT_MS, clearing the timer once
- * it settles (the withDbRetry pattern in api/_lib/db.ts). The abandoned
- * request isn't cancelled: if it was an UPDATE that later commits, the
- * retry's `IS NULL` guard skips those rows.
- */
-async function withAttemptDeadline(fn) {
-  let timeoutHandle;
-  try {
-    return await Promise.race([
-      Promise.resolve().then(fn),
-      new Promise((_, reject) => {
-        timeoutHandle = setTimeout(
-          () =>
-            reject(
-              new Error(`db attempt timeout after ${DB_ATTEMPT_TIMEOUT_MS} ms`),
-            ),
-          DB_ATTEMPT_TIMEOUT_MS,
-        );
-      }),
-    ]);
-  } finally {
-    clearTimeout(timeoutHandle);
-  }
-}
-
-/**
- * Run a Neon query with a 30 s deadline per attempt, retrying a transient
- * failure (the deadline included) twice, after 2 s and then 4 s. A
- * genuine error (bad SQL, constraint) rethrows at once.
- */
-export async function retryTransientDb(fn) {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await withAttemptDeadline(fn);
-    } catch (err) {
-      const delay = DB_RETRY_DELAYS_MS[attempt];
-      if (delay == null || !DB_TRANSIENT.test(messageOf(err))) throw err;
-      await sleep(delay);
-    }
-  }
 }
 
 // ── Report ─────────────────────────────────────────────────
@@ -361,46 +194,4 @@ export function mergeMonthCounts(before, after) {
       nullIndex: row.null_index,
     };
   });
-}
-
-/** Failures by status, most common first, each with its first example. */
-export function summarizeFailures(failures) {
-  const byStatus = new Map();
-  for (const f of failures) {
-    const entry = byStatus.get(f.status);
-    if (entry) {
-      entry.count++;
-    } else {
-      byStatus.set(f.status, {
-        status: f.status,
-        count: 1,
-        example: { ticker: f.ticker, date: f.date, detail: f.detail },
-      });
-    }
-  }
-  return [...byStatus.values()].sort(
-    (a, b) => b.count - a.count || a.status.localeCompare(b.status),
-  );
-}
-
-function urlPasswords(url) {
-  try {
-    const raw = new URL(url).password;
-    return raw ? [raw, decodeURIComponent(raw)] : [];
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Scrub the UW key, the database URL and its password from text before
- * it's printed. Longest first, so the URL goes before the password in it.
- */
-export function redact(text, { uwKey, databaseUrl }) {
-  const secrets = [uwKey, databaseUrl, ...urlPasswords(databaseUrl)]
-    .filter((s) => typeof s === 'string' && s.length >= 4)
-    .sort((a, b) => b.length - a.length);
-  let out = String(text);
-  for (const secret of secrets) out = out.split(secret).join('[redacted]');
-  return out;
 }
