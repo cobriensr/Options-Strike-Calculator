@@ -508,6 +508,25 @@ describe('GET /api/events', () => {
     expect(goodFriday?.description).toContain('Good Friday');
   });
 
+  it('lists the 2028 early closes and nothing else', async () => {
+    const summer = await eventsFrom('2028-06-25T12:00:00Z', '30');
+    const summerEarly = summer.filter((e) => e.event === 'EARLY CLOSE');
+    expect(summerEarly.map((e) => e.date)).toEqual(['2028-07-03']);
+    expect(summerEarly[0]?.description).toContain('closes at');
+    expect(summerEarly[0]?.description).toContain('1:00 PM');
+    expect(summerEarly[0]?.description).toContain('Independence Day Eve');
+    expect(summerEarly[0]?.time).toBe('1:00 PM');
+
+    const fall = await eventsFrom('2028-11-01T12:00:00Z', '90');
+    const fallEarly = fall.filter((e) => e.event === 'EARLY CLOSE');
+    // 2028-12-24 is a Sunday, so there is no Christmas Eve early close.
+    expect(fallEarly.map((e) => e.date)).toEqual(['2028-11-24']);
+    expect(fallEarly[0]?.description).toContain('closes at');
+    expect(fallEarly[0]?.description).toContain('1:00 PM');
+    expect(fallEarly[0]?.description).toContain('Black Friday');
+    expect(fallEarly[0]?.time).toBe('1:00 PM');
+  });
+
   // Decision day (second day of each meeting) from the Fed's own calendar,
   // https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm, fetched
   // 2026-11-06. 'FOMC + SEP' marks the meetings with a Summary of Economic
