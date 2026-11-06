@@ -170,6 +170,7 @@ const GOOD_FRIDAYS: readonly string[] = [
   '2025-04-18',
   '2026-04-03',
   '2027-03-26',
+  '2028-04-14',
 ];
 
 const EARLY_CLOSE_REASON_BY_MONTH: Readonly<Record<string, string>> = {

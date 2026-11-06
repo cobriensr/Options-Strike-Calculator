@@ -501,6 +501,13 @@ describe('GET /api/events', () => {
     expect(summer.filter((e) => e.event === 'EARLY CLOSE')).toEqual([]);
   });
 
+  it('lists Good Friday 2028-04-14 as a closed event', async () => {
+    const events = await eventsFrom('2028-04-10T12:00:00Z', '10');
+    const goodFriday = events.find((e) => e.date === '2028-04-14');
+    expect(goodFriday?.event).toBe('CLOSED');
+    expect(goodFriday?.description).toContain('Good Friday');
+  });
+
   // Decision day (second day of each meeting) from the Fed's own calendar,
   // https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm, fetched
   // 2026-11-06. 'FOMC + SEP' marks the meetings with a Summary of Economic
