@@ -456,6 +456,17 @@ const run = (over: Partial<Parameters<typeof runRepair>[0]> = {}) => {
   });
 };
 
+/** The digest of a day's rebuilt-bar files as they are on disk right now. */
+function digestOnDisk(day: string): string {
+  const texts = new Map<string, string>();
+  for (const root of ['ES', 'NQ']) {
+    const name = `${root}-${day}.ndjson`;
+    const path = join(inDir, 'ndjson', name);
+    if (existsSync(path)) texts.set(name, readFileSync(path, 'utf8'));
+  }
+  return dayDigest(texts, day);
+}
+
 /** Rewrite one rebuilt-bar file in place, as a Phase 1 re-run would. */
 function editNdjson(
   file: string,
@@ -711,6 +722,9 @@ describe('--apply on real SQL (pglite)', () => {
     expect(logged()).toContain(
       '1 day(s) already applied (done marker), 0 to apply',
     );
+    expect(logged()).toContain(
+      'WARNING: 2026-04-21 is marked done but the fresh plan still has 1 update(s) and 0 delete(s) for it.',
+    );
     expect(hooks.writes).toBe(writes);
     expect((await table(pg)).get('ES 2026-04-21T13:05:00Z')?.high).toBe(
       '7062.0000',
@@ -721,6 +735,54 @@ describe('--apply on real SQL (pglite)', () => {
     expect((await table(pg)).get('ES 2026-04-21T13:05:00Z')?.high).toBe(
       '7001.0000',
     );
+  });
+
+  it('warns for each marked day that drifted, with its counts, and says the totals include them', async () => {
+    await run();
+    // Three marked days drift: two rows change back, one deleted row comes back.
+    await pg.query(
+      `UPDATE futures_bars SET open = 7060.75
+        WHERE symbol = 'ES' AND ts = '2026-04-07T14:31:00Z'`,
+    );
+    await pg.query(
+      `UPDATE futures_bars SET high = 7062
+        WHERE symbol = 'ES' AND ts = '2026-04-21T13:05:00Z'`,
+    );
+    await pg.query(
+      `INSERT INTO futures_bars (symbol, ts, open, high, low, close, volume)
+       VALUES ('RTY', '2026-04-11T14:00:00Z', 100, 101, 99, 100, 5)`,
+    );
+    const writes = hooks.writes;
+
+    expect(await run({ expectUpdates: 2, expectDeletes: 1 })).toBe(0);
+
+    const text = logged();
+    expect(text).toContain(
+      'WARNING: 2026-04-07 is marked done but the fresh plan still has 1 update(s) and 0 delete(s) for it.',
+    );
+    expect(text).toContain(
+      'WARNING: 2026-04-11 is marked done but the fresh plan still has 0 update(s) and 1 delete(s) for it.',
+    );
+    expect(text).toContain(
+      'WARNING: 2026-04-21 is marked done but the fresh plan still has 1 update(s) and 0 delete(s) for it.',
+    );
+    expect(text).toContain('the --expect totals count them');
+    expect(text).toContain(
+      '3 day(s) already applied (done marker), 0 to apply',
+    );
+    expect(hooks.writes).toBe(writes); // skipped, as before
+  });
+
+  it('does not warn about a clean marked day, or about a day that --force redoes', async () => {
+    await run();
+    await pg.query(
+      `UPDATE futures_bars SET high = 7062
+        WHERE symbol = 'ES' AND ts = '2026-04-21T13:05:00Z'`,
+    );
+    expect(await run({ expectUpdates: 1, expectDeletes: 0, force: true })).toBe(
+      0,
+    );
+    expect(logged()).not.toContain('WARNING');
   });
 
   it('does not rewrite a row that already holds its target value', async () => {
@@ -1006,7 +1068,40 @@ describe('--apply on real SQL (pglite)', () => {
     ) as Record<string, string>;
     expect(marker.gitHead).toBe('fbe7c057154fee85ca59ed5a43ecac1cfa4f720a');
     expect(marker.ndjsonSha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(marker.ndjsonSha256).toBe(dayDigest(inDir, '2026-04-21'));
+    expect(marker.ndjsonSha256).toBe(digestOnDisk('2026-04-21'));
+  });
+
+  it('stamps a marker with the bars the plan used, even if the file is rewritten before the marker', async () => {
+    const applied = digestOnDisk('2026-04-21');
+    // Phase 1 is re-run while the apply is under way: 04-21's file changes
+    // after the plan was built and before that day's marker is written.
+    hooks.beforeWrite = () => {
+      if (hooks.writes !== 1) return;
+      editNdjson('ES-2026-04-21.ndjson', (bar) => {
+        if (bar.ts === '2026-04-21T13:05:00Z') bar.high = 7001.5;
+      });
+    };
+
+    expect(await run()).toBe(0);
+
+    const marker = JSON.parse(
+      readFileSync(markerPath(workDir, '2026-04-21'), 'utf8'),
+    ) as Record<string, string>;
+    expect(digestOnDisk('2026-04-21')).not.toBe(applied); // the file did change
+    expect(marker.ndjsonSha256).toBe(applied); // the marker names what was applied
+
+    // So the next run sees a marker written for other bars and re-plans the day.
+    await pg.query(
+      `UPDATE futures_bars SET high = 7062
+        WHERE symbol = 'ES' AND ts = '2026-04-21T13:05:00Z'`,
+    );
+    expect(await run({ expectUpdates: 1, expectDeletes: 0 })).toBe(0);
+    expect(logged()).toContain(
+      'marker for 2026-04-21 was written for different rebuilt bars; re-planning',
+    );
+    expect((await table(pg)).get('ES 2026-04-21T13:05:00Z')?.high).toBe(
+      '7001.5000',
+    );
   });
 
   it('re-plans a marked day whose rebuilt bars changed, and skips one that did not', async () => {

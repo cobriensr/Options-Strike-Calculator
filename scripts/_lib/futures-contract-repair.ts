@@ -360,12 +360,22 @@ const FILE_RE = /^(ES|NQ)-(\d{4}-\d{2}-\d{2})\.ndjson$/;
 const inSpan = (span: Span, tsMs: number): boolean =>
   tsMs >= span.startMs && tsMs < span.endMs;
 
+export interface LoadedRebuild {
+  rebuild: Rebuild;
+  /**
+   * The text of every NDJSON file, by file name: the exact bytes the plan is
+   * built from, kept so a done marker can be stamped with their digest even
+   * if a file is rewritten on disk later.
+   */
+  texts: Map<string, string>;
+}
+
 /**
  * Load every NDJSON file into a per-root map keyed by the minute's epoch ms.
  * The manifest's file and row counts must match, so a missing or truncated
  * file cannot silently turn into "no rebuilt minute" (which deletes the row).
  */
-export function loadRebuild(dir: string, m: Manifest): Rebuild {
+export function loadRebuild(dir: string, m: Manifest): LoadedRebuild {
   const folder = join(dir, 'ndjson');
   if (!existsSync(folder)) throw new Error(`ndjson folder not found in ${dir}`);
   const files = readdirSync(folder)
@@ -383,13 +393,13 @@ export function loadRebuild(dir: string, m: Manifest): Rebuild {
   }
 
   const rebuild: Rebuild = { ES: new Map(), NQ: new Map() };
+  const texts = new Map<string, string>();
   const counts: Record<string, number> = {};
   for (const { name, root, day } of files) {
     const path = join(folder, name);
-    for (const { bar, line } of parseNdjsonLines(
-      readFileSync(path, 'utf8'),
-      path,
-    )) {
+    const text = readFileSync(path, 'utf8');
+    texts.set(name, text);
+    for (const { bar, line } of parseNdjsonLines(text, path)) {
       const where = `${path}:${line}`;
       const stamp = isoMinute(bar.tsMs);
       if (bar.symbol !== root) {
@@ -428,7 +438,7 @@ export function loadRebuild(dir: string, m: Manifest): Rebuild {
       }
     }
   }
-  return rebuild;
+  return { rebuild, texts };
 }
 
 // ── Tick-less windows ───────────────────────────────────────────────────────
@@ -1249,17 +1259,20 @@ function writeBackup(workDir: string, days: DayPlan[]): string {
 export const markerPath = (workDir: string, day: string): string =>
   join(workDir, `${day}.applied`);
 
-/** SHA-256 over the day's ES and NQ NDJSON (name and bytes; a missing file counts as absent). */
-export function dayDigest(dir: string, day: string): string {
+/**
+ * SHA-256 over the day's ES and NQ NDJSON as `loadRebuild` read them (name and
+ * text; a missing file counts as absent). Taken from memory, not from disk, so
+ * the digest names the bars the plan used.
+ */
+export function dayDigest(
+  texts: ReadonlyMap<string, string>,
+  day: string,
+): string {
   const hash = createHash('sha256');
   for (const root of ROOTS) {
     const name = `${root}-${day}.ndjson`;
-    const path = join(dir, 'ndjson', name);
-    hash.update(
-      existsSync(path)
-        ? `${name}\n${readFileSync(path, 'utf8')}\n`
-        : `${name} absent\n`,
-    );
+    const text = texts.get(name);
+    hash.update(text == null ? `${name} absent\n` : `${name}\n${text}\n`);
   }
   return hash.digest('hex');
 }
@@ -1495,7 +1508,7 @@ async function run(opts: RepairOptions): Promise<number> {
     if (opts.apply) throw new Error(`Refusing to --apply: ${message}`);
     console.log(`WARNING: ${message}; --apply would refuse.`);
   }
-  const rebuild = loadRebuild(opts.dir, m);
+  const { rebuild, texts } = loadRebuild(opts.dir, m);
   const tickless = loadTicklessWindows(opts.dir);
   console.log(
     `Futures contract-mix repair${opts.apply ? '' : ' (DRY RUN: read-only, no writes)'}`,
@@ -1536,30 +1549,51 @@ async function run(opts: RepairOptions): Promise<number> {
     );
   }
 
-  const stamp = (day: string): MarkerStamp => ({
-    gitHead: m.gitHead,
-    ndjsonSha256: dayDigest(opts.dir, day),
-  });
-  const pending = days.filter((d) => {
-    if (opts.force) return true;
-    const state = markerState(opts.workDir, d.day, stamp(d.day));
-    if (state.state === 'stale') {
-      console.log(`marker for ${d.day} ${state.reason}; re-planning`);
+  // One stamp per day, from the bytes the plan was built on, carried to the
+  // marker write: a file rewritten on disk during a long apply cannot change
+  // what the marker says was applied.
+  const planned = days.map((day) => ({
+    day,
+    stamp: {
+      gitHead: m.gitHead,
+      ndjsonSha256: dayDigest(texts, day.day),
+    } satisfies MarkerStamp,
+  }));
+  const pending: typeof planned = [];
+  for (const entry of planned) {
+    const { day } = entry;
+    const state = opts.force
+      ? ({ state: 'none' } as const)
+      : markerState(opts.workDir, day.day, entry.stamp);
+    if (state.state === 'done') {
+      // A done day that still has changes has drifted since it was applied.
+      // The totals above count it; it is skipped, so say so.
+      console.log(
+        `WARNING: ${day.day} is marked done but the fresh plan still has ${day.updates.length} update(s) and ${day.deletes.length} delete(s) for it. ` +
+          'It is skipped, and the --expect totals count them. Use --force to redo it.',
+      );
+      continue;
     }
-    return state.state !== 'done';
-  });
+    if (state.state === 'stale') {
+      console.log(`marker for ${day.day} ${state.reason}; re-planning`);
+    }
+    pending.push(entry);
+  }
   console.log(
-    `\n${days.length - pending.length} day(s) already applied (done marker), ${pending.length} to apply`,
+    `\n${planned.length - pending.length} day(s) already applied (done marker), ${pending.length} to apply`,
   );
   if (pending.length === 0) return 0;
 
-  const backup = writeBackup(opts.workDir, pending);
+  const backup = writeBackup(
+    opts.workDir,
+    pending.map((p) => p.day),
+  );
   console.log(`backup: ${backup}`);
-  for (const [index, day] of pending.entries()) {
+  for (const [index, { day, stamp }] of pending.entries()) {
     // A full apply can outlast the close, so the guard is checked before every
     // day, not only at the start. Finished days are already marked.
     if (isMarketHours()) {
-      const left = pending.slice(index);
+      const left = pending.slice(index).map((p) => p.day);
       console.error(
         `apply stopped before day ${day.day}: market hours began (09:25 ET). ` +
           `${index} day(s) done and marked; ${left.length} left ` +
@@ -1580,7 +1614,7 @@ async function run(opts: RepairOptions): Promise<number> {
     }
     writeFileSync(
       markerPath(opts.workDir, day.day),
-      `${JSON.stringify({ ...stamp(day.day), appliedAt: new Date().toISOString() })}\n`,
+      `${JSON.stringify({ ...stamp, appliedAt: new Date().toISOString() })}\n`,
     );
   }
   return 0;

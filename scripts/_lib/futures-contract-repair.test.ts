@@ -1047,12 +1047,20 @@ describe('inputs', () => {
         },
         {},
       );
-      const rebuild = loadRebuild(dir, m);
+      const { rebuild, texts } = loadRebuild(dir, m);
       expect([...rebuild.ES.keys()]).toEqual([
         ms('2026-04-07T14:31:00Z'),
         ms('2026-04-21T14:31:00Z'),
       ]);
       expect(rebuild.NQ.size).toBe(0);
+      // The bytes the plan is built from are kept, by file name.
+      expect([...texts.keys()]).toEqual([
+        'ES-2026-04-07.ndjson',
+        'ES-2026-04-21.ndjson',
+      ]);
+      expect(texts.get('ES-2026-04-07.ndjson')).toContain(
+        '"ts":"2026-04-07T14:31:00Z"',
+      );
     });
 
     it('refuses when a file is missing against the manifest count', () => {
@@ -1249,7 +1257,6 @@ describe('dayDigest and markerState', () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'repair-markers-'));
-    mkdirSync(join(dir, 'ndjson'));
   });
 
   afterEach(() => {
@@ -1257,8 +1264,8 @@ describe('dayDigest and markerState', () => {
   });
 
   const day = '2026-04-21';
-  const write = (name: string, text: string) =>
-    writeFileSync(join(dir, 'ndjson', name), text);
+  const texts = (files: Record<string, string>) =>
+    new Map(Object.entries(files));
   const stamp = (ndjsonSha256: string, gitHead = 'aaaaaaaa11112222') => ({
     gitHead,
     ndjsonSha256,
@@ -1270,20 +1277,27 @@ describe('dayDigest and markerState', () => {
     );
 
   it('hashes both roots files of the day, so a change to either shows', () => {
-    write(`ES-${day}.ndjson`, 'a');
-    const first = dayDigest(dir, day);
-    expect(dayDigest(dir, day)).toBe(first);
-    write(`ES-${day}.ndjson`, 'b');
-    const second = dayDigest(dir, day);
+    const es = `ES-${day}.ndjson`;
+    const nq = `NQ-${day}.ndjson`;
+    const first = dayDigest(texts({ [es]: 'a' }), day);
+    expect(dayDigest(texts({ [es]: 'a' }), day)).toBe(first);
+    const second = dayDigest(texts({ [es]: 'b' }), day);
     expect(second).not.toBe(first);
-    write(`NQ-${day}.ndjson`, 'c');
-    expect(dayDigest(dir, day)).not.toBe(second);
+    expect(dayDigest(texts({ [es]: 'b', [nq]: 'c' }), day)).not.toBe(second);
   });
 
   it('tells a day with no file from a day whose file is empty', () => {
-    const absent = dayDigest(dir, day);
-    write(`ES-${day}.ndjson`, '');
-    expect(dayDigest(dir, day)).not.toBe(absent);
+    const absent = dayDigest(texts({}), day);
+    expect(dayDigest(texts({ [`ES-${day}.ndjson`]: '' }), day)).not.toBe(
+      absent,
+    );
+  });
+
+  it('ignores the files of other days', () => {
+    const only = dayDigest(texts({}), day);
+    expect(dayDigest(texts({ 'ES-2026-04-22.ndjson': 'other day' }), day)).toBe(
+      only,
+    );
   });
 
   it('is none without a marker', () => {
