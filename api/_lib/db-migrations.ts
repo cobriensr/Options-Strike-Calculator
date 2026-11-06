@@ -5624,4 +5624,51 @@ export const MIGRATIONS: Migration[] = [
       sql`DROP TABLE IF EXISTS es_bars`,
     ],
   },
+  {
+    id: 201,
+    description:
+      'Record how the outcomes of each fire were made: outcome_source + outcome_version on lottery_finder_fires and silent_boom_alerts, and inversion_source + inversion_version on lottery_finder_fires (the realized_flow_inversion_pct pass). A source is fulltape (a script reading the UW Full Tape, from R2 or a local dir), bot_eod (a script reading a local Bot-EOD dir) or ws_cron (the two Vercel enrich crons); inversion_source takes fulltape or bot_eod only. A version is a SMALLINT above 0 and is set exactly when its source is; 1 is the first computation. NULL in both means the row was written before this migration. A tape writer also tags a row it tried but could not price and leaves the outcomes NULL, so an outcome that is NULL next to a source means tried, not pending. The three CHECKs are added NOT VALID on purpose: they bind every later write and skip the scan of existing rows, which all hold NULL. Each CHECK spells out IS NOT NULL on the tagged branch, because a CHECK passes when its test evaluates to NULL and would otherwise let a lone tag or a lone version through. No index, default or backfill. Spec: docs/superpowers/specs/2026-10-28-nightly-pipeline-automation-design.md (Enrichment); plan: docs/superpowers/plans/2026-10-29-nightly-pipeline-phase2.md.',
+    statements: (sql) => [
+      sql`SET LOCAL lock_timeout = '5s'`,
+      sql`
+        ALTER TABLE lottery_finder_fires
+          ADD COLUMN IF NOT EXISTS outcome_source TEXT,
+          ADD COLUMN IF NOT EXISTS outcome_version SMALLINT,
+          ADD COLUMN IF NOT EXISTS inversion_source TEXT,
+          ADD COLUMN IF NOT EXISTS inversion_version SMALLINT,
+          DROP CONSTRAINT IF EXISTS lottery_finder_fires_outcome_source_chk,
+          ADD CONSTRAINT lottery_finder_fires_outcome_source_chk CHECK (
+            (outcome_source IS NULL AND outcome_version IS NULL)
+            OR (
+              outcome_source IS NOT NULL AND outcome_version IS NOT NULL
+              AND outcome_source IN ('fulltape', 'bot_eod', 'ws_cron')
+              AND outcome_version > 0
+            )
+          ) NOT VALID,
+          DROP CONSTRAINT IF EXISTS lottery_finder_fires_inversion_source_chk,
+          ADD CONSTRAINT lottery_finder_fires_inversion_source_chk CHECK (
+            (inversion_source IS NULL AND inversion_version IS NULL)
+            OR (
+              inversion_source IS NOT NULL AND inversion_version IS NOT NULL
+              AND inversion_source IN ('fulltape', 'bot_eod')
+              AND inversion_version > 0
+            )
+          ) NOT VALID
+      `,
+      sql`
+        ALTER TABLE silent_boom_alerts
+          ADD COLUMN IF NOT EXISTS outcome_source TEXT,
+          ADD COLUMN IF NOT EXISTS outcome_version SMALLINT,
+          DROP CONSTRAINT IF EXISTS silent_boom_alerts_outcome_source_chk,
+          ADD CONSTRAINT silent_boom_alerts_outcome_source_chk CHECK (
+            (outcome_source IS NULL AND outcome_version IS NULL)
+            OR (
+              outcome_source IS NOT NULL AND outcome_version IS NOT NULL
+              AND outcome_source IN ('fulltape', 'bot_eod', 'ws_cron')
+              AND outcome_version > 0
+            )
+          ) NOT VALID
+      `,
+    ],
+  },
 ];
