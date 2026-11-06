@@ -121,3 +121,48 @@ Owner approval: 2026-11-06 ("yes please" to the Sept 3–29 backfill). The appro
 
 - **All six roots, not three:** yes, because all six are missing.
 - **A tie on executed_at µs:** order by trade_id. Live timestamps are epoch milliseconds, and among prints sharing a millisecond the first arrival is the open and the last arrival the close. REST is microseconds, ties by trade_id. The two orders can pick different prints, and those prints need not share a price. `--compare` is the arbiter of how often that happens.
+
+## Rollout results (2026-11-06)
+
+Landed as `fe9eee7c` (5 commits). Two review rounds: continue (5 fixes), then pass. Vercel deploy succeeded; no Railway deploy.
+
+### Step 2, `--compare` on 2026-10-30: the builder is faithful
+
+- **Raw per-root line:** ES 98.65%, NQ 97.22%, RTY 98.25%, CL 98.89%, GC 98.33% and ZN 99.35%, all below the 99% gate. stored-only and rest-only were 0 everywhere.
+- **Every diff was classified** by a read-only probe (`docs/tmp/uw-futures-run/classify-1030.mjs`):
+  - **REST-short: 0 on every root.** REST never had fewer prints than a live bar.
+  - **Live bar short (REST volume > stored): 8–15 minutes per root.** These are the same minutes across roots (01:19, 02:01, 07:00, 18:55Z, …), so they are websocket drops in the reference, not builder errors.
+  - **Same volume, different OHLC:** ES 2, NQ 20, RTY 12, CL 3, GC 13, ZN 0. Only `open` or `close` ever differed; `high`, `low`, volume and flow matched every time. Most gaps were one tick. This is the tie case from the open question.
+- **Reading of the gate:** the "systematic diff" stop is meant for builder errors. Every non-tie diff here is a live loss, and the builder was more complete than the reference. On minutes where the live feed was complete, ES matches 99.8% and ZN 100%, and every remaining diff on every root is a tie. Rollout continued on that reading.
+
+### Step 3, dry run on the roll days 09-10 and 09-11 (in place of the full-range dry run)
+
+- 15,694 bars would be inserted, with 1 unbuildable minute, over 5,983 pages and no failures.
+- A full-range dry run would have paged the same ~45k pages as the real run, and the real run only writes into empty minutes.
+
+### Step 4, the real run, 08:09–09:04Z
+
+- **136,974 bars inserted** (built 136,974, unbuildable 89, all leader-absent) over 43,130 pages, with no failed root-days. The 24 root-days with nothing to do are the Saturdays.
+- The budget was 90,000. About 3,000 pages per weekday made the plan's 20–35k estimate low.
+
+### Step 5, verify
+
+- **Coverage:** every UTC day from 09-04 to 09-28 now matches its neighbours. ES has 1,380 bars on weekdays, 1,260 on Fridays, 120 on Sunday evenings and 1,140 on Labor Day (09-07). GC and ZN have full days for the first time; the Databento era barely carried them.
+- **Integrity:** no bar has buy + sell > volume, none has a bad high or low, and none has NULL flow.
+- **Rolls:**
+  - ES: one jump, +67.25 at 09-14 13:45Z (U → Z).
+  - NQ: one jump, +288.75 at 13:43Z (U → Z).
+  - CL: one jump, −4.58 at 09-18 00:00Z (V → X).
+  - GC and ZN: no roll jump.
+- **The step-5 check "no carry-basis jump" was wrong as written.** A volume-picked root series steps by the carry once per roll, by design. What matters is that it steps only once.
+
+### Finding: front-month flips, a weakness of the live rule (open, owner decision)
+
+- **In the backfill:**
+  - RTY on 09-14 flips between RTYU6 and RTYZ6 about 5 times between 00:00 and 02:00Z, ±21 points each.
+  - CL on 09-07 (Labor Day) leads with CLX6 for one minute at 00:00Z.
+- **In live data since 09-29:** CL has one-minute flips to another month and straight back at 09-30 02:36, 10-29 01:19 and 11-05 00:00Z ($1.0–2.2). 10-16 00:00Z is a genuine single roll step.
+- **Causes:**
+  1. The leader tally restarts at 00:00 UTC, so the first prints of a day can come from the back month.
+  2. The tally is in memory, so a uw-stream restart or reconnect empties it mid-day.
+- The backfill and the nightly cron replay the same rule (`replayFrontMonth`), so they reproduce cause 1.

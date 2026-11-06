@@ -460,4 +460,7 @@ There are 1,044 frames from 389 sampled prints (ES 201, NQ 188; `trade_id % 500 
   - **RTY, CL, GC and ZN:** 205,391 minutes repaired and 22,339 skipped, over 38,901 pages, with no failed root-days. RTY, CL and ZN are at 99.9% from 07-26 on.
 - **UW REST futures history is usable from 2026-07-26,** the Sunday-evening session. Before that, a day returns 4–90 pages against about 1,046 for a full ES day, so the 2% rule skips those bars, as designed. The backfill therefore gives about 66 sessions, enough for the OFI re-test (Phase 1 consequences).
 - **GC is thin before October,** and the backfill isn't the cause: the bars themselves barely exist (993 in July, 461 in August and 2,797 in September, against about 29,000 in a normal month). The old Databento pipeline missed GC. October fills normally.
-- **Gap found, not fixed:** ES, NQ and CL have no bars at all from 2026-09-03 to 09-29 (ES has 6,898 for all of September). That is the stretch between Databento's end and the switch to UW. `backfill-futures-gaps` looks back only 3 days, so it never refilled these. Fixing it means an OHLC backfill from UW candles, then the flow pass. That is offered to the owner but not scheduled.
+- **Gap found, then filled 2026-11-06:**
+  - All six roots had no bars at all for UTC days 2026-09-04 to 09-28. That is the stretch between Databento's end and the switch to UW. `backfill-futures-gaps` looks back only 3 days, so it never refilled these.
+  - UW candles can't reach back that far (the newest 5,000 rows only), so `scripts/backfill-futures-bars.ts` rebuilt the bars, with flow, from REST prints: 136,974 bars.
+  - Plan and results: `2026-11-06-futures-sept-bar-backfill.md`.
