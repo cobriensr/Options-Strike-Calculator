@@ -24,6 +24,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
+import psycopg2
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -144,9 +145,11 @@ def fire_row(fire_id: int, chain: str) -> tuple:
     return (fire_id, chain, ENTRY, Decimal('1.0000'))
 
 
-def flow_fire_row(fire_id: int, chain: str) -> tuple:
+def flow_fire_row(
+    fire_id: int, chain: str, entry_price: Decimal = Decimal('1.0000')
+) -> tuple:
     symbol = chain.split('2607')[0]
-    return (fire_id, chain, symbol, 'C', ENTRY, Decimal('1.0000'), date(2026, 7, 22))
+    return (fire_id, chain, symbol, 'C', ENTRY, entry_price, date(2026, 7, 22))
 
 
 def rising_then_falling_flow() -> list[tuple[datetime, Decimal]]:
@@ -188,6 +191,7 @@ class FakeCursor:
     def execute(self, sql: str, params: tuple | None = None) -> None:
         sql = norm(sql)
         self.db.executed.append((sql, params))
+        self.db.maybe_fail(sql)
         self.rows = self.db.answer(sql, params)
         self.rowcount = self.db.rowcount_for(sql, params)
 
@@ -224,13 +228,21 @@ class FakeDb:
         self.returning = None
         # What a plain UPDATE reports as rowcount; None means every id sent.
         self.stamp_rowcount: int | None = None
+        # A statement (normalized text) this returns True for is recorded and
+        # then rejected, as a dropped connection would.
+        self.fail_when = None
+        self.commits = 0
 
     # psycopg2 connection surface
     def cursor(self) -> FakeCursor:
         return FakeCursor(self)
 
     def commit(self) -> None:
-        pass
+        self.commits += 1
+
+    def maybe_fail(self, sql: str) -> None:
+        if self.fail_when is not None and self.fail_when(sql):
+            raise psycopg2.OperationalError('server closed the connection unexpectedly')
 
     def close(self) -> None:
         pass
@@ -257,6 +269,7 @@ class FakeDb:
     def execute_values(self, _cur, sql, rows, template=None, **kwargs):
         rows = list(rows)
         self.values_writes.append(ValuesWrite(norm(sql), rows, template, kwargs))
+        self.maybe_fail(norm(sql))
         if not kwargs.get('fetch'):
             return None
         if self.returning is not None:
@@ -280,6 +293,10 @@ class FakeDb:
 
     def updates_run(self) -> list[str]:
         return [sql for sql, _ in self.executed if sql.startswith('UPDATE')]
+
+    def flow_reads(self) -> list[str]:
+        """The flow pass's per-(ticker, side) net-flow SELECTs."""
+        return [sql for sql, _ in self.executed if sql.startswith('SELECT ts, ')]
 
 
 @pytest.fixture
@@ -620,6 +637,41 @@ def test_flow_value_written_with_tag(fulltape: Path, make_db) -> None:
     assert db.stamps('inversion_source') == []
 
 
+def test_flow_non_finite_exit_is_tagged_not_written(fulltape: Path, make_db) -> None:
+    # entry_price is NUMERIC, which can hold NaN: float() makes the exit NaN.
+    # Written, it would store NaN as a "value" and never be picked again.
+    db = make_db(
+        flow_fires=[
+            flow_fire_row(1, TSLA, Decimal('NaN')),
+            flow_fire_row(2, TSLA),
+        ],
+        flow={('TSLA', 'C'): rising_then_falling_flow()},
+    )
+
+    result = lottery.enrich_one_date(db, DAY)
+
+    assert [row[0] for w in db.flow_writes() for row in w.rows] == [2]
+    ((_, params),) = db.stamps('inversion_source')
+    assert params == ('fulltape', 1, [1])
+    assert result.flow_written == 1
+    assert result.flow_stamped_undefined == 1
+
+
+@pytest.mark.parametrize(('side', 'column'), [('C', 'net_call_prem'), ('P', 'net_put_prem')])
+def test_matched_flow_window_is_exactly_24_hours(side: str, column: str) -> None:
+    # '1 day' on a timestamptz is a calendar day in the session zone: 23 or 25
+    # hours across a DST change, while list_work_dates' EXISTS is exactly 24.
+    db = FakeDb()
+
+    lottery.load_matched_flow(db, DAY, 'TSLA', side)
+
+    sql, params = db.executed[-1]
+    assert sql.startswith(f'SELECT ts, {column} FROM net_flow_per_ticker_history')
+    assert "AND ts < %s::timestamptz + INTERVAL '24 hours'" in sql
+    assert "'1 day'" not in sql
+    assert params == ('TSLA', f'{DAY}T00:00:00Z', f'{DAY}T00:00:00Z')
+
+
 def test_flow_tag_follows_the_archive(archive: Path, archive_globals: None, make_db) -> None:
     write_tape(archive, 'trades')
     lottery.configure_archive(archive, 'trades')
@@ -749,6 +801,60 @@ def test_dry_run_writes_nothing(tmp_path: Path, archive_globals: None, make_db) 
     assert result == real
     assert result.outcomes_written == 2
     assert result.flow_written == 1
+
+
+# ── a write that rejects ───────────────────────────────────────
+
+# (statement the database drops, text that identifies it, what must not follow
+# it, commits that went through before it). The day has all four writes:
+# outcome values, outcome stamp, inversion values, inversion stamp.
+WRITE_FAULTS = [
+    pytest.param(
+        'SET realized_trail30_10_pct',
+        lambda db: [
+            *db.stamps('outcome_source'),
+            *db.flow_reads(),
+            *db.flow_writes(),
+            *db.stamps('inversion_source'),
+        ],
+        0,
+        id='outcome-values',
+    ),
+    pytest.param(
+        'outcome_source = %s',
+        lambda db: [*db.flow_reads(), *db.flow_writes(), *db.stamps('inversion_source')],
+        1,
+        id='outcome-stamp',
+    ),
+    pytest.param(
+        'SET realized_flow_inversion_pct',
+        lambda db: db.stamps('inversion_source'),
+        2,
+        id='inversion-values',
+    ),
+    pytest.param('inversion_source = %s', lambda db: [], 3, id='inversion-stamp'),
+]
+
+
+@pytest.mark.parametrize(('fails_on', 'issued_after', 'commits'), WRITE_FAULTS)
+def test_a_rejected_write_propagates_and_stops_the_day(
+    fails_on: str, issued_after, commits: int, fulltape: Path, make_db
+) -> None:
+    db = _day_db(make_db)
+    db.fail_when = lambda sql: fails_on in sql
+
+    with pytest.raises(psycopg2.OperationalError, match='server closed'):
+        lottery.enrich_one_date(db, DAY, select='all')
+
+    # The rejected statement went out once (no retry, no swallow) ...
+    sent = [s for s, _ in db.executed if fails_on in s]
+    sent += [w.sql for w in db.values_writes if fails_on in w.sql]
+    assert len(sent) == 1
+    # ... nothing that follows it ran, in particular no flow pass after a
+    # failed main pass, and no stamp after a failed value write ...
+    assert issued_after(db) == []
+    # ... and only the writes before it were committed.
+    assert db.commits == commits
 
 
 # ── env file ───────────────────────────────────────────────────

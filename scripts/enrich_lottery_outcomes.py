@@ -574,7 +574,11 @@ def load_matched_flow(
     conn, target_date: str, ticker: str, option_type: str
 ) -> list[tuple[datetime, float]]:
     """Per-minute matched-side flow (net_call_prem for C, net_put_prem
-    for P). Cached at the call site by (ticker, option_type)."""
+    for P) over the UTC day. Cached at the call site by (ticker, option_type).
+
+    The window ends 24 hours after UTC midnight: a '1 day' interval on a
+    timestamptz is a calendar day in the session zone, 23 or 25 hours across
+    a DST change, and list_work_dates counts exactly 24."""
     cur = conn.cursor()
     col = 'net_call_prem' if option_type == 'C' else 'net_put_prem'
     cur.execute(
@@ -583,7 +587,7 @@ def load_matched_flow(
         FROM net_flow_per_ticker_history
         WHERE ticker = %s
           AND ts >= %s::timestamptz
-          AND ts <  %s::timestamptz + INTERVAL '1 day'
+          AND ts < %s::timestamptz + INTERVAL '24 hours'
         ORDER BY ts ASC
         """,
         (ticker, f'{target_date}T00:00:00Z', f'{target_date}T00:00:00Z'),
