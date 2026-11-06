@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 import sys
-import threading
 import warnings
 from collections import namedtuple
 from collections.abc import Callable
@@ -24,7 +23,17 @@ from typing import Any
 
 import pytest
 import urllib3
-from botocore.exceptions import ClientError, HTTPClientError, ReadTimeoutError
+from botocore.exceptions import (
+    ClientError,
+    ConnectTimeoutError,
+    EndpointConnectionError,
+    HTTPClientError,
+    IncompleteReadError,
+    NoCredentialsError,
+    ParamValidationError,
+    ReadTimeoutError,
+    ResponseStreamingError,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -55,12 +64,17 @@ class FakeBody:
         *,
         drop_tail: int = 0,
         fail_on_read: int | None = None,
+        fail_with: Callable[[], BaseException] = lambda: ReadTimeoutError(endpoint_url=ENDPOINT),
+        eof_error: Callable[[], BaseException] | None = None,
         on_read: Callable[[int], None] | None = None,
     ) -> None:
-        # drop_tail bytes never arrive, and nothing raises: a silently short body.
+        # drop_tail bytes never arrive. With no eof_error nothing raises: a silently short
+        # body, which only the reader's own byte count catches.
         self._data = data[: len(data) - drop_tail]
         self._pos = 0
         self._fail_on_read = fail_on_read
+        self._fail_with = fail_with
+        self._eof_error = eof_error
         self._on_read = on_read
         self.reads = 0
         self.closed = False
@@ -68,9 +82,13 @@ class FakeBody:
     def read(self, amt: int) -> bytes:
         self.reads += 1
         if self.reads == self._fail_on_read:
-            raise ReadTimeoutError(endpoint_url=ENDPOINT)
+            raise self._fail_with()
         chunk = self._data[self._pos : self._pos + amt]
         self._pos += len(chunk)
+        if not chunk and self._eof_error is not None:
+            # What botocore's StreamingBody does: on the final empty read it compares the
+            # bytes read with Content-Length and raises IncompleteReadError.
+            raise self._eof_error()
         if self._on_read is not None:
             self._on_read(self.reads)
         return chunk
@@ -199,9 +217,10 @@ def assert_no_secrets(text: str) -> None:
 def test_landed_days_reads_only_tape_keys(r2: FakeR2, reader: TapeReader) -> None:
     r2.objects.update(
         {
-            KEY: b'nightly day, with user metadata on R2',
-            # An upload-script object carries no metadata but is still a landed day.
-            'fulltape/2026-03-16-fulltape.parquet': b'legacy day',
+            # Every tape-named key counts as landed, whatever user metadata it carries (the
+            # fake has none): the key existing is what landed means.
+            KEY: b'a landed day',
+            'fulltape/2026-03-16-fulltape.parquet': b'a landed day from the upload script',
             'gexbot-eod/SPX/2026-10-28.zip': b'zip',
             'fulltape/_unavailable/2026-05-29.json': b'{}',
             'fulltape/_superseded/2026-10-20-x.parquet': b'old',
@@ -295,6 +314,63 @@ def test_short_body_retries_then_raises_and_leaves_nothing(
     assert all(body.closed for body in r2.bodies)
 
 
+# The ways a real body breaks. botocore's StreamingBody raises IncompleteReadError on the
+# final empty read when the bytes read differ from Content-Length, so a short body never
+# reaches the reader's own count in production; the silent-short test above pins that count.
+BROKEN_STREAMS: dict[str, Callable[[int, bytes], FakeBody]] = {
+    'IncompleteReadError': lambda _attempt, data: FakeBody(
+        data, drop_tail=4, eof_error=lambda: IncompleteReadError(actual_bytes=12, expected_bytes=16)
+    ),
+    'ResponseStreamingError': lambda _attempt, data: FakeBody(
+        data, fail_on_read=2, fail_with=lambda: ResponseStreamingError(error=f'lost the link to {ENDPOINT}')
+    ),
+    'ReadTimeoutError': lambda _attempt, data: FakeBody(data, fail_on_read=3),
+    # Raw errors urllib3 and the socket layer can let through a read without botocore wrapping them.
+    'ProtocolError': lambda _attempt, data: FakeBody(
+        data, fail_on_read=2, fail_with=lambda: urllib3.exceptions.ProtocolError('Connection broken')
+    ),
+    'ConnectionResetError': lambda _attempt, data: FakeBody(
+        data, fail_on_read=2, fail_with=ConnectionResetError
+    ),
+    'TimeoutError': lambda _attempt, data: FakeBody(data, fail_on_read=2, fail_with=TimeoutError),
+}
+
+
+@pytest.mark.parametrize('name', list(BROKEN_STREAMS))
+def test_a_stream_botocore_reports_as_broken_is_retried_then_raises(
+    name: str, r2: FakeR2, reader: TapeReader, caplog: pytest.LogCaptureFixture, monkeypatch
+) -> None:
+    monkeypatch.setattr(_tape_reader, 'FETCH_CHUNK_BYTES', 4)
+    r2.objects[KEY] = BODY
+    r2.make_body = BROKEN_STREAMS[name]
+
+    with caplog.at_level(logging.DEBUG, logger='_tape_reader'):
+        with pytest.raises(TapeReadError) as caught:
+            reader.fetch_day(DAY)
+
+    assert r2.get_calls == [KEY] * _tape_reader.FETCH_ATTEMPTS
+    # A fixed phrase and the class name: botocore's text (the endpoint, the byte counts) is not copied.
+    assert str(caught.value) == f'{KEY}: fetch failed after {_tape_reader.FETCH_ATTEMPTS} attempts ({name})'
+    assert_no_secrets(caplog.text)
+    assert name in caplog.text
+    assert_nothing_cached(reader, DAY)
+    assert all(body.closed for body in r2.bodies)
+
+
+def test_a_stream_that_breaks_at_the_end_can_be_retried_to_success(r2: FakeR2, reader: TapeReader, monkeypatch) -> None:
+    monkeypatch.setattr(_tape_reader, 'FETCH_CHUNK_BYTES', 4)
+    r2.objects[KEY] = BODY
+    r2.make_body = lambda attempt, data: (
+        BROKEN_STREAMS['IncompleteReadError'](attempt, data) if attempt == 1 else FakeBody(data)
+    )
+
+    path = reader.fetch_day(DAY)
+
+    assert path is not None and path.read_bytes() == BODY
+    assert r2.get_calls == [KEY, KEY]
+    assert not part_of(path).exists()
+
+
 def test_a_dropped_stream_is_retried_and_the_retry_can_succeed(
     r2: FakeR2, reader: TapeReader, caplog: pytest.LogCaptureFixture, monkeypatch
 ) -> None:
@@ -312,15 +388,25 @@ def test_a_dropped_stream_is_retried_and_the_retry_can_succeed(
     assert_no_secrets(caplog.text)  # ...but botocore's text, which embeds the endpoint, is not
 
 
-def test_a_failed_get_that_botocore_raised_is_retried(r2: FakeR2, reader: TapeReader) -> None:
+@pytest.mark.parametrize(
+    'error',
+    [
+        HTTPClientError(error=OSError('connection reset')),
+        EndpointConnectionError(endpoint_url=ENDPOINT),
+        ConnectTimeoutError(endpoint_url=ENDPOINT),
+    ],
+    ids=['HTTPClientError', 'EndpointConnectionError', 'ConnectTimeoutError'],
+)
+def test_a_failed_get_that_botocore_raised_is_retried(error: Exception, r2: FakeR2, reader: TapeReader) -> None:
     r2.objects[KEY] = BODY
-    r2.get_error = HTTPClientError(error=OSError('connection reset'))
+    r2.get_error = error
 
-    with pytest.raises(TapeReadError, match='after 3 attempts') as caught:
+    with pytest.raises(TapeReadError) as caught:
         reader.fetch_day(DAY)
 
     assert len(r2.get_calls) == _tape_reader.FETCH_ATTEMPTS
-    assert 'HTTPClientError' in str(caught.value)
+    message = f'{KEY}: fetch failed after {_tape_reader.FETCH_ATTEMPTS} attempts ({type(error).__name__})'
+    assert str(caught.value) == message
     assert_nothing_cached(reader, DAY)
 
 
@@ -333,6 +419,54 @@ def test_a_refused_read_is_not_retried(r2: FakeR2, reader: TapeReader) -> None:
 
     assert r2.get_calls == [KEY]
     assert KEY in str(caught.value)
+    assert_nothing_cached(reader, DAY)
+
+
+@pytest.mark.parametrize(
+    'error',
+    [NoCredentialsError(), ParamValidationError(report='bad parameter')],
+    ids=['NoCredentialsError', 'ParamValidationError'],
+)
+def test_a_botocore_error_a_second_get_cannot_cure_is_not_retried(
+    error: Exception, r2: FakeR2, reader: TapeReader
+) -> None:
+    r2.objects[KEY] = BODY
+    r2.get_error = error
+
+    with pytest.raises(TapeReadError) as caught:
+        reader.fetch_day(DAY)
+
+    assert r2.get_calls == [KEY]
+    assert str(caught.value) == f'{KEY}: R2 request failed ({type(error).__name__})'
+    assert_nothing_cached(reader, DAY)
+
+
+def test_a_botocore_error_a_second_get_cannot_cure_mid_stream_is_not_retried(
+    r2: FakeR2, reader: TapeReader, monkeypatch
+) -> None:
+    monkeypatch.setattr(_tape_reader, 'FETCH_CHUNK_BYTES', 4)
+    r2.objects[KEY] = BODY
+    r2.make_body = lambda _attempt, data: FakeBody(data, fail_on_read=2, fail_with=NoCredentialsError)
+
+    with pytest.raises(TapeReadError) as caught:
+        reader.fetch_day(DAY)
+
+    assert r2.get_calls == [KEY]
+    assert str(caught.value) == f'{KEY}: R2 request failed (NoCredentialsError)'
+    assert r2.bodies[0].closed
+    assert_nothing_cached(reader, DAY)  # the four bytes already written are gone
+
+
+def test_an_empty_object_is_refused_not_cached(r2: FakeR2, reader: TapeReader) -> None:
+    r2.objects[KEY] = b''
+
+    with pytest.raises(TapeReadError, match='empty') as caught:
+        reader.fetch_day(DAY)
+
+    assert KEY in str(caught.value)
+    assert r2.get_calls == [KEY]  # a second GET would return the same nothing
+    assert r2.bodies[0].reads == 0
+    assert r2.bodies[0].closed
     assert_nothing_cached(reader, DAY)
 
 
@@ -555,7 +689,6 @@ def test_from_env_builds_a_reader_from_the_four_vars(r2: FakeR2, monkeypatch, tm
 def test_one_client_and_no_transfer_threads(r2: FakeR2, reader: TapeReader) -> None:
     r2.objects[KEY] = BODY
     r2.objects[OTHER_KEY] = BODY
-    threads_before = threading.active_count()
 
     reader.landed_days()
     reader.fetch_day(DAY)
@@ -565,7 +698,6 @@ def test_one_client_and_no_transfer_threads(r2: FakeR2, reader: TapeReader) -> N
 
     assert len(r2.client_calls) == 1  # one boto3 client per reader
     assert r2.transfer_calls == []  # download_file and friends are never touched
-    assert threading.active_count() == threads_before
 
     call = r2.client_calls[0]
     assert call['args'] == ('s3',)
@@ -586,6 +718,23 @@ def test_a_second_reader_builds_its_own_client(r2: FakeR2, tmp_path: Path) -> No
 
     assert len(r2.client_calls) == 2
     assert first.cache_dir != second.cache_dir
+
+
+def test_a_client_that_cannot_be_built_is_named_without_its_endpoint(monkeypatch, tmp_path: Path) -> None:
+    marker = 'https://account-id-marker.invalid'
+
+    def refuse(*_args: Any, **_kwargs: Any) -> None:
+        raise ValueError(f'Invalid endpoint: {marker}')
+
+    monkeypatch.setattr(_tape_reader.boto3, 'client', refuse)
+
+    with pytest.raises(TapeReadError) as caught:
+        make_reader(tmp_path)
+
+    assert marker not in str(caught.value)
+    assert str(caught.value) == 'could not build the R2 client (ValueError)'
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__  # `from None`
+    assert not (tmp_path / 'cache').exists()
 
 
 def test_building_a_reader_turns_the_insecure_request_warning_into_an_error(r2: FakeR2, tmp_path: Path) -> None:

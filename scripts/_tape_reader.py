@@ -31,7 +31,8 @@ from typing import Any
 import boto3
 import urllib3
 from botocore.config import Config
-from botocore.exceptions import BotoCoreError, ClientError, HTTPClientError
+from botocore.exceptions import BotoCoreError, ClientError, HTTPClientError, IncompleteReadError
+from botocore.exceptions import ConnectionError as BotoConnectionError
 
 log = logging.getLogger(__name__)
 
@@ -46,9 +47,20 @@ _PREFIX = 'fulltape/'
 _TAPE_KEY = re.compile(r'fulltape/([0-9]{4}-[0-9]{2}-[0-9]{2})-fulltape\.parquet')
 _ENV_NAMES = ('R2_ENDPOINT_URL', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET_FULLTAPE')
 _NO_SUCH_KEY_CODES = frozenset({'NoSuchKey', '404'})
-# What a dropped or stalled body stream raises. A local OSError (full disk, locked
-# file) is deliberately absent: a second GET cannot cure it.
-_TRANSPORT_ERRORS = (BotoCoreError, urllib3.exceptions.HTTPError, ConnectionError, TimeoutError)
+# Everything a request or a body stream may raise apart from an S3 ClientError. A local
+# OSError (full disk, locked file) is deliberately absent: it is not R2's doing.
+_REQUEST_ERRORS = (BotoCoreError, urllib3.exceptions.HTTPError, ConnectionError, TimeoutError)
+# The part of that a fresh GET may cure: a dropped, stalled or truncated transport.
+# Everything else (no credentials, a bad parameter, a bad config) fails the same way
+# again, so it is final on the first try.
+_TRANSIENT_ERRORS = (
+    HTTPClientError,  # ReadTimeoutError, ResponseStreamingError, ConnectionClosedError
+    BotoConnectionError,  # EndpointConnectionError, ConnectTimeoutError, SSLError
+    IncompleteReadError,  # botocore's own check that the body matched Content-Length
+    urllib3.exceptions.HTTPError,
+    ConnectionError,
+    TimeoutError,
+)
 
 
 class TapeReadError(Exception):
@@ -90,11 +102,13 @@ def _failure_phrase(exc: BaseException) -> str:
     return type(exc).__name__
 
 
-def _transport_failure(key: str, exc: BaseException) -> Exception:
-    """The error to raise for a failed request or stream: TLS trouble is final, the rest transient."""
+def _request_failure(key: str, exc: BaseException) -> Exception:
+    """The error to raise for a failed request or stream: only a dropped transport is transient."""
     if _is_tls_guard_error(exc):
         return TapeReadError(f'{key}: TLS verification was skipped for an R2 request; aborting')
-    return _Transient(_failure_phrase(exc))
+    if isinstance(exc, _TRANSIENT_ERRORS):
+        return _Transient(_failure_phrase(exc))
+    return TapeReadError(f'{key}: R2 request failed ({_failure_phrase(exc)})')
 
 
 def _check_deadline(key: str, deadline: float, written: int = 0, expected: int | None = None) -> None:
@@ -106,7 +120,12 @@ def _check_deadline(key: str, deadline: float, written: int = 0, expected: int |
 
 
 class TapeReader:
-    """Lists and fetches Full Tape days. One per thread: never share an instance."""
+    """Lists and fetches Full Tape days. One per thread: never share an instance.
+
+    `cache_dir` belongs to one reader. The partial file's name is fixed per day
+    (`<day>-fulltape.parquet.part`), so two readers, or two processes, on one directory
+    would overwrite each other's download. Give each reader its own, empty directory.
+    """
 
     def __init__(
         self,
@@ -122,22 +141,26 @@ class TapeReader:
         warnings.filterwarnings('error', category=urllib3.exceptions.InsecureRequestWarning)
         self._bucket = bucket
         self._cache_dir = Path(cache_dir)
-        self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._cached: set[date] = set()
-        self._client = boto3.client(
-            's3',
-            endpoint_url=endpoint_url,
-            aws_access_key_id=access_key_id,
-            aws_secret_access_key=secret_access_key,
-            region_name='auto',
-            verify=True,
-            config=Config(
-                signature_version='s3v4',
-                retries={'mode': 'standard', 'max_attempts': 5},
-                connect_timeout=10,
-                read_timeout=60,
-            ),
-        )
+        try:
+            self._client = boto3.client(
+                's3',
+                endpoint_url=endpoint_url,
+                aws_access_key_id=access_key_id,
+                aws_secret_access_key=secret_access_key,
+                region_name='auto',
+                verify=True,
+                config=Config(
+                    signature_version='s3v4',
+                    retries={'mode': 'standard', 'max_attempts': 5},
+                    connect_timeout=10,
+                    read_timeout=60,
+                ),
+            )
+        except Exception as exc:
+            # Not chained: botocore's text can embed the endpoint URL, which holds the R2 account id.
+            raise TapeReadError(f'could not build the R2 client ({type(exc).__name__})') from None
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
 
     @classmethod
     def from_env(cls, cache_dir: Path) -> TapeReader:
@@ -182,9 +205,9 @@ class TapeReader:
         the default is FETCH_DEADLINE_SECONDS from now. The object streams to
         `<path>.part`, its byte count is checked against ContentLength, and only then
         is it renamed into place, so `path(day)` never holds a partial file. A file
-        already at `path(day)` is replaced. A dropped or short stream is retried as a
-        whole GET up to FETCH_ATTEMPTS times; a refusal, a full disk or a passed
-        deadline is final.
+        already at `path(day)` is replaced. A dropped, stalled or short stream is retried
+        as a whole GET up to FETCH_ATTEMPTS times; a refusal, an empty object, any other
+        client error, a full disk or a passed deadline is final.
         """
         key = _tape_key(day)
         target = self.path(day)
@@ -222,13 +245,15 @@ class TapeReader:
             if code in _NO_SUCH_KEY_CODES:
                 return None
             raise TapeReadError(f'{key}: R2 refused the read ({code})') from None
-        except BotoCoreError as exc:
-            raise _transport_failure(key, exc) from None
+        except _REQUEST_ERRORS as exc:
+            raise _request_failure(key, exc) from None
         body = response['Body']
         try:
             expected = response.get('ContentLength')
             if not isinstance(expected, int):
                 raise TapeReadError(f'{key}: R2 sent no ContentLength')
+            if expected == 0:
+                raise TapeReadError(f'{key}: R2 object is empty (0 bytes)')
             needed = expected + FETCH_DISK_HEADROOM_BYTES
             free = disk_usage(self._cache_dir).free
             if free < needed:
@@ -250,8 +275,8 @@ class TapeReader:
             while True:
                 try:
                     chunk = body.read(FETCH_CHUNK_BYTES)
-                except _TRANSPORT_ERRORS as exc:
-                    raise _transport_failure(key, exc) from None
+                except _REQUEST_ERRORS as exc:
+                    raise _request_failure(key, exc) from None
                 if not chunk:
                     return written
                 out.write(chunk)
