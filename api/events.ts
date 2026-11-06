@@ -95,6 +95,9 @@ const TRACKED_RELEASES: readonly FredReleaseConfig[] = [
 // STATIC FOMC DATES
 // ============================================================
 
+// Each list holds the decision day (second day) of every scheduled meeting.
+// Source: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm.
+// Add next year's list when the Fed publishes it.
 const FOMC_DATES_2025 = [
   '2025-01-29',
   '2025-03-19',
@@ -109,12 +112,23 @@ const FOMC_DATES_2025 = [
 const FOMC_DATES_2026 = [
   '2026-01-28',
   '2026-03-18',
-  '2026-05-06',
+  '2026-04-29',
   '2026-06-17',
   '2026-07-29',
   '2026-09-16',
   '2026-10-28',
   '2026-12-09',
+] as const;
+
+const FOMC_DATES_2027 = [
+  '2027-01-27',
+  '2027-03-17',
+  '2027-04-28',
+  '2027-06-09',
+  '2027-07-28',
+  '2027-09-15',
+  '2027-10-27',
+  '2027-12-08',
 ] as const;
 
 const SEP_DATES = new Set([
@@ -126,9 +140,13 @@ const SEP_DATES = new Set([
   '2026-06-17',
   '2026-09-16',
   '2026-12-09',
+  '2027-03-17',
+  '2027-06-09',
+  '2027-09-15',
+  '2027-12-08',
 ]);
 
-const ALL_FOMC = [...FOMC_DATES_2025, ...FOMC_DATES_2026];
+const ALL_FOMC = [...FOMC_DATES_2025, ...FOMC_DATES_2026, ...FOMC_DATES_2027];
 
 // ============================================================
 // STATIC HALF-DAY / EARLY CLOSE DATES

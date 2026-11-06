@@ -86,6 +86,41 @@ class TestIsFomc:
             )
 
 
+    def test_fomc_dates_2025_to_2027_match_fed_calendar(self):
+        """Decision days from federalreserve.gov/monetarypolicy/fomccalendars.htm
+        (fetched 2026-11-06); api/events.ts carries the same list."""
+        fed_decision_days = {
+            # 2025
+            date(2025, 1, 29),
+            date(2025, 3, 19),
+            date(2025, 5, 7),
+            date(2025, 6, 18),
+            date(2025, 7, 30),
+            date(2025, 9, 17),
+            date(2025, 10, 29),
+            date(2025, 12, 10),
+            # 2026
+            date(2026, 1, 28),
+            date(2026, 3, 18),
+            date(2026, 4, 29),
+            date(2026, 6, 17),
+            date(2026, 7, 29),
+            date(2026, 9, 16),
+            date(2026, 10, 28),
+            date(2026, 12, 9),
+            # 2027
+            date(2027, 1, 27),
+            date(2027, 3, 17),
+            date(2027, 4, 28),
+            date(2027, 6, 9),
+            date(2027, 7, 28),
+            date(2027, 9, 15),
+            date(2027, 10, 27),
+            date(2027, 12, 8),
+        }
+        assert {d for d in FOMC_DATES if d.year >= 2025} == fed_decision_days
+
+
 class TestIsEventDay:
     def test_opex_is_event_day(self):
         assert is_event_day(date(2024, 4, 19)) is True

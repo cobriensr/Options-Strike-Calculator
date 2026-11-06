@@ -501,6 +501,78 @@ describe('GET /api/events', () => {
     expect(summer.filter((e) => e.event === 'EARLY CLOSE')).toEqual([]);
   });
 
+  // Decision day (second day of each meeting) from the Fed's own calendar,
+  // https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm, fetched
+  // 2026-11-06. 'FOMC + SEP' marks the meetings with a Summary of Economic
+  // Projections (an asterisk on that page).
+  const FED_DECISION_DAYS: Readonly<Record<string, 'FOMC' | 'FOMC + SEP'>> = {
+    '2025-01-29': 'FOMC',
+    '2025-03-19': 'FOMC + SEP',
+    '2025-05-07': 'FOMC',
+    '2025-06-18': 'FOMC + SEP',
+    '2025-07-30': 'FOMC',
+    '2025-09-17': 'FOMC + SEP',
+    '2025-10-29': 'FOMC',
+    '2025-12-10': 'FOMC + SEP',
+    '2026-01-28': 'FOMC',
+    '2026-03-18': 'FOMC + SEP',
+    '2026-04-29': 'FOMC',
+    '2026-06-17': 'FOMC + SEP',
+    '2026-07-29': 'FOMC',
+    '2026-09-16': 'FOMC + SEP',
+    '2026-10-28': 'FOMC',
+    '2026-12-09': 'FOMC + SEP',
+    '2027-01-27': 'FOMC',
+    '2027-03-17': 'FOMC + SEP',
+    '2027-04-28': 'FOMC',
+    '2027-06-09': 'FOMC + SEP',
+    '2027-07-28': 'FOMC',
+    '2027-09-15': 'FOMC + SEP',
+    '2027-10-27': 'FOMC',
+    '2027-12-08': 'FOMC + SEP',
+  };
+
+  /** FOMC events across [from, to], walking the 90-day maximum window. */
+  async function fomcEventsBetween(from: string, to: string) {
+    const stepMs = 91 * 24 * 60 * 60 * 1000;
+    const end = new Date(`${to}T12:00:00Z`).getTime();
+    const found: Record<string, string> = {};
+    for (
+      let t = new Date(`${from}T12:00:00Z`).getTime();
+      t <= end;
+      t += stepMs
+    ) {
+      const events = await eventsFrom(new Date(t).toISOString(), '90');
+      for (const e of events) {
+        if (e.event.startsWith('FOMC')) found[e.date] = e.event;
+      }
+    }
+    return found;
+  }
+
+  it('lists exactly the Fed-published FOMC decision days for 2025 through 2027', async () => {
+    const found = await fomcEventsBetween('2025-01-01', '2027-12-31');
+    expect(found).toEqual(FED_DECISION_DAYS);
+  });
+
+  it('puts the April 2026 FOMC on the 29th, not 2026-05-06', async () => {
+    const events = await eventsFrom('2026-04-01T12:00:00Z', '60');
+    const fomc = events.filter((e) => e.event.startsWith('FOMC'));
+    expect(fomc.map((e) => e.date)).toEqual(['2026-04-29']);
+    expect(fomc[0]?.event).toBe('FOMC');
+  });
+
+  it('labels the 2027 SEP meetings and gives every FOMC day the 2:00 PM ET time', async () => {
+    const events = await eventsFrom('2027-03-01T12:00:00Z', '60');
+    const fomc = events.filter((e) => e.event.startsWith('FOMC'));
+    expect(fomc.map((e) => [e.date, e.event])).toEqual([
+      ['2027-03-17', 'FOMC + SEP'],
+      ['2027-04-28', 'FOMC'],
+    ]);
+    expect(fomc.every((e) => e.time === '2:00 PM')).toBe(true);
+    expect(fomc[0]?.description).toContain('Summary of Economic Projections');
+  });
+
   it('returns 403 when checkBot reports a bot', async () => {
     process.env.FRED_API_KEY = 'fred-key';
     vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });

@@ -4,8 +4,8 @@ OPEX (monthly options expiration) is the **third Friday** of every calendar
 month. Computable deterministically from the date alone.
 
 FOMC meeting dates are a published calendar the Fed releases annually. We
-maintain a static frozenset for 2024 through 2026 — extend when the Fed
-releases 2027 dates. A missed FOMC flag is safe (the day just doesn't get
+maintain a static frozenset for 2024 through 2027 — extend when the Fed
+releases 2028 dates. A missed FOMC flag is safe (the day just doesn't get
 tagged); a wrong flag is noisy, so prefer omission over invention.
 
 These flags feed the backtest's `event_day_filter` param so the sweep can
@@ -43,16 +43,25 @@ FOMC_DATES: frozenset[date] = frozenset(
         date(2025, 7, 30),
         date(2025, 9, 17),
         date(2025, 10, 29),
-        date(2025, 12, 17),
+        date(2025, 12, 10),
         # 2026
         date(2026, 1, 28),
         date(2026, 3, 18),
-        date(2026, 5, 6),
+        date(2026, 4, 29),
         date(2026, 6, 17),
         date(2026, 7, 29),
         date(2026, 9, 16),
         date(2026, 10, 28),
         date(2026, 12, 9),
+        # 2027
+        date(2027, 1, 27),
+        date(2027, 3, 17),
+        date(2027, 4, 28),
+        date(2027, 6, 9),
+        date(2027, 7, 28),
+        date(2027, 9, 15),
+        date(2027, 10, 27),
+        date(2027, 12, 8),
     }
 )
 
