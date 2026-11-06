@@ -95,9 +95,16 @@ function untilDeadline<T>(signal: AbortSignal, work: Promise<T>): Promise<T> {
   });
 }
 
-/** Sleep `ms`, or wake at once if `signal` aborts; either way no timer is left. */
+/**
+ * Sleep `ms`, or wake at once if `signal` aborts or has already; either way
+ * no timer is left.
+ */
 function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise<void>((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
     const wake = () => {
       clearTimeout(timer);
       signal.removeEventListener('abort', wake);
@@ -110,19 +117,22 @@ function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
 
 /**
  * Retry `fn` up to BUNDLE_FETCH_MAX_RETRIES more times, with backoffs, until
- * `signal` aborts: from then on no attempt starts and no backoff is slept,
- * and a deadline that lands mid-attempt or mid-backoff ends the loop with a
- * DeadlineError.
+ * `signal` aborts: from then on no attempt starts and no backoff is slept.
+ * A deadline that lands mid-attempt or mid-backoff ends the loop with a
+ * DeadlineError, unless an earlier attempt failed in a way a retry would only
+ * repeat (fetchFailureKind 'error', a 403 for one): that failure is what the
+ * load throws, so the deadline doesn't turn it into a 'transient' one.
  */
 async function withRetry<T>(
   label: string,
   signal: AbortSignal,
   fn: () => Promise<T>,
 ): Promise<T> {
+  // The last failure an attempt itself returned, never the DeadlineError.
   let lastErr: unknown;
   for (let attempt = 0; attempt <= BUNDLE_FETCH_MAX_RETRIES; attempt++) {
     // Reached by waking early from a backoff the deadline cut short.
-    if (signal.aborted) throw deadlineError();
+    if (signal.aborted) break;
     try {
       return await untilDeadline(signal, fn());
     } catch (err) {
@@ -136,7 +146,7 @@ async function withRetry<T>(
         (err instanceof Error && err.name === 'BundleSchemaError');
       if (isSchemaErr) throw err;
 
-      lastErr = err;
+      if (!(err instanceof DeadlineError)) lastErr = err;
       if (attempt >= BUNDLE_FETCH_MAX_RETRIES || signal.aborted) break;
       const delay = BUNDLE_FETCH_BACKOFFS_MS[attempt] ?? 1000;
       Sentry.captureMessage(
@@ -149,6 +159,14 @@ async function withRetry<T>(
       );
       await sleepUnlessAborted(delay, signal);
     }
+  }
+  // The deadline ended the loop: it is the failure, unless an attempt already
+  // failed in a way a retry would only repeat.
+  if (
+    signal.aborted &&
+    (lastErr === undefined || fetchFailureKind(lastErr) === 'transient')
+  ) {
+    throw deadlineError();
   }
   throw lastErr;
 }

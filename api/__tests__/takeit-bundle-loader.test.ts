@@ -821,6 +821,27 @@ describe('getBundle: why it has no bundle', () => {
     });
   });
 
+  it('reports a bundle body that is not JSON as an error: a 2xx that does not parse is a bad upload or an error page, not an outage', async () => {
+    serve({
+      [MANIFEST_PATH]: json(MANIFEST),
+      [BUNDLE_PATH]: () => new Response('<html>'),
+    });
+
+    const { bundle, onUnavailable } = await load();
+
+    expect(bundle).toBeNull();
+    // The SyntaxError from res.json() is neither a network failure nor a
+    // Blob class, so fetchFailureKind leaves it an 'error', as for the
+    // manifest above.
+    expect(onUnavailable).toHaveBeenCalledExactlyOnceWith({
+      reason: expect.stringMatching(
+        /^Take-It bundle takeit\/lottery_classifier_v2026-05-16\.json unavailable: .*JSON/,
+      ),
+      kind: 'error',
+    });
+    expect(Sentry.captureException).toHaveBeenCalledOnce();
+  });
+
   it('reports a manifest with no bundle for the alert type as an error', async () => {
     serve({ [MANIFEST_PATH]: json({ silentboom: MANIFEST.silentboom }) });
 
@@ -926,13 +947,9 @@ describe('getBundle: the load deadline', () => {
 
   type Answer = (init: RequestInit | undefined) => Response | Promise<Response>;
 
-  /**
-   * Serve Blob paths: list() finds each path in `answers` and fetch() answers
-   * it. `answers` stays editable, so a test can change what Blob says
-   * between two loads.
-   */
-  function serve(answers: Record<string, Answer>) {
-    vi.mocked(list).mockImplementation(async (opts) => {
+  /** A list() that finds each path in `answers` (and no other). */
+  const listing =
+    (answers: Record<string, Answer>) => async (opts?: { prefix?: string }) => {
       const pathname = opts?.prefix ?? '';
       const url = blobUrl(pathname);
       return {
@@ -943,7 +960,14 @@ describe('getBundle: the load deadline', () => {
         cursor: undefined,
         hasMore: false,
       } as unknown as Awaited<ReturnType<typeof list>>;
-    });
+    };
+  /**
+   * Serve Blob paths: list() finds each path in `answers` and fetch() answers
+   * it. `answers` stays editable, so a test can change what Blob says
+   * between two loads.
+   */
+  function serve(answers: Record<string, Answer>) {
+    vi.mocked(list).mockImplementation(listing(answers));
     return vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
       const answer = answers[String(url).replace(blobUrl(''), '')];
       if (answer == null) {
@@ -956,6 +980,10 @@ describe('getBundle: the load deadline', () => {
     (body: unknown): Answer =>
     () =>
       new Response(JSON.stringify(body));
+  const status =
+    (code: number, text: string): Answer =>
+    () =>
+      new Response('nope', { status: code, statusText: text });
   const after =
     (ms: number, answer: Answer): Answer =>
     (init) =>
@@ -1132,11 +1160,12 @@ describe('getBundle: the load deadline', () => {
 
   it('stops retrying when the deadline lands mid-backoff', async () => {
     // The first attempt fails at 9.9 s, so its 200 ms backoff is under way
-    // when the deadline passes at 10 s.
+    // when the deadline passes at 10 s. The failure is a transient one, so
+    // the deadline is then why the load failed.
     vi.mocked(list).mockImplementation(
       () =>
         new Promise((_resolve, reject) => {
-          setTimeout(() => reject(new Error('blob 503')), 9_900);
+          setTimeout(() => reject(new BlobServiceNotAvailable()), 9_900);
         }),
     );
     const onUnavailable = vi.fn();
@@ -1165,6 +1194,120 @@ describe('getBundle: the load deadline', () => {
     expect(vi.getTimerCount()).toBe(0);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a deterministic failure the deadline cut short: a 403, then the deadline mid-backoff, is an error', async () => {
+    // The download answers 403 at 9.9 s, so its backoff is under way at 10 s.
+    // A retry would only repeat a 403, so the deadline is not why this load
+    // failed and must not turn it into a 'transient' one.
+    const fetchSpy = serve({
+      [MANIFEST_PATH]: after(9_900, status(403, 'Forbidden')),
+    });
+    const onUnavailable = vi.fn();
+
+    const pending = getBundle('lottery', onUnavailable);
+    const settled = settledFlag(pending);
+    await vi.advanceTimersByTimeAsync(9_900);
+    expect(settled()).toBe(false);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(settled()).toBe(true);
+    expect(await pending).toBeNull();
+    expect(onUnavailable).toHaveBeenCalledExactlyOnceWith({
+      reason:
+        'Take-It manifest unavailable: take-it manifest fetch failed: 403 Forbidden',
+      kind: 'error',
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps a deterministic failure when the retry after it hangs into the deadline', async () => {
+    // Attempt 1 answers 403 at once; attempt 2 hangs until the deadline. The
+    // hang is no evidence the 403 went away, so it stays the load's failure.
+    let downloads = 0;
+    serve({
+      [MANIFEST_PATH]: (init) =>
+        ++downloads === 1 ? status(403, 'Forbidden')(init) : hungBody(init),
+    });
+    const onUnavailable = vi.fn();
+
+    const pending = getBundle('lottery', onUnavailable);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(await pending).toBeNull();
+    expect(downloads).toBe(2);
+    expect(onUnavailable).toHaveBeenCalledExactlyOnceWith({
+      reason:
+        'Take-It manifest unavailable: take-it manifest fetch failed: 403 Forbidden',
+      kind: 'error',
+    });
+  });
+
+  it('writes no cache entry for a refresh that finishes after the deadline', async () => {
+    // The bundle's list() ignores the signal and answers at 10.5 s, 0.5 s
+    // after getBundle gave up. The download then runs to the end.
+    const answers: Record<string, Answer> = {
+      [MANIFEST_PATH]: json(MANIFEST),
+      [BUNDLE_PATH]: json(mockBundle('v2026-05-16')),
+    };
+    const fetchSpy = serve(answers);
+    let firstBundleList = true;
+    vi.mocked(list).mockImplementation(async (opts) => {
+      if (opts?.prefix === BUNDLE_PATH && firstBundleList) {
+        firstBundleList = false;
+        await new Promise((resolve) => setTimeout(resolve, 10_500));
+      }
+      return listing(answers)(opts);
+    });
+
+    const first = getBundle('lottery', vi.fn());
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await first).toBeNull();
+    await vi.advanceTimersByTimeAsync(1_000);
+    // The late bundle was downloaded (manifest + bundle), and dropped.
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    // Blob is down now: a cache entry written by the late success would be
+    // served here, fresh, without a word to Blob.
+    vi.mocked(list).mockRejectedValue(new BlobServiceNotAvailable());
+    const onUnavailable = vi.fn();
+    const second = getBundle('lottery', onUnavailable);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(await second).toBeNull();
+    expect(onUnavailable).toHaveBeenCalledExactlyOnceWith({
+      reason: expect.stringContaining('Take-It manifest unavailable'),
+      kind: 'transient',
+    });
+  });
+
+  it('leaves no unhandled rejection when a request fails after the deadline', async () => {
+    // list() ignores the signal and rejects at 10.5 s, after getBundle gave up.
+    vi.mocked(list).mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          setTimeout(() => reject(new BlobServiceNotAvailable()), 10_500);
+        }),
+    );
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      const pending = getBundle('lottery', vi.fn());
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await pending).toBeNull();
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      // Node reports an unhandled rejection on a later turn of the real
+      // event loop, so give it two.
+      vi.useRealTimers();
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
   });
 
   it('loads as before inside the deadline, on one signal that stays unaborted', async () => {
