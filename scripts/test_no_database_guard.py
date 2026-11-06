@@ -25,7 +25,7 @@ from pathlib import Path
 import psycopg2
 import psycopg2.pool
 import pytest
-from conftest import BLOCKED_ENV_NAMES, DatabaseAccessBlocked
+from conftest import BLOCKED_ENV_NAMES, DatabaseAccessBlocked, _STORE_ENV_NAMES
 from sqlalchemy import create_engine
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -401,3 +401,35 @@ def test_a_swallowed_store_call_fails_the_session_and_names_both_rules(tmp_path)
     assert STORE_MESSAGE in output
     assert MESSAGE in output
     assert 'tried 2 time(s)' in output
+
+
+def test_the_env_file_loader_is_wrapped_once_where_the_module_exists(tmp_path):
+    # The scripts tree has no `utils` module, so the wrapper has nothing to
+    # wrap here (the ml twin proves it against the real one). The probe brings
+    # a stand-in `utils` whose load_env returns every store name next to a
+    # harmless one and a database URL, the way ml's does when the repo-root
+    # .env holds them.
+    stand_in = f"""
+        def load_env():
+            env = {{name: 'fake' for name in {list(_STORE_ENV_NAMES)!r}}}
+            env['HARMLESS'] = 'kept'
+            env['DATABASE_URL'] = 'postgresql://x@invalid.invalid/db'
+            return env
+    """
+    result = _run_probe(
+        tmp_path,
+        """
+        import utils
+        from conftest import _install_env_file_strip
+
+        def test_store_names_are_dropped_and_the_rest_kept():
+            assert sorted(utils.load_env()) == ['DATABASE_URL', 'HARMLESS']
+
+        def test_installing_again_does_not_wrap_twice():
+            before = utils.load_env
+            _install_env_file_strip()
+            assert utils.load_env is before
+        """,
+        extra_files={'utils.py': stand_in},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

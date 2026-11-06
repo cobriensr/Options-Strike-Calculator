@@ -24,7 +24,7 @@ import psycopg2.pool
 import pytest
 from sqlalchemy import create_engine
 
-from conftest import BLOCKED_ENV_NAMES, DatabaseAccessBlocked
+from conftest import _STORE_ENV_NAMES, BLOCKED_ENV_NAMES, DatabaseAccessBlocked
 
 DSN = "postgresql://x@invalid.invalid/db"
 MESSAGE = "tests must not connect to a database"
@@ -109,6 +109,37 @@ def test_env_names_cover_the_database_and_writable_stores():
         "R2_SECRET_ACCESS_KEY",
     ):
         assert name in BLOCKED_ENV_NAMES
+
+
+# ── The env file: store credentials never come back through a loader ───────
+
+
+def test_load_env_drops_the_store_credentials_of_the_env_file(monkeypatch, tmp_path):
+    # utils.load_env merges <ML_ROOT>/../.env over os.environ, which the
+    # per-test scrub does not touch. DuckDB httpfs and s3fs would reach R2 on
+    # credentials alone, with no botocore call to block.
+    import utils
+
+    lines = [f"{name}=fake-{name.lower()}" for name in _STORE_ENV_NAMES]
+    lines += ["HARMLESS=kept", f"DATABASE_URL={DSN}"]
+    (tmp_path / ".env").write_text("\n".join(lines) + "\n")
+    monkeypatch.setattr(utils, "ML_ROOT", tmp_path / "ml")
+
+    env = utils.load_env()
+
+    assert [name for name in _STORE_ENV_NAMES if name in env] == []
+    # Anything else is still returned. The database URL too: the connect call
+    # is its block, and a loader that hid it would turn get_connection into a
+    # sys.exit before the attempt could be recorded.
+    assert env["HARMLESS"] == "kept"
+    assert env["DATABASE_URL"] == DSN
+
+
+def test_load_env_drops_a_store_credential_that_came_from_os_environ(monkeypatch):
+    import utils
+
+    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "set-by-this-test")
+    assert "R2_SECRET_ACCESS_KEY" not in utils.load_env()
 
 
 # ── Subprocess probes ────────────────────────────────────────────────────────
@@ -396,3 +427,33 @@ def test_a_swallowed_store_call_fails_the_session_and_names_both_rules(tmp_path)
     assert STORE_MESSAGE in output
     assert MESSAGE in output
     assert "tried 2 time(s)" in output
+
+
+def test_the_env_file_loader_is_wrapped_once_where_the_module_exists(tmp_path):
+    # The probe brings a stand-in `utils` whose load_env returns every store
+    # name next to a harmless one and a database URL, the way the real one does
+    # when the repo-root .env holds them.
+    stand_in = f"""
+        def load_env():
+            env = {{name: "fake" for name in {list(_STORE_ENV_NAMES)!r}}}
+            env["HARMLESS"] = "kept"
+            env["DATABASE_URL"] = "postgresql://x@invalid.invalid/db"
+            return env
+    """
+    result = _run_probe(
+        tmp_path,
+        """
+        import utils
+        from conftest import _install_env_file_strip
+
+        def test_store_names_are_dropped_and_the_rest_kept():
+            assert sorted(utils.load_env()) == ["DATABASE_URL", "HARMLESS"]
+
+        def test_installing_again_does_not_wrap_twice():
+            before = utils.load_env
+            _install_env_file_strip()
+            assert utils.load_env is before
+        """,
+        extra_files={"utils.py": stand_in},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

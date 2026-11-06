@@ -16,7 +16,9 @@ constructing psycopg2.extensions.connection(...) directly, which bypasses
 _connect. The production stores follow the same design: botocore.client.
 BaseClient._make_api_call, where every boto3 call to R2 or S3 ends, is replaced
 by a stub with its own message ("tests must not reach a production store"),
-reads included, when botocore imports.
+reads included, when botocore imports. The guard section also wraps ml's
+utils.load_env where a module of that name exists (it does not in this tree,
+so the wrapper is a no-op here; ml/conftest.py has the effect).
 
 Run the suite the way the test docstrings say, from the repo root:
 
@@ -39,13 +41,15 @@ import pytest
 
 # Every name a database client or a writable remote store reads. Tests that
 # need a value set their own fake after the fixture below has run.
-BLOCKED_ENV_NAMES = (
+_DATABASE_ENV_NAMES = (
     "DATABASE_URL",
     "DATABASE_URL_UNPOOLED",
     "POSTGRES_URL",
     "POSTGRES_URL_NON_POOLING",
     "POSTGRES_PRISMA_URL",
     "NEON_DATABASE_URL",
+)
+_STORE_ENV_NAMES = (
     "KV_REST_API_URL",
     "KV_REST_API_TOKEN",
     "UPSTASH_REDIS_REST_URL",
@@ -57,6 +61,7 @@ BLOCKED_ENV_NAMES = (
     "R2_ENDPOINT_URL",
     "R2_BUCKET_FULLTAPE",
 )
+BLOCKED_ENV_NAMES = _DATABASE_ENV_NAMES + _STORE_ENV_NAMES
 
 _BLOCK_MESSAGE = "tests must not connect to a database"
 _STORE_BLOCK_MESSAGE = "tests must not reach a production store"
@@ -110,8 +115,7 @@ _STORE_KINDS = frozenset(kind for _, _, kind in _STORE_POINTS)
 def _install_db_block() -> None:
     """Replace each driver's connect call, and each store's call, with a stub.
 
-    Safe to call again: it only reassigns. A driver that is not installed
-    has nothing to block.
+    A driver that is not installed has nothing to block.
     """
     for points, message in (
         (_CONNECT_POINTS, _BLOCK_MESSAGE),
@@ -129,6 +133,41 @@ def _install_db_block() -> None:
 
 
 _install_db_block()
+
+# Env-file loaders. utils.load_env merges the repo-root .env FILE over
+# os.environ, so the fixture below, which clears os.environ only, does not
+# keep the store credentials in that file out of a test. DuckDB's httpfs and
+# pandas via s3fs reach R2 without botocore and need only credentials to do
+# it, so those credentials are closed at the source: the loader drops the
+# store names. The database names stay in what it returns. The connect call is
+# their block, and a loader that returned no URL would end get_connection in
+# sys.exit before the attempt is recorded. A suite whose tree has no such
+# module has nothing to wrap.
+_ENV_FILE_LOADERS = (("utils", "load_env"),)
+
+
+def _without_store_names(loader):
+    def load_without_store_names(*args, **kwargs):
+        env = loader(*args, **kwargs)
+        return {k: v for k, v in env.items() if k not in _STORE_ENV_NAMES}
+
+    load_without_store_names._without_store_names = True
+    return load_without_store_names
+
+
+def _install_env_file_strip() -> None:
+    """Wrap each env-file loader to drop the store names. Idempotent."""
+    for module_name, function in _ENV_FILE_LOADERS:
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        loader = getattr(module, function, None)
+        if loader is not None and not hasattr(loader, "_without_store_names"):
+            setattr(module, function, _without_store_names(loader))
+
+
+_install_env_file_strip()
 
 
 @pytest.fixture(autouse=True)
@@ -166,13 +205,12 @@ def db_block_attempts() -> _AttemptsSinceTestStart:
 
 @pytest.fixture(scope="session", autouse=True)
 def _tests_never_reach_a_database():
-    """Fail the session if any test attempted a database connection.
+    """Fail the session if any test attempted a database or store call.
 
     The stub raises in the test that tried, but a caller may swallow that;
-    the log still has it. Re-installs the block at session start in case
-    something replaced it between import and the first test.
+    the log still has it. The block itself is installed once, at import
+    (above); the self-tests prove it is in place.
     """
-    _install_db_block()
     yield
     if _attempts:
         listed = "\n".join(f"  {kind}" for kind in _attempts)
