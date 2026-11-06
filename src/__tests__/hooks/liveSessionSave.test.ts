@@ -410,6 +410,30 @@ describe('a live session after the page loaded', () => {
     expect(new Set(slots.map((s) => rows.get(s)!.spx)).size).toBe(slots.length);
   });
 
+  it('keeps the last live quote through a quotes outage, not the page-load candle', async () => {
+    const hook = await runSession(3);
+    const lastQuote = quotesAt(3);
+
+    // Schwab stops answering: no new quotes, so no time sync either. The
+    // clock runs 8 minutes past the 9:45 slot, and other hooks keep App
+    // rendering, so the time reads as more than 5 minutes behind.
+    for (let minute = 0; minute < 7; minute += 1) {
+      await advance(60_000);
+      hook.rerender();
+    }
+    await settle(2000);
+
+    expect(hook.result.current.time.timeMinute).toBe('45');
+    expect(hook.result.current.spot.spxDirect).toBe(
+      lastQuote.spx!.price.toFixed(0),
+    );
+    expect(hook.result.current.spot.spotPrice).toBe(
+      lastQuote.spy!.price.toFixed(2),
+    );
+    expect(hook.result.current.historySnapshot).toBeNull();
+    expect(posts.filter((p) => p.body.isBacktest === true)).toEqual([]);
+  });
+
   it('saves the top-of-hour slot, which a step into a new hour must not lose', async () => {
     await runSession(24);
 

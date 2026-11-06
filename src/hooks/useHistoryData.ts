@@ -6,7 +6,9 @@
  *
  * Today's date fetches too, once, when it is selected: the candles up to
  * that moment, never refreshed. useAutoFill uses them for a scrubbed-back
- * time, not for today at the current time, where live Schwab data stands.
+ * time they cover. It does not use them for today at the current time while
+ * live quotes exist (without them it shows them, as the only source), nor
+ * for a today time after the last candle, where live Schwab data stands.
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';

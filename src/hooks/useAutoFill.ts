@@ -5,12 +5,13 @@
  *   1. Live auto-fill: When Schwab quotes arrive, populate empty fields
  *      (spot, SPX, VIX, VIX1D) and set the current time.
  *   2. History auto-fill: When the selected moment is history (a past date,
- *      or today scrubbed back more than 5 minutes: isBacktestMode), fill
- *      inputs from historical candle data; restore live data otherwise.
- *      Today at the current time keeps the live quotes on every poll and
- *      time step: today's candles are fetched once, at page load, so the
- *      last one is no later than the load. With no live quotes at all (a
- *      guest's view of today) they fill the display, as the only source.
+ *      or today scrubbed back more than 5 minutes: isBacktestMode) and its
+ *      candles cover the time, fill inputs from historical candle data;
+ *      restore live data otherwise. Today at the current time keeps the live
+ *      quotes on every poll and time step, and so does a today time after
+ *      the last candle: today's candles are fetched once, at page load, so
+ *      they stop there. With no live quotes at all (a guest's view of
+ *      today) they fill the display, as the only source.
  *      A past date without intraday history still gets its own IV mode and
  *      σ: the static VIX1D table's value, else VIX mode on the date's daily
  *      VIX OHLC (useVixData). No past date gets today's live VIX1D or VIX.
@@ -29,6 +30,7 @@ import { toETTime } from '../utils/calculator';
 import {
   getCTTime,
   getETToday,
+  getETTotalMinutes,
   isBacktestMode,
   isPastETDate,
 } from '../utils/timezone';
@@ -75,6 +77,9 @@ interface UseAutoFillInputs {
   timeAmPm: AmPm;
   timezone: 'ET' | 'CT';
 }
+
+/** How long one history candle covers, in minutes. */
+const CANDLE_MINUTES = 5;
 
 /**
  * How much of a past date's VIX1D an IV-mode choice could see, least first:
@@ -135,14 +140,24 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     timeAmPm,
     timezone,
   );
-  // The date's own history applies where the selected moment is history. On
-  // today at the current time it never does: useHistoryData fetches today
-  // once and never again, so its last candle is the page load's and would
-  // pin the inputs, and the signals read from them, to it on every poll. Its
-  // one use on a live moment is when no live quotes exist to take its place.
+  // The date's own history applies where the selected moment is history and
+  // the candles cover it. Today's candles stop at the page load
+  // (useHistoryData fetches today once), and getStateAtTime answers any later
+  // time with the last one. So on today at the current time they never apply,
+  // nor to a time after the last candle, even one far behind the clock (a
+  // scrub past the load, or a quotes outage that stalls the time sync): the
+  // live quotes stand, and the signals read the live feeds. Their one use
+  // there is when no live quotes exist to take their place.
+  const etMinutes = etHour * 60 + etMinute;
+  const lastCandle = historyData.history?.spx.candles.at(-1);
+  const coversTime =
+    isPastETDate(selectedDate) ||
+    (lastCandle != null &&
+      etMinutes <
+        getETTotalMinutes(new Date(lastCandle.datetime)) + CANDLE_MINUTES);
   const fromHistory =
     ownHistory &&
-    (isBacktestMode(selectedDate, etHour * 60 + etMinute) ||
+    ((isBacktestMode(selectedDate, etMinutes) && coversTime) ||
       !market.data.quotes);
 
   // Track which date we last auto-set IV mode for so we don't override the

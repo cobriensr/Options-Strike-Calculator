@@ -1588,14 +1588,37 @@ describe('useAutoFill: today at the current time vs its loaded history', () => {
     vix1dStatic: createVix1dStatic(),
   };
 
-  /** Today's history as the page loaded it: SPX 5750, SPY 575, VIX 20.50. */
-  const todaysHistory = createHistoryData({
-    hasHistory: true,
-    history: mockHistory(TODAY_DATE),
-    getStateAtTime: vi
-      .fn()
-      .mockReturnValue(makeHistorySnapshot({ vix: 20.5, vix1d: null })),
-  });
+  /**
+   * Today's history as the page loaded it: SPX 5750, SPY 575, VIX 20.50.
+   * Its last candle starts at `lastCandleUtc` and covers the 5 minutes after.
+   */
+  const historyEndingAt = (lastCandleUtc: string) => {
+    const history = mockHistory(TODAY_DATE);
+    return createHistoryData({
+      hasHistory: true,
+      history: {
+        ...history,
+        spx: {
+          ...history.spx,
+          candles: [
+            {
+              datetime: Date.parse(lastCandleUtc),
+              time: '',
+              open: 5750,
+              high: 5750,
+              low: 5750,
+              close: 5750,
+            },
+          ],
+        },
+      },
+      getStateAtTime: vi
+        .fn()
+        .mockReturnValue(makeHistorySnapshot({ vix: 20.5, vix1d: null })),
+    });
+  };
+  /** The page loaded at 11:28 CT: the last candle starts at 12:25 ET. */
+  const todaysHistory = historyEndingAt('2026-03-17T16:25:00Z');
 
   /** A poll's quotes: SPX `spx`, SPY `spx / 10`, VIX `vix`. */
   const poll = (spx: number, vix: number): MarketDataState => ({
@@ -1611,17 +1634,19 @@ describe('useAutoFill: today at the current time vs its loaded history', () => {
 
   interface Props {
     market: MarketDataState;
+    timeHour?: string;
     timeMinute: string;
   }
 
-  function renderToday(initial: Props) {
+  function renderToday(initial: Props, historyData = todaysHistory) {
     return renderHook(
-      ({ market, timeMinute }: Props) =>
+      ({ market, timeHour = fixed.timeHour, timeMinute }: Props) =>
         useAutoFill({
           ...fixed,
           market,
+          timeHour,
           timeMinute,
-          historyData: todaysHistory,
+          historyData,
         }),
       { initialProps: initial },
     );
@@ -1687,6 +1712,52 @@ describe('useAutoFill: today at the current time vs its loaded history', () => {
     expect(lastCall(setters.setSpotPrice)).toBe('575.00');
     expect(lastCall(setters.setVixInput)).toBe('20.50');
     expect(result.current?.spot).toBe(5750);
+  });
+
+  it.each([
+    {
+      label: 'the minute its last candle starts (10:40 ET)',
+      hour: '9',
+      minute: '40',
+      fromHistory: true,
+    },
+    {
+      label: 'the minute that candle ends (10:45 ET)',
+      hour: '9',
+      minute: '45',
+      fromHistory: false,
+    },
+  ])(
+    'at $label, a scrubbed-back today fills from the history: $fromHistory',
+    ({ hour, minute, fromHistory }) => {
+      // The page loaded after 10:40 ET (9:40 CT): its last candle covers
+      // 10:40 up to 10:45 ET. Both times are more than 5 minutes behind the
+      // clock (12:30 ET).
+      const { result } = renderToday(
+        { market: poll(5820, 18.5), timeHour: hour, timeMinute: minute },
+        historyEndingAt('2026-03-17T14:40:00Z'),
+      );
+
+      expect(lastCall(setters.setSpxDirect)).toBe(
+        fromHistory ? '5750' : '5820',
+      );
+      expect(result.current === null).toBe(!fromHistory);
+    },
+  );
+
+  it('shows the live quotes for a time after the last candle, however far behind the clock', () => {
+    // The page loaded at 9:42 CT, so the candles end at 10:40 ET. Scrubbed
+    // to 11:15 ET the history has none, and would answer with the 10:40
+    // candle (the last), frozen at the load.
+    const { result } = renderToday(
+      { market: poll(5820, 18.5), timeHour: '10', timeMinute: '15' },
+      historyEndingAt('2026-03-17T14:40:00Z'),
+    );
+
+    expect(lastCall(setters.setSpxDirect)).toBe('5820');
+    expect(lastCall(setters.setSpotPrice)).toBe('582.00');
+    expect(lastCall(setters.setVixInput)).toBe('18.50');
+    expect(result.current).toBeNull();
   });
 
   it('fills the display from the history while no live quotes exist, then hands over to them', () => {
