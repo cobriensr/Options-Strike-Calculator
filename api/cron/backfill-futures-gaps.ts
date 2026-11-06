@@ -29,7 +29,8 @@
  *      in-memory, so a mid-day uw-stream restart restarts it from zero;
  *      on a roll day the two can then pick different months for a minute.
  *   4. Batched `INSERT … SELECT FROM unnest(…) ON CONFLICT (symbol, ts)
- *      DO NOTHING` for the leader's bars inside each gap. DO NOTHING
+ *      DO NOTHING` (`insertFuturesBars`, `api/_lib/futures-bars.ts`) for
+ *      the leader's bars inside each gap, flow left NULL. DO NOTHING
  *      never overwrites a bar the live handler wrote.
  *   5. Order-flow pass (spec Phase 6), after the OHLC pass so the bars it
  *      just inserted are included: bars in the same window and Globex-open
@@ -83,6 +84,7 @@ import {
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 import { isFuturesMarketOpen } from '../../src/utils/timezone.js';
+import { insertFuturesBars } from '../_lib/futures-bars.js';
 import {
   FUTURES_ROOTS,
   fetchFuturesContracts,
@@ -118,7 +120,6 @@ export const config = {
 const JOB = 'backfill-futures-gaps';
 
 const LOOKBACK_DAYS = 3;
-const INSERT_CHUNK = 500;
 // UW's documented-by-probe ceiling on one 1m candle response.
 const UW_CANDLE_ROW_CAP = 5000;
 // NUMERIC(12,4) ceiling — a larger value would reject the whole chunk.
@@ -309,36 +310,6 @@ function parseCandle(raw: unknown): Bar | null {
   };
 }
 
-// ── DB write ────────────────────────────────────────────────
-
-async function insertBars(symbol: FuturesRoot, bars: Bar[]): Promise<number> {
-  const sql = getDb();
-  let inserted = 0;
-  for (let i = 0; i < bars.length; i += INSERT_CHUNK) {
-    const chunk = bars.slice(i, i + INSERT_CHUNK);
-    const rows = (await withDbRetry(
-      () => sql`
-        INSERT INTO futures_bars (symbol, ts, open, high, low, close, volume)
-        SELECT ${symbol}, t.ts, t.open, t.high, t.low, t.close, t.volume
-        FROM unnest(
-          ${chunk.map((b) => b.ts)}::timestamptz[],
-          ${chunk.map((b) => b.open)}::numeric[],
-          ${chunk.map((b) => b.high)}::numeric[],
-          ${chunk.map((b) => b.low)}::numeric[],
-          ${chunk.map((b) => b.close)}::numeric[],
-          ${chunk.map((b) => b.volume)}::bigint[]
-        ) AS t(ts, open, high, low, close, volume)
-        ON CONFLICT (symbol, ts) DO NOTHING
-        RETURNING ts
-      `,
-      2,
-      10_000,
-    )) as unknown[];
-    inserted += rows.length;
-  }
-  return inserted;
-}
-
 // ── Candles ─────────────────────────────────────────────────
 
 /** One root's 1m candles for its front-month candidates. */
@@ -451,7 +422,7 @@ async function repairSymbol(
   const bars = replayFrontMonth(candles.byContract)
     .map((e) => e.row)
     .filter(inGap);
-  const inserted = await insertBars(symbol, bars);
+  const inserted = await insertFuturesBars(symbol, bars);
 
   return {
     contracts: candles.candidates,
