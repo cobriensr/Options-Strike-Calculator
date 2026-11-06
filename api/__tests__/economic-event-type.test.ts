@@ -240,17 +240,29 @@ describe('classifyEconomicEvent', () => {
     'Norway interest rate decision',
     'South Africa interest rate decision',
     'Euro Zone economic projections',
+    // The adjective forms of the listed countries, and the hyphenated zone.
+    'Euro-zone interest rate decision',
+    'European interest rate decision',
+    'Australian interest rate decision',
+    'Korean interest rate decision',
+    'Mexican interest rate decision',
+    'Brazilian interest rate decision',
+    'Turkish interest rate decision',
+    'Swedish interest rate decision',
+    'Norwegian interest rate decision',
+    'Indian interest rate decision',
+    'South African interest rate decision',
   ])('country-named foreign decision is not FOMC: %s', (name) => {
     expect(classifyEconomicEvent(name)).toBe('OTHER');
   });
 
-  // The country guard matches whole words: Indiana is not India. Neither of
-  // these is a foreign decision, so the guard must not touch them.
+  // The country guard matches whole words: Indiana is not India. This is a
+  // synthetic word-boundary probe, not a real UW name: the Fed anchors the
+  // decision, so it is FOMC unless "Indiana" is wrongly read as India.
   it('does not veto a name that merely starts with a country name', () => {
-    expect(classifyEconomicEvent('Indiana interest rate decision')).toBe(
+    expect(classifyEconomicEvent('Fed rate decision: Indiana outlook')).toBe(
       'FOMC',
     );
-    expect(classifyEconomicEvent('Indiana manufacturing survey')).toBe('OTHER');
   });
 
   // The exclusion covers every FOMC rule, not only the rate-decision one.

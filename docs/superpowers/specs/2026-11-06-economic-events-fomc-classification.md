@@ -99,10 +99,11 @@ The first matching rule wins:
     interest rate decision", so a foreign one often carries only its country:
     "Japan interest rate decision" and "Euro Zone interest rate decision" are
     `OTHER`. The country list is Japan/Japanese, Canada/Canadian, U.K./United
-    Kingdom/British, Euro zone/Eurozone/Euro area, Australia, New Zealand,
-    Swiss/Switzerland, China/Chinese, India, Korea, Mexico, Brazil, Turkey,
-    Sweden, Norway and South Africa, matched as whole words ("Indiana" is not
-    India).
+    Kingdom/British, Euro zone/Euro-zone/Eurozone/Euro area/European,
+    Australia/Australian, New Zealand, Swiss/Switzerland, China/Chinese,
+    India/Indian, Korea/Korean, Mexico/Mexican, Brazil/Brazilian,
+    Turkey/Turkish, Sweden/Swedish, Norway/Norwegian and South
+    Africa/South African, matched as whole words ("Indiana" is not India).
   - A speaker who mentions the decision or the projections is `FED`, not
     `FOMC`: "Fed's Waller speaks on the rate decision" and "Fed Vice Chair
     Jefferson speaks on economic projections". The rate-decision and
@@ -156,11 +157,13 @@ The first matching rule wins:
     call 2026-11-06: OR with FOMC rows, to cover unscheduled decisions).
     - The schedule guarantees every scheduled meeting counts even with no
       rows (before the table existed, or in the 07-22..09-07 gap).
-    - With the new classifier, only decision-type releases are typed `FOMC`.
-      A foreign central bank's decision (named by bank, abbreviation or
-      country) and a speaker who mentions the decision or the projections are
-      vetoed (see Labels), so a `FOMC` row on a non-decision day is an
-      unscheduled decision.
+    - With the new classifier, decision-type releases are typed `FOMC`. A
+      foreign central bank's decision is vetoed when its name carries a listed
+      bank, abbreviation or country (or its adjective), and so is a speaker who
+      mentions the decision or the projections (see Labels). So a `FOMC` row on
+      a non-decision day is an unscheduled decision. The foreign veto is a
+      blocklist: a country that is not listed would still pass, which is
+      inherent to a blocklist.
   - `event_type` is `'FOMC'` when `is_fomc`; otherwise it's the first type
     found in this order: FOMC, CPI, PCE, JOBS, GDP, FED, PMI, RETAIL,
     SENTIMENT, OTHER. It's left unset when there are no rows and the day isn't

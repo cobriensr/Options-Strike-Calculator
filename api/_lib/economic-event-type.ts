@@ -38,9 +38,10 @@ type Rule = readonly [
 // rows into is_fomc, so one typed FOMC would flip the ML feature on a day the
 // Fed is silent. Guards every FOMC rule. UW names the U.S. decision "U.S.
 // interest rate decision", so a foreign one is often named by its country
-// alone ("Japan interest rate decision"): the last two patterns are country
-// names, as whole words ("Indiana" is not India). Abbreviations, bank names
-// and countries are separate regexes so each stays under
+// alone ("Japan interest rate decision"): the last four patterns are country
+// names and their adjectives, as whole words ("Indiana" is not India). It is a
+// blocklist: a country that is not listed still passes. Abbreviations, bank
+// names and countries are separate regexes so each stays under
 // `sonarjs/regex-complexity`.
 const FOREIGN_CENTRAL_BANK: readonly RegExp[] = [
   /\b(?:ECB|BoE|BoJ|BoC|BoK|RBA|RBNZ|RBI|SNB|PBOC|CBRT|Banxico)\b/i,
@@ -48,8 +49,10 @@ const FOREIGN_CENTRAL_BANK: readonly RegExp[] = [
   /\bReserve Bank of (?:Australia|New Zealand|India)\b/i,
   /\b(?:European Central Bank|Swiss National Bank|Riksbank|Norges Bank)\b/i,
   /\bPeople['’]s Bank of China\b/i,
-  /\b(?:Japan(?:ese)?|Canad(?:a|ian)|China|Chinese|India|Korea|Mexico|Brazil|Turkey|Sweden|Norway)\b/i,
-  /\b(?:U\.?K|United Kingdom|British|Euro ?zone|Euro area|Australia|New Zealand|Swiss|Switzerland|South Africa)\b/i,
+  /\b(?:Japan(?:ese)?|Canad(?:a|ian)|China|Chinese|India(?:n)?|Korea(?:n)?)\b/i,
+  /\b(?:Mexic(?:o|an)|Brazil(?:ian)?|Turk(?:ey|ish)|Swed(?:en|ish)|Norw(?:ay|egian))\b/i,
+  /\b(?:U\.?K|United Kingdom|British|Euro[- ]?zone|Euro area|European)\b/i,
+  /\b(?:Australia(?:n)?|New Zealand|Swiss|Switzerland|South Africa(?:n)?)\b/i,
 ];
 
 // A person speaking is never a survey or a decision, even when the title
