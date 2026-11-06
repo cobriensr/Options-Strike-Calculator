@@ -10,6 +10,7 @@ import {
   cashSessionMinutes,
   currentSessionStage,
   ACTIVE_SESSION_STAGES,
+  EARLY_CLOSE_DATES,
   MARKET_CLOSED_DATES,
   type SessionStage,
 } from '../../data/marketHours';
@@ -452,6 +453,83 @@ describe('2027 NYSE calendar', () => {
     expect(priorTradingDay('2027-01-04')).toBe('2026-12-31'); // Fri Jan 1 closed
     expect(priorTradingDay('2027-07-06')).toBe('2027-07-02'); // Mon Jul 5 closed
     expect(priorTradingDay('2027-12-27')).toBe('2027-12-23'); // Fri Dec 24 closed
+  });
+});
+
+describe('2028 NYSE calendar', () => {
+  // Source: https://www.nyse.com/markets/hours-calendars (checked 2026-11-06).
+  // The weekday is part of the table so a mistyped date fails here.
+  const HOLIDAYS_2028 = [
+    ['2028-01-17', 'Mon', 'MLK Day'],
+    ['2028-02-21', 'Mon', "Washington's Birthday"],
+    ['2028-04-14', 'Fri', 'Good Friday'],
+    ['2028-05-29', 'Mon', 'Memorial Day'],
+    ['2028-06-19', 'Mon', 'Juneteenth'],
+    ['2028-07-04', 'Tue', 'Independence Day'],
+    ['2028-09-04', 'Mon', 'Labor Day'],
+    ['2028-11-23', 'Thu', 'Thanksgiving'],
+    ['2028-12-25', 'Mon', 'Christmas'],
+  ] as const;
+  const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+
+  it.each(HOLIDAYS_2028)(
+    'treats %s (%s, %s) as a full closure',
+    (date, weekday) => {
+      expect(WEEKDAYS[parseIsoDate(date)?.getUTCDay() ?? -1]).toBe(weekday);
+      expect(isHoliday(date)).toBe(true);
+      expect(isTradingDay(date)).toBe(false);
+      expect(getMarketCloseHourET(date)).toBeNull();
+      expect(cashSessionMinutes(date)).toBe(0);
+    },
+  );
+
+  it('lists exactly the nine 2028 closures NYSE publishes', () => {
+    const listed = [...MARKET_CLOSED_DATES].filter((d) =>
+      d.startsWith('2028-'),
+    );
+    expect(listed.sort()).toEqual(HOLIDAYS_2028.map(([date]) => date));
+  });
+
+  it.each([
+    ['2028-07-03', 'Mon, the day before Independence Day'],
+    ['2028-11-24', 'Fri, the day after Thanksgiving'],
+  ])('treats %s (%s) as a 1 PM ET early close', (date) => {
+    expect(isHalfDay(date)).toBe(true);
+    expect(isTradingDay(date)).toBe(true);
+    expect(getEarlyCloseHourET(date)).toBe(13);
+    expect(getMarketCloseHourET(date)).toBe(13);
+    expect(cashSessionMinutes(date)).toBe(210);
+  });
+
+  it('lists exactly two 2028 early closes', () => {
+    const listed = [...EARLY_CLOSE_DATES.keys()].filter((d) =>
+      d.startsWith('2028-'),
+    );
+    expect(listed.sort()).toEqual(['2028-07-03', '2028-11-24']);
+  });
+
+  it('has no Christmas Eve early close, because 2028-12-24 is a Sunday', () => {
+    expect(getEarlyCloseHourET('2028-12-24')).toBeUndefined();
+    expect(isTradingDay('2028-12-24')).toBe(false);
+  });
+
+  it('treats Friday 2028-12-22 as an ordinary full trading day', () => {
+    expect(isTradingDay('2028-12-22')).toBe(true);
+    expect(isHalfDay('2028-12-22')).toBe(false);
+    expect(getMarketCloseHourET('2028-12-22')).toBe(16);
+    expect(cashSessionMinutes('2028-12-22')).toBe(390);
+  });
+
+  it('does not observe New Year 2028 (a Saturday) on Friday 2027-12-31', () => {
+    expect(isHoliday('2027-12-31')).toBe(false);
+    expect(isTradingDay('2027-12-31')).toBe(true);
+    expect(isTradingDay('2028-01-01')).toBe(false); // Saturday
+  });
+
+  it('skips the 2028 holidays when walking back to the prior trading day', () => {
+    expect(priorTradingDay('2028-01-18')).toBe('2028-01-14'); // Mon Jan 17 closed
+    expect(priorTradingDay('2028-07-05')).toBe('2028-07-03'); // Tue Jul 4 closed
+    expect(priorTradingDay('2028-11-27')).toBe('2028-11-24'); // half day counts
   });
 });
 

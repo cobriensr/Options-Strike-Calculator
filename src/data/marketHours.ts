@@ -3,7 +3,8 @@
  * Affects time-to-expiry (T) for 0DTE pricing.
  *
  * Update once per year from: https://www.nyse.com/markets/hours-calendars
- * (2027 entries checked against that page on 2026-10-28). A test in
+ * (2027 entries checked against that page on 2026-10-28; 2028 entries
+ * checked on 2026-11-06, when NYSE had not published 2029 yet). A test in
  * marketHours.test.ts fails once the last listed holiday is under 60 days out.
  */
 
@@ -30,6 +31,9 @@ export const EARLY_CLOSE_DATES: ReadonlyMap<string, number> = new Map([
   // 2027: NYSE lists only the day after Thanksgiving. Jul 2 and Dec 23 are
   // full days; Jul 5 and Dec 24 are the observed closures instead.
   ['2027-11-26', 13], // Black Friday
+  // 2028: Dec 24 is a Sunday, so there is no Christmas Eve early close.
+  ['2028-07-03', 13], // Day before Independence Day (Monday)
+  ['2028-11-24', 13], // Black Friday
 ]);
 
 /**
@@ -67,6 +71,16 @@ export const MARKET_CLOSED_DATES: ReadonlySet<string> = new Set([
   '2027-09-06', // Labor Day
   '2027-11-25', // Thanksgiving
   '2027-12-24', // Christmas (observed; Dec 25 is a Saturday)
+  // 2028: New Year's Day (a Saturday) is not observed, so no closure.
+  '2028-01-17', // MLK Day
+  '2028-02-21', // Washington's Birthday
+  '2028-04-14', // Good Friday
+  '2028-05-29', // Memorial Day
+  '2028-06-19', // Juneteenth
+  '2028-07-04', // Independence Day
+  '2028-09-04', // Labor Day
+  '2028-11-23', // Thanksgiving
+  '2028-12-25', // Christmas
 ]);
 
 /**
