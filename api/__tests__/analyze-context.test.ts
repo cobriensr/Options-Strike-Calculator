@@ -1431,8 +1431,8 @@ describe('formatEconomicCalendarForClaude', () => {
     expect(result).not.toContain('[MEDIUM]');
   });
 
-  it('recognizes all high-severity types: FOMC, CPI, PCE, JOBS, GDP', () => {
-    const highTypes = ['FOMC', 'CPI', 'PCE', 'JOBS', 'GDP'];
+  it('recognizes all high-severity types: FOMC, FED, CPI, PCE, JOBS, GDP', () => {
+    const highTypes = ['FOMC', 'FED', 'CPI', 'PCE', 'JOBS', 'GDP'];
     for (const eventType of highTypes) {
       const rows = [
         {

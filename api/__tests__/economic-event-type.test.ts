@@ -85,8 +85,62 @@ const CASES: ReadonlyArray<readonly [EconomicEventType, string]> =
     names.map((name) => [type as EconomicEventType, name] as const),
   );
 
+const DISTRICTS = [
+  'Boston',
+  'New York',
+  'Philadelphia',
+  'Cleveland',
+  'Richmond',
+  'Atlanta',
+  'Chicago',
+  'St. Louis',
+  'Minneapolis',
+  'Kansas City',
+  'Dallas',
+  'San Francisco',
+] as const;
+
 describe('classifyEconomicEvent', () => {
   it.each(CASES)('%s: %s', (expected, name) => {
     expect(classifyEconomicEvent(name)).toBe(expected);
   });
+
+  // A district's survey is a PMI, but its president speaking is FED. Both
+  // have to hold for every one of the 12 districts.
+  it.each(DISTRICTS)('%s Fed manufacturing survey is PMI', (district) => {
+    expect(classifyEconomicEvent(`${district} Fed manufacturing survey`)).toBe(
+      'PMI',
+    );
+  });
+
+  it.each(DISTRICTS)('%s Fed President speaking is FED', (district) => {
+    expect(
+      classifyEconomicEvent(`${district} Fed President Jane Doe speaks`),
+    ).toBe('FED');
+  });
+
+  // The survey rule allows a few words between "Fed" and "survey|index", not
+  // an arbitrary stretch of text: a speech title that merely mentions a survey
+  // or an index is still a speech.
+  it.each([
+    'Philadelphia Fed President Anna Paulson speaks on Survey of Professional Forecasters',
+    'Philadelphia Fed President Anna Paulson speaks at index funds conference',
+  ])('speech that mentions a survey or index stays FED: %s', (name) => {
+    expect(classifyEconomicEvent(name)).toBe('FED');
+  });
+
+  it('a district survey with a longer title is still PMI', () => {
+    expect(
+      classifyEconomicEvent('Dallas Fed Texas Manufacturing Outlook Survey'),
+    ).toBe('PMI');
+  });
+
+  // UW calls the decision "U.S. interest rate decision", but the phrase is
+  // not fixed, so any "rate decision" is the decision day.
+  it.each(['Fed rate decision', 'FOMC rate decision'])(
+    'rate decision without "interest": %s',
+    (name) => {
+      expect(classifyEconomicEvent(name)).toBe('FOMC');
+    },
+  );
 });

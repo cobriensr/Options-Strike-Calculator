@@ -273,7 +273,7 @@ export function isQuarterEndLastHourCt(triggerTimeCt: Date): boolean {
  *   - Day-after-FOMC, day-after-CPI, day-after-NFP — STUBBED. The repo has
  *     an `economic_events` table populated by
  *     `api/cron/fetch-economic-calendar.ts` with `event_type ∈
- *     {FOMC, CPI, PCE, JOBS, GDP, PMI, RETAIL, SENTIMENT, OTHER}` but
+ *     {FOMC, FED, CPI, PCE, JOBS, GDP, PMI, RETAIL, SENTIMENT, OTHER}` but
  *     reading it requires I/O. Spec §"Data dependencies" defers this to v2;
  *     the rewire will inject `priorTradingDayEventTypes: Set<string>` into
  *     the macro arg.

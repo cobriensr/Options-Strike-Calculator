@@ -29,8 +29,10 @@ type Rule = readonly [type: EconomicEventType, pattern: RegExp];
 const RULES: readonly Rule[] = [
   // 1. The decision day. UW renamed "FOMC interest-rate decision" to "U.S.
   //    interest rate decision" in September 2026, so match the phrase, not
-  //    the prefix.
-  ['FOMC', /\binterest[- ]rate decision\b/i],
+  //    the prefix. "rate decision" alone also takes "Fed rate decision" and
+  //    "FOMC rate decision". UW's calendar is US-only, so a foreign central
+  //    bank's "rate decision" isn't a live risk.
+  ['FOMC', /\brate decision\b/i],
   ['FOMC', /\bFOMC statement\b/i],
   ['FOMC', /\b(?:Fed|FOMC|Federal Reserve)\b.*\bpress conference\b/i],
   ['FOMC', /\beconomic projections\b/i],
@@ -38,11 +40,13 @@ const RULES: readonly Rule[] = [
   // 2. Regional surveys, before the broad Fed rule: "Philadelphia Fed
   //    manufacturing survey" is a PMI, "Philadelphia Fed President ..." is
   //    FED. Only a district name directly before "Fed", then survey or index
-  //    within 40 characters, counts as a survey. ISM and the Empire State
-  //    survey carry no "Fed" at all.
+  //    after at most three whole words, counts as a survey. A speech title
+  //    that merely mentions a survey ("... speaks on Survey of Professional
+  //    Forecasters") has more than three words in between, so it stays FED.
+  //    ISM and the Empire State survey carry no "Fed" at all.
   [
     'PMI',
-    /\b(?:Boston|New York|Philadelphia|Cleveland|Richmond|Atlanta|Chicago|St\.? Louis|Minneapolis|Kansas City|Dallas|San Francisco) Fed\b.{0,40}?\b(?:survey|index)\b/i,
+    /\b(?:Boston|New York|Philadelphia|Cleveland|Richmond|Atlanta|Chicago|St\.? Louis|Minneapolis|Kansas City|Dallas|San Francisco) Fed (?:[\w-]+ ){0,3}(?:survey|index)\b/i,
   ],
   ['PMI', /\bEmpire State\b.*\b(?:survey|index)\b/i],
   ['PMI', /\bISM\b/i],
