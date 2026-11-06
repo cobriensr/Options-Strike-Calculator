@@ -20,9 +20,9 @@ made the same day.
 
 1. **The rate decision itself is labelled OTHER.** In September UW renamed it
    from "FOMC interest-rate decision" to "U.S. interest rate decision". The
-   classifier (`api/cron/fetch-economic-calendar.ts:59-70`) has no rule for
-   the new name, so the 09-16 and 10-28 decisions were stored as `OTHER`. On
-   10-28 the analyze prompt showed the decision as `[MEDIUM]`.
+   classifier (`api/cron/fetch-economic-calendar.ts:59-70` (pre-fix)) has no
+   rule for the new name, so the 09-16 and 10-28 decisions were stored as
+   `OTHER`. On 10-28 the analyze prompt showed the decision as `[MEDIUM]`.
 2. **Every Fed mention is labelled FOMC.** `/FOMC|Federal Reserve|Fed/i` runs
    first and matches substrings, so:
    - about 95 speeches, testimony, minutes, Beige Book and panel rows are
@@ -45,8 +45,8 @@ made the same day.
    - False on 01-28 and 03-18, which predate the table; on 07-29, inside the
      gap in item 7; and on 10-28, which is labelled OTHER.
 6. **`days_to_next_event` is off by about a day on every row.**
-   - `build-features-phase2.ts:266-282` turns a DATE (returned as UTC
-     midnight) into a JS `Date` and subtracts noon ET. A next-day event
+   - `build-features-phase2.ts:266-282` (pre-fix) turns a DATE (returned as
+     UTC midnight) into a JS `Date` and subtracts noon ET. A next-day event
      therefore gives `round(0.29) = 0`.
    - Live builds always get NULL, because the cron stores only today's events,
      so no later row exists at build time. Backfilled rows are populated:
@@ -86,15 +86,30 @@ The first matching rule wins:
 
 - `Fed` must match as a whole word, so "federal" never matches it.
 - Rules 1 and 2 must run before rule 3.
-- Rule 1 takes any "rate decision", not only "interest rate decision". A
-  foreign central bank's decision is excluded from every rule-1 pattern
-  (names that mention an abbreviation such as ECB, BoE, BoJ, BoC, BoK, RBA,
-  RBNZ, RBI, SNB, PBOC, CBRT or Banxico, or a spelled-out name such as Bank of
-  England, Bank of Japan, Bank of Canada, Bank of Korea, European Central
-  Bank, Reserve Bank of Australia, New Zealand or India, Swiss National Bank,
-  People's Bank of China, Riksbank or Norges Bank), so "ECB interest rate
-  decision" and "European Central Bank rate decision" are `OTHER`. Why: `is_fomc` ORs in `FOMC` rows, so a false
-  `FOMC` flips the ML feature on a day the Fed is silent.
+- Rule 1 takes any "rate decision", not only "interest rate decision". Two
+  vetoes keep a name that is not the Fed's decision out of `FOMC`. Why:
+  `is_fomc` ORs in `FOMC` rows, so a false `FOMC` flips the ML feature on a day
+  the Fed is silent.
+  - A foreign central bank's decision is excluded from every rule-1 pattern.
+    The name mentions an abbreviation (ECB, BoE, BoJ, BoC, BoK, RBA, RBNZ,
+    RBI, SNB, PBOC, CBRT, Banxico), a spelled-out bank (Bank of England,
+    Japan, Canada or Korea, European Central Bank, Reserve Bank of Australia,
+    New Zealand or India, Swiss National Bank, People's Bank of China,
+    Riksbank, Norges Bank), or a country. UW names the U.S. decision "U.S.
+    interest rate decision", so a foreign one often carries only its country:
+    "Japan interest rate decision" and "Euro Zone interest rate decision" are
+    `OTHER`. The country list is Japan/Japanese, Canada/Canadian, U.K./United
+    Kingdom/British, Euro zone/Eurozone/Euro area, Australia, New Zealand,
+    Swiss/Switzerland, China/Chinese, India, Korea, Mexico, Brazil, Turkey,
+    Sweden, Norway and South Africa, matched as whole words ("Indiana" is not
+    India).
+  - A speaker who mentions the decision or the projections is `FED`, not
+    `FOMC`: "Fed's Waller speaks on the rate decision" and "Fed Vice Chair
+    Jefferson speaks on economic projections". The rate-decision and
+    economic-projections rules take the speaker-word veto (President,
+    Governor, Chair, Chairman, Chairwoman, speaks, speech, remarks, testifies,
+    panel). The press-conference rule does not: "Fed Chair Powell press
+    conference" carries "Chair".
 - Rule 2 bounds the gap by words, not characters, and a name with a speaker
   word (President, Governor, Chair, Chairman, Chairwoman, speaks, speech,
   remarks, testifies, panel) never matches it. "Philadelphia Fed President
@@ -124,32 +139,51 @@ The first matching rule wins:
   `ml/src/setups_backtest/econ_calendar.csv`.
   - It asserts that the Python dates for 2025–2027 equal the TS set.
   - It asserts that every csv FOMC date is a TS decision day.
-  - It fails today on the csv's 2025-05-01, which the same phase fixes.
+  - It failed on the csv's 2025-05-01 (the Fed's decision day was
+    2025-05-07), which the same phase fixed.
 
 ### Consumers
 
-- **`addEventFeatures`** (`build-features-phase2.ts`; the rule lives in the
-  exported `summarizeDayEvents`, which the phase 5 backfill reuses):
+- **`addEventFeatures`** (`build-features-phase2.ts`). The day-level rules
+  live in a pure module, `api/_lib/economic-event-features.ts`
+  (`summarizeDayEvents`, the event-type rank, `MAX_PLAUSIBLE_EVENT_GAP_DAYS`,
+  `plausibleEventGap`, `nextEventGap`). It imports only
+  `fomc-schedule.ts` and a type. `addEventFeatures` and the phase 5 backfill
+  both import from it, with no re-export shim: `build-features-phase2.ts` pulls
+  in the UW client, Upstash and Sentry, and a script that imported it printed
+  Redis warnings on every run.
   - `is_fomc = isFomcDecisionDay(dateStr) || types.has('FOMC')` (controller's
     call 2026-11-06: OR with FOMC rows, to cover unscheduled decisions).
     - The schedule guarantees every scheduled meeting counts even with no
       rows (before the table existed, or in the 07-22..09-07 gap).
-    - With the new classifier, only decision-type releases are typed `FOMC`,
-      so a `FOMC` row on a non-decision day is an unscheduled decision.
+    - With the new classifier, only decision-type releases are typed `FOMC`.
+      A foreign central bank's decision (named by bank, abbreviation or
+      country) and a speaker who mentions the decision or the projections are
+      vetoed (see Labels), so a `FOMC` row on a non-decision day is an
+      unscheduled decision.
   - `event_type` is `'FOMC'` when `is_fomc`; otherwise it's the first type
     found in this order: FOMC, CPI, PCE, JOBS, GDP, FED, PMI, RETAIL,
     SENTIMENT, OTHER. It's left unset when there are no rows and the day isn't
     a decision day.
-  - `days_to_next_event` is computed in SQL as
-    `(MIN(date) - ${dateStr}::date)`, an integer number of calendar days. It's
-    left unset when no later row exists.
-  - It is also left unset when the gap is more than
-    `MAX_PLAUSIBLE_EVENT_GAP_DAYS` = 10 (controller's call 2026-11-06). UW's
-    calendar has weekly jobless claims plus several releases most days, so a
-    longer gap means calendar rows are missing (the 2026-07-22..09-07 hole),
-    not a quiet calendar. The constant and `plausibleEventGap()` live in
-    `build-features-phase2.ts`; `addEventFeatures` and the backfill both use
-    them. A gap of 10 is kept; 11 is unset.
+  - `days_to_next_event` is the integer number of calendar days to the next
+    `economic_events` date, computed on DATEs in one SQL statement that also
+    returns `before_table`: whether the day precedes the table's first row.
+    `nextEventGap(gapDays, beforeTable)` turns that into the value. It is left
+    unset in three cases:
+    - no later row exists;
+    - the gap is more than `MAX_PLAUSIBLE_EVENT_GAP_DAYS` = 10 (controller's
+      call 2026-11-06). UW's calendar has weekly jobless claims plus several
+      releases most days, so a longer gap means calendar rows are missing (the
+      2026-07-22..09-07 hole), not a quiet calendar. A gap of 10 is kept; 11
+      is unset;
+    - the day is dated before the first `economic_events` row (controller's
+      call 2026-11-06): the table did not exist yet, so the gap measures when
+      it began. The backfill NULLs such rows, so a live
+      `build-features?backfill=true` or `?date=` must not write one back (the
+      upsert's `COALESCE` would keep it).
+      The backfill computes the gap and the flag from the rows and calls the
+      same `nextEventGap`. A pglite test checks that both give the same value
+      on every date in a seeded calendar.
 - **Analyze formatter** (`analyze-context-formatters.ts` `HIGH_SEVERITY_TYPES`):
   see Q1.
 - **Gamma detector:**
@@ -184,13 +218,26 @@ The first matching rule wins:
     check-in);
   - a 2xx body with no `data` array, or `data: null`, now fails the run (500
     and `Sentry.captureException`). Before, `uwFetch` turned it into `[]` with
-    only a Sentry warning, and the cron reported a clean day with no events.
+    only a Sentry warning, and the cron reported a clean day with no events;
+  - a 2xx with `data: []` is not silent either. UW serves a two-week window,
+    so an empty one on a weekday is abnormal. The run stays a `success`
+    (nothing failed), but it increments `fetch_economic_calendar.empty` and
+    sends one Sentry warning with the message "fetch-economic-calendar: UW
+    returned an empty calendar". A calendar that has events, none dated today,
+    is not empty.
 
 ## Phases
 
 One implementer, one worktree (`.worktrees/econ-fomc-labels`, branch
-`fix/econ-fomc-labels`), one commit per phase. Starts after the calendar-2028
-work (A) is pushed; rebase onto it first, since both touch `api/events.ts`.
+`fix/econ-fomc-labels`). Starts after the calendar-2028 work (A) is pushed;
+rebase onto it first, since both touch `api/events.ts`.
+
+The branch did not land as one commit per phase. Each phase has one to three
+commits, and the review rounds added fix commits on top: the FOMC schedule
+drift guard, the foreign-bank and speaker vetoes, the gap and before-table
+rules for `days_to_next_event`, the pure `economic-event-features.ts` module,
+the empty-calendar alert and the backfill's ET-date, empty-read and CLI
+tests. Commits are grouped by file because the commit gate seals whole files.
 
 1. **FOMC schedule module** (~1 h)
    - Create: `api/_lib/fomc-schedule.ts`, `api/__tests__/fomc-schedule.test.ts`
@@ -202,13 +249,18 @@ work (A) is pushed; rebase onto it first, since both touch `api/events.ts`.
    - Modify: `api/cron/fetch-economic-calendar.ts` (use the classifier, plus
      the cron hardening).
    - Modify: `api/__tests__/fetch-economic-calendar.test.ts`. Flip the
-     "FOMC Meeting Minutes" case, and add the invalid-time case.
+     "FOMC Meeting Minutes" case, and add the invalid-time case and the
+     empty-calendar alert.
    - The analyze formatter change (`api/_lib/analyze-context-formatters.ts`,
      `api/__tests__/analyze-context.test.ts`) landed here, in phase 2, not in
      phase 3.
 3. **Consumers** (~1.5 h)
+   - Create: `api/_lib/economic-event-features.ts` (the pure day rules) and
+     `api/__tests__/economic-event-features.test.ts`.
    - Modify: `api/_lib/build-features-phase2.ts`,
-     `api/__tests__/build-features-phase2.test.ts`.
+     `api/__tests__/build-features-phase2.test.ts` and
+     `api/__tests__/build-features-phase2-events-pglite.test.ts` (real SQL for
+     `days_to_next_event`).
    - Modify `api/__tests__/build-features.test.ts` only if it pins the old
      priority.
 4. **Gamma detector wiring** (~45 min)
@@ -220,10 +272,16 @@ work (A) is pushed; rebase onto it first, since both touch `api/events.ts`.
 5. **Backfill script** (~1.5 h)
    - Created: `scripts/backfill-economic-event-labels.ts` (the thin CLI),
      `scripts/_lib/econ-label-backfill.ts` (the logic),
-     `scripts/_lib/econ-label-backfill.test.ts` (plan and arguments) and
-     `scripts/_lib/econ-label-backfill-pglite.test.ts` (real SQL). Follows
-     the pattern of `scripts/backfill-anchor-legs.ts` and
-     `scripts/_lib/anchor-backfill.ts`.
+     `scripts/_lib/econ-label-backfill.test.ts` (plan and arguments),
+     `scripts/_lib/econ-label-backfill-pglite.test.ts` (real SQL, including
+     the live/backfill parity case) and
+     `scripts/_lib/econ-label-backfill-cli.test.ts` (the CLI, with its module
+     boundaries mocked). Follows the pattern of `scripts/backfill-anchor-legs.ts`
+     and `scripts/_lib/anchor-backfill.ts`. It imports the day rules from
+     `api/_lib/economic-event-features.ts`, not `build-features-phase2.ts`.
+   - A zero-row `economic_events` read, with `training_features` rows present,
+     stops the run in both modes: with no events every feature row would be
+     recomputed from an empty calendar.
    - Dry run by default. Prints each table's before and after counts and every
      changed `economic_events` name.
    - `--apply` computes the plan up front and runs all writes in one
@@ -246,10 +304,10 @@ work (A) is pushed; rebase onto it first, since both touch `api/events.ts`.
           data, not the calendar (controller's call 2026-11-06):
           - a row dated before the first `economic_events` date (2026-03-25)
             gets NULL, since the table did not exist yet;
-          - a gap over `MAX_PLAUSIBLE_EVENT_GAP_DAYS` = 10 gets NULL (the
-            shared `plausibleEventGap()`, as in `addEventFeatures`).
-            The dry run prints both counts: the rows before the first event
-            date, and the rows NULLed by the gap rule.
+          - a gap over `MAX_PLAUSIBLE_EVENT_GAP_DAYS` = 10 gets NULL.
+            Both are the shared `nextEventGap()`, which `addEventFeatures`
+            applies too. The dry run prints both counts: the rows before the
+            first event date, and the rows NULLed by the gap rule.
      3. `market_snapshots` and `training_features.is_event_day`. Use
         conditional updates guarded by the current values, so a second run
         changes nothing.
@@ -342,5 +400,5 @@ carry `FOMC` on speech days, and build-features ORs `FOMC` rows into
 - `event_type` priority: FOMC, CPI, PCE, JOBS, GDP, FED, PMI, RETAIL,
   SENTIMENT, OTHER.
 - Lottery MACRO types are unchanged: FOMC, CPI, PCE, JOBS.
-- `MAX_PLAUSIBLE_EVENT_GAP_DAYS` = 10 (`build-features-phase2.ts`): the longest
+- `MAX_PLAUSIBLE_EVENT_GAP_DAYS` = 10 (`economic-event-features.ts`): the longest
   calendar-day gap to the next event row that still counts as "the next event".
