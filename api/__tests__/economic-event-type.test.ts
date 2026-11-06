@@ -51,6 +51,11 @@ const NAMES_BY_TYPE: Record<EconomicEventType, readonly string[]> = {
     'Economic Club of Washington, DC event with Federal Reserve Bank of Richmond President Thomas Barkin',
     'Philadelphia Fed President Anna Paulson speech',
     'Philadelphia Fed President Paulson speaks on survey',
+    // A speaker who mentions the decision or the projections is not the
+    // decision. (The press-conference rule is exempt: "Fed Chair Powell press
+    // conference" carries the word Chair.)
+    "Fed's Waller speaks on the rate decision",
+    'Fed Vice Chair Jefferson speaks on economic projections',
     'Boston Fed President Susan Collins, Richmond Fed President Tom Barkin and Philadelphia Fed President Anna Paulson on a panel about rural economy',
     'New York Fed President John Williams speaks',
   ],
@@ -204,6 +209,48 @@ describe('classifyEconomicEvent', () => {
     'Bank of Korea rate decision',
   ])('foreign central bank decision is OTHER: %s', (name) => {
     expect(classifyEconomicEvent(name)).toBe('OTHER');
+  });
+
+  // UW names the U.S. decision "U.S. interest rate decision", so a foreign
+  // one is named by its country, with no bank in the name.
+  it.each([
+    'Japan interest rate decision',
+    'Japanese interest rate decision',
+    'Canada interest rate decision',
+    'Canadian interest rate decision',
+    'U.K. interest rate decision',
+    'UK interest rate decision',
+    'United Kingdom interest rate decision',
+    'British interest rate decision',
+    'Euro Zone interest rate decision',
+    'Eurozone interest rate decision',
+    'Euro area interest rate decision',
+    'Australia interest rate decision',
+    'New Zealand interest rate decision',
+    'Swiss interest rate decision',
+    'Switzerland interest rate decision',
+    'China interest rate decision',
+    'Chinese interest rate decision',
+    'India interest rate decision',
+    'Korea interest rate decision',
+    'Mexico interest rate decision',
+    'Brazil interest rate decision',
+    'Turkey interest rate decision',
+    'Sweden interest rate decision',
+    'Norway interest rate decision',
+    'South Africa interest rate decision',
+    'Euro Zone economic projections',
+  ])('country-named foreign decision is not FOMC: %s', (name) => {
+    expect(classifyEconomicEvent(name)).toBe('OTHER');
+  });
+
+  // The country guard matches whole words: Indiana is not India. Neither of
+  // these is a foreign decision, so the guard must not touch them.
+  it('does not veto a name that merely starts with a country name', () => {
+    expect(classifyEconomicEvent('Indiana interest rate decision')).toBe(
+      'FOMC',
+    );
+    expect(classifyEconomicEvent('Indiana manufacturing survey')).toBe('OTHER');
   });
 
   // The exclusion covers every FOMC rule, not only the rate-decision one.

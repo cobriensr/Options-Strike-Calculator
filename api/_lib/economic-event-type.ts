@@ -36,21 +36,35 @@ type Rule = readonly [
 
 // A foreign central bank's decision is not the Fed's. build-features ORs FOMC
 // rows into is_fomc, so one typed FOMC would flip the ML feature on a day the
-// Fed is silent. Guards every FOMC rule. Abbreviations and spelled-out names
-// are separate regexes so each stays under `sonarjs/regex-complexity`.
+// Fed is silent. Guards every FOMC rule. UW names the U.S. decision "U.S.
+// interest rate decision", so a foreign one is often named by its country
+// alone ("Japan interest rate decision"): the last two patterns are country
+// names, as whole words ("Indiana" is not India). Abbreviations, bank names
+// and countries are separate regexes so each stays under
+// `sonarjs/regex-complexity`.
 const FOREIGN_CENTRAL_BANK: readonly RegExp[] = [
   /\b(?:ECB|BoE|BoJ|BoC|BoK|RBA|RBNZ|RBI|SNB|PBOC|CBRT|Banxico)\b/i,
   /\bBank of (?:England|Japan|Canada|Korea)\b/i,
   /\bReserve Bank of (?:Australia|New Zealand|India)\b/i,
   /\b(?:European Central Bank|Swiss National Bank|Riksbank|Norges Bank)\b/i,
   /\bPeople['’]s Bank of China\b/i,
+  /\b(?:Japan(?:ese)?|Canad(?:a|ian)|China|Chinese|India|Korea|Mexico|Brazil|Turkey|Sweden|Norway)\b/i,
+  /\b(?:U\.?K|United Kingdom|British|Euro ?zone|Euro area|Australia|New Zealand|Swiss|Switzerland|South Africa)\b/i,
 ];
 
-// A person speaking is never a survey, even when the title mentions one
-// ("Philadelphia Fed President Paulson speaks on survey"). "Vice Chair" is
-// covered by "Chair". Guards the district-survey rule.
+// A person speaking is never a survey or a decision, even when the title
+// mentions one ("Philadelphia Fed President Paulson speaks on survey", "Fed's
+// Waller speaks on the rate decision"). "Vice Chair" is covered by "Chair".
+// Guards the district-survey rule and two FOMC rules, but not the press
+// conference rule: "Fed Chair Powell press conference" carries "Chair".
 const SPEAKER_WORDS: readonly RegExp[] = [
   /\b(?:President|Governor|Chair(?:man|woman)?|speaks|speech|remarks|testifies|panel)\b/i,
+];
+
+// What vetoes the rate-decision and economic-projections rules.
+const NOT_A_DECISION: readonly RegExp[] = [
+  ...FOREIGN_CENTRAL_BANK,
+  ...SPEAKER_WORDS,
 ];
 
 // `Fed` matches as a whole word only, so "federal" never matches it.
@@ -59,15 +73,17 @@ const RULES: readonly Rule[] = [
   //    interest rate decision" in September 2026, so match the phrase, not
   //    the prefix. "rate decision" alone also takes "Fed rate decision" and
   //    "FOMC rate decision". A foreign central bank's decision is excluded
-  //    (FOREIGN_CENTRAL_BANK), so "ECB interest rate decision" is OTHER.
-  ['FOMC', /\brate decision\b/i, FOREIGN_CENTRAL_BANK],
+  //    (FOREIGN_CENTRAL_BANK), so "ECB interest rate decision" and "Japan
+  //    interest rate decision" are OTHER. So is a speaker who mentions the
+  //    decision or the projections (SPEAKER_WORDS): that is FED.
+  ['FOMC', /\brate decision\b/i, NOT_A_DECISION],
   ['FOMC', /\bFOMC statement\b/i, FOREIGN_CENTRAL_BANK],
   [
     'FOMC',
     /\b(?:Fed|FOMC|Federal Reserve)\b.*\bpress conference\b/i,
     FOREIGN_CENTRAL_BANK,
   ],
-  ['FOMC', /\beconomic projections\b/i, FOREIGN_CENTRAL_BANK],
+  ['FOMC', /\beconomic projections\b/i, NOT_A_DECISION],
 
   // 2. Regional surveys, before the broad Fed rule: "Philadelphia Fed
   //    manufacturing survey" is a PMI, "Philadelphia Fed President ..." is
