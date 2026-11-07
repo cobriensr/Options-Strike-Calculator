@@ -45,6 +45,7 @@ import {
   isFuturesRthCt,
   isGexbotLiveCt,
   isMarketHours,
+  isTradingDayET,
 } from '../_lib/cron-helpers.js';
 
 interface VercelConfig {
@@ -215,6 +216,7 @@ const NAMED_GATES: Record<string, () => boolean> = {
   isGexbotLiveCt,
   isFuturesRthCt,
   isConeCalcWindow,
+  isTradingDayET,
 };
 
 /**
@@ -267,6 +269,10 @@ function sourceGate(rawSrc: string): (() => boolean) | null {
  * at the same ET minute in both regimes.
  */
 const DST_ASYMMETRIC_CRONS: Record<string, string> = {
+  'fetch-market-internals':
+    'One run a day at 22:30 UTC: 17:30 ET in EST, 18:30 ET in EDT, both after ' +
+    "the close. The settled series is the same at either time, and a day's " +
+    'run is repeated by the next four (SETTLE_SESSIONS).',
   'fetch-greek-exposure-strike':
     '`30 13,14` UTC is a DST pair: 09:30 ET runs in both regimes, and EDT ' +
     'adds a 10:30 ET re-run that upserts the same rows (ON CONFLICT DO UPDATE).',
@@ -432,6 +438,39 @@ describe('cron-schedules SCHEDULE_MAP', () => {
       }
     },
   );
+
+  // fetch-market-internals is a post-close settle, not a per-minute capture
+  // (spec live-data-integrity-2026-11-06, P0.5). Pin the schedule, the monitor
+  // that follows it, and that the tick lands after the close in BOTH regimes.
+  describe('fetch-market-internals runs once a weekday after the close', () => {
+    it('vercel.json fires it at 22:30 UTC, weekdays only, once a day', () => {
+      expect(vercelCrons.get('fetch-market-internals')).toEqual([
+        '30 22 * * 1-5',
+      ]);
+    });
+
+    it('its monitor expects exactly that tick, in UTC, with the default failure threshold', () => {
+      const cfg = SCHEDULE_MAP['fetch-market-internals'];
+      expect(cfg).toMatchObject({ schedule: '30 22 * * 1-5' });
+      expect(cfg?.timezone).toBeUndefined();
+      // One failed or missed daily run is a day with no settled internals:
+      // the high-frequency threshold of 3 would hide it for three days.
+      expect(cfg?.failureIssueThreshold).toBeUndefined();
+    });
+
+    it.each([
+      ['EST', 5],
+      ['EDT', 4],
+    ])(
+      'the 22:30 UTC tick is after the 16:00 ET close in %s',
+      (_regime, offset) => {
+        const tick = parseCron('30 22 * * 1-5');
+        expect([...utcTickSet(tick)]).toEqual([22 * 60 + 30]);
+        const etMinutes = 22 * 60 + 30 - offset * 60;
+        expect(etMinutes).toBeGreaterThan(MARKET_MINUTES.CLOSE);
+      },
+    );
+  });
 
   it('every entry has positive checkinMargin and maxRuntime', () => {
     for (const [name, cfg] of Object.entries(SCHEDULE_MAP)) {
@@ -729,6 +768,7 @@ describe('DST: gated crons reach the same ET window in both regimes', () => {
         'fetch-gexbot-fast', // timeCheck: isGexbotLiveCt
         'fetch-gex-strike-expiry-etfs', // timeCheck: isFuturesRthCt
         'compute-cone', // timeCheck: isConeCalcWindow (one slot per regime)
+        'fetch-market-internals', // timeCheck: isTradingDayET
       ]),
     );
     // Custom gates are left to each cron's own tests. Each must still be a

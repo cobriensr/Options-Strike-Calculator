@@ -461,11 +461,15 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
+  // Once a weekday after the close (17:30 ET in winter, 18:30 ET in summer):
+  // the post-close settle of the NYSE internals, no longer a per-minute
+  // capture (docs/superpowers/specs/live-data-integrity-2026-11-06.md, P0.5).
+  // A daily job keeps the default failure threshold of 1: one miss or one
+  // error check-in is a day without settled internals.
   'fetch-market-internals': {
-    schedule: '* 13-21 * * 1-5',
+    schedule: '30 22 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
-    failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
   'fetch-net-flow': {
     schedule: '1,6,11,16,21,26,31,36,41,46,51,56 13-21 * * 1-5',
