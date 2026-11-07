@@ -5731,6 +5731,41 @@ export const MIGRATIONS: Migration[] = [
     ],
   },
   {
+    id: 205,
+    description:
+      'Create futures_contract_volume and futures_front_month, the two tables behind the one-contract-per-session front-month rule (spec: docs/superpowers/specs/2026-11-06-futures-session-front-month.md). A trade date is the America/Chicago date of ts + 7 h, so the 17:00 CT open starts the next date. futures_contract_volume holds one row per root (product), trade date and contract: that contract volume for the session. uw-stream writes it from its futures_trades tally (source live) with an upsert that only raises volume, so a restart recount cannot lower it; the seed fills past sessions from the UW daily candles (source candles) with DO NOTHING, and only for trade dates before the current one. futures_front_month holds one row per root and trade date: the contract that session bars are built from. Whoever needs it first writes it (source live for uw-stream, cron for the gap cron, script for a script, candles for the seed) with ON CONFLICT DO NOTHING and then re-reads the row, so every writer ends with the same answer; a row is never updated. contract in both tables is the canonical name: root, CME month code and the last year digit (ESZ6, also for ESZ26). No index beyond each primary key and no pruning: about 20 volume rows and 6 decision rows per session. No backfill here; the seed writes history. Nothing reads or writes either table until the later phases, so apply this before any of them is deployed.',
+    statements: (sql) => [
+      // Written by uw-stream (source live), the seed (candles) and, for
+      // futures_front_month, the gap cron and one-off scripts. volume is
+      // BIGINT, which the HTTP driver returns as a string: Number() it before
+      // comparing. The primary key (product, trade_date, contract) is the
+      // only index: the decision reads one trade date at a time.
+      sql`
+        CREATE TABLE IF NOT EXISTS futures_contract_volume (
+          product    TEXT        NOT NULL,
+          trade_date DATE        NOT NULL,
+          contract   TEXT        NOT NULL,
+          volume     BIGINT      NOT NULL,
+          source     TEXT        NOT NULL CHECK (source IN ('live', 'candles')),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          PRIMARY KEY (product, trade_date, contract)
+        )
+      `,
+      // One decision per root and trade date, so the primary key is also the
+      // idempotency key of the writers' ON CONFLICT DO NOTHING.
+      sql`
+        CREATE TABLE IF NOT EXISTS futures_front_month (
+          product    TEXT        NOT NULL,
+          trade_date DATE        NOT NULL,
+          contract   TEXT        NOT NULL,
+          source     TEXT        NOT NULL CHECK (source IN ('live', 'cron', 'script', 'candles')),
+          decided_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          PRIMARY KEY (product, trade_date)
+        )
+      `,
+    ],
+  },
+  {
     id: 206,
     description:
       "Create flow_data_revisions, the append-only log of every value a closed-bucket flow_data row ever had (spec P0.7, docs/superpowers/specs/live-data-integrity-2026-11-06.md). The closed-bucket crons and backfills write spy_etf_tide, qqq_etf_tide, zero_dte_index and zero_dte_greek_flow through an upsert that replaces a row with UW's latest value, and UW restates these series after first publishing them, so the first-seen value is otherwise lost and a replay of 'what the signal said at 10:05' would use numbers that did not exist at 10:05. flow_data keeps the latest value, so no reader changes; each write that inserts a row or changes a value appends the row as stored (the same columns, is_first = true when the write inserted the flow_data row) with seen_at and the writer's name, in the same statement as the write, so a failed log insert fails the write. BIGSERIAL id: the log has no natural key (a row can return to an earlier value, and keying on seen_at would key on now()) and the id orders revisions that share a time. No foreign key: a revision outlives a Tier 2 delete of its flow_data row. Index (source, timestamp, seen_at) serves the as-of query. Seeded in the same migration from the current flow_data rows of those four sources, seen_at = created_at, writer = 'seed', is_first = true, guarded by NOT EXISTS on (date, timestamp, source) so a re-run adds nothing: before the upsert these rows were first-seen (DO NOTHING), so they are the live values history has, and they must survive the Tier 2 refills and deletes. The other flow_data sources (market_tide, market_tide_otm, spx_flow, spy_flow, qqq_flow) are first-write-wins and are not logged.",
