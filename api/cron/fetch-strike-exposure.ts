@@ -12,26 +12,51 @@
  *     for the Periscope view and the build-features-gex 1DTE column.
  *   - SPY/QQQ: today (0DTE). Both have daily expirations.
  *
- * Per-ticker ATM window:
- *   - SPX  ±200 pts (~80 strikes at $5)
+ * Per-ticker ATM window (the stored range AND the requested
+ * `min_strike`/`max_strike`, so nothing is fetched that is then dropped):
+ *   - SPX  ±200 pts (~80 strikes at $5). Same range as fetch-gex-0dte.
  *   - SPY  ±20 pts (~3% of ~600)
  *   - QQQ  ±20 pts (~3% of ~500)
+ * A window never holds 500 strikes (SPX at $1 spacing is 401), so one
+ * `limit=500` page is the whole ladder.
  *
  * NDX was dropped 2026-05-16: UW only publishes NDX monthlies and the
  * front-month roll has near-zero OI on every monthly-expiry morning, so
  * compute-zero-gamma rejected the snapshot ~daily. See
  * `zero-gamma-tickers.ts` for the full rationale.
  *
- * Total UW calls per invocation: 4 (SPX × 2, plus 1 each for SPY, QQQ).
- * All four run in parallel with per-task fault isolation via
- * Promise.allSettled — one ticker hiccup does not block the others.
+ * What keeps a wrong ladder out of `strike_exposures`
+ * (docs/superpowers/specs/live-data-integrity-2026-11-06.md, F5 to F7):
+ *   - Spot first, per ticker, from UW's per-minute `/spot-exposures`
+ *     (fetchUwSpot). A ticker with no usable spot is a Sentry error and its
+ *     tasks fail; the cron never guesses a window from a strike row, whose
+ *     price is the thing UW freezes.
+ *   - The ladder is requested with `min_strike`/`max_strike` around that
+ *     spot. Without a window UW serves a stale cache that freezes the
+ *     ladder for the whole day (F6); the window routes the call through
+ *     UW's live path, the workaround fetch-gex-0dte has used since
+ *     2026-04-23.
+ *   - A ladder whose newest row is from an earlier ET day is UW's
+ *     pre-rollover answer (09:28 to 09:32 ET). It is skipped, not stored
+ *     under today's date (F5).
+ *   - An all-zero gamma ladder is skipped (F7, R-zero).
+ *   - A failed task (UW error, no spot, unparseable payload, DB reject) is
+ *     counted. Every task failing is a 500; some failing is `partial` and
+ *     `success: false`. A failure is never reported as a success (R4).
+ *
+ * Total UW calls per invocation: 7 (3 spot reads, then SPX × 2 plus 1 each
+ * for SPY, QQQ). Each phase fans out under mapWithConcurrency with
+ * per-task fault isolation — one ticker hiccup does not block the others.
  *
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import { withCronCheckin } from '../_lib/cron-instrumentation.js';
+import {
+  deriveCronStatus,
+  withCronCheckin,
+} from '../_lib/cron-instrumentation.js';
 import { getDb } from '../_lib/db.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
   uwFetch,
@@ -43,6 +68,15 @@ import {
 } from '../_lib/api-helpers.js';
 import { CRON_TICKER_DEFAULT_CONCURRENCY } from '../_lib/constants.js';
 import { reportCronRun } from '../_lib/axiom.js';
+import { getETDateStr } from '../../src/utils/timezone.js';
+import {
+  hasGammaSignal,
+  isBeforeEtDay,
+  keepWithinRange,
+  newestRowTime,
+  strikeWindow,
+} from '../_lib/strike-ladder.js';
+import { fetchUwSpot } from '../_lib/uw-spot.js';
 import {
   ZERO_GAMMA_TICKERS,
   getPrimaryExpiry,
@@ -116,6 +150,10 @@ interface ExpiryResult {
   total: number;
   stored: number;
   skipped: number;
+  /** The whole snapshot was left out: prior-day cache or all-zero gamma. */
+  rejected?: 'stale_cache' | 'all_zero';
+  /** The task failed and stored nothing (the failure is in Sentry). */
+  failed?: true;
 }
 
 // ── Fetch helper ────────────────────────────────────────────
@@ -124,9 +162,16 @@ async function fetchStrikeExposure(
   apiKey: string,
   ticker: Ticker,
   expiry: string,
+  spot: number,
 ): Promise<StrikeRow[]> {
+  const { minStrike, maxStrike } = strikeWindow(
+    spot,
+    ATM_RANGE_BY_TICKER[ticker],
+  );
   const params = new URLSearchParams({
     'expirations[]': expiry,
+    min_strike: String(minStrike),
+    max_strike: String(maxStrike),
     limit: '500',
   });
 
@@ -143,70 +188,75 @@ async function storeStrikes(
   today: string,
   ticker: Ticker,
   expiry: string,
+  spot: number,
+  snapshotTime: string,
 ): Promise<ExpiryResult> {
-  if (rows.length === 0) return { total: 0, stored: 0, skipped: 0 };
-
-  const atmRange = ATM_RANGE_BY_TICKER[ticker];
-  const price = Number.parseFloat(rows[0]!.price);
-  const minStrike = price - atmRange;
-  const maxStrike = price + atmRange;
-
-  const filtered = rows.filter((r) => {
-    const s = Number.parseFloat(r.strike);
-    return s >= minStrike && s <= maxStrike;
-  });
+  const filtered = keepWithinRange(rows, spot, ATM_RANGE_BY_TICKER[ticker]);
 
   if (filtered.length === 0) {
     return { total: rows.length, stored: 0, skipped: 0 };
   }
 
-  const timestamp = roundTo5Min(new Date(rows[0]!.time)).toISOString();
-  const sql = getDb();
-
-  try {
-    const results = await sql.transaction((txn) =>
-      filtered.map(
-        (row) => txn`
-          INSERT INTO strike_exposures (
-            date, timestamp, ticker, expiry, strike, price,
-            call_gamma_oi, put_gamma_oi,
-            call_gamma_ask, call_gamma_bid, put_gamma_ask, put_gamma_bid,
-            call_charm_oi, put_charm_oi,
-            call_charm_ask, call_charm_bid, put_charm_ask, put_charm_bid,
-            call_delta_oi, put_delta_oi,
-            call_vanna_oi, put_vanna_oi
-          )
-          VALUES (
-            ${today}, ${timestamp}, ${ticker}, ${expiry}, ${row.strike}, ${row.price},
-            ${row.call_gamma_oi}, ${row.put_gamma_oi},
-            ${row.call_gamma_ask}, ${row.call_gamma_bid},
-            ${row.put_gamma_ask}, ${row.put_gamma_bid},
-            ${row.call_charm_oi}, ${row.put_charm_oi},
-            ${row.call_charm_ask}, ${row.call_charm_bid},
-            ${row.put_charm_ask}, ${row.put_charm_bid},
-            ${row.call_delta_oi}, ${row.put_delta_oi},
-            ${row.call_vanna_oi}, ${row.put_vanna_oi}
-          )
-          ON CONFLICT (date, timestamp, ticker, strike, expiry) DO NOTHING
-          RETURNING id
-        `,
-      ),
+  // R-zero: a ladder with no gamma on any strike is UW's open-of-day
+  // placeholder (F7). Storing it would keep a flat-zero snapshot for good.
+  if (!hasGammaSignal(filtered)) {
+    logger.warn(
+      { ticker, expiry, rows: filtered.length, date: today },
+      'fetch-strike-exposure: rejecting all-zero gamma snapshot',
     );
-
-    let stored = 0;
-    for (const result of results) {
-      if (result.length > 0) stored++;
-    }
+    metrics.increment('fetch_strike_exposure.zero_snapshot_skip');
     return {
       total: rows.length,
-      stored,
-      skipped: filtered.length - stored,
+      stored: 0,
+      skipped: filtered.length,
+      rejected: 'all_zero',
     };
-  } catch (err) {
-    Sentry.captureException(err);
-    logger.warn({ err, ticker, expiry }, 'Batch strike exposure insert failed');
-    return { total: rows.length, stored: 0, skipped: filtered.length };
   }
+
+  const timestamp = roundTo5Min(new Date(snapshotTime)).toISOString();
+  const sql = getDb();
+
+  // No catch here: a rejected transaction fails the task, which the handler
+  // captures once and counts. Returning stored: 0 used to report a failed
+  // write as a success (R4).
+  const results = await sql.transaction((txn) =>
+    filtered.map(
+      (row) => txn`
+        INSERT INTO strike_exposures (
+          date, timestamp, ticker, expiry, strike, price,
+          call_gamma_oi, put_gamma_oi,
+          call_gamma_ask, call_gamma_bid, put_gamma_ask, put_gamma_bid,
+          call_charm_oi, put_charm_oi,
+          call_charm_ask, call_charm_bid, put_charm_ask, put_charm_bid,
+          call_delta_oi, put_delta_oi,
+          call_vanna_oi, put_vanna_oi
+        )
+        VALUES (
+          ${today}, ${timestamp}, ${ticker}, ${expiry}, ${row.strike}, ${row.price},
+          ${row.call_gamma_oi}, ${row.put_gamma_oi},
+          ${row.call_gamma_ask}, ${row.call_gamma_bid},
+          ${row.put_gamma_ask}, ${row.put_gamma_bid},
+          ${row.call_charm_oi}, ${row.put_charm_oi},
+          ${row.call_charm_ask}, ${row.call_charm_bid},
+          ${row.put_charm_ask}, ${row.put_charm_bid},
+          ${row.call_delta_oi}, ${row.put_delta_oi},
+          ${row.call_vanna_oi}, ${row.put_vanna_oi}
+        )
+        ON CONFLICT (date, timestamp, ticker, strike, expiry) DO NOTHING
+        RETURNING id
+      `,
+    ),
+  );
+
+  let stored = 0;
+  for (const result of results) {
+    if (result.length > 0) stored++;
+  }
+  return {
+    total: rows.length,
+    stored,
+    skipped: filtered.length - stored,
+  };
 }
 
 // ── Per-task runner ─────────────────────────────────────────
@@ -223,15 +273,99 @@ async function runOne(
   today: string,
   ticker: Ticker,
   expiry: string,
+  spot: number,
 ): Promise<TaskOutcome> {
   const rows = await withRetry(() =>
-    fetchStrikeExposure(apiKey, ticker, expiry),
+    fetchStrikeExposure(apiKey, ticker, expiry, spot),
   );
-  const price = rows.length > 0 ? Number.parseFloat(rows[0]!.price) : null;
+  if (rows.length === 0) {
+    return {
+      ticker,
+      expiry,
+      result: { total: 0, stored: 0, skipped: 0 },
+      price: spot,
+    };
+  }
+
+  const snapshotTime = newestRowTime(rows);
+  if (snapshotTime === null) {
+    throw new Error(
+      `fetch-strike-exposure: ${ticker} ${expiry} no strike row carries a parseable time`,
+    );
+  }
+
+  // Stale-cache guard (F5), ported from fetch-gex-0dte: before UW rolls
+  // over (09:28 to 09:32 ET) the first poll is the previous session's
+  // ladder. Stored under today's date it would sit in the table as a
+  // snapshot of a day that has not happened yet, so skip it.
+  if (isBeforeEtDay(snapshotTime, today)) {
+    logger.warn(
+      {
+        ticker,
+        expiry,
+        dataEtDate: getETDateStr(new Date(snapshotTime)),
+        today,
+        snapshotTime,
+      },
+      'fetch-strike-exposure: stale UW cache (ladder from an earlier ET day), skipping store',
+    );
+    metrics.increment('fetch_strike_exposure.stale_cache_skip');
+    return {
+      ticker,
+      expiry,
+      result: {
+        total: rows.length,
+        stored: 0,
+        skipped: 0,
+        rejected: 'stale_cache',
+      },
+      price: spot,
+    };
+  }
+
   const result = await withRetry(() =>
-    storeStrikes(rows, today, ticker, expiry),
+    storeStrikes(rows, today, ticker, expiry, spot, snapshotTime),
   );
-  return { ticker, expiry, result, price };
+  return { ticker, expiry, result, price: spot };
+}
+
+// ── Spot phase ──────────────────────────────────────────────
+
+/**
+ * Read each ticker's spot once (SPX serves two expiries). A ticker whose
+ * spot is rejected or unusable is reported to Sentry here, once, and its
+ * tasks fail without a strike request.
+ */
+type SpotResult = { ok: true; spot: number } | { ok: false; failure: unknown };
+
+async function fetchSpots(apiKey: string): Promise<Map<Ticker, SpotResult>> {
+  const runs = await mapWithConcurrency(
+    ZERO_GAMMA_TICKERS,
+    CRON_TICKER_DEFAULT_CONCURRENCY,
+    async (ticker): Promise<[Ticker, SpotResult]> => {
+      try {
+        const spot = await withRetry(() => fetchUwSpot(apiKey, ticker));
+        if (spot !== null) return [ticker, { ok: true, spot: spot.price }];
+        metrics.increment('fetch_strike_exposure.spot_null');
+        Sentry.setTag('cron.job', 'fetch-strike-exposure');
+        Sentry.setTag('ticker', ticker);
+        const message = `fetch-strike-exposure: no usable ${ticker} spot from UW /spot-exposures, nothing stored for it`;
+        Sentry.captureMessage(message, 'error');
+        logger.error({ ticker }, message);
+        return [ticker, { ok: false, failure: new Error(message) }];
+      } catch (failure) {
+        Sentry.setTag('cron.job', 'fetch-strike-exposure');
+        Sentry.setTag('ticker', ticker);
+        Sentry.captureException(failure);
+        logger.error(
+          { err: failure, ticker },
+          'fetch-strike-exposure: spot request failed',
+        );
+        return [ticker, { ok: false, failure }];
+      }
+    },
+  );
+  return new Map(runs);
 }
 
 // ── Handler ─────────────────────────────────────────────────
@@ -252,23 +386,37 @@ export default withCronCheckin('fetch-strike-exposure', async (req, res) => {
   }
 
   try {
+    const spots = await fetchSpots(apiKey);
+
     // Run all tasks in parallel; isolate failures so one ticker hiccup
     // does not block the rest. mapWithConcurrency caps in-flight requests
-    // at CRON_TICKER_DEFAULT_CONCURRENCY so the 5-task fan-out never blows
+    // at CRON_TICKER_DEFAULT_CONCURRENCY so the 4-task fan-out never blows
     // past UW's per-app concurrency cap. The runner mirrors Promise.allSettled
-    // shape so the existing aggregation loop is unchanged.
+    // shape so the existing aggregation loop is unchanged. A task whose
+    // ticker has no spot is rejected up front and marked `reported`: its
+    // failure already reached Sentry in fetchSpots.
     type SettledRun =
       | { status: 'fulfilled'; value: TaskOutcome }
-      | { status: 'rejected'; reason: unknown };
+      | { status: 'rejected'; reason: unknown; reported: boolean };
     const settled: SettledRun[] = await mapWithConcurrency(
       tasks,
       CRON_TICKER_DEFAULT_CONCURRENCY,
       async (t): Promise<SettledRun> => {
+        const spot = spots.get(t.ticker)!;
+        if (!spot.ok) {
+          return { status: 'rejected', reason: spot.failure, reported: true };
+        }
         try {
-          const value = await runOne(apiKey, today, t.ticker, t.expiry);
+          const value = await runOne(
+            apiKey,
+            today,
+            t.ticker,
+            t.expiry,
+            spot.spot,
+          );
           return { status: 'fulfilled', value };
         } catch (reason) {
-          return { status: 'rejected', reason };
+          return { status: 'rejected', reason, reported: false };
         }
       },
     );
@@ -293,31 +441,48 @@ export default withCronCheckin('fetch-strike-exposure', async (req, res) => {
       };
     }
 
-    let anySuccess = false;
+    let failedTasks = 0;
+    let staleSkips = 0;
+    let zeroSkips = 0;
     settled.forEach((s, i) => {
       const task = tasks[i]!;
       const bucket = perTicker[task.ticker]!;
 
       if (s.status === 'fulfilled') {
-        anySuccess = true;
         bucket.expiries[task.expiry] = s.value.result;
         bucket.totalStored += s.value.result.stored;
         bucket.totalSkipped += s.value.result.skipped;
         if (s.value.price != null) bucket.price = s.value.price;
+        if (s.value.result.rejected === 'stale_cache') staleSkips++;
+        if (s.value.result.rejected === 'all_zero') zeroSkips++;
       } else {
-        Sentry.setTag('cron.job', 'fetch-strike-exposure');
-        Sentry.setTag('ticker', task.ticker);
-        Sentry.captureException(s.reason);
-        logger.error(
-          { err: s.reason, ticker: task.ticker, expiry: task.expiry },
-          'fetch-strike-exposure: per-task failure',
-        );
-        bucket.expiries[task.expiry] = { total: 0, stored: 0, skipped: 0 };
+        failedTasks++;
+        if (!s.reported) {
+          Sentry.setTag('cron.job', 'fetch-strike-exposure');
+          Sentry.setTag('ticker', task.ticker);
+          Sentry.captureException(s.reason);
+          logger.error(
+            { err: s.reason, ticker: task.ticker, expiry: task.expiry },
+            'fetch-strike-exposure: per-task failure',
+          );
+        }
+        bucket.expiries[task.expiry] = {
+          total: 0,
+          stored: 0,
+          skipped: 0,
+          failed: true,
+        };
       }
     });
 
-    if (!anySuccess) {
+    const outcome = deriveCronStatus(failedTasks, tasks.length);
+    if (outcome === 'error') {
       logger.error('fetch-strike-exposure: all tasks failed');
+      await reportCronRun('fetch-strike-exposure', {
+        status: 'error',
+        failedTasks,
+        durationMs: Date.now() - startTime,
+      });
       return res.status(500).json({ error: 'All ticker fetches failed' });
     }
 
@@ -359,25 +524,51 @@ export default withCronCheckin('fetch-strike-exposure', async (req, res) => {
     );
     const durationMs = Date.now() - startTime;
 
+    // 'ok' keeps the status the Axiom dashboards already filter on. A run that
+    // stored nothing only because every ladder was stale or all-zero is
+    // 'skipped': it did its job, and the warnings name why.
+    const status =
+      outcome === 'partial'
+        ? 'partial'
+        : totalStored === 0 && staleSkips + zeroSkips > 0
+          ? 'skipped'
+          : 'ok';
+
     logger.info(
-      { perTicker, totalStored, totalSkipped, date: today, durationMs },
+      {
+        perTicker,
+        totalStored,
+        totalSkipped,
+        failedTasks,
+        staleSkips,
+        zeroSkips,
+        date: today,
+        durationMs,
+      },
       'fetch-strike-exposure completed',
     );
 
     await reportCronRun('fetch-strike-exposure', {
-      status: 'ok',
+      status,
       perTicker,
       totalStored,
       totalSkipped,
+      failedTasks,
+      staleSkips,
+      zeroSkips,
       durationMs,
     });
 
     return res.status(200).json({
       job: 'fetch-strike-exposure',
-      success: true,
+      success: outcome === 'success',
+      status,
       perTicker,
       totalStored,
       totalSkipped,
+      failedTasks,
+      staleSkips,
+      zeroSkips,
       durationMs,
     });
   } catch (err) {
