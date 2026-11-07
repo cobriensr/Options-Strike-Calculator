@@ -10,35 +10,49 @@
  *
  * What is stored, and when (spec: docs/superpowers/specs/live-data-integrity-2026-11-06.md,
  * F1/F2; the rules live in api/_lib/closed-buckets.ts):
- *   - UW answers with the whole session's per-minute grid, null for the
- *     minutes that have not happened yet, and before its roll-over
- *     (09:28-09:32 ET) with the PREVIOUS session. Storing either as data
- *     froze 78 zero rows (or yesterday's session) per day under DO NOTHING.
- *   - One row per 5-minute bucket, stored by the first run after the bucket
- *     closes (the cron runs every 5 minutes through 16:05 ET), carrying the
- *     value of the bucket's LAST minute. A bucket still open, or whose last
- *     minute has no value, waits for a later run. Nothing missing is stored
- *     as 0.
- *   - Only rows UW stamps on today's ET date at or after 09:30 ET. A payload
- *     with none (the pre-open answer) stores nothing; that is a skip, not an
- *     error.
+ *   - UW answers with the whole session's per-minute grid (390 rows, 09:30-15:59
+ *     ET), null for the minutes that have not happened yet, and before its
+ *     roll-over (09:28-09:32 ET) with the PREVIOUS session. Storing either as
+ *     data froze 78 zero rows (or yesterday's session) per day under DO NOTHING.
+ *   - One row per 5-minute bucket, carrying the value of the bucket's LAST
+ *     minute, stored by the first run at least 90 s after the bucket ended
+ *     (FINAL_LAG_MS: a minute that has ended is not necessarily final). A
+ *     bucket still open, unsettled, or whose last minute has no usable value
+ *     waits for a later run. Nothing missing is stored as 0.
+ *   - The write is an upsert on (date, timestamp, source) (spec R6, not a
+ *     lock): every run re-sends the day's closed buckets, a value UW revised
+ *     is updated, an unchanged one is not rewritten. See flow-bucket-store.ts.
+ *   - Only rows UW stamps on today's ET date from 09:30 ET until the close. A
+ *     payload with none (the pre-open answer) stores nothing; that is a skip,
+ *     not an error, unless it is still empty at 09:40 ET (Sentry warning).
  *   - Label rule (spec open question 1, default in force): a closed bucket is
  *     stored under its END time. The 09:30-09:35 bucket is stored at 09:35.
+ *   - Runs every 5 minutes from 09:25 ET until 10 minutes after the close, so
+ *     the last bucket (15:55-16:00, settled at 16:01:30) has the 16:02 run and
+ *     a second attempt at 16:07.
  *
  * Total API calls per invocation: 2
  *
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import { getDb } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
-import { uwFetch, withRetry, checkDataQuality } from '../_lib/api-helpers.js';
+import {
+  uwFetch,
+  withRetry,
+  checkDataQuality,
+  isMarketHours,
+} from '../_lib/api-helpers.js';
 import {
   closedBuckets,
-  sessionWindowIso,
-  type ClosedBucket,
+  isDegenerate,
+  isFeedStalled,
 } from '../_lib/closed-buckets.js';
+import {
+  sessionRowCounts,
+  upsertClosedBuckets,
+} from '../_lib/flow-bucket-store.js';
 import {
   withCronInstrumentation,
   deriveCronStatus,
@@ -60,15 +74,32 @@ interface EtfTideRow {
 }
 
 interface LegResult {
+  /** Rows written: inserted + updated. */
   stored: number;
+  inserted: number;
+  /** Existing rows whose values UW revised. */
+  updated: number;
+  /** Existing rows that already held these values. */
   skipped: number;
   /** Closed buckets this run tried to store. */
   candles: number;
-  /** Closed buckets left out because their last minute had no usable value. */
-  unusable: number;
-  /** Set when UW sent no row for today's session (nothing was attempted). */
-  reason?: 'no_rows_today';
+  /** Closed buckets left out, last minute unusable, ended under 10 min ago. */
+  pending: number;
+  /** The same, ended 10 min ago or more. */
+  stuck: number;
+  /** Set when nothing was attempted. */
+  reason?: 'no_rows_today' | 'degenerate';
 }
+
+const NOTHING_STORED = {
+  stored: 0,
+  inserted: 0,
+  updated: 0,
+  skipped: 0,
+  candles: 0,
+  pending: 0,
+  stuck: 0,
+} satisfies LegResult;
 
 // ── Fetch helper ────────────────────────────────────────────
 
@@ -84,38 +115,6 @@ async function fetchEtfTide(
   return uwFetch<EtfTideRow>(apiKey, `/market/${ticker}/etf-tide`);
 }
 
-// ── Store helper ────────────────────────────────────────────
-
-async function storeAllCandles(
-  candles: ClosedBucket[],
-  source: string,
-  date: string,
-): Promise<{ stored: number; skipped: number }> {
-  if (candles.length === 0) return { stored: 0, skipped: 0 };
-
-  const sql = getDb();
-
-  // A rejected write throws to the per-ticker catch in the handler, which
-  // counts it as a failed leg, logs it and captures it once. Swallowing it
-  // here as "skipped" used to leave the run reporting `success` (R4).
-  const results = await sql.transaction((txn) =>
-    candles.map(
-      (candle) => txn`
-        INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
-        VALUES (${date}, ${candle.timestamp}, ${source}, ${candle.ncp}, ${candle.npp}, ${candle.netVolume})
-        ON CONFLICT (date, timestamp, source) DO NOTHING
-        RETURNING id
-      `,
-    ),
-  );
-
-  let stored = 0;
-  for (const result of results) {
-    if (result.length > 0) stored++;
-  }
-  return { stored, skipped: candles.length - stored };
-}
-
 // ── Handler ─────────────────────────────────────────────────
 
 export default withCronInstrumentation(
@@ -126,6 +125,13 @@ export default withCronInstrumentation(
     // had already closed when UW answered (R-closed).
     const now = new Date(startTimeMs);
     const results: Record<string, LegResult> = {};
+    /** Legs where UW sent no row for today at or after 09:40 ET. */
+    const stalled: string[] = [];
+    /** Legs with a closed bucket stuck without a usable last minute. */
+    const stuckBySource: Record<
+      string,
+      { stuck: number; oldest: string | null }
+    > = {};
 
     // Count per-ticker failures so the handler can demote its status when
     // some (partial) or all (error) tickers fail. Without this the cron
@@ -137,35 +143,81 @@ export default withCronInstrumentation(
       TICKERS.map(async ({ ticker, source }) => {
         try {
           const rows = await withRetry(() => fetchEtfTide(apiKey, ticker));
-          const { buckets, sessionRows, unusable } = closedBuckets(rows, now);
+          const result = closedBuckets(rows, now);
 
           // R-day: UW sent nothing for today's session. Normal at the 09:27
           // run (it still serves the previous session), so a skip.
-          if (sessionRows === 0) {
+          if (result.sessionRows === 0) {
             logger.warn(
               { ticker, source, payloadRows: rows.length, today },
               'fetch-etf-tide: no rows for today in the UW payload — nothing stored',
             );
             metrics.increment('fetch_etf_tide.no_rows_today');
+            if (isFeedStalled(result.sessionRows, now)) stalled.push(source);
+            results[source] = { ...NOTHING_STORED, reason: 'no_rows_today' };
+            return;
+          }
+
+          // Only a closed bucket stuck without a usable last minute is a bad
+          // candle. Future minutes are expected to be null, and a bucket UW
+          // is only a few minutes late with is pending: neither is counted.
+          for (let i = 0; i < result.stuck; i++) {
+            metrics.increment('fetch_etf_tide.invalid_candle');
+          }
+          if (result.stuck > 0) {
+            stuckBySource[source] = {
+              stuck: result.stuck,
+              oldest: result.oldestStuck,
+            };
+          }
+
+          if (isDegenerate(result)) {
+            logger.warn(
+              {
+                source,
+                buckets: result.buckets.length,
+                stuck: result.stuck,
+                date: today,
+              },
+              'fetch-etf-tide: rejecting all-zero/unusable snapshot',
+            );
+            Sentry.captureMessage(
+              'fetch-etf-tide: rejected all-zero/unusable ETF tide snapshot',
+              {
+                level: 'error',
+                tags: { cron: 'fetch-etf-tide', stage: 'degenerate_snapshot' },
+                extra: {
+                  source,
+                  buckets: result.buckets.length,
+                  stuck: result.stuck,
+                  date: today,
+                },
+              },
+            );
             results[source] = {
-              stored: 0,
-              skipped: 0,
-              candles: 0,
-              unusable: 0,
-              reason: 'no_rows_today',
+              ...NOTHING_STORED,
+              candles: result.buckets.length,
+              pending: result.pending,
+              stuck: result.stuck,
+              reason: 'degenerate',
             };
             return;
           }
 
-          // Only a closed bucket whose last minute has no usable value is a
-          // bad candle. Future minutes are expected to be null and are not
-          // counted (they were 30,342 hits a day).
-          for (let i = 0; i < unusable; i++) {
-            metrics.increment('fetch_etf_tide.invalid_candle');
-          }
-
-          const result = await storeAllCandles(buckets, source, today);
-          results[source] = { ...result, candles: buckets.length, unusable };
+          const counts = await upsertClosedBuckets(
+            result.buckets,
+            source,
+            today,
+          );
+          results[source] = {
+            stored: counts.inserted + counts.updated,
+            inserted: counts.inserted,
+            updated: counts.updated,
+            skipped: counts.unchanged,
+            candles: result.buckets.length,
+            pending: result.pending,
+            stuck: result.stuck,
+          };
         } catch (err) {
           failureCount += 1;
           // Covers the UW fetch AND the flow_data write: either failing
@@ -173,35 +225,51 @@ export default withCronInstrumentation(
           logger.warn({ err, ticker, source }, 'Failed to fetch ETF Tide');
           metrics.increment('fetch_etf_tide.fetch_error');
           Sentry.captureException(err);
-          results[source] = { stored: 0, skipped: 0, candles: 0, unusable: 0 };
+          results[source] = { ...NOTHING_STORED };
         }
       }),
     );
 
-    // Data quality check: alert if all values are zero. Counts only today's
-    // session rows (R-quality): rows with `date = today` can also hold an
+    // A feed with nothing for today at 09:40 ET or later has stalled: say so
+    // once per run, naming the legs.
+    if (stalled.length > 0) {
+      Sentry.captureMessage(
+        "fetch-etf-tide: no rows for today's session in the UW payload (09:40 ET or later)",
+        {
+          level: 'warning',
+          tags: { cron: 'fetch-etf-tide', stage: 'feed_stalled' },
+          extra: { sources: stalled, date: today },
+        },
+      );
+    }
+    // Closed buckets stuck without a usable last minute: once per run, naming
+    // the oldest of each leg.
+    if (Object.keys(stuckBySource).length > 0) {
+      Sentry.captureMessage(
+        'fetch-etf-tide: closed bucket(s) stuck without a usable last minute',
+        {
+          level: 'warning',
+          tags: { cron: 'fetch-etf-tide', stage: 'stuck_bucket' },
+          extra: { bySource: stuckBySource, date: today },
+        },
+      );
+    }
+
+    // Data quality check: alert if all of today's session rows are zero. It
+    // runs whenever this run wrote a row (inserted or updated) and
+    // checkDataQuality decides on the row count. Counts only rows stamped on
+    // today's session (R-quality): rows with `date = today` can also hold an
     // earlier session's values, which would hide a dead day.
     for (const [source, r] of Object.entries(results)) {
-      if (r.candles > 10 && r.stored === r.candles) {
-        // All candles were new (no duplicates) — check the raw data
-        // for all-zero values which indicate an upstream data issue
-        const { openIso, closeIso } = sessionWindowIso(today);
-        const rows = await getDb()`
-          SELECT COUNT(*) AS total,
-                 COUNT(*) FILTER (WHERE ncp::numeric != 0 OR npp::numeric != 0) AS nonzero
-          FROM flow_data
-          WHERE date = ${today} AND source = ${source}
-            AND timestamp >= ${openIso}::timestamptz
-            AND timestamp <= ${closeIso}::timestamptz
-        `;
-        const { total, nonzero } = rows[0]!;
+      if (r.stored > 0) {
+        const { total, nonzero } = await sessionRowCounts(today, source);
         await checkDataQuality({
           job: 'fetch-etf-tide',
           table: 'flow_data',
           date: today,
           sourceFilter: source,
-          total: Number(total),
-          nonzero: Number(nonzero),
+          total,
+          nonzero,
         });
       }
     }
@@ -227,4 +295,8 @@ export default withCronInstrumentation(
       metadata: { results, failureCount },
     };
   },
+  // Until 10 minutes after the close (the default is 5): the last bucket
+  // (15:55-16:00) settles at 16:01:30, so it has the 16:02 run and a second
+  // attempt at 16:07 (13:02 and 13:07 on an early-close day).
+  { timeCheck: () => isMarketHours(10) },
 );
