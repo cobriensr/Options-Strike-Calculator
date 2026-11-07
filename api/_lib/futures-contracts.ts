@@ -16,22 +16,25 @@
  *      symbol and can outtrade an outright), and take the top
  *      FRONT_MONTH_CANDIDATES by volume.
  *
- * Two rules for the contract of a minute live here:
+ * Two rules for the contract of a minute live here, and both are on their
+ * way out. The rule that replaces them is one contract per root per CME
+ * trade date, in `futures_front_month` (Phase 2 on, in
+ * `docs/superpowers/specs/2026-11-06-futures-session-front-month.md`):
  *
  *   - `replayFrontMonth`, the old one: the leader of the UTC-day volume
  *     tally, with no memory. It can step back and forth around a roll.
- *     Superseded.
- *   - `replayRollForward`, the one Phase 6 of
- *     `docs/superpowers/specs/futures-contract-mix-repair-2026-11-06.md`
- *     moves every writer to: each root has one front that only ever rolls
- *     forward, and a later contract takes over only after leading the
- *     tally for `ROLL_GUARD_CLOSES` consecutive minute closes.
- *     `parseContract`, `compareExpiry` and `nullSeedContract` give it the
- *     expiry order and the cold-start seed, and `canonicalContract` the one
- *     name a contract has everywhere.
+ *     Superseded; Phase 4c deletes it.
+ *   - `replayRollForward`, the contract-mix spec's streak rule: each root
+ *     has one front that only ever rolls forward, and a later contract
+ *     takes over only after leading the tally for `ROLL_GUARD_CLOSES`
+ *     consecutive minute closes. It stays until Phase 2 replaces it with
+ *     the per-session pick (`decideFrontMonth`); no writer moves to it.
+ *     `parseContract`, `compareExpiry` and `nullSeedContract` give both it
+ *     and the per-session pick the expiry order and the cold-start seed,
+ *     and `canonicalContract` the one name a contract has everywhere.
  *
- * The uw-stream handler will carry a Python copy of the new rule (Task
- * 6d). Both copies are to run the cases in
+ * The uw-stream handler will carry a Python copy of the per-session rule
+ * (Phase 5). Both copies are to run the cases in
  * `api/__tests__/fixtures/futures-roll-cases.json`, so they can't drift
  * apart.
  */
@@ -100,10 +103,10 @@ export interface ContractMinute {
 }
 
 /**
- * Superseded by `replayRollForward`: this rule has no memory, so it can
- * step back and forth between months around a roll. Task 6c moves the gap
- * cron's two calls to the new rule and Task 6e moves the two history
- * scripts; 6e deletes this function.
+ * Superseded: this rule has no memory, so it can step back and forth
+ * between months around a roll. Phase 4a moves the gap cron's two calls to
+ * the per-session front month and Phase 4b moves the two history scripts;
+ * Phase 4c deletes this function.
  *
  * Replays the uw-stream front-month rule over per-contract minute rows
  * (candles in `backfill-futures-gaps`, trade-derived minutes in the order
@@ -173,9 +176,10 @@ export function replayFrontMonth<T extends ContractMinute>(
 export const ROLL_GUARD_CLOSES = 120;
 
 /**
- * How far back a seed lookup reads for the root's newest tagged bar. The
- * gap cron (Task 6c) and the uw-stream handler (Task 6d) bound their seed
- * query with it, on the existing `(symbol, ts DESC)` index.
+ * How far back a seed lookup reads for the root's newest tagged bar, for
+ * `replayRollForward`'s cold start: the gap cron and the uw-stream handler
+ * were to bound their seed query with it, on the existing
+ * `(symbol, ts DESC)` index. Phase 2 removes it with that rule.
  */
 export const SEED_LOOKBACK_DAYS = 7;
 
@@ -185,7 +189,7 @@ export const MONTH_CODES = 'FGHJKMNQUVXZ';
 /**
  * Contract months each root's front month moves through, in calendar
  * order: quarterly for the equity indexes and ZN, every month for CL, the
- * even months for GC (its odd months never lead). Task 6e makes
+ * even months for GC (its odd months never lead). Phase 4b makes
  * `scripts/_lib/futures-flow-backfill.ts` import this and `MONTH_CODES`
  * instead of keeping its own copies.
  */
@@ -422,7 +426,7 @@ export interface RollForwardResult<T extends ContractMinute> {
   /** Each change of front: `ts` is the first minute on `contract`. */
   takeovers: Array<{ ts: string; contract: string }>;
   /**
-   * The front for the minute after the last row, which Task 6c seeds the
+   * The front for the minute after the last row, which a caller seeds the
    * next hole from. Null only when there is no seed and no row of a kept key
    * to date one.
    */
