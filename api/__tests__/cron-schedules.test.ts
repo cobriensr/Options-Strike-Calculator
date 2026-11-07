@@ -419,12 +419,14 @@ describe('cron-schedules SCHEDULE_MAP', () => {
   //     15:55-16:00 bucket, which settles at 16:01:30, has two attempts:
   //     close + 2 and + 7 (ETF, minutes :02 and :07) and close + 4 and + 9
   //     (zero-DTE, minutes :04 and :09). The last tick of each is 16:07 and
-  //     16:09 ET, 21:07 and 21:09 UTC in EST.
+  //     16:09 ET, 21:07 and 21:09 UTC in EST. fetch-greek-flow gates the same
+  //     way, at close + 3 and + 8 (minutes :03 and :08).
   it.each([
     ['evaluate-round-trip', [70, 80]],
     ['wave2-confirmation', [85, 90]],
     ['fetch-etf-tide', [2, 7]],
     ['fetch-zero-dte-flow', [4, 9]],
+    ['fetch-greek-flow', [3, 8]],
   ])(
     '%s: vercel.json serves the post-close ticks in BOTH DST regimes',
     (jobName, afterCloseTicks) => {
@@ -485,7 +487,7 @@ describe('cron-schedules SCHEDULE_MAP', () => {
   // 10). The post-close ticks are read from vercel.json here, in both DST
   // regimes, so a schedule edit that moves them fails loudly instead of
   // silently losing or mis-reporting the day's last row.
-  it.each([['fetch-etf-tide'], ['fetch-zero-dte-flow']])(
+  it.each([['fetch-etf-tide'], ['fetch-zero-dte-flow'], ['fetch-greek-flow']])(
     '%s: a first post-close tick that sees the final bucket settled, before the last-attempt instant, and a last tick at or after it',
     (jobName) => {
       const vercel = vercelCrons.get(jobName);

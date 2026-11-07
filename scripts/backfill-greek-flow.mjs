@@ -7,6 +7,15 @@
  * Stored in flow_data table with source = 'zero_dte_greek_flow'.
  * ncp = total_delta_flow, npp = dir_delta_flow, net_volume = volume.
  *
+ * DO NOT RUN THIS for zero_dte_greek_flow, on any day, until it adopts the
+ * window-END label (spec P2.1,
+ * docs/superpowers/specs/live-data-integrity-2026-11-06.md). From the deploy of
+ * that fix (planned 2026-11-09) api/cron/fetch-greek-flow.ts stamps a closed
+ * 5-minute bucket at its END (the 09:30-09:35 bucket at 09:35) and upserts it.
+ * This script still stamps the window START (09:30), is DO NOTHING and does not
+ * write the OTM columns, so its rows would interleave with the live ones under
+ * a second convention, and the unique key would not catch it.
+ *
  * Usage:
  *   UW_API_KEY=your_key DATABASE_URL="postgresql://..." node scripts/backfill-greek-flow.mjs
  *
