@@ -51,7 +51,7 @@ import {
  * 5:00 PM CT = 22:00 UTC (CDT) or 23:00 UTC (CST).
  * Using 22:00 UTC (CDT) — close enough for the query window.
  */
-function getOvernightStartCT(todayET: string): string {
+export function getOvernightStartCT(todayET: string): string {
   const today = new Date(todayET + 'T12:00:00Z');
   const dayOfWeek = today.getUTCDay();
   const daysBack = dayOfWeek === 1 ? 3 : 1; // Monday → go back to Friday
@@ -67,7 +67,7 @@ function getOvernightStartCT(todayET: string): string {
  * 13:30 UTC in CDT, 14:30 UTC in CST. The old hardcoded `T13:30:00Z`
  * excluded the CST last Globex hour (07:30–08:30 CT) from the aggregate.
  */
-function getOvernightEndCT(todayET: string): string {
+export function getOvernightEndCT(todayET: string): string {
   const iso = getETMarketOpenUtcIso(todayET);
   if (!iso) {
     // todayET comes from cronGuard's getETDateStr(), always a valid
@@ -76,6 +76,55 @@ function getOvernightEndCT(todayET: string): string {
     throw new Error(`Invalid trade date for overnight end: ${todayET}`);
   }
   return iso;
+}
+
+/** The four numbers the cron stores for one trade date's overnight window. */
+export interface Globex {
+  globexHigh: number;
+  globexLow: number;
+  globexClose: number;
+  globexVwap: number | null;
+  barCount: number;
+}
+
+/**
+ * Globex H/L/C/VWAP of the overnight ES bars for `tradeDate`, or null when the
+ * window holds no bars. The cron and scripts/recompute-futures-derived.ts both
+ * read the window through this, so the stored numbers cannot drift apart.
+ */
+export async function queryGlobex(
+  sql: ReturnType<typeof getDb>,
+  tradeDate: string,
+): Promise<Globex | null> {
+  const overnightStart = getOvernightStartCT(tradeDate);
+  const overnightEnd = getOvernightEndCT(tradeDate);
+
+  const bars = await withDbRetry(
+    () => sql`
+      SELECT
+        MAX(high)                                      AS globex_high,
+        MIN(low)                                       AS globex_low,
+        (ARRAY_AGG(close ORDER BY ts DESC))[1]         AS globex_close,
+        SUM(close * volume) / NULLIF(SUM(volume), 0)   AS vwap,
+        COUNT(*)                                       AS bar_count
+      FROM futures_bars
+      WHERE symbol = 'ES'
+        AND ts >= ${overnightStart}
+        AND ts <  ${overnightEnd}
+    `,
+    2,
+    10_000,
+  );
+
+  const row = bars[0];
+  if (!row?.globex_high) return null;
+  return {
+    globexHigh: Number.parseFloat(String(row.globex_high)),
+    globexLow: Number.parseFloat(String(row.globex_low)),
+    globexClose: Number.parseFloat(String(row.globex_close)),
+    globexVwap: row.vwap ? Number.parseFloat(String(row.vwap)) : null,
+    barCount: Number.parseInt(String(row.bar_count), 10),
+  };
 }
 
 // ── Handler ─────────────────────────────────────────────────
@@ -90,28 +139,10 @@ export default withCronInstrumentation(
     const tradeDate = ctx.today;
     const sql = getDb();
 
-    const overnightStart = getOvernightStartCT(tradeDate);
-    const overnightEnd = getOvernightEndCT(tradeDate);
-
     // Query overnight ES bars from futures_bars
-    const bars = await withDbRetry(
-      () => sql`
-        SELECT
-          MAX(high)                                      AS globex_high,
-          MIN(low)                                       AS globex_low,
-          (ARRAY_AGG(close ORDER BY ts DESC))[1]         AS globex_close,
-          SUM(close * volume) / NULLIF(SUM(volume), 0)   AS vwap,
-          COUNT(*)                                       AS bar_count
-        FROM futures_bars
-        WHERE symbol = 'ES'
-          AND ts >= ${overnightStart}
-          AND ts <  ${overnightEnd}
-      `,
-      2,
-      10_000,
-    );
+    const globex = await queryGlobex(sql, tradeDate);
 
-    if (!bars[0]?.globex_high) {
+    if (globex == null) {
       logger.info({ tradeDate }, 'No overnight ES bars found for pre-fill');
       return {
         status: 'skipped',
@@ -124,12 +155,7 @@ export default withCronInstrumentation(
       };
     }
 
-    const row = bars[0];
-    const globexHigh = Number.parseFloat(String(row.globex_high));
-    const globexLow = Number.parseFloat(String(row.globex_low));
-    const globexClose = Number.parseFloat(String(row.globex_close));
-    const globexVwap = row.vwap ? Number.parseFloat(String(row.vwap)) : null;
-    const barCount = Number.parseInt(String(row.bar_count), 10);
+    const { globexHigh, globexLow, globexClose, globexVwap, barCount } = globex;
 
     // Build pre_market_data JSON
     const preMarketData = JSON.stringify({
