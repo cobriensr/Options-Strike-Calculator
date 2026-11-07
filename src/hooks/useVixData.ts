@@ -146,12 +146,20 @@ export function useVixData(
       .then((data) => {
         if (controller.signal.aborted) return;
         if (!data || data.count === 0) return;
-        setVixOHLC({
+        const fromSnapshots = {
           open: data.open,
           high: data.high,
           low: data.low,
           close: data.close,
-        });
+        };
+        // This answer is OHLC over the snapshots saved that day, a sample.
+        // The only other writer here is App's history fallback, whose
+        // candles cover the date's whole session: on a past date they
+        // stand. Today's candles stop at the page load, so the answer
+        // replaces them.
+        setVixOHLC((prev) =>
+          prev && isPastETDate(selectedDate) ? prev : fromSnapshots,
+        );
       })
       .catch((err: unknown) => {
         // AbortError + guest 401s are expected (cleanup / auth gate) so

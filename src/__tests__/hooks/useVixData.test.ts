@@ -448,6 +448,56 @@ describe('useVixData', () => {
       fetchSpy.mockRestore();
     });
 
+    // /api/vix-ohlc samples the snapshots saved that day. A past date's own
+    // candles (written through setVixOHLC by App's history fallback) cover
+    // the whole session, so the API's late answer must not replace them.
+    describe('an OHLC already set while the API answer is in flight', () => {
+      const candleOHLC = { open: 19, high: 22, low: 18, close: 20 };
+      const apiOHLC = { open: 20.0, high: 21.5, low: 19.5, close: 21.0 };
+
+      /** Select `date`, set `candleOHLC` mid-flight, then let the API answer. */
+      async function answerAfterCandles(date: string) {
+        let answer: (r: Response) => void = () => {};
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockReturnValue(
+          new Promise<Response>((resolve) => {
+            answer = resolve;
+          }),
+        );
+        const view = renderWith();
+        await waitFor(() =>
+          expect(view.result.current.vixDataLoaded).toBe(true),
+        );
+        act(() => {
+          view.result.current.setSelectedDate(date);
+        });
+        await waitFor(() => {
+          expect(fetchSpy).toHaveBeenCalledWith(
+            `/api/vix-ohlc?date=${date}`,
+            expect.objectContaining({ signal: expect.any(AbortSignal) }),
+          );
+        });
+        act(() => {
+          view.result.current.setVixOHLC(candleOHLC);
+        });
+        await act(async () => {
+          answer({
+            ok: true,
+            json: async () => ({ ...apiOHLC, count: 2 }),
+          } as Response);
+        });
+        fetchSpy.mockRestore();
+        return view.result.current.vixOHLC;
+      }
+
+      it("keeps a past date's candles", async () => {
+        expect(await answerAfterCandles('2026-03-26')).toBe(candleOHLC);
+      });
+
+      it("lets the API's answer replace today's partial candles", async () => {
+        expect(await answerAfterCandles(getETToday())).toEqual(apiOHLC);
+      });
+    });
+
     it('does NOT fetch when date IS in static data', async () => {
       const fetchSpy = vi
         .spyOn(globalThis, 'fetch')
