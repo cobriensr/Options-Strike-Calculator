@@ -513,6 +513,30 @@ describe("the selected date's daily VIX OHLC", () => {
       setTimeout(() => resolve(json(historyFor(date))), ms);
     });
 
+  /**
+   * A past date with history ends on its snapshot's VIX at the selected
+   * time, not on the daily OHLC value written on the way there.
+   */
+  const expectPastVixInput = (hook: {
+    result: { current: ReturnType<typeof useLiveSession> };
+  }) => {
+    const { iv, historySnapshot } = hook.result.current;
+    expect(historySnapshot).not.toBeNull();
+    expect(iv.vixInput).toBe(historySnapshot!.vix!.toFixed(2));
+    expect(iv.vixInput).toBe(LAST_CANDLE_VIX.toFixed(2));
+    expect(iv.vixInput).not.toBe(candleVixOHLC().open.toFixed(2));
+    expect(iv.vixInput).not.toBe(SNAPSHOT_VIX_OHLC.open.toFixed(2));
+  };
+
+  /** Today's VIX input stays the live quote, whatever the OHLC says. */
+  const expectLiveVixInput = (hook: {
+    result: { current: ReturnType<typeof useLiveSession> };
+  }) => {
+    expect(hook.result.current.iv.vixInput).toBe(
+      quotesAt(0).vix!.price.toFixed(2),
+    );
+  };
+
   const selectPastDate = async () => {
     const hook = renderHook(() => useLiveSession());
     await settle(2000);
@@ -529,6 +553,7 @@ describe("the selected date's daily VIX OHLC", () => {
       expect.anything(),
     );
     expect(hook.result.current.vix.vixOHLC).toEqual(candleVixOHLC());
+    expectPastVixInput(hook);
   });
 
   it("is a past date's own candles, though /api/vix-ohlc answers before them", async () => {
@@ -541,6 +566,7 @@ describe("the selected date's daily VIX OHLC", () => {
 
     await settle(2000);
     expect(hook.result.current.vix.vixOHLC).toEqual(candleVixOHLC());
+    expectPastVixInput(hook);
   });
 
   it("stays a past date's candles when an hour step refetches /api/vix-ohlc", async () => {
@@ -582,6 +608,7 @@ describe("the selected date's daily VIX OHLC", () => {
       expect.anything(),
     );
     expect(hook.result.current.vix.vixOHLC).toEqual(candleVixOHLC());
+    expectLiveVixInput(hook);
   });
 
   it("is today's own candles, though /api/vix-ohlc answers before them", async () => {
@@ -591,9 +618,11 @@ describe("the selected date's daily VIX OHLC", () => {
     // The API's answer (400 ms) is in, the history's (1500 ms) is not.
     await settle(1000);
     expect(hook.result.current.vix.vixOHLC).toEqual(SNAPSHOT_VIX_OHLC);
+    expectLiveVixInput(hook);
 
     await settle(2000);
     expect(hook.result.current.vix.vixOHLC).toEqual(candleVixOHLC());
+    expectLiveVixInput(hook);
   });
 
   it("is /api/vix-ohlc's answer for today when it has no VIX candles", async () => {
