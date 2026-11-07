@@ -34,9 +34,10 @@ The cluster rule (tick span), per root and minute:
 Limit: a gap in the front month's own prints inside one minute, wider than G
 and narrower than CARRY_HALF, with no prints in between, is split silently. The
 upper part becomes the second cluster and is dropped, and nothing in this
-extract flags the minute. (A gap of CARRY_HALF or more also leaves the next
-minute that far from this bar's close, and front_absent or the post-check
-flags it there.)
+extract flags the minute. A gap of CARRY_HALF or more is flagged only if the new
+level persists: an upward gap on the next minute (a post-check step, or
+front_absent when that minute stands alone), a downward gap on the same minute
+(a step). A gap that reverts within the minute is not flagged at any width.
 
 The time-order pass. Step 2 fails when the front month's own sweep inside one
 minute is about as wide as the carry: the front's extreme and the back month's

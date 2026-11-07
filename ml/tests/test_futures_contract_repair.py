@@ -898,7 +898,9 @@ def previous_output(out: Path) -> None:
     (out / "ndjson").mkdir(parents=True)
     for name in fcr.OUTPUT_FILES:
         (out / name).write_bytes(f"old {name}".encode())
-    (out / "manifest.json").write_text('{"status": "passed"}\n', encoding="utf-8")
+    (out / "manifest.json").write_text(
+        '{"status": "passed", "git": {"head": "old"}}\n', encoding="utf-8"
+    )
     (out / "ndjson" / "ES-2026-04-20.ndjson").write_bytes(b"old day file\n")
     (out / "notes.txt").write_text("not ours", encoding="utf-8")
 
@@ -1108,7 +1110,11 @@ def test_a_passing_run_replaces_the_previous_output(tmp_path, monkeypatch):
     staging.mkdir()
     (staging / "notes.txt").write_text("not ours", encoding="utf-8")
     assert passing_run(tmp_path, monkeypatch) == 0
-    assert manifest(out)["status"] == "passed"
+    # The manifest is the new run's, not the seeded one ("old" has no ndjson_files).
+    got = manifest(out)
+    assert got["status"] == "passed"
+    assert got["git"]["head"] != "old"
+    assert got["ndjson_files"] == 4
     assert len(pd.read_parquet(out / "rebuilt_bars.parquet")) == 22
     # The old day file is gone, not mixed in with the new ones.
     assert sorted(p.name for p in (out / "ndjson").iterdir()) == [
