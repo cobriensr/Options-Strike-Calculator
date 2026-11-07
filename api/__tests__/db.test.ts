@@ -10,7 +10,11 @@ mockSql.transaction = vi.fn().mockResolvedValue([]);
 vi.mock('@neondatabase/serverless', () => ({
   neon: vi.fn(() => mockSql),
 }));
+vi.mock('../_lib/logger.js', () => ({
+  default: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
 
+import logger from '../_lib/logger.js';
 import { MIGRATIONS } from '../_lib/db-migrations.js';
 import {
   getDb,
@@ -2135,6 +2139,7 @@ describe('getVixOhlcFromSnapshots', () => {
     _resetDb();
     process.env.DATABASE_URL = 'postgresql://test';
     vi.mocked(neon).mockReturnValue(mockSql as never);
+    vi.mocked(logger.warn).mockClear();
   });
 
   afterEach(() => {
@@ -2268,6 +2273,16 @@ describe('getVixOhlcFromSnapshots', () => {
     ]);
     const result = await getVixOhlcFromSnapshots('2026-03-10');
     expect(result).toBeNull();
+    // Only the 'lunch' row is a surprise; the pre-market row is meant to go.
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        date: '2026-03-10',
+        count: 1,
+        samples: ['lunch'],
+      }),
+      expect.any(String),
+    );
   });
 });
 

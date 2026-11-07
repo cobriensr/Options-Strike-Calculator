@@ -382,8 +382,8 @@ export async function getRecentVixSnapshots(
  * replay of a past date is created later than its date and holds that date's
  * VIX, so plain own-date would drop the good rows. A live row saved under
  * another date (a tab left on that date) holds the quotes of the day it was
- * saved, so it is dropped. Rows saved before the 2026-10-27 flag fix carry
- * is_backtest = true on their own date and so still count.
+ * saved, so it is dropped. Rows saved before 2026-10-28 carry an inverted
+ * is_backtest (true for a live save on its own date) and so still count.
  */
 export async function getVixOhlcFromSnapshots(date: string): Promise<{
   open: number;

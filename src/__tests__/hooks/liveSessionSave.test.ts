@@ -595,6 +595,10 @@ describe("the selected date's daily VIX OHLC", () => {
     await settle(2000);
 
     expect(hook.result.current.vix.vixOHLC).toEqual(SNAPSHOT_VIX_OHLC);
+    // No snapshot VIX either, so the API's open (Auto, 9:40 CT) is the input.
+    expect(hook.result.current.iv.vixInput).toBe(
+      SNAPSHOT_VIX_OHLC.open.toFixed(2),
+    );
   });
 
   // Today's candles run to the page load, and /api/vix-ohlc samples the
@@ -633,5 +637,6 @@ describe("the selected date's daily VIX OHLC", () => {
     await settle(2000);
 
     expect(hook.result.current.vix.vixOHLC).toEqual(SNAPSHOT_VIX_OHLC);
+    expectLiveVixInput(hook);
   });
 });
