@@ -174,6 +174,7 @@ function useLiveSession() {
     vix.selectedDate,
     vix.vixOHLC,
     vix.setVixOHLC,
+    vix.vixData,
   );
   const spotEdited = useRef(false);
   const spxEdited = useRef(false);
@@ -264,6 +265,9 @@ const POST_LATENCY_MS = 300;
  */
 const VIX_OHLC_LATENCY_MS = 400;
 
+/** What /api/vix-ohlc answers: OHLC over the snapshots saved that day. */
+const SNAPSHOT_VIX_OHLC = { open: 18, high: 18.6, low: 17.4, close: 18.1 };
+
 interface Post {
   body: Record<string, unknown>;
   signal: AbortSignal;
@@ -297,10 +301,7 @@ beforeEach(() => {
     if (url.startsWith('/api/vix-ohlc')) {
       return new Promise<Response>((resolve) => {
         setTimeout(
-          () =>
-            resolve(
-              json({ open: 18, high: 18.6, low: 17.4, close: 18.1, count: 40 }),
-            ),
+          () => resolve(json({ ...SNAPSHOT_VIX_OHLC, count: 40 })),
           VIX_OHLC_LATENCY_MS,
         );
       });
@@ -476,5 +477,99 @@ describe('a replay of a past date', () => {
       expect(rows.get(slot)!.isBacktest, slot).toBe(true);
       expect(rows.get(slot)!.spx, slot).toBe(LAST_CANDLE_SPX);
     }
+  });
+});
+
+describe("the selected date's daily VIX OHLC", () => {
+  /** The OHLC historyFor's 5-minute VIX candles give: the whole session. */
+  const candleVixOHLC = () => {
+    const vix = historyFor(PAST_DATE).vix.candles;
+    return {
+      open: vix[0]!.open,
+      high: Math.max(...vix.map((c) => c.high)),
+      low: Math.min(...vix.map((c) => c.low)),
+      close: vix.at(-1)!.close,
+    };
+  };
+
+  /** Answer `PAST_DATE`'s /api/history with `respond`, the rest as usual. */
+  const overridePastHistory = (respond: () => Promise<Response>) => {
+    const base = fetchSpy.getMockImplementation() as typeof fetch;
+    fetchSpy.mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) =>
+        String(input) === `/api/history?date=${PAST_DATE}`
+          ? respond()
+          : base(input, init),
+    );
+  };
+
+  const selectPastDate = async () => {
+    const hook = renderHook(() => useLiveSession());
+    await settle(2000);
+    act(() => hook.result.current.vix.setSelectedDate(PAST_DATE));
+    return hook;
+  };
+
+  it("is a past date's own candles, though /api/vix-ohlc answers after them", async () => {
+    const hook = await selectPastDate();
+    await settle(2000);
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `/api/vix-ohlc?date=${PAST_DATE}`,
+      expect.anything(),
+    );
+    expect(hook.result.current.vix.vixOHLC).toEqual(candleVixOHLC());
+  });
+
+  it("is a past date's own candles, though /api/vix-ohlc answers before them", async () => {
+    overridePastHistory(
+      () =>
+        new Promise<Response>((resolve) => {
+          setTimeout(() => resolve(json(historyFor(PAST_DATE))), 1500);
+        }),
+    );
+    const hook = await selectPastDate();
+
+    // The API's answer (400 ms) is in, the history's (1500 ms) is not.
+    await settle(1000);
+    expect(hook.result.current.vix.vixOHLC).toEqual(SNAPSHOT_VIX_OHLC);
+
+    await settle(2000);
+    expect(hook.result.current.vix.vixOHLC).toEqual(candleVixOHLC());
+  });
+
+  it("stays a past date's candles when an hour step refetches /api/vix-ohlc", async () => {
+    const hook = await selectPastDate();
+    await settle(2000);
+    hook.result.current.timeEdited.current = true;
+    act(() => {
+      hook.result.current.time.setTimeHour('10');
+      hook.result.current.time.setTimeMinute('00');
+    });
+    await settle(2000);
+
+    // The date's first look, then the hour step's.
+    const ohlcCalls = fetchSpy.mock.calls.filter(([url]: unknown[]) =>
+      String(url).startsWith(`/api/vix-ohlc?date=${PAST_DATE}`),
+    );
+    expect(ohlcCalls).toHaveLength(2);
+    expect(hook.result.current.vix.vixOHLC).toEqual(candleVixOHLC());
+  });
+
+  it("is /api/vix-ohlc's answer for a past date with no VIX candles", async () => {
+    overridePastHistory(() =>
+      Promise.resolve(json({ ...historyFor(PAST_DATE), vix: noCandles })),
+    );
+    const hook = await selectPastDate();
+    await settle(2000);
+
+    expect(hook.result.current.vix.vixOHLC).toEqual(SNAPSHOT_VIX_OHLC);
+  });
+
+  it("is /api/vix-ohlc's answer for today, whose candles stop at the page load", async () => {
+    const hook = renderHook(() => useLiveSession());
+    await settle(2000);
+
+    expect(hook.result.current.vix.vixOHLC).toEqual(SNAPSHOT_VIX_OHLC);
   });
 });

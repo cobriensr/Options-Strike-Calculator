@@ -6,7 +6,8 @@ import {
   useHistoryVixOHLCFallback,
 } from '../../hooks/useHistoryData';
 import { captureUnlessAuth } from '../../lib/sentry-helpers';
-import type { VIXDayData } from '../../types';
+import { getETToday } from '../../utils/timezone';
+import type { VIXDataMap, VIXDayData } from '../../types';
 import type { HistoryResponse } from '../../types/api';
 
 vi.mock('../../lib/sentry-helpers', () => ({
@@ -885,13 +886,15 @@ describe('useHistoryVixOHLCFallback', () => {
     history: HistoryResponse | null;
     date: string;
     vixOHLC: VIXDayData | null;
+    /** The static table; empty unless a test gives the date an entry. */
+    vixData?: VIXDataMap;
   }
 
   function mount(initialProps: Props) {
     const setVixOHLC = vi.fn();
     const view = renderHook(
-      ({ history, date, vixOHLC }: Props) =>
-        useHistoryVixOHLCFallback(history, date, vixOHLC, setVixOHLC),
+      ({ history, date, vixOHLC, vixData = {} }: Props) =>
+        useHistoryVixOHLCFallback(history, date, vixOHLC, setVixOHLC, vixData),
       { initialProps },
     );
     return { ...view, setVixOHLC };
@@ -908,11 +911,87 @@ describe('useHistoryVixOHLCFallback', () => {
     expect(setVixOHLC).toHaveBeenCalledWith(OHLC);
   });
 
-  it("leaves a date's VIX OHLC from the table or API alone", () => {
+  const OTHER = { open: 20, high: 21, low: 19, close: 20.5 };
+
+  it("leaves the static table's entry for a past date alone", () => {
     const { setVixOHLC } = mount({
       history: own,
       date: '2024-03-04',
-      vixOHLC: { open: 20, high: 21, low: 19, close: 20.5 },
+      vixOHLC: OTHER,
+      vixData: { '2024-03-04': OTHER },
+    });
+
+    expect(setVixOHLC).not.toHaveBeenCalled();
+  });
+
+  it("replaces a past date's snapshot-derived OHLC with the candles'", () => {
+    // /api/vix-ohlc samples the snapshots saved that day; the candles cover
+    // the whole session.
+    const { setVixOHLC } = mount({
+      history: own,
+      date: '2024-03-04',
+      vixOHLC: OTHER,
+    });
+
+    expect(setVixOHLC).toHaveBeenCalledTimes(1);
+    expect(setVixOHLC).toHaveBeenCalledWith(OHLC);
+  });
+
+  it("replaces the snapshot-derived OHLC when the date's candles arrive later", () => {
+    const { setVixOHLC, rerender } = mount({
+      history: null,
+      date: '2024-03-04',
+      vixOHLC: OTHER,
+    });
+    expect(setVixOHLC).not.toHaveBeenCalled();
+
+    rerender({ history: own, date: '2024-03-04', vixOHLC: OTHER });
+    expect(setVixOHLC).toHaveBeenCalledTimes(1);
+    expect(setVixOHLC).toHaveBeenCalledWith(OHLC);
+  });
+
+  it('sets the candles once, not again when they are already the OHLC', () => {
+    const { setVixOHLC, rerender } = mount({
+      history: own,
+      date: '2024-03-04',
+      vixOHLC: OTHER,
+    });
+    const set = setVixOHLC.mock.calls[0]![0] as VIXDayData;
+
+    rerender({ history: own, date: '2024-03-04', vixOHLC: set });
+    expect(setVixOHLC).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves today's OHLC from the API alone: today's candles are partial", () => {
+    const today = getETToday();
+    const { setVixOHLC } = mount({
+      history: { ...own, date: today },
+      date: today,
+      vixOHLC: OTHER,
+    });
+
+    expect(setVixOHLC).not.toHaveBeenCalled();
+  });
+
+  it("fills today's OHLC from the candles when none is set", () => {
+    const today = getETToday();
+    const { setVixOHLC } = mount({
+      history: { ...own, date: today },
+      date: today,
+      vixOHLC: null,
+    });
+
+    expect(setVixOHLC).toHaveBeenCalledWith(OHLC);
+  });
+
+  it("keeps a past date's API OHLC when the date has no VIX candles", () => {
+    const { setVixOHLC } = mount({
+      history: {
+        ...own,
+        vix: { candles: [], previousClose: 0, previousDay: null },
+      },
+      date: '2024-03-04',
+      vixOHLC: OTHER,
     });
 
     expect(setVixOHLC).not.toHaveBeenCalled();

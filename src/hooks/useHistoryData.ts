@@ -13,7 +13,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { z } from 'zod';
-import type { VIXDayData } from '../types';
+import type { VIXDataMap, VIXDayData } from '../types';
 import type {
   HistoryResponse,
   HistoryCandle,
@@ -26,7 +26,7 @@ import {
 } from '../lib/response-guard';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { getErrorMessage } from '../utils/error';
-import { getETToday, getETTotalMinutes } from '../utils/timezone';
+import { getETToday, getETTotalMinutes, isPastETDate } from '../utils/timezone';
 import { getMarketCloseHourET } from '../data/marketHours';
 
 // ============================================================
@@ -284,26 +284,34 @@ export function historyVixOHLC(
 }
 
 /**
- * App's fallback for the date's daily VIX OHLC: when neither the static
- * table nor /api/vix-ohlc has one (`vixOHLC` null), set it from the date's
- * own history (historyVixOHLC), never the last date's while the new one
- * loads. The derivation is a memo and the write an effect, so the effect's
- * deps stay exhaustive.
+ * App's source for the date's daily VIX OHLC from its own history
+ * (historyVixOHLC), never the last date's while the new one loads. The
+ * static table's entry always stands. Otherwise /api/vix-ohlc fills `vixOHLC`
+ * with OHLC over the snapshots saved that day, a sample of the session:
+ *   - a past date's candles cover the whole session, so they replace it;
+ *   - today's candles stop at the page load, so they only fill an empty
+ *     `vixOHLC` and the API's answer stands.
+ * The derivation is a memo and the write an effect, so the effect's deps
+ * stay exhaustive.
  */
 export function useHistoryVixOHLCFallback(
   history: HistoryResponse | null,
   selectedDate: string,
   vixOHLC: VIXDayData | null,
   setVixOHLC: (v: VIXDayData | null) => void,
+  vixData: VIXDataMap,
 ): void {
   const fromHistory = useMemo(
     () => historyVixOHLC(history, selectedDate),
     [history, selectedDate],
   );
+  const candlesReplaceApi =
+    !vixData[selectedDate] && isPastETDate(selectedDate);
   useEffect(() => {
-    if (vixOHLC || !fromHistory) return;
+    if (!fromHistory || vixOHLC === fromHistory) return;
+    if (vixOHLC && !candlesReplaceApi) return;
     setVixOHLC(fromHistory);
-  }, [vixOHLC, fromHistory, setVixOHLC]);
+  }, [vixOHLC, fromHistory, candlesReplaceApi, setVixOHLC]);
 }
 
 function computeOpeningRange(

@@ -351,14 +351,16 @@ export default function StrikeCalculator() {
     getEarlyCloseHourET(vix.selectedDate),
   );
 
-  // Derive VIX OHLC from history candles when static data and API have no
-  // entry, from the selected date's own history only (never the last
-  // date's, kept while the new one loads).
+  // Derive VIX OHLC from history candles, from the selected date's own
+  // history only (never the last date's, kept while the new one loads): they
+  // fill an empty entry, and on a past date replace /api/vix-ohlc's
+  // snapshot-derived one. The static table's entry always stands.
   useHistoryVixOHLCFallback(
     historyData.history,
     vix.selectedDate,
     vix.vixOHLC,
     vix.setVixOHLC,
+    vix.vixData,
   );
 
   // Track user edits so auto-fill overwrites defaults but not manual input
