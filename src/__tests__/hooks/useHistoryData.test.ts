@@ -962,7 +962,7 @@ describe('useHistoryVixOHLCFallback', () => {
     expect(setVixOHLC).toHaveBeenCalledTimes(1);
   });
 
-  it("leaves today's OHLC from the API alone: today's candles are partial", () => {
+  it("replaces today's snapshot-derived OHLC with the candles' too", () => {
     const today = getETToday();
     const { setVixOHLC } = mount({
       history: { ...own, date: today },
@@ -970,7 +970,8 @@ describe('useHistoryVixOHLCFallback', () => {
       vixOHLC: OTHER,
     });
 
-    expect(setVixOHLC).not.toHaveBeenCalled();
+    expect(setVixOHLC).toHaveBeenCalledTimes(1);
+    expect(setVixOHLC).toHaveBeenCalledWith(OHLC);
   });
 
   it("fills today's OHLC from the candles when none is set", () => {
@@ -982,6 +983,33 @@ describe('useHistoryVixOHLCFallback', () => {
     });
 
     expect(setVixOHLC).toHaveBeenCalledWith(OHLC);
+  });
+
+  it("leaves the static table's entry for today alone", () => {
+    const today = getETToday();
+    const { setVixOHLC } = mount({
+      history: { ...own, date: today },
+      date: today,
+      vixOHLC: OTHER,
+      vixData: { [today]: OTHER },
+    });
+
+    expect(setVixOHLC).not.toHaveBeenCalled();
+  });
+
+  it("keeps today's API OHLC when today has no VIX candles", () => {
+    const today = getETToday();
+    const { setVixOHLC } = mount({
+      history: {
+        ...own,
+        date: today,
+        vix: { candles: [], previousClose: 0, previousDay: null },
+      },
+      date: today,
+      vixOHLC: OTHER,
+    });
+
+    expect(setVixOHLC).not.toHaveBeenCalled();
   });
 
   it("keeps a past date's API OHLC when the date has no VIX candles", () => {

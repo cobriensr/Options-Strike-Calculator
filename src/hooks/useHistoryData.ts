@@ -26,7 +26,7 @@ import {
 } from '../lib/response-guard';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { getErrorMessage } from '../utils/error';
-import { getETToday, getETTotalMinutes, isPastETDate } from '../utils/timezone';
+import { getETToday, getETTotalMinutes } from '../utils/timezone';
 import { getMarketCloseHourET } from '../data/marketHours';
 
 // ============================================================
@@ -285,14 +285,12 @@ export function historyVixOHLC(
 
 /**
  * App's source for the date's daily VIX OHLC from its own history
- * (historyVixOHLC), never the last date's while the new one loads. The
- * static table's entry always stands. Otherwise /api/vix-ohlc fills `vixOHLC`
- * with OHLC over the snapshots saved that day, a sample of the session:
- *   - a past date's candles cover the whole session, so they replace it;
- *   - today's candles stop at the page load, so they only fill an empty
- *     `vixOHLC` and the API's answer stands.
- * The derivation is a memo and the write an effect, so the effect's deps
- * stay exhaustive.
+ * (historyVixOHLC), never the last date's while the new one loads. Its 5-min
+ * candles cover the session, where /api/vix-ohlc is OHLC over only the
+ * snapshots saved that day. So the static table's entry stands, otherwise the
+ * candles win, replacing what the API wrote; the API's answer fills `vixOHLC`
+ * only for a date with neither. The derivation is a memo and the write an
+ * effect, so the effect's deps stay exhaustive.
  */
 export function useHistoryVixOHLCFallback(
   history: HistoryResponse | null,
@@ -305,13 +303,11 @@ export function useHistoryVixOHLCFallback(
     () => historyVixOHLC(history, selectedDate),
     [history, selectedDate],
   );
-  const candlesReplaceApi =
-    !vixData[selectedDate] && isPastETDate(selectedDate);
+  const hasTableEntry = !!vixData[selectedDate];
   useEffect(() => {
-    if (!fromHistory || vixOHLC === fromHistory) return;
-    if (vixOHLC && !candlesReplaceApi) return;
+    if (hasTableEntry || !fromHistory || vixOHLC === fromHistory) return;
     setVixOHLC(fromHistory);
-  }, [vixOHLC, fromHistory, candlesReplaceApi, setVixOHLC]);
+  }, [hasTableEntry, fromHistory, vixOHLC, setVixOHLC]);
 }
 
 function computeOpeningRange(

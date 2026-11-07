@@ -448,9 +448,10 @@ describe('useVixData', () => {
       fetchSpy.mockRestore();
     });
 
-    // /api/vix-ohlc samples the snapshots saved that day. A past date's own
+    // /api/vix-ohlc samples the snapshots saved that day. The date's own
     // candles (written through setVixOHLC by App's history fallback) cover
-    // the whole session, so the API's late answer must not replace them.
+    // the session, so the API's late answer must not replace them, today's
+    // included. It only fills an empty slot.
     describe('an OHLC already set while the API answer is in flight', () => {
       const candleOHLC = { open: 19, high: 22, low: 18, close: 20 };
       const apiOHLC = { open: 20.0, high: 21.5, low: 19.5, close: 21.0 };
@@ -489,12 +490,11 @@ describe('useVixData', () => {
         return view.result.current.vixOHLC;
       }
 
-      it("keeps a past date's candles", async () => {
-        expect(await answerAfterCandles('2026-03-26')).toBe(candleOHLC);
-      });
-
-      it("lets the API's answer replace today's partial candles", async () => {
-        expect(await answerAfterCandles(getETToday())).toEqual(apiOHLC);
+      it.each([
+        ['a past date', '2026-03-26'],
+        ['today', getETToday()],
+      ])("keeps %s's candles", async (_label, date) => {
+        expect(await answerAfterCandles(date)).toBe(candleOHLC);
       });
     });
 

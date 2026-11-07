@@ -352,9 +352,10 @@ export default function StrikeCalculator() {
   );
 
   // Derive VIX OHLC from history candles, from the selected date's own
-  // history only (never the last date's, kept while the new one loads): they
-  // fill an empty entry, and on a past date replace /api/vix-ohlc's
-  // snapshot-derived one. The static table's entry always stands.
+  // history only (never the last date's, kept while the new one loads). The
+  // static table's entry stands; otherwise the candles win over
+  // /api/vix-ohlc's snapshot-derived OHLC, which fills only when the date has
+  // neither.
   useHistoryVixOHLCFallback(
     historyData.history,
     vix.selectedDate,
