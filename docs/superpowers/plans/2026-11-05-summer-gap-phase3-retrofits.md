@@ -80,6 +80,7 @@ Off-hours only, one UW script at a time, a dry run or one-day probe first, then 
 2. `greek_exposure` D3 (`call_gex`/`put_gex`): stays as live until R3 lands, so backfilled rows match live rows. Default: unchanged.
 3. `ws_gamma_setup_fires`, `periscope_lottery_fires`, `gex_target_features`, `flow_regime_0dte_daily`: out of phase 3 (phase 4), and the first two stay paused with GEXBot.
 4. The P3.1 candle backfills have the all-unusable shape that P3.2 now guards (`assertUsable` in `flow-data-backfill.mjs`): a ticker or symbol whose bars are all on another ET day (UW ignoring `?date=`) returns `kept 0, dropped N` from `ingestEtfTicker` / `ingestIndex` and passes as a healthy day, and DO NOTHING keeps the hole. `candles-backfill.mjs` is unchanged. The 2026-11-06 P3.1 run reports 390 `'r'` bars per symbol on every day, so no day of it had this shape. Default: leave it until a re-run needs it, then port the guard (one throw after `toEtfRows` / `toIndexRows`); there is no all-zero check to port, since the candles are prices.
+5. `toNetFlowRows` adds `net_call_volume` and `net_put_volume` as UW sends them, as the live cron does (`api/cron/fetch-net-flow.ts:93`, `runningCallVol += tick.net_call_volume || 0`). A fractional volume would make the running `net_volume` a fraction, which the INTEGER column rejects, so the item fails loudly as `db`. Default: unchanged.
 
 ## Thresholds / constants
 
