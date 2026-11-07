@@ -184,7 +184,10 @@ import { fetchMaxPain } from '../_lib/max-pain.js';
 import { fetchSPXCandles } from '../_lib/spx-candles.js';
 import { uwFetch, schwabFetch } from '../_lib/api-helpers.js';
 import { formatFuturesForClaude } from '../_lib/futures-context.js';
-import { formatPriorDayFlowForClaude } from '../_lib/analyze-context-formatters.js';
+import {
+  formatMarketInternalsForClaude,
+  formatPriorDayFlowForClaude,
+} from '../_lib/analyze-context-formatters.js';
 import { computeCrossAssetRegime } from '../_lib/cross-asset-regime.js';
 import { computeVolumeProfile } from '../_lib/volume-profile.js';
 import { computeVixSpxDivergence } from '../_lib/vix-divergence.js';
@@ -1022,5 +1025,74 @@ describe('analyze-context-fetchers — 14DTE 50Δ chain picker', () => {
     // OI 1234 → "1.2K"; Vol 5678 → "5.7K"
     expect(result).toContain('OI 1.2K');
     expect(result).toContain('Vol 5.7K');
+  });
+});
+
+// ── fetchMainData: market internals ───────────────────────────────────
+//
+// The internals table is filled after the close (api/cron/fetch-market-
+// internals.ts, spec live-data-integrity-2026-11-06 P0.5), so an in-session
+// analysis finds no row for today. The block must then be absent, not a
+// reading of zero: the prompt answers "NOT PROVIDED" for a missing block, and
+// "$ADD: 0" would read as a real, flat market.
+
+describe('analyze-context-fetchers — market internals', () => {
+  beforeEach(async () => {
+    const { getGreekExposure, getSpotExposures } =
+      await import('../_lib/db.js');
+    const {
+      getStrikeExposures,
+      getAllExpiryStrikeExposures,
+      getNetGexHeatmap,
+    } = await import('../_lib/db-strike-helpers.js');
+    const { getRecentNope } = await import('../_lib/db-nope.js');
+    vi.mocked(getFlowData).mockResolvedValue([] as never);
+    vi.mocked(getGreekExposure).mockResolvedValue([] as never);
+    vi.mocked(getSpotExposures).mockResolvedValue([] as never);
+    vi.mocked(getStrikeExposures).mockResolvedValue([] as never);
+    vi.mocked(getAllExpiryStrikeExposures).mockResolvedValue([] as never);
+    vi.mocked(getNetGexHeatmap).mockResolvedValue([] as never);
+    vi.mocked(getRecentNope).mockResolvedValue([] as never);
+  });
+
+  it('has no internals block and does not call the formatter when no row is stored for the day', async () => {
+    const { getMarketInternalsToday } = await import('../_lib/db-flow.js');
+    vi.mocked(getMarketInternalsToday).mockResolvedValue([] as never);
+
+    const result = await fetchMainData(
+      '2026-11-06',
+      undefined,
+      undefined,
+      undefined,
+    );
+
+    expect(getMarketInternalsToday).toHaveBeenCalledWith('2026-11-06');
+    expect(result.marketInternalsContext).toBeNull();
+    expect(formatMarketInternalsForClaude).not.toHaveBeenCalled();
+  });
+
+  it('formats the settled rows when they are there (a past date)', async () => {
+    const { getMarketInternalsToday } = await import('../_lib/db-flow.js');
+    const bars = [
+      {
+        ts: '2026-11-05T14:30:00.000Z',
+        symbol: '$ADD' as const,
+        open: 200,
+        high: 300,
+        low: 100,
+        close: 250,
+      },
+    ];
+    vi.mocked(getMarketInternalsToday).mockResolvedValue(bars as never);
+
+    const result = await fetchMainData(
+      '2026-11-05',
+      undefined,
+      undefined,
+      undefined,
+    );
+
+    expect(formatMarketInternalsForClaude).toHaveBeenCalledWith(bars);
+    expect(result.marketInternalsContext).toBe('internals');
   });
 });

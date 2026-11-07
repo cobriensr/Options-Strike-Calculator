@@ -773,6 +773,54 @@ describe('buildAnalysisContext', () => {
     vi.unstubAllGlobals();
   });
 
+  it('omits the NYSE Market Internals block when no row is stored for the day, and lists it as unavailable', async () => {
+    const { getMarketInternalsToday } = await import('../_lib/db-flow.js');
+    vi.mocked(getMarketInternalsToday).mockResolvedValueOnce([]);
+
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-11-06',
+    });
+
+    expect(getMarketInternalsToday).toHaveBeenCalledWith('2026-11-06');
+    const text = result.content
+      .flatMap((b) => (b.type === 'text' ? [b.text] : []))
+      .join('\n');
+    // No block, and no reading of zero in its place.
+    expect(text).not.toContain('NYSE Market Internals — Session Regime');
+    expect(text).not.toContain('Current readings (latest bar)');
+    expect(text).not.toContain('$ADD');
+    expect(text).not.toContain('$VOLD');
+    // The data manifest names it, so the prompt reads it as NOT PROVIDED.
+    expect(text).toContain('- NYSE Market Internals');
+  });
+
+  it('includes the NYSE Market Internals block with the settled readings when rows are stored', async () => {
+    const { getMarketInternalsToday } = await import('../_lib/db-flow.js');
+    vi.mocked(getMarketInternalsToday).mockResolvedValueOnce([
+      {
+        ts: '2026-11-05T20:59:00.000Z',
+        symbol: '$ADD' as const,
+        open: 200,
+        high: 300,
+        low: 100,
+        close: 180,
+      },
+    ]);
+
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-11-05',
+    });
+
+    const text = result.content
+      .flatMap((b) => (b.type === 'text' ? [b.text] : []))
+      .join('\n');
+    expect(text).toContain('NYSE Market Internals — Session Regime');
+    expect(text).toContain('$ADD: +180');
+    expect(text).not.toContain('- NYSE Market Internals\n');
+  });
+
   it('populates unavailable data manifest when nothing is fetched', async () => {
     const result = await buildAnalysisContext([], {
       mode: 'entry',
