@@ -1,7 +1,10 @@
 /**
- * flow_data writes and the data-quality count for the closed tide buckets
- * (api/_lib/closed-buckets.ts), shared by fetch-etf-tide and
- * fetch-zero-dte-flow so both use the same SQL.
+ * flow_data writes and the data-quality count for the closed buckets
+ * (api/_lib/closed-buckets.ts), shared by fetch-etf-tide,
+ * fetch-zero-dte-flow and fetch-greek-flow so all three use the same counting
+ * and the same session count. A bucket that carries the OTM wings (greek flow:
+ * otm_ncp, otm_npp) also writes and compares them; one without leaves those
+ * two columns unnamed, so they stay NULL and are never rewritten.
  * Spec: docs/superpowers/specs/live-data-integrity-2026-11-06.md
  *
  * The write is an idempotent upsert on the source-derived key (spec R6), not
@@ -20,7 +23,7 @@ import { sessionWindowIso, type ClosedBucket } from './closed-buckets.js';
 export interface UpsertCounts {
   /** New rows. */
   inserted: number;
-  /** Existing rows whose ncp, npp or net_volume UW revised. */
+  /** Existing rows whose ncp, npp, net_volume or OTM wing UW revised. */
   updated: number;
   /** Existing rows that already hold these values. */
   unchanged: number;
@@ -42,9 +45,14 @@ export async function upsertClosedBuckets(
   // that stays NULL is not rewritten. `xmax = 0` marks a tuple this statement
   // inserted; an updated one carries the updater's transaction id. When the
   // WHERE is false no row is returned: unchanged.
+  //
+  // Two statements, one per shape of bucket, because a tagged template cannot
+  // splice a column list. They differ only in the two OTM columns, and both
+  // return the same row, so the counting below is shared.
   const results = await sql.transaction((txn) =>
-    buckets.map(
-      (bucket) => txn`
+    buckets.map((bucket) =>
+      bucket.otm === undefined
+        ? txn`
         INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
         VALUES (${date}, ${bucket.timestamp}, ${source}, ${bucket.ncp}, ${bucket.npp}, ${bucket.netVolume})
         ON CONFLICT (date, timestamp, source) DO UPDATE
@@ -53,6 +61,19 @@ export async function upsertClosedBuckets(
               net_volume = EXCLUDED.net_volume
           WHERE (flow_data.ncp, flow_data.npp, flow_data.net_volume)
             IS DISTINCT FROM (EXCLUDED.ncp, EXCLUDED.npp, EXCLUDED.net_volume)
+        RETURNING (xmax = 0) AS inserted
+      `
+        : txn`
+        INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume, otm_ncp, otm_npp)
+        VALUES (${date}, ${bucket.timestamp}, ${source}, ${bucket.ncp}, ${bucket.npp}, ${bucket.netVolume}, ${bucket.otm.ncp}, ${bucket.otm.npp})
+        ON CONFLICT (date, timestamp, source) DO UPDATE
+          SET ncp = EXCLUDED.ncp,
+              npp = EXCLUDED.npp,
+              net_volume = EXCLUDED.net_volume,
+              otm_ncp = EXCLUDED.otm_ncp,
+              otm_npp = EXCLUDED.otm_npp
+          WHERE (flow_data.ncp, flow_data.npp, flow_data.net_volume, flow_data.otm_ncp, flow_data.otm_npp)
+            IS DISTINCT FROM (EXCLUDED.ncp, EXCLUDED.npp, EXCLUDED.net_volume, EXCLUDED.otm_ncp, EXCLUDED.otm_npp)
         RETURNING (xmax = 0) AS inserted
       `,
     ),

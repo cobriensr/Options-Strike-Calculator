@@ -1,14 +1,23 @@
 /**
- * Closed 5-minute buckets from UW's per-minute cumulative tide grids.
+ * Closed 5-minute buckets from UW's per-minute grids.
  *
  * Shared by fetch-etf-tide (/market/{ticker}/etf-tide) and fetch-zero-dte-flow
- * (/net-flow/expiry). Both send the whole session's grid on every call: 390
+ * (/net-flow/expiry), which send the whole session's grid on every call: 390
  * one-minute rows, 09:30-15:59 ET (measured 2026-11-06). From about 09:32 ET
  * the minutes that have not happened yet carry null values, and before the
  * roll-over (09:28-09:32 ET) the answer holds the PREVIOUS session. The crons
  * used to turn a null into 0 (or store NULL), and `ON CONFLICT DO NOTHING`
  * then kept that first write for the day.
  * Spec: docs/superpowers/specs/live-data-integrity-2026-11-06.md (F1-F3).
+ *
+ * Also shared by fetch-greek-flow (/stock/SPX/greek-flow/{expiry}, F4): one
+ * row a minute of per-minute delta flows, which holds the PREVIOUS session's
+ * trades (1DTE flow) before the roll-over and minutes after the cash close
+ * (SPX options print until 16:15 ET).
+ *
+ * `closedBucketsOf` holds the rules below once. A source brings only its
+ * per-row value parse (`tideValues`, `greekFlowValues`): the wrappers
+ * `closedBuckets` and `closedGreekFlowBuckets` bind them.
  *
  * The rules this module applies, in the spec's names:
  *   - R-day:    only rows whose own timestamp is on today's ET date, at or
@@ -21,8 +30,8 @@
  *               bucket is left out, never stored as 0 or NULL, and an earlier
  *               minute is never substituted: the last minute may only be
  *               late, and a substitute would then be stored in its place. An
- *               absent `net_volume` is the one exception: it is stored as
- *               NULL, as the backfill does.
+ *               absent `net_volume` (`volume` for greek flow) is the one
+ *               exception: it is stored as NULL, as the backfill does.
  *   - R-closed: a bucket is returned only once its end passed FINAL_LAG_MS
  *               ago. A minute that has ended is not necessarily final, so the
  *               crons also upsert (flow-bucket-store.ts): a value UW revises
@@ -97,7 +106,7 @@ const fitsInteger = (n: number): boolean => n >= INT4_MIN && n <= INT4_MAX;
 const fitsDecimal = (n: number): boolean =>
   Math.round(Math.abs(n) * 100) <= DECIMAL_14_2_MAX_CENTS;
 
-/** One UW minute row. Each value may be null, absent or garbled. */
+/** One UW tide minute row. Each value may be null, absent or garbled. */
 export interface TideMinute {
   timestamp: string;
   net_call_premium: unknown;
@@ -105,14 +114,37 @@ export interface TideMinute {
   net_volume: unknown;
 }
 
-/** A closed bucket's final values, ready for flow_data. */
-export interface ClosedBucket {
-  /** ISO instant the row is stored under (see the label rule). */
+/**
+ * One UW greek-flow minute row (the fields fetch-greek-flow maps). Each value
+ * may be null, absent or garbled.
+ */
+export interface GreekFlowMinute {
   timestamp: string;
+  total_delta_flow: unknown;
+  dir_delta_flow: unknown;
+  otm_total_delta_flow: unknown;
+  otm_dir_delta_flow: unknown;
+  volume: unknown;
+}
+
+/** The values a source stores for a bucket, parsed from its last minute row. */
+export interface BucketValues {
   ncp: number;
   npp: number;
-  /** NULL when UW sent no `net_volume` for the bucket's last minute. */
+  /** NULL when UW sent no volume for the bucket's last minute. */
   netVolume: number | null;
+  /**
+   * The OTM wings (flow_data otm_ncp, otm_npp), for a source that has them
+   * (greek flow). Absent for the tide sources, whose rows leave the two
+   * columns NULL.
+   */
+  otm?: { ncp: number; npp: number };
+}
+
+/** A closed bucket's final values, ready for flow_data. */
+export interface ClosedBucket extends BucketValues {
+  /** ISO instant the row is stored under (see the label rule). */
+  timestamp: string;
 }
 
 export interface ClosedBucketsResult {
@@ -167,36 +199,102 @@ function sessionCloseMinutes(day: string): number {
   return closeHour === null ? MARKET_MINUTES.CLOSE : closeHour * 60;
 }
 
-/**
- * A minute row's values for flow_data, or null when it cannot be stored as it
- * is: a premium that is not a number or outside DECIMAL(14,2), or a
- * `net_volume` that is present but not a safe integer inside INTEGER. An
- * absent `net_volume` (null or undefined) is NULL, as the backfill stores it.
- */
-function minuteValues(
-  row: TideMinute,
-): { ncp: number; npp: number; netVolume: number | null } | null {
-  const ncp = finiteNumber(row.net_call_premium);
-  const npp = finiteNumber(row.net_put_premium);
-  if (ncp === null || npp === null) return null;
-  if (!fitsDecimal(ncp) || !fitsDecimal(npp)) return null;
-  if (row.net_volume == null) return { ncp, npp, netVolume: null };
-  const netVolume = finiteNumber(row.net_volume);
-  if (netVolume === null) return null;
-  if (!Number.isSafeInteger(netVolume) || !fitsInteger(netVolume)) return null;
-  return { ncp, npp, netVolume };
+/** A number that fits DECIMAL(14,2), else null (missing, garbled or out of range). */
+function decimalValue(raw: unknown): number | null {
+  const n = finiteNumber(raw);
+  return n !== null && fitsDecimal(n) ? n : null;
 }
 
+/**
+ * A volume column's value. An absent one (null or undefined) is `{ value:
+ * null }`, stored as NULL as the backfill does. One that is present must be a
+ * safe integer inside INTEGER, else null (unusable).
+ */
+function volumeValue(raw: unknown): { value: number | null } | null {
+  if (raw == null) return { value: null };
+  const n = finiteNumber(raw);
+  if (n === null || !Number.isSafeInteger(n) || !fitsInteger(n)) return null;
+  return { value: n };
+}
+
+/**
+ * A tide minute row's values for flow_data, or null when it cannot be stored
+ * as it is: a premium that is not a number or outside DECIMAL(14,2), or a
+ * `net_volume` that is present but not a safe integer inside INTEGER. An
+ * absent `net_volume` is NULL, as the backfill stores it.
+ */
+function tideValues(row: TideMinute): BucketValues | null {
+  const ncp = decimalValue(row.net_call_premium);
+  const npp = decimalValue(row.net_put_premium);
+  const volume = volumeValue(row.net_volume);
+  if (ncp === null || npp === null || volume === null) return null;
+  return { ncp, npp, netVolume: volume.value };
+}
+
+/**
+ * A greek-flow minute row's values for flow_data, or null when it cannot be
+ * stored as it is: ncp = total_delta_flow, npp = dir_delta_flow, otm_ncp =
+ * otm_total_delta_flow and otm_npp = otm_dir_delta_flow must all be numbers
+ * inside DECIMAL(14,2) (a missing wing is not stored as NULL or 0: the bucket
+ * waits for UW). net_volume = volume follows the tide rule: absent is NULL,
+ * present must be a safe integer inside INTEGER.
+ */
+function greekFlowValues(row: GreekFlowMinute): BucketValues | null {
+  const ncp = decimalValue(row.total_delta_flow);
+  const npp = decimalValue(row.dir_delta_flow);
+  const otmNcp = decimalValue(row.otm_total_delta_flow);
+  const otmNpp = decimalValue(row.otm_dir_delta_flow);
+  const volume = volumeValue(row.volume);
+  if (
+    ncp === null ||
+    npp === null ||
+    otmNcp === null ||
+    otmNpp === null ||
+    volume === null
+  ) {
+    return null;
+  }
+  return {
+    ncp,
+    npp,
+    netVolume: volume.value,
+    otm: { ncp: otmNcp, npp: otmNpp },
+  };
+}
+
+/** Closed buckets of a tide payload (fetch-etf-tide, fetch-zero-dte-flow). */
 export function closedBuckets(
   rows: readonly TideMinute[],
   now: Date,
+): ClosedBucketsResult {
+  return closedBucketsOf(rows, now, tideValues);
+}
+
+/** Closed buckets of a greek-flow payload (fetch-greek-flow). */
+export function closedGreekFlowBuckets(
+  rows: readonly GreekFlowMinute[],
+  now: Date,
+): ClosedBucketsResult {
+  return closedBucketsOf(rows, now, greekFlowValues);
+}
+
+/**
+ * The session, closure, pending and stuck rules for any per-minute source.
+ * `parseValues` turns a row into the values to store, or null when the row
+ * cannot be stored as it is (R-null); it is asked only for the last minute of
+ * a bucket that has closed.
+ */
+export function closedBucketsOf<Row extends { timestamp: string }>(
+  rows: readonly Row[],
+  now: Date,
+  parseValues: (row: Row) => BucketValues | null,
 ): ClosedBucketsResult {
   const today = getETDateStr(now);
   const nowMs = now.getTime();
   const closeMinutes = sessionCloseMinutes(today);
 
   // R-day: today's ET session rows only, oldest first (UW promises no order).
-  const session: Array<{ ms: number; row: TideMinute }> = [];
+  const session: Array<{ ms: number; row: Row }> = [];
   for (const row of rows) {
     const ms = Date.parse(row.timestamp);
     if (!Number.isFinite(ms)) continue;
@@ -210,7 +308,7 @@ export function closedBuckets(
 
   // The latest row of each bucket. ET offsets are whole hours, so epoch-aligned
   // 5-minute windows are the ET-aligned ones.
-  const lastOfBucket = new Map<number, { ms: number; row: TideMinute }>();
+  const lastOfBucket = new Map<number, { ms: number; row: Row }>();
   for (const entry of session) {
     lastOfBucket.set(Math.floor(entry.ms / BUCKET_MS) * BUCKET_MS, entry);
   }
@@ -229,10 +327,10 @@ export function closedBuckets(
     const endMs = startMs + BUCKET_MS;
     if (endMs + FINAL_LAG_MS > nowMs) continue; // R-closed: store it on a later run.
 
-    const values = minuteValues(last.row);
     // R-null: the bucket's value is its last minute's, so that minute's row
     // must be there (not an earlier one) and carry usable values.
     const hasLastMinute = last.ms >= endMs - MINUTE_MS;
+    const values = hasLastMinute ? parseValues(last.row) : null;
     const label = new Date(labelMs(startMs)).toISOString();
     if (hasLastMinute && values !== null) {
       buckets.push({ timestamp: label, ...values });

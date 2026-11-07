@@ -19,9 +19,12 @@ import {
   LAST_ATTEMPT_AFTER_CLOSE_MS,
   STUCK_AFTER_MS,
   closedBuckets,
+  closedBucketsOf,
+  closedGreekFlowBuckets,
   isDegenerate,
   isFeedStalled,
   sessionWindowIso,
+  type GreekFlowMinute,
   type TideMinute,
 } from '../_lib/closed-buckets.js';
 
@@ -70,12 +73,12 @@ function grid(from: Date, to: Date, filledUntil: Date): TideMinute[] {
 const SESSION_OPEN = at('13:30');
 const SESSION_CLOSE = at('20:00');
 
-/** The grid with one minute's fields replaced. */
-const withMinute = (
-  rows: TideMinute[],
+/** The grid (tide or greek flow) with one minute's fields replaced. */
+const withMinute = <Row extends { timestamp: string }>(
+  rows: Row[],
   hhmmZ: string,
-  overrides: Partial<TideMinute>,
-): TideMinute[] =>
+  overrides: Partial<Row>,
+): Row[] =>
   rows.map((r) =>
     r.timestamp === `${DAY}T${hhmmZ}:00.000Z` ? { ...r, ...overrides } : r,
   );
@@ -547,6 +550,380 @@ describe('closedBuckets', () => {
 
   it('exposes a 5-minute bucket', () => {
     expect(BUCKET_MS).toBe(5 * MINUTE);
+  });
+});
+
+/**
+ * The generalized core: the session, closure, pending and stuck rules live in
+ * closedBucketsOf, and a source brings only its per-row value parse. The tide
+ * wrapper (closedBuckets, tested above) and the greek-flow wrapper below are
+ * thin callers of it.
+ */
+describe('closedBucketsOf', () => {
+  interface PlainRow {
+    timestamp: string;
+    v: number | null;
+  }
+  const parse = (row: PlainRow) =>
+    row.v === null ? null : { ncp: row.v, npp: -row.v, netVolume: null };
+  const plainGrid = (filledUntil: Date): PlainRow[] =>
+    grid(SESSION_OPEN, SESSION_CLOSE, filledUntil).map((r, i) => ({
+      timestamp: r.timestamp,
+      v: r.net_call_premium === null ? null : i,
+    }));
+
+  it('applies the shared time rules to whatever the parse callback returns', () => {
+    const result = closedBucketsOf(plainGrid(at('14:02')), at('14:02'), parse);
+    expect(result.sessionRows).toBe(390);
+    expect(result.buckets.map((b) => [b.timestamp, b.ncp, b.npp])).toEqual([
+      ['2026-03-24T13:35:00.000Z', 4, -4],
+      ['2026-03-24T13:40:00.000Z', 9, -9],
+      ['2026-03-24T13:45:00.000Z', 14, -14],
+      ['2026-03-24T13:50:00.000Z', 19, -19],
+      ['2026-03-24T13:55:00.000Z', 24, -24],
+      ['2026-03-24T14:00:00.000Z', 29, -29],
+    ]);
+  });
+
+  it("asks the callback for a closed bucket's last minute only, never for an earlier minute or an open bucket", () => {
+    const seen: string[] = [];
+    closedBucketsOf(plainGrid(at('14:02')), at('14:02'), (row: PlainRow) => {
+      seen.push(row.timestamp);
+      return parse(row);
+    });
+    expect(seen).toEqual([
+      '2026-03-24T13:34:00.000Z',
+      '2026-03-24T13:39:00.000Z',
+      '2026-03-24T13:44:00.000Z',
+      '2026-03-24T13:49:00.000Z',
+      '2026-03-24T13:54:00.000Z',
+      '2026-03-24T13:59:00.000Z',
+    ]);
+  });
+
+  it('counts a bucket whose last minute the callback refuses as pending, then stuck, and never substitutes an earlier minute', () => {
+    const rows = plainGrid(at('14:30')).map((r) =>
+      r.timestamp === '2026-03-24T13:44:00.000Z' ? { ...r, v: null } : r,
+    );
+    const end = at('13:45').getTime();
+    const early = closedBucketsOf(
+      rows,
+      new Date(end + STUCK_AFTER_MS - 1),
+      parse,
+    );
+    expect(early.pending).toBe(1);
+    expect(early.stuck).toBe(0);
+    const late = closedBucketsOf(rows, new Date(end + STUCK_AFTER_MS), parse);
+    expect(late.pending).toBe(0);
+    expect(late.stuck).toBe(1);
+    expect(late.oldestStuck).toBe('2026-03-24T13:45:00.000Z');
+    expect(late.buckets.map((b) => b.timestamp)).not.toContain(
+      '2026-03-24T13:45:00.000Z',
+    );
+  });
+
+  it('carries the OTM wings through when the callback returns them', () => {
+    const rows: PlainRow[] = [{ timestamp: '2026-03-24T13:34:00.000Z', v: 1 }];
+    const withOtm = (row: PlainRow) => ({
+      ncp: row.v ?? 0,
+      npp: 0,
+      netVolume: 3,
+      otm: { ncp: 7, npp: -8 },
+    });
+    expect(closedBucketsOf(rows, at('13:37'), withOtm).buckets).toEqual([
+      {
+        timestamp: '2026-03-24T13:35:00.000Z',
+        ncp: 1,
+        npp: 0,
+        netVolume: 3,
+        otm: { ncp: 7, npp: -8 },
+      },
+    ]);
+  });
+});
+
+/**
+ * UW's greek-flow answer (/stock/SPX/greek-flow/{expiry}) for SPX 0DTE: one
+ * row a minute carrying per-minute delta flows, mapped to flow_data as
+ * ncp = total_delta_flow, npp = dir_delta_flow, net_volume = volume and
+ * otm_ncp = otm_total_delta_flow, otm_npp = otm_dir_delta_flow. The same
+ * session, closure, pending and stuck rules as the tide grids. SPX options
+ * trade until 16:15 ET, so a real payload also holds minutes after the cash
+ * close.
+ */
+describe('closedGreekFlowBuckets', () => {
+  function greekMinute(
+    start: Date,
+    overrides: Partial<GreekFlowMinute> = {},
+  ): GreekFlowMinute {
+    const sinceOpen = (start.getTime() - at('13:30').getTime()) / MINUTE;
+    return {
+      timestamp: start.toISOString(),
+      total_delta_flow: String(2000 + sinceOpen),
+      dir_delta_flow: String(-700 - sinceOpen),
+      otm_total_delta_flow: String(300 + sinceOpen),
+      otm_dir_delta_flow: String(-100 - sinceOpen),
+      volume: 50 + sinceOpen,
+      ...overrides,
+    };
+  }
+
+  /** One row a minute; minutes at or after `filledUntil` carry nulls (the prefilled form). */
+  function greekGrid(
+    from: Date,
+    to: Date,
+    filledUntil: Date,
+  ): GreekFlowMinute[] {
+    const rows: GreekFlowMinute[] = [];
+    for (let t = from.getTime(); t < to.getTime(); t += MINUTE) {
+      const start = new Date(t);
+      rows.push(
+        t < filledUntil.getTime()
+          ? greekMinute(start)
+          : {
+              timestamp: start.toISOString(),
+              total_delta_flow: null,
+              dir_delta_flow: null,
+              otm_total_delta_flow: null,
+              otm_dir_delta_flow: null,
+              volume: null,
+            },
+      );
+    }
+    return rows;
+  }
+
+  it("maps UW's fields to the bucket values and stores each closed bucket at its END from its last minute", () => {
+    const rows = greekGrid(SESSION_OPEN, SESSION_CLOSE, at('13:42')).reverse();
+    const result = closedGreekFlowBuckets(rows, at('13:42'));
+    // 13:30-13:35: last minute 13:34 is minute 4 of the session; 13:35-13:40: minute 9.
+    expect(result.buckets).toEqual([
+      {
+        timestamp: '2026-03-24T13:35:00.000Z',
+        ncp: 2004,
+        npp: -704,
+        netVolume: 54,
+        otm: { ncp: 304, npp: -104 },
+      },
+      {
+        timestamp: '2026-03-24T13:40:00.000Z',
+        ncp: 2009,
+        npp: -709,
+        netVolume: 59,
+        otm: { ncp: 309, npp: -109 },
+      },
+    ]);
+    expect(result.pending + result.stuck).toBe(0);
+  });
+
+  it("stores nothing from a payload holding only the previous session (the 09:28 ET answer is D-1's 1DTE flow)", () => {
+    const yesterday = greekGrid(
+      at('13:30', '2026-03-23'),
+      at('20:15', '2026-03-23'),
+      at('20:15', '2026-03-23'),
+    );
+    const result = closedGreekFlowBuckets(yesterday, at('13:28'));
+    expect(result.buckets).toEqual([]);
+    expect(result.sessionRows).toBe(0);
+    expect(result.pending + result.stuck).toBe(0);
+  });
+
+  it('stores nothing at 09:32 ET from a prefilled grid, because no bucket has closed', () => {
+    const result = closedGreekFlowBuckets(
+      greekGrid(SESSION_OPEN, SESSION_CLOSE, at('13:32')),
+      at('13:32'),
+    );
+    expect(result.sessionRows).toBe(390);
+    expect(result.buckets).toEqual([]);
+    expect(result.pending + result.stuck).toBe(0);
+  });
+
+  it('does not store a partial mid-session bucket: the 10:00-10:05 bucket is open at 10:04', () => {
+    const result = closedGreekFlowBuckets(
+      greekGrid(SESSION_OPEN, SESSION_CLOSE, at('14:04')),
+      at('14:04'),
+    );
+    expect(result.buckets.map((b) => b.timestamp)).toEqual([
+      '2026-03-24T13:35:00.000Z',
+      '2026-03-24T13:40:00.000Z',
+      '2026-03-24T13:45:00.000Z',
+      '2026-03-24T13:50:00.000Z',
+      '2026-03-24T13:55:00.000Z',
+      '2026-03-24T14:00:00.000Z',
+    ]);
+  });
+
+  it('waits FINAL_LAG_MS after a bucket ends before storing it (R-closed)', () => {
+    const rows = greekGrid(SESSION_OPEN, SESSION_CLOSE, at('13:50'));
+    const end = at('13:35').getTime();
+    expect(closedGreekFlowBuckets(rows, new Date(end)).buckets).toHaveLength(0);
+    expect(
+      closedGreekFlowBuckets(rows, new Date(end + FINAL_LAG_MS - 1)).buckets,
+    ).toHaveLength(0);
+    expect(
+      closedGreekFlowBuckets(rows, new Date(end + FINAL_LAG_MS)).buckets,
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    ['total_delta_flow null', { total_delta_flow: null }],
+    ['total_delta_flow garbled', { total_delta_flow: 'n/a' }],
+    ['dir_delta_flow missing', { dir_delta_flow: undefined }],
+    ['dir_delta_flow blank', { dir_delta_flow: '  ' }],
+    ['otm_total_delta_flow null', { otm_total_delta_flow: null }],
+    ['otm_total_delta_flow missing', { otm_total_delta_flow: undefined }],
+    ['otm_dir_delta_flow garbled', { otm_dir_delta_flow: 'Infinity' }],
+    ['otm_dir_delta_flow NaN', { otm_dir_delta_flow: Number.NaN }],
+    ['fractional volume', { volume: 12.5 }],
+    ['volume above INTEGER', { volume: 2_147_483_648 }],
+    ['volume garbled', { volume: 'many' }],
+    ['total_delta_flow of 1e12', { total_delta_flow: '1000000000000' }],
+    ['otm_total_delta_flow of 1e12', { otm_total_delta_flow: 1e12 }],
+    ['otm_dir_delta_flow of -1e12', { otm_dir_delta_flow: -1e12 }],
+  ])(
+    'never stores a closed bucket whose last minute has %s as 0 or NULL: pending, then stuck (R-null)',
+    (_label, overrides) => {
+      const rows = withMinute(
+        greekGrid(SESSION_OPEN, SESSION_CLOSE, at('14:30')),
+        '13:49',
+        overrides,
+      );
+      const end = at('13:50').getTime();
+
+      const early = closedGreekFlowBuckets(rows, new Date(end + 5 * MINUTE));
+      expect(early.buckets.map((b) => b.timestamp)).not.toContain(
+        '2026-03-24T13:50:00.000Z',
+      );
+      expect(early.pending).toBe(1);
+      expect(early.stuck).toBe(0);
+
+      const late = closedGreekFlowBuckets(rows, new Date(end + STUCK_AFTER_MS));
+      expect(late.buckets.map((b) => b.timestamp)).not.toContain(
+        '2026-03-24T13:50:00.000Z',
+      );
+      expect(late.pending).toBe(0);
+      expect(late.stuck).toBe(1);
+      expect(late.oldestStuck).toBe('2026-03-24T13:50:00.000Z');
+    },
+  );
+
+  it('leaves a bucket out when its last minute row is absent, and does not fall back to an earlier minute', () => {
+    const rows = greekGrid(SESSION_OPEN, SESSION_CLOSE, at('14:02')).filter(
+      (r) => r.timestamp !== '2026-03-24T13:44:00.000Z',
+    );
+    const result = closedGreekFlowBuckets(rows, at('14:02'));
+    expect(result.buckets.map((b) => b.timestamp)).not.toContain(
+      '2026-03-24T13:45:00.000Z',
+    );
+    expect(result.stuck).toBe(1);
+  });
+
+  it.each([
+    ['volume null', { volume: null }],
+    ['volume undefined', { volume: undefined }],
+  ])(
+    'stores NULL net_volume for a last minute with %s, as the tide crons do',
+    (_l, overrides) => {
+      const rows = withMinute(
+        greekGrid(SESSION_OPEN, SESSION_CLOSE, at('13:42')),
+        '13:34',
+        overrides,
+      );
+      expect(closedGreekFlowBuckets(rows, at('13:42')).buckets[0]).toEqual({
+        timestamp: '2026-03-24T13:35:00.000Z',
+        ncp: 2004,
+        npp: -704,
+        netVolume: null,
+        otm: { ncp: 304, npp: -104 },
+      });
+    },
+  );
+
+  it('stores a real zero in every field: only a missing value is refused', () => {
+    const rows = withMinute(
+      greekGrid(SESSION_OPEN, SESSION_CLOSE, at('13:42')),
+      '13:34',
+      {
+        total_delta_flow: '0',
+        dir_delta_flow: 0,
+        otm_total_delta_flow: '0.00',
+        otm_dir_delta_flow: 0,
+        volume: 0,
+      },
+    );
+    expect(closedGreekFlowBuckets(rows, at('13:42')).buckets[0]).toMatchObject({
+      ncp: 0,
+      npp: 0,
+      netVolume: 0,
+      otm: { ncp: 0, npp: 0 },
+    });
+  });
+
+  it('accepts the DECIMAL(14,2) limits on the OTM wings', () => {
+    const rows = withMinute(
+      greekGrid(SESSION_OPEN, SESSION_CLOSE, at('13:42')),
+      '13:34',
+      {
+        otm_total_delta_flow: '999999999999.99',
+        otm_dir_delta_flow: -999_999_999_999.99,
+      },
+    );
+    expect(closedGreekFlowBuckets(rows, at('13:42')).buckets[0]?.otm).toEqual({
+      ncp: 999_999_999_999.99,
+      npp: -999_999_999_999.99,
+    });
+  });
+
+  it('leaves out the minutes after the close (SPX options print until 16:15 ET) so they cannot open a bucket', () => {
+    const rows = greekGrid(SESSION_OPEN, at('20:15'), at('20:15'));
+    const result = closedGreekFlowBuckets(rows, at('20:12'));
+    expect(result.sessionRows).toBe(390);
+    expect(result.buckets).toHaveLength(78);
+    expect(result.buckets.at(-1)?.timestamp).toBe('2026-03-24T20:00:00.000Z');
+  });
+
+  it('ends the session at 13:00 ET on an early-close day', () => {
+    const half = '2026-11-27'; // EST
+    const est = (hhmm: string) => new Date(`${half}T${hhmm}:00Z`);
+    const rows = [
+      greekMinute(est('17:59')),
+      greekMinute(est('18:00')),
+      greekMinute(est('18:04')),
+    ];
+    const result = closedGreekFlowBuckets(rows, est('18:12'));
+    expect(result.sessionRows).toBe(1);
+    expect(result.buckets.map((b) => b.timestamp)).toEqual([
+      '2026-11-27T18:00:00.000Z',
+    ]);
+  });
+
+  it.each([
+    ['16:04:59 ET, a second before close + 5 min', '20:04:59', 'pending'],
+    ['16:05:00 ET, close + 5 min', '20:05:00', 'stuck'],
+    ['16:08 ET, the greek-flow last attempt', '20:08:00', 'stuck'],
+  ])(
+    'the final bucket (15:55-16:00) with a null OTM wing at %s is %s',
+    (_label, timeZ, expected) => {
+      const rows = withMinute(
+        greekGrid(SESSION_OPEN, at('20:15'), at('20:15')),
+        '19:59',
+        { otm_dir_delta_flow: null },
+      );
+      const result = closedGreekFlowBuckets(rows, new Date(`${DAY}T${timeZ}Z`));
+      expect(result.buckets).toHaveLength(77);
+      expect(result.stuck).toBe(expected === 'stuck' ? 1 : 0);
+      expect(result.pending).toBe(expected === 'pending' ? 1 : 0);
+    },
+  );
+
+  it('ignores a row whose timestamp does not parse', () => {
+    const rows = [
+      { ...greekMinute(at('13:34')), timestamp: 'garbage' },
+      greekMinute(at('13:34')),
+    ];
+    const result = closedGreekFlowBuckets(rows, at('13:37'));
+    expect(result.sessionRows).toBe(1);
+    expect(result.buckets).toHaveLength(1);
   });
 });
 

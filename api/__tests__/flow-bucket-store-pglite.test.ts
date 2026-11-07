@@ -2,7 +2,8 @@
 
 /**
  * REAL-SQL test for the closed-bucket upsert and the session row count shared
- * by fetch-etf-tide and fetch-zero-dte-flow. The cron tests mock the database
+ * by fetch-etf-tide, fetch-zero-dte-flow and fetch-greek-flow (which also
+ * writes the OTM wings). The cron tests mock the database
  * and can only match the SQL text; this file runs the actual statements
  * against pglite (real Postgres in WASM) on the table built by the real
  * migration #4, with the session in UTC as on Neon.
@@ -38,7 +39,9 @@ import {
 } from '../_lib/flow-bucket-store.js';
 import {
   closedBuckets,
+  closedGreekFlowBuckets,
   type ClosedBucket,
+  type GreekFlowMinute,
   type TideMinute,
 } from '../_lib/closed-buckets.js';
 
@@ -50,6 +53,8 @@ let pg: PGlite;
 beforeAll(async () => {
   pg = await PGlite.create();
   await applyMigration(pg, 4);
+  // #48 adds otm_ncp and otm_npp (DECIMAL(14,2)), written by greek flow only.
+  await applyMigration(pg, 48);
   await pg.query(`SET TimeZone = 'UTC'`);
   const base = neonOverPglite(pg);
   type Txn = typeof base;
@@ -477,6 +482,410 @@ describe('closedBuckets and the flow_data columns agree on the ranges', () => {
         upsertClosedBuckets([direct], SOURCE, DATE),
       ).rejects.toThrow();
       expect(await stored()).toEqual([]);
+    },
+  );
+});
+
+/**
+ * Greek flow (source zero_dte_greek_flow) also carries the OTM wings in
+ * otm_ncp and otm_npp (migration #48, DECIMAL(14,2)). The upsert writes them
+ * for a bucket that has them, and compares them in its IS DISTINCT FROM
+ * clause, so a revised wing is healed like a revised ncp.
+ */
+describe('upsertClosedBuckets with the OTM wings (greek flow)', () => {
+  const GREEK = 'zero_dte_greek_flow';
+
+  const greekBucket = (
+    hhmmZ: string,
+    ncp: number,
+    npp: number,
+    netVolume: number | null,
+    otmNcp: number,
+    otmNpp: number,
+  ): ClosedBucket => ({
+    timestamp: `${DATE}T${hhmmZ}:00.000Z`,
+    ncp,
+    npp,
+    netVolume,
+    otm: { ncp: otmNcp, npp: otmNpp },
+  });
+
+  interface StoredWingRow {
+    timestamp: string;
+    ncp: string | null;
+    npp: string | null;
+    net_volume: number | null;
+    otm_ncp: string | null;
+    otm_npp: string | null;
+  }
+
+  /** Every column as the text Postgres stores, so no float comparison blurs a value. */
+  async function storedWings(source = GREEK): Promise<StoredWingRow[]> {
+    const { rows } = await pg.query<StoredWingRow>(
+      `SELECT to_char(timestamp AT TIME ZONE 'UTC', 'HH24:MI') AS timestamp,
+              ncp::text AS ncp, npp::text AS npp, net_volume,
+              otm_ncp::text AS otm_ncp, otm_npp::text AS otm_npp
+         FROM flow_data WHERE source = $1 ORDER BY timestamp`,
+      [source],
+    );
+    return rows;
+  }
+
+  it('inserts a bucket with its OTM wings and counts it as inserted', async () => {
+    const counts = await upsertClosedBuckets(
+      [greekBucket('13:35', 5000000, -3000000, 120000, 2500000.5, -1800000.25)],
+      GREEK,
+      DATE,
+    );
+
+    expect(counts).toEqual({ inserted: 1, updated: 0, unchanged: 0 });
+    expect(await storedWings()).toEqual([
+      {
+        timestamp: '13:35',
+        ncp: '5000000.00',
+        npp: '-3000000.00',
+        net_volume: 120000,
+        otm_ncp: '2500000.50',
+        otm_npp: '-1800000.25',
+      },
+    ]);
+  });
+
+  it('leaves a bucket that already holds the same values and wings untouched', async () => {
+    const first = [greekBucket('13:35', 100, -20, 7, 60, -10)];
+    await upsertClosedBuckets(first, GREEK, DATE);
+    const before = await storedWings();
+
+    expect(await upsertClosedBuckets(first, GREEK, DATE)).toEqual({
+      inserted: 0,
+      updated: 0,
+      unchanged: 1,
+    });
+    expect(await storedWings()).toEqual(before);
+  });
+
+  it.each([
+    ['otm_ncp', greekBucket('13:35', 100, -20, 7, 61, -10), '61.00', '-10.00'],
+    ['otm_npp', greekBucket('13:35', 100, -20, 7, 60, -11), '60.00', '-11.00'],
+  ])(
+    'treats a revised %s alone as a change and rewrites it',
+    async (_column, revised, otmNcp, otmNpp) => {
+      await upsertClosedBuckets(
+        [greekBucket('13:35', 100, -20, 7, 60, -10)],
+        GREEK,
+        DATE,
+      );
+
+      const counts = await upsertClosedBuckets([revised], GREEK, DATE);
+
+      expect(counts).toEqual({ inserted: 0, updated: 1, unchanged: 0 });
+      expect(await storedWings()).toEqual([
+        {
+          timestamp: '13:35',
+          ncp: '100.00',
+          npp: '-20.00',
+          net_volume: 7,
+          otm_ncp: otmNcp,
+          otm_npp: otmNpp,
+        },
+      ]);
+    },
+  );
+
+  it('still treats a revised ncp, npp or volume as a change and keeps the wings', async () => {
+    await upsertClosedBuckets(
+      [greekBucket('13:35', 100, -20, 7, 60, -10)],
+      GREEK,
+      DATE,
+    );
+
+    for (const revised of [
+      greekBucket('13:35', 101, -20, 7, 60, -10),
+      greekBucket('13:35', 101, -21, 7, 60, -10),
+      greekBucket('13:35', 101, -21, 8, 60, -10),
+    ]) {
+      expect(await upsertClosedBuckets([revised], GREEK, DATE)).toEqual({
+        inserted: 0,
+        updated: 1,
+        unchanged: 0,
+      });
+    }
+    expect(await storedWings()).toEqual([
+      {
+        timestamp: '13:35',
+        ncp: '101.00',
+        npp: '-21.00',
+        net_volume: 8,
+        otm_ncp: '60.00',
+        otm_npp: '-10.00',
+      },
+    ]);
+  });
+
+  it('fills the wings of a row stored without them (history, or the old cron), as a change', async () => {
+    await pg.query(
+      `INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
+       VALUES ($1, '2026-03-24T13:35:00Z', $2, 100, -20, 7)`,
+      [DATE, GREEK],
+    );
+
+    const counts = await upsertClosedBuckets(
+      [greekBucket('13:35', 100, -20, 7, 60, -10)],
+      GREEK,
+      DATE,
+    );
+
+    expect(counts).toEqual({ inserted: 0, updated: 1, unchanged: 0 });
+    expect((await storedWings())[0]).toMatchObject({
+      otm_ncp: '60.00',
+      otm_npp: '-10.00',
+    });
+  });
+
+  it('compares the wings at the column precision: a sub-cent difference is not a change', async () => {
+    await upsertClosedBuckets(
+      [greekBucket('13:35', 100, -20, 7, 60.5, -10)],
+      GREEK,
+      DATE,
+    );
+
+    expect(
+      await upsertClosedBuckets(
+        [greekBucket('13:35', 100, -20, 7, 60.5004, -10.0004)],
+        GREEK,
+        DATE,
+      ),
+    ).toEqual({ inserted: 0, updated: 0, unchanged: 1 });
+  });
+
+  it('keeps one counting path: a mixed batch of new, revised and unchanged greek buckets', async () => {
+    await upsertClosedBuckets(
+      [
+        greekBucket('13:35', 100, -20, 7, 60, -10),
+        greekBucket('13:40', 200, -40, 9, 120, -20),
+      ],
+      GREEK,
+      DATE,
+    );
+
+    const counts = await upsertClosedBuckets(
+      [
+        greekBucket('13:35', 100, -20, 7, 60, -10), // unchanged
+        greekBucket('13:40', 200, -40, 9, 125, -20), // wing revised
+        greekBucket('13:45', 300, -60, null, 180, -30), // new, NULL volume
+      ],
+      GREEK,
+      DATE,
+    );
+
+    expect(counts).toEqual({ inserted: 1, updated: 1, unchanged: 1 });
+    expect((await storedWings()).map((r) => r.otm_ncp)).toEqual([
+      '60.00',
+      '125.00',
+      '180.00',
+    ]);
+  });
+
+  it('never touches the wings of a bucket that has none (a tide bucket): they are not written and not compared', async () => {
+    // A row that carries wings, hit by a bucket without any.
+    await pg.query(
+      `INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume, otm_ncp, otm_npp)
+       VALUES ($1, '2026-03-24T13:35:00Z', $2, 100, -20, 7, 60, -10)`,
+      [DATE, SOURCE],
+    );
+
+    // Same ncp, npp and volume: unchanged, whatever the wings hold.
+    expect(
+      await upsertClosedBuckets([bucket('13:35', 100, -20, 7)], SOURCE, DATE),
+    ).toEqual({ inserted: 0, updated: 0, unchanged: 1 });
+    // A changed ncp: updated, and the wings are left as they were.
+    expect(
+      await upsertClosedBuckets([bucket('13:35', 130, -20, 7)], SOURCE, DATE),
+    ).toEqual({ inserted: 0, updated: 1, unchanged: 0 });
+    expect((await storedWings(SOURCE))[0]).toMatchObject({
+      ncp: '130.00',
+      otm_ncp: '60.00',
+      otm_npp: '-10.00',
+    });
+    // A new tide bucket leaves them NULL.
+    await upsertClosedBuckets([bucket('13:40', 1, 1, 1)], SOURCE, DATE);
+    expect((await storedWings(SOURCE))[1]).toMatchObject({
+      otm_ncp: null,
+      otm_npp: null,
+    });
+  });
+
+  it('throws on a rejected write and stores nothing from the batch (R4)', async () => {
+    // An OTM wing of 1e13 overflows DECIMAL(14,2): the statement is rejected
+    // and the earlier good row in the same transaction is rolled back.
+    await expect(
+      upsertClosedBuckets(
+        [
+          greekBucket('13:35', 100, -20, 7, 60, -10),
+          greekBucket('13:40', 1, 1, 1, 1e13, 0),
+        ],
+        GREEK,
+        DATE,
+      ),
+    ).rejects.toThrow(/numeric field overflow/i);
+    expect(await storedWings()).toEqual([]);
+  });
+});
+
+/**
+ * closedGreekFlowBuckets filters the OTM wings before the write; otm_ncp and
+ * otm_npp are DECIMAL(14,2). The filter and the columns must draw the line in
+ * the same place: a bucket the filter lets through that Postgres rejects fails
+ * the batch, and one rejected bucket rolls back the whole day's upsert.
+ */
+describe('closedGreekFlowBuckets and the OTM columns agree on the ranges', () => {
+  const GREEK = 'zero_dte_greek_flow';
+  // 25 minutes after the 09:30-09:35 bucket ended: an unusable one is stuck.
+  const NOW = new Date('2026-03-24T14:00:00.000Z');
+  const minute = (overrides: Partial<GreekFlowMinute>): GreekFlowMinute => ({
+    timestamp: '2026-03-24T13:34:00.000Z',
+    total_delta_flow: '1',
+    dir_delta_flow: '1',
+    otm_total_delta_flow: '1',
+    otm_dir_delta_flow: '1',
+    volume: 1,
+    ...overrides,
+  });
+
+  interface WingText {
+    ncp: string;
+    npp: string;
+    otm_ncp: string;
+    otm_npp: string;
+    v: number;
+  }
+
+  // [label, overrides, then the ncp, npp, otm_ncp and otm_npp Postgres stores, as text].
+  it.each<[string, Partial<GreekFlowMinute>, string, string, string, string]>([
+    [
+      'the largest otm_ncp',
+      { otm_total_delta_flow: '999999999999.99' },
+      '1.00',
+      '1.00',
+      '999999999999.99',
+      '1.00',
+    ],
+    [
+      'the smallest otm_ncp',
+      { otm_total_delta_flow: '-999999999999.99' },
+      '1.00',
+      '1.00',
+      '-999999999999.99',
+      '1.00',
+    ],
+    [
+      'the largest otm_npp',
+      { otm_dir_delta_flow: 999_999_999_999.99 },
+      '1.00',
+      '1.00',
+      '1.00',
+      '999999999999.99',
+    ],
+    [
+      'the smallest otm_npp',
+      { otm_dir_delta_flow: -999_999_999_999.99 },
+      '1.00',
+      '1.00',
+      '1.00',
+      '-999999999999.99',
+    ],
+    // Postgres rounds 999999999999.994 to .99, which fits.
+    [
+      'an otm_ncp that rounds down to the largest',
+      { otm_total_delta_flow: 999_999_999_999.994 },
+      '1.00',
+      '1.00',
+      '999999999999.99',
+      '1.00',
+    ],
+    [
+      'the largest total_delta_flow and the smallest dir_delta_flow',
+      {
+        total_delta_flow: '999999999999.99',
+        dir_delta_flow: '-999999999999.99',
+      },
+      '999999999999.99',
+      '-999999999999.99',
+      '1.00',
+      '1.00',
+    ],
+  ])(
+    'accepts %s, and Postgres stores it',
+    async (_label, overrides, ncp, npp, otmNcp, otmNpp) => {
+      const result = closedGreekFlowBuckets([minute(overrides)], NOW);
+      expect(result.buckets).toHaveLength(1);
+
+      await expect(
+        upsertClosedBuckets(result.buckets, GREEK, DATE),
+      ).resolves.toEqual({ inserted: 1, updated: 0, unchanged: 0 });
+
+      const { rows } = await pg.query<WingText>(
+        `SELECT ncp::text AS ncp, npp::text AS npp, otm_ncp::text AS otm_ncp,
+                otm_npp::text AS otm_npp, net_volume AS v FROM flow_data`,
+      );
+      // Compared as text: a float comparison would pass a boundary value that
+      // Postgres had rounded or clipped.
+      expect(rows).toEqual([
+        { ncp, npp, otm_ncp: otmNcp, otm_npp: otmNpp, v: 1 },
+      ]);
+    },
+  );
+
+  it.each<[string, Partial<GreekFlowMinute>, { ncp: number; npp: number }]>([
+    [
+      'otm_ncp of 1e12',
+      { otm_total_delta_flow: '1000000000000' },
+      { ncp: 1e12, npp: 1 },
+    ],
+    [
+      'otm_ncp of -1e12',
+      { otm_total_delta_flow: '-1000000000000' },
+      { ncp: -1e12, npp: 1 },
+    ],
+    ['otm_npp of 1e12', { otm_dir_delta_flow: 1e12 }, { ncp: 1, npp: 1e12 }],
+    ['otm_npp of -1e12', { otm_dir_delta_flow: -1e12 }, { ncp: 1, npp: -1e12 }],
+    // Postgres rounds 999999999999.995 up to 1e12, which does not fit.
+    [
+      'an otm_ncp that rounds up past the largest',
+      { otm_total_delta_flow: '999999999999.995' },
+      { ncp: 999_999_999_999.995, npp: 1 },
+    ],
+    [
+      'an otm_npp that rounds past the smallest',
+      { otm_dir_delta_flow: '-999999999999.995' },
+      { ncp: 1, npp: -999_999_999_999.995 },
+    ],
+  ])(
+    'rejects %s before the write, and Postgres would reject it too',
+    async (_label, overrides, otm) => {
+      // The filter leaves the bucket out and counts it as stuck ...
+      const filtered = closedGreekFlowBuckets([minute(overrides)], NOW);
+      expect(filtered.buckets).toEqual([]);
+      expect(filtered.stuck).toBe(1);
+
+      // ... and the same values written directly are refused by Postgres.
+      await expect(
+        upsertClosedBuckets(
+          [
+            {
+              timestamp: '2026-03-24T13:35:00.000Z',
+              ncp: 1,
+              npp: 1,
+              netVolume: 1,
+              otm,
+            },
+          ],
+          GREEK,
+          DATE,
+        ),
+      ).rejects.toThrow();
+      const { rows } = await pg.query('SELECT 1 FROM flow_data');
+      expect(rows).toEqual([]);
     },
   );
 });
