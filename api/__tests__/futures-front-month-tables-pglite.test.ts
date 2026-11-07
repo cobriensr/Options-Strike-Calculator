@@ -39,7 +39,7 @@ function insertVolume(
     tradeDate: string;
     contract: string;
     volume: number | null;
-    source: string;
+    source: string | null;
   }> = {},
 ) {
   const v = {
@@ -47,7 +47,7 @@ function insertVolume(
     tradeDate: '2026-11-05',
     contract: 'ESZ6',
     volume: 1000 as number | null,
-    source: 'live',
+    source: 'live' as string | null,
     ...over,
   };
   return db.query(
@@ -63,14 +63,14 @@ function insertFront(
     product: string;
     tradeDate: string;
     contract: string;
-    source: string;
+    source: string | null;
   }> = {},
 ) {
   const v = {
     product: 'ES',
     tradeDate: '2026-11-05',
     contract: 'ESZ6',
-    source: 'live',
+    source: 'live' as string | null,
     ...over,
   };
   return db.query(
@@ -180,6 +180,12 @@ describe('futures_contract_volume', () => {
     );
   });
 
+  it('rejects a NULL source: a CHECK passes on NULL, so NOT NULL is the only guard', async () => {
+    await expect(insertVolume({ source: null })).rejects.toThrow(
+      /null value in column "source"/,
+    );
+  });
+
   it('stores a volume past 32 bits', async () => {
     await insertVolume({ volume: 5_000_000_000 });
 
@@ -236,4 +242,10 @@ describe('futures_front_month', () => {
       );
     },
   );
+
+  it('rejects a NULL source: a CHECK passes on NULL, so NOT NULL is the only guard', async () => {
+    await expect(insertFront({ source: null })).rejects.toThrow(
+      /null value in column "source"/,
+    );
+  });
 });
