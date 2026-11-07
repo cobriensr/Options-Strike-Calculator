@@ -9,6 +9,7 @@ installed with monkeypatch; ml/conftest.py blocks any real connect.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pandas as pd
 import psycopg2
@@ -338,11 +339,38 @@ def test_a_silence_across_minutes_marks_both_edge_minutes():
     assert list(got.values()) == [True, True, False]
 
 
-def test_the_last_minute_before_the_daily_halt_is_not_partial():
-    # CDT: the 16:00-17:00 CT halt is 21:00-22:00Z.
-    gaps = [(utc("2026-05-20 20:59:59.9"), utc("2026-05-20 22:00:00"))]
-    got = partial_of(["2026-05-20 20:59", "2026-05-20 22:00"], gaps)
+@pytest.mark.parametrize(
+    "day", ["2026-05-18", "2026-05-19", "2026-05-20", "2026-05-21"], ids=lambda d: d
+)
+def test_the_last_minute_before_the_daily_halt_is_not_partial(day):
+    # Monday to Thursday. CDT: the 16:00-17:00 CT halt is 21:00-22:00Z.
+    gaps = [(utc(f"{day} 20:59:59.9"), utc(f"{day} 22:00:00"))]
+    got = partial_of([f"{day} 20:59", f"{day} 22:00"], gaps)
     assert list(got.values()) == [False, False]
+
+
+TWENTY = pd.Timedelta(seconds=20)
+SHADE_UNDER = pd.Timedelta(seconds=19.999)
+
+
+def test_a_tick_gap_of_exactly_twenty_seconds_counts():
+    a = utc("2026-05-26 13:00:00")
+    assert fcr.tick_gaps(pd.Series([a, a + TWENTY])) == [(a, a + TWENTY)]
+    assert fcr.tick_gaps(pd.Series([a, a + SHADE_UNDER])) == []
+
+
+def test_a_span_edge_silence_of_exactly_twenty_seconds_counts():
+    span = (utc("2026-06-15 13:50"), utc("2026-06-15 14:12"))
+    first, last = span[0] + TWENTY, span[1] - SHADE_UNDER
+    assert fcr.stream_gaps([(first, last, [])], span) == [(span[0], first)]
+
+
+def test_an_open_part_of_exactly_twenty_seconds_makes_a_minute_partial():
+    # The silence runs into the 21:00Z halt: 20 s of it is open market.
+    exact = [(utc("2026-05-20 20:59:40"), utc("2026-05-20 22:00:00"))]
+    assert partial_of(["2026-05-20 20:59"], exact) == {"2026-05-20 20:59": True}
+    short = [(utc("2026-05-20 20:59:40.001"), utc("2026-05-20 22:00:00"))]
+    assert partial_of(["2026-05-20 20:59"], short) == {"2026-05-20 20:59": False}
 
 
 def test_an_outage_into_the_halt_counts_only_its_open_part():
@@ -517,6 +545,105 @@ def test_a_wrong_seed_cannot_outlive_its_minute():
     assert got.iloc[1].close == 7002.0
     assert got.iloc[1].dropped == 1
     assert (got.iloc[2].open, got.iloc[2].high) == (7000.0, 7001.0)
+
+
+# Which minutes the walk visits (F-B): each trigger has a case only it catches.
+
+
+def flat_minute(start: pd.Timestamp) -> pd.DataFrame:
+    return ticks([(1, 7000.0, 1), (30, 7000.0, 1), (59, 7000.0, 1)], start)
+
+
+def jump_minute(start: pd.Timestamp) -> pd.DataFrame:
+    """Kept range 11, under CARRY_HALF. The first print (7040, 7 lots) is over
+    CARRY_HALF above a 7000 close before it, and the next one (7029) is not:
+    the walk drops 7040. The level, 7029.25, is within CARRY_HALF of 7000, so the
+    minute is not front_absent."""
+    return ticks(
+        [(1, 7040.0, 7), (2, 7029.0, 1), (30, 7029.5, 2), (50, 7029.0, 1)], start
+    )
+
+
+def test_a_wide_merged_minute_after_a_gap_is_walked_on_its_range_alone():
+    # merged_minute() with its body moved four minutes on: no contiguous
+    # predecessor, and not the frame's first minute, so only the range calls for
+    # the walk.
+    t, front, back = merged_minute()
+    t = t.assign(ts=t.ts.where(t.ts < minute(1), t.ts + pd.Timedelta(minutes=4)))
+    got = fcr.rebuild_from_ticks(t, ES).iloc[1]
+    assert got.ts == minute(5)
+    assert got.high == max(p for _, p in front) == 7140.0
+    assert got.dropped == len(back)
+
+
+def test_a_narrow_minute_over_the_previous_low_is_walked():
+    # Range 11 is not wide; only 7040 against the previous minute's low of 7000
+    # (7000 + CARRY_HALF = 7030.375) calls for the walk.
+    t = pd.concat([flat_minute(minute(0)), jump_minute(minute(1))], ignore_index=True)
+    t["seq"] = range(len(t))
+    got = fcr.rebuild_from_ticks(t, ES).iloc[1]
+    assert (got.dropped, got.open, got.high, got.volume) == (1, 7029.0, 7029.5, 4)
+    assert not (got.wick or got.step)
+
+
+def test_the_first_minute_of_a_page_is_walked_without_seeing_the_page_before(
+    monkeypatch,
+):
+    # Pages are UTC days read apart, so the walk can't compare this 00:00Z
+    # minute with the 23:59 one on the other page.
+    pages = {
+        utc("2026-05-05"): flat_minute(utc("2026-05-05 23:59")),
+        utc("2026-05-06"): jump_minute(utc("2026-05-06 00:00")),
+    }
+    empty = ticks([])
+    monkeypatch.setattr(
+        fcr, "fetch_tick_page", lambda _env, _cfg, lo, _hi: pages.get(lo, empty)
+    )
+    minutes, _ = fcr.run_tick_span(None, ES, 1, frozenset())
+    got = minutes[minutes.ts == utc("2026-05-06 00:00")].iloc[0]
+    assert (got.dropped, got.open, got.high, got.volume) == (1, 7029.0, 7029.5, 4)
+
+
+def test_a_stale_close_from_before_an_outage_does_not_seed_the_walk():
+    # Minute 0 closes at 7000, then four minutes without ticks. Minute 5 is wide
+    # (31 points) and opens on a genuine 7032 print of 100 lots, 2 s before a
+    # 7010. Seeded from the stale 7000 close, the walk would call 7032 (over
+    # 7000 + CARRY_HALF) a back-month print that 7010 confirms and drop it.
+    after = ticks(
+        [(1, 7032.0, 100), (3, 7010.0, 1), (20, 7015.0, 1), (30, 7020.0, 1)]
+        + [(50, 7041.0, 1)],
+        minute(5),
+    )
+    t = pd.concat([flat_minute(minute(0)), after], ignore_index=True)
+    t["seq"] = range(len(t))
+    minutes = fcr.rebuild_from_ticks(t, ES)
+    assert not minutes.front_absent.any()
+    got = minutes.iloc[1]
+    assert (got.dropped, got.open, got.high, got.volume) == (0, 7032.0, 7041.0, 104)
+
+
+def walk_keeps(points: list[tuple[float, float]], seed: float = 7000.0):
+    """walk_front over prints at (seconds into the minute, price); no look-ahead."""
+    prints = path(minute(1), points)
+    return fcr.walk_front(prints, prints.iloc[:0], seed, ES).tolist()
+
+
+@pytest.mark.parametrize(
+    ("points", "want"),
+    [
+        # Exactly CARRY_HALF (30.375) above the level is still the front.
+        ([(1, 7030.375), (3, 7000.5)], [True, True]),
+        ([(1, 7030.625), (3, 7000.5)], [False, True]),
+        # The confirming print may sit exactly CARRY_HALF above the level too.
+        ([(1, 7031.0), (3, 7030.375)], [False, True]),
+        ([(1, 7031.0), (3, 7030.625)], [True, True]),
+        # ...and exactly WALK_CONFIRM_SECONDS after the jump, not a shade later.
+        ([(1, 7040.0), (6, 7000.5)], [False, True]),
+        ([(1, 7040.0), (6.001, 7000.5)], [True, True]),
+    ],
+)
+def test_walk_front_boundaries_are_exact(points, want):
+    assert walk_keeps(points) == want
 
 
 def archive_bars(rows: list[tuple[str, str, float, int]]):
@@ -746,50 +873,131 @@ def must_not_run(*_args, **_kwargs):
     raise AssertionError("must not run after a failed gate")
 
 
+def out_of(tmp_path) -> Path:
+    return tmp_path / "out"
+
+
+def staging_of(tmp_path) -> Path:
+    return fcr.staging_dir(out_of(tmp_path))
+
+
 def run_main(tmp_path, monkeypatch, gate: pd.DataFrame, *extra: str) -> int:
     monkeypatch.setattr(fcr, "resolve_env_file", lambda _: tmp_path / "unused.env")
     monkeypatch.setattr(fcr, "run_ground_truth", lambda _archive: gate)
-    out = tmp_path / "out"
+    out = out_of(tmp_path)
     return fcr.main(["--archive", str(tmp_path), "--out-dir", str(out), *extra])
 
 
-def manifest(tmp_path) -> dict:
-    return json.loads((tmp_path / "out" / "manifest.json").read_text(encoding="utf-8"))
+def manifest(folder: Path) -> dict:
+    return json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
 
 
-def test_a_failed_gate_leaves_only_the_table_and_a_failed_manifest(
-    tmp_path, monkeypatch
-):
-    # An earlier run's outputs must not survive to look current.
-    out = tmp_path / "out"
+def previous_output(out: Path) -> None:
+    """A validated earlier run's folder: every output file, a day file, and a
+    file of someone else's."""
     (out / "ndjson").mkdir(parents=True)
+    for name in fcr.OUTPUT_FILES:
+        (out / name).write_bytes(f"old {name}".encode())
+    (out / "manifest.json").write_text('{"status": "passed"}\n', encoding="utf-8")
+    (out / "ndjson" / "ES-2026-04-20.ndjson").write_bytes(b"old day file\n")
+    (out / "notes.txt").write_text("not ours", encoding="utf-8")
+
+
+def tree(root: Path) -> dict[str, bytes | None]:
+    """Every path under `root` with its bytes (None for a folder)."""
+    return {
+        p.relative_to(root).as_posix(): p.read_bytes() if p.is_file() else None
+        for p in sorted(root.rglob("*"))
+    }
+
+
+def test_the_staging_folder_sits_next_to_the_output_folder():
+    out = Path("elsewhere") / "futures-contract-repair"
+    assert fcr.staging_dir(out) == Path("elsewhere") / "futures-contract-repair.staging"
+
+
+def test_a_failed_gate_leaves_only_the_table_and_a_failed_manifest_in_staging(
+    tmp_path, monkeypatch, capsys
+):
+    # A staging folder left by an earlier failed run must not survive to look
+    # current: only the output files go, whatever else sits there stays.
+    staging = staging_of(tmp_path)
+    (staging / "ndjson").mkdir(parents=True)
     for name in (
         "rebuilt_bars.parquet",
         "per_day.csv",
         "front_absent.csv",
         "unsplittable.csv",
     ):
-        (out / name).write_text("stale", encoding="utf-8")
-    (out / "ndjson" / "ES-2026-04-20.ndjson").write_text("stale", encoding="utf-8")
-    (out / "notes.txt").write_text("not ours", encoding="utf-8")
+        (staging / name).write_text("stale", encoding="utf-8")
+    (staging / "ndjson" / "ES-2026-04-20.ndjson").write_text("stale", encoding="utf-8")
+    (staging / "notes.txt").write_text("not ours", encoding="utf-8")
     monkeypatch.setattr(fcr, "run_archive_span", must_not_run)
     monkeypatch.setattr(fcr, "run_tick_span", must_not_run)
     gate = both_clocks(gate_table(es_exact=998), gate_table())
     assert run_main(tmp_path, monkeypatch, gate) == 1
-    written = pd.read_csv(out / "ground_truth.csv")
+    written = pd.read_csv(staging / "ground_truth.csv")
     assert sorted(written.clock.unique()) == ["ts_event", "ts_recv"]
     assert len(written) == 4
-    assert sorted(p.name for p in out.iterdir()) == [
+    assert sorted(p.name for p in staging.iterdir()) == [
         "ground_truth.csv",
         "manifest.json",
         "ndjson",
         "notes.txt",
     ]
-    assert list((out / "ndjson").iterdir()) == []
-    got = manifest(tmp_path)
+    assert list((staging / "ndjson").iterdir()) == []
+    got = manifest(staging)
     assert (got["status"], got["reason"]) == ("failed", "ground-truth gate")
     assert got["gate"]["ts_recv"]["ES"]["passed"] is False
     assert got["git"]["head"]
+    # The run says where the diagnostics are, and a first run makes no output folder.
+    assert str(staging) in capsys.readouterr().err
+    assert not out_of(tmp_path).exists()
+
+
+def test_a_gate_table_missing_a_root_fails_the_run(tmp_path, monkeypatch):
+    # ES alone passes on its own rates; NQ has no rows at all.
+    monkeypatch.setattr(fcr, "run_archive_span", must_not_run)
+    monkeypatch.setattr(fcr, "run_tick_span", must_not_run)
+    only_es = both_clocks(gate_table().iloc[:1], gate_table().iloc[:1])
+    assert run_main(tmp_path, monkeypatch, only_es) == 1
+    got = manifest(staging_of(tmp_path))
+    assert (got["status"], got["reason"]) == ("failed", "ground-truth gate")
+    assert set(got["gate"]["ts_recv"]) == {"ES"}
+
+
+@pytest.mark.parametrize("failure", ["gate", "post-check", "crash"])
+def test_a_failed_run_leaves_the_previous_output_byte_identical(
+    tmp_path, monkeypatch, failure
+):
+    out = out_of(tmp_path)
+    previous_output(out)
+    before = tree(out)
+    monkeypatch.setattr(fcr, "run_archive_span", archive_span)
+    gate = both_clocks(gate_table(), gate_table())
+    if failure == "gate":
+        gate = both_clocks(gate_table(es_exact=998), gate_table())
+        monkeypatch.setattr(fcr, "run_archive_span", must_not_run)
+        monkeypatch.setattr(fcr, "run_tick_span", must_not_run)
+    elif failure == "post-check":
+        monkeypatch.setattr(fcr, "run_tick_span", spiky_tick_span)
+    else:
+
+        def page_fails(*_args):
+            raise RuntimeError("ES page 2026-05-05 failed")
+
+        monkeypatch.setattr(fcr, "run_tick_span", page_fails)
+
+    if failure == "crash":
+        with pytest.raises(RuntimeError, match="page 2026-05-05 failed"):
+            run_main(tmp_path, monkeypatch, gate)
+    else:
+        assert run_main(tmp_path, monkeypatch, gate) == 1
+
+    assert tree(out) == before
+    assert (staging_of(tmp_path) / "ground_truth.csv").is_file()
+    if failure != "crash":
+        assert manifest(staging_of(tmp_path))["status"] == "failed"
 
 
 def tick_span_of(levels_for, gaps=()):
@@ -826,8 +1034,8 @@ def test_a_passing_run_writes_every_output(tmp_path, monkeypatch):
     gate = both_clocks(gate_table(), gate_table(es_exact=990, nq_exact=990))
     assert run_main(tmp_path, monkeypatch, gate) == 0
 
-    out = tmp_path / "out"
-    got = manifest(tmp_path)
+    out = out_of(tmp_path)
+    got = manifest(out)
     assert got["status"] == "passed"
     assert got["roots"]["ES"] == {
         "front": "ESM6",
@@ -878,6 +1086,160 @@ def test_a_passing_run_writes_every_output(tmp_path, monkeypatch):
     lines = (out / "ndjson" / "ES-2026-05-05.ndjson").read_bytes().split(b"\n")
     assert lines[-1] == b""  # LF-terminated, one object per line
     assert len(lines) == 11
+    # The walk touched nothing, and the file says so rather than being absent.
+    walked = pd.read_csv(out / "walked.csv")
+    assert list(walked.columns) == WALKED_COLUMNS
+    assert walked.empty
+    # Every staged file moved out; the staging folder is gone.
+    assert not staging_of(tmp_path).exists()
+
+
+def passing_run(tmp_path, monkeypatch, *extra: str) -> int:
+    monkeypatch.setattr(fcr, "run_archive_span", archive_span)
+    monkeypatch.setattr(fcr, "run_tick_span", tick_span_of(clean_levels))
+    gate = both_clocks(gate_table(), gate_table())
+    return run_main(tmp_path, monkeypatch, gate, *extra)
+
+
+def test_a_passing_run_replaces_the_previous_output(tmp_path, monkeypatch):
+    out = out_of(tmp_path)
+    previous_output(out)
+    staging = staging_of(tmp_path)
+    staging.mkdir()
+    (staging / "notes.txt").write_text("not ours", encoding="utf-8")
+    assert passing_run(tmp_path, monkeypatch) == 0
+    assert manifest(out)["status"] == "passed"
+    assert len(pd.read_parquet(out / "rebuilt_bars.parquet")) == 22
+    # The old day file is gone, not mixed in with the new ones.
+    assert sorted(p.name for p in (out / "ndjson").iterdir()) == [
+        "ES-2026-04-08.ndjson",
+        "ES-2026-05-05.ndjson",
+        "NQ-2026-04-08.ndjson",
+        "NQ-2026-05-05.ndjson",
+    ]
+    # Only the run's own files are replaced, here and in the staging folder.
+    assert (out / "notes.txt").read_text(encoding="utf-8") == "not ours"
+    assert [p.name for p in staging.iterdir()] == ["notes.txt"]
+
+
+def test_ground_truth_only_never_replaces_the_output(tmp_path, monkeypatch, capsys):
+    out = out_of(tmp_path)
+    previous_output(out)
+    before = tree(out)
+    monkeypatch.setattr(fcr, "run_archive_span", must_not_run)
+    monkeypatch.setattr(fcr, "run_tick_span", must_not_run)
+    gate = both_clocks(gate_table(), gate_table())
+    assert run_main(tmp_path, monkeypatch, gate, "--ground-truth-only") == 0
+    assert tree(out) == before
+    staging = staging_of(tmp_path)
+    assert sorted(p.name for p in staging.iterdir()) == [
+        "ground_truth.csv",
+        "manifest.json",
+    ]
+    assert manifest(staging)["status"] == "gate-only"
+    assert str(staging) in capsys.readouterr().out
+
+
+def test_a_clean_that_fails_partway_never_leaves_a_passed_manifest(
+    tmp_path, monkeypatch
+):
+    previous_output(tmp_path)
+    unlink = Path.unlink
+
+    def locked(self, missing_ok=False):
+        if self.name == "rebuilt_bars.parquet":
+            raise PermissionError("in use by another process")
+        unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", locked)
+    with pytest.raises(PermissionError):
+        fcr.clean_outputs(tmp_path)
+    assert not (tmp_path / "manifest.json").exists()
+
+
+def test_a_replace_that_cannot_finish_points_at_the_staged_output(
+    tmp_path, monkeypatch
+):
+    out = out_of(tmp_path)
+    previous_output(out)
+    replace = fcr.os.replace
+
+    def locked(src, dst):
+        if Path(dst) == out / "per_day.csv":
+            raise PermissionError("in use by another process")
+        replace(src, dst)
+
+    monkeypatch.setattr(fcr.os, "replace", locked)
+    with pytest.raises(RuntimeError, match=r"out\.staging"):
+        passing_run(tmp_path, monkeypatch)
+    # The folder is half-replaced, so it must not read as passed; the new
+    # output is complete next to it.
+    assert not (out / "manifest.json").exists()
+    staging = staging_of(tmp_path)
+    assert manifest(staging)["status"] == "passed"
+    assert (staging / "per_day.csv").is_file()
+
+
+WALKED_COLUMNS = [
+    "symbol",
+    "ts",
+    "dropped_prints",
+    "volume_before",
+    "volume_after",
+    "high_before",
+    "high_after",
+]
+
+
+def fast_front_spike() -> pd.DataFrame:
+    """The task-1 re-review's synthetic ES case (F-A): flat at 7000, a genuine
+    front spike of 1,000 lots to 7036 at 20 s, 21 s, a retrace to 7020 at 23 s,
+    then 7010 and 7005. The true bar is high 7036, volume 1,050."""
+    rows = [(s, 7000.0, 4) for s in range(0, 20, 2)]
+    rows += [(20, 7035.0, 500), (21, 7036.0, 500)]
+    rows += [(23, 7020.0, 5), (25, 7010.0, 3), (30, 7005.0, 2)]
+    return ticks(rows)
+
+
+def test_the_walk_erases_a_fast_front_spike_and_walked_rows_report_it():
+    minutes = fcr.rebuild_from_ticks(fast_front_spike(), ES)
+    bar = minutes.iloc[0]
+    # The 5 s confirmation reads the retrace as a back-month print coming back.
+    assert (bar.high, bar.volume, bar.dropped) == (7020.0, 50, 2)
+    assert (bar.high_before, bar.volume_before) == (7036.0, 1050)
+    # The post-check can't see it: that is why walked.csv exists.
+    assert not (bar.wick or bar.step) and bar.passed
+    rows = fcr.walked_rows(minutes, "ES")
+    assert list(rows.columns) == WALKED_COLUMNS
+    assert rows.values.tolist() == [["ES", T0, 2, 1050, 50, 7036.0, 7020.0]]
+
+
+def test_walked_csv_lists_the_spike_the_post_check_passes(tmp_path, monkeypatch):
+    def tick_span(_env, cfg, _workers, allowlisted):
+        t = fast_front_spike() if cfg.symbol == "ES" else minute_of(28000.0)
+        minutes = fcr.rebuild_from_ticks(t, cfg, allowlisted)
+        return fcr.mark_partial(minutes, []), []
+
+    monkeypatch.setattr(fcr, "run_archive_span", archive_span)
+    monkeypatch.setattr(fcr, "run_tick_span", tick_span)
+    gate = both_clocks(gate_table(), gate_table())
+    assert run_main(tmp_path, monkeypatch, gate) == 0
+    out = out_of(tmp_path)
+    assert manifest(out)["post_check"]["listed"] == 0
+    walked = pd.read_csv(out / "walked.csv")
+    assert walked.values.tolist() == [
+        ["ES", "2026-05-05 14:30:00+00:00", 2, 1050, 50, 7036.0, 7020.0]
+    ]
+
+
+def test_walked_rows_lists_only_the_minutes_that_lost_prints():
+    t, _, _ = merged_minute()
+    minutes = fcr.rebuild_from_ticks(t, ES)
+    rows = fcr.walked_rows(minutes, "ES")
+    # Only the merged minute, with the back prints it lost.
+    assert rows.ts.tolist() == [minute(1)]
+    assert rows.dropped_prints.tolist() == [12]
+    assert rows.high_after.iloc[0] < rows.high_before.iloc[0]
 
 
 def test_ndjson_records_follow_the_phase_2_schema():
@@ -963,6 +1325,29 @@ def test_the_post_check_flags_a_wick_and_a_step():
     # Exactly CARRY_HALF is not over it.
     edge = bars_frame([(0, 7000.0, 7030.375, 7000.0, 7000.0)])
     assert not fcr.time_order_pass(edge, no_prints(), ES).wick.iloc[0]
+
+
+def test_the_step_limit_is_exactly_half_a_carry():
+    flat = (0, 7000.0, 7000.0, 7000.0, 7000.0)
+    on_edge = bars_frame([flat, (1, 7030.375, 7030.375, 7030.375, 7030.375)])
+    over = bars_frame([flat, (1, 7030.5, 7030.5, 7030.5, 7030.5)])
+    assert fcr.time_order_pass(on_edge, no_prints(), ES).step.tolist() == [False, False]
+    assert fcr.time_order_pass(over, no_prints(), ES).step.tolist() == [False, True]
+
+
+def test_the_post_check_never_lists_a_front_absent_minute():
+    # time_order_pass leaves wick and step False on an absent minute, so only a
+    # hand-built frame reaches the filter: it has to hold on its own.
+    rows = [
+        (0, 7000.0, 7001.0, 6999.0, 7000.5),
+        (1, 7061.0, 7061.25, 7061.0, 7061.25),
+        (2, 7000.5, 7001.0, 7000.0, 7000.75),
+    ]
+    minutes = bars_frame(rows, absent={1}).assign(
+        wick=[False, True, False], step=[False, True, True], partial=False
+    )
+    listed = fcr.post_check_rows(minutes, "ES", EMPTY_ALLOWLIST)
+    assert listed[["ts", "rule"]].values.tolist() == [[minute(2), "step"]]
 
 
 def test_an_allowlisted_minute_passes_and_is_reported_as_such():
@@ -1065,22 +1450,25 @@ def spiky_tick_span(_env, cfg, _workers, allowlisted):
     return fcr.mark_partial(minutes, []), []
 
 
-def test_an_unlisted_post_check_minute_fails_the_run(tmp_path, monkeypatch):
+def test_an_unlisted_post_check_minute_fails_the_run(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(fcr, "run_archive_span", archive_span)
     monkeypatch.setattr(fcr, "run_tick_span", spiky_tick_span)
     gate = both_clocks(gate_table(), gate_table())
     assert run_main(tmp_path, monkeypatch, gate) == 1
-    out = tmp_path / "out"
-    unsplittable = pd.read_csv(out / "unsplittable.csv")
+    staging = staging_of(tmp_path)
+    unsplittable = pd.read_csv(staging / "unsplittable.csv")
     assert unsplittable[["symbol", "rule"]].values.tolist() == [
         ["ES", "wick"],
         ["NQ", "wick"],
     ]
-    assert not (out / "rebuilt_bars.parquet").exists()
-    assert not (out / "ndjson").exists()
-    got = manifest(tmp_path)
+    assert (staging / "walked.csv").is_file()  # the walk's list is diagnostics too
+    assert not (staging / "rebuilt_bars.parquet").exists()
+    assert not (staging / "ndjson").exists()
+    got = manifest(staging)
     assert (got["status"], got["reason"]) == ("failed", "post-check")
     assert got["post_check"] == {"listed": 2, "allowlisted": 0, "unsplittable": 2}
+    assert str(staging) in capsys.readouterr().err
+    assert not out_of(tmp_path).exists()
 
 
 def test_an_allowlisted_post_check_minute_lets_the_run_pass(tmp_path, monkeypatch):
@@ -1095,9 +1483,10 @@ def test_an_allowlisted_post_check_minute_lets_the_run_pass(tmp_path, monkeypatc
     monkeypatch.setattr(fcr, "run_tick_span", spiky_tick_span)
     gate = both_clocks(gate_table(), gate_table())
     assert run_main(tmp_path, monkeypatch, gate, "--allowlist", str(allowlist)) == 0
-    listed = pd.read_csv(tmp_path / "out" / "post_check.csv")
+    out = out_of(tmp_path)
+    listed = pd.read_csv(out / "post_check.csv")
     assert listed.allowlisted.tolist() == [True, True]
-    assert manifest(tmp_path)["post_check"] == {
+    assert manifest(out)["post_check"] == {
         "listed": 2,
         "allowlisted": 2,
         "unsplittable": 0,

@@ -31,6 +31,13 @@ The cluster rule (tick span), per root and minute:
      timestamp keep the tick table's own `id` order (its insert order, which
      follows `ts`); on the archive the file row order plays that part.
 
+Limit: a gap in the front month's own prints inside one minute, wider than G
+and narrower than CARRY_HALF, with no prints in between, is split silently. The
+upper part becomes the second cluster and is dropped, and nothing in this
+extract flags the minute. (A gap of CARRY_HALF or more also leaves the next
+minute that far from this bar's close, and front_absent or the post-check
+flags it there.)
+
 The time-order pass. Step 2 fails when the front month's own sweep inside one
 minute is about as wide as the carry: the front's extreme and the back month's
 nearest print sit within G and the clusters merge. The ticks showed this on ES
@@ -55,6 +62,11 @@ order and tracks the front level, the last accepted print.
   * Over the whole tick span it changes exactly the two minutes above. Its
     output there equals the verifier's re-derivation from raw ticks, and W =
     1, 2 and 5 s give the same bars.
+  * The 5-second confirmation assumes a back-month print always has a
+    front-month print nearby. A genuine front spike that retraces within 5 s
+    would be erased, and the post-check can't see it: walked.csv lists every
+    minute where the walk dropped a print, with the bar before and after, so a
+    reviewer can.
 
 Back-month-only minutes. When the front month didn't print, the lowest cluster
 is the next contract, about one carry above the front.
@@ -70,6 +82,11 @@ is the next contract, about one carry above the front.
   * A run of 6 or more back-only minutes masks its own middle, though: its
     neighbours' median sits on the back month too. The post-check below
     catches such a run by its carry-sized step on entry and exit.
+  * One shape is uncovered: a back-only stretch with no contiguous minute on
+    either side, a short run between two outages. It has no entry or exit step
+    for the post-check to list. The absent test finds no reference when no
+    minute with prints lies within 30 minutes, and flags only the ends of a
+    long run when some does.
 
 The post-check (fails the run). Over each stretch of contiguous tick minutes
 (front_absent minutes don't break a stretch), a bar is listed when either
@@ -160,9 +177,18 @@ Usage (from the repo root; the archive lives in the main checkout only):
     ml/.venv/Scripts/python ml/src/futures_contract_repair.py \\
         --archive F:/dev/strike-calculator/ml/data/archive
 
-Outputs (--out-dir, default ml/data/futures-contract-repair/, gitignored). Every
-earlier output there is deleted when a run starts, and `manifest.json` is
-written last. Phase 2 refuses a directory whose manifest doesn't say "passed".
+A run builds into a staging folder next to --out-dir, named <out-dir>.staging
+(ml/data/futures-contract-repair.staging/ by default), and replaces --out-dir
+only after the gate and the post-check both pass. A failed run leaves --out-dir
+as it was; its diagnostics and a failed manifest are in the staging folder, and
+the run prints where. --ground-truth-only writes there too and never replaces
+--out-dir. The staging folder's own earlier outputs are deleted when a run
+starts.
+
+Outputs (--out-dir, default ml/data/futures-contract-repair/, gitignored). On a
+pass the run deletes the earlier outputs there, moves the new ones in and lands
+`manifest.json` last. Files that aren't outputs stay. Phase 2 refuses a
+directory whose manifest doesn't say "passed".
 
 | File | Contents |
 |---|---|
@@ -172,6 +198,7 @@ written last. Phase 2 refuses a directory whose manifest doesn't say "passed".
 | `front_absent.csv` | symbol, ts of each tick minute where only a back month printed. |
 | `post_check.csv` | Every minute the post-check listed, with its allowlist status. |
 | `unsplittable.csv` | The listed minutes not on the allowlist. Empty when the run passes. |
+| `walked.csv` | symbol, ts, dropped_prints, volume_before, volume_after, high_before, high_after: every minute where the walk dropped a print. Read it before accepting a run. |
 | `suspect.csv` | Tick bars with a range above 0.7 x carry. |
 | `tickless_windows.csv` | Tick-span windows with no ticks. |
 | `ground_truth.csv` | The gate below, per root, day and archive clock. |
@@ -199,6 +226,7 @@ main checkout's. It is never printed.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import io
 import json
 import os
@@ -301,17 +329,20 @@ MINUTE_COLUMNS = (
     "kept_gap",
     "split_gap",
 )
-# Every file a run writes; a run deletes them all before it starts.
+MANIFEST = "manifest.json"
+# Every file a passing run writes. The manifest comes first because a folder
+# being cleaned must stop reading as passed before any other file goes.
 OUTPUT_FILES = (
+    MANIFEST,
     "rebuilt_bars.parquet",
     "per_day.csv",
     "front_absent.csv",
     "post_check.csv",
     "unsplittable.csv",
+    "walked.csv",
     "suspect.csv",
     "tickless_windows.csv",
     "ground_truth.csv",
-    "manifest.json",
 )
 NDJSON_DIR = "ndjson"
 # Outright month codes; spreads ("ESM6-ESU6") and options ("ESM6 C6475") don't match.
@@ -467,10 +498,11 @@ def time_order_pass(
 ) -> pd.DataFrame:
     """Walk the minutes that need it, then run the post-check on every bar.
 
-    Adds `dropped` (prints the walk removed), `wick`, `step` and `passed` (the
-    bar passed the post-check, or its minute is in `allowlisted`). A minute's
-    walk is seeded from the previous minute's close only when that minute is
-    contiguous, is a bar and passed. See the module docstring.
+    Adds `dropped` (prints the walk removed), `high_before` and `volume_before`
+    (the bar before the walk), `wick`, `step` and `passed` (the bar passed the
+    post-check, or its minute is in `allowlisted`). A minute's walk is seeded
+    from the previous minute's close only when that minute is contiguous, is a
+    bar and passed. See the module docstring.
     """
     out = minutes.sort_values("ts", ignore_index=True)
     n = len(out)
@@ -478,6 +510,8 @@ def time_order_pass(
     prices = ("open", "high", "low", "close")
     cols = {c: out[c].to_numpy(dtype="float64").copy() for c in prices}
     volume = out["volume"].to_numpy(dtype="int64").copy()
+    high_before = cols["high"].copy()
+    volume_before = volume.copy()
     clusters = out["clusters"].to_numpy(dtype="int64").copy()
     absent = out["front_absent"].to_numpy(dtype=bool)
     dropped = np.zeros(n, dtype="int64")
@@ -531,6 +565,8 @@ def time_order_pass(
         volume=volume,
         clusters=clusters,
         dropped=dropped,
+        high_before=high_before,
+        volume_before=volume_before,
         wick=wick,
         step=step,
         passed=passed,
@@ -766,6 +802,26 @@ def post_check_rows(
     out["allowlisted"] = out["ts"].isin(reasons.index)
     out["reason"] = out["ts"].map(reasons)
     return out.reset_index(drop=True)
+
+
+def walked_rows(minutes: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    """Every minute where the walk dropped prints, with the bar before and after.
+
+    The post-check can't see a genuine front spike the walk erased, so this list
+    is where a reviewer looks. Needs time_order_pass's output.
+    """
+    walked = minutes[minutes["dropped"] > 0]
+    return pd.DataFrame(
+        {
+            "symbol": symbol,
+            "ts": walked["ts"].astype("datetime64[us, UTC]"),
+            "dropped_prints": walked["dropped"],
+            "volume_before": walked["volume_before"],
+            "volume_after": walked["volume"],
+            "high_before": walked["high_before"],
+            "high_after": walked["high"],
+        }
+    ).reset_index(drop=True)
 
 
 def suspect_rows(minutes: pd.DataFrame, cfg: Root) -> pd.DataFrame:
@@ -1233,6 +1289,40 @@ def clean_outputs(out_dir: Path) -> None:
             file.unlink()
 
 
+def staging_dir(out_dir: Path) -> Path:
+    """Where a run builds its output: next to `out_dir`, on the same drive."""
+    return out_dir.with_name(out_dir.name + ".staging")
+
+
+def promote_staged(staging: Path, out_dir: Path) -> None:
+    """Replace the earlier output in `out_dir` with the staged one.
+
+    Called only after the gate and the post-check passed. The manifest goes
+    first and lands last, so a folder caught half-way never reads as passed.
+    Other files in `out_dir` stay. A file that can't be moved (open in another
+    program) stops the run with the complete new output still in `staging`.
+    """
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        clean_outputs(out_dir)
+        (out_dir / NDJSON_DIR).mkdir(exist_ok=True)
+        for name in OUTPUT_FILES:
+            if name != MANIFEST:
+                os.replace(staging / name, out_dir / name)
+        for file in sorted((staging / NDJSON_DIR).glob("*.ndjson")):
+            os.replace(file, out_dir / NDJSON_DIR / file.name)
+        os.replace(staging / MANIFEST, out_dir / MANIFEST)
+    except OSError as err:
+        raise RuntimeError(
+            f"could not replace {out_dir} ({err}); the complete new output is in "
+            f"{staging}"
+        ) from err
+    # Anything else left in the staging folder is not ours; leave it.
+    for leftover in (staging / NDJSON_DIR, staging):
+        with contextlib.suppress(OSError):
+            leftover.rmdir()
+
+
 def git_state() -> dict:
     """The commit the extract ran from, and whether its module was edited."""
 
@@ -1300,8 +1390,8 @@ def _manifest(status: str, reason: str, started: float, **parts) -> dict:
     }
 
 
-def _write_manifest(out_dir: Path, manifest: dict) -> None:
-    _write_text(out_dir / "manifest.json", json.dumps(manifest, indent=2) + "\n")
+def _write_manifest(folder: Path, manifest: dict) -> None:
+    _write_text(folder / MANIFEST, json.dumps(manifest, indent=2) + "\n")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1309,14 +1399,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--archive", type=Path, required=True, help="the archive dir (ml/data/archive)"
     )
-    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=DEFAULT_OUT_DIR,
+        help="the output folder; built in <out-dir>.staging, replaced on a pass",
+    )
     parser.add_argument("--env-file", help="path to .env.local")
     parser.add_argument("--workers", type=int, default=3, help="parallel tick pages")
     parser.add_argument(
         "--allowlist", type=Path, help="reviewed post-check allowlist CSV"
     )
     parser.add_argument(
-        "--ground-truth-only", action="store_true", help="stop after the gate"
+        "--ground-truth-only",
+        action="store_true",
+        help="stop after the gate; its files go to the staging folder only",
     )
     args = parser.parse_args(argv)
     started = time.monotonic()
@@ -1328,12 +1425,13 @@ def main(argv: list[str] | None = None) -> int:
             print("no .env.local found; pass --env-file", file=sys.stderr)
             return 2
     allowlist = load_allowlist(args.allowlist)
-    out_dir = args.out_dir
-    out_dir.mkdir(parents=True, exist_ok=True)
-    clean_outputs(out_dir)
+    out_dir = args.out_dir.resolve()
+    staging = staging_dir(out_dir)
+    staging.mkdir(parents=True, exist_ok=True)
+    clean_outputs(staging)
 
     gt = run_ground_truth(args.archive)
-    _write_csv(out_dir / "ground_truth.csv", gt)
+    _write_csv(staging / "ground_truth.csv", gt)
     gates = {}
     for clock in ARCHIVE_CLOCKS:
         scored = "gate" if clock == GATE_CLOCK else "record"
@@ -1349,15 +1447,21 @@ def main(argv: list[str] | None = None) -> int:
     gate = gates[GATE_CLOCK]
     if not all(res["passed"] for res in gate.values()) or set(gate) != set(ROOTS):
         _write_manifest(
-            out_dir, _manifest("failed", "ground-truth gate", started, gate=gates)
+            staging, _manifest("failed", "ground-truth gate", started, gate=gates)
         )
-        print("ground-truth gate failed; no bars written", file=sys.stderr)
+        print(
+            f"ground-truth gate failed; no bars written; {out_dir} untouched, "
+            f"diagnostics in {staging}",
+            file=sys.stderr,
+        )
         return 1
     if args.ground_truth_only:
-        _write_manifest(out_dir, _manifest("gate-only", "", started, gate=gates))
+        _write_manifest(staging, _manifest("gate-only", "", started, gate=gates))
+        _log(f"gate only: results in {staging}; {out_dir} untouched")
         return 0
 
     bars, summaries, absent, checks, suspects, windows = [], [], [], [], [], []
+    walks = []
     partial_counts = {}
     for cfg in ROOTS.values():
         listed = allowlist[allowlist["symbol"] == cfg.symbol]["ts"]
@@ -1369,6 +1473,7 @@ def main(argv: list[str] | None = None) -> int:
         flagged = ticked[ticked["front_absent"]]
         absent.append(pd.DataFrame({"symbol": cfg.symbol, "ts": flagged["ts"]}))
         checks.append(post_check_rows(ticked, cfg.symbol, allowlist))
+        walks.append(walked_rows(ticked, cfg.symbol))
         suspects.append(suspect_rows(ticked, cfg))
         windows.append(tickless_windows(gaps, TICK_SPAN, cfg.symbol))
         built = ticked[~ticked["front_absent"]]
@@ -1382,8 +1487,9 @@ def main(argv: list[str] | None = None) -> int:
 
     check = pd.concat(checks, ignore_index=True)
     unsplittable = check[~check["allowlisted"]]
-    _write_csv(out_dir / "post_check.csv", check)
-    _write_csv(out_dir / "unsplittable.csv", unsplittable)
+    _write_csv(staging / "post_check.csv", check)
+    _write_csv(staging / "unsplittable.csv", unsplittable)
+    _write_csv(staging / "walked.csv", pd.concat(walks, ignore_index=True))
     post = {
         "listed": len(check),
         "allowlisted": int(check["allowlisted"].sum()),
@@ -1391,12 +1497,12 @@ def main(argv: list[str] | None = None) -> int:
     }
     if len(unsplittable):
         _write_manifest(
-            out_dir,
+            staging,
             _manifest("failed", "post-check", started, gate=gates, post_check=post),
         )
         print(
             f"post-check failed: {len(unsplittable)} minute(s) in unsplittable.csv; "
-            "no bars written",
+            f"no bars written; {out_dir} untouched, diagnostics in {staging}",
             file=sys.stderr,
         )
         return 1
@@ -1407,20 +1513,20 @@ def main(argv: list[str] | None = None) -> int:
     if out.duplicated(["symbol", "ts"]).any():
         raise RuntimeError("duplicate (symbol, ts) rows in the rebuild")
     _write_atomic(
-        out_dir / "rebuilt_bars.parquet",
+        staging / "rebuilt_bars.parquet",
         lambda p: out.to_parquet(p, index=False),
     )
     files = ndjson_lines(out)
-    (out_dir / NDJSON_DIR).mkdir(exist_ok=True)
+    (staging / NDJSON_DIR).mkdir(exist_ok=True)
     for name, lines in files.items():
-        _write_text(out_dir / NDJSON_DIR / name, "\n".join(lines) + "\n")
-    _write_csv(out_dir / "per_day.csv", pd.concat(summaries, ignore_index=True))
-    _write_csv(out_dir / "front_absent.csv", pd.concat(absent, ignore_index=True))
-    _write_csv(out_dir / "suspect.csv", pd.concat(suspects, ignore_index=True))
-    _write_csv(out_dir / "tickless_windows.csv", pd.concat(windows, ignore_index=True))
+        _write_text(staging / NDJSON_DIR / name, "\n".join(lines) + "\n")
+    _write_csv(staging / "per_day.csv", pd.concat(summaries, ignore_index=True))
+    _write_csv(staging / "front_absent.csv", pd.concat(absent, ignore_index=True))
+    _write_csv(staging / "suspect.csv", pd.concat(suspects, ignore_index=True))
+    _write_csv(staging / "tickless_windows.csv", pd.concat(windows, ignore_index=True))
     rows = out.groupby(["symbol", "source"]).size()
     _write_manifest(
-        out_dir,
+        staging,
         _manifest(
             "passed",
             "",
@@ -1433,6 +1539,7 @@ def main(argv: list[str] | None = None) -> int:
             ndjson_files=len(files),
         ),
     )
+    promote_staged(staging, out_dir)
     _log(
         f"wrote {len(out):,} bars and {len(files)} NDJSON files to {out_dir} in "
         f"{time.monotonic() - started:.0f}s"
