@@ -55,6 +55,14 @@ R1 → R11 → R2 → R3 → R4 → R5 → R6 → R7 → R8 → R9 → R10 → R
 
 ### Task R1: Shared UW spot helper + full strike window in strike-all + backfill
 
+**Status (2026-11-07): code DONE, in P0.3 of `docs/superpowers/specs/live-data-integrity-2026-11-06.md` (branch `fix/strike-exposure-guards`).**
+- `api/_lib/uw-spot.ts` and its test, the `fetch-strike-all` rewrite (spot helper, window, paging at exactly 500 with a page cap of 10, the ±200 filter, stored price = helper spot, snapshot time = newest row time) and `scripts/backfill-strike-all.mjs` are built, with the tests listed below.
+- Built differently from this task's text: the backfill's paging, window and spot rules live in `scripts/_lib/strike-all-backfill.mjs`; the script stops on a ladder from a different ET day than the date asked; its insert is one transaction per date. P0.3 also added the stale-cache and all-zero guards to `fetch-strike-all` and the windowed, guarded rewrite of `fetch-strike-exposure`.
+- **Still open for the controller: the backfill RUN** for every trading day 2026-09-25 → 2026-10-22 (the dry run first, the per-date counts, and the min/max strike versus spot on 2 sample dates). It has not been run.
+  - Dry run of one date: `node --env-file=.env.local scripts/backfill-strike-all.mjs --from 2026-09-25 --to 2026-10-22 --limit 1 --dry-run`. It prints the strike range it would store beside the SPX spot, so the range straddling spot can be read off it. Then drop `--limit 1 --dry-run`.
+  - The script added `--from`/`--to`, `--limit`, `--dry-run` and the market-hours refusal (it takes them from `scripts/_lib/backfill-cli.mjs`); the old positional `DAYS` lookback still works.
+  - A date already holding the wrong ladder for its 5-minute bucket keeps it (ON CONFLICT DO NOTHING) until those rows are deleted.
+
 **Files:**
 - Create: `api/_lib/uw-spot.ts`, `api/__tests__/uw-spot.test.ts`
 - Modify: `api/cron/fetch-strike-all.ts` (fetch at :68-73, filter at :89-96, timestamp at :116), `api/__tests__/fetch-strike-all.test.ts`, `scripts/backfill-strike-all.mjs`
