@@ -320,6 +320,18 @@ describe('futures-bars SQL (pglite)', () => {
         expect((await rows()).map((r) => r.contract)).toEqual(['ESZ6', null]);
       });
 
+      it('a malformed contract at a minute that is already stored still throws, because the CHECK runs before the conflict arbiter, and the stored row is unchanged', async () => {
+        await insertFuturesBars('ES', [bar(0, { contract: 'ESZ6' })]);
+
+        await expect(
+          insertFuturesBars('ES', [bar(0, { contract: 'NQZ6' })]),
+        ).rejects.toThrow(/futures_bars_contract_chk/);
+
+        expect((await rows()).map((r) => [r.ts, r.open, r.contract])).toEqual([
+          ['2026-09-04T00:00:00Z', '7700.0000', 'ESZ6'],
+        ]);
+      });
+
       it.each([
         ['another root’s contract', 'NQZ6'],
         ['the micro root’s contract', 'MESZ6'],
