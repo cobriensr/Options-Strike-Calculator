@@ -31,6 +31,11 @@ ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env.local'
 PARQUET_DIR = Path.home() / 'Desktop' / 'Bot-Eod-parquet'
 
+# Read each day's flow with the enrichment script's own loader, so the window
+# is the one its values are written from (the tuning variants below stay here).
+sys.path.insert(0, str(ROOT / 'scripts'))
+from enrich_lottery_outcomes import load_matched_flow  # noqa: E402
+
 _CT_TZ = ZoneInfo('America/Chicago')
 
 DEFAULT_PROM = 0.05
@@ -231,30 +236,11 @@ def build_fire_inputs():
         }
 
         flow_cache = {}
-        cur = conn.cursor()
         for ticker in sub['underlying_symbol'].unique():
-            for opt_type, col in [('C', 'net_call_prem'), ('P', 'net_put_prem')]:
-                cur.execute(
-                    f"""
-                    SELECT ts, {col} FROM net_flow_per_ticker_history
-                    WHERE ticker = %s
-                      AND ts >= %s::timestamptz
-                      AND ts <  %s::timestamptz + INTERVAL '1 day'
-                    ORDER BY ts ASC
-                    """,
-                    (ticker, f'{date_str}T00:00:00Z', f'{date_str}T00:00:00Z'),
+            for opt_type in ('C', 'P'):
+                flow_cache[(ticker, opt_type)] = load_matched_flow(
+                    conn, date_str, ticker, opt_type
                 )
-                rows = []
-                for ts, val in cur.fetchall():
-                    if val is None:
-                        continue
-                    try:
-                        v = float(val)
-                    except (TypeError, ValueError):
-                        continue
-                    if np.isfinite(v):
-                        rows.append((ts, v))
-                flow_cache[(ticker, opt_type)] = rows
 
         cnt = 0
         for _, fire in sub.iterrows():

@@ -805,9 +805,10 @@ def test_dry_run_writes_nothing(tmp_path: Path, archive_globals: None, make_db) 
 
 # ── a write that rejects ───────────────────────────────────────
 
-# (statement the database drops, text that identifies it, what must not follow
-# it, commits that went through before it). The day has all four writes:
-# outcome values, outcome stamp, inversion values, inversion stamp.
+# (fails_on: text that identifies the statement the database drops,
+# issued_after: what must not follow it, commits: commits before it). The day
+# has all four writes: outcome values, outcome stamp, inversion values,
+# inversion stamp.
 WRITE_FAULTS = [
     pytest.param(
         'SET realized_trail30_10_pct',

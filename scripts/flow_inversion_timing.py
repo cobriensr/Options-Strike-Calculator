@@ -35,7 +35,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import numpy as np
 import pandas as pd
 import psycopg2
 
@@ -51,6 +50,7 @@ from _cli_paths import (  # noqa: E402
     warn_missing_archive,
 )
 from enrich_lottery_outcomes import (  # noqa: E402
+    load_matched_flow,
     simulate_flow_inversion,
     resample_minute_mid,
 )
@@ -151,32 +151,14 @@ def main(argv: list[str] | None = None) -> None:
 
         # Per-chain minute mids cache.
         minute_cache: dict[str, list[tuple]] = {}
-        # Per (ticker, type) flow cache.
+        # Per (ticker, type) flow cache, from the enrichment script's own
+        # loader so the window is the one its values are written from.
         flow_cache: dict[tuple[str, str], list[tuple]] = {}
-        cur = conn.cursor()
         for ticker in sub['underlying_symbol'].unique():
-            for opt_type, col in [('C', 'net_call_prem'), ('P', 'net_put_prem')]:
-                cur.execute(
-                    f"""
-                    SELECT ts, {col} FROM net_flow_per_ticker_history
-                    WHERE ticker = %s
-                      AND ts >= %s::timestamptz
-                      AND ts <  %s::timestamptz + INTERVAL '1 day'
-                    ORDER BY ts ASC
-                    """,
-                    (ticker, f'{date_str}T00:00:00Z', f'{date_str}T00:00:00Z'),
+            for opt_type in ('C', 'P'):
+                flow_cache[(ticker, opt_type)] = load_matched_flow(
+                    conn, date_str, ticker, opt_type
                 )
-                rows = []
-                for ts, val in cur.fetchall():
-                    if val is None:
-                        continue
-                    try:
-                        v = float(val)
-                    except (TypeError, ValueError):
-                        continue
-                    if np.isfinite(v):
-                        rows.append((ts, v))
-                flow_cache[(ticker, opt_type)] = rows
 
         for _, fire in sub.iterrows():
             chain_df = chain_idx.get(fire['option_chain_id'])
