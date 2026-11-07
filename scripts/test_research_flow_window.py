@@ -103,15 +103,23 @@ def write_day(directory: Path) -> None:
     pd.DataFrame(rows).to_parquet(directory / f'{DAY}-trades.parquet')
 
 
-def fires_frame() -> pd.DataFrame:
+def fires_frame(extra_days: tuple[str, ...] = ()) -> pd.DataFrame:
     """The lottery_finder_fires rows both scripts read: one call fire (id 1)
-    and one put fire (id 2) on the same ticker and day."""
+    and one put fire (id 2) on the same ticker and day, plus one call fire on
+    each of `extra_days` (days the test gives no archive file)."""
+    fires = [
+        (1, CALL_CHAIN, 'C', date(2026, 7, 22)),
+        (2, PUT_CHAIN, 'P', date(2026, 7, 22)),
+    ]
+    for i, day in enumerate(extra_days):
+        chain = f'TSLA{day.replace("-", "")[2:]}C00300000'
+        fires.append((10 + i, chain, 'C', date.fromisoformat(day)))
     rows = []
-    for fire_id, chain, option_type in ((1, CALL_CHAIN, 'C'), (2, PUT_CHAIN, 'P')):
+    for fire_id, chain, option_type, fire_date in fires:
         rows.append(
             {
                 'id': fire_id,
-                'date': date(2026, 7, 22),
+                'date': fire_date,
                 'option_chain_id': chain,
                 'underlying_symbol': 'TSLA',
                 'option_type': option_type,
@@ -141,15 +149,71 @@ def loader() -> FlowLoader:
     return FlowLoader()
 
 
-def test_tune_reads_each_ticker_and_side_through_the_loader(
-    tmp_path: Path, conn: FakeConn, loader: FlowLoader, monkeypatch: pytest.MonkeyPatch
+@pytest.fixture(autouse=True)
+def home_without_archives(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The tuning script used to read ~/Desktop/Bot-Eod-parquet. Point the home
+    directory at an empty one, so a script that falls back to it finds nothing
+    on any machine, including one that has that folder."""
+    home = tmp_path / 'home'
+    home.mkdir()
+    monkeypatch.setattr(Path, 'home', staticmethod(lambda: home))
+
+
+@pytest.fixture
+def archive(tmp_path: Path) -> Path:
+    """An empty Bot-EOD archive directory, under a name no default uses."""
+    directory = tmp_path / 'my-archive'
+    directory.mkdir()
+    return directory
+
+
+@pytest.fixture
+def tune_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """tune.main() with an empty .env.local and its report kept under tmp_path;
+    returns where the report would land."""
+    env_file = tmp_path / '.env.local'
+    env_file.write_text('', encoding='utf-8')
+    monkeypatch.setattr(tune, 'ENV_FILE', env_file)
+    monkeypatch.setattr(tune, 'ROOT', tmp_path)
+    return tmp_path / 'docs' / 'tmp' / f'flow-inversion-tuning-{DAY}.md'
+
+
+# ── tune_flow_inversion: --parquet-dir, as flow_inversion_timing takes it ──
+
+
+def test_tune_parquet_dir_is_required(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        tune.parse_args([])
+    assert exc.value.code == 2
+    assert '--parquet-dir' in capsys.readouterr().err
+
+
+def test_tune_missing_parquet_dir_fails_by_name(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    write_day(tmp_path)
-    monkeypatch.setattr(tune, 'PARQUET_DIR', tmp_path)
+    missing = tmp_path / 'Desktop' / 'Bot-Eod-parquet'
+    with pytest.raises(SystemExit) as exc:
+        tune.parse_args(['--parquet-dir', str(missing)])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert '--parquet-dir' in err
+    assert str(missing) in err
+
+
+def test_tune_parquet_dir_parses_to_a_path(archive: Path) -> None:
+    assert tune.parse_args(['--parquet-dir', str(archive)]).parquet_dir == archive
+
+
+def test_tune_reads_each_ticker_and_side_through_the_loader(
+    archive: Path, conn: FakeConn, loader: FlowLoader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The day file exists only in the directory the caller names.
+    write_day(archive)
     monkeypatch.setattr(tune, 'load_matched_flow', loader)
 
-    inputs = tune.build_fire_inputs()
+    inputs, days_read, missing = tune.build_fire_inputs(archive)
 
+    assert (days_read, missing) == (1, [])
     # Once per (ticker, side), for the session date, on the script's connection.
     assert loader.calls == [(conn, DAY, 'TSLA', 'C'), (conn, DAY, 'TSLA', 'P')]
     # Each fire carries its own side's flow.
@@ -157,6 +221,86 @@ def test_tune_reads_each_ticker_and_side_through_the_loader(
     assert flow_by_id == {1: CALL_FLOW, 2: PUT_FLOW}
     # And the script sends no flow query of its own.
     assert conn.flow_sqls() == []
+
+
+# ── tune_flow_inversion: a day with no archive file ──
+
+
+def test_tune_skips_a_missing_day_by_name(
+    archive: Path,
+    conn: FakeConn,
+    loader: FlowLoader,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(tune, 'load_matched_flow', loader)
+
+    inputs, days_read, missing = tune.build_fire_inputs(archive)
+
+    assert inputs.empty
+    assert (days_read, missing) == (0, [DAY])
+    assert loader.calls == []  # no file, so no flow is read for the day
+    out, err = capsys.readouterr()
+    line = (
+        f'[load] SKIP {DAY}: archive file missing: '
+        f'{archive / f"{DAY}-trades.parquet"} (2 fires not prepped)'
+    )
+    assert line in out
+    assert line in err
+    assert '0 day(s) read, 1 day(s) skipped for a missing archive' in out
+    assert f'[load] skipped (archive missing): {DAY}' in err
+
+
+def test_tune_with_no_archive_day_exits_0_and_writes_no_report(
+    archive: Path,
+    conn: FakeConn,
+    tune_env: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    tune.main(['--parquet-dir', str(archive)])  # returns: exit 0
+
+    out = capsys.readouterr().out
+    assert 'no archive day to read' in out
+    assert 'no report written' in out
+    assert not tune_env.exists()
+
+
+def test_tune_still_fails_when_days_were_read_but_nothing_prepped(
+    archive: Path,
+    conn: FakeConn,
+    tune_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # One day file exists but holds none of the fires' chains, and another day
+    # has no file at all: a skipped day must not turn this into a clean exit.
+    write_day(archive)
+    other = fires_frame(extra_days=('2026-07-23',)).assign(
+        option_chain_id='NVDA260722C00100000'
+    )
+    monkeypatch.setattr('pandas.read_sql', lambda *_args, **_kwargs: other)
+
+    with pytest.raises(SystemExit, match='no fire-inputs prepared'):
+        tune.main(['--parquet-dir', str(archive)])
+
+    assert '1 day(s) read, 1 day(s) skipped for a missing archive' in capsys.readouterr().out
+    assert not tune_env.exists()
+
+
+def test_tune_report_names_the_days_it_skipped(
+    archive: Path,
+    conn: FakeConn,
+    tune_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_day(archive)
+    with_gap = fires_frame(extra_days=('2026-07-23',))
+    monkeypatch.setattr('pandas.read_sql', lambda *_args, **_kwargs: with_gap)
+
+    tune.main(['--parquet-dir', str(archive)])
+
+    report = tune_env.read_text(encoding='utf-8')
+    assert '1 day(s) skipped (archive missing): 2026-07-23' in report
 
 
 def test_timing_reads_each_ticker_and_side_through_the_loader(

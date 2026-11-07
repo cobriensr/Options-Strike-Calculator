@@ -9,17 +9,26 @@ can tell if a tuned combo is real edge vs overfit noise.
 
 Read-only — does not modify the DB or production code.
 
+A day whose archive file is missing is skipped with one line naming it, and
+the skipped days are listed at the end. When no day had a file, the run says
+so and exits 0; a run that read days but prepared no fire still exits
+non-zero.
+
 Usage:
-    ml/.venv/Scripts/python scripts/tune_flow_inversion.py
+    ml/.venv/Scripts/python scripts/tune_flow_inversion.py --parquet-dir <bot-eod-dir>
+
+--parquet-dir is the Bot-EOD archive, the directory of
+{date}-trades.parquet files (`make tune` passes the Makefile's PARQUET_DIR).
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -29,11 +38,15 @@ import psycopg2
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env.local'
-PARQUET_DIR = Path.home() / 'Desktop' / 'Bot-Eod-parquet'
 
 # Read each day's flow with the enrichment script's own loader, so the window
 # is the one its values are written from (the tuning variants below stay here).
 sys.path.insert(0, str(ROOT / 'scripts'))
+from _cli_paths import (  # noqa: E402
+    existing_dir,
+    format_dates,
+    warn_missing_archive,
+)
 from enrich_lottery_outcomes import load_matched_flow  # noqa: E402
 
 _CT_TZ = ZoneInfo('America/Chicago')
@@ -189,7 +202,12 @@ def resample_minute_mid(chain_df):
     return [(ts.to_pydatetime(), float(m)) for ts, m in grouped['mid'].items()]
 
 
-def build_fire_inputs():
+def build_fire_inputs(
+    parquet_dir: Path,
+) -> tuple[pd.DataFrame, int, list[str]]:
+    """The tuning inputs for every enriched fire whose day file is in
+    `parquet_dir`, as (inputs, days_read, missing): the days with no file are
+    skipped, each named on stdout and stderr, and listed in `missing`."""
     db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ['DATABASE_URL']
     conn = psycopg2.connect(db_url)
     print('[load] fetching fires…')
@@ -206,12 +224,18 @@ def build_fire_inputs():
     print(f'[load] {len(fires):,} fires across {fires["date"].nunique()} dates')
 
     inputs = []
+    missing: list[str] = []
+    days_read = 0
     for d, sub in fires.groupby('date', sort=True):
         date_str = d.isoformat() if hasattr(d, 'isoformat') else str(d)[:10]
-        path = PARQUET_DIR / f'{date_str}-trades.parquet'
+        path = parquet_dir / f'{date_str}-trades.parquet'
         if not path.exists():
-            print(f'  [{date_str}] parquet missing — skipping')
+            warn_missing_archive(
+                '[load]', date_str, path, f'{len(sub):,} fires not prepped'
+            )
+            missing.append(date_str)
             continue
+        days_read += 1
         chains = sub['option_chain_id'].unique().tolist()
         df = pd.read_parquet(
             path,
@@ -267,7 +291,15 @@ def build_fire_inputs():
             cnt += 1
         print(f'  [{date_str}] {len(sub):,} fires → {cnt:,} prepped')
 
-    return pd.DataFrame(inputs)
+    print(
+        f'[load] {days_read} day(s) read, {len(missing)} day(s) skipped '
+        'for a missing archive'
+    )
+    if missing:
+        line = f'[load] skipped (archive missing): {format_dates(missing)}'
+        print(line)
+        print(line, file=sys.stderr)
+    return pd.DataFrame(inputs), days_read, missing
 
 
 # ============================================================
@@ -311,14 +343,33 @@ def latest_fire_date(conn) -> str:
     return row[0].isoformat() if hasattr(row[0], 'isoformat') else str(row[0])[:10]
 
 
-def main():
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        '--parquet-dir',
+        type=existing_dir,
+        required=True,
+        help='Bot-EOD archive: the directory of {date}-trades.parquet files.',
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     load_env()
     db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ['DATABASE_URL']
     out_path = (
         ROOT / 'docs' / 'tmp'
         / f'flow-inversion-tuning-{latest_fire_date(psycopg2.connect(db_url))}.md'
     )
-    inputs = build_fire_inputs()
+    inputs, days_read, missing = build_fire_inputs(args.parquet_dir)
+    if inputs.empty:
+        if days_read == 0 and missing:
+            # Missing archives are a skip, not a failure (owner rule
+            # 2026-10-29): say so and let the caller carry on.
+            print('[tune] no archive day to read — no report written')
+            return
+        sys.exit('[tune] no fire-inputs prepared — nothing to tune')
     print(f'\n[tune] {len(inputs):,} fire-inputs ready')
 
     dates_sorted = sorted(inputs['date'].unique())
@@ -336,6 +387,11 @@ def main():
     lines.append('# Flow-inversion per-mode parameter tuning\n')
     lines.append(f'Dataset: {len(inputs):,} fires '
                  f'({len(train_dates)} train days, {len(test_dates)} test days)\n')
+    if missing:
+        lines.append(
+            f'{len(missing)} day(s) skipped (archive missing): '
+            f'{format_dates(missing)}. Their fires are not tuned on.\n'
+        )
     lines.append(f'Frozen defaults: prom={DEFAULT_PROM}, '
                  f'window={DEFAULT_WINDOW}min, persist={DEFAULT_PERSIST}min\n')
 

@@ -51,9 +51,9 @@ PYTHON      := ml/.venv/$(VENV_BIN)/python
 HOME_DIR    := $(subst \,/,$(HOME))
 INPUT_DIR   ?= $(HOME_DIR)/Downloads/EOD-OptionFlow
 # Bot-EOD archive ({date}-trades.parquet). scripts/ingest-flow.py writes it
-# (--archive-dir); the enrich, backfill-flow, exit-policy-search and
-# flow-inversion-timing scripts read it (--parquet-dir). None of them has a
-# default of its own here.
+# (--archive-dir); the enrich, backfill-flow, exit-policy-search,
+# flow-inversion-timing and tune-flow-inversion scripts read it
+# (--parquet-dir). None of them has a default of its own here.
 PARQUET_DIR ?= $(HOME_DIR)/Desktop/Bot-Eod-parquet
 INPUT_DIR_FULLTAPE   ?= $(HOME_DIR)/Downloads/EOD-FullTape
 PARQUET_DIR_FULLTAPE ?= $(HOME_DIR)/Desktop/Eod-Full-Tape-parquet
@@ -308,7 +308,7 @@ tune:
 	@# 84 (prom × window × persist) combos × 63K fires per mode. Pure-
 	@# Python loops — slow but cache-warm-friendly. Run weekly: the
 	@# answer doesn't move on a single new day of data.
-	$(PYTHON) scripts/tune_flow_inversion.py
+	$(PYTHON) scripts/tune_flow_inversion.py --parquet-dir "$(PARQUET_DIR)"
 
 # Manually download the UW Full Tape zip for inspection / future research.
 #
