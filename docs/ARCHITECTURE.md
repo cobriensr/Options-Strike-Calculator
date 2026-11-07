@@ -525,7 +525,6 @@ Every handler in `api/cron/` checks `CRON_SECRET` (with `bearerMatches`). Most r
 | `fetch-strike-trade-volume`    | Unusual Whales | `strike_trade_volume`  | Per-strike tape-side volume        |
 | `fetch-flow-alerts`            | Unusual Whales | `flow_alerts`          | 0–1 DTE SPXW flow alerts           |
 | `monitor-flow-ratio`           | Unusual Whales | `flow_ratio_monitor`   | Put/call flow ratio dynamics       |
-| `fetch-market-internals`       | Schwab         | `market_internals`     | $TICK, $ADD, $VOLD, $TRIN bars     |
 
 **Post-close and daily:**
 
@@ -544,6 +543,7 @@ Schedules are UTC, with the ET time in EDT. Jobs that must land at a fixed ET ti
 | `capture-flow-regime-daily`   | 21:55 (5:55 PM)                                  | Fills the flow-regime slots the live cron missed (normally the last, 3:30–4:00 PM)                                   |
 | `fetch-futures-session-stats` | Tue–Sat 12:30 (8:30 AM), Mon–Fri 21:30 (5:30 PM) | CME settlement, open interest and session volume, front two contracts of each futures root → `futures_session_stats` |
 | `repair-futures-blocks`       | 22:15 (6:15 PM)                                  | Repairs `futures_blocks` from UW REST for blocks the websocket dropped                                               |
+| `fetch-market-internals`      | Mon–Fri 22:30 (6:30 PM)                          | Schwab's settled 1-min $TICK, $ADD, $VOLD, $TRIN bars for the last 5 sessions → `market_internals` (upsert; none in session) |
 | `fetch-day-ohlc`              | Tue–Sat 23:00 (7:00 PM)                          | OHLC + excursions on the prior trading day's `day_embeddings` row                                                    |
 | `audit-gexbot-eod`            | 19:45 (3:45 PM)                                  | Alarms when a GEXBot EOD report is missing from `gexbot_eod_reports`, in time for a manual rescue run                |
 | `archive-gexbot-eod`          | Daily 02:00, 12:00, 19:00, 23:00                 | GEXBot end-of-day report ZIPs (60 tickers) → private R2, indexed in `gexbot_eod_reports`                             |
