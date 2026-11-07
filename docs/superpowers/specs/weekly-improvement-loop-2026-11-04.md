@@ -26,9 +26,9 @@ A weekly pass would surface these as counts with dates, instead of relying on so
 | Flaky tests | A test that fails, then passes on a rerun with no code change, 2 or more times a week | A flaky-test ledger entry and a fix ticket |
 | Model use | Agent calls by type and model, tokens, and stall rate per model | The subagent-model rule; Sonnet vs Opus per task type |
 | Rule efficacy | For each memory or rule with a creation date, the rate of the behaviour it targets in the 2 weeks before vs since | Keep it, reword it, or replace it with a hook or script |
-| Skill use (not built) | Skills loaded vs listed; skills never loaded in 4 weeks | Prune or merge |
+| Skill use | Skills loaded vs listed; skills never loaded in 4 weeks | Prune or merge, by the owner reading the list. It proposes nothing. |
 
-No phase below covers Skill use, so it wasn't built. The owner decides whether to add it or drop it.
+No phase below covered Skill use. The owner added it on 2026-11-07 as a report section only: a skill that fires on a rare prompt looks the same as a dead one, and the same names would come back every week.
 
 The rule-efficacy check is the one the audit lacked. It would have flagged all five rules that weren't working on 2026-10-28, and today it would flag the pipe and time-zone rules.
 
@@ -82,7 +82,7 @@ The spec left these open. They were picked during the build (2026-11-06), not by
 - Proposals need 3 approval waits of one kind, 3 runs left asleep, 3 corrections or 2 flips of one test. A hook or script needs a confident replace or a known case recurring. An inconclusive row can only ask for a rewording, and only when its bands exclude keep.
 - "Owner away" means an approval wait over 6 h. Approval figures lead with wall-clock and market-hours time, with overlapping waits counted once.
 
-The transcripts only went back to 2026-10-22 at the first run, so the before windows then were 6 to 7 days, not 14.
+At the first run the transcripts covered 2026-09-30 to 10-05 and from the evening of 10-22 CT on, with nothing between, so the before windows for rules dated around 10-29 were 6 to 7 days, not 14.
 
 ## Decisions (owner, 2026-11-04 about 14:15 CT: all defaults)
 
