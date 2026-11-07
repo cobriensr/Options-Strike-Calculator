@@ -1,1029 +1,650 @@
 {
-  "format": "Shared by the TypeScript (api/__tests__/futures-contracts.test.ts) roll-forward rule tests and by the Python (uw-stream, Phase 5) tests, which are to run these same cases. To run a case: build one list of rows per contract key, in order of first appearance in the segments. A segment is k consecutive minutes starting at `from`; in each of them every contract named in `volumes` gets one row (ts, volume), and a contract not named has no row that minute. All timestamps are UTC minutes in the form YYYY-MM-DDTHH:MM:00.000Z. A volume of 0 is still a row. Minutes between segments have no rows at all. Run the rule with the case's `root` and `seed` (null means no seed). Keys are contract symbols as fed: the rule folds a key to its one-digit name (ESZ26 is ESZ6), so `takeovers` and `front` use the one-digit names. The seed is folded the same way: with rows, a two-digit seed outside the window below makes the rule throw (that is a caller bug and has no field here); with no row at all it is folded by its last digit. Compare the result to `takeovers` (ts is the first minute on the new contract, in time order), `front` (the front after the last row, for the minute that follows it; null only when `seed` is null and no row of a key the rule keeps exists, so there is nothing to date a cold-start seed; a cold-start seed is dated at the first minute of a kept key, not at a skipped key's earlier row) and `skipped` (keys the rule leaves out, sorted ascending by code point: not an outright of the root, or a two-digit year outside the one-digit window [R - 1, R + 8], R being the UTC year of the first row of any outright key; such a year has no one-digit name that would not collide with a nearer contract) exactly. When a case has `emitted`, also compare it: every row the rule emits, in time order, each `{ts, contract, key, volume}`, where `contract` is the canonical name, `key` is the key (spelling) whose own row it is and `volume` is that row's own volume, not the sum of the minute's spellings. To check `key`, tag each row you build with the key it came from. `N` is the guard length in minute closes.",
-  "N": 120,
-  "cases": [
+  "format": "Shared by the TypeScript tests (api/__tests__/futures-contracts.test.ts) and by the Python tests of the uw-stream futures_trades handler (Phase 5), which are to run these same cases against their port of the per-session front-month rule. Three lists, each case with a unique `name`. `cmeTradeDate`: {name, ts, tradeDate}. ts is a UTC instant (ISO, ending in Z). Its CME trade date is the America/Chicago calendar date of ts + 7 hours, so a session runs from 17:00 Chicago time on the evening before its trade date until 17:00 on it (the open moves between 22:00Z and 23:00Z with daylight saving). `decideFrontMonth`: {name, root, tradeDate, incumbent, volumes, front}. Run decide(incumbent, volumes, root, tradeDate) and compare it with `front`. incumbent is a contract symbol or null (none). volumes is an object of contract symbol to volume, symbols as fed. Every symbol, the incumbent included, is first folded to its canonical name: root, CME month code and the last year digit, so ESZ26 is ESZ6 and the spellings of one contract sum their volumes. A symbol that is not an outright of `root` (a spread, another root) is dropped, and so is a two-digit year outside the one-digit window [Y - 1, Y + 8], Y being the year of tradeDate. A one-digit year is the one year in that window ending in that digit. `front` is always a canonical name. With no incumbent and no volume left, the result is the first contract in the root's listing cycle that has not stopped trading by the month of tradeDate. `pickScheduledFront`: {name, schedule, rows, picked}. schedule maps a trade date to a contract name, and a trade date it does not list has no scheduled contract. rows is a list of {key, ts, volume}: build one list of rows per key, keys in order of first appearance, and run pick(byKey, contractFor), where contractFor looks a trade date up in schedule. A row counts only if the canonical name of its key, with Y taken from the trade date of the row's own ts, equals the scheduled contract of that trade date (canonical too). Of several counting rows in one minute (two spellings of one contract) the larger volume's row is picked, and a tie goes to the key that sorts first by code point, whatever the order of the rows. A minute where the scheduled contract has no counting row is left out. Compare the result with `picked` exactly, in time order: {ts, contract, key, volume}, where contract is the scheduled canonical name, key is the key (spelling) whose own row it is and volume is that row's own volume, not a sum.",
+  "cmeTradeDate": [
     {
-      "name": "roll-day crossover: one takeover at exactly m0 + 120 closes, none earlier",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T00:00:00.000Z",
-          "minutes": 480,
-          "volumes": {
-            "ESZ6": 10
-          }
-        },
-        {
-          "from": "2026-12-08T08:00:00.000Z",
-          "minutes": 480,
-          "volumes": {
-            "ESZ6": 0,
-            "ESH7": 20
-          }
-        }
-      ],
-      "takeovers": [
-        {
-          "ts": "2026-12-08T14:00:00.000Z",
-          "contract": "ESH7"
-        }
-      ],
-      "front": "ESH7",
-      "skipped": []
+      "name": "CST: one minute before the 17:00 CT open is still the same date",
+      "ts": "2026-11-05T22:59:00.000Z",
+      "tradeDate": "2026-11-05"
     },
     {
-      "name": "no step back after 00:00Z: the old front leads the new day and the front stays",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-09T00:00:00.000Z",
-          "minutes": 360,
-          "volumes": {
-            "ESZ6": 10
-          }
-        },
-        {
-          "from": "2026-12-09T06:00:00.000Z",
-          "minutes": 600,
-          "volumes": {
-            "ESZ6": 0,
-            "ESH7": 20
-          }
-        },
-        {
-          "from": "2026-12-10T00:00:00.000Z",
-          "minutes": 420,
-          "volumes": {
-            "ESZ6": 10,
-            "ESH7": 3
-          }
-        }
-      ],
-      "takeovers": [
-        {
-          "ts": "2026-12-09T11:00:00.000Z",
-          "contract": "ESH7"
-        }
-      ],
-      "front": "ESH7",
-      "skipped": []
+      "name": "CST: the last millisecond before the open",
+      "ts": "2026-11-05T22:59:59.999Z",
+      "tradeDate": "2026-11-05"
     },
     {
-      "name": "a transient lead of 119 closes gives no takeover",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T00:00:00.000Z",
-          "minutes": 60,
-          "volumes": {
-            "ESZ6": 10
-          }
-        },
-        {
-          "from": "2026-12-08T01:00:00.000Z",
-          "minutes": 179,
-          "volumes": {
-            "ESZ6": 0,
-            "ESH7": 10
-          }
-        },
-        {
-          "from": "2026-12-08T03:59:00.000Z",
-          "minutes": 1,
-          "volumes": {
-            "ESZ6": 5000,
-            "ESH7": 0
-          }
-        },
-        {
-          "from": "2026-12-08T04:00:00.000Z",
-          "minutes": 120,
-          "volumes": {
-            "ESZ6": 0,
-            "ESH7": 0
-          }
-        }
-      ],
-      "takeovers": [],
-      "front": "ESZ6",
-      "skipped": []
+      "name": "CST: the 17:00 CT open starts the next trade date",
+      "ts": "2026-11-05T23:00:00.000Z",
+      "tradeDate": "2026-11-06"
     },
     {
-      "name": "a lead of exactly 120 closes gives one takeover, even when the lead is lost at that very minute",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T00:00:00.000Z",
-          "minutes": 60,
-          "volumes": {
-            "ESZ6": 10
-          }
-        },
-        {
-          "from": "2026-12-08T01:00:00.000Z",
-          "minutes": 180,
-          "volumes": {
-            "ESZ6": 0,
-            "ESH7": 10
-          }
-        },
-        {
-          "from": "2026-12-08T04:00:00.000Z",
-          "minutes": 1,
-          "volumes": {
-            "ESZ6": 5000,
-            "ESH7": 0
-          }
-        },
-        {
-          "from": "2026-12-08T04:01:00.000Z",
-          "minutes": 120,
-          "volumes": {
-            "ESZ6": 0,
-            "ESH7": 0
-          }
-        }
-      ],
-      "takeovers": [
-        {
-          "ts": "2026-12-08T04:00:00.000Z",
-          "contract": "ESH7"
-        }
-      ],
-      "front": "ESH7",
-      "skipped": []
+      "name": "CST: 00:00 UTC is 18:00 the evening before in Chicago, already the next trade date",
+      "ts": "2026-11-06T00:00:00.000Z",
+      "tradeDate": "2026-11-06"
     },
     {
-      "name": "a lost lead breaks the streak and it restarts from the next lead (a tie is a lost lead)",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T00:00:00.000Z",
-          "minutes": 60,
-          "volumes": {
-            "ESZ6": 10
-          }
-        },
-        {
-          "from": "2026-12-08T01:00:00.000Z",
-          "minutes": 160,
-          "volumes": {
-            "ESZ6": 0,
-            "ESH7": 10
-          }
-        },
-        {
-          "from": "2026-12-08T03:40:00.000Z",
-          "minutes": 1,
-          "volumes": {
-            "ESZ6": 1000,
-            "ESH7": 0
-          }
-        },
-        {
-          "from": "2026-12-08T03:41:00.000Z",
-          "minutes": 180,
-          "volumes": {
-            "ESZ6": 0,
-            "ESH7": 10
-          }
-        }
-      ],
-      "takeovers": [
-        {
-          "ts": "2026-12-08T05:41:00.000Z",
-          "contract": "ESH7"
-        }
-      ],
-      "front": "ESH7",
-      "skipped": []
+      "name": "CST: Chicago midnight belongs to the session that opened at 17:00 the day before",
+      "ts": "2026-11-05T06:00:00.000Z",
+      "tradeDate": "2026-11-05"
     },
     {
-      "name": "a challenger change resets the streak: two later contracts swap the lead",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T00:00:00.000Z",
-          "minutes": 60,
-          "volumes": {
-            "ESZ6": 10
-          }
-        },
-        {
-          "from": "2026-12-08T01:00:00.000Z",
-          "minutes": 160,
-          "volumes": {
-            "ESH7": 10
-          }
-        },
-        {
-          "from": "2026-12-08T03:40:00.000Z",
-          "minutes": 30,
-          "volumes": {
-            "ESM7": 100
-          }
-        },
-        {
-          "from": "2026-12-08T04:10:00.000Z",
-          "minutes": 150,
-          "volumes": {
-            "ESH7": 100
-          }
-        }
-      ],
-      "takeovers": [
-        {
-          "ts": "2026-12-08T06:23:00.000Z",
-          "contract": "ESH7"
-        }
-      ],
-      "front": "ESH7",
-      "skipped": []
+      "name": "CST: mid-session",
+      "ts": "2026-11-05T15:30:00.000Z",
+      "tradeDate": "2026-11-05"
     },
     {
-      "name": "the streak cannot span 00:00 UTC (rows through midnight): it restarts after the reset",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T00:00:00.000Z",
-          "minutes": 1320,
-          "volumes": {
-            "ESZ6": 1
-          }
-        },
-        {
-          "from": "2026-12-08T22:00:00.000Z",
-          "minutes": 120,
-          "volumes": {
-            "ESZ6": 0,
-            "ESH7": 20
-          }
-        },
-        {
-          "from": "2026-12-09T00:00:00.000Z",
-          "minutes": 300,
-          "volumes": {
-            "ESZ6": 0,
-            "ESH7": 20
-          }
-        }
-      ],
-      "takeovers": [
-        {
-          "ts": "2026-12-09T02:00:00.000Z",
-          "contract": "ESH7"
-        }
-      ],
-      "front": "ESH7",
-      "skipped": []
+      "name": "CDT: one minute before the 17:00 CT open",
+      "ts": "2026-09-14T21:59:00.000Z",
+      "tradeDate": "2026-09-14"
     },
     {
-      "name": "the streak cannot span 00:00 UTC (quiet gap over midnight): a maturity on the next day is not honored",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T00:00:00.000Z",
-          "minutes": 1320,
-          "volumes": {
-            "ESZ6": 1
-          }
-        },
-        {
-          "from": "2026-12-08T22:00:00.000Z",
-          "minutes": 120,
-          "volumes": {
-            "ESZ6": 0,
-            "ESH7": 20
-          }
-        },
-        {
-          "from": "2026-12-09T02:00:00.000Z",
-          "minutes": 300,
-          "volumes": {
-            "ESZ6": 0,
-            "ESH7": 20
-          }
-        }
-      ],
-      "takeovers": [
-        {
-          "ts": "2026-12-09T04:00:00.000Z",
-          "contract": "ESH7"
-        }
-      ],
-      "front": "ESH7",
-      "skipped": []
+      "name": "CDT: the 17:00 CT open is 22:00Z",
+      "ts": "2026-09-14T22:00:00.000Z",
+      "tradeDate": "2026-09-15"
     },
     {
-      "name": "maturity inside a quiet gap: the lead holds through minutes with no rows and the takeover ts is the maturity minute",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T00:00:00.000Z",
-          "minutes": 60,
-          "volumes": {
-            "ESZ6": 10
-          }
-        },
-        {
-          "from": "2026-12-08T01:00:00.000Z",
-          "minutes": 61,
-          "volumes": {
-            "ESZ6": 0,
-            "ESH7": 10
-          }
-        },
-        {
-          "from": "2026-12-08T07:00:00.000Z",
-          "minutes": 10,
-          "volumes": {
-            "ESZ6": 1,
-            "ESH7": 1
-          }
-        }
-      ],
-      "takeovers": [
-        {
-          "ts": "2026-12-08T04:00:00.000Z",
-          "contract": "ESH7"
-        }
-      ],
-      "front": "ESH7",
-      "skipped": []
+      "name": "DST ends 2026-11-01: the Friday before is still CDT, the open is 22:00Z",
+      "ts": "2026-10-30T21:59:00.000Z",
+      "tradeDate": "2026-10-30"
     },
     {
-      "name": "restart mid-roll: seeded with the old front, the tally counts only from the restart",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T12:00:00.000Z",
-          "minutes": 60,
-          "volumes": {
-            "ESZ6": 10,
-            "ESH7": 3
-          }
-        },
-        {
-          "from": "2026-12-08T13:00:00.000Z",
-          "minutes": 300,
-          "volumes": {
-            "ESZ6": 0,
-            "ESH7": 20
-          }
-        }
-      ],
-      "takeovers": [
-        {
-          "ts": "2026-12-08T15:21:00.000Z",
-          "contract": "ESH7"
-        }
-      ],
-      "front": "ESH7",
-      "skipped": []
+      "name": "DST ends 2026-11-01: the Friday before is still CDT, 22:00Z opens the next date",
+      "ts": "2026-10-30T22:00:00.000Z",
+      "tradeDate": "2026-10-31"
     },
     {
-      "name": "expiry handover: the front stops printing and the next contract takes over 120 closes after its first leading close",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-18T13:00:00.000Z",
-          "minutes": 480,
-          "volumes": {
-            "ESZ6": 10,
-            "ESH7": 1
-          }
-        },
-        {
-          "from": "2026-12-21T01:00:00.000Z",
-          "minutes": 300,
-          "volumes": {
-            "ESH7": 5
-          }
-        }
-      ],
-      "takeovers": [
-        {
-          "ts": "2026-12-21T03:00:00.000Z",
-          "contract": "ESH7"
-        }
-      ],
-      "front": "ESH7",
-      "skipped": []
+      "name": "DST ends 2026-11-01: the repeated hour, first pass (01:30 CDT)",
+      "ts": "2026-11-01T06:30:00.000Z",
+      "tradeDate": "2026-11-01"
     },
     {
-      "name": "jump past the next contract: the expired front's second-next contract has the largest tally",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-21T01:00:00.000Z",
-          "minutes": 300,
-          "volumes": {
-            "ESH7": 1,
-            "ESM7": 5
-          }
-        }
-      ],
-      "takeovers": [
-        {
-          "ts": "2026-12-21T03:00:00.000Z",
-          "contract": "ESM7"
-        }
-      ],
-      "front": "ESM7",
-      "skipped": []
+      "name": "DST ends 2026-11-01: the repeated hour, second pass (01:30 CST)",
+      "ts": "2026-11-01T07:30:00.000Z",
+      "tradeDate": "2026-11-01"
     },
     {
-      "name": "decade rollover: ESZ9 hands over to ESH0 across 2029/2030",
-      "root": "ES",
-      "seed": "ESZ9",
-      "segments": [
-        {
-          "from": "2029-12-10T00:00:00.000Z",
-          "minutes": 360,
-          "volumes": {
-            "ESZ9": 10
-          }
-        },
-        {
-          "from": "2029-12-10T06:00:00.000Z",
-          "minutes": 600,
-          "volumes": {
-            "ESZ9": 0,
-            "ESH0": 20
-          }
-        }
-      ],
-      "takeovers": [
-        {
-          "ts": "2029-12-10T11:00:00.000Z",
-          "contract": "ESH0"
-        }
-      ],
-      "front": "ESH0",
-      "skipped": []
+      "name": "DST ends 2026-11-01: 22:00Z is only 16:00 CST, the same date",
+      "ts": "2026-11-01T22:00:00.000Z",
+      "tradeDate": "2026-11-01"
     },
     {
-      "name": "null seed, ES in November: the cycle seeds ESZ6 even when the first print is a back month",
-      "root": "ES",
-      "seed": null,
-      "segments": [
-        {
-          "from": "2026-11-10T01:00:00.000Z",
-          "minutes": 1,
-          "volumes": {
-            "ESH7": 3
-          }
-        },
-        {
-          "from": "2026-11-10T01:01:00.000Z",
-          "minutes": 299,
-          "volumes": {
-            "ESZ6": 10,
-            "ESH7": 1
-          }
-        }
-      ],
-      "takeovers": [],
-      "front": "ESZ6",
-      "skipped": []
+      "name": "DST ends 2026-11-01: the Sunday open is 23:00Z, one minute before",
+      "ts": "2026-11-01T22:59:00.000Z",
+      "tradeDate": "2026-11-01"
     },
     {
-      "name": "null seed, CL in November: CL stops a month early, so the cycle seeds CLZ6, not CLX6",
+      "name": "DST ends 2026-11-01: the Sunday open at 23:00Z starts 11-02",
+      "ts": "2026-11-01T23:00:00.000Z",
+      "tradeDate": "2026-11-02"
+    },
+    {
+      "name": "DST begins 2027-03-14: the Saturday before is still CST, the open is 23:00Z, one minute before",
+      "ts": "2027-03-13T22:59:00.000Z",
+      "tradeDate": "2027-03-13"
+    },
+    {
+      "name": "DST begins 2027-03-14: the Saturday before is still CST, 23:00Z opens the next date",
+      "ts": "2027-03-13T23:00:00.000Z",
+      "tradeDate": "2027-03-14"
+    },
+    {
+      "name": "DST begins 2027-03-14: the last minute before the clocks jump (01:59 CST)",
+      "ts": "2027-03-14T07:59:00.000Z",
+      "tradeDate": "2027-03-14"
+    },
+    {
+      "name": "DST begins 2027-03-14: the first minute after the clocks jump (03:00 CDT)",
+      "ts": "2027-03-14T08:00:00.000Z",
+      "tradeDate": "2027-03-14"
+    },
+    {
+      "name": "DST begins 2027-03-14: the Sunday open is 22:00Z, one minute before",
+      "ts": "2027-03-14T21:59:00.000Z",
+      "tradeDate": "2027-03-14"
+    },
+    {
+      "name": "DST begins 2027-03-14: the Sunday open at 22:00Z starts 03-15",
+      "ts": "2027-03-14T22:00:00.000Z",
+      "tradeDate": "2027-03-15"
+    },
+    {
+      "name": "year end: before the open",
+      "ts": "2026-12-31T22:59:00.000Z",
+      "tradeDate": "2026-12-31"
+    },
+    {
+      "name": "year end: the open starts January 1",
+      "ts": "2026-12-31T23:00:00.000Z",
+      "tradeDate": "2027-01-01"
+    },
+    {
+      "name": "decade end: the open starts 2030-01-01",
+      "ts": "2029-12-31T23:00:00.000Z",
+      "tradeDate": "2030-01-01"
+    },
+    {
+      "name": "leap day: the open on 02-28 starts 02-29",
+      "ts": "2028-02-28T23:00:00.000Z",
+      "tradeDate": "2028-02-29"
+    },
+    {
+      "name": "leap day: the open on 02-29 starts 03-01",
+      "ts": "2028-02-29T23:00:00.000Z",
+      "tradeDate": "2028-03-01"
+    },
+    {
+      "name": "month end: the open on 11-30 starts 12-01",
+      "ts": "2026-11-30T23:00:00.000Z",
+      "tradeDate": "2026-12-01"
+    }
+  ],
+  "decideFrontMonth": [
+    {
+      "name": "keeps the incumbent when it out-traded the later month",
+      "root": "ES",
+      "tradeDate": "2026-12-08",
+      "incumbent": "ESZ6",
+      "volumes": { "ESZ6": 1000, "ESH7": 500 },
+      "front": "ESZ6"
+    },
+    {
+      "name": "rolls forward when a later month out-traded the incumbent",
+      "root": "ES",
+      "tradeDate": "2026-12-08",
+      "incumbent": "ESZ6",
+      "volumes": { "ESZ6": 500, "ESH7": 1000 },
+      "front": "ESH7"
+    },
+    {
+      "name": "rolls forward by a single contract of volume",
+      "root": "ES",
+      "tradeDate": "2026-12-08",
+      "incumbent": "ESZ6",
+      "volumes": { "ESZ6": 1000, "ESH7": 1001 },
+      "front": "ESH7"
+    },
+    {
+      "name": "a tie keeps the incumbent",
+      "root": "ES",
+      "tradeDate": "2026-12-08",
+      "incumbent": "ESZ6",
+      "volumes": { "ESZ6": 700, "ESH7": 700 },
+      "front": "ESZ6"
+    },
+    {
+      "name": "never rolls back to an earlier month that has more volume",
+      "root": "ES",
+      "tradeDate": "2026-12-08",
+      "incumbent": "ESH7",
+      "volumes": { "ESZ6": 9000, "ESH7": 10 },
+      "front": "ESH7"
+    },
+    {
+      "name": "never rolls back, even when the incumbent has no volume at all",
+      "root": "ES",
+      "tradeDate": "2026-12-08",
+      "incumbent": "ESH7",
+      "volumes": { "ESZ6": 9000 },
+      "front": "ESH7"
+    },
+    {
+      "name": "empty volumes keep the incumbent",
+      "root": "ES",
+      "tradeDate": "2026-12-08",
+      "incumbent": "ESZ6",
+      "volumes": {},
+      "front": "ESZ6"
+    },
+    {
+      "name": "an expired incumbent with no volume rolls to the later month",
+      "root": "ES",
+      "tradeDate": "2026-12-21",
+      "incumbent": "ESZ6",
+      "volumes": { "ESH7": 100 },
+      "front": "ESH7"
+    },
+    {
+      "name": "a later month with zero volume does not roll an incumbent that has none",
+      "root": "ES",
+      "tradeDate": "2026-12-08",
+      "incumbent": "ESZ6",
+      "volumes": { "ESH7": 0 },
+      "front": "ESZ6"
+    },
+    {
+      "name": "jumps past the next month when the second-next out-traded it",
+      "root": "ES",
+      "tradeDate": "2026-12-08",
+      "incumbent": "ESZ6",
+      "volumes": { "ESZ6": 10, "ESH7": 50, "ESM7": 500 },
+      "front": "ESM7"
+    },
+    {
+      "name": "a tie among later months that beat the incumbent goes to the nearer expiry",
+      "root": "ES",
+      "tradeDate": "2026-12-08",
+      "incumbent": "ESZ6",
+      "volumes": { "ESM7": 50, "ESH7": 50, "ESZ6": 10 },
+      "front": "ESH7"
+    },
+    {
+      "name": "CL rolls month to month: CLZ6 hands over to CLF7",
       "root": "CL",
-      "seed": null,
-      "segments": [
-        {
-          "from": "2026-11-10T01:00:00.000Z",
-          "minutes": 300,
-          "volumes": {
-            "CLZ6": 10,
-            "CLF7": 1
-          }
-        }
-      ],
-      "takeovers": [],
-      "front": "CLZ6",
-      "skipped": []
+      "tradeDate": "2026-11-12",
+      "incumbent": "CLZ6",
+      "volumes": { "CLZ6": 10, "CLF7": 50 },
+      "front": "CLF7"
     },
     {
-      "name": "null seed, ES on 2026-12-20: the expired ESZ6 seeds, then the roll comes late, 120 closes after ESH7's first lead",
+      "name": "GC rolls through its even months: GCZ6 hands over to GCG7",
+      "root": "GC",
+      "tradeDate": "2026-11-24",
+      "incumbent": "GCZ6",
+      "volumes": { "GCZ6": 10, "GCG7": 50 },
+      "front": "GCG7"
+    },
+    {
+      "name": "no incumbent: the contract with the most volume",
       "root": "ES",
-      "seed": null,
-      "segments": [
-        {
-          "from": "2026-12-20T20:00:00.000Z",
-          "minutes": 200,
-          "volumes": {
-            "ESH7": 5
-          }
-        }
-      ],
-      "takeovers": [
-        {
-          "ts": "2026-12-20T22:00:00.000Z",
-          "contract": "ESH7"
-        }
-      ],
-      "front": "ESH7",
-      "skipped": []
+      "tradeDate": "2026-12-08",
+      "incumbent": null,
+      "volumes": { "ESZ6": 300, "ESH7": 900, "ESM7": 50 },
+      "front": "ESH7"
     },
     {
-      "name": "null seed, GC in November: the even-month cycle seeds GCZ6",
-      "root": "GC",
-      "seed": null,
-      "segments": [
-        {
-          "from": "2026-11-10T01:00:00.000Z",
-          "minutes": 10,
-          "volumes": {
-            "GCZ6": 5,
-            "GCG7": 1
-          }
-        }
-      ],
-      "takeovers": [],
-      "front": "GCZ6",
-      "skipped": []
+      "name": "no incumbent: a tie goes to the earlier expiry",
+      "root": "ES",
+      "tradeDate": "2026-12-08",
+      "incumbent": null,
+      "volumes": { "ESH7": 5, "ESZ6": 5 },
+      "front": "ESZ6"
     },
     {
-      "name": "null seed, CL in December: CL stops a month early and the year wraps, so the cycle seeds CLF7",
+      "name": "no incumbent and no volume, ES in November: the cycle seeds ESZ6",
+      "root": "ES",
+      "tradeDate": "2026-11-10",
+      "incumbent": null,
+      "volumes": {},
+      "front": "ESZ6"
+    },
+    {
+      "name": "no incumbent and no volume, CL in November: CL stops a month early, so CLZ6 and not CLX6",
       "root": "CL",
-      "seed": null,
-      "segments": [
-        {
-          "from": "2026-12-10T01:00:00.000Z",
-          "minutes": 10,
-          "volumes": {
-            "CLF7": 5,
-            "CLG7": 1
-          }
-        }
-      ],
-      "takeovers": [],
-      "front": "CLF7",
-      "skipped": []
+      "tradeDate": "2026-11-10",
+      "incumbent": null,
+      "volumes": {},
+      "front": "CLZ6"
     },
     {
-      "name": "null seed, GC in January: the cycle seeds GCG7",
+      "name": "no incumbent and no volume, ES on 2026-12-20: the expired ESZ6 seeds and the rule moves on from there",
+      "root": "ES",
+      "tradeDate": "2026-12-20",
+      "incumbent": null,
+      "volumes": {},
+      "front": "ESZ6"
+    },
+    {
+      "name": "no incumbent and no volume, GC in November: the even-month cycle seeds GCZ6",
       "root": "GC",
-      "seed": null,
-      "segments": [
-        {
-          "from": "2027-01-12T01:00:00.000Z",
-          "minutes": 10,
-          "volumes": {
-            "GCG7": 5,
-            "GCJ7": 1
-          }
-        }
-      ],
-      "takeovers": [],
-      "front": "GCG7",
-      "skipped": []
+      "tradeDate": "2026-11-10",
+      "incumbent": null,
+      "volumes": {},
+      "front": "GCZ6"
     },
     {
-      "name": "null seed, NQ in February: the quarterly cycle seeds NQH7 (GC's even-month cycle would seed NQG7)",
+      "name": "no incumbent and no volume, CL in December: CL stops a month early and the year wraps, so CLF7",
+      "root": "CL",
+      "tradeDate": "2026-12-10",
+      "incumbent": null,
+      "volumes": {},
+      "front": "CLF7"
+    },
+    {
+      "name": "no incumbent and no volume, GC in January: GCG7",
+      "root": "GC",
+      "tradeDate": "2027-01-12",
+      "incumbent": null,
+      "volumes": {},
+      "front": "GCG7"
+    },
+    {
+      "name": "no incumbent and no volume, NQ in February: the quarterly cycle seeds NQH7",
       "root": "NQ",
-      "seed": null,
-      "segments": [
-        {
-          "from": "2027-02-10T01:00:00.000Z",
-          "minutes": 10,
-          "volumes": {
-            "NQH7": 5
-          }
-        }
-      ],
-      "takeovers": [],
-      "front": "NQH7",
-      "skipped": []
+      "tradeDate": "2027-02-10",
+      "incumbent": null,
+      "volumes": {},
+      "front": "NQH7"
     },
     {
-      "name": "null seed, ES in April: the quarterly cycle seeds ESM7 (GC's even-month cycle would seed ESJ7)",
+      "name": "no incumbent and no volume, ES in April: the quarterly cycle seeds ESM7",
       "root": "ES",
-      "seed": null,
-      "segments": [
-        {
-          "from": "2027-04-13T01:00:00.000Z",
-          "minutes": 10,
-          "volumes": {
-            "ESM7": 5
-          }
-        }
-      ],
-      "takeovers": [],
-      "front": "ESM7",
-      "skipped": []
+      "tradeDate": "2027-04-13",
+      "incumbent": null,
+      "volumes": {},
+      "front": "ESM7"
     },
     {
-      "name": "null seed, RTY in July: the quarterly cycle seeds RTYU6",
+      "name": "no incumbent and no volume, RTY at the 2026-07-22 seed start: RTYU6",
       "root": "RTY",
-      "seed": null,
-      "segments": [
-        {
-          "from": "2026-07-01T01:00:00.000Z",
-          "minutes": 10,
-          "volumes": {
-            "RTYU6": 5,
-            "RTYZ6": 1
-          }
-        }
-      ],
-      "takeovers": [],
-      "front": "RTYU6",
-      "skipped": []
+      "tradeDate": "2026-07-22",
+      "incumbent": null,
+      "volumes": {},
+      "front": "RTYU6"
     },
     {
-      "name": "null seed, ZN in April: the quarterly cycle seeds ZNM7",
+      "name": "no incumbent and no volume, ZN in April: the quarterly cycle seeds ZNM7",
       "root": "ZN",
-      "seed": null,
-      "segments": [
-        {
-          "from": "2027-04-01T01:00:00.000Z",
-          "minutes": 10,
-          "volumes": {
-            "ZNM7": 5,
-            "ZNU7": 1
-          }
-        }
-      ],
-      "takeovers": [],
-      "front": "ZNM7",
-      "skipped": []
+      "tradeDate": "2027-04-01",
+      "incumbent": null,
+      "volumes": {},
+      "front": "ZNM7"
     },
     {
-      "name": "a stray far-dated contract: a burst of ESZ7 lots under 120 closes gives no takeover",
+      "name": "no incumbent and only symbols that are dropped: the cycle seed",
       "root": "ES",
-      "seed": "ESH7",
-      "segments": [
+      "tradeDate": "2026-11-10",
+      "incumbent": null,
+      "volumes": { "ESZ6-ESH7": 9999, "NQZ6": 5, "ESZ36": 7 },
+      "front": "ESZ6"
+    },
+    {
+      "name": "two spellings of one contract are one contract: their volumes sum against the later month",
+      "root": "ES",
+      "tradeDate": "2026-12-08",
+      "incumbent": "ESZ6",
+      "volumes": { "ESZ6": 300, "ESZ26": 300, "ESH7": 500 },
+      "front": "ESZ6"
+    },
+    {
+      "name": "two spellings of the later month sum too",
+      "root": "ES",
+      "tradeDate": "2026-12-08",
+      "incumbent": "ESZ6",
+      "volumes": { "ESZ6": 400, "ESH7": 250, "ESH27": 250 },
+      "front": "ESH7"
+    },
+    {
+      "name": "a two-digit incumbent is the same contract as its one-digit name, and the answer is the one-digit name",
+      "root": "ES",
+      "tradeDate": "2026-12-08",
+      "incumbent": "ESZ26",
+      "volumes": { "ESZ6": 400, "ESH7": 300 },
+      "front": "ESZ6"
+    },
+    {
+      "name": "a spread is ignored",
+      "root": "ES",
+      "tradeDate": "2026-12-08",
+      "incumbent": "ESZ6",
+      "volumes": { "ESZ6-ESH7": 99999, "ESZ6": 10, "ESH7": 5 },
+      "front": "ESZ6"
+    },
+    {
+      "name": "another root's contract is ignored",
+      "root": "ES",
+      "tradeDate": "2026-12-08",
+      "incumbent": "ESZ6",
+      "volumes": { "NQH7": 99999, "ESZ6": 10 },
+      "front": "ESZ6"
+    },
+    {
+      "name": "a two-digit year outside the window is dropped, not folded onto a nearer contract",
+      "root": "ES",
+      "tradeDate": "2026-12-08",
+      "incumbent": "ESZ6",
+      "volumes": { "ESZ36": 99999, "ESZ6": 10 },
+      "front": "ESZ6"
+    },
+    {
+      "name": "a two-digit year outside the window is dropped when there is no incumbent",
+      "root": "ES",
+      "tradeDate": "2026-12-08",
+      "incumbent": null,
+      "volumes": { "ESZ36": 99999, "ESH7": 5 },
+      "front": "ESH7"
+    },
+    {
+      "name": "a two-digit year at the window edge (Y + 8) folds to its one-digit name",
+      "root": "ES",
+      "tradeDate": "2026-12-08",
+      "incumbent": "ESZ6",
+      "volumes": { "ESZ6": 1, "ESH34": 5 },
+      "front": "ESH4"
+    },
+    {
+      "name": "decade rollover: ESH0 is after ESZ9, not a decade before it",
+      "root": "ES",
+      "tradeDate": "2029-12-20",
+      "incumbent": "ESZ9",
+      "volumes": { "ESZ9": 10, "ESH0": 20 },
+      "front": "ESH0"
+    },
+    {
+      "name": "decade rollover: with no incumbent and equal volume the earlier expiry ESZ9 wins",
+      "root": "ES",
+      "tradeDate": "2029-12-20",
+      "incumbent": null,
+      "volumes": { "ESH0": 5, "ESZ9": 5 },
+      "front": "ESZ9"
+    },
+    {
+      "name": "decade rollover: ESH0 does not roll back to ESZ9",
+      "root": "ES",
+      "tradeDate": "2030-01-10",
+      "incumbent": "ESH0",
+      "volumes": { "ESZ9": 9000, "ESH0": 10 },
+      "front": "ESH0"
+    },
+    {
+      "name": "year rollover: at 2027-01-05 ESZ6 is last year's contract and ESH7 this year's",
+      "root": "ES",
+      "tradeDate": "2027-01-05",
+      "incumbent": "ESZ6",
+      "volumes": { "ESZ6": 5, "ESH7": 9 },
+      "front": "ESH7"
+    }
+  ],
+  "pickScheduledFront": [
+    {
+      "name": "minutes either side of a CST session open take different contracts",
+      "schedule": { "2026-11-05": "ESZ6", "2026-11-06": "ESH7" },
+      "rows": [
+        { "key": "ESZ6", "ts": "2026-11-05T22:58:00.000Z", "volume": 10 },
+        { "key": "ESZ6", "ts": "2026-11-05T22:59:00.000Z", "volume": 11 },
+        { "key": "ESZ6", "ts": "2026-11-05T23:00:00.000Z", "volume": 12 },
+        { "key": "ESZ6", "ts": "2026-11-05T23:01:00.000Z", "volume": 13 },
+        { "key": "ESH7", "ts": "2026-11-05T22:58:00.000Z", "volume": 3 },
+        { "key": "ESH7", "ts": "2026-11-05T22:59:00.000Z", "volume": 4 },
+        { "key": "ESH7", "ts": "2026-11-05T23:00:00.000Z", "volume": 5 },
+        { "key": "ESH7", "ts": "2026-11-05T23:01:00.000Z", "volume": 6 }
+      ],
+      "picked": [
         {
-          "from": "2026-12-10T00:00:00.000Z",
-          "minutes": 30,
-          "volumes": {
-            "ESH7": 1,
-            "ESZ7": 100
-          }
+          "ts": "2026-11-05T22:58:00.000Z",
+          "contract": "ESZ6",
+          "key": "ESZ6",
+          "volume": 10
         },
         {
-          "from": "2026-12-10T00:30:00.000Z",
-          "minutes": 120,
-          "volumes": {
-            "ESH7": 100,
-            "ESZ7": 0
-          }
-        }
-      ],
-      "takeovers": [],
-      "front": "ESH7",
-      "skipped": []
-    },
-    {
-      "name": "a far-dated contract with a smaller tally never becomes the challenger",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T00:00:00.000Z",
-          "minutes": 400,
-          "volumes": {
-            "ESZ6": 1,
-            "ESH7": 10,
-            "ESZ7": 5
-          }
-        }
-      ],
-      "takeovers": [
-        {
-          "ts": "2026-12-08T02:00:00.000Z",
-          "contract": "ESH7"
-        }
-      ],
-      "front": "ESH7",
-      "skipped": []
-    },
-    {
-      "name": "ties: an equal tally is not a lead",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T00:00:00.000Z",
-          "minutes": 600,
-          "volumes": {
-            "ESZ6": 10,
-            "ESH7": 10
-          }
-        }
-      ],
-      "takeovers": [],
-      "front": "ESZ6",
-      "skipped": []
-    },
-    {
-      "name": "ties: equal tallies among later contracts go to the nearer expiry",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T00:00:00.000Z",
-          "minutes": 400,
-          "volumes": {
-            "ESM7": 10,
-            "ESH7": 10
-          }
-        }
-      ],
-      "takeovers": [
-        {
-          "ts": "2026-12-08T02:00:00.000Z",
-          "contract": "ESH7"
-        }
-      ],
-      "front": "ESH7",
-      "skipped": []
-    },
-    {
-      "name": "the 120th close is 23:59: the takeover lands at 00:00Z, before the daily reset",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T22:00:00.000Z",
-          "minutes": 180,
-          "volumes": {
-            "ESH7": 20
-          }
-        }
-      ],
-      "takeovers": [
-        {
-          "ts": "2026-12-09T00:00:00.000Z",
-          "contract": "ESH7"
-        }
-      ],
-      "front": "ESH7",
-      "skipped": []
-    },
-    {
-      "name": "end of input at the 120th close applies the takeover: front is the front for the minute after the last row",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T10:00:00.000Z",
-          "minutes": 120,
-          "volumes": {
-            "ESH7": 20
-          }
-        }
-      ],
-      "takeovers": [
-        {
-          "ts": "2026-12-08T12:00:00.000Z",
-          "contract": "ESH7"
-        }
-      ],
-      "front": "ESH7",
-      "skipped": []
-    },
-    {
-      "name": "end of input at the 119th close keeps the old front",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T10:00:00.000Z",
-          "minutes": 119,
-          "volumes": {
-            "ESH7": 20
-          }
-        }
-      ],
-      "takeovers": [],
-      "front": "ESZ6",
-      "skipped": []
-    },
-    {
-      "name": "two spellings: a front fed under its two-digit name still counts as the front",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T10:00:00.000Z",
-          "minutes": 130,
-          "volumes": {
-            "ESZ26": 5,
-            "ESH7": 1
-          }
-        }
-      ],
-      "takeovers": [],
-      "front": "ESZ6",
-      "skipped": []
-    },
-    {
-      "name": "two spellings of the front in the same minutes: their volumes sum against a challenger between the single and the summed volume",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T10:00:00.000Z",
-          "minutes": 130,
-          "volumes": {
-            "ESZ6": 3,
-            "ESZ26": 3,
-            "ESH7": 4
-          }
-        }
-      ],
-      "takeovers": [],
-      "front": "ESZ6",
-      "skipped": []
-    },
-    {
-      "name": "two spellings: a two-digit seed is the same contract as its one-digit name",
-      "root": "ES",
-      "seed": "ESZ26",
-      "segments": [
-        {
-          "from": "2026-12-08T10:00:00.000Z",
-          "minutes": 130,
-          "volumes": {
-            "ESZ6": 5,
-            "ESH7": 1
-          }
-        }
-      ],
-      "takeovers": [],
-      "front": "ESZ6",
-      "skipped": []
-    },
-    {
-      "name": "two spellings: a challenger fed with a two-digit year takes over under its one-digit name",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T10:00:00.000Z",
-          "minutes": 130,
-          "volumes": {
-            "ESZ6": 1,
-            "ESH27": 20
-          }
-        }
-      ],
-      "takeovers": [
-        {
-          "ts": "2026-12-08T12:00:00.000Z",
-          "contract": "ESH7"
-        }
-      ],
-      "front": "ESH7",
-      "skipped": []
-    },
-    {
-      "name": "two spellings: a two-digit year outside the one-digit window is skipped, never folded onto a nearer contract (its 20 lots a minute would otherwise keep CLZ6 in front)",
-      "root": "CL",
-      "seed": "CLZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T10:00:00.000Z",
-          "minutes": 65,
-          "volumes": {
-            "CLZ6": 1,
-            "CLF7": 3
-          }
+          "ts": "2026-11-05T22:59:00.000Z",
+          "contract": "ESZ6",
+          "key": "ESZ6",
+          "volume": 11
         },
         {
-          "from": "2026-12-08T11:05:00.000Z",
-          "minutes": 65,
-          "volumes": {
-            "CLZ36": 20,
-            "CLF7": 3
-          }
-        }
-      ],
-      "takeovers": [
-        {
-          "ts": "2026-12-08T12:00:00.000Z",
-          "contract": "CLF7"
-        }
-      ],
-      "front": "CLF7",
-      "skipped": ["CLZ36"]
-    },
-    {
-      "name": "two spellings: a two-digit year at the window edge (ref + 8) still folds to its one-digit name",
-      "root": "ES",
-      "seed": "ESU4",
-      "segments": [
-        {
-          "from": "2026-12-08T10:00:00.000Z",
-          "minutes": 130,
-          "volumes": {
-            "ESU34": 5,
-            "ESZ4": 1
-          }
-        }
-      ],
-      "takeovers": [],
-      "front": "ESU4",
-      "skipped": []
-    },
-    {
-      "name": "two spellings: the window year is taken from the first row of any outright key, kept or not",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-31T23:59:00.000Z",
-          "minutes": 1,
-          "volumes": {
-            "ESZ35": 1
-          }
+          "ts": "2026-11-05T23:00:00.000Z",
+          "contract": "ESH7",
+          "key": "ESH7",
+          "volume": 5
         },
         {
-          "from": "2027-01-01T00:00:00.000Z",
-          "minutes": 2,
-          "volumes": {
-            "ESZ6": 1
-          }
+          "ts": "2026-11-05T23:01:00.000Z",
+          "contract": "ESH7",
+          "key": "ESH7",
+          "volume": 6
         }
-      ],
-      "takeovers": [],
-      "front": "ESZ6",
-      "skipped": ["ESZ35"]
+      ]
     },
     {
-      "name": "null seed: the seed is dated at the first kept minute, not at an earlier skipped key's row",
-      "root": "CL",
-      "seed": null,
-      "segments": [
+      "name": "minutes either side of a CDT session open take different contracts",
+      "schedule": { "2026-09-14": "ESU6", "2026-09-15": "ESZ6" },
+      "rows": [
+        { "key": "ESU6", "ts": "2026-09-14T21:59:00.000Z", "volume": 10 },
+        { "key": "ESU6", "ts": "2026-09-14T22:00:00.000Z", "volume": 11 },
+        { "key": "ESZ6", "ts": "2026-09-14T21:59:00.000Z", "volume": 3 },
+        { "key": "ESZ6", "ts": "2026-09-14T22:00:00.000Z", "volume": 4 }
+      ],
+      "picked": [
         {
-          "from": "2026-11-30T23:59:00.000Z",
-          "minutes": 1,
-          "volumes": {
-            "CLZ36": 1
-          }
+          "ts": "2026-09-14T21:59:00.000Z",
+          "contract": "ESU6",
+          "key": "ESU6",
+          "volume": 10
         },
         {
-          "from": "2026-12-01T00:00:00.000Z",
-          "minutes": 130,
-          "volumes": {
-            "CLF7": 3,
-            "CLG7": 1
-          }
+          "ts": "2026-09-14T22:00:00.000Z",
+          "contract": "ESZ6",
+          "key": "ESZ6",
+          "volume": 4
         }
-      ],
-      "takeovers": [],
-      "front": "CLF7",
-      "skipped": ["CLZ36"]
+      ]
     },
     {
-      "name": "two spellings in one minute: the row emitted is the larger volume's own, a tie goes to the smaller key",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T10:00:00.000Z",
-          "minutes": 1,
-          "volumes": {
-            "ESZ6": 2,
-            "ESZ26": 5
-          }
-        },
-        {
-          "from": "2026-12-08T10:01:00.000Z",
-          "minutes": 1,
-          "volumes": {
-            "ESZ6": 4,
-            "ESZ26": 4
-          }
-        },
-        {
-          "from": "2026-12-08T10:02:00.000Z",
-          "minutes": 1,
-          "volumes": {
-            "ESZ6": 7
-          }
-        }
+      "name": "the Sunday open after the clocks fall back is 23:00Z, not 22:00Z",
+      "schedule": { "2026-11-01": "ESZ6", "2026-11-02": "ESH7" },
+      "rows": [
+        { "key": "ESZ6", "ts": "2026-11-01T22:00:00.000Z", "volume": 10 },
+        { "key": "ESZ6", "ts": "2026-11-01T22:59:00.000Z", "volume": 11 },
+        { "key": "ESZ6", "ts": "2026-11-01T23:00:00.000Z", "volume": 12 },
+        { "key": "ESH7", "ts": "2026-11-01T22:00:00.000Z", "volume": 3 },
+        { "key": "ESH7", "ts": "2026-11-01T22:59:00.000Z", "volume": 4 },
+        { "key": "ESH7", "ts": "2026-11-01T23:00:00.000Z", "volume": 5 }
       ],
-      "takeovers": [],
-      "front": "ESZ6",
-      "skipped": [],
-      "emitted": [
+      "picked": [
+        {
+          "ts": "2026-11-01T22:00:00.000Z",
+          "contract": "ESZ6",
+          "key": "ESZ6",
+          "volume": 10
+        },
+        {
+          "ts": "2026-11-01T22:59:00.000Z",
+          "contract": "ESZ6",
+          "key": "ESZ6",
+          "volume": 11
+        },
+        {
+          "ts": "2026-11-01T23:00:00.000Z",
+          "contract": "ESH7",
+          "key": "ESH7",
+          "volume": 5
+        }
+      ]
+    },
+    {
+      "name": "the Sunday open after the clocks spring forward is 22:00Z, not 23:00Z",
+      "schedule": { "2027-03-14": "ESH7", "2027-03-15": "ESM7" },
+      "rows": [
+        { "key": "ESH7", "ts": "2027-03-14T21:59:00.000Z", "volume": 10 },
+        { "key": "ESH7", "ts": "2027-03-14T22:00:00.000Z", "volume": 11 },
+        { "key": "ESM7", "ts": "2027-03-14T21:59:00.000Z", "volume": 3 },
+        { "key": "ESM7", "ts": "2027-03-14T22:00:00.000Z", "volume": 4 }
+      ],
+      "picked": [
+        {
+          "ts": "2027-03-14T21:59:00.000Z",
+          "contract": "ESH7",
+          "key": "ESH7",
+          "volume": 10
+        },
+        {
+          "ts": "2027-03-14T22:00:00.000Z",
+          "contract": "ESM7",
+          "key": "ESM7",
+          "volume": 4
+        }
+      ]
+    },
+    {
+      "name": "a minute where the scheduled contract has no row is left out, not filled from another month",
+      "schedule": { "2026-11-05": "ESZ6" },
+      "rows": [
+        { "key": "ESZ6", "ts": "2026-11-05T14:00:00.000Z", "volume": 5 },
+        { "key": "ESZ6", "ts": "2026-11-05T14:02:00.000Z", "volume": 6 },
+        { "key": "ESH7", "ts": "2026-11-05T14:00:00.000Z", "volume": 50 },
+        { "key": "ESH7", "ts": "2026-11-05T14:01:00.000Z", "volume": 50 },
+        { "key": "ESH7", "ts": "2026-11-05T14:02:00.000Z", "volume": 50 }
+      ],
+      "picked": [
+        {
+          "ts": "2026-11-05T14:00:00.000Z",
+          "contract": "ESZ6",
+          "key": "ESZ6",
+          "volume": 5
+        },
+        {
+          "ts": "2026-11-05T14:02:00.000Z",
+          "contract": "ESZ6",
+          "key": "ESZ6",
+          "volume": 6
+        }
+      ]
+    },
+    {
+      "name": "a trade date with no scheduled contract has no bars",
+      "schedule": { "2026-11-05": "ESZ6" },
+      "rows": [
+        { "key": "ESZ6", "ts": "2026-11-05T15:00:00.000Z", "volume": 5 },
+        { "key": "ESZ6", "ts": "2026-11-07T15:00:00.000Z", "volume": 6 }
+      ],
+      "picked": [
+        {
+          "ts": "2026-11-05T15:00:00.000Z",
+          "contract": "ESZ6",
+          "key": "ESZ6",
+          "volume": 5
+        }
+      ]
+    },
+    {
+      "name": "the result is in time order, whatever the order of the rows",
+      "schedule": { "2026-11-05": "ESZ6" },
+      "rows": [
+        { "key": "ESZ6", "ts": "2026-11-05T14:02:00.000Z", "volume": 3 },
+        { "key": "ESZ6", "ts": "2026-11-05T14:00:00.000Z", "volume": 1 },
+        { "key": "ESZ6", "ts": "2026-11-05T14:01:00.000Z", "volume": 2 }
+      ],
+      "picked": [
+        {
+          "ts": "2026-11-05T14:00:00.000Z",
+          "contract": "ESZ6",
+          "key": "ESZ6",
+          "volume": 1
+        },
+        {
+          "ts": "2026-11-05T14:01:00.000Z",
+          "contract": "ESZ6",
+          "key": "ESZ6",
+          "volume": 2
+        },
+        {
+          "ts": "2026-11-05T14:02:00.000Z",
+          "contract": "ESZ6",
+          "key": "ESZ6",
+          "volume": 3
+        }
+      ]
+    },
+    {
+      "name": "two spellings in one minute: the larger volume's own row, a tie goes to the smaller key",
+      "schedule": { "2026-12-08": "ESZ6" },
+      "rows": [
+        { "key": "ESZ6", "ts": "2026-12-08T10:00:00.000Z", "volume": 2 },
+        { "key": "ESZ26", "ts": "2026-12-08T10:00:00.000Z", "volume": 5 },
+        { "key": "ESZ6", "ts": "2026-12-08T10:01:00.000Z", "volume": 4 },
+        { "key": "ESZ26", "ts": "2026-12-08T10:01:00.000Z", "volume": 4 },
+        { "key": "ESZ6", "ts": "2026-12-08T10:02:00.000Z", "volume": 7 }
+      ],
+      "picked": [
         {
           "ts": "2026-12-08T10:00:00.000Z",
           "contract": "ESZ6",
@@ -1045,44 +666,99 @@
       ]
     },
     {
-      "name": "null seed and only unparseable keys: nothing to date a seed, so front is null",
-      "root": "ES",
-      "seed": null,
-      "segments": [
-        {
-          "from": "2026-12-08T10:00:00.000Z",
-          "minutes": 5,
-          "volumes": {
-            "ESZ6-ESH7": 10,
-            "NQZ6": 3
-          }
-        }
+      "name": "two spellings: the one-digit key wins when its volume is larger, and a tie goes to the smaller key whichever spelling came first",
+      "schedule": { "2026-12-08": "ESZ6" },
+      "rows": [
+        { "key": "ESZ26", "ts": "2026-12-08T10:00:00.000Z", "volume": 4 },
+        { "key": "ESZ6", "ts": "2026-12-08T10:00:00.000Z", "volume": 4 },
+        { "key": "ESZ6", "ts": "2026-12-08T10:01:00.000Z", "volume": 9 },
+        { "key": "ESZ26", "ts": "2026-12-08T10:01:00.000Z", "volume": 3 }
       ],
-      "takeovers": [],
-      "front": null,
-      "skipped": ["ESZ6-ESH7", "NQZ6"]
+      "picked": [
+        {
+          "ts": "2026-12-08T10:00:00.000Z",
+          "contract": "ESZ6",
+          "key": "ESZ26",
+          "volume": 4
+        },
+        {
+          "ts": "2026-12-08T10:01:00.000Z",
+          "contract": "ESZ6",
+          "key": "ESZ6",
+          "volume": 9
+        }
+      ]
     },
     {
-      "name": "unparseable keys are skipped and their volume never counts",
-      "root": "ES",
-      "seed": "ESZ6",
-      "segments": [
-        {
-          "from": "2026-12-08T00:00:00.000Z",
-          "minutes": 300,
-          "volumes": {
-            "ESZ6": 1,
-            "ESZ6-ESH7": 1000,
-            "NQZ6": 1000,
-            "esz6": 1000,
-            "ESZ6\n": 1000,
-            "ESZ2026": 1000
-          }
-        }
+      "name": "a two-digit year outside the window is never folded onto the scheduled contract",
+      "schedule": { "2026-12-08": "ESZ6" },
+      "rows": [
+        { "key": "ESZ36", "ts": "2026-12-08T10:00:00.000Z", "volume": 20 },
+        { "key": "ESZ6", "ts": "2026-12-08T10:01:00.000Z", "volume": 1 },
+        { "key": "ESZ36", "ts": "2026-12-08T10:02:00.000Z", "volume": 99 },
+        { "key": "ESZ6", "ts": "2026-12-08T10:02:00.000Z", "volume": 1 }
       ],
-      "takeovers": [],
-      "front": "ESZ6",
-      "skipped": ["ESZ2026", "ESZ6\n", "ESZ6-ESH7", "NQZ6", "esz6"]
+      "picked": [
+        {
+          "ts": "2026-12-08T10:01:00.000Z",
+          "contract": "ESZ6",
+          "key": "ESZ6",
+          "volume": 1
+        },
+        {
+          "ts": "2026-12-08T10:02:00.000Z",
+          "contract": "ESZ6",
+          "key": "ESZ6",
+          "volume": 1
+        }
+      ]
+    },
+    {
+      "name": "spreads and other roots never count",
+      "schedule": { "2026-12-08": "ESZ6" },
+      "rows": [
+        { "key": "ESZ6-ESH7", "ts": "2026-12-08T10:00:00.000Z", "volume": 99 },
+        { "key": "NQZ6", "ts": "2026-12-08T10:00:00.000Z", "volume": 99 },
+        { "key": "ESZ6", "ts": "2026-12-08T10:00:00.000Z", "volume": 1 },
+        { "key": "ESZ6-ESH7", "ts": "2026-12-08T10:01:00.000Z", "volume": 99 }
+      ],
+      "picked": [
+        {
+          "ts": "2026-12-08T10:00:00.000Z",
+          "contract": "ESZ6",
+          "key": "ESZ6",
+          "volume": 1
+        }
+      ]
+    },
+    {
+      "name": "decade rollover: ESH30 is the scheduled ESH0, ESH20 is a decade away and is left out",
+      "schedule": { "2029-12-20": "ESH0" },
+      "rows": [
+        { "key": "ESH0", "ts": "2029-12-20T15:00:00.000Z", "volume": 4 },
+        { "key": "ESH30", "ts": "2029-12-20T15:01:00.000Z", "volume": 5 },
+        { "key": "ESH20", "ts": "2029-12-20T15:02:00.000Z", "volume": 6 }
+      ],
+      "picked": [
+        {
+          "ts": "2029-12-20T15:00:00.000Z",
+          "contract": "ESH0",
+          "key": "ESH0",
+          "volume": 4
+        },
+        {
+          "ts": "2029-12-20T15:01:00.000Z",
+          "contract": "ESH0",
+          "key": "ESH30",
+          "volume": 5
+        }
+      ]
+    },
+    {
+      "name": "no rows, or only rows of unscheduled dates, pick nothing",
+      "schedule": { "2026-11-05": "ESZ6" },
+      "rows": [],
+      "picked": []
     }
   ]
 }

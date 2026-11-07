@@ -16,22 +16,24 @@
  *      symbol and can outtrade an outright), and take the top
  *      FRONT_MONTH_CANDIDATES by volume.
  *
- * Two rules for the contract of a minute live here, and both are on their
- * way out. The rule that replaces them is one contract per root per CME
- * trade date, in `futures_front_month` (Phase 2 on, in
+ * The contract of a minute is one contract per root per CME trade date,
+ * kept in `futures_front_month` (plan:
  * `docs/superpowers/specs/2026-11-06-futures-session-front-month.md`):
  *
- *   - `replayFrontMonth`, the old one: the leader of the UTC-day volume
- *     tally, with no memory. It can step back and forth around a roll.
- *     Superseded; Phase 4c deletes it.
- *   - `replayRollForward`, the contract-mix spec's streak rule: each root
- *     has one front that only ever rolls forward, and a later contract
- *     takes over only after leading the tally for `ROLL_GUARD_CLOSES`
- *     consecutive minute closes. It stays until Phase 2 replaces it with
- *     the per-session pick (`decideFrontMonth`); no writer moves to it.
- *     `parseContract`, `compareExpiry` and `nullSeedContract` give both it
- *     and the per-session pick the expiry order and the cold-start seed,
- *     and `canonicalContract` the one name a contract has everywhere.
+ *   - `cmeTradeDate` gives the trade date of a minute.
+ *   - `decideFrontMonth` decides a date's contract once, from the previous
+ *     decision and the previous date's per-contract volume. It only ever
+ *     rolls forward. `api/_lib/futures-front-month.ts` reads those inputs
+ *     and stores the answer.
+ *   - `pickScheduledFront` builds each minute's bar from the contract its
+ *     date was decided on, and from no other.
+ *   - `parseContract`, `compareExpiry` and `nullSeedContract` give them
+ *     the expiry order and the cold-start seed, and `canonicalContract`
+ *     the one name a contract has everywhere.
+ *
+ * The old rule, `replayFrontMonth`, is the leader of the UTC-day volume
+ * tally, with no memory, so it can step back and forth around a roll.
+ * Superseded: Phase 4c deletes it.
  *
  * The uw-stream handler will carry a Python copy of the per-session rule
  * (Phase 5). Both copies are to run the cases in
@@ -39,6 +41,7 @@
  * apart.
  */
 
+import { getCTDateStr } from '../../src/utils/timezone.js';
 import { uwFetch, withRetry } from './api-helpers.js';
 
 /**
@@ -161,27 +164,7 @@ export function replayFrontMonth<T extends ContractMinute>(
   return out;
 }
 
-// ── Roll forward only ─────────────────────────────────────
-
-/**
- * Consecutive wall-clock minute closes a later contract must lead the
- * UTC-day tally before it becomes the front, the same for every root.
- * Replayed on 64 ES and 64 NQ rolls plus 278,112 simulated restarts, 60 is
- * the smallest N with no early step on ES and NQ, but thinned RTY/CL-like
- * proxies still let 0 to 2 through after a restart; 120 lets none through
- * (an early step can't be undone, a late one stays on a liquid old front).
- * Report: `docs/tmp/es-contract-month-2026-11-06/h-roll-tuning.md` (main
- * checkout).
- */
-export const ROLL_GUARD_CLOSES = 120;
-
-/**
- * How far back a seed lookup reads for the root's newest tagged bar, for
- * `replayRollForward`'s cold start: the gap cron and the uw-stream handler
- * were to bound their seed query with it, on the existing
- * `(symbol, ts DESC)` index. Phase 2 removes it with that rule.
- */
-export const SEED_LOOKBACK_DAYS = 7;
+// ── Contract names ────────────────────────────────────────
 
 /** CME month codes, January to December. */
 export const MONTH_CODES = 'FGHJKMNQUVXZ';
@@ -230,9 +213,6 @@ const OUTRIGHT_SYM = Object.fromEntries(
     new RegExp(`^${root}[${MONTH_CODES}][0-9]{1,2}$`),
   ]),
 ) as Record<FuturesRoot, RegExp>;
-
-const MINUTE_MS = 60_000;
-const DAY_MS = 86_400_000;
 
 /** A contract's expiry order: calendar month (1 to 12) and year. */
 export interface ParsedContract {
@@ -323,7 +303,15 @@ export function canonicalContract(
   sym: string,
   refIso: string,
 ): string | null {
-  const refYear = utcDate(refIso).getUTCFullYear();
+  return canonicalAt(root, sym, utcDate(refIso).getUTCFullYear());
+}
+
+/** `canonicalContract` against a year already read from the reference. */
+function canonicalAt(
+  root: FuturesRoot,
+  sym: string,
+  refYear: number,
+): string | null {
   return isOutright(root, sym) ? canonicalName(root, sym, refYear) : null;
 }
 
@@ -363,280 +351,195 @@ export function nullSeedContract(root: FuturesRoot, refIso: string): string {
   return formatContract(root, firstLiveContract(root, utcDate(refIso)));
 }
 
-interface Contender {
-  contract: string;
-  expiry: ParsedContract;
-}
+// ── The per-session rule ──────────────────────────────────
+
+/** Seven hours: the 17:00 CT open of a session is 00:00 of its date. */
+const TRADE_DATE_OFFSET_MS = 7 * 3_600_000;
 
 /**
- * A challenger that is leading the tally. `matures` is the minute of its
- * first bar as the front, or null when its `ROLL_GUARD_CLOSES` closes would
- * cross 00:00 UTC (the streak then dies at the reset).
+ * The CME trade date of an instant, `YYYY-MM-DD`: the America/Chicago
+ * calendar date of `tsIso` + 7 hours. A session runs from 17:00 CT on the
+ * evening before its trade date to 17:00 CT on it, so the instant that
+ * opens a session (23:00Z in winter, 22:00Z in summer) is already on its
+ * date. (Seven hours on from an instant and seven hours on from its
+ * Chicago wall time are one date: the clocks change at 02:00 on a Sunday,
+ * never in the seven hours before a Chicago midnight.) Throws on a `tsIso`
+ * that does not parse.
  */
-interface Streak {
-  challenger: Contender;
-  matures: number | null;
+export function cmeTradeDate(tsIso: string): string {
+  const ms = Date.parse(tsIso);
+  if (Number.isNaN(ms)) throw new Error(`Invalid timestamp: ${tsIso}`);
+  return getCTDateStr(new Date(ms + TRADE_DATE_OFFSET_MS));
 }
 
-function dayOf(ms: number): number {
-  return Math.floor(ms / DAY_MS);
-}
-
-function maturityOf(startMs: number): number | null {
-  const lastClose = startMs + (ROLL_GUARD_CLOSES - 1) * MINUTE_MS;
-  return dayOf(lastClose) === dayOf(startMs) ? lastClose + MINUTE_MS : null;
-}
-
-/** One key's row at one minute, with the canonical name of its contract. */
-interface Spelled<T> {
+/** A contract's total volume, with its expiry to order by. */
+interface Traded {
   name: string;
-  row: T;
+  expiry: ParsedContract;
+  volume: number;
 }
 
-/**
- * One minute's rows by canonical name. Spellings of one contract sum their
- * volumes; the row kept is the larger volume's, a tie going to the
- * codepoint-smaller key, whatever the iteration order.
- */
-function foldSpellings<T extends ContractMinute>(
-  spelled: ReadonlyMap<string, Spelled<T>>,
-): Map<string, { key: string; row: T; total: number }> {
-  const byName = new Map<string, { key: string; row: T; total: number }>();
-  for (const [key, { name, row }] of spelled) {
-    const seen = byName.get(name);
-    if (seen == null) {
-      byName.set(name, { key, row, total: row.volume });
-      continue;
-    }
-    seen.total += row.volume;
+/** The most volume; a tie goes to the earlier expiry, whatever the order. */
+function mostTraded(candidates: Iterable<Traded>): Traded | null {
+  let best: Traded | null = null;
+  for (const c of candidates) {
     if (
-      row.volume > seen.row.volume ||
-      (row.volume === seen.row.volume && key < seen.key)
+      best == null ||
+      c.volume > best.volume ||
+      (c.volume === best.volume && compareExpiry(c.expiry, best.expiry) < 0)
     ) {
-      seen.key = key;
-      seen.row = row;
+      best = c;
     }
   }
-  return byName;
-}
-
-export interface RollForwardResult<T extends ContractMinute> {
-  /** The front's row for each minute it has one, in time order. */
-  rows: Array<{ contract: string; row: T }>;
-  /** Each change of front: `ts` is the first minute on `contract`. */
-  takeovers: Array<{ ts: string; contract: string }>;
-  /**
-   * The front for the minute after the last row, which a caller seeds the
-   * next hole from. Null only when there is no seed and no row of a kept key
-   * to date one.
-   */
-  front: string | null;
-  /**
-   * Keys left out of the replay, sorted: no outright of the root, or a
-   * two-digit year outside the one-digit window.
-   */
-  skipped: string[];
+  return best;
 }
 
 /**
- * The roll-forward-only rule over per-contract minute rows. One front per
- * root, starting at `seed` (null: `nullSeedContract` at the first minute of
- * a kept key).
- * Per minute m with rows, in time order:
+ * The front month for trade date `tradeDate`, decided once from what the
+ * previous date left behind. `incumbent` is the contract of the latest
+ * earlier decision (null: none), `volumes` the per-contract volume of the
+ * latest earlier date that has any. With C the contract that expires after
+ * the incumbent and has the most volume (a tie goes to the earlier expiry):
  *
- *   1. A streak whose maturity time is at or before m makes its challenger
- *      the front from that time on, even if the time fell in a quiet gap.
- *   2. At the first minute of a new UTC day, the tally and the streak are
- *      cleared (after step 1, so a streak whose 120th close was 23:59
- *      still takes over at 00:00).
- *   3. The front's row for m is emitted, if it has one. A minute without
- *      one is left out, never filled from another month.
- *   4. m's volumes are added to the UTC-day tally.
- *   5. The close of m is evaluated. The challenger is the contract
- *      expiring after the front with the largest tally (a tie goes to the
- *      nearer expiry). It leads when its tally is strictly greater than
- *      the front's (0 if the front has none). A lead without a streak, or
- *      for another contract, starts a streak at m. No lead ends it.
+ *   - the front is C when C's volume is larger than the incumbent's (0 for a
+ *     contract missing from `volumes`), else the incumbent: a tie keeps it;
+ *   - with no incumbent, the contract with the most volume (a tie goes to
+ *     the earlier expiry);
+ *   - with no incumbent and no volume, `nullSeedContract` (a seed that is
+ *     too early can only make the roll late).
  *
- * A streak matures after `ROLL_GUARD_CLOSES` consecutive wall-clock closes
- * m0 .. m0 + N - 1, so the bar at m0 + N is the first on the new contract.
- * The tally only changes on rows, so a lead holds through quiet minutes.
- * The closes must lie in m0's UTC day. An earlier-expiring contract never
- * becomes the front.
+ * A contract expiring on or before the incumbent is never chosen, so the
+ * series only moves forward, and a false lead can roll it one session
+ * early at most.
  *
- * At the end of the input a streak that has matured by the minute after
- * the last row is applied, and recorded as a takeover (its `ts` may then be
- * that next minute), so `front` is what the next minute would be on.
- *
- * Every key and the seed are first folded to their canonical one-digit name
- * (`canonicalContract`), and `takeovers`, `front` and each emitted
- * `contract` use it. If two keys fold into one contract (`ESZ6` and
- * `ESZ26`), their volumes sum in the tally, and the minute's emitted row is
- * the one with the larger volume (a tie goes to the codepoint-smaller key).
- * Otherwise a front fed under a second spelling would be tallied at 0 and
- * the next contract would take over early. A two-digit year outside the
- * one-digit window has no canonical name, so its key is left out and listed
- * in `skipped`; folding it would emit its rows as a nearer contract's bars.
- *
- * Keys that are not an outright of `root` are left out and listed in
- * `skipped`. One-digit years and that window resolve against the UTC year
- * of the first row of any outright key; a cold-start seed is dated at the
- * first minute of a kept key. Throws on a seed that is not an outright of
- * `root` (it comes from the CHECK'd column, so that is a bug), on a
- * two-digit seed outside that window when there are rows, and on a row whose
- * `ts` does not parse. `ts` must be the `toISOString()` minute form.
+ * Every name, the incumbent's included, is first made canonical against
+ * `tradeDate` (`ESZ26` is `ESZ6`; their volumes sum), and the answer is
+ * canonical. A volume key that is not an outright of `root` (a spread,
+ * another root, a two-digit year outside the window) is dropped. A bad
+ * incumbent throws: it comes from a table only this rule writes, so
+ * treating it as none would reseed over a corrupt row. Throws on a
+ * `tradeDate` that does not parse.
  */
-export function replayRollForward<T extends ContractMinute>(
-  byContract: ReadonlyMap<string, readonly T[]>,
-  { root, seed }: { root: FuturesRoot; seed: string | null },
-): RollForwardResult<T> {
-  if (seed != null && !isOutright(root, seed)) {
-    throw new Error(
-      `replayRollForward: seed ${JSON.stringify(seed)} is not an outright ${root} contract`,
+export function decideFrontMonth(
+  incumbent: string | null,
+  volumes: ReadonlyMap<string, number>,
+  root: FuturesRoot,
+  tradeDate: string,
+): string {
+  const refYear = utcDate(tradeDate).getUTCFullYear();
+  const traded = new Map<string, Traded>();
+  for (const [sym, volume] of volumes) {
+    const name = canonicalAt(root, sym, refYear);
+    if (name == null) continue;
+    const seen = traded.get(name);
+    if (seen == null) {
+      const expiry = decodeContract(root, name, refYear);
+      traded.set(name, { name, expiry, volume });
+    } else {
+      seen.volume += volume;
+    }
+  }
+
+  if (incumbent == null) {
+    return (
+      mostTraded(traded.values())?.name ?? nullSeedContract(root, tradeDate)
     );
   }
-  // The seed is the stored canonical name. With rows it is checked against
-  // the window once the reference year is known; with none there is no
-  // reference year, so it is only folded by its last digit.
-  const seedName = seed == null ? null : oneDigitName(root, seed);
+  const held = canonicalAt(root, incumbent, refYear);
+  if (held == null) {
+    throw new Error(
+      `decideFrontMonth: incumbent ${JSON.stringify(incumbent)} is not an outright ${root} contract on ${tradeDate}`,
+    );
+  }
+  const heldExpiry = decodeContract(root, held, refYear);
+  const challenger = mostTraded(
+    [...traded.values()].filter((c) => compareExpiry(c.expiry, heldExpiry) > 0),
+  );
+  const heldVolume = traded.get(held)?.volume ?? 0;
+  return challenger != null && challenger.volume > heldVolume
+    ? challenger.name
+    : held;
+}
 
-  const skipped: string[] = [];
-  const keyed: Array<{ key: string; rows: Array<{ ms: number; row: T }> }> = [];
-  let refMs: number | undefined;
+/** A trade date's scheduled contract, read once per call. */
+interface Scheduled {
+  root: FuturesRoot;
+  refYear: number;
+  contract: string;
+  /** Canonical name of each key seen on this date (null: not an outright). */
+  names: Map<string, string | null>;
+}
+
+/**
+ * The scheduled contract of `tradeDate` as the root, year and canonical
+ * name it implies; null when nothing is scheduled. Throws on a name that is
+ * no outright of any root, so a bad schedule is not a quiet day.
+ */
+function readSchedule(
+  tradeDate: string,
+  sym: string | undefined,
+): Scheduled | null {
+  if (sym == null) return null;
+  const root = FUTURES_ROOTS.find((r) => isOutright(r, sym));
+  const refYear = utcDate(tradeDate).getUTCFullYear();
+  const contract = root == null ? null : canonicalAt(root, sym, refYear);
+  if (root == null || contract == null) {
+    throw new Error(
+      `pickScheduledFront: the contract scheduled for ${tradeDate}, ${JSON.stringify(sym)}, is not an outright of any root`,
+    );
+  }
+  return { root, refYear, contract, names: new Map() };
+}
+
+/**
+ * Builds each minute's bar from the contract its trade date was decided on
+ * (`contractFor`, `undefined` for a date with none) and from no other: a
+ * minute where that contract has no row is left out, never filled from
+ * another month, which trades at a carry basis. Where two spellings of the
+ * contract both have a row in a minute (`ESZ6` and `ESZ26`, from the REST
+ * paths), the larger volume's row is the bar, a tie going to the key that
+ * sorts first by code point. A key is the contract only when its canonical
+ * name against the row's own trade date is the scheduled one, so a spread,
+ * another root and a two-digit year outside the window never count.
+ *
+ * The root comes from the scheduled name, so one call serves one root.
+ * Results are in time order. Throws on a `ts` that does not parse and on a
+ * scheduled name that is no outright. Rows are the caller's objects.
+ */
+export function pickScheduledFront<T extends ContractMinute>(
+  byContract: ReadonlyMap<string, readonly T[]>,
+  contractFor: (tradeDate: string) => string | undefined,
+): Array<{ contract: string; row: T }> {
+  const schedules = new Map<string, Scheduled | null>();
+  const picked = new Map<number, { contract: string; key: string; row: T }>();
   for (const [key, rows] of byContract) {
-    if (!isOutright(root, key)) {
-      skipped.push(key);
-      continue;
-    }
-    const timed: Array<{ ms: number; row: T }> = [];
     for (const row of rows) {
-      const ms = Date.parse(row.ts);
-      if (Number.isNaN(ms)) {
-        throw new Error(
-          `replayRollForward: ${key} row has an unparseable ts ${JSON.stringify(row.ts)}`,
+      const tradeDate = cmeTradeDate(row.ts);
+      if (!schedules.has(tradeDate)) {
+        schedules.set(
+          tradeDate,
+          readSchedule(tradeDate, contractFor(tradeDate)),
         );
       }
-      refMs = refMs == null ? ms : Math.min(refMs, ms);
-      timed.push({ ms, row });
-    }
-    keyed.push({ key, rows: timed });
-  }
-  if (refMs == null) {
-    skipped.sort();
-    return { rows: [], takeovers: [], front: seedName, skipped };
-  }
+      const day = schedules.get(tradeDate);
+      if (day == null) continue;
+      if (!day.names.has(key)) {
+        day.names.set(key, canonicalAt(day.root, key, day.refYear));
+      }
+      if (day.names.get(key) !== day.contract) continue;
 
-  // The reference year is the first row of any outright key, kept or not,
-  // since whether a two-digit year is in the window depends on it. (A
-  // cold-start seed is dated later, at the first kept minute.)
-  const refYear = new Date(refMs).getUTCFullYear();
-  if (seed != null && canonicalName(root, seed, refYear) == null) {
-    throw new Error(
-      `replayRollForward: seed ${JSON.stringify(seed)} is outside the one-digit window for ${refYear}`,
-    );
-  }
-  const names = new Set<string>();
-  const byMinute = new Map<number, Map<string, Spelled<T>>>();
-  for (const { key, rows } of keyed) {
-    const name = canonicalName(root, key, refYear);
-    if (name == null) {
-      skipped.push(key);
-      continue;
-    }
-    names.add(name);
-    for (const { ms, row } of rows) {
-      const minute = byMinute.get(ms) ?? new Map<string, Spelled<T>>();
-      minute.set(key, { name, row });
-      byMinute.set(ms, minute);
-    }
-  }
-  skipped.sort();
-
-  const minutes = [...byMinute].sort((a, b) => a[0] - b[0]);
-  const firstMs = minutes[0]?.[0];
-  if (firstMs == null) {
-    return { rows: [], takeovers: [], front: seedName, skipped };
-  }
-
-  const byExpiry: Contender[] = [...names]
-    .map((contract) => ({
-      contract,
-      expiry: decodeContract(root, contract, refYear),
-    }))
-    .sort((a, b) => compareExpiry(a.expiry, b.expiry));
-  const cycleSeed = firstLiveContract(root, new Date(firstMs));
-
-  const rows: Array<{ contract: string; row: T }> = [];
-  const takeovers: Array<{ ts: string; contract: string }> = [];
-  const tally = new Map<string, number>();
-  // One object, so TypeScript doesn't narrow these across the closure below
-  // the way it would plain `let`s.
-  const state: { front: Contender; streak: Streak | null } = {
-    front:
-      seedName == null
-        ? { contract: formatContract(root, cycleSeed), expiry: cycleSeed }
-        : {
-            contract: seedName,
-            expiry: decodeContract(root, seedName, refYear),
-          },
-    streak: null,
-  };
-
-  const applyMatured = (byMs: number): void => {
-    const { streak } = state;
-    if (streak?.matures == null || streak.matures > byMs) return;
-    takeovers.push({
-      ts: new Date(streak.matures).toISOString(),
-      contract: streak.challenger.contract,
-    });
-    state.front = streak.challenger;
-    state.streak = null;
-  };
-
-  let day = dayOf(firstMs);
-  let lastMs = firstMs;
-  for (const [ms, spelled] of minutes) {
-    lastMs = ms;
-    applyMatured(ms);
-    if (dayOf(ms) !== day) {
-      day = dayOf(ms);
-      tally.clear();
-      state.streak = null;
-    }
-
-    const atMinute = foldSpellings(spelled);
-    const frontRow = atMinute.get(state.front.contract)?.row;
-    if (frontRow != null) {
-      rows.push({ contract: state.front.contract, row: frontRow });
-    }
-    for (const [contract, { total }] of atMinute) {
-      tally.set(contract, (tally.get(contract) ?? 0) + total);
-    }
-
-    // Ascending expiry, replacing only on a strictly larger tally: a tie
-    // stays with the nearer expiry.
-    let challenger: Contender | null = null;
-    let challengerTally = 0;
-    for (const candidate of byExpiry) {
-      if (compareExpiry(candidate.expiry, state.front.expiry) <= 0) continue;
-      const volume = tally.get(candidate.contract) ?? 0;
-      if (challenger == null || volume > challengerTally) {
-        challenger = candidate;
-        challengerTally = volume;
+      const ms = Date.parse(row.ts);
+      const kept = picked.get(ms);
+      if (
+        kept == null ||
+        row.volume > kept.row.volume ||
+        (row.volume === kept.row.volume && key < kept.key)
+      ) {
+        picked.set(ms, { contract: day.contract, key, row });
       }
     }
-    if (
-      challenger != null &&
-      challengerTally > (tally.get(state.front.contract) ?? 0)
-    ) {
-      if (state.streak?.challenger.contract !== challenger.contract) {
-        state.streak = { challenger, matures: maturityOf(ms) };
-      }
-    } else {
-      state.streak = null;
-    }
   }
-  applyMatured(lastMs + MINUTE_MS);
-
-  return { rows, takeovers, front: state.front.contract, skipped };
+  return [...picked]
+    .sort(([a], [b]) => a - b)
+    .map(([, { contract, row }]) => ({ contract, row }));
 }
