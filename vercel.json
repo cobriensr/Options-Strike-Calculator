@@ -58,6 +58,10 @@
       "schedule": "0 22 * * 1-5"
     },
     {
+      "path": "/api/cron/reconcile-zero-dte-greek-flow",
+      "schedule": "5 22 * * 1-5"
+    },
+    {
       "path": "/api/cron/cleanup-ws-gex-strike-expiry",
       "schedule": "0 12 * * 1-5"
     },

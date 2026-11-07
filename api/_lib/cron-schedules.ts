@@ -526,6 +526,14 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
+  'reconcile-zero-dte-greek-flow': {
+    // Once a trading day after the close: a missed or failed run is a day whose
+    // greek flow stays at the live values UW later restated. Default failure
+    // threshold of 1.
+    schedule: '5 22 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
   'repair-futures-blocks': {
     // Nightly REST repair of blocks the websocket missed during drops. Its
     // paging stops at 240 s, inside the default 300 s limit. Low frequency
