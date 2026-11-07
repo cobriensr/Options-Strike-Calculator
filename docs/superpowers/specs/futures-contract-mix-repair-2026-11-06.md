@@ -128,7 +128,10 @@ The gap cron and the history backfills copy the same rule through `replayFrontMo
   - **An expired front** is covered by the same rule: its volume stops and the next contract's streak starts on its first lead. Up to N minutes of bars after the expiry are then missing, and the gap cron, running the same rule, doesn't fill them. In 128 ES/NQ rolls the front never expired before the takeover: the crossover came 3.6–7.6 days before the old front's last bar.
 - **Seed (the front at startup or at a hole).**
   - The `contract` of the root's newest tagged bar in the last 7 days, at or before that point.
-  - With none, it's the earliest-expiring outright among the candidates, and the rule above rolls forward from there. That can only err late, never early.
+  - With none, it's the first contract in the root's listing cycle whose last-trade month isn't before the current UTC month. CL stops trading the month before its contract month, so CL in November seeds CLZ6, not CLX6. The rule above rolls forward from there.
+    - Why the cycle and not prices: at a cold start the live handler has no candidate list, and the session's first print can be a back month.
+    - The cycle needs no prints, so the TS and Python copies agree exactly.
+    - A seed that's too early (even an expired contract) can only make the roll late; a late one could never come back.
   - Restarts lose the in-memory volume tally. The challenger then needs 120 leading closes counted from the restart.
 - **Why N = 120** (`docs/tmp/es-contract-month-2026-11-06/h-roll-tuning.md`). The rule was replayed on the archive's per-contract minute volumes: 64 ES and 64 NQ rolls, 2010–2026, plus 278,112 simulated hourly restarts.
   - N = 1 is unsafe. NQ 2015-03-09 stepped 96 market-open hours early on 0.9% of the front's volume.
