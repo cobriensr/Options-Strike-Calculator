@@ -51,6 +51,8 @@ import type {
 const LOAD = '2026-11-04T15:42:10Z';
 /** The Tuesday before: the replay's date. */
 const PAST_DATE = '2026-11-03';
+/** The date the page opens on: the CT date of LOAD. */
+const TODAY = '2026-11-04';
 /** 9:30 ET, the first candle. */
 const OPEN_MS = Date.parse('2026-11-04T14:30:00Z');
 const FIVE_MIN_MS = 5 * 60_000;
@@ -492,16 +494,24 @@ describe("the selected date's daily VIX OHLC", () => {
     };
   };
 
-  /** Answer `PAST_DATE`'s /api/history with `respond`, the rest as usual. */
-  const overridePastHistory = (respond: () => Promise<Response>) => {
+  /** Answer `date`'s /api/history with `respond`, the rest as usual. */
+  const overrideHistory = (date: string, respond: () => Promise<Response>) => {
     const base = fetchSpy.getMockImplementation() as typeof fetch;
     fetchSpy.mockImplementation(
       (input: RequestInfo | URL, init?: RequestInit) =>
-        String(input) === `/api/history?date=${PAST_DATE}`
+        String(input) === `/api/history?date=${date}`
           ? respond()
           : base(input, init),
     );
   };
+  const overridePastHistory = (respond: () => Promise<Response>) =>
+    overrideHistory(PAST_DATE, respond);
+
+  /** History that lands `ms` after it is asked for. */
+  const historyAfter = (date: string, ms: number) => () =>
+    new Promise<Response>((resolve) => {
+      setTimeout(() => resolve(json(historyFor(date))), ms);
+    });
 
   const selectPastDate = async () => {
     const hook = renderHook(() => useLiveSession());
@@ -522,12 +532,7 @@ describe("the selected date's daily VIX OHLC", () => {
   });
 
   it("is a past date's own candles, though /api/vix-ohlc answers before them", async () => {
-    overridePastHistory(
-      () =>
-        new Promise<Response>((resolve) => {
-          setTimeout(() => resolve(json(historyFor(PAST_DATE))), 1500);
-        }),
-    );
+    overridePastHistory(historyAfter(PAST_DATE, 1500));
     const hook = await selectPastDate();
 
     // The API's answer (400 ms) is in, the history's (1500 ms) is not.
@@ -566,7 +571,35 @@ describe("the selected date's daily VIX OHLC", () => {
     expect(hook.result.current.vix.vixOHLC).toEqual(SNAPSHOT_VIX_OHLC);
   });
 
-  it("is /api/vix-ohlc's answer for today, whose candles stop at the page load", async () => {
+  // Today's candles run to the page load, and /api/vix-ohlc samples the
+  // snapshots saved so far: the candles win there too.
+  it("is today's own candles, though /api/vix-ohlc answers after them", async () => {
+    const hook = renderHook(() => useLiveSession());
+    await settle(2000);
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `/api/vix-ohlc?date=${TODAY}`,
+      expect.anything(),
+    );
+    expect(hook.result.current.vix.vixOHLC).toEqual(candleVixOHLC());
+  });
+
+  it("is today's own candles, though /api/vix-ohlc answers before them", async () => {
+    overrideHistory(TODAY, historyAfter(TODAY, 1500));
+    const hook = renderHook(() => useLiveSession());
+
+    // The API's answer (400 ms) is in, the history's (1500 ms) is not.
+    await settle(1000);
+    expect(hook.result.current.vix.vixOHLC).toEqual(SNAPSHOT_VIX_OHLC);
+
+    await settle(2000);
+    expect(hook.result.current.vix.vixOHLC).toEqual(candleVixOHLC());
+  });
+
+  it("is /api/vix-ohlc's answer for today when it has no VIX candles", async () => {
+    overrideHistory(TODAY, () =>
+      Promise.resolve(json({ ...historyFor(TODAY), vix: noCandles })),
+    );
     const hook = renderHook(() => useLiveSession());
     await settle(2000);
 
