@@ -576,6 +576,18 @@ interface RollCase {
   takeovers: Array<{ ts: string; contract: string }>;
   front: string | null;
   skipped: string[];
+  /** Optional: every emitted row, with the key whose own row it is. */
+  emitted?: Array<{
+    ts: string;
+    contract: string;
+    key: string;
+    volume: number;
+  }>;
+}
+
+/** A fixture row tagged with the key it came from, as the format text says. */
+interface KeyedMinute extends ContractMinute {
+  key: string;
 }
 
 const MINUTE_MS = 60_000;
@@ -591,15 +603,15 @@ const fixture = JSON.parse(
 /** The expansion the fixture's `format` string describes. */
 function expandSegments(
   segments: RollCase['segments'],
-): Map<string, ContractMinute[]> {
-  const byContract = new Map<string, ContractMinute[]>();
+): Map<string, KeyedMinute[]> {
+  const byContract = new Map<string, KeyedMinute[]>();
   for (const { from, minutes, volumes } of segments) {
     const start = Date.parse(from);
     for (let i = 0; i < minutes; i++) {
       const ts = new Date(start + i * MINUTE_MS).toISOString();
       for (const [contract, volume] of Object.entries(volumes)) {
         const rows = byContract.get(contract) ?? [];
-        rows.push({ ts, volume });
+        rows.push({ ts, volume, key: contract });
         byContract.set(contract, rows);
       }
     }
@@ -635,6 +647,16 @@ describe('replayRollForward: the shared fixture', () => {
     expect(result.takeovers).toEqual(c.takeovers);
     expect(result.front).toBe(c.front);
     expect(result.skipped).toEqual(c.skipped);
+    if (c.emitted != null) {
+      expect(
+        result.rows.map((e) => ({
+          ts: e.row.ts,
+          contract: e.contract,
+          key: e.row.key,
+          volume: e.row.volume,
+        })),
+      ).toEqual(c.emitted);
+    }
   });
 });
 
@@ -864,6 +886,43 @@ describe('replayRollForward: guards and edges', () => {
     expect(result.rows.map((e) => [e.contract, e.row.ts])).toEqual([
       ['CLZ6', '2027-01-01T00:00:00.000Z'],
     ]);
+  });
+
+  it('throws, naming the seed and the year, on a two-digit seed outside the window once there are rows', () => {
+    const rows = new Map([
+      ['CLZ6', [{ ts: '2026-12-08T10:00:00.000Z', volume: 1 }]],
+      ['CLF7', [{ ts: '2026-12-08T10:00:00.000Z', volume: 3 }]],
+    ]);
+    // As a row key CLZ36 would be skipped; as the seed it must not be folded
+    // onto CLZ6 and trusted as the front.
+    expect(() =>
+      replayRollForward(rows, { root: 'CL', seed: 'CLZ36' }),
+    ).toThrow('seed "CLZ36" is outside the one-digit window for 2026');
+    // Also when every key is skipped: the reference year is still known.
+    expect(() =>
+      replayRollForward(
+        new Map([['CLZ37', [{ ts: '2026-12-08T10:00:00.000Z', volume: 1 }]]]),
+        { root: 'CL', seed: 'CLZ36' },
+      ),
+    ).toThrow('is outside the one-digit window for 2026');
+  });
+
+  it('accepts the same two-digit seed when the reference year puts it inside the window, and with no rows folds it by its last digit', () => {
+    // 2036 is ref + 8 at ref 2028.
+    const inWindow = replayRollForward(
+      new Map([['CLZ6', [{ ts: '2028-01-03T10:00:00.000Z', volume: 1 }]]]),
+      { root: 'CL', seed: 'CLZ36' },
+    );
+    expect(inWindow.front).toBe('CLZ6');
+    // No rows, so no reference year: nothing to check it against.
+    expect(replayRollForward(new Map(), { root: 'CL', seed: 'CLZ36' })).toEqual(
+      {
+        rows: [],
+        takeovers: [],
+        front: 'CLZ6',
+        skipped: [],
+      },
+    );
   });
 
   it('with only an out-of-window key, replays nothing: the seed, or null, comes back and the key is skipped', () => {

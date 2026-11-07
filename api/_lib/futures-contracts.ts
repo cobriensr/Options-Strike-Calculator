@@ -423,7 +423,8 @@ export interface RollForwardResult<T extends ContractMinute> {
   takeovers: Array<{ ts: string; contract: string }>;
   /**
    * The front for the minute after the last row, which Task 6c seeds the
-   * next hole from. Null only when there is no seed and no row to date one.
+   * next hole from. Null only when there is no seed and no row of a kept key
+   * to date one.
    */
   front: string | null;
   /**
@@ -435,7 +436,8 @@ export interface RollForwardResult<T extends ContractMinute> {
 
 /**
  * The roll-forward-only rule over per-contract minute rows. One front per
- * root, starting at `seed` (null: `nullSeedContract` at the first minute).
+ * root, starting at `seed` (null: `nullSeedContract` at the first minute of
+ * a kept key).
  * Per minute m with rows, in time order:
  *
  *   1. A streak whose maturity time is at or before m makes its challenger
@@ -474,10 +476,11 @@ export interface RollForwardResult<T extends ContractMinute> {
  *
  * Keys that are not an outright of `root` are left out and listed in
  * `skipped`. One-digit years and that window resolve against the UTC year
- * of the first row of any outright key. The seed is folded by its last digit
- * without a window check. Throws on a seed that is not an outright of
- * `root` (it comes from the CHECK'd column, so that is a bug) and on a row
- * whose `ts` does not parse. `ts` must be the `toISOString()` minute form.
+ * of the first row of any outright key; a cold-start seed is dated at the
+ * first minute of a kept key. Throws on a seed that is not an outright of
+ * `root` (it comes from the CHECK'd column, so that is a bug), on a
+ * two-digit seed outside that window when there are rows, and on a row whose
+ * `ts` does not parse. `ts` must be the `toISOString()` minute form.
  */
 export function replayRollForward<T extends ContractMinute>(
   byContract: ReadonlyMap<string, readonly T[]>,
@@ -488,8 +491,9 @@ export function replayRollForward<T extends ContractMinute>(
       `replayRollForward: seed ${JSON.stringify(seed)} is not an outright ${root} contract`,
     );
   }
-  // The seed is the stored canonical name, so it is folded by its last digit
-  // without a window check (there is no reference year before the rows).
+  // The seed is the stored canonical name. With rows it is checked against
+  // the window once the reference year is known; with none there is no
+  // reference year, so it is only folded by its last digit.
   const seedName = seed == null ? null : oneDigitName(root, seed);
 
   const skipped: string[] = [];
@@ -519,8 +523,14 @@ export function replayRollForward<T extends ContractMinute>(
   }
 
   // The reference year is the first row of any outright key, kept or not,
-  // since whether a two-digit year is in the window depends on it.
+  // since whether a two-digit year is in the window depends on it. (A
+  // cold-start seed is dated later, at the first kept minute.)
   const refYear = new Date(refMs).getUTCFullYear();
+  if (seed != null && canonicalName(root, seed, refYear) == null) {
+    throw new Error(
+      `replayRollForward: seed ${JSON.stringify(seed)} is outside the one-digit window for ${refYear}`,
+    );
+  }
   const names = new Set<string>();
   const byMinute = new Map<number, Map<string, Spelled<T>>>();
   for (const { key, rows } of keyed) {
@@ -549,11 +559,8 @@ export function replayRollForward<T extends ContractMinute>(
       contract,
       expiry: decodeContract(root, contract, refYear),
     }))
-    .sort(
-      (a, b) =>
-        compareExpiry(a.expiry, b.expiry) || (a.contract < b.contract ? -1 : 1),
-    );
-  const cycleSeed = firstLiveContract(root, new Date(refMs));
+    .sort((a, b) => compareExpiry(a.expiry, b.expiry));
+  const cycleSeed = firstLiveContract(root, new Date(firstMs));
 
   const rows: Array<{ contract: string; row: T }> = [];
   const takeovers: Array<{ ts: string; contract: string }> = [];
