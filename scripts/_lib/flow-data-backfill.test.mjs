@@ -12,7 +12,12 @@ const { neonMock, sqlQuery } = vi.hoisted(() => ({
 }));
 vi.mock('@neondatabase/serverless', () => ({ neon: neonMock }));
 
-import { runDays, summarizeItemRun, summarizeRun } from './backfill-cli.mjs';
+import {
+  DayFailure,
+  runDays,
+  summarizeItemRun,
+  summarizeRun,
+} from './backfill-cli.mjs';
 import {
   ETF_TIDE,
   FLOW_DATA_TARGET,
@@ -124,9 +129,12 @@ describe('FLOW_DATA_TARGET', () => {
   });
 
   it('is not re-keyed by a later migration: no constraint change, no unique index, nothing on the key behind the constraint', () => {
-    // The plain idx_flow_data_* indexes may come and go; only a constraint or
-    // a unique index could change the conflict key.
-    expect(migrations).not.toMatch(/ALTER TABLE flow_data[^`]*CONSTRAINT/i);
+    // The plain idx_flow_data_* indexes and a CHECK constraint may come and
+    // go; only a unique or primary key, or a unique index, could change the
+    // conflict key. Dropping the constraint is caught by its index name below.
+    expect(migrations).not.toMatch(
+      /ALTER TABLE flow_data[^`]*(UNIQUE|PRIMARY KEY)/i,
+    );
     expect(migrations).not.toMatch(/CREATE UNIQUE INDEX[^`]*ON flow_data\b/i);
     expect(migrations).not.toContain('flow_data_date_timestamp_source_key');
   });
@@ -206,6 +214,37 @@ describe('toMarketTideRows', () => {
       2_147_483_647, -2_147_483_648,
     ]);
     expect(dropped).toBe(3);
+  });
+
+  it('leaves out a premium the DECIMAL(14,2) column cannot hold, and counts it, instead of failing the whole INSERT', () => {
+    const at = (minute, overrides) =>
+      tideRows(1, D1, {
+        timestamp: `2026-08-12T14:${minute}:00.000Z`,
+        ...overrides,
+      })[0];
+    const uw = [
+      // the largest and smallest values that fit: 12 digits and 2 decimals
+      at('00', {
+        net_call_premium: '999999999999.99',
+        net_put_premium: '-999999999999.99',
+      }),
+      // one past each end, call side then put side, as a number and a string
+      at('05', { net_call_premium: 1_000_000_000_000 }),
+      at('10', { net_put_premium: '-1000000000000.00' }),
+      at('15', { net_call_premium: '-1000000000000' }),
+      at('20', { net_put_premium: 1e15 }),
+    ];
+
+    const { rows, dropped } = toMarketTideRows(D1, 'market_tide', uw);
+
+    expect(rows.map((r) => [r.ncp, r.npp])).toEqual([
+      [999_999_999_999.99, -999_999_999_999.99],
+    ]);
+    expect(dropped).toBe(4);
+    // The ETF tide shares the rule.
+    expect(toEtfTideRows(D1, 'spy_etf_tide', uw)).toMatchObject({
+      dropped: 4,
+    });
   });
 
   it('counts a row it leaves out instead of storing it', () => {
@@ -428,6 +467,93 @@ describe('toNetFlowRows', () => {
     expect(dropped).toBe(1);
     expect(rows.map((r) => r.net_volume)).toEqual([6, 506, 521]);
     expect(rows.map((r) => r.ncp)).toEqual([100, 100, 200]);
+  });
+
+  describe('a running total that leaves its column', () => {
+    // Ticks 5 minutes apart from 13:30Z, so the third is 13:40Z.
+    const withTicks = (...fields) =>
+      ticks(fields.length).map((tick, i) => ({
+        ...tick,
+        net_call_premium: '0',
+        net_put_premium: '0',
+        net_call_volume: 0,
+        net_put_volume: 0,
+        ...fields[i],
+      }));
+    const failure = (uw) => {
+      try {
+        toNetFlowRows(D1, 'spx_flow', uw);
+      } catch (error) {
+        return error;
+      }
+      return null;
+    };
+
+    it('fails the item as malformed, naming the source, the date, the column and the first bad minute, instead of dropping ticks', () => {
+      // 999,999,999,999.99 fits DECIMAL(14,2); one cent more does not.
+      const error = failure(
+        withTicks(
+          { net_call_premium: '999999999999.00' },
+          { net_call_premium: '0.99' },
+          { net_call_premium: '0.01' },
+          { net_call_premium: '0.01' },
+        ),
+      );
+
+      expect(error).toBeInstanceOf(DayFailure);
+      expect(error.kind).toBe('malformed');
+      expect(error.message).toContain('spx_flow for 2026-08-12');
+      expect(error.message).toContain('ncp');
+      // The third tick (13:40Z) is the first to push the total past the end.
+      expect(error.message).toContain('2026-08-12T13:40:00.000Z');
+    });
+
+    it.each([
+      ['ncp', { net_call_premium: '600000000000' }],
+      ['npp', { net_put_premium: '-600000000000' }],
+      ['net_volume', { net_call_volume: 1_500_000_000 }],
+      ['net_volume', { net_put_volume: -1_500_000_000 }],
+    ])(
+      'fails on %s when the second tick takes the total past the end',
+      (column, tick) => {
+        const error = failure(withTicks(tick, tick));
+
+        expect(error).toBeInstanceOf(DayFailure);
+        expect(error.message).toContain(column);
+        expect(error.message).toContain('2026-08-12T13:35:00.000Z');
+      },
+    );
+
+    it('takes totals that end exactly on the limits', () => {
+      const { rows } = toNetFlowRows(
+        D1,
+        'spx_flow',
+        withTicks(
+          {
+            net_call_premium: '999999999999.99',
+            net_put_premium: '-999999999999.99',
+            net_call_volume: 2_147_483_647,
+          },
+          // the second tick takes net_volume to its lower limit and back
+          { net_put_volume: -2_147_483_647 - 1 },
+        ),
+      );
+
+      expect(rows.map((r) => [r.ncp, r.npp, r.net_volume])).toEqual([
+        [999_999_999_999.99, -999_999_999_999.99, 2_147_483_647],
+        [999_999_999_999.99, -999_999_999_999.99, -1],
+      ]);
+    });
+
+    it('lets one corrupt tick fail the whole item, not just its own row', () => {
+      // A tick in the middle of a day sends every later total out of range.
+      const error = failure(
+        withTicks({}, { net_call_premium: '1e13' }, {}, {}),
+      );
+
+      expect(error).toBeInstanceOf(DayFailure);
+      expect(error.message).toContain('2026-08-12T13:35:00.000Z');
+    });
   });
 
   it('leaves out a tick from another ET day before adding anything up', () => {
@@ -880,6 +1006,50 @@ describe.each(CASES)('processFlowDay: $name', (testCase) => {
       kept: 2 * items.length,
       stored: 2 * items.length,
     });
+  });
+});
+
+describe('processFlowDay: a net-flow total that leaves its column', () => {
+  const netFlow = CASES.find((c) => c.name === 'net flow');
+
+  beforeEach(() => atTime(TODAY, ['Date', 'setTimeout']));
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('fails the day as malformed naming the source and the first bad minute, stores nothing for that ticker, and still stores the others', async () => {
+    // One corrupt tick in the middle of the SPX day.
+    stubFetch(netFlow, (item, date) =>
+      item === 'SPX'
+        ? ticks(3, date).map((tick, i) =>
+            i === 1 ? { ...tick, net_call_premium: '1e13' } : tick,
+          )
+        : netFlow.answer(2, date),
+    );
+    const sql = fakeSql();
+
+    const run = await runWorker([D1], (date) =>
+      processFlowDay(
+        date,
+        { apiKey: 'uw-key-for-tests', sql, dryRun: false, waitForSlot: noWait },
+        NET_FLOW,
+      ),
+    );
+
+    expect(run.days[0].ok).toBe(false);
+    expect(run.days[0].failure.kind).toBe('malformed');
+    expect(run.days[0].failure.detail).toContain('1 of 3 tickers failed');
+    expect(run.days[0].failure.detail).toContain('first (SPX)');
+    expect(run.days[0].failure.detail).toContain('spx_flow for 2026-08-12');
+    expect(run.days[0].failure.detail).toContain('2026-08-12T13:35:00.000Z');
+    // SPY and QQQ were written; SPX was not, and no row of it was dropped one
+    // by one to get the rest through.
+    expect(sql.query.mock.calls.map(([, v]) => v[2])).toEqual([
+      'spy_flow',
+      'qqq_flow',
+    ]);
+    expect(summarizeRun(run).exitCode).toBe(1);
   });
 });
 

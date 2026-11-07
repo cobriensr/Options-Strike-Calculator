@@ -57,9 +57,19 @@ export const FLOW_DATA_TARGET = {
 
 const FIVE_MIN_MS = 300_000;
 
-/** The INTEGER column's range (net_volume): a value outside it fails the whole INSERT. */
+/**
+ * flow_data's column ranges (migrations #4 and #48): net_volume is INTEGER;
+ * ncp and npp are DECIMAL(14,2), 12 digits before the point, so 100 times the
+ * value rounded to a cent is at most 99_999_999_999_999. A value outside its
+ * range makes Postgres reject the whole multi-row INSERT.
+ */
 const INT4_MIN = -2_147_483_648;
 const INT4_MAX = 2_147_483_647;
+const DECIMAL_14_2_MAX_CENTS = 99_999_999_999_999;
+
+const fitsInteger = (n) => n >= INT4_MIN && n <= INT4_MAX;
+const fitsDecimal = (n) =>
+  Math.round(Math.abs(n) * 100) <= DECIMAL_14_2_MAX_CENTS;
 
 /**
  * How many rows an item needs before "every premium is zero" fails the day.
@@ -99,22 +109,24 @@ function flowRow(date, ms, source, ncp, npp, netVolume) {
  * old etf script and the live ETF cron turn a bad one into a 0, which is then
  * stored as data). `net_volume` may be absent, which is stored as NULL (the
  * live ETF cron stores 0; the readers print a NULL as N/A); a volume that is
- * there must be a whole number inside the INTEGER column's range, or the row
- * is left out and counted instead of failing the whole INSERT.
+ * there must be a whole number inside the INTEGER column's range, and the
+ * premiums must fit DECIMAL(14,2), or the row is left out and counted instead
+ * of failing the whole INSERT. UW sends tide values already added up, so one
+ * bad value spoils only its own row.
  */
 function tideValues(row) {
   const ms = Date.parse(row.timestamp);
   const ncp = numberOf(row.net_call_premium);
   const npp = numberOf(row.net_put_premium);
   if (!Number.isFinite(ms) || ncp === null || npp === null) return null;
+  if (!fitsDecimal(ncp) || !fitsDecimal(npp)) return null;
   let netVolume = null;
   if (row.net_volume != null) {
     netVolume = numberOf(row.net_volume);
     if (
       netVolume === null ||
       !Number.isSafeInteger(netVolume) ||
-      netVolume < INT4_MIN ||
-      netVolume > INT4_MAX
+      !fitsInteger(netVolume)
     ) {
       return null;
     }
@@ -178,6 +190,29 @@ export function toEtfTideRows(date, source, uwRows) {
 }
 
 /**
+ * Throw if a running net-flow total no longer fits the column it will be stored
+ * in. `totals` are the running ncp, npp and net call and put volumes after the
+ * tick at `ms`. The message names the source, the date, the column, the value
+ * and that minute, which is the first one past the end.
+ */
+function assertTotalsFit(source, date, ms, totals) {
+  const { ncp, npp, callVolume, putVolume } = totals;
+  const netVolume = callVolume + putVolume;
+  const bad =
+    (!fitsDecimal(ncp) && ['ncp', ncp, 'DECIMAL(14,2)']) ||
+    (!fitsDecimal(npp) && ['npp', npp, 'DECIMAL(14,2)']) ||
+    (!fitsInteger(netVolume) && ['net_volume', netVolume, 'INTEGER']);
+  if (!bad) return;
+  const [column, value, type] = bad;
+  throw new DayFailure(
+    'malformed',
+    `${source} for ${date}: the running ${column} is ${value} at ` +
+      `${new Date(ms).toISOString()}, outside the ${type} column; one corrupt ` +
+      'tick moves every later total, so nothing is stored for it',
+  );
+}
+
+/**
  * UW net-prem-ticks (the change in net premium and volume for each minute) →
  * flow_data rows, as fetch-net-flow.ts stores them: the ticks added up in time
  * order, the running total kept at the last tick of each 5-minute window,
@@ -191,7 +226,14 @@ export function toEtfTideRows(date, source, uwRows) {
  * cron's `|| 0` does: its volumes are part of every later row's net_volume,
  * so leaving the whole tick out would shift them all. Both kinds are counted
  * in `dropped` (a tick that is only partly used is counted too). A volume
- * that is missing counts as 0. `{ rows, dropped }`.
+ * that is missing counts as 0.
+ *
+ * The running totals are this function's own sums, so one corrupt tick moves
+ * every later total, and dropping rows one by one would quietly strip the rest
+ * of the day. If a running ncp, npp or net_volume leaves its column's range
+ * (see fitsDecimal and fitsInteger), it throws a `malformed` DayFailure naming
+ * the source, the date, the column and the first minute, and nothing is
+ * stored for the item. `{ rows, dropped }`.
  */
 export function toNetFlowRows(date, source, ticks) {
   const usable = [];
@@ -225,6 +267,7 @@ export function toNetFlowRows(date, source, ticks) {
     npp += tick.npp;
     callVolume += tick.callVolume;
     putVolume += tick.putVolume;
+    assertTotalsFit(source, date, tick.ms, { ncp, npp, callVolume, putVolume });
     byWindow.set(
       windowStart(tick.ms),
       flowRow(

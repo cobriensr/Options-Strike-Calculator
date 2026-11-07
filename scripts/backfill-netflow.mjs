@@ -14,7 +14,10 @@
  * is missing. A tick for another ET day is left out before anything is added
  * up. A tick whose premium is not a number stays in the sums as a premium of 0
  * with its volumes, like the live cron's `|| 0` (leaving it out would shift
- * every later net_volume). Both are counted ("dropped").
+ * every later net_volume). Both are counted ("dropped"). If a running total
+ * leaves its column (ncp and npp DECIMAL(14,2), net_volume INTEGER), the
+ * ticker fails the day (`malformed`) naming the first minute: one corrupt tick
+ * moves every later total, so no rows are dropped one by one for it.
  *
  * 07-22 and the live rows: the live cron's morning rows are totals of the
  * ticks as they stood that morning; this script's rows for the rest of the day
@@ -34,14 +37,17 @@
  * User-Agent. A 4xx or malformed answer fails that day (exit 1); a day UW has
  * no ticks for is listed as empty, not failed. A ticker with no ticks on a day
  * that otherwise has some is named in a "partly empty days" line at the end of
- * the summary: listed, not failed, exit code unchanged. A ticker whose ticks
- * are all unusable for the day (UW answered another ET day), or that has ten or
- * more rows with every premium zero, fails the day (`malformed`) and writes
- * nothing. A database error fails the day too: nothing is only warned about.
- * Refuses to start 08:15–15:30 CT
- * on a weekday, and stops taking days (exit 3) when that window opens mid-run:
- * its calls skip the shared Redis semaphore and compete with the production
- * crons.
+ * the summary: listed, not failed, exit code unchanged.
+ *
+ * A ticker whose ticks are all unusable for the day (UW answered another ET
+ * day), or that has ten or more rows with every premium zero, fails the day
+ * (`malformed`) and writes nothing for that ticker; the day's other tickers
+ * still write. A database error fails the day too: nothing is only warned
+ * about.
+ *
+ * Refuses to start 08:15–15:30 CT on a weekday, and stops taking days
+ * (exit 3) when that window opens mid-run: its calls skip the shared Redis
+ * semaphore and compete with the production crons.
  *
  * Writes: ≤500 rows per INSERT. Runs against whatever DATABASE_URL points at
  * (.env.local = PRODUCTION).
@@ -60,7 +66,8 @@
  * Exit codes: 0 every day done, 1 a day failed (or a key is missing),
  * 2 bad flags, 3 the market-hours guard refused or stopped the run.
  *
- * Plan: docs/superpowers/plans/2026-11-05-summer-gap-phase3-retrofits.md (P3.2).
+ * Plan: docs/superpowers/plans/2026-11-05-summer-gap-phase3-retrofits.md
+ * (P3.2).
  */
 
 import { NET_FLOW, runFlowScript } from './_lib/flow-data-backfill.mjs';
