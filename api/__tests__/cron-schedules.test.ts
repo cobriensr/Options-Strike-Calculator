@@ -495,7 +495,11 @@ describe('cron-schedules SCHEDULE_MAP', () => {
       const servedUtc = unionTickSet(vercel ?? []);
       const lastAttemptMin = LAST_ATTEMPT_AFTER_CLOSE_MS / 60_000;
       const settleMin = FINAL_LAG_MS / 60_000;
-      // The handler gate is isMarketHours(10): close + 1 .. close + 10.
+      // The handler gate is isMarketHours(10): close + 1 .. close + 10. That 10
+      // is hard-coded here; the other half of the pin is each handler's own
+      // window test (fetch-etf-tide, fetch-zero-dte-flow, fetch-greek-flow:
+      // "window: ..."), which runs the real gate at the edges. Change the gate
+      // and both must move.
       const gateMinutes = Array.from({ length: 10 }, (_, i) => i + 1);
       for (const offset of [5, 4]) {
         const regime = offset === 5 ? 'EST' : 'EDT';
