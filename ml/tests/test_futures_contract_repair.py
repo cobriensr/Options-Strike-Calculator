@@ -9,6 +9,7 @@ installed with monkeypatch; ml/conftest.py blocks any real connect.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -1126,6 +1127,21 @@ def test_a_passing_run_replaces_the_previous_output(tmp_path, monkeypatch):
     # Only the run's own files are replaced, here and in the staging folder.
     assert (out / "notes.txt").read_text(encoding="utf-8") == "not ours"
     assert [p.name for p in staging.iterdir()] == ["notes.txt"]
+
+
+def test_the_landed_manifest_times_the_run_through_the_promote(tmp_path, monkeypatch):
+    staged = {}
+    promote = fcr.promote_staged
+
+    def slow_promote(staging, out_dir):
+        staged["run_seconds"] = manifest(staging)["run_seconds"]
+        promote(staging, out_dir)
+        time.sleep(0.5)
+
+    monkeypatch.setattr(fcr, "promote_staged", slow_promote)
+    assert passing_run(tmp_path, monkeypatch) == 0
+    # Both figures are rounded to 0.1 s, so allow for that.
+    assert manifest(out_of(tmp_path))["run_seconds"] >= staged["run_seconds"] + 0.3
 
 
 def test_ground_truth_only_never_replaces_the_output(tmp_path, monkeypatch, capsys):

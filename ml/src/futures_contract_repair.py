@@ -184,7 +184,9 @@ only after the gate and the post-check both pass. A failed run leaves --out-dir
 as it was; its diagnostics and a failed manifest are in the staging folder, and
 the run prints where. --ground-truth-only writes there too and never replaces
 --out-dir. The staging folder's own earlier outputs are deleted when a run
-starts.
+starts. Don't run into a folder that Phase 2 is reading: on Windows a file held
+open stops the replace after the earlier outputs are already deleted, and the
+new output stays in the staging folder.
 
 Outputs (--out-dir, default ml/data/futures-contract-repair/, gitignored). On a
 pass the run deletes the earlier outputs there, moves the new ones in and lands
@@ -1526,24 +1528,22 @@ def main(argv: list[str] | None = None) -> int:
     _write_csv(staging / "suspect.csv", pd.concat(suspects, ignore_index=True))
     _write_csv(staging / "tickless_windows.csv", pd.concat(windows, ignore_index=True))
     rows = out.groupby(["symbol", "source"]).size()
-    _write_manifest(
-        staging,
-        _manifest(
-            "passed",
-            "",
-            started,
-            gate=gates,
-            post_check=post,
-            rows={f"{s}/{src}": int(n) for (s, src), n in rows.items()},
-            partial=partial_counts,
-            front_absent=int(sum(len(a) for a in absent)),
-            ndjson_files=len(files),
-        ),
-    )
+    parts = {
+        "gate": gates,
+        "post_check": post,
+        "rows": {f"{s}/{src}": int(n) for (s, src), n in rows.items()},
+        "partial": partial_counts,
+        "front_absent": int(sum(len(a) for a in absent)),
+        "ndjson_files": len(files),
+    }
+    _write_manifest(staging, _manifest("passed", "", started, **parts))
     promote_staged(staging, out_dir)
+    # Stamp the landed manifest again so its time covers the promote too.
+    landed = _manifest("passed", "", started, **parts)
+    _write_manifest(out_dir, landed)
     _log(
         f"wrote {len(out):,} bars and {len(files)} NDJSON files to {out_dir} in "
-        f"{time.monotonic() - started:.0f}s"
+        f"{landed['run_seconds']:.0f}s"
     )
     return 0
 
