@@ -1,485 +1,291 @@
 /**
  * GET /api/cron/fetch-market-internals
  *
- * Fetches 1-minute OHLC bars for the four NYSE market internals
- * ($TICK, $ADD, $VOLD, $TRIN) and stores them in the
- * `market_internals` table. Runs every minute during regular-session
- * hours.
+ * Post-close settle of the four NYSE market internals ($TICK, $ADD, $VOLD,
+ * $TRIN) into `market_internals`. Runs once a weekday after the close
+ * (`30 22 * * 1-5` UTC: 17:30 ET in winter, 18:30 ET in summer) and upserts
+ * Schwab's SETTLED 1-minute bars for the last SETTLE_SESSIONS sessions.
  *
- * Data source split:
- *   - $TICK, $TRIN → Schwab /pricehistory (returns intraday 1-min bars)
- *   - $ADD, $VOLD  → Schwab /quotes (pricehistory only returns completed
- *     sessions for these symbols). We synthesize a flat bar
- *     (open=high=low=close=lastPrice) from the quote snapshot.
+ * It no longer captures anything in session. There is no trustworthy live
+ * source for these symbols (`/quotes` answers $ADD and $VOLD with a zeroed
+ * placeholder; live `/pricehistory` clamps $TICK's negatives to 0 and returns
+ * $TRIN at the wrong scale), and the old `ON CONFLICT DO NOTHING` kept every
+ * wrong first-seen row for good. The settled series is correct for all four.
+ * So an in-session `/analyze` gets no internals block (the prompt handles
+ * "NOT PROVIDED"), and an analysis of a past date reads the settled bars.
+ * Spec: docs/superpowers/specs/live-data-integrity-2026-11-06.md (P0.5).
+ * The rules (session filter, all-zero bar, bar count, $TICK clamp signature)
+ * and the upsert are in api/_lib/market-internals-settle.ts.
  *
- * Why per-minute polling:
- *   - $TICK/$ADD/$VOLD/$TRIN change second-by-second during the session.
- *     1-min bars are the standard granularity for the breadth panel.
+ * How a run fails, and how that shows (R4):
+ *   - Schwab 401/403/5xx or a network failure of a symbol -> that symbol's
+ *     leg fails (`schwab_error`, Sentry exception). A lapsed login is
+ *     `schwab_logged_out` (no exception: the error check-in is the alert).
+ *   - An empty or malformed answer -> `empty_payload` / `malformed_payload`.
+ *   - A rejected write -> `db_write`, the symbol's rows of this run are not
+ *     stored.
+ *   - Every leg failed -> status `error`; some -> `partial`.
+ *   - Status is also `partial`, with a Sentry **error** message, when a
+ *     session came back unusable (incomplete bar count, an all-zero bar, the
+ *     $TICK clamp signature) or when a symbol-session is stored all zero. A
+ *     warning would email nobody (spec P0.1, the alert-routing note).
  *
- * Extended-hours filter:
- *   Verification showed Schwab returns extended-hours bars for $TICK
- *   and $TRIN even with `needExtendedHoursData=false`. We filter in
- *   code to ET minutes-of-day [570, 960] (9:30 AM - 4:00 PM inclusive)
- *   before insert to keep the table clean.
+ * `?force=1` skips the time gate (CRON_SECRET is still required), so a
+ * weekend run settles the five sessions that ended the day before.
  *
- * Error handling:
- *   Each symbol is fetched independently via Promise.all with a per-symbol
- *   try/catch inside `processSymbol` (so the promise never rejects — it
- *   always resolves to a SymbolResult, with an `error` field on failure).
- *   If one symbol fails, the other three still commit. Per-symbol errors
- *   are logged and sent to Sentry but do not fail the whole run.
- *   Exception: when Schwab is logged out (SCHWAB_TOKEN_EXPIRED — expected
- *   until a manual re-auth) nothing is captured and a fully logged-out
- *   run reports `skipped`, so a lapsed login doesn't page every minute.
- *
- * Idempotence:
- *   INSERT ... ON CONFLICT (ts, symbol) DO NOTHING — safe to rerun.
- *   We fetch a 90-minute lookback to cover poll lag and short outages.
- *
- * Environment: CRON_SECRET (Schwab token managed internally)
+ * Environment: CRON_SECRET (the Schwab token is managed internally)
  */
 
-import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
-import {
-  schwabFetch,
-  checkDataQuality,
-  withRetry,
-  mapWithConcurrency,
-} from '../_lib/api-helpers.js';
+import { schwabFetch } from '../_lib/schwab-fetch.js';
+import { mapWithConcurrency } from '../_lib/uw-fetch.js';
+import { isTradingDayET } from '../_lib/cron-helpers.js';
 import { CRON_TICKER_DEFAULT_CONCURRENCY } from '../_lib/constants.js';
 import {
+  deriveCronStatus,
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
-import { getETTotalMinutes } from '../../src/utils/timezone.js';
-// INTERNAL_SYMBOLS is used by other modules; the cron now splits into
-// PRICEHISTORY_SYMBOLS and QUOTES_ONLY_SYMBOLS defined below.
+import {
+  SETTLE_SYMBOLS,
+  SettleFailure,
+  allZeroSessions,
+  fetchWindow,
+  parsePriceHistory,
+  planSymbol,
+  pricehistoryPath,
+  sessionProblems,
+  sessionRowCounts,
+  settleSessions,
+  upsertInternalBars,
+  type SessionOutcome,
+  type SessionProblem,
+  type SessionRowCount,
+  type SettleFailureKind,
+  type SymbolPlan,
+  type UpsertCounts,
+} from '../_lib/market-internals-settle.js';
 import type { InternalSymbol } from '../../src/types/market-internals.js';
 
-// ── Types ───────────────────────────────────────────────────
+const JOB = 'fetch-market-internals';
 
-interface SchwabCandle {
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-  datetime: number;
-}
-
-interface SchwabPriceHistory {
-  symbol: string;
-  empty: boolean;
-  candles: SchwabCandle[];
-}
-
-interface InternalBarRow {
-  ts: string; // ISO timestamp
+interface LegResult {
   symbol: InternalSymbol;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-}
-
-interface SymbolResult {
-  symbol: InternalSymbol;
+  /** Usable candles in the answer. */
   fetched: number;
-  filtered: number;
-  stored: number;
-  skipped: number;
+  /** Candles dropped for a missing or non-finite field. */
+  malformed: number;
+  /** Candles outside every session of the window. */
+  outOfSession: number;
+  duplicates: number;
+  /** All-zero bars rejected, over all sessions. */
+  zeroBars: number;
+  inserted: number;
+  updated: number;
+  unchanged: number;
+  sessions: SessionOutcome[];
+  problems: SessionProblem[];
+  /** Set when the leg failed; `error` is the message (already redacted). */
+  failure?: SettleFailureKind | 'db_write';
   error?: string;
-  /** Failed only because Schwab is logged out (SCHWAB_TOKEN_EXPIRED). */
-  loggedOut?: boolean;
 }
 
-/**
- * Schwab returned SCHWAB_TOKEN_EXPIRED: the login lapsed. Thrown past
- * `withRetry` (not a transient pattern) and caught in `processSymbol`
- * without a Sentry capture.
- */
-class SchwabLoggedOutError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'SchwabLoggedOutError';
-  }
-}
-
-// Regular-session bounds in ET minutes-of-day.
-// 9:30 AM = 9*60+30 = 570, 4:00 PM = 16*60 = 960.
-const SESSION_OPEN_MIN = 570;
-const SESSION_CLOSE_MIN = 960;
-
-// Schwab pricehistory returns intraday bars for TICK/TRIN but only
-// completed sessions for ADD/VOLD. The latter use /quotes instead.
-const PRICEHISTORY_SYMBOLS: InternalSymbol[] = ['$TICK', '$TRIN'];
-const QUOTES_ONLY_SYMBOLS: InternalSymbol[] = ['$ADD', '$VOLD'];
-
-/** Schwab quote response shape (subset of fields we need). */
-interface SchwabQuoteEntry {
-  quote?: { lastPrice?: number };
-}
-
-// ── Fetch helper ────────────────────────────────────────────
-
-async function fetchInternalCandles(
-  symbol: InternalSymbol,
-  startMs: number,
-  endMs: number,
-): Promise<SchwabCandle[]> {
-  const params = new URLSearchParams({
+function emptyLeg(symbol: InternalSymbol): LegResult {
+  return {
     symbol,
-    periodType: 'day',
-    frequencyType: 'minute',
-    frequency: '1',
-    startDate: String(startMs),
-    endDate: String(endMs),
-    needExtendedHoursData: 'false',
-    needPreviousClose: 'false',
-  });
-
-  const result = await schwabFetch<SchwabPriceHistory>(
-    `/pricehistory?${params.toString()}`,
-  );
-
-  if (!result.ok) {
-    const message = `Schwab pricehistory ${result.status}: ${result.error}`;
-    if (result.code === 'SCHWAB_TOKEN_EXPIRED') {
-      throw new SchwabLoggedOutError(message);
-    }
-    throw new Error(message);
-  }
-  return result.data.candles ?? [];
+    fetched: 0,
+    malformed: 0,
+    outOfSession: 0,
+    duplicates: 0,
+    zeroBars: 0,
+    inserted: 0,
+    updated: 0,
+    unchanged: 0,
+    sessions: [],
+    problems: [],
+  };
 }
 
-// ── Filter helper ───────────────────────────────────────────
-
-/**
- * Keep only bars whose timestamp falls within the regular NYSE session
- * in America/New_York. Drops any extended-hours bars Schwab returns
- * despite `needExtendedHoursData=false`.
- */
-function filterToRegularSession(candles: SchwabCandle[]): SchwabCandle[] {
-  const kept: SchwabCandle[] = [];
-  for (const c of candles) {
-    const d = new Date(c.datetime);
-    const etMin = getETTotalMinutes(d);
-    if (etMin >= SESSION_OPEN_MIN && etMin <= SESSION_CLOSE_MIN) {
-      kept.push(c);
-    }
-  }
-  return kept;
-}
-
-// ── Normalize helper ────────────────────────────────────────
-
-function toRows(
-  candles: SchwabCandle[],
-  symbol: InternalSymbol,
-): InternalBarRow[] {
-  const rows: InternalBarRow[] = [];
-  for (const c of candles) {
-    if (
-      !Number.isFinite(c.open) ||
-      !Number.isFinite(c.high) ||
-      !Number.isFinite(c.low) ||
-      !Number.isFinite(c.close)
-    ) {
-      continue;
-    }
-    rows.push({
-      ts: new Date(c.datetime).toISOString(),
-      symbol,
-      open: c.open,
-      high: c.high,
-      low: c.low,
-      close: c.close,
+/** The leg after a failure: what was learned before it, plus the cause. */
+function failedLeg(
+  leg: LegResult,
+  failure: SettleFailureKind | 'db_write',
+  err: unknown,
+): LegResult {
+  const error = err instanceof Error ? err.message : String(err);
+  if (failure !== 'schwab_logged_out') {
+    logger.warn({ err, symbol: leg.symbol, failure }, `${JOB}: leg failed`);
+    Sentry.captureException(err, {
+      tags: { cron: JOB, stage: failure, symbol: leg.symbol },
     });
   }
-  return rows;
+  return { ...leg, failure, error };
 }
 
-// ── Store helper ────────────────────────────────────────────
-
-async function storeBars(
-  rows: InternalBarRow[],
-): Promise<{ stored: number; skipped: number }> {
-  if (rows.length === 0) return { stored: 0, skipped: 0 };
-
-  const sql = getDb();
-
-  const results = await sql.transaction((txn) =>
-    rows.map(
-      (row) => txn`
-        INSERT INTO market_internals (ts, symbol, open, high, low, close)
-        VALUES (
-          ${row.ts}, ${row.symbol},
-          ${row.open}, ${row.high}, ${row.low}, ${row.close}
-        )
-        ON CONFLICT (ts, symbol) DO NOTHING
-        RETURNING ts
-      `,
-    ),
-  );
-
-  let stored = 0;
-  for (const result of results) {
-    if (result.length > 0) stored++;
-  }
-  return { stored, skipped: rows.length - stored };
-}
-
-// ── Per-symbol pipeline ─────────────────────────────────────
-
-async function processSymbol(
+/** Fetch, check and plan one symbol, then write it. Never rejects. */
+async function settleSymbol(
   symbol: InternalSymbol,
+  sessions: string[],
   startMs: number,
   endMs: number,
-): Promise<SymbolResult> {
+): Promise<LegResult> {
+  let leg = emptyLeg(symbol);
+  let plan: SymbolPlan;
   try {
-    const raw = await withRetry(() =>
-      fetchInternalCandles(symbol, startMs, endMs),
+    // schwabFetch retries 5xx and network errors itself; a 4xx is final.
+    const result = await schwabFetch<unknown>(
+      pricehistoryPath(symbol, startMs, endMs),
     );
-    const filteredCandles = filterToRegularSession(raw);
-    const filteredOut = raw.length - filteredCandles.length;
-    const rows = toRows(filteredCandles, symbol);
-
-    const { stored, skipped } = await withRetry(() => storeBars(rows));
-
-    return {
-      symbol,
-      fetched: raw.length,
-      filtered: filteredOut,
-      stored,
-      skipped,
-    };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (err instanceof SchwabLoggedOutError) {
-      return {
-        symbol,
-        fetched: 0,
-        filtered: 0,
-        stored: 0,
-        skipped: 0,
-        error: msg,
-        loggedOut: true,
-      };
-    }
-    logger.warn({ err, symbol }, 'fetch-market-internals: per-symbol failure');
-    Sentry.setTag('cron.symbol', symbol);
-    Sentry.captureException(err);
-    return {
-      symbol,
-      fetched: 0,
-      filtered: 0,
-      stored: 0,
-      skipped: 0,
-      error: msg,
-    };
-  }
-}
-
-// ── Quote-based pipeline for $ADD/$VOLD ────────────────────
-
-/**
- * Fetch current values for symbols that Schwab pricehistory doesn't
- * serve intraday, and synthesize flat bars (open=high=low=close).
- */
-async function processQuoteSymbols(
-  symbols: InternalSymbol[],
-): Promise<SymbolResult[]> {
-  if (symbols.length === 0) return [];
-
-  const symbolList = symbols.map((s) => encodeURIComponent(s)).join(',');
-  try {
-    const result = await withRetry(() =>
-      schwabFetch<Record<string, SchwabQuoteEntry>>(
-        `/quotes?symbols=${symbolList}&fields=quote`,
-      ),
-    );
-
     if (!result.ok) {
-      return symbols.map((symbol) => ({
-        symbol,
-        fetched: 0,
-        filtered: 0,
-        stored: 0,
-        skipped: 0,
-        error: `Schwab quotes ${result.status}: ${result.error}`,
-        loggedOut: result.code === 'SCHWAB_TOKEN_EXPIRED',
-      }));
+      throw new SettleFailure(
+        result.code === 'SCHWAB_TOKEN_EXPIRED'
+          ? 'schwab_logged_out'
+          : 'schwab_error',
+        `Schwab pricehistory ${result.status}: ${result.error}`,
+      );
     }
-
-    const now = new Date();
-    now.setSeconds(0, 0); // Truncate to minute boundary
-    const ts = now.toISOString();
-
-    const results: SymbolResult[] = [];
-    for (const symbol of symbols) {
-      const price = result.data[symbol]?.quote?.lastPrice;
-      if (price == null || !Number.isFinite(price)) {
-        results.push({
-          symbol,
-          fetched: 1,
-          filtered: 0,
-          stored: 0,
-          skipped: 0,
-          error: `No valid lastPrice for ${symbol}`,
-        });
-        continue;
-      }
-
-      try {
-        const row: InternalBarRow = {
-          ts,
-          symbol,
-          open: price,
-          high: price,
-          low: price,
-          close: price,
-        };
-        const { stored, skipped } = await withRetry(() => storeBars([row]));
-        results.push({
-          symbol,
-          fetched: 1,
-          filtered: 0,
-          stored,
-          skipped,
-        });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.warn(
-          { err, symbol },
-          'fetch-market-internals: quote store failure',
-        );
-        Sentry.captureException(err);
-        results.push({
-          symbol,
-          fetched: 1,
-          filtered: 0,
-          stored: 0,
-          skipped: 0,
-          error: msg,
-        });
-      }
-    }
-    return results;
+    const parsed = parsePriceHistory(result.data);
+    plan = planSymbol(symbol, parsed.candles, sessions);
+    leg = {
+      ...leg,
+      fetched: parsed.candles.length,
+      malformed: parsed.malformed,
+      outOfSession: plan.outOfSession,
+      duplicates: plan.duplicates,
+      zeroBars: plan.sessions.reduce((n, s) => n + s.zeroBars, 0),
+      sessions: plan.sessions,
+      problems: sessionProblems(plan),
+    };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.warn(
-      { err, symbols },
-      'fetch-market-internals: quotes fetch failure',
+    return failedLeg(
+      leg,
+      err instanceof SettleFailure ? err.kind : 'schwab_error',
+      err,
     );
-    Sentry.captureException(err);
-    return symbols.map((symbol) => ({
-      symbol,
-      fetched: 0,
-      filtered: 0,
-      stored: 0,
-      skipped: 0,
-      error: msg,
-    }));
   }
-}
 
-// ── Handler ─────────────────────────────────────────────────
+  let counts: UpsertCounts;
+  try {
+    ({ counts } = await upsertInternalBars(plan.rows));
+  } catch (err) {
+    return failedLeg(leg, 'db_write', err);
+  }
+  return { ...leg, ...counts };
+}
 
 export default withCronInstrumentation(
-  'fetch-market-internals',
+  JOB,
   async (ctx): Promise<CronResult> => {
-    const { today } = ctx;
+    // One clock read: which sessions are over is decided once for the run.
+    const sessions = settleSessions(new Date(ctx.startTimeMs));
+    const { startMs, endMs } = fetchWindow(sessions);
 
-    const endMs = Date.now();
-    const startMs = endMs - 90 * 60 * 1000; // last 90 minutes
+    // Capped fan-out, so a longer symbol list cannot 429 Schwab's per-app
+    // concurrency budget.
+    const legs = await mapWithConcurrency(
+      SETTLE_SYMBOLS,
+      CRON_TICKER_DEFAULT_CONCURRENCY,
+      (symbol) => settleSymbol(symbol, [...sessions], startMs, endMs),
+    );
 
-    // Fetch both groups in parallel:
-    // - pricehistory symbols ($TICK, $TRIN) get full OHLC bars
-    // - quotes-only symbols ($ADD, $VOLD) get current-value snapshots
-    // mapWithConcurrency caps the per-symbol fan-out so a future symbol
-    // expansion doesn't 429 against Schwab's per-app concurrency budget.
-    const [priceHistoryResults, quoteResults] = await Promise.all([
-      mapWithConcurrency(
-        PRICEHISTORY_SYMBOLS,
-        CRON_TICKER_DEFAULT_CONCURRENCY,
-        (s) => processSymbol(s, startMs, endMs),
-      ),
-      processQuoteSymbols(QUOTES_ONLY_SYMBOLS),
-    ]);
+    const failedLegs = legs.filter((l) => l.failure !== undefined);
+    const problems = legs.flatMap((l) => l.problems);
 
-    const results = [...priceHistoryResults, ...quoteResults];
-
-    if (results.every((r) => r.loggedOut)) {
-      ctx.logger.warn(
-        'fetch-market-internals: Schwab logged out — skipping until re-auth',
+    // A session Schwab sent unusable, or sent short: say so once per run,
+    // naming every symbol-session. Error level: a warning emails nobody.
+    if (problems.length > 0) {
+      logger.warn(
+        { problems },
+        `${JOB}: settled series unusable for session(s)`,
       );
-      return {
-        status: 'skipped',
-        message: 'Schwab logged out — re-auth at /api/auth/init',
-        metadata: { reason: 'schwab_logged_out' },
-      };
-    }
-
-    const totals = results.reduce(
-      (acc, r) => ({
-        fetched: acc.fetched + r.fetched,
-        filtered: acc.filtered + r.filtered,
-        stored: acc.stored + r.stored,
-        skipped: acc.skipped + r.skipped,
-      }),
-      { fetched: 0, filtered: 0, stored: 0, skipped: 0 },
-    );
-
-    const failures = results.filter((r) => r.error);
-    const successes = results.filter((r) => !r.error);
-
-    ctx.logger.info(
-      {
-        date: today,
-        ...totals,
-        successCount: successes.length,
-        failureCount: failures.length,
-        failures: failures.map((f) => ({ symbol: f.symbol, error: f.error })),
-      },
-      'fetch-market-internals completed',
-    );
-
-    // Data quality check: only fire when we stored enough rows for the
-    // day. Uses a nonzero "close" value as the liveness signal.
-    if (totals.stored > 10) {
-      // Liveness check: $ADD, $VOLD, $TRIN are effectively never 0 intraday,
-      // and a $TICK reading of exactly 0 is rare. If the aggregate nonzero
-      // count across all 4 symbols drops to 0 while `total` is large, Schwab
-      // is returning synthetic/empty bars — surface it via checkDataQuality.
-      const qcRows = await getDb()`
-        SELECT COUNT(*) AS total,
-               COUNT(*) FILTER (WHERE close <> 0) AS nonzero
-        FROM market_internals
-        WHERE ts::date = ${today}::date
-      `;
-      const { total, nonzero } = qcRows[0]!;
-      await checkDataQuality({
-        job: 'fetch-market-internals',
-        table: 'market_internals',
-        date: today,
-        sourceFilter: '1-minute $TICK/$ADD/$VOLD/$TRIN bars',
-        total: Number(total),
-        nonzero: Number(nonzero),
+      Sentry.captureMessage(`${JOB}: settled series unusable for session(s)`, {
+        level: 'error',
+        tags: { cron: JOB, stage: 'session_problem' },
+        extra: { problems, sessions },
       });
     }
 
+    // Per-symbol check of what is STORED for the window's sessions: any
+    // symbol-session with more than 10 rows, all zero, is a dead feed. It is
+    // per symbol on purpose: pooled over the four symbols, a healthy $TICK
+    // hid $ADD and $VOLD stored all zero for seven months (F9).
+    let allZero: SessionRowCount[] = [];
+    let qualityCheckFailed = false;
+    try {
+      allZero = allZeroSessions(await sessionRowCounts(sessions));
+    } catch (err) {
+      qualityCheckFailed = true;
+      logger.warn({ err }, `${JOB}: quality check failed`);
+      Sentry.captureException(err, {
+        tags: { cron: JOB, stage: 'quality_check' },
+      });
+    }
+    if (allZero.length > 0) {
+      logger.warn({ allZero }, `${JOB}: stored session is all zero`);
+      Sentry.captureMessage(`${JOB}: stored session is all zero`, {
+        level: 'error',
+        tags: { cron: JOB, stage: 'symbol_all_zero' },
+        extra: { sessions: allZero },
+      });
+    }
+
+    const noisy =
+      problems.length > 0 ||
+      allZero.length > 0 ||
+      qualityCheckFailed ||
+      legs.some((l) => l.malformed > 0);
+    const derived = deriveCronStatus(failedLegs.length, legs.length);
+    const status = derived === 'success' && noisy ? 'partial' : derived;
+
+    const loggedOut =
+      failedLegs.length === legs.length &&
+      failedLegs.every((l) => l.failure === 'schwab_logged_out');
+
+    const total = (pick: (l: LegResult) => number): number =>
+      legs.reduce((n, l) => n + pick(l), 0);
+    const inserted = total((l) => l.inserted);
+    const updated = total((l) => l.updated);
+    const unchanged = total((l) => l.unchanged);
+
+    ctx.logger.info(
+      {
+        date: ctx.today,
+        sessions,
+        status,
+        inserted,
+        updated,
+        unchanged,
+        failed: failedLegs.map((l) => ({
+          symbol: l.symbol,
+          failure: l.failure,
+        })),
+      },
+      `${JOB} completed`,
+    );
+
     return {
-      status: failures.length === 0 ? 'success' : 'partial',
+      status,
+      ...(loggedOut
+        ? { message: 'Schwab logged out — re-auth at /api/auth/init' }
+        : {}),
       metadata: {
-        success: true,
-        ...totals,
-        successCount: successes.length,
-        failureCount: failures.length,
-        results,
+        ...(loggedOut ? { reason: 'schwab_logged_out' } : {}),
+        sessions,
+        inserted,
+        updated,
+        unchanged,
+        zeroBars: total((l) => l.zeroBars),
+        failureCount: failedLegs.length,
+        problems,
+        allZero,
+        qualityCheckFailed,
+        results: legs,
       },
     };
   },
-  { requireApiKey: false },
+  // Not the market-hours gate: this runs after the close, on a trading day.
+  // `isTradingDayET` is false on a weekend or holiday, so those skip without
+  // `?force=1`; the 22:30 UTC schedule is past the close in both DST regimes.
+  { requireApiKey: false, timeCheck: isTradingDayET },
 );

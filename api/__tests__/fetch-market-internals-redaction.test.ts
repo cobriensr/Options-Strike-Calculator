@@ -2,19 +2,18 @@
 
 /**
  * End-to-end check that an upstream Schwab error body never reaches the
- * places fetch-market-internals puts `result.error`: the thrown Error (and
- * so Sentry and the log line) in fetchInternalCandles, and the per-symbol
- * `error` field in the response and the Axiom event (both the pricehistory
- * and the quotes paths).
+ * places fetch-market-internals puts `result.error`: the thrown SettleFailure
+ * (and so Sentry and the log line), and the per-symbol `error` field in the
+ * response and the Axiom event.
  *
  * fetch-market-internals.test.ts mocks schwabFetch, so it cannot see the
  * redaction, which lives in schwabFetch itself (api/_lib/schwab-fetch.ts).
- * This file keeps schwabFetch and withRetry REAL and stubs only the network
- * (`fetch`), the token source and the DB, so a regression in the shared
- * helper fails here as a leak in this cron.
+ * This file keeps schwabFetch REAL and stubs only the network (`fetch`), the
+ * token source and the DB, so a regression in the shared helper fails here as
+ * a leak in this cron.
  *
- * A 403 is used on purpose: schwabFetch itself retries only 5xx, so the
- * only backoff left is withRetry's (see beforeEach).
+ * A 403 is used on purpose: schwabFetch retries only 5xx and network errors,
+ * so the answer comes back at once with no backoff to wait out.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -36,7 +35,11 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { setTag: vi.fn(), captureException: vi.fn() },
+  Sentry: {
+    setTag: vi.fn(),
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+  },
   metrics: {
     increment: vi.fn(),
     schwabCall: vi.fn(() => vi.fn()),
@@ -57,8 +60,8 @@ import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 import { reportCronRun } from '../_lib/axiom.js';
 
-// Tuesday 10:00 AM ET, inside the market-hours gate.
-const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
+// Friday 17:30 ET (EST), after the close: inside the settle's time gate.
+const SETTLE_TIME = new Date('2026-11-06T22:30:00.000Z');
 
 // A 40-character token-like run, as an echoed credential would look.
 const TOKEN = 'T0kenLikeRun'.repeat(4).slice(0, 40);
@@ -69,11 +72,8 @@ describe('fetch-market-internals: Schwab error body redaction', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
-    // setTimeout is faked so withRetry's 1 s + 2 s backoff costs no wall
-    // time: schwabFetch maps a 403 to status 502, and fetchInternalCandles
-    // embeds that in its message, which withRetry treats as retryable.
-    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
-    vi.setSystemTime(MARKET_TIME);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(SETTLE_TIME);
     process.env = { ...originalEnv };
     process.env.CRON_SECRET = 'test-secret';
     mockSql.mockResolvedValue([]);
@@ -96,17 +96,17 @@ describe('fetch-market-internals: Schwab error body redaction', () => {
 
   it('masks the token in the response, the Axiom event, the log and the Sentry capture', async () => {
     const res = mockResponse();
-    const run = handler(
+    await handler(
       mockRequest({
         method: 'GET',
         headers: { authorization: 'Bearer test-secret' },
       }),
       res,
     );
-    await vi.advanceTimersByTimeAsync(5_000);
-    await run;
 
-    // Every symbol failed on the 403, so the per-symbol errors are present.
+    // Every symbol failed on the 403, so the per-symbol errors are present
+    // and the run did not report success.
+    expect((res._json as { status: string }).status).toBe('error');
     const body = res._json as {
       results: { symbol: string; error?: string }[];
     };
@@ -134,7 +134,7 @@ describe('fetch-market-internals: Schwab error body redaction', () => {
       expect(message).not.toContain(TOKEN);
     }
 
-    // pricehistory failures are thrown as an Error and captured.
+    // Each failed symbol is captured as an Error.
     const captured = vi.mocked(Sentry.captureException).mock.calls;
     expect(captured.length).toBeGreaterThan(0);
     for (const [err] of captured) {
