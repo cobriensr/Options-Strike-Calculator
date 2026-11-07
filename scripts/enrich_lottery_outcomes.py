@@ -984,11 +984,11 @@ def update_fires(conn, updates: list[tuple], source: str) -> tuple[int, int]:
 #   - no prior outcome: tag it (source, version, enriched_at) as tried but
 #     unpriced, the realized columns staying NULL;
 #   - prior outcome: leave the values, outcome_source and outcome_version
-#     exactly as they were, and leave enriched_at alone unless it is NULL. A
-#     row with a value but no enriched_at (scripts/recompute_peak_from_parquet.py
-#     writes the peak without it) would otherwise stay in the crons'
-#     `enriched_at IS NULL` pool, and a cron write there would overwrite a row
-#     the tape examined.
+#     exactly as they were, and leave enriched_at alone unless it is NULL. The
+#     column is nullable and nothing in the schema forbids a value with a NULL
+#     enriched_at, so the keep branch fills it defensively: such a row would
+#     otherwise stay in the crons' `enriched_at IS NULL` pool, and a cron write
+#     there would overwrite a row the tape examined.
 # Either way the marker is set to this pass's version, so the row is not
 # examined again until the version changes. The realized columns are not in
 # the SET at all. RETURNING reports the branch taken: the stamp changes no

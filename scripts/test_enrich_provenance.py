@@ -23,6 +23,7 @@ the Full Tape (the legacy 42-column files with decimal numerics and the new
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -574,6 +575,41 @@ def test_tape_work_carries_the_version_gate_ahead_of_the_bounds(as_source) -> No
     assert db.executed[-1][1] == (DAY,)
 
 
+def test_the_tape_gate_selects_unexamined_and_older_rows_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The gate is real SQL, so run it: the fake cannot evaluate a WHERE. The
+    # production predicate text goes into stdlib sqlite3 in memory (it speaks
+    # the same IS NULL / OR / < / AND), with sqlite's `?` as the version.
+    monkeypatch.setattr(lottery, 'OUTCOME_VERSION', 2)
+    gate = lottery.outcome_work_all('fulltape', '', '?')
+    other_day = '2026-07-23'
+    con = sqlite3.connect(':memory:')
+    con.execute('CREATE TABLE fires (id INTEGER PRIMARY KEY, date TEXT, outcome_tape_version INTEGER)')
+    con.executemany(
+        'INSERT INTO fires VALUES (?, ?, ?)',
+        [
+            (1, DAY, None),  # never examined: selected
+            (2, DAY, 1),  # examined at an older version: selected
+            (3, DAY, 2),  # examined at this version: not
+            (4, DAY, 3),  # examined at a newer version: not
+            # The same markers on another day. Without the gate's parentheses
+            # `date = ? AND marker IS NULL OR marker < ?` lets row 6 through.
+            (5, other_day, None),
+            (6, other_day, 1),
+        ],
+    )
+    # One binding per `?` in the predicate: the day, then the version wherever
+    # the gate takes it, so a gate that stops taking one fails on its rows.
+    params = (DAY, *[lottery.OUTCOME_VERSION] * gate.count('?'))
+
+    rows = con.execute(
+        f'SELECT id FROM fires WHERE date = ? AND {gate} ORDER BY id', params
+    ).fetchall()
+
+    assert [row[0] for row in rows] == [1, 2]
+
+
 def test_a_version_bump_reaches_every_tape_gate(
     fulltape: Path, make_db, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -764,10 +800,11 @@ def test_unpriced_fire_with_an_outcome_keeps_it(fulltape: Path, make_db) -> None
 
 
 def test_a_kept_row_without_enriched_at_gets_one(fulltape: Path, make_db) -> None:
-    # A row with a value but no enriched_at (scripts/recompute_peak_from_parquet.py
-    # writes the peak without it) would stay in 'pending' for good, and the
-    # cron's `enriched_at IS NULL` guard would let it overwrite a row the tape
-    # examined. The keep branch fills a missing enriched_at and nothing else.
+    # enriched_at is nullable and nothing in the schema forbids a row with a
+    # value and a NULL enriched_at. Such a row would stay in 'pending' for
+    # good, and the cron's `enriched_at IS NULL` guard would let it overwrite a
+    # row the tape examined, so the keep branch fills it defensively. It fills
+    # a missing enriched_at and nothing else.
     db = make_db(fires=[fire_row(2, AAPL, had_outcome=True)])
 
     lottery.enrich_one_date(db, DAY, select='all')
