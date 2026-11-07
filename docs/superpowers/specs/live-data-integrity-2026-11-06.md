@@ -43,6 +43,13 @@ A value check on the P3.2 `flow_data` backfill (summer gap plan, `docs/superpowe
 | F22 | `cone_levels` | 3 (one side's mark bad) | 08-25, 10-19 | 2 rows | `cone` cron, DO NOTHING keeps the first write |
 | F23 | `flow_ratio_monitor` | 2 (pre-rollover reading is yesterday's last tick; unverified in the DB) | 03-25 → now, if confirmed | not measured | `api/cron/monitor-flow-ratio.ts:62-72` polls `/net-flow/expiry` with `date=today` every minute from 09:25 ET and takes the last non-null tick, which is yesterday's 15:59 before the rollover. Same class as F2 |
 
+**F11 and F12 repair note (2026-11-07).** The frozen live rows were replaced by replaying their slots through the app:
+- 199 frozen live rows deleted, on 10-28, 11-02, 11-04 and 11-06.
+- 858 slots replayed through the app on 11 dates (09-09, 09-14, 09-15, 09-16, 10-16, 10-19, 10-27, 10-28, 11-02, 11-04, 11-06). Every row was checked against its posted payload and its candle.
+- `training_features` rebuilt for 10 of them.
+- 11-06 waits for its VIX1D: the `refresh-vix1d` cron runs weekday mornings.
+- The older dates wait on the owner. On the ~22 dates that can't be replayed (2026-03-21 to 09-01, about 890 rows) the frozen rows stay, and they still feed `/api/vix-ohlc` where a date has no candles. See Lead 15 in `past-date-replay-integrity-2026-10-27.md`.
+
 Owned elsewhere. Check with that work before touching any of these:
 - **Lottery and Silent Boom outcome labels missing or stamped empty** (252K unenriched fires 06-25 → 10-21; 9K Silent Boom rows): the enrich work, commits 11a02b97 and 54850fdd on 11-06.
 - **`is_fomc` labels:** the econ/FOMC label work.
