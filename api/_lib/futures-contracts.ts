@@ -2,7 +2,7 @@
  * Front-month contract selection for the UW futures crons, and the rule
  * that decides which contract each `futures_bars` minute is built from.
  *
- * `futures_bars` rows are keyed by root ('ES'). Since migration #203 a bar
+ * `futures_bars` rows are keyed by root ('ES'). Since migration #204 a bar
  * also carries the dated outright it came from (`contract`, NULL in all
  * older history). The REST crons that read per-contract data
  * (`backfill-futures-gaps` for candles, `fetch-futures-session-stats` for
