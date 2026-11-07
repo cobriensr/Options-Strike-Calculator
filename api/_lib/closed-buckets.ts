@@ -124,11 +124,18 @@ export interface ClosedBucketsResult {
    */
   sessionRows: number;
   /**
-   * Closed buckets left out because their last minute has no usable value,
-   * that ended less than STUCK_AFTER_MS ago. UW is late: expected.
+   * Closed buckets left out because their last minute has no usable value and
+   * UW may still be late: the bucket ended less than STUCK_AFTER_MS ago and,
+   * for the final bucket of the day, the day's last attempt (the session
+   * close + LAST_ATTEMPT_AFTER_CLOSE_MS) has not come yet. Expected, not
+   * reported.
    */
   pending: number;
-  /** The same, ended STUCK_AFTER_MS or more ago. Counted on every run. */
+  /**
+   * The same, but UW is no longer just late: the bucket ended STUCK_AFTER_MS
+   * or more ago, or it is the final bucket and the day's last attempt has
+   * come. Counted on every run.
+   */
   stuck: number;
   /** Row timestamp the oldest stuck bucket would be stored under, or null. */
   oldestStuck: string | null;

@@ -368,35 +368,77 @@ describe('closedBuckets and the flow_data columns agree on the ranges', () => {
   const LARGEST_PREMIUM = '999999999999.99';
   const SMALLEST_PREMIUM = '-999999999999.99';
 
-  it.each<[string, Partial<TideMinute>]>([
-    ['the largest ncp', { net_call_premium: LARGEST_PREMIUM }],
-    ['the smallest ncp', { net_call_premium: SMALLEST_PREMIUM }],
-    ['the largest npp', { net_put_premium: LARGEST_PREMIUM }],
-    ['the smallest npp', { net_put_premium: SMALLEST_PREMIUM }],
-    ['the largest net_volume', { net_volume: 2_147_483_647 }],
-    ['the smallest net_volume', { net_volume: -2_147_483_648 }],
+  // [label, minute overrides, stored ncp text, stored npp text, stored net_volume].
+  // The default minute carries premiums of 1 (stored '1.00') and a volume of 1.
+  it.each<[string, Partial<TideMinute>, string, string, number]>([
+    [
+      'the largest ncp',
+      { net_call_premium: LARGEST_PREMIUM },
+      '999999999999.99',
+      '1.00',
+      1,
+    ],
+    [
+      'the smallest ncp',
+      { net_call_premium: SMALLEST_PREMIUM },
+      '-999999999999.99',
+      '1.00',
+      1,
+    ],
+    [
+      'the largest npp',
+      { net_put_premium: LARGEST_PREMIUM },
+      '1.00',
+      '999999999999.99',
+      1,
+    ],
+    [
+      'the smallest npp',
+      { net_put_premium: SMALLEST_PREMIUM },
+      '1.00',
+      '-999999999999.99',
+      1,
+    ],
+    [
+      'the largest net_volume',
+      { net_volume: 2_147_483_647 },
+      '1.00',
+      '1.00',
+      2_147_483_647,
+    ],
+    [
+      'the smallest net_volume',
+      { net_volume: -2_147_483_648 },
+      '1.00',
+      '1.00',
+      -2_147_483_648,
+    ],
     // Postgres rounds 999999999999.994 to .99, which fits.
     [
       'a premium that rounds down to the largest',
       { net_call_premium: 999_999_999_999.994 },
+      '999999999999.99',
+      '1.00',
+      1,
     ],
-  ])('accepts %s, and Postgres stores it', async (_label, overrides) => {
-    const result = closedBuckets([minute(overrides)], NOW);
-    expect(result.buckets).toHaveLength(1);
+  ])(
+    'accepts %s, and Postgres stores it',
+    async (_label, overrides, ncpText, nppText, volume) => {
+      const result = closedBuckets([minute(overrides)], NOW);
+      expect(result.buckets).toHaveLength(1);
 
-    await expect(
-      upsertClosedBuckets(result.buckets, SOURCE, DATE),
-    ).resolves.toEqual({ inserted: 1, updated: 0, unchanged: 0 });
+      await expect(
+        upsertClosedBuckets(result.buckets, SOURCE, DATE),
+      ).resolves.toEqual({ inserted: 1, updated: 0, unchanged: 0 });
 
-    const { rows } = await pg.query<{ ncp: string; npp: string; v: number }>(
-      `SELECT ncp::text AS ncp, npp::text AS npp, net_volume AS v FROM flow_data`,
-    );
-    const bucket = result.buckets[0]!;
-    expect(rows).toHaveLength(1);
-    expect(Number(rows[0]?.ncp)).toBeCloseTo(bucket.ncp, 2);
-    expect(Number(rows[0]?.npp)).toBeCloseTo(bucket.npp, 2);
-    expect(rows[0]?.v).toBe(bucket.netVolume);
-  });
+      const { rows } = await pg.query<{ ncp: string; npp: string; v: number }>(
+        `SELECT ncp::text AS ncp, npp::text AS npp, net_volume AS v FROM flow_data`,
+      );
+      // Compared as text: a float comparison would pass a boundary value that
+      // Postgres had rounded or clipped.
+      expect(rows).toEqual([{ ncp: ncpText, npp: nppText, v: volume }]);
+    },
+  );
 
   it.each<[string, Partial<TideMinute>]>([
     ['ncp of 1e12', { net_call_premium: '1000000000000' }],

@@ -268,6 +268,42 @@ describe('closedBuckets', () => {
     },
   );
 
+  it('keeps the after-close rule to the final bucket: LAST_ATTEMPT_AFTER_CLOSE_MS + BUCKET_MS <= STUCK_AFTER_MS', () => {
+    // Every other bucket ended at least BUCKET_MS before the final one, so at
+    // close + LAST_ATTEMPT_AFTER_CLOSE_MS it is already STUCK_AFTER_MS old and
+    // the age rule had stuck it. Raise LAST_ATTEMPT_AFTER_CLOSE_MS past this
+    // bound and the rule would call a bucket stuck that the age rule calls
+    // pending.
+    expect(LAST_ATTEMPT_AFTER_CLOSE_MS + BUCKET_MS).toBeLessThanOrEqual(
+      STUCK_AFTER_MS,
+    );
+  });
+
+  it.each([
+    ['16:04:59 ET, a second before close + 5 min', '20:04:59', 'pending'],
+    ['16:05:00 ET, close + 5 min', '20:05:00', 'stuck'],
+    ['16:09 ET, the zero-DTE last attempt', '20:09:00', 'stuck'],
+  ])(
+    'the bucket before the final one (15:50-15:55) with a null last minute at %s is %s, exactly as its age says',
+    (_label, timeZ, expected) => {
+      // It ended 10 minutes before close + 5: the age rule (STUCK_AFTER_MS)
+      // and the after-close rule agree to the millisecond, so the after-close
+      // rule never decides for it. The final bucket stays the only one the
+      // rule touches.
+      const rows = withMinute(
+        grid(SESSION_OPEN, SESSION_CLOSE, SESSION_CLOSE),
+        '19:54',
+        { net_call_premium: null },
+      );
+      const result = closedBuckets(rows, new Date(`${DAY}T${timeZ}Z`));
+      expect(result.stuck).toBe(expected === 'stuck' ? 1 : 0);
+      expect(result.pending).toBe(expected === 'pending' ? 1 : 0);
+      expect(result.oldestStuck).toBe(
+        expected === 'stuck' ? '2026-03-24T19:55:00.000Z' : null,
+      );
+    },
+  );
+
   it('the final bucket on an early-close day is stuck from 13:05 ET, not from 16:05', () => {
     const half = '2026-11-27'; // EST: 13:00 ET is 18:00Z
     const rows = grid(

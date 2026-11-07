@@ -41,6 +41,10 @@ import { SCHEDULE_MAP } from '../_lib/cron-schedules.js';
 import { assertValidTimezone } from '../_lib/cron-instrumentation.js';
 import { MARKET_MINUTES } from '../_lib/constants.js';
 import {
+  FINAL_LAG_MS,
+  LAST_ATTEMPT_AFTER_CLOSE_MS,
+} from '../_lib/closed-buckets.js';
+import {
   isConeCalcWindow,
   isFuturesRthCt,
   isGexbotLiveCt,
@@ -471,6 +475,52 @@ describe('cron-schedules SCHEDULE_MAP', () => {
       },
     );
   });
+
+  // The closed-bucket crons store the final 5-minute bucket (15:55-16:00) on
+  // their first run after it has settled, and report it stuck if its last
+  // minute is still unusable on their last run (closedBuckets, "the day's last
+  // attempt" = the close + LAST_ATTEMPT_AFTER_CLOSE_MS). That only works if
+  // vercel.json fires at least one tick before that instant, no earlier than
+  // the settle lag, and one at or after it, inside the handler's gate (close +
+  // 10). The post-close ticks are read from vercel.json here, in both DST
+  // regimes, so a schedule edit that moves them fails loudly instead of
+  // silently losing or mis-reporting the day's last row.
+  it.each([['fetch-etf-tide'], ['fetch-zero-dte-flow']])(
+    '%s: a first post-close tick that sees the final bucket settled, before the last-attempt instant, and a last tick at or after it',
+    (jobName) => {
+      const vercel = vercelCrons.get(jobName);
+      expect(vercel).toBeDefined();
+      const servedUtc = unionTickSet(vercel ?? []);
+      const lastAttemptMin = LAST_ATTEMPT_AFTER_CLOSE_MS / 60_000;
+      const settleMin = FINAL_LAG_MS / 60_000;
+      // The handler gate is isMarketHours(10): close + 1 .. close + 10.
+      const gateMinutes = Array.from({ length: 10 }, (_, i) => i + 1);
+      for (const offset of [5, 4]) {
+        const regime = offset === 5 ? 'EST' : 'EDT';
+        const postClose = gateMinutes.filter((afterClose) =>
+          servedUtc.has(MARKET_MINUTES.CLOSE + afterClose + offset * 60),
+        );
+        const first = postClose[0];
+        const last = postClose.at(-1);
+        expect(
+          first,
+          `${regime}: no post-close tick in the gate`,
+        ).toBeDefined();
+        expect(
+          first,
+          `${regime}: the first tick (close + ${first}) must see the final bucket settled (>= ${settleMin} min)`,
+        ).toBeGreaterThanOrEqual(settleMin);
+        expect(
+          first,
+          `${regime}: the first tick (close + ${first}) must come before the last-attempt instant (${lastAttemptMin} min)`,
+        ).toBeLessThan(lastAttemptMin);
+        expect(
+          last,
+          `${regime}: the last tick (close + ${last}) must be at or after the last-attempt instant (${lastAttemptMin} min)`,
+        ).toBeGreaterThanOrEqual(lastAttemptMin);
+      }
+    },
+  );
 
   it('every entry has positive checkinMargin and maxRuntime', () => {
     for (const [name, cfg] of Object.entries(SCHEDULE_MAP)) {
