@@ -169,7 +169,8 @@ ARCHIVE_SOURCES = {
 # Full Tape sets on every row it examines: the version of the pass that
 # examined it (NULL: none has). The tape's work and guards re-examine a row
 # whose marker is older than OUTCOME_VERSION, so a version bump re-derives
-# history.
+# history. Bumping it is a deliberate backfill: the nightly then re-reads every
+# tape day, newest first, over several nights.
 OUTCOME_VERSION = 1
 INVERSION_VERSION = 1
 # The source with the final say over outcomes (the Full Tape).
@@ -955,10 +956,11 @@ def update_fires(conn, updates: list[tuple], source: str) -> tuple[int, int]:
 
     A cron write that commits while the statement is running is a different
     case. The UPDATE still overwrites it (it waits for the writer, then
-    re-checks the guard on the new row version), but `prior` still reads the
-    version from the snapshot, so that row is counted as not replaced: one
-    count of drift per raced row, never data. The nightly (07:15 UTC) and the
-    crons (21:40-23:40 UTC) do not overlap, so neither case should occur."""
+    re-checks the guard on the newest row version), but `prior`, a non-target
+    relation, is not re-read: it still shows the version it was joined at, from
+    the snapshot, so that row is counted as not replaced. That is one count of
+    drift per raced row, never data. The nightly (07:15 UTC) and the crons
+    (21:40-23:40 UTC) do not overlap, so neither case should occur."""
     if not updates:
         return 0, 0
     tape = source == TAPE_SOURCE
