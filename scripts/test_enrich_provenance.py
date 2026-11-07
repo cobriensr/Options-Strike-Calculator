@@ -49,7 +49,8 @@ QQQ = 'QQQ260722C00500000'  # priced; no net-flow rows exist for it
 PENDING = 'enriched_at IS NULL'
 EMPTY = 'enriched_at IS NOT NULL AND peak_ceiling_pct IS NULL AND outcome_source IS NULL'
 ALL = 'peak_ceiling_pct IS NULL AND outcome_source IS NULL'  # bot_eod: fill only
-ALL_TAPE = 'outcome_tape_version IS NULL'  # fulltape: not yet examined
+# fulltape: not examined, or examined by an older pass (%s is OUTCOME_VERSION).
+ALL_TAPE = '(outcome_tape_version IS NULL OR outcome_tape_version < %s)'
 INVERSION_WORK = 'realized_flow_inversion_pct IS NULL AND inversion_source IS NULL'
 # The module default source is bot_eod.
 PREDICATES = {'pending': PENDING, 'empty': EMPTY, 'all': ALL}
@@ -61,7 +62,9 @@ PREDICATES_BY_SOURCE = {
 # The fulltape stamp for fires the tape cannot price. It decides per row, from
 # the row's current peak_ceiling_pct, so a value written after our SELECT is
 # kept: the realized columns are never in the SET, and a row with an outcome
-# gets only the marker.
+# keeps its values, tag and version and gets the marker (plus an enriched_at
+# only if it had none). The version gate comes before the ids so the ids stay
+# the last parameter.
 TAPE_STAMP = (
     'UPDATE lottery_finder_fires AS f '
     'SET outcome_source = CASE WHEN f.peak_ceiling_pct IS NULL '
@@ -69,9 +72,10 @@ TAPE_STAMP = (
     'outcome_version = CASE WHEN f.peak_ceiling_pct IS NULL '
     'THEN %s::smallint ELSE f.outcome_version END, '
     'enriched_at = CASE WHEN f.peak_ceiling_pct IS NULL '
-    'THEN NOW() ELSE f.enriched_at END, '
+    'THEN NOW() ELSE COALESCE(f.enriched_at, NOW()) END, '
     'outcome_tape_version = %s::smallint '
-    'WHERE f.id = ANY(%s::bigint[]) AND f.outcome_tape_version IS NULL '
+    'WHERE (f.outcome_tape_version IS NULL OR f.outcome_tape_version < %s) '
+    'AND f.id = ANY(%s::bigint[]) '
     'RETURNING f.peak_ceiling_pct IS NOT NULL AS had_outcome'
 )
 # The bot_eod stamp is Task 3's, unchanged.
@@ -552,12 +556,55 @@ def test_list_work_dates_without_bounds_has_no_parameters() -> None:
     assert db.executed[-1][1] == ()
 
 
+def test_tape_work_carries_the_version_gate_ahead_of_the_bounds(as_source) -> None:
+    # The gate's %s sits in the outcome half of the union, before its bounds.
+    as_source('fulltape')
+    db = FakeDb()
+    lottery.list_work_dates(db, 'all', since='2026-06-01', through='2026-06-30')
+    sql, params = db.executed[-1]
+    assert params == (lottery.OUTCOME_VERSION, *('2026-06-01', '2026-06-30') * 2)
+
+    lottery.list_work_dates(db, 'all')
+    assert db.executed[-1][1] == (lottery.OUTCOME_VERSION,)
+
+    lottery.fetch_unenriched(db, DAY, 'all')
+    assert db.executed[-1][1] == (DAY, lottery.OUTCOME_VERSION)
+    # pending and empty carry no gate.
+    lottery.fetch_unenriched(db, DAY, 'pending')
+    assert db.executed[-1][1] == (DAY,)
+
+
+def test_a_version_bump_reaches_every_tape_gate(
+    fulltape: Path, make_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A row the tape examined at an older version is work again, and every
+    # guard lets it through: the gate is the constant, read when it runs.
+    monkeypatch.setattr(lottery, 'OUTCOME_VERSION', 2)
+    db = make_db(fires=[fire_row(1, TSLA), fire_row(2, AAPL)])
+
+    lottery.list_work_dates(db, 'all')
+    assert db.executed[-1][1] == (2,)
+
+    lottery.enrich_one_date(db, DAY, select='all')
+
+    fetch_params = next(p for s, p in db.executed if 'entry_time_ct, entry_price' in s)
+    assert fetch_params == (DAY, 2)
+    (write,) = db.outcome_writes()
+    # The priced UPDATE's gate reads the version carried in its VALUES row.
+    assert 'f.outcome_tape_version < v.version' in write.sql
+    assert [row[-2:] for row in write.rows] == [('fulltape', 2)]
+    # (source, outcome version, marker, gate, ids)
+    ((_, stamp_params),) = db.outcome_stamps()
+    assert stamp_params == ('fulltape', 2, 2, 2, [2])
+
+
 # ── the outcome pass: conditional, tagged, counted from the DB ──
 
 
 # The guard each source's priced UPDATE carries, and what it returns.
 TAPE_UPDATE_TAIL = (
-    'WHERE f.id = v.id AND prior.id = f.id AND f.outcome_tape_version IS NULL '
+    'WHERE f.id = v.id AND prior.id = f.id '
+    'AND (f.outcome_tape_version IS NULL OR f.outcome_tape_version < v.version) '
     'RETURNING f.id, prior.peak_ceiling_pct IS NOT NULL AS had_outcome'
 )
 FILL_UPDATE_TAIL = (
@@ -607,7 +654,8 @@ def test_tape_replaces_a_cron_outcome(fulltape: Path, make_db) -> None:
     result = lottery.enrich_one_date(db, DAY, select='all')
 
     (write,) = db.outcome_writes()
-    # The guard is the marker alone: no test of the prior outcome or its tag.
+    # The guard is the marker's version gate alone: no test of the prior
+    # outcome or its tag.
     assert write.sql.endswith(TAPE_UPDATE_TAIL)
     where = write.sql.split(' WHERE ', 1)[1]
     assert 'peak_ceiling_pct IS NULL' not in where
@@ -680,8 +728,8 @@ def test_unpriced_fires_are_tagged_once(fulltape: Path, make_db) -> None:
 
     stamps = db.outcome_stamps()
     assert len(stamps) == 1
-    # (source, version, marker, ids): one statement for both fires.
-    assert stamps[0][1] == ('fulltape', 1, 1, [2, 3])
+    # (source, version, marker, gate, ids): one statement for both fires.
+    assert stamps[0][1] == ('fulltape', 1, 1, 1, [2, 3])
     assert result.fires_selected == 3
     assert result.outcomes_written == 1
     assert result.stamped_no_outcome == 2
@@ -699,20 +747,45 @@ def test_unpriced_fire_with_an_outcome_keeps_it(fulltape: Path, make_db) -> None
 
     ((sql, params),) = db.outcome_stamps()
     # The per-row branch is in the statement: with an outcome (peak_ceiling_pct
-    # NOT NULL) only the marker is set. The six realized columns are not in the
-    # SET at all, and the tag, the version and enriched_at stay as they were.
+    # NOT NULL) the marker is set and the tag and the version stay as they
+    # were. The six realized columns are not in the SET at all. enriched_at
+    # stays too, unless it is NULL (see the next test).
     assert sql == TAPE_STAMP
     set_clause = sql.split(' SET ', 1)[1].split(' WHERE ', 1)[0]
     for column in ('realized_', 'peak_ceiling_pct =', 'minutes_to_peak'):
         assert column not in set_clause
     assert set_clause.count('ELSE f.outcome_source END') == 1
     assert set_clause.count('ELSE f.outcome_version END') == 1
-    assert set_clause.count('ELSE f.enriched_at END') == 1
-    assert params == ('fulltape', 1, 1, [2])
+    assert params == ('fulltape', 1, 1, 1, [2])
     assert result.outcomes_kept == 1
     assert result.stamped_no_outcome == 0
     assert result.outcomes_written == 0
     assert result.fires_written == 0
+
+
+def test_a_kept_row_without_enriched_at_gets_one(fulltape: Path, make_db) -> None:
+    # A row with a value but no enriched_at (scripts/recompute_peak_from_parquet.py
+    # writes the peak without it) would stay in 'pending' for good, and the
+    # cron's `enriched_at IS NULL` guard would let it overwrite a row the tape
+    # examined. The keep branch fills a missing enriched_at and nothing else.
+    db = make_db(fires=[fire_row(2, AAPL, had_outcome=True)])
+
+    lottery.enrich_one_date(db, DAY, select='all')
+
+    ((sql, _),) = db.outcome_stamps()
+    set_clause = sql.split(' SET ', 1)[1].split(' WHERE ', 1)[0]
+    # No outcome: a fresh enriched_at. An outcome: the one it has, or now if
+    # it has none. Never a bare `ELSE f.enriched_at`, which would leave NULL.
+    assert (
+        'enriched_at = CASE WHEN f.peak_ceiling_pct IS NULL '
+        'THEN NOW() ELSE COALESCE(f.enriched_at, NOW()) END'
+    ) in set_clause
+    assert 'ELSE f.enriched_at END' not in set_clause
+    # The values, tag and version of the kept row are still untouched.
+    assert 'ELSE f.outcome_source END' in set_clause
+    assert 'ELSE f.outcome_version END' in set_clause
+    for column in ('realized_', 'peak_ceiling_pct =', 'minutes_to_peak'):
+        assert column not in set_clause
 
 
 def test_unpriced_fire_without_an_outcome_is_tagged(fulltape: Path, make_db) -> None:
@@ -726,7 +799,7 @@ def test_unpriced_fire_without_an_outcome_is_tagged(fulltape: Path, make_db) -> 
     assert sql == TAPE_STAMP
     assert 'THEN %s::text ELSE f.outcome_source END' in sql
     assert 'outcome_tape_version = %s::smallint' in sql
-    assert params == ('fulltape', 1, 1, [2])
+    assert params == ('fulltape', 1, 1, 1, [2])
     assert result.stamped_no_outcome == 1
     assert result.outcomes_kept == 0
     assert result.fires_written == 1
@@ -754,10 +827,11 @@ def test_stamp_no_outcome_is_conditional_per_row_and_chunked(make_db) -> None:
     assert lottery.stamp_no_outcome(db, ids, 'fulltape') == (1001, 0)
 
     assert {sql for sql, _ in db.executed} == {TAPE_STAMP}
-    assert [(p[0], p[1], p[2], len(p[3])) for _, p in db.executed] == [
-        ('fulltape', 1, 1, 500),
-        ('fulltape', 1, 1, 500),
-        ('fulltape', 1, 1, 1),
+    # (source, outcome version, marker, gate) then the chunk of ids.
+    assert [(*p[:4], len(p[4])) for _, p in db.executed] == [
+        ('fulltape', 1, 1, 1, 500),
+        ('fulltape', 1, 1, 1, 500),
+        ('fulltape', 1, 1, 1, 1),
     ]
     assert lottery.stamp_no_outcome(db, [], 'fulltape') == (0, 0)
     assert len(db.executed) == 3
@@ -1303,6 +1377,6 @@ def test_main_runs_pending_dates_tagged_by_the_archive(
     assert f'WHERE {PENDING} ORDER BY 1' in dates_sql
     assert INVERSION_WORK not in dates_sql
     assert [row[-2:] for w in db.outcome_writes() for row in w.rows] == [('fulltape', 1)]
-    assert db.outcome_stamps()[0][1] == ('fulltape', 1, 1, [2])
+    assert db.outcome_stamps()[0][1] == ('fulltape', 1, 1, 1, [2])
     # WRITE_DB=1 no longer reaches the live ticker stats.
     assert not any('lottery_ticker_stats' in sql for sql, _ in db.executed)

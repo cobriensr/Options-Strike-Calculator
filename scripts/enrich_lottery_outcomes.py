@@ -28,12 +28,16 @@ which computation.
 The Full Tape has the final say over outcomes (owner, 2026-11-06). The
 websocket feed drops and cannot replay, so a cron outcome may be missing
 prints. With `--parquet-format fulltape`, `--select all` re-derives every
-outcome the tape has not yet examined (outcome_tape_version IS NULL), the
-crons' and untagged history included, and replaces it when the tape can price
-the fire. A fire it cannot price (no chain, no print at or after entry) keeps
-any value another writer left ("keep the feed's values for now"): the row is
-only marked examined, so it is not picked again. With no prior outcome it is
-also tagged 'fulltape' with the outcomes left NULL. The crons write only
+outcome the tape has not yet examined at the current OUTCOME_VERSION
+(outcome_tape_version is NULL or older), the crons' and untagged history
+included, and replaces it when the tape can price the fire. A fire it cannot
+price (no chain, no print at or after entry) keeps any value another writer
+left ("keep the feed's values for now"): the row is only marked examined, so
+it is not picked again until the version changes; the one thing the keep adds
+is an enriched_at when the row has none, so it leaves the cron's
+`enriched_at IS NULL` pool. With no prior outcome it is also tagged 'fulltape'
+with the outcomes left NULL. Bumping OUTCOME_VERSION re-derives the history.
+The crons write only
 `enriched_at IS NULL` rows and the tape sets enriched_at, so no cron can
 overwrite the tape. The Bot-EOD archive (`trades`) only fills: it writes fires
 nobody has filled, never replaces a value and never sets the marker.
@@ -162,14 +166,19 @@ ARCHIVE_SOURCES = {
     'fulltape': 'fulltape',
 }
 # OUTCOME_VERSION is also the value of outcome_tape_version, the marker the
-# Full Tape sets on every row it examines (NULL: it has not).
+# Full Tape sets on every row it examines: the version of the pass that
+# examined it (NULL: none has). The tape's work and guards re-examine a row
+# whose marker is older than OUTCOME_VERSION, so a version bump re-derives
+# history.
 OUTCOME_VERSION = 1
 INVERSION_VERSION = 1
 # The source with the final say over outcomes (the Full Tape).
 TAPE_SOURCE = ARCHIVE_SOURCES['fulltape']
 
 # Which fires a run picks up for the outcome pass. {a} is a column prefix
-# (e.g. 'f.') for a statement that joins the table to itself.
+# (e.g. 'f.') for a statement that joins the table to itself; {v} is where the
+# version comes from (a %s parameter, or v.version in the priced UPDATE, which
+# carries it in its VALUES row).
 #   pending: enriched_at IS NULL (what a nightly run needs).
 #   empty:   marked enriched (before tagging existed) with no outcome and no
 #            tag.
@@ -184,14 +193,18 @@ OUTCOME_WORK = {
     ),
 }
 # The 'all' work, by source. It is also the guard on that source's writes.
-#   fulltape: every row the tape has not examined, whatever another writer
-#             left in it. Never a row it examined, so the work set shrinks to
-#             zero and the nightly drains the history from TAPE_START.
+#   fulltape: every row the tape has not examined at this version, whatever
+#             another writer left in it (the parentheses matter: it is ANDed
+#             with other tests). Never a row examined at the current version,
+#             so the work set shrinks to zero and the nightly drains the
+#             history from TAPE_START.
 #   bot_eod:  fill only: a fire with no outcome and no tag. A fire a writer
 #             tagged (outcome_source set, even with the outcome NULL) is
 #             tried, not pending.
 OUTCOME_WORK_ALL = {
-    'fulltape': '{a}outcome_tape_version IS NULL',
+    'fulltape': (
+        '({a}outcome_tape_version IS NULL OR {a}outcome_tape_version < {v})'
+    ),
     'bot_eod': '{a}peak_ceiling_pct IS NULL AND {a}outcome_source IS NULL',
 }
 INVERSION_WORK = 'realized_flow_inversion_pct IS NULL AND inversion_source IS NULL'
@@ -217,18 +230,21 @@ def configure_archive(parquet_dir: Path, parquet_format: str) -> None:
     SOURCE_TAG = ARCHIVE_SOURCES[parquet_format]
 
 
-def outcome_work_all(source: str, alias: str = '') -> str:
+def outcome_work_all(source: str, alias: str = '', version: str = '%s') -> str:
     """The 'all' outcome work for `source`, with `alias` (e.g. 'f.') in front
-    of its columns. It doubles as that source's write guard."""
-    return OUTCOME_WORK_ALL[source].format(a=alias)
+    of its columns and `version` where the tape's gate compares against
+    OUTCOME_VERSION. It doubles as that source's write guard."""
+    return OUTCOME_WORK_ALL[source].format(a=alias, v=version)
 
 
-def outcome_work(select: Select) -> str:
-    """The WHERE predicate for `select`. 'all' follows SOURCE_TAG, read at
-    call time, so callers run configure_archive first."""
+def outcome_work(select: Select) -> tuple[str, tuple]:
+    """The WHERE predicate for `select` and the parameters its placeholders
+    take, in order. 'all' follows SOURCE_TAG, read at call time, so callers
+    run configure_archive first; only the tape's carries one (the version)."""
     if select == 'all':
-        return outcome_work_all(SOURCE_TAG)
-    return OUTCOME_WORK[select].format(a='')
+        params = (OUTCOME_VERSION,) if SOURCE_TAG == TAPE_SOURCE else ()
+        return outcome_work_all(SOURCE_TAG), params
+    return OUTCOME_WORK[select].format(a=''), ()
 
 
 # ============================================================
@@ -515,15 +531,16 @@ def fetch_unenriched(
     also carries whether it already holds an outcome."""
     tape = SOURCE_TAG == TAPE_SOURCE
     had_outcome = ', peak_ceiling_pct IS NOT NULL AS had_outcome' if tape else ''
+    work, work_params = outcome_work(select)
     cur = conn.cursor()
     cur.execute(
         f"""
         SELECT id, option_chain_id, entry_time_ct, entry_price{had_outcome}
         FROM lottery_finder_fires
-        WHERE date = %s AND {outcome_work(select)}
+        WHERE date = %s AND {work}
         ORDER BY inserted_at ASC
         """,
-        (target_date,),
+        (target_date, *work_params),
     )
     rows = cur.fetchall()
     return [
@@ -869,18 +886,64 @@ def compute_fire_outcomes(
     return trail, hard30, tier50, eod, peak, mtp
 
 
+# The priced UPDATE, one whole statement per source (update_fires picks by
+# source). execute_values takes exactly one %s, the VALUES list, so the tape's
+# version gate reads the version carried in each VALUES row (v.version).
+#   - Full Tape: the guard is the marker's version gate alone, so the write
+#     replaces whatever outcome another writer left. It joins the table to
+#     itself (`prior`) to report the row's outcome as it was before this UPDATE
+#     (see update_fires), and sets the marker.
+#   - Bot-EOD: Task 3's fill-only statement: no outcome and no tag, no marker.
+_TAPE_UPDATE_SQL = f"""
+    UPDATE lottery_finder_fires AS f
+    SET realized_trail30_10_pct       = v.trail,
+        realized_hard30m_pct          = v.hard30,
+        realized_tier50_holdeod_pct   = v.tier50,
+        realized_eod_pct              = v.eod,
+        peak_ceiling_pct              = v.peak,
+        minutes_to_peak               = v.mtp,
+        enriched_at                   = NOW(),
+        outcome_source                = v.source,
+        outcome_version               = v.version,
+        outcome_tape_version          = v.version
+    FROM (VALUES %s) AS v(id, trail, hard30, tier50, eod, peak, mtp, source, version),
+         lottery_finder_fires AS prior
+    WHERE f.id = v.id
+      AND prior.id = f.id
+      AND {outcome_work_all(TAPE_SOURCE, 'f.', 'v.version')}
+    RETURNING f.id, prior.peak_ceiling_pct IS NOT NULL AS had_outcome
+"""
+_FILL_UPDATE_SQL = f"""
+    UPDATE lottery_finder_fires AS f
+    SET realized_trail30_10_pct       = v.trail,
+        realized_hard30m_pct          = v.hard30,
+        realized_tier50_holdeod_pct   = v.tier50,
+        realized_eod_pct              = v.eod,
+        peak_ceiling_pct              = v.peak,
+        minutes_to_peak               = v.mtp,
+        enriched_at                   = NOW(),
+        outcome_source                = v.source,
+        outcome_version               = v.version
+    FROM (VALUES %s) AS v(id, trail, hard30, tier50, eod, peak, mtp, source, version)
+    WHERE f.id = v.id
+      AND {outcome_work_all(ARCHIVE_SOURCES['trades'], 'f.')}
+    RETURNING f.id
+"""
+
+
 def update_fires(conn, updates: list[tuple], source: str) -> tuple[int, int]:
     """Bulk UPDATE via VALUES + UPDATE FROM, tagged with `source`. Returns
     (written, replaced): the rows the database says it wrote, and how many of
     them already held an outcome.
 
-    - Full Tape: the guard is the marker alone (outcome_tape_version IS
-      NULL), so the write replaces whatever outcome another writer left, the
-      crons' and untagged history included, and sets the marker. The only way
-      to write fewer rows than sent is another tape run examining a fire
-      first.
-    - Bot-EOD: fill only. The guard is Task 3's (no outcome and no tag), so
-      it never replaces a value and never sets the marker; replaced is 0.
+    - Full Tape (_TAPE_UPDATE_SQL): the guard is the marker's version gate
+      (outcome_tape_version IS NULL or older than this pass), so the write
+      replaces whatever outcome another writer left, the crons' and untagged
+      history included, and sets the marker. The only way to write fewer rows
+      than sent is another tape run examining a fire first.
+    - Bot-EOD (_FILL_UPDATE_SQL): fill only. The guard is Task 3's (no outcome
+      and no tag), so it never replaces a value and never sets the marker;
+      replaced is 0.
 
     Which rows held an outcome is read inside the statement: the tape's UPDATE
     joins the table to itself (`prior`) and RETURNING reports
@@ -893,33 +956,10 @@ def update_fires(conn, updates: list[tuple], source: str) -> tuple[int, int]:
     if not updates:
         return 0, 0
     tape = source == TAPE_SOURCE
-    if tape:
-        extra_set = ',\n            outcome_tape_version          = v.version'
-        extra_from = ',\n             lottery_finder_fires AS prior'
-        extra_where = '\n          AND prior.id = f.id'
-        returning = 'f.id, prior.peak_ceiling_pct IS NOT NULL AS had_outcome'
-    else:
-        extra_set = extra_from = extra_where = ''
-        returning = 'f.id'
     cur = conn.cursor()
     returned = execute_values(
         cur,
-        f"""
-        UPDATE lottery_finder_fires AS f
-        SET realized_trail30_10_pct       = v.trail,
-            realized_hard30m_pct          = v.hard30,
-            realized_tier50_holdeod_pct   = v.tier50,
-            realized_eod_pct              = v.eod,
-            peak_ceiling_pct              = v.peak,
-            minutes_to_peak               = v.mtp,
-            enriched_at                   = NOW(),
-            outcome_source                = v.source,
-            outcome_version               = v.version{extra_set}
-        FROM (VALUES %s) AS v(id, trail, hard30, tier50, eod, peak, mtp, source, version){extra_from}
-        WHERE f.id = v.id{extra_where}
-          AND {outcome_work_all(source, 'f.')}
-        RETURNING {returning}
-        """,
+        _TAPE_UPDATE_SQL if tape else _FILL_UPDATE_SQL,
         [(*u, source, OUTCOME_VERSION) for u in updates],
         template='(%s::bigint, %s, %s, %s, %s, %s, %s, %s::text, %s::smallint)',
         page_size=WRITE_BATCH,
@@ -935,12 +975,18 @@ def update_fires(conn, updates: list[tuple], source: str) -> tuple[int, int]:
 # SELECT), so a value written after the SELECT is kept, not erased:
 #   - no prior outcome: tag it (source, version, enriched_at) as tried but
 #     unpriced, the realized columns staying NULL;
-#   - prior outcome: leave the values, outcome_source, outcome_version and
-#     enriched_at exactly as they were.
-# Either way the marker is set, so the row is not examined again. The realized
-# columns are not in the SET at all. RETURNING reports the branch taken: the
-# stamp changes no realized column, so the post-update peak_ceiling_pct IS NOT
-# NULL is the row's prior outcome.
+#   - prior outcome: leave the values, outcome_source and outcome_version
+#     exactly as they were, and leave enriched_at alone unless it is NULL. A
+#     row with a value but no enriched_at (scripts/recompute_peak_from_parquet.py
+#     writes the peak without it) would otherwise stay in the crons'
+#     `enriched_at IS NULL` pool, and a cron write there would overwrite a row
+#     the tape examined.
+# Either way the marker is set to this pass's version, so the row is not
+# examined again until the version changes. The realized columns are not in
+# the SET at all. RETURNING reports the branch taken: the stamp changes no
+# realized column, so the post-update peak_ceiling_pct IS NOT NULL is the
+# row's prior outcome. The version gate comes before the ids so the ids stay
+# the last parameter.
 _TAPE_STAMP_SQL = f"""
     UPDATE lottery_finder_fires AS f
     SET outcome_source  = CASE WHEN f.peak_ceiling_pct IS NULL
@@ -948,10 +994,10 @@ _TAPE_STAMP_SQL = f"""
         outcome_version = CASE WHEN f.peak_ceiling_pct IS NULL
                                THEN %s::smallint ELSE f.outcome_version END,
         enriched_at     = CASE WHEN f.peak_ceiling_pct IS NULL
-                               THEN NOW() ELSE f.enriched_at END,
+                               THEN NOW() ELSE COALESCE(f.enriched_at, NOW()) END,
         outcome_tape_version = %s::smallint
-    WHERE f.id = ANY(%s::bigint[])
-      AND {outcome_work_all(TAPE_SOURCE, 'f.')}
+    WHERE {outcome_work_all(TAPE_SOURCE, 'f.')}
+      AND f.id = ANY(%s::bigint[])
     RETURNING f.peak_ceiling_pct IS NOT NULL AS had_outcome
 """
 # Bot-EOD's stamp is fill only: tag a fire nobody has filled, nothing else.
@@ -970,7 +1016,7 @@ def stamp_no_outcome(conn, fire_ids: list[int], source: str) -> tuple[int, int]:
     - Full Tape (_TAPE_STAMP_SQL): stamped is a row with no prior outcome, now
       tagged 'fulltape' with its outcomes NULL (tried, not pending). kept is a
       row that held an outcome, which stays as it was ("keep the feed's values
-      for now") with only the marker set.
+      for now") with the marker set, and an enriched_at if it had none.
     - Bot-EOD (_FILL_STAMP_SQL): tags a fire nobody has filled and counts
       rowcount; kept is 0.
 
@@ -982,9 +1028,10 @@ def stamp_no_outcome(conn, fire_ids: list[int], source: str) -> tuple[int, int]:
     for i in range(0, len(fire_ids), WRITE_BATCH):
         chunk = fire_ids[i : i + WRITE_BATCH]
         if source == TAPE_SOURCE:
+            # (source, outcome version, marker, version gate, ids)
             cur.execute(
                 _TAPE_STAMP_SQL,
-                (source, OUTCOME_VERSION, OUTCOME_VERSION, chunk),
+                (source, OUTCOME_VERSION, OUTCOME_VERSION, OUTCOME_VERSION, chunk),
             )
             returned = cur.fetchall()
             chunk_kept = sum(1 for (had_outcome,) in returned if had_outcome)
@@ -1164,25 +1211,28 @@ def list_work_dates(
         bounds += ' AND date <= %s::date'
         bound_params.append(through)
 
+    work, work_params = outcome_work(select)
     cur = conn.cursor()
     if select != 'all':
         cur.execute(
             f"""
             SELECT DISTINCT date::text
             FROM lottery_finder_fires
-            WHERE {outcome_work(select)}{bounds}
+            WHERE {work}{bounds}
             ORDER BY 1
             """,
-            tuple(bound_params),
+            (*work_params, *bound_params),
         )
     else:
+        # Placeholders in order: the outcome half's work (the tape's version
+        # gate), its bounds, then the inversion half's bounds.
         cur.execute(
             f"""
             SELECT DISTINCT date::text
             FROM (
               SELECT date
               FROM lottery_finder_fires
-              WHERE {outcome_work('all')}{bounds}
+              WHERE {work}{bounds}
               UNION ALL
               SELECT w.date
               FROM (
@@ -1201,7 +1251,7 @@ def list_work_dates(
             ) d
             ORDER BY 1
             """,
-            tuple(bound_params) * 2,
+            (*work_params, *bound_params, *bound_params),
         )
     return [r[0] for r in cur.fetchall()]
 

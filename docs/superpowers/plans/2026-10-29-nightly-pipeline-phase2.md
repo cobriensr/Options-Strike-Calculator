@@ -276,7 +276,7 @@ class TapeReader:                                    # single-threaded: one per 
   - A NULL source means the row was written before this migration. For `realized_flow_inversion_pct` that is a legacy value: parquet-built (January to June) or the fixed cron's last four sessions. It tells those apart from tape-written values.
   - A tape writer also tags the rows it tried but could not price, leaving their outcomes NULL, so "outcome NULL with a source" means tried, not pending. When such a row already holds another writer's outcome, the full tape keeps it and sets only `outcome_tape_version` (owner, 2026-11-06: "keep the feed's values for now"); `ws_cron` with that marker means feed values the tape could not confirm.
 - **The work predicates** (written once, in the scripts):
-  - **outcome work (`--select all`, the nightly's):** for `fulltape`, `outcome_tape_version IS NULL` (migration #202, Task 1b): the full tape has the final say (owner, 2026-11-06) and re-derives cron-written and untagged outcomes, history included, never one it examined. For `bot_eod`, `peak_ceiling_pct IS NULL AND outcome_source IS NULL` (fill only). The crons write only `enriched_at IS NULL`, so they never replace the tape;
+  - **outcome work (`--select all`, the nightly's):** for `fulltape`, `outcome_tape_version IS NULL OR outcome_tape_version < OUTCOME_VERSION` (migration #202, Task 1b): the full tape has the final say (owner, 2026-11-06) and re-derives cron-written and untagged outcomes, history included, never one it examined at the current `OUTCOME_VERSION`. For `bot_eod`, `peak_ceiling_pct IS NULL AND outcome_source IS NULL` (fill only). The crons write only `enriched_at IS NULL`, so they never replace the tape;
   - **inversion work (lottery):** `realized_flow_inversion_pct IS NULL AND inversion_source IS NULL`, and matched-side net flow exists for the ticker's UTC day;
   - **bounds:** `date BETWEEN TAPE_START AND last_session`, processed newest first.
 - **Every print in the day's tape counts** (owner, 10-28: no post-close cutoff). The scripts' reads keep their current filters: canceled prints and prices ≤ 0 are dropped, and nothing else.
@@ -473,6 +473,7 @@ class TapeReader:                                    # single-threaded: one per 
   ```
 
 **Rules:**
+- **Superseded for fulltape by Task 3c** (owner, 2026-11-06): the fulltape work set and guards use `outcome_tape_version`; the stamp decides per row and keeps another writer's value; counts come from RETURNING. The rules below still hold for bot_eod.
 - **Selects:**
   - `pending`: `enriched_at IS NULL` (today's behaviour);
   - `empty`: `enriched_at IS NOT NULL AND peak_ceiling_pct IS NULL AND outcome_source IS NULL`;
