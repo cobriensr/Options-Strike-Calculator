@@ -2,8 +2,10 @@
  * Schwab access for the plain-node scripts: read the token record the
  * production crons keep in Upstash Redis, refresh it in place when the access
  * token has run out, and the guard that keeps a script off the crons' window.
- * Lifted out of scripts/backfill-market-internals.mjs so the candle backfill
- * (candles-backfill.mjs) uses the same code instead of a second copy.
+ * Lifted out of the market-internals backfill so the candle backfill
+ * (candles-backfill.mjs) uses the same code instead of a second copy. Both the
+ * market-internals backfill (scripts/backfill-market-internals.ts, through
+ * schwab-local.d.mts) and the candle backfill use it.
  *
  * WARNING: the Redis these scripts read is the PRODUCTION one that holds the
  * live Schwab token record. A script that uses it should run only while the
@@ -60,8 +62,9 @@ export function redactBody(body) {
 
 /**
  * First and last UTC hour of the Schwab crons' day: vercel.json registers
- * fetch-spx-candles-1m, fetch-market-internals and fetch-strike-iv as
- * `* 13-21 * * 1-5`, and compute-cone and fetch-outcomes inside it.
+ * fetch-spx-candles-1m and fetch-strike-iv as `* 13-21 * * 1-5`, and
+ * compute-cone and fetch-outcomes inside it. (fetch-market-internals no
+ * longer runs in this window: it settles once at 22:30 UTC, after it.)
  */
 const BUSY_FIRST_UTC_HOUR = 13;
 const BUSY_LAST_UTC_HOUR = 21;
