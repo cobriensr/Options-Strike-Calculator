@@ -7,6 +7,7 @@
 
 import { getDb, withDbRetry } from './db.js';
 import type { DarkPoolCluster } from './darkpool.js';
+import logger from './logger.js';
 import { parseEntryTimeMinutes } from '../../src/utils/entry-time.js';
 
 // ============================================================
@@ -250,7 +251,32 @@ export async function saveSnapshot(
 
 // entry_time is the label the app writes ("9:30 AM CT", "3:00 PM ET"). Both
 // readers below sort on parseEntryTimeMinutes (CT minutes) and drop a row it
-// can't read, such as the "pre-market" row.
+// can't read. The "pre-market" row is meant to go; any other label that
+// doesn't parse is a format the parser doesn't know, so it is warned about.
+
+/**
+ * Warn once about the labels a reader dropped for not parsing, with the date
+ * and up to 5 distinct samples. The "pre-market" row is expected, so it
+ * doesn't count.
+ */
+function warnUnparseableEntryTimes(
+  date: string,
+  labels: readonly string[],
+): void {
+  const unreadable = labels.filter(
+    (label) =>
+      label !== 'pre-market' && Number.isNaN(parseEntryTimeMinutes(label)),
+  );
+  if (unreadable.length === 0) return;
+  logger.warn(
+    {
+      date,
+      count: unreadable.length,
+      samples: [...new Set(unreadable)].slice(0, 5),
+    },
+    'market_snapshots rows dropped: entry_time did not parse',
+  );
+}
 
 // ============================================================
 // RECENT VIX SNAPSHOTS (intraday trajectory)
@@ -304,6 +330,11 @@ export async function getRecentVixSnapshots(
     10_000,
   );
 
+  warnUnparseableEntryTimes(
+    date,
+    rows.map((r) => (r as { entry_time: string }).entry_time),
+  );
+
   return rows
     .map((r) => {
       const row = r as {
@@ -346,6 +377,13 @@ export async function getRecentVixSnapshots(
  * high  = MAX(vix) across all snapshots
  * low   = MIN(vix) across all snapshots
  * Returns null if no snapshots exist for the date.
+ *
+ * Only rows that are backtest, or were saved on their own ET date, count. A
+ * replay of a past date is created later than its date and holds that date's
+ * VIX, so plain own-date would drop the good rows. A live row saved under
+ * another date (a tab left on that date) holds the quotes of the day it was
+ * saved, so it is dropped. Rows saved before the 2026-10-27 flag fix carry
+ * is_backtest = true on their own date and so still count.
  */
 export async function getVixOhlcFromSnapshots(date: string): Promise<{
   open: number;
@@ -360,12 +398,19 @@ export async function getVixOhlcFromSnapshots(date: string): Promise<{
     SELECT entry_time, vix::text AS vix
     FROM market_snapshots
     WHERE date = ${date} AND vix IS NOT NULL
+      AND (is_backtest IS TRUE
+           OR (created_at AT TIME ZONE 'America/New_York')::date = date)
   `,
     2,
     10_000,
   );
 
   if (rows.length === 0) return null;
+
+  warnUnparseableEntryTimes(
+    date,
+    rows.map((r) => (r as { entry_time: string }).entry_time),
+  );
 
   const sorted = rows
     .map((r) => ({

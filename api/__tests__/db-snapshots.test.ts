@@ -12,9 +12,16 @@ vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
+vi.mock('../_lib/logger.js', () => ({
+  default: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+}));
 
-import { getRecentVixSnapshots } from '../_lib/db-snapshots.js';
+import {
+  getRecentVixSnapshots,
+  getVixOhlcFromSnapshots,
+} from '../_lib/db-snapshots.js';
 import { getDb } from '../_lib/db.js';
+import logger from '../_lib/logger.js';
 
 interface RawRow {
   entry_time: string;
@@ -300,5 +307,97 @@ describe('getRecentVixSnapshots', () => {
     ]);
     const out = await getRecentVixSnapshots('2026-04-14');
     expect(out.map((r) => r.entryTime)).toEqual(['9:35 AM', '10:00 AM']);
+  });
+});
+
+// A label the readers can't parse drops its row from the VIX series. The
+// 'pre-market' row is meant to, so it is silent; any other label means the app
+// wrote a format the parser doesn't know, so each call warns once.
+describe.each([
+  [
+    'getRecentVixSnapshots',
+    async (date: string) => {
+      await getRecentVixSnapshots(date);
+    },
+    (entry_time: string): RawRow => ({
+      entry_time,
+      vix: '17',
+      vix1d: null,
+      vix9d: '15',
+      spx: null,
+    }),
+  ],
+  [
+    'getVixOhlcFromSnapshots',
+    async (date: string) => {
+      await getVixOhlcFromSnapshots(date);
+    },
+    (entry_time: string) => ({ entry_time, vix: '17' }) as unknown as RawRow,
+  ],
+])('%s: unparseable entry_time labels', (_name, read, row) => {
+  beforeEach(() => {
+    vi.mocked(getDb).mockReset();
+    vi.mocked(logger.warn).mockClear();
+  });
+
+  it('warns once with the date and the unreadable labels', async () => {
+    mockSqlReturning([
+      row('lunch'),
+      row('9:35 AM CT'),
+      row('25:00 PM CT'),
+      row('lunch'),
+    ]);
+    await read('2026-04-14');
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        date: '2026-04-14',
+        count: 3,
+        samples: ['lunch', '25:00 PM CT'],
+      }),
+      expect.any(String),
+    );
+  });
+
+  it('stays silent for the pre-market row and for rows that all parse', async () => {
+    mockSqlReturning([row('pre-market'), row('9:35 AM CT'), row('3:00 PM ET')]);
+    await read('2026-04-14');
+
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('leaves the pre-market row out of the count and samples of a warning', async () => {
+    mockSqlReturning([row('pre-market'), row('lunch')]);
+    await read('2026-04-14');
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ count: 1, samples: ['lunch'] }),
+      expect.any(String),
+    );
+  });
+
+  it('samples at most 5 distinct labels, in one warning', async () => {
+    mockSqlReturning(
+      ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'a'].map((label) => row(label)),
+    );
+    await read('2026-04-14');
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        count: 8,
+        samples: ['a', 'b', 'c', 'd', 'e'],
+      }),
+      expect.any(String),
+    );
+  });
+
+  it('warns even when no row is left to return', async () => {
+    mockSqlReturning([row('lunch')]);
+    await read('2026-04-14');
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
   });
 });

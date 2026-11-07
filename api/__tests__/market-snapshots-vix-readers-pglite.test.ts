@@ -1,10 +1,10 @@
 // @vitest-environment node
 
 /**
- * REAL-SQL tests for the two readers that take "the VIX now" from
- * market_snapshots by created_at: the VIX/SPX divergence check
- * (vix-divergence.ts getVixAt, via computeVixSpxDivergence) and the
- * Periscope lottery's fetchLatestVix.
+ * REAL-SQL tests for the readers that take the VIX from market_snapshots:
+ * the VIX/SPX divergence check (vix-divergence.ts getVixAt, via
+ * computeVixSpxDivergence), the Periscope lottery's fetchLatestVix, and the
+ * day's OHLC (getVixOhlcFromSnapshots, behind /api/vix-ohlc).
  *
  * A backtest save for a past date is created now but carries that date's
  * VIX, so created_at alone reads a replayed VIX as the current one. So
@@ -40,7 +40,7 @@ const holder = vi.hoisted(() => ({ sql: null as unknown }));
 
 vi.mock('@neondatabase/serverless', () => ({ neon: () => holder.sql }));
 
-import { _resetDb, initDb } from '../_lib/db.js';
+import { _resetDb, getVixOhlcFromSnapshots, initDb } from '../_lib/db.js';
 import {
   computeVixSpxDivergence,
   formatVixDivergenceForClaude,
@@ -263,5 +263,142 @@ describe('fetchLatestVix against Postgres (pglite)', () => {
     await snapshot('2026-03-11', 41, new Date('2026-03-11T01:10:00.000Z'));
 
     expect(await fetchLatestVix(fire)).toBeCloseTo(22, 10);
+  });
+});
+
+describe('getVixOhlcFromSnapshots against Postgres (pglite)', () => {
+  const DAY = '2026-03-10';
+  const ownDay = (hhmmZ: string) => new Date(`${DAY}T${hhmmZ}:00.000Z`);
+
+  /** A row labelled the way the app writes it, saved at `createdAt`. */
+  async function labelled(
+    date: string,
+    entryTime: string,
+    vix: number,
+    createdAt: Date,
+    isBacktest: boolean | null,
+  ): Promise<void> {
+    await pg.query(
+      `INSERT INTO market_snapshots (date, entry_time, vix, is_backtest, created_at)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [date, entryTime, vix, isBacktest, createdAt.toISOString()],
+    );
+  }
+
+  it("takes the OHLC of a date's rows saved on that date", async () => {
+    await labelled(DAY, '10:00 AM CT', 18.5, ownDay('15:00'), false);
+    await labelled(DAY, '9:35 AM CT', 17.8, ownDay('14:35'), false);
+    await labelled(DAY, '2:30 PM ET', 19.2, ownDay('19:30'), false);
+
+    expect(await getVixOhlcFromSnapshots(DAY)).toEqual({
+      open: 17.8,
+      high: 19.2,
+      low: 17.8,
+      close: 19.2,
+      count: 3,
+    });
+  });
+
+  it('keeps a backtest row created after its date: a replay is saved later', async () => {
+    await labelled(DAY, '9:35 AM CT', 17.8, ownDay('14:35'), false);
+    // Replayed on 03-14 for 03-10: created four days late, and the good row.
+    await labelled(
+      DAY,
+      '2:30 PM CT',
+      19.2,
+      new Date('2026-03-14T15:00:00.000Z'),
+      true,
+    );
+
+    expect(await getVixOhlcFromSnapshots(DAY)).toMatchObject({
+      open: 17.8,
+      close: 19.2,
+      count: 2,
+    });
+  });
+
+  it('excludes a live row saved under another date', async () => {
+    await labelled(DAY, '9:35 AM CT', 17.8, ownDay('14:35'), false);
+    // A tab left on 03-10 saved live quotes there on 03-12.
+    await labelled(
+      DAY,
+      '2:30 PM CT',
+      35,
+      new Date('2026-03-12T19:30:00.000Z'),
+      false,
+    );
+
+    expect(await getVixOhlcFromSnapshots(DAY)).toEqual({
+      open: 17.8,
+      high: 17.8,
+      low: 17.8,
+      close: 17.8,
+      count: 1,
+    });
+  });
+
+  it('answers null when every row of the date is a live row saved under another date', async () => {
+    await labelled(
+      DAY,
+      '9:35 AM CT',
+      35,
+      new Date('2026-03-12T14:35:00.000Z'),
+      false,
+    );
+
+    expect(await getVixOhlcFromSnapshots(DAY)).toBeNull();
+  });
+
+  it('excludes a live row saved before its date', async () => {
+    // A tab left on a future date once saved live data under it.
+    await labelled(
+      DAY,
+      '9:35 AM CT',
+      40,
+      new Date('2026-03-09T20:00:00.000Z'),
+      false,
+    );
+
+    expect(await getVixOhlcFromSnapshots(DAY)).toBeNull();
+  });
+
+  it('excludes a row whose flag is unset and which was saved under another date', async () => {
+    await labelled(
+      DAY,
+      '9:35 AM CT',
+      40,
+      new Date('2026-03-12T14:35:00.000Z'),
+      null,
+    );
+
+    expect(await getVixOhlcFromSnapshots(DAY)).toBeNull();
+  });
+
+  it('counts a late-evening save as created on its own ET date', async () => {
+    // 23:30 EDT on 03-10 is 03:30Z on 03-11: the UTC date has rolled, the ET
+    // date (the row's date) has not.
+    await labelled(
+      DAY,
+      '10:30 PM CT',
+      21,
+      new Date('2026-03-11T03:30:00.000Z'),
+      false,
+    );
+
+    expect(await getVixOhlcFromSnapshots(DAY)).toMatchObject({
+      close: 21,
+      count: 1,
+    });
+  });
+
+  it('skips the pre-market row, whose label is not a clock time', async () => {
+    await labelled(DAY, 'pre-market', 25, ownDay('12:00'), false);
+    await labelled(DAY, '9:35 AM CT', 17.8, ownDay('14:35'), false);
+
+    expect(await getVixOhlcFromSnapshots(DAY)).toMatchObject({
+      open: 17.8,
+      close: 17.8,
+      count: 1,
+    });
   });
 });
