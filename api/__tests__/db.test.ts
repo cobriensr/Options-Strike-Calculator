@@ -2207,6 +2207,68 @@ describe('getVixOhlcFromSnapshots', () => {
       count: 2,
     });
   });
+
+  it('reads the "H:MM AM CT" labels the app writes (not null)', async () => {
+    // src/App.tsx saves `${hour}:${minute} ${AM|PM} ${CT|ET}`. A parser that
+    // stops at AM/PM drops every such row, so the endpoint answered
+    // count 0 for every date.
+    mockSql.mockResolvedValueOnce([
+      { entry_time: '10:00 AM CT', vix: '18.50' },
+      { entry_time: '9:35 AM CT', vix: '17.80' },
+      { entry_time: '2:30 PM CT', vix: '19.20' },
+    ]);
+    const result = await getVixOhlcFromSnapshots('2026-03-10');
+    expect(result).toEqual({
+      open: 17.8,
+      high: 19.2,
+      low: 17.8,
+      close: 19.2,
+      count: 3,
+    });
+  });
+
+  it('orders mixed CT and ET labels by the moment they name', async () => {
+    // 10:30 AM ET is 9:30 AM CT, so it opens the day ahead of 9:45 AM CT;
+    // 3:00 PM ET is 2:00 PM CT, so it closes it after 1:00 PM CT.
+    mockSql.mockResolvedValueOnce([
+      { entry_time: '9:45 AM CT', vix: '18.00' },
+      { entry_time: '3:00 PM ET', vix: '16.00' },
+      { entry_time: '10:30 AM ET', vix: '17.00' },
+      { entry_time: '1:00 PM CT', vix: '19.00' },
+    ]);
+    const result = await getVixOhlcFromSnapshots('2026-03-10');
+    expect(result).toEqual({
+      open: 17.0,
+      high: 19.0,
+      low: 16.0,
+      close: 16.0,
+      count: 4,
+    });
+  });
+
+  it('skips the pre-market row and counts only the clock-time rows', async () => {
+    mockSql.mockResolvedValueOnce([
+      { entry_time: 'pre-market', vix: '25.00' },
+      { entry_time: '9:35 AM CT', vix: '17.80' },
+    ]);
+    const result = await getVixOhlcFromSnapshots('2026-03-10');
+    expect(result).toEqual({
+      open: 17.8,
+      high: 17.8,
+      low: 17.8,
+      close: 17.8,
+      count: 1,
+    });
+  });
+
+  it('returns null when every row has an unreadable label', async () => {
+    mockSql.mockResolvedValueOnce([
+      { entry_time: 'pre-market', vix: '25.00' },
+      { entry_time: 'lunch', vix: '17.80' },
+    ]);
+    const result = await getVixOhlcFromSnapshots('2026-03-10');
+    expect(result).toBeNull();
+  });
 });
 
 // ============================================================

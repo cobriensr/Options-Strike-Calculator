@@ -7,6 +7,7 @@
 
 import { getDb, withDbRetry } from './db.js';
 import type { DarkPoolCluster } from './darkpool.js';
+import { parseEntryTimeMinutes } from '../../src/utils/entry-time.js';
 
 // ============================================================
 // TYPES
@@ -247,22 +248,9 @@ export async function saveSnapshot(
 // VIX OHLC FROM SNAPSHOTS
 // ============================================================
 
-/**
- * Parse an entry_time string like "9:35 AM" or "3:00 PM" to minutes
- * since midnight for chronological sorting.
- */
-function parseEntryTimeMinutes(t: string): number {
-  const timePattern = /^(\d+):(\d+)\s*(AM|PM)$/i;
-  const m = timePattern.exec(t);
-  if (!m) return Number.NaN;
-  let h = Number.parseInt(m[1]!, 10);
-  const min = Number.parseInt(m[2]!, 10);
-  if (h < 1 || h > 12 || min < 0 || min > 59) return Number.NaN;
-  const isPm = m[3]!.toUpperCase() === 'PM';
-  if (isPm && h !== 12) h += 12;
-  else if (!isPm && h === 12) h = 0;
-  return h * 60 + min;
-}
+// entry_time is the label the app writes ("9:30 AM CT", "3:00 PM ET"). Both
+// readers below sort on parseEntryTimeMinutes (CT minutes) and drop a row it
+// can't read, such as the "pre-market" row.
 
 // ============================================================
 // RECENT VIX SNAPSHOTS (intraday trajectory)
@@ -293,8 +281,8 @@ export async function getRecentVixSnapshots(
 ): Promise<VixTrajectoryRow[]> {
   const sql = getDb();
   // ORDER BY created_at DESC (insertion time = chronological), NOT
-  // entry_time. entry_time is a TEXT column ("9:35 AM", "3:00 PM") whose
-  // lexicographic sort mis-orders the clock ('10:00 AM' < '9:35 AM'),
+  // entry_time. entry_time is a TEXT column ("9:35 AM CT", "3:00 PM CT")
+  // whose lexicographic sort mis-orders the clock ('10:00 AM' < '9:35 AM'),
   // so an ASC entry_time + LIMIT would keep the WRONG subset on heavy
   // days. Keeping the most-recent N by created_at, then re-sorting
   // ascending by parsed minutes below, yields the correct window.

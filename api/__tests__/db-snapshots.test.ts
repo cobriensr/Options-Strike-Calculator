@@ -125,6 +125,108 @@ describe('getRecentVixSnapshots', () => {
     ]);
   });
 
+  it('keeps rows labelled the way the app writes them: "H:MM AM CT"', async () => {
+    // src/App.tsx saves `${hour}:${minute} ${AM|PM} ${CT|ET}`. Every prod
+    // row carries the zone, so a parser that stops at AM/PM drops them all.
+    mockSqlReturning([
+      {
+        entry_time: '2:30 PM CT',
+        vix: '17.5',
+        vix1d: '11.0',
+        vix9d: '16.0',
+        spx: '6900',
+      },
+      {
+        entry_time: '9:35 AM CT',
+        vix: '17.2',
+        vix1d: '11.1',
+        vix9d: '16.1',
+        spx: '6890',
+      },
+    ]);
+    const out = await getRecentVixSnapshots('2026-04-14');
+    expect(out.map((r) => r.entryTime)).toEqual(['9:35 AM CT', '2:30 PM CT']);
+  });
+
+  it('keeps rows labelled in ET', async () => {
+    mockSqlReturning([
+      {
+        entry_time: '3:00 PM ET',
+        vix: '17',
+        vix1d: null,
+        vix9d: '15',
+        spx: null,
+      },
+    ]);
+    const out = await getRecentVixSnapshots('2026-04-14');
+    expect(out).toHaveLength(1);
+    expect(out[0]?.entryTime).toBe('3:00 PM ET');
+  });
+
+  it('orders mixed CT and ET labels by the moment they name', async () => {
+    // 10:30 AM ET is 9:30 AM CT, ahead of 9:45 AM CT; 3:00 PM ET is 2:00 PM
+    // CT, after 1:00 PM CT. Sorted as bare clock times, 9:45 AM CT would
+    // come first.
+    mockSqlReturning([
+      {
+        entry_time: '3:00 PM ET',
+        vix: '16',
+        vix1d: null,
+        vix9d: '15',
+        spx: null,
+      },
+      {
+        entry_time: '9:45 AM CT',
+        vix: '18',
+        vix1d: null,
+        vix9d: '15',
+        spx: null,
+      },
+      {
+        entry_time: '1:00 PM CT',
+        vix: '19',
+        vix1d: null,
+        vix9d: '15',
+        spx: null,
+      },
+      {
+        entry_time: '10:30 AM ET',
+        vix: '17',
+        vix1d: null,
+        vix9d: '15',
+        spx: null,
+      },
+    ]);
+    const out = await getRecentVixSnapshots('2026-04-14');
+    expect(out.map((r) => r.entryTime)).toEqual([
+      '10:30 AM ET',
+      '9:45 AM CT',
+      '1:00 PM CT',
+      '3:00 PM ET',
+    ]);
+  });
+
+  it('drops the pre-market row, whose label is not a clock time', async () => {
+    mockSqlReturning([
+      {
+        entry_time: 'pre-market',
+        vix: '17',
+        vix1d: null,
+        vix9d: '15',
+        spx: null,
+      },
+      {
+        entry_time: '9:35 AM CT',
+        vix: '17.2',
+        vix1d: null,
+        vix9d: '15',
+        spx: null,
+      },
+    ]);
+    const out = await getRecentVixSnapshots('2026-04-14');
+    expect(out.map((r) => r.entryTime)).toEqual(['9:35 AM CT']);
+  });
+
   it('drops rows with unparseable entry_time', async () => {
     mockSqlReturning([
       { entry_time: 'lunch', vix: '17', vix1d: null, vix9d: '15', spx: null },
