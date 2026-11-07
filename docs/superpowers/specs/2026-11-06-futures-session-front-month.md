@@ -59,7 +59,7 @@
 6. **Minutes.** The bar for minute m comes only from front(tradeDate(m)), and its `contract` is that name. If that contract printed nothing in m, the minute is a gap. This is unchanged: there is no back-month fallback.
    - Where two spellings of one contract both have a candle row in a minute (REST paths), the bar is the larger-volume spelling's row (a tie goes to the code-point smaller key), as in the 6b parser tests. The live handler folds both spellings' prints into one bar.
 
-**Expected effect, ES Sept→Dec:** the old rule switched 09-14 13:45 UTC. The new rule switches at the 17:00 CT open after the first full session in which Dec out-traded Sept. Phase 3 prints each root's switch sessions.
+**Expected effect, ES Sept→Dec:** the old rule switched 09-14 13:45 UTC. The new rule switches at the 17:00 CT open after the first full session in which Dec out-traded Sept. Phase 3b prints each root's switch sessions.
 
 ## Global constraints
 
@@ -70,7 +70,7 @@
   - No uw-stream push 08:30–15:00 CT.
   - This plan touches no `nightly/src`.
 - **Deploy order: migrations, then Vercel, then Railway.** The shared insert in `futures-bars.ts` names `contract` on every insert, and the uw-stream handler swallows flush errors. So no commit that writes `contract` reaches main before #204 is applied in prod, and no uw-stream deploy that writes it goes out before that either.
-- **Migrations:** apply only when ours are the only ones pending (memory `others-migrations`). Prod's top is #200 today (2026-11-07); main also holds #201 and #202 (nightly session) and #203 (no-op on prod), all unapplied.
+- **Migrations:** apply only when ours are the only ones pending (memory `others-migrations`). Their owners applied #201–#203 on 2026-11-07 (prod's top is #203), so #204 and #205 are the only pending ones unless main adds another before step 4.
 - **Tests never touch a real database:** use PGlite or `vi.mock`, and mocks in uw-stream.
 - **Prod writes** are idempotent and resumable. The Phase 6 repair keeps a backup of every row it changes.
 - **Readers are unaffected:** `futures_bars` gains a nullable `contract` column and nothing else. No reader changes, and no new endpoint, so the UW auth rule is not touched.
@@ -160,7 +160,7 @@ Produces:
 - In `futures-front-month.ts`:
   - `ensureFrontMonth(product: FuturesRoot, tradeDate: string, source: 'cron' | 'script'): Promise<string>`. It reads the row; when it is absent, it decides by rule 4 from the tables, inserts with DO NOTHING and re-reads. It logs a warning on the cycle fallback and throws on a date after the current trade date. DB errors propagate.
   - `fetchFrontMonthSchedule(product: FuturesRoot, tradeDates: readonly string[], source: 'cron' | 'script'): Promise<{ contractFor(tradeDate: string): string | undefined; contracts: string[] }>`. It calls `ensureFrontMonth` for each distinct date. Callers pass only the trade dates their minutes fall on, so weekends get no rows.
-  - `insertContractVolumes(rows: ReadonlyArray<{ product: FuturesRoot; tradeDate: string; contract: string; volume: number }>): Promise<number>` and `insertFrontMonthRows(rows: ReadonlyArray<{ product: FuturesRoot; tradeDate: string; contract: string }>): Promise<number>`. Both are batched unnest inserts with DO NOTHING, 500 rows per chunk, `withDbRetry`, `source = 'candles'`, and are used by Phase 3.
+  - `insertContractVolumes(rows: ReadonlyArray<{ product: FuturesRoot; tradeDate: string; contract: string; volume: number }>): Promise<number>` and `insertFrontMonthRows(rows: ReadonlyArray<{ product: FuturesRoot; tradeDate: string; contract: string }>): Promise<number>`. Both are batched unnest inserts with DO NOTHING, 500 rows per chunk, `withDbRetry`, `source = 'candles'`, and are used by Phases 3b and 4a.
 
 Steps:
 - [ ] Fixture cases plus failing tests:
@@ -192,7 +192,28 @@ Steps:
 - [ ] Implement until green.
 - [ ] Gate, review, commit.
 
-### Phase 3: seed the table from daily candles (medium)
+### Phase 3a: a shared daily-candle fetch (small)
+
+The Phase 3b seed and the Phase 4a cron both read daily candles (owner decision 2026-11-07: the cron refreshes volumes on every run, see Phase 4a), so the fetch lives in `api/_lib`, where both can import it.
+
+Files:
+- new `api/_lib/futures-daily-candles.ts`
+- new `api/__tests__/futures-daily-candles.test.ts`
+
+Produces:
+- `cycleContracts(root: FuturesRoot, fromMonth: string, toMonth: string): string[]`: the root's `CONTRACT_CYCLE` contracts whose contract month is in [fromMonth, toMonth] (YYYY-MM), as canonical names in expiry order.
+- `fetchDailyContractVolumes(apiKey: string, root: FuturesRoot, contracts: readonly string[], range: string): Promise<Array<{ contract: string; tradeDate: string; volume: number }>>`:
+  - One `uwFetch` + `withRetry` call per contract (`/futures/{contract}/candles?interval=1d&range=<range>`), at most `UW_CONCURRENCY_CAP` at once.
+  - **Parse** with Zod: `date` is YYYY-MM-DD, `v` is a non-negative integer. `contract` is the canonical name.
+  - An empty array is a contract with no history, not an error.
+  - A non-array response or a malformed row throws an error naming the root and the contract.
+- Check the operation page for the `range` values UW accepts. The seed uses `6m`; the cron wants the shortest one that covers a week.
+
+Steps:
+- [ ] Failing tests, with `uwFetch` mocked: the cycle list for ES, CL and GC across a year end; one call per contract; an empty contract; a malformed row and a non-array response each named; a `uwFetch` rejection propagates.
+- [ ] Implement, gate, review, commit.
+
+### Phase 3b: seed the table from daily candles (medium)
 
 Files:
 - new `scripts/backfill-futures-front-month.ts`
@@ -200,10 +221,7 @@ Files:
 - `tsconfig.scripts.json`
 
 What the seed does:
-- **Fetch:** for each root, the `CONTRACT_CYCLE` months from 2026-07 to three months past today, one daily-candle call each through `uwFetch` + `withRetry`, at most `UW_CONCURRENCY_CAP` at once. That is about 30 calls.
-- **Parse** with Zod: `date` is YYYY-MM-DD, `v` is a non-negative integer.
-  - An empty array is a contract with no history, not an error.
-  - A non-array response or a malformed row fails that root, named.
+- **Fetch:** for each root, `fetchDailyContractVolumes` over `cycleContracts(root, '2026-07', three months past today)` with `range=6m`. That is about 30 calls. A fetch error fails that root, named; the other roots still run.
 - **Volumes** go in for trade dates before the current one.
 - **Decisions:**
   - From 2026-07-22 through the current trade date, worked out in memory by `decideFrontMonth`.
@@ -213,10 +231,9 @@ What the seed does:
 - **Flags:** `--dry-run` and `--roots`. There is no market-hours guard; it makes about 30 light calls.
 
 Steps:
-- [ ] Failing tests, with `uwFetch` and the two insert functions mocked:
+- [ ] Failing tests, with `fetchDailyContractVolumes` and the two insert functions mocked:
   - A synthetic two-contract history rolls once, on the session after volume crosses.
-  - A malformed candle fails its root by name.
-  - An empty contract is skipped.
+  - A fetch error fails its root by name, and the other roots still run.
   - The current trade date's volume is not written.
   - A dry run writes nothing.
 - [ ] Implement, gate, review, commit.
@@ -227,16 +244,21 @@ Steps:
 Files: `api/cron/backfill-futures-gaps.ts`, `api/__tests__/backfill-futures-gaps.test.ts`, `api/_lib/futures-flow-repair.ts` (comment only).
 
 - [ ] **Failing tests** first:
+  - Before each root's schedule is read, its volumes are refreshed: daily candles for the incumbent and the next two cycle contracts, written with `insertContractVolumes` for trade dates before the current one only.
+  - A refresh failure (UW error, malformed candle, DB reject) fails that root by name with a Sentry exception and writes no decision row for it. The other roots still run, and the run reports partial.
   - Candles are fetched only for `schedule.contracts`, and `/futures/contracts` is no longer called.
   - Gap minutes either side of a session open land on their own session's contract.
   - Every inserted bar carries its scheduled `contract`.
   - A DB error in the schedule read fails the root in each pass with a Sentry exception, and the run reports partial or error.
 - [ ] **Then the change:**
+  - **Volume refresh first** (owner decision 2026-11-07). For each root: take the incumbent (the latest decision row; with none, the cycle seed for the current trade date). Take `cycleContracts` from its month, first three. Call `fetchDailyContractVolumes` with the shortest range Phase 3a found, then `insertContractVolumes` for trade dates before the current one. About 18 calls a run.
+    - Why: otherwise nothing writes volume between the Phase 3b seed and Phase 5, or on any day uw-stream is down. A decision made from old volume is permanent.
+    - Candle rows are `DO NOTHING`, so a session uw-stream already wrote keeps its live tally.
   - The trade dates of the window's gap minutes and of the NULL-flow runs go to `fetchFrontMonthSchedule(root, dates, 'cron')`.
   - Both passes use `pickScheduledFront` and pass `contract` to the shared insert.
   - **Why `contract` must be valid:** #204's CHECK runs before the conflict arbiter, so one malformed name fails the whole 500-row chunk, minutes already stored included (the other spec's `task-6c-brief.md` §5 and §8). Decision rows hold canonical names, which pass by construction; the insert still checks each `contract` with `parseContract`, writing NULL with a warning for one that fails.
   - Rewrite header steps 2–3.
-- [ ] Gate, review, commit. This needs the Phase 3 seed run before it reaches main: from then on, the 06:00 UTC cron reads the table.
+- [ ] Gate, review, commit. This needs the Phase 3b seed run before it reaches main: from then on, the 06:00 UTC cron reads the table.
 
 ### Phase 4b: the scripts read the table (medium)
 
@@ -297,7 +319,7 @@ Steps:
 - [ ] **Deploy after the 17:00 CT open,** not just after 15:00 CT, and only with #204 in prod.
   - **Why the timing matters:** uw-stream's first tally starts at its first boot. If it deployed at 15:30 CT, the next session's decision would rest on 30 minutes of volume. After the open, the session that just closed has a final daily candle.
   - **Steps:**
-    1. Re-run the Phase 3 seed. It writes that session's volumes and the new session's decision.
+    1. Re-run the Phase 3b seed. It writes that session's volumes and the new session's decision.
     2. Push uw-stream.
   - Later restarts resume the saved tally, so this matters only for the first deploy.
   - **Check:**
@@ -344,8 +366,8 @@ Steps:
 
 1. Phase 1 (local).
 2. Phase 2.
-3. Phase 3.
-4. Once #201–#203 are applied by their owners: apply #204 and #205, push Phases 1–3, run the seed.
+3. Phases 3a and 3b.
+4. Apply #204 and #205 (#201–#203 went in on 2026-11-07), push Phases 1–3b, run the seed.
 5. Phases 4a, 4b, 4c.
 6. Phase 5. Re-run the seed after a 17:00 CT open, then push. Before 2026-12-09.
 7. Phase 6, outside market hours.
@@ -363,7 +385,7 @@ Between steps 5 and 6, the cron fills gaps by the new rule while live bars still
 - **One-digit year window:** [ref − 1, ref + 8], ref being the trade date's year (from the 6b parser).
 - **One tick, the Phase 6 band:** ES 0.25, NQ 0.25, RTY 0.10, CL 0.01, GC 0.10, ZN 1/64 = 0.015625.
 - **Seed start:** trade date 2026-07-21, the first daily candle on NQ/RTY/CL/GC/ZN and the start of REST trades. The first decision row is 2026-07-22.
-- **Daily candles:** `interval=1d&range=6m`, volume from `v`.
+- **Daily candles:** `interval=1d`, volume from `v`; `range=6m` for the seed, the shortest range covering a week for the cron.
 - **Repair window:** 2026-09-04 00:00 UTC → the Phase 5 deploy.
 
 ## Open questions (defaults taken)
