@@ -143,6 +143,13 @@ describe('FLOW_DATA_TARGET', () => {
 // ── Market tide rows ───────────────────────────────────────
 
 describe('toMarketTideRows', () => {
+  /** One tide row at 14:<minute>Z, with `overrides` on top of the defaults. */
+  const at = (minute, overrides) =>
+    tideRows(1, D1, {
+      timestamp: `2026-08-12T14:${minute}:00.000Z`,
+      ...overrides,
+    })[0];
+
   it('maps UW rows to flow_data rows: the asked date, the source, numbers, UW timestamps as sent', () => {
     const { rows, dropped } = toMarketTideRows(D1, 'market_tide', tideRows(2));
 
@@ -195,17 +202,12 @@ describe('toMarketTideRows', () => {
   });
 
   it('leaves out a net_volume the INTEGER column cannot hold, and counts it, instead of failing the whole INSERT', () => {
-    const at = (minute, net_volume) =>
-      tideRows(1, D1, {
-        timestamp: `2026-08-12T14:${minute}:00.000Z`,
-        net_volume,
-      })[0];
     const uw = [
-      at('00', 2_147_483_647),
-      at('05', -2_147_483_648),
-      at('10', 2_147_483_648),
-      at('15', -2_147_483_649),
-      at('20', 1e15),
+      at('00', { net_volume: 2_147_483_647 }),
+      at('05', { net_volume: -2_147_483_648 }),
+      at('10', { net_volume: 2_147_483_648 }),
+      at('15', { net_volume: -2_147_483_649 }),
+      at('20', { net_volume: 1e15 }),
     ];
 
     const { rows, dropped } = toMarketTideRows(D1, 'market_tide', uw);
@@ -217,11 +219,6 @@ describe('toMarketTideRows', () => {
   });
 
   it('leaves out a premium the DECIMAL(14,2) column cannot hold, and counts it, instead of failing the whole INSERT', () => {
-    const at = (minute, overrides) =>
-      tideRows(1, D1, {
-        timestamp: `2026-08-12T14:${minute}:00.000Z`,
-        ...overrides,
-      })[0];
     const uw = [
       // the largest and smallest values that fit: 12 digits and 2 decimals
       at('00', {
@@ -245,6 +242,31 @@ describe('toMarketTideRows', () => {
     expect(toEtfTideRows(D1, 'spy_etf_tide', uw)).toMatchObject({
       dropped: 4,
     });
+  });
+
+  it('rounds a premium to a cent before it checks the range, as Postgres does: .994 fits, .995 rounds up past the end', () => {
+    const uw = [
+      // rounds down to 999,999,999,999.99: kept
+      at('00', {
+        net_call_premium: '999999999999.994',
+        net_put_premium: '-999999999999.994',
+      }),
+      // round to 1,000,000,000,000.00: Postgres would reject the INSERT
+      at('05', { net_call_premium: '999999999999.995' }),
+      at('10', { net_call_premium: '-999999999999.995' }),
+      at('15', { net_put_premium: '999999999999.995' }),
+      at('20', { net_put_premium: '-999999999999.995' }),
+    ];
+
+    const market = toMarketTideRows(D1, 'market_tide', uw);
+    const etf = toEtfTideRows(D1, 'spy_etf_tide', uw);
+
+    for (const { rows, dropped } of [market, etf]) {
+      expect(rows.map((r) => [r.ncp, r.npp])).toEqual([
+        [999_999_999_999.994, -999_999_999_999.994],
+      ]);
+      expect(dropped).toBe(4);
+    }
   });
 
   it('counts a row it leaves out instead of storing it', () => {
@@ -534,8 +556,9 @@ describe('toNetFlowRows', () => {
             net_put_premium: '-999999999999.99',
             net_call_volume: 2_147_483_647,
           },
-          // the second tick takes net_volume to its lower limit and back
-          { net_put_volume: -2_147_483_647 - 1 },
+          // this tick's own volume is the lowest INTEGER; the total goes from
+          // 2,147,483,647 to -1
+          { net_put_volume: -2_147_483_648 },
         ),
       );
 
@@ -543,6 +566,28 @@ describe('toNetFlowRows', () => {
         [999_999_999_999.99, -999_999_999_999.99, 2_147_483_647],
         [999_999_999_999.99, -999_999_999_999.99, -1],
       ]);
+    });
+
+    it('keeps a net_volume total that lands exactly on a limit, and fails one past it', () => {
+      const atLowest = toNetFlowRows(
+        D1,
+        'spx_flow',
+        withTicks({ net_put_volume: -2_147_483_648 }),
+      );
+      expect(atLowest.rows.map((r) => r.net_volume)).toEqual([-2_147_483_648]);
+
+      const belowLowest = failure(
+        withTicks({ net_put_volume: -2_147_483_648 }, { net_put_volume: -1 }),
+      );
+      expect(belowLowest).toBeInstanceOf(DayFailure);
+      expect(belowLowest.message).toContain('net_volume');
+      expect(belowLowest.message).toContain('2026-08-12T13:35:00.000Z');
+
+      const aboveHighest = failure(
+        withTicks({ net_call_volume: 2_147_483_647 }, { net_call_volume: 1 }),
+      );
+      expect(aboveHighest).toBeInstanceOf(DayFailure);
+      expect(aboveHighest.message).toContain('2026-08-12T13:35:00.000Z');
     });
 
     it('lets one corrupt tick fail the whole item, not just its own row', () => {
