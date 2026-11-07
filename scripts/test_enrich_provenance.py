@@ -1043,6 +1043,8 @@ def test_an_unusable_entry_is_stamped_not_written(
 ) -> None:
     # 1 is fine. 2 has an entry of 0 (it raised and aborted the day), 3 NaN, 4
     # Infinity. 5 has no chain in the tape and 6 only a print before its entry.
+    # 7 has no chain AND a NaN entry: it counts once, as no-chain, because the
+    # chain is checked first.
     db = make_db(
         fires=[
             fire_row(1, TSLA),
@@ -1051,6 +1053,7 @@ def test_an_unusable_entry_is_stamped_not_written(
             fire_row(4, TSLA, entry_price=Decimal('Infinity')),
             fire_row(5, NVDA),
             fire_row(6, AAPL),
+            fire_row(7, NVDA, entry_price=Decimal('NaN')),
         ]
     )
 
@@ -1060,12 +1063,13 @@ def test_an_unusable_entry_is_stamped_not_written(
     assert [row[0] for row in rows] == [1]
     assert all(math.isfinite(v) for row in rows for v in row[1:7])
     ((_, params),) = db.outcome_stamps()
-    assert params == ('fulltape', 1, 1, 1, [2, 3, 4, 5, 6])
+    assert params == ('fulltape', 1, 1, 1, [2, 3, 4, 5, 6, 7])
     assert result.outcomes_written == 1
-    assert result.stamped_no_outcome == 5
-    # The log says why, and does not call a bad entry a missing print.
+    assert result.stamped_no_outcome == 6
+    # The log says why, and does not call a bad entry a missing print. Fire 7
+    # is a no-chain, not a bad-entry, so the three counts add up to the six.
     out = capsys.readouterr().out
-    assert '(unpriced: 1 no-chain, 3 bad-entry, 1 no-usable-prints)' in out
+    assert '(unpriced: 2 no-chain, 3 bad-entry, 1 no-usable-prints)' in out
 
 
 def test_an_infinite_print_is_stamped_not_written(
@@ -1192,9 +1196,49 @@ def test_flow_value_written_with_tag(fulltape: Path, make_db) -> None:
     assert db.stamps('inversion_source') == []
 
 
+def test_flow_unusable_entry_is_tagged_not_written(
+    fulltape: Path, make_db, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # simulate_flow_inversion divides by the entry price. An entry of 0 raised
+    # ZeroDivisionError after the main pass had committed, so the day aborted at
+    # the flow pass on every rerun, and an entry of -1 wrote a finite -275.0 as
+    # a value. 1 is fine; 2 has entry 0, 3 entry -1, 4 Infinity. 5 has no chain
+    # AND a NaN entry (counted once, as no-chain: the chain is checked first).
+    # 6 has a NaN entry and no net flow: a bad entry never improves when flow
+    # arrives, so it is stamped now and not left for later.
+    db = make_db(
+        flow_fires=[
+            flow_fire_row(1, TSLA),
+            flow_fire_row(2, TSLA, Decimal('0')),
+            flow_fire_row(3, TSLA, Decimal('-1')),
+            flow_fire_row(4, TSLA, Decimal('Infinity')),
+            flow_fire_row(5, NVDA, Decimal('NaN')),
+            flow_fire_row(6, QQQ, Decimal('NaN')),
+        ],
+        flow={('TSLA', 'C'): rising_then_falling_flow(), ('QQQ', 'C'): []},
+    )
+
+    result = lottery.enrich_one_date(db, DAY)  # raises nothing
+
+    rows = [row for w in db.flow_writes() for row in w.rows]
+    assert [row[0] for row in rows] == [1]
+    assert rows[0][1] == pytest.approx(75.0)
+    ((_, params),) = db.stamps('inversion_source')
+    assert params == ('fulltape', 1, [2, 3, 4, 5, 6])
+    assert result.flow_written == 1
+    assert result.flow_stamped_undefined == 5
+    assert result.flow_input_missing == 0
+    # Counted like the other undefined reasons, in the pass's status lines.
+    out = capsys.readouterr().out
+    assert '[flow-inv]   bad_entry: 4' in out
+    assert '[flow-inv]   no_chain: 1' in out
+
+
 def test_flow_non_finite_exit_is_tagged_not_written(fulltape: Path, make_db) -> None:
-    # entry_price is NUMERIC, which can hold NaN: float() makes the exit NaN.
-    # Written, it would store NaN as a "value" and never be picked again.
+    # A NaN entry (NUMERIC can hold it) must never be written as a "value".
+    # It is refused before the simulation (see the unusable-entry test above);
+    # a non-finite exit from a usable entry is refused after it (see the
+    # infinite-quote test below). Either way the fire is stamped.
     db = make_db(
         flow_fires=[
             flow_fire_row(1, TSLA, Decimal('NaN')),
@@ -1209,6 +1253,43 @@ def test_flow_non_finite_exit_is_tagged_not_written(fulltape: Path, make_db) -> 
     ((_, params),) = db.stamps('inversion_source')
     assert params == ('fulltape', 1, [1])
     assert result.flow_written == 1
+    assert result.flow_stamped_undefined == 1
+
+
+def test_flow_infinite_quote_exit_is_tagged_not_written(
+    archive: Path, archive_globals: None, make_db
+) -> None:
+    # A usable entry can still give a non-finite exit: the loader keeps a quote
+    # of infinity, and the exit is the minute mid at the inversion (minute 15
+    # for this flow). The entry guard cannot see that, so the check on the exit
+    # is what keeps it from being written.
+    rows = []
+    for m in range(1, 21):
+        price = 1.0 + 0.05 * m
+        rows.append(
+            {
+                'executed_at': minute(m),
+                'option_chain_id': TSLA,
+                'price': price,
+                'canceled': False,
+                'nbbo_bid': price - 0.05,
+                'nbbo_ask': float('inf') if m == 15 else price + 0.05,
+                'size': 1,
+            }
+        )
+    pd.DataFrame(rows).to_parquet(archive / f'{DAY}-fulltape.parquet')
+    lottery.configure_archive(archive, 'fulltape')
+    db = make_db(
+        flow_fires=[flow_fire_row(1, TSLA)],
+        flow={('TSLA', 'C'): rising_then_falling_flow()},
+    )
+
+    result = lottery.enrich_one_date(db, DAY)
+
+    assert db.flow_writes() == []
+    ((_, params),) = db.stamps('inversion_source')
+    assert params == ('fulltape', 1, [1])
+    assert result.flow_written == 0
     assert result.flow_stamped_undefined == 1
 
 

@@ -385,7 +385,9 @@ def recompute_lottery(
 ) -> dict[int, tuple[float, float]]:
     """chain_id -> sorted DataFrame via the lottery loader, then peak/mtp via
     compute_fire_outcomes (entry_time_ct basis). Returns {id: (peak, mtp)}
-    only for rows with post-entry ticks; rows with no ticks are omitted.
+    only for fires the lottery writer can price. The rest are omitted: no
+    chain in the tape, no post-entry ticks, an entry price that is not a
+    usable number, or a non-finite outcome.
 
     Parquet globals are set once in configure_source(); this delegates to
     lottery_enrich.load_parquet_chain_index which reads those globals.
@@ -417,7 +419,10 @@ def recompute_sb(
     rows: list[Row], target_date: str
 ) -> dict[int, tuple[float, float]]:
     """SB tape via load_chain_tape, peak/mtp via compute_outcomes
-    (bucket_ct basis, numpy-argmax peak). Returns {id: (peak, mtp)}.
+    (bucket_ct basis, numpy-argmax peak). Returns {id: (peak, mtp)}. An alert
+    the silent-boom writer cannot price is omitted: no chain in the tape, no
+    print at or after the bucket, an entry price that is not a usable number,
+    or a non-finite outcome.
 
     The path is built from THIS module's PARQUET_DIR/PARQUET_PATTERN
     (set in configure_source) and passed explicitly to load_chain_tape,
@@ -824,7 +829,9 @@ def run_table(
             examined += 1
             got = recomputed.get(r.id)
             if got is None:
-                # Chain missing in parquet OR no post-entry ticks. Leave as-is.
+                # Omitted by the recompute: chain missing in parquet, no
+                # post-entry ticks, an entry price that is not a usable
+                # number, or a non-finite outcome. Leave as-is.
                 no_parquet_ticks += 1
                 continue
             new_peak, new_mtp = got
@@ -974,7 +981,10 @@ def run_repair_table(
     targeted = 0
     bot_eod_wins = 0  # bot-eod raised peak above full-tape -> a write
     kept_full_tape = 0  # full-tape peak still >= bot-eod -> no change
-    no_bot_eod_ticks = 0  # chain absent from bot-eod tape -> unchanged
+    # Omitted from the bot-eod recompute -> unchanged: chain absent from the
+    # tape, no ticks after entry, an unusable entry price, or a non-finite
+    # outcome (the name is kept; it counts all of them).
+    no_bot_eod_ticks = 0
     missing_parquet_dates: list[str] = []
     still_below: list[StillBelow] = []
     samples: list[RepairSample] = []
@@ -1025,7 +1035,9 @@ def run_repair_table(
 
             got = bot_eod_vals.get(r.id)
             if got is None:
-                # Chain absent from the bot-eod tape — leave unchanged.
+                # Omitted from the bot-eod recompute (chain absent from the
+                # tape, no ticks after entry, an unusable entry price, or a
+                # non-finite outcome) — leave unchanged.
                 no_bot_eod_ticks += 1
                 bot_eod_peak: float | None = None
                 final_peak = ft_peak

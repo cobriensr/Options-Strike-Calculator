@@ -783,9 +783,10 @@ def run_flow_inversion_pass(
     rows for the date), tagged with `source`.
 
     - A finite exit is written.
-    - Any other outcome (no chain in the tape, no print after the trigger,
-      too little flow, flat flow, no peak) is a settled "undefined": the
-      fire is tagged, its value stays NULL, and it is not picked again.
+    - Any other outcome (no chain in the tape, an entry price that is not a
+      usable number, no print after the trigger, too little flow, flat flow,
+      no peak, a non-finite exit) is a settled "undefined": the fire is
+      tagged, its value stays NULL, and it is not picked again.
     - A fire whose (ticker, side) has no net-flow rows at all is left
       untagged and counted as input_missing: it stays NULL until the flow
       exists (the chip uses realized_eod_pct for it meanwhile).
@@ -815,6 +816,16 @@ def run_flow_inversion_pass(
         chain_df = chain_index.get(fire.option_chain_id)
         if chain_df is None:
             status_counts['no_chain'] = status_counts.get('no_chain', 0) + 1
+            undefined_ids.append(fire.id)
+            continue
+
+        # The simulation divides by the entry price. An entry that is not a
+        # usable number is a settled "undefined" like the cases above: it is
+        # decided before the flow lookup, because flow arriving later cannot
+        # fix it (an entry of 0 raised ZeroDivisionError here, and a negative
+        # one wrote a finite nonsense value).
+        if not usable_entry(fire.entry_price):
+            status_counts['bad_entry'] = status_counts.get('bad_entry', 0) + 1
             undefined_ids.append(fire.id)
             continue
 
