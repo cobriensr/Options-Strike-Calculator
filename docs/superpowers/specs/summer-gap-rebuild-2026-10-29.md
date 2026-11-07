@@ -71,6 +71,14 @@ UW requests are throttled to ≤300/min so the live crons keep the rest of the k
    - Write new scripts only where none exists: `strike_trade_volume` (`/stock/{t}/flow-per-strike-intraday?date=`, probe first) and `economic_events` (probe past-date support first).
    - Dark pool: ~1.3–1.65K paged requests, with the three UW filter rules applied.
    - **Done 2026-10-29** (0 failures each): `net_flow_per_ticker_history` 1,063,486 rows (all 86 tickers × 33 days), `vega_flow_etf` 0DTE 26,574 rows (+162 07-22 morning minutes updated to their final values), `gex_strike_0dte` end-of-day snapshots 2,652 rows.
+   - **Done 2026-11-06** (P3.1, 33 of 33 days, 0 failures each). Run logs are local in `docs/tmp/summer-gap-2026-10-29/runs/`.
+     - **`etf_candles_1m`**: 52,013 rows stored out of 54,384 fetched. On 07-22 the 689 live morning rows were kept (the writes are DO NOTHING). Each day holds 1,500–1,817 SPY+QQQ bars from 04:00 to 19:59 ET.
+     - **`index_candles_1m` SPX+NDX**: 52,013 rows, built from those bars × each day's Schwab daily close ratio.
+       - SPX/SPY runs 10.0179–10.0359 and NDX/QQQ 41.0764–41.1220. Neither ratio is a constant.
+       - Every day has 390 `'r'` bars per symbol.
+       - The scaled 15:59 SPX close sits within 4 pts of the Schwab daily close (median about 0.4).
+       - The Schwab daily close sits within 4.08 pts of `outcomes.settlement` (worst day 07-29). `outcomes` has no 07-22 row.
+     - **Session envelope**: gap days keep the post-market bars to 19:59 ET, like the 02-25 → 04-08 days. Live days since April stop about 16:05 ET. Readers that need regular hours filter `market_time = 'r'`.
    - **The rest need code first.** The 2026-10-29 script audit (local, `docs/tmp/summer-gap-2026-10-29/phase3-script-audit.md`) found most scripts take only a lookback count and warn-and-exit-0 on UW or DB errors. Retrofit `--from/--to`, the market-hours guard, the throttle and error counting from `scripts/_lib/net-prem-ticks-backfill.mjs`. Scripts not to run as they are:
      - `backfill-greek-flow-etf.mjs`: its conflict target was dropped by migration #129, so every row fails while it exits 0;
      - `backfill-greek-flow.mjs`: doesn't write `otm_ncp/otm_npp`, so DO NOTHING would leave them NULL for good;
