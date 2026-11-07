@@ -891,8 +891,9 @@ def compute_fire_outcomes(
 # version gate reads the version carried in each VALUES row (v.version).
 #   - Full Tape: the guard is the marker's version gate alone, so the write
 #     replaces whatever outcome another writer left. It joins the table to
-#     itself (`prior`) to report the row's outcome as it was before this UPDATE
-#     (see update_fires), and sets the marker.
+#     itself (`prior`) to report the row's outcome as of the statement's
+#     snapshot (see update_fires for the one case that differs), and sets the
+#     marker.
 #   - Bot-EOD: Task 3's fill-only statement: no outcome and no tag, no marker.
 _TAPE_UPDATE_SQL = f"""
     UPDATE lottery_finder_fires AS f
@@ -947,12 +948,17 @@ def update_fires(conn, updates: list[tuple], source: str) -> tuple[int, int]:
 
     Which rows held an outcome is read inside the statement: the tape's UPDATE
     joins the table to itself (`prior`) and RETURNING reports
-    `prior.peak_ceiling_pct IS NOT NULL`. Every scan in a statement sees the
-    snapshot taken when it started, so `prior` is the row as it was before
-    this UPDATE, and the count follows the row, not the earlier SELECT: a
-    cron write that landed between the two is still counted as replaced.
-    (The nightly at 07:15 UTC and the crons at 21:40-23:40 UTC do not
-    overlap, so a race could only ever move a count, never data.)"""
+    `prior.peak_ceiling_pct IS NOT NULL`. `prior` is the row as of the
+    statement's snapshot, taken when it started, so the count follows the row
+    and not the earlier SELECT: a cron write that committed after the SELECT
+    but before the statement started is counted as replaced.
+
+    A cron write that commits while the statement is running is a different
+    case. The UPDATE still overwrites it (it waits for the writer, then
+    re-checks the guard on the new row version), but `prior` still reads the
+    version from the snapshot, so that row is counted as not replaced: one
+    count of drift per raced row, never data. The nightly (07:15 UTC) and the
+    crons (21:40-23:40 UTC) do not overlap, so neither case should occur."""
     if not updates:
         return 0, 0
     tape = source == TAPE_SOURCE
