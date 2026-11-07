@@ -72,8 +72,8 @@ UW requests are throttled to ≤300/min so the live crons keep the rest of the k
    - Dark pool: ~1.3–1.65K paged requests, with the three UW filter rules applied.
    - **Done 2026-10-29** (0 failures each): `net_flow_per_ticker_history` 1,063,486 rows (all 86 tickers × 33 days), `vega_flow_etf` 0DTE 26,574 rows (+162 07-22 morning minutes updated to their final values), `gex_strike_0dte` end-of-day snapshots 2,652 rows.
    - **Done 2026-11-06** (P3.1, 33 of 33 days, 0 failures each). Run logs are local in `docs/tmp/summer-gap-2026-10-29/runs/`.
-     - **`etf_candles_1m`**: 52,013 rows stored out of 54,384 fetched. On 07-22 the 689 live morning rows were kept (the writes are DO NOTHING). Each day holds 1,500–1,817 SPY+QQQ bars from 04:00 to 19:59 ET.
-     - **`index_candles_1m` SPX+NDX**: 52,013 rows, built from those bars × each day's Schwab daily close ratio.
+     - **`etf_candles_1m`**: the full run fetched 54,384 rows and stored 52,013. The other 2,371 were already in the table: 689 live morning rows on 07-22, plus all 1,682 rows of 07-27 from the earlier one-day probe write (the writes are DO NOTHING). The table now holds 54,384 rows for the range. Each day holds 1,500–1,817 SPY+QQQ bars from 04:00 to 19:59 ET.
+     - **`index_candles_1m` SPX+NDX**: the same counts, because each SPX or NDX bar is built from one SPY or QQQ bar (× that day's Schwab daily close ratio): 54,384 fetched, 52,013 stored, and the other 2,371 already in the table (the 07-22 morning rows and all of 07-27). The table now holds 54,384 rows for the range.
        - SPX/SPY runs 10.0179–10.0359 and NDX/QQQ 41.0764–41.1220. Neither ratio is a constant.
        - Every day has 390 `'r'` bars per symbol.
        - The scaled 15:59 SPX close sits within 4 pts of the Schwab daily close (median about 0.4).
