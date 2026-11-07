@@ -31,11 +31,12 @@ prints. With `--parquet-format fulltape`, `--select all` re-derives every
 outcome the tape has not yet examined at the current OUTCOME_VERSION
 (outcome_tape_version is NULL or older), the crons' and untagged history
 included, and replaces it when the tape can price the fire. A fire it cannot
-price (no chain, no print at or after entry) keeps any value another writer
-left ("keep the feed's values for now"): the row is only marked examined, so
-it is not picked again until the version changes; the one thing the keep adds
-is an enriched_at when the row has none, so it leaves the cron's
-`enriched_at IS NULL` pool. With no prior outcome it is also tagged 'fulltape'
+price (no chain, no print at or after entry, an entry price that is not a
+usable number, or an outcome that is not finite) keeps any value another
+writer left ("keep the feed's values for now"): the row is only marked
+examined, so it is not picked again until the version changes; the one thing
+the keep adds is an enriched_at when the row has none, so it leaves the
+cron's `enriched_at IS NULL` pool. With no prior outcome it is also tagged 'fulltape'
 with the outcomes left NULL. Bumping OUTCOME_VERSION re-derives the history.
 The crons write only
 `enriched_at IS NULL` rows and the tape sets enriched_at, so no cron can
@@ -305,6 +306,9 @@ def peak_ceiling(prices: list[float], entry: float) -> float:
 def minutes_to_peak(
     prices: list[float], minutes_since_entry: list[float]
 ) -> float:
+    """The minutes-since-entry offset of the first maximum price. It is never
+    None: a peak at the first post-entry print is 0.0 (that offset, not a
+    missing value), and so is an empty list."""
     if len(prices) == 0:
         return 0.0
     max_idx = 0
@@ -865,9 +869,22 @@ def run_flow_inversion_pass(
     )
 
 
+def usable_entry(entry_price: float) -> bool:
+    """Whether `entry_price` is a price to divide by. It is NUMERIC NOT NULL,
+    which can hold NaN or Infinity (float() keeps both), and 0 is a legal
+    number; none of those, nor a negative price, gives a meaningful outcome."""
+    return math.isfinite(entry_price) and entry_price > 0
+
+
 def compute_fire_outcomes(
     fire: Fire, chain_df: pd.DataFrame
 ) -> tuple[float, float, float, float, float, float] | None:
+    """The six realized outcomes of `fire` on its chain's prints, or None when
+    the fire is unpriced: its entry price is unusable (see usable_entry), no
+    print is at or after its entry, or an outcome is not finite. The caller
+    stamps such a fire instead of writing it."""
+    if not usable_entry(fire.entry_price):
+        return None
     entry_ts = fire.entry_time_ct
     if entry_ts.tz is None:
         entry_ts = entry_ts.tz_localize('UTC')
@@ -884,7 +901,13 @@ def compute_fire_outcomes(
     eod = ((prices[-1] - fire.entry_price) / fire.entry_price) * 100.0
     peak = peak_ceiling(prices, fire.entry_price)
     mtp = minutes_to_peak(prices, minutes)
-    return trail, hard30, tier50, eod, peak, mtp
+    outcomes = (trail, hard30, tier50, eod, peak, mtp)
+    # `price > 0` in the loader lets an infinite print through. Written, a
+    # non-finite value would count as an outcome and the fire would never be
+    # picked again, so such a fire is unpriced and goes to the stamp.
+    if not all(math.isfinite(v) for v in outcomes):
+        return None
+    return outcomes
 
 
 # The priced UPDATE, one whole statement per source (update_fires picks by
@@ -969,7 +992,13 @@ def update_fires(conn, updates: list[tuple], source: str) -> tuple[int, int]:
         cur,
         _TAPE_UPDATE_SQL if tape else _FILL_UPDATE_SQL,
         [(*u, source, OUTCOME_VERSION) for u in updates],
-        template='(%s::bigint, %s, %s, %s, %s, %s, %s, %s::text, %s::smallint)',
+        # Each of the six realized columns is cast: a VALUES column that is
+        # NULL in every row of a batch is typed text, and assigning text to a
+        # numeric column fails the whole UPDATE.
+        template=(
+            '(%s::bigint, %s::numeric, %s::numeric, %s::numeric, %s::numeric, '
+            '%s::numeric, %s::numeric, %s::text, %s::smallint)'
+        ),
         page_size=WRITE_BATCH,
         fetch=True,
     )
@@ -1018,8 +1047,9 @@ _FILL_STAMP_SQL = f"""
 
 
 def stamp_no_outcome(conn, fire_ids: list[int], source: str) -> tuple[int, int]:
-    """Stamp fires the tape cannot price (no chain, or no print at or after
-    entry). Returns (stamped, kept), counted from what the database returned.
+    """Stamp fires the tape cannot price (no chain, no print at or after entry,
+    an unusable entry price, or an outcome that is not finite). Returns
+    (stamped, kept), counted from what the database returned.
 
     - Full Tape (_TAPE_STAMP_SQL): stamped is a row with no prior outcome, now
       tagged 'fulltape' with its outcomes NULL (tried, not pending). kept is a
@@ -1339,6 +1369,7 @@ def enrich_one_date(
         updates: list[tuple] = []
         unpriced_ids: list[int] = []
         no_chain = 0
+        bad_entry = 0
         # From the fetch, for a dry run: priced fires that hold an outcome
         # (would be replaced) and unpriced ones that do (would be kept).
         priced_with_outcome = 0
@@ -1352,6 +1383,8 @@ def enrich_one_date(
                 continue
             res = compute_fire_outcomes(fire, chain_df)
             if res is None:
+                if not usable_entry(fire.entry_price):
+                    bad_entry += 1
                 unpriced_ids.append(fire.id)
                 unpriced_with_outcome += fire.had_outcome
                 continue
@@ -1364,8 +1397,8 @@ def enrich_one_date(
         print(
             f'[enrich] {target_date} computed {len(updates):,} outcomes '
             f'in {time.time() - t0:.1f}s '
-            f'(unpriced: {no_chain} no-chain, '
-            f'{len(unpriced_ids) - no_chain} no-post-ticks)'
+            f'(unpriced: {no_chain} no-chain, {bad_entry} bad-entry, '
+            f'{len(unpriced_ids) - no_chain - bad_entry} no-usable-prints)'
         )
 
         if dry_run:

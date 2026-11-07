@@ -104,7 +104,9 @@ def minutes_to_peak(
 ) -> float | None:
     """Minutes to peak: time from entry to peak price.
 
-    Returns minutes to peak, or None if peak was at entry.
+    Returns the minutes-since-entry offset of the first maximum price. A peak
+    at entry is that offset (0.0 there), not None; None is returned only for
+    an empty price list.
     """
     if not prices:
         return None

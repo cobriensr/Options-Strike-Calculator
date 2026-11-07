@@ -67,6 +67,15 @@ PREDICATES_BY_SOURCE = {
     'fulltape': {**PREDICATES, 'all': ALL_TAPE},
 }
 
+# The priced UPDATE's VALUES row: the id, the six realized columns (each cast,
+# see test_the_priced_template_casts_all_six_realized_columns), the tag and the
+# version.
+LOTTERY_UPDATE_TEMPLATE = (
+    '(%s::bigint, '
+    + ', '.join(['%s::numeric'] * 6)
+    + ', %s::text, %s::smallint)'
+)
+
 # The fulltape stamp for fires the tape cannot price. It decides per row, from
 # the row's current peak_ceiling_pct, so a value written after our SELECT is
 # kept: the realized columns are never in the SET, and a row with an outcome
@@ -187,10 +196,16 @@ def write_tape(directory: Path, parquet_format: str, layout: str = 'new') -> Pat
 # ── fire rows and net flow, as the SELECTs return them ─────────
 
 
-def fire_row(fire_id: int, chain: str, had_outcome: bool = False) -> tuple:
-    # entry_price is NUMERIC: psycopg2 hands back a Decimal. The fifth column
-    # (peak_ceiling_pct IS NOT NULL) is selected for the fulltape source only.
-    return (fire_id, chain, ENTRY, Decimal('1.0000'), had_outcome)
+def fire_row(
+    fire_id: int,
+    chain: str,
+    had_outcome: bool = False,
+    entry_price: Decimal = Decimal('1.0000'),
+) -> tuple:
+    # entry_price is NUMERIC: psycopg2 hands back a Decimal (which can be NaN
+    # or Infinity). The fifth column (peak_ceiling_pct IS NOT NULL) is selected
+    # for the fulltape source only.
+    return (fire_id, chain, ENTRY, entry_price, had_outcome)
 
 
 def flow_fire_row(
@@ -686,7 +701,7 @@ def test_outcome_update_is_conditional_and_tagged(
     assert 'outcome_source = v.source' in write.sql
     assert 'outcome_version = v.version' in write.sql
     assert 'enriched_at = NOW()' in write.sql
-    assert write.template == '(%s::bigint, %s, %s, %s, %s, %s, %s, %s::text, %s::smallint)'
+    assert write.template == LOTTERY_UPDATE_TEMPLATE
     assert write.kwargs == {'page_size': 500, 'fetch': True}
     assert [row[-2:] for row in write.rows] == [(source, 1)]
     # Canceled (9.00) and zero-price prints are dropped: the peak is 2.00.
@@ -943,6 +958,138 @@ def test_bot_eod_never_sets_the_marker_or_replaces(
     assert params == ('bot_eod', 1, [2])
     assert (result.outcomes_replaced, result.outcomes_kept) == (0, 0)
     assert (result.outcomes_written, result.stamped_no_outcome) == (1, 1)
+
+
+# ── the priced UPDATE's casts, and an entry price that can't be used ──
+
+
+@pytest.mark.parametrize('source', ['fulltape', 'bot_eod'])
+def test_the_priced_template_casts_all_six_realized_columns(source: str, make_db) -> None:
+    # A VALUES column that is NULL in every row of a batch is typed text, and
+    # assigning text to a numeric column fails the whole UPDATE ("column ... is
+    # of type numeric but expression is of type text"). So each of the six is
+    # cast, and a batch whose six values are all NULL carries the same template.
+    db = make_db()
+
+    lottery.update_fires(db, [(1, None, None, None, None, None, None)], source)
+
+    (write,) = db.values_writes
+    assert write.template == LOTTERY_UPDATE_TEMPLATE
+    middle = write.template.removeprefix('(%s::bigint, ').removesuffix(
+        ', %s::text, %s::smallint)'
+    )
+    assert middle.split(', ') == ['%s::numeric'] * 6
+
+
+def _fire_with_entry(entry_price: float) -> lottery.Fire:
+    return lottery.Fire(
+        id=1,
+        option_chain_id=TSLA,
+        entry_time_ct=pd.Timestamp(ENTRY),
+        entry_price=entry_price,
+    )
+
+
+@pytest.mark.parametrize(
+    'entry', [0.0, -1.0, float('nan'), float('inf'), float('-inf')]
+)
+def test_compute_fire_outcomes_refuses_an_unusable_entry(entry: float) -> None:
+    # NUMERIC NOT NULL can hold NaN and Infinity, and 0 is a legal number.
+    # None of them is a price to divide by: an entry of 0 raised
+    # ZeroDivisionError and aborted the day, NaN was written as a "value", and
+    # Infinity only warned its way to NaN. A warning is an error here.
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        res = lottery.compute_fire_outcomes(
+            _fire_with_entry(entry), _chain_frame([1.1, 1.2])
+        )
+    assert res is None
+
+
+def test_compute_fire_outcomes_never_returns_a_non_finite_value() -> None:
+    # `price > 0` in the loader lets an infinite print through. Written, the
+    # outcome would count as a value and the fire would never be picked again.
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        res = lottery.compute_fire_outcomes(
+            _fire_with_entry(1.0), _chain_frame([1.1, float('inf')])
+        )
+    assert res is None
+
+
+def test_compute_fire_outcomes_keeps_a_finite_result() -> None:
+    res = lottery.compute_fire_outcomes(
+        _fire_with_entry(1.0), _chain_frame([1.1, 1.5, 1.2])
+    )
+    assert res is not None
+    assert len(res) == 6
+    assert all(math.isfinite(v) for v in res)
+    trail, hard30, tier50, eod, peak, mtp = res
+    assert peak == pytest.approx(50.0)
+    assert eod == pytest.approx(20.0)
+    assert mtp == pytest.approx(2.0)  # the 1.5 print, two minutes in
+
+
+def test_minutes_to_peak_is_an_offset_and_never_none() -> None:
+    # Not None at the entry: a peak at the first post-entry print is offset 0.0,
+    # an empty list is 0.0, and equal peaks resolve to the first.
+    assert lottery.minutes_to_peak([1.5, 1.2, 1.1], [0.0, 5.0, 9.0]) == 0.0
+    assert lottery.minutes_to_peak([], []) == 0.0
+    assert lottery.minutes_to_peak([1.0, 1.4, 1.4], [2.0, 6.0, 9.0]) == 6.0
+
+
+def test_an_unusable_entry_is_stamped_not_written(
+    fulltape: Path, make_db, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 1 is fine. 2 has an entry of 0 (it raised and aborted the day), 3 NaN, 4
+    # Infinity. 5 has no chain in the tape and 6 only a print before its entry.
+    db = make_db(
+        fires=[
+            fire_row(1, TSLA),
+            fire_row(2, TSLA, entry_price=Decimal('0')),
+            fire_row(3, QQQ, entry_price=Decimal('NaN')),
+            fire_row(4, TSLA, entry_price=Decimal('Infinity')),
+            fire_row(5, NVDA),
+            fire_row(6, AAPL),
+        ]
+    )
+
+    result = lottery.enrich_one_date(db, DAY, select='all')  # raises nothing
+
+    rows = [row for w in db.outcome_writes() for row in w.rows]
+    assert [row[0] for row in rows] == [1]
+    assert all(math.isfinite(v) for row in rows for v in row[1:7])
+    ((_, params),) = db.outcome_stamps()
+    assert params == ('fulltape', 1, 1, 1, [2, 3, 4, 5, 6])
+    assert result.outcomes_written == 1
+    assert result.stamped_no_outcome == 5
+    # The log says why, and does not call a bad entry a missing print.
+    out = capsys.readouterr().out
+    assert '(unpriced: 1 no-chain, 3 bad-entry, 1 no-usable-prints)' in out
+
+
+def test_an_infinite_print_is_stamped_not_written(
+    archive: Path, archive_globals: None, make_db, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pd.DataFrame(
+        {
+            'executed_at': [minute(1), minute(2)],
+            'option_chain_id': TSLA,
+            'price': [1.1, float('inf')],
+            'canceled': [False, False],
+        }
+    ).to_parquet(archive / f'{DAY}-fulltape.parquet')
+    lottery.configure_archive(archive, 'fulltape')
+    db = make_db(fires=[fire_row(1, TSLA)])
+
+    result = lottery.enrich_one_date(db, DAY, select='all')
+
+    assert db.outcome_writes() == []
+    ((_, params),) = db.outcome_stamps()
+    assert params == ('fulltape', 1, 1, 1, [1])
+    assert result.outcomes_written == 0
+    assert result.stamped_no_outcome == 1
+    assert '(unpriced: 0 no-chain, 0 bad-entry, 1 no-usable-prints)' in capsys.readouterr().out
 
 
 # ── the flow-inversion pass ────────────────────────────────────
