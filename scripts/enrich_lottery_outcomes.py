@@ -5,9 +5,13 @@ Replaces api/cron/enrich-lottery-outcomes.ts for the realized exit-policy
 columns. The Vercel cron reads ws_option_trades, which is incomplete
 relative to the EOD parquet that `make ingest` writes as
 `{DATE}-trades.parquet` in the Bot-EOD archive. Running this locally
-after ingest gives full coverage. `--parquet-dir` names the archive (no
-default; the Makefile passes its PARQUET_DIR), and
-`--parquet-format fulltape` reads `{DATE}-fulltape.parquet` instead.
+after ingest gives full coverage. The tape comes from one of two places,
+and exactly one is required: `--parquet-dir` names a local archive (no
+default; the Makefile passes its PARQUET_DIR; `--parquet-format fulltape`
+reads `{DATE}-fulltape.parquet` instead of the trades files), and `--r2`
+reads the Full Tape lake in R2 (the four R2_* variables, from the
+environment or .env.local), one day at a time through a temp directory
+that is deleted when the run ends.
 
 Computes:
   - realized_trail30_10_pct
@@ -46,11 +50,19 @@ nobody has filled, never replaces a value and never sets the marker.
 A fire whose matched-side net flow does not exist yet is left untagged until
 it does.
 
+`--select {pending,empty,all}` (default pending) picks the fires the outcome
+pass works on and, with --all-unenriched, the dates (see OUTCOME_WORK). It
+does not touch the flow-inversion pass, which keeps its own work set.
+`--dry-run` computes everything and writes nothing: no UPDATE, no refit (it
+writes a simulation CSV), and every summary line says "would".
+
 Usage
 -----
     ml/.venv/Scripts/python scripts/enrich_lottery_outcomes.py --parquet-dir <bot-eod-dir>
     ml/.venv/Scripts/python scripts/enrich_lottery_outcomes.py \\
         --parquet-dir <bot-eod-dir> --date 2026-05-05
+    ml/.venv/Scripts/python scripts/enrich_lottery_outcomes.py \\
+        --r2 --all-unenriched --select all --dry-run
 """
 
 from __future__ import annotations
@@ -60,10 +72,13 @@ import csv
 import math
 import os
 import re
+import shutil
 import statistics
 import sys
+import tempfile
 import time
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date as DateType, datetime, timezone
 from pathlib import Path
@@ -239,13 +254,20 @@ def outcome_work_all(source: str, alias: str = '', version: str = '%s') -> str:
     return OUTCOME_WORK_ALL[source].format(a=alias, v=version)
 
 
+def write_guard() -> tuple[str, tuple]:
+    """SOURCE_TAG's write guard (the text its priced UPDATE and its stamp
+    carry) and the parameters its placeholders take, in order. SOURCE_TAG is
+    read at call time, so callers run configure_archive first; only the
+    tape's guard carries a parameter (the version)."""
+    params = (OUTCOME_VERSION,) if SOURCE_TAG == TAPE_SOURCE else ()
+    return outcome_work_all(SOURCE_TAG), params
+
+
 def outcome_work(select: Select) -> tuple[str, tuple]:
     """The WHERE predicate for `select` and the parameters its placeholders
-    take, in order. 'all' follows SOURCE_TAG, read at call time, so callers
-    run configure_archive first; only the tape's carries one (the version)."""
+    take, in order. 'all' is the write guard of SOURCE_TAG's source."""
     if select == 'all':
-        params = (OUTCOME_VERSION,) if SOURCE_TAG == TAPE_SOURCE else ()
-        return outcome_work_all(SOURCE_TAG), params
+        return write_guard()
     return OUTCOME_WORK[select].format(a=''), ()
 
 
@@ -497,6 +519,11 @@ class Fire:
     # NULL). Read for the Full Tape only, the one source that replaces or
     # keeps an outcome; it feeds a dry run's replaced and kept counts.
     had_outcome: bool = False
+    # SOURCE_TAG's write guard, evaluated on the fire when it was selected: the
+    # priced UPDATE and the stamp would touch it. A dry run counts only these,
+    # as the guarded statements of a real run would. The default is for the
+    # callers that never write (scripts/recompute_peak_from_parquet.py).
+    writable: bool = True
 
 
 @dataclass
@@ -532,20 +559,25 @@ def fetch_unenriched(
     conn, target_date: str, select: Select = 'pending'
 ) -> list[Fire]:
     """The date's fires that `select` names (see OUTCOME_WORK and
-    OUTCOME_WORK_ALL; 'all' follows SOURCE_TAG). For the Full Tape each fire
-    also carries whether it already holds an outcome."""
+    OUTCOME_WORK_ALL; 'all' follows SOURCE_TAG). Each fire also carries
+    whether SOURCE_TAG's write guard lets a write touch it (`writable`: the
+    guard evaluated on the row, so a dry run can count what a real run would
+    write), and for the Full Tape whether it already holds an outcome."""
     tape = SOURCE_TAG == TAPE_SOURCE
     had_outcome = ', peak_ceiling_pct IS NOT NULL AS had_outcome' if tape else ''
+    guard, guard_params = write_guard()
     work, work_params = outcome_work(select)
     cur = conn.cursor()
+    # Placeholders in order: the guard's (the select list), the day, the work's.
     cur.execute(
         f"""
-        SELECT id, option_chain_id, entry_time_ct, entry_price{had_outcome}
+        SELECT id, option_chain_id, entry_time_ct, entry_price,
+               ({guard}) AS writable{had_outcome}
         FROM lottery_finder_fires
         WHERE date = %s AND {work}
         ORDER BY inserted_at ASC
         """,
-        (target_date, *work_params),
+        (*guard_params, target_date, *work_params),
     )
     rows = cur.fetchall()
     return [
@@ -554,7 +586,8 @@ def fetch_unenriched(
             option_chain_id=r[1],
             entry_time_ct=pd.Timestamp(r[2]),
             entry_price=float(r[3]),
-            had_outcome=bool(r[4]) if tape else False,
+            writable=bool(r[4]),
+            had_outcome=bool(r[5]) if tape else False,
         )
         for r in rows
     ]
@@ -1342,8 +1375,9 @@ def enrich_one_date(
     by that source's work predicate, so the counts are what the database
     wrote. The Full Tape replaces an outcome it can price and keeps one it
     cannot; Bot-EOD only fills (see the module docstring). With dry_run
-    nothing is written and the counts are what would be, the replaced and
-    kept ones read from the fetch (Fire.had_outcome).
+    nothing is written and the counts are what would be: the fetch's
+    Fire.writable keeps out the fires the source's guard would refuse, and
+    Fire.had_outcome gives the replaced and kept ones.
 
     A day with work to do whose archive file is missing is skipped: one
     line names it (warn_missing_archive) and nothing is written for it, so
@@ -1381,29 +1415,35 @@ def enrich_one_date(
         unpriced_ids: list[int] = []
         no_chain = 0
         bad_entry = 0
-        # From the fetch, for a dry run: priced fires that hold an outcome
-        # (would be replaced) and unpriced ones that do (would be kept).
-        priced_with_outcome = 0
-        unpriced_with_outcome = 0
+        # From the fetch, for a dry run: what the guarded statements would
+        # touch. Only a writable fire counts, as the guard's WHERE would let
+        # only it through: a priced one is written (and replaces an outcome it
+        # holds), an unpriced one is stamped (and kept if it holds one).
+        would_write = would_replace = would_stamp = would_keep = 0
         for fire in fires:
             chain_df = chain_index.get(fire.option_chain_id)
-            if chain_df is None:
-                no_chain += 1
-                unpriced_ids.append(fire.id)
-                unpriced_with_outcome += fire.had_outcome
-                continue
-            res = compute_fire_outcomes(fire, chain_df)
+            res = (
+                None
+                if chain_df is None
+                else compute_fire_outcomes(fire, chain_df)
+            )
             if res is None:
-                if not usable_entry(fire.entry_price):
+                if chain_df is None:
+                    no_chain += 1
+                elif not usable_entry(fire.entry_price):
                     bad_entry += 1
                 unpriced_ids.append(fire.id)
-                unpriced_with_outcome += fire.had_outcome
+                if fire.writable:
+                    would_keep += fire.had_outcome
+                    would_stamp += not fire.had_outcome
                 continue
             trail, hard30, tier50, eod, peak, mtp = res
             updates.append(
                 (fire.id, trail, hard30, tier50, eod, peak, mtp)
             )
-            priced_with_outcome += fire.had_outcome
+            if fire.writable:
+                would_write += 1
+                would_replace += fire.had_outcome
 
         print(
             f'[enrich] {target_date} computed {len(updates):,} outcomes '
@@ -1413,10 +1453,10 @@ def enrich_one_date(
         )
 
         if dry_run:
-            result.outcomes_written = len(updates)
-            result.outcomes_replaced = priced_with_outcome
-            result.stamped_no_outcome = len(unpriced_ids) - unpriced_with_outcome
-            result.outcomes_kept = unpriced_with_outcome
+            result.outcomes_written = would_write
+            result.outcomes_replaced = would_replace
+            result.stamped_no_outcome = would_stamp
+            result.outcomes_kept = would_keep
         else:
             result.outcomes_written, result.outcomes_replaced = update_fires(
                 conn, updates, SOURCE_TAG
@@ -1447,26 +1487,56 @@ def enrich_one_date(
     return result
 
 
-def print_run_summary(results: dict[str, DayResult]) -> None:
+def print_run_summary(
+    results: dict[str, DayResult],
+    dry_run: bool = False,
+    not_landed: list[str] | None = None,
+) -> None:
     """Days enriched, fires written, and the days skipped for a missing
-    archive (also on stderr, so they can't scroll past unseen)."""
+    archive or, with --r2, not landed in the lake (both also on stderr, so
+    they can't scroll past unseen). On a dry run nothing was written, so
+    every count reads "would"."""
     missing = [d for d, r in results.items() if r.archive_missing]
     done = [r for r in results.values() if not r.archive_missing]
-    print(
-        f'[enrich] summary: {len(done)} day(s) enriched, '
-        f'{sum(r.fires_written for r in done):,} fires updated, '
-        f'{sum(r.flow_written for r in done):,} flow-inversion rows written; '
-        f'{len(missing)} day(s) skipped for a missing archive'
-    )
-    print(
-        f'[enrich] summary: {sum(r.outcomes_replaced for r in done):,} '
-        'outcome(s) replaced a prior outcome, '
-        f'{sum(r.outcomes_kept for r in done):,} unpriced fire(s) kept theirs'
-    )
+    fires = sum(r.fires_written for r in done)
+    flow = sum(r.flow_written for r in done)
+    replaced = sum(r.outcomes_replaced for r in done)
+    kept = sum(r.outcomes_kept for r in done)
+    if dry_run:
+        head = '[enrich] summary (dry run, nothing written):'
+        print(
+            f'{head} {len(done)} day(s) would be enriched, '
+            f'{fires:,} fires would be updated, '
+            f'{flow:,} flow-inversion rows would be written; '
+            f'{len(missing)} day(s) skipped for a missing archive'
+        )
+        print(
+            f'{head} {replaced:,} outcome(s) would replace a prior outcome, '
+            f'{kept:,} unpriced fire(s) would keep theirs'
+        )
+    else:
+        print(
+            f'[enrich] summary: {len(done)} day(s) enriched, '
+            f'{fires:,} fires updated, '
+            f'{flow:,} flow-inversion rows written; '
+            f'{len(missing)} day(s) skipped for a missing archive'
+        )
+        print(
+            f'[enrich] summary: {replaced:,} '
+            'outcome(s) replaced a prior outcome, '
+            f'{kept:,} unpriced fire(s) kept theirs'
+        )
     if missing:
         line = (
             f'[enrich] skipped (archive missing, fires left unenriched): '
             f'{format_dates(missing)}'
+        )
+        print(line)
+        print(line, file=sys.stderr)
+    if not_landed:
+        line = (
+            f'[enrich] skipped (not landed in R2, fires left unenriched): '
+            f'{format_dates(not_landed)}'
         )
         print(line)
         print(line, file=sys.stderr)
@@ -1476,41 +1546,204 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         '--date',
-        help='YYYY-MM-DD; defaults to the latest matching parquet on disk',
+        help=(
+            'YYYY-MM-DD; defaults to the newest day in the source: the '
+            'latest parquet in --parquet-dir, or the newest landed day '
+            'with --r2'
+        ),
     )
     parser.add_argument(
         '--all-unenriched',
         action='store_true',
         help=(
-            'Enumerate every date with enriched_at IS NULL rows and process '
-            'each. Overrides --date. The ticker-quality refit still runs '
+            'Enumerate every date with outcome work for --select (pending, '
+            'the default: enriched_at IS NULL) and process each; with --r2, '
+            'only the dates the lake holds (the rest are listed at the '
+            'end). Overrides --date. The ticker-quality refit still runs '
             'once at the end (it is global, not per-date). Used by '
             "`make enrich` so post-nightly manual backfills don't get "
             'stranded with enriched_at NULL.'
         ),
     )
-    parser.add_argument(
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
         '--parquet-dir',
         type=existing_dir,
-        required=True,
         help=(
             'Directory of day parquets: the Bot-EOD archive for '
             '--parquet-format trades, the Full Tape archive for fulltape.'
         ),
     )
+    source.add_argument(
+        '--r2',
+        action='store_true',
+        help=(
+            'Read the Full Tape from the R2 lake (R2_ENDPOINT_URL, '
+            'R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_FULLTAPE), '
+            'one day at a time through a temp directory.'
+        ),
+    )
     parser.add_argument(
         '--parquet-format',
         choices=sorted(PARQUET_FORMATS.keys()),
-        default='trades',
-        help='Parquet schema and filename suffix.',
+        default=None,
+        help=(
+            'Parquet schema and filename suffix for --parquet-dir (default '
+            'trades). --r2 is always fulltape.'
+        ),
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        '--select',
+        choices=['pending', 'empty', 'all'],
+        default='pending',
+        help=(
+            'Which fires the outcome pass works on: pending = '
+            'enriched_at IS NULL (default); empty = marked enriched with no '
+            'outcome and no tag; all = every fire the source may still '
+            'write (Full Tape: every fire it has not examined at this '
+            'version, whatever another writer left; Bot-EOD: fires nobody '
+            'has filled). The flow-inversion pass keeps its own work set.'
+        ),
+    )
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help=(
+            'Compute and report what would be written; write nothing (the '
+            'ticker-quality refit is skipped too).'
+        ),
+    )
+    args = parser.parse_args(argv)
+    if args.r2:
+        if args.parquet_format not in (None, 'fulltape'):
+            parser.error(
+                f'--parquet-format {args.parquet_format} cannot be used '
+                'with --r2: the R2 lake holds Full Tape days only'
+            )
+        args.parquet_format = 'fulltape'
+    elif args.parquet_format is None:
+        args.parquet_format = 'trades'
+    return args
+
+
+@contextmanager
+def r2_reader():
+    """A TapeReader on a fresh temp directory, for the length of the run.
+
+    Leaving the block, however it ends, closes the reader (which deletes every
+    day it cached) and removes the directory. A TapeReadError from from_env or
+    from anything inside the block ends the run with a non-zero exit; its
+    message holds a key, a count or a variable name, never a value. Imported
+    here, so importing this module never loads boto3.
+    """
+    from _tape_reader import TapeReader, TapeReadError
+
+    cache_dir = Path(tempfile.mkdtemp(prefix='enrich-'))
+    reader = None
+    try:
+        reader = TapeReader.from_env(cache_dir)
+        yield reader
+    except TapeReadError as exc:
+        sys.exit(f'[enrich] R2 tape read failed: {exc}')
+    finally:
+        try:
+            if reader is not None:
+                reader.close()
+        finally:
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+
+def landed_dates(reader) -> set[str]:
+    """The days the lake holds, as YYYY-MM-DD."""
+    return {day.isoformat() for day in reader.landed_days()}
+
+
+def newest_landed_day(landed: set[str]) -> str:
+    if not landed:
+        sys.exit('[enrich] No landed Full Tape days in R2')
+    return max(landed)
+
+
+def enrich_day(conn, target_date: str, args: argparse.Namespace, reader) -> DayResult:
+    """One date. With --r2 its tape is fetched into the reader's cache first
+    and released afterwards, so one day is on disk at a time."""
+    if reader is None:
+        return enrich_one_date(conn, target_date, args.select, args.dry_run)
+    day = DateType.fromisoformat(target_date)
+    # No object (None) leaves no file, so enrich_one_date takes its
+    # missing-archive skip: the day is named, counted and left alone.
+    reader.fetch_day(day)
+    try:
+        return enrich_one_date(conn, target_date, args.select, args.dry_run)
+    finally:
+        reader.release(day)
+
+
+def run(args: argparse.Namespace, db_url: str, reader) -> None:
+    """The date loop, the refit and the summary. `reader` is None for
+    --parquet-dir."""
+    conn = connect_with_retry(db_url)
+    results: dict[str, DayResult] = {}
+    not_landed: list[str] = []
+    try:
+        if args.all_unenriched:
+            dates = list_work_dates(conn, args.select)
+            if reader is not None:
+                landed = landed_dates(reader)
+                not_landed = [d for d in dates if d not in landed]
+                dates = [d for d in dates if d in landed]
+            if not dates:
+                # Nothing to process: fall through to the global refit so the
+                # caller (make enrich) still gets a stats refresh.
+                if reader is not None:
+                    latest_date = newest_landed_day(landed)
+                    where = f'latest landed day: {latest_date}'
+                else:
+                    latest_date = detect_latest_date()
+                    where = f'latest parquet: {latest_date}'
+                what = 'landed dates pending' if not_landed else 'dates pending'
+                print(f'[enrich] --all-unenriched: 0 {what} ({where})')
+            else:
+                print(
+                    f'[enrich] --all-unenriched: {len(dates)} dates to process'
+                )
+                latest_date = dates[-1]
+        else:
+            if args.date:
+                latest_date = args.date
+            elif reader is not None:
+                latest_date = newest_landed_day(landed_dates(reader))
+            else:
+                latest_date = detect_latest_date()
+            # Validate format.
+            DateType.fromisoformat(latest_date)
+            print(f'[enrich] target date: {latest_date}')
+            dates = [latest_date]
+
+        for d in dates:
+            results[d] = enrich_day(conn, d, args, reader)
+
+        # Third pass — per-ticker inversion-quality refit (Phase 2 of the
+        # inversion-quality filter). Runs against whatever is in
+        # lottery_finder_fires regardless of whether today's main pass ran.
+        # Stamp the sim CSV with the most recent date we touched. A dry run
+        # writes nothing, and the refit writes that CSV.
+        if args.dry_run:
+            print(
+                '[enrich] dry run: skipping the ticker-quality refit '
+                '(it writes a simulation CSV)'
+            )
+        else:
+            sim_csv = Path(f'docs/tmp/lottery-quality-sim-{latest_date}.csv')
+            refit_ticker_inversion_stats(conn, sim_csv_path=sim_csv)
+        print_run_summary(results, args.dry_run, not_landed)
+
+    finally:
+        conn.close()
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-
-    configure_archive(args.parquet_dir, args.parquet_format)
 
     load_env()
 
@@ -1520,43 +1753,14 @@ def main(argv: list[str] | None = None) -> None:
     if not db_url:
         sys.exit('DATABASE_URL_UNPOOLED / DATABASE_URL not set')
 
-    conn = connect_with_retry(db_url)
-    results: dict[str, DayResult] = {}
-    try:
-        if args.all_unenriched:
-            dates = list_work_dates(conn, 'pending')
-            if not dates:
-                # Nothing pending — fall through to the global refit so the
-                # caller (make enrich) still gets a stats refresh.
-                latest_date = detect_latest_date()
-                print(
-                    f'[enrich] --all-unenriched: 0 dates pending '
-                    f'(latest parquet: {latest_date})'
-                )
-            else:
-                print(
-                    f'[enrich] --all-unenriched: {len(dates)} dates to process'
-                )
-                for d in dates:
-                    results[d] = enrich_one_date(conn, d)
-                latest_date = dates[-1]
-        else:
-            latest_date = args.date or detect_latest_date()
-            # Validate format.
-            DateType.fromisoformat(latest_date)
-            print(f'[enrich] target date: {latest_date}')
-            results[latest_date] = enrich_one_date(conn, latest_date)
-
-        # Third pass — per-ticker inversion-quality refit (Phase 2 of the
-        # inversion-quality filter). Runs against whatever is in
-        # lottery_finder_fires regardless of whether today's main pass ran.
-        # Stamp the sim CSV with the most recent date we touched.
-        sim_csv = Path(f'docs/tmp/lottery-quality-sim-{latest_date}.csv')
-        refit_ticker_inversion_stats(conn, sim_csv_path=sim_csv)
-        print_run_summary(results)
-
-    finally:
-        conn.close()
+    if not args.r2:
+        configure_archive(args.parquet_dir, args.parquet_format)
+        run(args, db_url, None)
+        return
+    # load_env came first: the R2_* values are normally in .env.local.
+    with r2_reader() as reader:
+        configure_archive(reader.cache_dir, args.parquet_format)
+        run(args, db_url, reader)
 
 
 if __name__ == '__main__':

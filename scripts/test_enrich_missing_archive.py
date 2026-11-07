@@ -111,7 +111,9 @@ class FakeDb:
             day = params[0]
             if 'realized_flow_inversion_pct IS NULL' in sql:
                 return []  # no flow-inversion work in these tests
-            return [(IDS[day], _chain(day), _entry(day), 1.0)]
+            # (id, chain, entry time, entry price, writable): bot_eod reads no
+            # had_outcome, and the write guard lets the row through.
+            return [(IDS[day], _chain(day), _entry(day), 1.0, True)]
         return []  # net-flow, ticker-quality refit: nothing
 
     def written_ids(self) -> set[int]:
@@ -188,7 +190,12 @@ def test_parquet_dir_is_required(
     with pytest.raises(SystemExit) as exc:
         parse_args(['--date', '2026-07-23'])
     assert exc.value.code == 2
-    assert '--parquet-dir' in capsys.readouterr().err
+    # One of two sources (--parquet-dir or --r2), so argparse's group message
+    # names the flag.
+    assert (
+        'one of the arguments --parquet-dir --r2 is required'
+        in capsys.readouterr().err
+    )
 
 
 @pytest.mark.parametrize('parse_args', PARSERS)

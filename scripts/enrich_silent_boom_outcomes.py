@@ -43,17 +43,28 @@ column is added, then revert to the default flow. Its writes are the
 source's like any other, so the Bot-EOD archive no longer re-writes a row
 that already holds a peak.
 
+`--select {pending,empty,all}` (default pending) picks the alerts the run
+works on and, with --all-unenriched, the dates (see OUTCOME_WORK). It has no
+meaning together with --backfill-mode, which has its own select, so only
+pending goes with that flag. `--dry-run` computes everything and writes
+nothing, and every summary line says "would".
+
 Usage:
     ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes.py --parquet-dir <bot-eod-dir>
     ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes.py \\
         --parquet-dir <bot-eod-dir> --date 2026-05-07
     ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes.py \\
         --parquet-dir <bot-eod-dir> --backfill-mode
+    ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes.py \\
+        --r2 --all-unenriched --select all --dry-run
 
+The tape comes from one of two places, and exactly one is required.
 --parquet-dir is the Bot-EOD archive, the directory of
 {date}-trades.parquet files (no default; the Makefile passes its
-PARQUET_DIR). For the Full Tape archive use
-scripts/enrich_silent_boom_outcomes_fulltape.py.
+PARQUET_DIR). --r2 reads the Full Tape lake in R2 instead (the four R2_*
+variables, from the environment or .env.local), one day at a time through a
+temp directory that is deleted when the run ends. For a local Full Tape
+archive use scripts/enrich_silent_boom_outcomes_fulltape.py.
 """
 
 from __future__ import annotations
@@ -62,9 +73,13 @@ import argparse
 import math
 import os
 import re
+import shutil
 import sys
+import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
@@ -166,13 +181,20 @@ def outcome_work_all(source: str, alias: str = '', version: str = '%s') -> str:
     return OUTCOME_WORK_ALL[source].format(a=alias, v=version)
 
 
+def write_guard() -> tuple[str, tuple]:
+    """SOURCE_TAG's write guard (the text its priced UPDATE and its stamp
+    carry) and the parameters its placeholders take, in order. SOURCE_TAG is
+    read at call time, so callers run configure_archive first; only the
+    tape's guard carries a parameter (the version)."""
+    params = (OUTCOME_VERSION,) if SOURCE_TAG == TAPE_SOURCE else ()
+    return outcome_work_all(SOURCE_TAG), params
+
+
 def outcome_work(select: Select) -> tuple[str, tuple]:
     """The WHERE predicate for `select` and the parameters its placeholders
-    take, in order. 'all' follows SOURCE_TAG, read at call time, so callers
-    run configure_archive first; only the tape's carries one (the version)."""
+    take, in order. 'all' is the write guard of SOURCE_TAG's source."""
     if select == 'all':
-        params = (OUTCOME_VERSION,) if SOURCE_TAG == TAPE_SOURCE else ()
-        return outcome_work_all(SOURCE_TAG), params
+        return write_guard()
     return OUTCOME_WORK[select].format(a=''), ()
 
 
@@ -229,8 +251,11 @@ def fetch_unenriched(
     select: Select = 'pending',
 ) -> list[dict]:
     """The date's alerts that `select` names (see OUTCOME_WORK and
-    OUTCOME_WORK_ALL; 'all' follows SOURCE_TAG). For the Full Tape each alert
-    also carries whether it already holds an outcome (`had_outcome`).
+    OUTCOME_WORK_ALL; 'all' follows SOURCE_TAG). Each alert also carries
+    whether SOURCE_TAG's write guard lets a write touch it (`writable`: the
+    guard evaluated on the row, so a dry run can count what a real run would
+    write), and for the Full Tape whether it already holds an outcome
+    (`had_outcome`).
 
     Standard mode: the select, 'pending' by default (enriched_at IS NULL, the
     nightly flow).
@@ -247,19 +272,22 @@ def fetch_unenriched(
         )
     tape = SOURCE_TAG == TAPE_SOURCE
     had_outcome = ', peak_ceiling_pct IS NOT NULL AS had_outcome' if tape else ''
+    guard, guard_params = write_guard()
     if backfill_mode:
         work, work_params = BACKFILL_WORK, ()
     else:
         work, work_params = outcome_work(select)
     cur = conn.cursor()
+    # Placeholders in order: the guard's (the select list), the day, the work's.
     cur.execute(
         f"""
-        SELECT id, option_chain_id, bucket_ct, entry_price{had_outcome}
+        SELECT id, option_chain_id, bucket_ct, entry_price,
+               ({guard}) AS writable{had_outcome}
         FROM silent_boom_alerts
         WHERE date = %s AND {work}
         ORDER BY bucket_ct ASC
         """,
-        (target_date, *work_params),
+        (*guard_params, target_date, *work_params),
     )
     rows = cur.fetchall()
     return [
@@ -268,7 +296,8 @@ def fetch_unenriched(
             'chain': r[1],
             'bucket_ct': pd.Timestamp(r[2]),
             'entry_price': float(r[3]),
-            'had_outcome': bool(r[4]) if tape else False,
+            'writable': bool(r[4]),
+            'had_outcome': bool(r[5]) if tape else False,
         }
         for r in rows
     ]
@@ -587,8 +616,10 @@ def enrich_one_date(
     by that source's work predicate, so the counts are what the database
     wrote. The Full Tape replaces an outcome it can price and keeps one it
     cannot; Bot-EOD only fills (see the module docstring). With dry_run
-    nothing is written and the counts are what would be, the replaced and
-    kept ones read from the fetch (`had_outcome`).
+    nothing is written and the counts are what would be: the fetch's
+    `writable` keeps out the alerts the source's guard would refuse (a
+    --backfill-mode alert that already holds a peak, for Bot-EOD), and
+    `had_outcome` gives the replaced and kept ones.
 
     A day with work to do whose archive file is missing is skipped: one line
     names it (warn_missing_archive) and nothing is written for it, so its
@@ -620,10 +651,11 @@ def enrich_one_date(
     unpriced_ids: list[int] = []
     skipped_chain_missing = 0
     skipped_no_outcome = 0
-    # From the fetch, for a dry run: priced alerts that hold an outcome (would
-    # be replaced) and unpriced ones that do (would be kept).
-    priced_with_outcome = 0
-    unpriced_with_outcome = 0
+    # From the fetch, for a dry run: what the guarded statements would touch.
+    # Only a writable alert counts, as the guard's WHERE would let only it
+    # through: a priced one is written (and replaces an outcome it holds), an
+    # unpriced one is stamped (and kept if it holds one).
+    would_write = would_replace = would_stamp = would_keep = 0
     for a in alerts:
         chain_df = chain_index.get(a['chain'])
         res = (
@@ -637,18 +669,22 @@ def enrich_one_date(
             else:
                 skipped_no_outcome += 1
             unpriced_ids.append(a['id'])
-            unpriced_with_outcome += a['had_outcome']
+            if a['writable']:
+                would_keep += a['had_outcome']
+                would_stamp += not a['had_outcome']
             continue
         peak, mtp, r30, r60, r120, eod, trail30 = res
         updates.append((a['id'], peak, mtp, r30, r60, r120, eod, trail30))
-        priced_with_outcome += a['had_outcome']
+        if a['writable']:
+            would_write += 1
+            would_replace += a['had_outcome']
 
     result = DayResult(alerts_selected=len(alerts))
     if dry_run:
-        result.outcomes_written = len(updates)
-        result.alerts_replaced = priced_with_outcome
-        result.stamped_no_outcome = len(unpriced_ids) - unpriced_with_outcome
-        result.alerts_kept = unpriced_with_outcome
+        result.outcomes_written = would_write
+        result.alerts_replaced = would_replace
+        result.stamped_no_outcome = would_stamp
+        result.alerts_kept = would_keep
     else:
         result.outcomes_written, result.alerts_replaced = update_outcomes(
             conn, updates, SOURCE_TAG
@@ -675,21 +711,42 @@ def alerts_updated(result: DayResult) -> int:
     return result.outcomes_written + result.stamped_no_outcome
 
 
-def print_run_summary(results: dict[str, DayResult]) -> None:
+def print_run_summary(
+    results: dict[str, DayResult],
+    dry_run: bool = False,
+    not_landed: list[str] | None = None,
+) -> None:
     """Days enriched, alerts written, and the days skipped for a missing
-    archive (also on stderr, so they can't scroll past unseen)."""
+    archive or, with --r2, not landed in the lake (both also on stderr, so
+    they can't scroll past unseen). On a dry run nothing was written, so
+    every count reads "would"."""
     missing = [d for d, r in results.items() if r.archive_missing]
     done = [r for r in results.values() if r.alerts_selected]
-    print(
-        f'[enrich-silent-boom] summary: {len(done)} day(s) enriched, '
-        f'{sum(alerts_updated(r) for r in done):,} alerts updated; '
-        f'{len(missing)} day(s) skipped for a missing archive'
-    )
-    print(
-        f'[enrich-silent-boom] summary: '
-        f'alerts_replaced={sum(r.alerts_replaced for r in done):,} '
-        f'alerts_kept={sum(r.alerts_kept for r in done):,}'
-    )
+    updated = sum(alerts_updated(r) for r in done)
+    replaced = sum(r.alerts_replaced for r in done)
+    kept = sum(r.alerts_kept for r in done)
+    if dry_run:
+        head = '[enrich-silent-boom] summary (dry run, nothing written):'
+        print(
+            f'{head} {len(done)} day(s) would be enriched, '
+            f'{updated:,} alerts would be updated; '
+            f'{len(missing)} day(s) skipped for a missing archive'
+        )
+        print(
+            f'{head} alerts_would_replace={replaced:,} '
+            f'alerts_would_keep={kept:,}'
+        )
+    else:
+        print(
+            f'[enrich-silent-boom] summary: {len(done)} day(s) enriched, '
+            f'{updated:,} alerts updated; '
+            f'{len(missing)} day(s) skipped for a missing archive'
+        )
+        print(
+            f'[enrich-silent-boom] summary: '
+            f'alerts_replaced={replaced:,} '
+            f'alerts_kept={kept:,}'
+        )
     if missing:
         line = (
             '[enrich-silent-boom] skipped (archive missing, alerts left '
@@ -697,15 +754,33 @@ def print_run_summary(results: dict[str, DayResult]) -> None:
         )
         print(line)
         print(line, file=sys.stderr)
+    if not_landed:
+        line = (
+            '[enrich-silent-boom] skipped (not landed in R2, alerts left '
+            f'unenriched): {format_dates(not_landed)}'
+        )
+        print(line)
+        print(line, file=sys.stderr)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
         '--parquet-dir',
         type=existing_dir,
-        required=True,
         help='Bot-EOD archive: the directory of {date}-trades.parquet files.',
+    )
+    source.add_argument(
+        '--r2',
+        action='store_true',
+        help=(
+            'Read the Full Tape from the R2 lake (R2_ENDPOINT_URL, '
+            'R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_FULLTAPE), '
+            'one day at a time through a temp directory. --from-date / '
+            '--to-date then pick among the landed days that have alerts to '
+            'enrich.'
+        ),
     )
     parser.add_argument('--date', help='YYYY-MM-DD; single-day mode')
     parser.add_argument('--from-date')
@@ -717,50 +792,148 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             'Gate the row fetch on realized_trail30_10_pct IS NULL instead '
             'of enriched_at IS NULL. Use once after migration #150 to '
             'fill the new column on previously-enriched rows without '
-            'resetting enriched_at on the table.'
+            'resetting enriched_at on the table. Takes no --select other '
+            'than pending.'
         ),
     )
     parser.add_argument(
         '--all-unenriched',
         action='store_true',
         help=(
-            'Enumerate dates from silent_boom_alerts WHERE enriched_at IS NULL '
-            '(or realized_trail30_10_pct IS NULL with --backfill-mode) and '
-            'process only those. Overrides --date / --from-date / --to-date. '
+            'Enumerate dates from silent_boom_alerts with outcome work for '
+            '--select (pending, the default: enriched_at IS NULL; with '
+            '--backfill-mode, realized_trail30_10_pct IS NULL) and process '
+            'only those; with --r2, only the dates the lake holds (the rest '
+            'are listed at the end). Overrides --date / --from-date / '
+            '--to-date. '
             "Used by `make enrich` so post-nightly manual backfills don't get "
             'stranded with enriched_at NULL.'
         ),
     )
-    return parser.parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> None:
-    args = parse_args(argv)
-
-    configure_archive(args.parquet_dir, 'trades')
-
-    load_env()
-    db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ.get(
-        'DATABASE_URL'
+    parser.add_argument(
+        '--select',
+        choices=['pending', 'empty', 'all'],
+        default='pending',
+        help=(
+            'Which alerts the run works on: pending = enriched_at IS NULL '
+            '(default); empty = marked enriched with no outcome and no tag; '
+            'all = every alert the source may still write (Full Tape: every '
+            'alert it has not examined at this version, whatever another '
+            'writer left; Bot-EOD: alerts nobody has filled). Not with '
+            '--backfill-mode.'
+        ),
     )
-    if not db_url:
-        sys.exit('DATABASE_URL_UNPOOLED / DATABASE_URL not set')
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Compute and report what would be written; write nothing.',
+    )
+    args = parser.parse_args(argv)
+    if args.backfill_mode and args.select != 'pending':
+        parser.error(
+            f'--select {args.select} cannot be used with --backfill-mode: '
+            'backfill mode has its own select (only pending goes with it)'
+        )
+    return args
+
+
+@contextmanager
+def r2_reader():
+    """A TapeReader on a fresh temp directory, for the length of the run.
+
+    Leaving the block, however it ends, closes the reader (which deletes every
+    day it cached) and removes the directory. A TapeReadError from from_env or
+    from anything inside the block ends the run with a non-zero exit; its
+    message holds a key, a count or a variable name, never a value. Imported
+    here, so importing this module never loads boto3.
+    """
+    from _tape_reader import TapeReader, TapeReadError
+
+    cache_dir = Path(tempfile.mkdtemp(prefix='enrich-'))
+    reader = None
+    try:
+        reader = TapeReader.from_env(cache_dir)
+        yield reader
+    except TapeReadError as exc:
+        sys.exit(f'[enrich-silent-boom] R2 tape read failed: {exc}')
+    finally:
+        try:
+            if reader is not None:
+                reader.close()
+        finally:
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+
+def work_dates(conn, args: argparse.Namespace) -> list[str]:
+    """Dates with outcome work for the run (--backfill-mode has its own)."""
+    if args.backfill_mode:
+        return list_backfill_dates(conn)
+    return list_work_dates(conn, args.select)
+
+
+def select_dates(conn, args: argparse.Namespace, reader) -> tuple[list[str], list[str]]:
+    """The dates to process, and the dates with work the lake does not hold.
+
+    --all-unenriched overrides --date and the range. With --r2 a range names
+    landed days that have alerts to enrich: the lake holds every session
+    since the tape began, and a day with nothing to do is not worth a
+    download of up to 2 GB.
+    """
+    if args.date and not args.all_unenriched:
+        return [args.date], []
+    if reader is None:
+        if args.all_unenriched:
+            return work_dates(conn, args), []
+        return list_parquet_dates(args.from_date, args.to_date), []
+    landed = {day.isoformat() for day in reader.landed_days()}
+    dates = work_dates(conn, args)
+    if not args.all_unenriched:
+        dates = [
+            d
+            for d in dates
+            if (not args.from_date or d >= args.from_date)
+            and (not args.to_date or d <= args.to_date)
+        ]
+    return [d for d in dates if d in landed], [d for d in dates if d not in landed]
+
+
+def enrich_day(conn, target_date: str, args: argparse.Namespace, reader) -> DayResult:
+    """One date. With --r2 its tape is fetched into the reader's cache first
+    and released afterwards, so one day is on disk at a time."""
+    if reader is None:
+        return enrich_one_date(
+            conn,
+            target_date,
+            select=args.select,
+            dry_run=args.dry_run,
+            backfill_mode=args.backfill_mode,
+        )
+    day = date.fromisoformat(target_date)
+    # No object (None) leaves no file, so enrich_one_date takes its
+    # missing-archive skip: the day is named, counted and left alone.
+    reader.fetch_day(day)
+    try:
+        return enrich_one_date(
+            conn,
+            target_date,
+            select=args.select,
+            dry_run=args.dry_run,
+            backfill_mode=args.backfill_mode,
+        )
+    finally:
+        reader.release(day)
+
+
+def run(args: argparse.Namespace, db_url: str, reader) -> None:
+    """The date loop and the summary. `reader` is None for --parquet-dir."""
     conn = connect_with_retry(db_url)
     try:
-        if args.all_unenriched:
-            dates = (
-                list_backfill_dates(conn)
-                if args.backfill_mode
-                else list_work_dates(conn, 'pending')
-            )
-        else:
-            dates = (
-                [args.date]
-                if args.date
-                else list_parquet_dates(args.from_date, args.to_date)
-            )
+        dates, not_landed = select_dates(conn, args, reader)
         mode_label = 'backfill' if args.backfill_mode else 'standard'
-        scope = 'all-unenriched' if args.all_unenriched else 'parquet-list'
+        if args.all_unenriched:
+            scope = 'all-unenriched'
+        else:
+            scope = 'lake-list' if reader is not None else 'parquet-list'
         print(
             f'[enrich-silent-boom] {len(dates)} dates '
             f'(mode={mode_label}, scope={scope})'
@@ -769,19 +942,45 @@ def main(argv: list[str] | None = None) -> None:
         results: dict[str, DayResult] = {}
         t0 = time.time()
         for date_str in dates:
-            results[date_str] = enrich_one_date(
-                conn, date_str, backfill_mode=args.backfill_mode
-            )
+            results[date_str] = enrich_day(conn, date_str, args, reader)
 
         done = [r for r in results.values() if r.alerts_selected]
-        print(
-            f'\n[enrich-silent-boom] DONE '
-            f'updated={sum(alerts_updated(r) for r in done):,} '
-            f'in {time.time() - t0:.1f}s'
-        )
-        print_run_summary(results)
+        updated = sum(alerts_updated(r) for r in done)
+        elapsed = time.time() - t0
+        if args.dry_run:
+            print(
+                f'\n[enrich-silent-boom] DONE (dry run, nothing written) '
+                f'would update {updated:,} in {elapsed:.1f}s'
+            )
+        else:
+            print(
+                f'\n[enrich-silent-boom] DONE '
+                f'updated={updated:,} '
+                f'in {elapsed:.1f}s'
+            )
+        print_run_summary(results, args.dry_run, not_landed)
     finally:
         conn.close()
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+
+    load_env()
+    db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ.get(
+        'DATABASE_URL'
+    )
+    if not db_url:
+        sys.exit('DATABASE_URL_UNPOOLED / DATABASE_URL not set')
+
+    if not args.r2:
+        configure_archive(args.parquet_dir, 'trades')
+        run(args, db_url, None)
+        return
+    # load_env came first: the R2_* values are normally in .env.local.
+    with r2_reader() as reader:
+        configure_archive(reader.cache_dir, 'fulltape')
+        run(args, db_url, reader)
 
 
 if __name__ == '__main__':

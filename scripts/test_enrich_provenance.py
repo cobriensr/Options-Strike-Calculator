@@ -201,11 +201,13 @@ def fire_row(
     chain: str,
     had_outcome: bool = False,
     entry_price: Decimal = Decimal('1.0000'),
+    writable: bool = True,
 ) -> tuple:
     # entry_price is NUMERIC: psycopg2 hands back a Decimal (which can be NaN
-    # or Infinity). The fifth column (peak_ceiling_pct IS NOT NULL) is selected
-    # for the fulltape source only.
-    return (fire_id, chain, ENTRY, entry_price, had_outcome)
+    # or Infinity). The fifth column is the source's write guard evaluated on
+    # the row (every source selects it); the sixth (peak_ceiling_pct IS NOT
+    # NULL) is selected for the fulltape source only.
+    return (fire_id, chain, ENTRY, entry_price, writable, had_outcome)
 
 
 def flow_fire_row(
@@ -337,15 +339,25 @@ class FakeDb:
             if self.stamp_returning is not None:
                 return self.stamp_returning(ids)
             had = self.had_outcome_ids()
-            return [(i in had,) for i in ids]
+            refused = self.refused_ids()
+            return [(i in had,) for i in ids if i not in refused]
         return []
 
     def had_outcome_ids(self) -> set[int]:
-        return {r[0] for r in self.fires if len(r) > 4 and r[4]}
+        return {r[0] for r in self.fires if len(r) > 5 and r[5]}
+
+    def refused_ids(self) -> set[int]:
+        """Served rows the source's write guard refuses (the fifth column): the
+        database leaves them out of every UPDATE's WHERE, so RETURNING and the
+        rowcount never include them. An id the fake never served passes."""
+        return {r[0] for r in self.fires if not r[4]}
 
     def rowcount_for(self, sql: str, params: tuple | None) -> int:
         if sql.startswith('UPDATE') and params:
-            return len(params[-1]) if self.stamp_rowcount is None else self.stamp_rowcount
+            if self.stamp_rowcount is not None:
+                return self.stamp_rowcount
+            refused = self.refused_ids()
+            return len([i for i in params[-1] if i not in refused])
         return 0
 
     def execute_values(self, _cur, sql, rows, template=None, **kwargs):
@@ -356,11 +368,13 @@ class FakeDb:
             return None
         if self.returning is not None:
             return self.returning(rows)
+        refused = self.refused_ids()
+        written = [r for r in rows if r[0] not in refused]
         if 'prior.peak_ceiling_pct IS NOT NULL' in sql:
             # The tape's priced UPDATE also returns the row's prior outcome.
             had = self.had_outcome_ids()
-            return [(r[0], r[0] in had) for r in rows]
-        return [(r[0],) for r in rows]
+            return [(r[0], r[0] in had) for r in written]
+        return [(r[0],) for r in written]
 
     # what the tests ask of it
     def outcome_writes(self) -> list[ValuesWrite]:
@@ -517,11 +531,14 @@ def test_all_work_follows_the_source(source: str, as_source) -> None:
         for sql in (fetch_sql, dates_sql):
             assert 'outcome_tape_version' not in sql
 
-    # 'pending' and 'empty' do not depend on the source.
+    # 'pending' and 'empty' do not depend on the source. (The fetch's select
+    # list carries the source's write guard as `writable`, so only its WHERE is
+    # the work.)
     for select in ('pending', 'empty'):
         lottery.fetch_unenriched(db, DAY, select)
-        assert PREDICATES[select] in db.executed[-1][0]
-        assert 'outcome_tape_version' not in db.executed[-1][0]
+        fetch_where = db.executed[-1][0].split('WHERE date = %s AND ', 1)[1].split(' ORDER BY')[0]
+        assert fetch_where == PREDICATES[select]
+        assert 'outcome_tape_version' not in fetch_where
         lottery.list_work_dates(db, select)
         assert f'WHERE {PREDICATES[select]}' in db.executed[-1][0]
         assert 'outcome_tape_version' not in db.executed[-1][0]
@@ -597,11 +614,13 @@ def test_tape_work_carries_the_version_gate_ahead_of_the_bounds(as_source) -> No
     lottery.list_work_dates(db, 'all')
     assert db.executed[-1][1] == (lottery.OUTCOME_VERSION,)
 
+    # The fetch's own gate (the `writable` column, in the select list) comes
+    # before the day; the work's gate, for 'all', after it.
     lottery.fetch_unenriched(db, DAY, 'all')
-    assert db.executed[-1][1] == (DAY, lottery.OUTCOME_VERSION)
-    # pending and empty carry no gate.
+    assert db.executed[-1][1] == (lottery.OUTCOME_VERSION, DAY, lottery.OUTCOME_VERSION)
+    # pending and empty carry the column's gate only.
     lottery.fetch_unenriched(db, DAY, 'pending')
-    assert db.executed[-1][1] == (DAY,)
+    assert db.executed[-1][1] == (lottery.OUTCOME_VERSION, DAY)
 
 
 def test_the_tape_gate_selects_unexamined_and_older_rows_only(
@@ -653,7 +672,7 @@ def test_a_version_bump_reaches_every_tape_gate(
     lottery.enrich_one_date(db, DAY, select='all')
 
     fetch_params = next(p for s, p in db.executed if 'entry_time_ct, entry_price' in s)
-    assert fetch_params == (DAY, 2)
+    assert fetch_params == (2, DAY, 2)  # the column's gate, the day, the work's gate
     (write,) = db.outcome_writes()
     # The priced UPDATE's gate reads the version carried in its VALUES row.
     assert 'f.outcome_tape_version < v.version' in write.sql
@@ -1510,6 +1529,146 @@ def test_dry_run_counts_unpriced_fires_without_an_outcome_as_tagged(
     assert db.commits == 0
 
 
+# The write guard as a fetched column. A dry run counts only the rows the
+# guarded statements would touch, so the fetch evaluates the guard on each row:
+# the source's own predicate, the text its priced UPDATE and its stamp carry.
+
+
+def test_fetch_selects_the_write_guard_as_a_column(as_source) -> None:
+    # The tape binds the version in the select list, ahead of the day.
+    as_source('fulltape')
+    db = FakeDb(fires=[fire_row(1, TSLA, had_outcome=True), fire_row(2, AAPL, writable=False)])
+    fires = lottery.fetch_unenriched(db, DAY)
+    sql, params = db.executed[-1]
+    assert sql.startswith(
+        'SELECT id, option_chain_id, entry_time_ct, entry_price, '
+        f'({ALL_TAPE}) AS writable, peak_ceiling_pct IS NOT NULL AS had_outcome '
+        'FROM lottery_finder_fires'
+    )
+    assert params == (lottery.OUTCOME_VERSION, DAY)
+    assert [(f.id, f.writable, f.had_outcome) for f in fires] == [(1, True, True), (2, False, False)]
+
+    as_source('bot_eod')
+    db = FakeDb(fires=[fire_row(1, TSLA), fire_row(2, AAPL, writable=False)])
+    fires = lottery.fetch_unenriched(db, DAY)
+    sql, params = db.executed[-1]
+    assert sql.startswith(
+        f'SELECT id, option_chain_id, entry_time_ct, entry_price, ({ALL}) AS writable '
+        'FROM lottery_finder_fires'
+    )
+    assert params == (DAY,)
+    assert [(f.id, f.writable, f.had_outcome) for f in fires] == [(1, True, False), (2, False, False)]
+
+
+class SqliteConn:
+    """The psycopg2 cursor surface over stdlib sqlite3, which speaks the guards'
+    SQL (IS NULL, OR, <, AND): `%s` placeholders become `?`. The fake cannot
+    evaluate a WHERE or a select-list expression; this can."""
+
+    def __init__(self, con: sqlite3.Connection) -> None:
+        self.cur = con.cursor()
+
+    def cursor(self) -> SqliteConn:
+        return self
+
+    def execute(self, sql: str, params: tuple = ()) -> None:
+        self.cur.execute(sql.replace('%s', '?'), params)
+
+    def fetchall(self) -> list:
+        return self.cur.fetchall()
+
+
+# (id, enriched_at, peak_ceiling_pct, outcome_source, outcome_tape_version): the
+# writers' marks a row can carry, and who may write it.
+GUARD_ROWS = [
+    (1, None, None, None, None),  # untouched: both
+    (2, None, 50, 'cron', None),  # a cron's outcome: the tape only (final say)
+    (3, None, None, 'bot_eod', None),  # tagged unpriced by bot_eod: the tape only
+    (4, None, 7, 'fulltape', 1),  # examined at this version: neither
+    (5, None, None, None, 0),  # examined by an older pass: both
+]
+GUARD_WRITABLE = {
+    'fulltape': {1: True, 2: True, 3: True, 4: False, 5: True},
+    'bot_eod': {1: True, 2: False, 3: False, 4: False, 5: True},
+}
+
+
+@pytest.mark.parametrize('source', GUARD_WRITABLE)
+def test_the_writable_column_evaluates_the_guard_the_writes_carry(
+    source: str, as_source
+) -> None:
+    # Real SQL: the production fetch, run on rows that carry each writer's marks.
+    as_source(source)
+    con = sqlite3.connect(':memory:')
+    con.execute(
+        'CREATE TABLE lottery_finder_fires (id INTEGER PRIMARY KEY, date TEXT, '
+        'option_chain_id TEXT, entry_time_ct TEXT, entry_price REAL, inserted_at INTEGER, '
+        'enriched_at TEXT, peak_ceiling_pct REAL, outcome_source TEXT, '
+        'outcome_tape_version INTEGER)'
+    )
+    con.executemany(
+        'INSERT INTO lottery_finder_fires VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [(i, DAY, TSLA, ENTRY.isoformat(), 1.0, i, *rest) for i, *rest in GUARD_ROWS],
+    )
+
+    fires = lottery.fetch_unenriched(SqliteConn(con), DAY, 'pending')
+
+    assert {f.id: f.writable for f in fires} == GUARD_WRITABLE[source]
+    if source == 'fulltape':
+        assert {f.id: f.had_outcome for f in fires} == {1: False, 2: True, 3: False, 4: True, 5: False}
+
+
+def test_dry_run_counts_only_the_rows_the_write_guard_lets_through(
+    fulltape: Path, make_db
+) -> None:
+    rows = [
+        fire_row(1, TSLA, had_outcome=True),  # priced, guard open, holds one: replaced
+        fire_row(2, QQQ, writable=False),  # priced, guard shut: counted nowhere
+        fire_row(3, AAPL),  # unpriced, guard open, none: tagged
+        fire_row(4, NVDA, had_outcome=True, writable=False),  # unpriced, guard shut: not kept
+        fire_row(5, NVDA, had_outcome=True),  # unpriced, guard open, holds one: kept
+    ]
+
+    dry = lottery.enrich_one_date(make_db(fires=rows), DAY, select='all', dry_run=True)
+    wet = lottery.enrich_one_date(make_db(fires=list(rows)), DAY, select='all')
+
+    assert dry == wet
+    assert (
+        dry.fires_selected,
+        dry.outcomes_written,
+        dry.outcomes_replaced,
+        dry.stamped_no_outcome,
+        dry.outcomes_kept,
+    ) == (5, 1, 1, 1, 1)
+
+
+def test_bot_eod_dry_run_counts_only_the_rows_the_write_guard_lets_through(
+    archive: Path, archive_globals: None, make_db
+) -> None:
+    # Fill only: a row the guard lets through holds no outcome, so nothing is
+    # replaced or kept, and a row that already holds a peak is counted nowhere.
+    write_tape(archive, 'trades')
+    lottery.configure_archive(archive, 'trades')
+    rows = [
+        fire_row(1, TSLA),  # priced, guard open: written
+        fire_row(2, QQQ, writable=False),  # priced, already holds a peak: nowhere
+        fire_row(3, AAPL),  # unpriced, guard open: tagged
+        fire_row(4, NVDA, writable=False),  # unpriced, already holds a peak: nowhere
+    ]
+
+    dry = lottery.enrich_one_date(make_db(fires=rows), DAY, select='all', dry_run=True)
+    wet = lottery.enrich_one_date(make_db(fires=list(rows)), DAY, select='all')
+
+    assert dry == wet
+    assert (
+        dry.fires_selected,
+        dry.outcomes_written,
+        dry.outcomes_replaced,
+        dry.stamped_no_outcome,
+        dry.outcomes_kept,
+    ) == (4, 1, 0, 1, 0)
+
+
 # ── a write that rejects ───────────────────────────────────────
 
 # (fails_on: text that identifies the statement the database drops,
@@ -1722,11 +1881,13 @@ def alert_row(
     chain: str,
     had_outcome: bool = False,
     entry_price: Decimal = Decimal('1.0000'),
+    writable: bool = True,
 ) -> tuple:
-    # (id, option_chain_id, bucket_ct, entry_price[, peak_ceiling_pct IS NOT
-    # NULL]): entry_price is NUMERIC, so psycopg2 hands back a Decimal. The
-    # fifth column is selected for the fulltape source only.
-    return (alert_id, chain, ENTRY, entry_price, had_outcome)
+    # (id, option_chain_id, bucket_ct, entry_price, writable[, peak_ceiling_pct
+    # IS NOT NULL]): entry_price is NUMERIC, so psycopg2 hands back a Decimal;
+    # writable is the source's write guard evaluated on the row; the sixth
+    # column is selected for the fulltape source only.
+    return (alert_id, chain, ENTRY, entry_price, writable, had_outcome)
 
 
 @pytest.fixture
@@ -1866,11 +2027,14 @@ def test_sb_all_work_follows_the_source(source: str, sb_as_source) -> None:
         for sql in (fetch_sql, dates_sql):
             assert 'outcome_tape_version' not in sql
 
-    # 'pending' and 'empty' do not depend on the source.
+    # 'pending' and 'empty' do not depend on the source. (The fetch's select
+    # list carries the source's write guard as `writable`, so only its WHERE is
+    # the work.)
     for select in ('pending', 'empty'):
         sb.fetch_unenriched(db, DAY, select=select)
-        assert PREDICATES[select] in db.executed[-1][0]
-        assert 'outcome_tape_version' not in db.executed[-1][0]
+        fetch_where = db.executed[-1][0].split('WHERE date = %s AND ', 1)[1].split(' ORDER BY')[0]
+        assert fetch_where == PREDICATES[select]
+        assert 'outcome_tape_version' not in fetch_where
         sb.list_work_dates(db, select)
         assert f'WHERE {PREDICATES[select]}' in db.executed[-1][0]
         assert 'outcome_tape_version' not in db.executed[-1][0]
@@ -1885,13 +2049,16 @@ def test_sb_fetch_unenriched_defaults_to_pending() -> None:
 
 def test_sb_fetch_unenriched_reads_the_row_with_its_outcome_flag(sb_as_source) -> None:
     # The fulltape fetch also says whether the alert holds an outcome (it feeds
-    # a dry run's replaced and kept counts); bot_eod reads four columns.
+    # a dry run's replaced and kept counts); bot_eod does not read it.
     sb_as_source('fulltape')
     db = FakeDb(fires=[alert_row(1, TSLA, had_outcome=True), alert_row(2, AAPL)])
     alerts = sb.fetch_unenriched(db, DAY, select='all')
     assert db.executed[-1][0].startswith(
         'SELECT id, option_chain_id, bucket_ct, entry_price, '
-        'peak_ceiling_pct IS NOT NULL AS had_outcome FROM silent_boom_alerts'
+    )
+    assert db.executed[-1][0].endswith(
+        'peak_ceiling_pct IS NOT NULL AS had_outcome FROM silent_boom_alerts '
+        'WHERE date = %s AND ' + ALL_TAPE + ' ORDER BY bucket_ct ASC'
     )
     assert [(a['id'], a['chain'], a['had_outcome']) for a in alerts] == [
         (1, TSLA, True),
@@ -1902,11 +2069,9 @@ def test_sb_fetch_unenriched_reads_the_row_with_its_outcome_flag(sb_as_source) -
     assert alerts[0]['bucket_ct'] == pd.Timestamp(ENTRY)
 
     sb_as_source('bot_eod')
-    plain = FakeDb(fires=[(1, TSLA, ENTRY, Decimal('1.0'))])
+    plain = FakeDb(fires=[(1, TSLA, ENTRY, Decimal('1.0'), True)])
     (alert,) = sb.fetch_unenriched(plain, DAY, select='all')
-    assert plain.executed[-1][0].startswith(
-        'SELECT id, option_chain_id, bucket_ct, entry_price FROM silent_boom_alerts'
-    )
+    assert 'had_outcome' not in plain.executed[-1][0]
     assert alert['had_outcome'] is False
 
 
@@ -1964,11 +2129,15 @@ def test_sb_tape_work_carries_the_version_gate_ahead_of_the_bounds(sb_as_source)
     sb.list_work_dates(db, 'all')
     assert db.executed[-1][1] == (sb.OUTCOME_VERSION,)
 
+    # The fetch's own gate (the `writable` column, in the select list) comes
+    # before the day; the work's gate, for 'all', after it.
     sb.fetch_unenriched(db, DAY, select='all')
-    assert db.executed[-1][1] == (DAY, sb.OUTCOME_VERSION)
-    # pending and empty carry no gate.
+    assert db.executed[-1][1] == (sb.OUTCOME_VERSION, DAY, sb.OUTCOME_VERSION)
+    # pending and empty carry the column's gate only.
     sb.fetch_unenriched(db, DAY, select='pending')
-    assert db.executed[-1][1] == (DAY,)
+    assert db.executed[-1][1] == (sb.OUTCOME_VERSION, DAY)
+    sb.fetch_unenriched(db, DAY, True)
+    assert db.executed[-1][1] == (sb.OUTCOME_VERSION, DAY)
 
     # And the bot_eod 'all' work carries none either.
     sb_as_source('bot_eod')
@@ -2029,7 +2198,7 @@ def test_sb_a_version_bump_reaches_every_tape_gate(
     sb.enrich_one_date(db, DAY, select='all')
 
     fetch_params = next(p for s, p in db.executed if 'bucket_ct, entry_price' in s)
-    assert fetch_params == (DAY, 2)
+    assert fetch_params == (2, DAY, 2)  # the column's gate, the day, the work's gate
     (write,) = db.sb_outcome_writes()
     # The priced UPDATE's gate reads the version carried in its VALUES row.
     assert 'a.outcome_tape_version < v.version' in write.sql
@@ -2536,6 +2705,123 @@ def test_sb_dry_run_counts_unpriced_alerts_without_an_outcome_as_tagged(
     assert result.stamped_no_outcome == 1
     assert result.alerts_kept == 1
     assert db.commits == 0
+
+
+# The write guard as a fetched column (see the lottery's section): a dry run
+# counts only the alerts the guarded statements would touch.
+
+
+def test_sb_fetch_selects_the_write_guard_as_a_column(sb_as_source) -> None:
+    sb_as_source('fulltape')
+    db = FakeDb(fires=[alert_row(1, TSLA, had_outcome=True), alert_row(2, AAPL, writable=False)])
+    alerts = sb.fetch_unenriched(db, DAY)
+    sql, params = db.executed[-1]
+    assert sql.startswith(
+        'SELECT id, option_chain_id, bucket_ct, entry_price, '
+        f'({ALL_TAPE}) AS writable, peak_ceiling_pct IS NOT NULL AS had_outcome '
+        'FROM silent_boom_alerts'
+    )
+    assert params == (sb.OUTCOME_VERSION, DAY)
+    assert [(a['id'], a['writable'], a['had_outcome']) for a in alerts] == [
+        (1, True, True),
+        (2, False, False),
+    ]
+
+    sb_as_source('bot_eod')
+    db = FakeDb(fires=[alert_row(1, TSLA), alert_row(2, AAPL, writable=False)])
+    alerts = sb.fetch_unenriched(db, DAY)
+    sql, params = db.executed[-1]
+    assert sql.startswith(
+        f'SELECT id, option_chain_id, bucket_ct, entry_price, ({ALL}) AS writable '
+        'FROM silent_boom_alerts'
+    )
+    assert params == (DAY,)
+    assert [(a['id'], a['writable'], a['had_outcome']) for a in alerts] == [
+        (1, True, False),
+        (2, False, False),
+    ]
+
+
+@pytest.mark.parametrize('source', GUARD_WRITABLE)
+def test_sb_the_writable_column_evaluates_the_guard_the_writes_carry(
+    source: str, sb_as_source
+) -> None:
+    sb_as_source(source)
+    con = sqlite3.connect(':memory:')
+    con.execute(
+        'CREATE TABLE silent_boom_alerts (id INTEGER PRIMARY KEY, date TEXT, '
+        'option_chain_id TEXT, bucket_ct TEXT, entry_price REAL, '
+        'enriched_at TEXT, peak_ceiling_pct REAL, outcome_source TEXT, '
+        'outcome_tape_version INTEGER)'
+    )
+    con.executemany(
+        'INSERT INTO silent_boom_alerts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [(i, DAY, TSLA, ENTRY.isoformat(), 1.0, *rest) for i, *rest in GUARD_ROWS],
+    )
+
+    alerts = sb.fetch_unenriched(SqliteConn(con), DAY)
+
+    assert {a['id']: a['writable'] for a in alerts} == GUARD_WRITABLE[source]
+    if source == 'fulltape':
+        assert {a['id']: a['had_outcome'] for a in alerts} == {
+            1: False,
+            2: True,
+            3: False,
+            4: True,
+            5: False,
+        }
+
+
+def test_sb_dry_run_counts_only_the_alerts_the_write_guard_lets_through(
+    sb_fulltape: Path, make_sb_db
+) -> None:
+    rows = [
+        alert_row(1, TSLA, had_outcome=True),  # priced, guard open, holds one: replaced
+        alert_row(2, QQQ, writable=False),  # priced, guard shut: counted nowhere
+        alert_row(3, AAPL),  # unpriced, guard open, none: tagged
+        alert_row(4, NVDA, had_outcome=True, writable=False),  # unpriced, guard shut
+        alert_row(5, NVDA, had_outcome=True),  # unpriced, guard open, holds one: kept
+    ]
+
+    dry = sb.enrich_one_date(make_sb_db(fires=rows), DAY, select='all', dry_run=True)
+    wet = sb.enrich_one_date(make_sb_db(fires=list(rows)), DAY, select='all')
+
+    assert dry == wet
+    assert (
+        dry.alerts_selected,
+        dry.outcomes_written,
+        dry.alerts_replaced,
+        dry.stamped_no_outcome,
+        dry.alerts_kept,
+    ) == (5, 1, 1, 1, 1)
+
+
+def test_sb_bot_eod_backfill_mode_dry_run_counts_only_the_alerts_the_guard_lets_through(
+    archive: Path, sb_globals: None, make_sb_db
+) -> None:
+    # --backfill-mode picks rows by a NULL trail column, so it can serve an alert
+    # that already holds a peak; bot_eod's fill-only guard refuses that write,
+    # and a dry run must not count it.
+    write_tape(archive, 'trades')
+    sb.configure_archive(archive, 'trades')
+    rows = [
+        alert_row(1, TSLA),  # priced, guard open: written
+        alert_row(2, QQQ, writable=False),  # priced, holds a peak already: nowhere
+        alert_row(3, AAPL),  # unpriced, guard open: tagged
+        alert_row(4, NVDA, writable=False),  # unpriced, holds a peak already: nowhere
+    ]
+
+    dry = sb.enrich_one_date(make_sb_db(fires=rows), DAY, backfill_mode=True, dry_run=True)
+    wet = sb.enrich_one_date(make_sb_db(fires=list(rows)), DAY, backfill_mode=True)
+
+    assert dry == wet
+    assert (
+        dry.alerts_selected,
+        dry.outcomes_written,
+        dry.alerts_replaced,
+        dry.stamped_no_outcome,
+        dry.alerts_kept,
+    ) == (4, 1, 0, 1, 0)
 
 
 def test_sb_day_log_and_run_summary_report_replaced_and_kept(
