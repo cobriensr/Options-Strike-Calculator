@@ -381,10 +381,41 @@ describe('canonicalContract', () => {
     ['a two-digit year folds to its last digit', 'ESZ26', 'ESZ6'],
     ['a next-year two-digit spelling', 'ESH27', 'ESH7'],
     ['a decade rollover spelling', 'ESH30', 'ESH0'],
-    ['a leading-zero year', 'ESH07', 'ESH7'],
     ['a one-digit zero', 'ESH0', 'ESH0'],
+    // Window at ref 2026: 2025 (ref - 1) to 2034 (ref + 8).
+    ['the lower edge, ref - 1', 'ESZ25', 'ESZ5'],
+    ['the upper edge, ref + 8', 'ESZ34', 'ESZ4'],
   ])('%s', (_label, sym, expected) => {
     expect(canonicalContract('ES', sym, REF)).toBe(expected);
+  });
+
+  it.each([
+    ['one year below the window, ref - 2', 'ESZ24'],
+    ['one year above the window, ref + 9', 'ESZ35'],
+    ['a decade out, the CL case (2036)', 'ESZ36'],
+    ['a leading-zero year long past', 'ESH07'],
+    ['the year 2000', 'ESZ00'],
+  ])('is null for a two-digit year outside the window: %s', (_label, sym) => {
+    // parseContract still reads it, as its own year.
+    expect(parseContract('ES', sym, REF)).not.toBeNull();
+    expect(canonicalContract('ES', sym, REF)).toBeNull();
+  });
+
+  it('judges the window against the reference year it is given', () => {
+    // 2036 is ref + 8 at ref 2028.
+    expect(canonicalContract('CL', 'CLZ36', '2028-01-01T00:00:00.000Z')).toBe(
+      'CLZ6',
+    );
+    expect(
+      canonicalContract('CL', 'CLZ36', '2027-12-31T23:59:59.999Z'),
+    ).toBeNull();
+    // 2025 is ref - 1 at ref 2026, but ref - 2 at ref 2027.
+    expect(canonicalContract('CL', 'CLZ25', '2026-01-01T00:00:00.000Z')).toBe(
+      'CLZ5',
+    );
+    expect(
+      canonicalContract('CL', 'CLZ25', '2027-01-01T00:00:00.000Z'),
+    ).toBeNull();
   });
 
   it('keeps the root, for every root', () => {
@@ -393,7 +424,7 @@ describe('canonicalContract', () => {
     }
   });
 
-  it('is null exactly where parseContract is null', () => {
+  it('is null where parseContract is null', () => {
     for (const sym of [
       'ESZ6\n',
       'ESZ6-ESH7',
@@ -409,14 +440,16 @@ describe('canonicalContract', () => {
     }
   });
 
-  it('is the one-digit spelling of the parsed year, for every month code and two-digit year', () => {
+  it('is the one-digit spelling inside the window and null outside it, for every month code and two-digit year', () => {
     for (const code of MONTH_CODES) {
       for (let yy = 0; yy < 100; yy++) {
         const sym = `ES${code}${String(yy).padStart(2, '0')}`;
         const parsed = parseContract('ES', sym, REF);
-        expect(parsed).not.toBeNull();
+        expect(parsed?.year).toBe(2000 + yy);
+        // Window at ref 2026: 2025 to 2034.
+        const inWindow = 2000 + yy >= 2025 && 2000 + yy <= 2034;
         expect(canonicalContract('ES', sym, REF)).toBe(
-          `ES${code}${(parsed?.year ?? 0) % 10}`,
+          inWindow ? `ES${code}${yy % 10}` : null,
         );
       }
     }
@@ -797,6 +830,60 @@ describe('replayRollForward: guards and edges', () => {
     },
   );
 
+  it('skips a key whose two-digit year is outside the window, and emits no bar for a minute where only it printed', () => {
+    const rows = new Map([
+      [
+        'CLZ6',
+        [
+          { ts: '2026-12-08T10:00:00.000Z', volume: 1 },
+          { ts: '2026-12-08T10:02:00.000Z', volume: 1 },
+        ],
+      ],
+      // 2036 would fold onto CLZ6 (2026) and be emitted as its 10:01 bar.
+      ['CLZ36', [{ ts: '2026-12-08T10:01:00.000Z', volume: 50 }]],
+    ]);
+    const result = replayRollForward(rows, { root: 'CL', seed: 'CLZ6' });
+    expect(result.skipped).toEqual(['CLZ36']);
+    expect(result.rows.map((e) => e.row.ts)).toEqual([
+      '2026-12-08T10:00:00.000Z',
+      '2026-12-08T10:02:00.000Z',
+    ]);
+    expect(result.front).toBe('CLZ6');
+  });
+
+  it('judges the window against the first row of any outright key, even a skipped one', () => {
+    // CLZ35 prints first, at 23:59 on 2026-12-31: window 2025..2034, so 2035
+    // is out. Had the reference year come from the first kept row (CLZ6, in
+    // 2027, window 2026..2035) it would have been folded to CLZ5 instead.
+    const rows = new Map([
+      ['CLZ35', [{ ts: '2026-12-31T23:59:00.000Z', volume: 1 }]],
+      ['CLZ6', [{ ts: '2027-01-01T00:00:00.000Z', volume: 1 }]],
+    ]);
+    const result = replayRollForward(rows, { root: 'CL', seed: 'CLZ6' });
+    expect(result.skipped).toEqual(['CLZ35']);
+    expect(result.rows.map((e) => [e.contract, e.row.ts])).toEqual([
+      ['CLZ6', '2027-01-01T00:00:00.000Z'],
+    ]);
+  });
+
+  it('with only an out-of-window key, replays nothing: the seed, or null, comes back and the key is skipped', () => {
+    const rows = new Map([
+      ['ESZ36', [{ ts: '2026-12-08T10:00:00.000Z', volume: 9 }]],
+    ]);
+    expect(replayRollForward(rows, { root: 'ES', seed: 'ESZ6' })).toEqual({
+      rows: [],
+      takeovers: [],
+      front: 'ESZ6',
+      skipped: ['ESZ36'],
+    });
+    expect(replayRollForward(rows, { root: 'ES', seed: null })).toEqual({
+      rows: [],
+      takeovers: [],
+      front: null,
+      skipped: ['ESZ36'],
+    });
+  });
+
   it('throws, naming the contract, on a row whose ts does not parse', () => {
     expect(() =>
       replayRollForward(new Map([['ESZ6', [{ ts: 'noon', volume: 1 }]]]), {
@@ -820,12 +907,14 @@ function lcg(seed: number): () => number {
  * 50 hours of three contracts whose rates and presence change by regime.
  * Each print is spelled with a one-digit year, a two-digit year, or both in
  * the same minute (two keys for one contract, each with its own volume).
+ * An out-of-window key, ESZ36, also prints big lots in about 8% of minutes;
+ * it would fold onto the ESZ6 front if it were not skipped.
  */
 function randomRolls(seed: number): Map<string, ContractMinute[]> {
   const rand = lcg(seed);
   const contracts = ['ESZ6', 'ESH7', 'ESM7'];
   const twoDigit = (name: string) => `${name.slice(0, 3)}2${name.slice(3)}`;
-  const keys = [...contracts, ...contracts.map(twoDigit)];
+  const keys = [...contracts, ...contracts.map(twoDigit), 'ESZ36'];
   const rates = [0, 1, 3, 10];
   const presences = [0.02, 0.3, 1];
   const start = Date.parse('2026-12-08T10:00:00.000Z');
@@ -858,6 +947,9 @@ function randomRolls(seed: number): Map<string, ContractMinute[]> {
         byContract.get(key)?.push({ ts, volume });
       }
     });
+    if (rand() < 0.08) {
+      byContract.get('ESZ36')?.push({ ts, volume: Math.floor(rand() * 60) });
+    }
   }
   return byContract;
 }
@@ -867,7 +959,9 @@ function randomRolls(seed: number): Map<string, ContractMinute[]> {
  * closes (quiet minutes included), switch the front for the minute after the
  * Nth, clear the tally and the count at 00:00 UTC. No gap arithmetic, so it
  * is an independent check of the module's row-to-row jumps. Two-digit
- * spellings fold to the one-digit name here by slicing (ES keys only).
+ * spellings fold to the one-digit name here by slicing (ES keys only), and
+ * a two-digit year outside [R - 1, R + 8] is dropped, R being the UTC year
+ * of the first row of any key.
  */
 function referenceRoll(
   root: FuturesRoot,
@@ -883,18 +977,28 @@ function referenceRoll(
     }
   }
   const canon = (key: string) => key.slice(0, 3) + key.slice(-1);
-  const times = [...rowsAt.keys()];
+  const refMs = Math.min(...[...rowsAt.keys()]);
+  const refYear = new Date(refMs).getUTCFullYear();
+  const kept = (key: string) => {
+    if (key.length === 4) return true;
+    const year = 2000 + Number(key.slice(3));
+    return year >= refYear - 1 && year <= refYear + 8;
+  };
+  // Rows of dropped keys play no part, not even in the first or last minute.
+  const times = [...rowsAt]
+    .filter(([, at]) => [...at.keys()].some(kept))
+    .map(([ms]) => ms);
   const first = Math.min(...times);
   const last = Math.max(...times);
-  const refIso = new Date(first).toISOString();
+  const refIso = new Date(refMs).toISOString();
   const expiry = (sym: string) => {
     const parsed = parseContract(root, sym, refIso);
     if (parsed == null) throw new Error(`bad key ${sym}`);
     return parsed;
   };
-  const later = [...new Set([...byContract.keys()].map(canon))].sort(
-    (a, b) => compareExpiry(expiry(a), expiry(b)) || (a < b ? -1 : 1),
-  );
+  const later = [
+    ...new Set([...byContract.keys()].filter(kept).map(canon)),
+  ].sort((a, b) => compareExpiry(expiry(a), expiry(b)) || (a < b ? -1 : 1));
 
   let front = canon(seed);
   let streak: string | null = null;
@@ -913,7 +1017,7 @@ function referenceRoll(
       // The front's spellings at this minute: the larger volume is emitted,
       // a tie goes to the smaller key.
       const frontRow = [...at]
-        .filter(([key]) => canon(key) === front)
+        .filter(([key]) => kept(key) && canon(key) === front)
         .sort(
           ([ka, a], [kb, b]) =>
             b.volume - a.volume || (ka < kb ? -1 : ka > kb ? 1 : 0),
@@ -926,6 +1030,7 @@ function referenceRoll(
         });
       }
       for (const [key, row] of at) {
+        if (!kept(key)) continue;
         tally.set(canon(key), (tally.get(canon(key)) ?? 0) + row.volume);
       }
     }
@@ -987,7 +1092,7 @@ describe('replayRollForward: against a minute-by-minute reading', () => {
       takeoverCount += actual.takeovers.length;
     }
     // A comparison that never sees a roll proves nothing. (The generator is
-    // deterministic: 298 sessions roll, 418 takeovers in all.)
+    // deterministic: 299 sessions roll, 424 takeovers in all.)
     expect(withTakeover).toBeGreaterThanOrEqual(200);
     expect(takeoverCount).toBeGreaterThanOrEqual(300);
   });

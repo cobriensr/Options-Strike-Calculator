@@ -284,26 +284,43 @@ export function parseContract(
 }
 
 /** `sym` must already pass `isOutright`: root + month code + last digit. */
-function canonicalName(root: FuturesRoot, sym: string): string {
+function oneDigitName(root: FuturesRoot, sym: string): string {
   return sym.slice(0, root.length + 1) + sym.slice(-1);
+}
+
+/**
+ * The one-digit name of `sym` if it names the same year as `sym` does, else
+ * null: a two-digit year outside the window has no one-digit name.
+ */
+function canonicalName(
+  root: FuturesRoot,
+  sym: string,
+  refYear: number,
+): string | null {
+  const name = oneDigitName(root, sym);
+  const sameYear =
+    decodeContract(root, sym, refYear).year ===
+    decodeContract(root, name, refYear).year;
+  return sameYear ? name : null;
 }
 
 /**
  * The one name a contract has everywhere (stored `contract` values, seeds,
  * the tally): the one-digit form, `${root}${code}${year % 10}`, so `ESZ26`
- * is `ESZ6`. Null where `parseContract` is null, and it throws on a bad
- * `refIso` the same way; the name itself does not depend on `refIso`.
- * A two-digit year folds to its last digit even when it lies outside the
- * one-digit window, so spellings a decade apart are not told apart.
+ * is `ESZ6`. Null where `parseContract` is null, or where the year is
+ * outside the one-digit window [ref - 1, ref + 8]: one digit cannot name
+ * that year without colliding with a nearer contract (at ref 2026, `CLZ36`
+ * would fold onto `CLZ6`, and a minute where only it printed would be
+ * emitted as a `CLZ6` bar ten years of carry away). `parseContract` still
+ * reads such a symbol, as 2036. Throws on a bad `refIso`.
  */
 export function canonicalContract(
   root: FuturesRoot,
   sym: string,
   refIso: string,
 ): string | null {
-  return parseContract(root, sym, refIso) == null
-    ? null
-    : canonicalName(root, sym);
+  const refYear = utcDate(refIso).getUTCFullYear();
+  return isOutright(root, sym) ? canonicalName(root, sym, refYear) : null;
 }
 
 /** Orders two contracts by (year, month): negative when `a` expires first. */
@@ -409,7 +426,10 @@ export interface RollForwardResult<T extends ContractMinute> {
    * next hole from. Null only when there is no seed and no row to date one.
    */
   front: string | null;
-  /** Keys that are no outright of the root, sorted. Left out of the replay. */
+  /**
+   * Keys left out of the replay, sorted: no outright of the root, or a
+   * two-digit year outside the one-digit window.
+   */
   skipped: string[];
 }
 
@@ -448,13 +468,16 @@ export interface RollForwardResult<T extends ContractMinute> {
  * `ESZ26`), their volumes sum in the tally, and the minute's emitted row is
  * the one with the larger volume (a tie goes to the codepoint-smaller key).
  * Otherwise a front fed under a second spelling would be tallied at 0 and
- * the next contract would take over early.
+ * the next contract would take over early. A two-digit year outside the
+ * one-digit window has no canonical name, so its key is left out and listed
+ * in `skipped`; folding it would emit its rows as a nearer contract's bars.
  *
  * Keys that are not an outright of `root` are left out and listed in
- * `skipped`. One-digit years resolve against the UTC year of the first
- * minute. Throws on a seed that is not an outright of `root` (it comes
- * from the CHECK'd column, so that is a bug) and on a row whose `ts` does
- * not parse. `ts` must be the `toISOString()` minute form.
+ * `skipped`. One-digit years and that window resolve against the UTC year
+ * of the first row of any outright key. The seed is folded by its last digit
+ * without a window check. Throws on a seed that is not an outright of
+ * `root` (it comes from the CHECK'd column, so that is a bug) and on a row
+ * whose `ts` does not parse. `ts` must be the `toISOString()` minute form.
  */
 export function replayRollForward<T extends ContractMinute>(
   byContract: ReadonlyMap<string, readonly T[]>,
@@ -465,18 +488,19 @@ export function replayRollForward<T extends ContractMinute>(
       `replayRollForward: seed ${JSON.stringify(seed)} is not an outright ${root} contract`,
     );
   }
-  const seedName = seed == null ? null : canonicalName(root, seed);
+  // The seed is the stored canonical name, so it is folded by its last digit
+  // without a window check (there is no reference year before the rows).
+  const seedName = seed == null ? null : oneDigitName(root, seed);
 
   const skipped: string[] = [];
-  const names = new Set<string>();
-  const byMinute = new Map<number, Map<string, Spelled<T>>>();
+  const keyed: Array<{ key: string; rows: Array<{ ms: number; row: T }> }> = [];
+  let refMs: number | undefined;
   for (const [key, rows] of byContract) {
     if (!isOutright(root, key)) {
       skipped.push(key);
       continue;
     }
-    const name = canonicalName(root, key);
-    names.add(name);
+    const timed: Array<{ ms: number; row: T }> = [];
     for (const row of rows) {
       const ms = Date.parse(row.ts);
       if (Number.isNaN(ms)) {
@@ -484,6 +508,29 @@ export function replayRollForward<T extends ContractMinute>(
           `replayRollForward: ${key} row has an unparseable ts ${JSON.stringify(row.ts)}`,
         );
       }
+      refMs = refMs == null ? ms : Math.min(refMs, ms);
+      timed.push({ ms, row });
+    }
+    keyed.push({ key, rows: timed });
+  }
+  if (refMs == null) {
+    skipped.sort();
+    return { rows: [], takeovers: [], front: seedName, skipped };
+  }
+
+  // The reference year is the first row of any outright key, kept or not,
+  // since whether a two-digit year is in the window depends on it.
+  const refYear = new Date(refMs).getUTCFullYear();
+  const names = new Set<string>();
+  const byMinute = new Map<number, Map<string, Spelled<T>>>();
+  for (const { key, rows } of keyed) {
+    const name = canonicalName(root, key, refYear);
+    if (name == null) {
+      skipped.push(key);
+      continue;
+    }
+    names.add(name);
+    for (const { ms, row } of rows) {
       const minute = byMinute.get(ms) ?? new Map<string, Spelled<T>>();
       minute.set(key, { name, row });
       byMinute.set(ms, minute);
@@ -497,7 +544,6 @@ export function replayRollForward<T extends ContractMinute>(
     return { rows: [], takeovers: [], front: seedName, skipped };
   }
 
-  const refYear = new Date(firstMs).getUTCFullYear();
   const byExpiry: Contender[] = [...names]
     .map((contract) => ({
       contract,
@@ -507,7 +553,7 @@ export function replayRollForward<T extends ContractMinute>(
       (a, b) =>
         compareExpiry(a.expiry, b.expiry) || (a.contract < b.contract ? -1 : 1),
     );
-  const cycleSeed = firstLiveContract(root, new Date(firstMs));
+  const cycleSeed = firstLiveContract(root, new Date(refMs));
 
   const rows: Array<{ contract: string; row: T }> = [];
   const takeovers: Array<{ ts: string; contract: string }> = [];

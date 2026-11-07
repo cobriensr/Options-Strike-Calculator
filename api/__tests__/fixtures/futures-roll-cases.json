@@ -1,5 +1,5 @@
 {
-  "format": "Shared by the TypeScript (api/__tests__/futures-contracts.test.ts) roll-forward rule tests and by the Python (uw-stream, Task 6d) tests, which are to run these same cases. To run a case: build one list of rows per contract key, in order of first appearance in the segments. A segment is k consecutive minutes starting at `from`; in each of them every contract named in `volumes` gets one row (ts, volume), and a contract not named has no row that minute. All timestamps are UTC minutes in the form YYYY-MM-DDTHH:MM:00.000Z. A volume of 0 is still a row. Minutes between segments have no rows at all. Run the rule with the case's `root` and `seed` (null means no seed). Keys are contract symbols as fed: the rule folds a key to its one-digit name (ESZ26 is ESZ6), so `takeovers` and `front` use the one-digit names. Compare the result to `takeovers` (ts is the first minute on the new contract, in time order), `front` (the front after the last row, for the minute that follows it; null only when `seed` is null and no row of a parseable key exists, so there is nothing to date a cold-start seed) and `skipped` (keys the parser rejects, sorted ascending by code point) exactly. `N` is the guard length in minute closes.",
+  "format": "Shared by the TypeScript (api/__tests__/futures-contracts.test.ts) roll-forward rule tests and by the Python (uw-stream, Task 6d) tests, which are to run these same cases. To run a case: build one list of rows per contract key, in order of first appearance in the segments. A segment is k consecutive minutes starting at `from`; in each of them every contract named in `volumes` gets one row (ts, volume), and a contract not named has no row that minute. All timestamps are UTC minutes in the form YYYY-MM-DDTHH:MM:00.000Z. A volume of 0 is still a row. Minutes between segments have no rows at all. Run the rule with the case's `root` and `seed` (null means no seed). Keys are contract symbols as fed: the rule folds a key to its one-digit name (ESZ26 is ESZ6), so `takeovers` and `front` use the one-digit names. The seed is folded by its last digit, with no window check. Compare the result to `takeovers` (ts is the first minute on the new contract, in time order), `front` (the front after the last row, for the minute that follows it; null only when `seed` is null and no row of a key the rule keeps exists, so there is nothing to date a cold-start seed) and `skipped` (keys the rule leaves out, sorted ascending by code point: not an outright of the root, or a two-digit year outside the one-digit window [R - 1, R + 8], R being the UTC year of the first row of any outright key; such a year has no one-digit name that would not collide with a nearer contract) exactly. `N` is the guard length in minute closes.",
   "N": 120,
   "cases": [
     {
@@ -876,6 +876,79 @@
       ],
       "front": "ESH7",
       "skipped": []
+    },
+    {
+      "name": "two spellings: a two-digit year outside the one-digit window is skipped, never folded onto a nearer contract (its 20 lots a minute would otherwise keep CLZ6 in front)",
+      "root": "CL",
+      "seed": "CLZ6",
+      "segments": [
+        {
+          "from": "2026-12-08T10:00:00.000Z",
+          "minutes": 65,
+          "volumes": {
+            "CLZ6": 1,
+            "CLF7": 3
+          }
+        },
+        {
+          "from": "2026-12-08T11:05:00.000Z",
+          "minutes": 65,
+          "volumes": {
+            "CLZ36": 20,
+            "CLF7": 3
+          }
+        }
+      ],
+      "takeovers": [
+        {
+          "ts": "2026-12-08T12:00:00.000Z",
+          "contract": "CLF7"
+        }
+      ],
+      "front": "CLF7",
+      "skipped": ["CLZ36"]
+    },
+    {
+      "name": "two spellings: a two-digit year at the window edge (ref + 8) still folds to its one-digit name",
+      "root": "ES",
+      "seed": "ESU4",
+      "segments": [
+        {
+          "from": "2026-12-08T10:00:00.000Z",
+          "minutes": 130,
+          "volumes": {
+            "ESU34": 5,
+            "ESZ4": 1
+          }
+        }
+      ],
+      "takeovers": [],
+      "front": "ESU4",
+      "skipped": []
+    },
+    {
+      "name": "two spellings: the window year is taken from the first row of any outright key, kept or not",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-31T23:59:00.000Z",
+          "minutes": 1,
+          "volumes": {
+            "ESZ35": 1
+          }
+        },
+        {
+          "from": "2027-01-01T00:00:00.000Z",
+          "minutes": 2,
+          "volumes": {
+            "ESZ6": 1
+          }
+        }
+      ],
+      "takeovers": [],
+      "front": "ESZ6",
+      "skipped": ["ESZ35"]
     },
     {
       "name": "null seed and only unparseable keys: nothing to date a seed, so front is null",
