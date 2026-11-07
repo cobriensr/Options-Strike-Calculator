@@ -1720,8 +1720,19 @@ def run(args: argparse.Namespace, db_url: str, reader) -> None:
             print(f'[enrich] target date: {latest_date}')
             dates = [latest_date]
 
-        for d in dates:
-            results[d] = enrich_day(conn, d, args, reader)
+        try:
+            for d in dates:
+                results[d] = enrich_day(conn, d, args, reader)
+        except BaseException:
+            # The days already done are committed: summarize them before the
+            # run ends, as it ends (a failed read, a database error, Ctrl-C).
+            # The refit is skipped; it runs only after a whole run.
+            print(
+                f'[enrich] stopped after {len(results)} of {len(dates)} '
+                'day(s); summary of the days done:'
+            )
+            print_run_summary(results, args.dry_run, not_landed)
+            raise
 
         # Third pass — per-ticker inversion-quality refit (Phase 2 of the
         # inversion-quality filter). Runs against whatever is in

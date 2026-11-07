@@ -72,6 +72,7 @@ class Lake:
     missing: set[date] = field(default_factory=set)  # listed, but the GET finds no object
     fetch_errors: dict[date, Exception] = field(default_factory=dict)
     landed_error: Exception | None = None
+    close_error: Exception | None = None  # close() fails, e.g. a cached file will not delete
     calls: list[tuple] = field(default_factory=list)
     cached_at_fetch: list[list[str]] = field(default_factory=list)
     cache_dirs: list[Path] = field(default_factory=list)
@@ -118,6 +119,8 @@ class FakeReader:
 
     def close(self) -> None:
         self._lake.calls.append(('close',))
+        if self._lake.close_error is not None:
+            raise self._lake.close_error
         for leftover in self._cache_dir.glob('*.parquet'):
             leftover.unlink()
 
@@ -460,6 +463,23 @@ def test_sb_r2_range_does_not_download_a_landed_day_with_nothing_to_do(
     assert lake.fetched() == [D1, D2, D4]
 
 
+def test_sb_r2_range_lists_only_in_range_days_as_not_landed(
+    lake: Lake, cli_env: Path, serve, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Work on D1 and D4 lies outside the range and is not landed either: it is
+    # not this run's business, so it must not show up as skipped.
+    lake.landed = {D2}
+    serve(SILENT_BOOM, fires=two_fires(SILENT_BOOM), work_dates=iso(D1, D2, D3, D4))
+
+    silent_boom.main(['--r2', '--from-date', D2.isoformat(), '--to-date', D3.isoformat()])
+
+    assert lake.fetched() == [D2]
+    out, err = capsys.readouterr()
+    line = f'[enrich-silent-boom] skipped (not landed in R2, alerts left unenriched): {D3}'
+    assert line in out.splitlines()
+    assert line in err.splitlines()
+
+
 def test_sb_r2_explicit_date_is_fetched_as_asked(lake: Lake, cli_env: Path, serve) -> None:
     lake.landed = {D1}
     serve(SILENT_BOOM, fires=two_fires(SILENT_BOOM))
@@ -774,3 +794,156 @@ def test_env_local_is_loaded_before_the_reader_is_built(
     script.module.main(['--r2', '--all-unenriched'])
 
     assert lake.bucket_seen == ['bucket-from-the-file']
+
+
+# ── however the run ends, the reader is closed and the directory goes ──
+
+
+@pytest.mark.parametrize('script', SCRIPTS)
+def test_a_close_that_fails_still_removes_the_temp_dir(
+    script: Script, lake: Lake, cli_env: Path, serve
+) -> None:
+    # TapeReader.close raises the first OSError it hit deleting a cached file,
+    # after trying them all. The directory must go regardless, and the OSError
+    # is not swallowed.
+    lake.landed = {D1}
+    lake.close_error = OSError('cannot delete a cached file')
+    serve(script, fires=two_fires(script), work_dates=iso(D1))
+
+    with pytest.raises(OSError, match='cannot delete a cached file'):
+        script.module.main(['--r2', '--all-unenriched'])
+
+    assert lake.calls[-1] == ('close',)
+    (cache_dir,) = lake.cache_dirs
+    assert not cache_dir.exists()
+
+
+@pytest.mark.parametrize('script', SCRIPTS)
+def test_ctrl_c_mid_run_releases_closes_and_propagates(
+    script: Script,
+    lake: Lake,
+    cli_env: Path,
+    serve,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    lake.landed = {D1, D2, D3}
+    lake.fetch_errors = {D2: KeyboardInterrupt()}
+    db = serve(script, fires=two_fires(script), work_dates=iso(D1, D2, D3))
+
+    with pytest.raises(KeyboardInterrupt):
+        script.module.main(['--r2', '--all-unenriched'])
+
+    # Day 1 was written and released; day 2 never started; day 3 was not fetched.
+    assert lake.calls == [
+        ('landed_days',),
+        ('fetch', D1),
+        ('release', D1),
+        ('fetch', D2),
+        ('close',),
+    ]
+    assert not lake.cache_dirs[0].exists()
+    assert len(db.values_writes) == 1
+    assert f'{script.prefix} stopped after 1 of 3 day(s)' in capsys.readouterr().out
+
+
+# ── a run that stops mid-way still summarizes the days it finished ──
+
+
+@pytest.mark.parametrize('script', SCRIPTS)
+def test_a_failed_fetch_still_summarizes_the_days_done(
+    script: Script,
+    lake: Lake,
+    cli_env: Path,
+    serve,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    lake.landed = {D1, D2, D3}
+    lake.fetch_errors = {D2: read_error(D2)}
+    db = serve(script, fires=two_fires(script), work_dates=iso(D1, D2, D3, D4))
+
+    with pytest.raises(SystemExit) as exc:
+        script.module.main(['--r2', '--all-unenriched'])
+
+    # The exit is as before: non-zero, naming the key and the cause ...
+    assert isinstance(exc.value.code, str)
+    assert f'fulltape/{D2.isoformat()}-fulltape.parquet' in exc.value.code
+    # ... and day 1, which was committed, gets its summary first. The days the
+    # lake lacks are listed too.
+    out, err = capsys.readouterr()
+    noun = 'fires' if script is LOTTERY else 'alerts'
+    assert f'{script.prefix} stopped after 1 of 3 day(s); summary of the days done:' in out
+    assert f'{script.prefix} summary: 1 day(s) enriched, 2 {noun} updated' in out
+    not_landed = f'{script.prefix} skipped (not landed in R2, {noun} left unenriched): {D4}'
+    assert not_landed in out
+    assert not_landed in err
+    # No completion line, and no refit after a failure.
+    assert 'DONE' not in out
+    assert not any('GROUP BY underlying_symbol' in sql for sql, _ in db.executed)
+
+
+@pytest.mark.parametrize('script', SCRIPTS)
+def test_a_failed_fetch_on_a_dry_run_summarizes_with_would(
+    script: Script,
+    lake: Lake,
+    cli_env: Path,
+    serve,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    lake.landed = {D1, D2, D3}
+    lake.fetch_errors = {D2: read_error(D2)}
+    db = serve(script, fires=two_fires(script), work_dates=iso(D1, D2, D3))
+
+    with pytest.raises(SystemExit):
+        script.module.main(['--r2', '--all-unenriched', '--dry-run'])
+
+    out = capsys.readouterr().out
+    head = f'{script.prefix} summary (dry run, nothing written): 1 day(s) would be enriched'
+    assert head in out
+    summary = [line for line in out.splitlines() if line.startswith(f'{script.prefix} summary')]
+    assert summary and all('would' in line for line in summary)
+    assert db.values_writes == [] and write_statements(db) == []
+
+
+def test_a_failing_first_day_summarizes_zero_days(
+    lake: Lake, cli_env: Path, serve, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lake.landed = {D1}
+    lake.fetch_errors = {D1: read_error(D1)}
+    serve(LOTTERY, fires=two_fires(LOTTERY), work_dates=iso(D1))
+
+    with pytest.raises(SystemExit):
+        lottery.main(['--r2', '--all-unenriched'])
+
+    out = capsys.readouterr().out
+    assert '[enrich] stopped after 0 of 1 day(s); summary of the days done:' in out
+    assert '[enrich] summary: 0 day(s) enriched, 0 fires updated' in out
+
+
+# ── silent boom: the per-day line of a dry run says would ──
+
+
+def test_sb_per_day_line_says_would_on_a_dry_run_and_is_unchanged_otherwise(
+    lake: Lake, cli_env: Path, serve, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lake.landed = {D1}
+    rows = [prov.alert_row(1, prov.TSLA, had_outcome=True), prov.alert_row(2, prov.NVDA, had_outcome=True)]
+    serve(SILENT_BOOM, fires=rows, work_dates=iso(D1))
+
+    silent_boom.main(['--r2', '--all-unenriched', '--select', 'all', '--dry-run'])
+
+    out = capsys.readouterr().out
+    assert (
+        f'  [{D1}] (dry run) alerts=   2 would_update=   1 would_replace=1 would_tag=0 '
+        'would_keep=1 skipped_chain=1 skipped_no_outcome=0 in '
+    ) in out
+    for wet_field in (' updated=', 'alerts_replaced=', ' tagged=', 'alerts_kept='):
+        assert wet_field not in out
+
+    silent_boom.main(['--r2', '--all-unenriched', '--select', 'all'])
+
+    out = capsys.readouterr().out
+    assert (
+        f'  [{D1}] alerts=   2 updated=   1 alerts_replaced=1 tagged=0 '
+        'alerts_kept=1 skipped_chain=1 skipped_no_outcome=0 in '
+    ) in out
+    assert 'would' not in out

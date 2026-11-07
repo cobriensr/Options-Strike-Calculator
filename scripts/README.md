@@ -52,8 +52,8 @@ Sanity checks against production data. Usually read-only.
 
 Compute additional features on existing rows. Typically used after a feature-engineering change.
 
-- `enrich_lottery_outcomes.py`: realized exit-policy columns on `lottery_finder_fires` from the EOD parquet tape (`make enrich`)
-- `enrich_silent_boom_outcomes.py`: peak and realized exits on `silent_boom_alerts` from parquet
+- `enrich_lottery_outcomes.py`: realized exit-policy columns on `lottery_finder_fires` from the EOD parquet tape (`make enrich`) or the R2 Full Tape with `--r2` (also `--select` and `--dry-run`)
+- `enrich_silent_boom_outcomes.py`: peak and realized exits on `silent_boom_alerts` from parquet or the R2 Full Tape with `--r2` (also `--select` and `--dry-run`)
 - `enrich_silent_boom_outcomes_fulltape.py`: the same from the Full Tape parquet archive
 - `enrich_interval_ba_outcomes.py`: forward SPX paths for `interval_ba_alerts`
 

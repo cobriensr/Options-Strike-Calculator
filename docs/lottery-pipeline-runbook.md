@@ -20,7 +20,7 @@ Pipeline (5 phases): `analyze → ingest → plots → backfill-flow → enrich`
 - Analyzes today's `bot-eod-report-YYYY-MM-DD.csv` from `~/Downloads/EOD-OptionFlow/`
 - Writes the per-trade parquet to `~/Desktop/Bot-Eod-parquet/{DATE}-trades.parquet`
 - Backfills `net_flow_per_ticker_history` from UW REST (so flow_inversion can compute even when the Vercel cron silently fails)
-- Replays the parquet against `lottery_finder_fires` to populate the realized exit columns
+- Replays the parquet against `lottery_finder_fires` to populate the realized exit columns (`scripts/enrich_lottery_outcomes.py` and `scripts/enrich_silent_boom_outcomes.py` can read the R2 Full Tape instead with `--r2`, and take `--select` and `--dry-run`)
 
 **Resume mode**: if the CSV was already consumed in a prior run but the parquet is on disk, `make nightly` auto-falls-back to `plots → backfill-flow → enrich` only. Safe to re-run.
 

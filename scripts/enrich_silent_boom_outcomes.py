@@ -692,13 +692,25 @@ def enrich_one_date(
         result.stamped_no_outcome, result.alerts_kept = stamp_no_outcome(
             conn, unpriced_ids, SOURCE_TAG
         )
+    # Nothing was written on a dry run, so its counts read "would".
+    if dry_run:
+        counts = (
+            f'would_update={result.outcomes_written:>4,} '
+            f'would_replace={result.alerts_replaced} '
+            f'would_tag={result.stamped_no_outcome} '
+            f'would_keep={result.alerts_kept} '
+        )
+    else:
+        counts = (
+            f'updated={result.outcomes_written:>4,} '
+            f'alerts_replaced={result.alerts_replaced} '
+            f'tagged={result.stamped_no_outcome} '
+            f'alerts_kept={result.alerts_kept} '
+        )
     print(
         f'  [{target_date}] {"(dry run) " if dry_run else ""}'
         f'alerts={len(alerts):>4,} '
-        f'updated={result.outcomes_written:>4,} '
-        f'alerts_replaced={result.alerts_replaced} '
-        f'tagged={result.stamped_no_outcome} '
-        f'alerts_kept={result.alerts_kept} '
+        f'{counts}'
         f'skipped_chain={skipped_chain_missing} '
         f'skipped_no_outcome={skipped_no_outcome} '
         f'in {time.time() - td:.1f}s'
@@ -941,8 +953,18 @@ def run(args: argparse.Namespace, db_url: str, reader) -> None:
 
         results: dict[str, DayResult] = {}
         t0 = time.time()
-        for date_str in dates:
-            results[date_str] = enrich_day(conn, date_str, args, reader)
+        try:
+            for date_str in dates:
+                results[date_str] = enrich_day(conn, date_str, args, reader)
+        except BaseException:
+            # The days already done are committed: summarize them before the
+            # run ends, as it ends (a failed read, a database error, Ctrl-C).
+            print(
+                f'[enrich-silent-boom] stopped after {len(results)} of '
+                f'{len(dates)} day(s); summary of the days done:'
+            )
+            print_run_summary(results, args.dry_run, not_landed)
+            raise
 
         done = [r for r in results.values() if r.alerts_selected]
         updated = sum(alerts_updated(r) for r in done)
