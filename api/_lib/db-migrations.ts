@@ -5695,4 +5695,22 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 203,
+    description:
+      'Add the seven regime columns the calculator saves with every snapshot to market_snapshots: vix_term_shape and rv_iv_label TEXT; cluster_put_mult, cluster_call_mult, rv_iv_ratio and iv_accel_mult DECIMAL(6,4); rv_annualized DECIMAL(8,6). Production already has them (the retired pre-migration migrateDb added them in March 2026, in 7194ddff^), but neither initDb() nor MIGRATIONS did, so a database built from these alone lacked them and saveSnapshot, which writes them again, would fail with a missing-column error. ADD COLUMN IF NOT EXISTS makes this a no-op on production and seeds every fresh database. Nullable, no default, no backfill: NULL means the row was saved while the writer dropped them (every production row after 2026-03-16 until that fix).',
+    statements: (sql) => [
+      sql`SET LOCAL lock_timeout = '5s'`,
+      sql`
+        ALTER TABLE market_snapshots
+          ADD COLUMN IF NOT EXISTS vix_term_shape TEXT,
+          ADD COLUMN IF NOT EXISTS cluster_put_mult DECIMAL(6,4),
+          ADD COLUMN IF NOT EXISTS cluster_call_mult DECIMAL(6,4),
+          ADD COLUMN IF NOT EXISTS rv_iv_ratio DECIMAL(6,4),
+          ADD COLUMN IF NOT EXISTS rv_iv_label TEXT,
+          ADD COLUMN IF NOT EXISTS rv_annualized DECIMAL(8,6),
+          ADD COLUMN IF NOT EXISTS iv_accel_mult DECIMAL(6,4)
+      `,
+    ],
+  },
 ];

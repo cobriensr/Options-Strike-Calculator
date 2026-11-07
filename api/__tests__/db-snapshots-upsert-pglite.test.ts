@@ -15,10 +15,11 @@
  * template over pglite, so initDb, withDbRetry and saveSnapshot all run
  * as in production.
  *
- * One addition to the real schema: the seven regime columns (vix_term_shape
- * .. iv_accel_mult). Production has them; neither initDb() nor MIGRATIONS
- * creates them. They were added by the retired pre-migration migrateDb
- * (7194ddff^:api/_lib/db.ts), whose DDL REGIME_COLUMNS_DDL copies.
+ * The seven regime columns (vix_term_shape .. iv_accel_mult) are not in
+ * initDb(): production got them from the retired pre-migration migrateDb
+ * (7194ddff^:api/_lib/db.ts) and MIGRATIONS #203 creates them for every
+ * other database. The table here gets them from #203's own statements, so
+ * the INSERT is proved against the DDL a fresh database would run.
  */
 
 import {
@@ -37,6 +38,7 @@ const holder = vi.hoisted(() => ({ sql: null as unknown }));
 vi.mock('@neondatabase/serverless', () => ({ neon: () => holder.sql }));
 
 import { _resetDb, initDb, saveSnapshot } from '../_lib/db.js';
+import { applyMigration } from './pglite-migrations';
 
 let pg: PGlite;
 const originalUrl = process.env.DATABASE_URL;
@@ -49,17 +51,8 @@ function taggedSql(db: PGlite) {
   };
 }
 
-/** The production column types, from the retired migrateDb. */
-const REGIME_COLUMNS_DDL = `
-  ALTER TABLE market_snapshots
-    ADD COLUMN IF NOT EXISTS vix_term_shape   TEXT,
-    ADD COLUMN IF NOT EXISTS cluster_put_mult DECIMAL(6,4),
-    ADD COLUMN IF NOT EXISTS cluster_call_mult DECIMAL(6,4),
-    ADD COLUMN IF NOT EXISTS rv_iv_ratio      DECIMAL(6,4),
-    ADD COLUMN IF NOT EXISTS rv_iv_label      TEXT,
-    ADD COLUMN IF NOT EXISTS rv_annualized    DECIMAL(8,6),
-    ADD COLUMN IF NOT EXISTS iv_accel_mult    DECIMAL(6,4)
-`;
+/** The migration that adds the seven regime columns. */
+const REGIME_COLUMNS_ID = 203;
 
 beforeAll(async () => {
   pg = await PGlite.create();
@@ -67,7 +60,7 @@ beforeAll(async () => {
   process.env.DATABASE_URL = 'postgres://pglite';
   _resetDb();
   await initDb();
-  await pg.exec(REGIME_COLUMNS_DDL);
+  await applyMigration(pg, REGIME_COLUMNS_ID);
 });
 
 afterAll(async () => {
@@ -356,6 +349,91 @@ describe('saveSnapshot upsert against Postgres (pglite)', () => {
       vixTermShape: 'flat',
       rvIvRatio: 0.9,
     });
+  });
+
+  // ── Migration #203 ──────────────────────────────────────────
+  // Production already has the columns, from the old migrateDb; every other
+  // database gets them from #203. The types are those of 7194ddff^.
+
+  it('migration #203 creates the seven columns with the production types', async () => {
+    const res = await pg.query<{
+      column_name: string;
+      data_type: string;
+      numeric_precision: number | null;
+      numeric_scale: number | null;
+    }>(
+      `SELECT column_name, data_type, numeric_precision, numeric_scale
+       FROM information_schema.columns
+       WHERE table_name = 'market_snapshots'
+         AND column_name = ANY($1)
+       ORDER BY column_name`,
+      [
+        [
+          'vix_term_shape',
+          'cluster_put_mult',
+          'cluster_call_mult',
+          'rv_iv_ratio',
+          'rv_iv_label',
+          'rv_annualized',
+          'iv_accel_mult',
+        ],
+      ],
+    );
+
+    expect(res.rows).toEqual([
+      {
+        column_name: 'cluster_call_mult',
+        data_type: 'numeric',
+        numeric_precision: 6,
+        numeric_scale: 4,
+      },
+      {
+        column_name: 'cluster_put_mult',
+        data_type: 'numeric',
+        numeric_precision: 6,
+        numeric_scale: 4,
+      },
+      {
+        column_name: 'iv_accel_mult',
+        data_type: 'numeric',
+        numeric_precision: 6,
+        numeric_scale: 4,
+      },
+      {
+        column_name: 'rv_annualized',
+        data_type: 'numeric',
+        numeric_precision: 8,
+        numeric_scale: 6,
+      },
+      {
+        column_name: 'rv_iv_label',
+        data_type: 'text',
+        numeric_precision: null,
+        numeric_scale: null,
+      },
+      {
+        column_name: 'rv_iv_ratio',
+        data_type: 'numeric',
+        numeric_precision: 6,
+        numeric_scale: 4,
+      },
+      {
+        column_name: 'vix_term_shape',
+        data_type: 'text',
+        numeric_precision: null,
+        numeric_scale: null,
+      },
+    ]);
+  });
+
+  it('migration #203 is a no-op over a table that already has the columns', async () => {
+    // Production's situation: the columns exist, and rows from before
+    // 7194ddff hold values in them.
+    await saveSnapshot({ ...KEY, spx: 6800, ...LIVE_SEVEN });
+
+    await applyMigration(pg, REGIME_COLUMNS_ID);
+
+    expect(await storedSeven()).toEqual(LIVE_SEVEN);
   });
 
   it('a backtest save leaves a row whose flag is NULL', async () => {
