@@ -93,7 +93,7 @@ const queriedSymbols = new Set<string>();
  * Missing symbols return empty arrays for latest bar (→ skipped).
  *
  * Query shapes emitted by computeSnapshot (in order per symbol):
- *   1. Latest bar:    ts <= ${atIso}            ORDER BY ts DESC LIMIT 1
+ *   1. Latest bar:    ts <= ${closedIso}        ORDER BY ts DESC LIMIT 1
  *   2. 1H ago:        ts <= ${oneHourAgoIso}    ORDER BY ts DESC LIMIT 1
  *   3. Day open:      ts >= ${dayOpenTs}        ORDER BY ts ASC  LIMIT 1
  *   4. 20-day avg volume (AVG(daily_vol) subquery)
@@ -101,13 +101,17 @@ const queriedSymbols = new Set<string>();
  *
  * Because (1) and (2) both match `ts <= X ORDER BY ts DESC LIMIT 1`,
  * we disambiguate by the ISO timestamp value: the latest-bar query
- * passes the handler's "now" (MARKET_TIME), while the 1H-ago query
- * passes MARKET_TIME - 60m.
+ * passes MARKET_TIME - 60 s (the last closed bar), while the 1H-ago
+ * query passes MARKET_TIME - 60m.
  */
 function setupSqlDispatch(symbolMap: Record<string, SymbolData | null>) {
-  // Canonical ISO of the cron's "now" so we're resilient to sub-second
-  // precision drift (e.g. …:00Z vs …:00.000Z) when comparing bounds.
-  const nowIso = new Date(MARKET_TIME).toISOString();
+  // Canonical ISO of the latest-bar bound: only bars that have closed by the
+  // cron's "now" count (ts <= now - 60 s), so it is the bound that tells the
+  // latest-bar query from the 1H-ago query. Canonical so we're resilient to
+  // sub-second precision drift (e.g. …:00Z vs …:00.000Z) when comparing.
+  const closedBoundIso = new Date(
+    new Date(MARKET_TIME).getTime() - 60_000,
+  ).toISOString();
   const normalizeIso = (v: unknown): string | null => {
     if (typeof v !== 'string') return null;
     const parsed = new Date(v);
@@ -137,9 +141,9 @@ function setupSqlDispatch(symbolMap: Record<string, SymbolData | null>) {
 
       if (query.includes('ORDER BY ts DESC LIMIT 1') && query.includes('<=')) {
         // Either latest or 1H-ago; disambiguate by the ts bound passed
-        // in. Normalize both sides through new Date(...).toISOString()
+        // in (now - 60 s for the latest closed bar, now - 60 min for 1H ago). Normalize both sides through new Date(...).toISOString()
         // so precision differences don't flip the branch.
-        const isLatest = values.some((v) => normalizeIso(v) === nowIso);
+        const isLatest = values.some((v) => normalizeIso(v) === closedBoundIso);
         if (isLatest) {
           return Promise.resolve([
             { close: data.latestClose, ts: data.latestTs },

@@ -8,10 +8,14 @@
  * historical timestamp. Behavior is otherwise identical.
  *
  * Key invariants:
- *   - "Latest bar" is the most recent bar with `ts <= at`, NOT the
- *     absolute latest bar for the symbol. This is what makes the
- *     historical picker correct — walking back in time must not leak
- *     future information.
+ *   - "Latest bar" is the most recent bar that has closed by `at`
+ *     (`ts <= at - 60 s`), NOT the absolute latest bar for the symbol.
+ *     This is what makes the historical picker correct — walking back in
+ *     time must not leak future information, and neither may the minute
+ *     `at` is still inside. uw-stream writes a minute's bar only once the
+ *     next minute prints, so the live cron has always seen exactly this
+ *     set; reading the same set for a past `at` reproduces the row the
+ *     cron wrote.
  *   - A bar only stands in for the price at a moment T if it printed
  *     within MAX_BAR_AGE_MS of T (see below). A symbol whose latest bar
  *     is older than that has no snapshot at all.
@@ -70,6 +74,14 @@ export const FUTURES_SYMBOLS = ['ES', 'NQ', 'ZN', 'RTY', 'CL', 'GC'] as const;
  */
 const MAX_BAR_AGE_MS = 15 * 60 * 1000;
 
+/**
+ * A 1-minute bar stamped `ts` covers [ts, ts + 1 min), so it has closed, and
+ * is visible, only once `at >= ts + 60 s`. Bars are minute-aligned, so
+ * `ts <= at - 60 s` admits the bar of the previous minute and never the bar
+ * of the minute `at` falls in.
+ */
+const BAR_CLOSE_LAG_MS = 60 * 1000;
+
 export type FuturesSymbol = (typeof FUTURES_SYMBOLS)[number];
 
 export interface SnapshotRow {
@@ -87,7 +99,7 @@ export interface SnapshotRow {
  *   - `fresh`: a snapshot from a bar within MAX_BAR_AGE_MS of `at`.
  *   - `stale`: bars exist but the newest is too old — a stopped feed.
  *     Both fields are null when the bar's ts is unparseable.
- *   - `missing`: no bar at or before `at` at all (e.g. a symbol never
+ *   - `missing`: no bar closed by `at` at all (e.g. a symbol never
  *     ingested).
  */
 export type SnapshotResult =
@@ -142,12 +154,12 @@ function pctChange(price: number, ref: number | null): number | null {
  * @param tradeDate ET calendar date used for "day change" and today's
  *                  volume (typically `getETDateStr(at)`).
  * @param at        The "now" moment from the caller's perspective. The
- *                  latest bar is the most recent bar with `ts <= at`.
- *                  20-day avg volume window ends at `at`.
- * @returns         `fresh` with the snapshot, `stale` when the latest bar
- *                  at or before `at` is more than MAX_BAR_AGE_MS older
- *                  than `at`, or `missing` when there is no such bar.
- *                  DB errors reject.
+ *                  latest bar is the most recent bar that has closed by
+ *                  `at` (`ts <= at - 60 s`). The 20-day avg volume window
+ *                  and today's volume run through that same bar.
+ * @returns         `fresh` with the snapshot, `stale` when the latest closed
+ *                  bar is more than MAX_BAR_AGE_MS older than `at`, or
+ *                  `missing` when there is no such bar. DB errors reject.
  */
 export async function computeSnapshot(
   symbol: FuturesSymbol,
@@ -155,14 +167,16 @@ export async function computeSnapshot(
   at: Date,
 ): Promise<SnapshotResult> {
   const sql = getDb();
-  const atIso = at.toISOString();
   const atMs = at.getTime();
+  // Only bars that have closed by `at` count (see BAR_CLOSE_LAG_MS).
+  const closedMs = atMs - BAR_CLOSE_LAG_MS;
+  const closedIso = new Date(closedMs).toISOString();
 
-  // Latest bar at or before `at`
+  // Latest bar that has closed by `at`
   const latestRows = await sql`
     SELECT close, ts FROM futures_bars
     WHERE symbol = ${symbol}
-      AND ts <= ${atIso}
+      AND ts <= ${closedIso}
     ORDER BY ts DESC LIMIT 1
   `;
   if (latestRows.length === 0) return { kind: 'missing' };
@@ -181,7 +195,7 @@ export async function computeSnapshot(
     logger.info(
       {
         symbol,
-        at: atIso,
+        at: at.toISOString(),
         latestTs: stale.latestTs,
         ageMinutes: stale.ageMinutes,
       },
@@ -235,8 +249,8 @@ export async function computeSnapshot(
     ORDER BY ts ASC LIMIT 1
   `;
   // The open bar must print within MAX_BAR_AGE_MS of 9:30 ET (a later
-  // first bar means the feed was down at the open) and not after `at`
-  // (before the open, or a historical pick, it would be a future bar).
+  // first bar means the feed was down at the open) and must have closed by
+  // `at` (before the open, or a historical pick, it would be a future bar).
   // Days with no cash session (Sunday evening) therefore get null.
   const dayOpenMs = new Date(dayOpenTs).getTime();
   const changeDayPct = pctChange(
@@ -244,11 +258,11 @@ export async function computeSnapshot(
     closeWithin(
       dayOpenRows[0],
       dayOpenMs,
-      Math.min(atMs, dayOpenMs + MAX_BAR_AGE_MS),
+      Math.min(closedMs, dayOpenMs + MAX_BAR_AGE_MS),
     ),
   );
 
-  // 20-day average daily volume, ending at `at`.
+  // 20-day average daily volume, through the last closed bar.
   const twentyDaysAgo = new Date(at.getTime() - 20 * 24 * 60 * 60 * 1000);
   const avgVolRows = await sql`
     SELECT
@@ -259,18 +273,18 @@ export async function computeSnapshot(
       FROM futures_bars
       WHERE symbol = ${symbol}
         AND ts >= ${twentyDaysAgo.toISOString()}
-        AND ts <= ${atIso}
+        AND ts <= ${closedIso}
       GROUP BY DATE(ts)
     ) sub
   `;
 
-  // Today's volume, up to `at`.
+  // Today's volume, through the last closed bar.
   const todayVolRows = await sql`
     SELECT SUM(volume) AS today_vol
     FROM futures_bars
     WHERE symbol = ${symbol}
       AND ts >= ${dayOpenTs}
-      AND ts <= ${atIso}
+      AND ts <= ${closedIso}
   `;
 
   let volumeRatio: number | null = null;

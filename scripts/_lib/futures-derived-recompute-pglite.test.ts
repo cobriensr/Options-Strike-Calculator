@@ -221,9 +221,10 @@ async function bar(
 
 /**
  * One trading day of bars (EDT, so the cash open is 13:30Z): a prior-day bar of
- * volume 1000, the open bar, the hour-ago bar and the latest bar, 100 each. A
- * snapshot at 14:31:30 therefore recomputes to price `now`, a 1h and day change
- * of (now - ref) / ref, and a volume ratio of 300 / avg(1000, 300) = 0.4615.
+ * volume 1000, the open bar, the hour-ago bar and the last closed bar (14:30,
+ * which closed at 14:31), 100 each. A snapshot at 14:31:30 therefore recomputes
+ * to price `now`, a 1h and day change of (now - ref) / ref, and a volume ratio
+ * of 300 / avg(1000, 300) = 0.4615.
  */
 async function snapshotDay(
   symbol: 'ES' | 'NQ',
@@ -241,7 +242,7 @@ async function snapshotDay(
   const v = symbol === 'ES' ? 100 : 50;
   await bar(symbol, `${date}T13:30:00Z`, ref, v);
   await bar(symbol, `${date}T13:31:00Z`, ref, v);
-  await bar(symbol, `${date}T14:31:00Z`, now, v);
+  await bar(symbol, `${date}T14:30:00Z`, now, v);
 }
 
 async function snapshotRow(

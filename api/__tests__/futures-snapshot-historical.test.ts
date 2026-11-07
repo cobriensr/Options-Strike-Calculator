@@ -105,9 +105,12 @@ function setupHistoricalDispatch(opts: {
   spx?: string | null;
 }) {
   const { symbols, oldestTs, spx = null } = opts;
-  // Canonical ISO of the picked `at` so we can compare regardless of
-  // the exact sub-second formatting the endpoint happens to emit.
-  const pickedAtIso = new Date(PICKED_AT).toISOString();
+  // Canonical ISO of the latest-bar bound (the last bar closed by the picked
+  // `at`: ts <= at - 60 s) so we can compare regardless of the exact
+  // sub-second formatting the endpoint happens to emit.
+  const closedBoundIso = new Date(
+    new Date(PICKED_AT).getTime() - 60_000,
+  ).toISOString();
   const normalizeIso = (v: unknown): string | null => {
     if (typeof v !== 'string') return null;
     const parsed = new Date(v);
@@ -139,10 +142,10 @@ function setupHistoricalDispatch(opts: {
       if (!data) return Promise.resolve([]);
 
       if (query.includes('ORDER BY ts DESC LIMIT 1') && query.includes('<=')) {
-        // Latest-bar query uses `atIso` as the bound; 1H-ago query uses
+        // Latest-bar query uses `at - 60 s` as the bound; 1H-ago query uses
         // `at - 60m`. Normalize both sides through `new Date(x).toISOString()`
         // so we're resilient to sub-second formatting drift.
-        const isLatest = values.some((v) => normalizeIso(v) === pickedAtIso);
+        const isLatest = values.some((v) => normalizeIso(v) === closedBoundIso);
         if (isLatest) {
           return Promise.resolve([
             { close: data.latestClose, ts: data.latestTs },
