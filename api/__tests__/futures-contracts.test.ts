@@ -21,6 +21,7 @@ import {
   MONTH_CODES,
   ROLL_GUARD_CLOSES,
   SEED_LOOKBACK_DAYS,
+  canonicalContract,
   compareExpiry,
   fetchFuturesContracts,
   frontMonthCandidates,
@@ -372,6 +373,62 @@ describe('parseContract', () => {
   });
 });
 
+describe('canonicalContract', () => {
+  const REF = '2026-06-15T12:00:00.000Z';
+
+  it.each([
+    ['a one-digit year is already canonical', 'ESZ6', 'ESZ6'],
+    ['a two-digit year folds to its last digit', 'ESZ26', 'ESZ6'],
+    ['a next-year two-digit spelling', 'ESH27', 'ESH7'],
+    ['a decade rollover spelling', 'ESH30', 'ESH0'],
+    ['a leading-zero year', 'ESH07', 'ESH7'],
+    ['a one-digit zero', 'ESH0', 'ESH0'],
+  ])('%s', (_label, sym, expected) => {
+    expect(canonicalContract('ES', sym, REF)).toBe(expected);
+  });
+
+  it('keeps the root, for every root', () => {
+    for (const root of FUTURES_ROOTS) {
+      expect(canonicalContract(root, `${root}Z26`, REF)).toBe(`${root}Z6`);
+    }
+  });
+
+  it('is null exactly where parseContract is null', () => {
+    for (const sym of [
+      'ESZ6\n',
+      'ESZ6-ESH7',
+      'NQZ6',
+      'esz6',
+      'ESZ2026',
+      'ES',
+      '',
+      'ESA6',
+    ]) {
+      expect(parseContract('ES', sym, REF)).toBeNull();
+      expect(canonicalContract('ES', sym, REF)).toBeNull();
+    }
+  });
+
+  it('is the one-digit spelling of the parsed year, for every month code and two-digit year', () => {
+    for (const code of MONTH_CODES) {
+      for (let yy = 0; yy < 100; yy++) {
+        const sym = `ES${code}${String(yy).padStart(2, '0')}`;
+        const parsed = parseContract('ES', sym, REF);
+        expect(parsed).not.toBeNull();
+        expect(canonicalContract('ES', sym, REF)).toBe(
+          `ES${code}${(parsed?.year ?? 0) % 10}`,
+        );
+      }
+    }
+  });
+
+  it('throws on an unparseable reference time, like parseContract', () => {
+    expect(() => canonicalContract('ES', 'ESZ6', 'not a time')).toThrow(
+      /reference time/,
+    );
+  });
+});
+
 describe('compareExpiry', () => {
   it.each<[string, [number, number], [number, number], number]>([
     ['a later year wins over a later month', [12, 2026], [1, 2027], -1],
@@ -412,8 +469,12 @@ describe('nullSeedContract', () => {
     ['ES', '2029-12-20T00:00:00.000Z', 'ESZ9'],
     ['ES', '2030-01-01T00:00:00.000Z', 'ESH0'],
     // NQ, RTY and ZN share the quarterly cycle.
+    ['NQ', '2026-09-30T23:59:59.999Z', 'NQU6'],
+    ['NQ', '2026-10-01T00:00:00.000Z', 'NQZ6'],
     ['NQ', '2026-11-07T00:00:00.000Z', 'NQZ6'],
     ['NQ', '2029-12-20T00:00:00.000Z', 'NQZ9'],
+    ['RTY', '2026-06-30T23:59:59.999Z', 'RTYM6'],
+    ['RTY', '2026-07-01T00:00:00.000Z', 'RTYU6'],
     ['RTY', '2026-12-31T23:59:59.999Z', 'RTYZ6'],
     ['RTY', '2027-01-01T00:00:00.000Z', 'RTYH7'],
     ['ZN', '2026-03-31T23:59:59.999Z', 'ZNH6'],
@@ -480,7 +541,7 @@ interface RollCase {
     volumes: Record<string, number>;
   }>;
   takeovers: Array<{ ts: string; contract: string }>;
-  front: string;
+  front: string | null;
   skipped: string[];
 }
 
@@ -674,6 +735,10 @@ describe('replayRollForward: guards and edges', () => {
       front: null,
       skipped: [],
     });
+    // The seed is returned under its canonical name.
+    expect(replayRollForward(new Map(), { root: 'ES', seed: 'ESZ26' })).toEqual(
+      { rows: [], takeovers: [], front: 'ESZ6', skipped: [] },
+    );
     expect(
       replayRollForward(new Map([['ESZ6', []]]), { root: 'ES', seed: null })
         .front,
@@ -692,6 +757,45 @@ describe('replayRollForward: guards and edges', () => {
     expect(result.rows).toEqual([]);
     expect(result.front).toBe('ESZ6');
   });
+
+  it('emits a front fed under its two-digit name as its canonical contract, with the caller row', () => {
+    const z26 = { ts: '2026-12-10T00:00:00.000Z', volume: 5 };
+    const { rows, front } = replayRollForward(new Map([['ESZ26', [z26]]]), {
+      root: 'ES',
+      seed: 'ESZ6',
+    });
+    expect(front).toBe('ESZ6');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.contract).toBe('ESZ6');
+    expect(rows[0]?.row).toBe(z26);
+  });
+
+  it.each([
+    ['inserted one-digit first', ['ESZ6', 'ESZ26']],
+    ['inserted two-digit first', ['ESZ26', 'ESZ6']],
+  ])(
+    'when two spellings print the same minute, emits the larger volume (%s), and a tie goes to the codepoint-smaller key',
+    (_label, order) => {
+      const ts = '2026-12-10T00:00:00.000Z';
+      const emitted = (small: number, large: number) => {
+        const rows = new Map(
+          order.map((key) => [
+            key,
+            [{ key, ts, volume: key === 'ESZ6' ? small : large }],
+          ]),
+        );
+        return replayRollForward(rows, { root: 'ES', seed: 'ESZ6' }).rows.map(
+          (e) => e.row.key,
+        );
+      };
+      // ESZ6 carries 2, ESZ26 carries 9: the two-digit spelling wins.
+      expect(emitted(2, 9)).toEqual(['ESZ26']);
+      // And the other way round.
+      expect(emitted(9, 2)).toEqual(['ESZ6']);
+      // Equal volumes: 'ESZ26' < 'ESZ6' by code point.
+      expect(emitted(4, 4)).toEqual(['ESZ26']);
+    },
+  );
 
   it('throws, naming the contract, on a row whose ts does not parse', () => {
     expect(() =>
@@ -712,10 +816,16 @@ function lcg(seed: number): () => number {
   };
 }
 
-/** 50 hours of three contracts whose rates and presence change by regime. */
+/**
+ * 50 hours of three contracts whose rates and presence change by regime.
+ * Each print is spelled with a one-digit year, a two-digit year, or both in
+ * the same minute (two keys for one contract, each with its own volume).
+ */
 function randomRolls(seed: number): Map<string, ContractMinute[]> {
   const rand = lcg(seed);
-  const keys = ['ESZ6', 'ESH7', 'ESM7'];
+  const contracts = ['ESZ6', 'ESH7', 'ESM7'];
+  const twoDigit = (name: string) => `${name.slice(0, 3)}2${name.slice(3)}`;
+  const keys = [...contracts, ...contracts.map(twoDigit)];
   const rates = [0, 1, 3, 10];
   const presences = [0.02, 0.3, 1];
   const start = Date.parse('2026-12-08T10:00:00.000Z');
@@ -728,14 +838,22 @@ function randomRolls(seed: number): Map<string, ContractMinute[]> {
   for (let i = 0; i < 3000; i++) {
     if (i >= regimeEnd) {
       regimeEnd = i + 150 + Math.floor(rand() * 600);
-      rate = keys.map(() => rates[Math.floor(rand() * rates.length)] ?? 0);
-      presence = keys.map(
+      rate = contracts.map(() => rates[Math.floor(rand() * rates.length)] ?? 0);
+      presence = contracts.map(
         () => presences[Math.floor(rand() * presences.length)] ?? 0,
       );
     }
     const ts = new Date(start + i * MINUTE_MS).toISOString();
-    keys.forEach((key, j) => {
-      if (rand() < (presence[j] ?? 0)) {
+    contracts.forEach((name, j) => {
+      if (rand() >= (presence[j] ?? 0)) return;
+      const spelling = rand();
+      const spelled =
+        spelling < 0.25
+          ? [twoDigit(name)]
+          : spelling < 0.4
+            ? [name, twoDigit(name)]
+            : [name];
+      for (const key of spelled) {
         const volume = Math.floor(rand() * 2 * (rate[j] ?? 0));
         byContract.get(key)?.push({ ts, volume });
       }
@@ -748,7 +866,8 @@ function randomRolls(seed: number): Map<string, ContractMinute[]> {
  * The rule read one wall-clock minute at a time: count consecutive leading
  * closes (quiet minutes included), switch the front for the minute after the
  * Nth, clear the tally and the count at 00:00 UTC. No gap arithmetic, so it
- * is an independent check of the module's row-to-row jumps.
+ * is an independent check of the module's row-to-row jumps. Two-digit
+ * spellings fold to the one-digit name here by slicing (ES keys only).
  */
 function referenceRoll(
   root: FuturesRoot,
@@ -763,6 +882,7 @@ function referenceRoll(
       rowsAt.set(Date.parse(row.ts), at);
     }
   }
+  const canon = (key: string) => key.slice(0, 3) + key.slice(-1);
   const times = [...rowsAt.keys()];
   const first = Math.min(...times);
   const last = Math.max(...times);
@@ -772,15 +892,15 @@ function referenceRoll(
     if (parsed == null) throw new Error(`bad key ${sym}`);
     return parsed;
   };
-  const later = [...byContract.keys()].sort(
+  const later = [...new Set([...byContract.keys()].map(canon))].sort(
     (a, b) => compareExpiry(expiry(a), expiry(b)) || (a < b ? -1 : 1),
   );
 
-  let front = seed;
+  let front = canon(seed);
   let streak: string | null = null;
   let closes = 0;
   const tally = new Map<string, number>();
-  const rows: Array<{ contract: string; ts: string }> = [];
+  const rows: Array<{ contract: string; ts: string; volume: number }> = [];
   const takeovers: Array<{ ts: string; contract: string }> = [];
   for (let ms = first; ms <= last; ms += MINUTE_MS) {
     if (ms % DAY_MS === 0) {
@@ -789,11 +909,24 @@ function referenceRoll(
       closes = 0;
     }
     const at = rowsAt.get(ms);
-    const frontRow = at?.get(front);
-    if (frontRow != null) rows.push({ contract: front, ts: frontRow.ts });
     if (at != null) {
-      for (const [contract, row] of at) {
-        tally.set(contract, (tally.get(contract) ?? 0) + row.volume);
+      // The front's spellings at this minute: the larger volume is emitted,
+      // a tie goes to the smaller key.
+      const frontRow = [...at]
+        .filter(([key]) => canon(key) === front)
+        .sort(
+          ([ka, a], [kb, b]) =>
+            b.volume - a.volume || (ka < kb ? -1 : ka > kb ? 1 : 0),
+        )[0]?.[1];
+      if (frontRow != null) {
+        rows.push({
+          contract: front,
+          ts: frontRow.ts,
+          volume: frontRow.volume,
+        });
+      }
+      for (const [key, row] of at) {
+        tally.set(canon(key), (tally.get(canon(key)) ?? 0) + row.volume);
       }
     }
     let challenger: string | null = null;
@@ -830,7 +963,7 @@ function referenceRoll(
 }
 
 describe('replayRollForward: against a minute-by-minute reading', () => {
-  it('agrees on rows, takeovers and front for 300 random three-contract sessions', () => {
+  it('agrees on rows, takeovers and front for 300 random three-contract sessions, with two spellings per contract', () => {
     let withTakeover = 0;
     let takeoverCount = 0;
     for (let seed = 1; seed <= 300; seed++) {
@@ -843,14 +976,18 @@ describe('replayRollForward: against a minute-by-minute reading', () => {
       expect(actual.takeovers, `seed ${seed}`).toEqual(expected.takeovers);
       expect(actual.front, `seed ${seed}`).toBe(expected.front);
       expect(
-        actual.rows.map((e) => ({ contract: e.contract, ts: e.row.ts })),
+        actual.rows.map((e) => ({
+          contract: e.contract,
+          ts: e.row.ts,
+          volume: e.row.volume,
+        })),
         `seed ${seed}`,
       ).toEqual(expected.rows);
       if (actual.takeovers.length > 0) withTakeover++;
       takeoverCount += actual.takeovers.length;
     }
     // A comparison that never sees a roll proves nothing. (The generator is
-    // deterministic: 297 sessions roll, 418 takeovers in all.)
+    // deterministic: 298 sessions roll, 418 takeovers in all.)
     expect(withTakeover).toBeGreaterThanOrEqual(200);
     expect(takeoverCount).toBeGreaterThanOrEqual(300);
   });

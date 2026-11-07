@@ -27,11 +27,13 @@
  *     forward, and a later contract takes over only after leading the
  *     tally for `ROLL_GUARD_CLOSES` consecutive minute closes.
  *     `parseContract`, `compareExpiry` and `nullSeedContract` give it the
- *     expiry order and the cold-start seed.
+ *     expiry order and the cold-start seed, and `canonicalContract` the one
+ *     name a contract has everywhere.
  *
- * The uw-stream handler carries a Python copy of the new rule. Both copies
- * run the cases in `api/__tests__/fixtures/futures-roll-cases.json`, so
- * they can't drift apart.
+ * The uw-stream handler will carry a Python copy of the new rule (Task
+ * 6d). Both copies are to run the cases in
+ * `api/__tests__/fixtures/futures-roll-cases.json`, so they can't drift
+ * apart.
  */
 
 import { uwFetch, withRetry } from './api-helpers.js';
@@ -281,6 +283,29 @@ export function parseContract(
   return isOutright(root, sym) ? decodeContract(root, sym, refYear) : null;
 }
 
+/** `sym` must already pass `isOutright`: root + month code + last digit. */
+function canonicalName(root: FuturesRoot, sym: string): string {
+  return sym.slice(0, root.length + 1) + sym.slice(-1);
+}
+
+/**
+ * The one name a contract has everywhere (stored `contract` values, seeds,
+ * the tally): the one-digit form, `${root}${code}${year % 10}`, so `ESZ26`
+ * is `ESZ6`. Null where `parseContract` is null, and it throws on a bad
+ * `refIso` the same way; the name itself does not depend on `refIso`.
+ * A two-digit year folds to its last digit even when it lies outside the
+ * one-digit window, so spellings a decade apart are not told apart.
+ */
+export function canonicalContract(
+  root: FuturesRoot,
+  sym: string,
+  refIso: string,
+): string | null {
+  return parseContract(root, sym, refIso) == null
+    ? null
+    : canonicalName(root, sym);
+}
+
 /** Orders two contracts by (year, month): negative when `a` expires first. */
 export function compareExpiry(a: ParsedContract, b: ParsedContract): number {
   return a.year - b.year || a.month - b.month;
@@ -341,6 +366,39 @@ function maturityOf(startMs: number): number | null {
   return dayOf(lastClose) === dayOf(startMs) ? lastClose + MINUTE_MS : null;
 }
 
+/** One key's row at one minute, with the canonical name of its contract. */
+interface Spelled<T> {
+  name: string;
+  row: T;
+}
+
+/**
+ * One minute's rows by canonical name. Spellings of one contract sum their
+ * volumes; the row kept is the larger volume's, a tie going to the
+ * codepoint-smaller key, whatever the iteration order.
+ */
+function foldSpellings<T extends ContractMinute>(
+  spelled: ReadonlyMap<string, Spelled<T>>,
+): Map<string, { key: string; row: T; total: number }> {
+  const byName = new Map<string, { key: string; row: T; total: number }>();
+  for (const [key, { name, row }] of spelled) {
+    const seen = byName.get(name);
+    if (seen == null) {
+      byName.set(name, { key, row, total: row.volume });
+      continue;
+    }
+    seen.total += row.volume;
+    if (
+      row.volume > seen.row.volume ||
+      (row.volume === seen.row.volume && key < seen.key)
+    ) {
+      seen.key = key;
+      seen.row = row;
+    }
+  }
+  return byName;
+}
+
 export interface RollForwardResult<T extends ContractMinute> {
   /** The front's row for each minute it has one, in time order. */
   rows: Array<{ contract: string; row: T }>;
@@ -384,6 +442,14 @@ export interface RollForwardResult<T extends ContractMinute> {
  * the last row is applied, and recorded as a takeover (its `ts` may then be
  * that next minute), so `front` is what the next minute would be on.
  *
+ * Every key and the seed are first folded to their canonical one-digit name
+ * (`canonicalContract`), and `takeovers`, `front` and each emitted
+ * `contract` use it. If two keys fold into one contract (`ESZ6` and
+ * `ESZ26`), their volumes sum in the tally, and the minute's emitted row is
+ * the one with the larger volume (a tie goes to the codepoint-smaller key).
+ * Otherwise a front fed under a second spelling would be tallied at 0 and
+ * the next contract would take over early.
+ *
  * Keys that are not an outright of `root` are left out and listed in
  * `skipped`. One-digit years resolve against the UTC year of the first
  * minute. Throws on a seed that is not an outright of `root` (it comes
@@ -399,25 +465,27 @@ export function replayRollForward<T extends ContractMinute>(
       `replayRollForward: seed ${JSON.stringify(seed)} is not an outright ${root} contract`,
     );
   }
+  const seedName = seed == null ? null : canonicalName(root, seed);
 
   const skipped: string[] = [];
-  const outrights: string[] = [];
-  const byMinute = new Map<number, Map<string, T>>();
-  for (const [contract, rows] of byContract) {
-    if (!isOutright(root, contract)) {
-      skipped.push(contract);
+  const names = new Set<string>();
+  const byMinute = new Map<number, Map<string, Spelled<T>>>();
+  for (const [key, rows] of byContract) {
+    if (!isOutright(root, key)) {
+      skipped.push(key);
       continue;
     }
-    outrights.push(contract);
+    const name = canonicalName(root, key);
+    names.add(name);
     for (const row of rows) {
       const ms = Date.parse(row.ts);
       if (Number.isNaN(ms)) {
         throw new Error(
-          `replayRollForward: ${contract} row has an unparseable ts ${JSON.stringify(row.ts)}`,
+          `replayRollForward: ${key} row has an unparseable ts ${JSON.stringify(row.ts)}`,
         );
       }
-      const minute = byMinute.get(ms) ?? new Map<string, T>();
-      minute.set(contract, row);
+      const minute = byMinute.get(ms) ?? new Map<string, Spelled<T>>();
+      minute.set(key, { name, row });
       byMinute.set(ms, minute);
     }
   }
@@ -425,10 +493,12 @@ export function replayRollForward<T extends ContractMinute>(
 
   const minutes = [...byMinute].sort((a, b) => a[0] - b[0]);
   const firstMs = minutes[0]?.[0];
-  if (firstMs == null) return { rows: [], takeovers: [], front: seed, skipped };
+  if (firstMs == null) {
+    return { rows: [], takeovers: [], front: seedName, skipped };
+  }
 
   const refYear = new Date(firstMs).getUTCFullYear();
-  const byExpiry: Contender[] = outrights
+  const byExpiry: Contender[] = [...names]
     .map((contract) => ({
       contract,
       expiry: decodeContract(root, contract, refYear),
@@ -446,9 +516,12 @@ export function replayRollForward<T extends ContractMinute>(
   // the way it would plain `let`s.
   const state: { front: Contender; streak: Streak | null } = {
     front:
-      seed == null
+      seedName == null
         ? { contract: formatContract(root, cycleSeed), expiry: cycleSeed }
-        : { contract: seed, expiry: decodeContract(root, seed, refYear) },
+        : {
+            contract: seedName,
+            expiry: decodeContract(root, seedName, refYear),
+          },
     streak: null,
   };
 
@@ -465,7 +538,7 @@ export function replayRollForward<T extends ContractMinute>(
 
   let day = dayOf(firstMs);
   let lastMs = firstMs;
-  for (const [ms, atMinute] of minutes) {
+  for (const [ms, spelled] of minutes) {
     lastMs = ms;
     applyMatured(ms);
     if (dayOf(ms) !== day) {
@@ -474,12 +547,13 @@ export function replayRollForward<T extends ContractMinute>(
       state.streak = null;
     }
 
-    const frontRow = atMinute.get(state.front.contract);
+    const atMinute = foldSpellings(spelled);
+    const frontRow = atMinute.get(state.front.contract)?.row;
     if (frontRow != null) {
       rows.push({ contract: state.front.contract, row: frontRow });
     }
-    for (const [contract, row] of atMinute) {
-      tally.set(contract, (tally.get(contract) ?? 0) + row.volume);
+    for (const [contract, { total }] of atMinute) {
+      tally.set(contract, (tally.get(contract) ?? 0) + total);
     }
 
     // Ascending expiry, replacing only on a strictly larger tally: a tie

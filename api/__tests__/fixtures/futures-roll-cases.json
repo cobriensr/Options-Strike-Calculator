@@ -1,5 +1,5 @@
 {
-  "format": "Shared by the TypeScript (api/__tests__/futures-contracts.test.ts) and Python (uw-stream) roll-forward rule tests. To run a case: build one list of rows per contract key, in order of first appearance in the segments. A segment is k consecutive minutes starting at `from`; in each of them every contract named in `volumes` gets one row (ts, volume), and a contract not named has no row that minute. All timestamps are UTC minutes in the form YYYY-MM-DDTHH:MM:00.000Z. A volume of 0 is still a row. Minutes between segments have no rows at all. Run the rule with the case's `root` and `seed` (null means no seed). Compare the result to `takeovers` (ts is the first minute on the new contract, in time order), `front` (the front after the last row, for the minute that follows it) and `skipped` (keys the parser rejects, sorted ascending by code point) exactly. `N` is the guard length in minute closes.",
+  "format": "Shared by the TypeScript (api/__tests__/futures-contracts.test.ts) roll-forward rule tests and by the Python (uw-stream, Task 6d) tests, which are to run these same cases. To run a case: build one list of rows per contract key, in order of first appearance in the segments. A segment is k consecutive minutes starting at `from`; in each of them every contract named in `volumes` gets one row (ts, volume), and a contract not named has no row that minute. All timestamps are UTC minutes in the form YYYY-MM-DDTHH:MM:00.000Z. A volume of 0 is still a row. Minutes between segments have no rows at all. Run the rule with the case's `root` and `seed` (null means no seed). Keys are contract symbols as fed: the rule folds a key to its one-digit name (ESZ26 is ESZ6), so `takeovers` and `front` use the one-digit names. Compare the result to `takeovers` (ts is the first minute on the new contract, in time order), `front` (the front after the last row, for the minute that follows it; null only when `seed` is null and no row of a parseable key exists, so there is nothing to date a cold-start seed) and `skipped` (keys the parser rejects, sorted ascending by code point) exactly. `N` is the guard length in minute closes.",
   "N": 120,
   "cases": [
     {
@@ -540,6 +540,114 @@
       "skipped": []
     },
     {
+      "name": "null seed, GC in November: the even-month cycle seeds GCZ6",
+      "root": "GC",
+      "seed": null,
+      "segments": [
+        {
+          "from": "2026-11-10T01:00:00.000Z",
+          "minutes": 10,
+          "volumes": {
+            "GCZ6": 5,
+            "GCG7": 1
+          }
+        }
+      ],
+      "takeovers": [],
+      "front": "GCZ6",
+      "skipped": []
+    },
+    {
+      "name": "null seed, CL in December: CL stops a month early and the year wraps, so the cycle seeds CLF7",
+      "root": "CL",
+      "seed": null,
+      "segments": [
+        {
+          "from": "2026-12-10T01:00:00.000Z",
+          "minutes": 10,
+          "volumes": {
+            "CLF7": 5,
+            "CLG7": 1
+          }
+        }
+      ],
+      "takeovers": [],
+      "front": "CLF7",
+      "skipped": []
+    },
+    {
+      "name": "null seed, GC in January: the cycle seeds GCG7",
+      "root": "GC",
+      "seed": null,
+      "segments": [
+        {
+          "from": "2027-01-12T01:00:00.000Z",
+          "minutes": 10,
+          "volumes": {
+            "GCG7": 5,
+            "GCJ7": 1
+          }
+        }
+      ],
+      "takeovers": [],
+      "front": "GCG7",
+      "skipped": []
+    },
+    {
+      "name": "null seed, NQ in November: the quarterly cycle seeds NQZ6",
+      "root": "NQ",
+      "seed": null,
+      "segments": [
+        {
+          "from": "2026-11-10T01:00:00.000Z",
+          "minutes": 10,
+          "volumes": {
+            "NQZ6": 5,
+            "NQH7": 1
+          }
+        }
+      ],
+      "takeovers": [],
+      "front": "NQZ6",
+      "skipped": []
+    },
+    {
+      "name": "null seed, RTY in July: the quarterly cycle seeds RTYU6",
+      "root": "RTY",
+      "seed": null,
+      "segments": [
+        {
+          "from": "2026-07-01T01:00:00.000Z",
+          "minutes": 10,
+          "volumes": {
+            "RTYU6": 5,
+            "RTYZ6": 1
+          }
+        }
+      ],
+      "takeovers": [],
+      "front": "RTYU6",
+      "skipped": []
+    },
+    {
+      "name": "null seed, ZN in April: the quarterly cycle seeds ZNM7",
+      "root": "ZN",
+      "seed": null,
+      "segments": [
+        {
+          "from": "2027-04-01T01:00:00.000Z",
+          "minutes": 10,
+          "volumes": {
+            "ZNM7": 5,
+            "ZNU7": 1
+          }
+        }
+      ],
+      "takeovers": [],
+      "front": "ZNM7",
+      "skipped": []
+    },
+    {
       "name": "a stray far-dated contract: a burst of ESZ7 lots under 120 closes gives no takeover",
       "root": "ES",
       "seed": "ESH7",
@@ -690,6 +798,102 @@
       "takeovers": [],
       "front": "ESZ6",
       "skipped": []
+    },
+    {
+      "name": "two spellings: a front fed under its two-digit name still counts as the front",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-08T10:00:00.000Z",
+          "minutes": 130,
+          "volumes": {
+            "ESZ26": 5,
+            "ESH7": 1
+          }
+        }
+      ],
+      "takeovers": [],
+      "front": "ESZ6",
+      "skipped": []
+    },
+    {
+      "name": "two spellings of the front in the same minutes: their volumes sum against a challenger between the single and the summed volume",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-08T10:00:00.000Z",
+          "minutes": 130,
+          "volumes": {
+            "ESZ6": 3,
+            "ESZ26": 3,
+            "ESH7": 4
+          }
+        }
+      ],
+      "takeovers": [],
+      "front": "ESZ6",
+      "skipped": []
+    },
+    {
+      "name": "two spellings: a two-digit seed is the same contract as its one-digit name",
+      "root": "ES",
+      "seed": "ESZ26",
+      "segments": [
+        {
+          "from": "2026-12-08T10:00:00.000Z",
+          "minutes": 130,
+          "volumes": {
+            "ESZ6": 5,
+            "ESH7": 1
+          }
+        }
+      ],
+      "takeovers": [],
+      "front": "ESZ6",
+      "skipped": []
+    },
+    {
+      "name": "two spellings: a challenger fed with a two-digit year takes over under its one-digit name",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-08T10:00:00.000Z",
+          "minutes": 130,
+          "volumes": {
+            "ESZ6": 1,
+            "ESH27": 20
+          }
+        }
+      ],
+      "takeovers": [
+        {
+          "ts": "2026-12-08T12:00:00.000Z",
+          "contract": "ESH7"
+        }
+      ],
+      "front": "ESH7",
+      "skipped": []
+    },
+    {
+      "name": "null seed and only unparseable keys: nothing to date a seed, so front is null",
+      "root": "ES",
+      "seed": null,
+      "segments": [
+        {
+          "from": "2026-12-08T10:00:00.000Z",
+          "minutes": 5,
+          "volumes": {
+            "ESZ6-ESH7": 10,
+            "NQZ6": 3
+          }
+        }
+      ],
+      "takeovers": [],
+      "front": null,
+      "skipped": ["ESZ6-ESH7", "NQZ6"]
     },
     {
       "name": "unparseable keys are skipped and their volume never counts",
