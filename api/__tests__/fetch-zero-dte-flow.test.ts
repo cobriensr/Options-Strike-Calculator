@@ -44,7 +44,8 @@ import { reportCronRun } from '../_lib/axiom.js';
 
 // 2026-03-24 is on EDT (UTC-4): 09:30 ET is 13:30Z, 16:00 ET is 20:00Z.
 // Fixed "market hours" date: Tuesday 10:14 AM ET, a cron minute (:14). The
-// 10:00-10:05 and 10:05-10:10 buckets have closed; 10:10-10:15 is open.
+// 10:00-10:05 and 10:05-10:10 buckets have closed and settled; 10:10-10:15
+// is open.
 const MARKET_TIME = new Date('2026-03-24T14:14:00.000Z');
 // Fixed "outside hours" date: Tuesday 6:00 AM ET
 const OFF_HOURS_TIME = new Date('2026-03-24T11:00:00.000Z');
@@ -57,7 +58,7 @@ const at = (hhmmZ: string, day = '2026-03-24'): Date =>
 
 /**
  * One minute tick. The default is the last minute (14:04Z = 10:04 ET) of the
- * 10:00-10:05 bucket, which is closed at MARKET_TIME.
+ * 10:00-10:05 bucket, which has closed and settled at MARKET_TIME.
  */
 function makeFlowTick(overrides = {}) {
   return {
@@ -72,15 +73,20 @@ function makeFlowTick(overrides = {}) {
 }
 
 /**
- * UW's prefilled session grid for `day`: one tick per minute from the 09:30
- * ET open to the 16:00 ET close. Minutes that start at or after `filledUntil`
- * have not happened yet, so UW sends them with null values. The cumulative
- * ncp is the minute-of-session, so a bucket's value names its last minute.
+ * UW's prefilled session grid for `day`: one tick per minute from `openZ`
+ * (`minutes` of them: 390 is 09:30-15:59 ET). Minutes that start at or after
+ * `filledUntil` have not happened yet, so UW sends them with null values. The
+ * cumulative ncp is the minute-of-session, so a bucket's value names its last
+ * minute.
  */
-function tickGrid(day: string, filledUntil: Date) {
-  const open = at('13:30', day).getTime();
+function tickGrid(
+  day: string,
+  filledUntil: Date,
+  { openZ = '13:30', minutes = 390 } = {},
+) {
+  const open = at(openZ, day).getTime();
   const ticks: Array<Record<string, unknown>> = [];
-  for (let i = 0; i < 390; i++) {
+  for (let i = 0; i < minutes; i++) {
     const start = new Date(open + i * MINUTE);
     ticks.push(
       start < filledUntil
@@ -104,8 +110,20 @@ function tickGrid(day: string, filledUntil: Date) {
   return ticks;
 }
 
+/** The grid with one minute's fields replaced. */
+const withMinute = (
+  ticks: Array<Record<string, unknown>>,
+  hhmmZ: string,
+  overrides: Record<string, unknown>,
+) =>
+  ticks.map((tick) =>
+    tick.timestamp === `2026-03-24T${hhmmZ}:00.000Z`
+      ? { ...tick, ...overrides }
+      : tick,
+  );
+
 /** Stub fetch with the doubly-nested UW net-flow/expiry response structure */
-function stubFetch(ticks: unknown[] = []) {
+function stubFetch(ticks: unknown = []) {
   vi.stubGlobal(
     'fetch',
     vi.fn().mockResolvedValue({
@@ -126,20 +144,32 @@ function stubFetchEmpty() {
   );
 }
 
+type Outcome = 'inserted' | 'updated' | 'unchanged';
+const OUTCOME_ROWS: Record<Outcome, unknown[]> = {
+  inserted: [{ inserted: true }],
+  updated: [{ inserted: false }],
+  unchanged: [],
+};
+
 /**
- * Replace the batch transaction with a recorder: each INSERT's bound values
+ * Replace the batch transaction with a recorder: each upsert's bound values
  * (date, timestamp, source, ncp, npp, net_volume) are pushed to the returned
- * array. Every INSERT reports a stored row.
+ * array, and each is answered with `outcome(values, index)` (default: a new
+ * row).
  */
-function recordInserts() {
+function recordInserts(
+  outcome: (values: unknown[], index: number) => Outcome = () => 'inserted',
+) {
   const inserts: unknown[][] = [];
   mockTransaction.mockImplementation(
     async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+      const bound: unknown[][] = [];
       const queries = fn((_strings: unknown, ...values: unknown[]) => {
-        inserts.push(values);
+        bound.push(values);
         return {};
       });
-      return queries.map(() => [{ id: 1 }]);
+      inserts.push(...bound);
+      return queries.map((_q, i) => OUTCOME_ROWS[outcome(bound[i]!, i)]);
     },
   );
   return inserts;
@@ -160,17 +190,11 @@ describe('fetch-zero-dte-flow handler', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
-    mockSql.mockResolvedValue([{ id: 1 }]);
+    // The data-quality COUNT always answers one row.
+    mockSql.mockResolvedValue([{ total: 0, nonzero: 0 }]);
     mockSql.transaction = mockTransaction;
-    // Default: every row insert returns a row (stored), mirroring the
-    // ON CONFLICT DO NOTHING RETURNING id contract on a fresh insert.
-    mockTransaction.mockImplementation(
-      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
-        const txnFn = () => ({});
-        const queries = fn(txnFn);
-        return queries.map(() => [{ id: 1 }]);
-      },
-    );
+    // Default: every upsert in the batch inserts a new row.
+    recordInserts();
     process.env = { ...originalEnv };
     vi.setSystemTime(MARKET_TIME);
     process.env.CRON_SECRET = 'test-secret';
@@ -259,6 +283,21 @@ describe('fetch-zero-dte-flow handler', () => {
     expect(res._json).toMatchObject({ skipped: true });
   });
 
+  it.each([
+    ['09:24 ET, before the 09:25 buffer', '13:24', true],
+    ['09:29 ET, the first run', '13:29', false],
+    ['16:09 ET, the second attempt at the last bucket', '20:09', false],
+    ['16:10 ET, the last minute of the window', '20:10', false],
+    ['16:11 ET, after the window', '20:11', true],
+  ])('window: %s', async (_label, hhmmZ, skipped) => {
+    vi.setSystemTime(at(hhmmZ));
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch([]);
+    const res = await runCron();
+    expect(res._status).toBe(200);
+    expect(Boolean((res._json as { skipped?: boolean }).skipped)).toBe(skipped);
+  });
+
   // ── Missing API key ───────────────────────────────────────
 
   it('returns 500 when UW_API_KEY is not set', async () => {
@@ -281,6 +320,8 @@ describe('fetch-zero-dte-flow handler', () => {
     expect(res._json).toMatchObject({
       ticks: 1,
       stored: 1,
+      inserted: 1,
+      updated: 0,
       skipped: 0,
     });
     expect(mockTransaction).toHaveBeenCalledTimes(1);
@@ -298,8 +339,18 @@ describe('fetch-zero-dte-flow handler', () => {
     ]);
     expect(reportCronRun).toHaveBeenCalledWith(
       'fetch-zero-dte-flow',
-      expect.objectContaining({ status: 'ok', stored: 1 }),
+      expect.objectContaining({ status: 'ok', stored: 1, inserted: 1 }),
     );
+  });
+
+  it('stores NULL when UW sends no net_volume for the last minute', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    const inserts = recordInserts();
+    stubFetch([makeFlowTick({ net_volume: null })]);
+
+    await runCron();
+
+    expect(inserts[0]?.[5]).toBeNull();
   });
 
   it('handles empty outer data array (no ticks)', async () => {
@@ -375,18 +426,63 @@ describe('fetch-zero-dte-flow handler', () => {
     ]);
   });
 
-  // ── Duplicate handling ────────────────────────────────────
+  // ── Upsert: finality by self-heal ─────────────────────────
+
+  it('reports inserted and updated rows separately, and unchanged ones as skipped', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    recordInserts(
+      (_values, i) => (['inserted', 'updated', 'unchanged'] as const)[i % 3]!,
+    );
+    stubFetch([
+      makeFlowTick({ timestamp: '2026-03-24T13:34:00Z' }),
+      makeFlowTick({ timestamp: '2026-03-24T13:39:00Z' }),
+      makeFlowTick({ timestamp: '2026-03-24T13:44:00Z' }),
+    ]);
+
+    const res = await runCron();
+
+    expect(res._json).toMatchObject({
+      stored: 2,
+      inserted: 1,
+      updated: 1,
+      skipped: 1,
+    });
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'fetch-zero-dte-flow',
+      expect.objectContaining({ inserted: 1, updated: 1, skipped: 1 }),
+    );
+  });
+
+  it('writes with an upsert that only rewrites a changed row, never DO NOTHING', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    const texts: string[] = [];
+    mockTransaction.mockImplementation(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const queries = fn((strings: unknown) => {
+          texts.push((strings as string[]).join('?'));
+          return {};
+        });
+        return queries.map(() => OUTCOME_ROWS.inserted);
+      },
+    );
+    stubFetch([makeFlowTick()]);
+
+    await runCron();
+
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).toContain(
+      'ON CONFLICT (date, timestamp, source) DO UPDATE',
+    );
+    expect(texts[0]).toContain('IS DISTINCT FROM');
+    expect(texts[0]).toContain('RETURNING (xmax = 0) AS inserted');
+    expect(texts[0]).not.toContain('DO NOTHING');
+    expect(texts[0]).not.toContain('created_at');
+  });
 
   it('counts skipped duplicates correctly', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    // Empty result per query = ON CONFLICT DO NOTHING (duplicate)
-    mockTransaction.mockImplementationOnce(
-      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
-        const txnFn = () => ({});
-        const queries = fn(txnFn);
-        return queries.map(() => []);
-      },
-    );
+    // Empty result per query = the row already holds these values
+    recordInserts(() => 'unchanged');
     stubFetch([makeFlowTick()]);
 
     const res = await runCron();
@@ -456,16 +552,17 @@ describe('fetch-zero-dte-flow handler', () => {
     expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 
-  it('rejects and reports a snapshot whose closed buckets all have null or blank premium', async () => {
+  it('rejects and reports a snapshot whose only closed buckets are stuck with null or blank premium', async () => {
     process.env.UW_API_KEY = 'uwkey';
+    // The 09:50-09:55 and 09:55-10:00 buckets ended 19 and 14 minutes ago.
     stubFetch([
       makeFlowTick({
-        timestamp: '2026-03-24T14:04:00Z',
+        timestamp: '2026-03-24T13:54:00Z',
         net_call_premium: '',
         net_put_premium: '',
       }),
       makeFlowTick({
-        timestamp: '2026-03-24T14:09:00Z',
+        timestamp: '2026-03-24T13:59:00Z',
         net_call_premium: null,
         net_put_premium: null,
       }),
@@ -476,12 +573,38 @@ describe('fetch-zero-dte-flow handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       stored: 0,
-      unusable: 2,
+      stuck: 2,
       rejected: true,
     });
     // Neither a 0 nor a NULL row is written for them.
     expect(mockTransaction).not.toHaveBeenCalled();
-    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('rejected'),
+      expect.objectContaining({
+        level: 'error',
+        tags: expect.objectContaining({ stage: 'degenerate_snapshot' }),
+      }),
+    );
+  });
+
+  it('does not reject a snapshot whose only unusable bucket is pending (UW a few minutes late)', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // The 10:05-10:10 bucket ended 4 minutes ago and its last minute is null.
+    stubFetch([
+      makeFlowTick({
+        timestamp: '2026-03-24T14:09:00Z',
+        net_call_premium: null,
+        net_put_premium: null,
+      }),
+    ]);
+
+    const res = await runCron();
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ stored: 0, pending: 1, stuck: 0 });
+    expect(res._json).not.toMatchObject({ rejected: true });
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(metrics.increment).not.toHaveBeenCalled();
   });
 
   it('stores when at least one closed bucket carries net premium', async () => {
@@ -534,6 +657,7 @@ describe('fetch-zero-dte-flow handler', () => {
       expect.stringContaining('no rows for today'),
     );
     expect(Sentry.captureException).not.toHaveBeenCalled();
+    // Normal before 09:40 ET: no alert.
     expect(Sentry.captureMessage).not.toHaveBeenCalled();
     expect(reportCronRun).toHaveBeenCalledWith(
       'fetch-zero-dte-flow',
@@ -555,7 +679,8 @@ describe('fetch-zero-dte-flow handler', () => {
       ticks: 390,
       stored: 0,
       skipped: 0,
-      unusable: 0,
+      pending: 0,
+      stuck: 0,
     });
     expect(res._json).not.toMatchObject({ rejected: true });
     expect(mockTransaction).not.toHaveBeenCalled();
@@ -563,7 +688,7 @@ describe('fetch-zero-dte-flow handler', () => {
     expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 
-  it('10:04 ET: stores only the closed, non-null buckets, at bucket-end labels (R-closed, label rule)', async () => {
+  it('10:04 ET: stores only the closed, settled, non-null buckets, at bucket-end labels (R-closed, label rule)', async () => {
     vi.setSystemTime(at('14:04'));
     process.env.UW_API_KEY = 'uwkey';
     const inserts = recordInserts();
@@ -572,7 +697,12 @@ describe('fetch-zero-dte-flow handler', () => {
     const res = await runCron();
 
     expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({ stored: 6, skipped: 0, unusable: 0 });
+    expect(res._json).toMatchObject({
+      stored: 6,
+      skipped: 0,
+      pending: 0,
+      stuck: 0,
+    });
     // 09:30-09:35 is stored at 09:35 (13:35Z) ... 09:55-10:00 at 10:00 (14:00Z).
     // The value of each is its last minute's: 13:34 is minute 4 of the session.
     expect(inserts).toEqual([
@@ -630,33 +760,59 @@ describe('fetch-zero-dte-flow handler', () => {
     expect(metrics.increment).not.toHaveBeenCalled();
   });
 
-  it('leaves out a closed bucket whose last minute is null and counts it (R-null)', async () => {
-    vi.setSystemTime(at('14:04'));
+  it('waits for a bucket that ended less than 90 s ago, even though its last minute has a value', async () => {
+    vi.setSystemTime(new Date('2026-03-24T14:00:30.000Z'));
     process.env.UW_API_KEY = 'uwkey';
     const inserts = recordInserts();
-    const grid = tickGrid('2026-03-24', at('14:04')).map((tick) =>
-      tick.timestamp === '2026-03-24T13:44:00.000Z'
-        ? {
-            ...tick,
-            net_call_premium: null,
-            net_put_premium: null,
-            net_volume: null,
-          }
-        : tick,
-    );
+    stubFetch(tickGrid('2026-03-24', at('14:01')));
+
+    await runCron();
+
+    expect(inserts.at(-1)?.[1]).toBe('2026-03-24T13:55:00.000Z');
+  });
+
+  // ── Bad minutes: pending, stuck, never stored as 0 ────────
+
+  it('counts a closed bucket whose last minute is null and that ended 10 minutes ago or more as stuck, with one warning naming the oldest (R-null)', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    const inserts = recordInserts();
+    // The 09:55-10:00 bucket ended 14 minutes before MARKET_TIME; the 09:40
+    // one 29 minutes before.
+    let grid = withMinute(tickGrid('2026-03-24', MARKET_TIME), '13:59', {
+      net_call_premium: null,
+      net_put_premium: null,
+      net_volume: null,
+    });
+    grid = withMinute(grid, '13:44', { net_call_premium: 'garbage' });
     stubFetch(grid);
 
     const res = await runCron();
 
-    expect(res._json).toMatchObject({ stored: 5, unusable: 1 });
+    expect(res._json).toMatchObject({ stuck: 2, pending: 0 });
     expect(inserts.map((v) => v[1])).not.toContain('2026-03-24T13:45:00.000Z');
-    expect(metrics.increment).toHaveBeenCalledTimes(1);
+    expect(inserts.map((v) => v[1])).not.toContain('2026-03-24T14:00:00.000Z');
+    expect(metrics.increment).toHaveBeenCalledTimes(2);
     expect(metrics.increment).toHaveBeenCalledWith(
       'fetch_zero_dte_flow.invalid_candle',
     );
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('stuck'),
+      expect.objectContaining({
+        level: 'warning',
+        tags: expect.objectContaining({
+          cron: 'fetch-zero-dte-flow',
+          stage: 'stuck_bucket',
+        }),
+        extra: expect.objectContaining({
+          stuck: 2,
+          oldest: '2026-03-24T13:45:00.000Z',
+        }),
+      }),
+    );
   });
 
-  it('never stores a NaN premium in a past minute as 0 or NULL (R-null)', async () => {
+  it('never stores a NaN premium in a past minute as 0 or NULL; a bucket UW is only minutes late with is pending, not counted (R-null)', async () => {
     process.env.UW_API_KEY = 'uwkey';
     const inserts = recordInserts();
     stubFetch([
@@ -669,15 +825,36 @@ describe('fetch-zero-dte-flow handler', () => {
 
     const res = await runCron();
 
-    expect(res._json).toMatchObject({ stored: 1, unusable: 1 });
+    expect(res._json).toMatchObject({ stored: 1, pending: 1, stuck: 0 });
     expect(inserts).toHaveLength(1);
     expect(inserts[0]?.[1]).toBe('2026-03-24T14:05:00.000Z');
+    expect(metrics.increment).not.toHaveBeenCalled();
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('never stores a NaN premium in a stuck bucket either', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    const inserts = recordInserts();
+    stubFetch([
+      makeFlowTick({ timestamp: '2026-03-24T14:04:00Z' }),
+      makeFlowTick({
+        timestamp: '2026-03-24T13:59:00Z',
+        net_put_premium: 'not-a-number',
+      }),
+    ]);
+
+    const res = await runCron();
+
+    expect(res._json).toMatchObject({ stored: 1, stuck: 1 });
+    expect(inserts.map((v) => v[1])).toEqual(['2026-03-24T14:05:00.000Z']);
     expect(metrics.increment).toHaveBeenCalledWith(
       'fetch_zero_dte_flow.invalid_candle',
     );
   });
 
-  it('16:04 ET: stores the last bucket of the day (15:55-16:00) at 16:00 on the first run after it closes', async () => {
+  // ── Last bucket of the day, and the window around it ──────
+
+  it('16:04 ET: stores the last bucket of the day (15:55-16:00) at 16:00 on the first run after it settles', async () => {
     vi.setSystemTime(at('20:04'));
     process.env.UW_API_KEY = 'uwkey';
     const inserts = recordInserts();
@@ -699,24 +876,205 @@ describe('fetch-zero-dte-flow handler', () => {
     ]);
   });
 
+  it('16:09 ET: the second attempt re-sends the day and rewrites nothing that is unchanged', async () => {
+    vi.setSystemTime(at('20:09'));
+    process.env.UW_API_KEY = 'uwkey';
+    recordInserts(() => 'unchanged');
+    stubFetch(tickGrid('2026-03-24', at('20:00')));
+
+    const res = await runCron();
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ stored: 0, skipped: 78 });
+    // Nothing was written, so the quality query is not run.
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
   it('15:59 ET: the last bucket is still open and is not stored yet', async () => {
     vi.setSystemTime(at('19:59'));
     process.env.UW_API_KEY = 'uwkey';
     const inserts = recordInserts();
-    mockSql.mockResolvedValue([{ total: 77, nonzero: 77 }]);
     stubFetch(tickGrid('2026-03-24', at('19:59')));
 
     await runCron();
 
+    // The 15:55-16:00 bucket ends at 20:00; the 15:50-15:55 one settled at
+    // 19:56:30, so 77 buckets (labels 09:35 to 15:55) are stored.
     expect(inserts).toHaveLength(77);
     expect(inserts.at(-1)?.[1]).toBe('2026-03-24T19:55:00.000Z');
   });
 
-  // ── Data quality check ────────────────────────────────────
+  it('13:04 ET on an early-close day: stores the 12:55-13:00 bucket at 13:00 on the first run', async () => {
+    // 2026-11-27 is a half day on EST (UTC-5): 09:30 ET is 14:30Z, 13:00 ET
+    // is 18:00Z. UW sends 12:59 as its last session minute; the ticks after
+    // it are stray and must not open a 13:00-13:05 bucket.
+    vi.setSystemTime(at('18:04', '2026-11-27'));
+    process.env.UW_API_KEY = 'uwkey';
+    const inserts = recordInserts();
+    stubFetch(
+      tickGrid('2026-11-27', at('18:05', '2026-11-27'), {
+        openZ: '14:30',
+        minutes: 215,
+      }),
+    );
+
+    const res = await runCron();
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ stored: 42 });
+    expect(inserts.at(-1)?.[1]).toBe('2026-11-27T18:00:00.000Z');
+    expect(inserts.map((v) => v[0])).toEqual(Array(42).fill('2026-11-27'));
+  });
+
+  it('13:09 ET on an early-close day: ticks stamped after the 13:00 close do not open a bucket', async () => {
+    // The 13:00-13:05 bucket has ended and settled by 13:09, and UW's stray
+    // ticks in it carry values: it would be stored if the close were not the
+    // end of the session.
+    vi.setSystemTime(at('18:09', '2026-11-27'));
+    process.env.UW_API_KEY = 'uwkey';
+    const inserts = recordInserts();
+    stubFetch(
+      tickGrid('2026-11-27', at('18:05', '2026-11-27'), {
+        openZ: '14:30',
+        minutes: 215,
+      }),
+    );
+
+    const res = await runCron();
+
+    expect(res._json).toMatchObject({ stored: 42 });
+    expect(inserts.map((v) => v[1])).not.toContain('2026-11-27T18:05:00.000Z');
+  });
+
+  it('13:09 ET on an early-close day: still inside the window; 13:11 ET is not', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch([]);
+
+    vi.setSystemTime(at('18:09', '2026-11-27'));
+    const inside = await runCron();
+    // `skipped` is also this cron's count of unchanged rows: 0 here, not true.
+    expect(inside._json).not.toMatchObject({ skipped: true });
+
+    vi.setSystemTime(at('18:11', '2026-11-27'));
+    const outside = await runCron();
+    expect(outside._json).toMatchObject({ skipped: true });
+  });
+
+  // ── Feed stalled (item 4) ─────────────────────────────────
+
+  it('10:14 ET: an empty payload is surfaced as a stalled feed', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetchEmpty();
+
+    const res = await runCron();
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ stored: 0, reason: 'no_rows_today' });
+    expect(mockTransaction).not.toHaveBeenCalled();
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('no rows for today'),
+      expect.objectContaining({
+        level: 'warning',
+        tags: expect.objectContaining({
+          cron: 'fetch-zero-dte-flow',
+          stage: 'feed_stalled',
+        }),
+      }),
+    );
+  });
+
+  it("10:14 ET: a grid holding only yesterday's session is surfaced as a stalled feed", async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch(tickGrid('2026-03-23', at('20:00', '2026-03-23')));
+
+    const res = await runCron();
+
+    expect(res._json).toMatchObject({ stored: 0, reason: 'no_rows_today' });
+    expect(mockTransaction).not.toHaveBeenCalled();
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('no rows for today'),
+      expect.objectContaining({
+        level: 'warning',
+        tags: expect.objectContaining({ stage: 'feed_stalled' }),
+      }),
+    );
+  });
+
+  it.each([
+    ['09:34 ET, UW may still be rolling over', '13:34', 0],
+    ['09:39 ET', '13:39', 0],
+    ['09:44 ET', '13:44', 1],
+  ])('an empty payload at %s: %i alert(s)', async (_label, hhmmZ, alerts) => {
+    vi.setSystemTime(at(hhmmZ));
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetchEmpty();
+
+    await runCron();
+
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(alerts);
+  });
+
+  // ── Data quality check (R-quality) ────────────────────────
+
+  it('runs the data quality check after a write even when only one bucket is new (steady state)', async () => {
+    // 10:34 ET: 12 buckets (09:30-10:30) have closed and settled. 11 were
+    // stored by earlier runs; this run adds the newest one.
+    vi.setSystemTime(at('14:34'));
+    process.env.UW_API_KEY = 'uwkey';
+    recordInserts((values) =>
+      values[1] === '2026-03-24T14:30:00.000Z' ? 'inserted' : 'unchanged',
+    );
+    mockSql.mockResolvedValue([{ total: 12, nonzero: 0 }]);
+    stubFetch(tickGrid('2026-03-24', at('14:34')));
+
+    const res = await runCron();
+
+    expect(res._json).toMatchObject({ stored: 1, inserted: 1, skipped: 11 });
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('ALL values are zero'),
+      'warning',
+    );
+  });
+
+  it('runs the data quality check when a revised value was written', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    recordInserts(() => 'updated');
+    mockSql.mockResolvedValue([{ total: 12, nonzero: 12 }]);
+    stubFetch([makeFlowTick()]);
+
+    await runCron();
+
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not alert on 10 stored rows or fewer, however zero they are', async () => {
+    vi.setSystemTime(at('14:04'));
+    process.env.UW_API_KEY = 'uwkey';
+    mockSql.mockResolvedValue([{ total: 6, nonzero: 0 }]);
+    stubFetch(tickGrid('2026-03-24', at('14:04')));
+
+    await runCron();
+
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('skips the data quality check when the run wrote nothing', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    recordInserts(() => 'unchanged');
+    stubFetch([makeFlowTick()]);
+
+    await runCron();
+
+    expect(mockSql).not.toHaveBeenCalled();
+  });
 
   it("counts only today's session rows in the data quality query, so yesterday's rows cannot mask a dead day (R-quality)", async () => {
     process.env.UW_API_KEY = 'uwkey';
-    // The check runs when more than 10 buckets are stored in one run.
     vi.setSystemTime(at('14:34'));
     mockSql.mockResolvedValue([{ total: 12, nonzero: 12 }]);
     stubFetch(tickGrid('2026-03-24', at('14:34')));
@@ -736,20 +1094,6 @@ describe('fetch-zero-dte-flow handler', () => {
     expect(values).toContain('2026-03-24T20:00:00.000Z');
     expect(values).toContain('2026-03-24');
     expect(values).toContain('zero_dte_index');
-  });
-
-  it('alerts when more than 10 stored rows are all zero', async () => {
-    vi.setSystemTime(at('14:34'));
-    process.env.UW_API_KEY = 'uwkey';
-    mockSql.mockResolvedValue([{ total: 12, nonzero: 0 }]);
-    stubFetch(tickGrid('2026-03-24', at('14:34')));
-
-    await runCron();
-
-    expect(Sentry.captureMessage).toHaveBeenCalledWith(
-      expect.stringContaining('ALL values are zero'),
-      'warning',
-    );
   });
 
   // ── Error handling ────────────────────────────────────────
@@ -797,6 +1141,34 @@ describe('fetch-zero-dte-flow handler', () => {
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
   });
 
+  it('returns 500 and captures once when a 2xx response does not parse as JSON (R4)', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.reject(new SyntaxError('Unexpected token <')),
+      }),
+    );
+
+    const res = await runCron();
+
+    expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({ error: 'Internal error' });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'SyntaxError' }),
+      expect.objectContaining({
+        tags: expect.objectContaining({ stage: 'fetch' }),
+      }),
+    );
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'fetch-zero-dte-flow',
+      expect.objectContaining({ status: 'error' }),
+    );
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+
   it('returns 500 and captures once when the payload is not a list of ticks', async () => {
     process.env.UW_API_KEY = 'uwkey';
     vi.stubGlobal(
@@ -815,7 +1187,7 @@ describe('fetch-zero-dte-flow handler', () => {
     expect(mockTransaction).not.toHaveBeenCalled();
   });
 
-  it('a rejected batch insert is a failed run, captured once and reported as error, never success (R4)', async () => {
+  it('a rejected batch upsert is a failed run, captured once and reported as error, never success (R4)', async () => {
     process.env.UW_API_KEY = 'uwkey';
     const dbError = new Error('DB batch insert failed');
     mockTransaction.mockRejectedValue(dbError);
