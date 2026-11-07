@@ -49,7 +49,25 @@ import {
   queryGlobex,
   type Globex,
 } from '../../api/cron/auto-prefill-premarket.js';
-import { getETDateStr } from '../../src/utils/timezone.js';
+import {
+  getETDateStr,
+  getETMarketOpenUtcIso,
+} from '../../src/utils/timezone.js';
+import {
+  affectedSnapshotFields,
+  aggregateWindow,
+  buildRepair,
+  inputsMatchSnapshot,
+  parseBackup,
+  preRepairWindow,
+  snapshotInputs,
+  windowAffected,
+  type BackupBar,
+  type Bar,
+  type Repair,
+  type SnapshotField,
+  type WindowAggregate,
+} from './futures-derived-attribution.js';
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -75,9 +93,24 @@ export const BASIS_LOOKBACK_MS = 6 * MINUTE_MS;
 
 /** Concurrent computeSnapshot / basis / Globex recomputes. */
 const CONCURRENCY = 8;
-/** Control set: every row within this many days of an edge, but at least this many rows. */
-const CONTROL_DAYS = 7;
-const CONTROL_MIN_ROWS = 200;
+/**
+ * The snapshot method control starts here: from this day on every row was
+ * written by today's code (the freshness gate came in on 2026-09-30) from bars
+ * that were in the table when the cron ran. Before it, rows are not a clean
+ * control: the 20-day volume window of 2026-10-02 to 10-16 reaches bars of the
+ * 2026-09-04 to 09-25 outage that were filled in later, and on 10-19 to 10-30
+ * bars landed late, so a stored price is the close of a bar two to six minutes
+ * old that has newer neighbours now. 2026-11-02 is the first day with neither.
+ * The rows before it are reported as information, not gated.
+ */
+export const SNAPSHOT_CONTROL_FROM_MS = Date.UTC(2026, 10, 2);
+/** The information window starts at the day the freshness gate's deploy settled. */
+export const SNAPSHOT_INFO_FROM_MS = Date.UTC(2026, 9, 2);
+/** The information window recomputes every INFO_STRIDE-th row. */
+const INFO_STRIDE = 4;
+/** The method control needs at least this many rows over at least this many days, per symbol. */
+export const CONTROL_MIN_ROWS = 200;
+export const CONTROL_MIN_DAYS = 3;
 /** Rows per UPDATE statement (R5), statements per write transaction. */
 const WRITE_CHUNK = 500;
 const CHUNKS_PER_TRANSACTION = 10;
@@ -223,21 +256,6 @@ export function premarketInScope(tradeDate: string): boolean {
   return w.fromMs < SPAN.endMs && w.toMs > SPAN.startMs;
 }
 
-/**
- * The control rows on one side of an edge: every row within CONTROL_DAYS of the
- * edge, or the nearest CONTROL_MIN_ROWS, whichever is more. `nearestFirst` is
- * sorted by distance from the edge; `distanceMs` is that distance.
- */
-export function pickControl<T>(
-  nearestFirst: T[],
-  distanceMs: (item: T) => number,
-): T[] {
-  const within = nearestFirst.filter(
-    (t) => distanceMs(t) < CONTROL_DAYS * DAY_MS,
-  );
-  return nearestFirst.slice(0, Math.max(within.length, CONTROL_MIN_ROWS));
-}
-
 // ── Comparison ──────────────────────────────────────────────────────────────
 
 export interface Control {
@@ -248,6 +266,12 @@ export interface Control {
   /** Rows and matches by UTC month, to show where in time the method reproduces what is stored. */
   byMonth: Record<string, { rows: number; matched: number }>;
   samples: string[];
+  /** What a match means, for the report and the gate. Default: "control set matches". */
+  label?: string;
+  /** Reasons to refuse `--apply` beyond the match rate. */
+  problems?: string[];
+  /** Information lines under the control set in the report. */
+  notes?: string[];
 }
 
 export interface SnapshotValues {
@@ -266,7 +290,7 @@ const SNAPSHOT_KEYS = [
 
 export type SnapshotOutcome =
   | { kind: 'same' }
-  | { kind: 'change'; fields: string[]; to: SnapshotValues }
+  | { kind: 'change'; fields: SnapshotField[]; to: SnapshotValues }
   | { kind: 'unrecomputable'; why: string };
 
 /** Compare a stored snapshot row with what computeSnapshot returns now, at the column scale. */
@@ -418,8 +442,11 @@ export function checkApplyGate(
       );
     } else if (control.matched !== control.rows) {
       problems.push(
-        `${store}: control set matches ${control.matched} of ${control.rows} (${pct(control.matched, control.rows)}), not 100%`,
+        `${store}: ${control.label ?? 'control set matches'} ${control.matched} of ${control.rows} (${pct(control.matched, control.rows)}), not 100%`,
       );
+    }
+    for (const extra of control.problems ?? []) {
+      problems.push(`${store}: ${extra}`);
     }
   }
   return problems;
@@ -506,6 +533,85 @@ async function assertReadOnlySession(): Promise<string[]> {
   return lines;
 }
 
+// ── Bars and the Phase 2 repair ─────────────────────────────────────────────
+
+/** Bars are read from this long before the span, so the pre-market windows and hour-ago bars are covered. */
+const BARS_LEAD_MS = 3 * DAY_MS;
+
+interface SymbolData {
+  /** Every bar from BARS_LEAD_MS before the span to the end of the snapshot scope, by ts. */
+  bars: Bar[];
+  repair: Repair;
+  backup: BackupBar[];
+}
+
+interface RawBar {
+  ts: string;
+  high: string;
+  low: string;
+  close: string;
+  volume: string;
+}
+
+/** One symbol's bars with fromMs <= ts < toMs, paged by UTC days. */
+async function readBars(
+  symbol: string,
+  fromMs: number,
+  toMs: number,
+): Promise<Bar[]> {
+  const out: Bar[] = [];
+  for (let at = fromMs; at < toMs; at += READ_PAGE_DAYS * DAY_MS) {
+    const from = iso(at);
+    const to = iso(Math.min(toMs, at + READ_PAGE_DAYS * DAY_MS));
+    const page = await readRows<RawBar>(
+      (sql) => sql`
+        SELECT to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS ts,
+               high::text AS high, low::text AS low,
+               close::text AS close, volume::text AS volume
+          FROM futures_bars
+         WHERE symbol = ${symbol}
+           AND ts >= ${from}::timestamptz AND ts < ${to}::timestamptz
+         ORDER BY ts`,
+    );
+    for (const r of page) {
+      out.push({
+        tsMs: Date.parse(r.ts),
+        high: Number(r.high),
+        low: Number(r.low),
+        close: Number(r.close),
+        volume: Number(r.volume),
+      });
+    }
+  }
+  return out;
+}
+
+/** Reads the bars of the symbols a run needs and what Phase 2 changed in each. */
+async function loadSymbolData(
+  symbols: readonly Sym[],
+  backup: BackupBar[],
+): Promise<Map<Sym, SymbolData>> {
+  const scope = scopeRanges().snapshots;
+  const out = new Map<Sym, SymbolData>();
+  for (const symbol of symbols) {
+    const bars = await readBars(
+      symbol,
+      scope.fromMs - BARS_LEAD_MS,
+      scope.toMs,
+    );
+    const mine = backup.filter((b) => b.symbol === symbol);
+    out.set(symbol, {
+      bars,
+      backup: mine,
+      repair: buildRepair(mine, new Map(bars.map((b) => [b.tsMs, b]))),
+    });
+    console.log(
+      `bars ${symbol}: ${bars.length} read; Phase 2 backup ${mine.length} rows (${mine.filter((b) => b.op === 'delete').length} deleted)`,
+    );
+  }
+  return out;
+}
+
 // ── Snapshots ───────────────────────────────────────────────────────────────
 
 interface SnapshotRow {
@@ -520,8 +626,10 @@ export interface SnapshotChange {
   id: number;
   symbol: Sym;
   tsMs: number;
-  fields: string[];
+  /** The affected fields whose recomputed value differs: the only ones written. */
+  fields: SnapshotField[];
   from: SnapshotValues;
+  /** The recompute for all four fields; only `fields` of it are written. */
   to: SnapshotValues;
   row: Row;
 }
@@ -579,55 +687,9 @@ async function readSnapshots(
   return out;
 }
 
-/**
- * The time range holding one symbol's control rows on one side of the scope: the
- * nearest CONTROL_MIN_ROWS rows, or all rows within CONTROL_DAYS of the edge if
- * that is more. Null when the table has nothing on that side.
- */
-async function snapshotControlRange(
-  symbol: Sym,
-  side: 'before' | 'after',
-): Promise<Range | null> {
-  const scope = scopeRanges().snapshots;
-  const edge = side === 'after' ? scope.toMs : scope.fromMs;
-  const near =
-    side === 'after'
-      ? { fromMs: edge, toMs: edge + CONTROL_DAYS * DAY_MS }
-      : { fromMs: edge - CONTROL_DAYS * DAY_MS, toMs: edge };
-  const [count] = await readRows<{ n: number }>(
-    (sql) => sql`
-      SELECT count(*)::int AS n FROM futures_snapshots
-       WHERE symbol = ${symbol}
-         AND ts >= ${iso(near.fromMs)}::timestamptz
-         AND ts < ${iso(near.toMs)}::timestamptz`,
-  );
-  const limit = Math.max(count?.n ?? 0, CONTROL_MIN_ROWS);
-  const edgeIso = iso(edge);
-  const [bound] =
-    side === 'after'
-      ? await readRows<{ ts: string | null }>(
-          (sql) => sql`
-            SELECT to_char(max(ts) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS ts
-              FROM (SELECT ts FROM futures_snapshots
-                     WHERE symbol = ${symbol} AND ts >= ${edgeIso}::timestamptz
-                     ORDER BY ts ASC LIMIT ${limit}) nearest`,
-        )
-      : await readRows<{ ts: string | null }>(
-          (sql) => sql`
-            SELECT to_char(min(ts) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS ts
-              FROM (SELECT ts FROM futures_snapshots
-                     WHERE symbol = ${symbol} AND ts < ${edgeIso}::timestamptz
-                     ORDER BY ts DESC LIMIT ${limit}) nearest`,
-        );
-  if (bound?.ts == null) return null;
-  const boundMs = Date.parse(bound.ts);
-  return side === 'after'
-    ? { fromMs: edge, toMs: boundMs + 1 }
-    : { fromMs: boundMs, toMs: edge };
-}
-
 interface SnapshotEvaluation {
   row: SnapshotRow;
+  result: SnapshotResult;
   outcome: SnapshotOutcome;
 }
 
@@ -641,7 +703,7 @@ async function evaluateSnapshots(
       () => computeSnapshot(row.symbol, getETDateStr(at), at),
       COMPUTE_RETRIES,
     );
-    return { row, outcome: compareSnapshot(row.stored, result) };
+    return { row, result, outcome: compareSnapshot(row.stored, result) };
   });
 }
 
@@ -680,6 +742,28 @@ function controlOfSnapshots(evals: SnapshotEvaluation[]): Control {
   );
 }
 
+/**
+ * Evidence that a mismatch is a late bar, not the method: the stored price is
+ * the close of a bar two to six minutes older than the latest closed bar,
+ * which is what the cron saw while the newer bars had not landed yet.
+ */
+async function storedPriceIsOlderBar(
+  symbol: Sym,
+  atMs: number,
+  storedPrice: number,
+): Promise<boolean> {
+  const minute = Math.floor(atMs / MINUTE_MS) * MINUTE_MS;
+  const from = iso(minute - 6 * MINUTE_MS);
+  const to = iso(minute - 2 * MINUTE_MS);
+  const closes = await readRows<{ close: string }>(
+    (sql) => sql`
+      SELECT close::text AS close FROM futures_bars
+       WHERE symbol = ${symbol}
+         AND ts >= ${from}::timestamptz AND ts <= ${to}::timestamptz`,
+  );
+  return closes.some((c) => Number(c.close) === storedPrice);
+}
+
 // ── Pre-market ──────────────────────────────────────────────────────────────
 
 interface PremarketRow {
@@ -697,6 +781,8 @@ export interface PremarketChange {
   fields: string[];
   from: GlobexValues | null;
   to: GlobexValues;
+  /** Whether the bars as they were before Phase 2 reproduce the stored values. */
+  preRepair: 'reproduces' | 'differs';
   row: Row;
 }
 
@@ -830,75 +916,270 @@ export interface StoreResult<C> {
   control: Control;
 }
 
+export interface SnapshotSymbolReport {
+  symbol: Sym;
+  inRange: number;
+  rowsToWrite: number;
+  byField: Record<SnapshotField, number>;
+  /** Fields no repaired bar feeds where today's method differs from the stored value. Not written. */
+  drift: Record<SnapshotField, number>;
+  /** Stale or missing recompute on a row with an affected field: left alone. */
+  affectedLeftAlone: number;
+  /** Stale or missing recompute with nothing affected. */
+  unaffectedLeftAlone: number;
+  /** Rows where the mirrored input rule disagrees with computeSnapshot. */
+  attributionInconsistent: number;
+  controlRows: number;
+  controlMatched: number;
+  controlDays: number;
+}
+
+export interface SnapshotInfo {
+  rows: number;
+  byDay: Record<string, { rows: number; matched: number }>;
+  priceMismatches: number;
+  /** Price mismatches whose stored price is the close of a bar 2 to 6 minutes older. */
+  lateBar: number;
+}
+
+export interface SnapshotStore extends StoreResult<SnapshotChange> {
+  symbols: SnapshotSymbolReport[];
+  info: SnapshotInfo;
+}
+
+export interface PremarketStore extends StoreResult<PremarketChange> {
+  /** In-scope rows whose recompute equals what is stored. */
+  equalInScope: number;
+  /** In-scope rows that differ though no repaired bar is in the window: not written. */
+  notAffected: string[];
+}
+
 export interface Plans {
-  snapshots?: StoreResult<SnapshotChange>;
-  premarket?: StoreResult<PremarketChange>;
+  snapshots?: SnapshotStore;
+  premarket?: PremarketStore;
   fires?: StoreResult<FireChange>;
 }
 
-async function planSnapshots(): Promise<StoreResult<SnapshotChange>> {
-  const scope = scopeRanges().snapshots;
-  const inScope: SnapshotRow[] = [];
-  const control: SnapshotRow[] = [];
-  for (const symbol of SYMBOLS) {
-    inScope.push(...(await readSnapshots(symbol, scope.fromMs, scope.toMs)));
-    for (const side of ['before', 'after'] as const) {
-      const range = await snapshotControlRange(symbol, side);
-      if (range != null) {
-        control.push(
-          ...(await readSnapshots(symbol, range.fromMs, range.toMs)),
-        );
+const emptyFields = (): Record<SnapshotField, number> => ({
+  price: 0,
+  change1hPct: 0,
+  changeDayPct: 0,
+  volumeRatio: 0,
+});
+
+const utcDay = (tsMs: number): string => iso(tsMs).slice(0, 10);
+
+/** The cash open of the ET trade date of `at`, as epoch ms; null for a malformed date. */
+function dayOpenOf(at: Date): number | null {
+  const open = getETMarketOpenUtcIso(getETDateStr(at));
+  return open == null ? null : Date.parse(open);
+}
+
+/**
+ * The method control: rows written by today's code, which must recompute equal
+ * to what is stored. Rows before SNAPSHOT_CONTROL_FROM_MS are information only.
+ */
+async function snapshotControl(
+  symbol: Sym,
+  report: SnapshotSymbolReport,
+  info: SnapshotInfo,
+): Promise<SnapshotEvaluation[]> {
+  const rows = await readSnapshots(
+    symbol,
+    SNAPSHOT_CONTROL_FROM_MS,
+    Date.now() + DAY_MS,
+  );
+  const evals = await evaluateSnapshots(rows, `${symbol} snapshots control`);
+  report.controlRows = rows.length;
+  report.controlMatched = evals.filter((e) => e.outcome.kind === 'same').length;
+  report.controlDays = new Set(rows.map((r) => utcDay(r.tsMs))).size;
+
+  const sampled = (
+    await readSnapshots(symbol, SNAPSHOT_INFO_FROM_MS, SNAPSHOT_CONTROL_FROM_MS)
+  ).filter((_, i) => i % INFO_STRIDE === 0);
+  const infoEvals = await evaluateSnapshots(
+    sampled,
+    `${symbol} snapshots info`,
+  );
+  for (const { row, result, outcome } of infoEvals) {
+    info.rows += 1;
+    const day = (info.byDay[utcDay(row.tsMs)] ??= { rows: 0, matched: 0 });
+    day.rows += 1;
+    if (outcome.kind === 'same') {
+      day.matched += 1;
+    } else if (outcome.kind === 'change' && outcome.fields.includes('price')) {
+      info.priceMismatches += 1;
+      if (
+        result.kind === 'fresh' &&
+        (await storedPriceIsOlderBar(symbol, row.tsMs, row.stored.price))
+      ) {
+        info.lateBar += 1;
       }
     }
   }
-  console.log(
-    `snapshots: ${inScope.length} rows in scope, ${control.length} control rows`,
-  );
-  const scoped = await evaluateSnapshots(inScope, 'snapshots in scope');
-  const controls = await evaluateSnapshots(control, 'snapshots control');
+  return evals;
+}
 
+/**
+ * Reasons a symbol's snapshot checks refuse `--apply` beyond the control match
+ * rate: a method control too small to prove anything, and input bars found for
+ * attribution that disagree with what computeSnapshot used.
+ */
+export function snapshotProblems(
+  r: Pick<
+    SnapshotSymbolReport,
+    'symbol' | 'controlRows' | 'controlDays' | 'attributionInconsistent'
+  >,
+): string[] {
+  const out: string[] = [];
+  if (r.controlRows < CONTROL_MIN_ROWS || r.controlDays < CONTROL_MIN_DAYS) {
+    out.push(
+      `${r.symbol}: the method control has ${r.controlRows} rows over ${r.controlDays} days, ${CONTROL_MIN_ROWS} rows over ${CONTROL_MIN_DAYS} days are needed`,
+    );
+  }
+  if (r.attributionInconsistent > 0) {
+    out.push(
+      `${r.symbol}: the input bars found for attribution disagree with computeSnapshot on ${r.attributionInconsistent} rows`,
+    );
+  }
+  return out;
+}
+
+async function planSnapshots(
+  data: Map<Sym, SymbolData>,
+): Promise<SnapshotStore> {
+  const scope = scopeRanges().snapshots;
   const changes: SnapshotChange[] = [];
   const unrecomputable: string[] = [];
-  for (const { row, outcome } of scoped) {
-    if (outcome.kind === 'change') {
+  const reports: SnapshotSymbolReport[] = [];
+  const controlEvals: SnapshotEvaluation[] = [];
+  const problems: string[] = [];
+  const info: SnapshotInfo = {
+    rows: 0,
+    byDay: {},
+    priceMismatches: 0,
+    lateBar: 0,
+  };
+
+  for (const symbol of SYMBOLS) {
+    const sd = data.get(symbol);
+    if (sd == null) throw new Error(`no bars were read for ${symbol}`);
+    const rows = await readSnapshots(symbol, scope.fromMs, scope.toMs);
+    console.log(`snapshots ${symbol}: ${rows.length} rows in range`);
+    const report: SnapshotSymbolReport = {
+      symbol,
+      inRange: rows.length,
+      rowsToWrite: 0,
+      byField: emptyFields(),
+      drift: emptyFields(),
+      affectedLeftAlone: 0,
+      unaffectedLeftAlone: 0,
+      attributionInconsistent: 0,
+      controlRows: 0,
+      controlMatched: 0,
+      controlDays: 0,
+    };
+
+    for (const { row, result, outcome } of await evaluateSnapshots(
+      rows,
+      `${symbol} snapshots in range`,
+    )) {
+      const dayOpenMs = dayOpenOf(new Date(row.tsMs));
+      const affected = affectedSnapshotFields(
+        sd.repair,
+        sd.bars,
+        row.tsMs,
+        dayOpenMs,
+      );
+      if (
+        result.kind === 'fresh' &&
+        !inputsMatchSnapshot(
+          snapshotInputs(sd.bars, row.tsMs, dayOpenMs),
+          result.snapshot,
+        )
+      ) {
+        report.attributionInconsistent += 1;
+      }
+      if (outcome.kind === 'unrecomputable') {
+        if (affected.size > 0) {
+          report.affectedLeftAlone += 1;
+          unrecomputable.push(
+            `${snapshotLine(row, null, outcome.why)} [affected: ${[...affected].sort().join(', ')}]`,
+          );
+        } else {
+          report.unaffectedLeftAlone += 1;
+        }
+        continue;
+      }
+      if (outcome.kind === 'same') continue;
+      const writable = outcome.fields.filter((f) => affected.has(f));
+      for (const f of outcome.fields) {
+        if (!affected.has(f)) report.drift[f] += 1;
+      }
+      if (writable.length === 0) continue;
+      report.rowsToWrite += 1;
+      for (const f of writable) report.byField[f] += 1;
       changes.push({
         id: row.id,
-        symbol: row.symbol,
+        symbol,
         tsMs: row.tsMs,
-        fields: outcome.fields,
+        fields: writable,
         from: row.stored,
         to: outcome.to,
         row: row.row,
       });
-    } else if (outcome.kind === 'unrecomputable') {
-      unrecomputable.push(snapshotLine(row, null, outcome.why));
     }
+
+    controlEvals.push(...(await snapshotControl(symbol, report, info)));
+    problems.push(...snapshotProblems(report));
+    reports.push(report);
   }
+
+  const control = controlOfSnapshots(controlEvals);
+  control.problems = problems;
   return {
-    inScope: inScope.length,
+    inScope: reports.reduce((n, r) => n + r.inRange, 0),
     changes,
     unrecomputable,
-    control: controlOfSnapshots(controls),
+    control,
+    symbols: reports,
+    info,
   };
 }
 
-async function planPremarket(): Promise<StoreResult<PremarketChange>> {
+/** True when two Globex aggregates agree: the doubles exactly on high/low/close, the vwap to 1e-6 relative. */
+function reproduces(
+  stored: GlobexValues | null,
+  agg: WindowAggregate | null,
+): boolean {
+  if (stored == null || agg == null) return false;
+  const vwapOk =
+    stored.globexVwap == null || agg.vwap == null
+      ? stored.globexVwap === agg.vwap
+      : Math.abs(stored.globexVwap - agg.vwap) <=
+        1e-6 * Math.abs(stored.globexVwap);
+  return (
+    stored.globexHigh === agg.high &&
+    stored.globexLow === agg.low &&
+    stored.globexClose === agg.close &&
+    vwapOk
+  );
+}
+
+async function planPremarket(
+  data: Map<Sym, SymbolData>,
+): Promise<PremarketStore> {
+  const es = data.get('ES');
+  if (es == null) throw new Error('no bars were read for ES');
   const all = await readAutoFilled();
   const inScope = all.filter((r) => premarketInScope(r.date));
-  const before = all
-    .filter((r) => premarketWindow(r.date).toMs <= SPAN.startMs)
-    .reverse();
-  const after = all.filter((r) => premarketWindow(r.date).fromMs >= SPAN.endMs);
-  const control = [
-    ...pickControl(before, (r) => SPAN.startMs - premarketWindow(r.date).toMs),
-    ...pickControl(after, (r) => premarketWindow(r.date).fromMs - SPAN.endMs),
-  ];
+  const outside = all.filter((r) => !premarketInScope(r.date));
   console.log(
-    `premarket: ${all.length} auto-filled rows, ${inScope.length} in scope, ${control.length} control rows`,
+    `premarket: ${all.length} auto-filled rows, ${inScope.length} in scope, ${outside.length} outside the span`,
   );
 
   const sql = getDb();
-  const dates = [...new Set([...inScope, ...control].map((r) => r.date))];
+  const dates = [...new Set(all.map((r) => r.date))];
   const globexList = await mapPool(dates, CONCURRENCY, 'premarket', (date) =>
     queryGlobex(sql, date),
   );
@@ -908,9 +1189,28 @@ async function planPremarket(): Promise<StoreResult<PremarketChange>> {
 
   const changes: PremarketChange[] = [];
   const unrecomputable: string[] = [];
+  const notAffected: string[] = [];
+  let equalInScope = 0;
   for (const r of inScope) {
     const outcome = compare(r);
-    if (outcome.kind === 'change') {
+    const w = premarketWindow(r.date);
+    if (outcome.kind === 'same') {
+      equalInScope += 1;
+    } else if (outcome.kind === 'unrecomputable') {
+      unrecomputable.push(`${r.date} id ${r.id}: ${outcome.why}`);
+    } else if (!windowAffected(es.repair, w.fromMs, w.toMs)) {
+      notAffected.push(
+        `${r.date} id ${r.id} ${globexLine(r.stored)} -> ${globexLine(outcome.to)}`,
+      );
+    } else {
+      const before = aggregateWindow(
+        preRepairWindow(
+          es.bars.filter((b) => b.tsMs >= w.fromMs && b.tsMs < w.toMs),
+          es.backup,
+          w.fromMs,
+          w.toMs,
+        ),
+      );
       changes.push({
         id: r.id,
         date: r.date,
@@ -918,34 +1218,54 @@ async function planPremarket(): Promise<StoreResult<PremarketChange>> {
         fields: outcome.fields,
         from: r.stored,
         to: outcome.to,
+        preRepair: reproduces(r.stored, before) ? 'reproduces' : 'differs',
         row: r.row,
       });
-    } else if (outcome.kind === 'unrecomputable') {
-      unrecomputable.push(`${r.date} id ${r.id}: ${outcome.why}`);
     }
   }
-  const line = (r: PremarketRow, o: GlobexOutcome): string =>
-    `${r.date} id ${r.id} ${globexLine(r.stored)} -> ${o.kind === 'change' ? globexLine(o.to) : o.kind === 'unrecomputable' ? o.why : 'same'}`;
+
+  // Bars added after the auto-fill can only widen a window's range, so a stored
+  // row outside the span must sit inside today's range: its high no higher and
+  // its low no lower. The exact four-key match is information.
+  let exact = 0;
+  const control = controlOf(
+    outside.map((r) => {
+      const outcome = compare(r);
+      const now = globexByDate.get(r.date) ?? null;
+      if (outcome.kind === 'same') exact += 1;
+      const inside =
+        r.stored != null &&
+        now != null &&
+        r.stored.globexHigh <= now.globexHigh &&
+        r.stored.globexLow >= now.globexLow;
+      let kindKey = '';
+      if (!inside) {
+        if (r.stored == null) kindKey = 'unreadable stored values';
+        else if (now == null) kindKey = 'no overnight bars now';
+        else if (r.stored.globexHigh > now.globexHigh) {
+          kindKey = 'stored high above the recomputed high';
+        } else kindKey = 'stored low below the recomputed low';
+      }
+      return {
+        outcome: { kind: inside ? 'same' : 'change' },
+        month: r.date.slice(0, 7),
+        kindKey,
+        describe: () =>
+          `${r.date} id ${r.id} ${globexLine(r.stored)} -> ${globexLine(now)}`,
+      };
+    }),
+  );
+  control.label = 'subset check holds for';
+  control.notes = [
+    `exact four-key match (information): ${exact} of ${outside.length}`,
+  ];
   return {
     inScope: inScope.length,
     changes,
     unrecomputable,
-    control: controlOf(
-      control.map((r) => {
-        const outcome = compare(r);
-        return {
-          outcome,
-          month: r.date.slice(0, 7),
-          kindKey:
-            outcome.kind === 'change'
-              ? outcome.fields.join('+')
-              : outcome.kind === 'unrecomputable'
-                ? outcome.why
-                : '',
-          describe: () => line(r, outcome),
-        };
-      }),
-    ),
+    control,
+    equalInScope,
+    notAffected,
   };
 }
 
@@ -1003,7 +1323,8 @@ async function planFires(): Promise<StoreResult<FireChange>> {
 
 function controlText(c: Control): string[] {
   const rate = c.rows === 0 ? 'empty' : pct(c.matched, c.rows);
-  const out = [`  control set: ${c.matched} of ${c.rows} match (${rate})`];
+  const label = c.label ?? 'control set matches';
+  const out = [`  ${label}: ${c.matched} of ${c.rows} (${rate})`];
   const months = Object.entries(c.byMonth)
     .sort(([a], [b]) => (a < b ? -1 : 1))
     .map(([m, v]) => `${m} ${v.matched}/${v.rows}`);
@@ -1013,6 +1334,7 @@ function controlText(c: Control): string[] {
     out.push(`    mismatch ${kind || '(none)'}: ${n}`);
   }
   for (const s of c.samples) out.push(`    e.g. ${s}`);
+  for (const n of c.notes ?? []) out.push(`    ${n}`);
   return out;
 }
 
@@ -1024,39 +1346,62 @@ function unrecomputableText(list: string[]): string[] {
   ];
 }
 
-function snapshotsText(r: StoreResult<SnapshotChange>): string[] {
-  const top = [...r.changes]
+const byFieldText = (counts: Record<SnapshotField, number>): string =>
+  SNAPSHOT_KEYS.map((k) => `${k}=${counts[k]}`).join(' ');
+
+function snapshotsText(r: SnapshotStore): string[] {
+  const top = r.changes
+    .filter((c) => c.fields.includes('price'))
     .sort(
       (a, b) =>
         Math.abs(b.to.price - b.from.price) -
         Math.abs(a.to.price - a.from.price),
     )
     .slice(0, TOP_N);
-  const perField = SNAPSHOT_KEYS.map(
-    (k) => `${k}=${r.changes.filter((c) => c.fields.includes(k)).length}`,
-  ).join(' ');
-  return [
-    'futures_snapshots (ES, NQ)',
-    `  rows in scope: ${r.inScope}, rows to change: ${r.changes.length} (${perField})`,
-    ...unrecomputableText(r.unrecomputable),
-    '  largest price diffs:',
+  const out = [
+    'futures_snapshots (ES, NQ): only the fields a repaired bar feeds are written',
+    `  rows in range: ${r.inScope}, rows to write: ${r.changes.length}`,
+  ];
+  for (const s of r.symbols) {
+    out.push(
+      `  ${s.symbol}: rows in range ${s.inRange}, rows to write ${s.rowsToWrite} (${byFieldText(s.byField)})`,
+      `    left alone, stale or missing recompute: ${s.affectedLeftAlone} with an affected field, ${s.unaffectedLeftAlone} with none`,
+      `    information, unaffected fields where today's method differs from the stored value (not written): ${byFieldText(s.drift)}`,
+      `    method control, rows from ${isoSecond(SNAPSHOT_CONTROL_FROM_MS)}: ${s.controlMatched} of ${s.controlRows} match over ${s.controlDays} days`,
+      `    attribution inputs disagreeing with computeSnapshot: ${s.attributionInconsistent}`,
+    );
+  }
+  out.push(
+    '  largest price diffs written:',
     ...top.map(
       (c) =>
-        `    ${snapshotLine({ id: c.id, symbol: c.symbol, tsMs: c.tsMs, stored: c.from, row: c.row }, c.to)}`,
+        `    ${snapshotLine({ id: c.id, symbol: c.symbol, tsMs: c.tsMs, stored: c.from, row: c.row }, c.to)} [writes ${c.fields.join(', ')}]`,
     ),
+    ...unrecomputableText(r.unrecomputable),
     ...controlText(r.control),
-  ];
+  );
+  const days = Object.entries(r.info.byDay)
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([d, v]) => `${d.slice(5)} ${v.matched}/${v.rows}`);
+  out.push(
+    `  information, rows ${isoSecond(SNAPSHOT_INFO_FROM_MS)} to ${isoSecond(SNAPSHOT_CONTROL_FROM_MS)} (every ${INFO_STRIDE}th row, not gated): ${r.info.rows} rows`,
+    `    price mismatches ${r.info.priceMismatches}, of which the stored price is the close of a bar 2 to 6 minutes older (a bar that landed late): ${r.info.lateBar}`,
+  );
+  if (days.length > 0) out.push(`    matched/rows by day: ${days.join(', ')}`);
+  return out;
 }
 
-function premarketText(r: StoreResult<PremarketChange>): string[] {
+function premarketText(r: PremarketStore): string[] {
   return [
-    'market_snapshots.pre_market_data (auto-filled rows only)',
-    `  rows in scope: ${r.inScope}, rows to change: ${r.changes.length}`,
+    'market_snapshots.pre_market_data (auto-filled rows only): written only where a repaired bar is in the window',
+    `  rows in scope: ${r.inScope}, rows to write: ${r.changes.length}, equal to the recompute: ${r.equalInScope}`,
     ...unrecomputableText(r.unrecomputable),
-    '  Globex high/low/close/vwap, old -> new, per date:',
+    `  differ from the recompute with no repaired bar in the window (not written): ${r.notAffected.length}`,
+    ...r.notAffected.slice(0, SAMPLE_N).map((l) => `    ${l}`),
+    '  Globex high/low/close/vwap, old -> new, per date (the last flag says whether the bars as they were before Phase 2 reproduce the stored values):',
     ...r.changes.map(
       (c) =>
-        `    ${c.date} id ${c.id} (${c.entryTime}) ${globexLine(c.from)} -> ${globexLine(c.to)}`,
+        `    ${c.date} id ${c.id} (${c.entryTime}) ${globexLine(c.from)} -> ${globexLine(c.to)} [pre-repair bars ${c.preRepair === 'reproduces' ? 'reproduce the stored values' : 'do not reproduce the stored values: also differs outside the repaired bars'}]`,
     ),
     ...controlText(r.control),
   ];
@@ -1097,8 +1442,8 @@ export function formatReport(
   if (plans.fires) out.push(...firesText(plans.fires), '');
   out.push(
     gateProblems.length === 0
-      ? 'Control sets: every store matches 100%.'
-      : 'APPLY WOULD REFUSE on the control sets:',
+      ? 'Apply gate: every check passes.'
+      : 'APPLY WOULD REFUSE:',
     ...gateProblems.map((p) => `  ${p}`),
   );
   return out.join('\n');
@@ -1106,21 +1451,40 @@ export function formatReport(
 
 // ── Writes ──────────────────────────────────────────────────────────────────
 
+/**
+ * Writes only the fields the plan names for each row: a `set_*` flag per field
+ * keeps the stored value of every other field, so an unaffected field is never
+ * touched. The guard compares the values the row would hold afterwards, so a
+ * row that already holds them is not rewritten.
+ */
 function updateSnapshots(sql: Sql, rows: SnapshotChange[]) {
+  const sets = (field: SnapshotField) =>
+    rows.map((c) => c.fields.includes(field));
   return sql`
     UPDATE futures_snapshots f
-       SET price = r.price, change_1h_pct = r.change_1h_pct,
-           change_day_pct = r.change_day_pct, volume_ratio = r.volume_ratio
+       SET price = CASE WHEN r.set_price THEN r.price ELSE f.price END,
+           change_1h_pct = CASE WHEN r.set_1h THEN r.change_1h_pct ELSE f.change_1h_pct END,
+           change_day_pct = CASE WHEN r.set_day THEN r.change_day_pct ELSE f.change_day_pct END,
+           volume_ratio = CASE WHEN r.set_vr THEN r.volume_ratio ELSE f.volume_ratio END
       FROM unnest(${rows.map((c) => c.id)}::int[],
                   ${rows.map((c) => c.symbol)}::text[],
+                  ${sets('price')}::bool[],
                   ${rows.map((c) => c.to.price)}::numeric[],
+                  ${sets('change1hPct')}::bool[],
                   ${rows.map((c) => c.to.change1hPct)}::numeric[],
+                  ${sets('changeDayPct')}::bool[],
                   ${rows.map((c) => c.to.changeDayPct)}::numeric[],
+                  ${sets('volumeRatio')}::bool[],
                   ${rows.map((c) => c.to.volumeRatio)}::numeric[])
-           AS r(id, symbol, price, change_1h_pct, change_day_pct, volume_ratio)
+           AS r(id, symbol, set_price, price, set_1h, change_1h_pct,
+                set_day, change_day_pct, set_vr, volume_ratio)
      WHERE f.id = r.id AND f.symbol = r.symbol
        AND (f.price, f.change_1h_pct, f.change_day_pct, f.volume_ratio)
-           IS DISTINCT FROM (r.price, r.change_1h_pct, r.change_day_pct, r.volume_ratio)
+           IS DISTINCT FROM (
+             CASE WHEN r.set_price THEN r.price ELSE f.price END,
+             CASE WHEN r.set_1h THEN r.change_1h_pct ELSE f.change_1h_pct END,
+             CASE WHEN r.set_day THEN r.change_day_pct ELSE f.change_day_pct END,
+             CASE WHEN r.set_vr THEN r.volume_ratio ELSE f.volume_ratio END)
     RETURNING f.id`;
 }
 
@@ -1180,13 +1544,23 @@ interface BackupEntry {
   to: unknown;
 }
 
+/** The values a change would write: for a snapshot only its affected fields, not the whole recompute. */
+function backedUpValues(
+  c: SnapshotChange | PremarketChange | FireChange,
+): unknown {
+  if ('symbol' in c) {
+    return Object.fromEntries(c.fields.map((f) => [f, c.to[f]]));
+  }
+  return c.to;
+}
+
 /** One JSONL line per row about to change, full row included; the line count is checked back. */
 function writeBackup(workDir: string, plans: Plans): string {
   const entries: BackupEntry[] = [];
   for (const store of STORES) {
     const result = plans[store];
     for (const c of result?.changes ?? []) {
-      entries.push({ store, id: c.id, row: c.row, to: c.to });
+      entries.push({ store, id: c.id, row: c.row, to: backedUpValues(c) });
     }
   }
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -1250,10 +1624,16 @@ async function verifySnapshots(changes: SnapshotChange[]): Promise<void> {
           c.id,
           {
             ...c.row,
-            price: c.to.price,
-            change_1h_pct: c.to.change1hPct,
-            change_day_pct: c.to.changeDayPct,
-            volume_ratio: c.to.volumeRatio,
+            ...(c.fields.includes('price') && { price: c.to.price }),
+            ...(c.fields.includes('change1hPct') && {
+              change_1h_pct: c.to.change1hPct,
+            }),
+            ...(c.fields.includes('changeDayPct') && {
+              change_day_pct: c.to.changeDayPct,
+            }),
+            ...(c.fields.includes('volumeRatio') && {
+              volume_ratio: c.to.volumeRatio,
+            }),
           },
         ]),
       ),
@@ -1313,7 +1693,9 @@ export interface RecomputeOptions {
   apply: boolean;
   force: boolean;
   stores: Store[];
-  /** The rows to change in the dry run the owner approved. Null on a dry run. */
+  /** The Phase 2 backup JSONL: required for the snapshots and premarket stores. */
+  backup: string | null;
+  /** The rows to write in the dry run the owner approved. Null on a dry run. */
   expectSnapshots: number | null;
   expectPremarket: number | null;
   expectFires: number | null;
@@ -1342,6 +1724,7 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
     apply: false,
     force: false,
     stores: [...STORES],
+    backup: null,
     expectSnapshots: null,
     expectPremarket: null,
     expectFires: null,
@@ -1374,6 +1757,7 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
       args.expectPremarket = parseCount(flag, next());
     else if (flag === '--expect-fires')
       args.expectFires = parseCount(flag, next());
+    else if (flag === '--backup') args.backup = next();
     else if (flag === '--work-dir') args.workDir = next();
     else if (flag === '--env-file') args.envFile = next();
     else if (flag === '--apply') args.apply = true;
@@ -1402,8 +1786,16 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
       );
     }
   }
+  if (needsBackup(args) && args.backup == null) {
+    throw new Error(
+      '--backup <file> is required with the snapshots or premarket store: the Phase 2 backup JSONL',
+    );
+  }
   return args;
 }
+
+const needsBackup = (o: RecomputeOptions): boolean =>
+  o.stores.includes('snapshots') || o.stores.includes('premarket');
 
 function expectations(o: RecomputeOptions): Record<Store, number | null> {
   return {
@@ -1422,8 +1814,17 @@ async function run(opts: RecomputeOptions): Promise<number> {
       'Refusing to --apply during market hours (09:25 to 16:05 ET): run after the close.',
     );
   }
+  if (needsBackup(opts) && opts.backup == null) {
+    throw new Error(
+      '--backup <file> is required with the snapshots or premarket store',
+    );
+  }
   mkdirSync(opts.workDir, { recursive: true });
   const startedAt = Date.now();
+  const backupBars =
+    needsBackup(opts) && opts.backup != null
+      ? parseBackup(readFileSync(opts.backup, 'utf8'), opts.backup)
+      : [];
   console.log(
     `Futures derived-store recompute${opts.apply ? '' : ' (DRY RUN: read-only, no writes)'}`,
   );
@@ -1434,11 +1835,17 @@ async function run(opts: RecomputeOptions): Promise<number> {
   try {
     session = await assertReadOnlySession();
     for (const line of session) console.log(line);
+    const data = needsBackup(opts)
+      ? await loadSymbolData(
+          opts.stores.includes('snapshots') ? SYMBOLS : ['ES'],
+          backupBars,
+        )
+      : new Map<Sym, SymbolData>();
     if (opts.stores.includes('fires')) plans.fires = await planFires();
     if (opts.stores.includes('premarket'))
-      plans.premarket = await planPremarket();
+      plans.premarket = await planPremarket(data);
     if (opts.stores.includes('snapshots'))
-      plans.snapshots = await planSnapshots();
+      plans.snapshots = await planSnapshots(data);
   } finally {
     neonConfig.fetchFunction = undefined;
   }
@@ -1458,6 +1865,11 @@ async function run(opts: RecomputeOptions): Promise<number> {
       `repaired span ${span}`,
       `snapshot scope ${isoSecond(scope.snapshots.fromMs)} .. ${isoSecond(scope.snapshots.toMs)} (span end + 20 days)`,
       `fire scope ${isoSecond(scope.fires.fromMs)} .. ${isoSecond(scope.fires.toMs)} (span end + 6 minutes)`,
+      ...(opts.backup == null
+        ? []
+        : [
+            `Phase 2 backup ${opts.backup}: ${backupBars.length} rows (${backupBars.filter((b) => b.op === 'update').length} updated, ${backupBars.filter((b) => b.op === 'delete').length} deleted)`,
+          ]),
       ...session,
       `elapsed ${Math.round((Date.now() - startedAt) / 1000)}s`,
     ],

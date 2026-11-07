@@ -7,7 +7,7 @@
  * futures-derived-recompute-pglite.test.ts.
  */
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -36,17 +36,30 @@ import {
   gateFlips,
   parseRecomputeArgs,
   pcsPasses,
-  pickControl,
   premarketInScope,
   premarketWindow,
   readOnlyFetch,
   roundNumeric,
   runRecompute,
   scopeRanges,
+  snapshotProblems,
   type Control,
   type FireChange,
   type SnapshotValues,
 } from './futures-derived-recompute.js';
+import {
+  affectedSnapshotFields,
+  aggregateWindow,
+  buildRepair,
+  inputsMatchSnapshot,
+  parseBackup,
+  preRepairWindow,
+  snapshotInputs,
+  windowAffected,
+  type BackupBar,
+  type Bar,
+  type Repair,
+} from './futures-derived-attribution.js';
 
 const ms = (iso: string): number => Date.parse(iso);
 
@@ -54,11 +67,12 @@ const ms = (iso: string): number => Date.parse(iso);
 
 describe('parseRecomputeArgs', () => {
   it('defaults to a dry run over all three stores', () => {
-    expect(parseRecomputeArgs([])).toEqual({
+    expect(parseRecomputeArgs(['--backup', 'b.jsonl'])).toEqual({
       workDir: 'docs/tmp/futures-derived-recompute',
       apply: false,
       force: false,
       stores: ['snapshots', 'premarket', 'fires'],
+      backup: 'b.jsonl',
       expectSnapshots: null,
       expectPremarket: null,
       expectFires: null,
@@ -78,6 +92,8 @@ describe('parseRecomputeArgs', () => {
         '240',
         '--work-dir',
         'out',
+        '--backup',
+        'backup.jsonl',
         '--env-file',
         '.env.test',
         '--force',
@@ -87,6 +103,7 @@ describe('parseRecomputeArgs', () => {
       apply: true,
       force: true,
       stores: ['snapshots', 'premarket', 'fires'],
+      backup: 'backup.jsonl',
       expectSnapshots: 31012,
       expectPremarket: 36,
       expectFires: 240,
@@ -104,9 +121,27 @@ describe('parseRecomputeArgs', () => {
     ]);
     expect(args.stores).toEqual(['fires']);
     expect(args.expectFires).toBe(12);
+    expect(args.backup).toBeNull();
     expect(() =>
       parseRecomputeArgs(['--apply', '--stores', 'fires', 'premarket']),
     ).toThrow(/--apply needs --expect-fires K and --expect-premarket M/);
+  });
+
+  it('asks for the Phase 2 backup only when a store needs the bars', () => {
+    const needs =
+      /--backup <file> is required with the snapshots or premarket store/;
+    expect(() => parseRecomputeArgs([])).toThrow(needs);
+    expect(() => parseRecomputeArgs(['--stores', 'premarket'])).toThrow(needs);
+    expect(() =>
+      parseRecomputeArgs([
+        '--apply',
+        '--stores',
+        'snapshots',
+        '--expect-snapshots',
+        '1',
+      ]),
+    ).toThrow(needs);
+    expect(parseRecomputeArgs(['--stores', 'fires']).stores).toEqual(['fires']);
   });
 
   it.each([
@@ -116,6 +151,7 @@ describe('parseRecomputeArgs', () => {
     [['--stores'], /--stores needs a value/],
     [['--stores', '--apply'], /--stores needs a value/],
     [['--stores', 'bars'], /unknown store "bars"/],
+    [['--backup'], /--backup needs a value/],
     [['--force'], /--force only applies with --apply/],
     [
       ['--apply'],
@@ -224,34 +260,6 @@ describe('roundNumeric', () => {
     expect(() => roundNumeric(Number.POSITIVE_INFINITY, 4)).toThrow(
       /cannot round Infinity/,
     );
-  });
-});
-
-// ── Control set ─────────────────────────────────────────────────────────────
-
-describe('pickControl', () => {
-  const DAY = 86_400_000;
-  /** Rows `step` ms apart, nearest first. */
-  const rows = (n: number, step: number): number[] =>
-    Array.from({ length: n }, (_, i) => i * step);
-
-  it('takes everything inside 7 days when that is more than 200 rows', () => {
-    const near = rows(300, 1000); // 300 rows inside the first 5 minutes
-    const far = [8 * DAY, 9 * DAY];
-    expect(pickControl([...near, ...far], (x) => x)).toHaveLength(300);
-  });
-
-  it('extends to the nearest 200 rows when 7 days hold fewer', () => {
-    const near = rows(50, 1000);
-    const far = rows(500, DAY).map((x) => x + 8 * DAY);
-    const picked = pickControl([...near, ...far], (x) => x);
-    expect(picked).toHaveLength(200);
-    expect(picked.at(-1)).toBe(far[149]);
-  });
-
-  it('takes all of a store that has fewer than 200 rows', () => {
-    expect(pickControl(rows(20, DAY), (x) => x)).toHaveLength(20);
-    expect(pickControl([], (x: number) => x)).toEqual([]);
   });
 });
 
@@ -489,6 +497,36 @@ describe('checkApplyGate', () => {
   });
 });
 
+describe('snapshotProblems', () => {
+  const ok = {
+    symbol: 'ES' as const,
+    controlRows: 216,
+    controlDays: 3,
+    attributionInconsistent: 0,
+  };
+
+  it('has nothing to say about a control of 200 rows over 3 days with consistent inputs', () => {
+    expect(snapshotProblems(ok)).toEqual([]);
+    expect(snapshotProblems({ ...ok, controlRows: 200 })).toEqual([]);
+  });
+
+  it.each([
+    [{ controlRows: 199 }, '199 rows over 3 days'],
+    [{ controlDays: 2 }, '216 rows over 2 days'],
+    [{ controlRows: 0, controlDays: 0 }, '0 rows over 0 days'],
+  ])('refuses a control that is too small: %j', (over, text) => {
+    expect(snapshotProblems({ ...ok, ...over })).toEqual([
+      `ES: the method control has ${text}, 200 rows over 3 days are needed`,
+    ]);
+  });
+
+  it('refuses inputs that disagree with computeSnapshot', () => {
+    expect(snapshotProblems({ ...ok, attributionInconsistent: 4 })).toEqual([
+      'ES: the input bars found for attribution disagree with computeSnapshot on 4 rows',
+    ]);
+  });
+});
+
 // ── Read-only fetch ─────────────────────────────────────────────────────────
 
 describe('readOnlyFetch', () => {
@@ -589,6 +627,7 @@ describe('runRecompute guards', () => {
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.mocked(getDb).mockClear();
+    writeFileSync(join(dir, 'backup.jsonl'), '');
   });
 
   afterEach(() => {
@@ -606,6 +645,7 @@ describe('runRecompute guards', () => {
       | 'premarket'
       | 'fires'
     )[],
+    backup: join(dir, 'backup.jsonl'),
     expectSnapshots: 1,
     expectPremarket: 1,
     expectFires: 1,
@@ -630,5 +670,434 @@ describe('runRecompute guards', () => {
     expect(console.error).toHaveBeenCalledWith(
       expect.stringMatching(/getDb must not be reached/),
     );
+  });
+
+  it('exits non-zero, before the database, when the Phase 2 backup is missing', async () => {
+    expect(
+      await runRecompute(options({ backup: join(dir, 'missing.jsonl') })),
+    ).toBe(1);
+    expect(console.error).toHaveBeenCalledWith(expect.stringMatching(/ENOENT/));
+    expect(getDb).not.toHaveBeenCalled();
+  });
+
+  it('exits non-zero, before the database, naming the line of a malformed backup', async () => {
+    writeFileSync(join(dir, 'backup.jsonl'), 'not json\n');
+    expect(await runRecompute(options({ apply: false }))).toBe(1);
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringMatching(/backup\.jsonl:1: not JSON/),
+    );
+    expect(getDb).not.toHaveBeenCalled();
+  });
+
+  it('needs no backup for the fires store alone', async () => {
+    expect(
+      await runRecompute(
+        options({ apply: false, stores: ['fires'], backup: null }),
+      ),
+    ).toBe(1);
+    expect(getDb).toHaveBeenCalled();
+  });
+});
+
+// ── Attribution (the Phase 2 backup against the bars now) ───────────────────
+
+const bar = (
+  ts: string,
+  close: number,
+  volume = 100,
+  over: Partial<Bar> = {},
+): Bar => ({
+  tsMs: ms(ts),
+  high: close,
+  low: close,
+  close,
+  volume,
+  ...over,
+});
+
+const old = (
+  ts: string,
+  op: 'update' | 'delete',
+  close: number,
+  volume = 100,
+  over: Partial<BackupBar> = {},
+): BackupBar => ({
+  op,
+  symbol: 'ES',
+  tsMs: ms(ts),
+  high: close,
+  low: close,
+  close,
+  volume,
+  ...over,
+});
+
+const currentOf = (bars: Bar[]): Map<number, Bar> =>
+  new Map(bars.map((b) => [b.tsMs, b]));
+
+describe('parseBackup', () => {
+  const line = (op: string, ts: string) =>
+    JSON.stringify({
+      op,
+      reason: 'archive_span',
+      row: {
+        id: '1',
+        symbol: 'ES',
+        ts,
+        open: '7000.0000',
+        high: '7001.2500',
+        low: '6999.0000',
+        close: '7000.5000',
+        volume: '300',
+        buy_volume: null,
+      },
+    });
+
+  it('reads each line into a bar with its op, ignoring the columns it does not use', () => {
+    const text = `${line('update', '2026-04-07T14:30:00Z')}\n\n${line('delete', '2026-04-07T14:31:00Z')}\n`;
+    expect(parseBackup(text, 'b.jsonl')).toEqual([
+      {
+        op: 'update',
+        symbol: 'ES',
+        tsMs: ms('2026-04-07T14:30:00Z'),
+        high: 7001.25,
+        low: 6999,
+        close: 7000.5,
+        volume: 300,
+      },
+      {
+        op: 'delete',
+        symbol: 'ES',
+        tsMs: ms('2026-04-07T14:31:00Z'),
+        high: 7001.25,
+        low: 6999,
+        close: 7000.5,
+        volume: 300,
+      },
+    ]);
+  });
+
+  const badRow = (over: object) =>
+    JSON.stringify({
+      op: 'update',
+      row: {
+        symbol: 'ES',
+        ts: '2026-04-07T14:30:00Z',
+        high: '1',
+        low: '1',
+        close: '1',
+        volume: '1',
+        ...over,
+      },
+    });
+
+  it.each([
+    ['{not json', /b\.jsonl:2: not JSON/],
+    [JSON.stringify({ op: 'merge', row: {} }), /b\.jsonl:2: op/],
+    [badRow({ close: 'x' }), /b\.jsonl:2: row\.close not a number/],
+    [badRow({ ts: 'yesterday' }), /b\.jsonl:2: ts "yesterday" is not a date/],
+  ])('names the line of a bad row: %s', (bad, message) => {
+    const text = `${line('update', '2026-04-07T14:30:00Z')}\n${bad}\n`;
+    expect(() => parseBackup(text, 'b.jsonl')).toThrow(message);
+  });
+});
+
+describe('buildRepair', () => {
+  const T = (m: number) => `2026-04-07T14:${String(m).padStart(2, '0')}:00Z`;
+
+  it('records what differs between the backup and the bars now, field by field', () => {
+    const repair = buildRepair(
+      [
+        old(T(1), 'update', 7000), // same close and volume now
+        old(T(2), 'update', 7050), // close changed
+        old(T(3), 'update', 7000, 40), // volume changed
+        old(T(4), 'update', 7000, 100, { high: 7090 }), // high changed only
+        old(T(5), 'update', 7000), // gone now
+        old(T(6), 'delete', 7000),
+      ],
+      currentOf([
+        bar(T(1), 7000),
+        bar(T(2), 7000),
+        bar(T(3), 7000),
+        bar(T(4), 7000),
+      ]),
+    );
+    expect(repair.deleted).toEqual([ms(T(6))]);
+    expect([...repair.closeChanged].sort()).toEqual(
+      [ms(T(2)), ms(T(5))].sort(),
+    );
+    expect(repair.volumeTouched).toEqual([ms(T(3)), ms(T(5)), ms(T(6))]);
+    expect(repair.windowTouched).toEqual([
+      ms(T(2)),
+      ms(T(3)),
+      ms(T(4)),
+      ms(T(5)),
+      ms(T(6)),
+    ]);
+  });
+});
+
+describe('snapshotInputs', () => {
+  // 2026-04-14 is EDT: open 13:30Z. at = 14:31:30, so the last closed bar is 14:30.
+  const AT = ms('2026-04-14T14:31:30Z');
+  const OPEN = ms('2026-04-14T13:30:00Z');
+  const bars = [
+    bar('2026-04-14T13:30:00Z', 7000),
+    bar('2026-04-14T13:31:00Z', 7001),
+    bar('2026-04-14T14:30:00Z', 7005),
+    bar('2026-04-14T14:31:00Z', 7099),
+  ];
+
+  it('takes the latest closed bar, the hour-ago bar and the day-open bar', () => {
+    const inputs = snapshotInputs(bars, AT, OPEN);
+    expect(inputs.latest?.close).toBe(7005);
+    expect(inputs.hourAgo?.close).toBe(7001);
+    expect(inputs.dayOpen?.close).toBe(7000);
+  });
+
+  it('drops an hour-ago bar older than 15 minutes before at - 60 min, and a late day-open bar', () => {
+    const inputs = snapshotInputs(
+      [
+        bar('2026-04-14T13:10:00Z', 7000), // 21 min before 13:31:30
+        bar('2026-04-14T13:50:00Z', 7001), // 20 min after the open
+        bar('2026-04-14T14:30:00Z', 7005),
+      ],
+      AT,
+      OPEN,
+    );
+    expect(inputs.hourAgo).toBeNull();
+    expect(inputs.dayOpen).toBeNull();
+    expect(inputs.latest?.close).toBe(7005);
+  });
+
+  it('has no day-open bar when there is no cash session, or before the open bar closed', () => {
+    expect(snapshotInputs(bars, AT, null).dayOpen).toBeNull();
+    const early = ms('2026-04-14T13:30:30Z'); // the 13:30 bar is still printing
+    expect(snapshotInputs(bars, early, OPEN).dayOpen).toBeNull();
+  });
+});
+
+describe('affectedSnapshotFields', () => {
+  const AT = ms('2026-04-14T14:31:30Z');
+  const OPEN = ms('2026-04-14T13:30:00Z');
+  const bars = [
+    bar('2026-04-14T13:30:00Z', 7000),
+    bar('2026-04-14T13:31:00Z', 7001),
+    bar('2026-04-14T14:20:00Z', 7003),
+    bar('2026-04-14T14:30:00Z', 7005),
+    bar('2026-04-14T14:31:00Z', 7099),
+  ];
+  interface Changes {
+    deleted?: string[];
+    close?: string[];
+    volume?: string[];
+  }
+  const repairOf = (over: Changes): Repair => {
+    const ascending = (a: number, b: number) => a - b;
+    const deleted = (over.deleted ?? []).map(ms).sort(ascending);
+    return {
+      deleted,
+      closeChanged: new Set((over.close ?? []).map(ms)),
+      volumeTouched: [...(over.volume ?? []).map(ms), ...deleted].sort(
+        ascending,
+      ),
+      windowTouched: [],
+    };
+  };
+  const fieldsOf = (over: Changes): string[] =>
+    [...affectedSnapshotFields(repairOf(over), bars, AT, OPEN)].sort();
+
+  it.each([
+    ['nothing changed', {}, []],
+    [
+      'the latest closed bar close changed',
+      { close: ['2026-04-14T14:30:00Z'] },
+      ['changeDayPct', 'change1hPct', 'price'],
+    ],
+    [
+      'the bar of the open minute changed (not an input)',
+      { close: ['2026-04-14T14:31:00Z'] },
+      [],
+    ],
+    [
+      'the hour-ago bar changed',
+      { close: ['2026-04-14T13:31:00Z'] },
+      ['change1hPct'],
+    ],
+    [
+      'the day-open bar changed',
+      { close: ['2026-04-14T13:30:00Z'] },
+      ['changeDayPct'],
+    ],
+    [
+      'a bar deleted after the latest closed bar',
+      { deleted: ['2026-04-14T14:30:30Z'] },
+      ['changeDayPct', 'change1hPct', 'price', 'volumeRatio'],
+    ],
+    [
+      'a bar deleted before the hour-ago bar',
+      { deleted: ['2026-04-14T13:20:00Z'] },
+      ['volumeRatio'],
+    ],
+    [
+      'a bar deleted after the hour-ago bar and before at - 60 min',
+      { deleted: ['2026-04-14T13:31:20Z'] },
+      ['change1hPct', 'volumeRatio'],
+    ],
+    [
+      'a volume that changed inside the 20 days',
+      { volume: ['2026-04-02T15:00:00Z'] },
+      ['volumeRatio'],
+    ],
+    [
+      'a volume that changed before the 20 days',
+      { volume: ['2026-03-20T15:00:00Z'] },
+      [],
+    ],
+    [
+      'a volume that changed in the open minute',
+      { volume: ['2026-04-14T14:31:00Z'] },
+      [],
+    ],
+  ] as [string, Changes, string[]][])('%s', (_name, over, want) => {
+    expect(fieldsOf(over)).toEqual([...want].sort());
+  });
+
+  it('flags the day change, and the 1h change, when the bar that would have been the reference was deleted', () => {
+    // No bar at 13:30 now: the first bar after the open is 13:32. A bar deleted
+    // at 13:30:00 was the old day-open bar, and (13:31:30 being the hour-ago
+    // moment) the old hour-ago bar too.
+    const shifted = [
+      bar('2026-04-14T13:32:00Z', 7001),
+      bar('2026-04-14T14:30:00Z', 7005),
+    ];
+    const fields = affectedSnapshotFields(
+      repairOf({ deleted: ['2026-04-14T13:30:00Z'] }),
+      shifted,
+      AT,
+      OPEN,
+    );
+    expect([...fields].sort()).toEqual([
+      'change1hPct',
+      'changeDayPct',
+      'volumeRatio',
+    ]);
+  });
+
+  it('flags only the price chain without a cash session', () => {
+    const fields = affectedSnapshotFields(
+      repairOf({ close: ['2026-04-14T14:30:00Z'] }),
+      bars,
+      AT,
+      null,
+    );
+    expect([...fields].sort()).toEqual([
+      'change1hPct',
+      'changeDayPct',
+      'price',
+    ]);
+  });
+});
+
+describe('inputsMatchSnapshot', () => {
+  const AT = ms('2026-04-14T14:31:30Z');
+  const OPEN = ms('2026-04-14T13:30:00Z');
+  const bars = [
+    bar('2026-04-14T13:30:00Z', 7000),
+    bar('2026-04-14T13:31:00Z', 7000),
+    bar('2026-04-14T14:30:00Z', 7007),
+  ];
+  const snapshot = {
+    price: 7007,
+    change1hPct: 0.1,
+    changeDayPct: 0.1,
+    latestTs: '2026-04-14T14:30:00.000Z',
+  };
+
+  it('is true when the latest bar and both references follow from the inputs', () => {
+    expect(inputsMatchSnapshot(snapshotInputs(bars, AT, OPEN), snapshot)).toBe(
+      true,
+    );
+  });
+
+  it.each([
+    ['another latest bar', { latestTs: '2026-04-14T13:31:00.000Z' }],
+    ['another price', { price: 7006 }],
+    ['another 1h change', { change1hPct: 0.2 }],
+    ['a day change where none follows', { changeDayPct: null }],
+  ])('is false for %s', (_name, over) => {
+    expect(
+      inputsMatchSnapshot(snapshotInputs(bars, AT, OPEN), {
+        ...snapshot,
+        ...over,
+      }),
+    ).toBe(false);
+  });
+
+  it('is false when there is no latest bar', () => {
+    expect(inputsMatchSnapshot(snapshotInputs([], AT, OPEN), snapshot)).toBe(
+      false,
+    );
+  });
+});
+
+describe('pre-market window attribution', () => {
+  const from = ms('2026-05-12T22:00:00Z');
+  const to = ms('2026-05-13T13:30:00Z');
+
+  it('flags a window only when a changed or deleted bar falls inside it, end exclusive', () => {
+    const outside = buildRepair(
+      [
+        old('2026-05-12T21:59:00Z', 'delete', 7000),
+        old('2026-05-13T13:30:00Z', 'delete', 7000),
+      ],
+      new Map(),
+    );
+    expect(windowAffected(outside, from, to)).toBe(false);
+    const inside = buildRepair(
+      [old('2026-05-13T03:00:00Z', 'delete', 7000)],
+      new Map(),
+    );
+    expect(windowAffected(inside, from, to)).toBe(true);
+    const first = buildRepair(
+      [old('2026-05-12T22:00:00Z', 'update', 7000, 100, { low: 6990 })],
+      currentOf([bar('2026-05-12T22:00:00Z', 7000)]),
+    );
+    expect(windowAffected(first, from, to)).toBe(true);
+  });
+
+  it('aggregates like the cron: max high, min low, the last close, volume-weighted close', () => {
+    expect(aggregateWindow([])).toBeNull();
+    expect(
+      aggregateWindow([
+        bar('2026-05-12T23:00:00Z', 7200, 100, { high: 7250, low: 7100 }),
+        bar('2026-05-13T03:00:00Z', 7205, 300, { high: 7210, low: 7190 }),
+      ]),
+    ).toEqual({ high: 7250, low: 7100, close: 7205, vwap: 7203.75 });
+    expect(
+      aggregateWindow([bar('2026-05-12T23:00:00Z', 7200, 0)])?.vwap,
+    ).toBeNull();
+  });
+
+  it('puts back what Phase 2 changed: updated rows at their old values, deleted rows added', () => {
+    const now = [
+      bar('2026-05-12T23:00:00Z', 7200, 100),
+      bar('2026-05-13T03:00:00Z', 7205, 300),
+    ];
+    const before = preRepairWindow(
+      now,
+      [
+        old('2026-05-12T23:00:00Z', 'update', 7260, 100, { high: 7300 }),
+        old('2026-05-13T01:00:00Z', 'delete', 7210, 50),
+        old('2026-05-14T01:00:00Z', 'delete', 7000, 50), // outside the window
+      ],
+      from,
+      to,
+    );
+    expect(before.map((b) => [b.tsMs, b.close, b.high])).toEqual([
+      [ms('2026-05-12T23:00:00Z'), 7260, 7300],
+      [ms('2026-05-13T01:00:00Z'), 7210, 7210],
+      [ms('2026-05-13T03:00:00Z'), 7205, 7205],
+    ]);
   });
 });
