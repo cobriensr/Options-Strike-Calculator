@@ -6,14 +6,22 @@
  * Whales /market/{SPY,QQQ}/etf-tide?date=, for a range of finished ET trading
  * days. Two UW requests a day.
  *
- * Mirrors api/cron/fetch-etf-tide.ts: UW sends one cumulative row a minute;
- * the last row of each 5-minute window is kept, stamped at the window start,
- * ON CONFLICT (date, timestamp, source) DO NOTHING (the unique key of
- * migration #4). A re-run only adds what is missing, and a day the live cron
- * already filled keeps its rows. Differences from the old script and the cron:
- * the rows are put in time order before the last of a window is picked, and a
- * row whose premium is not a number is left out and counted ("dropped")
- * instead of being stored as 0.
+ * DO NOT RUN THIS for spy_etf_tide or qqq_etf_tide, on any day, until it
+ * adopts the window-END label (spec P2.1,
+ * docs/superpowers/specs/live-data-integrity-2026-11-06.md). Since 2026-11-09
+ * api/cron/fetch-etf-tide.ts stamps a closed 5-minute bucket at its END (the
+ * 09:30-09:35 bucket at 09:35) and upserts it. This script still stamps the
+ * window START (09:30) and is DO NOTHING, so its rows would interleave with
+ * the live ones under a second convention, and the unique key would not catch
+ * it.
+ *
+ * What it does today, as fetch-etf-tide.ts did before that change: UW sends
+ * one cumulative row a minute; the last row of each 5-minute window is kept,
+ * stamped at the window START, ON CONFLICT (date, timestamp, source) DO
+ * NOTHING (the unique key of migration #4). A re-run only adds what is
+ * missing. Differences from the old script: the rows are put in time order
+ * before the last of a window is picked, and a row whose premium is not a
+ * number is left out and counted ("dropped") instead of being stored as 0.
  *
  * Which days: --from and --to are required, inclusive, NYSE trading days from
  * src/data/marketHours.ts (holidays skipped). --to must be before today (ET):

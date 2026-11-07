@@ -5,8 +5,18 @@
  * Fetches from the Net Flow Expiry endpoint with filters:
  *   expiration=zero_dte, tide_type=index_only
  *
- * Data is already cumulative. Sampled to 5-min intervals.
- * Stored in flow_data table with source = 'zero_dte_index'.
+ * Data is already cumulative. Sampled to 5-min intervals, stamped at the
+ * window START, ON CONFLICT DO NOTHING. Stored in flow_data table with
+ * source = 'zero_dte_index'.
+ *
+ * DO NOT RUN THIS for zero_dte_index on any day until it adopts the
+ * window-END label (spec P2.1,
+ * docs/superpowers/specs/live-data-integrity-2026-11-06.md). Since 2026-11-09
+ * api/cron/fetch-zero-dte-flow.ts stamps a closed bucket at its END (the
+ * 09:30-09:35 bucket at 09:35) and upserts it. This script still stamps the
+ * window START and is DO NOTHING, so its rows would interleave with the live
+ * ones under a second convention. It also stores a null premium as NULL,
+ * which the live cron no longer does.
  *
  * Usage:
  *   UW_API_KEY=your_key DATABASE_URL="postgresql://..." node scripts/backfill-zero-dte-flow.mjs
