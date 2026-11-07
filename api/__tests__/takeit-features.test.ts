@@ -563,6 +563,54 @@ describe('featuresForLottery', () => {
     expect(out.ticker_bucket_SPY).toBe(1);
   });
 
+  // The Take-It lottery model v2026-05-16 was trained while the stored ETF
+  // tide grid was all zeros, so it learned spy_etf_diff = qqq_etf_diff = 0.
+  // Until the owner decides between keeping 0, retraining, or dropping the
+  // features (spec open question 3), scoring feeds 0 whatever the row holds.
+  // Spec: docs/superpowers/specs/live-data-integrity-2026-11-06.md (F17, P0.2)
+  describe('ETF tide diffs are pinned to 0 for scoring (F17)', () => {
+    const bundle = makeBundle('lottery', ['spy_etf_diff', 'qqq_etf_diff']);
+
+    it.each([
+      ['a real positive value', 1_234_567.5, -42.25],
+      ['a real negative value', -9_876_543, 310_000],
+      ['null', null, null],
+      ['NaN', Number.NaN, Number.NaN],
+    ])('feeds 0 for both diffs when the row holds %s', (_label, spy, qqq) => {
+      const out = featuresForLottery(
+        bundle,
+        lotteryRow({ spy_etf_diff: spy, qqq_etf_diff: qqq }),
+        EMPTY_CTX,
+      );
+      expect(out.spy_etf_diff).toBe(0);
+      expect(out.qqq_etf_diff).toBe(0);
+    });
+
+    it('pins each diff independently of the other', () => {
+      const out = featuresForLottery(
+        bundle,
+        lotteryRow({ spy_etf_diff: 5_000_000, qqq_etf_diff: null }),
+        EMPTY_CTX,
+      );
+      expect(out.spy_etf_diff).toBe(0);
+      expect(out.qqq_etf_diff).toBe(0);
+    });
+
+    it('leaves every other macro feature as the row holds it', () => {
+      const out = featuresForLottery(
+        bundle,
+        lotteryRow({
+          mkt_tide_diff: 7.5,
+          zero_dte_diff: -3.25,
+          spy_etf_diff: 100,
+        }),
+        EMPTY_CTX,
+      );
+      expect(out.mkt_tide_diff).toBe(7.5);
+      expect(out.zero_dte_diff).toBe(-3.25);
+    });
+  });
+
   it('uses sequential context for burst-storm + cofire + prior-session', () => {
     const t = new Date('2026-04-01T14:30:00Z');
     const ctx: SequentialContext = {

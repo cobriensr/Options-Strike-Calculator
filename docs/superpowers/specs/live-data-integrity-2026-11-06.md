@@ -77,7 +77,7 @@ Tier 0 must be live before **Mon 2026-11-09 09:25 ET**. Each phase is ≤5 files
   - Tests: replay the 09:27 payload (yesterday's rows) → nothing stored. Replay the 09:32 grid with null future minutes → only closed, non-null buckets stored. Write failure → the run is not `success`.
 - **P0.2 Greek flow and the Take-It pin (F4, F17).**
   - `fetch-greek-flow.ts` + test: apply R-day (drops the pre-open 1DTE answer), and surface write failures (R4).
-  - `api/_lib/takeit-features.ts` + test: the Take-It lottery input `spy_etf_diff`/`qqq_etf_diff` stays 0, the distribution v2026-05-16 was trained on, until the owner decides on a retrain (open question 3). Stored fires get the real values. Name the pin in a comment with this spec's path.
+  - `api/_lib/takeit-features.ts` + test: the Take-It lottery input `spy_etf_diff`/`qqq_etf_diff` stays 0, the distribution v2026-05-16 was trained on, until the owner decides on a retrain (open question 3). Stored fires get the real values. Name the pin in a comment with this spec's path. Shipped on its own, ahead of the greek flow part of P0.2 (owner priority change, 2026-11-07).
 - **P0.3 Strike exposures (F5, F6, F7).** `fetch-strike-exposure.ts`, `fetch-strike-all.ts` and tests.
   - Port the stale-cache guard and the `min_strike`/`max_strike` window from `fetch-gex-0dte.ts`.
   - Add the R-zero guard to `fetch-strike-exposure`.

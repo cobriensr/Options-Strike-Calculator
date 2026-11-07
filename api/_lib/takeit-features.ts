@@ -529,6 +529,25 @@ function nullableBooleanToFeature(
 }
 
 /**
+ * The value `spy_etf_diff` and `qqq_etf_diff` take for scoring, whatever the
+ * alert row holds (a number, null or NaN).
+ *
+ * Why: from 2026-04-02 the live ETF tide writer stored an all-zero grid, so the
+ * Take-It lottery model v2026-05-16 was trained on spy_etf_diff = qqq_etf_diff
+ * = 0 for every fire. The writer is fixed (P0.1), so stored fires now carry
+ * real values, and feeding those to a model that never saw them would shift
+ * its scores. The owner has not yet chosen between keeping 0, retraining on
+ * repaired data, or dropping both features (spec open question 3, default: keep
+ * feeding 0). Remove this pin only with that decision.
+ *
+ * Scoring only: detect-lottery-fires.ts keeps writing the real values to the
+ * lottery_finder_fires columns.
+ * Spec: docs/superpowers/specs/live-data-integrity-2026-11-06.md (F17, P0.2,
+ * open question 3).
+ */
+const PINNED_ETF_DIFF_FEATURE = 0;
+
+/**
  * Build the full feature record for a lottery alert. Output is a map keyed
  * by feature_cols name; the scorer can then call featuresFromRow() to turn
  * this into the ordered array.
@@ -608,8 +627,9 @@ export function featuresForLottery(
     mkt_tide_diff: nullableNumberToFeature(row.mkt_tide_diff),
     mkt_tide_otm_diff: nullableNumberToFeature(row.mkt_tide_otm_diff),
     spx_flow_diff: nullableNumberToFeature(row.spx_flow_diff),
-    spy_etf_diff: nullableNumberToFeature(row.spy_etf_diff),
-    qqq_etf_diff: nullableNumberToFeature(row.qqq_etf_diff),
+    // Pinned, not row.spy_etf_diff / row.qqq_etf_diff: see the constant.
+    spy_etf_diff: PINNED_ETF_DIFF_FEATURE,
+    qqq_etf_diff: PINNED_ETF_DIFF_FEATURE,
     zero_dte_diff: nullableNumberToFeature(row.zero_dte_diff),
     spx_spot_gamma_oi: nullableNumberToFeature(row.spx_spot_gamma_oi),
     spx_spot_gamma_vol: nullableNumberToFeature(row.spx_spot_gamma_vol),
