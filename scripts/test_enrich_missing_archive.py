@@ -151,6 +151,12 @@ def run_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(lottery, 'SOURCE_TAG', lottery.ARCHIVE_SOURCES['trades'])
     monkeypatch.setattr(silent_boom, 'PARQUET_DIR', None)
+    monkeypatch.setattr(
+        silent_boom, 'PARQUET_FILE_PATTERN', silent_boom.PARQUET_FORMATS['trades']
+    )
+    monkeypatch.setattr(
+        silent_boom, 'SOURCE_TAG', silent_boom.ARCHIVE_SOURCES['trades']
+    )
 
 
 def _fake_db(module, table: str, monkeypatch: pytest.MonkeyPatch) -> FakeDb:

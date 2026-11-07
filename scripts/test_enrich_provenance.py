@@ -1,4 +1,6 @@
-"""Provenance, selection and conditional writes in enrich_lottery_outcomes.py.
+"""Provenance, selection and conditional writes in enrich_lottery_outcomes.py
+and, in the "silent boom" section at the end, enrich_silent_boom_outcomes.py
+(the same rules on silent_boom_alerts).
 
 The live Vercel enrich cron writes the same lottery_finder_fires rows, so
 every write the script makes is conditional and tagged with where it came from
@@ -22,14 +24,17 @@ the Full Tape (the legacy 42-column files with decimal numerics and the new
 
 from __future__ import annotations
 
+import math
 import os
 import sqlite3
 import sys
+import warnings
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
+import pandas as pd
 import psycopg2
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -38,6 +43,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import enrich_lottery_outcomes as lottery  # noqa: E402
+import enrich_silent_boom_outcomes as sb  # noqa: E402
+import enrich_silent_boom_outcomes_fulltape as sb_tape  # noqa: E402
 
 DAY = '2026-07-22'
 ENTRY = datetime(2026, 7, 22, 15, 0, tzinfo=timezone.utc)
@@ -301,7 +308,10 @@ class FakeDb:
         if sql.startswith('SELECT ts, '):
             side = 'C' if 'net_call_prem' in sql.split(' FROM ')[0] else 'P'
             return self.flow.get((params[0], side), [])
-        if 'WHERE date = %s' in sql and 'entry_time_ct, entry_price' in sql:
+        if 'WHERE date = %s' in sql and (
+            'entry_time_ct, entry_price' in sql or 'bucket_ct, entry_price' in sql
+        ):
+            # lottery_finder_fires or silent_boom_alerts: the same row shape.
             return self.fires
         if 'WHERE date = %s' in sql and 'trigger_time_ct' in sql:
             return self.flow_fires
@@ -343,6 +353,10 @@ class FakeDb:
 
     def flow_writes(self) -> list[ValuesWrite]:
         return [w for w in self.values_writes if 'SET realized_flow_inversion_pct' in w.sql]
+
+    def sb_outcome_writes(self) -> list[ValuesWrite]:
+        """The silent-boom priced UPDATEs (their SET starts with peak_ceiling_pct)."""
+        return [w for w in self.values_writes if 'UPDATE silent_boom_alerts' in w.sql]
 
     def stamps(self, column: str) -> list[tuple[str, tuple]]:
         """Plain UPDATEs (the tag-only stamps) whose SET touches `column`."""
@@ -1417,3 +1431,1101 @@ def test_main_runs_pending_dates_tagged_by_the_archive(
     assert db.outcome_stamps()[0][1] == ('fulltape', 1, 1, 1, [2])
     # WRITE_DB=1 no longer reaches the live ticker stats.
     assert not any('lottery_ticker_stats' in sql for sql, _ in db.executed)
+
+
+# ═══════════════════════════════════════════════════════════════
+# silent boom: enrich_silent_boom_outcomes.py
+#
+# The same rules on silent_boom_alerts (alias a), with peak_ceiling_pct as the
+# column that says an alert holds an outcome. The predicates and the
+# OUTCOME_VERSION marker are the lottery's.
+# ═══════════════════════════════════════════════════════════════
+
+SB_BACKFILL = 'realized_trail30_10_pct IS NULL'
+
+# The tape's stamp for alerts it cannot price: per row, from the row's current
+# peak_ceiling_pct (see TAPE_STAMP). Gate before the ids.
+SB_TAPE_STAMP = (
+    'UPDATE silent_boom_alerts AS a '
+    'SET outcome_source = CASE WHEN a.peak_ceiling_pct IS NULL '
+    'THEN %s::text ELSE a.outcome_source END, '
+    'outcome_version = CASE WHEN a.peak_ceiling_pct IS NULL '
+    'THEN %s::smallint ELSE a.outcome_version END, '
+    'enriched_at = CASE WHEN a.peak_ceiling_pct IS NULL '
+    'THEN NOW() ELSE COALESCE(a.enriched_at, NOW()) END, '
+    'outcome_tape_version = %s::smallint '
+    'WHERE (a.outcome_tape_version IS NULL OR a.outcome_tape_version < %s) '
+    'AND a.id = ANY(%s::bigint[]) '
+    'RETURNING a.peak_ceiling_pct IS NOT NULL AS had_outcome'
+)
+SB_FILL_STAMP = (
+    'UPDATE silent_boom_alerts SET enriched_at = NOW(), '
+    'outcome_source = %s, outcome_version = %s '
+    'WHERE id = ANY(%s::bigint[]) '
+    'AND peak_ceiling_pct IS NULL AND outcome_source IS NULL'
+)
+SB_TAPE_UPDATE_TAIL = (
+    'WHERE a.id = v.id AND prior.id = a.id '
+    'AND (a.outcome_tape_version IS NULL OR a.outcome_tape_version < v.version) '
+    'RETURNING a.id, prior.peak_ceiling_pct IS NOT NULL AS had_outcome'
+)
+SB_FILL_UPDATE_TAIL = (
+    'WHERE a.id = v.id AND a.peak_ceiling_pct IS NULL AND a.outcome_source IS NULL '
+    'RETURNING a.id'
+)
+# Every numeric is cast: r30/r60/r120 can be None, and a VALUES column that is
+# all NULL has type text, which the NUMERIC column would refuse.
+SB_UPDATE_TEMPLATE = (
+    '(%s::bigint, ' + ', '.join(['%s::numeric'] * 7) + ', %s::text, %s::smallint)'
+)
+SB_UPDATE_COLUMNS = (
+    'peak_ceiling_pct = v.peak',
+    'minutes_to_peak = v.mtp',
+    'realized_30m_pct = v.r30',
+    'realized_60m_pct = v.r60',
+    'realized_120m_pct = v.r120',
+    'realized_eod_pct = v.eod',
+    'realized_trail30_10_pct = v.trail30',
+)
+
+
+def alert_row(
+    alert_id: int,
+    chain: str,
+    had_outcome: bool = False,
+    entry_price: Decimal = Decimal('1.0000'),
+) -> tuple:
+    # (id, option_chain_id, bucket_ct, entry_price[, peak_ceiling_pct IS NOT
+    # NULL]): entry_price is NUMERIC, so psycopg2 hands back a Decimal. The
+    # fifth column is selected for the fulltape source only.
+    return (alert_id, chain, ENTRY, entry_price, had_outcome)
+
+
+@pytest.fixture
+def sb_globals(monkeypatch: pytest.MonkeyPatch) -> None:
+    """configure_archive / main() rebind these; restore them after the test."""
+    monkeypatch.setattr(sb, 'PARQUET_DIR', None)
+    monkeypatch.setattr(sb, 'PARQUET_FILE_PATTERN', sb.PARQUET_FORMATS['trades'])
+    monkeypatch.setattr(sb, 'SOURCE_TAG', sb.ARCHIVE_SOURCES['trades'])
+
+
+@pytest.fixture
+def make_sb_db(monkeypatch: pytest.MonkeyPatch):
+    def make(**kwargs) -> FakeDb:
+        db = FakeDb(**kwargs)
+        monkeypatch.setattr(sb, 'execute_values', db.execute_values)
+        return db
+
+    return make
+
+
+@pytest.fixture
+def sb_fulltape(archive: Path, sb_globals: None) -> Path:
+    """A Full Tape archive holding the day, configured as the source."""
+    write_tape(archive, 'fulltape')
+    sb.configure_archive(archive, 'fulltape')
+    return archive
+
+
+@pytest.fixture
+def sb_as_source(sb_globals: None, monkeypatch: pytest.MonkeyPatch):
+    """Switch the module's source tag for one test; sb_globals puts it back."""
+
+    def switch(source: str) -> None:
+        monkeypatch.setattr(sb, 'SOURCE_TAG', source)
+
+    return switch
+
+
+def _sb_day_db(make_sb_db) -> FakeDb:
+    return make_sb_db(
+        fires=[
+            alert_row(1, TSLA),  # priced
+            alert_row(2, AAPL),  # only print before the bucket
+            alert_row(3, NVDA),  # chain not in the tape
+            alert_row(4, QQQ),  # priced
+        ]
+    )
+
+
+# ── vocabulary ─────────────────────────────────────────────────
+
+
+def test_sb_archive_sources_follow_the_check_vocabulary() -> None:
+    # Migration #201's silent_boom_alerts_outcome_source_chk.
+    assert sb.ARCHIVE_SOURCES == {'trades': 'bot_eod', 'fulltape': 'fulltape'}
+    assert set(sb.ARCHIVE_SOURCES) == set(sb.PARQUET_FORMATS)
+    assert sb.OUTCOME_VERSION == 1
+    assert sb.TAPE_SOURCE == 'fulltape'
+    # A source with no 'all' predicate would fail at the first run.
+    assert set(sb.OUTCOME_WORK_ALL) == set(sb.ARCHIVE_SOURCES.values())
+
+
+def test_sb_configure_archive_sets_dir_pattern_and_tag(
+    archive: Path, sb_globals: None
+) -> None:
+    sb.configure_archive(archive, 'fulltape')
+    assert sb.PARQUET_DIR == archive
+    assert sb.PARQUET_FILE_PATTERN == '{date}-fulltape.parquet'
+    assert sb.SOURCE_TAG == 'fulltape'
+    assert sb.day_archive_path(DAY) == archive / f'{DAY}-fulltape.parquet'
+
+    sb.configure_archive(archive, 'trades')
+    assert sb.PARQUET_FILE_PATTERN == '{date}-trades.parquet'
+    assert sb.SOURCE_TAG == 'bot_eod'
+    assert sb.day_archive_path(DAY) == archive / f'{DAY}-trades.parquet'
+
+
+def test_sb_list_parquet_dates_follows_the_configured_pattern(
+    archive: Path, sb_globals: None
+) -> None:
+    for name in ('2026-07-22-fulltape', '2026-07-23-fulltape', '2026-07-24-trades'):
+        (archive / f'{name}.parquet').write_bytes(b'')
+
+    sb.configure_archive(archive, 'fulltape')
+    assert sb.list_parquet_dates(None, None) == ['2026-07-22', '2026-07-23']
+    assert sb.list_parquet_dates('2026-07-23', None) == ['2026-07-23']
+
+    sb.configure_archive(archive, 'trades')
+    assert sb.list_parquet_dates(None, '2026-07-31') == ['2026-07-24']
+    assert sb.list_parquet_dates('2026-07-25', None) == []
+
+
+# ── selection ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize('source', PREDICATES_BY_SOURCE)
+@pytest.mark.parametrize('select', PREDICATES)
+def test_sb_select_predicates(select: str, source: str, sb_as_source) -> None:
+    sb_as_source(source)
+    expected = PREDICATES_BY_SOURCE[source][select]
+    db = FakeDb()
+    sb.fetch_unenriched(db, DAY, select=select)
+    fetch_sql = db.executed[-1][0]
+    assert 'FROM silent_boom_alerts WHERE date = %s AND ' in fetch_sql
+    where = fetch_sql.split('WHERE date = %s AND ', 1)[1].split(' ORDER BY')[0]
+    assert where == expected
+    assert fetch_sql.endswith('ORDER BY bucket_ct ASC')
+
+    sb.list_work_dates(db, select)
+    dates_sql = db.executed[-1][0]
+    assert dates_sql.startswith('SELECT DISTINCT date::text FROM silent_boom_alerts')
+    assert f'WHERE {expected}' in dates_sql
+    assert dates_sql.endswith('ORDER BY 1')
+    # Silent boom has no inversion half.
+    assert 'net_flow' not in dates_sql
+    assert 'UNION' not in dates_sql
+
+
+@pytest.mark.parametrize('source', PREDICATES_BY_SOURCE)
+def test_sb_all_work_follows_the_source(source: str, sb_as_source) -> None:
+    sb_as_source(source)
+    db = FakeDb()
+    sb.fetch_unenriched(db, DAY, select='all')
+    fetch_sql = db.executed[-1][0]
+    sb.list_work_dates(db, 'all')
+    dates_sql = db.executed[-1][0]
+
+    if source == 'fulltape':
+        # The marker alone: every row the tape has not examined, whatever
+        # another writer left in it.
+        assert f'WHERE {ALL_TAPE}' in dates_sql
+        for sql in (fetch_sql, dates_sql):
+            assert 'peak_ceiling_pct IS NULL' not in sql
+            assert 'outcome_source' not in sql
+    else:
+        assert f'WHERE {ALL}' in dates_sql
+        for sql in (fetch_sql, dates_sql):
+            assert 'outcome_tape_version' not in sql
+
+    # 'pending' and 'empty' do not depend on the source.
+    for select in ('pending', 'empty'):
+        sb.fetch_unenriched(db, DAY, select=select)
+        assert PREDICATES[select] in db.executed[-1][0]
+        assert 'outcome_tape_version' not in db.executed[-1][0]
+        sb.list_work_dates(db, select)
+        assert f'WHERE {PREDICATES[select]}' in db.executed[-1][0]
+        assert 'outcome_tape_version' not in db.executed[-1][0]
+
+
+def test_sb_fetch_unenriched_defaults_to_pending() -> None:
+    db = FakeDb()
+    sb.fetch_unenriched(db, DAY)
+    assert f'WHERE date = %s AND {PENDING} ORDER BY bucket_ct ASC' in db.executed[-1][0]
+    assert db.executed[-1][1] == (DAY,)
+
+
+def test_sb_fetch_unenriched_reads_the_row_with_its_outcome_flag(sb_as_source) -> None:
+    # The fulltape fetch also says whether the alert holds an outcome (it feeds
+    # a dry run's replaced and kept counts); bot_eod reads four columns.
+    sb_as_source('fulltape')
+    db = FakeDb(fires=[alert_row(1, TSLA, had_outcome=True), alert_row(2, AAPL)])
+    alerts = sb.fetch_unenriched(db, DAY, select='all')
+    assert db.executed[-1][0].startswith(
+        'SELECT id, option_chain_id, bucket_ct, entry_price, '
+        'peak_ceiling_pct IS NOT NULL AS had_outcome FROM silent_boom_alerts'
+    )
+    assert [(a['id'], a['chain'], a['had_outcome']) for a in alerts] == [
+        (1, TSLA, True),
+        (2, AAPL, False),
+    ]
+    # entry_price is a Decimal in the database and a float in the alert.
+    assert all(isinstance(a['entry_price'], float) for a in alerts)
+    assert alerts[0]['bucket_ct'] == pd.Timestamp(ENTRY)
+
+    sb_as_source('bot_eod')
+    plain = FakeDb(fires=[(1, TSLA, ENTRY, Decimal('1.0'))])
+    (alert,) = sb.fetch_unenriched(plain, DAY, select='all')
+    assert plain.executed[-1][0].startswith(
+        'SELECT id, option_chain_id, bucket_ct, entry_price FROM silent_boom_alerts'
+    )
+    assert alert['had_outcome'] is False
+
+
+def test_sb_backfill_mode_keeps_its_own_select() -> None:
+    db = FakeDb()
+    sb.fetch_unenriched(db, DAY, True)
+    sql, params = db.executed[-1]
+    assert f'WHERE date = %s AND {SB_BACKFILL} ORDER BY bucket_ct ASC' in sql
+    assert params == (DAY,)
+
+
+@pytest.mark.parametrize('select', ['empty', 'all'])
+def test_sb_backfill_mode_takes_only_the_pending_select(select: str) -> None:
+    db = FakeDb()
+    with pytest.raises(ValueError, match='backfill'):
+        sb.fetch_unenriched(db, DAY, True, select)
+    assert db.executed == []  # nothing was asked of the database
+
+
+def test_sb_backfill_dates_gate_on_the_trail_column() -> None:
+    db = FakeDb(work_dates=[DAY, '2026-07-23'])
+    assert sb.list_backfill_dates(db) == [DAY, '2026-07-23']
+    sql = db.executed[-1][0]
+    assert f'FROM silent_boom_alerts WHERE {SB_BACKFILL}' in sql
+    assert sql.startswith('SELECT DISTINCT date::text')
+    # Replaced, not kept beside it.
+    assert not hasattr(sb, 'list_unenriched_dates')
+
+
+def test_sb_list_work_dates_bounds_are_parameters() -> None:
+    db = FakeDb(work_dates=['2026-07-22', '2026-07-23'])
+    got = sb.list_work_dates(db, 'pending', since='2026-06-01', through='2026-06-30')
+    assert got == ['2026-07-22', '2026-07-23']
+    sql, params = db.executed[-1]
+    assert 'date >= %s::date' in sql
+    assert 'date <= %s::date' in sql
+    assert params == ('2026-06-01', '2026-06-30')
+
+    sb.list_work_dates(db, 'pending', through='2026-06-30')
+    sql, params = db.executed[-1]
+    assert 'date >= %s::date' not in sql
+    assert params == ('2026-06-30',)
+
+    sb.list_work_dates(db, 'empty')
+    assert db.executed[-1][1] == ()
+
+
+def test_sb_tape_work_carries_the_version_gate_ahead_of_the_bounds(sb_as_source) -> None:
+    # The gate's %s sits in the work predicate, before the bounds.
+    sb_as_source('fulltape')
+    db = FakeDb()
+    sb.list_work_dates(db, 'all', since='2026-06-01', through='2026-06-30')
+    assert db.executed[-1][1] == (sb.OUTCOME_VERSION, '2026-06-01', '2026-06-30')
+
+    sb.list_work_dates(db, 'all')
+    assert db.executed[-1][1] == (sb.OUTCOME_VERSION,)
+
+    sb.fetch_unenriched(db, DAY, select='all')
+    assert db.executed[-1][1] == (DAY, sb.OUTCOME_VERSION)
+    # pending and empty carry no gate.
+    sb.fetch_unenriched(db, DAY, select='pending')
+    assert db.executed[-1][1] == (DAY,)
+
+    # And the bot_eod 'all' work carries none either.
+    sb_as_source('bot_eod')
+    sb.list_work_dates(db, 'all')
+    assert db.executed[-1][1] == ()
+    sb.fetch_unenriched(db, DAY, select='all')
+    assert db.executed[-1][1] == (DAY,)
+
+
+def test_sb_the_tape_gate_selects_unexamined_and_older_rows_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The gate is real SQL, so run it: the fake cannot evaluate a WHERE. The
+    # production predicate text goes into stdlib sqlite3 in memory (it speaks
+    # the same IS NULL / OR / < / AND), with sqlite's `?` as the version.
+    monkeypatch.setattr(sb, 'OUTCOME_VERSION', 2)
+    gate = sb.outcome_work_all('fulltape', '', '?')
+    other_day = '2026-07-23'
+    con = sqlite3.connect(':memory:')
+    con.execute(
+        'CREATE TABLE alerts (id INTEGER PRIMARY KEY, date TEXT, outcome_tape_version INTEGER)'
+    )
+    con.executemany(
+        'INSERT INTO alerts VALUES (?, ?, ?)',
+        [
+            (1, DAY, None),  # never examined: selected
+            (2, DAY, 1),  # examined at an older version: selected
+            (3, DAY, 2),  # examined at this version: not
+            (4, DAY, 3),  # examined at a newer version: not
+            # The same markers on another day. Without the gate's parentheses
+            # `date = ? AND marker IS NULL OR marker < ?` lets row 6 through.
+            (5, other_day, None),
+            (6, other_day, 1),
+        ],
+    )
+    # One binding per `?` in the predicate: the day, then the version wherever
+    # the gate takes it, so a gate that stops taking one fails on its rows.
+    params = (DAY, *[sb.OUTCOME_VERSION] * gate.count('?'))
+
+    rows = con.execute(
+        f'SELECT id FROM alerts WHERE date = ? AND {gate} ORDER BY id', params
+    ).fetchall()
+
+    assert [row[0] for row in rows] == [1, 2]
+
+
+def test_sb_a_version_bump_reaches_every_tape_gate(
+    sb_fulltape: Path, make_sb_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A row the tape examined at an older version is work again, and every
+    # guard lets it through: the gate is the constant, read when it runs.
+    monkeypatch.setattr(sb, 'OUTCOME_VERSION', 2)
+    db = make_sb_db(fires=[alert_row(1, TSLA), alert_row(2, AAPL)])
+
+    sb.list_work_dates(db, 'all')
+    assert db.executed[-1][1] == (2,)
+
+    sb.enrich_one_date(db, DAY, select='all')
+
+    fetch_params = next(p for s, p in db.executed if 'bucket_ct, entry_price' in s)
+    assert fetch_params == (DAY, 2)
+    (write,) = db.sb_outcome_writes()
+    # The priced UPDATE's gate reads the version carried in its VALUES row.
+    assert 'a.outcome_tape_version < v.version' in write.sql
+    assert [row[-2:] for row in write.rows] == [('fulltape', 2)]
+    # (source, outcome version, marker, gate, ids)
+    ((_, stamp_params),) = db.outcome_stamps()
+    assert stamp_params == ('fulltape', 2, 2, 2, [2])
+
+
+# ── the outcome pass: conditional, tagged, counted from the DB ──
+
+
+@pytest.mark.parametrize(
+    ('parquet_format', 'source', 'tail'),
+    [
+        ('fulltape', 'fulltape', SB_TAPE_UPDATE_TAIL),
+        ('trades', 'bot_eod', SB_FILL_UPDATE_TAIL),
+    ],
+)
+def test_sb_update_is_conditional_and_tagged(
+    parquet_format: str,
+    source: str,
+    tail: str,
+    archive: Path,
+    sb_globals: None,
+    make_sb_db,
+) -> None:
+    write_tape(archive, parquet_format)
+    sb.configure_archive(archive, parquet_format)
+    db = make_sb_db(fires=[alert_row(1, TSLA)])
+
+    result = sb.enrich_one_date(db, DAY)
+
+    (write,) = db.sb_outcome_writes()
+    assert write.sql.startswith('UPDATE silent_boom_alerts AS a SET peak_ceiling_pct')
+    assert write.sql.endswith(tail)
+    for column in SB_UPDATE_COLUMNS:
+        assert column in write.sql
+    assert 'outcome_source = v.source' in write.sql
+    assert 'outcome_version = v.version' in write.sql
+    assert 'enriched_at = NOW()' in write.sql
+    assert write.template == SB_UPDATE_TEMPLATE
+    assert write.kwargs == {'page_size': 500, 'fetch': True}
+    (row,) = write.rows
+    # (id, peak, mtp, r30, r60, r120, eod, trail30, source, version)
+    assert len(row) == 10
+    assert row[0] == 1
+    # Canceled (9.00) and zero-price prints are dropped: the peak is 2.00, at
+    # minute 20.
+    assert row[1] == pytest.approx(100.0)
+    assert row[2] == pytest.approx(20.0)
+    assert row[-2:] == (source, 1)
+    assert result.outcomes_written == 1
+    assert result.alerts_replaced == 0  # nothing was there to replace
+
+
+def test_sb_tape_replaces_a_cron_outcome(sb_fulltape: Path, make_sb_db) -> None:
+    # The alert already holds a value another writer left (had_outcome).
+    db = make_sb_db(fires=[alert_row(1, TSLA, had_outcome=True)])
+
+    result = sb.enrich_one_date(db, DAY, select='all')
+
+    (write,) = db.sb_outcome_writes()
+    # The guard is the marker's version gate alone: no test of the prior
+    # outcome or its tag.
+    assert write.sql.endswith(SB_TAPE_UPDATE_TAIL)
+    where = write.sql.split(' WHERE ', 1)[1]
+    assert 'peak_ceiling_pct IS NULL' not in where
+    assert 'outcome_source' not in where
+    # It sets the tag, the version and the marker with the seven values.
+    assert 'outcome_source = v.source' in write.sql
+    assert 'outcome_version = v.version' in write.sql
+    assert 'enriched_at = NOW()' in write.sql
+    assert 'outcome_tape_version = v.version' in write.sql
+    assert 'silent_boom_alerts AS prior' in write.sql
+    assert [row[-2:] for row in write.rows] == [('fulltape', 1)]
+    assert result.outcomes_written == 1
+    assert result.alerts_replaced == 1
+    assert result.stamped_no_outcome == 0
+    assert result.alerts_kept == 0
+
+
+def test_sb_written_count_comes_from_returning(sb_fulltape: Path, make_sb_db) -> None:
+    db = make_sb_db(fires=[alert_row(i, TSLA) for i in (1, 2, 3)])
+    # Another tape run examined alert 3 between our SELECT and our UPDATE.
+    db.returning = lambda rows: [(r[0], False) for r in rows if r[0] != 3]
+
+    result = sb.enrich_one_date(db, DAY)
+
+    assert result.alerts_selected == 3
+    assert result.outcomes_written == 2
+    assert result.stamped_no_outcome == 0
+
+
+def test_sb_replaced_count_comes_from_returning(sb_fulltape: Path, make_sb_db) -> None:
+    db = make_sb_db(fires=[alert_row(i, TSLA, had_outcome=True) for i in (1, 2, 3)])
+    # Another tape run examined alert 3 first, so the guard dropped it.
+    db.returning = lambda rows: [(r[0], True) for r in rows if r[0] != 3]
+
+    result = sb.enrich_one_date(db, DAY, select='all')
+
+    assert result.alerts_selected == 3
+    assert result.outcomes_written == 2
+    assert result.alerts_replaced == 2  # not the three the fetch saw
+
+
+def test_sb_replaced_count_follows_the_row_not_the_fetch(
+    sb_fulltape: Path, make_sb_db
+) -> None:
+    # Alert 1 had no outcome at the SELECT but the cron wrote one before our
+    # UPDATE; alert 2 is the other way round. The statement's own view of the
+    # prior row decides.
+    db = make_sb_db(fires=[alert_row(1, TSLA), alert_row(2, QQQ, had_outcome=True)])
+    db.returning = lambda rows: [(1, True), (2, False)]
+
+    result = sb.enrich_one_date(db, DAY, select='all')
+
+    assert result.outcomes_written == 2
+    assert result.alerts_replaced == 1
+
+
+def test_sb_update_outcomes_returns_written_and_replaced(make_sb_db) -> None:
+    db = make_sb_db()
+    db.returning = lambda rows: [(rows[0][0], True), (rows[1][0], False)]
+    updates = [(i, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0) for i in (7, 8, 9)]
+    assert sb.update_outcomes(db, updates, 'fulltape') == (2, 1)
+    assert sb.update_outcomes(db, [], 'fulltape') == (0, 0)
+    assert len(db.values_writes) == 1
+    assert db.commits == 1
+
+    # bot_eod fills only: every returned row is a write, none a replacement,
+    # and the second returned column (if any) is never read.
+    fill = make_sb_db()
+    fill.returning = lambda rows: [(r[0],) for r in rows if r[0] != 9]
+    assert sb.update_outcomes(fill, updates, 'bot_eod') == (2, 0)
+
+
+def test_sb_null_horizons_travel_as_nulls(
+    sb_fulltape: Path, make_sb_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A chain with no print inside the first 30 minutes has r30 = None. The
+    # row is sent as None (NULL in the VALUES list, cast to numeric by the
+    # template), never as 0 and never dropped.
+    real = sb.compute_outcomes
+
+    def sparse(chain_df, bucket_ct, entry_price):
+        out = real(chain_df, bucket_ct, entry_price)
+        return (out[0], out[1], None, None, None, out[5], out[6])
+
+    monkeypatch.setattr(sb, 'compute_outcomes', sparse)
+    db = make_sb_db(fires=[alert_row(1, TSLA)])
+
+    sb.enrich_one_date(db, DAY)
+
+    rows = [row for w in db.sb_outcome_writes() for row in w.rows]
+    assert [row[3:6] for row in rows] == [(None, None, None)]
+
+
+# ── unpriced alerts ────────────────────────────────────────────
+
+
+def test_sb_unpriced_alerts_are_tagged_once(sb_fulltape: Path, make_sb_db) -> None:
+    # 2: its only print is before the bucket; 3: its chain is not in the tape;
+    # 5: priced chain, entry price 0.
+    db = make_sb_db(
+        fires=[
+            alert_row(1, TSLA),
+            alert_row(2, AAPL),
+            alert_row(3, NVDA),
+            alert_row(5, QQQ, entry_price=Decimal('0.0000')),
+        ]
+    )
+
+    result = sb.enrich_one_date(db, DAY)
+
+    stamps = db.outcome_stamps()
+    assert len(stamps) == 1
+    # (source, version, marker, gate, ids): one statement for all three.
+    assert stamps[0][1] == ('fulltape', 1, 1, 1, [2, 3, 5])
+    assert result.alerts_selected == 4
+    assert result.outcomes_written == 1
+    assert result.stamped_no_outcome == 3
+    assert result.alerts_kept == 0
+    assert [row[0] for write in db.sb_outcome_writes() for row in write.rows] == [1]
+
+
+def test_sb_unpriced_alert_with_an_outcome_keeps_it(sb_fulltape: Path, make_sb_db) -> None:
+    # AAPL's only print is before the bucket, but the alert holds a cron value.
+    db = make_sb_db(fires=[alert_row(2, AAPL, had_outcome=True)])
+    db.stamp_returning = lambda ids: [(True,) for _ in ids]  # the row kept its outcome
+
+    result = sb.enrich_one_date(db, DAY, select='all')
+
+    ((sql, params),) = db.outcome_stamps()
+    # The per-row branch is in the statement: with an outcome (peak_ceiling_pct
+    # NOT NULL) the marker is set and the tag and the version stay as they
+    # were. The realized columns are not in the SET at all.
+    assert sql == SB_TAPE_STAMP
+    set_clause = sql.split(' SET ', 1)[1].split(' WHERE ', 1)[0]
+    for column in ('realized_', 'peak_ceiling_pct =', 'minutes_to_peak'):
+        assert column not in set_clause
+    assert set_clause.count('ELSE a.outcome_source END') == 1
+    assert set_clause.count('ELSE a.outcome_version END') == 1
+    assert params == ('fulltape', 1, 1, 1, [2])
+    assert result.alerts_kept == 1
+    assert result.stamped_no_outcome == 0
+    assert result.outcomes_written == 0
+
+
+def test_sb_a_kept_row_without_enriched_at_gets_one(sb_fulltape: Path, make_sb_db) -> None:
+    # enriched_at is nullable and nothing in the schema forbids a row with a
+    # value and a NULL enriched_at, so the keep branch fills it defensively. It
+    # fills a missing enriched_at and nothing else.
+    db = make_sb_db(fires=[alert_row(2, AAPL, had_outcome=True)])
+
+    sb.enrich_one_date(db, DAY, select='all')
+
+    ((sql, _),) = db.outcome_stamps()
+    set_clause = sql.split(' SET ', 1)[1].split(' WHERE ', 1)[0]
+    # No outcome: a fresh enriched_at. An outcome: the one it has, or now if
+    # it has none. Never a bare `ELSE a.enriched_at`, which would leave NULL.
+    assert (
+        'enriched_at = CASE WHEN a.peak_ceiling_pct IS NULL '
+        'THEN NOW() ELSE COALESCE(a.enriched_at, NOW()) END'
+    ) in set_clause
+    assert 'ELSE a.enriched_at END' not in set_clause
+    # The values, tag and version of the kept row are still untouched.
+    assert 'ELSE a.outcome_source END' in set_clause
+    assert 'ELSE a.outcome_version END' in set_clause
+    for column in ('realized_', 'peak_ceiling_pct =', 'minutes_to_peak'):
+        assert column not in set_clause
+
+
+def test_sb_unpriced_alert_without_an_outcome_is_tagged(
+    sb_fulltape: Path, make_sb_db
+) -> None:
+    db = make_sb_db(fires=[alert_row(2, AAPL)])
+    db.stamp_returning = lambda ids: [(False,) for _ in ids]  # nothing was there
+
+    result = sb.enrich_one_date(db, DAY, select='all')
+
+    ((sql, params),) = db.outcome_stamps()
+    # The same statement tags 'fulltape' and sets the marker on such a row.
+    assert sql == SB_TAPE_STAMP
+    assert 'THEN %s::text ELSE a.outcome_source END' in sql
+    assert 'outcome_tape_version = %s::smallint' in sql
+    assert params == ('fulltape', 1, 1, 1, [2])
+    assert result.stamped_no_outcome == 1
+    assert result.alerts_kept == 0
+
+
+def test_sb_kept_and_stamped_come_from_the_row_not_the_fetch(
+    sb_fulltape: Path, make_sb_db
+) -> None:
+    # The fetch saw alert 2 without an outcome and alert 3 with one. By the
+    # time of the stamp the cron had written 2's too, so both rows keep an
+    # outcome. The statement's RETURNING decides: counting from the fetch would
+    # give kept 1 and stamped 1.
+    db = make_sb_db(fires=[alert_row(2, AAPL), alert_row(3, NVDA, had_outcome=True)])
+    db.stamp_returning = lambda ids: [(True,), (True,)]
+
+    result = sb.enrich_one_date(db, DAY, select='all')
+
+    assert result.alerts_kept == 2
+    assert result.stamped_no_outcome == 0
+
+
+def test_sb_stamp_no_outcome_is_conditional_per_row_and_chunked(make_sb_db) -> None:
+    db = make_sb_db()
+    ids = list(range(1, 1002))
+
+    assert sb.stamp_no_outcome(db, ids, 'fulltape') == (1001, 0)
+
+    assert {sql for sql, _ in db.executed} == {SB_TAPE_STAMP}
+    # (source, outcome version, marker, gate) then the chunk of ids.
+    assert [(*p[:4], len(p[4])) for _, p in db.executed] == [
+        ('fulltape', 1, 1, 1, 500),
+        ('fulltape', 1, 1, 1, 500),
+        ('fulltape', 1, 1, 1, 1),
+    ]
+    assert db.commits == 1
+    assert sb.stamp_no_outcome(db, [], 'fulltape') == (0, 0)
+    assert len(db.executed) == 3
+
+
+def test_sb_bot_eod_stamp_is_conditional_and_chunked(make_sb_db) -> None:
+    db = make_sb_db()
+    ids = list(range(1, 1002))
+
+    assert sb.stamp_no_outcome(db, ids, 'bot_eod') == (1001, 0)
+
+    assert {sql for sql, _ in db.executed} == {SB_FILL_STAMP}
+    assert [(p[0], p[1], len(p[2])) for _, p in db.executed] == [
+        ('bot_eod', 1, 500),
+        ('bot_eod', 1, 500),
+        ('bot_eod', 1, 1),
+    ]
+    assert sb.stamp_no_outcome(db, [], 'bot_eod') == (0, 0)
+    assert len(db.executed) == 3
+
+
+def test_sb_stamp_counts_come_from_what_the_database_returned(
+    make_sb_db, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # fulltape: one RETURNING row per row examined. Another tape run took 6.
+    tape = make_sb_db()
+    tape.stamp_returning = lambda ids: [(True,), (False,)]
+    assert sb.stamp_no_outcome(tape, [5, 6, 7], 'fulltape') == (1, 1)
+    # bot_eod: the statement's rowcount; the cron already filled two of three.
+    fill = make_sb_db()
+    fill.stamp_rowcount = 1
+    assert sb.stamp_no_outcome(fill, [5, 6, 7], 'bot_eod') == (1, 0)
+    captured = capsys.readouterr()
+    assert captured.err == ''
+    assert 'WARN' not in captured.out
+
+
+def test_sb_bot_eod_never_sets_the_marker_or_replaces(
+    archive: Path, sb_globals: None, make_sb_db
+) -> None:
+    write_tape(archive, 'trades')
+    sb.configure_archive(archive, 'trades')
+    # Both alerts hold an outcome; fill-only never touches such a row.
+    db = make_sb_db(
+        fires=[alert_row(1, TSLA, had_outcome=True), alert_row(2, AAPL, had_outcome=True)]
+    )
+
+    result = sb.enrich_one_date(db, DAY, select='all')
+
+    statements = [sql for sql, _ in db.executed] + [w.sql for w in db.values_writes]
+    assert statements
+    assert not [s for s in statements if 'outcome_tape_version' in s]
+    (write,) = db.sb_outcome_writes()
+    assert write.sql.endswith(SB_FILL_UPDATE_TAIL)
+    assert 'prior' not in write.sql
+    ((stamp, params),) = db.outcome_stamps()
+    assert stamp == SB_FILL_STAMP
+    assert params == ('bot_eod', 1, [2])
+    assert (result.alerts_replaced, result.alerts_kept) == (0, 0)
+    assert (result.outcomes_written, result.stamped_no_outcome) == (1, 1)
+
+
+# ── the non-finite guard ───────────────────────────────────────
+
+
+def _chain_frame(prices: list[float], minutes: list[int] | None = None) -> pd.DataFrame:
+    """Prints after the bucket, one a minute from minute 1 unless `minutes` says."""
+    bucket = pd.Timestamp(ENTRY)
+    minutes = minutes or [m + 1 for m in range(len(prices))]
+    return pd.DataFrame(
+        {
+            'executed_at': [bucket + timedelta(minutes=m) for m in minutes],
+            'option_chain_id': TSLA,
+            'price': prices,
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ('entry', 'prices'),
+    [
+        (float('nan'), [1.1, 1.2]),  # NUMERIC can hold NaN
+        (float('inf'), [1.1, 1.2]),
+        (1.0, [1.1, float('inf')]),  # price > 0 lets an infinite print through
+    ],
+)
+def test_sb_compute_outcomes_never_returns_a_non_finite_value(
+    entry: float, prices: list[float]
+) -> None:
+    # A warning is an error here: a non-finite entry price must be refused
+    # before the arithmetic (inf / inf warns its way to NaN), and an infinite
+    # print must be refused by the check on the outcomes.
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        res = sb.compute_outcomes(_chain_frame(prices), pd.Timestamp(ENTRY), entry)
+    assert res is None
+
+
+def test_sb_compute_outcomes_keeps_a_finite_result() -> None:
+    res = sb.compute_outcomes(_chain_frame([1.1, 1.5, 1.2]), pd.Timestamp(ENTRY), 1.0)
+    assert res is not None
+    assert len(res) == 7
+    assert all(v is None or math.isfinite(v) for v in res)
+    assert res[0] == pytest.approx(50.0)  # peak
+
+
+def test_sb_compute_outcomes_keeps_a_horizon_with_no_tick_as_none() -> None:
+    # The first print is 45 minutes in, so the +30m horizon has no tick: None,
+    # a NULL outcome and not a reason to refuse the alert (the finite check
+    # skips None). Coding it as 0% would inflate win rates for sparse chains.
+    res = sb.compute_outcomes(
+        _chain_frame([1.2, 1.5], minutes=[45, 100]), pd.Timestamp(ENTRY), 1.0
+    )
+    assert res is not None
+    peak, mtp, r30, r60, r120, eod, _trail = res
+    assert r30 is None
+    assert r60 == pytest.approx(20.0)  # the 45m print is the last one inside 60m
+    assert r120 == pytest.approx(50.0)
+    assert (peak, mtp, eod) == (pytest.approx(50.0), pytest.approx(100.0), pytest.approx(50.0))
+
+
+def test_sb_non_finite_outcome_is_tagged_not_written(sb_fulltape: Path, make_sb_db) -> None:
+    # entry_price is NUMERIC, which can hold NaN or Infinity: float() makes
+    # every outcome non-finite. Written, NaN would be stored as a "value" and
+    # the alert never picked again.
+    db = make_sb_db(
+        fires=[
+            alert_row(1, TSLA, entry_price=Decimal('NaN')),
+            alert_row(2, TSLA),
+            alert_row(3, QQQ, entry_price=Decimal('Infinity')),
+        ]
+    )
+
+    result = sb.enrich_one_date(db, DAY)
+
+    rows = [row for w in db.sb_outcome_writes() for row in w.rows]
+    assert [row[0] for row in rows] == [2]
+    assert all(v is None or math.isfinite(v) for row in rows for v in row[1:8])
+    ((_, params),) = db.outcome_stamps()
+    assert params == ('fulltape', 1, 1, 1, [1, 3])
+    assert result.outcomes_written == 1
+    assert result.stamped_no_outcome == 2
+
+
+# ── legacy and new layouts enrich identically ──────────────────
+
+
+def test_sb_legacy_and_new_layouts_agree(tmp_path: Path, sb_globals: None, make_sb_db) -> None:
+    outcomes = {}
+    for layout in ('legacy', 'new'):
+        directory = tmp_path / layout
+        directory.mkdir()
+        write_tape(directory, 'fulltape', layout)
+        sb.configure_archive(directory, 'fulltape')
+        db = _sb_day_db(make_sb_db)
+        result = sb.enrich_one_date(db, DAY, select='all')
+        outcomes[layout] = (
+            [w.rows for w in db.sb_outcome_writes()],
+            db.outcome_stamps(),
+            result,
+        )
+
+    assert outcomes['legacy'] == outcomes['new']
+    outcome_rows, stamps, result = outcomes['new']
+    assert [row[0] for row in outcome_rows[0]] == [1, 4]
+    assert stamps[0][1] == ('fulltape', 1, 1, 1, [2, 3])
+    assert result == sb.DayResult(alerts_selected=4, outcomes_written=2, stamped_no_outcome=2)
+
+
+# ── dry run ────────────────────────────────────────────────────
+
+
+def test_sb_dry_run_writes_nothing(tmp_path: Path, sb_globals: None, make_sb_db) -> None:
+    directory = tmp_path / 'tape'
+    directory.mkdir()
+    write_tape(directory, 'fulltape')
+    sb.configure_archive(directory, 'fulltape')
+
+    written = _sb_day_db(make_sb_db)
+    real = sb.enrich_one_date(written, DAY, select='all')
+    assert written.values_writes
+    assert written.updates_run()
+
+    dry = _sb_day_db(make_sb_db)
+    result = sb.enrich_one_date(dry, DAY, select='all', dry_run=True)
+
+    assert dry.values_writes == []
+    assert dry.updates_run() == []
+    assert dry.commits == 0
+    assert result == real
+    assert result.outcomes_written == 2
+    assert result.stamped_no_outcome == 2
+
+
+def test_sb_dry_run_counts_would_replace_and_would_keep(
+    sb_fulltape: Path, make_sb_db
+) -> None:
+    # One priced and one unpriced alert, both holding an outcome the feed wrote.
+    rows = [alert_row(1, TSLA, had_outcome=True), alert_row(2, AAPL, had_outcome=True)]
+    db = make_sb_db(fires=rows)
+
+    result = sb.enrich_one_date(db, DAY, select='all', dry_run=True)
+
+    # The counts come from the fetch (had_outcome), and nothing is written.
+    assert result.outcomes_written == 1
+    assert result.alerts_replaced == 1
+    assert result.alerts_kept == 1
+    assert result.stamped_no_outcome == 0
+    assert db.values_writes == []
+    assert db.updates_run() == []
+    assert db.commits == 0
+    # A wet run over the same rows reports the same counts.
+    wet = make_sb_db(fires=list(rows))
+    assert sb.enrich_one_date(wet, DAY, select='all') == result
+
+
+def test_sb_dry_run_counts_unpriced_alerts_without_an_outcome_as_tagged(
+    sb_fulltape: Path, make_sb_db
+) -> None:
+    db = make_sb_db(fires=[alert_row(2, AAPL), alert_row(3, NVDA, had_outcome=True)])
+
+    result = sb.enrich_one_date(db, DAY, select='all', dry_run=True)
+
+    assert result.stamped_no_outcome == 1
+    assert result.alerts_kept == 1
+    assert db.commits == 0
+
+
+def test_sb_day_log_and_run_summary_report_replaced_and_kept(
+    sb_fulltape: Path, make_sb_db, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 1: priced over an outcome; 2: unpriced, keeps its outcome; 3: unpriced, none.
+    db = make_sb_db(
+        fires=[
+            alert_row(1, TSLA, had_outcome=True),
+            alert_row(2, AAPL, had_outcome=True),
+            alert_row(3, NVDA),
+        ]
+    )
+
+    day = sb.enrich_one_date(db, DAY, select='all')
+
+    out = capsys.readouterr().out
+    assert (
+        'updated=   1 alerts_replaced=1 tagged=1 alerts_kept=1 '
+        'skipped_chain=1 skipped_no_outcome=1'
+    ) in out
+
+    # The summary adds the days up, and leaves out a day skipped for its archive.
+    sb.print_run_summary(
+        {
+            DAY: day,
+            '2026-07-23': sb.DayResult(alerts_selected=2, alerts_replaced=2, alerts_kept=3),
+            '2026-07-24': sb.DayResult(archive_missing=True, alerts_replaced=9, alerts_kept=9),
+        }
+    )
+    out = capsys.readouterr().out
+    assert '[enrich-silent-boom] summary: alerts_replaced=3 alerts_kept=4' in out
+    assert (
+        '[enrich-silent-boom] summary: 2 day(s) enriched, 2 alerts updated; '
+        '1 day(s) skipped for a missing archive'
+    ) in out
+
+
+# ── a write that rejects ───────────────────────────────────────
+
+# (fails_on: text that identifies the statement the database drops,
+# issued_after: what must not follow it, commits: commits before it). The day
+# has both writes: outcome values, then the outcome stamp.
+SB_WRITE_FAULTS = [
+    pytest.param('SET peak_ceiling_pct', lambda db: db.outcome_stamps(), 0, id='outcome-values'),
+    pytest.param('outcome_tape_version = %s', lambda db: [], 1, id='outcome-stamp'),
+]
+
+
+@pytest.mark.parametrize(('fails_on', 'issued_after', 'commits'), SB_WRITE_FAULTS)
+def test_sb_a_rejected_write_propagates_and_stops_the_day(
+    fails_on: str, issued_after, commits: int, sb_fulltape: Path, make_sb_db
+) -> None:
+    db = _sb_day_db(make_sb_db)
+    db.fail_when = lambda sql: fails_on in sql
+
+    result = None
+    with pytest.raises(psycopg2.OperationalError, match='server closed'):
+        result = sb.enrich_one_date(db, DAY, select='all')
+
+    # No DayResult came back for the day ...
+    assert result is None
+    # ... the rejected statement went out once (no retry, no swallow) ...
+    sent = [s for s, _ in db.executed if fails_on in s]
+    sent += [w.sql for w in db.values_writes if fails_on in w.sql]
+    assert len(sent) == 1
+    # ... nothing that follows it ran, in particular no stamp after a failed
+    # value write ...
+    assert issued_after(db) == []
+    # ... and only the writes before it were committed.
+    assert db.commits == commits
+
+
+# ── env file ───────────────────────────────────────────────────
+
+
+def test_sb_load_env_without_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sb, 'ENV_FILE', tmp_path / 'missing.env.local')
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://process/env')
+
+    sb.load_env()  # no SystemExit: the nightly service has no env file
+
+    assert os.environ['DATABASE_URL'] == 'postgresql://process/env'
+
+
+def test_sb_load_env_reads_the_module_global_at_call_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_file = tmp_path / 'later.env.local'
+    env_file.write_text('SB_PROVENANCE_PROBE="from-file"\n', encoding='utf-8')
+    monkeypatch.delenv('SB_PROVENANCE_PROBE', raising=False)
+    monkeypatch.setattr(sb, 'ENV_FILE', env_file)
+
+    sb.load_env()
+
+    assert os.environ['SB_PROVENANCE_PROBE'] == 'from-file'
+    monkeypatch.delenv('SB_PROVENANCE_PROBE')
+
+
+# ── main ───────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def sb_main_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sb, 'ENV_FILE', tmp_path / 'absent.env.local')
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://test/none')
+
+
+def test_sb_main_runs_pending_dates_tagged_bot_eod(
+    archive: Path, sb_globals: None, sb_main_env: None, make_sb_db, monkeypatch
+) -> None:
+    write_tape(archive, 'trades')
+    db = make_sb_db(fires=[alert_row(1, TSLA), alert_row(2, NVDA)], work_dates=[DAY])
+    monkeypatch.setattr(sb, 'connect_with_retry', lambda _url: db)
+
+    sb.main(['--all-unenriched', '--parquet-dir', str(archive)])
+
+    dates_sql = next(
+        sql for sql, _ in db.executed if sql.startswith('SELECT DISTINCT date::text')
+    )
+    assert f'WHERE {PENDING} ORDER BY 1' in dates_sql
+    (write,) = db.sb_outcome_writes()
+    assert write.sql.endswith(SB_FILL_UPDATE_TAIL)
+    assert [row[-2:] for row in write.rows] == [('bot_eod', 1)]
+    ((stamp, params),) = db.outcome_stamps()
+    assert stamp == SB_FILL_STAMP
+    assert params == ('bot_eod', 1, [2])
+
+
+def test_sb_main_backfill_mode_lists_dates_by_the_trail_column(
+    archive: Path, sb_globals: None, sb_main_env: None, make_sb_db, monkeypatch
+) -> None:
+    write_tape(archive, 'trades')
+    db = make_sb_db(fires=[alert_row(1, TSLA)], work_dates=[DAY])
+    monkeypatch.setattr(sb, 'connect_with_retry', lambda _url: db)
+
+    sb.main(['--all-unenriched', '--backfill-mode', '--parquet-dir', str(archive)])
+
+    dates_sql = next(
+        sql for sql, _ in db.executed if sql.startswith('SELECT DISTINCT date::text')
+    )
+    assert f'WHERE {SB_BACKFILL}' in dates_sql
+    fetch_sql = next(sql for sql, _ in db.executed if 'bucket_ct, entry_price' in sql)
+    assert f'WHERE date = %s AND {SB_BACKFILL} ORDER BY' in fetch_sql
+    assert [row[0] for w in db.sb_outcome_writes() for row in w.rows] == [1]
+
+
+def test_sb_main_lists_parquet_days_without_all_unenriched(
+    archive: Path, sb_globals: None, sb_main_env: None, make_sb_db, monkeypatch
+) -> None:
+    write_tape(archive, 'trades')
+    (archive / '2026-07-01-fulltape.parquet').write_bytes(b'')  # another archive's file
+    db = make_sb_db(fires=[alert_row(1, TSLA)])
+    monkeypatch.setattr(sb, 'connect_with_retry', lambda _url: db)
+
+    sb.main(['--parquet-dir', str(archive)])
+
+    # Only the trades file's day is visited, and no date query is issued.
+    assert not any(sql.startswith('SELECT DISTINCT') for sql, _ in db.executed)
+    fetches = [p for sql, p in db.executed if 'bucket_ct, entry_price' in sql]
+    assert fetches == [(DAY,)]
+
+
+# ── the Full Tape sister script ────────────────────────────────
+
+
+def _run_sister(argv: list[str], db: FakeDb, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(sb, 'ENV_FILE', tmp_path / 'absent.env.local')
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://test/none')
+    monkeypatch.setattr(sb_tape.psycopg2, 'connect', lambda _url: db)
+    sb_tape.main(argv)
+
+
+def test_sb_fulltape_sister_tags_fulltape(
+    archive: Path, make_sb_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_tape(archive, 'fulltape')
+    # 1 priced; 2 unpriced and holding a feed value (kept); 3 chain absent;
+    # 5 entry price 0.
+    db = make_sb_db(
+        fires=[
+            alert_row(1, TSLA),
+            alert_row(2, AAPL, had_outcome=True),
+            alert_row(3, NVDA),
+            alert_row(5, QQQ, entry_price=Decimal('0.0000')),
+        ]
+    )
+
+    _run_sister(['--parquet-dir', str(archive), '--date', DAY], db, tmp_path, monkeypatch)
+
+    # The priced write goes through the tape guard (the marker gate), tagged.
+    (write,) = db.sb_outcome_writes()
+    assert write.sql.endswith(SB_TAPE_UPDATE_TAIL)
+    assert [row[-2:] for row in write.rows] == [('fulltape', 1)]
+    assert [row[0] for row in write.rows] == [1]
+    # Every unpriced alert is examined: one stamp statement through the tape
+    # guard, which keeps the feed value of alert 2.
+    ((sql, params),) = db.outcome_stamps()
+    assert sql == SB_TAPE_STAMP
+    assert params == ('fulltape', 1, 1, 1, [2, 3, 5])
+
+
+def test_sb_fulltape_sister_keeps_its_own_select(
+    archive: Path, make_sb_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_tape(archive, 'fulltape')
+    db = make_sb_db(fires=[alert_row(1, TSLA)])
+
+    _run_sister(['--parquet-dir', str(archive), '--date', DAY], db, tmp_path, monkeypatch)
+    fetch_sql = next(sql for sql, _ in db.executed if 'bucket_ct, entry_price' in sql)
+    assert f'WHERE date = %s AND {PENDING} ORDER BY' in fetch_sql
+
+    db = make_sb_db(fires=[alert_row(1, TSLA)])
+    _run_sister(
+        ['--parquet-dir', str(archive), '--date', DAY, '--backfill-mode'],
+        db,
+        tmp_path,
+        monkeypatch,
+    )
+    fetch_sql = next(sql for sql, _ in db.executed if 'bucket_ct, entry_price' in sql)
+    assert f'WHERE date = %s AND {SB_BACKFILL} ORDER BY' in fetch_sql

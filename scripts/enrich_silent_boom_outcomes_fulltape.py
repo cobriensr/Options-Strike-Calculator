@@ -12,8 +12,15 @@ existing enrichment module + overrides only the parquet read path
 realized-outcome computation, and INSERT-side semantics are
 unchanged.
 
-Idempotent via the existing `enriched_at IS NULL` gate (or
-`realized_trail30_10_pct IS NULL` under --backfill-mode).
+Picks alerts by the existing `enriched_at IS NULL` gate (or
+`realized_trail30_10_pct IS NULL` under --backfill-mode). Its writes are
+Full Tape writes: tagged outcome_source = 'fulltape', guarded by the tape's
+marker (outcome_tape_version), and the Full Tape has the final say (owner,
+2026-11-06). An alert it prices replaces any value another writer left; one it
+cannot price (no chain, no print at or after the bucket) is stamped, and
+keeps a value another writer left. Every alert it examines gets the marker,
+so a rerun does not write the same alert twice. See
+enrich_silent_boom_outcomes.py for the rules.
 
 Usage:
     ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes_fulltape.py \\
@@ -180,28 +187,39 @@ def main(argv: list[str] | None = None) -> None:
                 iter(tape.groupby('option_chain_id', sort=False))
             )
             updates: list[tuple] = []
+            unpriced_ids: list[int] = []
             skipped_chain_missing = 0
             skipped_no_outcome = 0
             for a in alerts:
                 chain_df = chain_index.get(a['chain'])
                 if chain_df is None:
                     skipped_chain_missing += 1
+                    unpriced_ids.append(a['id'])
                     continue
                 res = enrich_sb.compute_outcomes(
                     chain_df, a['bucket_ct'], a['entry_price']
                 )
                 if res is None:
                     skipped_no_outcome += 1
+                    unpriced_ids.append(a['id'])
                     continue
                 peak, mtp, r30, r60, r120, eod, trail30 = res
                 updates.append(
                     (a['id'], peak, mtp, r30, r60, r120, eod, trail30)
                 )
-            enrich_sb.update_outcomes(conn, updates)
-            grand_updated += len(updates)
+            written, replaced = enrich_sb.update_outcomes(
+                conn, updates, enrich_sb.TAPE_SOURCE
+            )
+            stamped, kept = enrich_sb.stamp_no_outcome(
+                conn, unpriced_ids, enrich_sb.TAPE_SOURCE
+            )
+            grand_updated += written + stamped
             print(
                 f'  [{date_str}] alerts={len(alerts):>4,} '
-                f'updated={len(updates):>4,} '
+                f'updated={written:>4,} '
+                f'alerts_replaced={replaced} '
+                f'tagged={stamped} '
+                f'alerts_kept={kept} '
                 f'skipped_chain={skipped_chain_missing} '
                 f'skipped_no_outcome={skipped_no_outcome} '
                 f'in {time.time() - td:.1f}s'
