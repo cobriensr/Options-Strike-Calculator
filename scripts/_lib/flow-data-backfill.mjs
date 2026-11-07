@@ -9,7 +9,9 @@
  * Each is a spec: the items a day fans out over, the UW URL for an item, the
  * script's User-Agent, and `toRows`, which maps UW's answer to flow_data rows
  * the way the live crons do (fetch-flow.ts, fetch-net-flow.ts; fetch-etf-tide.ts
- * did until 2026-11-09, see the ETF_TIDE warning below). The CLI, the day loop and the failure bookkeeping are
+ * did before the deploy of the live-data-integrity P0.1 fix, planned
+ * 2026-11-09, see the ETF_TIDE warning below). The CLI, the day loop and the
+ * failure bookkeeping are
  * backfill-cli.mjs's; the UW GET is uw-day-fetch.mjs's. What is here is the
  * flow_data part: the row mapping, the table's key, the day worker and the
  * script runner.
@@ -20,7 +22,8 @@
  *
  * ETF_TIDE: do not run it for spy_etf_tide or qqq_etf_tide, on any day, until
  * toEtfTideRows adopts the window-END label (spec P2.1,
- * docs/superpowers/specs/live-data-integrity-2026-11-06.md). Since 2026-11-09
+ * docs/superpowers/specs/live-data-integrity-2026-11-06.md). From the deploy of
+ * that fix (planned 2026-11-09)
  * the live fetch-etf-tide cron (and fetch-zero-dte-flow for zero_dte_index)
  * stamps a closed bucket at its END and upserts it. toEtfTideRows still
  * stamps the window START and these writes are DO NOTHING, so a backfilled
@@ -115,10 +118,11 @@ function flowRow(date, ms, source, ncp, npp, netVolume) {
 /**
  * One market-tide or ETF-tide row as numbers: `{ ms, ncp, npp, netVolume }`, or
  * null when it can't be stored as it is. The premiums must be numbers (the
- * old etf script and, until 2026-11-09, the live ETF cron turn a bad one into
- * a 0, which is then stored as data). `net_volume` may be absent, which is
- * stored as NULL (the live ETF cron stored 0 until 2026-11-09 and now stores
- * NULL too; the readers print a NULL as N/A); a volume that is
+ * old etf script and, before the P0.1 deploy (planned 2026-11-09), the live
+ * ETF cron turn a bad one into a 0, which is then stored as data).
+ * `net_volume` may be absent, which is stored as NULL (the live ETF cron
+ * stored 0 before that deploy and stores NULL too after it; the readers print
+ * a NULL as N/A); a volume that is
  * there must be a whole number inside the INTEGER column's range, and the
  * premiums must fit DECIMAL(14,2), or the row is left out and counted instead
  * of failing the whole INSERT. UW sends tide values already added up, so one
@@ -183,9 +187,9 @@ export function toMarketTideRows(date, source, uwRows) {
 
 /**
  * UW ETF-tide rows (one a minute, cumulative) → flow_data rows, as
- * fetch-etf-tide.ts stored them until 2026-11-09: the last row of each
- * 5-minute window, stamped at the window START. The live cron now stamps the
- * window END and upserts (see the ETF_TIDE warning at the top of the file:
+ * fetch-etf-tide.ts stored them before the P0.1 deploy (planned 2026-11-09):
+ * the last row of each 5-minute window, stamped at the window START. The live
+ * cron then stamps the window END and upserts (see the ETF_TIDE warning at the top of the file:
  * do not run this for ETF tide until it does too). The rows are put in time
  * order first, so "last" is the
  * latest minute whatever order UW sent them in. `{ rows, dropped }`: `dropped`

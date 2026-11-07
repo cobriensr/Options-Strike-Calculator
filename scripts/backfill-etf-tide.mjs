@@ -8,7 +8,8 @@
  *
  * DO NOT RUN THIS for spy_etf_tide or qqq_etf_tide, on any day, until it
  * adopts the window-END label (spec P2.1,
- * docs/superpowers/specs/live-data-integrity-2026-11-06.md). Since 2026-11-09
+ * docs/superpowers/specs/live-data-integrity-2026-11-06.md). From the deploy of
+ * that fix (planned 2026-11-09)
  * api/cron/fetch-etf-tide.ts stamps a closed 5-minute bucket at its END (the
  * 09:30-09:35 bucket at 09:35) and upserts it. This script still stamps the
  * window START (09:30) and is DO NOTHING, so its rows would interleave with
