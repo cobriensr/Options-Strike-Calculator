@@ -14,6 +14,11 @@
  * Only the Neon driver is replaced: getDb() gets a Neon-shaped tagged
  * template over pglite, so initDb, withDbRetry and saveSnapshot all run
  * as in production.
+ *
+ * One addition to the real schema: the seven regime columns (vix_term_shape
+ * .. iv_accel_mult). Production has them; neither initDb() nor MIGRATIONS
+ * creates them. They were added by the retired pre-migration migrateDb
+ * (7194ddff^:api/_lib/db.ts), whose DDL REGIME_COLUMNS_DDL copies.
  */
 
 import {
@@ -44,12 +49,25 @@ function taggedSql(db: PGlite) {
   };
 }
 
+/** The production column types, from the retired migrateDb. */
+const REGIME_COLUMNS_DDL = `
+  ALTER TABLE market_snapshots
+    ADD COLUMN IF NOT EXISTS vix_term_shape   TEXT,
+    ADD COLUMN IF NOT EXISTS cluster_put_mult DECIMAL(6,4),
+    ADD COLUMN IF NOT EXISTS cluster_call_mult DECIMAL(6,4),
+    ADD COLUMN IF NOT EXISTS rv_iv_ratio      DECIMAL(6,4),
+    ADD COLUMN IF NOT EXISTS rv_iv_label      TEXT,
+    ADD COLUMN IF NOT EXISTS rv_annualized    DECIMAL(8,6),
+    ADD COLUMN IF NOT EXISTS iv_accel_mult    DECIMAL(6,4)
+`;
+
 beforeAll(async () => {
   pg = await PGlite.create();
   holder.sql = taggedSql(pg);
   process.env.DATABASE_URL = 'postgres://pglite';
   _resetDb();
   await initDb();
+  await pg.exec(REGIME_COLUMNS_DDL);
 });
 
 afterAll(async () => {
@@ -135,6 +153,209 @@ describe('saveSnapshot upsert against Postgres (pglite)', () => {
 
     expect(id).toEqual(expect.any(Number));
     expect(await stored()).toEqual({ spx: 6805, is_backtest: false });
+  });
+
+  // ── The seven regime columns ────────────────────────────────
+  // The client posts them with every save. They were dropped from the INSERT
+  // in 7194ddff (2026-03-16), so every row since holds NULL in all seven.
+
+  const LIVE_SEVEN = {
+    vixTermShape: 'contango',
+    clusterPutMult: 1.3125,
+    clusterCallMult: 1.1,
+    rvIvRatio: 0.85,
+    rvIvLabel: 'Fair Value',
+    rvAnnualized: 0.123456,
+    ivAccelMult: 1.21,
+  };
+  const BACKTEST_SEVEN = {
+    vixTermShape: 'fear-spike',
+    clusterPutMult: 1.39,
+    clusterCallMult: 1.11,
+    rvIvRatio: 1.25,
+    rvIvLabel: 'IV Cheap',
+    rvAnnualized: 0.0987,
+    ivAccelMult: 1.8,
+  };
+
+  interface SevenRow {
+    vixTermShape: string | null;
+    clusterPutMult: number | null;
+    clusterCallMult: number | null;
+    rvIvRatio: number | null;
+    rvIvLabel: string | null;
+    rvAnnualized: number | null;
+    ivAccelMult: number | null;
+  }
+
+  /** The stored seven for KEY; NUMERIC comes back as text, so it is cast. */
+  async function storedSeven(): Promise<SevenRow> {
+    const res = await pg.query<{
+      vix_term_shape: string | null;
+      cluster_put_mult: string | null;
+      cluster_call_mult: string | null;
+      rv_iv_ratio: string | null;
+      rv_iv_label: string | null;
+      rv_annualized: string | null;
+      iv_accel_mult: string | null;
+    }>(
+      `SELECT vix_term_shape,
+              cluster_put_mult::text  AS cluster_put_mult,
+              cluster_call_mult::text AS cluster_call_mult,
+              rv_iv_ratio::text       AS rv_iv_ratio,
+              rv_iv_label,
+              rv_annualized::text     AS rv_annualized,
+              iv_accel_mult::text     AS iv_accel_mult
+       FROM market_snapshots WHERE date = $1 AND entry_time = $2`,
+      [KEY.date, KEY.entryTime],
+    );
+    expect(res.rows).toHaveLength(1);
+    const r = res.rows[0]!;
+    const n = (v: string | null) => (v == null ? null : Number(v));
+    return {
+      vixTermShape: r.vix_term_shape,
+      clusterPutMult: n(r.cluster_put_mult),
+      clusterCallMult: n(r.cluster_call_mult),
+      rvIvRatio: n(r.rv_iv_ratio),
+      rvIvLabel: r.rv_iv_label,
+      rvAnnualized: n(r.rv_annualized),
+      ivAccelMult: n(r.iv_accel_mult),
+    };
+  }
+
+  const ALL_NULL: SevenRow = {
+    vixTermShape: null,
+    clusterPutMult: null,
+    clusterCallMult: null,
+    rvIvRatio: null,
+    rvIvLabel: null,
+    rvAnnualized: null,
+    ivAccelMult: null,
+  };
+
+  it('an insert stores all seven', async () => {
+    await saveSnapshot({ ...KEY, spx: 6800, ...LIVE_SEVEN });
+
+    expect(await storedSeven()).toEqual(LIVE_SEVEN);
+  });
+
+  it('an insert with null or absent values stores NULL', async () => {
+    await saveSnapshot({
+      ...KEY,
+      spx: 6800,
+      vixTermShape: null,
+      clusterPutMult: null,
+      // the other five are absent
+    });
+
+    expect(await storedSeven()).toEqual(ALL_NULL);
+  });
+
+  it('stores the top of each realistic range within the column precision', async () => {
+    // DECIMAL(6,4) holds 99.9999 and DECIMAL(8,6) holds 99.999999; the
+    // client's values sit far below: mults 0.3-3, rv/iv 0.1-5, accel
+    // capped at 1.8, rv as a decimal 0.03-1.5.
+    const top = {
+      vixTermShape: 'backwardation',
+      clusterPutMult: 3,
+      clusterCallMult: 3,
+      rvIvRatio: 5,
+      rvIvLabel: 'IV Cheap',
+      rvAnnualized: 1.5,
+      ivAccelMult: 1.8,
+    };
+    await saveSnapshot({ ...KEY, spx: 6800, ...top });
+    expect(await storedSeven()).toEqual(top);
+
+    const bottom = {
+      vixTermShape: 'contango',
+      clusterPutMult: 0.3,
+      clusterCallMult: 0.3,
+      rvIvRatio: 0.1,
+      rvIvLabel: 'IV Rich',
+      rvAnnualized: 0.03,
+      ivAccelMult: 0.5,
+    };
+    await saveSnapshot({ ...KEY, spx: 6801, ...bottom });
+    expect(await storedSeven()).toEqual(bottom);
+  });
+
+  it('a live save over a live row replaces the seven', async () => {
+    await saveSnapshot({ ...KEY, spx: 6800, ...LIVE_SEVEN });
+
+    await saveSnapshot({ ...KEY, spx: 6801, ...BACKTEST_SEVEN });
+
+    expect(await storedSeven()).toEqual(BACKTEST_SEVEN);
+  });
+
+  it('a backtest save over a backtest row overwrites the seven', async () => {
+    await saveSnapshot({
+      ...KEY,
+      spx: 6750,
+      isBacktest: true,
+      ...LIVE_SEVEN,
+    });
+
+    const id = await saveSnapshot({
+      ...KEY,
+      spx: 6752,
+      isBacktest: true,
+      ...BACKTEST_SEVEN,
+    });
+
+    expect(id).toEqual(expect.any(Number));
+    expect(await storedSeven()).toEqual(BACKTEST_SEVEN);
+    expect(await stored()).toEqual({ spx: 6752, is_backtest: true });
+  });
+
+  it('a live save over a backtest row replaces the seven', async () => {
+    await saveSnapshot({
+      ...KEY,
+      spx: 6750,
+      isBacktest: true,
+      ...BACKTEST_SEVEN,
+    });
+
+    await saveSnapshot({ ...KEY, spx: 6800, ...LIVE_SEVEN });
+
+    expect(await storedSeven()).toEqual(LIVE_SEVEN);
+  });
+
+  it('a backtest save over a live row leaves the live row’s seven untouched', async () => {
+    await saveSnapshot({ ...KEY, spx: 6800, ...LIVE_SEVEN });
+
+    const id = await saveSnapshot({
+      ...KEY,
+      spx: 6750.25,
+      isBacktest: true,
+      ...BACKTEST_SEVEN,
+    });
+
+    expect(id).toBeNull();
+    expect(await storedSeven()).toEqual(LIVE_SEVEN);
+    expect(await stored()).toEqual({ spx: 6800, is_backtest: false });
+  });
+
+  it('a backtest save over a NULL-flag row leaves its seven untouched', async () => {
+    await pg.query(
+      `INSERT INTO market_snapshots (date, entry_time, spx, is_backtest, vix_term_shape, rv_iv_ratio)
+       VALUES ($1, $2, 6800, NULL, 'flat', 0.9)`,
+      [KEY.date, KEY.entryTime],
+    );
+
+    const id = await saveSnapshot({
+      ...KEY,
+      spx: 6750,
+      isBacktest: true,
+      ...BACKTEST_SEVEN,
+    });
+
+    expect(id).toBeNull();
+    expect(await storedSeven()).toEqual({
+      ...ALL_NULL,
+      vixTermShape: 'flat',
+      rvIvRatio: 0.9,
+    });
   });
 
   it('a backtest save leaves a row whose flag is NULL', async () => {

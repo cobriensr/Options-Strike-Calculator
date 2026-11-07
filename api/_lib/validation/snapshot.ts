@@ -157,6 +157,19 @@ export const snapshotBodySchema = z.object({
 
   // Term structure
   vixTermSignal: str,
+  vixTermShape: str,
+
+  // Directional vol clustering
+  clusterPutMult: num,
+  clusterCallMult: num,
+
+  // Realized vs implied volatility
+  rvIvRatio: num,
+  rvIvLabel: str,
+  rvAnnualized: num,
+
+  // IV acceleration
+  ivAccelMult: num,
 
   // Overnight
   overnightGap: num,

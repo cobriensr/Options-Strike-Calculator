@@ -140,6 +140,90 @@ describe('POST /api/snapshot', () => {
     });
   });
 
+  // The client posts seven regime columns (useSnapshotSave). The body schema
+  // is a plain z.object, which strips unknown keys, so a field missing from
+  // it never reaches saveSnapshot.
+  describe('the seven regime columns', () => {
+    const SEVEN = {
+      vixTermShape: 'contango',
+      clusterPutMult: 1.3125,
+      clusterCallMult: 1.1,
+      rvIvRatio: 0.85,
+      rvIvLabel: 'Fair Value',
+      rvAnnualized: 0.1234,
+      ivAccelMult: 1.21,
+    };
+
+    it('passes all seven through to saveSnapshot', async () => {
+      vi.mocked(saveSnapshot).mockResolvedValue(5);
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'POST',
+          body: { date: TODAY, entryTime: '10:30 AM CT', ...SEVEN },
+        }),
+        res,
+      );
+
+      expect(res._json).toEqual({ id: 5, saved: true });
+      expect(saveSnapshot).toHaveBeenCalledWith({
+        date: TODAY,
+        entryTime: '10:30 AM CT',
+        ...SEVEN,
+      });
+    });
+
+    it('keeps null values (the client sends null for an unavailable signal)', async () => {
+      vi.mocked(saveSnapshot).mockResolvedValue(6);
+      const nulls = {
+        vixTermShape: null,
+        clusterPutMult: null,
+        clusterCallMult: null,
+        rvIvRatio: null,
+        rvIvLabel: null,
+        rvAnnualized: null,
+        ivAccelMult: null,
+      };
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'POST',
+          body: { date: TODAY, entryTime: '10:30 AM CT', ...nulls },
+        }),
+        res,
+      );
+
+      expect(res._json).toEqual({ id: 6, saved: true });
+      expect(saveSnapshot).toHaveBeenCalledWith({
+        date: TODAY,
+        entryTime: '10:30 AM CT',
+        ...nulls,
+      });
+    });
+
+    it('accepts a body that omits all seven', async () => {
+      vi.mocked(saveSnapshot).mockResolvedValue(7);
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'POST',
+          body: { date: TODAY, entryTime: '10:30 AM CT', spx: 6800 },
+        }),
+        res,
+      );
+
+      expect(res._json).toEqual({ id: 7, saved: true });
+      expect(saveSnapshot).toHaveBeenCalledWith({
+        date: TODAY,
+        entryTime: '10:30 AM CT',
+        spx: 6800,
+      });
+    });
+  });
+
   it('marks a null id as a kept live row (skipped: live-row)', async () => {
     vi.mocked(saveSnapshot).mockResolvedValue(null);
 

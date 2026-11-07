@@ -70,6 +70,19 @@ export interface SnapshotInput {
 
   // Term structure
   vixTermSignal?: Maybe<string>;
+  vixTermShape?: Maybe<string>;
+
+  // Directional vol clustering
+  clusterPutMult?: Maybe<number>;
+  clusterCallMult?: Maybe<number>;
+
+  // Realized vs implied volatility
+  rvIvRatio?: Maybe<number>;
+  rvIvLabel?: Maybe<string>;
+  rvAnnualized?: Maybe<number>;
+
+  // IV acceleration
+  ivAccelMult?: Maybe<number>;
 
   // Overnight
   overnightGap?: Maybe<number>;
@@ -124,7 +137,11 @@ export async function saveSnapshot(
       median_oc_pct, median_hl_pct, p90_oc_pct, p90_hl_pct, p90_oc_pts, p90_hl_pts,
       opening_range_available, opening_range_high, opening_range_low,
       opening_range_pct_consumed, opening_range_signal,
-      vix_term_signal, overnight_gap,
+      vix_term_signal, vix_term_shape,
+      cluster_put_mult, cluster_call_mult,
+      rv_iv_ratio, rv_iv_label, rv_annualized,
+      iv_accel_mult,
+      overnight_gap,
       strikes,
       is_early_close, is_event_day, event_names,
       is_backtest
@@ -151,7 +168,12 @@ export async function saveSnapshot(
       ${input.openingRangeAvailable ?? null},
       ${input.openingRangeHigh ?? null}, ${input.openingRangeLow ?? null},
       ${input.openingRangePctConsumed ?? null}, ${input.openingRangeSignal ?? null},
-      ${input.vixTermSignal ?? null}, ${input.overnightGap ?? null},
+      ${input.vixTermSignal ?? null}, ${input.vixTermShape ?? null},
+      ${input.clusterPutMult ?? null}, ${input.clusterCallMult ?? null},
+      ${input.rvIvRatio ?? null}, ${input.rvIvLabel ?? null},
+      ${input.rvAnnualized ?? null},
+      ${input.ivAccelMult ?? null},
+      ${input.overnightGap ?? null},
       ${input.strikes ? JSON.stringify(input.strikes) : null},
       ${input.isEarlyClose ?? false}, ${input.isEventDay ?? false},
       ${input.eventNames ?? null},
@@ -197,6 +219,13 @@ export async function saveSnapshot(
       opening_range_pct_consumed = EXCLUDED.opening_range_pct_consumed,
       opening_range_signal = EXCLUDED.opening_range_signal,
       vix_term_signal = EXCLUDED.vix_term_signal,
+      vix_term_shape = EXCLUDED.vix_term_shape,
+      cluster_put_mult = EXCLUDED.cluster_put_mult,
+      cluster_call_mult = EXCLUDED.cluster_call_mult,
+      rv_iv_ratio = EXCLUDED.rv_iv_ratio,
+      rv_iv_label = EXCLUDED.rv_iv_label,
+      rv_annualized = EXCLUDED.rv_annualized,
+      iv_accel_mult = EXCLUDED.iv_accel_mult,
       overnight_gap = EXCLUDED.overnight_gap,
       strikes = EXCLUDED.strikes,
       is_early_close = EXCLUDED.is_early_close,

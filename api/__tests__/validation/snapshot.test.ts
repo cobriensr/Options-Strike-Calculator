@@ -295,6 +295,53 @@ describe('snapshotBodySchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  describe('the seven regime columns', () => {
+    const BASE = { date: '2026-05-10', entryTime: '09:30' };
+    const SEVEN = {
+      vixTermShape: 'fear-spike',
+      clusterPutMult: 1.39,
+      clusterCallMult: 1.11,
+      rvIvRatio: 1.25,
+      rvIvLabel: 'IV Cheap',
+      rvAnnualized: 0.0987,
+      ivAccelMult: 1.8,
+    };
+
+    it('keeps all seven in the parsed output (z.object strips unknown keys)', () => {
+      const result = snapshotBodySchema.safeParse({ ...BASE, ...SEVEN });
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual({ ...BASE, ...SEVEN });
+    });
+
+    it.each(Object.keys(SEVEN))('accepts null for %s', (key) => {
+      const result = snapshotBodySchema.safeParse({ ...BASE, [key]: null });
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual({ ...BASE, [key]: null });
+    });
+
+    it.each(Object.keys(SEVEN))('accepts %s absent', (key) => {
+      const rest = Object.fromEntries(
+        Object.entries(SEVEN).filter(([k]) => k !== key),
+      );
+      const result = snapshotBodySchema.safeParse({ ...BASE, ...rest });
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual({ ...BASE, ...rest });
+    });
+
+    it.each([
+      ['vixTermShape', 'a number', 5],
+      ['rvIvLabel', 'a boolean', true],
+      ['clusterPutMult', 'a numeric string', '1.3'],
+      ['clusterCallMult', 'NaN', Number.NaN],
+      ['rvIvRatio', 'text', 'abc'],
+      ['rvAnnualized', 'Infinity', Number.POSITIVE_INFINITY],
+      ['ivAccelMult', 'an object', {}],
+    ])('rejects %s given %s', (key, _what, value) => {
+      const result = snapshotBodySchema.safeParse({ ...BASE, [key]: value });
+      expect(result.success).toBe(false);
+    });
+  });
 });
 
 // ── analysisResponseSchema ───────────────────────────────────
