@@ -24,7 +24,7 @@
  *     is updated, an unchanged one is not rewritten. See flow-bucket-store.ts.
  *   - Only rows UW stamps on today's ET date from 09:30 ET until the close. A
  *     payload with none (the pre-open answer) stores nothing; that is a skip,
- *     not an error, unless it is still empty at 09:40 ET (Sentry warning).
+ *     not an error, unless it is still empty at 09:40 ET (Sentry error).
  *   - Label rule (spec open question 1, default in force): a closed bucket is
  *     stored under its END time. The 09:30-09:35 bucket is stored at 09:35.
  *   - Runs every 5 minutes from 09:25 ET until 10 minutes after the close, so
@@ -231,12 +231,13 @@ export default withCronInstrumentation(
     );
 
     // A feed with nothing for today at 09:40 ET or later has stalled: say so
-    // once per run, naming the legs.
+    // once per run, naming the legs. An error, not a warning: a warning
+    // reaches nobody, and the whole tape for the day is missing.
     if (stalled.length > 0) {
       Sentry.captureMessage(
         "fetch-etf-tide: no rows for today's session in the UW payload (09:40 ET or later)",
         {
-          level: 'warning',
+          level: 'error',
           tags: { cron: 'fetch-etf-tide', stage: 'feed_stalled' },
           extra: { sources: stalled, date: today },
         },

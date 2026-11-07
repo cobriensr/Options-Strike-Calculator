@@ -27,7 +27,7 @@
  *     is updated, an unchanged one is not rewritten. See flow-bucket-store.ts.
  *   - Only ticks UW stamps on today's ET date from 09:30 ET until the close. A
  *     payload with none (the pre-open answer) stores nothing; that is a skip,
- *     not an error, unless it is still empty at 09:40 ET (Sentry warning).
+ *     not an error, unless it is still empty at 09:40 ET (Sentry error).
  *   - Label rule (spec open question 1, default in force): a closed bucket is
  *     stored under its END time. The 09:30-09:35 bucket is stored at 09:35.
  *   - Runs every 5 minutes from 09:25 ET until 10 minutes after the close, so
@@ -123,12 +123,14 @@ export default withCronCheckin('fetch-zero-dte-flow', async (req, res) => {
         'fetch-zero-dte-flow: no rows for today in the UW payload — nothing stored',
       );
       metrics.increment('fetch_zero_dte_flow.no_rows_today');
-      // Still nothing at 09:40 ET or later: the feed has stalled.
+      // Still nothing at 09:40 ET or later: the feed has stalled. An error,
+      // not a warning: a warning reaches nobody, and the whole tape for the
+      // day is missing.
       if (isFeedStalled(closed.sessionRows, now)) {
         Sentry.captureMessage(
           "fetch-zero-dte-flow: no rows for today's session in the UW payload (09:40 ET or later)",
           {
-            level: 'warning',
+            level: 'error',
             tags: { cron: 'fetch-zero-dte-flow', stage: 'feed_stalled' },
             extra: { payloadRows: ticks.length, date: today },
           },

@@ -526,6 +526,64 @@ describe('fetch-etf-tide handler', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
+  it('16:07 ET: a final bucket whose last minute never arrived is reported stuck, not lost in silence', async () => {
+    // The 15:55-16:00 bucket ended 7 minutes ago: pending by age alone. This
+    // is the cron's last attempt, so it is stuck.
+    vi.setSystemTime(at('20:07'));
+    process.env.UW_API_KEY = 'uwkey';
+    const inserts = recordInserts();
+    stubUw(
+      withMinute(sessionGrid('2026-03-24', at('20:00')), '19:59', {
+        net_call_premium: null,
+        net_put_premium: null,
+        net_volume: null,
+      }),
+    );
+
+    const res = await runCron();
+
+    expect(res._json).toMatchObject({
+      results: { spy_etf_tide: { stored: 77, stuck: 1, pending: 0 } },
+    });
+    expect(inserts.spy_etf_tide?.map((v) => v[1])).not.toContain(
+      '2026-03-24T20:00:00.000Z',
+    );
+    expect(metrics.increment).toHaveBeenCalledTimes(2);
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('stuck'),
+      expect.objectContaining({
+        level: 'warning',
+        extra: expect.objectContaining({
+          bySource: {
+            spy_etf_tide: { stuck: 1, oldest: '2026-03-24T20:00:00.000Z' },
+            qqq_etf_tide: { stuck: 1, oldest: '2026-03-24T20:00:00.000Z' },
+          },
+        }),
+      }),
+    );
+  });
+
+  it('16:02 ET: the same final bucket is only pending at the first attempt', async () => {
+    vi.setSystemTime(at('20:02'));
+    process.env.UW_API_KEY = 'uwkey';
+    stubUw(
+      withMinute(sessionGrid('2026-03-24', at('20:00')), '19:59', {
+        net_call_premium: null,
+        net_put_premium: null,
+        net_volume: null,
+      }),
+    );
+
+    const res = await runCron();
+
+    expect(res._json).toMatchObject({
+      results: { spy_etf_tide: { stuck: 0, pending: 1 } },
+    });
+    expect(metrics.increment).not.toHaveBeenCalled();
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
   it('15:57 ET: the last bucket is still open and is not stored yet', async () => {
     vi.setSystemTime(at('19:57'));
     process.env.UW_API_KEY = 'uwkey';
@@ -872,7 +930,7 @@ describe('fetch-etf-tide handler', () => {
     expect(Sentry.captureMessage).toHaveBeenCalledWith(
       expect.stringContaining('no rows for today'),
       expect.objectContaining({
-        level: 'warning',
+        level: 'error',
         tags: expect.objectContaining({
           cron: 'fetch-etf-tide',
           stage: 'feed_stalled',
@@ -903,6 +961,7 @@ describe('fetch-etf-tide handler', () => {
     expect(Sentry.captureMessage).toHaveBeenCalledWith(
       expect.stringContaining('no rows for today'),
       expect.objectContaining({
+        level: 'error',
         tags: expect.objectContaining({ stage: 'feed_stalled' }),
       }),
     );
@@ -921,7 +980,7 @@ describe('fetch-etf-tide handler', () => {
     expect(Sentry.captureMessage).toHaveBeenCalledWith(
       expect.stringContaining('no rows for today'),
       expect.objectContaining({
-        level: 'warning',
+        level: 'error',
         tags: expect.objectContaining({ stage: 'feed_stalled' }),
       }),
     );

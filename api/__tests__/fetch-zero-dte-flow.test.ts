@@ -890,6 +890,56 @@ describe('fetch-zero-dte-flow handler', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
+  it('16:09 ET: a final bucket whose last minute never arrived is reported stuck, not lost in silence', async () => {
+    // The 15:55-16:00 bucket ended 9 minutes ago: pending by age alone. This
+    // is the cron's last attempt, so it is stuck.
+    vi.setSystemTime(at('20:09'));
+    process.env.UW_API_KEY = 'uwkey';
+    const inserts = recordInserts();
+    stubFetch(
+      withMinute(tickGrid('2026-03-24', at('20:00')), '19:59', {
+        net_call_premium: null,
+        net_put_premium: null,
+        net_volume: null,
+      }),
+    );
+
+    const res = await runCron();
+
+    expect(res._json).toMatchObject({ stored: 77, stuck: 1, pending: 0 });
+    expect(inserts.map((v) => v[1])).not.toContain('2026-03-24T20:00:00.000Z');
+    expect(metrics.increment).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('stuck'),
+      expect.objectContaining({
+        level: 'warning',
+        extra: expect.objectContaining({
+          stuck: 1,
+          oldest: '2026-03-24T20:00:00.000Z',
+        }),
+      }),
+    );
+  });
+
+  it('16:04 ET: the same final bucket is only pending at the first attempt', async () => {
+    vi.setSystemTime(at('20:04'));
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch(
+      withMinute(tickGrid('2026-03-24', at('20:00')), '19:59', {
+        net_call_premium: null,
+        net_put_premium: null,
+        net_volume: null,
+      }),
+    );
+
+    const res = await runCron();
+
+    expect(res._json).toMatchObject({ pending: 1, stuck: 0 });
+    expect(metrics.increment).not.toHaveBeenCalled();
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
   it('15:59 ET: the last bucket is still open and is not stored yet', async () => {
     vi.setSystemTime(at('19:59'));
     process.env.UW_API_KEY = 'uwkey';
@@ -975,7 +1025,7 @@ describe('fetch-zero-dte-flow handler', () => {
     expect(Sentry.captureMessage).toHaveBeenCalledWith(
       expect.stringContaining('no rows for today'),
       expect.objectContaining({
-        level: 'warning',
+        level: 'error',
         tags: expect.objectContaining({
           cron: 'fetch-zero-dte-flow',
           stage: 'feed_stalled',
@@ -995,7 +1045,7 @@ describe('fetch-zero-dte-flow handler', () => {
     expect(Sentry.captureMessage).toHaveBeenCalledWith(
       expect.stringContaining('no rows for today'),
       expect.objectContaining({
-        level: 'warning',
+        level: 'error',
         tags: expect.objectContaining({ stage: 'feed_stalled' }),
       }),
     );
