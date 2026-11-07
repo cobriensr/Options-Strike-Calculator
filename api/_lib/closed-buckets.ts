@@ -13,7 +13,9 @@
  * Also shared by fetch-greek-flow (/stock/SPX/greek-flow/{expiry}, F4): one
  * row a minute of per-minute delta flows, which holds the PREVIOUS session's
  * trades (1DTE flow) before the roll-over and minutes after the cash close
- * (SPX options print until 16:15 ET).
+ * (SPX options print until 16:15 ET). reconcile-zero-dte-greek-flow reads the
+ * closed session once after the close with the same rules; at that hour every
+ * unusable bucket is `stuck` (see LAST_ATTEMPT_AFTER_CLOSE_MS).
  *
  * `closedBucketsOf` holds the rules below once. A source brings only its
  * per-row value parse (`tideValues`, `greekFlowValues`): the wrappers
@@ -44,8 +46,8 @@
  *
  * An unusable closed bucket is `pending` while it ended less than
  * STUCK_AFTER_MS ago (UW is late: expected) and `stuck` after that, or once
- * the tide crons' last attempt of the day has come (LAST_ATTEMPT_AFTER_CLOSE_MS
- * after the close).
+ * the closed-bucket crons' last attempt of the day has come
+ * (LAST_ATTEMPT_AFTER_CLOSE_MS after the close).
  *
  * Pure: the caller passes `now`, read once before it fetched, so every bucket
  * called closed was already closed when UW answered.
@@ -66,7 +68,8 @@ const MINUTE_MS = 60_000;
 /**
  * Operational margin, not a guarantee: a bucket is stored only once its end
  * is this far behind `now`. UW fills a minute's value after the minute ends,
- * and the crons run 2 (ETF) and 4 (zero-DTE) minutes after a bucket closes.
+ * and the crons run 2 (ETF), 3 (greek flow) and 4 (zero-DTE) minutes after a
+ * bucket closes.
  * A value revised later is still healed by the upsert.
  */
 export const FINAL_LAG_MS = 90_000;
@@ -79,12 +82,12 @@ export const STUCK_AFTER_MS = 10 * 60_000;
 
 /**
  * From this long after the session close every unusable bucket is `stuck`,
- * whatever its age. The tide crons' last runs are 16:07 (fetch-etf-tide) and
- * 16:09 (fetch-zero-dte-flow), 7 and 9 minutes after the final bucket ends:
- * by the age rule alone a late 15:59 minute would stay `pending` and silent
- * and the day's last row would be lost without a word. Their first attempts
- * (close + 2 and + 4) are before this, so a minute that is only late there is
- * still `pending`.
+ * whatever its age. The crons' last runs are 16:07 (fetch-etf-tide), 16:08
+ * (fetch-greek-flow) and 16:09 (fetch-zero-dte-flow), 7, 8 and 9 minutes after
+ * the final bucket ends: by the age rule alone a late 15:59 minute would stay
+ * `pending` and silent and the day's last row would be lost without a word.
+ * Their first attempts (close + 2, + 3 and + 4) are before this, so a minute
+ * that is only late there is still `pending`.
  */
 export const LAST_ATTEMPT_AFTER_CLOSE_MS = 5 * 60_000;
 
