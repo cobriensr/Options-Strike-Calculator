@@ -9,8 +9,9 @@
  * good, and a minute that has ended is not necessarily final. Each run
  * re-sends every closed bucket of the day, so a value UW revises later is
  * corrected by the next run, through the close. A row is rewritten only when
- * a value really differs, so the settled buckets cost no write, and
- * `created_at` is never touched.
+ * a value really differs, so a settled bucket gets no new tuple version (the
+ * row is still locked by the conflicting INSERT), and `created_at` is never
+ * touched.
  */
 
 import { getDb } from './db.js';

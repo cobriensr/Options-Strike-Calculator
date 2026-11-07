@@ -405,11 +405,18 @@ describe('cron-schedules SCHEDULE_MAP', () => {
   //     insert margin (SETTLE_AGE_MIN): the last fire (16:05:59 ET) is 75 min
   //     old at 17:20:59, so close + 85 (17:25 ET) is the first tick and
   //     close + 90 (17:30 ET, 22:30 UTC in EST) the retry.
+  //   - fetch-etf-tide and fetch-zero-dte-flow gate to close + 10 so the
+  //     15:55-16:00 bucket, which settles at 16:01:30, has two attempts:
+  //     close + 2 and + 7 (ETF, minutes :02 and :07) and close + 4 and + 9
+  //     (zero-DTE, minutes :04 and :09). The last tick of each is 16:07 and
+  //     16:09 ET, 21:07 and 21:09 UTC in EST.
   it.each([
     ['evaluate-round-trip', [70, 80]],
     ['wave2-confirmation', [85, 90]],
+    ['fetch-etf-tide', [2, 7]],
+    ['fetch-zero-dte-flow', [4, 9]],
   ])(
-    '%s: vercel.json serves the post-close evaluation ticks in BOTH DST regimes',
+    '%s: vercel.json serves the post-close ticks in BOTH DST regimes',
     (jobName, afterCloseTicks) => {
       const vercel = vercelCrons.get(jobName);
       expect(vercel).toBeDefined();

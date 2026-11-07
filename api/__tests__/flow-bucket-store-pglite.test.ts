@@ -36,7 +36,11 @@ import {
   sessionRowCounts,
   upsertClosedBuckets,
 } from '../_lib/flow-bucket-store.js';
-import type { ClosedBucket } from '../_lib/closed-buckets.js';
+import {
+  closedBuckets,
+  type ClosedBucket,
+  type TideMinute,
+} from '../_lib/closed-buckets.js';
 
 const SOURCE = 'spy_etf_tide';
 const DATE = '2026-03-24'; // EDT: 09:30 ET is 13:30Z, 16:00 ET is 20:00Z
@@ -341,4 +345,96 @@ describe('sessionRowCounts', () => {
       nonzero: 0,
     });
   });
+});
+
+/**
+ * closedBuckets filters values before the write; the columns (migrations #4
+ * and #48: ncp and npp DECIMAL(14,2), net_volume INTEGER) are the limit that
+ * counts. The two must agree: a bucket the filter lets through that Postgres
+ * rejects fails the batch, and one rejected bucket rolls back the whole day's
+ * upsert for that source on every run.
+ */
+describe('closedBuckets and the flow_data columns agree on the ranges', () => {
+  // 25 minutes after the 09:30-09:35 bucket ended: an unusable one is stuck.
+  const NOW = new Date('2026-03-24T14:00:00.000Z');
+  const minute = (overrides: Partial<TideMinute>): TideMinute => ({
+    timestamp: '2026-03-24T13:34:00.000Z',
+    net_call_premium: '1',
+    net_put_premium: '1',
+    net_volume: 1,
+    ...overrides,
+  });
+
+  const LARGEST_PREMIUM = '999999999999.99';
+  const SMALLEST_PREMIUM = '-999999999999.99';
+
+  it.each<[string, Partial<TideMinute>]>([
+    ['the largest ncp', { net_call_premium: LARGEST_PREMIUM }],
+    ['the smallest ncp', { net_call_premium: SMALLEST_PREMIUM }],
+    ['the largest npp', { net_put_premium: LARGEST_PREMIUM }],
+    ['the smallest npp', { net_put_premium: SMALLEST_PREMIUM }],
+    ['the largest net_volume', { net_volume: 2_147_483_647 }],
+    ['the smallest net_volume', { net_volume: -2_147_483_648 }],
+    // Postgres rounds 999999999999.994 to .99, which fits.
+    [
+      'a premium that rounds down to the largest',
+      { net_call_premium: 999_999_999_999.994 },
+    ],
+  ])('accepts %s, and Postgres stores it', async (_label, overrides) => {
+    const result = closedBuckets([minute(overrides)], NOW);
+    expect(result.buckets).toHaveLength(1);
+
+    await expect(
+      upsertClosedBuckets(result.buckets, SOURCE, DATE),
+    ).resolves.toEqual({ inserted: 1, updated: 0, unchanged: 0 });
+
+    const { rows } = await pg.query<{ ncp: string; npp: string; v: number }>(
+      `SELECT ncp::text AS ncp, npp::text AS npp, net_volume AS v FROM flow_data`,
+    );
+    const bucket = result.buckets[0]!;
+    expect(rows).toHaveLength(1);
+    expect(Number(rows[0]?.ncp)).toBeCloseTo(bucket.ncp, 2);
+    expect(Number(rows[0]?.npp)).toBeCloseTo(bucket.npp, 2);
+    expect(rows[0]?.v).toBe(bucket.netVolume);
+  });
+
+  it.each<[string, Partial<TideMinute>]>([
+    ['ncp of 1e12', { net_call_premium: '1000000000000' }],
+    ['ncp of -1e12', { net_call_premium: '-1000000000000' }],
+    ['npp of 1e12', { net_put_premium: '1000000000000' }],
+    ['npp of -1e12', { net_put_premium: -1_000_000_000_000 }],
+    // Postgres rounds 999999999999.995 up to 1e12, which does not fit.
+    [
+      'a premium that rounds up past the largest',
+      { net_call_premium: '999999999999.995' },
+    ],
+    [
+      'a negative premium that rounds past the smallest',
+      { net_put_premium: '-999999999999.995' },
+    ],
+    ['net_volume one above INTEGER', { net_volume: 2_147_483_648 }],
+    ['net_volume one below INTEGER', { net_volume: -2_147_483_649 }],
+    ['a fractional net_volume', { net_volume: 12.5 }],
+  ])(
+    'rejects %s before the write, and Postgres would reject it too',
+    async (_label, overrides) => {
+      // The filter leaves the bucket out and counts it as stuck ...
+      const filtered = closedBuckets([minute(overrides)], NOW);
+      expect(filtered.buckets).toEqual([]);
+      expect(filtered.stuck).toBe(1);
+
+      // ... and the same values written directly are refused by Postgres, so
+      // the filter and the columns draw the line in the same place.
+      const direct: ClosedBucket = {
+        timestamp: '2026-03-24T13:35:00.000Z',
+        ncp: Number(overrides.net_call_premium ?? 1),
+        npp: Number(overrides.net_put_premium ?? 1),
+        netVolume: Number(overrides.net_volume ?? 1),
+      };
+      await expect(
+        upsertClosedBuckets([direct], SOURCE, DATE),
+      ).rejects.toThrow();
+      expect(await stored()).toEqual([]);
+    },
+  );
 });
