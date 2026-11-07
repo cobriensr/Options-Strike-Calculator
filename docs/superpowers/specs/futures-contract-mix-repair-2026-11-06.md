@@ -71,6 +71,19 @@ A TypeScript script in `scripts/` that turns the Phase 1 file into writes. It re
    - spot-check 3 days against the archive;
    - day bar counts unchanged except for the deletions.
 
+**Done 2026-11-07 (owner OK).** The apply ran 05:53–05:55Z, exit 0.
+- **Changed:** 39,061 ES/NQ rows updated (ES 20,179, NQ 18,882) and 236 rows deleted (ES 40, NQ 35, RTY 33, CL 59, GC 57, ZN 12). Both totals equal the approved dry run, per root and field.
+- **Backup:** `docs/tmp/futures-contract-repair/backup-2026-11-07T05-53-50-958Z.jsonl` (main checkout). It holds 39,297 full rows with `id`, written before any write.
+- **The independent check passed** (`docs/tmp/futures-contract-repair/verify-apply.md`):
+  - **Detector:** ES and NQ contaminated days went from 45 to 0 each, with no runs left.
+    - 28 single bars are still flagged (ES 12, NQ 16). Each equals the archive or the rebuild exactly. They are news and roll-week minutes, near the detector's own clean-day baseline of about 6 per root.
+    - RTY/CL/GC/ZN flags match the pre-repair run, id for id, less the deleted junk.
+  - **Archive span**, all 26 root-days: 0 mismatches against the Databento archive at NUMERIC(12,4), and 0 rows on only one side.
+  - **Tick span:** ES 06-12 is identical to the rebuild. No price field anywhere is more than CARRY_HALF from the rebuild, and roll-week volumes all match.
+  - **Untouched rows** differ in 0 columns. The order-flow columns and `ts` are unchanged.
+  - **A second dry run** plans 0 updates and 0 deletes.
+- **Left as is by design:** ES 7,281 and NQ 7,320 rows in tick-less windows. They have no rebuild source, and no flag falls in them.
+
 ### Phase 4: recompute what was saved from the bad bars (one implementer task + run)
 
 | Store | Rows | Action |
@@ -118,7 +131,7 @@ The gap cron and the history backfills copy the same rule through `replayFrontMo
   - No index. Seed lookups are bounded to 7 days on the existing `(symbol, ts DESC)` index.
 - **Expiry order comes from the contract code:**
   - the month letter gives the month;
-  - the year digit gives the year, resolved to the one year in [ref − 1, ref + 8] that ends in that digit, where ref is the UTC year of the print or bar (at 2026, `H7` → 2027 and `Z5` → 2035);
+  - the year digit gives the year, resolved to the one year in [ref − 1, ref + 8] that ends in that digit, where ref is the UTC year of the replay's first minute, or of the print where the handler first sees the contract (at 2026, `H7` → 2027, `Z5` → 2025 and `Z4` → 2034). The window keeps ref − 1 on purpose: a seed tagged late in one year and read early the next (`ESZ6` in January 2027) must still read as 2026. Read as 2036, it would lock the root for good. A contract ten years out that's misread as past is harmless, because an earlier contract never takes over;
   - a two-digit year is read as 20YY.
 - **Each root has one current front.**
   - **Challenger:** the later-expiring contract with the largest volume since 00:00 UTC. A tie goes to the nearer expiry.
