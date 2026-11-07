@@ -11,8 +11,10 @@
  * an order), the running total is kept at the last tick of each 5-minute
  * window and stamped at the window start, ON CONFLICT (date, timestamp,
  * source) DO NOTHING (the unique key of migration #4). A re-run only adds what
- * is missing. A tick for another ET day, or with a premium that is not a
- * number, is left out before anything is added up and counted ("dropped").
+ * is missing. A tick for another ET day is left out before anything is added
+ * up. A tick whose premium is not a number stays in the sums as a premium of 0
+ * with its volumes, like the live cron's `|| 0` (leaving it out would shift
+ * every later net_volume). Both are counted ("dropped").
  *
  * 07-22 and the live rows: the live cron's morning rows are totals of the
  * ticks as they stood that morning; this script's rows for the rest of the day
@@ -32,8 +34,11 @@
  * User-Agent. A 4xx or malformed answer fails that day (exit 1); a day UW has
  * no ticks for is listed as empty, not failed. A ticker with no ticks on a day
  * that otherwise has some is named in a "partly empty days" line at the end of
- * the summary: listed, not failed, exit code unchanged. A database error fails
- * the day too: nothing is only warned about. Refuses to start 08:15–15:30 CT
+ * the summary: listed, not failed, exit code unchanged. A ticker whose ticks
+ * are all unusable for the day (UW answered another ET day), or that has ten or
+ * more rows with every premium zero, fails the day (`malformed`) and writes
+ * nothing. A database error fails the day too: nothing is only warned about.
+ * Refuses to start 08:15–15:30 CT
  * on a weekday, and stops taking days (exit 3) when that window opens mid-run:
  * its calls skip the shared Redis semaphore and compete with the production
  * crons.

@@ -24,6 +24,7 @@ import { neon } from '@neondatabase/serverless';
 
 import { getETDateStr } from '../../src/utils/timezone.ts';
 import {
+  DayFailure,
   EXIT_BAD_ARGS,
   EXIT_FAILED,
   EXIT_GUARD_STOP,
@@ -56,6 +57,17 @@ export const FLOW_DATA_TARGET = {
 
 const FIVE_MIN_MS = 300_000;
 
+/** The INTEGER column's range (net_volume): a value outside it fails the whole INSERT. */
+const INT4_MIN = -2_147_483_648;
+const INT4_MAX = 2_147_483_647;
+
+/**
+ * How many rows an item needs before "every premium is zero" fails the day.
+ * The live crons' own floor: checkDataQuality's `minRows` is 10 (it alerts
+ * above 10, this fails at 10).
+ */
+const ALL_ZERO_MIN_ROWS = 10;
+
 /** A finite number from a number or a numeric string (UW sends decimals as strings), else null. */
 function numberOf(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
@@ -84,9 +96,11 @@ function flowRow(date, ms, source, ncp, npp, netVolume) {
 /**
  * One market-tide or ETF-tide row as numbers: `{ ms, ncp, npp, netVolume }`, or
  * null when it can't be stored as it is. The premiums must be numbers (the
- * old etf script turned a bad one into a 0, which would be stored as data).
- * `net_volume` may be absent, which is stored as NULL, never a made-up 0; a
- * volume that is there must be a whole number (the column is INTEGER).
+ * old etf script and the live ETF cron turn a bad one into a 0, which is then
+ * stored as data). `net_volume` may be absent, which is stored as NULL (the
+ * live ETF cron stores 0; the readers print a NULL as N/A); a volume that is
+ * there must be a whole number inside the INTEGER column's range, or the row
+ * is left out and counted instead of failing the whole INSERT.
  */
 function tideValues(row) {
   const ms = Date.parse(row.timestamp);
@@ -96,7 +110,14 @@ function tideValues(row) {
   let netVolume = null;
   if (row.net_volume != null) {
     netVolume = numberOf(row.net_volume);
-    if (netVolume === null || !Number.isSafeInteger(netVolume)) return null;
+    if (
+      netVolume === null ||
+      !Number.isSafeInteger(netVolume) ||
+      netVolume < INT4_MIN ||
+      netVolume > INT4_MAX
+    ) {
+      return null;
+    }
   }
   return { ms, ncp, npp, netVolume };
 }
@@ -162,35 +183,35 @@ export function toEtfTideRows(date, source, uwRows) {
  * order, the running total kept at the last tick of each 5-minute window,
  * stamped at the window start. `net_volume` is the running net call volume plus
  * net put volume. The ticks are put in time order first (UW does not promise
- * one, and a running sum depends on it). A tick for another ET day, or with a
- * premium that isn't a number, is left out before anything is added up and
- * counted in `dropped`: it adds nothing to the total, which is what the live
- * cron's `|| 0` does too, but here it is counted. A volume that is missing
- * counts as 0. `{ rows, dropped }`.
+ * one, and a running sum depends on it).
+ *
+ * A tick for another ET day, or with a timestamp that doesn't parse, is left
+ * out before anything is added up. A tick whose premium isn't a number stays
+ * in the sums with that premium as 0 and its volumes, which is what the live
+ * cron's `|| 0` does: its volumes are part of every later row's net_volume,
+ * so leaving the whole tick out would shift them all. Both kinds are counted
+ * in `dropped` (a tick that is only partly used is counted too). A volume
+ * that is missing counts as 0. `{ rows, dropped }`.
  */
 export function toNetFlowRows(date, source, ticks) {
   const usable = [];
   let dropped = 0;
   for (const tick of ticks) {
     const ms = Date.parse(tick.tape_time);
+    if (!Number.isFinite(ms) || !isOnEtDay(ms, date)) {
+      dropped++;
+      continue;
+    }
     const ncp = numberOf(tick.net_call_premium);
     const npp = numberOf(tick.net_put_premium);
-    if (
-      !Number.isFinite(ms) ||
-      ncp === null ||
-      npp === null ||
-      !isOnEtDay(ms, date)
-    ) {
-      dropped++;
-    } else {
-      usable.push({
-        ms,
-        ncp,
-        npp,
-        callVolume: numberOf(tick.net_call_volume) ?? 0,
-        putVolume: numberOf(tick.net_put_volume) ?? 0,
-      });
-    }
+    if (ncp === null || npp === null) dropped++;
+    usable.push({
+      ms,
+      ncp: ncp ?? 0,
+      npp: npp ?? 0,
+      callVolume: numberOf(tick.net_call_volume) ?? 0,
+      putVolume: numberOf(tick.net_put_volume) ?? 0,
+    });
   }
   usable.sort((a, b) => a.ms - b.ms);
 
@@ -300,6 +321,34 @@ export function planFlowDays(argv) {
  *   waitForSlot  the UW throttle (createRequestThrottle)
  */
 
+/**
+ * Fail an item whose answer looks like UW's mistake, not a quiet day. Without
+ * this the day reads as healthy and DO NOTHING keeps the bad outcome for good:
+ *   - UW sent rows and none is usable for `date` (it ignored `?date=` and
+ *     answered another ET day: kept 0, dropped N, exit 0);
+ *   - ALL_ZERO_MIN_ROWS or more rows and every premium is zero (the live cron
+ *     alerts on this too; a finished session never has it).
+ * Both are `malformed`: nothing is written for the item, and the day is re-run
+ * once UW answers properly.
+ */
+function assertUsable(uwRows, rows, source, date) {
+  if (uwRows.length > 0 && rows.length === 0) {
+    throw new DayFailure(
+      'malformed',
+      `UW sent ${uwRows.length} rows for ${source}, none usable for ${date}`,
+    );
+  }
+  if (
+    rows.length >= ALL_ZERO_MIN_ROWS &&
+    rows.every((row) => row.ncp === 0 && row.npp === 0)
+  ) {
+    throw new DayFailure(
+      'malformed',
+      `${source} for ${date}: ${rows.length} rows and every premium is zero`,
+    );
+  }
+}
+
 async function ingestItem(item, date, spec, ctx) {
   const outcome = await fetchUwDayRows(spec.urlFor(item, date), ctx.apiKey, {
     rowField: spec.rowField,
@@ -309,7 +358,9 @@ async function ingestItem(item, date, spec, ctx) {
   });
   if (outcome.kind === 'error') return outcome;
   const uwRows = outcome.kind === 'ok' ? outcome.rows : [];
-  const { rows, dropped } = spec.toRows(date, spec.sourceOf(item), uwRows);
+  const source = spec.sourceOf(item);
+  const { rows, dropped } = spec.toRows(date, source, uwRows);
+  assertUsable(uwRows, rows, source, date);
   const stored = await storeRows(ctx.sql, FLOW_DATA_TARGET, rows, ctx);
   return {
     fetched: uwRows.length,
@@ -326,10 +377,12 @@ async function ingestItem(item, date, spec, ctx) {
  * summed over the items: `fetched` the rows UW sent, `kept` the flow_data rows
  * the mapping produced (the would-be count on a dry run), `stored` the rows the
  * database took (a live row of the same key is skipped), `dropped` the UW rows
- * left out as unusable, `emptyItems` how many items UW sent no rows for. One
- * item failing doesn't stop the others; the day then fails with the first
- * failure's kind (runDayItems), and a DB error is a `db` failure, never a
- * warning.
+ * left out as unusable (net flow: also the ticks whose premium counted as 0),
+ * `emptyItems` how many items UW sent no rows for. One item failing doesn't
+ * stop the others; the day then fails with the first failure's kind
+ * (runDayItems), and a DB error is a `db` failure, never a warning. An item
+ * whose rows are all unusable for the day, or all zero (assertUsable), fails
+ * as `malformed` too, so it can't pass as a healthy day with kept 0.
  *
  * For the two sampled sources (ETF tide, net flow) the rows that are not
  * dropped collapse into the 5-minute rows, so `kept` is lower than

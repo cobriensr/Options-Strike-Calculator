@@ -26,8 +26,11 @@
  * User-Agent. A 4xx or malformed answer fails that day (exit 1); a day UW has
  * no rows for is listed as empty, not failed. A ticker with no rows on a day
  * that otherwise has rows is named in a "partly empty days" line at the end of
- * the summary: listed, not failed, exit code unchanged. A database error fails
- * the day too: nothing is only warned about. Refuses to start 08:15–15:30 CT
+ * the summary: listed, not failed, exit code unchanged. A ticker whose rows are
+ * all unusable for the day (UW answered another ET day), or that has ten or
+ * more rows with every premium zero, fails the day (`malformed`) and writes
+ * nothing. A database error fails the day too: nothing is only warned about.
+ * Refuses to start 08:15–15:30 CT
  * on a weekday, and stops taking days (exit 3) when that window opens mid-run:
  * its calls skip the shared Redis semaphore and compete with the production
  * crons.

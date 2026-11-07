@@ -32,6 +32,7 @@ const TODAY = '2026-11-06T08:00:00Z';
 // 2026-08-12 and 2026-08-13 are a Wednesday and Thursday in EDT (UTC−4).
 const D1 = '2026-08-12';
 const D2 = '2026-08-13';
+const D3 = '2026-08-14';
 // 2026-11-04 is a Wednesday in EST (UTC−5): 19:30 ET is already the next UTC day.
 const WINTER = '2026-11-04';
 
@@ -122,9 +123,12 @@ describe('FLOW_DATA_TARGET', () => {
     }
   });
 
-  it('is not re-keyed by a later migration', () => {
+  it('is not re-keyed by a later migration: no constraint change, no unique index, nothing on the key behind the constraint', () => {
+    // The plain idx_flow_data_* indexes may come and go; only a constraint or
+    // a unique index could change the conflict key.
     expect(migrations).not.toMatch(/ALTER TABLE flow_data[^`]*CONSTRAINT/i);
-    expect(migrations).not.toMatch(/DROP INDEX[^`]*flow_data/i);
+    expect(migrations).not.toMatch(/CREATE UNIQUE INDEX[^`]*ON flow_data\b/i);
+    expect(migrations).not.toContain('flow_data_date_timestamp_source_key');
   });
 });
 
@@ -180,6 +184,28 @@ describe('toMarketTideRows', () => {
       tideRows(1, D1, { net_volume: undefined }),
     ).rows;
     expect(row.net_volume).toBeNull();
+  });
+
+  it('leaves out a net_volume the INTEGER column cannot hold, and counts it, instead of failing the whole INSERT', () => {
+    const at = (minute, net_volume) =>
+      tideRows(1, D1, {
+        timestamp: `2026-08-12T14:${minute}:00.000Z`,
+        net_volume,
+      })[0];
+    const uw = [
+      at('00', 2_147_483_647),
+      at('05', -2_147_483_648),
+      at('10', 2_147_483_648),
+      at('15', -2_147_483_649),
+      at('20', 1e15),
+    ];
+
+    const { rows, dropped } = toMarketTideRows(D1, 'market_tide', uw);
+
+    expect(rows.map((r) => r.net_volume)).toEqual([
+      2_147_483_647, -2_147_483_648,
+    ]);
+    expect(dropped).toBe(3);
   });
 
   it('counts a row it leaves out instead of storing it', () => {
@@ -367,7 +393,7 @@ describe('toNetFlowRows', () => {
     expect(toNetFlowRows(D1, 'qqq_flow', uw).rows[0].net_volume).toBe(4);
   });
 
-  it('counts a tick with a bad premium as left out, and leaves it out of the total', () => {
+  it('counts a tick with a bad premium, adds it as a premium of 0, and still adds its volumes', () => {
     const uw = minuteTicks([
       ['100', '-10', 1, 0],
       ['n/a', '-10', 1, 0],
@@ -379,9 +405,29 @@ describe('toNetFlowRows', () => {
 
     expect(dropped).toBe(2);
     expect(rows).toHaveLength(1);
-    expect(rows[0].ncp).toBe(200);
-    expect(rows[0].npp).toBe(-20);
-    expect(rows[0].net_volume).toBe(2);
+    // A bad premium counts as 0 (the live cron's `|| 0`); a good one beside it stays.
+    expect(rows[0].ncp).toBe(300);
+    expect(rows[0].npp).toBe(-30);
+    expect(rows[0].net_volume).toBe(4);
+  });
+
+  it('keeps the volume of a tick with a bad premium in every later row: the running net volume does not shift', () => {
+    // Window 13:30 holds a good tick; window 13:35 a bad-premium tick that
+    // carries volume 600/-100; window 13:40 a good tick. Leaving the bad tick
+    // out would take 500 off the net volume of the 13:35 and 13:40 rows.
+    const uw = ticks(3).map((tick, i) => ({
+      ...tick,
+      net_call_premium: i === 1 ? 'n/a' : '100',
+      net_put_premium: '-10',
+      net_call_volume: [10, 600, 20][i],
+      net_put_volume: [-4, -100, -5][i],
+    }));
+
+    const { rows, dropped } = toNetFlowRows(D1, 'spx_flow', uw);
+
+    expect(dropped).toBe(1);
+    expect(rows.map((r) => r.net_volume)).toEqual([6, 506, 521]);
+    expect(rows.map((r) => r.ncp)).toEqual([100, 100, 200]);
   });
 
   it('leaves out a tick from another ET day before adding anything up', () => {
@@ -416,6 +462,8 @@ const CASES = [
     itemOf: (url) =>
       url.includes('otm_only=true') ? 'market_tide_otm' : 'market_tide',
     answer: (n, date) => tideRows(n, date),
+    zero: (n, date) =>
+      tideRows(n, date, { net_call_premium: '0', net_put_premium: '0.0000' }),
   },
   {
     name: 'ETF tide',
@@ -428,6 +476,8 @@ const CASES = [
     ],
     itemOf: (url) => /market\/([A-Z]+)\/etf-tide/.exec(url)[1],
     answer: (n, date) => tideRows(n, date),
+    zero: (n, date) =>
+      tideRows(n, date, { net_call_premium: '0', net_put_premium: '0.0000' }),
   },
   {
     name: 'net flow',
@@ -441,6 +491,8 @@ const CASES = [
     ],
     itemOf: (url) => /stock\/([A-Z]+)\/net-prem-ticks/.exec(url)[1],
     answer: (n, date) => ticks(n, date),
+    zero: (n, date) =>
+      ticks(n, date, { net_call_premium: '0.00', net_put_premium: '0.00' }),
   },
 ];
 
@@ -694,6 +746,78 @@ describe.each(CASES)('processFlowDay: $name', (testCase) => {
 
     expect(run.days[0].failure.kind).toBe('malformed');
     expect(run.days[0].failure.detail).toContain(`has no ${spec.rowField}`);
+  });
+
+  it('fails the day as malformed when UW sends rows and none is usable for the day, names the source, and still tries the other items', async () => {
+    // UW ignores ?date= for the first item and answers another ET day.
+    const [first] = items;
+    stubFetch(testCase, (item, date) =>
+      item === first ? testCase.answer(5, D2) : testCase.answer(2, date),
+    );
+    const sql = fakeSql();
+
+    const run = await runWorker([D1], work(sql));
+
+    expect(run.days[0].ok).toBe(false);
+    expect(run.days[0].failure.kind).toBe('malformed');
+    expect(run.days[0].failure.detail).toContain(
+      `1 of ${items.length} ${spec.itemLabel} failed`,
+    );
+    expect(run.days[0].failure.detail).toContain(`first (${first})`);
+    expect(run.days[0].failure.detail).toContain(
+      `UW sent 5 rows for ${sources[0]}, none usable for ${D1}`,
+    );
+    // Not a healthy day with kept 0 and dropped 5: the failed item wrote
+    // nothing, the others still did.
+    expect(sql.query).toHaveBeenCalledTimes(items.length - 1);
+    expect(sql.query.mock.calls.map(([, v]) => v[2])).not.toContain(sources[0]);
+    expect(summarizeRun(run).exitCode).toBe(1);
+  });
+
+  it('fails the day as malformed when ten rows have every premium at zero, and writes nothing for that item', async () => {
+    const [first] = items;
+    stubFetch(testCase, (item, date) =>
+      item === first ? testCase.zero(10, date) : testCase.answer(2, date),
+    );
+    const sql = fakeSql();
+
+    const run = await runWorker([D1], work(sql));
+
+    expect(run.days[0].failure.kind).toBe('malformed');
+    expect(run.days[0].failure.detail).toContain(`first (${first})`);
+    expect(run.days[0].failure.detail).toContain(
+      `${sources[0]} for ${D1}: 10 rows and every premium is zero`,
+    );
+    expect(sql.query).toHaveBeenCalledTimes(items.length - 1);
+    expect(sql.query.mock.calls.map(([, v]) => v[2])).not.toContain(sources[0]);
+    expect(summarizeRun(run).exitCode).toBe(1);
+  });
+
+  it('takes nine all-zero rows as a quiet item, and a single call or put premium among many zero rows as data', async () => {
+    const [first] = items;
+    // Eleven zero rows, then a last row with one premium in it.
+    const withLast = (date, field) =>
+      testCase
+        .zero(12, date)
+        .map((row, i) => (i === 11 ? { ...row, [field]: '500.00' } : row));
+    stubFetch(testCase, (item, date) => {
+      if (item !== first) return testCase.answer(2, date);
+      if (date === D1) return testCase.zero(9, date);
+      return withLast(
+        date,
+        date === D2 ? 'net_call_premium' : 'net_put_premium',
+      );
+    });
+    const sql = fakeSql();
+
+    const run = await runWorker([D1, D2, D3], work(sql));
+
+    expect(run.days.map((d) => d.ok)).toEqual([true, true, true]);
+    // Each day wrote the first item: 9 rows, then 12, then 12.
+    const firstWrites = sql.query.mock.calls.filter(
+      ([, v]) => v[2] === sources[0],
+    );
+    expect(firstWrites.map(([, v]) => v.length / 6)).toEqual([9, 12, 12]);
   });
 
   it('fails the day as db when the write rejects, says which item, and exits 1: no warn-and-carry-on', async () => {
