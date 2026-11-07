@@ -26,7 +26,9 @@ A weekly pass would surface these as counts with dates, instead of relying on so
 | Flaky tests | A test that fails, then passes on a rerun with no code change, 2 or more times a week | A flaky-test ledger entry and a fix ticket |
 | Model use | Agent calls by type and model, tokens, and stall rate per model | The subagent-model rule; Sonnet vs Opus per task type |
 | Rule efficacy | For each memory or rule with a creation date, the rate of the behaviour it targets in the 2 weeks before vs since | Keep it, reword it, or replace it with a hook or script |
-| Skill use | Skills loaded vs listed; skills never loaded in 4 weeks | Prune or merge |
+| Skill use (not built) | Skills loaded vs listed; skills never loaded in 4 weeks | Prune or merge |
+
+No phase below covers Skill use, so it wasn't built. The owner decides whether to add it or drop it.
 
 The rule-efficacy check is the one the audit lacked. It would have flagged all five rules that weren't working on 2026-10-28, and today it would flag the pipe and time-zone rules.
 
@@ -34,6 +36,8 @@ The rule-efficacy check is the one the audit lacked. It would have flagged all f
 
 - A report at `docs/tmp/weekly-review/<date>/report.md`. `docs/tmp/` is gitignored, because the report quotes session text. One section per signal: counts this week, the change from last week, and the 3 worst examples with transcript references.
 - A proposals file next to it. Each proposal is a concrete diff (a memory edit, CLAUDE.md wording, a hook, or a script stub) with the evidence behind it. The owner approves, edits or rejects each one, and only approved proposals get applied, in a normal session with the usual review loop.
+- `signals.json` beside them: the same figures as data, for checking the report's numbers by hand. Nothing reads it.
+- `decisions.md`, written at the end of a walk-through: the approved, edited and rejected proposals, by title. An apply session starts from it, and the next review uses it to skip what was rejected.
 
 ## Phases
 
