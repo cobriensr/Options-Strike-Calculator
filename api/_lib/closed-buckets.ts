@@ -34,7 +34,9 @@
  *               change there.
  *
  * An unusable closed bucket is `pending` while it ended less than
- * STUCK_AFTER_MS ago (UW is late: expected) and `stuck` after that.
+ * STUCK_AFTER_MS ago (UW is late: expected) and `stuck` after that, or once
+ * the tide crons' last attempt of the day has come (LAST_ATTEMPT_AFTER_CLOSE_MS
+ * after the close).
  *
  * Pure: the caller passes `now`, read once before it fetched, so every bucket
  * called closed was already closed when UW answered.
@@ -65,6 +67,17 @@ export const FINAL_LAG_MS = 90_000;
  * A shorter one is `pending`, which is expected and not reported.
  */
 export const STUCK_AFTER_MS = 10 * 60_000;
+
+/**
+ * From this long after the session close every unusable bucket is `stuck`,
+ * whatever its age. The tide crons' last runs are 16:07 (fetch-etf-tide) and
+ * 16:09 (fetch-zero-dte-flow), 7 and 9 minutes after the final bucket ends:
+ * by the age rule alone a late 15:59 minute would stay `pending` and silent
+ * and the day's last row would be lost without a word. Their first attempts
+ * (close + 2 and + 4) are before this, so a minute that is only late there is
+ * still `pending`.
+ */
+export const LAST_ATTEMPT_AFTER_CLOSE_MS = 5 * 60_000;
 
 /** The feed counts as stalled when there are no rows for today from 09:40 ET. */
 const STALL_FROM_ET_MINUTES = 9 * 60 + 40;
@@ -195,6 +208,11 @@ export function closedBuckets(
     lastOfBucket.set(Math.floor(entry.ms / BUCKET_MS) * BUCKET_MS, entry);
   }
 
+  // No later run can fill a bucket from here on (see LAST_ATTEMPT_AFTER_CLOSE_MS).
+  const pastLastAttempt =
+    nowMs >=
+    Date.parse(sessionWindowIso(today).closeIso) + LAST_ATTEMPT_AFTER_CLOSE_MS;
+
   const buckets: ClosedBucket[] = [];
   let pending = 0;
   let stuck = 0;
@@ -211,7 +229,7 @@ export function closedBuckets(
     const label = new Date(labelMs(startMs)).toISOString();
     if (hasLastMinute && values !== null) {
       buckets.push({ timestamp: label, ...values });
-    } else if (nowMs - endMs >= STUCK_AFTER_MS) {
+    } else if (pastLastAttempt || nowMs - endMs >= STUCK_AFTER_MS) {
       stuck++;
       oldestStuck ??= label;
     } else {

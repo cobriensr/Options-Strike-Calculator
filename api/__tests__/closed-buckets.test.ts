@@ -16,6 +16,7 @@ import { describe, it, expect } from 'vitest';
 import {
   BUCKET_MS,
   FINAL_LAG_MS,
+  LAST_ATTEMPT_AFTER_CLOSE_MS,
   STUCK_AFTER_MS,
   closedBuckets,
   isDegenerate,
@@ -238,6 +239,68 @@ describe('closedBuckets', () => {
     const result = closedBuckets(rows, at('14:30'));
     expect(result.stuck).toBe(2);
     expect(result.oldestStuck).toBe('2026-03-24T13:45:00.000Z');
+  });
+
+  it.each([
+    ['16:02 ET, the ETF first attempt', '20:02:00', 'pending'],
+    ['16:04 ET, the zero-DTE first attempt', '20:04:00', 'pending'],
+    ['16:04:59 ET, a second before close + 5 min', '20:04:59', 'pending'],
+    ['16:05:00 ET, close + 5 min', '20:05:00', 'stuck'],
+    ['16:07 ET, the ETF last attempt', '20:07:00', 'stuck'],
+    ['16:09 ET, the zero-DTE last attempt', '20:09:00', 'stuck'],
+  ])(
+    'the final bucket (15:55-16:00) with a null last minute at %s is %s',
+    (_label, timeZ, expected) => {
+      // The bucket ended 2 to 9 minutes before, so by the age rule alone it is
+      // pending at every one of these times and its loss would be silent.
+      const rows = withMinute(
+        grid(SESSION_OPEN, SESSION_CLOSE, SESSION_CLOSE),
+        '19:59',
+        { net_call_premium: null },
+      );
+      const result = closedBuckets(rows, new Date(`${DAY}T${timeZ}Z`));
+      expect(result.buckets).toHaveLength(77);
+      expect(result.stuck).toBe(expected === 'stuck' ? 1 : 0);
+      expect(result.pending).toBe(expected === 'pending' ? 1 : 0);
+      expect(result.oldestStuck).toBe(
+        expected === 'stuck' ? '2026-03-24T20:00:00.000Z' : null,
+      );
+    },
+  );
+
+  it('the final bucket on an early-close day is stuck from 13:05 ET, not from 16:05', () => {
+    const half = '2026-11-27'; // EST: 13:00 ET is 18:00Z
+    const rows = grid(
+      new Date(`${half}T14:30:00Z`),
+      new Date(`${half}T18:00:00Z`),
+      new Date(`${half}T18:00:00Z`),
+    ).map((r) =>
+      r.timestamp === `${half}T17:59:00.000Z`
+        ? { ...r, net_put_premium: 'garbage' }
+        : r,
+    );
+
+    const before = closedBuckets(rows, new Date(`${half}T18:04:59Z`));
+    expect(before.pending).toBe(1);
+    expect(before.stuck).toBe(0);
+
+    const after = closedBuckets(rows, new Date(`${half}T18:05:00Z`));
+    expect(after.pending).toBe(0);
+    expect(after.stuck).toBe(1);
+    expect(after.oldestStuck).toBe(`${half}T18:00:00.000Z`);
+  });
+
+  it('keeps a bucket that is only a few minutes late pending during the session', () => {
+    // The same 7 minutes of age as the ETF last attempt, but mid-session.
+    const rows = withMinute(
+      grid(SESSION_OPEN, SESSION_CLOSE, at('14:12')),
+      '14:04',
+      { net_call_premium: null },
+    );
+    const result = closedBuckets(rows, at('14:12'));
+    expect(result.pending).toBe(1);
+    expect(result.stuck).toBe(0);
+    expect(LAST_ATTEMPT_AFTER_CLOSE_MS).toBe(5 * MINUTE);
   });
 
   it.each([
