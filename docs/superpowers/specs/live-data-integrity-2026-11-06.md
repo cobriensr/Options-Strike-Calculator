@@ -41,6 +41,7 @@ A value check on the P3.2 `flow_data` backfill (summer gap plan, `docs/superpowe
 | F20 | `vol_term_structure`, `vol_realized` | 2/3 (holiday rows copy the prior session; stale `iv_30d`) | 05-25, 06-19, 07-03 (+04-03), 09-16, 10-01 | 59 + 6 rows | `fetch-vol-surface.ts` |
 | F21 | `oi_changes` | 3 (one mid-March 50-row set copied to 29 days) | 02-23 → 04-02 | 1,450 rows | `scripts/backfill-oi-change.mjs` |
 | F22 | `cone_levels` | 3 (one side's mark bad) | 08-25, 10-19 | 2 rows | `cone` cron, DO NOTHING keeps the first write |
+| F23 | `flow_ratio_monitor` | 2 (pre-rollover reading is yesterday's last tick; unverified in the DB) | 03-25 → now, if confirmed | not measured | `api/cron/monitor-flow-ratio.ts:62-72` polls `/net-flow/expiry` with `date=today` every minute from 09:25 ET and takes the last non-null tick, which is yesterday's 15:59 before the rollover. Same class as F2 |
 
 Owned elsewhere. Check with that work before touching any of these:
 - **Lottery and Silent Boom outcome labels missing or stamped empty** (252K unenriched fires 06-25 → 10-21; 9K Silent Boom rows): the enrich work, commits 11a02b97 and 54850fdd on 11-06.
@@ -55,7 +56,7 @@ Clean: market_tide, market_tide_otm, spx/spy/qqq net flow, greek_exposure_strike
 
 - **R-day.** Store only rows whose own timestamp falls on today's ET session day, and only at or after the 09:30 ET open for the session series. A payload whose data is from an earlier day is skipped with a warning and a metric. Port `fetch-gex-0dte.ts`'s stale-cache check, and don't add a new mechanism.
 - **R-null.** A missing or unparseable value is never stored as 0. Leave the row out and count it.
-- **R-closed.** A writer that stores a 5-minute bucket's final value stores it only once the bucket has closed (bucket end ≤ now).
+- **R-closed.** A writer that stores a 5-minute bucket's final value stores it only once the bucket has closed and settled (bucket end + `FINAL_LAG_MS` ≤ now). A minute that has ended is not necessarily final, so the write is also an upsert on the source key (R6, not a lock) that rewrites a row only when a value differs: a value UW revises later is healed by the next run.
 - **R-zero.** A snapshot whose every value column is zero is skipped with a warning (`fetch-strike-all`'s `hasSignal`, e21f0903).
 - **R-stale.** A derived writer checks its source's age before computing. `compute-zero-gamma` skips when the newest source snapshot is older than 15 minutes or from an earlier ET day.
 - **R-quality.** `checkDataQuality` counts only today's rows (timestamp on today's ET day), so yesterday's rows can't mask a dead day.
@@ -68,6 +69,11 @@ Tier 0 must be live before **Mon 2026-11-09 09:25 ET**. Each phase is ≤5 files
 **Tier 0: stop new bad rows**
 
 - **P0.1 ETF tide and zero-DTE index crons (F1, F2, F3).** `api/cron/fetch-etf-tide.ts`, `api/cron/fetch-zero-dte-flow.ts` and their tests. Apply R-day, R-null, R-closed, R-quality and the label rule.
+  - Built on a shared `api/_lib/closed-buckets.ts` (the rules) and `api/_lib/flow-bucket-store.ts` (the write and the quality count).
+  - **Finality.** A bucket is stored only once `FINAL_LAG_MS` (90 s) has passed since its end. The INSERT is `ON CONFLICT (date, timestamp, source) DO UPDATE SET ncp, npp, net_volume WHERE (old values) IS DISTINCT FROM (new values)`: the spec's R6 (idempotent upsert on the source key), not a lock. Each run re-sends every closed bucket of the day, so a revised value is corrected through the close, `created_at` is never touched, and inserted and updated rows are counted separately.
+  - **Window.** Both crons run until 10 minutes after the close, so the last bucket (15:55 to 16:00, settled at 16:01:30) has two attempts (16:02 and 16:07 for ETF tide, 16:04 and 16:09 for zero-DTE). Rows at or after the close (16:00 ET, or 13:00 ET on an early-close day) are left out.
+  - **Values.** An absent `net_volume` is stored as NULL, as the backfill does. A present one that is not a safe integer inside INTEGER, or a premium outside DECIMAL(14,2), makes the bucket unusable.
+  - **Surfacing.** An unusable bucket is *pending* while it ended under 10 minutes ago (UW is late: no metric) and *stuck* after that (`invalid_candle` plus one Sentry warning per run naming the oldest). A payload with no rows for today at 09:40 ET or later raises a warning. A snapshot whose buckets are all zero, or all stuck, is rejected with a Sentry error. The quality check runs after any write.
   - Tests: replay the 09:27 payload (yesterday's rows) → nothing stored. Replay the 09:32 grid with null future minutes → only closed, non-null buckets stored. Write failure → the run is not `success`.
 - **P0.2 Greek flow and the Take-It pin (F4, F17).**
   - `fetch-greek-flow.ts` + test: apply R-day (drops the pre-open 1DTE answer), and surface write failures (R4).
@@ -75,9 +81,10 @@ Tier 0 must be live before **Mon 2026-11-09 09:25 ET**. Each phase is ≤5 files
 - **P0.3 Strike exposures (F5, F6, F7).** `fetch-strike-exposure.ts`, `fetch-strike-all.ts` and tests.
   - Port the stale-cache guard and the `min_strike`/`max_strike` window from `fetch-gex-0dte.ts`.
   - Add the R-zero guard to `fetch-strike-exposure`.
-- **P0.4 Derived and remaining zero guards (F7, F8, F14).**
+- **P0.4 Derived and remaining zero guards (F7, F8, F14, F23).**
   - R-stale in `compute-zero-gamma.ts`.
   - R-zero in `fetch-gex-0dte.ts` and `fetch-spot-gex.ts`.
+  - R-day in `monitor-flow-ratio.ts` (F23): keep only ticks stamped on today's ET date at or after 09:30 ET, and store no reading when there are none. Check `flow_ratio_monitor` for 09:25 to 09:32 ET rows first, since the finding is unverified.
   - Tests for each. Split if it passes 5 files.
 - **P0.5 Market internals (F9, F10).** Find out first why `$ADD`/`$VOLD` read 0 from 04-16 and why `$TICK` bars are O=H=L=C=0.
   - Read `fetch-market-internals.ts` and its 04-15/16 history. Probe Schwab off-hours with the token in Upstash; the guard is 13:00–21:59 UTC weekdays.
@@ -109,10 +116,12 @@ Tier 0 must be live before **Mon 2026-11-09 09:25 ET**. Each phase is ≤5 files
   - Add a rebuild mode that can clear a column instead of `COALESCE`-keeping it.
 - **P1.3 Vol surface (F20).** Pass `date=`, check the row's own date, and skip market holidays.
 - **P1.4 Backfill rule.** Add to the summer gap plan and `scripts/README.md` that a backfill's full write waits for `check-data-integrity` on a dry run, plus parity against live days, not only row counts.
+  - Don't run the ETF tide or zero_dte_index backfills for any day until `flow-data-backfill.mjs` uses the window-end label. Since 2026-11-09 the live rows use it, and DO NOTHING would interleave the two conventions.
 
 **Tier 2: repair history (owner approval for every DELETE or UPDATE; the predicates go to the owner first)**
 
 - **P2.1 `flow_data`.**
+  - Don't run the ETF tide or zero_dte_index backfills for any day until `flow-data-backfill.mjs` uses the window-end label. Since 2026-11-09 the live rows use it, and DO NOTHING would interleave the two conventions. The backfill scripts' headers say so.
   - Delete the ETF zero grid: `source IN ('spy_etf_tide','qqq_etf_tide') AND ncp = 0 AND npp = 0 AND net_volume = 0`, 18,738 rows.
   - Delete the greek-flow 1DTE rows: `source = 'zero_dte_greek_flow' AND (timestamp AT TIME ZONE 'America/New_York')::date <> date`, 11,342 rows.
   - Delete the `zero_dte_index` NULL slots from 04-02 on.
@@ -171,7 +180,11 @@ Tier 0 must be live before **Mon 2026-11-09 09:25 ET**. Each phase is ≤5 files
 ## Thresholds / constants
 
 - **Session gate:** 09:30 ET for the session series. UW rolls over 09:28–09:32 ET.
-- **Bucket:** 5 minutes. A bucket is closed when `bucket_end ≤ now`.
+- **Bucket:** 5 minutes. A bucket is closed when `bucket_end + FINAL_LAG_MS ≤ now`.
+- **`FINAL_LAG_MS`:** 90 s. An operational margin, not a guarantee: UW fills a minute after it ends, and the upsert heals a later revision.
+- **Pending and stuck:** an unusable closed bucket is pending for 10 minutes after its end (no metric, no alert) and stuck from then on (`invalid_candle` and a Sentry warning per run).
+- **Stalled feed:** no rows for today's session at 09:40 ET or later raises a Sentry warning. UW rolls over 09:28 to 09:32 ET, so an empty answer before 09:40 is normal.
+- **Tide cron window:** 09:25 ET to 10 minutes after the close, for `fetch-etf-tide` and `fetch-zero-dte-flow` (the default gate is 5 minutes after).
 - **Source age for derived writers:** 15 minutes.
 - **Snapshot quote staleness:** 10 minutes.
 - **All-zero floor:** every value column zero across the snapshot. For `flow_data` days, the P3.2 floor: 10 rows.
