@@ -5713,9 +5713,23 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
-  // #204 and #205 are taken by another session's unpushed branch
-  // (feat/futures-session-front-month). migrateDb applies by id-set
-  // membership and only needs the ids strictly increasing, so the gap is fine.
+  {
+    id: 204,
+    description:
+      'Record which dated contract each futures_bars bar was built from: a nullable contract TEXT column holding the outright, such as ESZ6. The bar writers fill it (the uw-stream futures_trades handler from the websocket sym field, the shared TS insert in api/_lib/futures-bars.ts from its caller). NULL means unknown, and covers every bar written before this migration plus any later bar whose writer does not pass one. The unique key stays (symbol, ts), so a stored bar keeps its contract (or its NULL) when a later write for the same minute is skipped by ON CONFLICT DO NOTHING. The CHECK is the acceptance test of the uw-stream handler (_OUTRIGHT_SYM in uw-stream/src/handlers/futures_trades.py): the root of the row itself, one CME month code and a one- or two-digit year. It cannot reject a bar the handler would write, and it keeps out a spread (ESZ6-ESH7), a bare root and a contract of another root. It is added NOT VALID on purpose: it binds every later write and skips the scan of existing rows, which all hold NULL (a CHECK passes on NULL). No index: the seed lookups that read the last tagged contract of a root are bounded to the last 7 days and use idx_futures_bars_symbol_ts, so a partial index on tagged rows would only duplicate it for every new bar. Deploy order: apply this migration BEFORE any writer that sends contract is deployed. The uw-stream handler swallows flush errors, so a handler deployed against a database without the column drops every bar. Spec: docs/superpowers/specs/futures-contract-mix-repair-2026-11-06.md (Phase 6).',
+    statements: (sql) => [
+      sql`SET LOCAL lock_timeout = '5s'`,
+      sql`
+        ALTER TABLE futures_bars
+          ADD COLUMN IF NOT EXISTS contract TEXT,
+          DROP CONSTRAINT IF EXISTS futures_bars_contract_chk,
+          ADD CONSTRAINT futures_bars_contract_chk CHECK (
+            contract IS NULL
+            OR contract ~ ('^' || symbol || '[FGHJKMNQUVXZ][0-9]{1,2}$')
+          ) NOT VALID
+      `,
+    ],
+  },
   {
     id: 206,
     description:

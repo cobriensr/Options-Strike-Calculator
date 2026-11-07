@@ -5,10 +5,12 @@
  *
  * futures_bars comes from the REAL migrations on pglite (real Postgres in
  * WASM): #42 creates it (its es_bars copy is left out: that table no
- * longer exists) and #193 adds the order-flow columns. It checks what a
- * mocked tag can't see: ON CONFLICT DO NOTHING leaves a stored bar alone,
- * the NUMERIC(12,4) column rounds UW's 9-decimal strings, NULL flow
- * arrays reach the columns as NULL, and a bad value rejects the insert.
+ * longer exists), #193 adds the order-flow columns and #204 adds the
+ * contract column and its CHECK. It checks what a mocked tag can't see:
+ * ON CONFLICT DO NOTHING leaves a stored bar (and its contract) alone,
+ * the NUMERIC(12,4) column rounds UW's 9-decimal strings, NULL flow and
+ * contract arrays reach the columns as NULL, a bad value rejects the
+ * insert, and the real `withDbRetry` does not retry a CHECK violation.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -20,17 +22,26 @@ const { pg } = vi.hoisted(() => ({
   pg: { db: null as PGlite | null, queries: [] as string[] },
 }));
 
-vi.mock('../_lib/db.js', () => ({
-  getDb:
-    () =>
-    (strings: TemplateStringsArray, ...values: unknown[]) => {
-      const text = strings.reduce((acc, s, i) => `${acc}$${i}${s}`);
-      pg.queries.push(text);
-      return pg.db!.query(text, values).then((r) => r.rows);
-    },
-  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-}));
+// `withDbRetry` and its classifier are the real ones: the CHECK-violation
+// test needs to see that a constraint error is not retried.
+vi.mock('../_lib/db.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('../_lib/db.js')>('../_lib/db.js');
+  return {
+    getDb:
+      () =>
+      (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const text = strings.reduce((acc, s, i) => `${acc}$${i}${s}`);
+        pg.queries.push(text);
+        return pg.db!.query(text, values).then((r) => r.rows);
+      },
+    withDbRetry: actual.withDbRetry,
+    isRetryableDbError: actual.isRetryableDbError,
+    TransientDbError: actual.TransientDbError,
+  };
+});
 
+import { isRetryableDbError, TransientDbError } from '../_lib/db.js';
 import {
   fetchFuturesBars,
   insertFuturesBars,
@@ -90,13 +101,15 @@ interface StoredRow {
   sell_volume: string | null;
   buy_prints: number | null;
   sell_prints: number | null;
+  contract: string | null;
 }
 
 async function rows(symbol = 'ES'): Promise<StoredRow[]> {
   const { rows: out } = await pg.db!.query<StoredRow>(
     `SELECT symbol, to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS ts,
             open::text, high::text, low::text, close::text, volume::text,
-            buy_volume::text, sell_volume::text, buy_prints, sell_prints
+            buy_volume::text, sell_volume::text, buy_prints, sell_prints,
+            contract
        FROM futures_bars WHERE symbol = $1 ORDER BY ts`,
     [symbol],
   );
@@ -125,6 +138,7 @@ describe('futures-bars SQL (pglite)', () => {
     pg.queries = [];
     await applyStatements(pg.db, 42, (text) => !/\bes_bars\b/.test(text));
     await applyStatements(pg.db, 193);
+    await applyStatements(pg.db, 204);
   });
 
   afterEach(async () => {
@@ -150,6 +164,7 @@ describe('futures-bars SQL (pglite)', () => {
           sell_volume: null,
           buy_prints: null,
           sell_prints: null,
+          contract: null,
         },
         expect.objectContaining({ volume: '3', buy_volume: null }),
       ]);
@@ -234,8 +249,12 @@ describe('futures-bars SQL (pglite)', () => {
       await expect(insertFuturesBars('ES', [bar(1)])).resolves.toBe(1);
     });
 
-    it('inserts in 500-row batches, one statement each', async () => {
-      const all = Array.from({ length: 1201 }, (_, i) => bar(i));
+    it('inserts in 500-row batches, one statement each, each row keeping its own contract across the chunk boundaries', async () => {
+      const cycle = ['ESZ6', 'ESH7', null] as const;
+      const want = (i: number) => cycle[i % cycle.length]!;
+      const all = Array.from({ length: 1201 }, (_, i) =>
+        bar(i, { contract: want(i) }),
+      );
 
       const n = await insertFuturesBars('ES', all);
 
@@ -243,7 +262,9 @@ describe('futures-bars SQL (pglite)', () => {
       expect(pg.queries.filter((q) => q.includes('INSERT INTO'))).toHaveLength(
         3,
       );
-      expect(await rows()).toHaveLength(1201);
+      const stored = await rows();
+      expect(stored).toHaveLength(1201);
+      expect(stored.map((r) => r.contract)).toEqual(all.map((_, i) => want(i)));
     });
 
     it('nothing to insert → no query', async () => {
@@ -257,6 +278,129 @@ describe('futures-bars SQL (pglite)', () => {
       ).rejects.toThrow(/numeric field overflow/);
 
       expect(await rows()).toEqual([]);
+    });
+
+    describe('contract', () => {
+      it('stores the contract a bar came from and fetchFuturesBars returns it', async () => {
+        await insertFuturesBars('ES', [bar(0, { contract: 'ESZ6' })]);
+
+        expect((await rows()).map((r) => r.contract)).toEqual(['ESZ6']);
+        const got = await fetchFuturesBars('ES', T0, T1);
+        expect(got).toHaveLength(1);
+        expect(got[0]).toMatchObject({ ts: T0, contract: 'ESZ6' });
+      });
+
+      it('a bar with no contract, or a null one, stores NULL and reads back null, mixed with tagged bars in one chunk', async () => {
+        await insertFuturesBars('ES', [
+          bar(0, { contract: 'ESZ6' }),
+          bar(1),
+          bar(2, { contract: null }),
+          bar(3, { contract: 'ESH7' }),
+        ]);
+
+        const want = ['ESZ6', null, null, 'ESH7'];
+        expect((await rows()).map((r) => r.contract)).toEqual(want);
+        const got = await fetchFuturesBars(
+          'ES',
+          T0,
+          '2026-09-04T00:04:00.000Z',
+        );
+        expect(got.map((b) => b.contract)).toEqual(want);
+      });
+
+      it('ON CONFLICT DO NOTHING keeps the contract already stored, and a stored NULL stays NULL', async () => {
+        await insertFuturesBars('ES', [bar(0, { contract: 'ESZ6' }), bar(1)]);
+
+        const n = await insertFuturesBars('ES', [
+          bar(0, { contract: 'ESH7' }),
+          bar(1, { contract: 'ESZ6' }),
+        ]);
+
+        expect(n).toBe(0);
+        expect((await rows()).map((r) => r.contract)).toEqual(['ESZ6', null]);
+      });
+
+      it.each([
+        ['another root’s contract', 'NQZ6'],
+        ['the micro root’s contract', 'MESZ6'],
+        ['a bare root', 'ES'],
+        ['a spread', 'ESZ6-ESH7'],
+        ['a four-digit year', 'ESZ2026'],
+        ['a letter that is not a CME month code', 'ESA6'],
+        ['a month with no year', 'ESZ'],
+        ['lower case', 'esz6'],
+        ['a trailing newline', 'ESZ6\n'],
+      ])(
+        'the CHECK rejects %s (%j) and the whole chunk stores nothing',
+        async (_what, contract) => {
+          await expect(
+            insertFuturesBars('ES', [bar(0), bar(1, { contract })]),
+          ).rejects.toThrow(/futures_bars_contract_chk/);
+
+          expect(await rows()).toEqual([]);
+        },
+      );
+
+      it.each([
+        ['ES', 'ESZ6'],
+        ['ES', 'ESZ26'],
+        ['RTY', 'RTYU6'],
+      ])('the CHECK accepts %s contract %s', async (symbol, contract) => {
+        await expect(
+          insertFuturesBars(symbol, [bar(0, { contract })]),
+        ).resolves.toBe(1);
+
+        expect((await rows(symbol)).map((r) => r.contract)).toEqual([contract]);
+      });
+
+      it('a CHECK violation surfaces at once: withDbRetry does not call it transient, so the INSERT runs once', async () => {
+        const err = await insertFuturesBars('ES', [
+          bar(0, { contract: 'NQZ6' }),
+        ]).catch((e: unknown) => e);
+
+        expect(err).toBeInstanceOf(Error);
+        expect(err).not.toBeInstanceOf(TransientDbError);
+        expect((err as Error).message).toMatch(
+          /violates check constraint "futures_bars_contract_chk"/,
+        );
+        expect(isRetryableDbError(err)).toBe(false);
+        expect(
+          pg.queries.filter((q) => q.includes('INSERT INTO')),
+        ).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('migration #204', () => {
+    it('re-runs cleanly: a row from before the column keeps a NULL contract, and the CHECK stays NOT VALID and still binds new writes', async () => {
+      // A table as it stood before #204, with one bar already in it.
+      await pg.db!.close();
+      pg.db = new PGlite();
+      await applyStatements(pg.db, 42, (text) => !/\bes_bars\b/.test(text));
+      await applyStatements(pg.db, 193);
+      await pg.db.query(
+        `INSERT INTO futures_bars (symbol, ts, open, high, low, close, volume)
+         VALUES ('ES', $1, 1, 1, 1, 1, 5)`,
+        [T0],
+      );
+
+      await applyStatements(pg.db, 204);
+      await applyStatements(pg.db, 204);
+
+      expect((await rows()).map((r) => [r.ts, r.contract])).toEqual([
+        ['2026-09-04T00:00:00Z', null],
+      ]);
+      const { rows: chk } = await pg.db.query<{ convalidated: boolean }>(
+        `SELECT convalidated FROM pg_constraint
+          WHERE conname = 'futures_bars_contract_chk'`,
+      );
+      expect(chk).toEqual([{ convalidated: false }]);
+      await expect(
+        insertFuturesBars('ES', [bar(1, { contract: 'NQZ6' })]),
+      ).rejects.toThrow(/futures_bars_contract_chk/);
+      await expect(
+        insertFuturesBars('ES', [bar(1, { contract: 'ESZ6' })]),
+      ).resolves.toBe(1);
     });
   });
 
@@ -284,6 +428,7 @@ describe('futures-bars SQL (pglite)', () => {
           sellVolume: null,
           buyPrints: null,
           sellPrints: null,
+          contract: null,
         },
         expect.objectContaining({
           ts: T1,

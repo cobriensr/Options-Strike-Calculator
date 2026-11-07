@@ -10,6 +10,15 @@
  *
  * Flow follows the table's NULL-vs-0 rule: a flow field left out, or
  * null, is written as NULL (unknown), and a 0 is a known zero.
+ *
+ * `contract` is the dated outright the bar was built from, such as
+ * `ESZ6` (column added by migration #204). Left out, or null, it is
+ * written as NULL (unknown), which is also what every bar from before the
+ * migration holds. The two callers don't pass it yet; the gap cron and
+ * the history backfill are changed to in Phase 6 of
+ * `docs/superpowers/specs/futures-contract-mix-repair-2026-11-06.md`.
+ * The column's CHECK rejects anything but the row's own root, a CME month
+ * code and a one- or two-digit year.
  */
 
 import { getDb, withDbRetry } from './db.js';
@@ -33,14 +42,17 @@ export interface FuturesBarRow {
   sellVolume?: number | null;
   buyPrints?: number | null;
   sellPrints?: number | null;
+  /** The dated outright the bar came from, e.g. `ESZ6`; absent = unknown. */
+  contract?: string | null;
 }
 
 /**
  * Batched `INSERT … SELECT FROM unnest(…) ON CONFLICT (symbol, ts) DO
  * NOTHING` of `symbol`'s bars, 500 rows a statement. DO NOTHING never
- * revises a bar the live handler wrote, so a re-run is a no-op. Returns
- * the rows actually inserted. Throws on a rejected INSERT; batches
- * already inserted stay.
+ * revises a bar the live handler wrote, so a re-run is a no-op and a
+ * stored `contract` (or its NULL) is kept. Returns the rows actually
+ * inserted. Throws on a rejected INSERT, a `contract` that fails the
+ * column's CHECK included; batches already inserted stay.
  */
 export async function insertFuturesBars(
   symbol: string,
@@ -54,9 +66,10 @@ export async function insertFuturesBars(
       () => sql`
         INSERT INTO futures_bars
           (symbol, ts, open, high, low, close, volume,
-           buy_volume, sell_volume, buy_prints, sell_prints)
+           buy_volume, sell_volume, buy_prints, sell_prints, contract)
         SELECT ${symbol}, t.ts, t.open, t.high, t.low, t.close, t.volume,
-               t.buy_volume, t.sell_volume, t.buy_prints, t.sell_prints
+               t.buy_volume, t.sell_volume, t.buy_prints, t.sell_prints,
+               t.contract
         FROM unnest(
           ${chunk.map((b) => b.ts)}::timestamptz[],
           ${chunk.map((b) => b.open)}::numeric[],
@@ -67,9 +80,10 @@ export async function insertFuturesBars(
           ${chunk.map((b) => b.buyVolume ?? null)}::bigint[],
           ${chunk.map((b) => b.sellVolume ?? null)}::bigint[],
           ${chunk.map((b) => b.buyPrints ?? null)}::int[],
-          ${chunk.map((b) => b.sellPrints ?? null)}::int[]
+          ${chunk.map((b) => b.sellPrints ?? null)}::int[],
+          ${chunk.map((b) => b.contract ?? null)}::text[]
         ) AS t(ts, open, high, low, close, volume,
-               buy_volume, sell_volume, buy_prints, sell_prints)
+               buy_volume, sell_volume, buy_prints, sell_prints, contract)
         ON CONFLICT (symbol, ts) DO NOTHING
         RETURNING ts
       `,
@@ -93,6 +107,8 @@ export interface StoredFuturesBar {
   sellVolume: number | null;
   buyPrints: number | null;
   sellPrints: number | null;
+  /** The dated outright the bar came from; null = unknown. */
+  contract: string | null;
 }
 
 interface StoredRow {
@@ -106,6 +122,7 @@ interface StoredRow {
   sell_volume: number | null;
   buy_prints: number | null;
   sell_prints: number | null;
+  contract: string | null;
 }
 
 /**
@@ -126,7 +143,7 @@ export async function fetchFuturesBars(
              close::text AS close, volume::float8 AS volume,
              buy_volume::float8 AS buy_volume,
              sell_volume::float8 AS sell_volume,
-             buy_prints, sell_prints
+             buy_prints, sell_prints, contract
       FROM futures_bars
       WHERE symbol = ${symbol}
         AND ts >= ${startIso}::timestamptz
@@ -147,5 +164,6 @@ export async function fetchFuturesBars(
     sellVolume: r.sell_volume,
     buyPrints: r.buy_prints,
     sellPrints: r.sell_prints,
+    contract: r.contract,
   }));
 }
