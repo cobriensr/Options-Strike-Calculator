@@ -1,5 +1,6 @@
 """Bot-EOD archive paths for backfill_net_flow_history.py,
-exit_policy_search.py, flow_inversion_timing.py and ingest-flow.py.
+exit_policy_search.py, flow_inversion_timing.py, tune_flow_inversion.py and
+ingest-flow.py.
 
 The readers take the archive as `--parquet-dir` (no home-directory default;
 the Makefile passes its PARQUET_DIR) and fail by name when it is missing.
@@ -27,6 +28,7 @@ sys.path.insert(0, str(SCRIPTS))
 import backfill_net_flow_history as net_flow  # noqa: E402
 import exit_policy_search as policy_search  # noqa: E402
 import flow_inversion_timing as timing  # noqa: E402
+import tune_flow_inversion as tuning  # noqa: E402
 
 
 def _load_hyphenated(stem: str):
@@ -74,6 +76,7 @@ READERS = [
     pytest.param(net_flow.parse_args, id='backfill_net_flow_history'),
     pytest.param(timing.parse_args, id='flow_inversion_timing'),
     pytest.param(policy_search.parse_args, id='exit_policy_search'),
+    pytest.param(tuning.parse_args, id='tune_flow_inversion'),
 ]
 
 
@@ -82,6 +85,7 @@ READERS = [
     [
         pytest.param(timing.parse_args, id='flow_inversion_timing'),
         pytest.param(policy_search.parse_args, id='exit_policy_search'),
+        pytest.param(tuning.parse_args, id='tune_flow_inversion'),
     ],
 )
 def test_update_reports_require_parquet_dir(

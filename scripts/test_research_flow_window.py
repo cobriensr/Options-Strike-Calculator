@@ -10,7 +10,9 @@ same window the enrichment writes its values from.
 Each script is driven for one day with Neon faked at the module boundary
 (psycopg2.connect, pandas.read_sql) and the loader replaced by a recorder, so
 the test sees which (ticker, side) pairs are loaded and which flow each fire
-is simulated with. Run:
+is simulated with. It also covers the tuning script's `--parquet-dir`
+parameter (the day file is read from the directory given, not a default) and
+its missing-day handling. Run:
 
     ml/.venv/Scripts/python -m pytest -q scripts/test_research_flow_window.py
 """
@@ -178,30 +180,9 @@ def tune_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path / 'docs' / 'tmp' / f'flow-inversion-tuning-{DAY}.md'
 
 
-# ── tune_flow_inversion: --parquet-dir, as flow_inversion_timing takes it ──
-
-
-def test_tune_parquet_dir_is_required(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as exc:
-        tune.parse_args([])
-    assert exc.value.code == 2
-    assert '--parquet-dir' in capsys.readouterr().err
-
-
-def test_tune_missing_parquet_dir_fails_by_name(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    missing = tmp_path / 'Desktop' / 'Bot-Eod-parquet'
-    with pytest.raises(SystemExit) as exc:
-        tune.parse_args(['--parquet-dir', str(missing)])
-    assert exc.value.code == 2
-    err = capsys.readouterr().err
-    assert '--parquet-dir' in err
-    assert str(missing) in err
-
-
-def test_tune_parquet_dir_parses_to_a_path(archive: Path) -> None:
-    assert tune.parse_args(['--parquet-dir', str(archive)]).parquet_dir == archive
+# ── tune_flow_inversion: reads from the directory it is given ──
+# (Its `--parquet-dir` flag is held to the same contract as the other readers
+# in test_bot_eod_parquet_dir.py.)
 
 
 def test_tune_reads_each_ticker_and_side_through_the_loader(
