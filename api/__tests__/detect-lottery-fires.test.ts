@@ -1444,6 +1444,40 @@ describe('detect-lottery-fires handler', () => {
     expect(binds.get('direction_gated')).toBe(false); // otm null → ungated
   });
 
+  it('stores the real spy_etf_diff and qqq_etf_diff on the fire and hands them unpinned to scoreLottery (the Take-It pin lives in featuresForLottery, F17)', async () => {
+    // Spec: docs/superpowers/specs/live-data-integrity-2026-11-06.md (F17,
+    // open question 3). Scoring feeds 0 for both diffs, but the
+    // lottery_finder_fires columns keep the real values, so a later retrain
+    // or re-derivation reads them. This pins that the cron does not zero
+    // them, and that the zeroing happens inside featuresForLottery, not here.
+    const takeitCtx = { bundle: { version: 'test-v1' }, ctx: {} };
+    mockLoadTakeitDetectContext.mockResolvedValue(takeitCtx);
+    stageTicks(fireableSndkStream());
+    router.on('flowData', [
+      { source: 'spy_etf_tide', ncp: '900', npp: '400' },
+      { source: 'qqq_etf_tide', ncp: '300', npp: '700' },
+    ]);
+    router.on('insert', [{ id: 42 }]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const binds = extractInsertBinds(mockSql, 'lottery_finder_fires');
+    expect(binds.get('spy_etf_diff')).toBe(500); // 900 - 400
+    expect(binds.get('qqq_etf_diff')).toBe(-400); // 300 - 700
+    expect(mockScoreLottery).toHaveBeenCalledExactlyOnceWith(
+      takeitCtx,
+      expect.objectContaining({ spy_etf_diff: 500, qqq_etf_diff: -400 }),
+    );
+  });
+
   it('issues the strike_exposures query for SPY (in TICKERS_WITH_GEX_STRIKE)', async () => {
     const spyStream = fireableSndkStream().map((t) => ({
       ...t,

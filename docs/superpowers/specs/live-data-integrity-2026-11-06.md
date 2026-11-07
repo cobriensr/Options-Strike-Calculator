@@ -35,7 +35,7 @@ A value check on the P3.2 `flow_data` backfill (summer gap plan, `docs/superpowe
 | F14 | `spot_exposures` | 3 (all-zero rows at 09:30–09:33) | 02-19 → 07-22, plus 3 pre-market days | 129 rows | `fetch-spot-gex.ts` |
 | F15 | `training_features` | fallout | 04-02 → now | 8 ETF columns 0 on 120 days; `zero_dte_*` NULL; `etf_tide_divergence` never true | `build-features*.ts` |
 | F16 | `training_features` | own bugs | various | the snapshot picker sorts TEXT `entry_time` (10:05 before 8:30); static features NULL on 34 days; `opt_*` repeated 02-23 → 06-22; upsert `COALESCE` can't clear a bad value | `build-features.ts`, `build-features-*.ts` |
-| F17 | `lottery_finder_fires` `spy_etf_diff`, `qqq_etf_diff` | fallout | 04-07 → now, 100% zero | ~607K fires | `detect-lottery-fires.ts`; Take-It lottery v2026-05-16 was trained with the zeros |
+| F17 | `lottery_finder_fires` `spy_etf_diff`, `qqq_etf_diff` | fallout | 04-07 → now, 100% zero | ~607K fires | `detect-lottery-fires.ts`; live Take-It scoring has been fed these zeros on every fire; v2026-05-16's training set holds them only for its 04-07 → 05-16 slice (open question 3) |
 | F18 | analyze prompt | fallout | 04-02 → now | "SPY/QQQ ETF Tide: +0M bear", "Mixed signals", `uw-deltas` always MIXED, "$ADD: 0, $VOLD: 0", greek-flow direction measured from yesterday's 1DTE value | readers in `api/_lib/` |
 | F19 | `system-status` freshness | fallout | 04-02 → now | the zero grid's max timestamp is 15:55 ET, so a mid-session stall can't show | `api/system-status.ts` |
 | F20 | `vol_term_structure`, `vol_realized` | 2/3 (holiday rows copy the prior session; stale `iv_30d`) | 05-25, 06-19, 07-03 (+04-03), 09-16, 10-01 | 59 + 6 rows | `fetch-vol-surface.ts` |
@@ -77,7 +77,7 @@ Tier 0 must be live before **Mon 2026-11-09 09:25 ET**. Each phase is ≤5 files
   - Tests: replay the 09:27 payload (yesterday's rows) → nothing stored. Replay the 09:32 grid with null future minutes → only closed, non-null buckets stored. Write failure → the run is not `success`.
 - **P0.2 Greek flow and the Take-It pin (F4, F17).**
   - `fetch-greek-flow.ts` + test: apply R-day (drops the pre-open 1DTE answer), and surface write failures (R4).
-  - `api/_lib/takeit-features.ts` + test: the Take-It lottery input `spy_etf_diff`/`qqq_etf_diff` stays 0, the distribution v2026-05-16 was trained on, until the owner decides on a retrain (open question 3). Stored fires get the real values. Name the pin in a comment with this spec's path. Shipped on its own, ahead of the greek flow part of P0.2 (owner priority change, 2026-11-07).
+  - `api/_lib/takeit-features.ts` + test: the Take-It lottery input `spy_etf_diff`/`qqq_etf_diff` stays 0 for scoring, where live scores have been since 04-07, until the owner decides (open question 3). A continuity pin, not a restored training distribution. Stored fires get the real values; the `takeit_features` JSONB stores the pinned 0. Name the pin in a comment with this spec's path. Shipped on its own, ahead of the greek flow part of P0.2 (owner priority change, 2026-11-07).
 - **P0.3 Strike exposures (F5, F6, F7).** `fetch-strike-exposure.ts`, `fetch-strike-all.ts` and tests.
   - Port the stale-cache guard and the `min_strike`/`max_strike` window from `fetch-gex-0dte.ts`.
   - Add the R-zero guard to `fetch-strike-exposure`.
@@ -170,10 +170,12 @@ Tier 0 must be live before **Mon 2026-11-09 09:25 ET**. Each phase is ≤5 files
 
 1. **Label rule.** Should a stored closed-window value carry the window's end time (default), or UW's window start? Window-end gives replays no lookahead and matches live rows to within about 1.5 min. The summer `flow_data` write waits for this answer. The P0.1 live ETF fix uses the default; a later "start" answer means shifting those rows back 5 minutes with one UPDATE.
 2. **DELETE approval.** Tier 2 deletes production rows. Each phase's predicates and counts go to the owner before running. Nothing is deleted until then.
-3. **Take-It lottery.** The model learned `spy_etf_diff = 0` as a post-April flag. Options:
-   - **Default:** P0.2's pin, which keeps feeding 0.
+3. **Take-It lottery.** Live scoring has been fed `spy_etf_diff = qqq_etf_diff = 0` on every fire since 04-07, but the model was not trained on 0 alone. The training SQL has no date floor; the parity fixture's 50 production rows hold 18 real, 19 null and 13 zero values for each column; the bundle splits 116 times on `spy_etf_diff` and 95 times on `qqq_etf_diff`, at real thresholds (such as -179,339,250). So feeding real values is in-distribution too. Whether the model reads a zero as a post-April flag is unverified. Options:
+   - **Default:** P0.2's pin, which keeps feeding 0 (continuity with live scores since 04-07).
    - Retrain on repaired data.
    - Drop both features in the next retrain.
+
+   Until this is decided, do not run `scripts/backfill_takeit.py`. It scores in Python through `build_training_set.load_lottery` with the stored columns, bypasses the pin, and would feed real values (every historical row once P2.4 re-derives them). `scripts/backfill-takeit-scores.mjs` and `scripts/replay-lottery-fires-2026-05-18.ts` score through `scoreLottery` and inherit the pin.
 4. **Live in-progress snapshots.** Live market tide and net flow store a snapshot 20–90 s into each window, frozen by DO NOTHING. Default: leave them, since they fit the label rule.
 5. **Frozen strike-exposure days (F6).** Default: no refill; mark them known-bad.
 

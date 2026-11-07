@@ -532,16 +532,31 @@ function nullableBooleanToFeature(
  * The value `spy_etf_diff` and `qqq_etf_diff` take for scoring, whatever the
  * alert row holds (a number, null or NaN).
  *
- * Why: from 2026-04-02 the live ETF tide writer stored an all-zero grid, so the
- * Take-It lottery model v2026-05-16 was trained on spy_etf_diff = qqq_etf_diff
- * = 0 for every fire. The writer is fixed (P0.1), so stored fires now carry
- * real values, and feeding those to a model that never saw them would shift
- * its scores. The owner has not yet chosen between keeping 0, retraining on
- * repaired data, or dropping both features (spec open question 3, default: keep
- * feeding 0). Remove this pin only with that decision.
+ * Why: continuity. The live ETF tide writer stored an all-zero grid from
+ * 2026-04-02, so every live fire since 2026-04-07 has been scored with both
+ * diffs at 0 (spec F17). The writer is fixed (P0.1) and stored fires now carry
+ * real values; this pin keeps live scores where they have been. It does not
+ * restore a training distribution: the v2026-05-16 training set has no date
+ * floor and holds real, null and zero values for both columns (the parity
+ * fixture's 50 production rows: 18 real, 19 null, 13 zero), and the bundle
+ * splits on them (116 splits on spy_etf_diff, 95 on qqq_etf_diff, at real
+ * thresholds such as -179,339,250). Feeding real values is in-distribution
+ * too, so both choices are defensible. Keeping 0, retraining on repaired data,
+ * or dropping both features is the owner's call (spec open question 3,
+ * default: keep feeding 0). Remove this pin only with that decision.
  *
- * Scoring only: detect-lottery-fires.ts keeps writing the real values to the
- * lottery_finder_fires columns.
+ * What the pin does and does not touch:
+ * - Scoring only: detect-lottery-fires.ts keeps writing the real values to the
+ *   lottery_finder_fires columns.
+ * - The `takeit_features` JSONB stores the pinned 0, by design: the SHAP fill
+ *   must explain the exact input that was scored. Research that reads that
+ *   JSONB sees 0 for these two features.
+ * - scripts/backfill-takeit-scores.mjs and scripts/replay-lottery-fires-
+ *   2026-05-18.ts score through scoreLottery and inherit the pin, so a rescore
+ *   of fires from before 2026-04-07 now uses 0 too.
+ * - scripts/backfill_takeit.py (Python, via build_training_set.load_lottery)
+ *   bypasses the pin and scores with the stored columns. Do not run it until
+ *   open question 3 is decided.
  * Spec: docs/superpowers/specs/live-data-integrity-2026-11-06.md (F17, P0.2,
  * open question 3).
  */
