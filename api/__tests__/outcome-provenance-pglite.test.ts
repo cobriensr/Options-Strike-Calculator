@@ -10,6 +10,9 @@
  * The two tables come from their real CREATE TABLE migrations (#110 and
  * #134). Rows are seeded BEFORE #201 runs, to stand for the fires written
  * before provenance existed.
+ *
+ * Also covers #202, the Full Tape examination marker (outcome_tape_version),
+ * which is applied on top of #201 and kept apart from the source tag.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -27,6 +30,7 @@ type NeonSql = Parameters<NonNullable<Migration['statements']>>[0];
 const LOTTERY_CREATE_ID = 110;
 const SILENT_BOOM_CREATE_ID = 134;
 const PROVENANCE_ID = 201;
+const TAPE_MARKER_ID = 202;
 
 const CHECK_VIOLATION = '23514';
 
@@ -67,6 +71,17 @@ const TARGETS: Target[] = [
 const TARGET_LABELS = TARGETS.map(
   (t) => [`${t.table}.${t.prefix}_*`, t] as const,
 );
+
+const TAPE_MARKER_TARGETS = [
+  {
+    table: 'lottery_finder_fires',
+    constraint: 'lottery_finder_fires_outcome_tape_version_chk',
+  },
+  {
+    table: 'silent_boom_alerts',
+    constraint: 'silent_boom_alerts_outcome_tape_version_chk',
+  },
+] as const;
 
 let pg: PGlite;
 let chainSeq = 0;
@@ -131,6 +146,26 @@ async function tag(
   );
 }
 
+/** Set outcome_tape_version on one row; the value may be invalid on purpose. */
+async function setTapeMarker(
+  table: Target['table'],
+  id: number,
+  version: number | null,
+) {
+  await pg.query(
+    `UPDATE ${table} SET outcome_tape_version = $1 WHERE id = $2`,
+    [version, id],
+  );
+}
+
+async function readTapeMarker(table: Target['table'], id: number) {
+  const { rows } = await pg.query<{ version: number | null }>(
+    `SELECT outcome_tape_version AS version FROM ${table} WHERE id = $1`,
+    [id],
+  );
+  return rows[0]!.version;
+}
+
 async function readTag({ table, prefix }: Target, id: number) {
   const { rows } = await pg.query<{
     source: string | null;
@@ -150,6 +185,7 @@ beforeAll(async () => {
   seeded.lottery_finder_fires = await insertRow('lottery_finder_fires');
   seeded.silent_boom_alerts = await insertRow('silent_boom_alerts');
   await applyMigration(pg, PROVENANCE_ID);
+  await applyMigration(pg, TAPE_MARKER_ID);
 });
 
 afterAll(async () => {
@@ -345,5 +381,153 @@ describe('migration #201 on pglite', () => {
         convalidated: false,
       },
     ]);
+  });
+});
+
+describe('migration #202 on pglite', () => {
+  it('adds a nullable outcome_tape_version with no default to both tables', async () => {
+    const { rows } = await pg.query<{
+      table_name: string;
+      data_type: string;
+      is_nullable: string;
+      column_default: string | null;
+    }>(
+      `SELECT table_name, data_type, is_nullable, column_default
+         FROM information_schema.columns
+        WHERE column_name = 'outcome_tape_version'
+        ORDER BY table_name`,
+    );
+
+    expect(rows).toEqual(
+      TAPE_MARKER_TARGETS.map(({ table }) => ({
+        table_name: table,
+        data_type: 'smallint',
+        is_nullable: 'YES',
+        column_default: null,
+      })),
+    );
+  });
+
+  describe.each(TAPE_MARKER_TARGETS)('$table', ({ table, constraint }) => {
+    it('accepts a positive version and NULL, whatever the source tag says', async () => {
+      const id = await insertRow(table);
+
+      await setTapeMarker(table, id, 1);
+      expect(await readTapeMarker(table, id)).toBe(1);
+      await setTapeMarker(table, id, null);
+      expect(await readTapeMarker(table, id)).toBeNull();
+
+      // The marker is separate from who wrote the values: a feed row (ws_cron)
+      // the tape could not price carries both.
+      await pg.query(
+        `UPDATE ${table}
+            SET outcome_source = 'ws_cron', outcome_version = 1,
+                outcome_tape_version = 1
+          WHERE id = $1`,
+        [id],
+      );
+      expect(await readTapeMarker(table, id)).toBe(1);
+    });
+
+    it.each([
+      ['zero', 0],
+      ['a negative', -1],
+    ] as const)('rejects %s', async (_name, version) => {
+      const id = await insertRow(table);
+
+      await expect(setTapeMarker(table, id, version)).rejects.toMatchObject({
+        code: CHECK_VIOLATION,
+        constraint,
+      });
+      expect(await readTapeMarker(table, id)).toBeNull();
+    });
+  });
+
+  it('keeps existing rows NULL, and a re-run is a no-op that leaves a set marker alone', async () => {
+    const count = async (sql: string) =>
+      Number((await pg.query<{ n: number }>(sql)).rows[0]!.n);
+    const columns = `SELECT count(*)::int AS n FROM information_schema.columns
+                      WHERE column_name = 'outcome_tape_version'`;
+    const checks = `SELECT count(*)::int AS n FROM pg_constraint
+                     WHERE conname ~ '_outcome_tape_version_chk$'`;
+    expect([await count(columns), await count(checks)]).toEqual([2, 2]);
+    for (const { table } of TAPE_MARKER_TARGETS) {
+      expect(await readTapeMarker(table, seeded[table])).toBeNull();
+    }
+
+    // Mark one fresh row per table the way the tape writer would, and keep
+    // the pre-migration seed rows untouched.
+    const marked = {
+      lottery_finder_fires: await insertRow('lottery_finder_fires'),
+      silent_boom_alerts: await insertRow('silent_boom_alerts'),
+    };
+    for (const { table } of TAPE_MARKER_TARGETS) {
+      await setTapeMarker(table, marked[table], 1);
+    }
+
+    // Runs again without error: ADD COLUMN is IF NOT EXISTS and each
+    // constraint is dropped before it is added.
+    await applyMigration(pg, TAPE_MARKER_ID);
+
+    expect([await count(columns), await count(checks)]).toEqual([2, 2]);
+    for (const { table, constraint } of TAPE_MARKER_TARGETS) {
+      expect(await readTapeMarker(table, seeded[table])).toBeNull();
+      expect(await readTapeMarker(table, marked[table])).toBe(1);
+      // The re-added check still binds.
+      await expect(
+        setTapeMarker(table, marked[table], 0),
+      ).rejects.toMatchObject({ code: CHECK_VIOLATION, constraint });
+    }
+  });
+
+  it('adds both checks NOT VALID, so existing rows are not scanned', async () => {
+    const { rows } = await pg.query<{
+      conname: string;
+      table_name: string;
+      convalidated: boolean;
+    }>(
+      `SELECT conname, conrelid::regclass::text AS table_name, convalidated
+         FROM pg_constraint
+        WHERE conname IN (
+          'lottery_finder_fires_outcome_tape_version_chk',
+          'silent_boom_alerts_outcome_tape_version_chk'
+        )
+        ORDER BY conname`,
+    );
+
+    expect(rows).toEqual([
+      {
+        conname: 'lottery_finder_fires_outcome_tape_version_chk',
+        table_name: 'lottery_finder_fires',
+        convalidated: false,
+      },
+      {
+        conname: 'silent_boom_alerts_outcome_tape_version_chk',
+        table_name: 'silent_boom_alerts',
+        convalidated: false,
+      },
+    ]);
+  });
+
+  it('sets lock_timeout with SET LOCAL, so it ends with the migration transaction', async () => {
+    const migration = MIGRATIONS.find((m) => m.id === TAPE_MARKER_ID);
+    if (!migration?.statements) throw new Error('#202 has no statements');
+    // applyMigration runs each statement outside a transaction, where SET
+    // LOCAL does nothing; run them in one, as migrateDb() does.
+    const queries = migration.statements(
+      neonOverPglite(pg) as unknown as NeonSql,
+    ) as unknown as PgliteQuery[];
+    const showTimeout = async (db: Pick<PGlite, 'query'>) =>
+      (await db.query<{ lock_timeout: string }>('SHOW lock_timeout')).rows;
+
+    const inside = await pg.transaction(async (tx) => {
+      for (const q of queries) await tx.query(q.text, q.params);
+      return showTimeout(tx);
+    });
+
+    expect(inside).toEqual([{ lock_timeout: '5s' }]);
+    // SET LOCAL, not SET: the 5s timeout must not outlive the transaction on
+    // a pooled backend.
+    expect(await showTimeout(pg)).toEqual([{ lock_timeout: '0' }]);
   });
 });

@@ -5671,4 +5671,28 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 202,
+    description:
+      'Record that the Full Tape examined a fire: outcome_tape_version on lottery_finder_fires and silent_boom_alerts. It is the version of the Full Tape outcome pass that examined the row, a SMALLINT above 0, and NULL means the tape has not examined it. The fulltape writer sets it on every row it examines: one it priced, one it tagged as unpriceable, and one it left with the outcome of another writer. It is separate from outcome_source, which says who wrote the values. A ws_cron outcome_source with a non-NULL marker means feed values the tape could not price, which the tape kept (owner, 2026-11-06): the websocket feed drops prints and cannot replay them, so the tape has the final say, but without the marker those days would come back as nightly work forever (a 1-2 GB tape refetch each), and tagging the rows fulltape would misstate who wrote them. The bot_eod and ws_cron writers never set it. The two CHECKs are added NOT VALID on purpose: they bind every later write and skip the scan of existing rows, which all hold NULL. Each CHECK spells out the IS NULL branch, in the way #201 spells out IS NOT NULL. No index, default or backfill. Spec: docs/superpowers/specs/2026-10-28-nightly-pipeline-automation-design.md (Enrichment); plan: docs/superpowers/plans/2026-10-29-nightly-pipeline-phase2.md.',
+    statements: (sql) => [
+      sql`SET LOCAL lock_timeout = '5s'`,
+      sql`
+        ALTER TABLE lottery_finder_fires
+          ADD COLUMN IF NOT EXISTS outcome_tape_version SMALLINT,
+          DROP CONSTRAINT IF EXISTS lottery_finder_fires_outcome_tape_version_chk,
+          ADD CONSTRAINT lottery_finder_fires_outcome_tape_version_chk CHECK (
+            outcome_tape_version IS NULL OR outcome_tape_version > 0
+          ) NOT VALID
+      `,
+      sql`
+        ALTER TABLE silent_boom_alerts
+          ADD COLUMN IF NOT EXISTS outcome_tape_version SMALLINT,
+          DROP CONSTRAINT IF EXISTS silent_boom_alerts_outcome_tape_version_chk,
+          ADD CONSTRAINT silent_boom_alerts_outcome_tape_version_chk CHECK (
+            outcome_tape_version IS NULL OR outcome_tape_version > 0
+          ) NOT VALID
+      `,
+    ],
+  },
 ];
