@@ -235,10 +235,10 @@ def fetch_unenriched(
     Standard mode: the select, 'pending' by default (enriched_at IS NULL, the
     nightly flow).
     Backfill mode: rows with realized_trail30_10_pct IS NULL (one-shot
-    pickup after migration #150 lands — rows previously enriched get
-    re-touched and the UPDATE re-writes all 7 outcome columns; peak /
-    mtp / r30 / r60 / r120 / eod recompute identically from parquet so
-    the only material change is a fresh enriched_at = NOW() timestamp).
+    pickup after migration #150 lands, for rows enriched before it). The
+    select only picks the rows; the write follows the source's rule, so
+    Bot-EOD skips a row that already holds a peak and the Full Tape replaces
+    it (see the module docstring).
     It has no select of its own, so only 'pending' goes with it.
     """
     if backfill_mode and select != 'pending':
