@@ -1,11 +1,16 @@
 """Provenance, selection and conditional writes in enrich_lottery_outcomes.py.
 
 The live Vercel enrich cron writes the same lottery_finder_fires rows, so
-every write the script makes is conditional (it only fills a row nobody has
-filled) and tagged with where it came from (outcome_source / inversion_source
-plus a version), and the set of work must shrink to zero: a fire the tape
-cannot price is tagged once, a fire whose net flow does not exist yet is left
-alone and not selected until it does.
+every write the script makes is conditional and tagged with where it came from
+(outcome_source / inversion_source plus a version), and the set of work must
+shrink to zero: a fire the tape cannot price is examined once, a fire whose
+net flow does not exist yet is left alone and not selected until it does.
+
+The Full Tape has the final say over outcomes (owner, 2026-11-06): it replaces
+every outcome it can price that it has not examined (outcome_tape_version IS
+NULL), crons' and untagged history included, and keeps another writer's value
+for a fire it cannot price. The Bot-EOD archive only fills: it never replaces
+a value and never sets the marker.
 
 Neon is faked at the psycopg2 boundary (connect_with_retry, execute_values,
 the cursor), as in test_enrich_missing_archive.py. The two parquet layouts of
@@ -43,9 +48,39 @@ QQQ = 'QQQ260722C00500000'  # priced; no net-flow rows exist for it
 
 PENDING = 'enriched_at IS NULL'
 EMPTY = 'enriched_at IS NOT NULL AND peak_ceiling_pct IS NULL AND outcome_source IS NULL'
-ALL = 'peak_ceiling_pct IS NULL AND outcome_source IS NULL'
+ALL = 'peak_ceiling_pct IS NULL AND outcome_source IS NULL'  # bot_eod: fill only
+ALL_TAPE = 'outcome_tape_version IS NULL'  # fulltape: not yet examined
 INVERSION_WORK = 'realized_flow_inversion_pct IS NULL AND inversion_source IS NULL'
+# The module default source is bot_eod.
 PREDICATES = {'pending': PENDING, 'empty': EMPTY, 'all': ALL}
+PREDICATES_BY_SOURCE = {
+    'bot_eod': PREDICATES,
+    'fulltape': {**PREDICATES, 'all': ALL_TAPE},
+}
+
+# The fulltape stamp for fires the tape cannot price. It decides per row, from
+# the row's current peak_ceiling_pct, so a value written after our SELECT is
+# kept: the realized columns are never in the SET, and a row with an outcome
+# gets only the marker.
+TAPE_STAMP = (
+    'UPDATE lottery_finder_fires AS f '
+    'SET outcome_source = CASE WHEN f.peak_ceiling_pct IS NULL '
+    'THEN %s::text ELSE f.outcome_source END, '
+    'outcome_version = CASE WHEN f.peak_ceiling_pct IS NULL '
+    'THEN %s::smallint ELSE f.outcome_version END, '
+    'enriched_at = CASE WHEN f.peak_ceiling_pct IS NULL '
+    'THEN NOW() ELSE f.enriched_at END, '
+    'outcome_tape_version = %s::smallint '
+    'WHERE f.id = ANY(%s::bigint[]) AND f.outcome_tape_version IS NULL '
+    'RETURNING f.peak_ceiling_pct IS NOT NULL AS had_outcome'
+)
+# The bot_eod stamp is Task 3's, unchanged.
+FILL_STAMP = (
+    'UPDATE lottery_finder_fires SET enriched_at = NOW(), '
+    'outcome_source = %s, outcome_version = %s '
+    'WHERE id = ANY(%s::bigint[]) '
+    'AND peak_ceiling_pct IS NULL AND outcome_source IS NULL'
+)
 
 
 def minute(m: int) -> datetime:
@@ -140,9 +175,10 @@ def write_tape(directory: Path, parquet_format: str, layout: str = 'new') -> Pat
 # ── fire rows and net flow, as the SELECTs return them ─────────
 
 
-def fire_row(fire_id: int, chain: str) -> tuple:
-    # entry_price is NUMERIC: psycopg2 hands back a Decimal.
-    return (fire_id, chain, ENTRY, Decimal('1.0000'))
+def fire_row(fire_id: int, chain: str, had_outcome: bool = False) -> tuple:
+    # entry_price is NUMERIC: psycopg2 hands back a Decimal. The fifth column
+    # (peak_ceiling_pct IS NOT NULL) is selected for the fulltape source only.
+    return (fire_id, chain, ENTRY, Decimal('1.0000'), had_outcome)
 
 
 def flow_fire_row(
@@ -193,7 +229,10 @@ class FakeCursor:
         self.db.executed.append((sql, params))
         self.db.maybe_fail(sql)
         self.rows = self.db.answer(sql, params)
-        self.rowcount = self.db.rowcount_for(sql, params)
+        if sql.startswith('UPDATE') and 'RETURNING' in sql:
+            self.rowcount = len(self.rows)
+        else:
+            self.rowcount = self.db.rowcount_for(sql, params)
 
     def fetchall(self) -> list:
         return self.rows
@@ -226,6 +265,10 @@ class FakeDb:
         # What an UPDATE ... RETURNING hands back, as a function of the rows
         # sent; None means every row. A cron that got there first shrinks it.
         self.returning = None
+        # What a tag-only UPDATE ... RETURNING hands back, as a function of the
+        # ids sent; None means one (had_outcome,) row per id, true for the
+        # fires the SELECT served with an outcome.
+        self.stamp_returning = None
         # What a plain UPDATE reports as rowcount; None means every id sent.
         self.stamp_rowcount: int | None = None
         # A statement (normalized text) this returns True for is recorded and
@@ -259,7 +302,16 @@ class FakeDb:
             return self.flow_fires
         if 'GROUP BY underlying_symbol' in sql:
             return self.refit_rows
+        if sql.startswith('UPDATE') and 'RETURNING' in sql:
+            ids = params[-1]
+            if self.stamp_returning is not None:
+                return self.stamp_returning(ids)
+            had = self.had_outcome_ids()
+            return [(i in had,) for i in ids]
         return []
+
+    def had_outcome_ids(self) -> set[int]:
+        return {r[0] for r in self.fires if len(r) > 4 and r[4]}
 
     def rowcount_for(self, sql: str, params: tuple | None) -> int:
         if sql.startswith('UPDATE') and params:
@@ -274,6 +326,10 @@ class FakeDb:
             return None
         if self.returning is not None:
             return self.returning(rows)
+        if 'prior.peak_ceiling_pct IS NOT NULL' in sql:
+            # The tape's priced UPDATE also returns the row's prior outcome.
+            had = self.had_outcome_ids()
+            return [(r[0], r[0] in had) for r in rows]
         return [(r[0],) for r in rows]
 
     # what the tests ask of it
@@ -289,6 +345,16 @@ class FakeDb:
             (sql, params)
             for sql, params in self.executed
             if sql.startswith('UPDATE') and f'{column} = %s' in sql
+        ]
+
+    def outcome_stamps(self) -> list[tuple[str, tuple]]:
+        """The unpriced-fire stamps, whichever source wrote them: the UPDATEs
+        that touch enriched_at through the cursor (priced rows go through
+        execute_values)."""
+        return [
+            (sql, params)
+            for sql, params in self.executed
+            if sql.startswith('UPDATE') and 'enriched_at' in sql
         ]
 
     def updates_run(self) -> list[str]:
@@ -361,22 +427,75 @@ def test_configure_archive_sets_dir_pattern_and_tag(
 # ── selection ──────────────────────────────────────────────────
 
 
+@pytest.fixture
+def as_source(archive_globals: None, monkeypatch: pytest.MonkeyPatch):
+    """Switch the module's source tag for one test; archive_globals puts it back."""
+
+    def switch(source: str) -> None:
+        monkeypatch.setattr(lottery, 'SOURCE_TAG', source)
+
+    return switch
+
+
+@pytest.mark.parametrize('source', PREDICATES_BY_SOURCE)
 @pytest.mark.parametrize('select', PREDICATES)
-def test_select_predicates(select: str) -> None:
+def test_select_predicates(select: str, source: str, as_source) -> None:
+    as_source(source)
+    expected = PREDICATES_BY_SOURCE[source][select]
     db = FakeDb(work_dates=[DAY])
     lottery.fetch_unenriched(db, DAY, select)
     fetch_sql = db.executed[-1][0]
     where = fetch_sql.split('WHERE date = %s AND ', 1)[1].split(' ORDER BY')[0]
-    assert where == PREDICATES[select]
+    assert where == expected
 
     lottery.list_work_dates(db, select)
     dates_sql = db.executed[-1][0]
-    assert f'WHERE {PREDICATES[select]}' in dates_sql
+    assert f'WHERE {expected}' in dates_sql
     assert dates_sql.endswith('ORDER BY 1')
     # Only 'all' also looks for inversion work (and the flow that makes it doable).
     has_inversion = INVERSION_WORK in dates_sql
     assert has_inversion is (select == 'all')
     assert ('net_flow_per_ticker_history' in dates_sql) is (select == 'all')
+
+
+@pytest.mark.parametrize('source', PREDICATES_BY_SOURCE)
+def test_all_work_follows_the_source(source: str, as_source) -> None:
+    as_source(source)
+    db = FakeDb()
+    lottery.fetch_unenriched(db, DAY, 'all')
+    fetch_sql = db.executed[-1][0]
+    lottery.list_work_dates(db, 'all')
+    dates_sql = db.executed[-1][0]
+    # The outcome half of the date list: between the subquery's WHERE and its UNION.
+    outcome_half = dates_sql.split(
+        'SELECT date FROM lottery_finder_fires WHERE ', 1
+    )[1].split(' UNION ALL')[0]
+
+    if source == 'fulltape':
+        # The marker alone: every row the tape has not examined, whatever
+        # another writer left in it.
+        assert outcome_half == ALL_TAPE
+        for sql in (fetch_sql, dates_sql):
+            assert 'peak_ceiling_pct IS NULL' not in sql
+            assert 'outcome_source' not in sql
+    else:
+        assert outcome_half == ALL
+        for sql in (fetch_sql, dates_sql):
+            assert 'outcome_tape_version' not in sql
+
+    # 'pending' and 'empty' do not depend on the source.
+    for select in ('pending', 'empty'):
+        lottery.fetch_unenriched(db, DAY, select)
+        assert PREDICATES[select] in db.executed[-1][0]
+        assert 'outcome_tape_version' not in db.executed[-1][0]
+        lottery.list_work_dates(db, select)
+        assert f'WHERE {PREDICATES[select]}' in db.executed[-1][0]
+        assert 'outcome_tape_version' not in db.executed[-1][0]
+
+
+def test_work_predicates_cover_every_archive_source() -> None:
+    # A source with no 'all' predicate would fail at the first run.
+    assert set(lottery.OUTCOME_WORK_ALL) == set(lottery.ARCHIVE_SOURCES.values())
 
 
 def test_fetch_unenriched_defaults_to_pending() -> None:
@@ -393,7 +512,8 @@ def test_enrich_one_date_selects_what_it_is_told(
 
     lottery.enrich_one_date(db, DAY, select=select)
 
-    assert f'WHERE date = %s AND {PREDICATES[select]} ORDER BY' in db.executed[0][0]
+    expected = PREDICATES_BY_SOURCE['fulltape'][select]  # the fixture's source
+    assert f'WHERE date = %s AND {expected} ORDER BY' in db.executed[0][0]
 
 
 def test_flow_unfilled_excludes_tagged_rows() -> None:
@@ -435,12 +555,25 @@ def test_list_work_dates_without_bounds_has_no_parameters() -> None:
 # ── the outcome pass: conditional, tagged, counted from the DB ──
 
 
+# The guard each source's priced UPDATE carries, and what it returns.
+TAPE_UPDATE_TAIL = (
+    'WHERE f.id = v.id AND prior.id = f.id AND f.outcome_tape_version IS NULL '
+    'RETURNING f.id, prior.peak_ceiling_pct IS NOT NULL AS had_outcome'
+)
+FILL_UPDATE_TAIL = (
+    'WHERE f.id = v.id AND f.peak_ceiling_pct IS NULL AND f.outcome_source IS NULL '
+    'RETURNING f.id'
+)
+
+
 @pytest.mark.parametrize(
-    ('parquet_format', 'source'), [('fulltape', 'fulltape'), ('trades', 'bot_eod')]
+    ('parquet_format', 'source', 'tail'),
+    [('fulltape', 'fulltape', TAPE_UPDATE_TAIL), ('trades', 'bot_eod', FILL_UPDATE_TAIL)],
 )
 def test_outcome_update_is_conditional_and_tagged(
     parquet_format: str,
     source: str,
+    tail: str,
     archive: Path,
     archive_globals: None,
     make_db,
@@ -452,10 +585,10 @@ def test_outcome_update_is_conditional_and_tagged(
     result = lottery.enrich_one_date(db, DAY)
 
     (write,) = db.outcome_writes()
-    assert 'WHERE f.id = v.id AND f.peak_ceiling_pct IS NULL AND f.outcome_source IS NULL' in write.sql
-    assert write.sql.endswith('RETURNING f.id')
+    assert write.sql.endswith(tail)
     assert 'outcome_source = v.source' in write.sql
     assert 'outcome_version = v.version' in write.sql
+    assert 'enriched_at = NOW()' in write.sql
     assert write.template == '(%s::bigint, %s, %s, %s, %s, %s, %s, %s::text, %s::smallint)'
     assert write.kwargs == {'page_size': 500, 'fetch': True}
     assert [row[-2:] for row in write.rows] == [(source, 1)]
@@ -464,12 +597,38 @@ def test_outcome_update_is_conditional_and_tagged(
     assert row[0] == 1
     assert row[5] == pytest.approx(100.0)
     assert result.outcomes_written == 1
+    assert result.outcomes_replaced == 0  # nothing was there to replace
+
+
+def test_tape_replaces_a_cron_outcome(fulltape: Path, make_db) -> None:
+    # The fire already holds a value another writer left (had_outcome).
+    db = make_db(fires=[fire_row(1, TSLA, had_outcome=True)])
+
+    result = lottery.enrich_one_date(db, DAY, select='all')
+
+    (write,) = db.outcome_writes()
+    # The guard is the marker alone: no test of the prior outcome or its tag.
+    assert write.sql.endswith(TAPE_UPDATE_TAIL)
+    where = write.sql.split(' WHERE ', 1)[1]
+    assert 'peak_ceiling_pct IS NULL' not in where
+    assert 'outcome_source' not in where
+    # It sets the tag, the version and the marker with the six values.
+    assert 'outcome_source = v.source' in write.sql
+    assert 'outcome_version = v.version' in write.sql
+    assert 'enriched_at = NOW()' in write.sql
+    assert 'outcome_tape_version = v.version' in write.sql
+    assert 'lottery_finder_fires AS prior' in write.sql
+    assert [row[-2:] for row in write.rows] == [('fulltape', 1)]
+    assert result.outcomes_written == 1
+    assert result.outcomes_replaced == 1
+    assert result.stamped_no_outcome == 0
+    assert result.outcomes_kept == 0
 
 
 def test_written_count_comes_from_returning(fulltape: Path, make_db) -> None:
     db = make_db(fires=[fire_row(i, TSLA) for i in (1, 2, 3)])
-    # The cron filled fire 3 between our SELECT and our UPDATE.
-    db.returning = lambda rows: [(r[0],) for r in rows if r[0] != 3]
+    # Another tape run examined fire 3 between our SELECT and our UPDATE.
+    db.returning = lambda rows: [(r[0], False) for r in rows if r[0] != 3]
 
     result = lottery.enrich_one_date(db, DAY)
 
@@ -479,12 +638,37 @@ def test_written_count_comes_from_returning(fulltape: Path, make_db) -> None:
     assert result.stamped_no_outcome == 0
 
 
-def test_update_fires_returns_the_returned_row_count(make_db) -> None:
+def test_replaced_count_comes_from_returning(fulltape: Path, make_db) -> None:
+    db = make_db(fires=[fire_row(i, TSLA, had_outcome=True) for i in (1, 2, 3)])
+    # Another tape run examined fire 3 first, so the guard dropped it.
+    db.returning = lambda rows: [(r[0], True) for r in rows if r[0] != 3]
+
+    result = lottery.enrich_one_date(db, DAY, select='all')
+
+    assert result.fires_selected == 3
+    assert result.outcomes_written == 2
+    assert result.outcomes_replaced == 2  # not the three the fetch saw
+
+
+def test_replaced_count_follows_the_row_not_the_fetch(fulltape: Path, make_db) -> None:
+    # Fire 1 had no outcome at the SELECT but the cron wrote one before our
+    # UPDATE; fire 2 is the other way round. The statement's own view of the
+    # prior row decides.
+    db = make_db(fires=[fire_row(1, TSLA), fire_row(2, QQQ, had_outcome=True)])
+    db.returning = lambda rows: [(1, True), (2, False)]
+
+    result = lottery.enrich_one_date(db, DAY, select='all')
+
+    assert result.outcomes_written == 2
+    assert result.outcomes_replaced == 1
+
+
+def test_update_fires_returns_written_and_replaced(make_db) -> None:
     db = make_db()
-    db.returning = lambda rows: [(rows[0][0],)]
+    db.returning = lambda rows: [(rows[0][0], True), (rows[1][0], False)]
     updates = [(i, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0) for i in (7, 8, 9)]
-    assert lottery.update_fires(db, updates, 'fulltape') == 1
-    assert lottery.update_fires(db, [], 'fulltape') == 0
+    assert lottery.update_fires(db, updates, 'fulltape') == (2, 1)
+    assert lottery.update_fires(db, [], 'fulltape') == (0, 0)
     assert len(db.values_writes) == 1
 
 
@@ -494,47 +678,146 @@ def test_unpriced_fires_are_tagged_once(fulltape: Path, make_db) -> None:
 
     result = lottery.enrich_one_date(db, DAY)
 
-    stamps = db.stamps('outcome_source')
+    stamps = db.outcome_stamps()
     assert len(stamps) == 1
-    assert stamps[0][1] == ('fulltape', 1, [2, 3])
+    # (source, version, marker, ids): one statement for both fires.
+    assert stamps[0][1] == ('fulltape', 1, 1, [2, 3])
     assert result.fires_selected == 3
     assert result.outcomes_written == 1
     assert result.stamped_no_outcome == 2
+    assert result.outcomes_kept == 0
     assert result.fires_written == 3
     assert [row[0] for write in db.outcome_writes() for row in write.rows] == [1]
 
 
-def test_stamp_no_outcome_is_conditional_and_chunked(make_db) -> None:
+def test_unpriced_fire_with_an_outcome_keeps_it(fulltape: Path, make_db) -> None:
+    # AAPL's only print is before the entry, but the fire holds a cron value.
+    db = make_db(fires=[fire_row(2, AAPL, had_outcome=True)])
+    db.stamp_returning = lambda ids: [(True,) for _ in ids]  # the row kept its outcome
+
+    result = lottery.enrich_one_date(db, DAY, select='all')
+
+    ((sql, params),) = db.outcome_stamps()
+    # The per-row branch is in the statement: with an outcome (peak_ceiling_pct
+    # NOT NULL) only the marker is set. The six realized columns are not in the
+    # SET at all, and the tag, the version and enriched_at stay as they were.
+    assert sql == TAPE_STAMP
+    set_clause = sql.split(' SET ', 1)[1].split(' WHERE ', 1)[0]
+    for column in ('realized_', 'peak_ceiling_pct =', 'minutes_to_peak'):
+        assert column not in set_clause
+    assert set_clause.count('ELSE f.outcome_source END') == 1
+    assert set_clause.count('ELSE f.outcome_version END') == 1
+    assert set_clause.count('ELSE f.enriched_at END') == 1
+    assert params == ('fulltape', 1, 1, [2])
+    assert result.outcomes_kept == 1
+    assert result.stamped_no_outcome == 0
+    assert result.outcomes_written == 0
+    assert result.fires_written == 0
+
+
+def test_unpriced_fire_without_an_outcome_is_tagged(fulltape: Path, make_db) -> None:
+    db = make_db(fires=[fire_row(2, AAPL)])
+    db.stamp_returning = lambda ids: [(False,) for _ in ids]  # nothing was there
+
+    result = lottery.enrich_one_date(db, DAY, select='all')
+
+    ((sql, params),) = db.outcome_stamps()
+    # The same statement tags 'fulltape' and sets the marker on such a row.
+    assert sql == TAPE_STAMP
+    assert 'THEN %s::text ELSE f.outcome_source END' in sql
+    assert 'outcome_tape_version = %s::smallint' in sql
+    assert params == ('fulltape', 1, 1, [2])
+    assert result.stamped_no_outcome == 1
+    assert result.outcomes_kept == 0
+    assert result.fires_written == 1
+
+
+def test_kept_and_stamped_come_from_the_row_not_the_fetch(fulltape: Path, make_db) -> None:
+    # The fetch saw fire 2 without an outcome and fire 3 with one. By the time
+    # of the stamp the cron had written 2's too, so both rows keep an outcome.
+    # The statement's RETURNING, from the row itself, decides: counting from
+    # the fetch would give kept 1 and stamped 1.
+    db = make_db(fires=[fire_row(2, AAPL), fire_row(3, NVDA, had_outcome=True)])
+    db.stamp_returning = lambda ids: [(True,), (True,)]
+
+    result = lottery.enrich_one_date(db, DAY, select='all')
+
+    assert result.outcomes_kept == 2
+    assert result.stamped_no_outcome == 0
+    assert result.fires_written == 0
+
+
+def test_stamp_no_outcome_is_conditional_per_row_and_chunked(make_db) -> None:
     db = make_db()
     ids = list(range(1, 1002))
 
-    assert lottery.stamp_no_outcome(db, ids, 'bot_eod') == 1001
+    assert lottery.stamp_no_outcome(db, ids, 'fulltape') == (1001, 0)
 
-    sqls = {sql for sql, _ in db.executed}
-    assert sqls == {
-        'UPDATE lottery_finder_fires SET enriched_at = NOW(), '
-        'outcome_source = %s, outcome_version = %s '
-        'WHERE id = ANY(%s::bigint[]) '
-        'AND peak_ceiling_pct IS NULL AND outcome_source IS NULL'
-    }
+    assert {sql for sql, _ in db.executed} == {TAPE_STAMP}
+    assert [(p[0], p[1], p[2], len(p[3])) for _, p in db.executed] == [
+        ('fulltape', 1, 1, 500),
+        ('fulltape', 1, 1, 500),
+        ('fulltape', 1, 1, 1),
+    ]
+    assert lottery.stamp_no_outcome(db, [], 'fulltape') == (0, 0)
+    assert len(db.executed) == 3
+
+
+def test_bot_eod_stamp_is_conditional_and_chunked(make_db) -> None:
+    db = make_db()
+    ids = list(range(1, 1002))
+
+    assert lottery.stamp_no_outcome(db, ids, 'bot_eod') == (1001, 0)
+
+    assert {sql for sql, _ in db.executed} == {FILL_STAMP}
     assert [(p[0], p[1], len(p[2])) for _, p in db.executed] == [
         ('bot_eod', 1, 500),
         ('bot_eod', 1, 500),
         ('bot_eod', 1, 1),
     ]
-    assert lottery.stamp_no_outcome(db, [], 'bot_eod') == 0
+    assert lottery.stamp_no_outcome(db, [], 'bot_eod') == (0, 0)
     assert len(db.executed) == 3
 
 
-def test_stamp_count_comes_from_rowcount(
+def test_stamp_counts_come_from_what_the_database_returned(
     make_db, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    db = make_db()
-    db.stamp_rowcount = 1  # the cron already filled two of the three
-    assert lottery.stamp_no_outcome(db, [5, 6, 7], 'fulltape') == 1
+    # fulltape: one RETURNING row per row examined. Another tape run took 6.
+    tape = make_db()
+    tape.stamp_returning = lambda ids: [(True,), (False,)]
+    assert lottery.stamp_no_outcome(tape, [5, 6, 7], 'fulltape') == (1, 1)
+    # bot_eod: the statement's rowcount; the cron already filled two of three.
+    fill = make_db()
+    fill.stamp_rowcount = 1
+    assert lottery.stamp_no_outcome(fill, [5, 6, 7], 'bot_eod') == (1, 0)
     captured = capsys.readouterr()
     assert captured.err == ''
     assert 'WARN' not in captured.out
+
+
+def test_bot_eod_never_sets_the_marker_or_replaces(
+    archive: Path, archive_globals: None, make_db
+) -> None:
+    write_tape(archive, 'trades')
+    lottery.configure_archive(archive, 'trades')
+    # Both fires hold an outcome; fill-only never touches such a row.
+    db = make_db(
+        fires=[fire_row(1, TSLA, had_outcome=True), fire_row(2, AAPL, had_outcome=True)]
+    )
+
+    result = lottery.enrich_one_date(db, DAY, select='all')
+
+    statements = [sql for sql, _ in db.executed] + [w.sql for w in db.values_writes]
+    assert statements
+    assert not [s for s in statements if 'outcome_tape_version' in s]
+    (write,) = db.outcome_writes()
+    assert write.sql.endswith(FILL_UPDATE_TAIL)
+    assert 'prior' not in write.sql
+    ((stamp, params),) = db.outcome_stamps()
+    assert stamp == FILL_STAMP
+    assert params == ('bot_eod', 1, [2])
+    assert (result.outcomes_replaced, result.outcomes_kept) == (0, 0)
+    assert (result.outcomes_written, result.stamped_no_outcome) == (1, 1)
 
 
 # ── the flow-inversion pass ────────────────────────────────────
@@ -758,7 +1041,7 @@ def test_lottery_legacy_and_new_layouts_agree(
         outcomes[layout] = (
             [w.rows for w in db.outcome_writes()],
             [w.rows for w in db.flow_writes()],
-            db.stamps('outcome_source'),
+            db.outcome_stamps(),
             db.stamps('inversion_source'),
             result,
         )
@@ -803,6 +1086,77 @@ def test_dry_run_writes_nothing(tmp_path: Path, archive_globals: None, make_db) 
     assert result.flow_written == 1
 
 
+def test_dry_run_counts_would_replace_and_would_keep(fulltape: Path, make_db) -> None:
+    # One priced and one unpriced fire, both holding an outcome the feed wrote.
+    db = make_db(
+        fires=[fire_row(1, TSLA, had_outcome=True), fire_row(2, AAPL, had_outcome=True)]
+    )
+
+    result = lottery.enrich_one_date(db, DAY, select='all', dry_run=True)
+
+    # The counts come from the fetch (had_outcome), and nothing is written.
+    assert result.outcomes_written == 1
+    assert result.outcomes_replaced == 1
+    assert result.outcomes_kept == 1
+    assert result.stamped_no_outcome == 0
+    assert db.values_writes == []
+    assert db.updates_run() == []
+    assert db.commits == 0
+    # A wet run over the same rows reports the same counts.
+    wet = make_db(
+        fires=[fire_row(1, TSLA, had_outcome=True), fire_row(2, AAPL, had_outcome=True)]
+    )
+    assert lottery.enrich_one_date(wet, DAY, select='all') == result
+
+
+def test_day_log_and_run_summary_report_replaced_and_kept(
+    fulltape: Path, make_db, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 1: priced over an outcome; 2: unpriced, keeps its outcome; 3: unpriced, none.
+    db = make_db(
+        fires=[
+            fire_row(1, TSLA, had_outcome=True),
+            fire_row(2, AAPL, had_outcome=True),
+            fire_row(3, NVDA),
+        ]
+    )
+
+    day = lottery.enrich_one_date(db, DAY, select='all')
+
+    out = capsys.readouterr().out
+    assert (
+        f'[enrich] {DAY} DB updated: 1 rows (1 replaced a prior outcome; '
+        '+ 1 tagged with no outcome, 1 unpriced kept their outcome)'
+    ) in out
+
+    # The summary adds the days up, and leaves out a day skipped for its archive.
+    lottery.print_run_summary(
+        {
+            DAY: day,
+            '2026-07-23': lottery.DayResult(outcomes_replaced=2, outcomes_kept=3),
+            '2026-07-24': lottery.DayResult(
+                archive_missing=True, outcomes_replaced=9, outcomes_kept=9
+            ),
+        }
+    )
+    assert (
+        '[enrich] summary: 3 outcome(s) replaced a prior outcome, '
+        '4 unpriced fire(s) kept theirs'
+    ) in capsys.readouterr().out
+
+
+def test_dry_run_counts_unpriced_fires_without_an_outcome_as_tagged(
+    fulltape: Path, make_db
+) -> None:
+    db = make_db(fires=[fire_row(2, AAPL), fire_row(3, NVDA, had_outcome=True)])
+
+    result = lottery.enrich_one_date(db, DAY, select='all', dry_run=True)
+
+    assert result.stamped_no_outcome == 1
+    assert result.outcomes_kept == 1
+    assert db.commits == 0
+
+
 # ── a write that rejects ───────────────────────────────────────
 
 # (fails_on: text that identifies the statement the database drops,
@@ -813,7 +1167,7 @@ WRITE_FAULTS = [
     pytest.param(
         'SET realized_trail30_10_pct',
         lambda db: [
-            *db.stamps('outcome_source'),
+            *db.outcome_stamps(),
             *db.flow_reads(),
             *db.flow_writes(),
             *db.stamps('inversion_source'),
@@ -822,7 +1176,7 @@ WRITE_FAULTS = [
         id='outcome-values',
     ),
     pytest.param(
-        'outcome_source = %s',
+        'outcome_tape_version = %s',
         lambda db: [*db.flow_reads(), *db.flow_writes(), *db.stamps('inversion_source')],
         1,
         id='outcome-stamp',
@@ -949,6 +1303,6 @@ def test_main_runs_pending_dates_tagged_by_the_archive(
     assert f'WHERE {PENDING} ORDER BY 1' in dates_sql
     assert INVERSION_WORK not in dates_sql
     assert [row[-2:] for w in db.outcome_writes() for row in w.rows] == [('fulltape', 1)]
-    assert db.stamps('outcome_source')[0][1] == ('fulltape', 1, [2])
+    assert db.outcome_stamps()[0][1] == ('fulltape', 1, 1, [2])
     # WRITE_DB=1 no longer reaches the live ticker stats.
     assert not any('lottery_ticker_stats' in sql for sql, _ in db.executed)

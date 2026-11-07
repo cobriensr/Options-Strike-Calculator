@@ -149,6 +149,7 @@ The owner asked for the whole process: downloading the file, saving it, uploadin
 - **Enrichment:**
   - **Every outcome computation runs on the backfill,** pass 2 included, with every print counted.
   - **Before the backfill writes anything, each outcome row records how it was made,** for example `outcome_source` ∈ {`fulltape`, `ws_cron`} plus a version. A later filter or a training-set choice can then separate tape-built rows from cron-built ones without re-running.
+  - **The full tape has the final say (owner, 2026-11-06).** The websocket feed drops and can't replay, so a cron outcome may be missing prints. The nightly re-derives every outcome the full tape has not yet examined, the crons' and untagged history included, and replaces it when the tape can price the fire. When it can't, another writer's value stays ("keep the feed's values for now") and the row is marked examined (`outcome_tape_version`), so it is not picked again. The crons write only fires nobody has enriched, so they never overwrite the tape.
   - **Pass 3 never writes live `lottery_ticker_stats`;** it honours the existing shadow hold.
 - **Research outputs:**
   - **All of them run nightly** (the owner asked for the whole thing).

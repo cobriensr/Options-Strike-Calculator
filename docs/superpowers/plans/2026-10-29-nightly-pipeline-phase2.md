@@ -274,9 +274,9 @@ class TapeReader:                                    # single-threaded: one per 
   | `outcome_version`, `inversion_version` | SMALLINT > 0, NOT NULL exactly when the source is | `1` everywhere in this phase |
 
   - A NULL source means the row was written before this migration. For `realized_flow_inversion_pct` that is a legacy value: parquet-built (January to June) or the fixed cron's last four sessions. It tells those apart from tape-written values.
-  - A tape writer also tags the rows it tried but could not price, leaving their outcomes NULL, so "outcome NULL with a source" means tried, not pending.
+  - A tape writer also tags the rows it tried but could not price, leaving their outcomes NULL, so "outcome NULL with a source" means tried, not pending. When such a row already holds another writer's outcome, the full tape keeps it and sets only `outcome_tape_version` (owner, 2026-11-06: "keep the feed's values for now"); `ws_cron` with that marker means feed values the tape could not confirm.
 - **The work predicates** (written once, in the scripts):
-  - **outcome work:** `peak_ceiling_pct IS NULL AND outcome_source IS NULL`;
+  - **outcome work (`--select all`, the nightly's):** for `fulltape`, `outcome_tape_version IS NULL` (migration #202, Task 1b): the full tape has the final say (owner, 2026-11-06) and re-derives cron-written and untagged outcomes, history included, never one it examined. For `bot_eod`, `peak_ceiling_pct IS NULL AND outcome_source IS NULL` (fill only). The crons write only `enriched_at IS NULL`, so they never replace the tape;
   - **inversion work (lottery):** `realized_flow_inversion_pct IS NULL AND inversion_source IS NULL`, and matched-side net flow exists for the ticker's UTC day;
   - **bounds:** `date BETWEEN TAPE_START AND last_session`, processed newest first.
 - **Every print in the day's tape counts** (owner, 10-28: no post-close cutoff). The scripts' reads keep their current filters: canceled prints and prices ≤ 0 are dropped, and nothing else.
@@ -295,9 +295,10 @@ class TapeReader:                                    # single-threaded: one per 
    Pinned by:
    - `test_lottery_legacy_and_new_layouts_agree` (Task 3);
    - `test_sb_legacy_and_new_layouts_agree` (Task 4).
-2. **The live cron and the job writing the same fire.** If the cron writes a fire between the job's SELECT and its UPDATE, or the other way round, nothing is overwritten and the counts stay honest.
+2. **The live cron and the job writing the same fire.** If the cron writes a fire between the job's SELECT and its UPDATE, the job still replaces it when the tape prices it (the tape has the final say), and keeps it when the tape can't (the stamp decides from the row, not the fetch). If the job writes first, the cron's `enriched_at IS NULL` guard makes its UPDATE a no-op. A second tape run on the same fire changes nothing. Every count comes from what the database returned.
    Pinned by:
    - `test_written_count_comes_from_returning` (Tasks 3, 4);
+   - `test_tape_replaces_a_cron_outcome` and `test_unpriced_fire_with_an_outcome_keeps_it` (Task 3c);
    - the conditional-predicate assertions (Tasks 3, 4, 7).
 3. **The work set must shrink to zero.** Otherwise one day is re-downloaded every night forever. A fire the tape cannot price (no chain, no print at or after entry) is tagged once. A fire whose net flow is missing is left for later and not selected until the flow exists.
    Pinned by:
@@ -325,7 +326,7 @@ class TapeReader:                                    # single-threaded: one per 
 
 **Interfaces:**
 - Produces: migration `#N`, where N is max id + 1 on origin/main. That is 201 (the top id is 200 at `06cad43f`, 2026-11-06).
-  - **Ordering with phase 4:** this phase owns 201. Phase 4's migration (its Task 3) is 202 and is pushed only after this task is on origin/main. Ids are only a convention, so re-read the top id just before the push. If another session took 201, use the next free id and tell the main session, so phase 4's number follows.
+  - **Ordering with phase 4:** this phase owns 201 and 202 (Task 1b). Phase 4's migration (its Task 3) is 203 and is pushed only after this task is on origin/main. Ids are only a convention, so re-read the top id just before the push. If another session took 201, use the next free id and tell the main session, so phase 4's number follows.
   - `lottery_finder_fires` gains `outcome_source TEXT`, `outcome_version SMALLINT`, `inversion_source TEXT` and `inversion_version SMALLINT`, plus checks `lottery_finder_fires_outcome_source_chk` and `lottery_finder_fires_inversion_source_chk`.
   - `silent_boom_alerts` gains `outcome_source TEXT` and `outcome_version SMALLINT`, plus check `silent_boom_alerts_outcome_source_chk`.
   - Each check is `(src IN (<vocabulary>) AND ver > 0) OR (src IS NULL AND ver IS NULL)`, added `NOT VALID` (no scan of existing rows).
@@ -361,6 +362,10 @@ class TapeReader:                                    # single-threaded: one per 
 - [ ] **Step 4:** Run `npx vitest run api/__tests__/outcome-provenance-pglite.test.ts api/__tests__/db.test.ts`. Expected: PASS.
 - [ ] **Step 5:** Run `npm run review`. Expected: green.
 - [ ] **Step 6:** Commit `feat(db): Record how each fire's outcomes were made`, then push (P1). Check the top id on origin/main first (see Interfaces).
+
+### Task 1b: Migration #202, the Full Tape examination marker (added 2026-11-06, owner decision)
+
+`lottery_finder_fires` and `silent_boom_alerts` gain `outcome_tape_version SMALLINT` (nullable; CHECK `IS NULL OR > 0`, NOT VALID; no default, index or backfill): the version of the Full Tape outcome pass that examined the row. The fulltape writer sets it on every row it examines; bot_eod and the crons never do. It lets the tape keep a feed value it can't price without re-reading that day every night. Tested on PGlite in `outcome-provenance-pglite.test.ts`; `db.test.ts` counts updated. Phase 4's migration moves to #203. Pushed as soon as it passes (P1).
 
 ### Task 2: Shared tape reader
 
@@ -602,7 +607,7 @@ class TapeReader:                                    # single-threaded: one per 
 
 **Skills:** `postgres-pro`, `r2-storage`. Owner answer 1 (2026-11-06) governs Step 1.
 
-- [ ] **Step 1:** Read `SELECT max(id) FROM schema_migrations` (read-only), and list the ids on main that prod lacks. `scripts/migrate-db.ts` applies every pending id, so run Step 2 only when the pending ids are ours alone (Task 1's). If another session's migration is pending, wait for that session to apply it; don't apply it. Tell the owner the pending ids either way.
+- [ ] **Step 1:** Read `SELECT max(id) FROM schema_migrations` (read-only), and list the ids on main that prod lacks. `scripts/migrate-db.ts` applies every pending id, so run Step 2 only when the pending ids are ours alone (Task 1's). If another session's migration is pending, wait for that session to apply it; don't apply it. Tell the owner the pending ids either way. Expected: #201 and #202, both this phase's.
 - [ ] **Step 2:** In the 16:05–16:35 CT window (the enrich crons start 16:40 CT), from a worktree at the origin/main commit that contains Task 1, run `node --env-file=<repo>/.env.local --import tsx scripts/migrate-db.ts`. Verify:
   - `schema_migrations` has N;
   - the six columns exist;
@@ -612,6 +617,7 @@ class TapeReader:                                    # single-threaded: one per 
   - the same two runs with `scripts/enrich_silent_boom_outcomes.py`.
 
   Pass, for each table and day: priced share `outcomes_written / fires_selected` (or `alerts_selected`) ≥ 0.98. The history floor is 0.9926. Also:
+  - record `outcomes_replaced` and `outcomes_kept` for each table and day, and report `kept` to the owner (feed values the tape could not price, kept "for now", owner 2026-11-06). No gate;
   - record the inversion counts (no gate);
   - record seconds per day (fetch, then each table);
   - `grep -c InsecureRequestWarning` on the run log = 0.
@@ -624,13 +630,14 @@ class TapeReader:                                    # single-threaded: one per 
     SELECT count(*) FILTER (WHERE enriched_at IS NULL) AS pending,
            count(*) FILTER (WHERE enriched_at IS NOT NULL AND peak_ceiling_pct IS NULL) AS done_empty,
            count(*) FILTER (WHERE peak_ceiling_pct IS NOT NULL) AS with_outcome,
-           count(*) FILTER (WHERE outcome_source = 'fulltape') AS tape_tagged
+           count(*) FILTER (WHERE outcome_source = 'fulltape') AS tape_tagged,
+           count(*) FILTER (WHERE outcome_tape_version IS NOT NULL) AS tape_examined
     FROM lottery_finder_fires WHERE date = '2026-10-20';
     ```
 
     Run the same on `silent_boom_alerts`, and record `SELECT max(updated_at) FROM lottery_ticker_stats`.
   - **Then** run both scripts with `--r2 --select all --date 2026-10-20`, without `--dry-run`.
-  - **After:** expect lottery pending 3,693 → 0 and `with_outcome` ≥ 0.98 × 3,693; silent boom done-but-empty 64 → `with_outcome` ≥ 63. `lottery_ticker_stats.max(updated_at)` must be unchanged.
+  - **After:** expect every row of the day to have `outcome_tape_version` set on both tables (the tape has the final say over every row it has not examined), and `with_outcome` ≥ 0.98 × the row count. Record `outcomes_replaced` and `outcomes_kept`. `lottery_ticker_stats.max(updated_at)` must be unchanged.
   - **Re-run the dry-run** on 10-20: 0 outcome rows selected (idempotent).
 - [ ] **Step 5: Cron inversion check** (moved here from phase 4's Task 10 Step 1; read-only; a scratch script under `docs/tmp/`). The tape inversion pass now exists (Task 3) and the cron's pass is still in place. The ×100 fix shipped on 11-05 and the 111,645 provenance rows were reset on 11-06 (Facts), so the only cron-written values left are the fixed cron's, on the last four sessions (`realized_flow_inversion_pct IS NOT NULL AND inversion_source IS NULL`). Check them against the tape before Task 7 deletes the pass:
   - pick the newest landed session, among the last four, that has such fires (older values are parquet-built, not the cron's). If none does (the cron's slots come after the close and the tape lands the next morning), wait for the next landing and repeat;

@@ -259,7 +259,7 @@ Nightly constants (`nightly/src/constants.py`):
 - **DB writes:** ≤ 500 rows per statement (R5); conditional, or compare-and-set on the pointer (R6). A promotion is exactly one transaction.
 - **Owner go-ahead before running anything that changes live scores, tiers or labels** (memory `no-silent-methodology-changes`). That is Task 23, marked **[OWNER GO-AHEAD]**. `PROMOTION_ENABLED` ships `False`. Two more steps need the owner's approval at execution time because they change prod or alerting: the migration run and the Sentry message rule (both Task 9).
 - **Push and deploy order.** Every push that touches a Railway watch path goes **after 15:00 CT and outside 07:15–12:30 UTC** (phase 2's D1).
-  - **P1:** Task 2 is pushed when it passes. Task 3 (migration #202) is pushed when it passes and phase 2's Task 1 (#201) is on origin/main. Neither has a runtime effect.
+  - **P1:** Task 2 is pushed when it passes. Task 3 (migration #203) is pushed when it passes and phase 2's Tasks 1 and 1b (#201, #202) are on origin/main. Neither has a runtime effect.
   - **P2:** Tasks 4–8 stay local until Task 9 has verified the migration on prod. They are pushed together.
   - **P3:** Tasks 12–17 (`ml/`, `scripts/`, Makefile) are pushed as they pass, except that Task 16 waits and goes with Task 17: between the two, `make update` would call the deleted script. Vercel ignores those paths. None of their files is a watch path: Task 20 adds the new ones, and Task 22 sets them on the service.
   - **P4:** Tasks 18–21, including Task 20b (`nightly/`, `.dockerignore`, `ci.yml`, docs), stay local until Task 22.
@@ -392,8 +392,8 @@ Nightly constants (`nightly/src/constants.py`):
 
 **Interfaces:**
 - Consumes: `SEED_LOTTERY_WEIGHTS`, `SEED_LOTTERY_WEIGHTS_VERSION` (Task 2).
-- Produces: migration `#N`, where N is **202**: phase 2's Task 1 owns #201 (the top id was 200 at `06cad43f`). It contains D5's three tables, the partial unique index, `lottery_finder_fires.score_version`, the seed row and both pointers.
-  - **Ordering:** push this task only after phase 2's Task 1 is on origin/main. Ids are only a convention, so re-read the top id on origin/main just before the push. If another session took 202, use the next free id and tell the main session.
+- Produces: migration `#N`, where N is **203**: phase 2's Task 1 owns #201 and its Task 1b owns #202 (the top id was 200 at `06cad43f`). It contains D5's three tables, the partial unique index, `lottery_finder_fires.score_version`, the seed row and both pointers.
+  - **Ordering:** push this task only after phase 2's Tasks 1 and 1b are on origin/main. Ids are only a convention, so re-read the top id on origin/main just before the push. If another session took 203, use the next free id and tell the main session.
 
 **SQL shape:** `statements: (sql) => [...]`, in this order:
 1. `SET LOCAL lock_timeout = '5s'`;
@@ -598,7 +598,7 @@ The description cites the spec and D5, says NULL `score_version` means "scored b
 
 **Skills:** `postgres-pro`, `vercel-deployment`, `sentry:sentry-create-alert`.
 
-- [ ] **Step 1:** Read `SELECT max(id) FROM schema_migrations`. List the pending ids on main and tell the owner which ones `scripts/migrate-db.ts` will apply. It applies every pending id, so run it only when the pending id is ours alone (#202); if another session's migration is pending, wait for that session to apply it, and don't apply it (phase 2's owner answer 1). Then wait for the owner's yes. In the 16:05–16:35 CT window, run `node --env-file=<repo>/.env.local --import tsx scripts/migrate-db.ts`. Verify:
+- [ ] **Step 1:** Read `SELECT max(id) FROM schema_migrations`. List the pending ids on main and tell the owner which ones `scripts/migrate-db.ts` will apply. It applies every pending id, so run it only when the pending id is ours alone (#203); if another session's migration is pending, wait for that session to apply it, and don't apply it (phase 2's owner answer 1). Then wait for the owner's yes. In the 16:05–16:35 CT window, run `node --env-file=<repo>/.env.local --import tsx scripts/migrate-db.ts`. Verify:
   - `schema_migrations` has N;
   - both pointers are on `seed-2026-06-17`;
   - the seed row parses (a `tsx` one-liner with `LotteryWeightsSchema`);
@@ -1157,7 +1157,7 @@ The description cites the spec and D5, says NULL `score_version` means "scored b
    - its enrich step and backfill, and its deletion of the cron's inversion pass;
    - its Task 15 measurement and its "backfill finished" definition.
 
-   Phase 4's migration is #202 and waits for #201 on origin/main (Task 3).
+   Phase 4's migration is #203 and waits for #201 and #202 on origin/main (Task 3).
 2. **Phase 3 repoints the research reports to the active weights** (owner order, 2026-11-06). It does so before Task 23, with a test, and this plan edits none of them.
    - The scripts that read the frozen `ml/output/lottery_score_weights.json` are `daily_tracker.py`, `feature_audit.py`, `mine_outcome_patterns.py`, `score_lineage_audit.py`, `vix_regime_analysis.py` and `check_lottery_score_sum_invariant.py`. The nightly job runs the first four.
    - The store they read: `lottery_weights.load_pointer(conn, "active")` (Task 12) returns `(version, weights)`, validated. `weights["feed_cutoffs"]` is `{tier1_min_score, tier2_min_score}` (qas) and `weights["cutoffs"]` is `{t1, t2}` (bare score). `lottery_weights.score_frame` scores a frame. The tables are `lottery_score_versions` and `lottery_score_pointers`, and each fire carries `lottery_finder_fires.score_version` (NULL means scored before the store).

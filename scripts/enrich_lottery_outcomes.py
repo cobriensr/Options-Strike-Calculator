@@ -20,13 +20,26 @@ Computes:
     runs `make backfill-flow` first if that table is empty for the date)
 
 The Vercel enrich cron writes the same rows, so every write here is
-conditional (it fills only a row nobody has filled, and counts what the
-database says it wrote) and tagged: outcome_source / inversion_source name
-the archive ('bot_eod' for `--parquet-format trades`, 'fulltape' for
-fulltape) and the version says which computation. A fire the tape cannot
-price (no chain, no print at or after entry) is tagged with its outcomes
-left NULL, so it is not picked again. A fire whose matched-side net flow
-does not exist yet is left untagged until it does.
+conditional and tagged, and every count is what the database says it wrote.
+outcome_source / inversion_source name the archive ('bot_eod' for
+`--parquet-format trades`, 'fulltape' for fulltape) and the version says
+which computation.
+
+The Full Tape has the final say over outcomes (owner, 2026-11-06). The
+websocket feed drops and cannot replay, so a cron outcome may be missing
+prints. With `--parquet-format fulltape`, `--select all` re-derives every
+outcome the tape has not yet examined (outcome_tape_version IS NULL), the
+crons' and untagged history included, and replaces it when the tape can price
+the fire. A fire it cannot price (no chain, no print at or after entry) keeps
+any value another writer left ("keep the feed's values for now"): the row is
+only marked examined, so it is not picked again. With no prior outcome it is
+also tagged 'fulltape' with the outcomes left NULL. The crons write only
+`enriched_at IS NULL` rows and the tape sets enriched_at, so no cron can
+overwrite the tape. The Bot-EOD archive (`trades`) only fills: it writes fires
+nobody has filled, never replaces a value and never sets the marker.
+
+A fire whose matched-side net flow does not exist yet is left untagged until
+it does.
 
 Usage
 -----
@@ -148,24 +161,38 @@ ARCHIVE_SOURCES = {
     'trades': 'bot_eod',
     'fulltape': 'fulltape',
 }
+# OUTCOME_VERSION is also the value of outcome_tape_version, the marker the
+# Full Tape sets on every row it examines (NULL: it has not).
 OUTCOME_VERSION = 1
 INVERSION_VERSION = 1
+# The source with the final say over outcomes (the Full Tape).
+TAPE_SOURCE = ARCHIVE_SOURCES['fulltape']
 
-# Which fires a run picks up for the outcome pass. A fire a writer tagged
-# (outcome_source set, even with the outcome NULL) is tried, not pending.
+# Which fires a run picks up for the outcome pass. {a} is a column prefix
+# (e.g. 'f.') for a statement that joins the table to itself.
 #   pending: enriched_at IS NULL (what a nightly run needs).
 #   empty:   marked enriched (before tagging existed) with no outcome and no
 #            tag.
-#   all:     any fire with no outcome and no tag. list_work_dates also adds
-#            the inversion work for this select.
+#   all:     depends on the source, see OUTCOME_WORK_ALL. list_work_dates also
+#            adds the inversion work for this select.
 Select = Literal['pending', 'empty', 'all']
 OUTCOME_WORK = {
-    'pending': 'enriched_at IS NULL',
+    'pending': '{a}enriched_at IS NULL',
     'empty': (
-        'enriched_at IS NOT NULL AND peak_ceiling_pct IS NULL '
-        'AND outcome_source IS NULL'
+        '{a}enriched_at IS NOT NULL AND {a}peak_ceiling_pct IS NULL '
+        'AND {a}outcome_source IS NULL'
     ),
-    'all': 'peak_ceiling_pct IS NULL AND outcome_source IS NULL',
+}
+# The 'all' work, by source. It is also the guard on that source's writes.
+#   fulltape: every row the tape has not examined, whatever another writer
+#             left in it. Never a row it examined, so the work set shrinks to
+#             zero and the nightly drains the history from TAPE_START.
+#   bot_eod:  fill only: a fire with no outcome and no tag. A fire a writer
+#             tagged (outcome_source set, even with the outcome NULL) is
+#             tried, not pending.
+OUTCOME_WORK_ALL = {
+    'fulltape': '{a}outcome_tape_version IS NULL',
+    'bot_eod': '{a}peak_ceiling_pct IS NULL AND {a}outcome_source IS NULL',
 }
 INVERSION_WORK = 'realized_flow_inversion_pct IS NULL AND inversion_source IS NULL'
 # Rows written per statement: execute_values page size and stamp id chunk.
@@ -188,6 +215,20 @@ def configure_archive(parquet_dir: Path, parquet_format: str) -> None:
     PARQUET_DIR = parquet_dir
     PARQUET_FILE_PATTERN = PARQUET_FORMATS[parquet_format]
     SOURCE_TAG = ARCHIVE_SOURCES[parquet_format]
+
+
+def outcome_work_all(source: str, alias: str = '') -> str:
+    """The 'all' outcome work for `source`, with `alias` (e.g. 'f.') in front
+    of its columns. It doubles as that source's write guard."""
+    return OUTCOME_WORK_ALL[source].format(a=alias)
+
+
+def outcome_work(select: Select) -> str:
+    """The WHERE predicate for `select`. 'all' follows SOURCE_TAG, read at
+    call time, so callers run configure_archive first."""
+    if select == 'all':
+        return outcome_work_all(SOURCE_TAG)
+    return OUTCOME_WORK[select].format(a='')
 
 
 # ============================================================
@@ -431,6 +472,10 @@ class Fire:
     option_chain_id: str
     entry_time_ct: pd.Timestamp
     entry_price: float
+    # The fire held an outcome when it was selected (peak_ceiling_pct IS NOT
+    # NULL). Read for the Full Tape only, the one source that replaces or
+    # keeps an outcome; it feeds a dry run's replaced and kept counts.
+    had_outcome: bool = False
 
 
 @dataclass
@@ -465,13 +510,17 @@ def detect_latest_date() -> str:
 def fetch_unenriched(
     conn, target_date: str, select: Select = 'pending'
 ) -> list[Fire]:
-    """The date's fires that `select` names (see OUTCOME_WORK)."""
+    """The date's fires that `select` names (see OUTCOME_WORK and
+    OUTCOME_WORK_ALL; 'all' follows SOURCE_TAG). For the Full Tape each fire
+    also carries whether it already holds an outcome."""
+    tape = SOURCE_TAG == TAPE_SOURCE
+    had_outcome = ', peak_ceiling_pct IS NOT NULL AS had_outcome' if tape else ''
     cur = conn.cursor()
     cur.execute(
         f"""
-        SELECT id, option_chain_id, entry_time_ct, entry_price
+        SELECT id, option_chain_id, entry_time_ct, entry_price{had_outcome}
         FROM lottery_finder_fires
-        WHERE date = %s AND {OUTCOME_WORK[select]}
+        WHERE date = %s AND {outcome_work(select)}
         ORDER BY inserted_at ASC
         """,
         (target_date,),
@@ -483,6 +532,7 @@ def fetch_unenriched(
             option_chain_id=r[1],
             entry_time_ct=pd.Timestamp(r[2]),
             entry_price=float(r[3]),
+            had_outcome=bool(r[4]) if tape else False,
         )
         for r in rows
     ]
@@ -819,16 +869,42 @@ def compute_fire_outcomes(
     return trail, hard30, tier50, eod, peak, mtp
 
 
-def update_fires(conn, updates: list[tuple], source: str) -> int:
-    """Bulk UPDATE via VALUES + UPDATE FROM, tagged with `source`, only onto
-    rows nobody has filled. Returns the rows the database says it wrote;
-    fewer than sent means the cron got there first."""
+def update_fires(conn, updates: list[tuple], source: str) -> tuple[int, int]:
+    """Bulk UPDATE via VALUES + UPDATE FROM, tagged with `source`. Returns
+    (written, replaced): the rows the database says it wrote, and how many of
+    them already held an outcome.
+
+    - Full Tape: the guard is the marker alone (outcome_tape_version IS
+      NULL), so the write replaces whatever outcome another writer left, the
+      crons' and untagged history included, and sets the marker. The only way
+      to write fewer rows than sent is another tape run examining a fire
+      first.
+    - Bot-EOD: fill only. The guard is Task 3's (no outcome and no tag), so
+      it never replaces a value and never sets the marker; replaced is 0.
+
+    Which rows held an outcome is read inside the statement: the tape's UPDATE
+    joins the table to itself (`prior`) and RETURNING reports
+    `prior.peak_ceiling_pct IS NOT NULL`. Every scan in a statement sees the
+    snapshot taken when it started, so `prior` is the row as it was before
+    this UPDATE, and the count follows the row, not the earlier SELECT: a
+    cron write that landed between the two is still counted as replaced.
+    (The nightly at 07:15 UTC and the crons at 21:40-23:40 UTC do not
+    overlap, so a race could only ever move a count, never data.)"""
     if not updates:
-        return 0
+        return 0, 0
+    tape = source == TAPE_SOURCE
+    if tape:
+        extra_set = ',\n            outcome_tape_version          = v.version'
+        extra_from = ',\n             lottery_finder_fires AS prior'
+        extra_where = '\n          AND prior.id = f.id'
+        returning = 'f.id, prior.peak_ceiling_pct IS NOT NULL AS had_outcome'
+    else:
+        extra_set = extra_from = extra_where = ''
+        returning = 'f.id'
     cur = conn.cursor()
-    written = execute_values(
+    returned = execute_values(
         cur,
-        """
+        f"""
         UPDATE lottery_finder_fires AS f
         SET realized_trail30_10_pct       = v.trail,
             realized_hard30m_pct          = v.hard30,
@@ -838,12 +914,11 @@ def update_fires(conn, updates: list[tuple], source: str) -> int:
             minutes_to_peak               = v.mtp,
             enriched_at                   = NOW(),
             outcome_source                = v.source,
-            outcome_version               = v.version
-        FROM (VALUES %s) AS v(id, trail, hard30, tier50, eod, peak, mtp, source, version)
-        WHERE f.id = v.id
-          AND f.peak_ceiling_pct IS NULL
-          AND f.outcome_source IS NULL
-        RETURNING f.id
+            outcome_version               = v.version{extra_set}
+        FROM (VALUES %s) AS v(id, trail, hard30, tier50, eod, peak, mtp, source, version){extra_from}
+        WHERE f.id = v.id{extra_where}
+          AND {outcome_work_all(source, 'f.')}
+        RETURNING {returning}
         """,
         [(*u, source, OUTCOME_VERSION) for u in updates],
         template='(%s::bigint, %s, %s, %s, %s, %s, %s, %s::text, %s::smallint)',
@@ -851,33 +926,75 @@ def update_fires(conn, updates: list[tuple], source: str) -> int:
         fetch=True,
     )
     conn.commit()
-    return len(written)
+    replaced = sum(1 for row in returned if row[1]) if tape else 0
+    return len(returned), replaced
 
 
-def stamp_no_outcome(conn, fire_ids: list[int], source: str) -> int:
-    """Tag fires the tape cannot price (no chain, or no print at or after
-    entry) and mark them enriched, leaving the realized columns NULL: there
-    is no realizable exit, and a source next to a NULL outcome means tried,
-    not pending. Counts rows changed: fewer than the ids is normal (the cron
-    got there first)."""
+# The Full Tape's stamp for a fire it cannot price. It decides per row, inside
+# the statement, from the row's current peak_ceiling_pct (never from the
+# SELECT), so a value written after the SELECT is kept, not erased:
+#   - no prior outcome: tag it (source, version, enriched_at) as tried but
+#     unpriced, the realized columns staying NULL;
+#   - prior outcome: leave the values, outcome_source, outcome_version and
+#     enriched_at exactly as they were.
+# Either way the marker is set, so the row is not examined again. The realized
+# columns are not in the SET at all. RETURNING reports the branch taken: the
+# stamp changes no realized column, so the post-update peak_ceiling_pct IS NOT
+# NULL is the row's prior outcome.
+_TAPE_STAMP_SQL = f"""
+    UPDATE lottery_finder_fires AS f
+    SET outcome_source  = CASE WHEN f.peak_ceiling_pct IS NULL
+                               THEN %s::text ELSE f.outcome_source END,
+        outcome_version = CASE WHEN f.peak_ceiling_pct IS NULL
+                               THEN %s::smallint ELSE f.outcome_version END,
+        enriched_at     = CASE WHEN f.peak_ceiling_pct IS NULL
+                               THEN NOW() ELSE f.enriched_at END,
+        outcome_tape_version = %s::smallint
+    WHERE f.id = ANY(%s::bigint[])
+      AND {outcome_work_all(TAPE_SOURCE, 'f.')}
+    RETURNING f.peak_ceiling_pct IS NOT NULL AS had_outcome
+"""
+# Bot-EOD's stamp is fill only: tag a fire nobody has filled, nothing else.
+_FILL_STAMP_SQL = f"""
+    UPDATE lottery_finder_fires
+    SET enriched_at = NOW(), outcome_source = %s, outcome_version = %s
+    WHERE id = ANY(%s::bigint[])
+      AND {outcome_work_all(ARCHIVE_SOURCES['trades'])}
+"""
+
+
+def stamp_no_outcome(conn, fire_ids: list[int], source: str) -> tuple[int, int]:
+    """Stamp fires the tape cannot price (no chain, or no print at or after
+    entry). Returns (stamped, kept), counted from what the database returned.
+
+    - Full Tape (_TAPE_STAMP_SQL): stamped is a row with no prior outcome, now
+      tagged 'fulltape' with its outcomes NULL (tried, not pending). kept is a
+      row that held an outcome, which stays as it was ("keep the feed's values
+      for now") with only the marker set.
+    - Bot-EOD (_FILL_STAMP_SQL): tags a fire nobody has filled and counts
+      rowcount; kept is 0.
+
+    Fewer rows than ids is normal: another tape run examined them first."""
     if not fire_ids:
-        return 0
+        return 0, 0
     cur = conn.cursor()
-    stamped = 0
+    stamped = kept = 0
     for i in range(0, len(fire_ids), WRITE_BATCH):
-        cur.execute(
-            """
-            UPDATE lottery_finder_fires
-            SET enriched_at = NOW(), outcome_source = %s, outcome_version = %s
-            WHERE id = ANY(%s::bigint[])
-              AND peak_ceiling_pct IS NULL
-              AND outcome_source IS NULL
-            """,
-            (source, OUTCOME_VERSION, fire_ids[i : i + WRITE_BATCH]),
-        )
-        stamped += cur.rowcount
+        chunk = fire_ids[i : i + WRITE_BATCH]
+        if source == TAPE_SOURCE:
+            cur.execute(
+                _TAPE_STAMP_SQL,
+                (source, OUTCOME_VERSION, OUTCOME_VERSION, chunk),
+            )
+            returned = cur.fetchall()
+            chunk_kept = sum(1 for (had_outcome,) in returned if had_outcome)
+            kept += chunk_kept
+            stamped += len(returned) - chunk_kept
+        else:
+            cur.execute(_FILL_STAMP_SQL, (source, OUTCOME_VERSION, chunk))
+            stamped += cur.rowcount
     conn.commit()
-    return stamped
+    return stamped, kept
 
 
 def refit_ticker_inversion_stats(
@@ -1025,7 +1142,8 @@ def list_work_dates(
     through: str | None = None,
 ) -> list[str]:
     """Distinct YYYY-MM-DD dates with outcome work for `select` (see
-    OUTCOME_WORK), ascending, within [since, through] when given.
+    OUTCOME_WORK and OUTCOME_WORK_ALL; 'all' follows SOURCE_TAG), ascending,
+    within [since, through] when given.
 
     'all' also lists the dates with inversion work, but only where the
     matched side's net flow exists for the ticker on the same UTC day
@@ -1052,7 +1170,7 @@ def list_work_dates(
             f"""
             SELECT DISTINCT date::text
             FROM lottery_finder_fires
-            WHERE {OUTCOME_WORK[select]}{bounds}
+            WHERE {outcome_work(select)}{bounds}
             ORDER BY 1
             """,
             tuple(bound_params),
@@ -1064,7 +1182,7 @@ def list_work_dates(
             FROM (
               SELECT date
               FROM lottery_finder_fires
-              WHERE {OUTCOME_WORK['all']}{bounds}
+              WHERE {outcome_work('all')}{bounds}
               UNION ALL
               SELECT w.date
               FROM (
@@ -1096,11 +1214,16 @@ class DayResult:
     # Main pass: outcome rows written plus unpriced fires tagged.
     fires_written: int = 0
     flow_written: int = 0
-    # Main pass: fires selected, outcome rows written (the database's count,
-    # at most the priced fires), unpriced fires tagged.
+    # Main pass: fires selected; outcome rows written (the database's count,
+    # at most the priced fires); of those, how many replaced a prior outcome
+    # (Full Tape only); unpriced fires tagged with no prior outcome; unpriced
+    # fires that held an outcome, kept with only the marker set (Full Tape
+    # only: the feed values the tape could not confirm).
     fires_selected: int = 0
     outcomes_written: int = 0
+    outcomes_replaced: int = 0
     stamped_no_outcome: int = 0
+    outcomes_kept: int = 0
     # Flow pass: fires selected, tagged undefined, left for missing net flow.
     flow_selected: int = 0
     flow_stamped_undefined: int = 0
@@ -1116,9 +1239,12 @@ def enrich_one_date(
     """Per-date passes: main outcome computation + flow-inversion. Caller
     runs the global ticker-quality refit once after the date loop.
 
-    Every write is tagged with SOURCE_TAG (see configure_archive) and only
-    fills a row nobody has filled, so the counts are what the database
-    wrote. With dry_run nothing is written and the counts are what would be.
+    Every write is tagged with SOURCE_TAG (see configure_archive) and guarded
+    by that source's work predicate, so the counts are what the database
+    wrote. The Full Tape replaces an outcome it can price and keeps one it
+    cannot; Bot-EOD only fills (see the module docstring). With dry_run
+    nothing is written and the counts are what would be, the replaced and
+    kept ones read from the fetch (Fire.had_outcome).
 
     A day with work to do whose archive file is missing is skipped: one
     line names it (warn_missing_archive) and nothing is written for it, so
@@ -1155,20 +1281,27 @@ def enrich_one_date(
         updates: list[tuple] = []
         unpriced_ids: list[int] = []
         no_chain = 0
+        # From the fetch, for a dry run: priced fires that hold an outcome
+        # (would be replaced) and unpriced ones that do (would be kept).
+        priced_with_outcome = 0
+        unpriced_with_outcome = 0
         for fire in fires:
             chain_df = chain_index.get(fire.option_chain_id)
             if chain_df is None:
                 no_chain += 1
                 unpriced_ids.append(fire.id)
+                unpriced_with_outcome += fire.had_outcome
                 continue
             res = compute_fire_outcomes(fire, chain_df)
             if res is None:
                 unpriced_ids.append(fire.id)
+                unpriced_with_outcome += fire.had_outcome
                 continue
             trail, hard30, tier50, eod, peak, mtp = res
             updates.append(
                 (fire.id, trail, hard30, tier50, eod, peak, mtp)
             )
+            priced_with_outcome += fire.had_outcome
 
         print(
             f'[enrich] {target_date} computed {len(updates):,} outcomes '
@@ -1179,17 +1312,23 @@ def enrich_one_date(
 
         if dry_run:
             result.outcomes_written = len(updates)
-            result.stamped_no_outcome = len(unpriced_ids)
+            result.outcomes_replaced = priced_with_outcome
+            result.stamped_no_outcome = len(unpriced_ids) - unpriced_with_outcome
+            result.outcomes_kept = unpriced_with_outcome
         else:
-            result.outcomes_written = update_fires(conn, updates, SOURCE_TAG)
-            result.stamped_no_outcome = stamp_no_outcome(
+            result.outcomes_written, result.outcomes_replaced = update_fires(
+                conn, updates, SOURCE_TAG
+            )
+            result.stamped_no_outcome, result.outcomes_kept = stamp_no_outcome(
                 conn, unpriced_ids, SOURCE_TAG
             )
         print(
             f'[enrich] {target_date} '
             f'{"DRY RUN would write" if dry_run else "DB updated"}: '
             f'{result.outcomes_written:,} rows '
-            f'(+ {result.stamped_no_outcome} tagged with no outcome)'
+            f'({result.outcomes_replaced} replaced a prior outcome; '
+            f'+ {result.stamped_no_outcome} tagged with no outcome, '
+            f'{result.outcomes_kept} unpriced kept their outcome)'
         )
         result.fires_written = result.outcomes_written + result.stamped_no_outcome
 
@@ -1216,6 +1355,11 @@ def print_run_summary(results: dict[str, DayResult]) -> None:
         f'{sum(r.fires_written for r in done):,} fires updated, '
         f'{sum(r.flow_written for r in done):,} flow-inversion rows written; '
         f'{len(missing)} day(s) skipped for a missing archive'
+    )
+    print(
+        f'[enrich] summary: {sum(r.outcomes_replaced for r in done):,} '
+        'outcome(s) replaced a prior outcome, '
+        f'{sum(r.outcomes_kept for r in done):,} unpriced fire(s) kept theirs'
     )
     if missing:
         line = (
