@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { checkIsOwner } from '../utils/auth';
+import { parseEntryTimeMinutes } from '../utils/entry-time';
 import { usePolling } from './usePolling';
 
 export interface VixSnapshot {
@@ -45,18 +46,6 @@ const EMPTY: VixTrajectoryState = {
 const WINDOW_MIN = 15;
 const MIN_SPAN_MIN = 8;
 const MAX_SPAN_MIN = 25;
-
-function parseEntryTimeMinutes(t: string): number {
-  const match = /^(\d+):(\d+)\s*(AM|PM)$/i.exec(t);
-  if (!match) return Number.NaN;
-  let h = Number.parseInt(match[1]!, 10);
-  const minute = Number.parseInt(match[2]!, 10);
-  if (h < 1 || h > 12 || minute < 0 || minute > 59) return Number.NaN;
-  const isPm = match[3]!.toUpperCase() === 'PM';
-  if (isPm && h !== 12) h += 12;
-  else if (!isPm && h === 12) h = 0;
-  return h * 60 + minute;
-}
 
 function computeTrajectory(
   series: readonly { t: number; value: number }[],

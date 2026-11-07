@@ -442,6 +442,70 @@ describe('AnalysisHistory', () => {
       expect(options[1]).toHaveTextContent('12:00 PM');
       expect(options[2]).toHaveTextContent('2:00 PM');
     });
+
+    it('orders mixed CT and ET labels by the moment they name', async () => {
+      // 10:30 AM ET is 9:30 AM CT, ahead of 9:45 AM CT; 3:30 PM ET is
+      // 2:30 PM CT, after 2:00 PM CT. Sorted as bare clock times, 9:45 AM
+      // CT would come first.
+      const analyses = [
+        makeEntry(1, 'entry', '3:30 PM ET'),
+        makeEntry(2, 'entry', '2:00 PM CT'),
+        makeEntry(3, 'entry', '9:45 AM CT'),
+        makeEntry(4, 'entry', '10:30 AM ET'),
+      ];
+      vi.stubGlobal('fetch', mockFetch(DATES, analyses));
+      const user = userEvent.setup();
+      render(<AnalysisHistory />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/Select a date/)).toBeInTheDocument();
+      });
+
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
+
+      await waitFor(() => {
+        expect(screen.getByLabelText('Entry Time')).toBeInTheDocument();
+      });
+
+      const options = within(screen.getByLabelText('Entry Time')).getAllByRole(
+        'option',
+      );
+      expect(options.map((o) => o.textContent)).toEqual([
+        '10:30 AM ET',
+        '9:45 AM CT',
+        '2:00 PM CT',
+        '3:30 PM ET',
+      ]);
+    });
+
+    it('lists a label that is not a clock time ahead of the others', async () => {
+      // db-analyses.ts saves 'unknown' when the context has no entryTime.
+      const analyses = [
+        makeEntry(1, 'entry', '9:30 AM CT'),
+        makeEntry(2, 'entry', 'unknown'),
+      ];
+      vi.stubGlobal('fetch', mockFetch(DATES, analyses));
+      const user = userEvent.setup();
+      render(<AnalysisHistory />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/Select a date/)).toBeInTheDocument();
+      });
+
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
+
+      await waitFor(() => {
+        expect(screen.getByLabelText('Entry Time')).toBeInTheDocument();
+      });
+
+      const options = within(screen.getByLabelText('Entry Time')).getAllByRole(
+        'option',
+      );
+      expect(options.map((o) => o.textContent)).toEqual([
+        'unknown',
+        '9:30 AM CT',
+      ]);
+    });
   });
 
   describe('mode filter resets cascade', () => {

@@ -98,6 +98,39 @@ describe('deriveTrajectory', () => {
     expect(state.ratio9d!.spanMin).toBe(15);
   });
 
+  it('reads the "H:MM AM CT" labels the app writes', () => {
+    // src/App.tsx saves `${hour}:${minute} ${AM|PM} ${CT|ET}`; a parser that
+    // stops at AM/PM skips every row and the trajectory never forms.
+    const state = deriveTrajectory([
+      snap({ entryTime: '11:30 AM CT', vix: 17, vix9d: 14.45 }), // 0.85
+      snap({ entryTime: '11:45 AM CT', vix: 17, vix9d: 16.15 }), // 0.95
+    ]);
+    expect(state.ratio9d).not.toBeNull();
+    expect(state.ratio9d!.spanMin).toBe(15);
+    expect(state.ratio9d!.delta).toBeCloseTo(0.1, 2);
+  });
+
+  it('puts ET labels on the CT clock when measuring a span', () => {
+    // 12:45 PM ET is 11:45 AM CT, 15 minutes after 11:30 AM CT. Read as bare
+    // clock times the span is 75 minutes and the window is rejected.
+    const state = deriveTrajectory([
+      snap({ entryTime: '11:30 AM CT', vix: 17, vix9d: 14.45 }),
+      snap({ entryTime: '12:45 PM ET', vix: 17, vix9d: 16.15 }),
+    ]);
+    expect(state.ratio9d).not.toBeNull();
+    expect(state.ratio9d!.spanMin).toBe(15);
+  });
+
+  it('skips the pre-market row', () => {
+    const state = deriveTrajectory([
+      snap({ entryTime: 'pre-market', vix9d: 15 }),
+      snap({ entryTime: '11:30 AM CT', vix9d: 16 }),
+      snap({ entryTime: '11:45 AM CT', vix9d: 16.5 }),
+    ]);
+    expect(state.ratio9d).not.toBeNull();
+    expect(state.ratio9d!.spanMin).toBe(15);
+  });
+
   it('computes SPX delta independently from ratio deltas', () => {
     const state = deriveTrajectory([
       snap({ entryTime: '11:30 AM', spx: 6900 }),
@@ -182,6 +215,37 @@ describe('useVixTrajectory hook', () => {
     );
     expect(result.current.spx).not.toBeNull();
     expect(result.current.spx!.delta).toBeCloseTo(10, 2);
+  });
+
+  it('forms the trajectory from the "H:MM AM CT" entryTimes the endpoint returns', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        snapshots: [
+          {
+            entryTime: '11:30 AM CT',
+            vix: 17,
+            vix1d: 13,
+            vix9d: 16,
+            spx: 6900,
+          },
+          {
+            entryTime: '11:45 AM CT',
+            vix: 17,
+            vix1d: 14,
+            vix9d: 16.5,
+            spx: 6910,
+          },
+        ],
+      }),
+    });
+
+    const { result } = renderHook(() => useVixTrajectory(true));
+
+    await waitFor(() => expect(result.current.hasData).toBe(true));
+    expect(result.current.spx).toEqual({ delta: 10, spanMin: 15 });
+    expect(result.current.ratio1d).not.toBeNull();
+    expect(result.current.ratio9d).not.toBeNull();
   });
 
   it('polls at MARKET_DATA interval while open', async () => {

@@ -14,6 +14,7 @@ import type {
 } from './types';
 import { SectionBox } from '../ui';
 import { checkIsOwner } from '../../utils/auth';
+import { parseEntryTimeMinutes } from '../../utils/entry-time';
 import AnalysisHistoryPicker from './AnalysisHistoryPicker';
 
 // ── Component ──────────────────────────────────────────────
@@ -138,19 +139,12 @@ export default function AnalysisHistory({
 
   const availableTimes = useMemo(() => {
     const times = [...new Set(filteredAnalyses.map((a) => a.entryTime))];
-    return times.sort((a, b) => {
-      const parse = (t: string) => {
-        const match = /^(\d+):(\d+)\s*(AM|PM)/i.exec(t);
-        if (!match) return 0;
-        let h = Number.parseInt(match[1]!, 10);
-        const m = Number.parseInt(match[2]!, 10);
-        const ampm = match[3]!.toUpperCase();
-        if (ampm === 'PM' && h !== 12) h += 12;
-        if (ampm === 'AM' && h === 12) h = 0;
-        return h * 60 + m;
-      };
-      return parse(a) - parse(b);
-    });
+    // A label that is not a clock time ("unknown") sorts first.
+    const minutes = (t: string) => {
+      const m = parseEntryTimeMinutes(t);
+      return Number.isNaN(m) ? 0 : m;
+    };
+    return times.sort((a, b) => minutes(a) - minutes(b));
   }, [filteredAnalyses]);
 
   // ── Derived: available modes for selected time ─────────
