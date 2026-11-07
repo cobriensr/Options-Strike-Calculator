@@ -1,0 +1,717 @@
+{
+  "format": "Shared by the TypeScript (api/__tests__/futures-contracts.test.ts) and Python (uw-stream) roll-forward rule tests. To run a case: build one list of rows per contract key, in order of first appearance in the segments. A segment is k consecutive minutes starting at `from`; in each of them every contract named in `volumes` gets one row (ts, volume), and a contract not named has no row that minute. All timestamps are UTC minutes in the form YYYY-MM-DDTHH:MM:00.000Z. A volume of 0 is still a row. Minutes between segments have no rows at all. Run the rule with the case's `root` and `seed` (null means no seed). Compare the result to `takeovers` (ts is the first minute on the new contract, in time order), `front` (the front after the last row, for the minute that follows it) and `skipped` (keys the parser rejects, sorted ascending by code point) exactly. `N` is the guard length in minute closes.",
+  "N": 120,
+  "cases": [
+    {
+      "name": "roll-day crossover: one takeover at exactly m0 + 120 closes, none earlier",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-08T00:00:00.000Z",
+          "minutes": 480,
+          "volumes": {
+            "ESZ6": 10
+          }
+        },
+        {
+          "from": "2026-12-08T08:00:00.000Z",
+          "minutes": 480,
+          "volumes": {
+            "ESZ6": 0,
+            "ESH7": 20
+          }
+        }
+      ],
+      "takeovers": [
+        {
+          "ts": "2026-12-08T14:00:00.000Z",
+          "contract": "ESH7"
+        }
+      ],
+      "front": "ESH7",
+      "skipped": []
+    },
+    {
+      "name": "no step back after 00:00Z: the old front leads the new day and the front stays",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-09T00:00:00.000Z",
+          "minutes": 360,
+          "volumes": {
+            "ESZ6": 10
+          }
+        },
+        {
+          "from": "2026-12-09T06:00:00.000Z",
+          "minutes": 600,
+          "volumes": {
+            "ESZ6": 0,
+            "ESH7": 20
+          }
+        },
+        {
+          "from": "2026-12-10T00:00:00.000Z",
+          "minutes": 420,
+          "volumes": {
+            "ESZ6": 10,
+            "ESH7": 3
+          }
+        }
+      ],
+      "takeovers": [
+        {
+          "ts": "2026-12-09T11:00:00.000Z",
+          "contract": "ESH7"
+        }
+      ],
+      "front": "ESH7",
+      "skipped": []
+    },
+    {
+      "name": "a transient lead of 119 closes gives no takeover",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-08T00:00:00.000Z",
+          "minutes": 60,
+          "volumes": {
+            "ESZ6": 10
+          }
+        },
+        {
+          "from": "2026-12-08T01:00:00.000Z",
+          "minutes": 179,
+          "volumes": {
+            "ESZ6": 0,
+            "ESH7": 10
+          }
+        },
+        {
+          "from": "2026-12-08T03:59:00.000Z",
+          "minutes": 1,
+          "volumes": {
+            "ESZ6": 5000,
+            "ESH7": 0
+          }
+        },
+        {
+          "from": "2026-12-08T04:00:00.000Z",
+          "minutes": 120,
+          "volumes": {
+            "ESZ6": 0,
+            "ESH7": 0
+          }
+        }
+      ],
+      "takeovers": [],
+      "front": "ESZ6",
+      "skipped": []
+    },
+    {
+      "name": "a lead of exactly 120 closes gives one takeover, even when the lead is lost at that very minute",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-08T00:00:00.000Z",
+          "minutes": 60,
+          "volumes": {
+            "ESZ6": 10
+          }
+        },
+        {
+          "from": "2026-12-08T01:00:00.000Z",
+          "minutes": 180,
+          "volumes": {
+            "ESZ6": 0,
+            "ESH7": 10
+          }
+        },
+        {
+          "from": "2026-12-08T04:00:00.000Z",
+          "minutes": 1,
+          "volumes": {
+            "ESZ6": 5000,
+            "ESH7": 0
+          }
+        },
+        {
+          "from": "2026-12-08T04:01:00.000Z",
+          "minutes": 120,
+          "volumes": {
+            "ESZ6": 0,
+            "ESH7": 0
+          }
+        }
+      ],
+      "takeovers": [
+        {
+          "ts": "2026-12-08T04:00:00.000Z",
+          "contract": "ESH7"
+        }
+      ],
+      "front": "ESH7",
+      "skipped": []
+    },
+    {
+      "name": "a lost lead breaks the streak and it restarts from the next lead (a tie is a lost lead)",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-08T00:00:00.000Z",
+          "minutes": 60,
+          "volumes": {
+            "ESZ6": 10
+          }
+        },
+        {
+          "from": "2026-12-08T01:00:00.000Z",
+          "minutes": 160,
+          "volumes": {
+            "ESZ6": 0,
+            "ESH7": 10
+          }
+        },
+        {
+          "from": "2026-12-08T03:40:00.000Z",
+          "minutes": 1,
+          "volumes": {
+            "ESZ6": 1000,
+            "ESH7": 0
+          }
+        },
+        {
+          "from": "2026-12-08T03:41:00.000Z",
+          "minutes": 180,
+          "volumes": {
+            "ESZ6": 0,
+            "ESH7": 10
+          }
+        }
+      ],
+      "takeovers": [
+        {
+          "ts": "2026-12-08T05:41:00.000Z",
+          "contract": "ESH7"
+        }
+      ],
+      "front": "ESH7",
+      "skipped": []
+    },
+    {
+      "name": "a challenger change resets the streak: two later contracts swap the lead",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-08T00:00:00.000Z",
+          "minutes": 60,
+          "volumes": {
+            "ESZ6": 10
+          }
+        },
+        {
+          "from": "2026-12-08T01:00:00.000Z",
+          "minutes": 160,
+          "volumes": {
+            "ESH7": 10
+          }
+        },
+        {
+          "from": "2026-12-08T03:40:00.000Z",
+          "minutes": 30,
+          "volumes": {
+            "ESM7": 100
+          }
+        },
+        {
+          "from": "2026-12-08T04:10:00.000Z",
+          "minutes": 150,
+          "volumes": {
+            "ESH7": 100
+          }
+        }
+      ],
+      "takeovers": [
+        {
+          "ts": "2026-12-08T06:23:00.000Z",
+          "contract": "ESH7"
+        }
+      ],
+      "front": "ESH7",
+      "skipped": []
+    },
+    {
+      "name": "the streak cannot span 00:00 UTC (rows through midnight): it restarts after the reset",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-08T00:00:00.000Z",
+          "minutes": 1320,
+          "volumes": {
+            "ESZ6": 1
+          }
+        },
+        {
+          "from": "2026-12-08T22:00:00.000Z",
+          "minutes": 120,
+          "volumes": {
+            "ESZ6": 0,
+            "ESH7": 20
+          }
+        },
+        {
+          "from": "2026-12-09T00:00:00.000Z",
+          "minutes": 300,
+          "volumes": {
+            "ESZ6": 0,
+            "ESH7": 20
+          }
+        }
+      ],
+      "takeovers": [
+        {
+          "ts": "2026-12-09T02:00:00.000Z",
+          "contract": "ESH7"
+        }
+      ],
+      "front": "ESH7",
+      "skipped": []
+    },
+    {
+      "name": "the streak cannot span 00:00 UTC (quiet gap over midnight): a maturity on the next day is not honored",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-08T00:00:00.000Z",
+          "minutes": 1320,
+          "volumes": {
+            "ESZ6": 1
+          }
+        },
+        {
+          "from": "2026-12-08T22:00:00.000Z",
+          "minutes": 120,
+          "volumes": {
+            "ESZ6": 0,
+            "ESH7": 20
+          }
+        },
+        {
+          "from": "2026-12-09T02:00:00.000Z",
+          "minutes": 300,
+          "volumes": {
+            "ESZ6": 0,
+            "ESH7": 20
+          }
+        }
+      ],
+      "takeovers": [
+        {
+          "ts": "2026-12-09T04:00:00.000Z",
+          "contract": "ESH7"
+        }
+      ],
+      "front": "ESH7",
+      "skipped": []
+    },
+    {
+      "name": "maturity inside a quiet gap: the lead holds through minutes with no rows and the takeover ts is the maturity minute",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-08T00:00:00.000Z",
+          "minutes": 60,
+          "volumes": {
+            "ESZ6": 10
+          }
+        },
+        {
+          "from": "2026-12-08T01:00:00.000Z",
+          "minutes": 61,
+          "volumes": {
+            "ESZ6": 0,
+            "ESH7": 10
+          }
+        },
+        {
+          "from": "2026-12-08T07:00:00.000Z",
+          "minutes": 10,
+          "volumes": {
+            "ESZ6": 1,
+            "ESH7": 1
+          }
+        }
+      ],
+      "takeovers": [
+        {
+          "ts": "2026-12-08T04:00:00.000Z",
+          "contract": "ESH7"
+        }
+      ],
+      "front": "ESH7",
+      "skipped": []
+    },
+    {
+      "name": "restart mid-roll: seeded with the old front, the tally counts only from the restart",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-08T12:00:00.000Z",
+          "minutes": 60,
+          "volumes": {
+            "ESZ6": 10,
+            "ESH7": 3
+          }
+        },
+        {
+          "from": "2026-12-08T13:00:00.000Z",
+          "minutes": 300,
+          "volumes": {
+            "ESZ6": 0,
+            "ESH7": 20
+          }
+        }
+      ],
+      "takeovers": [
+        {
+          "ts": "2026-12-08T15:21:00.000Z",
+          "contract": "ESH7"
+        }
+      ],
+      "front": "ESH7",
+      "skipped": []
+    },
+    {
+      "name": "expiry handover: the front stops printing and the next contract takes over 120 closes after its first leading close",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-18T13:00:00.000Z",
+          "minutes": 480,
+          "volumes": {
+            "ESZ6": 10,
+            "ESH7": 1
+          }
+        },
+        {
+          "from": "2026-12-21T01:00:00.000Z",
+          "minutes": 300,
+          "volumes": {
+            "ESH7": 5
+          }
+        }
+      ],
+      "takeovers": [
+        {
+          "ts": "2026-12-21T03:00:00.000Z",
+          "contract": "ESH7"
+        }
+      ],
+      "front": "ESH7",
+      "skipped": []
+    },
+    {
+      "name": "jump past the next contract: the expired front's second-next contract has the largest tally",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-21T01:00:00.000Z",
+          "minutes": 300,
+          "volumes": {
+            "ESH7": 1,
+            "ESM7": 5
+          }
+        }
+      ],
+      "takeovers": [
+        {
+          "ts": "2026-12-21T03:00:00.000Z",
+          "contract": "ESM7"
+        }
+      ],
+      "front": "ESM7",
+      "skipped": []
+    },
+    {
+      "name": "decade rollover: ESZ9 hands over to ESH0 across 2029/2030",
+      "root": "ES",
+      "seed": "ESZ9",
+      "segments": [
+        {
+          "from": "2029-12-10T00:00:00.000Z",
+          "minutes": 360,
+          "volumes": {
+            "ESZ9": 10
+          }
+        },
+        {
+          "from": "2029-12-10T06:00:00.000Z",
+          "minutes": 600,
+          "volumes": {
+            "ESZ9": 0,
+            "ESH0": 20
+          }
+        }
+      ],
+      "takeovers": [
+        {
+          "ts": "2029-12-10T11:00:00.000Z",
+          "contract": "ESH0"
+        }
+      ],
+      "front": "ESH0",
+      "skipped": []
+    },
+    {
+      "name": "null seed, ES in November: the cycle seeds ESZ6 even when the first print is a back month",
+      "root": "ES",
+      "seed": null,
+      "segments": [
+        {
+          "from": "2026-11-10T01:00:00.000Z",
+          "minutes": 1,
+          "volumes": {
+            "ESH7": 3
+          }
+        },
+        {
+          "from": "2026-11-10T01:01:00.000Z",
+          "minutes": 299,
+          "volumes": {
+            "ESZ6": 10,
+            "ESH7": 1
+          }
+        }
+      ],
+      "takeovers": [],
+      "front": "ESZ6",
+      "skipped": []
+    },
+    {
+      "name": "null seed, CL in November: CL stops a month early, so the cycle seeds CLZ6, not CLX6",
+      "root": "CL",
+      "seed": null,
+      "segments": [
+        {
+          "from": "2026-11-10T01:00:00.000Z",
+          "minutes": 300,
+          "volumes": {
+            "CLZ6": 10,
+            "CLF7": 1
+          }
+        }
+      ],
+      "takeovers": [],
+      "front": "CLZ6",
+      "skipped": []
+    },
+    {
+      "name": "null seed, ES on 2026-12-20: the expired ESZ6 seeds, then the roll comes late, 120 closes after ESH7's first lead",
+      "root": "ES",
+      "seed": null,
+      "segments": [
+        {
+          "from": "2026-12-20T20:00:00.000Z",
+          "minutes": 200,
+          "volumes": {
+            "ESH7": 5
+          }
+        }
+      ],
+      "takeovers": [
+        {
+          "ts": "2026-12-20T22:00:00.000Z",
+          "contract": "ESH7"
+        }
+      ],
+      "front": "ESH7",
+      "skipped": []
+    },
+    {
+      "name": "a stray far-dated contract: a burst of ESZ7 lots under 120 closes gives no takeover",
+      "root": "ES",
+      "seed": "ESH7",
+      "segments": [
+        {
+          "from": "2026-12-10T00:00:00.000Z",
+          "minutes": 30,
+          "volumes": {
+            "ESH7": 1,
+            "ESZ7": 100
+          }
+        },
+        {
+          "from": "2026-12-10T00:30:00.000Z",
+          "minutes": 120,
+          "volumes": {
+            "ESH7": 100,
+            "ESZ7": 0
+          }
+        }
+      ],
+      "takeovers": [],
+      "front": "ESH7",
+      "skipped": []
+    },
+    {
+      "name": "a far-dated contract with a smaller tally never becomes the challenger",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-08T00:00:00.000Z",
+          "minutes": 400,
+          "volumes": {
+            "ESZ6": 1,
+            "ESH7": 10,
+            "ESZ7": 5
+          }
+        }
+      ],
+      "takeovers": [
+        {
+          "ts": "2026-12-08T02:00:00.000Z",
+          "contract": "ESH7"
+        }
+      ],
+      "front": "ESH7",
+      "skipped": []
+    },
+    {
+      "name": "ties: an equal tally is not a lead",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-08T00:00:00.000Z",
+          "minutes": 600,
+          "volumes": {
+            "ESZ6": 10,
+            "ESH7": 10
+          }
+        }
+      ],
+      "takeovers": [],
+      "front": "ESZ6",
+      "skipped": []
+    },
+    {
+      "name": "ties: equal tallies among later contracts go to the nearer expiry",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-08T00:00:00.000Z",
+          "minutes": 400,
+          "volumes": {
+            "ESM7": 10,
+            "ESH7": 10
+          }
+        }
+      ],
+      "takeovers": [
+        {
+          "ts": "2026-12-08T02:00:00.000Z",
+          "contract": "ESH7"
+        }
+      ],
+      "front": "ESH7",
+      "skipped": []
+    },
+    {
+      "name": "the 120th close is 23:59: the takeover lands at 00:00Z, before the daily reset",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-08T22:00:00.000Z",
+          "minutes": 180,
+          "volumes": {
+            "ESH7": 20
+          }
+        }
+      ],
+      "takeovers": [
+        {
+          "ts": "2026-12-09T00:00:00.000Z",
+          "contract": "ESH7"
+        }
+      ],
+      "front": "ESH7",
+      "skipped": []
+    },
+    {
+      "name": "end of input at the 120th close applies the takeover: front is the front for the minute after the last row",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-08T10:00:00.000Z",
+          "minutes": 120,
+          "volumes": {
+            "ESH7": 20
+          }
+        }
+      ],
+      "takeovers": [
+        {
+          "ts": "2026-12-08T12:00:00.000Z",
+          "contract": "ESH7"
+        }
+      ],
+      "front": "ESH7",
+      "skipped": []
+    },
+    {
+      "name": "end of input at the 119th close keeps the old front",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-08T10:00:00.000Z",
+          "minutes": 119,
+          "volumes": {
+            "ESH7": 20
+          }
+        }
+      ],
+      "takeovers": [],
+      "front": "ESZ6",
+      "skipped": []
+    },
+    {
+      "name": "unparseable keys are skipped and their volume never counts",
+      "root": "ES",
+      "seed": "ESZ6",
+      "segments": [
+        {
+          "from": "2026-12-08T00:00:00.000Z",
+          "minutes": 300,
+          "volumes": {
+            "ESZ6": 1,
+            "ESZ6-ESH7": 1000,
+            "NQZ6": 1000,
+            "esz6": 1000,
+            "ESZ6\n": 1000,
+            "ESZ2026": 1000
+          }
+        }
+      ],
+      "takeovers": [],
+      "front": "ESZ6",
+      "skipped": ["ESZ2026", "ESZ6\n", "ESZ6-ESH7", "NQZ6", "esz6"]
+    }
+  ]
+}
