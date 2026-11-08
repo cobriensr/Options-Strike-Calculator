@@ -4,12 +4,13 @@
  * Daily post-close fetch of `/stock/{ticker}/net-prem-ticks` for the
  * Lottery Finder universe (V3 ∪ EXTENDED). Writes per-minute net-flow
  * deltas into `net_flow_per_ticker_history` with source='rest'. This
- * keeps the table current so `enrich-lottery-outcomes` can compute
- * `realized_flow_inversion_pct` for the day's fires.
+ * keeps the table current so the nightly Full Tape inversion pass
+ * (scripts/enrich_lottery_outcomes.py, `load_matched_flow`) can compute
+ * `realized_flow_inversion_pct` for the day's fires, a night after the
+ * session. `enrich-lottery-outcomes` no longer reads this table.
  *
- * Schedule: 21:25 UTC Mon-Fri (16:25 CT, 5 min before
- * `enrich-lottery-outcomes` so the flow data is in place when enrich
- * runs). Idempotent via ON CONFLICT (ticker, ts, source) DO NOTHING.
+ * Schedule: 21:25 UTC Mon-Fri (16:25 CT, after the close). Idempotent via
+ * ON CONFLICT (ticker, ts, source) DO NOTHING.
  *
  * Phase 2 of docs/superpowers/specs/lottery-flow-inversion-automation-2026-05-05.md.
  *
@@ -190,9 +191,9 @@ async function fetchAndStore(
     );
     // Surface to Sentry — the prior version only logger.warned and
     // returned a zero-stored tuple, so a UW outage across ~50 tickers
-    // looked like a healthy zero-row run. This table feeds
-    // enrich-lottery-outcomes' realized_flow_inversion_pct; silent
-    // zeros corrupt the day's fires. Matches fetch-net-flow.ts.
+    // looked like a healthy zero-row run. This table feeds the nightly
+    // tape pass's realized_flow_inversion_pct; silent zeros corrupt the
+    // day's fires. Matches fetch-net-flow.ts.
     Sentry.captureException(err, {
       tags: { cron: 'fetch-net-flow-history', ticker },
     });
@@ -212,8 +213,8 @@ export default withCronInstrumentation(
     await cronJitter();
 
     // UW caps in-flight at 3; any higher reliably 429s. ~50 tickers at
-    // concurrency 3 → ~17 sequential rounds, each ~0.5–1 s, total well
-    // under the 5-minute window before enrich-lottery-outcomes fires.
+    // concurrency 3 → ~17 sequential rounds, each ~0.5–1 s, under 20 s
+    // in all.
     const results = await mapWithConcurrency(TICKERS, 3, (t) =>
       fetchAndStore(apiKey, t, today),
     );
