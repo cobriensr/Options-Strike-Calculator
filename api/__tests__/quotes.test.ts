@@ -177,11 +177,21 @@ describe('GET /api/quotes', () => {
       ['NaN', Number.NaN],
       ['Infinity', Number.POSITIVE_INFINITY],
       ['null', null],
+      // The snapshot schema takes a safe integer only (z.number().int()), so
+      // anything else would 400 the whole live POST and lose the slot.
+      ['a fraction', 1794001029801.5],
+      ['2^53, the first unsafe integer', 2 ** 53],
+      ['1e21', 1e21],
     ])('is null when tradeTime is %s', async (_label, tradeTime) => {
       const json = await getQuotes(quoteWith(tradeTime));
       expect(json.spx?.quotedAt).toBeNull();
       // A bad time never drops the quote itself.
       expect(json.spx?.price).toBe(500);
+    });
+
+    it('keeps the largest safe integer', async () => {
+      const json = await getQuotes(quoteWith(Number.MAX_SAFE_INTEGER));
+      expect(json.spx?.quotedAt).toBe(Number.MAX_SAFE_INTEGER);
     });
   });
 

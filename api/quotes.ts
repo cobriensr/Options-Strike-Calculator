@@ -71,11 +71,14 @@ const SYMBOLS = 'SPY,$SPX,$VIX,$VIX1D,$VIX9D,$VVIX';
 /**
  * Schwab's `tradeTime` is epoch milliseconds (a JSON number, 13 digits;
  * probed on $SPX and $VIX 2026-11-08). Anything else is not a time we can
- * compare to a slot, so it becomes null rather than a guess.
+ * compare to a slot, so it becomes null rather than a guess. A safe positive
+ * integer only: the snapshot body schema is z.number().int().positive(), and
+ * a fraction or a value past 2^53 would fail it and 400 the whole live POST,
+ * losing the slot.
  */
 function toQuotedAt(tradeTime: unknown): number | null {
   return typeof tradeTime === 'number' &&
-    Number.isFinite(tradeTime) &&
+    Number.isSafeInteger(tradeTime) &&
     tradeTime > 0
     ? tradeTime
     : null;
