@@ -16,6 +16,10 @@
  * write the OTM columns, so its rows would interleave with the live ones under
  * a second convention, and the unique key would not catch it.
  *
+ * Every row it inserts is also appended to flow_data_revisions, in the same
+ * statement, under the writer name "backfill-greek-flow" (spec P0.7): a refill
+ * keeps the log of what was stored before it.
+ *
  * Usage:
  *   UW_API_KEY=your_key DATABASE_URL="postgresql://..." node scripts/backfill-greek-flow.mjs
  *
@@ -25,6 +29,8 @@
 
 import { neon } from '@neondatabase/serverless';
 
+import { storeRows } from './_lib/backfill-cli.mjs';
+import { loggedFlowDataTarget } from './_lib/flow-data-backfill.mjs';
 import { getTradingDays } from './_lib/trading-days.mjs';
 
 const UW_API_KEY = process.env.UW_API_KEY;
@@ -84,16 +90,24 @@ async function storeCandles(ticks, date) {
 
   for (const [ts, tick] of sampled) {
     try {
-      const result = await sql`
-        INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
-        VALUES (
-          ${date}, ${ts}, ${SOURCE},
-          ${tick.total_delta_flow}, ${tick.dir_delta_flow}, ${tick.volume}
-        )
-        ON CONFLICT (date, timestamp, source) DO NOTHING
-        RETURNING id
-      `;
-      if (result.length > 0) stored++;
+      // DO NOTHING, and every row it inserts is logged to flow_data_revisions
+      // in the same statement (zero_dte_greek_flow is in the revision log,
+      // P0.7).
+      stored += await storeRows(
+        sql,
+        loggedFlowDataTarget('backfill-greek-flow'),
+        [
+          {
+            date,
+            timestamp: ts,
+            source: SOURCE,
+            ncp: tick.total_delta_flow,
+            npp: tick.dir_delta_flow,
+            net_volume: tick.volume,
+          },
+        ],
+        { dryRun: false },
+      );
     } catch (err) {
       console.warn(`  Insert error: ${err.message}`);
     }

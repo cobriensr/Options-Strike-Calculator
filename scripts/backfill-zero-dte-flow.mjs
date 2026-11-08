@@ -19,6 +19,10 @@
  * ones under a second convention. It also stores a null premium as NULL,
  * which the live cron no longer does.
  *
+ * Every row it inserts is also appended to flow_data_revisions, in the same
+ * statement, under the writer name "backfill-zero-dte-flow" (spec P0.7): a
+ * refill keeps the log of what was stored before it.
+ *
  * Usage:
  *   UW_API_KEY=your_key DATABASE_URL="postgresql://..." node scripts/backfill-zero-dte-flow.mjs
  *
@@ -28,6 +32,8 @@
 
 import { neon } from '@neondatabase/serverless';
 
+import { storeRows } from './_lib/backfill-cli.mjs';
+import { loggedFlowDataTarget } from './_lib/flow-data-backfill.mjs';
 import { getTradingDays } from './_lib/trading-days.mjs';
 
 const UW_API_KEY = process.env.UW_API_KEY;
@@ -93,16 +99,23 @@ async function storeCandles(ticks, date, totals) {
 
   for (const [ts, tick] of sampled) {
     try {
-      const result = await sql`
-        INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
-        VALUES (
-          ${date}, ${ts}, ${SOURCE},
-          ${tick.net_call_premium}, ${tick.net_put_premium}, ${tick.net_volume}
-        )
-        ON CONFLICT (date, timestamp, source) DO NOTHING
-        RETURNING id
-      `;
-      if (result.length > 0) stored++;
+      // DO NOTHING, and every row it inserts is logged to flow_data_revisions
+      // in the same statement (zero_dte_index is in the revision log, P0.7).
+      stored += await storeRows(
+        sql,
+        loggedFlowDataTarget('backfill-zero-dte-flow'),
+        [
+          {
+            date,
+            timestamp: ts,
+            source: SOURCE,
+            ncp: tick.net_call_premium,
+            npp: tick.net_put_premium,
+            net_volume: tick.net_volume,
+          },
+        ],
+        { dryRun: false },
+      );
     } catch (err) {
       console.warn(`  Insert error: ${err.message}`);
       totals.failed++;

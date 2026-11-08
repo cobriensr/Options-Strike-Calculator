@@ -433,12 +433,23 @@ export const WRITE_BATCH = 500;
 
 /**
  * One multi-row INSERT for `rows`. `target` is `{ table, columns,
- * conflictTarget }`: constants in the calling module, never data, because they
- * are spliced into the text. Every value is a bound parameter, a missing field
- * a NULL. DO NOTHING, so a row already stored (a live cron's) stays as it is.
- * RETURNING id counts the rows ON CONFLICT let in, so the table needs an `id`.
+ * conflictTarget }` and optionally `revisionLog: { table, writer }`: constants
+ * in the calling module, never data, because the names are spliced into the
+ * text. Every value is a bound parameter, a missing field a NULL. DO NOTHING,
+ * so a row already stored (a live cron's) stays as it is. RETURNING id counts
+ * the rows ON CONFLICT let in, so the table needs an `id`.
+ *
+ * With `revisionLog`, the same statement also appends each row it inserted to
+ * the log table (the target's columns plus `writer` and `is_first`, here
+ * always true: a DO NOTHING insert only ever adds a row), in a data-modifying
+ * CTE, so the rows and their log entries are written together or not at all.
+ * A row the conflict skipped is not in the CTE and logs nothing. The log gets
+ * the values as the table stored them. See flow_data_revisions (spec P0.7).
  */
-function insertStatement({ table, columns, conflictTarget }, rows) {
+function insertStatement(
+  { table, columns, conflictTarget, revisionLog },
+  rows,
+) {
   const values = [];
   const groups = rows.map((row) => {
     const params = columns.map((column) => {
@@ -447,9 +458,19 @@ function insertStatement({ table, columns, conflictTarget }, rows) {
     });
     return `(${params.join(', ')})`;
   });
+  const columnList = columns.join(', ');
+  const insert =
+    `INSERT INTO ${table} (${columnList}) VALUES ${groups.join(', ')} ` +
+    `ON CONFLICT ${conflictTarget} DO NOTHING`;
+  if (revisionLog === undefined) {
+    return { text: `${insert} RETURNING id`, values };
+  }
+  values.push(revisionLog.writer);
   const text =
-    `INSERT INTO ${table} (${columns.join(', ')}) VALUES ${groups.join(', ')} ` +
-    `ON CONFLICT ${conflictTarget} DO NOTHING RETURNING id`;
+    `WITH ins AS (${insert} RETURNING id, ${columnList}), ` +
+    `logged AS (INSERT INTO ${revisionLog.table} (${columnList}, writer, is_first) ` +
+    `SELECT ${columnList}, $${values.length}::text, true FROM ins) ` +
+    `SELECT id FROM ins`;
   return { text, values };
 }
 
