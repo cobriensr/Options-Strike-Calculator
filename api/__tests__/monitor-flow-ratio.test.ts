@@ -11,8 +11,15 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { setTag: vi.fn(), captureException: vi.fn() },
+  Sentry: {
+    setTag: vi.fn(),
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+  },
+  metrics: { increment: vi.fn(), uwRateLimit: vi.fn(), uwBudget: vi.fn() },
 }));
+
+vi.mock('../_lib/axiom.js', () => ({ reportCronRun: vi.fn() }));
 
 vi.mock('../_lib/logger.js', () => ({
   default: {
@@ -44,10 +51,14 @@ vi.mock('../_lib/api-helpers.js', () => ({
 import handler from '../cron/monitor-flow-ratio.js';
 import { cronGuard, uwFetch } from '../_lib/api-helpers.js';
 import { writeAlertIfNew, checkForCombinedAlert } from '../_lib/alerts.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
+import { reportCronRun } from '../_lib/axiom.js';
 import logger from '../_lib/logger.js';
 
 const MARKET_TIME = new Date('2026-03-24T16:00:00Z');
+// EDT (UTC-4): the last second before, and the first second of, 09:40 ET.
+const BEFORE_0940_ET = new Date('2026-03-24T13:39:59.000Z');
+const AT_0940_ET = new Date('2026-03-24T13:40:00.000Z');
 
 function makeCronReq() {
   return mockRequest({
@@ -136,6 +147,164 @@ describe('monitor-flow-ratio handler', () => {
       skipped: true,
       reason: 'invalid values',
     });
+  });
+
+  // ── R-day (F23): only today's session ticks are readings ──
+
+  // Friday-style rollover: UW still answers date=today with yesterday's grid,
+  // whose last non-null tick is yesterday's 15:59 ET (19:59Z).
+  const YESTERDAY_TICK = {
+    timestamp: '2026-03-23T19:59:00Z',
+    date: '2026-03-23',
+  };
+
+  it('stores nothing, warns, counts a metric and reports skipped when every tick is yesterdays', async () => {
+    vi.mocked(uwFetch).mockResolvedValue([
+      makeFlowTick({ ...YESTERDAY_TICK, timestamp: '2026-03-23T19:58:00Z' }),
+      makeFlowTick(YESTERDAY_TICK),
+      // UW pre-fills the unfilled slots with nulls.
+      makeFlowTick({
+        timestamp: '2026-03-24T13:30:00Z',
+        net_call_premium: null,
+      }),
+    ]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      job: 'monitor-flow-ratio',
+      skipped: true,
+      reason: 'stale ticks',
+      offSession: 2,
+    });
+    expect(res._json).not.toHaveProperty('ratio');
+    // Nothing stored, no ROC/surge read.
+    expect(mockSql).not.toHaveBeenCalled();
+    expect(vi.mocked(writeAlertIfNew)).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ today: '2026-03-24', offSession: 2 }),
+      expect.stringContaining('skipping store'),
+    );
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'monitor_flow_ratio.stale_tick_skip',
+    );
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'monitor-flow-ratio',
+      expect.objectContaining({ status: 'skipped', offSession: 2 }),
+    );
+  });
+
+  it('sends a Sentry error from 09:40 ET when UW still serves only yesterdays ticks', async () => {
+    vi.setSystemTime(AT_0940_ET);
+    vi.mocked(uwFetch).mockResolvedValue([makeFlowTick(YESTERDAY_TICK)]);
+
+    await handler(makeCronReq(), mockResponse());
+
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining("none from today's session"),
+      'error',
+    );
+    expect(Sentry.setTag).toHaveBeenCalledWith(
+      'cron.job',
+      'monitor-flow-ratio',
+    );
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet in Sentry before 09:40 ET (the rollover), still warns and counts', async () => {
+    vi.setSystemTime(BEFORE_0940_ET);
+    vi.mocked(uwFetch).mockResolvedValue([makeFlowTick(YESTERDAY_TICK)]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._json).toMatchObject({ skipped: true, reason: 'stale ticks' });
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalled();
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'monitor_flow_ratio.stale_tick_skip',
+    );
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('ignores a pre-open tick of today: the session starts at 09:30 ET', async () => {
+    // 09:29 ET is 13:29Z (EDT): today's date, but before the open.
+    vi.mocked(uwFetch).mockResolvedValue([
+      makeFlowTick({ timestamp: '2026-03-24T13:29:00Z' }),
+    ]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._json).toMatchObject({ skipped: true, reason: 'stale ticks' });
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('accepts a tick stamped exactly 09:30 ET', async () => {
+    vi.mocked(uwFetch).mockResolvedValue([
+      makeFlowTick({ timestamp: '2026-03-24T13:30:00Z' }),
+    ]);
+    mockSql.mockResolvedValue([]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._json).toMatchObject({ job: 'monitor-flow-ratio', ratio: 1.6 });
+    expect(res._json).not.toMatchObject({ skipped: true });
+    expect(mockSql).toHaveBeenCalled();
+  });
+
+  it('uses the last session tick of today and drops yesterdays ticks around it', async () => {
+    vi.mocked(uwFetch).mockResolvedValue([
+      makeFlowTick({
+        ...YESTERDAY_TICK,
+        net_call_premium: '10000000',
+        net_put_premium: '-10000000',
+      }),
+      makeFlowTick({
+        timestamp: '2026-03-24T13:31:00Z',
+        net_call_premium: '40000000',
+        net_put_premium: '-60000000',
+      }),
+      makeFlowTick({
+        timestamp: '2026-03-24T13:32:00Z',
+        net_call_premium: null,
+      }),
+    ]);
+    mockSql.mockResolvedValue([]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    // 09:31 ET tick: |NPP| 60M / |NCP| 40M = 1.5, not yesterday's 1.0.
+    expect(res._json).toMatchObject({ ratio: 1.5, absNpp: 60000000 });
+  });
+
+  it('drops a tick with an unparseable timestamp', async () => {
+    vi.mocked(uwFetch).mockResolvedValue([
+      makeFlowTick({ timestamp: 'garbage' }),
+    ]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._json).toMatchObject({ skipped: true, reason: 'stale ticks' });
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('keeps the quiet "no flow data" skip when UW sends no tick at all', async () => {
+    vi.mocked(uwFetch).mockResolvedValue([]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._json).toMatchObject({ skipped: true, reason: 'no flow data' });
+    expect(metrics.increment).not.toHaveBeenCalled();
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 
   // ── Ratio computation ────────────────────────────────────
@@ -512,6 +681,31 @@ describe('monitor-flow-ratio handler', () => {
       'monitor-flow-ratio',
     );
     expect(vi.mocked(logger.error)).toHaveBeenCalled();
+  });
+
+  it('returns 500 with the parse error captured when UW answers 2xx but the body is not JSON', async () => {
+    // The real uwFetch behind the mocked barrel, so the 2xx / json() rejection
+    // goes through the real wrapper.
+    const real = await vi.importActual<typeof import('../_lib/uw-fetch.js')>(
+      '../_lib/uw-fetch.js',
+    );
+    vi.mocked(uwFetch).mockImplementation(real.uwFetch);
+    const parseError = new SyntaxError('Unexpected token < in JSON');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.reject(parseError),
+      }),
+    );
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({ error: 'Internal error' });
+    expect(Sentry.captureException).toHaveBeenCalledWith(parseError);
+    expect(mockSql).not.toHaveBeenCalled();
   });
 
   it('returns 500 when DB throws during storeRatioReading', async () => {

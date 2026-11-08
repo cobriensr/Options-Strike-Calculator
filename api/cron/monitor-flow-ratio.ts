@@ -13,6 +13,15 @@
  * Directional decomposition: determines BEARISH vs BULLISH by which
  * side (NPP or NCP) drove the ratio change.
  *
+ * R-day (docs/superpowers/specs/live-data-integrity-2026-11-06.md, F23, P0.4):
+ * only a tick stamped on today's ET date at or after 09:30 ET is a reading.
+ * Until UW rolls over (09:28 to 09:32 ET) `date=today` can still answer with
+ * yesterday's grid, whose last non-null tick is yesterday's 15:59; that would
+ * be stored under today. F23 was seen on one day (checked 2026-11-07), so
+ * this is a defensive guard, not a repair. With no such tick nothing is
+ * stored: a warning and a metric, and from 09:40 ET a Sentry error. A
+ * response with no tick at all is the old quiet "no flow data" skip.
+ *
  * Total API calls per invocation: 1 (net-flow/expiry)
  *
  * Environment: UW_API_KEY, CRON_SECRET
@@ -32,6 +41,8 @@ import { writeAlertIfNew, checkForCombinedAlert } from '../_lib/alerts.js';
 import type { AlertPayload, AlertDirection } from '../_lib/alerts.js';
 import { ALERT_THRESHOLDS } from '../_lib/alert-thresholds.js';
 import { reportCronRun } from '../_lib/axiom.js';
+import { reportSkippedWrite } from '../_lib/ladder-skip.js';
+import { getETDateStr, getETTotalMinutes } from '../../src/utils/timezone.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -53,10 +64,33 @@ interface RatioReading {
 
 // ── Fetch helper ────────────────────────────────────────────
 
+/** 09:30 ET, the cash open, in ET minutes after midnight. */
+const SESSION_OPEN_ET_MINUTES = 9 * 60 + 30;
+
+/**
+ * R-day: true when the tick's own timestamp falls on `today`'s ET date at or
+ * after the 09:30 ET open. An unparseable timestamp is not a session tick.
+ */
+function isSessionTick(tick: FlowTick, today: string): boolean {
+  const at = new Date(tick.timestamp);
+  if (Number.isNaN(at.getTime())) return false;
+  return (
+    getETDateStr(at) === today &&
+    getETTotalMinutes(at) >= SESSION_OPEN_ET_MINUTES
+  );
+}
+
+interface LatestTick {
+  /** The last non-null tick of today's session, or null. */
+  tick: FlowTick | null;
+  /** Non-null ticks dropped for not being from today's session. */
+  offSession: number;
+}
+
 async function fetchLatestFlowTick(
   apiKey: string,
   today: string,
-): Promise<FlowTick | null> {
+): Promise<LatestTick> {
   const ticks = await uwFetch<FlowTick>(
     apiKey,
     `/net-flow/expiry?date=${today}&expiration=zero_dte&tide_type=index_only`,
@@ -68,11 +102,13 @@ async function fetchLatestFlowTick(
   );
 
   // The UW API pre-fills future minute slots with null values.
-  // Find the last tick that actually has data.
-  for (let i = ticks.length - 1; i >= 0; i--) {
-    if (ticks[i]!.net_call_premium != null) return ticks[i]!;
-  }
-  return null;
+  // Find the last tick that actually has data and is from today's session.
+  const withData = ticks.filter((t) => t.net_call_premium != null);
+  const session = withData.filter((t) => isSessionTick(t, today));
+  return {
+    tick: session.at(-1) ?? null,
+    offSession: withData.length - session.length,
+  };
 }
 
 // ── Store reading ───────────────────────────────────────────
@@ -298,7 +334,33 @@ export default withCronCheckin('monitor-flow-ratio', async (req, res) => {
   const startTime = Date.now();
 
   try {
-    const tick = await withRetry(() => fetchLatestFlowTick(apiKey, today));
+    const { tick, offSession } = await withRetry(() =>
+      fetchLatestFlowTick(apiKey, today),
+    );
+
+    if (!tick && offSession > 0) {
+      // R-day: UW answered, but none of its ticks is from today's session.
+      reportSkippedWrite({
+        job: 'monitor-flow-ratio',
+        metric: 'monitor_flow_ratio.stale_tick_skip',
+        warning:
+          "monitor-flow-ratio: no tick from today's ET session (UW still serving an earlier day), skipping store",
+        detail: { today, offSession },
+        alert: `monitor-flow-ratio: ${offSession} flow tick(s) but none from today's session, nothing stored`,
+      });
+      await reportCronRun('monitor-flow-ratio', {
+        status: 'skipped',
+        message: 'no tick from the current session',
+        offSession,
+        durationMs: Date.now() - startTime,
+      });
+      return res.status(200).json({
+        job: 'monitor-flow-ratio',
+        skipped: true,
+        reason: 'stale ticks',
+        offSession,
+      });
+    }
 
     if (!tick) {
       logger.info('monitor-flow-ratio: no flow ticks returned');
