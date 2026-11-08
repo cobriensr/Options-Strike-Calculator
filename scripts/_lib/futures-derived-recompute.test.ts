@@ -31,6 +31,7 @@ import {
   SNAPSHOT_LOOKBACK_MS,
   SPAN,
   checkApplyGate,
+  checkJunkGate,
   compareGlobex,
   compareSnapshot,
   gateFlips,
@@ -82,6 +83,8 @@ describe('parseRecomputeArgs', () => {
       expectSnapshots: null,
       expectPremarket: null,
       expectFires: null,
+      deleteJunkStale: false,
+      expectJunkDeletes: null,
       envFile: null,
     });
   });
@@ -113,8 +116,29 @@ describe('parseRecomputeArgs', () => {
       expectSnapshots: 31012,
       expectPremarket: 36,
       expectFires: 240,
+      deleteJunkStale: false,
+      expectJunkDeletes: null,
       envFile: '.env.test',
     });
+  });
+
+  it('takes --delete-junk-stale with its count, under --apply only', () => {
+    const args = parseRecomputeArgs([
+      '--apply',
+      '--backup',
+      'b.jsonl',
+      '--expect-snapshots',
+      '10',
+      '--expect-premarket',
+      '1',
+      '--expect-fires',
+      '2',
+      '--delete-junk-stale',
+      '--expect-junk-deletes',
+      '1964',
+    ]);
+    expect(args.deleteJunkStale).toBe(true);
+    expect(args.expectJunkDeletes).toBe(1964);
   });
 
   it('asks only for the expectations of the stores it was given', () => {
@@ -188,12 +212,110 @@ describe('parseRecomputeArgs', () => {
       ['--apply', '--expect-fires', '1.5'],
       /--expect-fires needs a whole number, got "1.5"/,
     ],
+    // The junk delete is opt-in, counted, and a snapshots write.
+    [['--delete-junk-stale'], /--delete-junk-stale only applies with --apply/],
+    [
+      ['--expect-junk-deletes', '3'],
+      /--expect-junk-deletes only applies with --apply/,
+    ],
+    [
+      [
+        '--apply',
+        '--backup',
+        'b.jsonl',
+        '--stores',
+        'fires',
+        '--expect-fires',
+        '1',
+        '--expect-junk-deletes',
+        '3',
+      ],
+      /--expect-junk-deletes needs --delete-junk-stale/,
+    ],
+    [
+      [
+        '--apply',
+        '--backup',
+        'b.jsonl',
+        '--expect-snapshots',
+        '1',
+        '--expect-premarket',
+        '1',
+        '--expect-fires',
+        '1',
+        '--delete-junk-stale',
+      ],
+      /--delete-junk-stale needs --expect-junk-deletes J: the count of the dry run you approved/,
+    ],
+    [
+      [
+        '--apply',
+        '--backup',
+        'b.jsonl',
+        '--stores',
+        'fires',
+        '--expect-fires',
+        '1',
+        '--delete-junk-stale',
+        '--expect-junk-deletes',
+        '3',
+      ],
+      /--delete-junk-stale deletes from futures_snapshots, so --stores must include snapshots/,
+    ],
+    [
+      [
+        '--apply',
+        '--backup',
+        'b.jsonl',
+        '--stores',
+        'snapshots',
+        '--expect-snapshots',
+        '1',
+        '--delete-junk-stale',
+        '--expect-junk-deletes',
+        'all',
+      ],
+      /--expect-junk-deletes needs a whole number, got "all"/,
+    ],
   ])('rejects %j', (argv, message) => {
     expect(() => parseRecomputeArgs(argv)).toThrow(message);
   });
 });
 
 // ── Scope ───────────────────────────────────────────────────────────────────
+
+describe('checkJunkGate', () => {
+  it('has nothing to say without the flag, whatever the count', () => {
+    expect(
+      checkJunkGate({ deleteJunkStale: false, expectJunkDeletes: null }, 7),
+    ).toEqual([]);
+    expect(
+      checkJunkGate({ deleteJunkStale: false, expectJunkDeletes: 3 }, 7),
+    ).toEqual([]);
+  });
+
+  it('passes the approved count, including zero', () => {
+    expect(
+      checkJunkGate({ deleteJunkStale: true, expectJunkDeletes: 7 }, 7),
+    ).toEqual([]);
+    expect(
+      checkJunkGate({ deleteJunkStale: true, expectJunkDeletes: 0 }, 0),
+    ).toEqual([]);
+  });
+
+  it('refuses a missing count and a different count, naming both', () => {
+    expect(
+      checkJunkGate({ deleteJunkStale: true, expectJunkDeletes: null }, 7),
+    ).toEqual([
+      '--delete-junk-stale needs --expect-junk-deletes J: the count of the dry run you approved',
+    ]);
+    expect(
+      checkJunkGate({ deleteJunkStale: true, expectJunkDeletes: 6 }, 7),
+    ).toEqual([
+      'the fresh plan deletes 7 junk-priced rows, --expect-junk-deletes 6 was given',
+    ]);
+  });
+});
 
 describe('scope', () => {
   it('is the Phase 2 span, half-open', () => {
@@ -682,6 +804,8 @@ describe('runRecompute guards', () => {
     expectSnapshots: 1,
     expectPremarket: 1,
     expectFires: 1,
+    deleteJunkStale: false,
+    expectJunkDeletes: null,
     ...over,
   });
 

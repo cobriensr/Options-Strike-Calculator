@@ -788,6 +788,8 @@ function options(over: Partial<RecomputeOptions> = {}): RecomputeOptions {
     expectSnapshots: 4,
     expectPremarket: 1,
     expectFires: 3,
+    deleteJunkStale: false,
+    expectJunkDeletes: null,
     ...over,
   };
 }
@@ -896,6 +898,40 @@ afterEach(() => {
   vi.restoreAllMocks();
   rmSync(dir, { recursive: true, force: true });
 });
+
+/**
+ * Stale rows that are not junk-priced although a repaired bar is behind them:
+ * a stale row priced from a real bar (the close of the 05-12 14:30 bar), one
+ * priced from a bar whose close Phase 2 changed (04-14 14:30, 7067 then, 7007
+ * now), and one whose price is a real bar's but whose 1h change reconstructs the
+ * close of the deleted 05-14 bar.
+ */
+async function staleRowsNotJunk(): Promise<{
+  real: number;
+  changed: number;
+  hourOnly: number;
+}> {
+  return {
+    real: await snapshotRow(
+      'ES',
+      '2026-05-12T21:31:30.250Z',
+      '2026-05-12',
+      [7007, 0, 0, 1],
+    ),
+    changed: await snapshotRow(
+      'ES',
+      '2026-04-14T20:31:30.250Z',
+      '2026-04-14',
+      [7067, 0, 0, 1],
+    ),
+    hourOnly: await snapshotRow(
+      'ES',
+      '2026-05-14T16:00:30.250Z',
+      '2026-05-14',
+      [7007, -6.5733, null, 1],
+    ),
+  };
+}
 
 // ── Dry run ─────────────────────────────────────────────────────────────────
 
@@ -1053,6 +1089,44 @@ describe('dry run on real SQL (pglite)', () => {
     expect(text).not.toContain('futures_snapshots (ES, NQ)');
     expect(text).not.toContain('market_snapshots.pre_market_data');
     expect(text).not.toContain('Phase 2 backup');
+  });
+
+  it('reports the stale rows priced from a deleted junk bar, and the command that would delete them', async () => {
+    // Stale rows with a repaired bar behind them that are not priced from a deleted one.
+    const { real, changed, hourOnly } = await staleRowsNotJunk();
+    const before = await dump();
+    expect(await dry()).toBe(0);
+    expect(await dump()).toBe(before);
+    const lines = report().split('\n');
+    const at = lines.findIndex((l) =>
+      l.includes('stale rows priced from a deleted junk bar'),
+    );
+    // The heading and the indented lines under it, up to the next section.
+    const under: string[] = [];
+    for (const l of lines.slice(at + 1)) {
+      if (!l.startsWith('    ')) break;
+      under.push(l);
+    }
+    const block = under.join('\n');
+    expect(lines[at]).toBe(
+      '  stale rows priced from a deleted junk bar (not recomputable; --delete-junk-stale deletes them, off by default): 2',
+    );
+    expect(block).toContain(
+      'ES: 2, first 2026-05-14T14:31:30.250Z, last 2026-05-15T21:31:30.250Z',
+    );
+    expect(block).toContain(
+      `ES 2026-05-14T14:31:30.250Z id ${ids.s6}: stored price 7500, the deleted bar of 2026-05-14T14:30:00Z closed at 7500`,
+    );
+    expect(block).toContain(
+      `ES 2026-05-15T21:31:30.250Z id ${ids.s9}: stored price 7500, the deleted bar of 2026-05-14T14:30:00Z closed at 7500`,
+    );
+    // Not the stale row priced from a real bar, the stale row nothing matches, or the fresh Sunday rows.
+    for (const id of [real, changed, hourOnly, ids.s4, ids.s10, ids.s11]) {
+      expect(block).not.toContain(`id ${id}:`);
+    }
+    expect(block).toContain(
+      `npx tsx scripts/recompute-futures-derived.ts --apply --backup ${backupPath} --stores snapshots --expect-snapshots 4 --delete-junk-stale --expect-junk-deletes 2`,
+    );
   });
 
   it("reports an exact root's control miss, classified, and exits 0", async () => {
@@ -1700,6 +1774,187 @@ describe('--apply on real SQL (pglite)', () => {
 });
 
 // ── Method identity with the cron ───────────────────────────────────────────
+
+describe('--delete-junk-stale on real SQL (pglite)', () => {
+  /** Rows of the whole table, by id. */
+  const surviving = async (candidates: number[]): Promise<number[]> =>
+    (
+      await pg.query<{ id: number }>(
+        `SELECT id FROM futures_snapshots WHERE id = ANY($1::int[]) ORDER BY id`,
+        [candidates],
+      )
+    ).rows.map((r) => r.id);
+  const countRows = async (): Promise<number> =>
+    (
+      await pg.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM futures_snapshots`,
+      )
+    ).rows[0]!.n;
+  /** The options of the command the report prints: the snapshots store and the delete. */
+  const junkRun = (over: Partial<RecomputeOptions> = {}) =>
+    run({
+      stores: ['snapshots'],
+      expectPremarket: null,
+      expectFires: null,
+      deleteJunkStale: true,
+      expectJunkDeletes: 2,
+      ...over,
+    });
+
+  it('is off by default: a plain apply keeps the stale rows priced from a deleted bar', async () => {
+    expect(await run()).toBe(0);
+    expect(await surviving([ids.s6, ids.s9])).toEqual([ids.s6, ids.s9]);
+    expect(existsSync(markerPath(workDir, 'junk'))).toBe(false);
+  });
+
+  it('deletes exactly the scoped rows, backs them up whole first, and leaves a stale row priced from a real bar', async () => {
+    const { real, changed, hourOnly } = await staleRowsNotJunk();
+    const rowsBefore = await countRows();
+    let backedUp: string[] = [];
+    hooks.beforeWrite = (texts) => {
+      // Before the first write, and so before the DELETE, the backup holds the full rows.
+      if (backedUp.length > 0 || texts.some((t) => /DELETE/.test(t))) return;
+      backedUp = backups();
+    };
+    expect(await junkRun()).toBe(0);
+
+    expect(await surviving([ids.s6, ids.s9])).toEqual([]);
+    expect(await countRows()).toBe(rowsBefore - 2);
+    // Kept: the stale row priced from a real bar, the stale row nothing matches,
+    // and the fresh rows priced from a deleted bar (updated, not deleted).
+    expect(
+      await surviving([
+        real,
+        changed,
+        hourOnly,
+        ids.s4,
+        ids.s1,
+        ids.s10,
+        ids.s11,
+      ]),
+    ).toHaveLength(7);
+    expect(await snapshotValues(ids.s10)).toEqual([
+      '6771.2500',
+      null,
+      null,
+      '1.0000',
+    ]);
+
+    expect(backedUp).toHaveLength(1);
+    const lines = readFileSync(join(workDir, backedUp[0]!), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map(
+        (l) =>
+          JSON.parse(l) as {
+            store: string;
+            id: number;
+            op?: string;
+            to: unknown;
+            row: Record<string, unknown>;
+          },
+      );
+    expect(lines).toHaveLength(6); // 4 snapshot updates + 2 deleted rows
+    const deleted = lines.filter((l) => l.op === 'delete');
+    expect(deleted.map((l) => l.id).sort()).toEqual([ids.s6, ids.s9].sort());
+    for (const l of deleted) {
+      expect(l.store).toBe('snapshots');
+      expect(l.to).toBeNull();
+      expect(l.row).toMatchObject({
+        id: l.id,
+        symbol: 'ES',
+        price: 7500,
+        change_1h_pct: 0,
+        volume_ratio: 1,
+      });
+    }
+    expect(existsSync(markerPath(workDir, 'junk'))).toBe(true);
+    expect(existsSync(markerPath(workDir, 'snapshots'))).toBe(true);
+    // --stores snapshots: the other stores were not written.
+    expect(await fireValue(ids.f1)).toBe('0.2');
+    expect(existsSync(markerPath(workDir, 'fires'))).toBe(false);
+  });
+
+  it('refuses the flag without --expect-junk-deletes, before any write', async () => {
+    const before = await dump();
+    expect(await junkRun({ expectJunkDeletes: null })).toBe(1);
+    expect(errored()).toMatch(
+      /--delete-junk-stale needs --expect-junk-deletes J: the count of the dry run you approved/,
+    );
+    expect(hooks.writes).toBe(0);
+    expect(backups()).toEqual([]);
+    expect(await dump()).toBe(before);
+  });
+
+  it('refuses a count that is not the fresh plan, before any write', async () => {
+    const before = await dump();
+    expect(await junkRun({ expectJunkDeletes: 3 })).toBe(1);
+    expect(errored()).toMatch(
+      /the fresh plan deletes 2 junk-priced rows, --expect-junk-deletes 3 was given/,
+    );
+    expect(hooks.writes).toBe(0);
+    expect(backups()).toEqual([]);
+    expect(await dump()).toBe(before);
+    expect(existsSync(markerPath(workDir, 'junk'))).toBe(false);
+  });
+
+  it('fails the step, unmarked, when the delete is silently dropped', async () => {
+    hooks.beforeWrite = (texts) => {
+      if (texts.some((t) => /DELETE FROM futures_snapshots/.test(t))) {
+        hooks.dropWrites = true;
+      }
+    };
+    expect(await junkRun()).toBe(1);
+    expect(errored()).toMatch(
+      /apply failed: junk: verify failed for junk: 2 of 2 row\(s\) are still there/,
+    );
+    expect(existsSync(markerPath(workDir, 'junk'))).toBe(false);
+    expect(await surviving([ids.s6, ids.s9])).toHaveLength(2);
+  });
+
+  it('leaves a row alone that changed since the plan, and says so', async () => {
+    hooks.beforeWrite = async (texts) => {
+      if (texts.some((t) => /DELETE FROM futures_snapshots/.test(t))) {
+        await pg.query(
+          `UPDATE futures_snapshots SET price = 7501 WHERE id = $1`,
+          [ids.s6],
+        );
+      }
+    };
+    expect(await junkRun()).toBe(1);
+    expect(errored()).toMatch(/verify failed for junk: 1 of 2 row\(s\)/);
+    expect(await surviving([ids.s6, ids.s9])).toEqual([ids.s6]);
+    expect(existsSync(markerPath(workDir, 'junk'))).toBe(false);
+  });
+
+  it('fails the step, unmarked, when anything else left the table during the delete', async () => {
+    hooks.beforeWrite = async (texts) => {
+      if (texts.some((t) => /DELETE FROM futures_snapshots/.test(t))) {
+        await pg.query(`DELETE FROM futures_snapshots WHERE id = $1`, [ids.s4]);
+      }
+    };
+    expect(await junkRun()).toBe(1);
+    expect(errored()).toMatch(
+      /verify failed for junk: \d+ rows in scope before, \d+ after, \d+ expected/,
+    );
+    expect(await surviving([ids.s6, ids.s9])).toEqual([]);
+    expect(existsSync(markerPath(workDir, 'junk'))).toBe(false);
+  });
+
+  it('is done once: the marker skips it, and the fresh plan then lists no row', async () => {
+    expect(await junkRun()).toBe(0);
+    vi.mocked(console.log).mockClear();
+    expect(await junkRun({ expectSnapshots: 0, expectJunkDeletes: 0 })).toBe(0);
+    const logged = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => String(c[0]))
+      .join('\n');
+    expect(logged).toContain(
+      'the junk delete is marked done and has nothing left to delete',
+    );
+    expect(backups()).toHaveLength(1);
+  });
+});
 
 describe("the pre-market recompute is the cron's own method", () => {
   it('reads the same four Globex values the cron handler stores from the same bars', async () => {

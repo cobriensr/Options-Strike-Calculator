@@ -16,7 +16,9 @@
  * A row is updated only when its recomputed value differs. A row the bars can
  * no longer support (a stale or missing snapshot, a window with no bars, a
  * NULL basis) is reported and left alone; a NULL basis is never set, and no
- * fire is added or deleted.
+ * fire is added or deleted. The one delete is opt-in (`--delete-junk-stale`, off
+ * by default): a stale snapshot row whose price is the close of a bar Phase 2
+ * deleted, which cannot be recomputed and whose `price` cannot be blanked.
  *
  * Before trusting any in-span difference, each store recomputes a control set
  * of rows outside the repaired span, where the bars were never bad. It must
@@ -485,6 +487,28 @@ export function checkApplyGate(
     }
   }
   return problems;
+}
+
+/**
+ * Why `--apply --delete-junk-stale` must refuse: the rows it would delete must be
+ * the count the owner approved from the dry run. Empty without the flag.
+ */
+export function checkJunkGate(
+  o: Pick<RecomputeOptions, 'deleteJunkStale' | 'expectJunkDeletes'>,
+  planned: number,
+): string[] {
+  if (!o.deleteJunkStale) return [];
+  if (o.expectJunkDeletes == null) {
+    return [
+      '--delete-junk-stale needs --expect-junk-deletes J: the count of the dry run you approved',
+    ];
+  }
+  if (o.expectJunkDeletes !== planned) {
+    return [
+      `the fresh plan deletes ${planned} junk-priced rows, --expect-junk-deletes ${o.expectJunkDeletes} was given`,
+    ];
+  }
+  return [];
 }
 
 // ── Read-only session ───────────────────────────────────────────────────────
@@ -1041,6 +1065,18 @@ export interface ThinControl {
   otherRows: string[];
 }
 
+/** A stale or missing snapshot row whose stored price is the close of a bar Phase 2 deleted: priced from junk, and not recomputable. */
+export interface JunkRow {
+  id: number;
+  symbol: Sym;
+  tsMs: number;
+  storedPrice: number;
+  /** The deleted bar whose close the stored price equals, and that close. */
+  barTsMs: number;
+  barClose: number;
+  row: Row;
+}
+
 export interface SnapshotInfoDay {
   rows: number;
   matched: number;
@@ -1068,8 +1104,10 @@ export interface SnapshotInfo {
 export interface SnapshotStore extends StoreResult<SnapshotChange> {
   symbols: SnapshotSymbolReport[];
   info: SnapshotInfo[];
-  /** The method control's rows, per symbol, classified like the information window. */
+  /** The control's misses of the exact roots (ES, NQ), classified like the information window. */
   controlMisses: SnapshotInfo[];
+  /** Rows the opt-in `--delete-junk-stale` would delete: always planned and reported, never deleted by default. */
+  junk: JunkRow[];
 }
 
 export interface PremarketStore extends StoreResult<PremarketChange> {
@@ -1385,6 +1423,7 @@ async function planSnapshots(
   const problems: string[] = [];
   const infos: SnapshotInfo[] = [];
   const controlMisses: SnapshotInfo[] = [];
+  const junk: JunkRow[] = [];
 
   for (const symbol of SYMBOLS) {
     const sd = data.get(symbol);
@@ -1456,6 +1495,20 @@ async function planSnapshots(
         report.attributionInconsistent += 1;
       }
       if (outcome.kind === 'unrecomputable') {
+        const junkHit = byValue.hits.find(
+          (h) => h.field === 'price' && h.bar.repair === 'deleted',
+        );
+        if (junkHit != null) {
+          junk.push({
+            id: row.id,
+            symbol,
+            tsMs: row.tsMs,
+            storedPrice: row.stored.price,
+            barTsMs: junkHit.bar.tsMs,
+            barClose: junkHit.bar.closePre,
+            row: row.row,
+          });
+        }
         if (affected.size > 0) {
           report.affectedLeftAlone += 1;
           noteLeftAlone(report.leftAlone, result.kind, affected, row.tsMs);
@@ -1537,6 +1590,7 @@ async function planSnapshots(
     symbols: reports,
     info: infos,
     controlMisses,
+    junk,
   };
 }
 
@@ -1840,7 +1894,36 @@ function infoText(info: SnapshotInfo, heading: string): string[] {
   return out;
 }
 
-function snapshotsText(r: SnapshotStore): string[] {
+function junkText(junk: JunkRow[], command: string | null): string[] {
+  const out = [
+    `  stale rows priced from a deleted junk bar (not recomputable; --delete-junk-stale deletes them, off by default): ${junk.length}`,
+  ];
+  if (junk.length === 0) return out;
+  for (const symbol of SYMBOLS) {
+    const times = junk.filter((j) => j.symbol === symbol).map((j) => j.tsMs);
+    if (times.length === 0) continue;
+    out.push(
+      `    ${symbol}: ${times.length}, first ${isoSecond(Math.min(...times))}, last ${isoSecond(Math.max(...times))}`,
+    );
+  }
+  const first = [...junk].sort((a, b) => a.tsMs - b.tsMs).slice(0, SAMPLE_N);
+  out.push(
+    `    the first ${first.length} by time:`,
+    ...first.map(
+      (j) =>
+        `      ${j.symbol} ${isoSecond(j.tsMs)} id ${j.id}: stored price ${j.storedPrice}, the deleted bar of ${isoSecond(j.barTsMs)} closed at ${j.barClose}`,
+    ),
+  );
+  if (command != null) {
+    out.push(
+      '    to delete them (the owner decides; the snapshots store takes --expect-snapshots 0 once applied):',
+      `      ${command}`,
+    );
+  }
+  return out;
+}
+
+function snapshotsText(r: SnapshotStore, junkCommand: string | null): string[] {
   const top = r.changes
     .filter((c) => c.fields.includes('price'))
     .sort(
@@ -1877,6 +1960,7 @@ function snapshotsText(r: SnapshotStore): string[] {
         `    ${snapshotLine({ id: c.id, symbol: c.symbol, tsMs: c.tsMs, stored: c.from, row: c.row }, c.to)} [writes ${c.fields.join(', ')}]`,
     ),
     ...unrecomputableText(r.unrecomputable),
+    ...junkText(r.junk, junkCommand),
     ...controlText(r.control),
   );
   for (const info of r.controlMisses) {
@@ -1943,9 +2027,12 @@ export function formatReport(
   plans: Plans,
   header: string[],
   gateProblems: string[],
+  junkCommand: string | null = null,
 ): string {
   const out = [...header, ''];
-  if (plans.snapshots) out.push(...snapshotsText(plans.snapshots), '');
+  if (plans.snapshots) {
+    out.push(...snapshotsText(plans.snapshots, junkCommand), '');
+  }
   if (plans.premarket) out.push(...premarketText(plans.premarket), '');
   if (plans.fires) out.push(...firesText(plans.fires), '');
   out.push(
@@ -2050,6 +2137,8 @@ interface BackupEntry {
   id: number;
   row: Row;
   to: unknown;
+  /** Only on a deleted row: its `to` is null and `row` is everything the restore needs. */
+  op?: 'delete';
 }
 
 /** The values a change would write: for a snapshot only its affected fields, not the whole recompute. */
@@ -2063,13 +2152,22 @@ function backedUpValues(
 }
 
 /** One JSONL line per row about to change, full row included; the line count is checked back. */
-function writeBackup(workDir: string, plans: Plans): string {
+function writeBackup(workDir: string, plans: Plans, junk: JunkRow[]): string {
   const entries: BackupEntry[] = [];
   for (const store of STORES) {
     const result = plans[store];
     for (const c of result?.changes ?? []) {
       entries.push({ store, id: c.id, row: c.row, to: backedUpValues(c) });
     }
+  }
+  for (const j of junk) {
+    entries.push({
+      store: 'snapshots',
+      id: j.id,
+      row: j.row,
+      to: null,
+      op: 'delete',
+    });
   }
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const path = join(workDir, `backup-${stamp}.jsonl`);
@@ -2085,10 +2183,14 @@ function writeBackup(workDir: string, plans: Plans): string {
   return path;
 }
 
-export const markerPath = (workDir: string, store: Store): string =>
+export const markerPath = (workDir: string, store: Store | 'junk'): string =>
   join(workDir, `${store}.applied`);
 
-function writeMarker(workDir: string, store: Store, rows: number): void {
+function writeMarker(
+  workDir: string,
+  store: Store | 'junk',
+  rows: number,
+): void {
   writeFileSync(
     markerPath(workDir, store),
     `${JSON.stringify({ store, rows, appliedAt: new Date().toISOString() })}\n`,
@@ -2193,6 +2295,65 @@ async function verifyFires(changes: FireChange[]): Promise<void> {
   }
 }
 
+/**
+ * Deletes by id and symbol, and only while the row still holds the price it
+ * was planned with, so a row that changed since the plan is left alone.
+ */
+function deleteJunk(sql: Sql, rows: JunkRow[]) {
+  return sql`
+    DELETE FROM futures_snapshots f
+     USING unnest(${rows.map((j) => j.id)}::int[],
+                  ${rows.map((j) => j.symbol)}::text[],
+                  ${rows.map((j) => j.storedPrice)}::numeric[])
+           AS r(id, symbol, price)
+     WHERE f.id = r.id AND f.symbol = r.symbol AND f.price = r.price
+    RETURNING f.id`;
+}
+
+/** Snapshot rows in the recompute's scope: the past, so no live writer adds to it. */
+async function countSnapshotsInScope(): Promise<number> {
+  const { snapshots } = scopeRanges();
+  const rows = await readRows<{ n: string }>(
+    (sql) => sql`
+      SELECT count(*)::text AS n FROM futures_snapshots
+       WHERE ts >= ${iso(snapshots.fromMs)}::timestamptz
+         AND ts < ${iso(snapshots.toMs)}::timestamptz`,
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
+/** The rows are gone, and nothing else is: the scope holds exactly that many fewer. */
+async function verifyJunk(junk: JunkRow[], before: number): Promise<void> {
+  for (const group of chunks(junk, WRITE_CHUNK)) {
+    const ids = group.map((j) => j.id);
+    const left = await readRows<{ id: string }>(
+      (sql) => sql`
+        SELECT id::text AS id FROM futures_snapshots WHERE id = ANY(${ids}::int[])`,
+    );
+    if (left.length > 0) {
+      throw new Error(
+        `verify failed for junk: ${left.length} of ${group.length} row(s) are still there: ${left
+          .slice(0, 3)
+          .map((r) => r.id)
+          .join(', ')}`,
+      );
+    }
+  }
+  const after = await countSnapshotsInScope();
+  if (after !== before - junk.length) {
+    throw new Error(
+      `verify failed for junk: ${before} rows in scope before, ${after} after, ${before - junk.length} expected`,
+    );
+  }
+}
+
+async function applyJunk(junk: JunkRow[]): Promise<number> {
+  const before = await countSnapshotsInScope();
+  await writeInTransactions(junk, deleteJunk);
+  await verifyJunk(junk, before);
+  return junk.length;
+}
+
 // ── Arguments ───────────────────────────────────────────────────────────────
 
 export interface RecomputeOptions {
@@ -2207,6 +2368,14 @@ export interface RecomputeOptions {
   expectSnapshots: number | null;
   expectPremarket: number | null;
   expectFires: number | null;
+  /**
+   * Also delete the stale snapshot rows whose price is the close of a bar Phase 2
+   * deleted (they cannot be recomputed and `price` cannot be blanked). Off by
+   * default: the owner decides, after reading the dry run's list.
+   */
+  deleteJunkStale: boolean;
+  /** The rows that delete removes in the dry run the owner approved. */
+  expectJunkDeletes: number | null;
 }
 
 export interface RecomputeArgs extends RecomputeOptions {
@@ -2236,6 +2405,8 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
     expectSnapshots: null,
     expectPremarket: null,
     expectFires: null,
+    deleteJunkStale: false,
+    expectJunkDeletes: null,
     envFile: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -2270,10 +2441,33 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
     else if (flag === '--env-file') args.envFile = next();
     else if (flag === '--apply') args.apply = true;
     else if (flag === '--force') args.force = true;
+    else if (flag === '--delete-junk-stale') args.deleteJunkStale = true;
+    else if (flag === '--expect-junk-deletes')
+      args.expectJunkDeletes = parseCount(flag, next());
     else throw new Error(`unknown argument ${flag}`);
   }
   if (args.force && !args.apply)
     throw new Error('--force only applies with --apply');
+  if (!args.apply && (args.deleteJunkStale || args.expectJunkDeletes != null)) {
+    throw new Error(
+      `${args.deleteJunkStale ? '--delete-junk-stale' : '--expect-junk-deletes'} only applies with --apply`,
+    );
+  }
+  if (args.expectJunkDeletes != null && !args.deleteJunkStale) {
+    throw new Error('--expect-junk-deletes needs --delete-junk-stale');
+  }
+  if (args.deleteJunkStale) {
+    if (!args.stores.includes('snapshots')) {
+      throw new Error(
+        '--delete-junk-stale deletes from futures_snapshots, so --stores must include snapshots',
+      );
+    }
+    if (args.expectJunkDeletes == null) {
+      throw new Error(
+        '--delete-junk-stale needs --expect-junk-deletes J: the count of the dry run you approved',
+      );
+    }
+  }
   const given = expectations(args);
   if (!args.apply) {
     for (const store of STORES) {
@@ -2319,6 +2513,21 @@ function expectations(o: RecomputeOptions): Record<Store, number | null> {
 }
 
 // ── Run ─────────────────────────────────────────────────────────────────────
+
+/** The command that would apply the snapshots updates and the junk delete, for the report. */
+function junkApplyCommand(
+  opts: RecomputeOptions,
+  snapshots: SnapshotStore,
+): string {
+  return [
+    'npx tsx scripts/recompute-futures-derived.ts --apply',
+    ...(opts.backup == null ? [] : [`--backup ${opts.backup}`]),
+    '--stores snapshots',
+    `--expect-snapshots ${snapshots.changes.length}`,
+    '--delete-junk-stale',
+    `--expect-junk-deletes ${snapshots.junk.length}`,
+  ].join(' ');
+}
 
 /** Exit codes: 0 done, 1 failed or refused, 2 stopped between stores (market hours began). */
 async function run(opts: RecomputeOptions): Promise<number> {
@@ -2389,6 +2598,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
       `elapsed ${Math.round((Date.now() - startedAt) / 1000)}s`,
     ],
     controlProblems,
+    plans.snapshots == null ? null : junkApplyCommand(opts, plans.snapshots),
   );
   console.log(`\n${report}`);
   writeFileSync(join(opts.workDir, 'report.txt'), `${report}\n`);
@@ -2401,7 +2611,10 @@ async function run(opts: RecomputeOptions): Promise<number> {
   // an approved total to equal.
   const approved: Partial<Record<Store, number | null>> = {};
   for (const store of opts.stores) approved[store] = expectations(opts)[store];
-  const problems = checkApplyGate(gateInputs, approved);
+  const problems = [
+    ...checkApplyGate(gateInputs, approved),
+    ...checkJunkGate(opts, plans.snapshots?.junk.length ?? 0),
+  ];
   if (problems.length > 0) {
     const listed = problems.map((p) => `  ${p}`).join('\n');
     throw new Error(`Refusing to --apply. Nothing was written.\n${listed}`);
@@ -2420,16 +2633,37 @@ async function run(opts: RecomputeOptions): Promise<number> {
     }
     pending.push(store);
   }
-  if (pending.length === 0) return 0;
+  const junk = plans.snapshots?.junk ?? [];
+  let junkPending = false;
+  if (opts.deleteJunkStale) {
+    if (!opts.force && existsSync(markerPath(opts.workDir, 'junk'))) {
+      console.log(
+        junk.length > 0
+          ? `WARNING: the junk delete is marked done but the fresh plan still lists ${junk.length} row(s); it is skipped. Use --force to redo it.`
+          : 'the junk delete is marked done and has nothing left to delete',
+      );
+    } else {
+      junkPending = junk.length > 0;
+    }
+  }
+  if (pending.length === 0 && !junkPending) return 0;
 
-  const backup = writeBackup(opts.workDir, {
-    snapshots: pending.includes('snapshots') ? plans.snapshots : undefined,
-    premarket: pending.includes('premarket') ? plans.premarket : undefined,
-    fires: pending.includes('fires') ? plans.fires : undefined,
-  });
+  const backup = writeBackup(
+    opts.workDir,
+    {
+      snapshots: pending.includes('snapshots') ? plans.snapshots : undefined,
+      premarket: pending.includes('premarket') ? plans.premarket : undefined,
+      fires: pending.includes('fires') ? plans.fires : undefined,
+    },
+    junkPending ? junk : [],
+  );
   console.log(`backup: ${backup}`);
 
-  for (const store of pending) {
+  const steps: (Store | 'junk')[] = [
+    ...pending,
+    ...(junkPending ? (['junk'] as const) : []),
+  ];
+  for (const store of steps) {
     // The apply can outlast the close, so the guard is checked before every store.
     if (isMarketHours()) {
       console.error(
@@ -2438,15 +2672,24 @@ async function run(opts: RecomputeOptions): Promise<number> {
       return 2;
     }
     try {
-      const done = await applyStore(store, plans);
-      console.log(`${store}: ${done} row(s) changed and verified`);
+      const done =
+        store === 'junk'
+          ? await applyJunk(junk)
+          : await applyStore(store, plans);
+      console.log(
+        `${store}: ${done} row(s) ${store === 'junk' ? 'deleted' : 'changed'} and verified`,
+      );
     } catch (err) {
       throw new Error(
         `apply failed: ${store}: ${err instanceof Error ? err.message : String(err)}`,
         { cause: err },
       );
     }
-    writeMarker(opts.workDir, store, plans[store]?.changes.length ?? 0);
+    writeMarker(
+      opts.workDir,
+      store,
+      store === 'junk' ? junk.length : (plans[store]?.changes.length ?? 0),
+    );
   }
   return 0;
 }
