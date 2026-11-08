@@ -5713,4 +5713,53 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  // #204 and #205 are taken by another session's unpushed branch
+  // (feat/futures-session-front-month). migrateDb applies by id-set
+  // membership and only needs the ids strictly increasing, so the gap is fine.
+  {
+    id: 206,
+    description:
+      "Create flow_data_revisions, the append-only log of every value a closed-bucket flow_data row ever had (spec P0.7, docs/superpowers/specs/live-data-integrity-2026-11-06.md). The closed-bucket crons and backfills write spy_etf_tide, qqq_etf_tide, zero_dte_index and zero_dte_greek_flow through an upsert that replaces a row with UW's latest value, and UW restates these series after first publishing them, so the first-seen value is otherwise lost and a replay of 'what the signal said at 10:05' would use numbers that did not exist at 10:05. flow_data keeps the latest value, so no reader changes; each write that inserts a row or changes a value appends the row as stored (the same columns, is_first = true when the write inserted the flow_data row) with seen_at and the writer's name, in the same statement as the write, so a failed log insert fails the write. BIGSERIAL id: the log has no natural key (a row can return to an earlier value, and keying on seen_at would key on now()) and the id orders revisions that share a time. No foreign key: a revision outlives a Tier 2 delete of its flow_data row. Index (source, timestamp, seen_at) serves the as-of query. Seeded in the same migration from the current flow_data rows of those four sources, seen_at = created_at, writer = 'seed', is_first = true, guarded by NOT EXISTS on (date, timestamp, source) so a re-run adds nothing: before the upsert these rows were first-seen (DO NOTHING), so they are the live values history has, and they must survive the Tier 2 refills and deletes. The other flow_data sources (market_tide, market_tide_otm, spx_flow, spy_flow, qqq_flow) are first-write-wins and are not logged.",
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS flow_data_revisions (
+          id          BIGSERIAL PRIMARY KEY,
+          date        DATE NOT NULL,
+          timestamp   TIMESTAMPTZ NOT NULL,
+          source      TEXT NOT NULL,
+          ncp         DECIMAL(14,2),
+          npp         DECIMAL(14,2),
+          net_volume  INTEGER,
+          otm_ncp     DECIMAL(14,2),
+          otm_npp     DECIMAL(14,2),
+          seen_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+          writer      TEXT NOT NULL,
+          is_first    BOOLEAN NOT NULL
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_flow_data_revisions_asof
+          ON flow_data_revisions (source, timestamp, seen_at)
+      `,
+      sql`
+        INSERT INTO flow_data_revisions (
+          date, timestamp, source, ncp, npp, net_volume, otm_ncp, otm_npp,
+          seen_at, writer, is_first
+        )
+        SELECT f.date, f.timestamp, f.source, f.ncp, f.npp, f.net_volume,
+               f.otm_ncp, f.otm_npp, f.created_at, 'seed', true
+        FROM flow_data f
+        WHERE f.source IN (
+                'spy_etf_tide', 'qqq_etf_tide', 'zero_dte_index',
+                'zero_dte_greek_flow'
+              )
+          AND NOT EXISTS (
+            SELECT 1 FROM flow_data_revisions r
+            WHERE r.date = f.date
+              AND r.timestamp = f.timestamp
+              AND r.source = f.source
+          )
+      `,
+    ],
+  },
 ];
