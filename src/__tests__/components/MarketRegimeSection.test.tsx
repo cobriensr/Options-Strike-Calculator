@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import MarketRegimeSection from '../../components/MarketRegimeSection';
 import type { CalculationResults, DeltaRow } from '../../types';
@@ -123,7 +123,9 @@ const mockMarket: MarketDataState = {
 const noCluster: ClusterMultiplier = {
   signal: { rangePct: null, cluster: null, mult: 1 },
   inputs: { open: '', high: '', low: '' },
+  isEdited: false,
   setInput: vi.fn(),
+  reset: vi.fn(),
 };
 
 describe('MarketRegimeSection', () => {
@@ -419,7 +421,9 @@ describe('MarketRegimeSection', () => {
         low: 6636.04,
       }),
       inputs: { open: '6681.78', high: '6810.44', low: '6636.04' },
+      isEdited: false,
       setInput: vi.fn(),
+      reset: vi.fn(),
     };
 
     function renderWith(cluster: ClusterMultiplier) {
@@ -462,6 +466,54 @@ describe('MarketRegimeSection', () => {
       const user = userEvent.setup();
       await user.type(screen.getByLabelText(/yesterday low/i), '1');
       expect(setInput).toHaveBeenCalledWith('low', '6636.041');
+    });
+
+    it('marks the header badge while an edit is held, with the card closed', () => {
+      render(
+        <MarketRegimeSection
+          dVix="20"
+          results={makeResults()}
+          errors={{}}
+          skewPct={0}
+          selectedDate="2026-03-12"
+          market={mockMarket}
+          cluster={{ ...hotCluster, isEdited: true }}
+          signals={defaultSignals}
+          chain={null}
+          defaultCollapsed
+        />,
+      );
+      expect(screen.getByText(/ · cluster edited$/)).toBeInTheDocument();
+    });
+
+    it('shows the marker even without a VIX badge', () => {
+      render(
+        <MarketRegimeSection
+          dVix=""
+          results={null}
+          errors={{}}
+          skewPct={0}
+          selectedDate="2026-03-12"
+          market={mockMarket}
+          cluster={{ ...noCluster, isEdited: true }}
+          signals={defaultSignals}
+          chain={null}
+          defaultCollapsed
+        />,
+      );
+      expect(screen.getByText('cluster edited')).toBeInTheDocument();
+    });
+
+    it('has no marker when nothing is edited', () => {
+      renderWith(hotCluster);
+      expect(screen.queryByText(/cluster edited/)).not.toBeInTheDocument();
+    });
+
+    it('wires the panel Reset to cluster.reset', () => {
+      const reset = vi.fn();
+      renderWith({ ...hotCluster, isEdited: true, reset });
+      fireEvent.click(screen.getByRole('button', { name: 'Reset to data' }));
+      expect(reset).toHaveBeenCalledTimes(1);
     });
   });
 });

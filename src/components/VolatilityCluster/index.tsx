@@ -17,6 +17,10 @@ interface Props {
    * exactly what the snapshot save and the regime ceilings use. */
   readonly signal: ClusterSignal;
   readonly onInputChange: (field: ClusterField, value: string) => void;
+  /** True while the owner's edit overrides yesterday's data. */
+  readonly isEdited: boolean;
+  /** Drop the edit and go back to the value computed from the data. */
+  readonly onReset: () => void;
   readonly clusterPutMult?: number | null;
   readonly clusterCallMult?: number | null;
 }
@@ -27,7 +31,9 @@ interface Props {
  * for the VIX regime, and the clustering multiplier for today's expected
  * range. A view only: useClusterMultiplier owns the inputs and the result
  * (computeClusterSignal), so the multiplier exists whether or not this panel
- * is mounted, and typing here is reported through onInputChange.
+ * is mounted, and typing here is reported through onInputChange. An edit
+ * outlives this panel (closing the card keeps it), so while one is held the
+ * panel offers a way back to the data.
  */
 export default function VolatilityCluster({
   vix,
@@ -35,6 +41,8 @@ export default function VolatilityCluster({
   inputs,
   signal,
   onInputChange,
+  isEdited,
+  onReset,
   clusterPutMult,
   clusterCallMult,
 }: Props) {
@@ -88,8 +96,19 @@ export default function VolatilityCluster({
 
   return (
     <div>
-      <div className="text-accent mb-2.5 font-sans text-[11px] font-bold tracking-[0.14em] uppercase">
-        Volatility Clustering
+      <div className="mb-2.5 flex items-center justify-between gap-2">
+        <div className="text-accent font-sans text-[11px] font-bold tracking-[0.14em] uppercase">
+          Volatility Clustering
+        </div>
+        {isEdited && (
+          <button
+            type="button"
+            onClick={onReset}
+            className="border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt cursor-pointer rounded-md border-[1.5px] p-[3px_10px] font-sans text-[11px] font-semibold transition-colors duration-100"
+          >
+            Reset to data
+          </button>
+        )}
       </div>
 
       <p className="text-secondary m-0 mb-3 font-sans text-xs leading-normal">

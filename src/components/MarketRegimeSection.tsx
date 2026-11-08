@@ -64,10 +64,18 @@ export default function MarketRegimeSection({
         : theme.red
     : undefined;
 
+  // An owner edit of yesterday's range overrides the cluster multiplier even
+  // with this card closed, so the header says so.
+  const regimeBadge =
+    bucket?.label ?? (results ? 'VIX ' + (vixNum || '\u2014') : null);
+  const badge = cluster.isEdited
+    ? [regimeBadge, 'cluster edited'].filter(Boolean).join(' \u00b7 ')
+    : regimeBadge;
+
   return (
     <SectionBox
       label="Market Regime"
-      badge={bucket?.label ?? (results ? 'VIX ' + (vixNum || '\u2014') : null)}
+      badge={badge}
       badgeColor={bucket ? vixBadgeColor : undefined}
       collapsible
       defaultCollapsed={defaultCollapsed}
@@ -112,6 +120,8 @@ export default function MarketRegimeSection({
                     inputs={cluster.inputs}
                     signal={cluster.signal}
                     onInputChange={cluster.setInput}
+                    isEdited={cluster.isEdited}
+                    onReset={cluster.reset}
                     clusterPutMult={signals.clusterPutMult}
                     clusterCallMult={signals.clusterCallMult}
                   />

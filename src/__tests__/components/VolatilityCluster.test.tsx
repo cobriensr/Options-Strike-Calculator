@@ -36,6 +36,8 @@ function Harness({
         inputs={cluster.inputs}
         signal={cluster.signal}
         onInputChange={cluster.setInput}
+        isEdited={cluster.isEdited}
+        onReset={cluster.reset}
       />
       <output data-testid="effective-mult">{cluster.signal.mult}</output>
     </>
@@ -341,6 +343,8 @@ describe('VolatilityCluster: controlled by its props', () => {
         inputs={inputs}
         signal={signal}
         onInputChange={vi.fn()}
+        isEdited={false}
+        onReset={vi.fn()}
       />,
     );
     expect(screen.getByText('0.969x')).toBeInTheDocument();
@@ -357,6 +361,8 @@ describe('VolatilityCluster: controlled by its props', () => {
         inputs={inputs}
         signal={{ rangePct: null, cluster: null, mult: 1 }}
         onInputChange={onInputChange}
+        isEdited={false}
+        onReset={vi.fn()}
       />,
     );
     setInput(/yesterday open/i, '6801');
@@ -368,5 +374,69 @@ describe('VolatilityCluster: controlled by its props', () => {
       ['low', '6751'],
     ]);
     expect(inputValue(/yesterday open/i)).toBe('6800');
+  });
+
+  it.each([
+    [true, 1],
+    [false, 0],
+  ])('isEdited %s: %d "Reset to data" control', (isEdited, count) => {
+    render(
+      <VolatilityCluster
+        vix={20}
+        spot={6800}
+        inputs={inputs}
+        signal={{ rangePct: null, cluster: null, mult: 1 }}
+        onInputChange={vi.fn()}
+        isEdited={isEdited}
+        onReset={vi.fn()}
+      />,
+    );
+    expect(
+      screen.queryAllByRole('button', { name: 'Reset to data' }),
+    ).toHaveLength(count);
+  });
+
+  it('calls onReset from the control', () => {
+    const onReset = vi.fn();
+    render(
+      <VolatilityCluster
+        vix={20}
+        spot={6800}
+        inputs={inputs}
+        signal={{ rangePct: null, cluster: null, mult: 1 }}
+        onInputChange={vi.fn()}
+        isEdited
+        onReset={onReset}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Reset to data' }));
+    expect(onReset).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ============================================================
+// SEEING AND CLEARING AN EDIT
+// ============================================================
+describe('VolatilityCluster: reset to data', () => {
+  const resetButton = () =>
+    screen.queryByRole('button', { name: 'Reset to data' });
+
+  it('offers no reset until the owner edits', () => {
+    render(<Harness vix={20} spot={6800} yesterday={HOT_DAY} />);
+    expect(resetButton()).not.toBeInTheDocument();
+  });
+
+  it('after an edit, "Reset to data" brings back the data and the computed value', () => {
+    render(<Harness vix={20} spot={6800} yesterday={HOT_DAY} />);
+    setInput(/yesterday high/i, '6696.04');
+    expect(screen.getByTestId('effective-mult')).toHaveTextContent('0.956');
+    expect(resetButton()).toBeInTheDocument();
+
+    fireEvent.click(resetButton()!);
+
+    expect(inputValue(/yesterday high/i)).toBe('6810.44');
+    expect(screen.getByText('1.203x')).toBeInTheDocument();
+    expect(screen.getByTestId('effective-mult')).toHaveTextContent('1.203');
+    expect(resetButton()).not.toBeInTheDocument();
   });
 });

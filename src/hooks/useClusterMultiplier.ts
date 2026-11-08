@@ -14,7 +14,10 @@
  * overrides the computed value while it is held. It belongs to a `scope` (App
  * passes the selected date): an edit made under another scope is ignored, so
  * a typed range never leaks onto another day. It lives as long as this hook,
- * not the panel, so closing the card keeps the multiplier the owner set.
+ * not the panel, so closing the card keeps the multiplier the owner set; that
+ * is why `isEdited` is exposed (App marks the card header) and `reset()` clears
+ * the edit. Only the latest edit is kept: editing under a new scope replaces
+ * the old one, and going back to the old scope without editing shows it again.
  */
 
 import { useCallback, useMemo, useState } from 'react';
@@ -48,7 +51,11 @@ export interface ClusterMultiplier {
   readonly signal: ClusterSignal;
   /** The three fields as shown: the edit if one is held, else yesterday. */
   readonly inputs: ClusterInputs;
+  /** True while the owner's edit (for this scope) overrides the data. */
+  readonly isEdited: boolean;
   readonly setInput: (field: ClusterField, value: string) => void;
+  /** Drop the edit: back to the value computed from the data. */
+  readonly reset: () => void;
 }
 
 interface ScopedEdit {
@@ -75,6 +82,12 @@ export function useClusterMultiplier({
   const yHigh = yesterday?.high;
   const yLow = yesterday?.low;
 
+  // The fields show yesterday to the cent (toFixed(2)). The data path below
+  // computes from the unrounded numbers on purpose: the fields are a display,
+  // and App's value must not depend on how they round. The two can differ by
+  // at most 0.01 pt of range (half a cent on each end), about 1.5e-4
+  // percentage points at SPX 6800 (7e-5 per end). That moves the bucket only
+  // for a range within 1.5e-4 points of a threshold.
   const dataInputs = useMemo<ClusterInputs>(
     () => ({ open: show(yOpen), high: show(yHigh), low: show(yLow) }),
     [yOpen, yHigh, yLow],
@@ -115,8 +128,11 @@ export function useClusterMultiplier({
     [scope, dataInputs],
   );
 
+  const reset = useCallback(() => setEdit(null), []);
+
+  const isEdited = editedInputs != null;
   return useMemo(
-    () => ({ signal, inputs, setInput }),
-    [signal, inputs, setInput],
+    () => ({ signal, inputs, isEdited, setInput, reset }),
+    [signal, inputs, isEdited, setInput, reset],
   );
 }
