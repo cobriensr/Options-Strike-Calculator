@@ -21,6 +21,7 @@ import { IV_MODES } from '../../constants';
 import { getEarlyCloseHourET } from '../../data/marketHours';
 import { useAutoFill } from '../../hooks/useAutoFill';
 import { useCalculation } from '../../hooks/useCalculation';
+import { useClusterMultiplier } from '../../hooks/useClusterMultiplier';
 import { useComputedSignals } from '../../hooks/useComputedSignals';
 import {
   useHistoryData,
@@ -37,10 +38,13 @@ import { useTimeInputs } from '../../hooks/useTimeInputs';
 import { useVix1dData } from '../../hooks/useVix1dData';
 import { useVixData } from '../../hooks/useVixData';
 import type {
+  DaySummary,
   HistoryCandle,
   HistoryResponse,
   QuotesResponse,
 } from '../../types/api';
+import { isPastETDate } from '../../utils/timezone';
+import { resolveYesterday } from '../../utils/yesterday';
 
 // ============================================================
 // FIXTURES
@@ -77,6 +81,44 @@ function candles(base: number, step: number): HistoryCandle[] {
 
 const noCandles = { candles: [], previousClose: 0, previousDay: null };
 
+/**
+ * The day before TODAY, as the live /api/yesterday feed answers it: 170 pts
+ * on a 7650 open, 2.22% of it. The live quotes' VIX sits under 18, where that
+ * is a hot day: multiplier 1.235. It closed up, so the call side tilts wider.
+ */
+const LIVE_YESTERDAY: DaySummary = {
+  date: '2026-11-03',
+  open: 7650,
+  high: 7770,
+  low: 7600,
+  close: 7690,
+  rangePct: 2.22,
+  rangePts: 170,
+};
+const LIVE_MULT = 1.235;
+
+/**
+ * The day before PAST_DATE, as api/history answers for it: 50 pts on a 7500
+ * open, 0.67%. The replay's VIX (18.0 to 18.28) is in the 18-25 regime, where
+ * that is a calm day: multiplier 0.956, and flat, so both sides equal. Leaked
+ * from the live feed instead, the replay would read 1.203 (hot at 18-25).
+ */
+const OLDER_DAY: DaySummary = {
+  date: '2026-11-02',
+  open: 7500,
+  high: 7540,
+  low: 7490,
+  close: 7510,
+  rangePct: 0.67,
+  rangePts: 50,
+};
+const REPLAY_MULT = 0.956;
+const LEAKED_MULT = 1.203;
+
+/** api/history's previousDay: today's is the live feed's day. */
+const previousDayFor = (date: string): DaySummary =>
+  date === TODAY ? LIVE_YESTERDAY : OLDER_DAY;
+
 /** The intraday history api/history answers for `date`: the same candles. */
 function historyFor(date: string): HistoryResponse {
   return {
@@ -84,7 +126,7 @@ function historyFor(date: string): HistoryResponse {
     spx: {
       candles: candles(7700, 1),
       previousClose: 7690,
-      previousDay: null,
+      previousDay: previousDayFor(date),
     },
     vix: { candles: candles(18, 0.02), previousClose: 18.4, previousDay: null },
     vix1d: noCandles,
@@ -130,7 +172,11 @@ function useLiveSession() {
       data: {
         quotes,
         intraday: null,
-        yesterday: null,
+        yesterday: {
+          yesterday: LIVE_YESTERDAY,
+          twoDaysAgo: null,
+          asOf: LOAD,
+        },
         events: null,
         movers: null,
       },
@@ -207,12 +253,26 @@ function useLiveSession() {
     historyData,
     vix1dStatic,
   });
+  // App's wiring, argument for argument: yesterday resolved once, then the
+  // cluster multiplier from it, with no Market Regime panel mounted.
+  const yesterday = resolveYesterday(
+    historySnapshot?.yesterday,
+    market.data.yesterday?.yesterday,
+    isPastETDate(vix.selectedDate),
+  );
+  const cluster = useClusterMultiplier({
+    vix: iv.dVix ? Number.parseFloat(iv.dVix) : null,
+    spot: results?.spot,
+    yesterday,
+    scope: vix.selectedDate,
+  });
+  const clusterMult = cluster.signal.mult;
   const signals = useComputedSignals({
     vix: Number.parseFloat(iv.dVix) || undefined,
     spot: results?.spot,
     T: results?.T,
     skewPct: 0,
-    clusterMult: 1,
+    clusterMult,
     selectedDate: vix.selectedDate,
     timeHour: time.timeHour,
     timeMinute: time.timeMinute,
@@ -224,6 +284,10 @@ function useLiveSession() {
     liveVix9d: undefined,
     liveVvix: undefined,
     liveOpeningRange: undefined,
+    liveYesterdayHigh: yesterday?.high,
+    liveYesterdayLow: yesterday?.low,
+    liveYesterdayOpen: yesterday?.open,
+    liveYesterdayClose: yesterday?.close,
     historySnapshot,
     isBacktest: false,
   });
@@ -246,11 +310,20 @@ function useLiveSession() {
         [iv.multiplier, iv.dMult],
       ],
       skewPct: 0,
-      clusterMult: 1,
+      clusterMult,
     }),
     true,
   );
-  return { setQuotes, spot, iv, time, vix, timeEdited, historySnapshot };
+  return {
+    setQuotes,
+    spot,
+    iv,
+    time,
+    vix,
+    timeEdited,
+    historySnapshot,
+    cluster,
+  };
 }
 
 // ============================================================
@@ -336,6 +409,22 @@ afterEach(() => {
   fetchSpy.mockRestore();
   vi.useRealTimers();
 });
+
+/** Answer `date`'s /api/history with `respond`, the rest as usual. */
+const overrideHistory = (date: string, respond: () => Promise<Response>) => {
+  const base = fetchSpy.getMockImplementation() as typeof fetch;
+  fetchSpy.mockImplementation((input: RequestInfo | URL, init?: RequestInit) =>
+    String(input) === `/api/history?date=${date}`
+      ? respond()
+      : base(input, init),
+  );
+};
+
+/** History that lands `ms` after it is asked for. */
+const historyAfter = (date: string, ms: number) => () =>
+  new Promise<Response>((resolve) => {
+    setTimeout(() => resolve(json(historyFor(date))), ms);
+  });
 
 const advance = (ms: number) =>
   act(async () => {
@@ -482,6 +571,125 @@ describe('a replay of a past date', () => {
   });
 });
 
+// F24: the cluster multiplier was reported only by the Volatility Clustering
+// panel, which sits in the Market Regime card, closed on every page load, so
+// every saved row carried 1. The harness mounts no panel at all.
+describe('the saved cluster multiplier, with no Market Regime panel mounted', () => {
+  const postsFor = (date: string) => posts.filter((p) => p.body.date === date);
+
+  /** Pick the past date, then scrub to each (hour, minute): no time sync. */
+  async function replay(
+    hook: { result: { current: ReturnType<typeof useLiveSession> } },
+    slots: ReadonlyArray<readonly [string, string]>,
+  ) {
+    act(() => hook.result.current.vix.setSelectedDate(PAST_DATE));
+    await settle(2000);
+    hook.result.current.timeEdited.current = true;
+    for (const [hour, minute] of slots) {
+      act(() => {
+        hook.result.current.time.setTimeHour(hour);
+        hook.result.current.time.setTimeMinute(minute);
+      });
+      await settle(2000);
+    }
+  }
+
+  it('saves the computed multiplier on every live slot, the top of the hour included', async () => {
+    await runSession(24);
+
+    const live = postsFor(TODAY);
+    expect(live.length).toBeGreaterThan(0);
+    for (const post of live) {
+      expect(post.body.clusterMult, String(post.body.entryTime)).toBe(
+        LIVE_MULT,
+      );
+      // An up day with clustering: the call side widens past the put side.
+      expect(post.body.clusterCallMult).toBeGreaterThan(
+        post.body.clusterPutMult as number,
+      );
+      expect(post.body.clusterPutMult).toBeGreaterThan(1);
+    }
+    expect(live.map((p) => p.body.entryTime)).toContain('10:00 AM CT');
+    expect(posts.some((p) => p.body.clusterMult === 1)).toBe(false);
+  });
+
+  it("saves the past date's own multiplier through a date change and the top of the hour", async () => {
+    const hook = renderHook(() => useLiveSession());
+    await settle(2000);
+    await replay(hook, [
+      ['9', '55'],
+      ['10', '00'],
+    ]);
+
+    // Rows saved before the date change are today's, the rest the past date's.
+    const today = postsFor(TODAY);
+    const past = postsFor(PAST_DATE);
+    expect(today.length).toBeGreaterThan(0);
+    expect(past.length).toBeGreaterThan(0);
+    for (const post of today) {
+      expect(post.body.clusterMult, String(post.body.entryTime)).toBe(
+        LIVE_MULT,
+      );
+    }
+    for (const post of past) {
+      const slot = String(post.body.entryTime);
+      expect(post.body.clusterMult, slot).toBe(REPLAY_MULT);
+      // A flat day: no direction, so both sides carry the multiplier itself.
+      expect(post.body.clusterPutMult, slot).toBe(REPLAY_MULT);
+      expect(post.body.clusterCallMult, slot).toBe(REPLAY_MULT);
+    }
+    expect(past.map((p) => p.body.entryTime)).toEqual(
+      expect.arrayContaining(['9:55 AM CT', '10:00 AM CT']),
+    );
+    expect(posts.some((p) => p.body.clusterMult === 1)).toBe(false);
+  });
+
+  it("saves 1, not today's yesterday, when the past date's history has no previous day", async () => {
+    const withoutPreviousDay = () => {
+      const history = historyFor(PAST_DATE);
+      return Promise.resolve(
+        json({ ...history, spx: { ...history.spx, previousDay: null } }),
+      );
+    };
+    overrideHistory(PAST_DATE, withoutPreviousDay);
+    const hook = renderHook(() => useLiveSession());
+    await settle(2000);
+    await replay(hook, [
+      ['9', '55'],
+      ['10', '00'],
+    ]);
+
+    const past = postsFor(PAST_DATE);
+    expect(past.length).toBeGreaterThan(0);
+    for (const post of past) {
+      const slot = String(post.body.entryTime);
+      // The live feed's day would give 1.203 here, with a call-side tilt.
+      expect(post.body.clusterMult, slot).toBe(1);
+      expect(post.body.clusterPutMult, slot).toBe(1);
+      expect(post.body.clusterCallMult, slot).toBe(1);
+    }
+    expect(hook.result.current.cluster.signal.rangePct).toBeNull();
+    expect(posts.some((p) => p.body.clusterMult === LEAKED_MULT)).toBe(false);
+  });
+
+  it("is 1, not today's yesterday, while a past date's history loads", async () => {
+    overrideHistory(PAST_DATE, historyAfter(PAST_DATE, 1500));
+    const hook = renderHook(() => useLiveSession());
+    await settle(2000);
+    act(() => hook.result.current.vix.setSelectedDate(PAST_DATE));
+    await settle(500);
+
+    // The history is still on its way: no snapshot, so no yesterday.
+    expect(hook.result.current.historySnapshot).toBeNull();
+    expect(hook.result.current.cluster.signal.mult).toBe(1);
+    expect(postsFor(PAST_DATE)).toEqual([]);
+
+    await settle(3000);
+    expect(hook.result.current.historySnapshot).not.toBeNull();
+    expect(hook.result.current.cluster.signal.mult).toBe(REPLAY_MULT);
+  });
+});
+
 describe("the selected date's daily VIX OHLC", () => {
   /** The OHLC historyFor's 5-minute VIX candles give: the whole session. */
   const candleVixOHLC = () => {
@@ -494,24 +702,8 @@ describe("the selected date's daily VIX OHLC", () => {
     };
   };
 
-  /** Answer `date`'s /api/history with `respond`, the rest as usual. */
-  const overrideHistory = (date: string, respond: () => Promise<Response>) => {
-    const base = fetchSpy.getMockImplementation() as typeof fetch;
-    fetchSpy.mockImplementation(
-      (input: RequestInfo | URL, init?: RequestInit) =>
-        String(input) === `/api/history?date=${date}`
-          ? respond()
-          : base(input, init),
-    );
-  };
   const overridePastHistory = (respond: () => Promise<Response>) =>
     overrideHistory(PAST_DATE, respond);
-
-  /** History that lands `ms` after it is asked for. */
-  const historyAfter = (date: string, ms: number) => () =>
-    new Promise<Response>((resolve) => {
-      setTimeout(() => resolve(json(historyFor(date))), ms);
-    });
 
   /**
    * A past date with history ends on its snapshot's VIX at the selected

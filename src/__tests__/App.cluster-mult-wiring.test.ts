@@ -31,16 +31,29 @@ describe('App cluster multiplier wiring', () => {
   it('takes clusterMult from useClusterMultiplier, not from state', () => {
     expect(appCode).toContain('const clusterMult = cluster.signal.mult;');
     expect(appCode).toMatch(/const cluster = useClusterMultiplier\(/);
-    expect(appCode).not.toMatch(/setClusterMult/);
   });
 
-  it('computes it from the VIX, spot and the history-else-live yesterday', () => {
+  it('computes it from the VIX, spot and the one resolved yesterday', () => {
     const args = callArgs('useClusterMultiplier');
     expect(args).toContain('Number.parseFloat(dVix)');
     expect(args).toContain('spot: results?.spot');
-    expect(args).toContain(
-      'historySnapshot?.yesterday ?? market.data.yesterday?.yesterday',
+    expect(args).toMatch(/\byesterday,/);
+  });
+
+  it('resolves yesterday once: history first, the live feed only for today', () => {
+    // resolveYesterday(snapshot's, live feed's, selected date is past)
+    expect(appCode).toMatch(
+      /const yesterday = resolveYesterday\(\s*historySnapshot\?\.yesterday,\s*market\.data\.yesterday\?\.yesterday,\s*analysisIsBacktest,\s*\);/,
     );
+  });
+
+  it('feeds that same yesterday to the signals, so the tilt and the multiplier agree', () => {
+    const args = callArgs('useComputedSignals');
+    for (const field of ['High', 'Low', 'Open', 'Close']) {
+      expect(args).toContain(
+        `liveYesterday${field}: yesterday?.${field.toLowerCase()},`,
+      );
+    }
   });
 
   it('scopes the owner edit to the selected date', () => {
@@ -56,10 +69,9 @@ describe('App cluster multiplier wiring', () => {
     },
   );
 
-  it('hands the Market Regime card the hook result, not a setter', () => {
+  it('hands the Market Regime card the hook result', () => {
     const card = /<MarketRegimeSection([\s\S]*?)\/>/.exec(appCode);
     if (!card) throw new Error('Could not locate <MarketRegimeSection>');
     expect(card[1]).toContain('cluster={cluster}');
-    expect(card[1]).not.toContain('onClusterMultChange');
   });
 });

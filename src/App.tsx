@@ -15,6 +15,7 @@ import { useIvInputs } from './hooks/useIvInputs';
 import { useSpotInputs } from './hooks/useSpotInputs';
 import { useStrategyInputs } from './hooks/useStrategyInputs';
 import { useClusterMultiplier } from './hooks/useClusterMultiplier';
+import { resolveYesterday } from './utils/yesterday';
 import { useTheme } from './hooks/useTheme';
 import { useTimeInputs } from './hooks/useTimeInputs';
 import { useAutoFill } from './hooks/useAutoFill';
@@ -496,22 +497,6 @@ export default function StrikeCalculator() {
     vix1dStatic,
   });
 
-  // Today's volatility-clustering multiplier, owned here and not by the
-  // Volatility Clustering panel: that panel sits in the Market Regime card,
-  // collapsed on every page load, and a multiplier it reported only while
-  // mounted left the snapshot save, the regime ceilings and the analyze
-  // context on 1 (F24). It is derived during render from the VIX, spot and
-  // yesterday's open/high/low (the history snapshot's, else the live feed's),
-  // so it is right on the first render that has them, card open or closed. An
-  // edit of yesterday's range typed in the card overrides it for that date.
-  const cluster = useClusterMultiplier({
-    vix: dVix ? Number.parseFloat(dVix) : null,
-    spot: results?.spot,
-    yesterday: historySnapshot?.yesterday ?? market.data.yesterday?.yesterday,
-    scope: vix.selectedDate,
-  });
-  const clusterMult = cluster.signal.mult;
-
   // BacktestDiag dismissal is permanent (guest feedback 2026-06-12):
   // dismiss once and the overlay never returns, across dates and
   // sessions. Reset path: localStorage.removeItem('backtestDiag.dismissed').
@@ -542,6 +527,35 @@ export default function StrikeCalculator() {
   const etToday = useETToday();
   const analysisIsBacktest = isPastETDate(vix.selectedDate, etToday);
 
+  // Yesterday's SPX OHLC, resolved once for everything that reads it: the
+  // cluster multiplier below, its put/call tilt (useRegimeClassification) and
+  // the range analysis, so they cannot disagree. The history snapshot's own
+  // previous day; without one, the live feed's only on today. A past date
+  // whose history is loading, has no candle for the slot, or has no
+  // previousDay gets null, never today's yesterday (the signals hooks'
+  // `liveYesterday*` inputs below carry this resolved value).
+  const yesterday = resolveYesterday(
+    historySnapshot?.yesterday,
+    market.data.yesterday?.yesterday,
+    analysisIsBacktest,
+  );
+
+  // Today's volatility-clustering multiplier, owned here and not by the
+  // Volatility Clustering panel: that panel sits in the Market Regime card,
+  // collapsed on every page load, and a multiplier it reported only while
+  // mounted left the snapshot save, the regime ceilings and the analyze
+  // context on 1 (F24). It is derived during render from the VIX, spot and
+  // yesterday's open/high/low, so it is right on the first render that has
+  // them, card open or closed. An edit of yesterday's range typed in the card
+  // overrides it for that date until reset (the card header marks it).
+  const cluster = useClusterMultiplier({
+    vix: dVix ? Number.parseFloat(dVix) : null,
+    spot: results?.spot,
+    yesterday,
+    scope: vix.selectedDate,
+  });
+  const clusterMult = cluster.signal.mult;
+
   // Auto-save market snapshot for authenticated owner (fire-and-forget)
   const signals = useComputedSignals({
     vix: Number.parseFloat(dVix) || undefined,
@@ -560,10 +574,10 @@ export default function StrikeCalculator() {
     liveVix9d: market.data.quotes?.vix9d?.price ?? undefined,
     liveVvix: market.data.quotes?.vvix?.price ?? undefined,
     liveOpeningRange: market.data.intraday?.openingRange ?? undefined,
-    liveYesterdayHigh: market.data.yesterday?.yesterday?.high ?? undefined,
-    liveYesterdayLow: market.data.yesterday?.yesterday?.low ?? undefined,
-    liveYesterdayOpen: market.data.yesterday?.yesterday?.open ?? undefined,
-    liveYesterdayClose: market.data.yesterday?.yesterday?.close ?? undefined,
+    liveYesterdayHigh: yesterday?.high,
+    liveYesterdayLow: yesterday?.low,
+    liveYesterdayOpen: yesterday?.open,
+    liveYesterdayClose: yesterday?.close,
     liveEvents: market.data.events?.events,
     historySnapshot,
     isBacktest: analysisIsBacktest,
