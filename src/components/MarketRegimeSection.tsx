@@ -13,6 +13,7 @@ import SettlementCheck from './SettlementCheck';
 import RvIvCard from './RvIvCard';
 import PinRiskAnalysis from './PinRiskAnalysis';
 import type { MarketDataState } from '../hooks/useMarketData';
+import type { ClusterMultiplier } from '../hooks/useClusterMultiplier';
 import type { HistorySnapshot } from '../hooks/useHistoryData';
 import type { ChainResponse, HistoryCandle } from '../types/api';
 import type { ComputedSignals } from '../hooks/useComputedSignals';
@@ -24,8 +25,10 @@ interface Props {
   skewPct: number;
   selectedDate: string;
   market: MarketDataState;
-  onClusterMultChange: (v: number) => void;
-  clusterMult: number;
+  /** App's cluster multiplier (useClusterMultiplier): the panel shows it, and
+   * DeltaRegimeGuide applies it. App computes it whether or not this card is
+   * open. */
+  cluster: ClusterMultiplier;
   historySnapshot?: HistorySnapshot | null;
   historyCandles?: readonly HistoryCandle[];
   entryTimeLabel?: string;
@@ -41,8 +44,7 @@ export default function MarketRegimeSection({
   skewPct,
   selectedDate,
   market,
-  onClusterMultChange,
-  clusterMult,
+  cluster,
   historySnapshot,
   historyCandles,
   entryTimeLabel,
@@ -105,19 +107,11 @@ export default function MarketRegimeSection({
               <>
                 <div className="mt-5">
                   <VolatilityCluster
-                    key={
-                      historySnapshot
-                        ? `hist-vc-${historySnapshot.candle.datetime}`
-                        : 'live-vc'
-                    }
                     vix={vixNum ?? 0}
                     spot={results.spot}
-                    onMultiplierChange={onClusterMultChange}
-                    initialYesterday={
-                      historySnapshot?.yesterday ??
-                      market.data.yesterday?.yesterday ??
-                      undefined
-                    }
+                    inputs={cluster.inputs}
+                    signal={cluster.signal}
+                    onInputChange={cluster.setInput}
                     clusterPutMult={signals.clusterPutMult}
                     clusterCallMult={signals.clusterCallMult}
                   />
@@ -129,7 +123,7 @@ export default function MarketRegimeSection({
                   skew={skewPct / 100}
                   allDeltas={results.allDeltas}
                   selectedDate={selectedDate}
-                  clusterMult={clusterMult}
+                  clusterMult={cluster.signal.mult}
                 />
                 <div className="mt-5">
                   <OpeningRangeCheck

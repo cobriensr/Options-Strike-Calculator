@@ -6,7 +6,9 @@ import type { CalculationResults, DeltaRow } from '../../types';
 import type { HistorySnapshot } from '../../hooks/useHistoryData';
 import type { MarketDataState } from '../../hooks/useMarketData';
 import type { ComputedSignals } from '../../hooks/useComputedSignals';
+import type { ClusterMultiplier } from '../../hooks/useClusterMultiplier';
 import type { HistoryCandle } from '../../types/api';
+import { computeClusterSignal } from '../../utils/volatility-cluster';
 
 const defaultSignals: ComputedSignals = {
   vix1d: undefined,
@@ -117,6 +119,13 @@ const mockMarket: MarketDataState = {
   marketOpen: false,
 };
 
+/** App's cluster multiplier before yesterday's range is known: 1, no inputs. */
+const noCluster: ClusterMultiplier = {
+  signal: { rangePct: null, cluster: null, mult: 1 },
+  inputs: { open: '', high: '', low: '' },
+  setInput: vi.fn(),
+};
+
 describe('MarketRegimeSection', () => {
   it('renders section heading', () => {
     render(
@@ -127,8 +136,7 @@ describe('MarketRegimeSection', () => {
         skewPct={0}
         selectedDate="2026-03-12"
         market={mockMarket}
-        onClusterMultChange={vi.fn()}
-        clusterMult={1.0}
+        cluster={noCluster}
         signals={defaultSignals}
         chain={null}
       />,
@@ -145,8 +153,7 @@ describe('MarketRegimeSection', () => {
         skewPct={0}
         selectedDate="2026-03-12"
         market={mockMarket}
-        onClusterMultChange={vi.fn()}
-        clusterMult={1.0}
+        cluster={noCluster}
         signals={defaultSignals}
         chain={null}
       />,
@@ -165,8 +172,7 @@ describe('MarketRegimeSection', () => {
         skewPct={0}
         selectedDate="2026-03-12"
         market={mockMarket}
-        onClusterMultChange={vi.fn()}
-        clusterMult={1.0}
+        cluster={noCluster}
         signals={defaultSignals}
         chain={null}
       />,
@@ -185,8 +191,7 @@ describe('MarketRegimeSection', () => {
         skewPct={0}
         selectedDate="2026-03-12"
         market={mockMarket}
-        onClusterMultChange={vi.fn()}
-        clusterMult={1.0}
+        cluster={noCluster}
         signals={defaultSignals}
         chain={null}
       />,
@@ -204,8 +209,7 @@ describe('MarketRegimeSection', () => {
         skewPct={0}
         selectedDate="2026-03-12"
         market={mockMarket}
-        onClusterMultChange={vi.fn()}
-        clusterMult={1.0}
+        cluster={noCluster}
         signals={defaultSignals}
         chain={null}
       />,
@@ -226,8 +230,7 @@ describe('MarketRegimeSection', () => {
         skewPct={0}
         selectedDate="2026-03-12"
         market={mockMarket}
-        onClusterMultChange={vi.fn()}
-        clusterMult={1.0}
+        cluster={noCluster}
         signals={defaultSignals}
         chain={null}
       />,
@@ -245,8 +248,7 @@ describe('MarketRegimeSection', () => {
         skewPct={0}
         selectedDate="2026-03-12"
         market={mockMarket}
-        onClusterMultChange={vi.fn()}
-        clusterMult={1.0}
+        cluster={noCluster}
         signals={defaultSignals}
         chain={null}
       />,
@@ -331,8 +333,7 @@ describe('MarketRegimeSection', () => {
         skewPct={0}
         selectedDate="2026-03-12"
         market={mockMarket}
-        onClusterMultChange={vi.fn()}
-        clusterMult={1.0}
+        cluster={noCluster}
         historySnapshot={snapshot}
         historyCandles={candles}
         entryTimeLabel="10:00 AM ET"
@@ -354,8 +355,7 @@ describe('MarketRegimeSection', () => {
         skewPct={0}
         selectedDate="2026-03-12"
         market={mockMarket}
-        onClusterMultChange={vi.fn()}
-        clusterMult={1.0}
+        cluster={noCluster}
         signals={defaultSignals}
         chain={null}
       />,
@@ -398,8 +398,7 @@ describe('MarketRegimeSection', () => {
         skewPct={0}
         selectedDate="2026-03-12"
         market={mockMarket}
-        onClusterMultChange={vi.fn()}
-        clusterMult={1.0}
+        cluster={noCluster}
         historySnapshot={snapshot}
         historyCandles={[]}
         signals={defaultSignals}
@@ -407,5 +406,62 @@ describe('MarketRegimeSection', () => {
       />,
     );
     expect(screen.queryByText('Settlement Check')).not.toBeInTheDocument();
+  });
+
+  describe('cluster multiplier (F24)', () => {
+    // VIX 20, 174.4 pts / 6681.78 = 2.61% → above p90 → Hot → 1.203.
+    const hotCluster: ClusterMultiplier = {
+      signal: computeClusterSignal({
+        vix: 20,
+        spot: 5700,
+        open: 6681.78,
+        high: 6810.44,
+        low: 6636.04,
+      }),
+      inputs: { open: '6681.78', high: '6810.44', low: '6636.04' },
+      setInput: vi.fn(),
+    };
+
+    function renderWith(cluster: ClusterMultiplier) {
+      render(
+        <MarketRegimeSection
+          dVix="20"
+          results={makeResults()}
+          errors={{}}
+          skewPct={0}
+          selectedDate="2026-03-12"
+          market={mockMarket}
+          cluster={cluster}
+          signals={defaultSignals}
+          chain={null}
+        />,
+      );
+    }
+
+    it('shows the cluster result and its inputs in the panel', () => {
+      renderWith(hotCluster);
+      expect(screen.getByText('HIGH CLUSTERING')).toBeInTheDocument();
+      expect(screen.getByText('1.203x')).toBeInTheDocument();
+      expect(screen.getByLabelText(/yesterday high/i)).toHaveValue('6810.44');
+    });
+
+    it('applies the same multiplier in the delta guide', () => {
+      renderWith(hotCluster);
+      expect(screen.getByText(/1\.20x cluster/)).toBeInTheDocument();
+    });
+
+    it('shows no clustering without a range', () => {
+      renderWith(noCluster);
+      expect(screen.queryByText('HIGH CLUSTERING')).not.toBeInTheDocument();
+      expect(screen.queryByText(/x cluster/)).not.toBeInTheDocument();
+    });
+
+    it('reports typing in the panel to cluster.setInput', async () => {
+      const setInput = vi.fn();
+      renderWith({ ...hotCluster, setInput });
+      const user = userEvent.setup();
+      await user.type(screen.getByLabelText(/yesterday low/i), '1');
+      expect(setInput).toHaveBeenCalledWith('low', '6636.041');
+    });
   });
 });

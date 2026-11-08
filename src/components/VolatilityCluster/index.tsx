@@ -1,79 +1,49 @@
-import { useState, useEffect, useRef } from 'react';
 import { theme } from '../../themes';
 import { inputCls, tinyLbl, tint } from '../../utils/ui-utils';
-import {
-  getClusterMultiplier,
-  CLUSTER_THRESHOLDS,
-} from '../../data/vixRangeStats';
+import { CLUSTER_THRESHOLDS } from '../../data/vixRangeStats';
+import type {
+  ClusterField,
+  ClusterInputs,
+} from '../../hooks/useClusterMultiplier';
+import type { ClusterSignal } from '../../utils/volatility-cluster';
 import PercentileBar from './PercentileBar';
 
 interface Props {
   readonly vix: number | null;
   readonly spot: number | null;
-  readonly onMultiplierChange?: (mult: number) => void;
-  readonly initialYesterday?: {
-    readonly open: number;
-    readonly high: number;
-    readonly low: number;
-  };
+  /** Yesterday's open, high and low as shown: the owner's edit or the data. */
+  readonly inputs: ClusterInputs;
+  /** The result for those inputs. App uses the same value, so it shows here
+   * exactly what the snapshot save and the regime ceilings use. */
+  readonly signal: ClusterSignal;
+  readonly onInputChange: (field: ClusterField, value: string) => void;
   readonly clusterPutMult?: number | null;
   readonly clusterCallMult?: number | null;
 }
 
 /**
  * Volatility Clustering signal.
- * Takes yesterday's SPX high/low/open, computes the H-L range,
- * classifies it against VIX-regime percentile thresholds, and shows
- * the clustering multiplier for today's expected range.
+ * Shows yesterday's SPX high/low/open, the H-L range, its percentile bucket
+ * for the VIX regime, and the clustering multiplier for today's expected
+ * range. A view only: useClusterMultiplier owns the inputs and the result
+ * (computeClusterSignal), so the multiplier exists whether or not this panel
+ * is mounted, and typing here is reported through onInputChange.
  */
 export default function VolatilityCluster({
   vix,
   spot,
-  onMultiplierChange,
-  initialYesterday,
+  inputs,
+  signal,
+  onInputChange,
   clusterPutMult,
   clusterCallMult,
 }: Props) {
-  const [yestHigh, setYestHigh] = useState('5750');
-  const [yestLow, setYestLow] = useState('5690');
-  const [yestOpen, setYestOpen] = useState('5720');
-  const userEdited = useRef(false);
-
-  // Auto-fill from live data (overwrites defaults but respects user edits)
-  useEffect(() => {
-    if (initialYesterday && !userEdited.current) {
-      setYestOpen(initialYesterday.open.toFixed(2));
-      setYestHigh(initialYesterday.high.toFixed(2));
-      setYestLow(initialYesterday.low.toFixed(2));
-    }
-  }, [initialYesterday]);
-
   const hasVix = vix != null && vix > 0;
-  const highVal = Number.parseFloat(yestHigh);
-  const lowVal = Number.parseFloat(yestLow);
-  const openVal = Number.parseFloat(yestOpen);
+  const highVal = Number.parseFloat(inputs.high);
+  const lowVal = Number.parseFloat(inputs.low);
   const hasBothHL = !Number.isNaN(highVal) && !Number.isNaN(lowVal);
-  const hasRange = hasBothHL && highVal > lowVal;
-
-  // Compute yesterday's range %
-  const refPrice =
-    !Number.isNaN(openVal) && openVal > 0
-      ? openVal
-      : (spot ?? (highVal + lowVal) / 2);
-  const yestRangePct = hasRange ? ((highVal - lowVal) / refPrice) * 100 : null;
-
-  // Get cluster result
-  const cluster =
-    hasVix && vix && yestRangePct != null
-      ? getClusterMultiplier(vix, yestRangePct)
-      : null;
-
-  // Notify parent of multiplier changes
-  useEffect(() => {
-    if (onMultiplierChange) {
-      onMultiplierChange(cluster?.mult ?? 1);
-    }
-  }, [cluster?.mult, onMultiplierChange]);
+  const { rangePct: yestRangePct, cluster } = signal;
+  const hasRange = yestRangePct != null;
 
   // Determine signal color
   const signalColor = cluster
@@ -138,11 +108,8 @@ export default function VolatilityCluster({
             type="text"
             inputMode="decimal"
             placeholder={spot ? spot.toFixed(0) : 'e.g. 6800'}
-            value={yestOpen}
-            onChange={(e) => {
-              setYestOpen(e.target.value);
-              userEdited.current = true;
-            }}
+            value={inputs.open}
+            onChange={(e) => onInputChange('open', e.target.value)}
             className={inputCls}
           />
         </div>
@@ -155,11 +122,8 @@ export default function VolatilityCluster({
             type="text"
             inputMode="decimal"
             placeholder={spot ? (spot + 30).toFixed(0) : 'e.g. 6830'}
-            value={yestHigh}
-            onChange={(e) => {
-              setYestHigh(e.target.value);
-              userEdited.current = true;
-            }}
+            value={inputs.high}
+            onChange={(e) => onInputChange('high', e.target.value)}
             className={inputCls}
           />
         </div>
@@ -172,11 +136,8 @@ export default function VolatilityCluster({
             type="text"
             inputMode="decimal"
             placeholder={spot ? (spot - 30).toFixed(0) : 'e.g. 6770'}
-            value={yestLow}
-            onChange={(e) => {
-              setYestLow(e.target.value);
-              userEdited.current = true;
-            }}
+            value={inputs.low}
+            onChange={(e) => onInputChange('low', e.target.value)}
             className={inputCls}
           />
         </div>

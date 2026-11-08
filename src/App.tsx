@@ -14,6 +14,7 @@ import { useViewMode } from './hooks/useViewMode';
 import { useIvInputs } from './hooks/useIvInputs';
 import { useSpotInputs } from './hooks/useSpotInputs';
 import { useStrategyInputs } from './hooks/useStrategyInputs';
+import { useClusterMultiplier } from './hooks/useClusterMultiplier';
 import { useTheme } from './hooks/useTheme';
 import { useTimeInputs } from './hooks/useTimeInputs';
 import { useAutoFill } from './hooks/useAutoFill';
@@ -257,8 +258,6 @@ export default function StrikeCalculator() {
     setContracts,
     skewPct,
     setSkewPct,
-    clusterMult,
-    setClusterMult,
     breakevenTarget,
     setBreakevenTarget,
     showBWB,
@@ -496,6 +495,22 @@ export default function StrikeCalculator() {
     historyData,
     vix1dStatic,
   });
+
+  // Today's volatility-clustering multiplier, owned here and not by the
+  // Volatility Clustering panel: that panel sits in the Market Regime card,
+  // collapsed on every page load, and a multiplier it reported only while
+  // mounted left the snapshot save, the regime ceilings and the analyze
+  // context on 1 (F24). It is derived during render from the VIX, spot and
+  // yesterday's open/high/low (the history snapshot's, else the live feed's),
+  // so it is right on the first render that has them, card open or closed. An
+  // edit of yesterday's range typed in the card overrides it for that date.
+  const cluster = useClusterMultiplier({
+    vix: dVix ? Number.parseFloat(dVix) : null,
+    spot: results?.spot,
+    yesterday: historySnapshot?.yesterday ?? market.data.yesterday?.yesterday,
+    scope: vix.selectedDate,
+  });
+  const clusterMult = cluster.signal.mult;
 
   // BacktestDiag dismissal is permanent (guest feedback 2026-06-12):
   // dismiss once and the overlay never returns, across dates and
@@ -951,8 +966,7 @@ export default function StrikeCalculator() {
                 skewPct={skewPct}
                 selectedDate={vix.selectedDate}
                 market={market}
-                onClusterMultChange={setClusterMult}
-                clusterMult={clusterMult}
+                cluster={cluster}
                 historySnapshot={historySnapshot}
                 historyCandles={historyData.history?.spx.candles}
                 entryTimeLabel={
@@ -1387,7 +1401,7 @@ export default function StrikeCalculator() {
       bwbWideMultiplier,
       chainData.chain,
       chevronUrl,
-      clusterMult,
+      cluster,
       contracts,
       csvPositionSummary,
       dSpot,
@@ -1425,7 +1439,6 @@ export default function StrikeCalculator() {
       setBreakevenTarget,
       setBwbNarrowWidth,
       setBwbWideMultiplier,
-      setClusterMult,
       setContracts,
       setCsvPositionSummary,
       setDirectIVInput,
