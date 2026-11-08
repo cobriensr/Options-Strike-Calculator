@@ -194,6 +194,13 @@ export const snapshotBodySchema = z.object({
   eventNames: z.array(z.string()).nullable().optional(),
 
   isBacktest: bool,
+
+  // When the live quotes behind a live save last printed: the older of the
+  // SPX and VIX Schwab tradeTime, epoch milliseconds. The server checks it
+  // against the save's slot (P0.6 of live-data-integrity-2026-11-06). A
+  // backtest save sends none. Listed here because z.object strips unknown
+  // keys.
+  quotedAt: z.number().int().positive().nullable().optional(),
 });
 
 export type SnapshotBody = z.infer<typeof snapshotBodySchema>;

@@ -342,6 +342,47 @@ describe('snapshotBodySchema', () => {
       expect(result.success).toBe(false);
     });
   });
+
+  describe('quotedAt (the live quote time, epoch ms)', () => {
+    const BASE = { date: '2026-11-09', entryTime: '10:35 AM CT' };
+    const QUOTED_AT = 1794001029801;
+
+    it('keeps quotedAt in the parsed output (z.object strips unknown keys)', () => {
+      const result = snapshotBodySchema.safeParse({
+        ...BASE,
+        quotedAt: QUOTED_AT,
+      });
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual({ ...BASE, quotedAt: QUOTED_AT });
+    });
+
+    it('accepts null', () => {
+      const result = snapshotBodySchema.safeParse({ ...BASE, quotedAt: null });
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual({ ...BASE, quotedAt: null });
+    });
+
+    it('accepts quotedAt absent (a backtest save sends none)', () => {
+      const result = snapshotBodySchema.safeParse(BASE);
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual(BASE);
+    });
+
+    it.each([
+      ['a numeric string', '1794001029801'],
+      ['an ISO string', '2026-11-06T21:37:09.801Z'],
+      ['a float', 1794001029801.5],
+      ['zero', 0],
+      ['a negative number', -1],
+      ['NaN', Number.NaN],
+      ['Infinity', Number.POSITIVE_INFINITY],
+      ['a boolean', true],
+      ['an object', {}],
+    ])('rejects quotedAt given %s', (_what, value) => {
+      const result = snapshotBodySchema.safeParse({ ...BASE, quotedAt: value });
+      expect(result.success).toBe(false);
+    });
+  });
 });
 
 // ── analysisResponseSchema ───────────────────────────────────
