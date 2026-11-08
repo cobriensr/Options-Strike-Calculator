@@ -1222,7 +1222,7 @@ export interface SnapshotSymbolReport {
   unmatched: Record<ValueField, number>;
   /** The TOP_UNWRITTEN largest |stored - recomputed| price differences that are not written. */
   unwritten: UnwrittenDiff[];
-  /** The TOP_UNWRITTEN largest price drifts among rows that can be recomputed and whose price is not written. */
+  /** The DRIFT_LIST_CAP largest price drifts among rows that can be recomputed and whose price is not written. */
   driftTop: UnwrittenDiff[];
   /** Those rows over UNWRITTEN_FLAG_SHARE of the price. */
   driftOverMark: number;
@@ -1555,6 +1555,12 @@ function valueHitFields(field: ValueField): SnapshotField[] {
 }
 
 const TOP_UNWRITTEN = 10;
+/**
+ * The safety-net list of recomputable rows nothing will write names up to this
+ * many: after every step ES and NQ keep a few dozen rows over the mark (ruling 7
+ * asks for each of them by name), where the other lists show the first 10.
+ */
+const DRIFT_LIST_CAP = 50;
 const TOP_UNMATCHED = 3;
 /** A price difference over this share of the price is named in the report. */
 const UNWRITTEN_FLAG_SHARE = 0.0015;
@@ -2138,6 +2144,7 @@ async function planSnapshots(
             row,
             outcome.to.price,
             'recomputable, price not affected',
+            DRIFT_LIST_CAP,
           );
           if (
             Math.abs(row.stored.price - outcome.to.price) >

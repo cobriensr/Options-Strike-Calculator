@@ -2506,6 +2506,34 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     expect(await dump()).toBe(before);
   });
 
+  it('names every drifting row up to the list cap, not only the first 10', async () => {
+    // Twelve ES rows with 12 different stored prices no bar has: no run, no matched
+    // bar, nothing writes them. The times keep a bar under 15 minutes old at each row
+    // (14:57 and 14:58 would be stale: the 14:58 bar closes at 14:59).
+    await frozenDay('ES', '2026-06-18', '2026-06-17');
+    const times = [
+      ...[50, 51, 52, 53, 54, 55, 56].map((m) => `14:${m}:00.250`),
+      ...[0, 1, 2, 3, 4].map((m) => `15:0${m}:00.250`),
+    ];
+    const rows: { id: number; stored: number }[] = [];
+    for (const [k, time] of times.entries()) {
+      rows.push({
+        id: await at('ES', '2026-06-18', time, 7100 + k),
+        stored: 7100 + k,
+      });
+    }
+    expect(await dry({ detectorDays: detector() })).toBe(0);
+    const text = report();
+    for (const { id, stored } of rows) {
+      expect(text).toContain(`id ${id}: stored ${stored}, recomputed `);
+    }
+    expect(text).toMatch(
+      /the (\d+) largest price drifts on rows that can be recomputed \(price not affected, not written, not in the stale-at-write plan; (\d+) rows over 0\.15% of the price\):/,
+    );
+    const heading = /the (\d+) largest price drifts/.exec(text);
+    expect(Number(heading?.[1])).toBeGreaterThanOrEqual(12);
+  });
+
   describe('the frozen-run clause', () => {
     it('writes a run of 20 minutes at a price no bar has, and not a run of exactly 15, and reports the clause rows and the run', async () => {
       await frozenDay('ES', '2026-06-11', '2026-06-10');
