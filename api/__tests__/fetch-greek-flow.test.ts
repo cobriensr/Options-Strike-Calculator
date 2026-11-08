@@ -1184,7 +1184,7 @@ describe('fetch-greek-flow handler', () => {
 
     expect(uwFetchCalls()).toHaveLength(1);
     // Anchored at the end: appending `?date=` (as the reconcile does for a
-    // finished session) must fail this. R-day is the live cron's guard.
+    // finished session) must fail this.
     expect(String(uwFetchCalls()[0]![0])).toMatch(
       /\/stock\/SPX\/greek-flow\/2026-03-24$/,
     );
