@@ -30,10 +30,6 @@
  *     the expiry order and the cold-start seed, and `canonicalContract`
  *     the one name a contract has everywhere.
  *
- * The old rule, `replayFrontMonth`, is the leader of the UTC-day volume
- * tally, with no memory, so it can step back and forth around a roll.
- * Superseded: Phase 4c deletes it.
- *
  * The uw-stream handler will carry a Python copy of the per-session rule
  * (Phase 5). Both copies are to run the cases in
  * `api/__tests__/fixtures/futures-roll-cases.json`, so they can't drift
@@ -102,65 +98,6 @@ export function frontMonthCandidates(
 export interface ContractMinute {
   ts: string;
   volume: number;
-}
-
-/**
- * Superseded: this rule has no memory, so it can step back and forth
- * between months around a roll. The gap cron moved to the per-session front
- * month in Phase 4a and the two history scripts in Phase 4b. Nothing calls
- * this any more, and Phase 4c deletes it.
- *
- * Replays the uw-stream front-month rule over per-contract minute rows
- * (candles in the bar backfill, trade-derived minutes in the order flow
- * backfill): per minute, add every contract's volume to a UTC-day tally
- * (reset at each new UTC date), then emit the tally leader's row for that
- * minute if it has one. A minute where the leader has no row is left out,
- * never filled from another month, which trades at a carry basis. Ties go
- * to the larger contract symbol, matching Python's
- * `max(tally.items(), key=lambda kv: (kv[1], kv[0]))`.
- *
- * `ts` must be the `toISOString()` form: equal-length UTC strings sort
- * chronologically and their first 10 characters are the UTC date.
- */
-export function replayFrontMonth<T extends ContractMinute>(
-  byContract: ReadonlyMap<string, readonly T[]>,
-): Array<{ contract: string; row: T }> {
-  const byMinute = new Map<string, Map<string, T>>();
-  for (const [contract, rows] of byContract) {
-    for (const row of rows) {
-      const minute = byMinute.get(row.ts) ?? new Map<string, T>();
-      minute.set(contract, row);
-      byMinute.set(row.ts, minute);
-    }
-  }
-
-  const out: Array<{ contract: string; row: T }> = [];
-  const tally = new Map<string, number>();
-  let day = '';
-  for (const ts of [...byMinute.keys()].sort()) {
-    const minute = byMinute.get(ts)!;
-    if (ts.slice(0, 10) !== day) {
-      day = ts.slice(0, 10);
-      tally.clear();
-    }
-    for (const [contract, row] of minute) {
-      tally.set(contract, (tally.get(contract) ?? 0) + row.volume);
-    }
-    let leader = '';
-    let leaderVolume = -1;
-    for (const [contract, volume] of tally) {
-      if (
-        volume > leaderVolume ||
-        (volume === leaderVolume && contract > leader)
-      ) {
-        leader = contract;
-        leaderVolume = volume;
-      }
-    }
-    const row = minute.get(leader);
-    if (row) out.push({ contract: leader, row });
-  }
-  return out;
 }
 
 // ── Contract names ────────────────────────────────────────

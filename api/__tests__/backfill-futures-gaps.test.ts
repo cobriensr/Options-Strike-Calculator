@@ -937,7 +937,7 @@ describe('backfill-futures-gaps handler', () => {
     expect(insertCalls()).toHaveLength(0);
   });
 
-  it('a capped payload only has to reach the first minute to repair: no UTC-day tally needs the rest of its day', async () => {
+  it('a capped payload only has to reach the first minute to repair', async () => {
     mockSql.mockResolvedValueOnce([ES_GAP]).mockResolvedValueOnce([{}]);
     // Starts 10:00Z, after 00:00Z of the gap's UTC day but before the gap.
     const start = Date.parse('2026-09-29T10:00:00Z');
