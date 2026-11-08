@@ -58,6 +58,7 @@ import {
   type FuturesRoot,
 } from './futures-contracts.js';
 import logger from './logger.js';
+import { Sentry } from './sentry.js';
 
 type Sql = ReturnType<typeof getDb>;
 
@@ -273,10 +274,19 @@ function capAtCeiling(
     ceiling,
   );
   if (clamped) {
+    const message =
+      'Front-month decision is later than the next stored decision: using the next stored decision';
     logger.warn(
       { product, tradeDate, wanted, ceiling: contract, incumbent },
-      'Front-month decision is later than the next stored decision: using the next stored decision',
+      message,
     );
+    // Once the seed has run, a clamp means a late volume row or a date
+    // decided out of order: a log line alone would go unseen.
+    Sentry.captureMessage(message, {
+      level: 'warning',
+      tags: { product, trade_date: tradeDate },
+      extra: { wanted, ceiling: contract, incumbent },
+    });
   }
   return contract;
 }
@@ -296,10 +306,14 @@ async function decideAndStore(
 ): Promise<string> {
   const { incumbent, ceiling, volumes } = inputs;
   if (incumbent == null && volumes.size === 0) {
-    logger.warn(
-      { product, tradeDate },
-      'No earlier front-month decision and no earlier volume: using the listing-cycle seed',
-    );
+    const message =
+      'No earlier front-month decision and no earlier volume: using the listing-cycle seed';
+    logger.warn({ product, tradeDate }, message);
+    // Once the seed has run, this means a root with no history.
+    Sentry.captureMessage(message, {
+      level: 'warning',
+      tags: { product, trade_date: tradeDate },
+    });
   }
   const decided = capAtCeiling(
     product,
@@ -330,7 +344,8 @@ async function decideAndStore(
  * The contract for one root and trade date: the stored row when there is
  * one, else decided now by `decideFrontMonth` from the latest earlier
  * decision and volume, written with ON CONFLICT DO NOTHING and read back,
- * so every writer returns the same answer. Logs a warning, and uses the
+ * so every writer returns the same answer. Warns (a log line and a Sentry
+ * warning tagged with the product and trade date), and uses the
  * listing-cycle seed, when there is no earlier decision and no volume at
  * all: a seed that is too early can only make the roll late.
  *
@@ -340,8 +355,9 @@ async function decideAndStore(
  * starts from the row just written, so there is no concurrency to bound,
  * and the fill is not capped here: the caller owns its time budget). A date
  * is never decided later than the earliest decision after it; when the
- * tally would, that decision is used and a warning logged. A stored row
- * costs one query, and a miss with nothing to fill or clamp costs four.
+ * tally would, that decision is used and a warning is raised the same way.
+ * A stored row costs one query, and a miss with nothing to fill or clamp
+ * costs four.
  *
  * Throws on a malformed date and on one after the current trade date.
  * Database errors propagate (transient ones after `withDbRetry`'s retries).

@@ -27,7 +27,7 @@ import { PGlite } from '@electric-sql/pglite';
 
 import { applyMigration } from './pglite-migrations';
 
-const { pg, mockWarn } = vi.hoisted(() => ({
+const { pg, mockWarn, mockCaptureMessage } = vi.hoisted(() => ({
   pg: {
     db: null as PGlite | null,
     queries: [] as string[],
@@ -51,6 +51,7 @@ const { pg, mockWarn } = vi.hoisted(() => ({
     } | null,
   },
   mockWarn: vi.fn(),
+  mockCaptureMessage: vi.fn(),
 }));
 
 vi.mock('../_lib/db.js', async () => {
@@ -96,6 +97,12 @@ vi.mock('../_lib/logger.js', () => ({
   default: { warn: mockWarn, info: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+// `metrics` is read by the real `withDbRetry`.
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: { captureMessage: mockCaptureMessage },
+  metrics: { increment: vi.fn() },
+}));
+
 import { TransientDbError } from '../_lib/db.js';
 import {
   ensureFrontMonth,
@@ -138,6 +145,7 @@ beforeEach(async () => {
   pg.fail = null;
   pg.before = null;
   mockWarn.mockClear();
+  mockCaptureMessage.mockClear();
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(new Date(NOW));
 });
@@ -342,6 +350,16 @@ describe('ensureFrontMonth', () => {
       expect.objectContaining({ product: 'ES', tradeDate: '2026-11-05' }),
       expect.any(String),
     );
+    // A root with no history is unexpected once the seed has run: a log
+    // line alone would go unseen.
+    expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+    expect(mockCaptureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('listing-cycle seed'),
+      {
+        level: 'warning',
+        tags: { product: 'ES', trade_date: '2026-11-05' },
+      },
+    );
   });
 
   it('does not warn when an incumbent decides with no volume, or volume decides with no incumbent', async () => {
@@ -356,6 +374,7 @@ describe('ensureFrontMonth', () => {
     );
 
     expect(mockWarn).not.toHaveBeenCalled();
+    expect(mockCaptureMessage).not.toHaveBeenCalled();
   });
 
   it('refuses a trade date after the current one, naming the product and both dates, before any query', async () => {
@@ -519,6 +538,16 @@ describe('ensureFrontMonth: the series only moves forward, whatever order dates 
       }),
       expect.any(String),
     );
+    // Once the seed has run, a clamp means a late volume row or a date
+    // decided out of order: worth a Sentry warning, not only a log line.
+    expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+    expect(mockCaptureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('next stored decision'),
+      expect.objectContaining({
+        level: 'warning',
+        tags: { product: 'ES', trade_date: '2026-11-05' },
+      }),
+    );
   });
 
   it.each(['ESH7', 'ESM7'])(
@@ -533,6 +562,7 @@ describe('ensureFrontMonth: the series only moves forward, whatever order dates 
       );
 
       expect(mockWarn).not.toHaveBeenCalled();
+      expect(mockCaptureMessage).not.toHaveBeenCalled();
     },
   );
 
@@ -586,6 +616,15 @@ describe('ensureFrontMonth: the series only moves forward, whatever order dates 
         incumbent: 'ESH7',
       }),
       expect.any(String),
+    );
+    expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+    expect(mockCaptureMessage).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        level: 'warning',
+        // The incumbent that is later than the ceiling is named too.
+        extra: expect.objectContaining({ incumbent: 'ESH7' }),
+      }),
     );
   });
 
