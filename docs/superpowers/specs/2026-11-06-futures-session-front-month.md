@@ -47,6 +47,7 @@
    - The row is written once by whoever needs it first: uw-stream, the gap cron or a script.
    - Writes use `ON CONFLICT DO NOTHING` and then re-read the row, so every writer ends up with the same answer.
    - A row is never updated.
+   - Every writer refuses a decision row dated after the current trade date. The current date is allowed: the seed writes the running session's row.
 4. **The decision for D** (`decideFrontMonth` / `decide_front`):
    - **I** is the contract of the latest decision row before D.
    - **V** is the per-contract volume of the latest trade date before D that has volume rows.
@@ -55,7 +56,11 @@
    - **No incumbent:** take the contract with the most volume in V (tie: earlier expiry).
    - **No incumbent and no V:** `nullSeedContract(root, D)`, the first contract in the root's cycle that hasn't stopped trading. The writer logs a warning naming the root and date. A seed that is too early can only make the roll one session late.
    - **D after the current trade date:** refused.
-5. **Forward only.** A contract expiring on or before I is never chosen, so a false lead can at most roll one session early, and the series never rolls back.
+5. **Forward only.** A contract expiring on or before I is never chosen, so a false lead can at most roll one session early. That alone keeps the series from rolling back only when each date is decided after the one before it, so `ensureFrontMonth` (and `ensure_front`) enforces the order itself (Phase 2 review, 2026-11-07):
+   - **Why:** ES is ESZ6 on 11-03; ESH7 out-trades on 11-04, ESZ6 again on 11-05. In order, 11-05 and 11-06 are both ESH7. Deciding 11-06 first, from the same incumbent but 11-05's volume, gave ESZ6, and 11-05 decided afterwards gave ESH7: a roll back, stored for good.
+   - **Fill forward:** before deciding D, it decides each undecided date that has volume rows between I's date and D, oldest first. With no incumbent there is nothing to fill.
+   - **Ceiling:** if the answer expires after the contract of the earliest decision after D, it writes that contract instead and warns, naming the product, date, wanted contract, ceiling and incumbent.
+   - **Accepted risk:** the inputs are read in one statement and the row is inserted in another. A volume row landing in between, while another process decides a different date, can leave one out-of-order pair (a model found 98 in 300,000 random schedules; none without the volume writer). Closing it would take a conditional insert, and it is left open.
 6. **Minutes.** The bar for minute m comes only from front(tradeDate(m)), and its `contract` is that name. If that contract printed nothing in m, the minute is a gap. This is unchanged: there is no back-month fallback.
    - Where two spellings of one contract both have a candle row in a minute (REST paths), the bar is the larger-volume spelling's row (a tie goes to the code-point smaller key), as in the 6b parser tests. The live handler folds both spellings' prints into one bar.
 
@@ -87,6 +92,7 @@ Inputs the phases must test explicitly (the owning phase is in brackets):
 5. **Neon unreachable while deciding:**
    - uw-stream does not cache the failure, logs the minute as a gap, and retries on the next flush.
    - The cron fails that root by name. [Phases 4a, 5]
+6. **Dates decided out of order** (a gap date the cron reaches after a later live row, or a seed re-run over stored rows): the series never rolls back. [Phase 2 PGlite, Phase 3b, Phase 5]
 
 ## Data dependencies
 
@@ -134,9 +140,9 @@ Files:
 - New work: `api/_lib/db-migrations.ts`, `api/__tests__/db.test.ts`.
 
 Steps:
-- [ ] Cherry-pick the six onto this branch, rebased on origin/main. Their migration #203 collides with main's #203 (market_snapshots): renumber it to #204 in the migration, its tests and its comments.
-- [ ] Add #205, the two tables above. Update `db.test.ts` per CLAUDE.md "DB Migrations".
-- [ ] Gate, review (the renumber and #205 only), commit. **No push** until #204 and #205 are applied in prod.
+- [x] Cherry-pick the six onto this branch, rebased on origin/main. Their migration #203 collides with main's #203 (market_snapshots): renumber it to #204 in the migration, its tests and its comments.
+- [x] Add #205, the two tables above. Update `db.test.ts` per CLAUDE.md "DB Migrations".
+- [x] Gate, review (the renumber and #205 only), commit. **No push** until #204 and #205 are applied in prod. Done 2026-11-07, local, ending at 859734c6.
 - [ ] Apply #204 and #205 once they are the only ones pending. Then push.
 
 ### Phase 2: the session rule in TypeScript (medium)
@@ -158,12 +164,13 @@ Produces:
   - `decideFrontMonth(incumbent: string | null, volumes: ReadonlyMap<string, number>, root: FuturesRoot, tradeDate: string): string`. Rule 4; volume keys are canonicalized and null names dropped.
   - `pickScheduledFront<T extends ContractMinute>(byContract: ReadonlyMap<string, readonly T[]>, contractFor: (tradeDate: string) => string | undefined): Array<{ contract: string; row: T }>`. Rule 6, including the two-spelling case.
 - In `futures-front-month.ts`:
-  - `ensureFrontMonth(product: FuturesRoot, tradeDate: string, source: 'cron' | 'script'): Promise<string>`. It reads the row; when it is absent, it decides by rule 4 from the tables, inserts with DO NOTHING and re-reads. It logs a warning on the cycle fallback and throws on a date after the current trade date. DB errors propagate.
+  - `ensureFrontMonth(product: FuturesRoot, tradeDate: string, source: 'cron' | 'script'): Promise<string>`. It reads the row; when it is absent, it fills forward and decides by rules 4 and 5 from the tables, applies the ceiling, inserts with DO NOTHING and re-reads. A stored row costs one query; a miss costs four statements with nothing to fill and 5 + 3k with k dates to fill. It logs a warning on the cycle fallback and on a clamp, and throws on a date after the current trade date. DB errors propagate.
   - `fetchFrontMonthSchedule(product: FuturesRoot, tradeDates: readonly string[], source: 'cron' | 'script'): Promise<{ contractFor(tradeDate: string): string | undefined; contracts: string[] }>`. It calls `ensureFrontMonth` for each distinct date. Callers pass only the trade dates their minutes fall on, so weekends get no rows.
-  - `insertContractVolumes(rows: ReadonlyArray<{ product: FuturesRoot; tradeDate: string; contract: string; volume: number }>): Promise<number>` and `insertFrontMonthRows(rows: ReadonlyArray<{ product: FuturesRoot; tradeDate: string; contract: string }>): Promise<number>`. Both are batched unnest inserts with DO NOTHING, 500 rows per chunk, `withDbRetry`, `source = 'candles'`, and are used by Phases 3b and 4a.
+  - `insertContractVolumes(rows: ReadonlyArray<{ product: FuturesRoot; tradeDate: string; contract: string; volume: number }>): Promise<number>` and `insertFrontMonthRows(rows: ReadonlyArray<{ product: FuturesRoot; tradeDate: string; contract: string }>): Promise<number>`. Both are batched unnest inserts with DO NOTHING, 500 rows per chunk, `withDbRetry`, `source = 'candles'`, and are used by Phases 3b and 4a. Each checks every row before writing any: a non-canonical contract is refused, `insertContractVolumes` refuses a trade date on or after the current one (a running session's volume is partial), and `insertFrontMonthRows` refuses one after it.
+- In the fixture: a `decideFrontMonth` or `pickScheduledFront` case may carry `throws` (a message pattern) instead of an answer. The call must raise. The `format` text says how a port checks it.
 
 Steps:
-- [ ] Fixture cases plus failing tests:
+- [x] Fixture cases plus failing tests:
   - **`cmeTradeDate`:**
     - `2026-11-05T22:59Z` → `2026-11-05` and `23:00Z` → `2026-11-06` (CST).
     - `2026-09-14T21:59Z` → `09-14` and `22:00Z` → `09-15` (CDT).
@@ -189,18 +196,20 @@ Steps:
     - V is read from the latest earlier trade date across a weekend.
     - With no rows at all, it returns the cycle seed and logs a warning.
     - A future trade date is refused.
-- [ ] Implement until green.
-- [ ] Gate, review, commit.
+- [x] Implement until green.
+- [x] Gate, review, commit. Done 2026-11-07, local: 24c0a6bc, d1cde054, then review fixes 2cb039f2, 39af7aa9, a9515286 (fill forward, ceiling, insert date guards, fixture `throws`).
 
-### Phase 3a: a shared daily-candle fetch (small)
+### Phase 3a: a shared daily-candle fetch and a stored-decision read (small)
 
 The Phase 3b seed and the Phase 4a cron both read daily candles (owner decision 2026-11-07: the cron refreshes volumes on every run, see Phase 4a), so the fetch lives in `api/_lib`, where both can import it.
 
 Files:
 - new `api/_lib/futures-daily-candles.ts`
 - new `api/__tests__/futures-daily-candles.test.ts`
+- `api/_lib/futures-front-month.ts` and `api/__tests__/futures-front-month-pglite.test.ts`: one read for the Phase 3b seed
 
 Produces:
+- In `futures-front-month.ts`, `fetchStoredFrontMonths(product: FuturesRoot, fromDate: string, toDate: string): Promise<Map<string, string>>`: the stored decision rows in [fromDate, toDate], trade date → canonical contract, in one query. A stored row that isn't an outright of the product throws, naming it (as `decideFrontMonth` does for a bad incumbent). PGlite tests: the range bounds, another product's rows left out, the corrupt-row throw, a DB reject propagating.
 - `cycleContracts(root: FuturesRoot, fromMonth: string, toMonth: string): string[]`: the root's `CONTRACT_CYCLE` contracts whose contract month is in [fromMonth, toMonth] (YYYY-MM), as canonical names in expiry order.
 - `fetchDailyContractVolumes(apiKey: string, root: FuturesRoot, contracts: readonly string[], range: string): Promise<Array<{ contract: string; tradeDate: string; volume: number }>>`:
   - One `uwFetch` + `withRetry` call per contract (`/futures/{contract}/candles?interval=1d&range=<range>`), at most `UW_CONCURRENCY_CAP` at once.
@@ -222,26 +231,32 @@ Files:
 
 What the seed does:
 - **Fetch:** for each root, `fetchDailyContractVolumes` over `cycleContracts(root, '2026-07', three months past today)` with `range=6m`. That is about 30 calls. A fetch error fails that root, named; the other roots still run.
-- **Volumes** go in for trade dates before the current one.
+- **Volumes** go in for trade dates before the current one, and before any decision row, so the two tables are written together in one run.
 - **Decisions:**
-  - From 2026-07-22 through the current trade date, worked out in memory by `decideFrontMonth`.
+  - From 2026-07-22 through the current trade date, worked out in memory by `decideFrontMonth`, oldest first.
   - The incumbent for 07-22 is the contract with the most volume on 07-21.
+  - **A stored row wins** (`fetchStoredFrontMonths`, read once per root before the walk): where a date already has a decision, the walk takes it as that date's answer and carries on from it. Rows are write-once, so this keeps a re-run (Phase 5 step 1, after the gap cron has been deciding) in line with what is stored, instead of writing a chain that disagrees with it.
   - One row is written per trade date that has candle volume, plus the current trade date.
+- **Check after writing:** read the root's series back with `fetchStoredFrontMonths`. Any later date holding an earlier-expiring contract fails the root, naming the pair, and the exit code is 1.
+- **Run it before any other decider writes** where possible: the first run is rollout step 4, before Phase 4a reaches main.
 - **Output:** each root's switches (trade date, from → to, the deciding session's two volumes), so they can be compared with the old rule's switch minutes.
 - **Flags:** `--dry-run` and `--roots`. There is no market-hours guard; it makes about 30 light calls.
 
 Steps:
-- [ ] Failing tests, with `fetchDailyContractVolumes` and the two insert functions mocked:
+- [ ] Failing tests, with `fetchDailyContractVolumes`, `fetchStoredFrontMonths` and the two insert functions mocked:
   - A synthetic two-contract history rolls once, on the session after volume crosses.
   - A fetch error fails its root by name, and the other roots still run.
   - The current trade date's volume is not written.
+  - Volumes are inserted before decisions.
+  - A stored row in the middle of the range is kept, and the walk continues from it: a stored ESH7 a session before candles would roll makes every later row ESH7 or later.
+  - The check after writing names an out-of-order pair and fails its root, and the other roots still run.
   - A dry run writes nothing.
 - [ ] Implement, gate, review, commit.
 - [ ] Once #205 is in prod: a dry run, then the real run. Record the switch list in this doc.
 
 ### Phase 4a: the gap cron reads the table (medium)
 
-Files: `api/cron/backfill-futures-gaps.ts`, `api/__tests__/backfill-futures-gaps.test.ts`, `api/_lib/futures-flow-repair.ts` (comment only).
+Files: `api/cron/backfill-futures-gaps.ts`, `api/__tests__/backfill-futures-gaps.test.ts`, `api/_lib/futures-flow-repair.ts` (comment only), `api/_lib/futures-front-month.ts` and `api/__tests__/futures-front-month-pglite.test.ts` (the two warnings below).
 
 - [ ] **Failing tests** first:
   - Before each root's schedule is read, its volumes are refreshed: daily candles for the incumbent and the next two cycle contracts, written with `insertContractVolumes` for trade dates before the current one only.
@@ -250,7 +265,9 @@ Files: `api/cron/backfill-futures-gaps.ts`, `api/__tests__/backfill-futures-gaps
   - Gap minutes either side of a session open land on their own session's contract.
   - Every inserted bar carries its scheduled `contract`.
   - A DB error in the schedule read fails the root in each pass with a Sentry exception, and the run reports partial or error.
+  - PGlite: a clamp, and a cycle-seed fallback, each send one warning-level Sentry message tagged with product and trade date, besides the log line.
 - [ ] **Then the change:**
+  - **The two warnings in `futures-front-month.ts` go to Sentry** (ruling 2026-11-07), as `captureMessage` at warning level with `product` and `trade_date` tags. Once the seed has run, either one means something unexpected: a clamp means a late volume row or an out-of-order decision, and a cycle seed means a root has no history. A log line alone would go unseen.
   - **Volume refresh first** (owner decision 2026-11-07). For each root: take the incumbent (the latest decision row; with none, the cycle seed for the current trade date). Take `cycleContracts` from its month, first three. Call `fetchDailyContractVolumes` with the shortest range Phase 3a found, then `insertContractVolumes` for trade dates before the current one. About 18 calls a run.
     - Why: otherwise nothing writes volume between the Phase 3b seed and Phase 5, or on any day uw-stream is down. A decision made from old volume is permanent.
     - Candle rows are `DO NOTHING`, so a session uw-stream already wrote keeps its live tally.
@@ -287,9 +304,13 @@ Files: `api/_lib/futures-contracts.ts`, `api/__tests__/futures-contracts.test.ts
 Files: `uw-stream/src/handlers/futures_trades.py`, new `uw-stream/src/futures_front_month.py`, `uw-stream/src/db.py`, `uw-stream/tests/test_futures_trades_handler.py`, new `uw-stream/tests/test_futures_front_month.py`.
 
 Produces:
-- **Pure functions, held to the shared fixture** (`api/__tests__/fixtures/futures-roll-cases.json`): `trade_date(ts: datetime) -> date`, `parse_contract`, `canonical_contract` and `null_seed_contract` (ports of the TS parser) and `decide_front(incumbent: str | None, volumes: Mapping[str, int], product: str, trade_date: date) -> str`.
+- **Pure functions, held to the shared fixture** (`api/__tests__/fixtures/futures-roll-cases.json`): `trade_date(ts: datetime) -> date`, `parse_contract`, `canonical_contract` and `null_seed_contract` (ports of the TS parser) and `decide_front(incumbent: str | None, volumes: Mapping[str, int], product: str, trade_date: date) -> str`. Fixture cases with `throws` must raise.
 - **DB functions:**
-  - `async ensure_front(product: str, trade_date: date) -> str | None`: the same read / decide / insert DO NOTHING / re-read as in TypeScript, with `source = 'live'`. None only on a DB error.
+  - `async ensure_front(product: str, trade_date: date) -> str | None`: the same read / fill forward / decide / ceiling / insert DO NOTHING / re-read as `ensureFrontMonth` (rules 4 and 5), with `source = 'live'`.
+    - **The fill is capped** at 10 dates a call, oldest first, so a long backlog can't stall the handler's flush (each filled date is three round trips). Past the cap it returns None, the minute is a gap, and the next flush carries on from where the fill stopped.
+    - **A clamp** logs `kind="front_month_clamped"` at error level (so it reaches Sentry, like Phase 4a's message), with the product, date, wanted contract, ceiling and incumbent.
+    - **The module docstring** carries rule 5's accepted risk: the read and the insert are separate statements.
+    - None on a DB error or at the fill cap.
   - `async load_tally(product: str, trade_date: date) -> dict[str, int]`.
   - `async save_tally(rows: Sequence[tuple[str, date, str, int]]) -> None`: one upsert with GREATEST.
 - **`db.py`:** public `fetch` and `execute` helpers that go through `_with_db_retry`, if the module doesn't already have them.
@@ -312,6 +333,14 @@ Steps:
   - **Restart:** a restart carries the tally on from the table and keeps the session's contract.
   - **Straggler:** a late print for D−1's last minute uses D−1's contract.
   - **DB error at the open:** the minute becomes a gap with an error log, and the next flush retries.
+  - **Order, in `test_futures_front_month.py`:** twins of the PGlite block "ensureFrontMonth: the series only moves forward, whatever order dates…" in `api/__tests__/futures-front-month-pglite.test.ts`. The fixture can't pin these, since they are the DB layer. Run them against a dict-backed stand-in monkeypatched over the module's read and insert functions:
+    - a gap with volume rows is filled first;
+    - the ESZ6/ESH7 flicker gives the same rows in both orders;
+    - an old date decided after a later row never passes it;
+    - late volume rows;
+    - no incumbent means no fill;
+    - the clamp, over ordered and over already-disordered rows, and its log;
+    - the cap: 12 undecided dates, so the first call fills 10 and returns None, and the second completes.
   - **Duplicates** still don't inflate the tally.
   - **Two spellings** (`ESZ26`, `ESZ6`) fold into one tally key and one bar.
   - **Fixture:** the parity test against the shared fixture passes.
@@ -386,6 +415,7 @@ Between steps 5 and 6, the cron fills gaps by the new rule while live bars still
 - **One tick, the Phase 6 band:** ES 0.25, NQ 0.25, RTY 0.10, CL 0.01, GC 0.10, ZN 1/64 = 0.015625.
 - **Seed start:** trade date 2026-07-21, the first daily candle on NQ/RTY/CL/GC/ZN and the start of REST trades. The first decision row is 2026-07-22.
 - **Daily candles:** `interval=1d`, volume from `v`; `range=6m` for the seed, the shortest range covering a week for the cron.
+- **Live fill cap:** 10 dates per `ensure_front` call (Phase 5). The TypeScript fill is uncapped: its callers are a cron and scripts.
 - **Repair window:** 2026-09-04 00:00 UTC → the Phase 5 deploy.
 
 ## Open questions (defaults taken)
