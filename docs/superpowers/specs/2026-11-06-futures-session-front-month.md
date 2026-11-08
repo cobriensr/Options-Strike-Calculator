@@ -242,8 +242,8 @@ What the seed does:
   - **An empty result** fails the root by name for any listed contract up to and including the second cycle contract after the current month. On 11-07 that is ESU6, ESZ6 and ESH7 for ES, and through CLF7 for CL. Read as no volume, it would let a challenger roll early.
 - **Volumes** go in for trade dates before the current one, and before any decision row, so the two tables are written together in one run.
 - **Decisions:**
-  - From 2026-07-22 through the current trade date, worked out in memory by `decideFrontMonth`, oldest first.
-  - The incumbent for 07-22 is the contract with the most volume on 07-21.
+  - From 2026-07-28 through the current trade date, worked out in memory by `decideFrontMonth`, oldest first.
+  - The incumbent for 07-28 is the contract with the most volume on 07-27.
   - **A stored row wins** (`fetchStoredFrontMonths`, read once per root before the walk): where a date already has a decision, the walk takes it as that date's answer and carries on from it. Rows are write-once, so this keeps a re-run (Phase 5 step 1, after the gap cron has been deciding) in line with what is stored, instead of writing a chain that disagrees with it.
   - One row is written per trade date that has candle volume, plus the current trade date.
 - **Check after writing:** read the root's series back with `fetchStoredFrontMonths`. Any later date holding an earlier-expiring contract fails the root, naming the pair, and the exit code is 1.
@@ -425,7 +425,9 @@ Between steps 5 and 6, the cron fills gaps by the new rule while live bars still
 - **Trade-date offset:** +7 h on America/Chicago wall time. The 17:00 CT open becomes the next date.
 - **One-digit year window:** [ref − 1, ref + 8], ref being the trade date's year (from the 6b parser).
 - **One tick, the Phase 6 band:** ES 0.25, NQ 0.25, RTY 0.10, CL 0.01, GC 0.10, ZN 1/64 = 0.015625.
-- **Seed start:** trade date 2026-07-21, the first daily candle on NQ/RTY/CL/GC/ZN and the start of REST trades. The first decision row is 2026-07-22.
+- **Seed start:** trade date 2026-07-27, the first full session in UW's daily candles; the first decision row is 2026-07-28 (owner, 2026-11-08).
+  - UW serves daily candles from 07-21, but 07-21 to 07-24 hold only a sliver of each session: RTY September traded 73 to 1,685 a day, then 144,241 on 07-27.
+  - The first dry run (2026-11-08, start 07-21) rolled RTY to December on 07-24, from 218 vs 73. Rolls only move forward, so that would have held RTY on December through September.
 - **Daily candles:** `interval=1d`, volume from `v`; `range=6m` for the seed and `range=1m` for the cron. `range` counts calendar days back from now (probe 2026-11-07: `1w` gave 5 sessions, `1m` 21).
 - **Live fill cap:** 10 dates per `ensure_front` call (Phase 5). The TypeScript fill is uncapped: its callers are a cron and scripts.
 - **Repair window:** 2026-09-04 00:00 UTC → the Phase 5 deploy.
