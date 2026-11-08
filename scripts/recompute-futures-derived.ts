@@ -28,8 +28,9 @@
  * no freshness gate until 2026-09-30: it priced from the last bar it had while
  * minutes were missing, and they have landed since. --rewrite-stale-at-write
  * rewrites those rows from today's bars (off by default). It covers every ES and NQ
- * row before 2026-10-01, and the thin roots' rows from the span end (their bars
- * before it are still month-mixed, D1) except on the days the Phase 1 detector
+ * row before 2026-10-01, and the thin roots' rows from the span end + 20 days (their
+ * bars before the span end are still month-mixed, D1, and a snapshot in the 20 days
+ * after reads some of them) except on the days the Phase 1 detector
  * confirmed contaminated in --detector-days. Without that file the thin roots' rows
  * after the span end are left too. A row is stale when its price is the close of a
  * bar older than the freshness gate (found by value, 96 hours back) or when it sits

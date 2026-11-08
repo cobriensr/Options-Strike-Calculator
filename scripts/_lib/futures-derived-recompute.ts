@@ -1162,6 +1162,12 @@ export interface StaleStats {
   afterSpan: number;
   /** Rows that meet the test but are left: a thin root's rows before the span end (D1). */
   left: number;
+  /**
+   * A thin root's rows from the span end to the end of the 20-day window after it
+   * (the reach of a snapshot's 1h change, day change and volume window into the
+   * span): left, because those inputs are contract-mixed (D1).
+   */
+  window: number;
   /** A thin root's rows after the span end that are left because no --detector-days file was given. */
   unchecked: number;
   /** Thin roots with a --detector-days file only. */
@@ -1922,6 +1928,7 @@ async function planSnapshots(
         inSpan: 0,
         afterSpan: 0,
         left: 0,
+        window: 0,
         unchecked: 0,
         detector:
           detectorDays?.get(symbol) == null
@@ -2101,9 +2108,11 @@ async function planSnapshots(
       // stale when it sits in a frozen run (frozenRunsOf), which finds the outage
       // rows whose last good bar is older than the value look-back. A thin root's
       // bars are still month-mixed before the span end (D1): its rows there are
-      // left. After it they are today's continuous-front bars, except on the days
-      // the Phase 1 detector confirmed contaminated, and only when a detector-days
-      // file says so.
+      // left. So are its rows in the 20 days after it (ruling 9): a snapshot there
+      // reads the hour-ago bar, the day-open bar and a 20-day volume window that
+      // reach back into the span. After that the inputs are today's continuous-front
+      // bars, except on the days the Phase 1 detector confirmed contaminated, and
+      // only when a detector-days file says so.
       const staleBar =
         byValue.priceBar != null &&
         row.tsMs - byValue.priceBar.tsMs > MAX_BAR_AGE_MS
@@ -2121,6 +2130,9 @@ async function planSnapshots(
         const day = ctTradingDay(row.tsMs);
         if (row.tsMs < SPAN.endMs) {
           report.stale.left += 1;
+          stalePlanned = false;
+        } else if (row.tsMs < scope.toMs) {
+          report.stale.window += 1;
           stalePlanned = false;
         } else if (stats == null || days == null) {
           report.stale.unchecked += 1;
@@ -2654,6 +2666,9 @@ function staleText(st: StaleStats): string[] {
   const left =
     (st.left > 0
       ? `; ${st.left} more before the span end are left (D1: this root's bars there are still month-mixed)`
+      : '') +
+    (st.window > 0
+      ? `; ${st.window} more inside the 20-day window after the span (thin root, inside the 20-day window after the span: their 1h change, day change and volume window read bars inside the span, D1) are left`
       : '') +
     (st.unchecked > 0
       ? `; ${st.unchecked} more after it are left (no --detector-days file: the source is unchecked)`
@@ -3876,7 +3891,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
       `repaired span ${span}`,
       `snapshot scope ${isoSecond(scope.snapshots.fromMs)} .. ${isoSecond(scope.snapshots.toMs)} (span end + 20 days)`,
       `fire scope ${isoSecond(scope.fires.fromMs)} .. ${isoSecond(scope.fires.toMs)} (span end + 6 minutes)`,
-      `stale-at-write test reaches ${isoSecond(STALE_UNTIL_MS)} (the freshness gate shipped on 2026-09-30); ES and NQ from the span start, the thin roots from the span end and off the contaminated days in ${opts.detectorDays ?? 'no file (their rows after the span end are left)'}`,
+      `stale-at-write test reaches ${isoSecond(STALE_UNTIL_MS)} (the freshness gate shipped on 2026-09-30); ES and NQ from the span start, the thin roots from the span end + 20 days (${isoSecond(scope.snapshots.toMs)}) and off the contaminated days in ${opts.detectorDays ?? 'no file (their rows after the span end are left)'}`,
       ...(opts.backup == null
         ? []
         : [

@@ -2284,7 +2284,8 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
    * in the span, which a thin root leaves. VR is on 2026-05-20, whose 20-day
    * window holds the deleted 05-14 bar: the normal step writes its volume ratio and
    * the stale step the rest. POST and THINPOST are after the span end (06-22):
-   * both rewritten. THINFLAGGED and THINFLAGGED2 are RTY on 06-23, a day the Phase 1
+   * both rewritten (RTY's are on 07-06 and 07-07, after the 20 days that follow the
+   * span end). THINFLAGGED and THINFLAGGED2 are RTY on 07-07, a day the Phase 1
    * detector confirmed contaminated (see `detector`): left. OCT1 is 2026-10-01, after
    * the freshness gate shipped: left.
    */
@@ -2294,8 +2295,8 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
       ['RTY', '2026-06-10', '2026-06-09'],
       ['ES', '2026-05-20', '2026-05-19'],
       ['ES', '2026-06-22', '2026-06-19'],
-      ['RTY', '2026-06-22', '2026-06-19'],
-      ['RTY', '2026-06-23', '2026-06-22'],
+      ['RTY', '2026-07-06', '2026-07-03'],
+      ['RTY', '2026-07-07', '2026-07-06'],
       ['ES', '2026-10-01', '2026-09-30'],
     ] as const) {
       await frozenDay(symbol, date, prior);
@@ -2313,15 +2314,15 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
       rty: await at('RTY', '2026-06-10', '14:50:00.250', 7007),
       vr: await at('ES', '2026-05-20', '14:50:00.250', 7007),
       post: await at('ES', '2026-06-22', '14:50:00.250', 7007),
-      thinPost: await at('RTY', '2026-06-22', '14:50:00.250', 7007),
-      thinFlagged: await at('RTY', '2026-06-23', '14:50:00.250', 7007),
-      thinFlagged2: await at('RTY', '2026-06-23', '14:55:00.250', 7007),
+      thinPost: await at('RTY', '2026-07-06', '14:50:00.250', 7007),
+      thinFlagged: await at('RTY', '2026-07-07', '14:50:00.250', 7007),
+      thinFlagged2: await at('RTY', '2026-07-07', '14:55:00.250', 7007),
       oct1: await at('ES', '2026-10-01', '14:50:00.250', 7007),
     };
   }
   /**
    * The detector's file: the CT trading days (feat.py) per thin root. By default
-   * RTY's 06-23 is contaminated and 06-22 has a single flagged bar.
+   * RTY's 07-07 is contaminated and 07-06 has a single flagged bar.
    */
   const detector = (
     days: Partial<
@@ -2331,8 +2332,8 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
       >
     > = {
       RTY: {
-        contaminated: ['2026-06-23'],
-        flagged: ['2026-06-22', '2026-06-23'],
+        contaminated: ['2026-07-07'],
+        flagged: ['2026-07-06', '2026-07-07'],
       },
     },
   ): string => {
@@ -2366,12 +2367,12 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     }
     return ids;
   };
-  /** No contaminated day (06-22 and 06-23 only have a flagged bar): the 10% rule does not refuse the apply. */
+  /** No contaminated day (07-06 and 07-07 only have a flagged bar): the 10% rule does not refuse the apply. */
   const applyDetector = () =>
     detector({
-      RTY: { contaminated: [], flagged: ['2026-06-22', '2026-06-23'] },
+      RTY: { contaminated: [], flagged: ['2026-07-06', '2026-07-07'] },
     });
-  // 10 rows: ES 6 in the span (F1a-c, F1d, FX, VR) and 1 after it (POST), RTY 3 after it (THINPOST and the two on 06-23).
+  // 10 rows: ES 6 in the span (F1a-c, F1d, FX, VR) and 1 after it (POST), RTY 3 after it (THINPOST and the two on 07-07).
   const staleRun = (over: Partial<RecomputeOptions> = {}) =>
     run({
       stores: ['snapshots'],
@@ -2451,7 +2452,7 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     );
     // The thin root's line carries the bar used and its neighbours.
     expect(text).toContain(
-      `RTY 2026-06-22T14:50:00.250Z id ${s.thinPost}: price 7007 -> 7010 (3.00), the matched bar of 2026-06-22T14:30:00Z is 20 min older; writes price, change1hPct, changeDayPct, volumeRatio; the bar used (2026-06-22T14:42:00Z) closed at 7010, the minutes before and after at none and none`,
+      `RTY 2026-07-06T14:50:00.250Z id ${s.thinPost}: price 7007 -> 7010 (3.00), the matched bar of 2026-07-06T14:30:00Z is 20 min older; writes price, change1hPct, changeDayPct, volumeRatio; the bar used (2026-07-06T14:42:00Z) closed at 7010, the minutes before and after at none and none`,
     );
     // One run of three rows (F1a-c) with the range of its recompute; F1d is cut off from it by U2, and FX has another price.
     expect(text).toContain(
@@ -2466,11 +2467,11 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     );
     // The thin root's contaminated day: its rows there are left, two of the three after-span stale rows.
     expect(text).toContain(
-      'contaminated days (Phase 1 detector, 1 listed): 2 stale rows on 1 of them are left, 66.7% of the 3 after-span stale rows, OVER 10%: stop and report before committing: 2026-06-23 (2)',
+      'contaminated days (Phase 1 detector, 1 listed): 2 stale rows on 1 of them are left, 66.7% of the 3 after-span stale rows, OVER 10%: stop and report before committing: 2026-07-07 (2)',
     );
     // Information: a day with a single flagged bar is not left; its row stays planned.
     expect(text).toContain(
-      'information, days with a flagged bar (2 listed; one flagged bar is the clean-day false-positive rate, so these are not left): 3 stale rows on 2 of them: 2026-06-22 (1), 2026-06-23 (2)',
+      'information, days with a flagged bar (2 listed; one flagged bar is the clean-day false-positive rate, so these are not left): 3 stale rows on 2 of them: 2026-07-06 (1), 2026-07-07 (2)',
     );
     // A thin root with nothing to leave out and nothing planned has a share of 0, not NaN.
     expect(text).toContain(
@@ -2531,26 +2532,26 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     // ES is unaffected by the file: its rows after the span end stay planned.
     expect(text).toContain(`ES 2026-06-22T14:50:00.250Z id ${s.post}: price`);
     expect(text).not.toContain(
-      `RTY 2026-06-22T14:50:00.250Z id ${s.thinPost}: price`,
+      `RTY 2026-07-06T14:50:00.250Z id ${s.thinPost}: price`,
     );
   });
 
   it('states a contaminated share of exactly 10% as within, and a listed day with no stale row as nothing left', async () => {
-    // RTY on 06-22: 9 stale rows a minute apart; on 06-23 one more, on a contaminated day. 1 of 10 is 10%.
-    await frozenDay('RTY', '2026-06-22', '2026-06-19');
-    await frozenDay('RTY', '2026-06-23', '2026-06-22');
+    // RTY on 07-06: 9 stale rows a minute apart; on 07-07 one more, on a contaminated day. 1 of 10 is 10%.
+    await frozenDay('RTY', '2026-07-06', '2026-07-03');
+    await frozenDay('RTY', '2026-07-07', '2026-07-06');
     for (let m = 48; m < 57; m += 1) {
-      await at('RTY', '2026-06-22', `14:${m}:00.250`, 7007);
+      await at('RTY', '2026-07-06', `14:${m}:00.250`, 7007);
     }
-    await at('RTY', '2026-06-23', '14:50:00.250', 7007);
+    await at('RTY', '2026-07-07', '14:50:00.250', 7007);
     const on = (contaminated: string[]) =>
       detector({ RTY: { contaminated, flagged: contaminated } });
-    expect(await dry({ detectorDays: on(['2026-06-23']) })).toBe(0);
+    expect(await dry({ detectorDays: on(['2026-07-07']) })).toBe(0);
     expect(report()).toContain(
-      'contaminated days (Phase 1 detector, 1 listed): 1 stale rows on 1 of them are left, 10.0% of the 10 after-span stale rows, within 10%: 2026-06-23 (1)',
+      'contaminated days (Phase 1 detector, 1 listed): 1 stale rows on 1 of them are left, 10.0% of the 10 after-span stale rows, within 10%: 2026-07-07 (1)',
     );
     // A listed day that holds no stale row leaves nothing out.
-    expect(await dry({ detectorDays: on(['2026-06-30']) })).toBe(0);
+    expect(await dry({ detectorDays: on(['2026-07-20']) })).toBe(0);
     expect(report()).toContain(
       'contaminated days (Phase 1 detector, 1 listed): 0 stale rows on 0 of them are left, 0.0% of the 10 after-span stale rows, within 10%',
     );
@@ -2606,7 +2607,7 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
   it("refuses --apply when more than 10% of a thin root's after-span stale rows are on contaminated days", async () => {
     await seedStale();
     const before = await dump();
-    // 06-23 is contaminated for RTY: 2 of its 3 after-span stale rows.
+    // 07-07 is contaminated for RTY: 2 of its 3 after-span stale rows.
     expect(
       await staleRun({ detectorDays: detector(), expectStaleRewrites: 8 }),
     ).toBe(1);
@@ -2638,6 +2639,49 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     expect([code, errored()]).toEqual([0, '']);
     expect(await price(last)).toBe('7015.0000');
     expect(await price(first)).toBe('7007.0000');
+  });
+
+  it("leaves a thin root's stale row 10 days after the span end next to a price step at the span end, and rewrites one 21 days after", async () => {
+    // A step at the span end, as CL had (71.87 to 80.15): 7000 before it, 7200 from the first bar after.
+    await bar('RTY', '2026-06-15T14:10:00Z', 7000, 100);
+    await bar('RTY', '2026-06-15T14:11:00Z', 7200, 100);
+    await frozenDay('RTY', '2026-06-25', '2026-06-24');
+    await frozenDay('RTY', '2026-07-06', '2026-07-03');
+    const tenDays = await at('RTY', '2026-06-25', '14:50:00.250', 7007);
+    const twentyOneDays = await at('RTY', '2026-07-06', '14:50:00.250', 7007);
+    expect(await dry({ detectorDays: detector() })).toBe(0);
+    const head =
+      'stale-at-write rows (opt-in --rewrite-stale-at-write; the stored price is the close of a bar older than 15 min at the row, the recompute is fresh, every differing field the normal step does not write)';
+    expect(report()).toContain(
+      `${head}: 1 planned (0 in the span, 1 after it, up to 2026-10-01T00:00:00Z); 1 more inside the 20-day window after the span (thin root, inside the 20-day window after the span: their 1h change, day change and volume window read bars inside the span, D1) are left`,
+    );
+    const code = await staleRun({ expectSnapshots: 4, expectStaleRewrites: 1 });
+    expect([code, errored()]).toEqual([0, '']);
+    expect(await price(tenDays)).toBe('7007.0000');
+    expect(await price(twentyOneDays)).toBe('7010.0000');
+  });
+
+  it('starts a thin root at the first millisecond of the 20 days after the span end', async () => {
+    // 2026-07-05T14:11:00.000Z is the span end + 20 days: the row at that instant is
+    // rewritten, the one a millisecond before it is not.
+    await bar('RTY', '2026-07-05T13:30:00Z', 7007, 100);
+    await bar('RTY', '2026-07-05T14:00:00Z', 7005, 100);
+    const before = await snapshotRow(
+      'RTY',
+      '2026-07-05T14:10:59.999Z',
+      '2026-07-05',
+      [7007, 0.1, 0.1, 0.4615],
+    );
+    const exact = await snapshotRow(
+      'RTY',
+      '2026-07-05T14:11:00.000Z',
+      '2026-07-05',
+      [7007, 0.1, 0.1, 0.4615],
+    );
+    const code = await staleRun({ expectSnapshots: 4, expectStaleRewrites: 1 });
+    expect([code, errored()]).toEqual([0, '']);
+    expect(await price(before)).toBe('7007.0000');
+    expect(await price(exact)).toBe('7005.0000');
   });
 
   describe('after a partial apply', () => {
@@ -2924,9 +2968,9 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
 
     it("leaves a thin root's run in the span, and rewrites the same run after the span end", async () => {
       await frozenDay('RTY', '2026-06-11', '2026-06-10');
-      await frozenDay('RTY', '2026-06-24', '2026-06-23');
+      await frozenDay('RTY', '2026-07-08', '2026-07-07');
       const inSpan = await run20('RTY', '2026-06-11', 7123);
-      const after = await run20('RTY', '2026-06-24', 7123);
+      const after = await run20('RTY', '2026-07-08', 7123);
       expect(await dry({ detectorDays: detector() })).toBe(0);
       const head =
         'stale-at-write rows (opt-in --rewrite-stale-at-write; the stored price is the close of a bar older than 15 min at the row, the recompute is fresh, every differing field the normal step does not write)';

@@ -625,6 +625,7 @@ describe('checkStaleShare', () => {
     inSpan: 0,
     afterSpan,
     left: 0,
+    window: 0,
     unchecked: 0,
     detector:
       contaminated == null
