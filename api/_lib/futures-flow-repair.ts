@@ -32,9 +32,12 @@
  *   - `fetchNullFlowBars` / `groupFlowRanges` find the NULL-flow bars in
  *     Globex-open minutes, in runs of consecutive bars.
  *
- * Which contract a root's bar came from is not stored; callers pick it
- * with `replayFrontMonth` (`api/_lib/futures-contracts.ts`), the same rule
- * the live handler and the OHLC repair use.
+ * Which contract a root's bar came from is decided by the caller. The gap
+ * cron reads it from the per-session front month (`fetchFrontMonthSchedule`
+ * in `api/_lib/futures-front-month.ts`, then `pickScheduledFront` in
+ * `api/_lib/futures-contracts.ts`): the contract its trade date was decided
+ * on. `scripts/backfill-futures-flow.ts` still replays the old rule
+ * (`replayFrontMonth`) until Phase 4b moves it.
  *
  * Spec: docs/superpowers/specs/2026-10-28-uw-futures-orderflow-design.md
  * (Phases 6 and 6b, as amended by probe 0a).

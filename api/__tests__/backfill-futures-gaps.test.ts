@@ -29,10 +29,22 @@ vi.mock('../_lib/axiom.js', () => ({
   reportCronRun: vi.fn(),
 }));
 
-const { mockUwFetch, mockCronGuard, mockWithRetry } = vi.hoisted(() => ({
+const {
+  mockUwFetch,
+  mockCronGuard,
+  mockWithRetry,
+  mockFetchSchedule,
+  mockFetchStored,
+  mockInsertVolumes,
+  mockFetchDaily,
+} = vi.hoisted(() => ({
   mockUwFetch: vi.fn(),
   mockCronGuard: vi.fn(),
   mockWithRetry: vi.fn((fn: () => unknown) => fn()),
+  mockFetchSchedule: vi.fn(),
+  mockFetchStored: vi.fn(),
+  mockInsertVolumes: vi.fn(),
+  mockFetchDaily: vi.fn(),
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
@@ -41,7 +53,23 @@ vi.mock('../_lib/api-helpers.js', () => ({
   withRetry: mockWithRetry,
 }));
 
+// The per-session store and the daily-candle fetch are mocked at their
+// module boundary. The contract names, the cycle and the pick are real.
+vi.mock('../_lib/futures-front-month.js', () => ({
+  fetchFrontMonthSchedule: mockFetchSchedule,
+  fetchStoredFrontMonths: mockFetchStored,
+  insertContractVolumes: mockInsertVolumes,
+}));
+
+vi.mock('../_lib/futures-daily-candles.js', async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import('../_lib/futures-daily-candles.js')
+  >()),
+  fetchDailyContractVolumes: mockFetchDaily,
+}));
+
 import handler from '../cron/backfill-futures-gaps.js';
+import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 import { reportCronRun } from '../_lib/axiom.js';
 import { formatMicrosIso, parseUwTimeMicros } from '../_lib/uw-time.js';
@@ -49,25 +77,46 @@ import { formatMicrosIso, parseUwTimeMicros } from '../_lib/uw-time.js';
 // ── Fixtures ──────────────────────────────────────────────
 
 const GUARD = { apiKey: 'test-uw-key', today: '2026-09-30' };
-// 06:00 UTC run → window is the three prior UTC days.
+// 06:00 UTC run → window is the three prior UTC days. The current CME
+// trade date is 2026-09-30 (01:00 CDT + 7 h).
 const NOW = '2026-09-30T06:00:00Z';
 const WINDOW_START = '2026-09-27T00:00:00.000Z';
 const WINDOW_END = '2026-09-30T00:00:00.000Z';
-const CONTRACTS_PATH = '/futures/contracts?days=5';
 const candlesPath = (contract: string) =>
   `/futures/${contract}/candles?interval=1m&range=5d`;
 
-/** Live `/futures/contracts` shape (probed 2026-09-30), trimmed. */
-const CONTRACTS = [
-  { name: 'ESZ6', product: 'ES', is_spread: false, volume: 3_267_170 },
-  // Micro: `q=ES` substring-matches it, so the resolver must use EQUALITY.
-  { name: 'MESZ6', product: 'MES', is_spread: false, volume: 2_363_415 },
-  { name: 'ESH7', product: 'ES', is_spread: false, volume: 1_562 },
-  { name: 'ESZ7', product: 'ES', is_spread: false, volume: 5 },
-  { name: 'ESZ6-ESH7', product: 'ES', is_spread: true, volume: 9_999_999 },
-  { name: 'NQZ6', product: 'NQ', is_spread: false, volume: 1_270_100 },
-  { name: 'NQH7', product: 'NQ', is_spread: false, volume: 1_789 },
-];
+/** Each root's front month in the default schedule. */
+const FRONT: Record<string, string> = {
+  ES: 'ESZ6',
+  NQ: 'NQZ6',
+  RTY: 'RTYZ6',
+  CL: 'CLX6',
+  GC: 'GCZ6',
+  ZN: 'ZNZ6',
+};
+
+/** A schedule that gives every date asked about the root's front month. */
+function defaultSchedule(product: string, dates: readonly string[]) {
+  const front = FRONT[product]!;
+  return {
+    contractFor: (tradeDate: string) =>
+      dates.includes(tradeDate) ? front : undefined,
+    contracts: [front],
+  };
+}
+
+/** A schedule that gives each listed trade date its own contract. */
+function scheduleOf(byDate: Record<string, string>) {
+  return {
+    contractFor: (tradeDate: string) => byDate[tradeDate],
+    contracts: [...new Set(Object.values(byDate))],
+  };
+}
+
+/** A daily candle row as `fetchDailyContractVolumes` returns it. */
+function dailyRow(contract: string, tradeDate: string, volume: number) {
+  return { contract, tradeDate, volume };
+}
 
 function candle(
   start: string,
@@ -127,6 +176,16 @@ function insertCalls(): number[] {
     .filter((i) => sqlText(i).includes('INSERT INTO futures_bars'));
 }
 
+/** The `contract` column of one bar INSERT, one entry per row. */
+function insertedContracts(callIdx: number): unknown[] {
+  return sqlValues(callIdx).at(-1) as unknown[];
+}
+
+/** The products `fetchFrontMonthSchedule` was asked about, in call order. */
+function scheduledProducts(): string[] {
+  return mockFetchSchedule.mock.calls.map((c) => c[0] as string);
+}
+
 async function run() {
   const res = mockResponse();
   await handler(
@@ -142,29 +201,44 @@ async function run() {
 // A Tuesday 09:00–09:30 CDT hole (14:00Z–14:30Z): 29 open minutes missing.
 const ES_GAP = gapRow('ES', '2026-09-29T14:00:00Z', '2026-09-29T14:30:00Z');
 
+beforeEach(() => {
+  vi.resetAllMocks();
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(NOW));
+  mockCronGuard.mockReturnValue(GUARD);
+  mockWithRetry.mockImplementation((fn: () => unknown) => fn());
+  // Every query after the queued ones (the order-flow pass's NULL-flow
+  // scan in the OHLC tests) finds nothing.
+  mockSql.mockResolvedValue([]);
+  // Each root's latest decision is its front month, and the daily candles
+  // of every contract asked for hold one earlier session.
+  mockFetchStored.mockImplementation(
+    async (product: string) => new Map([['2026-09-29', FRONT[product]!]]),
+  );
+  mockFetchDaily.mockImplementation(
+    async (_key: string, _product: string, contracts: readonly string[]) =>
+      contracts.map((c) => dailyRow(c, '2026-09-28', 1_000)),
+  );
+  mockInsertVolumes.mockImplementation(
+    async (rows: readonly unknown[]) => rows.length,
+  );
+  mockFetchSchedule.mockImplementation(defaultSchedule);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe('backfill-futures-gaps handler', () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(new Date(NOW));
-    mockCronGuard.mockReturnValue(GUARD);
-    mockWithRetry.mockImplementation((fn: () => unknown) => fn());
-    // Every query after the queued ones (the order-flow pass's NULL-flow
-    // scan in the OHLC tests) finds nothing.
-    mockSql.mockResolvedValue([]);
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
   // ── Guard + wiring ────────────────────────────────────
 
-  it('exits without touching the DB or UW when cronGuard rejects', async () => {
+  it('exits without touching the DB, UW or the front-month store when cronGuard rejects', async () => {
     mockCronGuard.mockReturnValue(null);
     await run();
     expect(mockSql).not.toHaveBeenCalled();
     expect(mockUwFetch).not.toHaveBeenCalled();
+    expect(mockFetchSchedule).not.toHaveBeenCalled();
+    expect(mockFetchDaily).not.toHaveBeenCalled();
   });
 
   it('runs outside market hours (daily 06:00 UTC schedule)', async () => {
@@ -195,10 +269,14 @@ describe('backfill-futures-gaps handler', () => {
     expect(sqlText(1)).toContain('buy_volume IS NULL');
   });
 
-  it('no-gap run: makes no UW calls and reports success with zero rows', async () => {
+  it('no-gap run: makes no UW call, reads no schedule, refreshes no volume, and reports success with zero rows', async () => {
     mockSql.mockResolvedValueOnce([]);
     const res = await run();
     expect(mockUwFetch).not.toHaveBeenCalled();
+    expect(mockFetchSchedule).not.toHaveBeenCalled();
+    expect(mockFetchStored).not.toHaveBeenCalled();
+    expect(mockFetchDaily).not.toHaveBeenCalled();
+    expect(mockInsertVolumes).not.toHaveBeenCalled();
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ status: 'success', rows: 0 });
   });
@@ -212,6 +290,8 @@ describe('backfill-futures-gaps handler', () => {
     ]);
     const res = await run();
     expect(mockUwFetch).not.toHaveBeenCalled();
+    expect(mockFetchSchedule).not.toHaveBeenCalled();
+    expect(mockFetchDaily).not.toHaveBeenCalled();
     expect(res._json).toMatchObject({ status: 'success', rows: 0 });
   });
 
@@ -222,13 +302,11 @@ describe('backfill-futures-gaps handler', () => {
       ])
       .mockResolvedValueOnce([{}]);
     routeUw({
-      [CONTRACTS_PATH]: CONTRACTS,
       [candlesPath('ESZ6')]: [
         candle('2026-09-29T14:00:00Z', 7740, 10),
         candle('2026-09-29T14:01:00Z', 7741, 10),
         candle('2026-09-29T14:02:00Z', 7742, 10),
       ],
-      [candlesPath('ESH7')]: [],
     });
 
     const res = await run();
@@ -251,15 +329,16 @@ describe('backfill-futures-gaps handler', () => {
       ])
       .mockResolvedValueOnce([{}, {}, {}, {}]);
     routeUw({
-      [CONTRACTS_PATH]: CONTRACTS,
       [candlesPath('ESZ6')]: [
         candle('2026-09-28T20:58:00Z', 7740, 10),
         candle('2026-09-28T20:59:00Z', 7741, 10),
         candle('2026-09-28T22:00:00Z', 7742, 10),
         candle('2026-09-28T22:01:00Z', 7743, 10),
       ],
-      [candlesPath('ESH7')]: [],
     });
+    mockFetchSchedule.mockResolvedValue(
+      scheduleOf({ '2026-09-28': 'ESZ6', '2026-09-29': 'ESZ6' }),
+    );
 
     const res = await run();
 
@@ -275,32 +354,373 @@ describe('backfill-futures-gaps handler', () => {
     });
   });
 
-  // ── Front-month resolution + fetch ────────────────────
+  // ── Volume refresh ────────────────────────────────────
 
-  it('gap → fetches 1m candles for the top-2 exact-product, non-spread contracts by volume', async () => {
+  it("refreshes a root's volumes before its schedule is read: 1m of daily candles for the incumbent and the next two cycle contracts", async () => {
     mockSql.mockResolvedValueOnce([ES_GAP]).mockResolvedValueOnce([]);
     routeUw({
-      [CONTRACTS_PATH]: CONTRACTS,
       [candlesPath('ESZ6')]: [candle('2026-09-29T14:05:00Z', 7745, 100)],
-      [candlesPath('ESH7')]: [],
     });
+
     await run();
+
+    // The incumbent is the latest decision of the last 30 days; the current
+    // trade date is 2026-09-30.
+    expect(mockFetchStored).toHaveBeenCalledWith(
+      'ES',
+      '2026-08-31',
+      '2026-09-30',
+    );
+    expect(mockFetchDaily).toHaveBeenCalledTimes(1);
+    expect(mockFetchDaily).toHaveBeenCalledWith(
+      'test-uw-key',
+      'ES',
+      ['ESZ6', 'ESH7', 'ESM7'],
+      '1m',
+    );
+    expect(mockInsertVolumes).toHaveBeenCalledWith([
+      {
+        product: 'ES',
+        tradeDate: '2026-09-28',
+        contract: 'ESZ6',
+        volume: 1000,
+      },
+      {
+        product: 'ES',
+        tradeDate: '2026-09-28',
+        contract: 'ESH7',
+        volume: 1000,
+      },
+      {
+        product: 'ES',
+        tradeDate: '2026-09-28',
+        contract: 'ESM7',
+        volume: 1000,
+      },
+    ]);
+    expect(mockInsertVolumes.mock.invocationCallOrder[0]!).toBeLessThan(
+      mockFetchSchedule.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("takes the latest stored decision as the incumbent, and the cycle's own months after it (CL is monthly)", async () => {
+    mockFetchStored.mockResolvedValue(
+      new Map([
+        ['2026-09-10', 'CLU6'],
+        ['2026-09-28', 'CLV6'],
+      ]),
+    );
+    mockSql
+      .mockResolvedValueOnce([
+        gapRow('CL', '2026-09-29T14:00:00Z', '2026-09-29T14:02:00Z'),
+      ])
+      .mockResolvedValueOnce([]);
+    routeUw({
+      [candlesPath('CLX6')]: [candle('2026-09-29T14:01:00Z', 70, 10)],
+    });
+
+    await run();
+
+    expect(mockFetchDaily).toHaveBeenCalledWith(
+      'test-uw-key',
+      'CL',
+      ['CLV6', 'CLX6', 'CLZ6'],
+      '1m',
+    );
+  });
+
+  it("with no decision stored in the last 30 days the incumbent is the root's listing-cycle seed", async () => {
+    mockFetchStored.mockResolvedValue(new Map());
+    mockSql.mockResolvedValueOnce([ES_GAP]).mockResolvedValueOnce([]);
+    routeUw({
+      [candlesPath('ESZ6')]: [candle('2026-09-29T14:05:00Z', 7745, 100)],
+    });
+
+    await run();
+
+    // September 2026 has not stopped trading by the month, so ESU6 is first.
+    expect(mockFetchDaily).toHaveBeenCalledWith(
+      'test-uw-key',
+      'ES',
+      ['ESU6', 'ESZ6', 'ESH7'],
+      '1m',
+    );
+  });
+
+  it('stores volume only for trade dates before the current one, and logs each root’s refreshed row count', async () => {
+    mockFetchDaily.mockResolvedValue([
+      dailyRow('ESZ6', '2026-09-28', 900),
+      dailyRow('ESZ6', '2026-09-29', 800),
+      dailyRow('ESH7', '2026-09-29', 40),
+      // The running session: only partial volume, the next decision reads it.
+      dailyRow('ESZ6', '2026-09-30', 120),
+    ]);
+    // Three rows offered, two already stored (DO NOTHING).
+    mockInsertVolumes.mockResolvedValue(1);
+    mockSql.mockResolvedValueOnce([ES_GAP]).mockResolvedValueOnce([]);
+    routeUw({
+      [candlesPath('ESZ6')]: [candle('2026-09-29T14:05:00Z', 7745, 100)],
+    });
+
+    const res = await run();
+
+    expect(mockInsertVolumes).toHaveBeenCalledWith([
+      { product: 'ES', tradeDate: '2026-09-28', contract: 'ESZ6', volume: 900 },
+      { product: 'ES', tradeDate: '2026-09-29', contract: 'ESZ6', volume: 800 },
+      { product: 'ES', tradeDate: '2026-09-29', contract: 'ESH7', volume: 40 },
+    ]);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ symbol: 'ES', offered: 3, inserted: 1 }),
+      expect.stringContaining('volumes refreshed'),
+    );
+    expect(res._json).toMatchObject({
+      volumeRefresh: {
+        ES: expect.objectContaining({ offered: 3, inserted: 1 }),
+      },
+    });
+  });
+
+  it('refreshes each root that reads a schedule once, and no other', async () => {
+    mockSql
+      .mockResolvedValueOnce([
+        ES_GAP,
+        gapRow('NQ', '2026-09-29T14:00:00Z', '2026-09-29T14:30:00Z'),
+      ])
+      .mockResolvedValue([]);
+    routeUw({
+      [candlesPath('ESZ6')]: [candle('2026-09-29T14:05:00Z', 7745, 100)],
+      [candlesPath('NQZ6')]: [candle('2026-09-29T14:10:00Z', 26_000, 50)],
+    });
+
+    await run();
+
+    expect(mockFetchDaily.mock.calls.map((c) => c[1])).toEqual(['ES', 'NQ']);
+    expect(mockInsertVolumes).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['a UW error', 'UW API 502: bad gateway'],
+    [
+      'a malformed daily candle',
+      'fetchDailyContractVolumes: UW daily candles for ES contract ESZ6: row 0 is malformed (v: Invalid input)',
+    ],
+  ])(
+    'a volume refresh that fails on %s fails that root by name, writes no decision row for it, and leaves the other roots to run → partial',
+    async (_name, message) => {
+      mockFetchDaily.mockImplementation(
+        async (_key: string, product: string, contracts: readonly string[]) => {
+          if (product === 'ES') throw new Error(message);
+          return contracts.map((c) => dailyRow(c, '2026-09-28', 1_000));
+        },
+      );
+      mockSql
+        .mockResolvedValueOnce([
+          ES_GAP,
+          gapRow('NQ', '2026-09-29T14:00:00Z', '2026-09-29T14:30:00Z'),
+        ])
+        .mockResolvedValueOnce([{}])
+        .mockResolvedValue([]);
+      routeUw({
+        [candlesPath('NQZ6')]: [candle('2026-09-29T14:10:00Z', 26_000, 50)],
+      });
+
+      const res = await run();
+
+      expect(Sentry.captureException).toHaveBeenCalledWith(
+        expect.objectContaining({ message }),
+        expect.objectContaining({
+          tags: expect.objectContaining({ symbol: 'ES' }),
+          extra: { root: 'ES', range: '1m' },
+        }),
+      );
+      expect(scheduledProducts()).toEqual(['NQ']);
+      expect(mockUwFetch).not.toHaveBeenCalledWith(
+        expect.anything(),
+        candlesPath('ESZ6'),
+      );
+      expect(insertCalls()).toHaveLength(1);
+      expect(sqlValues(insertCalls()[0]!)).toContain('NQ');
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        rows: 1,
+        failures: [expect.stringContaining('ES volume refresh')],
+      });
+    },
+  );
+
+  it('a refresh with no daily candle for the incumbent fails the root: an empty body is also what UW returns on a fault', async () => {
+    // ESH7 and ESM7 came back, the incumbent ESZ6 did not.
+    mockFetchDaily.mockResolvedValue([
+      dailyRow('ESH7', '2026-09-28', 40),
+      dailyRow('ESM7', '2026-09-28', 1),
+    ]);
+    mockSql.mockResolvedValueOnce([ES_GAP]);
+
+    const res = await run();
+
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringMatching(/no daily candles.*ESZ6/),
+      }),
+      expect.objectContaining({
+        tags: expect.objectContaining({ symbol: 'ES' }),
+        extra: { root: 'ES', range: '1m' },
+      }),
+    );
+    expect(mockInsertVolumes).not.toHaveBeenCalled();
+    expect(mockFetchSchedule).not.toHaveBeenCalled();
+    expect(res._json).toMatchObject({ status: 'error', rows: 0 });
+  });
+
+  it('an empty daily result for a contract after the incumbent is not a fault: a new month can have no history', async () => {
+    mockFetchDaily.mockResolvedValue([dailyRow('ESZ6', '2026-09-28', 1_000)]);
+    mockSql.mockResolvedValueOnce([ES_GAP]).mockResolvedValueOnce([]);
+    routeUw({
+      [candlesPath('ESZ6')]: [candle('2026-09-29T14:05:00Z', 7745, 100)],
+    });
+
+    const res = await run();
+
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(res._json).toMatchObject({ status: 'success' });
+  });
+
+  it('a rejected volume insert fails the root by name: status error, Sentry exception with the root and the range, no decision row', async () => {
+    mockInsertVolumes.mockRejectedValue(new Error('connection terminated'));
+    mockSql.mockResolvedValueOnce([ES_GAP]);
+
+    const res = await run();
+
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'connection terminated' }),
+      expect.objectContaining({
+        tags: expect.objectContaining({ symbol: 'ES' }),
+        extra: { root: 'ES', range: '1m' },
+      }),
+    );
+    expect(mockFetchSchedule).not.toHaveBeenCalled();
+    expect(insertCalls()).toHaveLength(0);
+    expect(res._json).toMatchObject({
+      status: 'error',
+      rows: 0,
+      failures: ['ES volume refresh: connection terminated'],
+    });
+  });
+
+  // ── Schedule ──────────────────────────────────────────
+
+  it("reads the schedule from the CME trade dates of the root's gap minutes, oldest first, with source 'cron'", async () => {
+    // 15:57 → 17:02 CDT straddles the 17:00 CDT open: two trade dates.
+    mockSql
+      .mockResolvedValueOnce([
+        gapRow('ES', '2026-09-28T20:57:00Z', '2026-09-28T22:02:00Z'),
+      ])
+      .mockResolvedValueOnce([]);
+    routeUw({
+      [candlesPath('ESZ6')]: [candle('2026-09-28T20:58:00Z', 7740, 10)],
+    });
+
+    await run();
+
+    expect(mockFetchSchedule).toHaveBeenCalledTimes(1);
+    expect(mockFetchSchedule).toHaveBeenCalledWith(
+      'ES',
+      ['2026-09-28', '2026-09-29'],
+      'cron',
+    );
+  });
+
+  it('reads one schedule per root from the dates of all its gaps, each minute landing on its own date’s contract', async () => {
+    mockSql
+      .mockResolvedValueOnce([
+        gapRow('ES', '2026-09-28T14:00:00Z', '2026-09-28T14:02:00Z'),
+        gapRow('ES', '2026-09-29T14:00:00Z', '2026-09-29T14:02:00Z'),
+      ])
+      .mockResolvedValueOnce([{}, {}]);
+    mockFetchSchedule.mockResolvedValue(
+      scheduleOf({ '2026-09-28': 'ESZ6', '2026-09-29': 'ESH7' }),
+    );
+    routeUw({
+      [candlesPath('ESZ6')]: [candle('2026-09-28T14:01:00Z', 7741, 10)],
+      [candlesPath('ESH7')]: [candle('2026-09-29T14:01:00Z', 7841, 10)],
+    });
+
+    await run();
+
+    expect(mockFetchSchedule).toHaveBeenCalledTimes(1);
+    expect(mockFetchSchedule).toHaveBeenCalledWith(
+      'ES',
+      ['2026-09-28', '2026-09-29'],
+      'cron',
+    );
+    expect(insertedContracts(insertCalls()[0]!)).toEqual(['ESZ6', 'ESH7']);
+  });
+
+  it('asks for no weekend trade date when a hole spans the weekend: Friday and the Monday session only', async () => {
+    // Fri 15:57 CDT → Sun 17:02 CDT: Fri 15:58-15:59 and the Sunday 17:00
+    // open (Monday's trade date) are the only open minutes.
+    mockSql
+      .mockResolvedValueOnce([
+        gapRow('NQ', '2026-09-25T20:57:00Z', '2026-09-27T22:02:00Z'),
+      ])
+      .mockResolvedValueOnce([]);
+    routeUw({
+      [candlesPath('NQZ6')]: [candle('2026-09-25T20:58:00Z', 26_000, 10)],
+    });
+
+    await run();
+
+    expect(mockFetchSchedule).toHaveBeenCalledWith(
+      'NQ',
+      ['2026-09-25', '2026-09-28'],
+      'cron',
+    );
+  });
+
+  it('fetches 1m candles only for the schedule’s contracts, and never calls /futures/contracts', async () => {
+    mockSql.mockResolvedValueOnce([ES_GAP]).mockResolvedValueOnce([]);
+    routeUw({
+      [candlesPath('ESZ6')]: [candle('2026-09-29T14:05:00Z', 7745, 100)],
+    });
+
+    await run();
+
+    // ESH7 and ESM7 are in the volume refresh but not in the schedule.
     expect(mockUwFetch.mock.calls.map((c) => c[1])).toEqual([
-      CONTRACTS_PATH,
       candlesPath('ESZ6'),
-      candlesPath('ESH7'),
     ]);
     expect(mockUwFetch.mock.calls.every((c) => c[0] === 'test-uw-key')).toBe(
       true,
     );
   });
 
-  it('upserts only the front-month bars inside the gap via one batched unnest ON CONFLICT DO NOTHING', async () => {
+  it('fetches every contract the schedule uses when the window holds a roll', async () => {
+    mockSql
+      .mockResolvedValueOnce([
+        gapRow('ES', '2026-09-28T14:00:00Z', '2026-09-29T14:30:00Z'),
+      ])
+      .mockResolvedValueOnce([]);
+    mockFetchSchedule.mockResolvedValue(
+      scheduleOf({ '2026-09-28': 'ESZ6', '2026-09-29': 'ESH7' }),
+    );
+    routeUw({
+      [candlesPath('ESZ6')]: [candle('2026-09-28T14:05:00Z', 7745, 100)],
+      [candlesPath('ESH7')]: [candle('2026-09-29T14:05:00Z', 7845, 100)],
+    });
+
+    await run();
+
+    expect(mockUwFetch.mock.calls.map((c) => c[1])).toEqual([
+      candlesPath('ESZ6'),
+      candlesPath('ESH7'),
+    ]);
+  });
+
+  it('upserts only the scheduled contract’s bars inside the gap via one batched unnest ON CONFLICT DO NOTHING, each carrying its contract', async () => {
     mockSql
       .mockResolvedValueOnce([ES_GAP])
       .mockResolvedValueOnce([{ ts: 'a' }, { ts: 'b' }]);
     routeUw({
-      [CONTRACTS_PATH]: CONTRACTS,
       [candlesPath('ESZ6')]: [
         candle('2026-09-29T14:00:00Z', 7740, 500), // bounding bar: exists already
         candle('2026-09-29T14:05:00Z', 7745, 400),
@@ -308,7 +728,6 @@ describe('backfill-futures-gaps handler', () => {
         candle('2026-09-29T14:30:00Z', 7750, 200), // bounding bar
         candle('2026-09-29T15:00:00Z', 7760, 100), // outside the gap
       ],
-      [candlesPath('ESH7')]: [candle('2026-09-29T14:05:00Z', 7805, 3)],
     });
 
     const res = await run();
@@ -324,113 +743,161 @@ describe('backfill-futures-gaps handler', () => {
       '2026-09-29T14:05:00.000Z',
       '2026-09-29T14:06:00.000Z',
     ]);
-    expect(values).toContainEqual([7745, 7746]); // opens — ESZ6, not ESH7
+    expect(values).toContainEqual([7745, 7746]); // opens
     expect(values).toContainEqual([400, 300]); // volumes
+    expect(insertedContracts(inserts[0]!)).toEqual(['ESZ6', 'ESZ6']);
     expect(res._status).toBe(200);
     // rows = what ON CONFLICT actually inserted (RETURNING), not bars sent.
     expect(res._json).toMatchObject({ status: 'success', rows: 2 });
   });
 
-  it('mirrors the uw-stream front-month rule: per minute, the larger cumulative UTC-day volume wins, ties to the larger symbol, and a leader with no print that minute leaves the minute empty', async () => {
-    // Mon 18:50 CDT → Mon 19:20 CDT spans the 00:00 UTC session reset.
+  it('builds minutes either side of a session open from their own session’s contract, even where another month printed more', async () => {
+    // Mon 15:57 → 17:02 CDT. 20:58–20:59Z are 09-28's session (ESZ6),
+    // 22:00–22:01Z are the next session's (ESH7, rolled at the open).
     mockSql
       .mockResolvedValueOnce([
-        gapRow('ES', '2026-09-28T23:50:00Z', '2026-09-29T00:20:00Z'),
+        gapRow('ES', '2026-09-28T20:57:00Z', '2026-09-28T22:02:00Z'),
       ])
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce([{}, {}, {}, {}]);
+    mockFetchSchedule.mockResolvedValue(
+      scheduleOf({ '2026-09-28': 'ESZ6', '2026-09-29': 'ESH7' }),
+    );
     routeUw({
-      [CONTRACTS_PATH]: CONTRACTS,
       [candlesPath('ESZ6')]: [
-        candle('2026-09-28T23:55:00Z', 7740, 10),
-        candle('2026-09-29T00:00:00Z', 7741, 20),
-        candle('2026-09-29T00:02:00Z', 7742, 5),
-        candle('2026-09-29T00:03:00Z', 7743, 10),
+        candle('2026-09-28T20:58:00Z', 7740, 10),
+        candle('2026-09-28T20:59:00Z', 7741, 10),
+        // The old contract still prints after the open, in size.
+        candle('2026-09-28T22:00:00Z', 7742, 9_000),
+        candle('2026-09-28T22:01:00Z', 7743, 9_000),
       ],
       [candlesPath('ESH7')]: [
-        candle('2026-09-28T23:55:00Z', 7800, 1_000),
-        candle('2026-09-29T00:00:00Z', 7801, 20),
-        candle('2026-09-29T00:01:00Z', 7802, 100),
-        candle('2026-09-29T00:03:00Z', 7803, 10),
+        // The new contract printed before the open: not its session yet.
+        candle('2026-09-28T20:58:00Z', 7840, 9_000),
+        candle('2026-09-28T22:00:00Z', 7842, 10),
+        candle('2026-09-28T22:01:00Z', 7843, 10),
       ],
     });
 
     await run();
 
     const values = sqlValues(insertCalls()[0]!);
-    // 23:55 ESH7 leads the 09-28 tally (1000 vs 10).
-    // 00:00 new UTC day resets the tally: 20 vs 20 tie → 'ESZ6' > 'ESH7'.
-    // 00:01 ESH7 overtakes (120 vs 20).
-    // 00:02 ESH7 still leads (120 vs 25) but has no candle → skipped.
-    // 00:03 ESH7 (130 vs 35).
     expect(values).toContainEqual([
-      '2026-09-28T23:55:00.000Z',
-      '2026-09-29T00:00:00.000Z',
-      '2026-09-29T00:01:00.000Z',
-      '2026-09-29T00:03:00.000Z',
+      '2026-09-28T20:58:00.000Z',
+      '2026-09-28T20:59:00.000Z',
+      '2026-09-28T22:00:00.000Z',
+      '2026-09-28T22:01:00.000Z',
     ]);
-    expect(values).toContainEqual([7800, 7741, 7802, 7803]);
+    expect(values).toContainEqual([7740, 7741, 7842, 7843]);
+    expect(insertedContracts(insertCalls()[0]!)).toEqual([
+      'ESZ6',
+      'ESZ6',
+      'ESH7',
+      'ESH7',
+    ]);
   });
 
-  it('chunks large repairs into 500-row batches', async () => {
-    // Mon 22:00 CDT → Tue 08:01 CDT: 600 open minutes missing.
+  it('leaves a minute empty when the scheduled contract has no candle for it, never filling it from another month', async () => {
     mockSql
       .mockResolvedValueOnce([
-        gapRow('ES', '2026-09-29T03:00:00Z', '2026-09-29T13:01:00Z'),
+        gapRow('ES', '2026-09-28T14:00:00Z', '2026-09-29T14:30:00Z'),
       ])
-      .mockResolvedValueOnce(Array.from({ length: 500 }, () => ({})))
-      .mockResolvedValueOnce(Array.from({ length: 100 }, () => ({})));
-    const start = Date.parse('2026-09-29T03:01:00Z');
+      .mockResolvedValueOnce([{}, {}]);
+    mockFetchSchedule.mockResolvedValue(
+      scheduleOf({ '2026-09-28': 'ESZ6', '2026-09-29': 'ESH7' }),
+    );
     routeUw({
-      [CONTRACTS_PATH]: CONTRACTS,
-      [candlesPath('ESZ6')]: Array.from({ length: 600 }, (_, i) =>
-        candle(new Date(start + i * 60_000).toISOString(), 7700 + i, 10),
-      ),
-      [candlesPath('ESH7')]: [],
+      [candlesPath('ESZ6')]: [
+        candle('2026-09-28T14:05:00Z', 7745, 100),
+        // ESZ6 still prints on 09-29, but 09-29 belongs to ESH7.
+        candle('2026-09-29T14:05:00Z', 7746, 5_000),
+      ],
+      [candlesPath('ESH7')]: [candle('2026-09-29T14:07:00Z', 7847, 100)],
+    });
+
+    await run();
+
+    const inserts = insertCalls();
+    expect(sqlValues(inserts[0]!)).toContainEqual([
+      '2026-09-28T14:05:00.000Z',
+      '2026-09-29T14:07:00.000Z',
+    ]);
+    expect(insertedContracts(inserts[0]!)).toEqual(['ESZ6', 'ESH7']);
+  });
+
+  it('stores NULL, with one warning per root, for a scheduled name that is no outright of the root: the column’s CHECK would fail the whole chunk', async () => {
+    // A decision row naming another root's contract (a corrupt row).
+    mockSql
+      .mockResolvedValueOnce([
+        gapRow('NQ', '2026-09-29T14:00:00Z', '2026-09-29T14:30:00Z'),
+      ])
+      .mockResolvedValueOnce([{}, {}]);
+    mockFetchSchedule.mockResolvedValue(scheduleOf({ '2026-09-29': 'ESZ6' }));
+    routeUw({
+      [candlesPath('ESZ6')]: [
+        candle('2026-09-29T14:05:00Z', 7745, 100),
+        candle('2026-09-29T14:06:00Z', 7746, 100),
+      ],
     });
 
     const res = await run();
 
-    const inserts = insertCalls();
-    expect(inserts).toHaveLength(2);
-    expect((sqlValues(inserts[0]!)[1] as unknown[]).length).toBe(500);
-    expect((sqlValues(inserts[1]!)[1] as unknown[]).length).toBe(100);
-    expect(res._json).toMatchObject({ status: 'success', rows: 600 });
+    expect(insertedContracts(insertCalls()[0]!)).toEqual([null, null]);
+    const warnings = vi
+      .mocked(logger.warn)
+      .mock.calls.filter((c) => String(c[1]).includes('not an outright'));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]![0]).toMatchObject({
+      symbol: 'NQ',
+      contracts: ['ESZ6'],
+    });
+    expect(res._json).toMatchObject({ status: 'success', rows: 2 });
   });
 
   // ── Failure modes (R4) ────────────────────────────────
 
-  it('UW non-OK on /futures/contracts → 500, Sentry exception, error reported (not ok)', async () => {
+  it('a DB error in the schedule read fails the root: Sentry exception, status error, no candles fetched, no bars written', async () => {
     mockSql.mockResolvedValueOnce([ES_GAP]);
-    routeUw({ [CONTRACTS_PATH]: new Error('UW API 500: upstream down') });
+    mockFetchSchedule.mockRejectedValue(new Error('connection terminated'));
 
     const res = await run();
 
-    expect(res._status).toBe(500);
     expect(Sentry.captureException).toHaveBeenCalledWith(
-      expect.objectContaining({ message: 'UW API 500: upstream down' }),
+      expect.objectContaining({ message: 'connection terminated' }),
+      expect.objectContaining({
+        tags: expect.objectContaining({ symbol: 'ES' }),
+      }),
     );
+    expect(mockUwFetch).not.toHaveBeenCalled();
+    expect(insertCalls()).toHaveLength(0);
+    expect(res._json).toMatchObject({ status: 'error', rows: 0 });
     expect(reportCronRun).toHaveBeenCalledWith(
       'backfill-futures-gaps',
       expect.objectContaining({ status: 'error' }),
     );
-    expect(insertCalls()).toHaveLength(0);
   });
 
-  it('a non-array /futures/contracts payload → 500, Sentry exception, error reported', async () => {
-    mockSql.mockResolvedValueOnce([ES_GAP]);
-    routeUw({ [CONTRACTS_PATH]: { unexpected: 'shape' } });
+  it('a schedule read that fails for one root leaves the other roots to repair → partial', async () => {
+    mockSql
+      .mockResolvedValueOnce([
+        ES_GAP,
+        gapRow('NQ', '2026-09-29T14:00:00Z', '2026-09-29T14:30:00Z'),
+      ])
+      .mockResolvedValueOnce([{}])
+      .mockResolvedValue([]);
+    mockFetchSchedule.mockImplementation(
+      async (product: string, dates: readonly string[]) => {
+        if (product === 'ES') throw new Error('connection terminated');
+        return defaultSchedule(product, dates);
+      },
+    );
+    routeUw({
+      [candlesPath('NQZ6')]: [candle('2026-09-29T14:10:00Z', 26_000, 50)],
+    });
 
     const res = await run();
 
-    expect(res._status).toBe(500);
-    expect(Sentry.captureException).toHaveBeenCalledWith(
-      expect.objectContaining({ message: expect.stringMatching(/non-array/) }),
-    );
-    expect(reportCronRun).toHaveBeenCalledWith(
-      'backfill-futures-gaps',
-      expect.objectContaining({ status: 'error' }),
-    );
-    expect(insertCalls()).toHaveLength(0);
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(res._json).toMatchObject({ status: 'partial', rows: 1 });
   });
 
   it('a candle payload at the UW row cap that no longer reaches the gap fails the symbol instead of reporting a clean run', async () => {
@@ -438,11 +905,9 @@ describe('backfill-futures-gaps handler', () => {
     // 5,000 rows (UW keeps the NEWEST at the cap) starting after the gap.
     const start = Date.parse('2026-09-29T15:00:00Z');
     routeUw({
-      [CONTRACTS_PATH]: CONTRACTS,
       [candlesPath('ESZ6')]: Array.from({ length: 5000 }, (_, i) =>
         candle(new Date(start + i * 60_000).toISOString(), 7700, 10),
       ),
-      [candlesPath('ESH7')]: [],
     });
 
     const res = await run();
@@ -455,27 +920,21 @@ describe('backfill-futures-gaps handler', () => {
     expect(insertCalls()).toHaveLength(0);
   });
 
-  it('a capped payload that reaches the gap but not the start of its UTC day also fails (the front-month tally needs the whole day)', async () => {
-    mockSql.mockResolvedValueOnce([ES_GAP]);
-    // Starts 10:00Z — before the 14:01Z gap minute but after 00:00Z, so the
-    // replay's UTC-day volume tally for 2026-09-29 would be incomplete.
+  it('a capped payload only has to reach the first minute to repair: no UTC-day tally needs the rest of its day', async () => {
+    mockSql.mockResolvedValueOnce([ES_GAP]).mockResolvedValueOnce([{}]);
+    // Starts 10:00Z, after 00:00Z of the gap's UTC day but before the gap.
     const start = Date.parse('2026-09-29T10:00:00Z');
     routeUw({
-      [CONTRACTS_PATH]: CONTRACTS,
       [candlesPath('ESZ6')]: Array.from({ length: 5000 }, (_, i) =>
         candle(new Date(start + i * 60_000).toISOString(), 7700, 10),
       ),
-      [candlesPath('ESH7')]: [],
     });
 
     const res = await run();
 
-    expect(res._json).toMatchObject({ status: 'error', rows: 0 });
-    expect(Sentry.captureException).toHaveBeenCalledWith(
-      expect.objectContaining({ message: expect.stringMatching(/truncated/) }),
-      expect.anything(),
-    );
-    expect(insertCalls()).toHaveLength(0);
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(insertCalls()).toHaveLength(1);
+    expect(res._json).toMatchObject({ status: 'success' });
   });
 
   it('network error on one symbol surfaces to Sentry while the other symbol still repairs → partial', async () => {
@@ -486,10 +945,8 @@ describe('backfill-futures-gaps handler', () => {
       ])
       .mockResolvedValueOnce([{}]);
     routeUw({
-      [CONTRACTS_PATH]: CONTRACTS,
       [candlesPath('ESZ6')]: new TypeError('fetch failed'),
       [candlesPath('NQZ6')]: [candle('2026-09-29T14:10:00Z', 26_000, 50)],
-      [candlesPath('NQH7')]: [],
     });
 
     const res = await run();
@@ -508,7 +965,6 @@ describe('backfill-futures-gaps handler', () => {
   it('every gap symbol failing reports status error, never ok', async () => {
     mockSql.mockResolvedValueOnce([ES_GAP]);
     routeUw({
-      [CONTRACTS_PATH]: CONTRACTS,
       [candlesPath('ESZ6')]: new Error('UW API 502: bad gateway'),
     });
 
@@ -522,13 +978,9 @@ describe('backfill-futures-gaps handler', () => {
     );
   });
 
-  it('an empty candle payload for the most-active contract is a failure, not a clean zero-row success', async () => {
+  it('an empty candle payload for a scheduled contract is a failure, not a clean zero-row success', async () => {
     mockSql.mockResolvedValueOnce([ES_GAP]);
-    routeUw({
-      [CONTRACTS_PATH]: CONTRACTS,
-      [candlesPath('ESZ6')]: [],
-      [candlesPath('ESH7')]: [],
-    });
+    routeUw({ [candlesPath('ESZ6')]: [] });
 
     const res = await run();
 
@@ -540,10 +992,33 @@ describe('backfill-futures-gaps handler', () => {
     expect(insertCalls()).toHaveLength(0);
   });
 
+  it('an empty candle payload for the second scheduled contract is also a failure', async () => {
+    mockSql.mockResolvedValueOnce([
+      gapRow('ES', '2026-09-28T14:00:00Z', '2026-09-29T14:30:00Z'),
+    ]);
+    mockFetchSchedule.mockResolvedValue(
+      scheduleOf({ '2026-09-28': 'ESZ6', '2026-09-29': 'ESH7' }),
+    );
+    routeUw({
+      [candlesPath('ESZ6')]: [candle('2026-09-28T14:05:00Z', 7745, 100)],
+      [candlesPath('ESH7')]: [],
+    });
+
+    const res = await run();
+
+    expect(res._json).toMatchObject({ status: 'error' });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringMatching(/no candles for ESH7/),
+      }),
+      expect.anything(),
+    );
+    expect(insertCalls()).toHaveLength(0);
+  });
+
   it('skips malformed candles, surfaces them via captureMessage, and still inserts the valid ones', async () => {
     mockSql.mockResolvedValueOnce([ES_GAP]).mockResolvedValueOnce([{}]);
     routeUw({
-      [CONTRACTS_PATH]: CONTRACTS,
       [candlesPath('ESZ6')]: [
         candle('2026-09-29T14:05:00Z', 7745, 100),
         candle('not-a-date', 7745, 100),
@@ -554,7 +1029,6 @@ describe('backfill-futures-gaps handler', () => {
         candle('2026-09-29T14:10:00Z', 7745, 1.5),
         candle('2026-09-29T14:11:00Z', 1e9, 100), // overflows NUMERIC(12,4)
       ],
-      [candlesPath('ESH7')]: [],
     });
 
     const res = await run();
@@ -574,10 +1048,7 @@ describe('backfill-futures-gaps handler', () => {
 
   it('a payload of only malformed candles fails the symbol', async () => {
     mockSql.mockResolvedValueOnce([ES_GAP]);
-    routeUw({
-      [CONTRACTS_PATH]: CONTRACTS,
-      [candlesPath('ESZ6')]: [candle('garbage', 7745, 100)],
-    });
+    routeUw({ [candlesPath('ESZ6')]: [candle('garbage', 7745, 100)] });
 
     const res = await run();
 
@@ -591,31 +1062,16 @@ describe('backfill-futures-gaps handler', () => {
 
   it('a non-array candle payload fails the symbol', async () => {
     mockSql.mockResolvedValueOnce([ES_GAP]);
-    routeUw({
-      [CONTRACTS_PATH]: CONTRACTS,
-      [candlesPath('ESZ6')]: { unexpected: 'shape' },
-    });
-
-    const res = await run();
-
-    expect(res._json).toMatchObject({ status: 'error' });
-    expect(Sentry.captureException).toHaveBeenCalled();
-    expect(insertCalls()).toHaveLength(0);
-  });
-
-  it('fails the symbol when /futures/contracts lists no contract for its root', async () => {
-    mockSql.mockResolvedValueOnce([ES_GAP]);
-    routeUw({
-      [CONTRACTS_PATH]: CONTRACTS.filter((c) => c.product !== 'ES'),
-    });
+    routeUw({ [candlesPath('ESZ6')]: { unexpected: 'shape' } });
 
     const res = await run();
 
     expect(res._json).toMatchObject({ status: 'error' });
     expect(Sentry.captureException).toHaveBeenCalledWith(
-      expect.objectContaining({ message: expect.stringMatching(/ES/) }),
+      expect.objectContaining({ message: expect.stringMatching(/non-array/) }),
       expect.anything(),
     );
+    expect(insertCalls()).toHaveLength(0);
   });
 
   it('a rejected DB insert fails the symbol (status error + Sentry), not success', async () => {
@@ -623,9 +1079,7 @@ describe('backfill-futures-gaps handler', () => {
       .mockResolvedValueOnce([ES_GAP])
       .mockRejectedValueOnce(new Error('numeric field overflow'));
     routeUw({
-      [CONTRACTS_PATH]: CONTRACTS,
       [candlesPath('ESZ6')]: [candle('2026-09-29T14:05:00Z', 7745, 100)],
-      [candlesPath('ESH7')]: [],
     });
 
     const res = await run();
@@ -645,6 +1099,7 @@ describe('backfill-futures-gaps handler', () => {
     expect(res._status).toBe(500);
     expect(Sentry.captureException).toHaveBeenCalled();
     expect(mockUwFetch).not.toHaveBeenCalled();
+    expect(mockFetchDaily).not.toHaveBeenCalled();
   });
 });
 
@@ -721,14 +1176,12 @@ function updateCalls(): number[] {
     .filter((i) => sqlText(i).includes('UPDATE futures_bars'));
 }
 
-/** ESZ6 leads 2026-09-29 by a wide margin; ESH7 barely trades. */
+/** ESZ6 candles for the two NULL-flow minutes most tests repair. */
 const ES_CANDLES = {
   [candlesPath('ESZ6')]: [
-    candle('2026-09-29T00:00:00Z', 7700, 5_000),
     candle('2026-09-29T14:01:00Z', 7740, 10),
     candle('2026-09-29T14:02:00Z', 7741, 5),
   ],
-  [candlesPath('ESH7')]: [candle('2026-09-29T00:00:00Z', 7760, 3)],
 };
 
 /** The one warning a run raises when it leaves NULL-flow minutes behind. */
@@ -742,20 +1195,7 @@ const ES_1401_PAGE = [
 ];
 
 describe('backfill-futures-gaps order-flow pass', () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(new Date(NOW));
-    mockCronGuard.mockReturnValue(GUARD);
-    mockWithRetry.mockImplementation((fn: () => unknown) => fn());
-    mockSql.mockResolvedValue([]);
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it('fills NULL-flow minutes from the front contract REST prints with one conditional UPDATE, and reports the counts in meta', async () => {
+  it('fills NULL-flow minutes from the scheduled contract REST prints with one conditional UPDATE, and reports the counts in meta', async () => {
     mockSql
       .mockResolvedValueOnce([]) // no missing bars
       .mockResolvedValueOnce([
@@ -763,25 +1203,21 @@ describe('backfill-futures-gaps order-flow pass', () => {
         nullFlowRow('ES', '2026-09-29T14:02:00Z', 5, false),
       ])
       .mockResolvedValueOnce([{ ts: 'a' }, { ts: 'b' }]);
-    routeUwWithTrades(
-      { [CONTRACTS_PATH]: CONTRACTS, ...ES_CANDLES },
-      {
-        ESZ6: [
-          [
-            print(5, '2026-09-29T14:02:40.000001Z', 3, 'buy'),
-            print(4, '2026-09-29T14:02:10.000000Z', 2, 'sell'),
-            print(3, '2026-09-29T14:01:50.000000Z', 6, 'buy'),
-            print(2, '2026-09-29T14:01:05.000000Z', 4, 'none'),
-            print(1, '2026-09-29T14:00:59.999999Z', 9, 'buy'),
-          ],
+    routeUwWithTrades(ES_CANDLES, {
+      ESZ6: [
+        [
+          print(5, '2026-09-29T14:02:40.000001Z', 3, 'buy'),
+          print(4, '2026-09-29T14:02:10.000000Z', 2, 'sell'),
+          print(3, '2026-09-29T14:01:50.000000Z', 6, 'buy'),
+          print(2, '2026-09-29T14:01:05.000000Z', 4, 'none'),
+          print(1, '2026-09-29T14:00:59.999999Z', 9, 'buy'),
         ],
-      },
-    );
+      ],
+    });
 
     const res = await run();
 
-    // Paged back from the end of the range, on the replay's leader.
-    expect(tradesCalls('ESH7')).toEqual([]);
+    // Paged back from the end of the range, on the scheduled contract.
     const calls = tradesCalls('ESZ6');
     expect(calls).toHaveLength(1);
     expect(olderThan(calls[0]!)).toBe('2026-09-29T14:03:00.000000Z');
@@ -813,7 +1249,51 @@ describe('backfill-futures-gaps order-flow pass', () => {
     );
   });
 
-  it('gives flow to the bars the OHLC pass inserts in the same run, reusing its candles', async () => {
+  it('reads the flow schedule from the trade dates of the root’s NULL-flow bars, after refreshing the root’s volumes', async () => {
+    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      // Two ranges on two trade dates for ES, one for NQ.
+      nullFlowRow('ES', '2026-09-28T14:01:00Z', 10, true),
+      nullFlowRow('ES', '2026-09-29T14:01:00Z', 5, true),
+      nullFlowRow('NQ', '2026-09-29T14:01:00Z', 4, true),
+    ]);
+    routeUwWithTrades(
+      {
+        [candlesPath('ESZ6')]: [
+          candle('2026-09-28T14:01:00Z', 7740, 10),
+          candle('2026-09-29T14:01:00Z', 7741, 5),
+        ],
+        [candlesPath('NQZ6')]: [candle('2026-09-29T14:01:00Z', 26_000, 4)],
+      },
+      {
+        ESZ6: [
+          [print(1, '2026-09-28T14:00:30.000000Z', 1, 'buy')],
+          [print(2, '2026-09-29T14:00:30.000000Z', 1, 'buy')],
+        ],
+        NQZ6: [[print(3, '2026-09-29T14:00:30.000000Z', 1, 'buy')]],
+      },
+    );
+
+    await run();
+
+    expect(mockFetchSchedule).toHaveBeenCalledTimes(2);
+    expect(mockFetchSchedule).toHaveBeenCalledWith(
+      'ES',
+      ['2026-09-28', '2026-09-29'],
+      'cron',
+    );
+    expect(mockFetchSchedule).toHaveBeenCalledWith(
+      'NQ',
+      ['2026-09-29'],
+      'cron',
+    );
+    // Neither root had a gap: each is refreshed here, before its schedule.
+    expect(mockFetchDaily.mock.calls.map((c) => c[1])).toEqual(['ES', 'NQ']);
+    expect(mockInsertVolumes.mock.invocationCallOrder[0]!).toBeLessThan(
+      mockFetchSchedule.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('gives flow to the bars the OHLC pass inserts in the same run: one volume refresh and one candle load per contract, a schedule read per pass', async () => {
     mockSql
       .mockResolvedValueOnce([
         gapRow('ES', '2026-09-29T14:00:00Z', '2026-09-29T14:02:00Z'),
@@ -823,16 +1303,14 @@ describe('backfill-futures-gaps order-flow pass', () => {
         nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
       ])
       .mockResolvedValueOnce([{ ts: 'x' }]); // flow UPDATE
-    routeUwWithTrades(
-      { [CONTRACTS_PATH]: CONTRACTS, ...ES_CANDLES },
-      { ESZ6: [ES_1401_PAGE] },
-    );
+    routeUwWithTrades(ES_CANDLES, { ESZ6: [ES_1401_PAGE] });
 
     const res = await run();
 
     const paths = mockUwFetch.mock.calls.map((c) => c[1] as string);
     expect(paths.filter((p) => p === candlesPath('ESZ6'))).toHaveLength(1);
-    expect(paths.filter((p) => p === CONTRACTS_PATH)).toHaveLength(1);
+    expect(mockFetchDaily).toHaveBeenCalledTimes(1);
+    expect(scheduledProducts()).toEqual(['ES', 'ES']);
     expect(insertCalls()).toHaveLength(1);
     expect(updateCalls()).toHaveLength(1);
     expect(res._json).toMatchObject({
@@ -842,24 +1320,26 @@ describe('backfill-futures-gaps order-flow pass', () => {
     });
   });
 
-  it('fetches prints from the contract the roll replay picks, and skips a minute whose leader has no candle', async () => {
+  it('fetches prints from the contract the schedule gives each date, and skips a minute whose scheduled contract has no candle', async () => {
     mockSql
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
         nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
-        // No candle for any ES contract at 14:05: unattributed.
+        // ESZ6 has a candle at 14:05 but ESH7, the scheduled contract for
+        // 09-29, has none: unattributed.
         nullFlowRow('ES', '2026-09-29T14:05:00Z', 7, false),
       ])
       .mockResolvedValueOnce([{ ts: 'x' }]);
+    mockFetchSchedule.mockResolvedValue(
+      scheduleOf({ '2026-09-28': 'ESZ6', '2026-09-29': 'ESH7' }),
+    );
     routeUwWithTrades(
       {
-        [CONTRACTS_PATH]: CONTRACTS,
-        [candlesPath('ESZ6')]: [candle('2026-09-29T14:01:00Z', 7740, 5)],
-        // Mid-roll: ESH7 leads the 09-29 tally.
-        [candlesPath('ESH7')]: [
-          candle('2026-09-29T00:00:00Z', 7760, 90_000),
-          candle('2026-09-29T14:01:00Z', 7761, 10),
+        [candlesPath('ESZ6')]: [
+          candle('2026-09-29T14:01:00Z', 7740, 5),
+          candle('2026-09-29T14:05:00Z', 7745, 5),
         ],
+        [candlesPath('ESH7')]: [candle('2026-09-29T14:01:00Z', 7761, 10)],
       },
       { ESH7: [ES_1401_PAGE] },
     );
@@ -884,10 +1364,7 @@ describe('backfill-futures-gaps order-flow pass', () => {
       .mockResolvedValueOnce([
         nullFlowRow('ES', '2026-09-29T14:01:00Z', 100, true),
       ]);
-    routeUwWithTrades(
-      { [CONTRACTS_PATH]: CONTRACTS, ...ES_CANDLES },
-      { ESZ6: [ES_1401_PAGE] },
-    );
+    routeUwWithTrades(ES_CANDLES, { ESZ6: [ES_1401_PAGE] });
 
     const res = await run();
 
@@ -906,10 +1383,9 @@ describe('backfill-futures-gaps order-flow pass', () => {
         nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
         nullFlowRow('ES', '2026-09-29T14:02:00Z', 5, false),
       ]);
-    routeUwWithTrades(
-      { [CONTRACTS_PATH]: CONTRACTS, ...ES_CANDLES },
-      { ESZ6: [[print(9, '2026-09-29T14:02:30.000000Z', 5, 'buy')], []] },
-    );
+    routeUwWithTrades(ES_CANDLES, {
+      ESZ6: [[print(9, '2026-09-29T14:02:30.000000Z', 5, 'buy')], []],
+    });
 
     const res = await run();
 
@@ -937,14 +1413,12 @@ describe('backfill-futures-gaps order-flow pass', () => {
     ]);
     let id = 1;
     mockUwFetch.mockImplementation(async (_key: string, path: string) => {
-      if (path === CONTRACTS_PATH) return CONTRACTS;
       if (path === candlesPath('NQZ6')) {
         return [
           candle('2026-09-29T13:00:00Z', 26_000, 50),
           candle('2026-09-29T13:01:00Z', 26_001, 50),
         ];
       }
-      if (path === candlesPath('NQH7')) return [];
       if (path.startsWith(tradesPrefix('NQZ6'))) {
         // One print 2 µs older than the cursor, so each page steps back
         // 1 µs and never reaches the range start.
@@ -959,6 +1433,8 @@ describe('backfill-futures-gaps order-flow pass', () => {
     expect(tradesCalls('NQZ6')).toHaveLength(600);
     expect(tradesCalls('ESZ6')).toEqual([]);
     expect(updateCalls()).toHaveLength(0);
+    // ES waited behind the budget: it was never refreshed or scheduled.
+    expect(scheduledProducts()).toEqual(['NQ']);
     // Deferred but still inside tomorrow's window: success, with a warning.
     expect(res._json).toMatchObject({
       status: 'success',
@@ -987,14 +1463,12 @@ describe('backfill-futures-gaps order-flow pass', () => {
       ]);
     let id = 1;
     mockUwFetch.mockImplementation(async (_key: string, path: string) => {
-      if (path === CONTRACTS_PATH) return CONTRACTS;
       if (path === candlesPath('NQZ6')) {
         return [
           candle('2026-09-27T22:30:00Z', 26_000, 50),
           candle('2026-09-27T22:31:00Z', 26_001, 50),
         ];
       }
-      if (path === candlesPath('NQH7')) return [];
       if (path.startsWith(tradesPrefix('NQZ6'))) {
         const us = parseUwTimeMicros(olderThan(path))! - 2n;
         return [print(id++, formatMicrosIso(us), 1, 'buy')];
@@ -1030,14 +1504,12 @@ describe('backfill-futures-gaps order-flow pass', () => {
     ]);
     let id = 1;
     mockUwFetch.mockImplementation(async (_key: string, path: string) => {
-      if (path === CONTRACTS_PATH) return CONTRACTS;
       if (path === candlesPath('NQZ6')) {
         return [
           candle('2026-09-30T13:00:00Z', 26_000, 50),
           candle('2026-10-01T13:00:00Z', 26_001, 50),
         ];
       }
-      if (path === candlesPath('NQH7')) return [];
       if (path.startsWith(tradesPrefix('NQZ6'))) {
         // Never reaches the range start: the oldest range takes the budget.
         const us = parseUwTimeMicros(olderThan(path))! - 2n;
@@ -1061,10 +1533,9 @@ describe('backfill-futures-gaps order-flow pass', () => {
       .mockResolvedValueOnce([
         nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
       ]);
-    routeUwWithTrades(
-      { [CONTRACTS_PATH]: CONTRACTS, ...ES_CANDLES },
-      { ESZ6: [new Error('UW API 503: unavailable')] },
-    );
+    routeUwWithTrades(ES_CANDLES, {
+      ESZ6: [new Error('UW API 503: unavailable')],
+    });
 
     const res = await run();
 
@@ -1087,10 +1558,7 @@ describe('backfill-futures-gaps order-flow pass', () => {
       .mockResolvedValueOnce([
         nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
       ]);
-    routeUwWithTrades(
-      { [CONTRACTS_PATH]: CONTRACTS, ...ES_CANDLES },
-      { ESZ6: [{ unexpected: 'shape' }] },
-    );
+    routeUwWithTrades(ES_CANDLES, { ESZ6: [{ unexpected: 'shape' }] });
 
     const res = await run();
 
@@ -1109,10 +1577,7 @@ describe('backfill-futures-gaps order-flow pass', () => {
         nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
       ])
       .mockRejectedValueOnce(new Error('canceling statement due to timeout'));
-    routeUwWithTrades(
-      { [CONTRACTS_PATH]: CONTRACTS, ...ES_CANDLES },
-      { ESZ6: [ES_1401_PAGE] },
-    );
+    routeUwWithTrades(ES_CANDLES, { ESZ6: [ES_1401_PAGE] });
 
     const res = await run();
 
@@ -1141,10 +1606,8 @@ describe('backfill-futures-gaps order-flow pass', () => {
       .mockResolvedValueOnce([{ ts: 'x' }]);
     routeUwWithTrades(
       {
-        [CONTRACTS_PATH]: CONTRACTS,
         ...ES_CANDLES,
         [candlesPath('NQZ6')]: [candle('2026-09-29T14:01:00Z', 26_000, 4)],
-        [candlesPath('NQH7')]: [],
       },
       {
         ESZ6: [new TypeError('fetch failed')],
@@ -1166,14 +1629,14 @@ describe('backfill-futures-gaps order-flow pass', () => {
     });
   });
 
-  it('a failed contract list in the flow pass reports status error with a Sentry exception, still answering 200', async () => {
+  it('a failed candle fetch in the flow pass reports status error with a Sentry exception, still answering 200', async () => {
     mockSql
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
         nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
       ]);
     routeUwWithTrades(
-      { [CONTRACTS_PATH]: new Error('UW API 500: upstream down') },
+      { [candlesPath('ESZ6')]: new Error('UW API 500: upstream down') },
       {},
     );
 
@@ -1189,6 +1652,55 @@ describe('backfill-futures-gaps order-flow pass', () => {
     );
   });
 
+  it('a DB error in the flow pass’s schedule read fails the root: Sentry exception tagged flow, status error, no prints fetched', async () => {
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
+      ]);
+    mockFetchSchedule.mockRejectedValue(new Error('connection terminated'));
+
+    const res = await run();
+
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'connection terminated' }),
+      expect.objectContaining({
+        tags: expect.objectContaining({ symbol: 'ES', pass: 'flow' }),
+      }),
+    );
+    expect(mockUwFetch).not.toHaveBeenCalled();
+    expect(res._json).toMatchObject({ status: 'error' });
+  });
+
+  it('a schedule read that fails in both passes fails the root in each pass: two exceptions, two failures, status error', async () => {
+    mockSql
+      .mockResolvedValueOnce([ES_GAP])
+      .mockResolvedValueOnce([
+        nullFlowRow('ES', '2026-09-29T14:40:00Z', 10, true),
+      ]);
+    mockFetchSchedule.mockRejectedValue(new Error('connection terminated'));
+
+    const res = await run();
+
+    expect(Sentry.captureException).toHaveBeenCalledTimes(2);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'connection terminated' }),
+      expect.objectContaining({
+        tags: { cron: 'backfill-futures-gaps', symbol: 'ES' },
+      }),
+    );
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'connection terminated' }),
+      expect.objectContaining({
+        tags: { cron: 'backfill-futures-gaps', symbol: 'ES', pass: 'flow' },
+      }),
+    );
+    expect(res._json).toMatchObject({
+      status: 'error',
+      failures: ['ES: connection terminated', 'ES flow: connection terminated'],
+    });
+  });
+
   it('a malformed print withholds its minute and surfaces as a Sentry warning, while the rest of the range is written', async () => {
     mockSql
       .mockResolvedValueOnce([])
@@ -1197,18 +1709,15 @@ describe('backfill-futures-gaps order-flow pass', () => {
         nullFlowRow('ES', '2026-09-29T14:02:00Z', 5, false),
       ])
       .mockResolvedValueOnce([{ ts: 'x' }]);
-    routeUwWithTrades(
-      { [CONTRACTS_PATH]: CONTRACTS, ...ES_CANDLES },
-      {
-        ESZ6: [
-          [
-            print(5, '2026-09-29T14:02:40.000000Z', 3, 'up'), // unknown side
-            print(4, '2026-09-29T14:02:10.000000Z', 2, 'sell'),
-            ...ES_1401_PAGE,
-          ],
+    routeUwWithTrades(ES_CANDLES, {
+      ESZ6: [
+        [
+          print(5, '2026-09-29T14:02:40.000000Z', 3, 'up'), // unknown side
+          print(4, '2026-09-29T14:02:10.000000Z', 2, 'sell'),
+          ...ES_1401_PAGE,
         ],
-      },
-    );
+      ],
+    });
 
     const res = await run();
 
@@ -1230,21 +1739,24 @@ describe('backfill-futures-gaps order-flow pass', () => {
   });
 
   it('a budget spent mid-range defers the rest of it, including the part led by the next contract', async () => {
+    // A range across the Monday 17:00 CDT open: 20:59Z is 09-28's session
+    // (ESZ6), 22:00Z is the next session's (ESH7).
     mockSql
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
-        nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
-        nullFlowRow('ES', '2026-09-29T14:02:00Z', 10, false),
+        nullFlowRow('ES', '2026-09-28T20:59:00Z', 10, true),
+        nullFlowRow('ES', '2026-09-28T22:00:00Z', 10, false),
       ]);
+    mockFetchSchedule.mockResolvedValue(
+      scheduleOf({ '2026-09-28': 'ESZ6', '2026-09-29': 'ESH7' }),
+    );
     let id = 1;
     mockUwFetch.mockImplementation(async (_key: string, path: string) => {
-      if (path === CONTRACTS_PATH) return CONTRACTS;
-      // ESZ6 leads 14:01; ESH7 overtakes at 14:02 (a roll mid-range).
       if (path === candlesPath('ESZ6')) {
-        return [candle('2026-09-29T14:01:00Z', 7740, 100)];
+        return [candle('2026-09-28T20:59:00Z', 7740, 100)];
       }
       if (path === candlesPath('ESH7')) {
-        return [candle('2026-09-29T14:02:00Z', 7790, 1_000)];
+        return [candle('2026-09-28T22:00:00Z', 7790, 1_000)];
       }
       if (path.startsWith(tradesPrefix('ESZ6'))) {
         const us = parseUwTimeMicros(olderThan(path))! - 2n;
@@ -1283,15 +1795,8 @@ describe('backfill-futures-gaps order-flow pass', () => {
       .mockResolvedValue([{ ts: 'x' }]);
     routeUwWithTrades(
       {
-        [CONTRACTS_PATH]: [
-          ...CONTRACTS,
-          { name: 'CLZ6', product: 'CL', is_spread: false, volume: 800_000 },
-          { name: 'CLF7', product: 'CL', is_spread: false, volume: 300_000 },
-        ],
         [candlesPath('NQZ6')]: [candle('2026-09-29T14:01:00Z', 26_000, 4)],
-        [candlesPath('NQH7')]: [],
-        [candlesPath('CLZ6')]: [candle('2026-09-29T14:01:00Z', 60, 3)],
-        [candlesPath('CLF7')]: [],
+        [candlesPath('CLX6')]: [candle('2026-09-29T14:01:00Z', 60, 3)],
       },
       {
         NQZ6: [
@@ -1300,7 +1805,7 @@ describe('backfill-futures-gaps order-flow pass', () => {
             print(1, '2026-09-29T14:00:30.000000Z', 1, 'buy'),
           ],
         ],
-        CLZ6: [
+        CLX6: [
           [
             print(2, '2026-09-29T14:01:30.000000Z', 3, 'sell'),
             print(1, '2026-09-29T14:00:30.000000Z', 1, 'buy'),
@@ -1315,7 +1820,7 @@ describe('backfill-futures-gaps order-flow pass', () => {
     const first = (contract: string) =>
       paths.findIndex((p) => p.startsWith(tradesPrefix(contract)));
     expect(first('NQZ6')).toBeGreaterThanOrEqual(0);
-    expect(first('NQZ6')).toBeLessThan(first('CLZ6'));
+    expect(first('NQZ6')).toBeLessThan(first('CLX6'));
   });
 
   it('repairs a long range oldest piece first, so a budget stop leaves the newer minutes, not the older', async () => {
@@ -1329,15 +1834,12 @@ describe('backfill-futures-gaps order-flow pass', () => {
       .mockResolvedValueOnce([{ ts: 'x' }]);
     let call = 0;
     mockUwFetch.mockImplementation(async (_key: string, path: string) => {
-      if (path === CONTRACTS_PATH) return CONTRACTS;
       if (path === candlesPath('ESZ6')) {
         return [
-          candle('2026-09-29T00:00:00Z', 7700, 5_000),
           candle('2026-09-29T14:00:00Z', 7740, 599),
           candle('2026-09-29T15:30:00Z', 7750, 7),
         ];
       }
-      if (path === candlesPath('ESH7')) return [];
       if (path.startsWith(tradesPrefix('ESZ6'))) {
         call += 1;
         // 599 one-lot pages stepping back from the first cursor, then a
@@ -1374,10 +1876,7 @@ describe('backfill-futures-gaps order-flow pass', () => {
         nullFlowRow('ES', '2026-09-29T14:40:00Z', 10, true),
       ]);
     routeUwWithTrades(
-      {
-        [CONTRACTS_PATH]: CONTRACTS,
-        [candlesPath('ESZ6')]: new Error('UW API 502: bad gateway'),
-      },
+      { [candlesPath('ESZ6')]: new Error('UW API 502: bad gateway') },
       {},
     );
 
@@ -1389,6 +1888,50 @@ describe('backfill-futures-gaps order-flow pass', () => {
       status: 'error',
       failures: ['ES: UW API 502: bad gateway'],
       flowSkippedSymbols: ['ES'],
+    });
+  });
+
+  it('a root whose volume refresh failed in the OHLC pass is skipped by the flow pass: not refreshed again, not reported twice, no schedule read', async () => {
+    mockFetchDaily.mockRejectedValue(new Error('UW API 502: bad gateway'));
+    mockSql
+      .mockResolvedValueOnce([ES_GAP])
+      .mockResolvedValueOnce([
+        nullFlowRow('ES', '2026-09-29T14:40:00Z', 10, true),
+      ]);
+
+    const res = await run();
+
+    expect(mockFetchDaily).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(mockFetchSchedule).not.toHaveBeenCalled();
+    expect(mockUwFetch).not.toHaveBeenCalled();
+    expect(res._json).toMatchObject({
+      status: 'error',
+      failures: ['ES volume refresh: UW API 502: bad gateway'],
+      flowSkippedSymbols: ['ES'],
+    });
+  });
+
+  it('a volume refresh that fails in the flow pass fails the root there, once, with no schedule read', async () => {
+    mockFetchDaily.mockRejectedValue(new Error('UW API 502: bad gateway'));
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true),
+      ]);
+
+    const res = await run();
+
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'UW API 502: bad gateway' }),
+      expect.objectContaining({ extra: { root: 'ES', range: '1m' } }),
+    );
+    expect(mockFetchSchedule).not.toHaveBeenCalled();
+    expect(updateCalls()).toHaveLength(0);
+    expect(res._json).toMatchObject({
+      status: 'error',
+      failures: ['ES volume refresh: UW API 502: bad gateway'],
     });
   });
 });

@@ -4,10 +4,9 @@
  *
  * `futures_bars` rows are keyed by root ('ES'). Since migration #204 a bar
  * also carries the dated outright it came from (`contract`, NULL in all
- * older history). The REST crons that read per-contract data
- * (`backfill-futures-gaps` for candles, `fetch-futures-session-stats` for
- * settlement and open interest) first need that root's active contracts.
- * Both select them here, the same way:
+ * older history). The REST cron that reads per-contract settlement and open
+ * interest (`fetch-futures-session-stats`) first needs that root's active
+ * contracts. It selects them here:
  *
  *   1. `GET /futures/contracts?days=5`, once per run: every active CME
  *      contract, volume summed over the last 5 sessions.
@@ -107,13 +106,13 @@ export interface ContractMinute {
 
 /**
  * Superseded: this rule has no memory, so it can step back and forth
- * between months around a roll. Phase 4a moves the gap cron's two calls to
- * the per-session front month and Phase 4b moves the two history scripts;
- * Phase 4c deletes this function.
+ * between months around a roll. The gap cron moved to the per-session front
+ * month in Phase 4a. Phase 4b moves the two history scripts, its last
+ * callers, and Phase 4c deletes this function.
  *
  * Replays the uw-stream front-month rule over per-contract minute rows
- * (candles in `backfill-futures-gaps`, trade-derived minutes in the order
- * flow repair): per minute, add every contract's volume to a UTC-day tally
+ * (candles in the bar backfill, trade-derived minutes in the order flow
+ * backfill): per minute, add every contract's volume to a UTC-day tally
  * (reset at each new UTC date), then emit the tally leader's row for that
  * minute if it has one. A minute where the leader has no row is left out,
  * never filled from another month, which trades at a carry basis. Ties go
