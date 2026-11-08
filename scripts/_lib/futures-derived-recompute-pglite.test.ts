@@ -1261,7 +1261,7 @@ describe('dry run on real SQL (pglite)', () => {
     expect(text).toContain('ES: rows in range 10, rows to write 3 (');
   });
 
-  it('tests the unmatched-large rows for a merge state, counts the others that meet the test, and writes every bar to merge-state.txt', async () => {
+  it('attributes a row with no value match to the merge state of a repaired bar, leaves a row that matches an unrepaired bar, and writes every bar to merge-state.txt', async () => {
     // A bar Phase 2 changed at 14:25, five minutes before the latest closed bar
     // (14:30): it was 7000..7120 before (a merged range) and 7005 now.
     await snapshotDay('ES', '2026-05-19', '2026-05-18', 7000, 7007);
@@ -1282,22 +1282,22 @@ describe('dry run on real SQL (pglite)', () => {
       '2026-05-19',
       [7100, 0.1, 0.1, 0.4615],
     );
-    // B: the same test, but only 0.01% off: not in the group, would be written.
-    await snapshotRow(
+    // B: the same test, only 0.01% off, and no bar's close either.
+    const b = await snapshotRow(
       'ES',
       '2026-05-19T14:33:00.250Z',
       '2026-05-19',
       [7008, 0.1, 0.1, 0.4615],
     );
-    // D: the same test, and the price is right (the latest bar's close) while the
-    // 1h change is off: it meets the test but a recompute does not change its price.
-    await snapshotRow(
+    // D: inside the merged range too, but 7007 is the latest bar's close, a bar
+    // Phase 2 did not change: it matches by value, so the range test does not apply.
+    const d = await snapshotRow(
       'ES',
       '2026-05-19T14:34:00.250Z',
       '2026-05-19',
       [7007, 0.5, 0.1, 0.4615],
     );
-    // C: read the repaired bar itself, so its price is already attributed.
+    // C: read the repaired bar itself, so its price is attributed by the close rule already.
     await snapshotRow(
       'ES',
       '2026-05-19T14:26:30.250Z',
@@ -1306,24 +1306,46 @@ describe('dry run on real SQL (pglite)', () => {
     );
     expect(await dry()).toBe(0);
     const text = report();
+    // A and B are added (price, 1h and day) and both are written because of it.
     expect(text).toContain(
-      'tested for a merge state (a bar Phase 2 changed within 14 min of the latest closed bar, whose pre-repair [low, high] holds the stored price and whose current range does not): merge-state 1, other 0',
+      'the merge-state rule (a row with no value match whose stored price lies in the pre-repair [low, high] of a bar Phase 2 changed within 14 min of the latest closed bar, and not in its current range): 2 rows added (price=2 change1hPct=2 changeDayPct=2 volumeRatio=0), 2 of them in the write set because of it',
     );
     expect(text).toContain(
       `ES 2026-05-19T14:32:00.250Z id ${a}: stored 7100, recomputed 7007, merge-state (newest bar 2026-05-19T14:25:00Z)`,
     );
-    // Outside the group: C, B, D and the fixture's S1 (a repaired 14:30 bar holding 7067).
     expect(text).toContain(
-      'rows outside them meeting the same test: 4 (price already attributed 2; not attributed 2, of which a recompute that differs in price 1: what the test would add to the write set)',
+      `ES 2026-05-19T14:33:00.250Z id ${b}: stored 7008, recomputed 7007, merge-state (newest bar 2026-05-19T14:25:00Z)`,
     );
-    expect(text).toContain('every bar of those rows: merge-state.txt');
-    // NQ was repaired too (S3), so it has the test; the roots Phase 2 only deleted bars of do not.
-    expect(text.match(/tested for a merge state/g)).toHaveLength(2);
+    // D and the fixture's S1 match a bar by value: not attributed by the rule.
+    expect(text).toContain(
+      'rows that meet the same test but match an unrepaired bar by value (not attributed by the rule; they stay as stored): 2 (price already attributed by another rule 1; not attributed 1, of which a recompute that differs in price 0)',
+    );
+    expect(text).toContain('every bar of the added rows: merge-state.txt');
+    // NQ was repaired too (S3), so it has the rule; the roots Phase 2 only deleted bars of do not.
+    expect(text.match(/the merge-state rule \(/g)).toHaveLength(2);
+    expect(text).toContain('0 rows added');
+    // No ES row is left in the unmatched-large list: A and B are written.
+    expect(text.match(/the open D1 question\): 0 rows/g)).toHaveLength(6);
 
     const detail = readFileSync(join(workDir, 'merge-state.txt'), 'utf8');
     expect(detail).toContain(
       `ES 2026-05-19T14:32:00.250Z id ${a}: stored 7100, recomputed 7007: merge-state (newest bar 2026-05-19T14:25:00Z)\n  L 2026-05-19T14:30:00Z: O/H/L/C before not in the backup, now 7007/7007/7007/7007, Phase 2 did not update it\n  L-5 min 2026-05-19T14:25:00Z: O/H/L/C before 7050/7120/7000/7050, now 7005/7005/7005/7005, Phase 2 changed it\n`,
     );
+
+    // The apply writes A and B and leaves D alone.
+    const rows = Number(
+      /^ {2}rows in range: \d+, rows to write: (\d+)$/m.exec(text)?.[1],
+    );
+    expect(await run({ expectSnapshots: rows })).toBe(0);
+    expect((await snapshotValues(a))[0]).toBe('7007.0000');
+    expect((await snapshotValues(b))[0]).toBe('7007.0000');
+    // D keeps its price, 1h and day change (its volume ratio is rewritten: the
+    // fixture's deleted 05-14 bar is in its 20-day window).
+    expect((await snapshotValues(d)).slice(0, 3)).toEqual([
+      '7007.0000',
+      '0.5000',
+      '0.1000',
+    ]);
   });
 
   it("reports an exact root's control miss, classified, and exits 0", async () => {

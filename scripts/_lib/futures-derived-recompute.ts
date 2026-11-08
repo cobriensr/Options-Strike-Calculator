@@ -1030,18 +1030,22 @@ export interface ValueRuleStats {
 }
 
 /**
- * The unmatched-large rows of an ES or NQ report, tested for a merge state (see
- * findMergeState), and how many other rows meet the same test.
+ * The merge-state attribution rule (ruling 6) for an ES or NQ report: a row
+ * with no value match whose stored price lies in the pre-repair range of a bar
+ * Phase 2 changed (see findMergeState) has price, 1h and day affected.
  */
 export interface MergeStateReport {
-  merge: number;
-  other: number;
-  /** One line per row of the unmatched-large group. */
+  /** Rows the rule made affected that no other rule had (a field it added). */
+  added: number;
+  fields: Record<SnapshotField, number>;
+  /** Of those, rows whose recompute differs in an added field: in the write set because of the rule. */
+  written: number;
+  /** One line per added row. */
   rows: string[];
   /** The same rows with every bar, for merge-state.txt. */
   detail: string[];
-  /** Rows outside that group that meet the test. */
-  outside: {
+  /** Rows that meet the test but match an unrepaired bar by value: not attributed by this rule. */
+  valueMatched: {
     meeting: number;
     attributed: number;
     notAttributed: number;
@@ -1525,17 +1529,23 @@ function mergeBarText(v: MergeBarView): string {
 function noteMergeState(
   m: MergeStateReport,
   row: SnapshotRow,
-  recomputed: number,
+  outcome: SnapshotOutcome,
   views: MergeBarView[],
-  found: MergeBarView | null,
+  found: MergeBarView,
+  added: SnapshotField[],
 ): void {
-  if (found == null) m.other += 1;
-  else m.merge += 1;
+  m.added += 1;
+  for (const f of added) m.fields[f] += 1;
+  const recomputed =
+    outcome.kind === 'change' ? String(outcome.to.price) : 'no change';
+  if (
+    outcome.kind === 'change' &&
+    outcome.fields.some((f) => added.includes(f))
+  ) {
+    m.written += 1;
+  }
   const head = `${row.symbol} ${isoSecond(row.tsMs)} id ${row.id}: stored ${row.stored.price}, recomputed ${recomputed}`;
-  const verdict =
-    found == null
-      ? 'other'
-      : `merge-state (newest bar ${isoSecond(found.tsMs)})`;
+  const verdict = `merge-state (newest bar ${isoSecond(found.tsMs)})`;
   m.rows.push(`${head}, ${verdict}`);
   m.detail.push(`${head}: ${verdict}`, ...views.map(mergeBarText));
 }
@@ -1593,11 +1603,12 @@ async function planSnapshots(
         sd.updates.size === 0
           ? null
           : {
-              merge: 0,
-              other: 0,
+              added: 0,
+              fields: emptyFields(),
+              written: 0,
               rows: [],
               detail: [],
-              outside: {
+              valueMatched: {
                 meeting: 0,
                 attributed: 0,
                 notAttributed: 0,
@@ -1629,12 +1640,32 @@ async function planSnapshots(
         row.stored,
       );
       for (const f of byValue.unmatched) report.unmatched[f] += 1;
-      const affected = new Set<SnapshotField>([...byRule, ...byValue.fields]);
+      const inputs = snapshotInputs(sd.bars, row.tsMs, dayOpenMs);
+      // The merge-state rule (ruling 6, ES and NQ): a row no pre-repair bar
+      // matches by value, whose price lies in the pre-repair range of a bar Phase 2
+      // changed near the latest closed bar and not in its current range, is a
+      // value that existed only before the repair (the cron read the bar while
+      // contract months were still merged into it). A row that matches an
+      // unrepaired bar by value stays as it is: the range test does not override it.
+      const noValueMatch = byValue.unmatched.includes('price');
+      const mergeViews =
+        report.mergeState != null && inputs.latest != null
+          ? mergeStateBars(sd.bars, sd.updates, inputs.latest)
+          : [];
+      const mergeFound = findMergeState(mergeViews, row.stored.price);
+      const mergeFields: SnapshotField[] =
+        mergeFound != null && noValueMatch
+          ? ['price', 'change1hPct', 'changeDayPct']
+          : [];
+      const affected = new Set<SnapshotField>([
+        ...byRule,
+        ...byValue.fields,
+        ...mergeFields,
+      ]);
       const newly = [...byValue.fields].filter((f) => !byRule.has(f));
       if (newly.length > 0) {
         noteValueRule(report.valueRule, row, byValue.hits, newly);
       }
-      const inputs = snapshotInputs(sd.bars, row.tsMs, dayOpenMs);
       if (
         result.kind === 'fresh' &&
         !inputsMatchSnapshot(inputs, result.snapshot)
@@ -1650,26 +1681,28 @@ async function planSnapshots(
         byValue.unmatched.includes('price') &&
         Math.abs(row.stored.price - outcome.to.price) >
           UNWRITTEN_FLAG_SHARE * Math.abs(row.stored.price);
-      if (report.mergeState != null && inputs.latest != null) {
-        const views = mergeStateBars(sd.bars, sd.updates, inputs.latest);
-        const found = findMergeState(views, row.stored.price);
-        if (largeUnmatched && outcome.kind === 'change') {
+      if (report.mergeState != null && mergeFound != null) {
+        const added = mergeFields.filter(
+          (f) => !byRule.has(f) && !byValue.fields.has(f),
+        );
+        if (added.length > 0) {
           noteMergeState(
             report.mergeState,
             row,
-            outcome.to.price,
-            views,
-            found,
+            outcome,
+            mergeViews,
+            mergeFound,
+            added,
           );
-        } else if (found != null) {
-          const outside = report.mergeState.outside;
-          outside.meeting += 1;
+        } else if (!noValueMatch) {
+          const vm = report.mergeState.valueMatched;
+          vm.meeting += 1;
           if (affected.has('price')) {
-            outside.attributed += 1;
+            vm.attributed += 1;
           } else {
-            outside.notAttributed += 1;
+            vm.notAttributed += 1;
             if (outcome.kind === 'change' && outcome.fields.includes('price')) {
-              outside.wouldWrite += 1;
+              vm.wouldWrite += 1;
             }
           }
         }
@@ -2097,12 +2130,12 @@ function olderMatchesText(v: ValueRuleStats): string {
 }
 
 function mergeStateText(m: MergeStateReport): string[] {
-  const o = m.outside;
+  const v = m.valueMatched;
   return [
-    `    the rows above, tested for a merge state (a bar Phase 2 changed within ${LATE_BAR_MAX_AGE_MIN} min of the latest closed bar, whose pre-repair [low, high] holds the stored price and whose current range does not): merge-state ${m.merge}, other ${m.other}`,
+    `    the merge-state rule (a row with no value match whose stored price lies in the pre-repair [low, high] of a bar Phase 2 changed within ${LATE_BAR_MAX_AGE_MIN} min of the latest closed bar, and not in its current range): ${m.added} rows added (${byFieldText(m.fields)}), ${m.written} of them in the write set because of it`,
     ...m.rows.map((l) => `      ${l}`),
-    `    rows outside them meeting the same test: ${o.meeting} (price already attributed ${o.attributed}; not attributed ${o.notAttributed}, of which a recompute that differs in price ${o.wouldWrite}: what the test would add to the write set)`,
-    '    every bar of those rows: merge-state.txt',
+    `    rows that meet the same test but match an unrepaired bar by value (not attributed by the rule; they stay as stored): ${v.meeting} (price already attributed by another rule ${v.attributed}; not attributed ${v.notAttributed}, of which a recompute that differs in price ${v.wouldWrite})`,
+    '    every bar of the added rows: merge-state.txt',
   ];
 }
 
