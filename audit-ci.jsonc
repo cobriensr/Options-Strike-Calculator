@@ -93,7 +93,8 @@
     // pattern amplifies minimatch's internal pattern list
     // (firstPhasePreProcess), then a quadratic pass (secondPhasePreProcess)
     // exhausts CPU and memory. Fixed in 11.0.1. After the glob overrides
-    // above, three copies below 11.0.1 remain (checked 2026-11-03):
+    // above, three copies below 11.0.1 remain (checked 2026-11-03 and
+    // 2026-11-07):
     // - 10.2.6 at the root: eslint, @eslint/config-array,
     //   @typescript-eslint/typescript-estree, eslint-plugin-import-x and
     //   eslint-plugin-sonarjs, i.e. the lint chain.
@@ -102,16 +103,18 @@
     // - 5.1.9 under filelist (jake, ejs, workbox-build's off-main-thread
     //   plugin): never loaded, since ejs's lib does not require jake.
     //
-    // No fix exists:
+    // No fix exists (re-checked 2026-11-07):
     // - Parent upgrade: the latest eslint 10.14.0, eslint-plugin-sonarjs
-    //   4.2.2, typescript-estree 8.72.1, @eslint/config-array 0.23.5,
-    //   eslint-plugin-import-x 4.17.1 and @ts-morph/common 0.29.0 all still
-    //   depend on `minimatch ^10` (import-x: `^9 || ^10`), and @vercel/node
-    //   29.0.1 still pins ts-morph 12.0.0.
-    // - Override: unsafe. minimatch 11 drops makeRe(), and import-x's ESM
-    //   entry does `import { makeRe } from 'minimatch'`
+    //   4.2.2, typescript-estree 8.72.1, @eslint/config-array 0.23.5 and
+    //   @ts-morph/common 0.29.0 all still depend on `minimatch ^10`, and
+    //   @vercel/node 30.0.0 still pins ts-morph 12.0.0. Only
+    //   eslint-plugin-import-x has moved: 4.18.0 accepts `^11.0.1` and
+    //   imports the Minimatch class instead of makeRe.
+    // - Override: unsafe. minimatch 11 drops makeRe(), and the installed
+    //   import-x 4.16.2's ESM entry does `import { makeRe } from 'minimatch'`
     //   (rules/no-internal-modules.js), a SyntaxError at load, so the root
-    //   copy must stay on 10.x. @ts-morph/common and filelist call
+    //   copy must stay on 10.x until import-x is on 4.18.0 or later and the
+    //   rest of the lint chain accepts 11. @ts-morph/common and filelist call
     //   `require('minimatch')` as a function, which is an object in 11
     //   (TypeError). Moving only eslint, config-array, typescript-estree
     //   and sonarjs to 11 would not remove this entry, and would run every
