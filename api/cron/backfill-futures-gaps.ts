@@ -13,22 +13,23 @@
  *      gap (ZN/RTY go quiet for up to ~4 minutes overnight), which only
  *      costs the UW calls: UW has no candle for it, so nothing is
  *      inserted. A run with no gaps makes no UW calls.
- *   2. Volume refresh, once per root and before that root's schedule is
- *      read. The front month is one contract per root per CME trade date,
- *      decided once from the previous session's volume and kept in
+ *   2. Volume refresh, once per root, before a decision is made for it. The
+ *      front month is one contract per root per CME trade date, decided
+ *      once from the previous session's volume and kept in
  *      `futures_front_month` (`api/_lib/futures-front-month.ts`); a
- *      decision made from old volume is permanent. So the root's volumes
- *      are brought up to date first: daily candles
- *      (`GET /futures/{contract}/candles?interval=1d&range=1m`) for the
- *      incumbent (the latest stored decision of the last 30 days, else the
- *      listing-cycle seed) and the next two contracts of its cycle, written
- *      by `insertContractVolumes` for trade dates before the current one
- *      only. Those rows are DO NOTHING, so a session uw-stream tallied keeps
- *      its tally. A UW error, a malformed candle, no candle at all for the
- *      incumbent or a DB reject fails that root by name (Sentry exception
- *      tagged with the root and the range), before any decision row is
- *      written for it. A root with no gaps and no NULL-flow bars reads no
- *      schedule and is not refreshed.
+ *      decision made from old volume is permanent. So when a trade date the
+ *      root needs has no decision yet (`fetchStoredFrontMonths`),
+ *      `refreshFrontMonthVolumes` (`api/_lib/futures-volume-refresh.ts`)
+ *      brings its volumes up to date first: daily candles over `1m` for the
+ *      incumbent and the next two contracts of its cycle, stored for trade
+ *      dates before the current one, and a check that UW has filed the
+ *      last session. A UW error, a malformed candle, no candle for the
+ *      incumbent, stale daily candles or a DB reject fails that root by name
+ *      (Sentry exception tagged with the root and the range), before any
+ *      decision row is written for it. A root whose dates are all decided
+ *      repairs from the stored schedule and makes no refresh call, so a UW
+ *      daily-candle outage does not block it. A root with no gaps and no
+ *      NULL-flow bars reads no schedule and is not refreshed.
  *   3. Schedule and candles: the CME trade dates of the root's gap minutes
  *      go to `fetchFrontMonthSchedule(root, dates, 'cron')`, which returns
  *      each date's stored contract or decides it now. Then
@@ -107,21 +108,19 @@ import { insertFuturesBars, type FuturesBarRow } from '../_lib/futures-bars.js';
 import {
   FUTURES_ROOTS,
   cmeTradeDate,
-  nullSeedContract,
   parseContract,
   pickScheduledFront,
   type FuturesRoot,
 } from '../_lib/futures-contracts.js';
 import {
-  cycleContracts,
-  fetchDailyContractVolumes,
-} from '../_lib/futures-daily-candles.js';
-import {
   fetchFrontMonthSchedule,
   fetchStoredFrontMonths,
-  insertContractVolumes,
   type FrontMonthSchedule,
 } from '../_lib/futures-front-month.js';
+import {
+  refreshFrontMonthVolumes,
+  type VolumeRefresh,
+} from '../_lib/futures-volume-refresh.js';
 import {
   fetchContractFlow,
   fetchNullFlowBars,
@@ -162,12 +161,6 @@ const MAX_PRICE = 99_999_999;
 // week, `1w` would leave the older missed sessions with no volume rows, and
 // the rows are DO NOTHING, so the longer range costs nothing but rows.
 const VOLUME_RANGE = '1m';
-// How far back from the current trade date the incumbent is looked for.
-const INCUMBENT_LOOKBACK_DAYS = 30;
-// The contracts refreshed per root: the incumbent and the next two in its
-// cycle, searched within this many months after the incumbent's month.
-const REFRESH_CONTRACTS = 3;
-const REFRESH_SPAN_MONTHS = 12;
 
 // UW /trades pages per run for the order-flow pass, oldest range first
 // (spec Phase 6). About 84 ms a page, so roughly a minute of paging.
@@ -389,15 +382,32 @@ interface RootCandles {
 /** What both passes share for the run, per root. */
 interface RootLoaders {
   /**
-   * Refreshes the root's contract volumes, once per run, before its first
-   * schedule read. False: the refresh failed, and was reported.
+   * Roots the flow pass leaves out: their volume refresh or a candle load
+   * failed, and was reported.
    */
-  volumesRefreshed(symbol: FuturesRoot): Promise<boolean>;
+  readonly failedRoots: ReadonlySet<FuturesRoot>;
+  /**
+   * The root's schedule for `dates` (ascending, at least one). When a date
+   * has no decision yet, its volumes are refreshed first, once per run, and
+   * the schedule is read (and the decision made) after. Null: the refresh
+   * failed, and was reported.
+   */
+  scheduleFor(
+    symbol: FuturesRoot,
+    dates: readonly string[],
+  ): Promise<FrontMonthSchedule | null>;
   /** The root's 1m candles for `contracts`; each contract loads once per run. */
   candlesFor(
     symbol: FuturesRoot,
     contracts: readonly string[],
   ): Promise<RootCandles>;
+}
+
+/** A root's candle minutes that sit on their trade date's scheduled contract. */
+interface ScheduledMinutes {
+  candles: RootCandles;
+  /** In time order; `contract` is the schedule's canonical name. */
+  picked: Array<{ contract: string; row: Bar }>;
 }
 
 /**
@@ -467,103 +477,168 @@ function assertCandleDepth(candles: RootCandles, firstMinuteMs: number): void {
   }
 }
 
-// ── Volume refresh ──────────────────────────────────────────
+// ── Failures and per-root loads ─────────────────────────────
 
-/** What one root's volume refresh offered and stored. */
-interface RefreshResult {
-  contracts: string[];
-  /** Rows given to `insertContractVolumes`: sessions before the current one. */
-  offered: number;
-  /** Rows it inserted; the rest were already stored. */
-  inserted: number;
+/** How one kind of per-root failure is reported. */
+interface FailureReport {
+  /** Between the root and the message in the failure line: "ES flow: …". */
+  label: string;
+  log: string;
+  metric: string;
+  /** Sentry tags added to `cron` and `symbol`. */
+  tags?: Record<string, string>;
+  /** Set for the volume refresh: Sentry gets `{ root, range }` as extra. */
+  range?: string;
 }
 
-/** `date` (`YYYY-MM-DD`) moved by whole days. */
-function shiftDate(date: string, days: number): string {
-  return new Date(Date.parse(`${date}T00:00:00Z`) + days * DAY_MS)
-    .toISOString()
-    .slice(0, 10);
-}
+const OHLC_FAILURE: FailureReport = {
+  label: '',
+  log: `${JOB}: symbol repair failed`,
+  metric: 'backfill_futures_gaps.symbol_error',
+};
+
+const FLOW_FAILURE: FailureReport = {
+  label: ' flow',
+  log: `${JOB}: order-flow repair failed`,
+  metric: 'backfill_futures_gaps.flow_symbol_error',
+  tags: { pass: 'flow' },
+};
+
+const REFRESH_FAILURE: FailureReport = {
+  label: ' volume refresh',
+  log: `${JOB}: volume refresh failed`,
+  metric: 'backfill_futures_gaps.volume_refresh_error',
+  tags: { pass: 'volume' },
+  range: VOLUME_RANGE,
+};
 
 /**
- * The incumbent and the next contracts of its cycle, `REFRESH_CONTRACTS` in
- * all: the cycle contracts from the incumbent's contract month to
- * `REFRESH_SPAN_MONTHS` later. The incumbent comes first even where it is
- * not itself a cycle contract (GC's odd months), so its volume is always
- * read.
+ * Records one root's failure: the failure line (so the run cannot report
+ * success), a log line, a metric and a Sentry exception.
  */
-function refreshContracts(
-  root: FuturesRoot,
-  incumbent: string,
-  tradeDate: string,
-): string[] {
-  const expiry = parseContract(root, incumbent, tradeDate);
-  if (expiry == null) {
-    throw new Error(`the incumbent ${incumbent} is not an outright ${root}`);
-  }
-  const month = expiry.year * 12 + expiry.month - 1;
-  const label = (index: number) =>
-    `${Math.floor(index / 12)}-${String((index % 12) + 1).padStart(2, '0')}`;
-  const cycle = cycleContracts(
-    root,
-    label(month),
-    label(month + REFRESH_SPAN_MONTHS),
-  );
-  return [incumbent, ...cycle.filter((c) => c !== incumbent)].slice(
-    0,
-    REFRESH_CONTRACTS,
-  );
-}
-
-/**
- * Brings one root's `futures_contract_volume` up to date before its
- * schedule is read: daily candles over `VOLUME_RANGE` for the incumbent
- * (the latest decision stored in the last `INCUMBENT_LOOKBACK_DAYS` days,
- * else the listing-cycle seed for the current trade date) and the next
- * contracts of its cycle, stored by `insertContractVolumes` for trade dates
- * before the current one only. A decision made from old volume is
- * permanent, and nothing else writes volume when uw-stream is down.
- *
- * Throws on a UW error, a malformed candle, a DB error, and when no candle
- * at all comes back for the incumbent (it has traded every session of the
- * month, and UW answers a fault with an empty body).
- */
-async function refreshVolumes(
+function reportRootFailure(
   ctx: CronContext,
-  root: FuturesRoot,
-): Promise<RefreshResult> {
-  const current = cmeTradeDate(new Date().toISOString());
-  const stored = await fetchStoredFrontMonths(
-    root,
-    shiftDate(current, -INCUMBENT_LOOKBACK_DAYS),
-    current,
+  failures: string[],
+  symbol: FuturesRoot,
+  err: unknown,
+  how: FailureReport,
+): void {
+  const message = err instanceof Error ? err.message : String(err);
+  failures.push(`${symbol}${how.label}: ${message}`);
+  ctx.logger.error(
+    { err, symbol, ...(how.range === undefined ? {} : { range: how.range }) },
+    how.log,
   );
-  // Oldest first, so the last entry is the latest decision.
-  const incumbent =
-    [...stored.values()].at(-1) ?? nullSeedContract(root, current);
-  const contracts = refreshContracts(root, incumbent, current);
+  metrics.increment(how.metric);
+  Sentry.captureException(err, {
+    tags: { cron: JOB, symbol, ...how.tags },
+    ...(how.range === undefined
+      ? {}
+      : { extra: { root: symbol, range: how.range } }),
+  });
+}
 
-  const candles = await fetchDailyContractVolumes(
-    ctx.apiKey,
-    root,
-    contracts,
-    VOLUME_RANGE,
-  );
-  if (!candles.some((c) => c.contract === incumbent)) {
-    throw new Error(`UW returned no daily candles for ${incumbent}`);
-  }
-  // The running session has only partial volume, and the next decision
-  // reads this table: store the sessions that are over.
-  const rows = candles
-    .filter((c) => c.tradeDate < current)
-    .map((c) => ({
-      product: root,
-      tradeDate: c.tradeDate,
-      contract: c.contract,
-      volume: c.volume,
-    }));
-  const inserted = await insertContractVolumes(rows);
-  return { contracts, offered: rows.length, inserted };
+/**
+ * What both passes share for the run. Each root's volumes refresh at most
+ * once, each contract's candles load once, whichever pass asks first. A
+ * refresh failure is reported here, once, and fails the root: no schedule
+ * is read for it, so no decision is made from stale volume.
+ */
+function createRootLoaders(
+  ctx: CronContext,
+  failures: string[],
+  volumeRefresh: Partial<Record<FuturesRoot, VolumeRefresh>>,
+): RootLoaders {
+  const failedRoots = new Set<FuturesRoot>();
+  const refreshes = new Map<FuturesRoot, Promise<boolean>>();
+  const candleLoads = new Map<string, Promise<ContractCandles>>();
+
+  const volumesRefreshed = (symbol: FuturesRoot): Promise<boolean> => {
+    let refresh = refreshes.get(symbol);
+    if (!refresh) {
+      refresh = refreshFrontMonthVolumes(ctx.apiKey, symbol, VOLUME_RANGE).then(
+        (result) => {
+          volumeRefresh[symbol] = result;
+          ctx.logger.info(
+            { symbol, ...result, range: VOLUME_RANGE },
+            `${JOB}: contract volumes refreshed`,
+          );
+          return true;
+        },
+        (err: unknown) => {
+          failedRoots.add(symbol);
+          reportRootFailure(ctx, failures, symbol, err, REFRESH_FAILURE);
+          return false;
+        },
+      );
+      refreshes.set(symbol, refresh);
+    }
+    return refresh;
+  };
+
+  return {
+    failedRoots,
+    async scheduleFor(symbol, dates) {
+      // Volume only matters to a decision still to be made: with every date
+      // decided, the stored schedule is read as it is.
+      const decided = await fetchStoredFrontMonths(
+        symbol,
+        dates[0]!,
+        dates.at(-1)!,
+      );
+      if (
+        dates.some((d) => !decided.has(d)) &&
+        !(await volumesRefreshed(symbol))
+      ) {
+        return null;
+      }
+      return fetchFrontMonthSchedule(symbol, dates, 'cron');
+    },
+    async candlesFor(symbol, contracts) {
+      const byContract = new Map<string, Bar[]>();
+      const capped = new Map<string, number>();
+      let malformed = 0;
+      for (const contract of contracts) {
+        let load = candleLoads.get(contract);
+        if (!load) {
+          load = loadCandles(ctx, symbol, contract);
+          candleLoads.set(contract, load);
+        }
+        const loaded = await load.catch((err: unknown) => {
+          failedRoots.add(symbol);
+          throw err;
+        });
+        byContract.set(contract, loaded.bars);
+        if (loaded.cappedAt !== null) capped.set(contract, loaded.cappedAt);
+        malformed += loaded.malformed;
+      }
+      return { contracts: [...contracts], byContract, capped, malformed };
+    },
+  };
+}
+
+/**
+ * A root's candle minutes that sit on the contract their trade date was
+ * decided on: the schedule for `dates`, the candles of its contracts, the
+ * depth check against `firstMinuteMs` (the oldest minute to repair), and
+ * `pickScheduledFront`. Null when the root's volume refresh failed. Throws
+ * on a schedule, candle or depth fault, which fails the root in the pass
+ * that asked.
+ */
+async function pickScheduledMinutes(
+  loaders: RootLoaders,
+  symbol: FuturesRoot,
+  dates: readonly string[],
+  firstMinuteMs: number,
+): Promise<ScheduledMinutes | null> {
+  const schedule = await loaders.scheduleFor(symbol, dates);
+  if (schedule === null) return null;
+  const candles = await loaders.candlesFor(symbol, schedule.contracts);
+  assertCandleDepth(candles, firstMinuteMs);
+  return {
+    candles,
+    picked: pickScheduledFront(candles.byContract, schedule.contractFor),
+  };
 }
 
 // ── OHLC pass ───────────────────────────────────────────────
@@ -572,14 +647,8 @@ async function repairSymbol(
   ctx: CronContext,
   symbol: FuturesRoot,
   gaps: Gap[],
-  candles: RootCandles,
-  schedule: FrontMonthSchedule,
+  { candles, picked }: ScheduledMinutes,
 ): Promise<SymbolResult> {
-  assertCandleDepth(
-    candles,
-    Math.min(...gaps.map((g) => g.prevMs)) + MINUTE_MS,
-  );
-
   const inGap = (bar: Bar) => {
     const t = Date.parse(bar.ts);
     return gaps.some((g) => t > g.prevMs && t < g.nextMs);
@@ -589,10 +658,7 @@ async function repairSymbol(
   // already stored included. A decision row is canonical by construction;
   // a bad one is stored as NULL (unknown) and warned about.
   const unstorable = new Set<string>();
-  const bars: FuturesBarRow[] = pickScheduledFront(
-    candles.byContract,
-    schedule.contractFor,
-  )
+  const bars: FuturesBarRow[] = picked
     .filter((e) => inGap(e.row))
     .map(({ contract, row }) => {
       if (parseContract(symbol, contract, row.ts) !== null) {
@@ -718,18 +784,19 @@ async function repairFlowRange(
  * first (ties in FUTURES_ROOTS order: ES and NQ first, spec D7), within
  * FLOW_PAGE_BUDGET pages. A symbol whose schedule, candles, prints or write
  * fail is a failure (Sentry exception); its remaining runs are skipped. A
- * symbol in `skip` (its volume refresh or candles already failed, and were
- * reported, in the OHLC pass) is left out. A symbol that fails its volume
- * refresh here is reported by `loaders`, once. Throws only when the
- * NULL-flow scan itself fails.
+ * symbol that failed its volume refresh or a candle load in the OHLC pass
+ * was reported there and is left out. One that fails its volume refresh
+ * here is reported by `loaders`, once. Throws only when the NULL-flow scan
+ * itself fails.
  */
 async function repairFlow(
   ctx: CronContext,
   windowStart: Date,
   windowEnd: Date,
   loaders: RootLoaders,
-  skip: ReadonlySet<FuturesRoot>,
 ): Promise<FlowPassResult> {
+  // As the OHLC pass left it: roots that fail here are reported here.
+  const skip = new Set(loaders.failedRoots);
   const result: FlowPassResult = {
     symbols: {},
     skippedSymbols: [],
@@ -773,22 +840,20 @@ async function repairFlow(
     tradeDates.set(bar.symbol, dates);
   }
   // Each minute's scheduled contract, where that contract has a candle.
+  // Null: the root's volume refresh failed, and was reported.
   const leaderMaps = new Map<FuturesRoot, Map<string, string>>();
   const leadersFor = async (symbol: FuturesRoot) => {
     const cached = leaderMaps.get(symbol);
     if (cached) return cached;
-    const schedule = await fetchFrontMonthSchedule(
+    const scheduled = await pickScheduledMinutes(
+      loaders,
       symbol,
       [...tradeDates.get(symbol)!].sort(),
-      'cron',
+      oldestMs.get(symbol)!,
     );
-    const candles = await loaders.candlesFor(symbol, schedule.contracts);
-    assertCandleDepth(candles, oldestMs.get(symbol)!);
+    if (scheduled === null) return null;
     const leaders = new Map(
-      pickScheduledFront(candles.byContract, schedule.contractFor).map((e) => [
-        e.row.ts,
-        e.contract,
-      ]),
+      scheduled.picked.map((e) => [e.row.ts, e.contract]),
     );
     leaderMaps.set(symbol, leaders);
     return leaders;
@@ -824,13 +889,12 @@ async function repairFlow(
       defer(range.bars);
       continue;
     }
-    // Before the schedule is read, which may write a decision row.
-    if (!(await loaders.volumesRefreshed(symbol))) {
-      failed.add(symbol);
-      continue;
-    }
     try {
       const leaders = await leadersFor(symbol);
+      if (leaders === null) {
+        failed.add(symbol);
+        continue;
+      }
       const outcome = await repairFlowRange(
         ctx,
         symbol,
@@ -843,13 +907,7 @@ async function repairFlow(
       if (outcome.deferred.length > 0) defer(outcome.deferred);
     } catch (err) {
       failed.add(symbol);
-      const message = err instanceof Error ? err.message : String(err);
-      result.failures.push(`${symbol} flow: ${message}`);
-      ctx.logger.error({ err, symbol }, `${JOB}: order-flow repair failed`);
-      metrics.increment('backfill_futures_gaps.flow_symbol_error');
-      Sentry.captureException(err, {
-        tags: { cron: JOB, symbol, pass: 'flow' },
-      });
+      reportRootFailure(ctx, result.failures, symbol, err, FLOW_FAILURE);
     }
   }
 
@@ -909,114 +967,33 @@ export default withCronInstrumentation(
 
     const symbols: Partial<Record<FuturesRoot, SymbolResult>> = {};
     const failures: string[] = [];
-    const volumeRefresh: Partial<Record<FuturesRoot, RefreshResult>> = {};
+    const volumeRefresh: Partial<Record<FuturesRoot, VolumeRefresh>> = {};
+    const loaders = createRootLoaders(ctx, failures, volumeRefresh);
 
-    // Both passes read a root's schedule, which may write a decision row from
-    // the root's volume, so a root's volumes are refreshed first, once per
-    // run. A failure is reported here, once, and fails the root: no schedule
-    // is read for it.
-    const refreshes = new Map<FuturesRoot, Promise<boolean>>();
-    const volumesRefreshed = (symbol: FuturesRoot): Promise<boolean> => {
-      let refresh = refreshes.get(symbol);
-      if (!refresh) {
-        refresh = refreshVolumes(ctx, symbol).then(
-          (result) => {
-            volumeRefresh[symbol] = result;
-            ctx.logger.info(
-              { symbol, ...result, range: VOLUME_RANGE },
-              `${JOB}: contract volumes refreshed`,
-            );
-            return true;
-          },
-          (err: unknown) => {
-            const message = err instanceof Error ? err.message : String(err);
-            failures.push(`${symbol} volume refresh: ${message}`);
-            ctx.logger.error(
-              { err, symbol, range: VOLUME_RANGE },
-              `${JOB}: volume refresh failed`,
-            );
-            metrics.increment('backfill_futures_gaps.volume_refresh_error');
-            Sentry.captureException(err, {
-              tags: { cron: JOB, symbol, pass: 'volume' },
-              extra: { root: symbol, range: VOLUME_RANGE },
-            });
-            return false;
-          },
-        );
-        refreshes.set(symbol, refresh);
-      }
-      return refresh;
-    };
-
-    // Each contract's candles load once, whichever pass asks first, so a
-    // contract both passes need is fetched once.
-    const candleLoads = new Map<string, Promise<ContractCandles>>();
-    const candlesFor = async (
-      symbol: FuturesRoot,
-      contracts: readonly string[],
-    ): Promise<RootCandles> => {
-      const byContract = new Map<string, Bar[]>();
-      const capped = new Map<string, number>();
-      let malformed = 0;
-      for (const contract of contracts) {
-        let load = candleLoads.get(contract);
-        if (!load) {
-          load = loadCandles(ctx, symbol, contract);
-          candleLoads.set(contract, load);
-        }
-        const loaded = await load;
-        byContract.set(contract, loaded.bars);
-        if (loaded.cappedAt !== null) capped.set(contract, loaded.cappedAt);
-        malformed += loaded.malformed;
-      }
-      return { contracts: [...contracts], byContract, capped, malformed };
-    };
-
-    // Roots the flow pass leaves out: their volume refresh or candles failed
-    // (and were reported) here, and it would only get the same failure.
-    const flowSkip = new Set<FuturesRoot>();
     for (const [symbol, symbolGaps] of gaps) {
-      if (!(await volumesRefreshed(symbol))) {
-        flowSkip.add(symbol);
-        continue;
-      }
       try {
-        const schedule = await fetchFrontMonthSchedule(
+        const scheduled = await pickScheduledMinutes(
+          loaders,
           symbol,
           [...new Set(symbolGaps.flatMap((g) => g.tradeDates))].sort(),
-          'cron',
+          Math.min(...symbolGaps.map((g) => g.prevMs)) + MINUTE_MS,
         );
-        const candles = await candlesFor(symbol, schedule.contracts).catch(
-          (err: unknown) => {
-            flowSkip.add(symbol);
-            throw err;
-          },
-        );
+        // Null: the root's volume refresh failed, and was reported.
+        if (scheduled === null) continue;
         symbols[symbol] = await repairSymbol(
           ctx,
           symbol,
           symbolGaps,
-          candles,
-          schedule,
+          scheduled,
         );
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        failures.push(`${symbol}: ${message}`);
-        ctx.logger.error({ err, symbol }, `${JOB}: symbol repair failed`);
-        metrics.increment('backfill_futures_gaps.symbol_error');
-        Sentry.captureException(err, { tags: { cron: JOB, symbol } });
+        reportRootFailure(ctx, failures, symbol, err, OHLC_FAILURE);
       }
     }
     const rows = Object.values(symbols).reduce((n, r) => n + r.inserted, 0);
 
     // After the OHLC pass, so the bars it just inserted get flow too.
-    const flow = await repairFlow(
-      ctx,
-      windowStart,
-      windowEnd,
-      { volumesRefreshed, candlesFor },
-      flowSkip,
-    );
+    const flow = await repairFlow(ctx, windowStart, windowEnd, loaders);
     failures.push(...flow.failures);
     const flowSymbols = Object.keys(flow.symbols).length;
 
