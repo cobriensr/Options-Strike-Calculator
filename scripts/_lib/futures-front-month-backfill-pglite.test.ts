@@ -41,22 +41,17 @@ import {
 } from 'vitest';
 import { PGlite } from '@electric-sql/pglite';
 
-const { pgRef, mockFetchVolumes, mockWarn } = vi.hoisted(() => ({
-  pgRef: { current: null as PGlite | null },
+const { holder, mockFetchVolumes, mockWarn } = vi.hoisted(() => ({
+  holder: { sql: null as unknown },
   mockFetchVolumes: vi.fn(),
   mockWarn: vi.fn(),
 }));
 
+// Real withDbRetry; getDb() is the Neon-shaped client over pglite (the
+// tagged template, query and transaction).
 vi.mock('../../api/_lib/db.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/_lib/db.js')>()),
-  getDb:
-    () =>
-    (strings: TemplateStringsArray, ...values: unknown[]) => {
-      const pg = pgRef.current;
-      if (!pg) throw new Error('pglite not started');
-      const text = strings.reduce((acc, part, i) => `${acc}$${i}${part}`);
-      return pg.query(text, values).then((r) => r.rows);
-    },
+  getDb: () => holder.sql,
 }));
 vi.mock('../../api/_lib/logger.js', () => ({
   default: { warn: mockWarn, info: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -68,7 +63,10 @@ vi.mock('../../api/_lib/futures-daily-candles.js', async () => {
   return { ...actual, fetchDailyContractVolumes: mockFetchVolumes };
 });
 
-import { applyMigration } from '../../api/__tests__/pglite-migrations';
+import {
+  applyMigration,
+  neonOverPglite,
+} from '../../api/__tests__/pglite-migrations.js';
 import {
   compareExpiry,
   parseContract,
@@ -207,11 +205,11 @@ let logs: string[];
 beforeAll(async () => {
   db = new PGlite();
   await applyMigration(db, 205);
-  pgRef.current = db;
+  holder.sql = neonOverPglite(db);
 });
 
 afterAll(async () => {
-  pgRef.current = null;
+  holder.sql = null;
   await db.close();
 });
 
@@ -262,6 +260,9 @@ function expiresBefore(
   return compareExpiry(pa, pb) < 0;
 }
 
+/** A switch line of the seed's output: root, trade date, `from → to`, .... */
+const SWITCH_LINE = /^ {2}[A-Z]+ {2}\d{4}-\d{2}-\d{2} {2}\S+ → .*$/gm;
+
 // What the 30 histories between them exercised, so the equivalence cannot
 // pass on histories that never roll, keep a stored row or clamp.
 const seen = {
@@ -305,7 +306,12 @@ describe('the seed against ensureFrontMonth, on real SQL', () => {
       expect(logs.filter((l) => l.startsWith('ERROR'))).toEqual([]);
       expect(exit).toBe(0);
       const output = logs.join('\n');
-      seen.switches += (output.match(/ → /g) ?? []).length - 1; // the banner
+      // Rolls the candles decided, from switch lines only (`  CL  2026-08-10
+      // CLU6 → CLV6  (...)`; the banner and each root's header carry arrows
+      // too). A switch onto a stored row is not one.
+      seen.switches += (output.match(SWITCH_LINE) ?? []).filter(
+        (line) => !line.endsWith('[stored row]'),
+      ).length;
       seen.kept += (output.match(/kept stored row/g) ?? []).length;
       const lowered = (output.match(/lowered/g) ?? []).length;
       seen.lowered += lowered;
@@ -386,7 +392,9 @@ describe('the seed against ensureFrontMonth, on real SQL', () => {
   );
 
   it('the histories between them rolled, kept stored rows, clamped, and crossed weekends', () => {
-    expect(seen.switches).toBeGreaterThan(10);
+    // 34 rolls decided by the candles over these histories (5 more switches
+    // land on stored rows); histories that never rolled would read 0.
+    expect(seen.switches).toBeGreaterThan(30);
     expect(seen.kept).toBeGreaterThan(0);
     expect(seen.lowered).toBeGreaterThan(0);
     expect(seen.clampWarnings).toBe(seen.lowered);
