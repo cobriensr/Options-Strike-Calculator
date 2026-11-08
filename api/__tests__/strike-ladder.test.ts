@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest';
 import {
   hasGammaSignal,
   isBeforeEtDay,
+  judgeLadder,
   keepWithinRange,
   newestRowTime,
   strikeWindow,
@@ -134,5 +135,92 @@ describe('hasGammaSignal', () => {
 
   it('is false for an empty ladder', () => {
     expect(hasGammaSignal([])).toBe(false);
+  });
+});
+
+describe('judgeLadder', () => {
+  // Day 2026-11-09, spot 7385, range 200: stored strikes are 7185..7585.
+  const opts = { spot: 7385, range: 200, day: '2026-11-09' };
+  const live = (strike: string) =>
+    row({ strike, time: '2026-11-09T15:00:00Z' });
+
+  it('stores the in-range rows with the newest row time', () => {
+    const rows = [
+      live('7100'),
+      row({ strike: '7385', time: '2026-11-09T15:07:00Z' }),
+      live('7590'),
+    ];
+    const verdict = judgeLadder(rows, opts);
+    expect(verdict).toEqual({
+      kind: 'store',
+      rows: [rows[1]],
+      snapshotTime: '2026-11-09T15:07:00.000Z',
+    });
+  });
+
+  it('is empty for no rows', () => {
+    expect(judgeLadder([], opts)).toEqual({ kind: 'empty' });
+  });
+
+  it('is malformed when no row has a parseable time', () => {
+    expect(judgeLadder([row({ time: 'garbage' })], opts)).toEqual({
+      kind: 'malformed',
+    });
+  });
+
+  it('is stale when the newest row is from an earlier ET day, naming that day', () => {
+    // Friday 11-06 close, the 09:28 ET poll on Monday 11-09.
+    const rows = [row({ time: '2026-11-06T21:00:00Z', strike: '7385' })];
+    expect(judgeLadder(rows, opts)).toEqual({
+      kind: 'stale',
+      dataEtDate: '2026-11-06',
+      snapshotTime: '2026-11-06T21:00:00.000Z',
+    });
+  });
+
+  it('judges staleness on the newest row, so one lagging strike is not stale', () => {
+    // UW lets a rarely traded strike keep a time from hours ago.
+    const rows = [
+      row({ strike: '7385', time: '2026-11-09T15:00:00Z' }),
+      row({ strike: '7390', time: '2026-11-06T21:00:00Z' }),
+    ];
+    expect(judgeLadder(rows, opts).kind).toBe('store');
+  });
+
+  it('is outside_window when rows came back but none is inside spot ± range', () => {
+    const rows = [live('6000'), live('8000')];
+    expect(judgeLadder(rows, opts)).toEqual({
+      kind: 'outside_window',
+      total: 2,
+    });
+  });
+
+  it('is all_zero when the in-range strikes carry no gamma', () => {
+    const rows = [
+      row({
+        strike: '7385',
+        call_gamma_oi: '0',
+        put_gamma_oi: '0',
+        time: '2026-11-09T15:00:00Z',
+      }),
+      live('8000'),
+    ];
+    expect(judgeLadder(rows, opts)).toEqual({ kind: 'all_zero', total: 1 });
+  });
+
+  it('checks in order: stale before outside_window before all_zero', () => {
+    const zero = { call_gamma_oi: '0', put_gamma_oi: '0' };
+    const stale = row({
+      strike: '9000',
+      time: '2026-11-06T21:00:00Z',
+      ...zero,
+    });
+    expect(judgeLadder([stale], opts).kind).toBe('stale');
+    const outside = row({
+      strike: '9000',
+      time: '2026-11-09T15:00:00Z',
+      ...zero,
+    });
+    expect(judgeLadder([outside], opts).kind).toBe('outside_window');
   });
 });

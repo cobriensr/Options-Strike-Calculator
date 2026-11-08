@@ -20,11 +20,29 @@
  * Pure functions on UW's string-typed rows; no I/O.
  */
 
-import { getETDateStr } from '../../src/utils/timezone.js';
+import { getETDateStr, isPastETDate } from '../../src/utils/timezone.js';
 
 interface TimedRow {
   time: string;
 }
+
+/**
+ * Why a ladder was not stored. The crons and the backfill treat every kind
+ * the same way (api/_lib/ladder-skip.ts): never stored, a warning, a metric,
+ * and from 09:40 ET a Sentry error.
+ *   - stale: the newest strike row is from an earlier ET day.
+ *   - stale_spot: the spot row the window was centered on is from an earlier
+ *     ET day (judged by the caller, before any ladder is fetched).
+ *   - all_zero: no strike in the stored range carries gamma OI.
+ *   - empty: UW returned no strike rows.
+ *   - outside_window: rows came back but none is inside the stored range.
+ */
+export type LadderSkipKind =
+  | 'stale'
+  | 'stale_spot'
+  | 'all_zero'
+  | 'empty'
+  | 'outside_window';
 
 interface StrikeRowLike {
   strike: string;
@@ -85,7 +103,7 @@ export function newestRowTime(rows: readonly TimedRow[]): string | null {
  * prior session's ladder. YYYY-MM-DD strings order chronologically.
  */
 export function isBeforeEtDay(timeIso: string, today: string): boolean {
-  return getETDateStr(new Date(timeIso)) < today;
+  return isPastETDate(getETDateStr(new Date(timeIso)), today);
 }
 
 /**
@@ -102,4 +120,49 @@ export function hasGammaSignal(rows: readonly GammaRowLike[]): boolean {
   return rows.some(
     (r) => toNumber(r.call_gamma_oi) !== 0 || toNumber(r.put_gamma_oi) !== 0,
   );
+}
+
+/** What to do with a fetched ladder. */
+export type LadderVerdict<T> =
+  | { kind: 'store'; rows: T[]; snapshotTime: string }
+  /** No row has a parseable `time`: a malformed payload, not a skip. */
+  | { kind: 'malformed' }
+  | { kind: 'empty' }
+  | { kind: 'stale'; dataEtDate: string; snapshotTime: string }
+  | { kind: 'outside_window'; total: number }
+  | { kind: 'all_zero'; total: number };
+
+/**
+ * The store-or-skip decision for one fetched ladder, shared by both crons and
+ * the backfill. `day` is the ET date the rows would be stored under (the
+ * cron's `today`, the backfill's date). Checked in this order, the first
+ * failing check names the verdict: no rows, no parseable time, newest row
+ * from an earlier ET day, no row inside spot ± range, no gamma in range. A
+ * `store` verdict carries only the in-range rows and the newest row time.
+ */
+export function judgeLadder<T extends TimedRow & StrikeRowLike & GammaRowLike>(
+  rows: readonly T[],
+  opts: { spot: number; range: number; day: string },
+): LadderVerdict<T> {
+  if (rows.length === 0) return { kind: 'empty' };
+
+  const snapshotTime = newestRowTime(rows);
+  if (snapshotTime === null) return { kind: 'malformed' };
+
+  if (isBeforeEtDay(snapshotTime, opts.day)) {
+    return {
+      kind: 'stale',
+      dataEtDate: getETDateStr(new Date(snapshotTime)),
+      snapshotTime,
+    };
+  }
+
+  const inRange = keepWithinRange(rows, opts.spot, opts.range);
+  if (inRange.length === 0) {
+    return { kind: 'outside_window', total: rows.length };
+  }
+  if (!hasGammaSignal(inRange)) {
+    return { kind: 'all_zero', total: inRange.length };
+  }
+  return { kind: 'store', rows: inRange, snapshotTime };
 }
