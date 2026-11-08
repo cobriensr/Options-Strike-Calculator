@@ -444,7 +444,7 @@ export const WRITE_BATCH = 500;
  * always true: a DO NOTHING insert only ever adds a row), in a data-modifying
  * CTE, so the rows and their log entries are written together or not at all.
  * A row the conflict skipped is not in the CTE and logs nothing. The log gets
- * the values as the table stored them. See flow_data_revisions (spec P0.7).
+ * the values as the table stored them. See flow_data_revisions (spec P0.8).
  */
 function insertStatement(
   { table, columns, conflictTarget, revisionLog },

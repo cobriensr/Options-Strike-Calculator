@@ -2,7 +2,7 @@
 
 /**
  * REAL-SQL test of migration #206, the flow_data_revisions table and its seed
- * (spec P0.7, docs/superpowers/specs/live-data-integrity-2026-11-06.md). The
+ * (spec P0.8, docs/superpowers/specs/live-data-integrity-2026-11-06.md). The
  * table is built by the real migrations #4 and #48 (flow_data) and #206, in
  * pglite (real Postgres in WASM). The migration is applied again after rows
  * are put in flow_data, which is what its seed statement does on a database

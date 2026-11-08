@@ -2,7 +2,7 @@
 
 /**
  * REAL-SQL test of the revision log write the flow_data backfill scripts make
- * (spec P0.7, docs/superpowers/specs/live-data-integrity-2026-11-06.md). The
+ * (spec P0.8, docs/superpowers/specs/live-data-integrity-2026-11-06.md). The
  * scripts insert with ON CONFLICT DO NOTHING, so they only ever add rows; each
  * row they add is appended to flow_data_revisions in the same statement, under
  * the script's name. flow-data-backfill.test.mjs and backfill-cli.test.mjs see

@@ -1109,7 +1109,7 @@ describe('processFlowDay: a net-flow total that leaves its column', () => {
 
 // ── The revision log ───────────────────────────────────────
 
-describe('the revision log (spec P0.7)', () => {
+describe('the revision log (spec P0.8)', () => {
   const etf = CASES.find((c) => c.name === 'ETF tide');
 
   beforeEach(() => atTime(TODAY, ['Date', 'setTimeout']));

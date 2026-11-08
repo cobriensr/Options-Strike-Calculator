@@ -20,7 +20,7 @@
  * 07-22 partial day keeps the rows the live crons wrote that morning, and
  * fills in the rest. The ETF tide rows it inserts are also appended to
  * flow_data_revisions in the same statement, under "backfill-etf-tide" (spec
- * P0.7, loggedFlowDataTarget); market tide and net flow are first-write-wins
+ * P0.8, loggedFlowDataTarget); market tide and net flow are first-write-wins
  * sources outside the log.
  *
  * ETF_TIDE: do not run it for spy_etf_tide or qqq_etf_tide, on any day, until
@@ -71,7 +71,7 @@ export const FLOW_DATA_TARGET = {
 /**
  * FLOW_DATA_TARGET for a script that writes one of the sources in the revision
  * log (spy_etf_tide, qqq_etf_tide, zero_dte_index, zero_dte_greek_flow; spec
- * P0.7): every row it inserts is appended to flow_data_revisions in the same
+ * P0.8): every row it inserts is appended to flow_data_revisions in the same
  * statement, under `writer` (the script's name), as a first-seen row. The
  * script stays DO NOTHING, so it can only add rows. The first-write-wins
  * sources (market tide, net flow) are not in the log and use FLOW_DATA_TARGET.
@@ -403,7 +403,7 @@ export const ETF_TIDE = {
   userAgent: 'strike-calculator-etf-tide-backfill (node)',
   items: ['SPY', 'QQQ'],
   itemLabel: 'tickers',
-  // spy_etf_tide and qqq_etf_tide are in the revision log (spec P0.7).
+  // spy_etf_tide and qqq_etf_tide are in the revision log (spec P0.8).
   revisionWriter: 'backfill-etf-tide',
   rowField: 'timestamp',
   rowLabel: 'tide row',
