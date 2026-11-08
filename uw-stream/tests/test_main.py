@@ -10,6 +10,7 @@ it. Push-notification flushing + session close are also verified.
 from __future__ import annotations
 
 import asyncio
+import inspect
 
 import pytest
 
@@ -84,6 +85,9 @@ async def test_shutdown_cancels_producers_before_draining(_reset_notify_state):
         producer_tasks=producers,
         handlers=[handler],
         other_tasks=[health, stop_wait],
+        connectors=[],
+        receive_queue=asyncio.Queue(),
+        lease_renewal=None,
     )
 
     # Producers cancelled strictly before the handler drain ran.
@@ -120,6 +124,9 @@ async def test_shutdown_logs_but_survives_a_drain_failure(_reset_notify_state):
         producer_tasks=[producer],
         handlers=[_BoomHandler(), good],
         other_tasks=[],
+        connectors=[],
+        receive_queue=asyncio.Queue(),
+        lease_renewal=None,
     )
 
     # The good handler still drained despite the boom handler raising.
@@ -458,6 +465,9 @@ async def test_shutdown_releases_lease_after_producers_then_closes_session(
         producer_tasks=[producer],
         handlers=[],
         other_tasks=[],
+        connectors=[],
+        receive_queue=asyncio.Queue(),
+        lease_renewal=None,
         lease=lease,
         lease_session=session,
     )
@@ -482,6 +492,9 @@ async def test_shutdown_without_lease_is_unchanged(_reset_notify_state):
         producer_tasks=[producer],
         handlers=[],
         other_tasks=[],
+        connectors=[],
+        receive_queue=asyncio.Queue(),
+        lease_renewal=None,
     )
 
     assert producer.cancelled()
@@ -559,6 +572,9 @@ async def test_a_hung_shutdown_step_is_abandoned_and_the_later_steps_still_run(
             producer_tasks=[producer],
             handlers=[_Handler()],
             other_tasks=[background],
+            connectors=[],
+            receive_queue=asyncio.Queue(),
+            lease_renewal=None,
             lease=_Lease(),
             lease_session=_FakeLeaseSession(),
         )
@@ -586,6 +602,16 @@ async def test_a_hung_shutdown_step_is_abandoned_and_the_later_steps_still_run(
             await asyncio.wait(pending, timeout=2.0)
 
 
+def test_shutdown_arguments_whose_omission_brings_a_bug_back_are_required():
+    # A caller that forgot connectors= would release the lease with sockets still
+    # open; one that forgot lease_renewal= would read its own release as a lost
+    # lease. A default would let either compile and run.
+    params = inspect.signature(main._shutdown).parameters
+    for name in ("connectors", "receive_queue", "lease_renewal"):
+        assert params[name].kind is inspect.Parameter.KEYWORD_ONLY
+        assert params[name].default is inspect.Parameter.empty, name
+
+
 @pytest.mark.asyncio
 async def test_shutdown_step_timeout_is_reported_with_its_bound(monkeypatch):
     messages: list[tuple[str, dict]] = []
@@ -599,7 +625,15 @@ async def test_shutdown_step_timeout_is_reported_with_its_bound(monkeypatch):
 
     # wait_for only guards the test: an unbounded step fails it, not hangs it.
     await asyncio.wait_for(
-        main._shutdown(producer_tasks=[], handlers=[], other_tasks=[]), timeout=5.0
+        main._shutdown(
+            producer_tasks=[],
+            handlers=[],
+            other_tasks=[],
+            connectors=[],
+            receive_queue=asyncio.Queue(),
+            lease_renewal=None,
+        ),
+        timeout=5.0,
     )
 
     assert len(messages) == 1
@@ -650,6 +684,8 @@ async def test_shutdown_aborts_connector_sockets_before_the_lease_is_released(
             connectors=[_Connector("c0"), _Connector("c1")],
             handlers=[],
             other_tasks=[],
+            receive_queue=asyncio.Queue(),
+            lease_renewal=None,
             lease=_Lease(),
             lease_session=_FakeLeaseSession(),
         )
@@ -698,6 +734,8 @@ async def test_a_connector_abort_failure_is_reported_and_the_shutdown_goes_on(mo
         connectors=[_BrokenConnector(), _Connector()],
         handlers=[_Handler()],
         other_tasks=[],
+        receive_queue=asyncio.Queue(),
+        lease_renewal=None,
     )
 
     assert events == ["abort:c1", "drain"]
@@ -728,7 +766,14 @@ async def test_shutdown_counts_frames_left_in_the_receive_queue_as_dropped(monke
     router = asyncio.create_task(_router())
     await asyncio.sleep(0.02)
 
-    await main._shutdown(producer_tasks=[router], handlers=[], other_tasks=[], receive_queue=queue)
+    await main._shutdown(
+        producer_tasks=[router],
+        handlers=[],
+        other_tasks=[],
+        connectors=[],
+        receive_queue=queue,
+        lease_renewal=None,
+    )
 
     assert main.state.receive_queue_drops == 5 + 2
 

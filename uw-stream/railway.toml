@@ -10,8 +10,10 @@ restartPolicyMaxRetries = 10
 # which SIGKILLs before the handler drains can flush their queues. 40 s fits
 # the worst-case shutdown: every step of main._shutdown has its own bound in
 # main._SHUTDOWN_STEP_TIMEOUTS_S (36.5 s in all, 30 s of it the concurrent
-# handler drains, handlers.base.DRAIN_DEADLINE_S), plus Sentry's 2 s flush at
-# exit. tests/test_handlers.py::test_drain_deadline_fits_railway_draining_seconds
+# handler drains, handlers.base.DRAIN_DEADLINE_S), plus a second 1 s
+# release_lease that _run's finally runs after _shutdown, plus Sentry's 2 s
+# flush at exit: 39.5 s.
+# tests/test_handlers.py::test_drain_deadline_fits_railway_draining_seconds
 # pins that arithmetic.
 # The window is set in two places, both 40, and they must stay equal: this
 # key, and the RAILWAY_DEPLOYMENT_DRAINING_SECONDS service variable

@@ -405,8 +405,10 @@ migration chain, and all schema changes go there.)
   service. Railway marks config as code deprecated: existing
   `railway.toml` files keep working for legacy services until 2026-12-01
   (its docs, checked 2026-11-08), and after that the variable carries the
-  setting. The shutdown bounds plus Sentry's 2 s exit flush must fit under
-  it; `tests/test_handlers.py::test_drain_deadline_fits_railway_draining_seconds`
+  setting. The shutdown bounds, a second `release_lease` bound (`_run`'s
+  `finally` repeats that step), and Sentry's 2 s exit flush must fit under
+  it (39.5 s of 40);
+  `tests/test_handlers.py::test_drain_deadline_fits_railway_draining_seconds`
   checks the sum against `railway.toml`.
 - **Single process.** One process holds every shard's connection. If one
   socket drops, only that shard's channels go quiet while it reconnects.

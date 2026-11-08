@@ -45,10 +45,12 @@ _LEASE_HTTP_TIMEOUT_S = 5.0
 
 # The longest each step of the shutdown may take, in the order they run.
 # Railway SIGKILLs the container ``drainingSeconds`` (40, railway.toml) after
-# SIGTERM and the steps run one after another, so each has its own bound and
-# the bounds plus the 2 s Sentry flush at interpreter exit must stay under it:
+# SIGTERM and the steps run one after another, so each has its own bound. They
+# sum to 36.5 s, but _run's finally runs release_lease a second time after
+# _shutdown (a no-op unless that step wedged), so the worst case is 37.5 s plus
+# the 2 s Sentry flush at interpreter exit, 39.5 s:
 # tests/test_handlers.py::test_drain_deadline_fits_railway_draining_seconds
-# pins the sum. A step that overruns is abandoned (bounded.run_bounded) and
+# pins it. A step that overruns is abandoned (bounded.run_bounded) and
 # reported to Sentry, and the next step runs.
 _SHUTDOWN_STEP_TIMEOUTS_S: dict[str, float] = {
     # Connector close handshakes, all at once. websockets' own close timeout is
@@ -452,13 +454,19 @@ async def _shutdown(
     producer_tasks: list[asyncio.Task],
     handlers: list[Handler],
     other_tasks: list[asyncio.Task],
-    connectors: Sequence[Connector] = (),
-    receive_queue: asyncio.Queue | None = None,
+    connectors: Sequence[Connector],
+    receive_queue: asyncio.Queue,
+    lease_renewal: asyncio.Task | None,
     lease: WsLease | None = None,
     lease_session: aiohttp.ClientSession | None = None,
-    lease_renewal: asyncio.Task | None = None,
 ) -> None:
     """Graceful shutdown sequence — ORDER MATTERS.
+
+    ``connectors``, ``receive_queue`` and ``lease_renewal`` have no defaults on
+    purpose. A caller that left out ``connectors`` would release the lease with
+    sockets still open, and one that left out ``lease_renewal`` would read its
+    own lease release as a lost lease. ``lease_renewal`` is None when there is
+    no lease.
 
     1. Cancel the producers (connector + router) first so no new payloads
        can reach a handler queue. Draining the consumers while the router
@@ -503,8 +511,7 @@ async def _shutdown(
     # 1a. Close any socket the connectors left open, then count the frames the
     # router never routed. Synchronous, so no step bound.
     _abort_connectors(connectors)
-    if receive_queue is not None:
-        state.receive_queue_drops += receive_queue.qsize()
+    state.receive_queue_drops += receive_queue.qsize()
 
     # 1b. Stop renewing and release the lease now that our sockets are closed,
     # then close the lease's dedicated session. CAS-fenced so it can only

@@ -750,8 +750,10 @@ def test_drain_deadline_fits_railway_draining_seconds():
     (default 0). Every step of the shutdown has its own bound
     (``main._SHUTDOWN_STEP_TIMEOUTS_S``: stop the producers, release the lease,
     drain every handler concurrently, flush push notifications, cancel the
-    background tasks, close the pool), and they run one after another. Sentry
-    then flushes at interpreter exit. All of it must fit in the window.
+    background tasks, close the pool), and they run one after another. _run's
+    finally then runs the release_lease step a second time (a no-op unless the
+    first one wedged, but bounded the same), and Sentry flushes at interpreter
+    exit. All of it must fit in the window.
     """
     import inspect
     import tomllib
@@ -778,7 +780,9 @@ def test_drain_deadline_fits_railway_draining_seconds():
     # drain_pending bounds itself first, so its warning is what logs on a slow Vercel.
     assert steps["flush_notifications"] > notify_s
     assert all(bound > 0 for bound in steps.values())
-    assert sum(steps.values()) + sentry_exit_s < draining_s
+    # The steps, then the finally's second release_lease, then Sentry's exit flush.
+    worst_case_s = sum(steps.values()) + steps["release_lease"] + sentry_exit_s
+    assert worst_case_s < draining_s
 
 
 @pytest.mark.asyncio
