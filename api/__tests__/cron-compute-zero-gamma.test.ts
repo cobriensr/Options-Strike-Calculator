@@ -36,8 +36,11 @@ const WEEKEND_TIME = new Date('2026-03-28T14:00:00.000Z');
 
 const TICKERS = ['SPX', 'SPY', 'QQQ'] as const;
 
-// The newest ladder fetch-strike-exposure stored: 5 minutes before MARKET_TIME.
-const LADDER_TS = '2026-03-24T13:55:00.000Z';
+// The newest ladder fetch-strike-exposure stored: its 5-minute bucket began
+// 10 minutes before MARKET_TIME. The row computed from it is labelled with
+// the END of that bucket, 5 minutes later.
+const LADDER_TS = '2026-03-24T13:50:00.000Z';
+const LABEL_TS = '2026-03-24T13:55:00.000Z';
 
 /**
  * Build a strike_exposures row. `timestamp` is shared across all rows in a
@@ -295,10 +298,71 @@ describe('compute-zero-gamma handler', () => {
       expect(parsed[0]).toHaveProperty('netGamma');
       // R6: the row is keyed on its source ladder, so the same ladder
       // recomputed at 14:00 or 14:05 hits ON CONFLICT (ticker, ts) and
-      // writes nothing. Not the compute time (14:00, the column default).
-      expect(ts).toBe(LADDER_TS);
+      // writes nothing. The label is the END of the ladder's bucket: not the
+      // compute time (14:00, the column default), and not the bucket floor
+      // (13:50, which is up to ~4 minutes before the data existed).
+      expect(ts).toBe(LABEL_TS);
       expect(ts).not.toBe(MARKET_TIME.toISOString());
+      expect(ts).not.toBe(LADDER_TS);
     });
+  });
+
+  it('labels a row with the bucket end even when that is ahead of the clock', async () => {
+    // The cron runs at :04; the ladder observed at :02 is stamped :00, so its
+    // label (:05) is a minute AHEAD of the clock. It is stored all the same.
+    vi.setSystemTime(new Date('2026-03-24T13:59:00.000Z'));
+    mockSql
+      .mockResolvedValueOnce([{ latest_ts: '2026-03-24T13:55:00.000Z' }])
+      .mockResolvedValueOnce(balancedChain())
+      .mockResolvedValueOnce([{ id: 1 }])
+      .mockResolvedValueOnce([]);
+    mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+    mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect((res._json as Body).perTicker.SPX).toMatchObject({ stored: true });
+    const insert = (mockSql.mock.calls as unknown[][])[2]!;
+    const label = insert.slice(1).at(-1);
+    expect(label).toBe('2026-03-24T14:00:00.000Z');
+    expect(Date.parse(label as string)).toBeGreaterThan(Date.now());
+  });
+
+  // ── The SQL text is the contract (R6) ────────────────────
+
+  // The strings of a tagged-template call, joined with a placeholder.
+  const sqlText = (call: unknown[]) => (call[0] as string[]).join('?');
+
+  it('inserts with ON CONFLICT (ticker, ts) DO NOTHING ... RETURNING id', async () => {
+    queueStored();
+    mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+    mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+
+    await handler(authedReq(), mockResponse());
+
+    const insert = sqlText((mockSql.mock.calls as unknown[][])[2]!);
+    expect(insert).toMatch(/INSERT INTO zero_gamma_levels/);
+    // Without the conflict clause a repeat of one ladder would raise on the
+    // unique index (or, before it, write a duplicate).
+    expect(insert).toMatch(/ON CONFLICT \(ticker, ts\) DO NOTHING/);
+    expect(insert).toMatch(/RETURNING id/);
+    // ts is written explicitly; it is not left to the NOW() default.
+    expect(insert).toMatch(/gamma_curve, ts\b/);
+  });
+
+  it('reads the previous ladder with a strict ts < (never <=, which would read the row just written)', async () => {
+    queueStored([{ net_gamma_at_spot: '-250000000' }]);
+    mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+    mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+
+    await handler(authedReq(), mockResponse());
+
+    const prev = sqlText((mockSql.mock.calls as unknown[][])[3]!);
+    expect(prev).toMatch(/FROM zero_gamma_levels/);
+    expect(prev).toMatch(/\bts < \?/);
+    expect(prev).not.toMatch(/ts <= /);
+    expect(prev).toMatch(/ORDER BY ts DESC/);
   });
 
   it('writes nothing, and says so, when the ladder was already stored (a recompute of the same source)', async () => {
@@ -343,10 +407,10 @@ describe('compute-zero-gamma handler', () => {
     expect(res._status).toBe(200);
 
     // SPX's previous-ladder SELECT is its 4th call. It binds the ticker and
-    // this ladder's timestamp, so it never reads the row it just wrote.
+    // this ladder's label, so it never reads the row it just wrote.
     const prevCall = (mockSql.mock.calls as unknown[][])[3]!;
     const values = prevCall.slice(1) as unknown[];
-    expect(values).toEqual(['SPX', LADDER_TS]);
+    expect(values).toEqual(['SPX', LABEL_TS]);
     expect(Sentry.addBreadcrumb).toHaveBeenCalledWith(
       expect.objectContaining({ category: 'dealer-regime' }),
     );
@@ -557,6 +621,91 @@ describe('compute-zero-gamma handler', () => {
     );
     // 2 SQL calls per ticker, no INSERT.
     expect(mockSql).toHaveBeenCalledTimes(6);
+  });
+
+  it('skips as "empty" when the rows SELECT returns nothing (the snapshot vanished between the two reads)', async () => {
+    for (let i = 0; i < TICKERS.length; i += 1) {
+      mockSql
+        .mockResolvedValueOnce([{ latest_ts: LADDER_TS }])
+        .mockResolvedValueOnce([]);
+    }
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    const body = res._json as Body;
+    expect(body.status).toBe('skipped');
+    expect(body.perTicker.SPX).toMatchObject({ stored: false, skip: 'empty' });
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'compute_zero_gamma.empty_ladder_skip',
+    );
+    // 2 SQL calls per ticker, no INSERT.
+    expect(mockSql).toHaveBeenCalledTimes(6);
+  });
+
+  it.each(['0', '-7105', 'not-a-number'])(
+    'skips as "empty" when the snapshot spot is not a positive number (%s)',
+    async (price) => {
+      for (let i = 0; i < TICKERS.length; i += 1) {
+        mockSql
+          .mockResolvedValueOnce([{ latest_ts: LADDER_TS }])
+          .mockResolvedValueOnce(balancedChain().map((r) => ({ ...r, price })));
+      }
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      const body = res._json as Body;
+      expect(body.status).toBe('skipped');
+      expect(body.perTicker.QQQ).toMatchObject({
+        stored: false,
+        skip: 'empty',
+      });
+      expect(mockSql).toHaveBeenCalledTimes(6);
+    },
+  );
+
+  it('stores the row but counts the leg failed when the previous-ladder SELECT rejects; the next run says "already stored"', async () => {
+    const dbError = new Error('previous-ladder select rejected');
+    // Run 1: SPX inserts its row, then the previous-ladder read rejects.
+    mockSql
+      .mockResolvedValueOnce([{ latest_ts: LADDER_TS }])
+      .mockResolvedValueOnce(balancedChain())
+      .mockResolvedValueOnce([{ id: 1 }]) // INSERT stored the ladder
+      .mockRejectedValueOnce(dbError);
+    mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+    mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+
+    const first = mockResponse();
+    await handler(authedReq(), first);
+
+    const firstBody = first._json as Body;
+    expect(firstBody.perTicker.SPX).toMatchObject({ stored: false });
+    expect(firstBody.perTicker.SPX!.error).toContain('previous-ladder');
+    expect(firstBody.failedLegs).toBe(1);
+    expect(firstBody.status).toBe('error');
+    expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
+    // The INSERT ran: the row is in the table despite the failed leg.
+    expect(sqlText((mockSql.mock.calls as unknown[][])[2]!)).toMatch(
+      /INSERT INTO zero_gamma_levels/,
+    );
+
+    // Run 2: the same ladder; the INSERT conflicts, so it is "already stored".
+    mockSql
+      .mockResolvedValueOnce([{ latest_ts: LADDER_TS }])
+      .mockResolvedValueOnce(balancedChain())
+      .mockResolvedValueOnce([]);
+    mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+    mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+
+    const second = mockResponse();
+    await handler(authedReq(), second);
+
+    expect((second._json as Body).perTicker.SPX).toMatchObject({
+      stored: false,
+      reason: 'ladder already stored',
+    });
+    expect((second._json as Body).failedLegs).toBe(0);
   });
 
   // ── Per-ticker fault isolation ───────────────────────────

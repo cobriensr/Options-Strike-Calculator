@@ -37,12 +37,17 @@
  *   metric, and from 09:40 ET a Sentry error. A run in which every ticker was
  *   skipped reports `skipped`, never `success`.
  *
- * R6: the row is keyed on its source, `ts` = the ladder's own timestamp (the
- * 5-minute bucket fetch-strike-exposure stores), not the compute time. The
- * `ts` column default (NOW()) made `ON CONFLICT (ticker, ts) DO NOTHING` a
- * no-op, so recomputing one ladder wrote a new row each run. Now it writes
- * nothing. A row is labelled with the time of the ladder it came from, up
- * to 5 minutes before the cron ran.
+ * R6: the row is keyed on its source, not on the compute time. `ts` = the END
+ * of the source ladder's 5-minute bucket (zeroGammaLabelTs: the ladder's
+ * `strike_exposures.timestamp`, which is UW's row time floored to 5 minutes,
+ * plus 5 minutes). The `ts` column default (NOW()) made
+ * `ON CONFLICT (ticker, ts) DO NOTHING` a no-op, so recomputing one ladder
+ * wrote a new row each run (F8's 2,051 frozen rows). Now it writes nothing.
+ * The bucket END, not the floor, because a ladder observed at :02 or :03 is
+ * stamped :00, and a label at :00 would put the row up to about 4 minutes
+ * before its data existed: lookahead for a `ts <= at` reader. At compute time
+ * (:04) the newest row's label (:05) is about a minute AHEAD of the clock;
+ * the staleness gates read `now - ts`, which is negative, so it is fresh.
  *
  * Cadence: 5-min at +1 offset from fetch-strike-exposure source — ensures
  * the source rows are committed before we read them. Cron line:
@@ -67,6 +72,7 @@ import {
 import { reportLadderSkip } from '../_lib/ladder-skip.js';
 import { isBeforeEtDay, type LadderSkipKind } from '../_lib/strike-ladder.js';
 import { computeZeroGammaLevel, type GexStrike } from '../_lib/zero-gamma.js';
+import { zeroGammaLabelTs } from '../_lib/zero-gamma-label.js';
 import {
   ZERO_GAMMA_TICKERS,
   getPrimaryExpiry,
@@ -92,11 +98,14 @@ interface SnapshotBundle {
 }
 
 /**
- * R-stale: the oldest a source ladder may be and still be computed from. The
- * source is written every 5 minutes, and this cron runs 1 minute after it,
- * so a healthy ladder is at most about 6 minutes old (its 5-minute bucket
- * plus the offset). 15 minutes tolerates one missed fetch; the dealer-regime
- * tile calls a row older than 15 minutes stale too (REGIME_CONSTANTS.staleAgeMs).
+ * R-stale: the oldest a source ladder (its `strike_exposures.timestamp`, the
+ * START of its 5-minute bucket) may be and still be computed from. The source
+ * is written every 5 minutes and this cron runs 1 minute after it, so a
+ * healthy ladder's bucket started about 4 to 5 minutes before the run (UW row
+ * time :02 or :03 is stamped :00, the run is at :04). 15 minutes tolerates
+ * one missed fetch (a run at :14 still sees the :00 ladder, 14 minutes old);
+ * the dealer-regime tile calls a row older than 15 minutes stale too
+ * (REGIME_CONSTANTS.staleAgeMs).
  */
 const SOURCE_MAX_AGE_MS = 15 * 60_000;
 
@@ -339,9 +348,11 @@ async function processTicker(
   const netGamma = netGammaAtSpot(result.curve, snapshot.spot);
   const gammaCurveJson = JSON.stringify(result.curve);
 
-  // R6: keyed on the source ladder. `ts` is the ladder's own timestamp, so
-  // computing the same ladder again conflicts on (ticker, ts) and RETURNING
-  // yields no row: nothing is written, and nothing below runs for it.
+  // R6: keyed on the source ladder. `ts` is the END of the ladder's bucket
+  // (see the header), so computing the same ladder again conflicts on
+  // (ticker, ts) and RETURNING yields no row: nothing is written, and nothing
+  // below runs for it.
+  const labelTs = zeroGammaLabelTs(snapshot.timestamp);
   const inserted = (await withDbRetry(
     () => sql`
       INSERT INTO zero_gamma_levels (
@@ -350,7 +361,7 @@ async function processTicker(
       )
       VALUES (
         ${ticker}, ${snapshot.spot}, ${zeroGamma}, ${result.confidence},
-        ${netGamma}, ${gammaCurveJson}::jsonb, ${snapshot.timestamp}::timestamptz
+        ${netGamma}, ${gammaCurveJson}::jsonb, ${labelTs}::timestamptz
       )
       ON CONFLICT (ticker, ts) DO NOTHING
       RETURNING id
@@ -371,7 +382,8 @@ async function processTicker(
   }
 
   // Sign-flip detection: compare this ladder's net γ with the previous
-  // LADDER's (`ts` strictly before this one's, so never the row just written).
+  // LADDER's (`ts` strictly before this one's label, so never the row just
+  // written; `<=` would read it and the flip would never be seen).
   // When the sign changes between successive ladders, dealer-gamma regime
   // flipped (long-γ ↔ short-γ at spot) — a load-bearing event for
   // post-mortem context on trades that misfire around the transition.
@@ -382,7 +394,7 @@ async function processTicker(
       SELECT net_gamma_at_spot::numeric AS net_gamma_at_spot
       FROM zero_gamma_levels
       WHERE ticker = ${ticker}
-        AND ts < ${snapshot.timestamp}::timestamptz
+        AND ts < ${labelTs}::timestamptz
       ORDER BY ts DESC
       LIMIT 1
     `,
@@ -440,6 +452,7 @@ async function processTicker(
       netGammaAtSpot: netGamma,
       strikesUsed: snapshot.strikes.length,
       snapshotTs: snapshot.timestamp,
+      labelTs,
     },
     'computed zero-gamma',
   );
