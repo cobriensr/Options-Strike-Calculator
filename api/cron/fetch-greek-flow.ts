@@ -66,6 +66,7 @@
 
 import { isMarketHours } from '../_lib/api-helpers.js';
 import {
+  REJECTED_SNAPSHOT_MESSAGE,
   spxGreekFlowMetadata,
   syncSpxGreekFlow,
 } from '../_lib/spx-greek-flow.js';
@@ -108,9 +109,7 @@ export default withCronInstrumentation(
     // stays `success`, as for fetch-etf-tide and fetch-zero-dte-flow.
     return {
       status: 'success',
-      ...(sync.rejected
-        ? { message: 'Rejected an all-zero/unusable greek flow snapshot' }
-        : {}),
+      ...(sync.rejected ? { message: REJECTED_SNAPSHOT_MESSAGE } : {}),
       metadata,
     };
   },

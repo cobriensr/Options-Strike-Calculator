@@ -42,6 +42,7 @@
 
 import { isTradingDayET } from '../_lib/api-helpers.js';
 import {
+  REJECTED_SNAPSHOT_MESSAGE,
   spxGreekFlowMetadata,
   syncSpxGreekFlow,
 } from '../_lib/spx-greek-flow.js';
@@ -76,17 +77,15 @@ export default withCronInstrumentation(
       };
     }
 
-    // A rejected snapshot (all zero or all stuck) is dropped and raised as the
-    // Sentry error `degenerate_snapshot`; that error is the alert, so the run
-    // status stays `success`, as for the live cron. A failed write or quality
-    // query throws out of here.
-    return {
-      status: 'success',
-      ...(sync.rejected
-        ? { message: 'Rejected an all-zero/unusable greek flow snapshot' }
-        : {}),
-      metadata,
-    };
+    // A rejected snapshot (all zero or all stuck) is dropped, and the shared
+    // path raises the Sentry error `degenerate_snapshot`. At this hour that was
+    // the day's last attempt, so the reconcile did not happen: the run is an
+    // `error`. ("Rejected is success" is for the live cron, whose next tick
+    // retries.) A failed write or quality query throws out of here.
+    if (sync.rejected) {
+      return { status: 'error', message: REJECTED_SNAPSHOT_MESSAGE, metadata };
+    }
+    return { status: 'success', metadata };
   },
   // Trading days only: the schedule is Mon-Fri, so a market holiday would
   // otherwise read an empty session as a stalled feed. The time of day is the

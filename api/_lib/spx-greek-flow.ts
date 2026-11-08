@@ -41,7 +41,11 @@ import {
 } from './flow-bucket-store.js';
 import type { CronResult } from './cron-instrumentation.js';
 
-export const SPX_GREEK_FLOW_SOURCE = 'zero_dte_greek_flow';
+const SPX_GREEK_FLOW_SOURCE = 'zero_dte_greek_flow';
+
+/** The message of a run that dropped an all-zero or all-stuck snapshot. */
+export const REJECTED_SNAPSHOT_MESSAGE =
+  'Rejected an all-zero/unusable greek flow snapshot';
 
 /** What one run found and wrote. */
 export interface SpxGreekFlowSync {

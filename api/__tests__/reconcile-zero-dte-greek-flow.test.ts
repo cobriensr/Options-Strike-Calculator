@@ -62,6 +62,7 @@ import {
   makeGreekFlowTick,
   stubFetch,
   tickGrid,
+  uwFetchCalls,
   withMinute,
   type Outcome,
 } from './spx-greek-flow-fixtures';
@@ -169,7 +170,7 @@ describe('reconcile-zero-dte-greek-flow handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ skipped: true });
-    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+    expect(uwFetchCalls()).toHaveLength(0);
     expect(mockTransaction).not.toHaveBeenCalled();
     expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
@@ -181,8 +182,8 @@ describe('reconcile-zero-dte-greek-flow handler', () => {
 
     await runCron();
 
-    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
-    const url = String(vi.mocked(fetch).mock.calls[0]![0]);
+    expect(uwFetchCalls()).toHaveLength(1);
+    const url = String(uwFetchCalls()[0]![0]);
     expect(url).toContain('/stock/SPX/greek-flow/2026-03-24?date=2026-03-24');
   });
 
@@ -338,7 +339,7 @@ describe('reconcile-zero-dte-greek-flow handler', () => {
     );
   });
 
-  it('rejects an all-zero session with a Sentry error and writes nothing', async () => {
+  it('reports an all-zero session as a failed run: a Sentry error, status error, nothing written', async () => {
     stubFetch(
       fullSession().map((tick) => ({
         ...tick,
@@ -349,12 +350,22 @@ describe('reconcile-zero-dte-greek-flow handler', () => {
 
     const res = await runCron();
 
+    // At 22:05 UTC this is the day's last attempt, so the reconcile did not
+    // happen: `error`, not the live cron's `success` (its next tick retries).
     expect(res._json).toMatchObject({
-      status: 'success',
+      status: 'error',
       message: 'Rejected an all-zero/unusable greek flow snapshot',
       stored: 0,
       rejected: true,
     });
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'reconcile-zero-dte-greek-flow',
+      expect.objectContaining({ status: 'error', rejected: true }),
+    );
+    expect(reportCronRun).not.toHaveBeenCalledWith(
+      'reconcile-zero-dte-greek-flow',
+      expect.objectContaining({ status: 'success' }),
+    );
     expect(mockTransaction).not.toHaveBeenCalled();
     expect(Sentry.captureMessage).toHaveBeenCalledWith(
       expect.stringContaining('rejected'),
@@ -471,6 +482,32 @@ describe('reconcile-zero-dte-greek-flow handler', () => {
       'reconcile-zero-dte-greek-flow',
       expect.objectContaining({ status: 'error', message: 'Network error' }),
     );
+  });
+
+  it('returns 500 and captures once when a 2xx response does not parse as JSON', async () => {
+    const parseError = new SyntaxError('Unexpected token <');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.reject(parseError),
+      }),
+    );
+
+    const res = await runCron();
+
+    expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({
+      job: 'reconcile-zero-dte-greek-flow',
+      error: 'Internal error',
+    });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(parseError);
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'reconcile-zero-dte-greek-flow',
+      expect.objectContaining({ status: 'error' }),
+    );
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
 
   it.each([

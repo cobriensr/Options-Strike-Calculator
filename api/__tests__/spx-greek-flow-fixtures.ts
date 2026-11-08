@@ -111,6 +111,17 @@ export function stubFetch(ticks: unknown = []) {
   );
 }
 
+/**
+ * The calls to the stubbed `fetch` that went to Unusual Whales. Other calls
+ * (a Sentry cron check-in when SENTRY_DSN is set in the shell) are not the
+ * cron's UW reads and must not move a test's count.
+ */
+export function uwFetchCalls() {
+  return vi
+    .mocked(fetch)
+    .mock.calls.filter(([url]) => String(url).includes('unusualwhales'));
+}
+
 export type Outcome = 'inserted' | 'updated' | 'unchanged';
 export const OUTCOME_ROWS: Record<Outcome, unknown[]> = {
   inserted: [{ inserted: true }],
