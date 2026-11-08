@@ -62,6 +62,7 @@ import {
   makeGreekFlowTick,
   stubFetch,
   tickGrid,
+  uwFetchCalls,
   withMinute,
   type Outcome,
 } from './spx-greek-flow-fixtures';
@@ -1152,13 +1153,17 @@ describe('fetch-greek-flow handler', () => {
 
   // ── Correct API endpoint ──────────────────────────────────
 
-  it('calls the greek-flow endpoint with today as the expiry (/stock/SPX/greek-flow/<today>)', async () => {
+  it('calls the greek-flow endpoint with today as the expiry and no ?date= (the undated live URL)', async () => {
     process.env.UW_API_KEY = 'uwkey';
     stubFetch([makeGreekFlowTick()]);
 
     await runCron();
 
-    const fetchCall = vi.mocked(fetch).mock.calls[0]!;
-    expect(fetchCall[0]).toContain('/stock/SPX/greek-flow/2026-03-24');
+    expect(uwFetchCalls()).toHaveLength(1);
+    // Anchored at the end: appending `?date=` (as the reconcile does for a
+    // finished session) must fail this. R-day is the live cron's guard.
+    expect(String(uwFetchCalls()[0]![0])).toMatch(
+      /\/stock\/SPX\/greek-flow\/2026-03-24$/,
+    );
   });
 });
