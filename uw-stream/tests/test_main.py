@@ -13,6 +13,7 @@ import asyncio
 
 import pytest
 
+import bounded
 import main
 import notify
 import ws_lease
@@ -480,6 +481,128 @@ async def test_shutdown_without_lease_is_unchanged(_reset_notify_state):
     assert producer.cancelled()
 
 
+# --- Per-step bounds ----------------------------------------------------------
+#
+# Railway SIGKILLs the container ``drainingSeconds`` after SIGTERM. _shutdown's
+# steps run one after another, so each gets its own bound; a step that will not
+# finish is abandoned (run_bounded) so the steps after it still run.
+# test_drain_deadline_fits_railway_draining_seconds sums the bounds.
+
+_BOUNDED_STEPS = ("stop_producers", "release_lease", "flush_notifications", "cancel_background")
+
+
+async def _unkillable(release: asyncio.Event) -> None:
+    """Park, then keep unwinding after a cancel until ``release`` is set."""
+    try:
+        await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+        await release.wait()
+        raise
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hung_step", [None, *_BOUNDED_STEPS])
+async def test_a_hung_shutdown_step_is_abandoned_and_the_later_steps_still_run(
+    hung_step, monkeypatch
+):
+    events: list[str] = []
+    release = asyncio.Event()
+    messages: list[dict] = []
+    monkeypatch.setattr(main, "capture_message", lambda _msg, **kw: messages.append(kw))
+    for step in _BOUNDED_STEPS:
+        monkeypatch.setitem(main._SHUTDOWN_STEP_TIMEOUTS_S, step, 0.05)
+
+    async def _notify_drain(*_a, **_k) -> None:
+        if hung_step == "flush_notifications":
+            await asyncio.sleep(3600)
+        events.append("notify_drain")
+
+    async def _notify_close(*_a, **_k) -> None:
+        events.append("notify_close")
+
+    monkeypatch.setattr(notify, "drain_pending", _notify_drain)
+    monkeypatch.setattr(notify, "close_session", _notify_close)
+
+    class _Lease(ws_lease.WsLease):  # type: ignore[misc]
+        def __init__(self) -> None:
+            pass  # only release() is exercised
+
+        async def release(self) -> bool:
+            if hung_step == "release_lease":
+                await asyncio.sleep(3600)
+            events.append("lease_release")
+            return True
+
+    class _Handler:
+        name = "good"
+
+        async def drain(self) -> int:
+            events.append("drain")
+            return 0
+
+    producer = asyncio.create_task(
+        _unkillable(release) if hung_step == "stop_producers" else _forever(events, "connector")
+    )
+    background = asyncio.create_task(
+        _unkillable(release) if hung_step == "cancel_background" else _forever(events, "health")
+    )
+    await asyncio.sleep(0.02)  # let both reach their await point
+
+    shutdown = asyncio.ensure_future(
+        main._shutdown(
+            producer_tasks=[producer],
+            handlers=[_Handler()],
+            other_tasks=[background],
+            lease=_Lease(),
+            lease_session=_FakeLeaseSession(),
+        )
+    )
+    try:
+        done, _ = await asyncio.wait({shutdown}, timeout=2.0)
+
+        assert shutdown in done, f"the hung {hung_step} step held the shutdown"
+        shutdown.result()
+        expected = ["lease_release", "drain", "notify_drain", "notify_close"]
+        if hung_step == "release_lease":
+            expected.remove("lease_release")
+        if hung_step == "flush_notifications":
+            expected.remove("notify_drain")
+            expected.remove("notify_close")
+        assert [e for e in events if e in expected] == expected
+        # Exactly one Sentry warning, naming the step that timed out.
+        assert [m["tags"] for m in messages] == (
+            [{"component": "main", "step": hung_step}] if hung_step else []
+        )
+    finally:
+        release.set()
+        pending = {t for t in (shutdown, producer, background, *bounded._unwinding) if not t.done()}
+        if pending:
+            await asyncio.wait(pending, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_step_timeout_is_reported_with_its_bound(monkeypatch):
+    messages: list[tuple[str, dict]] = []
+    monkeypatch.setattr(main, "capture_message", lambda msg, **kw: messages.append((msg, kw)))
+    monkeypatch.setitem(main._SHUTDOWN_STEP_TIMEOUTS_S, "flush_notifications", 0.05)
+
+    async def _hang(*_a, **_k) -> None:
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(notify, "drain_pending", _hang)
+
+    # wait_for only guards the test: an unbounded step fails it, not hangs it.
+    await asyncio.wait_for(
+        main._shutdown(producer_tasks=[], handlers=[], other_tasks=[]), timeout=5.0
+    )
+
+    assert len(messages) == 1
+    msg, kw = messages[0]
+    assert "flush_notifications" in msg
+    assert kw["level"] == "warning"
+    assert kw["context"] == {"step": "flush_notifications", "timeout_s": 0.05}
+
+
 # --- _build_handlers: boot wiring of channel vs handler state (E5) ----------
 
 
@@ -579,6 +702,29 @@ def _stub_pipeline(monkeypatch) -> None:
     monkeypatch.setattr(main, "run_subscription_watchdog", _forever_bg)
 
 
+def _sigterm_once_run_is_waiting(monkeypatch) -> None:
+    """Fire the stop Event (the last one _run creates) once _run is waiting:
+    the normal-SIGTERM path, as in test_run_exits_zero_on_normal_sigterm.
+    """
+    created_events: list[asyncio.Event] = []
+    real_event = asyncio.Event
+
+    def _tracking_event() -> asyncio.Event:
+        ev = real_event()
+        created_events.append(ev)
+        return ev
+
+    monkeypatch.setattr(main.asyncio, "Event", _tracking_event)
+    real_wait = asyncio.wait
+
+    async def _wait_then_sigterm(tasks, **kwargs):
+        await asyncio.sleep(0)  # let the background tasks reach their first await
+        created_events[-1].set()
+        return await real_wait(tasks, **kwargs)
+
+    monkeypatch.setattr(main.asyncio, "wait", _wait_then_sigterm)
+
+
 @pytest.mark.asyncio
 async def test_run_starts_drop_reporter_and_shutdown_cancels_it(_reset_notify_state, monkeypatch):
     _stub_pipeline(monkeypatch)
@@ -593,30 +739,35 @@ async def test_run_starts_drop_reporter_and_shutdown_cancels_it(_reset_notify_st
             raise
 
     monkeypatch.setattr(main, "run_drop_reporter", _recording_reporter)
-
-    # Fire the stop Event (the last one _run creates) once _run is waiting:
-    # the normal-SIGTERM path, as in test_run_exits_zero_on_normal_sigterm.
-    created_events: list[asyncio.Event] = []
-    real_event = asyncio.Event
-
-    def _tracking_event() -> asyncio.Event:
-        ev = real_event()
-        created_events.append(ev)
-        return ev
-
-    monkeypatch.setattr(main.asyncio, "Event", _tracking_event)
-    real_wait = asyncio.wait
-
-    async def _wait_then_sigterm(tasks, **kwargs):
-        await asyncio.sleep(0)  # let the reporter reach its first await
-        created_events[-1].set()
-        return await real_wait(tasks, **kwargs)
-
-    monkeypatch.setattr(main.asyncio, "wait", _wait_then_sigterm)
+    _sigterm_once_run_is_waiting(monkeypatch)
 
     await main._run()
 
     assert events == ["started", "cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_run_does_not_wait_on_a_pool_close_that_never_returns(
+    _reset_notify_state, monkeypatch
+):
+    # asyncpg's pool.close() waits for every acquired connection to be released,
+    # and a drain flush abandoned at its deadline may still hold one. The close
+    # is the last thing _run does, so it needs its own bound inside the window.
+    _stub_pipeline(monkeypatch)
+    messages: list[dict] = []
+    monkeypatch.setattr(main, "capture_message", lambda _msg, **kw: messages.append(kw))
+    monkeypatch.setitem(main._SHUTDOWN_STEP_TIMEOUTS_S, "close_pool", 0.05)
+
+    async def _close_never_returns() -> None:
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(main, "close_pool", _close_never_returns)
+    _sigterm_once_run_is_waiting(monkeypatch)
+
+    # wait_for only guards the test: an unbounded close fails it, not hangs it.
+    await asyncio.wait_for(main._run(), timeout=5.0)
+
+    assert [m["tags"] for m in messages] == [{"component": "main", "step": "close_pool"}]
 
 
 @pytest.mark.asyncio

@@ -16,17 +16,19 @@ import asyncio
 import contextlib
 import os
 import signal
+from collections.abc import Awaitable
 from uuid import uuid4
 
 import aiohttp
 
 import notify
+from bounded import run_bounded
 from channel_registry import handler_class_for_channel
 from config import settings
 from connector import Connector
 from db import close_pool, init_pool
 from drop_reporter import run_drop_reporter
-from handlers.base import Handler
+from handlers.base import DRAIN_DEADLINE_S, Handler
 from health import run_server
 from logger_setup import log
 from router import Router
@@ -40,6 +42,35 @@ from ws_lease import WsLease
 # acquire/renew without letting a wedged request hang the daemon. Mirrors
 # notify.py's single-purpose ClientTimeout(total=…) style.
 _LEASE_HTTP_TIMEOUT_S = 5.0
+
+# The longest each step of the shutdown may take, in the order they run.
+# Railway SIGKILLs the container ``drainingSeconds`` (40, railway.toml) after
+# SIGTERM and the steps run one after another, so each has its own bound and
+# the bounds plus the 2 s Sentry flush at interpreter exit must stay under it:
+# tests/test_handlers.py::test_drain_deadline_fits_railway_draining_seconds
+# pins the sum. A step that overruns is abandoned (bounded.run_bounded) and
+# reported to Sentry, and the next step runs.
+_SHUTDOWN_STEP_TIMEOUTS_S: dict[str, float] = {
+    # Connector close handshakes, all at once. websockets' own close timeout is
+    # 10 s; a normal close takes one round trip.
+    "stop_producers": 1.5,
+    # One Upstash CAS-DEL (sub-100 ms) and closing its session. The lease
+    # session's 5 s ClientTimeout (_LEASE_HTTP_TIMEOUT_S) is for acquire/renew.
+    "release_lease": 1.0,
+    # Every handler's drain() at once. Each enforces this itself (see
+    # Handler.drain), so _shutdown does not wrap the step again. 30 s covers one
+    # full asyncpg command_timeout for the final flush.
+    "drain_handlers": DRAIN_DEADLINE_S,
+    # notify.drain_pending (bounds itself at 2 s), then closing the HTTP session.
+    "flush_notifications": 2.5,
+    # Cancelling the health server (aiohttp waits on in-flight requests, up to
+    # 60 s by default), the watchdog, the drop reporter's final report, ...
+    "cancel_background": 0.5,
+    # Last, in _run's finally. asyncpg's pool.close() waits for every acquired
+    # connection to be released, and a drain flush abandoned at its deadline
+    # may still hold one.
+    "close_pool": 1.0,
+}
 
 # Bounded buffer between the connector (WS receive) and the router
 # (parse + dispatch). At ~10k msgs/sec peak this gives ~1s of headroom
@@ -354,7 +385,35 @@ async def _run() -> None:
         if lease_session is not None and not lease_session.closed:
             with contextlib.suppress(Exception):
                 await lease_session.close()
-        await close_pool()
+        await _bounded_step("close_pool", close_pool())
+
+
+async def _bounded_step(step: str, aw: Awaitable[object]) -> None:
+    """Run one shutdown step inside its bound; if it overruns, report it and move on."""
+    timeout_s = _SHUTDOWN_STEP_TIMEOUTS_S[step]
+    try:
+        await run_bounded(aw, timeout_s, name=f"shutdown:{step}")
+    except TimeoutError:
+        capture_message(
+            f"uw-stream shutdown step {step} timed out; moving on",
+            level="warning",
+            tags={"component": "main", "step": step},
+            context={"step": step, "timeout_s": timeout_s},
+        )
+
+
+async def _release_lease(
+    lease: WsLease | None, lease_session: aiohttp.ClientSession | None
+) -> None:
+    if lease is not None:
+        await lease.release()
+    if lease_session is not None and not lease_session.closed:
+        await lease_session.close()
+
+
+async def _flush_notifications() -> None:
+    await notify.drain_pending()
+    await notify.close_session()
 
 
 async def _shutdown(
@@ -388,21 +447,26 @@ async def _shutdown(
        down, then close the shared HTTP session.
     4. Cancel the remaining background tasks (handler drain loops, health
        server, subscription watchdog, drop reporter, signal waiter, lease
-       renewal). We don't await indefinitely
-       — Railway SIGKILLs us after its grace window regardless.
+       renewal).
+
+    Railway SIGKILLs us ``drainingSeconds`` after SIGTERM, so every step runs
+    inside its bound from ``_SHUTDOWN_STEP_TIMEOUTS_S`` (the handler drains
+    carry theirs inside ``Handler.drain``). A step that overruns is abandoned
+    and reported, and the next one runs: a connector stuck in its close
+    handshake still lets the handlers drain. The one cost is that the lease is
+    then released while a socket may still be closing; that is a short overlap
+    the connectors' re-join of unacked channels recovers from, and far cheaper
+    than a drain that never ran.
     """
     # 1. Stop inflow.
     for t in producer_tasks:
         t.cancel()
-    await asyncio.gather(*producer_tasks, return_exceptions=True)
+    await _bounded_step("stop_producers", asyncio.gather(*producer_tasks, return_exceptions=True))
 
     # 1b. Release the lease now that our sockets are closed, then close the
     # lease's dedicated session. CAS-fenced so it can only delete OUR lease;
     # best-effort so it never raises out of the shutdown path.
-    if lease is not None:
-        await lease.release()
-    if lease_session is not None and not lease_session.closed:
-        await lease_session.close()
+    await _bounded_step("release_lease", _release_lease(lease, lease_session))
 
     # 2. Drain consumers.
     drain_results = await asyncio.gather(
@@ -422,13 +486,12 @@ async def _shutdown(
             )
 
     # 3. Flush in-flight push notifications, then close the HTTP session.
-    await notify.drain_pending()
-    await notify.close_session()
+    await _bounded_step("flush_notifications", _flush_notifications())
 
     # 4. Cancel everything still running.
     for t in other_tasks:
         t.cancel()
-    await asyncio.gather(*other_tasks, return_exceptions=True)
+    await _bounded_step("cancel_background", asyncio.gather(*other_tasks, return_exceptions=True))
 
 
 def _describe_done(done: set) -> str:

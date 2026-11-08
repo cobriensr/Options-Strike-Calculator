@@ -635,12 +635,16 @@ async def test_drain_flush_does_not_retry():
 
 def test_drain_deadline_fits_railway_draining_seconds():
     """Railway SIGKILLs the old deploy ``drainingSeconds`` after SIGTERM
-    (default 0). _shutdown releases the lease (up to its 5 s HTTP budget),
-    drains every handler concurrently (up to the drain deadline), then flushes
-    push notifications (up to 2 s). All of it must fit in the window.
+    (default 0). Every step of the shutdown has its own bound
+    (``main._SHUTDOWN_STEP_TIMEOUTS_S``: stop the producers, release the lease,
+    drain every handler concurrently, flush push notifications, cancel the
+    background tasks, close the pool), and they run one after another. Sentry
+    then flushes at interpreter exit. All of it must fit in the window.
     """
     import inspect
     import tomllib
+
+    from sentry_sdk.consts import ClientConstructor
 
     import main
     import notify
@@ -649,10 +653,20 @@ def test_drain_deadline_fits_railway_draining_seconds():
     railway = tomllib.loads((Path(__file__).resolve().parents[1] / "railway.toml").read_text())
     draining_s = railway["deploy"]["drainingSeconds"]
     notify_s = inspect.signature(notify.drain_pending).parameters["timeout"].default
+    # init_sentry() leaves shutdown_timeout at the SDK default.
+    sentry_exit_s = (
+        inspect.signature(ClientConstructor.__init__).parameters["shutdown_timeout"].default
+    )
+    steps = main._SHUTDOWN_STEP_TIMEOUTS_S
 
     assert inspect.signature(Handler.drain).parameters["deadline_s"].default == DRAIN_DEADLINE_S
     assert DRAIN_DEADLINE_S >= 30.0  # at least one full command_timeout
-    assert main._LEASE_HTTP_TIMEOUT_S + DRAIN_DEADLINE_S + notify_s < draining_s
+    # Each handler's drain() enforces this bound itself; _shutdown does not wrap it.
+    assert steps["drain_handlers"] == DRAIN_DEADLINE_S
+    # drain_pending bounds itself first, so its warning is what logs on a slow Vercel.
+    assert steps["flush_notifications"] > notify_s
+    assert all(bound > 0 for bound in steps.values())
+    assert sum(steps.values()) + sentry_exit_s < draining_s
 
 
 @pytest.mark.asyncio

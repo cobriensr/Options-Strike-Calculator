@@ -32,13 +32,12 @@ from sentry_setup import capture_exception, capture_message
 from state import state
 
 # Per-handler shutdown deadline. Railway SIGKILLs the old deploy
-# ``drainingSeconds`` (40, in railway.toml) after SIGTERM. Before the drains,
-# _shutdown releases the WS lease (up to main._LEASE_HTTP_TIMEOUT_S = 5 s);
-# after them it flushes push notifications (up to 2 s). The handlers drain
-# concurrently, so 5 + 30 + 2 = 37 s fits the window, and 30 s covers one
-# full asyncpg ``command_timeout`` for the final flush.
+# ``drainingSeconds`` (40, in railway.toml) after SIGTERM. The handlers drain
+# concurrently inside this one bound; every other step of main._shutdown has
+# its own in main._SHUTDOWN_STEP_TIMEOUTS_S, and 30 s covers one full asyncpg
+# ``command_timeout`` for a final flush.
 # tests/test_handlers.py::test_drain_deadline_fits_railway_draining_seconds
-# pins this arithmetic against railway.toml.
+# pins the sum of all of them against railway.toml.
 DRAIN_DEADLINE_S = 30.0
 
 # Most rows one steady-state flush takes when the queue is backed up (see
