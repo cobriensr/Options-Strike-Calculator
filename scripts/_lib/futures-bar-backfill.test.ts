@@ -568,6 +568,135 @@ describe('runBarBackfill', () => {
       expect(insertCalls()).toHaveLength(0);
     });
 
+    it('refuses a trade date before the stored front month (2026-07-28) by name, with no read, refresh or decision', async () => {
+      const code = await run({ dates: ['2026-07-27'] });
+
+      expect(code).toBe(1);
+      expect(out()).toMatch(
+        /ES 2026-07-27 FAILED: ES: trade date 2026-07-27 is before the stored front month, which starts 2026-07-28/,
+      );
+      expect(mockStored).not.toHaveBeenCalled();
+      expect(mockRefresh).not.toHaveBeenCalled();
+      expect(mockSchedule).not.toHaveBeenCalled();
+      expect(mockUwFetch).not.toHaveBeenCalled();
+      expect(insertCalls()).toHaveLength(0);
+    });
+
+    it('runs 2026-07-28, whose UTC day opens on trade date 2026-07-28', async () => {
+      routeTrades({
+        ESU6: [
+          [
+            print(2, '2026-07-28T14:00:30.000000Z', 1, 'buy'),
+            print(1, '2026-07-27T23:59:00.000000Z', 1, 'buy'),
+          ],
+        ],
+      });
+
+      const code = await run({ dates: ['2026-07-28'] });
+
+      expect(code).toBe(0);
+      expect(mockSchedule).toHaveBeenCalledWith(
+        'ES',
+        ['2026-07-28', '2026-07-29'],
+        'script',
+      );
+      expect(inserted().ts).toEqual(['2026-07-28T14:00:00.000Z']);
+    });
+
+    describe.each([
+      ['--dry-run', { dryRun: true }],
+      ['--compare', { compare: true }],
+    ] as const)('%s reads the stored decisions only', (_flag, mode) => {
+      it('an undecided date: no refresh, no decision, the date is reported and the stored date still pages', async () => {
+        routeFrontMonth({}, ['2026-09-16']);
+        routeTrades({
+          ESU6: [[print(2, '2026-09-15T14:00:30.000000Z', 4, 'buy'), ENDER]],
+        });
+        routeSql({
+          ES: [storedRow('2026-09-15T14:00:00Z', { volume: 4, buy_volume: 4 })],
+        });
+
+        const code = await run(mode);
+
+        expect(code).toBe(0);
+        expect(mockStored).toHaveBeenCalledWith(
+          'ES',
+          '2026-09-15',
+          '2026-09-16',
+        );
+        expect(mockRefresh).not.toHaveBeenCalled();
+        expect(mockSchedule).not.toHaveBeenCalled();
+        expect(insertCalls()).toHaveLength(0);
+        // 09-15's session only: up to the 16:00 CT halt, nothing of 09-16.
+        expect(tradesContracts()).toEqual(['ESU6']);
+        expect(olderThan(0)).toBe('2026-09-15T21:00:00.000000Z');
+        expect(out()).toMatch(/ES 2026-09-15 .*undecided 2026-09-16/);
+        expect(out()).toMatch(
+          /ES {2}undecided trade dates 1: 2026-09-16 \(skipped; a real run decides them\)/,
+        );
+      });
+
+      it('logs a root’s undecided dates once for the run', async () => {
+        routeFrontMonth({}, ['2026-09-16', '2026-09-17']);
+        routeSql({ ES: [storedRow('2026-09-15T14:00:00Z')] });
+        routeTrades({ ESU6: [[ENDER], [ENDER]] });
+
+        await run({ ...mode, dates: [DAY, '2026-09-16'] });
+
+        expect(logs.filter((l) => /undecided trade dates/.test(l))).toEqual([
+          '  ES  undecided trade dates 2: 2026-09-16, 2026-09-17 (skipped; a real run decides them)',
+        ]);
+      });
+
+      it('refuses a trade date before the stored front month by name', async () => {
+        routeSql({ ES: [storedRow('2026-07-27T14:00:00Z')] });
+
+        const code = await run({ ...mode, dates: ['2026-07-27'] });
+
+        expect(code).toBe(1);
+        expect(out()).toMatch(
+          /ES 2026-07-27 FAILED: ES: trade date 2026-07-27 is before/,
+        );
+        expect(mockStored).not.toHaveBeenCalled();
+        expect(mockSchedule).not.toHaveBeenCalled();
+      });
+    });
+
+    it('--compare leaves the stored bars of an undecided date out of the counts', async () => {
+      routeFrontMonth({}, ['2026-09-16']);
+      routeSql({
+        ES: [
+          storedRow('2026-09-15T14:00:00Z', { volume: 4, buy_volume: 4 }),
+          // Trade date 2026-09-16, undecided: not a disagreement.
+          storedRow('2026-09-15T22:30:00Z'),
+        ],
+      });
+      routeTrades({
+        ESU6: [[print(2, '2026-09-15T14:00:30.000000Z', 4, 'buy'), ENDER]],
+      });
+
+      await run({ compare: true });
+
+      expect(out()).toMatch(
+        /ES 2026-09-15 {2}stored 2 {2}compared 1 {2}matched 1 {2}differ 0 {2}stored-only 0 /,
+      );
+      expect(out()).toMatch(/ES {2}matched 1 of 1 stored \(100\.00%\)/);
+    });
+
+    it('--dry-run leaves a root-day with only undecided dates unpaged', async () => {
+      routeFrontMonth({}, [DAY, '2026-09-16']);
+
+      const code = await run({ dryRun: true });
+
+      expect(code).toBe(0);
+      expect(mockUwFetch).not.toHaveBeenCalled();
+      expect(out()).toMatch(
+        /ES {2}undecided trade dates 2: 2026-09-15, 2026-09-16 /,
+      );
+      // Nothing was paged, so this is not a hole in UW's history.
+      expect(out()).not.toMatch(/prints 0/);
+    });
+
     it('a rejected schedule read fails the root-day by name before any UW call', async () => {
       mockSchedule.mockRejectedValue(new Error('connection terminated'));
 

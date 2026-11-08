@@ -56,13 +56,15 @@ import {
   parseArgs,
   planDates,
   runBackfill,
+  sessionPieces,
   sessionSpans,
   type BackfillOptions,
+  type ScheduleReader,
 } from './futures-flow-backfill.js';
 
 // ── Fixtures ──────────────────────────────────────────────
 
-const NOW = '2026-07-23T23:00:00Z'; // a Thursday evening, after the close
+const NOW = '2026-08-13T23:00:00Z'; // a Thursday evening, after the close
 
 function opts(over: Partial<BackfillOptions> = {}): BackfillOptions {
   return {
@@ -179,12 +181,12 @@ function updateCalls(): unknown[][] {
 }
 
 /** ESU6 leads 07-14; its page ends with a print before the first NULL minute. */
-const ES_0714_PAGES = {
+const ES_PAGES = {
   ESU6: [
     [
-      print(3, '2026-07-14T14:01:10.000000Z', 6, 'buy'),
-      print(2, '2026-07-14T14:00:20.000000Z', 4, 'sell'),
-      print(1, '2026-07-13T23:59:59.000000Z', 9, 'buy'),
+      print(3, '2026-08-04T14:01:10.000000Z', 6, 'buy'),
+      print(2, '2026-08-04T14:00:20.000000Z', 4, 'sell'),
+      print(1, '2026-08-03T23:59:59.000000Z', 9, 'buy'),
     ],
   ],
 };
@@ -267,21 +269,22 @@ describe('parseArgs', () => {
 // ── planDates ─────────────────────────────────────────────
 
 describe('planDates', () => {
-  it('defaults to each root’s UW history start (ES 06-30, the rest 07-21) through today, oldest first', () => {
-    const plan = planDates(opts(), '2026-07-22');
+  it('defaults to the first date with a stored front month (2026-07-28) for every root, through today, oldest first', () => {
+    const plan = planDates(opts(), '2026-08-02');
 
-    expect(plan[0]).toEqual({ date: '2026-06-30', roots: ['ES'] });
-    expect(plan.find((d) => d.date === '2026-07-20')?.roots).toEqual(['ES']);
-    expect(plan.find((d) => d.date === '2026-07-21')?.roots).toEqual([
-      'ES',
-      'NQ',
-      'RTY',
-      'CL',
-      'GC',
-      'ZN',
+    expect(plan).toHaveLength(6);
+    expect(plan[0]).toEqual({
+      date: '2026-07-28',
+      roots: ['ES', 'NQ', 'RTY', 'CL', 'GC', 'ZN'],
+    });
+    expect(plan.at(-1)?.date).toBe('2026-08-02');
+  });
+
+  it('a default range starts at the first stored front month even for one root', () => {
+    expect(planDates(opts({ roots: ['ES'] }), '2026-07-29')).toEqual([
+      { date: '2026-07-28', roots: ['ES'] },
+      { date: '2026-07-29', roots: ['ES'] },
     ]);
-    expect(plan.at(-1)?.date).toBe('2026-07-22');
-    expect(plan).toHaveLength(23);
   });
 
   it('explicit dates: deduped, oldest first, roots limited to their history, future dates dropped', () => {
@@ -408,20 +411,100 @@ describe('sessionSpans', () => {
   });
 });
 
+// ── sessionPieces ─────────────────────────────────────────
+
+describe('sessionPieces', () => {
+  // 2026-08-04 14:00Z to 2026-08-06 14:00Z: three trade dates, 08-04 to 08-06.
+  const from = Date.parse('2026-08-04T14:00:00Z');
+  const to = Date.parse('2026-08-06T14:00:00Z');
+  const reader = (contracts: Record<string, string>): ScheduleReader =>
+    vi.fn(async () => new Map(Object.entries(contracts)));
+  const minute = (ms: number) => `${new Date(ms).toISOString().slice(0, 16)}Z`;
+
+  it('one contract on every date is one piece over the whole window', async () => {
+    const { pieces, undecided } = await sessionPieces(
+      reader({
+        '2026-08-04': 'ESU6',
+        '2026-08-05': 'ESU6',
+        '2026-08-06': 'ESU6',
+      }),
+      'ES',
+      from,
+      to,
+    );
+
+    expect(undecided).toEqual([]);
+    expect(
+      pieces.map((p) => [p.contract, minute(p.fromMs), minute(p.toMs)]),
+    ).toEqual([['ESU6', '2026-08-04T14:00Z', '2026-08-06T14:00Z']]);
+  });
+
+  it('a roll makes a piece per contract', async () => {
+    const { pieces } = await sessionPieces(
+      reader({
+        '2026-08-04': 'ESU6',
+        '2026-08-05': 'ESU6',
+        '2026-08-06': 'ESZ6',
+      }),
+      'ES',
+      from,
+      to,
+    );
+
+    expect(
+      pieces.map((p) => [p.contract, minute(p.fromMs), minute(p.toMs)]),
+    ).toEqual([
+      ['ESU6', '2026-08-04T14:00Z', '2026-08-05T21:00Z'],
+      ['ESZ6', '2026-08-05T22:00Z', '2026-08-06T14:00Z'],
+    ]);
+  });
+
+  it('a date without a contract is listed undecided, and a piece never spans it', async () => {
+    const { pieces, undecided } = await sessionPieces(
+      reader({ '2026-08-04': 'ESU6', '2026-08-06': 'ESU6' }),
+      'ES',
+      from,
+      to,
+    );
+
+    expect(undecided).toEqual(['2026-08-05']);
+    expect(
+      pieces.map((p) => [p.contract, minute(p.fromMs), minute(p.toMs)]),
+    ).toEqual([
+      ['ESU6', '2026-08-04T14:00Z', '2026-08-04T21:00Z'],
+      ['ESU6', '2026-08-05T22:00Z', '2026-08-06T14:00Z'],
+    ]);
+  });
+
+  it('a window with no Globex-open minute reads no schedule', async () => {
+    const schedules = reader({});
+
+    const result = await sessionPieces(
+      schedules,
+      'ES',
+      Date.parse('2026-08-08T00:00:00Z'), // a Saturday
+      Date.parse('2026-08-09T00:00:00Z'),
+    );
+
+    expect(result).toEqual({ pieces: [], undecided: [] });
+    expect(schedules).not.toHaveBeenCalled();
+  });
+});
+
 // ── runBackfill ───────────────────────────────────────────
 
 describe('runBackfill', () => {
   it('pages the scheduled contract over the NULL minutes’ span and writes its flow with the conditional UPDATE', async () => {
     mockSql
       .mockResolvedValueOnce([
-        nullRow('ES', '2026-07-14T14:00:00Z', 4),
-        nullRow('ES', '2026-07-14T14:01:00Z', 6),
+        nullRow('ES', '2026-08-04T14:00:00Z', 4),
+        nullRow('ES', '2026-08-04T14:01:00Z', 6),
       ])
       .mockResolvedValueOnce([{ ts: 'a' }, { ts: 'b' }]);
-    routeTrades(ES_0714_PAGES);
+    routeTrades(ES_PAGES);
 
     const code = await runBackfill({
-      ...opts({ dates: ['2026-07-14'], roots: ['ES'] }),
+      ...opts({ dates: ['2026-08-04'], roots: ['ES'] }),
       apiKey: 'uw-key',
     });
 
@@ -429,13 +512,13 @@ describe('runBackfill', () => {
     // Only the scheduled contract, from the last NULL minute back to the
     // first (not to 00:00 UTC, and no back month).
     expect(tradesContracts()).toEqual(['ESU6']);
-    expect(olderThan(0)).toBe('2026-07-14T14:02:00.000000Z');
-    expect(mockSchedule).toHaveBeenCalledWith('ES', ['2026-07-14'], 'script');
+    expect(olderThan(0)).toBe('2026-08-04T14:02:00.000000Z');
+    expect(mockSchedule).toHaveBeenCalledWith('ES', ['2026-08-04'], 'script');
 
     const detect = (mockSql.mock.calls[0]![0] as readonly string[]).join('?');
     expect(detect).toContain('buy_volume IS NULL');
     expect(mockSql.mock.calls[0]!.slice(1)).toContain(
-      '2026-07-14T00:00:00.000Z',
+      '2026-08-04T00:00:00.000Z',
     );
 
     const [update] = updateCalls();
@@ -444,12 +527,12 @@ describe('runBackfill', () => {
     );
     expect(update!.slice(1)).toContain('ES');
     expect(update!.slice(1)).toContainEqual([
-      '2026-07-14T14:00:00.000Z',
-      '2026-07-14T14:01:00.000Z',
+      '2026-08-04T14:00:00.000Z',
+      '2026-08-04T14:01:00.000Z',
     ]);
     expect(update!.slice(1)).toContainEqual([0, 6]); // buy volume
     expect(update!.slice(1)).toContainEqual([4, 0]); // sell volume
-    expect(logs.join('\n')).toMatch(/ES 2026-07-14 .*repaired 2/);
+    expect(logs.join('\n')).toMatch(/ES 2026-08-04 .*repaired 2/);
     expect(logs.join('\n')).toMatch(/pages 1 /);
     expect(logs.join('\n')).not.toContain('uw-key');
   });
@@ -458,49 +541,49 @@ describe('runBackfill', () => {
     const tail = (id: number, at: string) => print(id, at, 1, 'buy');
 
     it('splits the UTC day at the session open: each piece pages only its own session’s contract, over its own window', async () => {
-      routeFrontMonth({ '2026-07-15': 'ESZ6' });
+      routeFrontMonth({ '2026-08-05': 'ESZ6' });
       mockSql
         .mockResolvedValueOnce([
-          nullRow('ES', '2026-07-14T14:00:00Z', 4),
-          nullRow('ES', '2026-07-14T22:30:00Z', 3),
+          nullRow('ES', '2026-08-04T14:00:00Z', 4),
+          nullRow('ES', '2026-08-04T22:30:00Z', 3),
         ])
         .mockResolvedValueOnce([{ ts: 'a' }, { ts: 'b' }]);
       routeTrades({
         ESU6: [
           [
-            print(2, '2026-07-14T14:00:20.000000Z', 4, 'buy'),
-            tail(1, '2026-07-14T13:59:00.000000Z'),
+            print(2, '2026-08-04T14:00:20.000000Z', 4, 'buy'),
+            tail(1, '2026-08-04T13:59:00.000000Z'),
           ],
         ],
         ESZ6: [
           [
-            print(4, '2026-07-14T22:30:10.000000Z', 3, 'sell'),
-            tail(3, '2026-07-14T21:59:00.000000Z'),
+            print(4, '2026-08-04T22:30:10.000000Z', 3, 'sell'),
+            tail(3, '2026-08-04T21:59:00.000000Z'),
           ],
         ],
       });
 
       const code = await runBackfill({
-        ...opts({ dates: ['2026-07-14'], roots: ['ES'] }),
+        ...opts({ dates: ['2026-08-04'], roots: ['ES'] }),
         apiKey: 'k',
       });
 
       expect(code).toBe(0);
       expect(mockSchedule).toHaveBeenCalledWith(
         'ES',
-        ['2026-07-14', '2026-07-15'],
+        ['2026-08-04', '2026-08-05'],
         'script',
       );
       // ESU6 pages the first session up to the 16:00 CT halt, ESZ6 only the
       // second session: neither is paged over the other's window.
       expect(tradesContracts()).toEqual(['ESU6', 'ESZ6']);
-      expect(olderThan(0)).toBe('2026-07-14T21:00:00.000000Z');
-      expect(olderThan(1)).toBe('2026-07-14T22:31:00.000000Z');
+      expect(olderThan(0)).toBe('2026-08-04T21:00:00.000000Z');
+      expect(olderThan(1)).toBe('2026-08-04T22:31:00.000000Z');
 
       const [update] = updateCalls();
       expect(update!.slice(1)).toContainEqual([
-        '2026-07-14T14:00:00.000Z',
-        '2026-07-14T22:30:00.000Z',
+        '2026-08-04T14:00:00.000Z',
+        '2026-08-04T22:30:00.000Z',
       ]);
       expect(update!.slice(1)).toContainEqual([4, 0]); // buy volume
       expect(update!.slice(1)).toContainEqual([0, 3]); // sell volume
@@ -508,30 +591,30 @@ describe('runBackfill', () => {
     });
 
     it('a late minute pages only its own piece, not the day from 00:00', async () => {
-      routeFrontMonth({ '2026-07-15': 'ESZ6' });
+      routeFrontMonth({ '2026-08-05': 'ESZ6' });
       mockSql
-        .mockResolvedValueOnce([nullRow('ES', '2026-07-14T22:30:00Z', 3)])
+        .mockResolvedValueOnce([nullRow('ES', '2026-08-04T22:30:00Z', 3)])
         .mockResolvedValueOnce([{ ts: 'a' }]);
       routeTrades({
         ESZ6: [
           [
-            print(2, '2026-07-14T22:30:10.000000Z', 3, 'sell'),
-            tail(1, '2026-07-14T21:59:00.000000Z'),
+            print(2, '2026-08-04T22:30:10.000000Z', 3, 'sell'),
+            tail(1, '2026-08-04T21:59:00.000000Z'),
           ],
         ],
       });
 
       const code = await runBackfill({
-        ...opts({ dates: ['2026-07-14'], roots: ['ES'] }),
+        ...opts({ dates: ['2026-08-04'], roots: ['ES'] }),
         apiKey: 'k',
       });
 
       expect(code).toBe(0);
-      expect(mockSchedule).toHaveBeenCalledWith('ES', ['2026-07-15'], 'script');
-      expect(mockStored).toHaveBeenCalledWith('ES', '2026-07-15', '2026-07-15');
+      expect(mockSchedule).toHaveBeenCalledWith('ES', ['2026-08-05'], 'script');
+      expect(mockStored).toHaveBeenCalledWith('ES', '2026-08-05', '2026-08-05');
       expect(tradesContracts()).toEqual(['ESZ6']);
-      expect(olderThan(0)).toBe('2026-07-14T22:31:00.000000Z');
-      expect(logs.join('\n')).toMatch(/ES 2026-07-14 .*repaired 1 .*pages 1 /);
+      expect(olderThan(0)).toBe('2026-08-04T22:31:00.000000Z');
+      expect(logs.join('\n')).toMatch(/ES 2026-08-04 .*repaired 1 .*pages 1 /);
     });
 
     it('splits at 23:00Z in winter and pages nothing in the 22:00Z halt hour', async () => {
@@ -580,28 +663,28 @@ describe('runBackfill', () => {
     it('both sessions on one contract are one piece, paged once over the whole span', async () => {
       mockSql
         .mockResolvedValueOnce([
-          nullRow('ES', '2026-07-14T14:00:00Z', 4),
-          nullRow('ES', '2026-07-14T22:30:00Z', 3),
+          nullRow('ES', '2026-08-04T14:00:00Z', 4),
+          nullRow('ES', '2026-08-04T22:30:00Z', 3),
         ])
         .mockResolvedValueOnce([{ ts: 'a' }, { ts: 'b' }]);
       routeTrades({
         ESU6: [
           [
-            print(3, '2026-07-14T22:30:10.000000Z', 3, 'sell'),
-            print(2, '2026-07-14T14:00:20.000000Z', 4, 'buy'),
-            tail(1, '2026-07-14T13:59:00.000000Z'),
+            print(3, '2026-08-04T22:30:10.000000Z', 3, 'sell'),
+            print(2, '2026-08-04T14:00:20.000000Z', 4, 'buy'),
+            tail(1, '2026-08-04T13:59:00.000000Z'),
           ],
         ],
       });
 
       const code = await runBackfill({
-        ...opts({ dates: ['2026-07-14'], roots: ['ES'] }),
+        ...opts({ dates: ['2026-08-04'], roots: ['ES'] }),
         apiKey: 'k',
       });
 
       expect(code).toBe(0);
       expect(tradesContracts()).toEqual(['ESU6']);
-      expect(olderThan(0)).toBe('2026-07-14T22:31:00.000000Z');
+      expect(olderThan(0)).toBe('2026-08-04T22:31:00.000000Z');
       expect(logs.join('\n')).toMatch(/repaired 2 .*pages 1 /);
     });
   });
@@ -609,30 +692,30 @@ describe('runBackfill', () => {
   describe('the front-month table', () => {
     const runOne = () =>
       runBackfill({
-        ...opts({ dates: ['2026-07-14'], roots: ['ES'] }),
+        ...opts({ dates: ['2026-08-04'], roots: ['ES'] }),
         apiKey: 'uw-key',
       });
 
     it('every date stored: no volume refresh, the schedule is read as stored', async () => {
       mockSql
-        .mockResolvedValueOnce([nullRow('ES', '2026-07-14T14:00:00Z', 4)])
+        .mockResolvedValueOnce([nullRow('ES', '2026-08-04T14:00:00Z', 4)])
         .mockResolvedValueOnce([{ ts: 'a' }]);
-      routeTrades(ES_0714_PAGES);
+      routeTrades(ES_PAGES);
 
       const code = await runOne();
 
       expect(code).toBe(0);
-      expect(mockStored).toHaveBeenCalledWith('ES', '2026-07-14', '2026-07-14');
+      expect(mockStored).toHaveBeenCalledWith('ES', '2026-08-04', '2026-08-04');
       expect(mockRefresh).not.toHaveBeenCalled();
       expect(mockSchedule).toHaveBeenCalledTimes(1);
     });
 
     it('an undecided date: refreshes the root’s volumes over 1m, then asks for the schedule', async () => {
-      routeFrontMonth({}, ['2026-07-14']);
+      routeFrontMonth({}, ['2026-08-04']);
       mockSql
-        .mockResolvedValueOnce([nullRow('ES', '2026-07-14T14:00:00Z', 4)])
+        .mockResolvedValueOnce([nullRow('ES', '2026-08-04T14:00:00Z', 4)])
         .mockResolvedValueOnce([{ ts: 'a' }]);
-      routeTrades(ES_0714_PAGES);
+      routeTrades(ES_PAGES);
 
       const code = await runOne();
 
@@ -641,27 +724,28 @@ describe('runBackfill', () => {
       expect(mockRefresh.mock.invocationCallOrder[0]!).toBeLessThan(
         mockSchedule.mock.invocationCallOrder[0]!,
       );
+      // A real run decides the date; nothing is left to report.
+      expect(logs.join('\n')).not.toMatch(/undecided/);
     });
 
     it('refreshes each root once per run, however many of its dates are undecided', async () => {
-      // 07-21 is the first day NQ's REST history reaches.
-      routeFrontMonth({}, ['2026-07-21', '2026-07-22']);
+      routeFrontMonth({}, ['2026-08-11', '2026-08-12']);
       routeNullBars({
-        '2026-07-21': [
-          nullRow('ES', '2026-07-21T14:00:00Z', 4),
-          nullRow('NQ', '2026-07-21T14:00:00Z', 4),
+        '2026-08-11': [
+          nullRow('ES', '2026-08-11T14:00:00Z', 4),
+          nullRow('NQ', '2026-08-11T14:00:00Z', 4),
         ],
-        '2026-07-22': [
-          nullRow('ES', '2026-07-22T14:00:00Z', 4),
-          nullRow('NQ', '2026-07-22T14:00:00Z', 4),
+        '2026-08-12': [
+          nullRow('ES', '2026-08-12T14:00:00Z', 4),
+          nullRow('NQ', '2026-08-12T14:00:00Z', 4),
         ],
       });
       mockUwFetch.mockResolvedValue([
-        print(1, '2026-07-21T13:00:00.000000Z', 1, 'buy'),
+        print(1, '2026-08-11T13:00:00.000000Z', 1, 'buy'),
       ]);
 
       const code = await runBackfill({
-        ...opts({ dates: ['2026-07-21', '2026-07-22'], roots: ['ES', 'NQ'] }),
+        ...opts({ dates: ['2026-08-11', '2026-08-12'], roots: ['ES', 'NQ'] }),
         apiKey: 'uw-key',
       });
 
@@ -673,10 +757,10 @@ describe('runBackfill', () => {
     });
 
     it('a failed refresh is not remembered: the root’s next root-day tries again', async () => {
-      routeFrontMonth({}, ['2026-07-14', '2026-07-15']);
+      routeFrontMonth({}, ['2026-08-04', '2026-08-05']);
       routeNullBars({
-        '2026-07-14': [nullRow('ES', '2026-07-14T14:00:00Z', 4)],
-        '2026-07-15': [nullRow('ES', '2026-07-15T14:00:00Z', 4)],
+        '2026-08-04': [nullRow('ES', '2026-08-04T14:00:00Z', 4)],
+        '2026-08-05': [nullRow('ES', '2026-08-05T14:00:00Z', 4)],
       });
       mockRefresh
         .mockRejectedValueOnce(new Error('UW API 503: unavailable'))
@@ -684,26 +768,26 @@ describe('runBackfill', () => {
       routeTrades({
         ESU6: [
           [
-            print(2, '2026-07-15T14:00:30.000000Z', 4, 'buy'),
-            print(1, '2026-07-15T13:00:00.000000Z', 1, 'buy'),
+            print(2, '2026-08-05T14:00:30.000000Z', 4, 'buy'),
+            print(1, '2026-08-05T13:00:00.000000Z', 1, 'buy'),
           ],
         ],
       });
 
       const code = await runBackfill({
-        ...opts({ dates: ['2026-07-14', '2026-07-15'], roots: ['ES'] }),
+        ...opts({ dates: ['2026-08-04', '2026-08-05'], roots: ['ES'] }),
         apiKey: 'k',
       });
 
       expect(code).toBe(1);
       expect(mockRefresh).toHaveBeenCalledTimes(2);
-      expect(logs.join('\n')).toMatch(/ES 2026-07-14 FAILED: UW API 503/);
-      expect(logs.join('\n')).toMatch(/ES 2026-07-15 .*repaired 1/);
+      expect(logs.join('\n')).toMatch(/ES 2026-08-04 FAILED: UW API 503/);
+      expect(logs.join('\n')).toMatch(/ES 2026-08-05 .*repaired 1/);
     });
 
     it('a failed volume refresh fails that root-day by name, decides nothing and pages nothing', async () => {
-      routeFrontMonth({}, ['2026-07-14']);
-      mockSql.mockResolvedValueOnce([nullRow('ES', '2026-07-14T14:00:00Z', 4)]);
+      routeFrontMonth({}, ['2026-08-04']);
+      mockSql.mockResolvedValueOnce([nullRow('ES', '2026-08-04T14:00:00Z', 4)]);
       mockRefresh.mockRejectedValue(
         new Error(
           'stale daily candles for ES: the newest ESU6 candle is 07-10',
@@ -714,7 +798,7 @@ describe('runBackfill', () => {
 
       expect(code).toBe(1);
       expect(logs.join('\n')).toMatch(
-        /ES 2026-07-14 FAILED: stale daily candles for ES/,
+        /ES 2026-08-04 FAILED: stale daily candles for ES/,
       );
       expect(mockSchedule).not.toHaveBeenCalled();
       expect(mockUwFetch).not.toHaveBeenCalled();
@@ -735,7 +819,7 @@ describe('runBackfill', () => {
       'a rejected %s fails that root-day by name before any UW call',
       async (_label, reject) => {
         mockSql.mockResolvedValueOnce([
-          nullRow('ES', '2026-07-14T14:00:00Z', 4),
+          nullRow('ES', '2026-08-04T14:00:00Z', 4),
         ]);
         reject();
 
@@ -743,7 +827,7 @@ describe('runBackfill', () => {
 
         expect(code).toBe(1);
         expect(logs.join('\n')).toMatch(
-          /ES 2026-07-14 FAILED: connection terminated/,
+          /ES 2026-08-04 FAILED: connection terminated/,
         );
         expect(mockUwFetch).not.toHaveBeenCalled();
         expect(updateCalls()).toHaveLength(0);
@@ -751,7 +835,7 @@ describe('runBackfill', () => {
     );
 
     it('a schedule with no contract for a date it was asked about fails the root-day', async () => {
-      mockSql.mockResolvedValueOnce([nullRow('ES', '2026-07-14T14:00:00Z', 4)]);
+      mockSql.mockResolvedValueOnce([nullRow('ES', '2026-08-04T14:00:00Z', 4)]);
       mockSchedule.mockResolvedValue({
         contractFor: () => undefined,
         contracts: [],
@@ -761,13 +845,13 @@ describe('runBackfill', () => {
 
       expect(code).toBe(1);
       expect(logs.join('\n')).toMatch(
-        /ES 2026-07-14 FAILED: ES: no front month for 2026-07-14/,
+        /ES 2026-08-04 FAILED: ES: no front month for 2026-08-04/,
       );
       expect(mockUwFetch).not.toHaveBeenCalled();
     });
 
     it('a root-day with no NULL-flow bars reads no schedule and refreshes nothing', async () => {
-      routeFrontMonth({}, ['2026-07-14']);
+      routeFrontMonth({}, ['2026-08-04']);
 
       const code = await runOne();
 
@@ -778,46 +862,223 @@ describe('runBackfill', () => {
     });
   });
 
+  describe('before the stored front month (it starts 2026-07-28)', () => {
+    const runDay = (date: string, dryRun = false) =>
+      runBackfill({
+        ...opts({ dates: [date], roots: ['ES'], dryRun }),
+        apiKey: 'uw-key',
+      });
+
+    it.each([false, true])(
+      'refuses a trade date before it by name, with no read, refresh or decision (dry run: %s)',
+      async (dryRun) => {
+        mockSql.mockResolvedValueOnce([
+          nullRow('ES', '2026-07-27T14:00:00Z', 4),
+        ]);
+
+        const code = await runDay('2026-07-27', dryRun);
+
+        expect(code).toBe(1);
+        expect(logs.join('\n')).toMatch(
+          /ES 2026-07-27 FAILED: ES: trade date 2026-07-27 is before the stored front month, which starts 2026-07-28/,
+        );
+        expect(mockStored).not.toHaveBeenCalled();
+        expect(mockRefresh).not.toHaveBeenCalled();
+        expect(mockSchedule).not.toHaveBeenCalled();
+        expect(mockUwFetch).not.toHaveBeenCalled();
+        expect(updateCalls()).toHaveLength(0);
+      },
+    );
+
+    it('runs 2026-07-28', async () => {
+      mockSql
+        .mockResolvedValueOnce([nullRow('ES', '2026-07-28T14:00:00Z', 4)])
+        .mockResolvedValueOnce([{ ts: 'a' }]);
+      routeTrades({
+        ESU6: [
+          [
+            print(2, '2026-07-28T14:00:20.000000Z', 4, 'buy'),
+            print(1, '2026-07-28T13:00:00.000000Z', 1, 'buy'),
+          ],
+        ],
+      });
+
+      const code = await runDay('2026-07-28');
+
+      expect(code).toBe(0);
+      expect(mockSchedule).toHaveBeenCalledWith('ES', ['2026-07-28'], 'script');
+      expect(logs.join('\n')).toMatch(/ES 2026-07-28 .*repaired 1/);
+    });
+
+    it('goes by the minute’s trade date, not the UTC date: a 2026-07-27 minute after the open is 2026-07-28’s', async () => {
+      mockSql
+        .mockResolvedValueOnce([nullRow('ES', '2026-07-27T22:30:00Z', 3)])
+        .mockResolvedValueOnce([{ ts: 'a' }]);
+      routeTrades({
+        ESU6: [
+          [
+            print(2, '2026-07-27T22:30:10.000000Z', 3, 'sell'),
+            print(1, '2026-07-27T21:59:00.000000Z', 1, 'sell'),
+          ],
+        ],
+      });
+
+      const code = await runDay('2026-07-27');
+
+      expect(code).toBe(0);
+      expect(mockSchedule).toHaveBeenCalledWith('ES', ['2026-07-28'], 'script');
+      expect(logs.join('\n')).toMatch(/ES 2026-07-27 .*repaired 1/);
+    });
+
+    it('a root-day that reaches back before it is refused whole: nothing of 2026-07-28 is paged either', async () => {
+      mockSql.mockResolvedValueOnce([
+        nullRow('ES', '2026-07-27T14:00:00Z', 4),
+        nullRow('ES', '2026-07-27T22:30:00Z', 3),
+      ]);
+
+      const code = await runDay('2026-07-27');
+
+      expect(code).toBe(1);
+      expect(logs.join('\n')).toMatch(
+        /ES 2026-07-27 FAILED: ES: trade date 2026-07-27 is before/,
+      );
+      expect(mockUwFetch).not.toHaveBeenCalled();
+      expect(mockSchedule).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('--dry-run reads the stored decisions only', () => {
+    const dry = (dates: string[], roots: BackfillOptions['roots'] = ['ES']) =>
+      runBackfill({
+        ...opts({ dates, roots, dryRun: true }),
+        apiKey: 'uw-key',
+      });
+
+    it('an undecided date: no refresh, no decision, no paging, and the date is reported rather than counted as outside 2%', async () => {
+      routeFrontMonth({}, ['2026-08-04']);
+      mockSql.mockResolvedValueOnce([nullRow('ES', '2026-08-04T14:00:00Z', 4)]);
+
+      const code = await dry(['2026-08-04']);
+
+      expect(code).toBe(0);
+      expect(mockStored).toHaveBeenCalledWith('ES', '2026-08-04', '2026-08-04');
+      expect(mockRefresh).not.toHaveBeenCalled();
+      expect(mockSchedule).not.toHaveBeenCalled();
+      expect(mockUwFetch).not.toHaveBeenCalled();
+      expect(updateCalls()).toHaveLength(0);
+      const out = logs.join('\n');
+      expect(out).toMatch(
+        /ES 2026-08-04 {2}null 1 {2}would write 0 {2}skipped 0 .*undecided 2026-08-04/,
+      );
+      expect(out).toMatch(
+        /ES {2}undecided trade dates 1: 2026-08-04 \(skipped; a real run decides them\)/,
+      );
+    });
+
+    it('the stored dates of the same root-day still page; only the undecided date is skipped', async () => {
+      routeFrontMonth({}, ['2026-08-05']);
+      mockSql.mockResolvedValueOnce([
+        nullRow('ES', '2026-08-04T14:00:00Z', 4),
+        nullRow('ES', '2026-08-04T22:30:00Z', 3), // trade date 2026-08-05
+      ]);
+      routeTrades(ES_PAGES);
+
+      const code = await dry(['2026-08-04']);
+
+      expect(code).toBe(0);
+      // 08-04's session pages up to the halt hour; 08-05's piece is not paged.
+      expect(tradesContracts()).toEqual(['ESU6']);
+      expect(olderThan(0)).toBe('2026-08-04T21:00:00.000000Z');
+      expect(mockRefresh).not.toHaveBeenCalled();
+      expect(mockSchedule).not.toHaveBeenCalled();
+      const out = logs.join('\n');
+      expect(out).toMatch(/ES 2026-08-04 .*would write 1 {2}skipped 0 /);
+      expect(out).toMatch(/undecided trade dates 1: 2026-08-05/);
+    });
+
+    it('logs each root’s undecided dates once for the run, not once per root-day', async () => {
+      routeFrontMonth({}, ['2026-08-04', '2026-08-05']);
+      routeNullBars({
+        '2026-08-04': [
+          nullRow('ES', '2026-08-04T14:00:00Z', 4),
+          nullRow('NQ', '2026-08-04T14:00:00Z', 4),
+        ],
+        '2026-08-05': [nullRow('ES', '2026-08-05T14:00:00Z', 4)],
+      });
+
+      const code = await dry(['2026-08-04', '2026-08-05'], ['ES', 'NQ']);
+
+      expect(code).toBe(0);
+      const summary = logs.filter((l) => /undecided trade dates/.test(l));
+      expect(summary).toEqual([
+        '  ES  undecided trade dates 2: 2026-08-04, 2026-08-05 (skipped; a real run decides them)',
+        '  NQ  undecided trade dates 1: 2026-08-04 (skipped; a real run decides them)',
+      ]);
+    });
+
+    it('all dates stored: nothing is reported undecided', async () => {
+      mockSql.mockResolvedValueOnce([nullRow('ES', '2026-08-04T14:00:00Z', 4)]);
+      routeTrades(ES_PAGES);
+
+      await dry(['2026-08-04']);
+
+      expect(logs.join('\n')).not.toMatch(/undecided/);
+    });
+
+    it('a rejected read of the stored decisions fails the root-day by name', async () => {
+      mockSql.mockResolvedValueOnce([nullRow('ES', '2026-08-04T14:00:00Z', 4)]);
+      mockStored.mockRejectedValue(new Error('connection terminated'));
+
+      const code = await dry(['2026-08-04']);
+
+      expect(code).toBe(1);
+      expect(logs.join('\n')).toMatch(
+        /ES 2026-08-04 FAILED: connection terminated/,
+      );
+      expect(mockUwFetch).not.toHaveBeenCalled();
+    });
+  });
+
   it('--dry-run reads and matches but never writes', async () => {
     mockSql.mockResolvedValueOnce([
-      nullRow('ES', '2026-07-14T14:00:00Z', 4),
-      nullRow('ES', '2026-07-14T14:01:00Z', 6),
+      nullRow('ES', '2026-08-04T14:00:00Z', 4),
+      nullRow('ES', '2026-08-04T14:01:00Z', 6),
     ]);
-    routeTrades(ES_0714_PAGES);
+    routeTrades(ES_PAGES);
 
     const code = await runBackfill({
-      ...opts({ dates: ['2026-07-14'], roots: ['ES'], dryRun: true }),
+      ...opts({ dates: ['2026-08-04'], roots: ['ES'], dryRun: true }),
       apiKey: 'k',
     });
 
     expect(code).toBe(0);
     expect(updateCalls()).toHaveLength(0);
     expect(logs.join('\n')).toMatch(/dry run/i);
-    expect(logs.join('\n')).toMatch(/ES 2026-07-14 .*would write 2/);
+    expect(logs.join('\n')).toMatch(/ES 2026-08-04 .*would write 2/);
   });
 
   it('leaves a minute NULL when REST volume misses the Databento-era bar by more than 2%', async () => {
     mockSql
       .mockResolvedValueOnce([
-        nullRow('ES', '2026-07-14T14:00:00Z', 4),
-        nullRow('ES', '2026-07-14T14:01:00Z', 60), // REST has 6
+        nullRow('ES', '2026-08-04T14:00:00Z', 4),
+        nullRow('ES', '2026-08-04T14:01:00Z', 60), // REST has 6
       ])
       .mockResolvedValueOnce([{ ts: 'a' }]);
-    routeTrades(ES_0714_PAGES);
+    routeTrades(ES_PAGES);
 
     await runBackfill({
-      ...opts({ dates: ['2026-07-14'], roots: ['ES'] }),
+      ...opts({ dates: ['2026-08-04'], roots: ['ES'] }),
       apiKey: 'k',
     });
 
     const [update] = updateCalls();
-    expect(update!.slice(1)).toContainEqual(['2026-07-14T14:00:00.000Z']);
-    expect(logs.join('\n')).toMatch(/ES 2026-07-14 .*skipped 1/);
+    expect(update!.slice(1)).toContainEqual(['2026-08-04T14:00:00.000Z']);
+    expect(logs.join('\n')).toMatch(/ES 2026-08-04 .*skipped 1/);
   });
 
   it('a root-day with no NULL-flow bars makes no UW calls (resumable)', async () => {
     const code = await runBackfill({
-      ...opts({ dates: ['2026-07-14'], roots: ['ES'] }),
+      ...opts({ dates: ['2026-08-04'], roots: ['ES'] }),
       apiKey: 'k',
     });
 
@@ -838,15 +1099,15 @@ describe('runBackfill', () => {
   it('stops before the next date once the page budget is spent, and says where to resume', async () => {
     mockSql
       .mockResolvedValueOnce([
-        nullRow('ES', '2026-07-14T14:00:00Z', 4),
-        nullRow('ES', '2026-07-14T14:01:00Z', 6),
+        nullRow('ES', '2026-08-04T14:00:00Z', 4),
+        nullRow('ES', '2026-08-04T14:01:00Z', 6),
       ])
       .mockResolvedValueOnce([{}, {}]);
-    routeTrades(ES_0714_PAGES);
+    routeTrades(ES_PAGES);
 
     const code = await runBackfill({
       ...opts({
-        dates: ['2026-07-14', '2026-07-15'],
+        dates: ['2026-08-04', '2026-08-05'],
         roots: ['ES'],
         maxPages: 1,
       }),
@@ -856,7 +1117,7 @@ describe('runBackfill', () => {
     expect(code).toBe(0);
     // 07-14 used 1 page; 07-15 never starts.
     expect(mockSql).toHaveBeenCalledTimes(2);
-    expect(logs.join('\n')).toMatch(/page budget.*--from 2026-07-15/is);
+    expect(logs.join('\n')).toMatch(/page budget.*--from 2026-08-05/is);
   });
 
   it('a failed root-day (UW 5xx) is reported and fails the exit code; other roots still run', async () => {
@@ -865,8 +1126,8 @@ describe('runBackfill', () => {
       if (text.includes('UPDATE futures_bars')) return [{}];
       const symbols = v[0] as string[];
       return symbols[0] === 'NQ'
-        ? [nullRow('NQ', '2026-07-21T14:00:00Z', 2)]
-        : [nullRow('ES', '2026-07-21T14:00:00Z', 4)];
+        ? [nullRow('NQ', '2026-08-11T14:00:00Z', 2)]
+        : [nullRow('ES', '2026-08-11T14:00:00Z', 4)];
     });
     mockUwFetch.mockImplementation(async (_key: string, path: string) => {
       if (path.startsWith('/futures/ESU6/')) {
@@ -874,58 +1135,58 @@ describe('runBackfill', () => {
       }
       if (path.startsWith('/futures/NQU6/')) {
         return [
-          print(2, '2026-07-21T14:00:30.000000Z', 2, 'buy'),
-          print(1, '2026-07-20T23:00:00.000000Z', 1, 'buy'),
+          print(2, '2026-08-11T14:00:30.000000Z', 2, 'buy'),
+          print(1, '2026-08-10T23:00:00.000000Z', 1, 'buy'),
         ];
       }
       return [];
     });
 
     const code = await runBackfill({
-      ...opts({ dates: ['2026-07-21'], roots: ['ES', 'NQ'] }),
+      ...opts({ dates: ['2026-08-11'], roots: ['ES', 'NQ'] }),
       apiKey: 'k',
     });
 
     expect(code).toBe(1);
-    expect(logs.join('\n')).toMatch(/ES 2026-07-21 FAILED: UW API 502/);
+    expect(logs.join('\n')).toMatch(/ES 2026-08-11 FAILED: UW API 502/);
     expect(updateCalls().some((c) => c.slice(1).includes('NQ'))).toBe(true);
   });
 
   it('a rejected UPDATE fails that root-day and the exit code', async () => {
     mockSql
       .mockResolvedValueOnce([
-        nullRow('ES', '2026-07-14T14:00:00Z', 4),
-        nullRow('ES', '2026-07-14T14:01:00Z', 6),
+        nullRow('ES', '2026-08-04T14:00:00Z', 4),
+        nullRow('ES', '2026-08-04T14:01:00Z', 6),
       ])
       .mockRejectedValueOnce(new Error('connection terminated'));
-    routeTrades(ES_0714_PAGES);
+    routeTrades(ES_PAGES);
 
     const code = await runBackfill({
-      ...opts({ dates: ['2026-07-14'], roots: ['ES'] }),
+      ...opts({ dates: ['2026-08-04'], roots: ['ES'] }),
       apiKey: 'k',
     });
 
     expect(code).toBe(1);
     expect(logs.join('\n')).toMatch(
-      /ES 2026-07-14 FAILED: connection terminated/,
+      /ES 2026-08-04 FAILED: connection terminated/,
     );
   });
 
   it('a failed root-day’s pages still count against the page budget', async () => {
-    mockSql.mockResolvedValueOnce([nullRow('ES', '2026-07-14T14:00:00Z', 4)]);
+    mockSql.mockResolvedValueOnce([nullRow('ES', '2026-08-04T14:00:00Z', 4)]);
     let call = 0;
     mockUwFetch.mockImplementation(async () => {
       call += 1;
       // Page 1 doesn't reach the first NULL minute; page 2 fails.
       if (call === 1) {
-        return [print(1, '2026-07-14T14:00:30.000000Z', 1, 'buy')];
+        return [print(1, '2026-08-04T14:00:30.000000Z', 1, 'buy')];
       }
       throw new Error('UW API 502: bad gateway');
     });
 
     const code = await runBackfill({
       ...opts({
-        dates: ['2026-07-14', '2026-07-15'],
+        dates: ['2026-08-04', '2026-08-05'],
         roots: ['ES'],
         maxPages: 2,
       }),
@@ -936,8 +1197,8 @@ describe('runBackfill', () => {
     // Both requests counted: 07-15 never starts.
     expect(mockSql).toHaveBeenCalledTimes(1);
     const out = logs.join('\n');
-    expect(out).toMatch(/ES 2026-07-14 FAILED.*UW API 502/);
-    expect(out).toMatch(/page budget.*--from 2026-07-15/is);
+    expect(out).toMatch(/ES 2026-08-04 FAILED.*UW API 502/);
+    expect(out).toMatch(/page budget.*--from 2026-08-05/is);
     expect(out).toMatch(/2 pages/);
   });
 });

@@ -2,7 +2,10 @@
  * One-time history backfill of `futures_bars` order flow from UW REST
  * prints (spec Phase 6b): `buy_volume`, `sell_volume`, `buy_prints` and
  * `sell_prints` on bars written before the websocket handler carried
- * them, back to the start of UW's REST history.
+ * them, back to 2026-07-28, the first trade date with a stored front month
+ * (FIRST_DECISION_DATE). UW's REST history reaches back further (ES
+ * 2026-06-30, the rest 2026-07-21), but no contract is recorded for those
+ * dates, so a root-day on an earlier trade date fails by name.
  *
  * Per root and UTC day, oldest day first:
  *   1. The day's NULL-flow bars in Globex-open minutes
@@ -10,8 +13,9 @@
  *      front-month read: a re-run resumes where the last one stopped.
  *   2. The contract of each CME trade date the NULL minutes fall on, from
  *      the stored per-session front month (`futures_front_month`,
- *      `api/_lib/futures-front-month.ts`). The table is read first; only
- *      when a date has no row yet are the root's contract volumes
+ *      `api/_lib/futures-front-month.ts`). A trade date before the table
+ *      starts fails the root-day. The table is read first; only in a real
+ *      run, when a date has no row yet, are the root's contract volumes
  *      refreshed (`refreshFrontMonthVolumes`, once per root per run) and
  *      the date decided (`fetchFrontMonthSchedule`, source 'script').
  *   3. The NULL minutes' span is cut at the session open into pieces, each
@@ -27,9 +31,10 @@
  * A day whose minutes all failed the 2% rule still has NULL bars, so a
  * re-run pages it again; pass `--from` to skip ahead.
  *
- * `--dry-run` writes no bars. It still reads the front-month table the way
- * a real run does, so a date with no row yet gets its volumes and its one
- * decision stored: the same rows any writer would add.
+ * `--dry-run` writes nothing, the front-month table included: it reads the
+ * stored decisions only (no volume refresh, no decision). A trade date
+ * with no stored row is skipped, not paged, and reported once per root at
+ * the end; a real run decides it.
  *
  * Operational limits: at most UW_CONCURRENCY_CAP requests in flight (one
  * root-day per slot, its pieces paged one after another), each through the
@@ -65,12 +70,12 @@ import {
 import {
   fetchFrontMonthSchedule,
   fetchStoredFrontMonths,
-  type FrontMonthSchedule,
 } from '../../api/_lib/futures-front-month.js';
 import { refreshFrontMonthVolumes } from '../../api/_lib/futures-volume-refresh.js';
 import { UW_CONCURRENCY_CAP } from '../../api/_lib/uw-concurrency.js';
 import { mapWithConcurrency } from '../../api/_lib/uw-fetch.js';
 import { isFuturesMarketOpen } from '../../src/utils/timezone.js';
+import { FIRST_DECISION_DATE } from './futures-front-month-backfill.js';
 
 /**
  * First UTC day UW's REST /trades history reaches, per root (probe 0a,
@@ -105,7 +110,7 @@ const DATE_RX = /^\d{4}-\d{2}-\d{2}$/;
 export interface BackfillOptions {
   /** Explicit UTC dates, or null to use the from/to range. */
   dates: string[] | null;
-  /** Range start; null = each root's UW history start. */
+  /** Range start; null = the first date with a stored front month. */
   from: string | null;
   /** Range end (inclusive); null = today (UTC). */
   to: string | null;
@@ -234,22 +239,19 @@ function addDays(date: string, days: number): string {
 
 /**
  * The UTC dates to process, oldest first, each with the roots whose UW
- * history reaches it. Dates after `today` are dropped.
+ * history reaches it. Dates after `today` are dropped. With no dates and no
+ * `--from`, the range starts at FIRST_DECISION_DATE for every root: no
+ * earlier trade date has a stored front month to page.
  */
 export function planDates(opts: BackfillOptions, today: string): DayPlan[] {
   let dates: string[];
   if (opts.dates !== null) {
     dates = [...new Set(opts.dates)].sort();
   } else {
-    const earliest = opts.roots
-      .map((r) => UW_TRADES_HISTORY_START[r])
-      .sort()[0];
-    const from = opts.from ?? earliest;
+    const from = opts.from ?? FIRST_DECISION_DATE;
     const to = opts.to ?? today;
     dates = [];
-    if (from !== undefined) {
-      for (let d = from; d <= to; d = addDays(d, 1)) dates.push(d);
-    }
+    for (let d = from; d <= to; d = addDays(d, 1)) dates.push(d);
   }
 
   const plan: DayPlan[] = [];
@@ -305,70 +307,129 @@ export interface SessionPiece {
 }
 
 /**
- * Reads a root's front months for ascending, distinct trade dates, as
- * `fetchFrontMonthSchedule` returns them. See `createScheduleReader`.
+ * Reads a root's front months for ascending, distinct trade dates: trade
+ * date → contract, for the dates that have one. See `createScheduleReader`.
  */
 export type ScheduleReader = (
   root: FuturesRoot,
   tradeDates: readonly string[],
-) => Promise<FrontMonthSchedule>;
+) => Promise<ReadonlyMap<string, string>>;
 
 /**
- * A schedule reader for one run. It reads the stored decisions first and
- * touches UW only when a date has none: then it refreshes the root's
- * contract volumes (daily candles over `1m`, as the gap cron does) and
- * `fetchFrontMonthSchedule` decides the date. The refresh comes first
- * because a decision made from old volume is permanent. Each root is
- * refreshed once per run; a refresh that fails is not remembered, so the
- * root's next root-day tries again. Any failure here (UW, a stale candle,
- * the database) rejects, nothing is decided from the stale volume, and the
- * date loop reports the root-day as `<root> <date> FAILED: <message>`.
+ * A schedule reader for one run. A trade date before FIRST_DECISION_DATE
+ * (the stored table starts there) rejects, naming the root and the date,
+ * before any read: nothing earlier has a front month to page.
+ *
+ * With `decide` false (`--dry-run`, `--compare`) it reads the stored
+ * decisions and nothing else, so a date with no row is simply missing from
+ * the answer: it never refreshes volumes or decides a date.
+ *
+ * With `decide` true it reads the stored decisions first and touches UW only
+ * when a date has none: then it refreshes the root's contract volumes (daily
+ * candles over `1m`, as the gap cron does) and `fetchFrontMonthSchedule`
+ * decides the date, so every date asked about is in the answer. The refresh
+ * comes first because a decision made from old volume is permanent. Each
+ * root is refreshed once per run; a refresh that fails is not remembered, so
+ * the root's next root-day tries again.
+ *
+ * Any failure (UW, a stale candle, the database) rejects, nothing is decided
+ * from stale volume, and the date loop reports the root-day as
+ * `<root> <date> FAILED: <message>`.
  */
-export function createScheduleReader(apiKey: string): ScheduleReader {
+export function createScheduleReader(
+  apiKey: string,
+  { decide }: { decide: boolean },
+): ScheduleReader {
   const refreshed = new Set<FuturesRoot>();
   return async (root, tradeDates) => {
+    const first = tradeDates[0]!;
+    if (first < FIRST_DECISION_DATE) {
+      throw new Error(
+        `${root}: trade date ${first} is before the stored front month, which starts ${FIRST_DECISION_DATE}`,
+      );
+    }
     const stored = await fetchStoredFrontMonths(
       root,
-      tradeDates[0]!,
+      first,
       tradeDates.at(-1)!,
     );
+    if (!decide) return stored;
+
     if (!refreshed.has(root) && tradeDates.some((d) => !stored.has(d))) {
       await refreshFrontMonthVolumes(apiKey, root, '1m');
       refreshed.add(root);
     }
-    return fetchFrontMonthSchedule(root, tradeDates, 'script');
+    const schedule = await fetchFrontMonthSchedule(root, tradeDates, 'script');
+    const decided = new Map<string, string>();
+    for (const tradeDate of tradeDates) {
+      const contract = schedule.contractFor(tradeDate);
+      if (contract === undefined) {
+        throw new Error(`${root}: no front month for ${tradeDate}`);
+      }
+      decided.set(tradeDate, contract);
+    }
+    return decided;
   };
+}
+
+/** What `sessionPieces` cut a window into. */
+export interface SessionPieces {
+  pieces: SessionPiece[];
+  /** Trade dates the reader had no front month for: not paged. */
+  undecided: string[];
 }
 
 /**
  * The pieces of [fromMs, toMs) for `root`: one per run of trade dates that
  * share a contract, each with that contract. Nothing is paged here. An
  * empty window (no Globex-open minute) has no piece and reads no schedule.
- * Throws if the schedule has no contract for a date it was asked about.
+ * A trade date the reader returned no contract for is left out and listed
+ * in `undecided`; a piece never spans it. A deciding reader leaves none.
  */
 export async function sessionPieces(
   schedules: ScheduleReader,
   root: FuturesRoot,
   fromMs: number,
   toMs: number,
-): Promise<SessionPiece[]> {
+): Promise<SessionPieces> {
   const spans = sessionSpans(fromMs, toMs);
-  if (spans.length === 0) return [];
-  const schedule = await schedules(
+  if (spans.length === 0) return { pieces: [], undecided: [] };
+  const contracts = await schedules(
     root,
     spans.map((s) => s.tradeDate),
   );
   const pieces: SessionPiece[] = [];
+  const undecided: string[] = [];
+  let tail: SessionPiece | undefined;
   for (const span of spans) {
-    const contract = schedule.contractFor(span.tradeDate);
+    const contract = contracts.get(span.tradeDate);
     if (contract === undefined) {
-      throw new Error(`${root}: no front month for ${span.tradeDate}`);
+      undecided.push(span.tradeDate);
+      tail = undefined;
+    } else if (tail?.contract === contract) {
+      tail.toMs = span.toMs;
+    } else {
+      tail = { contract, fromMs: span.fromMs, toMs: span.toMs };
+      pieces.push(tail);
     }
-    const last = pieces.at(-1);
-    if (last?.contract === contract) last.toMs = span.toMs;
-    else pieces.push({ contract, fromMs: span.fromMs, toMs: span.toMs });
   }
-  return pieces;
+  return { pieces, undecided };
+}
+
+/**
+ * Says, once, which trade dates each root had no stored decision for in a
+ * read-only run. Silent when there were none.
+ */
+export function logUndecided(
+  byRoot: ReadonlyMap<FuturesRoot, ReadonlySet<string>>,
+): void {
+  for (const [root, dates] of byRoot) {
+    if (dates.size === 0) continue;
+    console.log(
+      `  ${root}  undecided trade dates ${dates.size}: ` +
+        `${[...dates].sort().join(', ')} (skipped; a real run decides them)`,
+    );
+  }
 }
 
 // ── One root-day ────────────────────────────────────────────
@@ -381,6 +442,8 @@ interface RootDayResult {
   pages: number;
   /** Contracts that led at least one written minute. */
   leaders: string[];
+  /** Trade dates with no stored front month (read-only runs): skipped. */
+  undecided: string[];
 }
 
 /** A failed root-day, carrying the UW pages it used before failing. */
@@ -471,6 +534,7 @@ async function backfillRootDay(
       skippedTolerance: 0,
       pages: 0,
       leaders: [],
+      undecided: [],
     };
   }
 
@@ -478,7 +542,7 @@ async function backfillRootDay(
   // run's budget.
   const tally: PagingTally = { pages: 0, malformed: 0 };
   try {
-    const pieces = await sessionPieces(
+    const { pieces, undecided } = await sessionPieces(
       schedules,
       root,
       Date.parse(bars[0]!.ts),
@@ -489,7 +553,13 @@ async function backfillRootDay(
     const front = new Map(
       [...paged].map(([ts, { minute }]) => [ts, minute] as const),
     );
-    const { updates, skippedTolerance } = matchFlowToBars(bars, front);
+    // A bar on an undecided date has no prints to match: it is reported with
+    // its date, not counted as outside 2%.
+    const matchable =
+      undecided.length === 0
+        ? bars
+        : bars.filter((b) => !undecided.includes(cmeTradeDate(b.ts)));
+    const { updates, skippedTolerance } = matchFlowToBars(matchable, front);
     const written = dryRun
       ? updates.length
       : await writeFlowMinutes(root, updates);
@@ -502,6 +572,7 @@ async function backfillRootDay(
       skippedTolerance,
       pages: tally.pages,
       leaders,
+      undecided,
     };
   } catch (err) {
     throw new RootDayError(err, tally.pages);
@@ -537,6 +608,8 @@ export interface FailedRootDay {
 export interface DayLoopResult {
   pages: number;
   failures: number;
+  /** Per root, the trade dates a read-only run found no front month for. */
+  undecided: Map<FuturesRoot, Set<string>>;
   /** The failed root-days, in the order they finished. */
   failed: FailedRootDay[];
   /**
@@ -552,16 +625,20 @@ export interface DayLoopResult {
  * where to resume), runs a date's roots up to UW_CONCURRENCY_CAP at a
  * time, and hands each finished root-day to `report`. A root-day that
  * throws is logged with its pages, counted as a failure, and the run goes
- * on. Returns the pages used, the failed root-days, and where it stopped
+ * on. Returns the pages used, the failed root-days, the trade dates a
+ * read-only run found no front month for (per root), and where it stopped
  * early (if it did).
  */
-export async function runPlannedDays<R extends { pages: number }>(
+export async function runPlannedDays<
+  R extends { pages: number; undecided: readonly string[] },
+>(
   plan: readonly DayPlan[],
   maxPages: number,
   work: (root: FuturesRoot, date: string) => Promise<R>,
   report: (root: FuturesRoot, date: string, result: R) => void,
 ): Promise<DayLoopResult> {
   let pages = 0;
+  const undecided = new Map<FuturesRoot, Set<string>>();
   const failed: FailedRootDay[] = [];
   let stoppedBefore: string | null = null;
   for (const [i, day] of plan.entries()) {
@@ -609,10 +686,15 @@ export async function runPlannedDays<R extends { pages: number }>(
         continue;
       }
       pages += r.ok.pages;
+      if (r.ok.undecided.length > 0) {
+        const dates = undecided.get(r.root) ?? new Set<string>();
+        for (const d of r.ok.undecided) dates.add(d);
+        undecided.set(r.root, dates);
+      }
       report(r.root, day.date, r.ok);
     }
   }
-  return { pages, failures: failed.length, failed, stoppedBefore };
+  return { pages, failures: failed.length, undecided, failed, stoppedBefore };
 }
 
 /** Runs the backfill and returns the process exit code. */
@@ -625,15 +707,17 @@ export async function runBackfill(
   const plan = planDates(opts, today);
   const verb = opts.dryRun ? 'would write' : 'repaired';
   console.log(
-    `Futures order-flow backfill${opts.dryRun ? ' (DRY RUN: no bars written)' : ''}: ` +
+    `Futures order-flow backfill${opts.dryRun ? ' (DRY RUN: no writes)' : ''}: ` +
       `${plan.length} dates, ${plan[0]?.date ?? '-'} → ${plan.at(-1)?.date ?? '-'}, ` +
       `roots ${opts.roots.join(',')}, page budget ${opts.maxPages}`,
   );
 
-  const schedules = createScheduleReader(opts.apiKey);
+  const schedules = createScheduleReader(opts.apiKey, {
+    decide: !opts.dryRun,
+  });
   let written = 0;
   let skipped = 0;
-  const { pages, failures } = await runPlannedDays(
+  const { pages, failures, undecided } = await runPlannedDays(
     plan,
     opts.maxPages,
     (root, date) =>
@@ -645,10 +729,14 @@ export async function runBackfill(
       console.log(
         `  ${root} ${date}  null ${res.nullMinutes}  ${verb} ${res.written}` +
           `  skipped ${res.skippedTolerance}  pages ${res.pages}` +
-          `  front ${res.leaders.join('/') || '-'}`,
+          `  front ${res.leaders.join('/') || '-'}` +
+          (res.undecided.length > 0
+            ? `  undecided ${res.undecided.join(',')}`
+            : ''),
       );
     },
   );
+  logUndecided(undecided);
 
   console.log(
     `\nDone: ${verb} ${written} minutes, skipped ${skipped} (outside 2%), ` +

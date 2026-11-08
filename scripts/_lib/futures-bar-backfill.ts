@@ -39,16 +39,18 @@
  *   5. `insertFuturesBars`: ON CONFLICT DO NOTHING, so a bar the live
  *      handler wrote is never replaced.
  *
- * `--dry-run` does steps 1-4 and writes no bars. `--compare` writes no bars
+ * `--dry-run` does steps 1-4 and writes nothing. `--compare` writes nothing
  * either: for minutes that already have a bar it counts how many
  * REST-built bars equal the stored bar (prices rounded to 4 dp, as the
  * NUMERIC(12,4) column stores them) and prints the first few differences.
  * That is the acceptance check against a day of full live bars. Its
  * percentage is matched / (compared + stored-only): a stored bar no print
  * rebuilds is a contract or roll disagreement, so it counts against the
- * root. Both modes still read the front-month table the way a real run
- * does, so a date with no row yet gets its volumes and its one decision
- * stored: the same rows any writer would add.
+ * root. Neither mode writes the front-month table either: both read the
+ * stored decisions only (no volume refresh, no decision). A trade date with
+ * no stored row is skipped, not paged, and reported once per root at the
+ * end; `--compare` leaves its stored bars out of the counts. A real run
+ * decides it.
  *
  * The current UTC day is never processed: the live handler is still
  * writing it, and a bar built from a minute still in progress would be
@@ -77,6 +79,7 @@ import {
   type StoredFuturesBar,
 } from '../../api/_lib/futures-bars.js';
 import {
+  cmeTradeDate,
   parseContract,
   type FuturesRoot,
 } from '../../api/_lib/futures-contracts.js';
@@ -87,6 +90,7 @@ import {
   MINUTE_MS,
   RootDayError,
   createScheduleReader,
+  logUndecided,
   pageDayContracts,
   parseArgs,
   planDates,
@@ -247,6 +251,8 @@ interface BarRootDayResult {
    * are stored with a NULL contract.
    */
   unstorable: string[];
+  /** Trade dates with no stored front month (read-only modes): skipped. */
+  undecided: string[];
   compare: CompareCounts | null;
 }
 
@@ -263,6 +269,7 @@ function emptyResult(over: Partial<BarRootDayResult>): BarRootDayResult {
     noPrints: false,
     leaders: [],
     unstorable: [],
+    undecided: [],
     compare: null,
     ...over,
   };
@@ -326,17 +333,30 @@ async function backfillBarRootDay(
   // run's budget.
   const tally: PagingTally = { pages: 0, malformed: 0 };
   try {
-    const pieces = await sessionPieces(schedules, root, dayStartMs, dayEndMs);
+    const { pieces, undecided } = await sessionPieces(
+      schedules,
+      root,
+      dayStartMs,
+      dayEndMs,
+    );
     const minutes = await pageDayContracts(apiKey, pieces, tally);
     const base = emptyResult({
       stored: stored.length,
       missing,
       malformed: tally.malformed,
       pages: tally.pages,
-      noPrints: minutes.size === 0,
+      // Nothing paged is not a hole in UW's history.
+      noPrints: pieces.length > 0 && minutes.size === 0,
+      undecided,
     });
     if (mode === 'compare') {
-      return { ...base, compare: compareStored(minutes, stored) };
+      // A stored bar on an undecided date has no print to be rebuilt from:
+      // it is reported with its date, not counted as a disagreement.
+      const comparable =
+        undecided.length === 0
+          ? stored
+          : stored.filter((b) => !undecided.includes(cmeTradeDate(b.ts)));
+      return { ...base, compare: compareStored(minutes, comparable) };
     }
 
     const bars: FuturesBarRow[] = [];
@@ -441,8 +461,8 @@ export async function runBarBackfill(
   const plan = planDates(opts, lastDay);
   const label = {
     write: '',
-    dry: ' (DRY RUN: no bars written)',
-    compare: ' (COMPARE: no bars written)',
+    dry: ' (DRY RUN: no writes)',
+    compare: ' (COMPARE: no writes)',
   }[mode];
   console.log(
     `Futures bar backfill from REST prints${label}: ` +
@@ -457,7 +477,10 @@ export async function runBarBackfill(
     { matched: number; compared: number; storedOnly: number; restOnly: number }
   >();
 
-  const schedules = createScheduleReader(opts.apiKey);
+  // Only a real run decides a date; --dry-run and --compare read what is stored.
+  const schedules = createScheduleReader(opts.apiKey, {
+    decide: mode === 'write',
+  });
   const loop = await runPlannedDays(
     plan,
     opts.maxPages,
@@ -470,7 +493,11 @@ export async function runBarBackfill(
       }
       const front = res.leaders.join('/') || '-';
       // A hole in UW's history shows here, not as a clean empty day.
-      const marker = res.noPrints ? '  prints 0' : '';
+      const marker =
+        (res.noPrints ? '  prints 0' : '') +
+        (res.undecided.length > 0
+          ? `  undecided ${res.undecided.join(',')}`
+          : '');
       if (res.compare !== null) {
         const c = res.compare;
         const sum = byRoot.get(root) ?? {
@@ -510,6 +537,8 @@ export async function runBarBackfill(
       }
     },
   );
+
+  logUndecided(loop.undecided);
 
   if (mode === 'compare') {
     // A stored bar REST can't rebuild is a contract or roll disagreement, so

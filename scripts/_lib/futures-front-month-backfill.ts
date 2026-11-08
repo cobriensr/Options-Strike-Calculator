@@ -78,8 +78,12 @@ import {
  */
 export const SEED_START = '2026-07-27';
 
-/** The first decision row: the session after `SEED_START`. */
-const FIRST_DECISION_DATE = '2026-07-28';
+/**
+ * The first decision row: the session after `SEED_START`. No earlier trade
+ * date has a stored front month, so the history backfills
+ * (`futures-flow-backfill.ts`) refuse to read one.
+ */
+export const FIRST_DECISION_DATE = '2026-07-28';
 
 /** The first contract month listed for each root. */
 const FROM_MONTH = '2026-07';
