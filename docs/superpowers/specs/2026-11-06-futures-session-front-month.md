@@ -329,11 +329,30 @@ Files: `scripts/_lib/futures-flow-backfill.ts` and its test, `scripts/_lib/futur
 
 Files: `api/_lib/futures-contracts.ts`, `api/__tests__/futures-contracts.test.ts`.
 
-- [ ] Delete `replayFrontMonth` and its tests.
-- [ ] Grep for every reference to it (calls, comments, docs in `api/` and `scripts/`) and fix each one.
-- [ ] Gate, review, commit.
+- [x] Delete `replayFrontMonth` and its tests.
+- [x] Grep for every reference to it (calls, comments, docs in `api/` and `scripts/`) and fix each one.
+- [x] Gate, review, commit. Done 2026-11-08 (aad9c73f, on main). `frontMonthCandidates` stays: `fetch-futures-session-stats` uses it.
 
-### Phase 5: uw-stream decides live (large; push after a 17:00 CT open)
+### Phase 5a: one volume source per session (small)
+
+Ruling 2026-11-08, from the Phase 4a review: within one (product, trade date), every volume row comes from one source, and the first writer wins.
+
+Why: candle rows are DO NOTHING per (product, trade date, contract). After a restart mid-session, a partial live tally for the incumbent could sit next to a challenger's full-session candle volume and roll early. A partial session from one source is no worse than today's live rule.
+
+Who writes first: live rows land while the session runs, and candle rows only after it ends (`insertContractVolumes` refuses the current date). So in practice live wins wherever uw-stream saw the session, and candles fill sessions it missed entirely.
+
+Files: `api/_lib/futures-front-month.ts`, `api/__tests__/futures-front-month-pglite.test.ts`.
+
+- [ ] **Failing PGlite tests:**
+  - A date with `live` rows gets no candle rows, not even for a contract the live tally never saw.
+  - A date with only candle rows keeps today's per-contract DO NOTHING, so a refresh still adds a contract the seed didn't fetch.
+  - A date with no rows gets every row.
+  - The return value counts only the rows inserted.
+  - The statement count is unchanged.
+- [ ] **Then the change:** `insertContractVolumes` skips any row whose (product, trade date) already has a `live` row. Do it in the same unnest statement (`WHERE NOT EXISTS`), not a separate read.
+- [ ] Gate, review, commit, push. It must be on main before Phase 5b deploys.
+
+### Phase 5b: uw-stream decides live (large; push after a 17:00 CT open)
 
 Files: `uw-stream/src/handlers/futures_trades.py`, new `uw-stream/src/futures_front_month.py`, `uw-stream/src/db.py`, `uw-stream/tests/test_futures_trades_handler.py`, new `uw-stream/tests/test_futures_front_month.py`.
 
@@ -346,7 +365,7 @@ Produces:
     - **The module docstring** carries rule 5's accepted risk: the read and the insert are separate statements.
     - None on a DB error or at the fill cap.
   - `async load_tally(product: str, trade_date: date) -> dict[str, int]`.
-  - `async save_tally(rows: Sequence[tuple[str, date, str, int]]) -> None`: one upsert with GREATEST.
+  - `async save_tally(rows: Sequence[tuple[str, date, str, int]]) -> None`: one upsert with GREATEST. It never writes a (product, trade date) that already has `candles` rows (`WHERE NOT EXISTS`, in the same statement), per Phase 5a's one-source rule.
 - **`db.py`:** public `fetch` and `execute` helpers that go through `_with_db_retry`, if the module doesn't already have them.
 
 Handler changes:
@@ -359,7 +378,7 @@ Handler changes:
 - **Every emitted bar** carries `contract`.
 - **Removed:** the `_front_sym` snapshots, `_session_date` / `_roll_session`, and the prior-day straggler special case. A straggler now just uses its own trade date's contract.
 - **Docstring:** rewrite rule 5. `front_sym_absent` stays.
-- **Don't mix sources within one session's tally** (Phase 4a review). Candle rows are DO NOTHING per (product, trade date, contract). So after a restart mid-session with a partial live tally for the incumbent and no row for a challenger, a cron refresh can add the challenger's full-session candle volume next to the partial tally, and roll early. Decide which source wins for a (product, trade date) before Phase 5 writes live rows, and test it.
+- **One source per session** (Phase 5a): `save_tally` skips a session that already has candle rows, and the cron's refresh skips a session that has live rows. Test the live side: a session with candle rows gets no live rows.
 
 Steps:
 - [ ] **Rewrite the front-month tests** (today's lines ~399–529, 786, 881) to the new rule, with the database mocked:
@@ -434,8 +453,8 @@ Steps:
 2. Phase 2.
 3. Phases 3a and 3b.
 4. Apply #204 and #205 (#201–#203 went in on 2026-11-07), push Phases 1–3b, run the seed. **Done 2026-11-08.**
-5. Phases 4a, 4b, 4c.
-6. Phase 5. Re-run the seed after a 17:00 CT open, then push. Before 2026-12-09.
+5. Phases 4a, 4b, 4c. **Done 2026-11-08.**
+6. Phase 5a (push any time), then Phase 5b: re-run the seed after a 17:00 CT open, then push uw-stream. Before 2026-12-09.
 7. Phase 6, outside market hours.
 8. Phase 7.
 
