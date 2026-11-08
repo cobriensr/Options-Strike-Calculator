@@ -19,6 +19,10 @@
  * Flags: --dry-run (read, fetch and walk; write nothing, no read-back) ·
  *        --roots ES,NQ,... (default all six).
  *
+ * The current trade date always gets a decision row. Run on a weekday, or
+ * after the Sunday 17:00 CT open, to avoid a row for a date with no
+ * session; the row is harmless if you do not.
+ *
  * Exit code 1 when any root failed (named in the log, with the arguments
  * that re-run it); the other roots still run.
  *

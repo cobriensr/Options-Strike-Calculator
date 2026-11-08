@@ -31,11 +31,17 @@ vi.mock('../../api/_lib/futures-daily-candles.js', async () => {
   >('../../api/_lib/futures-daily-candles.js');
   return { ...actual, fetchDailyContractVolumes: mockFetchVolumes };
 });
-vi.mock('../../api/_lib/futures-front-month.js', () => ({
-  fetchStoredFrontMonths: mockFetchStored,
-  insertContractVolumes: mockInsertVolumes,
-  insertFrontMonthRows: mockInsertFront,
-}));
+vi.mock('../../api/_lib/futures-front-month.js', async () => {
+  const actual = await vi.importActual<
+    typeof import('../../api/_lib/futures-front-month.js')
+  >('../../api/_lib/futures-front-month.js');
+  return {
+    ...actual,
+    fetchStoredFrontMonths: mockFetchStored,
+    insertContractVolumes: mockInsertVolumes,
+    insertFrontMonthRows: mockInsertFront,
+  };
+});
 
 import type { FuturesRoot } from '../../api/_lib/futures-contracts.js';
 import type { DailyContractVolume } from '../../api/_lib/futures-daily-candles.js';
@@ -149,17 +155,34 @@ describe('requiredContracts', () => {
     expect(required).not.toContain('CLK7');
   });
 
-  it('leaves out a contract that stopped trading before the seed start', () => {
-    // CLN6 (July 2026) stopped in June: UW has no history for it, and no
-    // volume of it could reach a decision.
+  it('leaves out the contracts that stopped trading before the first decision', () => {
+    // CLN6 (July 2026) stopped in June and CLQ6 (August) on 2026-07-21, its
+    // last session: UW serves no candles for either, and neither can be the
+    // incumbent or the challenger from 07-22 on.
     const required = requiredContracts(
       'CL',
       ['CLN6', 'CLQ6', 'CLU6', 'CLV6', 'CLX6', 'CLZ6', 'CLF7'],
       TODAY,
     );
     expect(required).not.toContain('CLN6');
-    expect(required[0]).toBe('CLQ6');
+    expect(required).not.toContain('CLQ6');
+    expect(required[0]).toBe('CLU6');
   });
+
+  it.each([
+    ['ES', ['ESU6', 'ESZ6', 'ESH7']],
+    ['NQ', ['NQU6', 'NQZ6', 'NQH7']],
+    ['RTY', ['RTYU6', 'RTYZ6', 'RTYH7']],
+    ['ZN', ['ZNU6', 'ZNZ6', 'ZNH7']],
+    ['GC', ['GCQ6', 'GCV6', 'GCZ6', 'GCG7']],
+  ] as const)(
+    'keeps %s from its first contract still trading in August',
+    (root, listed) => {
+      // None of these stops in July, so the first listed contract is
+      // required: ESU6 and GCQ6 have candles from 07-21.
+      expect(requiredContracts(root, listed, TODAY)).toEqual(listed);
+    },
+  );
 
   it('GC on 11-06: through GCG7, the second even month after November', () => {
     expect(
@@ -393,10 +416,12 @@ describe('walkFrontMonths', () => {
   it.each([
     ['no candles at all', []],
     ['no candles on the seed start', vol('2026-07-22', ['ESU6', 100])],
-  ])('throws, naming the root, with %s', (_label, volumes) => {
+  ])('throws, naming the date, with %s', (_label, volumes) => {
     expect(() =>
       walkFrontMonths('ES', volumes, new Map(), '2026-07-28'),
-    ).toThrow(/ES: .*2026-07-21/);
+    ).toThrow(
+      /^no candle volume on 2026-07-21, the session the first decision/,
+    );
   });
 });
 
@@ -656,7 +681,10 @@ describe('runFrontMonthSeed', () => {
         rollCandles(contracts, root === 'ES' ? ['ESZ6'] : []),
     );
     expect(await run(['ES', 'NQ'])).toBe(1);
-    expect(errors.join('\n')).toMatch(/ES.*no daily candles.*ESZ6/);
+    // The root is named once, by the failure line.
+    expect(errors[0]).toMatch(
+      /^ {2}ES FAILED: UW returned no daily candles for ESZ6;/,
+    );
     expect(errors.join('\n')).not.toMatch(/ESU6|ESH7/);
     // Nothing of ES is written: not even its volumes.
     expect(writtenVolumes().every((r) => r.product === 'NQ')).toBe(true);
@@ -674,12 +702,27 @@ describe('runFrontMonthSeed', () => {
     expect(mockInsertFront).toHaveBeenCalledTimes(1);
   });
 
-  it('does not fail CL on CLN6, which stopped before UW has any history', async () => {
+  it('does not fail CL on an empty CLN6 or CLQ6, which stopped before the first decision', async () => {
+    // Probe 2026-11-07: CLQ6 returns no rows (its last session was 07-21),
+    // CLU6 has rows from 07-21.
     mockFetchVolumes.mockImplementation(
       async (_key: string, _root: string, contracts: readonly string[]) =>
-        rollCandles(contracts, ['CLN6']),
+        rollCandles(contracts, ['CLN6', 'CLQ6']),
     );
     expect(await run(['CL'])).toBe(0);
+    expect(errors).toEqual([]);
+  });
+
+  it('fails CL, naming CLU6, when CLU6 is empty', async () => {
+    mockFetchVolumes.mockImplementation(
+      async (_key: string, _root: string, contracts: readonly string[]) =>
+        rollCandles(contracts, ['CLN6', 'CLQ6', 'CLU6']),
+    );
+    expect(await run(['CL'])).toBe(1);
+    expect(errors[0]).toMatch(
+      /^ {2}CL FAILED: UW returned no daily candles for CLU6;/,
+    );
+    expect(mockInsertVolumes).not.toHaveBeenCalled();
   });
 
   it('fails CL when CLF7, the second contract after November, is empty', async () => {
@@ -759,6 +802,51 @@ describe('runFrontMonthSeed', () => {
     expect(logs.join('\n')).toMatch(/ES.*decisions: inserted 4 of 4/);
     expect(writtenDecisions().some((r) => r.product === 'NQ')).toBe(true);
   });
+
+  it('fails a root with no volume on 2026-07-21, naming the date, writing nothing for it, and runs the others', async () => {
+    mockFetchVolumes.mockImplementation(
+      async (_key: string, root: string, contracts: readonly string[]) =>
+        rollCandles(contracts).filter(
+          (c) => root !== 'NQ' || c.tradeDate !== SEED_START,
+        ),
+    );
+    expect(await run(['NQ', 'ES'])).toBe(1);
+    expect(errors[0]).toMatch(
+      /^ {2}NQ FAILED: no candle volume on 2026-07-21,/,
+    );
+    expect(errors.join('\n')).toMatch(/Failed roots: NQ\./);
+    expect(writtenVolumes().every((r) => r.product === 'ES')).toBe(true);
+    expect(writtenDecisions().every((r) => r.product === 'ES')).toBe(true);
+    expect(writtenDecisions()).toHaveLength(4);
+  });
+
+  it.each([
+    ['a real run', false],
+    ['a dry run', true],
+  ])(
+    'fails a root whose series to write steps back, by name, before any insert (%s)',
+    async (_label, dryRun) => {
+      // Stored rows that were already out of order: the walk keeps them, so
+      // the series it would leave behind steps back. It must not be written.
+      mockFetchStored.mockImplementation(async (root: string) =>
+        root === 'ES'
+          ? new Map([
+              ['2026-07-22', 'ESZ6'],
+              ['2026-07-23', 'ESU6'],
+            ])
+          : new Map(),
+      );
+      expect(await run(['ES', 'NQ'], { dryRun })).toBe(1);
+      expect(errors[0]).toMatch(
+        /^ {2}ES FAILED: the series to write steps back: 2026-07-22 ESZ6, then 2026-07-23 ESU6/,
+      );
+      expect(errors.join('\n')).toMatch(/Failed roots: ES\./);
+      expect(writtenVolumes().every((r) => r.product === 'NQ')).toBe(true);
+      expect(writtenDecisions().every((r) => r.product === 'NQ')).toBe(true);
+      // NQ was walked (and in a real run written) after ES failed.
+      expect(logs.join('\n')).toMatch(/NQ: 4 decisions/);
+    },
+  );
 
   it('writes nothing in a dry run, says so, and still prints the switches', async () => {
     expect(await run(['ES', 'NQ'], { dryRun: true })).toBe(0);

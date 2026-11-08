@@ -19,7 +19,10 @@
  *      over the sessions, oldest first. A stored row is that date's answer
  *      and the walk carries on from it; a computed answer is never later
  *      than the next stored one, so a re-run over rows another decider
- *      wrote cannot make the series step back.
+ *      wrote cannot make the series step back. Before anything is written,
+ *      the walked series is checked for a step back anyway (rows that were
+ *      already out of order are kept, and would leave one): such a root
+ *      fails and writes nothing.
  *   5. The volumes of the sessions before the current one, then the
  *      decisions the walk produced (both `ON CONFLICT DO NOTHING`, so a
  *      re-run writes only what is missing), then a read-back: any later
@@ -27,10 +30,14 @@
  *      the pair.
  *
  * A root's failure (a fetch error, an empty result, a rejected read or
- * insert, a failed read-back) fails that root alone, by name; the others
- * still run, and the exit code is 1 if any failed. `--dry-run` does steps
- * 1-4, prints what it would write, and does neither the inserts nor the
- * read-back.
+ * insert, a series that steps back, before or after the write) fails that
+ * root alone, by name; the others still run, and the exit code is 1 if any
+ * failed. `--dry-run` does steps 1-4, prints what it would write, and does
+ * neither the inserts nor the read-back.
+ *
+ * The current trade date always gets a decision row. Run on a weekday, or
+ * after the Sunday 17:00 CT open, to avoid a row for a date with no
+ * session; the row is harmless if you do not.
  *
  * No market-hours guard: about 30 light calls. Never prints a secret.
  */
@@ -51,6 +58,7 @@ import {
   type DailyContractVolume,
 } from '../../api/_lib/futures-daily-candles.js';
 import {
+  ceilingContract,
   fetchStoredFrontMonths,
   insertContractVolumes,
   insertFrontMonthRows,
@@ -83,7 +91,7 @@ export interface SeedOptions {
   roots: FuturesRoot[];
 }
 
-export const SEED_USAGE = `Usage: npx tsx scripts/backfill-futures-front-month.ts
+const SEED_USAGE = `Usage: npx tsx scripts/backfill-futures-front-month.ts
          [--roots ES,NQ,...] [--dry-run]`;
 
 function parseRoots(value: string): FuturesRoot[] {
@@ -143,7 +151,7 @@ function expiryOf(
   const expiry = parseContract(root, contract, tradeDate);
   if (expiry === null) {
     throw new Error(
-      `${root}: ${JSON.stringify(contract)} is not an outright ${root} contract on ${tradeDate}`,
+      `${JSON.stringify(contract)} is not an outright ${root} contract on ${tradeDate}`,
     );
   }
   return expiry;
@@ -155,15 +163,28 @@ function monthNumber(expiry: ParsedContract): number {
 }
 
 /**
+ * Where the required contracts start: the first contract still trading in
+ * the month after the first decision date. `nullSeedContract` is
+ * month-granular, so asking it about the first decision date itself (a day
+ * in July) keeps every contract that stops in July; the first day of the
+ * next month drops them. That is CLQ6, whose last session is 2026-07-21 and
+ * which UW serves no candles for (probe 2026-11-07). None of the other
+ * roots has a contract that stops in July.
+ */
+const REQUIRED_FROM = `${monthPlus(FIRST_DECISION_DATE, 1)}-01`;
+
+/**
  * The listed contracts whose empty result fails the root: from the first
- * contract still trading on `SEED_START` up to and including the second
- * cycle contract after the month of `today` (ES on 2026-11-06: ESU6, ESZ6
- * and ESH7; CL: CLQ6 through CLF7). Read as no volume, an empty answer
- * would let a challenger roll early. A contract that stopped trading
- * before the seed start (CLN6, June 2026) is not required: UW has no
- * history for it and no volume of it could reach a decision. With fewer
- * than two contracts after the current month, every listed contract from
- * the first one on is required. `contracts` is in expiry order.
+ * contract still trading after the first decision date's month up to and
+ * including the second cycle contract after the month of `today` (ES on
+ * 2026-11-06: ESU6, ESZ6 and ESH7; CL: CLU6 through CLF7). Read as no
+ * volume, an empty answer would let a challenger roll early. A contract
+ * that stopped trading before then (CLN6, June 2026; CLQ6, whose last
+ * session is 2026-07-21) is not required: UW has no candles for it, and it
+ * can be neither the incumbent nor the challenger of any decision from
+ * 07-22 on. With fewer than two contracts after the current month, every
+ * listed contract from the first one on is required. `contracts` is in
+ * expiry order.
  */
 export function requiredContracts(
   root: FuturesRoot,
@@ -172,7 +193,7 @@ export function requiredContracts(
 ): string[] {
   const current = Number(today.slice(0, 4)) * 12 + Number(today.slice(5, 7));
   const first = monthNumber(
-    expiryOf(root, nullSeedContract(root, SEED_START), today),
+    expiryOf(root, nullSeedContract(root, REQUIRED_FROM), today),
   );
   const after = contracts
     .map((c) => monthNumber(expiryOf(root, c, today)))
@@ -185,9 +206,8 @@ export function requiredContracts(
   });
 }
 
-/** Throws, naming the root, when a required contract came back empty. */
+/** Throws, naming the contracts, when a required one came back empty. */
 function requireCandles(
-  root: FuturesRoot,
   required: readonly string[],
   candles: readonly DailyContractVolume[],
 ): void {
@@ -195,7 +215,7 @@ function requireCandles(
   const missing = required.filter((c) => !seen.has(c));
   if (missing.length > 0) {
     throw new Error(
-      `${root}: UW returned no daily candles for ${missing.join(', ')}; read as no volume, an empty result could let a challenger roll early`,
+      `UW returned no daily candles for ${missing.join(', ')}; read as no volume, an empty result could let a challenger roll early`,
     );
   }
 }
@@ -268,23 +288,6 @@ export interface Walk {
   clamped: Clamp[];
 }
 
-/** `wanted`, or `ceiling` if `wanted` would expire after it. */
-function capAtCeiling(
-  root: FuturesRoot,
-  tradeDate: string,
-  wanted: string,
-  ceiling: string | null,
-  clamped: Clamp[],
-): string {
-  if (ceiling === null) return wanted;
-  const wantedExpiry = expiryOf(root, wanted, tradeDate);
-  if (compareExpiry(wantedExpiry, expiryOf(root, ceiling, tradeDate)) <= 0) {
-    return wanted;
-  }
-  clamped.push({ tradeDate, wanted, ceiling });
-  return ceiling;
-}
-
 /**
  * The rule `ensureFrontMonth` applies, run in memory over the sessions
  * from the day after `SEED_START` to `today`, oldest first. The dates are
@@ -323,7 +326,7 @@ export function walkFrontMonths(
   }
   if (!bySession.has(SEED_START)) {
     throw new Error(
-      `${root}: no candle volume on ${SEED_START}, the session the first decision starts from`,
+      `no candle volume on ${SEED_START}, the session the first decision starts from`,
     );
   }
   const volumeDates = [...bySession.keys()].sort();
@@ -368,13 +371,16 @@ export function walkFrontMonths(
         });
       }
     } else {
-      contract = capAtCeiling(
+      const capped = ceilingContract(
         root,
         date,
         wanted,
         ceilings.get(date) ?? null,
-        walk.clamped,
       );
+      contract = capped.contract;
+      if (capped.clamped) {
+        walk.clamped.push({ tradeDate: date, wanted, ceiling: contract });
+      }
       source = 'candles';
       walk.rows.push({ product: root, tradeDate: date, contract });
     }
@@ -397,14 +403,21 @@ export function walkFrontMonths(
   return walk;
 }
 
-// ── The read-back ───────────────────────────────────────────
+// ── The order check ─────────────────────────────────────────
 
-/** Two consecutive stored decisions, the later one expiring first. */
+/** Two consecutive decisions, the later one expiring first. */
 export interface OutOfOrder {
   earlierDate: string;
   earlierContract: string;
   laterDate: string;
   laterContract: string;
+}
+
+function formatPair(v: OutOfOrder): string {
+  return (
+    `${v.earlierDate} ${v.earlierContract}, then ` +
+    `${v.laterDate} ${v.laterContract}`
+  );
 }
 
 /**
@@ -466,11 +479,23 @@ async function seedRoot(
     contracts,
     CANDLE_RANGE,
   );
-  requireCandles(root, requiredContracts(root, contracts, today), candles);
+  requireCandles(requiredContracts(root, contracts, today), candles);
 
   const volumes = volumeRowsToStore(root, candles, today);
   const stored = await fetchStoredFrontMonths(root, FIRST_DECISION_DATE, today);
   const walk = walkFrontMonths(root, volumes, stored, today);
+  // Rows are write-once. Stored rows that were already out of order are
+  // kept by the walk, so the series it would leave behind can step back:
+  // refuse that before anything is written, in a dry run too.
+  const stepBack = findOutOfOrder(
+    root,
+    new Map(walk.series.map((s) => [s.tradeDate, s.contract])),
+  );
+  if (stepBack !== null) {
+    throw new Error(
+      `the series to write steps back: ${formatPair(stepBack)}; nothing written`,
+    );
+  }
   if (dryRun) {
     return {
       walk,
@@ -558,12 +583,10 @@ export async function runFrontMonthSeed(
       const res = await seedRoot(opts.apiKey, root, today, opts.dryRun);
       printRoot(root, res);
       if (res.violation !== null) {
-        const v = res.violation;
         failed.push(root);
         console.error(
           `  ${root} FAILED: the stored series steps back: ` +
-            `${v.earlierDate} ${v.earlierContract}, then ` +
-            `${v.laterDate} ${v.laterContract}`,
+            formatPair(res.violation),
         );
       }
     } catch (err) {
