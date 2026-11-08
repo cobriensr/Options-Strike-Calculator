@@ -8,14 +8,19 @@ restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
 # SIGTERM-to-SIGKILL window for the outgoing deploy. Railway's default is 0,
 # which SIGKILLs before the handler drains can flush their queues. 40 s fits
-# the worst-case shutdown: lease release (5 s) + concurrent handler drains
-# (handlers.base.DRAIN_DEADLINE_S = 30 s) + push-notification flush (2 s).
-# tests/test_handlers.py::test_drain_deadline_fits_railway_draining_seconds
-# pins that arithmetic. Railway stops reading railway.toml on 2026-12-01
-# (Config as Code is deprecated). Before then, move this setting to the
-# RAILWAY_DEPLOYMENT_DRAINING_SECONDS=40 service variable or the service's
-# Settings pane in the dashboard; see docs/superpowers/specs/
-# review-remediation-2026-10-26.md, phase 3.14.
+# the worst-case shutdown: every step of main._shutdown has its own bound in
+# main._SHUTDOWN_STEP_TIMEOUTS_S (36.5 s in all, 30 s of it the concurrent
+# handler drains, handlers.base.DRAIN_DEADLINE_S), plus Sentry's 2 s flush at
+# exit. tests/test_handlers.py::test_drain_deadline_fits_railway_draining_seconds
+# pins that arithmetic.
+# The window is set in two places, both 40, and they must stay equal: this
+# key, and the RAILWAY_DEPLOYMENT_DRAINING_SECONDS service variable
+# (docs.railway.com/deployments/deployment-teardown#draining-time). Railway's
+# Config as Code reference (docs.railway.com/config-as-code/reference) still
+# documents drainingSeconds, but marks config as code deprecated: existing
+# files keep working for legacy services until 2026-12-01 (checked 2026-11-08).
+# After that the variable is what keeps the setting. Spec P7:
+# docs/superpowers/specs/review-remediation-2026-10-26.md.
 drainingSeconds = 40
 # NOTE: healthcheckPath is intentionally UNSET. /healthz reports
 # "ok_market_closed" overnight and on weekends (the UW channels are

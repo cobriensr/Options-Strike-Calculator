@@ -369,8 +369,9 @@ migration chain, and all schema changes go there.)
   warning tagged `component=backpressure` for each queue that dropped
   payloads or lost flush rows since its last report. It gives the new
   amounts (`dropped`, `lost_rows`) and the running totals (`drop_total`,
-  `lost_rows_total`). A quiet interval sends nothing. The cumulative
-  counters stay on `/metrics`.
+  `lost_rows_total`). A quiet interval sends nothing. On shutdown the task
+  sends one last report for the drops since its previous tick. The
+  cumulative counters stay on `/metrics`.
 - **Disconnects.** Each dropped socket logs one line with the shard, the
   exception, both close frames, the underlying cause (with errno), the
   session length, frames received, time since the last frame, and both
@@ -382,12 +383,25 @@ migration chain, and all schema changes go there.)
 - **Shutdown drain.** On SIGTERM the daemon closes its sockets, releases
   the lease, then drains every handler at once. Each drain waits for an
   in-flight flush to finish, then writes what is left in its queue and
-  batch in one DB attempt with no retry, all inside a 30 s deadline
-  (`DRAIN_DEADLINE_S` in `src/handlers/base.py`). If the deadline hits,
-  those rows are lost and a Sentry warning gives the counts (`lost_rows`).
-  Railway's SIGTERM-to-SIGKILL window is 40 s (`drainingSeconds` in
-  `railway.toml`; Railway's default is 0). `railway.toml` stops being read
-  on 2026-12-01, so that setting has to move before then.
+  batch in slices of up to 5,000 rows (`BACKLOG_BATCH_MAX`), one DB attempt
+  each with no retry, all inside a 30 s deadline (`DRAIN_DEADLINE_S` in
+  `src/handlers/base.py`). The deadline is hard: at 30 s the drain is
+  cancelled and left to unwind, not waited for. If it hits, the rows not yet
+  written are lost and a Sentry warning gives the counts (`lost_rows`).
+  Every other shutdown step has its own bound too
+  (`_SHUTDOWN_STEP_TIMEOUTS_S` in `src/main.py`); a step that overruns is
+  reported to Sentry (tag `step`) and the next one runs. The drop reporter
+  sends a last report when it is cancelled.
+- **Draining time.** Railway SIGKILLs the old deploy `drainingSeconds`
+  after SIGTERM (Railway's default is 0). It is 40, set in two places that
+  must stay equal: `drainingSeconds` in `railway.toml`, and the
+  `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` service variable on the Railway
+  service. Railway marks config as code deprecated: existing
+  `railway.toml` files keep working for legacy services until 2026-12-01
+  (its docs, checked 2026-11-08), and after that the variable carries the
+  setting. The shutdown bounds plus Sentry's 2 s exit flush must fit under
+  it; `tests/test_handlers.py::test_drain_deadline_fits_railway_draining_seconds`
+  checks the sum against `railway.toml`.
 - **Single process.** One process holds every shard's connection. If one
   socket drops, only that shard's channels go quiet while it reconnects.
   If the process dies during market hours, all data goes dark until
