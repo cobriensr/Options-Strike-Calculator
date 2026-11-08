@@ -50,6 +50,7 @@ import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
+import { BULK_UPSERT_DEFAULT_CHUNK_SIZE } from '../_lib/bulk-upsert.js';
 import { reportSkippedWrite } from '../_lib/ladder-skip.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 
@@ -112,7 +113,10 @@ async function storeNewRows(
   rows: SpotExposureRow[],
   today: string,
 ): Promise<{
+  /** Rows that actually went in (the rest were conflict no-ops). */
   stored: number;
+  /** Rows sent to the database: past the mark and not all-zero. */
+  submitted: number;
   timestamp?: string;
   /** New rows left out because every value column was zero or null. */
   zeroSkipped: number;
@@ -120,7 +124,7 @@ async function storeNewRows(
   zeroFrom?: string;
   zeroTo?: string;
 }> {
-  if (rows.length === 0) return { stored: 0, zeroSkipped: 0 };
+  if (rows.length === 0) return { stored: 0, submitted: 0, zeroSkipped: 0 };
 
   const sql = getDb();
   const hwmRows = (await withDbRetry(
@@ -158,11 +162,21 @@ async function storeNewRows(
       : {}),
   };
 
-  if (toInsert.length === 0) return { stored: 0, ...zero };
+  if (toInsert.length === 0) return { stored: 0, submitted: 0, ...zero };
 
-  for (const { row, tsIso } of toInsert) {
-    const rowDate = getETDateStr(new Date(row.start_time ?? row.time));
-    await withDbRetry(
+  // R5: one unnest statement per chunk of up to 500 rows, not a statement
+  // per row. Before the rollover the mark is null and UW still serves the
+  // whole previous session (about 494 rows), each a conflict no-op; that was
+  // 494 awaited round trips. The rows are ascending by time, so a chunk that
+  // fails leaves the earlier ones stored and the next run's mark picks up the
+  // rest. `stored` counts the rows that actually went in (RETURNING), not the
+  // rows submitted.
+  let stored = 0;
+  for (let i = 0; i < toInsert.length; i += BULK_UPSERT_DEFAULT_CHUNK_SIZE) {
+    const chunk = toInsert.slice(i, i + BULK_UPSERT_DEFAULT_CHUNK_SIZE);
+    const column = (pick: (r: SpotExposureRow) => string | null | undefined) =>
+      chunk.map(({ row }) => pick(row) ?? null);
+    const inserted = (await withDbRetry(
       () => sql`
         INSERT INTO spot_exposures (
           date, timestamp, ticker, price,
@@ -170,27 +184,41 @@ async function storeNewRows(
           charm_oi, charm_vol, charm_dir,
           vanna_oi, vanna_vol, vanna_dir
         )
-        VALUES (
-          ${rowDate}, ${tsIso}, 'SPX', ${row.price},
-          ${row.gamma_per_one_percent_move_oi},
-          ${row.gamma_per_one_percent_move_vol},
-          ${row.gamma_per_one_percent_move_dir},
-          ${row.charm_per_one_percent_move_oi},
-          ${row.charm_per_one_percent_move_vol},
-          ${row.charm_per_one_percent_move_dir},
-          ${row.vanna_per_one_percent_move_oi},
-          ${row.vanna_per_one_percent_move_vol},
-          ${row.vanna_per_one_percent_move_dir}
+        SELECT t.row_date, t.ts, 'SPX', t.price,
+               t.gamma_oi, t.gamma_vol, t.gamma_dir,
+               t.charm_oi, t.charm_vol, t.charm_dir,
+               t.vanna_oi, t.vanna_vol, t.vanna_dir
+        FROM unnest(
+          ${chunk.map(({ row }) => getETDateStr(new Date(row.start_time ?? row.time)))}::date[],
+          ${chunk.map(({ tsIso }) => tsIso)}::timestamptz[],
+          ${column((r) => r.price)}::numeric[],
+          ${column((r) => r.gamma_per_one_percent_move_oi)}::numeric[],
+          ${column((r) => r.gamma_per_one_percent_move_vol)}::numeric[],
+          ${column((r) => r.gamma_per_one_percent_move_dir)}::numeric[],
+          ${column((r) => r.charm_per_one_percent_move_oi)}::numeric[],
+          ${column((r) => r.charm_per_one_percent_move_vol)}::numeric[],
+          ${column((r) => r.charm_per_one_percent_move_dir)}::numeric[],
+          ${column((r) => r.vanna_per_one_percent_move_oi)}::numeric[],
+          ${column((r) => r.vanna_per_one_percent_move_vol)}::numeric[],
+          ${column((r) => r.vanna_per_one_percent_move_dir)}::numeric[]
+        ) AS t(
+          row_date, ts, price,
+          gamma_oi, gamma_vol, gamma_dir,
+          charm_oi, charm_vol, charm_dir,
+          vanna_oi, vanna_vol, vanna_dir
         )
         ON CONFLICT (date, timestamp, ticker) DO NOTHING
+        RETURNING id
       `,
       2,
       10_000,
-    );
+    )) as Array<{ id: number }>;
+    stored += inserted.length;
   }
 
   return {
-    stored: toInsert.length,
+    stored,
+    submitted: toInsert.length,
     timestamp: toInsert.at(-1)!.tsIso,
     ...zero,
   };
@@ -205,6 +233,26 @@ export default withCronInstrumentation(
     await cronJitter();
 
     const rows = await withRetry(() => fetchSpotExposures(apiKey));
+
+    // An empty answer is not a clean run: UW serves the whole session so far
+    // on every call, so no rows at all means it has nothing (R4). Warn and
+    // count it always; from 09:40 ET it is a Sentry error (before that it is
+    // the pre-open or the rollover). Never a success.
+    if (rows.length === 0) {
+      reportSkippedWrite({
+        job: 'fetch-spot-gex',
+        metric: 'fetch_spot_gex.empty_payload',
+        warning: 'fetch-spot-gex: UW returned no spot-exposure rows',
+        detail: { date: today },
+        alert: 'fetch-spot-gex: UW returned no SPX spot-exposure rows',
+      });
+      return {
+        status: 'skipped',
+        message: 'UW returned no spot-exposure rows',
+        metadata: { ticks: 0, stored: 0, submitted: 0, zeroSkipped: 0 },
+      };
+    }
+
     const result = await withRetry(() => storeNewRows(rows, today));
 
     // R-zero: say so every run the zero rows are still beyond the mark. The
@@ -227,11 +275,15 @@ export default withCronInstrumentation(
           zeroFrom: result.zeroFrom,
           zeroTo: result.zeroTo,
           newestIsZero,
+          newestTime: newest?.start_time ?? newest?.time,
           date: today,
         },
+        // A constant text, the row's time is in `detail`: a stuck feed is one
+        // Sentry issue, not a new one every minute.
         ...(newestIsZero
           ? {
-              alert: `fetch-spot-gex: the newest UW spot-exposure row (${newest.start_time ?? newest.time}) is all-zero, nothing stored`,
+              alert:
+                'fetch-spot-gex: the newest UW SPX spot-exposure row is all-zero, nothing stored',
             }
           : {}),
       });

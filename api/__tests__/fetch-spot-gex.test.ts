@@ -108,8 +108,15 @@ describe('fetch-spot-gex handler', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
-    // Default: return a row satisfying data-quality SELECT shapes
-    mockSql.mockResolvedValue([{ total: 0, nonzero: 0 }]);
+    // Default: the INSERT ... RETURNING id answers one row per unnested row
+    // (nothing conflicted); any other query (the high-water-mark SELECT, the
+    // data-quality SELECT) answers a row satisfying its shape.
+    mockSql.mockImplementation(
+      async (strings: TemplateStringsArray, ...params: unknown[]) =>
+        strings.join('?').includes('INSERT INTO spot_exposures')
+          ? (params[0] as unknown[]).map((_v, i) => ({ id: i + 1 }))
+          : [{ total: 0, nonzero: 0 }],
+    );
     process.env = { ...originalEnv };
     vi.setSystemTime(MARKET_TIME);
     process.env.CRON_SECRET = 'test-secret';
@@ -268,28 +275,162 @@ describe('fetch-spot-gex handler', () => {
       ticks: 4,
       stored: 4,
     });
-    // 1 HWM SELECT + 4 INSERTs + 1 data-quality SELECT = 6
-    expect(mockSql).toHaveBeenCalledTimes(6);
+    // 1 HWM SELECT + ONE unnest INSERT for all 4 rows + 1 data-quality SELECT
+    expect(mockSql).toHaveBeenCalledTimes(3);
+    const insert = (mockSql.mock.calls as unknown[][]).find((c) =>
+      (c[0] as string[]).join('?').includes('INSERT INTO spot_exposures'),
+    )!;
+    const text = (insert[0] as string[]).join('?');
+    expect(text).toMatch(/unnest\(/);
+    expect(text).toMatch(/ON CONFLICT \(date, timestamp, ticker\) DO NOTHING/);
+    expect(text).toMatch(/RETURNING id/);
+    const [dates, stamps, prices] = insert.slice(1) as unknown[][];
+    expect(dates).toEqual(Array(4).fill('2026-03-24'));
+    expect(stamps).toEqual([
+      '2026-03-24T14:00:00.000Z',
+      '2026-03-24T14:01:00.000Z',
+      '2026-03-24T14:04:00.000Z',
+      '2026-03-24T14:05:00.000Z',
+    ]);
+    expect(prices).toEqual(['5750.25', '5750.25', '5750.25', '5760.00']);
   });
 
-  it('returns stored 0 for empty API response', async () => {
+  it('splits more than 500 new rows into 500-row statements, oldest first', async () => {
     process.env.UW_API_KEY = 'uwkey';
+    // 501 minutes of ticks; the first 500 go in one statement, the last in
+    // the second. Value columns are non-zero so none is skipped.
+    const start = Date.parse('2026-03-24T04:00:00.000Z');
+    const rows = Array.from({ length: 501 }, (_v, i) =>
+      makeSpotRow({
+        start_time: new Date(start + i * 60_000).toISOString(),
+        time: new Date(start + i * 60_000).toISOString(),
+      }),
+    );
+    // UW does not promise an order: send them newest first.
+    stubFetch([...rows].reverse());
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._json).toMatchObject({
+      ticks: 501,
+      stored: 501,
+      submitted: 501,
+    });
+    const inserts = (mockSql.mock.calls as unknown[][]).filter((c) =>
+      (c[0] as string[]).join('?').includes('INSERT INTO spot_exposures'),
+    );
+    expect(inserts).toHaveLength(2);
+    expect((inserts[0]![2] as unknown[]).length).toBe(500);
+    expect((inserts[1]![2] as unknown[]).length).toBe(1);
+    // Oldest first, so a failed later chunk leaves a clean high-water mark.
+    expect((inserts[0]![2] as string[])[0]).toBe('2026-03-24T04:00:00.000Z');
+    expect((inserts[1]![2] as string[])[0]).toBe(rows.at(-1)!.start_time);
+  });
+
+  it('counts the rows that went in, not the rows sent, when they all conflict (the pre-rollover replay)', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // The mark is null before the rollover and UW still serves yesterday's
+    // session: every row is sent and every one is a conflict no-op.
+    mockSql.mockImplementation(async (strings: TemplateStringsArray) =>
+      strings.join('?').includes('INSERT INTO spot_exposures')
+        ? []
+        : [{ total: 0, nonzero: 0 }],
+    );
+    stubFetch([minute('13:30'), minute('13:31'), minute('13:32')]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._json).toMatchObject({ stored: 0, submitted: 3, ticks: 3 });
+  });
+
+  it('puts each row on its own ET date', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // 2026-03-24 02:00Z is 22:00 ET on the 23rd; 14:00Z is 10:00 ET on the 24th.
+    stubFetch([
+      makeSpotRow({
+        start_time: '2026-03-24T02:00:00.000Z',
+        time: '2026-03-24T02:00:00.000Z',
+      }),
+      makeSpotRow(),
+    ]);
+
+    await handler(authedReq(), mockResponse());
+
+    const insert = (mockSql.mock.calls as unknown[][]).find((c) =>
+      (c[0] as string[]).join('?').includes('INSERT INTO spot_exposures'),
+    )!;
+    expect(insert[1]).toEqual(['2026-03-23', '2026-03-24']);
+  });
+
+  it('is a 500 with the exception captured when a chunk INSERT is rejected', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    const dbError = new Error('insert rejected');
+    mockSql.mockImplementation(
+      async (strings: TemplateStringsArray, ...params: unknown[]) => {
+        if (strings.join('?').includes('INSERT INTO spot_exposures')) {
+          throw dbError;
+        }
+        return params.length > 0 ? [{ total: 0, nonzero: 0 }] : [];
+      },
+    );
+    stubFetch([minute('13:31')]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(500);
+    expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
+  });
+
+  // ── An empty answer is not a clean run (R4) ────────────────
+
+  it('after 09:40 ET an empty answer is skipped, with a metric and a Sentry error, and reads no table', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    vi.setSystemTime(AT_0940_ET);
     stubFetch([]);
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
     const res = mockResponse();
-    await handler(req, res);
+    await handler(authedReq(), res);
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
+      status: 'skipped',
       ticks: 0,
       stored: 0,
     });
-    // No INSERTs, no HWM query (short-circuits on empty), 1 data-quality SELECT
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(res._json).not.toMatchObject({ status: 'success' });
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'fetch_spot_gex.empty_payload',
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ date: '2026-03-24' }),
+      expect.stringContaining('no spot-exposure rows'),
+    );
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'fetch-spot-gex: UW returned no SPX spot-exposure rows (09:40 ET or later)',
+      'error',
+    );
+    // No HWM query, no INSERT, no data-quality SELECT.
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('before 09:40 ET an empty answer is skipped and counted, but quiet in Sentry', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    vi.setSystemTime(BEFORE_0940_ET);
+    stubFetch([]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._json).toMatchObject({ status: 'skipped', ticks: 0 });
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'fetch_spot_gex.empty_payload',
+    );
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(mockSql).not.toHaveBeenCalled();
   });
 
   it('uses time field when start_time is absent', async () => {
@@ -466,12 +607,35 @@ describe('fetch-spot-gex handler', () => {
     expect(res._json).toMatchObject({ status: 'skipped', stored: 0 });
     expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
     expect(Sentry.captureMessage).toHaveBeenCalledWith(
-      expect.stringContaining('newest UW spot-exposure row'),
+      'fetch-spot-gex: the newest UW SPX spot-exposure row is all-zero, nothing stored (09:40 ET or later)',
       'error',
     );
     expect(metrics.increment).toHaveBeenCalledWith(
       'fetch_spot_gex.zero_row_skip',
     );
+    // The row's time is in the log detail, not the Sentry text.
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ newestTime: '2026-03-24T13:39:00.000Z' }),
+      expect.any(String),
+    );
+  });
+
+  it('sends the same Sentry text every minute while the feed is stuck, so it is one issue', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    const texts: string[] = [];
+    for (const [now, hhmm] of [
+      ['2026-03-24T13:41:00.000Z', '13:40'],
+      ['2026-03-24T13:42:00.000Z', '13:41'],
+      ['2026-03-24T13:43:00.000Z', '13:42'],
+    ] as const) {
+      vi.setSystemTime(new Date(now));
+      stubFetch([minute(hhmm, ZERO_VALUES)]);
+      await handler(authedReq(), mockResponse());
+      texts.push(vi.mocked(Sentry.captureMessage).mock.calls.at(-1)![0]);
+    }
+
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(3);
+    expect(new Set(texts).size).toBe(1);
   });
 
   it('treats null, blank and missing columns as zero', async () => {
@@ -529,8 +693,8 @@ describe('fetch-spot-gex handler', () => {
       zeroSkipped: 2,
       timestamp: '2026-03-24T13:33:00.000Z',
     });
-    // 1 HWM SELECT + 2 INSERTs + 1 data-quality SELECT = 4
-    expect(mockSql).toHaveBeenCalledTimes(4);
+    // 1 HWM SELECT + 1 unnest INSERT (the 2 real rows) + 1 data-quality SELECT
+    expect(mockSql).toHaveBeenCalledTimes(3);
     expect(metrics.increment).toHaveBeenCalledWith(
       'fetch_spot_gex.zero_row_skip',
     );
