@@ -467,6 +467,8 @@ As of 2026-10-29: 200 numbered migrations and about 90 live tables.
 | ------------------ | -------------------------------- | ---------------------------------------- | --------------- |
 | `flow_data`        | Market Tide & net flow by source | ncp, npp, net_volume, source             | 5-minute        |
 | `flow_data_revisions` | Append-only log of every value a closed-bucket `flow_data` row had (ETF tide, 0DTE index flow, SPX 0DTE greek flow), so "what did it show at 10:05" can be answered | the `flow_data` columns, seen_at, writer, is_first | One row per insert or change |
+| `vega_flow_etf_revisions` | Append-only log of every value a `vega_flow_etf` row had (SPY and QQQ greek flow, all expiries and 0DTE); rows seeded by migration #207 are labelled `seed_restated` because they were already restated | the `vega_flow_etf` columns, seen_at, writer, is_first | One row per insert or change |
+| `nope_ticks_revisions` | Append-only log of every value a `nope_ticks` row had (SPY NOPE); seeded and labelled the same way | the `nope_ticks` columns, seen_at, writer, is_first | One row per insert or change |
 | `greek_exposure`   | MM Greek exposure per expiration | gamma, charm, delta, vanna (call/put)    | Daily by expiry |
 | `spot_exposures`   | Aggregate GEX per timestamp      | gamma/charm/vanna (oi/vol/dir)           | 1-minute        |
 | `strike_exposures` | Per-strike Greek profile         | gamma/charm/delta/vanna by strike+expiry | 5-minute        |

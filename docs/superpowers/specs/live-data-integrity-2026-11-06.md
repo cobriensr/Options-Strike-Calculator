@@ -202,6 +202,45 @@ Tier 0 must be live before **Mon 2026-11-09 09:25 ET**. Each phase is ≤5 files
     - Log the first-write-wins sources too (`market_tide`, net flow)? Default: no, they have no revisions.
     - A reader for the as-of query (a helper in `api/_lib/`)? Default: only the documented query until a replay needs one.
     - Prune? Default: never; revisit if a table scan ever matters.
+- **P0.9 `vega_flow_etf` and `nope_ticks` revision logs (owner decision, 2026-11-07). Same deadline as P0.8: live before Mon 2026-11-09 09:25 ET.** It repeats P0.8 for two more series that UW restates and the system overwrites.
+  - **Problem.** `vega_flow_etf` (SPY and QQQ greek flow): `upsertGreekFlowTicks` updates every conflicting row with no guard, every minute, with the whole day re-sent (`fetch-greek-flow-etf`), again at 22:00 UTC (`reconcile-greek-flow-etf`), and in the two backfills. `nope_ticks` (SPY NOPE): `fetch-nope` calls `bulkUpsert` with no `conflictUpdateColumns`, so every non-key column is rewritten on every conflict, `ingested_at` included, every minute; the comment in `fetch-nope.ts` that said stable minutes are DO NOTHING was false. UW restates both, so a replay of "what the signal said at 10:05" reads numbers that did not exist at 10:05. The evidence is the local, gitignored `docs/tmp/live-data-integrity-2026-11-06/pit-overwrite-audit.md`.
+  - **Decision.** The P0.8 pattern: the tables keep the latest value (no reader changes), and two new append-only tables record every value a row had, with the time it was stored and the writer's name.
+  - **Tables, migration #207** (one migration; #204 and #205 belong to `feat/futures-session-front-month`, #206 is P0.8). `vega_flow_etf_revisions` has the key columns `ticker`, `date`, `timestamp`, `expiry` and the ten value columns of `vega_flow_etf` with the same types and nullability (the eight NUMERIC flows, `transactions`, `volume`); `nope_ticks_revisions` has `ticker`, `timestamp` and the nine value columns of `nope_ticks` (`ingested_at` is not copied: `seen_at` is the log's time). Both add `id BIGSERIAL PRIMARY KEY` (a row can return to an earlier value, and keying on `seen_at` would key on `now()`), `seen_at TIMESTAMPTZ NOT NULL DEFAULT now()`, `writer TEXT NOT NULL`, `is_first BOOLEAN NOT NULL`, and an index on `(ticker, timestamp, seen_at)` for the as-of query. A test compares each table's columns with its source table's, column by column.
+  - **The seed differs from P0.8.** These rows already hold restated values: `vega_flow_etf.inserted_at` is the first-insert time but the values are the latest, and `nope_ticks.ingested_at` has been overwritten every minute, so no first-seen value can be recovered. Each table is seeded in the same migration with `seen_at = now()` (the migration's time), `writer = 'seed_restated'` and `is_first = true`, guarded by `NOT EXISTS` on the key so a re-run adds nothing. A strict as-of query at a time before the migration then correctly finds nothing, and a fallback reader that takes the earliest stored revision gets the restated value, labelled as such.
+  - **The writes.**
+    - `upsertGreekFlowTicks(ticker, ticks, date, expiry, writer)` becomes one data-modifying CTE per call: the `INSERT … SELECT FROM unnest … ON CONFLICT DO UPDATE … WHERE (old values) IS DISTINCT FROM (new values) RETURNING … (xmax = 0) AS is_first`, and an `INSERT INTO vega_flow_etf_revisions … SELECT … FROM up`. An unchanged row is not rewritten and logs nothing, so `updated` now counts rows that really changed. A failed log insert fails the statement and the table does not change.
+    - `bulkUpsert` gets an opt-in `revisionLog: { table, writer }`, used by `fetch-nope` and, through `scripts/_lib/greek-nope-backfill.mjs`, `backfill-nope.mjs` and the two vega backfills. Chosen over a dedicated nope statement because the CTE, the `IS DISTINCT FROM` guard and the chunking are the same for every table, `bulkUpsert` already holds the chunk transaction and the identifier checks, and the scripts can import it (it has no runtime imports); a dedicated statement would copy all three. With `revisionLog` set, the helper updates only the columns it is told to (so `nope_ticks.ingested_at` keeps its first-ingest time), rewrites a row only when one of them differs, logs it, and returns the inserted and updated counts. Behavior without `revisionLog` is unchanged, for its other callers.
+  - **Every writer logs.**
+    - `vega_flow_etf`: `fetch-greek-flow-etf` and `reconcile-greek-flow-etf` (through `upsertGreekFlowTicks`; the reconcile now fails its run on a failed write instead of reporting success), `scripts/backfill-greek-flow-etf.mjs` and `scripts/backfill-greek-flow-etf-0dte.mjs` (now one statement per ticker and day through `bulkUpsert`; the all-expiries script's `ON CONFLICT (ticker, timestamp)` named a constraint that migration #129 dropped, so it failed on every row and still exited 0, and it now conflicts on `(ticker, timestamp, expiry)`). All three backfills now exit 1 when a write failed.
+    - `nope_ticks`: `fetch-nope` and `scripts/backfill-nope.mjs` (which also set `ingested_at = now()` on every conflict and swallowed insert errors).
+    - `derive-vega-spike-floors.mjs`, `replay-spike-detection.mjs` and the readers only read. No Python or `uw-stream` code writes either table.
+  - **Queries** (the pglite tests pin them). First seen is the earliest revision; final is the table itself; what the system showed at `:t`:
+
+    ```sql
+    -- vega_flow_etf_revisions (:expiry is NULL for the all-expiries rows)
+    SELECT DISTINCT ON (ticker, timestamp, expiry)
+           ticker, date, timestamp, expiry, dir_vega_flow, otm_dir_vega_flow,
+           total_vega_flow, otm_total_vega_flow, dir_delta_flow, otm_dir_delta_flow,
+           total_delta_flow, otm_total_delta_flow, transactions, volume, seen_at
+    FROM vega_flow_etf_revisions
+    WHERE ticker = :ticker AND expiry IS NOT DISTINCT FROM :expiry
+      AND timestamp <= :t AND seen_at <= :t
+    ORDER BY ticker, timestamp, expiry, seen_at DESC, id DESC;
+
+    -- nope_ticks_revisions
+    SELECT DISTINCT ON (ticker, timestamp) ticker, timestamp, call_vol, put_vol,
+           stock_vol, call_delta, put_delta, call_fill_delta, put_fill_delta,
+           nope, nope_fill, seen_at
+    FROM nope_ticks_revisions
+    WHERE ticker = :ticker AND timestamp <= :t AND seen_at <= :t
+    ORDER BY ticker, timestamp, seen_at DESC, id DESC;
+    ```
+
+  - **Backup.** Both revision tables are in `TABLES` of `api/cron/backup-tables.ts`: they hold the only copy of the first-seen values.
+  - **Deploy order.** As P0.8: #207 is applied on production from this branch (`scripts/migrate-db.ts`; #206 is already applied) before the push, with the owner's OK. The code without the tables fails every write loudly: the live greek-flow cron marks the leg failed, `fetch-nope` throws, and the reconcile now fails its run. Unlike P0.8 the order does not change what the seed means: the P0.8 seed is first-seen only if no unlogged upsert ran first, while every row this seed copies is already restated and is labelled so, whichever order.
+  - **Size.** `vega_flow_etf`: about 390 minute bars per ticker per scope per day, two tickers and up to two scopes; `nope_ticks`: about 390 a day. Revisions add one row per UW restatement. The seed copies every existing row of both tables (tens of thousands each) in one statement each. Check after week 1 with `SELECT writer, count(*) FROM vega_flow_etf_revisions GROUP BY 1` and the same for `nope_ticks_revisions`.
+  - **Files.** `api/_lib/db-migrations.ts` and `api/__tests__/db.test.ts` (#207), `api/_lib/greek-flow-etf-store.ts`, `api/cron/fetch-greek-flow-etf.ts`, `api/cron/reconcile-greek-flow-etf.ts`, `api/_lib/bulk-upsert.ts`, `api/cron/fetch-nope.ts`, `api/cron/backup-tables.ts`, the three backfill scripts (`scripts/backfill-greek-flow-etf.mjs`, `scripts/backfill-greek-flow-etf-0dte.mjs`, `scripts/backfill-nope.mjs`) with their shared writes in `scripts/_lib/greek-nope-backfill.mjs`, their tests (real SQL in pglite; the scripts run end to end as child processes against `scripts/_lib/greek-nope-backfill-stub.mjs`), and this spec.
+  - **Open questions** (defaults in force): a reader for the as-of query (default: only the documented queries until a replay needs one); pruning (default: never); logging other overwriting series (the pit-overwrite audit lists them; default: each in its own phase).
 
 **Tier 1: catch it without being asked**
 
@@ -264,7 +303,8 @@ Tier 0 must be live before **Mon 2026-11-09 09:25 ET**. Each phase is ≤5 files
 
 - **Tier 0:**
   - `api/cron/fetch-etf-tide.ts`, `fetch-zero-dte-flow.ts`, `fetch-greek-flow.ts`
-  - `api/_lib/flow-bucket-store.ts`, migration #206 in `api/_lib/db-migrations.ts` (`flow_data_revisions`), and the backfill scripts' inserts (P0.7)
+  - `api/_lib/flow-bucket-store.ts`, migration #206 in `api/_lib/db-migrations.ts` (`flow_data_revisions`), and the backfill scripts' inserts (P0.8)
+  - `api/_lib/greek-flow-etf-store.ts`, `api/_lib/bulk-upsert.ts`, `api/cron/fetch-nope.ts`, migration #207 (`vega_flow_etf_revisions`, `nope_ticks_revisions`) and the three backfill scripts' writes (P0.9)
   - `api/cron/reconcile-zero-dte-greek-flow.ts` and `api/_lib/spx-greek-flow.ts` (P0.2), with its `vercel.json` and `SCHEDULE_MAP` entries
   - `api/cron/fetch-strike-exposure.ts`, `fetch-strike-all.ts`, `compute-zero-gamma.ts`, `fetch-gex-0dte.ts`, `fetch-spot-gex.ts`, `fetch-market-internals.ts`
   - `api/_lib/market-internals-settle.ts` (P0.5), `scripts/backfill-market-internals.ts` and `scripts/_lib/market-internals-backfill.ts`
@@ -281,7 +321,7 @@ Tier 0 must be live before **Mon 2026-11-09 09:25 ET**. Each phase is ≤5 files
 
 ## Data dependencies
 
-- One new table, `flow_data_revisions` (P0.7, migration #206, applied on production from this branch with `scripts/migrate-db.ts` before the push, with the owner's OK). P1.1 may add an `audit-data-integrity` Sentry monitor by hand (rule 6262822 routing).
+- Three new tables: `vega_flow_etf_revisions` and `nope_ticks_revisions` (P0.9, migration #207, applied the same way, after #206), and `flow_data_revisions` (P0.8, migration #206, applied on production from this branch with `scripts/migrate-db.ts` before the push, with the owner's OK). P1.1 may add an `audit-data-integrity` Sentry monitor by hand (rule 6262822 routing).
 - UW REST for refills (~300 ETF requests, ~300 greek flow, ~300 zero-DTE index), off-hours only.
 - Schwab price history for `market_internals` and the probe in P0.5, outside 13:00–21:59 UTC on weekdays.
 
