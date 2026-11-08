@@ -13,6 +13,12 @@
  * Idempotent — skips (ticker, date) pairs that already have non-null
  * expiry rows. Pass --force to re-upsert anyway.
  *
+ * Each (ticker, day) is one statement (scripts/_lib/greek-nope-backfill.mjs): a
+ * row is rewritten only when a value differs, and every inserted or changed
+ * row is appended to vega_flow_etf_revisions under the writer
+ * 'backfill-greek-flow-etf-0dte' (spec P0.9). Exits 1 if a fetch or a write
+ * failed.
+ *
  * Usage:
  *   UW_API_KEY=... DATABASE_URL=... node scripts/backfill-greek-flow-etf-0dte.mjs
  *   node scripts/backfill-greek-flow-etf-0dte.mjs --dry-run
@@ -27,6 +33,10 @@
  */
 
 import { neon } from '@neondatabase/serverless';
+
+import { storeVegaFlowTicks } from './_lib/greek-nope-backfill.mjs';
+
+const WRITER = 'backfill-greek-flow-etf-0dte';
 
 const UW_API_KEY = process.env.UW_API_KEY;
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -103,54 +113,6 @@ async function fetchPerExpiryTicks(ticker, date) {
   return uwGet(`/stock/${ticker}/greek-flow/${date}?date=${date}`);
 }
 
-// ── Upsert (mirrors api/_lib/greek-flow-etf-store.ts) ───────
-
-async function upsertTicks(ticker, ticks, date, expiry) {
-  if (ticks.length === 0) return { inserted: 0, updated: 0, failed: 0 };
-  let inserted = 0;
-  let updated = 0;
-  let failed = 0;
-
-  for (const tick of ticks) {
-    try {
-      const result = await sql`
-        INSERT INTO vega_flow_etf (
-          ticker, date, timestamp, expiry,
-          dir_vega_flow, otm_dir_vega_flow, total_vega_flow, otm_total_vega_flow,
-          dir_delta_flow, otm_dir_delta_flow, total_delta_flow, otm_total_delta_flow,
-          transactions, volume
-        )
-        VALUES (
-          ${ticker}, ${date}, ${tick.timestamp}, ${expiry},
-          ${tick.dir_vega_flow}, ${tick.otm_dir_vega_flow}, ${tick.total_vega_flow}, ${tick.otm_total_vega_flow},
-          ${tick.dir_delta_flow}, ${tick.otm_dir_delta_flow}, ${tick.total_delta_flow}, ${tick.otm_total_delta_flow},
-          ${tick.transactions}, ${tick.volume}
-        )
-        ON CONFLICT (ticker, timestamp, expiry) DO UPDATE SET
-          dir_vega_flow        = EXCLUDED.dir_vega_flow,
-          otm_dir_vega_flow    = EXCLUDED.otm_dir_vega_flow,
-          total_vega_flow      = EXCLUDED.total_vega_flow,
-          otm_total_vega_flow  = EXCLUDED.otm_total_vega_flow,
-          dir_delta_flow       = EXCLUDED.dir_delta_flow,
-          otm_dir_delta_flow   = EXCLUDED.otm_dir_delta_flow,
-          total_delta_flow     = EXCLUDED.total_delta_flow,
-          otm_total_delta_flow = EXCLUDED.otm_total_delta_flow,
-          transactions         = EXCLUDED.transactions,
-          volume               = EXCLUDED.volume
-        RETURNING (xmax = 0) AS was_insert
-      `;
-      if (result[0]?.was_insert) inserted++;
-      else updated++;
-    } catch (err) {
-      console.warn(
-        `    upsert error (${ticker} ${tick.timestamp}): ${err.message}`,
-      );
-      failed++;
-    }
-  }
-  return { inserted, updated, failed };
-}
-
 // ── Main ────────────────────────────────────────────────────
 
 async function main() {
@@ -173,6 +135,7 @@ async function main() {
     fetched: 0,
     inserted: 0,
     updated: 0,
+    unchanged: 0,
     failed: 0,
   };
 
@@ -226,12 +189,19 @@ async function main() {
         continue;
       }
 
-      const result = await upsertTicks(ticker, ticks, date, date);
+      const result = await storeVegaFlowTicks(sql, {
+        ticker,
+        date,
+        expiry: date,
+        ticks,
+        writer: WRITER,
+      });
       totals.inserted += result.inserted;
       totals.updated += result.updated;
+      totals.unchanged += result.unchanged;
       totals.failed += result.failed;
       perTickerSummary.push(
-        `${ticker}: ${ticks.length} ticks (${result.inserted}↑ ${result.updated}↻ ${result.failed}✗)`,
+        `${ticker}: ${ticks.length} ticks (${result.inserted}↑ ${result.updated}↻ ${result.unchanged}= ${result.failed}✗)`,
       );
     }
 
@@ -244,6 +214,7 @@ async function main() {
   console.log(`  Ticks fetched:               ${totals.fetched}`);
   console.log(`  Inserted:                    ${totals.inserted}`);
   console.log(`  Updated:                     ${totals.updated}`);
+  console.log(`  Unchanged:                   ${totals.unchanged}`);
   console.log(`  Failed:                      ${totals.failed}`);
 
   if (totals.failed > 0) {

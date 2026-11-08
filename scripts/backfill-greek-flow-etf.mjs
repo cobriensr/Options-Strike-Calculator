@@ -12,6 +12,11 @@
  * finalized them — diverging by 5–40× on the May 2026 sessions before
  * we caught it.
  *
+ * Each day is one statement (scripts/_lib/greek-nope-backfill.mjs): a row is
+ * rewritten only when a value differs, and every inserted or changed row is
+ * appended to vega_flow_etf_revisions under the writer 'backfill-greek-flow-etf'
+ * (spec P0.9). Exits 1 if a fetch or a write failed.
+ *
  * Usage:
  *   # Last N trading days (default 30):
  *   UW_API_KEY=... DATABASE_URL=... node scripts/backfill-greek-flow-etf.mjs
@@ -23,6 +28,10 @@
  */
 
 import { neon } from '@neondatabase/serverless';
+
+import { storeVegaFlowTicks } from './_lib/greek-nope-backfill.mjs';
+
+const WRITER = 'backfill-greek-flow-etf';
 
 const UW_API_KEY = process.env.UW_API_KEY;
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -106,56 +115,6 @@ async function fetchGreekFlow(ticker, date) {
   return body.data ?? [];
 }
 
-// ── Store every minute bar (no downsampling) ────────────────
-
-async function storeTicks(ticks, ticker, date) {
-  if (ticks.length === 0) return { inserted: 0, updated: 0, total: 0 };
-
-  let inserted = 0;
-  let updated = 0;
-
-  for (const tick of ticks) {
-    try {
-      const result = await sql`
-        INSERT INTO vega_flow_etf (
-          ticker, date, timestamp,
-          dir_vega_flow, otm_dir_vega_flow,
-          total_vega_flow, otm_total_vega_flow,
-          dir_delta_flow, otm_dir_delta_flow,
-          total_delta_flow, otm_total_delta_flow,
-          transactions, volume
-        )
-        VALUES (
-          ${ticker}, ${date}, ${tick.timestamp},
-          ${tick.dir_vega_flow}, ${tick.otm_dir_vega_flow},
-          ${tick.total_vega_flow}, ${tick.otm_total_vega_flow},
-          ${tick.dir_delta_flow}, ${tick.otm_dir_delta_flow},
-          ${tick.total_delta_flow}, ${tick.otm_total_delta_flow},
-          ${tick.transactions}, ${tick.volume}
-        )
-        ON CONFLICT (ticker, timestamp) DO UPDATE SET
-          dir_vega_flow        = EXCLUDED.dir_vega_flow,
-          otm_dir_vega_flow    = EXCLUDED.otm_dir_vega_flow,
-          total_vega_flow      = EXCLUDED.total_vega_flow,
-          otm_total_vega_flow  = EXCLUDED.otm_total_vega_flow,
-          dir_delta_flow       = EXCLUDED.dir_delta_flow,
-          otm_dir_delta_flow   = EXCLUDED.otm_dir_delta_flow,
-          total_delta_flow     = EXCLUDED.total_delta_flow,
-          otm_total_delta_flow = EXCLUDED.otm_total_delta_flow,
-          transactions         = EXCLUDED.transactions,
-          volume               = EXCLUDED.volume
-        RETURNING (xmax = 0) AS was_insert
-      `;
-      if (result[0]?.was_insert) inserted++;
-      else updated++;
-    } catch (err) {
-      console.warn(`  Upsert error: ${err.message}`);
-    }
-  }
-
-  return { inserted, updated, total: ticks.length };
-}
-
 // ── Format for display ──────────────────────────────────────
 
 function fmt(val) {
@@ -203,23 +162,33 @@ async function main() {
 
   let totalInserted = 0;
   let totalUpdated = 0;
+  let totalUnchanged = 0;
   let totalBars = 0;
+  let storeFailures = 0;
 
   for (const date of tradingDays) {
     for (const ticker of TICKERS) {
       await new Promise((r) => setTimeout(r, 300));
 
       const ticks = await fetchGreekFlow(ticker, date);
-      const result = await storeTicks(ticks, ticker, date);
+      const result = await storeVegaFlowTicks(sql, {
+        ticker,
+        date,
+        expiry: null,
+        ticks,
+        writer: WRITER,
+      });
 
       totalInserted += result.inserted;
       totalUpdated += result.updated;
-      totalBars += result.total;
+      totalUnchanged += result.unchanged;
+      totalBars += ticks.length;
+      storeFailures += result.failed;
 
       const dvMax = ticks.length > 0 ? fmt(maxAbsDirVega(ticks)) : 'N/A';
 
       console.log(
-        `  ${date} ${ticker}: ${result.total} ticks (${result.inserted} new, ${result.updated} updated) | dir_vega max: ${dvMax}`,
+        `  ${date} ${ticker}: ${ticks.length} ticks (${result.inserted} new, ${result.updated} updated, ${result.unchanged} unchanged, ${result.failed} failed) | dir_vega max: ${dvMax}`,
       );
     }
   }
@@ -229,9 +198,11 @@ async function main() {
   console.log(`  Total bars seen: ${totalBars}`);
   console.log(`  Inserted: ${totalInserted}`);
   console.log(`  Updated:  ${totalUpdated}`);
+  console.log(`  Unchanged: ${totalUnchanged}`);
   console.log(`  Fetch failures: ${fetchFailures}`);
+  console.log(`  Store failures (ticks): ${storeFailures}`);
 
-  if (fetchFailures > 0) {
+  if (fetchFailures > 0 || storeFailures > 0) {
     process.exitCode = 1;
   }
 }
