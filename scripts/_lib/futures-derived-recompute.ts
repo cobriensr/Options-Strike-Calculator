@@ -5,8 +5,9 @@
  * and their writers only ever compute "now", so the old rows stay wrong until
  * recomputed:
  *
- * - `futures_snapshots` (ES, NQ): price, 1h change, day change, volume ratio,
- *   recomputed with `computeSnapshot` exactly as fetch-futures-snapshot calls it.
+ * - `futures_snapshots` (ES, NQ, RTY, CL, GC, ZN): price, 1h change, day change,
+ *   volume ratio, recomputed with `computeSnapshot` exactly as
+ *   fetch-futures-snapshot calls it.
  * - `market_snapshots.pre_market_data` (auto-filled rows only): the four Globex
  *   numbers, recomputed with the cron's own window and aggregate (`queryGlobex`).
  * - `ws_gamma_setup_fires.es_basis_change_5m`: recomputed with
@@ -20,8 +21,10 @@
  * Before trusting any in-span difference, each store recomputes a control set
  * of rows outside the repaired span, where the bars were never bad. It must
  * reproduce what is stored; `--apply` refuses unless every store's does, at
- * 100%. A method that cannot reproduce clean rows would mix its own error into
- * the repair.
+ * 100%. For the snapshots of RTY, CL, GC and ZN, whose minute bar can land after
+ * the cron read it, a miss that a late bar explains also counts (see
+ * classifyThinMiss); ES and NQ must match exactly. A method that cannot
+ * reproduce clean rows would mix its own error into the repair.
  *
  * The dry run (the default) reads the database through read-only transactions
  * and writes only report.txt. `--apply` backs up every row it will change, then
@@ -35,6 +38,7 @@ import { neonConfig } from '@neondatabase/serverless';
 import { isMarketHours } from '../../api/_lib/cron-helpers.js';
 import { getDb, withDbRetry } from '../../api/_lib/db.js';
 import {
+  FUTURES_SYMBOLS,
   computeSnapshot,
   type FuturesSymbol,
   type SnapshotResult,
@@ -58,8 +62,11 @@ import {
   LATE_BAR_MAX_AGE_MIN,
   affectedSnapshotFields,
   aggregateWindow,
+  attributeByValue,
+  buildPreSeries,
   buildRepair,
   classifyMismatch,
+  classifyThinMiss,
   inputsMatchSnapshot,
   parseBackup,
   preRepairWindow,
@@ -69,8 +76,10 @@ import {
   type Bar,
   type MismatchClass,
   type OlderBar,
+  type PreBar,
   type Repair,
   type SnapshotField,
+  type ValueField,
   type WindowAggregate,
 } from './futures-derived-attribution.js';
 
@@ -79,8 +88,29 @@ import {
 export const STORES = ['snapshots', 'premarket', 'fires'] as const;
 export type Store = (typeof STORES)[number];
 
-const SYMBOLS = ['ES', 'NQ'] as const satisfies readonly FuturesSymbol[];
-type Sym = (typeof SYMBOLS)[number];
+/**
+ * Every root futures_snapshots holds. Phase 2 repaired ES and NQ and deleted
+ * the Saturday junk bars of RTY, CL, GC and ZN, so only a deleted bar can make
+ * one of those four roots' fields repair-affected.
+ */
+const SYMBOLS = FUTURES_SYMBOLS;
+type Sym = FuturesSymbol;
+
+/**
+ * ES and NQ print every second, so a minute's bar is out before the cron reads
+ * it and their method control must match exactly. The other roots can print
+ * nothing between the minute and the read, so the cron saw one bar fewer than the
+ * table holds now (`_flush` in uw-stream emits a minute only once a print of a
+ * later minute has arrived). Their control also passes a miss that a late bar
+ * explains (ruling 4).
+ */
+const EXACT_CONTROL_ROOTS: readonly Sym[] = ['ES', 'NQ'];
+const isThinRoot = (symbol: Sym): boolean =>
+  !EXACT_CONTROL_ROOTS.includes(symbol);
+
+/** What the gate counts as a match in the snapshot control. */
+const SNAPSHOT_CONTROL_LABEL =
+  'control set matches (a thin root: or is explained by a late bar)';
 
 const MINUTE_MS = 60_000;
 const DAY_MS = 86_400_000;
@@ -96,8 +126,8 @@ export const SNAPSHOT_LOOKBACK_MS = 20 * DAY_MS;
 /** computeEsBasisChange5m reads a 6-minute SPX window (gamma-detector.ts). */
 export const BASIS_LOOKBACK_MS = 6 * MINUTE_MS;
 
-/** Concurrent computeSnapshot / basis / Globex recomputes. */
-const CONCURRENCY = 8;
+/** Concurrent computeSnapshot / basis / Globex recomputes: six roots take about 160,000 of them. */
+const CONCURRENCY = 16;
 /**
  * The snapshot method control starts here: every futures_snapshots row from
  * this day on, per symbol, must recompute equal to what is stored. Rows before
@@ -436,7 +466,7 @@ export function checkApplyGate(
   const problems: string[] = [];
   for (const { store, toChange, control } of stores) {
     const expected = expects?.[store];
-    if (expects != null && toChange !== expected) {
+    if (expects != null && expected !== undefined && toChange !== expected) {
       problems.push(
         `${store}: the fresh plan changes ${toChange} rows, --expect-${store} ${expected ?? 'missing'} was given`,
       );
@@ -548,6 +578,8 @@ interface SymbolData {
   bars: Bar[];
   repair: Repair;
   backup: BackupBar[];
+  /** The same bars as they were before Phase 2, for finding a stored row's inputs by value. */
+  series: PreBar[];
 }
 
 interface RawBar {
@@ -609,6 +641,7 @@ async function loadSymbolData(
       bars,
       backup: mine,
       repair: buildRepair(mine, new Map(bars.map((b) => [b.tsMs, b]))),
+      series: buildPreSeries(mine, bars),
     });
     console.log(
       `bars ${symbol}: ${bars.length} read; Phase 2 backup ${mine.length} rows (${mine.filter((b) => b.op === 'delete').length} deleted)`,
@@ -940,6 +973,22 @@ export interface StoreResult<C> {
   control: Control;
 }
 
+/** Rows and fields the value rule made affected that the ruling 1 rule did not. */
+export interface ValueRuleStats {
+  rows: number;
+  fields: Record<SnapshotField, number>;
+  /** Matched bars by what Phase 2 did to them. */
+  byKind: { deleted: number; 'close-changed': number };
+  /** The first SAMPLE_N such rows, with the matched bar. */
+  samples: string[];
+}
+
+/** A price difference between the stored row and the recompute that is not written. */
+export interface UnwrittenDiff {
+  diff: number;
+  line: string;
+}
+
 /** Rows with an affected field whose recompute is stale or missing: left as stored. */
 export interface LeftAloneStats {
   stale: number;
@@ -965,11 +1014,31 @@ export interface SnapshotSymbolReport {
   unaffectedLeftAlone: number;
   /** The rows counted in `affectedLeftAlone`, broken down. */
   leftAlone: LeftAloneStats;
+  valueRule: ValueRuleStats;
+  /** Stored fields for which no pre-repair bar matched by value. */
+  unmatched: Record<ValueField, number>;
+  /** The TOP_UNWRITTEN largest |stored - recomputed| price differences that are not written. */
+  unwritten: UnwrittenDiff[];
   /** Rows where the mirrored input rule disagrees with computeSnapshot. */
   attributionInconsistent: number;
   controlRows: number;
   controlMatched: number;
   controlDays: number;
+  /** A thin root's control, split by explanation; null for ES and NQ, which must match exactly. */
+  thin: ThinControl | null;
+}
+
+/** A thin root's control rows: exact, or a miss explained by a late bar, or neither. */
+export interface ThinControl {
+  rows: number;
+  exact: number;
+  lateBar: number;
+  lateVolume: number;
+  other: number;
+  /** Minutes older than the latest closed bar, for each late-bar row. */
+  lateAges: number[];
+  /** The first SAMPLE_N other rows, with every field. */
+  otherRows: string[];
 }
 
 export interface SnapshotInfoDay {
@@ -999,6 +1068,8 @@ export interface SnapshotInfo {
 export interface SnapshotStore extends StoreResult<SnapshotChange> {
   symbols: SnapshotSymbolReport[];
   info: SnapshotInfo[];
+  /** The method control's rows, per symbol, classified like the information window. */
+  controlMisses: SnapshotInfo[];
 }
 
 export interface PremarketStore extends StoreResult<PremarketChange> {
@@ -1057,8 +1128,11 @@ const emptyClasses = (): Record<MismatchClass, number> => ({
   unexplained: 0,
 });
 
-/** Classifies every mismatch of the rows before the control start. */
-async function classifyInfoWindow(symbol: Sym): Promise<SnapshotInfo> {
+/** Classifies every mismatch among already evaluated rows: september-window, late-bar or unexplained. */
+async function classifyEvals(
+  symbol: Sym,
+  evals: SnapshotEvaluation[],
+): Promise<SnapshotInfo> {
   const info: SnapshotInfo = {
     symbol,
     rows: 0,
@@ -1071,12 +1145,6 @@ async function classifyInfoWindow(symbol: Sym): Promise<SnapshotInfo> {
     unexplainedOlderMatch: 0,
     unexplained: [],
   };
-  const rows = await readSnapshots(
-    symbol,
-    SNAPSHOT_INFO_FROM_MS,
-    SNAPSHOT_CONTROL_FROM_MS,
-  );
-  const evals = await evaluateSnapshots(rows, `${symbol} snapshots info`);
   for (const { row, result, outcome } of evals) {
     const day = (info.byDay[utcDay(row.tsMs)] ??= {
       rows: 0,
@@ -1133,6 +1201,19 @@ async function classifyInfoWindow(symbol: Sym): Promise<SnapshotInfo> {
   return info;
 }
 
+/** Classifies every mismatch of the rows before the control start. */
+async function classifyInfoWindow(symbol: Sym): Promise<SnapshotInfo> {
+  const rows = await readSnapshots(
+    symbol,
+    SNAPSHOT_INFO_FROM_MS,
+    SNAPSHOT_CONTROL_FROM_MS,
+  );
+  return classifyEvals(
+    symbol,
+    await evaluateSnapshots(rows, `${symbol} snapshots info`),
+  );
+}
+
 /**
  * The method control: rows written by today's code, which must recompute equal
  * to what is stored. Rows before SNAPSHOT_CONTROL_FROM_MS are classified as
@@ -1152,6 +1233,65 @@ async function snapshotControl(
   report.controlMatched = evals.filter((e) => e.outcome.kind === 'same').length;
   report.controlDays = new Set(rows.map((r) => utcDay(r.tsMs))).size;
   return evals;
+}
+
+/**
+ * Splits a thin root's control rows into exact matches, misses that a late bar
+ * explains (late-bar, late-volume: see classifyThinMiss) and the rest. The set
+ * of explained evaluations counts as a match in the gate.
+ */
+async function explainThinControl(
+  symbol: Sym,
+  evals: SnapshotEvaluation[],
+): Promise<{ thin: ThinControl; explained: Set<SnapshotEvaluation> }> {
+  const thin: ThinControl = {
+    rows: evals.length,
+    exact: 0,
+    lateBar: 0,
+    lateVolume: 0,
+    other: 0,
+    lateAges: [],
+    otherRows: [],
+  };
+  const explained = new Set<SnapshotEvaluation>();
+  for (const ev of evals) {
+    const { row, result, outcome } = ev;
+    if (outcome.kind === 'same') {
+      thin.exact += 1;
+      continue;
+    }
+    let verdict: ReturnType<typeof classifyThinMiss> = {
+      cls: 'other',
+      ageMin: null,
+    };
+    if (outcome.kind === 'change' && result.kind === 'fresh') {
+      const older = outcome.fields.includes('price')
+        ? await olderBarsBefore(symbol, Date.parse(result.snapshot.latestTs))
+        : [];
+      verdict = classifyThinMiss({
+        fields: outcome.fields,
+        atMs: row.tsMs,
+        storedPrice: row.stored.price,
+        olderBars: older,
+        storedVolumeRatio: row.stored.volumeRatio,
+        recomputedVolumeRatio: outcome.to.volumeRatio,
+      });
+    }
+    if (verdict.cls === 'late-bar') {
+      thin.lateBar += 1;
+      if (verdict.ageMin != null) thin.lateAges.push(verdict.ageMin);
+      explained.add(ev);
+    } else if (verdict.cls === 'late-volume') {
+      thin.lateVolume += 1;
+      explained.add(ev);
+    } else {
+      thin.other += 1;
+      if (thin.otherRows.length < SAMPLE_N) {
+        thin.otherRows.push(mismatchLine(row, outcome));
+      }
+    }
+  }
+  return { thin, explained };
 }
 
 /**
@@ -1179,6 +1319,61 @@ export function snapshotProblems(
   return out;
 }
 
+/** The fields a value hit on `field` makes affected: a price hit takes the 1h and day change with it. */
+function valueHitFields(field: ValueField): SnapshotField[] {
+  return field === 'price' ? ['price', 'change1hPct', 'changeDayPct'] : [field];
+}
+
+const TOP_UNWRITTEN = 10;
+/** A price difference over this share of the price is named in the report. */
+const UNWRITTEN_FLAG_SHARE = 0.0015;
+
+function noteUnwritten(
+  list: UnwrittenDiff[],
+  row: SnapshotRow,
+  recomputed: number,
+  why: string,
+): void {
+  const diff = Math.abs(row.stored.price - recomputed);
+  if (list.length >= TOP_UNWRITTEN && diff <= (list.at(-1)?.diff ?? 0)) return;
+  const flag = diff > UNWRITTEN_FLAG_SHARE * Math.abs(row.stored.price);
+  list.push({
+    diff,
+    line: `${row.symbol} ${isoSecond(row.tsMs)} id ${row.id}: stored ${row.stored.price}, recomputed ${recomputed}, difference ${diff.toFixed(2)}, ${why}${flag ? ' [over 0.15% of the price]' : ''}`,
+  });
+  list.sort((a, b) => b.diff - a.diff);
+  list.length = Math.min(list.length, TOP_UNWRITTEN);
+}
+
+function noteValueRule(
+  stats: ValueRuleStats,
+  row: SnapshotRow,
+  hits: { field: ValueField; bar: PreBar }[],
+  newly: SnapshotField[],
+): void {
+  stats.rows += 1;
+  for (const f of newly) stats.fields[f] += 1;
+  // A bar that matched two fields (the price and the 1h change) counts once.
+  const bars = new Map<number, PreBar>();
+  for (const h of hits) {
+    if (valueHitFields(h.field).some((f) => newly.includes(f))) {
+      bars.set(h.bar.tsMs, h.bar);
+    }
+  }
+  for (const bar of bars.values()) {
+    if (bar.repair != null) stats.byKind[bar.repair] += 1;
+  }
+  if (stats.samples.length < SAMPLE_N) {
+    const first = hits[0];
+    if (first != null) {
+      const now = first.bar.closeNow ?? 'gone';
+      stats.samples.push(
+        `${row.symbol} ${isoSecond(row.tsMs)} id ${row.id}: stored ${first.field} matches the ${first.bar.repair} bar of ${isoSecond(first.bar.tsMs)} (close ${first.bar.closePre} before Phase 2, ${now} now); newly affected: ${newly.join(', ')}`,
+      );
+    }
+  }
+}
+
 async function planSnapshots(
   data: Map<Sym, SymbolData>,
 ): Promise<SnapshotStore> {
@@ -1189,6 +1384,7 @@ async function planSnapshots(
   const controlEvals: SnapshotEvaluation[] = [];
   const problems: string[] = [];
   const infos: SnapshotInfo[] = [];
+  const controlMisses: SnapshotInfo[] = [];
 
   for (const symbol of SYMBOLS) {
     const sd = data.get(symbol);
@@ -1212,10 +1408,19 @@ async function planSnapshots(
         firstMs: null,
         lastMs: null,
       },
+      valueRule: {
+        rows: 0,
+        fields: emptyFields(),
+        byKind: { deleted: 0, 'close-changed': 0 },
+        samples: [],
+      },
+      unmatched: { price: 0, change1hPct: 0, changeDayPct: 0 },
+      unwritten: [],
       attributionInconsistent: 0,
       controlRows: 0,
       controlMatched: 0,
       controlDays: 0,
+      thin: null,
     };
 
     for (const { row, result, outcome } of await evaluateSnapshots(
@@ -1223,12 +1428,24 @@ async function planSnapshots(
       `${symbol} snapshots in range`,
     )) {
       const dayOpenMs = dayOpenOf(new Date(row.tsMs));
-      const affected = affectedSnapshotFields(
+      const byRule = affectedSnapshotFields(
         sd.repair,
         sd.bars,
         row.tsMs,
         dayOpenMs,
       );
+      const byValue = attributeByValue(
+        sd.series,
+        row.tsMs,
+        dayOpenMs,
+        row.stored,
+      );
+      for (const f of byValue.unmatched) report.unmatched[f] += 1;
+      const affected = new Set<SnapshotField>([...byRule, ...byValue.fields]);
+      const newly = [...byValue.fields].filter((f) => !byRule.has(f));
+      if (newly.length > 0) {
+        noteValueRule(report.valueRule, row, byValue.hits, newly);
+      }
       if (
         result.kind === 'fresh' &&
         !inputsMatchSnapshot(
@@ -1248,12 +1465,29 @@ async function planSnapshots(
         } else {
           report.unaffectedLeftAlone += 1;
         }
+        const latest = snapshotInputs(sd.bars, row.tsMs, dayOpenMs).latest;
+        if (latest != null) {
+          noteUnwritten(
+            report.unwritten,
+            row,
+            latest.close,
+            `left alone, ${result.kind} (${affected.size > 0 ? 'a field is affected' : 'nothing affected'}), against the latest closed bar`,
+          );
+        }
         continue;
       }
       if (outcome.kind === 'same') continue;
       const writable = outcome.fields.filter((f) => affected.has(f));
       for (const f of outcome.fields) {
         if (!affected.has(f)) report.drift[f] += 1;
+      }
+      if (outcome.fields.includes('price') && !writable.includes('price')) {
+        noteUnwritten(
+          report.unwritten,
+          row,
+          outcome.to.price,
+          'method drift, price not affected',
+        );
       }
       if (writable.length === 0) continue;
       report.rowsToWrite += 1;
@@ -1269,13 +1503,31 @@ async function planSnapshots(
       });
     }
 
-    controlEvals.push(...(await snapshotControl(symbol, report)));
+    const controlOfSymbol = await snapshotControl(symbol, report);
+    if (isThinRoot(symbol)) {
+      const { thin, explained } = await explainThinControl(
+        symbol,
+        controlOfSymbol,
+      );
+      report.thin = thin;
+      // A miss that a late bar explains counts as a match in the gate.
+      controlEvals.push(
+        ...controlOfSymbol.map(
+          (ev): SnapshotEvaluation =>
+            explained.has(ev) ? { ...ev, outcome: { kind: 'same' } } : ev,
+        ),
+      );
+    } else {
+      controlEvals.push(...controlOfSymbol);
+      controlMisses.push(await classifyEvals(symbol, controlOfSymbol));
+    }
     infos.push(await classifyInfoWindow(symbol));
     problems.push(...snapshotProblems(report));
     reports.push(report);
   }
 
   const control = controlOfSnapshots(controlEvals);
+  control.label = SNAPSHOT_CONTROL_LABEL;
   control.problems = problems;
   return {
     inScope: reports.reduce((n, r) => n + r.inRange, 0),
@@ -1284,6 +1536,7 @@ async function planSnapshots(
     control,
     symbols: reports,
     info: infos,
+    controlMisses,
   };
 }
 
@@ -1527,22 +1780,37 @@ const byFieldText = (counts: Record<SnapshotField, number>): string =>
 const percentile = (sorted: number[], p: number): number =>
   sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] ?? 0;
 
-function infoText(info: SnapshotInfo): string[] {
+/** The spread of late-bar ages: minutes older than the latest closed bar. */
+function lateAgeText(lateAges: number[]): string {
+  const ages = [...lateAges].sort((a, b) => a - b);
+  const hist = Array.from({ length: LATE_BAR_MAX_AGE_MIN }, (_, i) => i + 1)
+    .map((m) => `${m}:${ages.filter((a) => a === m).length}`)
+    .join(' ');
+  return `    late-bar age, minutes older than the latest closed bar: min ${ages[0]}, median ${percentile(ages, 0.5)}, p90 ${percentile(ages, 0.9)}, max ${ages.at(-1)} (${hist})`;
+}
+
+function thinControlText(symbol: Sym, t: ThinControl): string[] {
+  const out = [
+    `    ${symbol} thin-root control (a miss passes when a late bar explains it): ${t.rows} rows, ${t.exact} exact, late-bar ${t.lateBar}, late-volume ${t.lateVolume}, other ${t.other}`,
+  ];
+  if (t.lateAges.length > 0) out.push(lateAgeText(t.lateAges));
+  if (t.other > 0) {
+    out.push(
+      `    OTHER rows, first ${t.otherRows.length} of ${t.other} (every field, stored -> recomputed, * where it differs):`,
+      ...t.otherRows.map((l) => `      ${l}`),
+    );
+  }
+  return out;
+}
+
+function infoText(info: SnapshotInfo, heading: string): string[] {
   const miss = info.rows - info.matched;
   const classes = info.byClass;
   const out = [
-    `  information, ${info.symbol}, rows ${isoSecond(SNAPSHOT_INFO_FROM_MS)} to ${isoSecond(SNAPSHOT_CONTROL_FROM_MS)} (every row, not gated): ${info.rows} rows, ${info.matched} match, ${miss} do not`,
+    `  ${heading}: ${info.rows} rows, ${info.matched} match, ${miss} do not`,
     `    mismatches by class: september-window ${classes['september-window']}, late-bar ${classes['late-bar']}, unexplained ${classes.unexplained}`,
   ];
-  if (info.lateAges.length > 0) {
-    const ages = [...info.lateAges].sort((a, b) => a - b);
-    const hist = Array.from({ length: LATE_BAR_MAX_AGE_MIN }, (_, i) => i + 1)
-      .map((m) => `${m}:${ages.filter((a) => a === m).length}`)
-      .join(' ');
-    out.push(
-      `    late-bar age, minutes older than the latest closed bar: min ${ages[0]}, median ${percentile(ages, 0.5)}, p90 ${percentile(ages, 0.9)}, max ${ages.at(-1)} (${hist})`,
-    );
-  }
+  if (info.lateAges.length > 0) out.push(lateAgeText(info.lateAges));
   const days = Object.entries(info.byDay)
     .sort(([a], [b]) => (a < b ? -1 : 1))
     .map(
@@ -1582,7 +1850,7 @@ function snapshotsText(r: SnapshotStore): string[] {
     )
     .slice(0, TOP_N);
   const out = [
-    'futures_snapshots (ES, NQ): only the fields a repaired bar feeds are written',
+    'futures_snapshots (ES, NQ, RTY, CL, GC, ZN): only the fields a repaired bar feeds are written',
     `  rows in range: ${r.inScope}, rows to write: ${r.changes.length}`,
   ];
   for (const s of r.symbols) {
@@ -1593,7 +1861,13 @@ function snapshotsText(r: SnapshotStore): string[] {
       `    ${volumeRatioWriteText(r.changes, s.symbol)}`,
       `    information, unaffected fields where today's method differs from the stored value (not written): ${byFieldText(s.drift)}`,
       `    method control, rows from ${isoSecond(SNAPSHOT_CONTROL_FROM_MS)}: ${s.controlMatched} of ${s.controlRows} match over ${s.controlDays} days`,
+      ...(s.thin == null ? [] : thinControlText(s.symbol, s.thin)),
       `    attribution inputs disagreeing with computeSnapshot: ${s.attributionInconsistent}`,
+      `    newly affected by the value rule (the stored input found by value, a bar Phase 2 deleted or changed): ${s.valueRule.rows} rows (${byFieldText(s.valueRule.fields)}), matched bars deleted ${s.valueRule.byKind.deleted}, close-changed ${s.valueRule.byKind['close-changed']}`,
+      ...s.valueRule.samples.map((l) => `      ${l}`),
+      `    unmatched (no pre-repair bar matched the stored value, so the field is left to the other rule): price=${s.unmatched.price} change1hPct=${s.unmatched.change1hPct} changeDayPct=${s.unmatched.changeDayPct}`,
+      `    the ${s.unwritten.length} largest price differences not written (stored vs recomputed, or vs the latest closed bar when the recompute is stale):`,
+      ...s.unwritten.map((u) => `      ${u.line}`),
     );
   }
   out.push(
@@ -1605,7 +1879,23 @@ function snapshotsText(r: SnapshotStore): string[] {
     ...unrecomputableText(r.unrecomputable),
     ...controlText(r.control),
   );
-  for (const info of r.info) out.push(...infoText(info));
+  for (const info of r.controlMisses) {
+    if (info.matched === info.rows) continue;
+    out.push(
+      ...infoText(
+        info,
+        `control misses, ${info.symbol}, rows from ${isoSecond(SNAPSHOT_CONTROL_FROM_MS)} (the control must be 100%)`,
+      ),
+    );
+  }
+  for (const info of r.info) {
+    out.push(
+      ...infoText(
+        info,
+        `information, ${info.symbol}, rows ${isoSecond(SNAPSHOT_INFO_FROM_MS)} to ${isoSecond(SNAPSHOT_CONTROL_FROM_MS)} (every row, not gated)`,
+      ),
+    );
+  }
   return out;
 }
 
@@ -2006,14 +2296,19 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
   }
   if (needsBackup(args) && args.backup == null) {
     throw new Error(
-      '--backup <file> is required with the snapshots or premarket store: the Phase 2 backup JSONL',
+      '--backup <file> is required with --apply or with the snapshots or premarket store: the Phase 2 backup JSONL',
     );
   }
   return args;
 }
 
+/**
+ * `--apply` plans all three stores whatever `--stores` says, because its gate
+ * needs every check to hold; `--stores` then limits only what is written. So it
+ * needs the Phase 2 backup too.
+ */
 const needsBackup = (o: RecomputeOptions): boolean =>
-  o.stores.includes('snapshots') || o.stores.includes('premarket');
+  o.apply || o.stores.includes('snapshots') || o.stores.includes('premarket');
 
 function expectations(o: RecomputeOptions): Record<Store, number | null> {
   return {
@@ -2034,7 +2329,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
   }
   if (needsBackup(opts) && opts.backup == null) {
     throw new Error(
-      '--backup <file> is required with the snapshots or premarket store',
+      '--backup <file> is required with --apply or with the snapshots or premarket store',
     );
   }
   mkdirSync(opts.workDir, { recursive: true });
@@ -2048,6 +2343,8 @@ async function run(opts: RecomputeOptions): Promise<number> {
   );
 
   const plans: Plans = {};
+  // A dry run plans what it was asked for; --apply plans every store, to check it.
+  const planned: Store[] = opts.apply ? [...STORES] : opts.stores;
   let session: string[];
   neonConfig.fetchFunction = readOnlyFetch;
   try {
@@ -2055,20 +2352,20 @@ async function run(opts: RecomputeOptions): Promise<number> {
     for (const line of session) console.log(line);
     const data = needsBackup(opts)
       ? await loadSymbolData(
-          opts.stores.includes('snapshots') ? SYMBOLS : ['ES'],
+          planned.includes('snapshots') ? SYMBOLS : ['ES'],
           backupBars,
         )
       : new Map<Sym, SymbolData>();
-    if (opts.stores.includes('fires')) plans.fires = await planFires();
-    if (opts.stores.includes('premarket'))
+    if (planned.includes('fires')) plans.fires = await planFires();
+    if (planned.includes('premarket'))
       plans.premarket = await planPremarket(data);
-    if (opts.stores.includes('snapshots'))
+    if (planned.includes('snapshots'))
       plans.snapshots = await planSnapshots(data);
   } finally {
     neonConfig.fetchFunction = undefined;
   }
 
-  const gateInputs: GateInput[] = opts.stores.flatMap((store) => {
+  const gateInputs: GateInput[] = planned.flatMap((store) => {
     const r = plans[store];
     return r == null
       ? []
@@ -2100,7 +2397,11 @@ async function run(opts: RecomputeOptions): Promise<number> {
 
   // Refuse before any marker, backup or write: the totals must be the approved
   // ones and every control set must match.
-  const problems = checkApplyGate(gateInputs, expectations(opts));
+  // Every planned store's checks must hold; only the stores to be written have
+  // an approved total to equal.
+  const approved: Partial<Record<Store, number | null>> = {};
+  for (const store of opts.stores) approved[store] = expectations(opts)[store];
+  const problems = checkApplyGate(gateInputs, approved);
   if (problems.length > 0) {
     const listed = problems.map((p) => `  ${p}`).join('\n');
     throw new Error(`Refusing to --apply. Nothing was written.\n${listed}`);

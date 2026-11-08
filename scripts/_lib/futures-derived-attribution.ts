@@ -159,7 +159,7 @@ export interface Repair {
 
 /**
  * One symbol's repair, from its backup rows and the bars as they are now. An
- * `update` row whose bar is gone counts as changed in every field.
+ * `update` row whose bar is gone counts as deleted.
  */
 export function buildRepair(
   backup: readonly BackupBar[],
@@ -178,6 +178,8 @@ export function buildRepair(
     }
     const now = current.get(old.tsMs);
     if (now == null) {
+      // Updated by Phase 2 but gone now: as good as deleted.
+      deleted.push(old.tsMs);
       closeChanged.add(old.tsMs);
       volumeTouched.push(old.tsMs);
       windowTouched.push(old.tsMs);
@@ -201,6 +203,181 @@ export function buildRepair(
   volumeTouched.sort(ascending);
   windowTouched.sort(ascending);
   return { deleted, closeChanged, volumeTouched, windowTouched };
+}
+
+// ── The old input, found by value ───────────────────────────────────────────
+
+/**
+ * How far back an old input is searched for by value. The April to June writer
+ * had no freshness gate, so a frozen price can sit well behind the newest bar
+ * (the junk bars Phase 2 deleted on Saturday 04-11 priced rows on Sunday
+ * 04-12, 27 hours later).
+ */
+export const VALUE_LOOKBACK_MS = 96 * 60 * 60 * 1000;
+
+/** A bar of the series as it was before Phase 2. */
+export interface PreBar {
+  tsMs: number;
+  /** The close before Phase 2. */
+  closePre: number;
+  /** The close now; null for a deleted bar. */
+  closeNow: number | null;
+  /** What Phase 2 did to the bar's close: nothing, changed it, or deleted the bar. */
+  repair: 'deleted' | 'close-changed' | null;
+}
+
+/**
+ * One symbol's bars as they were before Phase 2: today's bars with each changed
+ * bar's close put back, and the deleted bars put back. A bar the backup updated
+ * that is gone now counts as deleted. Sorted by ts.
+ */
+export function buildPreSeries(
+  backup: readonly BackupBar[],
+  current: readonly Bar[],
+): PreBar[] {
+  const byTs = new Map<number, PreBar>(
+    current.map((b) => [
+      b.tsMs,
+      { tsMs: b.tsMs, closePre: b.close, closeNow: b.close, repair: null },
+    ]),
+  );
+  for (const old of backup) {
+    const now = byTs.get(old.tsMs);
+    const closeNow = now?.closeNow ?? null;
+    let repair: PreBar['repair'] = null;
+    if (closeNow == null) repair = 'deleted';
+    else if (closeNow !== old.close) repair = 'close-changed';
+    byTs.set(old.tsMs, {
+      tsMs: old.tsMs,
+      closePre: old.close,
+      closeNow,
+      repair,
+    });
+  }
+  return [...byTs.values()].sort((a, b) => a.tsMs - b.tsMs);
+}
+
+/** Index of the last bar with ts <= `tsMs`, or -1. */
+function lastIndexAtOrBefore(series: readonly PreBar[], tsMs: number): number {
+  let lo = 0;
+  let hi = series.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if ((series[mid] as PreBar).tsMs <= tsMs) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo - 1;
+}
+
+export interface StoredSnapshot {
+  price: number;
+  change1hPct: number | null;
+  changeDayPct: number | null;
+}
+
+export type ValueField = 'price' | 'change1hPct' | 'changeDayPct';
+
+export interface ValueHit {
+  field: ValueField;
+  bar: PreBar;
+}
+
+export interface ValueRule {
+  /** The fields a hit makes repair-affected (a price hit takes the 1h and day change with it). */
+  fields: Set<SnapshotField>;
+  /** The matched bars that Phase 2 deleted or changed. */
+  hits: ValueHit[];
+  /** The stored fields for which no pre-repair bar matched. */
+  unmatched: ValueField[];
+}
+
+/** Half a tick is the most a NUMERIC(8,4) percentage can move a reconstructed close. */
+const tolerance = (price: number): number => Math.abs(price) * 1e-6 + 0.00005;
+
+/**
+ * Finds a stored row's inputs by value in the pre-repair series. The ruling 1
+ * rule looks for the input today's rule would pick, which misses an old input
+ * that is older than today's: the writer used the newest bar it could see.
+ *
+ * - price: the newest bar at or before `atMs` whose pre-repair close equals the
+ *   stored price, looking back at most VALUE_LOOKBACK_MS;
+ * - hour-ago: the close reconstructed from the stored 1h change
+ *   (P / (1 + pct / 100)), matched within a tolerance on the newest bar at or
+ *   before `atMs - 60 min`;
+ * - day-open: the same from the stored day change, on the oldest bar between the
+ *   cash open and `atMs`.
+ *
+ * A matched bar that Phase 2 deleted or changed the close of makes the field
+ * repair-affected. No match leaves the field alone and is counted.
+ */
+export function attributeByValue(
+  series: readonly PreBar[],
+  atMs: number,
+  dayOpenMs: number | null,
+  stored: StoredSnapshot,
+): ValueRule {
+  const out: ValueRule = { fields: new Set(), hits: [], unmatched: [] };
+  const floor = atMs - VALUE_LOOKBACK_MS;
+  const tol = tolerance(stored.price);
+
+  const newest = (
+    fromMs: number,
+    matches: (b: PreBar) => boolean,
+  ): PreBar | null => {
+    for (let i = lastIndexAtOrBefore(series, fromMs); i >= 0; i -= 1) {
+      const b = series[i] as PreBar;
+      if (b.tsMs < floor) break;
+      if (matches(b)) return b;
+    }
+    return null;
+  };
+  const note = (
+    field: ValueField,
+    bar: PreBar | null,
+    fields: SnapshotField[],
+  ): void => {
+    if (bar == null) {
+      out.unmatched.push(field);
+      return;
+    }
+    if (bar.repair == null) return;
+    out.hits.push({ field, bar });
+    for (const f of fields) out.fields.add(f);
+  };
+
+  note(
+    'price',
+    newest(atMs, (b) => b.closePre === stored.price),
+    ['price', 'change1hPct', 'changeDayPct'],
+  );
+
+  if (stored.change1hPct != null) {
+    const hour = stored.price / (1 + stored.change1hPct / 100);
+    note(
+      'change1hPct',
+      newest(atMs - HOUR_MS, (b) => Math.abs(b.closePre - hour) <= tol),
+      ['change1hPct'],
+    );
+  }
+
+  if (stored.changeDayPct != null && dayOpenMs != null) {
+    const day = stored.price / (1 + stored.changeDayPct / 100);
+    let found: PreBar | null = null;
+    for (
+      let i = lastIndexAtOrBefore(series, dayOpenMs - 1) + 1;
+      i < series.length;
+      i += 1
+    ) {
+      const b = series[i] as PreBar;
+      if (b.tsMs > atMs) break;
+      if (Math.abs(b.closePre - day) <= tol) {
+        found = b;
+        break;
+      }
+    }
+    note('changeDayPct', found, ['changeDayPct']);
+  }
+  return out;
 }
 
 // ── Snapshot inputs ─────────────────────────────────────────────────────────
@@ -465,4 +642,41 @@ export function classifyMismatch(row: {
     return { cls: 'late-bar', ageMin: late.ageMin, olderMatch };
   }
   return { cls: 'unexplained', ageMin: null, olderMatch };
+}
+
+export type ThinMissClass = 'late-bar' | 'late-volume' | 'other';
+
+/**
+ * The class of a miss in the method control of a thin root (RTY, CL, GC, ZN),
+ * whose minute bar can land after the cron read. A late bar can only do two
+ * things to what the cron saw: leave the price on an older bar, or leave out a
+ * volume. The first is `late-bar` (see classifyMismatch). The second is
+ * `late-volume`: the price, 1h and day change all match and the stored volume
+ * ratio is strictly below the recomputed one, because adding a bar's volume
+ * raises today's total by `v` and the 20-day average, a sum that already holds
+ * today, by at most `v / n`. The ratio only goes up. A stored ratio above the
+ * recomputed one, a null on either side, or any other field is `other`: a
+ * method difference, not an arrival.
+ */
+export function classifyThinMiss(row: {
+  fields: readonly SnapshotField[];
+  atMs: number;
+  storedPrice: number;
+  olderBars: readonly OlderBar[];
+  storedVolumeRatio: number | null;
+  recomputedVolumeRatio: number | null;
+}): { cls: ThinMissClass; ageMin: number | null } {
+  const late = classifyMismatch(row);
+  if (late.cls === 'late-bar') return { cls: 'late-bar', ageMin: late.ageMin };
+  const onlyVolumeRatio =
+    row.fields.length === 1 && row.fields[0] === 'volumeRatio';
+  if (
+    onlyVolumeRatio &&
+    row.storedVolumeRatio != null &&
+    row.recomputedVolumeRatio != null &&
+    row.storedVolumeRatio < row.recomputedVolumeRatio
+  ) {
+    return { cls: 'late-volume', ageMin: null };
+  }
+  return { cls: 'other', ageMin: null };
 }

@@ -6,14 +6,15 @@
  *
  *   npx tsx scripts/recompute-futures-derived.ts --backup <phase 2 backup.jsonl>   # dry run
  *   npx tsx scripts/recompute-futures-derived.ts --backup <file> --apply --expect-snapshots N --expect-premarket M --expect-fires K
- *   npx tsx scripts/recompute-futures-derived.ts --stores fires    # one store, no backup needed
+ *   npx tsx scripts/recompute-futures-derived.ts --stores fires    # a dry run of one store, no backup needed
  *
  * The default is a DRY RUN: it reads the database DATABASE_URL points at
  * (production, in .env.local) through read-only transactions, prints the
  * summary and writes only report.txt into --work-dir. --apply WRITES to that
  * database, after the close, only after the owner has seen the dry run, and
  * only when every check passes: the snapshot method control (rows written by
- * today's code) recomputes to exactly what is stored, the pre-market subset
+ * today's code) recomputes to exactly what is stored (for RTY, CL, GC and ZN a
+ * miss that a late bar explains also counts), the pre-market subset
  * check holds on every row outside the span, the fire basis control matches,
  * and the totals equal the --expect-* counts. A saved value is written only
  * where one of its input bars was changed or deleted by Phase 2 (read from the
@@ -22,10 +23,12 @@
  *
  * Options:
  *   --backup <file>         the Phase 2 backup JSONL (docs/tmp/futures-contract-repair/backup-*.jsonl);
- *                           required with the snapshots or premarket store
+ *                           required with --apply or with the snapshots or premarket store
  *   --work-dir <dir>        report.txt, backup-*.jsonl and the {store}.applied
  *                           markers (default docs/tmp/futures-derived-recompute)
- *   --stores s1 s2 ...      only these of snapshots, premarket, fires (default all)
+ *   --stores s1 s2 ...      only these of snapshots, premarket, fires (default all). A dry run
+ *                           plans only these; --apply still plans and checks all three and
+ *                           writes only these
  *   --apply                 write (backup first); needs an --expect-* per store in the run
  *   --expect-snapshots N    the futures_snapshots rows to write in the approved dry run
  *   --expect-premarket M    the pre_market_data rows to write in that dry run

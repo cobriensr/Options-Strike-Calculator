@@ -162,7 +162,10 @@ import { mockRequest, mockResponse } from '../../api/__tests__/helpers';
 import { applyMigration } from '../../api/__tests__/pglite-migrations';
 import premarketCron from '../../api/cron/auto-prefill-premarket.js';
 import snapshotCron from '../../api/cron/fetch-futures-snapshot.js';
-import { computeSnapshot } from '../../api/_lib/futures-derive.js';
+import {
+  FUTURES_SYMBOLS,
+  computeSnapshot,
+} from '../../api/_lib/futures-derive.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 import {
   compareSnapshot,
@@ -172,6 +175,10 @@ import {
   runRecompute,
   type RecomputeOptions,
 } from './futures-derived-recompute.js';
+
+// Six roots, a 1,296-row control and the information window make each run take
+// seconds, and some tests run the tool three times.
+vi.setConfig({ testTimeout: 90_000 });
 
 // ── Schema ──────────────────────────────────────────────────────────────────
 
@@ -422,8 +429,15 @@ const BACKUP = [
     high: 7300,
     low: 7100,
   }),
-  // Another root, ignored.
-  backupLine('delete', 'RTY', '2026-04-14T14:30:00Z', { close: 2000 }),
+  // Saturday 04-11 junk bars Phase 2 deleted, which priced the Sunday 04-12 rows.
+  backupLine('delete', 'ES', '2026-04-11T19:52:00Z', {
+    close: 8283.5,
+    volume: 10,
+  }),
+  backupLine('delete', 'RTY', '2026-04-11T15:40:00Z', {
+    close: 2800.1,
+    volume: 10,
+  }),
 ].join('\n');
 
 interface Ids {
@@ -437,6 +451,8 @@ interface Ids {
   s7: number; // ES 10-21, before the control: only the volume ratio differs, outside the window
   s8: number; // ES 10-22, before the control: a price miss that is no late bar
   s9: number; // ES 05-15, 16:31 CT: stale, price affected, in the daily break
+  s10: number; // ES Sunday 04-12, stores a deleted junk bar's close: found by value
+  s11: number; // RTY Sunday 04-12, the same for a root Phase 2 only deleted bars of
   p1: number; // 05-13 auto-filled, bad high, a repaired bar in the window
   p1hand: number; // 05-13 hand-saved
   p2: number; // 05-14 auto-filled, already right
@@ -457,7 +473,7 @@ let ids: Ids;
 
 const CONTROL_DAYS = ['2026-11-03', '2026-11-04', '2026-11-05'];
 interface ControlRow {
-  symbol: 'ES' | 'NQ';
+  symbol: (typeof FUTURES_SYMBOLS)[number];
   ts: string;
   tradeDate: string;
   values: SnapshotValuesTuple;
@@ -465,13 +481,24 @@ interface ControlRow {
 /** What computeSnapshot returns for the clean-era rows: computed once, reinserted by every reset. */
 const controlRows: ControlRow[] = [];
 
-/** Minute bars 13:00Z to 21:30Z for each control day (EST), every symbol. */
+const ROOT_PRICE: Record<(typeof FUTURES_SYMBOLS)[number], number> = {
+  ES: 7000,
+  NQ: 24000,
+  RTY: 2000,
+  CL: 70,
+  GC: 3000,
+  ZN: 110,
+};
+
+/** Bars 13:00Z to 21:30Z for each control day (EST), every symbol. */
 async function controlBars(): Promise<void> {
   const rows: [string, string, number, number][] = [];
   for (const [d, date] of ['2026-11-02', ...CONTROL_DAYS].entries()) {
-    for (const symbol of ['ES', 'NQ'] as const) {
-      const base = symbol === 'ES' ? 7000 : 24000;
-      for (let m = 0; m <= 510; m += 1) {
+    for (const symbol of FUTURES_SYMBOLS) {
+      const base = ROOT_PRICE[symbol];
+      // A bar every 5 minutes is enough: the snapshots at :31:21, :36:21 ... each see
+      // a latest closed bar a minute old, an hour-ago bar and a day-open bar.
+      for (let m = 0; m <= 510; m += 5) {
         const ts = new Date(Date.parse(`${date}T13:00:00Z`) + m * 60_000);
         rows.push([
           symbol,
@@ -587,6 +614,30 @@ async function reset(): Promise<void> {
     '2026-05-15',
     [7500, 0, 0, 1],
   );
+  // Sunday 04-12 after the reopen: the old writer had no freshness gate, so its
+  // price was the Saturday junk bar's close (8283.5, deleted by Phase 2 27 hours
+  // earlier) and the real reopen bars landed in the table later. The bars'
+  // volumes make 04-12 a day of 650, so the 04-14 average stays 650.
+  for (const [symbol, base] of [
+    ['ES', 6769.5],
+    ['RTY', 2000],
+  ] as const) {
+    await bar(symbol, '2026-04-12T22:27:00Z', base, 300);
+    await bar(symbol, '2026-04-12T22:28:00Z', base + 0.5, 300);
+    await bar(symbol, '2026-04-12T22:29:00Z', base + 1.75, 50);
+  }
+  const s10 = await snapshotRow(
+    'ES',
+    '2026-04-12T22:30:02.641Z',
+    '2026-04-12',
+    [8283.5, 0, null, null],
+  );
+  const s11 = await snapshotRow(
+    'RTY',
+    '2026-04-12T22:30:02.641Z',
+    '2026-04-12',
+    [2800.1, 0, null, null],
+  );
   // A price that matches no bar near the latest closed one: not a late bar.
   await snapshotDay('ES', '2026-10-22', '2026-10-21', 7000, 7007);
   const s8 = await snapshotRow(
@@ -599,7 +650,7 @@ async function reset(): Promise<void> {
   // The clean era (EST): bars, and the snapshots the cron would have written.
   await controlBars();
   if (controlRows.length === 0) {
-    for (const symbol of ['ES', 'NQ'] as const) {
+    for (const symbol of FUTURES_SYMBOLS) {
       for (const date of CONTROL_DAYS) {
         for (let m = 15 * 60 + 31; m <= 21 * 60 + 26; m += 5) {
           const ts = `${date}T${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}:21.500Z`;
@@ -703,6 +754,8 @@ async function reset(): Promise<void> {
     s7,
     s8,
     s9,
+    s10,
+    s11,
     p1,
     p1hand,
     p2,
@@ -732,12 +785,16 @@ function options(over: Partial<RecomputeOptions> = {}): RecomputeOptions {
     force: false,
     stores: [...ALL],
     backup: backupPath,
-    expectSnapshots: 2,
+    expectSnapshots: 4,
     expectPremarket: 1,
     expectFires: 3,
     ...over,
   };
 }
+/** What the snapshot control line says: a thin root's miss counts when a late bar explains it. */
+const CONTROL_LABEL =
+  'control set matches (a thin root: or is explained by a late bar)';
+
 const run = (over: Partial<RecomputeOptions> = {}) =>
   runRecompute(options(over));
 const dry = (over: Partial<RecomputeOptions> = {}) =>
@@ -804,7 +861,7 @@ async function fireValue(id: number): Promise<string | null> {
 
 async function touches(table: string): Promise<number[]> {
   const { rows } = await pg.query<{ id: string }>(
-    `SELECT id::text FROM touch_log WHERE tbl = $1 ORDER BY id`,
+    `SELECT id::text AS id FROM touch_log WHERE tbl = $1 ORDER BY touch_log.id`,
     [table],
   );
   return rows.map((r) => Number(r.id));
@@ -865,15 +922,39 @@ describe('dry run on real SQL (pglite)', () => {
     expect(text).toContain('read-only transaction: on');
     expect(text).toContain('plain query during planning: on');
     expect(text).toContain('Phase 2 backup');
-    expect(text).toContain('6 rows (4 updated, 2 deleted)');
-    // Snapshots: ES has 4 rows in range (S1, S2, S4, S6), NQ has 1 (S3).
-    expect(text).toContain('rows in range: 6, rows to write: 2');
+    expect(text).toContain('7 rows (4 updated, 3 deleted)');
+    // Snapshots: ES has 6 rows in range, NQ 1 (S3) and RTY 1; four are written.
+    expect(text).toContain('rows in range: 8, rows to write: 4');
     expect(text).toContain(
-      'ES: rows in range 5, rows to write 1 (price=1 change1hPct=1 changeDayPct=1 volumeRatio=1)',
+      'ES: rows in range 6, rows to write 2 (price=2 change1hPct=2 changeDayPct=1 volumeRatio=2)',
     );
     expect(text).toContain(
       'NQ: rows in range 1, rows to write 1 (price=1 change1hPct=1 changeDayPct=1 volumeRatio=0)',
     );
+    // RTY: Phase 2 only deleted its Saturday junk bars, and one priced the Sunday row.
+    expect(text).toContain(
+      'RTY: rows in range 1, rows to write 1 (price=1 change1hPct=1 changeDayPct=0 volumeRatio=1)',
+    );
+    // The value rule finds the two Sunday rows that the ruling 1 rule cannot
+    // (the junk bar is older than today's latest closed bar).
+    expect(
+      text.match(
+        /newly affected by the value rule \(the stored input found by value, a bar Phase 2 deleted or changed\): 1 rows \(price=1 change1hPct=1 changeDayPct=1 volumeRatio=0\), matched bars deleted 1, close-changed 0/g,
+      ),
+    ).toHaveLength(2);
+    expect(text).toMatch(
+      /ES 2026-04-12T22:30:02\.641Z id \d+: stored price matches the deleted bar of 2026-04-11T19:52:00Z \(close 8283\.5 before Phase 2, gone now\); newly affected: price, change1hPct, changeDayPct/,
+    );
+    // The largest written price difference is the ES Sunday row.
+    expect(text).toMatch(
+      /ES 2026-04-12T22:30:02\.641Z id \d+ price\/1h\/day\/vr 8283\.5\/0\/null\/null -> 6771\.25\/null\/null\/1 \[writes price, change1hPct, volumeRatio\]/,
+    );
+    // The largest price differences that are not written, with the flag over 0.15%.
+    expect(text).toContain('the 3 largest price differences not written');
+    expect(text).toMatch(
+      /ES 2026-05-14T14:31:30\.250Z id \d+: stored 7500, recomputed 7290, difference 210\.00, left alone, stale \(a field is affected\), against the latest closed bar \[over 0\.15% of the price\]/,
+    );
+    expect(text).toContain('unmatched (no pre-repair bar matched');
     // The NQ volume ratio is stored 0.3, today's method says 0.4615, and no
     // repaired bar feeds it: information, not written.
     expect(text).toMatch(
@@ -890,8 +971,8 @@ describe('dry run on real SQL (pglite)', () => {
     expect(text).toContain(
       'rows from 2026-11-02T00:00:00Z: 216 of 216 match over 3 days',
     );
-    expect(text).toContain('control set matches: 432 of 432 (100.0%)');
-    expect(text).toContain('matched/rows by month: 2026-11 432/432');
+    expect(text).toContain(`${CONTROL_LABEL}: 1296 of 1296 (100.0%)`);
+    expect(text).toContain('matched/rows by month: 2026-11 1296/1296');
     // The largest written price diff is the NQ row: 24100 -> 24024.
     expect(text).toMatch(
       /NQ 2026-04-14T14:31:30\.250Z id \d+ price\/1h\/day\/vr 24100\/0.9\/1\/0.3 -> 24024\/0.1\/0.1\/0.4615 \[writes price, change1hPct, changeDayPct\]/,
@@ -923,8 +1004,9 @@ describe('dry run on real SQL (pglite)', () => {
     );
     // The volume-ratio writes: ES one (0.3 -> 0.4615), NQ none.
     expect(text).toContain(
-      'volume-ratio writes: 1; |relative change| median 53.83%, p90 53.83%, max 53.83%; under 1%: 0; from or to null: 0',
+      'volume-ratio writes: 2; |relative change| median 53.83%, p90 53.83%, max 53.83%; under 1%: 0; from or to null: 1',
     );
+    expect(text).toContain('volume-ratio writes: 1; from or to null: 1');
     expect(text).toContain('volume-ratio writes: 0; from or to null: 0');
     // The stale row with an affected field (S6, a deleted bar), broken down.
     expect(text).toContain(
@@ -973,15 +1055,163 @@ describe('dry run on real SQL (pglite)', () => {
     expect(text).not.toContain('Phase 2 backup');
   });
 
-  it('reports a snapshot method control that does not match, with what differs, and exits 0', async () => {
+  it("reports an exact root's control miss, classified, and exits 0", async () => {
     await pg.query(
-      `UPDATE futures_snapshots SET price = price + 1 WHERE id = (SELECT max(id) FROM futures_snapshots)`,
+      `UPDATE futures_snapshots SET price = price + 1 WHERE id = (SELECT max(id) FROM futures_snapshots WHERE symbol = 'ES')`,
     );
     expect(await dry()).toBe(0);
     const text = report();
-    expect(text).toContain('control set matches: 431 of 432 (99.8%)');
+    expect(text).toContain(`${CONTROL_LABEL}: 1295 of 1296 (99.9%)`);
     expect(text).toContain('mismatch price: 1');
+    // The miss is classified like the information window: no older bar closed at
+    // the stored price, so it is unexplained.
+    expect(text).toContain(
+      'control misses, ES, rows from 2026-11-02T00:00:00Z (the control must be 100%): 216 rows, 215 match, 1 do not',
+    );
+    expect(text).toContain(
+      'mismatches by class: september-window 0, late-bar 0, unexplained 1',
+    );
     expect(text).toContain('APPLY WOULD REFUSE');
+  });
+
+  describe('the method control of a thin root', () => {
+    const AT = '2026-11-03T15:31:21.500Z';
+    const THIN_LINE = (counts: string, rows = 216) =>
+      `GC thin-root control (a miss passes when a late bar explains it): ${rows} rows, ${counts}`;
+
+    /** Sets columns of one root's 11-03 15:31:21.5Z control row. */
+    const setRow = (symbol: string, set: string) =>
+      pg.query(
+        `UPDATE futures_snapshots SET ${set} WHERE symbol = $1 AND ts = $2`,
+        [symbol, AT],
+      );
+    /** The close of the bar at `ts`; the latest closed bar of the row is the one of 15:30. */
+    const closeAt = async (symbol: string, ts: string): Promise<string> =>
+      (
+        await pg.query<{ c: string }>(
+          `SELECT close::text AS c FROM futures_bars WHERE symbol = $1 AND ts = $2`,
+          [symbol, ts],
+        )
+      ).rows[0]!.c;
+
+    it("passes a miss explained by a late bar: the stored price is an older bar's close", async () => {
+      await setRow(
+        'GC',
+        `price = ${await closeAt('GC', '2026-11-03T15:25:00Z')}`,
+      );
+      expect(await dry()).toBe(0);
+      const text = report();
+      expect(text).toContain(`${CONTROL_LABEL}: 1296 of 1296 (100.0%)`);
+      expect(text).toContain(
+        THIN_LINE('215 exact, late-bar 1, late-volume 0, other 0'),
+      );
+      expect(text).toContain(
+        'late-bar age, minutes older than the latest closed bar: min 5, median 5, p90 5, max 5',
+      );
+      expect(text).toContain('Apply gate: every check passes.');
+    });
+
+    it('passes a miss explained by a late volume: price, 1h and day match and the stored ratio is below', async () => {
+      await setRow('GC', 'volume_ratio = volume_ratio - 0.01');
+      expect(await dry()).toBe(0);
+      const text = report();
+      expect(text).toContain(
+        THIN_LINE('215 exact, late-bar 0, late-volume 1, other 0'),
+      );
+      expect(text).toContain('Apply gate: every check passes.');
+    });
+
+    it('refuses a stored volume ratio above the recomputed one: a late bar cannot lower it', async () => {
+      await setRow('GC', 'volume_ratio = volume_ratio + 0.01');
+      expect(await dry()).toBe(0);
+      const text = report();
+      expect(text).toContain(
+        THIN_LINE('215 exact, late-bar 0, late-volume 0, other 1'),
+      );
+      expect(text).toContain('OTHER rows, first 1 of 1');
+      expect(text).toMatch(
+        /GC 2026-11-03T15:31:21\.500Z id \d+: price [\d.]+ -> [\d.]+, change1hPct [-\d.]+ -> [-\d.]+, changeDayPct [-\d.]+ -> [-\d.]+, volumeRatio [\d.]+ -> [\d.]+ \*/,
+      );
+      expect(text).toContain(
+        `APPLY WOULD REFUSE:\n  snapshots: ${CONTROL_LABEL} 1295 of 1296 (99.9%), not 100%`,
+      );
+    });
+
+    it('refuses a 1h miss on a row whose price matches', async () => {
+      await setRow('GC', 'change_1h_pct = change_1h_pct + 0.5');
+      expect(await dry()).toBe(0);
+      expect(report()).toContain(
+        THIN_LINE('215 exact, late-bar 0, late-volume 0, other 1'),
+      );
+      expect(report()).toContain('APPLY WOULD REFUSE');
+    });
+
+    it('refuses a price miss that no older bar explains', async () => {
+      await setRow('GC', 'price = price + 1');
+      expect(await dry()).toBe(0);
+      expect(report()).toContain(
+        THIN_LINE('215 exact, late-bar 0, late-volume 0, other 1'),
+      );
+      expect(report()).toContain('APPLY WOULD REFUSE');
+    });
+
+    it('refuses a price that is the close of a bar more than 14 minutes older than the latest closed one', async () => {
+      // The bar of 15:15 is 15 minutes older than the latest closed bar (15:30).
+      await setRow(
+        'GC',
+        `price = ${await closeAt('GC', '2026-11-03T15:15:00Z')}`,
+      );
+      expect(await dry()).toBe(0);
+      expect(report()).toContain(
+        THIN_LINE('215 exact, late-bar 0, late-volume 0, other 1'),
+      );
+    });
+
+    it('refuses a thin root row that cannot be recomputed: stale, no bar within 15 minutes', async () => {
+      // After the last bar of the day (21:30Z) the latest closed bar is hours old.
+      await snapshotRow(
+        'GC',
+        '2026-11-03T23:50:00.500Z',
+        '2026-11-03',
+        [3000, 0, 0, 1],
+      );
+      expect(await dry()).toBe(0);
+      const text = report();
+      expect(text).toContain(`${CONTROL_LABEL}: 1296 of 1297`);
+      expect(text).toContain(
+        THIN_LINE('216 exact, late-bar 0, late-volume 0, other 1', 217),
+      );
+      expect(text).toMatch(
+        /GC 2026-11-03T23:50:00\.500Z id \d+ price\/1h\/day\/vr 3000\/0\/0\/1 -> stale/,
+      );
+      expect(text).toContain('APPLY WOULD REFUSE');
+    });
+
+    it('still needs an exact match from ES and NQ: the late volume a thin root may have fails there', async () => {
+      await setRow('ES', 'volume_ratio = volume_ratio - 0.01');
+      expect(await dry()).toBe(0);
+      const text = report();
+      expect(text).toContain(`${CONTROL_LABEL}: 1295 of 1296 (99.9%)`);
+      expect(text).not.toContain('ES thin-root control');
+      expect(text).toContain('APPLY WOULD REFUSE');
+    });
+
+    it("refuses --apply on a thin root's unexplained miss, before any write", async () => {
+      await setRow('GC', 'volume_ratio = volume_ratio + 0.01');
+      const before = await dump();
+      expect(await run()).toBe(1);
+      expect(errored()).toMatch(
+        /snapshots: control set matches \(a thin root: or is explained by a late bar\) 1295 of 1296/,
+      );
+      expect(hooks.writes).toBe(0);
+      expect(await dump()).toBe(before);
+    });
+
+    it("lets --apply go on when a thin root's misses are all explained", async () => {
+      await setRow('GC', 'volume_ratio = volume_ratio - 0.01');
+      expect(await run()).toBe(0);
+      expect(hooks.writes).toBeGreaterThan(0);
+    });
   });
 
   it('refuses to plan on a session that could write, naming both answers', async () => {
@@ -1022,12 +1252,12 @@ describe('--apply refuses before any write', () => {
 
   it('when the snapshot method control does not reproduce what is stored', async () => {
     await pg.query(
-      `UPDATE futures_snapshots SET volume_ratio = 0.5 WHERE id = (SELECT max(id) FROM futures_snapshots)`,
+      `UPDATE futures_snapshots SET volume_ratio = 0.5 WHERE id = (SELECT max(id) FROM futures_snapshots WHERE symbol = 'ES')`,
     );
     const before = await dump();
     expect(await run()).toBe(1);
     expect(errored()).toMatch(
-      /snapshots: control set matches 431 of 432 \(99\.8%\), not 100%/,
+      /snapshots: control set matches \(a thin root: or is explained by a late bar\) 1295 of 1296 \(99\.9%\), not 100%/,
     );
     await expectNothingWritten(before);
   });
@@ -1090,11 +1320,48 @@ describe('--apply refuses before any write', () => {
     hooks.shortBackup = true;
     const before = await dump();
     expect(await run()).toBe(1);
-    expect(errored()).toMatch(/backup .*backup-.* has 1 lines, expected 6/);
+    expect(errored()).toMatch(/backup .*backup-.* has 1 lines, expected 8/);
     expect(hooks.writes).toBe(0);
     expect(await dump()).toBe(before);
     for (const store of ALL)
       expect(existsSync(markerPath(workDir, store))).toBe(false);
+  });
+
+  it('whatever --stores says: --apply --stores fires still refuses on a failing snapshot control', async () => {
+    await pg.query(
+      `UPDATE futures_snapshots SET price = price + 1 WHERE id = (SELECT max(id) FROM futures_snapshots)`,
+    );
+    const before = await dump();
+    expect(
+      await run({
+        stores: ['fires'],
+        expectSnapshots: null,
+        expectPremarket: null,
+        expectFires: 3,
+      }),
+    ).toBe(1);
+    expect(errored()).toMatch(
+      /snapshots: control set matches \(a thin root: or is explained by a late bar\) 1295 of 1296 \(99\.9%\), not 100%/,
+    );
+    await expectNothingWritten(before);
+  });
+
+  it('whatever --stores says: --apply --stores fires still refuses on a failing pre-market subset check', async () => {
+    await pg.query(
+      `UPDATE market_snapshots SET pre_market_data = jsonb_set(pre_market_data, '{globexHigh}', '7500') WHERE id = $1`,
+      [ids.pc],
+    );
+    const before = await dump();
+    expect(
+      await run({
+        stores: ['fires'],
+        expectSnapshots: null,
+        expectPremarket: null,
+        expectFires: 3,
+      }),
+    ).toBe(1);
+    expect(errored()).toMatch(/premarket: subset check holds for 1 of 2/);
+    await expectNothingWritten(before);
   });
 
   it('during market hours, before it reads anything', async () => {
@@ -1138,9 +1405,24 @@ describe('--apply on real SQL (pglite)', () => {
       '0.1000',
       '0.3000',
     ]);
+    // The Sunday 04-12 rows stored the close of a junk bar Phase 2 deleted a
+    // day earlier: ES and RTY both follow today's bars (no 1h or day change
+    // exists that early in the session).
+    expect(await snapshotValues(ids.s10)).toEqual([
+      '6771.2500',
+      null,
+      null,
+      '1.0000',
+    ]);
+    expect(await snapshotValues(ids.s11)).toEqual([
+      '2001.7500',
+      null,
+      null,
+      '1.0000',
+    ]);
     // The right row, the stale rows (one with an affected price), the information row and the controls were not written.
     expect(await touches('futures_snapshots')).toEqual(
-      [ids.s1, ids.s3].sort((a, b) => a - b),
+      [ids.s1, ids.s3, ids.s10, ids.s11].sort((a, b) => a - b),
     );
     expect(await snapshotValues(ids.s6)).toEqual([
       '7500.0000',
@@ -1209,7 +1491,7 @@ describe('--apply on real SQL (pglite)', () => {
       const lines = readFileSync(join(workDir, seen[0]!), 'utf8')
         .split('\n')
         .filter(Boolean);
-      expect(lines).toHaveLength(6); // 2 snapshots + 1 pre-market + 3 fires
+      expect(lines).toHaveLength(8); // 4 snapshots + 1 pre-market + 3 fires
     };
     expect(await run()).toBe(0);
     expect(seen).toHaveLength(1);
@@ -1258,6 +1540,26 @@ describe('--apply on real SQL (pglite)', () => {
     ).toEqual([0.2, 0.9, 0.6]);
   });
 
+  it('--stores limits what is written: --apply --stores fires writes the fires and no snapshot or pre-market row', async () => {
+    expect(
+      await run({
+        stores: ['fires'],
+        expectSnapshots: null,
+        expectPremarket: null,
+        expectFires: 3,
+      }),
+    ).toBe(0);
+    expect(await fireValue(ids.f1)).toBe('0.5');
+    expect(await touches('futures_snapshots')).toEqual([]);
+    expect(await touches('market_snapshots')).toEqual([]);
+    expect(existsSync(markerPath(workDir, 'fires'))).toBe(true);
+    expect(existsSync(markerPath(workDir, 'snapshots'))).toBe(false);
+    expect(existsSync(markerPath(workDir, 'premarket'))).toBe(false);
+    // The report still shows every store's checks.
+    expect(report()).toContain('futures_snapshots (ES, NQ, RTY, CL, GC, ZN)');
+    expect(report()).toContain('Apply gate: every check passes.');
+  });
+
   it('is idempotent: a second dry run plans no write, and a forced rerun writes nothing', async () => {
     expect(await run()).toBe(0);
     const after = await dump();
@@ -1265,7 +1567,7 @@ describe('--apply on real SQL (pglite)', () => {
       .rows[0] as { n: number };
 
     expect(await dry()).toBe(0);
-    expect(report()).toContain('rows in range: 6, rows to write: 0');
+    expect(report()).toContain('rows in range: 8, rows to write: 0');
     expect(report()).toMatch(/rows in scope: 5, rows to change: 0/);
     expect(report()).toContain('rows in scope: 4, rows to write: 0');
 
@@ -1318,7 +1620,9 @@ describe('--apply on real SQL (pglite)', () => {
       }
     };
     expect(await run()).toBe(0);
-    expect(await touches('futures_snapshots')).toEqual([ids.s3]);
+    expect(await touches('futures_snapshots')).toEqual(
+      [ids.s3, ids.s10, ids.s11].sort((a, b) => a - b),
+    );
   });
 
   it('never overwrites a row that became hand-saved after the plan was read', async () => {
@@ -1364,7 +1668,7 @@ describe('--apply on real SQL (pglite)', () => {
     hooks.dropWrites = true;
     expect(await run()).toBe(1);
     expect(errored()).toMatch(
-      /apply failed: snapshots: verify failed for snapshots: 2 of 2 row\(s\) differ/,
+      /apply failed: snapshots: verify failed for snapshots: 4 of 4 row\(s\) differ/,
     );
     expect(existsSync(markerPath(workDir, 'snapshots'))).toBe(false);
   });

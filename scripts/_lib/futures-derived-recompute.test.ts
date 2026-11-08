@@ -52,8 +52,11 @@ import {
 import {
   affectedSnapshotFields,
   aggregateWindow,
+  attributeByValue,
+  buildPreSeries,
   buildRepair,
   classifyMismatch,
+  classifyThinMiss,
   inputsMatchSnapshot,
   parseBackup,
   preRepairWindow,
@@ -117,6 +120,8 @@ describe('parseRecomputeArgs', () => {
   it('asks only for the expectations of the stores it was given', () => {
     const args = parseRecomputeArgs([
       '--apply',
+      '--backup',
+      'b.jsonl',
       '--stores',
       'fires',
       '--expect-fires',
@@ -124,23 +129,25 @@ describe('parseRecomputeArgs', () => {
     ]);
     expect(args.stores).toEqual(['fires']);
     expect(args.expectFires).toBe(12);
-    expect(args.backup).toBeNull();
+    expect(args.expectSnapshots).toBeNull();
     expect(() =>
       parseRecomputeArgs(['--apply', '--stores', 'fires', 'premarket']),
     ).toThrow(/--apply needs --expect-fires K and --expect-premarket M/);
   });
 
-  it('asks for the Phase 2 backup only when a store needs the bars', () => {
+  it('asks for the Phase 2 backup when a store needs the bars, and always with --apply', () => {
     const needs =
-      /--backup <file> is required with the snapshots or premarket store/;
+      /--backup <file> is required with --apply or with the snapshots or premarket store/;
     expect(() => parseRecomputeArgs([])).toThrow(needs);
     expect(() => parseRecomputeArgs(['--stores', 'premarket'])).toThrow(needs);
+    // --apply plans all three stores to check them, so even a fires-only
+    // apply needs the backup the snapshot and pre-market checks read.
     expect(() =>
       parseRecomputeArgs([
         '--apply',
         '--stores',
-        'snapshots',
-        '--expect-snapshots',
+        'fires',
+        '--expect-fires',
         '1',
       ]),
     ).toThrow(needs);
@@ -493,6 +500,29 @@ describe('checkApplyGate', () => {
     ).toEqual(['fires: the control set is empty, so the method is unproven']);
   });
 
+  it('checks every planned store, and the approved total only of the stores it has one for', () => {
+    // --apply --stores fires: the snapshot and pre-market checks still hold,
+    // and only fires has an approved total.
+    const planned = [
+      store('snapshots', 16580, control(2728, 2728)),
+      store('premarket', 35, control(108, 108)),
+      store('fires', 0, control(166, 166)),
+    ];
+    expect(checkApplyGate(planned, { fires: 0 })).toEqual([]);
+    expect(
+      checkApplyGate(
+        [
+          store('snapshots', 16580, control(2728, 2700)),
+          planned[1]!,
+          planned[2]!,
+        ],
+        { fires: 0 },
+      ),
+    ).toEqual([
+      'snapshots: control set matches 2700 of 2728 (99.0%), not 100%',
+    ]);
+  });
+
   it('checks only the stores in the run', () => {
     expect(
       checkApplyGate([store('fires', 7, control(166, 166))], { fires: 7 }),
@@ -825,7 +855,8 @@ describe('buildRepair', () => {
         bar(T(4), 7000),
       ]),
     );
-    expect(repair.deleted).toEqual([ms(T(6))]);
+    // The update whose bar is gone (T(5)) counts as deleted.
+    expect(repair.deleted).toEqual([ms(T(5)), ms(T(6))]);
     expect([...repair.closeChanged].sort()).toEqual(
       [ms(T(2)), ms(T(5))].sort(),
     );
@@ -1189,6 +1220,89 @@ describe('classifyMismatch', () => {
   });
 });
 
+describe('classifyThinMiss', () => {
+  const miss = (over: object = {}) => ({
+    fields: ['volumeRatio'] as ('volumeRatio' | 'price' | 'change1hPct')[],
+    // Outside the September window, so a volume-ratio-only miss is not september-window.
+    atMs: ms('2026-11-03T15:31:21Z'),
+    storedPrice: 110.5,
+    olderBars: [] as { ageMin: number; close: number }[],
+    storedVolumeRatio: 0.5 as number | null,
+    recomputedVolumeRatio: 0.5002 as number | null,
+    ...over,
+  });
+
+  it('calls a miss late-bar when the stored price is the close of a bar 1 to 14 minutes older, whatever else differs', () => {
+    expect(
+      classifyThinMiss(
+        miss({
+          fields: ['price', 'change1hPct', 'volumeRatio'],
+          olderBars: [{ ageMin: 1, close: 110.5 }],
+          // The volume ratio is a consequence of the late bar: it may be on either side.
+          recomputedVolumeRatio: 0.4,
+        }),
+      ),
+    ).toEqual({ cls: 'late-bar', ageMin: 1 });
+  });
+
+  it('calls a volume-ratio-only miss late-volume when the stored ratio is strictly below the recomputed one', () => {
+    expect(classifyThinMiss(miss())).toEqual({
+      cls: 'late-volume',
+      ageMin: null,
+    });
+  });
+
+  it.each([
+    ['above the recomputed ratio', 0.5, 0.4998],
+    ['equal to the recomputed ratio', 0.5, 0.5],
+    ['null while the recompute has a ratio', null, 0.5],
+    ['a number while the recompute has none', 0.5, null],
+  ])(
+    'does not call a volume-ratio miss late-volume when the stored ratio is %s',
+    (_why, stored, recomputed) => {
+      expect(
+        classifyThinMiss(
+          miss({
+            storedVolumeRatio: stored,
+            recomputedVolumeRatio: recomputed,
+          }),
+        ),
+      ).toEqual({ cls: 'other', ageMin: null });
+    },
+  );
+
+  it.each([
+    [['change1hPct', 'volumeRatio']],
+    [['changeDayPct']],
+    [['price', 'volumeRatio']],
+    [['price']],
+  ] as const)(
+    'is other when %j differs and no late bar explains it, though the volume ratio is below',
+    (fields) => {
+      expect(classifyThinMiss(miss({ fields: [...fields] }))).toEqual({
+        cls: 'other',
+        ageMin: null,
+      });
+    },
+  );
+
+  it('is other when the matching older bar is too old, or the stored price equals the latest close', () => {
+    expect(
+      classifyThinMiss(
+        miss({
+          fields: ['price'],
+          olderBars: [{ ageMin: 15, close: 110.5 }],
+        }),
+      ).cls,
+    ).toBe('other');
+    expect(
+      classifyThinMiss(
+        miss({ fields: ['price'], olderBars: [{ ageMin: 3, close: 110.4 }] }),
+      ).cls,
+    ).toBe('other');
+  });
+});
+
 describe('volumeRatioWriteText', () => {
   const change = (
     symbol: 'ES' | 'NQ',
@@ -1234,6 +1348,141 @@ describe('volumeRatioWriteText', () => {
     ).toBe('volume-ratio writes: 3; from or to null: 3');
     expect(volumeRatioWriteText([], 'ES')).toBe(
       'volume-ratio writes: 0; from or to null: 0',
+    );
+  });
+});
+
+describe("finding a stored row's inputs by value", () => {
+  const AT = ms('2026-04-12T22:30:02Z'); // Sunday, 27 hours after the junk bar
+  const OPEN = ms('2026-04-12T13:30:00Z');
+  const real = [
+    bar('2026-04-12T22:27:00Z', 6769.5),
+    bar('2026-04-12T22:28:00Z', 6770),
+    bar('2026-04-12T22:29:00Z', 6771.25),
+  ];
+  const stored = (over: object = {}) => ({
+    price: 8283.5,
+    change1hPct: 0,
+    changeDayPct: null,
+    ...over,
+  });
+  const series = (backup: BackupBar[], current: Bar[] = real) =>
+    buildPreSeries(backup, current);
+
+  it('finds the price of a bar Phase 2 deleted, though newer unrepaired bars exist (the 04-12 rows)', () => {
+    const rule = attributeByValue(
+      series([old('2026-04-11T19:52:00Z', 'delete', 8283.5)]),
+      AT,
+      OPEN,
+      stored(),
+    );
+    expect([...rule.fields].sort()).toEqual([
+      'change1hPct',
+      'changeDayPct',
+      'price',
+    ]);
+    expect(rule.hits.map((h) => [h.field, h.bar.repair, h.bar.tsMs])).toEqual([
+      ['price', 'deleted', ms('2026-04-11T19:52:00Z')],
+      ['change1hPct', 'deleted', ms('2026-04-11T19:52:00Z')],
+    ]);
+    expect(rule.unmatched).toEqual([]);
+  });
+
+  it('finds the price of a bar whose close Phase 2 changed (the same blind spot)', () => {
+    const current = [bar('2026-04-12T22:20:00Z', 7499.75), ...real];
+    const rule = attributeByValue(
+      series([old('2026-04-12T22:20:00Z', 'update', 7550)], current),
+      AT,
+      OPEN,
+      stored({ price: 7550, change1hPct: null }),
+    );
+    expect([...rule.fields].sort()).toEqual([
+      'change1hPct',
+      'changeDayPct',
+      'price',
+    ]);
+    expect(rule.hits[0]).toMatchObject({
+      field: 'price',
+      bar: { repair: 'close-changed', closePre: 7550, closeNow: 7499.75 },
+    });
+  });
+
+  it('leaves a row alone when a newer unrepaired bar shares the stored close', () => {
+    const current = [bar('2026-04-12T22:00:00Z', 8283.5), ...real];
+    const rule = attributeByValue(
+      series([old('2026-04-11T19:52:00Z', 'delete', 8283.5)], current),
+      AT,
+      OPEN,
+      stored({ change1hPct: null }),
+    );
+    expect(rule.fields.size).toBe(0);
+    expect(rule.hits).toEqual([]);
+  });
+
+  it('finds the hour-ago close from the stored 1h change, to the tolerance of its rounding', () => {
+    // price 6771.25 against a deleted hour-ago close of 6866.5 (-1.3871%).
+    const current = [...real];
+    const hour = 6866.5;
+    const pct = Math.round(((6771.25 - hour) / hour) * 100 * 1e4) / 1e4;
+    const rule = attributeByValue(
+      series([old('2026-04-12T21:25:00Z', 'delete', hour)], current),
+      AT,
+      OPEN,
+      stored({ price: 6771.25, change1hPct: pct }),
+    );
+    expect([...rule.fields]).toEqual(['change1hPct']);
+    expect(rule.hits.map((h) => h.field)).toEqual(['change1hPct']);
+    // The price matched a real bar (6771.25 is in the series) and is untouched.
+    expect(rule.unmatched).toEqual([]);
+  });
+
+  it('finds the day-open close from the stored day change', () => {
+    const open = 6800.25;
+    const pct = Math.round(((6771.25 - open) / open) * 100 * 1e4) / 1e4;
+    const rule = attributeByValue(
+      series([old('2026-04-12T13:30:00Z', 'delete', open)]),
+      AT,
+      OPEN,
+      stored({ price: 6771.25, change1hPct: null, changeDayPct: pct }),
+    );
+    expect([...rule.fields]).toEqual(['changeDayPct']);
+    expect(rule.hits[0]?.bar.tsMs).toBe(ms('2026-04-12T13:30:00Z'));
+  });
+
+  it('counts a field with no match, skips a null field, and does not look past 96 hours', () => {
+    const rule = attributeByValue(
+      series([old('2026-04-07T22:00:00Z', 'delete', 8283.5)]), // 5.0 days earlier
+      AT,
+      OPEN,
+      stored({ change1hPct: 0.5 }),
+    );
+    expect(rule.fields.size).toBe(0);
+    expect(rule.unmatched).toEqual(['price', 'change1hPct']);
+    // A null day change is not looked for, so it is not unmatched either.
+  });
+
+  it('treats an update whose bar is gone now as a deleted bar', () => {
+    const backup = [old('2026-04-11T19:52:00Z', 'update', 8283.5)];
+    const repair = buildRepair(backup, currentOf(real));
+    expect(repair.deleted).toEqual([ms('2026-04-11T19:52:00Z')]);
+    const pre = buildPreSeries(backup, real);
+    expect(pre.find((b) => b.closePre === 8283.5)).toMatchObject({
+      repair: 'deleted',
+      closeNow: null,
+    });
+    expect(
+      attributeByValue(pre, AT, OPEN, stored({ change1hPct: null })).hits[0]
+        ?.bar.repair,
+    ).toBe('deleted');
+  });
+
+  it('marks an unchanged backed-up bar as not repaired', () => {
+    const pre = buildPreSeries(
+      [old('2026-04-12T22:27:00Z', 'update', 6769.5)],
+      real,
+    );
+    expect(pre.find((b) => b.tsMs === ms('2026-04-12T22:27:00Z'))?.repair).toBe(
+      null,
     );
   });
 });
