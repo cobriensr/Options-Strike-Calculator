@@ -40,7 +40,9 @@
  * root-day per slot, its pieces paged one after another), each through the
  * crons' shared Redis slots; no start during market hours and a stop
  * between dates if they begin; the page budget is checked between dates,
- * so a run overshoots it by at most one date.
+ * so a run overshoots it by at most one date. A run that fails a root-day
+ * or stops before its last date exits 1; it ends by naming the root-days it
+ * did not reach and the arguments that resume them.
  *
  * The argument parser, date plan, session pieces, per-day paging, date
  * loop and market-hours guard are exported for `futures-bar-backfill.ts`
@@ -76,20 +78,6 @@ import { UW_CONCURRENCY_CAP } from '../../api/_lib/uw-concurrency.js';
 import { mapWithConcurrency } from '../../api/_lib/uw-fetch.js';
 import { isFuturesMarketOpen } from '../../src/utils/timezone.js';
 import { FIRST_DECISION_DATE } from './futures-front-month-backfill.js';
-
-/**
- * First UTC day UW's REST /trades history reaches, per root (probe 0a,
- * 2026-10-28): ESU6 from 2026-06-30T18:06Z, the others from 2026-07-21.
- * A fixed archive start, not a rolling window.
- */
-export const UW_TRADES_HISTORY_START: Readonly<Record<FuturesRoot, string>> = {
-  ES: '2026-06-30',
-  NQ: '2026-07-21',
-  RTY: '2026-07-21',
-  CL: '2026-07-21',
-  GC: '2026-07-21',
-  ZN: '2026-07-21',
-};
 
 /** Default `--max-pages`: about 20 ES sessions, roughly half an hour. */
 export const DEFAULT_MAX_PAGES = 20_000;
@@ -238,10 +226,10 @@ function addDays(date: string, days: number): string {
 }
 
 /**
- * The UTC dates to process, oldest first, each with the roots whose UW
- * history reaches it. Dates after `today` are dropped. With no dates and no
- * `--from`, the range starts at FIRST_DECISION_DATE for every root: no
- * earlier trade date has a stored front month to page.
+ * The UTC dates to process, oldest first, each with every root asked for.
+ * Dates after `today` are dropped. With no dates and no `--from`, the range
+ * starts at FIRST_DECISION_DATE: no earlier trade date has a stored front
+ * month to page, and a root-day on one fails by name (the schedule reader).
  */
 export function planDates(opts: BackfillOptions, today: string): DayPlan[] {
   let dates: string[];
@@ -257,8 +245,7 @@ export function planDates(opts: BackfillOptions, today: string): DayPlan[] {
   const plan: DayPlan[] = [];
   for (const date of dates) {
     if (date > today) continue;
-    const roots = opts.roots.filter((r) => date >= UW_TRADES_HISTORY_START[r]);
-    if (roots.length > 0) plan.push({ date, roots });
+    plan.push({ date, roots: [...opts.roots] });
   }
   return plan;
 }
@@ -605,6 +592,49 @@ export interface FailedRootDay {
   date: string;
 }
 
+/**
+ * The arguments that re-run `dates` for `roots` with this run's page
+ * budget: explicit dates stay dates, a range is re-given as --from/--to.
+ * `flag` is the run's mode flag with its leading space, or ''.
+ */
+export function rerunArgs(
+  opts: BackfillOptions,
+  dates: readonly string[],
+  roots: readonly FuturesRoot[],
+  flag: string,
+): string {
+  const when =
+    opts.dates !== null
+      ? dates.join(' ')
+      : `--from ${dates[0] ?? ''} --to ${dates.at(-1) ?? ''}`;
+  return `${when} --roots ${roots.join(',')} --max-pages ${opts.maxPages}${flag}`;
+}
+
+/**
+ * Says where a run that stopped early (market hours began, or the page
+ * budget was spent) left off: the arguments that resume it and the
+ * root-days it never reached. Silent when `stoppedBefore` is null.
+ */
+export function reportStoppedEarly(
+  opts: BackfillOptions,
+  plan: readonly DayPlan[],
+  stoppedBefore: string | null,
+  flag: string,
+): void {
+  if (stoppedBefore === null) return;
+  const left = plan.filter((d) => d.date >= stoppedBefore);
+  const dates = left.map((d) => d.date);
+  const rootDays = left.reduce((n, d) => n + d.roots.length, 0);
+  console.error(
+    `Incomplete: stopped before ${stoppedBefore}. ` +
+      `Resume with ${rerunArgs(opts, dates, opts.roots, flag)}`,
+  );
+  console.error(
+    `Not reached: ${dates[0]} → ${dates.at(-1)}, ` +
+      `roots ${opts.roots.join(',')} (${rootDays} root-days)`,
+  );
+}
+
 export interface DayLoopResult {
   pages: number;
   failures: number;
@@ -717,7 +747,7 @@ export async function runBackfill(
   });
   let written = 0;
   let skipped = 0;
-  const { pages, failures, undecided } = await runPlannedDays(
+  const { pages, failures, undecided, stoppedBefore } = await runPlannedDays(
     plan,
     opts.maxPages,
     (root, date) =>
@@ -745,5 +775,12 @@ export async function runBackfill(
   if (failures > 0) {
     console.error('Re-run the failed dates; finished root-days are skipped.');
   }
-  return failures > 0 ? 1 : 0;
+  reportStoppedEarly(
+    opts,
+    plan,
+    stoppedBefore,
+    opts.dryRun ? ' --dry-run' : '',
+  );
+  // Dates the loop never reached are as unfinished as failed root-days.
+  return failures > 0 || stoppedBefore !== null ? 1 : 0;
 }

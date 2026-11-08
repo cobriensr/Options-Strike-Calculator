@@ -1177,6 +1177,9 @@ describe('runBarBackfill', () => {
     expect(out()).toMatch(
       /Incomplete: stopped before 2026-09-16\. Resume with 2026-09-16 --roots ES --max-pages 1$/m,
     );
+    expect(out()).toMatch(
+      /Not reached: 2026-09-16 → 2026-09-16, roots ES \(1 root-days\)$/m,
+    );
   });
 
   it('a range run that stops early resumes with --from and the same --to', async () => {

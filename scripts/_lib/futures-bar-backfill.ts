@@ -95,6 +95,8 @@ import {
   parseArgs,
   planDates,
   refuseDuringMarketHours,
+  reportStoppedEarly,
+  rerunArgs,
   runPlannedDays,
   sessionPieces,
   type BackfillOptions,
@@ -405,22 +407,10 @@ function modeOf(opts: BarBackfillOptions): Mode {
   return opts.dryRun ? 'dry' : 'write';
 }
 
-/**
- * The arguments that re-run `dates` for `roots` with this run's page
- * budget and mode: explicit dates stay dates, a range is re-given as
- * --from/--to.
- */
-function rerunArgs(
-  opts: BarBackfillOptions,
-  dates: readonly string[],
-  roots: readonly FuturesRoot[],
-): string {
-  const first = dates[0] ?? '';
-  const last = dates.at(-1) ?? '';
-  const when =
-    opts.dates !== null ? dates.join(' ') : `--from ${first} --to ${last}`;
-  const flag = opts.compare ? ' --compare' : opts.dryRun ? ' --dry-run' : '';
-  return `${when} --roots ${roots.join(',')} --max-pages ${opts.maxPages}${flag}`;
+/** The run's mode flag as `rerunArgs` appends it, with its leading space. */
+function modeFlag(opts: BarBackfillOptions): string {
+  if (opts.compare) return ' --compare';
+  return opts.dryRun ? ' --dry-run' : '';
 }
 
 /**
@@ -438,16 +428,11 @@ function reportIncomplete(
     const failedRoots = new Set(loop.failed.map((f) => f.root));
     const roots = opts.roots.filter((r) => failedRoots.has(r));
     console.error(`Failed root-days: ${list}`);
-    console.error(`Re-run with ${rerunArgs(opts, dates, roots)}`);
-  }
-  if (loop.stoppedBefore !== null) {
-    const from = loop.stoppedBefore;
-    const dates = plan.map((d) => d.date).filter((d) => d >= from);
     console.error(
-      `Incomplete: stopped before ${from}. ` +
-        `Resume with ${rerunArgs(opts, dates, opts.roots)}`,
+      `Re-run with ${rerunArgs(opts, dates, roots, modeFlag(opts))}`,
     );
   }
+  reportStoppedEarly(opts, plan, loop.stoppedBefore, modeFlag(opts));
 }
 
 /** Runs the rebuild and returns the process exit code. */

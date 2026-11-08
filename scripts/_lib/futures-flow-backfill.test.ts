@@ -287,7 +287,7 @@ describe('planDates', () => {
     ]);
   });
 
-  it('explicit dates: deduped, oldest first, roots limited to their history, future dates dropped', () => {
+  it('explicit dates: deduped, oldest first, every root on every date, future dates dropped', () => {
     const plan = planDates(
       opts({
         dates: [
@@ -303,19 +303,20 @@ describe('planDates', () => {
     );
 
     expect(plan).toEqual([
-      { date: '2026-07-01', roots: ['ES'] },
+      { date: '2026-06-29', roots: ['ES', 'NQ'] },
+      { date: '2026-07-01', roots: ['ES', 'NQ'] },
       { date: '2026-07-21', roots: ['ES', 'NQ'] },
     ]);
   });
 
-  it('a --from/--to range clipped to each root’s history', () => {
+  it('a --from/--to range gives every root every date, in the order the roots were given', () => {
     const plan = planDates(
       opts({ from: '2026-07-20', to: '2026-07-21', roots: ['NQ', 'ES'] }),
       '2026-07-22',
     );
 
     expect(plan).toEqual([
-      { date: '2026-07-20', roots: ['ES'] },
+      { date: '2026-07-20', roots: ['NQ', 'ES'] },
       { date: '2026-07-21', roots: ['NQ', 'ES'] },
     ]);
   });
@@ -890,6 +891,40 @@ describe('runBackfill', () => {
       },
     );
 
+    it('an explicit range before it fails every root by name, none dropped', async () => {
+      const roots = ['ES', 'NQ', 'RTY', 'CL', 'GC', 'ZN'] as const;
+      routeNullBars({
+        '2026-06-29': roots.map((r) => nullRow(r, '2026-06-29T14:00:00Z', 4)),
+        '2026-07-21': roots.map((r) => nullRow(r, '2026-07-21T14:00:00Z', 4)),
+      });
+
+      const code = await runBackfill({
+        ...opts({ dates: ['2026-06-29', '2026-07-21'] }),
+        apiKey: 'uw-key',
+      });
+
+      expect(code).toBe(1);
+      const failed = logs.filter((l) =>
+        /FAILED: .*is before the stored front month/.test(l),
+      );
+      expect(failed).toHaveLength(12);
+      for (const root of roots) {
+        for (const date of ['2026-06-29', '2026-07-21']) {
+          expect(
+            failed.some((l) =>
+              l.includes(
+                `${root} ${date} FAILED: ${root}: trade date ${date} is before`,
+              ),
+            ),
+          ).toBe(true);
+        }
+      }
+      expect(mockStored).not.toHaveBeenCalled();
+      expect(mockRefresh).not.toHaveBeenCalled();
+      expect(mockSchedule).not.toHaveBeenCalled();
+      expect(mockUwFetch).not.toHaveBeenCalled();
+    });
+
     it('runs 2026-07-28', async () => {
       mockSql
         .mockResolvedValueOnce([nullRow('ES', '2026-07-28T14:00:00Z', 4)])
@@ -1114,10 +1149,78 @@ describe('runBackfill', () => {
       apiKey: 'k',
     });
 
-    expect(code).toBe(0);
-    // 07-14 used 1 page; 07-15 never starts.
+    // A run that stopped short is not a success (the bar script's rule).
+    expect(code).toBe(1);
+    // 08-04 used 1 page; 08-05 never starts.
     expect(mockSql).toHaveBeenCalledTimes(2);
-    expect(logs.join('\n')).toMatch(/page budget.*--from 2026-08-05/is);
+    const out = logs.join('\n');
+    expect(out).toMatch(/Page budget spent \(1 of 1\).*--from 2026-08-05/is);
+    expect(out).toMatch(
+      /Incomplete: stopped before 2026-08-05\. Resume with 2026-08-05 --roots ES --max-pages 1$/m,
+    );
+    expect(out).toMatch(
+      /Not reached: 2026-08-05 → 2026-08-05, roots ES \(1 root-days\)$/m,
+    );
+  });
+
+  it('stops before the next date when market hours begin mid-run: exits 1 and names what was not reached', async () => {
+    mockIsMarketHours
+      .mockReturnValueOnce(false) // the start guard
+      .mockReturnValueOnce(false) // before 08-04
+      .mockReturnValue(true); // before 08-05
+    routeNullBars({ '2026-08-04': [nullRow('ES', '2026-08-04T14:00:00Z', 4)] });
+    routeTrades(ES_PAGES);
+
+    const code = await runBackfill({
+      ...opts({
+        dates: ['2026-08-04', '2026-08-05', '2026-08-06'],
+        roots: ['ES', 'NQ'],
+      }),
+      apiKey: 'k',
+    });
+
+    expect(code).toBe(1);
+    const out = logs.join('\n');
+    expect(out).toMatch(/Market hours began: stopping before 2026-08-05/);
+    expect(out).toMatch(
+      /Incomplete: stopped before 2026-08-05\. Resume with 2026-08-05 2026-08-06 --roots ES,NQ --max-pages 20000$/m,
+    );
+    expect(out).toMatch(
+      /Not reached: 2026-08-05 → 2026-08-06, roots ES,NQ \(4 root-days\)$/m,
+    );
+    expect(out).not.toMatch(/FAILED/);
+  });
+
+  it('a range run that stops early resumes with --from and the same --to, and keeps --dry-run', async () => {
+    mockIsMarketHours
+      .mockReturnValueOnce(false) // the start guard
+      .mockReturnValueOnce(false) // before 08-04
+      .mockReturnValue(true); // before 08-05
+
+    const code = await runBackfill({
+      ...opts({
+        from: '2026-08-04',
+        to: '2026-08-06',
+        roots: ['ES'],
+        dryRun: true,
+      }),
+      apiKey: 'k',
+    });
+
+    expect(code).toBe(1);
+    expect(logs.join('\n')).toMatch(
+      /Incomplete: stopped before 2026-08-05\. Resume with --from 2026-08-05 --to 2026-08-06 --roots ES --max-pages 20000 --dry-run$/m,
+    );
+  });
+
+  it('a run that reaches its last date is not marked incomplete', async () => {
+    const code = await runBackfill({
+      ...opts({ dates: ['2026-08-04', '2026-08-05'], roots: ['ES'] }),
+      apiKey: 'k',
+    });
+
+    expect(code).toBe(0);
+    expect(logs.join('\n')).not.toMatch(/Incomplete|Not reached/);
   });
 
   it('a failed root-day (UW 5xx) is reported and fails the exit code; other roots still run', async () => {
@@ -1194,11 +1297,13 @@ describe('runBackfill', () => {
     });
 
     expect(code).toBe(1);
-    // Both requests counted: 07-15 never starts.
+    // Both requests counted: 08-05 never starts.
     expect(mockSql).toHaveBeenCalledTimes(1);
     const out = logs.join('\n');
     expect(out).toMatch(/ES 2026-08-04 FAILED.*UW API 502/);
     expect(out).toMatch(/page budget.*--from 2026-08-05/is);
+    // A failure and an early stop together: both are listed.
+    expect(out).toMatch(/Incomplete: stopped before 2026-08-05\./);
     expect(out).toMatch(/2 pages/);
   });
 });
