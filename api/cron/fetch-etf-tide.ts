@@ -208,6 +208,7 @@ export default withCronInstrumentation(
             result.buckets,
             source,
             today,
+            'fetch-etf-tide',
           );
           results[source] = {
             stored: counts.inserted + counts.updated,

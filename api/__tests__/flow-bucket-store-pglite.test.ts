@@ -47,6 +47,8 @@ import {
 
 const SOURCE = 'spy_etf_tide';
 const DATE = '2026-03-24'; // EDT: 09:30 ET is 13:30Z, 16:00 ET is 20:00Z
+/** The writer name every call logs its revisions under. */
+const WRITER = 'test-writer';
 
 let pg: PGlite;
 
@@ -55,6 +57,8 @@ beforeAll(async () => {
   await applyMigration(pg, 4);
   // #48 adds otm_ncp and otm_npp (DECIMAL(14,2)), written by greek flow only.
   await applyMigration(pg, 48);
+  // #206 adds flow_data_revisions, the log every upsert appends to.
+  await applyMigration(pg, 206);
   await pg.query(`SET TimeZone = 'UTC'`);
   const base = neonOverPglite(pg);
   type Txn = typeof base;
@@ -79,7 +83,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await pg.query('TRUNCATE flow_data RESTART IDENTITY');
+  await pg.query('TRUNCATE flow_data, flow_data_revisions RESTART IDENTITY');
 });
 
 const bucket = (
@@ -92,6 +96,22 @@ const bucket = (
   ncp,
   npp,
   netVolume,
+});
+
+/** A bucket that carries the OTM wings (greek flow). */
+const greekBucket = (
+  hhmmZ: string,
+  ncp: number,
+  npp: number,
+  netVolume: number | null,
+  otmNcp: number,
+  otmNpp: number,
+): ClosedBucket => ({
+  timestamp: `${DATE}T${hhmmZ}:00.000Z`,
+  ncp,
+  npp,
+  netVolume,
+  otm: { ncp: otmNcp, npp: otmNpp },
 });
 
 interface StoredRow {
@@ -134,6 +154,7 @@ describe('upsertClosedBuckets', () => {
       [bucket('13:35', 100.5, -20.25, 7), bucket('13:40', 200, -40, 9)],
       SOURCE,
       DATE,
+      WRITER,
     );
 
     expect(counts).toEqual({ inserted: 2, updated: 0, unchanged: 0 });
@@ -146,23 +167,29 @@ describe('upsertClosedBuckets', () => {
 
   it('leaves a bucket that already holds the same values untouched (no write)', async () => {
     const first = [bucket('13:35', 100.5, -20.25, 7)];
-    await upsertClosedBuckets(first, SOURCE, DATE);
+    await upsertClosedBuckets(first, SOURCE, DATE, WRITER);
     const before = await stored();
 
-    const counts = await upsertClosedBuckets(first, SOURCE, DATE);
+    const counts = await upsertClosedBuckets(first, SOURCE, DATE, WRITER);
 
     expect(counts).toEqual({ inserted: 0, updated: 0, unchanged: 1 });
     expect(await stored()).toEqual(before);
   });
 
   it('updates a bucket whose value UW revised, keeping its id and created_at', async () => {
-    await upsertClosedBuckets([bucket('13:35', 100, -20, 7)], SOURCE, DATE);
+    await upsertClosedBuckets(
+      [bucket('13:35', 100, -20, 7)],
+      SOURCE,
+      DATE,
+      WRITER,
+    );
     const [before] = await stored();
 
     const counts = await upsertClosedBuckets(
       [bucket('13:35', 130.5, -20, 7)],
       SOURCE,
       DATE,
+      WRITER,
     );
 
     expect(counts).toEqual({ inserted: 0, updated: 1, unchanged: 0 });
@@ -177,8 +204,13 @@ describe('upsertClosedBuckets', () => {
     ['npp', bucket('13:35', 100, -21, 7)],
     ['net_volume', bucket('13:35', 100, -20, 8)],
   ])('treats a revised %s alone as a change', async (_column, revised) => {
-    await upsertClosedBuckets([bucket('13:35', 100, -20, 7)], SOURCE, DATE);
-    const counts = await upsertClosedBuckets([revised], SOURCE, DATE);
+    await upsertClosedBuckets(
+      [bucket('13:35', 100, -20, 7)],
+      SOURCE,
+      DATE,
+      WRITER,
+    );
+    const counts = await upsertClosedBuckets([revised], SOURCE, DATE, WRITER);
     expect(counts).toEqual({ inserted: 0, updated: 1, unchanged: 0 });
   });
 
@@ -187,6 +219,7 @@ describe('upsertClosedBuckets', () => {
       [bucket('13:35', 100, -20, 7), bucket('13:40', 200, -40, 9)],
       SOURCE,
       DATE,
+      WRITER,
     );
 
     const counts = await upsertClosedBuckets(
@@ -197,6 +230,7 @@ describe('upsertClosedBuckets', () => {
       ],
       SOURCE,
       DATE,
+      WRITER,
     );
 
     expect(counts).toEqual({ inserted: 1, updated: 1, unchanged: 1 });
@@ -205,47 +239,68 @@ describe('upsertClosedBuckets', () => {
 
   it('stores a NULL net_volume, and a NULL that stays NULL is not a change', async () => {
     const nullVolume = [bucket('13:35', 100, -20, null)];
-    expect(await upsertClosedBuckets(nullVolume, SOURCE, DATE)).toEqual({
-      inserted: 1,
-      updated: 0,
-      unchanged: 0,
-    });
+    expect(await upsertClosedBuckets(nullVolume, SOURCE, DATE, WRITER)).toEqual(
+      {
+        inserted: 1,
+        updated: 0,
+        unchanged: 0,
+      },
+    );
     expect((await stored())[0]?.net_volume).toBeNull();
 
     // NULL IS DISTINCT FROM NULL is false: no rewrite.
-    expect(await upsertClosedBuckets(nullVolume, SOURCE, DATE)).toEqual({
-      inserted: 0,
-      updated: 0,
-      unchanged: 1,
-    });
+    expect(await upsertClosedBuckets(nullVolume, SOURCE, DATE, WRITER)).toEqual(
+      {
+        inserted: 0,
+        updated: 0,
+        unchanged: 1,
+      },
+    );
 
     // UW later sends the volume: that is a change.
     expect(
-      await upsertClosedBuckets([bucket('13:35', 100, -20, 5)], SOURCE, DATE),
+      await upsertClosedBuckets(
+        [bucket('13:35', 100, -20, 5)],
+        SOURCE,
+        DATE,
+        WRITER,
+      ),
     ).toEqual({ inserted: 0, updated: 1, unchanged: 0 });
     expect((await stored())[0]?.net_volume).toBe(5);
   });
 
   it('compares at the column precision: a sub-cent difference is not a change', async () => {
-    await upsertClosedBuckets([bucket('13:35', 100.5, -20, 7)], SOURCE, DATE);
+    await upsertClosedBuckets(
+      [bucket('13:35', 100.5, -20, 7)],
+      SOURCE,
+      DATE,
+      WRITER,
+    );
 
     const counts = await upsertClosedBuckets(
       [bucket('13:35', 100.5004, -20, 7)],
       SOURCE,
       DATE,
+      WRITER,
     );
 
     expect(counts).toEqual({ inserted: 0, updated: 0, unchanged: 1 });
   });
 
   it('keys on date, timestamp and source: the other source and day are separate rows', async () => {
-    await upsertClosedBuckets([bucket('13:35', 100, -20, 7)], SOURCE, DATE);
+    await upsertClosedBuckets(
+      [bucket('13:35', 100, -20, 7)],
+      SOURCE,
+      DATE,
+      WRITER,
+    );
 
     expect(
       await upsertClosedBuckets(
         [bucket('13:35', 100, -20, 7)],
         'qqq_etf_tide',
         DATE,
+        WRITER,
       ),
     ).toEqual({ inserted: 1, updated: 0, unchanged: 0 });
     expect(
@@ -253,6 +308,7 @@ describe('upsertClosedBuckets', () => {
         [bucket('13:35', 100, -20, 7)],
         SOURCE,
         '2026-03-25',
+        WRITER,
       ),
     ).toEqual({ inserted: 1, updated: 0, unchanged: 0 });
     expect(await stored(SOURCE)).toHaveLength(2);
@@ -260,7 +316,7 @@ describe('upsertClosedBuckets', () => {
   });
 
   it('does nothing for an empty batch', async () => {
-    expect(await upsertClosedBuckets([], SOURCE, DATE)).toEqual({
+    expect(await upsertClosedBuckets([], SOURCE, DATE, WRITER)).toEqual({
       inserted: 0,
       updated: 0,
       unchanged: 0,
@@ -275,6 +331,7 @@ describe('upsertClosedBuckets', () => {
         [bucket('13:35', 100, -20, 7), bucket('13:40', 1e13, 0, 1)],
         SOURCE,
         DATE,
+        WRITER,
       ),
     ).rejects.toThrow(/numeric field overflow/i);
     expect(await stored()).toEqual([]);
@@ -433,7 +490,7 @@ describe('closedBuckets and the flow_data columns agree on the ranges', () => {
       expect(result.buckets).toHaveLength(1);
 
       await expect(
-        upsertClosedBuckets(result.buckets, SOURCE, DATE),
+        upsertClosedBuckets(result.buckets, SOURCE, DATE, WRITER),
       ).resolves.toEqual({ inserted: 1, updated: 0, unchanged: 0 });
 
       const { rows } = await pg.query<{ ncp: string; npp: string; v: number }>(
@@ -479,7 +536,7 @@ describe('closedBuckets and the flow_data columns agree on the ranges', () => {
         netVolume: Number(overrides.net_volume ?? 1),
       };
       await expect(
-        upsertClosedBuckets([direct], SOURCE, DATE),
+        upsertClosedBuckets([direct], SOURCE, DATE, WRITER),
       ).rejects.toThrow();
       expect(await stored()).toEqual([]);
     },
@@ -494,21 +551,6 @@ describe('closedBuckets and the flow_data columns agree on the ranges', () => {
  */
 describe('upsertClosedBuckets with the OTM wings (greek flow)', () => {
   const GREEK = 'zero_dte_greek_flow';
-
-  const greekBucket = (
-    hhmmZ: string,
-    ncp: number,
-    npp: number,
-    netVolume: number | null,
-    otmNcp: number,
-    otmNpp: number,
-  ): ClosedBucket => ({
-    timestamp: `${DATE}T${hhmmZ}:00.000Z`,
-    ncp,
-    npp,
-    netVolume,
-    otm: { ncp: otmNcp, npp: otmNpp },
-  });
 
   interface StoredWingRow {
     timestamp: string;
@@ -536,6 +578,7 @@ describe('upsertClosedBuckets with the OTM wings (greek flow)', () => {
       [greekBucket('13:35', 5000000, -3000000, 120000, 2500000.5, -1800000.25)],
       GREEK,
       DATE,
+      WRITER,
     );
 
     expect(counts).toEqual({ inserted: 1, updated: 0, unchanged: 0 });
@@ -553,10 +596,10 @@ describe('upsertClosedBuckets with the OTM wings (greek flow)', () => {
 
   it('leaves a bucket that already holds the same values and wings untouched', async () => {
     const first = [greekBucket('13:35', 100, -20, 7, 60, -10)];
-    await upsertClosedBuckets(first, GREEK, DATE);
+    await upsertClosedBuckets(first, GREEK, DATE, WRITER);
     const before = await storedWings();
 
-    expect(await upsertClosedBuckets(first, GREEK, DATE)).toEqual({
+    expect(await upsertClosedBuckets(first, GREEK, DATE, WRITER)).toEqual({
       inserted: 0,
       updated: 0,
       unchanged: 1,
@@ -574,9 +617,10 @@ describe('upsertClosedBuckets with the OTM wings (greek flow)', () => {
         [greekBucket('13:35', 100, -20, 7, 60, -10)],
         GREEK,
         DATE,
+        WRITER,
       );
 
-      const counts = await upsertClosedBuckets([revised], GREEK, DATE);
+      const counts = await upsertClosedBuckets([revised], GREEK, DATE, WRITER);
 
       expect(counts).toEqual({ inserted: 0, updated: 1, unchanged: 0 });
       expect(await storedWings()).toEqual([
@@ -597,6 +641,7 @@ describe('upsertClosedBuckets with the OTM wings (greek flow)', () => {
       [greekBucket('13:35', 100, -20, 7, 60, -10)],
       GREEK,
       DATE,
+      WRITER,
     );
 
     for (const revised of [
@@ -604,11 +649,13 @@ describe('upsertClosedBuckets with the OTM wings (greek flow)', () => {
       greekBucket('13:35', 101, -21, 7, 60, -10),
       greekBucket('13:35', 101, -21, 8, 60, -10),
     ]) {
-      expect(await upsertClosedBuckets([revised], GREEK, DATE)).toEqual({
-        inserted: 0,
-        updated: 1,
-        unchanged: 0,
-      });
+      expect(await upsertClosedBuckets([revised], GREEK, DATE, WRITER)).toEqual(
+        {
+          inserted: 0,
+          updated: 1,
+          unchanged: 0,
+        },
+      );
     }
     expect(await storedWings()).toEqual([
       {
@@ -633,6 +680,7 @@ describe('upsertClosedBuckets with the OTM wings (greek flow)', () => {
       [greekBucket('13:35', 100, -20, 7, 60, -10)],
       GREEK,
       DATE,
+      WRITER,
     );
 
     expect(counts).toEqual({ inserted: 0, updated: 1, unchanged: 0 });
@@ -647,6 +695,7 @@ describe('upsertClosedBuckets with the OTM wings (greek flow)', () => {
       [greekBucket('13:35', 100, -20, 7, 60.5, -10)],
       GREEK,
       DATE,
+      WRITER,
     );
 
     expect(
@@ -654,6 +703,7 @@ describe('upsertClosedBuckets with the OTM wings (greek flow)', () => {
         [greekBucket('13:35', 100, -20, 7, 60.5004, -10.0004)],
         GREEK,
         DATE,
+        WRITER,
       ),
     ).toEqual({ inserted: 0, updated: 0, unchanged: 1 });
   });
@@ -666,6 +716,7 @@ describe('upsertClosedBuckets with the OTM wings (greek flow)', () => {
       ],
       GREEK,
       DATE,
+      WRITER,
     );
 
     const counts = await upsertClosedBuckets(
@@ -676,6 +727,7 @@ describe('upsertClosedBuckets with the OTM wings (greek flow)', () => {
       ],
       GREEK,
       DATE,
+      WRITER,
     );
 
     expect(counts).toEqual({ inserted: 1, updated: 1, unchanged: 1 });
@@ -696,11 +748,21 @@ describe('upsertClosedBuckets with the OTM wings (greek flow)', () => {
 
     // Same ncp, npp and volume: unchanged, whatever the wings hold.
     expect(
-      await upsertClosedBuckets([bucket('13:35', 100, -20, 7)], SOURCE, DATE),
+      await upsertClosedBuckets(
+        [bucket('13:35', 100, -20, 7)],
+        SOURCE,
+        DATE,
+        WRITER,
+      ),
     ).toEqual({ inserted: 0, updated: 0, unchanged: 1 });
     // A changed ncp: updated, and the wings are left as they were.
     expect(
-      await upsertClosedBuckets([bucket('13:35', 130, -20, 7)], SOURCE, DATE),
+      await upsertClosedBuckets(
+        [bucket('13:35', 130, -20, 7)],
+        SOURCE,
+        DATE,
+        WRITER,
+      ),
     ).toEqual({ inserted: 0, updated: 1, unchanged: 0 });
     expect((await storedWings(SOURCE))[0]).toMatchObject({
       ncp: '130.00',
@@ -708,7 +770,7 @@ describe('upsertClosedBuckets with the OTM wings (greek flow)', () => {
       otm_npp: '-10.00',
     });
     // A new tide bucket leaves them NULL.
-    await upsertClosedBuckets([bucket('13:40', 1, 1, 1)], SOURCE, DATE);
+    await upsertClosedBuckets([bucket('13:40', 1, 1, 1)], SOURCE, DATE, WRITER);
     expect((await storedWings(SOURCE))[1]).toMatchObject({
       otm_ncp: null,
       otm_npp: null,
@@ -726,6 +788,7 @@ describe('upsertClosedBuckets with the OTM wings (greek flow)', () => {
         ],
         GREEK,
         DATE,
+        WRITER,
       ),
     ).rejects.toThrow(/numeric field overflow/i);
     expect(await storedWings()).toEqual([]);
@@ -821,7 +884,7 @@ describe('closedGreekFlowBuckets and the OTM columns agree on the ranges', () =>
       expect(result.buckets).toHaveLength(1);
 
       await expect(
-        upsertClosedBuckets(result.buckets, GREEK, DATE),
+        upsertClosedBuckets(result.buckets, GREEK, DATE, WRITER),
       ).resolves.toEqual({ inserted: 1, updated: 0, unchanged: 0 });
 
       const { rows } = await pg.query<WingText>(
@@ -882,10 +945,417 @@ describe('closedGreekFlowBuckets and the OTM columns agree on the ranges', () =>
           ],
           GREEK,
           DATE,
+          WRITER,
         ),
       ).rejects.toThrow();
       const { rows } = await pg.query('SELECT 1 FROM flow_data');
       expect(rows).toEqual([]);
     },
   );
+});
+
+/**
+ * The revision log (spec P0.7, migration #206). flow_data keeps the latest
+ * value; every write that inserts a row or changes a value also appends the
+ * row, as stored, to flow_data_revisions in the same statement. An unchanged
+ * row writes none.
+ */
+describe('upsertClosedBuckets and the flow_data_revisions log', () => {
+  const GREEK = 'zero_dte_greek_flow';
+
+  interface LogRow {
+    ts: string;
+    ncp: string | null;
+    npp: string | null;
+    net_volume: number | null;
+    otm_ncp: string | null;
+    otm_npp: string | null;
+    writer: string;
+    is_first: boolean;
+  }
+
+  /** The log of one source, oldest write first, values as the text Postgres stores. */
+  async function log(source = SOURCE): Promise<LogRow[]> {
+    const { rows } = await pg.query<LogRow>(
+      `SELECT to_char(timestamp AT TIME ZONE 'UTC', 'HH24:MI') AS ts,
+              ncp::text AS ncp, npp::text AS npp, net_volume,
+              otm_ncp::text AS otm_ncp, otm_npp::text AS otm_npp,
+              writer, is_first
+         FROM flow_data_revisions WHERE source = $1 ORDER BY id`,
+      [source],
+    );
+    return rows;
+  }
+
+  const count = async (table: 'flow_data' | 'flow_data_revisions') =>
+    Number(
+      (await pg.query<{ n: string }>(`SELECT COUNT(*) AS n FROM ${table}`))
+        .rows[0]!.n,
+    );
+
+  it('logs an inserted row as a first revision with its writer and stored values', async () => {
+    await upsertClosedBuckets(
+      [bucket('13:35', 100.5, -20.25, 7)],
+      SOURCE,
+      DATE,
+      'fetch-etf-tide',
+    );
+
+    expect(await log()).toEqual([
+      {
+        ts: '13:35',
+        ncp: '100.50',
+        npp: '-20.25',
+        net_volume: 7,
+        otm_ncp: null,
+        otm_npp: null,
+        writer: 'fetch-etf-tide',
+        is_first: true,
+      },
+    ]);
+  });
+
+  it('writes no revision for a row that already holds the same values', async () => {
+    const same = [bucket('13:35', 100.5, -20.25, 7)];
+    await upsertClosedBuckets(same, SOURCE, DATE, WRITER);
+
+    const counts = await upsertClosedBuckets(same, SOURCE, DATE, WRITER);
+
+    expect(counts).toEqual({ inserted: 0, updated: 0, unchanged: 1 });
+    expect(await log()).toHaveLength(1);
+  });
+
+  it('writes no revision for a sub-cent difference, which is not a change', async () => {
+    await upsertClosedBuckets(
+      [bucket('13:35', 100.5, -20, 7)],
+      SOURCE,
+      DATE,
+      WRITER,
+    );
+
+    await upsertClosedBuckets(
+      [bucket('13:35', 100.5004, -20, 7)],
+      SOURCE,
+      DATE,
+      WRITER,
+    );
+
+    expect(await log()).toHaveLength(1);
+  });
+
+  it('logs a changed value as a later revision (is_first false) and flow_data holds the latest', async () => {
+    await upsertClosedBuckets(
+      [bucket('13:35', 100, -20, 7)],
+      SOURCE,
+      DATE,
+      'fetch-etf-tide',
+    );
+    await upsertClosedBuckets(
+      [bucket('13:35', 130.5, -20, 7)],
+      SOURCE,
+      DATE,
+      'fetch-etf-tide',
+    );
+
+    expect(await log()).toEqual([
+      expect.objectContaining({ ncp: '100.00', is_first: true }),
+      expect.objectContaining({
+        ncp: '130.50',
+        npp: '-20.00',
+        is_first: false,
+      }),
+    ]);
+    expect((await stored())[0]).toMatchObject({ ncp: 130.5 });
+    expect(await count('flow_data')).toBe(1);
+  });
+
+  it.each([
+    ['net_volume', bucket('13:35', 100, -20, 8)],
+    ['npp', bucket('13:35', 100, -21, 7)],
+  ])('logs a revised %s alone', async (_column, revised) => {
+    await upsertClosedBuckets(
+      [bucket('13:35', 100, -20, 7)],
+      SOURCE,
+      DATE,
+      WRITER,
+    );
+
+    await upsertClosedBuckets([revised], SOURCE, DATE, WRITER);
+
+    expect((await log()).map((r) => r.is_first)).toEqual([true, false]);
+  });
+
+  it('logs a change of an OTM wing alone, with both wings as stored', async () => {
+    await upsertClosedBuckets(
+      [greekBucket('13:35', 100, -20, 7, 60, -10)],
+      GREEK,
+      DATE,
+      'fetch-greek-flow',
+    );
+
+    await upsertClosedBuckets(
+      [greekBucket('13:35', 100, -20, 7, 61.5, -10)],
+      GREEK,
+      DATE,
+      'fetch-greek-flow',
+    );
+
+    expect(await log(GREEK)).toEqual([
+      expect.objectContaining({
+        otm_ncp: '60.00',
+        otm_npp: '-10.00',
+        is_first: true,
+      }),
+      expect.objectContaining({
+        otm_ncp: '61.50',
+        otm_npp: '-10.00',
+        is_first: false,
+      }),
+    ]);
+  });
+
+  it("logs a reconcile's change under the reconcile's own writer name", async () => {
+    await upsertClosedBuckets(
+      [greekBucket('13:35', -2281, -900, 54, -300, 12)],
+      GREEK,
+      DATE,
+      'fetch-greek-flow',
+    );
+
+    // UW restated the figures after the close.
+    const counts = await upsertClosedBuckets(
+      [greekBucket('13:35', -14505, -9000, 54, -7000, -6500)],
+      GREEK,
+      DATE,
+      'reconcile-zero-dte-greek-flow',
+    );
+
+    expect(counts).toEqual({ inserted: 0, updated: 1, unchanged: 0 });
+    expect(await log(GREEK)).toEqual([
+      expect.objectContaining({
+        ncp: '-2281.00',
+        writer: 'fetch-greek-flow',
+        is_first: true,
+      }),
+      expect.objectContaining({
+        ncp: '-14505.00',
+        writer: 'reconcile-zero-dte-greek-flow',
+        is_first: false,
+      }),
+    ]);
+  });
+
+  it('logs exactly the rows a mixed batch inserted or changed: one new, one revised, one unchanged', async () => {
+    await upsertClosedBuckets(
+      [bucket('13:35', 100, -20, 7), bucket('13:40', 200, -40, 9)],
+      SOURCE,
+      DATE,
+      WRITER,
+    );
+
+    const counts = await upsertClosedBuckets(
+      [
+        bucket('13:35', 100, -20, 7), // unchanged
+        bucket('13:40', 250, -40, 9), // revised
+        bucket('13:45', 300, -60, 11), // new
+      ],
+      SOURCE,
+      DATE,
+      'second-writer',
+    );
+
+    expect(counts).toEqual({ inserted: 1, updated: 1, unchanged: 1 });
+    expect((await log()).map((r) => [r.ts, r.writer, r.is_first])).toEqual([
+      ['13:35', WRITER, true],
+      ['13:40', WRITER, true],
+      ['13:40', 'second-writer', false],
+      ['13:45', 'second-writer', true],
+    ]);
+  });
+
+  it('logs the whole row as stored: a tide change keeps the wings the row already carried', async () => {
+    await pg.query(
+      `INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume, otm_ncp, otm_npp)
+       VALUES ($1, '2026-03-24T13:35:00Z', $2, 100, -20, 7, 60, -10)`,
+      [DATE, SOURCE],
+    );
+
+    await upsertClosedBuckets(
+      [bucket('13:35', 130, -20, 7)],
+      SOURCE,
+      DATE,
+      WRITER,
+    );
+
+    expect(await log()).toEqual([
+      expect.objectContaining({
+        ncp: '130.00',
+        otm_ncp: '60.00',
+        otm_npp: '-10.00',
+        is_first: false,
+      }),
+    ]);
+  });
+
+  it('keeps each source and each day apart in the log', async () => {
+    await upsertClosedBuckets(
+      [bucket('13:35', 100, -20, 7)],
+      SOURCE,
+      DATE,
+      WRITER,
+    );
+    await upsertClosedBuckets(
+      [bucket('13:35', 100, -20, 7)],
+      'qqq_etf_tide',
+      DATE,
+      WRITER,
+    );
+    await upsertClosedBuckets(
+      [bucket('13:35', 100, -20, 7)],
+      SOURCE,
+      '2026-03-25',
+      WRITER,
+    );
+
+    expect(await log(SOURCE)).toHaveLength(2);
+    expect(await log('qqq_etf_tide')).toHaveLength(1);
+  });
+
+  it('writes nothing, and logs nothing, for an empty batch', async () => {
+    await upsertClosedBuckets([], SOURCE, DATE, WRITER);
+
+    expect(await count('flow_data_revisions')).toBe(0);
+  });
+
+  it('throws when the log insert fails, and flow_data does not change (R4)', async () => {
+    await upsertClosedBuckets(
+      [bucket('13:35', 100, -20, 7)],
+      SOURCE,
+      DATE,
+      WRITER,
+    );
+    await pg.query('DROP TABLE flow_data_revisions');
+    try {
+      // A revised value and a new row: both must be refused with the log.
+      await expect(
+        upsertClosedBuckets(
+          [bucket('13:35', 999, -20, 7), bucket('13:40', 1, 1, 1)],
+          SOURCE,
+          DATE,
+          WRITER,
+        ),
+      ).rejects.toThrow(/flow_data_revisions/);
+      expect(await stored()).toEqual([
+        expect.objectContaining({ timestamp: '13:35', ncp: 100 }),
+      ]);
+    } finally {
+      await applyMigration(pg, 206);
+    }
+  });
+
+  it('a rejected bucket in the batch rolls back every bucket and every revision', async () => {
+    await expect(
+      upsertClosedBuckets(
+        [bucket('13:35', 100, -20, 7), bucket('13:40', 1e13, 0, 1)],
+        SOURCE,
+        DATE,
+        WRITER,
+      ),
+    ).rejects.toThrow(/numeric field overflow/i);
+
+    expect(await count('flow_data')).toBe(0);
+    expect(await count('flow_data_revisions')).toBe(0);
+  });
+});
+
+/**
+ * What the system showed at time T: the query the spec documents (P0.7). For
+ * each bucket, the latest revision whose label and storing time are both not
+ * after T; the first value is the earliest revision, and the final one is the
+ * flow_data row.
+ */
+describe('the as-of query over flow_data_revisions', () => {
+  const AS_OF_SQL = `
+    SELECT DISTINCT ON (date, timestamp, source)
+           to_char(timestamp AT TIME ZONE 'UTC', 'HH24:MI') AS ts,
+           ncp::float8 AS ncp
+    FROM flow_data_revisions
+    WHERE source = $1 AND timestamp <= $2::timestamptz AND seen_at <= $2::timestamptz
+    ORDER BY date, timestamp, source, seen_at DESC, id DESC`;
+
+  const asOf = async (t: string) =>
+    (
+      await pg.query<{ ts: string; ncp: number }>(AS_OF_SQL, [SOURCE, t])
+    ).rows.map((r) => [r.ts, r.ncp]);
+
+  /** Run an upsert, then stamp the revisions it just wrote with the time they were seen. */
+  async function writeAt(seenAt: string, buckets: ClosedBucket[]) {
+    const { rows } = await pg.query<{ m: string | null }>(
+      'SELECT MAX(id) AS m FROM flow_data_revisions',
+    );
+    const before = Number(rows[0]!.m ?? 0);
+    await upsertClosedBuckets(buckets, SOURCE, DATE, WRITER);
+    await pg.query(
+      'UPDATE flow_data_revisions SET seen_at = $1 WHERE id > $2',
+      [seenAt, before],
+    );
+  }
+
+  beforeEach(async () => {
+    // 13:35 is first stored at 13:36:30 (ncp 100), restated at 13:50 (ncp 120)
+    // and again after the close at 22:05 (ncp 150). 13:40 is first stored at
+    // 13:41:30 (ncp 200) and never revised.
+    await writeAt('2026-03-24T13:36:30Z', [bucket('13:35', 100, -20, 7)]);
+    await writeAt('2026-03-24T13:41:30Z', [bucket('13:40', 200, -40, 9)]);
+    await writeAt('2026-03-24T13:50:00Z', [bucket('13:35', 120, -20, 7)]);
+    await writeAt('2026-03-24T22:05:00Z', [bucket('13:35', 150, -20, 7)]);
+  });
+
+  it('shows nothing before a row was first stored', async () => {
+    expect(await asOf('2026-03-24T13:36:00Z')).toEqual([]);
+  });
+
+  it('shows the first value right after it was stored', async () => {
+    expect(await asOf('2026-03-24T13:37:00Z')).toEqual([['13:35', 100]]);
+  });
+
+  it('shows the value between two revisions, not the final one', async () => {
+    expect(await asOf('2026-03-24T13:45:00Z')).toEqual([
+      ['13:35', 100],
+      ['13:40', 200],
+    ]);
+    expect(await asOf('2026-03-24T14:00:00Z')).toEqual([
+      ['13:35', 120],
+      ['13:40', 200],
+    ]);
+  });
+
+  it('shows the final value once every revision is in, and it matches flow_data', async () => {
+    const final = await asOf('2026-03-24T23:00:00Z');
+    expect(final).toEqual([
+      ['13:35', 150],
+      ['13:40', 200],
+    ]);
+    expect((await stored()).map((r) => [r.timestamp, r.ncp])).toEqual(final);
+  });
+
+  it('does not show a bucket whose label is after T even if it was stored by T', async () => {
+    // 13:40 is labelled 13:40: at 13:39 it is not visible, whenever it was stored.
+    await pg.query(
+      `UPDATE flow_data_revisions SET seen_at = '2026-03-24T13:30:00Z' WHERE timestamp = '2026-03-24T13:40:00Z'`,
+    );
+    expect(await asOf('2026-03-24T13:39:00Z')).toEqual([['13:35', 100]]);
+  });
+
+  it('answers first seen from the earliest revision, not the latest', async () => {
+    const { rows } = await pg.query<{ ncp: number; seen_at: string }>(
+      `SELECT DISTINCT ON (date, timestamp, source)
+              ncp::float8 AS ncp, seen_at::text AS seen_at
+         FROM flow_data_revisions
+        WHERE source = $1 AND timestamp = '2026-03-24T13:35:00Z'
+        ORDER BY date, timestamp, source, seen_at, id`,
+      [SOURCE],
+    );
+    expect(rows).toEqual([{ ncp: 100, seen_at: '2026-03-24 13:36:30+00' }]);
+  });
 });

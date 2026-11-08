@@ -215,7 +215,7 @@ export async function syncSpxGreekFlow(opts: {
   const counts = rejected
     ? NOTHING_WRITTEN
     : await withRetry(() =>
-        upsertClosedBuckets(closed.buckets, SPX_GREEK_FLOW_SOURCE, today),
+        upsertClosedBuckets(closed.buckets, SPX_GREEK_FLOW_SOURCE, today, job),
       );
   const stored = counts.inserted + counts.updated;
   // Buckets rejected as degenerate were not written either.

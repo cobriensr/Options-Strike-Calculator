@@ -200,7 +200,12 @@ export default withCronCheckin('fetch-zero-dte-flow', async (req, res) => {
     } else {
       stage = 'batch_insert';
       counts = await withRetry(() =>
-        upsertClosedBuckets(closed.buckets, SOURCE, today),
+        upsertClosedBuckets(
+          closed.buckets,
+          SOURCE,
+          today,
+          'fetch-zero-dte-flow',
+        ),
       );
     }
     const stored = counts.inserted + counts.updated;
