@@ -54,9 +54,11 @@ import {
   getETMarketOpenUtcIso,
 } from '../../src/utils/timezone.js';
 import {
+  LATE_BAR_MAX_AGE_MIN,
   affectedSnapshotFields,
   aggregateWindow,
   buildRepair,
+  classifyMismatch,
   inputsMatchSnapshot,
   parseBackup,
   preRepairWindow,
@@ -64,6 +66,8 @@ import {
   windowAffected,
   type BackupBar,
   type Bar,
+  type MismatchClass,
+  type OlderBar,
   type Repair,
   type SnapshotField,
   type WindowAggregate,
@@ -94,20 +98,20 @@ export const BASIS_LOOKBACK_MS = 6 * MINUTE_MS;
 /** Concurrent computeSnapshot / basis / Globex recomputes. */
 const CONCURRENCY = 8;
 /**
- * The snapshot method control starts here: from this day on every row was
- * written by today's code (the freshness gate came in on 2026-09-30) from bars
- * that were in the table when the cron ran. Before it, rows are not a clean
- * control: the 20-day volume window of 2026-10-02 to 10-16 reaches bars of the
- * 2026-09-04 to 09-25 outage that were filled in later, and on 10-19 to 10-30
- * bars landed late, so a stored price is the close of a bar two to six minutes
- * old that has newer neighbours now. 2026-11-02 is the first day with neither.
- * The rows before it are reported as information, not gated.
+ * The snapshot method control starts here: every futures_snapshots row from
+ * this day on, per symbol, must recompute equal to what is stored. Rows before
+ * it are not a clean control because they read bars that were filled in after
+ * the row was written: the 20-day volume window of 2026-10-02 to 10-19 reaches
+ * the 2026-09-03 to 09-29 outage bars that another session backfilled, and on
+ * 10-19 to 10-30 bars landed late (a stored price is the close of a bar a few
+ * minutes older than the latest closed bar, which has newer neighbours now).
+ * 2026-11-02 is the first day with neither. Every mismatch before it is
+ * classified in the report (september-window, late-bar or unexplained), as
+ * information that backs the choice of the date, not as a gate.
  */
 export const SNAPSHOT_CONTROL_FROM_MS = Date.UTC(2026, 10, 2);
-/** The information window starts at the day the freshness gate's deploy settled. */
+/** The information window starts after the freshness gate deployed (2026-09-30). */
 export const SNAPSHOT_INFO_FROM_MS = Date.UTC(2026, 9, 2);
-/** The information window recomputes every INFO_STRIDE-th row. */
-const INFO_STRIDE = 4;
 /** The method control needs at least this many rows over at least this many days, per symbol. */
 export const CONTROL_MIN_ROWS = 200;
 export const CONTROL_MIN_DAYS = 3;
@@ -743,25 +747,44 @@ function controlOfSnapshots(evals: SnapshotEvaluation[]): Control {
 }
 
 /**
- * Evidence that a mismatch is a late bar, not the method: the stored price is
- * the close of a bar two to six minutes older than the latest closed bar,
- * which is what the cron saw while the newer bars had not landed yet.
+ * The closed bars 1 to LATE_BAR_MAX_AGE_MIN minutes older than today's latest
+ * closed bar, newest first: the candidates for the bar a late-landing cron saw.
  */
-async function storedPriceIsOlderBar(
+async function olderBarsBefore(
   symbol: Sym,
-  atMs: number,
-  storedPrice: number,
-): Promise<boolean> {
-  const minute = Math.floor(atMs / MINUTE_MS) * MINUTE_MS;
-  const from = iso(minute - 6 * MINUTE_MS);
-  const to = iso(minute - 2 * MINUTE_MS);
-  const closes = await readRows<{ close: string }>(
+  latestMs: number,
+): Promise<OlderBar[]> {
+  const from = iso(latestMs - LATE_BAR_MAX_AGE_MIN * MINUTE_MS);
+  const to = iso(latestMs - MINUTE_MS);
+  const rows = await readRows<{ ts: string; close: string }>(
     (sql) => sql`
-      SELECT close::text AS close FROM futures_bars
+      SELECT to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS ts,
+             close::text AS close
+        FROM futures_bars
        WHERE symbol = ${symbol}
-         AND ts >= ${from}::timestamptz AND ts <= ${to}::timestamptz`,
+         AND ts >= ${from}::timestamptz AND ts <= ${to}::timestamptz
+       ORDER BY ts DESC`,
   );
-  return closes.some((c) => Number(c.close) === storedPrice);
+  return rows.map((r) => ({
+    ageMin: Math.round((latestMs - Date.parse(r.ts)) / MINUTE_MS),
+    close: Number(r.close),
+  }));
+}
+
+/** A mismatching row with every field: stored -> recomputed, `*` on the ones that differ. */
+function mismatchLine(row: SnapshotRow, outcome: SnapshotOutcome): string {
+  if (outcome.kind !== 'change') {
+    return snapshotLine(
+      row,
+      null,
+      outcome.kind === 'unrecomputable' ? outcome.why : '',
+    );
+  }
+  const cells = SNAPSHOT_KEYS.map(
+    (k) =>
+      `${k} ${fmt(row.stored[k])} -> ${fmt(outcome.to[k])}${outcome.fields.includes(k) ? ' *' : ''}`,
+  );
+  return `${row.symbol} ${isoSecond(row.tsMs)} id ${row.id}: ${cells.join(', ')}`;
 }
 
 // ── Pre-market ──────────────────────────────────────────────────────────────
@@ -934,17 +957,30 @@ export interface SnapshotSymbolReport {
   controlDays: number;
 }
 
-export interface SnapshotInfo {
+export interface SnapshotInfoDay {
   rows: number;
-  byDay: Record<string, { rows: number; matched: number }>;
-  priceMismatches: number;
-  /** Price mismatches whose stored price is the close of a bar 2 to 6 minutes older. */
-  lateBar: number;
+  matched: number;
+  classes: Record<MismatchClass, number>;
+}
+
+/** One symbol's rows from SNAPSHOT_INFO_FROM_MS to the control start: classified, not gated. */
+export interface SnapshotInfo {
+  symbol: Sym;
+  rows: number;
+  matched: number;
+  byClass: Record<MismatchClass, number>;
+  byDay: Record<string, SnapshotInfoDay>;
+  /** Minutes older than the latest closed bar, for each late-bar row. */
+  lateAges: number[];
+  /** Unexplained rows whose stored price also equals an older bar's close (late-bar under a looser rule). */
+  unexplainedOlderMatch: number;
+  /** The first SAMPLE_N unexplained rows, with every field. */
+  unexplained: string[];
 }
 
 export interface SnapshotStore extends StoreResult<SnapshotChange> {
   symbols: SnapshotSymbolReport[];
-  info: SnapshotInfo;
+  info: SnapshotInfo[];
 }
 
 export interface PremarketStore extends StoreResult<PremarketChange> {
@@ -975,14 +1011,84 @@ function dayOpenOf(at: Date): number | null {
   return open == null ? null : Date.parse(open);
 }
 
+const emptyClasses = (): Record<MismatchClass, number> => ({
+  'september-window': 0,
+  'late-bar': 0,
+  unexplained: 0,
+});
+
+/** Classifies every mismatch of the rows before the control start. */
+async function classifyInfoWindow(symbol: Sym): Promise<SnapshotInfo> {
+  const info: SnapshotInfo = {
+    symbol,
+    rows: 0,
+    matched: 0,
+    byClass: emptyClasses(),
+    byDay: {},
+    lateAges: [],
+    unexplainedOlderMatch: 0,
+    unexplained: [],
+  };
+  const rows = await readSnapshots(
+    symbol,
+    SNAPSHOT_INFO_FROM_MS,
+    SNAPSHOT_CONTROL_FROM_MS,
+  );
+  const evals = await evaluateSnapshots(rows, `${symbol} snapshots info`);
+  for (const { row, result, outcome } of evals) {
+    const day = (info.byDay[utcDay(row.tsMs)] ??= {
+      rows: 0,
+      matched: 0,
+      classes: emptyClasses(),
+    });
+    info.rows += 1;
+    day.rows += 1;
+    if (outcome.kind === 'same') {
+      info.matched += 1;
+      day.matched += 1;
+      continue;
+    }
+    let verdict: ReturnType<typeof classifyMismatch> = {
+      cls: 'unexplained',
+      ageMin: null,
+      olderMatch: false,
+    };
+    if (outcome.kind === 'change' && result.kind === 'fresh') {
+      const base = {
+        fields: outcome.fields,
+        atMs: row.tsMs,
+        storedPrice: row.stored.price,
+      };
+      verdict = classifyMismatch({ ...base, olderBars: [] });
+      if (verdict.cls !== 'september-window') {
+        const older = await olderBarsBefore(
+          symbol,
+          Date.parse(result.snapshot.latestTs),
+        );
+        verdict = classifyMismatch({ ...base, olderBars: older });
+      }
+    }
+    info.byClass[verdict.cls] += 1;
+    day.classes[verdict.cls] += 1;
+    if (verdict.ageMin != null) info.lateAges.push(verdict.ageMin);
+    if (verdict.cls === 'unexplained' && verdict.olderMatch) {
+      info.unexplainedOlderMatch += 1;
+    }
+    if (verdict.cls === 'unexplained' && info.unexplained.length < SAMPLE_N) {
+      info.unexplained.push(mismatchLine(row, outcome));
+    }
+  }
+  return info;
+}
+
 /**
  * The method control: rows written by today's code, which must recompute equal
- * to what is stored. Rows before SNAPSHOT_CONTROL_FROM_MS are information only.
+ * to what is stored. Rows before SNAPSHOT_CONTROL_FROM_MS are classified as
+ * information (classifyInfoWindow).
  */
 async function snapshotControl(
   symbol: Sym,
   report: SnapshotSymbolReport,
-  info: SnapshotInfo,
 ): Promise<SnapshotEvaluation[]> {
   const rows = await readSnapshots(
     symbol,
@@ -993,30 +1099,6 @@ async function snapshotControl(
   report.controlRows = rows.length;
   report.controlMatched = evals.filter((e) => e.outcome.kind === 'same').length;
   report.controlDays = new Set(rows.map((r) => utcDay(r.tsMs))).size;
-
-  const sampled = (
-    await readSnapshots(symbol, SNAPSHOT_INFO_FROM_MS, SNAPSHOT_CONTROL_FROM_MS)
-  ).filter((_, i) => i % INFO_STRIDE === 0);
-  const infoEvals = await evaluateSnapshots(
-    sampled,
-    `${symbol} snapshots info`,
-  );
-  for (const { row, result, outcome } of infoEvals) {
-    info.rows += 1;
-    const day = (info.byDay[utcDay(row.tsMs)] ??= { rows: 0, matched: 0 });
-    day.rows += 1;
-    if (outcome.kind === 'same') {
-      day.matched += 1;
-    } else if (outcome.kind === 'change' && outcome.fields.includes('price')) {
-      info.priceMismatches += 1;
-      if (
-        result.kind === 'fresh' &&
-        (await storedPriceIsOlderBar(symbol, row.tsMs, row.stored.price))
-      ) {
-        info.lateBar += 1;
-      }
-    }
-  }
   return evals;
 }
 
@@ -1054,12 +1136,7 @@ async function planSnapshots(
   const reports: SnapshotSymbolReport[] = [];
   const controlEvals: SnapshotEvaluation[] = [];
   const problems: string[] = [];
-  const info: SnapshotInfo = {
-    rows: 0,
-    byDay: {},
-    priceMismatches: 0,
-    lateBar: 0,
-  };
+  const infos: SnapshotInfo[] = [];
 
   for (const symbol of SYMBOLS) {
     const sd = data.get(symbol);
@@ -1130,7 +1207,8 @@ async function planSnapshots(
       });
     }
 
-    controlEvals.push(...(await snapshotControl(symbol, report, info)));
+    controlEvals.push(...(await snapshotControl(symbol, report)));
+    infos.push(await classifyInfoWindow(symbol));
     problems.push(...snapshotProblems(report));
     reports.push(report);
   }
@@ -1143,7 +1221,7 @@ async function planSnapshots(
     unrecomputable,
     control,
     symbols: reports,
-    info,
+    info: infos,
   };
 }
 
@@ -1349,6 +1427,46 @@ function unrecomputableText(list: string[]): string[] {
 const byFieldText = (counts: Record<SnapshotField, number>): string =>
   SNAPSHOT_KEYS.map((k) => `${k}=${counts[k]}`).join(' ');
 
+const percentile = (sorted: number[], p: number): number =>
+  sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] ?? 0;
+
+function infoText(info: SnapshotInfo): string[] {
+  const miss = info.rows - info.matched;
+  const classes = info.byClass;
+  const out = [
+    `  information, ${info.symbol}, rows ${isoSecond(SNAPSHOT_INFO_FROM_MS)} to ${isoSecond(SNAPSHOT_CONTROL_FROM_MS)} (every row, not gated): ${info.rows} rows, ${info.matched} match, ${miss} do not`,
+    `    mismatches by class: september-window ${classes['september-window']}, late-bar ${classes['late-bar']}, unexplained ${classes.unexplained}`,
+  ];
+  if (info.lateAges.length > 0) {
+    const ages = [...info.lateAges].sort((a, b) => a - b);
+    const hist = Array.from({ length: LATE_BAR_MAX_AGE_MIN }, (_, i) => i + 1)
+      .map((m) => `${m}:${ages.filter((a) => a === m).length}`)
+      .join(' ');
+    out.push(
+      `    late-bar age, minutes older than the latest closed bar: min ${ages[0]}, median ${percentile(ages, 0.5)}, p90 ${percentile(ages, 0.9)}, max ${ages.at(-1)} (${hist})`,
+    );
+  }
+  const days = Object.entries(info.byDay)
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(
+      ([d, v]) =>
+        `${d.slice(5)} ${v.matched}/${v.rows} (${v.classes['september-window']}/${v.classes['late-bar']}/${v.classes.unexplained})`,
+    );
+  if (days.length > 0) {
+    out.push(
+      `    by day, matched/rows (september-window/late-bar/unexplained): ${days.join(', ')}`,
+    );
+  }
+  if (classes.unexplained > 0) {
+    out.push(
+      `    unexplained rows whose stored price equals the latest closed bar and also an older bar (late-bar only under a looser rule): ${info.unexplainedOlderMatch}`,
+      `    UNEXPLAINED rows, first ${info.unexplained.length} of ${classes.unexplained} (every field, stored -> recomputed, * where it differs):`,
+      ...info.unexplained.map((l) => `      ${l}`),
+    );
+  }
+  return out;
+}
+
 function snapshotsText(r: SnapshotStore): string[] {
   const top = r.changes
     .filter((c) => c.fields.includes('price'))
@@ -1380,14 +1498,7 @@ function snapshotsText(r: SnapshotStore): string[] {
     ...unrecomputableText(r.unrecomputable),
     ...controlText(r.control),
   );
-  const days = Object.entries(r.info.byDay)
-    .sort(([a], [b]) => (a < b ? -1 : 1))
-    .map(([d, v]) => `${d.slice(5)} ${v.matched}/${v.rows}`);
-  out.push(
-    `  information, rows ${isoSecond(SNAPSHOT_INFO_FROM_MS)} to ${isoSecond(SNAPSHOT_CONTROL_FROM_MS)} (every ${INFO_STRIDE}th row, not gated): ${r.info.rows} rows`,
-    `    price mismatches ${r.info.priceMismatches}, of which the stored price is the close of a bar 2 to 6 minutes older (a bar that landed late): ${r.info.lateBar}`,
-  );
-  if (days.length > 0) out.push(`    matched/rows by day: ${days.join(', ')}`);
+  for (const info of r.info) out.push(...infoText(info));
   return out;
 }
 

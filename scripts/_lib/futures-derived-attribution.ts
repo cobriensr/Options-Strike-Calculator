@@ -409,3 +409,62 @@ export function preRepairWindow(
   }
   return [...byTs.values()].sort((a, b) => a.tsMs - b.tsMs);
 }
+
+// ── Why a clean-era-looking snapshot row does not match ─────────────────────
+
+/** The 2026-09 outage of the futures bars: 09-03 to 09-29, another session backfilled it later. */
+export const SEPTEMBER_GAP_FROM_MS = Date.UTC(2026, 8, 3);
+/** Exclusive: the gap's last day is 09-29. */
+export const SEPTEMBER_GAP_TO_MS = Date.UTC(2026, 8, 30);
+/** A late bar's stored price is the close of a bar this many minutes older than today's latest closed bar, at most. */
+export const LATE_BAR_MAX_AGE_MIN = 14;
+
+export type MismatchClass = 'september-window' | 'late-bar' | 'unexplained';
+
+export interface OlderBar {
+  /** Minutes older than today's latest closed bar. */
+  ageMin: number;
+  close: number;
+}
+
+/**
+ * One class for a snapshot row whose recompute differs from what is stored,
+ * checked in this order:
+ *
+ * - `september-window`: only the volume ratio differs and the row's 20-day
+ *   window overlaps the September outage, whose bars were filled in later;
+ * - `late-bar`: the stored price differs from today's latest closed bar's
+ *   close and is the close of a closed bar 1 to 14 minutes older, which is what
+ *   the cron saw while the newer bars had not landed yet (`olderBars`, newest
+ *   first; the newest match gives the age). The row's other differences follow
+ *   from that. A price that already equals the latest close is not explained
+ *   by a late bar, even when an older bar closed at the same price, so such a
+ *   row stays unexplained and `olderMatch` says an older bar matched;
+ * - `unexplained`: anything else.
+ */
+export function classifyMismatch(row: {
+  fields: readonly SnapshotField[];
+  atMs: number;
+  storedPrice: number;
+  olderBars: readonly OlderBar[];
+}): { cls: MismatchClass; ageMin: number | null; olderMatch: boolean } {
+  const onlyVolumeRatio =
+    row.fields.length === 1 && row.fields[0] === 'volumeRatio';
+  const windowOverlapsGap =
+    row.atMs >= SEPTEMBER_GAP_FROM_MS &&
+    row.atMs - VOLUME_WINDOW_MS < SEPTEMBER_GAP_TO_MS;
+  if (onlyVolumeRatio && windowOverlapsGap) {
+    return { cls: 'september-window', ageMin: null, olderMatch: false };
+  }
+  const late = row.olderBars.find(
+    (b) =>
+      b.ageMin >= 1 &&
+      b.ageMin <= LATE_BAR_MAX_AGE_MIN &&
+      b.close === row.storedPrice,
+  );
+  const olderMatch = late != null;
+  if (late != null && row.fields.includes('price')) {
+    return { cls: 'late-bar', ageMin: late.ageMin, olderMatch };
+  }
+  return { cls: 'unexplained', ageMin: null, olderMatch };
+}

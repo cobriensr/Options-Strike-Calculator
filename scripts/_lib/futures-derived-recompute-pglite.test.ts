@@ -140,6 +140,7 @@ vi.mock('../../api/_lib/logger.js', () => ({
 import { mockRequest, mockResponse } from '../../api/__tests__/helpers';
 import { applyMigration } from '../../api/__tests__/pglite-migrations';
 import premarketCron from '../../api/cron/auto-prefill-premarket.js';
+import snapshotCron from '../../api/cron/fetch-futures-snapshot.js';
 import { computeSnapshot } from '../../api/_lib/futures-derive.js';
 import {
   markerPath,
@@ -408,7 +409,9 @@ interface Ids {
   s3: number; // NQ 04-14, bad everywhere, volume ratio NOT affected
   s4: number; // ES 06-24, stale recompute, nothing affected
   s6: number; // ES 05-14, stale recompute, price affected (a deleted bar)
-  info: number; // ES 10-20, before the control: information only
+  info: number; // ES 10-20, before the control: a late bar (the price is an older bar's close)
+  s5: number; // ES 10-06, before the control: only the volume ratio differs, inside the September window
+  s7: number; // ES 10-21, before the control: only the volume ratio differs, outside the window
   p1: number; // 05-13 auto-filled, bad high, a repaired bar in the window
   p1hand: number; // 05-13 hand-saved
   p2: number; // 05-14 auto-filled, already right
@@ -533,6 +536,24 @@ async function reset(): Promise<void> {
     '2026-10-20',
     [7001, 0.1, 0.1, 0.4615],
   );
+  // Only the volume ratio is off. The 20-day window of 10-06 reaches the
+  // September outage; the window of 10-21 does not.
+  await snapshotDay('ES', '2026-10-06', '2026-10-05', 7000, 7007);
+  const s5 = await snapshotRow(
+    'ES',
+    '2026-10-06T14:31:30.250Z',
+    '2026-10-06',
+    [7007, 0.1, 0.1, 0.9999],
+  );
+  await snapshotDay('ES', '2026-10-21', '2026-10-20', 7000, 7007);
+  // An older bar that closed at the stored price too: a late bar is not needed to explain it.
+  await bar('ES', '2026-10-21T14:28:00Z', 7007, 1);
+  const s7 = await snapshotRow(
+    'ES',
+    '2026-10-21T14:31:30.250Z',
+    '2026-10-21',
+    [7007, 0.1, 0.1, 0.1111],
+  );
 
   // The clean era (EST): bars, and the snapshots the cron would have written.
   await controlBars();
@@ -637,6 +658,8 @@ async function reset(): Promise<void> {
     s4,
     s6,
     info,
+    s5,
+    s7,
     p1,
     p1hand,
     p2,
@@ -829,10 +852,29 @@ describe('dry run on real SQL (pglite)', () => {
     expect(text).toMatch(
       /NQ 2026-04-14T14:31:30\.250Z id \d+ price\/1h\/day\/vr 24100\/0.9\/1\/0.3 -> 24024\/0.1\/0.1\/0.4615 \[writes price, change1hPct, changeDayPct\]/,
     );
-    // Information window: one ES row, whose stored price is a late bar's close.
-    expect(text).toContain('every 4th row, not gated): 1 rows');
+    // Information window: every row before the control start, one class each.
     expect(text).toContain(
-      'price mismatches 1, of which the stored price is the close of a bar 2 to 6 minutes older (a bar that landed late): 1',
+      'information, ES, rows 2026-10-02T00:00:00Z to 2026-11-02T00:00:00Z (every row, not gated): 3 rows, 0 match, 3 do not',
+    );
+    expect(text).toContain(
+      'mismatches by class: september-window 1, late-bar 1, unexplained 1',
+    );
+    // The 10-20 row stores the close of the 14:27 bar; the latest closed bar is 14:30.
+    expect(text).toContain(
+      'late-bar age, minutes older than the latest closed bar: min 3, median 3, p90 3, max 3 (1:0 2:0 3:1 4:0',
+    );
+    expect(text).toContain(
+      'by day, matched/rows (september-window/late-bar/unexplained): 10-06 0/1 (1/0/0), 10-20 0/1 (0/1/0), 10-21 0/1 (0/0/1)',
+    );
+    expect(text).toContain(
+      'unexplained rows whose stored price equals the latest closed bar and also an older bar (late-bar only under a looser rule): 1',
+    );
+    expect(text).toContain('UNEXPLAINED rows, first 1 of 1');
+    expect(text).toMatch(
+      /ES 2026-10-21T14:31:30\.250Z id \d+: price 7007 -> 7007, change1hPct 0\.1 -> 0\.1, changeDayPct 0\.1 -> 0\.1, volumeRatio 0\.1111 -> 0\.\d+ \*/,
+    );
+    expect(text).toContain(
+      'information, NQ, rows 2026-10-02T00:00:00Z to 2026-11-02T00:00:00Z (every row, not gated): 0 rows, 0 match, 0 do not',
     );
     // Pre-market: 4 auto-filled rows in scope, 1 written, 1 equal, 1 not affected, 1 with no bars.
     expect(text).toContain(
@@ -1328,6 +1370,139 @@ describe("the pre-market recompute is the cron's own method", () => {
     );
     expect(text).toContain(
       'differ from the recompute with no repaired bar in the window (not written): 0',
+    );
+  });
+});
+
+// ── Method identity with the snapshot cron, in daylight time ────────────────
+
+describe("the snapshot recompute is the cron's own method in daylight time", () => {
+  interface Day {
+    /** Wall-clock instant the cron runs at (CDT; the cash open is 13:30Z). */
+    at: string;
+    /** ES bars [ts, close, volume]; NQ gets the same minutes 17000 higher. */
+    bars: [string, number, number][];
+    /** The latest closed bar and one volume-touched bar, as Phase 2 would have changed them. */
+    changedClose: string;
+    changedVolume: string;
+    /** What the cron must have stored for ES: price / 1h / day / volume ratio. */
+    es: [string, string, string, string];
+  }
+
+  /** Runs fetch-futures-snapshot at `at`: the fake clock is the cron's `now`. */
+  async function runSnapshotCron(at: string) {
+    vi.setSystemTime(new Date(at));
+    hooks.plainReadOnly = false; // the cron writes through plain queries
+    const res = mockResponse();
+    try {
+      await snapshotCron(
+        mockRequest({
+          method: 'GET',
+          headers: { authorization: 'Bearer test-secret' },
+        }),
+        res,
+      );
+    } finally {
+      hooks.plainReadOnly = true;
+    }
+    return res;
+  }
+
+  async function seed(day: Day): Promise<void> {
+    // Only the cron's rows may be in range, so the report speaks of them alone.
+    await pg.query(`DELETE FROM futures_snapshots WHERE ts < '2026-07-05'`);
+    // ... and only this day's bars in the 20-day average.
+    await pg.query(`DELETE FROM futures_bars WHERE ts < '2026-07-05'`);
+    for (const [ts, close, volume] of day.bars) {
+      await bar('ES', ts, close, volume);
+      await bar('NQ', ts, close + 17_000, volume);
+    }
+    const lines = ['ES', 'NQ'].flatMap((symbol) => [
+      backupLine('update', symbol, day.changedClose, { close: 1 }),
+      backupLine('update', symbol, day.changedVolume, { close: 1, volume: 1 }),
+    ]);
+    writeFileSync(backupPath, `${lines.join('\n')}\n`);
+  }
+
+  async function storedAt(at: string, symbol: string) {
+    const { rows } = await pg.query<Record<string, string | null>>(
+      `SELECT id, price::text, change_1h_pct::text AS c1,
+              change_day_pct::text AS cd, volume_ratio::text AS vr
+         FROM futures_snapshots WHERE symbol = $1 AND ts = $2`,
+      [symbol, at],
+    );
+    return rows[0]!;
+  }
+
+  const days: [string, Day][] = [
+    [
+      'mid-session on a CDT weekday (Wednesday 2026-05-20, 11:00 ET)',
+      {
+        at: '2026-05-20T16:00:21.300Z',
+        bars: [
+          ['2026-05-19T15:00:00Z', 6990, 1000],
+          ['2026-05-20T13:30:00Z', 7000, 100],
+          ['2026-05-20T15:00:00Z', 7010, 100],
+          ['2026-05-20T15:59:00Z', 7030, 100],
+        ],
+        changedClose: '2026-05-20T15:59:00Z',
+        changedVolume: '2026-05-20T15:00:00Z',
+        // (7030-7010)/7010, (7030-7000)/7000, 300 / avg(1000, 300)
+        es: ['7030.0000', '0.2853', '0.4286', '0.4615'],
+      },
+    ],
+    [
+      'the first hour after the day open (Thursday 2026-05-21, 09:41 ET)',
+      {
+        at: '2026-05-21T13:41:21.300Z',
+        bars: [
+          ['2026-05-20T15:00:00Z', 6990, 1000],
+          ['2026-05-21T12:40:00Z', 6998, 50],
+          ['2026-05-21T13:30:00Z', 7000, 100],
+          ['2026-05-21T13:40:00Z', 7004, 100],
+        ],
+        changedClose: '2026-05-21T13:40:00Z',
+        changedVolume: '2026-05-21T12:40:00Z',
+        // (7004-6998)/6998, (7004-7000)/7000, 200 / avg(1000, 250)
+        es: ['7004.0000', '0.0857', '0.0571', '0.3200'],
+      },
+    ],
+  ];
+
+  it.each(days)(
+    'gives the cron and the tool the same stored values: %s',
+    async (_name, day) => {
+      await seed(day);
+      const res = await runSnapshotCron(day.at);
+      expect(res._json).toMatchObject({ stored: 2 });
+      const es = await storedAt(day.at, 'ES');
+      expect([es.price, es.c1, es.cd, es.vr]).toEqual(day.es);
+
+      // Every field of both rows is repair-affected here, so any difference
+      // between the cron's values and the tool's recompute would be written.
+      vi.setSystemTime(new Date('2026-11-08T12:00:00Z'));
+      expect(await dry({ stores: ['snapshots'] })).toBe(0);
+      expect(report()).toContain(
+        'ES: rows in range 1, rows to write 0 (price=0 change1hPct=0 changeDayPct=0 volumeRatio=0)',
+      );
+      expect(report()).toContain(
+        'NQ: rows in range 1, rows to write 0 (price=0 change1hPct=0 changeDayPct=0 volumeRatio=0)',
+      );
+    },
+  );
+
+  it('would see a difference: a stored price one point off is written', async () => {
+    const [, day] = days[0]!;
+    await seed(day);
+    await runSnapshotCron(day.at);
+    await pg.query(
+      `UPDATE futures_snapshots SET price = price + 1 WHERE symbol = 'ES' AND ts = $1`,
+      [day.at],
+    );
+    vi.setSystemTime(new Date('2026-11-08T12:00:00Z'));
+    expect(await dry({ stores: ['snapshots'] })).toBe(0);
+    expect(report()).toContain(
+      'ES: rows in range 1, rows to write 1 (price=1 change1hPct=0 changeDayPct=0 volumeRatio=0)',
     );
   });
 });

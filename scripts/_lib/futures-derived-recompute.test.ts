@@ -51,6 +51,7 @@ import {
   affectedSnapshotFields,
   aggregateWindow,
   buildRepair,
+  classifyMismatch,
   inputsMatchSnapshot,
   parseBackup,
   preRepairWindow,
@@ -1099,5 +1100,89 @@ describe('pre-market window attribution', () => {
       [ms('2026-05-13T01:00:00Z'), 7210, 7210],
       [ms('2026-05-13T03:00:00Z'), 7205, 7205],
     ]);
+  });
+});
+
+describe('classifyMismatch', () => {
+  const row = (over: object = {}) => ({
+    fields: ['volumeRatio'] as ('volumeRatio' | 'price' | 'change1hPct')[],
+    atMs: ms('2026-10-06T14:31:30Z'),
+    storedPrice: 7001,
+    olderBars: [] as { ageMin: number; close: number }[],
+    ...over,
+  });
+
+  it('calls a volume-ratio-only miss whose 20-day window reaches the September outage september-window', () => {
+    expect(classifyMismatch(row())).toEqual({
+      cls: 'september-window',
+      ageMin: null,
+      olderMatch: false,
+    });
+  });
+
+  it.each([
+    // The window of the last 20 days must overlap 09-03 .. 09-29 (end exclusive 09-30).
+    ['2026-10-19T23:00:00Z', 'september-window'],
+    ['2026-10-20T00:00:00Z', 'unexplained'],
+    ['2026-09-02T23:59:00Z', 'unexplained'],
+    ['2026-09-03T00:00:00Z', 'september-window'],
+  ])('at %s the volume-ratio-only miss is %s', (at, cls) => {
+    expect(classifyMismatch(row({ atMs: ms(at) })).cls).toBe(cls);
+  });
+
+  it('does not call a miss september-window when another field differs too', () => {
+    expect(
+      classifyMismatch(row({ fields: ['volumeRatio', 'price'] })).cls,
+    ).toBe('unexplained');
+  });
+
+  it('calls it late-bar when the stored price is the close of a bar 1 to 14 minutes older, and gives the newest age', () => {
+    const olderBars = [
+      { ageMin: 2, close: 7001 },
+      { ageMin: 5, close: 7001 },
+    ];
+    expect(
+      classifyMismatch(row({ fields: ['price', 'change1hPct'], olderBars })),
+    ).toEqual({ cls: 'late-bar', ageMin: 2, olderMatch: true });
+  });
+
+  it.each([
+    [0, 'unexplained'],
+    [1, 'late-bar'],
+    [14, 'late-bar'],
+    [15, 'unexplained'],
+  ])('a matching bar %s minutes older is %s', (ageMin, cls) => {
+    expect(
+      classifyMismatch(
+        row({ fields: ['price'], olderBars: [{ ageMin, close: 7001 }] }),
+      ).cls,
+    ).toBe(cls);
+  });
+
+  it('calls it unexplained when no older bar has the stored price', () => {
+    expect(
+      classifyMismatch(
+        row({ fields: ['price'], olderBars: [{ ageMin: 3, close: 7002 }] }),
+      ),
+    ).toEqual({ cls: 'unexplained', ageMin: null, olderMatch: false });
+  });
+
+  it('does not call a miss late-bar when the stored price already equals the latest close, though an older bar closed there too', () => {
+    // Only the volume ratio differs, outside the September window: a price that
+    // matches today's latest bar needs no late bar, whatever an older bar closed at.
+    expect(
+      classifyMismatch(
+        row({
+          atMs: ms('2026-10-29T22:05:21Z'),
+          olderBars: [{ ageMin: 3, close: 7001 }],
+        }),
+      ),
+    ).toEqual({ cls: 'unexplained', ageMin: null, olderMatch: true });
+  });
+
+  it('checks september-window before late-bar', () => {
+    expect(
+      classifyMismatch(row({ olderBars: [{ ageMin: 3, close: 7001 }] })).cls,
+    ).toBe('september-window');
   });
 });
