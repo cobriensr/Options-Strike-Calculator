@@ -37,7 +37,11 @@ import {
 import {
   upsertGreekFlowTicks,
   type GreekFlowTick,
+  type UpsertResult,
 } from '../_lib/greek-flow-etf-store.js';
+
+/** Stored on every vega_flow_etf revision this run writes (spec P0.9). */
+const WRITER = 'reconcile-greek-flow-etf';
 
 interface ExpiryBreakdownEntry {
   // Live UW API uses `expires` (OpenAPI spec at /api/stock/{ticker}/
@@ -101,11 +105,32 @@ export default withCronInstrumentation(
 
     const [spyAllResult, qqqAllResult, spy0dteResult, qqq0dteResult] =
       await Promise.all([
-        upsertGreekFlowTicks('SPY', spyAllTicks, today, null),
-        upsertGreekFlowTicks('QQQ', qqqAllTicks, today, null),
-        upsertGreekFlowTicks('SPY', spy0dteTicks, today, today),
-        upsertGreekFlowTicks('QQQ', qqq0dteTicks, today, today),
+        upsertGreekFlowTicks('SPY', spyAllTicks, today, null, WRITER),
+        upsertGreekFlowTicks('QQQ', qqqAllTicks, today, null, WRITER),
+        upsertGreekFlowTicks('SPY', spy0dteTicks, today, today, WRITER),
+        upsertGreekFlowTicks('QQQ', qqq0dteTicks, today, today, WRITER),
       ]);
+
+    // The store swallows its own write error and resolves with { failed: N }.
+    // This run exists to land UW's final post-close values, so a scope that
+    // failed to write is a failed run, not a success with a failed count in
+    // the metadata (R4). Throwing sends the run to Sentry and Axiom as an
+    // error and answers 500.
+    const scopes: [string, UpsertResult][] = [
+      ['SPY/all', spyAllResult],
+      ['QQQ/all', qqqAllResult],
+      ['SPY/0dte', spy0dteResult],
+      ['QQQ/0dte', qqq0dteResult],
+    ];
+    const failedScopes = scopes.filter(([, result]) => result.failed > 0);
+    if (failedScopes.length > 0) {
+      const detail = failedScopes
+        .map(([scope, result]) => `${scope}=${result.failed}`)
+        .join(', ');
+      throw new Error(
+        `reconcile-greek-flow-etf: store write failed for ${today} (failed ticks: ${detail})`,
+      );
+    }
 
     const spyMeta = {
       all: { ticks: spyAllTicks.length, ...spyAllResult },

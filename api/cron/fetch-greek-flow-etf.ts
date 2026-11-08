@@ -53,6 +53,9 @@ import {
   type GreekFlowTick,
 } from '../_lib/greek-flow-etf-store.js';
 
+/** Stored on every vega_flow_etf revision this run writes (spec P0.9). */
+const WRITER = 'fetch-greek-flow-etf';
+
 interface ExpiryBreakdownEntry {
   // Live UW API uses `expires` (OpenAPI spec at /api/stock/{ticker}/
   // expiry-breakdown documents `expiry`, but the live response shape
@@ -233,10 +236,10 @@ export default withCronInstrumentation(
     // and aborting the other three scopes' writes.
     const [spyAllSettled, qqqAllSettled, spy0dteSettledC, qqq0dteSettledC] =
       await Promise.allSettled([
-        upsertGreekFlowTicks('SPY', spyAllTicks, today, null),
-        upsertGreekFlowTicks('QQQ', qqqAllTicks, today, null),
-        upsertGreekFlowTicks('SPY', spy0dteTicks, today, today),
-        upsertGreekFlowTicks('QQQ', qqq0dteTicks, today, today),
+        upsertGreekFlowTicks('SPY', spyAllTicks, today, null, WRITER),
+        upsertGreekFlowTicks('QQQ', qqqAllTicks, today, null, WRITER),
+        upsertGreekFlowTicks('SPY', spy0dteTicks, today, today, WRITER),
+        upsertGreekFlowTicks('QQQ', qqq0dteTicks, today, today, WRITER),
       ]);
 
     const ZERO_UPSERT = { inserted: 0, updated: 0, failed: 0 };

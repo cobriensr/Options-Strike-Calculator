@@ -37,6 +37,8 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 import handler from '../cron/reconcile-greek-flow-etf.js';
+import { Sentry } from '../_lib/sentry.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 const GUARD = { apiKey: 'test-uw-key', today: '2026-04-27' };
 
@@ -188,7 +190,7 @@ describe('reconcile-greek-flow-etf handler', () => {
     });
   });
 
-  it('counts upsert error as failed; handler still returns 200', async () => {
+  it('fails the run (500, Sentry, Axiom error) when a scope fails to write, naming the scope and the date (R4)', async () => {
     mockSql.mockRejectedValueOnce(new Error('DB upsert failed'));
     setupMocks({
       spyAll: [makeTick({ ticker: 'SPY' })],
@@ -199,12 +201,95 @@ describe('reconcile-greek-flow-etf handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
+    // The store swallowed the DB error and returned { failed: 1 }; the run
+    // used to answer 200 'success' with that count buried in the metadata.
+    expect(res._status).toBe(500);
+    const expected = expect.objectContaining({
+      message:
+        'reconcile-greek-flow-etf: store write failed for 2026-04-27 (failed ticks: SPY/all=1)',
+    });
+    expect(Sentry.captureException).toHaveBeenCalledWith(expected);
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'reconcile-greek-flow-etf',
+      expect.objectContaining({ status: 'error' }),
+    );
+    expect(reportCronRun).not.toHaveBeenCalledWith(
+      'reconcile-greek-flow-etf',
+      expect.objectContaining({ status: 'success' }),
+    );
+  });
+
+  it('lists every scope that failed to write, per-expiry ones included', async () => {
+    mockSql.mockRejectedValue(new Error('DB down'));
+    setupMocks({
+      spyAll: [makeTick({ ticker: 'SPY' }), makeTick({ ticker: 'SPY' })],
+      qqqAll: [makeTick({ ticker: 'QQQ' })],
+      spyBreakdown: EXPIRY_TODAY_BREAKDOWN,
+      qqqBreakdown: EXPIRY_TODAY_BREAKDOWN,
+      spyExpiry: [makeTick({ ticker: 'SPY' })],
+      qqqExpiry: [makeTick({ ticker: 'QQQ' })],
+    });
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(res._status).toBe(500);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message:
+          'reconcile-greek-flow-etf: store write failed for 2026-04-27 (failed ticks: SPY/all=2, QQQ/all=1, SPY/0dte=1, QQQ/0dte=1)',
+      }),
+    );
+  });
+
+  it('a scope with nothing to write does not fail the run', async () => {
+    setupMocks({
+      spyAll: [makeTick({ ticker: 'SPY' })],
+      qqqAll: [],
+    });
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(res._status).toBe(200);
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('an unchanged day (the store logs and rewrites nothing) is a success', async () => {
+    mockSql.mockResolvedValue([]);
+    setupMocks({});
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       tickers: {
-        SPY: { all: { inserted: 0, updated: 0, failed: 1 } },
-        QQQ: { all: { inserted: 0, updated: 0, failed: 0 } },
+        SPY: { all: { ticks: 1, inserted: 0, updated: 0, failed: 0 } },
+        QQQ: { all: { ticks: 1, inserted: 0, updated: 0, failed: 0 } },
       },
     });
+  });
+
+  it('logs its revisions under its own writer name, not the live cron writer name (spec P0.9)', async () => {
+    setupMocks({
+      spyBreakdown: EXPIRY_TODAY_BREAKDOWN,
+      qqqBreakdown: EXPIRY_TODAY_BREAKDOWN,
+      spyExpiry: [makeTick({ ticker: 'SPY' })],
+      qqqExpiry: [makeTick({ ticker: 'QQQ' })],
+    });
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(res._status).toBe(200);
+    expect(mockSql).toHaveBeenCalledTimes(4);
+    for (const [strings, ...values] of mockSql.mock.calls) {
+      expect((strings as readonly string[]).join('?')).toContain(
+        'INSERT INTO vega_flow_etf_revisions',
+      );
+      expect(values).toContain('reconcile-greek-flow-etf');
+      expect(values).not.toContain('fetch-greek-flow-etf');
+    }
   });
 });
