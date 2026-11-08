@@ -78,6 +78,10 @@ pine/
 .github/
 .claude/
 
+# Venvs and worktrees: a local root-context build would upload them (nightly/.venv: 479 MB).
+.worktrees/
+**/.venv/
+
 # Dev config
 .env*
 .vscode/

@@ -87,8 +87,10 @@ jobs:
             # The nightly image builds from the repo root and runs six shared files
             # (IMAGE_FILES in nightly/tests/test_image_layout.py). The tests that
             # pin them and .dockerignore, which decides what the build sees, count
-            # too. Keep this list, that tuple, the Dockerfile COPY lines and the
-            # two root-level steps in the nightly job below in step.
+            # too. scripts/test_enrich_provenance.py imports the fulltape script,
+            # which is not an image file, and pytest run from the root loads
+            # scripts/conftest.py. Keep this list, that tuple, the Dockerfile COPY
+            # lines and the three root-level steps in the nightly job below in step.
             nightly:
               - 'nightly/**'
               - 'scripts/_tape_reader.py'
@@ -101,6 +103,8 @@ jobs:
               - 'scripts/test_cli_paths.py'
               - 'scripts/test_pipeline_retry.py'
               - 'scripts/test_enrich_*.py'
+              - 'scripts/enrich_silent_boom_outcomes_fulltape.py'
+              - 'scripts/conftest.py'
               - '.dockerignore'
               - '.github/workflows/ci.yml'
             # What the browser loads under test. api/** is left out: the specs
@@ -379,3 +383,11 @@ jobs:
           scripts/test_enrich_missing_archive.py
           scripts/test_enrich_provenance.py
           scripts/test_enrich_r2_cli.py
+
+      # The only check of the .dockerignore semantics: nightly/tests/test_image_layout.py
+      # reads text and cannot see a later pattern re-exclude a file, but a COPY of an
+      # ignored path fails this build. Nothing is pushed or run.
+      - name: Build the image
+        if: ${{ !cancelled() }}
+        working-directory: .
+        run: docker build -f nightly/Dockerfile .

@@ -1,12 +1,16 @@
 """The nightly image is built from the repo root and carries the shared enrich scripts.
 
-Six places name the same six files and must change together (plan D1): IMAGE_FILES
-below, the Dockerfile COPY lines, the .dockerignore re-admits, the nightly paths
-filter and the lint step in .github/workflows/ci.yml. A file missing from one builds
-an image that fails at import time on Railway, or a CI job that skips the change.
+Six places name the same six files and must change together (plan D1): the Dockerfile
+COPY lines, the Railway watch paths of the `nightly` service, the .dockerignore
+re-admits, IMAGE_FILES below, the `nightly` paths filter in .github/workflows/ci.yml
+and the watch-path list in nightly/README.md. A file missing from one builds an image
+that fails at import time on Railway, or a CI job that skips the change.
+
 These tests keep the Dockerfile and .dockerignore in step with IMAGE_FILES and import
-the scripts as the image lays them out. A real `docker build -f nightly/Dockerfile .`
-from the repo root is the only check of the .dockerignore semantics.
+the scripts as the image lays them out. They read text, so a later .dockerignore
+pattern that re-excludes a file passes them. The last step of the nightly job in
+ci.yml, `docker build -f nightly/Dockerfile .`, catches that: a COPY of an ignored path
+fails the build.
 """
 
 from __future__ import annotations
@@ -89,8 +93,9 @@ def test_dockerignore_readmits_image_files():
         if line.strip() and not line.strip().startswith("#")
     ]
     scripts = [f for f in IMAGE_FILES if f.startswith("scripts/")]
-    # Docker keeps the last pattern that matches a path: ignore the directory, admit it,
-    # ignore its contents, then admit each file. Any other order drops the files.
+    # The repo's convention, as for src/data in .dockerignore: ignore the directory,
+    # admit it, ignore its contents, then admit each file. This pins that text and its
+    # order. Whether the files get into the build is the CI docker build's job.
     expected = ["scripts/", "!scripts/", "scripts/*", *(f"!{f}" for f in scripts)]
 
     missing = [pattern for pattern in expected if pattern not in entries]
