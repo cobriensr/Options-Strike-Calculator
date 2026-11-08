@@ -387,11 +387,17 @@ migration chain, and all schema changes go there.)
   each with no retry, all inside a 30 s deadline (`DRAIN_DEADLINE_S` in
   `src/handlers/base.py`). The deadline is hard: at 30 s the drain is
   cancelled and left to unwind, not waited for. If it hits, the rows not yet
-  written are lost and a Sentry warning gives the counts (`lost_rows`).
+  written are lost and a Sentry warning gives the counts (`lost_rows`); a
+  consumer flush still running at that point is cancelled too, so those rows
+  are neither written later nor counted again.
   Every other shutdown step has its own bound too
   (`_SHUTDOWN_STEP_TIMEOUTS_S` in `src/main.py`); a step that overruns is
-  reported to Sentry (tag `step`) and the next one runs. The drop reporter
-  sends a last report when it is cancelled.
+  reported to Sentry (tag `step`) and the next one runs. Before the lease is
+  released the daemon aborts any connector socket still open (a hung close
+  handshake leaves one) and counts the frames left in the receive queue as
+  dropped; the lease renewal stops first, so a drain longer than a renew
+  interval is not read as a lost lease. The drop reporter sends a last
+  report when it is cancelled, after the drains.
 - **Draining time.** Railway SIGKILLs the old deploy `drainingSeconds`
   after SIGTERM (Railway's default is 0). It is 40, set in two places that
   must stay equal: `drainingSeconds` in `railway.toml`, and the

@@ -238,6 +238,8 @@ async def test_run_wires_renewal_task_with_lease_lost_callback(monkeypatch):
             # main pre-registers each shard via c.name before tasks start.
             self.name = kwargs.get("name", "conn")
 
+        def abort(self) -> None: ...
+
         async def run(self) -> None:
             await asyncio.sleep(3600)
 
@@ -314,6 +316,8 @@ async def test_run_exits_nonzero_and_reports_on_task_crash(_reset_notify_state, 
         def __init__(self, *_a, **kwargs) -> None:
             self.name = kwargs.get("name", "conn")
 
+        def abort(self) -> None: ...
+
         async def run(self) -> None:
             await asyncio.sleep(3600)
 
@@ -368,6 +372,8 @@ async def test_run_exits_zero_on_normal_sigterm(monkeypatch):
     class _ForeverConnector:
         def __init__(self, *_a, **kwargs) -> None:
             self.name = kwargs.get("name", "conn")
+
+        def abort(self) -> None: ...
 
         async def run(self) -> None:
             await asyncio.sleep(3600)
@@ -603,6 +609,130 @@ async def test_shutdown_step_timeout_is_reported_with_its_bound(monkeypatch):
     assert kw["context"] == {"step": "flush_notifications", "timeout_s": 0.05}
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("close_hangs", [False, True])
+async def test_shutdown_aborts_connector_sockets_before_the_lease_is_released(
+    close_hangs, monkeypatch
+):
+    """A connector stuck in its closing handshake is cut off when the
+    stop_producers step overruns, with its socket still open (see
+    Connector.abort). _shutdown aborts every connector's socket after that step,
+    whether or not it overran, and before the lease goes: the next deploy
+    connects from another host the moment the lease is released.
+    """
+    events: list[str] = []
+    release = asyncio.Event()
+    monkeypatch.setattr(main, "capture_message", lambda *_a, **_k: None)
+    monkeypatch.setitem(main._SHUTDOWN_STEP_TIMEOUTS_S, "stop_producers", 0.05)
+
+    class _Connector:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def abort(self) -> None:
+            events.append(f"abort:{self.name}")
+
+    class _Lease(ws_lease.WsLease):  # type: ignore[misc]
+        def __init__(self) -> None:
+            pass  # only release() is exercised
+
+        async def release(self) -> bool:
+            events.append("lease_release")
+            return True
+
+    producer = asyncio.create_task(
+        _unkillable(release) if close_hangs else _forever(events, "connector")
+    )
+    await asyncio.sleep(0.02)
+    try:
+        await main._shutdown(
+            producer_tasks=[producer],
+            connectors=[_Connector("c0"), _Connector("c1")],
+            handlers=[],
+            other_tasks=[],
+            lease=_Lease(),
+            lease_session=_FakeLeaseSession(),
+        )
+
+        assert [e for e in events if e.startswith(("abort", "lease"))] == [
+            "abort:c0",
+            "abort:c1",
+            "lease_release",
+        ]
+        if not close_hangs:
+            assert events.index("cancelled:connector") < events.index("abort:c0")
+    finally:
+        release.set()
+        pending = {t for t in (producer, *bounded._unwinding) if not t.done()}
+        if pending:
+            await asyncio.wait(pending, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_a_connector_abort_failure_is_reported_and_the_shutdown_goes_on(monkeypatch):
+    events: list[str] = []
+    captured: list[tuple[BaseException, dict]] = []
+    monkeypatch.setattr(main, "capture_exception", lambda exc, **kw: captured.append((exc, kw)))
+
+    class _BrokenConnector:
+        name = "c0"
+
+        def abort(self) -> None:
+            raise AttributeError("'NoneType' object has no attribute 'abort'")
+
+    class _Connector:
+        name = "c1"
+
+        def abort(self) -> None:
+            events.append("abort:c1")
+
+    class _Handler:
+        name = "good"
+
+        async def drain(self) -> int:
+            events.append("drain")
+            return 0
+
+    await main._shutdown(
+        producer_tasks=[],
+        connectors=[_BrokenConnector(), _Connector()],
+        handlers=[_Handler()],
+        other_tasks=[],
+    )
+
+    assert events == ["abort:c1", "drain"]
+    assert [str(exc) for exc, _ in captured] == ["'NoneType' object has no attribute 'abort'"]
+    assert captured[0][1]["tags"] == {"component": "main", "step": "abort_connectors"}
+    assert captured[0][1]["context"] == {"connector": "c0"}
+
+
+@pytest.mark.asyncio
+async def test_shutdown_counts_frames_left_in_the_receive_queue_as_dropped(monkeypatch):
+    """Frames still in the receive queue once the router is cancelled are never
+    routed. They are dropped, so they go in the counter the drop reporter's final
+    pass reports. A frame the router took off the queue before dying is not one
+    of them.
+    """
+    monkeypatch.setattr(main.state, "receive_queue_drops", 5)
+    queue: asyncio.Queue = asyncio.Queue()
+    for frame in (b"a", b"b", b"c"):
+        queue.put_nowait(frame)
+
+    async def _router() -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            queue.get_nowait()  # the frame it was routing when it was cancelled
+            raise
+
+    router = asyncio.create_task(_router())
+    await asyncio.sleep(0.02)
+
+    await main._shutdown(producer_tasks=[router], handlers=[], other_tasks=[], receive_queue=queue)
+
+    assert main.state.receive_queue_drops == 5 + 2
+
+
 # --- _build_handlers: boot wiring of channel vs handler state (E5) ----------
 
 
@@ -683,6 +813,8 @@ def _stub_pipeline(monkeypatch) -> None:
     class _ForeverConnector:
         def __init__(self, *_a, **kwargs) -> None:
             self.name = kwargs.get("name", "conn")
+
+        def abort(self) -> None: ...
 
         async def run(self) -> None:
             await asyncio.sleep(3600)
@@ -790,3 +922,162 @@ async def test_run_exits_nonzero_when_drop_reporter_dies(_reset_notify_state, mo
     assert [(str(e), kw["tags"]["task"]) for e, kw in captured] == [
         ("reporter boom", "drop_reporter")
     ]
+
+
+# --- shutdown order: drop reporter, lease renewal, lease release in _run -----
+
+
+@pytest.mark.asyncio
+async def test_the_drop_reporter_is_cancelled_after_the_handlers_drain(
+    _reset_notify_state, monkeypatch
+):
+    """The reporter's final pass has to see what the drains lose, so shutdown
+    cancels it after them. Cancelled first, a failed final flush's lost rows
+    would never be reported: the next tick never comes.
+    """
+    import drop_reporter
+    from state import State
+
+    _stub_pipeline(monkeypatch)
+    fresh = State()
+    reports: list[dict] = []
+    monkeypatch.setattr(drop_reporter, "state", fresh)
+    monkeypatch.setattr(drop_reporter, "capture_message", lambda _msg, **kw: reports.append(kw))
+
+    class _LossyHandler:
+        name = "lossy"
+
+        async def run(self) -> None:
+            await asyncio.sleep(3600)
+
+        async def drain(self) -> int:
+            fresh.handler("lossy").lost_rows += 7  # the final flush failed
+            return 0
+
+    monkeypatch.setattr(main, "_build_handlers", lambda _ch: {"lossy": _LossyHandler()})
+    _sigterm_once_run_is_waiting(monkeypatch)
+
+    await main._run()
+
+    assert [(r["tags"]["handler"], r["context"]["lost_rows"]) for r in reports] == [("lossy", 7)]
+
+
+class _UpstashResponse:
+    status = 200
+
+    def __init__(self, command: list) -> None:
+        self._command = command
+
+    async def __aenter__(self) -> _UpstashResponse:
+        return self
+
+    async def __aexit__(self, *_exc) -> bool:
+        return False
+
+    async def json(self) -> dict:
+        return {"result": "OK" if self._command[0] == "SET" else 1}
+
+
+class _UpstashSession:
+    """Answers every lease command as a holder would. Like aiohttp's, a closed
+    session raises RuntimeError on post(), which is not a ClientError.
+    """
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def post(self, _url, *, json, headers) -> _UpstashResponse:
+        if self.closed:
+            raise RuntimeError("Session is closed")
+        return _UpstashResponse(json)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_a_drain_longer_than_a_renew_interval_does_not_read_as_a_lost_lease(
+    _reset_notify_state, monkeypatch
+):
+    """The renewal task used to be cancelled last, after the release step had
+    closed the lease's session. Its next tick then called post() on a closed
+    session, which raises RuntimeError rather than a lease error, and
+    run_renewal reads any such error as a lost lease: an error event, on_lost,
+    and an exit-1 restart. Any drain longer than the renew interval did that.
+    """
+    _stub_pipeline(monkeypatch)
+    monkeypatch.setattr(main.settings, "ws_lease_enabled", True, raising=False)
+    monkeypatch.setattr(main.settings, "kv_rest_api_url", "https://t.upstash.io", raising=False)
+    monkeypatch.setattr(main.settings, "kv_rest_api_token", "tok", raising=False)
+    monkeypatch.setattr(main.settings, "ws_lease_ttl_ms", 600, raising=False)
+    monkeypatch.setattr(main.settings, "ws_lease_renew_ms", 20, raising=False)
+    session = _UpstashSession()
+    monkeypatch.setattr(main.aiohttp, "ClientSession", lambda *_a, **_k: session)
+    lease_events: list[str] = []
+    monkeypatch.setattr(ws_lease, "capture_message", lambda msg, **_kw: lease_events.append(msg))
+
+    class _SlowDrainHandler:
+        name = "slow"
+
+        async def run(self) -> None:
+            await asyncio.sleep(3600)
+
+        async def drain(self) -> int:
+            await asyncio.sleep(0.2)  # ten renew intervals
+            return 0
+
+    monkeypatch.setattr(main, "_build_handlers", lambda _ch: {"slow": _SlowDrainHandler()})
+    _sigterm_once_run_is_waiting(monkeypatch)
+
+    await main._run()  # a SystemExit(1) here is the false lease loss
+
+    assert lease_events == []
+    assert session.closed is True
+
+
+@pytest.mark.asyncio
+async def test_run_does_not_wait_on_a_lease_release_that_never_returns(monkeypatch):
+    """_run's finally releases the lease on every exit that skipped _shutdown
+    (here, an acquire timeout). That release gets the same bound as the
+    _shutdown step; unbounded, a wedged Upstash request held the exit until
+    Railway's SIGKILL.
+    """
+    monkeypatch.setattr(main, "init_sentry", lambda: None)
+    pool_calls: list[str] = []
+
+    async def _fake_init_pool() -> None:
+        pool_calls.append("init")
+
+    async def _fake_close_pool() -> None:
+        pool_calls.append("close")
+
+    monkeypatch.setattr(main, "init_pool", _fake_init_pool)
+    monkeypatch.setattr(main, "close_pool", _fake_close_pool)
+    monkeypatch.setattr(main.settings, "ws_lease_enabled", True, raising=False)
+    monkeypatch.setattr(main.settings, "kv_rest_api_url", "https://test.upstash.io", raising=False)
+    monkeypatch.setattr(main.settings, "kv_rest_api_token", "tok", raising=False)
+    monkeypatch.setattr(main.aiohttp, "ClientSession", lambda *_a, **_k: _FakeLeaseSession())
+    monkeypatch.setitem(main._SHUTDOWN_STEP_TIMEOUTS_S, "release_lease", 0.05)
+
+    class _WedgedLease:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def acquire(self, _timeout_s: float) -> bool:
+            return False  # a wedged prior generation still holds it
+
+        async def release(self) -> bool:
+            await asyncio.sleep(3600)
+            return True
+
+    monkeypatch.setattr(main, "WsLease", _WedgedLease)
+    messages: list[dict] = []
+    monkeypatch.setattr(main, "capture_message", lambda _msg, **kw: messages.append(kw))
+
+    # wait_for only guards the test: an unbounded release fails it, not hangs it.
+    with pytest.raises(SystemExit) as exc_info:
+        await asyncio.wait_for(main._run(), timeout=5.0)
+
+    assert exc_info.value.code == 1
+    assert [m["tags"]["step"] for m in messages if "step" in m.get("tags", {})] == ["release_lease"]
+    assert pool_calls == ["init", "close"]  # the exit went on to close the pool

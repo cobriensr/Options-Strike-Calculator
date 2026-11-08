@@ -16,7 +16,7 @@ import asyncio
 import contextlib
 import os
 import signal
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Sequence
 from uuid import uuid4
 
 import aiohttp
@@ -169,6 +169,7 @@ async def _run() -> None:
     # the closes are guarded, so the finally is idempotent.
     lease: WsLease | None = None
     lease_session: aiohttp.ClientSession | None = None
+    lease_renewal: asyncio.Task | None = None
     try:
         if settings.ws_lease_enabled:
             lease_session = aiohttp.ClientSession(
@@ -322,12 +323,13 @@ async def _run() -> None:
             stop.set()
 
         if lease is not None:
-            background_tasks.append(
-                asyncio.create_task(
-                    lease.run_renewal(on_lost=_on_lease_lost),
-                    name="ws_lease_renewal",
-                ),
+            # Kept apart from the other background tasks: _shutdown stops it
+            # before it releases the lease and closes the lease's session.
+            lease_renewal = asyncio.create_task(
+                lease.run_renewal(on_lost=_on_lease_lost),
+                name="ws_lease_renewal",
             )
+            background_tasks.append(lease_renewal)
 
         # Wait for either a signal or any task to die unexpectedly.
         done_task = asyncio.create_task(stop.wait(), name="stop_wait")
@@ -356,10 +358,13 @@ async def _run() -> None:
         unique_handlers = list({id(h): h for h in handlers.values()}.values())
         await _shutdown(
             producer_tasks=producer_tasks,
+            connectors=connectors,
+            receive_queue=receive_queue,
             handlers=unique_handlers,
             other_tasks=[*handler_tasks, *background_tasks, done_task],
             lease=lease,
             lease_session=lease_session,
+            lease_renewal=lease_renewal,
         )
         log.info("uw-stream stopped")
         # A confirmed lease loss drained gracefully above; now exit non-zero so
@@ -378,13 +383,13 @@ async def _run() -> None:
         # normal _shutdown path: release() no-ops once owns()==False and the
         # session close is guarded. Releasing a still-HELD lease here is what
         # stops a mid-boot failure from blocking the next generation for a
-        # full TTL. Suppress errors so cleanup never masks the real exception.
-        if lease is not None:
-            with contextlib.suppress(Exception):
-                await lease.release()
-        if lease_session is not None and not lease_session.closed:
-            with contextlib.suppress(Exception):
-                await lease_session.close()
+        # full TTL. Suppress errors so cleanup never masks the real exception,
+        # and bound the release like the _shutdown step: a wedged Upstash
+        # request must not hold the exit until Railway's SIGKILL.
+        with contextlib.suppress(Exception):
+            await _bounded_step(
+                "release_lease", _release_lease(lease, lease_session, lease_renewal)
+            )
         await _bounded_step("close_pool", close_pool())
 
 
@@ -403,12 +408,38 @@ async def _bounded_step(step: str, aw: Awaitable[object]) -> None:
 
 
 async def _release_lease(
-    lease: WsLease | None, lease_session: aiohttp.ClientSession | None
+    lease: WsLease | None,
+    lease_session: aiohttp.ClientSession | None,
+    renewal: asyncio.Task | None,
 ) -> None:
+    """Stop renewing, release the lease, close its session, in that order.
+
+    The renewal task goes first. Once the session is closed its next tick calls
+    post() on it, which raises RuntimeError, not a lease error; run_renewal reads
+    that as a lost lease (an error event, on_lost, an exit-1 restart), and any
+    drain longer than the renew interval would trigger it. gather() absorbs the
+    task's cancel without swallowing one aimed at this step.
+    """
+    if renewal is not None:
+        renewal.cancel()
+        await asyncio.gather(renewal, return_exceptions=True)
     if lease is not None:
         await lease.release()
     if lease_session is not None and not lease_session.closed:
         await lease_session.close()
+
+
+def _abort_connectors(connectors: Sequence[Connector]) -> None:
+    """Abort every connector's socket. One failing must not stop the shutdown."""
+    for connector in connectors:
+        try:
+            connector.abort()
+        except Exception as exc:
+            capture_exception(
+                exc,
+                tags={"component": "main", "step": "abort_connectors"},
+                context={"connector": connector.name},
+            )
 
 
 async def _flush_notifications() -> None:
@@ -421,8 +452,11 @@ async def _shutdown(
     producer_tasks: list[asyncio.Task],
     handlers: list[Handler],
     other_tasks: list[asyncio.Task],
+    connectors: Sequence[Connector] = (),
+    receive_queue: asyncio.Queue | None = None,
     lease: WsLease | None = None,
     lease_session: aiohttp.ClientSession | None = None,
+    lease_renewal: asyncio.Task | None = None,
 ) -> None:
     """Graceful shutdown sequence — ORDER MATTERS.
 
@@ -431,12 +465,18 @@ async def _shutdown(
        is still alive races it: the router could ``enqueue`` a payload
        AFTER a handler's drain loop has already emptied its queue, and
        that row would be lost.
-    1b. Release the WS connection lease (if active) — but ONLY after the
-       producers are cancelled, i.e. our UW sockets are closed. Releasing
-       earlier would let the next deploy generation acquire and connect
-       while our sockets are still open, re-introducing the very overlap
-       the lease prevents. Release is CAS-fenced + best-effort (never
-       raises out of shutdown), then its dedicated aiohttp session closes.
+    1a. Abort every connector's socket. A connector stuck in its closing
+       handshake is cancelled a second time when the step times out, which
+       leaves the handshake with the socket still open (see
+       ``Connector.abort``). Then count the frames still in the receive
+       queue as dropped: with the router gone, nothing will route them.
+    1b. Release the WS connection lease (if active) — but ONLY after our UW
+       sockets are closed. Releasing earlier would let the next deploy
+       generation acquire and connect while our sockets are still open,
+       re-introducing the very overlap the lease prevents. The renewal task
+       stops first (see ``_release_lease``). Release is CAS-fenced +
+       best-effort (never raises out of shutdown), then its dedicated
+       aiohttp session closes.
     2. Drain the consumer handlers against a now-static queue. Railway
        sends SIGTERM on every deploy; without the drain any rows still in
        the per-channel queue or in-memory batch are silently lost
@@ -453,20 +493,23 @@ async def _shutdown(
     inside its bound from ``_SHUTDOWN_STEP_TIMEOUTS_S`` (the handler drains
     carry theirs inside ``Handler.drain``). A step that overruns is abandoned
     and reported, and the next one runs: a connector stuck in its close
-    handshake still lets the handlers drain. The one cost is that the lease is
-    then released while a socket may still be closing; that is a short overlap
-    the connectors' re-join of unacked channels recovers from, and far cheaper
-    than a drain that never ran.
+    handshake still lets the handlers drain.
     """
     # 1. Stop inflow.
     for t in producer_tasks:
         t.cancel()
     await _bounded_step("stop_producers", asyncio.gather(*producer_tasks, return_exceptions=True))
 
-    # 1b. Release the lease now that our sockets are closed, then close the
-    # lease's dedicated session. CAS-fenced so it can only delete OUR lease;
-    # best-effort so it never raises out of the shutdown path.
-    await _bounded_step("release_lease", _release_lease(lease, lease_session))
+    # 1a. Close any socket the connectors left open, then count the frames the
+    # router never routed. Synchronous, so no step bound.
+    _abort_connectors(connectors)
+    if receive_queue is not None:
+        state.receive_queue_drops += receive_queue.qsize()
+
+    # 1b. Stop renewing and release the lease now that our sockets are closed,
+    # then close the lease's dedicated session. CAS-fenced so it can only
+    # delete OUR lease; best-effort so it never raises out of the shutdown path.
+    await _bounded_step("release_lease", _release_lease(lease, lease_session, lease_renewal))
 
     # 2. Drain consumers.
     drain_results = await asyncio.gather(
