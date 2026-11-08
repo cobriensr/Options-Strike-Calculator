@@ -5811,4 +5811,89 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 207,
+    description:
+      "Create vega_flow_etf_revisions and nope_ticks_revisions, the append-only logs of every value a vega_flow_etf or nope_ticks row ever had (spec P0.9, docs/superpowers/specs/live-data-integrity-2026-11-06.md; owner decision 2026-11-07, the same pattern as flow_data_revisions, #206). UW restates both series and the writers overwrite: upsertGreekFlowTicks updated every conflicting vega_flow_etf row with no guard, every minute, and fetch-nope rewrote every nope_ticks column, ingested_at included, every minute, so the first-seen value is lost and a replay of 'what the signal said at 10:05' would use numbers that did not exist at 10:05. The tables keep the latest value, so no reader changes; each write that inserts a row or changes a value appends the row as stored (is_first = true when the write inserted it) with seen_at and the writer's name, in the same statement as the write. Each log has its source table's key and value columns with the same types (nope_ticks.ingested_at is not copied; seen_at is the log's time), a BIGSERIAL id (a row can return to an earlier value, and keying on seen_at would key on now()), and an index on (ticker, timestamp, seen_at) for the as-of query. Seeded in the same migration from the current rows, with seen_at = now() (the migration's time), writer = 'seed_restated' and is_first = true, guarded by NOT EXISTS on the key so a re-run adds nothing. Unlike #206 these rows are not first-seen: vega_flow_etf.inserted_at is the first-insert time but its values are the latest, and nope_ticks.ingested_at was overwritten every minute, so no first-seen value can be recovered; a strict as-of query before the migration finds nothing, and a fallback reader gets the restated value, labelled as such.",
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS vega_flow_etf_revisions (
+          id                    BIGSERIAL PRIMARY KEY,
+          ticker                TEXT NOT NULL,
+          date                  DATE NOT NULL,
+          timestamp             TIMESTAMPTZ NOT NULL,
+          expiry                DATE,
+          dir_vega_flow         NUMERIC NOT NULL,
+          otm_dir_vega_flow     NUMERIC NOT NULL,
+          total_vega_flow       NUMERIC NOT NULL,
+          otm_total_vega_flow   NUMERIC NOT NULL,
+          dir_delta_flow        NUMERIC NOT NULL,
+          otm_dir_delta_flow    NUMERIC NOT NULL,
+          total_delta_flow      NUMERIC NOT NULL,
+          otm_total_delta_flow  NUMERIC NOT NULL,
+          transactions          INTEGER NOT NULL,
+          volume                INTEGER NOT NULL,
+          seen_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+          writer                TEXT NOT NULL,
+          is_first              BOOLEAN NOT NULL
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_vega_flow_etf_revisions_asof
+          ON vega_flow_etf_revisions (ticker, timestamp, seen_at)
+      `,
+      sql`
+        INSERT INTO vega_flow_etf_revisions (
+          ticker, date, timestamp, expiry, dir_vega_flow, otm_dir_vega_flow, total_vega_flow, otm_total_vega_flow, dir_delta_flow, otm_dir_delta_flow, total_delta_flow, otm_total_delta_flow, transactions, volume,
+          seen_at, writer, is_first
+        )
+        SELECT f.ticker, f.date, f.timestamp, f.expiry, f.dir_vega_flow, f.otm_dir_vega_flow, f.total_vega_flow, f.otm_total_vega_flow, f.dir_delta_flow, f.otm_dir_delta_flow, f.total_delta_flow, f.otm_total_delta_flow, f.transactions, f.volume,
+               now(), 'seed_restated', true
+        FROM vega_flow_etf f
+        WHERE NOT EXISTS (
+          SELECT 1 FROM vega_flow_etf_revisions r
+          WHERE r.ticker = f.ticker
+            AND r.timestamp = f.timestamp
+            AND r.expiry IS NOT DISTINCT FROM f.expiry
+        )
+      `,
+      sql`
+        CREATE TABLE IF NOT EXISTS nope_ticks_revisions (
+          id                BIGSERIAL       PRIMARY KEY,
+          ticker            TEXT            NOT NULL,
+          timestamp         TIMESTAMPTZ     NOT NULL,
+          call_vol          INTEGER         NOT NULL,
+          put_vol           INTEGER         NOT NULL,
+          stock_vol         INTEGER         NOT NULL,
+          call_delta        NUMERIC(20, 4)  NOT NULL,
+          put_delta         NUMERIC(20, 4)  NOT NULL,
+          call_fill_delta   NUMERIC(20, 4)  NOT NULL,
+          put_fill_delta    NUMERIC(20, 4)  NOT NULL,
+          nope              NUMERIC(20, 10) NOT NULL,
+          nope_fill         NUMERIC(20, 10) NOT NULL,
+          seen_at           TIMESTAMPTZ     NOT NULL DEFAULT now(),
+          writer            TEXT            NOT NULL,
+          is_first          BOOLEAN         NOT NULL
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_nope_ticks_revisions_asof
+          ON nope_ticks_revisions (ticker, timestamp, seen_at)
+      `,
+      sql`
+        INSERT INTO nope_ticks_revisions (
+          ticker, timestamp, call_vol, put_vol, stock_vol, call_delta, put_delta, call_fill_delta, put_fill_delta, nope, nope_fill,
+          seen_at, writer, is_first
+        )
+        SELECT f.ticker, f.timestamp, f.call_vol, f.put_vol, f.stock_vol, f.call_delta, f.put_delta, f.call_fill_delta, f.put_fill_delta, f.nope, f.nope_fill,
+               now(), 'seed_restated', true
+        FROM nope_ticks f
+        WHERE NOT EXISTS (
+          SELECT 1 FROM nope_ticks_revisions r
+          WHERE r.ticker = f.ticker
+            AND r.timestamp = f.timestamp
+        )
+      `,
+    ],
+  },
 ];
