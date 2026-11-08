@@ -979,8 +979,14 @@ describe('dry run on real SQL (pglite)', () => {
       ),
     ).toHaveLength(2);
     expect(text).toMatch(
-      /ES 2026-04-12T22:30:02\.641Z id \d+: stored price matches the deleted bar of 2026-04-11T19:52:00Z \(close 8283\.5 before Phase 2, gone now\); newly affected: price, change1hPct, changeDayPct/,
+      /ES 2026-04-12T22:30:02\.641Z id \d+: stored price matches the deleted bar of 2026-04-11T19:52:00Z \(close 8283\.5 before Phase 2, gone now\), 1598 min older; newly affected: price, change1hPct, changeDayPct/,
     );
+    // Each Sunday row matched a bar 27 hours older: over the 15-minute gate and over 60 minutes.
+    expect(
+      text.match(
+        /matched bars older than the 15-minute gate: deleted 1, close-changed 0; older than 60 min: deleted 1, close-changed 0/g,
+      ),
+    ).toHaveLength(2);
     // The largest written price difference is the ES Sunday row.
     expect(text).toMatch(
       /ES 2026-04-12T22:30:02\.641Z id \d+ price\/1h\/day\/vr 8283\.5\/0\/null\/null -> 6771\.25\/null\/null\/1 \[writes price, change1hPct, volumeRatio\]/,
@@ -1097,6 +1103,9 @@ describe('dry run on real SQL (pglite)', () => {
   });
 
   it('reports the stale rows priced from a deleted junk bar, and the command that would delete them', async () => {
+    // A bar on 05-15 gives that day's stale row a different latest closed bar
+    // (7300, 200 away) from the 05-14 row's (the 05:00 bar, 7290, 210 away).
+    await bar('ES', '2026-05-15T20:00:00Z', 7300, 10);
     // Stale rows with a repaired bar behind them that are not priced from a deleted one.
     const { real, changed, hourOnly } = await staleRowsNotJunk();
     const before = await dump();
@@ -1117,25 +1126,25 @@ describe('dry run on real SQL (pglite)', () => {
       '  stale rows priced from a deleted junk bar (not recomputable; --delete-junk-stale deletes them, off by default): 2',
     );
     expect(block).toContain(
-      'ES: 2, first 2026-05-14T14:31:30.250Z, last 2026-05-15T21:31:30.250Z',
+      "ES: 2, first 2026-05-14T14:31:30.250Z, last 2026-05-15T21:31:30.250Z; |stored - the latest closed bar's close| min 200.00, median 210.00, max 210.00",
     );
     expect(block).toContain(
-      `ES 2026-05-14T14:31:30.250Z id ${ids.s6}: stored price 7500, the deleted bar of 2026-05-14T14:30:00Z closed at 7500`,
+      `ES 2026-05-14T14:31:30.250Z id ${ids.s6}: stored price 7500, the deleted bar of 2026-05-14T14:30:00Z closed at 7500; the latest closed bar then closed at 7290`,
     );
     expect(block).toContain(
-      `ES 2026-05-15T21:31:30.250Z id ${ids.s9}: stored price 7500, the deleted bar of 2026-05-14T14:30:00Z closed at 7500`,
+      `ES 2026-05-15T21:31:30.250Z id ${ids.s9}: stored price 7500, the deleted bar of 2026-05-14T14:30:00Z closed at 7500; the latest closed bar then closed at 7300`,
     );
     // Not the stale row priced from a real bar, the stale row nothing matches, or the fresh Sunday rows.
     for (const id of [real, changed, hourOnly, ids.s4, ids.s10, ids.s11]) {
       expect(block).not.toContain(`id ${id}:`);
     }
-    // The commands sit next to the three totals, with the delete's count and without it.
+    // One command, the delete's count next to the three totals.
     const text = report();
     const apply = `npx tsx scripts/recompute-futures-derived.ts --apply --work-dir ${workDir} --backup ${backupPath} --expect-snapshots 4 --expect-premarket 1 --expect-fires 3`;
     expect(text).toContain(
-      `with the delete of the stale rows priced from a deleted junk bar:\n    ${apply} --delete-junk-stale --expect-junk-deletes 2`,
+      `each total is the count above):\n  ${apply} --delete-junk-stale --expect-junk-deletes 2\n`,
     );
-    expect(text).toContain(`without it:\n    ${apply}\n`);
+    expect(text).not.toContain('without it');
   });
 
   it("lists every match to a bar whose close Phase 2 changed, with the bar's age and a mark over 60 minutes", async () => {
@@ -1153,6 +1162,11 @@ describe('dry run on real SQL (pglite)', () => {
     const text = report();
     expect(text).toContain(
       "all 4 matches to a bar whose close Phase 2 changed (the matched bar's age; over 60 min is marked a probable coincidence, 2 of them):",
+    );
+    // Four close-changed matches, all over the 15-minute gate, two over 60 minutes;
+    // the Sunday deleted-bar match is counted beside them.
+    expect(text).toContain(
+      'matched bars older than the 15-minute gate: deleted 1, close-changed 4; older than 60 min: deleted 1, close-changed 2',
     );
     const matched = (id: number, ts: string, age: string) =>
       `ES ${ts} id ${id}: stored price 7067 matches the close-changed bar of 2026-04-14T14:30:00Z (close 7067 before Phase 2, 7007 now), ${age}`;
@@ -1228,8 +1242,88 @@ describe('dry run on real SQL (pglite)', () => {
       expect(block.join('\n')).not.toContain(`id ${other}:`);
     }
     expect(text).toContain('the open D1 question): 0 rows');
+    // The drift list: the three recomputable rows whose price is not written,
+    // the largest first; 7100 and 6990 are over 0.15%, 7005 is not. The stale
+    // rows left alone are not in it.
+    expect(text).toContain(
+      'the 3 largest price drifts on rows that can be recomputed (price not affected, not written; 2 rows over 0.15% of the price):',
+    );
+    expect(text).toContain(
+      `ES 2026-05-12T14:32:00.250Z id ${id}: stored 7100, recomputed 7007, difference 93.00, recomputable, price not affected [over 0.15% of the price]`,
+    );
+    expect(text).toContain(
+      `ES 2026-05-12T14:34:00.250Z id ${small}: stored 7005, recomputed 7007, difference 2.00, recomputable, price not affected\n`,
+    );
+    expect(text).toContain(
+      'the 0 largest price drifts on rows that can be recomputed',
+    );
     // The 04-14 row is written (three ES rows now), the others are not.
     expect(text).toContain('ES: rows in range 10, rows to write 3 (');
+  });
+
+  it('tests the unmatched-large rows for a merge state, counts the others that meet the test, and writes every bar to merge-state.txt', async () => {
+    // A bar Phase 2 changed at 14:25, five minutes before the latest closed bar
+    // (14:30): it was 7000..7120 before (a merged range) and 7005 now.
+    await snapshotDay('ES', '2026-05-19', '2026-05-18', 7000, 7007);
+    await bar('ES', '2026-05-19T14:25:00Z', 7005, 10);
+    writeFileSync(
+      backupPath,
+      `${BACKUP}\n${backupLine('update', 'ES', '2026-05-19T14:25:00Z', {
+        close: 7050,
+        high: 7120,
+        low: 7000,
+        volume: 10,
+      })}\n`,
+    );
+    // A: stored 7100 is inside the merged range and no bar's close, 1.3% off.
+    const a = await snapshotRow(
+      'ES',
+      '2026-05-19T14:32:00.250Z',
+      '2026-05-19',
+      [7100, 0.1, 0.1, 0.4615],
+    );
+    // B: the same test, but only 0.01% off: not in the group, would be written.
+    await snapshotRow(
+      'ES',
+      '2026-05-19T14:33:00.250Z',
+      '2026-05-19',
+      [7008, 0.1, 0.1, 0.4615],
+    );
+    // D: the same test, and the price is right (the latest bar's close) while the
+    // 1h change is off: it meets the test but a recompute does not change its price.
+    await snapshotRow(
+      'ES',
+      '2026-05-19T14:34:00.250Z',
+      '2026-05-19',
+      [7007, 0.5, 0.1, 0.4615],
+    );
+    // C: read the repaired bar itself, so its price is already attributed.
+    await snapshotRow(
+      'ES',
+      '2026-05-19T14:26:30.250Z',
+      '2026-05-19',
+      [7060, 0.1, 0.1, 0.4615],
+    );
+    expect(await dry()).toBe(0);
+    const text = report();
+    expect(text).toContain(
+      'tested for a merge state (a bar Phase 2 changed within 14 min of the latest closed bar, whose pre-repair [low, high] holds the stored price and whose current range does not): merge-state 1, other 0',
+    );
+    expect(text).toContain(
+      `ES 2026-05-19T14:32:00.250Z id ${a}: stored 7100, recomputed 7007, merge-state (newest bar 2026-05-19T14:25:00Z)`,
+    );
+    // Outside the group: C, B, D and the fixture's S1 (a repaired 14:30 bar holding 7067).
+    expect(text).toContain(
+      'rows outside them meeting the same test: 4 (price already attributed 2; not attributed 2, of which a recompute that differs in price 1: what the test would add to the write set)',
+    );
+    expect(text).toContain('every bar of those rows: merge-state.txt');
+    // NQ was repaired too (S3), so it has the test; the roots Phase 2 only deleted bars of do not.
+    expect(text.match(/tested for a merge state/g)).toHaveLength(2);
+
+    const detail = readFileSync(join(workDir, 'merge-state.txt'), 'utf8');
+    expect(detail).toContain(
+      `ES 2026-05-19T14:32:00.250Z id ${a}: stored 7100, recomputed 7007: merge-state (newest bar 2026-05-19T14:25:00Z)\n  L 2026-05-19T14:30:00Z: O/H/L/C before not in the backup, now 7007/7007/7007/7007, Phase 2 did not update it\n  L-5 min 2026-05-19T14:25:00Z: O/H/L/C before 7050/7120/7000/7050, now 7005/7005/7005/7005, Phase 2 changed it\n`,
+    );
   });
 
   it("reports an exact root's control miss, classified, and exits 0", async () => {
@@ -2038,6 +2132,30 @@ describe('--delete-junk-stale on real SQL (pglite)', () => {
     expect(errored()).toMatch(/verify failed for junk: 1 of 2 row\(s\)/);
     expect(await surviving([ids.s6, ids.s9])).toEqual([ids.s6]);
     expect(existsSync(markerPath(workDir, 'junk'))).toBe(false);
+  });
+
+  it('fails the step, unmarked, when the delete itself rejects: the rows stay and the backup is on disk', async () => {
+    // The snapshots update is the first write, the DELETE the second.
+    hooks.failWriteAt = { nth: 2, error: new Error('deadlock detected') };
+    expect(await junkRun()).toBe(1);
+    expect(errored()).toMatch(/apply failed: junk: deadlock detected/);
+    expect(existsSync(markerPath(workDir, 'junk'))).toBe(false);
+    expect(await surviving([ids.s6, ids.s9])).toEqual([ids.s6, ids.s9]);
+    // The snapshots store finished before the delete and is marked; the backup
+    // holds the two rows that were to go.
+    expect(existsSync(markerPath(workDir, 'snapshots'))).toBe(true);
+    const files = backups();
+    expect(files).toHaveLength(1);
+    const lines = readFileSync(join(workDir, files[0]!), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as { op?: string; id: number });
+    expect(
+      lines
+        .filter((l) => l.op === 'delete')
+        .map((l) => l.id)
+        .sort(),
+    ).toEqual([ids.s6, ids.s9].sort());
   });
 
   it('fails the step, unmarked, when anything else left the table during the delete', async () => {

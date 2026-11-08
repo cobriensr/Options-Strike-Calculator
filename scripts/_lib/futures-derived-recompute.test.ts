@@ -30,6 +30,7 @@ import {
   BASIS_LOOKBACK_MS,
   SNAPSHOT_LOOKBACK_MS,
   SPAN,
+  BARS_LEAD_MS,
   checkApplyGate,
   checkJunkGate,
   compareGlobex,
@@ -58,14 +59,18 @@ import {
   buildRepair,
   classifyMismatch,
   classifyThinMiss,
+  findMergeState,
   inputsMatchSnapshot,
+  mergeStateBars,
   parseBackup,
   preRepairWindow,
   snapshotInputs,
   windowAffected,
   type BackupBar,
   type Bar,
+  type MergeBarView,
   type Repair,
+  VALUE_LOOKBACK_MS,
 } from './futures-derived-attribution.js';
 
 const ms = (iso: string): number => Date.parse(iso);
@@ -318,6 +323,10 @@ describe('checkJunkGate', () => {
 });
 
 describe('scope', () => {
+  it("reads bars as far back as the value rule looks, so the first row's look-back is covered", () => {
+    expect(BARS_LEAD_MS).toBeGreaterThanOrEqual(VALUE_LOOKBACK_MS);
+  });
+
   it('is the Phase 2 span, half-open', () => {
     expect(SPAN.startMs).toBe(ms('2026-04-05T22:00:00Z'));
     expect(SPAN.endMs).toBe(ms('2026-06-15T14:11:00Z'));
@@ -917,6 +926,7 @@ describe('parseBackup', () => {
         op: 'update',
         symbol: 'ES',
         tsMs: ms('2026-04-07T14:30:00Z'),
+        open: 7000,
         high: 7001.25,
         low: 6999,
         close: 7000.5,
@@ -926,12 +936,28 @@ describe('parseBackup', () => {
         op: 'delete',
         symbol: 'ES',
         tsMs: ms('2026-04-07T14:31:00Z'),
+        open: 7000,
         high: 7001.25,
         low: 6999,
         close: 7000.5,
         volume: 300,
       },
     ]);
+  });
+
+  it('leaves open undefined for a row without it', () => {
+    const text = JSON.stringify({
+      op: 'update',
+      row: {
+        symbol: 'ES',
+        ts: '2026-04-07T14:30:00Z',
+        high: '2',
+        low: '1',
+        close: '1.5',
+        volume: '3',
+      },
+    });
+    expect(parseBackup(text, 'b.jsonl')[0]?.open).toBeUndefined();
   });
 
   const badRow = (over: object) =>
@@ -1442,6 +1468,135 @@ describe('classifyThinMiss', () => {
         miss({ fields: ['price'], olderBars: [{ ageMin: 3, close: 110.4 }] }),
       ).cls,
     ).toBe('other');
+  });
+});
+
+describe('mergeStateBars and findMergeState', () => {
+  const t = (m: number) =>
+    ms(`2026-04-08T07:${String(m).padStart(2, '0')}:00Z`);
+  const current = (
+    m: number,
+    o: number,
+    h: number,
+    l: number,
+    c: number,
+  ): Bar => ({
+    tsMs: t(m),
+    open: o,
+    high: h,
+    low: l,
+    close: c,
+    volume: 10,
+  });
+  const backup = (
+    m: number,
+    o: number,
+    h: number,
+    l: number,
+    c: number,
+  ): BackupBar => ({
+    op: 'update',
+    symbol: 'ES',
+    ...current(m, o, h, l, c),
+  });
+  const updatesOf = (...b: BackupBar[]) => new Map(b.map((x) => [x.tsMs, x]));
+
+  // Minutes 5, 10, 11, 20 and 25 hold bars; 25 is the latest closed bar.
+  const bars = [
+    current(5, 6800, 6800, 6800, 6800),
+    current(10, 6810, 6812, 6808, 6811),
+    current(11, 6811, 6813, 6809, 6812),
+    current(20, 6820, 6822, 6818, 6821),
+    current(25, 6830, 6832, 6828, 6831),
+  ];
+  const latest = bars[4] as Bar;
+
+  it('lists the latest closed bar and the bars up to 14 minutes older, newest first, with their age', () => {
+    const views = mergeStateBars(bars, new Map(), latest);
+    expect(views.map((v) => [v.ageMin, v.tsMs])).toEqual([
+      [0, t(25)],
+      [5, t(20)],
+      [14, t(11)],
+    ]);
+    // Minute 10 is 15 minutes older: out.
+    expect(views.every((v) => v.pre == null && !v.changed)).toBe(true);
+  });
+
+  it('has pre-repair values only for a bar the backup updated, and calls it changed only when a value differs', () => {
+    const views = mergeStateBars(
+      bars,
+      updatesOf(
+        backup(20, 6820, 6890, 6818, 6821), // high was merged up
+        { ...backup(11, 6811, 6813, 6809, 6812), volume: 99 }, // only the volume differs
+      ),
+      latest,
+    );
+    const byAge = Object.fromEntries(views.map((v) => [v.ageMin, v]));
+    expect(byAge[5]).toMatchObject({
+      pre: { open: 6820, high: 6890, low: 6818, close: 6821 },
+      now: { open: 6820, high: 6822, low: 6818, close: 6821 },
+      changed: true,
+    });
+    expect(byAge[14]).toMatchObject({ changed: true });
+    expect(byAge[14]?.pre).not.toBeNull();
+    expect(byAge[0]?.pre).toBeNull();
+  });
+
+  it('does not call a bar changed when the backup holds the same values', () => {
+    const views = mergeStateBars(
+      bars,
+      updatesOf(backup(20, 6820, 6822, 6818, 6821)),
+      latest,
+    );
+    expect(views.find((v) => v.ageMin === 5)).toMatchObject({
+      changed: false,
+    });
+    expect(views.find((v) => v.ageMin === 5)?.pre).not.toBeNull();
+  });
+
+  it('is empty-handed when the latest bar is the only bar', () => {
+    expect(mergeStateBars([latest], new Map(), latest)).toHaveLength(1);
+  });
+
+  const views = (...b: BackupBar[]): MergeBarView[] =>
+    mergeStateBars(bars, updatesOf(...b), latest);
+
+  it('finds the newest changed bar whose pre-repair range holds the price and whose current range does not', () => {
+    const found = findMergeState(
+      views(
+        backup(20, 6820, 6890, 6818, 6821),
+        backup(11, 6811, 6895, 6809, 6812),
+      ),
+      6880,
+    );
+    expect(found?.tsMs).toBe(t(20)); // both hold 6880; the newer one is named
+  });
+
+  it.each([
+    ['no bar was updated', []],
+    [
+      'the pre-repair range does not hold the price',
+      [backup(20, 6820, 6850, 6818, 6821)],
+    ],
+    [
+      'the current range still holds the price',
+      [backup(20, 6820, 6890, 6818, 6821)],
+    ],
+    ['the bar is unchanged', [backup(20, 6820, 6822, 6818, 6821)]],
+  ] as [string, BackupBar[]][])('finds nothing when %s', (why, updates) => {
+    // 6880 is inside [6818, 6890] but not inside the current [6818, 6822]; the
+    // cases above break one condition each (the third is tested at 6820).
+    const price =
+      why === 'the current range still holds the price' ? 6820 : 6880;
+    expect(findMergeState(views(...updates), price)).toBeNull();
+  });
+
+  it('holds the bounds of the pre-repair range', () => {
+    const v = views(backup(20, 6820, 6890, 6850, 6821));
+    expect(findMergeState(v, 6850)?.tsMs).toBe(t(20));
+    expect(findMergeState(v, 6890)?.tsMs).toBe(t(20));
+    expect(findMergeState(v, 6849.75)).toBeNull();
+    expect(findMergeState(v, 6890.25)).toBeNull();
   });
 });
 

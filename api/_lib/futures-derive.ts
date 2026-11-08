@@ -12,11 +12,12 @@
  *     (`ts <= at - 60 s`), NOT the absolute latest bar for the symbol.
  *     This is what makes the historical picker correct — walking back in
  *     time must not leak future information, and neither may the minute
- *     `at` is still inside. uw-stream writes a minute's bar only after
- *     that minute closes, so the live uw-stream cron sees at most this set
- *     (a bar that lands late is simply absent from what it saw); reading
- *     this set for a past `at` is the closest reproduction of the row the
- *     cron wrote.
+ *     `at` is still inside. uw-stream emits a minute's bar only once a
+ *     print of a later minute has arrived (`_flush` in futures_trades.py),
+ *     so a quiet root's previous bar can still be missing when the live
+ *     cron reads; the cron sees at most this set (a bar that lands late is
+ *     simply absent from what it saw). Reading this set for a past `at` is
+ *     the closest reproduction of the row the cron wrote.
  *   - A bar only stands in for the price at a moment T if it printed
  *     within MAX_BAR_AGE_MS of T (see below). A symbol whose latest bar
  *     is older than that has no snapshot at all.

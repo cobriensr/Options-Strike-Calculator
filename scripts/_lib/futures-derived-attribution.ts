@@ -33,6 +33,8 @@ const HOUR_MS = 60 * 60 * 1000;
 
 export interface Bar {
   tsMs: number;
+  /** Read from the table and the backup for the merge-state report; the attribution itself never uses it. */
+  open?: number;
   high: number;
   low: number;
   close: number;
@@ -50,6 +52,7 @@ const backupLineSchema = z.object({
   row: z.object({
     symbol: z.string(),
     ts: z.string(),
+    open: numeric.optional(),
     high: numeric,
     low: numeric,
     close: numeric,
@@ -92,6 +95,7 @@ export function parseBackup(text: string, label: string): BackupBar[] {
       op,
       symbol: row.symbol,
       tsMs,
+      open: row.open == null ? undefined : Number(row.open),
       high: Number(row.high),
       low: Number(row.low),
       close: Number(row.close),
@@ -691,4 +695,85 @@ export function classifyThinMiss(row: {
     return { cls: 'late-volume', ageMin: null };
   }
   return { cls: 'other', ageMin: null };
+}
+
+// ── The merge state of a bar the cron read ──────────────────────────────────
+
+export interface OhlcView {
+  open: number | null;
+  high: number;
+  low: number;
+  close: number;
+}
+
+/** A bar near a row's latest closed bar, with what Phase 2 did to it. */
+export interface MergeBarView {
+  tsMs: number;
+  /** Minutes older than the latest closed bar; 0 for that bar. */
+  ageMin: number;
+  /** The bar as it was before Phase 2; null when Phase 2 did not update it. */
+  pre: OhlcView | null;
+  now: OhlcView;
+  /** Phase 2 changed a value of this bar. */
+  changed: boolean;
+}
+
+/**
+ * The latest closed bar `latest` and every bar up to LATE_BAR_MAX_AGE_MIN
+ * minutes older, newest first, each with its pre-repair values when the Phase 2
+ * backup updated it. `bars` is sorted by ts and holds `latest`.
+ */
+export function mergeStateBars(
+  bars: readonly Bar[],
+  updates: ReadonlyMap<number, BackupBar>,
+  latest: Bar,
+): MergeBarView[] {
+  const out: MergeBarView[] = [];
+  const start = Math.min(barLowerBound(bars, latest.tsMs), bars.length - 1);
+  for (let i = start; i >= 0; i -= 1) {
+    const b = bars[i] as Bar;
+    if (b.tsMs > latest.tsMs) continue;
+    if (latest.tsMs - b.tsMs > LATE_BAR_MAX_AGE_MIN * 60_000) break;
+    const u = updates.get(b.tsMs);
+    out.push({
+      tsMs: b.tsMs,
+      ageMin: Math.round((latest.tsMs - b.tsMs) / 60_000),
+      pre:
+        u == null
+          ? null
+          : { open: u.open ?? null, high: u.high, low: u.low, close: u.close },
+      now: { open: b.open ?? null, high: b.high, low: b.low, close: b.close },
+      changed:
+        u != null &&
+        (u.high !== b.high ||
+          u.low !== b.low ||
+          u.close !== b.close ||
+          u.volume !== b.volume ||
+          (u.open != null && b.open != null && u.open !== b.open)),
+    });
+  }
+  return out;
+}
+
+/**
+ * The newest bar in `views` that Phase 2 changed, whose pre-repair [low, high]
+ * holds `price` and whose current [low, high] does not: a cron that read the
+ * bar while contract months were still merged into it (the Databento-era upsert
+ * kept high = GREATEST, low = LEAST, close = last write) could store a price
+ * that lies in the merged range and matches no final bar. Null when none.
+ */
+export function findMergeState(
+  views: readonly MergeBarView[],
+  price: number,
+): MergeBarView | null {
+  return (
+    views.find(
+      (v) =>
+        v.changed &&
+        v.pre != null &&
+        v.pre.low <= price &&
+        price <= v.pre.high &&
+        !(v.now.low <= price && price <= v.now.high),
+    ) ?? null
+  );
 }

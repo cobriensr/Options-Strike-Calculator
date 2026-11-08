@@ -41,6 +41,7 @@ import { isMarketHours } from '../../api/_lib/cron-helpers.js';
 import { getDb, withDbRetry } from '../../api/_lib/db.js';
 import {
   FUTURES_SYMBOLS,
+  MAX_BAR_AGE_MS,
   computeSnapshot,
   type FuturesSymbol,
   type SnapshotResult,
@@ -62,6 +63,7 @@ import {
 } from '../../src/utils/timezone.js';
 import {
   LATE_BAR_MAX_AGE_MIN,
+  VALUE_LOOKBACK_MS,
   affectedSnapshotFields,
   aggregateWindow,
   attributeByValue,
@@ -69,13 +71,16 @@ import {
   buildRepair,
   classifyMismatch,
   classifyThinMiss,
+  findMergeState,
   inputsMatchSnapshot,
+  mergeStateBars,
   parseBackup,
   preRepairWindow,
   snapshotInputs,
   windowAffected,
   type BackupBar,
   type Bar,
+  type MergeBarView,
   type MismatchClass,
   type OlderBar,
   type PreBar,
@@ -595,8 +600,12 @@ async function assertReadOnlySession(): Promise<string[]> {
 
 // ── Bars and the Phase 2 repair ─────────────────────────────────────────────
 
-/** Bars are read from this long before the span, so the pre-market windows and hour-ago bars are covered. */
-const BARS_LEAD_MS = 3 * DAY_MS;
+/**
+ * Bars are read from this long before the span, so the pre-market windows, the
+ * hour-ago bars and the value rule's whole look-back are covered for the first
+ * row of the scope.
+ */
+export const BARS_LEAD_MS = VALUE_LOOKBACK_MS;
 
 interface SymbolData {
   /** Every bar from BARS_LEAD_MS before the span to the end of the snapshot scope, by ts. */
@@ -605,10 +614,13 @@ interface SymbolData {
   backup: BackupBar[];
   /** The same bars as they were before Phase 2, for finding a stored row's inputs by value. */
   series: PreBar[];
+  /** The bars Phase 2 updated, by ts, with their values before it. */
+  updates: Map<number, BackupBar>;
 }
 
 interface RawBar {
   ts: string;
+  open: string;
   high: string;
   low: string;
   close: string;
@@ -628,7 +640,7 @@ async function readBars(
     const page = await readRows<RawBar>(
       (sql) => sql`
         SELECT to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS ts,
-               high::text AS high, low::text AS low,
+               open::text AS open, high::text AS high, low::text AS low,
                close::text AS close, volume::text AS volume
           FROM futures_bars
          WHERE symbol = ${symbol}
@@ -638,6 +650,7 @@ async function readBars(
     for (const r of page) {
       out.push({
         tsMs: Date.parse(r.ts),
+        open: Number(r.open),
         high: Number(r.high),
         low: Number(r.low),
         close: Number(r.close),
@@ -667,6 +680,9 @@ async function loadSymbolData(
       backup: mine,
       repair: buildRepair(mine, new Map(bars.map((b) => [b.tsMs, b]))),
       series: buildPreSeries(mine, bars),
+      updates: new Map(
+        mine.filter((b) => b.op === 'update').map((b) => [b.tsMs, b]),
+      ),
     });
     console.log(
       `bars ${symbol}: ${bars.length} read; Phase 2 backup ${mine.length} rows (${mine.filter((b) => b.op === 'delete').length} deleted)`,
@@ -1008,6 +1024,29 @@ export interface ValueRuleStats {
   samples: string[];
   /** Every match to a bar whose close Phase 2 changed, with how much older the bar is than the row. */
   closeChanged: { line: string; coincidence: boolean }[];
+  /** Matched bars older than the freshness gate (MAX_BAR_AGE_MS) and older than COINCIDENCE_MIN, by what Phase 2 did to them. */
+  older15: { deleted: number; 'close-changed': number };
+  older60: { deleted: number; 'close-changed': number };
+}
+
+/**
+ * The unmatched-large rows of an ES or NQ report, tested for a merge state (see
+ * findMergeState), and how many other rows meet the same test.
+ */
+export interface MergeStateReport {
+  merge: number;
+  other: number;
+  /** One line per row of the unmatched-large group. */
+  rows: string[];
+  /** The same rows with every bar, for merge-state.txt. */
+  detail: string[];
+  /** Rows outside that group that meet the test. */
+  outside: {
+    meeting: number;
+    attributed: number;
+    notAttributed: number;
+    wouldWrite: number;
+  };
 }
 
 /** Stored price differs from the recompute by over 0.15% though no pre-repair bar has the stored price: not written. */
@@ -1055,7 +1094,13 @@ export interface SnapshotSymbolReport {
   unmatched: Record<ValueField, number>;
   /** The TOP_UNWRITTEN largest |stored - recomputed| price differences that are not written. */
   unwritten: UnwrittenDiff[];
+  /** The TOP_UNWRITTEN largest price drifts among rows that can be recomputed and whose price is not written. */
+  driftTop: UnwrittenDiff[];
+  /** Those rows over UNWRITTEN_FLAG_SHARE of the price. */
+  driftOverMark: number;
   unmatchedLarge: UnmatchedLarge;
+  /** ES and NQ only: null for a root Phase 2 only deleted bars of. */
+  mergeState: MergeStateReport | null;
   /** Rows where the mirrored input rule disagrees with computeSnapshot. */
   attributionInconsistent: number;
   controlRows: number;
@@ -1087,6 +1132,8 @@ export interface JunkRow {
   /** The deleted bar whose close the stored price equals, and that close. */
   barTsMs: number;
   barClose: number;
+  /** The close of the latest closed bar at the row's ts: what the row could have said. */
+  latestClose: number | null;
   row: Row;
 }
 
@@ -1437,8 +1484,11 @@ function noteValueRule(
   for (const { field, bar } of matched.values()) {
     if (bar.repair == null) continue;
     stats.byKind[bar.repair] += 1;
+    const olderMs = row.tsMs - bar.tsMs;
+    if (olderMs > MAX_BAR_AGE_MS) stats.older15[bar.repair] += 1;
+    if (olderMs > COINCIDENCE_MIN * MINUTE_MS) stats.older60[bar.repair] += 1;
     if (bar.repair === 'close-changed') {
-      const ageMin = Math.round((row.tsMs - bar.tsMs) / MINUTE_MS);
+      const ageMin = Math.round(olderMs / MINUTE_MS);
       const coincidence = ageMin > COINCIDENCE_MIN;
       stats.closeChanged.push({
         coincidence,
@@ -1450,11 +1500,44 @@ function noteValueRule(
     const first = hits[0];
     if (first != null) {
       const now = first.bar.closeNow ?? 'gone';
+      const ageMin = Math.round((row.tsMs - first.bar.tsMs) / MINUTE_MS);
       stats.samples.push(
-        `${row.symbol} ${isoSecond(row.tsMs)} id ${row.id}: stored ${first.field} matches the ${first.bar.repair} bar of ${isoSecond(first.bar.tsMs)} (close ${first.bar.closePre} before Phase 2, ${now} now); newly affected: ${newly.join(', ')}`,
+        `${row.symbol} ${isoSecond(row.tsMs)} id ${row.id}: stored ${first.field} matches the ${first.bar.repair} bar of ${isoSecond(first.bar.tsMs)} (close ${first.bar.closePre} before Phase 2, ${now} now), ${ageMin} min older; newly affected: ${newly.join(', ')}`,
       );
     }
   }
+}
+
+const ohlcText = (
+  v: { open: number | null } & Omit<MergeBarView['now'], 'open'>,
+) => [v.open ?? '?', v.high, v.low, v.close].join('/');
+
+/** One bar of a merge-state row: its age against the latest closed bar, before and now, and what Phase 2 did. */
+function mergeBarText(v: MergeBarView): string {
+  const age = v.ageMin === 0 ? 'L' : `L-${v.ageMin} min`;
+  const before = v.pre == null ? 'not in the backup' : ohlcText(v.pre);
+  let did = 'Phase 2 left it unchanged';
+  if (v.pre == null) did = 'Phase 2 did not update it';
+  else if (v.changed) did = 'Phase 2 changed it';
+  return `  ${age} ${isoSecond(v.tsMs)}: O/H/L/C before ${before}, now ${ohlcText(v.now)}, ${did}`;
+}
+
+function noteMergeState(
+  m: MergeStateReport,
+  row: SnapshotRow,
+  recomputed: number,
+  views: MergeBarView[],
+  found: MergeBarView | null,
+): void {
+  if (found == null) m.other += 1;
+  else m.merge += 1;
+  const head = `${row.symbol} ${isoSecond(row.tsMs)} id ${row.id}: stored ${row.stored.price}, recomputed ${recomputed}`;
+  const verdict =
+    found == null
+      ? 'other'
+      : `merge-state (newest bar ${isoSecond(found.tsMs)})`;
+  m.rows.push(`${head}, ${verdict}`);
+  m.detail.push(`${head}: ${verdict}`, ...views.map(mergeBarText));
 }
 
 async function planSnapshots(
@@ -1498,10 +1581,29 @@ async function planSnapshots(
         byKind: { deleted: 0, 'close-changed': 0 },
         samples: [],
         closeChanged: [],
+        older15: { deleted: 0, 'close-changed': 0 },
+        older60: { deleted: 0, 'close-changed': 0 },
       },
       unmatched: { price: 0, change1hPct: 0, changeDayPct: 0 },
       unwritten: [],
+      driftTop: [],
+      driftOverMark: 0,
       unmatchedLarge: { count: 0, first: [], largest: [] },
+      mergeState:
+        sd.updates.size === 0
+          ? null
+          : {
+              merge: 0,
+              other: 0,
+              rows: [],
+              detail: [],
+              outside: {
+                meeting: 0,
+                attributed: 0,
+                notAttributed: 0,
+                wouldWrite: 0,
+              },
+            },
       attributionInconsistent: 0,
       controlRows: 0,
       controlMatched: 0,
@@ -1532,14 +1634,45 @@ async function planSnapshots(
       if (newly.length > 0) {
         noteValueRule(report.valueRule, row, byValue.hits, newly);
       }
+      const inputs = snapshotInputs(sd.bars, row.tsMs, dayOpenMs);
       if (
         result.kind === 'fresh' &&
-        !inputsMatchSnapshot(
-          snapshotInputs(sd.bars, row.tsMs, dayOpenMs),
-          result.snapshot,
-        )
+        !inputsMatchSnapshot(inputs, result.snapshot)
       ) {
         report.attributionInconsistent += 1;
+      }
+      // A recomputable row whose price is not written, that no pre-repair bar
+      // explains and that is far from the recompute: the open D1 question.
+      const largeUnmatched =
+        outcome.kind === 'change' &&
+        outcome.fields.includes('price') &&
+        !affected.has('price') &&
+        byValue.unmatched.includes('price') &&
+        Math.abs(row.stored.price - outcome.to.price) >
+          UNWRITTEN_FLAG_SHARE * Math.abs(row.stored.price);
+      if (report.mergeState != null && inputs.latest != null) {
+        const views = mergeStateBars(sd.bars, sd.updates, inputs.latest);
+        const found = findMergeState(views, row.stored.price);
+        if (largeUnmatched && outcome.kind === 'change') {
+          noteMergeState(
+            report.mergeState,
+            row,
+            outcome.to.price,
+            views,
+            found,
+          );
+        } else if (found != null) {
+          const outside = report.mergeState.outside;
+          outside.meeting += 1;
+          if (affected.has('price')) {
+            outside.attributed += 1;
+          } else {
+            outside.notAttributed += 1;
+            if (outcome.kind === 'change' && outcome.fields.includes('price')) {
+              outside.wouldWrite += 1;
+            }
+          }
+        }
       }
       if (outcome.kind === 'unrecomputable') {
         const junkHit = byValue.hits.find(
@@ -1553,6 +1686,7 @@ async function planSnapshots(
             storedPrice: row.stored.price,
             barTsMs: junkHit.bar.tsMs,
             barClose: junkHit.bar.closePre,
+            latestClose: inputs.latest?.close ?? null,
             row: row.row,
           });
         }
@@ -1565,7 +1699,7 @@ async function planSnapshots(
         } else {
           report.unaffectedLeftAlone += 1;
         }
-        const latest = snapshotInputs(sd.bars, row.tsMs, dayOpenMs).latest;
+        const latest = inputs.latest;
         if (latest != null) {
           noteUnwritten(
             report.unwritten,
@@ -1588,14 +1722,20 @@ async function planSnapshots(
           outcome.to.price,
           'method drift, price not affected',
         );
-      }
-      if (
-        outcome.fields.includes('price') &&
-        !writable.includes('price') &&
-        byValue.unmatched.includes('price') &&
-        Math.abs(row.stored.price - outcome.to.price) >
+        noteUnwritten(
+          report.driftTop,
+          row,
+          outcome.to.price,
+          'recomputable, price not affected',
+        );
+        if (
+          Math.abs(row.stored.price - outcome.to.price) >
           UNWRITTEN_FLAG_SHARE * Math.abs(row.stored.price)
-      ) {
+        ) {
+          report.driftOverMark += 1;
+        }
+      }
+      if (largeUnmatched) {
         noteUnmatchedLarge(report.unmatchedLarge, row, outcome.to.price);
       }
       if (writable.length === 0) continue;
@@ -1950,6 +2090,29 @@ function infoText(info: SnapshotInfo, heading: string): string[] {
   return out;
 }
 
+function olderMatchesText(v: ValueRuleStats): string {
+  const f = (m: ValueRuleStats['older15']) =>
+    `deleted ${m.deleted}, close-changed ${m['close-changed']}`;
+  return `    matched bars older than the ${MAX_BAR_AGE_MS / MINUTE_MS}-minute gate: ${f(v.older15)}; older than ${COINCIDENCE_MIN} min: ${f(v.older60)}`;
+}
+
+function mergeStateText(m: MergeStateReport): string[] {
+  const o = m.outside;
+  return [
+    `    the rows above, tested for a merge state (a bar Phase 2 changed within ${LATE_BAR_MAX_AGE_MIN} min of the latest closed bar, whose pre-repair [low, high] holds the stored price and whose current range does not): merge-state ${m.merge}, other ${m.other}`,
+    ...m.rows.map((l) => `      ${l}`),
+    `    rows outside them meeting the same test: ${o.meeting} (price already attributed ${o.attributed}; not attributed ${o.notAttributed}, of which a recompute that differs in price ${o.wouldWrite}: what the test would add to the write set)`,
+    '    every bar of those rows: merge-state.txt',
+  ];
+}
+
+function driftText(r: SnapshotSymbolReport): string[] {
+  return [
+    `    the ${r.driftTop.length} largest price drifts on rows that can be recomputed (price not affected, not written; ${r.driftOverMark} rows over 0.15% of the price):`,
+    ...r.driftTop.map((u) => `      ${u.line}`),
+  ];
+}
+
 function closeChangedText(v: ValueRuleStats): string[] {
   if (v.closeChanged.length === 0) return [];
   const coincidences = v.closeChanged.filter((m) => m.coincidence).length;
@@ -1979,19 +2142,32 @@ function junkText(junk: JunkRow[]): string[] {
   ];
   if (junk.length === 0) return out;
   for (const symbol of SYMBOLS) {
-    const times = junk.filter((j) => j.symbol === symbol).map((j) => j.tsMs);
-    if (times.length === 0) continue;
+    const mine = junk.filter((j) => j.symbol === symbol);
+    if (mine.length === 0) continue;
+    const times = mine.map((j) => j.tsMs);
+    const away = mine
+      .flatMap((j) =>
+        j.latestClose == null ? [] : [Math.abs(j.storedPrice - j.latestClose)],
+      )
+      .sort((a, b) => a - b);
+    const spread =
+      away.length === 0
+        ? ''
+        : `; |stored - the latest closed bar's close| min ${(away[0] ?? 0).toFixed(2)}, median ${percentile(away, 0.5).toFixed(2)}, max ${(away.at(-1) ?? 0).toFixed(2)}`;
     out.push(
-      `    ${symbol}: ${times.length}, first ${isoSecond(Math.min(...times))}, last ${isoSecond(Math.max(...times))}`,
+      `    ${symbol}: ${mine.length}, first ${isoSecond(Math.min(...times))}, last ${isoSecond(Math.max(...times))}${spread}`,
     );
   }
   const first = [...junk].sort((a, b) => a.tsMs - b.tsMs).slice(0, SAMPLE_N);
   out.push(
     `    the first ${first.length} by time:`,
-    ...first.map(
-      (j) =>
-        `      ${j.symbol} ${isoSecond(j.tsMs)} id ${j.id}: stored price ${j.storedPrice}, the deleted bar of ${isoSecond(j.barTsMs)} closed at ${j.barClose}`,
-    ),
+    ...first.map((j) => {
+      const compare =
+        j.latestClose == null
+          ? 'no closed bar before it'
+          : `the latest closed bar then closed at ${j.latestClose}`;
+      return `      ${j.symbol} ${isoSecond(j.tsMs)} id ${j.id}: stored price ${j.storedPrice}, the deleted bar of ${isoSecond(j.barTsMs)} closed at ${j.barClose}; ${compare}`;
+    }),
   );
   return out;
 }
@@ -2021,11 +2197,14 @@ function snapshotsText(r: SnapshotStore): string[] {
       `    attribution inputs disagreeing with computeSnapshot: ${s.attributionInconsistent}`,
       `    newly affected by the value rule (the stored input found by value, a bar Phase 2 deleted or changed): ${s.valueRule.rows} rows (${byFieldText(s.valueRule.fields)}), matched bars deleted ${s.valueRule.byKind.deleted}, close-changed ${s.valueRule.byKind['close-changed']}`,
       ...s.valueRule.samples.map((l) => `      ${l}`),
+      olderMatchesText(s.valueRule),
       ...closeChangedText(s.valueRule),
       `    unmatched (no pre-repair bar matched the stored value, so the field is left to the other rule): price=${s.unmatched.price} change1hPct=${s.unmatched.change1hPct} changeDayPct=${s.unmatched.changeDayPct}`,
       `    the ${s.unwritten.length} largest price differences not written (stored vs recomputed, or vs the latest closed bar when the recompute is stale):`,
       ...s.unwritten.map((u) => `      ${u.line}`),
+      ...driftText(s),
       ...unmatchedLargeText(s.unmatchedLarge),
+      ...(s.mergeState == null ? [] : mergeStateText(s.mergeState)),
     );
   }
   out.push(
@@ -2102,7 +2281,7 @@ export function formatReport(
   plans: Plans,
   header: string[],
   gateProblems: string[],
-  commands: ApplyCommands | null = null,
+  applyCommand: string | null = null,
 ): string {
   const out = [...header, ''];
   if (plans.snapshots) out.push(...snapshotsText(plans.snapshots), '');
@@ -2114,18 +2293,11 @@ export function formatReport(
       : 'APPLY WOULD REFUSE:',
     ...gateProblems.map((p) => `  ${p}`),
   );
-  if (commands != null) {
+  if (applyCommand != null) {
     out.push(
       '',
       'To apply, after the close (add --env-file as for this dry run; each total is the count above):',
-      ...(commands.withJunkDelete == null
-        ? []
-        : [
-            '  with the delete of the stale rows priced from a deleted junk bar:',
-            `    ${commands.withJunkDelete}`,
-          ]),
-      '  without it:',
-      `    ${commands.withoutJunkDelete}`,
+      `  ${applyCommand}`,
     );
   }
   return out.join('\n');
@@ -2601,20 +2773,16 @@ function expectations(o: RecomputeOptions): Record<Store, number | null> {
 
 // ── Run ─────────────────────────────────────────────────────────────────────
 
-/** The commands that would apply what this dry run planned: with and without the junk delete. */
-interface ApplyCommands {
-  /** Null when the snapshots store was not planned, which the delete needs. */
-  withJunkDelete: string | null;
-  withoutJunkDelete: string;
-}
-
-function applyCommands(
-  opts: RecomputeOptions,
-  plans: Plans,
-): ApplyCommands | null {
+/**
+ * The one command that would apply what this dry run planned, every total next
+ * to the delete of the stale rows priced from a deleted junk bar when there are
+ * any (leave out its two flags to apply without it).
+ */
+function applyCommand(opts: RecomputeOptions, plans: Plans): string | null {
   const planned = STORES.filter((store) => plans[store] != null);
   if (planned.length === 0) return null;
-  const base = [
+  const junk = plans.snapshots?.junk.length ?? 0;
+  return [
     'npx tsx scripts/recompute-futures-derived.ts --apply',
     `--work-dir ${opts.workDir}`,
     ...(opts.backup == null ? [] : [`--backup ${opts.backup}`]),
@@ -2625,18 +2793,10 @@ function applyCommands(
       (store) =>
         `${EXPECT_FLAGS[store].flag} ${plans[store]?.changes.length ?? 0}`,
     ),
-  ];
-  return {
-    withJunkDelete:
-      plans.snapshots == null
-        ? null
-        : [
-            ...base,
-            '--delete-junk-stale',
-            `--expect-junk-deletes ${plans.snapshots.junk.length}`,
-          ].join(' '),
-    withoutJunkDelete: base.join(' '),
-  };
+    ...(junk === 0
+      ? []
+      : ['--delete-junk-stale', `--expect-junk-deletes ${junk}`]),
+  ].join(' ');
 }
 
 /** Exit codes: 0 done, 1 failed or refused, 2 stopped between stores (market hours began). */
@@ -2708,11 +2868,19 @@ async function run(opts: RecomputeOptions): Promise<number> {
       `elapsed ${Math.round((Date.now() - startedAt) / 1000)}s`,
     ],
     controlProblems,
-    applyCommands(opts, plans),
+    applyCommand(opts, plans),
   );
   console.log(`\n${report}`);
   writeFileSync(join(opts.workDir, 'report.txt'), `${report}\n`);
   console.log(`\nreport: ${join(opts.workDir, 'report.txt')}`);
+  const mergeDetail =
+    plans.snapshots?.symbols.flatMap((r) => r.mergeState?.detail ?? []) ?? [];
+  if (mergeDetail.length > 0) {
+    writeFileSync(
+      join(opts.workDir, 'merge-state.txt'),
+      `${mergeDetail.join('\n')}\n`,
+    );
+  }
   if (!opts.apply) return 0;
 
   // Refuse before any marker, backup or write: the totals must be the approved
