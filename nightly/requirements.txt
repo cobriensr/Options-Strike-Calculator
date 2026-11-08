@@ -6,3 +6,9 @@ pydantic>=2.7,<3
 pydantic-settings>=2.3,<3
 # Unconditional: ZoneInfo needs the IANA database, which python:3.12-slim lacks.
 tzdata>=2024.1
+# The shared enrich scripts (scripts/enrich_*_outcomes.py) import these. Each floor is the
+# ml/requirements.txt pin those scripts are tested on; pyarrow is pandas' parquet engine.
+pandas>=3.0.2,<3.1
+numpy>=2.4.4,<2.5
+pyarrow>=23.0.1,<24
+psycopg2-binary>=2.9.11,<2.10

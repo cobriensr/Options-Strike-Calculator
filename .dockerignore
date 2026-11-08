@@ -34,6 +34,17 @@ e2e/
 playwright-report/
 test-results/
 scripts/
+# The nightly image (nightly/Dockerfile, repo-root context) copies five of these
+# files. Same three steps as src/data above: re-admit the directory, ignore its
+# contents, then re-admit each file. Keep that order. A COPY of an ignored path
+# fails the build. IMAGE_FILES in nightly/tests/test_image_layout.py lists the files.
+!scripts/
+scripts/*
+!scripts/_tape_reader.py
+!scripts/_cli_paths.py
+!scripts/_pipeline_retry.py
+!scripts/enrich_lottery_outcomes.py
+!scripts/enrich_silent_boom_outcomes.py
 
 # Sidecar service (separate Railway service, own Dockerfile)
 sidecar/
