@@ -40,6 +40,7 @@
  *
  * `insertContractVolumes` and `insertFrontMonthRows` are the bulk inserts
  * the history seed (Phase 3) uses. They write `source = 'candles'`.
+ * `fetchStoredFrontMonths` is its read of the decisions already stored.
  *
  * The HTTP driver returns BIGINT as a string and DATE as a JS `Date`.
  * Volumes are read as `float8` (exact below 2^53) and dates are only ever
@@ -68,8 +69,12 @@ const ATTEMPT_TIMEOUT_MS = 10_000;
 
 const TRADE_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
-/** Throws unless `tradeDate` is a real calendar date, `YYYY-MM-DD`. */
-function assertTradeDate(tradeDate: string): void {
+/**
+ * Throws unless `tradeDate` is a real calendar date, `YYYY-MM-DD`. `caller`,
+ * when given, starts the message: the function, and the argument if it has
+ * more than one date.
+ */
+function assertTradeDate(tradeDate: string, caller?: string): void {
   const ms = TRADE_DATE.test(tradeDate)
     ? Date.parse(`${tradeDate}T00:00:00Z`)
     : Number.NaN;
@@ -77,8 +82,9 @@ function assertTradeDate(tradeDate: string): void {
     Number.isNaN(ms) ||
     new Date(ms).toISOString().slice(0, 10) !== tradeDate
   ) {
+    const prefix = caller == null ? '' : `${caller}: `;
     throw new Error(
-      `Invalid trade date ${JSON.stringify(tradeDate)}: expected a calendar date as YYYY-MM-DD`,
+      `${prefix}Invalid trade date ${JSON.stringify(tradeDate)}: expected a calendar date as YYYY-MM-DD`,
     );
   }
 }
@@ -393,6 +399,60 @@ export async function fetchFrontMonthSchedule(
     contractFor: (tradeDate) => byDate.get(tradeDate),
     contracts: [...contracts],
   };
+}
+
+/**
+ * The decisions stored for `product` from `fromDate` to `toDate`, both
+ * included, as trade date (`YYYY-MM-DD`) → canonical contract, oldest first,
+ * in one query. The history seed reads what is already decided before it
+ * decides the rest. A date with no row is absent from the map. A stored name
+ * is returned canonical (`ESZ26` as `ESZ6`), as `decideFrontMonth` reads its
+ * incumbent; one that is no outright of the product throws, naming the date
+ * and the name: the table is only written by this rule, so a bad row is
+ * corrupt (fail, don't guess).
+ *
+ * Throws, before any query, on a date that is not a real calendar date and
+ * on `fromDate` after `toDate`. `toDate` may be after the current trade
+ * date: this only reads, and no row can be stored there. Database errors
+ * propagate (transient ones after `withDbRetry`'s retries).
+ */
+export async function fetchStoredFrontMonths(
+  product: FuturesRoot,
+  fromDate: string,
+  toDate: string,
+): Promise<Map<string, string>> {
+  assertTradeDate(fromDate, 'fetchStoredFrontMonths fromDate');
+  assertTradeDate(toDate, 'fetchStoredFrontMonths toDate');
+  if (fromDate > toDate) {
+    throw new Error(
+      `fetchStoredFrontMonths: ${product} fromDate ${fromDate} is after toDate ${toDate}`,
+    );
+  }
+
+  const sql = getDb();
+  const rows = (await withDbRetry(
+    () => sql`
+      SELECT trade_date::text AS trade_date, contract
+      FROM futures_front_month
+      WHERE product = ${product}
+        AND trade_date BETWEEN ${fromDate}::date AND ${toDate}::date
+      ORDER BY trade_date
+    `,
+    RETRIES,
+    ATTEMPT_TIMEOUT_MS,
+  )) as Array<{ trade_date: string; contract: string }>;
+
+  const stored = new Map<string, string>();
+  for (const r of rows) {
+    const contract = canonicalContract(product, r.contract, r.trade_date);
+    if (contract == null) {
+      throw new Error(
+        `fetchStoredFrontMonths: ${product} front month stored for ${r.trade_date}, ${JSON.stringify(r.contract)}, is not an outright ${product} contract`,
+      );
+    }
+    stored.set(r.trade_date, contract);
+  }
+  return stored;
 }
 
 /** Throws unless `contract` is `product`'s canonical name on `tradeDate`. */

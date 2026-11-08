@@ -100,6 +100,7 @@ import { TransientDbError } from '../_lib/db.js';
 import {
   ensureFrontMonth,
   fetchFrontMonthSchedule,
+  fetchStoredFrontMonths,
   insertContractVolumes,
   insertFrontMonthRows,
 } from '../_lib/futures-front-month.js';
@@ -113,6 +114,7 @@ const NOW = '2026-11-10T15:00:00.000Z';
 const STORED_READ =
   /FROM futures_front_month\s+WHERE product = \$1 AND trade_date = \$2::date/;
 const INPUTS_READ = /UNION ALL/;
+const RANGE_READ = /trade_date BETWEEN \$2::date AND \$3::date/;
 const FRONT_INSERT = /INSERT INTO futures_front_month/;
 const VOLUME_INSERT = /INSERT INTO futures_contract_volume/;
 
@@ -889,6 +891,247 @@ describe('fetchFrontMonthSchedule', () => {
 
     expect(count(FRONT_INSERT)).toBe(0);
     expect(await frontRows()).toEqual([]);
+  });
+});
+
+// ── fetchStoredFrontMonths ────────────────────────────────
+
+describe('fetchStoredFrontMonths', () => {
+  it('returns the decisions from the first date to the last, both included, as trade date → contract in date order, with the dates as text', async () => {
+    await putFront('ES', '2026-11-02', 'ESZ6');
+    await putFront('ES', '2026-11-05', 'ESH7');
+    await putFront('ES', '2026-11-03', 'ESZ6');
+    await putFront('ES', '2026-11-04', 'ESZ6');
+    await putFront('ES', '2026-11-06', 'ESH7');
+
+    const stored = await fetchStoredFrontMonths(
+      'ES',
+      '2026-11-03',
+      '2026-11-05',
+    );
+
+    // 11-02 and 11-06 sit one day outside, 11-03 and 11-05 on the bounds.
+    expect([...stored]).toEqual([
+      ['2026-11-03', 'ESZ6'],
+      ['2026-11-04', 'ESZ6'],
+      ['2026-11-05', 'ESH7'],
+    ]);
+  });
+
+  it('returns the dates oldest first even when the rows are read in the order they were stored', async () => {
+    await putFront('ES', '2026-11-05', 'ESH7');
+    await putFront('ES', '2026-11-03', 'ESZ6');
+    await putFront('ES', '2026-11-04', 'ESZ6');
+    // Postgres reads this range through the primary-key index, whose order
+    // would hide a missing ORDER BY. A sequential scan returns the heap.
+    await db.exec('SET enable_indexscan = off; SET enable_bitmapscan = off');
+    try {
+      const stored = await fetchStoredFrontMonths(
+        'ES',
+        '2026-11-03',
+        '2026-11-05',
+      );
+
+      expect([...stored.keys()]).toEqual([
+        '2026-11-03',
+        '2026-11-04',
+        '2026-11-05',
+      ]);
+    } finally {
+      await db.exec('RESET enable_indexscan; RESET enable_bitmapscan');
+    }
+  });
+
+  it('with the same first and last date returns that one day', async () => {
+    await putFront('ES', '2026-11-04', 'ESZ6');
+    await putFront('ES', '2026-11-05', 'ESH7');
+
+    const stored = await fetchStoredFrontMonths(
+      'ES',
+      '2026-11-05',
+      '2026-11-05',
+    );
+
+    expect([...stored]).toEqual([['2026-11-05', 'ESH7']]);
+  });
+
+  it('leaves out the rows of every other product, on the same dates too', async () => {
+    await putFront('ES', '2026-11-04', 'ESZ6');
+    await putFront('NQ', '2026-11-04', 'NQH7');
+    await putFront('NQ', '2026-11-05', 'NQH7');
+    await putFront('CL', '2026-11-05', 'CLZ6');
+
+    const stored = await fetchStoredFrontMonths(
+      'ES',
+      '2026-11-01',
+      '2026-11-09',
+    );
+
+    expect([...stored]).toEqual([['2026-11-04', 'ESZ6']]);
+  });
+
+  it('answers an empty map when nothing is stored in the range', async () => {
+    await putFront('ES', '2026-11-02', 'ESZ6');
+
+    const stored = await fetchStoredFrontMonths(
+      'ES',
+      '2026-11-03',
+      '2026-11-09',
+    );
+
+    expect(stored.size).toBe(0);
+  });
+
+  it('is one query, with the dates bound and not spliced into the text', async () => {
+    await putFront('ES', '2026-11-04', 'ESZ6');
+
+    await fetchStoredFrontMonths('ES', '2026-11-03', '2026-11-05');
+
+    expect(pg.queries).toHaveLength(1);
+    expect(pg.calls[0]!.values).toEqual(['ES', '2026-11-03', '2026-11-05']);
+  });
+
+  it('returns a stored two-digit spelling under its canonical name, as the decision does', async () => {
+    await putFront('ES', '2026-11-04', 'ESZ26');
+
+    const stored = await fetchStoredFrontMonths(
+      'ES',
+      '2026-11-04',
+      '2026-11-04',
+    );
+
+    expect([...stored]).toEqual([['2026-11-04', 'ESZ6']]);
+  });
+
+  it('does not refuse a last date after the current trade date: it reads, and nothing there is stored', async () => {
+    await putFront('ES', '2026-11-09', 'ESZ6');
+
+    const stored = await fetchStoredFrontMonths(
+      'ES',
+      '2026-11-09',
+      '2026-12-31',
+    );
+
+    expect([...stored]).toEqual([['2026-11-09', 'ESZ6']]);
+  });
+
+  it.each([
+    ['another root', 'NQZ6'],
+    ['a spread', 'ESZ6-ESH7'],
+    ['a bare root', 'ES'],
+    ['a two-digit year outside the window', 'ESZ36'],
+    ['an empty name', ''],
+  ])(
+    'throws on a stored row that is %s, naming the product, the date and the contract, and returns none of the rows',
+    async (_what, contract) => {
+      await putFront('ES', '2026-11-03', 'ESZ6');
+      await putFront('ES', '2026-11-04', contract);
+      await putFront('ES', '2026-11-05', 'ESZ6');
+
+      await expect(
+        fetchStoredFrontMonths('ES', '2026-11-03', '2026-11-05'),
+      ).rejects.toThrow(
+        new RegExp(
+          `fetchStoredFrontMonths.*ES.*2026-11-04.*${JSON.stringify(contract)}`,
+        ),
+      );
+    },
+  );
+
+  it('does not read a corrupt row of another product, or one outside the range', async () => {
+    await putFront('NQ', '2026-11-04', 'ESZ6');
+    await putFront('ES', '2026-11-02', 'NQZ6');
+    await putFront('ES', '2026-11-04', 'ESZ6');
+
+    const stored = await fetchStoredFrontMonths(
+      'ES',
+      '2026-11-03',
+      '2026-11-05',
+    );
+
+    expect([...stored]).toEqual([['2026-11-04', 'ESZ6']]);
+  });
+
+  it.each(['2026-11-5', '', '2026-13-01', '2026-02-30', 'tomorrow'])(
+    'rejects the malformed date %j in either position, naming the function and the position, before any query',
+    async (bad) => {
+      await expect(
+        fetchStoredFrontMonths('ES', bad, '2026-11-05'),
+      ).rejects.toThrow(/fetchStoredFrontMonths fromDate.*trade date/);
+      await expect(
+        fetchStoredFrontMonths('ES', '2026-11-03', bad),
+      ).rejects.toThrow(/fetchStoredFrontMonths toDate.*trade date/);
+
+      expect(pg.queries).toEqual([]);
+    },
+  );
+
+  it('rejects a first date after the last one, naming the product and both, before any query', async () => {
+    await expect(
+      fetchStoredFrontMonths('ES', '2026-11-06', '2026-11-05'),
+    ).rejects.toThrow(/fetchStoredFrontMonths.*ES.*2026-11-06.*2026-11-05/);
+
+    expect(pg.queries).toEqual([]);
+  });
+
+  it('rejects with the database error, after one statement: a genuine error is not retried', async () => {
+    pg.fail = {
+      match: RANGE_READ,
+      error: new Error('connection lost'),
+      times: 1,
+    };
+
+    await expect(
+      fetchStoredFrontMonths('ES', '2026-11-03', '2026-11-05'),
+    ).rejects.toThrow('connection lost');
+
+    expect(pg.queries).toHaveLength(1);
+  });
+
+  it('retries a transient failure once and still answers', async () => {
+    await putFront('ES', '2026-11-04', 'ESZ6');
+    pg.fail = {
+      match: RANGE_READ,
+      error: new Error('fetch failed'),
+      times: 1,
+    };
+
+    const stored = await fetchStoredFrontMonths(
+      'ES',
+      '2026-11-03',
+      '2026-11-05',
+    );
+
+    expect([...stored]).toEqual([['2026-11-04', 'ESZ6']]);
+    expect(count(RANGE_READ)).toBe(2);
+  });
+
+  it('gives up after the retries on a transient error that never clears: the TransientDbError reaches the caller', async () => {
+    // Real backoff is 1 s then 2 s; fake the timers so the test does not wait.
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout'] });
+    vi.setSystemTime(new Date(NOW));
+    pg.fail = {
+      match: RANGE_READ,
+      error: new Error('fetch failed'),
+      times: 99,
+    };
+
+    const outcome = fetchStoredFrontMonths(
+      'ES',
+      '2026-11-03',
+      '2026-11-05',
+    ).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    const err = await outcome;
+    vi.useRealTimers();
+
+    expect(err).toBeInstanceOf(TransientDbError);
+    expect(err).toMatchObject({ message: 'fetch failed' });
+    expect(count(RANGE_READ)).toBe(3);
   });
 });
 
