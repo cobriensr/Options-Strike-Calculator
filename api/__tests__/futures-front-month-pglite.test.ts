@@ -31,8 +31,18 @@ const { pg, mockWarn } = vi.hoisted(() => ({
   pg: {
     db: null as PGlite | null,
     queries: [] as string[],
-    /** Reject the next `times` statements whose text matches. */
-    fail: null as { match: RegExp; error: Error; times: number } | null,
+    /** Every statement with its bound values, in order. */
+    calls: [] as Array<{ text: string; values: unknown[] }>,
+    /**
+     * Reject the next `times` statements whose text matches, after letting
+     * `skip` of them through.
+     */
+    fail: null as {
+      match: RegExp;
+      error: Error;
+      times: number;
+      skip?: number;
+    } | null,
     /** Run `run` before the statement that matches, after `skip` matches. */
     before: null as {
       match: RegExp;
@@ -52,6 +62,7 @@ vi.mock('../_lib/db.js', async () => {
       (strings: TemplateStringsArray, ...values: unknown[]) => {
         const text = strings.reduce((acc, s, i) => `${acc}$${i}${s}`);
         pg.queries.push(text);
+        pg.calls.push({ text, values });
         return (async () => {
           const { before } = pg;
           if (before?.match.test(text)) {
@@ -64,9 +75,13 @@ vi.mock('../_lib/db.js', async () => {
           }
           // Read after the hook: it may arm a failure for this statement.
           const { fail } = pg;
-          if (fail?.match.test(text) && fail.times > 0) {
-            fail.times -= 1;
-            throw fail.error;
+          if (fail?.match.test(text)) {
+            if (fail.skip != null && fail.skip > 0) {
+              fail.skip -= 1;
+            } else if (fail.times > 0) {
+              fail.times -= 1;
+              throw fail.error;
+            }
           }
           return (await pg.db!.query(text, values)).rows;
         })();
@@ -81,6 +96,7 @@ vi.mock('../_lib/logger.js', () => ({
   default: { warn: mockWarn, info: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+import { TransientDbError } from '../_lib/db.js';
 import {
   ensureFrontMonth,
   fetchFrontMonthSchedule,
@@ -116,6 +132,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await db.exec('TRUNCATE futures_contract_volume, futures_front_month');
   pg.queries = [];
+  pg.calls = [];
   pg.fail = null;
   pg.before = null;
   mockWarn.mockClear();
@@ -184,6 +201,10 @@ async function volumeRows() {
 }
 
 const count = (re: RegExp) => pg.queries.filter((q) => re.test(q)).length;
+
+/** Trade dates of the `ensureFrontMonth` inserts, in the order they ran. */
+const insertedDates = () =>
+  pg.calls.filter((c) => FRONT_INSERT.test(c.text)).map((c) => c.values[1]);
 
 // ── ensureFrontMonth ──────────────────────────────────────
 
@@ -284,13 +305,21 @@ describe('ensureFrontMonth', () => {
   it('only reads its own product', async () => {
     await putFront('ES', '2026-11-05', 'ESZ6');
     await putVolumes('ES', '2026-11-05', { ESZ6: 100, ESH7: 900 });
-    // Newer rows of another product must not become ES's input.
+    // Rows of another product must not become ES's incumbent, volume, a
+    // session to fill, or the ceiling after it.
     await putFront('NQ', '2026-11-06', 'NQH7');
     await putVolumes('NQ', '2026-11-06', { NQZ6: 9999 });
+    await putFront('NQ', '2026-11-10', 'NQZ6');
 
     await expect(ensureFrontMonth('ES', '2026-11-09', 'cron')).resolves.toBe(
       'ESH7',
     );
+
+    expect(
+      (await frontRows())
+        .filter((r) => r.product === 'ES')
+        .map((r) => r.trade_date),
+    ).toEqual(['2026-11-05', '2026-11-09']);
   });
 
   it('with no rows at all returns the cycle seed, stores it, and warns once, naming the root and the date', async () => {
@@ -376,6 +405,208 @@ describe('ensureFrontMonth', () => {
   });
 });
 
+describe('ensureFrontMonth: the series only moves forward, whatever order dates are decided in', () => {
+  it('a lone date over an undecided gap decides the gap first, oldest first, under the caller’s source; a date with no volume rows gets no row', async () => {
+    await putFront('ES', '2026-11-03', 'ESZ6');
+    // The incumbent's own date is not decided again.
+    await putVolumes('ES', '2026-11-03', { ESZ6: 100, ESH7: 900 });
+    // Written out of date order on purpose.
+    await putVolumes('ES', '2026-11-06', { ESZ6: 900, ESH7: 100 });
+    await putVolumes('ES', '2026-11-04', { ESZ6: 100, ESH7: 50 });
+    await putVolumes('ES', '2026-11-05', { ESZ6: 900, ESH7: 100 });
+
+    // 11-09 alone would see ESZ6 as the incumbent and as the leader on 11-06,
+    // and say ESZ6. Rolled in order, 11-04 follows 11-03's lead to ESH7 and
+    // nothing rolls back.
+    await expect(ensureFrontMonth('ES', '2026-11-09', 'script')).resolves.toBe(
+      'ESH7',
+    );
+
+    expect(
+      (await frontRows()).map((r) => [r.trade_date, r.contract, r.source]),
+    ).toEqual([
+      ['2026-11-03', 'ESZ6', 'live'],
+      ['2026-11-04', 'ESH7', 'script'],
+      ['2026-11-05', 'ESH7', 'script'],
+      ['2026-11-06', 'ESH7', 'script'],
+      ['2026-11-09', 'ESH7', 'script'],
+    ]);
+    expect(insertedDates()).toEqual([
+      '2026-11-04',
+      '2026-11-05',
+      '2026-11-06',
+      '2026-11-09',
+    ]);
+  });
+
+  it('stays forward-only when a date is decided before the one just before it: the later date fills the gap, and the earlier one is then already stored', async () => {
+    await putFront('ES', '2026-11-03', 'ESZ6');
+    await putVolumes('ES', '2026-11-04', { ESZ6: 100, ESH7: 900 });
+    await putVolumes('ES', '2026-11-05', { ESZ6: 900, ESH7: 100 });
+
+    // Without the gap, 11-06 would be ESZ6 (the leader on 11-05) and 11-05
+    // would then roll to ESH7 behind it.
+    await expect(ensureFrontMonth('ES', '2026-11-06', 'cron')).resolves.toBe(
+      'ESH7',
+    );
+    pg.queries = [];
+    await expect(ensureFrontMonth('ES', '2026-11-05', 'script')).resolves.toBe(
+      'ESH7',
+    );
+
+    expect(pg.queries).toHaveLength(1);
+    expect(
+      (await frontRows()).map((r) => [r.trade_date, r.contract, r.source]),
+    ).toEqual([
+      ['2026-11-03', 'ESZ6', 'live'],
+      ['2026-11-04', 'ESZ6', 'cron'],
+      ['2026-11-05', 'ESH7', 'cron'],
+      ['2026-11-06', 'ESH7', 'cron'],
+    ]);
+  });
+
+  it('with no earlier decision there is nothing to fill from: only the date itself is decided, never the volume history', async () => {
+    await putVolumes('ES', '2026-11-03', { ESZ6: 100, ESH7: 900 });
+    await putVolumes('ES', '2026-11-04', { ESZ6: 900, ESH7: 100 });
+
+    await expect(ensureFrontMonth('ES', '2026-11-06', 'cron')).resolves.toBe(
+      'ESZ6',
+    );
+
+    expect((await frontRows()).map((r) => r.trade_date)).toEqual([
+      '2026-11-06',
+    ]);
+    expect(mockWarn).not.toHaveBeenCalled();
+  });
+
+  it('a miss with nothing to fill and nothing to clamp is four statements: the stored read, the inputs, the insert and the re-read', async () => {
+    await putFront('ES', '2026-11-05', 'ESZ6');
+    await putVolumes('ES', '2026-11-05', { ESZ6: 500, ESH7: 900 });
+
+    await ensureFrontMonth('ES', '2026-11-06', 'cron');
+
+    expect(pg.queries).toHaveLength(4);
+  });
+
+  it('an old date decided after a later row never exceeds that row: it takes the next stored decision, the earliest one, and warns', async () => {
+    await putFront('ES', '2026-11-03', 'ESZ6');
+    await putFront('ES', '2026-11-09', 'ESZ6');
+    await putFront('ES', '2026-11-10', 'ESH7');
+    await putVolumes('ES', '2026-11-04', { ESZ6: 100, ESH7: 900 });
+
+    // The tally wants ESH7, which expires after the ESZ6 stored for 11-09.
+    await expect(ensureFrontMonth('ES', '2026-11-05', 'script')).resolves.toBe(
+      'ESZ6',
+    );
+
+    expect((await frontRows()).map((r) => [r.trade_date, r.contract])).toEqual([
+      ['2026-11-03', 'ESZ6'],
+      ['2026-11-04', 'ESZ6'],
+      ['2026-11-05', 'ESZ6'],
+      ['2026-11-09', 'ESZ6'],
+      ['2026-11-10', 'ESH7'],
+    ]);
+    expect(mockWarn).toHaveBeenCalledTimes(1);
+    expect(mockWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        product: 'ES',
+        tradeDate: '2026-11-05',
+        wanted: 'ESH7',
+        ceiling: 'ESZ6',
+      }),
+      expect.any(String),
+    );
+  });
+
+  it.each(['ESH7', 'ESM7'])(
+    'does not clamp, or warn, when the next stored decision (%s) is not before the wanted ESH7',
+    async (ceiling) => {
+      await putFront('ES', '2026-11-03', 'ESZ6');
+      await putFront('ES', '2026-11-09', ceiling);
+      await putVolumes('ES', '2026-11-04', { ESZ6: 100, ESH7: 900 });
+
+      await expect(ensureFrontMonth('ES', '2026-11-05', 'cron')).resolves.toBe(
+        'ESH7',
+      );
+
+      expect(mockWarn).not.toHaveBeenCalled();
+    },
+  );
+
+  it('volume rows that land after a later date was decided cannot make an earlier date roll past it', async () => {
+    await putFront('ES', '2026-11-03', 'ESZ6');
+    await putVolumes('ES', '2026-11-05', { ESZ6: 900, ESH7: 100 });
+    await expect(ensureFrontMonth('ES', '2026-11-06', 'cron')).resolves.toBe(
+      'ESZ6',
+    );
+
+    // 11-03's candle volume lands late, with ESH7 in the lead: 11-04 would
+    // roll, and 11-05 and 11-06 are already ESZ6.
+    await putVolumes('ES', '2026-11-03', { ESZ6: 100, ESH7: 900 });
+    await expect(ensureFrontMonth('ES', '2026-11-04', 'script')).resolves.toBe(
+      'ESZ6',
+    );
+
+    expect((await frontRows()).map((r) => [r.trade_date, r.contract])).toEqual([
+      ['2026-11-03', 'ESZ6'],
+      ['2026-11-04', 'ESZ6'],
+      ['2026-11-05', 'ESZ6'],
+      ['2026-11-06', 'ESZ6'],
+    ]);
+    expect(mockWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tradeDate: '2026-11-04',
+        wanted: 'ESH7',
+        ceiling: 'ESZ6',
+      }),
+      expect.any(String),
+    );
+  });
+
+  it('throws, naming the next stored decision, when it is not an outright of the root, and writes nothing', async () => {
+    await putFront('ES', '2026-11-03', 'ESZ6');
+    await putFront('ES', '2026-11-09', 'NQZ6');
+
+    await expect(ensureFrontMonth('ES', '2026-11-05', 'cron')).rejects.toThrow(
+      /next stored decision.*NQZ6/,
+    );
+
+    expect(count(FRONT_INSERT)).toBe(0);
+  });
+
+  it('rejects with the database error when the fill fails part-way: the dates written stay, the date asked for is not decided, and a retry finishes', async () => {
+    await putFront('ES', '2026-11-03', 'ESZ6');
+    await putVolumes('ES', '2026-11-04', { ESZ6: 100, ESH7: 900 });
+    await putVolumes('ES', '2026-11-05', { ESZ6: 900, ESH7: 100 });
+    // Inputs reads, in order: 11-06, 11-04, 11-05. Fail the third.
+    pg.fail = {
+      match: INPUTS_READ,
+      error: new Error('connection lost'),
+      times: 1,
+      skip: 2,
+    };
+
+    await expect(ensureFrontMonth('ES', '2026-11-06', 'cron')).rejects.toThrow(
+      'connection lost',
+    );
+
+    expect((await frontRows()).map((r) => r.trade_date)).toEqual([
+      '2026-11-03',
+      '2026-11-04',
+    ]);
+
+    await expect(ensureFrontMonth('ES', '2026-11-06', 'cron')).resolves.toBe(
+      'ESH7',
+    );
+    expect((await frontRows()).map((r) => r.trade_date)).toEqual([
+      '2026-11-03',
+      '2026-11-04',
+      '2026-11-05',
+      '2026-11-06',
+    ]);
+  });
+});
+
 describe('ensureFrontMonth: when the database fails', () => {
   const boom = new Error('connection lost');
 
@@ -433,6 +664,32 @@ describe('ensureFrontMonth: when the database fails', () => {
       expect(await frontRows()).toHaveLength(1);
     },
   );
+
+  it('gives up after the retries on a transient error that never clears: the TransientDbError reaches the caller and nothing is decided', async () => {
+    // Real backoff is 1 s then 2 s; fake the timers so the test does not wait.
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout'] });
+    vi.setSystemTime(new Date(NOW));
+    pg.fail = {
+      match: STORED_READ,
+      error: new Error('fetch failed'),
+      times: 99,
+    };
+
+    const outcome = ensureFrontMonth('ES', '2026-11-05', 'cron').then(
+      () => null,
+      (err: unknown) => err,
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    const err = await outcome;
+    vi.useRealTimers();
+
+    expect(err).toBeInstanceOf(TransientDbError);
+    expect(err).toMatchObject({ message: 'fetch failed' });
+    expect(count(STORED_READ)).toBe(3);
+    expect(count(INPUTS_READ)).toBe(0);
+    expect(await frontRows()).toEqual([]);
+  });
 
   it('lets the row that is stored win a race: another writer inserts after the inputs are read, and every caller gets its answer', async () => {
     // This writer would decide the seed, ESZ6. The other one, a uw-stream
@@ -498,19 +755,20 @@ describe('fetchFrontMonthSchedule', () => {
     ]);
   });
 
-  it('decides in date order whatever order the dates come in, so the series never steps back', async () => {
+  it('decides the missing dates oldest first, whatever order they come in, and the series is forward-only', async () => {
     await putFront('ES', '2026-11-04', 'ESZ6');
     await putVolumes('ES', '2026-11-04', { ESZ6: 100, ESH7: 900 });
     await putVolumes('ES', '2026-11-05', { ESZ6: 900, ESH7: 100 });
 
-    // Newest first: decided that way, 11-09 would see only 11-04's front
-    // and 11-05's tally and fall back to ESZ6 after 11-05 rolled.
+    // Newest first: 11-09 would fill 11-05 and decide itself before the
+    // dates between are asked for. In order, each starts from the one before.
     const schedule = await fetchFrontMonthSchedule(
       'ES',
       ['2026-11-09', '2026-11-06', '2026-11-05'],
       'cron',
     );
 
+    expect(insertedDates()).toEqual(['2026-11-05', '2026-11-06', '2026-11-09']);
     expect(
       ['2026-11-05', '2026-11-06', '2026-11-09'].map(schedule.contractFor),
     ).toEqual(['ESH7', 'ESH7', 'ESH7']);
@@ -688,7 +946,7 @@ describe('insertContractVolumes', () => {
 
   it('inserts in 500-row statements', async () => {
     const day = (i: number) =>
-      new Date(Date.UTC(2026, 0, 1 + i)).toISOString().slice(0, 10);
+      new Date(Date.UTC(2020, 0, 1 + i)).toISOString().slice(0, 10);
     const rows = Array.from({ length: 1201 }, (_, i) =>
       row({ tradeDate: day(i), volume: i }),
     );
@@ -733,9 +991,42 @@ describe('insertContractVolumes', () => {
     },
   );
 
+  it.each([
+    ['the current trade date', '2026-11-10'],
+    ['a later one', '2026-11-11'],
+  ])(
+    'rejects %s, naming it, and writes none of the rows: a session still running has only partial volume',
+    async (_what, tradeDate) => {
+      await expect(
+        insertContractVolumes([
+          row({ tradeDate: '2026-11-09' }),
+          row({ tradeDate }),
+        ]),
+      ).rejects.toThrow(
+        new RegExp(`${tradeDate}.*current trade date 2026-11-10`),
+      );
+
+      expect(pg.queries).toEqual([]);
+    },
+  );
+
+  it('takes the current trade date from the 17:00 CT open, not the UTC date', async () => {
+    // 22:59Z is 16:59 CST: 11-10 is still running.
+    vi.setSystemTime(new Date('2026-11-10T22:59:00.000Z'));
+    await expect(
+      insertContractVolumes([row({ tradeDate: '2026-11-10' })]),
+    ).rejects.toThrow(/2026-11-10.*current trade date 2026-11-10/);
+
+    // 23:00Z is the open of 11-11: 11-10 is over.
+    vi.setSystemTime(new Date('2026-11-10T23:00:00.000Z'));
+    await expect(
+      insertContractVolumes([row({ tradeDate: '2026-11-10' })]),
+    ).resolves.toBe(1);
+  });
+
   it('rejects with the database error, and a later batch is not attempted', async () => {
     const day = (i: number) =>
-      new Date(Date.UTC(2026, 0, 1 + i)).toISOString().slice(0, 10);
+      new Date(Date.UTC(2020, 0, 1 + i)).toISOString().slice(0, 10);
     const rows = Array.from({ length: 600 }, (_, i) =>
       row({ tradeDate: day(i) }),
     );
@@ -763,6 +1054,29 @@ describe('insertContractVolumes', () => {
     await expect(insertContractVolumes([row()])).resolves.toBe(1);
 
     expect(count(VOLUME_INSERT)).toBe(2);
+  });
+
+  it('gives up after the retries on a transient error that never clears: the TransientDbError reaches the caller', async () => {
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout'] });
+    vi.setSystemTime(new Date(NOW));
+    pg.fail = {
+      match: VOLUME_INSERT,
+      error: new Error('fetch failed'),
+      times: 99,
+    };
+
+    const outcome = insertContractVolumes([row()]).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    const err = await outcome;
+    vi.useRealTimers();
+
+    expect(err).toBeInstanceOf(TransientDbError);
+    expect(count(VOLUME_INSERT)).toBe(3);
+    expect(await volumeRows()).toEqual([]);
   });
 });
 
