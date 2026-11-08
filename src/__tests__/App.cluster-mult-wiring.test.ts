@@ -56,6 +56,15 @@ describe('App cluster multiplier wiring', () => {
     }
   });
 
+  it("gives the pre-market gap preview the resolved yesterday's close, and re-renders on it", () => {
+    // A past date's Globex close must not meet today's prior close.
+    const preview = /<PreMarketInput([\s\S]*?)\/>/.exec(appCode);
+    if (!preview) throw new Error('Could not locate <PreMarketInput>');
+    expect(preview[1]).toContain('prevClose={yesterday?.close}');
+    // The panel map is memoized: its deps must carry the resolved value.
+    expect(appCode).toMatch(/\n\s+yesterday,\s*\n\s*\],\s*\n\s*\);/);
+  });
+
   it('scopes the owner edit to the selected date', () => {
     expect(callArgs('useClusterMultiplier')).toContain(
       'scope: vix.selectedDate',

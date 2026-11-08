@@ -155,7 +155,11 @@ interface HookInputs {
   liveVvix: number | undefined;
   liveOpeningRange: { high: number; low: number } | undefined;
 
-  // Yesterday's SPX OHLC for RV/IV and clustering (live mode)
+  // Yesterday's SPX OHLC for RV/IV and the cluster tilt. The names say "live"
+  // but App passes the one resolved value (resolveYesterday): the history
+  // snapshot's previous day, else the live feed's on today only, else absent
+  // (a past date never gets today's). The hooks below still prefer the
+  // snapshot's own when it has one.
   liveYesterdayHigh?: number;
   liveYesterdayLow?: number;
   liveYesterdayOpen?: number;

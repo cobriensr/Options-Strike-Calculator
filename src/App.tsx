@@ -528,12 +528,13 @@ export default function StrikeCalculator() {
   const analysisIsBacktest = isPastETDate(vix.selectedDate, etToday);
 
   // Yesterday's SPX OHLC, resolved once for everything that reads it: the
-  // cluster multiplier below, its put/call tilt (useRegimeClassification) and
-  // the range analysis, so they cannot disagree. The history snapshot's own
-  // previous day; without one, the live feed's only on today. A past date
-  // whose history is loading, has no candle for the slot, or has no
-  // previousDay gets null, never today's yesterday (the signals hooks'
-  // `liveYesterday*` inputs below carry this resolved value).
+  // cluster multiplier below, its put/call tilt (useRegimeClassification), the
+  // range analysis and the pre-market gap preview's prior close, so they
+  // cannot disagree. The history snapshot's own previous day; without one,
+  // the live feed's only on today. A past date whose history is loading, has
+  // no candle for the slot, or has no previousDay gets null, never today's
+  // yesterday (the signals hooks' `liveYesterday*` inputs below carry this
+  // resolved value).
   const yesterday = resolveYesterday(
     historySnapshot?.yesterday,
     market.data.yesterday?.yesterday,
@@ -889,7 +890,7 @@ export default function StrikeCalculator() {
                 <PreMarketInput
                   date={vix.selectedDate}
                   spxPrice={results?.spot}
-                  prevClose={market.data.yesterday?.yesterday?.close}
+                  prevClose={yesterday?.close}
                 />
               )}
             </>
@@ -1483,6 +1484,7 @@ export default function StrikeCalculator() {
       vix.vixOHLCField,
       vixInput,
       wingWidth,
+      yesterday,
     ],
   );
 
