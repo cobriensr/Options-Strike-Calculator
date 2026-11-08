@@ -68,11 +68,40 @@ export interface BulkUpsertOptions<T extends Record<string, unknown>> {
   conflictUpdateColumns?: readonly (keyof T & string)[];
   /** Override chunk size. Default: BULK_UPSERT_DEFAULT_CHUNK_SIZE. */
   chunkSize?: number;
+  /**
+   * Opt-in revision log (spec P0.9, docs/superpowers/specs/live-data-integrity-2026-11-06.md).
+   * Each chunk becomes ONE statement: the upsert, a guard that rewrites a
+   * conflicting row only when one of the `conflictUpdateColumns` differs, and
+   * an INSERT of every inserted or changed row into `table` with `writer` and
+   * `is_first` (true when this write inserted the row). A row that already
+   * holds these values is neither rewritten nor logged. The log table must have
+   * every column in `columns` with the same type, plus `writer TEXT` and
+   * `is_first BOOLEAN`. A failed log insert fails the statement, so the data
+   * table never changes without its revision. Unset: no behavior change.
+   */
+  revisionLog?: RevisionLogOptions;
+}
+
+export interface RevisionLogOptions {
+  /** Log table name (a trusted constant; checked as a bare identifier). */
+  table: string;
+  /** Who is writing: the cron or script name, stored on every revision. */
+  writer: string;
 }
 
 export interface BulkUpsertResult {
   /** Number of rows passed in (NOT the number of conflicts resolved). */
   rows: number;
+}
+
+/** What a `revisionLog` run did, counted from the rows the log insert returned. */
+export interface LoggedBulkUpsertResult extends BulkUpsertResult {
+  /** Rows that did not exist and were inserted (logged with is_first). */
+  inserted: number;
+  /** Existing rows whose update columns differed and were rewritten (logged). */
+  updated: number;
+  /** Existing rows that already held these values: not rewritten, not logged. */
+  unchanged: number;
 }
 
 // Identifiers visible to the conflict clause, used to derive the default
@@ -142,20 +171,56 @@ function buildChunkQuery<T extends Record<string, unknown>>(
     tuples.push(`(${placeholders.join(',')})`);
   }
 
+  const { revisionLog } = opts;
+  const setClause = updateColumns.map((c) => `${c} = EXCLUDED.${c}`).join(', ');
+  // With a log, skip the rewrite (and so the revision) when nothing differs.
+  const stored = updateColumns.map((c) => `${table}.${c}`).join(', ');
+  const proposed = updateColumns.map((c) => `EXCLUDED.${c}`).join(', ');
+  const guard = revisionLog
+    ? ` WHERE (${stored}) IS DISTINCT FROM (${proposed})`
+    : '';
   const onConflict =
     updateColumns.length === 0
       ? `ON CONFLICT ${conflictTarget} DO NOTHING`
-      : `ON CONFLICT ${conflictTarget} DO UPDATE SET ${updateColumns
-          .map((c) => `${c} = EXCLUDED.${c}`)
-          .join(', ')}`;
+      : `ON CONFLICT ${conflictTarget} DO UPDATE SET ${setClause}${guard}`;
 
-  const stmt = `
-    INSERT INTO ${table} (${columns.join(', ')})
+  const columnList = columns.join(', ');
+  if (!revisionLog) {
+    const stmt = `
+    INSERT INTO ${table} (${columnList})
     VALUES ${tuples.join(',')}
     ${onConflict}
   `;
+    return { stmt, params };
+  }
+
+  // One statement: the data-modifying CTE runs to completion and the log
+  // INSERT reads the rows it returned, so the two cannot diverge. xmax = 0
+  // marks a tuple this statement inserted; a row the guard skipped returns
+  // nothing and is not logged.
+  params.push(revisionLog.writer);
+  const stmt = `
+    WITH up AS (
+      INSERT INTO ${table} (${columnList})
+      VALUES ${tuples.join(',')}
+      ${onConflict}
+      RETURNING ${columnList}, (xmax = 0) AS is_first
+    )
+    INSERT INTO ${revisionLog.table} (${columnList}, writer, is_first)
+    SELECT ${columnList}, $${params.length}::text, is_first FROM up
+    RETURNING is_first AS inserted
+  `;
 
   return { stmt, params };
+}
+
+/** Count the log insert's returned rows: one per inserted or changed row. */
+function tally(logged: readonly Record<string, unknown>[]): {
+  inserted: number;
+  updated: number;
+} {
+  const inserted = logged.filter((r) => r.inserted === true).length;
+  return { inserted, updated: logged.length - inserted };
 }
 
 /**
@@ -190,14 +255,33 @@ function buildChunkQuery<T extends Record<string, unknown>>(
  * Returns `{ rows: rows.length }`. Note: this is the input row count,
  * NOT the number of rows that mutated the DB. Neon's serverless driver
  * doesn't return the exact rowCount from a multi-statement upsert, and
- * exposing the input count keeps the contract simple.
+ * exposing the input count keeps the contract simple. With `revisionLog` the
+ * log insert returns one row per inserted or changed row, so the result adds
+ * exact `inserted`, `updated` and `unchanged` counts.
  */
+export function bulkUpsert<T extends Record<string, unknown>>(
+  opts: BulkUpsertOptions<T> & { revisionLog: RevisionLogOptions },
+): Promise<LoggedBulkUpsertResult>;
+export function bulkUpsert<T extends Record<string, unknown>>(
+  opts: BulkUpsertOptions<T>,
+): Promise<BulkUpsertResult>;
 export async function bulkUpsert<T extends Record<string, unknown>>(
   opts: BulkUpsertOptions<T>,
-): Promise<BulkUpsertResult> {
-  const { sql, rows, columns, conflictTarget, chunkSize: chunkOverride } = opts;
+): Promise<BulkUpsertResult | LoggedBulkUpsertResult> {
+  const {
+    sql,
+    rows,
+    columns,
+    conflictTarget,
+    chunkSize: chunkOverride,
+    revisionLog,
+  } = opts;
 
-  if (rows.length === 0) return { rows: 0 };
+  if (rows.length === 0) {
+    return revisionLog
+      ? { rows: 0, inserted: 0, updated: 0, unchanged: 0 }
+      : { rows: 0 };
+  }
   if (columns.length === 0) {
     throw new Error('bulkUpsert: columns must be a non-empty list');
   }
@@ -206,6 +290,8 @@ export async function bulkUpsert<T extends Record<string, unknown>>(
   // so reject anything that isn't a bare Postgres identifier before it can
   // reach the SQL string. Covers the table and every write column.
   assertSafeIdentifier(opts.table, 'table');
+  if (revisionLog)
+    assertSafeIdentifier(revisionLog.table, 'revision log table');
   for (const col of columns) {
     assertSafeIdentifier(col, 'column');
   }
@@ -256,8 +342,14 @@ export async function bulkUpsert<T extends Record<string, unknown>>(
   // Single-chunk fast path: one query, no transaction overhead.
   if (rows.length <= chunkSize) {
     const { stmt, params } = buildChunkQuery(opts, rows, updateColumns);
-    await sql.query(stmt, params);
-    return { rows: rows.length };
+    const result = await sql.query(stmt, params);
+    if (!revisionLog) return { rows: rows.length };
+    const counts = tally(result);
+    return {
+      rows: rows.length,
+      ...counts,
+      unchanged: rows.length - counts.inserted - counts.updated,
+    };
   }
 
   // Multi-chunk path: wrap the entire loop in a single Postgres
@@ -270,9 +362,15 @@ export async function bulkUpsert<T extends Record<string, unknown>>(
     chunkQueries.push(buildChunkQuery(opts, slice, updateColumns));
   }
 
-  await sql.transaction((txn) =>
+  const results = await sql.transaction((txn) =>
     chunkQueries.map(({ stmt, params }) => txn.query(stmt, params)),
   );
 
-  return { rows: rows.length };
+  if (!revisionLog) return { rows: rows.length };
+  const counts = tally(results.flat());
+  return {
+    rows: rows.length,
+    ...counts,
+    unchanged: rows.length - counts.inserted - counts.updated,
+  };
 }

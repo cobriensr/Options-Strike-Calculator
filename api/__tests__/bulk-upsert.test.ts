@@ -559,4 +559,185 @@ describe('bulkUpsert', () => {
       expect(queryMock).toHaveBeenCalledTimes(1);
     });
   });
+
+  // The behavior of these statements is pinned against real Postgres in
+  // bulk-upsert-revision-log-pglite.test.ts; here: the text and the counting.
+  describe('revisionLog (spec P0.9)', () => {
+    const rows: Row[] = [
+      { date: '2026-05-02', ticker: 'SPX', price: 5800 },
+      { date: '2026-05-02', ticker: 'NDX', price: 21000 },
+      { date: '2026-05-02', ticker: 'RUT', price: 2100 },
+      { date: '2026-05-02', ticker: 'DJX', price: 440 },
+    ];
+    const opts = {
+      table: 'demo',
+      columns: ['date', 'ticker', 'price'] as const,
+      conflictTarget: '(date, ticker)',
+      revisionLog: { table: 'demo_revisions', writer: 'fetch-demo' },
+    };
+
+    it('writes the upsert, the change guard and the log insert as ONE statement, with the writer as the last parameter', async () => {
+      await bulkUpsert<Row>({ sql, ...opts, rows: rows.slice(0, 2) });
+
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      const [stmt, params] = queryMock.mock.calls[0]!;
+      const flat = (stmt as string).replaceAll(/\s+/g, ' ');
+      expect(flat).toContain(
+        'WITH up AS ( INSERT INTO demo (date, ticker, price)',
+      );
+      expect(flat).toContain('VALUES ($1,$2,$3),($4,$5,$6)');
+      expect(flat).toContain(
+        'ON CONFLICT (date, ticker) DO UPDATE SET price = EXCLUDED.price WHERE (demo.price) IS DISTINCT FROM (EXCLUDED.price)',
+      );
+      expect(flat).toContain(
+        'RETURNING date, ticker, price, (xmax = 0) AS is_first )',
+      );
+      expect(flat).toContain(
+        'INSERT INTO demo_revisions (date, ticker, price, writer, is_first) SELECT date, ticker, price, $7::text, is_first FROM up RETURNING is_first AS inserted',
+      );
+      expect(params).toEqual([
+        '2026-05-02',
+        'SPX',
+        5800,
+        '2026-05-02',
+        'NDX',
+        21000,
+        'fetch-demo',
+      ]);
+    });
+
+    it('guards on every update column, as a row comparison', async () => {
+      await bulkUpsert<Row & { size: number }>({
+        sql,
+        ...opts,
+        columns: ['date', 'ticker', 'price', 'size'],
+        rows: [{ ...rows[0]!, size: 1 }],
+      });
+
+      const flat = (queryMock.mock.calls[0]![0] as string).replaceAll(
+        /\s+/g,
+        ' ',
+      );
+      expect(flat).toContain(
+        'WHERE (demo.price, demo.size) IS DISTINCT FROM (EXCLUDED.price, EXCLUDED.size)',
+      );
+    });
+
+    it('with no update columns keeps DO NOTHING (no guard) and still logs inserted rows', async () => {
+      await bulkUpsert<Row>({
+        sql,
+        ...opts,
+        rows: rows.slice(0, 1),
+        conflictUpdateColumns: [],
+      });
+
+      const flat = (queryMock.mock.calls[0]![0] as string).replaceAll(
+        /\s+/g,
+        ' ',
+      );
+      expect(flat).toContain('ON CONFLICT (date, ticker) DO NOTHING RETURNING');
+      expect(flat).not.toContain('IS DISTINCT FROM');
+      expect(flat).toContain('INSERT INTO demo_revisions');
+    });
+
+    it('counts inserted, updated and unchanged from the rows the log insert returned', async () => {
+      queryMock.mockResolvedValueOnce([
+        { inserted: true },
+        { inserted: false },
+      ]);
+
+      const result = await bulkUpsert<Row>({ sql, ...opts, rows });
+
+      // Four sent; two inserted or changed came back; two rows were skipped.
+      expect(result).toEqual({
+        rows: 4,
+        inserted: 1,
+        updated: 1,
+        unchanged: 2,
+      });
+    });
+
+    it('sums the counts across every chunk of a multi-chunk transaction', async () => {
+      transactionMock.mockResolvedValueOnce([
+        [{ inserted: true }, { inserted: true }],
+        [{ inserted: false }],
+      ]);
+
+      const result = await bulkUpsert<Row>({
+        sql,
+        ...opts,
+        rows,
+        chunkSize: 2,
+      });
+
+      expect(result).toEqual({
+        rows: 4,
+        inserted: 2,
+        updated: 1,
+        unchanged: 1,
+      });
+    });
+
+    it('logs every chunk of a multi-chunk transaction with the writer', async () => {
+      await bulkUpsert<Row>({ sql, ...opts, rows, chunkSize: 2 });
+
+      expect(txnQueryCalls).toHaveLength(2);
+      for (const [stmt, params] of txnQueryCalls) {
+        expect(stmt).toContain('INSERT INTO demo_revisions');
+        expect(params.at(-1)).toBe('fetch-demo');
+      }
+    });
+
+    it('returns zero counts for empty input without calling the DB', async () => {
+      const result = await bulkUpsert<Row>({ sql, ...opts, rows: [] });
+
+      expect(result).toEqual({
+        rows: 0,
+        inserted: 0,
+        updated: 0,
+        unchanged: 0,
+      });
+      expect(queryMock).not.toHaveBeenCalled();
+    });
+
+    it('without revisionLog the statement has no CTE, guard or log, and the result has no counts', async () => {
+      const result = await bulkUpsert<Row>({
+        sql,
+        table: 'demo',
+        columns: ['date', 'ticker', 'price'],
+        conflictTarget: '(date, ticker)',
+        rows: rows.slice(0, 1),
+      });
+
+      expect(result).toEqual({ rows: 1 });
+      const stmt = queryMock.mock.calls[0]![0] as string;
+      expect(stmt).not.toContain('WITH');
+      expect(stmt).not.toContain('IS DISTINCT FROM');
+      expect(stmt).not.toContain('revisions');
+    });
+
+    it('throws on a log table name that is not a bare identifier, and never hits the DB', async () => {
+      await expect(
+        bulkUpsert<Row>({
+          sql,
+          ...opts,
+          rows,
+          revisionLog: {
+            table: 'demo_revisions; DROP TABLE demo',
+            writer: 'w',
+          },
+        }),
+      ).rejects.toThrow(/unsafe revision log table identifier/);
+      expect(queryMock).not.toHaveBeenCalled();
+      expect(transactionMock).not.toHaveBeenCalled();
+    });
+
+    it('propagates a failed statement (the helper does not swallow it)', async () => {
+      queryMock.mockRejectedValueOnce(new Error('log insert failed'));
+
+      await expect(bulkUpsert<Row>({ sql, ...opts, rows })).rejects.toThrow(
+        'log insert failed',
+      );
+    });
+  });
 });
