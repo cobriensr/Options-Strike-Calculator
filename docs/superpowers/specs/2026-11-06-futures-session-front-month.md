@@ -280,7 +280,7 @@ Steps:
 
 Files: `api/cron/backfill-futures-gaps.ts`, `api/__tests__/backfill-futures-gaps.test.ts`, `api/_lib/futures-flow-repair.ts` (comment only), `api/_lib/futures-front-month.ts` and `api/__tests__/futures-front-month-pglite.test.ts` (the two warnings below).
 
-- [ ] **Failing tests** first:
+- [x] **Failing tests** first:
   - Before each root's schedule is read, its volumes are refreshed: daily candles for the incumbent and the next two cycle contracts, written with `insertContractVolumes` for trade dates before the current one only.
   - A refresh failure (UW error, malformed candle, DB reject, or an empty candle result for the incumbent) fails that root by name with a Sentry exception that carries the root and the range. It writes no decision row for that root. The other roots still run, and the run reports partial.
   - A fetched row for the current trade date is dropped before `insertContractVolumes`, and the run logs each root's refreshed row count.
@@ -289,7 +289,7 @@ Files: `api/cron/backfill-futures-gaps.ts`, `api/__tests__/backfill-futures-gaps
   - Every inserted bar carries its scheduled `contract`.
   - A DB error in the schedule read fails the root in each pass with a Sentry exception, and the run reports partial or error.
   - PGlite: a clamp, and a cycle-seed fallback, each send one warning-level Sentry message tagged with product and trade date, besides the log line.
-- [ ] **Then the change:**
+- [x] **Then the change:**
   - **The two warnings in `futures-front-month.ts` go to Sentry** (ruling 2026-11-07), as `captureMessage` at warning level with `product` and `trade_date` tags. Once the seed has run, either one means something unexpected: a clamp means a late volume row or an out-of-order decision, and a cycle seed means a root has no history. A log line alone would go unseen.
   - **Volume refresh first** (owner decision 2026-11-07). For each root: take the incumbent (the latest decision row; with none, the cycle seed for the current trade date). Take `cycleContracts` from its month, first three. Call `fetchDailyContractVolumes` with `range=1m`, then `insertContractVolumes` for trade dates before the current one. That is about 18 calls and about 400 rows a run.
     - Why `1m` and not `1w`: if the cron is down for more than a week, `1w` would leave the older missed sessions with no volume rows. Re-writes are DO NOTHING, so the longer range costs nothing but rows.
@@ -299,7 +299,17 @@ Files: `api/cron/backfill-futures-gaps.ts`, `api/__tests__/backfill-futures-gaps
   - Both passes use `pickScheduledFront` and pass `contract` to the shared insert.
   - **Why `contract` must be valid:** #204's CHECK runs before the conflict arbiter, so one malformed name fails the whole 500-row chunk, minutes already stored included (the other spec's `task-6c-brief.md` §5 and §8). Decision rows hold canonical names, which pass by construction; the insert still checks each `contract` with `parseContract`, writing NULL with a warning for one that fails.
   - Rewrite header steps 2–3.
-- [ ] Gate, review, commit. This needs the Phase 3b seed run before it reaches main: from then on, the 06:00 UTC cron reads the table.
+- [x] Gate, review, commit. This needs the Phase 3b seed run before it reaches main: from then on, the 06:00 UTC cron reads the table. Done 2026-11-08: 3976cc47, f14ae81e, then review fixes 110c4a1c, 220d351f and one test fix.
+  - **What review added (2026-11-08):**
+    - **Library:** the refresh lives in `api/_lib/futures-volume-refresh.ts` (`refreshFrontMonthVolumes`) for Phase 4b to reuse.
+    - **Refresh only when needed:** a root refreshes only when a schedule date is undecided. With every date stored it repairs from the stored schedule, so a UW daily-candle outage can't block repair inside the 3-day window.
+    - **Freshness:** the incumbent's newest daily candle must reach the trade date of the root's latest `futures_bars` row before the current session. Otherwise the root fails as stale and nothing is decided, because until Phase 5 the cron makes the running session's permanent decision every morning.
+    - **Deadline:** `FLOW_DEADLINE_MS` is 540 s.
+  - **Known failure mode, accepted:**
+    - **The trigger:** the incumbent expires while the cron is down, so no decision rolled off it in time. Its candles stop, and the root fails as stale on every run.
+    - **The fix:** insert that root's next decision row by hand (`source = 'script'`).
+    - **Why it stays:** in normal running the roll lands a day or two before expiry (CLU6 → CLV6 on 08-19; CLU6's last session was 08-20). Checking any contract's candle instead would let a missing incumbent candle read as 0 and roll early, permanently.
+    - **Holidays:** a holiday session that UW files under another date fails the same way, until the next full session.
 
 ### Phase 4b: the scripts read the table (medium)
 
@@ -349,6 +359,7 @@ Handler changes:
 - **Every emitted bar** carries `contract`.
 - **Removed:** the `_front_sym` snapshots, `_session_date` / `_roll_session`, and the prior-day straggler special case. A straggler now just uses its own trade date's contract.
 - **Docstring:** rewrite rule 5. `front_sym_absent` stays.
+- **Don't mix sources within one session's tally** (Phase 4a review). Candle rows are DO NOTHING per (product, trade date, contract). So after a restart mid-session with a partial live tally for the incumbent and no row for a challenger, a cron refresh can add the challenger's full-session candle volume next to the partial tally, and roll early. Decide which source wins for a (product, trade date) before Phase 5 writes live rows, and test it.
 
 Steps:
 - [ ] **Rewrite the front-month tests** (today's lines ~399–529, 786, 881) to the new rule, with the database mocked:
