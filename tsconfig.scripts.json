@@ -50,6 +50,7 @@
     "scripts/backfill-futures-front-month.ts",
     "scripts/_lib/futures-front-month-backfill.ts",
     "scripts/_lib/futures-front-month-backfill.test.ts",
+    "scripts/_lib/futures-front-month-backfill-pglite.test.ts",
     "scripts/backfill-gamma-setup-fires.ts",
     "scripts/backfill-gex-target-features.ts",
     "scripts/backfill-lottery-score.ts",
