@@ -88,7 +88,7 @@ A TypeScript script in `scripts/` that turns the Phase 1 file into writes. It re
 
 | Store | Rows | Action |
 |---|---|---|
-| `futures_snapshots` (ES, NQ) | about 15.8K per root, 04-06 → 06-16 | Recompute each (symbol, ts) with `computeSnapshot`; UPDATE where it differs |
+| `futures_snapshots` (ES, NQ, RTY, CL, GC, ZN) | about 19.4K per root, 04-06 → 07-05 (the span plus the 20-day volume window) | Recompute each (symbol, ts) with `computeSnapshot`; UPDATE only the fields a repaired bar feeds (below) |
 | `market_snapshots.pre_market_data` | 38 auto-filled rows (35 with an inflated Globex range) | Recompute Globex H/L/C/VWAP. Keep the `autoFilled` guard, so hand-saved rows are never touched |
 | `ws_gamma_setup_fires.es_basis_change_5m` | 248 rows | Recompute the column. List the fires whose PCS Monday gate result flips; don't delete or add fires (the detector is paused) |
 | `periscope_grades.trade_sims` | 77 rows (05-07, 05-08) | Re-run `scripts/grade-periscope-day.mjs` for both dates |
@@ -110,6 +110,18 @@ A TypeScript script in `scripts/` that turns the Phase 1 file into writes. It re
 - Side finding, not fixed (the owner reworks the lessons code): `getActiveLessons()` orders by `source_date` with no tie-break, so which tied lessons fill the last of the 20 slots can change between runs. No new lessons have been curated since 2026-04-20.
 
 Same pattern as Phase 2: dry run, backup, owner OK, apply, verify.
+
+**Phase 4 as built (rulings 1 to 5, 2026-11-07).** The tool is `scripts/recompute-futures-derived.ts` with `scripts/_lib/futures-derived-recompute.ts` (planning, report, writes) and `scripts/_lib/futures-derived-attribution.ts` (pure rules). The default is a read-only dry run. `--apply` runs after the close, with the totals of the dry run the owner saw (`--expect-snapshots`, `--expect-premarket`, `--expect-fires`), and refuses unless every check below holds.
+
+- **Scope.** `futures_snapshots` covers all six roots. Phase 2 repaired ES and NQ. For RTY, CL, GC and ZN it only deleted the Saturday 04-11 junk bars, so for those four roots only a deleted bar makes a saved field affected. Their contract mix is Phase 5 (D1) and stays as it is.
+- **Closed-bar rule.** `computeSnapshot` reads only bars closed by `at` (`ts <= at - 60 s`), the set the live cron could see. Without it the recompute cannot reproduce the rows the cron wrote.
+- **Attribution: only repaired inputs are written.** A saved field is written only where one of its input bars was changed or deleted by Phase 2 (read from the Phase 2 backup), and only where the recompute differs. Input bars are found two ways, and a field is affected if either finds a repaired bar:
+  - by today's rule, against the current table (the latest closed bar for the price; the hour-ago bar for the 1h change; the day-open bar for the day change; any bar in the 20-day window for the volume ratio; any bar in the overnight window for a pre-market row);
+  - by value, in the series as it was before Phase 2 (ruling 3): the newest bar with the stored close within 96 hours, and the bars that reconstruct the stored 1h and day changes. This catches a row priced from an old bar that is older than today's latest one, such as the 04-12 Sunday rows priced from a Saturday junk bar.
+- **Method control (what makes `--apply` trustworthy).** Every `futures_snapshots` row from 2026-11-02 on (at least 200 rows over 3 days per root) must recompute to what is stored. ES and NQ must match exactly. For RTY, CL, GC and ZN a miss also counts when a late bar explains it, because uw-stream emits a minute's bar only after a print of a later minute arrives, so a quiet root's previous bar can be missing when the cron reads (rulings 4 and 5): `late-bar` (the stored price is the close of a closed bar 1 to 14 minutes older) or `late-volume` (price, 1h and day match, and the stored volume ratio is below the recomputed one, or above it by at most 0.0001, one unit of the column, because a hole filled later on a prior day lowers the 20-day ratio). Any other miss, and a stale or missing row, fails. The rows from 2026-10-02 to 11-01 are classified in the report as information, not gated.
+- **Pre-market and fires.** A pre-market row is written only where a repaired bar is in its overnight window. The check on the rows outside the span is a subset check (today's bars may only widen a stored range: stored high <= recomputed, stored low >=). The fire basis control must match 100%.
+- **Opt-in delete of the stale junk-priced rows (ruling 4).** A snapshot row whose stored price matches a bar Phase 2 deleted and whose recompute is stale or missing (1,964 on the 2026-11-07 dry run; ES, NQ, ZN, RTY and CL 266 each, GC 634) cannot be recomputed, and `price` is NOT NULL. The dry run always lists them. `--delete-junk-stale` with `--expect-junk-deletes J` deletes them, off by default: the full rows go to the backup first, the DELETE is batched and guarded by the planned price, and a verify checks the rows are gone and nothing else left the scope. **The owner approved the delete on 2026-11-08.**
+- **Dry run of 2026-11-07:** 25,365 snapshot rows, 35 pre-market rows and 0 fire values to write; every control passes.
 
 ### Phase 5: RTY, CL, GC, ZN (needs owner decision D1)
 
