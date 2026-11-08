@@ -602,7 +602,8 @@ describe('a live session after the page loaded', () => {
 // F11: a poll that stalls leaves the inputs on the last quotes, and a manual
 // time step or Resume live then moves the slot to now over them. The row
 // still matches the quote state, so only its quote time shows it is old. The
-// server refuses such a row (422); a poll that recovers must save the slot.
+// server will refuse such a row (422, P0.6 Phase 3; refuseStaleQuote stands in
+// for it here); a poll that recovers must save the slot.
 describe('a stalled quote poll', () => {
   const STALL_MINUTES = 16;
   const SLOT = '10:00 AM CT';
@@ -658,6 +659,27 @@ describe('a stalled quote poll', () => {
       expect(post.answered).toBe(false);
     }
     expect(savedRows().has(SLOT)).toBe(false);
+  });
+
+  it('still saves the stale slot when a quote lands minutes after the refusal', async () => {
+    const hook = await stallThenResumeLive();
+    // Three more minutes with no quote while other hooks keep App rendering.
+    // (useSnapshotSave.test.ts pins that a refused quote time is not posted
+    // again however often the save re-runs; here the harness has no such
+    // re-run, so this checks the recovery end to end.)
+    for (let minute = 0; minute < 3; minute += 1) {
+      await advance(60_000);
+      hook.rerender();
+    }
+    await settle(2000);
+    expect(slotPosts()).toHaveLength(1);
+
+    refuseStaleQuote = false;
+    act(() => hook.result.current.setQuotes(quotesAt(19)));
+    await settle(2000);
+
+    expect(slotPosts().at(-1)!.answered).toBe(true);
+    expect(savedRows().get(SLOT)!.quotedAt).toBe(quoteTimesAt(19).vix);
   });
 
   it('stops retrying the stale slot at the post cap while a lagging feed keeps moving', async () => {

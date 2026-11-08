@@ -1198,18 +1198,98 @@ describe('useSnapshotSave — a failed save', () => {
       reason: 'stale-quote',
       saved: false,
     });
-    const liveAt = (quotedAt: number, entryTime = '09:35'): SnapshotMeta => ({
+    const STALE_AT = Date.parse(NOW) - 20 * 60_000;
+    const MINUTE = 60_000;
+    const liveAt = (
+      quotedAt: number | null,
+      entryTime = '09:35',
+    ): SnapshotMeta => ({
       ...baseMeta,
       entryTime,
       live: { spot: 5500, vix: 18, quotedAt },
     });
 
-    it('retries without reporting it, up to the cap', async () => {
+    /**
+     * Render live at `firstQuotedAt`, let its answer land, and return poll():
+     * a re-render as a quote poll causes one, with fresh results and signals
+     * (App's signals change identity on every render) and the quote's time.
+     */
+    async function renderLive(firstQuotedAt: number | null) {
+      const { rerender } = renderHook(
+        ({ meta, results, signals }) =>
+          useSnapshotSave(results, signals, meta, true),
+        {
+          initialProps: {
+            meta: liveAt(firstQuotedAt),
+            results: makeResults(),
+            signals: { ...defaultSignals },
+          },
+        },
+      );
+      await settle();
+      return async (quotedAt: number | null, entryTime?: string) => {
+        rerender({
+          meta: liveAt(quotedAt, entryTime),
+          results: makeResults(),
+          signals: { ...defaultSignals },
+        });
+        await settle();
+      };
+    }
+
+    it('retries each fresher quote without reporting it, up to the cap', async () => {
       answerAlways(422);
-      await renderAndChurn(8);
+      const poll = await renderLive(STALE_AT);
+      for (let i = 1; i <= 6; i++) await poll(STALE_AT + i * MINUTE);
 
       expect(fetchSpy).toHaveBeenCalledTimes(3);
+      expect(body(1).quotedAt).toBe(STALE_AT + MINUTE);
+      expect(body(2).quotedAt).toBe(STALE_AT + 2 * MINUTE);
       expect(captureUnlessAuth).not.toHaveBeenCalled();
+    });
+
+    it('does not post a slot again for the quote time the server just refused', async () => {
+      answerAlways(422);
+      const poll = await renderLive(STALE_AT);
+      // Three polls, the same stale quote, new signals each time.
+      await poll(STALE_AT);
+      await poll(STALE_AT);
+      await poll(STALE_AT);
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(captureUnlessAuth).not.toHaveBeenCalled();
+    });
+
+    it('still saves the slot when a fresher quote lands after several polls of the refused one', async () => {
+      fetchSpy.mockResolvedValueOnce(new Response(REFUSED, { status: 422 }));
+      const poll = await renderLive(STALE_AT);
+      await poll(STALE_AT);
+      await poll(STALE_AT);
+      await poll(STALE_AT);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+      // Minute 4: the quote moves. The refused polls did not use the budget.
+      const freshAt = STALE_AT + 15 * MINUTE;
+      await poll(freshAt);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(body(1).quotedAt).toBe(freshAt);
+
+      // That one was answered 200: the slot is saved, a newer quote adds none.
+      await poll(freshAt + MINUTE);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('holds a missing quote time to the same rule: no repost until one arrives', async () => {
+      answerAlways(422);
+      const poll = await renderLive(null);
+      await poll(null);
+      await poll(null);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(body(0).quotedAt).toBeNull();
+
+      await poll(STALE_AT);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(body(1).quotedAt).toBe(STALE_AT);
     });
 
     it('posts the released key again when a fresher quote arrives, with the new quote time', async () => {
@@ -1247,14 +1327,19 @@ describe('useSnapshotSave — a failed save', () => {
       expect(fetchSpy).toHaveBeenCalledTimes(1);
     });
 
-    it('gives each entry time its own attempts, without reporting any', async () => {
+    it('gives each entry time its own attempts and its own refused quote, without reporting any', async () => {
       answerAlways(422);
-      const churn = renderForChurn();
-      await churn(baseMeta);
+      const poll = await renderLive(STALE_AT);
+      for (let i = 1; i <= 5; i++) await poll(STALE_AT + i * MINUTE);
       expect(fetchSpy).toHaveBeenCalledTimes(3);
 
-      await churn({ ...baseMeta, entryTime: '09:40' });
+      // The next slot posts at once, even for a quote time the first slot was
+      // just refused for, and then has its own three.
+      await poll(STALE_AT + 5 * MINUTE, '09:40');
+      for (let i = 6; i <= 10; i++) await poll(STALE_AT + i * MINUTE, '09:40');
       expect(fetchSpy).toHaveBeenCalledTimes(6);
+      expect(body(3).entryTime).toBe('09:40');
+      expect(body(3).quotedAt).toBe(STALE_AT + 5 * MINUTE);
       expect(captureUnlessAuth).not.toHaveBeenCalled();
     });
   });

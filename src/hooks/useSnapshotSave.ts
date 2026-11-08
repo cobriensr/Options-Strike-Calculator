@@ -16,9 +16,10 @@
  *     nothing: its quotes are the last session's. Nor does an entry time
  *     ahead of the clock (today scrubbed forward): its inputs are now's.
  *     The row carries quotedAt, when those quotes last printed (the older of
- *     the SPX and VIX Schwab tradeTime), so the server can refuse a row
- *     whose quotes are stale: a stalled poll or an old Schwab print leaves
- *     inputs that still match the quote state. A replay sends none.
+ *     the SPX and VIX Schwab tradeTime): a stalled poll or an old Schwab
+ *     print leaves inputs that still match the quote state, and only the
+ *     quote's time shows it. Phase 3 of P0.6 makes the server refuse a stale
+ *     row; until then it accepts quotedAt and ignores it. A replay sends none.
  *   - A past date with its own intraday history, or today scrubbed back
  *     more than 5 minutes (isBacktestMode): a backtest row (is_backtest
  *     true), once the inputs carry that history's SPX and SPY at the entry
@@ -35,17 +36,20 @@
  * retry would post (and report) on every render, and a POST aborted by a
  * re-render, say on a late answer from another hook, would be lost for
  * good: its key is already marked. Only unmount aborts a POST. A failure:
- *   - a network error, a 5xx, a 429 (rate limited), a 422 (the server found
- *     the live quote stale) or a 401 (a lapsed owner session, which the auth
- *     interceptor clears) releases the key, so the next change posts it
- *     again, up to the cap. A fresher quote is such a change: quotedAt is
- *     an effect dependency;
+ *   - a network error, a 5xx, a 429 (rate limited), a 422 (P0.6 Phase 3: the
+ *     server found the live quote stale) or a 401 (a lapsed owner session,
+ *     which the auth interceptor clears) releases the key, so the next
+ *     change posts it again, up to the cap. A 422 posts the key again only
+ *     for a different quote time than the one it refused: while the quote
+ *     stays stale every poll re-runs this effect, and re-sending it would
+ *     spend the cap before a fresher quote arrived. quotedAt is an effect
+ *     dependency, so a fresher quote is such a change;
  *   - a 400 (the body itself) or another 4xx, and a 403 (the endpoint's
  *     botid check; the auth interceptor handles 401s only), keep the key:
  *     the same post would fail the same way.
  * A failure reaches Sentry once per key, a 403 as a warning, except a 429,
- * a 422 and a 401, which are expected (the server reports a stale quote
- * itself). A 200 that saved nothing (a kept live row, a date the server
+ * a 422 and a 401, which are expected (a stale quote is the server's to
+ * report). A 200 that saved nothing (a kept live row, a date the server
  * skipped) keeps the key: it was answered, not lost.
  */
 
@@ -204,10 +208,14 @@ const FUTURE_ENTRY_SLACK_MINUTES = 1;
  */
 const MAX_POSTS_PER_KEY = 3;
 
-/** One key's failed posts so far, and whether one reached Sentry. */
+/**
+ * One key's failed posts so far, whether one reached Sentry, and the quote
+ * time the server last refused it for (null while none has been).
+ */
 interface KeyAttempts {
   posts: number;
   reported: boolean;
+  refused: { quotedAt: number | null } | null;
 }
 
 function near(
@@ -341,6 +349,15 @@ export function useSnapshotSave(
 
     const key = `${meta.selectedDate}|${meta.entryTime}`;
     if (savedRef.current.has(key)) return;
+    // Live rows carry their quote time; a replay's is undefined and is never
+    // refused for it.
+    const quotedAt = kind === 'live' ? (liveQuotedAt ?? null) : undefined;
+    // The server refused this slot for this very quote time (422). Posting it
+    // again would be refused again, and during a stall every poll re-runs this
+    // effect with new signals, so the post budget would drain on one stale
+    // quote before a fresher one arrived. Wait for a different quote time.
+    const refused = attemptsRef.current.get(key)?.refused;
+    if (refused != null && refused.quotedAt === quotedAt) return;
     savedRef.current.add(key);
 
     // Build the strikes JSONB from allDeltas
@@ -377,9 +394,10 @@ export function useSnapshotSave(
       skewPct: meta.skewPct,
       clusterMult: meta.clusterMult,
       isBacktest: kind === 'backtest',
-      // A live row's quotes' age; the server refuses a stale one. A replay
-      // has no quote to date, so it sends none (undefined drops from JSON).
-      quotedAt: kind === 'live' ? (liveQuotedAt ?? null) : undefined,
+      // A live row's quotes' age (P0.6 Phase 3 has the server refuse a stale
+      // one). A replay has no quote to date, so it sends none (undefined
+      // drops from JSON).
+      quotedAt,
 
       // From signals (all computed trading signals)
       spxOpen: signals.spxOpen,
@@ -426,9 +444,10 @@ export function useSnapshotSave(
       strikes,
     };
 
-    const attempt = attemptsRef.current.get(key) ?? {
+    const attempt: KeyAttempts = attemptsRef.current.get(key) ?? {
       posts: 0,
       reported: false,
+      refused: null,
     };
     attempt.posts += 1;
     attemptsRef.current.set(key, attempt);
@@ -464,10 +483,17 @@ export function useSnapshotSave(
           return;
         }
         const { status } = res;
-        // Expected and transient: retry quietly. A 422 is the server finding
-        // the live quote stale (the poll stalled, or Schwab served an old
-        // print): a fresher quote re-posts the key, and the server alerts.
-        if (status === 401 || status === 422 || status === 429) {
+        // A 422 is the server finding the live quote stale (the poll
+        // stalled, or Schwab served an old print). Quiet: a stale quote is
+        // the server's to report. Remember the quote time it refused: only a
+        // different one posts the key again.
+        if (status === 422) {
+          attempt.refused = { quotedAt: quotedAt ?? null };
+          retry();
+          return;
+        }
+        // Expected and transient: retry quietly.
+        if (status === 401 || status === 429) {
           retry();
           return;
         }
