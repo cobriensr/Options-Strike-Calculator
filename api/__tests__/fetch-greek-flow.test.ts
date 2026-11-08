@@ -308,7 +308,7 @@ describe('fetch-greek-flow handler', () => {
     expect(text).toContain('otm_npp');
     expect(text).toContain('ON CONFLICT (date, timestamp, source) DO UPDATE');
     expect(text).toContain('IS DISTINCT FROM');
-    // The same statement appends the row to the revision log (P0.7).
+    // The same statement appends the row to the revision log (P0.8).
     expect(text).toContain('INSERT INTO flow_data_revisions');
     expect(text).toContain('(xmax = 0) AS is_first');
     expect(text).toContain('RETURNING is_first AS inserted');

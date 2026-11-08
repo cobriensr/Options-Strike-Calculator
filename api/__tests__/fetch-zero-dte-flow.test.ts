@@ -480,7 +480,7 @@ describe('fetch-zero-dte-flow handler', () => {
       'ON CONFLICT (date, timestamp, source) DO UPDATE',
     );
     expect(texts[0]).toContain('IS DISTINCT FROM');
-    // The same statement appends the row to the revision log (P0.7).
+    // The same statement appends the row to the revision log (P0.8).
     expect(texts[0]).toContain('INSERT INTO flow_data_revisions');
     expect(texts[0]).toContain('(xmax = 0) AS is_first');
     expect(texts[0]).toContain('RETURNING is_first AS inserted');

@@ -17,7 +17,7 @@
  * touched.
  *
  * Every row a write inserts or changes is also appended to flow_data_revisions
- * (migration #206, spec P0.7), the log of every value a row ever had with the
+ * (migration #206, spec P0.8), the log of every value a row ever had with the
  * time it was stored and the writer's name. flow_data keeps the latest value,
  * and UW restates these series, so without the log the first-seen value, and
  * what the system showed at time T, are gone. The log insert is part of the

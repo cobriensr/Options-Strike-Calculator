@@ -955,7 +955,7 @@ describe('closedGreekFlowBuckets and the OTM columns agree on the ranges', () =>
 });
 
 /**
- * The revision log (spec P0.7, migration #206). flow_data keeps the latest
+ * The revision log (spec P0.8, migration #206). flow_data keeps the latest
  * value; every write that inserts a row or changes a value also appends the
  * row, as stored, to flow_data_revisions in the same statement. An unchanged
  * row writes none.
@@ -1269,7 +1269,7 @@ describe('upsertClosedBuckets and the flow_data_revisions log', () => {
 });
 
 /**
- * What the system showed at time T: the query the spec documents (P0.7). For
+ * What the system showed at time T: the query the spec documents (P0.8). For
  * each bucket, the latest revision whose label and storing time are both not
  * after T; the first value is the earliest revision, and the final one is the
  * flow_data row.
