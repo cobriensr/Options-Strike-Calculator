@@ -43,6 +43,8 @@ import {
   runRecompute,
   scopeRanges,
   snapshotProblems,
+  volumeRatioWriteText,
+  type SnapshotChange,
   type Control,
   type FireChange,
   type SnapshotValues,
@@ -1184,5 +1186,54 @@ describe('classifyMismatch', () => {
     expect(
       classifyMismatch(row({ olderBars: [{ ageMin: 3, close: 7001 }] })).cls,
     ).toBe('september-window');
+  });
+});
+
+describe('volumeRatioWriteText', () => {
+  const change = (
+    symbol: 'ES' | 'NQ',
+    from: number | null,
+    to: number | null,
+    fields: SnapshotChange['fields'] = ['volumeRatio'],
+  ): SnapshotChange => ({
+    id: 1,
+    symbol,
+    tsMs: 0,
+    fields,
+    from: {
+      price: 1,
+      change1hPct: null,
+      changeDayPct: null,
+      volumeRatio: from,
+    },
+    to: { price: 1, change1hPct: null, changeDayPct: null, volumeRatio: to },
+    row: {},
+  });
+
+  it('gives the count, the median, p90 and max of |relative change|, and how many are under 1%', () => {
+    const changes = [
+      change('ES', 1, 1.005), // 0.5%
+      change('ES', 1, 0.98), // 2%
+      change('ES', 1, 1.1), // 10%
+      change('ES', 1, 1.5), // 50%
+      change('ES', 2, 2.002), // 0.1%
+      change('NQ', 1, 9), // another symbol
+      change('ES', 1, 7, ['price']), // does not write the volume ratio
+    ];
+    expect(volumeRatioWriteText(changes, 'ES')).toBe(
+      'volume-ratio writes: 5; |relative change| median 2.00%, p90 50.00%, max 50.00%; under 1%: 2; from or to null: 0',
+    );
+  });
+
+  it('counts a null on either end apart, and has no spread without a pair', () => {
+    expect(
+      volumeRatioWriteText(
+        [change('NQ', null, 0.4), change('NQ', 0.4, null), change('NQ', 0, 1)],
+        'NQ',
+      ),
+    ).toBe('volume-ratio writes: 3; from or to null: 3');
+    expect(volumeRatioWriteText([], 'ES')).toBe(
+      'volume-ratio writes: 0; from or to null: 0',
+    );
   });
 });

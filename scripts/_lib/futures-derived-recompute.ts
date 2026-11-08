@@ -50,6 +50,7 @@ import {
   type Globex,
 } from '../../api/cron/auto-prefill-premarket.js';
 import {
+  getCTTime,
   getETDateStr,
   getETMarketOpenUtcIso,
 } from '../../src/utils/timezone.js';
@@ -939,6 +940,18 @@ export interface StoreResult<C> {
   control: Control;
 }
 
+/** Rows with an affected field whose recompute is stale or missing: left as stored. */
+export interface LeftAloneStats {
+  stale: number;
+  missing: number;
+  byField: Record<SnapshotField, number>;
+  /** In the 16:15 to 17:00 CT daily break, where the old writer had no freshness gate. */
+  inBreak: number;
+  elsewhere: number;
+  firstMs: number | null;
+  lastMs: number | null;
+}
+
 export interface SnapshotSymbolReport {
   symbol: Sym;
   inRange: number;
@@ -950,6 +963,8 @@ export interface SnapshotSymbolReport {
   affectedLeftAlone: number;
   /** Stale or missing recompute with nothing affected. */
   unaffectedLeftAlone: number;
+  /** The rows counted in `affectedLeftAlone`, broken down. */
+  leftAlone: LeftAloneStats;
   /** Rows where the mirrored input rule disagrees with computeSnapshot. */
   attributionInconsistent: number;
   controlRows: number;
@@ -972,6 +987,9 @@ export interface SnapshotInfo {
   byDay: Record<string, SnapshotInfoDay>;
   /** Minutes older than the latest closed bar, for each late-bar row. */
   lateAges: number[];
+  /** Rows whose stored price differs and is not a late bar, with every field (first SAMPLE_N). */
+  priceNotLate: string[];
+  priceNotLateCount: number;
   /** Unexplained rows whose stored price also equals an older bar's close (late-bar under a looser rule). */
   unexplainedOlderMatch: number;
   /** The first SAMPLE_N unexplained rows, with every field. */
@@ -1005,6 +1023,28 @@ const emptyFields = (): Record<SnapshotField, number> => ({
 
 const utcDay = (tsMs: number): string => iso(tsMs).slice(0, 10);
 
+/** True from 16:15 to 17:00 CT, the daily maintenance break. */
+function inDailyBreak(tsMs: number): boolean {
+  const { hour, minute } = getCTTime(new Date(tsMs));
+  const t = hour * 60 + minute;
+  return t >= 16 * 60 + 15 && t < 17 * 60;
+}
+
+function noteLeftAlone(
+  stats: LeftAloneStats,
+  kind: SnapshotResult['kind'],
+  affected: ReadonlySet<SnapshotField>,
+  tsMs: number,
+): void {
+  if (kind === 'stale') stats.stale += 1;
+  else stats.missing += 1;
+  for (const f of affected) stats.byField[f] += 1;
+  if (inDailyBreak(tsMs)) stats.inBreak += 1;
+  else stats.elsewhere += 1;
+  stats.firstMs = Math.min(stats.firstMs ?? tsMs, tsMs);
+  stats.lastMs = Math.max(stats.lastMs ?? tsMs, tsMs);
+}
+
 /** The cash open of the ET trade date of `at`, as epoch ms; null for a malformed date. */
 function dayOpenOf(at: Date): number | null {
   const open = getETMarketOpenUtcIso(getETDateStr(at));
@@ -1026,6 +1066,8 @@ async function classifyInfoWindow(symbol: Sym): Promise<SnapshotInfo> {
     byClass: emptyClasses(),
     byDay: {},
     lateAges: [],
+    priceNotLate: [],
+    priceNotLateCount: 0,
     unexplainedOlderMatch: 0,
     unexplained: [],
   };
@@ -1073,6 +1115,16 @@ async function classifyInfoWindow(symbol: Sym): Promise<SnapshotInfo> {
     if (verdict.ageMin != null) info.lateAges.push(verdict.ageMin);
     if (verdict.cls === 'unexplained' && verdict.olderMatch) {
       info.unexplainedOlderMatch += 1;
+    }
+    if (
+      verdict.cls !== 'late-bar' &&
+      outcome.kind === 'change' &&
+      outcome.fields.includes('price')
+    ) {
+      info.priceNotLateCount += 1;
+      if (info.priceNotLate.length < SAMPLE_N) {
+        info.priceNotLate.push(mismatchLine(row, outcome));
+      }
     }
     if (verdict.cls === 'unexplained' && info.unexplained.length < SAMPLE_N) {
       info.unexplained.push(mismatchLine(row, outcome));
@@ -1151,6 +1203,15 @@ async function planSnapshots(
       drift: emptyFields(),
       affectedLeftAlone: 0,
       unaffectedLeftAlone: 0,
+      leftAlone: {
+        stale: 0,
+        missing: 0,
+        byField: emptyFields(),
+        inBreak: 0,
+        elsewhere: 0,
+        firstMs: null,
+        lastMs: null,
+      },
       attributionInconsistent: 0,
       controlRows: 0,
       controlMatched: 0,
@@ -1180,6 +1241,7 @@ async function planSnapshots(
       if (outcome.kind === 'unrecomputable') {
         if (affected.size > 0) {
           report.affectedLeftAlone += 1;
+          noteLeftAlone(report.leftAlone, result.kind, affected, row.tsMs);
           unrecomputable.push(
             `${snapshotLine(row, null, outcome.why)} [affected: ${[...affected].sort().join(', ')}]`,
           );
@@ -1424,6 +1486,41 @@ function unrecomputableText(list: string[]): string[] {
   ];
 }
 
+const percentOf = (x: number): string => `${(x * 100).toFixed(2)}%`;
+
+/** Count, |relative change| median, p90, max and how many are under 1%, for the volume-ratio writes of one symbol. */
+export function volumeRatioWriteText(
+  changes: SnapshotChange[],
+  symbol: Sym,
+): string {
+  const writes = changes.filter(
+    (c) => c.symbol === symbol && c.fields.includes('volumeRatio'),
+  );
+  const rel: number[] = [];
+  let nullEnds = 0;
+  for (const c of writes) {
+    const from = c.from.volumeRatio;
+    const to = c.to.volumeRatio;
+    if (from == null || to == null || from === 0) nullEnds += 1;
+    else rel.push(Math.abs(to - from) / Math.abs(from));
+  }
+  rel.sort((a, b) => a - b);
+  const under = rel.filter((x) => x < 0.01).length;
+  const spread =
+    rel.length === 0
+      ? ''
+      : `; |relative change| median ${percentOf(percentile(rel, 0.5))}, p90 ${percentOf(percentile(rel, 0.9))}, max ${percentOf(rel.at(-1) ?? 0)}; under 1%: ${under}`;
+  return `volume-ratio writes: ${writes.length}${spread}; from or to null: ${nullEnds}`;
+}
+
+function leftAloneText(a: LeftAloneStats): string {
+  const when =
+    a.firstMs == null || a.lastMs == null
+      ? 'none'
+      : `${utcDay(a.firstMs)} to ${utcDay(a.lastMs)}`;
+  return `stale ${a.stale}, missing ${a.missing}; by affected field ${byFieldText(a.byField)}; in the 16:15-17:00 CT daily break ${a.inBreak}, elsewhere ${a.elsewhere}; first and last date ${when}`;
+}
+
 const byFieldText = (counts: Record<SnapshotField, number>): string =>
   SNAPSHOT_KEYS.map((k) => `${k}=${counts[k]}`).join(' ');
 
@@ -1457,6 +1554,14 @@ function infoText(info: SnapshotInfo): string[] {
       `    by day, matched/rows (september-window/late-bar/unexplained): ${days.join(', ')}`,
     );
   }
+  const listed =
+    info.priceNotLate.length > 0
+      ? ` (first ${info.priceNotLate.length}, every field, * where it differs)`
+      : '';
+  out.push(
+    `    price misses that are not late bars: ${info.priceNotLateCount}${listed}`,
+    ...info.priceNotLate.map((l) => `      ${l}`),
+  );
   if (classes.unexplained > 0) {
     out.push(
       `    unexplained rows whose stored price equals the latest closed bar and also an older bar (late-bar only under a looser rule): ${info.unexplainedOlderMatch}`,
@@ -1484,6 +1589,8 @@ function snapshotsText(r: SnapshotStore): string[] {
     out.push(
       `  ${s.symbol}: rows in range ${s.inRange}, rows to write ${s.rowsToWrite} (${byFieldText(s.byField)})`,
       `    left alone, stale or missing recompute: ${s.affectedLeftAlone} with an affected field, ${s.unaffectedLeftAlone} with none`,
+      `      the ${s.affectedLeftAlone} with an affected field (kept as stored): ${leftAloneText(s.leftAlone)}`,
+      `    ${volumeRatioWriteText(r.changes, s.symbol)}`,
       `    information, unaffected fields where today's method differs from the stored value (not written): ${byFieldText(s.drift)}`,
       `    method control, rows from ${isoSecond(SNAPSHOT_CONTROL_FROM_MS)}: ${s.controlMatched} of ${s.controlRows} match over ${s.controlDays} days`,
       `    attribution inputs disagreeing with computeSnapshot: ${s.attributionInconsistent}`,

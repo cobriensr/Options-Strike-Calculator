@@ -62,7 +62,28 @@ const hooks = vi.hoisted(() => ({
   writes: 0,
   /** The trade date the mocked cronGuard hands the pre-market cron. */
   cronToday: '2026-05-28',
+  /** The tool's backup file keeps only its first line, as a short disk write would. */
+  shortBackup: false,
 }));
+
+// Only the tool's own backup-<stamp>.jsonl write is cut short.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    writeFileSync: (...args: Parameters<typeof actual.writeFileSync>) => {
+      const [path, data, ...rest] = args;
+      if (hooks.shortBackup && String(path).includes('backup-')) {
+        return actual.writeFileSync(
+          path,
+          `${String(data).split('\n')[0]}\n`,
+          ...rest,
+        );
+      }
+      return actual.writeFileSync(path, data, ...rest);
+    },
+  };
+});
 
 vi.mock('../../api/_lib/db.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/_lib/db.js')>();
@@ -142,7 +163,9 @@ import { applyMigration } from '../../api/__tests__/pglite-migrations';
 import premarketCron from '../../api/cron/auto-prefill-premarket.js';
 import snapshotCron from '../../api/cron/fetch-futures-snapshot.js';
 import { computeSnapshot } from '../../api/_lib/futures-derive.js';
+import { getETDateStr } from '../../src/utils/timezone.js';
 import {
+  compareSnapshot,
   markerPath,
   readOnlyFetch,
   roundNumeric,
@@ -412,6 +435,8 @@ interface Ids {
   info: number; // ES 10-20, before the control: a late bar (the price is an older bar's close)
   s5: number; // ES 10-06, before the control: only the volume ratio differs, inside the September window
   s7: number; // ES 10-21, before the control: only the volume ratio differs, outside the window
+  s8: number; // ES 10-22, before the control: a price miss that is no late bar
+  s9: number; // ES 05-15, 16:31 CT: stale, price affected, in the daily break
   p1: number; // 05-13 auto-filled, bad high, a repaired bar in the window
   p1hand: number; // 05-13 hand-saved
   p2: number; // 05-14 auto-filled, already right
@@ -555,6 +580,22 @@ async function reset(): Promise<void> {
     [7007, 0.1, 0.1, 0.1111],
   );
 
+  // Stale, with the deleted 05-14 bar still before it, and inside the 16:15-17:00 CT break.
+  const s9 = await snapshotRow(
+    'ES',
+    '2026-05-15T21:31:30.250Z',
+    '2026-05-15',
+    [7500, 0, 0, 1],
+  );
+  // A price that matches no bar near the latest closed one: not a late bar.
+  await snapshotDay('ES', '2026-10-22', '2026-10-21', 7000, 7007);
+  const s8 = await snapshotRow(
+    'ES',
+    '2026-10-22T14:31:30.250Z',
+    '2026-10-22',
+    [7099, 0.1, 0.1, 0.4615],
+  );
+
   // The clean era (EST): bars, and the snapshots the cron would have written.
   await controlBars();
   if (controlRows.length === 0) {
@@ -660,6 +701,8 @@ async function reset(): Promise<void> {
     info,
     s5,
     s7,
+    s8,
+    s9,
     p1,
     p1hand,
     p2,
@@ -783,6 +826,7 @@ beforeEach(async () => {
   hooks.failWriteAt = null;
   hooks.dropWrites = false;
   hooks.plainReadOnly = true;
+  hooks.shortBackup = false;
   hooks.writes = 0;
   await reset();
   // The first reset computes the clean-era snapshots through computeSnapshot.
@@ -823,9 +867,9 @@ describe('dry run on real SQL (pglite)', () => {
     expect(text).toContain('Phase 2 backup');
     expect(text).toContain('6 rows (4 updated, 2 deleted)');
     // Snapshots: ES has 4 rows in range (S1, S2, S4, S6), NQ has 1 (S3).
-    expect(text).toContain('rows in range: 5, rows to write: 2');
+    expect(text).toContain('rows in range: 6, rows to write: 2');
     expect(text).toContain(
-      'ES: rows in range 4, rows to write 1 (price=1 change1hPct=1 changeDayPct=1 volumeRatio=1)',
+      'ES: rows in range 5, rows to write 1 (price=1 change1hPct=1 changeDayPct=1 volumeRatio=1)',
     );
     expect(text).toContain(
       'NQ: rows in range 1, rows to write 1 (price=1 change1hPct=1 changeDayPct=1 volumeRatio=0)',
@@ -837,7 +881,7 @@ describe('dry run on real SQL (pglite)', () => {
     );
     // S6 is stale with an affected price (a deleted bar); S4 is stale with nothing affected.
     expect(text).toContain(
-      'left alone, stale or missing recompute: 1 with an affected field, 1 with none',
+      'left alone, stale or missing recompute: 2 with an affected field, 1 with none',
     );
     expect(text).toMatch(
       /id \d+ price\/1h\/day\/vr 7500\/0\/0\/1 -> stale[^\n]*\[affected: /,
@@ -854,22 +898,38 @@ describe('dry run on real SQL (pglite)', () => {
     );
     // Information window: every row before the control start, one class each.
     expect(text).toContain(
-      'information, ES, rows 2026-10-02T00:00:00Z to 2026-11-02T00:00:00Z (every row, not gated): 3 rows, 0 match, 3 do not',
+      'information, ES, rows 2026-10-02T00:00:00Z to 2026-11-02T00:00:00Z (every row, not gated): 4 rows, 0 match, 4 do not',
     );
     expect(text).toContain(
-      'mismatches by class: september-window 1, late-bar 1, unexplained 1',
+      'mismatches by class: september-window 1, late-bar 1, unexplained 2',
     );
     // The 10-20 row stores the close of the 14:27 bar; the latest closed bar is 14:30.
     expect(text).toContain(
       'late-bar age, minutes older than the latest closed bar: min 3, median 3, p90 3, max 3 (1:0 2:0 3:1 4:0',
     );
     expect(text).toContain(
-      'by day, matched/rows (september-window/late-bar/unexplained): 10-06 0/1 (1/0/0), 10-20 0/1 (0/1/0), 10-21 0/1 (0/0/1)',
+      'by day, matched/rows (september-window/late-bar/unexplained): 10-06 0/1 (1/0/0), 10-20 0/1 (0/1/0), 10-21 0/1 (0/0/1), 10-22 0/1 (0/0/1)',
     );
     expect(text).toContain(
       'unexplained rows whose stored price equals the latest closed bar and also an older bar (late-bar only under a looser rule): 1',
     );
-    expect(text).toContain('UNEXPLAINED rows, first 1 of 1');
+    expect(text).toContain('UNEXPLAINED rows, first 2 of 2');
+    // The one price miss that is not a late bar is named, with every field.
+    expect(text).toContain(
+      'price misses that are not late bars: 1 (first 1, every field, * where it differs)',
+    );
+    expect(text).toMatch(
+      /ES 2026-10-22T14:31:30\.250Z id \d+: price 7099 -> 7007 \*, change1hPct 0\.1 -> 0\.1, changeDayPct 0\.1 -> 0\.1, volumeRatio 0\.4615 -> [\d.]+/,
+    );
+    // The volume-ratio writes: ES one (0.3 -> 0.4615), NQ none.
+    expect(text).toContain(
+      'volume-ratio writes: 1; |relative change| median 53.83%, p90 53.83%, max 53.83%; under 1%: 0; from or to null: 0',
+    );
+    expect(text).toContain('volume-ratio writes: 0; from or to null: 0');
+    // The stale row with an affected field (S6, a deleted bar), broken down.
+    expect(text).toContain(
+      'the 2 with an affected field (kept as stored): stale 2, missing 0; by affected field price=2 change1hPct=2 changeDayPct=2 volumeRatio=2; in the 16:15-17:00 CT daily break 1, elsewhere 1; first and last date 2026-05-14 to 2026-05-15',
+    );
     expect(text).toMatch(
       /ES 2026-10-21T14:31:30\.250Z id \d+: price 7007 -> 7007, change1hPct 0\.1 -> 0\.1, changeDayPct 0\.1 -> 0\.1, volumeRatio 0\.1111 -> 0\.\d+ \*/,
     );
@@ -1024,6 +1084,17 @@ describe('--apply refuses before any write', () => {
     expect(await run({ expectFires: 3 })).toBe(1);
     expect(errored()).toMatch(/fires: the control set is empty/);
     expect(hooks.writes).toBe(0);
+  });
+
+  it('when the backup file comes out short: the count in the file is checked before the first UPDATE', async () => {
+    hooks.shortBackup = true;
+    const before = await dump();
+    expect(await run()).toBe(1);
+    expect(errored()).toMatch(/backup .*backup-.* has 1 lines, expected 6/);
+    expect(hooks.writes).toBe(0);
+    expect(await dump()).toBe(before);
+    for (const store of ALL)
+      expect(existsSync(markerPath(workDir, store))).toBe(false);
   });
 
   it('during market hours, before it reads anything', async () => {
@@ -1194,7 +1265,7 @@ describe('--apply on real SQL (pglite)', () => {
       .rows[0] as { n: number };
 
     expect(await dry()).toBe(0);
-    expect(report()).toContain('rows in range: 5, rows to write: 0');
+    expect(report()).toContain('rows in range: 6, rows to write: 0');
     expect(report()).toMatch(/rows in scope: 5, rows to change: 0/);
     expect(report()).toContain('rows in scope: 4, rows to write: 0');
 
@@ -1386,7 +1457,7 @@ describe("the snapshot recompute is the cron's own method in daylight time", () 
     changedClose: string;
     changedVolume: string;
     /** What the cron must have stored for ES: price / 1h / day / volume ratio. */
-    es: [string, string, string, string];
+    es: [string, string | null, string | null, string | null];
   }
 
   /** Runs fetch-futures-snapshot at `at`: the fake clock is the cron's `now`. */
@@ -1434,6 +1505,22 @@ describe("the snapshot recompute is the cron's own method in daylight time", () 
     return rows[0]!;
   }
 
+  /** The tool's method-control comparison for one stored row: exact on all four fields? */
+  async function controlComparison(at: string, symbol: 'ES' | 'NQ') {
+    const row = await storedAt(at, symbol);
+    const num = (x: string | null | undefined) =>
+      x == null ? null : Number(x);
+    return compareSnapshot(
+      {
+        price: Number(row.price),
+        change1hPct: num(row.c1),
+        changeDayPct: num(row.cd),
+        volumeRatio: num(row.vr),
+      },
+      await computeSnapshot(symbol, getETDateStr(new Date(at)), new Date(at)),
+    );
+  }
+
   const days: [string, Day][] = [
     [
       'mid-session on a CDT weekday (Wednesday 2026-05-20, 11:00 ET)',
@@ -1467,6 +1554,24 @@ describe("the snapshot recompute is the cron's own method in daylight time", () 
         es: ['7004.0000', '0.0857', '0.0571', '0.3200'],
       },
     ],
+    [
+      'the first hour after the 17:00 CT day open (Wednesday 2026-05-20, 22:30Z, CDT)',
+      {
+        at: '2026-05-20T22:30:21.300Z',
+        bars: [
+          ['2026-05-19T15:00:00Z', 6990, 1000],
+          ['2026-05-20T13:30:00Z', 7000, 100],
+          ['2026-05-20T20:59:00Z', 7040, 100], // the last bar before the 16:00 CT break
+          ['2026-05-20T22:00:00Z', 7050, 100], // the reopen
+          ['2026-05-20T22:20:00Z', 7055, 100],
+        ],
+        changedClose: '2026-05-20T22:20:00Z',
+        changedVolume: '2026-05-20T20:59:00Z',
+        // The hour-ago bar (20:59) is 31 minutes before 21:30: no 1h change.
+        // (7055-7000)/7000, 400 / avg(1000, 400)
+        es: ['7055.0000', null, '0.7857', '0.5714'],
+      },
+    ],
   ];
 
   it.each(days)(
@@ -1477,6 +1582,12 @@ describe("the snapshot recompute is the cron's own method in daylight time", () 
       expect(res._json).toMatchObject({ stored: 2 });
       const es = await storedAt(day.at, 'ES');
       expect([es.price, es.c1, es.cd, es.vr]).toEqual(day.es);
+
+      // The tool's method-control comparison counts both written rows as exact
+      // matches on all four fields.
+      vi.setSystemTime(new Date('2026-11-08T12:00:00Z'));
+      expect(await controlComparison(day.at, 'ES')).toEqual({ kind: 'same' });
+      expect(await controlComparison(day.at, 'NQ')).toEqual({ kind: 'same' });
 
       // Every field of both rows is repair-affected here, so any difference
       // between the cron's values and the tool's recompute would be written.
