@@ -150,10 +150,24 @@ function historyFor(date: string): HistoryResponse {
   };
 }
 
+const LOAD_MS = Date.parse(LOAD);
+/** runSession polls once a minute: the nth poll lands n minutes after LOAD. */
+const POLL_EVERY_MS = 60_000;
+/** The SPX print is 2 s old when its poll lands, the VIX print 12 s old. */
+const SPX_PRINT_AGE_MS = 2_000;
+const VIX_PRINT_AGE_MS = 12_000;
+
+/** The nth poll's Schwab tradeTimes, as /api/quotes passes them on. */
+function quoteTimesAt(n: number) {
+  const polled = LOAD_MS + n * POLL_EVERY_MS;
+  return { spx: polled - SPX_PRINT_AGE_MS, vix: polled - VIX_PRINT_AGE_MS };
+}
+
 /** The nth poll's quotes: SPX climbs 4 points a poll, off the history's. */
 function quotesAt(n: number): QuotesResponse {
   const spx = 7750 + 4 * n;
-  const quote = (price: number) => ({
+  const times = quoteTimesAt(n);
+  const quote = (price: number, quotedAt: number) => ({
     price,
     open: price,
     high: price,
@@ -161,12 +175,13 @@ function quotesAt(n: number): QuotesResponse {
     prevClose: price,
     change: 0,
     changePct: 0,
+    quotedAt,
   });
   return {
-    spy: quote(spx / 10 + 0.037),
-    spx: quote(spx),
-    vix: quote(17.5 + n * 0.01),
-    vix1d: quote(14.2),
+    spy: quote(spx / 10 + 0.037, times.spx),
+    spx: quote(spx, times.spx),
+    vix: quote(17.5 + n * 0.01, times.vix),
+    vix1d: quote(14.2, times.vix),
     vix9d: null,
     vvix: null,
     marketOpen: true,
@@ -365,6 +380,8 @@ interface Post {
 
 let posts: Post[];
 let fetchSpy: ReturnType<typeof vi.spyOn>;
+/** True while the server refuses a snapshot POST as a stale quote (422). */
+let refuseStaleQuote: boolean;
 
 function json(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200 });
@@ -375,6 +392,7 @@ beforeEach(() => {
   vi.setSystemTime(new Date(LOAD));
   localStorage.clear();
   posts = [];
+  refuseStaleQuote = false;
   fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
     if (url.startsWith('/api/history?date=')) {
@@ -405,6 +423,19 @@ beforeEach(() => {
       posts.push(post);
       return new Promise<Response>((resolve, reject) => {
         const timer = setTimeout(() => {
+          if (refuseStaleQuote) {
+            resolve(
+              new Response(
+                JSON.stringify({
+                  error: 'quote-not-fresh',
+                  reason: 'stale-quote',
+                  saved: false,
+                }),
+                { status: 422 },
+              ),
+            );
+            return;
+          }
           post.answered = true;
           resolve(json({ id: 'row', saved: true }));
         }, POST_LATENCY_MS);
@@ -515,6 +546,20 @@ describe('a live session after the page loaded', () => {
     expect(new Set(slots.map((s) => rows.get(s)!.spx)).size).toBe(slots.length);
   });
 
+  it('stamps each live row with the older of its poll’s SPX and VIX quote times', async () => {
+    await runSession(12);
+
+    const live = posts.filter((p) => p.body.isBacktest === false);
+    expect(live.length).toBeGreaterThan(0);
+    for (const post of live) {
+      // The row's SPX names its poll: 7750 + 4n.
+      const n = ((post.body.spx as number) - 7750) / 4;
+      const times = quoteTimesAt(n);
+      expect(times.vix, String(post.body.entryTime)).toBeLessThan(times.spx);
+      expect(post.body.quotedAt, String(post.body.entryTime)).toBe(times.vix);
+    }
+  });
+
   it('keeps the last live quote through a quotes outage, not the page-load candle', async () => {
     const hook = await runSession(3);
     const lastQuote = quotesAt(3);
@@ -554,6 +599,111 @@ describe('a live session after the page loaded', () => {
   });
 });
 
+// F11: a poll that stalls leaves the inputs on the last quotes, and a manual
+// time step or Resume live then moves the slot to now over them. The row
+// still matches the quote state, so only its quote time shows it is old. The
+// server refuses such a row (422); a poll that recovers must save the slot.
+describe('a stalled quote poll', () => {
+  const STALL_MINUTES = 16;
+  const SLOT = '10:00 AM CT';
+  const NEXT_SLOT = '10:05 AM CT';
+  /** How far behind a lagging Schwab feed's prints run: past the 10 min limit. */
+  const FEED_LAG_MS = 12 * 60_000;
+
+  /** The nth poll's quotes with both prints `lagMs` older than usual. */
+  function laggingQuotesAt(n: number, lagMs: number): QuotesResponse {
+    const quotes = quotesAt(n);
+    const older = (quote: NonNullable<QuotesResponse['spx']>) => ({
+      ...quote,
+      quotedAt: (quote.quotedAt ?? 0) - lagMs,
+    });
+    return {
+      ...quotes,
+      spx: older(quotes.spx!),
+      vix: older(quotes.vix!),
+    };
+  }
+
+  async function stallThenResumeLive() {
+    const hook = await runSession(3);
+    // Schwab stops answering: no new quotes, so no time sync. Other hooks
+    // keep App rendering. 9:45:12 CT + 16 min is 10:01:12, in the 10:00 slot.
+    for (let minute = 0; minute < STALL_MINUTES; minute += 1) {
+      await advance(60_000);
+      hook.rerender();
+    }
+    // App.handleResumeLive: clear the edit flag, set the time to now's slot.
+    refuseStaleQuote = true;
+    act(() => {
+      hook.result.current.timeEdited.current = false;
+      hook.result.current.time.setTimeHour('10');
+      hook.result.current.time.setTimeMinute('00');
+      hook.result.current.time.setTimeAmPm('AM');
+      hook.result.current.time.setTimezone('CT');
+    });
+    await settle(2000);
+    return hook;
+  }
+
+  const slotPosts = () => posts.filter((p) => p.body.entryTime === SLOT);
+
+  it('posts the slot with the stale quote time, which the server refuses', async () => {
+    await stallThenResumeLive();
+
+    expect(slotPosts().length).toBeGreaterThan(0);
+    for (const post of slotPosts()) {
+      expect(post.body.isBacktest).toBe(false);
+      // The third poll's VIX print, 16 minutes old by now.
+      expect(post.body.quotedAt).toBe(quoteTimesAt(3).vix);
+      expect(post.answered).toBe(false);
+    }
+    expect(savedRows().has(SLOT)).toBe(false);
+  });
+
+  it('stops retrying the stale slot at the post cap while a lagging feed keeps moving', async () => {
+    const hook = await stallThenResumeLive();
+    // The poll recovers but Schwab's prints run 12 minutes behind, so every
+    // poll brings a new quote time that the server refuses again.
+    for (let poll = 0; poll < 3; poll += 1) {
+      await advance(58_000);
+      act(() =>
+        hook.result.current.setQuotes(laggingQuotesAt(20 + poll, FEED_LAG_MS)),
+      );
+      await settle(2000);
+    }
+
+    // MAX_POSTS_PER_KEY is 3: a 422 is a quiet retry, not a storm.
+    expect(slotPosts()).toHaveLength(3);
+    expect(slotPosts().every((p) => !p.answered)).toBe(true);
+    expect(new Set(slotPosts().map((p) => p.body.quotedAt)).size).toBe(3);
+
+    // The next slot has its own attempts: the capped key doesn't poison it.
+    await advance(58_000);
+    act(() => hook.result.current.setQuotes(laggingQuotesAt(23, FEED_LAG_MS)));
+    await settle(2000);
+    expect(
+      posts.filter((p) => p.body.entryTime === NEXT_SLOT).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('saves the slot with the new quote time once a poll lands a fresher quote', async () => {
+    const hook = await stallThenResumeLive();
+    const refused = slotPosts().length;
+
+    refuseStaleQuote = false;
+    act(() => hook.result.current.setQuotes(quotesAt(19)));
+    await settle(2000);
+
+    const fresh = slotPosts().slice(refused);
+    expect(fresh.length).toBeGreaterThan(0);
+    expect(fresh.at(-1)!.answered).toBe(true);
+    expect(fresh.at(-1)!.body.quotedAt).toBe(quoteTimesAt(19).vix);
+    expect(fresh.at(-1)!.body.spx).toBeCloseTo(quotesAt(19).spx!.price, 6);
+    expect(savedRows().get(SLOT)!.quotedAt).toBe(quoteTimesAt(19).vix);
+    expect(quoteTimesAt(19).vix).toBeGreaterThan(quoteTimesAt(3).vix);
+  });
+});
+
 describe('a replay of a past date', () => {
   it('saves the top-of-hour slot when the hour change refetches the date’s VIX OHLC', async () => {
     const hook = renderHook(() => useLiveSession());
@@ -580,6 +730,8 @@ describe('a replay of a past date', () => {
       expect(rows.get(slot)!.date, slot).toBe(PAST_DATE);
       expect(rows.get(slot)!.isBacktest, slot).toBe(true);
       expect(rows.get(slot)!.spx, slot).toBe(LAST_CANDLE_SPX);
+      // A replay has no live quote to date: the server's guard skips it.
+      expect(rows.get(slot)!, slot).not.toHaveProperty('quotedAt');
     }
   });
 });

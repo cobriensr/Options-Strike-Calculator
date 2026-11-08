@@ -15,6 +15,10 @@
  *     display when no quotes exist. A weekend or holiday today saves
  *     nothing: its quotes are the last session's. Nor does an entry time
  *     ahead of the clock (today scrubbed forward): its inputs are now's.
+ *     The row carries quotedAt, when those quotes last printed (the older of
+ *     the SPX and VIX Schwab tradeTime), so the server can refuse a row
+ *     whose quotes are stale: a stalled poll or an old Schwab print leaves
+ *     inputs that still match the quote state. A replay sends none.
  *   - A past date with its own intraday history, or today scrubbed back
  *     more than 5 minutes (isBacktestMode): a backtest row (is_backtest
  *     true), once the inputs carry that history's SPX and SPY at the entry
@@ -31,16 +35,18 @@
  * retry would post (and report) on every render, and a POST aborted by a
  * re-render, say on a late answer from another hook, would be lost for
  * good: its key is already marked. Only unmount aborts a POST. A failure:
- *   - a network error, a 5xx, a 429 (rate limited) or a 401 (a lapsed
- *     owner session, which the auth interceptor clears) releases the key,
- *     so the next change posts it again, up to the cap;
+ *   - a network error, a 5xx, a 429 (rate limited), a 422 (the server found
+ *     the live quote stale) or a 401 (a lapsed owner session, which the auth
+ *     interceptor clears) releases the key, so the next change posts it
+ *     again, up to the cap. A fresher quote is such a change: quotedAt is
+ *     an effect dependency;
  *   - a 400 (the body itself) or another 4xx, and a 403 (the endpoint's
  *     botid check; the auth interceptor handles 401s only), keep the key:
  *     the same post would fail the same way.
- * A failure reaches Sentry once per key, a 403 as a warning, except a 429
- * and a 401, which are expected. A 200 that saved nothing (a kept live
- * row, a date the server skipped) keeps the key: it was answered, not
- * lost.
+ * A failure reaches Sentry once per key, a 403 as a warning, except a 429,
+ * a 422 and a 401, which are expected (the server reports a stale quote
+ * itself). A 200 that saved nothing (a kept live row, a date the server
+ * skipped) keeps the key: it was answered, not lost.
  */
 
 import { useEffect, useRef } from 'react';
@@ -74,6 +80,11 @@ export interface SnapshotLive {
   spot: number;
   /** The live VIX. */
   vix: number;
+  /**
+   * When these quotes last printed (epoch ms): the older of the SPX and VIX
+   * quote times, null or absent when either is unknown.
+   */
+  quotedAt?: number | null;
 }
 
 export interface SnapshotMeta {
@@ -110,6 +121,17 @@ export interface SnapshotMetaSource {
 }
 
 /**
+ * The older of two quote times, or null when either is unknown: a row is
+ * only as fresh as its stalest input, and a missing time can't vouch for it.
+ */
+function olderQuoteTime(
+  spx: number | null | undefined,
+  vix: number | null | undefined,
+): number | null {
+  return spx != null && vix != null ? Math.min(spx, vix) : null;
+}
+
+/**
  * The meta App passes to useSnapshotSave: where the inputs could have come
  * from (the history, labelled with its own date, and the live quotes),
  * whether a debounced input is still in flight, and the inputs themselves.
@@ -130,7 +152,14 @@ export function buildSnapshotMeta(src: SnapshotMetaSource): SnapshotMeta {
             vix: snap.vix,
           }
         : null,
-    live: spx && vix ? { spot: spx.price, vix: vix.price } : null,
+    live:
+      spx && vix
+        ? {
+            spot: spx.price,
+            vix: vix.price,
+            quotedAt: olderQuoteTime(spx.quotedAt, vix.quotedAt),
+          }
+        : null,
     inputsPending: src.debounced.some(([raw, value]) => raw !== value),
     spy: Number.parseFloat(src.dSpot) || undefined,
     vix: Number.parseFloat(src.dVix) || undefined,
@@ -283,6 +312,7 @@ export function useSnapshotSave(
   const historyVix = meta.history?.vix;
   const liveSpot = meta.live?.spot;
   const liveVix = meta.live?.vix;
+  const liveQuotedAt = meta.live?.quotedAt;
   const inputsPending = meta.inputsPending === true;
 
   useEffect(() => {
@@ -347,6 +377,9 @@ export function useSnapshotSave(
       skewPct: meta.skewPct,
       clusterMult: meta.clusterMult,
       isBacktest: kind === 'backtest',
+      // A live row's quotes' age; the server refuses a stale one. A replay
+      // has no quote to date, so it sends none (undefined drops from JSON).
+      quotedAt: kind === 'live' ? (liveQuotedAt ?? null) : undefined,
 
       // From signals (all computed trading signals)
       spxOpen: signals.spxOpen,
@@ -431,8 +464,10 @@ export function useSnapshotSave(
           return;
         }
         const { status } = res;
-        // Expected and transient: retry quietly.
-        if (status === 401 || status === 429) {
+        // Expected and transient: retry quietly. A 422 is the server finding
+        // the live quote stale (the poll stalled, or Schwab served an old
+        // print): a fresher quote re-posts the key, and the server alerts.
+        if (status === 401 || status === 422 || status === 429) {
           retry();
           return;
         }
@@ -470,6 +505,7 @@ export function useSnapshotSave(
     historyVix,
     liveSpot,
     liveVix,
+    liveQuotedAt,
     meta.spy,
     meta.vix,
     meta.skewPct,

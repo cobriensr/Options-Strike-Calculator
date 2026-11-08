@@ -877,6 +877,61 @@ describe('useSnapshotSave — a save carries its own date’s inputs', () => {
 });
 
 // ============================================================
+// THE QUOTE TIME A LIVE SAVE CARRIES
+// ============================================================
+
+describe('useSnapshotSave — the quote time a live save carries', () => {
+  const QUOTED_AT = Date.parse(NOW) - 30_000;
+  const liveMeta = (quotedAt?: number | null): SnapshotMeta => ({
+    ...baseMeta,
+    live: { spot: 5500, vix: 18, quotedAt },
+  });
+
+  it('sends the live quotes’ quotedAt on a live save', () => {
+    renderHook(() =>
+      useSnapshotSave(makeResults(), defaultSignals, liveMeta(QUOTED_AT), true),
+    );
+
+    expect(body().isBacktest).toBe(false);
+    expect(body().quotedAt).toBe(QUOTED_AT);
+  });
+
+  it.each([
+    ['null', null],
+    ['absent', undefined],
+  ])(
+    'sends null on a live save when the live quotes’ time is %s',
+    (_label, quotedAt) => {
+      renderHook(() =>
+        useSnapshotSave(
+          makeResults(),
+          defaultSignals,
+          liveMeta(quotedAt),
+          true,
+        ),
+      );
+
+      expect(body().isBacktest).toBe(false);
+      expect(body().quotedAt).toBeNull();
+    },
+  );
+
+  it('omits quotedAt on a backtest save, whatever the live quotes carry', () => {
+    renderHook(() =>
+      useSnapshotSave(
+        makeResults(),
+        defaultSignals,
+        { ...backtestMeta, live: { spot: 5500, vix: 18, quotedAt: QUOTED_AT } },
+        true,
+      ),
+    );
+
+    expect(body().isBacktest).toBe(true);
+    expect(body()).not.toHaveProperty('quotedAt');
+  });
+});
+
+// ============================================================
 // THE META APP PASSES (wiring)
 // ============================================================
 
@@ -907,7 +962,8 @@ describe('buildSnapshotMeta', () => {
       selectedDate: TODAY,
       entryTime: '10:00 AM CT',
       history: { date: TODAY, spot: 6790.2, spy: 679.02, vix: 19.4 },
-      live: { spot: 6800.37, vix: 20.114 },
+      // The fixture quotes carry no quote time.
+      live: { spot: 6800.37, vix: 20.114, quotedAt: null },
       inputsPending: false,
       spy: 679.02,
       vix: 19.4,
@@ -942,6 +998,41 @@ describe('buildSnapshotMeta', () => {
         ...(patch as Partial<SnapshotMetaSource>),
       }).live,
     ).toBeNull();
+  });
+
+  describe('the live source’s quote time', () => {
+    const withTimes = (
+      spxAt: number | null | undefined,
+      vixAt?: number | null,
+    ) =>
+      buildSnapshotMeta({
+        ...source,
+        quotes: {
+          spx: { price: 6800, quotedAt: spxAt },
+          vix: { price: 20, quotedAt: vixAt },
+        } as SnapshotMetaSource['quotes'],
+      }).live?.quotedAt;
+
+    it.each([
+      ['VIX the older', 2_000, 1_000, 1_000],
+      ['SPX the older', 1_000, 2_000, 1_000],
+      ['both the same', 1_500, 1_500, 1_500],
+    ])(
+      'is the older of the SPX and VIX quote times, %s',
+      (_l, spx, vix, at) => {
+        expect(withTimes(spx, vix)).toBe(at);
+      },
+    );
+
+    it.each([
+      ['no SPX time', undefined, 1_000],
+      ['a null SPX time', null, 1_000],
+      ['no VIX time', 1_000, undefined],
+      ['a null VIX time', 1_000, null],
+      ['neither time', undefined, undefined],
+    ])('is null with %s: the older one is unknown', (_label, spx, vix) => {
+      expect(withTimes(spx, vix)).toBeNull();
+    });
   });
 
   it('marks the inputs pending while any debounced copy lags its raw value', () => {
@@ -1023,6 +1114,25 @@ describe('useSnapshotSave — a failed save', () => {
     }
   }
 
+  /**
+   * Render for baseMeta, and return churn(meta): five re-renders of `meta`
+   * with fresh results, each answer landed first.
+   */
+  function renderForChurn() {
+    const { rerender } = renderHook(
+      ({ meta, results }) =>
+        useSnapshotSave(results, defaultSignals, meta, true),
+      { initialProps: { meta: baseMeta, results: makeResults() } },
+    );
+    return async (meta: SnapshotMeta) => {
+      for (let i = 0; i < 5; i++) {
+        await settle();
+        rerender({ meta, results: makeResults() });
+      }
+      await settle();
+    };
+  }
+
   const TAGS = { tags: { context: 'snapshot_save' } };
 
   it.each([500, 502])(
@@ -1080,6 +1190,73 @@ describe('useSnapshotSave — a failed save', () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(3);
     expect(captureUnlessAuth).not.toHaveBeenCalled();
+  });
+
+  describe('a 422 (the server found the quote stale)', () => {
+    const REFUSED = JSON.stringify({
+      error: 'quote-not-fresh',
+      reason: 'stale-quote',
+      saved: false,
+    });
+    const liveAt = (quotedAt: number, entryTime = '09:35'): SnapshotMeta => ({
+      ...baseMeta,
+      entryTime,
+      live: { spot: 5500, vix: 18, quotedAt },
+    });
+
+    it('retries without reporting it, up to the cap', async () => {
+      answerAlways(422);
+      await renderAndChurn(8);
+
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
+      expect(captureUnlessAuth).not.toHaveBeenCalled();
+    });
+
+    it('posts the released key again when a fresher quote arrives, with the new quote time', async () => {
+      const staleAt = Date.parse(NOW) - 20 * 60_000;
+      const freshAt = Date.parse(NOW) - 30_000;
+      fetchSpy.mockResolvedValueOnce(new Response(REFUSED, { status: 422 }));
+      const results = makeResults();
+      const { rerender } = renderHook(
+        ({ meta }) => useSnapshotSave(results, defaultSignals, meta, true),
+        { initialProps: { meta: liveAt(staleAt) } },
+      );
+      await settle();
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(body(0).quotedAt).toBe(staleAt);
+
+      // Only the quote time changes: same results, same signals, same inputs.
+      rerender({ meta: liveAt(freshAt) });
+
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(body(1).quotedAt).toBe(freshAt);
+      expect(body(1).entryTime).toBe(body(0).entryTime);
+      expect(captureUnlessAuth).not.toHaveBeenCalled();
+    });
+
+    it('does not post an answered key again when a fresher quote arrives', async () => {
+      const results = makeResults();
+      const { rerender } = renderHook(
+        ({ meta }) => useSnapshotSave(results, defaultSignals, meta, true),
+        { initialProps: { meta: liveAt(Date.parse(NOW) - 60_000) } },
+      );
+      await settle();
+
+      rerender({ meta: liveAt(Date.parse(NOW) - 30_000) });
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('gives each entry time its own attempts, without reporting any', async () => {
+      answerAlways(422);
+      const churn = renderForChurn();
+      await churn(baseMeta);
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
+
+      await churn({ ...baseMeta, entryTime: '09:40' });
+      expect(fetchSpy).toHaveBeenCalledTimes(6);
+      expect(captureUnlessAuth).not.toHaveBeenCalled();
+    });
   });
 
   it('caps a persistent network error at 3 posts and reports it once', async () => {
@@ -1149,18 +1326,7 @@ describe('useSnapshotSave — a failed save', () => {
 
   it('gives each entry time its own attempts and its own report', async () => {
     answerAlways(500);
-    const { rerender } = renderHook(
-      ({ meta, results }) =>
-        useSnapshotSave(results, defaultSignals, meta, true),
-      { initialProps: { meta: baseMeta, results: makeResults() } },
-    );
-    const churn = async (meta: SnapshotMeta) => {
-      for (let i = 0; i < 5; i++) {
-        await settle();
-        rerender({ meta, results: makeResults() });
-      }
-      await settle();
-    };
+    const churn = renderForChurn();
     await churn(baseMeta);
     expect(fetchSpy).toHaveBeenCalledTimes(3);
 
