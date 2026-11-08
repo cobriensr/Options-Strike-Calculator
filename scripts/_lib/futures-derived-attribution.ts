@@ -16,21 +16,19 @@
  *   the overnight window.
  *
  * The input bars are found with the rule `computeSnapshot` uses today
- * (api/_lib/futures-derive.ts). The rule is mirrored here because
- * computeSnapshot returns only the latest bar's timestamp, so
- * `inputsMatchSnapshot` checks the mirror against what computeSnapshot returned.
+ * (api/_lib/futures-derive.ts), whose three constants are imported, not
+ * copied. The rule itself is repeated here because computeSnapshot returns only
+ * the latest bar's timestamp, so `inputsMatchSnapshot` checks that repeat
+ * against what computeSnapshot returned.
  */
 
 import { z } from 'zod';
+import {
+  BAR_CLOSE_LAG_MS,
+  MAX_BAR_AGE_MS,
+  VOLUME_WINDOW_MS,
+} from '../../api/_lib/futures-derive.js';
 
-// ── The snapshot rule, mirrored from api/_lib/futures-derive.ts ─────────────
-
-/** Oldest a bar may be and still stand in for a moment (MAX_BAR_AGE_MS there). */
-export const MAX_BAR_AGE_MS = 15 * 60 * 1000;
-/** A bar is visible only once its minute has closed (BAR_CLOSE_LAG_MS there). */
-export const BAR_CLOSE_LAG_MS = 60 * 1000;
-/** The volume baseline reaches back this far. */
-export const VOLUME_WINDOW_MS = 20 * 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 
 export interface Bar {

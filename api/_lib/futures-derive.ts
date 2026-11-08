@@ -12,9 +12,10 @@
  *     (`ts <= at - 60 s`), NOT the absolute latest bar for the symbol.
  *     This is what makes the historical picker correct — walking back in
  *     time must not leak future information, and neither may the minute
- *     `at` is still inside. uw-stream writes a minute's bar only once the
- *     next minute prints, so the live cron has always seen exactly this
- *     set; reading the same set for a past `at` reproduces the row the
+ *     `at` is still inside. uw-stream writes a minute's bar only after
+ *     that minute closes, so the live uw-stream cron sees at most this set
+ *     (a bar that lands late is simply absent from what it saw); reading
+ *     this set for a past `at` is the closest reproduction of the row the
  *     cron wrote.
  *   - A bar only stands in for the price at a moment T if it printed
  *     within MAX_BAR_AGE_MS of T (see below). A symbol whose latest bar
@@ -72,7 +73,7 @@ export const FUTURES_SYMBOLS = ['ES', 'NQ', 'ZN', 'RTY', 'CL', 'GC'] as const;
  * no snapshot for that symbol — the pre-close price is not the price
  * "at" a moment when nothing trades.
  */
-const MAX_BAR_AGE_MS = 15 * 60 * 1000;
+export const MAX_BAR_AGE_MS = 15 * 60 * 1000;
 
 /**
  * A 1-minute bar stamped `ts` covers [ts, ts + 1 min), so it has closed, and
@@ -80,7 +81,10 @@ const MAX_BAR_AGE_MS = 15 * 60 * 1000;
  * `ts <= at - 60 s` admits the bar of the previous minute and never the bar
  * of the minute `at` falls in.
  */
-const BAR_CLOSE_LAG_MS = 60 * 1000;
+export const BAR_CLOSE_LAG_MS = 60 * 1000;
+
+/** The volume baseline reaches back this far from `at`. */
+export const VOLUME_WINDOW_MS = 20 * 24 * 60 * 60 * 1000;
 
 export type FuturesSymbol = (typeof FUTURES_SYMBOLS)[number];
 
@@ -263,7 +267,7 @@ export async function computeSnapshot(
   );
 
   // 20-day average daily volume, through the last closed bar.
-  const twentyDaysAgo = new Date(at.getTime() - 20 * 24 * 60 * 60 * 1000);
+  const twentyDaysAgo = new Date(at.getTime() - VOLUME_WINDOW_MS);
   const avgVolRows = await sql`
     SELECT
       AVG(daily_vol) AS avg_vol

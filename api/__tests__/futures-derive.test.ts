@@ -36,7 +36,10 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 import {
+  BAR_CLOSE_LAG_MS,
   FUTURES_SYMBOLS,
+  MAX_BAR_AGE_MS,
+  VOLUME_WINDOW_MS,
   computeSnapshot,
   type SnapshotResult,
   type SnapshotRow,
@@ -89,6 +92,14 @@ describe('FUTURES_SYMBOLS', () => {
     expect(FUTURES_SYMBOLS).not.toContain('VX1');
     expect(FUTURES_SYMBOLS).not.toContain('VX2');
     expect([...FUTURES_SYMBOLS]).toEqual(['ES', 'NQ', 'ZN', 'RTY', 'CL', 'GC']);
+  });
+});
+
+describe('bar-visibility constants', () => {
+  it('are the 15-minute age, the 60 s close lag and the 20-day window the Phase 4 attribution imports', () => {
+    expect(MAX_BAR_AGE_MS).toBe(15 * 60_000);
+    expect(BAR_CLOSE_LAG_MS).toBe(60_000);
+    expect(VOLUME_WINDOW_MS).toBe(20 * 24 * 60 * 60_000);
   });
 });
 
