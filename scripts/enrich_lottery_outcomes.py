@@ -364,8 +364,12 @@ def _trail_pp(
 
 
 # ============================================================
-# Flow-inversion port — direct port of api/_lib/flow-inversion.ts.
-# Constants are frozen; do not retune. Tested for parity in
+# Flow-inversion exit policy. This is the only implementation: the TypeScript
+# port (api/_lib/flow-inversion.ts) was removed with the Vercel cron's
+# inversion pass, so the nightly tape pass is the sole writer of
+# realized_flow_inversion_pct. The algorithm and frozen constants come from
+# simulate_flow_inversion in ml/experiments/lottery-net-flow-eda/
+# exit_simulation.py. Constants are frozen; do not retune. Tested in
 # scripts/test_enrich_lottery_outcomes.py.
 # ============================================================
 
@@ -443,8 +447,17 @@ def simulate_flow_inversion(
     entry_price: float,
     trigger_ts: datetime,
 ) -> tuple[float | None, datetime | None, str]:
-    """Returns (exitPct, exitTs, status). See
-    api/_lib/flow-inversion.ts:simulateFlowInversion for spec."""
+    """Returns (exitPct, exitTs, status).
+
+    1. Restrict matched-side flow to (trigger_ts, eod_ct] and require >= 5 rows.
+    2. Cumsum the flow series. Reject if the range is <= 0 (no peak possible).
+    3. Find the most-prominent peak with prominence >= 5 % x range.
+    4. From the peak onward, compute the 5-min slope of cumulative flow.
+    5. The first index where slope < 0 for >= 3 consecutive minutes is the
+       inversion timestamp. Fall back to EOD if none is found or the window
+       is too short.
+    6. Exit pct = (mid_at_or_after_inversion - entry_price) / entry_price x 100.
+    """
     post = [m for m in minutes if m[0] > trigger_ts]
     if not post:
         return None, None, 'no_post_trigger_prices'

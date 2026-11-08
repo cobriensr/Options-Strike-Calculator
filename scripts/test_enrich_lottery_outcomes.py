@@ -1,8 +1,9 @@
-"""Parity tests for the Python port of lottery exit policies.
+"""Tests for the Python lottery exit policies.
 
-Mirrors api/__tests__/lottery-exit-policies.test.ts and
-api/__tests__/flow-inversion.test.ts so the local enrichment cannot
-drift from the Vercel cron's logic without breaking this suite. Run:
+The tape policies mirror api/__tests__/lottery-exit-policies.test.ts, so
+the local enrichment cannot drift from the Vercel cron's logic without
+breaking this suite. The flow-inversion tests have no TypeScript
+counterpart: the Python pass is the only implementation. Run:
 
     ml/.venv/Scripts/pytest scripts/test_enrich_lottery_outcomes.py -q
 """
@@ -174,7 +175,7 @@ def test_minutes_to_peak_empty():
 
 
 # ============================================================
-# find_prominent_peaks — parity with TS findProminentPeaks
+# find_prominent_peaks
 # ============================================================
 
 
@@ -222,7 +223,7 @@ def test_eod_cst():
 
 
 # ============================================================
-# simulate_flow_inversion — parity with TS simulateFlowInversion
+# simulate_flow_inversion
 # ============================================================
 
 

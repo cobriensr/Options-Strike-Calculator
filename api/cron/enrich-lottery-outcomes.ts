@@ -43,8 +43,9 @@
  * realized_flow_inversion_pct comes only from the nightly Full Tape pass
  * (tagged fulltape), a night after the session. The pass this cron used to
  * run read UW's per-minute intraday tape, and on a cache miss it fed those
- * minutes to simulateFlowInversion newest-first and unsorted, so its values
- * were wrong.
+ * minutes to its TypeScript inversion simulation newest-first and unsorted,
+ * so its values were wrong. That simulation is deleted; the Python pass
+ * (scripts/enrich_lottery_outcomes.py) is the only implementation.
  *
  * Budget: maxDuration is 300 s. The pass starts no chunk after
  * TAPE_PASS_BUDGET_MS; whatever is left is picked up by the next run. A
