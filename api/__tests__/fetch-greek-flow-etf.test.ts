@@ -716,6 +716,53 @@ describe('fetch-greek-flow-etf handler', () => {
     expect(values).not.toContain(null);
   });
 
+  // ── Revision log (spec P0.9) ──────────────────────────────
+
+  it('names itself as the writer in every statement, each of which appends to vega_flow_etf_revisions', async () => {
+    setupMocks({
+      spyAll: [makeGreekFlowTick({ ticker: 'SPY' })],
+      qqqAll: [makeGreekFlowTick({ ticker: 'QQQ' })],
+      spyBreakdown: EXPIRY_TODAY_BREAKDOWN,
+      qqqBreakdown: EXPIRY_TODAY_BREAKDOWN,
+      spyExpiry: [makeGreekFlowTick({ ticker: 'SPY' })],
+      qqqExpiry: [makeGreekFlowTick({ ticker: 'QQQ' })],
+    });
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(res._status).toBe(200);
+    expect(mockSql).toHaveBeenCalledTimes(4);
+    for (const [strings, ...values] of mockSql.mock.calls) {
+      expect((strings as readonly string[]).join('?')).toContain(
+        'INSERT INTO vega_flow_etf_revisions',
+      );
+      expect(values).toContain('fetch-greek-flow-etf');
+    }
+  });
+
+  it("an unchanged re-send (the store returns no rows) is a success, not a total write loss: status 'success', nothing sent to Sentry", async () => {
+    // The whole day is re-sent every minute and the store skips unchanged
+    // rows, so zero inserted and zero updated is the usual answer.
+    mockSql.mockResolvedValue([]);
+    setupMocks({});
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      failureCount: 0,
+      legCount: 2,
+      tickers: {
+        SPY: { all: { ticks: 1, inserted: 0, updated: 0, failed: 0 } },
+        QQQ: { all: { ticks: 1, inserted: 0, updated: 0, failed: 0 } },
+      },
+    });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
   // ── Per-minute granularity preserved through batching ─────
 
   it('preserves per-minute granularity in a single batched INSERT (no 5-min downsampling)', async () => {
