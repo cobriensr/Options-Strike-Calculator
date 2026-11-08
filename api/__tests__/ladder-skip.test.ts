@@ -26,7 +26,7 @@ vi.mock('../_lib/sentry.js', () => ({
   metrics: mockMetrics,
 }));
 
-import { reportLadderSkip } from '../_lib/ladder-skip.js';
+import { reportLadderSkip, reportSkippedWrite } from '../_lib/ladder-skip.js';
 import type { LadderSkipKind } from '../_lib/strike-ladder.js';
 
 // 2026-03-24 is EDT (UTC-4): 13:39Z = 09:39 ET, 13:40Z = 09:40 ET.
@@ -36,6 +36,7 @@ const AT_0940_ET = new Date('2026-03-24T13:40:00.000Z');
 const KINDS: Array<[LadderSkipKind, string, string]> = [
   ['stale', 'stale_cache_skip', 'stale UW cache'],
   ['stale_spot', 'stale_spot_skip', 'stale UW spot'],
+  ['stale_source', 'stale_source_skip', 'source ladder too old'],
   ['all_zero', 'zero_snapshot_skip', 'all-zero gamma'],
   ['empty', 'empty_ladder_skip', 'no strikes'],
   ['outside_window', 'outside_window_skip', 'inside the stored range'],
@@ -115,5 +116,63 @@ describe('reportLadderSkip', () => {
     const [message] = mockSentry.captureMessage.mock.calls[0]!;
     expect(message).toContain('SPX');
     expect(message).not.toContain('undefined');
+  });
+});
+
+describe('reportSkippedWrite', () => {
+  const opts = {
+    job: 'fetch-spot-gex',
+    metric: 'fetch_spot_gex.zero_row_skip',
+    warning: 'fetch-spot-gex: skipping an all-zero row',
+    detail: { rows: 2 },
+    alert: 'fetch-spot-gex: newest row is all-zero',
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('warns and counts the named metric before 09:40 ET, with no Sentry', () => {
+    vi.setSystemTime(BEFORE_0940_ET);
+
+    reportSkippedWrite(opts);
+
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ rows: 2 }),
+      'fetch-spot-gex: skipping an all-zero row',
+    );
+    expect(mockMetrics.increment).toHaveBeenCalledWith(
+      'fetch_spot_gex.zero_row_skip',
+    );
+    expect(mockSentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('also sends the Sentry error from 09:40 ET', () => {
+    vi.setSystemTime(AT_0940_ET);
+
+    reportSkippedWrite(opts);
+
+    expect(mockSentry.captureMessage).toHaveBeenCalledWith(
+      'fetch-spot-gex: newest row is all-zero (09:40 ET or later)',
+      'error',
+    );
+    expect(mockSentry.setTag).toHaveBeenCalledWith(
+      'cron.job',
+      'fetch-spot-gex',
+    );
+  });
+
+  it('sends no Sentry error when the caller gives no alert, even from 09:40 ET', () => {
+    vi.setSystemTime(AT_0940_ET);
+
+    reportSkippedWrite({ ...opts, alert: undefined });
+
+    expect(mockLogger.warn).toHaveBeenCalled();
+    expect(mockMetrics.increment).toHaveBeenCalled();
+    expect(mockSentry.captureMessage).not.toHaveBeenCalled();
   });
 });

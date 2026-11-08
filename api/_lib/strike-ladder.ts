@@ -33,13 +33,16 @@ interface TimedRow {
  *   - stale: the newest strike row is from an earlier ET day.
  *   - stale_spot: the spot row the window was centered on is from an earlier
  *     ET day (judged by the caller, before any ladder is fetched).
+ *   - stale_source: a derived writer's source ladder (strike_exposures, for
+ *     compute-zero-gamma) is from today but older than the allowed age.
  *   - all_zero: no strike in the stored range carries gamma OI.
- *   - empty: UW returned no strike rows.
+ *   - empty: UW returned no strike rows (or the source has none).
  *   - outside_window: rows came back but none is inside the stored range.
  */
 export type LadderSkipKind =
   | 'stale'
   | 'stale_spot'
+  | 'stale_source'
   | 'all_zero'
   | 'empty'
   | 'outside_window';
