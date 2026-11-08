@@ -1377,8 +1377,26 @@ describe('classifyThinMiss', () => {
   });
 
   it.each([
-    ['above the recomputed ratio', 0.5, 0.4998],
-    ['equal to the recomputed ratio', 0.5, 0.5],
+    [0.5063, 0.5062], // ZN 2026-11-06: a fill on a prior day lowered the ratio past a rounding edge
+    [1.0001, 1],
+    [0.0001, 0],
+  ])(
+    'calls a stored ratio one unit of the column above the recomputed one (%s against %s) late-volume: a prior-day fill lowers the ratio',
+    (stored, recomputed) => {
+      expect(
+        classifyThinMiss(
+          miss({
+            storedVolumeRatio: stored,
+            recomputedVolumeRatio: recomputed,
+          }),
+        ),
+      ).toEqual({ cls: 'late-volume', ageMin: null });
+    },
+  );
+
+  it.each([
+    ['two units above the recomputed ratio', 0.5, 0.4998],
+    ['far above the recomputed ratio', 0.9, 0.5],
     ['null while the recompute has a ratio', null, 0.5],
     ['a number while the recompute has none', 0.5, null],
   ])(

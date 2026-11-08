@@ -646,17 +646,27 @@ export function classifyMismatch(row: {
 
 export type ThinMissClass = 'late-bar' | 'late-volume' | 'other';
 
+/** One unit of the NUMERIC(8,4) volume_ratio column. */
+const VOLUME_RATIO_UNIT = 0.0001;
+
 /**
  * The class of a miss in the method control of a thin root (RTY, CL, GC, ZN),
  * whose minute bar can land after the cron read. A late bar can only do two
  * things to what the cron saw: leave the price on an older bar, or leave out a
  * volume. The first is `late-bar` (see classifyMismatch). The second is
- * `late-volume`: the price, 1h and day change all match and the stored volume
- * ratio is strictly below the recomputed one, because adding a bar's volume
- * raises today's total by `v` and the 20-day average, a sum that already holds
- * today, by at most `v / n`. The ratio only goes up. A stored ratio above the
- * recomputed one, a null on either side, or any other field is `other`: a
- * method difference, not an arrival.
+ * `late-volume`: the price, 1h and day change all match and the volume ratio
+ * moved by a late fill.
+ *
+ * - A bar filled in later today raises today's total by `v` and the 20-day
+ *   average, a sum that already holds today, by at most `v / n`: the ratio goes
+ *   up, so the stored ratio is below the recomputed one.
+ * - A hole filled in later on a prior day raises the average and lowers the
+ *   ratio (backfill-futures-gaps does this after the close). That can flip the
+ *   fourth decimal by rounding, so a stored ratio above the recomputed one by
+ *   at most one unit of the column also counts.
+ *
+ * A stored ratio above by more than that, a null on either side, or any other
+ * field is `other`: a method difference, not an arrival.
  */
 export function classifyThinMiss(row: {
   fields: readonly SnapshotField[];
@@ -674,7 +684,9 @@ export function classifyThinMiss(row: {
     onlyVolumeRatio &&
     row.storedVolumeRatio != null &&
     row.recomputedVolumeRatio != null &&
-    row.storedVolumeRatio < row.recomputedVolumeRatio
+    Math.round(
+      (row.storedVolumeRatio - row.recomputedVolumeRatio) / VOLUME_RATIO_UNIT,
+    ) <= 1
   ) {
     return { cls: 'late-volume', ageMin: null };
   }

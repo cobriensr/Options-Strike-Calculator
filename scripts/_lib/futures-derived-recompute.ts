@@ -82,6 +82,7 @@ import {
   type Repair,
   type SnapshotField,
   type ValueField,
+  type ValueHit,
   type WindowAggregate,
 } from './futures-derived-attribution.js';
 
@@ -1005,6 +1006,17 @@ export interface ValueRuleStats {
   byKind: { deleted: number; 'close-changed': number };
   /** The first SAMPLE_N such rows, with the matched bar. */
   samples: string[];
+  /** Every match to a bar whose close Phase 2 changed, with how much older the bar is than the row. */
+  closeChanged: { line: string; coincidence: boolean }[];
+}
+
+/** Stored price differs from the recompute by over 0.15% though no pre-repair bar has the stored price: not written. */
+export interface UnmatchedLarge {
+  count: number;
+  /** The first SAMPLE_N by time. */
+  first: string[];
+  /** The TOP_UNMATCHED largest by difference. */
+  largest: UnwrittenDiff[];
 }
 
 /** A price difference between the stored row and the recompute that is not written. */
@@ -1043,6 +1055,7 @@ export interface SnapshotSymbolReport {
   unmatched: Record<ValueField, number>;
   /** The TOP_UNWRITTEN largest |stored - recomputed| price differences that are not written. */
   unwritten: UnwrittenDiff[];
+  unmatchedLarge: UnmatchedLarge;
   /** Rows where the mirrored input rule disagrees with computeSnapshot. */
   attributionInconsistent: number;
   controlRows: number;
@@ -1363,24 +1376,44 @@ function valueHitFields(field: ValueField): SnapshotField[] {
 }
 
 const TOP_UNWRITTEN = 10;
+const TOP_UNMATCHED = 3;
 /** A price difference over this share of the price is named in the report. */
 const UNWRITTEN_FLAG_SHARE = 0.0015;
+/** A value match to a bar this many minutes older than the row is marked a probable coincidence. */
+const COINCIDENCE_MIN = 60;
 
 function noteUnwritten(
   list: UnwrittenDiff[],
   row: SnapshotRow,
   recomputed: number,
   why: string,
+  cap = TOP_UNWRITTEN,
 ): void {
   const diff = Math.abs(row.stored.price - recomputed);
-  if (list.length >= TOP_UNWRITTEN && diff <= (list.at(-1)?.diff ?? 0)) return;
+  if (list.length >= cap && diff <= (list.at(-1)?.diff ?? 0)) return;
   const flag = diff > UNWRITTEN_FLAG_SHARE * Math.abs(row.stored.price);
   list.push({
     diff,
     line: `${row.symbol} ${isoSecond(row.tsMs)} id ${row.id}: stored ${row.stored.price}, recomputed ${recomputed}, difference ${diff.toFixed(2)}, ${why}${flag ? ' [over 0.15% of the price]' : ''}`,
   });
   list.sort((a, b) => b.diff - a.diff);
-  list.length = Math.min(list.length, TOP_UNWRITTEN);
+  list.length = Math.min(list.length, cap);
+}
+
+function noteUnmatchedLarge(
+  stats: UnmatchedLarge,
+  row: SnapshotRow,
+  recomputed: number,
+): void {
+  stats.count += 1;
+  const why = 'no pre-repair bar has the stored price';
+  const diff = Math.abs(row.stored.price - recomputed);
+  if (stats.first.length < SAMPLE_N) {
+    stats.first.push(
+      `${row.symbol} ${isoSecond(row.tsMs)} id ${row.id}: stored ${row.stored.price}, recomputed ${recomputed}, difference ${diff.toFixed(2)}`,
+    );
+  }
+  noteUnwritten(stats.largest, row, recomputed, why, TOP_UNMATCHED);
 }
 
 function noteValueRule(
@@ -1392,14 +1425,26 @@ function noteValueRule(
   stats.rows += 1;
   for (const f of newly) stats.fields[f] += 1;
   // A bar that matched two fields (the price and the 1h change) counts once.
-  const bars = new Map<number, PreBar>();
+  const matched = new Map<number, ValueHit>();
   for (const h of hits) {
-    if (valueHitFields(h.field).some((f) => newly.includes(f))) {
-      bars.set(h.bar.tsMs, h.bar);
+    if (
+      valueHitFields(h.field).some((f) => newly.includes(f)) &&
+      !matched.has(h.bar.tsMs)
+    ) {
+      matched.set(h.bar.tsMs, h);
     }
   }
-  for (const bar of bars.values()) {
-    if (bar.repair != null) stats.byKind[bar.repair] += 1;
+  for (const { field, bar } of matched.values()) {
+    if (bar.repair == null) continue;
+    stats.byKind[bar.repair] += 1;
+    if (bar.repair === 'close-changed') {
+      const ageMin = Math.round((row.tsMs - bar.tsMs) / MINUTE_MS);
+      const coincidence = ageMin > COINCIDENCE_MIN;
+      stats.closeChanged.push({
+        coincidence,
+        line: `${row.symbol} ${isoSecond(row.tsMs)} id ${row.id}: stored ${field} ${row.stored[field]} matches the close-changed bar of ${isoSecond(bar.tsMs)} (close ${bar.closePre} before Phase 2, ${bar.closeNow} now), ${ageMin} min older${coincidence ? ', probable coincidence' : ''}`,
+      });
+    }
   }
   if (stats.samples.length < SAMPLE_N) {
     const first = hits[0];
@@ -1452,9 +1497,11 @@ async function planSnapshots(
         fields: emptyFields(),
         byKind: { deleted: 0, 'close-changed': 0 },
         samples: [],
+        closeChanged: [],
       },
       unmatched: { price: 0, change1hPct: 0, changeDayPct: 0 },
       unwritten: [],
+      unmatchedLarge: { count: 0, first: [], largest: [] },
       attributionInconsistent: 0,
       controlRows: 0,
       controlMatched: 0,
@@ -1541,6 +1588,15 @@ async function planSnapshots(
           outcome.to.price,
           'method drift, price not affected',
         );
+      }
+      if (
+        outcome.fields.includes('price') &&
+        !writable.includes('price') &&
+        byValue.unmatched.includes('price') &&
+        Math.abs(row.stored.price - outcome.to.price) >
+          UNWRITTEN_FLAG_SHARE * Math.abs(row.stored.price)
+      ) {
+        noteUnmatchedLarge(report.unmatchedLarge, row, outcome.to.price);
       }
       if (writable.length === 0) continue;
       report.rowsToWrite += 1;
@@ -1894,7 +1950,30 @@ function infoText(info: SnapshotInfo, heading: string): string[] {
   return out;
 }
 
-function junkText(junk: JunkRow[], command: string | null): string[] {
+function closeChangedText(v: ValueRuleStats): string[] {
+  if (v.closeChanged.length === 0) return [];
+  const coincidences = v.closeChanged.filter((m) => m.coincidence).length;
+  return [
+    `    all ${v.closeChanged.length} matches to a bar whose close Phase 2 changed (the matched bar's age; over ${COINCIDENCE_MIN} min is marked a probable coincidence, ${coincidences} of them):`,
+    ...v.closeChanged.map((m) => `      ${m.line}`),
+  ];
+}
+
+function unmatchedLargeText(u: UnmatchedLarge): string[] {
+  const out = [
+    `    stored price matches no pre-repair bar and differs from the recompute by over 0.15% (not written; the open D1 question): ${u.count} rows`,
+  ];
+  if (u.count === 0) return out;
+  out.push(
+    `      the first ${u.first.length} by time:`,
+    ...u.first.map((l) => `        ${l}`),
+    `      the ${u.largest.length} largest:`,
+    ...u.largest.map((l) => `        ${l.line}`),
+  );
+  return out;
+}
+
+function junkText(junk: JunkRow[]): string[] {
   const out = [
     `  stale rows priced from a deleted junk bar (not recomputable; --delete-junk-stale deletes them, off by default): ${junk.length}`,
   ];
@@ -1914,16 +1993,10 @@ function junkText(junk: JunkRow[], command: string | null): string[] {
         `      ${j.symbol} ${isoSecond(j.tsMs)} id ${j.id}: stored price ${j.storedPrice}, the deleted bar of ${isoSecond(j.barTsMs)} closed at ${j.barClose}`,
     ),
   );
-  if (command != null) {
-    out.push(
-      '    to delete them (the owner decides; the snapshots store takes --expect-snapshots 0 once applied):',
-      `      ${command}`,
-    );
-  }
   return out;
 }
 
-function snapshotsText(r: SnapshotStore, junkCommand: string | null): string[] {
+function snapshotsText(r: SnapshotStore): string[] {
   const top = r.changes
     .filter((c) => c.fields.includes('price'))
     .sort(
@@ -1948,9 +2021,11 @@ function snapshotsText(r: SnapshotStore, junkCommand: string | null): string[] {
       `    attribution inputs disagreeing with computeSnapshot: ${s.attributionInconsistent}`,
       `    newly affected by the value rule (the stored input found by value, a bar Phase 2 deleted or changed): ${s.valueRule.rows} rows (${byFieldText(s.valueRule.fields)}), matched bars deleted ${s.valueRule.byKind.deleted}, close-changed ${s.valueRule.byKind['close-changed']}`,
       ...s.valueRule.samples.map((l) => `      ${l}`),
+      ...closeChangedText(s.valueRule),
       `    unmatched (no pre-repair bar matched the stored value, so the field is left to the other rule): price=${s.unmatched.price} change1hPct=${s.unmatched.change1hPct} changeDayPct=${s.unmatched.changeDayPct}`,
       `    the ${s.unwritten.length} largest price differences not written (stored vs recomputed, or vs the latest closed bar when the recompute is stale):`,
       ...s.unwritten.map((u) => `      ${u.line}`),
+      ...unmatchedLargeText(s.unmatchedLarge),
     );
   }
   out.push(
@@ -1960,7 +2035,7 @@ function snapshotsText(r: SnapshotStore, junkCommand: string | null): string[] {
         `    ${snapshotLine({ id: c.id, symbol: c.symbol, tsMs: c.tsMs, stored: c.from, row: c.row }, c.to)} [writes ${c.fields.join(', ')}]`,
     ),
     ...unrecomputableText(r.unrecomputable),
-    ...junkText(r.junk, junkCommand),
+    ...junkText(r.junk),
     ...controlText(r.control),
   );
   for (const info of r.controlMisses) {
@@ -2027,12 +2102,10 @@ export function formatReport(
   plans: Plans,
   header: string[],
   gateProblems: string[],
-  junkCommand: string | null = null,
+  commands: ApplyCommands | null = null,
 ): string {
   const out = [...header, ''];
-  if (plans.snapshots) {
-    out.push(...snapshotsText(plans.snapshots, junkCommand), '');
-  }
+  if (plans.snapshots) out.push(...snapshotsText(plans.snapshots), '');
   if (plans.premarket) out.push(...premarketText(plans.premarket), '');
   if (plans.fires) out.push(...firesText(plans.fires), '');
   out.push(
@@ -2041,6 +2114,20 @@ export function formatReport(
       : 'APPLY WOULD REFUSE:',
     ...gateProblems.map((p) => `  ${p}`),
   );
+  if (commands != null) {
+    out.push(
+      '',
+      'To apply, after the close (add --env-file as for this dry run; each total is the count above):',
+      ...(commands.withJunkDelete == null
+        ? []
+        : [
+            '  with the delete of the stale rows priced from a deleted junk bar:',
+            `    ${commands.withJunkDelete}`,
+          ]),
+      '  without it:',
+      `    ${commands.withoutJunkDelete}`,
+    );
+  }
   return out.join('\n');
 }
 
@@ -2514,19 +2601,42 @@ function expectations(o: RecomputeOptions): Record<Store, number | null> {
 
 // ── Run ─────────────────────────────────────────────────────────────────────
 
-/** The command that would apply the snapshots updates and the junk delete, for the report. */
-function junkApplyCommand(
+/** The commands that would apply what this dry run planned: with and without the junk delete. */
+interface ApplyCommands {
+  /** Null when the snapshots store was not planned, which the delete needs. */
+  withJunkDelete: string | null;
+  withoutJunkDelete: string;
+}
+
+function applyCommands(
   opts: RecomputeOptions,
-  snapshots: SnapshotStore,
-): string {
-  return [
+  plans: Plans,
+): ApplyCommands | null {
+  const planned = STORES.filter((store) => plans[store] != null);
+  if (planned.length === 0) return null;
+  const base = [
     'npx tsx scripts/recompute-futures-derived.ts --apply',
+    `--work-dir ${opts.workDir}`,
     ...(opts.backup == null ? [] : [`--backup ${opts.backup}`]),
-    '--stores snapshots',
-    `--expect-snapshots ${snapshots.changes.length}`,
-    '--delete-junk-stale',
-    `--expect-junk-deletes ${snapshots.junk.length}`,
-  ].join(' ');
+    ...(planned.length === STORES.length
+      ? []
+      : [`--stores ${planned.join(' ')}`]),
+    ...planned.map(
+      (store) =>
+        `${EXPECT_FLAGS[store].flag} ${plans[store]?.changes.length ?? 0}`,
+    ),
+  ];
+  return {
+    withJunkDelete:
+      plans.snapshots == null
+        ? null
+        : [
+            ...base,
+            '--delete-junk-stale',
+            `--expect-junk-deletes ${plans.snapshots.junk.length}`,
+          ].join(' '),
+    withoutJunkDelete: base.join(' '),
+  };
 }
 
 /** Exit codes: 0 done, 1 failed or refused, 2 stopped between stores (market hours began). */
@@ -2598,7 +2708,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
       `elapsed ${Math.round((Date.now() - startedAt) / 1000)}s`,
     ],
     controlProblems,
-    plans.snapshots == null ? null : junkApplyCommand(opts, plans.snapshots),
+    applyCommands(opts, plans),
   );
   console.log(`\n${report}`);
   writeFileSync(join(opts.workDir, 'report.txt'), `${report}\n`);

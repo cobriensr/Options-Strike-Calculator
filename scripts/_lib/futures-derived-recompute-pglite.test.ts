@@ -1089,6 +1089,11 @@ describe('dry run on real SQL (pglite)', () => {
     expect(text).not.toContain('futures_snapshots (ES, NQ)');
     expect(text).not.toContain('market_snapshots.pre_market_data');
     expect(text).not.toContain('Phase 2 backup');
+    // The command names only the planned store, and offers no junk delete (it needs snapshots).
+    expect(text).toContain(
+      `--apply --work-dir ${workDir} --stores fires --expect-fires 3`,
+    );
+    expect(text).not.toContain('--delete-junk-stale');
   });
 
   it('reports the stale rows priced from a deleted junk bar, and the command that would delete them', async () => {
@@ -1124,9 +1129,107 @@ describe('dry run on real SQL (pglite)', () => {
     for (const id of [real, changed, hourOnly, ids.s4, ids.s10, ids.s11]) {
       expect(block).not.toContain(`id ${id}:`);
     }
-    expect(block).toContain(
-      `npx tsx scripts/recompute-futures-derived.ts --apply --backup ${backupPath} --stores snapshots --expect-snapshots 4 --delete-junk-stale --expect-junk-deletes 2`,
+    // The commands sit next to the three totals, with the delete's count and without it.
+    const text = report();
+    const apply = `npx tsx scripts/recompute-futures-derived.ts --apply --work-dir ${workDir} --backup ${backupPath} --expect-snapshots 4 --expect-premarket 1 --expect-fires 3`;
+    expect(text).toContain(
+      `with the delete of the stale rows priced from a deleted junk bar:\n    ${apply} --delete-junk-stale --expect-junk-deletes 2`,
     );
+    expect(text).toContain(`without it:\n    ${apply}\n`);
+  });
+
+  it("lists every match to a bar whose close Phase 2 changed, with the bar's age and a mark over 60 minutes", async () => {
+    // The 14:30 bar of 04-14 closed at 7067 before Phase 2 and 7007 now. A newer,
+    // unrepaired bar exists, so only the value rule finds it. The rows are 17, 60,
+    // 61 and 91 minutes after it.
+    await bar('ES', '2026-04-14T14:45:00Z', 7010, 10);
+    const at = async (ts: string) =>
+      snapshotRow('ES', ts, '2026-04-14', [7067, 0, 0, 1]);
+    const near = await at('2026-04-14T14:46:30.250Z');
+    const edge = await at('2026-04-14T15:30:00.000Z');
+    const over = await at('2026-04-14T15:31:00.000Z');
+    const far = await at('2026-04-14T16:00:30.250Z');
+    expect(await dry()).toBe(0);
+    const text = report();
+    expect(text).toContain(
+      "all 4 matches to a bar whose close Phase 2 changed (the matched bar's age; over 60 min is marked a probable coincidence, 2 of them):",
+    );
+    const matched = (id: number, ts: string, age: string) =>
+      `ES ${ts} id ${id}: stored price 7067 matches the close-changed bar of 2026-04-14T14:30:00Z (close 7067 before Phase 2, 7007 now), ${age}`;
+    expect(text).toContain(
+      `${matched(near, '2026-04-14T14:46:30.250Z', '17 min older')}\n`,
+    );
+    expect(text).toContain(
+      `${matched(edge, '2026-04-14T15:30:00Z', '60 min older')}\n`,
+    );
+    expect(text).toContain(
+      `${matched(over, '2026-04-14T15:31:00Z', '61 min older, probable coincidence')}\n`,
+    );
+    expect(text).toContain(
+      matched(
+        far,
+        '2026-04-14T16:00:30.250Z',
+        '91 min older, probable coincidence',
+      ),
+    );
+  });
+
+  it('counts the rows whose stored price matches no pre-repair bar and differs from the recompute by over 0.15%, and writes nothing for them', async () => {
+    // The latest closed bar of the 14:3x rows gives 7007. 7100 is no bar's close and
+    // 1.3% off: listed. 6990 is a real bar's close (the prior-day bar), 0.24% off: a
+    // value match, so not listed. 7005 is no bar's close but 0.03% off: under the
+    // mark. 7099 on 04-14 is no bar's close and 1.3% off, but its latest closed bar
+    // was repaired, so the price is written, not left alone.
+    const id = await snapshotRow(
+      'ES',
+      '2026-05-12T14:32:00.250Z',
+      '2026-05-12',
+      [7100, 0.1, 0.1, 0.4615],
+    );
+    const real = await snapshotRow(
+      'ES',
+      '2026-05-12T14:33:00.250Z',
+      '2026-05-12',
+      [6990, 0.1, 0.1, 0.4615],
+    );
+    const small = await snapshotRow(
+      'ES',
+      '2026-05-12T14:34:00.250Z',
+      '2026-05-12',
+      [7005, 0.1, 0.1, 0.4615],
+    );
+    const written = await snapshotRow(
+      'ES',
+      '2026-04-14T14:31:50.250Z',
+      '2026-04-14',
+      [7099, 0.1, 0.1, 0.4615],
+    );
+    const before = await dump();
+    expect(await dry()).toBe(0);
+    expect(await dump()).toBe(before);
+    const text = report();
+    expect(text).toContain(
+      'stored price matches no pre-repair bar and differs from the recompute by over 0.15% (not written; the open D1 question): 1 rows',
+    );
+    expect(text).toContain(
+      `ES 2026-05-12T14:32:00.250Z id ${id}: stored 7100, recomputed 7007, difference 93.00`,
+    );
+    // Neither the other three rows nor any other root is in it.
+    const lines = text.split('\n');
+    const at = lines.findIndex((l) =>
+      l.includes('the open D1 question): 1 rows'),
+    );
+    const block: string[] = [];
+    for (const l of lines.slice(at + 1)) {
+      if (!l.startsWith('      ')) break;
+      block.push(l);
+    }
+    for (const other of [real, small, written]) {
+      expect(block.join('\n')).not.toContain(`id ${other}:`);
+    }
+    expect(text).toContain('the open D1 question): 0 rows');
+    // The 04-14 row is written (three ES rows now), the others are not.
+    expect(text).toContain('ES: rows in range 10, rows to write 3 (');
   });
 
   it("reports an exact root's control miss, classified, and exits 0", async () => {
@@ -1195,7 +1298,17 @@ describe('dry run on real SQL (pglite)', () => {
       expect(text).toContain('Apply gate: every check passes.');
     });
 
-    it('refuses a stored volume ratio above the recomputed one: a late bar cannot lower it', async () => {
+    it('passes a stored volume ratio one unit above the recomputed one: a prior-day fill lowers the ratio', async () => {
+      await setRow('GC', 'volume_ratio = volume_ratio + 0.0001');
+      expect(await dry()).toBe(0);
+      const text = report();
+      expect(text).toContain(
+        THIN_LINE('215 exact, late-bar 0, late-volume 1, other 0'),
+      );
+      expect(text).toContain('Apply gate: every check passes.');
+    });
+
+    it('refuses a stored volume ratio more than one unit above the recomputed one', async () => {
       await setRow('GC', 'volume_ratio = volume_ratio + 0.01');
       expect(await dry()).toBe(0);
       const text = report();
