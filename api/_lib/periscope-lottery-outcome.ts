@@ -79,13 +79,43 @@
 
 import { getMarketCloseHourET } from '../../src/data/marketHours.js';
 import { etWallClockToUtcIso } from '../../src/utils/timezone.js';
-import { eodCtForTrigger } from './flow-inversion.js';
+import { getCtParts } from './flow-alert-derive.js';
 import {
   PERISCOPE_LOTTERY_ENTRY_WINDOW_MINUTES,
   PERISCOPE_LOTTERY_THRESHOLDS,
 } from './periscope-lottery-types.js';
 
 export type PeriscopeLotteryFireType = 'call_lottery' | 'put_lottery';
+
+const EOD_CT_HOUR = 15;
+const EOD_CT_MINUTE = 0;
+
+/**
+ * 15:00 CT on the trigger's CT calendar day, returned as a UTC Date.
+ * DST-aware via Intl TZ lookup (matches `session-windows.ts` pattern).
+ */
+export function eodCtForTrigger(triggerTs: Date): Date {
+  const ctParts = getCtParts(triggerTs.toISOString());
+  const [y, m, d] = ctParts.dateStr
+    .split('-')
+    .map((p) => Number.parseInt(p, 10));
+  // 15:00 CT is 20:00 UTC during CDT, 21:00 UTC during CST.
+  for (const utcHour of [20, 21]) {
+    const cand = new Date(
+      Date.UTC(y!, (m ?? 1) - 1, d ?? 1, utcHour, EOD_CT_MINUTE, 0, 0),
+    );
+    const parts = getCtParts(cand.toISOString());
+    if (
+      parts.dateStr === ctParts.dateStr &&
+      parts.hour === EOD_CT_HOUR &&
+      parts.minute === EOD_CT_MINUTE
+    ) {
+      return cand;
+    }
+  }
+  // Fallback (unreachable for any real CT trigger): assume CDT.
+  return new Date(Date.UTC(y!, (m ?? 1) - 1, d ?? 1, 20, EOD_CT_MINUTE, 0, 0));
+}
 
 /** SPXW prints every few seconds into the close, so a silent 10 min = feed down. */
 const TAPE_TAIL_MINUTES = 10;

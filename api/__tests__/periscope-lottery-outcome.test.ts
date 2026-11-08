@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   barParityMismatches,
   barTapeLive,
+  eodCtForTrigger,
   outcomeFromMinuteBars,
   periscopeFireWindow,
   type BarOutcome,
@@ -36,6 +37,20 @@ function lockedValues(o: BarOutcome): BarOutcomeValues {
   }
   return o.values;
 }
+
+describe('eodCtForTrigger', () => {
+  it('returns 20:00 UTC during CDT (e.g. May)', () => {
+    const trigger = new Date('2026-05-02T15:00:00Z'); // 10:00 CT
+    const eod = eodCtForTrigger(trigger);
+    expect(eod.toISOString()).toBe('2026-05-02T20:00:00.000Z');
+  });
+
+  it('returns 21:00 UTC during CST (e.g. January)', () => {
+    const trigger = new Date('2026-01-15T15:00:00Z'); // 09:00 CT
+    const eod = eodCtForTrigger(trigger);
+    expect(eod.toISOString()).toBe('2026-01-15T21:00:00.000Z');
+  });
+});
 
 describe('periscopeFireWindow', () => {
   it.each([
