@@ -517,6 +517,28 @@ export function checkJunkGate(
   return [];
 }
 
+/**
+ * Why `--apply --rewrite-stale-at-write` must refuse: the rows it would rewrite
+ * must be the count the owner approved from the dry run. Empty without the flag.
+ */
+export function checkStaleGate(
+  o: Pick<RecomputeOptions, 'rewriteStaleAtWrite' | 'expectStaleRewrites'>,
+  planned: number,
+): string[] {
+  if (!o.rewriteStaleAtWrite) return [];
+  if (o.expectStaleRewrites == null) {
+    return [
+      '--rewrite-stale-at-write needs --expect-stale-rewrites S: the count of the dry run you approved',
+    ];
+  }
+  if (o.expectStaleRewrites !== planned) {
+    return [
+      `the fresh plan rewrites ${planned} stale-at-write rows, --expect-stale-rewrites ${o.expectStaleRewrites} was given`,
+    ];
+  }
+  return [];
+}
+
 // ── Read-only session ───────────────────────────────────────────────────────
 
 const READ_ONLY_HEADER = 'Neon-Batch-Read-Only';
@@ -1053,6 +1075,36 @@ export interface MergeStateReport {
   };
 }
 
+/** A row priced from a bar older than the freshness gate allows, with a fresh recompute: the opt-in `--rewrite-stale-at-write` rewrites it. */
+export interface StaleRewrite {
+  change: SnapshotChange;
+  /** The bar whose close the stored price equals, and how many minutes older than the row it is. */
+  barTsMs: number;
+  ageMin: number;
+}
+
+/** Consecutive rows of one root that store the same price. */
+export interface FrozenRun {
+  startMs: number;
+  endMs: number;
+  rows: number;
+  price: number;
+}
+
+/** One root's stale-at-write rows. */
+export interface StaleStats {
+  count: number;
+  /** The TOP_STALE largest price changes, with the matched bar's age. */
+  largest: UnwrittenDiff[];
+  /** Runs of two or more consecutive planned rows with the same stored price. */
+  runs: number;
+  rowsInRuns: number;
+  /** The TOP_RUNS longest of them. */
+  longest: FrozenRun[];
+  /** Rows after the repaired span, in the scope, that meet the same test: not planned. */
+  afterSpan: number;
+}
+
 /** Stored price differs from the recompute by over 0.15% though no pre-repair bar has the stored price: not written. */
 export interface UnmatchedLarge {
   count: number;
@@ -1105,6 +1157,8 @@ export interface SnapshotSymbolReport {
   unmatchedLarge: UnmatchedLarge;
   /** ES and NQ only: null for a root Phase 2 only deleted bars of. */
   mergeState: MergeStateReport | null;
+  /** ES and NQ only: the thin roots are excluded (D1: today's bars there may be the wrong month). */
+  stale: StaleStats | null;
   /** Rows where the mirrored input rule disagrees with computeSnapshot. */
   attributionInconsistent: number;
   controlRows: number;
@@ -1172,6 +1226,8 @@ export interface SnapshotStore extends StoreResult<SnapshotChange> {
   controlMisses: SnapshotInfo[];
   /** Rows the opt-in `--delete-junk-stale` would delete: always planned and reported, never deleted by default. */
   junk: JunkRow[];
+  /** Rows the opt-in `--rewrite-stale-at-write` would rewrite: always planned and reported, never rewritten by default. */
+  staleRewrites: StaleRewrite[];
 }
 
 export interface PremarketStore extends StoreResult<PremarketChange> {
@@ -1526,6 +1582,42 @@ function mergeBarText(v: MergeBarView): string {
   return `  ${age} ${isoSecond(v.tsMs)}: O/H/L/C before ${before}, now ${ohlcText(v.now)}, ${did}`;
 }
 
+const TOP_STALE = 10;
+const TOP_RUNS = 10;
+
+function noteStale(
+  stats: StaleStats,
+  rewrite: StaleRewrite,
+  row: SnapshotRow,
+): void {
+  const c = rewrite.change;
+  stats.count += 1;
+  const diff = Math.abs(c.to.price - c.from.price);
+  if (
+    stats.largest.length < TOP_STALE ||
+    diff > (stats.largest.at(-1)?.diff ?? 0)
+  ) {
+    stats.largest.push({
+      diff,
+      line: `${row.symbol} ${isoSecond(row.tsMs)} id ${row.id}: price ${c.from.price} -> ${c.to.price} (${diff.toFixed(2)}), the matched bar of ${isoSecond(rewrite.barTsMs)} is ${rewrite.ageMin} min older; writes ${c.fields.join(', ')}`,
+    });
+    stats.largest.sort((a, b) => b.diff - a.diff);
+    stats.largest.length = Math.min(stats.largest.length, TOP_STALE);
+  }
+}
+
+/** Closes the open frozen run: a run of two or more rows is counted and, if long, kept. */
+function endRun(stats: StaleStats, state: { run: FrozenRun | null }): void {
+  const run = state.run;
+  state.run = null;
+  if (run == null || run.rows < 2) return;
+  stats.runs += 1;
+  stats.rowsInRuns += run.rows;
+  stats.longest.push(run);
+  stats.longest.sort((a, b) => b.rows - a.rows);
+  stats.longest.length = Math.min(stats.longest.length, TOP_RUNS);
+}
+
 function noteMergeState(
   m: MergeStateReport,
   row: SnapshotRow,
@@ -1562,6 +1654,7 @@ async function planSnapshots(
   const infos: SnapshotInfo[] = [];
   const controlMisses: SnapshotInfo[] = [];
   const junk: JunkRow[] = [];
+  const staleRewrites: StaleRewrite[] = [];
 
   for (const symbol of SYMBOLS) {
     const sd = data.get(symbol);
@@ -1599,6 +1692,16 @@ async function planSnapshots(
       driftTop: [],
       driftOverMark: 0,
       unmatchedLarge: { count: 0, first: [], largest: [] },
+      stale: isThinRoot(symbol)
+        ? null
+        : {
+            count: 0,
+            largest: [],
+            runs: 0,
+            rowsInRuns: 0,
+            longest: [],
+            afterSpan: 0,
+          },
       mergeState:
         sd.updates.size === 0
           ? null
@@ -1622,10 +1725,15 @@ async function planSnapshots(
       thin: null,
     };
 
-    for (const { row, result, outcome } of await evaluateSnapshots(
+    const frozen: { run: FrozenRun | null; last: number } = {
+      run: null,
+      last: -2,
+    };
+    const evaluated = await evaluateSnapshots(
       rows,
       `${symbol} snapshots in range`,
-    )) {
+    );
+    for (const [idx, { row, result, outcome }] of evaluated.entries()) {
       const dayOpenMs = dayOpenOf(new Date(row.tsMs));
       const byRule = affectedSnapshotFields(
         sd.repair,
@@ -1771,7 +1879,57 @@ async function planSnapshots(
       if (largeUnmatched) {
         noteUnmatchedLarge(report.unmatchedLarge, row, outcome.to.price);
       }
-      if (writable.length === 0) continue;
+      if (writable.length === 0) {
+        // The April to June writer had no freshness gate: it priced from the last
+        // bar it had while minutes were missing, and they have landed since. A row
+        // that matches such a bar by value, with a fresh recompute and nothing else
+        // writing it, is a stale-at-write row (ES and NQ only).
+        const bar = byValue.priceBar;
+        if (
+          report.stale != null &&
+          bar != null &&
+          row.tsMs - bar.tsMs > MAX_BAR_AGE_MS
+        ) {
+          if (row.tsMs >= SPAN.endMs) {
+            report.stale.afterSpan += 1;
+          } else if (row.tsMs >= SPAN.startMs) {
+            const rewrite: StaleRewrite = {
+              change: {
+                id: row.id,
+                symbol,
+                tsMs: row.tsMs,
+                fields: outcome.fields,
+                from: row.stored,
+                to: outcome.to,
+                row: row.row,
+              },
+              barTsMs: bar.tsMs,
+              ageMin: Math.round((row.tsMs - bar.tsMs) / MINUTE_MS),
+            };
+            staleRewrites.push(rewrite);
+            noteStale(report.stale, rewrite, row);
+            const open = frozen.run;
+            if (
+              open != null &&
+              open.price === row.stored.price &&
+              frozen.last === idx - 1
+            ) {
+              open.endMs = row.tsMs;
+              open.rows += 1;
+            } else {
+              endRun(report.stale, frozen);
+              frozen.run = {
+                startMs: row.tsMs,
+                endMs: row.tsMs,
+                rows: 1,
+                price: row.stored.price,
+              };
+            }
+            frozen.last = idx;
+          }
+        }
+        continue;
+      }
       report.rowsToWrite += 1;
       for (const f of writable) report.byField[f] += 1;
       changes.push({
@@ -1784,6 +1942,8 @@ async function planSnapshots(
         row: row.row,
       });
     }
+
+    if (report.stale != null) endRun(report.stale, frozen);
 
     const controlOfSymbol = await snapshotControl(symbol, report);
     if (isThinRoot(symbol)) {
@@ -1820,6 +1980,7 @@ async function planSnapshots(
     info: infos,
     controlMisses,
     junk,
+    staleRewrites,
   };
 }
 
@@ -2139,6 +2300,23 @@ function mergeStateText(m: MergeStateReport): string[] {
   ];
 }
 
+function staleText(st: StaleStats): string[] {
+  const out = [
+    `    stale-at-write rows (opt-in --rewrite-stale-at-write; the stored price is the close of a bar older than ${MAX_BAR_AGE_MS / MINUTE_MS} min at the row, the recompute is fresh, nothing else writes the row): ${st.count} in the span, ${st.afterSpan} more after the span (not planned)`,
+  ];
+  if (st.count === 0) return out;
+  out.push(
+    `      the ${st.largest.length} largest price changes:`,
+    ...st.largest.map((u) => `        ${u.line}`),
+    `      frozen runs (consecutive rows with the same stored price): ${st.runs} runs hold ${st.rowsInRuns} of the ${st.count} rows; the ${st.longest.length} longest:`,
+    ...st.longest.map(
+      (r) =>
+        `        ${isoSecond(r.startMs)} .. ${isoSecond(r.endMs)}, ${r.rows} rows, price ${r.price}`,
+    ),
+  );
+  return out;
+}
+
 function driftText(r: SnapshotSymbolReport): string[] {
   return [
     `    the ${r.driftTop.length} largest price drifts on rows that can be recomputed (price not affected, not written; ${r.driftOverMark} rows over 0.15% of the price):`,
@@ -2238,6 +2416,7 @@ function snapshotsText(r: SnapshotStore): string[] {
       ...driftText(s),
       ...unmatchedLargeText(s.unmatchedLarge),
       ...(s.mergeState == null ? [] : mergeStateText(s.mergeState)),
+      ...(s.stale == null ? [] : staleText(s.stale)),
     );
   }
   out.push(
@@ -2444,13 +2623,26 @@ function backedUpValues(
 }
 
 /** One JSONL line per row about to change, full row included; the line count is checked back. */
-function writeBackup(workDir: string, plans: Plans, junk: JunkRow[]): string {
+function writeBackup(
+  workDir: string,
+  plans: Plans,
+  junk: JunkRow[],
+  stale: StaleRewrite[],
+): string {
   const entries: BackupEntry[] = [];
   for (const store of STORES) {
     const result = plans[store];
     for (const c of result?.changes ?? []) {
       entries.push({ store, id: c.id, row: c.row, to: backedUpValues(c) });
     }
+  }
+  for (const r of stale) {
+    entries.push({
+      store: 'snapshots',
+      id: r.change.id,
+      row: r.change.row,
+      to: backedUpValues(r.change),
+    });
   }
   for (const j of junk) {
     entries.push({
@@ -2475,14 +2667,13 @@ function writeBackup(workDir: string, plans: Plans, junk: JunkRow[]): string {
   return path;
 }
 
-export const markerPath = (workDir: string, store: Store | 'junk'): string =>
+/** A store, or one of the two opt-in steps that follow the snapshot updates. */
+type ApplyStep = Store | 'stale' | 'junk';
+
+export const markerPath = (workDir: string, store: ApplyStep): string =>
   join(workDir, `${store}.applied`);
 
-function writeMarker(
-  workDir: string,
-  store: Store | 'junk',
-  rows: number,
-): void {
+function writeMarker(workDir: string, store: ApplyStep, rows: number): void {
   writeFileSync(
     markerPath(workDir, store),
     `${JSON.stringify({ store, rows, appliedAt: new Date().toISOString() })}\n`,
@@ -2639,6 +2830,14 @@ async function verifyJunk(junk: JunkRow[], before: number): Promise<void> {
   }
 }
 
+/** The same guarded UPDATE and verify as the snapshot writes, for the stale-at-write rows. */
+async function applyStale(rewrites: StaleRewrite[]): Promise<number> {
+  const changes = rewrites.map((r) => r.change);
+  await writeInTransactions(changes, updateSnapshots);
+  await verifySnapshots(changes);
+  return changes.length;
+}
+
 async function applyJunk(junk: JunkRow[]): Promise<number> {
   const before = await countSnapshotsInScope();
   await writeInTransactions(junk, deleteJunk);
@@ -2668,6 +2867,14 @@ export interface RecomputeOptions {
   deleteJunkStale: boolean;
   /** The rows that delete removes in the dry run the owner approved. */
   expectJunkDeletes: number | null;
+  /**
+   * Also rewrite the ES and NQ rows the April to June writer priced from a bar
+   * older than the freshness gate allows, from today's repaired bars. Off by
+   * default: the owner decides, after reading the dry run's list.
+   */
+  rewriteStaleAtWrite: boolean;
+  /** The rows that rewrite changes in the dry run the owner approved. */
+  expectStaleRewrites: number | null;
 }
 
 export interface RecomputeArgs extends RecomputeOptions {
@@ -2699,6 +2906,8 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
     expectFires: null,
     deleteJunkStale: false,
     expectJunkDeletes: null,
+    rewriteStaleAtWrite: false,
+    expectStaleRewrites: null,
     envFile: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -2733,6 +2942,10 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
     else if (flag === '--env-file') args.envFile = next();
     else if (flag === '--apply') args.apply = true;
     else if (flag === '--force') args.force = true;
+    else if (flag === '--rewrite-stale-at-write')
+      args.rewriteStaleAtWrite = true;
+    else if (flag === '--expect-stale-rewrites')
+      args.expectStaleRewrites = parseCount(flag, next());
     else if (flag === '--delete-junk-stale') args.deleteJunkStale = true;
     else if (flag === '--expect-junk-deletes')
       args.expectJunkDeletes = parseCount(flag, next());
@@ -2744,6 +2957,29 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
     throw new Error(
       `${args.deleteJunkStale ? '--delete-junk-stale' : '--expect-junk-deletes'} only applies with --apply`,
     );
+  }
+  if (
+    !args.apply &&
+    (args.rewriteStaleAtWrite || args.expectStaleRewrites != null)
+  ) {
+    throw new Error(
+      `${args.rewriteStaleAtWrite ? '--rewrite-stale-at-write' : '--expect-stale-rewrites'} only applies with --apply`,
+    );
+  }
+  if (args.expectStaleRewrites != null && !args.rewriteStaleAtWrite) {
+    throw new Error('--expect-stale-rewrites needs --rewrite-stale-at-write');
+  }
+  if (args.rewriteStaleAtWrite) {
+    if (!args.stores.includes('snapshots')) {
+      throw new Error(
+        '--rewrite-stale-at-write writes futures_snapshots, so --stores must include snapshots',
+      );
+    }
+    if (args.expectStaleRewrites == null) {
+      throw new Error(
+        '--rewrite-stale-at-write needs --expect-stale-rewrites S: the count of the dry run you approved',
+      );
+    }
   }
   if (args.expectJunkDeletes != null && !args.deleteJunkStale) {
     throw new Error('--expect-junk-deletes needs --delete-junk-stale');
@@ -2815,6 +3051,7 @@ function applyCommand(opts: RecomputeOptions, plans: Plans): string | null {
   const planned = STORES.filter((store) => plans[store] != null);
   if (planned.length === 0) return null;
   const junk = plans.snapshots?.junk.length ?? 0;
+  const stale = plans.snapshots?.staleRewrites.length ?? 0;
   return [
     'npx tsx scripts/recompute-futures-derived.ts --apply',
     `--work-dir ${opts.workDir}`,
@@ -2829,6 +3066,9 @@ function applyCommand(opts: RecomputeOptions, plans: Plans): string | null {
     ...(junk === 0
       ? []
       : ['--delete-junk-stale', `--expect-junk-deletes ${junk}`]),
+    ...(stale === 0
+      ? []
+      : ['--rewrite-stale-at-write', `--expect-stale-rewrites ${stale}`]),
   ].join(' ');
 }
 
@@ -2925,6 +3165,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
   const problems = [
     ...checkApplyGate(gateInputs, approved),
     ...checkJunkGate(opts, plans.snapshots?.junk.length ?? 0),
+    ...checkStaleGate(opts, plans.snapshots?.staleRewrites.length ?? 0),
   ];
   if (problems.length > 0) {
     const listed = problems.map((p) => `  ${p}`).join('\n');
@@ -2957,7 +3198,20 @@ async function run(opts: RecomputeOptions): Promise<number> {
       junkPending = junk.length > 0;
     }
   }
-  if (pending.length === 0 && !junkPending) return 0;
+  const stale = plans.snapshots?.staleRewrites ?? [];
+  let stalePending = false;
+  if (opts.rewriteStaleAtWrite) {
+    if (!opts.force && existsSync(markerPath(opts.workDir, 'stale'))) {
+      console.log(
+        stale.length > 0
+          ? `WARNING: the stale-at-write rewrite is marked done but the fresh plan still lists ${stale.length} row(s); it is skipped. Use --force to redo it.`
+          : 'the stale-at-write rewrite is marked done and has nothing left to rewrite',
+      );
+    } else {
+      stalePending = stale.length > 0;
+    }
+  }
+  if (pending.length === 0 && !stalePending && !junkPending) return 0;
 
   const backup = writeBackup(
     opts.workDir,
@@ -2967,11 +3221,13 @@ async function run(opts: RecomputeOptions): Promise<number> {
       fires: pending.includes('fires') ? plans.fires : undefined,
     },
     junkPending ? junk : [],
+    stalePending ? stale : [],
   );
   console.log(`backup: ${backup}`);
 
-  const steps: (Store | 'junk')[] = [
+  const steps: ApplyStep[] = [
     ...pending,
+    ...(stalePending ? (['stale'] as const) : []),
     ...(junkPending ? (['junk'] as const) : []),
   ];
   for (const store of steps) {
@@ -2983,10 +3239,10 @@ async function run(opts: RecomputeOptions): Promise<number> {
       return 2;
     }
     try {
-      const done =
-        store === 'junk'
-          ? await applyJunk(junk)
-          : await applyStore(store, plans);
+      let done: number;
+      if (store === 'junk') done = await applyJunk(junk);
+      else if (store === 'stale') done = await applyStale(stale);
+      else done = await applyStore(store, plans);
       console.log(
         `${store}: ${done} row(s) ${store === 'junk' ? 'deleted' : 'changed'} and verified`,
       );
@@ -2996,11 +3252,11 @@ async function run(opts: RecomputeOptions): Promise<number> {
         { cause: err },
       );
     }
-    writeMarker(
-      opts.workDir,
-      store,
-      store === 'junk' ? junk.length : (plans[store]?.changes.length ?? 0),
-    );
+    let marked: number;
+    if (store === 'junk') marked = junk.length;
+    else if (store === 'stale') marked = stale.length;
+    else marked = plans[store]?.changes.length ?? 0;
+    writeMarker(opts.workDir, store, marked);
   }
   return 0;
 }

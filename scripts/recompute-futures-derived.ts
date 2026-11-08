@@ -7,7 +7,7 @@
  *   npx tsx scripts/recompute-futures-derived.ts --backup <phase 2 backup.jsonl>   # dry run
  *   npx tsx scripts/recompute-futures-derived.ts --backup <file> --apply --expect-snapshots N --expect-premarket M --expect-fires K
  *   npx tsx scripts/recompute-futures-derived.ts --stores fires    # a dry run of one store, no backup needed
- *   npx tsx scripts/recompute-futures-derived.ts --backup <file> --apply --stores snapshots --expect-snapshots N --delete-junk-stale --expect-junk-deletes J
+ *   npx tsx scripts/recompute-futures-derived.ts --backup <file> --apply --expect-snapshots N --expect-premarket M --expect-fires K --delete-junk-stale --expect-junk-deletes J --rewrite-stale-at-write --expect-stale-rewrites S
  *
  * The default is a DRY RUN: it reads the database DATABASE_URL points at
  * (production, in .env.local) through read-only transactions, prints the
@@ -24,7 +24,10 @@
  *
  * Stale snapshot rows priced from a bar Phase 2 deleted cannot be recomputed
  * and `price` cannot be blanked. The dry run always lists them; --delete-junk-stale
- * deletes them, off by default, and only the owner decides.
+ * deletes them, off by default, and only the owner decides. The April to June
+ * writer also had no freshness gate: it priced ES and NQ rows from the last bar it
+ * had while minutes were missing, and they have landed since. --rewrite-stale-at-write
+ * rewrites those rows from today's bars (off by default; the thin roots are excluded).
  *
  * Options:
  *   --backup <file>         the Phase 2 backup JSONL (docs/tmp/futures-contract-repair/backup-*.jsonl);
@@ -44,6 +47,12 @@
  *                           first; its own done marker junk.applied). Needs the snapshots store
  *   --expect-junk-deletes J the rows that delete removes in the dry run you approved;
  *                           required with --delete-junk-stale, --apply refuses when it differs
+ *   --rewrite-stale-at-write  with --apply, also rewrite the ES and NQ rows whose price is the close of a
+ *                           bar older than the 15-minute freshness gate at the row, with a fresh
+ *                           recompute and nothing else writing them (their own done marker stale.applied).
+ *                           Needs the snapshots store
+ *   --expect-stale-rewrites S the rows that rewrite changes in the dry run you approved;
+ *                           required with --rewrite-stale-at-write, --apply refuses when it differs
  *   --force                 with --apply, redo stores that have a done marker
  *   --env-file <path>       .env.local to load (default: the nearest one up the tree);
  *                           a path that does not exist is an error, never a fallback

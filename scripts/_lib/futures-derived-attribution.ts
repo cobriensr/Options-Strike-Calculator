@@ -293,6 +293,8 @@ export interface ValueRule {
   hits: ValueHit[];
   /** The stored fields for which no pre-repair bar matched. */
   unmatched: ValueField[];
+  /** The newest bar with the stored close, whatever Phase 2 did to it; null when none. */
+  priceBar: PreBar | null;
 }
 
 /** Half a tick is the most a NUMERIC(8,4) percentage can move a reconstructed close. */
@@ -320,7 +322,12 @@ export function attributeByValue(
   dayOpenMs: number | null,
   stored: StoredSnapshot,
 ): ValueRule {
-  const out: ValueRule = { fields: new Set(), hits: [], unmatched: [] };
+  const out: ValueRule = {
+    fields: new Set(),
+    hits: [],
+    unmatched: [],
+    priceBar: null,
+  };
   const floor = atMs - VALUE_LOOKBACK_MS;
   const tol = tolerance(stored.price);
 
@@ -349,11 +356,8 @@ export function attributeByValue(
     for (const f of fields) out.fields.add(f);
   };
 
-  note(
-    'price',
-    newest(atMs, (b) => b.closePre === stored.price),
-    ['price', 'change1hPct', 'changeDayPct'],
-  );
+  out.priceBar = newest(atMs, (b) => b.closePre === stored.price);
+  note('price', out.priceBar, ['price', 'change1hPct', 'changeDayPct']);
 
   if (stored.change1hPct != null) {
     const hour = stored.price / (1 + stored.change1hPct / 100);

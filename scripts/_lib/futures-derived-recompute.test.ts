@@ -33,6 +33,7 @@ import {
   BARS_LEAD_MS,
   checkApplyGate,
   checkJunkGate,
+  checkStaleGate,
   compareGlobex,
   compareSnapshot,
   gateFlips,
@@ -69,6 +70,7 @@ import {
   type BackupBar,
   type Bar,
   type MergeBarView,
+  type PreBar,
   type Repair,
   VALUE_LOOKBACK_MS,
 } from './futures-derived-attribution.js';
@@ -90,6 +92,8 @@ describe('parseRecomputeArgs', () => {
       expectFires: null,
       deleteJunkStale: false,
       expectJunkDeletes: null,
+      rewriteStaleAtWrite: false,
+      expectStaleRewrites: null,
       envFile: null,
     });
   });
@@ -123,8 +127,29 @@ describe('parseRecomputeArgs', () => {
       expectFires: 240,
       deleteJunkStale: false,
       expectJunkDeletes: null,
+      rewriteStaleAtWrite: false,
+      expectStaleRewrites: null,
       envFile: '.env.test',
     });
+  });
+
+  it('takes --rewrite-stale-at-write with its count, under --apply only', () => {
+    const args = parseRecomputeArgs([
+      '--apply',
+      '--backup',
+      'b.jsonl',
+      '--expect-snapshots',
+      '10',
+      '--expect-premarket',
+      '1',
+      '--expect-fires',
+      '2',
+      '--rewrite-stale-at-write',
+      '--expect-stale-rewrites',
+      '4321',
+    ]);
+    expect(args.rewriteStaleAtWrite).toBe(true);
+    expect(args.expectStaleRewrites).toBe(4321);
   });
 
   it('takes --delete-junk-stale with its count, under --apply only', () => {
@@ -216,6 +241,74 @@ describe('parseRecomputeArgs', () => {
     [
       ['--apply', '--expect-fires', '1.5'],
       /--expect-fires needs a whole number, got "1.5"/,
+    ],
+    // The stale-at-write rewrite is opt-in, counted, and a snapshots write.
+    [
+      ['--rewrite-stale-at-write'],
+      /--rewrite-stale-at-write only applies with --apply/,
+    ],
+    [
+      ['--expect-stale-rewrites', '3'],
+      /--expect-stale-rewrites only applies with --apply/,
+    ],
+    [
+      [
+        '--apply',
+        '--backup',
+        'b.jsonl',
+        '--stores',
+        'fires',
+        '--expect-fires',
+        '1',
+        '--expect-stale-rewrites',
+        '3',
+      ],
+      /--expect-stale-rewrites needs --rewrite-stale-at-write/,
+    ],
+    [
+      [
+        '--apply',
+        '--backup',
+        'b.jsonl',
+        '--expect-snapshots',
+        '1',
+        '--expect-premarket',
+        '1',
+        '--expect-fires',
+        '1',
+        '--rewrite-stale-at-write',
+      ],
+      /--rewrite-stale-at-write needs --expect-stale-rewrites S: the count of the dry run you approved/,
+    ],
+    [
+      [
+        '--apply',
+        '--backup',
+        'b.jsonl',
+        '--stores',
+        'fires',
+        '--expect-fires',
+        '1',
+        '--rewrite-stale-at-write',
+        '--expect-stale-rewrites',
+        '3',
+      ],
+      /--rewrite-stale-at-write writes futures_snapshots, so --stores must include snapshots/,
+    ],
+    [
+      [
+        '--apply',
+        '--backup',
+        'b.jsonl',
+        '--stores',
+        'snapshots',
+        '--expect-snapshots',
+        '1',
+        '--rewrite-stale-at-write',
+        '--expect-stale-rewrites',
+        'many',
+      ],
+      /--expect-stale-rewrites needs a whole number, got "many"/,
     ],
     // The junk delete is opt-in, counted, and a snapshots write.
     [['--delete-junk-stale'], /--delete-junk-stale only applies with --apply/],
@@ -318,6 +411,45 @@ describe('checkJunkGate', () => {
       checkJunkGate({ deleteJunkStale: true, expectJunkDeletes: 6 }, 7),
     ).toEqual([
       'the fresh plan deletes 7 junk-priced rows, --expect-junk-deletes 6 was given',
+    ]);
+  });
+});
+
+describe('checkStaleGate', () => {
+  it('has nothing to say without the flag, whatever the count', () => {
+    expect(
+      checkStaleGate(
+        { rewriteStaleAtWrite: false, expectStaleRewrites: null },
+        7,
+      ),
+    ).toEqual([]);
+    expect(
+      checkStaleGate({ rewriteStaleAtWrite: false, expectStaleRewrites: 3 }, 7),
+    ).toEqual([]);
+  });
+
+  it('passes the approved count, including zero', () => {
+    expect(
+      checkStaleGate({ rewriteStaleAtWrite: true, expectStaleRewrites: 7 }, 7),
+    ).toEqual([]);
+    expect(
+      checkStaleGate({ rewriteStaleAtWrite: true, expectStaleRewrites: 0 }, 0),
+    ).toEqual([]);
+  });
+
+  it('refuses a missing count and a different count, naming both', () => {
+    expect(
+      checkStaleGate(
+        { rewriteStaleAtWrite: true, expectStaleRewrites: null },
+        7,
+      ),
+    ).toEqual([
+      '--rewrite-stale-at-write needs --expect-stale-rewrites S: the count of the dry run you approved',
+    ]);
+    expect(
+      checkStaleGate({ rewriteStaleAtWrite: true, expectStaleRewrites: 6 }, 7),
+    ).toEqual([
+      'the fresh plan rewrites 7 stale-at-write rows, --expect-stale-rewrites 6 was given',
     ]);
   });
 });
@@ -815,6 +947,8 @@ describe('runRecompute guards', () => {
     expectFires: 1,
     deleteJunkStale: false,
     expectJunkDeletes: null,
+    rewriteStaleAtWrite: false,
+    expectStaleRewrites: null,
     ...over,
   });
 
@@ -1756,6 +1890,40 @@ describe("finding a stored row's inputs by value", () => {
     expect(rule.fields.size).toBe(0);
     expect(rule.unmatched).toEqual(['price', 'change1hPct']);
     // A null day change is not looked for, so it is not unmatched either.
+  });
+
+  it('gives the newest bar with the stored close, repaired or not, and null when none has it', () => {
+    const series: PreBar[] = [
+      {
+        tsMs: ms('2026-04-12T22:00:00Z'),
+        closePre: 7000,
+        closeNow: 7000,
+        repair: null,
+      },
+      {
+        tsMs: ms('2026-04-12T22:10:00Z'),
+        closePre: 7000,
+        closeNow: 7000,
+        repair: null,
+      },
+      {
+        tsMs: ms('2026-04-12T22:20:00Z'),
+        closePre: 7005,
+        closeNow: 7005,
+        repair: null,
+      },
+    ];
+    const at = ms('2026-04-12T22:45:00Z');
+    const stored = { price: 7000, change1hPct: null, changeDayPct: null };
+    // The newest bar closing at 7000 is the 22:10 one, an unrepaired bar: no hit, but it is named.
+    const hit = attributeByValue(series, at, null, stored);
+    expect(hit.priceBar?.tsMs).toBe(ms('2026-04-12T22:10:00Z'));
+    expect(hit.hits).toEqual([]);
+    expect(hit.unmatched).toEqual([]);
+    // No bar closes at 7001.
+    const none = attributeByValue(series, at, null, { ...stored, price: 7001 });
+    expect(none.priceBar).toBeNull();
+    expect(none.unmatched).toEqual(['price']);
   });
 
   it('treats an update whose bar is gone now as a deleted bar', () => {
