@@ -104,12 +104,12 @@ export default withDbReader(
 
     // When `date` is provided, return all snapshots for that ET calendar
     // day. `ts` is TIMESTAMPTZ (UTC): the END of the source ladder's
-    // 5-minute bucket (compute-zero-gamma, zeroGammaLabelTs; it was the cron's
-    // NOW() before P0.4 of the live-data-integrity spec) — but the UI sources the date from
-    // `getETToday()` (ET), so we have to convert per-row to ET before
-    // comparing. Without the AT TIME ZONE conversion, late-session rows whose
-    // UTC date rolls over (e.g. 21:00 ET = 01:00 UTC next day) would silently
-    // land on the wrong calendar bucket.
+    // 5-minute bucket (compute-zero-gamma, zeroGammaLabelTs; it was the
+    // cron's NOW() before P0.4 of the live-data-integrity spec) — but the UI
+    // sources the date from `getETToday()` (ET), so we have to convert per-row
+    // to ET before comparing. Without the AT TIME ZONE conversion,
+    // late-session rows whose UTC date rolls over (e.g. 21:00 ET = 01:00 UTC
+    // next day) would silently land on the wrong calendar bucket.
     const rows = date
       ? ((await withDbRetry(
           () => sql`

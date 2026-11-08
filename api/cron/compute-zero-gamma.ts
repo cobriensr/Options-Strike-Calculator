@@ -103,9 +103,10 @@ interface SnapshotBundle {
  * is written every 5 minutes and this cron runs 1 minute after it, so a
  * healthy ladder's bucket started about 4 to 5 minutes before the run (UW row
  * time :02 or :03 is stamped :00, the run is at :04). 15 minutes tolerates
- * one missed fetch (a run at :14 still sees the :00 ladder, 14 minutes old);
- * the dealer-regime tile calls a row older than 15 minutes stale too
- * (REGIME_CONSTANTS.staleAgeMs).
+ * one missed fetch (a run at :14 still sees the :00 ladder, 14 minutes old).
+ * The dealer-regime tile has the same 15 minutes (REGIME_CONSTANTS.staleAgeMs)
+ * but measures it from the row's label, the ladder plus 5 minutes, so it calls
+ * a row stale only once its ladder is about 20 minutes old.
  */
 const SOURCE_MAX_AGE_MS = 15 * 60_000;
 
