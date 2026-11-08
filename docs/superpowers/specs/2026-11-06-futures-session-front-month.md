@@ -143,7 +143,7 @@ Steps:
 - [x] Cherry-pick the six onto this branch, rebased on origin/main. Their migration #203 collides with main's #203 (market_snapshots): renumber it to #204 in the migration, its tests and its comments.
 - [x] Add #205, the two tables above. Update `db.test.ts` per CLAUDE.md "DB Migrations".
 - [x] Gate, review (the renumber and #205 only), commit. **No push** until #204 and #205 are applied in prod. Done 2026-11-07, local, ending at 859734c6.
-- [ ] Apply #204 and #205 once they are the only ones pending. Then push.
+- [x] Apply #204 and #205 once they are the only ones pending. Then push. Done 2026-11-08: #204 and #205 applied about 06:42Z, after main's #206; Phases 1–3b pushed (8e7e6430..9c2d02d9).
 
 ### Phase 2: the session rule in TypeScript (medium)
 
@@ -252,7 +252,7 @@ What the seed does:
 - **Flags:** `--dry-run` and `--roots`. There is no market-hours guard; it makes about 30 light calls.
 
 Steps:
-- [ ] Failing tests, with `fetchDailyContractVolumes`, `fetchStoredFrontMonths` and the two insert functions mocked:
+- [x] Failing tests, with `fetchDailyContractVolumes`, `fetchStoredFrontMonths` and the two insert functions mocked:
   - A synthetic two-contract history rolls once, on the session after volume crosses.
   - A fetch error fails its root by name, and the other roots still run.
   - An empty result for ESZ6 fails ES by name; an empty one for a far month (CLK7 on 11-07) does not fail CL.
@@ -261,8 +261,20 @@ Steps:
   - A stored row in the middle of the range is kept, and the walk continues from it: a stored ESH7 a session before candles would roll makes every later row ESH7 or later.
   - The check after writing names an out-of-order pair and fails its root, and the other roots still run.
   - A dry run writes nothing.
-- [ ] Implement, gate, review, commit.
-- [ ] Once #205 is in prod: a dry run, then the real run. Record the switch list in this doc.
+- [x] Implement, gate, review, commit. Done 2026-11-08, on main.
+- [x] Once #205 is in prod: a dry run, then the real run. Record the switch list in this doc.
+  - **Real run 2026-11-08, about 07:20Z:**
+    - Every root got 75 decision rows, 07-28 → 11-08.
+    - Volume rows, 07-27 → 11-06: ES 189, NQ 182, RTY 163, CL 573, GC 311, ZN 183.
+    - A read-only check found every root's contract spans contiguous, with no overlap.
+  - **Switches** (first session on the new contract, and the deciding session's volumes):
+    - ES, NQ and RTY: 09-15, U6 → Z6, from 09-14 (ES 849,992 vs 737,362; NQ 341,924 vs 312,278; RTY 120,937 vs 63,390). The old rule switched ES intraday on 09-14 at 13:45 UTC.
+    - CL:
+      - 08-19 CLU6 → CLV6 (08-18: 129,573 vs 30,691);
+      - 09-21 CLV6 → CLX6 (09-18: 189,087 vs 38,708);
+      - 10-19 CLX6 → CLZ6 (10-16: 196,766 vs 41,247).
+    - GC: 07-30 GCQ6 → GCZ6 (07-29: 114,976 vs 24,178).
+    - ZN: 08-28 ZNU6 → ZNZ6 (08-27: 1,123,214 vs 343,122).
 
 ### Phase 4a: the gap cron reads the table (medium)
 
@@ -408,7 +420,7 @@ Steps:
 1. Phase 1 (local).
 2. Phase 2.
 3. Phases 3a and 3b.
-4. Apply #204 and #205 (#201–#203 went in on 2026-11-07), push Phases 1–3b, run the seed.
+4. Apply #204 and #205 (#201–#203 went in on 2026-11-07), push Phases 1–3b, run the seed. **Done 2026-11-08.**
 5. Phases 4a, 4b, 4c.
 6. Phase 5. Re-run the seed after a 17:00 CT open, then push. Before 2026-12-09.
 7. Phase 6, outside market hours.
