@@ -41,6 +41,7 @@ import { writeAlertIfNew, checkForCombinedAlert } from '../_lib/alerts.js';
 import type { AlertPayload, AlertDirection } from '../_lib/alerts.js';
 import { ALERT_THRESHOLDS } from '../_lib/alert-thresholds.js';
 import { reportCronRun } from '../_lib/axiom.js';
+import { MARKET_MINUTES } from '../_lib/constants.js';
 import { reportSkippedWrite } from '../_lib/ladder-skip.js';
 import { getETDateStr, getETTotalMinutes } from '../../src/utils/timezone.js';
 
@@ -64,9 +65,6 @@ interface RatioReading {
 
 // ── Fetch helper ────────────────────────────────────────────
 
-/** 09:30 ET, the cash open, in ET minutes after midnight. */
-const SESSION_OPEN_ET_MINUTES = 9 * 60 + 30;
-
 /**
  * R-day: true when the tick's own timestamp falls on `today`'s ET date at or
  * after the 09:30 ET open. An unparseable timestamp is not a session tick.
@@ -75,8 +73,7 @@ function isSessionTick(tick: FlowTick, today: string): boolean {
   const at = new Date(tick.timestamp);
   if (Number.isNaN(at.getTime())) return false;
   return (
-    getETDateStr(at) === today &&
-    getETTotalMinutes(at) >= SESSION_OPEN_ET_MINUTES
+    getETDateStr(at) === today && getETTotalMinutes(at) >= MARKET_MINUTES.OPEN
   );
 }
 
@@ -102,13 +99,19 @@ async function fetchLatestFlowTick(
   );
 
   // The UW API pre-fills future minute slots with null values.
-  // Find the last tick that actually has data and is from today's session.
+  // Find the newest tick that actually has data and is from today's session.
+  // "Newest" is the greatest timestamp: UW promises no order, so the last
+  // element of the array is not necessarily the latest tick.
   const withData = ticks.filter((t) => t.net_call_premium != null);
   const session = withData.filter((t) => isSessionTick(t, today));
-  return {
-    tick: session.at(-1) ?? null,
-    offSession: withData.length - session.length,
-  };
+  const newest = session.reduce<FlowTick | null>(
+    (best, t) =>
+      best === null || Date.parse(t.timestamp) > Date.parse(best.timestamp)
+        ? t
+        : best,
+    null,
+  );
+  return { tick: newest, offSession: withData.length - session.length };
 }
 
 // ── Store reading ───────────────────────────────────────────

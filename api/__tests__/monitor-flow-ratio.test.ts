@@ -284,6 +284,34 @@ describe('monitor-flow-ratio handler', () => {
     expect(res._json).toMatchObject({ ratio: 1.5, absNpp: 60000000 });
   });
 
+  it('picks the tick with the greatest timestamp, whatever order UW sends them in', async () => {
+    // Newest first: the last element of the array is the OLDEST tick.
+    vi.mocked(uwFetch).mockResolvedValue([
+      makeFlowTick({
+        timestamp: '2026-03-24T14:02:00Z',
+        net_call_premium: '40000000',
+        net_put_premium: '-60000000',
+      }),
+      makeFlowTick({
+        timestamp: '2026-03-24T14:01:00Z',
+        net_call_premium: '10000000',
+        net_put_premium: '-10000000',
+      }),
+      makeFlowTick({
+        timestamp: '2026-03-24T13:45:00Z',
+        net_call_premium: '20000000',
+        net_put_premium: '-20000000',
+      }),
+    ]);
+    mockSql.mockResolvedValue([]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    // The 14:02Z tick: |NPP| 60M / |NCP| 40M = 1.5.
+    expect(res._json).toMatchObject({ ratio: 1.5, absNpp: 60000000 });
+  });
+
   it('drops a tick with an unparseable timestamp', async () => {
     vi.mocked(uwFetch).mockResolvedValue([
       makeFlowTick({ timestamp: 'garbage' }),
