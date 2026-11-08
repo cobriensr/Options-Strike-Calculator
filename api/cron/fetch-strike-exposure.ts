@@ -8,8 +8,8 @@
  * filter by `ticker` and `expiry`.
  *
  * Per-ticker expiry policy:
- *   - SPX: today (0DTE) + tomorrow (1DTE). The 1DTE pull is preserved
- *     for the Periscope view and the build-features-gex 1DTE column.
+ *   - SPX: today (0DTE) + the next trading day (1DTE). The 1DTE pull is
+ *     preserved for the Periscope view and the build-features-gex 1DTE column.
  *   - SPY/QQQ: today (0DTE). Both have daily expirations.
  *
  * Per-ticker ATM window (the stored range AND the requested
@@ -18,7 +18,10 @@
  *   - SPY  ±20 pts (~3% of ~600)
  *   - QQQ  ±20 pts (~3% of ~500)
  * A window never holds 500 strikes (SPX at $1 spacing is 401), so one
- * `limit=500` page is the whole ladder.
+ * `limit=500` page is the whole ladder. UW's `/expiry-strike` doc says a page
+ * with fewer than `limit` rows is the last; a page of 500 or more would mean
+ * the window was not honoured, so that task fails instead of storing a ladder
+ * that may be cut off.
  *
  * NDX was dropped 2026-05-16: UW only publishes NDX monthlies and the
  * front-month roll has near-zero OI on every monthly-expiry morning, so
@@ -29,24 +32,33 @@
  * (docs/superpowers/specs/live-data-integrity-2026-11-06.md, F5 to F7):
  *   - Spot first, per ticker, from UW's per-minute `/spot-exposures`
  *     (fetchUwSpot). A ticker with no usable spot is a Sentry error and its
- *     tasks fail; the cron never guesses a window from a strike row, whose
- *     price is the thing UW freezes.
+ *     tasks fail; the cron never guesses a window from a strike row. A spot
+ *     row from an earlier ET day is skipped (`stale_spot`). The helper spot is
+ *     also what is stored as `price`: UW documents that each strike row's
+ *     `price` is from that strike's own last recalculation and can lag by
+ *     hours, and compute-zero-gamma reads one row's price as the spot.
  *   - The ladder is requested with `min_strike`/`max_strike` around that
  *     spot. Without a window UW serves a stale cache that freezes the
  *     ladder for the whole day (F6); the window routes the call through
  *     UW's live path, the workaround fetch-gex-0dte has used since
  *     2026-04-23.
- *   - A ladder whose newest row is from an earlier ET day is UW's
- *     pre-rollover answer (09:28 to 09:32 ET). It is skipped, not stored
- *     under today's date (F5).
- *   - An all-zero gamma ladder is skipped (F7, R-zero).
- *   - A failed task (UW error, no spot, unparseable payload, DB reject) is
- *     counted. Every task failing is a 500; some failing is `partial` and
- *     `success: false`. A failure is never reported as a success (R4).
+ *   - The ladder goes through `judgeLadder`. One rule for every ladder that
+ *     is not stored (api/_lib/ladder-skip.ts): `stale` (newest row from an
+ *     earlier ET day, UW's 09:28 to 09:32 ET pre-rollover answer, F5),
+ *     `all_zero` (F7), `empty` and `outside_window`. The task is skipped,
+ *     with a warning and a metric; from 09:40 ET it is also a Sentry error.
+ *     A run that stored nothing only because of skips reports `skipped`.
+ *   - A failed task (UW error, no spot, unparseable payload, a full page, DB
+ *     reject) is counted. Every task failing is a 500; some failing is
+ *     `partial` and `success: false`. A failure is never reported as a
+ *     success (R4).
  *
  * Total UW calls per invocation: 7 (3 spot reads, then SPX × 2 plus 1 each
- * for SPY, QQQ). Each phase fans out under mapWithConcurrency with
- * per-task fault isolation — one ticker hiccup does not block the others.
+ * for SPY, QQQ). These spot reads exist only because the ladder is polled
+ * over REST; they retire with this cron when the `gex_strike_expiry:` and
+ * `gex:` websocket writers replace it (spec Follow-ups). Each phase fans out
+ * under mapWithConcurrency with per-task fault isolation — one ticker hiccup
+ * does not block the others.
  *
  * Environment: UW_API_KEY, CRON_SECRET
  */
@@ -68,13 +80,14 @@ import {
 } from '../_lib/api-helpers.js';
 import { CRON_TICKER_DEFAULT_CONCURRENCY } from '../_lib/constants.js';
 import { reportCronRun } from '../_lib/axiom.js';
+import { isTradingDay } from '../../src/data/marketHours.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
+import { reportLadderSkip } from '../_lib/ladder-skip.js';
 import {
-  hasGammaSignal,
   isBeforeEtDay,
-  keepWithinRange,
-  newestRowTime,
+  judgeLadder,
   strikeWindow,
+  type LadderSkipKind,
 } from '../_lib/strike-ladder.js';
 import { fetchUwSpot } from '../_lib/uw-spot.js';
 import {
@@ -96,16 +109,27 @@ const ATM_RANGE_BY_TICKER: Record<Ticker, number> = {
   QQQ: 20,
 };
 
+// UW's documented maximum `limit`; a windowed page this full is not trusted.
+const PAGE_LIMIT = 500;
+
 // ── Helpers ─────────────────────────────────────────────────
 
-/** Get the next trading day (skip weekends) in YYYY-MM-DD format. */
+/**
+ * The next trading day after `today` in YYYY-MM-DD format, skipping weekends
+ * and NYSE holidays: UW lists no expiry on a closed day, so asking for one
+ * (the Friday before a Monday holiday) would be an empty ladder every poll.
+ */
 function getNextTradingDay(today: string): string {
-  const d = new Date(`${today}T12:00:00`);
-  d.setDate(d.getDate() + 1);
-  while (d.getDay() === 0 || d.getDay() === 6) {
-    d.setDate(d.getDate() + 1);
+  const d = new Date(`${today}T12:00:00Z`);
+  // A run of non-trading days is at most four long; ten steps bounds a bad calendar.
+  for (let step = 0; step < 10; step++) {
+    d.setUTCDate(d.getUTCDate() + 1);
+    const iso = d.toISOString().slice(0, 10);
+    if (isTradingDay(iso)) return iso;
   }
-  return d.toISOString().slice(0, 10);
+  throw new Error(
+    `getNextTradingDay: no trading day within 10 days of ${today}`,
+  );
 }
 
 /**
@@ -150,8 +174,8 @@ interface ExpiryResult {
   total: number;
   stored: number;
   skipped: number;
-  /** The whole snapshot was left out: prior-day cache or all-zero gamma. */
-  rejected?: 'stale_cache' | 'all_zero';
+  /** The whole ladder was left out, and why (api/_lib/ladder-skip.ts). */
+  rejected?: LadderSkipKind;
   /** The task failed and stored nothing (the failure is in Sentry). */
   failed?: true;
 }
@@ -172,7 +196,7 @@ async function fetchStrikeExposure(
     'expirations[]': expiry,
     min_strike: String(minStrike),
     max_strike: String(maxStrike),
-    limit: '500',
+    limit: String(PAGE_LIMIT),
   });
 
   return uwFetch<StrikeRow>(
@@ -183,36 +207,20 @@ async function fetchStrikeExposure(
 
 // ── Store helper ────────────────────────────────────────────
 
+/**
+ * Insert a ladder `judgeLadder` approved. `price` is the helper spot, not the
+ * row's own: UW's per-strike `price` is from that strike's last recalculation
+ * and can lag by hours (compute-zero-gamma reads one row's price as spot).
+ */
 async function storeStrikes(
   rows: StrikeRow[],
+  total: number,
   today: string,
   ticker: Ticker,
   expiry: string,
   spot: number,
   snapshotTime: string,
 ): Promise<ExpiryResult> {
-  const filtered = keepWithinRange(rows, spot, ATM_RANGE_BY_TICKER[ticker]);
-
-  if (filtered.length === 0) {
-    return { total: rows.length, stored: 0, skipped: 0 };
-  }
-
-  // R-zero: a ladder with no gamma on any strike is UW's open-of-day
-  // placeholder (F7). Storing it would keep a flat-zero snapshot for good.
-  if (!hasGammaSignal(filtered)) {
-    logger.warn(
-      { ticker, expiry, rows: filtered.length, date: today },
-      'fetch-strike-exposure: rejecting all-zero gamma snapshot',
-    );
-    metrics.increment('fetch_strike_exposure.zero_snapshot_skip');
-    return {
-      total: rows.length,
-      stored: 0,
-      skipped: filtered.length,
-      rejected: 'all_zero',
-    };
-  }
-
   const timestamp = roundTo5Min(new Date(snapshotTime)).toISOString();
   const sql = getDb();
 
@@ -220,7 +228,7 @@ async function storeStrikes(
   // captures once and counts. Returning stored: 0 used to report a failed
   // write as a success (R4).
   const results = await sql.transaction((txn) =>
-    filtered.map(
+    rows.map(
       (row) => txn`
         INSERT INTO strike_exposures (
           date, timestamp, ticker, expiry, strike, price,
@@ -232,7 +240,7 @@ async function storeStrikes(
           call_vanna_oi, put_vanna_oi
         )
         VALUES (
-          ${today}, ${timestamp}, ${ticker}, ${expiry}, ${row.strike}, ${row.price},
+          ${today}, ${timestamp}, ${ticker}, ${expiry}, ${row.strike}, ${spot},
           ${row.call_gamma_oi}, ${row.put_gamma_oi},
           ${row.call_gamma_ask}, ${row.call_gamma_bid},
           ${row.put_gamma_ask}, ${row.put_gamma_bid},
@@ -252,11 +260,7 @@ async function storeStrikes(
   for (const result of results) {
     if (result.length > 0) stored++;
   }
-  return {
-    total: rows.length,
-    stored,
-    skipped: filtered.length - stored,
-  };
+  return { total, stored, skipped: rows.length - stored };
 }
 
 // ── Per-task runner ─────────────────────────────────────────
@@ -278,38 +282,42 @@ async function runOne(
   const rows = await withRetry(() =>
     fetchStrikeExposure(apiKey, ticker, expiry, spot),
   );
-  if (rows.length === 0) {
-    return {
-      ticker,
-      expiry,
-      result: { total: 0, stored: 0, skipped: 0 },
-      price: spot,
-    };
+  if (rows.length >= PAGE_LIMIT) {
+    throw new Error(
+      `fetch-strike-exposure: ${ticker} ${expiry} returned a full page of ${rows.length} rows inside a ±${ATM_RANGE_BY_TICKER[ticker]} window, ladder may be cut off`,
+    );
   }
 
-  const snapshotTime = newestRowTime(rows);
-  if (snapshotTime === null) {
+  const verdict = judgeLadder(rows, {
+    spot,
+    range: ATM_RANGE_BY_TICKER[ticker],
+    day: today,
+  });
+  if (verdict.kind === 'malformed') {
     throw new Error(
       `fetch-strike-exposure: ${ticker} ${expiry} no strike row carries a parseable time`,
     );
   }
-
-  // Stale-cache guard (F5), ported from fetch-gex-0dte: before UW rolls
-  // over (09:28 to 09:32 ET) the first poll is the previous session's
-  // ladder. Stored under today's date it would sit in the table as a
-  // snapshot of a day that has not happened yet, so skip it.
-  if (isBeforeEtDay(snapshotTime, today)) {
-    logger.warn(
-      {
-        ticker,
-        expiry,
-        dataEtDate: getETDateStr(new Date(snapshotTime)),
-        today,
-        snapshotTime,
-      },
-      'fetch-strike-exposure: stale UW cache (ladder from an earlier ET day), skipping store',
-    );
-    metrics.increment('fetch_strike_exposure.stale_cache_skip');
+  if (verdict.kind !== 'store') {
+    // Stale (F5, ported from fetch-gex-0dte: before UW rolls over, 09:28 to
+    // 09:32 ET, the first poll is the previous session's ladder), all-zero
+    // (F7), empty or outside the window: one rule, never stored.
+    reportLadderSkip({
+      job: 'fetch-strike-exposure',
+      kind: verdict.kind,
+      ticker,
+      expiry,
+      detail:
+        verdict.kind === 'stale'
+          ? {
+              today,
+              dataEtDate: verdict.dataEtDate,
+              snapshotTime: verdict.snapshotTime,
+            }
+          : verdict.kind === 'empty'
+            ? { today }
+            : { today, rows: verdict.total },
+    });
     return {
       ticker,
       expiry,
@@ -317,42 +325,71 @@ async function runOne(
         total: rows.length,
         stored: 0,
         skipped: 0,
-        rejected: 'stale_cache',
+        rejected: verdict.kind,
       },
       price: spot,
     };
   }
 
   const result = await withRetry(() =>
-    storeStrikes(rows, today, ticker, expiry, spot, snapshotTime),
+    storeStrikes(
+      verdict.rows,
+      rows.length,
+      today,
+      ticker,
+      expiry,
+      spot,
+      verdict.snapshotTime,
+    ),
   );
   return { ticker, expiry, result, price: spot };
 }
 
 // ── Spot phase ──────────────────────────────────────────────
 
+type SpotResult =
+  | { kind: 'ok'; spot: number }
+  | { kind: 'stale_spot' }
+  | { kind: 'failed'; failure: unknown };
+
 /**
  * Read each ticker's spot once (SPX serves two expiries). A ticker whose
  * spot is rejected or unusable is reported to Sentry here, once, and its
- * tasks fail without a strike request.
+ * tasks fail without a strike request. A spot row from an earlier ET day
+ * (UW serving yesterday's series at the rollover) is a `stale_spot` skip,
+ * also reported here once: the window would be centered on yesterday's level.
  */
-type SpotResult = { ok: true; spot: number } | { ok: false; failure: unknown };
-
-async function fetchSpots(apiKey: string): Promise<Map<Ticker, SpotResult>> {
+async function fetchSpots(
+  apiKey: string,
+  today: string,
+): Promise<Map<Ticker, SpotResult>> {
   const runs = await mapWithConcurrency(
     ZERO_GAMMA_TICKERS,
     CRON_TICKER_DEFAULT_CONCURRENCY,
     async (ticker): Promise<[Ticker, SpotResult]> => {
       try {
         const spot = await withRetry(() => fetchUwSpot(apiKey, ticker));
-        if (spot !== null) return [ticker, { ok: true, spot: spot.price }];
+        if (spot !== null && isBeforeEtDay(spot.time, today)) {
+          reportLadderSkip({
+            job: 'fetch-strike-exposure',
+            kind: 'stale_spot',
+            ticker,
+            detail: {
+              today,
+              spotTime: spot.time,
+              dataEtDate: getETDateStr(new Date(spot.time)),
+            },
+          });
+          return [ticker, { kind: 'stale_spot' }];
+        }
+        if (spot !== null) return [ticker, { kind: 'ok', spot: spot.price }];
         metrics.increment('fetch_strike_exposure.spot_null');
         Sentry.setTag('cron.job', 'fetch-strike-exposure');
         Sentry.setTag('ticker', ticker);
         const message = `fetch-strike-exposure: no usable ${ticker} spot from UW /spot-exposures, nothing stored for it`;
         Sentry.captureMessage(message, 'error');
         logger.error({ ticker }, message);
-        return [ticker, { ok: false, failure: new Error(message) }];
+        return [ticker, { kind: 'failed', failure: new Error(message) }];
       } catch (failure) {
         Sentry.setTag('cron.job', 'fetch-strike-exposure');
         Sentry.setTag('ticker', ticker);
@@ -361,7 +398,7 @@ async function fetchSpots(apiKey: string): Promise<Map<Ticker, SpotResult>> {
           { err: failure, ticker },
           'fetch-strike-exposure: spot request failed',
         );
-        return [ticker, { ok: false, failure }];
+        return [ticker, { kind: 'failed', failure }];
       }
     },
   );
@@ -386,7 +423,7 @@ export default withCronCheckin('fetch-strike-exposure', async (req, res) => {
   }
 
   try {
-    const spots = await fetchSpots(apiKey);
+    const spots = await fetchSpots(apiKey, today);
 
     // Run all tasks in parallel; isolate failures so one ticker hiccup
     // does not block the rest. mapWithConcurrency caps in-flight requests
@@ -394,7 +431,8 @@ export default withCronCheckin('fetch-strike-exposure', async (req, res) => {
     // past UW's per-app concurrency cap. The runner mirrors Promise.allSettled
     // shape so the existing aggregation loop is unchanged. A task whose
     // ticker has no spot is rejected up front and marked `reported`: its
-    // failure already reached Sentry in fetchSpots.
+    // failure already reached Sentry in fetchSpots. A task whose spot is
+    // stale is skipped up front; fetchSpots already reported that too.
     type SettledRun =
       | { status: 'fulfilled'; value: TaskOutcome }
       | { status: 'rejected'; reason: unknown; reported: boolean };
@@ -403,8 +441,24 @@ export default withCronCheckin('fetch-strike-exposure', async (req, res) => {
       CRON_TICKER_DEFAULT_CONCURRENCY,
       async (t): Promise<SettledRun> => {
         const spot = spots.get(t.ticker)!;
-        if (!spot.ok) {
+        if (spot.kind === 'failed') {
           return { status: 'rejected', reason: spot.failure, reported: true };
+        }
+        if (spot.kind === 'stale_spot') {
+          return {
+            status: 'fulfilled',
+            value: {
+              ticker: t.ticker,
+              expiry: t.expiry,
+              result: {
+                total: 0,
+                stored: 0,
+                skipped: 0,
+                rejected: 'stale_spot',
+              },
+              price: null,
+            },
+          };
         }
         try {
           const value = await runOne(
@@ -442,8 +496,8 @@ export default withCronCheckin('fetch-strike-exposure', async (req, res) => {
     }
 
     let failedTasks = 0;
-    let staleSkips = 0;
-    let zeroSkips = 0;
+    let skippedTasks = 0;
+    const skips: Partial<Record<LadderSkipKind, number>> = {};
     settled.forEach((s, i) => {
       const task = tasks[i]!;
       const bucket = perTicker[task.ticker]!;
@@ -453,8 +507,11 @@ export default withCronCheckin('fetch-strike-exposure', async (req, res) => {
         bucket.totalStored += s.value.result.stored;
         bucket.totalSkipped += s.value.result.skipped;
         if (s.value.price != null) bucket.price = s.value.price;
-        if (s.value.result.rejected === 'stale_cache') staleSkips++;
-        if (s.value.result.rejected === 'all_zero') zeroSkips++;
+        const kind = s.value.result.rejected;
+        if (kind !== undefined) {
+          skippedTasks++;
+          skips[kind] = (skips[kind] ?? 0) + 1;
+        }
       } else {
         failedTasks++;
         if (!s.reported) {
@@ -525,12 +582,13 @@ export default withCronCheckin('fetch-strike-exposure', async (req, res) => {
     const durationMs = Date.now() - startTime;
 
     // 'ok' keeps the status the Axiom dashboards already filter on. A run that
-    // stored nothing only because every ladder was stale or all-zero is
-    // 'skipped': it did its job, and the warnings name why.
+    // stored nothing only because every ladder was skipped (stale, all-zero,
+    // empty, outside the window, stale spot) is 'skipped', never a success:
+    // the warnings, the metrics and, from 09:40 ET, the Sentry errors name why.
     const status =
       outcome === 'partial'
         ? 'partial'
-        : totalStored === 0 && staleSkips + zeroSkips > 0
+        : totalStored === 0 && skippedTasks > 0
           ? 'skipped'
           : 'ok';
 
@@ -540,8 +598,8 @@ export default withCronCheckin('fetch-strike-exposure', async (req, res) => {
         totalStored,
         totalSkipped,
         failedTasks,
-        staleSkips,
-        zeroSkips,
+        skippedTasks,
+        skips,
         date: today,
         durationMs,
       },
@@ -554,21 +612,21 @@ export default withCronCheckin('fetch-strike-exposure', async (req, res) => {
       totalStored,
       totalSkipped,
       failedTasks,
-      staleSkips,
-      zeroSkips,
+      skippedTasks,
+      skips,
       durationMs,
     });
 
     return res.status(200).json({
       job: 'fetch-strike-exposure',
-      success: outcome === 'success',
+      success: status === 'ok',
       status,
       perTicker,
       totalStored,
       totalSkipped,
       failedTasks,
-      staleSkips,
-      zeroSkips,
+      skippedTasks,
+      skips,
       durationMs,
     });
   } catch (err) {
