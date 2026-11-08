@@ -168,6 +168,38 @@ Tier 0 must be live before **Mon 2026-11-09 09:25 ET**. Each phase is ≤5 files
   - **Phase 2 (F24).** Compute the cluster multiplier where the app owns it, not inside the panel. The inputs are the VIX, spot, and yesterday's open, high and low (`historySnapshot.yesterday`, else `market.data.yesterday.yesterday`). The formula is `VolatilityCluster`'s: `getClusterMultiplier(vix, rangePct)`, with the range as a percent of yesterday's open (else spot, else the high-low midpoint). The effective multiplier is the owner's manual edit while the card holds one, else the computed value, and 1 only when an input is missing. `VolatilityCluster` shows that value and keeps its manual edit. No derived `useState` (R1). Files: a new hook (or a pure util plus App wiring), `src/App.tsx`, `src/components/VolatilityCluster/index.tsx`, and `src/hooks/useStrategyInputs.ts` if its `clusterMult` state goes. Tests for the hook, and for a saved `clusterMult` that is right with the card closed.
   - **Then the repair.** Replay all 73 days (`--redo` on the 60 already replayed), check that afternoon `vix1d` is the midpoint and that `cluster_mult` matches its inputs, and rebuild `training_features`.
   - **Not covered.** Rows since 08-25 on days that are not replayed keep 1.0. Their backfill is a later owner question.
+- **P0.8 `flow_data` revision log (owner decision, 2026-11-07). Must be live before Mon 2026-11-09 09:30 ET. Built and committed under the name "P0.7" (commit messages, migration #206 description, code comments); renumbered P0.8 on merge because the F24/F25 P0.7 above landed first.**
+  - **Goal.** Keep every value a closed-bucket `flow_data` row ever had, so a replay or study of "what the signal said at 10:05" never uses a number that did not exist at 10:05. P0.1 and P0.2 turned the closed-bucket writes into an upsert that replaces a row with UW's latest value (and the 22:05 reconcile does it again after the close). UW restates these series: the 11-06 greek flow 09:30 row was stored live as ncp −2,281, and UW now says −14,505. Without a log the first-seen value is gone.
+  - **Decision: a revision log, not first-seen columns.** `flow_data` keeps holding the latest value, so no reader changes. A new append-only table records every value a row had and when it was stored. It answers three questions: first seen, final, and what the system showed at time T.
+  - **Sources.** Exactly the four that go through the shared closed-bucket path: `spy_etf_tide`, `qqq_etf_tide`, `zero_dte_index` and `zero_dte_greek_flow`. The other `flow_data` sources (`market_tide`, `market_tide_otm`, `spx_flow`, `spy_flow`, `qqq_flow`) are first-write-wins snapshots (DO NOTHING) with no revisions, and stay out.
+  - **The table, migration #206.** #204 and #205 belong to another session's unpushed branch (`feat/futures-session-front-month`); `migrateDb` applies by id-set membership and only needs ids strictly increasing in the array, so the gap is fine. `flow_data_revisions`:
+    - `id BIGSERIAL PRIMARY KEY`. The log has no natural key: the same row can return to an earlier value (A → B → A), two writes can share a transaction time, and keying on `seen_at` would be keying on `now()` (R6). The id is also the tiebreaker for ordering.
+    - `date DATE`, `timestamp TIMESTAMPTZ`, `source TEXT`: `flow_data`'s key, same types. No foreign key: a revision must outlive a Tier 2 delete of its `flow_data` row.
+    - `ncp`, `npp` `DECIMAL(14,2)`, `net_volume INTEGER`, `otm_ncp`, `otm_npp` `DECIMAL(14,2)`: the columns this path writes, same types and nullability as `flow_data`, holding the whole row as stored after the write.
+    - `seen_at TIMESTAMPTZ NOT NULL DEFAULT now()`, `writer TEXT NOT NULL` (the cron or script name), `is_first BOOLEAN NOT NULL` (true when the write inserted the `flow_data` row; `first` is a keyword, so `is_first`).
+    - Index `(source, timestamp, seen_at)` for the as-of query.
+  - **The seed, in the same migration.** One `INSERT … SELECT` from `flow_data` for those four sources: `seen_at = created_at`, `writer = 'seed'`, `is_first = true`, guarded by `NOT EXISTS` on the key so a re-run adds nothing. The migration is three statements (CREATE TABLE, CREATE INDEX, the seed), and the seed's filter is exactly `WHERE f.source IN ('spy_etf_tide', 'qqq_etf_tide', 'zero_dte_index', 'zero_dte_greek_flow') AND NOT EXISTS (SELECT 1 FROM flow_data_revisions r WHERE r.date = f.date AND r.timestamp = f.timestamp AND r.source = f.source)`. Before P0.1 these rows were first-seen (DO NOTHING), so they are the live values history has, and they must survive the Tier 2 refills and deletes. The seed copies known-bad rows too (the F1–F4 zero grid, the wrong-day rows): the log records what was stored, and a replay filters by the same rules as a reader.
+  - **The write.** Each per-bucket upsert in `upsertClosedBuckets` becomes one data-modifying CTE: the `INSERT … ON CONFLICT DO UPDATE … WHERE … IS DISTINCT FROM` returns the row it inserted or changed (`RETURNING … (xmax = 0) AS is_first`), and an `INSERT INTO flow_data_revisions … SELECT … FROM` that result adds the revision. An unchanged row returns nothing, so it writes no revision. One statement per bucket, in the existing transaction: if the log insert fails, the statement fails, `flow_data` does not change and the run fails (R4). `upsertClosedBuckets` takes a required `writer` (the job name) from every caller: `fetch-etf-tide`, `fetch-zero-dte-flow`, `fetch-greek-flow`, `reconcile-zero-dte-greek-flow`. The inserted, updated and unchanged counts are unchanged.
+  - **Every writer logs.** The three backfill scripts that write these sources (`backfill-etf-tide.mjs` through `scripts/_lib/flow-data-backfill.mjs`, `backfill-zero-dte-flow.mjs`, `backfill-greek-flow.mjs`) are DO NOTHING inserts: they can only add rows, so each row they insert logs a first-seen revision (`is_first` true) with the script name as `writer`, in the same statement: `storeRows` in `scripts/_lib/backfill-cli.mjs` builds it from a `revisionLog` on the target (`loggedFlowDataTarget` in `flow-data-backfill.mjs`), and the two inline scripts now go through `storeRows` too. The market tide and net flow backfills use the unlogged target. A row they skip changes nothing and logs nothing. The Tier 2 refills run through these scripts, so they log; the one-shot Tier 2 repair scripts that DELETE or UPDATE these sources must log the way the cron does, or be listed here as exempt with the reason. `fetch-flow.ts` and `fetch-net-flow.ts` write other sources and are not in scope. No Python or `uw-stream` writer touches these sources.
+  - **Queries** (the pglite tests pin them):
+    - First seen: the earliest revision of the key (`ORDER BY seen_at, id`). `is_first` marks a write that inserted the row, so a row deleted and refilled has two.
+    - Final: `flow_data`.
+    - What the system showed at time `:t` (`:src` the source): the latest revision of each bucket whose label and storing time are both not after `:t`.
+
+      ```sql
+      SELECT DISTINCT ON (date, timestamp, source)
+             date, timestamp, source, ncp, npp, net_volume, otm_ncp, otm_npp, seen_at
+      FROM flow_data_revisions
+      WHERE source = :src AND timestamp <= :t AND seen_at <= :t
+      ORDER BY date, timestamp, source, seen_at DESC, id DESC;
+      ```
+  - **Deploy order.** Apply #206 before the code deploys. The code on a database without the table fails every write loudly (the CTE names the table); that is correct and there is no fallback.
+  - **Size.** About 78 buckets × 4 sources a day of first-seen rows, plus a revision per UW restatement and per backfill: a few hundred rows a day, no pruning. The seed copies every existing row of the four sources (tens of thousands) in one statement.
+  - **Files.** `api/_lib/db-migrations.ts` and `api/__tests__/db.test.ts` (#206), `api/_lib/flow-bucket-store.ts`, its callers `fetch-etf-tide.ts`, `fetch-zero-dte-flow.ts` and `api/_lib/spx-greek-flow.ts`, `scripts/_lib/backfill-cli.mjs`, `scripts/_lib/flow-data-backfill.mjs`, `backfill-zero-dte-flow.mjs` and `backfill-greek-flow.mjs`, their tests (real SQL in pglite: `flow-bucket-store-pglite.test.ts`, `flow-data-revisions-migration-pglite.test.ts`, `flow-data-backfill-pglite.test.mjs`), and this spec.
+  - **Open questions** (defaults in force):
+    - Log the first-write-wins sources too (`market_tide`, net flow)? Default: no, they have no revisions.
+    - A reader for the as-of query (a helper in `api/_lib/`)? Default: only the documented query until a replay needs one.
+    - Prune? Default: never; revisit if a table scan ever matters.
 
 **Tier 1: catch it without being asked**
 
@@ -230,6 +262,7 @@ Tier 0 must be live before **Mon 2026-11-09 09:25 ET**. Each phase is ≤5 files
 
 - **Tier 0:**
   - `api/cron/fetch-etf-tide.ts`, `fetch-zero-dte-flow.ts`, `fetch-greek-flow.ts`
+  - `api/_lib/flow-bucket-store.ts`, migration #206 in `api/_lib/db-migrations.ts` (`flow_data_revisions`), and the backfill scripts' inserts (P0.7)
   - `api/cron/reconcile-zero-dte-greek-flow.ts` and `api/_lib/spx-greek-flow.ts` (P0.2), with its `vercel.json` and `SCHEDULE_MAP` entries
   - `api/cron/fetch-strike-exposure.ts`, `fetch-strike-all.ts`, `compute-zero-gamma.ts`, `fetch-gex-0dte.ts`, `fetch-spot-gex.ts`, `fetch-market-internals.ts`
   - `api/_lib/market-internals-settle.ts` (P0.5), `scripts/backfill-market-internals.ts` and `scripts/_lib/market-internals-backfill.ts`
@@ -246,7 +279,7 @@ Tier 0 must be live before **Mon 2026-11-09 09:25 ET**. Each phase is ≤5 files
 
 ## Data dependencies
 
-- No new tables. P1.1 may add an `audit-data-integrity` Sentry monitor by hand (rule 6262822 routing).
+- One new table, `flow_data_revisions` (P0.7, migration #206, applied on production by the controller after the push, with the owner's OK). P1.1 may add an `audit-data-integrity` Sentry monitor by hand (rule 6262822 routing).
 - UW REST for refills (~300 ETF requests, ~300 greek flow, ~300 zero-DTE index), off-hours only.
 - Schwab price history for `market_internals` and the probe in P0.5, outside 13:00–21:59 UTC on weekdays.
 
