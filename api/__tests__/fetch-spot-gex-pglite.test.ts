@@ -81,7 +81,12 @@ async function runCron(rows: unknown[]) {
     res,
   );
   expect(res._status).toBe(200);
-  return res._json as { status: string; stored: number; submitted: number };
+  return res._json as {
+    status: string;
+    message?: string;
+    stored: number;
+    submitted: number;
+  };
 }
 
 beforeAll(async () => {
@@ -146,6 +151,33 @@ describe('fetch-spot-gex against real Postgres', () => {
     expect(rows[0]!.charm_dir).toBeNull();
   });
 
+  it('puts each of the nine value columns in its own column (no arrays swapped)', async () => {
+    await runCron([uwRow('2026-03-24T13:31:00.000Z')]);
+
+    // uwRow gives every column a distinct value, so a swap of any two unnest
+    // arguments shows here. charm_dir is NULL and must stay NULL.
+    const { rows } = await pg.query<Record<string, string | null>>(
+      `SELECT price::text, gamma_oi::text, gamma_vol::text, gamma_dir::text,
+              charm_oi::text, charm_vol::text, charm_dir::text,
+              vanna_oi::text, vanna_vol::text, vanna_dir::text
+         FROM spot_exposures`,
+    );
+    expect(rows).toEqual([
+      {
+        price: '5750.25',
+        gamma_oi: '1234567.8912',
+        gamma_vol: '-500000.0000',
+        gamma_dir: '300000.0000',
+        charm_oi: '200000.0000',
+        charm_vol: '100000.0000',
+        charm_dir: null,
+        vanna_oi: '50000.0000',
+        vanna_vol: '25000.0000',
+        vanna_dir: '15000.0000',
+      },
+    ]);
+  });
+
   it('writes nothing for a repeat of the same rows and counts none as stored', async () => {
     const rows = [
       uwRow('2026-03-24T13:31:00.000Z'),
@@ -175,6 +207,44 @@ describe('fetch-spot-gex against real Postgres', () => {
     ]);
 
     expect(out).toMatchObject({ stored: 0, submitted: 2 });
+    const { rows } = await pg.query('SELECT 1 FROM spot_exposures');
+    expect(rows).toHaveLength(2);
+  });
+
+  it('reports success, not skipped, when the pre-rollover replay conflicts and also holds an all-zero opening minute', async () => {
+    // Yesterday's session is already stored; today has no row (mark is null).
+    await pg.exec(
+      `INSERT INTO spot_exposures (date, timestamp, ticker, price)
+       VALUES ('2026-03-23', '2026-03-23T19:58:00Z', 'SPX', 5700),
+              ('2026-03-23', '2026-03-23T19:59:00Z', 'SPX', 5701)`,
+    );
+    const zero = {
+      gamma_per_one_percent_move_oi: '0',
+      gamma_per_one_percent_move_vol: '0',
+      gamma_per_one_percent_move_dir: '0',
+      charm_per_one_percent_move_oi: '0',
+      charm_per_one_percent_move_vol: '0',
+      charm_per_one_percent_move_dir: null,
+      vanna_per_one_percent_move_oi: '0',
+      vanna_per_one_percent_move_vol: '0',
+      vanna_per_one_percent_move_dir: '0',
+    };
+
+    // UW replays yesterday: the opening minute was all-zero, the two real
+    // rows already exist, so all of them conflict (stored 0) but two were
+    // submitted. Not "only all-zero rows": a success.
+    const out = await runCron([
+      uwRow('2026-03-23T13:30:00.000Z', zero),
+      uwRow('2026-03-23T19:58:00.000Z'),
+      uwRow('2026-03-23T19:59:00.000Z'),
+    ]);
+
+    expect(out).toMatchObject({
+      status: 'success',
+      stored: 0,
+      submitted: 2,
+    });
+    expect(out.message).toBeUndefined();
     const { rows } = await pg.query('SELECT 1 FROM spot_exposures');
     expect(rows).toHaveLength(2);
   });

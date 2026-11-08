@@ -315,9 +315,11 @@ export default withCronInstrumentation(
       'fetch-spot-gex completed',
     );
 
-    // Nothing stored only because the new rows were all-zero: skipped, never
-    // a success.
-    const onlyZeroRows = result.stored === 0 && result.zeroSkipped > 0;
+    // Nothing sent only because the new rows were all-zero: skipped, never a
+    // success. `submitted`, not `stored`: before the rollover UW replays
+    // yesterday's session, whose real rows all conflict (stored 0) next to an
+    // all-zero opening minute, and that run is a success.
+    const onlyZeroRows = result.submitted === 0 && result.zeroSkipped > 0;
 
     return {
       status: onlyZeroRows ? 'skipped' : 'success',
