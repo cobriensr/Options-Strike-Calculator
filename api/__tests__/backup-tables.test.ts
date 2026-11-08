@@ -135,7 +135,7 @@ describe('backup-tables handler', () => {
 
   // ── Happy path: successful backup ─────────────────────────
 
-  it('exports all 15 tables and returns expected response shape', async () => {
+  it('exports all 17 tables and returns expected response shape', async () => {
     const fakeRow = { id: 1, name: 'test' };
     mockSql.mockResolvedValue([fakeRow]);
 
@@ -150,16 +150,16 @@ describe('backup-tables handler', () => {
 
     const json = res._json as Record<string, unknown>;
     expect(json.date).toBe('2026-03-29');
-    expect(json.totalRows).toBe(15); // 1 row x 15 tables
+    expect(json.totalRows).toBe(17); // 1 row x 17 tables
     expect(json.pruned).toBe(0);
     expect(json.errors).toBeUndefined();
 
-    // All 15 tables should appear in results
+    // All 17 tables should appear in results
     const tables = json.tables as Record<
       string,
       { rows: number; bytes: number }
     >;
-    expect(Object.keys(tables)).toHaveLength(15);
+    expect(Object.keys(tables)).toHaveLength(17);
     expect(tables.market_snapshots).toEqual({
       rows: 1,
       bytes: expect.any(Number),
@@ -180,13 +180,16 @@ describe('backup-tables handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    // 15 tables = 15 tagged-template calls + 15 unsafe interpolations
-    expect(mockSql).toHaveBeenCalledTimes(15);
-    expect(mockSql.unsafe).toHaveBeenCalledTimes(15);
+    // 17 tables = 17 tagged-template calls + 17 unsafe interpolations
+    expect(mockSql).toHaveBeenCalledTimes(17);
+    expect(mockSql.unsafe).toHaveBeenCalledTimes(17);
     expect(mockSql.unsafe).toHaveBeenCalledWith('market_snapshots');
     expect(mockSql.unsafe).toHaveBeenCalledWith('schema_migrations');
-    // The revision log (spec P0.7) is the only copy of a first-seen value.
+    // The revision log (spec P0.8) is the only copy of a first-seen value.
     expect(mockSql.unsafe).toHaveBeenCalledWith('flow_data_revisions');
+    // And so are the logs of vega_flow_etf and nope_ticks (spec P0.9).
+    expect(mockSql.unsafe).toHaveBeenCalledWith('vega_flow_etf_revisions');
+    expect(mockSql.unsafe).toHaveBeenCalledWith('nope_ticks_revisions');
   });
 
   it('calls put() with correct path, options, and JSONL content', async () => {
@@ -219,8 +222,8 @@ describe('backup-tables handler', () => {
       contentType: 'application/x-ndjson',
     });
 
-    // 15 put calls total
-    expect(mockPut).toHaveBeenCalledTimes(15);
+    // 17 put calls total
+    expect(mockPut).toHaveBeenCalledTimes(17);
   });
 
   it('computes totalBytes correctly from JSONL content', async () => {
@@ -239,8 +242,8 @@ describe('backup-tables handler', () => {
     // exportTable. ASCII JSON: byteLength === string length; the
     // assertion stays stable across UTF-8 row payloads regardless.
     const expectedPerTable = Buffer.byteLength(JSON.stringify(row));
-    // 15 tables, each with one row
-    expect(json.totalBytes).toBe(expectedPerTable * 15);
+    // 17 tables, each with one row
+    expect(json.totalBytes).toBe(expectedPerTable * 17);
   });
 
   // SENTRY-EMERALD-DESERT-6T: Vercel Blob's put() rejects empty bodies
@@ -267,13 +270,13 @@ describe('backup-tables handler', () => {
     // put() is NOT called when every table is empty.
     expect(mockPut).not.toHaveBeenCalled();
 
-    // All 15 tables still appear in results so a downstream consumer can
+    // All 17 tables still appear in results so a downstream consumer can
     // tell "table absent because empty" vs "table missing because failed".
     const tables = json.tables as Record<
       string,
       { rows: number; bytes: number }
     >;
-    expect(Object.keys(tables)).toHaveLength(15);
+    expect(Object.keys(tables)).toHaveLength(17);
     expect(tables.market_snapshots).toEqual({ rows: 0, bytes: 0 });
 
     // Happy path with no errors → status 'ok'
@@ -317,11 +320,11 @@ describe('backup-tables handler', () => {
     >;
     // market_snapshots collected both pages: 50000 + 1 = 50001 rows.
     expect(tables.market_snapshots!.rows).toBe(50_001);
-    // Total = 50001 (market_snapshots) + 14 × 1 (every other table)
-    expect(json.totalRows).toBe(50_015);
-    // 16 sql calls total: 2 for market_snapshots + 1 for each of the
-    // remaining 14 tables.
-    expect(mockSql).toHaveBeenCalledTimes(16);
+    // Total = 50001 (market_snapshots) + 16 × 1 (every other table)
+    expect(json.totalRows).toBe(50_017);
+    // 18 sql calls total: 2 for market_snapshots + 1 for each of the
+    // remaining 16 tables.
+    expect(mockSql).toHaveBeenCalledTimes(18);
   });
 
   // ── Individual table failure ──────────────────────────────
@@ -347,9 +350,9 @@ describe('backup-tables handler', () => {
     expect(res._status).toBe(200);
     const json = res._json as Record<string, unknown>;
 
-    // 14 successful, 1 failed
+    // 16 successful, 1 failed
     const tables = json.tables as Record<string, unknown>;
-    expect(Object.keys(tables)).toHaveLength(14);
+    expect(Object.keys(tables)).toHaveLength(16);
     expect(tables.outcomes).toBeUndefined();
 
     // errors array should contain the failed table
@@ -362,8 +365,8 @@ describe('backup-tables handler', () => {
     expect(Sentry.setTag).toHaveBeenCalledWith('cron.job', 'backup-tables');
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
 
-    // put() should only be called 14 times (not for the failed table)
-    expect(mockPut).toHaveBeenCalledTimes(14);
+    // put() should only be called 16 times (not for the failed table)
+    expect(mockPut).toHaveBeenCalledTimes(16);
 
     // Partial-failure → status 'partial' so the dashboard reflects reality
     expect(reportCronRun).toHaveBeenCalledWith(
@@ -393,9 +396,9 @@ describe('backup-tables handler', () => {
     expect(res._status).toBe(200);
     const json = res._json as Record<string, unknown>;
 
-    // 14 successful tables, 1 failed
+    // 16 successful tables, 1 failed
     const tables = json.tables as Record<string, unknown>;
-    expect(Object.keys(tables)).toHaveLength(14);
+    expect(Object.keys(tables)).toHaveLength(16);
 
     const errors = json.errors as string[];
     expect(errors).toHaveLength(1);
