@@ -42,13 +42,19 @@ A value check on the P3.2 `flow_data` backfill (summer gap plan, `docs/superpowe
 | F21 | `oi_changes` | 3 (one mid-March 50-row set copied to 29 days) | 02-23 → 04-02 | 1,450 rows | `scripts/backfill-oi-change.mjs` |
 | F22 | `cone_levels` | 3 (one side's mark bad) | 08-25, 10-19 | 2 rows | `cone` cron, DO NOTHING keeps the first write |
 | F23 | `flow_ratio_monitor` | 2 (pre-rollover reading is yesterday's last tick; unverified in the DB) | 03-25 → now, if confirmed | not measured | `api/cron/monitor-flow-ratio.ts:62-72` polls `/net-flow/expiry` with `date=today` every minute from 09:25 ET and takes the last non-null tick, which is yesterday's 15:59 before the rollover. Same class as F2 |
+| F24 | `market_snapshots` `cluster_mult` (and the regime zone and delta ceilings saved with it, the analyze context, `training_features.cluster_mult`) | 4 (a default 1.0 stored as a value) | 08-25 → now on every row, live and replayed; earlier wherever the card was closed | every row since 08-25 | the multiplier is computed only inside `VolatilityCluster`'s effect, which mounts only while the Market Regime card is open. App passes `defaultCollapsed` and `SectionBox` keeps the open state in plain `useState`, so each page load uses `useStrategyInputs`' default 1 until the owner opens the card |
+| F25 | `market_snapshots` `vix1d`, `sigma` on past-date (backtest) rows after noon ET | method | every backtest save | afternoon rows | `useVix1dData.getVix1d` takes the CBOE daily close after noon ET. Against 976 live VIX1D readings on 72 days (2026-11-07) that runs +1.58 points high in the afternoon (MAE 1.63); the open/close midpoint runs +0.24 (MAE 1.00). Mornings stay on the open (+0.17) |
 
 **F11 and F12 repair note (2026-11-07).** The frozen live rows were replaced by replaying their slots through the app:
 - 199 frozen live rows deleted, on 10-28, 11-02, 11-04 and 11-06.
 - 858 slots replayed through the app on 11 dates (09-09, 09-14, 09-15, 09-16, 10-16, 10-19, 10-27, 10-28, 11-02, 11-04, 11-06). Every row was checked against its posted payload and its candle.
-- `training_features` rebuilt for 10 of them.
-- 11-06 waits for its VIX1D: the `refresh-vix1d` cron runs weekday mornings.
-- The older dates wait on the owner. On the ~22 dates that can't be replayed (2026-03-21 to 09-01, about 890 rows) the frozen rows stay, and they still feed `/api/vix-ohlc` where a date has no candles. See Lead 15 in `past-date-replay-integrity-2026-10-27.md`.
+- `training_features` rebuilt for all 11 (11-06 after a one-off `refresh-vix1d` run loaded its VIX1D).
+- Older dates (owner-approved 11-07). Schwab's 5-minute history reaches back to at least 03-25, so all 62 frozen weekdays from 03-25 to 09-08 are replayable:
+  - The 16 rows dated Saturday 03-21 were deleted.
+  - 49 dates were replayed (3,822 slots) and checked; their features were rebuilt.
+  - On the other 13 dates, the 66 live-flag rows were marked as backtest rows so a replay overwrites them in place. That keeps their ids, which 9 analyses and positions rows reference. Of the 66, 39 were genuine live readings and 27 were wrong; 11 of the wrong ones held the 03-25 placeholders SPX 5720 and VIX 19.
+  - One mislabelled off-grid row (04-29 "3:10 PM ET", saved at 3:10 PM CT) was deleted.
+  - All 73 days (60 replayed, 13 marked and not yet replayed) get a replay after P0.7 ships, so F24 and F25 are right on every slot.
 
 Owned elsewhere. Check with that work before touching any of these:
 - **Lottery and Silent Boom outcome labels missing or stamped empty** (252K unenriched fires 06-25 → 10-21; 9K Silent Boom rows): the enrich work, commits 11a02b97 and 54850fdd on 11-06.
@@ -150,6 +156,11 @@ Tier 0 must be live before **Mon 2026-11-09 09:25 ET**. Each phase is ≤5 files
 - **P0.6 Frozen market snapshots (F11).** Find out first why the live quote state stops updating on 11-02, 11-04 and 11-06.
   - Read `useSnapshotSave.ts`, the quote hooks and `api/snapshot.ts`.
   - Add a staleness guard. A snapshot whose quote time is more than 10 minutes behind its slot is not saved; the client sends the quote time and the server checks it.
+- **P0.7 Snapshot signals that depend on the UI or on the VIX1D close (F24, F25).** Owner-approved 2026-11-07. Ships before the replay of all 73 days, which then fixes the stored rows.
+  - **Phase 1 (F25).** `src/hooks/useVix1dData.ts` `getVix1d`: the open before noon ET (unchanged), the midpoint of the day's open and close from noon ET on. Tests in `src/__tests__/hooks/useVix1dData.test.ts`.
+  - **Phase 2 (F24).** Compute the cluster multiplier where the app owns it, not inside the panel. The inputs are the VIX, spot, and yesterday's open, high and low (`historySnapshot.yesterday`, else `market.data.yesterday.yesterday`). The formula is `VolatilityCluster`'s: `getClusterMultiplier(vix, rangePct)`, with the range as a percent of yesterday's open (else spot, else the high-low midpoint). The effective multiplier is the owner's manual edit while the card holds one, else the computed value, and 1 only when an input is missing. `VolatilityCluster` shows that value and keeps its manual edit. No derived `useState` (R1). Files: a new hook (or a pure util plus App wiring), `src/App.tsx`, `src/components/VolatilityCluster/index.tsx`, and `src/hooks/useStrategyInputs.ts` if its `clusterMult` state goes. Tests for the hook, and for a saved `clusterMult` that is right with the card closed.
+  - **Then the repair.** Replay all 73 days (`--redo` on the 60 already replayed), check that afternoon `vix1d` is the midpoint and that `cluster_mult` matches its inputs, and rebuild `training_features`.
+  - **Not covered.** Rows since 08-25 on days that are not replayed keep 1.0. Their backfill is a later owner question.
 
 **Tier 1: catch it without being asked**
 
