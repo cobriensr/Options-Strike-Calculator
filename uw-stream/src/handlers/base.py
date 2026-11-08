@@ -24,6 +24,7 @@ import asyncio
 import contextlib
 from abc import ABC, abstractmethod
 
+from bounded import run_bounded
 from config import settings
 from db import single_attempt
 from logger_setup import log
@@ -254,13 +255,17 @@ class Handler(ABC):
           4. Append the drained items to the in-memory batch (after
              ``_transform``-ing them — same pipeline as the steady-state
              ``run()`` loop).
-          5. Call ``_safe_flush`` once with everything we collected, as a
-             single DB attempt with no transient retry.
+          5. Call ``_safe_flush`` with everything we collected, in slices of
+             at most ``BACKLOG_BATCH_MAX`` rows, each a single DB attempt
+             with no transient retry.
 
         Capped at ``deadline_s`` total so the drain finishes inside
-        Railway's SIGTERM-to-SIGKILL window (see ``DRAIN_DEADLINE_S``). If
-        the deadline hits, the rows still in memory or in the queue are
-        lost; that is logged and sent to Sentry with the counts.
+        Railway's SIGTERM-to-SIGKILL window (see ``DRAIN_DEADLINE_S``). The
+        cap is hard: at the deadline the inner drain is cancelled and
+        abandoned (``run_bounded``), not awaited, because a flush stuck in a
+        DB call can take longer than the deadline to unwind. The rows still
+        in memory or in the queue are lost; that is logged and sent to
+        Sentry with the counts.
 
         Returns the number of rows attempted to flush (``_safe_flush``
         swallows DB errors, so a non-zero return does NOT prove the rows
@@ -268,12 +273,16 @@ class Handler(ABC):
         write-count instrumentation).
         """
         try:
-            return await asyncio.wait_for(self._drain_inner(), timeout=deadline_s)
+            return await run_bounded(self._drain_inner(), deadline_s, name=f"drain:{self.name}")
         except TimeoutError:
             # Either run() is still inside a slow or stalled flush
             # ("consumer_busy"), or drain's own final flush is
-            # ("final_flush"). Both leave self._batch holding the rows of
-            # that flush. The wake-up sentinel is not a row.
+            # ("final_flush"). Either way self._batch holds the rows that
+            # were not written: the flush in flight plus, in the final
+            # flush, the slices after it. The wake-up sentinel is not a
+            # row. Nothing awaits between the deadline and these reads, so
+            # the cancelled inner drain has not touched the batch or the
+            # queue yet.
             in_memory = len(self._batch)
             queued = self.queue.qsize() - (1 if self._sentinel_queued else 0)
             context = {
@@ -295,7 +304,7 @@ class Handler(ABC):
             return 0
 
     async def _drain_inner(self) -> int:
-        """The body of drain(); separated so we can wrap it in wait_for."""
+        """The body of drain(); separated so ``run_bounded`` can wrap it."""
         # 1. Signal the consumer to exit. ``run()`` checks the flag
         #    between iterations and also short-circuits on the sentinel.
         self._stopping = True
@@ -337,14 +346,20 @@ class Handler(ABC):
 
         state.handler(self.name).queue_depth = self.queue.qsize()
 
-        # 4 + 5. One final flush with the combined batch, as one DB attempt.
+        # 4 + 5. Final flush of the combined batch, one DB attempt per slice.
         #    A transient retry would add backoff plus another 30 s
-        #    command_timeout, which only runs past the deadline.
+        #    command_timeout, which only runs past the deadline. The queue
+        #    can hold ws_queue_size rows (50,000 by default), so go out in
+        #    BACKLOG_BATCH_MAX slices rather than one transaction of dozens
+        #    of INSERTs. Rows leave ``self._batch`` only once their slice
+        #    returns, so a deadline hit counts the slice in flight and the
+        #    slices not yet started as lost, and nothing already written.
         flushed = len(self._batch)
-        if flushed:
-            with single_attempt():
-                await self._safe_flush(self._batch)
-            self._batch = []
+        with single_attempt():
+            while self._batch:
+                chunk = self._batch[:BACKLOG_BATCH_MAX]
+                await self._safe_flush(chunk)
+                del self._batch[: len(chunk)]
         return flushed
 
     async def _safe_flush(self, rows: list[tuple]) -> None:

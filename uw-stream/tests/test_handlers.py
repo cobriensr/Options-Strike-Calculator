@@ -530,6 +530,57 @@ async def test_drain_timeout_reports_sentry_with_lost_rows(monkeypatch, path):
 
 
 @pytest.mark.asyncio
+async def test_drain_returns_at_its_deadline_even_if_the_flush_will_not_unwind(monkeypatch):
+    """The deadline is hard. A final flush parked in a DB call can take longer
+    than the deadline to unwind once it is cancelled (``wait_for`` waits for
+    that), so drain() must report the lost rows and return at the deadline
+    without waiting for the cancel to complete.
+    """
+    import bounded
+    import handlers.base as base_mod
+    from handlers.base import Handler
+    from state import state
+
+    state.handlers.clear()
+    messages: list[tuple[str, dict]] = []
+    monkeypatch.setattr(base_mod, "capture_message", lambda msg, **kw: messages.append((msg, kw)))
+    release = asyncio.Event()
+
+    class _StuckHandler(Handler):
+        def _transform(self, payload: dict) -> tuple | None:
+            return (payload.get("seq"),)
+
+        async def _flush(self, rows: list[tuple]) -> None:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                await release.wait()  # the DB call's cancel cleanup never ends
+                raise
+
+    h = _StuckHandler(name="drain-hard-deadline-test")
+    h._batch = [(0,), (1,)]
+    for seq in (2, 3, 4):
+        h.queue.put_nowait({"seq": seq})
+    h._stopped.set()
+
+    drain = asyncio.ensure_future(h.drain(deadline_s=0.2))
+    try:
+        done, _ = await asyncio.wait({drain}, timeout=2.0)
+
+        assert drain in done, "drain() waited for the cancelled flush to unwind"
+        assert drain.result() == 0
+        assert len(messages) == 1
+        assert messages[0][1]["context"]["lost_rows"] == 5
+        assert messages[0][1]["tags"]["stage"] == "final_flush"
+    finally:
+        release.set()
+        if bounded._unwinding:
+            await asyncio.wait(set(bounded._unwinding), timeout=2.0)
+        await _cancel(drain)
+        state.handlers.clear()
+
+
+@pytest.mark.asyncio
 async def test_drain_flush_does_not_retry():
     """The drain's final flush makes ONE attempt. A retry (0.5 s backoff and
     another 30 s command_timeout) would only run past Railway's SIGKILL.

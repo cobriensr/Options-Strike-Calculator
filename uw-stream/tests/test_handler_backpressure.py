@@ -288,3 +288,116 @@ async def test_drain_reports_a_bad_payload_with_its_stage_and_flushes_the_rest(m
 
     assert h.batches == [[(0,), (2,)]]
     assert [kw["tags"]["stage"] for _, kw in captured] == ["drain_transform"]
+
+
+# --- Final flush slicing ------------------------------------------------------
+#
+# drain() collects the consumer's batch plus the whole queue (up to
+# ws_queue_size, 50,000 rows by default). Writing that as one flush is one
+# transaction of dozens of INSERTs that can eat the drain deadline, and a
+# deadline hit then loses every row of it. The final flush goes out in slices of
+# BACKLOG_BATCH_MAX, and rows already written are not counted as lost.
+
+
+def _final_flush_handler(monkeypatch, *, queued: int, batch: int = 0) -> _BatchRecordingHandler:
+    from config import settings
+
+    monkeypatch.setattr(settings, "ws_queue_size", queued + 1)
+    h = _BatchRecordingHandler()
+    h._batch = [(-(i + 1),) for i in range(batch)]
+    for seq in range(queued):
+        h.queue.put_nowait({"seq": seq})
+    h._stopped.set()  # no consumer running
+    return h
+
+
+@pytest.mark.asyncio
+async def test_drain_flushes_an_oversized_final_batch_in_slices(monkeypatch):
+    from handlers.base import BACKLOG_BATCH_MAX
+
+    h = _final_flush_handler(monkeypatch, queued=2 * BACKLOG_BATCH_MAX + 1, batch=3)
+
+    flushed = await h.drain()
+
+    assert flushed == 2 * BACKLOG_BATCH_MAX + 4
+    assert [len(b) for b in h.batches] == [BACKLOG_BATCH_MAX, BACKLOG_BATCH_MAX, 4]
+    # Order is kept and no row is written twice.
+    assert [r[0] for b in h.batches for r in b] == [-1, -2, -3, *range(2 * BACKLOG_BATCH_MAX + 1)]
+    assert h._batch == []
+    assert state.handler(h.name).write_attempted == 2 * BACKLOG_BATCH_MAX + 4
+
+
+@pytest.mark.asyncio
+async def test_drain_deadline_counts_only_the_slices_not_yet_written(monkeypatch):
+    import asyncio
+
+    import bounded
+    from handlers import base as base_mod
+    from handlers.base import BACKLOG_BATCH_MAX
+
+    messages: list[dict] = []
+    monkeypatch.setattr(base_mod, "capture_message", lambda _msg, **kw: messages.append(kw))
+    release = asyncio.Event()
+
+    class _HangsOnSecondSlice(_BatchRecordingHandler):
+        async def _flush(self, rows: list[tuple]) -> None:
+            await super()._flush(rows)
+            if len(self.batches) == 2:
+                try:
+                    await asyncio.sleep(3600)
+                except asyncio.CancelledError:
+                    await release.wait()
+                    raise
+
+    from config import settings
+
+    total = 3 * BACKLOG_BATCH_MAX
+    monkeypatch.setattr(settings, "ws_queue_size", total + 1)
+    h = _HangsOnSecondSlice()
+    for seq in range(total):
+        h.queue.put_nowait({"seq": seq})
+    h._stopped.set()
+
+    try:
+        assert await h.drain(deadline_s=0.2) == 0
+
+        # Slice 1 was written. Slice 2 was in flight and slice 3 never started.
+        assert len(messages) == 1
+        ctx = messages[0]["context"]
+        assert ctx["in_memory_batch"] == 2 * BACKLOG_BATCH_MAX
+        assert ctx["lost_rows"] == 2 * BACKLOG_BATCH_MAX
+        assert messages[0]["tags"]["stage"] == "final_flush"
+    finally:
+        release.set()
+        if bounded._unwinding:
+            await asyncio.wait(set(bounded._unwinding), timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_slice_is_counted_lost_and_the_next_slice_still_goes_out(monkeypatch):
+    from handlers import base as base_mod
+    from handlers.base import BACKLOG_BATCH_MAX
+
+    captured: list[tuple[BaseException, dict]] = []
+    monkeypatch.setattr(base_mod, "capture_exception", lambda exc, **kw: captured.append((exc, kw)))
+
+    class _FailsFirstSlice(_BatchRecordingHandler):
+        async def _flush(self, rows: list[tuple]) -> None:
+            await super()._flush(rows)
+            if len(self.batches) == 1:
+                raise ConnectionError("neon reset")
+
+    from config import settings
+
+    monkeypatch.setattr(settings, "ws_queue_size", 2 * BACKLOG_BATCH_MAX + 1)
+    h = _FailsFirstSlice()
+    for seq in range(BACKLOG_BATCH_MAX + 10):
+        h.queue.put_nowait({"seq": seq})
+    h._stopped.set()
+
+    assert await h.drain() == BACKLOG_BATCH_MAX + 10
+
+    assert [len(b) for b in h.batches] == [BACKLOG_BATCH_MAX, 10]
+    assert state.handler(h.name).lost_rows == BACKLOG_BATCH_MAX
+    assert [str(e) for e, _ in captured] == ["neon reset"]
+    assert h._batch == []
