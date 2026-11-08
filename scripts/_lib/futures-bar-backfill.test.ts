@@ -237,6 +237,10 @@ function tradesContracts(): string[] {
 let logs: string[];
 const out = () => logs.join('\n');
 
+/** The line a run prints when it stops before a date, if it did. */
+const stopLine = () =>
+  logs.find((l) => /Page budget spent|Market hours began/.test(l));
+
 beforeEach(() => {
   vi.resetAllMocks();
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -1119,7 +1123,9 @@ describe('runBarBackfill', () => {
     expect(code).toBe(1);
     expect(out()).toMatch(/ES 2026-09-15 FAILED: ESU6: more than 5000 pages/);
     expect(out()).toMatch(/\(after 5000 pages\)/);
-    expect(out()).toMatch(/Page budget spent.*--from 2026-09-16/is);
+    expect(stopLine()).toMatch(
+      /Page budget spent \(5000 of 100\): stopping before 2026-09-16\./,
+    );
     // A failure and an early stop together: both are listed at the end.
     expect(out()).toMatch(/Failed root-days: ES 2026-09-15$/m);
     expect(out()).toMatch(
@@ -1155,8 +1161,12 @@ describe('runBarBackfill', () => {
     // Dates were left unprocessed, so the run is not a success.
     expect(code).toBe(1);
     expect(insertCalls()).toHaveLength(1);
-    expect(out()).toMatch(/Market hours began: stopping before 2026-09-16/);
-    expect(out()).toMatch(/--from 2026-09-16/);
+    expect(stopLine()).toMatch(
+      /Market hours began: stopping before 2026-09-16\./,
+    );
+    // An explicit-date run is resumed from the Incomplete line below: a
+    // --from here would not combine with its dates.
+    expect(stopLine()).not.toContain('--from');
     expect(out()).toMatch(
       /Incomplete: stopped before 2026-09-16\. Resume with 2026-09-16 --roots ES --max-pages 20000$/m,
     );
@@ -1172,7 +1182,11 @@ describe('runBarBackfill', () => {
 
     expect(code).toBe(1);
     // 09-15 used 1 page; 09-16 never starts.
-    expect(out()).toMatch(/Page budget spent \(1 of 1\).*--from 2026-09-16/is);
+    expect(stopLine()).toMatch(
+      /Page budget spent \(1 of 1\): stopping before 2026-09-16\./,
+    );
+    expect(stopLine()).not.toContain('--from');
+    expect(stopLine()).toMatch(/Incomplete line/);
     expect(insertCalls()).toHaveLength(1);
     expect(out()).toMatch(
       /Incomplete: stopped before 2026-09-16\. Resume with 2026-09-16 --roots ES --max-pages 1$/m,

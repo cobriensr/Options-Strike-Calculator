@@ -651,8 +651,9 @@ export interface DayLoopResult {
 
 /**
  * The date loop both backfills share, oldest date first: stops before a
- * date once market hours begin or the page budget is spent (the log says
- * where to resume), runs a date's roots up to UW_CONCURRENCY_CAP at a
+ * date once market hours begin or the page budget is spent (it names the
+ * stop; `reportStoppedEarly` gives the resume arguments), runs a date's
+ * roots up to UW_CONCURRENCY_CAP at a
  * time, and hands each finished root-day to `report`. A root-day that
  * throws is logged with its pages, counted as a failure, and the run goes
  * on. Returns the pages used, the failed root-days, the trade dates a
@@ -675,7 +676,7 @@ export async function runPlannedDays<
     if (isMarketHours()) {
       console.error(
         `\nMarket hours began: stopping before ${day.date}. ` +
-          `Re-run after the close with --from ${day.date}.`,
+          `The Incomplete line at the end has the arguments to resume.`,
       );
       stoppedBefore = day.date;
       break;
@@ -683,7 +684,7 @@ export async function runPlannedDays<
     if (pages >= maxPages) {
       console.log(
         `\nPage budget spent (${pages} of ${maxPages}): stopping before ` +
-          `${day.date}. Resume with --from ${day.date}.`,
+          `${day.date}. The Incomplete line at the end has the arguments to resume.`,
       );
       stoppedBefore = day.date;
       break;

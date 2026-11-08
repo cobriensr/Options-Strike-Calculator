@@ -193,6 +193,10 @@ const ES_PAGES = {
 
 let logs: string[];
 
+/** The line a run prints when it stops before a date, if it did. */
+const stopLine = () =>
+  logs.find((l) => /Page budget spent|Market hours began/.test(l));
+
 beforeEach(() => {
   vi.resetAllMocks();
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -1154,7 +1158,9 @@ describe('runBackfill', () => {
     // 08-04 used 1 page; 08-05 never starts.
     expect(mockSql).toHaveBeenCalledTimes(2);
     const out = logs.join('\n');
-    expect(out).toMatch(/Page budget spent \(1 of 1\).*--from 2026-08-05/is);
+    expect(stopLine()).toMatch(
+      /Page budget spent \(1 of 1\): stopping before 2026-08-05\./,
+    );
     expect(out).toMatch(
       /Incomplete: stopped before 2026-08-05\. Resume with 2026-08-05 --roots ES --max-pages 1$/m,
     );
@@ -1181,7 +1187,9 @@ describe('runBackfill', () => {
 
     expect(code).toBe(1);
     const out = logs.join('\n');
-    expect(out).toMatch(/Market hours began: stopping before 2026-08-05/);
+    expect(stopLine()).toMatch(
+      /Market hours began: stopping before 2026-08-05\./,
+    );
     expect(out).toMatch(
       /Incomplete: stopped before 2026-08-05\. Resume with 2026-08-05 2026-08-06 --roots ES,NQ --max-pages 20000$/m,
     );
@@ -1190,6 +1198,45 @@ describe('runBackfill', () => {
     );
     expect(out).not.toMatch(/FAILED/);
   });
+
+  it.each<[string, Partial<BackfillOptions>, boolean]>([
+    ['the page budget', { maxPages: 1 }, false],
+    ['market hours', {}, true],
+  ])(
+    'the stop-time line for %s carries no resume arguments: an explicit-date run resumes from the Incomplete line',
+    async (_label, over, marketHours) => {
+      if (marketHours) {
+        mockIsMarketHours
+          .mockReturnValueOnce(false) // the start guard
+          .mockReturnValueOnce(false) // before 08-04
+          .mockReturnValue(true); // before 08-05
+      }
+      routeNullBars({
+        '2026-08-04': [nullRow('ES', '2026-08-04T14:00:00Z', 4)],
+      });
+      routeTrades(ES_PAGES);
+
+      const code = await runBackfill({
+        ...opts({
+          dates: ['2026-08-04', '2026-08-05'],
+          roots: ['ES'],
+          ...over,
+        }),
+        apiKey: 'k',
+      });
+
+      expect(code).toBe(1);
+      // Dates and --from are exclusive, so a --from here would be a command
+      // that fails; the arguments are on the Incomplete line only.
+      expect(stopLine()).toMatch(/stopping before 2026-08-05\./);
+      expect(stopLine()).not.toContain('--from');
+      expect(stopLine()).toMatch(/Incomplete line/);
+      const resume = logs.filter((l) => l.startsWith('Incomplete:'));
+      expect(resume).toHaveLength(1);
+      expect(resume[0]).toMatch(/Resume with 2026-08-05 --roots ES /);
+      expect(resume[0]).not.toContain('--from');
+    },
+  );
 
   it('a range run that stops early resumes with --from and the same --to, and keeps --dry-run', async () => {
     mockIsMarketHours
@@ -1301,7 +1348,9 @@ describe('runBackfill', () => {
     expect(mockSql).toHaveBeenCalledTimes(1);
     const out = logs.join('\n');
     expect(out).toMatch(/ES 2026-08-04 FAILED.*UW API 502/);
-    expect(out).toMatch(/page budget.*--from 2026-08-05/is);
+    expect(stopLine()).toMatch(
+      /Page budget spent \(2 of 2\): stopping before 2026-08-05\./,
+    );
     // A failure and an early stop together: both are listed.
     expect(out).toMatch(/Incomplete: stopped before 2026-08-05\./);
     expect(out).toMatch(/2 pages/);
