@@ -25,24 +25,27 @@ from state import State
 
 
 class _CaptureSpy:
-    """Records each capture_message call; optionally raises on chosen calls."""
+    """Records each capture_message call."""
 
-    def __init__(self, fail_on: set[int] | None = None) -> None:
+    def __init__(self) -> None:
         self.calls: list[tuple[tuple, dict]] = []
-        self._fail_on = fail_on or set()
-        self._n = 0
 
     def __call__(self, *args, **kwargs) -> None:
-        self._n += 1
-        if self._n in self._fail_on:
-            raise RuntimeError("sentry transport down")
         self.calls.append((args, kwargs))
 
 
-def _run_script(monkeypatch, steps: list[Callable[[State], None]], capture: _CaptureSpy):
+def _run_script(
+    monkeypatch,
+    steps: list[Callable[[State], None]],
+    capture: _CaptureSpy | None,
+    *,
+    at_cancel: Callable[[State], None] | None = None,
+):
     """Wire a fresh State + capture spy into the reporter, script its sleeps.
 
-    Returns (state, sleeps) so callers can assert on the sleep cadence.
+    ``at_cancel`` changes the counters just before the final sleep raises
+    CancelledError, i.e. after the last check and before shutdown cancels the
+    task. Returns (state, sleeps) so callers can assert on the sleep cadence.
     """
     fresh = State()
     sleeps: list[float] = []
@@ -51,12 +54,15 @@ def _run_script(monkeypatch, steps: list[Callable[[State], None]], capture: _Cap
         sleeps.append(seconds)
         i = len(sleeps) - 1
         if i >= len(steps):
+            if at_cancel is not None:
+                at_cancel(fresh)
             raise asyncio.CancelledError()
         steps[i](fresh)
 
     monkeypatch.setattr(drop_reporter.asyncio, "sleep", _scripted_sleep)
     monkeypatch.setattr(drop_reporter, "state", fresh)
-    monkeypatch.setattr(drop_reporter, "capture_message", capture)
+    if capture is not None:
+        monkeypatch.setattr(drop_reporter, "capture_message", capture)
     return fresh, sleeps
 
 
@@ -169,34 +175,76 @@ async def test_includes_receive_queue_drops(monkeypatch):
     assert _handler_events(capture) == []
 
 
-async def test_survives_a_capture_failure_and_carries_the_delta(monkeypatch):
-    # The first report raises. The task must keep running, and the drops it
-    # failed to report must go out with the next one rather than vanish.
-    capture = _CaptureSpy(fail_on={1})
-    _run_script(monkeypatch, [_drops("option_trades", 5), _drops("option_trades", 2)], capture)
+async def test_a_failing_sentry_forward_does_not_stop_the_reporter(monkeypatch):
+    # The reporter has no handler of its own around capture_message because
+    # capture_message never raises: sentry_setup catches an SDK failure and
+    # logs it. This runs the real capture_message with the SDK raising.
+    import sentry_sdk
+
+    import sentry_setup
+
+    forwarded: list[str] = []
+
+    def _sdk_down(message, **_kwargs):
+        forwarded.append(message)
+        raise RuntimeError("sentry transport down")
+
+    monkeypatch.setattr(sentry_setup, "_sentry_enabled", True)
+    monkeypatch.setattr(sentry_sdk, "capture_message", _sdk_down)
+    _, sleeps = _run_script(
+        monkeypatch, [_drops("option_trades", 5), _drops("option_trades", 2)], capture=None
+    )
 
     with pytest.raises(asyncio.CancelledError):
         await run_drop_reporter()
 
-    events = _handler_events(capture)
-    assert [e["context"]["dropped"] for e in events] == [7]
-    assert events[0]["context"]["drop_total"] == 7
+    # Both intervals were attempted: the first failure did not end the loop.
+    assert len(forwarded) == 2
+    assert len(sleeps) == 3
 
 
-async def test_one_failed_capture_does_not_block_the_other_queues(monkeypatch):
-    capture = _CaptureSpy(fail_on={1})
+async def test_cancel_reports_the_drops_since_the_last_check(monkeypatch):
+    # Shutdown cancels the reporter after the handlers drain. Whatever dropped or
+    # was lost since the last 60 s check is what a deploy causes, so the cancel
+    # runs one more pass before the task exits.
+    capture = _CaptureSpy()
 
-    def _both(s: State) -> None:
-        s.handler("option_trades").drop_count += 3
-        s.receive_queue_drops += 9
+    def _last_minute(s: State) -> None:
+        s.handler("option_trades").drop_count += 2
+        s.handler("net_flow").lost_rows += 500
+        s.receive_queue_drops += 7
 
-    _run_script(monkeypatch, [_both], capture)
+    _run_script(monkeypatch, [_drops("option_trades", 5)], capture, at_cancel=_last_minute)
 
     with pytest.raises(asyncio.CancelledError):
         await run_drop_reporter()
 
-    # The handler event raised; the receive-queue event still went out.
-    assert [e["context"]["dropped"] for e in _receive_events(capture)] == [9]
+    contexts = [
+        (e["tags"]["handler"], e["context"]["dropped"], e["context"]["lost_rows"])
+        for e in _handler_events(capture)
+    ]
+    # option_trades: 5 at the check, then only the 2 since. net_flow: its lost rows.
+    assert contexts == [("option_trades", 5, 0), ("option_trades", 2, 0), ("net_flow", 0, 500)]
+    assert [e["context"]["drop_total"] for e in _receive_events(capture)] == [7]
+
+
+async def test_cancelling_the_running_task_reports_before_it_exits(monkeypatch):
+    # The real cancel path: a task parked in its 60 s sleep, cancelled by shutdown.
+    capture = _CaptureSpy()
+    fresh = State()
+    monkeypatch.setattr(drop_reporter, "state", fresh)
+    monkeypatch.setattr(drop_reporter, "capture_message", capture)
+
+    task = asyncio.create_task(run_drop_reporter())
+    await asyncio.sleep(0)  # let it reach its first sleep
+    fresh.handler("net_flow").drop_count += 4
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert task.cancelled()
+    assert [e["context"]["dropped"] for e in _handler_events(capture)] == [4]
 
 
 async def test_sleeps_the_report_interval(monkeypatch):
@@ -252,13 +300,3 @@ async def test_drops_and_lost_rows_in_one_interval_send_one_event(monkeypatch):
     assert len(events) == 1
     ctx = events[0]["context"]
     assert (ctx["dropped"], ctx["lost_rows"]) == (3, 500)
-
-
-async def test_failed_capture_carries_the_lost_rows_delta(monkeypatch):
-    capture = _CaptureSpy(fail_on={1})
-    _run_script(monkeypatch, [_lost("net_flow", 500), _lost("net_flow", 100)], capture)
-
-    with pytest.raises(asyncio.CancelledError):
-        await run_drop_reporter()
-
-    assert [e["context"]["lost_rows"] for e in _handler_events(capture)] == [600]
