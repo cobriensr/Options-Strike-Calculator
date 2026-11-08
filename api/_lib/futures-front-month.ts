@@ -225,21 +225,21 @@ async function readInputs(
 }
 
 /**
- * `wanted`, unless it expires after `ceiling`, the earliest decision after
- * the date: then `ceiling`, canonical, and a warning that names the
- * incumbent too, so a clamp over rows that were already out of order (an
- * incumbent later than the ceiling) is visible. It still writes the ceiling
- * and does not throw. Throws on a ceiling that is no outright of the
- * product (a corrupt row; fail, don't guess).
+ * `wanted`, unless it expires after `ceiling`, the contract of the
+ * earliest decision stored after the date (null: none): then `ceiling` in
+ * its canonical name, with `clamped` true. A decision is write-once, so a
+ * date decided after a later one must not be later than it, or the series
+ * would step back. Shared by `ensureFrontMonth` and the history seed, which
+ * walks the same rule in memory. Throws on a ceiling that is no outright of
+ * the product (a corrupt row; fail, don't guess).
  */
-function capAtCeiling(
+export function ceilingContract(
   product: FuturesRoot,
   tradeDate: string,
   wanted: string,
   ceiling: string | null,
-  incumbent: string | null,
-): string {
-  if (ceiling == null) return wanted;
+): { contract: string; clamped: boolean } {
+  if (ceiling == null) return { contract: wanted, clamped: false };
   const cap = canonicalContract(product, ceiling, tradeDate);
   const capExpiry = cap == null ? null : parseContract(product, cap, tradeDate);
   const wantedExpiry = parseContract(product, wanted, tradeDate);
@@ -248,12 +248,37 @@ function capAtCeiling(
       `${product} front month for ${tradeDate}: the next stored decision, ${JSON.stringify(ceiling)}, is not an outright ${product} contract`,
     );
   }
-  if (compareExpiry(wantedExpiry, capExpiry) <= 0) return wanted;
-  logger.warn(
-    { product, tradeDate, wanted, ceiling: cap, incumbent },
-    'Front-month decision is later than the next stored decision: using the next stored decision',
+  return compareExpiry(wantedExpiry, capExpiry) <= 0
+    ? { contract: wanted, clamped: false }
+    : { contract: cap, clamped: true };
+}
+
+/**
+ * `ceilingContract`, with a warning that names the incumbent too when it
+ * clamps, so a clamp over rows that were already out of order (an incumbent
+ * later than the ceiling) is visible. It still writes the ceiling and does
+ * not throw.
+ */
+function capAtCeiling(
+  product: FuturesRoot,
+  tradeDate: string,
+  wanted: string,
+  ceiling: string | null,
+  incumbent: string | null,
+): string {
+  const { contract, clamped } = ceilingContract(
+    product,
+    tradeDate,
+    wanted,
+    ceiling,
   );
-  return cap;
+  if (clamped) {
+    logger.warn(
+      { product, tradeDate, wanted, ceiling: contract, incumbent },
+      'Front-month decision is later than the next stored decision: using the next stored decision',
+    );
+  }
+  return contract;
 }
 
 /**
