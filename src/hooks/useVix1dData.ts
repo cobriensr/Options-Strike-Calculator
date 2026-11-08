@@ -8,9 +8,13 @@
  * and return null until the data arrives.
  *
  * Provides a lookup function that returns the VIX1D value for a given
- * date and time, using the same "smart" logic as VIX:
+ * date and time. The daily map has no intraday path, so it stands in:
  *   - Before noon ET → use open
- *   - After noon ET → use close
+ *   - Noon ET on → use the midpoint of the day's open and close
+ * The close is not used for the afternoon: VIX1D spikes into the end of day.
+ * Against 976 live readings on 72 days, the afternoon close ran +1.58 points
+ * high while the open/close midpoint ran +0.24 (F25 in
+ * docs/superpowers/specs/live-data-integrity-2026-11-06.md).
  *
  * Data covers May 2022 – present (960+ days).
  * Real OHLC starts April 2023; earlier dates are close-only backtested.
@@ -37,7 +41,7 @@ export interface UseVix1dDataReturn {
    * never during render.
    */
   ensureLoaded: () => void;
-  /** Get VIX1D value for a date at a given ET hour. Uses smart OHLC (open < noon, close >= noon). Null until loaded. */
+  /** Get VIX1D value for a date at a given ET hour: the open before noon, the open/close midpoint (2 decimals) from noon on. Null until loaded. */
   getVix1d: (date: string, hourET: number) => number | null;
   /** Get full OHLC for a date. Null until loaded. */
   getOHLC: (date: string) => Vix1dEntry | null;
@@ -83,8 +87,16 @@ export function useVix1dData(): UseVix1dDataReturn {
     (date: string, hourET: number): number | null => {
       const entry = data[date];
       if (!entry) return null;
-      // Smart OHLC: open before noon, close after
-      return hourET < 12 ? entry.o : entry.c;
+      if (hourET < 12) return entry.o;
+      // Afternoon: the open/close midpoint. The map holds 2-decimal values,
+      // so an odd sum of hundredths puts the midpoint on a half-cent tie, and
+      // float math can round that tie down (18.15 and 18.2 give 18.17). Halve
+      // the integer cents instead: the tie always rounds up (18.18).
+      return (
+        Math.round(
+          (Math.round(entry.o * 100) + Math.round(entry.c * 100)) / 2,
+        ) / 100
+      );
     },
     [data],
   );

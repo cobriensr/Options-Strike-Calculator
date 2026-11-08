@@ -36,11 +36,11 @@ afterEach(() => {
 
 /**
  * Helper: render the hook and trigger a lazy load via the API endpoint.
- * Mocks /api/vix1d-daily returning 200 with mockVix1dMap.
+ * Mocks /api/vix1d-daily returning 200 with `map` (mockVix1dMap by default).
  */
-async function renderAndLoad() {
+async function renderAndLoad(map: object = mockVix1dMap) {
   fetchSpy.mockResolvedValue(
-    new Response(JSON.stringify(mockVix1dMap), { status: 200 }),
+    new Response(JSON.stringify(map), { status: 200 }),
   );
 
   const { result } = renderHook(() => useVix1dData());
@@ -144,18 +144,58 @@ describe('useVix1dData', () => {
       expect(result.current.getVix1d('2026-03-11', 11)).toBe(14.2);
     });
 
-    it('returns close when hourET >= 12', async () => {
+    // F25: the daily close spikes into the end of day, so after noon the
+    // open/close midpoint stands in for the intraday reading, not the close.
+    it('returns the open/close midpoint when hourET >= 12, not the close', async () => {
       const result = await renderAndLoad();
 
-      expect(result.current.getVix1d('2026-03-11', 12)).toBe(15.1);
-      expect(result.current.getVix1d('2026-03-11', 15)).toBe(15.1);
-      expect(result.current.getVix1d('2026-03-10', 14)).toBe(13.0);
+      // 2026-03-11: o 14.2, c 15.1 -> 14.65 (not the close, 15.1).
+      expect(result.current.getVix1d('2026-03-11', 12)).toBe(14.65);
+      expect(result.current.getVix1d('2026-03-11', 15)).toBe(14.65);
+      // 2026-03-10: o 12.0, c 13.0 -> 12.5 (not the close, 13.0).
+      expect(result.current.getVix1d('2026-03-10', 14)).toBe(12.5);
     });
 
-    it('returns null for a date not in the data', async () => {
+    it('switches from the open to the midpoint exactly at hour 12', async () => {
       const result = await renderAndLoad();
 
-      expect(result.current.getVix1d('2099-01-01', 10)).toBeNull();
+      expect(result.current.getVix1d('2026-03-11', 11)).toBe(14.2);
+      expect(result.current.getVix1d('2026-03-11', 12)).toBe(14.65);
+    });
+
+    // The map holds 2-decimal values, so an odd sum of hundredths puts the
+    // midpoint on a half-cent tie. The tie rounds up, and the plain float
+    // route (Math.round(x * 100) / 100) rounds 18.175 and 11.115 down.
+    it.each([
+      { o: 14.21, c: 15.1, expected: 14.66 },
+      { o: 18.15, c: 18.2, expected: 18.18 },
+      { o: 11.11, c: 11.12, expected: 11.12 },
+      { o: 9.99, c: 10.0, expected: 10 },
+    ])(
+      'rounds the midpoint of o=$o and c=$c to 2 decimals ($expected)',
+      async ({ o, c, expected }) => {
+        const result = await renderAndLoad({
+          '2026-03-09': { o, h: Math.max(o, c), l: Math.min(o, c), c },
+        });
+
+        expect(result.current.getVix1d('2026-03-09', 13)).toBe(expected);
+      },
+    );
+
+    it('returns the open on a flat day (o === c) at any hour', async () => {
+      const result = await renderAndLoad({
+        '2026-03-09': { o: 33.63, h: 33.63, l: 33.63, c: 33.63 },
+      });
+
+      expect(result.current.getVix1d('2026-03-09', 10)).toBe(33.63);
+      expect(result.current.getVix1d('2026-03-09', 14)).toBe(33.63);
+    });
+
+    it('returns null for a date not in the data, before and after noon', async () => {
+      const result = await renderAndLoad();
+
+      expect(result.current.getVix1d('2099-01-01', 9)).toBeNull();
+      expect(result.current.getVix1d('2099-01-01', 13)).toBeNull();
     });
   });
 
