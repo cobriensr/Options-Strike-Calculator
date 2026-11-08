@@ -31,6 +31,10 @@ const TABLES = [
   'lessons',
   'lesson_reports',
   'flow_data',
+  // The revision log (spec P0.7): once UW restates a value, the first-seen number
+  // cannot be fetched again, so this table is the only copy. `id` is its first
+  // column, so ORDER BY 1 pages it stably.
+  'flow_data_revisions',
   'greek_exposure',
   'spot_exposures',
   'strike_exposures',
