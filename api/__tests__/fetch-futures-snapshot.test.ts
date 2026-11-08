@@ -140,9 +140,10 @@ function setupSqlDispatch(symbolMap: Record<string, SymbolData | null>) {
       if (!data) return Promise.resolve([]); // no data → skip
 
       if (query.includes('ORDER BY ts DESC LIMIT 1') && query.includes('<=')) {
-        // Either latest or 1H-ago; disambiguate by the ts bound passed
-        // in (now - 60 s for the latest closed bar, now - 60 min for 1H ago). Normalize both sides through new Date(...).toISOString()
-        // so precision differences don't flip the branch.
+        // Either latest or 1H-ago; disambiguate by the ts bound passed in
+        // (now - 60 s for the latest closed bar, now - 60 min for 1H ago).
+        // Normalize both sides through new Date(...).toISOString() so
+        // precision differences don't flip the branch.
         const isLatest = values.some((v) => normalizeIso(v) === closedBoundIso);
         if (isLatest) {
           return Promise.resolve([

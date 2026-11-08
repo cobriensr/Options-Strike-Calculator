@@ -12,10 +12,11 @@
  * Historical mode (`?at=<ISO>`): derives a snapshot on the fly from
  *   the 1-minute `futures_bars` table, using the same `computeSnapshot`
  *   logic as the cron but with the caller-supplied moment. Nearest-bar
- *   snapping: the latest bar is the most recent bar with `ts <= at`,
- *   and a symbol whose latest bar is more than MAX_BAR_AGE_MS (15 min)
- *   before `at` is omitted — so a pick inside a weekend / maintenance
- *   closure or a feed outage returns no snapshot for that symbol.
+ *   snapping: the latest bar is the most recent bar closed by `at`
+ *   (`ts <= at - 60 s`), and a symbol whose latest bar is more than
+ *   MAX_BAR_AGE_MS (15 min) before `at` is omitted — so a pick inside a
+ *   weekend / maintenance closure or a feed outage returns no snapshot
+ *   for that symbol.
  *
  * ES-SPX basis is computed from whichever snapshot set is returned. In
  * historical mode, the SPX reference is pulled from `market_snapshots`
