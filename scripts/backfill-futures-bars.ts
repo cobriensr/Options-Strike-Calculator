@@ -17,7 +17,8 @@
  * UW_API_KEY, never printed). Run after the close: it refuses to start
  * during market hours and stops between dates if they begin. A date range
  * is required; every root-day in it is paged in full (about 1,000 pages
- * for an ES day, 20-35k for the September range).
+ * for an ES day; the September range took 43,130 pages, about 2,500-3,000
+ * a weekday across the six roots).
  *   npx tsx scripts/backfill-futures-bars.ts --compare 2026-10-30
  *   npx tsx scripts/backfill-futures-bars.ts --dry-run --from 2026-09-04 --to 2026-09-28 --max-pages 60000
  *   npx tsx scripts/backfill-futures-bars.ts --from 2026-09-04 --to 2026-09-28 --max-pages 60000

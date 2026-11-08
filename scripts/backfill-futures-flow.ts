@@ -28,6 +28,10 @@
  *        --roots ES,NQ,... (default all six) · --max-pages N (default
  *        20000, checked between dates; the log says where to resume).
  *
+ * Exit code 1 when any root-day failed, or the run stopped before its last
+ * date (market hours began, or the page budget was spent). The log then
+ * names the root-days not reached and the arguments that resume them.
+ *
  * Spec: docs/superpowers/specs/2026-10-28-uw-futures-orderflow-design.md
  */
 
