@@ -18,10 +18,28 @@ vi.mock('../_lib/logger.js', () => ({
   },
 }));
 
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: {
+    setTag: vi.fn(),
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+  },
+  metrics: {
+    increment: vi.fn(),
+    uwRateLimit: vi.fn(),
+    uwBudget: vi.fn(),
+  },
+}));
+
 import handler from '../cron/fetch-spot-gex.js';
+import logger from '../_lib/logger.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 
 // Fixed "market hours" date: Tuesday 10:00 AM ET
 const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
+// EDT (UTC-4): the last second before, and the first second of, 09:40 ET.
+const BEFORE_0940_ET = new Date('2026-03-24T13:39:59.000Z');
+const AT_0940_ET = new Date('2026-03-24T13:40:00.000Z');
 // Fixed "outside hours" date: Tuesday 6:00 AM ET
 const OFF_HOURS_TIME = new Date('2026-03-24T11:00:00.000Z');
 // Fixed weekend date: Saturday
@@ -43,6 +61,36 @@ function makeSpotRow(overrides: Partial<Record<string, string>> = {}) {
     vanna_per_one_percent_move_dir: '15000',
     ...overrides,
   };
+}
+
+const ZERO_VALUES = {
+  gamma_per_one_percent_move_oi: '0',
+  gamma_per_one_percent_move_vol: '0.00',
+  gamma_per_one_percent_move_dir: '-0',
+  charm_per_one_percent_move_oi: '0',
+  charm_per_one_percent_move_vol: '0',
+  charm_per_one_percent_move_dir: '0',
+  vanna_per_one_percent_move_oi: '0',
+  vanna_per_one_percent_move_vol: '0',
+  vanna_per_one_percent_move_dir: '0',
+};
+
+/** A minute row at `hhmm` UTC on 2026-03-24 (EDT: 13:30Z is 09:30 ET). */
+const minute = (
+  hhmm: string,
+  overrides: Partial<Record<string, string>> = {},
+) =>
+  makeSpotRow({
+    start_time: `2026-03-24T${hhmm}:00.000Z`,
+    time: `2026-03-24T${hhmm}:00.000Z`,
+    ...overrides,
+  });
+
+function authedReq() {
+  return mockRequest({
+    method: 'GET',
+    headers: { authorization: 'Bearer test-secret' },
+  });
 }
 
 function stubFetch(data: unknown[] = []) {
@@ -337,7 +385,8 @@ describe('fetch-spot-gex handler', () => {
   it('returns 500 when DB insert throws', async () => {
     process.env.UW_API_KEY = 'uwkey';
     stubFetch([makeSpotRow()]);
-    mockSql.mockRejectedValue(new Error('DB connection lost'));
+    const dbError = new Error('DB connection lost');
+    mockSql.mockRejectedValue(dbError);
 
     const req = mockRequest({
       method: 'GET',
@@ -348,5 +397,171 @@ describe('fetch-spot-gex handler', () => {
 
     expect(res._status).toBe(500);
     expect(res._json).toMatchObject({ error: 'Internal error' });
+    expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
+  });
+
+  it('returns 500 with the parse error captured when UW answers 2xx but the body is not JSON', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    const parseError = new SyntaxError('Unexpected token < in JSON');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.reject(parseError),
+      }),
+    );
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({ error: 'Internal error' });
+    expect(Sentry.captureException).toHaveBeenCalledWith(parseError);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  // ── R-zero (F14): all-zero rows are not stored ─────────────
+
+  it('does not store an all-zero newest row, warns, counts the metric and reports skipped', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    vi.setSystemTime(BEFORE_0940_ET);
+    stubFetch([minute('13:31', ZERO_VALUES)]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'skipped',
+      ticks: 1,
+      stored: 0,
+      zeroSkipped: 1,
+    });
+    expect(res._json).not.toMatchObject({ status: 'success' });
+    // 1 HWM SELECT + 1 data-quality SELECT: no INSERT.
+    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        zeroSkipped: 1,
+        zeroFrom: '2026-03-24T13:31:00.000Z',
+        newestIsZero: true,
+      }),
+      expect.stringContaining('all-zero'),
+    );
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'fetch_spot_gex.zero_row_skip',
+    );
+    // Before 09:40 ET (the rollover): quiet in Sentry.
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('sends a Sentry error from 09:40 ET when the newest row is all-zero', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    vi.setSystemTime(AT_0940_ET);
+    stubFetch([minute('13:39', ZERO_VALUES)]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._json).toMatchObject({ status: 'skipped', stored: 0 });
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('newest UW spot-exposure row'),
+      'error',
+    );
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'fetch_spot_gex.zero_row_skip',
+    );
+  });
+
+  it('treats null, blank and missing columns as zero', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch([
+      minute('13:31', {
+        ...ZERO_VALUES,
+        gamma_per_one_percent_move_oi: null as unknown as string,
+        gamma_per_one_percent_move_vol: '',
+        charm_per_one_percent_move_oi: undefined,
+      }),
+    ]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._json).toMatchObject({ status: 'skipped', zeroSkipped: 1 });
+    expect(mockSql).toHaveBeenCalledTimes(2);
+  });
+
+  it('stores a row with a single non-zero value column', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch([
+      minute('13:31', { ...ZERO_VALUES, vanna_per_one_percent_move_dir: '1' }),
+    ]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._json).toMatchObject({ status: 'success', stored: 1 });
+    expect(res._json).not.toMatchObject({ zeroSkipped: 1 });
+    expect(metrics.increment).not.toHaveBeenCalled();
+  });
+
+  it('stores the real rows around an all-zero opening minute and stays quiet in Sentry', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    vi.setSystemTime(AT_0940_ET);
+    // 09:30 and 09:31 ET are zero (the rollover); 09:32 and 09:33 are real.
+    stubFetch([
+      minute('13:30', ZERO_VALUES),
+      minute('13:31', ZERO_VALUES),
+      minute('13:32'),
+      minute('13:33'),
+    ]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    // The newest row is real, so after 09:40 there is no Sentry error, but
+    // the two zero rows are still counted and warned.
+    expect(res._json).toMatchObject({
+      status: 'success',
+      ticks: 4,
+      stored: 2,
+      zeroSkipped: 2,
+      timestamp: '2026-03-24T13:33:00.000Z',
+    });
+    // 1 HWM SELECT + 2 INSERTs + 1 data-quality SELECT = 4
+    expect(mockSql).toHaveBeenCalledTimes(4);
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'fetch_spot_gex.zero_row_skip',
+    );
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('leaves a gap: a skipped minute is not re-read once a later row is stored', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // The mark is already at 09:33 (the earlier run stored it). UW now sends
+    // 09:31 with real values, but it is at or behind the mark.
+    mockSql.mockResolvedValueOnce([{ max_ts: '2026-03-24T13:33:00.000Z' }]);
+    stubFetch([minute('13:31'), minute('13:33')]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._json).toMatchObject({ stored: 0 });
+    // HWM SELECT + data-quality SELECT only.
+    expect(mockSql).toHaveBeenCalledTimes(2);
+  });
+
+  it('picks a minute up on a later run while no later row has been stored', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // 09:31 was all-zero, so nothing was stored and the mark stayed at 09:29.
+    // On this run UW has filled 09:31's values in.
+    mockSql.mockResolvedValueOnce([{ max_ts: '2026-03-24T13:29:00.000Z' }]);
+    stubFetch([minute('13:31')]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._json).toMatchObject({ status: 'success', stored: 1 });
   });
 });
