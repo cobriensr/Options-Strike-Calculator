@@ -1856,6 +1856,19 @@ async function planSnapshots(
       for (const f of outcome.fields) {
         if (!affected.has(f)) report.drift[f] += 1;
       }
+      // The April to June writer had no freshness gate: it priced from the last
+      // bar it had while minutes were missing, and they have landed since. A row
+      // that matches such a bar by value, with a fresh recompute and nothing else
+      // writing it, is a stale-at-write row (ES and NQ only).
+      const staleBar =
+        report.stale != null &&
+        writable.length === 0 &&
+        byValue.priceBar != null &&
+        row.tsMs - byValue.priceBar.tsMs > MAX_BAR_AGE_MS
+          ? byValue.priceBar
+          : null;
+      const staleInSpan =
+        staleBar != null && row.tsMs >= SPAN.startMs && row.tsMs < SPAN.endMs;
       if (outcome.fields.includes('price') && !writable.includes('price')) {
         noteUnwritten(
           report.unwritten,
@@ -1863,36 +1876,32 @@ async function planSnapshots(
           outcome.to.price,
           'method drift, price not affected',
         );
-        noteUnwritten(
-          report.driftTop,
-          row,
-          outcome.to.price,
-          'recomputable, price not affected',
-        );
-        if (
-          Math.abs(row.stored.price - outcome.to.price) >
-          UNWRITTEN_FLAG_SHARE * Math.abs(row.stored.price)
-        ) {
-          report.driftOverMark += 1;
+        // The drift list is the safety net for rows nothing will write: a row
+        // in the stale-at-write plan is left out of it.
+        if (!staleInSpan) {
+          noteUnwritten(
+            report.driftTop,
+            row,
+            outcome.to.price,
+            'recomputable, price not affected',
+          );
+          if (
+            Math.abs(row.stored.price - outcome.to.price) >
+            UNWRITTEN_FLAG_SHARE * Math.abs(row.stored.price)
+          ) {
+            report.driftOverMark += 1;
+          }
         }
       }
       if (largeUnmatched) {
         noteUnmatchedLarge(report.unmatchedLarge, row, outcome.to.price);
       }
       if (writable.length === 0) {
-        // The April to June writer had no freshness gate: it priced from the last
-        // bar it had while minutes were missing, and they have landed since. A row
-        // that matches such a bar by value, with a fresh recompute and nothing else
-        // writing it, is a stale-at-write row (ES and NQ only).
-        const bar = byValue.priceBar;
-        if (
-          report.stale != null &&
-          bar != null &&
-          row.tsMs - bar.tsMs > MAX_BAR_AGE_MS
-        ) {
+        if (report.stale != null && staleBar != null) {
+          const bar = staleBar;
           if (row.tsMs >= SPAN.endMs) {
             report.stale.afterSpan += 1;
-          } else if (row.tsMs >= SPAN.startMs) {
+          } else if (staleInSpan) {
             const rewrite: StaleRewrite = {
               change: {
                 id: row.id,
@@ -2319,7 +2328,7 @@ function staleText(st: StaleStats): string[] {
 
 function driftText(r: SnapshotSymbolReport): string[] {
   return [
-    `    the ${r.driftTop.length} largest price drifts on rows that can be recomputed (price not affected, not written; ${r.driftOverMark} rows over 0.15% of the price):`,
+    `    the ${r.driftTop.length} largest price drifts on rows that can be recomputed (price not affected, not written, not in the stale-at-write plan; ${r.driftOverMark} rows over 0.15% of the price):`,
     ...r.driftTop.map((u) => `      ${u.line}`),
   ];
 }

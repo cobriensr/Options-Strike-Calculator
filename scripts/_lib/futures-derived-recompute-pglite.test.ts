@@ -1244,11 +1244,14 @@ describe('dry run on real SQL (pglite)', () => {
       expect(block.join('\n')).not.toContain(`id ${other}:`);
     }
     expect(text).toContain('the open D1 question): 0 rows');
-    // The drift list: the three recomputable rows whose price is not written,
-    // the largest first; 7100 and 6990 are over 0.15%, 7005 is not. The stale
-    // rows left alone are not in it.
+    // The drift list: the recomputable rows whose price nothing will write, the
+    // largest first; 7100 is over 0.15%, 7005 is not. 6990 is a real bar's close
+    // 23 hours older, so the stale-at-write plan takes it and it leaves this list.
     expect(text).toContain(
-      'the 3 largest price drifts on rows that can be recomputed (price not affected, not written; 2 rows over 0.15% of the price):',
+      'the 2 largest price drifts on rows that can be recomputed (price not affected, not written, not in the stale-at-write plan; 1 rows over 0.15% of the price):',
+    );
+    expect(text).toContain(
+      `id ${real}: price 6990 -> 7007 (17.00), the matched bar of 2026-05-11T15:00:00Z is 1413 min older`,
     );
     expect(text).toContain(
       `ES 2026-05-12T14:32:00.250Z id ${id}: stored 7100, recomputed 7007, difference 93.00, recomputable, price not affected [over 0.15% of the price]`,
@@ -2305,6 +2308,20 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     for (const id of [s.f2, s.u, s.u2, s.rty, s.post]) {
       expect(text).not.toContain(`id ${id}: price`);
     }
+    // The drift safety net leaves out the rows in the plan and keeps the rows nothing will write.
+    for (const id of [s.f1a, s.f1b, s.f1c, s.f1d, s.fx]) {
+      expect(text).not.toMatch(
+        new RegExp(
+          `id ${id}: stored [\\d.]+, recomputed [\\d.]+, difference [\\d.]+, recomputable`,
+        ),
+      );
+    }
+    expect(text).toContain(
+      `id ${s.f2}: stored 7007, recomputed 7010, difference 3.00, recomputable, price not affected`,
+    );
+    expect(text).toContain(
+      `id ${s.u}: stored 7123, recomputed 7007, difference 116.00, recomputable, price not affected`,
+    );
   });
 
   it('rewrites the four fields of the frozen rows, backs them up first, and leaves the rest', async () => {
