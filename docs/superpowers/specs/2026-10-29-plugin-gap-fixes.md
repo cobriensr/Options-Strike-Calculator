@@ -204,13 +204,12 @@ What shipped (local history `993c8f8`):
   - Log in to `neon-readonly` through `/mcp`.
   - Paste the handoff line into the skill-cleanup session.
   - The phase 8 `~/.claude/CLAUDE.md` line was declined by the owner on 2026-10-29; the memory note stands alone.
-- **`env-guard.sh` (the Edit/Write `.env` guard), found 2026-10-29. Not fixed yet.**
-  - Its timeout is 5 s, while the shell guard now gets 30 s.
-  - It starts `python3` (about 0.6 s idle) for every `.env*` path, through `hook_file_path`.
-  - A direct run on an Edit of the worktree's `.env.example` took 8.2 s, so it timed out three times and blocked an approved edit.
-  - The same run also returned the "secrets file" ask for `.env.example`, which `env_secret_path` should class as a template. The cause is unconfirmed: suspect the path `hook_file_path` returns, maybe a trailing `\r` from Windows Python.
-  - Fix it with the full loop, a case table like `env-shell-guard.test.mjs`, and a timeout raise. Note that `settings.json` currently carries another session's uncommitted hook-timeout edits.
-- **After the next heavy afternoon:** analyze the guard timing log, pick the real fix, and remove the log.
+- **`env-guard.sh` (the Edit/Write `.env` guard), found 2026-10-29. Fixed 2026-11-07.**
+  - It timed out three times on an approved `.env.example` edit: its limit was 5 s, while a concurrent `npm run review` starved the machine. Its timeout is now 30 s, the shell guard's.
+  - Every hook's `python3` now runs with `-S`, except `market-hours.sh`, which needs `tzdata` from site-packages. `-I` still ran the global `.pth` files, and `pip_system_certs.pth` alone cost about 450 ms of a 550 ms start.
+  - There was no misclassification. The "secrets file" ask for `.env.example` came from an inline repro that lost its backslashes, so the hook saw a path with no separators. The classifier is correct.
+  - `hooks/tests/env-guard.test.mjs` (local-only, 27 checks) pins the decisions, the python flags in every hook, the `market-hours.sh` status line and the timeout.
+- **Guard timing log: done 2026-11-05.** The timeouts were Windows process creation under load, not the script, and the log has been removed.
 - **Adjacent fixes found during the build. All done 2026-10-29, except the last item:**
   - `scripts/upload-fulltape-to-r2.py` now heads each upload and compares its size. A failed check deletes the object and exits 3; a TLS-guard error exits 4. There are 13 tests, and the code review passed.
   - CLAUDE.md's R2 rows now name Vercel, and say no code reads `R2_ACCOUNT_ID`. The matching `.env.example` comment was changed with the owner's one-time approval, despite the never-edit-`.env*` rule.
