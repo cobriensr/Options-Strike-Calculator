@@ -29,6 +29,15 @@
  * rest again from the same inputs, or from newer volume rows if some
  * landed, and either answer is a valid one for a date nobody has decided.
  *
+ * Accepted risk, a window of one round trip: the inputs are read in one
+ * statement and the decision is inserted in another. A volume row that
+ * lands in between, while a second caller decides a different date, can
+ * leave a non-monotone pair, and the ceiling cannot help: it bounds a date
+ * by the rows that exist when it is read, not by one inserted after. It
+ * needs a late volume writer and two processes deciding two dates within
+ * the same few tens of milliseconds, and the Python copy has the same
+ * window. Closing it would take a conditional insert; it is left open.
+ *
  * `insertContractVolumes` and `insertFrontMonthRows` are the bulk inserts
  * the history seed (Phase 3) uses. They write `source = 'candles'`.
  *
@@ -203,20 +212,26 @@ async function readInputs(
       inputs.undecided.push(r.day);
     }
   }
+  // SELECT DISTINCT promises no order (the planner may hash instead of
+  // sort), and the fill must run oldest first: keep this sort.
   inputs.undecided.sort();
   return inputs;
 }
 
 /**
  * `wanted`, unless it expires after `ceiling`, the earliest decision after
- * the date: then `ceiling`, canonical, and a warning. Throws on a ceiling
- * that is no outright of the product (a corrupt row; fail, don't guess).
+ * the date: then `ceiling`, canonical, and a warning that names the
+ * incumbent too, so a clamp over rows that were already out of order (an
+ * incumbent later than the ceiling) is visible. It still writes the ceiling
+ * and does not throw. Throws on a ceiling that is no outright of the
+ * product (a corrupt row; fail, don't guess).
  */
 function capAtCeiling(
   product: FuturesRoot,
   tradeDate: string,
   wanted: string,
   ceiling: string | null,
+  incumbent: string | null,
 ): string {
   if (ceiling == null) return wanted;
   const cap = canonicalContract(product, ceiling, tradeDate);
@@ -229,7 +244,7 @@ function capAtCeiling(
   }
   if (compareExpiry(wantedExpiry, capExpiry) <= 0) return wanted;
   logger.warn(
-    { product, tradeDate, wanted, ceiling: cap },
+    { product, tradeDate, wanted, ceiling: cap, incumbent },
     'Front-month decision is later than the next stored decision: using the next stored decision',
   );
   return cap;
@@ -260,6 +275,7 @@ async function decideAndStore(
     tradeDate,
     decideFrontMonth(incumbent, volumes, product, tradeDate),
     ceiling,
+    incumbent,
   );
   await withDbRetry(
     () => sql`
@@ -361,7 +377,7 @@ export async function fetchFrontMonthSchedule(
     for (const r of rows) byDate.set(r.trade_date, r.contract);
   }
   // Oldest first, one at a time: each decision starts from the one before,
-  // so the fill and the ceiling of `ensureFrontMonth` have nothing to do.
+  // so the fill has nothing to do for these dates.
   for (const tradeDate of dates) {
     if (!byDate.has(tradeDate)) {
       byDate.set(tradeDate, await ensureFrontMonth(product, tradeDate, source));
@@ -477,15 +493,24 @@ export interface FrontMonthRow {
  * FROM unnest(…) ON CONFLICT DO NOTHING`, 500 rows a statement, `source =
  * 'candles'`. A date that already has a row keeps it. Returns the rows this
  * call inserted: a retry after an attempt that timed out client-side but
- * committed counts 0 for those rows. Every row is checked first (a
- * non-canonical contract writes nothing). Throws on a rejected INSERT;
- * batches already inserted stay.
+ * committed counts 0 for those rows. Every row is checked first, so a bad
+ * one writes nothing: a non-canonical contract, or a trade date after the
+ * current one (the current date is allowed: the seed writes the row of the
+ * session that is running). A decision row is also the ceiling of every
+ * earlier decision, so a stray future row would clamp them all down to it.
+ * Throws on a rejected INSERT; batches already inserted stay.
  */
 export async function insertFrontMonthRows(
   rows: ReadonlyArray<FrontMonthRow>,
 ): Promise<number> {
+  const current = currentTradeDate();
   for (const r of rows) {
     assertCanonical('insertFrontMonthRows', r.product, r.tradeDate, r.contract);
+    if (r.tradeDate > current) {
+      throw new Error(
+        `insertFrontMonthRows: trade date ${r.tradeDate} is after the current trade date ${current}`,
+      );
+    }
   }
   const sql = getDb();
   let inserted = 0;

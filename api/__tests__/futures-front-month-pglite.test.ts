@@ -513,6 +513,7 @@ describe('ensureFrontMonth: the series only moves forward, whatever order dates 
         tradeDate: '2026-11-05',
         wanted: 'ESH7',
         ceiling: 'ESZ6',
+        incumbent: 'ESZ6',
       }),
       expect.any(String),
     );
@@ -558,6 +559,29 @@ describe('ensureFrontMonth: the series only moves forward, whatever order dates 
         tradeDate: '2026-11-04',
         wanted: 'ESH7',
         ceiling: 'ESZ6',
+        incumbent: 'ESZ6',
+      }),
+      expect.any(String),
+    );
+  });
+
+  it('over rows that were already out of order the clamp still writes the ceiling, does not throw, and the warning names the incumbent that is later than it', async () => {
+    // A later contract stored before an earlier one: disorder from before.
+    await putFront('ES', '2026-11-03', 'ESH7');
+    await putFront('ES', '2026-11-09', 'ESZ6');
+    await putVolumes('ES', '2026-11-03', { ESZ6: 100, ESH7: 900 });
+
+    await expect(ensureFrontMonth('ES', '2026-11-05', 'cron')).resolves.toBe(
+      'ESZ6',
+    );
+
+    expect(mockWarn).toHaveBeenCalledTimes(1);
+    expect(mockWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tradeDate: '2026-11-05',
+        wanted: 'ESH7',
+        ceiling: 'ESZ6',
+        incumbent: 'ESH7',
       }),
       expect.any(String),
     );
@@ -1160,7 +1184,7 @@ describe('insertFrontMonthRows', () => {
 
   it('inserts in 500-row statements', async () => {
     const day = (i: number) =>
-      new Date(Date.UTC(2026, 0, 1 + i)).toISOString().slice(0, 10);
+      new Date(Date.UTC(2020, 0, 1 + i)).toISOString().slice(0, 10);
     const rows = Array.from({ length: 1201 }, (_, i) =>
       row({ tradeDate: day(i) }),
     );
@@ -1197,9 +1221,44 @@ describe('insertFrontMonthRows', () => {
     },
   );
 
+  it('rejects a trade date after the current one, naming it and the current one, and writes none of the rows: a decision row is also a ceiling, so a stray future row would clamp every earlier decision', async () => {
+    await expect(
+      insertFrontMonthRows([
+        row({ tradeDate: '2026-11-09' }),
+        row({ tradeDate: '2026-11-11' }),
+      ]),
+    ).rejects.toThrow(/2026-11-11.*current trade date 2026-11-10/);
+
+    expect(pg.queries).toEqual([]);
+  });
+
+  it('accepts the current trade date, unlike the volume seed: the seed writes the decision row of the session that is running', async () => {
+    await expect(
+      insertFrontMonthRows([row({ tradeDate: '2026-11-10' })]),
+    ).resolves.toBe(1);
+
+    expect((await frontRows()).map((r) => r.trade_date)).toEqual([
+      '2026-11-10',
+    ]);
+  });
+
+  it('takes the current trade date from the 17:00 CT open, not the UTC date', async () => {
+    // 22:59Z is 16:59 CST: 11-11 has not opened.
+    vi.setSystemTime(new Date('2026-11-10T22:59:00.000Z'));
+    await expect(
+      insertFrontMonthRows([row({ tradeDate: '2026-11-11' })]),
+    ).rejects.toThrow(/2026-11-11.*current trade date 2026-11-10/);
+
+    // 23:00Z is the open of 11-11.
+    vi.setSystemTime(new Date('2026-11-10T23:00:00.000Z'));
+    await expect(
+      insertFrontMonthRows([row({ tradeDate: '2026-11-11' })]),
+    ).resolves.toBe(1);
+  });
+
   it('rejects with the database error, and a later batch is not attempted', async () => {
     const day = (i: number) =>
-      new Date(Date.UTC(2026, 0, 1 + i)).toISOString().slice(0, 10);
+      new Date(Date.UTC(2020, 0, 1 + i)).toISOString().slice(0, 10);
     const rows = Array.from({ length: 600 }, (_, i) =>
       row({ tradeDate: day(i) }),
     );
