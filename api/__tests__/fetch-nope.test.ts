@@ -18,6 +18,10 @@ vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: vi.fn(), setTag: vi.fn() },
 }));
 
+vi.mock('../_lib/axiom.js', () => ({
+  reportCronRun: vi.fn(),
+}));
+
 vi.mock('../_lib/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -35,6 +39,8 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 import handler, { type UwNopeRow } from '../cron/fetch-nope.js';
+import { Sentry } from '../_lib/sentry.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Fixtures ─────────────────────────────────────────────────
 
@@ -164,6 +170,88 @@ describe('fetch-nope handler', () => {
 
     expect(mockUwFetch).not.toHaveBeenCalled();
     expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  // ── Revision log (spec P0.9) ───────────────────────────────
+
+  const authorizedReq = () =>
+    mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+
+  it('logs every inserted or changed minute to nope_ticks_revisions under the writer fetch-nope, in the one statement', async () => {
+    mockUwFetch.mockResolvedValueOnce([
+      makeRow({ timestamp: '2026-04-14T18:45:00Z' }),
+      makeRow({ timestamp: '2026-04-14T18:46:00Z' }),
+    ]);
+
+    await handler(authorizedReq(), mockResponse());
+
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    const [stmt, params] = mockQuery.mock.calls[0]!;
+    const flat = (stmt as string).replaceAll(/\s+/g, ' ');
+    expect(flat).toContain('INSERT INTO nope_ticks_revisions');
+    expect(flat).toContain('IS DISTINCT FROM');
+    expect((params as unknown[]).at(-1)).toBe('fetch-nope');
+  });
+
+  it('never writes ingested_at: the first-ingest time stays, the column default sets it on insert', async () => {
+    mockUwFetch.mockResolvedValueOnce([makeRow()]);
+
+    await handler(authorizedReq(), mockResponse());
+
+    const [stmt, params] = mockQuery.mock.calls[0]!;
+    expect(stmt).not.toContain('ingested_at');
+    // 11 columns for the one row, then the writer.
+    expect(params).toHaveLength(12);
+  });
+
+  it('reports what the write did: inserted, updated and unchanged, with upserted still the rows sent', async () => {
+    mockUwFetch.mockResolvedValueOnce([
+      makeRow({ timestamp: '2026-04-14T18:44:00Z' }),
+      makeRow({ timestamp: '2026-04-14T18:45:00Z' }),
+      makeRow({ timestamp: '2026-04-14T18:46:00Z' }),
+    ]);
+    // The log insert returns one row per inserted or changed minute.
+    mockQuery.mockResolvedValueOnce([{ inserted: true }, { inserted: false }]);
+
+    const res = mockResponse();
+    await handler(authorizedReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      fetched: 3,
+      upserted: 3,
+      inserted: 1,
+      updated: 1,
+      unchanged: 1,
+    });
+  });
+
+  it('returns 500 and reports to Sentry, with the error message, when the nope_ticks write fails (R4)', async () => {
+    mockUwFetch.mockResolvedValueOnce([makeRow()]);
+    mockQuery.mockRejectedValueOnce(
+      new Error('relation "nope_ticks_revisions" does not exist'),
+    );
+
+    const res = mockResponse();
+    await handler(authorizedReq(), res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({
+      job: 'fetch-nope',
+      error: 'relation "nope_ticks_revisions" does not exist',
+    });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'relation "nope_ticks_revisions" does not exist',
+      }),
+    );
+    expect(reportCronRun).not.toHaveBeenCalledWith(
+      'fetch-nope',
+      expect.objectContaining({ status: 'success' }),
+    );
   });
 
   // ── Error handling ─────────────────────────────────────────

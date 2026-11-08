@@ -9,9 +9,17 @@
  * proxy for 0DTE SPX hedging pressure since dealers hedge SPX options via
  * SPY (and ES), not the index itself.
  *
- * UW returns the full day each call. We rely on primary-key UPSERT for
- * idempotence - stable (historical) minutes are DO-NOTHING, the trailing
- * minute gets DO-UPDATE as fills accumulate.
+ * UW returns the full day each call and restates minutes as fills accumulate
+ * and late prints settle. The upsert is idempotent on the primary key
+ * (ticker, timestamp) and keeps the latest values. Every conflicting minute is
+ * compared with the stored row: one whose values are all unchanged is left
+ * alone (not rewritten, not logged), one with a changed value is updated, and
+ * every inserted or changed minute is appended to nope_ticks_revisions with
+ * the writer 'fetch-nope', in the same statement (spec P0.9,
+ * docs/superpowers/specs/live-data-integrity-2026-11-06.md). Until P0.9 this
+ * rewrote every column of every minute on every call, `ingested_at` included,
+ * which erased both the first-seen value and the first-ingest time.
+ * `ingested_at` is never written here: the column default sets it on insert.
  *
  * Environment: UW_API_KEY, CRON_SECRET
  */
@@ -60,7 +68,6 @@ export default withCronInstrumentation(
 
     // Filter out rows with invalid numerics (UW returns partial rows at
     // session edges occasionally) before building the upsert payload.
-    const ingestedAt = new Date().toISOString();
     const validRows: Array<{
       ticker: string;
       timestamp: string;
@@ -73,7 +80,6 @@ export default withCronInstrumentation(
       put_fill_delta: string;
       nope: string;
       nope_fill: string;
-      ingested_at: string;
     }> = [];
     let skipped = 0;
     for (const r of rows) {
@@ -97,17 +103,12 @@ export default withCronInstrumentation(
         put_fill_delta: r.put_fill_delta,
         nope: r.nope,
         nope_fill: r.nope_fill,
-        // ingested_at is updated on every upsert (matches the legacy
-        // `ingested_at = now()` SET clause) by including it in the
-        // column list - bulkUpsert defaults to EXCLUDED.col on conflict.
-        ingested_at: ingestedAt,
       });
     }
 
-    // ON CONFLICT DO UPDATE always yields a returned row, so the legacy
-    // `upserted` count was effectively `validRows.length`. Preserved
-    // verbatim by reusing that count after the bulk insert.
-    await bulkUpsert({
+    // `upserted` stays the number of rows sent (the legacy count); the
+    // revision log adds the exact inserted / updated / unchanged counts.
+    const { inserted, updated, unchanged } = await bulkUpsert({
       sql: db,
       table: 'nope_ticks',
       columns: [
@@ -122,10 +123,10 @@ export default withCronInstrumentation(
         'put_fill_delta',
         'nope',
         'nope_fill',
-        'ingested_at',
       ],
       rows: validRows,
       conflictTarget: '(ticker, timestamp)',
+      revisionLog: { table: 'nope_ticks_revisions', writer: 'fetch-nope' },
     });
     const upserted = validRows.length;
 
@@ -137,7 +138,7 @@ export default withCronInstrumentation(
     }
 
     log.info(
-      { fetched: rows.length, upserted, skipped },
+      { fetched: rows.length, upserted, inserted, updated, unchanged, skipped },
       'fetch-nope completed',
     );
 
@@ -146,6 +147,9 @@ export default withCronInstrumentation(
       metadata: {
         fetched: rows.length,
         upserted,
+        inserted,
+        updated,
+        unchanged,
         skipped,
       },
     };
