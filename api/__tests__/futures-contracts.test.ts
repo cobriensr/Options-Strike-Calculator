@@ -574,14 +574,20 @@ interface DecideCase {
   tradeDate: string;
   incumbent: string | null;
   volumes: Record<string, number>;
-  front: string;
+  /** The decision; absent in a `throws` case. */
+  front?: string;
+  /** A pattern for the message of the error the call must raise. */
+  throws?: string;
 }
 
 interface PickCase {
   name: string;
   schedule: Record<string, string>;
   rows: Array<{ key: string; ts: string; volume: number }>;
-  picked: Array<{ ts: string; contract: string; key: string; volume: number }>;
+  /** The bars; absent in a `throws` case. */
+  picked?: Array<{ ts: string; contract: string; key: string; volume: number }>;
+  /** A pattern for the message of the error the call must raise. */
+  throws?: string;
 }
 
 /** A fixture row tagged with the key it came from, as the format text says. */
@@ -635,6 +641,31 @@ describe('the shared fixture', () => {
     expect(fixture.cmeTradeDate.length).toBeGreaterThanOrEqual(25);
     expect(fixture.decideFrontMonth.length).toBeGreaterThanOrEqual(35);
     expect(fixture.pickScheduledFront.length).toBeGreaterThanOrEqual(10);
+  });
+
+  it('gives each decide and pick case an answer or a `throws`, never both and never neither', () => {
+    for (const c of fixture.decideFrontMonth) {
+      expect([c.name, (c.front != null) !== (c.throws != null)]).toEqual([
+        c.name,
+        true,
+      ]);
+    }
+    for (const c of fixture.pickScheduledFront) {
+      expect([c.name, (c.picked != null) !== (c.throws != null)]).toEqual([
+        c.name,
+        true,
+      ]);
+    }
+  });
+
+  it('has `throws` cases for both functions, and each pattern compiles', () => {
+    const throwing = [
+      ...fixture.decideFrontMonth,
+      ...fixture.pickScheduledFront,
+    ].filter((c) => c.throws != null);
+    expect(fixture.decideFrontMonth.some((c) => c.throws != null)).toBe(true);
+    expect(fixture.pickScheduledFront.some((c) => c.throws != null)).toBe(true);
+    for (const c of throwing) expect(() => new RegExp(c.throws!)).not.toThrow();
   });
 });
 
@@ -695,14 +726,15 @@ describe('decideFrontMonth', () => {
   it.each(fixture.decideFrontMonth.map((c) => [c.name, c] as const))(
     '%s',
     (_name, c) => {
-      expect(
+      const decide = () =>
         decideFrontMonth(
           c.incumbent,
           new Map(Object.entries(c.volumes)),
           c.root,
           c.tradeDate,
-        ),
-      ).toBe(c.front);
+        );
+      if (c.throws != null) expect(decide).toThrow(new RegExp(c.throws));
+      else expect(decide()).toBe(c.front);
     },
   );
 
@@ -740,21 +772,6 @@ describe('decideFrontMonth', () => {
     ]);
   });
 
-  it.each([
-    ['another root', 'NQZ6'],
-    ['a spread', 'ESZ6-ESH7'],
-    ['a bare root', 'ES'],
-    ['a two-digit year outside the window', 'ESZ36'],
-    ['an empty string', ''],
-  ])(
-    'throws, naming the incumbent, when it is %s: a stored incumbent that is not an outright of the root is a bug, not a fresh start',
-    (_what, incumbent) => {
-      expect(() =>
-        decideFrontMonth(incumbent, new Map([['ESZ6', 5]]), 'ES', '2026-12-08'),
-      ).toThrow(new RegExp(`incumbent.*${incumbent}`));
-    },
-  );
-
   it('throws on a trade date that does not parse', () => {
     expect(() =>
       decideFrontMonth('ESZ6', new Map(), 'ES', 'not a date'),
@@ -766,6 +783,10 @@ describe('pickScheduledFront', () => {
   it.each(fixture.pickScheduledFront.map((c) => [c.name, c] as const))(
     '%s',
     (_name, c) => {
+      if (c.throws != null) {
+        expect(() => pick(c)).toThrow(new RegExp(c.throws));
+        return;
+      }
       expect(
         pick(c).map((e) => ({
           ts: e.row.ts,
@@ -799,28 +820,6 @@ describe('pickScheduledFront', () => {
       expect(pick(c).map((e) => [e.contract, e.row.key])).toEqual([
         [`${root}Z6`, `${root}Z26`],
       ]);
-    },
-  );
-
-  it('reads a scheduled contract in its two-digit spelling as its canonical name', () => {
-    const picked = pick({
-      schedule: { '2026-12-08': 'ESZ26' },
-      rows: [{ key: 'ESZ6', ts: '2026-12-08T10:00:00.000Z', volume: 2 }],
-    });
-    expect(picked.map((e) => [e.contract, e.row.key])).toEqual([
-      ['ESZ6', 'ESZ6'],
-    ]);
-  });
-
-  it.each(['XYZ6', 'ESZ6-ESH7', 'ESZ36', ''])(
-    'throws, naming the date and the contract, on a scheduled contract that is not an outright (%j): a bad schedule must not look like a quiet day',
-    (scheduled) => {
-      expect(() =>
-        pick({
-          schedule: { '2026-12-08': scheduled },
-          rows: [{ key: 'ESZ6', ts: '2026-12-08T10:00:00.000Z', volume: 2 }],
-        }),
-      ).toThrow(new RegExp(`2026-12-08.*${scheduled}`));
     },
   );
 
