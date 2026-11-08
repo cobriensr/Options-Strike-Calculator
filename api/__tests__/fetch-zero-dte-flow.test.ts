@@ -151,21 +151,27 @@ const OUTCOME_ROWS: Record<Outcome, unknown[]> = {
   unchanged: [],
 };
 
+/** The writer name each upsert of the last `recordInserts` recorder logged under. */
+let upsertWriters: string[] = [];
+
 /**
  * Replace the batch transaction with a recorder: each upsert's bound values
  * (date, timestamp, source, ncp, npp, net_volume) are pushed to the returned
  * array, and each is answered with `outcome(values, index)` (default: a new
- * row).
+ * row). The last bound value is the writer the revision log records; it goes
+ * to `upsertWriters`, not to the row values.
  */
 function recordInserts(
   outcome: (values: unknown[], index: number) => Outcome = () => 'inserted',
 ) {
   const inserts: unknown[][] = [];
+  upsertWriters = [];
   mockTransaction.mockImplementation(
     async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
       const bound: unknown[][] = [];
       const queries = fn((_strings: unknown, ...values: unknown[]) => {
-        bound.push(values);
+        upsertWriters.push(String(values.at(-1)));
+        bound.push(values.slice(0, -1));
         return {};
       });
       inserts.push(...bound);
@@ -474,9 +480,28 @@ describe('fetch-zero-dte-flow handler', () => {
       'ON CONFLICT (date, timestamp, source) DO UPDATE',
     );
     expect(texts[0]).toContain('IS DISTINCT FROM');
-    expect(texts[0]).toContain('RETURNING (xmax = 0) AS inserted');
+    // The same statement appends the row to the revision log (P0.7).
+    expect(texts[0]).toContain('INSERT INTO flow_data_revisions');
+    expect(texts[0]).toContain('(xmax = 0) AS is_first');
+    expect(texts[0]).toContain('RETURNING is_first AS inserted');
     expect(texts[0]).not.toContain('DO NOTHING');
     expect(texts[0]).not.toContain('created_at');
+  });
+
+  it('logs every write to the revision log under the job name', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    recordInserts();
+    stubFetch([
+      makeFlowTick({ timestamp: '2026-03-24T14:04:00Z' }),
+      makeFlowTick({ timestamp: '2026-03-24T14:09:00Z' }),
+    ]);
+
+    await runCron();
+
+    expect(upsertWriters).toEqual([
+      'fetch-zero-dte-flow',
+      'fetch-zero-dte-flow',
+    ]);
   });
 
   it('counts skipped duplicates correctly', async () => {

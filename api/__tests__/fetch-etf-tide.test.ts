@@ -119,21 +119,27 @@ const OUTCOME_ROWS: Record<Outcome, unknown[]> = {
   unchanged: [],
 };
 
+/** The writer name each upsert of the last `recordInserts` recorder logged under. */
+let upsertWriters: string[] = [];
+
 /**
  * Replace the batch transaction with a recorder: each upsert's bound values
  * (date, timestamp, source, ncp, npp, net_volume) are pushed to the returned
  * object, per source, and each is answered with `outcome(values, index)`
- * (default: a new row).
+ * (default: a new row). The last bound value is the writer the revision log
+ * records; it goes to `upsertWriters`, not to the row values.
  */
 function recordInserts(
   outcome: (values: unknown[], index: number) => Outcome = () => 'inserted',
 ) {
   const bySource: Record<string, unknown[][]> = {};
+  upsertWriters = [];
   mockTransaction.mockImplementation(
     async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
       const bound: unknown[][] = [];
       const queries = fn((_strings: unknown, ...values: unknown[]) => {
-        bound.push(values);
+        upsertWriters.push(String(values.at(-1)));
+        bound.push(values.slice(0, -1));
         return {};
       });
       for (const values of bound) {
@@ -455,10 +461,24 @@ describe('fetch-etf-tide handler', () => {
     for (const text of texts) {
       expect(text).toContain('ON CONFLICT (date, timestamp, source) DO UPDATE');
       expect(text).toContain('IS DISTINCT FROM');
-      expect(text).toContain('RETURNING (xmax = 0) AS inserted');
+      // The same statement appends the row to the revision log (P0.7).
+      expect(text).toContain('INSERT INTO flow_data_revisions');
+      expect(text).toContain('(xmax = 0) AS is_first');
+      expect(text).toContain('RETURNING is_first AS inserted');
       expect(text).not.toContain('DO NOTHING');
       expect(text).not.toContain('created_at');
     }
+  });
+
+  it('logs every write to the revision log under the job name', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    recordInserts();
+    stubUw([makeEtfTideRow()]);
+
+    await runCron();
+
+    // One bucket for each of SPY and QQQ.
+    expect(upsertWriters).toEqual(['fetch-etf-tide', 'fetch-etf-tide']);
   });
 
   it('counts skipped candles when the rows already hold the values', async () => {

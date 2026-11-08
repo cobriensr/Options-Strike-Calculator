@@ -86,20 +86,23 @@ function recordInserts(
   outcome: (values: unknown[], index: number) => Outcome = () => 'inserted',
 ) {
   const inserts: unknown[][] = [];
+  const writers: string[] = [];
   const texts: string[] = [];
   mockTransaction.mockImplementation(
     async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
       const bound: unknown[][] = [];
       const queries = fn((strings: unknown, ...values: unknown[]) => {
         texts.push((strings as string[]).join('?'));
-        bound.push(values);
+        // The last bound value is the writer the revision log records.
+        writers.push(String(values.at(-1)));
+        bound.push(values.slice(0, -1));
         return {};
       });
       inserts.push(...bound);
       return queries.map((_q, i) => OUTCOME_ROWS[outcome(bound[i]!, i)]);
     },
   );
-  return { inserts, texts };
+  return { inserts, texts, writers };
 }
 
 async function runCron() {
@@ -262,9 +265,23 @@ describe('reconcile-zero-dte-greek-flow handler', () => {
     );
     expect(texts[0]).toContain('IS DISTINCT FROM');
     expect(texts[0]).toContain('otm_ncp = EXCLUDED.otm_ncp');
+    expect(texts[0]).toContain('INSERT INTO flow_data_revisions');
+    expect(texts[0]).toContain('RETURNING is_first AS inserted');
     expect(texts[0]).not.toContain('DO NOTHING');
     // A row was written, so the session was counted once.
     expect(mockSql).toHaveBeenCalledTimes(1);
+  });
+
+  it('logs every write to the revision log under the reconcile job name', async () => {
+    const { writers } = recordInserts();
+    stubFetch(fullSession());
+
+    await runCron();
+
+    expect(writers).toHaveLength(78);
+    expect(new Set(writers)).toEqual(
+      new Set(['reconcile-zero-dte-greek-flow']),
+    );
   });
 
   it("leaves rows that already hold UW's final values untouched and does not count the session", async () => {

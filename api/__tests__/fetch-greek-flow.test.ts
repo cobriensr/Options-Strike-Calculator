@@ -79,11 +79,16 @@ const WEEKEND_TIME = new Date('2026-03-28T14:00:00.000Z');
 /** The SQL text of each upsert the last `recordInserts` recorder saw. */
 let upsertTexts: string[] = [];
 
+/** The writer name each upsert of the last `recordInserts` recorder logged under. */
+let upsertWriters: string[] = [];
+
 /**
  * Replace the batch transaction with a recorder: each upsert's bound values
  * (date, timestamp, source, ncp, npp, net_volume, otm_ncp, otm_npp) are
  * pushed to the returned array and its SQL text to `upsertTexts`, and each is
- * answered with `outcome(values, index)` (default: a new row).
+ * answered with `outcome(values, index)` (default: a new row). The last bound
+ * value is the writer the revision log records; it goes to `upsertWriters`,
+ * not to the row values.
  */
 function recordInserts(
   outcome: (values: unknown[], index: number) => Outcome = () => 'inserted',
@@ -91,12 +96,14 @@ function recordInserts(
   const inserts: unknown[][] = [];
   const texts: string[] = [];
   upsertTexts = texts;
+  upsertWriters = [];
   mockTransaction.mockImplementation(
     async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
       const bound: unknown[][] = [];
       const queries = fn((strings: unknown, ...values: unknown[]) => {
         texts.push((strings as string[]).join('?'));
-        bound.push(values);
+        upsertWriters.push(String(values.at(-1)));
+        bound.push(values.slice(0, -1));
         return {};
       });
       inserts.push(...bound);
@@ -301,10 +308,26 @@ describe('fetch-greek-flow handler', () => {
     expect(text).toContain('otm_npp');
     expect(text).toContain('ON CONFLICT (date, timestamp, source) DO UPDATE');
     expect(text).toContain('IS DISTINCT FROM');
-    expect(text).toContain('RETURNING (xmax = 0) AS inserted');
+    // The same statement appends the row to the revision log (P0.7).
+    expect(text).toContain('INSERT INTO flow_data_revisions');
+    expect(text).toContain('(xmax = 0) AS is_first');
+    expect(text).toContain('RETURNING is_first AS inserted');
     expect(text).not.toContain('DO NOTHING');
     expect(text).not.toContain('created_at');
     expect(inserts[0]?.slice(-2)).toEqual([2500000, -1800000]);
+  });
+
+  it('logs every write to the revision log under the job name', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    recordInserts();
+    stubFetch([
+      makeGreekFlowTick({ timestamp: '2026-03-24T14:04:00Z' }),
+      makeGreekFlowTick({ timestamp: '2026-03-24T13:59:00Z' }),
+    ]);
+
+    await runCron();
+
+    expect(upsertWriters).toEqual(['fetch-greek-flow', 'fetch-greek-flow']);
   });
 
   it('stores NULL when UW sends no volume for the last minute', async () => {
