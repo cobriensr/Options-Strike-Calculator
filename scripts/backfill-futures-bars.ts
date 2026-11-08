@@ -6,8 +6,10 @@
  * bar (ON CONFLICT DO NOTHING), so it never replaces a live bar. A
  * root-day with no missing Globex-open minute makes no UW call, so a
  * re-run skips what it already filled; one that still has a missing
- * minute (a sparse overnight tape, a holiday) is paged again. Logic and
- * rules: scripts/_lib/futures-bar-backfill.ts.
+ * minute (a sparse overnight tape, a holiday) is paged again. Each bar
+ * comes from, and records, the contract its CME trade date was decided on
+ * (futures_front_month; a date with no row yet gets one), and only that
+ * contract is paged. Logic and rules: scripts/_lib/futures-bar-backfill.ts.
  *
  * Usage (env from .env.local, like the other scripts: DATABASE_URL and
  * UW_API_KEY, never printed). Run after the close: it refuses to start
@@ -21,8 +23,8 @@
  * Flags: --from/--to YYYY-MM-DD (UTC, inclusive) or explicit dates ·
  *        --roots ES,NQ,... (default all six) · --max-pages N (default
  *        20000, checked between dates: a real run over September needs
- *        more) · --dry-run (read, page and build; write nothing) ·
- *        --compare (write nothing; count how many REST-built bars equal
+ *        more) · --dry-run (read, page and build; write no bars) ·
+ *        --compare (write no bars; count how many REST-built bars equal
  *        the bars already stored, and print the first few differences).
  * The current UTC day is never processed.
  *

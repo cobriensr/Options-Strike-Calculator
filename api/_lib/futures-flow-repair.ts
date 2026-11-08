@@ -36,8 +36,10 @@
  * cron reads it from the per-session front month (`fetchFrontMonthSchedule`
  * in `api/_lib/futures-front-month.ts`, then `pickScheduledFront` in
  * `api/_lib/futures-contracts.ts`): the contract its trade date was decided
- * on. `scripts/backfill-futures-flow.ts` still replays the old rule
- * (`replayFrontMonth`) until Phase 4b moves it.
+ * on. The two history scripts (`scripts/backfill-futures-flow.ts` and
+ * `scripts/backfill-futures-bars.ts`) read the same schedule and page only
+ * the contract of each session piece (`sessionPieces` in
+ * `scripts/_lib/futures-flow-backfill.ts`).
  *
  * Spec: docs/superpowers/specs/2026-10-28-uw-futures-orderflow-design.md
  * (Phases 6 and 6b, as amended by probe 0a).

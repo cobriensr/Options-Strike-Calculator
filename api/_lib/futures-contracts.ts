@@ -107,8 +107,8 @@ export interface ContractMinute {
 /**
  * Superseded: this rule has no memory, so it can step back and forth
  * between months around a roll. The gap cron moved to the per-session front
- * month in Phase 4a. Phase 4b moves the two history scripts, its last
- * callers, and Phase 4c deletes this function.
+ * month in Phase 4a and the two history scripts in Phase 4b. Nothing calls
+ * this any more, and Phase 4c deletes it.
  *
  * Replays the uw-stream front-month rule over per-contract minute rows
  * (candles in the bar backfill, trade-derived minutes in the order flow
@@ -171,9 +171,7 @@ export const MONTH_CODES = 'FGHJKMNQUVXZ';
 /**
  * Contract months each root's front month moves through, in calendar
  * order: quarterly for the equity indexes and ZN, every month for CL, the
- * even months for GC (its odd months never lead). Phase 4b makes
- * `scripts/_lib/futures-flow-backfill.ts` import this and `MONTH_CODES`
- * instead of keeping its own copies.
+ * even months for GC (its odd months never lead).
  */
 export const CONTRACT_CYCLE: Readonly<Record<FuturesRoot, string>> = {
   ES: 'HMUZ',

@@ -7,8 +7,10 @@
  *
  * Writes only bars whose buy_volume is still NULL, and only minutes whose
  * REST volume is within 2% of the bar's. So it never overwrites websocket
- * flow, and a re-run skips the root-days it already finished. Logic and
- * rules: scripts/_lib/futures-flow-backfill.ts.
+ * flow, and a re-run skips the root-days it already finished. Each minute's
+ * contract is the one its CME trade date was decided on (futures_front_month;
+ * a date with no row yet gets one), and only that contract is paged. Logic
+ * and rules: scripts/_lib/futures-flow-backfill.ts.
  *
  * Usage (env from .env.local, like the other scripts: DATABASE_URL and
  * UW_API_KEY, never printed). Run after the close: it refuses to start
@@ -17,7 +19,7 @@
  *   npx tsx scripts/backfill-futures-flow.ts
  *   npx tsx scripts/backfill-futures-flow.ts 2026-07-14 2026-07-15
  *   npx tsx scripts/backfill-futures-flow.ts --from 2026-08-01 --to 2026-08-31 --roots ES,NQ
- * Flags: --dry-run (read and match, no writes) · --from/--to YYYY-MM-DD
+ * Flags: --dry-run (read and match, write no bars) · --from/--to YYYY-MM-DD
  *        (UTC, inclusive; default: each root's history start to today) ·
  *        --roots ES,NQ,... (default all six) · --max-pages N (default
  *        20000, checked between dates; the log says where to resume).
