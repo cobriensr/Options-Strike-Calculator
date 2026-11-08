@@ -115,6 +115,19 @@ const OLDER_DAY: DaySummary = {
 const REPLAY_MULT = 0.956;
 const LEAKED_MULT = 1.203;
 
+/**
+ * One day's annualized Parkinson RV, rounded to 4 places as the signals store
+ * it (useRangeAnalysis): sqrt(1 / (4 ln 2)) x ln(H / L) x sqrt(252). Written
+ * out here so the test does not lean on the code it checks.
+ */
+const parkinsonRV = (day: DaySummary) =>
+  Math.round(
+    Math.sqrt(1 / (4 * Math.LN2)) *
+      Math.log(day.high / day.low) *
+      Math.sqrt(252) *
+      10000,
+  ) / 10000;
+
 /** api/history's previousDay: today's is the live feed's day. */
 const previousDayFor = (date: string): DaySummary =>
   date === TODAY ? LIVE_YESTERDAY : OLDER_DAY;
@@ -608,6 +621,8 @@ describe('the saved cluster multiplier, with no Market Regime panel mounted', ()
         post.body.clusterPutMult as number,
       );
       expect(post.body.clusterPutMult).toBeGreaterThan(1);
+      // RV/IV reads the same day: the live feed's, on today.
+      expect(post.body.rvAnnualized).toBe(parkinsonRV(LIVE_YESTERDAY));
     }
     expect(live.map((p) => p.body.entryTime)).toContain('10:00 AM CT');
     expect(posts.some((p) => p.body.clusterMult === 1)).toBe(false);
@@ -637,6 +652,13 @@ describe('the saved cluster multiplier, with no Market Regime panel mounted', ()
       // A flat day: no direction, so both sides carry the multiplier itself.
       expect(post.body.clusterPutMult, slot).toBe(REPLAY_MULT);
       expect(post.body.clusterCallMult, slot).toBe(REPLAY_MULT);
+      // RV/IV reads the same day: the past date's previous day, not the live
+      // feed's.
+      expect(post.body.rvAnnualized, slot).toBe(parkinsonRV(OLDER_DAY));
+      expect(post.body.rvAnnualized, slot).not.toBe(
+        parkinsonRV(LIVE_YESTERDAY),
+      );
+      expect(post.body.rvIvRatio, slot).not.toBeNull();
     }
     expect(past.map((p) => p.body.entryTime)).toEqual(
       expect.arrayContaining(['9:55 AM CT', '10:00 AM CT']),
@@ -667,6 +689,10 @@ describe('the saved cluster multiplier, with no Market Regime panel mounted', ()
       expect(post.body.clusterMult, slot).toBe(1);
       expect(post.body.clusterPutMult, slot).toBe(1);
       expect(post.body.clusterCallMult, slot).toBe(1);
+      // No previous day, so no RV/IV: NULL, not the live feed's day's values.
+      expect(post.body.rvAnnualized, slot).toBeNull();
+      expect(post.body.rvIvRatio, slot).toBeNull();
+      expect(post.body.rvIvLabel, slot).toBeNull();
     }
     expect(hook.result.current.cluster.signal.rangePct).toBeNull();
     expect(posts.some((p) => p.body.clusterMult === LEAKED_MULT)).toBe(false);
