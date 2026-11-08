@@ -29,8 +29,7 @@
 
 import { neon } from '@neondatabase/serverless';
 
-import { storeRows } from './_lib/backfill-cli.mjs';
-import { loggedFlowDataTarget } from './_lib/flow-data-backfill.mjs';
+import { storeSampledDay } from './_lib/flow-data-backfill.mjs';
 import { getTradingDays } from './_lib/trading-days.mjs';
 
 const UW_API_KEY = process.env.UW_API_KEY;
@@ -54,6 +53,8 @@ const days = Number.parseInt(process.argv[2] ?? '30', 10);
 // ── Fetch Greek flow for one date ───────────────────────────
 
 let fetchFailures = 0;
+// Insert errors, counted by storeSampledDay: any makes the run exit non-zero.
+const totals = { failed: 0 };
 
 async function fetchGreekFlow(date) {
   const res = await fetch(
@@ -74,46 +75,22 @@ async function fetchGreekFlow(date) {
 
 // ── Sample to 5-min and store ───────────────────────────────
 
-async function storeCandles(ticks, date) {
-  if (ticks.length === 0) return { stored: 0, sampled: 0 };
-
-  const sampled = new Map();
-  for (const tick of ticks) {
-    const dt = new Date(tick.timestamp);
-    const minutes = dt.getMinutes();
-    const rounded = new Date(dt);
-    rounded.setMinutes(minutes - (minutes % 5), 0, 0);
-    sampled.set(rounded.toISOString(), tick);
-  }
-
-  let stored = 0;
-
-  for (const [ts, tick] of sampled) {
-    try {
-      // DO NOTHING, and every row it inserts is logged to flow_data_revisions
-      // in the same statement (zero_dte_greek_flow is in the revision log,
-      // P0.7).
-      stored += await storeRows(
-        sql,
-        loggedFlowDataTarget('backfill-greek-flow'),
-        [
-          {
-            date,
-            timestamp: ts,
-            source: SOURCE,
-            ncp: tick.total_delta_flow,
-            npp: tick.dir_delta_flow,
-            net_volume: tick.volume,
-          },
-        ],
-        { dryRun: false },
-      );
-    } catch (err) {
-      console.warn(`  Insert error: ${err.message}`);
-    }
-  }
-
-  return { stored, sampled: sampled.size };
+function storeCandles(ticks, date) {
+  // Sampled to 5-min rows and stored with ONE statement for the day. DO NOTHING,
+  // and every row it inserts is logged to flow_data_revisions in the same
+  // statement (zero_dte_greek_flow is in the revision log, P0.7). An insert
+  // error is printed and counted in totals.failed, which sets the exit code.
+  return storeSampledDay(sql, ticks, {
+    date,
+    source: SOURCE,
+    writer: 'backfill-greek-flow',
+    valueOf: (tick) => ({
+      ncp: tick.total_delta_flow,
+      npp: tick.dir_delta_flow,
+      net_volume: tick.volume,
+    }),
+    totals,
+  });
 }
 
 // ── Format for display ──────────────────────────────────────
@@ -164,8 +141,9 @@ async function main() {
   console.log(`  Total candles: ${totalCandles}`);
   console.log(`  Newly stored: ${totalStored}`);
   console.log(`  Fetch failures: ${fetchFailures}`);
+  console.log(`  Insert failures: ${totals.failed}`);
 
-  if (fetchFailures > 0) {
+  if (fetchFailures > 0 || totals.failed > 0) {
     process.exitCode = 1;
   }
 }

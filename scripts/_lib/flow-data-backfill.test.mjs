@@ -3,6 +3,7 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -27,6 +28,8 @@ import {
   planFlowDays,
   processFlowDay,
   runFlowScript,
+  sampleFiveMinuteRows,
+  storeSampledDay,
   toEtfTideRows,
   toMarketTideRows,
   toNetFlowRows,
@@ -1164,23 +1167,205 @@ describe('the revision log (spec P0.7)', () => {
       }
     },
   );
+});
 
-  it('names the writer of the two inline scripts in their own code', () => {
-    // The inline scripts (backfill-zero-dte-flow.mjs, backfill-greek-flow.mjs)
-    // run on import and cannot be loaded here; they must go through the logged
-    // target with their own names, and write no flow_data row by hand.
-    for (const [file, writer] of [
-      ['backfill-zero-dte-flow.mjs', 'backfill-zero-dte-flow'],
-      ['backfill-greek-flow.mjs', 'backfill-greek-flow'],
-    ]) {
-      const source = readFileSync(
-        path.resolve(process.cwd(), 'scripts', file),
-        'utf8',
-      );
-      expect(source).toContain(`loggedFlowDataTarget('${writer}')`);
-      expect(source).not.toMatch(/INSERT INTO flow_data\b/);
-    }
+// ── The two inline scripts: sample a day, store it once ────
+
+describe('sampleFiveMinuteRows and storeSampledDay (the two inline scripts)', () => {
+  const tickAt = (hhmmss, extra = {}) => ({
+    timestamp: `2026-03-24T${hhmmss}Z`,
+    ...extra,
   });
+  const valueOf = (tick) => ({
+    ncp: tick.a,
+    npp: tick.b,
+    net_volume: tick.c,
+  });
+  const options = (totals = { failed: 0 }) => ({
+    date: D1,
+    source: 'zero_dte_index',
+    writer: 'backfill-zero-dte-flow',
+    valueOf,
+    totals,
+  });
+  /** `n` one-minute ticks from 13:30Z, values naming their minute. */
+  const minuteTicks = (n) =>
+    Array.from({ length: n }, (_, i) =>
+      tickAt(
+        `${String(13 + Math.floor((30 + i) / 60)).padStart(2, '0')}:${String(
+          (30 + i) % 60,
+        ).padStart(2, '0')}:00`,
+        { a: `a${i}`, b: `b${i}`, c: i },
+      ),
+    );
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('keeps the last tick of each 5-minute window, stamped at the window start, in the order the windows appear', () => {
+    const rows = sampleFiveMinuteRows(
+      [
+        tickAt('13:31:00', { a: 'first', b: 'x', c: 1 }),
+        tickAt('13:34:00', { a: 'last', b: 'y', c: 2 }),
+        tickAt('13:36:00', { a: 'next', b: 'z', c: 3 }),
+      ],
+      options(),
+    );
+
+    expect(rows).toEqual([
+      {
+        date: D1,
+        timestamp: '2026-03-24T13:30:00.000Z',
+        source: 'zero_dte_index',
+        ncp: 'last',
+        npp: 'y',
+        net_volume: 2,
+      },
+      {
+        date: D1,
+        timestamp: '2026-03-24T13:35:00.000Z',
+        source: 'zero_dte_index',
+        ncp: 'next',
+        npp: 'z',
+        net_volume: 3,
+      },
+    ]);
+  });
+
+  it('writes a whole day with ONE statement, not one per candle (R5)', async () => {
+    // 390 minutes is 78 windows.
+    const sql = fakeSql();
+
+    const result = await storeSampledDay(sql, minuteTicks(390), options());
+
+    expect(result).toEqual({ stored: 78, sampled: 78 });
+    expect(sql.query).toHaveBeenCalledTimes(1);
+    const [text, values] = sql.query.mock.calls[0];
+    expect(text).toContain('INSERT INTO flow_data_revisions');
+    // 78 rows of six values, then the writer.
+    expect(values).toHaveLength(78 * 6 + 1);
+    expect(values.at(-1)).toBe('backfill-zero-dte-flow');
+  });
+
+  it('writes nothing for a day with no ticks', async () => {
+    const sql = fakeSql();
+
+    expect(await storeSampledDay(sql, [], options())).toEqual({
+      stored: 0,
+      sampled: 0,
+    });
+    expect(sql.query).not.toHaveBeenCalled();
+  });
+
+  it('counts a failed insert, prints it and does not throw, so the script can exit non-zero', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const totals = { failed: 0 };
+    const sql = {
+      query: vi.fn(async () => {
+        throw new Error('relation "flow_data_revisions" does not exist');
+      }),
+    };
+
+    const result = await storeSampledDay(sql, minuteTicks(10), options(totals));
+
+    expect(result).toEqual({ stored: 0, sampled: 2 });
+    expect(totals.failed).toBe(1);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Insert error: relation "flow_data_revisions"'),
+    );
+  });
+
+  it('adds a failure per failed day and none for a day that wrote', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const totals = { failed: 0 };
+    const failing = {
+      query: vi.fn(async () => Promise.reject(new Error('x'))),
+    };
+
+    await storeSampledDay(fakeSql(), minuteTicks(10), options(totals));
+    expect(totals.failed).toBe(0);
+    await storeSampledDay(failing, minuteTicks(10), options(totals));
+    await storeSampledDay(failing, minuteTicks(10), options(totals));
+    expect(totals.failed).toBe(2);
+  });
+});
+
+/**
+ * The two scripts run end to end as child processes, with the network replaced
+ * by inline-backfill-stub.mjs (UW answers a canned day; the database answers
+ * like Postgres, or refuses with a missing-table error). The exit code and the
+ * number of statements cannot be seen any other way: the scripts run on import.
+ */
+describe('the inline backfill scripts, run end to end', () => {
+  const SCRIPTS = [
+    {
+      file: 'backfill-greek-flow.mjs',
+      writer: 'backfill-greek-flow',
+      failedLine: /Insert failures: 1/,
+    },
+    {
+      file: 'backfill-zero-dte-flow.mjs',
+      writer: 'backfill-zero-dte-flow',
+      failedLine: /Failed \(API \+ insert errors\): 1/,
+    },
+  ];
+
+  function run(file, sqlMode) {
+    const clean = { ...process.env };
+    delete clean.SENTRY_DSN;
+    return spawnSync(
+      process.execPath,
+      [
+        '--import',
+        // A file URL: on Windows node rejects a bare absolute path here.
+        pathToFileURL(
+          path.resolve(process.cwd(), 'scripts/_lib/inline-backfill-stub.mjs'),
+        ).href,
+        path.resolve(process.cwd(), 'scripts', file),
+        '1',
+      ],
+      {
+        env: {
+          ...clean,
+          UW_API_KEY: 'uw-key-for-tests',
+          DATABASE_URL: 'postgresql://user:pass@db.invalid/db',
+          STUB_SQL: sqlMode,
+        },
+        encoding: 'utf8',
+        timeout: 60_000,
+      },
+    );
+  }
+  const statements = (result) =>
+    result.stderr.split('\n').filter((line) => line.startsWith('sql '));
+
+  it.each(SCRIPTS)(
+    '$file stores a day with one logged statement under its own name and exits 0',
+    ({ file, writer }) => {
+      const result = run(file, 'ok');
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('10 ticks → 2 candles (2 new)');
+      // One statement for the day, not one per candle: 2 rows of six values,
+      // then the writer.
+      expect(statements(result)).toEqual([`sql 13 ${writer}`]);
+    },
+  );
+
+  it.each(SCRIPTS)(
+    '$file exits 1 and says so when the insert fails (R4), not 0 with "Newly stored: 0"',
+    ({ file, failedLine }) => {
+      const result = run(file, 'error');
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'Insert error: relation "flow_data_revisions" does not exist',
+      );
+      expect(result.stdout).toContain('Newly stored: 0');
+      expect(result.stdout).toMatch(failedLine);
+      // The failed day made one attempt, not one per candle.
+      expect(statements(result)).toHaveLength(1);
+    },
+  );
 });
 
 // ── The flags ──────────────────────────────────────────────

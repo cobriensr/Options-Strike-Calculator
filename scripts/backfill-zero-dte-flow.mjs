@@ -32,8 +32,7 @@
 
 import { neon } from '@neondatabase/serverless';
 
-import { storeRows } from './_lib/backfill-cli.mjs';
-import { loggedFlowDataTarget } from './_lib/flow-data-backfill.mjs';
+import { storeSampledDay } from './_lib/flow-data-backfill.mjs';
 import { getTradingDays } from './_lib/trading-days.mjs';
 
 const UW_API_KEY = process.env.UW_API_KEY;
@@ -82,47 +81,22 @@ async function fetchZeroDteFlow(date, totals) {
 
 // ── Sample to 5-min and store ───────────────────────────────
 
-async function storeCandles(ticks, date, totals) {
-  if (ticks.length === 0) return { stored: 0, sampled: 0 };
-
-  // Sample to 5-min intervals
-  const sampled = new Map();
-  for (const tick of ticks) {
-    const dt = new Date(tick.timestamp);
-    const minutes = dt.getMinutes();
-    const rounded = new Date(dt);
-    rounded.setMinutes(minutes - (minutes % 5), 0, 0);
-    sampled.set(rounded.toISOString(), tick);
-  }
-
-  let stored = 0;
-
-  for (const [ts, tick] of sampled) {
-    try {
-      // DO NOTHING, and every row it inserts is logged to flow_data_revisions
-      // in the same statement (zero_dte_index is in the revision log, P0.7).
-      stored += await storeRows(
-        sql,
-        loggedFlowDataTarget('backfill-zero-dte-flow'),
-        [
-          {
-            date,
-            timestamp: ts,
-            source: SOURCE,
-            ncp: tick.net_call_premium,
-            npp: tick.net_put_premium,
-            net_volume: tick.net_volume,
-          },
-        ],
-        { dryRun: false },
-      );
-    } catch (err) {
-      console.warn(`  Insert error: ${err.message}`);
-      totals.failed++;
-    }
-  }
-
-  return { stored, sampled: sampled.size };
+function storeCandles(ticks, date, totals) {
+  // Sampled to 5-min rows and stored with ONE statement for the day. DO NOTHING,
+  // and every row it inserts is logged to flow_data_revisions in the same
+  // statement (zero_dte_index is in the revision log, P0.7). An insert error is
+  // printed and counted in totals.failed, which sets the exit code.
+  return storeSampledDay(sql, ticks, {
+    date,
+    source: SOURCE,
+    writer: 'backfill-zero-dte-flow',
+    valueOf: (tick) => ({
+      ncp: tick.net_call_premium,
+      npp: tick.net_put_premium,
+      net_volume: tick.net_volume,
+    }),
+    totals,
+  });
 }
 
 // ── Format for display ──────────────────────────────────────

@@ -88,6 +88,59 @@ export function loggedFlowDataTarget(writer) {
 const FIVE_MIN_MS = 300_000;
 
 /**
+ * The 5-minute rows of one day's UW ticks, for the two older scripts that
+ * sample a minute series themselves (backfill-zero-dte-flow.mjs,
+ * backfill-greek-flow.mjs): the last tick of each 5-minute window, in the order
+ * the windows first appear, stamped at the window START (their convention,
+ * which the live crons no longer use; see the DO NOT RUN notes in those
+ * scripts). `valueOf(tick)` gives `{ ncp, npp, net_volume }` as UW sent them;
+ * the database coerces the strings. A tick whose timestamp does not parse
+ * throws a RangeError, which ends the run.
+ */
+export function sampleFiveMinuteRows(ticks, { date, source, valueOf }) {
+  const sampled = new Map();
+  for (const tick of ticks) {
+    const start =
+      Math.floor(Date.parse(tick.timestamp) / FIVE_MIN_MS) * FIVE_MIN_MS;
+    sampled.set(new Date(start).toISOString(), tick);
+  }
+  return [...sampled].map(([timestamp, tick]) => ({
+    date,
+    timestamp,
+    source,
+    ...valueOf(tick),
+  }));
+}
+
+/**
+ * Sample one day's ticks and store them with ONE statement (storeRows chunks at
+ * 500 rows; a day is about 78), logged to flow_data_revisions under `writer`.
+ * Returns `{ stored, sampled }`. A failed insert (including a failed log
+ * insert, which fails the whole statement) is printed, counted in
+ * `totals.failed` and returns stored 0: the script must exit non-zero when
+ * `totals.failed` is above 0 (R4), so an insert error can never read as a clean
+ * run with "Newly stored: 0".
+ */
+export async function storeSampledDay(
+  sql,
+  ticks,
+  { date, source, writer, valueOf, totals },
+) {
+  const rows = sampleFiveMinuteRows(ticks, { date, source, valueOf });
+  if (rows.length === 0) return { stored: 0, sampled: 0 };
+  try {
+    const stored = await storeRows(sql, loggedFlowDataTarget(writer), rows, {
+      dryRun: false,
+    });
+    return { stored, sampled: rows.length };
+  } catch (err) {
+    console.warn(`  Insert error: ${err.message}`);
+    totals.failed++;
+    return { stored: 0, sampled: rows.length };
+  }
+}
+
+/**
  * flow_data's column ranges (migrations #4 and #48): net_volume is INTEGER;
  * ncp and npp are DECIMAL(14,2), 12 digits before the point, so 100 times the
  * value rounded to a cent is at most 99_999_999_999_999. A value outside its
