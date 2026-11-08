@@ -64,6 +64,8 @@
     "scripts/_lib/wave2-backfill.ts",
     "scripts/_lib/wave2-backfill.test.ts",
     "scripts/backfill-zero-gamma.ts",
+    "scripts/_lib/zero-gamma-backfill.ts",
+    "scripts/_lib/zero-gamma-backfill.test.ts",
     "scripts/tag-periscope-source.mts",
     "scripts/_lib/tag-periscope-source.ts",
     "scripts/_lib/tag-periscope-source.test.ts",

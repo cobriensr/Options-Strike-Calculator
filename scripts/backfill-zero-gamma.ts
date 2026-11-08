@@ -15,23 +15,29 @@
  * is NULL only when the calculator found no sign change in ±3% of spot.
  * Matches the live cron's behavior.
  *
- * Idempotency (R6): each row is keyed on its source ladder, `ts` = the
- * snapshot's own timestamp, and inserted ON CONFLICT (ticker, ts) DO NOTHING.
- * Re-running a window writes nothing new and never deletes or overwrites a
- * row (it used to DELETE the whole window first). The live cron
- * (compute-zero-gamma) keys its rows the same way since P0.4 of
- * docs/superpowers/specs/live-data-integrity-2026-11-06.md. Rows the cron
- * wrote BEFORE that change are stamped with their compute time, not the
- * ladder time, so for a date that has them this script adds a second row per
- * ladder about a minute off. Run it for dates with no zero_gamma_levels rows,
- * or after the frozen and pre-open rows are deleted (spec P2.2, which needs
- * owner approval).
+ * Idempotency (R6): each row is keyed on its source ladder, `ts` = the END of
+ * the ladder's 5-minute bucket (zeroGammaLabelTs, the key the live cron
+ * uses since P0.4 of docs/superpowers/specs/live-data-integrity-2026-11-06.md),
+ * and inserted ON CONFLICT (ticker, ts) DO NOTHING. Re-running a window
+ * writes nothing new and never deletes or overwrites a row (it used to
+ * DELETE the whole window first).
+ *
+ * Duplicate guard: rows the cron wrote BEFORE that change are stamped with
+ * their compute time, so their `ts` never matches. For a (ticker, date) that
+ * has any row with a `ts` this run would not write, the date is SKIPPED, with
+ * the count and the reason printed, because writing it would add a second row
+ * per ladder (about 7,000 duplicates over the default 30 days). Pass
+ * `--allow-existing` to write those dates anyway, or delete the old rows
+ * first (spec P2.2, which needs owner approval). Rules: _lib/zero-gamma-backfill.ts.
  *
  * Usage:
  *   DATABASE_URL="postgresql://..." npx tsx scripts/backfill-zero-gamma.ts
  *
  * Options:
- *   npx tsx scripts/backfill-zero-gamma.ts 5    # 5 days instead of 30
+ *   npx tsx scripts/backfill-zero-gamma.ts 5                  # 5 days instead of 30
+ *   npx tsx scripts/backfill-zero-gamma.ts --allow-existing   # write dates that already have other rows
+ *
+ * WARNING: .env.local points at PRODUCTION. NOT RUN as part of P0.4.
  *
  * Prerequisite:
  *   `strike_exposures` must be populated for the target date range. Run
@@ -43,11 +49,21 @@ import {
   computeZeroGammaLevel,
   type GexStrike,
 } from '../api/_lib/zero-gamma.ts';
+import { zeroGammaLabelTs } from '../api/_lib/zero-gamma-label.ts';
 import {
   ZERO_GAMMA_TICKERS,
   getPrimaryExpiry,
   type ZeroGammaTicker,
 } from '../api/_lib/zero-gamma-tickers.ts';
+import { guardDate, parseArgs } from './_lib/zero-gamma-backfill.ts';
+
+let args: ReturnType<typeof parseArgs>;
+try {
+  args = parseArgs(process.argv.slice(2));
+} catch (err) {
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exit(2);
+}
 
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) {
@@ -57,7 +73,7 @@ if (!DATABASE_URL) {
 
 const sql = neon(DATABASE_URL);
 
-const days = Number.parseInt(process.argv[2] ?? '30', 10);
+const days = args.days;
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -198,11 +214,18 @@ async function main() {
       snapshots: number;
       stored: number;
       existing: number;
+      skippedDates: number;
       nullLevels: number;
     }
   > = {};
   for (const ticker of ZERO_GAMMA_TICKERS) {
-    totals[ticker] = { snapshots: 0, stored: 0, existing: 0, nullLevels: 0 };
+    totals[ticker] = {
+      snapshots: 0,
+      stored: 0,
+      existing: 0,
+      skippedDates: 0,
+      nullLevels: 0,
+    };
   }
 
   for (const date of tradingDays) {
@@ -213,6 +236,25 @@ async function main() {
 
       if (snapshots.length === 0) {
         dailySummary.push(`${ticker}: no snapshot`);
+        continue;
+      }
+
+      // Duplicate guard: rows on this ET date whose ts is not one this run
+      // would write (the cron's old compute-time stamps). The ET-day bounds go
+      // through ::timestamp so they do not depend on the session time zone.
+      const labels = snapshots.map((s) => zeroGammaLabelTs(s.ts));
+      const foreign = (await sql`
+        SELECT COUNT(*)::int AS n
+        FROM zero_gamma_levels
+        WHERE ticker = ${ticker}
+          AND ts >= (${date}::date::timestamp AT TIME ZONE 'America/New_York')
+          AND ts < ((${date}::date + 1)::timestamp AT TIME ZONE 'America/New_York')
+          AND ts <> ALL(${labels}::timestamptz[])
+      `) as Array<{ n: number }>;
+      const guard = guardDate(foreign[0]?.n ?? 0, args.allowExisting);
+      if (!guard.write) {
+        totals[ticker]!.skippedDates += 1;
+        dailySummary.push(`${ticker}: SKIPPED, ${guard.reason}`);
         continue;
       }
 
@@ -235,7 +277,7 @@ async function main() {
           )
           VALUES (
             ${ticker}, ${snap.spot}, ${zeroGamma}, ${result.confidence},
-            ${netGamma}, ${JSON.stringify(result.curve)}::jsonb, ${snap.ts}
+            ${netGamma}, ${JSON.stringify(result.curve)}::jsonb, ${zeroGammaLabelTs(snap.ts)}
           )
           ON CONFLICT (ticker, ts) DO NOTHING
           RETURNING id
@@ -267,7 +309,7 @@ async function main() {
     const t = totals[ticker]!;
     const pct = t.stored > 0 ? Math.round((t.nullLevels / t.stored) * 100) : 0;
     console.log(
-      `  ${ticker}: ${t.stored} rows stored, ${t.existing} already there (${t.nullLevels} null-level = ${pct}% of the computed — no sign change in ±3% grid)`,
+      `  ${ticker}: ${t.stored} rows stored, ${t.existing} already there, ${t.skippedDates} date(s) skipped by the duplicate guard (${t.nullLevels} null-level = ${pct}% of the computed — no sign change in ±3% grid)`,
     );
   }
 }
