@@ -57,6 +57,7 @@ import {
   type Globex,
 } from '../../api/cron/auto-prefill-premarket.js';
 import {
+  getCTDateStr,
   getCTTime,
   getETDateStr,
   getETMarketOpenUtcIso,
@@ -154,6 +155,27 @@ export const SNAPSHOT_INFO_FROM_MS = Date.UTC(2026, 9, 2);
 /** The method control needs at least this many rows over at least this many days, per symbol. */
 export const CONTROL_MIN_ROWS = 200;
 export const CONTROL_MIN_DAYS = 3;
+/**
+ * The stale-at-write test reaches every snapshot row before this: the freshness
+ * gate (ecf9c021) shipped on 2026-09-30, so until then the writer priced from the
+ * last bar it had while minutes were missing. The rows are read to here, far past
+ * the 20-day volume window of the repaired span.
+ */
+export const STALE_UNTIL_MS = Date.UTC(2026, 9, 1);
+/**
+ * A thin root whose after-span stale rows fall on contaminated days (the Phase 1
+ * detector's confirmed month-mix days) by more than this share is not safe to
+ * rewrite: the report says to stop.
+ */
+const CONTAMINATED_SHARE_STOP_PCT = 10;
+/**
+ * The September outage, 2026-09-04 to 09-28: the snapshot cron priced every root
+ * from its last bar for 24 days. Only a report line counts the frozen-run rows in it.
+ */
+const OUTAGE = {
+  fromMs: Date.UTC(2026, 8, 4),
+  toMs: Date.UTC(2026, 8, 29),
+} as const;
 /** Rows per UPDATE statement (R5), statements per write transaction. */
 const WRITE_CHUNK = 500;
 const CHUNKS_PER_TRANSACTION = 10;
@@ -182,6 +204,7 @@ interface Range {
 
 const iso = (tsMs: number): string => new Date(tsMs).toISOString();
 const isoSecond = (tsMs: number): string => iso(tsMs).replace('.000Z', 'Z');
+const isoDay = (tsMs: number): string => iso(tsMs).slice(0, 10);
 
 const numOrNull = (text: string | null | undefined): number | null =>
   text == null ? null : Number(text);
@@ -694,7 +717,7 @@ async function loadSymbolData(
     const bars = await readBars(
       symbol,
       scope.fromMs - BARS_LEAD_MS,
-      scope.toMs,
+      Math.max(scope.toMs, STALE_UNTIL_MS),
     );
     const mine = backup.filter((b) => b.symbol === symbol);
     out.set(symbol, {
@@ -1075,25 +1098,76 @@ export interface MergeStateReport {
   };
 }
 
-/** A row priced from a bar older than the freshness gate allows, with a fresh recompute: the opt-in `--rewrite-stale-at-write` rewrites it. */
+/**
+ * A row priced from a bar older than the freshness gate allows, with a fresh
+ * recompute: the opt-in `--rewrite-stale-at-write` rewrites the fields the normal
+ * snapshot step does not write on it.
+ */
 export interface StaleRewrite {
+  /** `fields` are the differing fields the normal step leaves; `to` is the whole recompute. */
   change: SnapshotChange;
-  /** The bar whose close the stored price equals, and how many minutes older than the row it is. */
-  barTsMs: number;
-  ageMin: number;
+  /** The fields the normal step writes on the same row: each field is written once, by one step. */
+  alsoWritten: SnapshotField[];
+  /**
+   * The bar whose close the stored price equals, and how many minutes older than
+   * the row it is. Null when only the frozen-run clause makes the row stale.
+   */
+  barTsMs: number | null;
+  ageMin: number | null;
+  /** The frozen run the row is in, if it is in one. */
+  run: PriceRun | null;
 }
 
-/** Consecutive rows of one root that store the same price. */
-export interface FrozenRun {
+/**
+ * Consecutive rows (by ts) of one root that all store the same price, from the
+ * first row to the last.
+ */
+export interface PriceRun {
   startMs: number;
   endMs: number;
   rows: number;
+}
+
+/** A stretch of planned stale rows that store the same price, with the range of their recompute. */
+export interface FrozenRun extends PriceRun {
   price: number;
+  minTo: number;
+  maxTo: number;
+}
+
+/** Day lists the Phase 1 detector produced for a thin root's bars after the span end, CT trading days. */
+export interface DetectorDays {
+  /** At least 10 flagged bars and 1% of the day's bars, in a run of at least 3 days: a month-mix. */
+  contaminated: ReadonlySet<string>;
+  /** At least one flagged bar. A single one is noise at the clean-day rate: information only. */
+  flagged: ReadonlySet<string>;
+}
+
+/** What the detector's days did to a thin root's stale rows after the span end. */
+export interface DetectorStats {
+  contaminatedListed: number;
+  flaggedListed: number;
+  /** Stale rows left on a contaminated day, by CT trading day. */
+  contaminatedRows: Map<string, number>;
+  /** Stale rows on a day with a flagged bar (planned or left), by CT trading day: information. */
+  flaggedRows: Map<string, number>;
 }
 
 /** One root's stale-at-write rows. */
 export interface StaleStats {
+  /** Planned rows: in the span (before its end) and after it, up to STALE_UNTIL_MS. */
   count: number;
+  inSpan: number;
+  afterSpan: number;
+  /** Rows that meet the test but are left: a thin root's rows before the span end (D1). */
+  left: number;
+  /** A thin root's rows after the span end that are left because no --detector-days file was given. */
+  unchecked: number;
+  /** Thin roots with a --detector-days file only. */
+  detector: DetectorStats | null;
+  /** Planned rows that only the frozen-run clause makes stale (no bar matches the stored price), and those in the outage. */
+  frozenAdded: number;
+  frozenAddedInOutage: number;
   /** The TOP_STALE largest price changes, with the matched bar's age. */
   largest: UnwrittenDiff[];
   /** Runs of two or more consecutive planned rows with the same stored price. */
@@ -1101,8 +1175,6 @@ export interface StaleStats {
   rowsInRuns: number;
   /** The TOP_RUNS longest of them. */
   longest: FrozenRun[];
-  /** Rows after the repaired span, in the scope, that meet the same test: not planned. */
-  afterSpan: number;
 }
 
 /** Stored price differs from the recompute by over 0.15% though no pre-repair bar has the stored price: not written. */
@@ -1157,8 +1229,8 @@ export interface SnapshotSymbolReport {
   unmatchedLarge: UnmatchedLarge;
   /** ES and NQ only: null for a root Phase 2 only deleted bars of. */
   mergeState: MergeStateReport | null;
-  /** ES and NQ only: the thin roots are excluded (D1: today's bars there may be the wrong month). */
-  stale: StaleStats | null;
+  /** A thin root's rows before the span end are left (D1: its bars there are still month-mixed). */
+  stale: StaleStats;
   /** Rows where the mirrored input rule disagrees with computeSnapshot. */
   attributionInconsistent: number;
   controlRows: number;
@@ -1585,21 +1657,56 @@ function mergeBarText(v: MergeBarView): string {
 const TOP_STALE = 10;
 const TOP_RUNS = 10;
 
+/** Index of the first bar with ts >= tsMs. */
+function firstBarAt(bars: readonly Bar[], tsMs: number): number {
+  let lo = 0;
+  let hi = bars.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if ((bars[mid] as Bar).tsMs < tsMs) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** The bar used by the recompute and the minutes either side of it: a thin root's continuity at a glance. */
+function neighbourText(bars: readonly Bar[], latestMs: number): string {
+  const at = (ms: number): string => {
+    const i = firstBarAt(bars, ms);
+    const b = bars[i];
+    return b != null && b.tsMs === ms ? String(b.close) : 'none';
+  };
+  return `the bar used (${isoSecond(latestMs)}) closed at ${at(latestMs)}, the minutes before and after at ${at(latestMs - MINUTE_MS)} and ${at(latestMs + MINUTE_MS)}`;
+}
+
 function noteStale(
   stats: StaleStats,
   rewrite: StaleRewrite,
   row: SnapshotRow,
+  extra: string,
 ): void {
   const c = rewrite.change;
   stats.count += 1;
+  if (row.tsMs >= SPAN.endMs) stats.afterSpan += 1;
+  else stats.inSpan += 1;
   const diff = Math.abs(c.to.price - c.from.price);
+  if (rewrite.barTsMs == null) {
+    stats.frozenAdded += 1;
+    if (row.tsMs >= OUTAGE.fromMs && row.tsMs < OUTAGE.toMs) {
+      stats.frozenAddedInOutage += 1;
+    }
+  }
   if (
     stats.largest.length < TOP_STALE ||
     diff > (stats.largest.at(-1)?.diff ?? 0)
   ) {
+    const why =
+      rewrite.barTsMs == null
+        ? `no bar has the stored price, the row is in a frozen run of ${rewrite.run?.rows} rows from ${isoSecond(rewrite.run?.startMs ?? 0)} to ${isoSecond(rewrite.run?.endMs ?? 0)}`
+        : `the matched bar of ${isoSecond(rewrite.barTsMs)} is ${rewrite.ageMin} min older`;
     stats.largest.push({
       diff,
-      line: `${row.symbol} ${isoSecond(row.tsMs)} id ${row.id}: price ${c.from.price} -> ${c.to.price} (${diff.toFixed(2)}), the matched bar of ${isoSecond(rewrite.barTsMs)} is ${rewrite.ageMin} min older; writes ${c.fields.join(', ')}`,
+      line: `${row.symbol} ${isoSecond(row.tsMs)} id ${row.id}: price ${c.from.price} -> ${c.to.price} (${diff.toFixed(2)}), ${why}; writes ${c.fields.join(', ')}${extra}`,
     });
     stats.largest.sort((a, b) => b.diff - a.diff);
     stats.largest.length = Math.min(stats.largest.length, TOP_STALE);
@@ -1610,12 +1717,111 @@ function noteStale(
 function endRun(stats: StaleStats, state: { run: FrozenRun | null }): void {
   const run = state.run;
   state.run = null;
-  if (run == null || run.rows < 2) return;
+  if (run == null) return;
+  if (run.rows < 2) return;
   stats.runs += 1;
   stats.rowsInRuns += run.rows;
   stats.longest.push(run);
   stats.longest.sort((a, b) => b.rows - a.rows);
   stats.longest.length = Math.min(stats.longest.length, TOP_RUNS);
+}
+
+/**
+ * For each row of one root (ordered by ts), the unbroken run of consecutive rows
+ * with the identical stored price that it belongs to, when that run spans more than
+ * the freshness gate from its first row to its last; null otherwise. A market that
+ * moved cannot print one price for longer than a bar can be stale, so such a run is
+ * frozen. A run of a market that really was flat recomputes equal: nothing to write.
+ */
+export function frozenRunsOf(
+  rows: readonly { tsMs: number; stored: { price: number } }[],
+): (PriceRun | null)[] {
+  const out: (PriceRun | null)[] = rows.map(() => null);
+  let start = 0;
+  for (let i = 1; i <= rows.length; i += 1) {
+    const first = rows[start];
+    const last = rows[i - 1];
+    if (first == null || last == null) break;
+    if (i < rows.length && rows[i]?.stored.price === first.stored.price) {
+      continue;
+    }
+    if (last.tsMs - first.tsMs > MAX_BAR_AGE_MS) {
+      const run: PriceRun = {
+        startMs: first.tsMs,
+        endMs: last.tsMs,
+        rows: i - start,
+      };
+      for (let j = start; j < i; j += 1) out[j] = run;
+    }
+    start = i;
+  }
+  return out;
+}
+
+/**
+ * The CT trading day of a snapshot row, as the Phase 1 detector keys its flags
+ * (feat.py: the CT date of the time plus 7 hours, so the Globex session that opens
+ * at 17:00 CT belongs to the next calendar day).
+ */
+export const ctTradingDay = (tsMs: number): string =>
+  getCTDateStr(new Date(tsMs + 7 * 60 * MINUTE_MS));
+
+/**
+ * The days the Phase 1 detector found in a thin root's bars after the span end:
+ * `{"RTY": {"contaminated": ["2026-07-14", ...], "flagged": [...]}, "CL": {...},
+ * "GC": {...}, "ZN": {...}}`, CT trading days. Every thin root must be listed, so
+ * a root left out of the file cannot pass as clean.
+ */
+export function parseDetectorDays(
+  text: string,
+  source: string,
+): Map<Sym, DetectorDays> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new Error(
+      `${source} is not JSON: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
+  const thin = SYMBOLS.filter(isThinRoot);
+  if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${source} must be an object with a day list per root`);
+  }
+  const byRoot = parsed as Record<string, unknown>;
+  const stray = Object.keys(byRoot).find(
+    (k) => !(thin as readonly string[]).includes(k),
+  );
+  if (stray != null) {
+    throw new Error(
+      `${source} lists ${stray}, which is not a thin root (${thin.join(', ')})`,
+    );
+  }
+  const dayList = (value: unknown): string[] | null =>
+    Array.isArray(value) &&
+    value.every((d) => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d))
+      ? (value as string[])
+      : null;
+  const out = new Map<Sym, DetectorDays>();
+  for (const root of thin) {
+    const entry = byRoot[root] as
+      | { contaminated?: unknown; flagged?: unknown }
+      | null
+      | undefined;
+    const contaminated = dayList(entry?.contaminated);
+    const flagged = dayList(entry?.flagged);
+    if (contaminated == null || flagged == null) {
+      throw new Error(
+        `${source} must list ${root} as {"contaminated": [...], "flagged": [...]} of YYYY-MM-DD days (empty arrays when none)`,
+      );
+    }
+    out.set(root, {
+      contaminated: new Set(contaminated),
+      flagged: new Set(flagged),
+    });
+  }
+  return out;
 }
 
 function noteMergeState(
@@ -1644,6 +1850,7 @@ function noteMergeState(
 
 async function planSnapshots(
   data: Map<Sym, SymbolData>,
+  detectorDays: Map<Sym, DetectorDays> | null,
 ): Promise<SnapshotStore> {
   const scope = scopeRanges().snapshots;
   const changes: SnapshotChange[] = [];
@@ -1655,11 +1862,12 @@ async function planSnapshots(
   const controlMisses: SnapshotInfo[] = [];
   const junk: JunkRow[] = [];
   const staleRewrites: StaleRewrite[] = [];
+  const readTo = Math.max(scope.toMs, STALE_UNTIL_MS);
 
   for (const symbol of SYMBOLS) {
     const sd = data.get(symbol);
     if (sd == null) throw new Error(`no bars were read for ${symbol}`);
-    const rows = await readSnapshots(symbol, scope.fromMs, scope.toMs);
+    const rows = await readSnapshots(symbol, scope.fromMs, readTo);
     console.log(`snapshots ${symbol}: ${rows.length} rows in range`);
     const report: SnapshotSymbolReport = {
       symbol,
@@ -1692,16 +1900,29 @@ async function planSnapshots(
       driftTop: [],
       driftOverMark: 0,
       unmatchedLarge: { count: 0, first: [], largest: [] },
-      stale: isThinRoot(symbol)
-        ? null
-        : {
-            count: 0,
-            largest: [],
-            runs: 0,
-            rowsInRuns: 0,
-            longest: [],
-            afterSpan: 0,
-          },
+      stale: {
+        count: 0,
+        inSpan: 0,
+        afterSpan: 0,
+        left: 0,
+        unchecked: 0,
+        detector:
+          detectorDays?.get(symbol) == null
+            ? null
+            : {
+                contaminatedListed:
+                  detectorDays.get(symbol)?.contaminated.size ?? 0,
+                flaggedListed: detectorDays.get(symbol)?.flagged.size ?? 0,
+                contaminatedRows: new Map(),
+                flaggedRows: new Map(),
+              },
+        frozenAdded: 0,
+        frozenAddedInOutage: 0,
+        largest: [],
+        runs: 0,
+        rowsInRuns: 0,
+        longest: [],
+      },
       mergeState:
         sd.updates.size === 0
           ? null
@@ -1729,6 +1950,7 @@ async function planSnapshots(
       run: null,
       last: -2,
     };
+    const frozenRuns = frozenRunsOf(rows);
     const evaluated = await evaluateSnapshots(
       rows,
       `${symbol} snapshots in range`,
@@ -1856,19 +2078,51 @@ async function planSnapshots(
       for (const f of outcome.fields) {
         if (!affected.has(f)) report.drift[f] += 1;
       }
-      // The April to June writer had no freshness gate: it priced from the last
+      // The writer had no freshness gate until 2026-09-30: it priced from the last
       // bar it had while minutes were missing, and they have landed since. A row
-      // that matches such a bar by value, with a fresh recompute and nothing else
-      // writing it, is a stale-at-write row (ES and NQ only).
+      // that matches such a bar by value and has a fresh recompute is a
+      // stale-at-write row. The stale step writes the differing fields the normal
+      // step does not, so each field is written once, by one step. A row is also
+      // stale when it sits in a frozen run (frozenRunsOf), which finds the outage
+      // rows whose last good bar is older than the value look-back. A thin root's
+      // bars are still month-mixed before the span end (D1): its rows there are
+      // left. After it they are today's continuous-front bars, except on the days
+      // the Phase 1 detector confirmed contaminated, and only when a detector-days
+      // file says so.
       const staleBar =
-        report.stale != null &&
-        writable.length === 0 &&
         byValue.priceBar != null &&
         row.tsMs - byValue.priceBar.tsMs > MAX_BAR_AGE_MS
           ? byValue.priceBar
           : null;
-      const staleInSpan =
-        staleBar != null && row.tsMs >= SPAN.startMs && row.tsMs < SPAN.endMs;
+      const frozenRun = frozenRuns[idx] ?? null;
+      const staleFields =
+        staleBar == null && frozenRun == null
+          ? []
+          : outcome.fields.filter((f) => !writable.includes(f));
+      let stalePlanned = staleFields.length > 0;
+      if (stalePlanned && isThinRoot(symbol)) {
+        const stats = report.stale.detector;
+        const days = detectorDays?.get(symbol);
+        const day = ctTradingDay(row.tsMs);
+        if (row.tsMs < SPAN.endMs) {
+          report.stale.left += 1;
+          stalePlanned = false;
+        } else if (stats == null || days == null) {
+          report.stale.unchecked += 1;
+          stalePlanned = false;
+        } else {
+          if (days.flagged.has(day)) {
+            stats.flaggedRows.set(day, (stats.flaggedRows.get(day) ?? 0) + 1);
+          }
+          if (days.contaminated.has(day)) {
+            stats.contaminatedRows.set(
+              day,
+              (stats.contaminatedRows.get(day) ?? 0) + 1,
+            );
+            stalePlanned = false;
+          }
+        }
+      }
       if (outcome.fields.includes('price') && !writable.includes('price')) {
         noteUnwritten(
           report.unwritten,
@@ -1878,7 +2132,7 @@ async function planSnapshots(
         );
         // The drift list is the safety net for rows nothing will write: a row
         // in the stale-at-write plan is left out of it.
-        if (!staleInSpan) {
+        if (!(stalePlanned && staleFields.includes('price'))) {
           noteUnwritten(
             report.driftTop,
             row,
@@ -1896,49 +2150,58 @@ async function planSnapshots(
       if (largeUnmatched) {
         noteUnmatchedLarge(report.unmatchedLarge, row, outcome.to.price);
       }
-      if (writable.length === 0) {
-        if (report.stale != null && staleBar != null) {
-          const bar = staleBar;
-          if (row.tsMs >= SPAN.endMs) {
-            report.stale.afterSpan += 1;
-          } else if (staleInSpan) {
-            const rewrite: StaleRewrite = {
-              change: {
-                id: row.id,
-                symbol,
-                tsMs: row.tsMs,
-                fields: outcome.fields,
-                from: row.stored,
-                to: outcome.to,
-                row: row.row,
-              },
-              barTsMs: bar.tsMs,
-              ageMin: Math.round((row.tsMs - bar.tsMs) / MINUTE_MS),
-            };
-            staleRewrites.push(rewrite);
-            noteStale(report.stale, rewrite, row);
-            const open = frozen.run;
-            if (
-              open != null &&
-              open.price === row.stored.price &&
-              frozen.last === idx - 1
-            ) {
-              open.endMs = row.tsMs;
-              open.rows += 1;
-            } else {
-              endRun(report.stale, frozen);
-              frozen.run = {
-                startMs: row.tsMs,
-                endMs: row.tsMs,
-                rows: 1,
-                price: row.stored.price,
-              };
-            }
-            frozen.last = idx;
-          }
+      if (stalePlanned) {
+        const rewrite: StaleRewrite = {
+          change: {
+            id: row.id,
+            symbol,
+            tsMs: row.tsMs,
+            fields: staleFields,
+            from: row.stored,
+            to: outcome.to,
+            row: row.row,
+          },
+          alsoWritten: writable,
+          barTsMs: staleBar?.tsMs ?? null,
+          ageMin:
+            staleBar == null
+              ? null
+              : Math.round((row.tsMs - staleBar.tsMs) / MINUTE_MS),
+          run: frozenRun,
+        };
+        staleRewrites.push(rewrite);
+        noteStale(
+          report.stale,
+          rewrite,
+          row,
+          isThinRoot(symbol) && inputs.latest != null
+            ? `; ${neighbourText(sd.bars, inputs.latest.tsMs)}`
+            : '',
+        );
+        const open = frozen.run;
+        if (
+          open != null &&
+          open.price === row.stored.price &&
+          frozen.last === idx - 1
+        ) {
+          open.endMs = row.tsMs;
+          open.rows += 1;
+          open.minTo = Math.min(open.minTo, outcome.to.price);
+          open.maxTo = Math.max(open.maxTo, outcome.to.price);
+        } else {
+          endRun(report.stale, frozen);
+          frozen.run = {
+            startMs: row.tsMs,
+            endMs: row.tsMs,
+            rows: 1,
+            price: row.stored.price,
+            minTo: outcome.to.price,
+            maxTo: outcome.to.price,
+          };
         }
-        continue;
+        frozen.last = idx;
       }
+      if (writable.length === 0) continue;
       report.rowsToWrite += 1;
       for (const f of writable) report.byField[f] += 1;
       changes.push({
@@ -1952,7 +2215,7 @@ async function planSnapshots(
       });
     }
 
-    if (report.stale != null) endRun(report.stale, frozen);
+    endRun(report.stale, frozen);
 
     const controlOfSymbol = await snapshotControl(symbol, report);
     if (isThinRoot(symbol)) {
@@ -2309,9 +2572,46 @@ function mergeStateText(m: MergeStateReport): string[] {
   ];
 }
 
+const dayCounts = (byDay: Map<string, number>): string[] =>
+  [...byDay.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([day, n]) => `${day} (${n})`);
+
+/**
+ * A thin root's Phase 1 detector days: the contaminated days whose stale rows are
+ * left (the share of its after-span stale rows, and the stop rule), and, as
+ * information, the stale rows on the days with a single flagged bar.
+ */
+function detectorDaysText(st: StaleStats, d: DetectorStats): string[] {
+  const rows = [...d.contaminatedRows.values()].reduce((a, b) => a + b, 0);
+  const share = (rows / Math.max(1, rows + st.afterSpan)) * 100;
+  const verdict =
+    share > CONTAMINATED_SHARE_STOP_PCT
+      ? `OVER ${CONTAMINATED_SHARE_STOP_PCT}%: stop and report before committing`
+      : `within ${CONTAMINATED_SHARE_STOP_PCT}%`;
+  const left = dayCounts(d.contaminatedRows);
+  const leftList = left.length > 0 ? `: ${left.join(', ')}` : '';
+  const flaggedRows = [...d.flaggedRows.values()].reduce((a, b) => a + b, 0);
+  const flagged = dayCounts(d.flaggedRows);
+  const flaggedList = flagged.length > 0 ? `: ${flagged.join(', ')}` : '';
+  return [
+    `      contaminated days (Phase 1 detector, ${d.contaminatedListed} listed): ${rows} stale rows on ${left.length} of them are left, ${share.toFixed(1)}% of the ${rows + st.afterSpan} after-span stale rows, ${verdict}${leftList}`,
+    `      information, days with a flagged bar (${d.flaggedListed} listed; one flagged bar is the clean-day false-positive rate, so these are not left): ${flaggedRows} stale rows on ${flagged.length} of them${flaggedList}`,
+  ];
+}
+
 function staleText(st: StaleStats): string[] {
+  const left =
+    (st.left > 0
+      ? `; ${st.left} more before the span end are left (D1: this root's bars there are still month-mixed)`
+      : '') +
+    (st.unchecked > 0
+      ? `; ${st.unchecked} more after it are left (no --detector-days file: the source is unchecked)`
+      : '');
   const out = [
-    `    stale-at-write rows (opt-in --rewrite-stale-at-write; the stored price is the close of a bar older than ${MAX_BAR_AGE_MS / MINUTE_MS} min at the row, the recompute is fresh, nothing else writes the row): ${st.count} in the span, ${st.afterSpan} more after the span (not planned)`,
+    `    stale-at-write rows (opt-in --rewrite-stale-at-write; the stored price is the close of a bar older than ${MAX_BAR_AGE_MS / MINUTE_MS} min at the row, the recompute is fresh, every differing field the normal step does not write): ${st.count} planned (${st.inSpan} in the span, ${st.afterSpan} after it, up to ${isoSecond(STALE_UNTIL_MS)})${left}`,
+    ...(st.detector == null ? [] : detectorDaysText(st, st.detector)),
+    `      the frozen-run clause (consecutive rows with one stored price spanning more than ${MAX_BAR_AGE_MS / MINUTE_MS} min, a fresh recompute that differs) adds ${st.frozenAdded} of these rows, ${st.frozenAddedInOutage} of them in the ${isoDay(OUTAGE.fromMs)} to ${isoDay(OUTAGE.toMs - DAY_MS).slice(5)} outage`,
   ];
   if (st.count === 0) return out;
   out.push(
@@ -2320,7 +2620,7 @@ function staleText(st: StaleStats): string[] {
     `      frozen runs (consecutive rows with the same stored price): ${st.runs} runs hold ${st.rowsInRuns} of the ${st.count} rows; the ${st.longest.length} longest:`,
     ...st.longest.map(
       (r) =>
-        `        ${isoSecond(r.startMs)} .. ${isoSecond(r.endMs)}, ${r.rows} rows, price ${r.price}`,
+        `        ${isoSecond(r.startMs)} .. ${isoSecond(r.endMs)}, ${r.rows} rows, price ${r.price}, recompute ${r.minTo} to ${r.maxTo}`,
     ),
   );
   return out;
@@ -2425,7 +2725,7 @@ function snapshotsText(r: SnapshotStore): string[] {
       ...driftText(s),
       ...unmatchedLargeText(s.unmatchedLarge),
       ...(s.mergeState == null ? [] : mergeStateText(s.mergeState)),
-      ...(s.stale == null ? [] : staleText(s.stale)),
+      ...staleText(s.stale),
     );
   }
   out.push(
@@ -2619,6 +2919,8 @@ interface BackupEntry {
   to: unknown;
   /** Only on a deleted row: its `to` is null and `row` is everything the restore needs. */
   op?: 'delete';
+  /** Only on a stale-at-write line: the snapshot step wrote the row's other fields, in its own line. */
+  step?: 'stale';
 }
 
 /** The values a change would write: for a snapshot only its affected fields, not the whole recompute. */
@@ -2651,6 +2953,7 @@ function writeBackup(
       id: r.change.id,
       row: r.change.row,
       to: backedUpValues(r.change),
+      step: 'stale',
     });
   }
   for (const j of junk) {
@@ -2840,10 +3143,21 @@ async function verifyJunk(junk: JunkRow[], before: number): Promise<void> {
 }
 
 /** The same guarded UPDATE and verify as the snapshot writes, for the stale-at-write rows. */
-async function applyStale(rewrites: StaleRewrite[]): Promise<number> {
+async function applyStale(
+  rewrites: StaleRewrite[],
+  normalApplied: boolean,
+): Promise<number> {
   const changes = rewrites.map((r) => r.change);
   await writeInTransactions(changes, updateSnapshots);
-  await verifySnapshots(changes);
+  // The row now holds the normal step's fields too, when that step ran in this run.
+  await verifySnapshots(
+    rewrites.map((r) => ({
+      ...r.change,
+      fields: normalApplied
+        ? [...new Set([...r.change.fields, ...r.alsoWritten])]
+        : r.change.fields,
+    })),
+  );
   return changes.length;
 }
 
@@ -2877,13 +3191,21 @@ export interface RecomputeOptions {
   /** The rows that delete removes in the dry run the owner approved. */
   expectJunkDeletes: number | null;
   /**
-   * Also rewrite the ES and NQ rows the April to June writer priced from a bar
-   * older than the freshness gate allows, from today's repaired bars. Off by
-   * default: the owner decides, after reading the dry run's list.
+   * Also rewrite the rows the writer priced from a bar older than the freshness
+   * gate allows (until 2026-09-30), from today's bars. Off by default: the owner
+   * decides, after reading the dry run's list.
    */
   rewriteStaleAtWrite: boolean;
   /** The rows that rewrite changes in the dry run the owner approved. */
   expectStaleRewrites: number | null;
+  /**
+   * The Phase 1 detector's days for RTY, CL, GC and ZN after the span end (a JSON
+   * file, see parseDetectorDays). Their rows on the contaminated days are left out
+   * of the stale rewrite; without the file their rows after the span end are left
+   * too, because the source is unchecked. It changes the plan, so a dry run takes
+   * it as well.
+   */
+  detectorDays: string | null;
 }
 
 export interface RecomputeArgs extends RecomputeOptions {
@@ -2917,6 +3239,7 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
     expectJunkDeletes: null,
     rewriteStaleAtWrite: false,
     expectStaleRewrites: null,
+    detectorDays: null,
     envFile: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -2955,6 +3278,7 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
       args.rewriteStaleAtWrite = true;
     else if (flag === '--expect-stale-rewrites')
       args.expectStaleRewrites = parseCount(flag, next());
+    else if (flag === '--detector-days') args.detectorDays = next();
     else if (flag === '--delete-junk-stale') args.deleteJunkStale = true;
     else if (flag === '--expect-junk-deletes')
       args.expectJunkDeletes = parseCount(flag, next());
@@ -3078,6 +3402,9 @@ function applyCommand(opts: RecomputeOptions, plans: Plans): string | null {
     ...(stale === 0
       ? []
       : ['--rewrite-stale-at-write', `--expect-stale-rewrites ${stale}`]),
+    ...(opts.detectorDays == null
+      ? []
+      : [`--detector-days ${opts.detectorDays}`]),
   ].join(' ');
 }
 
@@ -3099,6 +3426,13 @@ async function run(opts: RecomputeOptions): Promise<number> {
     needsBackup(opts) && opts.backup != null
       ? parseBackup(readFileSync(opts.backup, 'utf8'), opts.backup)
       : [];
+  const detectorDays =
+    opts.detectorDays == null
+      ? null
+      : parseDetectorDays(
+          readFileSync(opts.detectorDays, 'utf8'),
+          opts.detectorDays,
+        );
   console.log(
     `Futures derived-store recompute${opts.apply ? '' : ' (DRY RUN: read-only, no writes)'}`,
   );
@@ -3121,7 +3455,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
     if (planned.includes('premarket'))
       plans.premarket = await planPremarket(data);
     if (planned.includes('snapshots'))
-      plans.snapshots = await planSnapshots(data);
+      plans.snapshots = await planSnapshots(data, detectorDays);
   } finally {
     neonConfig.fetchFunction = undefined;
   }
@@ -3141,6 +3475,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
       `repaired span ${span}`,
       `snapshot scope ${isoSecond(scope.snapshots.fromMs)} .. ${isoSecond(scope.snapshots.toMs)} (span end + 20 days)`,
       `fire scope ${isoSecond(scope.fires.fromMs)} .. ${isoSecond(scope.fires.toMs)} (span end + 6 minutes)`,
+      `stale-at-write test reaches ${isoSecond(STALE_UNTIL_MS)} (the freshness gate shipped on 2026-09-30); ES and NQ from the span start, the thin roots from the span end and off the contaminated days in ${opts.detectorDays ?? 'no file (their rows after the span end are left)'}`,
       ...(opts.backup == null
         ? []
         : [
@@ -3250,8 +3585,9 @@ async function run(opts: RecomputeOptions): Promise<number> {
     try {
       let done: number;
       if (store === 'junk') done = await applyJunk(junk);
-      else if (store === 'stale') done = await applyStale(stale);
-      else done = await applyStore(store, plans);
+      else if (store === 'stale') {
+        done = await applyStale(stale, pending.includes('snapshots'));
+      } else done = await applyStore(store, plans);
       console.log(
         `${store}: ${done} row(s) ${store === 'junk' ? 'deleted' : 'changed'} and verified`,
       );

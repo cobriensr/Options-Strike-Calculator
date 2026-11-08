@@ -792,6 +792,7 @@ function options(over: Partial<RecomputeOptions> = {}): RecomputeOptions {
     expectJunkDeletes: null,
     rewriteStaleAtWrite: false,
     expectStaleRewrites: null,
+    detectorDays: null,
     ...over,
   };
 }
@@ -2230,19 +2231,35 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     snapshotRow(symbol, `${date}T${time}Z`, date, [price, 0.1, 0.1, 0.4615]);
 
   /**
-   * 2026-06-10, a day no repaired bar's 20-day window reaches. The old bar is the
-   * 14:30 one (7007); the table now also holds 14:42 (7010) and 14:58 (7012).
-   * F1a-c and F1d store 7007 and FX stores 7010, all frozen on a bar over 15
-   * minutes old (U2 sits between F1c and F1d, FX comes after F1d); F2 is exactly 15 minutes after the 14:30 bar; U and U2 match no
-   * bar. The RTY and 06-22 rows qualify but for the thin root and the span.
+   * The old bar is the 14:30 one (7007); the table now also holds 14:42 (7010)
+   * and 14:58 (7012). On 2026-06-10, a day no repaired bar's 20-day window
+   * reaches: F1a-c and F1d store 7007 and FX stores 7010, all frozen on a bar
+   * over 15 minutes old (U2 sits between F1c and F1d, FX comes after F1d); F2 is
+   * exactly 15 minutes after the 14:30 bar, and SEP (7123) keeps it out of the
+   * 10-minute run of F1a-c; U, SEP and U2 match no bar; RTY stores 7007
+   * in the span, which a thin root leaves. VR is on 2026-05-20, whose 20-day
+   * window holds the deleted 05-14 bar: the normal step writes its volume ratio and
+   * the stale step the rest. POST and THINPOST are after the span end (06-22):
+   * both rewritten. THINFLAGGED and THINFLAGGED2 are RTY on 06-23, a day the Phase 1
+   * detector confirmed contaminated (see `detector`): left. OCT1 is 2026-10-01, after
+   * the freshness gate shipped: left.
    */
   async function seedStale() {
-    await frozenDay('ES', '2026-06-10', '2026-06-09');
-    await frozenDay('RTY', '2026-06-10', '2026-06-09');
-    await frozenDay('ES', '2026-06-22', '2026-06-19');
-    const ids = {
+    for (const [symbol, date, prior] of [
+      ['ES', '2026-06-10', '2026-06-09'],
+      ['RTY', '2026-06-10', '2026-06-09'],
+      ['ES', '2026-05-20', '2026-05-19'],
+      ['ES', '2026-06-22', '2026-06-19'],
+      ['RTY', '2026-06-22', '2026-06-19'],
+      ['RTY', '2026-06-23', '2026-06-22'],
+      ['ES', '2026-10-01', '2026-09-30'],
+    ] as const) {
+      await frozenDay(symbol, date, prior);
+    }
+    return {
       u: await at('ES', '2026-06-10', '14:40:30.250', 7123),
       f2: await at('ES', '2026-06-10', '14:45:00.000', 7007),
+      sep: await at('ES', '2026-06-10', '14:47:00.250', 7123),
       f1a: await at('ES', '2026-06-10', '14:50:00.250', 7007),
       f1b: await at('ES', '2026-06-10', '14:55:00.250', 7007),
       f1c: await at('ES', '2026-06-10', '15:00:00.250', 7007),
@@ -2250,17 +2267,71 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
       f1d: await at('ES', '2026-06-10', '15:05:00.250', 7007),
       fx: await at('ES', '2026-06-10', '15:06:00.250', 7010),
       rty: await at('RTY', '2026-06-10', '14:50:00.250', 7007),
+      vr: await at('ES', '2026-05-20', '14:50:00.250', 7007),
       post: await at('ES', '2026-06-22', '14:50:00.250', 7007),
+      thinPost: await at('RTY', '2026-06-22', '14:50:00.250', 7007),
+      thinFlagged: await at('RTY', '2026-06-23', '14:50:00.250', 7007),
+      thinFlagged2: await at('RTY', '2026-06-23', '14:55:00.250', 7007),
+      oct1: await at('ES', '2026-10-01', '14:50:00.250', 7007),
     };
-    return ids;
   }
+  /**
+   * The detector's file: the CT trading days (feat.py) per thin root. By default
+   * RTY's 06-23 is contaminated and 06-22 has a single flagged bar.
+   */
+  const detector = (
+    days: Partial<
+      Record<
+        'RTY' | 'CL' | 'GC' | 'ZN',
+        { contaminated: string[]; flagged: string[] }
+      >
+    > = {
+      RTY: {
+        contaminated: ['2026-06-23'],
+        flagged: ['2026-06-22', '2026-06-23'],
+      },
+    },
+  ): string => {
+    const none = { contaminated: [], flagged: [] };
+    const path = join(dir, 'detector_days.json');
+    writeFileSync(
+      path,
+      JSON.stringify({ RTY: none, CL: none, GC: none, ZN: none, ...days }),
+    );
+    return path;
+  };
+  /**
+   * Snapshot rows five minutes apart at one stored price: five of them span 20
+   * minutes from the first to the last, four span exactly 15.
+   */
+  const run20 = async (
+    symbol: string,
+    date: string,
+    price: number,
+    rows = 5,
+  ) => {
+    const ids: number[] = [];
+    for (const time of [
+      '14:50:00.250',
+      '14:55:00.250',
+      '15:00:00.250',
+      '15:05:00.250',
+      '15:10:00.250',
+    ].slice(0, rows)) {
+      ids.push(await at(symbol, date, time, price));
+    }
+    return ids;
+  };
+  // 8 rows: ES 6 in the span (F1a-c, F1d, FX, VR) and 1 after it (POST), RTY 1 after it.
   const staleRun = (over: Partial<RecomputeOptions> = {}) =>
     run({
       stores: ['snapshots'],
+      expectSnapshots: 5,
       expectPremarket: null,
       expectFires: null,
       rewriteStaleAtWrite: true,
-      expectStaleRewrites: 5,
+      expectStaleRewrites: 8,
+      detectorDays: detector(),
       ...over,
     });
   const price = async (id: number): Promise<string | null> =>
@@ -2268,22 +2339,31 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
 
   it('is off by default: a plain apply leaves the frozen rows, and the dry run lists them', async () => {
     const s = await seedStale();
-    expect(await run()).toBe(0);
-    for (const id of [s.f1a, s.f1b, s.f1c, s.fx, s.f1d]) {
-      expect(['7007.0000', '7010.0000']).toContain(await price(id));
+    expect(await run({ expectSnapshots: 5 })).toBe(0);
+    for (const id of [s.f1a, s.f1b, s.f1c, s.vr, s.post, s.thinPost]) {
+      expect(await price(id)).toBe('7007.0000');
     }
     expect(existsSync(markerPath(workDir, 'stale'))).toBe(false);
   });
 
-  it('reports the count, the largest changes with the bar age, the frozen runs and the printed command, for ES and NQ only', async () => {
+  it('reports, per root, the planned rows in the span and after it, the largest changes with the bar age, the frozen runs and the printed command', async () => {
     const s = await seedStale();
     const before = await dump();
-    expect(await dry()).toBe(0);
+    const detectorPath = detector();
+    expect(await dry({ detectorDays: detectorPath })).toBe(0);
     expect(await dump()).toBe(before);
     const text = report();
+    const head =
+      'stale-at-write rows (opt-in --rewrite-stale-at-write; the stored price is the close of a bar older than 15 min at the row, the recompute is fresh, every differing field the normal step does not write)';
     expect(text).toContain(
-      'stale-at-write rows (opt-in --rewrite-stale-at-write; the stored price is the close of a bar older than 15 min at the row, the recompute is fresh, nothing else writes the row): 5 in the span, 1 more after the span (not planned)',
+      `${head}: 7 planned (6 in the span, 1 after it, up to 2026-10-01T00:00:00Z)`,
     );
+    // The thin root: only the row after the span end is planned; the one in the span is left.
+    expect(text).toContain(
+      `${head}: 1 planned (0 in the span, 1 after it, up to 2026-10-01T00:00:00Z); 1 more before the span end are left (D1: this root's bars there are still month-mixed)`,
+    );
+    // Every root has the line.
+    expect(text.match(/stale-at-write rows \(/g)).toHaveLength(6);
     // F1c rewrites 7007 to 7012 (the 14:30 bar is 30 minutes older), all four fields.
     expect(text).toContain(
       `ES 2026-06-10T15:00:00.250Z id ${s.f1c}: price 7007 -> 7012 (5.00), the matched bar of 2026-06-10T14:30:00Z is 30 min older; writes price, change1hPct, changeDayPct, volumeRatio`,
@@ -2292,24 +2372,60 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     expect(text).toContain(
       `ES 2026-06-10T15:06:00.250Z id ${s.fx}: price 7010 -> 7012 (2.00), the matched bar of 2026-06-10T14:42:00Z is 24 min older`,
     );
-    // One run of three rows (F1a-c); F1d is cut off from it by U2, and FX has another price.
+    // The volume ratio of VR is the normal step's: the stale step lists the other three.
     expect(text).toContain(
-      'frozen runs (consecutive rows with the same stored price): 1 runs hold 3 of the 5 rows; the 1 longest:',
+      `ES 2026-05-20T14:50:00.250Z id ${s.vr}: price 7007 -> 7010 (3.00), the matched bar of 2026-05-20T14:30:00Z is 20 min older; writes price, change1hPct, changeDayPct\n`,
+    );
+    // The row after the span end is in the list too.
+    expect(text).toContain(
+      `ES 2026-06-22T14:50:00.250Z id ${s.post}: price 7007 -> 7010 (3.00)`,
+    );
+    // The thin root's line carries the bar used and its neighbours.
+    expect(text).toContain(
+      `RTY 2026-06-22T14:50:00.250Z id ${s.thinPost}: price 7007 -> 7010 (3.00), the matched bar of 2026-06-22T14:30:00Z is 20 min older; writes price, change1hPct, changeDayPct, volumeRatio; the bar used (2026-06-22T14:42:00Z) closed at 7010, the minutes before and after at none and none`,
+    );
+    // One run of three rows (F1a-c) with the range of its recompute; F1d is cut off from it by U2, and FX has another price.
+    expect(text).toContain(
+      'frozen runs (consecutive rows with the same stored price): 1 runs hold 3 of the 7 rows; the 1 longest:',
     );
     expect(text).toContain(
-      '2026-06-10T14:50:00.250Z .. 2026-06-10T15:00:00.250Z, 3 rows, price 7007',
+      '2026-06-10T14:50:00.250Z .. 2026-06-10T15:00:00.250Z, 3 rows, price 7007, recompute 7010 to 7012',
     );
-    // The thin root is not listed; ES and NQ each have the line.
-    expect(text.match(/stale-at-write rows \(/g)).toHaveLength(2);
+    // The frozen-run clause adds nothing here: every stale row has a matching bar.
     expect(text).toContain(
-      '--rewrite-stale-at-write --expect-stale-rewrites 5',
+      'the frozen-run clause (consecutive rows with one stored price spanning more than 15 min, a fresh recompute that differs) adds 0 of these rows, 0 of them in the 2026-09-04 to 09-28 outage',
     );
-    // None of F2, U, U2, the RTY row or the 06-22 row is in the list.
-    for (const id of [s.f2, s.u, s.u2, s.rty, s.post]) {
+    // The thin root's contaminated day: its rows there are left, two of the three after-span stale rows.
+    expect(text).toContain(
+      'contaminated days (Phase 1 detector, 1 listed): 2 stale rows on 1 of them are left, 66.7% of the 3 after-span stale rows, OVER 10%: stop and report before committing: 2026-06-23 (2)',
+    );
+    // Information: a day with a single flagged bar is not left; its row stays planned.
+    expect(text).toContain(
+      'information, days with a flagged bar (2 listed; one flagged bar is the clean-day false-positive rate, so these are not left): 3 stale rows on 2 of them: 2026-06-22 (1), 2026-06-23 (2)',
+    );
+    // A thin root with nothing to leave out and nothing planned has a share of 0, not NaN.
+    expect(text).toContain(
+      'contaminated days (Phase 1 detector, 0 listed): 0 stale rows on 0 of them are left, 0.0% of the 0 after-span stale rows, within 10%',
+    );
+    // The printed command carries the file, after the counts it changes.
+    expect(text).toContain(
+      `--rewrite-stale-at-write --expect-stale-rewrites 8 --detector-days ${detectorPath}`,
+    );
+    // F2, SEP, U, U2, the RTY row in the span, the contaminated-day rows and the 10-01 row are not in the list.
+    for (const id of [
+      s.f2,
+      s.sep,
+      s.u,
+      s.u2,
+      s.rty,
+      s.thinFlagged,
+      s.thinFlagged2,
+      s.oct1,
+    ]) {
       expect(text).not.toContain(`id ${id}: price`);
     }
     // The drift safety net leaves out the rows in the plan and keeps the rows nothing will write.
-    for (const id of [s.f1a, s.f1b, s.f1c, s.f1d, s.fx]) {
+    for (const id of [s.f1a, s.f1b, s.f1c, s.f1d, s.fx, s.vr, s.post]) {
       expect(text).not.toMatch(
         new RegExp(
           `id ${id}: stored [\\d.]+, recomputed [\\d.]+, difference [\\d.]+, recomputable`,
@@ -2322,9 +2438,194 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     expect(text).toContain(
       `id ${s.u}: stored 7123, recomputed 7007, difference 116.00, recomputable, price not affected`,
     );
+    // A row the stale step leaves on a contaminated day stays on the safety-net list.
+    expect(text).toContain(
+      `id ${s.thinFlagged}: stored 7007, recomputed 7010, difference 3.00, recomputable, price not affected`,
+    );
   });
 
-  it('rewrites the four fields of the frozen rows, backs them up first, and leaves the rest', async () => {
+  it("leaves a thin root's rows after the span end when no detector-days file is given, and says so", async () => {
+    const s = await seedStale();
+    expect(await dry()).toBe(0);
+    const text = report();
+    const head =
+      'stale-at-write rows (opt-in --rewrite-stale-at-write; the stored price is the close of a bar older than 15 min at the row, the recompute is fresh, every differing field the normal step does not write)';
+    expect(text).toContain(
+      `${head}: 0 planned (0 in the span, 0 after it, up to 2026-10-01T00:00:00Z); 1 more before the span end are left (D1: this root's bars there are still month-mixed); 3 more after it are left (no --detector-days file: the source is unchecked)`,
+    );
+    expect(text).not.toContain('contaminated days (Phase 1 detector');
+    const command = text
+      .split('\n')
+      .find((l) => l.includes('npx tsx scripts/recompute-futures-derived.ts'));
+    expect(command).toBeDefined();
+    expect(command).not.toContain('--detector-days');
+    // ES is unaffected by the file: its rows after the span end stay planned.
+    expect(text).toContain(`ES 2026-06-22T14:50:00.250Z id ${s.post}: price`);
+    expect(text).not.toContain(
+      `RTY 2026-06-22T14:50:00.250Z id ${s.thinPost}: price`,
+    );
+  });
+
+  it('states a contaminated share of exactly 10% as within, and a listed day with no stale row as nothing left', async () => {
+    // RTY on 06-22: 9 stale rows a minute apart; on 06-23 one more, on a contaminated day. 1 of 10 is 10%.
+    await frozenDay('RTY', '2026-06-22', '2026-06-19');
+    await frozenDay('RTY', '2026-06-23', '2026-06-22');
+    for (let m = 48; m < 57; m += 1) {
+      await at('RTY', '2026-06-22', `14:${m}:00.250`, 7007);
+    }
+    await at('RTY', '2026-06-23', '14:50:00.250', 7007);
+    const on = (contaminated: string[]) =>
+      detector({ RTY: { contaminated, flagged: contaminated } });
+    expect(await dry({ detectorDays: on(['2026-06-23']) })).toBe(0);
+    expect(report()).toContain(
+      'contaminated days (Phase 1 detector, 1 listed): 1 stale rows on 1 of them are left, 10.0% of the 10 after-span stale rows, within 10%: 2026-06-23 (1)',
+    );
+    // A listed day that holds no stale row leaves nothing out.
+    expect(await dry({ detectorDays: on(['2026-06-30']) })).toBe(0);
+    expect(report()).toContain(
+      'contaminated days (Phase 1 detector, 1 listed): 0 stale rows on 0 of them are left, 0.0% of the 10 after-span stale rows, within 10%',
+    );
+  });
+
+  it('refuses a detector-days file that is missing or malformed, before the database is read', async () => {
+    await seedStale();
+    const before = await dump();
+    expect(await dry({ detectorDays: join(dir, 'no-such-file.json') })).toBe(1);
+    expect(errored()).toMatch(/ENOENT/);
+    const bad = join(dir, 'bad.json');
+    writeFileSync(
+      bad,
+      JSON.stringify({ RTY: { contaminated: [], flagged: [] } }),
+    );
+    expect(await dry({ detectorDays: bad })).toBe(1);
+    expect(errored()).toMatch(
+      /must list ZN as \{"contaminated": \[\.\.\.\], "flagged": \[\.\.\.\]\} of YYYY-MM-DD days/,
+    );
+    expect(hooks.calls).toEqual([]);
+    expect(hooks.plainFetch).toEqual([]);
+    expect(await dump()).toBe(before);
+  });
+
+  describe('the frozen-run clause', () => {
+    it('writes a run of 20 minutes at a price no bar has, and not a run of exactly 15, and reports the clause rows and the run', async () => {
+      await frozenDay('ES', '2026-06-11', '2026-06-10');
+      await frozenDay('ES', '2026-06-12', '2026-06-09');
+      const long = await run20('ES', '2026-06-11', 7123);
+      const short = await run20('ES', '2026-06-12', 7124, 4);
+      expect(await dry({ detectorDays: detector() })).toBe(0);
+      const text = report();
+      const head =
+        'stale-at-write rows (opt-in --rewrite-stale-at-write; the stored price is the close of a bar older than 15 min at the row, the recompute is fresh, every differing field the normal step does not write)';
+      expect(text).toContain(
+        `${head}: 5 planned (5 in the span, 0 after it, up to 2026-10-01T00:00:00Z)`,
+      );
+      expect(text).toContain(
+        'adds 5 of these rows, 0 of them in the 2026-09-04 to 09-28 outage',
+      );
+      // No bar has 7123, so the line names the run, not a matched bar.
+      expect(text).toContain(
+        `ES 2026-06-11T14:50:00.250Z id ${long[0]}: price 7123 -> 7010 (113.00), no bar has the stored price, the row is in a frozen run of 5 rows from 2026-06-11T14:50:00.250Z to 2026-06-11T15:10:00.250Z; writes price, change1hPct, changeDayPct, volumeRatio`,
+      );
+      expect(text).toContain(
+        '2026-06-11T14:50:00.250Z .. 2026-06-11T15:10:00.250Z, 5 rows, price 7123, recompute 7010 to 7012',
+      );
+      // The run of exactly 15 minutes stays on the safety-net list.
+      expect(text).toContain(
+        `id ${short[0]}: stored 7124, recomputed 7010, difference 114.00, recomputable, price not affected`,
+      );
+      const code = await staleRun({
+        expectSnapshots: 4,
+        expectStaleRewrites: 5,
+      });
+      expect([code, errored()]).toEqual([0, '']);
+      expect(await price(long[0]!)).toBe('7010.0000');
+      expect(await price(long[1]!)).toBe('7010.0000');
+      expect(await price(long[2]!)).toBe('7012.0000');
+      expect(await price(long[4]!)).toBe('7012.0000');
+      for (const id of short) expect(await price(id)).toBe('7124.0000');
+    });
+
+    it('reports the range of the recompute over a run, whichever way the bars move', async () => {
+      // The bars fall after the first rows: the recompute goes 7010, 7010, 6990, 6990, 6990.
+      await snapshotDay('ES', '2026-06-17', '2026-06-16', 7000, 7007);
+      await bar('ES', '2026-06-17T14:42:00Z', 7010, 100);
+      await bar('ES', '2026-06-17T14:58:00Z', 6990, 100);
+      await run20('ES', '2026-06-17', 7123);
+      expect(await dry({ detectorDays: detector() })).toBe(0);
+      expect(report()).toContain(
+        '2026-06-17T14:50:00.250Z .. 2026-06-17T15:10:00.250Z, 5 rows, price 7123, recompute 6990 to 7010',
+      );
+    });
+
+    it('leaves a flat run whose recompute equals the stored values: a second plan writes nothing', async () => {
+      // A market that really was flat: every bar closes 6900. The first apply writes
+      // the 1h change and the volume ratio of the five rows (the price is already 6900);
+      // after it each row equals its recompute, the run is still 20 minutes of one
+      // price, and nothing is left to write.
+      await snapshotDay('ES', '2026-06-16', '2026-06-15', 6900, 6900);
+      await bar('ES', '2026-06-16T14:42:00Z', 6900, 100);
+      await bar('ES', '2026-06-16T14:58:00Z', 6900, 100);
+      const ids = await run20('ES', '2026-06-16', 6900);
+      const first = await staleRun({
+        expectSnapshots: 4,
+        expectStaleRewrites: 5,
+      });
+      expect([first, errored()]).toEqual([0, '']);
+      const settled = await Promise.all(ids.map((id) => snapshotValues(id)));
+      for (const [p, , day] of settled) {
+        expect(p).toBe('6900.0000');
+        expect(day).toBe('0.0000');
+      }
+      const second = await staleRun({
+        expectSnapshots: 0,
+        expectStaleRewrites: 0,
+        force: true,
+      });
+      expect([second, errored()]).toEqual([0, '']);
+      expect(await Promise.all(ids.map((id) => snapshotValues(id)))).toEqual(
+        settled,
+      );
+    });
+
+    it("leaves a thin root's run in the span, and rewrites the same run after the span end", async () => {
+      await frozenDay('RTY', '2026-06-11', '2026-06-10');
+      await frozenDay('RTY', '2026-06-24', '2026-06-23');
+      const inSpan = await run20('RTY', '2026-06-11', 7123);
+      const after = await run20('RTY', '2026-06-24', 7123);
+      expect(await dry({ detectorDays: detector() })).toBe(0);
+      const head =
+        'stale-at-write rows (opt-in --rewrite-stale-at-write; the stored price is the close of a bar older than 15 min at the row, the recompute is fresh, every differing field the normal step does not write)';
+      expect(report()).toContain(
+        `${head}: 5 planned (0 in the span, 5 after it, up to 2026-10-01T00:00:00Z); 5 more before the span end are left (D1: this root's bars there are still month-mixed)`,
+      );
+      const code = await staleRun({
+        expectSnapshots: 4,
+        expectStaleRewrites: 5,
+      });
+      expect([code, errored()]).toEqual([0, '']);
+      for (const id of inSpan) expect(await price(id)).toBe('7123.0000');
+      expect(await price(after[0]!)).toBe('7010.0000');
+      expect(await price(after[4]!)).toBe('7012.0000');
+    });
+
+    it('counts the rows of the September outage on their own, by day', async () => {
+      // 09-03 and 09-29 are just outside the window, 09-10 inside.
+      for (const [date, prior] of [
+        ['2026-09-03', '2026-09-02'],
+        ['2026-09-10', '2026-09-09'],
+        ['2026-09-29', '2026-09-28'],
+      ] as const) {
+        await frozenDay('ES', date, prior);
+        await run20('ES', date, 7123);
+      }
+      expect(await dry({ detectorDays: detector() })).toBe(0);
+      expect(report()).toContain(
+        'adds 15 of these rows, 5 of them in the 2026-09-04 to 09-28 outage',
+      );
+    });
+  });
+
+  it('writes what the normal step leaves: each field once, by one step, both recorded in the backup', async () => {
     const s = await seedStale();
     let backedUp: string[] = [];
     hooks.beforeWrite = () => {
@@ -2342,14 +2643,23 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     expect(c1).toBeNull();
     expect(cd).toBe('0.1429');
     expect(vr).not.toBe('0.4615');
-    // Not planned: exactly 15 minutes old, no matching bar, a thin root, after the span.
-    for (const id of [s.f2, s.rty, s.post]) {
+    // VR: the normal step wrote its volume ratio, the stale step its price, 1h and day.
+    const [vp, vc1, vcd, vvr] = await snapshotValues(s.vr);
+    expect(vp).toBe('7010.0000');
+    expect(vc1).toBeNull();
+    expect(vcd).toBe('0.1429');
+    expect(vvr).not.toBe('0.4615');
+    // After the span end: the ES row and the thin root's row are rewritten.
+    expect(await price(s.post)).toBe('7010.0000');
+    expect(await price(s.thinPost)).toBe('7010.0000');
+    // Left: exactly 15 minutes old, no matching bar, a thin root in the span, the freshness gate's day.
+    for (const id of [s.f2, s.rty, s.oct1]) {
       expect(await price(id)).toBe('7007.0000');
     }
     for (const id of [s.u, s.u2]) {
       expect(await price(id)).toBe('7123.0000');
     }
-    // The backup holds the 5 rows with the same lines as a snapshot write, besides the 4 normal ones.
+    // One backup file, written before the first write: 5 normal lines and 8 stale lines.
     expect(backedUp).toHaveLength(1);
     const lines = readFileSync(join(workDir, backedUp[0]!), 'utf8')
       .split('\n')
@@ -2360,15 +2670,23 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
             store: string;
             id: number;
             op?: string;
+            step?: string;
             to: Record<string, unknown> | null;
           },
       );
-    expect(lines).toHaveLength(9);
+    expect(lines).toHaveLength(13);
+    const ofVr = lines.filter((l) => l.id === s.vr);
+    expect(ofVr).toHaveLength(2);
+    const normal = ofVr.find((l) => l.step == null)!;
+    const stale = ofVr.find((l) => l.step === 'stale')!;
+    expect(Object.keys(normal.to ?? {})).toEqual(['volumeRatio']);
+    expect(Object.keys(stale.to ?? {}).sort()).toEqual(
+      ['change1hPct', 'changeDayPct', 'price'].sort(),
+    );
     const f1c = lines.find((l) => l.id === s.f1c)!;
-    expect(f1c.store).toBe('snapshots');
-    expect(f1c.op).toBeUndefined();
+    expect(f1c.step).toBe('stale');
     expect(Object.keys(f1c.to ?? {}).sort()).toEqual(
-      ['changeDayPct', 'change1hPct', 'price', 'volumeRatio'].sort(),
+      ['change1hPct', 'changeDayPct', 'price', 'volumeRatio'].sort(),
     );
     expect(existsSync(markerPath(workDir, 'stale'))).toBe(true);
     expect(existsSync(markerPath(workDir, 'snapshots'))).toBe(true);
@@ -2381,9 +2699,9 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     expect(errored()).toMatch(
       /--rewrite-stale-at-write needs --expect-stale-rewrites S: the count of the dry run you approved/,
     );
-    expect(await staleRun({ expectStaleRewrites: 4 })).toBe(1);
+    expect(await staleRun({ expectStaleRewrites: 7 })).toBe(1);
     expect(errored()).toMatch(
-      /the fresh plan rewrites 5 stale-at-write rows, --expect-stale-rewrites 4 was given/,
+      /the fresh plan rewrites 8 stale-at-write rows, --expect-stale-rewrites 7 was given/,
     );
     expect(hooks.writes).toBe(0);
     expect(backups()).toEqual([]);
@@ -2399,7 +2717,7 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     expect(errored()).toMatch(/apply failed: stale: deadlock detected/);
     expect(existsSync(markerPath(workDir, 'stale'))).toBe(false);
     expect(existsSync(markerPath(workDir, 'snapshots'))).toBe(true);
-    for (const id of [s.f1a, s.f1b, s.f1c, s.f1d]) {
+    for (const id of [s.f1a, s.f1b, s.f1c, s.f1d, s.post, s.thinPost]) {
       expect(await price(id)).toBe('7007.0000');
     }
     expect(backups()).toHaveLength(1);

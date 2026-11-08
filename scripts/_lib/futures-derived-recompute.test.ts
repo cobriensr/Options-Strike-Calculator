@@ -31,12 +31,16 @@ import {
   SNAPSHOT_LOOKBACK_MS,
   SPAN,
   BARS_LEAD_MS,
+  STALE_UNTIL_MS,
   checkApplyGate,
   checkJunkGate,
   checkStaleGate,
   compareGlobex,
   compareSnapshot,
+  ctTradingDay,
+  frozenRunsOf,
   gateFlips,
+  parseDetectorDays,
   parseRecomputeArgs,
   pcsPasses,
   premarketInScope,
@@ -94,6 +98,7 @@ describe('parseRecomputeArgs', () => {
       expectJunkDeletes: null,
       rewriteStaleAtWrite: false,
       expectStaleRewrites: null,
+      detectorDays: null,
       envFile: null,
     });
   });
@@ -129,8 +134,23 @@ describe('parseRecomputeArgs', () => {
       expectJunkDeletes: null,
       rewriteStaleAtWrite: false,
       expectStaleRewrites: null,
+      detectorDays: null,
       envFile: '.env.test',
     });
+  });
+
+  it('takes --detector-days with a path, in a dry run too, and refuses it without one', () => {
+    expect(
+      parseRecomputeArgs([
+        '--backup',
+        'b.jsonl',
+        '--detector-days',
+        'detector_days.json',
+      ]).detectorDays,
+    ).toBe('detector_days.json');
+    expect(() =>
+      parseRecomputeArgs(['--backup', 'b.jsonl', '--detector-days']),
+    ).toThrow('--detector-days needs a value');
   });
 
   it('takes --rewrite-stale-at-write with its count, under --apply only', () => {
@@ -454,7 +474,151 @@ describe('checkStaleGate', () => {
   });
 });
 
+describe('ctTradingDay', () => {
+  // The Phase 1 detector's day (feat.py): the CT date of the time plus 7 hours,
+  // so the Globex session that opens at 17:00 CT belongs to the next date.
+  it.each([
+    ['Sunday 17:00 CDT opens Monday', '2026-06-14T22:00:00Z', '2026-06-15'],
+    ['Monday 15:59 CDT is still Monday', '2026-06-15T20:59:00Z', '2026-06-15'],
+    [
+      'Monday 16:30 CDT, in the break, is Monday',
+      '2026-06-15T21:30:00Z',
+      '2026-06-15',
+    ],
+    ['Monday 17:00 CDT opens Tuesday', '2026-06-15T22:00:00Z', '2026-06-16'],
+    ['Sunday 17:00 CST opens Monday', '2026-11-08T23:00:00Z', '2026-11-09'],
+  ])('%s', (_name, iso, day) => {
+    expect(ctTradingDay(ms(iso))).toBe(day);
+  });
+});
+
+describe('frozenRunsOf', () => {
+  const MIN = 60_000;
+  const at = (minutes: number, price: number) => ({
+    tsMs: ms('2026-06-10T14:00:00Z') + minutes * MIN,
+    stored: { price },
+  });
+
+  it('marks a run that spans more than the freshness gate, and only that run', () => {
+    // 7000 for 20 minutes (5 rows), then 7001 for 15 minutes exactly, then 7002 alone.
+    const rows = [
+      ...[0, 5, 10, 15, 20].map((m) => at(m, 7000)),
+      ...[25, 30, 35, 40].map((m) => at(m, 7001)),
+      at(45, 7002),
+    ];
+    const runs = frozenRunsOf(rows);
+    const first = { startMs: rows[0]!.tsMs, endMs: rows[4]!.tsMs, rows: 5 };
+    expect(runs.slice(0, 5)).toEqual([first, first, first, first, first]);
+    // 15 minutes from the first row to the last is not more than the gate.
+    expect(runs.slice(5)).toEqual([null, null, null, null, null]);
+  });
+
+  it('breaks a run at a different price, and does not rejoin it after one', () => {
+    const rows = [
+      at(0, 7000),
+      at(10, 7000),
+      at(20, 7000),
+      at(25, 7100),
+      at(30, 7000),
+      at(40, 7000),
+    ];
+    const runs = frozenRunsOf(rows);
+    expect(runs.map((r) => r?.rows ?? null)).toEqual([
+      3,
+      3,
+      3,
+      null,
+      null,
+      null,
+    ]);
+  });
+
+  it('handles no rows and one row', () => {
+    expect(frozenRunsOf([])).toEqual([]);
+    expect(frozenRunsOf([at(0, 7000)])).toEqual([null]);
+  });
+});
+
+describe('parseDetectorDays', () => {
+  const entry = (over: Record<string, unknown> = {}) => ({
+    contaminated: [],
+    flagged: ['2026-07-14'],
+    ...over,
+  });
+  const file = (over: Record<string, unknown> = {}): string =>
+    JSON.stringify({
+      RTY: entry(),
+      CL: entry({ flagged: [] }),
+      GC: entry({
+        contaminated: ['2026-09-04'],
+        flagged: ['2026-09-04', '2026-09-11'],
+      }),
+      ZN: entry({ flagged: ['2026-06-25'] }),
+      ...over,
+    });
+
+  it('reads the contaminated and the flagged days of each thin root', () => {
+    const days = parseDetectorDays(file(), 'f.json');
+    expect([...days.keys()].sort()).toEqual(['CL', 'GC', 'RTY', 'ZN']);
+    expect(days.get('RTY')?.contaminated).toEqual(new Set());
+    expect(days.get('RTY')?.flagged).toEqual(new Set(['2026-07-14']));
+    expect(days.get('CL')?.flagged).toEqual(new Set());
+    expect(days.get('GC')?.contaminated.has('2026-09-04')).toBe(true);
+    expect(days.get('GC')?.flagged.has('2026-09-11')).toBe(true);
+  });
+
+  const shape =
+    'must list GC as {"contaminated": [...], "flagged": [...]} of YYYY-MM-DD days';
+  it.each([
+    ['text that is not JSON', 'nope', 'f.json is not JSON'],
+    ['an array', '[]', 'f.json must be an object with a day list per root'],
+    ['null', 'null', 'f.json must be an object with a day list per root'],
+    [
+      'a root that is not thin',
+      file({ ES: entry() }),
+      'f.json lists ES, which is not a thin root (ZN, RTY, CL, GC)',
+    ],
+    [
+      'a thin root left out',
+      JSON.stringify({ RTY: entry(), GC: entry(), ZN: entry() }),
+      'f.json must list CL as {"contaminated": [...], "flagged": [...]} of YYYY-MM-DD days',
+    ],
+    [
+      'a root that is a bare list',
+      file({ GC: ['2026-09-04'] }),
+      `f.json ${shape}`,
+    ],
+    [
+      'a contaminated list that is missing',
+      file({ GC: { flagged: [] } }),
+      `f.json ${shape}`,
+    ],
+    [
+      'a flagged list that is missing',
+      file({ GC: { contaminated: [] } }),
+      `f.json ${shape}`,
+    ],
+    [
+      'a day that is not YYYY-MM-DD',
+      file({ GC: entry({ flagged: ['2026-6-25'] }) }),
+      `f.json ${shape}`,
+    ],
+    [
+      'a day that is not a string',
+      file({ GC: entry({ contaminated: [20260714] }) }),
+      `f.json ${shape}`,
+    ],
+  ])('refuses %s', (_name, text, message) => {
+    expect(() => parseDetectorDays(text, 'f.json')).toThrow(message);
+  });
+});
+
 describe('scope', () => {
+  it('reads snapshot rows up to 2026-10-01, the day after the freshness gate shipped, for the stale-at-write test', () => {
+    expect(STALE_UNTIL_MS).toBe(ms('2026-10-01T00:00:00Z'));
+    expect(STALE_UNTIL_MS).toBeGreaterThan(scopeRanges().snapshots.toMs);
+  });
+
   it("reads bars as far back as the value rule looks, so the first row's look-back is covered", () => {
     expect(BARS_LEAD_MS).toBeGreaterThanOrEqual(VALUE_LOOKBACK_MS);
   });
@@ -949,6 +1113,7 @@ describe('runRecompute guards', () => {
     expectJunkDeletes: null,
     rewriteStaleAtWrite: false,
     expectStaleRewrites: null,
+    detectorDays: null,
     ...over,
   });
 

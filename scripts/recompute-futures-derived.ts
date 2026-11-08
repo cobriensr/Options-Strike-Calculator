@@ -7,7 +7,7 @@
  *   npx tsx scripts/recompute-futures-derived.ts --backup <phase 2 backup.jsonl>   # dry run
  *   npx tsx scripts/recompute-futures-derived.ts --backup <file> --apply --expect-snapshots N --expect-premarket M --expect-fires K
  *   npx tsx scripts/recompute-futures-derived.ts --stores fires    # a dry run of one store, no backup needed
- *   npx tsx scripts/recompute-futures-derived.ts --backup <file> --apply --expect-snapshots N --expect-premarket M --expect-fires K --delete-junk-stale --expect-junk-deletes J --rewrite-stale-at-write --expect-stale-rewrites S
+ *   npx tsx scripts/recompute-futures-derived.ts --backup <file> --apply --expect-snapshots N --expect-premarket M --expect-fires K --delete-junk-stale --expect-junk-deletes J --rewrite-stale-at-write --expect-stale-rewrites S --detector-days <file>
  *
  * The default is a DRY RUN: it reads the database DATABASE_URL points at
  * (production, in .env.local) through read-only transactions, prints the
@@ -24,10 +24,18 @@
  *
  * Stale snapshot rows priced from a bar Phase 2 deleted cannot be recomputed
  * and `price` cannot be blanked. The dry run always lists them; --delete-junk-stale
- * deletes them, off by default, and only the owner decides. The April to June
- * writer also had no freshness gate: it priced ES and NQ rows from the last bar it
- * had while minutes were missing, and they have landed since. --rewrite-stale-at-write
- * rewrites those rows from today's bars (off by default; the thin roots are excluded).
+ * deletes them, off by default, and only the owner decides. The writer also had
+ * no freshness gate until 2026-09-30: it priced from the last bar it had while
+ * minutes were missing, and they have landed since. --rewrite-stale-at-write
+ * rewrites those rows from today's bars (off by default). It covers every ES and NQ
+ * row before 2026-10-01, and the thin roots' rows from the span end (their bars
+ * before it are still month-mixed, D1) except on the days the Phase 1 detector
+ * confirmed contaminated in --detector-days. Without that file the thin roots' rows
+ * after the span end are left too. A row is stale when its price is the close of a
+ * bar older than the freshness gate (found by value, 96 hours back) or when it sits
+ * in a run of consecutive rows with one stored price that spans more than the gate
+ * (the September outage rows, whose last good bar is weeks old); the recompute must
+ * be fresh and differ.
  *
  * Options:
  *   --backup <file>         the Phase 2 backup JSONL (docs/tmp/futures-contract-repair/backup-*.jsonl);
@@ -47,12 +55,20 @@
  *                           first; its own done marker junk.applied). Needs the snapshots store
  *   --expect-junk-deletes J the rows that delete removes in the dry run you approved;
  *                           required with --delete-junk-stale, --apply refuses when it differs
- *   --rewrite-stale-at-write  with --apply, also rewrite the ES and NQ rows whose price is the close of a
- *                           bar older than the 15-minute freshness gate at the row, with a fresh
- *                           recompute and nothing else writing them (their own done marker stale.applied).
- *                           Needs the snapshots store
+ *   --rewrite-stale-at-write  with --apply, also rewrite the rows whose price is the close of a bar older
+ *                           than the 15-minute freshness gate at the row and whose recompute is fresh:
+ *                           every differing field the snapshot step does not write (own done marker
+ *                           stale.applied; its backup lines say step "stale"). Needs the snapshots store
  *   --expect-stale-rewrites S the rows that rewrite changes in the dry run you approved;
  *                           required with --rewrite-stale-at-write, --apply refuses when it differs
+ *   --detector-days <file>  a JSON file {"RTY": {"contaminated": [...], "flagged": [...]}, "CL": {...}, "GC": {...},
+ *                           "ZN": {...}} of the CT trading days the Phase 1 detector found in that root's bars
+ *                           after the span end (docs/tmp/es-contract-month-2026-11-06/b-after-span/): a
+ *                           contaminated day has at least 10 flagged bars and 1% of the day's bars in a run of
+ *                           3 days, a flagged day has any flagged bar. The stale rewrite leaves the root's rows
+ *                           on the contaminated days (the report prints their share, and the stale rows on the
+ *                           flagged days as information). It changes the plan, so a dry run takes it too and
+ *                           --apply must repeat it
  *   --force                 with --apply, redo stores that have a done marker
  *   --env-file <path>       .env.local to load (default: the nearest one up the tree);
  *                           a path that does not exist is an error, never a fallback
