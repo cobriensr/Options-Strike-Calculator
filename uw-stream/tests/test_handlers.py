@@ -581,6 +581,118 @@ async def test_drain_returns_at_its_deadline_even_if_the_flush_will_not_unwind(m
 
 
 @pytest.mark.asyncio
+async def test_a_flush_that_turns_its_cancel_into_an_exception_is_not_counted_lost(monkeypatch):
+    """asyncpg does not always surface a cancel as CancelledError: unwinding a
+    cancelled query, the ROLLBACK on the terminated connection raises
+    InterfaceError. _safe_flush took that for a failed flush, counted the slice
+    lost, and let the abandoned drain go on flushing the later slices, each with
+    its own exception event and lost_rows, on top of the drain's one event for
+    the same rows. A task that is being cancelled must re-raise instead.
+    """
+    import asyncpg
+
+    import bounded
+    import handlers.base as base_mod
+    from handlers.base import BACKLOG_BATCH_MAX, Handler
+    from state import state
+
+    state.handlers.clear()
+    messages: list[dict] = []
+    exceptions: list[BaseException] = []
+    monkeypatch.setattr(base_mod, "capture_message", lambda _msg, **kw: messages.append(kw))
+    monkeypatch.setattr(base_mod, "capture_exception", lambda exc, **_kw: exceptions.append(exc))
+
+    class _H(Handler):
+        def __init__(self) -> None:
+            super().__init__(name="cancel-as-exception-test")
+            self.calls = 0
+
+        def _transform(self, payload: dict) -> tuple | None:
+            return (payload.get("seq"),)
+
+        async def _flush(self, rows: list[tuple]) -> None:
+            self.calls += 1
+            if self.calls == 1:
+                try:
+                    await asyncio.sleep(3600)  # a stalled Neon
+                except asyncio.CancelledError:
+                    await asyncio.sleep(0.01)  # the cancel request's round trip
+                    raise asyncpg.exceptions.InterfaceError("connection is closed") from None
+            raise asyncpg.exceptions.InterfaceError("pool is closing")
+
+    h = _H()
+    h._batch = [(i,) for i in range(3 * BACKLOG_BATCH_MAX)]
+    h._stopped.set()
+    try:
+        assert await h.drain(deadline_s=0.1) == 0
+        if bounded._unwinding:
+            await asyncio.wait(set(bounded._unwinding), timeout=2.0)
+
+        assert h.calls == 1  # the abandoned drain did not go on to slices 2 and 3
+        assert [m["context"]["lost_rows"] for m in messages] == [3 * BACKLOG_BATCH_MAX]
+        assert exceptions == []
+        assert state.handler(h.name).lost_rows == 0  # the rows are counted once, by the drain
+    finally:
+        state.handlers.clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["fails", "succeeds"])
+async def test_a_consumer_busy_deadline_cancels_the_flush_it_reported_as_lost(monkeypatch, outcome):
+    """When drain() gives up on a flush that run() is still inside, it reports
+    that flush's rows as lost. The flush must not run on afterwards: failing
+    0.2 s later it counted the same rows again in lost_rows (and the drop
+    reporter's final pass reported them a second time); succeeding, it wrote
+    rows the Sentry event had called lost.
+    """
+    import handlers.base as base_mod
+    from handlers.base import Handler
+    from state import state
+
+    state.handlers.clear()
+    messages: list[dict] = []
+    monkeypatch.setattr(base_mod, "capture_message", lambda _msg, **kw: messages.append(kw))
+    monkeypatch.setattr(base_mod, "capture_exception", lambda *_a, **_kw: None)
+
+    class _H(Handler):
+        def __init__(self) -> None:
+            super().__init__(name=f"consumer-busy-{outcome}")
+            self.written: list[tuple] = []
+
+        def _transform(self, payload: dict) -> tuple | None:
+            return (payload.get("seq"),)
+
+        async def _flush(self, rows: list[tuple]) -> int:
+            await asyncio.sleep(0.3)  # in flight past the drain deadline
+            if outcome == "fails":
+                raise TimeoutError("command_timeout")
+            self.written.extend(rows)
+            return len(rows)
+
+    h = _H()
+    monkeypatch.setattr(h, "_batch_size", 3)
+    monkeypatch.setattr(h, "_batch_interval", 60.0)
+    run = asyncio.create_task(h.run())
+    try:
+        for seq in range(3):
+            await h.enqueue({"seq": seq})
+        await asyncio.sleep(0.01)  # run() is inside the flush of rows 0-2
+
+        assert await h.drain(deadline_s=0.1) == 0
+        await asyncio.sleep(0.5)  # past the flush's own 0.3 s
+
+        assert run.cancelled()
+        assert [(m["tags"]["stage"], m["context"]["lost_rows"]) for m in messages] == [
+            ("consumer_busy", 3)
+        ]
+        assert state.handler(h.name).lost_rows == 0
+        assert h.written == []
+    finally:
+        await _cancel(run)
+        state.handlers.clear()
+
+
+@pytest.mark.asyncio
 async def test_drain_flush_does_not_retry():
     """The drain's final flush makes ONE attempt. A retry (0.5 s backoff and
     another 30 s command_timeout) would only run past Railway's SIGKILL.

@@ -95,6 +95,9 @@ class Handler(ABC):
         # queue (it is not a row), and whoever dequeues it clears the flag.
         self._drain_stage: str = "idle"
         self._sentinel_queued: bool = False
+        # The task running ``run()``, so a drain that gives up on the consumer's
+        # in-flight flush can cancel it (see ``drain``).
+        self._consumer: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # Producer side — called by the router on every payload.
@@ -164,6 +167,7 @@ class Handler(ABC):
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._batch_interval
         self._stopped.clear()
+        self._consumer = asyncio.current_task()
 
         try:
             while not self._stopping:
@@ -300,6 +304,12 @@ class Handler(ABC):
                 tags={"component": "handler", "channel": self.name, "stage": self._drain_stage},
                 context=context,
             )
+            # In "consumer_busy" run() is still inside the flush whose rows were
+            # just reported lost. Cancel it: left running it would write rows the
+            # event called lost, or fail later and count the same rows again in
+            # lost_rows, which the drop reporter's final pass sends a second time.
+            if self._drain_stage == "consumer_busy" and self._consumer is not None:
+                self._consumer.cancel()
             return 0
 
     async def _drain_inner(self) -> int:
@@ -371,7 +381,9 @@ class Handler(ABC):
         when the subclass returns an int; otherwise it falls back to
         ``len(rows)`` so legacy subclasses without a return value are
         unaffected. A flush that raises adds ``len(rows)`` to
-        ``lost_rows``: those rows are not retried after this.
+        ``lost_rows``: those rows are not retried after this. The exception is
+        a task that is being cancelled: whatever the flush raised then is the
+        cancel unwinding, so it is re-raised and nothing is counted.
         """
         try:
             # Inside the try so a hypothetical state.handler() failure
@@ -383,6 +395,14 @@ class Handler(ABC):
             written = inserted if isinstance(inserted, int) else len(rows)
             state.handler(self.name).write_count += written
         except Exception as exc:
+            # A cancel can reach us as an ordinary exception: unwinding a
+            # cancelled query, asyncpg raises InterfaceError when the ROLLBACK
+            # cannot run on the terminated connection. That is not a failed
+            # flush. Re-raise so a drain abandoned at its deadline stops here
+            # instead of flushing the next slice, and so the rows are not counted
+            # lost a second time (the deadline event already reported them).
+            if (task := asyncio.current_task()) is not None and task.cancelling():
+                raise
             state.handler(self.name).lost_rows += len(rows)
             capture_exception(
                 exc,
