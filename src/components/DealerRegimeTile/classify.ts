@@ -36,7 +36,13 @@ export interface DealerRegimeInput {
   zeroGamma: number | null;
   confidence: number | null;
   netGammaAtSpot: number | null;
-  /** ISO timestamp of the underlying row (when it was written). */
+  /**
+   * ISO timestamp of the underlying row: the END of the 5-minute bucket of the
+   * strike ladder it was computed from (compute-zero-gamma). The cron runs
+   * about 1 minute before that moment, so the newest row's `ts` can be a
+   * minute AHEAD of the clock; `now - ts` is then negative, which the
+   * staleness gate treats as fresh.
+   */
   ts: string;
 }
 

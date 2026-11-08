@@ -101,6 +101,15 @@ describe('classify — staleness gate', () => {
     expect(classify(input({ ts: fresh }), { now: NOW })).toBe('long-γ');
   });
 
+  it('treats a ts slightly ahead of the clock as fresh (the newest row is labelled with its bucket end)', () => {
+    // compute-zero-gamma runs at :04 and labels the row :05: a minute ahead.
+    const ahead = new Date(NOW + 60 * 1000).toISOString();
+    expect(classify(input({ ts: ahead }), { now: NOW })).toBe('long-γ');
+    expect(
+      classifyUncertainReason(input({ ts: ahead }), { now: NOW }),
+    ).toBeNull();
+  });
+
   it('returns uncertain when ts is malformed', () => {
     expect(classify(input({ ts: 'not-a-date' }), { now: NOW })).toBe(
       'uncertain',
