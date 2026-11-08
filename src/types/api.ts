@@ -11,6 +11,13 @@ export interface QuoteSlice {
   readonly prevClose: number;
   readonly change: number;
   readonly changePct: number;
+  /**
+   * Schwab `quote.tradeTime` in epoch milliseconds: when the quote last
+   * printed, unlike the response's `asOf`, which is the server's clock.
+   * `null` when Schwab omitted it or sent something unusable. Optional so
+   * hand-built fixtures keep compiling.
+   */
+  readonly quotedAt?: number | null;
 }
 
 export interface QuotesResponse {

@@ -35,7 +35,7 @@ function makeSchwabQuote(overrides: Partial<Record<string, number>> = {}) {
       closePrice: overrides.closePrice ?? 499,
       netChange: overrides.netChange ?? 1.5,
       netPercentChange: overrides.netPercentChange ?? 0.3,
-      tradeTime: Date.now(),
+      tradeTime: overrides.tradeTime ?? Date.now(),
     },
   };
 }
@@ -106,6 +106,83 @@ describe('GET /api/quotes', () => {
     expect(json.spy).not.toBeNull();
     expect(json.spx).toBeNull();
     expect(json.vix).toBeNull();
+  });
+
+  describe('quotedAt (Schwab tradeTime, epoch ms)', () => {
+    // 2026-11-06 21:37:09.801Z, the $SPX tradeTime a live probe returned.
+    const SPX_TRADE_TIME = 1794001029801;
+    const VIX_TRADE_TIME = 1793999701329;
+
+    async function getQuotes(spxQuote: unknown) {
+      vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+      vi.mocked(isMarketOpen).mockReturnValue(true);
+      vi.mocked(schwabFetch).mockResolvedValue({
+        ok: true,
+        data: {
+          SPY: makeSchwabQuote({ lastPrice: 550 }),
+          $SPX: spxQuote,
+          $VIX: makeSchwabQuote({ lastPrice: 18, tradeTime: VIX_TRADE_TIME }),
+          $VIX1D: makeSchwabQuote({ tradeTime: VIX_TRADE_TIME }),
+          $VIX9D: makeSchwabQuote({ tradeTime: VIX_TRADE_TIME }),
+          $VVIX: makeSchwabQuote({ tradeTime: VIX_TRADE_TIME }),
+        },
+      } as never);
+      const res = mockResponse();
+      await handler(mockRequest(), res);
+      expect(res._status).toBe(200);
+      return res._json as Record<
+        string,
+        { price: number; quotedAt: number | null }
+      >;
+    }
+
+    it('copies tradeTime to quotedAt on every slice, price fields unchanged', async () => {
+      const json = await getQuotes(
+        makeSchwabQuote({ lastPrice: 7416, tradeTime: SPX_TRADE_TIME }),
+      );
+      expect(json.spx).toEqual({
+        price: 7416,
+        open: 498,
+        high: 502,
+        low: 497,
+        prevClose: 499,
+        change: 1.5,
+        changePct: 0.3,
+        quotedAt: SPX_TRADE_TIME,
+      });
+      expect(json.vix?.quotedAt).toBe(VIX_TRADE_TIME);
+      expect(json.vix1d?.quotedAt).toBe(VIX_TRADE_TIME);
+      expect(json.vix9d?.quotedAt).toBe(VIX_TRADE_TIME);
+      expect(json.vvix?.quotedAt).toBe(VIX_TRADE_TIME);
+    });
+
+    function quoteWith(tradeTime: unknown) {
+      const q = makeSchwabQuote();
+      return { quote: { ...q.quote, tradeTime } };
+    }
+
+    it('is null when Schwab omits tradeTime', async () => {
+      const quote: Partial<ReturnType<typeof makeSchwabQuote>['quote']> = {
+        ...makeSchwabQuote().quote,
+      };
+      delete quote.tradeTime;
+      const json = await getQuotes({ quote });
+      expect(json.spx?.quotedAt).toBeNull();
+    });
+
+    it.each([
+      ['a string', '1794001029801'],
+      ['zero', 0],
+      ['a negative number', -1],
+      ['NaN', Number.NaN],
+      ['Infinity', Number.POSITIVE_INFINITY],
+      ['null', null],
+    ])('is null when tradeTime is %s', async (_label, tradeTime) => {
+      const json = await getQuotes(quoteWith(tradeTime));
+      expect(json.spx?.quotedAt).toBeNull();
+      // A bad time never drops the quote itself.
+      expect(json.spx?.price).toBe(500);
+    });
   });
 
   it('returns 403 when bot detected (via guard)', async () => {

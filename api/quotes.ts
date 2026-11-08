@@ -9,14 +9,18 @@
  *
  * Response:
  * {
- *   spy:    { price, open, high, low, prevClose, change, changePct },
- *   spx:    { price, open, high, low, prevClose, change, changePct },
- *   vix:    { price, open, high, low, prevClose, change, changePct },
- *   vix1d:  { price, open, high, low, prevClose, change, changePct },
- *   vix9d:  { price, open, high, low, prevClose, change, changePct },
+ *   spy:    { price, open, high, low, prevClose, change, changePct, quotedAt },
+ *   spx:    { price, open, high, low, prevClose, change, changePct, quotedAt },
+ *   vix:    { price, open, high, low, prevClose, change, changePct, quotedAt },
+ *   vix1d:  { price, open, high, low, prevClose, change, changePct, quotedAt },
+ *   vix9d:  { price, open, high, low, prevClose, change, changePct, quotedAt },
+ *   vvix:   { price, open, high, low, prevClose, change, changePct, quotedAt },
  *   marketOpen: boolean,
- *   asOf:   ISO string
+ *   asOf:   ISO string (the server's clock, not the quote's)
  * }
+ *
+ * `quotedAt` is Schwab's `tradeTime` (epoch ms) or null. It is the only
+ * clock that shows a stale quote: `asOf` is stamped on every response.
  */
 
 import { Sentry, metrics } from './_lib/sentry.js';
@@ -55,6 +59,7 @@ interface QuoteSlice {
   prevClose: number;
   change: number;
   changePct: number;
+  quotedAt: number | null;
 }
 
 // ============================================================
@@ -62,6 +67,19 @@ interface QuoteSlice {
 // ============================================================
 
 const SYMBOLS = 'SPY,$SPX,$VIX,$VIX1D,$VIX9D,$VVIX';
+
+/**
+ * Schwab's `tradeTime` is epoch milliseconds (a JSON number, 13 digits;
+ * probed on $SPX and $VIX 2026-11-08). Anything else is not a time we can
+ * compare to a slot, so it becomes null rather than a guess.
+ */
+function toQuotedAt(tradeTime: unknown): number | null {
+  return typeof tradeTime === 'number' &&
+    Number.isFinite(tradeTime) &&
+    tradeTime > 0
+    ? tradeTime
+    : null;
+}
 
 function toSlice(q: SchwabQuote): QuoteSlice {
   return {
@@ -72,6 +90,7 @@ function toSlice(q: SchwabQuote): QuoteSlice {
     prevClose: q.quote.closePrice,
     change: q.quote.netChange,
     changePct: q.quote.netPercentChange,
+    quotedAt: toQuotedAt(q.quote.tradeTime),
   };
 }
 
