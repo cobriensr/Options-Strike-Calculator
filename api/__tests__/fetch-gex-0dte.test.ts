@@ -86,14 +86,51 @@ function makeStrikeRow(overrides = {}) {
   };
 }
 
-function stubFetch(data: unknown[] = []) {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ data }),
-    }),
-  );
+/** One /spot-exposures minute row: the live SPX spot. */
+function makeSpotRow(overrides = {}) {
+  return { price: '5800.5', time: '2026-03-24T14:29:00Z', ...overrides };
+}
+
+const uwOk = (data: unknown[]) => ({ ok: true, json: async () => ({ data }) });
+const uwError = (status: number) => ({
+  ok: false,
+  status,
+  text: async () => 'upstream error',
+});
+
+type Answer = unknown[] | ReturnType<typeof uwError>;
+
+/**
+ * Route the global fetch by UW path: `data` answers
+ * /spot-exposures/expiry-strike, `spot` answers /spot-exposures (default:
+ * one live row at 5800.5). Either may be a ready-made error response.
+ */
+function stubFetch(
+  data: Answer = [],
+  spot: Answer = [makeSpotRow()],
+): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn(async (input: string) => {
+    const url = new URL(input);
+    const answer = url.pathname.endsWith('/spot-exposures/expiry-strike')
+      ? data
+      : url.pathname.endsWith('/spot-exposures')
+        ? spot
+        : undefined;
+    if (answer === undefined) throw new Error(`unexpected UW url ${input}`);
+    return Array.isArray(answer) ? uwOk(answer) : answer;
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
+const callUrls = (fetchMock: ReturnType<typeof vi.fn>) =>
+  (fetchMock.mock.calls as unknown[][]).map((c) => new URL(String(c[0])));
+
+function authedReq() {
+  return mockRequest({
+    method: 'GET',
+    headers: { authorization: 'Bearer test-secret' },
+  });
 }
 
 describe('fetch-gex-0dte handler', () => {
@@ -217,28 +254,6 @@ describe('fetch-gex-0dte handler', () => {
     expect(mockTransaction).not.toHaveBeenCalled();
   });
 
-  it('returns correct response for empty API data', async () => {
-    process.env.UW_API_KEY = 'uwkey';
-    stubFetch([]);
-
-    const res = mockResponse();
-    await handler(
-      mockRequest({
-        method: 'GET',
-        headers: { authorization: 'Bearer test-secret' },
-      }),
-      res,
-    );
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      stored: false,
-      reason: 'No 0DTE strike data',
-    });
-    expect(mockQuery).not.toHaveBeenCalled();
-    expect(mockTransaction).not.toHaveBeenCalled();
-  });
-
   it('counts skipped duplicates correctly', async () => {
     process.env.UW_API_KEY = 'uwkey';
     // Simulate ON CONFLICT DO NOTHING hitting every row: RETURNING id yields []
@@ -293,75 +308,314 @@ describe('fetch-gex-0dte handler', () => {
 
   // ── UW stale-cache workaround (2026-04-23) ────────────────
 
-  it('runs spot preflight and bounds main call with min_strike/max_strike', async () => {
+  it('reads the spot from the per-minute series and bounds the main call with min_strike/max_strike', async () => {
     // UW's /spot-exposures/expiry-strike serves stale cached data unless
-    // the request carries a narrow strike window. The cron does a preflight
-    // to /spot-exposures/strike first, then passes ±ATM_RANGE around spot
-    // as min_strike/max_strike on the main call to hit UW's live path.
+    // the request carries a narrow strike window. The cron reads the spot
+    // from /spot-exposures first, then passes ±ATM_RANGE around it as
+    // min_strike/max_strike on the main call to hit UW's live path.
     process.env.UW_API_KEY = 'uwkey';
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ data: [makeStrikeRow()] }),
-    });
-    vi.stubGlobal('fetch', fetchMock);
+    const fetchMock = stubFetch([makeStrikeRow()]);
 
     const res = mockResponse();
-    await handler(
-      mockRequest({
-        method: 'GET',
-        headers: { authorization: 'Bearer test-secret' },
-      }),
-      res,
-    );
+    await handler(authedReq(), res);
 
     expect(res._status).toBe(200);
-    // Two fetches: preflight for spot, then main call for expiry-strike
+    // Two fetches: spot, then the main call for expiry-strike
+    const [spotUrl, mainUrl] = callUrls(fetchMock);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    const preflightUrl = String(fetchMock.mock.calls[0]![0]);
-    const mainUrl = String(fetchMock.mock.calls[1]![0]);
-    expect(preflightUrl).toContain('/spot-exposures/strike');
-    expect(preflightUrl).not.toContain('expiry-strike');
-    expect(mainUrl).toContain('/spot-exposures/expiry-strike');
-    // price=5800.5, ATM_RANGE=200 → min=floor(5600.5)=5600, max=ceil(6000.5)=6001
-    expect(mainUrl).toContain('min_strike=5600');
-    expect(mainUrl).toContain('max_strike=6001');
+    expect(spotUrl!.pathname).toBe('/api/stock/SPX/spot-exposures');
+    expect(mainUrl!.pathname).toBe(
+      '/api/stock/SPX/spot-exposures/expiry-strike',
+    );
+    // spot=5800.5, ATM_RANGE=200 → min=floor(5600.5)=5600, max=ceil(6000.5)=6001
+    expect(mainUrl!.searchParams.get('min_strike')).toBe('5600');
+    expect(mainUrl!.searchParams.get('max_strike')).toBe('6001');
+    expect(mainUrl!.searchParams.get('expirations[]')).toBe('2026-03-24');
   });
 
-  it('falls back to unbounded main call when the preflight returns no price', async () => {
-    // Preflight failure mode: UW returns empty data on /spot-exposures/strike.
-    // We want the cron to still attempt the main fetch (without min/max) so
-    // it mirrors old behavior rather than hard-failing. If the workaround is
-    // ever redundant (UW fixes the backend), this path is what runs.
-    process.env.UW_API_KEY = 'uwkey';
-    const fetchMock = vi
-      .fn()
-      // Preflight: empty data, no price
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [] }) })
-      // Main call: normal strike row
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ data: [makeStrikeRow()] }),
+  // ── The spot is loud (it used to fail open into an unbounded request) ──
+
+  it.each([
+    ['no rows', [] as unknown[]],
+    ['a NaN price', [makeSpotRow({ price: 'not-a-number' })]],
+    ['a zero price', [makeSpotRow({ price: '0' })]],
+  ])(
+    'is an error run with a Sentry error and a metric, and asks for no strikes, when the spot has %s',
+    async (_n, spot) => {
+      process.env.UW_API_KEY = 'uwkey';
+      const fetchMock = stubFetch([makeStrikeRow()], spot);
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'error',
+        stored: false,
+        reason: 'spot_null',
       });
-    vi.stubGlobal('fetch', fetchMock);
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        expect.stringContaining('no usable SPX spot'),
+        'error',
+      );
+      expect(metrics.increment).toHaveBeenCalledWith(
+        'fetch_gex_0dte.spot_null',
+      );
+      // No unbounded fallback: the strike endpoint is never called.
+      expect(callUrls(fetchMock).map((u) => u.pathname)).toEqual([
+        '/api/stock/SPX/spot-exposures',
+      ]);
+      expect(mockQuery).not.toHaveBeenCalled();
+    },
+  );
+
+  it('is a 500 with the exception captured, and no strike request, when the spot request is rejected', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // 422 is not retried.
+    const fetchMock = stubFetch([makeStrikeRow()], uwError(422));
 
     const res = mockResponse();
-    await handler(
-      mockRequest({
-        method: 'GET',
-        headers: { authorization: 'Bearer test-secret' },
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({ error: 'Internal error' });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining('UW API 422'),
       }),
-      res,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  // ── One rule for every ladder that is not stored (R4) ─────
+
+  const YESTERDAY = '2026-03-23T19:55:00Z';
+  const BEFORE_0940_ET = new Date('2026-03-24T13:39:59.000Z');
+  const AT_0940_ET = new Date('2026-03-24T13:40:00.000Z');
+  const ZERO_GAMMA = { call_gamma_oi: '0', put_gamma_oi: '0' };
+
+  // Each kind, the UW answers that produce it, and the metric it counts.
+  const SKIP_KINDS: Array<{
+    kind: string;
+    metric: string;
+    strikes: unknown[];
+    spot?: unknown[];
+  }> = [
+    {
+      kind: 'stale',
+      metric: 'stale_cache_skip',
+      strikes: [makeStrikeRow({ time: YESTERDAY })],
+    },
+    {
+      kind: 'stale_spot',
+      metric: 'stale_spot_skip',
+      strikes: [makeStrikeRow()],
+      spot: [makeSpotRow({ time: YESTERDAY })],
+    },
+    {
+      kind: 'all_zero',
+      metric: 'zero_snapshot_skip',
+      strikes: [makeStrikeRow(ZERO_GAMMA), makeStrikeRow(ZERO_GAMMA)],
+    },
+    { kind: 'empty', metric: 'empty_ladder_skip', strikes: [] },
+    {
+      kind: 'outside_window',
+      metric: 'outside_window_skip',
+      strikes: [makeStrikeRow({ strike: '4000' })],
+    },
+  ];
+
+  it.each(SKIP_KINDS)(
+    '$kind: stores nothing and reports skipped, never success, with a warning and the $metric metric',
+    async ({ kind, metric, strikes, spot }) => {
+      process.env.UW_API_KEY = 'uwkey';
+      stubFetch(strikes, spot);
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'skipped',
+        stored: false,
+        reason: kind,
+      });
+      expect(res._json).not.toMatchObject({ success: true });
+      expect(mockQuery).not.toHaveBeenCalled();
+      expect(mockLoadSnapshotHistory).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ kind, ticker: 'SPX' }),
+        expect.stringContaining('skipping store'),
+      );
+      expect(metrics.increment).toHaveBeenCalledWith(
+        `fetch_gex_0dte.${metric}`,
+      );
+    },
+  );
+
+  it.each(SKIP_KINDS)(
+    '$kind: sends a Sentry error naming the kind from 09:40 ET',
+    async ({ kind, strikes, spot }) => {
+      process.env.UW_API_KEY = 'uwkey';
+      vi.setSystemTime(AT_0940_ET);
+      stubFetch(strikes, spot);
+
+      await handler(authedReq(), mockResponse());
+
+      expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        expect.stringContaining(`fetch-gex-0dte: ${kind} ladder for SPX`),
+        'error',
+      );
+    },
+  );
+
+  it.each(SKIP_KINDS)(
+    '$kind: stays quiet in Sentry before 09:40 ET (the rollover), still warns and counts',
+    async ({ kind, metric, strikes, spot }) => {
+      process.env.UW_API_KEY = 'uwkey';
+      vi.setSystemTime(BEFORE_0940_ET);
+      stubFetch(strikes, spot);
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._json).toMatchObject({ status: 'skipped', reason: kind });
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalled();
+      expect(metrics.increment).toHaveBeenCalledWith(
+        `fetch_gex_0dte.${metric}`,
+      );
+    },
+  );
+
+  it('stale: names the data ET day and its time (the F5 replay)', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // The 09:28 ET poll gets Monday 03-23 15:55 ET.
+    stubFetch([makeStrikeRow({ time: YESTERDAY })]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._json).toMatchObject({
+      status: 'skipped',
+      reason: 'stale',
+      dataEtDate: '2026-03-23',
+      snapshotTime: '2026-03-23T19:55:00.000Z',
+    });
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dataEtDate: '2026-03-23',
+        today: '2026-03-24',
+      }),
+      expect.stringContaining('stale UW cache'),
+    );
+  });
+
+  it('stale_spot: asks for no ladder', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    const fetchMock = stubFetch(
+      [makeStrikeRow()],
+      [makeSpotRow({ time: YESTERDAY })],
     );
 
-    expect(res._status).toBe(200);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const mainUrl = String(fetchMock.mock.calls[1]![0]);
-    expect(mainUrl).toContain('/spot-exposures/expiry-strike');
-    expect(mainUrl).not.toContain('min_strike');
-    expect(mainUrl).not.toContain('max_strike');
-    // Main call still produces a stored row
-    expect(res._json).toMatchObject({ success: true, stored: 1 });
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._json).toMatchObject({
+      reason: 'stale_spot',
+      spotTime: YESTERDAY,
+      dataEtDate: '2026-03-23',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('judges staleness on the ET day, not the CT day: a ladder stamped 00:30 ET today is today', async () => {
+    // 2026-03-24 04:30Z = 00:30 EDT on the 24th = 23:30 CDT on the 23rd.
+    // The old wall-clock CT-date check called it stale; the ET day (the day
+    // the row is stored under) says it is today.
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch([makeStrikeRow({ time: '2026-03-24T04:30:00Z' })]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._json).toMatchObject({ success: true, stored: 1 });
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('keys the INSERT on the newest UW row time, not the run time', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch([
+      makeStrikeRow({ strike: '5800', time: '2026-03-24T14:21:00Z' }),
+      makeStrikeRow({ strike: '5805', time: '2026-03-24T14:34:00Z' }),
+    ]);
+
+    await handler(authedReq(), mockResponse());
+
+    const [, params] = mockQuery.mock.calls[0]!;
+    const p = params as unknown[];
+    // Both rows share the newest UW time (a snapshot has one timestamp), never
+    // MARKET_TIME (14:00:00Z, the run time).
+    expect(p[1]).toBe('2026-03-24T14:34:00.000Z');
+    expect(p[22 + 1]).toBe('2026-03-24T14:34:00.000Z');
+  });
+
+  it('stores a ladder with at least one in-range strike carrying gamma', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch([
+      makeStrikeRow({ strike: '5795', ...ZERO_GAMMA }),
+      makeStrikeRow({ strike: '5800' }),
+    ]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._json).toMatchObject({ success: true, stored: 2 });
+  });
+
+  it('is a 500 naming the payload when no strike row has a parseable time', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch([makeStrikeRow({ time: 'garbage' })]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(500);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining('parseable time'),
+      }),
+    );
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it.each(['spot', 'strike'] as const)(
+    'is a 500 with the parse error captured when UW answers 2xx but the %s body is not JSON',
+    async (which) => {
+      process.env.UW_API_KEY = 'uwkey';
+      const parseError = new SyntaxError('Unexpected token < in JSON');
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: string) => {
+          const isStrike = new URL(input).pathname.endsWith('/expiry-strike');
+          if ((which === 'strike') === isStrike) {
+            return { ok: true, json: () => Promise.reject(parseError) };
+          }
+          return uwOk(isStrike ? [makeStrikeRow()] : [makeSpotRow()]);
+        }),
+      );
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(500);
+      expect(res._json).toMatchObject({ error: 'Internal error' });
+      expect(Sentry.captureException).toHaveBeenCalledWith(parseError);
+      expect(mockQuery).not.toHaveBeenCalled();
+    },
+  );
 
   // ── Error handling ────────────────────────────────────────
 
@@ -504,7 +758,7 @@ describe('fetch-gex-0dte handler', () => {
     );
   });
 
-  it('does NOT issue an INSERT when filtered rows are empty', async () => {
+  it('does NOT issue an INSERT when every strike is outside the window, and is skipped, not a success', async () => {
     process.env.UW_API_KEY = 'uwkey';
     // All strikes far outside ±200 window from ATM
     const rows = [
@@ -514,16 +768,16 @@ describe('fetch-gex-0dte handler', () => {
     stubFetch(rows);
 
     const res = mockResponse();
-    await handler(
-      mockRequest({
-        method: 'GET',
-        headers: { authorization: 'Bearer test-secret' },
-      }),
-      res,
-    );
+    await handler(authedReq(), res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({ success: true, stored: 0, skipped: 0 });
+    expect(res._json).toMatchObject({
+      status: 'skipped',
+      stored: false,
+      reason: 'outside_window',
+      rows: 2,
+    });
+    expect(res._json).not.toMatchObject({ success: true });
     expect(mockQuery).not.toHaveBeenCalled();
     expect(mockTransaction).not.toHaveBeenCalled();
   });

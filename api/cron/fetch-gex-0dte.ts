@@ -15,16 +15,31 @@
  * ON CONFLICT DO NOTHING protects against duplicate writes if UW returns
  * the same snapshot timestamp on consecutive fetches.
  *
- * Total API calls per invocation: 2 (spot-price preflight + 0DTE strikes)
+ * Total API calls per invocation: 2 (spot + 0DTE strikes)
  *
  * UW workaround (2026-04-23, "spot greeks delayed thread"): the main
  * /spot-exposures/expiry-strike endpoint serves stale cached data unless
- * the request carries a narrow min_strike/max_strike window. The preflight
- * fetches current spot from /spot-exposures/strike (always-live), and the
- * main call bounds the request to ±ATM_RANGE to route through UW's live
- * path. If the preflight fails we fall back to the unbounded call — that
- * preserves old behavior if UW fixes the backend and makes the workaround
- * redundant.
+ * the request carries a narrow min_strike/max_strike window, so the main
+ * call is bounded to spot ± ATM_RANGE to route through UW's live path.
+ *
+ * Spot, the window and what is not stored (docs/superpowers/specs/
+ * live-data-integrity-2026-11-06.md, P0.4; the helpers are P0.3's):
+ *   - Spot is fetchUwSpot (the per-minute /spot-exposures series). It used to
+ *     be the first strike row of /spot-exposures/strike?limit=1, and a spot
+ *     that failed to load fell back to an UNBOUNDED request, i.e. the frozen
+ *     cache. Now no usable spot is a Sentry error, a metric and an `error`
+ *     run, and no strike request is made. A spot row from an earlier ET day
+ *     is skipped (`stale_spot`).
+ *   - The ladder goes through `judgeLadder`: one rule for every ladder that
+ *     is not stored (api/_lib/ladder-skip.ts): `stale` (newest row from an
+ *     earlier ET day; this was a wall-clock CT-date check, 099171ab, and is
+ *     now ET like the other strike crons), `all_zero` (F7, no gamma OI on any
+ *     in-range strike), `empty` and `outside_window`. Each logs a warning,
+ *     counts a metric, reports `skipped`; from 09:40 ET each is also a Sentry
+ *     error.
+ *   - `timestamp` is UW's own row time (the newest row's `time`), not the run
+ *     time, so ON CONFLICT (date, timestamp, strike) DO NOTHING keys each
+ *     snapshot by its source.
  *
  * Environment: UW_API_KEY, CRON_SECRET
  */
@@ -47,6 +62,15 @@ import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
+import { getETDateStr } from '../../src/utils/timezone.js';
+import { reportLadderSkip } from '../_lib/ladder-skip.js';
+import {
+  isBeforeEtDay,
+  judgeLadder,
+  strikeWindow,
+  type LadderSkipKind,
+} from '../_lib/strike-ladder.js';
+import { fetchUwSpot } from '../_lib/uw-spot.js';
 
 // Snapshot window required for multi-horizon feature extraction: the
 // 60-minute horizon needs 60 prior snapshots plus the current one.
@@ -80,51 +104,25 @@ interface StrikeRow {
   put_vanna_vol: string;
 }
 
-// ── Fetch helpers ───────────────────────────────────────────
+// ── Fetch helper ────────────────────────────────────────────
 
 /**
- * Preflight: fetch the current SPX spot price from UW's always-live
- * /spot-exposures/strike endpoint so the main call can bound its
- * min/max_strike window and bypass the frozen cache on
- * /spot-exposures/expiry-strike. Returns null on any failure so the
- * caller can fall back to the unbounded request (old behavior).
- * Deliberately not wrapped in withRetry — the main call has its own
- * retry and failure semantics; chaining both would double worst-case
- * latency on transient errors.
+ * The 0DTE ladder, always bounded to spot ± ATM_RANGE: omitting
+ * min/max_strike returns UW's frozen pre-market cache. See the file-level
+ * JSDoc for the full story. There is no unbounded fallback.
  */
-async function fetchSpotPrice(apiKey: string): Promise<number | null> {
-  try {
-    const rows = await uwFetch<{ price: string }>(
-      apiKey,
-      '/stock/SPX/spot-exposures/strike?limit=1',
-    );
-    const raw = rows[0]?.price;
-    if (raw === undefined) return null;
-    const price = Number.parseFloat(raw);
-    return Number.isFinite(price) ? price : null;
-  } catch (err) {
-    logger.warn({ err }, 'fetch-gex-0dte: spot preflight failed');
-    return null;
-  }
-}
-
 async function fetchStrike0dte(
   apiKey: string,
   expiry: string,
-  spotPrice: number | null,
+  spotPrice: number,
 ): Promise<StrikeRow[]> {
+  const { minStrike, maxStrike } = strikeWindow(spotPrice, ATM_RANGE);
   const params = new URLSearchParams({
     'expirations[]': expiry,
+    min_strike: String(minStrike),
+    max_strike: String(maxStrike),
     limit: '500',
   });
-
-  // UW workaround: narrow min/max_strike routes this through their
-  // live path; omitting it returns a frozen pre-market cache. See the
-  // file-level JSDoc for the full story.
-  if (spotPrice !== null) {
-    params.set('min_strike', String(Math.floor(spotPrice - ATM_RANGE)));
-    params.set('max_strike', String(Math.ceil(spotPrice + ATM_RANGE)));
-  }
 
   return uwFetch<StrikeRow>(
     apiKey,
@@ -134,25 +132,16 @@ async function fetchStrike0dte(
 
 // ── Store helper ────────────────────────────────────────────
 
+/**
+ * Insert a ladder `judgeLadder` approved: the in-range rows, at UW's newest
+ * row time (no rounding — minute precision).
+ */
 async function storeStrikes(
-  rows: StrikeRow[],
+  filtered: StrikeRow[],
   today: string,
+  snapshotTime: string,
 ): Promise<{ stored: number; skipped: number }> {
-  if (rows.length === 0) return { stored: 0, skipped: 0 };
-
-  const price = Number.parseFloat(rows[0]!.price);
-  const minStrike = price - ATM_RANGE;
-  const maxStrike = price + ATM_RANGE;
-
-  const filtered = rows.filter((r) => {
-    const s = Number.parseFloat(r.strike);
-    return s >= minStrike && s <= maxStrike;
-  });
-
-  if (filtered.length === 0) return { stored: 0, skipped: 0 };
-
-  // Use original timestamp (no rounding — minute precision)
-  const timestamp = new Date(rows[0]!.time).toISOString();
+  const timestamp = snapshotTime;
 
   // Dedupe by strike (last-write-wins). The conflict target is
   // (date, timestamp, strike) but date and timestamp are constants
@@ -258,52 +247,88 @@ export default withCronInstrumentation(
     const { apiKey, today, startTimeMs } = ctx;
     await cronJitter();
 
-    const spotPrice = await fetchSpotPrice(apiKey);
+    /**
+     * A ladder that is not stored (api/_lib/ladder-skip.ts): a warning, a
+     * metric, a Sentry error from 09:40 ET, and a run that is `skipped`,
+     * never a success.
+     */
+    const skipRun = (
+      kind: LadderSkipKind,
+      detail: Record<string, unknown> = {},
+    ): CronResult => {
+      reportLadderSkip({
+        job: 'fetch-gex-0dte',
+        kind,
+        ticker: 'SPX',
+        expiry: today,
+        detail: { today, ...detail },
+      });
+      return {
+        status: 'skipped',
+        message: `ladder not stored: ${kind}`,
+        metadata: { stored: false, reason: kind, ...detail },
+      };
+    };
+
+    // Spot first, from the per-minute series. No usable spot is an `error`
+    // run with no strike request: the window cannot be placed, and an
+    // unbounded request is the frozen cache.
+    const spot = await withRetry(() => fetchUwSpot(apiKey, 'SPX'));
+    if (spot === null) {
+      const message =
+        'fetch-gex-0dte: no usable SPX spot from UW /spot-exposures, nothing stored';
+      metrics.increment('fetch_gex_0dte.spot_null');
+      Sentry.captureMessage(message, 'error');
+      logger.error({ date: today }, message);
+      return {
+        status: 'error',
+        message,
+        metadata: { stored: false, reason: 'spot_null' },
+      };
+    }
+    // A spot row from an earlier ET day would center the window, and price
+    // the filter, on yesterday's level.
+    if (isBeforeEtDay(spot.time, today)) {
+      return skipRun('stale_spot', {
+        spotTime: spot.time,
+        dataEtDate: getETDateStr(new Date(spot.time)),
+      });
+    }
+
     const rows = await withRetry(() =>
-      fetchStrike0dte(apiKey, today, spotPrice),
+      fetchStrike0dte(apiKey, today, spot.price),
     );
 
-    if (rows.length === 0) {
-      return {
-        status: 'skipped',
-        message: 'No 0DTE strike data',
-        metadata: { stored: false, reason: 'No 0DTE strike data' },
-      };
+    const verdict = judgeLadder(rows, {
+      spot: spot.price,
+      range: ATM_RANGE,
+      day: today,
+    });
+    if (verdict.kind === 'malformed') {
+      throw new Error('fetch-gex-0dte: no strike row carries a parseable time');
     }
-
-    const price = Number.parseFloat(rows[0]!.price);
-
-    // Stale-cache guard (root cause of mis-dated "stray" rows): UW occasionally
-    // serves a FROZEN prior-session cache (see file JSDoc). Storing it under the
-    // current wall-clock `date` is what creates a prior-evening snapshot
-    // mis-stamped into the next trading day. Compare the data's OWN CT calendar
-    // date to today's CT date; if it is strictly older, the payload is stale —
-    // skip the write rather than poison `gex_strike_0dte`.
-    const ctDate = (d: Date) =>
-      new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'America/Chicago',
-      }).format(d); // 'YYYY-MM-DD' (lexicographic == chronological order)
-    const dataCtDate = ctDate(new Date(rows[0]!.time));
-    const nowCtDate = ctDate(new Date());
-    if (dataCtDate < nowCtDate) {
-      logger.warn(
-        { dataCtDate, nowCtDate, today, rowTime: rows[0]!.time },
-        'fetch-gex-0dte: stale UW cache (data CT-date older than today) — skipping store',
+    if (verdict.kind === 'stale') {
+      // Stale-cache guard (root cause of mis-dated "stray" rows, 099171ab):
+      // UW occasionally serves a FROZEN prior-session cache (see file
+      // JSDoc). Stored under the current `date` it is a prior-evening
+      // snapshot mis-stamped into the next trading day. Judged on the ET day
+      // the row would be stored under (was a wall-clock CT date).
+      return skipRun('stale', {
+        dataEtDate: verdict.dataEtDate,
+        snapshotTime: verdict.snapshotTime,
+      });
+    }
+    if (verdict.kind !== 'store') {
+      return skipRun(
+        verdict.kind,
+        verdict.kind === 'empty' ? {} : { rows: verdict.total },
       );
-      metrics.increment('fetch_gex_0dte.stale_cache_skip');
-      return {
-        status: 'skipped',
-        message: 'stale UW cache (prior CT day)',
-        metadata: {
-          stored: false,
-          reason: 'stale_cache',
-          dataCtDate,
-          nowCtDate,
-        },
-      };
     }
 
-    const result = await withRetry(() => storeStrikes(rows, today));
+    const price = spot.price;
+    const result = await withRetry(() =>
+      storeStrikes(verdict.rows, today, verdict.snapshotTime),
+    );
 
     logger.info(
       {
@@ -347,7 +372,7 @@ export default withCronInstrumentation(
     // bugs.
     let featureStatus: WriteFeatureRowsResult | { error: true } | null = null;
     if (result.stored > 0) {
-      const timestamp = new Date(rows[0]!.time).toISOString();
+      const timestamp = verdict.snapshotTime;
       try {
         const snapshots = await loadSnapshotHistory(
           today,
