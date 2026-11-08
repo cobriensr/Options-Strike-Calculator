@@ -120,9 +120,9 @@ async function storeRows(
 ): Promise<number> {
   if (rows.length === 0) return 0;
   const sql = getDb();
-  // Single round-trip via unnest, mirrors the option-intraday cache
-  // helper. ON CONFLICT (ticker, ts, source) DO NOTHING dedupes when
-  // the cron re-runs intraday or alongside the WS daemon's writes.
+  // Single round-trip via unnest. ON CONFLICT (ticker, ts, source) DO
+  // NOTHING dedupes when the cron re-runs intraday or alongside the WS
+  // daemon's writes.
   const ts = rows.map((r) => r.ts);
   const ncp = rows.map((r) => r.netCallPrem);
   const ncv = rows.map((r) => r.netCallVol);

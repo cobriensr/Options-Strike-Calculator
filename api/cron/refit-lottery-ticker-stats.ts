@@ -13,8 +13,10 @@
  * (lottery-inversion-bonus.ts). The live table was frozen on 2026-06-17,
  * when the local nightly stopped. Two reasons to hold:
  *   - The cutoffs and quintiles were tuned on parquet NBBO-mid inversion.
- *     The live realized_flow_inversion_pct uses UW's synthetic per-minute
- *     mid (option-intraday.ts deriveMid), and that parity is unverified.
+ *     The live realized_flow_inversion_pct used to come from UW's synthetic
+ *     per-minute mid, and that parity was never verified. It now comes from
+ *     the nightly Full Tape pass, a night after the session, and each row
+ *     records its source in inversion_source.
  *   - The inputs were empty from late June until enrichment resumed
  *     (docs/superpowers/specs/lottery-enrichment-starvation-2026-10-02.md),
  *     so an early refit would clear every quintile and switch suppression
@@ -32,7 +34,9 @@
  * constant, not an env var: promotion is a reviewed, one-time decision.
  *
  * Schedule: `55 23 * * 1-5`, after the last enrich-lottery-outcomes slot
- * (23:40 UTC), so the day's inversions are in.
+ * (23:40 UTC), so the day's tape outcomes are in. Its inversions are not:
+ * they arrive from the nightly Full Tape pass the next morning, so the refit
+ * sees them a day late.
  *
  * Environment: CRON_SECRET
  */
