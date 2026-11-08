@@ -216,11 +216,17 @@ Produces:
   - **Parse** with Zod: `date` is YYYY-MM-DD, `v` is a non-negative integer. `contract` is the canonical name.
   - An empty array is a contract with no history, not an error.
   - A non-array response or a malformed row throws an error naming the root and the contract.
-- Check the operation page for the `range` values UW accepts. The seed uses `6m`; the cron wants the shortest one that covers a week.
+- **`range` (found 2026-11-07):** UW's operation page accepts `1d, 3d, 5d, 1w, 1m, 3m, 6m, 1y, 5y`. They count calendar days back from now, not sessions. A read-only ESZ6 probe on Saturday 11-07 with `interval=1d` gave:
+  - `5d`: 3 rows;
+  - `1w`: 5 rows;
+  - `1m`: 21 rows, 10-09 to 11-06.
+
+  The seed uses `6m` and the cron `1m` (see Constants).
+- **An empty result can be a fault.** `uwFetch` turns a body with no `data` into `[]`, so callers decide which empty contracts are errors (Phases 3b and 4a). The fetch can also return the running session's partial row. Callers drop rows dated on or after the current trade date before `insertContractVolumes`, which refuses the whole batch otherwise.
 
 Steps:
-- [ ] Failing tests, with `uwFetch` mocked: the cycle list for ES, CL and GC across a year end; one call per contract; an empty contract; a malformed row and a non-array response each named; a `uwFetch` rejection propagates.
-- [ ] Implement, gate, review, commit.
+- [x] Failing tests, with `uwFetch` mocked: the cycle list for ES, CL and GC across a year end; one call per contract; an empty contract; a malformed row and a non-array response each named; a `uwFetch` rejection propagates.
+- [x] Implement, gate, review, commit. Done 2026-11-07, local: 49911645, 68cc385d, plus review fixes.
 
 ### Phase 3b: seed the table from daily candles (medium)
 
@@ -230,7 +236,10 @@ Files:
 - `tsconfig.scripts.json`
 
 What the seed does:
-- **Fetch:** for each root, `fetchDailyContractVolumes` over `cycleContracts(root, '2026-07', three months past today)` with `range=6m`. That is about 30 calls. A fetch error fails that root, named; the other roots still run.
+- **Fetch:** for each root, `fetchDailyContractVolumes` over `cycleContracts(root, '2026-07', six months past today)` with `range=6m`. That is about 28 calls.
+  - Why six months: three would leave out the next quarterly contract. On 11-07, ES would get ESU6 and ESZ6 but not ESH7, so the Dec→Mar roll could never be seen.
+  - A fetch error fails that root, named, and the other roots still run.
+  - **An empty result** fails the root by name for any listed contract up to and including the second cycle contract after the current month. On 11-07 that is ESU6, ESZ6 and ESH7 for ES, and through CLF7 for CL. Read as no volume, it would let a challenger roll early.
 - **Volumes** go in for trade dates before the current one, and before any decision row, so the two tables are written together in one run.
 - **Decisions:**
   - From 2026-07-22 through the current trade date, worked out in memory by `decideFrontMonth`, oldest first.
@@ -246,6 +255,7 @@ Steps:
 - [ ] Failing tests, with `fetchDailyContractVolumes`, `fetchStoredFrontMonths` and the two insert functions mocked:
   - A synthetic two-contract history rolls once, on the session after volume crosses.
   - A fetch error fails its root by name, and the other roots still run.
+  - An empty result for ESZ6 fails ES by name; an empty one for a far month (CLK7 on 11-07) does not fail CL.
   - The current trade date's volume is not written.
   - Volumes are inserted before decisions.
   - A stored row in the middle of the range is kept, and the walk continues from it: a stored ESH7 a session before candles would roll makes every later row ESH7 or later.
@@ -260,7 +270,8 @@ Files: `api/cron/backfill-futures-gaps.ts`, `api/__tests__/backfill-futures-gaps
 
 - [ ] **Failing tests** first:
   - Before each root's schedule is read, its volumes are refreshed: daily candles for the incumbent and the next two cycle contracts, written with `insertContractVolumes` for trade dates before the current one only.
-  - A refresh failure (UW error, malformed candle, DB reject) fails that root by name with a Sentry exception and writes no decision row for it. The other roots still run, and the run reports partial.
+  - A refresh failure (UW error, malformed candle, DB reject, or an empty candle result for the incumbent) fails that root by name with a Sentry exception that carries the root and the range. It writes no decision row for that root. The other roots still run, and the run reports partial.
+  - A fetched row for the current trade date is dropped before `insertContractVolumes`, and the run logs each root's refreshed row count.
   - Candles are fetched only for `schedule.contracts`, and `/futures/contracts` is no longer called.
   - Gap minutes either side of a session open land on their own session's contract.
   - Every inserted bar carries its scheduled `contract`.
@@ -268,7 +279,8 @@ Files: `api/cron/backfill-futures-gaps.ts`, `api/__tests__/backfill-futures-gaps
   - PGlite: a clamp, and a cycle-seed fallback, each send one warning-level Sentry message tagged with product and trade date, besides the log line.
 - [ ] **Then the change:**
   - **The two warnings in `futures-front-month.ts` go to Sentry** (ruling 2026-11-07), as `captureMessage` at warning level with `product` and `trade_date` tags. Once the seed has run, either one means something unexpected: a clamp means a late volume row or an out-of-order decision, and a cycle seed means a root has no history. A log line alone would go unseen.
-  - **Volume refresh first** (owner decision 2026-11-07). For each root: take the incumbent (the latest decision row; with none, the cycle seed for the current trade date). Take `cycleContracts` from its month, first three. Call `fetchDailyContractVolumes` with the shortest range Phase 3a found, then `insertContractVolumes` for trade dates before the current one. About 18 calls a run.
+  - **Volume refresh first** (owner decision 2026-11-07). For each root: take the incumbent (the latest decision row; with none, the cycle seed for the current trade date). Take `cycleContracts` from its month, first three. Call `fetchDailyContractVolumes` with `range=1m`, then `insertContractVolumes` for trade dates before the current one. That is about 18 calls and about 400 rows a run.
+    - Why `1m` and not `1w`: if the cron is down for more than a week, `1w` would leave the older missed sessions with no volume rows. Re-writes are DO NOTHING, so the longer range costs nothing but rows.
     - Why: otherwise nothing writes volume between the Phase 3b seed and Phase 5, or on any day uw-stream is down. A decision made from old volume is permanent.
     - Candle rows are `DO NOTHING`, so a session uw-stream already wrote keeps its live tally.
   - The trade dates of the window's gap minutes and of the NULL-flow runs go to `fetchFrontMonthSchedule(root, dates, 'cron')`.
@@ -414,7 +426,7 @@ Between steps 5 and 6, the cron fills gaps by the new rule while live bars still
 - **One-digit year window:** [ref − 1, ref + 8], ref being the trade date's year (from the 6b parser).
 - **One tick, the Phase 6 band:** ES 0.25, NQ 0.25, RTY 0.10, CL 0.01, GC 0.10, ZN 1/64 = 0.015625.
 - **Seed start:** trade date 2026-07-21, the first daily candle on NQ/RTY/CL/GC/ZN and the start of REST trades. The first decision row is 2026-07-22.
-- **Daily candles:** `interval=1d`, volume from `v`; `range=6m` for the seed, the shortest range covering a week for the cron.
+- **Daily candles:** `interval=1d`, volume from `v`; `range=6m` for the seed and `range=1m` for the cron. `range` counts calendar days back from now (probe 2026-11-07: `1w` gave 5 sessions, `1m` 21).
 - **Live fill cap:** 10 dates per `ensure_front` call (Phase 5). The TypeScript fill is uncapped: its callers are a cron and scripts.
 - **Repair window:** 2026-09-04 00:00 UTC → the Phase 5 deploy.
 
